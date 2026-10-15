@@ -8,7 +8,6 @@
 #include "render/ClusterLodRepair.h"
 #include "render/ElementWorkOps.h"
 #include "render/GpuBufferOps.h"
-#include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
 #include "render/LodNodeEdit.h"
 #include "render/MeshletBoundsRefit.h"
@@ -129,7 +128,6 @@ std::vector<FragmentBuild> BuildFragments(state::Scene &r, mtl::ComputeChain &ch
 // Removes the elements at the sorted handles from the point or line clusters that draw them, on the host, and returns the refit of the owner's nodes above them.
 LodNodeRefit RepairElementMeshletDeletion(state::Scene &r, mtl::ComputeChain &chain, MeshStore::Record &owner, uint32_t topology, std::span<const uint32_t> elements) {
     const profile::CpuScope scope{"ElementMeshletDeletion"};
-    auto &buffers = r.Context.get<GpuBuffers>();
     auto &meshes = r.Context.get<MeshStore>();
     auto &render = meshes.Render();
     const auto endpoints = topology == 1u ? 2u : 1u;
@@ -190,22 +188,22 @@ LodNodeRefit RepairElementMeshletDeletion(state::Scene &r, mtl::ComputeChain &ch
     meshes.ReleasePayloadRuns(owner, RenderPayload::VertexCorners, std::move(corner_tails));
     SortUnique(kept_blocks);
     std::ranges::sort(kept_addresses);
-    PublishMeshletOwners(r, chain, owner, topology, HandleRuns(kept), kept_blocks);
+    std::vector<MeshletOwnersJob> owner_jobs;
+    PrepareMeshletOwners(r, owner, topology, HandleRuns(kept), kept_blocks, owner_jobs);
+    RecordMeshletOwners(r, chain, owner_jobs);
     if (!kept.empty()) {
         const MeshletBoundsRefitJob job{&owner, &chain.Scratch, SeedElementWorkHandles(chain.Scratch, render.Meshlets.Capacity(), kept_addresses)};
         RefitCanonicalMeshletBounds(r, chain, std::span{&job, 1u});
     }
-    auto refit = EditLodNodes(r, chain, owner, empty, {}, kept);
+    auto refit = EditLodNodes(r, owner, empty, {}, kept);
     RetireMeshletStorage(r, owner, empty);
     if (empty.empty()) ++owner.MeshletRevision;
     UpdatePosedMeshletBlocks(r, owner, addresses);
-    buffers.PreludeStale = true;
     return refit;
 }
 } // namespace
 
 void RepairElementMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<const ElementMeshletRepair> repairs) {
-    auto &buffers = r.Context.get<GpuBuffers>();
     auto &meshes = r.Context.get<MeshStore>();
     auto &render = meshes.Render();
     const auto &a = meshes.Arenas();
@@ -258,8 +256,7 @@ void RepairElementMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<
     }
     if (!additions.empty()) {
         const auto built = BuildFragments(r, chain, additions);
-        for (uint32_t o = 0u; o < additions.size(); ++o) refits.push_back(EditLodNodes(r, chain, *additions[o].Owner, {}, built[o].Runs, {}));
-        buffers.PreludeStale = true;
+        for (uint32_t o = 0u; o < additions.size(); ++o) refits.push_back(EditLodNodes(r, *additions[o].Owner, {}, built[o].Runs, {}));
     }
     RecordLodNodeRefits(r, chain, refits);
 }
@@ -298,10 +295,10 @@ void RepairTriangleRender(state::Scene &r, mtl::ComputeChain &chain, std::span<c
     for (uint32_t i = 0u; i < patches.size(); ++i) {
         const auto &patch = patches[i];
         profile::RecordCounter("TopologyAddedMeshlets", built[i].Added.size());
-        r.Context.get<GpuSceneState>().LodDemand.insert(entities[i]);
+        r.emplace_or_replace<ClusterLodDemand>(entities[i]);
         // Retired members leave their groups, and the remaining stale members refit.
         std::erase_if(stale[i], [&](uint32_t cluster) { return std::ranges::binary_search(patch.Clusters, cluster); });
-        refits.push_back(EditLodNodes(r, chain, *owners[i].Owner, patch.Clusters, built[i].Runs, stale[i]));
+        refits.push_back(EditLodNodes(r, *owners[i].Owner, patch.Clusters, built[i].Runs, stale[i]));
     }
     RecordLodNodeRefits(r, chain, refits);
     // The host reads the fragments' records once the build has emitted them.
@@ -344,7 +341,6 @@ void RepairTopologyRender(state::Scene &r, mtl::ComputeChain &chain, std::span<c
 }
 
 void RepairFaceRender(state::Scene &r, mtl::ComputeChain &chain, std::span<const std::pair<state::Entity, FaceTriangles>> changes) {
-    auto &buffers = r.Context.get<GpuBuffers>();
     std::vector<TriangleRepair> repairs;
     std::vector<state::Entity> entities;
     for (const auto &[entity, changed] : changes) {
@@ -358,6 +354,5 @@ void RepairFaceRender(state::Scene &r, mtl::ComputeChain &chain, std::span<const
     }
     if (repairs.empty()) return;
     RepairTriangleRender(r, chain, repairs, {});
-    buffers.PreludeStale = true;
     RepointMeshInstances(r, entities);
 }

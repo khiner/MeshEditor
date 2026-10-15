@@ -204,17 +204,15 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             chain.Submit();
             meshes.RebuildSelectionIndex(clones);
             // A clone with render records draws them at once and takes its source's pending repairs.
-            auto &scene = r.Context.get<GpuSceneState>();
             for (const auto id : clones) {
                 RefreshMeshBinding(r, id);
                 const auto &record = meshes.Get(id);
                 const auto entity = MeshEntityOf(r, id);
                 if (entity == state::Null || record.RenderTopologies == 0u) continue;
-                if (meshes.HasDirtyPositions(record)) scene.PositionDirty.insert(entity);
-                if (meshes.HasDirtyGroups(record)) scene.LodDirty.insert(entity);
-                if (!meshes.ClusterGroupCount(record)) scene.LodDemand.insert(entity);
+                if (meshes.HasDirtyPositions(record)) r.emplace_or_replace<MeshletPositionsDirty>(entity);
+                if (meshes.HasDirtyGroups(record)) r.emplace_or_replace<ClusterLodDirty>(entity);
+                if (!meshes.ClusterGroupCount(record)) r.emplace_or_replace<ClusterLodDemand>(entity);
             }
-            r.Context.get<GpuBuffers>().PreludeStale = true;
         }
         begin_translate();
     };

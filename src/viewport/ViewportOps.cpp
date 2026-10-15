@@ -10,7 +10,6 @@
 #include "mesh/Mesh.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
-#include "metal/Dispatch.h"
 #include "scene/Entity.h"
 #include "selection/Selection.h"
 #include "selection/SelectionComponents.h"
@@ -35,10 +34,6 @@ bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode
     const auto edit_ranges = [&](Element element) {
         std::vector<ElementRange> ranges;
         if (element == Element::None) return ranges;
-        std::vector<uint32_t> ids;
-        for (const auto mesh_entity : r.view<const MeshElementSelection, const MeshHandle>()) ids.push_back(*DrawnStoreId(r, mesh_entity));
-        mtl::ComputeChain chain{meshes.BufferContext()};
-        meshes.EnsureSelectionState(r, chain, ids);
         for (const auto mesh_entity : r.view<const MeshElementSelection, const MeshHandle>()) {
             const auto mesh = GetDrawnMesh(r, mesh_entity);
             const auto count = mesh.ElementCount(element);
@@ -71,7 +66,6 @@ bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode
         // A mesh that has them keeps its remembered selection, converted to the element mode it was stored in otherwise.
         if (const auto edit_element = r.get<const EditMode>(viewport).Value; edit_element != Element::None) {
             std::vector<state::Entity> taking;
-            std::vector<uint32_t> ids;
             for (const auto mesh_entity : flags.Meshes) {
                 if (r.all_of<MeshElementSelection>(mesh_entity)) {
                     const auto id = *DrawnStoreId(r, mesh_entity);
@@ -80,10 +74,7 @@ bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode
                 }
                 if (GetDrawnMesh(r, mesh_entity).ElementCount(edit_element) == 0) continue;
                 taking.push_back(mesh_entity);
-                ids.push_back(*DrawnStoreId(r, mesh_entity));
             }
-            mtl::ComputeChain chain{meshes.BufferContext()};
-            meshes.EnsureSelectionState(r, chain, ids);
             for (const auto mesh_entity : taking) {
                 const auto mesh = GetDrawnMesh(r, mesh_entity);
                 r.emplace<MeshElementSelection>(mesh_entity);

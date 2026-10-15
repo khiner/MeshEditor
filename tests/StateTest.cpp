@@ -211,6 +211,29 @@ int main() {
         expect(removed.empty() && managed.empty());
         expect(state::Integral(r.create()) == 0u);
     };
+    "dirty parity tells whether a tag existed before the set's events"_test = [] {
+        state::Scene r;
+        state::DirtySet tags;
+        tags.bind(r);
+        tags.on<Selected>(state::On::Create | state::On::Update | state::On::Destroy);
+        const auto churned = r.create(), created = r.create(), destroyed = r.create(), updated = r.create();
+        r.emplace<Selected>(destroyed);
+        r.emplace<Selected>(updated);
+        tags.clear();
+        r.emplace<Selected>(churned);
+        r.remove<Selected>(churned);
+        r.emplace<Selected>(created);
+        r.remove<Selected>(destroyed);
+        r.patch<Selected>(updated);
+        expect(tags.size() == 4u);
+        expect(!tags.Existed(churned, r.all_of<Selected>(churned)) && !r.all_of<Selected>(churned));
+        expect(!tags.Existed(created, r.all_of<Selected>(created)) && r.all_of<Selected>(created));
+        expect(tags.Existed(destroyed, r.all_of<Selected>(destroyed)) && !r.all_of<Selected>(destroyed));
+        expect(tags.Existed(updated, r.all_of<Selected>(updated)) && r.all_of<Selected>(updated));
+        tags.clear();
+        r.remove<Selected>(created);
+        expect(tags.Existed(created, false));
+    };
     "bulk range retirement preserves unrelated allocations and address ordering"_test = [] {
         RangeAllocator batch, scalar;
         std::mt19937 random{934};

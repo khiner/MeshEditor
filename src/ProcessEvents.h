@@ -2,20 +2,13 @@
 
 #include "state/Entity.h"
 
-enum class RenderRequest : uint8_t {
-    None,
-    Reuse,
-    Silhouette,
-    Rebuild,
-};
-
-// The strongest render request not yet handled by a record/submit.
+// Whether a viewport frame waits for its record and submit.
 struct PendingRenderRequest {
-    RenderRequest Value{RenderRequest::None};
+    bool Value{false};
 };
 
-// Queue a viewport frame and invalidate occlusion after geometry or view changes.
-void RequestRender(state::Scene &, RenderRequest);
+// Queue a viewport frame, which invalidates occlusion unless its change cannot disocclude anything, as a selection change cannot.
+void RequestRender(state::Scene &, bool disoccludes = true);
 
 // Register the reactive trackers and scene lifecycle handlers used by ProcessComponentEvents.
 void RegisterSceneComponentHandlers(state::Scene &);
@@ -28,5 +21,5 @@ enum class EventPass { Frame,
                        Restore,
                        Sample,
                        Render };
-// Process component changes and accumulate render work in PendingRenderRequest.
+// Process component changes and request a frame in PendingRenderRequest.
 void ProcessComponentEvents(state::Scene &, state::Entity viewport, EventPass = EventPass::Frame);

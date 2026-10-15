@@ -1,5 +1,6 @@
 #include "mesh/SharpnessOperations.h"
 #include "gpu/EditSharpnessPushConstants.h"
+#include "mesh/CornerClassBatch.h"
 #include "mesh/ElementMembershipWork.h"
 #include "mesh/ElementWorkSort.h"
 #include "mesh/Mesh.h"
@@ -33,7 +34,6 @@ std::vector<SharpnessOperationChange> ExecuteGeometrySharpness(state::Scene &r, 
         ClosureSeed Vertices;
         MeshClosure Neighborhood;
         FaceTriangles Triangles;
-        MeshStore::CornerClassUpdate Classes;
     };
     std::vector<Edit> edits;
     std::vector<ElementWorkSeedJob> seeds;
@@ -113,16 +113,19 @@ std::vector<SharpnessOperationChange> ExecuteGeometrySharpness(state::Scene &r, 
     chain.Submit();
     for (auto &edit : edits) edit.Neighborhood.Finish(chain);
     std::erase_if(edits, [](const Edit &edit) { return !edit.Neighborhood.Counts[0]; });
+    std::vector<MeshStore::CornerClassRequest> requests;
     for (auto &edit : edits) {
         edit.Triangles = EncodeFaceTriangles(r, chain, edit.Id, edit.Neighborhood.Seed(Element::Face));
         // The neighborhood's corners include every corner at its vertices.
-        edit.Classes = meshes.EncodeCornerClassification(r, chain, edit.Id, edit.Neighborhood.Elements[0], edit.Neighborhood.Counts[0], edit.Neighborhood.Counts[1], source == Element::None);
+        const auto &neighborhood = edit.Neighborhood;
+        requests.push_back({edit.Id, neighborhood.Elements[0], neighborhood.Counts[0], neighborhood.Counts[1], source == Element::None});
     }
+    auto classes = meshes.EncodeCornerClassification(r, chain, requests);
     chain.Submit();
+    meshes.PlanCornerClassification(r, chain, classes);
     std::vector<LocalNormalWork> normals;
     for (auto &edit : edits) {
         edit.Triangles.Finish(chain);
-        meshes.PlanCornerClassification(r, chain, edit.Classes);
         const auto &neighborhood = edit.Neighborhood;
         normals.push_back({edit.Id, neighborhood.Elements[0], neighborhood.Counts[0], neighborhood.Elements[2], neighborhood.Counts[2]});
     }

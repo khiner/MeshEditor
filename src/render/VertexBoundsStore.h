@@ -17,6 +17,7 @@
 // Exact membership excludes stale holes.
 class VertexBoundsStore : public AttributeArena<VertexBoundsMapNode, AABB, 32u, 7u, 3u> {
     using Arena = AttributeArena<VertexBoundsMapNode, AABB, 32u, 7u, 3u>;
+    using Arena::Release;
 
 public:
     explicit VertexBoundsStore(mtl::BufferContext &ctx) : Arena(ctx), Members(ctx, 0u, SlotType::Buffer) {}
@@ -54,11 +55,9 @@ public:
         const AABB &operator[](uint32_t key) const { return Values[Index(key)]; }
     };
     ReadView View(uint32_t root) const { return {Nodes.Buffer.GetSpan<VertexBoundsMapNode>(), Values.Buffer.GetSpan<AABB>(), Members.GetSpan<uint32_t>(), root}; }
-    void BeginUpdate() { ++Epoch; }
     template<typename GetBlocks>
     Prepared Prepare(state::Entity entity, uint32_t store, uint64_t revision, uint32_t count, GetBlocks &&get_blocks) {
         auto &group = Groups[entity];
-        group.Seen = Epoch;
         if (group.Store == store && group.Revision == revision && group.Roots.size() == count) return {group.Roots, group.Keys, false, group.LayoutRevision};
         if (group.Store != store) {
             Unregister(group.Store, entity);
@@ -108,16 +107,13 @@ public:
             group.Revision = revision;
         }
     }
-    void EndUpdate() {
-        for (auto it = Groups.begin(); it != Groups.end();) {
-            if (it->second.Seen == Epoch) {
-                ++it;
-                continue;
-            }
-            for (auto &root : it->second.Roots) Release(root);
-            Unregister(it->second.Store, it->first);
-            it = Groups.erase(it);
-        }
+    // Releases the entity's roots, if it has any.
+    void Release(state::Entity entity) {
+        const auto it = Groups.find(entity);
+        if (it == Groups.end()) return;
+        for (auto &root : it->second.Roots) Release(root);
+        Unregister(it->second.Store, entity);
+        Groups.erase(it);
     }
     void Reset() {
         ByStore.clear();
@@ -125,14 +121,13 @@ public:
         Nodes.Reset();
         Values.Reset();
         Members.SetUsedSize(0u);
-        Epoch = 0u;
     }
     mtl::Buffer Members;
 
 private:
     struct Group {
         uint32_t Store{InvalidOffset};
-        uint64_t Revision{}, Seen{}, LayoutRevision{};
+        uint64_t Revision{}, LayoutRevision{};
         VertexBoundsStore::Keys Keys;
         std::array<std::unordered_map<uint32_t, uint32_t>, VertexBoundsLevels> Positions;
         std::array<std::unordered_map<uint32_t, uint32_t>, VertexBoundsLevels - 1u> Children;
@@ -141,7 +136,6 @@ private:
     };
     std::unordered_map<state::Entity, Group> Groups;
     std::unordered_map<uint32_t, std::unordered_set<state::Entity>> ByStore;
-    uint64_t Epoch{};
     void Unregister(uint32_t store, state::Entity entity) {
         const auto found = ByStore.find(store);
         if (found == ByStore.end()) return;

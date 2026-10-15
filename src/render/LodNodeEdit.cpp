@@ -217,7 +217,7 @@ void RestructureLeaves(OwnerNodes &nodes, const std::map<uint32_t, std::vector<u
 }
 } // namespace
 
-LodNodeRefit EditLodNodes(state::Scene &r, mtl::ComputeChain &chain, MeshStore::Record &owner, std::span<const uint32_t> removed, std::span<const LodClusterRun> added, std::span<const uint32_t> touched) {
+LodNodeRefit EditLodNodes(state::Scene &r, MeshStore::Record &owner, std::span<const uint32_t> removed, std::span<const LodClusterRun> added, std::span<const uint32_t> touched) {
     if (removed.empty() && added.empty() && touched.empty()) return {};
     const profile::CpuScope scope{"LodNodeEdit"};
     auto &buffers = r.Context.get<MeshStore>().Render();
@@ -348,10 +348,8 @@ LodNodeRefit EditLodNodes(state::Scene &r, mtl::ComputeChain &chain, MeshStore::
     }
     // A root that split adds a level the traversal descends.
     owner.LodDepth = std::max(owner.LodDepth, tree_depth);
-    std::vector<uint32_t> jobs;
-    std::vector<std::pair<uint32_t, Range>> batches;
+    LodNodeRefit refit;
     for (const auto &[depth, level] : levels) {
-        const auto first = uint32_t(jobs.size());
         for (const auto id : level) {
             auto node = nodes.Get(id);
             uint64_t count = 0u;
@@ -365,29 +363,42 @@ LodNodeRefit EditLodNodes(state::Scene &r, mtl::ComputeChain &chain, MeshStore::
             // A pinned finest node keeps every finest member at an infinite error, and an empty node encloses nothing.
             if (pinned.contains(id)) node.Error = std::numeric_limits<float>::infinity();
             else if (!count) node = {.FirstMeshlet = node.FirstMeshlet, .ChildOffset = node.ChildOffset, .ChildCount = node.ChildCount, .Members = node.Members};
-            else jobs.push_back(id);
+            else refit.Nodes.push_back({depth, {id, owner.NodeData.Index, owner.MeshletData.Index, owner.GroupData.Index, owner.MemberData.Index}});
             nodes.Edit(id) = node;
         }
-        if (jobs.size() > first) batches.push_back({depth, {first, uint32_t(jobs.size()) - first}});
     }
     for (const auto id : primitives) {
         auto &value = buffers.Primitives.GetMutable({buffers.Primitives.Address(owner.PrimitiveData, ElementHandle{id}).Value(), 1u})[0];
         value.MeshletCount = nodes.Get(value.LodRootNode).MeshletCount;
         value.Level0Count = nodes.Get(value.LodFinestNode).MeshletCount;
     }
-    if (jobs.empty()) return {};
-    const auto job_words = chain.Scratch.Allocate(std::span<const uint32_t>{jobs});
-    for (auto &[depth, batch] : batches) batch.Offset += job_words.Offset;
-    const LodNodeRefitPushConstants pc{
-        .Jobs = {chain.Scratch.Buffer.Slot, job_words.Offset},
+    return refit;
+}
+
+void RecordLodNodeRefits(state::Scene &r, mtl::ComputeChain &chain, std::span<const LodNodeRefit> refits) {
+    // Each depth's nodes form one run of the job table.
+    std::vector<uint32_t> first;
+    for (const auto &refit : refits) {
+        for (const auto &[depth, job] : refit.Nodes) {
+            if (depth + 2u > first.size()) first.resize(depth + 2u, 0u);
+            ++first[depth + 1u];
+        }
+    }
+    if (first.empty()) return;
+    for (uint32_t depth = 1u; depth < first.size(); ++depth) first[depth] += first[depth - 1u];
+    std::vector<LodNodeRefitJob> jobs(first.back());
+    auto next = first;
+    for (const auto &refit : refits) {
+        for (const auto &[depth, job] : refit.Nodes) jobs[next[depth]++] = job;
+    }
+    const auto &buffers = r.Context.get<const MeshStore>().Render();
+    const auto table = chain.Upload(std::as_bytes(std::span{jobs}));
+    LodNodeRefitPushConstants pc{
+        .Jobs = table,
         .Nodes = buffers.LodNodes.Slots(),
         .Meshlets = buffers.Meshlets.Slots(),
         .Groups = buffers.ClusterGroups.Slots(),
         .Members = buffers.LodMembers.Slots(),
-        .NodeSet = owner.NodeData.Index,
-        .MeshletSet = owner.MeshletData.Index,
-        .GroupSet = owner.GroupData.Index,
-        .MemberSet = owner.MemberData.Index,
         .NodeSlot = buffers.LodNodes.Buffer.Slot,
         .ParentSlot = buffers.LodParents.Buffer.Slot,
         .MeshletSlot = buffers.Meshlets.Buffer.Slot,
@@ -395,26 +406,11 @@ LodNodeRefit EditLodNodes(state::Scene &r, mtl::ComputeChain &chain, MeshStore::
         .MemberSlot = buffers.LodMembers.Buffer.Slot,
         .ErrorSlot = chain.Scratch.Buffer.Slot,
     };
-    return {pc, std::move(batches)};
-}
-
-void RecordLodNodeRefits(state::Scene &r, mtl::ComputeChain &chain, std::span<const LodNodeRefit> refits) {
-    uint32_t deepest = 0u;
-    for (const auto &refit : refits) {
-        for (const auto &[depth, batch] : refit.Depths) deepest = std::max(deepest, depth);
-    }
     const auto &pipeline = GetMeshPipelines(r)[MeshPass::LodNodeRefit];
-    for (uint32_t depth = deepest + 1u; depth--;) {
-        chain.Concurrent([&] {
-            for (const auto &refit : refits) {
-                for (const auto &[at, batch] : refit.Depths) {
-                    if (at != depth) continue;
-                    auto pc = refit.Pc;
-                    pc.Jobs.Offset = batch.Offset;
-                    pc.Count = batch.Count;
-                    chain.Groups(pipeline, pc, pc.Count, 128u);
-                }
-            }
-        });
+    constexpr uint32_t JobWords = sizeof(LodNodeRefitJob) / sizeof(uint32_t);
+    for (auto depth = uint32_t(first.size() - 1u); depth--;) {
+        pc.Jobs.Offset = table.Offset + first[depth] * JobWords;
+        pc.Count = first[depth + 1u] - first[depth];
+        chain.Groups(pipeline, pc, pc.Count, 128u);
     }
 }

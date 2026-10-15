@@ -575,7 +575,6 @@ void ApplySelection(state::Scene &r, std::span<const SelectionRequest> requests,
     std::vector<uint32_t> ids;
     for (const auto &request : requests) ids.push_back(*DrawnStoreId(r, request.MeshEntity));
     mtl::ComputeChain chain{meshes.BufferContext()};
-    meshes.EnsureSelectionState(r, chain, ids);
     for (uint32_t i = 0u; i < requests.size(); ++i) {
         const auto &request = requests[i];
         const auto id = ids[i];
@@ -728,10 +727,6 @@ void ConvertElementSelections(state::Scene &r, std::span<const state::Entity> me
     std::vector<uint32_t> ids;
     ids.reserve(mesh_entities.size());
     for (const auto mesh_entity : mesh_entities) ids.push_back(*DrawnStoreId(r, mesh_entity));
-    {
-        mtl::ComputeChain chain{meshes.BufferContext()};
-        meshes.EnsureSelectionState(r, chain, ids);
-    }
     std::vector<ElementRange> ranges;
     std::vector<state::Entity> all_selected;
     for (uint32_t i = 0u; i < mesh_entities.size(); ++i) {
@@ -792,7 +787,7 @@ void ApplyEditSharpness(state::Scene &r, state::Entity, std::span<const state::E
     });
     RepairFaceRender(r, chain, repairs);
     chain.Submit();
-    RequestRender(r, RenderRequest::Rebuild);
+    RequestRender(r);
 }
 
 const EditSelectionSummary *GetElementSelectionSummary(const state::Scene &r, state::Entity mesh_entity, Element element) {

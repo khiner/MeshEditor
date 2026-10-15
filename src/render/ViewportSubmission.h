@@ -10,4 +10,4 @@ struct ViewportRenderResources {
 };
 
 void SubmitRecordedFrame(state::Scene &, MTL::CommandBuffer *);
-void RecordAndSubmitFrame(state::Scene &, state::Entity, SceneUpdate, RenderPhase = RenderPhase::Full);
+void RecordAndSubmitFrame(state::Scene &, state::Entity, RenderPhase = RenderPhase::Full);

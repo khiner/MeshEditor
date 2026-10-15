@@ -798,20 +798,20 @@ void Project::AfterRestore() {
         if (!meshes.TryGet(change.StoreId)) buffers.Retally(change.StoreId, {});
         if (const auto entity = MeshEntityOf(R, change.StoreId); entity != state::Null) restored_meshes.push_back(entity);
     }
-    buffers.PreludeStale = true;
+    // Restored deformation can move any posed mesh.
+    for (const auto entity : R.view<const PosedLayout>()) R.emplace_or_replace<MeshBoundsDirty>(entity);
     auto &scene = R.Context.get<GpuSceneState>();
     SortUnique(restored_meshes);
     std::vector<state::Entity> repointed;
     for (const auto entity : restored_meshes) {
-        scene.PositionDirty.erase(entity);
-        scene.LodDirty.erase(entity);
+        R.remove<MeshletPositionsDirty, ClusterLodDirty>(entity);
         const auto id = *DrawnStoreId(R, entity);
         const auto *owner = meshes.TryGet(id);
         if (!owner || owner->RenderTopologies == 0u) continue;
         repointed.push_back(entity);
-        if (meshes.HasDirtyPositions(*owner)) scene.PositionDirty.insert(entity);
-        if (meshes.HasDirtyGroups(*owner)) scene.LodDirty.insert(entity);
-        if (!meshes.ClusterGroupCount(*owner) && ClusterLodApplies(Mesh{meshes, id}.FaceCount() > 0u, meshes.MeshletCount(*owner))) scene.LodDemand.insert(entity);
+        if (meshes.HasDirtyPositions(*owner)) R.emplace<MeshletPositionsDirty>(entity);
+        if (meshes.HasDirtyGroups(*owner)) R.emplace<ClusterLodDirty>(entity);
+        if (!meshes.ClusterGroupCount(*owner) && ClusterLodApplies(Mesh{meshes, id}.FaceCount() > 0u, meshes.MeshletCount(*owner))) R.emplace_or_replace<ClusterLodDemand>(entity);
     }
     // The restored render records change the meshlet and LOD node counts that size each instance's cull.
     RepointMeshInstances(R, repointed);

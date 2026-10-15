@@ -6,8 +6,11 @@
 
 void SelectionIndex::Update(uint32_t root, std::span<const uint32_t> blocks, uint32_t owner, std::span<const MeshElementBlock> membership, std::span<const SelectionAggregate> leaves) {
     if (Roots.size() <= root) Roots.resize(size_t(root) + 1u, InvalidOffset);
+    // A new root takes one range for a whole path of nodes, which a mesh of one block fills, and the unused tail returns at the end.
+    Range spine{};
+    uint32_t spine_used = 0u;
     const auto allocate = [&](uint32_t parent, uint32_t slot) {
-        const auto id = Aggregates.Allocate(1u).Offset;
+        const auto id = spine_used < spine.Count ? spine.Offset + spine_used++ : Aggregates.Allocate(1u).Offset;
         if (Nodes.size() <= id) Nodes.resize(size_t(id) + 1u);
         auto &node = Nodes[id];
         node = {.Parent = parent, .Slot = slot};
@@ -15,7 +18,10 @@ void SelectionIndex::Update(uint32_t root, std::span<const uint32_t> blocks, uin
         Aggregates.GetMutable({id, 1u})[0] = {};
         return id;
     };
-    if (Roots[root] == InvalidOffset) Roots[root] = allocate(InvalidOffset, 0u);
+    if (Roots[root] == InvalidOffset) {
+        spine = Aggregates.Allocate(SelectionIndexLevels);
+        Roots[root] = allocate(InvalidOffset, 0u);
+    }
     std::array<std::vector<uint32_t>, SelectionIndexLevels> paths;
     for (const auto block : blocks) {
         const bool live = block < membership.size() && membership[block].Owner == owner && membership[block].Count;
@@ -74,6 +80,7 @@ void SelectionIndex::Update(uint32_t root, std::span<const uint32_t> blocks, uin
             }
         }
     }
+    if (spine_used < spine.Count) Aggregates.Release({spine.Offset + spine_used, spine.Count - spine_used});
     profile::RecordCounter("SelectionIndexNodes", updated);
 }
 

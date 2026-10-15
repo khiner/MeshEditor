@@ -5,7 +5,6 @@
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
-#include "metal/Dispatch.h"
 #include "physics/ColliderUpdate.h"
 #include "physics/PhysicsTypes.h"
 #include "scene/Entity.h"
@@ -19,18 +18,33 @@ state::Entity ColliderMesh(const state::Scene &r, state::Entity collider, const 
 }
 } // namespace
 
+std::span<const state::Entity> MeshCollidersOf(const state::Scene &r, state::Entity mesh_entity) {
+    const auto *list = r.try_get<const MeshColliderList>(mesh_entity);
+    return list ? std::span{list->Colliders} : std::span<const state::Entity>{};
+}
+
 void UpdateMeshColliders(state::Scene &r) {
-    const auto &changed = reactive(r, state::Change::Colliders);
-    if (changed.empty()) return;
-    auto &index = r.Context.get<MeshColliders>();
-    // A collider keeping its mesh, as a dimension fit does, leaves the index in place.
-    const bool placed = std::ranges::all_of(changed, [&](state::Entity e) {
-        const auto *shape = r.valid(e) ? r.try_get<const ColliderShape>(e) : nullptr;
-        return shape && std::ranges::contains(index.Of(ColliderMesh(r, e, *shape)), e);
-    });
-    if (placed) return;
-    index.ByMesh.clear();
-    for (const auto [e, shape] : r.view<const ColliderShape>().each()) index.ByMesh[ColliderMesh(r, e, shape)].push_back(e);
+    for (const auto e : reactive(r, state::Change::Colliders)) {
+        if (!r.valid(e)) continue;
+        const auto *shape = r.try_get<const ColliderShape>(e);
+        const auto mesh_entity = shape ? ColliderMesh(r, e, *shape) : state::Null;
+        // A collider keeping its mesh, as a dimension fit does, stays in its list.
+        if (const auto *listed = r.try_get<const ColliderListedUnder>(e); listed && listed->MeshEntity == mesh_entity) continue;
+        r.remove<ColliderListedUnder>(e);
+        if (!r.valid(mesh_entity)) continue;
+        r.get_or_emplace<MeshColliderList>(mesh_entity).Colliders.push_back(e);
+        r.emplace<ColliderListedUnder>(e, mesh_entity);
+    }
+}
+
+void RegisterMeshColliderHandlers(state::Scene &r) {
+    r.on_destroy<ColliderListedUnder, [](state::Scene &r, state::Entity e) {
+        const auto mesh_entity = r.get<const ColliderListedUnder>(e).MeshEntity;
+        auto *list = r.try_edit<MeshColliderList>(mesh_entity);
+        if (!list) return;
+        std::erase(list->Colliders, e);
+        if (list->Colliders.empty()) r.remove<MeshColliderList>(mesh_entity);
+    }>();
 }
 
 void RederiveColliders(state::Scene &r, std::span<const state::Entity> entities) {
@@ -42,7 +56,6 @@ void RederiveColliders(state::Scene &r, std::span<const state::Entity> entities)
         uint32_t FitStoreId;
     };
     std::vector<Derivation> derivations;
-    std::vector<uint32_t> fit_ids;
     for (const auto e : entities) {
         const auto *cs = r.try_get<const ColliderShape>(e);
         const auto *policy = r.try_get<const ColliderPolicy>(e);
@@ -83,14 +96,9 @@ void RederiveColliders(state::Scene &r, std::span<const state::Entity> entities)
             (std::holds_alternative<physics::Box>(shape) || std::holds_alternative<physics::Sphere>(shape) ||
              std::holds_alternative<physics::Cylinder>(shape) || std::holds_alternative<physics::Capsule>(shape));
         const auto fit_id = fit_dimensions ? mesh->GetStoreId() : InvalidOffset;
-        if (fit_id != InvalidOffset) fit_ids.push_back(fit_id);
         derivations.push_back({e, mesh_entity, std::move(shape), local_offset, fit_id});
     }
-    auto &meshes = r.Context.get<MeshStore>();
-    if (!fit_ids.empty()) {
-        mtl::ComputeChain chain{meshes.BufferContext()};
-        meshes.EnsureSelectionState(r, chain, fit_ids);
-    }
+    const auto &meshes = r.Context.get<const MeshStore>();
     for (auto &[e, mesh_entity, shape, local_offset, fit_id] : derivations) {
         if (fit_id != InvalidOffset) {
             const auto aabb = meshes.GetSelectionRoot(fit_id, Element::Vertex).Bounds;

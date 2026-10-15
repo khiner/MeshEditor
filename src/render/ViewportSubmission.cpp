@@ -12,12 +12,11 @@
 #include <Metal/MTLCommandQueue.hpp>
 ViewportRenderResources::ViewportRenderResources() = default;
 ViewportRenderResources::~ViewportRenderResources() { mtl::AutoreleaseScope::Release(InFlight); }
-// Dispatch sizes follow scene recording because the rebuild determines their counts.
+// The submitted frame's cull sees every disocclusion so far.
 void SubmitRecordedFrame(state::Scene &r, MTL::CommandBuffer *command_buffer) {
     const mtl::AutoreleaseScope native_scope;
     const auto &ctx = r.Context.get<const mtl::Context>();
-    auto &buffers = r.Context.get<GpuBuffers>();
-    SyncPreludeDispatchArgs(buffers);
+    r.Context.get<GpuBuffers>().MeshletOcclusionStale = false;
     ctx.CommitResidency();
     {
         const profile::CpuScope scope{"QueueSubmit"};
@@ -28,12 +27,12 @@ void SubmitRecordedFrame(state::Scene &r, MTL::CommandBuffer *command_buffer) {
     r.Context.get<MeshStore>().FrameSubmitted();
 }
 
-void RecordAndSubmitFrame(state::Scene &r, state::Entity viewport, SceneUpdate update, RenderPhase phase) {
+void RecordAndSubmitFrame(state::Scene &r, state::Entity viewport, RenderPhase phase) {
     const mtl::AutoreleaseScope native_scope;
     const auto &ctx = r.Context.get<const mtl::Context>();
     auto &resources = r.Context.get<ViewportRenderResources>();
     auto *command_buffer = ctx.Queue->commandBuffer();
-    RecordRenderCommandBuffer(r, viewport, command_buffer, update, phase);
+    RecordRenderCommandBuffer(r, viewport, command_buffer, phase);
     resources.RecordedPhase = phase;
     SubmitRecordedFrame(r, command_buffer);
 }

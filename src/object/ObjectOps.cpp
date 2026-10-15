@@ -173,6 +173,9 @@ void ProcessObjectRemovals(state::Scene &r, state::Entity viewport) {
     buffers.Instances.Free(std::move(pending->InstanceRanges));
     buffers.ArmatureDeformBuffer.Release(std::move(pending->DeformRanges));
     buffers.MorphWeightBuffer.Release(std::move(pending->MorphRanges));
+    buffers.BoundsReduceEntries.Release(std::move(pending->BoundsEntryRanges));
+    buffers.NormalDeriveEntries.Release(std::move(pending->DeriveEntryRanges));
+    buffers.PreludeTiles.Release(std::move(pending->PreludeTileRanges));
     meshes.ReleaseSoundVertices(std::move(pending->SoundVertexRanges));
     r.Context.erase<PendingObjectRemovals>();
 

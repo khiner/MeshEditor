@@ -6,14 +6,18 @@
 #include "WorkspaceState.h"
 #include "action/Build.h"
 #include "action/Errors.h"
+#include "animation/MorphWeights.h"
+#include "armature/ArmatureComponents.h"
 #include "editor/Engine.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
 #include "mesh/MeshStores.h"
+#include "mesh/NormalDeriveGpu.h"
 #include "object/ObjectOps.h"
 #include "project/Assets.h"
 #include "render/GpuBuffers.h"
+#include "render/GpuSceneState.h"
 #include "render/Instance.h"
 #include "render/RenderTargets.h"
 #include "render/Textures.h"
@@ -22,14 +26,17 @@
 #include "scene/SceneGraphOps.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
+#include "viewport/InteractionComponents.h"
 #include "viewport/RenderExtent.h"
 #include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
+#include "viewport/ViewportInteractionState.h"
 
 #include <algorithm>
 #include <array>
 #include <cstdio>
 #include <fstream>
+#include <numeric>
 
 using boost::ut::expect;
 
@@ -485,6 +492,146 @@ void TestParentToDescendantFails() {
     f.Audit();
 }
 
+// Checks that every laid-out mesh's bounds run matches a spec recomputed from its record, instances and mode, that no two runs share storage, and that the topology and sharp-edge tallies match a recount.
+void CheckLayout(Fixture &f, std::string_view step) {
+    auto &r = f.R;
+    const auto &buffers = r.Context.get<const GpuBuffers>();
+    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &render = meshes.Render();
+    const bool edit = r.get<const Interaction>(f.Viewport).Mode == InteractionMode::Edit;
+    const bool transforming = edit && r.all_of<PendingTransform>(f.Viewport);
+    const auto &primaries = r.get<const EditPrimaries>(f.Viewport).All;
+    const auto fail = [&](std::string_view what) {
+        std::printf("layout after %.*s: %.*s\n", int(step.size()), step.data(), int(what.size()), what.data());
+        expect(false);
+    };
+    expect(r.view<const MeshLayoutDirty>().empty());
+    std::array<std::vector<Range>, 3> runs;
+    std::array<uint32_t, 3> topology_meshes{};
+    uint32_t sharp_meshes = 0u;
+    for (const auto [entity, models] : r.view<const ModelsBuffer>().each()) {
+        const auto *record = TryRecordOf(r, entity);
+        if (!record) continue;
+        const auto states = buffers.Instances.StateBuffer.GetSpan<uint8_t>({models.InstanceRange.Offset, models.InstanceCount});
+        if (std::ranges::any_of(states, [](uint8_t state) { return (state & InstanceStateHidden) == 0u; }) && meshes.MeshletCount(*record) > 0u) {
+            for (uint32_t topology = 0u; topology < 3u; ++topology) topology_meshes[topology] += (record->RenderTopologies >> topology) & 1u;
+            const auto flags = record->RenderTopologies ? render.MeshRecords.Get({record->StoreId, 1u})[0].Display.Flags : 0u;
+            if ((flags & uint32_t(MeshletInstanceFlag::EditOverlay)) && meshes.GetEdgeSharpnessSummary(record->StoreId).Any) ++sharp_meshes;
+        }
+        if (!HasMesh(r, entity)) continue;
+        const auto *run = r.try_get<const BoundsRun>(entity);
+        if (!run) {
+            fail("a mesh with instances has no bounds run");
+            continue;
+        }
+        // Outside Edit mode, instances bound to an armature or morph weights deform apart.
+        bool deformed = false;
+        if (!edit) {
+            for (const auto id : buffers.Instances.ObjectIdBuffer.GetSpan<uint32_t>({models.InstanceRange.Offset, models.InstanceCount})) {
+                const auto instance = r.EntityAt(ObjectIndex(id));
+                const auto *modifier = record->SkinBlocksReady ? r.try_get<const ArmatureModifier>(instance) : nullptr;
+                const auto *pose_state = modifier ? r.try_get<const ArmaturePoseState>(modifier->ArmatureEntity) : nullptr;
+                deformed |= pose_state && modifier->SkinSlot < pose_state->GpuDeformRanges.size();
+                deformed |= record->MorphBlocksReady && r.all_of<MorphWeightRange>(instance);
+            }
+        }
+        const auto *work = r.try_get<const MeshEditWork>(entity);
+        const bool posed = models.InstanceCount > 0u && (deformed || (edit && ((transforming && primaries.contains(entity)) || (work && work->RequiresPose))));
+        const uint32_t count = deformed ? models.InstanceCount : 1u;
+        if (run->Entries.Count != count) fail("entry count");
+        if (run->Posed() != posed || r.all_of<PosedLayout>(entity) != posed) fail("posedness");
+        const auto entries = buffers.BoundsReduceEntries.Get(run->Entries);
+        for (uint32_t i = 0u; i < entries.size(); ++i) {
+            if (entries[i].FirstInstance != models.InstanceRange.Offset + (deformed ? i : 0u) || entries[i].InstanceCount != (deformed ? 1u : models.InstanceCount)) fail("entry instances");
+            if (entries[i].VertexOwner != record->Vertices.Index) fail("entry vertex owner");
+        }
+        runs[0].push_back(run->Entries);
+        runs[1].push_back(run->DeriveEntries);
+        runs[2].push_back(run->Tiles);
+        if (!posed) {
+            if (run->DeriveEntries.Count || run->Tiles.Count) fail("a static run holds derive entries or tile words");
+            continue;
+        }
+        const auto &a = meshes.Arenas();
+        const bool authored_morph = r.get<const PosedLayout>(entity).MorphDeformOffset != InvalidOffset && record->MorphShadingAuthored;
+        const bool derive = !authored_morph && MakeDeriveEntryInputs(meshes, record->StoreId).has_value();
+        uint32_t jobs = 0u;
+        meshes.ForEachPrimitive(*record, [&](ElementHandle, const PrimitiveRecord &primitive) {
+            if (primitive.LodFinestNode == InvalidOffset) return;
+            const auto &node = render.LodNodes.Get({render.LodNodes.Address(record->NodeData, ElementHandle{primitive.LodFinestNode}).Value(), 1u})[0];
+            jobs += node.Members != InvalidOffset && node.MeshletCount;
+        });
+        if (run->DeriveEntries.Count != (derive ? count : 0u)) fail("derive entry count");
+        if (run->FaceBlocks != (derive ? a.FaceTriangles.Set(record->FaceData).BlockCount : 0u) || run->VertexBlocks != (derive ? a.Vertices.Set(record->Vertices).BlockCount : 0u)) fail("derive blocks");
+        if (run->MeshletJobs != jobs) fail("posed meshlet jobs");
+        if (run->BoundsKeys[0] != a.Vertices.Set(record->Vertices).BlockCount || run->BoundsKeys[3] != 1u) fail("bounds keys");
+        const auto words = std::accumulate(run->BoundsKeys.begin(), run->BoundsKeys.end(), 0u) + run->FaceBlocks + run->VertexBlocks + 2u * run->MeshletJobs;
+        if (run->Tiles.Count != words) fail("tile words");
+    }
+    for (auto &ranges : runs) {
+        std::erase_if(ranges, [](Range range) { return range.Count == 0u; });
+        std::ranges::sort(ranges, {}, &Range::Offset);
+        for (uint32_t i = 1u; i < ranges.size(); ++i) {
+            if (ranges[i - 1u].Offset + ranges[i - 1u].Count > ranges[i].Offset) fail("overlapping runs");
+        }
+    }
+    if (buffers.TopologyMeshes != topology_meshes) fail("topology tallies");
+    if (buffers.SharpEditMeshes != sharp_meshes) fail("sharp-edge tally");
+}
+
+// A settle lays out only the meshes whose own inputs changed, through loading a skinned scene, object and history edits, an Edit-mode drag, a separation and shading changes.
+void TestIncrementalLayout() {
+    const TestDir dir{"/tmp/mesheditor-scratch/project-incremental-layout"};
+    Fixture f{dir};
+    auto &r = f.R;
+    f.Do(action::io::LoadGltf{std::filesystem::path{MESHEDITOR_SOURCE_DIR} / "external/glTF-Sample-Assets/Models/RiggedSimple/glTF/RiggedSimple.gltf"});
+    expect(!r.view<const PosedLayout>().empty());
+    CheckLayout(f, "load");
+    // A linked duplicate of the skinned object deforms apart from its source.
+    const auto skinned = *r.view<const ArmatureModifier>().begin();
+    f.Do(action::selection::Select{skinned});
+    f.Add(action::object::DuplicateLinked{});
+    expect(r.get<const BoundsRun>(r.get<const Instance>(skinned).Entity).Entries.Count == 2u);
+    CheckLayout(f, "duplicate skinned");
+    const auto cube = f.AddCube();
+    CheckLayout(f, "add");
+    const auto copy = f.Add(action::object::Duplicate{});
+    CheckLayout(f, "duplicate");
+    f.Do(action::object::SetSelectedVisible{false});
+    CheckLayout(f, "hide");
+    f.Do(action::object::Delete{});
+    expect(!r.valid(copy));
+    CheckLayout(f, "delete");
+    f.P->Undo();
+    CheckLayout(f, "undo");
+    f.Do(action::selection::Select{cube});
+    f.Do(action::view::SetInteractionMode{InteractionMode::Edit});
+    f.Do(action::view::SetEditMode{.Mode = Element::Face});
+    f.Do(action::selection::SelectAll{});
+    CheckLayout(f, "edit");
+    action::Emit(action::view::TransformElements{{.P = {0.f, 1.f, 0.f}}}, action::Phase::Stage);
+    f.P->Frame(action::Drain());
+    expect(r.all_of<PosedLayout>(r.get<const Instance>(cube).Entity));
+    CheckLayout(f, "drag");
+    action::Commit();
+    f.P->Frame(action::Drain());
+    CheckLayout(f, "commit");
+    const auto mesh_entity = r.get<const Instance>(cube).Entity;
+    const std::array faces{0u, 1u};
+    ApplyEditSelectionLists(r, std::array{std::pair{mesh_entity, std::span<const uint32_t>{faces}}}, Element::Face);
+    f.Commit("Select faces");
+    const auto mesh_count = r.view<const MeshHandle>().size();
+    f.Do(action::mesh::Separate{});
+    expect(r.view<const MeshHandle>().size() == mesh_count + 1u);
+    CheckLayout(f, "separate");
+    f.Do(action::view::SetInteractionMode{InteractionMode::Object});
+    CheckLayout(f, "object");
+    f.Do(action::object::SetSelectedSmoothShading{true});
+    CheckLayout(f, "smooth");
+    f.Do(action::view::SetViewportShading{ViewportShadingMode::Wireframe});
+    CheckLayout(f, "wireframe");
+}
+
 } // namespace
 
 void TestProcedures();
@@ -508,6 +655,7 @@ int main(int argc, char **argv) {
     TestInstanceLifecycleRendersBack();
     TestDuplicateDrawsAsItsSource();
     TestParentToDescendantFails();
+    TestIncrementalLayout();
     TestProcedures();
     return RunSuites();
 }

@@ -143,17 +143,15 @@ void FinishTopologyEdit(state::Scene &r, state::Entity entity, const MeshTopolog
 void RunTopologyAction(state::Scene &r, std::span<const state::Entity> mesh_entities, auto &&run) {
     auto &history = project::Session(r).History;
     auto before = history.Pin();
-    bool changed = false;
     try {
         for (const auto entity : mesh_entities) ReleaseMeshEditWork(r, entity);
-        changed = run();
+        run();
     } catch (...) {
         (void)history.Restore(before);
         history.Release(before);
         throw;
     }
     history.Release(before);
-    if (changed) r.Context.get<GpuBuffers>().PreludeStale = true;
 }
 
 // A copied output builds all its drawable domains through the same render batch.
@@ -256,12 +254,7 @@ void RunTasks(state::Scene &r, std::span<const state::Entity> mesh_entities, std
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto split = ChunkByScratch(uint32_t(tasks.size()), ScratchWordBudget, [&](uint32_t i) { return TopologyScratchBound(meshes, tasks[i]); });
     RunTopologyAction(r, mesh_entities, [&] {
-        bool changed = false;
-        for (const auto span : split.Chunks) {
-            const auto outputs = EditTopology(r, mesh_entities.subspan(span.Offset, span.Count), tasks.subspan(span.Offset, span.Count));
-            changed |= std::ranges::any_of(outputs, [](const auto &output) { return output.has_value(); });
-        }
-        return changed;
+        for (const auto span : split.Chunks) EditTopology(r, mesh_entities.subspan(span.Offset, span.Count), tasks.subspan(span.Offset, span.Count));
     });
 }
 
@@ -314,13 +307,12 @@ void SeparateSelected(state::Scene &r, std::span<const state::Entity> mesh_entit
             };
             created.push_back(::AddMesh(r, *outputs[i], std::move(create)).first);
         }
-        if (created.empty()) return false;
-        RequestRender(r, RenderRequest::Rebuild);
-        r.Context.get<GpuSceneState>().LodDemand.insert(created.begin(), created.end());
+        if (created.empty()) return;
+        RequestRender(r);
+        for (const auto e : created) r.emplace_or_replace<ClusterLodDemand>(e);
         mtl::ComputeChain chain{r.Context.get<const MeshStore>().BufferContext()};
         UpdateAuthoredMorphShading(r, chain, created);
         chain.Submit();
-        return true;
     });
 }
 
@@ -344,14 +336,13 @@ void CombineSelected(state::Scene &r, const action::mesh::Boolean &boolean) {
     if (!task) return action::Fail(r, "A boolean combines closed surfaces");
     RunTopologyAction(r, std::array{first}, [&] {
         const auto output = ExecuteGeometryBoolean(r, *task);
-        if (!output) return false;
+        if (!output) return;
         // Erasing the handle queues the old record's release.
         r.remove<MeshHandle>(first);
         r.emplace<MeshHandle>(first, *output);
         r.remove<PrimitiveShape>(first);
         r.emplace_or_replace<MeshGeometryDirty>(first);
-        RequestRender(r, RenderRequest::Rebuild);
-        return true;
+        RequestRender(r);
     });
 }
 
@@ -432,7 +423,7 @@ void EditSelectedFaceAttributes(state::Scene &r, std::span<const state::Entity> 
     for (auto &[entity, triangles] : repairs) triangles.Finish(chain);
     RepairFaceRender(r, chain, repairs);
     chain.Submit();
-    RequestRender(r, RenderRequest::Rebuild);
+    RequestRender(r);
 }
 
 void EditSelectedPositions(state::Scene &r, state::Entity viewport, std::span<const state::Entity> targets, PositionEditOp operation, float factor, uint32_t repeat, PositionOperationOptions options = {}) {
@@ -536,7 +527,7 @@ bool UpdateInsetPreview(state::Scene &r, state::Entity viewport, const Inset &in
     RefreshEditedPositions(r, chain, changed);
     PublishEditedPositions(r, chain, targets, PositionPublication::Preview);
     chain.Submit();
-    RequestRender(r, RenderRequest::Reuse);
+    RequestRender(r);
     return true;
 }
 

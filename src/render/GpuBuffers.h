@@ -5,6 +5,7 @@
 #include "SlottedRange.h"
 #include "gpu/AABB.h"
 #include "gpu/BindlessBindings.h"
+#include "gpu/BoundsEntry.h"
 #include "gpu/InstanceRecord.h"
 #include "gpu/LightRecord.h"
 #include "gpu/LodFrontierBlockState.h"
@@ -17,6 +18,7 @@
 #include "gpu/MeshletRouteState.h"
 #include "gpu/MeshletWorkRange.h"
 #include "gpu/MeshletWorkState.h"
+#include "gpu/NormalDeriveEntry.h"
 #include "gpu/OverlayJob.h"
 #include "gpu/PBRMaterial.h"
 #include "gpu/SceneViewUBO.h"
@@ -144,9 +146,11 @@ struct GpuBuffers {
     uint64_t MeshletInstanceCount{0};
     // Maximum traversal depth among resident mesh span trees, the deepest tally.
     uint32_t MeshletLodDepth{0};
-    uint32_t MeshletTopologyMask{0};
-    // Whether drawing the topology needs a pipeline the topology mask lacks.
-    bool DrawsNewTopologies(uint32_t mask) const { return (mask & ~MeshletTopologyMask) != 0u; }
+    // The tallied meshes drawing meshlets of each render topology, by topology bit: triangles, lines, points.
+    std::array<uint32_t, 3> TopologyMeshes{};
+    // The tallied meshes whose edit overlay draws sharp edges.
+    uint32_t SharpEditMeshes{0};
+    bool DrawsNonTriangles() const { return TopologyMeshes[1] != 0u || TopologyMeshes[2] != 0u; }
 
     // Maintained totals for culls restricted to one instance flag.
     struct MeshletFlagWork {
@@ -164,8 +168,10 @@ struct GpuBuffers {
         ~(uint32_t(MeshletInstanceFlag::Silhouette) | uint32_t(MeshletInstanceFlag::LodPinFinest) |
           uint32_t(MeshletInstanceFlag::OverlayOnly) | uint32_t(MeshletInstanceFlag::SilhouetteEligible));
     // One mesh record's contribution to the scene and flag totals: its visible instances' meshlet work, under its record's flags.
+    // A record with visible instances and meshlets also counts toward its render topologies and, when its edit overlay draws sharp edges, the sharp-edge total.
     struct MeshFlagTally {
-        uint32_t Flags{0}, Instances{0}, Nodes{0}, Meshlets{0}, Depth{0};
+        uint32_t Flags{0}, Instances{0}, Nodes{0}, Meshlets{0}, Depth{0}, Topologies{0};
+        bool SharpEdges{};
     };
     // Each mesh record's tally, by store id.
     std::vector<MeshFlagTally> FlagTallies;
@@ -221,43 +227,26 @@ struct GpuBuffers {
     // SceneViewUBO stores the live state at instance zero and one aligned instance per blur step.
     mtl::Buffer SceneViewUBO, ViewportThemeUBO, WorkspaceLightsUBO;
 
-    // One entry per run of mesh instance slots sharing a deform state.
-    mtl::Buffer BoundsReduceEntries{Ctx, 0, SlotType::BoundsEntryBuffer};
-    // (entry index, canonical node key within its level).
-    // Leaves precede parents.
-    mtl::Buffer BoundsTiles{Ctx, 0, SlotType::Buffer};
-    std::array<uint32_t, VertexBoundsLevels> BoundsFirstTiles{};
+    // One entry per run of mesh instance slots sharing a deform state, in each laid-out mesh's range.
+    BufferArena<BoundsEntry> BoundsReduceEntries{Ctx, SlotType::BoundsEntryBuffer};
     VertexBoundsStore VertexBounds{Ctx};
-    // (entry index, canonical block) per normal-derive threadgroup, face blocks in a leading prefix.
-    mtl::Buffer DeriveTiles{Ctx, 0, SlotType::Buffer};
     // Current-pose positions keyed by canonical vertex in each pose namespace.
     PoseAttributeStore<vec3> PosedPositions{Ctx};
-    // (posed entry, global meshlet) per posed-meshlet bounds threadgroup, plus its local-space AABB output.
-    mtl::Buffer PosedMeshletBoundsJobs{Ctx, 0, SlotType::Buffer};
+    // Local-space posed meshlet AABBs.
     PoseAttributeStore<AABB> PosedMeshletBounds{Ctx};
-    // One entry per normal-derive dispatch item.
-    // Contains one entry per posed triangle range or one per mesh during base derivation.
-    mtl::Buffer NormalDeriveEntries{Ctx, 0, SlotType::Buffer};
+    // One entry per posed bounds entry whose normals derive, in each laid-out mesh's range.
+    BufferArena<NormalDeriveEntry> NormalDeriveEntries{Ctx, SlotType::Buffer};
+    // Each laid-out mesh's prelude tile words, which only the host reads to gather the tiles of the meshes a prelude recomputes.
+    BufferArena<uint32_t> PreludeTiles{Ctx, SlotType::Buffer};
     // Derived normals keyed by canonical vertex, sector record, and face, respectively.
     PoseAttributeStore<vec3> PosedVertexNormals{Ctx};
     PoseAttributeStore<vec3> PosedSectors{Ctx};
     PoseAttributeStore<vec3> PosedFaceNormals{Ctx};
     // Weight-summed authored morph normal deltas keyed by canonical vertex, present for authored morph poses.
     PoseAttributeStore<vec3> PosedMorphNormalDeltas{Ctx};
-    // Group counts of the posed prelude's passes, in recorded order (their arg slot order in PreludeDispatchArgs).
-    // Set when persistent scene descriptors refresh.
-    static constexpr uint32_t PreludePassCount{7};
-    std::array<uint32_t, PreludePassCount> PreludeGroups{};
-    // Empty entries still dispatch their root to publish neutral bounds.
-    bool PreludeHasWork() const {
-        return std::ranges::any_of(PreludeGroups, [](uint32_t g) { return g > 0u; });
-    }
-    // Stores recorded group counts or zeros for unchanged deform inputs.
-    mtl::Buffer PreludeDispatchArgs;
-    // The tiles and posed meshlet jobs of the entries a prelude over some entries recomputes, each level's tiles after the previous level's.
+    // The tiles and posed meshlet jobs of the entries a prelude recomputes, each level's tiles after the previous level's.
+    // Bounds tiles are (entry index, canonical node key within its level), and derive tiles (derive entry index, canonical block) with face blocks in a leading prefix.
     mtl::Buffer SparseBoundsTiles{Ctx, 0, SlotType::Buffer}, SparseDeriveTiles{Ctx, 0, SlotType::Buffer}, SparsePosedMeshletBoundsJobs{Ctx, 0, SlotType::Buffer};
-    // Every entry's inputs may have changed since the last submit wrote live prelude counts, so the next submit recomputes them all.
-    bool PreludeStale{true};
     // Tracks visibility or material changes that can reveal geometry without requiring the posed prelude.
     bool MeshletOcclusionStale{true};
 

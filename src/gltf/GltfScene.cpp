@@ -1555,7 +1555,9 @@ MeshEntities ImportMeshes(state::Scene &r, std::span<SourceMesh> source_meshes, 
         const auto features = parts[part].Kind == MeshKind::Triangles ? PbrFeaturesOf(materials, layout.DefaultMaterials) : PbrFeatureMask{0};
         const auto [e, _] = ::AddMesh(r, created[part].StoreId, std::nullopt);
         if (!created[part].AuthoredCornerNormals.empty()) r.emplace<AuthoredCornerNormals>(e, std::move(created[part].AuthoredCornerNormals));
+        const bool mapped = std::ranges::any_of(layout.VariantMappings, [](const auto &mapping) { return std::ranges::any_of(mapping, [](const auto &m) { return m.has_value(); }); });
         r.emplace<MeshSourceLayout>(e, std::move(layout));
+        if (mapped) r.emplace<HasVariantMappings>(e);
         if (features != 0) r.emplace<PbrMeshFeatures>(e, features);
         entities[parts[part].Mesh][size_t(parts[part].Kind)] = e;
     }

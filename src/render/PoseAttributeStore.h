@@ -26,7 +26,6 @@ public:
     explicit PoseAttributeStore(mtl::BufferContext &ctx) : Arena(ctx) {}
     using Arena::Nodes;
     using Arena::Values;
-    void BeginUpdate() { ++Epoch; }
     struct Prepared {
         std::span<const uint32_t> Roots;
         bool Changed;
@@ -35,7 +34,6 @@ public:
     template<typename GetBlocks>
     Prepared Prepare(state::Entity entity, uint32_t store, uint64_t revision, uint32_t count, GetBlocks &&get_blocks, uint32_t domain = 0u) {
         auto &group = Groups[entity];
-        group.Seen = Epoch;
         if (group.Store == store && group.Domain == domain && group.Revision == revision && group.Roots.size() == count) {
             return {group.Roots, false, group.LayoutRevision};
         }
@@ -71,16 +69,13 @@ public:
         group.Blocks = std::move(membership);
         return {group.Roots, true, group.LayoutRevision};
     }
-    void EndUpdate() {
-        for (auto it = Groups.begin(); it != Groups.end();) {
-            if (it->second.Seen == Epoch) {
-                ++it;
-                continue;
-            }
-            for (auto &root : it->second.Roots) Release(root);
-            Unregister(it->second.Store, it->first);
-            it = Groups.erase(it);
-        }
+    // Releases the entity's roots, if it has any.
+    void Release(state::Entity entity) {
+        const auto it = Groups.find(entity);
+        if (it == Groups.end()) return;
+        for (auto &root : it->second.Roots) Release(root);
+        Unregister(it->second.Store, entity);
+        Groups.erase(it);
     }
     PoseAttributeView<T> View(uint32_t root) const {
         if (root == InvalidOffset) return {};
@@ -91,7 +86,6 @@ public:
         Groups.clear();
         Nodes.Reset();
         Values.Reset();
-        Epoch = 0;
     }
 
     // Publication supplies changed canonical block IDs, so unchanged groups
@@ -139,13 +133,12 @@ private:
     struct Group {
         uint32_t Store{InvalidOffset};
         uint32_t Domain{};
-        uint64_t Revision{}, Seen{}, LayoutRevision{};
+        uint64_t Revision{}, LayoutRevision{};
         std::unordered_set<uint32_t> Blocks;
         std::vector<uint32_t> Roots;
     };
     std::unordered_map<state::Entity, Group> Groups;
     std::unordered_map<uint32_t, std::unordered_set<state::Entity>> ByStore;
-    uint64_t Epoch{};
     void Unregister(uint32_t store, state::Entity entity) {
         const auto it = ByStore.find(store);
         if (it == ByStore.end()) return;

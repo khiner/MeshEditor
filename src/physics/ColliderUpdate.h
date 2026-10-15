@@ -3,17 +3,20 @@
 #include <span>
 #include <vector>
 
-// The colliders that fit or cook from each mesh: those naming it, and those on its instances.
-struct MeshColliders {
-    std::unordered_map<state::Entity, std::vector<state::Entity>> ByMesh;
-
-    std::span<const state::Entity> Of(state::Entity mesh_entity) const {
-        const auto it = ByMesh.find(mesh_entity);
-        return it != ByMesh.end() ? std::span<const state::Entity>{it->second} : std::span<const state::Entity>{};
-    }
+// The colliders that fit or cook from a mesh: those naming it, and those on its instances.
+struct MeshColliderList {
+    std::vector<state::Entity> Colliders;
+};
+// The mesh whose collider list holds this collider.
+// Its destroy handler takes the collider out of that list.
+struct ColliderListedUnder {
+    state::Entity MeshEntity;
 };
 
-// Rebuilds the mesh collider index when a collider was created, destroyed or moved to another mesh.
+void RegisterMeshColliderHandlers(state::Scene &);
+// The colliders listed under the mesh.
+std::span<const state::Entity> MeshCollidersOf(const state::Scene &, state::Entity mesh_entity);
+// Moves each created or changed collider to its current mesh's list, and takes each collider whose shape left out of its list.
 void UpdateMeshColliders(state::Scene &);
 // Rederives each entity's collider shape, fitting auto-fit dimensions to its mesh's vertex bounds.
 void RederiveColliders(state::Scene &, std::span<const state::Entity>);

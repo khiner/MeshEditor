@@ -1,16 +1,15 @@
 #include "render/MeshletOwners.h"
-#include "gpu/MeshletOwnersPushConstants.h"
 #include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
 #include "metal/Dispatch.h"
+#include "numeric/uvec2.h"
 #include "state/Scene.h"
 
-void PublishMeshletOwners(state::Scene &r, mtl::ComputeChain &chain, MeshStore::Record &owner, uint32_t topology, std::span<const Range> clusters, std::span<const uint32_t> blocks) {
+void PrepareMeshletOwners(state::Scene &r, MeshStore::Record &owner, uint32_t topology, std::span<const Range> clusters, std::span<const uint32_t> blocks, std::vector<MeshletOwnersJob> &jobs) {
     if (std::ranges::all_of(clusters, [](Range range) { return !range.Count; })) return;
     if (topology >= 3u || owner.ExtrasFaces.Count) throw std::invalid_argument("Meshlet owners require a canonical render owner.");
     auto &meshes = r.Context.get<MeshStore>();
-    auto &render = meshes.Render();
-    auto &owners = render.ElementMeshlets[topology];
+    auto &owners = meshes.Render().ElementMeshlets[topology];
     auto &layer = owner.ElementMeshlets[topology];
     const auto bound = meshes.WithRenderDomain(owner, topology, [&](const auto &arena, ElementSetRef set) {
         const auto entries = arena.Entries(set);
@@ -33,26 +32,29 @@ void PublishMeshletOwners(state::Scene &r, mtl::ComputeChain &chain, MeshStore::
         written.push_back(layer.Offset + local);
     }
     owners.Values.Buffer.CaptureWriteElements(written, sizeof(std::remove_cvref_t<decltype(owners)>::Block));
-    MeshletOwnersPushConstants pc{
+    for (const auto range : clusters) {
+        if (range.Count) jobs.push_back({range.Offset, range.Count, owner.MeshletData.Index, owner.MeshletTriangles.Values.Offset, topology, owners.Ref(layer), bound * MeshElementBlockSize});
+    }
+}
+
+void RecordMeshletOwners(state::Scene &r, mtl::ComputeChain &chain, std::span<const MeshletOwnersJob> jobs) {
+    if (jobs.empty()) return;
+    const auto &render = r.Context.get<const MeshStore>().Render();
+    // Each cluster names the owners of its own elements.
+    std::vector<uvec2> tiles;
+    for (uint32_t j = 0u; j < jobs.size(); ++j) {
+        for (uint32_t i = 0u; i < jobs[j].Count; ++i) tiles.emplace_back(j, i);
+    }
+    const MeshletOwnersPushConstants pc{
+        .Jobs = chain.Upload(std::as_bytes(jobs)),
+        .Tiles = chain.Upload(std::as_bytes(std::span{tiles})),
+        .Count = uint32_t(tiles.size()),
         .Meshlets = render.Meshlets.Slots(),
-        .MeshletSet = owner.MeshletData.Index,
         .MeshletSlot = render.Meshlets.Buffer.Slot,
         .TriangleIdsSlot = render.MeshletTriangleIds.Buffer.Slot,
-        .TriangleIdBase = owner.MeshletTriangles.Values.Offset,
-        .Topology = topology,
-        .Owners = owners.Ref(layer),
-        .HandleBound = bound * MeshElementBlockSize,
         .ErrorSlot = chain.Scratch.Buffer.Slot,
     };
-    const auto &pipeline = GetMeshPipelines(r)[MeshPass::MeshletOwners];
-    // Each cluster names the owners of its own elements.
-    chain.Concurrent([&] {
-        for (const auto range : clusters) {
-            pc.First = range.Offset;
-            pc.Count = range.Count;
-            chain.Groups(pipeline, pc, range.Count, 64u);
-        }
-    });
+    chain.Groups(GetMeshPipelines(r)[MeshPass::MeshletOwners], pc, pc.Count, 64u);
 }
 
 void RetireMeshletOwners(state::Scene &r, MeshStore::Record &owner, std::span<const uint32_t> clusters, std::span<const uint32_t> retired) {

@@ -7,7 +7,6 @@
 #include "render/GpuBuffers.h"
 
 #include "state/Scene.h"
-#include <Metal/MTLComputeCommandEncoder.hpp>
 
 std::span<const PBRMaterial> GetMaterials(const state::Scene &r) {
     return r.Context.get<const GpuBuffers>().Materials.GetSpan<PBRMaterial>();
@@ -91,7 +90,6 @@ GpuBuffers::GpuBuffers(const mtl::Context &ctx, mtl::BindlessSet &slots)
       SceneViewUBO{Ctx, ViewUboStride() * (MaxBlurSteps + 1)},
       ViewportThemeUBO{Ctx, sizeof(ViewportTheme)},
       WorkspaceLightsUBO{Ctx, sizeof(WorkspaceLights)},
-      PreludeDispatchArgs{Ctx, PreludePassCount * sizeof(MTL::DispatchThreadgroupsIndirectArguments)},
       ObjectPickKeys{Ctx, sizeof(uint32_t)},
       ObjectPickSeenBitset{Ctx, sizeof(uint32_t)},
       ObjectBoxBitset{Ctx, sizeof(uint32_t)},
@@ -108,13 +106,17 @@ void GpuBuffers::ResetSceneArenas() {
     PosedMeshletBounds.Reset();
     GeometryWork.Reset();
     VertexBounds.Reset();
+    BoundsReduceEntries.Reset();
+    NormalDeriveEntries.Reset();
+    PreludeTiles.Reset();
     GpuInstanceSlots.UsedSize = 0;
     LodNodeCount = 0;
     MeshletInstanceCount = 0;
     MeshletLodDepth = 0;
     MeshletFlagWorkByBit = {};
     FlagTallies.clear();
-    MeshletTopologyMask = 0;
+    TopologyMeshes = {};
+    SharpEditMeshes = 0;
     OverlayJobs.UsedSize = 0;
     OverlayJobBlocks.UsedSize = 0;
     VisibleOverlayJobs.UsedSize = 0;
@@ -137,6 +139,11 @@ void GpuBuffers::Retally(uint32_t store_id, MeshFlagTally tally) {
             work.Nodes = add ? work.Nodes + nodes : work.Nodes - nodes;
             work.Meshlets = add ? work.Meshlets + meshlets : work.Meshlets - meshlets;
         }
+        if (!t.Instances) return;
+        for (uint32_t topology = 0u; topology < TopologyMeshes.size(); ++topology) {
+            if (t.Topologies & (1u << topology)) TopologyMeshes[topology] = add ? TopologyMeshes[topology] + 1u : TopologyMeshes[topology] - 1u;
+        }
+        if (t.SharpEdges) SharpEditMeshes = add ? SharpEditMeshes + 1u : SharpEditMeshes - 1u;
     };
     const auto previous = std::exchange(FlagTallies[store_id], tally);
     apply(previous, false);

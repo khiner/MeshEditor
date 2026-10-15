@@ -69,8 +69,9 @@ kernel void LodNodeRefit(device const BindlessSet &b [[buffer(BufferIndex_Bindle
     uint job_id [[threadgroup_position_in_grid]],uint tid [[thread_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]],uint simd [[simdgroup_index_in_threadgroup]]) {
     if (job_id>=pc.Count) return;
-    const uint id=BindlessBuffer(uint,b.Buffer,pc.Jobs.Slot)[pc.Jobs.Offset+job_id];
-    const RefitSet nodes=ReadRefitSet(b,pc.Nodes,pc.NodeSet);
+    const LodNodeRefitJob job=reinterpret_cast<device const LodNodeRefitJob *>(BindlessBuffer(uint,b.Buffer,pc.Jobs.Slot)+pc.Jobs.Offset)[job_id];
+    const uint id=job.Node;
+    const RefitSet nodes=ReadRefitSet(b,pc.Nodes,job.NodeSet);
     const uint address=nodes.Address(id);
     if (address==InvalidOffset) {
         if (!tid) RefitError(b,pc);
@@ -87,7 +88,7 @@ kernel void LodNodeRefit(device const BindlessSet &b [[buffer(BufferIndex_Bindle
     const uint count=node.ChildCount ? node.ChildCount : members*2u;
     if (!count || members>UINT_MAX/2u) { if (!tid) RefitError(b,pc); return; }
     threadgroup EnclosingSphereScratch scratch;
-    const LodRefitReader reader{b,pc,id,node,nodes,ReadRefitSet(b,pc.Members,pc.MemberSet),ReadRefitSet(b,pc.Meshlets,pc.MeshletSet),ReadRefitSet(b,pc.Groups,pc.GroupSet)};
+    const LodRefitReader reader{b,pc,id,node,nodes,ReadRefitSet(b,pc.Members,job.MemberSet),ReadRefitSet(b,pc.Meshlets,job.MeshletSet),ReadRefitSet(b,pc.Groups,job.GroupSet)};
     const auto result=EncloseSpheres(reader,count,tid,lane,simd,scratch);
     if (!tid) {
         output.Center=result.Sphere.xyz;

@@ -1,15 +1,15 @@
 #pragma once
 #include "state/Entity.h"
 
-#include <unordered_map>
+#include <vector>
 
 namespace state {
 struct Scene;
 } // namespace state
 
-// Derived: the entity holding each store record's mesh handle or evaluated mesh.
+// Derived: the entity holding each store record's mesh handle or evaluated mesh, by store ID, or null.
 struct MeshEntities {
-    std::unordered_map<uint32_t, state::Entity> ByStore;
+    std::vector<state::Entity> ByStore;
 };
 
 void RegisterMeshStoreHandlers(state::Scene &);

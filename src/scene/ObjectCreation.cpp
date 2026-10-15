@@ -138,7 +138,7 @@ void CreateBoneInstances(state::Scene &r, MeshStore &meshes, state::Entity arm_o
     auto sphere_data = primitive::BoneSphereDisc();
     const auto sphere_store_id = meshes.AllocateVertexBuffer(sphere_data.Mesh.Positions, {});
     const auto joint_entity = r.create();
-    r.emplace<BoneJoint>(joint_entity);
+    r.emplace<BoneJoint>(joint_entity, arm_obj_entity);
     r.emplace<VertexStoreId>(joint_entity, sphere_store_id);
 
     for (const auto bone_entity : arm_obj.BoneEntities) CreateBoneJoints(r, arm_obj_entity, bone_entity, joint_entity);

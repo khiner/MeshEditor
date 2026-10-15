@@ -700,7 +700,8 @@ void ProcessChanges(state::Scene &r) {
     if (definitions) UpdateMasks(s, r);
 
     // The bodies a change reaches: each body and collider at or under a changed node, with each collider's former and current owner.
-    std::vector<state::Entity> candidates;
+    // `reached` holds every node the walk visits and every destroyed input, which the joints below read.
+    std::vector<state::Entity> candidates, reached;
     const auto touch = [&](state::Entity e) {
         if (const auto owner = s.LeafOwners.find(e); owner != s.LeafOwners.end()) candidates.push_back(owner->second);
         if (s.Bodies.contains(e)) candidates.push_back(e);
@@ -710,15 +711,16 @@ void ProcessChanges(state::Scene &r) {
     };
     const auto touch_subtree = [&](this const auto &self, state::Entity e) -> void {
         touch(e);
+        reached.push_back(e);
         if (!r.valid(e)) return;
         for (const auto child : Children{&r, e}) self(child);
     };
     for (const auto e : inputs) touch_subtree(e);
     for (const auto e : moved) touch_subtree(e);
     for (const auto e : destroyed) touch(e);
-    const auto &mesh_colliders = r.Context.get<const MeshColliders>();
+    reached.append_range(destroyed);
     for (const auto mesh_entity : geometry) {
-        for (const auto collider : mesh_colliders.Of(mesh_entity)) touch(collider);
+        for (const auto collider : MeshCollidersOf(r, mesh_entity)) touch(collider);
     }
     // A definition reaches every leaf that names one.
     if (definitions) {
@@ -812,34 +814,73 @@ void ProcessChanges(state::Scene &r) {
         return;
     }
 
-    std::map<state::Entity, JointInput> joints;
-    for (const auto [e, joint] : r.view<const PhysicsJoint>().each()) joints.emplace(e, ReadJoint(s, r, e, joint));
-    if (uint32_t(std::ranges::count_if(joints, [](const auto &entry) { return IsActiveJoint(entry.second); })) > s.World->Joints.Capacity) {
+    // A body joining or leaving the world changes the owner of every node under it.
+    const auto reach_subtree = [&](this const auto &self, state::Entity e) -> void {
+        reached.push_back(e);
+        for (const auto child : Children{&r, e}) self(child);
+    };
+    for (const auto e : removed) {
+        if (r.valid(e)) reach_subtree(e);
+    }
+    for (const auto &pending : added) reach_subtree(pending.Entity);
+    SortUnique(reached);
+
+    // A joint reads its input again when the change reaches its node, its connected node or its definition, when a body it holds left the world, or when its connected node is gone.
+    // A built joint holding a reframed body rebuilds its world joint.
+    const auto reaches = [&](state::Entity e) { return std::ranges::binary_search(reached, e); };
+    const auto left = [&](state::Entity e) { return std::ranges::binary_search(removed, e); };
+    std::vector<state::Entity> reread, reframed_joints;
+    for (const auto &[entity, input] : s.Joints) {
+        const auto connected = input.Joint.ConnectedNode;
+        if (reaches(connected) || reaches(input.Joint.JointDefEntity) || left(input.Owner) || left(input.ConnectedOwner) || input.Connected.has_value() != r.valid(connected)) reread.push_back(entity);
+        if (const auto *handle = reframed.empty() || !r.valid(entity) ? nullptr : r.try_get<const PhysicsConstraintHandle>(entity)) {
+            const auto &joint = s.World->Joints[handle->ConstraintIndex];
+            if (reframed.contains(joint.BodyA) || reframed.contains(joint.BodyB)) reframed_joints.push_back(entity);
+        }
+    }
+    for (const auto e : reached) {
+        if (s.Joints.contains(e) || (r.valid(e) && r.all_of<PhysicsJoint>(e))) reread.push_back(e);
+    }
+    SortUnique(reread);
+    // The re-read joints whose input is new or differs.
+    std::vector<state::Entity> updated;
+    bool erased = false;
+    for (const auto entity : reread) {
+        const auto *joint = r.valid(entity) ? r.try_get<const PhysicsJoint>(entity) : nullptr;
+        const auto it = s.Joints.find(entity);
+        if (!joint) {
+            if (it != s.Joints.end()) {
+                s.Joints.erase(it);
+                erased = true;
+            }
+            continue;
+        }
+        auto next = ReadJoint(s, r, entity, *joint);
+        if (it == s.Joints.end()) s.Joints.emplace(entity, std::move(next));
+        else if (it->second != next) it->second = std::move(next);
+        else continue;
+        updated.push_back(entity);
+    }
+    if (!updated.empty() && uint32_t(std::ranges::count_if(s.Joints, [](const auto &entry) { return IsActiveJoint(entry.second); })) > s.World->Joints.Capacity) {
         Rebuild(r);
         return;
     }
     if (!released.empty()) RecomputeWorldTransforms(r, released, r.view<const BodyPoseCache>() | std::ranges::to<std::vector>(), {});
-    if (removed.empty() && changed.empty() && added.empty() && joints == s.Joints) return;
+    if (removed.empty() && changed.empty() && added.empty() && updated.empty() && !erased) return;
     s.Invalidate();
     s.SampleOrder.reset();
-    for (const auto entity : r.view<const PhysicsConstraintHandle>()) {
-        const auto it = joints.find(entity);
-        const bool active = it != joints.end() && IsActiveJoint(it->second);
+    for (const auto entity : reread) {
+        const auto *handle = r.valid(entity) ? r.try_get<const PhysicsConstraintHandle>(entity) : nullptr;
+        if (!handle) continue;
+        const auto it = s.Joints.find(entity);
+        const bool active = it != s.Joints.end() && IsActiveJoint(it->second);
         // Removing a body retires its world joints, which then rebuild on restart.
-        if (active && s.World->Joints[r.get<const PhysicsConstraintHandle>(entity).ConstraintIndex].Active) continue;
+        if (active && s.World->Joints[handle->ConstraintIndex].Active) continue;
         r.remove<PhysicsConstraintHandle>(entity);
         if (active) s.JointUpdates.insert(entity);
     }
-    for (const auto &[entity, next] : joints) {
-        const auto old = s.Joints.find(entity);
-        bool update = old == s.Joints.end() || old->second != next;
-        if (const auto *handle = r.try_get<const PhysicsConstraintHandle>(entity)) {
-            const auto &joint = s.World->Joints[handle->ConstraintIndex];
-            update |= reframed.contains(joint.BodyA) || reframed.contains(joint.BodyB);
-        }
-        if (update) s.JointUpdates.insert(entity);
-    }
-    s.Joints = std::move(joints);
+    s.JointUpdates.insert_range(updated);
+    s.JointUpdates.insert_range(reframed_joints);
 }
 
 void ApplySimulationSettings(state::Scene &r, const PhysicsSimulationSettings &settings) {
@@ -897,9 +938,8 @@ void SamplePosesAtFrame(state::Scene &r, float frame) {
     const uint32_t hi = std::min(lo + 1, *s.Baked);
     const float t = clamped - float(lo);
     const auto lo_idx = lo - s.CacheStartFrame, hi_idx = hi - s.CacheStartFrame;
-    // Update parents before restoring the independent poses of nested bodies.
-    // The posed bodies in entity index order, as `owned` requires.
-    const auto bodies = r.view<const BodyPoseCache>() | std::ranges::to<std::vector>();
+    // The children of the bodies whose sampled pose moved them.
+    std::vector<state::Entity> moved_children;
     for (const auto entity : SampleOrder(s, r)) {
         const auto &cache = r.get<const BodyPoseCache>(entity);
         const auto &a = cache.Frames[lo_idx], &b = cache.Frames[hi_idx];
@@ -908,10 +948,12 @@ void SamplePosesAtFrame(state::Scene &r, float frame) {
         const auto &world = *WorldTransformOf(r, entity);
         // A body already at its sampled pose has a consistent subtree.
         if (world.P == position && world.R == rotation) continue;
-        // The sampled pose recomposes the body's subtree, leaving the other posed bodies to their own samples.
         SetWorldTransform(r, entity, {position, rotation, world.S});
-        RecomputeWorldTransforms(r, Children{&r, entity} | std::ranges::to<std::vector>(), bodies, {});
+        moved_children.append_range(Children{&r, entity});
     }
+    // The moved bodies' subtrees recompose in one pass, leaving every posed body to its own sample.
+    // The posed bodies in entity index order, as `owned` requires.
+    RecomputeWorldTransforms(r, moved_children, r.view<const BodyPoseCache>() | std::ranges::to<std::vector>(), {});
 }
 
 void Init(state::Scene &r) {
@@ -920,7 +962,7 @@ void Init(state::Scene &r) {
     if (r.Context.get<const mtl::Context>().Device->supportsFamily(MTL::GPUFamilyMetal4)) s.Context.emplace();
     r.Context.emplace<PhysicsContactImpacts>();
     r.Context.emplace<PhysicsSustainedContacts>();
-    r.Context.emplace<MeshColliders>();
+    RegisterMeshColliderHandlers(r);
     r.on_destroy<PhysicsConstraintHandle, &OnDestroyPhysicsConstraint>();
     r.on_destroy<PhysicsMotion, &OnDestroyPhysicsInput>();
     r.on_destroy<ColliderShape, &OnDestroyPhysicsInput>();
@@ -949,7 +991,6 @@ void Init(state::Scene &r) {
         .on<PhysicsJoint>(On::Create | On::Update | On::Destroy);
 }
 void Deinit(state::Scene &r) {
-    r.Context.erase<MeshColliders>();
     r.Context.erase<PhysicsDefinitionUses>();
     r.Context.erase<PhysicsState>();
 }

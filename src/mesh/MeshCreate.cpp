@@ -3,9 +3,9 @@
 
 #include "Parallel.h"
 #include "Profile.h"
+#include "SortUnique.h"
 #include "mesh/CornerNormalOffset.h"
 #include "mesh/MeshConnectivityGpu.h"
-#include "mesh/NormalDeriveGpu.h"
 #include "mesh/VertexWeldGpu.h"
 #include "metal/Dispatch.h"
 
@@ -280,15 +280,41 @@ std::vector<CreatedMesh> CreateMeshes(state::Scene &r, std::span<MeshSource> sou
         InitializeSharpness(meshes, mesh, source.Data, source.Primitives, source.FlatShaded, authored);
         created.emplace_back(ids[i], std::move(prepared[i].MorphTangentDeltas), std::move(authored));
     }
-    // The selection state's submit also runs the corner class writes.
-    mtl::ComputeChain chain{meshes.BufferContext()};
-    meshes.UpdateCornerClassification(r, chain, ids);
-    EncodeDeriveAllNormals(r, chain, ids);
-    meshes.EnsureSelectionState(r, chain, ids);
     return created;
 }
 
 CreatedMesh CreateMesh(state::Scene &r, MeshSource source) { return std::move(CreateMeshes(r, {&source, 1}).front()); }
+
+std::optional<NewMeshShading> EncodeNewMeshShading(state::Scene &r, mtl::ComputeChain &chain) {
+    auto &meshes = r.Context.get<MeshStore>();
+    auto ids = meshes.TakeUnshaded();
+    // A record released since its creation has no shading to derive.
+    std::erase_if(ids, [&](uint32_t id) { return !meshes.TryGet(id); });
+    if (ids.empty()) return {};
+    SortUnique(ids);
+    std::vector<MeshStore::CornerClassRequest> requests;
+    requests.reserve(ids.size());
+    for (const auto id : ids) requests.push_back({.StoreId = id});
+    auto classes = meshes.EncodeCornerClassification(r, chain, requests);
+    auto normals = EncodeAllNormalsMembership(r, chain, ids);
+    return NewMeshShading{std::move(ids), std::move(classes), std::move(normals)};
+}
+
+void DeriveNewMeshShading(state::Scene &r, mtl::ComputeChain &chain, NewMeshShading &shading) {
+    auto &meshes = r.Context.get<MeshStore>();
+    meshes.PlanCornerClassification(r, chain, shading.Classes);
+    EncodeDeriveAllNormals(r, chain, shading.Normals);
+    meshes.EnsureSelectionState(r, chain, shading.Ids);
+}
+
+void ShadeNewMeshes(state::Scene &r) {
+    mtl::ComputeChain chain{r.Context.get<MeshStore>().BufferContext()};
+    auto shading = EncodeNewMeshShading(r, chain);
+    if (!shading) return;
+    chain.Submit();
+    DeriveNewMeshShading(r, chain, *shading);
+    chain.Submit();
+}
 
 void EncodeAuthoredCornerNormals(MeshStore &meshes, const Mesh &mesh, std::span<const vec3> authored) {
     const auto id = mesh.GetStoreId();

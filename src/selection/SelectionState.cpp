@@ -217,7 +217,7 @@ void BuildOutlinerRows(const state::Scene &r, OutlinerRows &out) {
     }
 }
 
-void UpdateSelectionState(state::Scene &r, state::Entity viewport) {
+std::vector<state::Entity> UpdateSelectionState(state::Scene &r, state::Entity viewport) {
     const bool selection = AnyChanged(r, Change::Selected, Change::ActiveInstance, Change::BoneSelection);
     const bool interaction = AnyChanged(r, Change::InteractionMode);
     const bool parents = AnyChanged(r, Change::SceneParent);
@@ -225,10 +225,17 @@ void UpdateSelectionState(state::Scene &r, state::Entity viewport) {
     const auto scope = ScopeOf(r, viewport);
 
     const bool primaries_changed = selection || interaction || instances;
+    std::vector<state::Entity> changed_primaries;
     if (primaries_changed) {
         auto &primaries = r.edit<EditPrimaries>(viewport);
-        if (scope.Mode == InteractionMode::Edit) primaries = ComputeEditPrimaries(r);
-        else if (!primaries.All.empty()) primaries = {};
+        auto next = scope.Mode == InteractionMode::Edit ? ComputeEditPrimaries(r) : EditPrimaries{};
+        for (const auto &[mesh_entity, instance_entity] : primaries.All) {
+            if (const auto found = next.All.find(mesh_entity); found == next.All.end() || found->second != instance_entity) changed_primaries.push_back(mesh_entity);
+        }
+        for (const auto &[mesh_entity, _] : next.All) {
+            if (!primaries.All.contains(mesh_entity)) changed_primaries.push_back(mesh_entity);
+        }
+        primaries = std::move(next);
     }
 
     const bool roots_changed = selection || interaction || parents;
@@ -249,4 +256,5 @@ void UpdateSelectionState(state::Scene &r, state::Entity viewport) {
 
     if (AnyChanged(r, Change::SceneHierarchy, Change::Names)) BuildOutlinerRows(r, r.edit<OutlinerRows>(viewport));
     if (selection || parents) ComputeSelectedAncestors(r, r.edit<OutlinerRows>(viewport));
+    return changed_primaries;
 }

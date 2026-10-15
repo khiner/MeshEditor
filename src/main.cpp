@@ -1773,7 +1773,7 @@ SceneStatus RunHeadlessScene(state::Scene &r, state::Entity viewport, const char
             Session(r).Frame(action::Drain());
             ReportActionErrors(r);
             // Continue event processing while audio-only capture suppresses GPU rendering after initial framing.
-            if (driver.AudioOnly() && driver.RecordingStarted) r.Context.get<PendingRenderRequest>().Value = RenderRequest::None;
+            if (driver.AudioOnly() && driver.RecordingStarted) r.Context.get<PendingRenderRequest>().Value = false;
             SubmitViewport(r, viewport);
             WaitForRender(r);
             if (!submitted) first_frame_at = std::chrono::steady_clock::now();
@@ -1803,8 +1803,7 @@ SceneStatus RunHeadlessScene(state::Scene &r, state::Entity viewport, const char
                 }
                 done = true;
             }
-            auto &pending = r.Context.get<PendingRenderRequest>().Value;
-            pending = std::max(pending, RenderRequest::Reuse);
+            r.Context.get<PendingRenderRequest>().Value = true;
         } else {
             if (driver.CaptureFrame(r, viewport, driver.Framed(settled))) done = true;
             // End an idle headless run after one completed frame.

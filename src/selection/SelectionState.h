@@ -79,6 +79,6 @@ struct OutlinerRows {
 // Rebuilds the rows from the scene graph and the open set.
 void BuildOutlinerRows(const state::Scene &, OutlinerRows &);
 
-// Recomputes the aggregates whose inputs changed this settle.
+// Recomputes the aggregates whose inputs changed this settle, and returns the meshes whose primary edit instance changed.
 // Runs after the world transforms are current.
-void UpdateSelectionState(state::Scene &, state::Entity viewport);
+std::vector<state::Entity> UpdateSelectionState(state::Scene &, state::Entity viewport);

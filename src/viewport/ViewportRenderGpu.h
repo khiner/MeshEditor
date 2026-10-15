@@ -101,12 +101,8 @@ enum class RenderPhase {
 
 constexpr bool IsBlurAccumulate(RenderPhase p) { return p == RenderPhase::BlurAccumulateFirst || p == RenderPhase::BlurAccumulate; }
 
-enum class SceneUpdate {
-    Rebuild,
-    Reuse,
-};
-
-void RecordRenderCommandBuffer(state::Scene &, state::Entity viewport, MTL::CommandBuffer *, SceneUpdate = SceneUpdate::Rebuild, RenderPhase = RenderPhase::Full);
+// Records the phase, whose prelude recomputes the bounds of the meshes MeshBoundsDirty marks, and consumes the marks.
+void RecordRenderCommandBuffer(state::Scene &, state::Entity viewport, MTL::CommandBuffer *, RenderPhase = RenderPhase::Full);
 
 // Records every blur step and the resolve into one command buffer using one view-UBO instance per step.
 void RecordBlurStepsCommandBuffer(state::Scene &, state::Entity viewport, MTL::CommandBuffer *, std::span<const uint32_t> sample_weights);
@@ -118,20 +114,21 @@ void RecordBlurStepsCommandBuffer(state::Scene &, state::Entity viewport, MTL::C
 // Call after the base derive has run, since the pin test compares against the base normal stores.
 void UpdateAuthoredMorphShading(state::Scene &, mtl::ComputeChain &, std::span<const state::Entity> mesh_entities);
 
-// Completes the listed new or restored mesh entities' shading state on the chain.
-// Derives base normals, encodes stored authored corner normals, and resolves the authored-morph-shading gate.
-// The chain submits where the host reads derived normals, and otherwise the derive runs with its next submit.
-// Call after canonical connectivity is available.
-void FinalizeNewMeshShading(state::Scene &, mtl::ComputeChain &, std::span<const state::Entity> mesh_entities);
+// Encodes the authored corner normals of each mesh entity holding them, resolves its authored-morph-shading gate, and drops the stored normals.
+// Call once its base normals derived and the host can read them.
+void FinalizeAuthoredShading(state::Scene &, mtl::ComputeChain &);
 
-// Evaluates the final pending edit into canonical positions and affected normals, submitting the chain to read which changed.
-// The refits and selection refresh then record on the chain, and the selection summaries publish once it submits again.
-// Returns the meshes whose positions changed.
+// Records the evaluation of the final pending edit into canonical positions and affected normals on the chain.
+// Returns the committed meshes, whose changed vertices PublishEditedPositions reads once the chain submits.
 std::vector<state::Entity> CommitPosedGeometry(state::Scene &, mtl::ComputeChain &, state::Entity viewport, std::span<const state::Entity> mesh_entities);
+// Removes the mesh's edit work, if any, and rederives its display fields, and its layout when the work required a pose, at the end of the settle pass.
 void ReleaseMeshEditWork(state::Scene &, state::Entity mesh_entity);
+// The MeshEditWork destroy handler, which releases the work's geometry work ranges.
+void ReleaseMeshEditWorkRanges(state::Scene &, state::Entity mesh_entity);
 
-// Writes the posed-prelude dispatch counts for the next submission, or zeros when deform inputs are unchanged.
-void SyncPreludeDispatchArgs(GpuBuffers &);
-
-// Rederives the listed meshes' record display fields from the scene, and returns whether one needs the scene layout rebuilt instead, as a posed mesh does.
-bool RefreshMeshDisplays(state::Scene &, state::Entity viewport, std::span<const state::Entity> mesh_entities);
+// Lays out each MeshLayoutDirty mesh's bounds entries, prelude tiles, pose namespaces and per-instance deform records, and marks its bounds and display fields to recompute.
+void LayOutMeshes(state::Scene &, state::Entity viewport);
+// The BoundsRun destroy handler, which queues the run's ranges for the settle pass to free and releases the mesh's pose namespaces.
+void ReleaseMeshLayout(state::Scene &, state::Entity mesh_entity);
+// Rederives each MeshDisplayDirty mesh's record display fields from the scene and its pose layout.
+void RefreshMeshDisplays(state::Scene &, state::Entity viewport);

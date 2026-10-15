@@ -11,6 +11,7 @@
 #include "mesh/BooleanWork.h"
 #include "mesh/ConnectivityBatch.h"
 #include "mesh/ConnectivityWritePages.h"
+#include "mesh/CornerClassBatch.h"
 #include "mesh/ElementMembershipWork.h"
 #include "mesh/ElementWorkSort.h"
 #include "mesh/MeshClone.h"
@@ -506,7 +507,6 @@ struct MeshTopologyEdit::Prepared {
     MeshStore::TopologyCounts Counts{};
     ElementHandleRange NewFaces{}, NewEdges{};
     std::optional<ConnectivityBatch> Connectivity;
-    MeshStore::CornerClassUpdate Classes{};
     // Whether the operator joins through label rounds, which repeat until a round changes nothing.
     bool Iterates{};
 
@@ -1124,21 +1124,24 @@ void MeshTopologyEdit::PublishAll(state::Scene &r, std::span<MeshTopologyEdit> a
     }
     SortUnique(fan_vertex_blocks);
     EncodeVertexFans(r, chain, fan_jobs, fan_vertex_blocks);
+    std::vector<MeshStore::CornerClassRequest> requests;
+    requests.reserve(edits.size());
     for (uint32_t i = 0u; auto *edit : edits) {
         auto &plan = *edit->Plan;
         const auto &connected = plan.Connectivity->Jobs[0];
         plan.Jobs.Record(chain, pipelines, emissions[i++], plan.Constants, std::array{TiledPass{MeshPass::TopologyEdgeAttributes, DstHalfedges}});
         EncodeSortElementWork(r, chain, std::span{&edit->RetiredEdges, 1u});
         // The rebuilt fans hold every corner at the repaired vertices.
-        plan.Classes = meshes.EncodeCornerClassification(r, chain, edit->StoreId, edit->Repair->Elements[0], connected.VertexCount, connected.HalfedgeCount);
+        requests.push_back({edit->StoreId, edit->Repair->Elements[0], connected.VertexCount, connected.HalfedgeCount});
     }
+    auto classes = meshes.EncodeCornerClassification(r, chain, requests);
     {
         const profile::CpuScope stage{"TopologyEmitSubmit"};
         chain.Submit();
     }
 
     // Corner classes, base normals and authored normals complete the canonical edit in the chain's next submit.
-    // Every edit plans its corner classes before one derive records the base normals the authored normals rebase on.
+    // The edits' corner classes plan as one batch before one derive records the base normals the authored normals rebase on.
     std::vector<LocalNormalWork> normals;
     normals.reserve(edits.size());
     for (auto *edit : edits) {
@@ -1151,9 +1154,9 @@ void MeshTopologyEdit::PublishAll(state::Scene &r, std::span<MeshTopologyEdit> a
         }
         meshes.TrimInsertedElements(edit->StoreId, D::Edge, plan.NewEdges, chain.Scratch, plan.Connectivity->ScratchSpan()[connected.StateOffset]);
         CheckElementWork(chain.Scratch, edit->RetiredEdges);
-        meshes.PlanCornerClassification(r, chain, plan.Classes);
         normals.push_back({edit->StoreId, edit->Repair->Elements[0], edit->Repair->Counts[0], edit->Repair->Elements[2], edit->Repair->Counts[2]});
     }
+    meshes.PlanCornerClassification(r, chain, classes);
     EncodeDeriveMeshNormals(r, chain, chain.Scratch, normals);
     for (auto *edit : edits) {
         auto &plan = *edit->Plan;

@@ -51,6 +51,7 @@ struct GeometryFixture {
     }
     uint32_t Create(MeshData data) {
         const auto id = CreateMesh(Scene, {.Data = std::move(data)}).StoreId;
+        ShadeNewMeshes(Scene);
         Audit();
         return id;
     }
@@ -188,6 +189,7 @@ std::pair<uint32_t, std::set<int32_t>> CreateAttributed(GeometryFixture &f, Mesh
     source.Deform = std::move(deform);
     source.Morph = std::move(morph);
     const auto id = CreateMesh(f.Scene, std::move(source)).StoreId;
+    ShadeNewMeshes(f.Scene);
     auto &meshes = f.Store();
     {
         const auto mesh = f.Get(id);
@@ -384,6 +386,7 @@ void RegisterGeometryOperationsTests() {
         attributes.Colors0 = std::vector<vec4>(4u, {.1f, .3f, .5f, 1.f});
         attributes.Colors0ComponentCount = 4u;
         const auto source = CreateMesh(f.Scene, {.Data = Quad(), .Attrs = std::move(attributes)}).StoreId;
+        ShadeNewMeshes(f.Scene);
         const auto extracted = f.Run({.SourceId = source, .Op = MeshTopologyOp::KeepSelectedFaces, .SelectionElement = Element::Face, .Selection = AllHandles(f.Get(source))});
         const auto output_id = extracted.GeometryId;
         const auto selection = extracted.Created;
@@ -711,6 +714,7 @@ void RegisterGeometryOperationsTests() {
                 return attributes;
             };
             const auto listed_id = CreateMesh(f.Scene, {.Data = Patchwork(), .Attrs = uvs()}).StoreId, masked_id = CreateMesh(f.Scene, {.Data = Patchwork(), .Attrs = uvs()}).StoreId;
+            ShadeNewMeshes(f.Scene);
             const PositionOperationTarget listed{.StoreId = listed_id, .Selection = Region(f.Get(listed_id))};
             const PositionOperationTarget masked{.StoreId = masked_id, .Selection = masks.Write(f.Store(), masked_id, Region(f.Get(masked_id)))};
             mtl::ComputeChain chain{f.Store().BufferContext()};

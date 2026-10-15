@@ -125,6 +125,10 @@ DirtySet::~DirtySet() {
         for (auto [type, event] : Bindings) std::erase(Owner->Dirty[type][size_t(event)], this);
     }
 }
+void DirtySet::Grow(uint32_t index) {
+    Positions.resize(index + 1, UINT32_MAX);
+    Parity.resize(index + 1, 0u);
+}
 void DirtySet::Track(TypeId type, Event event) {
     assert(Owner);
     Owner->Dirty[type][size_t(event)].push_back(this);
@@ -138,7 +142,7 @@ void BeforeWrite(Scene &r, TypeId type, Entity e) {
 }
 void Notify(Scene &r, TypeId type, Event event, Entity e) {
     if (r.Restoring && !r.RestoringEvents && event != Event::Destroy) return;
-    for (auto *dirty : r.Dirty[type][size_t(event)]) dirty->emplace(e);
+    for (auto *dirty : r.Dirty[type][size_t(event)]) dirty->emplace(e, event);
     const auto &handlers = r.Handlers[type][size_t(event)];
     for (const auto &handler : std::views::reverse(handlers)) handler(r, e);
 }

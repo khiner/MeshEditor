@@ -56,11 +56,7 @@
 #include <cassert>
 
 namespace {
-RenderRequest TakeRenderRequest(state::Scene &r) {
-    return std::exchange(r.Context.get<PendingRenderRequest>().Value, RenderRequest::None);
-}
-
-SceneUpdate RequestedSceneUpdate(RenderRequest request) { return request == RenderRequest::Rebuild ? SceneUpdate::Rebuild : SceneUpdate::Reuse; }
+bool TakeRenderRequest(state::Scene &r) { return std::exchange(r.Context.get<PendingRenderRequest>().Value, false); }
 
 // Motion blur applies in MaterialPreview/Rendered while playing, scrubbing, or capturing.
 bool MotionBlurActive(const state::Scene &r, state::Entity viewport) {
@@ -151,7 +147,7 @@ void RenderMotionBlurredFrame(state::Scene &r, state::Entity viewport) {
     r.edit<PlaybackFrame>(viewport).Value = settled_pf;
     std::ignore = TakeRenderRequest(r);
     auto *command_buffer = ctx.Queue->commandBuffer();
-    if (fast) RecordRenderCommandBuffer(r, viewport, command_buffer, SceneUpdate::Rebuild, RenderPhase::BlurFast);
+    if (fast) RecordRenderCommandBuffer(r, viewport, command_buffer, RenderPhase::BlurFast);
     else RecordBlurStepsCommandBuffer(r, viewport, command_buffer, sample_weights);
     resources.RecordedPhase = fast ? RenderPhase::BlurFast : RenderPhase::BlurAccumulate;
     SubmitRecordedFrame(r, command_buffer);
@@ -165,9 +161,9 @@ void SubmitViewport(state::Scene &r, state::Entity viewport) {
     auto &frame_state = r.Context.get<FrameState>();
     if (MotionBlurActive(r, viewport)) {
         // A blurred frame costs several scene evaluations, so only run one when something changed.
-        if (const auto request = TakeRenderRequest(r); request != RenderRequest::None) {
+        if (TakeRenderRequest(r)) {
             // Preserve the request for the per-step render and any required framebuffer recreation.
-            r.Context.get<PendingRenderRequest>().Value = request;
+            r.Context.get<PendingRenderRequest>().Value = true;
             RenderMotionBlurredFrame(r, viewport);
             frame_state.MotionBlurred = true;
         }
@@ -176,12 +172,9 @@ void SubmitViewport(state::Scene &r, state::Entity viewport) {
     // Blur just ended (playback stopped, or the playhead was released): replace the blurred frame with a sharp one.
     if (frame_state.MotionBlurred) {
         frame_state.MotionBlurred = false;
-        r.Context.get<PendingRenderRequest>().Value = RenderRequest::Rebuild;
+        r.Context.get<PendingRenderRequest>().Value = true;
     }
-    const auto render_request = TakeRenderRequest(r);
-    if (render_request == RenderRequest::None) return;
-
-    RecordAndSubmitFrame(r, viewport, RequestedSceneUpdate(render_request));
+    if (TakeRenderRequest(r)) RecordAndSubmitFrame(r, viewport);
 }
 
 state::Entity InitEngine(state::Scene &r) {
@@ -377,7 +370,8 @@ void PresentViewport(state::Scene &r, state::Entity viewport) {
         RenderMotionBlurredFrame(r, viewport);
         r.Context.get<FrameState>().MotionBlurred = true;
     } else {
-        RecordAndSubmitFrame(r, viewport, RequestedSceneUpdate(TakeRenderRequest(r)));
+        std::ignore = TakeRenderRequest(r);
+        RecordAndSubmitFrame(r, viewport);
         WaitForRender(r);
     }
 }

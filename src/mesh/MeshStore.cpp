@@ -437,6 +437,8 @@ struct MeshStore::HistoryState {
     std::vector<DomainStream> Streams;
     std::vector<AttributeStream> AttributeStreams;
     std::vector<IndexedRecord> Indexed;
+    // Each element layer's byte extents written since the last TakeWrites, which Ranges maps to their records.
+    std::unordered_map<mtl::Buffer *, std::vector<std::pair<uint64_t, uint64_t>>> LayerWrites;
     // Records whose ranges or sets changed since the last index, and whether every record did.
     std::vector<uint32_t> Dirty;
     bool AllDirty{true};
@@ -512,12 +514,10 @@ MeshStore::MeshStore(mtl::BufferContext &ctx)
           .BaseFaceNormal = Buffers.BaseFaceNormals.Buffer.Slot,
       },
       BlockLists{ctx, SlotType::Buffer} {
-    // Element value arenas, their mirrors, their membership and the canonical layers log their writes, and selection state derives from the blocks they name.
+    // Element value arenas, their mirrors and their membership log their writes, and selection state derives from the blocks they name.
     ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&) {
-        if (info.Bits == SelectionChanged || !info.Tracked() || info.RenderRange) return;
+        if (info.Bits == SelectionChanged || !info.Tracked() || info.RenderRange || info.Elements == Domain::None) return;
         const auto stride = uint32_t(sizeof(ArenaValue<std::remove_cvref_t<decltype(arena)>>));
-        if (info.Layer != Domain::None) WriteLogs.push_back({&arena.Buffer, info.Layer, WriteIndex::Layer, stride});
-        if (info.Elements == Domain::None) return;
         WriteLogs.push_back({&arena.Buffer, info.Elements, info.BlockIndexed ? WriteIndex::Blocks : WriteIndex::Elements, stride});
         if constexpr (requires { arena.Blocks; }) WriteLogs.push_back({&arena.Blocks.Buffer, info.Elements, WriteIndex::Blocks, uint32_t(sizeof(MeshElementBlock))});
     });
@@ -531,44 +531,63 @@ MeshStore::Writes MeshStore::TakeWrites() {
         auto &blocks = writes.Blocks[uint32_t(log.Domain)];
         for (const auto [begin, end] : log.Extents) {
             const auto first = begin / log.Stride, last = (end + log.Stride - 1u) / log.Stride;
-            switch (log.Index) {
-                case WriteIndex::Elements:
-                    for (auto block = first / MeshElementBlockSize; block <= (last - 1u) / MeshElementBlockSize; ++block) blocks.push_back(uint32_t(block));
-                    break;
-                case WriteIndex::Blocks:
-                    for (auto block = first; block < last; ++block) blocks.push_back(uint32_t(block));
-                    break;
-                case WriteIndex::Layer: break;
-            }
-        }
-        if (log.Index != WriteIndex::Layer) log.Extents.clear();
-    }
-    // A layer's written blocks name the local blocks of the records whose ranges hold them.
-    ForEachLayer(Buffers, [&](const auto &layer, const LayerInfo &info, auto &&entries, auto &&range) {
-        if (info.Render) return;
-        auto &log = *std::ranges::find(WriteLogs, &layer.Values.Buffer, &WriteLog::Buffer);
-        if (log.Extents.empty()) return;
-        constexpr auto Stride = sizeof(typename std::remove_cvref_t<decltype(layer)>::Block);
-        // The records' ranges in offset order, which are disjoint.
-        std::vector<std::pair<Range, const Record *>> held;
-        for (const auto &r : Records) {
-            if (r.Alive && range(r)->Count) held.emplace_back(*range(r), &r);
-        }
-        std::ranges::sort(held, {}, [](const auto &entry) { return entry.first.Offset; });
-        auto &blocks = writes.Blocks[uint32_t(info.Elements)];
-        for (const auto [begin, end] : log.Extents) {
-            const auto first = begin / Stride, last = (end + Stride - 1u) / Stride;
-            for (auto it = std::ranges::lower_bound(held, first, {}, [](const auto &entry) { return uint64_t(entry.first.Offset) + entry.first.Count - 1u; }); it != held.end() && it->first.Offset < last; ++it) {
-                const auto [values, r] = *it;
-                const auto table = WithDomain(Buffers, info.Elements, [&](const auto &arena) { return arena.Entries(DomainSet(*r, info.Elements)); });
-                const auto per = std::max(entries(*r), 1u);
-                for (auto block = std::max<uint64_t>(first, values.Offset); block < std::min<uint64_t>(last, values.Offset + values.Count); ++block) {
-                    if (const auto local = (block - values.Offset) / per; local < table.size() && table[local] != InvalidOffset) blocks.push_back(table[local]);
-                }
+            if (log.Index == WriteIndex::Elements) {
+                for (auto block = first / MeshElementBlockSize; block <= (last - 1u) / MeshElementBlockSize; ++block) blocks.push_back(uint32_t(block));
+            } else {
+                for (auto block = first; block < last; ++block) blocks.push_back(uint32_t(block));
             }
         }
         log.Extents.clear();
-    });
+    }
+    // A tracked store logs its layers' writes, and each written block names a local block of the record whose range holds it.
+    // The history index holds the ranges of the records unchanged since it last ran, and every other record reads its own range.
+    if (Tracked) {
+        auto &dirty = Tracked->Dirty;
+        SortUnique(dirty);
+        const bool indexed = !Tracked->AllDirty;
+        ForEachLayer(Buffers, [&](auto &layer, const LayerInfo &info, auto &&entries, auto &&range) {
+            if (info.Render) return;
+            auto &log = Tracked->LayerWrites.at(&layer.Values.Buffer);
+            if (log.empty()) return;
+            constexpr auto Stride = sizeof(typename std::remove_cvref_t<decltype(layer)>::Block);
+            // The ranges the index does not hold, in offset order, which are disjoint.
+            std::vector<std::pair<Range, uint32_t>> held;
+            const auto hold = [&](uint32_t id) {
+                if (id < Records.size() && Records[id].Alive && range(Records[id])->Count) held.emplace_back(*range(Records[id]), id);
+            };
+            if (indexed) {
+                for (const auto id : dirty) hold(id);
+            } else {
+                for (uint32_t id = 0u; id < Records.size(); ++id) hold(id);
+            }
+            std::ranges::sort(held, {}, [](const auto &entry) { return entry.first.Offset; });
+            auto &blocks = writes.Blocks[uint32_t(info.Elements)];
+            const auto &ranges = Tracked->Ranges.at(&layer.Values.Buffer);
+            for (const auto [begin, end] : log) {
+                const uint64_t first = begin / Stride, last = (end + Stride - 1u) / Stride;
+                // Takes the written blocks of the record's layer values [values_first, values_end).
+                const auto take = [&](uint32_t id, uint64_t values_first, uint64_t values_end) {
+                    const auto &record = Records[id];
+                    const auto table = WithDomain(Buffers, info.Elements, [&](const auto &arena) { return arena.Entries(DomainSet(record, info.Elements)); });
+                    const auto per = std::max(entries(record), 1u);
+                    for (auto block = std::max(first, values_first); block < std::min(last, values_end); ++block) {
+                        if (const auto local = (block - values_first) / per; local < table.size() && table[local] != InvalidOffset) blocks.push_back(table[local]);
+                    }
+                };
+                if (indexed) {
+                    auto it = ranges.upper_bound(begin);
+                    if (it != ranges.begin() && std::prev(it)->second.End > begin) --it;
+                    for (; it != ranges.end() && it->first < end; ++it) {
+                        if (!std::ranges::binary_search(dirty, it->second.Id)) take(it->second.Id, it->first / Stride, it->second.End / Stride);
+                    }
+                }
+                for (auto it = std::ranges::lower_bound(held, first, {}, [](const auto &entry) { return uint64_t(entry.first.Offset) + entry.first.Count - 1u; }); it != held.end() && it->first.Offset < last; ++it) {
+                    take(it->second, it->first.Offset, uint64_t(it->first.Offset) + it->first.Count);
+                }
+            }
+            log.clear();
+        });
+    }
     for (auto &blocks : writes.Blocks) SortUnique(blocks);
     writes.Attributes = std::exchange(WrittenAttributes, {});
     SortUnique(writes.Attributes);
@@ -592,6 +611,9 @@ void MeshStore::Track(store::History &history) {
         }
     });
     Tracked = std::make_unique<HistoryState>(*this, history);
+    ForEachLayer(Buffers, [&](auto &layer, const LayerInfo &info, auto &&, auto &&) {
+        if (!info.Render) layer.Values.Buffer.Writes = &Tracked->LayerWrites[&layer.Values.Buffer];
+    });
     ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&) {
         if (!info.Tracked()) return;
         if (info.Named) Tracked->AttributeStreams.push_back({&arena.Buffer, uint32_t(sizeof(ArenaValue<std::remove_cvref_t<decltype(arena)>>)), *info.Named});
@@ -1155,8 +1177,9 @@ void MeshStore::EnsureSelectionState(state::Scene &r, mtl::ComputeChain &chain, 
         }
     }
     UpdateSelection(r, chain, updates);
-    chain.Submit();
-    for (const auto &update : updates) PublishSelectionSummary(update.StoreId);
+    chain.AfterSubmit([this, ids = updates | std::views::transform(&SelectionUpdate::StoreId) | std::ranges::to<std::vector>()] {
+        for (const auto id : ids) PublishSelectionSummary(id);
+    });
 }
 
 SelectionView MeshStore::GetSelectedElements(uint32_t id, Element element) const {
@@ -1611,6 +1634,7 @@ void MeshStore::CommitReserves() {
 
 void MeshStore::CreateMesh(uint32_t id, const MeshData &data, const MeshVertexAttributes &attrs, const MeshPrimitives &primitives, const CornerLayers &layers, bool has_authored_normals) {
     const profile::CpuScope scope{"CreateMesh"};
+    Unshaded.push_back(id);
     const uint32_t face_count = data.FaceCount();
 
     // Source creation and welding completed the vertex-domain arena ranges.
@@ -2899,6 +2923,7 @@ void MeshStore::Clear() {
     }
     FreeIds.clear();
     Released.clear();
+    Unshaded.clear();
     for (auto &log : WriteLogs) log.Extents.clear();
     WrittenAttributes.clear();
 }

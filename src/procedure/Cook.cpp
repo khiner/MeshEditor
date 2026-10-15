@@ -558,7 +558,12 @@ Outcome RunNode(state::Scene &r, const GeometryProcedure &procedure, const CookP
     return edited;
 }
 
-uint32_t Generate(state::Scene &r, const Generator auto &shape) { return CreateMesh(r, {.Data = primitive::CreateMesh(shape), .FlatShaded = true}).StoreId; }
+// The generated record's shading derives at once, since the cook's next nodes read it.
+uint32_t Generate(state::Scene &r, const Generator auto &shape) {
+    const auto id = CreateMesh(r, {.Data = primitive::CreateMesh(shape), .FlatShaded = true}).StoreId;
+    ShadeNewMeshes(r);
+    return id;
+}
 
 // Turns record `id` into points, each placing an instance rotated and scaled by the node's parameters.
 void InstancePoints(state::Scene &r, const InstanceOnPoints &p, uint32_t id) {
@@ -1042,6 +1047,8 @@ void SettleProcedures(state::Scene &r, bool cook) {
         order.push_back(e);
     };
     for (const auto e : cooked) visit(e);
+    // A cook reads the meshes created since the last settle, such as a regenerated primitive source, so their shading derives first.
+    if (!order.empty()) ShadeNewMeshes(r);
     std::optional<BufferArena<SelectionBlock>> arena;
     for (const auto e : order) Cook(r, e, arena, writes);
     r.Context.get<CookCount>().Value += order.size();

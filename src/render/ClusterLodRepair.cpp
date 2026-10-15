@@ -6,7 +6,6 @@
 #include "mesh/MeshStore.h"
 #include "metal/Dispatch.h"
 #include "render/GpuBufferOps.h"
-#include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
 #include "render/LodNodeEdit.h"
 #include "render/MeshletBuild.h"
@@ -126,7 +125,6 @@ std::vector<std::vector<uint32_t>> InvalidateClusterGroups(state::Scene &r, std:
     if (std::ranges::all_of(seeds, [](const auto &seed) { return seed.Groups.empty(); })) return members;
     const profile::CpuScope scope{"InvalidateClusterGroups"};
     auto &buffers = r.Context.get<MeshStore>().Render();
-    auto &lod_dirty = r.Context.get<GpuSceneState>().LodDirty;
     for (uint32_t i = 0u; i < seeds.size(); ++i) {
         if (seeds[i].Groups.empty()) continue;
         const auto &owner = RecordOf(r, seeds[i].Entity);
@@ -146,7 +144,7 @@ std::vector<std::vector<uint32_t>> InvalidateClusterGroups(state::Scene &r, std:
             MaskSet(buffers.DirtyGroups, address);
         }
         std::ranges::sort(members[i]);
-        lod_dirty.insert(seeds[i].Entity);
+        r.emplace_or_replace<ClusterLodDirty>(seeds[i].Entity);
     }
     return members;
 }
@@ -412,7 +410,7 @@ void RepairDirtyClusterGroups(state::Scene &r, mtl::ComputeChain &chain, std::sp
             if (!runs.empty() && runs.back().First + runs.back().Count == id && runs.back().Primitive == primitive) ++runs.back().Count;
             else runs.push_back({id, 1u, primitive, false});
         }
-        refits.push_back(EditLodNodes(r, chain, owner, repair.Removed, runs, touched[i]));
+        refits.push_back(EditLodNodes(r, owner, repair.Removed, runs, touched[i]));
     }
     RecordLodNodeRefits(r, chain, refits);
     // The retired clusters and stale groups stay live until the recorded refits complete, and their release clears the owner's dirty groups.
@@ -434,6 +432,5 @@ void RepairDirtyClusterGroups(state::Scene &r, mtl::ComputeChain &chain, std::sp
             meshes.ReleasePayloadRuns(owner, RenderPayload::GroupClusters, std::move(runs));
             buffers.ClusterGroups.Erase(owner.GroupData, repair.Closure);
         }
-        r.Context.get<GpuBuffers>().PreludeStale = true;
     });
 }

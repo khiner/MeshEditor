@@ -1,8 +1,10 @@
 #pragma once
 
+#include "mesh/CornerClassBatch.h"
 #include "mesh/MeshAttributes.h"
 #include "mesh/MeshData.h"
 #include "mesh/MeshStore.h"
+#include "mesh/NormalDeriveGpu.h"
 
 #include <span>
 #include <vector>
@@ -31,8 +33,23 @@ struct CreatedMesh {
 
 // The arena work of each phase runs in source order, so a batch lays out the same way every run.
 // Authored normals recover as face sharpness on faceted faces, as edge sharpness where they disagree across an edge, and otherwise as a custom corner-normal layer.
+// A created record's corner classification, base normals and selection state derive later, through the new-mesh shading below.
 std::vector<CreatedMesh> CreateMeshes(state::Scene &, std::span<MeshSource>);
 CreatedMesh CreateMesh(state::Scene &, MeshSource);
+
+// The shading of the records CreateMesh completed since the last derive, between its two recordings.
+struct NewMeshShading {
+    std::vector<uint32_t> Ids;
+    CornerClassBatch Classes;
+    AllNormalsWork Normals;
+};
+// Takes the records awaiting shading and records their corner classification counts and their normal membership gather, when any await it.
+std::optional<NewMeshShading> EncodeNewMeshShading(state::Scene &, mtl::ComputeChain &);
+// Once the chain submitted the counts, records the records' classification writes, base normal derive and selection state.
+// The selection summaries publish with the chain's next submit.
+void DeriveNewMeshShading(state::Scene &, mtl::ComputeChain &, NewMeshShading &);
+// Derives the shading of the records awaiting it on a chain of its own, which submits for the classification plan and once at the end.
+void ShadeNewMeshes(state::Scene &);
 
 // Encode the authored corner normals as offsets from the derived corner normals where they deviate, filling the custom corner-normal layer.
 // Requires derived base normals and an empty custom layer.

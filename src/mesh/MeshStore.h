@@ -12,7 +12,6 @@
 #include "gpu/ConnectivityRef.h"
 #include "gpu/CornerClass.h"
 #include "gpu/CornerClassMode.h"
-#include "gpu/CornerClassificationPushConstants.h"
 #include "gpu/CustomNormal.h"
 #include "gpu/EditSelectionStorage.h"
 #include "gpu/EditSelectionSummary.h"
@@ -58,6 +57,7 @@ namespace state {
 struct Scene;
 } // namespace state
 struct CloneCopies;
+struct CornerClassBatch;
 
 struct ArmatureDeformData {
     std::vector<uvec4> Joints;
@@ -426,6 +426,7 @@ struct MeshStore {
     ElementView<uvec3> TriangleView(uint32_t id) const;
     ElementView<Vertex> VertexView(uint32_t id) const;
     // Completes the record created by CreateMeshSource: face tables, corner layers, primitive tables, and smooth sharpness stores.
+    // The record's shading derives later, and TakeUnshaded lists it until then.
     void CreateMesh(uint32_t id, const MeshData &, const MeshVertexAttributes &, const MeshPrimitives &, const CornerLayers &, bool has_authored_normals);
     // Each element domain's ascending blocks or local blocks, indexed by ElementDomain.
     using DomainBlocks = std::array<std::vector<uint32_t>, 6>;
@@ -475,6 +476,8 @@ struct MeshStore {
     store::Hash128 CanonicalHash(uint32_t id) const;
     // The ids Release retired since the last call, whose render tallies drop.
     std::vector<uint32_t> TakeReleased() { return std::exchange(Released, {}); }
+    // The ids CreateMesh completed since the last call, whose corner classification, base normals and selection state have not derived.
+    std::vector<uint32_t> TakeUnshaded() { return std::exchange(Unshaded, {}); }
     // Reset all arenas and the StoreId table to empty, keeping GPU allocations for reuse.
     // Requires a full scene clear without live StoreId references so allocation restarts deterministically.
     void Clear();
@@ -588,7 +591,8 @@ struct MeshStore {
     // Selection masks mirror canonical element blocks.
     // Only summaries, roots and gesture state are per mesh.
     // Creates cleared masks, a summary and the aggregates of every owned block, once per record.
-    // A record without them submits the chain, so their summaries publish before this returns.
+    // The aggregates derive on the chain, and the summaries publish once it submits.
+    // New-mesh shading calls it, and a clone or topology output takes its state with its record, so readers of a settled record find its state.
     void EnsureSelectionState(state::Scene &, mtl::ComputeChain &, std::span<const uint32_t> ids);
     SelectionView GetSelectedElements(uint32_t id, Element) const;
     SelectionView GetHiddenElements(uint32_t id, Element) const;
@@ -659,18 +663,18 @@ struct MeshStore {
     std::span<const vec3> GetCornerNormals(const Mesh &) const;
     // Classify each corner from the sharpness stores: vertex-normal, face-normal, or a seam sector of incident triangles.
     // Call after any sharpness write, then run the base derive pass to refill the base normal stores.
-    // A sparse vertex domain updates only its incoming corners, which `incoming` bounds.
-    // The default work descriptor gathers all live vertices through the same GPU path.
-    // Encode records the counts and the blocks the roots need.
-    // Plan settles the mesh's classification mode once the chain submits, holds sector ranges while the mode is mixed and records the root writes.
-    struct CornerClassUpdate {
-        uint32_t StoreId{};
-        CornerClassificationPushConstants Pc{};
+    // A request with sparse vertex work updates only those vertices' incoming corners, which `Incoming` bounds.
+    // A request without work classifies every live vertex of the mesh.
+    struct CornerClassRequest {
+        uint32_t StoreId;
+        ElementWork Vertices{};
         uint32_t VertexCount{}, Incoming{};
         bool Complete{};
     };
-    CornerClassUpdate EncodeCornerClassification(state::Scene &, mtl::ComputeChain &, uint32_t id, ElementWork vertices = {}, uint32_t vertex_count = 0u, uint32_t incoming = 0u, bool complete = false);
-    void PlanCornerClassification(state::Scene &, mtl::ComputeChain &, CornerClassUpdate &);
+    // Encode records the batch's counts and the blocks the roots need.
+    // Plan settles each mesh's classification mode once the chain submits, holds sector ranges while the mode is mixed and records the batch's root writes.
+    CornerClassBatch EncodeCornerClassification(state::Scene &, mtl::ComputeChain &, std::span<const CornerClassRequest>);
+    void PlanCornerClassification(state::Scene &, mtl::ComputeChain &, CornerClassBatch &);
     // Classifies every corner of each listed mesh, through both steps over the chain.
     // It submits the chain once for the plan.
     void UpdateCornerClassification(state::Scene &, mtl::ComputeChain &, std::span<const uint32_t> ids);
@@ -697,6 +701,7 @@ private:
     uint64_t NextNormalRevision{};
     std::vector<uint32_t> FreeIds{};
     std::vector<uint32_t> Released{};
+    std::vector<uint32_t> Unshaded{};
     std::vector<NamedAttribute> NamedAttributes{};
 
     struct HistoryState;
@@ -737,10 +742,9 @@ private:
     void ReleaseDomain(uint32_t id, ElementDomain);
     // Clears every element of the record's ascending blocks of the domain, which leave it.
     void DetachBlocks(uint32_t id, ElementDomain, std::span<const uint32_t> blocks);
-    // A logged buffer names element addresses, element blocks, or the blocks of records' layer ranges.
+    // A logged buffer names element addresses or element blocks.
     enum class WriteIndex : uint8_t { Elements,
-                                      Blocks,
-                                      Layer };
+                                      Blocks };
     struct WriteLog {
         mtl::Buffer *Buffer;
         ElementDomain Domain;

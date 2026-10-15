@@ -7,7 +7,6 @@
 #include "metal/Dispatch.h"
 #include "render/ClusterLodRepair.h"
 #include "render/ElementWorkOps.h"
-#include "render/GpuBuffers.h"
 #include "render/LodNodeEdit.h"
 #include "render/MeshletSpatial.h"
 #include "state/Scene.h"
@@ -53,7 +52,6 @@ void RefitCanonicalMeshletBounds(state::Scene &r, mtl::ComputeChain &chain, std:
 
 void StageDirtyPositionMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<const state::Entity> entities) {
     const profile::CpuScope scope{"PositionCoarseInvalidate"};
-    auto &buffers = r.Context.get<GpuBuffers>();
     auto &meshes = r.Context.get<MeshStore>();
     auto &render = meshes.Render();
     // Each coarse owner's moved clusters, whose groups seed its stale closure.
@@ -84,7 +82,6 @@ void StageDirtyPositionMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::
             seeds.pop_back();
             moved.pop_back();
         }
-        buffers.PreludeStale = true;
     }
     auto touched = InvalidateClusterGroups(r, seeds);
     std::vector<LodNodeRefit> refits;
@@ -92,7 +89,7 @@ void StageDirtyPositionMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::
         // The moved clusters refit their leaves along with every stale member.
         touched[i].insert(touched[i].end(), moved[i].begin(), moved[i].end());
         SortUnique(touched[i]);
-        refits.push_back(EditLodNodes(r, chain, EditRecordOf(r, seeds[i].Entity), {}, {}, touched[i]));
+        refits.push_back(EditLodNodes(r, EditRecordOf(r, seeds[i].Entity), {}, {}, touched[i]));
     }
     RecordLodNodeRefits(r, chain, refits);
 }

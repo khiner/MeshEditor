@@ -15,7 +15,6 @@ bool EditVisibility(state::Scene &r, std::span<const uint32_t> ids, Element elem
     const bool select = operation == EditVisibilityOperation::RevealSelected;
     auto &meshes = r.Context.get<MeshStore>();
     mtl::ComputeChain chain{meshes.BufferContext()};
-    meshes.EnsureSelectionState(r, chain, ids);
     std::vector<MeshStore::SelectionUpdate> updates;
     uint64_t changed = 0u;
     for (const auto id : ids) {

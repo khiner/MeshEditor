@@ -14,8 +14,10 @@ struct ArmatureObject {
     state::Entity JointEntity{state::Null};
 };
 
-// Tag on the shared joint sphere entity (excluded from silhouette and normal mesh iteration).
-struct BoneJoint {};
+// On the shared joint sphere entity (excluded from silhouette and normal mesh iteration), naming the armature object whose joints it draws.
+struct BoneJoint {
+    state::Entity ArmatureObjectEntity;
+};
 
 struct BoneSubPartOf {
     state::Entity BoneEntity;

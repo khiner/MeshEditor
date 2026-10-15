@@ -2,14 +2,10 @@
 
 #include "Range.h"
 #include "gpu/ElementWork.h"
-
 #include "state/Entity.h"
 
 #include <array>
-#include <map>
 #include <optional>
-#include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 // Pose namespaces and normal outputs for one mesh entity's instance run.
@@ -33,7 +29,17 @@ struct PosedNamespaces {
     }
 };
 
-// Derived work and bounds parents survive gestures until topology, shading layout, or edit mode changes.
+// The pose namespaces and deformation of a mesh whose instances lay out posed.
+struct PosedLayout {
+    PosedNamespaces Namespaces;
+    // The deform offsets the record display fields name, InvalidOffset without that deformation.
+    uint32_t BoneDeformOffset{InvalidOffset}, MorphDeformOffset{InvalidOffset}, MorphTargetCount{0};
+    // The armature data entities whose poses deform the mesh.
+    std::vector<state::Entity> Armatures;
+};
+
+// A mesh's derived edit work and bounds parents, which survive gestures until topology, shading layout, or edit mode changes.
+// Its destroy handler releases its geometry work ranges.
 struct MeshEditWork {
     uint32_t StoreId{InvalidOffset};
     // Canonical element handles.
@@ -48,7 +54,7 @@ struct MeshEditWork {
     Range WorkBudget;
 };
 
-// An overlay over a mesh's canonical vertex blocks, a bit in its mesh's VertexOverlays mask.
+// An overlay over a mesh's canonical vertex blocks, a bit in its mesh's MeshVertexOverlays mask.
 enum class VertexOverlay : uint8_t {
     EditPoints, // On the mesh's primary edit instance.
     Points,
@@ -56,47 +62,48 @@ enum class VertexOverlay : uint8_t {
     Normals,
 };
 
+// The vertex overlays a mesh's instances draw, as a nonzero mask of VertexOverlay bits.
+struct MeshVertexOverlays {
+    uint8_t Mask;
+};
+
+// A laid-out mesh's ranges over the bounds entries, the normal derive entries and the prelude tile words.
+// A static run has one entry, which reduces from one root tile, and no tile words.
+// A posed run's words hold, in order, each vertex bounds level's keys, the face and vertex blocks its derive tiles cover, and each posed meshlet job's finest node members and meshlet count.
+// The prelude expands the words into tiles for each of the run's entries.
+// Its destroy handler queues the ranges to free and releases the mesh's pose namespaces.
+struct BoundsRun {
+    Range Entries, DeriveEntries, Tiles;
+    std::array<uint32_t, 4> BoundsKeys{}; // By vertex bounds level.
+    uint32_t FaceBlocks{}, VertexBlocks{}, MeshletJobs{};
+    // A posed run's words hold at least its root key.
+    bool Posed() const { return Tiles.Count != 0u; }
+};
+
+// A mesh whose meshlets hold position-dirty bits, which the next settle outside edit mode stages.
+struct MeshletPositionsDirty {};
+// A mesh whose cluster groups hold dirty bits, which the next settle outside edit mode repairs.
+struct ClusterLodDirty {};
+// A mesh whose meshlets were built, edited or restored since its cluster hierarchy was last checked.
+struct ClusterLodDemand {};
+// A mesh whose record display fields rederive at the end of the settle pass, after its render data changed.
+struct MeshDisplayDirty {};
+// A mesh whose bounds entries, prelude tiles and pose namespaces lay out again at the end of the settle pass, after its own inputs changed.
+struct MeshLayoutDirty {};
+// A laid-out mesh whose bounds entries the next recorded prelude recomputes.
+struct MeshBoundsDirty {};
+
 // Host metadata for the persistent GPU scene, refreshed when scene structure or routing changes.
 struct GpuSceneState {
-    std::unordered_map<state::Entity, PosedNamespaces> PosedByEntity;
-    std::unordered_map<state::Entity, MeshEditWork> EditWork;
-    // Reconstructed from tracked per-mesh dirty roots after history restore.
-    std::unordered_set<state::Entity> PositionDirty, LodDirty;
-    // Meshes whose meshlets were built, edited or restored since their cluster hierarchy was last checked.
-    std::unordered_set<state::Entity> LodDemand;
-    // Meshes whose record's display fields rederive at the end of the settle pass, after their render data changed.
-    std::unordered_set<state::Entity> DisplayDirty;
     // Each material's required LOD attributes without and with authored tangents, as the live primitives hold them.
     std::vector<std::array<uint32_t, 2>> RequiredMaterialAttributes;
-    // The vertex overlays each mesh's instances draw, as masks of VertexOverlay bits, in mesh order.
-    std::map<state::Entity, uint8_t> VertexOverlays;
-    // Each laid-out mesh's run of bounds entries, which a mesh without per-instance deformation keeps across instance changes.
-    struct BoundsRun {
-        uint32_t First{}, Count{};
-        bool Posed{};
-    };
-    std::unordered_map<state::Entity, BoundsRun> BoundsRuns;
-    // Each bounds entry's tiles in every prelude pass, by entry.
-    struct EntryTiles {
-        std::array<Range, 4> Bounds{}; // By vertex bounds level.
-        Range DeriveFaces{}, DeriveGather{}, MeshletJobs{};
-    };
-    std::vector<EntryTiles> BoundsEntryTiles;
-    // Entries whose bounds the next submit recomputes apart from a full prelude, in any order with repeats.
-    std::vector<uint32_t> DirtyBoundsEntries;
-    // The entries morph weights pose, and the entries each armature data entity's skins pose.
-    std::vector<uint32_t> MorphEntries;
-    std::unordered_map<state::Entity, std::vector<uint32_t>> ArmatureEntries;
     // The OR of every mesh's PBR features.
     uint32_t MeshPbrFeatures{0};
-    // The display settings the last layout rebuild read.
-    uint64_t LayoutDisplayInputs{0};
-    bool MeshletEditHasSharpEdges{};
+    // The display settings every mesh's record display fields and the overlay jobs read, packed as the last settle pass saw them.
+    uint64_t MeshDisplaySettings{0};
     bool EditPreludePending{};
     // Element selection bits changed, so edit work candidates reseed.
     bool EditSelectionDirty{};
     // Camera lenses, lights, colliders, tets or instance slots changed, so the overlay jobs rebuild before the next record.
     bool OverlayJobsDirty{true};
-    uint64_t PreludeLayoutInputs{0};
-    uint64_t PreludeWorkInputs{0};
 };

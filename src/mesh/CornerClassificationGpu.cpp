@@ -1,115 +1,121 @@
 #include "mesh/MeshStore.h"
 
+#include "mesh/CornerClassBatch.h"
 #include "mesh/MeshPipelines.h"
+#include "mesh/ScratchChunks.h"
 #include "metal/Dispatch.h"
 #include "render/ElementWorkOps.h"
 
-MeshStore::CornerClassUpdate MeshStore::EncodeCornerClassification(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, ElementWork vertices, uint32_t vertex_count, uint32_t incoming, bool complete) {
-    const auto &record = Records.at(id);
-    const bool seed_all = vertices.Storage.Slot == InvalidSlot;
-    CornerClassUpdate update{.StoreId = id, .Complete = complete || seed_all};
-    if (seed_all) {
-        vertex_count = Buffers.Vertices.Count(record.Vertices);
-        incoming = Buffers.FaceCorners.Count(record.FaceCorners);
-    }
-    if (!record.TriangleCount) {
-        auto &written = WriteRecord(id);
-        Buffers.CornerSectors.Release(written.CornerSectors);
-        Buffers.NormalSectors.Release(written.NormalSectors);
-        written.Classification = uint32_t(CornerClassMode::UniformVertex);
-        DerivedRecords.at(id).NormalRevision = ++NextNormalRevision;
-        return update;
-    }
-    if (!vertex_count) return update;
-    const auto state = chain.Scratch.Allocate(2u);
-    std::ranges::fill(chain.Scratch.GetMutable(state), 0u);
-    auto &pc = update.Pc;
-    pc = {
-        .Connectivity = GetConnectivityRef(id),
-        .VertexCount = vertex_count,
-        .FaceCount = Buffers.FaceTriangles.Count(record.FaceData),
-        .EdgeSharpnessSlot = Buffers.EdgeSharpness.Buffer.Slot,
-        .FaceSharpnessSlot = Buffers.FaceSharpness.Buffer.Slot,
-        .CornerSectors = Buffers.CornerSectors.Ref(record.CornerSectors),
-        .State = {chain.Scratch.Buffer.Slot, state.Offset},
-    };
-    update.VertexCount = vertex_count;
-    update.Incoming = incoming;
-    if (seed_all) {
-        // The live masks of the mesh's vertex blocks seed the work on the host.
-        const auto blocks = GetBlockList(id, ElementDomain::Vertex).Blocks;
-        pc.Vertices = AllocateElementWork(chain.Scratch, Buffers.Vertices.HandleBound(record.Vertices), blocks.size());
-        const auto data = chain.Scratch.GetMutable(WorkStorageRange(pc.Vertices));
-        for (const auto block : blocks) {
-            const auto &members = Buffers.Vertices.Blocks.Get({block, 1u})[0];
-            for (uint32_t w = 0u; w < MeshElementBlockWords; ++w) MarkElementWorkWord(data, pc.Vertices, members.Local * MeshElementBlockWords + w, members.Live[w]);
-        }
-        FinishElementWork(data, pc.Vertices.Capacity);
-    } else {
-        pc.Vertices = vertices;
-    }
-    // Dirty and needed blocks are the arena blocks of the mesh's corner set.
+namespace {
+constexpr std::array CountPasses{TiledPass{MeshPass::CornerClassificationCount, 0}, TiledPass{MeshPass::CornerClassificationPlan, 0}};
+constexpr std::array WritePasses{TiledPass{MeshPass::CornerClassificationWrite, 0}};
+
+CornerClassificationPushConstants ClassificationConstants(const MeshArenas &a) {
+    return {.VertexBlocksSlot = a.Vertices.Blocks.Buffer.Slot, .EdgeSharpnessSlot = a.EdgeSharpness.Buffer.Slot, .FaceSharpnessSlot = a.FaceSharpness.Buffer.Slot};
+}
+} // namespace
+
+CornerClassBatch MeshStore::EncodeCornerClassification(state::Scene &r, mtl::ComputeChain &chain, std::span<const CornerClassRequest> requests) {
+    // Each job claims its two state words.
+    CornerClassBatch batch{.Jobs = {chain.Scratch, 2u * uint32_t(requests.size())}};
+    auto &jobs = batch.Jobs;
+    jobs.Begin();
+    // Dirty and needed blocks are the arena blocks of a mesh's corner set.
     const auto corner_blocks = Buffers.FaceCorners.Capacity() / MeshElementBlockSize;
-    const auto block_bound = std::min(incoming, Buffers.FaceCorners.Set(record.FaceCorners).BlockCount);
-    pc.DirtyBlocks = AllocateElementWork(chain.Scratch, corner_blocks, block_bound);
-    pc.NeededBlocks = AllocateElementWork(chain.Scratch, corner_blocks, block_bound);
-    const auto &pipelines = GetMeshPipelines(r);
-    const auto groups = uint32_t((uint64_t(vertex_count) + 255u) / 256u);
+    for (const auto &request : requests) {
+        const auto id = request.StoreId;
+        const auto &record = Records.at(id);
+        if (!record.TriangleCount) {
+            auto &written = WriteRecord(id);
+            Buffers.CornerSectors.Release(written.CornerSectors);
+            Buffers.NormalSectors.Release(written.NormalSectors);
+            written.Classification = uint32_t(CornerClassMode::UniformVertex);
+            DerivedRecords.at(id).NormalRevision = ++NextNormalRevision;
+            continue;
+        }
+        const bool all = request.Vertices.Storage.Slot == InvalidSlot;
+        const auto vertex_count = all ? Buffers.Vertices.Count(record.Vertices) : request.VertexCount;
+        if (!vertex_count) continue;
+        const auto incoming = all ? Buffers.FaceCorners.Count(record.FaceCorners) : request.Incoming;
+        const auto block_bound = std::min(incoming, Buffers.FaceCorners.Set(record.FaceCorners).BlockCount);
+        const auto job = jobs.AddJob(
+            {
+                .Connectivity = GetConnectivityRef(id),
+                .Vertices = all ? ElementWork{} : request.Vertices,
+                .VertexCount = vertex_count,
+                .FaceCount = Buffers.FaceTriangles.Count(record.FaceData),
+                .CornerSectors = Buffers.CornerSectors.Ref(record.CornerSectors),
+                .DirtyBlocks = AllocateElementWork(chain.Scratch, corner_blocks, block_bound),
+                .NeededBlocks = AllocateElementWork(chain.Scratch, corner_blocks, block_bound),
+                .State = jobs.AllocateScratch(2u),
+            },
+            {all ? 0u : TileCount(vertex_count, TileElements)}
+        );
+        // A mesh's live vertices tile by arena block.
+        if (all) Buffers.Vertices.ForEachBlock(record.Vertices, [&](uint32_t b, const auto &block) { if (block.Count) jobs.Tiles[0].emplace_back(job, b); });
+        batch.Targets.push_back({id, incoming, request.Complete || all});
+    }
+    if (jobs.Jobs.empty()) return batch;
+    std::ranges::fill(jobs.ScratchSpan().subspan(jobs.ArgumentWords), 0u);
     // The count and the plan read the same fans and write separate results.
-    chain.Concurrent([&] {
-        chain.Groups(pipelines[MeshPass::CornerClassificationCount], pc, groups);
-        chain.Groups(pipelines[MeshPass::CornerClassificationPlan], pc, groups);
-    });
-    return update;
+    chain.Concurrent([&] { jobs.Encode(chain, GetMeshPipelines(r), ClassificationConstants(Buffers), CountPasses); });
+    return batch;
 }
 
-void MeshStore::PlanCornerClassification(state::Scene &r, mtl::ComputeChain &chain, CornerClassUpdate &update) {
-    auto &pc = update.Pc;
-    if (pc.State.Slot == InvalidSlot) return;
-    const auto state = chain.Scratch.Get({pc.State.Offset, 2u});
-    if (state[0] > update.Incoming) throw std::logic_error("Corner classification exceeds its incoming corner bound.");
-    const auto flags = state[1];
-    // The block works finish on the host, in ascending block order.
-    for (const auto work : {pc.DirtyBlocks, pc.NeededBlocks}) {
-        CheckElementWork(chain.Scratch, work);
-        FinishElementWork(chain.Scratch.GetMutable(WorkStorageRange(work)), work.Capacity);
+void MeshStore::PlanCornerClassification(state::Scene &r, mtl::ComputeChain &chain, CornerClassBatch &batch) {
+    auto &jobs = batch.Jobs;
+    if (jobs.Jobs.empty()) return;
+    const auto state = jobs.ScratchSpan();
+    std::vector<uint8_t> writes(jobs.Jobs.size(), 0u);
+    for (uint32_t i = 0u; i < jobs.Jobs.size(); ++i) {
+        const auto &job = jobs.Jobs[i];
+        const auto [id, incoming, complete] = batch.Targets[i];
+        if (state[job.State] > incoming) throw std::logic_error("Corner classification exceeds its incoming corner bound.");
+        const auto flags = state[job.State + 1u];
+        CheckElementWork(chain.Scratch, job.DirtyBlocks);
+        CheckElementWork(chain.Scratch, job.NeededBlocks);
+        auto &record = WriteRecord(id);
+        const auto uniform = !(flags & 2u) ? uint32_t(CornerClassMode::UniformFace) : !(flags & 5u) ? uint32_t(CornerClassMode::UniformVertex) :
+                                                                                                      uint32_t(CornerClassMode::Mixed);
+        // A local result can preserve an already-uniform mode. Once a mesh is
+        // mixed, unaffected faces keep using their canonical flags and roots.
+        record.Classification = complete || uniform == record.Classification ? uniform : uint32_t(CornerClassMode::Mixed);
+        DerivedRecords.at(id).NormalRevision = ++NextNormalRevision;
+        // A mixed mesh holds sector roots and their normals from its first needed corner, which starts every corner at the vertex normal, and a uniform mesh holds none.
+        if (record.Classification != uint32_t(CornerClassMode::Mixed)) {
+            Buffers.CornerSectors.Release(record.CornerSectors);
+            Buffers.NormalSectors.Release(record.NormalSectors);
+            continue;
+        }
+        if (!record.CornerSectors.Count) {
+            if (ElementWorkEmpty(chain.Scratch, job.NeededBlocks)) continue;
+            const auto blocks = Buffers.FaceCorners.HandleBound(record.FaceCorners) / MeshElementBlockSize;
+            Buffers.CornerSectors.Cover(record.CornerSectors, blocks);
+            Buffers.CornerSectors.Clear(record.CornerSectors, {0u, blocks});
+            Buffers.NormalSectors.Cover(record.NormalSectors, blocks);
+            Buffers.NormalSectors.Clear(record.NormalSectors, {0u, blocks});
+        } else {
+            // Only the dirty corner blocks' roots change.
+            std::vector<uint32_t> written;
+            ForEachWorkElement(chain.Scratch, job.DirtyBlocks, [&](uint32_t b) { written.push_back(record.CornerSectors.Offset + Buffers.FaceCorners.Blocks.Get({b, 1u})[0].Local); });
+            Buffers.CornerSectors.Values.Buffer.CaptureWriteElements(written, sizeof(decltype(Buffers.CornerSectors)::Block));
+        }
+        writes[i] = 1u;
     }
-    bool needed = false;
-    ForEachWorkElement(chain.Scratch, pc.NeededBlocks, [&](uint32_t) { needed = true; });
-    auto &record = WriteRecord(update.StoreId);
-    const auto uniform = !(flags & 2u) ? uint32_t(CornerClassMode::UniformFace) : !(flags & 5u) ? uint32_t(CornerClassMode::UniformVertex) :
-                                                                                                  uint32_t(CornerClassMode::Mixed);
-    // A local result can preserve an already-uniform mode. Once a mesh is
-    // mixed, unaffected faces keep using their canonical flags and roots.
-    record.Classification = update.Complete || uniform == record.Classification ? uniform : uint32_t(CornerClassMode::Mixed);
-    DerivedRecords.at(update.StoreId).NormalRevision = ++NextNormalRevision;
-    // A mixed mesh holds sector roots and their normals from its first needed corner, which starts every corner at the vertex normal, and a uniform mesh holds none.
-    if (record.Classification != uint32_t(CornerClassMode::Mixed)) {
-        Buffers.CornerSectors.Release(record.CornerSectors);
-        Buffers.NormalSectors.Release(record.NormalSectors);
-        return;
+    // Every job names its roots once the batch's sector ranges are held.
+    for (uint32_t i = 0u; i < jobs.Jobs.size(); ++i) {
+        if (writes[i]) jobs.Jobs[i].CornerSectors = Buffers.CornerSectors.Ref(Records[batch.Targets[i].StoreId].CornerSectors);
     }
-    if (!record.CornerSectors.Count) {
-        if (!needed) return;
-        const auto blocks = Buffers.FaceCorners.HandleBound(record.FaceCorners) / MeshElementBlockSize;
-        Buffers.CornerSectors.Cover(record.CornerSectors, blocks);
-        Buffers.CornerSectors.Clear(record.CornerSectors, {0u, blocks});
-        Buffers.NormalSectors.Cover(record.NormalSectors, blocks);
-        Buffers.NormalSectors.Clear(record.NormalSectors, {0u, blocks});
-    } else {
-        // Only the dirty corner blocks' roots change.
-        std::vector<uint32_t> written;
-        ForEachWorkElement(chain.Scratch, pc.DirtyBlocks, [&](uint32_t b) { written.push_back(record.CornerSectors.Offset + Buffers.FaceCorners.Blocks.Get({b, 1u})[0].Local); });
-        Buffers.CornerSectors.Values.Buffer.CaptureWriteElements(written, sizeof(decltype(Buffers.CornerSectors)::Block));
-    }
-    pc.CornerSectors = Buffers.CornerSectors.Ref(record.CornerSectors);
-    chain.Groups(GetMeshPipelines(r)[MeshPass::CornerClassificationWrite], pc, uint32_t((uint64_t(update.VertexCount) + 255u) / 256u));
+    std::erase_if(jobs.Tiles[0], [&](uvec2 tile) { return !writes[tile.x]; });
+    if (jobs.Tiles[0].empty()) return;
+    jobs.Encode(chain, GetMeshPipelines(r), ClassificationConstants(Buffers), WritePasses);
 }
 
 void MeshStore::UpdateCornerClassification(state::Scene &r, mtl::ComputeChain &chain, std::span<const uint32_t> ids) {
-    std::vector<CornerClassUpdate> updates;
-    updates.reserve(ids.size());
-    chain.Concurrent([&] { for (const auto id : ids) updates.push_back(EncodeCornerClassification(r,chain,id)); });
+    std::vector<CornerClassRequest> requests;
+    requests.reserve(ids.size());
+    for (const auto id : ids) requests.push_back({.StoreId = id});
+    auto batch = EncodeCornerClassification(r, chain, requests);
     chain.Submit();
-    for (auto &update : updates) PlanCornerClassification(r, chain, update);
+    PlanCornerClassification(r, chain, batch);
 }

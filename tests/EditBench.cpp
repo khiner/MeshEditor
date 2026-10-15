@@ -520,7 +520,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         };
         const auto render_step = [&](std::string_view name) -> Result {
             if (!render) return {};
-            if (r.Context.get<const PendingRenderRequest>().Value == RenderRequest::None)
+            if (!r.Context.get<const PendingRenderRequest>().Value)
                 return std::unexpected{std::string{name} + " did not request a rendered frame"};
             draw(name, selected_count);
             return {};
@@ -883,9 +883,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 }
                 if (i) warm_preview_ms.push_back(elapsed);
                 if (render) {
-                    const auto request = r.Context.get<const PendingRenderRequest>().Value;
-                    if (request == RenderRequest::None) return std::unexpected{"edit preview did not request a rendered frame"};
-                    if (i && (request != RenderRequest::Reuse)) return std::unexpected{"warmed edit preview requested a full scene rebuild"};
+                    if (!r.Context.get<const PendingRenderRequest>().Value) return std::unexpected{"edit preview did not request a rendered frame"};
                     draw("render" + std::to_string(i), selected_count);
                     if (i == 1u)
                         if (auto result = Capture(r, "MESHEDITOR_EDIT_BENCH_CAPTURE"); !result) return result;
@@ -908,7 +906,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             if (!replay_error.empty()) return std::unexpected{replay_error};
         }
         const auto exit_ms = Milliseconds([&] { p.Do(action::MakeAction(action::view::SetInteractionMode{InteractionMode::Object})); });
-        if (staged && !r.Context.get<const GpuSceneState>().EditWork.empty()) return std::unexpected{"Edit mode exit retained geometry work"};
+        if (staged && !r.view<const MeshEditWork>().empty()) return std::unexpected{"Edit mode exit retained geometry work"};
         if (meshes.HasDirtyGroups(meshes.Get(original.GetStoreId()))) return std::unexpected{"edit mode exit left stale LOD groups"};
         if (position && meshes.HasDirtyPositions(meshes.Get(original.GetStoreId()))) return std::unexpected{"position edit exit retained coarse dirt"};
         if (auto result = render_step("render_exit_mode"); !result) return result;

@@ -2,12 +2,18 @@
 #include "gpu/MeshElementSet.h"
 #include "gpu/SlotOffset.h"
 
-// Jobs name node handles of the record whose node, meshlet, group and member sets resolve its handles.
+// One node to refit by handle, with its record's node, meshlet, group and member sets, which resolve its handles.
+struct LodNodeRefitJob {
+    uint32_t Node DEFAULT();
+    uint32_t NodeSet DEFAULT(InvalidOffset), MeshletSet DEFAULT(InvalidOffset), GroupSet DEFAULT(InvalidOffset), MemberSet DEFAULT(InvalidOffset);
+};
+static_assert(sizeof(LodNodeRefitJob) == 20);
+
+// Jobs name `Count` nodes of every record at one depth.
 struct LodNodeRefitPushConstants {
     SlotOffset Jobs DEFAULT();
     uint32_t Count DEFAULT();
     SetArenaSlots Nodes DEFAULT(), Meshlets DEFAULT(), Groups DEFAULT(), Members DEFAULT();
-    uint32_t NodeSet DEFAULT(InvalidOffset), MeshletSet DEFAULT(InvalidOffset), GroupSet DEFAULT(InvalidOffset), MemberSet DEFAULT(InvalidOffset);
     uint32_t NodeSlot DEFAULT(), ParentSlot DEFAULT(), MeshletSlot DEFAULT(), GroupSlot DEFAULT(), MemberSlot DEFAULT(), ErrorSlot DEFAULT();
 };
-static_assert(sizeof(LodNodeRefitPushConstants) == 100);
+static_assert(sizeof(LodNodeRefitPushConstants) == 84);

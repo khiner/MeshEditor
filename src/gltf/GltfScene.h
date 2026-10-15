@@ -61,6 +61,9 @@ struct MeshSourceLayout {
     std::string Name;
 };
 
+// A mesh whose source layout maps some primitive's material for some variant.
+struct HasVariantMappings {};
+
 namespace gltf {
 struct LoadError {
     std::string Message;

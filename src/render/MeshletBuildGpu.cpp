@@ -487,16 +487,16 @@ void BuildChunk(state::Scene &r, mtl::ComputeChain &chain, std::span<MeshletBuil
     chain.Retain(std::move(tile_buffer));
     if (owned) return;
     // A canonical source that is its own render owner publishes the owners of the element blocks its work names.
-    chain.Concurrent([&] {
-        for (uint32_t i = 0u; i < sources.size(); ++i) {
-            const auto &source = sources[i];
-            if (source.Owner || source.Destination->ExtrasFaces.Count) continue;
-            std::vector<uint32_t> blocks;
-            ForEachWorkBlock(membership, jobs[i].Elements, [&](uint32_t local, auto) { blocks.push_back(local); });
-            std::ranges::sort(blocks);
-            PublishMeshletOwners(r, chain, *source.Destination, source.Topology, std::array{Range{jobs[i].MeshletHandle, counts[i].x}}, blocks);
-        }
-    });
+    std::vector<MeshletOwnersJob> owner_jobs;
+    for (uint32_t i = 0u; i < sources.size(); ++i) {
+        const auto &source = sources[i];
+        if (source.Owner || source.Destination->ExtrasFaces.Count) continue;
+        std::vector<uint32_t> blocks;
+        ForEachWorkBlock(membership, jobs[i].Elements, [&](uint32_t local, auto) { blocks.push_back(local); });
+        std::ranges::sort(blocks);
+        PrepareMeshletOwners(r, *source.Destination, source.Topology, std::array{Range{jobs[i].MeshletHandle, counts[i].x}}, blocks, owner_jobs);
+    }
+    RecordMeshletOwners(r, chain, owner_jobs);
     chain.Submit();
     const profile::CpuScope membership_scope{"MeshletMembership"};
     // Each populated traversal leaf of a new owner lists its cluster run.

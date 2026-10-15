@@ -2,7 +2,9 @@
 #include "mesh/ElementMembershipWork.h"
 
 #include "gpu/ElementWorkSortPushConstants.h"
+#include "gpu/TiledJobPushConstants.h"
 #include "mesh/MeshPipelines.h"
+#include "mesh/TiledJobBatch.h"
 #include "metal/Dispatch.h"
 
 namespace {
@@ -12,9 +14,11 @@ uint32_t TemporaryWords(uint32_t capacity) { return capacity + 16u * ((capacity 
 uint32_t SortElementWorkWords(uint32_t capacity) { return TemporaryWords(capacity) + sizeof(ElementWorkSortJob) / sizeof(uint32_t); }
 
 void EncodeElementMembershipWork(state::Scene &r, mtl::ComputeChain &chain, std::span<const ElementWorkSeedJob> jobs) {
-    const auto &pipeline = GetMeshPipelines(r)[MeshPass::ElementWorkSeed];
-    // Each seed fills its own work.
-    chain.Concurrent([&] { for (const auto &job : jobs) chain.Groups(pipeline, job, job.BlockCount); });
+    // One tile per listed block of each job.
+    TiledJobBatch<ElementWorkSeedJob, 1> batch{chain.Scratch, 0u};
+    batch.Begin();
+    for (const auto &job : jobs) batch.AddJob(job, {job.BlockCount});
+    batch.Encode(chain, GetMeshPipelines(r), TiledJobPushConstants{}, std::array{TiledPass{MeshPass::ElementWorkSeed, 0}});
 }
 
 void EncodeSortElementWork(state::Scene &r, mtl::ComputeChain &chain, std::span<const ElementWork> work) {

@@ -6,6 +6,7 @@
 #include "armature/ArmatureComponents.h"
 #include "gpu/Transform.h"
 #include "mesh/MeshComponents.h"
+#include "render/GpuSceneState.h"
 #include "render/Instance.h"
 #include "render/LightComponents.h"
 #include "render/MaterialComponents.h"
@@ -25,5 +26,8 @@ void RegisterScene(Tables &tables) {
     Derived<
         RenderInstance, WorldTransform, ModelsBuffer, LightIndex, LastEvaluatedFrame,
         PlaybackFrame>(tables);
+    Derived<
+        PosedLayout, MeshEditWork, MeshVertexOverlays, BoundsRun,
+        MeshletPositionsDirty, ClusterLodDirty, ClusterLodDemand, MeshDisplayDirty, MeshLayoutDirty, MeshBoundsDirty>(tables);
 }
 } // namespace snapshot::detail

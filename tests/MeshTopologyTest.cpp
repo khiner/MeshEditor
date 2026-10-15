@@ -1540,9 +1540,8 @@ void TestPositionRetessellation() {
             }
         ExpectRenderedGeometry(meshes, current);
         if (preview) {
-            const auto &scene = f.R.Context.get<const GpuSceneState>();
             const auto &buffers = f.R.Context.get<const GpuBuffers>();
-            const auto posed = buffers.PosedPositions.View(scene.PosedByEntity.at(entity).PositionNamespace(0u));
+            const auto posed = buffers.PosedPositions.View(f.R.get<const PosedLayout>(entity).Namespaces.PositionNamespace(0u));
             expect(Near(posed[*vertex], moved));
         }
     };
@@ -3475,7 +3474,7 @@ void TestMixedMeshletBuild() {
     f.P->Settle();
     f.Checkpoint();
     check(scene_id);
-    expect(f.R.Context.get<GpuBuffers>().MeshletTopologyMask == 7u);
+    expect(std::ranges::all_of(f.R.Context.get<GpuBuffers>().TopologyMeshes, [](uint32_t meshes) { return meshes > 0u; }));
     const auto check_geometry = [&](vec3 offset) {
         const Mesh mesh{meshes, scene_id};
         check(scene_id);
@@ -3530,7 +3529,8 @@ void TestMixedMeshletLod() {
     const auto [entity, instance] = AddMesh(f.R, id, MeshInstanceCreateInfo{});
     f.P->Settle();
     BuildMeshlets(f.R, chain, std::array{entity}, {});
-    expect(BuildDemandedClusterLods(f.R, f.Viewport));
+    expect(BuildDemandedClusterLods(f.R, chain, f.Viewport));
+    chain.Submit();
     expect(meshes.ClusterGroupCount(meshes.Get(id)) > 0u);
     const auto counts = RenderedPrimitiveCounts(meshes, id);
     expect(counts[1] == 2u);

@@ -115,33 +115,40 @@ void EncodeDeriveMeshNormals(state::Scene &r, mtl::ComputeChain &chain, const Bu
     EncodeDeriveBaseEntries(r, chain, ids, entries, work);
 }
 
-void EncodeDeriveAllNormals(state::Scene &r, mtl::ComputeChain &chain, std::span<const uint32_t> ids) {
+AllNormalsWork EncodeAllNormalsMembership(state::Scene &r, mtl::ComputeChain &chain, std::span<const uint32_t> ids) {
     const auto &meshes = r.Context.get<const MeshStore>();
+    AllNormalsWork normals;
     std::vector<ElementWorkSeedJob> seeds;
-    std::vector<ElementWork> work;
-    std::vector<uint32_t> derived;
-    std::vector<NormalDeriveEntry> entries;
     for (const auto id : ids) {
-        auto entry = MakeDeriveEntryInputs(meshes, id);
-        if (!entry) continue;
-        derived.push_back(id);
         const auto &record = meshes.Get(id);
-        const auto v = PrepareElementMembershipWork(chain.Scratch, meshes.Arenas().Vertices, record.Vertices);
-        const auto f = PrepareElementMembershipWork(chain.Scratch, meshes.Arenas().FaceTriangles, record.FaceData);
-        seeds.push_back(v);
-        seeds.push_back(f);
-        work.push_back(v.Work);
-        work.push_back(f.Work);
-        entry->VerticesWork = v.Work;
-        entry->FacesWork = f.Work;
-        entry->VertexWorkCount = entry->VertexCount;
-        entry->FaceWorkCount = entry->FaceCount;
-        entries.push_back(*entry);
+        if (meshes.Arenas().FaceTriangles.Count(record.FaceData) == 0) continue;
+        normals.Ids.push_back(id);
+        seeds.push_back(PrepareElementMembershipWork(chain.Scratch, meshes.Arenas().Vertices, record.Vertices));
+        seeds.push_back(PrepareElementMembershipWork(chain.Scratch, meshes.Arenas().FaceTriangles, record.FaceData));
+        normals.Work.push_back(seeds[seeds.size() - 2u].Work);
+        normals.Work.push_back(seeds.back().Work);
     }
-    if (entries.empty()) return;
+    if (normals.Ids.empty()) return normals;
     EncodeElementMembershipWork(r, chain, seeds);
-    EncodeSortElementWork(r, chain, work);
-    chain.Submit();
-    for (const auto domain : work) CheckElementWork(chain.Scratch, domain);
-    EncodeDeriveBaseEntries(r, chain, derived, entries, chain.Scratch);
+    EncodeSortElementWork(r, chain, normals.Work);
+    return normals;
+}
+
+// Each entry is built here rather than with its membership work, since corner classification covers the sector records it references in between.
+void EncodeDeriveAllNormals(state::Scene &r, mtl::ComputeChain &chain, const AllNormalsWork &normals) {
+    const auto &meshes = r.Context.get<const MeshStore>();
+    std::vector<NormalDeriveEntry> entries;
+    entries.reserve(normals.Ids.size());
+    for (uint32_t i = 0u; i < normals.Ids.size(); ++i) {
+        auto entry = *MakeDeriveEntryInputs(meshes, normals.Ids[i]);
+        const auto v = normals.Work[2u * i], f = normals.Work[2u * i + 1u];
+        CheckElementWork(chain.Scratch, v);
+        CheckElementWork(chain.Scratch, f);
+        entry.VerticesWork = v;
+        entry.FacesWork = f;
+        entry.VertexWorkCount = entry.VertexCount;
+        entry.FaceWorkCount = entry.FaceCount;
+        entries.push_back(entry);
+    }
+    EncodeDeriveBaseEntries(r, chain, normals.Ids, entries, chain.Scratch);
 }

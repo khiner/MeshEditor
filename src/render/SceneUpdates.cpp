@@ -3,7 +3,6 @@
 #include "Profile.h"
 #include "SortUnique.h"
 #include "armature/ArmatureComponents.h"
-#include "gpu/BoundsEntry.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "metal/AutoreleaseScope.h"
@@ -37,8 +36,8 @@ uint8_t InstanceStateBits(const state::Scene &r, state::Entity e) {
 }
 
 bool IsSilhouetteEligible(const state::Scene &r, state::Entity mesh_entity) {
-    if (!r.valid(mesh_entity) || r.any_of<ObjectExtrasTag, ArmatureObject, BoneJoint>(mesh_entity)) return false;
-    return HasMesh(r, mesh_entity) && GetDrawnMesh(r, mesh_entity).FaceCount() > 0;
+    if (!r.valid(mesh_entity) || r.any_of<ObjectExtrasTag, ArmatureObject, BoneJoint>(mesh_entity) || !HasMesh(r, mesh_entity)) return false;
+    return r.Context.get<const MeshStore>().Arenas().FaceTriangles.Count(RecordOf(r, mesh_entity).FaceData) > 0u;
 }
 
 void RetallyMesh(state::Scene &r, state::Entity mesh_entity) {
@@ -50,21 +49,24 @@ void RetallyMesh(state::Scene &r, state::Entity mesh_entity) {
     if (!mb) return;
     const auto *models = r.try_get<const ModelsBuffer>(mesh_entity);
     const auto states = models ? buffers.Instances.StateBuffer.GetSpan<uint8_t>({models->InstanceRange.Offset, models->InstanceCount}) : std::span<const uint8_t>{};
+    const auto flags = mb->RenderTopologies != 0u ? render.MeshRecords.Get({*id, 1u})[0].Display.Flags : 0u;
     buffers.Retally(*id, {
-                             .Flags = mb->RenderTopologies != 0u ? render.MeshRecords.Get({*id, 1u})[0].Display.Flags : 0u,
+                             .Flags = flags,
                              .Instances = uint32_t(std::ranges::count_if(states, [](uint8_t state) { return (state & InstanceStateHidden) == 0u; })),
                              .Nodes = meshes.LodNodeCount(*mb),
                              .Meshlets = meshes.MeshletCount(*mb),
                              .Depth = mb->LodDepth,
+                             .Topologies = mb->RenderTopologies,
+                             .SharpEdges = (flags & uint32_t(MeshletInstanceFlag::EditOverlay)) != 0u && meshes.GetEdgeSharpnessSummary(*id).Any,
                          });
 }
 
 // Assign placed primitives to the affected meshes' instance ranges.
 void RepointMeshInstances(state::Scene &r, std::span<const state::Entity> mesh_entities) {
     const auto &buffers = r.Context.get<GpuBuffers>();
-    auto &scene = r.Context.get<GpuSceneState>();
     for (const auto mesh_entity : mesh_entities) {
-        scene.DisplayDirty.insert(mesh_entity);
+        r.emplace_or_replace<MeshLayoutDirty>(mesh_entity);
+        r.emplace_or_replace<MeshDisplayDirty>(mesh_entity);
         const auto *models = r.try_get<const ModelsBuffer>(mesh_entity);
         if (!models || !models->InstanceCount) continue;
         const auto first = models->InstanceRange.Offset;
@@ -81,22 +83,6 @@ void RepointMeshInstances(state::Scene &r, std::span<const state::Entity> mesh_e
         }
         RetallyMesh(r, mesh_entity);
     }
-}
-
-bool RepointChangedMeshes(state::Scene &r, std::span<const state::Entity> mesh_entities) {
-    const auto &buffers = r.Context.get<GpuBuffers>();
-    auto &scene = r.Context.get<GpuSceneState>();
-    RepointMeshInstances(r, mesh_entities);
-    bool changed = false;
-    for (const auto entity : mesh_entities) {
-        const auto *models = r.try_get<const ModelsBuffer>(entity);
-        if (!models || !models->InstanceCount) continue;
-        const auto &owner = RecordOf(r, entity);
-        const auto work = scene.EditWork.find(entity);
-        changed = changed || scene.PosedByEntity.contains(entity) || (work != scene.EditWork.end() && work->second.RequiresPose) ||
-            buffers.DrawsNewTopologies(owner.RenderTopologies);
-    }
-    return changed;
 }
 
 namespace {
@@ -160,7 +146,7 @@ void RefreshClusterLodAttributes(state::Scene &r, mtl::ComputeChain &chain, std:
     std::vector<LodNodeRefit> refits;
     for (uint32_t i = 0u; i < seeds.size(); ++i) {
         touched[i].erase(std::unique(touched[i].begin(), touched[i].end()), touched[i].end());
-        refits.push_back(EditLodNodes(r, chain, EditRecordOf(r, seeds[i].Entity), {}, {}, touched[i]));
+        refits.push_back(EditLodNodes(r, EditRecordOf(r, seeds[i].Entity), {}, {}, touched[i]));
     }
     RecordLodNodeRefits(r, chain, refits);
 }
@@ -169,8 +155,6 @@ void BuildMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<const st
     if (mesh_entities.empty() && bone_entities.empty()) return;
     for (const auto e : mesh_entities) ReleaseMeshEditWork(r, e);
     const profile::CpuScope scope{"BuildMeshlets"};
-    auto &buffers = r.Context.get<GpuBuffers>();
-    buffers.PreludeStale = true;
     auto &meshes = r.Context.get<MeshStore>();
     std::vector<MeshletBuildSource> sources;
     sources.reserve(mesh_entities.size() * 3u + bone_entities.size());
@@ -197,39 +181,33 @@ void BuildMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<const st
     RefreshClusterLodAttributes(r, chain, mesh_entities);
     RepointMeshInstances(r, mesh_entities);
     RepointMeshInstances(r, bones);
-    r.Context.get<GpuSceneState>().LodDemand.insert(mesh_entities.begin(), mesh_entities.end());
+    for (const auto e : mesh_entities) r.emplace_or_replace<ClusterLodDemand>(e);
 }
 
-bool EditPinsFinest(const selection::PrimaryEditInstanceMap &primaries, const GpuSceneState &scene, state::Entity mesh_entity) {
-    return primaries.contains(mesh_entity) || scene.EditWork.contains(mesh_entity);
+bool EditPinsFinest(const selection::PrimaryEditInstanceMap &primaries, const state::Scene &r, state::Entity mesh_entity) {
+    return primaries.contains(mesh_entity) || r.all_of<MeshEditWork>(mesh_entity);
 }
 
-bool BuildDemandedClusterLods(state::Scene &r, state::Entity viewport) {
-    auto &scene = r.Context.get<GpuSceneState>();
-    if (scene.LodDemand.empty()) return false;
-    auto &buffers = r.Context.get<GpuBuffers>();
+bool BuildDemandedClusterLods(state::Scene &r, mtl::ComputeChain &chain, state::Entity viewport) {
+    if (r.view<const ClusterLodDemand>().empty()) return false;
     auto &meshes = r.Context.get<MeshStore>();
     auto &render = meshes.Render();
     // A mesh leaves the demand set once it has a hierarchy or its meshlets take none.
-    std::erase_if(scene.LodDemand, [&](state::Entity entity) {
-        const auto *mb = r.valid(entity) && HasMesh(r, entity) ? TryRecordOf(r, entity) : nullptr;
-        return !mb || meshes.ClusterGroupCount(*mb) != 0u || !ClusterLodApplies(Mesh{meshes, mb->StoreId}.FaceCount() > 0u, meshes.MeshletCount(*mb));
-    });
-    std::vector<state::Entity> demanded{scene.LodDemand.begin(), scene.LodDemand.end()};
+    // Arena offsets follow commit order, which is the demand set's entity order.
+    std::vector<state::Entity> demanded;
+    for (const auto entity : r.view<const ClusterLodDemand>() | std::ranges::to<std::vector>()) {
+        const auto *mb = HasMesh(r, entity) ? TryRecordOf(r, entity) : nullptr;
+        if (!mb || meshes.ClusterGroupCount(*mb) != 0u || !ClusterLodApplies(Mesh{meshes, mb->StoreId}.FaceCount() > 0u, meshes.MeshletCount(*mb))) r.remove<ClusterLodDemand>(entity);
+        else demanded.push_back(entity);
+    }
     if (r.get<const Interaction>(viewport).Mode == InteractionMode::Edit && !demanded.empty()) {
         const auto &primaries = r.get<const EditPrimaries>(viewport).All;
-        std::erase_if(demanded, [&](state::Entity e) { return EditPinsFinest(primaries, scene, e); });
+        std::erase_if(demanded, [&](state::Entity e) { return EditPinsFinest(primaries, r, e); });
     }
     if (demanded.empty()) return false;
-    for (const auto entity : demanded) scene.LodDemand.erase(entity);
-    // Arena offsets follow commit order.
-    std::ranges::sort(demanded);
+    for (const auto entity : demanded) r.remove<ClusterLodDemand>(entity);
     const profile::CpuScope scope{"BuildClusterLods"};
-    {
-        mtl::ComputeChain chain{buffers.Ctx};
-        RefreshClusterLodAttributes(r, chain, demanded);
-        chain.Submit();
-    }
+    RefreshClusterLodAttributes(r, chain, demanded);
     const auto count = uint32_t(demanded.size());
     std::vector<MeshletBuildInputs> inputs;
     inputs.reserve(count);
@@ -268,7 +246,6 @@ bool BuildDemandedClusterLods(state::Scene &r, state::Entity viewport) {
     for (const auto entity : demanded) owners.push_back(&EditRecordOf(r, entity));
     CommitClusterLods(r, owners, lods);
     RepointMeshInstances(r, demanded);
-    buffers.PreludeStale = true;
     return true;
 }
 
@@ -332,40 +309,21 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
     // Released records leave the flag totals ahead of this pass's builds.
     for (const auto id : meshes.TakeReleased()) buffers.Retally(id, {});
     std::vector<state::Entity> new_mesh_entities, new_extras_entities;
-    std::vector<uint32_t> new_ids;
+    // Marks the records an earlier entity in the pass already listed, by store id.
+    std::vector<uint8_t> listed;
     for (auto e : reactive(r, Change::NewBufferEntity)) {
         if (!r.valid(e)) continue;
         // A record keeps its render data across handle changes that leave it intact.
         const auto id = DrawnStoreId(r, e);
-        if (!id || meshes.Get(*id).RenderTopologies != 0u || std::ranges::contains(new_ids, *id)) continue;
-        new_ids.push_back(*id);
+        if (!id || meshes.Get(*id).RenderTopologies != 0u) continue;
+        if (*id >= listed.size()) listed.resize(*id + 1u);
+        if (std::exchange(listed[*id], uint8_t{1})) continue;
         if (HasMesh(r, e)) new_mesh_entities.emplace_back(e);
         else if (r.all_of<ObjectExtrasTag>(e) || r.all_of<ArmatureObject>(e) || r.all_of<BoneJoint>(e)) new_extras_entities.emplace_back(e);
     }
 
-    bool layout = false;
-    const auto entries = buffers.BoundsReduceEntries.GetMutableSpan<BoundsEntry>();
-    // A mesh run without per-instance deformation follows its instance range in place, and any other mesh lays out again.
-    const auto update_run = [&](state::Entity buffer_entity, bool inserted) {
-        const auto run = scene.BoundsRuns.find(buffer_entity);
-        const auto *models = r.try_get<const ModelsBuffer>(buffer_entity);
-        if (run == scene.BoundsRuns.end()) {
-            layout |= models && HasMesh(r, buffer_entity);
-            return;
-        }
-        const auto [first, count, posed] = run->second;
-        if (!models || posed) {
-            // An entry without instances writes no instance bounds, so a retired run stays inert until the next layout.
-            for (uint32_t i = first; i < first + count && i < entries.size(); ++i) entries[i].InstanceCount = 0u;
-            layout |= posed && models;
-            return;
-        }
-        auto &entry = entries[first];
-        entry.FirstInstance = models->InstanceRange.Offset;
-        entry.InstanceCount = models->InstanceCount;
-        if (inserted) scene.DirtyBoundsEntries.push_back(first);
-        if (const auto *mb = TryRecordOf(r, buffer_entity); inserted && mb && buffers.DrawsNewTopologies(mb->RenderTopologies)) layout = true;
-    };
+    // A buffer entity whose instance range changed lays out again, which covers its entries' instances.
+    const auto relayout = [&](state::Entity buffer_entity) { r.emplace_or_replace<MeshLayoutDirty>(buffer_entity); };
 
     // Destroyed render instances leave their slots, and each owner keeping its buffer compacts once.
     bool slots_changed = false;
@@ -417,12 +375,13 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
         buffers.GpuInstanceSlots.SetCount<uint32_t>(uint32_t(std::ranges::remove(list, InvalidOffset).begin() - list.begin()));
         for (const auto &[owner, moved] : compacted) {
             RebaseRenderInstances(r, object_ids, moved);
-            update_run(owner, false);
+            relayout(owner);
             RetallyMesh(r, owner);
         }
         for (const auto owner : retired) {
-            update_run(owner, false);
-            if (r.valid(owner)) RetallyMesh(r, owner);
+            if (!r.valid(owner)) continue;
+            relayout(owner);
+            RetallyMesh(r, owner);
         }
         slots_changed = !erased_positions.empty();
         removals.clear();
@@ -503,13 +462,13 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
         std::ranges::fill(buffers.Instances.GetMutableBounds({base_index, n}), AABB{});
         mb.InstanceCount = new_total;
         for (const auto &[_, instance_entity] : group) newly_inserted.push_back(instance_entity);
-        update_run(buffer_entity, true);
+        relayout(buffer_entity);
         RetallyMesh(r, buffer_entity);
     }
     if (!inserted_slots.empty()) MergeInsertedSlots(buffers, std::move(inserted_slots));
     slots_changed |= !newly_inserted.empty();
     if (slots_changed) scene.OverlayJobsDirty = true;
-    return {std::move(newly_inserted), std::move(new_mesh_entities), std::move(new_extras_entities), slots_changed, layout};
+    return {std::move(newly_inserted), std::move(new_mesh_entities), std::move(new_extras_entities), slots_changed};
 }
 
 // Resize viewport GPU resources and return whether their extent changed.
