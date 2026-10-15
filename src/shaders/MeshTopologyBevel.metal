@@ -1,7 +1,7 @@
 #ifndef MESHTOPOLOGYBEVEL_MSL
 #define MESHTOPOLOGYBEVEL_MSL
 
-// Bevels selected edges or vertices by width Param0 with Steps segments.
+// Bevels selected edges or vertices by width Param0 with Steps segments, reading the width per vertex or per edge from the job's attribute when it carries one.
 // A face corner at a beveled vertex moves onto offset points: a corner point when both of its edges are beveled, or a point along its other edge when one is.
 // A corner with neither edge beveled uses the points its neighbors put on its edges.
 // Each beveled edge becomes a strip of quads between its two sides, and each beveled vertex a polygon of the points around it.
@@ -36,37 +36,30 @@ inline float TopoBevelSlide(float3 v, float3 along, float3 beveled, float width)
     return width / max(sine, 1e-3f);
 }
 
-// The point a face corner contributes onto its edge `along` (a neighbor of `v`), sliding away from its beveled edge `beveled`.
-inline float3 TopoBevelEdgePointFrom(TopoContext ctx, MeshTopologyJob job, uint v, uint along, uint beveled) {
-    const float3 p = ctx.SrcPosition(job, v);
-    const float3 a = ctx.SrcPosition(job, along);
-    if (TopoBevelVertices(job)) return p + normalize(a - p) * job.Param0;
-    return p + normalize(a - p) * TopoBevelSlide(p, a, ctx.SrcPosition(job, beveled), job.Param0);
-}
-
 // The point on unbeveled edge `rep` at its end `v`, from the corners on either side, or false when neither side contributes.
 inline bool TopoBevelEdgePoint(TopoContext ctx, MeshTopologyJob job, uint rep, bool at_to, thread float3 &point) {
     const auto corners = ctx.SrcCorners(job);
     const uint opposite = ctx.SrcOpposite(job, rep);
     const uint v = at_to ? corners[rep] : corners[ctx.SrcPrev(job, rep)];
     const uint other = at_to ? corners[ctx.SrcPrev(job, rep)] : corners[rep];
+    const float3 p = ctx.SrcPosition(job, v), a = ctx.SrcPosition(job, other);
     if (TopoBevelVertices(job)) {
         if (!ctx.SrcSelectedVertex(job, v)) return false;
-        point = TopoBevelEdgePointFrom(ctx, job, v, other, other);
+        point = p + normalize(a - p) * TopoParam0Vertex(ctx, job, v);
         return true;
     }
-    // The corner in each face whose other edge is beveled slides its point along this edge.
+    // The corner in each face whose other edge is beveled slides its point along this edge, away from that edge by its width.
     float best = -1.f;
     const auto consider = [&](uint corner_halfedge, bool arriving) {
         // `arriving`: the corner's arriving edge is this edge, so its leaving edge is the beveled candidate.
         const uint candidate = arriving ? ctx.SrcNext(job, corner_halfedge) : corner_halfedge;
         if (!TopoEdgeBeveled(ctx, job, candidate)) return;
         const uint far = arriving ? corners[candidate] : corners[ctx.SrcPrev(job, candidate)];
-        const float3 p = TopoBevelEdgePointFrom(ctx, job, v, other, far);
-        const float d = distance(p, ctx.SrcPosition(job, v));
+        const float3 q = p + normalize(a - p) * TopoBevelSlide(p, a, ctx.SrcPosition(job, far), TopoParam0Edge(ctx, job, ctx.SrcEdge(job, candidate)));
+        const float d = distance(q, p);
         if (d > best) {
             best = d;
-            point = p;
+            point = q;
         }
     };
     if (at_to) {
@@ -79,10 +72,12 @@ inline bool TopoBevelEdgePoint(TopoContext ctx, MeshTopologyJob job, uint rep, b
     return best >= 0.f;
 }
 
+// A corner between two beveled edges insets by the mean of their widths.
 inline float3 TopoBevelCornerPoint(TopoContext ctx, MeshTopologyJob job, uint h) {
     const auto corners = ctx.SrcCorners(job);
     const uint prev = ctx.SrcPrev(job, h), next = ctx.SrcNext(job, h);
-    return ctx.SrcPosition(job, corners[h]) + TopoInsetCorner(ctx.SrcPosition(job, corners[prev]), ctx.SrcPosition(job, corners[h]), ctx.SrcPosition(job, corners[next]), normalize(float3(ctx.SrcFaceNormals(job)[ctx.SrcFaceOf(job, h)])), job.Param0, 0.f, true);
+    const float width = 0.5f * (TopoParam0Edge(ctx, job, ctx.SrcEdge(job, h)) + TopoParam0Edge(ctx, job, ctx.SrcEdge(job, next)));
+    return ctx.SrcPosition(job, corners[h]) + TopoInsetCorner(ctx.SrcPosition(job, corners[prev]), ctx.SrcPosition(job, corners[h]), ctx.SrcPosition(job, corners[next]), normalize(float3(ctx.SrcFaceNormals(job)[ctx.SrcFaceOf(job, h)])), width, 0.f, true);
 }
 
 // The vertices a halfedge entry produces: its edge's points at both ends when it is an unbeveled representative,
@@ -156,7 +151,7 @@ inline float3 TopoBevelVertexRingPosition(TopoContext ctx, MeshTopologyJob job, 
     const float3 normal = normalize(float3(ctx.SrcVertexNormals(job)[v]));
     const float convex = max(-dot(radial, normal), 0.f);
     const float remaining = 1.f - t;
-    return center + job.Param0 * (radial * remaining * remaining - normal * (0.5f * convex * t * t));
+    return center + TopoParam0Vertex(ctx, job, v) * (radial * remaining * remaining - normal * (0.5f * convex * t * t));
 }
 
 inline uint2 TopoBevelCornerVertex(TopoContext ctx, MeshTopologyJob job, uint h) {

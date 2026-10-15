@@ -222,6 +222,8 @@ MeshTopologyJob TopologyJob(const MeshStore &meshes, const MeshTopologyTask &tas
         .Steps = task.Steps,
         .Param0 = task.Param0,
         .Param1 = task.Param1,
+        .Param0Attribute = task.Param0Attribute,
+        .Param1Attribute = task.Param1Attribute,
         .TargetVertex = task.TargetVertex,
         .TargetPosition = task.TargetPosition,
         .CopyRotation = task.CopyRotation,

@@ -2,6 +2,7 @@
 
 #include "gpu/ConnectivityRef.h"
 #include "gpu/ElementWork.h"
+#include "gpu/NamedAttributeRef.h"
 #include "gpu/Transform.h"
 
 enum VertexPositionEditFlags : uint32_t {
@@ -59,8 +60,9 @@ struct VertexPositionEditPushConstants {
     SlotOffset Parameters;
     uint32_t ChainCount DEFAULT();
     PositionEditOp Operation DEFAULT(PositionEditOp::Copy);
+    NamedAttributeRef FactorAttribute DEFAULT(); // A float vertex attribute holding the factor per vertex, or none to read Factor
 };
-static_assert(sizeof(VertexPositionEditPushConstants) == 220);
+static_assert(sizeof(VertexPositionEditPushConstants) == 228);
 
 struct EdgeChain {
     uint32_t InputOffset, OutputOffset, Count, Closed;

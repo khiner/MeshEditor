@@ -1,7 +1,5 @@
 #pragma once
 
-// MaterialEdit{R, index} edits fields of a material in the material buffer.
-
 #include "action/Object.h"
 #include "animation/Clips.h"
 #include "render/GpuBufferOps.h"

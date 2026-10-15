@@ -29,7 +29,7 @@ struct AddNode {
     uint16_t Kind;
     vec2 Position;
 };
-// Links an output socket into an input socket of the same type sharing an attribute type, or a bool attribute into a selection, replacing the input's link.
+// Links an output socket into an input socket that procedure::Links admits, replacing the input's link.
 struct Link {
     state::Entity MeshEntity;
     uint32_t FromNode;

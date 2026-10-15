@@ -2,6 +2,7 @@
 
 #include "gpu/Element.h"
 #include "gpu/MeshTopologyOp.h"
+#include "gpu/NamedAttributeRef.h"
 #include "gpu/Types.h"
 #include "mesh/GeometrySelection.h"
 #include <optional>
@@ -14,6 +15,8 @@ struct MeshTopologyTask {
     // A boolean's second source, combined with SourceId into a new mesh.
     uint32_t SecondSourceId{InvalidOffset};
     float Param0{}, Param1{};
+    // Float attributes of the source holding each parameter per element of the domain the operator reads it in, or none to read the parameter.
+    NamedAttributeRef Param0Attribute{}, Param1Attribute{};
     uint32_t Flags{};
     uint32_t Steps{1};
     // The source vertex a merge keeps and its output position.

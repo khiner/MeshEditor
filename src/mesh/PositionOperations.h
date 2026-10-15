@@ -66,6 +66,7 @@ struct PositionOperationOptions {
     std::optional<PositionCircle> Circle;
     std::optional<PositionTransform> Transform;
     std::optional<NamedAttributeRef> Attribute; // A vec3 vertex attribute the positions take, or add with PositionEditAttributeOffset
+    NamedAttributeRef Factor{}; // A float vertex attribute holding the factor per vertex of a smooth, shrink/fatten or randomize, or none to read the factor
 };
 struct PositionOperationChange {
     uint32_t TargetIndex;

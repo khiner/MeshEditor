@@ -4,6 +4,7 @@
 #include "gpu/ElementWork.h"
 #include "gpu/MeshAttributeBit.h"
 #include "gpu/MeshTopologyOp.h"
+#include "gpu/NamedAttributeRef.h"
 #include "gpu/SlotOffset.h"
 #include "gpu/Types.h"
 // One topology operator run: the source mesh, the output ranges, and the scratch layout.
@@ -15,6 +16,9 @@ struct MeshTopologyJob {
     uint32_t Steps DEFAULT(1); // Extrude region: layers of copies, each moved through the transform once more
     float Param0 DEFAULT();
     float Param1 DEFAULT();
+    // Float attributes of the source holding each parameter per element of the domain the operator reads it in, or none to read the parameter.
+    NamedAttributeRef Param0Attribute DEFAULT();
+    NamedAttributeRef Param1Attribute DEFAULT();
     // The source vertex a merge keeps and its output position.
     uint32_t TargetVertex DEFAULT(InvalidOffset);
     vec3 TargetPosition DEFAULT();
@@ -119,4 +123,4 @@ struct MeshTopologyJob {
     SlotOffset Attributes DEFAULT();
     GpuArray<uint32_t, 4> AttributeEnds DEFAULT();
 };
-static_assert(sizeof(MeshTopologyJob) == 820, "MeshTopologyJob size");
+static_assert(sizeof(MeshTopologyJob) == 836, "MeshTopologyJob size");

@@ -90,7 +90,7 @@ std::vector<FaceAttributeOperationChange> EncodeFaceAttributeOperation(MeshStore
 
 // Position operators share sparse capture and iterative canonical GPU writes.
 std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes, MeshPipelines &pipelines, mtl::ComputeChain &chain, std::span<const PositionOperationTarget> targets, PositionEditOp operation, float factor, uint32_t repeat, const PositionOperationOptions &options) {
-    const auto &[axes, requested_flags, direction, gradient, center, warp, bend, randomize, slide, edge_slide, symmetry, curve, circle, transform, attribute] = options;
+    const auto &[axes, requested_flags, direction, gradient, center, warp, bend, randomize, slide, edge_slide, symmetry, curve, circle, transform, attribute, factor_attribute] = options;
     uint32_t flags = requested_flags;
     if (!repeat || axes > 7u || uint32_t(operation) > uint32_t(PositionEditOp::Attribute)) return {};
     if (bool(warp) != (operation == PositionEditOp::Warp) || bool(bend) != (operation == PositionEditOp::Bend) ||
@@ -206,6 +206,7 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
             .VertexNormalSlot = meshes.Arenas().BaseVertexNormals.Buffer.Slot,
             .Flags = flags,
             .Operation = operation,
+            .FactorAttribute = factor_attribute,
         };
         if (!planar && operation == PositionEditOp::ShrinkFatten) {
             pc.Faces = SeedElementWorkHandles(chain.Scratch, meshes.Arenas().FaceTriangles.HandleBound(meshes.Get(id).FaceData), selection.Faces);

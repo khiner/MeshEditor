@@ -1071,7 +1071,7 @@ kernel void TopologyScatterVertices(
         const float3 p = ctx.SrcPosition(job, v);
         float3 q = p;
         for (uint copy = first_copy; copy < d + count; ++copy) {
-            q = transform ? ctx.TransformCopy(job, q) : p - normalize(float3(ctx.SrcVertexNormals(job)[v])) * job.Param0;
+            q = transform ? ctx.TransformCopy(job, q) : p - normalize(float3(ctx.SrcVertexNormals(job)[v])) * TopoParam0Vertex(ctx, job, v);
             *ctx.Inward(job, copy, 0u) = packed_float3(q - p);
         }
         if (transform && kept && count == 1u && TopoRegionMoves(ctx, job) && (ctx.FlagVertices(job)[v] & TopoInRegion)) {
@@ -1388,7 +1388,8 @@ kernel void TopologyScatterFaces(
         ctx.WriteVertexMap4(job, center, uint4(src_corners[h0], src_corners[h1], src_corners[h2], src_corners[h3]), 0.5f, t);
         const float3 normal = float3(ctx.SrcFaceNormals(job)[f]);
         const float normal_length2 = dot(normal, normal);
-        *ctx.Inward(job, center, 0u) = packed_float3(job.Param0 != 0.f && normal_length2 > 0.f ? normal * (job.Param0 * rsqrt(normal_length2)) : float3(0));
+        const float offset = TopoParamAt(ctx, job.Param0Attribute, job.Param0, ctx.SrcFaceDomain(job).Handle(f));
+        *ctx.Inward(job, center, 0u) = packed_float3(offset != 0.f && normal_length2 > 0.f ? normal * (offset * rsqrt(normal_length2)) : float3(0));
         ctx.SelectDstVertex(job, center);
         for (uint k = 0u; k < n; ++k) {
             const uint h = range.x + k, next = range.x + (k + 1u) % n;
@@ -1642,7 +1643,7 @@ kernel void TopologyGatherVertices(
         } else if (TopologyDisplaces(job.Op, job.Flags)) {
             position += float3(*ctx.Inward(job, d, 0u));
         }
-        if (job.Op == MeshTopologyOp::InsetRegion || job.Op == MeshTopologyOp::InsetIndividual) position += width * job.Param0 + depth * job.Param1;
+        if (job.Op == MeshTopologyOp::InsetRegion || job.Op == MeshTopologyOp::InsetIndividual) position += width * TopoParam0Vertex(ctx, job, v.x) + depth * TopoParamAt(ctx, job.Param1Attribute, job.Param1, ctx.SrcVertexDomain(job).Handle(v.x));
         ctx.DstVertices(job)[d].Position = position;
         if (job.DstInsetBasis.Slot != InvalidSlot) {
             reinterpret_cast<device InsetVertexBasis *>(BindlessBufferMutable(uint,bindless.Buffer,job.DstInsetBasis.Slot) + job.DstInsetBasis.Offset)[d] =

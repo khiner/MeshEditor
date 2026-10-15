@@ -10,6 +10,10 @@ inline float3 EditPosition(device const BindlessSet &b, constant VertexPositionE
 inline uint EditCornerVertex(device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, uint h) { return BindlessBuffer(uint, b.IndexBuffer, pc.CornerSlot)[HandleAddress<MeshElementBlockSize>(b, pc.Connectivity.Tables.Halfedges, h)]; }
 inline float3 EditFaceNormal(device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, uint f) { return float3(BindlessBuffer(packed_float3, b.Buffer, pc.FaceNormalSlot)[HandleAddress<MeshElementBlockSize>(b, pc.Connectivity.Tables.Faces, f)]); }
 inline float3 EditVertexNormal(device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, uint v) { return float3(BindlessBuffer(packed_float3, b.Buffer, pc.VertexNormalSlot)[EditVertexAddress(b, pc, v)]); }
+// The edit's factor at a vertex: the factor attribute's value there, or Factor without one.
+inline float EditFactor(device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, uint v) {
+    return pc.FactorAttribute.ValuesSlot == InvalidSlot ? pc.Factor : as_type<float>(ReadNamedAttribute(b, pc.FactorAttribute, AttributeType::Float, v).x);
+}
 
 inline float3 SnapSymmetryPosition(uint i,uint v,float3 before,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
     const uint partner=BindlessBuffer(uint,b.Buffer,pc.Parameters.Slot)[pc.Parameters.Offset+i];
@@ -40,7 +44,7 @@ inline float3 SmoothPosition(uint v,float3 before,device const BindlessSet &b,co
         sum += EditPosition(b, pc, first == v ? second : first);
         ++count;
     });
-    float3 position = count ? before + pc.Factor * (sum / float(count) - before) : before;
+    float3 position = count ? before + EditFactor(b, pc, v) * (sum / float(count) - before) : before;
     for (uint axis = 0u; axis < 3u; ++axis)
         if (!(pc.Axes & (1u << axis))) position[axis] = before[axis];
     return position;
@@ -89,7 +93,7 @@ inline float3 ShrinkFattenPosition(uint v,float3 before,device const BindlessSet
         const uint at = count_selected ? 1u : 0u;
         if (weight[at] > 0.f) shell = sum[at] / weight[at];
     }
-    return before + normal * (pc.Factor * shell);
+    return before + normal * (EditFactor(b, pc, v) * shell);
 }
 
 // Blender's bmo_planar_faces_exec keeps these original planes for every iteration.
@@ -268,7 +272,7 @@ inline float3 RandomizePosition(uint v,float3 before,device const BindlessSet &b
         }
         direction=a*direction+c*normal;
     }
-    return before+direction*(pc.Factor*magnitude);
+    return before+direction*(EditFactor(b,pc,v)*magnitude);
 }
 
 inline float3 VertexSlideDelta(uint v,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {

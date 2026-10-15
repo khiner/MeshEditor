@@ -308,6 +308,13 @@ inline uint4 TopoReadAttribute(TopoContext ctx, TopologyAttribute attribute, uin
     if (handle == InvalidOffset || attribute.Source.ValuesSlot == InvalidSlot) return uint4(attribute.Default[0], attribute.Default[1], attribute.Default[2], attribute.Default[3]);
     return ReadNamedAttribute(ctx.B, attribute.Source, attribute.Type, handle);
 }
+// The operator's parameter at a source handle: the job's per-element attribute's value there, or the constant without one.
+inline float TopoParamAt(TopoContext ctx, NamedAttributeRef attribute, float fallback, uint handle) {
+    return attribute.ValuesSlot == InvalidSlot ? fallback : as_type<float>(ReadNamedAttribute(ctx.B, attribute, AttributeType::Float, handle).x);
+}
+// The first parameter at a compact source vertex or edge.
+inline float TopoParam0Vertex(TopoContext ctx, MeshTopologyJob job, uint v) { return TopoParamAt(ctx, job.Param0Attribute, job.Param0, ctx.SrcVertexDomain(job).Handle(v)); }
+inline float TopoParam0Edge(TopoContext ctx, MeshTopologyJob job, uint e) { return TopoParamAt(ctx, job.Param0Attribute, job.Param0, ctx.SrcEdgeDomain(job).Handle(e)); }
 // Writes the attribute at an output handle of its domain.
 inline void TopoWriteAttribute(TopoContext ctx, TopologyAttribute attribute, uint handle, uint4 value) {
     WriteNamedAttribute(ctx.B, attribute.Destination, attribute.Type, handle, value);

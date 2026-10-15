@@ -77,6 +77,12 @@ struct SetPosition;
 struct TransformElements;
 struct InstanceOnPoints;
 struct ObjectInfo;
+struct FloatValue;
+struct IntegerValue;
+struct BooleanValue;
+struct VectorValue;
+struct RotationValue;
+struct TransformGeometry;
 struct NodeLayout;
 } // namespace procedure
 
@@ -99,6 +105,7 @@ using UpdatableComponents = TypeList<
     mesh::Rip, procedure::TransformElements, procedure::Boolean,
     procedure::Position, procedure::Normal, procedure::Index, procedure::NamedAttribute, procedure::VectorMath, procedure::FloatMath, procedure::Compare,
     procedure::BooleanMath, procedure::StoreNamedAttribute, procedure::SetPosition, procedure::InstanceOnPoints, procedure::ObjectInfo,
+    procedure::FloatValue, procedure::IntegerValue, procedure::BooleanValue, procedure::VectorValue, procedure::RotationValue, procedure::TransformGeometry,
     primitive::Plane, primitive::Circle, primitive::Cuboid, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone>;
 
 template<typename C, typename List> inline constexpr bool InTypeList = false;

@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 struct TabSelection {
@@ -71,10 +72,14 @@ struct NodesWindow : Window {
     uint32_t GrabAfter{}; // The node count a grab waits to grow past before it holds the new active node
     uint32_t LinkAfter{UINT32_MAX}; // The node count a linking add waits to grow past before it links the new node, or none
     std::vector<action::nodes::Link> PendingLinks; // The links a Make Link press stages one per frame, committing with the last
+    uint32_t Expanded{UINT32_MAX}; // The node whose parameters tray is open, with a row per parameter socket, or none
+    uint32_t PickNode{UINT32_MAX}; // The node whose sockets in PickRange the port picker offers the wire held at DragNode's DragSocket, or none
+    std::pair<uint16_t, uint16_t> PickRange{}; // The first socket the picker offers, through its end
     uint16_t DragSocket{}; // The socket a wire holds
+    uint16_t LinkSocket{}; // The socket of the node a linking add appends that its wire links to
     bool Moved{false}; // A move passed the drag threshold and staged its first step
     bool Hovered{false}; // The canvas is under the mouse this frame, which routes the editing shortcuts to it
-    bool Linking{false}; // The Add menu offers the kinds that link with the socket a dropped wire held, and links its node to that socket
+    bool Linking{false}; // The Add menu lists the sockets that link with the socket a dropped wire held, and links its node through the picked one
     std::array<char, 64> Search{}; // The Add menu's search text
     int SearchHighlight{}; // The search result Enter adds
     std::array<char, 64> NameEdit{}; // The attribute name the active name field edits

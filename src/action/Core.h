@@ -33,6 +33,9 @@ enum class ExtrudeMode : uint8_t;
 enum class DissolveMode : uint8_t;
 enum class SymmetrizeAxis : uint8_t;
 } // namespace action::mesh
+namespace procedure {
+enum class VectorComponent : uint8_t;
+} // namespace procedure
 
 namespace action {
 // Where an action applies.
@@ -123,7 +126,7 @@ using Core = std::variant<
     Update<TransformGizmo::Type>, Update<TransformGizmo::Mode>,
     Update<DebugChannel>, Update<AnisotropicFilterLevel>, Update<std::optional<MotionBlur>>,
     Update<mesh::DeleteMode>, Update<GeometryMergeMode>, Update<mesh::ExtrudeMode>, Update<mesh::DissolveMode>, Update<mesh::SymmetrizeAxis>,
-    Update<AttributeType>, Update<AttributeDomain>, Update<VectorMathOp>, Update<FloatMathOp>, Update<CompareOp>, Update<BooleanMathOp>, Update<BooleanOperation>,
+    Update<AttributeType>, Update<AttributeDomain>, Update<VectorMathOp>, Update<FloatMathOp>, Update<CompareOp>, Update<BooleanMathOp>, Update<BooleanOperation>, Update<procedure::VectorComponent>,
     DestroyEntity>;
 
 void Apply(state::Scene &, state::Entity viewport, const Core &);

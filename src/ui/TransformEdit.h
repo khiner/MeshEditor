@@ -1,7 +1,5 @@
 #pragma once
 
-// The transform editor, over any field editor: a properties panel edits an entity's transform and the history editor edits a recorded one.
-
 #include "gpu/Transform.h"
 
 #include <imgui.h>

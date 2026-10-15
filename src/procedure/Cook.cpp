@@ -26,6 +26,7 @@
 #include "state/Scene.h"
 #include "viewport/ViewportEvents.h"
 
+#include <bit>
 #include <cstring>
 #include <expected>
 #include <format>
@@ -45,7 +46,7 @@ struct Masks {
     bool Publish{};
 };
 
-// A socket's value during a cook: a record for geometry, points and the record they place for instances, each domain's first mask block in the cook's arena for a selection, or an attribute of the record its consumer reads.
+// A socket's value during a cook: a record for geometry, points and the record they place for instances, each domain's first mask block in the cook's arena for a selection, an attribute of the record its consumer reads, or one value's words.
 // A selection without mask blocks selects every element, and an absent attribute is InvalidOffset.
 struct SocketValue {
     SocketType Type{SocketType::Geometry};
@@ -57,10 +58,11 @@ struct SocketValue {
         uint32_t Record{InvalidOffset};
         std::array<uint32_t, 3> MaskFirst;
         uint32_t Attribute;
+        AttributeValue Value;
     };
     bool Borrowed() const { return Type == SocketType::Geometry && MeshEntity != state::Null; }
 };
-static_assert(sizeof(SocketValue) == 24u);
+static_assert(sizeof(SocketValue) == 28u);
 constexpr std::array<uint32_t, 3> EveryElement{InvalidOffset, InvalidOffset, InvalidOffset};
 // A node's output record, which is its input when the operation changed nothing, or why it could not run.
 using Outcome = std::expected<uint32_t, NodeFault>;
@@ -183,7 +185,52 @@ Outcome Reposition(state::Scene &r, uint32_t id, const Masks &masks, PositionEdi
 }
 uint32_t Axes(bool x, bool y, bool z) { return uint32_t(x) | uint32_t(y) << 1u | uint32_t(z) << 2u; }
 
+// The attribute each per-element parameter of a node reads, by the parameter's field, or InvalidOffset while it reads its constant.
+// The attribute each per-element parameter socket of a node reads, by input socket, or InvalidOffset while it reads its constant.
+struct Linked {
+    uint16_t Kind;
+    std::array<uint32_t, MaxInputs> Attributes;
+    // The attribute of the socket carrying the parameter field at the member path.
+    template<auto... Ms> uint32_t Of() const {
+        constexpr std::array<uint8_t, sizeof...(Ms)> path{uint8_t(field::IndexOf<Ms>)...};
+        const auto sockets = KindSockets(Kind);
+        for (uint16_t s = 0u; s < InputCount[Kind]; ++s) {
+            if (sockets[s].Carries(path[0], path.size() > 1u ? path[1] : NoField)) return Attributes[s];
+        }
+        return InvalidOffset;
+    }
+    bool Any() const {
+        return std::ranges::any_of(Attributes, [](uint32_t a) { return a != InvalidOffset; });
+    }
+};
+// The attribute a per-element parameter reads, which must be on the domain the operation reads it in and of the type, or InvalidOffset while the parameter reads its constant.
+std::expected<uint32_t, NodeFault> ElementParameter(const MeshStore &meshes, uint32_t attribute, AttributeDomain domain, AttributeType type = AttributeType::Float) {
+    if (attribute == InvalidOffset) return InvalidOffset;
+    const auto &a = meshes.GetAttribute(attribute);
+    if (a.Domain != domain || a.Type != type) return std::unexpected(NodeFault::Attribute);
+    return attribute;
+}
+NamedAttributeRef RefOf(const MeshStore &meshes, uint32_t attribute) { return attribute == InvalidOffset ? NamedAttributeRef{} : meshes.AttributeRef(attribute); }
+// Runs a task whose first and second parameters read per-element attributes of the domain, or their constants.
+Outcome ExecuteElement(state::Scene &r, MeshTopologyTask task, const Masks &masks, AttributeDomain domain, uint32_t param0, uint32_t param1 = InvalidOffset) {
+    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto first = ElementParameter(meshes, param0, domain), second = ElementParameter(meshes, param1, domain);
+    if (!first || !second) return std::unexpected(NodeFault::Attribute);
+    task.Param0Attribute = RefOf(meshes, *first);
+    task.Param1Attribute = RefOf(meshes, *second);
+    return Execute(r, std::move(task), masks);
+}
+// A position edit whose factor reads a per-vertex attribute, or its constant.
+Outcome RepositionBy(state::Scene &r, uint32_t id, const Masks &masks, PositionEditOp op, float factor, uint32_t repeat, uint32_t attribute, PositionOperationOptions options) {
+    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto linked = ElementParameter(meshes, attribute, AttributeDomain::Vertex);
+    if (!linked) return std::unexpected(linked.error());
+    options.Factor = RefOf(meshes, *linked);
+    return Reposition(r, id, masks, op, factor, repeat, options);
+}
+
 // Each operator edits record `id` where `masks` select, or every element without masks.
+// An operator with per-element parameters reads each linked one's attribute at the elements it edits.
 Outcome Run(state::Scene &r, const Delete &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp(uint32_t(p.Mode)), m), m); }
 Outcome Run(state::Scene &r, const Merge &p, uint32_t id, const Masks &m) {
     const auto &meshes = r.Context.get<const MeshStore>();
@@ -218,32 +265,39 @@ Outcome Run(state::Scene &r, const Dissolve &p, uint32_t id, const Masks &m) {
 Outcome Run(state::Scene &r, const Subdivide &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Subdivide, m, float(std::max(p.Cuts, 1u))), m); }
 Outcome Run(state::Scene &r, Triangulate, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Triangulate, m), m); }
 Outcome Run(state::Scene &r, TrisToQuads, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::TrisToQuads, m), m); }
-Outcome Run(state::Scene &r, const Poke &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Poke, m, p.Offset), m); }
+Outcome Run(state::Scene &r, const Poke &p, uint32_t id, const Masks &m, const Linked &linked) {
+    return ExecuteElement(r, Task(id, MeshTopologyOp::Poke, m, p.Offset), m, AttributeDomain::Face, linked.Of<&Poke::Offset>());
+}
 Outcome Run(state::Scene &r, FlipNormals, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::FlipNormals, m), m); }
 Outcome Run(state::Scene &r, EdgeSplit, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::EdgeSplit, m), m); }
 Outcome Run(state::Scene &r, Rip, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::EdgeSplit, m, 0.f, 0.f, TopologyFlagRipSelectCopies), m); }
-Outcome Run(state::Scene &r, const Inset &p, uint32_t id, const Masks &m) {
-    return Execute(r, Task(id, p.Individual ? MeshTopologyOp::InsetIndividual : MeshTopologyOp::InsetRegion, m, std::max(p.Thickness, 0.f), p.Depth, p.Even ? TopologyFlagEvenOffset : 0u), m);
+Outcome Run(state::Scene &r, const Inset &p, uint32_t id, const Masks &m, const Linked &linked) {
+    const auto task = Task(id, p.Individual ? MeshTopologyOp::InsetIndividual : MeshTopologyOp::InsetRegion, m, std::max(p.Thickness, 0.f), p.Depth, p.Even ? TopologyFlagEvenOffset : 0u);
+    return ExecuteElement(r, task, m, AttributeDomain::Vertex, linked.Of<&Inset::Thickness>(), linked.Of<&Inset::Depth>());
 }
-Outcome Run(state::Scene &r, const Solidify &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Solidify, m, p.Thickness), m); }
-Outcome Run(state::Scene &r, const Wireframe &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Scene &r, const Solidify &p, uint32_t id, const Masks &m, const Linked &linked) {
+    return ExecuteElement(r, Task(id, MeshTopologyOp::Solidify, m, p.Thickness), m, AttributeDomain::Vertex, linked.Of<&Solidify::Thickness>());
+}
+Outcome Run(state::Scene &r, const Wireframe &p, uint32_t id, const Masks &m, const Linked &linked) {
     const auto flags = (p.Even ? TopologyFlagEvenOffset : 0u) | (p.Boundary ? TopologyFlagWireBoundary : 0u) | (p.Relative ? TopologyFlagWireRelative : 0u) | (p.Replace ? TopologyFlagWireReplace : 0u);
-    return Execute(r, Task(id, MeshTopologyOp::Wireframe, m, std::max(p.Thickness, 0.f), std::clamp(p.Offset, -1.f, 1.f), flags), m);
+    const auto task = Task(id, MeshTopologyOp::Wireframe, m, std::max(p.Thickness, 0.f), std::clamp(p.Offset, -1.f, 1.f), flags);
+    return ExecuteElement(r, task, m, AttributeDomain::Vertex, linked.Of<&Wireframe::Thickness>());
 }
-Outcome Run(state::Scene &r, const Bevel &p, uint32_t id, const Masks &m) {
+// A vertex bevel reads its width at each vertex, and an edge bevel at each edge.
+Outcome Run(state::Scene &r, const Bevel &p, uint32_t id, const Masks &m, const Linked &linked) {
     auto task = Task(id, p.Vertices ? MeshTopologyOp::BevelVertices : MeshTopologyOp::BevelEdges, m, std::max(p.Width, 0.f));
     task.Steps = std::max(p.Segments, 1u);
-    return Execute(r, task, m);
+    return ExecuteElement(r, task, m, p.Vertices ? AttributeDomain::Vertex : AttributeDomain::Edge, linked.Of<&Bevel::Width>());
 }
-Outcome Run(state::Scene &r, const SmoothVertices &p, uint32_t id, const Masks &m) {
-    return Reposition(r, id, m, PositionEditOp::Smooth, p.Factor, std::clamp(p.Repeat, 1u, 1000u), {.Axes = Axes(p.X, p.Y, p.Z)});
+Outcome Run(state::Scene &r, const SmoothVertices &p, uint32_t id, const Masks &m, const Linked &linked) {
+    return RepositionBy(r, id, m, PositionEditOp::Smooth, p.Factor, std::clamp(p.Repeat, 1u, 1000u), linked.Of<&SmoothVertices::Factor>(), {.Axes = Axes(p.X, p.Y, p.Z)});
 }
 // Offsets follow vertex normals, since a node has no face edit mode to follow selected face normals by.
-Outcome Run(state::Scene &r, const ShrinkFatten &p, uint32_t id, const Masks &m) {
-    return Reposition(r, id, m, PositionEditOp::ShrinkFatten, p.Distance, 1u, {.Flags = p.Even ? PositionEditEvenOffset : 0u});
+Outcome Run(state::Scene &r, const ShrinkFatten &p, uint32_t id, const Masks &m, const Linked &linked) {
+    return RepositionBy(r, id, m, PositionEditOp::ShrinkFatten, p.Distance, 1u, linked.Of<&ShrinkFatten::Distance>(), {.Flags = p.Even ? PositionEditEvenOffset : 0u});
 }
-Outcome Run(state::Scene &r, const Randomize &p, uint32_t id, const Masks &m) {
-    return Reposition(r, id, m, PositionEditOp::Randomize, p.Amount, 1u, {.Randomize = PositionRandomize{p.Uniform, p.Normal, p.Seed}});
+Outcome Run(state::Scene &r, const Randomize &p, uint32_t id, const Masks &m, const Linked &linked) {
+    return RepositionBy(r, id, m, PositionEditOp::Randomize, p.Amount, 1u, linked.Of<&Randomize::Amount>(), {.Randomize = PositionRandomize{p.Uniform, p.Normal, p.Seed}});
 }
 Outcome Run(state::Scene &r, const Spin &p, uint32_t id, const Masks &m) {
     if (Dot(p.Axis, p.Axis) <= 0.f) return std::unexpected(NodeFault::Parameter);
@@ -287,6 +341,9 @@ Outcome Run(state::Scene &r, const RecalculateNormals &p, uint32_t id, const Mas
     faces.insert(faces.begin(), uint32_t(faces.size()));
     return Execute(r, MeshTopologyTask{.SourceId = id, .Op = MeshTopologyOp::FlipNormals, .List = std::move(faces), .Selection = selection}, m);
 }
+Outcome Run(state::Scene &r, const TransformGeometry &p, uint32_t id, const Masks &m) {
+    return Reposition(r, id, m, PositionEditOp::Transform, 1.f, 1u, {.Transform = PositionTransform{p.Delta, vec3{}}});
+}
 Outcome Run(state::Scene &r, const TransformElements &p, uint32_t id, const Masks &m) {
     return Reposition(r, id, m, PositionEditOp::Transform, 1.f, 1u, {.Transform = PositionTransform{p.Delta, p.Pivot}}, p.Frame);
 }
@@ -302,42 +359,83 @@ Outcome Run(state::Scene &r, const SetPosition &p, uint32_t id, uint32_t attribu
 
 std::string_view NameOf(const AttributeName &name) { return {name.data(), strnlen(name.data(), name.size())}; }
 
-// Stores the attribute under the name, renaming one of the evaluation's temporaries and copying any other attribute.
-Outcome Store(MeshStore &meshes, const StoreNamedAttribute &p, uint32_t id, uint32_t attribute, std::vector<uint32_t> &temporaries) {
+// The value's bits as attribute words, zero beyond its size.
+AttributeValue Words(auto value) {
+    AttributeValue words{};
+    std::memcpy(words.data(), &value, sizeof(value));
+    return words;
+}
+// One value linked into an input, with the attribute type its socket names.
+struct LinkedConstant {
+    AttributeValue Words;
+    AttributeType Type;
+};
+// An attribute node's operand: an attribute of the record, one value at every element, or absent.
+struct Operand {
+    uint32_t Attribute{InvalidOffset};
+    std::optional<LinkedConstant> Constant;
+};
+
+// Stores the value under the name, replacing an attribute of that name: a value fills an attribute of the node's domain, a temporary of the evaluation renames, and any other attribute copies.
+Outcome Store(MeshStore &meshes, const StoreNamedAttribute &p, uint32_t id, const Operand &value, std::vector<uint32_t> &temporaries) {
     const auto name = NameOf(p.Name);
-    if (attribute == InvalidOffset) return std::unexpected(NodeFault::Attribute);
+    const auto attribute = value.Attribute;
+    if (attribute == InvalidOffset && !value.Constant) return std::unexpected(NodeFault::Attribute);
     if (name.empty()) return std::unexpected(NodeFault::Parameter);
-    if (meshes.GetAttribute(attribute).NameView() == name) return id;
+    if (attribute != InvalidOffset && meshes.GetAttribute(attribute).NameView() == name) return id;
     if (const auto existing = meshes.FindAttribute(id, name); existing != InvalidOffset) meshes.ReleaseAttribute(existing);
+    if (attribute == InvalidOffset) return meshes.AddAttribute(id, p.Domain, value.Constant->Type, name, value.Constant->Words) ? Outcome{id} : std::unexpected(NodeFault::Attribute);
     const auto temporary = std::ranges::find(temporaries, attribute);
     if (temporary == temporaries.end()) return meshes.CopyAttribute(attribute, name) ? Outcome{id} : std::unexpected(NodeFault::Attribute);
     temporaries.erase(temporary);
     return meshes.RenameAttribute(attribute, name) ? Outcome{id} : std::unexpected(NodeFault::Attribute);
 }
 
-// Writes a node's inline selection into the cook's arena over its input record's blocks, and returns each domain's first mask block.
+// Turns record `id` into points, each placing an instance rotated by the node's rotation and scaled by its scale, or by a linked vec3 vertex attribute, which the points keep as their scale.
+Outcome Run(state::Scene &r, const InstanceOnPoints &p, uint32_t id, const Masks &, const Linked &linked) {
+    auto &meshes = r.Context.get<MeshStore>();
+    const auto rotation = ElementParameter(meshes, linked.Of<&InstanceOnPoints::Rotation>(), AttributeDomain::Vertex, AttributeType::Vec4);
+    const auto scale = ElementParameter(meshes, linked.Of<&InstanceOnPoints::Scale>(), AttributeDomain::Vertex, AttributeType::Vec3);
+    ToPoints(r, id);
+    for (const auto &[name, type, value, attribute] : {std::tuple{InstanceRotation, AttributeType::Vec4, Words(p.Rotation), rotation.value_or(InvalidOffset)}, std::tuple{InstanceScale, AttributeType::Vec3, Words(p.Scale), scale.value_or(InvalidOffset)}}) {
+        if (const auto existing = meshes.FindAttribute(id, name); existing != InvalidOffset) meshes.ReleaseAttribute(existing);
+        if (attribute != InvalidOffset) (void)meshes.CopyAttribute(attribute, name);
+        else (void)meshes.AddAttribute(id, AttributeDomain::Vertex, type, name, value);
+    }
+    if (!rotation) return std::unexpected(rotation.error());
+    return scale ? Outcome{id} : std::unexpected(scale.error());
+}
+
+// Zeroed mask blocks in the cook's arena over the record's blocks of each selectable domain, which `fill(domain, owned blocks, masks)` then sets, and each domain's first mask block.
 // Mask block b of a domain holds the record's block b, so it covers every block through the record's last.
-std::array<uint32_t, 3> UploadSelection(MeshStore &meshes, std::optional<BufferArena<SelectionBlock>> &arena, uint32_t id, const InlineSelection *selection) {
-    if (!selection || (selection->Vertices.empty() && selection->Edges.empty() && selection->Faces.empty())) return EveryElement;
+std::array<uint32_t, 3> ZeroedMasks(MeshStore &meshes, std::optional<BufferArena<SelectionBlock>> &arena, uint32_t id, auto &&fill) {
     if (!arena) arena.emplace(meshes.BufferContext(), SlotType::Buffer);
     using D = MeshStore::ElementDomain;
-    const std::array domains{std::pair{D::Vertex, &selection->Vertices}, std::pair{D::Edge, &selection->Edges}, std::pair{D::Face, &selection->Faces}};
+    constexpr std::array domains{D::Vertex, D::Edge, D::Face};
     std::array<uint32_t, 3> first;
     for (uint32_t d = 0u; d < 3u; ++d) {
-        const auto owned = meshes.GetBlockList(id, domains[d].first).Blocks;
-        const auto &blocks = *domains[d].second;
+        const auto owned = meshes.GetBlockList(id, domains[d]).Blocks;
         const auto range = arena->Allocate(owned.empty() ? 1u : owned.back() + 1u);
         const auto masks = arena->GetMutable(range);
         std::ranges::fill(masks, SelectionBlock{});
-        for (size_t i = 0u; i < std::min(owned.size(), blocks.size()); ++i) masks[owned[i]] = blocks[i];
+        fill(d, owned, masks);
         first[d] = range.Offset;
     }
     return first;
 }
+// Writes a node's inline selection into the cook's arena over its input record's blocks, and returns each domain's first mask block.
+std::array<uint32_t, 3> UploadSelection(MeshStore &meshes, std::optional<BufferArena<SelectionBlock>> &arena, uint32_t id, const InlineSelection *selection) {
+    if (!selection || (selection->Vertices.empty() && selection->Edges.empty() && selection->Faces.empty())) return EveryElement;
+    const std::array lists{&selection->Vertices, &selection->Edges, &selection->Faces};
+    return ZeroedMasks(meshes, arena, id, [&](uint32_t d, std::span<const uint32_t> owned, std::span<SelectionBlock> masks) {
+        const auto &blocks = *lists[d];
+        for (size_t i = 0u; i < std::min(owned.size(), blocks.size()); ++i) masks[owned[i]] = blocks[i];
+    });
+}
 
-// An attribute node's input attributes, each InvalidOffset when absent.
+// An attribute node's operands by input socket.
 struct Operands {
-    uint32_t A, B;
+    Operand A, B, C;
 };
 // An attribute node's dispatch: its output's domain and type, its pipeline, and its inputs and parameters.
 struct AttributeJob {
@@ -349,25 +447,25 @@ struct AttributeJob {
 AttributeInput NamedInput(const MeshStore &meshes, uint32_t attribute) {
     return {.Source = AttributeSource::Named, .Type = meshes.GetAttribute(attribute).Type, .Attribute = meshes.AttributeRef(attribute)};
 }
-// The value's bits as attribute words, zero beyond its size.
-AttributeValue Words(auto value) {
-    AttributeValue words{};
-    std::memcpy(words.data(), &value, sizeof(value));
-    return words;
-}
 AttributeInput ConstantInput(AttributeType type, auto value) { return {.Source = AttributeSource::Constant, .Type = type, .Value = Words(value)}; }
-// The second operand, or the constant when it is absent.
-AttributeInput OperandB(const MeshStore &meshes, Operands in, AttributeInput constant) { return in.B != InvalidOffset ? NamedInput(meshes, in.B) : constant; }
-// The domain of A, when A is present, each present operand has one of its socket's types, and B shares A's domain.
-std::optional<AttributeDomain> OperandDomain(const MeshStore &meshes, uint16_t kind, Operands in) {
-    if (in.A == InvalidOffset) return {};
+// An operand's input: its attribute, its value at every element, or the constant when it is absent.
+AttributeInput InputOf(const MeshStore &meshes, const Operand &operand, AttributeInput constant) {
+    if (operand.Attribute != InvalidOffset) return NamedInput(meshes, operand.Attribute);
+    if (operand.Constant) return {.Source = AttributeSource::Constant, .Type = operand.Constant->Type, .Value = operand.Constant->Words};
+    return constant;
+}
+// The domain the node evaluates in: that of its attribute operands, which share it and each have one of their socket's types.
+// A node without an attribute operand has no domain.
+std::optional<AttributeDomain> OperandDomain(const MeshStore &meshes, uint16_t kind, std::initializer_list<std::pair<const Operand *, uint16_t>> operands) {
     const auto sockets = KindSockets(kind);
-    const auto &a = meshes.GetAttribute(in.A);
-    if (!(sockets[0].Types & TypeBit(a.Type))) return {};
-    if (in.B == InvalidOffset) return a.Domain;
-    const auto &b = meshes.GetAttribute(in.B);
-    if (b.Domain != a.Domain || !(sockets[1].Types & TypeBit(b.Type))) return {};
-    return a.Domain;
+    std::optional<AttributeDomain> domain;
+    for (const auto [operand, socket] : operands) {
+        if (operand->Attribute == InvalidOffset) continue;
+        const auto &a = meshes.GetAttribute(operand->Attribute);
+        if (!(sockets[socket].Types & TypeBit(a.Type)) || (domain && *domain != a.Domain)) return {};
+        domain = a.Domain;
+    }
+    return domain;
 }
 
 // Each attribute node's job, or none when its parameters or inputs do not fit it.
@@ -383,48 +481,103 @@ std::optional<AttributeJob> Prepare(const MeshStore &meshes, const Normal &p, Op
 std::optional<AttributeJob> Prepare(const MeshStore &, const Index &p, Operands) {
     return AttributeJob{p.Domain, AttributeType::Int, MeshPass::AttributeRead, {.A = {.Source = AttributeSource::Ordinal, .Type = AttributeType::Int}}};
 }
-// Scale takes a float B, and the other operations a vec3 B.
-std::optional<AttributeJob> Prepare(const MeshStore &meshes, const VectorMath &p, Operands in) {
-    const auto domain = OperandDomain(meshes, KindOf<VectorMath>, in);
+// Scale reads its Scale input as a float B, and the other operations read B.
+std::optional<AttributeJob> Prepare(const MeshStore &meshes, const VectorMath &p, const Operands &in) {
     const bool scale = p.Operation == VectorMathOp::Scale;
-    if (!domain || (in.B != InvalidOffset && (meshes.GetAttribute(in.B).Type == AttributeType::Float) != scale)) return {};
+    const auto &b = scale ? in.C : in.B;
+    const auto domain = OperandDomain(meshes, KindOf<VectorMath>, {{&in.A, 0u}, {&b, uint16_t(scale ? 2u : 1u)}});
+    if (!domain) return {};
     const bool scalar = p.Operation == VectorMathOp::Dot || p.Operation == VectorMathOp::Length || p.Operation == VectorMathOp::Distance;
     const auto constant = scale ? ConstantInput(AttributeType::Float, p.Scale) : ConstantInput(AttributeType::Vec3, p.B);
-    return AttributeJob{*domain, scalar ? AttributeType::Float : AttributeType::Vec3, MeshPass::AttributeVectorMath, {.A = NamedInput(meshes, in.A), .B = OperandB(meshes, in, constant), .Operation = uint32_t(p.Operation)}};
+    return AttributeJob{*domain, scalar ? AttributeType::Float : AttributeType::Vec3, MeshPass::AttributeVectorMath, {.A = InputOf(meshes, in.A, ConstantInput(AttributeType::Vec3, vec3{})), .B = InputOf(meshes, b, constant), .Operation = uint32_t(p.Operation)}};
 }
-std::optional<AttributeJob> Prepare(const MeshStore &meshes, const FloatMath &p, Operands in) {
-    const auto domain = OperandDomain(meshes, KindOf<FloatMath>, in);
+std::optional<AttributeJob> Prepare(const MeshStore &meshes, const FloatMath &p, const Operands &in) {
+    const auto domain = OperandDomain(meshes, KindOf<FloatMath>, {{&in.A, 0u}, {&in.B, 1u}});
     if (!domain) return {};
-    return AttributeJob{*domain, AttributeType::Float, MeshPass::AttributeFloatMath, {.A = NamedInput(meshes, in.A), .B = OperandB(meshes, in, ConstantInput(AttributeType::Float, p.B)), .Operation = uint32_t(p.Operation)}};
+    return AttributeJob{*domain, AttributeType::Float, MeshPass::AttributeFloatMath, {.A = InputOf(meshes, in.A, ConstantInput(AttributeType::Float, 0.f)), .B = InputOf(meshes, in.B, ConstantInput(AttributeType::Float, p.B)), .Operation = uint32_t(p.Operation)}};
 }
 // A vector operand compares its chosen component.
-std::optional<AttributeJob> Prepare(const MeshStore &meshes, const Compare &p, Operands in) {
-    const auto domain = OperandDomain(meshes, KindOf<Compare>, in);
-    if (!domain || p.Component > 2u) return {};
+std::optional<AttributeJob> Prepare(const MeshStore &meshes, const Compare &p, const Operands &in) {
+    const auto domain = OperandDomain(meshes, KindOf<Compare>, {{&in.A, 0u}, {&in.B, 1u}});
+    if (!domain) return {};
     const auto pc = AttributeNodePushConstants{
-        .A = NamedInput(meshes, in.A),
-        .B = OperandB(meshes, in, ConstantInput(AttributeType::Float, p.B)),
+        .A = InputOf(meshes, in.A, ConstantInput(AttributeType::Float, 0.f)),
+        .B = InputOf(meshes, in.B, ConstantInput(AttributeType::Float, p.B)),
         .Operation = uint32_t(p.Operation),
-        .Component = p.Component,
+        .Component = uint32_t(p.Component),
         .Epsilon = std::max(p.Epsilon, 0.f),
     };
     return AttributeJob{*domain, AttributeType::Bool, MeshPass::AttributeCompare, pc};
 }
-std::optional<AttributeJob> Prepare(const MeshStore &meshes, const BooleanMath &p, Operands in) {
-    const auto domain = OperandDomain(meshes, KindOf<BooleanMath>, in);
+std::optional<AttributeJob> Prepare(const MeshStore &meshes, const BooleanMath &p, const Operands &in) {
+    const auto domain = OperandDomain(meshes, KindOf<BooleanMath>, {{&in.A, 0u}, {&in.B, 1u}});
     if (!domain) return {};
-    return AttributeJob{*domain, AttributeType::Bool, MeshPass::AttributeBooleanMath, {.A = NamedInput(meshes, in.A), .B = OperandB(meshes, in, ConstantInput(AttributeType::Bool, uint32_t(p.B))), .Operation = uint32_t(p.Operation)}};
+    return AttributeJob{*domain, AttributeType::Bool, MeshPass::AttributeBooleanMath, {.A = InputOf(meshes, in.A, ConstantInput(AttributeType::Bool, 0u)), .B = InputOf(meshes, in.B, ConstantInput(AttributeType::Bool, uint32_t(p.B))), .Operation = uint32_t(p.Operation)}};
 }
 template<typename K>
-concept Prepared = requires(const MeshStore &meshes, const K &p, Operands in) { Prepare(meshes, p, in); };
+concept Prepared = requires(const MeshStore &meshes, const K &p, const Operands &in) { Prepare(meshes, p, in); };
 
 // The record's attributes a node writes, named so no user attribute takes the name.
-std::string TemporaryName(uint32_t node, uint32_t socket) { return std::format(".cook.{}.{}", node, socket); }
+constexpr std::string_view TemporaryPrefix = ".cook.";
+std::string TemporaryName(uint32_t node, uint32_t socket) { return std::format("{}{}.{}", TemporaryPrefix, node, socket); }
+// Releases the record's cook temporaries, which an edit carried into a new record.
+void ReleaseTemporaries(MeshStore &meshes, uint32_t id) {
+    std::vector<uint32_t> temporaries;
+    meshes.ForEachNamedAttribute(id, [&](uint32_t attribute, const auto &a) {
+        if (a.NameView().starts_with(TemporaryPrefix)) temporaries.push_back(attribute);
+    });
+    for (const auto attribute : temporaries) meshes.ReleaseAttribute(attribute);
+}
 
-// The attribute an input reads, or InvalidOffset when it is unlinked or its producer has none.
-uint32_t LinkedAttribute(const GeometryProcedure &procedure, const CookPlan &plan, const std::vector<SocketValue> &values, uint32_t node, uint32_t input) {
+// What an input reads: an attribute of the record, or one value with the attribute type its source socket names.
+// An input reads neither while it is unlinked, past the node's inputs, or its producer has no attribute.
+Operand OperandOf(const GeometryProcedure &procedure, const CookPlan &plan, const std::vector<SocketValue> &values, uint32_t node, uint32_t input) {
+    if (input >= InputCount[procedure.Nodes[node].Kind]) return {};
     const auto link = procedure.Inputs[plan.InputFirst[node] + input];
-    return link.FromNode == NoNode ? InvalidOffset : values[plan.SocketFirst[link.FromNode] + link.FromSocket].Attribute;
+    if (link.FromNode == NoNode) return {};
+    const auto &source = values[plan.SocketFirst[link.FromNode] + link.FromSocket];
+    if (source.Type == SocketType::Value) return {.Constant = LinkedConstant{source.Value, AttributeType(std::countr_zero(KindSockets(procedure.Nodes[link.FromNode].Kind)[link.FromSocket].Types))}};
+    return {source.Type == SocketType::Attribute ? source.Attribute : InvalidOffset};
+}
+// Writes a value's words over the parameter field a socket carries.
+// Writes a value's words over the parameter field a socket carries, or the member of a nested field.
+template<typename K> void AssignField(K &p, Socket socket, const AttributeValue &words) {
+    field::ForEach(p, [&]<size_t I>(auto &member, std::integral_constant<size_t, I>) {
+        using F = std::remove_cvref_t<decltype(member)>;
+        if constexpr (detail::TypesOf<F>() != 0u) {
+            if (socket.Carries(I)) std::memcpy(&member, words.data(), sizeof(member));
+        } else if constexpr (field::Walkable<F>) {
+            field::ForEach(member, [&]<size_t J>(auto &nested, std::integral_constant<size_t, J>) {
+                if constexpr (detail::TypesOf<std::remove_cvref_t<decltype(nested)>>() != 0u) {
+                    if (socket.Carries(I, J)) std::memcpy(&nested, words.data(), sizeof(nested));
+                }
+            });
+        }
+    });
+}
+// The node's parameters, with each linked value written over its field: a value socket's value, or one value at every element of a per-element parameter.
+template<typename K> K Parameters(const state::Scene &r, const GeometryProcedure &procedure, const CookPlan &plan, const std::vector<SocketValue> &values, uint32_t node) {
+    const auto [entity, kind] = procedure.Nodes[node];
+    auto p = r.get<const K>(entity);
+    if constexpr (field::Walkable<K>) {
+        const auto [first, end] = ParameterRange(kind);
+        for (auto s = first; s < end; ++s) {
+            if (const auto value = OperandOf(procedure, plan, values, node, s).Constant) AssignField(p, KindSockets(kind)[s], value->Words);
+        }
+    }
+    return p;
+}
+// The attribute each per-element parameter socket of the node reads.
+Linked LinkedParameters(const GeometryProcedure &procedure, const CookPlan &plan, const std::vector<SocketValue> &values, uint32_t node) {
+    const auto kind = procedure.Nodes[node].Kind;
+    const auto sockets = KindSockets(kind);
+    const auto [first, end] = ParameterRange(kind);
+    Linked linked{kind};
+    linked.Attributes.fill(InvalidOffset);
+    for (auto s = first; s < end; ++s) {
+        if (sockets[s].Type == SocketType::Attribute) linked.Attributes[s] = OperandOf(procedure, plan, values, node, s).Attribute;
+    }
+    return linked;
 }
 
 // A geometry node's attribute and selection inputs, evaluated on its input record.
@@ -439,7 +592,6 @@ struct Evaluation {
 // An attribute node whose inputs or parameters do not fit it is marked and forwards its first input.
 Evaluation EvaluateInputs(state::Scene &r, const GeometryProcedure &procedure, const CookPlan &plan, std::vector<SocketValue> &values, uint32_t node, uint32_t id, std::optional<BufferArena<SelectionBlock>> &arena) {
     auto &meshes = r.Context.get<MeshStore>();
-    const auto input = [&](uint32_t n, uint32_t i) { return LinkedAttribute(procedure, plan, values, n, i); };
     auto upstream = Upstream(procedure, plan.InputFirst, node, [&](uint32_t n) { return IsAttributeKind(procedure.Nodes[n].Kind); });
     upstream[node] = false;
     Evaluation evaluation;
@@ -447,10 +599,10 @@ Evaluation EvaluateInputs(state::Scene &r, const GeometryProcedure &procedure, c
     for (const auto n : plan.Order) {
         if (!upstream[n]) continue;
         const auto [entity, kind] = procedure.Nodes[n];
-        const Operands in{InputCount[kind] > 0u ? input(n, 0u) : InvalidOffset, InputCount[kind] > 1u ? input(n, 1u) : InvalidOffset};
+        const Operands in{OperandOf(procedure, plan, values, n, 0u), OperandOf(procedure, plan, values, n, 1u), OperandOf(procedure, plan, values, n, 2u)};
         auto &output = values[plan.SocketFirst[n] + InputCount[kind]];
         output.Type = SocketType::Attribute;
-        output.Attribute = in.A;
+        output.Attribute = in.A.Attribute;
         if (kind == KindOf<NamedAttribute>) {
             const auto &p = r.get<const NamedAttribute>(entity);
             const auto found = meshes.FindAttribute(id, NameOf(p.Name));
@@ -460,7 +612,7 @@ Evaluation EvaluateInputs(state::Scene &r, const GeometryProcedure &procedure, c
         }
         std::optional<AttributeJob> job;
         VisitKind(kind, [&]<typename K> {
-            if constexpr (Prepared<K>) job = Prepare(meshes, r.get<const K>(entity), in);
+            if constexpr (Prepared<K>) job = Prepare(meshes, Parameters<K>(r, procedure, plan, values, n), in);
         });
         if (!job) {
             r.emplace_or_replace<NodeError>(entity, NodeFault::Attribute);
@@ -485,7 +637,17 @@ Evaluation EvaluateInputs(state::Scene &r, const GeometryProcedure &procedure, c
     const auto sockets = KindSockets(procedure.Nodes[node].Kind);
     for (uint32_t s = 0u; s < InputCount[procedure.Nodes[node].Kind]; ++s) {
         if (sockets[s].Type != SocketType::Selection || procedure.Inputs[plan.InputFirst[node] + s].FromNode == NoNode) continue;
-        const auto selection = input(node, s);
+        const auto linked = OperandOf(procedure, plan, values, node, s);
+        // A linked bool value selects every element, or none through empty masks.
+        if (linked.Constant) {
+            if (linked.Constant->Words[0] & 1u) {
+                evaluation.MaskFirst = EveryElement;
+                break;
+            }
+            evaluation.MaskFirst = ZeroedMasks(meshes, arena, id, [](uint32_t, std::span<const uint32_t>, std::span<SelectionBlock>) {});
+            break;
+        }
+        const auto selection = linked.Attribute;
         const auto *attribute = selection != InvalidOffset ? &meshes.GetAttribute(selection) : nullptr;
         if (!attribute || attribute->Type != AttributeType::Bool || attribute->Domain == AttributeDomain::Corner) {
             evaluation.Failed = true;
@@ -519,7 +681,7 @@ Evaluation EvaluateInputs(state::Scene &r, const GeometryProcedure &procedure, c
 }
 
 // Runs a geometry node on record `id` after evaluating its inputs on it, releasing the temporaries it does not store.
-// Operators release them first, so the edit carries none of them to its output.
+// An operator reading no per-element parameter releases them first, so the edit carries none of them to its output, and one reading some releases them from its output as well.
 Outcome RunNode(state::Scene &r, const GeometryProcedure &procedure, const CookPlan &plan, std::vector<SocketValue> &values, uint32_t node, uint32_t id, std::optional<BufferArena<SelectionBlock>> &arena) {
     auto &meshes = r.Context.get<MeshStore>();
     const auto [entity, kind] = procedure.Nodes[node];
@@ -532,6 +694,7 @@ Outcome RunNode(state::Scene &r, const GeometryProcedure &procedure, const CookP
         release();
         return std::unexpected(NodeFault::Attribute);
     }
+    const auto linked = LinkedParameters(procedure, plan, values, node);
     const auto sockets = KindSockets(kind);
     const auto first = plan.SocketFirst[node];
     const auto selection_socket = uint32_t(std::ranges::find(sockets, SocketType::Selection, &Socket::Type) - sockets.begin());
@@ -545,13 +708,24 @@ Outcome RunNode(state::Scene &r, const GeometryProcedure &procedure, const CookP
     masks.Publish = r.all_of<PublishSelection>(entity);
     Outcome edited = id;
     VisitKind(kind, [&]<typename K> {
+        const auto p = Parameters<K>(r, procedure, plan, values, node);
         if constexpr (std::same_as<K, StoreNamedAttribute>) {
-            edited = Store(meshes, r.get<const K>(entity), id, LinkedAttribute(procedure, plan, values, node, 1u), evaluation.Temporaries);
+            edited = Store(meshes, p, id, OperandOf(procedure, plan, values, node, 1u), evaluation.Temporaries);
         } else if constexpr (std::same_as<K, SetPosition>) {
-            edited = Run(r, r.get<const K>(entity), id, LinkedAttribute(procedure, plan, values, node, 1u), masks);
+            // A linked value becomes a temporary vertex attribute holding it at every vertex.
+            auto position = OperandOf(procedure, plan, values, node, 1u);
+            if (position.Attribute == InvalidOffset && position.Constant) {
+                position.Attribute = meshes.AddAttribute(id, AttributeDomain::Vertex, position.Constant->Type, TemporaryName(node, 1u), position.Constant->Words).value();
+                evaluation.Temporaries.push_back(position.Attribute);
+            }
+            edited = Run(r, p, id, position.Attribute, masks);
+        } else if constexpr (requires(const K &p, const Masks &m) { Run(r, p, id, m, linked); }) {
+            if (!linked.Any()) release();
+            edited = Run(r, p, id, masks, linked);
+            if (linked.Any() && edited && *edited != id) ReleaseTemporaries(meshes, *edited);
         } else if constexpr (requires(const K &p, const Masks &m) { Run(r, p, id, m); }) {
             release();
-            edited = Run(r, r.get<const K>(entity), id, masks);
+            edited = Run(r, p, id, masks);
         }
     });
     release();
@@ -563,16 +737,6 @@ uint32_t Generate(state::Scene &r, const Generator auto &shape) {
     const auto id = CreateMesh(r, {.Data = primitive::CreateMesh(shape), .FlatShaded = true}).StoreId;
     ShadeNewMeshes(r);
     return id;
-}
-
-// Turns record `id` into points, each placing an instance rotated and scaled by the node's parameters.
-void InstancePoints(state::Scene &r, const InstanceOnPoints &p, uint32_t id) {
-    auto &meshes = r.Context.get<MeshStore>();
-    ToPoints(r, id);
-    for (const auto &[name, type, value] : {std::tuple{InstanceRotation, AttributeType::Vec4, Words(p.Rotation)}, std::tuple{InstanceScale, AttributeType::Vec3, Words(p.Scale)}}) {
-        if (const auto existing = meshes.FindAttribute(id, name); existing != InvalidOffset) meshes.ReleaseAttribute(existing);
-        (void)meshes.AddAttribute(id, AttributeDomain::Vertex, type, name, value);
-    }
 }
 
 // The mesh entity an Object Info node reads: its object's mesh when the object has one other than the procedure's own, or null.
@@ -683,7 +847,7 @@ state::Entity OwnMesh(state::Scene &r, state::Entity mesh_entity, uint32_t recor
 // The Source node emits the previous output restored to the source when the source kept its blocks, so the output record persists across cooks.
 // An Object Info node emits another mesh entity's drawn record, which the cook borrows.
 // An input owns the record it reads once its producer has no other consumer left, and otherwise reads a clone.
-// A node that cannot run is marked with its fault and forwards its input, as does an operation that changes nothing.
+// A node that cannot run is marked with its fault and forwards its input, as does an operation that changes nothing or a node whose geometry input is unlinked.
 // A boolean emits a new record, and its inputs release with the cook's other records.
 // A missing result is the source's copy, and every other record the cook made releases.
 // A result reading instances empties its record and publishes the instances as entities.
@@ -723,11 +887,11 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
     }
     // The source copy's restore is no change of its own.
     meshes.TakeWrites();
-    // The nodes whose first input the result's record passes through, so the source's copy reaches the result in place.
+    // The nodes whose first input, a geometry input, the result's record passes through, so the source's copy reaches the result in place.
     std::vector<bool> on_path(procedure.Nodes.size());
     for (auto node = procedure.OutputNode; node != NoNode && !on_path[node];) {
         on_path[node] = true;
-        node = InputCount[procedure.Nodes[node].Kind] ? procedure.Inputs[plan.InputFirst[node]].FromNode : NoNode;
+        node = KindSockets(procedure.Nodes[node].Kind).front().Type == SocketType::Geometry ? procedure.Inputs[plan.InputFirst[node]].FromNode : NoNode;
     }
     std::vector<SocketValue> values(plan.SocketFirst.back());
     const auto slot_of = [&](uint32_t node, uint32_t input) {
@@ -790,7 +954,10 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
         bool generated = false;
         VisitKind(kind, [&]<typename K> {
             if constexpr (Generator<K>) {
-                values[first].Record = created.emplace_back(Generate(r, r.get<const K>(entity)));
+                values[first + InputCount[kind]].Record = created.emplace_back(Generate(r, Parameters<K>(r, procedure, plan, values, node)));
+                generated = true;
+            } else if constexpr (ValueKind<K>) {
+                values[first] = {.Type = SocketType::Value, .Value = Words(r.get<const K>(entity).Value)};
                 generated = true;
             }
         });
@@ -798,9 +965,8 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
         const auto in = take(node, 0u);
         const auto input = in.Record;
         if (kind == KindOf<Output>) {
-            // Only the result's Output node needs an input.
+            // The result's Output node holds the result, and without a link the result is the source's copy.
             if (node == procedure.OutputNode) {
-                if (input == InvalidOffset) r.emplace<NodeError>(entity, NodeFault::Unlinked);
                 result = input;
                 if (in.Type == SocketType::Instances) published = in;
             }
@@ -808,7 +974,6 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
         }
         if (kind == KindOf<Join>) {
             const auto second = take(node, 1u);
-            if (input == InvalidOffset || second.Record == InvalidOffset) r.emplace<NodeError>(entity, NodeFault::Unlinked);
             if (input != InvalidOffset && second.Record != InvalidOffset) {
                 meshes.Join(r, input, second.Record);
                 consume(second);
@@ -825,29 +990,26 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
                 created.push_back(*combined);
                 values[first + 2u].Record = *combined;
             } else {
-                r.emplace<NodeError>(entity, !linked ? NodeFault::Unlinked : !task ? NodeFault::NotClosed :
-                                                                                     NodeFault::Empty);
+                if (linked) r.emplace<NodeError>(entity, !task ? NodeFault::NotClosed : NodeFault::Empty);
                 values[first + 2u] = in;
             }
             continue;
         }
         if (kind == KindOf<InstanceOnPoints>) {
             const auto instance = take(node, 1u);
-            auto &output = values[first + 2u];
+            auto &output = values[first + InputCount[kind]];
             output.Type = SocketType::Instances;
             output.Record = input;
             if (input != InvalidOffset && instance.Record != InvalidOffset) {
-                InstancePoints(r, r.get<const InstanceOnPoints>(entity), input);
+                if (const auto placed = RunNode(r, procedure, plan, values, node, input, arena); !placed) r.emplace<NodeError>(entity, placed.error());
                 output.MeshEntity = instance.MeshEntity;
                 output.Instance = instance.Record;
                 continue;
             }
-            r.emplace<NodeError>(entity, NodeFault::Unlinked);
             if (input != InvalidOffset) Empty(r, input);
             continue;
         }
         if (kind == KindOf<RealizeInstances>) {
-            if (input == InvalidOffset) r.emplace<NodeError>(entity, NodeFault::Unlinked);
             const auto realized = input != InvalidOffset && in.Instance != InvalidOffset ? Realize(r, input, in.Instance) : std::nullopt;
             if (realized) {
                 consume(in);
@@ -858,7 +1020,7 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
             values[first + 1u].Record = realized.value_or(input);
             continue;
         }
-        const auto edited = input != InvalidOffset ? RunNode(r, procedure, plan, values, node, input, arena) : Outcome{std::unexpected(NodeFault::Unlinked)};
+        const auto edited = input != InvalidOffset ? RunNode(r, procedure, plan, values, node, input, arena) : Outcome{input};
         if (!edited) r.emplace<NodeError>(entity, edited.error());
         values[first + InputCount[kind]].Record = edited.value_or(input);
     }

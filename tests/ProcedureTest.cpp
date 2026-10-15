@@ -17,6 +17,7 @@
 #include "mesh/Primitives.h"
 #include "metal/Dispatch.h"
 #include "numeric/MatrixMath.h"
+#include "numeric/QuaternionMath.h"
 #include "object/ObjectOps.h"
 #include "procedure/Cook.h"
 #include "project/Project.h"
@@ -66,6 +67,12 @@ struct Fixture : TestDir, Engine {
         if (Observe) Observe(true);
         return node.value();
     }
+    // Does the action, which must fail.
+    template<typename A> void Fails(A a) {
+        P->Do(action::MakeAction(std::move(a)));
+        expect(!R.Context.get<action::Errors>().Messages.empty());
+        R.Context.get<action::Errors>().Messages.clear();
+    }
     // Adds a primitive object and returns its mesh entity.
     state::Entity AddMesh(PrimitiveShape shape) {
         Do(action::object::AddMeshPrimitive{std::move(shape), std::make_unique<MeshInstanceCreateInfo>()});
@@ -83,6 +90,8 @@ struct Fixture : TestDir, Engine {
             Do(Link{mesh_entity, *from, InputCount[R.get<const GeometryProcedure>(mesh_entity).Nodes[*from].Kind], *(from + 1), 0u});
     }
     state::Entity Node(state::Entity mesh_entity, uint32_t node) const { return R.get<const GeometryProcedure>(mesh_entity).Nodes[node].Entity; }
+    // The node's first output socket.
+    uint16_t Out(state::Entity mesh_entity, uint32_t node) const { return InputCount[R.get<const GeometryProcedure>(mesh_entity).Nodes[node].Kind]; }
     std::vector<state::Entity> NodeEntities(state::Entity mesh_entity) const {
         std::vector<state::Entity> entities;
         for (const auto &node : R.get<const GeometryProcedure>(mesh_entity).Nodes) entities.push_back(node.Entity);
@@ -638,10 +647,10 @@ Graph CapResync(Fixture &f) {
     const auto position = f.Add(mesh, KindOf<Position>).first;
     const auto [compare, compare_entity] = f.Add(mesh, KindOf<Compare>);
     const auto [inset, inset_entity] = f.Add(mesh, KindOf<action::mesh::Inset>);
-    f.Do(UpdateOf<&Compare::Component>(compare_entity, 1u));
+    f.Do(UpdateOf<&Compare::Component>(compare_entity, VectorComponent::Y));
     f.Do(UpdateOf<&Compare::B>(compare_entity, .9f));
     f.Do(Link{mesh, position, 0u, compare, 0u});
-    f.Do(Link{mesh, compare, 2u, inset, 1u});
+    f.Do(Link{mesh, compare, f.Out(mesh, compare), inset, 1u});
     f.Route(mesh, {0u, inset, 1u});
     const auto output = f.Output(mesh);
     const auto records = f.LiveRecords();
@@ -710,7 +719,7 @@ Graph ScalePositions(Fixture &f) {
     f.Do(UpdateOf<&VectorMath::Scale>(math_entity, 2.f));
     f.Do(UpdateOf<&SetPosition::Offset>(set_entity, false));
     f.Do(Link{mesh, position, 0u, math, 0u});
-    f.Do(Link{mesh, math, 2u, set, 1u});
+    f.Do(Link{mesh, math, f.Out(mesh, math), set, 1u});
     f.Route(mesh, {0u, set, 1u});
     return {
         mesh,
@@ -732,9 +741,9 @@ Graph CompareSelectsExtrusion(Fixture &f) {
     const auto position = f.Add(mesh, KindOf<Position>).first;
     const auto [compare, compare_entity] = f.Add(mesh, KindOf<Compare>);
     const auto extrude = f.Add(mesh, KindOf<action::mesh::Extrude>).first;
-    f.Do(UpdateOf<&Compare::Component>(compare_entity, 2u));
+    f.Do(UpdateOf<&Compare::Component>(compare_entity, VectorComponent::Z));
     f.Do(Link{mesh, position, 0u, compare, 0u});
-    f.Do(Link{mesh, compare, 2u, extrude, 1u});
+    f.Do(Link{mesh, compare, f.Out(mesh, compare), extrude, 1u});
     f.Route(mesh, {0u, extrude, 1u});
     return {
         mesh,
@@ -761,7 +770,7 @@ Graph CompareSelectsExtrusion(Fixture &f) {
             });
             expect(output == kernel.Output);
         },
-        [](Fixture &f, state::Entity mesh) { f.Do(UpdateOf<&Compare::Component>(f.Node(mesh, 3u), 0u)); },
+        [](Fixture &f, state::Entity mesh) { f.Do(UpdateOf<&Compare::Component>(f.Node(mesh, 3u), VectorComponent::X)); },
     };
 }
 
@@ -846,7 +855,7 @@ Graph DomainMismatch(Fixture &f) {
     f.Do(UpdateOf<&Normal::Domain>(normal_entity, AttributeDomain::Face));
     f.Do(Link{mesh, position, 0u, math, 0u});
     f.Do(Link{mesh, normal, 0u, math, 1u});
-    f.Do(Link{mesh, math, 2u, set, 1u});
+    f.Do(Link{mesh, math, f.Out(mesh, math), set, 1u});
     f.Route(mesh, {0u, set, 1u});
     return {
         mesh,
@@ -878,7 +887,7 @@ Graph JoinGenerated(Fixture &f) {
     const auto [cube, cube_entity] = f.Add(mesh, KindOf<primitive::Cuboid>);
     const auto join = f.Add(mesh, KindOf<Join>).first;
     f.Do(Link{mesh, 0u, 0u, join, 0u});
-    f.Do(Link{mesh, cube, 0u, join, 1u});
+    f.Do(Link{mesh, cube, f.Out(mesh, cube), join, 1u});
     f.Do(Link{mesh, join, 2u, 1u, 0u});
     const auto joined = Describe(meshes, f.Output(mesh));
     f.Do(UpdateOf<&primitive::Cuboid::HalfExtents>(cube_entity, vec3{2.f, .5f, 1.f}));
@@ -1137,9 +1146,7 @@ void TestViewportOperators(Fixture &f) {
             const auto selected = Describe(meshes, f.Output(mesh), selection);
             expect(meshes.GetSelectionSummary(f.Output(mesh)).SelectedCount == selection.Get(row.Domain).size());
             f.Audit();
-            f.P->Do(action::MakeAction(action::mesh::ToSphere{}));
-            expect(!r.Context.get<action::Errors>().Messages.empty());
-            r.Context.get<action::Errors>().Messages.clear();
+            f.Fails(action::mesh::ToSphere{});
             expect(Describe(meshes, f.Output(mesh)) == done.Output);
             ExpectRestores(f, mesh, std::array{start, done}, [&] { expect(r.valid(node) == (f.P->History.Present == done.Node)); });
             state::DirtySet cooks;
@@ -1176,9 +1183,9 @@ Graph BooleanIntersection(Fixture &f) {
     const auto [boolean, boolean_entity] = f.Add(mesh, KindOf<procedure::Boolean>);
     f.Do(UpdateOf<&procedure::Boolean::Operation>(boolean_entity, BooleanOperation::Intersection));
     f.Route(mesh, {0u, boolean, 1u});
-    expect(f.R.all_of<NodeError>(boolean_entity));
+    expect(!f.R.any_of<NodeError>(boolean_entity));
     expect(Describe(meshes, f.Output(mesh)) == Describe(meshes, f.Source(mesh)));
-    f.Do(Link{mesh, box, 0u, boolean, 1u});
+    f.Do(Link{mesh, box, f.Out(mesh, box), boolean, 1u});
     expect(!f.R.any_of<NodeError>(boolean_entity));
     // The cube keeps the bar's middle: 2 x 1 x 1.
     expect(std::abs(test::EnclosedVolume(Mesh{meshes, f.Output(mesh)}).value_or(-1.0) - 2.0) < 1e-4);
@@ -1261,7 +1268,7 @@ void TestInstances(Fixture &f) {
                 const auto [instance, instance_entity] = f.Add(mesh, instance_kind);
                 if (borrowed) f.Do(UpdateOf<&ObjectInfo::Object>(instance_entity, f.Object(cube_mesh)));
                 f.Route(mesh, {0u, to_points, instancer});
-                f.Do(Link{mesh, instance, 0u, instancer, 1u});
+                f.Do(Link{mesh, instance, f.Out(mesh, instance), instancer, 1u});
                 const auto cube_record = f.Source(cube_mesh);
                 const auto cube_shape = Describe(meshes, cube_record);
                 // Later actions record steps, whose replays the restores validate after the checks read each action's cook marks.
@@ -1276,7 +1283,7 @@ void TestInstances(Fixture &f) {
                     realizer = f.Add(mesh, KindOf<RealizeInstances>).first;
                     f.Route(mesh, {instancer, realizer, 1u});
                 } else {
-                    f.Do(Link{mesh, instancer, 2u, 1u, 0u});
+                    f.Do(Link{mesh, instancer, f.Out(mesh, instancer), 1u, 0u});
                 }
                 const auto published = [&] { return r.get<const ProcedureInstances>(mesh).Entities; };
                 const auto entities = realize ? std::vector<state::Entity>{} : published();
@@ -1335,7 +1342,7 @@ void TestInstances(Fixture &f) {
                 f.ExpectReplay();
                 if (realize) {
                     const auto realized = f.LiveRecords();
-                    f.Do(Link{mesh, instancer, 2u, 1u, 0u});
+                    f.Do(Link{mesh, instancer, f.Out(mesh, instancer), 1u, 0u});
                     f.ValidateReplay();
                     const auto published_owned = borrowed ? state::Null : r.get<const ProcedureOwnedMesh>(mesh).MeshEntity;
                     const auto published_record = borrowed ? InvalidOffset : f.Source(published_owned);
@@ -1404,13 +1411,13 @@ void TestObjectInfo(Fixture &f) {
     f.Do(Link{mesh, 0u, 0u, join, 0u});
     f.Do(Link{mesh, info, 0u, join, 1u});
     f.Do(Link{mesh, join, 2u, 1u, 0u});
-    expect(r.all_of<NodeError>(info_entity) && r.all_of<NodeError>(join_entity));
+    expect(r.all_of<NodeError>(info_entity) && !r.any_of<NodeError>(join_entity));
     expect(Describe(meshes, f.Output(mesh)) == Describe(meshes, f.Source(mesh)));
     f.ValidateReplay();
     const auto cube = f.AddMesh(primitive::Cuboid{});
     f.Do(AddProcedure{cube});
     const auto [box, box_entity] = f.Add(cube, KindOf<primitive::Cuboid>);
-    f.Do(Link{cube, box, 0u, 1u, 0u});
+    f.Do(Link{cube, box, f.Out(cube, box), 1u, 0u});
     f.Do(UpdateOf<&ObjectInfo::Object>(info_entity, f.Object(cube)));
     expect(!r.any_of<NodeError>(info_entity) && !r.any_of<NodeError>(join_entity));
     f.ValidateReplay();
@@ -1570,13 +1577,8 @@ void TestInsertNode(Fixture &f) {
     const auto output = f.Node(mesh, 1u);
     const auto subdivided = SelectAllReference(f, f.Source(mesh), {Op(MeshTopologyOp::Subdivide, 1.f)});
     const auto reads = [&](uint32_t node) { return r.get<const GeometryProcedure>(mesh).Inputs[InputFirst(r.get<const GeometryProcedure>(mesh), node)].FromNode; };
-    const auto fails = [&](InsertNode insert) {
-        f.P->Do(action::MakeAction(insert));
-        expect(!r.Context.get<action::Errors>().Messages.empty());
-        r.Context.get<action::Errors>().Messages.clear();
-    };
-    fails({mesh, position, 1u, 0u, 0.f});
-    fails({mesh, subdivide, triangulate, 0u, 0.f});
+    f.Fails(InsertNode{mesh, position, 1u, 0u, 0.f});
+    f.Fails(InsertNode{mesh, subdivide, triangulate, 0u, 0.f});
     const auto x = r.get<const NodeLayout>(output).Position.x;
     f.Do(SelectNodes{mesh, {subdivide}, subdivide});
     f.Stage(UpdateOf<&NodeLayout::Position>(action::OnSelectedDelta{}, vec2{100.f, 0.f}));
@@ -1591,10 +1593,10 @@ void TestInsertNode(Fixture &f) {
     expect(reads(1u) == 0u && reads(subdivide) == NoNode && r.get<const NodeLayout>(output).Position.x == x);
     f.P->Redo();
     f.Do(Link{mesh, triangulate, 2u, subdivide, 0u});
-    fails({mesh, triangulate, 1u, 0u, 0.f});
+    f.Fails(InsertNode{mesh, triangulate, 1u, 0u, 0.f});
 }
 
-// A bevel that selects nothing forwards its input without a fault, and a boolean missing its second mesh is marked with one.
+// A bevel that selects nothing and a boolean missing its second mesh forward their input without a fault, and an Object Info node without an object is marked with one.
 // A restore clears the mark, and the next cook marks the node again.
 void TestNodeError(Fixture &f) {
     f.Reset("node-error");
@@ -1615,19 +1617,214 @@ void TestNodeError(Fixture &f) {
     expect(!r.any_of<NodeError>(loose_entity));
     const auto [boolean, boolean_entity] = f.Add(mesh, KindOf<procedure::Boolean>);
     f.Route(mesh, {bevel, boolean, 1u});
-    const auto fault = [&] { return r.all_of<NodeError>(boolean_entity) ? std::optional{r.get<const NodeError>(boolean_entity).Fault} : std::nullopt; };
-    expect(fault() == NodeFault::Unlinked);
+    expect(!r.any_of<NodeError>(boolean_entity));
+    expect(Describe(meshes, f.Output(mesh)) == source);
+    const auto [info, info_entity] = f.Add(mesh, KindOf<ObjectInfo>);
+    const auto join = f.Add(mesh, KindOf<Join>).first;
+    f.Route(mesh, {bevel, join, 1u});
+    f.Do(Link{mesh, info, 0u, join, 1u});
+    const auto fault = [&] { return r.all_of<NodeError>(info_entity) ? std::optional{r.get<const NodeError>(info_entity).Fault} : std::nullopt; };
+    expect(fault() == NodeFault::NoMesh);
     expect(Describe(meshes, f.Output(mesh)) == source);
     f.ValidateReplay();
     f.Do(UpdateOf<&action::mesh::Bevel::Width>(bevel_entity, .2f));
-    expect(fault() == NodeFault::Unlinked);
+    expect(fault() == NodeFault::NoMesh);
     f.P->Undo();
     expect(!fault());
     f.P->Redo();
     expect(!fault());
     f.Do(UpdateOf<&action::mesh::Bevel::Width>(bevel_entity, .3f));
-    expect(fault() == NodeFault::Unlinked);
+    expect(fault() == NodeFault::NoMesh);
     f.ValidateReplay();
+    f.Audit();
+}
+
+// The socket carrying the parameter field at the member path.
+template<auto M, auto... Ms> uint16_t SocketOf() {
+    const auto sockets = KindSockets(KindOf<field::Owner<M>>);
+    constexpr std::array<uint8_t, sizeof...(Ms)> nested{uint8_t(field::IndexOf<Ms>)...};
+    return uint16_t(std::ranges::find_if(sockets, [&](Socket socket) { return socket.Carries(uint8_t(field::IndexOf<M>), nested.empty() ? NoField : nested[0]); }) - sockets.begin());
+}
+// A float attribute of the domain on the record holding `value(mesh, handle)` at each element, as a kernel reads a per-element parameter.
+template<AttributeDomain D> NamedAttributeRef FloatAttribute(MeshStore &meshes, uint32_t id, auto &&value) {
+    const auto attribute = meshes.AddAttribute(id, D, AttributeType::Float, "parameter").value();
+    const Mesh mesh{meshes, id};
+    const auto set = [&](auto handle) {
+        const float v = value(mesh, handle);
+        meshes.SetAttribute<float>(attribute, *handle, std::span{&v, 1u});
+    };
+    if constexpr (D == AttributeDomain::Vertex) {
+        for (const auto v : mesh.vertices()) set(v);
+    } else {
+        for (const auto face : mesh.faces()) set(face);
+    }
+    return meshes.AttributeRef(attribute);
+}
+// The per-vertex width each vertex of a cube reads from Position through Vector Math and Float Math.
+float WidthAt(const Mesh &mesh, he::VH v) {
+    const auto p = mesh.GetPosition(v);
+    return .05f * (p.x + p.y + p.z) + .2f;
+}
+
+// A value node linked into a parameter socket drives the parameter as editing it would, the parameter's own edits are inert while it is linked, a link checks its types, and a bool value into a selection selects every element or none.
+// A float attribute linked into a per-element parameter sets the parameter at each element as the kernel reading the attribute does, per vertex for a vertex bevel and a shrink/fatten and per face for a poke, an attribute of another domain marks the node, and the output keeps no cook attribute.
+// A float value stored under a name fills an attribute of the store's domain with it.
+void TestParameterSockets(Fixture &f) {
+    f.Reset("parameter-sockets");
+    auto &r = f.R;
+    auto &meshes = f.Store();
+    using action::mesh::Bevel, action::mesh::ShrinkFatten, action::mesh::Poke;
+    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    f.Do(AddProcedure{mesh});
+    const auto source_id = f.Source(mesh);
+    const auto source = Describe(meshes, source_id);
+    const auto output = [&] { return Describe(meshes, f.Output(mesh)); };
+    const auto fault = [&](state::Entity node) { return r.all_of<NodeError>(node) ? std::optional{r.get<const NodeError>(node).Fault} : std::nullopt; };
+    const auto [real, real_entity] = f.Add(mesh, KindOf<FloatValue>);
+    boost::ut::test("value") = [&] {
+        const auto [bevel, bevel_entity] = f.Add(mesh, KindOf<Bevel>);
+        f.Route(mesh, {0u, bevel, 1u});
+        const auto one = output();
+        f.Do(UpdateOf<&Bevel::Segments>(bevel_entity, 3u));
+        const auto three = output();
+        expect(three != one);
+        f.Do(UpdateOf<&Bevel::Segments>(bevel_entity, 1u));
+        const auto [integer, integer_entity] = f.Add(mesh, KindOf<IntegerValue>);
+        f.Do(UpdateOf<&IntegerValue::Value>(integer_entity, 3u));
+        const auto segments = SocketOf<&Bevel::Segments>(), width = SocketOf<&Bevel::Width>();
+        expect(KindSockets(KindOf<Bevel>)[segments].Type == SocketType::Value && KindSockets(KindOf<Bevel>)[width].Type == SocketType::Attribute);
+        f.Do(Link{mesh, integer, 0u, bevel, segments});
+        expect(output() == three);
+        f.ValidateReplay();
+        f.Do(UpdateOf<&Bevel::Segments>(bevel_entity, 5u));
+        expect(output() == three);
+        f.Do(UpdateOf<&IntegerValue::Value>(integer_entity, 1u));
+        expect(output() == one);
+        f.P->Undo();
+        expect(output() == three);
+        f.P->Redo();
+        expect(output() == one);
+        f.Do(action::nodes::Unlink{mesh, bevel, segments});
+        f.Do(UpdateOf<&Bevel::Segments>(bevel_entity, 3u));
+        expect(output() == three);
+        const auto position = f.Add(mesh, KindOf<Position>).first;
+        f.Fails(Link{mesh, real, 0u, bevel, segments});
+        f.Fails(Link{mesh, position, 0u, bevel, segments});
+        f.Do(UpdateOf<&FloatValue::Value>(real_entity, .2f));
+        f.Do(Link{mesh, real, 0u, bevel, width});
+        f.Do(UpdateOf<&Bevel::Width>(bevel_entity, .3f));
+        expect(output() == SelectAllReference(f, source_id, {Op(MeshTopologyOp::BevelEdges, .2f, 0u, 3u)}));
+        f.Do(action::nodes::Unlink{mesh, bevel, width});
+        f.Do(UpdateOf<&Bevel::Width>(bevel_entity, .1f));
+        const auto [flag, flag_entity] = f.Add(mesh, KindOf<BooleanValue>);
+        f.Do(Link{mesh, flag, 0u, bevel, 1u});
+        expect(output() == source && !fault(bevel_entity));
+        f.Do(UpdateOf<&BooleanValue::Value>(flag_entity, true));
+        expect(output() == three);
+        f.ValidateReplay();
+        f.Do(DeleteNodes{mesh, {bevel}});
+    };
+    // Position through Vector Math and Float Math, the per-element parameter the element tests link.
+    const auto position = f.Add(mesh, KindOf<Position>).first;
+    const auto [dot, dot_entity] = f.Add(mesh, KindOf<VectorMath>);
+    const auto [add, add_entity] = f.Add(mesh, KindOf<FloatMath>);
+    f.Do(UpdateOf<&VectorMath::Operation>(dot_entity, VectorMathOp::Dot));
+    f.Do(UpdateOf<&VectorMath::B>(dot_entity, vec3{.05f, .05f, .05f}));
+    f.Do(UpdateOf<&FloatMath::B>(add_entity, .2f));
+    f.Do(Link{mesh, position, 0u, dot, 0u});
+    f.Do(Link{mesh, dot, f.Out(mesh, dot), add, 0u});
+    // The record the operator's task leaves on a clone of the source, selecting every element and reading Param0 from the attribute `parameter` adds to the clone.
+    const auto reference = [&](MeshTopologyOp op, auto &&parameter) {
+        return Reference(f, source_id, [&](uint32_t clone) {
+                   auto task = Op(op, 0.f, TopologyFlagSelectAll);
+                   task.Param0Attribute = parameter(clone);
+                   f.Run(clone, {task});
+                   return GeometrySelection{};
+               })
+            .Output;
+    };
+    const auto widths = [&](uint32_t clone) { return FloatAttribute<AttributeDomain::Vertex>(meshes, clone, WidthAt); };
+    // Adds the operator reading the chain into its parameter socket, between the source and the output.
+    const auto add_operator = [&](uint16_t kind, uint16_t socket) {
+        const auto [node, entity] = f.Add(mesh, kind);
+        f.Do(Link{mesh, add, f.Out(mesh, add), node, socket});
+        f.Route(mesh, {0u, node, 1u});
+        return std::pair{node, entity};
+    };
+    boost::ut::test("vertex bevel") = [&] {
+        const auto [bevel, bevel_entity] = add_operator(KindOf<Bevel>, SocketOf<&Bevel::Width>());
+        f.Do(UpdateOf<&Bevel::Vertices>(bevel_entity, true));
+        expect(!fault(bevel_entity));
+        f.ValidateReplay();
+        expect(output() == reference(MeshTopologyOp::BevelVertices, widths));
+        expect(output() != SelectAllReference(f, source_id, {Op(MeshTopologyOp::BevelVertices, .2f)}));
+        expect(f.AttributeCount(f.Output(mesh)) == 0u && f.AttributeCount(source_id) == 0u);
+        f.Do(DeleteNodes{mesh, {bevel}});
+    };
+    boost::ut::test("shrink fatten") = [&] {
+        const auto [shrink, shrink_entity] = add_operator(KindOf<ShrinkFatten>, SocketOf<&ShrinkFatten::Distance>());
+        expect(!fault(shrink_entity));
+        f.ValidateReplay();
+        // The kernel reads the factor at each vertex from the attribute, past the constant factor's zero check.
+        const auto kernel = Reference(f, source_id, [&](uint32_t clone) {
+            const PositionOperationTarget target{.StoreId = clone, .Selection = AllHandles(Mesh{meshes, clone})};
+            ExecuteGeometryPositions(r, std::span{&target, 1u}, PositionEditOp::ShrinkFatten, 1.f, 1u, {.Factor = widths(clone)});
+            return GeometrySelection{};
+        });
+        expect(kernel.Output != source && output() == kernel.Output);
+        expect(f.AttributeCount(f.Output(mesh)) == 0u);
+        f.Do(DeleteNodes{mesh, {shrink}});
+    };
+    boost::ut::test("poke") = [&] {
+        // A vertex attribute does not fit the poke's per-face offset, and a face normal's z does.
+        const auto [poke, poke_entity] = add_operator(KindOf<Poke>, SocketOf<&Poke::Offset>());
+        expect(fault(poke_entity) == NodeFault::Attribute && output() == source);
+        const auto [normal, normal_entity] = f.Add(mesh, KindOf<Normal>);
+        f.Do(UpdateOf<&Normal::Domain>(normal_entity, AttributeDomain::Face));
+        f.Do(UpdateOf<&VectorMath::B>(dot_entity, vec3{0.f, 0.f, .3f}));
+        f.Do(Link{mesh, normal, 0u, dot, 0u});
+        f.Do(Link{mesh, dot, f.Out(mesh, dot), poke, SocketOf<&Poke::Offset>()});
+        expect(!fault(poke_entity));
+        f.ValidateReplay();
+        const auto offsets = [&](uint32_t clone) { return FloatAttribute<AttributeDomain::Face>(meshes, clone, [](const Mesh &m, he::FH face) { return .3f * m.GetNormal(face).z; }); };
+        expect(output() == reference(MeshTopologyOp::Poke, offsets));
+        expect(f.AttributeCount(f.Output(mesh)) == 0u);
+        f.Do(DeleteNodes{mesh, {poke}});
+    };
+    // A Vector value and a Rotation value link into the position and rotation members of the node's transform, and its scale edits as a field.
+    boost::ut::test("transform geometry") = [&] {
+        const auto [transform, transform_entity] = f.Add(mesh, KindOf<TransformGeometry>);
+        const auto [vector, vector_entity] = f.Add(mesh, KindOf<VectorValue>);
+        const auto [rotation, rotation_entity] = f.Add(mesh, KindOf<RotationValue>);
+        // The rotation leaves no two moved corners a GPU rounding apart in sort order.
+        const Transform delta{{1.f, 2.f, 3.f}, numeric::AngleAxis(.5f, Normalize(vec3{1.f, 2.f, 3.f})), {2.f, 1.f, .5f}};
+        f.Do(UpdateOf<&VectorValue::Value>(vector_entity, delta.P));
+        f.Do(UpdateOf<&RotationValue::Value>(rotation_entity, delta.R));
+        f.Do(UpdateOf<&TransformGeometry::Delta, &Transform::S>(transform_entity, delta.S));
+        f.Do(Link{mesh, vector, 0u, transform, SocketOf<&TransformGeometry::Delta, &Transform::P>()});
+        f.Do(Link{mesh, rotation, 0u, transform, SocketOf<&TransformGeometry::Delta, &Transform::R>()});
+        f.Route(mesh, {0u, transform, 1u});
+        expect(!fault(transform_entity));
+        expect(Near(Positions(meshes, f.Output(mesh)), Points(meshes, source_id, [&](uint32_t, vec3 p) { return delta.R * (delta.S * p) + delta.P; })));
+        f.ValidateReplay();
+        f.Do(DeleteNodes{mesh, {transform, vector, rotation}});
+    };
+    boost::ut::test("store") = [&] {
+        const auto [store, store_entity] = f.Add(mesh, KindOf<StoreNamedAttribute>);
+        f.Do(UpdateOf<&FloatValue::Value>(real_entity, 2.5f));
+        f.Do(UpdateOf<&StoreNamedAttribute::Domain>(store_entity, AttributeDomain::Face));
+        f.Do(SetAttributeName{store_entity, "heat"});
+        f.Do(Link{mesh, real, 0u, store, 1u});
+        f.Route(mesh, {0u, store, 1u});
+        expect(!fault(store_entity));
+        const auto heat = meshes.FindAttribute(f.Output(mesh), "heat");
+        expect(fatal(heat != InvalidOffset));
+        expect(meshes.GetAttribute(heat).Domain == AttributeDomain::Face && meshes.GetAttribute(heat).Type == AttributeType::Float);
+        const auto values = meshes.AttributeView<float>(heat);
+        for (const auto face : Mesh{meshes, f.Output(mesh)}.faces()) expect(values[*face] == 2.5f);
+        expect(f.AttributeCount(f.Output(mesh)) == 1u && f.AttributeCount(source_id) == 0u);
+        f.ValidateReplay();
+    };
     f.Audit();
 }
 } // namespace
@@ -1648,4 +1845,5 @@ void TestProcedures() {
     boost::ut::test("delete nodes") = [&] { TestDeleteNodes(f); };
     boost::ut::test("insert node") = [&] { TestInsertNode(f); };
     boost::ut::test("node error") = [&] { TestNodeError(f); };
+    boost::ut::test("parameter sockets") = [&] { TestParameterSockets(f); };
 }
