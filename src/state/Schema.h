@@ -269,6 +269,7 @@ inline constexpr std::string_view SchemaNames[] = {
     "procedure::NodeError",
     "procedure::NodeLayout",
     "procedure::NodeSelected",
+    "procedure::NodeTheme",
     "procedure::Normal",
     "procedure::ObjectInfo",
     "procedure::Output",

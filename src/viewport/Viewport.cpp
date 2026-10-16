@@ -32,6 +32,7 @@
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
 #include "procedure/Cook.h"
+#include "procedure/NodeTheme.h"
 #include "render/GpuSceneState.h"
 #include "render/Pipelines.h"
 #include "render/RenderStores.h"
@@ -245,6 +246,7 @@ void SetupScene(state::Scene &r, state::Entity viewport) {
     r.emplace_or_replace<Interaction>(viewport);
     r.emplace_or_replace<EditMode>(viewport);
     r.emplace_or_replace<ViewportTheme>(viewport, Defaults::ViewportTheme);
+    r.emplace_or_replace<procedure::NodeTheme>(viewport);
     r.emplace_or_replace<ViewCamera>(viewport, Defaults::ViewCamera);
     r.emplace_or_replace<MaterialPreviewLighting>(viewport, PBRViewportLighting{false, false, 1.f, 0.f});
     r.emplace_or_replace<RenderedLighting>(viewport, PBRViewportLighting{true, true, 1.f, 0.f});

@@ -9,6 +9,7 @@
 #include "gltf/GltfScene.h"
 #include "gltf/SourceAssets.h"
 #include "numeric/VectorMath.h"
+#include "procedure/NodeTheme.h"
 #include "procedure/Procedure.h"
 #include "scene/CameraLens.h"
 #include "scene/Defaults.h"
@@ -78,6 +79,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             [&](const SetActiveScene &a) { gltf::SwitchActiveScene(r, a.Scene); },
             [&](ResetViewCamera) { patch_camera_stopped([](auto &c) { c = Defaults::ViewCamera; }); },
             [&](ResetViewportTheme) { r.emplace_or_replace<ViewportTheme>(viewport, Defaults::ViewportTheme); },
+            [&](ResetNodeTheme) { r.replace<procedure::NodeTheme>(viewport, procedure::NodeTheme{}); },
             [&](const ResetPbrLighting &a) {
                 static constexpr PBRViewportLighting Defaults{false, false, 1.f, 0.f, 0.5f, 0.f, true};
                 if (a.Rendered) r.replace<RenderedLighting>(viewport, Defaults);

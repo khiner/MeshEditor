@@ -6,7 +6,6 @@
 #include "Profile.h"
 #include "TransformMath.h"
 #include "Variant.h"
-#include "Window.h"
 #include "action/Audio.h"
 #include "action/Bone.h"
 #include "action/Build.h"
@@ -1075,52 +1074,48 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
     }
 }
 
-void DrawStyleWindow(state::Scene &r, state::Entity viewport, Window &window) {
-    if (!window.Visible) return;
-    if (Begin(window.Name, &window.Visible)) {
-        using VC = ViewportThemeColors;
-        using AC = AxisThemeColors;
-        ui::Edit f{r, viewport};
-        SeparatorText("Viewport theme");
-        const auto &theme = r.get<const ViewportTheme>(viewport);
-        if (Button("Reset##ViewportTheme")) action::Emit(action::view::ResetViewportTheme{});
-        auto c = f.Sub<&ViewportTheme::Colors>();
-        c.Color<&VC::Background>();
-        c.Color<&VC::Grid>();
-        c.Color<&VC::Wire>();
-        c.Color<&VC::WireEdit>();
-        c.Color<&VC::ObjectActive>();
-        c.Color<&VC::ObjectSelected>();
-        c.Color<&VC::Light>();
-        c.Color<&VC::Vertex>();
-        c.Color<&VC::VertexSelected>();
-        c.Color<&VC::EdgeSelectedIncidental>("Edge selected (incidental)");
-        c.Color<&VC::EdgeSelected>();
-        c.Color<&VC::EdgeSharp>();
-        c.Color<&VC::FaceSelectedIncidental>("Face selected (incidental)");
-        c.Color<&VC::FaceSelected>();
-        c.Color<&VC::ElementActive>();
-        c.Color<&VC::ElementExcited>();
-        c.Color<&VC::FaceNormal>();
-        c.Color<&VC::VertexNormal>();
-        c.Color<&VC::BoneSolid>();
-        c.Color<&VC::BonePose>();
-        c.Color<&VC::BonePoseActive>();
-        c.Color<&VC::Transform>();
-        SeparatorText("Axis colors");
-        auto a = f.Sub<&ViewportTheme::AxisColors>();
-        a.Color<&AC::X>("Axis X");
-        a.Color<&AC::Y>("Axis Y");
-        a.Color<&AC::Z>("Axis Z");
-        // UI edits full width and storage is half-width.
-        if (float full_width = theme.EdgeWidth * 2.f; SliderFloat("Edge width", &full_width, 0.5f, 4.f)) {
-            f.Set<&ViewportTheme::EdgeWidth>(full_width / 2.f);
-        }
-        if (uint32_t v = theme.SilhouetteEdgeWidth; SliderUInt("Silhouette edge width", &v, 1, 4)) {
-            f.Set<&ViewportTheme::SilhouetteEdgeWidth>(v);
-        }
+void DrawViewportStyle(state::Scene &r, state::Entity viewport) {
+    using VC = ViewportThemeColors;
+    using AC = AxisThemeColors;
+    ui::Edit f{r, viewport};
+    const auto &theme = r.get<const ViewportTheme>(viewport);
+    if (Button("Reset")) action::Emit(action::view::ResetViewportTheme{});
+    SeparatorText("Colors");
+    auto c = f.Sub<&ViewportTheme::Colors>();
+    c.Color<&VC::Background>();
+    c.Color<&VC::Grid>();
+    c.Color<&VC::Wire>();
+    c.Color<&VC::WireEdit>();
+    c.Color<&VC::ObjectActive>();
+    c.Color<&VC::ObjectSelected>();
+    c.Color<&VC::Light>();
+    c.Color<&VC::Vertex>();
+    c.Color<&VC::VertexSelected>();
+    c.Color<&VC::EdgeSelectedIncidental>("Edge selected (incidental)");
+    c.Color<&VC::EdgeSelected>();
+    c.Color<&VC::EdgeSharp>();
+    c.Color<&VC::FaceSelectedIncidental>("Face selected (incidental)");
+    c.Color<&VC::FaceSelected>();
+    c.Color<&VC::ElementActive>();
+    c.Color<&VC::ElementExcited>();
+    c.Color<&VC::FaceNormal>();
+    c.Color<&VC::VertexNormal>();
+    c.Color<&VC::BoneSolid>();
+    c.Color<&VC::BonePose>();
+    c.Color<&VC::BonePoseActive>();
+    c.Color<&VC::Transform>();
+    auto a = f.Sub<&ViewportTheme::AxisColors>();
+    a.Color<&AC::X>("Axis X");
+    a.Color<&AC::Y>("Axis Y");
+    a.Color<&AC::Z>("Axis Z");
+    SeparatorText("Sizes");
+    // UI edits full width and storage is half-width.
+    if (float full_width = theme.EdgeWidth * 2.f; SliderFloat("Edge width", &full_width, 0.5f, 4.f)) {
+        f.Set<&ViewportTheme::EdgeWidth>(full_width / 2.f);
     }
-    End();
+    if (uint32_t v = theme.SilhouetteEdgeWidth; SliderUInt("Silhouette edge width", &v, 1, 4)) {
+        f.Set<&ViewportTheme::SilhouetteEdgeWidth>(v);
+    }
 }
 
 static void RenderObjectTree(state::Scene &r, state::Entity viewport) {

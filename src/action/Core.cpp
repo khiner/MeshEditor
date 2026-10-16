@@ -13,6 +13,7 @@
 #include "audio/ModalModes.h"
 #include "gpu/ViewportTheme.h"
 #include "numeric/VectorMath.h"
+#include "procedure/NodeTheme.h"
 #include "procedure/Procedure.h"
 #include "render/LightComponents.h"
 #include "render/MaterialComponents.h"

@@ -38,6 +38,7 @@ struct ZoomViewCamera {
 };
 struct ResetViewCamera {};
 struct ResetViewportTheme {};
+struct ResetNodeTheme {};
 struct ResetPbrLighting {
     bool Rendered;
 };
@@ -97,7 +98,7 @@ using Action = std::variant<
     SetInteractionMode, CycleInteractionMode, SetEditMode,
     EnterLookThroughCamera, ExitLookThroughCamera, SetLookThroughCamera,
     SetViewportShading, ToggleXRay, OrbitViewCamera, ZoomViewCamera,
-    ResetViewCamera, ResetViewportTheme, ResetPbrLighting, SetWorkspaceLights,
+    ResetViewCamera, ResetViewportTheme, ResetNodeTheme, ResetPbrLighting, SetWorkspaceLights,
     SetViewCameraTarget, SetViewCameraLens, SetViewCameraTargetDirection,
     TransformSelection, TransformElements, SetActiveTool, LatchTransform,
     SetStudioEnvironment, SetActiveScene>;

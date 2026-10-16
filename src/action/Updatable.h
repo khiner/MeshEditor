@@ -84,6 +84,7 @@ struct VectorValue;
 struct RotationValue;
 struct TransformGeometry;
 struct NodeLayout;
+struct NodeTheme;
 } // namespace procedure
 
 namespace action {
@@ -98,7 +99,7 @@ using UpdatableComponents = TypeList<
     PhysicsSimulationSettings, PhysicsMaterial, PhysicsMotion, PhysicsVelocity, ColliderPolicy, CollisionFilter, PhysicsJoint, ColliderMaterial, TriggerNodes,
     ModalGain, ModalTuning, ModalSoundControls, Striker, SurfaceSoundControls, AudioOutputMix, AudioOutputConfig,
     // Geometry procedure node layouts and parameters.
-    procedure::NodeLayout,
+    procedure::NodeLayout, procedure::NodeTheme,
     mesh::Delete, mesh::Merge, mesh::Extrude, mesh::Duplicate, mesh::Split, mesh::Dissolve, mesh::Subdivide, mesh::Triangulate, mesh::TrisToQuads,
     mesh::Poke, mesh::FlipNormals, mesh::EdgeSplit, mesh::Inset, mesh::Solidify, mesh::Wireframe, mesh::Bevel, mesh::SmoothVertices, mesh::ShrinkFatten,
     mesh::Randomize, mesh::Spin, mesh::ExtrudeRepeat, mesh::Bisect, mesh::Symmetrize, mesh::FillHoles, mesh::ConvexHull, mesh::Decimate, mesh::RecalculateNormals,

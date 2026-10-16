@@ -492,6 +492,22 @@ void RenderDebugWindow(state::Scene &r, const mtl::Context &ctx, CA::MetalLayer 
     End();
 }
 
+void DrawStyleWindow(state::Scene &r, state::Entity viewport, Window &window) {
+    if (!window.Visible) return;
+    if (Begin(window.Name, &window.Visible) && BeginTabBar("Style")) {
+        if (BeginTabItem("Viewport")) {
+            DrawViewportStyle(r, viewport);
+            EndTabItem();
+        }
+        if (BeginTabItem("Nodes")) {
+            procedure::DrawNodeStyle(r, viewport);
+            EndTabItem();
+        }
+        EndTabBar();
+    }
+    End();
+}
+
 struct EditorWindowsFrame {
     uvec2 ViewportExtent{};
     bool ViewportBegun{false};
