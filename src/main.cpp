@@ -45,7 +45,7 @@
 #include "object/ObjectOps.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
-#include "procedure/ProcedureUi.h"
+#include "procedure/NodeEditor.h"
 #include "project/HistoryUi.h"
 #include "project/Project.h"
 #include "project/Sessions.h"

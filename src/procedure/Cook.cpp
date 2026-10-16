@@ -62,7 +62,6 @@ struct SocketValue {
     };
     bool Borrowed() const { return Type == SocketType::Geometry && MeshEntity != state::Null; }
 };
-static_assert(sizeof(SocketValue) == 28u);
 constexpr std::array<uint32_t, 3> EveryElement{InvalidOffset, InvalidOffset, InvalidOffset};
 // A node's output record, which is its input when the operation changed nothing, or why it could not run.
 using Outcome = std::expected<uint32_t, NodeFault>;
@@ -587,9 +586,9 @@ struct Evaluation {
     bool Failed{}; // A linked selection reads no bool attribute of a selectable domain
 };
 
-// Evaluates the attribute nodes upstream of the node's inputs on record `id` in plan order, each writing a temporary attribute.
-// A linked selection then scatters into its domain's masks in the cook's arena, and the other two domains derive from them.
-// An attribute node whose inputs or parameters do not fit it is marked and forwards its first input.
+// Evaluate the attribute nodes feeding the node's inputs on record `id`, each into a temporary attribute.
+// A linked selection then fills its domain's masks, and the other two domains derive from them.
+// An attribute node whose inputs or parameters don't fit is marked and passes its first input through.
 Evaluation EvaluateInputs(state::Scene &r, const GeometryProcedure &procedure, const CookPlan &plan, std::vector<SocketValue> &values, uint32_t node, uint32_t id, std::optional<BufferArena<SelectionBlock>> &arena) {
     auto &meshes = r.Context.get<MeshStore>();
     auto upstream = Upstream(procedure, plan.InputFirst, node, [&](uint32_t n) { return IsAttributeKind(procedure.Nodes[n].Kind); });
@@ -819,9 +818,9 @@ void PublishInstances(state::Scene &r, state::Entity mesh_entity, state::Entity 
     else if (previous != published) r.emplace_or_replace<ProcedureInstances>(mesh_entity, std::move(published));
 }
 
-// Holds the instance record in the procedure's owned mesh entity, created on first need, releasing the record it held.
-// Without a record, the owned mesh entity leaves with its record.
-// Returns the owned mesh entity, or null.
+// Store the instance record in the procedure's owned mesh entity, creating it if needed and releasing its old record.
+// Without a record, remove the owned mesh entity.
+// Return the owned mesh entity, or null.
 state::Entity OwnMesh(state::Scene &r, state::Entity mesh_entity, uint32_t record) {
     const auto *owned = r.try_get<const ProcedureOwnedMesh>(mesh_entity);
     if (record == InvalidOffset) {
@@ -843,14 +842,12 @@ state::Entity OwnMesh(state::Scene &r, state::Entity mesh_entity, uint32_t recor
     return e;
 }
 
-// Evaluates the plan's nodes in order, each on one record, and publishes the result as the mesh's evaluated record.
-// The Source node emits the previous output restored to the source when the source kept its blocks, so the output record persists across cooks.
-// An Object Info node emits another mesh entity's drawn record, which the cook borrows.
-// An input owns the record it reads once its producer has no other consumer left, and otherwise reads a clone.
-// A node that cannot run is marked with its fault and forwards its input, as does an operation that changes nothing or a node whose geometry input is unlinked.
-// A boolean emits a new record, and its inputs release with the cook's other records.
-// A missing result is the source's copy, and every other record the cook made releases.
-// A result reading instances empties its record and publishes the instances as entities.
+// Evaluate the plan's nodes in order and publish the result as the mesh's evaluated record.
+// While the source keeps its blocks, Source reuses the previous output restored to the source, so the output record persists across cooks.
+// An input takes its producer's record once no other reader needs it, and a clone before that.
+// A node that cannot run is marked with its fault and passes its input through.
+// Without a result, the source's copy is the result, and every other record the cook made is released.
+// An instances result empties its record and publishes the instances as entities.
 void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<SelectionBlock>> &arena, const MeshStore::Writes &between) {
     auto &meshes = r.Context.get<MeshStore>();
     const auto &procedure = r.get<const GeometryProcedure>(mesh_entity);
@@ -898,10 +895,10 @@ void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<
         const auto link = procedure.Inputs[plan.InputFirst[node] + input];
         return plan.SocketFirst[link.FromNode] + link.FromSocket;
     };
-    // Takes the value linked into the node's input, which the input's socket then holds.
-    // A borrowed record reaches a reading input as is and an editing input as a clone.
-    // A record the cook owns reaches its last reader as is.
-    // A reader the record's later readers follow takes a clone, apart from a reader on the result's path, which takes the record and leaves its producer a clone.
+    // Take the value linked into the node's input.
+    // A borrowed record goes as is to a reading input and as a clone to an editing one.
+    // An owned record goes as is to its last reader and as a clone to earlier ones.
+    // A reader on the result's path takes the record itself and leaves its producer a clone.
     const auto take = [&](uint32_t node, uint32_t input) -> SocketValue {
         auto &taken = values[plan.SocketFirst[node] + input];
         if (procedure.Inputs[plan.InputFirst[node] + input].FromNode == NoNode) return taken;

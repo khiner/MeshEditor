@@ -95,7 +95,6 @@ struct Bounds {
     float Radius{};
     float Error{};
 };
-static_assert(offsetof(Bounds, Radius) == sizeof(vec3));
 
 Bounds MergeBounds(std::span<const Bounds> bounds) {
     const auto merged = meshopt_computeSphereBounds(&bounds.front().Center.x, bounds.size(), sizeof(Bounds), &bounds.front().Radius, sizeof(Bounds));

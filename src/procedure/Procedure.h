@@ -19,71 +19,85 @@
 #include <utility>
 #include <vector>
 
-// A mesh entity's geometry procedure: node entities, each holding one parameter component, with their sockets linked output to input.
+// A mesh's geometry procedure is a graph of node entities.
+// Each node holds one parameter component, and links connect output sockets to input sockets.
 namespace procedure {
-// Emits the mesh entity's source record.
-struct Source {};
-// Holds the procedure's result in its geometry input.
-struct Output {};
-// Appends its second geometry input's elements to its first's.
-struct Join {};
-// Combines its first geometry input's closed surface with its second's into a new mesh.
+struct Source {}; // Emit the mesh's source geometry.
+struct Output {}; // Receive the procedure's result.
+struct Join {}; // Append the second input's geometry to the first.
+
+// Combine two closed meshes into a new mesh.
 struct Boolean {
     BooleanOperation Operation{BooleanOperation::Difference};
 };
-// A primitive shape's parameters make a generator, which emits a new mesh of that shape.
+
+// Primitive shapes as nodes that create a new mesh.
 using Generators = action::TypeList<primitive::Plane, primitive::Circle, primitive::Cuboid, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone>;
 template<typename K>
 concept Generator = action::InTypeList<K, Generators>;
 
-// Attribute nodes evaluate on the record arriving at their consumer's geometry input, in the domain of their first attribute input.
-// Vertex positions.
-struct Position {};
-// Vertex or face normals.
+// Attribute nodes evaluate on the geometry their reader receives, in the domain of their first attribute input.
+struct Position {}; // Emit vertex positions.
+
+// Emit vertex or face normals.
 struct Normal {
     AttributeDomain Domain{AttributeDomain::Vertex};
 };
-// Each element's rank among the live elements of its domain.
+
+// Emit each element's index in its domain, counting live elements only.
 struct Index {
     AttributeDomain Domain{AttributeDomain::Vertex};
 };
-// The record's attribute of this name and type.
+
+// Read the named attribute of this type.
 struct NamedAttribute {
     AttributeType Type{AttributeType::Float};
     AttributeName Name{};
 };
-// A vector operation on A and B, where B is the constant B, or Scale for Scale, when its input is unlinked.
+
+// Apply a vector operation to A and B.
+// An unlinked B or Scale input uses its constant.
 struct VectorMath {
     VectorMathOp Operation{VectorMathOp::Add};
     vec3 B{};
     float Scale{1.f};
 };
-// A float operation on A and B, where B is the constant B when its input is unlinked.
+
+// Apply a float operation to A and B.
+// An unlinked B uses the constant B.
 struct FloatMath {
     FloatMathOp Operation{FloatMathOp::Add};
     float B{};
 };
+
 enum class VectorComponent : uint8_t { X,
                                        Y,
                                        Z };
-// Compares float values, or one component of vector values, where B is the constant B when its input is unlinked.
+
+// Compare floats, or one component of vectors.
+// An unlinked B uses the constant B.
 struct Compare {
     CompareOp Operation{CompareOp::Greater};
     float B{}, Epsilon{1e-5f};
     VectorComponent Component{VectorComponent::X};
 };
-// A boolean operation on A and B, where B is the constant B when its input is unlinked.
+
+// Apply a boolean operation to A and B.
+// An unlinked B uses the constant B.
 struct BooleanMath {
     BooleanMathOp Operation{BooleanMathOp::And};
     bool B{};
 };
-// Stores its value input on its geometry under the name, replacing an attribute of that name.
-// An attribute keeps its domain, and a single value fills an attribute of Domain.
+
+// Store the value input as a named attribute, replacing any existing one.
+// An attribute input keeps its domain, and a single value fills Domain.
 struct StoreNamedAttribute {
     AttributeName Name{};
     AttributeDomain Domain{AttributeDomain::Vertex};
 };
-// A value node emits one value, which a single-value parameter socket takes, and an attribute socket takes at every element.
+
+// Value nodes emit one constant.
+// An attribute socket receives it at every element.
 struct FloatValue {
     float Value{};
 };
@@ -99,40 +113,45 @@ struct VectorValue {
 struct RotationValue {
     quat Value{1, 0, 0, 0};
 };
-// Moves the selected vertices to a vec3 vertex attribute, or by it as an offset.
+
+// Set the selected vertices' positions from a vec3 attribute, or offset them by it.
 struct SetPosition {
     bool Offset{true};
 };
-// Moves the selected vertices by Delta about Pivot, both in the space Frame maps the record's positions into.
+
+// Move the selected vertices by Delta around Pivot, in the space Frame maps positions into.
 struct TransformElements {
     Transform Delta{};
     vec3 Pivot{};
     Transform Frame{};
 };
-// Moves every vertex by Delta about the origin, as Blender's Transform Geometry does.
+
+// Move every vertex by Delta around the origin, like Blender's Transform Geometry.
 struct TransformGeometry {
     Transform Delta{};
 };
 
-// An instances value is a face-less record whose vertices are its points, each placing one instance of its instance geometry.
-// The point is the instance's position, and these vertex attributes hold its rotation as a quaternion and its scale.
+// An instances value is a record of points with no faces, each point placing one copy of the instance geometry.
+// These point attributes hold each instance's rotation quaternion and scale.
 inline constexpr std::string_view InstanceRotation = ".instance.rotation", InstanceScale = ".instance.scale";
-// Emits its geometry's vertices as points.
-struct MeshToPoints {};
-// Places an instance of its second geometry input at each vertex of its first, rotated by Rotation and scaled by Scale, each per point through its attribute socket.
+
+struct MeshToPoints {}; // Emit the input's vertices as points.
+
+// Place an instance of the second input at each point of the first, with Rotation and Scale per point.
 struct InstanceOnPoints {
     vec3 Scale{1, 1, 1};
     quat Rotation{1, 0, 0, 0};
 };
-// Emits one copy of the instance geometry per instance, moved by the instance's transform.
-struct RealizeInstances {};
-// Emits the drawn record of the object's mesh in its local space, which the cook reads in place.
-// An object without a mesh, or whose mesh the procedure is on, emits nothing.
+
+struct RealizeInstances {}; // Emit a copy of the instance geometry per instance, moved by its transform.
+
+// Emit the object's drawn mesh in its local space, without copying it.
+// An object with no mesh, or with this procedure's own mesh, emits nothing.
 struct ObjectInfo {
     state::Entity Object{state::Null};
 };
 
-// A node's kind is the index of its parameter component here.
+// A node's kind is its parameter component's index in this list.
 using NodeKinds = action::TypeList<
     Source, Output, Join, Boolean,
     primitive::Plane, primitive::Circle, primitive::Cuboid, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone,
@@ -148,46 +167,51 @@ using ValueKinds = action::TypeList<FloatValue, IntegerValue, BooleanValue, Vect
 template<typename K>
 concept ValueKind = action::InTypeList<K, ValueKinds>;
 
-// An attribute socket carries an attribute of the record at its consumer's geometry input, or one value at every element.
-// A value socket carries one value, which a single-value parameter takes.
-// A selection socket takes a bool attribute, a bool value, and its node's inline selection while unlinked.
-// An instances socket carries points that each place an instance, which an Output node's geometry input also takes.
+// An attribute socket carries a per-element attribute, or one value for every element.
+// A value socket carries one value.
+// A selection socket takes a bool attribute or value, and uses the node's inline selection when unlinked.
+// An instances socket carries points that each place an instance.
 enum class SocketType : uint8_t { Geometry,
                                   Selection,
                                   Attribute,
                                   Instances,
                                   Value };
+
 enum class SocketDirection : uint8_t { In,
                                        Out };
+
 constexpr uint8_t TypeBit(AttributeType type) { return uint8_t(1u << uint32_t(type)); }
 inline constexpr uint8_t AnyType = (1u << AttributeTypeCount) - 1u;
-// A parameter socket carries one field of its node's parameters by the field's declaration index, or one member of a nested field by both indices.
+
+// A parameter socket names its field by declaration index, and a nested field's member by both indices.
 inline constexpr uint8_t NoField = UINT8_MAX;
 inline constexpr size_t MaxParameterFields = 16u;
 struct Socket {
     SocketType Type;
     SocketDirection Direction;
     uint8_t Types{}; // The attribute types a non-geometry socket carries, one TypeBit each
-    bool Reads{}; // A geometry input the node only reads, where every other geometry input edits its record
-    const char *Name{}; // The editor's label, or the type's name when null
+    bool Reads{}; // The node reads this geometry input without editing it
+    const char *Name{}; // The editor label, or the type's name when null
     uint8_t Field{NoField};
     uint8_t Member{NoField};
-    // Whether the socket carries the parameter field at the path.
+    // Whether the socket carries this parameter field.
     constexpr bool Carries(uint8_t field, uint8_t member = NoField) const { return Field == field && Member == member; }
 };
 
 namespace detail {
 using enum SocketType;
 using enum SocketDirection;
-inline constexpr uint8_t Bool = TypeBit(AttributeType::Bool), Float = TypeBit(AttributeType::Float), Vec3 = TypeBit(AttributeType::Vec3);
-// A kind's fixed sockets, which its parameter sockets follow after the inputs.
-// A source or generator emits geometry from no input.
+
+inline constexpr uint8_t Bool{TypeBit(AttributeType::Bool)}, Float{TypeBit(AttributeType::Float)}, Vec3{TypeBit(AttributeType::Vec3)};
+
+// Each kind's fixed sockets, with parameter sockets added after the inputs.
+// Sources and generators have no inputs.
 inline constexpr Socket SourceSockets[]{{Geometry, Out}};
 inline constexpr Socket OutputSockets[]{{Geometry, In}};
-// A join moves the elements of its second input into the geometry it edits.
+// A join moves its second input's elements into its first.
 inline constexpr Socket JoinSockets[]{{Geometry, In}, {Geometry, In}, {Geometry, Out}};
 inline constexpr Socket BooleanSockets[]{{Geometry, In, 0u, true, "Mesh 1"}, {Geometry, In, 0u, true, "Mesh 2"}, {Geometry, Out}};
-// An operator edits its geometry input where its selection input selects.
+// An operator edits its geometry input where the selection is true.
 inline constexpr Socket OperatorSockets[]{{Geometry, In}, {Selection, In, Bool}, {Geometry, Out}};
 inline constexpr Socket PositionSockets[]{{Attribute, Out, Vec3}};
 inline constexpr Socket IndexSockets[]{{Attribute, Out, TypeBit(AttributeType::Int)}};
@@ -199,12 +223,13 @@ inline constexpr Socket BooleanMathSockets[]{{Attribute, In, Bool, false, "A"}, 
 inline constexpr Socket StoreSockets[]{{Geometry, In}, {Attribute, In, AnyType, false, "Value"}, {Geometry, Out}};
 inline constexpr Socket SetPositionSockets[]{{Geometry, In}, {Attribute, In, Vec3, false, "Position"}, {Selection, In, Bool}, {Geometry, Out}};
 inline constexpr Socket PointsSockets[]{{Geometry, In}, {Geometry, Out, 0u, false, "Points"}};
-// A whole-geometry operator edits every element of its input.
+// A whole-geometry operator edits every element.
 inline constexpr Socket WholeSockets[]{{Geometry, In}, {Geometry, Out}};
-// Instancing edits its points and reads its instance geometry.
+// Instancing edits the points and reads the instance geometry.
 inline constexpr Socket InstanceSockets[]{{Geometry, In, 0u, false, "Points"}, {Geometry, In, 0u, true, "Instance"}, {Instances, Out}};
 inline constexpr Socket RealizeSockets[]{{Instances, In, 0u, true}, {Geometry, Out}};
-// The attribute type a parameter field of type F carries through its socket, or none for a field without a socket.
+
+// The attribute type a parameter of type F carries through its socket, or 0 when it has no socket.
 template<typename F> constexpr uint8_t TypesOf() {
     if constexpr (std::same_as<F, float>) return Float;
     else if constexpr (std::same_as<F, uint32_t>) return TypeBit(AttributeType::Int);
@@ -213,11 +238,13 @@ template<typename F> constexpr uint8_t TypesOf() {
     else if constexpr (std::same_as<F, quat>) return TypeBit(AttributeType::Vec4);
     else return 0u;
 }
-// A nested field's socket is named by its field's label and its member's, where a type names its members as its editor does.
+
+// A nested field's socket label is its field label followed by its member label.
 template<typename T, size_t J> inline constexpr auto MemberLabel = field::Label<T, J>;
 template<> inline constexpr auto MemberLabel<Transform, 0> = field::fixed_string{"Position"};
 template<> inline constexpr auto MemberLabel<Transform, 1> = field::fixed_string{"Rotation"};
 template<> inline constexpr auto MemberLabel<Transform, 2> = field::fixed_string{"Scale"};
+
 template<size_t A, size_t B> consteval auto Spaced(field::fixed_string<A> a, field::fixed_string<B> b) {
     field::fixed_string<A + B> out{};
     for (size_t i = 0u; i + 1u < A; ++i) out.Chars[i] = a.Chars[i];
@@ -226,6 +253,7 @@ template<size_t A, size_t B> consteval auto Spaced(field::fixed_string<A> a, fie
     return out;
 }
 template<typename K, size_t I, typename F, size_t J> inline constexpr auto NestedLabel = Spaced(field::Label<K, I>, MemberLabel<F, J>);
+
 template<typename K> inline constexpr Socket ValueSockets[]{{Value, Out, TypesOf<decltype(K::Value)>()}};
 template<typename K> constexpr std::span<const Socket> FixedSockets() {
     if constexpr (std::same_as<K, Source> || std::same_as<K, ObjectInfo> || Generator<K>) return SourceSockets;
@@ -249,8 +277,8 @@ template<typename K> constexpr std::span<const Socket> FixedSockets() {
     else return OperatorSockets;
 }
 
-// The attribute types a kind's parameter field carries through an attribute socket, one value per element of the domain the node edits it in, declared per field the way its Spec is.
-// Every other parameter field of a float, integer, bool or vec3 type has a value socket.
+// The parameter fields that take a value per element through an attribute socket, with their types.
+// Every other float, integer, bool or vec3 field gets a value socket.
 template<typename K, field::fixed_string Name> inline constexpr uint8_t PerElement = 0u;
 template<> inline constexpr uint8_t PerElement<action::mesh::Bevel, "Width"> = Float;
 template<> inline constexpr uint8_t PerElement<action::mesh::Poke, "Offset"> = Float;
@@ -268,8 +296,9 @@ template<> inline constexpr uint8_t PerElement<VectorMath, "Scale"> = Float;
 template<> inline constexpr uint8_t PerElement<FloatMath, "B"> = Float;
 template<> inline constexpr uint8_t PerElement<Compare, "B"> = Float | Vec3;
 template<> inline constexpr uint8_t PerElement<BooleanMath, "B"> = Bool;
-// The kind's sockets with their count: its fixed inputs, an input per parameter field of a socket type in field order, then its fixed outputs.
-// A value kind's one field is its output.
+
+// A kind's sockets and their count: fixed inputs, then one input per parameter field with a socket type, then fixed outputs.
+// A value kind's field is its output.
 template<typename K> inline constexpr auto KindSocketTable = [] {
     constexpr auto fixed = FixedSockets<K>();
     std::array<Socket, fixed.size() + MaxParameterFields> all{};
@@ -281,17 +310,15 @@ template<typename K> inline constexpr auto KindSocketTable = [] {
         K value{};
         field::ForEach(value, [&]<size_t I>(auto &member, std::integral_constant<size_t, I>) {
             using F = std::remove_cvref_t<decltype(member)>;
-            static_assert(I < MaxParameterFields);
             constexpr auto types = TypesOf<F>();
             if constexpr (types != 0u) {
                 constexpr auto per_element = PerElement<K, field::NameString<K, I>>;
                 all[n++] = {per_element ? Attribute : Value, In, per_element ? per_element : types, false, field::Label<K, I>.c_str(), uint8_t(I)};
             } else if constexpr (field::Walkable<F>) {
-                // A nested field's members each take a value socket.
+                // Each member of a nested field gets a value socket.
                 field::ForEach(member, [&]<size_t J>(auto &nested, std::integral_constant<size_t, J>) {
                     constexpr auto nested_types = TypesOf<std::remove_cvref_t<decltype(nested)>>();
                     if constexpr (nested_types != 0u) {
-                        static_assert(J < MaxParameterFields);
                         all[n++] = {Value, In, nested_types, false, NestedLabel<K, I, F, J>.c_str(), uint8_t(I), uint8_t(J)};
                     }
                 });
@@ -303,6 +330,7 @@ template<typename K> inline constexpr auto KindSocketTable = [] {
     }
     return std::pair{all, n};
 }();
+
 template<typename K> constexpr std::span<const Socket> SocketsOf() { return std::span{KindSocketTable<K>.first}.first(KindSocketTable<K>.second); }
 template<typename... Ks> constexpr auto PerKind(action::TypeList<Ks...>, auto &&value) {
     return std::array<uint16_t, sizeof...(Ks)>{uint16_t(value.template operator()<Ks>())...};
@@ -313,34 +341,31 @@ inline constexpr auto SocketCount = detail::PerKind(NodeKinds{}, []<typename K> 
 inline constexpr auto InputCount = detail::PerKind(NodeKinds{}, []<typename K> {
     return std::ranges::count(detail::SocketsOf<K>(), SocketDirection::In, &Socket::Direction);
 });
+
 inline constexpr uint16_t KindCount = uint16_t(SocketCount.size());
 inline constexpr size_t MaxInputs = std::ranges::max(InputCount);
-// Each kind's sockets, inputs before outputs, start at SocketFirst[kind] of Sockets.
+
+// Each kind's sockets start at SocketFirst[kind] in Sockets, inputs first.
 inline constexpr auto SocketFirst = [] {
     std::array<uint16_t, KindCount + 1u> first{};
     for (uint16_t k = 0u; k < KindCount; ++k) first[k + 1u] = first[k] + SocketCount[k];
     return first;
 }();
+
 inline constexpr auto Sockets = []<typename... Ks>(action::TypeList<Ks...>) {
     std::array<Socket, SocketFirst.back()> all{};
     auto *it = all.begin();
     ((it = std::ranges::copy(detail::SocketsOf<Ks>(), it).out), ...);
     return all;
 }(NodeKinds{});
-static_assert([] {
-    for (uint16_t k = 0u; k < KindCount; ++k) {
-        for (uint16_t s = 0u; s < SocketCount[k]; ++s) {
-            if ((s < InputCount[k]) != (Sockets[SocketFirst[k] + s].Direction == SocketDirection::In)) return false;
-        }
-    }
-    return true;
-}(),
-              "A kind's inputs precede its outputs");
 
 constexpr std::span<const Socket> KindSockets(uint16_t kind) { return std::span{Sockets}.subspan(SocketFirst[kind], SocketCount[kind]); }
-// An attribute node has no geometry socket, and evaluates once for each node that reads it on that node's geometry input.
+
+// An attribute node has no geometry socket.
+// It evaluates once per node that reads it, on that node's geometry input.
 constexpr bool IsAttributeKind(uint16_t kind) { return KindSockets(kind).front().Type == SocketType::Attribute; }
-// The range of the kind's parameter sockets, which follow its fixed inputs and end its inputs.
+
+// The kind's parameter sockets, which come last among its inputs.
 constexpr std::pair<uint16_t, uint16_t> ParameterRange(uint16_t kind) {
     return {uint16_t(std::ranges::count(KindSockets(kind).first(InputCount[kind]), NoField, &Socket::Field)), InputCount[kind]};
 }
@@ -351,21 +376,23 @@ template<typename K> inline constexpr uint16_t KindOf = []<typename... Ks>(actio
     return found;
 }(NodeKinds{});
 
-// Whether an output socket links into an input socket of a node of `to_kind`: the same type sharing an attribute type, a bool attribute into a selection, or a value into an attribute or selection input sharing its type.
-// An Output node's geometry input also takes instances, which its mesh entity publishes.
+// Whether an output socket can link into an input on a `to_kind` node.
+// Sockets link with the same socket type and a shared attribute type, which geometry doesn't need.
+// Attributes and values can also feed selections, values can feed attributes, and an Output node also takes instances.
 constexpr bool Links(Socket from, Socket to, uint16_t to_kind) {
     if (from.Type == SocketType::Instances) return to.Type == SocketType::Instances || to_kind == KindOf<Output>;
     const bool typed = from.Type == to.Type || ((from.Type == SocketType::Attribute || from.Type == SocketType::Value) && to.Type == SocketType::Selection) || (from.Type == SocketType::Value && to.Type == SocketType::Attribute);
     return typed && (from.Type == SocketType::Geometry || (from.Types & to.Types));
 }
 
-// Invokes `f.template operator()<K>()` for the kind's parameter component.
+// Call `f` with the parameter type of `kind`.
 template<typename F> void VisitKind(uint16_t kind, F &&f) {
     [&]<typename... Ks>(action::TypeList<Ks...>) {
         uint16_t index = 0u;
         (void)((index++ == kind && (f.template operator()<Ks>(), true)) || ...);
     }(NodeKinds{});
 }
+
 template<typename F> void ForEachKind(F &&f) {
     [&]<typename... Ks>(action::TypeList<Ks...>) { (f.template operator()<Ks>(), ...); }(NodeKinds{});
 }
@@ -375,11 +402,13 @@ struct NodeRecord {
     state::Entity Entity;
     uint16_t Kind;
 };
-// The output socket an input reads, with NoNode for an unlinked input.
+
+// The output socket an input reads, or NoNode when unlinked.
 struct SocketLink {
     uint32_t FromNode{NoNode};
     uint16_t FromSocket{};
 };
+
 // Persistent on the mesh entity.
 struct GeometryProcedure {
     std::vector<NodeRecord> Nodes; // In authoring order
@@ -387,20 +416,23 @@ struct GeometryProcedure {
     uint32_t OutputNode{NoNode}; // The Output node whose input holds the result
     uint32_t ActiveNode{NoNode}; // The node the editor's parameter panel edits
 };
+
 // The node's first input in Inputs.
 inline uint32_t InputFirst(const GeometryProcedure &procedure, uint32_t node) {
     uint32_t first = 0u;
     for (uint32_t n = 0u; n < node; ++n) first += InputCount[procedure.Nodes[n].Kind];
     return first;
 }
-// Each node's first input in Inputs, then the input count.
+
+// Each node's first input in Inputs, then the total input count.
 inline std::vector<uint32_t> InputFirsts(const GeometryProcedure &procedure) {
     std::vector<uint32_t> first{0u};
     for (const auto &node : procedure.Nodes) first.push_back(first.back() + InputCount[node.Kind]);
     return first;
 }
-// Marks `node` and the nodes it reads through its inputs, directly or through other marked nodes, where `follows` admits each node it marks.
-// Each node's inputs start at its entry of `input_first`.
+
+// Mark `node` and every node it reads from, directly or indirectly, visiting only nodes `follows` accepts.
+// `input_first` holds each node's first input.
 std::vector<bool> Upstream(const GeometryProcedure &procedure, std::span<const uint32_t> input_first, uint32_t node, auto &&follows) {
     std::vector<bool> marked(procedure.Nodes.size());
     marked[node] = true;
@@ -416,7 +448,9 @@ std::vector<bool> Upstream(const GeometryProcedure &procedure, std::span<const u
     }
     return marked;
 }
-// The kind's first geometry socket in the direction, through which a node inserted on a link links, or none.
+
+// The kind's first geometry socket in the direction, or none.
+// A node inserted on a link connects through it.
 inline std::optional<uint16_t> MainSocket(uint16_t kind, SocketDirection direction) {
     const auto sockets = KindSockets(kind);
     for (uint16_t s = 0u; s < uint16_t(sockets.size()); ++s) {
@@ -424,7 +458,9 @@ inline std::optional<uint16_t> MainSocket(uint16_t kind, SocketDirection directi
     }
     return {};
 }
-// Whether the node inserts on the link between two other nodes that enters the input: its main output links into the input, the link's source links into its main input, and neither link closes a cycle.
+
+// Whether the node can be inserted on the link into this input.
+// Its main output must fit the input, the link's source must fit its main input, and no cycle can form.
 inline bool Inserts(const GeometryProcedure &procedure, std::span<const uint32_t> input_first, uint32_t node, uint32_t to_node, uint16_t to_socket) {
     const auto link = procedure.Inputs[input_first[to_node] + to_socket];
     const auto kind = procedure.Nodes[node].Kind, to_kind = procedure.Nodes[to_node].Kind;
@@ -435,32 +471,35 @@ inline bool Inserts(const GeometryProcedure &procedure, std::span<const uint32_t
     const auto all = [](uint32_t) { return true; };
     return !Upstream(procedure, input_first, node, all)[to_node] && !Upstream(procedure, input_first, link.FromNode, all)[node];
 }
-// Persistent on a mesh entity whose procedure results in instances: the instance entities it publishes, one per point under each object instancing the mesh, object by object.
-// Each entity is an Instance of the instanced mesh whose Transform is its point's instance transform.
+
+// Persistent on a mesh entity whose procedure outputs instances: the instance entities it publishes, one per point for each object using the mesh, grouped by object.
+// Each is an Instance of the instanced mesh, with its point's transform.
 struct ProcedureInstances {
     std::vector<state::Entity> Entities;
 };
-// Persistent on a mesh entity whose procedure results in instances of geometry the procedure made: the mesh entity holding that geometry, which the published instances instance.
-// The owned mesh entity has no object, transform or name of its own, and it destroys once the result stops instancing it and with the procedure.
+
+// Persistent on a mesh entity whose procedure outputs instances of geometry it created: the mesh entity holding that geometry.
+// That mesh entity has no object, transform or name, and is destroyed when the result stops instancing it or the procedure is removed.
 struct ProcedureOwnedMesh {
     state::Entity MeshEntity;
 };
 
-// Persistent on a node, for the node editor.
+// Persistent on a node: its position and size in the node editor.
 struct NodeLayout {
     vec2 Position, Size;
 };
-// Persistent on a node: its selection input as one mask block per block its input record owns, in ascending block order.
-// An absent or empty selection selects every element.
+
+// Persistent on a node: its selection, as one mask block per block of its input record, in block order.
+// An absent or empty selection selects everything.
 struct InlineSelection {
     std::vector<SelectionBlock> Vertices, Edges, Faces;
 };
-// Persistent on a node a viewport operator appended, whose edit selects the elements it emits in its output record the way the operator does.
-struct PublishSelection {};
-// Persistent on a node the editor has selected, within its procedure's own selection.
-struct NodeSelected {};
-// Why a node could not run, which forwards its input instead.
-// An operation that runs and changes nothing, or whose geometry input is unlinked, forwards its input without a fault.
+
+struct PublishSelection {}; // Persistent on a node a viewport operator added, which selects its output like the operator does.
+struct NodeSelected {}; // Persistent on a node the editor has selected.
+
+// Why a node could not run, in which case it passes its input through.
+// A node that changes nothing, or has no geometry input linked, also passes its input through, without a fault.
 enum class NodeFault : uint8_t {
     Selection, // The selection does not fit the operation
     Parameter, // A parameter is invalid
@@ -469,10 +508,12 @@ enum class NodeFault : uint8_t {
     Empty, // A boolean produced no geometry
     NoMesh, // An Object Info node names no mesh it can read
 };
+
 // Derived on a node that could not run.
 struct NodeError {
     NodeFault Fault;
 };
+
 // Derived on the mesh entity, rebuilt with its procedure.
 struct CookPlan {
     std::vector<uint32_t> Order; // Every node after the nodes it reads

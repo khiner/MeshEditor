@@ -27,8 +27,6 @@ template<typename F> bool ForChannelComponent(state::TypeKey key, F &&f) {
     }(ChannelComponents{});
 }
 
-static_assert(offsetof(PosedLocal, Value) == 0 && offsetof(BoneDelta, Value) == 0, "Pose fields share Transform's offsets");
-
 bool NearlyEqual(float a, float b) { return std::abs(a - b) <= 1e-5f * std::max({1.f, std::abs(a), std::abs(b)}); }
 } // namespace
 

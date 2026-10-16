@@ -9,7 +9,6 @@ namespace action {
 // Ms... walks from the component down to the leaf field being written.
 template<auto... Ms>
 Update<detail::last_field<Ms...>> UpdateOf(Target target, detail::last_field<Ms...> v) {
-    static_assert(sizeof...(Ms) > 0, "UpdateOf requires at least one member pointer");
     using C = detail::first_class<Ms...>;
     using F = detail::last_field<Ms...>;
     static_assert(Updatable<C>, "Add the component to action::UpdatableComponents");

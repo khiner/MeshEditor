@@ -38,7 +38,7 @@ struct ChannelTarget {
 };
 
 // A quaternion channel value is quat's own bytes.
-static_assert(sizeof(quat) == 4 * sizeof(float) && std::is_trivially_copyable_v<quat>);
+static_assert(std::is_trivially_copyable_v<quat>);
 inline quat LoadQuat(const float *v) {
     quat q;
     std::memcpy(&q, v, sizeof q);

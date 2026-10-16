@@ -259,7 +259,7 @@ mesheditor_library(MeshEditorUi COLD
     src/audio/AudioUi.cpp
     src/gizmo/TransformGizmo.cpp
     src/physics/PhysicsUi.cpp
-    src/procedure/ProcedureUi.cpp
+    src/procedure/NodeEditor.cpp
     src/render/SvgResource.cpp
     src/scene/SceneControlsUi.cpp
     src/ui/FieldEdit.cpp

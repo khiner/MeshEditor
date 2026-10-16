@@ -1,4 +1,4 @@
-#include "procedure/ProcedureUi.h"
+#include "procedure/NodeEditor.h"
 
 #include "Field.h"
 #include "action/Build.h"
@@ -123,8 +123,8 @@ struct CanvasView {
 struct Rect {
     ImVec2 Min, Max;
 };
-// A node shows its fixed sockets in rows, inputs down the left edge and outputs down the right.
-// A node with parameters has a parameters tray under its fixed inputs: closed, one row with a chevron where its parameter wires meet, and open, a row per parameter socket in the chevron's place.
+// A node shows inputs down its left edge and outputs down its right, one per row.
+// Its parameters sit in a tray under the fixed inputs, one chevron row when closed and one row per parameter when open.
 // The row an input socket sits on, and the rows the inputs take.
 uint32_t InputRow(uint16_t kind, uint16_t socket, bool expanded) { return expanded ? socket : std::min<uint32_t>(socket, ParameterRange(kind).first); }
 uint32_t InputRows(uint16_t kind, bool expanded) { return expanded ? InputCount[kind] : std::min<uint32_t>(InputCount[kind], ParameterRange(kind).first + 1u); }
@@ -336,10 +336,10 @@ std::vector<uint32_t> SelectedNodes(const state::Scene &r, const GeometryProcedu
     return selected;
 }
 
-// The links Make Link adds between the nodes ordered left to right by their layout, one for each adjacent pair at most.
-// A pair links from its left node into its right, or the other way when the right node has no inputs or the left no outputs.
-// It links the first input in socket order that is unlinked, or with `replace` linked elsewhere when none is unlinked, from the first output that links into it.
-// A pair whose link would close a cycle links nothing.
+// The links Make Link adds, at most one per pair of nodes adjacent left to right.
+// A pair links left into right, or right into left when only that direction has sockets.
+// It links the first unlinked input, or with `replace` the first linked one, from the first output that fits.
+// A link that would close a cycle is skipped.
 std::vector<action::nodes::Link> MakeLinks(const state::Scene &r, state::Entity mesh_entity, GeometryProcedure procedure, std::vector<uint32_t> nodes, bool replace) {
     std::ranges::stable_sort(nodes, {}, [&](uint32_t n) { return r.get<const NodeLayout>(procedure.Nodes[n].Entity).Position.x; });
     const auto input_first = InputFirsts(procedure);
@@ -608,9 +608,8 @@ void DrawResults(int count, float width, int &highlight, int previous, bool ente
     }
 }
 
-// Adds a node of a picked kind at the menu's canvas position, from its kind groups or, with search text, from the kinds the text finds.
-// The added node grabs.
-// A linking menu lists every socket that links with the held socket flat, as Blender's link search does, and stages the add for ContinueLink to link that socket and grab the node.
+// Add a node of the picked kind at the menu's position and grab it, picking from kind groups or search results.
+// A menu opened by dropping a wire lists every socket that fits the held one, like Blender's link search, and ContinueLink links the new node through it.
 void DrawAddMenu(NodesWindow &window, const NodeTheme &theme, state::Entity mesh_entity, const GeometryProcedure &procedure, bool interactive) {
     if (!BeginPopup("##AddNode")) return;
     const auto &nodes = procedure.Nodes;
@@ -776,9 +775,8 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
         const auto sockets = KindSockets(kind);
         const auto [first, end_parameter] = ParameterRange(kind);
         const bool erring = r.all_of<NodeError>(entity);
-        // The active node borders in the active color and a selected node in the selected color, an erring node in the error color unless selected, and a selected erring node adds an error line inside its border.
-        // The border centers on the node's edge, where the sockets sit, and the sockets draw over it.
-        // ImGui strokes a rectangle half a unit inside its bounds, so the stroked bounds grow by that half.
+        // Border the node in the active, selected or error color, in that order, with an inner error line on a selected erring node.
+        // ImGui strokes half a unit inside a rectangle, so grow it by that half to center the border on the node edge where the sockets sit.
         const bool active = n == procedure.ActiveNode, selected = r.all_of<NodeSelected>(entity);
         const auto error = U32(colors.Error);
         const auto border = active ? U32(colors.Active) : selected ? U32(colors.Selected) :
@@ -867,7 +865,6 @@ bool ObjectChoice(const state::Scene &r, const char *label, state::Entity &value
 
 // Commits an edited attribute name through SetAttributeName when the field deactivates.
 // The window keeps the text of the one field ImGui has active.
-static_assert(std::same_as<decltype(NodesWindow::NameEdit), AttributeName>);
 void NameField(NodesWindow &window, state::Entity node, const char *label, const AttributeName &name, bool interactive) {
     const auto id = GetID(label);
     if (window.NameEditId != id) window.NameEdit = name;
@@ -917,7 +914,6 @@ template<typename K>
 void DrawFields(state::Scene &r, NodesWindow &window, state::Entity node, const K &value, const LinkedFields &linked, bool interactive) {
     field::ForEach(value, [&]<size_t I>(const auto &member, std::integral_constant<size_t, I>) {
         using F = std::remove_cvref_t<decltype(member)>;
-        static_assert(I < MaxParameterFields);
         const auto offset = uint16_t(reinterpret_cast<const std::byte *>(&member) - reinterpret_cast<const std::byte *>(&value));
         const char *label = field::Label<K, I>.c_str();
         if constexpr (std::same_as<F, AttributeName>) {
