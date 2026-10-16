@@ -12,8 +12,9 @@ struct CornerNormalFrame {
     float3 Normal, Ref, Ortho;
 };
 
-// Match CornerNormalOffset.h. Polygon neighbors anchor the frame independently
-// of which triangle references this corner. Unroll the two edge candidates.
+// Match CornerNormalOffset.h.
+// Polygon neighbors anchor the frame independently of which triangle references this corner.
+// Unroll the two edge candidates.
 inline CornerNormalFrame ComputeCornerFrame(float3 normal, float3 p0, float3 next, float3 previous) {
     const float3 n = dot(normal, normal) > 0.f ? normal : float3(0, 0, 1);
     const float3 e1 = next - p0, r1 = e1 - n * dot(e1, n);

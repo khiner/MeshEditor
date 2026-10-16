@@ -39,8 +39,8 @@ private:
 };
 using PhysicalPageRef = std::shared_ptr<PhysicalPage>;
 
-// The available-slab list is intrusive: allocating/releasing a page never
-// searches other slabs. Empty slabs are reused until trimming at a GPU idle point.
+// The available-slab list is intrusive: allocating/releasing a page never searches other slabs.
+// Empty slabs are reused until trimming at a GPU idle point.
 struct PhysicalPagePool : std::enable_shared_from_this<PhysicalPagePool> {
     explicit PhysicalPagePool(const Context &ctx) : Ctx(ctx) {}
     ~PhysicalPagePool();

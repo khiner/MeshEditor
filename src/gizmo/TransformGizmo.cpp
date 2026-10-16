@@ -702,7 +702,6 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
             dl.AddLine(o_px, CirclePositions[0], color, Style.RotationLineWidth / 2);
             dl.AddLine(o_px, CirclePositions[angle_i], color, Style.RotationLineWidth);
         } else if (!g.Start) {
-            // Half-circles facing the camera
             const float r = f.WorldPerNdc * Style.RotationCircleSize;
             const auto cam_to_model = Normalize(transform.WorldDirToLocal(o_ws - cam_ray.o));
             for (uint32_t axis = 0; axis < 3; ++axis) {
@@ -836,8 +835,6 @@ std::optional<Result> Interact(GizmoInteraction &g, const GizmoTransform &transf
         return {};
     }
 
-    // During an active transform, pressing an axis key constrains the transform to that axis.
-    // Pressing the same key again removes the constraint.
     if (g.Start) {
         const auto check_axis_key = [&](ImGuiKey key, InteractionOp axis_op) -> bool {
             if (!ImGui::IsKeyPressed(key, false)) return false;

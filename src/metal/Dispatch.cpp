@@ -54,7 +54,7 @@ MTL::ComputeCommandEncoder *ComputeChain::Encoder() {
         RecordingSignals = ctx.ExecutionSignals();
         OrderedCommits = CommittedCommandBuffers();
     } else if (ctx.ExecutionSignals() != RecordingSignals) {
-        // Work committed since the recording began can write what later passes read, so later passes wait for it.
+        // Wait for prior submissions before dependent reads.
         EndEncoding();
         ctx.OrderAfterGpuWork(Recording.get());
         RecordingSignals = ctx.ExecutionSignals();

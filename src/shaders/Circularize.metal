@@ -1,8 +1,8 @@
 #include "Bindless.metal"
 #include "gpu/VertexPositionEditPushConstants.h"
 
-// One invocation per independent boundary chain. Fitting reads shared GPU
-// scratch; dependency batches preserve order where boundaries meet.
+// One invocation per independent boundary chain.
+// Fitting reads shared GPU scratch; dependency batches preserve order where boundaries meet.
 kernel void Circularize(
     uint i [[thread_position_in_grid]],
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],

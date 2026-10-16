@@ -24,7 +24,6 @@ inline void CountWorkBlocks(device const BindlessSet &b, constant CommitPosedGeo
     atomic_fetch_add_explicit(count, total, memory_order_relaxed);
 }
 
-// Marks the arena address of the cluster owning the element at a handle of the topology's domain, through the meshlet set's table run.
 inline void MarkOwnedMeshlet(device const BindlessSet &b, constant CommitPosedGeometryPushConstants &pc, device const uint *meshlets, uint topology, uint handle) {
     const auto map=pc.ElementMeshlets[topology];
     if (map.Slot == InvalidSlot) return;

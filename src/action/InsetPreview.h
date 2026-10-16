@@ -5,9 +5,7 @@
 #include "state/Entity.h"
 
 namespace action::mesh {
-// Gesture-local metadata and GPU basis for parameter-only inset updates.
-// Source positions, directions, and canonical vertex writes remain on the GPU.
-// Every entry's basis is a range of one word arena.
+// Cache gesture metadata and GPU ranges for inset parameter updates.
 struct InsetPreviewCache {
     explicit InsetPreviewCache(mtl::BufferContext &ctx) : Basis{ctx, SlotType::Buffer, mtl::BufferLifetime::Workspace} {}
 

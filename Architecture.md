@@ -9,13 +9,16 @@
 - `state::Scene` owns entity allocation, native component pages, domain services, and dirty sets.
     - Component and service access uses fixed compile-time schema slots, with no runtime type lookup.
     - Keep component definitions, registration, and encoding in their owning domain TUs.
-    - Reads return const values. Use `edit` to capture before a write, or `patch` to also publish an update.
+    - Reads return const values.
+      Use `edit` to capture before a write, or `patch` to also publish an update.
       Mutable views capture each value they expose; use const views for reading.
-    - Create/update/destroy publish lifecycle changes. Destroy handlers observe the old value.
+    - Create/update/destroy publish lifecycle changes.
+      Destroy handlers observe the old value.
       Managed dirty sets discard destroyed identities; explicit removal trackers retain them until consumed.
     - History owns native copies of changed CPU records and shares unchanged trie branches.
       Serialization is for hashes and persistent records, not hot value installation.
-    - Entity generation/free-list state is versioned once. Exhausted generations retire their slot.
+    - Entity generation/free-list state is versioned once.
+      Exhausted generations retire their slot.
       Navigation and reset advance a separate epoch used to reject stale worker results.
 - Use ordered containers in Persistent components.
 - `Project::AfterRestore()` reconciles Derived state and must not mutate Persistent state.

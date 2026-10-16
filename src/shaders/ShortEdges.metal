@@ -1,7 +1,6 @@
 #include "ConnectivityRead.metal"
 #include "gpu/ShortEdgesPushConstants.h"
 
-// Sets the flag once any edge of the record is shorter than the distance.
 kernel void FlagShortEdges(
     uint i [[thread_position_in_grid]],
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],

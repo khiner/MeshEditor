@@ -127,8 +127,8 @@ ClusterLodBuild BuildClusterLod(const ClusterLodMesh &, bool serial = false);
 
 // Rebuilds the DAG above existing clusters with BuildClusterLod's level loop and the whole build's weights, limits and error scaling.
 // The mesh's single primitive lists every cluster's local triangles in cluster order.
-// `levels` holds each cluster's level, and a cluster joins the pending pool at its level.
-// Every open edge that no other pooled cluster shares keeps its vertices, so the outline against untouched neighbors holds.
-// The result follows BuildClusterLod's layout with the existing clusters as its inputs, and holds no span tree.
+// `levels` contains each cluster's level, and a cluster joins the pending pool at its level.
+// Preserve unshared boundary vertices to match untouched neighbors.
+// The result follows BuildClusterLod's layout with the existing clusters as its inputs, and contains no span tree.
 // `scale` is the primitive's SimplifyScale.
 ClusterLodBuild RebuildClusterLod(const ClusterLodMesh &, std::span<const uint32_t> levels, float scale);

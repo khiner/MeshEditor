@@ -9,7 +9,8 @@
 #include "metal/Dispatch.h"
 #include "state/Scene.h"
 
-// Input fields before assigning position and normal destinations. Empty for meshes without faces.
+// Input fields before assigning position and normal destinations.
+// Empty for meshes without faces.
 std::optional<NormalDeriveEntry> MakeDeriveEntryInputs(const MeshStore &meshes, uint32_t store_id) {
     const auto &record = meshes.Get(store_id);
     if (meshes.Arenas().FaceTriangles.Count(record.FaceData) == 0) return {};

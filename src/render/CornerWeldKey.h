@@ -64,7 +64,8 @@ struct CornerWeldKey {
         return Source.CustomNormals.Attribute.GetOr(Handle(corner)).Offset.x >= 0.f;
     }
 
-    // Fill the first WordCount() words with the corner's key. `flat_face` marks its triangle flat.
+    // Fill the first WordCount() words with the corner's key.
+    // `flat_face` marks its triangle flat.
     void Write(uint32_t corner, uint32_t source_vertex, bool flat_face, std::array<uint32_t, MaxWeldKeyWords> &words) const {
         WriteHandle(Handle(corner), source_vertex, flat_face, words);
     }

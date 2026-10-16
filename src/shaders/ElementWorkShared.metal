@@ -14,8 +14,8 @@ inline uint WorkElement(device const BindlessSet &bindless, ElementWork work, ui
     return block[1u + bit / 32u] & (1u << (bit % 32u)) ? (block[0] - 1u) * 256u + bit : InvalidOffset;
 }
 
-// Return true only to the invocation that first inserts this element. Sparse
-// graph traversals use this to enqueue each dependency once.
+// Return true only to the invocation that first inserts this element.
+// Sparse graph traversals use this to enqueue each dependency once.
 inline bool InsertWork(device const BindlessSet &bindless, ElementWork work, uint element) {
     if (element >= work.Count || work.Storage.Slot == InvalidSlot) return false;
     device atomic_uint *data = BindlessBufferMutable(atomic_uint, bindless.Buffer, work.Storage.Slot) + work.Storage.Offset;
@@ -45,8 +45,8 @@ inline void MarkWork(device const BindlessSet &bindless, ElementWork work, uint 
     InsertWork(bindless,work,element);
 }
 
-// Cooperative reductions need one group per live element, rather than one
-// group for every bit of a sparse block. Prefixes are over occupied blocks only.
+// Cooperative reductions need one group per live element, rather than one group for every bit of a sparse block.
+// Prefixes are over occupied blocks only.
 inline uint WorkGroupElement(device const BindlessSet &bindless, ElementWork work, uint ordinal) {
     if (work.Storage.Slot == InvalidSlot) return ordinal < work.Count ? ordinal : InvalidOffset;
     device const uint *data = BindlessBuffer(uint, bindless.Buffer, work.Storage.Slot) + work.Storage.Offset;
@@ -61,8 +61,8 @@ inline uint WorkGroupElement(device const BindlessSet &bindless, ElementWork wor
     return SelectLiveElement(block + 1u, block[0] - 1u, rank);
 }
 
-// Inverse of compact enumeration. Prefixes live at hash slots so lookup
-// needs no second directory or scan over the address domain.
+// Inverse of compact enumeration.
+// Prefixes live at hash slots so lookup needs no second directory or scan over the address domain.
 inline uint WorkRank(device const BindlessSet &bindless, ElementWork work, uint element) {
     if (element >= work.Count) return InvalidOffset;
     if (work.Storage.Slot == InvalidSlot) return element;
@@ -103,8 +103,8 @@ inline void FinishWork(device const BindlessSet &bindless, ElementWork work, uin
     if (tid == 0u) { data[2] = data[0]; data[3] = data[4] = data[6] = data[7] = 1u; }
 }
 
-// Source work contains handles and membership only. Polygon traversal keeps
-// halfedge handles so a loop can cross independently enumerated work blocks.
+// Source work contains handles and membership only.
+// Polygon traversal keeps halfedge handles so a loop can cross independently enumerated work blocks.
 struct ElementWorkDomain {
     device const BindlessSet &B;
     ElementWork Work;

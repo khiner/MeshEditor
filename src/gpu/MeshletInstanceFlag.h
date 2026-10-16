@@ -2,8 +2,8 @@
 
 #include "gpu/Types.h"
 
-// Mesh records hold every flag except Silhouette, which an instance takes from its selection state.
-// ElementSelection and EditOverlay apply to the mesh's primary edit instance only.
+// Mesh records contain every flag except Silhouette, which an instance takes from its selection state.
+// ElementSelection and EditOverlay apply only to the mesh's primary edit instance.
 enum class MeshletInstanceFlag : uint32_t {
     // A selected instance of a SilhouetteEligible mesh, apart from its mesh's primary edit instance.
     Silhouette = 1u,

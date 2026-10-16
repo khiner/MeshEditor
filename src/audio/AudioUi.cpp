@@ -31,12 +31,9 @@ using std::ranges::to, std::ranges::max_element;
 using std::views::transform;
 using namespace ImGui;
 
-/***** Sound object *****/
-
 namespace {
 constexpr ImVec2 ChartSize{-1, 160};
 
-// If `normalize_max` is set, normalize the data to this maximum value.
 void WriteWav(const std::vector<float> &frames, const fs::path &file_path, uint32_t sample_rate, std::optional<float> normalize_max = {}) {
     WavWriter writer{file_path, sample_rate};
     if (!writer.IsOpen()) throw std::runtime_error(std::format("Failed to open wav file {}", file_path.string()));
@@ -89,7 +86,6 @@ void PlotMagnitudeSpectrum(const std::vector<float> &frames, uint32_t sample_rat
     }
 }
 
-// Returns the index of the hovered mode, if any.
 std::optional<size_t> PlotModeData(
     const std::vector<float> &data, std::string_view label, std::string_view x_label, std::string_view y_label,
     std::optional<size_t> highlight_index = {}, std::optional<float> max_value_opt = {}
@@ -271,7 +267,6 @@ void DrawModalModelSettings(
     }
     if (reuse) BeginDisabled();
     const uint32_t min_vertices = 1, max_vertices = num_vertices;
-    // Reuse shows the actual count of existing excitation vertices, else the editable target count.
     if (uint32_t v = reuse ? r.get<const SoundVertices>(e).Vertices.Count : std::clamp(settings.NumVertices, 1u, num_vertices);
         SliderScalar("Count", ImGuiDataType_U32, &v, &min_vertices, &max_vertices)) {
         fs.Set<&ModalSolveSettings::NumVertices>(v);
@@ -301,7 +296,8 @@ std::vector<uint32_t> GetSampleOpVertices(const state::Scene &r, state::Entity v
     return vertices;
 }
 
-// Circular pad returning a position in the unit disk (center = zero). Drag to set, right-click recenters.
+// Circular pad returning a position in the unit disk (center = zero).
+// Drag to set, right-click recenters.
 bool ImpulseJoystick(vec2 &pos) {
     constexpr float radius{32.f};
     const auto p0 = GetCursorScreenPos();
@@ -391,7 +387,6 @@ void DrawObjectAudioControls(state::Scene &r, state::Entity viewport, state::Ent
         }
     }
 
-    // Sample ops + waveform (rendered when in Samples mode or when no model exists yet).
     if (model == SoundVerticesModel::Samples) {
         if (has_model) SeparatorText("Sound samples");
         if (sample_ops_available) {

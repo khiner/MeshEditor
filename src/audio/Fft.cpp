@@ -55,12 +55,12 @@ struct Split {
     std::vector<float, TransformAllocator<float>> Re, Im;
 };
 
-// Performs a complex transform directly or through Bluestein convolution for unsupported vDSP lengths.
 struct ComplexDft {
     ComplexDft(uint32_t n, vDSP_DFT_Direction direction) : N(n) {
         if (VdspComplexLength(n)) Direct = MakeComplexSetup(n, direction);
         if (Direct) return;
 
+        // Use Bluestein convolution for lengths unsupported by vDSP.
         M = std::max(8u, std::bit_ceil(2 * n - 1));
         Forward = MakeComplexSetup(M, vDSP_DFT_FORWARD);
         Inverse = MakeComplexSetup(M, vDSP_DFT_INVERSE);

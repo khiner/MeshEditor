@@ -24,7 +24,6 @@ vertex GridVaryings GridLinesVertex(
     return {scene.ViewProj() * plane_pos};
 }
 
-// Returns anti-aliased line intensity for spacing 1 / scale.
 inline float GridLineIntensity(float3 pos, float scale, float2 camera_xz, float2 world_d) {
     // Offset by the nearest grid line to preserve float precision at large distances.
     const float2 coord = pos.xz * scale - round(camera_xz * scale);
@@ -35,7 +34,6 @@ inline float GridLineIntensity(float3 pos, float scale, float2 camera_xz, float2
     return (1.0f - min(min(grid.x, grid.y), 1.0f)) * moire_fade;
 }
 
-// Composites premultiplied `a` over `b`.
 inline float4 BlendGrids(float4 a, float4 b) {
     const float alpha = 1.0f - (1.0f - a.a) * (1.0f - b.a);
     if (alpha < 0.001f) return float4(0);
@@ -51,8 +49,8 @@ fragment OverlayTargets GridLinesFragment(
 ) {
     const Scene scene{bindless, view, theme, workspace};
     constant ViewportThemeColors &colors = scene.Theme.Colors;
-    // Intersect this pixel with y = 0 directly. Interpolating infinite triangle
-    // coordinates perturbs derivatives at triangle boundaries and across redraws.
+    // Intersect this pixel with y = 0 directly.
+    // Interpolating infinite triangle coordinates perturbs derivatives at triangle boundaries and across redraws.
     const float2 ndc = in.Position.xy / float2(view.ViewportSize) * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f);
     const float4x4 vp = scene.ViewProj();
     const float3 clip_w = float3(vp[0].w, vp[2].w, vp[3].w);
@@ -66,7 +64,6 @@ fragment OverlayTargets GridLinesFragment(
     const float dist = length(to_camera);
     const float3 V = to_camera / dist;
 
-    // Select three grid scales from the camera height.
     const float camera_height = abs(camera_position.y);
     const float log_dist = log(max(camera_height, 0.001f)) / log(10.0f);
     const float base_level = floor(log_dist);
@@ -94,9 +91,7 @@ fragment OverlayTargets GridLinesFragment(
     const float3 axis_color = mix(float3(colors.GridAxisX), float3(colors.GridAxisZ), step(x_axis, z_axis));
 
     float4 color = BlendGrids(float4(axis_color, max(x_axis, z_axis)), grid);
-    // Fade the grid near horizontal viewing angles.
     color.a *= 1.0f - pow(1.0f - abs(V.y), 3.0f);
-    // Fade toward the far clip plane.
     color.a *= 1.0f - smoothstep(0.0f, 0.5f * view.CameraFar, dist - 0.5f * view.CameraFar);
     color.a *= OverlayBehindFade(scene, in.Position);
     return {color};

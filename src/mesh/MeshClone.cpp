@@ -39,7 +39,6 @@ void EncodeRuns(mtl::ComputeChain &chain, const mtl::ComputePipeline &pipeline, 
     chain.Retain(std::move(tile_buffer));
 }
 
-// Extends `run` by `next` when `next` continues it at both ends.
 bool Extend(ByteCopy &run, const ByteCopy &next) {
     if (run.Source + run.Bytes != next.Source || run.Destination + run.Bytes != next.Destination) return false;
     run.Bytes += next.Bytes;

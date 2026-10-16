@@ -10,7 +10,6 @@
 #include "gpu/OverlayJob.h"
 #include "gpu/OverlayJobDrawPushConstants.h"
 
-// Emits two dedicated vertices per line from procedural extras or persistent bounds and tetrahedral buffers.
 constant uint OverlayJobGroupLines = uint(OverlayDispatch::LineGroupLines);
 constant uint LightRangeSegments = uint(OverlayDispatch::LightRangeSegments);
 constant uint SpotConeSegments = uint(OverlayDispatch::SpotConeSegments);
@@ -38,7 +37,6 @@ inline float3 DiamondPoint(uint corner, float radius, float3 axis1, float3 axis2
     return axes[corner % 4u] * radius;
 }
 
-// Returns one endpoint of a light halo containing a diamond, two dashed rings, and a ground line.
 inline ExtrasLineVertex LightHaloVertex(uint line, uint end) {
     if (line < 4u) return {DiamondPoint(line + end, 2.7f, float3(1, 0, 0), float3(0, 1, 0)), VCLASS_SCREENSPACE};
     if (line < 12u) return {CirclePoint((line - 4u) * 2u, end, 16u, 9.0f, 0.0f), VCLASS_SCREENSPACE};
@@ -66,7 +64,6 @@ inline float3 ColliderRingPoint(uint segment, uint end, float radius, float heig
     return float3(cos(angle) * radius, height, sin(angle) * radius);
 }
 
-// Returns a collision-shape line endpoint in local space.
 inline float3 ColliderWirePoint(OverlayJob job, uint line, uint end) {
     const float4 params = job.Params;
     if (job.ExtrasKind == ExtrasLineKind::ColliderBox) {
@@ -99,7 +96,6 @@ inline float3 ColliderWirePoint(OverlayJob job, uint line, uint end) {
     return float3(point.x, height + (top ? point.y : -point.y), point.z);
 }
 
-// Returns an object-extra line endpoint in local space.
 inline ExtrasLineVertex ExtrasLineVertexAt(OverlayJob job, uint line, uint end) {
     if (IsColliderKind(job.ExtrasKind)) return {float3(job.LocalOffset) + ColliderWirePoint(job, line, end), VCLASS_NONE};
     const float4 params = job.Params;
@@ -243,7 +239,6 @@ inline float4 OverlayJobClipVertex(
             1.0f
         );
     }
-    // Use a fixed theme color for the ground line and diamond.
     if (vertex_class == VCLASS_GROUNDPOINT) color = float4(scene.Theme.Colors.Light);
 
     uint end_class;

@@ -33,7 +33,6 @@ struct SetConstraintInfluence {
 struct BakeConstraintChildOfInverse {
     uint32_t Index;
 };
-// Reset the Child-Of inverse to identity (no offset).
 struct ClearConstraintChildOfInverse {
     uint32_t Index;
 };

@@ -15,7 +15,6 @@
 #include "action/View.h"
 
 namespace action {
-// Contains one action variant per domain.
 using Action = std::variant<
     Core,
     selection::Action, object::Action, view::Action,
@@ -23,7 +22,6 @@ using Action = std::variant<
 
 static_assert(sizeof(Action) <= 64, "Keep actions at or below 64 bytes");
 
-// Returns the domain-variant index containing leaf action type L.
 template<typename L>
 inline constexpr size_t DomainIndex = []<size_t... Is>(std::index_sequence<Is...>) {
     size_t index = std::variant_size_v<Action>;
@@ -31,7 +29,6 @@ inline constexpr size_t DomainIndex = []<size_t... Is>(std::index_sequence<Is...
     return index;
 }(std::make_index_sequence<std::variant_size_v<Action>>{});
 
-// Wrap a leaf action in its domain's variant, merged into an Action.
 template<typename L> Action MakeAction(L &&leaf) {
     using Leaf = std::decay_t<L>;
     constexpr auto D = DomainIndex<Leaf>;
@@ -39,15 +36,13 @@ template<typename L> Action MakeAction(L &&leaf) {
     return Action{std::in_place_index<D>, std::variant_alternative_t<D, Action>{std::in_place_type<Leaf>, std::forward<L>(leaf)}};
 }
 
-// Invoke `f` templated over each domain variant and collect the results in a tuple.
 template<typename F> auto MapDomains(F f) {
     return [&]<size_t... Ds>(std::index_sequence<Ds...>) {
         return std::tuple{f.template operator()<std::variant_alternative_t<Ds, Action>>()...};
     }(std::make_index_sequence<std::variant_size_v<Action>>{});
 }
 
-// Actions are logged for replay unless they only produce an external artifact.
-// E.g. replaying a save would clobber a file.
+// Exclude actions with external side effects from replay.
 template<typename T> inline constexpr bool Recordable = true;
 template<> inline constexpr bool Recordable<io::SaveGltf> = false;
 // Latch state is live-only: the recorded TransformSelection already encodes the resolved transform.
@@ -69,8 +64,8 @@ inline bool IsRecordable(const Action &a) {
     return VisitLeaf(a, []<typename L>(const L &) { return Recordable<L>; });
 }
 
-// A staged previewing action restores the gesture's base state and applies over it as a preview the commit adopts.
-// Every mesh operator previews except one whose placement drag continues its gesture.
+// Restore the gesture base before each preview.
+// Placement-drag operators manage their own previews.
 template<typename T> inline constexpr bool Previews = !std::is_same_v<T, mesh::Extrude> && !std::is_same_v<T, mesh::Duplicate> && !std::is_same_v<T, mesh::Rip>;
 
 inline bool IsPreview(const Action &a) {

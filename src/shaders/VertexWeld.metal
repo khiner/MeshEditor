@@ -104,7 +104,6 @@ inline bool WeldKeysEqual(thread const WeldKeys &k, uint a, uint b) {
     return true;
 }
 
-// Copies `count` words between a staged welded record and one channel, then advances the record cursor.
 inline void WeldMoveWords(device uint *record, thread uint &w, device uint *channel, uint first, uint count, bool to_channels) {
     for (uint p = 0u; p < count; ++p) {
         if (to_channels) channel[first + p] = record[w + p];
@@ -113,8 +112,7 @@ inline void WeldMoveWords(device uint *record, thread uint &w, device uint *chan
     w += count;
 }
 
-// Copies one welded vertex's channels.
-// `stride` addresses the host tangent scratch.
+// Copy welded vertex channels using `stride` for host tangent scratch addresses.
 inline void WeldMoveRecord(thread const WeldKeys &k, device uint *record, uint vertex_index, uint stride, bool to_channels) {
     uint w = 0u;
     WeldMoveWords(record, w, k.Positions, vertex_index * WeldPositionWords, WeldPositionWords, to_channels);
@@ -254,7 +252,6 @@ kernel void VertexWeldCompact(
     const VertexWeldJob job = ctx.Jobs()[tile.x];
     device const uint *scratch = ctx.Scratch();
     const uint welded = scratch[job.FlagsOffset + job.Count];
-    // Skip channel compaction when every source vertex is retained.
     if (welded == job.Count) return;
     const uint n = tile.y * ScanTileSize + lane;
     if (n >= welded) return;
@@ -289,7 +286,6 @@ kernel void VertexWeldRemapCorners(
     const WeldContext ctx{bindless, pc};
     const uint2 tile = ctx.Tile(group_id);
     const VertexWeldJob job = ctx.Jobs()[tile.x];
-    // Skip corner remapping when every source vertex is retained.
     if (ctx.Scratch()[job.FlagsOffset + job.Count] == job.Count) return;
     const uint c = tile.y * ScanTileSize + lane;
     if (c >= job.CornerCount) return;

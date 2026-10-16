@@ -13,7 +13,8 @@ struct Group {
 FlattenPlan PlanFlatten(const Mesh &mesh, const GeometrySelection &selection) {
     std::vector<Group> groups;
     std::unordered_set<uint32_t> covered_edges;
-    // Face groups join across edges. The remaining selected edges join across vertices.
+    // Face groups join across edges.
+    // Remaining selected edges join across vertices.
     for (const auto domain : {Element::Face, Element::Edge}) {
         std::vector<uint32_t> elements, parent;
         std::unordered_map<uint32_t, uint32_t> users;

@@ -10,8 +10,8 @@ constexpr float NoCost = std::numeric_limits<float>::max();
 uint32_t Next(uint32_t h) { return h - h % 3u + (h + 1u) % 3u; }
 uint32_t Prev(uint32_t h) { return h - h % 3u + (h + 2u) % 3u; }
 
-// Blender's BM_verts_calc_rotate_beauty. Projection is expressed directly in
-// the quad plane, so no basis or copied position array is needed.
+// Blender's BM_verts_calc_rotate_beauty.
+// Projection is expressed directly in the quad plane, so no basis or copied position array is needed.
 float BeautyCost(vec3 a, vec3 b, vec3 c, vec3 d, bool angle) {
     const auto cross = [](vec3 a, vec3 b, vec3 c) { return Cross(b - a, c - a); };
     const auto normalize = [](vec3 p) { const float n=Length(p); return n>0.f ? p/n : vec3{}; };
@@ -48,8 +48,8 @@ float BeautyCost(vec3 a, vec3 b, vec3 c, vec3 d, bool angle) {
     const float ab = Length(a - b), bc = Length(b - c), cd = Length(c - d), da = Length(d - a), ac = Length(a - c), bd = Length(b - d);
     const float old_quality = std::abs(old_a) / (bc + cd + bd) + std::abs(old_b) / (da + ab + bd);
     const float new_quality = std::abs(new_a) / (ab + bc + ac) + std::abs(new_b) / (cd + da + ac);
-    // Equal-quality diagonals must not rotate because projection and summation
-    // rounded differently. Scale the tolerance with quality, not world units.
+    // Equal-quality diagonals must not rotate because projection and summation rounded differently.
+    // Scale the tolerance with quality, not world units.
     const float cost = old_quality - new_quality;
     return std::abs(cost) <= 8.f * std::numeric_limits<float>::epsilon() * std::max(old_quality, new_quality) ? 0.f : cost;
 }

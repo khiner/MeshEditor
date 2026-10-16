@@ -7,8 +7,8 @@ namespace mtl {
 struct ComputeChain;
 } // namespace mtl
 
-// A mesh or procedural mesh uses the same GPU builder. Primitive membership,
-// positions, topology and attributes are read from canonical GPU arenas.
+// A mesh or procedural mesh uses the same GPU builder.
+// Primitive membership, positions, topology and attributes are read from canonical GPU arenas.
 // The destination names the store record, which an extras record reads as bone or joint faces.
 // A canonical destination may have one source per topology; all publish together.
 struct MeshletBuildSource {
@@ -34,6 +34,6 @@ MeshRecord BuildMeshRecord(const GpuBuffers &, const MeshStore &, uint32_t store
 // Rewrites the record's GPU mesh record from the current bindless slots.
 void RefreshMeshBinding(state::Scene &, uint32_t store_id);
 
-// Create one empty primitive/LOD leaf only when a local build first uses its
-// source material. Existing routes and every untouched primitive stay in place.
+// Create one empty primitive/LOD leaf only when a local build first uses its source material.
+// Existing routes and every untouched primitive stay in place.
 uint32_t EnsureMeshletPrimitive(state::Scene &, MeshStore::Record &, uint32_t source_primitive, uint32_t topology);

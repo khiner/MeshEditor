@@ -22,7 +22,7 @@ void RepointMeshInstances(state::Scene &, std::span<const state::Entity>);
 // Builds and places level-zero meshlets for the meshes and the procedural bone meshes in one batch on the chain, in input order.
 // The build submits the chain for its counts and publication, and the refreshed LOD attributes run with its next submit.
 void BuildMeshlets(state::Scene &, mtl::ComputeChain &, std::span<const state::Entity> mesh_entities, std::span<const state::Entity> bone_entities);
-// Recomputes each material's required LOD attributes and returns whether any differ from the attributes the primitives hold.
+// Recomputes each material's required LOD attributes and returns whether any differ from the attributes the primitives contain.
 bool RefreshMaterialLodAttributes(state::Scene &);
 // Refreshes primitive dependencies and records the refit of coarse groups those changes invalidate.
 void RefreshClusterLodAttributes(state::Scene &, mtl::ComputeChain &, std::span<const state::Entity>);

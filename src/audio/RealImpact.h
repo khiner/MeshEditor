@@ -10,21 +10,9 @@
 
 using numeric::quat, numeric::vec3;
 
-/*
-Loads and provides access to a [RealImpact](https://github.com/samuel-clarke/RealImpact) dataset for a single object.
-Holds all listener point data except the audio samples.
-There are 2.3G of audio sample data for each object.
-  - 15 microphones * 4 distances * 10 angles = 600 listener points for each impact point
-  - 5 impact points per listener points = 3000 impact samples
-  - ~4.37s at 48kHz = 208,592 frames for each recording
-
-The `ListenerPoints` vector holds the first 600 listener points, representing all unique listener positions.
-The values vary first by MicId, then by DistanceMm, and finally by AngleDeg.
-This mirrors the chronological order of the recording process, where the microphone array records all mics simultaneously,
-storing from bottom to top, then the array moves back away from the object along a line at the same angle, and finally the
-array rotates to the next angle, moves back to the original distance, and repeats.
-Then, the hammer is positioned at the next impact point, and the process repeats.
-*/
+// One object from https://github.com/samuel-clarke/RealImpact.
+// ListenerPoints lists 600 unique positions, ordered by MicId, then DistanceMm, then AngleDeg.
+// Load recordings separately for each of the five impact points.
 
 namespace RealImpact {
 namespace fs = std::filesystem;
@@ -38,7 +26,8 @@ static constexpr float MicBarLengthMm = 1890 - 70; // Height of the microphone a
 static constexpr float MicLengthMm = 190.5, MicWidthMm = 22.352;
 // Listener point closest to the front-center of the object's hemisphere of microphone positions.
 static constexpr uint32_t CenteredListenerIndex = 263;
-// RealImpact meshes are Z-up. Rotates to MeshEditor's Y-up frame and flips 180° so the object faces forward.
+// RealImpact meshes are Z-up.
+// Rotates to MeshEditor's Y-up frame and flips 180° so the object faces forward.
 extern const quat ObjectRotationToYUp;
 
 struct ListenerPoint {

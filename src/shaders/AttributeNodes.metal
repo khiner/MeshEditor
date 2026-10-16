@@ -47,7 +47,6 @@ inline uint4 FloatMathNode(uint4 a_words, uint4 b_words, FloatMathOp op) {
     return a_words;
 }
 
-// Compares A and B as floats, each a float value or the chosen component of a vector.
 inline uint4 CompareNode(uint4 a_words, AttributeType a_type, uint4 b_words, AttributeType b_type, uint component, CompareOp op, float epsilon) {
     const float a = as_type<float>(a_type == AttributeType::Float ? a_words.x : a_words[component]);
     const float b = as_type<float>(b_type == AttributeType::Float ? b_words.x : b_words[component]);

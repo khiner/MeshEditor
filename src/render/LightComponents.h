@@ -3,7 +3,8 @@
 #include "Field.h"
 #include "gpu/PunctualLightType.h"
 
-// A KHR_lights_punctual light in glTF units. Range 0 is infinite, and cone angles are radians.
+// A KHR_lights_punctual light in glTF units.
+// Range 0 is infinite, and cone angles are radians.
 struct PunctualLight {
     float Range{0.f};
     vec3 Color{1.f, 1.f, 1.f};
@@ -16,7 +17,8 @@ struct PunctualLight {
 template<> inline constexpr FieldSpec Spec<PunctualLight, "Intensity">{.Min = 0, .Max = 1000, .Digits = 2};
 template<> inline constexpr FieldSpec Spec<PunctualLight, "Range">{.Min = 0.01, .Max = 1000, .Digits = 2};
 
-// The scene's EXT_lights_image_based light on the viewport. Rotation turns the environment and Intensity scales it.
+// The scene's EXT_lights_image_based light on the viewport.
+// Rotation turns the environment and Intensity scales it.
 struct ImageLight {
     quat Rotation{1, 0, 0, 0};
     float Intensity{1.f};

@@ -28,12 +28,14 @@ enum class MeshKind : uint8_t {
 };
 
 // Source references preserve glTF ordering and hierarchy independently of the runtime hierarchy.
-// Every imported object, node stub, and bone carries one. Armature objects have no source node, so Index is empty.
+// Every imported object, node stub, and bone carries one.
+// Armature objects have no source node, so Index is empty.
 struct GltfNode {
     std::optional<uint32_t> Index, Parent, Sibling, Camera, Light;
     // Retains a source matrix while runtime state uses TRS.
     std::optional<mat4> Matrix;
-    // Source names that runtime naming changed. Empty when the runtime name matches.
+    // Source names that runtime naming changed.
+    // Empty when the runtime name matches.
     std::string Name, CameraName, LightName;
     // The source name was empty and the runtime name is synthesized, so saves omit it.
     bool EmptyName{};
@@ -90,7 +92,8 @@ std::expected<fastgltf::Asset, LoadError> ParseGltfAsset(const std::filesystem::
 // Activates `scene` when it names an inactive scene.
 void SwitchActiveScene(state::Scene &, state::Entity scene);
 
-// Extras keys use fastgltf::Category bits. These name the categories the UI reads.
+// Extras keys use fastgltf::Category bits.
+// These name the categories the UI reads.
 constexpr uint32_t ExtrasCameras = 1u << 7, ExtrasMeshes = 1u << 9, ExtrasNodes = 1u << 11, ExtrasLights = 1u << 18;
 std::optional<std::string_view> GetExtras(const SourceAssets &, uint32_t category, uint32_t source_index);
 } // namespace gltf

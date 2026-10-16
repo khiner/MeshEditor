@@ -3,8 +3,8 @@
 #include "gpu/ElementWork.h"
 #include "gpu/MeshRecord.h"
 
-// A tile can fill eight 48-triangle meshlets without forcing a short final
-// cluster. Its 1,152 corner keys fit the shared-memory construction workspace.
+// A tile can fill eight 48-triangle meshlets without forcing a short final cluster.
+// Its 1,152 corner keys fit the shared-memory construction workspace.
 GPU_CONSTANT uint32_t MeshletBuildTileElements = 384u;
 GPU_CONSTANT uint32_t MeshletBuildTileRecords = (MeshletBuildTileElements + 20u) / 21u;
 // One SIMD group chooses each next triangle without a cross-group reduction.

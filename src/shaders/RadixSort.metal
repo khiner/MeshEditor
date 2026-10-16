@@ -3,8 +3,8 @@
 
 #include "BlockScan.metal"
 
-// Stable four-bit passes over 256-item tiles. Keys and order are separate so
-// sorting never moves geometry or attribute payloads.
+// Stable four-bit passes over 256-item tiles.
+// Keys and order are separate so sorting never moves geometry or attribute payloads.
 struct RadixSortView {
     device const uint *Keys;
     device uint *Order, *Temporary, *Histogram, *Totals;

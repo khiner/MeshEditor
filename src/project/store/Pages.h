@@ -6,7 +6,7 @@
 
 namespace store {
 // Versioned zero-default byte pages over CPU or Metal storage.
-// Storage holds whole pages and grows through Reserve, which returns the new storage.
+// Storage contains whole pages and grows through Reserve, which returns the new storage.
 // The backing owns the live length.
 // Write before mutating live bytes and Settle after CPU and GPU writes complete.
 struct Pages {
@@ -59,7 +59,8 @@ struct Pages {
 
     void Settle() { Trie.SettleFlat(Storage); }
 
-    // The byte ranges a restore or load changed, for an owner that maps bytes to records. The consumer takes them.
+    // The byte ranges a restore or load changed, for an owner that maps bytes to records.
+    // The consumer takes them.
     std::vector<std::pair<uint64_t, uint64_t>> TakeChangedExtents() { return std::exchange(ChangedExtents, {}); }
 
     bool Restore(const Version &v) {
@@ -125,7 +126,7 @@ private:
     void Apply(RestorePlan &plan) {
         for (auto &c : plan.Changes) {
             if (c.Erase) {
-                // Settled hashes identify the present pages that hold only zeros.
+                // Current hashes identify the present pages that contain only zeros.
                 if (!Present(c.Slot) || c.Slot >= Trie.SlotHashes.size() || Trie.SlotHashes[c.Slot].State != LiveTrie::SlotState::Value) {
                     c.Unchanged = true;
                     continue;

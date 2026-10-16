@@ -1,7 +1,6 @@
 #include "MeshTopologyContext.metal"
 #include "gpu/TopologyIdentityPushConstants.h"
 
-// An output map, indexed by compact output ordinal.
 inline device uint *IdentityOutput(device const BindlessSet &b, SlotOffset map) { return BindlessBufferMutable(uint,b.Buffer,map.Slot)+map.Offset; }
 
 // The operator's scanned output count of a quantity, which the host reads only after this submit.
@@ -87,7 +86,6 @@ kernel void TopologyIdentityNew(
         MarkWork(b,pc.NewElements[d],i);
 }
 
-// The i-th new output takes the i-th inserted handle.
 kernel void TopologyIdentityAssign(
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
     constant TopologyIdentityPushConstants &pc [[buffer(BufferIndex_PushConstants)]],

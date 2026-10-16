@@ -48,7 +48,8 @@ struct BoneAttachment {
     BoneId Bone;
 };
 
-// A bone entity's persisted pose relative to its rest pose. Identity is at rest.
+// A bone entity's persisted pose relative to its rest pose.
+// Identity is at rest.
 struct BoneDelta {
     Transform Value;
 };

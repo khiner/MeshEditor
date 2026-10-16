@@ -43,6 +43,6 @@ struct MeshletPatchAdoptJob {
 
 // Adopt locally built, primitive-bound finest meshlets into one canonical owner.
 // The host publishes their membership, traversal leaves and element owner blocks, and the chain writes their owner values.
-// Blocks names the canonical element blocks the fragments hold, and the fragments become empty.
+// Return canonical element blocks in Blocks and empty the fragments.
 // Returns the adopted clusters in ascending order.
 std::vector<uint32_t> AdoptMeshletFragments(state::Scene &, mtl::ComputeChain &, MeshStore::Record &, uint32_t topology, std::span<MeshStore::Record> fragments, std::span<const MeshletPatchAdoptJob> jobs, std::span<const uint32_t> blocks);

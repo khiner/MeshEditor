@@ -7,7 +7,6 @@
 // Any other line emits the one line it leaves: itself, its merged ends, or a dissolve chain's join, and a joining operator keeps one line per pair of ends.
 #include "MeshTopologySubdivide.metal"
 
-// The one output line a source line leaves, between the source-local vertices whose outputs it joins.
 struct TopoLine {
     uint From, To;
     bool Kept;
@@ -22,8 +21,8 @@ inline bool TopoLineJoins(MeshTopologyJob job) { return TopologyJoinsLines(job.O
 inline uint2 TopoLineKey(TopoLine line) { return uint2(min(line.From, line.To), max(line.From, line.To)); }
 inline uint TopoLineHash(uint2 key) { return TopoCellHash(int3(int(key.x), int(key.y), 0)); }
 
-// Record the preceding kept corner once per dissolved boundary. A two-corner
-// boundary leaves one loose edge; longer boundaries continue to own face edges.
+// Record the preceding kept corner once per dissolved boundary.
+// A two-corner boundary leaves one loose edge; longer boundaries continue to own face edges.
 inline void TopoDissolveBoundary(TopoContext ctx, MeshTopologyJob job, uint f) {
     const bool own=TopoDissolveOwnLoop(ctx,job,f);
     if (!own && ctx.FaceLabels(job)[f]!=f) return;
@@ -64,8 +63,8 @@ inline TopoLineEnd TopoLineChainEnd(TopoContext ctx, MeshTopologyJob job, uint v
     return {InvalidOffset, InvalidOffset};
 }
 
-// Only unchanged edges outside the core need a fan query. Inside the core,
-// the shared key table prefers surviving face edges over coincident wires.
+// Only unchanged edges outside the core need a fan query.
+// Inside the core, the shared key table prefers surviving face edges over coincident wires.
 inline bool TopoOuterLine(TopoContext ctx, MeshTopologyJob job, uint a, uint b) {
     const auto src=ctx.Src(job);
     for (const auto item:src.Fan(ctx.SrcVertexDomain(job).Handle(a))) {
@@ -146,14 +145,13 @@ inline bool TopoLineFirst(TopoContext ctx, MeshTopologyJob job, TopoLine line, u
     return TopoLineRepresentative(ctx,job,line)==hi && !TopoLineSurface(ctx,job,ctx.SrcHalfedgeDomain(job).Handle(hi));
 }
 
-// The output corners a source line emits at its representative corner.
 inline uint TopoLineCorners(TopoContext ctx, MeshTopologyJob job, uint h) {
     if (job.Op == MeshTopologyOp::Subdivide && TopoEdgeCut(ctx, job, h)) return 2u * (TopoSubdivideCuts(job) + 1u);
     const TopoLine line = TopoLineOutput(ctx, job, h);
     return line.Kept && TopoLineFirst(ctx, job, line, ctx.SrcHalfedgeDomain(job).Index(h)) ? 2u : 0u;
 }
 
-// Writes an output line from output vertex `from` to `to`, whose corners take their attributes from the source corners at its ends.
+// Emit a line from output vertex `from` to `to` with corner attributes from the respective source endpoints.
 inline void TopoEmitLine(TopoContext ctx, MeshTopologyJob job, uint d, uint from, uint to, uint from_corner, uint to_corner, uint edge_source, bool selected) {
     ctx.DstHalfedgeFaces(job)[d]=ctx.DstHalfedgeFaces(job)[d+1u]=InvalidOffset;
     const auto opposites=ctx.DstOpposites(job);
@@ -162,7 +160,6 @@ inline void TopoEmitLine(TopoContext ctx, MeshTopologyJob job, uint d, uint from
     ctx.WriteCorner(job, d + 1u, from, from_corner, from_corner, 0.f, edge_source, selected);
 }
 
-// Emits a source line's outputs at its representative corner.
 inline void TopoScatterLine(TopoContext ctx, MeshTopologyJob job, uint h, uint entry) {
     if (ctx.Counts(job, TopoCountWireCorners)[entry + 1u] == ctx.Counts(job, TopoCountWireCorners)[entry]) return;
     const uint base = ctx.WireCornerOffset(job, entry);

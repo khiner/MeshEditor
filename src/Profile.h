@@ -5,7 +5,6 @@
 #include <Metal/MTLCommandBuffer.hpp>
 #include <filesystem>
 
-// Store CPU and GPU samples for the next report.
 namespace profile {
 inline bool Enabled{false};
 inline std::filesystem::path JsonPath{};
@@ -13,7 +12,6 @@ inline std::filesystem::path JsonPath{};
 void Init(const mtl::Context &);
 void Deinit();
 
-// Begin per-pass timing for a command buffer.
 void BeginRecording();
 mtl::PassTimer *RecordingTimer();
 void EndRecording();
@@ -26,7 +24,6 @@ void RecordCounter(std::string_view name, double value);
 void Resolve(MTL::CommandBuffer *);
 // Clear samples while no scope or recording is active.
 void ClearStats();
-// Report the current CPU scopes under title.
 void ReportCpuPhase(std::string_view title);
 void Report();
 

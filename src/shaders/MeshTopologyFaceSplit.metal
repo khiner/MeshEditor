@@ -3,8 +3,8 @@
 
 #include "MeshTopologyFaces.metal"
 
-// A face owns at most n-2 polygons and 3n-6 loop nodes. Count builds this plan
-// once for nonplanar splitting or convex partitioning; scatter consumes it.
+// A face owns at most n-2 polygons and 3n-6 loop nodes.
+// Count builds this plan once for nonplanar splitting or convex partitioning; scatter consumes it.
 struct FaceSplitPolygons {
     device uint *Source, *Next, *Prev, *Start, *Length;
     device packed_float3 *Positions;
@@ -89,9 +89,8 @@ inline FaceSplitPolygons TopoInitFaceSplit(TopoContext ctx, MeshTopologyJob job,
     return plan;
 }
 
-// Blender's connect_verts_nonplanar rule: minimize the sum of absolute plane
-// height changes on both loops, then compare their normals to the angle limit.
 inline uint3 TopoNonplanarCount(TopoContext ctx, MeshTopologyJob job, uint f) {
+    // Blender's connect_verts_nonplanar rule: minimize the sum of absolute plane height changes on both loops, then compare their normals to the angle limit.
     const uint2 range = ctx.SrcFaceRange(job, f);
     const uint n = range.y - range.x;
     if (!ctx.SrcSelectedFace(job, f) || n <= 3u) return uint3(0u, 1u, n);

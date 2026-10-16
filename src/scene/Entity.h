@@ -28,14 +28,16 @@ struct Scene {
 };
 // Tag on the currently shown scene.
 struct ActiveScene {};
-// Scenes this object is in. Absent when there's only one scene (everything's in it).
+// Scenes this object is in.
+// Absent when there's only one scene (everything's in it).
 struct SceneMembership {
     std::vector<state::Entity> Scenes;
 };
 
 // Invariants:
 // * Zero or more entities can be Selected.
-// * At most one entity can be Active. Active and Selected are independent.
+// * At most one entity can be Active.
+// Active and Selected are independent.
 // * Active persists until explicitly replaced by a new pick/select action.
 struct Selected {};
 struct Active {};
@@ -46,7 +48,8 @@ struct MeshActiveElement {
 };
 
 // Sub-elements are not independently selectable in Object mode.
-// Picking/selection routes to Parent. Origin dot drawn only on Parent.
+// Picking/selection routes to Parent.
+// Origin dot drawn only on Parent.
 // Examples: armature bones, future duplivert instances.
 struct SubElementOf {
     state::Entity Parent;
@@ -75,7 +78,7 @@ std::vector<state::Entity> SortedEntities(std::ranges::input_range auto &&entiti
     return sorted;
 }
 
-// Whether `entities`, in the entity index order views run in, hold `e`.
+// Return whether entities contains e; require entity-index order.
 inline bool ContainsInIndexOrder(std::span<const state::Entity> entities, state::Entity e) {
     const auto it = std::ranges::lower_bound(entities, state::Index(e), {}, state::Index);
     return it != entities.end() && *it == e;
@@ -86,7 +89,8 @@ std::string GetName(const state::Scene &, state::Entity); // Returns name if pre
 
 state::Entity FindActiveEntity(const state::Scene &); // If no active entity, returns state::Null.
 
-// Mesh-data entity behind an instance. GetMeshEntity returns null for non-mesh instances.
+// Mesh-data entity behind an instance.
+// GetMeshEntity returns null for non-mesh instances.
 state::Entity GetMeshEntity(const state::Scene &, state::Entity);
 state::Entity GetActiveMeshEntity(const state::Scene &);
 state::Entity FindMeshEntity(const state::Scene &, state::Entity); // Instance's mesh entity, else the entity itself.

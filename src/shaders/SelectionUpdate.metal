@@ -17,11 +17,9 @@ struct SelectionContext {
           Conn(b, Mesh.Connectivity, Mesh.FaceCount) {}
 
     device uint *Work() const { return BindlessBufferMutable(uint, B.Buffer, Pc.WorkSlot); }
-    // The arena address of a handle of the vertex, edge, face or halfedge domain.
     uint Address(uint domain, uint handle) const {
         return domain == 0u ? Conn.VertexAddress(handle) : domain == 1u ? Conn.EdgeAddress(handle) : domain == 2u ? Conn.FaceAddress(handle) : Conn.HalfedgeAddress(handle);
     }
-    // The block holding an arena address of a domain.
     device const MeshElementBlock &Block(uint domain, uint address) const { return BindlessBuffer(MeshElementBlock, B.Buffer, Pc.Blocks[domain])[address / MeshElementBlockSize]; }
     uint Corner(uint h) const { return Conn.CornerVertex(Pc.CornersSlot, h); }
     bool HiddenAt(uint domain, uint address) const {
@@ -38,7 +36,6 @@ struct SelectionContext {
         const uint from = opposite != InvalidOffset ? opposite : Mesh.FaceCount ? conn.Previous(h) : InvalidOffset;
         return uint2(Corner(h), from == InvalidOffset ? InvalidOffset : Corner(from));
     }
-    // Whether the source domain's words select the element at the handle and its arena address.
     bool Derived(uint domain, uint handle, uint address) const {
         if (HiddenAt(domain, address)) return false;
         const auto conn = Conn;

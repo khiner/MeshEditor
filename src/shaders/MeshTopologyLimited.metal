@@ -3,12 +3,11 @@
 
 #include "MeshTopologyContext.metal"
 
-// An edge's two face users can disagree in any UV set or material, or carry
-// an explicit sharp mark. These are canonical arena reads over affected edges.
+// An edge's two face users can disagree in any UV set or material, or carry an explicit sharp mark.
+// These are canonical arena reads over affected edges.
 inline bool TopoLimitedDelimiter(TopoContext ctx,MeshTopologyJob job,uint h,uint opposite) {
     if ((job.Flags&TopologyFlagDelimitSharp) && ctx.SrcEdgeSharpness(job)[ctx.SrcEdge(job,h)]) return true;
-    // Primitive indices are the mesh's material slots, including distinct
-    // slots that currently reference the same material.
+    // Primitive indices are the mesh's material slots, including distinct slots that currently reference the same material.
     if ((job.Flags&TopologyFlagDelimitMaterial) &&
         ctx.SrcElementPrimitive(job,ctx.SrcFaceOf(job,h))!=ctx.SrcElementPrimitive(job,ctx.SrcFaceOf(job,opposite))) return true;
     if (job.Flags&TopologyFlagDelimitUV) {
@@ -29,8 +28,8 @@ inline TopoLimitedWork TopoLimited(TopoContext ctx,MeshTopologyJob job) {
     return {reinterpret_cast<device packed_uint2 *>(base),base+2u*job.SrcVertexCount,base+3u*job.SrcVertexCount};
 }
 
-// Build chains of selected degree-two vertices. Their endpoints, branches and
-// unselected vertices stay outside the chains and are never written by them.
+// Build chains of selected degree-two vertices.
+// Their endpoints, branches and unselected vertices stay outside the chains and are never written by them.
 inline void TopoLimitedPrepare(TopoContext ctx,MeshTopologyJob job,uint v) {
     const auto work=TopoLimited(ctx,job);
     work.Labels[v]=InvalidOffset;
@@ -71,9 +70,10 @@ inline void TopoLimitedJump(TopoContext ctx,MeshTopologyJob job,uint v) {
     if (atomic_fetch_min_explicit(labels+v,root,memory_order_relaxed)>root) ctx.State(job)[1]=1u;
 }
 
-// One GPU thread owns each chain. A removal changes only its two neighbors,
-// which re-enter the queue if needed. Thus there are at most N+2N queue visits;
-// a curved chain cannot disappear merely because all original bends were small.
+// One GPU thread owns each chain.
+// A removal changes only its two neighbors, which re-enter the queue if needed.
+// Bound queue visits by N initial vertices plus two neighbors per removal.
+// Recheck angles after each removal to preserve accumulated curvature.
 inline void TopoLimitedSimplify(TopoContext ctx,MeshTopologyJob job,uint root) {
     if (!(ctx.State(job)[0]&TopoLabelsConverged)) return;
     const auto work=TopoLimited(ctx,job);

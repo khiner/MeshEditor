@@ -481,8 +481,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         std::fprintf(stderr, "Rendering the baseline...\n");
         SubmitViewport(r, engine.Viewport);
         WaitForRender(r);
-        // Include the renderer's first meshlet and LOD publication in the
-        // baseline used for replay, as well as the edit selection.
+        // Include the renderer's first meshlet and LOD publication in the baseline used for replay, as well as the edit selection.
         p.History.Commit("benchmark selection", {});
         const auto base = *p.History.Present;
         const auto allocated = [&] { return uint64_t(r.Context.get<const mtl::Context>().Device->currentAllocatedSize()); };
@@ -511,7 +510,6 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             const char *plane_offset = std::getenv("MESHEDITOR_SPATIAL_PLANE_OFFSET");
             float offset = plane_offset ? std::strtof(plane_offset, nullptr) : Dot(normal, original.CalcFaceCentroid(face));
             std::printf("spatial_work,visited_nodes,candidate_blocks,candidate_faces,exact_faces\n");
-            // Report canonical broad-phase traversal, candidate membership and exact face matches.
             const auto spatial_counts = [&](const MeshTopologyTask &task) {
                 mtl::ComputeChain chain{meshes.BufferContext()};
                 SpatialFaceWork work{r, chain, task};
@@ -928,7 +926,6 @@ int main(int argc, char **argv) {
     };
     const auto scene = std::filesystem::path{argv[1]};
     const bool file = scene.extension() == ".gltf" || scene.extension() == ".glb";
-    // Slices, updates, render, refit probe, width, height, position, join.
     std::array<uint32_t, 8> numbers{0u, 3u, 0u, 0u, 128u, 128u, 0u, 0u};
     for (int i = 1; i < std::min(argc, 9); ++i) {
         if (i == 1 && file) continue;

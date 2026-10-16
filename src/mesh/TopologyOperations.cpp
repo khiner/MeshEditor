@@ -59,9 +59,8 @@ std::vector<std::vector<uint32_t>> BoundaryLoops(const MeshStore &meshes, const 
             if (!unique) it->second = InvalidOffset;
         }
     }
-    // Follow the face fan at the current boundary halfedge's destination to
-    // find the next boundary halfedge on the same surface sheet. Vertex-based
-    // pairing loses loops when distinct boundaries share a vertex.
+    // Follow the face fan at the current boundary halfedge's destination to find the next boundary halfedge on the same surface sheet.
+    // Vertex-based pairing loses loops when distinct boundaries share a vertex.
     const auto successor = [&](uint32_t h) -> uint32_t {
         auto next = c.Next(Mesh::HH{h});
         const auto across = [&](Mesh::HH at) -> Mesh::HH {
@@ -95,8 +94,8 @@ std::vector<std::vector<uint32_t>> BoundaryLoops(const MeshStore &meshes, const 
             if (!max_sides || loop.size() < max_sides) loop.push_back(*mesh.GetFromVertex(Mesh::HH{h}));
             const auto next = successor(h);
             if (selected_only && !candidate(next)) {
-                // A selected hole may touch an unselected boundary at one
-                // vertex. Follow its sole selected outgoing edge there.
+                // A selected hole may touch an unselected boundary at one vertex.
+                // Follow its sole selected outgoing edge there.
                 const auto it = selected_outgoing.find(*mesh.GetToVertex(Mesh::HH{h}));
                 h = it == selected_outgoing.end() ? InvalidOffset : it->second;
             } else {
@@ -350,7 +349,6 @@ std::optional<MeshTopologyTask> ConvexHullTask(const MeshStore &meshes, const Me
     const auto &points = selection.Vertices;
     if (points.size() < 4) return {};
     const auto at = [&](uint32_t v) { return mesh.GetPosition(he::VH{v}); };
-    // A starting tetrahedron from the first point, the farthest from it, the farthest from that line, and the farthest from that plane.
     std::array<uint32_t, 4> seed{points[0], points[0], points[0], points[0]};
     const auto farthest = [&](uint32_t &vertex, auto &&distance) {
         float best = 0.f;
@@ -397,7 +395,6 @@ std::optional<MeshTopologyTask> ConvexHullTask(const MeshStore &meshes, const Me
         while (j < 3 && !(face.V[j] == from && face.V[(j + 1) % 3] == to)) ++j;
         return j;
     };
-    // A point waits on the first face from `first` that sees it, or falls inside.
     const auto assign = [&](uint32_t v, uint32_t first) {
         for (uint32_t i = first; i < faces.size(); ++i) {
             if (outside(faces[i], v)) {
@@ -434,7 +431,6 @@ std::optional<MeshTopologyTask> ConvexHullTask(const MeshStore &meshes, const Me
     };
     std::vector<uint32_t> visible, stack;
     std::vector<HorizonEdge> horizon;
-    // The search that last reached each face.
     std::vector<uint32_t> visited(faces.size(), 0u);
     uint32_t search = 0;
     while (!pending.empty()) {
@@ -462,7 +458,6 @@ std::optional<MeshTopologyTask> ConvexHullTask(const MeshStore &meshes, const Me
             }
         }
         for (auto &edge : horizon) edge.NeighborEdge = edge_slot(faces[edge.Neighbor], edge.To, edge.From);
-        // Each horizon edge fans to the point, and consecutive fans meet along the point's spokes.
         const auto first_new = uint32_t(faces.size());
         std::unordered_map<uint32_t, uint32_t> fan_from, fan_to;
         for (uint32_t i = 0; i < horizon.size(); ++i) {
@@ -480,7 +475,6 @@ std::optional<MeshTopologyTask> ConvexHullTask(const MeshStore &meshes, const Me
             face.Across = {edge.Neighbor, fan_from.at(edge.To), fan_to.at(edge.From)};
             faces[edge.Neighbor].Across[edge.NeighborEdge] = first_new + i;
         }
-        // The visible faces' outside points move to the new faces.
         for (const auto f : visible) {
             auto &face = faces[f];
             face.Alive = false;

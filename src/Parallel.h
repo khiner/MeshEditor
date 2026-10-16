@@ -2,7 +2,7 @@
 
 #include <dispatch/dispatch.h>
 
-// Run `body(i)` concurrently for every i in [0, count).
+// Run body(i) concurrently for i in [0, count).
 // Each invocation must access only state assigned to its index.
 template<typename BodyT> void ParallelFor(uint32_t count, BodyT &&body) {
     if (count == 0) return;

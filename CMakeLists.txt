@@ -25,7 +25,6 @@ set(CMAKE_CXX_FLAGS "-stdlib=libc++")
 set(CMAKE_C_FLAGS "")
 target_compile_options(meshoptimizer PRIVATE -O3)
 
-# Link full zstd compression and decompression support.
 add_library(basisu_transcoder STATIC
     lib/basis_universal/transcoder/basisu_transcoder.cpp
     lib/basis_universal/zstd/zstd.c
@@ -33,11 +32,9 @@ add_library(basisu_transcoder STATIC
 target_include_directories(basisu_transcoder SYSTEM PUBLIC lib/basis_universal/transcoder)
 target_compile_options(basisu_transcoder PRIVATE -O2 -w -fno-strict-aliasing $<$<COMPILE_LANGUAGE:CXX>:-include exception>)
 
-# Suppress warnings from bundled libraries.
 file(GLOB_RECURSE LIB_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.c ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.cpp)
 set_source_files_properties(${LIB_SOURCES} PROPERTIES COMPILE_FLAGS "-w")
 
-# Symlink resources next to the executable.
 set(RESOURCE_DEST "${CMAKE_BINARY_DIR}/res")
 if(NOT EXISTS ${RESOURCE_DEST})
     file(CREATE_LINK "${CMAKE_SOURCE_DIR}/res" ${RESOURCE_DEST} SYMBOLIC)

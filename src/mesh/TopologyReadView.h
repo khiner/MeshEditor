@@ -13,8 +13,7 @@ struct MeshStore;
 
 // Read-only clones of every page the source neighborhoods of a batch of in-place edits read, including the sources' table runs.
 // Each source reads the clones at its own offsets, so the batch takes one slot per read buffer.
-// Clones preserve bytes, not allocator identities: the caller keeps source
-// handles reserved until the clones and their submitted consumers retire.
+// Clones preserve bytes, not allocator identities: the caller keeps source handles reserved until the clones and their submitted consumers retire.
 // Bindings without read pages stay invalid.
 struct TopologyReadView {
     // Adds the pages the rules of a source's neighborhood read, whose work lives in `scratch`.

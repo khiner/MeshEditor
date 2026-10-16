@@ -12,7 +12,6 @@ namespace action::animation {
 namespace {
 using ::animation::KeyTarget;
 
-// Entities a target names: the bones in Pose mode and the objects otherwise.
 std::vector<state::Entity> TargetEntities(const state::Scene &r, state::Entity viewport, const Target &target) {
     std::vector<state::Entity> entities;
     const bool pose = r.get<const Interaction>(viewport).Mode == InteractionMode::Pose;

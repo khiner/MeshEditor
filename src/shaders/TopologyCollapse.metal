@@ -64,8 +64,8 @@ kernel void TopologyCollapseReduce(uint lane [[thread_index_in_threadgroup]], ui
     if (i < count) CollapseSums(ctx, job, level)[i] = sum;
 }
 
-// Parent prefixes already contain preceding tiles. Only a tile's leading
-// component can continue across its boundary.
+// Parent prefixes already contain preceding tiles.
+// Only a tile's leading component can continue across its boundary.
 kernel void TopologyCollapseCarry(uint lane [[thread_index_in_threadgroup]], uint group [[threadgroup_position_in_grid]], COLLAPSE_ARGS) {
     COLLAPSE_CONTEXT;
     const uint level = pc.PassParameter, count = CollapseLevelCount(job.CollapseCount, level);
@@ -77,8 +77,8 @@ kernel void TopologyCollapseCarry(uint lane [[thread_index_in_threadgroup]], uin
     sums[i] = AddCollapseSum(CollapseSums(ctx, job, level + 1u)[tile.y - 1u], sums[i]);
 }
 
-// A component's final sorted item owns its destination position. Publishing
-// through the count scan avoids a center lookup or a second position write.
+// A component's final sorted item owns its destination position.
+// Publishing through the count scan avoids a center lookup or a second position write.
 kernel void TopologyCollapseCenters(uint lane [[thread_index_in_threadgroup]], uint group [[threadgroup_position_in_grid]], COLLAPSE_ARGS) {
     COLLAPSE_CONTEXT;
     const uint i = tile.y * 256u + lane;

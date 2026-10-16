@@ -46,7 +46,8 @@ struct Context {
     void AddResident(MTL::Allocation *) const;
     void RemoveResident(MTL::Allocation *) const;
     void CommitResidency() const;
-    // Teardown/draining only. Normal publication and retirement are asynchronous.
+    // Teardown/draining only.
+    // Normal publication and retirement are asynchronous.
     // Retired resources never add a wait to live-geometry submissions.
     bool DrainMappings() const;
     // Frame boundary: collect empty slabs only when native mappings are idle.
@@ -69,8 +70,8 @@ struct Context {
     void OrderAfterGpuWork(MTL::CommandBuffer *) const;
     // Advances with every execution-order signal, so a recorder can tell whether GPU work was committed after its command buffer began.
     uint64_t ExecutionSignals() const { return ExecutionSerial; }
-    // Arguments are physical pages. CommitResidency orders mappings after prior
-    // Queue work and before subsequent consumers on Queue.
+    // Arguments are physical pages.
+    // CommitResidency orders mappings after prior Queue work and before subsequent consumers on Queue.
     void MapBufferPages(MTL::Buffer *, MTL::Heap *, uint64_t first, uint64_t count, uint64_t heap_first) const;
 
     NS::SharedPtr<MTL::Device> Device;
@@ -85,8 +86,7 @@ private:
     mutable bool ResidencyDirty{false};
     mutable std::vector<NS::SharedPtr<MTL::Allocation>> PendingResidentRemovals;
     NS::SharedPtr<MTL4::CommandQueue> MappingQueue;
-    // Separate event values identify mapping publication, GPU execution, and
-    // retired-address cleanup on their respective timelines.
+    // Separate event values identify mapping publication, GPU execution, and retired-address cleanup on their respective timelines.
     NS::SharedPtr<MTL::SharedEvent> MappingEvent, ExecutionEvent, RetirementEvent;
     // An unmap has no heap.
     struct Mapping {

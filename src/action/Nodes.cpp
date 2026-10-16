@@ -16,7 +16,6 @@ state::Entity CreateNode(state::Scene &r, uint16_t kind, vec2 position) {
     return entity;
 }
 
-// A new node entity holding copies of the node's parameters, layout, inline selection and publish tag.
 state::Entity CopyNode(state::Scene &r, state::Entity node, uint16_t kind) {
     const auto copy = r.create();
     VisitKind(kind, [&]<typename K> {
@@ -38,7 +37,6 @@ bool ListsNodes(const GeometryProcedure &procedure, const std::vector<uint32_t> 
     return std::ranges::is_sorted(nodes) && std::ranges::adjacent_find(nodes) == nodes.end() && (nodes.empty() || nodes.back() < procedure.Nodes.size());
 }
 
-// Clears the procedure's node selection.
 void DeselectNodes(state::Scene &r, const GeometryProcedure &procedure) {
     for (const auto &node : procedure.Nodes) {
         if (r.all_of<NodeSelected>(node.Entity)) r.remove<NodeSelected>(node.Entity);
@@ -56,7 +54,6 @@ uint16_t KindOfNode(const state::Scene &r, state::Entity node) {
     return kind;
 }
 
-// Writes the name into the node's NamedAttribute or StoreNamedAttribute parameters.
 template<typename K> bool Rename(state::Scene &r, state::Entity node, std::string_view name) {
     if (!r.valid(node) || !r.all_of<K>(node)) return false;
     r.patch<K>(node, [&](K &p) {
@@ -135,10 +132,10 @@ void Apply(state::Scene &r, state::Entity, const Action &action) {
                 const auto *evaluated = procedure_of(a.MeshEntity) ? r.try_get<const EvaluatedMesh>(a.MeshEntity) : nullptr;
                 if (!evaluated) return;
                 const auto output = evaluated->StoreId;
-                // The output record becomes the source, so the evaluated mesh leaving after it keeps the record.
+                // Transfer the evaluated record to the source before removing its MeshHandle.
                 r.remove<MeshHandle>(a.MeshEntity);
                 r.emplace<MeshHandle>(a.MeshEntity, output);
-                // The published instances stay as plain objects with the mesh entity they instance, so their lists empty before they leave.
+                // Detach published instance lists before destroying the procedure to retain the objects.
                 if (r.all_of<ProcedureInstances>(a.MeshEntity)) r.replace<ProcedureInstances>(a.MeshEntity);
                 if (r.all_of<ProcedureOwnedMesh>(a.MeshEntity)) r.replace<ProcedureOwnedMesh>(a.MeshEntity, state::Null);
                 r.remove<GeometryProcedure, ProcedureInstances, ProcedureOwnedMesh, EvaluatedMesh, ResyncState, CookPlan, PrimitiveShape>(a.MeshEntity);
@@ -148,7 +145,6 @@ void Apply(state::Scene &r, state::Entity, const Action &action) {
                 if (!procedure) return;
                 if (a.Nodes.empty() || !ListsNodes(*procedure, a.Nodes)) return Fail(r, "A duplicate lists distinct nodes of the procedure in ascending order");
                 const auto first = uint32_t(procedure->Nodes.size());
-                // The copy of each listed node, or NoNode.
                 std::vector<uint32_t> copy_of(first, NoNode);
                 for (uint32_t i = 0u; i < a.Nodes.size(); ++i) copy_of[a.Nodes[i]] = first + i;
                 std::vector<NodeRecord> copies;
@@ -179,7 +175,7 @@ void Apply(state::Scene &r, state::Entity, const Action &action) {
                 if (a.Nodes.empty() || !ListsNodes(*procedure, a.Nodes)) return Fail(r, "A delete lists distinct nodes of the procedure in ascending order");
                 const auto input_first = InputFirsts(*procedure);
                 const auto removed = [&](uint32_t n) { return std::ranges::binary_search(a.Nodes, n); };
-                // The remaining output a link reads through the removed nodes, or no link.
+                // Resolve links through removed nodes to surviving outputs.
                 const auto through = [&](this const auto &self, SocketLink link) -> SocketLink {
                     if (link.FromNode == NoNode || !removed(link.FromNode)) return link;
                     const auto kind = procedure->Nodes[link.FromNode].Kind;
@@ -211,7 +207,7 @@ void Apply(state::Scene &r, state::Entity, const Action &action) {
                         for (const auto &[slot, source] : relinks) edited.Inputs[slot] = source;
                     });
                 }
-                // Each destroy removes its node from the procedure and unlinks the inputs still reading it.
+                // Destroying a node removes it from the procedure and disconnects its consumers.
                 for (const auto entity : entities) r.destroy(entity);
             },
             [&](const InsertNode &a) {
@@ -303,7 +299,6 @@ state::Entity AppendNode(state::Scene &r, state::Entity viewport, state::Entity 
     }
     const auto read = procedure.Inputs[InputFirst(procedure, output)];
     const auto node = uint32_t(procedure.Nodes.size());
-    // The node takes the Output node's place, and the Output node moves past it.
     const auto position = r.get<const NodeLayout>(procedure.Nodes[output].Entity).Position;
     r.patch<NodeLayout>(procedure.Nodes[output].Entity, [](NodeLayout &layout) { layout.Position.x += 240.f; });
     Apply(r, viewport, AddNode{mesh_entity, kind, position});
@@ -325,7 +320,6 @@ void ForEachResultNode(const state::Scene &r, state::Entity viewport, const std:
 } // namespace action::nodes
 
 namespace action {
-// The edited procedure's active node, and its selected nodes.
 state::Entity UpdateTraits<procedure::NodeLayout>::Active(const state::Scene &r) {
     const auto *procedure = r.try_get<const procedure::GeometryProcedure>(nodes::EditedMesh(r));
     return procedure && procedure->ActiveNode != procedure::NoNode ? procedure->Nodes[procedure->ActiveNode].Entity : state::Null;

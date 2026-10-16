@@ -42,7 +42,6 @@ vertex ObjectOriginVaryings ObjectOriginVertex(
     };
 }
 
-// A filled disc in the object's selection color inside a dark rim, premultiplied.
 fragment float4 ObjectOriginFragment(
     ObjectOriginVaryings in [[stage_in]],
     constant ObjectOriginPushConstants &pc [[buffer(BufferIndex_PushConstants)]]

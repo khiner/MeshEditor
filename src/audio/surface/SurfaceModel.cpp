@@ -6,8 +6,6 @@
 #include <complex>
 #include <numeric>
 
-/***** Roughness tracks *****/
-
 namespace {
 uint64_t SplitMix64(uint64_t &state) {
     uint64_t z = (state += 0x9e3779b97f4a7c15ull);
@@ -16,9 +14,7 @@ uint64_t SplitMix64(uint64_t &state) {
     return z ^ (z >> 31);
 }
 
-// The state `draws` SplitMix64 calls ahead, the state stepping by a constant per draw.
 uint64_t SkipDraws(uint64_t state, uint64_t draws) { return state + draws * 0x9e3779b97f4a7c15ull; }
-// One draw of the stream, mapped to a uniform in [0, 1).
 float UniformDraw(uint64_t &state) { return float(SplitMix64(state) >> 40) * 0x1p-24f; }
 float NextPhase(uint64_t &state) { return UniformDraw(state) * 2 * std::numbers::pi_v<float>; }
 
@@ -53,7 +49,6 @@ float Finish(RoughnessTrack &t) {
         }
         t.CurvatureRms = float(std::sqrt(curvature_energy / double(n - 2)));
     }
-    // Compute cyclic boxcar means from the running integral.
     for (uint32_t i = 0; i < TrackWidthCount; ++i) {
         const size_t width = size_t{1} << i;
         if (width >= n) {
@@ -155,7 +150,6 @@ FittedBand FitBand(const SpectrumCells &cells) {
     return best;
 }
 
-// A curve tabulated per bin, read at a fractional bin exactly as the field's amplitudes are.
 double SpectrumAt(std::span<const double> curve, double at) {
     if (at < 1 || at >= double(curve.size() - 1)) return 0;
     const auto lo = size_t(at);
@@ -172,7 +166,6 @@ std::vector<double> RadialSpectrum(std::span<const double> power, uint32_t rows,
     const auto count = cells.At.size();
     if (count < 4) return radial;
     const auto corner = FitBand(cells).Corner;
-    // Interpolate cell values onto bins.
     std::vector<double> held(count, 0.0);
     std::vector<size_t> cell(bins, 0);
     std::vector<double> share(bins, 0.0);
@@ -185,7 +178,6 @@ std::vector<double> RadialSpectrum(std::span<const double> power, uint32_t rows,
     const auto fill = [&] {
         for (size_t i = 1; i + 1 < bins; ++i) radial[i] = held[cell[i] - 1] + share[i] * (held[cell[i]] - held[cell[i] - 1]);
     };
-    // The exponent over the octave centred on each cell.
     const auto spread = std::max(size_t(RadialCellsPerOctave / 2), size_t{1});
     for (size_t j = 0; j < count; ++j) {
         const size_t lo = j > spread ? j - spread : 0, hi = std::min(count - 1, j + spread);
@@ -220,7 +212,6 @@ uint64_t SurfaceSeed() {
     return seed;
 }
 
-// A synthesis's draw state: its parameters hashed into `base`, then SURFACE_SEED where one is set.
 uint64_t SurfaceDraw(uint64_t base, auto... values) {
     const auto state = HashParams(base, values...);
     const auto seed = SurfaceSeed();
@@ -391,7 +382,6 @@ RoughnessTrack MakeProfileTrack(std::span<const float> heights, float spacing) {
         const auto spectrum = fft::RealToComplex(track.Heights);
         std::vector<double> power(spectrum.size());
         for (size_t i = 0; i < power.size(); ++i) power[i] = std::norm(spectrum[i]);
-        // The fit's corner is in bins, which the track length converts back into a wavelength.
         if (const auto band = FitBand(CellSpectrum(power, BandCellsPerOctave)); band.Corner > 0) {
             track.Band = {float(double(heights.size()) * spacing / band.Corner), float(band.Slope)};
         }
@@ -470,8 +460,6 @@ RoughnessField SynthesizeProfileField(std::span<const float> heights, float spac
     fft::ComplexToReal2d(spectrum, columns, rows, field.Heights);
     return field;
 }
-
-/***** Element springs *****/
 
 namespace {
 // Fritsch-Carlson slopes: the tightest slopes that keep a cubic Hermite monotone through monotone data.
@@ -658,7 +646,6 @@ void FillEngagementKnots(ElementSprings &out, double engagement_max, uint32_t kn
     }
 }
 
-// The tables a build fills: `curves` curve sets of `knots` knots each, plus the population's strength spectrum.
 void InitSpringTables(ElementSprings &out, std::span<const float> crests, float width, double engagement_max, uint32_t curves, uint32_t knots) {
     out.Width = width;
     out.EngagementMax = float(engagement_max);
@@ -876,7 +863,7 @@ std::vector<float> BearingDatum(const ElementSprings &s, double combined_curvatu
             unseated, count, load, worst
         );
     }
-    // The array keeps the mean height at first touch with the seat's variation on it.
+    // Add seat variation to the mean height at first touch.
     double gauge = 0;
     for (uint32_t e = 0; e < count; ++e) gauge += touch[e] - seat[e];
     gauge /= double(count);
@@ -906,7 +893,7 @@ SpringRead ReadContactSpringBins(
 ) {
     const uint32_t count = s.Count();
     if (count == 0 || envelope.size() < count || engagement <= 0) return {};
-    // The body's surface, placed by how far it has descended below first touch here.
+    // Place the surface at its current descent below first touch.
     const double surface = double(EnvelopeAt(envelope, position)) + double(Reregister(slide, position - 0.5)) - double(engagement);
     const auto bins = int64_t(bin_force.size());
     const bool modulated = bin_engagement.size() >= bin_force.size() && !bin_force.empty();
@@ -983,7 +970,8 @@ uint32_t SpectrumKnot(const ElementSprings &s, float engagement) {
     return knot;
 }
 
-// One knot's shares, each array normalised over the bins. Zero where that knot bears nothing.
+// One knot's shares, each array normalised over the bins.
+// Zero where that knot bears nothing.
 bool KnotShares(const ElementSprings &s, uint32_t knot, std::span<float> moment_out, std::span<float> force_out) {
     const size_t at = size_t(knot) * FlankSpectrumBins;
     const auto *moment = s.FlankSpectrum.data() + at;
@@ -1551,8 +1539,6 @@ ElementSprings BuildElementSprings(
     return BuildElementSprings(summits, sub, engagement_max, knots);
 }
 
-/***** Interface junctions and the asperity bed *****/
-
 double FlankSineCube(double slope) {
     if (!(slope > 0)) return 0;
     constexpr uint32_t N{257};
@@ -1581,6 +1567,7 @@ uint32_t FlankJunctionSpread(
 }
 
 double AsperityPressure(double inv_effective_modulus, double profile_slope_rms) {
+    // Persson 2007: recover the isotropic surface gradient from the profile slope.
     return inv_effective_modulus > 0 ? profile_slope_rms / (std::numbers::sqrt2 * inv_effective_modulus) : 0.0;
 }
 
@@ -1747,7 +1734,6 @@ const BedTable &Table() {
 // Where a height ratio falls in the tables, in table steps from the low limit.
 float BedTableIndex(float lambda) { return (lambda + BedTableLimit) * (BedTableSize / (2 * BedTableLimit)); }
 
-// One table's value at that index, linear between its entries.
 float ReadBedInterp(const std::array<float, BedTableSize + 1> &values, float t) {
     const auto i = int(t);
     return values[i] + (t - float(i)) * (values[i + 1] - values[i]);
@@ -1802,8 +1788,6 @@ float BedLinearPotentialFactor(float lambda) {
     return ReadBedInterp(Table().LinearPotential, BedTableIndex(lambda));
 }
 
-/***** The audio-thread render *****/
-
 namespace {
 // A voice ends after this long without a fresh contact report.
 constexpr float MaxVoiceIdleSeconds{0.1f};
@@ -1817,7 +1801,6 @@ std::optional<uint32_t> FindIndex(const auto &v, const auto &value) {
     return it != v.end() ? std::optional{uint32_t(std::ranges::distance(v.begin(), it))} : std::nullopt;
 }
 
-// Drop voice `i` from each parallel column, swapping the last into its place.
 void RemoveVoice(SurfaceAudioState &surface, uint32_t i) {
     surface.VoiceId[i] = surface.VoiceId.back();
     surface.VoiceObject[i] = surface.VoiceObject.back();
@@ -1902,7 +1885,6 @@ struct VoiceForce {
 // A cell taking up load again after parting is one shock, and a sample where the whole contact bears nothing is time the body spends clear of the surface.
 struct ContactReport {
     std::atomic<uint64_t> Samples{0}, Free{0}, Shocks{0}, CellSamples{0}, CellBearing{0};
-    // Junction engagements the turnover shot process spawned, summed over bins and voices.
     std::atomic<uint64_t> TurnoverEvents{0};
     std::atomic<uint64_t> Peaks{0}, UnderLoad{0}, UnderTen{0}, UnderHundred{0};
     std::atomic<uint64_t> TangentSamples{0}, StickSamples{0}, StickTransitions{0};
@@ -1937,7 +1919,6 @@ struct ContactReport {
 ContactReport Report;
 const bool ReportContacts = std::getenv("CONTACT_REPORT") != nullptr;
 
-// One cell's engagement counted for CONTACT_REPORT, whichever exchange path produced it.
 void ReportCell(SustainedCarry &carry, const SustainedState &st, uint32_t k, float load) {
     const uint32_t bit = 1u << k;
     if (load > 0) {
@@ -2379,7 +2360,7 @@ struct TangentInputs {
     float Ct; // Tangential displacement response per newton of friction force, modal plus body.
     float Cnt; // Tangential displacement per newton of normal reaction, through modes carrying both shapes.
     float Defl; // This sample's tangential deflection read.
-    float RhsTr; // The transverse free step. No surface travel enters: the surface slides along the slip direction alone.
+    float RhsTr; // Transverse free step excludes surface travel along the slip direction.
     float CtTr; // Transverse displacement response per newton of transverse force.
     float CntTr; // Transverse displacement per newton of normal reaction.
     float DeflTr; // This sample's transverse deflection read.
@@ -2387,7 +2368,6 @@ struct TangentInputs {
     bool ActiveTr; // A spring voice's transverse channel, resolvable the same way.
 };
 
-// One direction's solved junction force with the state to commit for it.
 struct DahlStep {
     float Force;
     float Stretch;
@@ -2555,8 +2535,8 @@ FrictionForces SolveVoiceFriction(const SustainedState &st, SustainedCarry &carr
         float ft;
         bool stick = false;
         if (const float zmax = fmax / kt; kt > 0 && fmax > 0 && zmax >= std::numeric_limits<float>::min() && st.SpringIndex >= 0) {
-            // Both stretches live on half-steps like psi.
-            // The shared cone couples the axes, the vector force projecting back to the cone, which only releases stretch.
+            // Evaluate both spring displacements at half-steps, like psi.
+            // The shared Coulomb cone couples both axes; force projection onto it can only release spring displacement.
             const auto along = SolveDahlDirection(carry.PatchShear, kt, zmax, rhs, tan.Ct);
             ft = along.Force;
             carry.PatchShear = along.Stretch;
@@ -2653,7 +2633,6 @@ ChannelAdvance AdvanceChannel(float psi, float g, float step, float hx, bool bea
     return {psi_next, force, fy};
 }
 
-// The whole contact's sample counted for CONTACT_REPORT, whichever exchange path solved it.
 void ReportSample(float force, float sample_rate) {
     Report.SampleRate = sample_rate;
     Report.Samples.fetch_add(1, std::memory_order_relaxed);
@@ -2759,7 +2738,6 @@ RowRead ReadRow(
 constexpr uint32_t VoiceDrives{4};
 constexpr uint32_t NoTransverseRow{~0u};
 
-// This sample's excitation of every mode from the drives past the first voice's, summed over those bearing force.
 void GatherExcitation(const float *__restrict gains, const float *__restrict forces, uint32_t voice_drives, uint32_t drives, float *__restrict excite, uint32_t count) {
     bool seeded = false;
     const auto row = [&](uint32_t d) { return gains + size_t(d) * count; };
@@ -2808,7 +2786,7 @@ float AdvanceModes(
     return acc;
 }
 
-// One block's fixed shape: the object's mode window, its drive levels, its row and channel layout, and its contacts' support.
+// Fix the mode window, drive levels, row and channel layout, and contact support for this block.
 struct RenderBlock {
     uint32_t K0{0}, Count{0}; // The object's first mode, and how many of them still sound.
     float OutGain{0}, ListenerGain{0}, SustainLevel{0};
@@ -2847,7 +2825,6 @@ RenderBlock PrepareRenderBlock(SurfaceAudioState &surface, SurfaceRenderScratch 
         w.TransverseRow[t] = candidate ? extra_base + bin_rows + transverse_rows++ : NoTransverseRow;
     }
     const uint32_t drives = extra_base + bin_rows + transverse_rows;
-    // Locate the read gains for bin `bb` of voice `t`.
     const auto bin_read_at = [&w, extra_base, count](size_t t, uint32_t bb) { return size_t(w.BinRowBase[t] - extra_base + bb) * count; };
     w.DriveGains.resize(size_t(drives) * count);
     w.BinRead.Resize(size_t(bin_rows) * count);
@@ -3091,7 +3068,7 @@ void RenderObjectCoupled(
         const size_t diag_stride = coupled ? size_t(nch) + 1 : 1;
         const float drive_level = sustain_level;
         // Each drive row silences on its own, so a feedback loop through the modes can be attributed to a row.
-        // The body feed stays live.
+        // Keep the body input enabled.
         const float geo_level = surface.MuteGeometricDrive.load(std::memory_order_relaxed) ? 0.f : drive_level;
         const float fric_level = surface.MuteFrictionDrive.load(std::memory_order_relaxed) ? 0.f : drive_level;
         for (uint32_t s = 0; s < frame_count; ++s) {
@@ -3146,8 +3123,6 @@ void RenderObjectCoupled(
                     }
                 }
             }
-            // The arrivals every read row takes this sample.
-            // The junction rows take the impacts alone, the sweep driving the normal channel.
             const float *const impact_arrival = impact_drive ? excite : nullptr;
             const float *const sweep_arrival = sweep_live ? w.SweepExcite.data() : nullptr;
             for (size_t t = 0; t < nv; ++t) {
@@ -3415,8 +3390,6 @@ void RenderObjectCoupled(
 }
 
 } // namespace
-
-/***** Core modal interface from audio/SurfaceContact.h *****/
 
 void SurfaceAudioStateDelete::operator()(SurfaceAudioState *s) const { delete s; }
 void SurfaceRenderScratchDelete::operator()(SurfaceRenderScratch *s) const { delete s; }

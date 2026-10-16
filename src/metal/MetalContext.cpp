@@ -129,8 +129,8 @@ void Context::RemoveResident(MTL::Allocation *resource) const {
 
 void Context::CollectCompletedWork() const {
     const AutoreleaseScope pool;
-    // A dead alias cannot read its old physical pages. Recycle those pages as
-    // soon as readers finish, independently of the virtual cleanup backlog.
+    // A dead alias cannot read its old physical pages.
+    // Recycle those pages as soon as readers finish, independently of the virtual cleanup backlog.
     while (!PageRetirements.empty() && PageRetirements.front()->Readers->status() == MTL::CommandBufferStatusCompleted) {
         PageRetirements.pop_front();
     }
@@ -209,9 +209,8 @@ void Context::CommitResidency() const {
         submission->Resources = std::move(PendingMappings);
         ++MappingSerial;
         MappingSubmissions.push_back(submission);
-        // Mapping updates touch the page tables of resources whose aliases may
-        // still be in flight. Order both queues explicitly, including growth
-        // and newly allocated ranges, before publishing the new mappings.
+        // Mapping updates touch the page tables of resources whose aliases may still be in flight.
+        // Order both queues explicitly, including growth and newly allocated ranges, before publishing the new mappings.
         auto *before = Queue->commandBuffer();
         ObserveCommand(before, std::format("Before sparse mapping {} (execution {})", MappingSerial, ExecutionSerial + 1u), MappingEvent.get(), ExecutionEvent.get());
         before->encodeSignalEvent(ExecutionEvent.get(), ++ExecutionSerial);
@@ -267,8 +266,8 @@ bool Context::DrainMappings() const {
         CollectCompletedWork();
     }
     // Teardown and explicit memory reclamation may wait for inactive storage.
-    // A CPU event wait avoids putting a watchdog-limited GPU wait behind a
-    // potentially long native unmap. Normal frames only poll and publish.
+    // A CPU event wait avoids putting a watchdog-limited GPU wait behind a potentially long native unmap.
+    // Normal frames only poll and publish.
     for (;;) {
         CollectCompletedWork();
         if (MappingRetirements.empty()) break;
@@ -286,8 +285,8 @@ void Context::TrimPageCache(uint64_t keep_bytes) const {
     const AutoreleaseScope pool;
     if (!PagePool || PagePool->CachedBytes() <= keep_bytes) return;
     CommitResidency();
-    // Empty slabs can be reused immediately, but their heaps may still back
-    // inactive aliases. A frame never waits for that cleanup just to trim cache.
+    // Empty slabs can be reused immediately, but their heaps may still back inactive aliases.
+    // Trim the cache asynchronously.
     if (!MappingRetirements.empty() || MappingEvent->signaledValue() != MappingSerial) return;
     auto *fence = Queue->commandBuffer();
     OrderAfterGpuWork(fence);

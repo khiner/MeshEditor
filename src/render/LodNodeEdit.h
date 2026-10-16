@@ -21,15 +21,10 @@ struct LodNodeRefit {
     std::vector<std::pair<uint32_t, LodNodeRefitJob>> Nodes{};
 };
 
-// Moves the removed and added clusters' traversal-leaf and pinned-finest memberships, then plans the refit of every node above them.
-// Added clusters already belong to the owner and name their intended leaf, and their records can still be pending on the chain.
-// Removed clusters and their reverse links stay allocated until the edit returns.
-// Touched clusters keep their memberships and refit their leaves and ancestors.
-// The host writes memberships, member counts and primitive totals, and RecordLodNodeRefits records the returned bounds refit.
-// A leaf past twice the build's leaf span splits into even runs of at most one span, and a node past twice the build's width splits the same way.
-// An emptied leaf, and a node its removal leaves without children, leave their parents and release their ids, while a primitive's root stays.
-// Each change moves the parent's children to one new contiguous run, and a root that splits adds a level below itself, so each tree stays as balanced as the build makes it.
-// Coarse geometry and group errors stay as they are.
+// Update removed and added cluster memberships and return ancestor refits for RecordLodNodeRefits.
+// Added clusters must belong to the owner and name their intended leaves; GPU records may still be pending.
+// Retain removed clusters and reverse links until this returns.
+// Touched clusters preserve membership; coarse geometry and group errors remain unchanged.
 [[nodiscard]] LodNodeRefit EditLodNodes(state::Scene &, MeshStore::Record &, std::span<const uint32_t> removed, std::span<const LodClusterRun> added, std::span<const uint32_t> touched);
 // Records the refits depth by depth, deepest first, with every owner's nodes at a depth in one dispatch.
 // A node at a depth reads only its children's bounds, which the deeper dispatches write first.

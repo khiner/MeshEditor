@@ -27,7 +27,7 @@ int main() {
         expect(arena.Count(set) == 3u * MeshElementBlockSize);
         expect(std::ranges::all_of(middle, [&](uint32_t h) { return arena.Contains(set, ElementHandle{h}); }));
 
-        // A run longer than every hole appends.
+        // Append allocations larger than every available free range.
         arena.Erase(set, middle);
         const auto appended = arena.Insert(set, 2u * MeshElementBlockSize, nullptr).Handles;
         expect(appended.First == 3u * MeshElementBlockSize);

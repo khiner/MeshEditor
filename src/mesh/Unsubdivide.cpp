@@ -54,8 +54,7 @@ std::optional<MeshTopologyTask> UnsubdivideTask(const Mesh &mesh, const Geometry
         index.emplace(v, uint32_t(nodes.size()));
         nodes.push_back(std::move(node));
     });
-    // Alternating breadth-first waves match Blender's keep/collapse tagging on
-    // regular regions, without visiting unselected or ineligible components.
+    // Alternating breadth-first waves match Blender's keep/collapse tagging on regular regions, without visiting unselected or ineligible components.
     std::vector<uint32_t> queue;
     for (uint32_t seed = 0u; seed < nodes.size(); ++seed) {
         if (nodes[seed].Tag) continue;
@@ -100,8 +99,8 @@ std::optional<MeshTopologyTask> UnsubdivideTask(const Mesh &mesh, const Geometry
     };
     for (const auto &node : nodes) {
         if (node.Tag != -1) continue;
-        // Odd cycles can put adjacent vertices in the same wave. Keep these
-        // independent so every emitted corner refers to a surviving vertex.
+        // Odd cycles can put adjacent vertices in the same wave.
+        // Keep these independent so every emitted corner refers to a surviving vertex.
         if (std::ranges::any_of(node.Neighbors, [&](uint32_t v) { return removed.contains(v); })) continue;
         if (!mesh.FaceCount() || node.Chain) {
             removed.insert(node.Vertex);

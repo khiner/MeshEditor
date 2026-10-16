@@ -12,7 +12,7 @@ struct MeshDisplay {
     uint32_t PrimitiveSet DEFAULT(InvalidOffset), NodeSet DEFAULT(InvalidOffset), GroupSet DEFAULT(InvalidOffset), MeshletSet DEFAULT(InvalidOffset), MemberSet DEFAULT(InvalidOffset);
     uint32_t PrimitiveCount DEFAULT();
     // The slot of the instance that draws the mesh's element selection, in Edit mode only.
-    // Without one, every instance draws the selection the record holds.
+    // Without one, every instance draws the selection the record contains.
     uint32_t PrimaryEditInstanceIndex DEFAULT(InvalidOffset);
     uint32_t HasPendingVertexTransform DEFAULT();
     uint32_t MorphDeformOffset DEFAULT(InvalidOffset);

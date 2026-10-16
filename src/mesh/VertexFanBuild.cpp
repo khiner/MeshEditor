@@ -10,7 +10,6 @@
 namespace {
 using FanBatch = TiledJobBatch<VertexFanBuildJob, 3>;
 
-// Frees the writable vertices' former runs and each run's unused tail, which the completed rebuild reports in its scratch.
 void ReleaseFormerFans(MeshStore &meshes, const FanBatch &batch) {
     const profile::CpuScope scope{"VertexFanRelease"};
     const auto scratch = batch.ScratchSpan();
@@ -32,7 +31,7 @@ void ReleaseFormerFans(MeshStore &meshes, const FanBatch &batch) {
 } // namespace
 
 void EncodeVertexFans(state::Scene &r, mtl::ComputeChain &chain, std::span<const MeshConnectivityJob> sources, std::span<const uint32_t> vertex_blocks, bool fresh) {
-    // A source's scratch holds its vertex metadata, corner keys, order and temporaries, radix histograms, totals and tile data.
+    // A source's scratch contains its vertex metadata, corner keys, order and temporaries, radix histograms, totals and tile data.
     const auto scratch_words = [&](const MeshConnectivityJob &source) {
         const uint64_t h = source.HalfedgeCount, v = source.VertexCount;
         return (fresh ? 1u : 4u) * v + (fresh ? 3u : 4u) * h + 16u * ((h + 255u) / 256u) + 17u + (v + 255u) / 256u;
@@ -53,8 +52,7 @@ void EncodeVertexFans(state::Scene &r, mtl::ComputeChain &chain, std::span<const
         VertexFanBuildJob job{.Vertices = source.Vertices, .Halfedges = source.Halfedges, .Tables = source.Connectivity.Tables, .CornersSlot = source.CornersSlot, .RootsSlot = source.Connectivity.VertexCornersSlot, .ItemsSlot = fans.Items.Buffer.Slot, .FaceOwnersSlot = source.Connectivity.HalfedgeFacesSlot, .FaceCount = source.FaceCount, .VertexCount = source.VertexCount, .HalfedgeCount = source.HalfedgeCount, .Fresh = fresh ? 1u : 0u};
         if (job.Vertices.Storage.Slot == InvalidSlot) job.Vertices.Count = job.VertexCount;
         if (job.Halfedges.Storage.Slot == InvalidSlot) job.Halfedges.Count = job.HalfedgeCount;
-        // Truncating InvalidOffset to this many radix bits still leaves it
-        // above every valid vertex rank, including power-of-two domains.
+        // Truncating InvalidOffset to this many radix bits still leaves it above every valid vertex rank, including power-of-two domains.
         job.VertexKeyPasses = std::max(1u, (std::bit_width(job.VertexCount) + 3u) / 4u);
         const uint64_t h = job.HalfedgeCount, v = job.VertexCount, blocks = (h + 255u) / 256u;
         if (fresh && (job.Vertices.Storage.Slot != InvalidSlot || job.Halfedges.Storage.Slot != InvalidSlot)) {
@@ -79,8 +77,8 @@ void EncodeVertexFans(state::Scene &r, mtl::ComputeChain &chain, std::span<const
     roots.Add(meshes.Arenas().VertexCorners.Buffer, vertex_blocks, BlockBytes<uvec2>);
     roots.CaptureWrites();
     std::vector<TiledPass> passes{{MeshPass::VertexFanInit, 0u}, {MeshPass::VertexFanKeys, 1u}, {MeshPass::VertexFanTileScan, 0u}, {MeshPass::VertexFanTilePrefix, PerJob}};
-    // Dense runs and finished sparse work both enumerate corners in handle
-    // order. A stable vertex-rank sort preserves that order inside each fan.
+    // Dense runs and finished sparse work both enumerate corners in handle order.
+    // A stable vertex-rank sort preserves that order inside each fan.
     const uint32_t key_passes = std::ranges::max(batch->Jobs, {}, &VertexFanBuildJob::VertexKeyPasses).VertexKeyPasses;
     for (uint32_t pass = 0u; pass < key_passes; ++pass) {
         passes.push_back({MeshPass::VertexFanHistogram, 1u, pass});

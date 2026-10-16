@@ -10,20 +10,18 @@ namespace {
 // Keys closer than this in seconds replace each other.
 constexpr float KeyEpsilon{1e-4f};
 
-// The index of the key at `seconds`, or the index to insert one at and false.
+// Return the key index at `seconds`, or the insertion index with false when no key exists.
 std::pair<size_t, bool> FindKey(const std::vector<float> &times, float seconds) {
     const auto it = std::ranges::lower_bound(times, seconds - KeyEpsilon);
     const size_t i = size_t(it - times.begin());
     return {i, i < times.size() && std::abs(times[i] - seconds) <= KeyEpsilon};
 }
 
-// The channel of `target` in `clip`, or null.
 auto *FindChannel(auto &clip, const ChannelTarget &target) {
     const auto it = std::ranges::find(clip.Channels, target, &AnimationChannel::Target);
     return it != clip.Channels.end() ? &*it : nullptr;
 }
 
-// Writes `value` as the key at `seconds`, replacing a key within KeyEpsilon.
 void SetKey(AnimationChannel &channel, float seconds, std::span<const float> value) {
     const auto n = uint32_t(value.size());
     const auto [i, replace] = FindKey(channel.Times, seconds);
@@ -51,7 +49,8 @@ void PublishClips(state::Scene &r, state::Entity entity) {
     if (r.get<const AnimationClips>(entity).Clips.empty()) r.remove<AnimationClips>(entity);
 }
 
-// Whether the field's value differs from its channel at `seconds`. A field the entity lacks never differs.
+// Whether the field's value differs from its channel at `seconds`.
+// A field the entity lacks never differs.
 bool FieldChanged(const state::Scene &r, state::Entity e, const AnimationChannel &channel, float seconds) {
     std::vector<float> current(channel.Target.Count), animated(channel.Target.Count);
     if (!ReadField(r, e, channel.Target, current)) return false;
@@ -59,8 +58,8 @@ bool FieldChanged(const state::Scene &r, state::Entity e, const AnimationChannel
     return !SameValue(channel.Target, current, animated);
 }
 
-// Calls `fn` with each active channel whose field value differs from the channel at `seconds`.
-// Stops when `fn` returns true.
+// Call `fn` for active channels whose field value differs from evaluation at `seconds`.
+// Stop when `fn` returns true.
 void ForEachChanged(const state::Scene &r, state::Entity viewport, float seconds, auto &&fn) {
     for (const auto [entity, clips] : r.view<const AnimationClips>().each()) {
         const auto *clip = ActiveClip(r, viewport, clips);

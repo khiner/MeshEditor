@@ -67,7 +67,8 @@ struct AttributeNodePushConstants {
 };
 
 // Copies a bool attribute's words at each element block of its record to the block's mask block, and zero to the mask blocks of other blocks.
-// Mask block b, starting at word Masks.Offset + 8b, holds element block b, and an attribute without a slot names a domain it is not on.
+// Mask block b covers element block b at word Masks.Offset + 8b.
+// An absent slot denotes an attribute absent from that domain.
 struct AttributeMaskPushConstants {
     NamedAttributeRef Attribute;
     uint32_t MembershipSlot, Owner; // The domain's block metadata and the record's set in it

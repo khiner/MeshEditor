@@ -36,7 +36,6 @@ inline MeshletRoute OpaqueVisibilityRoute(PBRMaterial material, Transform world)
     return scale.x * scale.y * scale.z < 0.0f ? MeshletRoute::OpaqueCullFront : MeshletRoute::OpaqueCullBack;
 }
 
-// The draw state the cull reads from an instance's record and its mesh's.
 struct CullInstance {
     uint Mesh, Flags, PrimitiveCount, MeshletBoundsNamespace;
     bool Deformed;
@@ -73,7 +72,6 @@ inline bool InstanceFinestOnly(const thread Scene &scene, MeshletCullPushConstan
         (pc.ExactEditGeometry != 0u && (instance.Flags & edit_flags) != 0u);
 }
 
-// Returns a cluster group's projected simplification error in pixels.
 inline float LodGroupErrorPixels(const thread Scene &scene, ClusterGroup group, Transform world) {
     const float3 scale = abs(float3(world.S));
     const float max_scale = max(scale.x, max(scale.y, scale.z));
@@ -176,8 +174,8 @@ inline bool MeshletBoundsInFrustum(const thread Scene &scene, MeshletBounds boun
 
 inline float EditEdgeMarginPixels(const thread Scene &scene, MeshletCullPushConstants pc) {
     if (pc.MinEditOverlayDiameterPixels <= 0.0f) return 0.0f;
-    // StrokeQuadCorner extends both along and across an endpoint. The diagonal
-    // plus half a pixel covers its raster footprint outside the meshlet bounds.
+    // StrokeQuadCorner extends both along and across an endpoint.
+    // The diagonal plus half a pixel covers its raster footprint outside the meshlet bounds.
     const float width = scene.Theme.EdgeWidth;
     const float half_width = width + (pc.EditOverlayHasSharpEdges != 0u ? max(width, 1.0f) : 0.0f) + 0.5f;
     return 1.41421356f * half_width + 0.5f;
@@ -282,13 +280,11 @@ inline RoutedMeshlet ClassifyMeshlet(
     return result;
 }
 
-// A cull entry's cluster, with its record's group table run when traversal produced it.
 struct CullCandidate {
     VisibleMeshlet Entry;
     uint GroupTable;
 };
 
-// The range's table runs resolve the work entry's member, cluster and primitive handles.
 inline CullCandidate ResolveMeshlet(
     device const BindlessSet &bindless, MeshletCullPushConstants pc, uint block_id, uint work_index
 ) {
@@ -312,13 +308,12 @@ inline CullCandidate ResolveMeshlet(
     return {{range.Instance, meshlet, InvalidOffset, Resolve<RenderBlockSize>(primitive_table, primitive)}, range.Tables.Groups};
 }
 
-// The routes that draw surfaces.
 constant MeshletRoute SurfaceRoutes[]{
     MeshletRoute::OpaqueCullBack, MeshletRoute::Blend, MeshletRoute::Transmission,
     MeshletRoute::OpaqueCullFront, MeshletRoute::OpaqueDoubleSided, MeshletRoute::Coverage,
 };
 
-// The source cull's surface route holding entry `i`, or CullRouteCount.
+// Return the source-cull surface route containing entry `i`, or CullRouteCount.
 inline uint SourceSurfaceRoute(device const BindlessSet &bindless, MeshletCullPushConstants pc, uint i) {
     const MeshletRouteState source = BindlessBuffer(MeshletRouteState, bindless.Buffer, pc.SourceRouteStateSlot)[0];
     for (const MeshletRoute route : SurfaceRoutes) {
@@ -333,7 +328,6 @@ inline CullCandidate ResolveCullEntry(device const BindlessSet &bindless, Meshle
     if (SourceSurfaceRoute(bindless, pc, i) == CullRouteCount) return {{InvalidOffset, InvalidOffset, InvalidOffset, InvalidOffset}, InvalidOffset};
     return {BindlessBuffer(VisibleMeshlet, bindless.Buffer, pc.SourceVisibleSlot)[i], InvalidOffset};
 }
-// Whether entry `i` of the cull holds a candidate, which classification resolved.
 inline bool CullEntryValid(device const BindlessSet &bindless, MeshletCullPushConstants pc, uint i) {
     if (pc.SourceVisibleSlot == InvalidSlot) return i < BindlessBuffer(MeshletWorkState, bindless.Buffer, pc.WorkStateSlot)->MeshletCount;
     return SourceSurfaceRoute(bindless, pc, i) != CullRouteCount;
@@ -354,7 +348,6 @@ inline uint SilhouetteRoutes(
     return hidden ? 1u << route : 0u;
 }
 
-// Sizes a filtering cull's block dispatches to the source cull's surface entries.
 kernel void SilhouetteCullSize(
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant MeshletCullPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
@@ -374,7 +367,6 @@ inline uint SetTableOffset(const thread Scene &scene, SetArenaSlots arena, uint 
     return set == InvalidOffset ? InvalidOffset : BindlessBuffer(MeshElementSet, scene.B.Buffer, arena.Sets)[set].First;
 }
 
-// The mesh display the work instance draws with.
 inline device const MeshDisplay &WorkDisplay(const thread Scene &scene, MeshletCullPushConstants pc, uint instance) {
     const uint instance_slot = BindlessBuffer(uint, scene.B.Buffer, pc.InstanceMapSlot)[instance];
     return scene.MeshRecords(scene.View.MeshRecordSlot)[BindlessBuffer(InstanceRecord, scene.B.Buffer, pc.InstanceSlot)[instance_slot].Mesh].Display;
@@ -391,14 +383,12 @@ inline bool LodNodeVisible(const thread Scene &scene, LodNode node, Transform wo
     return sphere_in_frustum(scene.ViewProj(), trs_transform_point(world, float3(node.Center)), radius);
 }
 
-// Stores one entry's child nodes and final-level record range, with the frontier entry that produced them.
 struct LodWork {
     LodFrontierEntry Entry;
     uint ChildCount;
     uint MeshletCount;
 };
 
-// Seeds traversal from instance IDs and writes primitive roots.
 inline LodWork ResolveLodSeed(const thread Scene &scene, MeshletCullPushConstants pc, uint id) {
     if (id >= pc.InstanceCount) return {};
     const uint instance_slot = BindlessBuffer(uint, scene.B.Buffer, pc.InstanceMapSlot)[id];
@@ -406,12 +396,11 @@ inline LodWork ResolveLodSeed(const thread Scene &scene, MeshletCullPushConstant
     const CullInstance instance = ResolveCullInstance(scene, pc, instance_slot);
     const uint visibility = ClassifyInstanceRange(scene, pc, instance_slot, instance);
     if (visibility == 0u) return {};
-    // Membership contains only primitives with finest geometry. Each emits
-    // one root, so seeding needs no primitive traversal or record loads.
+    // Membership contains only primitives with finest geometry.
+    // Each emits one root, so seeding needs no primitive traversal or record loads.
     return {{id, InvalidOffset}, instance.PrimitiveCount, 0u};
 }
 
-// Expands one frontier node into child nodes or its final-level record range.
 inline LodWork ResolveLodNode(const thread Scene &scene, MeshletCullPushConstants pc, uint index) {
     device const LodFrontierState *states = BindlessBuffer(LodFrontierState, scene.B.Buffer, pc.LodFrontierStateSlot);
     if (index >= states[pc.LodFrontierIndex].NodeCount) return {};
@@ -433,7 +422,6 @@ inline LodWork ResolveLodWork(const thread Scene &scene, MeshletCullPushConstant
     return pc.LodSeedLevel != 0u ? ResolveLodSeed(scene, pc, index) : ResolveLodNode(scene, pc, index);
 }
 
-// Writes each simdgroup's two totals into the corresponding prefix-row lane.
 inline void WriteLodSimdGroupSums(
     threadgroup uint *group_prefixes, LodWork work, uint simd_lane, uint simd_group
 ) {

@@ -39,7 +39,7 @@ namespace {
 constexpr vec2 ToVec2(ImVec2 v) { return std::bit_cast<vec2>(v); }
 constexpr float WheelOrbitRadPerUnit{0.05f}, WheelZoomStep{1.04f};
 
-// The drag's box as fractions of the viewport, or nothing for a drag below the threshold or wholly outside it.
+// Return viewport-relative box fractions, or none for drags below the threshold or entirely outside the viewport.
 std::optional<std::pair<vec2, vec2>> ComputeBoxSelect(vec2 start, vec2 end, vec2 window_pos, uvec2 logical_extent) {
     static constexpr float DragThresholdSq{2 * 2};
     if (Distance2(start, end) <= DragThresholdSq) return {};
@@ -83,7 +83,8 @@ bool IsSingleClicked(ImGuiMouseButton button) {
     return IsMouseReleased(button) && !IsMouseDragPastThreshold(button);
 }
 
-// Navigation actions are not recorded. During look-through, the first navigation input emits the recorded exit action.
+// Navigation actions are not recorded.
+// During look-through, the first navigation input emits the recorded exit action.
 void EmitViewNav(const state::Scene &r, auto &&nav) {
     if (LookThroughCameraEntity(r) != state::Null) action::Emit(action::view::ExitLookThroughCamera{});
     else action::Emit(std::forward<decltype(nav)>(nav));
@@ -96,7 +97,6 @@ struct OverlayIconButtonInfo {
     bool Enabled{true};
     bool Active{false};
     const char *Tooltip{nullptr};
-    // Dims a button whose setting has no effect in the current mode while keeping it clickable.
     bool Muted{false};
 };
 
@@ -159,7 +159,6 @@ std::optional<size_t> DrawOverlayIconButtonGroup(
     return clicked_index;
 }
 
-// Opens `popup_id` with ImGui's PressedOnClick boundary.
 void DrawOverlayDropdownArrow(ImVec2 pos, ImVec2 size, const OverlayIconButtonStyle &style, const char *id, const char *popup_id, bool &any_hovered) {
     const auto saved_cursor = GetCursorScreenPos();
     SetCursorScreenPos(pos);
@@ -195,7 +194,6 @@ vec2 ScreenPx(const mat4 &vp, const rect &viewport_rect, vec3 p) {
     return viewport_rect.pos + NdcToUv(vec2{cs.x, cs.y} / cs.w) * viewport_rect.size;
 }
 
-// A screen position as a fraction of the viewport.
 vec2 ToViewFraction(const state::Scene &r, vec2 screen_px) {
     const auto logical = r.Context.get<const ViewportExtent>().Value;
     const auto local = screen_px - ToVec2(GetCursorScreenPos());
@@ -220,7 +218,6 @@ void BeginMeshDrag(state::Scene &r, state::Entity viewport, FrameState &frame, M
     frame.MeshDrag = MeshOperatorDrag{.Value = op, .StartPx = ToVec2(GetMousePos()), .CenterPx = center_px, .WorldPerPx = pixels > 0.f ? 1.f / pixels : 0.f};
 }
 
-// Sizes the active mesh drag from the mouse, commits on release and cancels on Escape.
 void UpdateMeshDrag(state::Scene &r, state::Entity viewport, FrameState &frame) {
     using Op = MeshOperatorDrag::Op;
     auto &drag = *frame.MeshDrag;
@@ -275,7 +272,6 @@ void UpdateMeshDrag(state::Scene &r, state::Entity viewport, FrameState &frame) 
     drag.Staged = value;
 }
 
-// The edit-mode operator popups, opened by keys and the right mouse button.
 void DrawMeshOperatorMenus(state::Scene &r, state::Entity viewport) {
     using namespace action::mesh;
     const auto op = [](const char *label, auto a, action::Phase phase = action::Phase::Record) {
@@ -433,7 +429,6 @@ void DrawMeshOperatorMenus(state::Scene &r, state::Entity viewport) {
     PopStyleVar();
 }
 
-// The gizmo's tool: the stored one, or the nearest the selection allows.
 TransformGizmo::Type EffectiveGizmoType(const state::Scene &r, state::Entity viewport) {
     using enum TransformGizmo::Type;
     const auto type = r.get<const TransformGizmoState>(viewport).Config.Type;
@@ -631,7 +626,6 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
 
     if (!IsWindowHovered() && !frame.BoxSelectStart) return;
 
-    // Mouse wheel for camera rotation, Cmd+wheel or a trackpad pinch to zoom.
     const auto &io = GetIO();
     if (const vec2 wheel = std::exchange(frame.PreciseWheelDelta, vec2{0}); wheel != vec2{0, 0}) {
         if (io.KeyCtrl || io.KeySuper) EmitViewNav(r, action::view::ZoomViewCamera{.Factor = std::pow(WheelZoomStep, -wheel.y)});
@@ -868,7 +862,8 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
                         lights.UseSpecular = use_specular ? 1 : 0;
                         changed = true;
                     }
-                    // Light colors are stored in linear space. Display/edit as sRGB.
+                    // Light colors are stored in linear space.
+                    // Display/edit as sRGB.
                     static const auto linear_color_edit = [](const char *label, vec3 &linear) -> bool {
                         if (auto srgb = Pow(linear, vec3{1.f / 2.2f}); ColorEdit3(label, &srgb[0])) {
                             linear = Pow(srgb, vec3{2.2f});
@@ -1087,7 +1082,8 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
                 // Actual vertex positions are only modified on commit.
                 action::Emit(action::view::TransformElements{td}, action::Phase::Stage);
             } else {
-                // Object/bone mode: store the gizmo pivot + delta. Apply recomputes per-entity transforms.
+                // Store the gizmo pivot and delta for object and bone transforms.
+                // Apply recomputes each entity transform.
                 action::Emit(action::view::TransformSelection{td}, action::Phase::Stage);
             }
         } else if (was_using || !start_transform_view.empty()) {
@@ -1138,7 +1134,6 @@ void DrawOverlay(state::Scene &r, state::Entity viewport, FrameState &frame) {
             const vec2 fmin = vp_center - frame_size * 0.5f, fmax = vp_center + frame_size * 0.5f;
             const auto vmin = viewport_rect.pos, vmax = viewport_rect.pos + viewport_rect.size;
 
-            // Dim the area outside the camera's view.
             auto &dl = *GetWindowDrawList();
             static constexpr auto dim = IM_COL32(0, 0, 0, 100);
             const auto iv = [](vec2 v) { return std::bit_cast<ImVec2>(v); };

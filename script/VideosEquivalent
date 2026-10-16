@@ -2,7 +2,6 @@
 # Returns zero when videos differ only within MaxDiffFrames and the pixel-error threshold.
 # Requires audio samples to match exactly and prints per-frame difference statistics.
 # Apple's driver can vary one least-significant bit on occasional subpixel geometry despite identical Metal command streams.
-# Remove the tolerance after approximately 16 VirtualCity renders produce one hash.
 # Usage: VideosEquivalent <a> <b>
 import subprocess
 import sys

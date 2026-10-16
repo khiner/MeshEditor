@@ -6,7 +6,7 @@
 // Borrow a domain's live values without packing them for CPU consumers, in ascending handle order.
 // A packed soup or a dense set resolves an ordinal by offset.
 // A sparse set resolves an ordinal through its blocks in local order and the inclusive live-count prefix over them.
-// Values hold the arena, and an element's address indexes them.
+// Index Values by arena address.
 template<typename T> struct ElementView {
     std::span<const T> Values;
     std::span<const MeshElementBlock> Blocks;

@@ -28,8 +28,6 @@ using SurfaceRenderScratchPtr = std::unique_ptr<SurfaceRenderScratch, SurfaceRen
 
 SurfaceAudioStatePtr MakeSurfaceAudioState();
 
-/***** Audio thread *****/
-
 // Synchronizes bank voices with the latest contact set once per callback.
 void SurfaceAdoptVoices(ModalAudio &, ModalBank &, uint32_t frame_count);
 // Returns the sustained-contact count for object `o`.
@@ -40,8 +38,6 @@ bool SurfaceRenderObject(ModalAudio &, ModalRenderScratch &, ModalBank &, uint32
 void SurfaceSilenceObject(ModalAudio &, uint32_t object);
 // Returns the active sustained-contact count across the bank.
 uint32_t SurfaceActiveVoices(const ModalAudio &);
-
-/***** Main thread *****/
 
 // Releases state that references the replaced bank.
 void SurfaceInstallBank(ModalAudio &);

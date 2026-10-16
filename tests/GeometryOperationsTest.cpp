@@ -100,7 +100,6 @@ std::vector<std::vector<Point>> Shapes(const Mesh &mesh, Element element, std::s
     std::ranges::sort(shapes);
     return shapes;
 }
-// The created, retained and output elements of each domain, as shapes.
 struct Outcome {
     bool Changed, Copied;
     std::array<std::vector<std::vector<Point>>, 9> Elements;
@@ -119,8 +118,8 @@ Outcome Describe(const MeshStore &meshes, uint32_t source, const GeometryTopolog
 }
 
 // Named attributes of every type on every domain, each following fixed channels the gathers carry by the same rule, so outputs check against those channels.
-// Vertices follow the morph target and the skin, and corners the first UV set and the color, whose blue holds the integers.
-// Faces follow their primitive and sharpness, and edges hold distinct integers, raised by 1000 on sharp edges, beside their sharpness.
+// Encode vertex identity in morph targets and skin, and corner identity in UVs and blue channel.
+// Encode face identity in primitive and sharpness; add 1000 to sharp-edge identifiers.
 constexpr std::array AttributeDomains{AttributeDomain::Vertex, AttributeDomain::Edge, AttributeDomain::Face, AttributeDomain::Corner};
 constexpr std::array AttributeKinds{AttributeType::Float, AttributeType::Vec3, AttributeType::Int, AttributeType::Bool};
 constexpr std::array<std::array<std::string_view, 4>, 4> AttributeNames{{
@@ -142,7 +141,6 @@ float FaceFloat(int32_t p) { return 1.5f * float(p) + .25f; }
 vec3 EdgeVector(int32_t v) { return {float(v), -float(v), .5f * float(v)}; }
 float EdgeFloat(int32_t v) { return .5f * float(v); }
 
-// Writes an attribute over the `count` handles of a dense record domain from the value of each handle.
 template<AttributeScalar T> void Fill(MeshStore &meshes, uint32_t id, std::string_view name, uint32_t count, auto &&value) {
     const auto values = std::make_unique<T[]>(count);
     for (uint32_t i = 0u; i < count; ++i) values[i] = value(i);
@@ -281,22 +279,18 @@ void CheckAttributed(const MeshStore &meshes, uint32_t id, const std::set<int32_
         expect(cb[h] == (ci[h] >= 1000));
     });
 }
-// A primitive shape's mesh moved by the offset.
 uint32_t Place(GeometryFixture &f, const auto &shape, vec3 offset) {
     auto data = primitive::CreateMesh(shape);
     for (auto &p : data.Positions) p += offset;
     return f.Create(std::move(data));
 }
-// A box of the half extents centered at the point.
 uint32_t Box(GeometryFixture &f, vec3 center, vec3 half = vec3{1.f}) { return Place(f, primitive::Cuboid{.HalfExtents = half}, center); }
-// The boolean of the meshes' surfaces, or none when either is open.
 std::optional<uint32_t> RunBoolean(GeometryFixture &f, uint32_t first, uint32_t second, BooleanOperation operation) {
     const auto task = BooleanTask(f.Get(first), f.Get(second), operation, mat3{1.f}, vec3{0.f});
     const auto id = task ? ExecuteGeometryBoolean(f.Scene, *task) : std::nullopt;
     f.Audit();
     return id;
 }
-// Whether every halfedge of the mesh's faces pairs with a halfedge of another face that pairs back.
 bool ClosedManifold(const Mesh &mesh) {
     if (!mesh.HasClosedSurface()) return false;
     const auto &c = mesh.GetConnectivity();
@@ -308,7 +302,6 @@ bool ClosedManifold(const Mesh &mesh) {
     return true;
 }
 int64_t EulerCharacteristic(const Mesh &mesh) { return int64_t(mesh.VertexCount()) - int64_t(mesh.EdgeCount()) + int64_t(mesh.FaceCount()); }
-// Whether the mesh is a closed manifold enclosing the volume.
 bool Solid(const Mesh &mesh, double volume) { return ClosedManifold(mesh) && std::abs(::test::EnclosedVolume(mesh).value_or(-1.0) - volume) < 1e-4; }
 } // namespace
 
@@ -436,7 +429,7 @@ void RegisterGeometryOperationsTests() {
         GeometryFixture f;
         const auto id = f.Create(Quad());
         const auto mesh = f.Get(id);
-        // Handles in a local block the mesh does not hold name no element of it.
+        // Handles in a local block the mesh does not contain name no element of it.
         const auto selected = AllHandles(mesh);
         const GeometrySelection foreign{.Vertices = {MeshElementBlockSize}, .Edges = {MeshElementBlockSize}, .Faces = {MeshElementBlockSize}};
         const auto rejects = [](auto &&plan) {
@@ -648,7 +641,6 @@ void RegisterGeometryOperationsTests() {
         expect(duplicated.Changed);
         for (const auto element : {Element::Vertex, Element::Edge, Element::Face})
             expect(ReadMasks(f.Store(), id, element, output.Get(element)) == duplicated.Created.Get(element));
-        // The store's own masks receive nothing.
         for (const auto element : {Element::Vertex, Element::Edge, Element::Face})
             expect(f.Store().GetSelectedElements(id, element).Count() == 0u);
     };
@@ -738,7 +730,7 @@ void RegisterGeometryOperationsTests() {
         }
     };
     "booleans of boxes and a sphere yield the expected solids and keep their inputs"_test = [] {
-        // A boolean of two inputs and what its result holds, with each count and the volume left none where the row does not fix them.
+        // Expected boolean counts and volume; nullopt skips an assertion.
         // A row without an Euler characteristic expects no task, since an open input plans nothing, and every planned task yields a mesh.
         struct BooleanCase {
             std::string_view Name;
@@ -798,7 +790,6 @@ void RegisterGeometryOperationsTests() {
                 const auto id = task ? ExecuteGeometryBoolean(f.Scene, *task) : std::nullopt;
                 f.Audit();
                 expect(id.has_value() == task.has_value());
-                // The inputs stay as they were.
                 expect(f.Get(first).VertexCount() == first_vertices);
                 expect(f.Get(second).VertexCount() == second_vertices);
                 if (!id || !c.Euler) return;

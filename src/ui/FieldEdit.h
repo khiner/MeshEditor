@@ -3,8 +3,8 @@
 // Wrap ImGui field controls in one action gesture per edit.
 // Edit{R} targets the active entity and applies Alt-modified edits to the selection.
 // Edit{R, E} targets E explicitly.
-// PatchEdit{value} edits fields of a value the caller holds and patches them onto the active entity.
-// ValueEdit{value} edits fields of a value the caller holds in place.
+// PatchEdit{value} patches edits onto the active entity.
+// ValueEdit{value} edits the supplied value in place.
 
 #include "action/Build.h"
 #include "action/Dispatch.h"
@@ -344,7 +344,6 @@ struct Edit : FieldWidgets<Edit<HasEntity, Prefix...>, Prefix...> {
 Edit(state::Scene &) -> Edit<false>;
 Edit(state::Scene &, state::Entity) -> Edit<true>;
 
-// Edits fields of `Current`, a value the caller holds, patching each change onto the active entity.
 template<typename Component, auto... Prefix>
 struct PatchEdit : FieldWidgets<PatchEdit<Component, Prefix...>, Prefix...> {
     explicit PatchEdit(const Component &current) : Current{current} {}

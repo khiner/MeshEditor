@@ -80,7 +80,8 @@ struct History {
     // Return false on failure and preserve the current tree.
     bool Begin(const std::filesystem::path &dir, std::vector<std::byte> actions = {});
     // Restore position, or the latest working position when omitted, after validating the format and target.
-    // A directory without content logs holds only an actions log, which becomes the tree, and the present node replays from the empty state.
+    // Build the history tree from the actions log when content logs are absent.
+    // Replay the present node from empty state.
     // Return false on failure and preserve live state and the current tree.
     bool Open(const std::filesystem::path &dir, const HistoryPosition *position = nullptr);
     std::optional<uint32_t> FindPosition(const HistoryPosition &) const;
@@ -121,7 +122,7 @@ struct History {
     // The saved state must reference this history's content records.
     bool Clear(const HistoryPosition *saved = nullptr);
     // Write the present node and each reachable node's actions, label and parent, in index order, as an actions log, and return those nodes.
-    // Return why the tree cannot replay when its root holds state without actions.
+    // Return why the tree cannot replay when its root contains state without actions.
     std::expected<std::vector<uint32_t>, std::string> WriteActions(const std::filesystem::path &) const;
 
     // Eviction preserves snapshots for the present and this many ancestors, through its replay baseline.
@@ -132,7 +133,7 @@ struct History {
 
     // Serialize live state for byte comparisons.
     std::vector<std::byte> MaterializeLive();
-    // The present node and its ancestors always hold state, which replays compare against.
+    // Validate replay against retained states for the present node and its ancestors.
     // Replay the present node from its replay baseline, returning an error or differing track name, or empty on success.
     // Restore original live state on failure.
     std::string Replay();

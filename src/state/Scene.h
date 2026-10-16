@@ -10,7 +10,8 @@
 
 namespace state {
 struct Allocation;
-// Fixed service slots are selected at compile time. Definitions stay in the owning TU.
+// Fixed service slots are selected at compile time.
+// Definitions stay in the owning TU.
 struct Services {
     struct Slot {
         void *Value{};
@@ -45,7 +46,8 @@ struct PageMask {
     uint32_t Page{}, Mask{};
 };
 
-// Paged sparse set of raw values. Each page holds its slot owners and then the values.
+// Paged sparse set of raw values.
+// Each page contains its slot owners and then the values.
 // Small pages keep unrelated sparse components inexpensive and addresses stable.
 struct Table {
     static constexpr uint32_t PageCount = 32;
@@ -61,7 +63,8 @@ struct Table {
     Table(const Table &) = delete;
     Table &operator=(const Table &) = delete;
     ~Table() { clear(); }
-    // Describes the value type. An unbound table holds no value bytes.
+    // Describes the value type.
+    // An unbound table contains no value bytes.
     template<typename C> void Bind() {
         Size = sizeof(C);
         Align = uint32_t(std::max(alignof(C), alignof(Page)));
@@ -132,7 +135,7 @@ struct DirtySet {
         emplace(e);
         if (event != Event::Update) Parity[Index(e)] ^= 1u;
     }
-    // Sizes the per-index vectors to hold the index.
+    // Sizes the per-index vectors to store the index.
     void Grow(uint32_t index);
     void emplace(Entity e) {
         const auto i = Index(e);
@@ -296,14 +299,15 @@ struct Scene {
 
 inline DirtySet &reactive(Scene &r, Change c) { return r.Changes[size_t(c)]; }
 inline const DirtySet &reactive(const Scene &r, Change c) { return r.Changes[size_t(c)]; }
-// Whether any of the changes holds an entity.
+// Whether any of the changes contains an entity.
 inline bool AnyChanged(const Scene &r, std::same_as<Change> auto... changes) { return (... || !reactive(r, changes).empty()); }
 
 // Entities holding every listed component and none of the excluded ones, joined page by page on the table masks.
 template<typename R, typename... X, typename... C>
 struct View<R, ExcludeList<X...>, C...> : std::ranges::view_interface<View<R, ExcludeList<X...>, C...>> {
     using Driver = std::tuple_element_t<0, std::tuple<C...>>;
-    // Walks the live slots in entity index order. Slots removed ahead of the cursor are skipped.
+    // Walks the live slots in entity index order.
+    // Slots removed ahead of the cursor are skipped.
     struct Iterator {
         using value_type = Entity;
         using difference_type = std::ptrdiff_t;

@@ -45,7 +45,6 @@ jobs:
           # The hosted VM's Metal encoder lacks the renderer's queue-barrier API.
           ./build/tests/MeshEditorProjectTest --no-render
 
-  # Validate mesh corpora and benchmark production surface solves.
   modal-corpus:
     runs-on: macos-26
     timeout-minutes: 300

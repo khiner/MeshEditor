@@ -10,8 +10,8 @@ inline float PolygonCross2(vec2 a, vec2 b, vec2 c) {
     return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
 }
 
-// Ear-clips a projected polygon in a fixed order. The caller owns its scratch
-// links and points, in host memory for source creation or GPU scratch for edits.
+// Ear-clips a projected polygon in a fixed order.
+// The caller owns its scratch links and points, in host memory for source creation or GPU scratch for edits.
 template<typename Points, typename Next, typename Previous, typename Emit>
 inline void PolygonEarClip(Points points, Next next, Previous prev, uint32_t n, Emit emit) {
     for (uint32_t i = 0u; i < n; ++i) {
@@ -47,9 +47,9 @@ inline void PolygonEarClip(Points points, Next next, Previous prev, uint32_t n, 
     emit(uvec3(prev[cursor], cursor, next[cursor]), count);
 }
 
-// Project relative to the first corner and scale before computing a vector-area
-// normal. This avoids translation cancellation and supports either winding and
-// polygons in any plane. Convex loops retain their original fan ordering.
+// Project relative to the first corner and scale before computing a vector-area normal.
+// This avoids translation cancellation and supports either winding and polygons in any plane.
+// Convex loops retain their original fan ordering.
 template<typename Position, typename Points, typename Next, typename Previous, typename Emit>
 inline void TriangulatePolygon(uint32_t n, Position position, Points points, Next next, Previous previous, Emit emit) {
     if (n < 3u) return;

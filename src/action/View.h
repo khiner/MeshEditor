@@ -36,7 +36,8 @@ struct ResetNodeTheme {};
 struct ResetPbrLighting {
     bool Rendered;
 };
-// Replaces the viewport's solid-mode lights. Shared ownership bounds the action variant size.
+// Replaces the viewport's solid-mode lights.
+// Shared ownership bounds the action variant size.
 struct SetWorkspaceLights {
     std::unique_ptr<WorkspaceLights> Value;
 };

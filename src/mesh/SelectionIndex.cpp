@@ -6,7 +6,6 @@
 
 void SelectionIndex::Update(uint32_t root, std::span<const uint32_t> blocks, uint32_t owner, std::span<const MeshElementBlock> membership, std::span<const SelectionAggregate> leaves) {
     if (Roots.size() <= root) Roots.resize(size_t(root) + 1u, InvalidOffset);
-    // A new root takes one range for a whole path of nodes, which a mesh of one block fills, and the unused tail returns at the end.
     Range spine{};
     uint32_t spine_used = 0u;
     const auto allocate = [&](uint32_t parent, uint32_t slot) {
@@ -44,8 +43,7 @@ void SelectionIndex::Update(uint32_t root, std::span<const uint32_t> blocks, uin
             id = child;
         }
     }
-    // A fixed child order makes each sum a function of current values, with no
-    // accumulated floating-point delta error across edits, undo, or redo.
+    // A fixed child order makes each sum a function of current values, with no accumulated floating-point delta error across edits, undo, or redo.
     uint32_t updated = 0u;
     for (uint32_t level = 0u; level < SelectionIndexLevels; ++level) {
         auto &ids = paths[level];

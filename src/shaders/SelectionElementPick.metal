@@ -5,7 +5,6 @@
 #include "Varyings.metal"
 #include "gpu/SelectionElementPushConstants.h"
 
-// Resolves point, line, and X-ray face IDs through one selection key.
 [[early_fragment_tests]]
 fragment void SelectionElementPickFragment(
     ElementIdFragmentVaryings in [[stage_in]],

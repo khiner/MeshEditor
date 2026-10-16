@@ -13,8 +13,8 @@ public:
     static uint64_t Key(uint32_t a, uint32_t b) { return uint64_t(std::min(a, b)) << 32u | std::max(a, b); }
     uint64_t Key(he::HH h) const { return Key(*M.GetFromVertex(h), *M.GetToVertex(h)); }
     Users Get(he::HH h) { return Get(Key(h)); }
-    // Visit all face sides once at their lower endpoint. Callers can retain
-    // either a compact incidence summary or full radial users without copying geometry.
+    // Visit all face sides once at their lower endpoint.
+    // Callers can retain either a compact incidence summary or full radial users without copying geometry.
     void ForEachAtVertex(uint32_t v, auto &&visit) const {
         const auto &c = M.GetConnectivity();
         const auto fan = c.Incoming(he::VH{v});

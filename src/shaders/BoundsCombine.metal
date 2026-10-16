@@ -1,7 +1,6 @@
 #ifndef BOUNDSCOMBINE_MSL
 #define BOUNDSCOMBINE_MSL
 
-// Combines partial AABBs into each entry's instance bounds.
 #include "BoundsShared.metal"
 #include "gpu/SelectionAggregate.h"
 #include "VertexBounds.metal"

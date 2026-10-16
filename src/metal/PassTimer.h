@@ -5,7 +5,8 @@
 #include <Metal/MTLCounters.hpp>
 
 namespace mtl {
-// Per-command-buffer GPU timing. Hardware samples only at encoder stage boundaries.
+// Per-command-buffer GPU timing.
+// Hardware samples only at encoder stage boundaries.
 struct PassTimer {
     struct Pass {
         std::string_view Name;

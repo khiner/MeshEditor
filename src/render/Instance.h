@@ -11,7 +11,8 @@ struct Instance {
 struct Hidden {};
 constexpr uint8_t InstanceStateHidden{1u << 2};
 
-// A node's own KHR_node_visibility flag. Hidden follows this flag and the flags of every ancestor.
+// A node's own KHR_node_visibility flag.
+// Hidden follows this flag and the flags of every ancestor.
 struct Visibility {
     uint32_t Visible{1};
 

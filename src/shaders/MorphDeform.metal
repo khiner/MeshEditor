@@ -1,7 +1,6 @@
 #ifndef MORPH_DEFORM_MSL
 #define MORPH_DEFORM_MSL
 
-// Applies morph-target position deformation in mesh-local space and returns the input when no morph data exists.
 #include "Bindless.metal"
 
 // `weights_slot` selects current, shutter-open, or shutter-close pose weights.

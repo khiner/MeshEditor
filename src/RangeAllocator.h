@@ -5,9 +5,9 @@
 
 #include <deque>
 
-// Coalesced free ranges in a compressed binary radix tree, ordered by address.
-// A subtree's maximum free length finds the first fitting range in at most 32
-// branches. History versions individual nodes and the root state.
+// Store coalesced free ranges in address order.
+// Cache subtree maximum lengths for first-fit lookup in at most 32 branches.
+// History versions each node and the root.
 struct RangeAllocator {
     static constexpr uint32_t Null = std::numeric_limits<uint32_t>::max();
     static constexpr uint32_t HistoryLevels = 7;
@@ -22,9 +22,9 @@ struct RangeAllocator {
         uint32_t Root{Null}, Free{Null}, End{};
     };
 
-    // A reservation journals only changed allocator nodes. Abandoning it
-    // restores ownership without allocating memory or copying the arena.
-    // Nested operations retain their before-images in the enclosing scope.
+    // Record changed allocator nodes.
+    // Abandoning a transaction restores ownership without allocation.
+    // Nested operations retain before-images in the enclosing transaction.
     class Transaction {
     public:
         explicit Transaction(RangeAllocator &owner)
@@ -159,10 +159,10 @@ private:
 
     State S;
     Transaction *Active{};
-    // Before-images of the nodes the active transactions changed, oldest first.
-    // The innermost transaction's node count bounds the captured nodes, since every enclosing one discards the nodes created after it began.
+    // Retain before-images in mutation order.
+    // Rollback discards nodes created after the enclosing transaction began.
     std::vector<Change> Journal;
-    // Node addresses remain stable as the pool grows. Freed nodes are reused.
+    // Node addresses remain stable as the pool grows; freed nodes are reused.
     std::deque<Node> Nodes;
 
     State &WriteState() {

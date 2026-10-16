@@ -2,24 +2,21 @@
 
 #include "state/Entity.h"
 
-// Whether a viewport frame waits for its record and submit.
+// Pending viewport frame request.
 struct PendingRenderRequest {
     bool Value{false};
 };
 
-// Queue a viewport frame, which invalidates occlusion unless its change cannot disocclude anything, as a selection change cannot.
+// Queue a viewport frame and invalidate occlusion when the change can reveal hidden geometry.
 void RequestRender(state::Scene &, bool disoccludes = true);
 
-// Register the reactive trackers and scene lifecycle handlers used by ProcessComponentEvents.
 void RegisterSceneComponentHandlers(state::Scene &);
 
-// Restore reconciles Derived state without mutating Persistent state.
-// Sample evaluates a shutter time.
-// Render restores the displayed pose after sampling, including live drag offsets.
+// Restore reconciles Derived state while preserving Persistent state.
+// Sample evaluates a shutter time; Render restores the displayed pose, including live drag offsets.
 enum class EventPass { Frame,
                        Settle,
                        Restore,
                        Sample,
                        Render };
-// Process component changes and request a frame in PendingRenderRequest.
 void ProcessComponentEvents(state::Scene &, state::Entity viewport, EventPass = EventPass::Frame);

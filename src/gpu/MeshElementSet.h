@@ -1,8 +1,9 @@
 #pragma once
 #include "gpu/Types.h"
 
-// A set's table run: First names its entries in the domain's table arena, BlockCount of the Capacity entries are in use, and an InvalidOffset entry holds no block.
-// Flags bit 0 marks a dense set, whose table names consecutive blocks and whose live elements are the first Count handles.
+// First indexes the table arena; BlockCount entries are used within Capacity.
+// InvalidOffset entries contain no block.
+// Flags bit 0 denotes consecutive blocks with the first Count handles live.
 struct MeshElementSet {
     uint32_t First DEFAULT(InvalidOffset), Capacity DEFAULT();
     uint32_t Count DEFAULT(), BlockCount DEFAULT(), Revision DEFAULT(), Flags DEFAULT();

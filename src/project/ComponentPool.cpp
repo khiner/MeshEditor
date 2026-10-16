@@ -55,7 +55,8 @@ void ComponentPool::Settle() {
     Trie.ClearDirty();
 }
 
-// Values move to the entity now at their index. A changed entity generation never counts as unchanged.
+// Values move to the entity now at their index.
+// A changed entity generation never counts as unchanged.
 void ComponentPool::Apply(store::RestorePlan &plan, bool compare) {
     for (auto &c : plan.Changes) {
         const auto page = uint32_t(c.Slot);
@@ -114,7 +115,7 @@ void ComponentPool::Load(uint64_t length, std::span<const std::pair<uint64_t, st
     Apply(plan, false);
     Trie.CommitLoad(std::move(plan));
     // Move values whose entity changed identity to the entity now at their index.
-    // Only the table's occupied slots hold values, and loaded pages already hold theirs.
+    // Only the table's occupied slots contain values, and loaded pages already contain theirs.
     S.ForEachIdentityChangeRun([&](uint32_t first, uint32_t last) {
         for (auto page = first / state::Table::PageCount; page * state::Table::PageCount < last; ++page) {
             if (Trie.IsDirty(page)) continue;

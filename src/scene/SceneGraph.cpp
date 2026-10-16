@@ -7,7 +7,6 @@
 #include "scene/Entity.h"
 
 namespace {
-// Points the parent's child list at `first_child`.
 void SetFirstChild(state::Scene &r, state::Entity parent, state::Entity first_child) {
     if (r.all_of<SceneChildren>(parent)) r.patch<SceneChildren>(parent, [first_child](auto &c) { c.FirstChild = first_child; });
     else r.emplace<SceneChildren>(parent, SceneChildren{.FirstChild = first_child});
@@ -25,14 +24,13 @@ state::Entity FirstChildOf(const state::Scene &r, state::Entity parent) {
     return children ? children->FirstChild : state::Null;
 }
 
-// The placed instance slot holding the node's world transform, or UINT32_MAX when its WorldTransform component holds it.
-// An armature part's slot holds its display transform.
+// Return the node's transform slot, or UINT32_MAX when WorldTransform stores it.
+// An armature part's slot contains its display transform.
 uint32_t WorldSlot(const state::Scene &r, state::Entity e) {
     const auto *render = r.try_get<const RenderInstance>(e);
     return render && !r.all_of<SubElementOf>(e) ? render->BufferIndex : UINT32_MAX;
 }
 
-// The node's world transform at its home, `slot` from WorldSlot.
 const Transform *WorldTransformAt(const state::Scene &r, state::Entity e, uint32_t slot) {
     if (slot != UINT32_MAX) return r.Context.get<const GpuBuffers>().Instances.TransformBuffer.GetSpan<Transform>({slot, 1u}).data();
     return r.try_get<const WorldTransform>(e);
@@ -164,7 +162,7 @@ void RecomputeWorldTransforms(state::Scene &r, std::span<const state::Entity> ro
             const auto *local = ComposedLocal(r, e);
             if (!local) continue;
             const Transform world = parent_matrix == NoParent ? *local : ToTransform(matrices[parent_matrix] * ToMatrix(*local));
-            // An unchanged world transform leaves its subtree current, and an instance slot placed this settle holds no earlier value.
+            // Skip unchanged subtrees; always initialize newly placed instance slots.
             const auto slot = WorldSlot(r, e);
             if (const auto *current = placed.contains(e) ? nullptr : WorldTransformAt(r, e, slot); current && *current == world) continue;
             SetWorldTransformAt(r, e, slot, world);
@@ -184,7 +182,6 @@ void SetParent(state::Scene &r, state::Entity child, state::Entity parent) {
 }
 
 bool SetParentKeepWorld(state::Scene &r, std::span<const state::Entity> children, state::Entity parent) {
-    // The parent and its ancestors, none of which can become its child.
     std::vector<state::Entity> lineage;
     for (auto e = parent; e != state::Null; e = ParentOrNull(r, e)) lineage.push_back(e);
     bool looped = false;

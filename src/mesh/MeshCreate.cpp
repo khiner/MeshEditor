@@ -186,8 +186,8 @@ void InitializeSharpness(MeshStore &meshes, const Mesh &mesh, const MeshData &da
         ci += corner_count;
     }
 
-    // Sharp-edge inference: an interior edge whose authored corner normals disagree across it at either endpoint splits shading there.
-    // The split records as edge sharpness so seam sectors derive.
+    // Infer sharp edges when authored corner normals disagree across an interior edge at either endpoint.
+    // Record these boundaries as edge sharpness for normal-sector derivation.
     if (mesh.EdgeCount() == 0) return;
     const auto sharp_edges = meshes.EditEdgeSharpness(id);
     const auto &c = mesh.GetConnectivity();

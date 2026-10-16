@@ -11,7 +11,6 @@ constant float OccludedOutlineAlpha = 0.35f;
 struct SilhouetteEdgeHit {
     float Depth;
     float ObjectId;
-    // The pixel the outlined surface was rasterized at.
     int2 Texel;
 };
 

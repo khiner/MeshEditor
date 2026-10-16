@@ -35,7 +35,7 @@ template<uint BlockSize, typename SetT> inline uint HandleAddress(device const S
 template<typename SetT> inline device const uint *SetTable(device const SetT &b, SetArenaSlots arena, uint set) {
     return set == InvalidOffset ? nullptr : BindlessBuffer(uint, b.Buffer, arena.Table) + BindlessBuffer(MeshElementSet, b.Buffer, arena.Sets)[set].First;
 }
-// An element domain's arena values at a record's handles, which its table run resolves to arena addresses.
+// Resolve record-relative element handles through the domain table before accessing arena values.
 template<typename T> struct ElementValues {
     device T *Values;
     device const uint *Table;
@@ -65,7 +65,6 @@ inline uint SelectLiveElement(device const uint *live, uint block, uint rank) {
 inline uint MorphTargetIndex(SlotOffset morph, uint handle, uint target, uint targets) {
     return morph.Offset + (handle / MeshElementBlockSize * targets + target) * MeshElementBlockSize + handle % MeshElementBlockSize;
 }
-// A named attribute's value at a handle of its record, as the words of its components.
 inline uint4 ReadNamedAttribute(device const BindlessSet &b, NamedAttributeRef attribute, AttributeType type, uint handle) {
     const uint index = attribute.Offset + handle;
     device const uint *words = BindlessBuffer(uint, b.Buffer, attribute.ValuesSlot);
@@ -105,7 +104,6 @@ inline uint CornerSectorRoot(device const BindlessSet &b, SlotOffset sectors, ui
     return sectors.Slot != InvalidSlot ? BindlessBuffer(uint, b.Buffer, sectors.Slot)[sectors.Offset + h] : InvalidOffset;
 }
 
-// The corner handle at corner `corner` of the triangle handles from `first`, through the record's tables.
 inline uint TriangleCornerHandle(device const BindlessSet &b, uint slot, ConnectivityRef connectivity, uint first, uint corner) {
     return BindlessBuffer(packed_uint3, b.Buffer, slot)[HandleAddress<MeshElementBlockSize>(b, connectivity.Tables.Triangles, first + corner / 3u)][corner % 3u];
 }
@@ -128,7 +126,7 @@ inline uint InstanceFlags(uint mesh_flags, uint primary_edit_instance, uint inst
     return (primary ? mesh_flags : mesh_flags & ~primary_only) | (silhouette ? uint(MeshletInstanceFlag::Silhouette) : 0u);
 }
 
-// Storage that holds no element selection, since a zero slot names a live buffer.
+// Use InvalidSlot for absent selection; zero is a valid buffer slot.
 constant EditSelectionStorage NoEditSelection{{InvalidSlot, 0u}, {InvalidSlot, 0u}, {InvalidSlot, 0u}, {InvalidSlot, 0u}, InvalidSlot, InvalidSlot, InvalidSlot};
 
 // Compose mesh and instance state, whose stored references resolve through the mesh's tables.
@@ -211,11 +209,9 @@ struct SceneT {
     uint EdgeAddress(DrawData draw, uint e) const { return HandleAddress<MeshElementBlockSize>(B, draw.Connectivity.Tables.Edges, e); }
     uint FaceAddress(DrawData draw, uint f) const { return HandleAddress<MeshElementBlockSize>(B, draw.Connectivity.Tables.Faces, f); }
     uint ElementPrimitive(SlotOffset primitives, uint handle) const { return BindlessBuffer(uint, B.ElementPrimitiveBuffer, primitives.Slot)[primitives.Offset + handle]; }
-    // A corner's vertex handle.
     uint CornerVertex(DrawData draw, uint corner) const {
         return Indices(draw.IndexSlotOffset.Slot)[CornerAddress(draw, corner)];
     }
-    // The vertex handle at an index of an extras record's run.
     uint ExtrasVertex(DrawData draw, uint index) const {
         return Indices(draw.IndexSlotOffset.Slot)[draw.IndexSlotOffset.Offset + index];
     }
@@ -239,7 +235,6 @@ struct SceneT {
     // Weight-summed authored morph normal deltas, indexed like the posed positions.
     device const packed_float3 *PosedMorphNormalDeltas(uint slot) const { return BindlessBuffer(packed_float3, B.Buffer, slot); }
 
-    // A sampler slot combines its texture and sampler IDs.
     float4 SampleTex(uint slot, float2 uv) const { return B.Sampler[slot].Texture.sample(B.Sampler[slot].Sampler, uv); }
     float4 SampleTexGrad(uint slot, float2 uv, float2 dx, float2 dy) const {
         return B.Sampler[slot].Texture.sample(B.Sampler[slot].Sampler, uv, gradient2d(dx, dy));
@@ -286,7 +281,6 @@ struct SceneT {
 
     // Picking names an element by its arena address plus one, which no other record's element shares, and zero is its no-hit value.
     uint FacePickId(DrawData draw, uint face) const { return face == InvalidOffset ? 0u : FaceAddress(draw, face) + 1u; }
-    // The pick ID of a line topology's edge or a point topology's vertex.
     uint ElementPickId(DrawData draw, bool lines, uint element) const { return (lines ? EdgeAddress(draw, element) : VertexAddress(draw, element)) + 1u; }
 
     uint InstanceState(DrawData draw) const {

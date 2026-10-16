@@ -5,7 +5,6 @@
 #include "state/Schema.h"
 #include "viewport/ViewportDisplay.h"
 
-// Node parameter enums, whose fixed underlying types make these declarations complete.
 enum class AttributeType : uint32_t;
 enum class AttributeDomain : uint32_t;
 enum class VectorMathOp : uint32_t;
@@ -25,7 +24,6 @@ enum class VectorComponent : uint8_t;
 } // namespace procedure
 
 namespace action {
-// Where an action applies.
 struct OnActive {};
 struct OnSelected {};
 struct OnSelectedDelta {}; // Offsets each selected target by the active target's change since the drag start.
@@ -44,12 +42,10 @@ template<typename F>
 concept ScalarField = std::floating_point<F> || (std::integral<F> && !std::same_as<F, bool>);
 template<typename F>
 concept VectorField = requires { F::ComponentCount; } && ScalarField<typename F::value_type>;
-// A rotation delta composes by multiplication.
 template<typename F>
 concept RotationField = std::same_as<F, quat>;
 template<typename F> inline constexpr bool DeltaField = ScalarField<F> || VectorField<F> || RotationField<F>;
 
-// The scalar type bounding a numeric field, applied to each component of a vector.
 template<typename F> struct LimitOf {
     using Type = F;
 };

@@ -11,7 +11,7 @@ inline void AddBlock(std::vector<uint32_t> &blocks, uint32_t address) {
     const auto block = address / MeshElementBlockSize;
     if (blocks.empty() || blocks.back() != block) blocks.push_back(block);
 }
-// The arena blocks of a record's local blocks, through its table entries, skipping entries that hold no block.
+// The arena blocks of a record's local blocks, through its table entries, skipping entries that contain no block.
 std::vector<uint32_t> TableBlocks(std::span<const uint32_t> table, std::span<const uint32_t> locals);
 // The arena blocks of the handle run [first, first + count), through the record's table entries.
 std::vector<uint32_t> RunBlocks(std::span<const uint32_t> table, uint32_t first, uint32_t count);

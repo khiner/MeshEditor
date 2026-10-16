@@ -4,9 +4,11 @@
 
 #include "state/Entity.h"
 
-// Make `target` the look-through camera, preserving the saved view across switches. No-op if `target` is not a camera.
+// Make `target` the look-through camera, preserving the saved view across switches.
+// No-op if `target` is not a camera.
 void SetLookThrough(state::Scene &, state::Entity viewport, state::Entity target);
-// Exit look-through, restoring the saved pre-look-through view camera. No-op if not looking through.
+// Exit look-through, restoring the saved pre-look-through view camera.
+// No-op if not looking through.
 void ClearLookThrough(state::Scene &, state::Entity viewport);
 // Returns null when no look-through camera is active.
 state::Entity LookThroughCameraEntity(const state::Scene &);

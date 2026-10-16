@@ -93,12 +93,10 @@ struct NdcVaryings {
     float2 Ndc [[user(Ndc)]];
 };
 
-// The grid rasterizes its infinite plane for depth testing.
 struct GridVaryings {
     float4 Position [[position]];
 };
 
-// Object ID output for depth and selection prepasses.
 struct ObjectIdVaryings {
     float4 Position [[position]];
     float PointSize [[point_size]];
@@ -116,7 +114,6 @@ struct PointVaryings {
     float4 Color [[user(Color)]];
 };
 
-// Edge-quad coverage and color output.
 struct EdgeQuadVaryings {
     float4 Position [[position]];
     float2 EdgeCoord [[user(EdgeCoord)]] [[center_no_perspective]];
@@ -134,7 +131,6 @@ struct BoneSolidVaryings {
     uint ObjectId [[user(ObjectId)]] [[flat]];
 };
 
-// Bone-joint billboard output includes its view-space sphere.
 struct BoneSphereVaryings {
     float4 Position [[position]];
     float3 SphereCenter [[user(SphereCenter)]] [[flat]];
@@ -145,7 +141,6 @@ struct BoneSphereVaryings {
     float SphereRadius [[user(SphereRadius)]] [[flat]];
 };
 
-// Element ID output for selection passes.
 struct ElementIdVaryings {
     float4 Position [[position]];
     float PointSize [[point_size]];

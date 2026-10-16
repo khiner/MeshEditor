@@ -127,7 +127,6 @@ std::vector<EdgeSlideDirections> PlanEdgeSlide(const Mesh &mesh, const GeometryS
     };
     for (uint32_t seed = 0u; seed < nodes.size(); ++seed) {
         if (nodes[seed].Done) continue;
-        // Walk to a chain endpoint, or return to the seed for a closed loop.
         uint32_t start = seed, previous = InvalidOffset;
         while (nodes[start].Degree == 2u) {
             const auto next = next_link(start, previous).Vertex;

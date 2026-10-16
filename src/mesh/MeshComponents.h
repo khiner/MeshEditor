@@ -8,7 +8,8 @@ struct RenderInstance {
     state::Entity Entity;
     uint32_t BufferIndex{0};
 };
-// GPU object IDs are the entity slot plus one. Zero remains the background.
+// GPU object IDs are the entity slot plus one.
+// Zero remains the background.
 constexpr uint32_t ObjectId(state::Entity e) { return state::Index(e) + 1; }
 // The entity index an ObjectId names.
 constexpr uint32_t ObjectIndex(uint32_t object_id) { return object_id - 1u; }

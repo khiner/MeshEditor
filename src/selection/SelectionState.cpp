@@ -64,7 +64,6 @@ void ComputePivot(const state::Scene &r, const ModeScope &scope, TransformRoots 
     out.PivotPosition = count > 0 ? sum / float(count) : vec3{};
 }
 
-// Whether a world transform the pivot reads changed this settle.
 bool PivotMoved(const state::Scene &r, const ModeScope &scope, const TransformRoots &roots) {
     const auto &moved = reactive(r, Change::WorldTransform);
     if (moved.empty()) return false;
@@ -240,7 +239,7 @@ std::vector<state::Entity> UpdateSelectionState(state::Scene &r, state::Entity v
 
     const bool roots_changed = selection || interaction || parents;
     if (roots_changed) ComputeRoots(r, scope, r.edit<TransformRoots>(viewport));
-    // The pivot holds still through a gesture, which reads the pivot it started with.
+    // Preserve the initial pivot throughout the gesture.
     if (roots_changed || AnyChanged(r, Change::TransformEnd) ||
         (!r.all_of<StartPivot>(viewport) && PivotMoved(r, scope, r.get<const TransformRoots>(viewport)))) {
         ComputePivot(r, scope, r.edit<TransformRoots>(viewport));

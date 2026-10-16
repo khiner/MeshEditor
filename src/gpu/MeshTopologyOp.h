@@ -82,8 +82,8 @@ enum class BooleanOperation : uint32_t {
     Intersection,
 };
 
-// Primitive list: new vertex count, grid boundary length, grid span, attribute source,
-// boundary vertex handles, primitive count, then loops of (vertex, source corner) pairs.
+// Primitive-list header: vertex count, boundary length, span, attribute source, boundary handles, and primitive count.
+// Follow with loops of (vertex, source corner) pairs.
 GPU_CONSTANT uint32_t TopologyPrimitiveHeaderWords = 4u;
 
 // Flags a job's operator reads.

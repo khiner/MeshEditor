@@ -10,11 +10,9 @@
 
 namespace animation {
 namespace {
-// The components a channel can write, each a paged record addressed as bytes at an offset.
 template<typename... Cs> struct TypeList {};
 using ChannelComponents = TypeList<PosedLocal, BoneDelta, Perspective, Orthographic, PunctualLight, ImageLight, Visibility>;
 
-// Calls `f.template operator()<C>()` for the channel component keyed by `key`. Returns whether one matched.
 template<typename F> bool ForChannelComponent(state::TypeKey key, F &&f) {
     return [&]<typename... Cs>(TypeList<Cs...>) {
         return ((state::Key<Cs>() == key && (f.template operator()<Cs>(), true)) || ...);

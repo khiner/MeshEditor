@@ -331,7 +331,6 @@ EnvironmentPrefiltered BuildFlatColorEnvironment(
     return EnvironmentPrefiltered{.DiffuseEnv = std::move(*diffuse), .SpecularEnv = std::move(*specular), .Name = std::move(name)};
 }
 
-// Build diffuse and GGX-specular cubemaps from an equirectangular environment.
 EnvironmentPrefiltered CreateIblFromHdri(
     const mtl::Context &ctx, mtl::BindlessSet &slots, const Pipelines &pipelines, const std::filesystem::path &path, std::string name
 ) {

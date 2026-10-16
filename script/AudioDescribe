@@ -44,12 +44,10 @@ def describe(path):
     peak = float(np.max(np.abs(x)))
     kurt = float(np.mean(((x - x.mean()) / max(x.std(), 1e-30)) ** 4))
 
-    # Mark 20 ms frames active above 35 dB below the loudest frame.
     env = frame_rms(x, int(0.02 * SR), int(0.01 * SR))
     env_db = 20 * np.log10(np.maximum(env, 1e-15))
     active = float(np.mean(env_db > env_db.max() - 35))
 
-    # Detect onsets from half-wave-rectified spectral flux above three times the moving median.
     win, hop = 1024, 512
     frames = 1 + (len(x) - win) // hop
     prev = None
@@ -66,7 +64,6 @@ def describe(path):
         for i in range(1, frames - 1)
         if flux[i] > 3 * med[i] + 1e-12 and flux[i] >= flux[i - 1] and flux[i] > flux[i + 1]
     ]
-    # Merge peaks separated by less than 20 ms.
     events = []
     for i in peaks:
         if not events or (i - events[-1]) * hop / SR > 0.02:

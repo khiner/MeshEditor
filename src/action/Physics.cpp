@@ -17,7 +17,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
         overloaded{
             [&](const SetMotionType &a) {
                 using Type = SetMotionType::Type;
-                // Selected scope fans out to the selected entities that already take part in physics.
+                // Apply Selected scope only to selected entities already participating in physics.
                 ForEachTarget(
                     a.Target, viewport,
                     [&] { return FindActiveEntity(r); },

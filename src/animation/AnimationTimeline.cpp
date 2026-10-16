@@ -33,7 +33,6 @@ bool IconButton(const char *id, const SvgResource *icon, ImDrawFlags corners = I
     return clicked;
 }
 
-// Select a major step that prevents label overlap.
 int ComputeMajorStep(float pixels_per_frame) {
     static constexpr float MinLabelSpacingPx{80};
     static constexpr int steps[]{1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000};
@@ -71,8 +70,6 @@ std::optional<action::Action> RenderAnimationTimeline(const TimelineRange &range
 
     const auto bar_origin = GetCursorScreenPos();
     {
-        // The transport group holds the range jumps and play controls.
-        // The delta group to its right holds the Jump Time by Delta buttons and the playback options.
         // Pause spans the reverse and forward play slots while playing.
         constexpr float TransportSlots{6}, DeltaSlots{3};
         const auto transport_p = bar_origin + ImVec2{(w - h * (TransportSlots + DeltaSlots) - spacing.x) * 0.5f, 0.f};
@@ -237,7 +234,6 @@ std::optional<action::Action> RenderAnimationTimeline(const TimelineRange &range
 
     dl->AddLine({p0.x, p0.y + HeaderHeight}, {p1.x, p0.y + HeaderHeight}, IM_COL32(60, 60, 60, 255));
 
-    // Summary row of keyframe diamonds under the ruler.
     if (!keyframes.empty()) {
         constexpr float KeyHalf{5.f};
         const float ky = p0.y + HeaderHeight + KeyHalf + 4.f;

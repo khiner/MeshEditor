@@ -50,13 +50,11 @@ struct Fixture : Engine {
         Audit();
         return node.value();
     }
-    // Settles direct scene writes and commits them as one history node.
     void Commit(std::string label) {
         P->Settle();
         P->History.Commit(std::move(label), {});
         Audit();
     }
-    // Does an action that adds an object and returns the object, selected and active.
     template<typename A> state::Entity Add(A a) {
         Do(std::move(a));
         return FindActiveEntity(R);
@@ -127,7 +125,7 @@ void TestSavedProject() {
     edited.Check(reopened);
 }
 
-// Actions replay restores the present document and one branch while the final workspace restores the editor camera.
+// Verify action replay restores the document and a history branch, and workspace restoration restores the editor camera.
 void TestActionsArchive() {
     const TestDir dir{"/tmp/mesheditor-scratch/project-actions"}, archives{"/tmp/mesheditor-scratch/project-actions-archives"}, opened{"/tmp/mesheditor-scratch/project-actions-opened"};
     const auto archive = archives.Path / "Scene.actions";
@@ -197,7 +195,6 @@ void WriteFile(const std::filesystem::path &path, std::string_view text) {
     std::ofstream{path, std::ios::binary} << text;
 }
 
-// Writes the positions of the triangle (0,0,0), (x,0,0), (0,1,0) as a glTF buffer.
 void WriteTriangle(const std::filesystem::path &path, float x) {
     const std::array<vec3, 3> positions{vec3{0, 0, 0}, vec3{x, 0, 0}, vec3{0, 1, 0}};
     WriteFile(path, {reinterpret_cast<const char *>(positions.data()), sizeof(positions)});
@@ -252,7 +249,6 @@ void TestExternalReferences() {
     restored.Audit();
 }
 
-// The settle pass derives a RenderInstance for every Instance and writes Hidden into its state bit in place, through actions and history.
 void TestRenderInstanceDerivation() {
     const TestDir dir{"/tmp/mesheditor-scratch/project-render-instance"};
     Fixture f{dir};
@@ -291,7 +287,6 @@ void TestRenderInstanceDerivation() {
     f.Audit();
 }
 
-// A hidden object draws no pixel a pick can hit.
 void TestHiddenObjectEscapesPick() {
     const TestDir dir{"/tmp/mesheditor-scratch/project-hidden-pick"};
     Fixture f{dir};
@@ -324,7 +319,7 @@ struct Chain {
     }
 };
 
-// A selected grandchild of a selected object is no transform root, and moving the object moves the grandchild by the delta once.
+// Apply the parent transform once to a selected descendant by excluding the descendant from transform roots.
 void TestSelectedGrandchildMovesOnce() {
     const TestDir dir{"/tmp/mesheditor-scratch/project-grandchild"};
     Fixture f{dir};
@@ -335,7 +330,6 @@ void TestSelectedGrandchildMovesOnce() {
     expect(std::abs(WorldTransformOf(f.R, chain.C)->P.x - 1.f) < 1e-4f);
 }
 
-// Hiding, deleting and duplicating instances of a shared mesh and of another mesh, then undoing each, renders the scene's image again.
 void TestInstanceLifecycleRendersBack() {
     const TestDir dir{"/tmp/mesheditor-scratch/project-instance-lifecycle"};
     Fixture f{dir};
@@ -375,7 +369,6 @@ void TestDuplicateDrawsAsItsSource() {
     const auto render_owner = [&](state::Entity e) -> const MeshStore::Record & {
         return meshes.Get(r.get<const MeshHandle>(r.get<const Instance>(e).Entity).StoreId);
     };
-    // Duplicates the selected source and returns the copy.
     const auto duplicate = [&](state::Entity source) {
         f.Do(action::selection::Select{source});
         const auto copy = f.Add(action::object::Duplicate{});
@@ -479,7 +472,8 @@ void TestParentToDescendantFails() {
     f.Audit();
 }
 
-// Checks that every laid-out mesh's bounds run matches a spec recomputed from its record, instances and mode, that no two runs share storage, and that the topology and sharp-edge tallies match a recount.
+// Recompute layout expectations independently from records, instances, and mode.
+// Verify disjoint bounds storage and compare topology and sharp-edge totals with a recount.
 void CheckLayout(Fixture &f, std::string_view step) {
     auto &r = f.R;
     const auto &buffers = r.Context.get<const GpuBuffers>();
@@ -566,7 +560,7 @@ void CheckLayout(Fixture &f, std::string_view step) {
     if (buffers.SharpEditMeshes != sharp_meshes) fail("sharp-edge tally");
 }
 
-// A settle lays out only the meshes whose own inputs changed, through loading a skinned scene, object and history edits, an Edit-mode drag, a separation and shading changes.
+// Verify mesh layout updates only when mesh inputs change across scene load, history, transforms, separation, and shading.
 void TestIncrementalLayout() {
     const TestDir dir{"/tmp/mesheditor-scratch/project-incremental-layout"};
     Fixture f{dir};

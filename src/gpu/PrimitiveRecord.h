@@ -2,7 +2,8 @@
 
 #include "gpu/SlotOffset.h"
 
-// Stores one primitive's meshlet range and LOD roots. The instance record names the mesh record they share.
+// Stores one primitive's meshlet range and LOD roots.
+// The instance record names the mesh record they share.
 struct PrimitiveRecord {
     // Optional kind-specific indices for bone adjacency and ring geometry.
     SlotOffset AuxIndices DEFAULT();

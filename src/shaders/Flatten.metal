@@ -39,8 +39,8 @@ inline float3 FlattenLeastSquares(float3 diagonal,float3 off) {
     return normalize(basis[minimum]);
 }
 
-// Every group in a dispatch has disjoint vertices. Subsequent batches observe
-// earlier projections when face regions or remaining wire groups share a vertex.
+// Every group in a dispatch has disjoint vertices.
+// Subsequent batches observe earlier projections when face regions or remaining wire groups share a vertex.
 kernel void FlattenGroups(
     uint lane [[thread_index_in_threadgroup]],uint group [[threadgroup_position_in_grid]],
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],

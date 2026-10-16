@@ -84,7 +84,6 @@ template<typename OptT>
     return out;
 }
 
-// Reads one table field of a material extension from its fastgltf block.
 template<typename O, typename T, typename OF, typename TF>
 void ReadField(O &ours, const T &theirs, const MaterialField<O, T, OF, TF> &field, const fastgltf::Asset &asset) {
     if constexpr (std::same_as<OF, ::TextureInfo>) ours.*field.Ours = ToTextureIndex(theirs.*field.Theirs, asset);
@@ -143,7 +142,8 @@ std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32
 }
 
 // Append `count` vertices of the optional `name` attribute, backfilling with `fill` where absent.
-// Sets `bit` in `flags` when present. With `check_count`, a count mismatch with POSITION is an error.
+// Sets `bit` in `flags` when present.
+// With `check_count`, a count mismatch with POSITION is an error.
 template<typename T>
 std::expected<void, std::string> AppendVertexAttr(
     const fastgltf::Asset &asset, const fastgltf::Primitive &primitive, std::string_view name,
@@ -458,7 +458,6 @@ std::expected<void, std::string> AppendPrimitive(
         }
     }
 
-    // Process complete triangle lists as one shifted index block.
     if (primitive.type == fastgltf::PrimitiveType::Triangles) {
         const auto index_count = primitive.indicesAccessor ? asset.accessors[*primitive.indicesAccessor].count : position_accessor.count;
         if (index_count >= 3 && index_count % 3 == 0) {
@@ -501,7 +500,8 @@ std::expected<void, std::string> AppendPrimitive(
     return {};
 }
 
-// Raw bytes of a loaded buffer. Meshopt compressed data is referenced by buffer index, not bufferView.
+// Raw bytes of a loaded buffer.
+// Meshopt compressed data is referenced by buffer index, not bufferView.
 std::optional<std::span<const std::byte>> BufferBytes(const fastgltf::Buffer &buffer) {
     return std::visit(
         fastgltf::visitor{
@@ -514,7 +514,6 @@ std::optional<std::span<const std::byte>> BufferBytes(const fastgltf::Buffer &bu
     );
 }
 
-// Decodes each meshopt-compressed bufferView into a new buffer for ordinary accessor reads.
 std::expected<void, std::string> DecodeMeshoptCompression(fastgltf::Asset &asset) {
     using fastgltf::MeshoptCompressionMode, fastgltf::MeshoptCompressionFilter;
     for (auto &view : asset.bufferViews) {
@@ -617,7 +616,8 @@ struct SourceMesh {
     bool HasParts() const { return Triangles || Lines || Points; }
 };
 
-// Reads every primitive of asset.meshes[source_mesh_index]. Materials index the source materials plus the trailing implicit default.
+// Reads every primitive of asset.meshes[source_mesh_index].
+// Materials index the source materials plus the trailing implicit default.
 std::expected<SourceMesh, std::string> ReadSourceMesh(const fastgltf::Asset &asset, uint32_t source_mesh_index) {
     const auto &source_mesh = asset.meshes[source_mesh_index];
     const auto primitive_count = uint32_t(source_mesh.primitives.size());
@@ -960,10 +960,8 @@ bool EntityInActiveScene(const state::Scene &r, state::Entity active_scene, stat
     return !sm || std::ranges::find(sm->Scenes, active_scene) != sm->Scenes.end();
 }
 
-// A node's source index and its entity.
 using NodeEntity = std::pair<uint32_t, state::Entity>;
 
-// Shows an object of the active scene and hides an object outside it.
 void ApplySceneVisibility(state::Scene &r, state::Entity active_scene, state::Entity e, const SceneMembership &membership) {
     if (std::ranges::contains(membership.Scenes, active_scene)) Show(r, e);
     else Hide(r, e);
@@ -1046,7 +1044,7 @@ std::expected<SourceAssets, std::string> ReadSourceAssets(state::Scene &r, const
 }
 
 // Render materials and source metadata in parallel, with a trailing implicit default for primitives without a material.
-// Texture slots hold glTF texture indices until ImportMaterials maps them to bindless slots.
+// Texture slots contain glTF texture indices until ImportMaterials maps them to bindless slots.
 struct SourceMaterials {
     std::vector<PBRMaterial> Materials;
     std::vector<MaterialSourceMeta> Metas;
@@ -1112,7 +1110,8 @@ struct NodePlan {
     // Bone nodes render only when they also carry mesh data.
     std::vector<bool> IsObjectEmitted;
     std::vector<std::optional<uint32_t>> NearestObjectAncestor;
-    // Armature-root node per skin. Empty means the scene root.
+    // Armature-root node per skin.
+    // Empty means the scene root.
     std::vector<std::optional<uint32_t>> SkinArmaNode;
     // Valid joint nodes per used skin, deduped, in source order.
     std::vector<std::vector<uint32_t>> SkinJointNodes;
@@ -1317,13 +1316,15 @@ std::expected<std::vector<ArmaturePlan>, std::string> PlanArmatures(const fastgl
     return groups;
 }
 
-// Commit phase. Everything below runs after validation and cannot fail.
+// Commit phase.
+// Everything below runs after validation and cannot fail.
 
 struct PhysicsResources {
     std::vector<state::Entity> Materials, JointDefs;
 };
 
-// KHR_physics_rigid_bodies document resources. Collision filters follow in ImportNodePhysics with the node colliders that reference them.
+// KHR_physics_rigid_bodies document resources.
+// Collision filters follow in ImportNodePhysics with the node colliders that reference them.
 PhysicsResources ImportPhysicsResources(state::Scene &r, const fastgltf::Asset &asset) {
     PhysicsResources out;
     out.Materials.reserve(asset.physicsMaterials.size());
@@ -1375,7 +1376,6 @@ struct ImportedMaterials {
     std::vector<MaterializedTexture> Textures;
 };
 
-// Appends every source material to the GPU material buffer with its textures queued for upload and mapped to bindless slots.
 ImportedMaterials ImportMaterials(state::Scene &r, const fastgltf::Asset &asset, const SourceAssets &sa, std::span<const PBRMaterial> source_materials) {
     auto &slots = r.Context.get<mtl::BindlessSet>();
     auto &buffers = r.Context.get<GpuBuffers>();
@@ -1467,7 +1467,6 @@ ImportedMaterials ImportMaterials(state::Scene &r, const fastgltf::Asset &asset,
     return out;
 }
 
-// Shading features the mesh's materials enable, read from the appended GPU materials.
 PbrFeatureMask PbrFeaturesOf(std::span<const PBRMaterial> materials, std::span<const uint32_t> material_indices) {
     PbrFeatureMask mask{0};
     for (const auto index : material_indices) {
@@ -1506,7 +1505,7 @@ MeshEntities ImportMeshes(state::Scene &r, std::span<SourceMesh> source_meshes, 
                 if (m) *m = remap(*m);
             }
         }
-        // The last part takes the layout and the others copy it.
+        // Move the shared layout into the last part after copying it into earlier parts.
         const auto last_kind = source_mesh.Points ? MeshKind::Points : source_mesh.Lines ? MeshKind::Lines :
                                                                                            MeshKind::Triangles;
         const auto add_part = [&](std::optional<MeshSource> &source, MeshKind kind) {
@@ -1572,7 +1571,7 @@ ImportedObjects ImportObjects(state::Scene &r, const fastgltf::Asset &asset, con
         const auto mesh_index = ToIndex(source_node.meshIndex, asset.meshes.size());
         const auto camera_index = ToIndex(source_node.cameraIndex, asset.cameras.size());
         const auto light_index = ToIndex(source_node.lightIndex, asset.lights.size());
-        // Triangles, then lines, then points instance a mesh whose source lacks triangles.
+        // For a mesh without triangles, select instances from triangle, line, then point parts.
         const auto primary_mesh = [&]() -> state::Entity {
             if (!mesh_index) return state::Null;
             for (const auto e : mesh_entities[*mesh_index]) {
@@ -1594,7 +1593,7 @@ ImportedObjects ImportObjects(state::Scene &r, const fastgltf::Asset &asset, con
             if (primary_mesh != state::Null) {
                 const MeshInstanceCreateInfo info{.Name = std::move(name), .Transform = transform, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = true};
                 e = ::AddMeshInstance(r, primary_mesh, info);
-                // The source mesh's other parts ride under the primary instance with identity transforms.
+                // Parent the other mesh parts under the primary instance with identity transforms.
                 for (const auto extra : mesh_entities[*mesh_index]) {
                     if (extra == state::Null || extra == primary_mesh) continue;
                     const auto extra_instance = ::AddMeshInstance(r, extra, {.Name = info.Name, .Transform = Transform{}, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = true});
@@ -1623,7 +1622,8 @@ ImportedObjects ImportObjects(state::Scene &r, const fastgltf::Asset &asset, con
         }
     }
 
-    // Objects nest under their nearest emitted ancestor. Instances are roots, so their baked world transforms stand alone.
+    // Objects nest under their nearest emitted ancestor.
+    // Instances are roots, so their baked world transforms stand alone.
     for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
         if (!plan.IsObjectEmitted[node_index] || instanced[node_index]) continue;
         const auto parent = plan.NearestObjectAncestor[node_index];
@@ -1671,7 +1671,6 @@ PhysicsShape ToPhysicsShape(const fastgltf::Asset &asset, const fastgltf::Geomet
     return physics::TriangleMesh{};
 }
 
-// Collision filters, then every node's KHR_physics_rigid_bodies collider, motion, trigger, and joint.
 void ImportNodePhysics(state::Scene &r, const fastgltf::Asset &asset, const ImportedObjects &objects, const MeshEntities &mesh_entities, const PhysicsResources &resources) {
     // Collision system names dedupe into CollisionSystem entities shared across every filter.
     std::unordered_map<std::string, state::Entity> system_entity_by_name;
@@ -1753,7 +1752,7 @@ void ImportNodePhysics(state::Scene &r, const fastgltf::Asset &asset, const Impo
             std::visit(
                 overloaded{
                     [&](const fastgltf::GeometryTrigger &t) {
-                        // A geometry trigger is a ColliderShape with TriggerTag. KHR makes it exclusive with a solid collider, so a node already carrying one keeps it.
+                        // Preserve an existing solid collider when an invalid node also specifies a geometry trigger.
                         if (r.all_of<ColliderShape>(entity)) return;
                         r.emplace<ColliderShape>(entity, ColliderShape{.Shape = ToPhysicsShape(asset, t.geometry), .MeshEntity = triangles_of(t.geometry.mesh)});
                         r.emplace<ColliderPolicy>(entity, ColliderPolicy{.AutoFitDims = false, .LockedKind = true});
@@ -1780,7 +1779,6 @@ void ImportNodePhysics(state::Scene &r, const fastgltf::Asset &asset, const Impo
     }
 }
 
-// KHR_audio_rigid_bodies: modal models, acoustic materials, and acoustic surfaces attached to each instancing node.
 void ImportAudio(state::Scene &r, const fastgltf::Asset &asset, const ImportedObjects &objects) {
     if (asset.modalModels.empty() && asset.acousticSurfaces.empty()) return;
 
@@ -1977,11 +1975,9 @@ void ImportAudio(state::Scene &r, const fastgltf::Asset &asset, const ImportedOb
 
 struct ImportedArmatures {
     std::vector<state::Entity> Objects;
-    // Bone entities with a source joint node.
     std::vector<NodeEntity> Bones;
 };
 
-// Builds each planned armature with its bones, skins, bone instances, and constraints.
 ImportedArmatures ImportArmatures(state::Scene &r, const fastgltf::Asset &asset, const NodePlan &plan, std::span<const ArmaturePlan> groups, const ImportedObjects &objects, std::string_view name_prefix) {
     auto &meshes = r.Context.get<MeshStore>();
     ImportedArmatures out;
@@ -2032,7 +2028,7 @@ ImportedArmatures ImportArmatures(state::Scene &r, const fastgltf::Asset &asset,
         r.emplace<ObjectKind>(armature_entity, ObjectType::Armature);
         r.emplace<ArmatureObject>(armature_entity, armature_data_entity);
         r.emplace<Transform>(armature_entity, arma_node ? ToTransform(plan.WorldTransforms[*arma_node]) : Transform{});
-        // The armature's world transform, which parenting under its root node's object below preserves.
+        // Preserve the armature's world transform when parenting it under its root object.
         const mat4 armature_world = ToMatrix(ComposeWorldTransform(r, armature_entity));
         const auto skin_name = [&]() -> std::string {
             for (const auto skin_index : group.SkinIndices) {
@@ -2208,7 +2204,8 @@ bool ImportAnimations(state::Scene &r, const fastgltf::Asset &asset, state::Enti
                     targets.emplace_back(it->second, target);
                     break;
                 }
-                // A joint node's transform drives its bones. Its other properties stay on the object.
+                // A joint node's transform drives its bones.
+                // Its other properties stay on the object.
                 if (const auto it = bones_by_joint_node.find(index); row->Target.Component == state::Key<PosedLocal>() && it != bones_by_joint_node.end()) {
                     for (const auto &bone : it->second) {
                         auto target = row->Target;
@@ -2239,7 +2236,7 @@ bool ImportAnimations(state::Scene &r, const fastgltf::Asset &asset, state::Enti
                 break;
             }
         }
-        // Only fields the entity holds take a channel, so a perspective pointer skips an orthographic camera.
+        // Add channels only for fields present on the entity.
         std::erase_if(targets, [&](ResolvedTarget &target) {
             target.Rest.resize(target.Target.Count);
             return !animation::ReadField(r, target.Entity, target.Target, target.Rest);
@@ -2265,7 +2262,8 @@ bool ImportAnimations(state::Scene &r, const fastgltf::Asset &asset, state::Enti
             const auto interp = targets.front().Target.Kind == ValueKind::Bool ? AnimationInterpolation::Step : ToInterp(sampler.interpolation);
             const uint32_t n = targets.front().Target.Count;
             const auto keys_expected = interp == AnimationInterpolation::CubicSpline ? input_accessor.count * 3 : input_accessor.count;
-            // Weights channels pack every target into scalar elements. Other channels store one element per key.
+            // Weights channels pack every target into scalar elements.
+            // Other channels store one element per key.
             const bool packed = targets.front().Target.Component == state::Key<MorphWeightRange>();
             if (n == 0 || (packed ? output_accessor.count != keys_expected * n : fastgltf::getNumComponents(output_accessor.type) != n || output_accessor.count != keys_expected)) continue;
             std::vector<float> times(input_accessor.count);
@@ -2294,7 +2292,6 @@ bool ImportAnimations(state::Scene &r, const fastgltf::Asset &asset, state::Enti
         any = true;
     }
     if (!had_animations) animations.Active = 0;
-    // The timeline spans the longest animation in the scene.
     if (const float end = animation::LastKeySeconds(r); end > 0) r.patch<TimelineRange>(viewport, [&](auto &range) { range.EndFrame = int(std::ceil(end * range.Fps)); });
     return any;
 }
@@ -2364,7 +2361,6 @@ std::expected<LoadResult, LoadError> LoadGltf(const std::filesystem::path &sourc
     auto armature_plans = PlanArmatures(asset, plan, source_meshes, source_path);
     if (!armature_plans) return std::unexpected{LoadError{.Message = std::move(armature_plans.error())}};
 
-    // Commit. Nothing below can fail.
     const auto physics = ImportPhysicsResources(r, asset);
     if (!asset.materialVariants.empty()) {
         ::MaterialVariants mv;

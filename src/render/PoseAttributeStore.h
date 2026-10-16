@@ -79,8 +79,7 @@ public:
         Values.Reset();
     }
 
-    // Publication supplies changed canonical block IDs, so unchanged groups
-    // adopt the revision without re-enumerating their surviving membership.
+    // Publication supplies changed canonical block IDs, so unchanged groups adopt the revision without re-enumerating their surviving membership.
     template<typename Present>
     void UpdateBlocks(uint32_t store, uint64_t revision, std::span<const uint32_t> blocks, Present &&present, uint32_t domain = 0u) {
         const auto found = ByStore.find(store);

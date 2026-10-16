@@ -39,7 +39,6 @@ struct VisibilitySilhouetteTarget {
     float Depth [[depth(any)]];
 };
 
-// Seeds outlined owners' depth and object ID from the visibility image.
 fragment VisibilitySilhouetteTarget SilhouetteSeedFragment(
     float4 position [[position]],
     texture2d<uint, access::read> visibility [[texture(0)]],

@@ -57,7 +57,8 @@ constexpr uint32_t SlotCapacity(BindKind kind) {
     }
     return 0;
 }
-// Byte size of one argument-table entry. Uniforms bind by buffer index and take no entry.
+// Byte size of one argument-table entry.
+// Uniforms bind by buffer index and take no entry.
 constexpr uint32_t SlotStride(BindKind kind) {
     switch (kind) {
         case BindKind::Uniform:
@@ -96,7 +97,8 @@ struct BindlessSamplerCube {
 using BindlessBufferRef = uint64_t;
 #endif
 
-// Tier-2 argument buffer. Members follow SlotType order after the uniform bindings.
+// Tier-2 argument buffer.
+// Members follow SlotType order after the uniform bindings.
 // The table uses device address space because it exceeds constant-space limits and contains device addresses.
 // Image-writing shaders instantiate the same layout with a writable image type.
 template<typename ImageT> struct BindlessSetT {

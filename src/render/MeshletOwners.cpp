@@ -38,7 +38,6 @@ void PrepareMeshletOwners(state::Scene &r, MeshStore::Record &owner, uint32_t to
 void RecordMeshletOwners(state::Scene &r, mtl::ComputeChain &chain, std::span<const MeshletOwnersJob> jobs) {
     if (jobs.empty()) return;
     const auto &render = r.Context.get<const MeshStore>().Render();
-    // Each cluster names the owners of its own elements.
     std::vector<uvec2> tiles;
     for (uint32_t j = 0u; j < jobs.size(); ++j) {
         for (uint32_t i = 0u; i < jobs[j].Count; ++i) tiles.emplace_back(j, i);

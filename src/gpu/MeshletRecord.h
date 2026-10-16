@@ -2,12 +2,12 @@
 
 #include "gpu/Types.h"
 
-// Stores immutable mesh topology shared by all instances.
-// Its IDs are the render owner's triangle, edge or vertex handles by topology, and its vertex references the owner's corner handles, or vertex handles for lines and points.
+// Share topology among instances using render-owner handles.
+// IDs reference triangles, edges, or vertices; vertex references name corners for triangles and vertices otherwise.
 // Procedural triangle soups use absolute index slots.
-// Primitive, GroupIndex and RefinedGroup are handles of the owner's render sets.
-// TriangleOffset, VertexOffset and LocalTriangleOffset are its runs' offsets in the owner's payload ranges, and InvalidOffset for a run it lacks.
-// A coarse cluster has no source elements, and a line or point cluster no local triangles.
+// Primitive, GroupIndex, and RefinedGroup reference render sets.
+// Payload offsets are relative to owner ranges; InvalidOffset denotes absence.
+// Coarse clusters omit source elements; lines and points omit local triangles.
 struct MeshletRecord {
     uint32_t TriangleOffset DEFAULT();
     uint32_t TriangleCount DEFAULT();

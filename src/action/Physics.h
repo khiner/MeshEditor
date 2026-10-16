@@ -15,7 +15,8 @@ struct SetMotionType {
     Type Value;
     Target Target{OnActive{}};
 };
-// Replaces the whole motion record. Shared ownership bounds the action variant size.
+// Replaces the whole motion record.
+// Shared ownership bounds the action variant size.
 struct SetMotion {
     std::unique_ptr<PhysicsMotion> Value;
     Target Target{OnActive{}};

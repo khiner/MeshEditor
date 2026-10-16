@@ -33,7 +33,8 @@ struct NormalInfo {
 
 inline float clampedDot(float3 x, float3 y) { return clamp(dot(x, y), 0.0f, 1.0f); }
 
-// KHR_materials_volume: Beer's law. An attenuation distance of zero or less means no attenuation.
+// KHR_materials_volume: Beer's law.
+// An attenuation distance of zero or less means no attenuation.
 inline float3 applyVolumeAttenuation(float3 radiance, float dist, float3 attenuation_color, float attenuation_distance) {
     if (attenuation_distance <= 0.0f) return radiance;
     return pow(attenuation_color, float3(dist / attenuation_distance)) * radiance;
@@ -159,7 +160,6 @@ inline float4 ShadePbr(
 
     // A point or line vertex without a NORMAL has no surface orientation, so per the glTF spec it renders unlit.
     const bool no_normal = topology != uint(uint(MeshPrimitiveTopology::Triangle)) && dot(world_normal, world_normal) < 1e-12f;
-    // Compute all material properties when a debug channel is active.
     if (no_normal || (material.Unlit != 0u && view.DebugChannel == DebugChannel::None)) {
         if (material.AlphaMode == MaterialAlphaMode::Mask) {
             if (base_color.a < material.AlphaCutoff) discard_fragment();
@@ -263,7 +263,6 @@ inline float4 ShadePbr(
         anisotropy_dir = float2(cos(material.Anisotropy.Rotation), sin(material.Anisotropy.Rotation));
         if (material.Anisotropy.Texture.Slot != InvalidSlot) {
             const float3 anisotropySample = ctx.SampleTexture(material.Anisotropy.Texture).rgb;
-            // Decode RG to [-1, 1] and apply the material rotation.
             const float2 texDir = anisotropySample.xy * 2.0f - float2(1.0f);
             const float2x2 rotMatrix = float2x2(float2(anisotropy_dir.x, anisotropy_dir.y), float2(-anisotropy_dir.y, anisotropy_dir.x));
             anisotropy_dir = normalize(rotMatrix * texDir);

@@ -18,7 +18,9 @@ struct MeshConnectivityJob {
     uint32_t SourceCornerSlot DEFAULT(InvalidSlot);
     ElementWork SourceEdges DEFAULT();
     ElementWork ConvertedEdges DEFAULT(); // Explicit changes between surface and loose-edge ownership.
-    SlotOffset ConvertedWirePairs DEFAULT(); // Per converted-edge ordinal: wire pair's first halfedge + 1, zero for a surface, or InvalidOffset to retire. Absent means all become surfaces.
+    // Index by converted-edge ordinal: wire pair first halfedge + 1, zero for surface, or InvalidOffset for retired.
+    // Absent means all become surfaces.
+    SlotOffset ConvertedWirePairs DEFAULT();
     uint32_t SourceEdgeCount DEFAULT();
     uint32_t VertexCount DEFAULT();
     uint32_t HalfedgeCount DEFAULT();
@@ -38,8 +40,8 @@ struct MeshConnectivityJob {
     uint32_t PopcountOffset DEFAULT();
     uint32_t WordBlockOffset DEFAULT();
     uint32_t WordBlockCount DEFAULT();
-    // Bits contain new representatives then retired source edges. Ranks have
-    // an additional zero-count terminator after each of those two domains.
+    // Bits contain new representatives then retired source edges.
+    // Ranks have an additional zero-count terminator after each of those two domains.
     uint32_t BitsOffset DEFAULT();
     uint32_t RanksOffset DEFAULT();
     uint32_t RetainedEdgesOffset DEFAULT(InvalidOffset); // Per compact destination representative, an old edge or InvalidOffset.

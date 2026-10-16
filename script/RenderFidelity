@@ -76,7 +76,6 @@ OutDir="render_candidates/${Name}"
 Report="render_candidates/${Name}.json"
 
 if [ "${Render}" -eq 1 ]; then
-    # Remove stale candidate files before comparison.
     rm -rf "${OutDir}"
     "${ScriptDir}/Render" --out "${OutDir}" --app-args "${AppArgs}" || exit $?
 fi

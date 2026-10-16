@@ -38,7 +38,6 @@ void MeshStore::UpdateSelection(state::Scene &r, mtl::ComputeChain &chain, std::
     if (updates.empty()) return;
     const profile::CpuScope scope{"UpdateSelection"};
     const auto &pipelines = GetMeshPipelines(r);
-    // Every mesh update shares one mark and one block update.
     std::vector<SelectionMeshUpdate> meshes;
     meshes.reserve(updates.size());
     uint64_t seed_count = 0u, entry_bound = 0u;
@@ -157,7 +156,6 @@ void MeshStore::DeriveSelectionMasks(state::Scene &r, mtl::ComputeChain &chain, 
         .FaceCount = Buffers.FaceTriangles.Count(record.FaceData),
         .Source = source_index,
     };
-    // The dirty list's count and indirect dimensions, then each derived block with the one update.
     std::vector<uint32_t> list{0u, 1u, 1u};
     for (uint32_t d = 0u; d < 3u; ++d) {
         if (d != source_index) {

@@ -29,7 +29,6 @@ struct OwnerNodes {
     LodNode &Edit(uint32_t node) { return Buffers.LodNodes.GetMutable({Address(node).Value(), 1u})[0]; }
     uint32_t Parent(uint32_t node) const { return Buffers.LodParents.Get({Address(node).Value(), 1u})[0]; }
     void SetParent(uint32_t node, uint32_t parent) { Buffers.LodParents.GetMutable({Address(node).Value(), 1u})[0] = parent; }
-    // The leaf's members at indices [first, end).
     std::vector<uint32_t> Members(const LodNode &leaf, uint32_t first = 0u, uint32_t end = InvalidOffset) const {
         std::vector<uint32_t> members;
         if (leaf.Members == InvalidOffset) return members;
@@ -66,7 +65,6 @@ struct OwnerNodes {
         }
         return headroom;
     }
-    // Releases the leaf's run and its headroom.
     void Unlist(const LodNode &leaf) {
         if (leaf.Members == InvalidOffset) return;
         std::vector<uint32_t> handles(leaf.MeshletCount + Headroom(leaf));
@@ -81,14 +79,11 @@ struct NodeEntry {
     uint32_t Former{InvalidOffset};
 };
 
-// Places span-tree nodes in new runs of handles, and each placed node's children or members point back at it.
 struct SpanPlacement {
     OwnerNodes &Nodes;
     std::vector<uint32_t> Placed, Formers;
-    // Each placed leaf's members with their new leaf, written together once every node is placed.
     std::vector<std::pair<uint32_t, uint32_t>> Leaves;
 
-    // Writes the entries to one new run under `parent`, and returns the run's handles.
     Range Place(std::span<const NodeEntry> entries, uint32_t parent) {
         auto &buffers = Nodes.Buffers;
         const auto run = buffers.Insert(RenderSet::Nodes, Nodes.Owner.NodeData, uint32_t(entries.size()));
@@ -110,7 +105,7 @@ struct SpanPlacement {
 
     // Gives `node` the entries as its children.
     // A node past twice the build's width keeps its first even run and returns the others as siblings its parent takes after it.
-    // A root instead adds levels below itself until it holds every entry.
+    // A root instead adds levels below itself until it contains every entry.
     std::vector<LodNode> Adopt(uint32_t node, std::vector<NodeEntry> entries) {
         if (entries.size() > MaxNodeChildren && Nodes.Parent(node) != InvalidOffset) {
             const auto range = Place(entries, node);
@@ -176,7 +171,6 @@ void RestructureLeaves(OwnerNodes &nodes, const std::map<uint32_t, std::vector<u
         value.Members = pieces.front().Value.Members;
         value.MeshletCount = pieces.front().Value.MeshletCount;
         const auto parent = nodes.Parent(leaf);
-        // A root leaf becomes the parent of its runs.
         if (parent == InvalidOffset) {
             placement.Adopt(leaf, std::move(pieces));
             continue;
@@ -221,16 +215,15 @@ LodNodeRefit EditLodNodes(state::Scene &r, MeshStore::Record &owner, std::span<c
     OwnerNodes nodes{buffers, owner};
     // The visits insert nothing, so the owner's meshlet and node tables stay in place while they read them.
     const auto meshlet_table = buffers.Meshlets.Entries(owner.MeshletData), node_table = buffers.LodNodes.Entries(owner.NodeData);
-    // A traversal leaf that holds the cluster exactly when it is not being added.
+    // Require the cluster to belong to this traversal leaf unless it is being added.
     const auto holds = [&](uint32_t node, uint32_t cluster, bool adding) {
         if (!buffers.LodNodes.Contains(node_table, ElementHandle{node})) return false;
         const auto &value = buffers.LodNodes.Get({Resolve<RenderBlockSize>(node_table, ElementHandle{node}).Value(), 1u})[0];
         return !value.ChildCount && (nodes.LowerBound(value, cluster).second == cluster) != adding;
     };
-    // The clusters each edited leaf gains and loses.
     std::map<uint32_t, std::array<std::vector<uint32_t>, 2>> leaves;
     std::set<uint32_t> affected, primitives, roots, pinned;
-    // Consecutive clusters of one primitive record its nodes once, and consecutive clusters of one leaf record its path once.
+    // Record nodes once per consecutive primitive and paths once per consecutive leaf.
     uint32_t last_primitive = InvalidOffset, last_leaf = InvalidOffset;
     PrimitiveRecord primitive{};
     // Side zero gains the cluster and side one loses it.
@@ -299,7 +292,6 @@ LodNodeRefit EditLodNodes(state::Scene &r, MeshStore::Record &owner, std::span<c
         std::ranges::inplace_merge(tail, tail.begin() + kept);
         if (std::ranges::adjacent_find(tail) != tail.end() || first + tail.size() + losses.size() != value.MeshletCount + gains.size()) throw std::logic_error("LOD membership edit repeats cluster identities.");
         const auto count = first + uint32_t(tail.size());
-        // An overfull leaf takes its final members directly as even runs.
         if (count > MaxLeafRecords && !pinned.contains(node)) {
             auto all = nodes.Members(value, 0u, first);
             all.append_range(tail);
@@ -307,7 +299,8 @@ LodNodeRefit EditLodNodes(state::Scene &r, MeshStore::Record &owner, std::span<c
             continue;
         }
         if (!count && !pinned.contains(node) && !roots.contains(node)) emptied.push_back(node);
-        // The run grows or shrinks in place when its headroom holds the members, writing only from `first`, and the members it vacates become headroom.
+        // Resize in place when capacity permits and write from first.
+        // Retain vacated entries as spare capacity.
         auto updated = value;
         if (value.Members != InvalidOffset && count && (count <= value.MeshletCount || nodes.Headroom(value, count - value.MeshletCount) == count - value.MeshletCount)) {
             const auto entries = buffers.LodMembers.Entries(owner.MemberData);
@@ -342,7 +335,6 @@ LodNodeRefit EditLodNodes(state::Scene &r, MeshStore::Record &owner, std::span<c
         levels[depth].push_back(node);
         tree_depth = std::max(tree_depth, depth);
     }
-    // A root that split adds a level the traversal descends.
     owner.LodDepth = std::max(owner.LodDepth, tree_depth);
     LodNodeRefit refit;
     for (const auto &[depth, level] : levels) {

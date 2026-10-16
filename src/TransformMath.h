@@ -21,9 +21,7 @@ inline float MeanScale(vec3 s) {
     return (a.x + a.y + a.z) / 3;
 }
 
-// Transform a local point to world space.
 inline vec3 TransformPoint(const Transform &t, vec3 p) { return t.R * (p * t.S) + t.P; }
-// Transform a world-space point to local space.
 inline vec3 InverseTransformPoint(const Transform &t, vec3 p) { return (Conjugate(t.R) * (p - t.P)) / t.S; }
 // Rotate a world-space direction to local space while preserving its magnitude.
 inline vec3 InverseTransformDir(const Transform &t, vec3 d) { return Conjugate(t.R) * d; }

@@ -6,9 +6,9 @@
 
 struct WavWriter;
 
-// Record a fixed viewport region to H.264 through ffmpeg, or record mono float audio to a .wav path.
-// Require ffmpeg on PATH for video; IsActive returns false when startup fails.
-// A nonzero audio sample rate muxes captured audio into the video during Stop.
+// Record a fixed viewport region as H.264 through ffmpeg or mono float audio to a .wav path.
+// Video requires ffmpeg on PATH; IsActive is false when startup fails.
+// Stop muxes captured audio when the audio sample rate is nonzero.
 struct VideoRecorder {
     VideoRecorder(
         const mtl::Context &,
@@ -20,7 +20,6 @@ struct VideoRecorder {
     VideoRecorder(const VideoRecorder &) = delete;
     VideoRecorder &operator=(const VideoRecorder &) = delete;
 
-    // Capture the configured region from the render target.
     void CaptureFrame(const mtl::Texture &);
 
     // Capture mono frames at the configured sample rate.

@@ -3,8 +3,8 @@
 
 #include "MeshTopologyFaceSplit.metal"
 
-// Temporary triangulation of one selected polygon. Internal edge identities
-// survive rotations; the indexed heap updates only the five changed costs.
+// Temporary triangulation of one selected polygon.
+// Internal edge identities survive rotations; the indexed heap updates only the five changed costs.
 struct ConcaveFace {
     FaceSplitPolygons Plan;
     device uint *Opposite, *Edge, *Representative, *Concave, *Heap, *HeapPosition;
@@ -87,7 +87,7 @@ struct ConcaveFace {
         for (uint i = 0u; i < 4u; ++i) if (edges[i] != InvalidOffset) Set(edges[i], Beauty(edges[i], true), true);
     }
     uint Root(uint face) {
-        // Length is free until the final loops are counted, so it holds parents.
+        // Reuse Length for parents until final loop counting.
         while (Plan.Length[face] != face) {
             Plan.Length[face] = Plan.Length[Plan.Length[face]];
             face = Plan.Length[face];
@@ -110,9 +110,8 @@ struct ConcaveFace {
     }
 };
 
-// Blender's connect_verts_concave: triangulate, beautify, then join long
-// diagonals first, leaving diagonals between original concave corners last.
 inline uint3 TopoConcaveCount(TopoContext ctx, MeshTopologyJob job, uint f) {
+    // Blender's connect_verts_concave: triangulate, beautify, then join long diagonals first, leaving diagonals between original concave corners last.
     const uint2 range = ctx.SrcFaceRange(job, f);
     const uint n = range.y - range.x;
     if (!ctx.SrcSelectedFace(job, f) || n <= 3u) return uint3(0u, 1u, n);

@@ -81,13 +81,11 @@ std::vector<Project::RecordedAction> Decode(const std::vector<std::byte> &bytes)
     if (!bytes.empty()) zpp::bits::in{bytes}(recorded_actions).or_throw();
     return recorded_actions;
 }
-// Whether any of the actions has parameters to edit.
 bool Editable(std::span<const Project::RecordedAction> recorded_actions) {
     return std::ranges::any_of(recorded_actions, [](const auto &recorded_action) {
         return !recorded_action.Inputs.PreviewSeed && action::VisitLeaf(recorded_action.Action, []<typename L>(const L &) { return !std::is_empty_v<L>; });
     });
 }
-// The file an action loads, or null for an action that loads none.
 std::filesystem::path *SourcePath(action::Action &a) {
     return std::visit([](auto &domain) {
         return std::visit([]<typename A>(A &leaf) -> std::filesystem::path * {
@@ -98,7 +96,6 @@ std::filesystem::path *SourcePath(action::Action &a) {
     },
                       a);
 }
-// Generated files directly named by the written actions.
 std::expected<std::vector<std::string>, std::string> ReferencedAssets(const store::History &history, std::span<const uint32_t> nodes) {
     namespace fs = std::filesystem;
     const Assets assets{.Directory = history.Dir};
@@ -478,8 +475,8 @@ bool Project::Record(action::Action a, EventPass pass, bool staged) {
         GestureBase = History.Pin();
         GestureStart = RecordedActions.size();
     }
-    // Reapply from the gesture base. Canonical geometry, normals and render
-    // dependencies restore only their changed pages and allocation paths.
+    // Reapply from the gesture base.
+    // Canonical geometry, normals and render dependencies restore only their changed pages and allocation paths.
     const bool same_kind = staged && StageFirst && Kind(RecordedActions[*StageFirst].Action) == Kind(a);
     const bool preview = action::IsPreview(a);
     bool updated_inset = false;
@@ -504,8 +501,7 @@ bool Project::Record(action::Action a, EventPass pass, bool staged) {
     else Tick(recorded_action.Action, pass, staged);
     if (!recordable || R.Context.get<action::Errors>().Messages.size() != errors) return false;
     ++Revision;
-    // A staged inset keeps its construction action and final parameter
-    // update so replay repeats the same meshlet partition and GPU refit.
+    // A staged inset keeps its construction action and final parameter update so replay repeats the same meshlet partition and GPU refit.
     // A step that cooked a procedure over the previous step stays recorded, since the next step builds on the record it cooked.
     if (same_kind && (preview || R.Context.get<const CookCount>().Value == cooks)) {
         RecordedActions.resize(*StageFirst + (updated_inset ? 1u : 0u));
@@ -726,7 +722,7 @@ bool Project::Audit(std::string &why) {
         why = error.what();
         return false;
     }
-    // AfterRestore finds a mesh's entity through its store ID.
+    // Resolve restored mesh entities by their store IDs.
     for (const auto [entity, handle] : R.view<const MeshHandle>().each()) {
         if (MeshEntityOf(R, handle.StoreId) == entity) continue;
         why = "Mesh store " + std::to_string(handle.StoreId) + " does not map to its entity.";
@@ -743,7 +739,7 @@ void Project::AfterRestore() {
         ~ReadOnly() { R.DocumentReadOnly = false; }
     } read_only{R};
     bool sources_changed = false, manifest_changed = false, names_changed = false;
-    // The meshes whose handles or render records the restore changed rederive their dirty roots.
+    // Rebuild dirty roots for meshes whose handles or render records changed during restore.
     std::vector<state::Entity> restored_meshes;
     for (const auto &[type, entity, event] : Entities.TakeChanges()) {
         // The name hooks track created and destroyed names, and an overwritten name escapes them.
@@ -754,9 +750,9 @@ void Project::AfterRestore() {
         manifest_changed |= type == state::Type<MaterializedTextures>();
     }
     if (names_changed) RebuildEntityNames(R);
-    // Node errors mark what the last cook found, and the next cook marks the restored procedures' errors anew.
+    // Recompute restored procedure errors during the next cook.
     R.clear<procedure::NodeError>();
-    // Restored sources can hold other pixels at a manifest's slots, so every texture and the IBL decode again.
+    // Restored sources can contain other pixels at a manifest's slots, so every texture and the IBL decode again.
     // A manifest restored over unchanged sources keeps each texture it still lists, and the settle pass uploads the rest.
     if (sources_changed) {
         ReleaseImportedTextures(R);
@@ -769,11 +765,10 @@ void Project::AfterRestore() {
     if (sources_changed || manifest_changed) reactive(R, Change::MaterializedTextures).emplace(Viewport);
     auto &meshes = R.Context.get<MeshStore>();
     const auto changes = meshes.TakeChanges();
-    // The restored selection and positions refresh in one submit.
     mtl::ComputeChain chain{meshes.BufferContext()};
     meshes.ReconcileSelection(R, chain, changes);
     auto &buffers = R.Context.get<GpuBuffers>();
-    // A restored record rebinds its GPU mesh record, and a retired one leaves the flag totals.
+    // Rebind GPU mesh records after restore and remove retired records from flag totals.
     for (const auto &change : changes) {
         if (!(change.Bits & MeshStore::EntryChanged)) continue;
         RefreshMeshBinding(R, change.StoreId);
@@ -795,7 +790,7 @@ void Project::AfterRestore() {
         if (meshes.HasDirtyGroups(*owner)) R.emplace<ClusterLodDirty>(entity);
         if (!meshes.ClusterGroupCount(*owner) && ClusterLodApplies(Mesh{meshes, id}.FaceCount() > 0u, meshes.MeshletCount(*owner))) R.emplace_or_replace<ClusterLodDemand>(entity);
     }
-    // The restored render records change the meshlet and LOD node counts that size each instance's cull.
+    // Use restored meshlet and LOD-node counts to size instance culling buffers.
     RepointMeshInstances(R, repointed);
     std::vector<MeshVertexChanges> positions;
     for (const auto &change : changes) {
@@ -803,7 +798,7 @@ void Project::AfterRestore() {
         if (entity == state::Null) continue;
         if (change.Bits & ~MeshStore::SelectionChanged) {
             ReleaseMeshEditWork(R, entity);
-            // Edited positions refresh through the source record, and an evaluated record restores whole.
+            // Refresh edited positions through the source record; restore evaluated records in full.
             if ((change.Bits & ~MeshStore::SelectionChanged) == MeshStore::GeometryChanged && !change.VertexRanges.empty() && change.StoreId == R.get<const MeshHandle>(entity).StoreId) {
                 positions.push_back({entity, change.VertexRanges});
             }

@@ -10,7 +10,6 @@ std::optional<float> EstimateFundamentalFrequency(const FFTData &fft, uint32_t s
         mag_db[i] = 10.f * std::log10f(std::max(std::norm(fft.Bins[i]), 1e-20f));
     }
 
-    // Noise floor from upper half median
     std::vector<float> upper(mag_db.begin() + n_bins / 2, mag_db.end());
     nth_element(upper, upper.begin() + upper.size() / 2);
     const float threshold = upper[upper.size() / 2] + 15.f;

@@ -2,9 +2,9 @@
 
 #include "gpu/SlotOffset.h"
 
-// Sparse blocks contain an address block key plus eight 32-bit masks. The
-// active-slot list dispatches one 256-lane tile per occupied block. Inclusive
-// compact prefixes are keyed by hash slot, supporting rank and select.
+// Sparse blocks contain an address block key plus eight 32-bit masks.
+// The active-slot list dispatches one 256-lane tile per occupied block.
+// Inclusive compact prefixes are keyed by hash slot, supporting rank and select.
 GPU_CONSTANT uint32_t WorkHeaderWords = 8u;
 GPU_CONSTANT uint32_t WorkBlockWords = 9u;
 inline uint32_t WorkHash(uint32_t block, uint32_t capacity) {

@@ -190,7 +190,6 @@ constexpr Exception ExactExceptions[]{
     {"nodes[*].extensions.KHR_lights_punctual.light", "renumbered to match the un-deduped lights table"},
 };
 
-// Return the sole entity with C or null.
 template<typename C> state::Entity NodeWith(state::Scene &r) {
     for (auto e : r.view<const C>()) return e;
     return state::Null;
@@ -216,7 +215,6 @@ std::optional<simdjson::dom::element> OnlyAudioEntry(simdjson::dom::element doc,
     return entry;
 }
 
-// The table index a node instances through `key` of the extension, or nullopt when no node does.
 std::optional<uint64_t> NodeAudioIndex(simdjson::dom::element doc, std::string_view key) {
     for (auto node : doc["nodes"]) {
         uint64_t index;
@@ -256,8 +254,6 @@ bool IsExpectedDivergence(std::string_view path) {
     return std::ranges::any_of(ExactExceptions, [norm](const auto &ex) { return norm == ex.Pattern; }) ||
         std::ranges::any_of(SubtreeExceptions, [norm](const auto &ex) { return SubtreeMatches(norm, ex.Pattern); });
 }
-
-// --- Generic JSON comparator ---
 
 struct Diff {
     std::string Path, Message;
@@ -424,7 +420,6 @@ bool InfluencesEq(uvec4 ja, vec4 wa, uvec4 jb, vec4 wb) {
     return true;
 }
 
-// Zip two corner streams over their dereferenced attribute values, reporting the first divergence.
 template<typename T>
 void CompareCornerValues(
     const std::vector<T> &a, const std::vector<T> &b,
@@ -569,7 +564,6 @@ void CompareMeshGeometry(const fastgltf::Asset &a, const fastgltf::Asset &b, std
     }
 }
 
-// The array's values, or nullopt when any element is not a number.
 std::optional<std::vector<double>> NumberArray(simdjson::dom::array arr) {
     std::vector<double> out;
     for (auto e : arr) {
@@ -848,7 +842,6 @@ struct SceneFixture : Engine {
         for (const auto &message : R.Context.get<action::Errors>().Messages) std::cerr << "  project: " << message << "\n";
         if (const auto error = P->History.TakeIntegrityError(); !error.empty()) std::cerr << "  history: " << error << "\n";
     }
-    // Start a project at `dir`, save live state into it, close it, and return the persistent image.
     std::vector<std::byte> SaveTo(const std::filesystem::path &dir) {
         Check(P->Begin(dir));
         Check(P->Save());
@@ -856,14 +849,12 @@ struct SceneFixture : Engine {
         Check(P->Close());
         return image;
     }
-    // Restore the project at `dir` and return the persistent image.
     std::vector<std::byte> LoadFrom(const std::filesystem::path &dir) {
         Check(P->Open(dir));
         return P->History.MaterializeLive();
     }
 };
 
-// The first mesh-instance node, or null.
 state::Entity FirstMeshNode(state::Scene &r) {
     for (auto e : r.view<const Instance, const GltfNode>()) {
         if (r.all_of<MeshHandle>(r.get<const Instance>(e).Entity)) return e;
@@ -871,14 +862,14 @@ state::Entity FirstMeshNode(state::Scene &r) {
     return state::Null;
 }
 
-// The reloaded scene of a save/load round trip, with the first entity carrying T. Value is null when any step failed.
+// Return the reloaded scene and first entity with T after a save/load round trip.
+// Return null Value when any step fails.
 template<typename T> struct Roundtripped {
     std::unique_ptr<SceneFixture> Scene;
     state::Entity Node{state::Null};
     const T *Value{nullptr};
 };
 
-// Loads `sample` into a fresh scene, runs `author` on it with its first mesh-instance node, saves to `out_path`, and reloads the file into a second fresh scene.
 template<typename T> Roundtripped<T> RoundtripComponent(const fs::path &sample, const fs::path &out_path, auto &&author) {
     using namespace boost::ut;
     Roundtripped<T> out;
@@ -928,7 +919,8 @@ bool AcousticMaterialsEq(const AcousticMaterial &a, const AcousticMaterial &b) {
     return a.Name == b.Name && NumberEq(pa.Density, pb.Density) && NumberEq(pa.YoungModulus, pb.YoungModulus) && NumberEq(pa.PoissonRatio, pb.PoissonRatio) && NumberEq(pa.Alpha, pb.Alpha) && NumberEq(pa.Beta, pb.Beta);
 }
 
-// A glTF with one skinned triangle. The joint sits under a rig node the scene never reaches, so the armature root check fails, and dropping WEIGHTS_0 fails the mesh parse instead.
+// Use an unreachable rig to test armature-root failure.
+// Removing WEIGHTS_0 instead tests mesh-parse failure.
 std::string BrokenSkinnedTriangleGltf(bool drop_weights) {
     // 3 positions, 3 ubyte4 joints, and 3 float4 weights, all zero.
     const std::string buffer(128, 'A');
@@ -1003,7 +995,6 @@ void WriteCustomAttributeGltf(const fs::path &gltf) {
 })";
 }
 
-// Checks the welded quad's custom attributes, with _ID an integer when `integer_ids`.
 void CheckCustomAttributes(state::Scene &r, bool integer_ids) {
     using namespace boost::ut;
     const auto node = FirstMeshNode(r);
@@ -1065,10 +1056,8 @@ SceneCounts CountScene(SceneFixture &f) {
 int main(int argc, const char **argv) {
     using namespace boost::ut;
 
-    // Accept a Boost.UT test-name filter.
     if (argc > 1) cfg<override> = {.filter = argv[1]};
 
-    // Resolve symlinked resources and shaders from the build directory.
     Paths::Init(MESHEDITOR_BUILD_DIR, MESHEDITOR_BUILD_DIR);
 
     const auto tmp_root = MakeRoundtripDir();
@@ -1299,7 +1288,6 @@ int main(int argc, const char **argv) {
     // Require KHR_audio_rigid_bodies modal data and schema shape to survive export and re-import.
     if (const fs::path box = SamplePath("external/glTF-Sample-Assets/Models/Box/glTF/Box.gltf"); fs::exists(box)) {
         test("audio_modal_round_trip") = [&] {
-            // A small modal model on the node, with its derivation material.
             ModalModes modes{
                 {
                     .Freqs = {110.f, 275.5f, 431.2f},
@@ -1322,7 +1310,6 @@ int main(int argc, const char **argv) {
             });
             if (!reloaded.Value) return;
 
-            // Schema-shape checks on the emitted JSON.
             {
                 simdjson::dom::parser p;
                 simdjson::dom::element doc;

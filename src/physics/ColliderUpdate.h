@@ -7,8 +7,8 @@
 struct MeshColliderList {
     std::vector<state::Entity> Colliders;
 };
-// The mesh whose collider list holds this collider.
-// Its destroy handler takes the collider out of that list.
+// The mesh whose collider list contains this collider.
+// The destroy handler removes the collider from that list.
 struct ColliderListedUnder {
     state::Entity MeshEntity;
 };

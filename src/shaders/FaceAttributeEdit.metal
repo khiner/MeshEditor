@@ -2,7 +2,8 @@
 #include "ElementWorkShared.metal"
 #include "gpu/FaceAttributeEditPushConstants.h"
 
-// Each face exclusively owns its corners. Permute in place without an attribute copy.
+// Each face exclusively owns its corners.
+// Permute in place without an attribute copy.
 template<typename T>
 void PermuteCorners(device T *values, SlotOffset at, uint2 range, uint operation) {
     const auto index = [&](uint h) { return at.Offset + h; };

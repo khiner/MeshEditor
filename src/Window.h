@@ -42,7 +42,8 @@ struct HistoryWindow : Window {
     bool EditorOpen{true};
 };
 
-// The node canvas draws a node position p at the screen point Origin + Offset + p * Zoom, where Origin is the canvas's top left.
+// Map node position p to Origin + Offset + p * Zoom.
+// Origin is the canvas top left.
 struct NodeCanvas {
     numeric::vec2 Offset{40, 40};
     float Zoom{1};
@@ -59,14 +60,14 @@ struct NodesWindow : Window {
     numeric::vec2 Press{}; // The drag's start on the screen
     numeric::vec2 MoveStart{}; // The held node's position when a move started
     numeric::vec2 AddAt{}; // The canvas position the Add menu adds a node at
-    uint32_t DragNode{UINT32_MAX}; // The node a move, a grab or a wire holds
-    uint32_t GrabAfter{}; // The node count a grab waits to grow past before it holds the new active node
+    uint32_t DragNode{UINT32_MAX}; // Node index for the active move, grab, or wire gesture
+    uint32_t GrabAfter{}; // Start dragging the new active node after the count exceeds this value
     uint32_t LinkAfter{UINT32_MAX}; // The node count a linking add waits to grow past before it links the new node, or none
     std::vector<action::nodes::Link> PendingLinks; // The links a Make Link press stages one per frame, committing with the last
     uint32_t Expanded{UINT32_MAX}; // The node whose parameters tray is open, with a row per parameter socket, or none
     uint32_t PickNode{UINT32_MAX}; // The node whose sockets in PickRange the port picker offers the wire held at DragNode's DragSocket, or none
     std::pair<uint16_t, uint16_t> PickRange{}; // The first socket the picker offers, through its end
-    uint16_t DragSocket{}; // The socket a wire holds
+    uint16_t DragSocket{}; // Socket index for the active wire gesture
     uint16_t LinkSocket{}; // The socket of the node a linking add appends that its wire links to
     bool Moved{false}; // A move passed the drag threshold and staged its first step
     bool Hovered{false}; // The canvas is under the mouse this frame, which routes the editing shortcuts to it

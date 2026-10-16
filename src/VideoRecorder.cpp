@@ -35,7 +35,6 @@ VideoRecorder::VideoRecorder(
     uint32_t audio_sample_rate
 ) : Ctx{&ctx}, OffsetX{x}, OffsetY{y}, Ex{extent},
     FrameBytes{size_t(extent.Width) * extent.Height * 4}, FinalPath{output_path} {
-    // Audio-only recording writes directly to a float WAV file.
     if (output_path.extension() == ".wav") {
         if (audio_sample_rate == 0) {
             std::println(stderr, "VideoRecorder: {} needs audio; not recording.", output_path.string());

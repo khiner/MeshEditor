@@ -16,8 +16,7 @@ constant uint BuildHashSlots = 2048u;
 constant uint BuildClusterThreads = MeshletBuildClusterThreads;
 constant uint BuildRecordWords = sizeof(MeshletRecord) / sizeof(uint);
 
-// Stats: ordered-float bounds[6], tiles, record bound, emitted records,
-// emitted vertices, with the remaining words reserved for validation.
+// Stats: ordered-float bounds[6], tiles, record bound, emitted records, emitted vertices, with the remaining words reserved for validation.
 struct MeshletBuilder {
     device const BindlessSet &B;
     constant MeshletBuildPushConstants &Pc;
@@ -167,8 +166,8 @@ kernel void MeshletBuildKeys(uint lane [[thread_index_in_threadgroup]], BUILD_AR
     const uint i=tile_entry.y*256u+lane;
     float3 lo, hi;
     for (uint k = 0u; k < 3u; ++k) { lo[k] = FromOrderedFloat(b.Stats()[k]); hi[k] = FromOrderedFloat(b.Stats()[3u + k]); }
-    // Longest-axis bisection gives each key bit the largest remaining
-    // object-space cell dimension. One schedule is shared by the whole tile.
+    // Longest-axis bisection gives each key bit the largest remaining object-space cell dimension.
+    // One schedule is shared by the whole tile.
     threadgroup uint masks[3];
     if (lane == 0u) {
         float spans[3]{hi.x - lo.x, hi.y - lo.y, hi.z - lo.z};
@@ -258,8 +257,8 @@ inline float3 BuildVertexPosition(MeshletBuilder b, uint source) {
 }
 
 inline void BuildClusterBarrier(uint simd_size, mem_flags flags) {
-    // A tile uses one SIMD group on Apple GPUs with 32-lane execution. Keep
-    // the full-group fence when a device divides this threadgroup differently.
+    // A tile uses one SIMD group on Apple GPUs with 32-lane execution.
+    // Keep the full-group fence when a device divides this threadgroup differently.
     if (simd_size == BuildClusterThreads) simdgroup_barrier(flags);
     else threadgroup_barrier(flags);
 }

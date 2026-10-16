@@ -63,22 +63,21 @@ struct MeshVertexOverlays {
     uint8_t Mask;
 };
 
-// A laid-out mesh's ranges over the bounds entries, the normal derive entries and the prelude tile words.
-// A static run has one entry, which reduces from one root tile, and no tile words.
-// A posed run's words hold, in order, each vertex bounds level's keys, the face and vertex blocks its derive tiles cover, and each posed meshlet job's finest node members and meshlet count.
-// The prelude expands the words into tiles for each of the run's entries.
-// Its destroy handler queues the ranges to free and releases the mesh's pose namespaces.
+// Store bounds, normal-derive, and prelude ranges for one mesh.
+// Static runs use one entry and no tile words.
+// Posed words contain bounds keys, derive blocks, then finest-node members and meshlet counts.
+// Destruction queues range release and frees pose namespaces.
 struct BoundsRun {
     Range Entries, DeriveEntries, Tiles;
     std::array<uint32_t, 4> BoundsKeys{}; // By vertex bounds level.
     uint32_t FaceBlocks{}, VertexBlocks{}, MeshletJobs{};
-    // A posed run's words hold at least its root key.
+    // A posed run's words contain at least its root key.
     bool Posed() const { return Tiles.Count != 0u; }
 };
 
-// A mesh whose meshlets hold position-dirty bits, which the next settle outside edit mode stages.
+// A mesh whose meshlets contain position-dirty bits, which the next settle outside edit mode stages.
 struct MeshletPositionsDirty {};
-// A mesh whose cluster groups hold dirty bits, which the next settle outside edit mode repairs.
+// A mesh whose cluster groups contain dirty bits, which the next settle outside edit mode repairs.
 struct ClusterLodDirty {};
 // A mesh whose meshlets were built, edited or restored since its cluster hierarchy was last checked.
 struct ClusterLodDemand {};
@@ -91,7 +90,7 @@ struct MeshBoundsDirty {};
 
 // Host metadata for the persistent GPU scene, refreshed when scene structure or routing changes.
 struct GpuSceneState {
-    // Each material's required LOD attributes without and with authored tangents, as the live primitives hold them.
+    // Required LOD attributes per material, without and with authored tangents.
     std::vector<std::array<uint32_t, 2>> RequiredMaterialAttributes;
     // The OR of every mesh's PBR features.
     uint32_t MeshPbrFeatures{0};

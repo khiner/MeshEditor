@@ -108,7 +108,6 @@ void SelectBone(state::Scene &r, state::Entity e) {
 std::vector<SelectionHit> ResolveHits(state::Scene &r, const std::vector<state::Entity> &raw, bool bone_mode, bool merge_parts) {
     std::vector<SelectionHit> hits;
     std::vector<uint64_t> seen((r.EntityCapacity() + 63) / 64);
-    // Marks the target seen and returns whether it was new.
     const auto first = [&](state::Entity target) {
         const auto index = state::Index(target);
         const auto bit = uint64_t{1} << index % 64;

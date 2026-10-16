@@ -24,7 +24,7 @@
 #include "viewport/RenderView.h"
 
 // Per-instance GPU data behind one RangeAllocator, so every buffer shares the same instance offsets.
-// A slot without an instance holds a zero state, so a pass over every slot skips it.
+// A slot without an instance contains a zero state, so a pass over every slot skips it.
 struct InstanceArena {
     InstanceArena(mtl::BufferContext &ctx);
 
@@ -60,7 +60,8 @@ struct InstanceArena {
     mtl::Buffer TransformBuffer, ObjectIdBuffer, StateBuffer, BoundsBuffer, RecordBuffer;
 
 private:
-    void ClearStates(Range range) { std::ranges::fill(StateBuffer.GetMutableSpan<uint8_t>(range), uint8_t{0}); } // NOLINT(readability-make-member-function-const)
+    // NOLINTNEXTLINE(readability-make-member-function-const)
+    void ClearStates(Range range) { std::ranges::fill(StateBuffer.GetMutableSpan<uint8_t>(range), uint8_t{0}); }
     void ForEachBuffer(auto &&fn) {
         fn(TransformBuffer, sizeof(Transform));
         fn(ObjectIdBuffer, sizeof(uint32_t));
@@ -152,8 +153,7 @@ struct GpuBuffers {
     static constexpr uint32_t CountedMeshletFlags = ((1u << MeshletInstanceFlagCount) - 1u) &
         ~(uint32_t(MeshletInstanceFlag::Silhouette) | uint32_t(MeshletInstanceFlag::LodPinFinest) |
           uint32_t(MeshletInstanceFlag::OverlayOnly) | uint32_t(MeshletInstanceFlag::SilhouetteEligible));
-    // One mesh record's contribution to the scene and flag totals: its visible instances' meshlet work, under its record's flags.
-    // A record with visible instances and meshlets also counts toward its render topologies and, when its edit overlay draws sharp edges, the sharp-edge total.
+    // Count visible meshlet work by record flags and topology, including enabled sharp-edge overlays.
     struct MeshFlagTally {
         uint32_t Flags{0}, Instances{0}, Nodes{0}, Meshlets{0}, Depth{0}, Topologies{0};
         bool SharpEdges{};
@@ -229,8 +229,8 @@ struct GpuBuffers {
     PoseAttributeStore<vec3> PosedFaceNormals{Ctx};
     // Weight-summed authored morph normal deltas keyed by canonical vertex, present for authored morph poses.
     PoseAttributeStore<vec3> PosedMorphNormalDeltas{Ctx};
-    // The tiles and posed meshlet jobs of the entries a prelude recomputes, each level's tiles after the previous level's.
-    // Bounds tiles are (entry index, canonical node key within its level), and derive tiles (derive entry index, canonical block) with face blocks in a leading prefix.
+    // Group prelude tiles by level.
+    // Bounds tiles contain entry and node keys; derive tiles contain entry and block keys, with face blocks first.
     mtl::Buffer SparseBoundsTiles{Ctx, 0, SlotType::Buffer}, SparseDeriveTiles{Ctx, 0, SlotType::Buffer}, SparsePosedMeshletBoundsJobs{Ctx, 0, SlotType::Buffer};
     // Tracks visibility or material changes that can reveal geometry without requiring the posed prelude.
     bool MeshletOcclusionStale{true};

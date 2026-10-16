@@ -75,7 +75,6 @@ inline float applyIorToRoughness(float roughness, float ior) {
     return roughness * clamp(ior * 2.0f - 2.0f, 0.0f, 1.0f);
 }
 
-// Samples the opaque-scene mip chain at the projected refracted exit point.
 template<typename SetT>
 inline float3 sampleTransmissionFramebuffer(const thread SceneT<SetT> &scene, float3 refracted_dir, float3 world_pos, float world_thickness, float perceptual_roughness, float ior) {
     const float4 clip = scene.ViewProj() * float4(world_pos + refracted_dir * world_thickness, 1.0f);
@@ -85,7 +84,6 @@ inline float3 sampleTransmissionFramebuffer(const thread SceneT<SetT> &scene, fl
     return scene.SampleTexLod(scene.View.TransmissionFramebufferSamplerSlot, uv, lod).rgb;
 }
 
-// Samples the prefiltered specular environment along the refracted direction.
 template<typename SetT>
 inline float3 sampleIblRefraction(const thread SceneT<SetT> &scene, float3 refracted_dir, float perceptual_roughness, float ior) {
     const float lod = applyIorToRoughness(perceptual_roughness, ior) * float(max(scene.View.Ibl.SpecularEnvMipCount, 1u) - 1u);

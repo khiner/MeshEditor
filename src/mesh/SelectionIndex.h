@@ -41,8 +41,8 @@ struct SelectionIndexView {
     }
 };
 
-// Derived ownership and partial aggregates. The GPU produces canonical block
-// aggregates; after submission the CPU repairs only their six ancestor paths.
+// Derived ownership and partial aggregates.
+// The GPU produces canonical block aggregates; after submission the CPU repairs only their six ancestor paths.
 // All GPU-readable aggregate values stay in UMA, including each mesh's root.
 struct SelectionIndex {
     explicit SelectionIndex(mtl::BufferContext &ctx) : Aggregates{ctx, SlotType::Buffer} {}
@@ -91,7 +91,7 @@ struct SelectionIndex {
     BufferArena<SelectionAggregate> Aggregates;
     std::vector<SelectionIndexNode> Nodes;
     std::vector<uint32_t> Roots;
-    // The owner at the last completed update. Restore uses it to retire a block
-    // from its former tree even when canonical membership now has no owner.
+    // The owner at the last completed update.
+    // Restore uses it to retire a block from its former tree even when canonical membership now has no owner.
     std::array<std::unordered_map<uint32_t, uint32_t>, 3> Owners;
 };

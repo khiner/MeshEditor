@@ -1,7 +1,7 @@
 #ifndef BOUNDSREDUCE_MSL
 #define BOUNDSREDUCE_MSL
 
-// Writes one partial AABB per 256-vertex_id tile for the bounds-combine pass.
+// Write one partial AABB per tile of 256 vertex IDs for the bounds-combine pass.
 #include "gpu/AABB.h"
 #include "BoundsShared.metal"
 #include "VertexBounds.metal"

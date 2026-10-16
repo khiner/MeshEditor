@@ -5,7 +5,8 @@
 #include "state/Scene.h"
 
 // Strike impact angle relative to the surface.
-// Center strikes along surface normal, rim tilts impulse 90 degrees into the tangent plane. UI-only.
+// Center strikes along surface normal, rim tilts impulse 90 degrees into the tangent plane.
+// UI-only.
 vec2 ImpulseAngle{0, 0};
 
 // Unit surface normal at a mesh vertex.
@@ -25,7 +26,6 @@ vec3 TiltAlongNormal(vec3 n, vec2 joy) {
     return std::cos(theta) * n + std::sin(theta) * (joy.x * t + joy.y * bt) / r;
 }
 
-// Strike direction: the excited vertex's normal, tilted by the current impact angle.
 vec3 ExciteDirection(const state::Scene &r, state::Entity e, uint32_t vertex) {
     const auto n = VertexNormal(GetMesh(r, r.get<const Instance>(e).Entity), vertex);
     return TiltAlongNormal(n, ImpulseAngle);

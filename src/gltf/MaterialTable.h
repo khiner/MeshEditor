@@ -8,7 +8,7 @@
 // The glTF material extensions MeshEditor keeps, each as the fields it carries in PBRMaterial and in fastgltf under their glTF keys.
 // Import, export, the extension tally, and the animation pointer rows derive from this one description.
 namespace gltf::detail {
-// A field both representations hold, as a value, a color, or a texture.
+// A shared value, color, or texture field.
 template<typename O, typename T, typename OF, typename TF>
 struct MaterialField {
     OF O::*Ours;
@@ -23,7 +23,7 @@ struct MaterialNormalField {
     fastgltf::Optional<fastgltf::NormalTextureInfo> T::*Theirs;
     std::string_view Key;
 };
-// A distance glTF writes as infinity where PBRMaterial holds zero.
+// Represent infinite distance as zero in PBRMaterial.
 template<typename O, typename T>
 struct MaterialDistanceField {
     float O::*Ours;

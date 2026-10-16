@@ -24,5 +24,5 @@ inline std::optional<uint32_t> FindSoundVertexIndex(std::span<const uint32_t> ve
 struct VertexForce {
     uint32_t Vertex;
     float Force;
-    float ContactSpeed{1.f}; // Normal impact speed in m/s, driving the Hertz contact time. Collision events set this per strike.
+    float ContactSpeed{1.f}; // Normal impact speed in m/s for Hertz duration; set per collision strike.
 };

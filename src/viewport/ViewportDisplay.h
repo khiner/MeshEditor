@@ -45,7 +45,8 @@ struct ViewportDisplay {
     bool ShowExtras{true}, ShowBones{true}, ShowOrigins{true}, ShowOutlineSelected{true};
     bool ShowOverlays{true};
     uint8_t NormalOverlays{0};
-    // Screen-space error budget for the cluster LOD cut, in pixels. Zero renders original geometry alone.
+    // Screen-space error budget for the cluster LOD cut, in pixels.
+    // Zero renders original geometry alone.
     float LodErrorPixels{1.f};
     DebugChannel DebugChannel{DebugChannel::None};
     AnisotropicFilterLevel AnisotropicFilter{AnisotropicFilterLevel::X16};
@@ -56,12 +57,14 @@ struct ViewportDisplay {
 
 // Wireframe and Solid shade with the workspace lights and support X-ray display.
 constexpr bool WorkbenchShading(ViewportShadingMode mode) { return mode == ViewportShadingMode::Wireframe || mode == ViewportShadingMode::Solid; }
-// The X-ray flag of the current shading family. Edit-mode element selection follows it directly.
+// The X-ray flag of the current shading family.
+// Edit-mode element selection follows it directly.
 constexpr bool XRayFlag(const ViewportDisplay &d) { return d.ViewportShading == ViewportShadingMode::Wireframe ? d.XRayWireframe : d.XRaySolid; }
 constexpr float XRayOpacity(const ViewportDisplay &d) { return d.ViewportShading == ViewportShadingMode::Wireframe ? d.XRayAlphaWireframe : d.XRayAlpha; }
 // X-ray display: the flag is set, the opacity is below one, and the shading is workbench.
 constexpr bool XRayActive(const ViewportDisplay &d) { return WorkbenchShading(d.ViewportShading) && XRayFlag(d) && XRayOpacity(d) < 1.f; }
-// Strength of overlays behind the scene surface. Zero leaves them to the depth test.
+// Strength of overlays behind the scene surface.
+// Zero leaves them to the depth test.
 // X-ray display fades them by its opacity, and Edit mode with the flag draws back wires at half strength, as in Blender.
 constexpr float OverlayBehindOpacity(const ViewportDisplay &d, InteractionMode mode) {
     if (XRayActive(d)) return 1.f - XRayOpacity(d);
@@ -77,7 +80,8 @@ struct PBRViewportLighting {
     float BackgroundBlur{0.5f}, WorldOpacity{0.f};
     // Sample a mipmapped scene framebuffer at the refracted exit point for transmission.
     bool RealTransmission{true};
-    // Exposure in EV stops. Scales linear color by 2^EV before tone mapping.
+    // Exposure in EV stops.
+    // Scales linear color by 2^EV before tone mapping.
     float ExposureEV{0.f};
 };
 

@@ -1,7 +1,7 @@
 #ifndef WIRERASTER_MSL
 #define WIRERASTER_MSL
 
-// Each byte holds one coverage class; integer maxima make crossing wires deterministic.
+// Each byte contains one coverage class; integer maxima make crossing wires deterministic.
 #include "gpu/WireCoverage.h"
 #include "MeshletEditGeometry.metal"
 #include "gpu/WireRasterPushConstants.h"
@@ -39,7 +39,8 @@ inline void WireAccumulate(device atomic_uint *words, uint2 extent, int2 pixel, 
     }
 }
 
-// Clip to Metal's six clip planes before dividing by w. The width guard retains offscreen strokes.
+// Clip to Metal's six clip planes before dividing by w.
+// The width guard retains offscreen strokes.
 inline bool WireClip(thread float4 &a, thread float4 &b, float2 guard) {
     const float4 p = a, q = b;
     const float pa[6] = {p.z, p.w - p.z, p.w * guard.x + p.x, p.w * guard.x - p.x, p.w * guard.y + p.y, p.w * guard.y - p.y};
@@ -102,7 +103,6 @@ kernel void WireRasterKernel(
     const float length_px = length(delta);
     const float2 direction = length_px > 0.0f ? delta / length_px : float2(1.0f, 0.0f);
 
-    // Step along the major axis and cover line width along the minor axis.
     const bool x_major = abs(delta.x) >= abs(delta.y);
     const float major0 = x_major ? p0.x : p0.y, major1 = x_major ? p1.x : p1.y;
     const int begin = max(0, int(floor(min(major0, major1) - reach)));

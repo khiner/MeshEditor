@@ -67,9 +67,8 @@ void PatchEditedLocal(state::Scene &r, state::Entity e, auto &&fn) {
 // The node's world transform, composed from its local transform under its parent's while the settle pass has not composed it yet.
 Transform ComposeWorldTransform(const state::Scene &, state::Entity);
 
-// Recomputes the world transforms of `roots` and their descendants top-down, writing each one whose value changed or whose instance slot was placed this settle.
-// A node whose world transform holds its value leaves its subtree as it is, so every node whose local transform, parent or instance slot changed is a root.
-// Nodes in `owned` keep the world transform another system writes, and the recompute leaves them and their subtrees alone.
-// Nodes in `held` recompute while their descendants hold still.
-// `owned` and `held` are in entity index order.
+// Recompute roots and descendants top-down.
+// Include every node with a changed local transform, parent, or instance slot in roots.
+// Skip owned nodes and subtrees; recompute held nodes while preserving descendants.
+// Sort owned and held by entity index.
 void RecomputeWorldTransforms(state::Scene &, std::span<const state::Entity> roots, std::span<const state::Entity> owned, std::span<const state::Entity> held);

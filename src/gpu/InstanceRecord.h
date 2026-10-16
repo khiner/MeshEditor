@@ -3,7 +3,6 @@
 #include "gpu/Types.h"
 
 // One instance's own draw state.
-// Its mesh's record holds everything its instances share.
 struct InstanceRecord {
     uint32_t Mesh DEFAULT(InvalidOffset);
     uint32_t ObjectId DEFAULT();

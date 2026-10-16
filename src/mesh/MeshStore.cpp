@@ -23,9 +23,10 @@ constexpr auto NoAllocation = [](auto &) -> Range * { return nullptr; };
 using Domain = MeshStore::ElementDomain;
 
 // A render field of an arena's values: the word at byte Offset is a handle of the record's Target set, or InvalidOffset.
-// A run field names its handle and the consecutive handles after it, as many as the word at byte RunCount holds, and names none when that word is zero.
+// A run field references consecutive handles with a count stored at byte RunCount.
+// A zero count denotes an empty run.
 // A payload run field names an offset in the record's range of its Payload pool instead.
-// A field with neither holds the offset of the record's primitive material table.
+// A field with neither contains the offset of the record's primitive material table.
 struct RenderField {
     uint32_t Offset;
     std::optional<RenderSet> Target{};
@@ -70,7 +71,7 @@ struct ArenaInfo {
     Domain Elements{Domain::None};
     bool BlockIndexed{false};
     Domain Layer{Domain::None}; // The domain whose handles index an element layer's record ranges
-    std::optional<AttributeType> Named{}; // The value type of a named attribute value arena, whose ranges the attribute table holds
+    std::optional<AttributeType> Named{}; // Named-attribute type; the attribute table stores its ranges
     Domain References{Domain::None};
     bool ReferenceSpan{false};
     std::optional<RenderSet> Render{}; // The render collection keying the arena's values, or its blocks when BlockIndexed
@@ -79,14 +80,14 @@ struct ArenaInfo {
     bool Tracked() const { return Name != nullptr; }
 };
 
-// An element layer's domain, its history change bits and name, and whether it belongs to the record's render records.
 struct LayerInfo {
     Domain Elements;
     uint32_t Bits;
     const char *Name;
     bool Render{false};
 };
-// The element layer roster: calls f(layer, info, entries, range) for every layer, where entries(record) is the record's entries per element, zero for a record without the layer, and range(record) borrows its range.
+// Visit layers as f(layer, info, entries, range).
+// entries(record) is zero for absent layers; range(record) borrows storage.
 void ForEachLayer(auto &b, auto &&f) {
     using R = MeshStore::Record;
     using enum MeshStore::ChangeBits;
@@ -156,7 +157,7 @@ void ForEachArena(auto &b, auto &&f) {
         });
     }
     // Render arenas, whose collections the records' render sets key.
-    // A mirror of a render collection holds bytes only, sized by its collection's blocks.
+    // A mirror of a render collection contains bytes only, sized by its collection's blocks.
     auto &render = b.Render;
     f(render.ExtrasFaces, ArenaInfo{0, "ExtrasFaces"}, NoAllocation);
     f(render.ExtrasEdges, ArenaInfo{0, "ExtrasEdges"}, NoAllocation);
@@ -175,9 +176,8 @@ void ForEachArena(auto &b, auto &&f) {
     f(render.LodParents, ArenaInfo{.Name = "LodParents", .Mirror = true, .Render = RenderSet::Nodes, .Fields = NodeHandle}, NoAllocation);
     f(render.LodMembers, ArenaInfo{.Name = "LodMembers", .Render = RenderSet::Members, .Fields = MeshletHandle}, NoAllocation);
     f(render.Primitives, ArenaInfo{.Name = "Primitives", .Render = RenderSet::Primitives, .Fields = PrimitiveFields}, NoAllocation);
-    // Each record's routes, indexed by source primitive and topology.
     f(render.PrimitiveRoutes, ArenaInfo{.Name = "PrimitiveRoutes", .Fields = PrimitiveHandle, .RenderRange = true}, [](auto &e) { return &e.PrimitiveRoutes; });
-    // GPU mesh records hold runtime slots, which the restore rebuilds, so they have no history.
+    // GPU mesh records contain runtime slots, which the restore rebuilds, so they have no history.
     f(render.MeshRecords, ArenaInfo{}, NoAllocation);
 }
 
@@ -185,7 +185,6 @@ template<typename Arena> using ArenaValue = typename decltype(std::declval<const
 
 constexpr bool SelectableDomain(Domain domain) { return domain == Domain::Vertex || domain == Domain::Edge || domain == Domain::Face; }
 
-// A payload block holding `value` at every element.
 template<typename Block> Block FilledBlock(AttributeValue value) {
     Block block;
     if constexpr (std::same_as<Block, SelectionBlock>) {
@@ -271,12 +270,10 @@ void ResetRender(MeshStore::Record &r) {
     r.ElementMeshletBlockCounts = {};
 }
 
-// Whether the record holds a set in any render collection.
 bool HasRender(const MeshStore::Record &r) {
     return std::ranges::any_of(RenderSets, [&](RenderSet set) { return bool(RenderSetOf(r, set)); });
 }
 
-// Whether a per-block mask holds the bit of a live member of the set.
 bool MaskAny(const BufferArena<uint32_t> &masks, const auto &arena, ElementSetRef set) {
     bool any = false;
     arena.ForEachBlock(set, [&](uint32_t b, const auto &block) { any |= b < masks.Buffer.Count<uint32_t>() && (masks.Get({b, 1u})[0] & block.Live[0]) != 0u; });
@@ -335,7 +332,7 @@ RenderRun RenderArenas::Insert(RenderSet which, ElementSetRef &set, uint32_t cou
         return RenderRun{ElementHandle{handles.First}, arena.Address(set, ElementHandle{handles.First}), count};
     });
     SyncMirrors();
-    // A new member starts clean, whatever bits its slot held before.
+    // Clear dirty bits when reusing a member slot.
     if (which == RenderSet::Meshlets || which == RenderSet::Groups) {
         for (uint32_t i = 0u; i < count; ++i) MaskClear(which == RenderSet::Meshlets ? PositionDirty : DirtyGroups, run.Address + i);
     }
@@ -537,8 +534,8 @@ MeshStore::Writes MeshStore::TakeWrites() {
         }
         log.Extents.clear();
     }
-    // A tracked store logs its layers' writes, and each written block names a local block of the record whose range holds it.
-    // The history index holds the ranges of the records unchanged since it last ran, and every other record reads its own range.
+    // A tracked store logs its layers' writes, and each written block names a local block of the record whose range contains it.
+    // Use the history index for unchanged records and current ranges for changed records.
     if (Tracked) {
         auto &dirty = Tracked->Dirty;
         SortUnique(dirty);
@@ -548,7 +545,7 @@ MeshStore::Writes MeshStore::TakeWrites() {
             auto &log = Tracked->LayerWrites.at(&layer.Values.Buffer);
             if (log.empty()) return;
             constexpr auto Stride = sizeof(typename std::remove_cvref_t<decltype(layer)>::Block);
-            // The ranges the index does not hold, in offset order, which are disjoint.
+            // Disjoint unindexed ranges in offset order.
             std::vector<std::pair<Range, uint32_t>> held;
             const auto hold = [&](uint32_t id) {
                 if (id < Records.size() && Records[id].Alive && range(Records[id])->Count) held.emplace_back(*range(Records[id]), id);
@@ -563,7 +560,6 @@ MeshStore::Writes MeshStore::TakeWrites() {
             const auto &ranges = Tracked->Ranges.at(&layer.Values.Buffer);
             for (const auto [begin, end] : log) {
                 const uint64_t first = begin / Stride, last = (end + Stride - 1u) / Stride;
-                // Takes the written blocks of the record's layer values [values_first, values_end).
                 const auto take = [&](uint32_t id, uint64_t values_first, uint64_t values_end) {
                     const auto &record = Records[id];
                     const auto table = WithDomain(Buffers, info.Elements, [&](const auto &arena) { return arena.Entries(DomainSet(record, info.Elements)); });
@@ -754,8 +750,8 @@ void MeshStore::IndexHistory() {
 
 std::vector<MeshStore::Change> MeshStore::TakeChanges() {
     if (!Tracked) return {};
-    // Fan replacements always change canonical roots, which map changes to the
-    // owning mesh. The item track still needs its extent queue drained.
+    // Fan replacements always change canonical roots, which map changes to the owning mesh.
+    // The item track still needs its extent queue drained.
     Buffers.VertexFans.Items.Buffer.History()->TakeChangedExtents();
     // A table entry changes only with its set's header, which maps the change to its record.
     for (const auto domain : ElementDomains) WithDomain(Buffers, domain, [](auto &arena) { arena.Table.Buffer.History()->TakeChangedExtents(); });
@@ -784,8 +780,8 @@ std::vector<MeshStore::Change> MeshStore::TakeChanges() {
             for (; it != ranges.end() && it->first < end; ++it) changed.push_back({it->second.Id, it->second.Bits, {}});
         }
     }
-    // Canonical streams resolve only dirty blocks through the current ownership
-    // metadata. No per-mesh range index is built for these streams.
+    // Canonical streams resolve only dirty blocks through the current ownership metadata.
+    // No per-mesh range index is built for these streams.
     for (const auto &stream : Tracked->Streams) {
         const auto &owners = Tracked->Owners[uint32_t(stream.Elements)];
         for (const auto [begin, end] : stream.Buffer->History()->TakeChangedExtents()) {
@@ -823,7 +819,7 @@ std::vector<MeshStore::Change> MeshStore::TakeChanges() {
             });
         }
     }
-    // A named attribute's value block maps to the record of the attribute whose range holds it.
+    // A named attribute's value block maps to the record of the attribute whose range contains it.
     for (const auto &stream : Tracked->AttributeStreams) {
         for (const auto [begin, end] : stream.Buffer->History()->TakeChangedExtents()) {
             const auto first = begin / stream.Stride, last = (end + stream.Stride - 1u) / stream.Stride;
@@ -897,7 +893,6 @@ ElementHandleRange MeshStore::InsertElements(uint32_t id, ElementDomain domain, 
     if (!count) return {};
     const auto set = DomainSet(Records[id], domain);
     const bool first_face = domain == Domain::Face && !Buffers.FaceTriangles.Count(set);
-    // A new set, the triangle count and the first face's flags change the record.
     auto &record = !set || first_face || domain == Domain::Triangle ? WriteRecord(id) : Records[id];
     auto inserted = WithDomain(Buffers, domain, [&](auto &arena) {
         return arena.Insert(DomainSet(record, domain), count, list);
@@ -984,7 +979,7 @@ void MeshStore::TrimInsertedElements(uint32_t id, ElementDomain domain, ElementH
 void MeshStore::FinishEraseElements(uint32_t id, ElementDomain domain, std::span<const uint32_t> blocks) {
     if (blocks.empty()) return;
     const auto set = DomainSet(Records[id], domain);
-    // The listed blocks outside the set, which are all of them for a retired set.
+    // Collect listed blocks outside the set, including every listed block when the set is retired.
     std::vector<uint32_t> left;
     WithDomain(Buffers, domain, [&](const auto &arena) {
         for (const auto b : blocks) {
@@ -996,7 +991,6 @@ void MeshStore::FinishEraseElements(uint32_t id, ElementDomain domain, std::span
             const auto &member = arena.Blocks.Get({block, 1u})[0];
             for (uint32_t w = 0u; w < MeshElementBlockWords; ++w) words[w] &= member.Owner == set.Index ? member.Live[w] : 0u;
         });
-        // An erased active element leaves the summary.
         if (!Records[id].SelectionSummary.Count) return;
         const auto &summary = GetSelectionSummary(id);
         if (summary.Mode == element && summary.ActiveHandle != InvalidOffset && !arena.Contains(set, ElementHandle{summary.ActiveHandle})) WriteSelectionSummary(id).ActiveHandle = InvalidOffset;
@@ -1122,7 +1116,6 @@ std::expected<uint32_t, MeshStore::AttributeError> MeshStore::CopyAttribute(uint
     const auto entry = NamedAttributes.at(attribute);
     const auto copy = AddAttribute(entry.Record, entry.Domain, entry.Type, name, entry.Default);
     if (!copy) return copy;
-    // Both ranges cover the record's handle bound in the domain.
     WithAttributeValues(Buffers.Named, entry.Type, [&](auto &values) {
         const auto to = NamedAttributes[*copy].Values;
         std::ranges::copy(values.Get({entry.Values.Offset, to.Count}), values.GetMutable(to).begin());
@@ -1165,7 +1158,7 @@ void MeshStore::EnsureSelectionState(state::Scene &r, mtl::ComputeChain &chain, 
     }
     if (updates.empty()) return;
     SyncMirrors();
-    // Dead slots hold no selection, so the new state's masks are clear and only the aggregates need deriving.
+    // Dead slots contain no selection, so the new state's masks are clear and only the aggregates need deriving.
     for (auto &update : updates) {
         WriteRecord(update.StoreId).SelectionSummary = Buffers.SelectionSummary.Allocate(1);
         WriteSelectionSummary(update.StoreId) = {};
@@ -1715,7 +1708,6 @@ void MeshStore::CreateMesh(uint32_t id, const MeshData &data, const MeshVertexAt
         Buffers.VertexColors.Initialize(record.VertexColors, Buffers.Vertices.Count(record.Vertices), *attrs.Colors0);
     }
 
-    // The sharpness stores start smooth.
     const Mesh mesh{*this, id};
     std::ranges::fill(Buffers.FaceSharpness.GetMutable(Buffers.FaceTriangles.Dense(record.FaceData)), uint8_t{0});
     std::ranges::fill(Buffers.EdgeSharpness.GetMutable(Buffers.EdgeHalfedges.Dense(record.EdgeData)), uint8_t{0});
@@ -1744,7 +1736,6 @@ uint32_t MeshStore::BeginTopologyOutput(uint32_t source, std::span<const uint32_
     ForEachNamedAttribute(source, add);
     const auto id = AcquireId(std::move(record));
     CaptureSelectionSummary(id);
-    // The output's attributes take payloads as its elements insert.
     for (auto &attribute : attributes) {
         attribute.Record = id;
         AcquireAttribute(std::move(attribute));
@@ -1798,7 +1789,6 @@ void MeshStore::CopyBlocks(CloneCopies &copies, uint32_t destination, uint32_t s
         if (fan_count >= InvalidOffset) throw std::length_error("Copied fan items exceed their address space.");
         const auto fans = Buffers.VertexFans.Items.Allocate(uint32_t(fan_count));
         Buffers.VertexFans.Items.CaptureWrite(fans);
-        // Fan items of consecutive source runs copy as one run.
         uint32_t next = fans.Offset;
         Range run{InvalidOffset, 0u};
         const auto flush = [&] {
@@ -1863,7 +1853,6 @@ std::vector<uint32_t> MeshStore::CloneMeshes(CloneCopies &copies, std::span<cons
         DerivedRecords[id].NormalRevision = ++NextNormalRevision;
         const auto &src = Records[src_id];
         auto &dst = Records[id];
-        // A range whose values name render members belongs to the render records.
         ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&ranges) {
             const auto *from = ranges(src);
             if (!from || info.Mirror || (!render && info.RenderRange)) return;
@@ -1878,14 +1867,12 @@ std::vector<uint32_t> MeshStore::CloneMeshes(CloneCopies &copies, std::span<cons
     for (uint32_t i = 0u; i < ids.size(); ++i) {
         const auto &src = Records[source_ids[i]];
         pairs.push_back(PairBlocks(source_ids[i], ids[i]));
-        // The record's own ranges copy whole.
         ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &, auto &&ranges) {
             const auto *from = ranges(src);
             if constexpr (std::is_same_v<std::remove_cvref_t<decltype(*from)>, Range>) {
                 if (const auto *to = ranges(Records[ids[i]]); from && to->Count) CaptureCopy(copies, arena.Buffer, sizeof(ArenaValue<std::remove_cvref_t<decltype(arena)>>), from->Offset, to->Offset, from->Count);
             }
         });
-        // Each named attribute's range copies whole too.
         std::vector<uint32_t> attributes;
         ForEachNamedAttribute(source_ids[i], [&](uint32_t attribute, const NamedAttribute &) { attributes.push_back(attribute); });
         for (const auto attribute : attributes) {
@@ -1945,7 +1932,7 @@ MeshStore::Change MeshStore::Resync(CloneCopies &copies, uint32_t id, uint32_t s
     const profile::CpuScope scope{"ResyncMesh"};
     ReleaseRender(std::array{&WriteRecord(id)});
     Change change{.StoreId = id, .Bits = GeometryChanged | TopologyChanged};
-    // Each written local block and each one only one record holds restores, with the copy's table taking the source's shape.
+    // Restore written blocks and blocks present in only one record; match the source table layout.
     BlockPairs restored;
     for (const auto domain : ElementDomains) {
         const auto d = uint32_t(domain);
@@ -2008,7 +1995,6 @@ MeshStore::Change MeshStore::Resync(CloneCopies &copies, uint32_t id, uint32_t s
         }
     }
     SyncMirrors();
-    // The record takes the source's fields over its own sets, ranges and sector count.
     {
         const auto &src = Records[source];
         auto &record = WriteRecord(id);
@@ -2037,7 +2023,6 @@ MeshStore::Change MeshStore::Resync(CloneCopies &copies, uint32_t id, uint32_t s
         copy_range(Buffers.PrimitiveMaterials, record.PrimitiveMaterials, src.PrimitiveMaterials);
         copy_range(Buffers.SelectionSummary, record.SelectionSummary, src.SelectionSummary);
         copy_range(Buffers.PointNormals, record.PointNormals, src.PointNormals);
-        // Each layer follows the source: a range holding the source's entries copies the restored local blocks, and others copy whole.
         ForEachLayer(Buffers, [&](auto &layer, const LayerInfo &info, auto &&entries, auto &&range) {
             if (info.Render) return;
             auto &to = *range(record);
@@ -2055,7 +2040,7 @@ MeshStore::Change MeshStore::Resync(CloneCopies &copies, uint32_t id, uint32_t s
         });
         DerivedRecords[id] = {};
     }
-    // An attribute keeps its payloads when it still holds its source attribute's copy, and the others copy anew.
+    // Reuse payloads for attributes still associated with their source copies; allocate fresh copies for the others.
     std::vector<uvec2> kept, whole;
     std::vector<uint32_t> released;
     ForEachNamedAttribute(id, [&](uint32_t attribute, const NamedAttribute &entry) {
@@ -2068,7 +2053,7 @@ MeshStore::Change MeshStore::Resync(CloneCopies &copies, uint32_t id, uint32_t s
     ForEachNamedAttribute(source, [&](uint32_t attribute, const NamedAttribute &) {
         if (std::ranges::find(kept, attribute, &uvec2::x) == kept.end()) whole.emplace_back(attribute, 0u);
     });
-    // A kept attribute copies the restored local blocks, and a fresh one copies its source's range whole.
+    // Copy restored local blocks into retained attributes and the full source range into new attributes.
     for (const auto [from, to] : kept) {
         const auto entry = NamedAttributes[from];
         const auto bound = WithDomain(Buffers, ElementDomainOf(entry.Domain), [&](const auto &arena) { return arena.HandleBound(DomainSet(Records[id], ElementDomainOf(entry.Domain))) / MeshElementBlockSize; });
@@ -2161,7 +2146,7 @@ void MeshStore::Join(state::Scene &r, uint32_t id, uint32_t source) {
         });
     }
     CloneCopies copies;
-    // Each layer the destination carries covers the joined table and takes the source's entries after its own, or the absent value where the source holds none.
+    // Append source layer values to the destination, using defaults for absent source layers.
     ForEachLayer(Buffers, [&](auto &layer, const LayerInfo &info, auto &&entries, auto &&range) {
         const auto d = uint32_t(info.Elements);
         const auto per = entries(Records[id]);
@@ -2180,7 +2165,7 @@ void MeshStore::Join(state::Scene &r, uint32_t id, uint32_t source) {
             for (uint32_t e = 0u; e < std::min(held, per); ++e) CaptureCopy(copies, layer.Values.Buffer, Bytes, from.Offset + local * held + e, to.Offset + (shifts[d] + local) * per + e);
         }
     });
-    // Attributes of one name, type and domain join, and an attribute of either side holds its default on the other's elements.
+    // Join attributes with matching name, type, and domain; use defaults for missing values.
     const auto join_attribute = [&](uint32_t attribute, uint32_t from) {
         const auto entry = NamedAttributes[attribute];
         const auto d = uint32_t(ElementDomainOf(entry.Domain));
@@ -2279,7 +2264,7 @@ void MeshStore::CloneRenderRecords(CloneCopies &copies, std::span<const uint32_t
         target.Meshlets = source.Meshlets;
         target.ElementMeshletBlockCounts = source.ElementMeshletBlockCounts;
         for (const auto set : RenderSets) WithRenderSet(render, set, [&](auto &arena) { RenderSetOf(target, set) = arena.CloneMembership(RenderSetOf(source, set)); });
-        // The clone's payload ranges, which the roster copied, hold exactly their used values.
+        // The copied payload ranges include only used values.
         for (const auto payload : RenderPayloads) WithPayload(render, target, payload, [](auto &, PayloadRange &range) { range.Capacity = range.Values.Count; });
         sources.push_back(source_ids[i]);
         clones.push_back(clone_ids[i]);
@@ -2289,7 +2274,7 @@ void MeshStore::CloneRenderRecords(CloneCopies &copies, std::span<const uint32_t
     for (uint32_t c = 0u; c < sources.size(); ++c) {
         const auto &source = Records[sources[c]];
         auto &target = Records[clones[c]];
-        // Each collection's blocks pair at their local blocks, and every value keyed by them copies byte for byte.
+        // Pair collection blocks by local block index and copy their indexed values byte for byte.
         std::array<std::vector<uvec2>, RenderSets.size()> pairs;
         for (const auto set : RenderSets) {
             WithRenderSet(render, set, [&](const auto &arena) {
@@ -2316,7 +2301,6 @@ void MeshStore::CloneRenderRecords(CloneCopies &copies, std::span<const uint32_t
 }
 
 namespace {
-// One set's table entries and its arena's blocks of `BlockSize` slots.
 template<uint32_t BlockSize> struct SetTable {
     std::span<const uint32_t> Entries;
     std::span<const MeshElementBlock> Blocks;
@@ -2342,7 +2326,6 @@ template<typename Arena> SetTable<Arena::BlockSize> TableOf(const Arena &arena, 
 using ElementTable = SetTable<MeshElementBlockSize>;
 using RenderTable = SetTable<RenderBlockSize>;
 
-// A record's tables in each element domain, resolving its handles to arena addresses.
 struct RecordTables {
     std::array<ElementTable, 6> Sets;
     RecordTables(const MeshArenas &b, const MeshStore::Record &r) {
@@ -2352,7 +2335,6 @@ struct RecordTables {
     bool IsLive(MeshStore::ElementDomain domain, uint32_t handle) const { return Sets[uint32_t(domain)].IsLive(handle); }
     void ForEachLive(MeshStore::ElementDomain domain, auto &&fn) const { Sets[uint32_t(domain)].ForEachLive(fn); }
 };
-// A record's tables in each render collection.
 struct RenderTables {
     std::array<RenderTable, RenderSets.size()> Sets;
     RenderTables(const RenderArenas &render, const MeshStore::Record &r) {
@@ -2361,8 +2343,8 @@ struct RenderTables {
     const RenderTable &operator[](RenderSet set) const { return Sets[uint32_t(set)]; }
 };
 
-// Calls fn(info, value) with the bytes of each of the record's values in every arena a render collection keys, at its set's live members in table order, and in each of its render ranges apart from its element owners.
-// Spatial nodes are those of the finest triangle clusters the record's spatial tree indexes.
+// Call fn(info, value) for live render-arena members in table order and for render-range values except element owners.
+// Visit spatial nodes indexed by the finest triangle clusters.
 void ForEachRenderValue(const MeshArenas &b, const MeshStore::Record &r, const RenderTables &tables, auto &&fn) {
     const auto &render = b.Render;
     ForEachArena(b, [&](const auto &arena, const ArenaInfo &info, auto &&ranges) {
@@ -2383,14 +2365,13 @@ void ForEachRenderValue(const MeshArenas &b, const MeshStore::Record &r, const R
         });
     });
 }
-// The word at a byte offset of a value.
 uint32_t WordAt(std::span<const std::byte> value, uint32_t offset) {
     uint32_t word;
     std::memcpy(&word, value.data() + offset, sizeof(word));
     return word;
 }
 
-// Whether the set's table is well formed: each entry names a block the set owns at that entry, the first and last entries name blocks, and the header matches them.
+// Require each table entry to reference its owned block and the header to match the first and last nonempty entries.
 bool TableWellFormed(const auto &arena, ElementSetRef set) {
     if (set.Index >= arena.Sets.Buffer.template Count<MeshElementSet>()) return false;
     const auto &header = arena.Sets.Get({set.Index, 1u})[0];
@@ -2413,7 +2394,7 @@ bool TableWellFormed(const auto &arena, ElementSetRef set) {
     }
     return count == header.Count;
 }
-// Whether a per-block mask holds bits only at the set's live members.
+// Whether a per-block mask contains bits only at the set's live members.
 bool MaskWithinLive(const BufferArena<uint32_t> &masks, const RenderTable &table) {
     const auto words = masks.Buffer.GetSpan<uint32_t>();
     for (const auto block : table.Entries) {
@@ -2421,7 +2402,6 @@ bool MaskWithinLive(const BufferArena<uint32_t> &masks, const RenderTable &table
     }
     return true;
 }
-// The domain of the summary's mode, or None for a mode without one.
 Domain ActiveDomain(const EditSelectionSummary &summary) {
     const bool selectable = summary.Mode == Element::Vertex || summary.Mode == Element::Edge || summary.Mode == Element::Face;
     return selectable ? SelectionDomain(summary.Mode) : Domain::None;
@@ -2460,7 +2440,6 @@ bool MeshStore::Audit(std::string &why) const {
         }
         const RecordTables tables{Buffers, r};
         const auto names = [&](Domain domain, uint32_t handle) { return handle == InvalidOffset || tables.IsLive(domain, handle); };
-        // Every word of a referencing arena's live values, and every handle of a span value's run.
         std::string invalid;
         ForEachArena(Buffers, [&](const auto &arena, const ArenaInfo &info, auto &&) {
             if (!invalid.empty() || info.References == Domain::None) return;
@@ -2498,7 +2477,7 @@ bool MeshStore::Audit(std::string &why) const {
             });
         }
         if (!invalid.empty()) return fail("names a foreign or dead element in its " + invalid);
-        // Each layer and named attribute the record carries covers its handle bound in its domain within its arena, and a layer it lacks holds no range.
+        // Require layer and attribute ranges to cover their domain handle bounds; absent layers have empty ranges.
         const auto covers = [&](Range range, uint32_t blocks, uint32_t high_water) { return range.Count >= blocks && range.Offset + range.Count <= high_water; };
         ForEachLayer(Buffers, [&](const auto &layer, const LayerInfo &info, auto &&entries, auto &&range) {
             const auto per = entries(r), blocks = uint32_t(tables.Sets[uint32_t(info.Elements)].Entries.size());
@@ -2515,7 +2494,8 @@ bool MeshStore::Audit(std::string &why) const {
             if (summary.ActiveHandle != InvalidOffset && (domain == Domain::None || !tables.IsLive(domain, summary.ActiveHandle))) return fail("has a foreign or dead active element");
         }
         if (!HasRender(r)) continue;
-        // Every render field names live members of its target set, used values of its payload range or the record's material table, finest clusters own the live elements they draw, and clusters draw live corners.
+        // Require render references to identify live set members, used payload values, or material-table entries.
+        // Finest clusters must own their rendered elements and reference live corners.
         const RenderTables members{render, r};
         const auto used = [&](RenderPayload payload) { return WithPayload(render, r, payload, [](const auto &, const PayloadRange &range) { return range.Values.Count; }); };
         if (std::ranges::any_of(RenderPayloads, [&](RenderPayload payload) { return WithPayload(render, r, payload, [](const auto &, const PayloadRange &range) { return range.Values.Count > range.Capacity; }); })) return fail("uses a payload range past its capacity");
@@ -2542,7 +2522,6 @@ bool MeshStore::Audit(std::string &why) const {
                 });
             }
         }
-        // A group's member and proxy runs, whose bounds the fields checked, name live clusters.
         const auto group_ids = render.GroupClusterIds.Get(r.GroupClusters.Values);
         members[RenderSet::Groups].ForEachLive([&](uint32_t g, uint32_t address) {
             const auto &links = render.GroupLinks.Get({address, 1u})[0];
@@ -2610,7 +2589,6 @@ store::Hash128 MeshStore::CanonicalHash(uint32_t id) const {
         for (const auto block : table.Entries) put(block == InvalidOffset ? decltype(MeshElementBlock::Live){} : table.Blocks[block].Live);
     };
     for (const auto domain : ElementDomains) put_shape(tables.Sets[uint32_t(domain)]);
-    // Element values at live elements, and the record's own ranges.
     ForEachArena(Buffers, [&](const auto &arena, const ArenaInfo &info, auto &&ranges) {
         using Value = ArenaValue<std::remove_cvref_t<decltype(arena)>>;
         using Allocation = std::remove_cvref_t<decltype(*ranges(r))>;
@@ -2796,7 +2774,7 @@ uint32_t MeshStore::AppendPayload(Record &record, RenderPayload payload, uint32_
             if (range.Capacity && pool.Extend(capacity, used + count - range.Capacity)) {
                 range.Capacity = capacity.Count;
             } else {
-                // The released range coalesces with free neighbors, and the first fit starts at or before it, so an ascending copy reads each value before overwriting it.
+                // Coalescing places the replacement at or before the released range, making forward copies safe.
                 if (range.Capacity) pool.Release(capacity);
                 const auto grown = pool.Allocate(std::max(2u * range.Capacity, used + count));
                 std::ranges::copy(pool.Get(range.Values), pool.GetMutable({grown.Offset, used}).begin());
@@ -2820,7 +2798,6 @@ void MeshStore::ReleasePayloadRuns(Record &record, RenderPayload payload, std::v
 
 void MeshStore::ReleaseMeshletStorage(Record &owner, std::span<const uint32_t> handles) {
     auto &render = Buffers.Render;
-    // The payload runs the clusters' run fields name, in each pool.
     std::array<std::vector<Range>, RenderPayloads.size()> runs;
     const auto entries = render.Meshlets.Entries(owner.MeshletData);
     const auto words = render.Meshlets.Buffer.GetSpan<uint32_t>();
@@ -2846,7 +2823,7 @@ void MeshStore::ReleaseRender(std::span<Record *const> records) {
     std::array<std::vector<Range>, 3> owners;
     for (auto *record : records) {
         auto &b = *record;
-        // A fragment's meshlets and their payload runs leave its render owner.
+        // Release meshlets and their payload ranges from the fragment render owner.
         if (!b.MeshletData && b.Meshlets.Count) {
             std::vector<uint32_t> handles(b.Meshlets.Count);
             std::ranges::iota(handles, b.Meshlets.Offset);
@@ -2865,7 +2842,7 @@ void MeshStore::ReleaseRender(std::span<Record *const> records) {
         AppendRange(routes, b.PrimitiveRoutes);
     }
     for (auto &list : blocks) std::ranges::sort(list);
-    // A released block's mask word clears, so the block holds no bit when a set takes it again.
+    // Clear released block masks before reuse.
     ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&) {
         if constexpr (std::is_same_v<std::remove_cvref_t<decltype(arena)>, BufferArena<uint32_t>>) {
             if (!info.Render || !info.BlockIndexed) return;

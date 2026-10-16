@@ -3,10 +3,9 @@
 
 #include "MeshTopologyContext.metal"
 
-// Geometry follows Blender's bmesh_wireframe.cc: two normal-offset copies per
-// vertex, one inset per selected corner, and an outward inset at open boundaries.
-// Each source edge owns a selected-face count and its selected corner. Counting
-// all users also handles nonmanifold edges; an opposite alone cannot do that.
+// Geometry follows Blender's bmesh_wireframe.cc: two normal-offset copies per vertex, one inset per selected corner, and an outward inset at open boundaries.
+// Each source edge owns a selected-face count and its selected corner.
+// Counting all users also handles nonmanifold edges; an opposite alone cannot do that.
 inline device uint *TopoWireEdges(TopoContext ctx, MeshTopologyJob job) {
     return ctx.Scratch() + job.HalfedgeAuxOffset;
 }
@@ -25,9 +24,9 @@ inline uint TopoWireBoundaryEdges(TopoContext ctx, MeshTopologyJob job, uint v, 
     return count;
 }
 
-// Blender's relative thickness averages lengths to tagged neighbors over the
-// vertex's entire edge degree. Compute it once per affected vertex.
 inline float TopoWireRelative(TopoContext ctx, MeshTopologyJob job, uint v) {
+    // Blender's relative thickness averages lengths to tagged neighbors over the vertex's entire edge degree.
+    // Compute it once per affected vertex.
     if (!(job.Flags & TopologyFlagWireRelative)) return 1.f;
     float length = 0.f;
     uint count = 0u;

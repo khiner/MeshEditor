@@ -13,7 +13,6 @@
 #include "MeshTopologyBoolean.metal"
 #include "gpu/InsetVertexBasis.h"
 
-// The vertices, faces, and corners a source face produces.
 inline uint3 TopoFaceOutputs(TopoContext ctx, MeshTopologyJob job, uint f) {
     if (TopologyIsMerge(job.Op)) return TopoWeldCounts(ctx,job,f);
     const uint2 range = ctx.SrcFaceRange(job, f);
@@ -160,7 +159,6 @@ kernel void TopologyZero(
     if (v == 0u) ctx.State(job)[0] = 0u;
 }
 
-// Flags the halfedge's edge when the dissolve removes it, counts its ends' edges, and marks the ends the dissolve may drop.
 inline void TopoMarkDissolvedEdge(TopoContext ctx, MeshTopologyJob job, uint h) {
     const auto corners = ctx.SrcCorners(job);
     const uint to = corners[h], from = corners[ctx.SrcPrev(job, h)];
@@ -200,8 +198,6 @@ inline void TopoMarkDissolvedEdge(TopoContext ctx, MeshTopologyJob job, uint h) 
 }
 
 // Collapses an edge shorter than the distance toward its lower vertex.
-// Classifies each halfedge for its operator: deletion tags, the side quads and vertex copies an extrusion needs,
-// the edges a dissolve or collapse removes, an edge split's sectors, and the cut parameters a listed subdivide fills.
 kernel void TopologyMarkHalfedges(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -280,7 +276,6 @@ kernel void TopologyMarkHalfedges(
     else if (job.Op == MeshTopologyOp::Subdivide && (job.Flags & TopologyFlagListSelects) && hi < job.SrcEdgeCount) ctx.EdgeParams(job)[hi] = 0u;
 }
 
-// Flags each surviving source face and marks its corner vertices as kept or tagged.
 kernel void TopologyMarkFaces(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -410,7 +405,7 @@ kernel void TopologyLink(
     if (changed) ctx.State(job)[1] = 1u;
 }
 
-// Jumps each label to its label's label: the pass parameter selects a dissolve's face labels or a merge's vertex targets.
+// Use the pass parameter to select face labels for dissolve or vertex targets for merge.
 kernel void TopologyJump(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -457,7 +452,6 @@ kernel void TopologyConverge(
     for (uint w = 0u; w < 3u * domains; ++w) arguments[w] = 0u;
 }
 
-// Sums each region's boundary halfedges and finds its lowest one.
 kernel void TopologyDissolveRegions(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -481,7 +475,6 @@ kernel void TopologyDissolveRegions(
     atomic_fetch_min_explicit(&ctx.Atomic(ctx.RegionStart(job))[root], first, memory_order_relaxed);
 }
 
-// Walks each region root's boundary to count the corners its merged face keeps.
 kernel void TopologyDissolveWalk(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -516,7 +509,6 @@ kernel void TopologyDissolveRevert(
     atomic_fetch_sub_explicit(&removed[corners[ctx.SrcPrev(job, h)]], 1u, memory_order_relaxed);
 }
 
-// Empties a job's table, whose entries alone the host tiles.
 kernel void TopologyMergeTable(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -530,7 +522,6 @@ kernel void TopologyMergeTable(
     ctx.Table(job)[i] = InvalidOffset;
 }
 
-// Inserts each selected vertex into the table at its grid cell's probe run.
 kernel void TopologyMergeInsert(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -657,8 +648,6 @@ kernel void TopologyFinalizeVertices(
     if (job.Op==MeshTopologyOp::DissolveLimited) TopoLimitedPrepare(ctx,job,v);
 }
 
-// Fills a job's list into scratch: a selection list flags its vertices or a subdivide's edges, a cut list sets its edge parameters,
-// and a knife sets the parameter of every edge whose screen segment crosses it.
 kernel void TopologyListFill(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -760,7 +749,6 @@ kernel void TopologyJoinMatch(
     ctx.State(job)[1] = 1u;
 }
 
-// Clears the inward vectors the gather adds to output vertex positions.
 kernel void TopologyZeroVertices(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -793,8 +781,8 @@ kernel void TopologyCountVertices(
     }
     uint faces = 0u, corners = 0u;
     if (TopologyIsBevel(job.Op) && (ctx.FlagVertices(job)[v] & TopoInRegion)) {
-        // The boundary indexes halfedge outputs. Interior profile rings belong
-        // to this vertex entry and are counted by the same scan.
+        // The boundary indexes halfedge outputs.
+        // Interior profile rings belong to this vertex entry and are counted by the same scan.
         corners = TopoBevelRing(ctx, job, v, [](uint2, uint, uint) {}).Length;
         if (corners >= 3u) {
             const uint rings = job.Op == MeshTopologyOp::BevelVertices ? TopoBevelSegments(job) - 1u : 0u;
@@ -859,7 +847,6 @@ kernel void TopologyCountHalfedges(
     ctx.WriteCounts(job, entry, uint3(cut ? TopoSubdivideCuts(job) : 0u, side ? job.Steps : 0u, side ? 4u * job.Steps : 0u));
 }
 
-// Counts each face's outputs and writes the scan terminator.
 kernel void TopologyCountFaces(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -875,7 +862,7 @@ kernel void TopologyCountFaces(
         ctx.WriteCounts(job, entry, TopoFaceOutputs(ctx, job, f));
         return;
     }
-    // The list entry carries the vertices and faces a job appends from its list, and the terminator entry holds zeros.
+    // The list entry carries the vertices and faces a job appends from its list, and the terminator entry contains zeros.
     uint3 listed = uint3(0u);
     uint wire_corners=0u;
     if (f == job.SrcFaceCount && job.Op == MeshTopologyOp::AddPrimitives && job.ListOffset != InvalidOffset) {
@@ -976,8 +963,8 @@ kernel void TopologyScatterVertices(
     device const uint *offsets = ctx.Counts(job, TopoCountVertices);
     const uint count = offsets[entry + 1u] - offsets[entry];
     if (TopologyIsBevel(job.Op)) {
-        // Every profile ring is built from the same counted boundary. The last
-        // ring receives the cap, wound against the surrounding quads.
+        // Every profile ring is built from the same counted boundary.
+        // The last ring receives the cap, wound against the surrounding quads.
         device const uint *face_offsets = ctx.Counts(job, TopoCountFaces);
         if (face_offsets[entry + 1u] == face_offsets[entry]) return;
         const uint segments = job.Op == MeshTopologyOp::BevelVertices ? TopoBevelSegments(job) : 1u;
@@ -1154,7 +1141,6 @@ kernel void TopologyScatterHalfedges(
         const auto corners = ctx.SrcCorners(job);
         const uint v = corners[h], u = corners[ctx.SrcPrev(job, h)];
         const uint base = ctx.Counts(job, TopoCountVertices)[entry];
-        // Every new vertex sits on an original one, displaced to its point.
         const auto place = [&](uint d, uint anchor, float3 p) {
             ctx.WriteVertexMap(job, d, anchor, anchor, 0.f);
             *ctx.Inward(job, d, 0u) = packed_float3(p - ctx.SrcPosition(job, anchor));
@@ -1205,7 +1191,6 @@ kernel void TopologyScatterHalfedges(
         return;
     }
     if (job.Op == MeshTopologyOp::Subdivide) {
-        // A selected edge's cuts sit along its representative halfedge, each selected.
         device const uint *vertex_offsets = ctx.Counts(job, TopoCountVertices);
         const uint first = vertex_offsets[entry], count = vertex_offsets[entry + 1u] - first;
         if (count == 0u) return;
@@ -1248,7 +1233,6 @@ kernel void TopologyScatterHalfedges(
     }
 }
 
-// Emits each source face's outputs: its own loop through the vertex targets and copies, a duplicate loop, or an individual extrusion.
 kernel void TopologyScatterFaces(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -1334,7 +1318,8 @@ kernel void TopologyScatterFaces(
         return;
     }
     if (TopologyIsBevel(job.Op)) {
-        // Each corner emits its replacement points. A corner replaced by one point keeps its arriving edge, and a corner replaced by two keeps neither.
+        // Each corner emits its replacement points.
+        // A corner replaced by one point keeps its arriving edge, and a corner replaced by two keeps neither.
         uint emitted = 0u;
         for (uint h = range.x; h < range.y; ++h) {
             const BevelCornerPoints points = TopoBevelCornerPoints(ctx, job, h);
@@ -1377,7 +1362,6 @@ kernel void TopologyScatterFaces(
         return;
     }
     if (job.Op == MeshTopologyOp::Poke && selected) {
-        // The center vertex averages the face's corners and lifts by the offset along the face normal.
         const uint center = new_vertices;
         const uint h0 = range.x, h1 = range.x + (n >= 4u ? n / 4u : 1u), h2 = range.x + (n >= 4u ? n / 2u : 2u), h3 = range.x + (n >= 4u ? (3u * n) / 4u : 2u);
         const float t = n >= 4u ? 0.5f : 1.f / 3.f;
@@ -1402,7 +1386,7 @@ kernel void TopologyScatterFaces(
         return;
     }
     if (TopologyIsDissolve(job.Op) && !TopoDissolveOwnLoop(ctx, job, f)) {
-        // A region root emits its walked boundary as one face, selected when the face was selected or the region spans more faces.
+        // Emit a region boundary as one face, selected if its source face was selected or the region contains multiple faces.
         TopoWalkRegion(ctx, job, f, fd, base);
         TopoEmitFace(ctx, job, fd, base, ctx.WalkLength(job)[f], f, selected || ctx.RegionBoundary(job)[f] != n);
         return;
@@ -1416,12 +1400,11 @@ kernel void TopologyScatterFaces(
         job.Op == MeshTopologyOp::AddPrimitives ||
         TopologyIsDissolve(job.Op) || TopologyIsMerge(job.Op);
     const bool own_selected = individual || duplicated ? false : (job.Op == MeshTopologyOp::KeepSelectedFaces || selected) && job.Op != MeshTopologyOp::ExtrudeEdges;
-    // The list entry appends the job's listed faces, whose corners inherit attributes from any corner at their vertex.
+    // Append listed faces with corner attributes inherited from any source corner at each vertex.
     if (f == job.SrcFaceCount) {
         if (job.Op != MeshTopologyOp::AddPrimitives || job.ListOffset == InvalidOffset) return;
         device const uint *list = ctx.Lists(job);
-        // New vertices inherit attributes from a vertex explicitly named by
-        // the face list, so local emission has no unrelated source dependency.
+        // New vertices inherit attributes from a vertex explicitly named by the face list, so local emission has no unrelated source dependency.
         const uint listed = list[0];
         const uint attribute_source = list[3];
         const uint span=list[2],boundary=list[1];
@@ -1485,7 +1468,6 @@ kernel void TopologyScatterFaces(
         return;
     }
     if (individual) {
-        // The face's own copies of its corner vertices carry the top face, and each edge gets a quad down to the original vertices.
         for (uint k = 0u; k < n; ++k) {
             const uint h = range.x + k;
             const uint copy = new_vertices + k;
@@ -1559,7 +1541,7 @@ kernel void TopologyFaceTables(
     if (triangle_sources && source != InvalidOffset) {
         source_triangle = BindlessBuffer(uint,bindless.ObjectIdBuffer,pc.Source.FaceTriangleStartSlot)[ctx.SrcAddress(job,2u,ctx.SrcFaceDomain(job).Handle(source))];
     }
-    // Vertex gathering has finished; its provenance scratch now holds tessellation work.
+    // Vertex gathering has finished; its provenance scratch now contains tessellation work.
     device uint *scratch=ctx.VertexMap(job);
     device uint *next=scratch+range.x,*previous=scratch+job.DstHalfedgeCount+range.x;
     device vec2 *points=reinterpret_cast<device vec2 *>(scratch+2u*job.DstHalfedgeCount)+range.x;
@@ -1593,7 +1575,6 @@ inline float3 TopoCopyNormal(TopoContext ctx, MeshTopologyJob job, uint v, uint 
     return normal;
 }
 
-// Carries every vertex-domain channel through the vertex map.
 kernel void TopologyGatherVertices(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -1653,7 +1634,7 @@ kernel void TopologyGatherVertices(
         normal = TopoCopyNormal(ctx, job, v.x, d, normal);
         BindlessBufferMutable(packed_float3, bindless.Buffer, pc.Destination.BaseVertexNormalSlot)[ctx.DstAddress(job,0u,ctx.DstVertexDomain(job).Handle(d))] = packed_float3(normal);
     }
-    // A layer its source lacks holds its default, as a join gives it.
+    // Use defaults for layers absent from the source.
     if (job.VertexAttributes & MeshAttributeBit_Color0) {
         ctx.SetDstVertexColor(job, d, layers & MeshAttributeBit_Color0 ? TopoBilinear(ctx.SrcVertexColor(job, v.x), ctx.SrcVertexColor(job, v.y), ctx.SrcVertexColor(job, v.z), ctx.SrcVertexColor(job, v.w), s, t) : float4(1.f));
     }
@@ -1685,7 +1666,7 @@ kernel void TopologyGatherVertices(
             ctx.SetDstMorphTarget(job,d,k,value);
         }
     }
-    // A source past the job's source vertices, which an appended vertex names, holds the default.
+    // Use defaults for appended vertices beyond the source range.
     const uint2 vertices = TopoAttributeRun(job, AttributeDomain::Vertex);
     for (uint i = vertices.x; i < vertices.y; ++i) {
         const TopologyAttribute attribute = TopoAttribute(ctx, job, i);
@@ -1720,15 +1701,15 @@ kernel void TopologyGatherCorners(
     uint a = map[0], b = map[1], c = map[2], d = map[3];
     if (job.Op==MeshTopologyOp::Decimate) {
         const uint root=ctx.VertexTargets(job)[ctx.SrcCorners(job)[a]];
-        // Collapsible vertices have no UV/color seam. Give all incident
-        // corners the same surviving sample, without changing normal provenance.
+        // Collapsible vertices have continuous UVs and colors.
+        // Give all incident corners the same surviving sample, without changing normal provenance.
         if (ctx.FlagVertices(job)[root]&TopoListed) {
             const auto fan=ctx.SrcFan(job,root);
             if (fan.y) a=b=c=d=ctx.SrcFanCorner(job,fan.x);
         }
     }
     const float s = as_type<float>(map[4]), t = as_type<float>(map[5]);
-    // A layer the source lacks holds its default.
+    // Use defaults for layers absent from the source.
     const uint layers = job.SourceLayers;
     if (job.CornerAttributes & MeshAttributeBit_Tangent) {
         ctx.SetDstCornerTangent(job, h, layers & MeshAttributeBit_Tangent ? TopoBilinear(ctx.SrcCornerTangent(job, a), ctx.SrcCornerTangent(job, b), ctx.SrcCornerTangent(job, c), ctx.SrcCornerTangent(job, d), s, t) : float4(0.f));
@@ -1848,7 +1829,7 @@ kernel void TopologyCustomNormals(
 }
 
 
-// Carries edge sharpness and edge selection through the corner map once the output connectivity numbers its edges.
+// Transfer edge sharpness and selection through the corner map after output connectivity assigns edge indices.
 kernel void TopologyEdgeAttributes(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],

@@ -1,9 +1,8 @@
-// The boolean's topological decisions compare input coordinates and values computed the same way at every use, so this file's arithmetic stays IEEE without contraction.
+// Use IEEE arithmetic without contraction for consistent boolean topology predicates.
 #pragma METAL fp math_mode(safe)
 #pragma METAL fp contract(off)
 
-// Manifold's boolean as GPU passes: a radix tree per record, edge and triangle crossings by shadow predicates with symbolic perturbation,
-// winding numbers flooded through the components the crossings leave, and each kept triangle's polygon assembled and retriangulated.
+// Port Manifold boolean predicates and polygon assembly to GPU passes.
 #include "ConnectivityRead.metal"
 #include "ElementWorkShared.metal"
 #include "RadixSort.metal"
@@ -23,8 +22,8 @@ struct BooleanContext {
     void Fail() const { atomic_store_explicit(reinterpret_cast<device atomic_uint *>(Storage()), 1u, memory_order_relaxed); }
 };
 
-// Symbolic perturbation moves each record's vertices along their normals: a union expands both,
-// a difference contracts P and expands Q, and an intersection contracts both, so solids that only touch stay apart.
+// Perturb vertices along normals to separate tangencies.
+// Union expands both inputs; difference contracts P and expands Q; intersection contracts both.
 struct BoolPerturb {
     bool P, Q;
 };
@@ -225,7 +224,6 @@ struct BoolTree {
 inline BoolTree TreeOf(BooleanContext ctx, BooleanJob job, uint side) {
     return {ctx.Run<float>(job.NodeBoxes[side]), ctx.Run<packed_uint2>(job.Children[side]), ctx.Run<uint>(job.Order[side]), job.Triangles[side], side ? job.Triangles[0] : 0u};
 }
-// Visits the combined triangles whose leaf boxes `overlaps` accepts, depth first.
 template<typename Overlaps, typename Visit>
 inline void BoolTraverse(BoolTree tree, Overlaps overlaps, Visit visit) {
     if (tree.Leaves < 2u) {
@@ -272,7 +270,7 @@ inline uint SpreadBits3(uint v) {
     return v;
 }
 
-// Takes each vertex's position and normal into P's space, and grows its record's bounds.
+// Transform vertex positions and normals into P's coordinate system and expand its record bounds.
 kernel void BooleanVertices(
     uint v [[thread_position_in_grid]],
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
@@ -354,7 +352,6 @@ kernel void BooleanScanOffsets(
     ScanBlockOffsets(storage + pc.ScanValues, pc.ScanCount, group_id, storage + pc.ScanBlocks, storage + pc.ScanValues, lane, simd_lane, simd_group, sums);
 }
 
-// Each face's derived triangles: their combined vertices, corner handles, face and normal.
 kernel void BooleanTriangles(
     uint f [[thread_position_in_grid]],
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
@@ -388,7 +385,7 @@ kernel void BooleanTriangles(
     }
 }
 
-// The triangle of combined face `f` with the side from corner `from` to corner `to`, as its halfedge.
+// Return the halfedge of combined face `f` directed from corner `from` to corner `to`.
 inline uint BoolFindSide(BooleanContext ctx, BooleanJob job, uint f, uint from, uint to) {
     const uint first = ctx.Run<uint>(job.FaceTriangleFirst)[f], end = ctx.Run<uint>(job.FaceTriangleFirst)[f + 1u];
     device const packed_uint3 *corners = ctx.Run<packed_uint3>(job.TriangleCorners);
@@ -526,7 +523,6 @@ struct BoolRadixTree {
     }
 };
 
-// Links each internal node to its children and clears its refit counter.
 kernel void BooleanTree(
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
     constant BooleanPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
@@ -622,7 +618,6 @@ kernel void BooleanIntersectCount(
     first[h] = h == halfedges ? 0u : BoolEdgeHits(ctx, job, Geometry(ctx, job), h, [](uint, uint, BoolHit) {});
 }
 
-// Writes each halfedge's crossings at its scanned offset: the halfedge, the triangle, the signed crossing and its position.
 kernel void BooleanIntersectEmit(
     uint h [[thread_position_in_grid]],
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
@@ -644,7 +639,7 @@ kernel void BooleanIntersectEmit(
     });
 }
 
-// Whether the halfedge crosses a triangle of the other record, which breaks its edge's component link.
+// Detect crossings with the other record; a crossing disconnects the edge component.
 inline bool BoolBroken(BooleanContext ctx, BooleanJob job, uint h) {
     device const uint *first = ctx.Run<uint>(job.IntersectionFirst);
     return first[h + 1u] != first[h];
@@ -660,7 +655,6 @@ kernel void BooleanLabelInit(
     if (v < BoolVertexCount(job)) ctx.Run<uint>(job.Labels)[v] = v;
 }
 
-// Pulls both ends of each unbroken forward edge, and their labels, to the lower of their labels.
 kernel void BooleanLink(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
@@ -681,7 +675,6 @@ kernel void BooleanLink(
     if (changed) ctx.Run<uint>(job.LabelArguments)[6] = 1u;
 }
 
-// Jumps each label to its label's label.
 kernel void BooleanJump(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
@@ -698,7 +691,7 @@ kernel void BooleanJump(
     ctx.Run<uint>(job.LabelArguments)[6] = 1u;
 }
 
-// Ends the label rounds once one changes nothing, by zeroing their indirect arguments.
+// End converged label iterations by zeroing their indirect dispatch arguments.
 kernel void BooleanConverge(
     uint lane [[thread_index_in_threadgroup]],
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
@@ -735,7 +728,6 @@ kernel void BooleanWinding(
     ctx.Run<int>(job.Windings)[v] = forward ? winding : -winding;
 }
 
-// Each vertex's and intersection's signed output count by the operation: its winding through its component's root, or its crossing.
 kernel void BooleanInclusion(
     uint e [[thread_position_in_grid]],
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
@@ -770,15 +762,12 @@ inline void BoolGroupMembers(BooleanContext ctx, BooleanJob job, BoolGeometry g,
         }
     }
 }
-// The P and Q triangles of an intersection side's group.
 inline uint2 BoolGroupOf(BooleanContext ctx, BooleanJob job, BoolGeometry g, uint member) {
     const uint k = member / 2u, h = BoolRecordHalfedge(ctx, job, k);
     const uint face = member % 2u ? g.Pair(h) / 3u : h / 3u, t = BoolRecordTriangle(ctx, job, k);
     return k < job.FirstIntersections ? uint2(face, t) : uint2(t, face);
 }
 
-// The count scan's values: each triangle's polygon halfedges from its corners, each broken halfedge's partial edge entries,
-// each group owner's new edge entries, then each vertex's and intersection's output vertices, then the terminator.
 // A group's owner is its lowest intersection side.
 kernel void BooleanCounts(
     uint i [[thread_position_in_grid]],
@@ -816,7 +805,6 @@ kernel void BooleanCounts(
     else counts[i] = 0u;
 }
 
-// Adds each intersection's copies to its triangle's and its halfedge's two triangles' polygon halfedge counts.
 kernel void BooleanIntersectionSides(
     uint k [[thread_position_in_grid]],
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
@@ -833,7 +821,6 @@ kernel void BooleanIntersectionSides(
 }
 
 
-// Names each output vertex's entry, and starts each triangle's polygon halfedge cursor at its run.
 kernel void BooleanOutputs(
     uint i [[thread_position_in_grid]],
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
@@ -848,7 +835,7 @@ kernel void BooleanOutputs(
     if (i < BoolTriangleCount(job)) ctx.Run<uint>(job.Cursors)[i] = BoolPolygonFirst(ctx, job, i);
 }
 
-// Appends a halfedge to a triangle's polygon, failing the chain past the triangle's counted halfedges.
+// Append a polygon halfedge and fail the chain if its triangle count would be exceeded.
 inline void BoolAppend(BooleanContext ctx, BooleanJob job, uint t, uint start, uint end, uint source) {
     const uint slot = atomic_fetch_add_explicit(ctx.Run<atomic_uint>(job.Cursors) + t, 1u, memory_order_relaxed);
     if (slot >= BoolPolygonFirst(ctx, job, t + 1u)) {
@@ -944,8 +931,7 @@ kernel void BooleanPartialEdges(
     });
 }
 
-// Each group owner pairs its group's crossings along their longest extent into the segments of the P and Q triangles' intersection,
-// forward in P's polygon and backward in Q's.
+// Pair crossings along the longest extent, with opposite segment directions in P and Q.
 kernel void BooleanNewEdges(
     uint member [[thread_position_in_grid]],
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
@@ -965,8 +951,8 @@ kernel void BooleanNewEdges(
     uint count = 0u;
     BoolGroupMembers(ctx, job, g, group.x, group.y, [&](uint k, uint side) {
         const int inclusion = ctx.Run<int>(job.Inclusion)[vertices + k];
-        // As in Manifold, a P edge's crossing starts its own triangle's segment when its inclusion is nonnegative and a Q edge's when it is negative,
-        // and the pair's triangle takes the opposite.
+        // A P crossing starts its segment for nonnegative inclusion; a Q crossing starts it for negative inclusion.
+        // Reverse the rule for the paired triangle, as in Manifold.
         const bool direction = inclusion < 0, first_record = k < job.FirstIntersections;
         const bool start = side ? direction != !first_record : direction != first_record;
         const float3 p = BoolRecordPosition(ctx, job, k);
@@ -1014,7 +1000,7 @@ struct BoolPolygon {
     float2 Point(uint node) const { return float2(Points[node]); }
     float2 Project(uint i) const { return BoolProject(Normal, BoolOutputPosition(Ctx, Job, StartOf(i))); }
 
-    // Emits the triangle of three nodes, each corner reference marking whether the side to the next corner is its polygon halfedge.
+    // Emit a triangle whose corner references distinguish polygon halfedges from internal diagonals.
     void Emit(uint a, uint c, uint d, bool ac, bool cd, bool da) {
         device uint *corners = Triangles + 3u * Emitted++;
         corners[0] = (Refs[a] & ~BoolRealOut) | (ac ? BoolRealOut : 0u);
@@ -1070,8 +1056,8 @@ struct BoolPolygon {
     }
 };
 
-// Assembles each kept triangle's polygon halfedges into loops, bridges each hole into the outer loop containing it,
-// and triangulates: a triangle as itself, a quad by Manifold's diagonal rule, a convex loop by a fan, and the rest by ear clipping.
+// Assemble polygon loops and connect holes to their containing outer loops.
+// Triangulate quads with Manifold diagonals, convex loops with fans, and other loops with ear clipping.
 kernel void BooleanFaces(
     uint t [[thread_position_in_grid]],
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],

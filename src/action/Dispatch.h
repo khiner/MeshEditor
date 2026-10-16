@@ -7,10 +7,9 @@
 #include "scene/SceneGraph.h"
 #include "selection/Selection.h"
 
-// Field access for Update on each updatable component.
 namespace action {
-// A nested field follows its enclosing field, so the last range containing an offset is the innermost.
-// A field without bounds of its own takes its enclosing field's.
+// Use the innermost field range containing the offset.
+// Inherit enclosing bounds when the field has none.
 struct FieldRange {
     uint16_t Offset, Size;
     std::string Path;
@@ -55,7 +54,6 @@ struct ComponentField {
 };
 ComponentField UpdatedField(state::TypeKey, uint16_t offset);
 
-// Reads and writes a field at a byte offset of a component held on object entities.
 template<typename C>
 struct ComponentUpdateTraits {
     static bool Has(const state::Scene &r, state::Entity e) { return r.all_of<C>(e); }
@@ -72,7 +70,7 @@ struct ComponentUpdateTraits {
 template<typename C>
 struct UpdateTraits : ComponentUpdateTraits<C> {};
 
-// Inset and Bevel parameters on the selection address the node each edited procedure mesh's result reads, which a viewport drag's first step appended.
+// Edit the Inset or Bevel node appended at the start of the viewport drag.
 template<typename C>
     requires std::same_as<C, mesh::Inset> || std::same_as<C, mesh::Bevel>
 struct UpdateTraits<C> : ComponentUpdateTraits<C> {
@@ -114,8 +112,8 @@ struct UpdateTraits<procedure::NodeLayout> : ComponentUpdateTraits<procedure::No
     static void ForEachSelected(state::Scene &, state::Entity viewport, const std::function<void(state::Entity)> &);
 };
 
-// PrimitiveShape lives on the mesh entity behind an instance.
-// Fields address the current shape alternative, the selection covers meshes sharing the active shape, and the settle pass rebuilds each written mesh.
+// Resolve PrimitiveShape through the instance mesh.
+// Selection edits affect meshes with the active shape type; rebuild them after applying changes.
 template<>
 struct UpdateTraits<PrimitiveShape> {
     static bool Has(const state::Scene &, state::Entity);

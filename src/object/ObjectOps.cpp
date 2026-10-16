@@ -145,7 +145,6 @@ void ProcessObjectRemovals(state::Scene &r, state::Entity viewport) {
         const profile::CpuScope scope{"DestroyDataComponents"};
         r.destroy(buffers_to_destroy);
     }
-    // The entities destroyed above queue theirs too.
     auto &dependents = pending->Dependents;
     std::erase_if(dependents, [&](state::Entity e) { return !r.valid(e); });
     SortUnique(dependents);

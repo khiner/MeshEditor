@@ -4,8 +4,7 @@
 #include <memory>
 #include <optional>
 
-// A background task with a monitor for progress display and cooperative cancellation.
-// `work` runs on its own thread and receives the monitor.
+// Run `work` on a background thread with progress reporting and cooperative cancellation.
 template<typename Result, typename MonitorType>
 struct Job {
     Job(std::string title, auto &&work)

@@ -47,7 +47,6 @@ void TopologyReadView::Add(state::Scene &r, uint32_t id, const MeshClosure &neig
             if (const auto root = sectors[h]; root != InvalidOffset) AddBlock(roots, Resolve<MeshElementBlockSize>(corner_table, ElementHandle{root}).Value());
         });
     }
-    // Rules resolve the source's handles through its table runs.
     const auto table = [&](const auto &arena, ElementSetRef set) {
         if (!set) return;
         const auto &header = arena.Set(set);
@@ -169,7 +168,7 @@ ConnectivityRef TopologyReadView::SourceConnectivity(const MeshStore &meshes, ui
 ElementLayers TopologyReadView::SourceLayers(const MeshStore &meshes, uint32_t id) const {
     auto layers = meshes.Layers(id);
     const auto &Layers = Arenas.Layers;
-    // A layer the source holds reads its clone at the source's offset, and the clones hold every page the edit reads.
+    // Read present layers from clones at source offsets; clone every page the edit reads.
     const auto at = [](SlotOffset &ref, SlotOffset clone) { ref.Slot = ref.Slot == InvalidSlot ? InvalidSlot : clone.Slot; };
     at(layers.FacePrimitives, Layers.FacePrimitives);
     at(layers.VertexPrimitives, Layers.VertexPrimitives);

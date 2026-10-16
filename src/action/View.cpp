@@ -138,13 +138,11 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                             }
                         }
 
-                        // Full bone transform in bone edit mode.
                         const auto offset = ts_e.P - pivot.P;
                         make_local(e, {td.P + pivot.P + Rotate(td.R, rot * (rT * offset * td.S)), Normalize(td.R * ts_e.R), ts_e.S}, pd);
                         continue;
                     }
 
-                    // Object mode / non-bone transform.
                     const bool frozen = r.all_of<ScaleLocked>(e);
                     make_local(e, pending.ApplyTo(ts_e, frozen), start_pd);
                 }

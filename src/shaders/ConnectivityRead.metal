@@ -39,7 +39,6 @@ struct ConnectivityView {
     uint HalfedgeAddress(uint h) const { return Resolve<MeshElementBlockSize>(HalfedgeTable, h); }
     uint EdgeAddress(uint e) const { return Resolve<MeshElementBlockSize>(EdgeTable, e); }
     uint FaceAddress(uint f) const { return Resolve<MeshElementBlockSize>(FaceTable, f); }
-    // A corner's vertex handle, from the corner vertices at `corner_slot` of the index buffers.
     uint CornerVertex(uint corner_slot, uint h) const { return BindlessBuffer(uint, B.IndexBuffer, corner_slot)[HalfedgeAddress(h)]; }
 
     uint2 Incoming(uint v) const { if (At.VertexCornersSlot == InvalidSlot) return uint2(InvalidOffset, 0u); return uint2(BindlessBuffer(packed_uint2,B.Buffer,At.VertexCornersSlot)[VertexAddress(v)]); }

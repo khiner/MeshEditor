@@ -11,9 +11,8 @@ namespace state {
 struct Scene;
 } // namespace state
 
-// Manifold's boolean of a task's source P and second source Q as GPU passes over the chain's scratch, through the triangles each kept source triangle's polygon emits.
-// Construction submits once per stage whose sizes the stage before it counted: the crossings, the component label rounds until they converge, the output counts, and the polygons.
-// Its runs stay in the chain's scratch for the topology job's count and emission passes.
+// Construct boolean work in chain scratch and retain it through topology counting and emission.
+// Submit between stages whose sizes depend on prior GPU counts.
 struct BooleanWork {
     BooleanWork(state::Scene &, mtl::ComputeChain &, const MeshTopologyTask &, const MeshClosure &first, const MeshClosure &second);
 

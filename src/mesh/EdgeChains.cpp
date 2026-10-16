@@ -18,8 +18,7 @@ void VisitEdgeChains(EdgeGraph &graph, const std::function<void(const std::vecto
         uint32_t previous = start;
         bool closed = false;
         for (;;) {
-            // Blender treats a loop returning to a junction as an open chain
-            // after removing its repeated endpoint.
+            // Blender treats a loop returning to a junction as an open chain after removing its repeated endpoint.
             if (next == start) {
                 closed = graph.at(start).size() == 2u;
                 break;
@@ -34,7 +33,8 @@ void VisitEdgeChains(EdgeGraph &graph, const std::function<void(const std::vecto
         }
         visit(chain, closed);
     };
-    // Endpoints and junctions delimit open chains. Remaining edges form cycles.
+    // Endpoints and junctions delimit open chains.
+    // Remaining edges form cycles.
     for (const auto v : vertices) {
         if (graph.at(v).size() != 2u) {
             for (const auto next : graph.at(v)) walk(v, next);
@@ -46,8 +46,8 @@ void VisitEdgeChains(EdgeGraph &graph, const std::function<void(const std::vecto
 }
 
 namespace {
-// Convert canonical path handles to a shared position scratch and order read/write
-// dependencies. Paths sharing only fixed controls can execute concurrently.
+// Convert canonical path handles to a shared position scratch and order read/write dependencies.
+// Paths sharing only fixed controls can execute concurrently.
 void ScheduleEdgeChains(EdgeChainPlan &plan, bool move_all) {
     struct Access {
         uint32_t Rank, Read{}, Write{};

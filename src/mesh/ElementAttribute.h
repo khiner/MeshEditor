@@ -3,9 +3,8 @@
 #include "mesh/ElementAttributeView.h"
 #include "metal/BufferArena.h"
 
-// Grows a record's range of a block arena to `blocks` blocks: in place when the storage after it is free, and otherwise at twice its size or to fit, moving its values.
-// Values keep their offsets in the range, so a move changes no reference.
-// Returns whether the range changed.
+// Grow to at least blocks while preserving range-relative offsets.
+// Return whether the range changed.
 template<typename Block> bool CoverRange(BufferArena<Block> &arena, Range &range, uint32_t blocks) {
     if (blocks <= range.Count) return false;
     if (range.Count && arena.Extend(range, blocks - range.Count)) return true;
@@ -21,9 +20,9 @@ template<typename Block> void FillRange(BufferArena<Block> &arena, Range range, 
     if (blocks.Count) std::ranges::fill(arena.GetMutable({range.Offset + blocks.Offset, blocks.Count}), value);
 }
 
-// One element layer, whose values each record carrying it holds in one range of the layer's blocks.
-// A record's range covers its handle bound in the layer's domain with `entries` blocks per local block, and entry e of handle h sits at slot h % MeshElementBlockSize of the range's block (h / MeshElementBlockSize) * entries + e.
-// `Absent` is the value of an element whose source gave the layer none, which an insertion, a join or a boolean gives the elements it adds without one.
+// Store each record layer in one range of blocks covering its domain handle bound.
+// Entry e of handle h uses block (h / MeshElementBlockSize) * entries + e and slot h % MeshElementBlockSize.
+// Absent supplies defaults for elements without source values.
 template<typename T>
 struct ElementAttribute {
     using Block = std::array<T, MeshElementBlockSize>;

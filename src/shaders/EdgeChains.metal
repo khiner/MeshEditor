@@ -17,8 +17,8 @@ void SolveEdgeCurve(uint n,bool closed,device const float *knots,device float *u
         if (n==2u) solution[1]=packed_float4(float4(-c,0.f));
         return;
     }
-    // Solve xyz together. The fourth lane solves the rank-one correction
-    // for the cyclic matrix; open chains have zero endpoint curvature.
+    // Solve xyz together.
+    // The fourth lane solves the rank-one correction for the cyclic matrix; open chains have zero endpoint curvature.
     float previous_upper=0.f;
     float4 previous_rhs=0.f;
     for (uint k=0u;k<n;++k) {
@@ -61,8 +61,7 @@ float3 SampleEdgeCurve(uint n,uint segment,float target,bool cubic,device const 
     return a+dt*(slope+dt*(c+dt*(last-c)/(3.f*h)));
 }
 
-// One invocation per independent chain: a linear sweep measures arc length,
-// solves the natural/periodic cubic, and samples in increasing distance order.
+// One invocation per independent chain: a linear sweep measures arc length, solves the natural/periodic cubic, and samples in increasing distance order.
 // Only handle metadata comes from the host; all geometry stays in GPU buffers.
 kernel void SpaceEvenlyGather(
     uint i [[thread_position_in_grid]],
@@ -107,8 +106,8 @@ kernel void SpaceEvenlyGather(
     }
 }
 
-// Each phase reads a fixed set of knots, then publishes its relaxed points
-// together before the next phase. Canonical writes use the shared position pass.
+// Each phase reads a fixed set of knots, then publishes its relaxed points together before the next phase.
+// Canonical writes use the shared position pass.
 kernel void RelaxEdgeLoopsGather(
     uint i [[thread_position_in_grid]],
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
@@ -162,8 +161,8 @@ kernel void RelaxEdgeLoopsGather(
     }
 }
 
-// Paths without read/write conflicts run together. Later batches observe the positions
-// written by preceding crossing paths, before the common canonical write pass.
+// Paths without read/write conflicts run together.
+// Later batches observe the positions written by preceding crossing paths, before the common canonical write pass.
 kernel void CurveBetweenSelected(
     uint i [[thread_position_in_grid]],
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],

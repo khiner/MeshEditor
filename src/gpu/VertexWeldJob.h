@@ -9,12 +9,15 @@ struct VertexWeldJob {
     SlotOffset Positions DEFAULT();
     // Corner array remapped to welded indices.
     SlotOffset Corners DEFAULT();
-    // Handle-addressed skin joints and weights. InvalidSlot denotes no skin.
+    // Handle-addressed skin joints and weights.
+    // InvalidSlot denotes no skin.
     SlotOffset Skin DEFAULT();
-    // Handle-addressed morph position and normal deltas. InvalidSlot denotes no morph targets.
+    // Handle-addressed morph position and normal deltas.
+    // InvalidSlot denotes no morph targets.
     SlotOffset Morph DEFAULT();
     uint32_t TargetCount DEFAULT();
-    // Target-major three-word morph tangent deltas staged in scratch. InvalidOffset denotes no authored tangents.
+    // Target-major three-word morph tangent deltas staged in scratch.
+    // InvalidOffset denotes no authored tangents.
     uint32_t TangentOffset DEFAULT(InvalidOffset);
     uint32_t Count DEFAULT();
     uint32_t CornerCount DEFAULT();

@@ -101,7 +101,6 @@ struct LoadPlan {
     std::unordered_map<Hash128, std::vector<std::byte>, Hash128Hasher> Leaves;
 };
 
-// Run fn on the owner of a track.
 template<typename H> decltype(auto) With(H &history, const History::Tracked &t, auto &&fn) {
     switch (t.K) {
         case History::Kind::Pages: return fn(*history.PageTracks[t.Index]);
@@ -273,7 +272,7 @@ void SetPresent(History &history, uint32_t node) {
     history.Nodes[node].LastVisited = ++history.VisitCounter;
 }
 
-// Releases a node's descendants' snapshots and detaches them, leaving them unreachable from the root.
+// Release descendant snapshots and detach those nodes from the history tree.
 void DropDescendants(History &history, uint32_t node) {
     auto pending = history.Nodes[node].Children;
     history.Nodes[node].Children.clear();
@@ -311,7 +310,6 @@ std::filesystem::path LogPath(const std::filesystem::path &dir, size_t file) {
     return dir / Names[file];
 }
 
-// Report the first failed stream.
 std::string StreamError(History &history) {
     for (size_t i = 0; i < history.Streams.size(); ++i) {
         if (history.Streams[i].is_open() && !history.Streams[i]) return "cannot write " + LogPath(history.Dir, i).string();
@@ -525,7 +523,6 @@ bool ReadActions(History &history, const std::filesystem::path &dir) {
     return in.empty();
 }
 
-// Take over the candidate's tree and open streams.
 bool AdoptProject(History &history, History &candidate) {
     if (!CheckIO(history, Flush(candidate))) return false;
     CloseStreams(history);
@@ -608,7 +605,6 @@ std::expected<void, std::string> ApplyLoad(History &history, uint32_t node, cons
     return {};
 }
 
-// Appends a record for a hash the log does not hold yet.
 void AppendContent(History &history, History::ContentLog &log, Hash128 hash, std::span<const std::byte> payload) {
     if (!log.Idx.try_emplace(hash, History::Extent{log.Size + ContentHeader, uint32_t(payload.size())}).second) return;
     std::array<std::byte, ContentHeader> header;
@@ -654,7 +650,7 @@ void AppendTreeRecord(History &history, RecordKind kind, std::optional<uint32_t>
     Append(history, FileTree, record);
 }
 
-// Persist live content as the node's, returning its manifest roots with its parent's roots for unchanged tracks.
+// Persist live content and return manifest roots, reusing parent roots for unchanged tracks.
 std::vector<Hash128> PersistContent(History &history, const HistoryNode &n) {
     const auto *parent = n.Parent ? &history.Nodes[*n.Parent] : nullptr;
     std::vector<Hash128> roots;
@@ -1019,7 +1015,7 @@ std::optional<uint32_t> History::FindPosition(const HistoryPosition &position) c
 bool History::Open(const std::filesystem::path &dir, const HistoryPosition *position) {
     if (!CheckIO(*this, Flush(*this))) return false;
     History candidate{.Tracks = Tracks, .PageTracks = PageTracks, .RecordTracks = RecordTracks, .PoolTracks = PoolTracks, .Order = Order, .Callbacks = Callbacks};
-    // A directory without content logs holds only the recorded actions, so its nodes get their states from replay.
+    // Reconstruct states by replay when content logs are absent.
     std::error_code ec;
     const bool pages = std::filesystem::exists(dir / LeafLog.Name, ec);
     uint64_t tree_size{};

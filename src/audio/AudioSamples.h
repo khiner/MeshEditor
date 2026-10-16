@@ -13,7 +13,8 @@ struct VertexSamples {
     std::map<uint32_t, std::filesystem::path> PathByVertex;
 };
 
-// Runtime decoded cache. Snapshots store source references, never audio frames.
+// Runtime decoded cache.
+// Snapshots store source references, never audio frames.
 struct AudioSamples {
     std::unordered_map<std::filesystem::path, std::vector<float>> ByPath;
 };

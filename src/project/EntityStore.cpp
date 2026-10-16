@@ -57,7 +57,7 @@ std::vector<state::Entity> EntityStore::RemovedEntities() const {
 
 void EntityStore::FinishRestore(std::span<const state::Entity> removed) {
     R.RemoveComponents(removed);
-    // Only the changed generation pages can hold an entity whose liveness changed.
+    // Only the changed generation pages can contain an entity whose liveness changed.
     ForEachIdentityChange([&](uint32_t index) {
         const auto before = R.Living.entity_at(index), after = R.EntityAt(index);
         if (before == after) return;

@@ -198,8 +198,7 @@ void MeshPipelines::PrewarmAsync() {
                     const std::scoped_lock lock{Mutex};
                     if (!Pipelines[i]) Pipelines[i].emplace(std::move(pipeline));
                 } catch (...) {
-                    // Foreground use retains the normal error path for a shader
-                    // edited after the offline archive was built.
+                    // Foreground use retains the normal error path for a shader edited after the offline archive was built.
                 }
             }
         } catch (...) {

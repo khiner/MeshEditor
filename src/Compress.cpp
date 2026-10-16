@@ -15,7 +15,6 @@ constexpr uint32_t MetadataMagic = 0x184D2A50; // Zstd skippable frame.
 
 // Encode each archive entry as [uint32 path length][path][uint64 data length][data] in one zstd stream.
 
-// Compress `in` to `out`; use ZSTD_e_end for the final flush.
 bool Feed(ZSTD_CCtx *cctx, std::ostream &out, std::vector<char> &buf, ZSTD_inBuffer in, ZSTD_EndDirective mode) {
     for (bool done = false; !done;) {
         ZSTD_outBuffer o{buf.data(), buf.size(), 0};

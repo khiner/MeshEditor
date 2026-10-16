@@ -14,7 +14,7 @@ namespace project {
 // An action's name, and for a field write the component and field it names.
 std::string Label(const action::Action &);
 
-// A project archive holds the working directory, and an actions archive holds the recorded actions and their assets.
+// A project archive contains the working directory, and an actions archive contains the recorded actions and their assets.
 // Both archive forms save one final workspace snapshot.
 enum class ArchiveForm : uint8_t { Project,
                                    Actions };

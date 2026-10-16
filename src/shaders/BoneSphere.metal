@@ -72,7 +72,6 @@ fragment OverlayTargetsDepth BoneSphereFragment(
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
-    // Solve the ray-sphere intersection in view space.
     const float3 ray_dir = normalize(in.ViewPos);
     const float3 oc = in.ViewPos - in.SphereCenter;
 

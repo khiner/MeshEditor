@@ -9,7 +9,7 @@
 #include "gpu/MeshPrimitiveTopology.h"
 #include "gpu/PrimitiveRecord.h"
 
-// A record's cluster payloads from the bases of its ranges, which payload offsets index.
+// Interpret cluster payload offsets relative to the record range bases.
 struct MeshletPayloads {
     device const uint *TriangleIds, *VertexCorners;
     device const MeshletTriangle *LocalTriangles;
@@ -32,7 +32,7 @@ inline uint MeshletPrimitiveMaterialIndex(const thread Scene &scene, PrimitiveRe
 }
 
 
-// The vertex handle of a cluster vertex, which names a corner of a triangle cluster and a vertex otherwise.
+// Resolve cluster vertices through corner handles for triangles and directly through vertex handles otherwise.
 inline uint MeshletVertexId(
     const thread Scene &scene, DrawData draw, uint topology, uint source_vertex
 ) {

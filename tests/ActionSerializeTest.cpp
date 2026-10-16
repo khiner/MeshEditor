@@ -23,7 +23,6 @@ std::vector<Action> AllDefaultActions() {
     return all;
 }
 
-// The (domain, leaf) alternative indices identifying the action's type.
 std::pair<size_t, size_t> IndexOf(const Action &a) {
     return {a.index(), std::visit([](const auto &dv) { return dv.index(); }, a)};
 }
@@ -76,7 +75,6 @@ int main(int argc, const char **argv) {
             if (decoded.size() != 1u) continue;
             expect(IndexOf(decoded[0]) == IndexOf(a));
 
-            // Re-encoding the decoded action reproduces the same bytes.
             auto reout = MakeStream();
             SerializeAction(decoded[0], reout);
             const bool stable = reout.str() == encoded;

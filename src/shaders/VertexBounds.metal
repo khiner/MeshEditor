@@ -4,7 +4,7 @@
 #include "gpu/VertexBounds.h"
 #include "gpu/BoundsReducePushConstants.h"
 
-// The value index of a bounds record in the namespace at `root`, or InvalidOffset when the namespace holds none.
+// The value index of a bounds record in the namespace at `root`, or InvalidOffset when the namespace contains none.
 inline uint VertexBoundsFind(device const BindlessSet &b, uint nodes_slot, uint members_slot, uint root, uint record) {
     uint id=root;
     if (id==InvalidOffset) return id;

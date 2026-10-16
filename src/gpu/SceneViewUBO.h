@@ -29,7 +29,8 @@ struct SceneViewUBO {
     vec3 PendingScale DEFAULT();
     float ScreenPixelScale DEFAULT();
     vec2 ViewportSize DEFAULT();
-    // Cluster LOD error threshold in pixels. Zero selects original geometry.
+    // Cluster LOD error threshold in pixels.
+    // Zero selects original geometry.
     float LodErrorPixels DEFAULT();
     uint32_t EdgeSharpnessSlot DEFAULT();
     uint32_t FaceSharpnessSlot DEFAULT();
@@ -62,7 +63,8 @@ struct SceneViewUBO {
     uint32_t BoneXRay DEFAULT();
     // Opacity of every surface in the X-ray solid draw.
     float XRayAlpha DEFAULT(1);
-    // Scales overlay coverage behind the scene surface while overlays draw through it. Zero leaves occlusion to the depth test.
+    // Scales overlay coverage behind the scene surface while overlays draw through it.
+    // Zero leaves occlusion to the depth test.
     float OverlayBehindOpacity DEFAULT();
     uint32_t SceneDepthSamplerSlot DEFAULT(InvalidSlot);
     // Apply wire and point selection colors only when overlays are visible.

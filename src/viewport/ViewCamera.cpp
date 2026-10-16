@@ -35,7 +35,7 @@ ray CameraView::PixelToWorldRay(vec2 mouse_px, rect viewport) const {
     if (const auto *perspective = std::get_if<Perspective>(&Data)) {
         const auto aspect = viewport.size.x / viewport.size.y;
         const auto t = std::tan(perspective->FieldOfViewRad * 0.5f);
-        // View-space direction with +Z along the camera view dir, rotated into world-space
+        // Convert a view-space direction to world space with +Z along the camera view direction.
         return {Position(), Basis() * Normalize(vec3{ndc.x * aspect * t, ndc.y * t, 1.f})};
     }
 
@@ -81,7 +81,7 @@ void ViewCamera::ApplyDistance(float new_distance) {
 void ViewCamera::RotateBy(vec2 delta) {
     if (delta == vec2{0}) return;
     Anim.reset();
-    // Turntable: yaw about world up, pitch about the camera's local right axis
+    // Apply turntable yaw about world up and pitch about the camera local right axis.
     Orientation = Normalize(AngleAxis(-delta.x, WorldUp) * Orientation * AngleAxis(-delta.y, vec3{1, 0, 0}));
 }
 

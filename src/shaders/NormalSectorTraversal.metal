@@ -3,8 +3,8 @@
 
 #include "ConnectivityRead.metal"
 
-// Classification and normal derivation must traverse exactly the same smooth
-// component, in the same order. The caller handles the root before this walk.
+// Classification and normal derivation must traverse exactly the same smooth component, in the same order.
+// The caller handles the root before this walk.
 struct NormalSectorTraversal {
     ConnectivityView Conn;
     device const uchar *FaceSharpness;

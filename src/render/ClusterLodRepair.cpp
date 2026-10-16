@@ -49,7 +49,7 @@ void ReplaceGroupClusters(MeshStore &meshes, MeshStore::Record &owner, std::span
     std::ranges::sort(groups);
     groups.erase(std::ranges::unique(groups).begin(), groups.end());
     const std::unordered_set<uint32_t> removed_ids(removed.begin(), removed.end());
-    // Runs hold members first and proxies second, matching the two record fields.
+    // Runs contain members first and proxies second, matching the two record fields.
     struct Runs {
         std::array<std::vector<uint32_t>, 2> Ids;
         std::array<bool, 2> Changed{};
@@ -144,7 +144,7 @@ std::vector<std::vector<uint32_t>> InvalidateClusterGroups(state::Scene &r, std:
 }
 
 namespace {
-// One primitive's pool: the kept members of its stale groups, each at its group's level.
+// Pool retained members of stale groups by their original group levels.
 struct PoolBuild {
     uint32_t Primitive{};
     float Scale{};
@@ -155,7 +155,6 @@ struct PoolBuild {
     // Each member triangle's canonical vertex corners, in member order.
     std::vector<uvec3> Corners;
     std::vector<ClusterLodSourceCluster> Clusters;
-    // The owner's payloads the clusters index.
     std::span<const uint32_t> VertexCorners;
     std::span<const MeshletTriangle> LocalTriangles;
     ClusterLodPrimitive Triangles;
@@ -163,7 +162,6 @@ struct PoolBuild {
     ClusterLodBuild Build;
 };
 
-// The owner's render tables, resolving its cluster, group and primitive handles to arena addresses, and its payloads.
 struct OwnerTables {
     std::span<const uint32_t> Meshlets, Groups, Primitives, VertexCorners, GroupClusters;
     std::span<const MeshletTriangle> LocalTriangles;
@@ -281,7 +279,6 @@ void CommitPool(MeshStore &meshes, MeshStore::Record &owner, const PoolBuild &po
 void RepairDirtyClusterGroups(state::Scene &r, mtl::ComputeChain &chain, std::span<const state::Entity> entities) {
     auto &meshes = r.Context.get<MeshStore>();
     auto &buffers = meshes.Render();
-    // One owner's stale closure, the coarse clusters it retires and its pools by primitive.
     struct OwnerRepair {
         state::Entity Entity;
         std::vector<uint32_t> Closure, Removed;
@@ -301,7 +298,6 @@ void RepairDirtyClusterGroups(state::Scene &r, mtl::ComputeChain &chain, std::sp
             const OwnerTables tables{buffers, owner};
             const auto record_of = [&](uint32_t id) -> const MeshletRecord & { return records[Resolve<RenderBlockSize>(tables.Meshlets, ElementHandle{id}).Value()]; };
             const Mesh mesh{meshes, owner.StoreId};
-            // The stale groups are the owner's groups whose dirty bits are set.
             std::vector<uint32_t> seeds;
             buffers.ClusterGroups.ForEach(owner.GroupData, [&](ElementHandle group, ElementAddress address) {
                 if (MaskHas(buffers.DirtyGroups, address)) seeds.push_back(group.Value);
@@ -312,7 +308,7 @@ void RepairDirtyClusterGroups(state::Scene &r, mtl::ComputeChain &chain, std::sp
             for (const auto group : repair.Closure) by_level[GroupLevel(buffers, tables, group, levels)].push_back(group);
             profile::RecordCounter("LodRepairGroups", repair.Closure.size());
             const auto links_of = [&](uint32_t group) { return buffers.GroupLinks.Get({Resolve<RenderBlockSize>(tables.Groups, ElementHandle{group}).Value(), 1u})[0]; };
-            // Every stale group retires with the clusters it simplified to.
+            // Retire stale groups together with the clusters produced by their simplification.
             for (const auto group : repair.Closure) {
                 const auto links = links_of(group);
                 const auto proxies = tables.GroupClusters.subspan(links.ProxyOffset, links.ProxyCount);
@@ -373,7 +369,6 @@ void RepairDirtyClusterGroups(state::Scene &r, mtl::ComputeChain &chain, std::sp
                                            pool.Levels, pool.Scale);
         });
     }
-    // Each owner's new clusters, new groups and kept members.
     std::vector<std::vector<uint32_t>> added(repairs.size()), new_groups(repairs.size()), touched(repairs.size());
     {
         const profile::CpuScope stage{"LodRepairCommit"};
@@ -414,7 +409,7 @@ void RepairDirtyClusterGroups(state::Scene &r, mtl::ComputeChain &chain, std::sp
         for (const auto &repair : repairs) {
             auto &owner = EditRecordOf(r, repair.Entity);
             RetireMeshletStorage(r, owner, repair.Removed);
-            // The stale groups release the runs their links own and their dirty bits.
+            // Release stale group link ranges and clear their dirty bits.
             const auto entries = buffers.ClusterGroups.Entries(owner.GroupData);
             std::vector<Range> runs;
             for (const auto group : repair.Closure) {

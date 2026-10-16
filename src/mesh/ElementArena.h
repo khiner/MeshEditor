@@ -87,7 +87,7 @@ struct ElementArena {
         if (header.Count && !(header.Flags & 1u)) throw std::invalid_argument("Element set has no dense view.");
         return {Table.Get({header.First, 1u})[0] * BlockSize, header.Count};
     }
-    // Visits the set's blocks in local order, including its first block when it holds no element.
+    // Visits the set's blocks in local order, including its first block when it contains no element.
     void ForEachBlock(ElementSetRef set, auto &&visit) const {
         if (!set) return;
         const auto blocks = Blocks.Buffer.template GetSpan<MeshElementBlock>();
@@ -144,9 +144,9 @@ struct ElementArena {
         return set;
     }
 
-    // Adds `count` live elements to the set, creating it as a dense set when absent, and returns their handles and the blocks that gained them.
-    // Without a list the handles form one run, and otherwise they form a run whenever they are consecutive and are listed in a range of `list` when they are not.
-    // At most one block of handles fills free slots of the set's own blocks, and more take fresh blocks at the first interior run of table entries without blocks that fits them, or else at the end of its table.
+    // Insert count live elements and return their handles and changed blocks.
+    // Create a dense set when absent.
+    // Without list, require consecutive handles; otherwise store nonconsecutive handles in list.
     ElementInsert Insert(ElementSetRef &set, uint32_t count, BufferArena<uint32_t> *list) {
         ElementInsert result;
         if (!count) return result;
@@ -541,7 +541,7 @@ private:
         entry = {block.Owner, run};
         Available.insert({block.Owner, run, b});
     }
-    // The set's indexed blocks whose longest free run is at least `minimum`, in ascending run order, until they hold `slots` free slots.
+    // Return blocks with free runs of at least minimum, ordered by run length, until their free capacity reaches slots.
     // Entries that disagree with their block's metadata are refreshed first.
     std::vector<uint32_t> AvailableBlocks(ElementSetRef set, uint32_t minimum, uint32_t slots) {
         while (true) {
@@ -578,7 +578,7 @@ private:
         header.BlockCount += blocks.Count;
         return local;
     }
-    // Names `blocks` at the header's first run of interior entries that hold no block and fit them, or else appends them, and returns the local index of the first.
+    // Place blocks in the first fitting table gap or append them, returning the first local index.
     uint32_t Fill(MeshElementSet &header, Range blocks) {
         const auto entries = Table.Get({header.First, header.BlockCount});
         const auto hole = std::ranges::search_n(entries, blocks.Count, InvalidOffset);
@@ -589,7 +589,7 @@ private:
         return local;
     }
     // Clears the masked slots of the set's blocks, gives the set the flags, and returns the blocks in ascending order.
-    // Blocks left without elements leave the set, except its first block, and the table drops the entries it ends with that hold no block.
+    // Release empty blocks except the first, then trim empty trailing table entries.
     std::vector<uint32_t> ClearSlots(ElementSetRef set, std::vector<std::pair<uint32_t, LiveMask>> cleared, uint32_t flags) {
         std::ranges::sort(cleared, {}, &std::pair<uint32_t, LiveMask>::first);
         auto header = Set(set);

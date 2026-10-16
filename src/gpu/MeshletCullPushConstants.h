@@ -30,7 +30,7 @@ struct MeshletCullPushConstants {
     uint32_t PrimitiveSlot DEFAULT();
     uint32_t MeshletSlot DEFAULT();
     uint32_t MemberSlot DEFAULT();
-    // The render collections whose set indices the mesh records hold.
+    // Mesh records reference these render collections by set index.
     SetArenaSlots Primitives DEFAULT(), Nodes DEFAULT(), Groups DEFAULT(), Meshlets DEFAULT(), Members DEFAULT();
     uint32_t ClusterGroupSlot DEFAULT(InvalidSlot);
     uint32_t BoundsSlot DEFAULT();

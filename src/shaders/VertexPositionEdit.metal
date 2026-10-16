@@ -3,13 +3,11 @@
 #include "gpu/VertexPositionEditPushConstants.h"
 #include "EditTransform.metal"
 
-// The edited record's values at its handles.
 inline uint EditVertexAddress(device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, uint v) { return HandleAddress<MeshElementBlockSize>(b, pc.Connectivity.Tables.Vertices, v); }
 inline float3 EditPosition(device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, uint v) { return float3(BindlessBuffer(Vertex, b.VertexBuffer, pc.VertexSlot)[EditVertexAddress(b, pc, v)].Position); }
 inline uint EditCornerVertex(device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, uint h) { return BindlessBuffer(uint, b.IndexBuffer, pc.CornerSlot)[HandleAddress<MeshElementBlockSize>(b, pc.Connectivity.Tables.Halfedges, h)]; }
 inline float3 EditFaceNormal(device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, uint f) { return float3(BindlessBuffer(packed_float3, b.Buffer, pc.FaceNormalSlot)[HandleAddress<MeshElementBlockSize>(b, pc.Connectivity.Tables.Faces, f)]); }
 inline float3 EditVertexNormal(device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, uint v) { return float3(BindlessBuffer(packed_float3, b.Buffer, pc.VertexNormalSlot)[EditVertexAddress(b, pc, v)]); }
-// The edit's factor at a vertex: the factor attribute's value there, or Factor without one.
 inline float EditFactor(device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, uint v) {
     return pc.FactorAttribute.ValuesSlot == InvalidSlot ? pc.Factor : as_type<float>(ReadNamedAttribute(b, pc.FactorAttribute, AttributeType::Float, v).x);
 }
@@ -31,9 +29,8 @@ inline float3 SnapSymmetryPosition(uint i,uint v,float3 before,device const Bind
     return position;
 }
 
-// Blender's bmo_smooth_vert_exec: average each incident edge's other endpoint,
-// including unselected neighbors, before any selected vertex is written.
 inline float3 SmoothPosition(uint v,float3 before,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
+    // Blender's bmo_smooth_vert_exec: average each incident edge's other endpoint, including unselected neighbors, before any selected vertex is written.
     const ConnectivityView topology{b, pc.Connectivity, pc.FaceCount};
     float3 sum = 0.f;
     uint count = 0u;
@@ -49,9 +46,9 @@ inline float3 SmoothPosition(uint v,float3 before,device const BindlessSet &b,co
     return position;
 }
 
-// Blender's VertsToTransData and BM_vert_calc_shell_factor_ex: face mode uses
-// selected faces for the normal; even thickness uses selected faces when present.
 inline float3 ShrinkFattenPosition(uint v,float3 before,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
+    // Match Blender's VertsToTransData and BM_vert_calc_shell_factor_ex.
+    // Face mode uses selected face normals; even thickness uses selected faces when present.
     const ConnectivityView topology{b, pc.Connectivity, pc.FaceCount};
     float3 normal = EditVertexNormal(b, pc, v);
     // Blender's bm_vert_calc_normals uses the radial direction when the full fan has no normal.
@@ -95,12 +92,12 @@ inline float3 ShrinkFattenPosition(uint v,float3 before,device const BindlessSet
     return before + normal * (EditFactor(b, pc, v) * shell);
 }
 
-// Blender's bmo_planar_faces_exec keeps these original planes for every iteration.
 kernel void PlanarFacePlanes(
     uint i [[thread_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant VertexPositionEditPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
+    // Blender's bmo_planar_faces_exec keeps these original planes for every iteration.
     if (i >= pc.PlaneCount) return;
     const ElementWorkDomain faces{bindless, pc.Faces};
     const uint face = faces.Handle(i);
@@ -183,8 +180,8 @@ kernel void PositionStatisticsReduce(
     if (lane==0u) reinterpret_cast<device packed_float2 *>(BindlessBufferMutable(float,b.Buffer,pc.Output.Slot)+pc.Output.Offset)[group]=packed_float2(total);
 }
 
-// Blender's To Sphere averages local distances to the shared pivot across all edited meshes.
 inline float3 ToSpherePosition(float3 before,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
+    // Blender's To Sphere averages local distances to the shared pivot across all edited meshes.
     const float3 delta = before - float3(pc.Center);
     const float radius = length(delta), mean = BindlessBuffer(float, b.Buffer, pc.ReductionResult.Slot)[pc.ReductionResult.Offset];
     return float3(pc.Center) + NormalizeOrZero(delta) * mix(radius, mean, pc.Factor);
@@ -194,15 +191,14 @@ inline float3 PushPullPosition(float3 before,device const BindlessSet &b,constan
     return before + pc.Factor * NormalizeOrZero(float3(pc.Center) - before);
 }
 
-// The host transforms the world displacement vector and distance covector into
-// each primary's local space, including nonuniform and reflected object scales.
+// The host transforms the world displacement vector and distance covector into each primary's local space, including nonuniform and reflected object scales.
 inline float3 ShearPosition(float3 before,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
     const float distance = dot(before - float3(pc.Center), float3(pc.Gradient));
     return before + float3(pc.Direction) * (pc.Factor * distance);
 }
 
-// Blender's object_warp_transverts, with tangent continuation outside the range.
 inline float3 WarpPosition(float3 before,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
+    // Blender's object_warp_transverts, with tangent continuation outside the range.
     device const WarpParameters &warp=*reinterpret_cast<device const WarpParameters *>(BindlessBuffer(uint,b.Buffer,pc.Parameters.Slot)+pc.Parameters.Offset);
     float lo=warp.Minimum,hi=warp.Maximum;
     if (pc.Flags&PositionEditWarpAutoRange) {
@@ -221,9 +217,9 @@ inline float3 WarpPosition(float3 before,device const BindlessSet &b,constant Ve
     return position;
 }
 
-// Blender's transdata_elem_bend, evaluated in its bend plane. The half-angle
-// identity avoids subtracting nearly equal cosines around a distant pivot.
 inline float3 BendPosition(float3 before,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
+    // Blender's transdata_elem_bend, evaluated in its bend plane.
+    // The half-angle identity avoids subtracting nearly equal cosines around a distant pivot.
     device const BendParameters &bend=*reinterpret_cast<device const BendParameters *>(BindlessBuffer(uint,b.Buffer,pc.Parameters.Slot)+pc.Parameters.Offset);
     const float x=dot(before,float3(bend.Plane.X))+bend.Plane.Offset.x;
     const float y=dot(before,float3(bend.Plane.Y))+bend.Plane.Offset.y;
@@ -262,8 +258,7 @@ inline float3 RandomizePosition(uint v,float3 before,device const BindlessSet &b
         const float cosine=dot(direction,normal);
         if (cosine<0.f) normal=-normal;
         const float alignment=clamp(abs(cosine),0.f,1.f);
-        // Blender's nearest-hemisphere spherical interpolation, with the same
-        // near-parallel linear branch and zero-normal behavior.
+        // Blender's nearest-hemisphere spherical interpolation, with the same near-parallel linear branch and zero-normal behavior.
         float a=1.f-settings.Normal,c=settings.Normal;
         if (alignment<.9999f) {
             const float omega=acos(alignment),denominator=sin(omega);
@@ -344,7 +339,6 @@ inline float3 TransformPosition(float3 before, device const BindlessSet &b, cons
     return position;
 }
 
-// The vertex's named attribute value as its position, or as an offset with PositionEditAttributeOffset.
 inline float3 AttributePosition(uint v, float3 before, device const BindlessSet &b, constant VertexPositionEditPushConstants &pc) {
     const auto attribute = *reinterpret_cast<device const NamedAttributeRef *>(BindlessBuffer(uint, b.Buffer, pc.Parameters.Slot) + pc.Parameters.Offset);
     const float3 value = as_type<float3>(ReadNamedAttribute(b, attribute, AttributeType::Vec3, v).xyz);

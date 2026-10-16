@@ -38,7 +38,6 @@ struct Fixture : TestDir, Engine {
     // Runs after each action and each direct commit, told whether the present node replays from its actions.
     std::function<void(bool replays)> Observe;
     explicit Fixture(const char *dir) : TestDir{dir}, Engine{true} { R.Context.get<ViewportExtent>().Value = {64, 64}; }
-    // Begins a new project in the directory named for the test, observing nothing.
     void Reset(std::string_view name) {
         Observe = {};
         expect(P->New(Path / name));
@@ -55,12 +54,10 @@ struct Fixture : TestDir, Engine {
         expect(!R.Context.get<action::Errors>().Messages.empty());
         R.Context.get<action::Errors>().Messages.clear();
     }
-    // Adds a primitive object and returns its mesh entity.
     state::Entity AddMesh(PrimitiveShape shape) {
         Do(action::object::AddMeshPrimitive{std::move(shape), std::make_unique<MeshInstanceCreateInfo>()});
         return R.get<const Instance>(FindActiveEntity(R)).Entity;
     }
-    // Adds a node and returns its index and entity.
     std::pair<uint32_t, state::Entity> Add(state::Entity mesh_entity, uint16_t kind) {
         Do(AddNode{mesh_entity, kind, {}});
         const auto &nodes = R.get<const GeometryProcedure>(mesh_entity).Nodes;
@@ -72,14 +69,12 @@ struct Fixture : TestDir, Engine {
             Do(Link{mesh_entity, *from, InputCount[R.get<const GeometryProcedure>(mesh_entity).Nodes[*from].Kind], *(from + 1), 0u});
     }
     state::Entity Node(state::Entity mesh_entity, uint32_t node) const { return R.get<const GeometryProcedure>(mesh_entity).Nodes[node].Entity; }
-    // The node's first output socket.
     uint16_t Out(state::Entity mesh_entity, uint32_t node) const { return InputCount[R.get<const GeometryProcedure>(mesh_entity).Nodes[node].Kind]; }
     std::vector<state::Entity> NodeEntities(state::Entity mesh_entity) const {
         std::vector<state::Entity> entities;
         for (const auto &node : R.get<const GeometryProcedure>(mesh_entity).Nodes) entities.push_back(node.Entity);
         return entities;
     }
-    // Stages the action as the open gesture's next step.
     template<typename A> void Stage(A a) {
         action::Emit(std::move(a), action::Phase::Stage);
         P->Frame(action::Drain());
@@ -110,7 +105,7 @@ struct Fixture : TestDir, Engine {
         const auto clip = View().ViewProj * vec4{position.x, position.y, position.z, 1.f};
         Do(action::selection::ApplyEditElementClick{{.5f + .5f * clip.x / clip.w, .5f - .5f * clip.y / clip.w}, toggle, std::make_unique<RenderView>(R.Context.get<const GpuBuffers>().FrameView)});
     }
-    // Settles direct scene writes and commits them as one history node.
+    // Process direct scene writes and commit them as one history node.
     void Commit(std::string label) {
         P->Settle();
         P->History.Commit(std::move(label), {});
@@ -138,13 +133,12 @@ struct Fixture : TestDir, Engine {
     }
     MeshStore &Store() { return R.Context.get<MeshStore>(); }
     uint32_t Source(state::Entity mesh_entity) const { return R.get<const MeshHandle>(mesh_entity).StoreId; }
-    // The first object instancing the mesh entity.
     state::Entity Object(state::Entity mesh_entity) const {
         for (const auto [e, instance] : R.view<const Instance>().each())
             if (instance.Entity == mesh_entity) return e;
         return state::Null;
     }
-    // The record the mesh entity draws: its procedure's evaluated record, or its source.
+    // Return the evaluated procedure record when present, otherwise the source record.
     uint32_t Output(state::Entity mesh_entity) const { return *DrawnStoreId(R, mesh_entity); }
     uint64_t Cooks() const { return R.Context.get<const CookCount>().Value; }
     uint32_t Resyncs(state::Entity mesh_entity) const { return R.get<const ResyncState>(mesh_entity).Resyncs; }
@@ -158,7 +152,6 @@ struct Fixture : TestDir, Engine {
         for (uint32_t id = 0u; id < 4096u; ++id) count += Store().TryGet(id) != nullptr;
         return count;
     }
-    // A clone of the record that the kernel edits directly.
     uint32_t Clone(uint32_t id) {
         auto &meshes = Store();
         meshes.PlanClone(Mesh{meshes, id});
@@ -172,7 +165,6 @@ struct Fixture : TestDir, Engine {
         Audit();
         return clone;
     }
-    // Runs the tasks as dependent stages on the record, each of which changes it.
     void Run(uint32_t id, std::vector<MeshTopologyTask> tasks) {
         for (auto &task : tasks) task.SourceId = id;
         expect(std::ranges::all_of(ExecuteGeometryTopologyStages(R, tasks), &GeometryTopologyResult::Changed));
@@ -211,7 +203,7 @@ Shape Describe(const MeshStore &meshes, uint32_t id, const GeometrySelection &el
     return shape;
 }
 Shape Describe(const MeshStore &meshes, uint32_t id) { return Describe(meshes, id, AllHandles(Mesh{meshes, id})); }
-// A history node with its persistent state, the mesh's output and the rendered image there, and whether the node replays from its actions.
+// Capture persistent state, mesh output, and rendered image for a history node and track whether its actions replay.
 struct Step {
     uint32_t Node;
     std::vector<std::byte> Persistent;
@@ -219,11 +211,9 @@ struct Step {
     std::vector<std::byte> Image;
     bool Replays{true};
 };
-// The present node as a step of the mesh.
 Step PresentStep(Fixture &f, state::Entity mesh, bool replays = true) { return {*f.P->History.Present, f.P->History.MaterializeLive(), Describe(f.Store(), f.Output(mesh)), f.Image(), replays}; }
-// Navigates back through the steps to the first and forward again to the last.
-// Each move cooks nothing and restores its step's node, persistent state, output and image, and `restored` holds.
-// Each step that replays reaches its state from its parent's, checked here because the check's restore clears the cook marks a builder reads.
+// Check restored node, persistent state, output, image, and the restored predicate without cooking.
+// Check action replay here because its restore clears cook marks used during graph construction.
 void ExpectRestores(Fixture &f, state::Entity mesh, std::span<const Step> steps, auto &&restored) {
     auto &p = *f.P;
     const auto move = [&](const Step &step) {
@@ -289,7 +279,6 @@ Shape SelectAllReference(Fixture &f, uint32_t id, std::vector<MeshTopologyTask> 
         .Output;
 }
 
-// A node kind, and the parameter updates that make its cook plan a task.
 struct OperatorNode {
     uint16_t Kind;
     void (*Set)(Fixture &, state::Entity node, const MeshTopologyTask &){};
@@ -383,10 +372,8 @@ std::optional<OperatorNode> NodeOf(const MeshTopologyTask &task) {
     }
 }
 
-// Each operator row's node, given the row's region as its inline selection, cooks the patchwork like the kernel running the row's task on a clone, and again after its Param0 doubles.
-// Each generator kind cooks a subdivided mesh like the kernel subdividing its primitive mesh, without reading the source.
-// A source feeding two extrusions serves the one the result reads, the other stays inert, and the cooks keep the record count.
-// Every cook leaves the source record as it was in a new output record.
+// Compare node output with direct kernel execution on a clone, including parameter edits and generated inputs.
+// Verify unused branches remain unevaluated, record counts stay stable, and source records remain unchanged.
 void TestOperatorKinds(Fixture &f) {
     auto &r = f.R;
     auto &meshes = f.Store();
@@ -399,7 +386,6 @@ void TestOperatorKinds(Fixture &f) {
         f.Audit();
     };
     const auto observe = [&] { f.Observe = [&](bool replays) { if (replays) f.ValidateReplay(); }; };
-    // These rows name operators without a node kind: edge rotation, face replacement, vertex connection, nonplanar and concave splits, and keeping selected faces.
     constexpr std::array<std::string_view, 6> WithoutNode{"RotateEdges", "ReplaceFaces", "ConnectVertices", "SplitNonplanarFaces", "SplitConcaveFaces", "KeepSelectedFaces"};
     for (const auto &c : TopologyCases) {
         if (std::ranges::contains(WithoutNode, c.Name)) continue;
@@ -494,7 +480,6 @@ void TestOperatorKinds(Fixture &f) {
     };
 }
 
-// A graph a row builds through actions: its mesh entity, the check of its final output, and a parameter edit on a mesh entity's copy of the procedure, absent for a mesh without one.
 struct Graph {
     state::Entity Mesh;
     std::function<void(Fixture &)> Oracle;
@@ -505,10 +490,8 @@ struct GraphRow {
     Graph (*Build)(Fixture &);
 };
 
-// Each row's graph, built action by action, cooks its procedure once per action, and its final output passes the row's oracle.
-// Navigating its history restores every step's state, output and image without cooking, each action replays from its parent's state, and replaying the whole history reproduces it.
-// A procedure mesh's duplicate cooks the same output and edits on its own, deleting its object destroys its nodes until undo, and applying its procedure makes the output its source until undo.
-// A row that writes the scene directly skips the whole-history replays, which replay only actions.
+// Compare action-driven outputs against independent kernel results and restored history.
+// Skip full replay for cases that write scene state directly.
 void Survives(Fixture &f, std::span<const GraphRow> rows) {
     auto &r = f.R;
     const auto &meshes = f.Store();
@@ -597,7 +580,6 @@ void Survives(Fixture &f, std::span<const GraphRow> rows) {
     }
 }
 
-// A plane through Extrude and Subdivide, whose cuts rise to two, matches the kernel's extrusion and subdivision.
 Graph ExtrudeSubdivide(Fixture &f) {
     const auto mesh = f.AddMesh(primitive::Plane{});
     f.Do(AddProcedure{mesh});
@@ -667,7 +649,7 @@ Graph CapResync(Fixture &f) {
     }
     return {
         mesh,
-        // The output matches the kernel insetting the moved source's cap on a clone.
+        // Compare output against the kernel insetting the moved source cap on a clone.
         [mesh](Fixture &f) {
             const auto kernel = Reference(f, f.Source(mesh), [&](uint32_t clone) {
                 const Mesh sphere{f.Store(), clone};
@@ -690,7 +672,7 @@ Graph CapResync(Fixture &f) {
     };
 }
 
-// Position scaled by Vector Math into Set Position moves every vertex to twice its position, and the cook's temporaries leave the output.
+// Verify Vector Math feeding Set Position doubles vertex positions and releases temporary output attributes.
 Graph ScalePositions(Fixture &f) {
     const auto mesh = f.AddMesh(primitive::Cuboid{});
     f.Do(AddProcedure{mesh});
@@ -757,7 +739,6 @@ Graph CompareSelectsExtrusion(Fixture &f) {
 }
 
 vec3 OffsetOf(uint32_t v) { return {float(v % 7u), 1.f, -float(v % 3u)}; }
-// Named Attribute reads a vec3 attribute set on the source, which Set Position adds to each vertex.
 Graph NamedAttributeReads(Fixture &f) {
     auto &meshes = f.Store();
     const auto mesh = f.AddMesh(primitive::Plane{});
@@ -787,7 +768,6 @@ Graph NamedAttributeReads(Fixture &f) {
     };
 }
 
-// Whether the output holds exactly one attribute, "rest", equal to each vertex's position.
 bool RestMatches(Fixture &f, state::Entity mesh) {
     const auto &meshes = f.Store();
     const auto id = f.Output(mesh);
@@ -853,8 +833,8 @@ Graph DomainMismatch(Fixture &f) {
     };
 }
 
-// A cube joined with a generated cube holds both cubes' elements and material tables, and an attribute only the source has holds its default on the generated cube.
-// Resizing the generated cube changes the joined output.
+// Verify joined cubes retain both material tables and default source-only attributes on generated elements.
+// Resize the generated cube and verify the joined output changes.
 Graph JoinGenerated(Fixture &f) {
     auto &meshes = f.Store();
     const auto mesh = f.AddMesh(primitive::Cuboid{});
@@ -908,7 +888,6 @@ Graph JoinGenerated(Fixture &f) {
     };
 }
 
-// Each live vertex's handle and heat.
 std::map<uint32_t, float> Heat(const MeshStore &meshes, uint32_t id) {
     std::map<uint32_t, float> heat;
     const auto view = meshes.AttributeView<float>(meshes.FindAttribute(id, "heat"));
@@ -977,7 +956,6 @@ void TestJoinPrimitiveTables(Fixture &f) {
         data.Edges = {{0u, 1u}, {1u, 2u}, {2u, 3u}, {3u, 0u}};
         return create({.Data = std::move(data)});
     };
-    // Three points drawn with material 7.
     const auto points = [&] { return create({.Data = MeshData{{{0.f, 0.f, 1.f}, {1.f, 0.f, 1.f}, {0.f, 1.f, 1.f}}}, .Primitives = {.ElementPrimitiveIndices = {0u, 0u, 0u}, .MaterialIndices = {7u}}}); };
     expect(meshes.Get(wire()).PrimitiveMaterials.Count == 0u);
     // Each element's material through its primitive layer, sorted.
@@ -1011,7 +989,6 @@ void TestJoinPrimitiveTables(Fixture &f) {
     f.Audit();
 }
 
-// The elements the record selects, in each domain.
 GeometrySelection Selection(const MeshStore &meshes, uint32_t id) {
     GeometrySelection selection;
     for (const auto [element, handles] : {std::pair{Element::Vertex, &selection.Vertices}, std::pair{Element::Edge, &selection.Edges}, std::pair{Element::Face, &selection.Faces}})
@@ -1019,19 +996,17 @@ GeometrySelection Selection(const MeshStore &meshes, uint32_t id) {
     return selection;
 }
 
-// A viewport operator on the clicked elements of a procedure cube: the domain and count it clicks, the node kind it appends, its gesture's step values, and the kernel it plans.
 struct ViewportRow {
     std::string_view Name;
     Element Domain;
     uint32_t Clicks;
     uint16_t Kind;
     std::vector<float> Values;
-    // Takes the gesture's step with the value, the first step appending the node.
     void (*Gesture)(Fixture &, float value, bool first);
-    // Runs the operator with the value on the clone at the clicked handles, and returns the elements it selects.
+    // Run the operator on the clone at the clicked handles and return its selected elements.
     GeometrySelection (*Kernel)(Fixture &, uint32_t clone, const GeometrySelection &clicked, float value);
 };
-// Runs the topology task on the clone, publishing its emitted selection, and returns the clone's selection.
+// Run the topology task on the clone, publish its emitted selection, and return that selection.
 GeometrySelection PublishedKernel(Fixture &f, uint32_t clone, MeshTopologyTask task) {
     task.SourceId = clone;
     PublishStoreSelection(f.Store(), task);
@@ -1039,14 +1014,13 @@ GeometrySelection PublishedKernel(Fixture &f, uint32_t clone, MeshTopologyTask t
     return Selection(f.Store(), clone);
 }
 
-// Each operator appends its node kind between the source and the output, holding the clicked selection and publishing its edit's selection, and each later gesture step resyncs the output in place.
-// The commit leaves one history node after the start, an operator without a node kind fails and leaves the mesh, and undo and redo restore both nodes without cooking.
-// Leaving edit mode cooks nothing, replay reproduces the history, the source stays as it was, and the output and its selection match the kernel on a clone at the clicked ordinals.
+// Compare viewport edits and output selection with kernel operations on a clone at the clicked ordinals.
+// Verify drag steps update the output in place and commit as one history node.
+// Undo and redo restore the graph without cooking, and the source record remains unchanged.
 void TestViewportOperators(Fixture &f) {
     auto &r = f.R;
     const auto &meshes = f.Store();
     using D = MeshStore::ElementDomain;
-    // The domains of each element type, with their lists in a selection.
     const auto domains = [](GeometrySelection &selection) {
         return std::array{std::tuple{D::Vertex, Element::Vertex, &selection.Vertices}, std::tuple{D::Edge, Element::Edge, &selection.Edges}, std::tuple{D::Face, Element::Face, &selection.Faces}};
     };
@@ -1155,7 +1129,6 @@ void TestViewportOperators(Fixture &f) {
     }
 }
 
-// A boolean node errs and forwards its first input while its second is unlinked, then intersects the source cube with a generated bar, and re-cooks when the bar's size changes.
 Graph BooleanIntersection(Fixture &f) {
     const auto &meshes = f.Store();
     const auto mesh = f.AddMesh(primitive::Cuboid{});
@@ -1189,7 +1162,6 @@ void TestBooleanAction(Fixture &f) {
     auto &r = f.R;
     const auto target = f.AddMesh(primitive::Cuboid{});
     const auto active = FindActiveEntity(r);
-    // The cutter joins the selection, and the target stays active.
     f.Do(action::object::AddMeshPrimitive{primitive::Cuboid{}, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Transform = {.P = {1.f, 1.f, 1.f}}, .Select = MeshInstanceCreateInfo::SelectBehavior::Additive})});
     expect(FindActiveEntity(r) == active);
     const auto source = f.Source(target);
@@ -1213,23 +1185,18 @@ std::vector<Point> ShapePositions(const auto &shape) {
     return points;
 }
 
-// A plain primitive mesh regenerates its record on a shape edit, and the old record's release lands in the same step.
+// Release the old primitive record in the same transaction that regenerates it after a shape edit.
 Graph PrimitiveShapeEdit(Fixture &f) {
     const auto mesh = f.AddMesh(primitive::Cuboid{});
     f.Do(action::UpdateOfShape(mesh, &primitive::Cuboid::HalfExtents, vec3{2.f, .5f, 1.f}));
     f.Do(action::UpdateOfShape(mesh, &primitive::Cuboid::HalfExtents, vec3{1.f, 1.f, 3.f}));
     return {mesh, [mesh](Fixture &f) { expect(Near(Positions(f.Store(), f.Output(mesh)), ShapePositions(primitive::Cuboid{{1.f, 1.f, 3.f}}))); }};
 }
-// The plain mesh has no procedure to duplicate, delete or apply.
 constexpr std::array<GraphRow, 1> PlainGraphs{{{"PrimitiveShapeEdit", PrimitiveShapeEdit}}};
 
-// Instancing the cube object or a generated cube on the plane's own vertices, published as entities or realized as geometry.
-// No node errs, and the result follows the instance scale, the plane's size and the cube's size, keeping its instance entities and owned mesh entity, and resyncing the emptied output from the source when the scale changes.
-// Published instances sit under the mesh's object at the plane's vertices and instance the cube or a mesh entity the procedure owns, which has no object of its own, and the drawn record is empty.
-// Realized cubes sit at the plane's vertices, publishing nothing.
-// A cook borrowing the cube object's record leaves it as it was and makes no record, and undo and redo restore each step without cooking.
-// A published result takes instances for a linked duplicate until it is deleted, gives a duplicate its own owned mesh entity, and stays as plain instances once applied, until deleting its object destroys the owned mesh entity with its record.
-// Realizing again after publishing drops the owned mesh entity with its record.
+// Verify published instances retain their entities across edits and borrowed geometry remains unchanged.
+// Generated geometry belongs to a separate mesh entity released with its final owner.
+// Realization replaces published instances with geometry, and undo/redo restores each state without cooking.
 void TestInstances(Fixture &f) {
     auto &r = f.R;
     const auto &meshes = f.Store();
@@ -1240,7 +1207,6 @@ void TestInstances(Fixture &f) {
             boost::ut::test(name) = [&] {
                 f.Reset(name);
                 f.Observe = [&](bool) { f.ValidateReplay(); };
-                // A plane mesh's procedure places an instance of the instance node's geometry at each of the plane's own vertices, beside a cube object an Object Info node reads.
                 const auto mesh = f.AddMesh(primitive::Plane{});
                 const auto object = FindActiveEntity(r);
                 const auto cube_mesh = f.AddMesh(primitive::Cuboid{});
@@ -1276,7 +1242,6 @@ void TestInstances(Fixture &f) {
                     if (realize) {
                         expect(!r.any_of<ProcedureInstances, ProcedureOwnedMesh>(mesh));
                         expect(Mesh{meshes, f.Output(mesh)}.FaceCount() == 4u * 6u);
-                        // Each cube vertex, scaled, offset by each plane vertex.
                         std::vector<Point> realized;
                         for (const auto &p : ShapePositions(primitive::Plane{plane}))
                             for (const auto &c : ShapePositions(primitive::Cuboid{cube})) realized.push_back({p[0] + scale.x * c[0], p[1] + scale.y * c[1], p[2] + scale.z * c[2]});
@@ -1403,7 +1368,6 @@ void TestObjectInfo(Fixture &f) {
     f.Do(UpdateOf<&ObjectInfo::Object>(info_entity, f.Object(cube)));
     expect(!r.any_of<NodeError>(info_entity) && !r.any_of<NodeError>(join_entity));
     f.ValidateReplay();
-    // The join holds the plane and the cube's output, which the cube's procedure cooked.
     const auto joined = [&](vec3 half_extents) {
         auto points = ShapePositions(primitive::Plane{});
         points.append_range(ShapePositions(primitive::Cuboid{half_extents}));
@@ -1476,7 +1440,7 @@ void TestDuplicateNodes(Fixture &f) {
     expect(copy_subdivide.Kind == KindOf<action::mesh::Subdivide> && copy_triangulate.Kind == KindOf<action::mesh::Triangulate>);
     expect(r.get<const action::mesh::Subdivide>(copy_subdivide.Entity).Cuts == 3u);
     expect(r.get<const NodeLayout>(copy_subdivide.Entity).Position == r.get<const NodeLayout>(subdivide_entity).Position + vec2{20.f, 20.f});
-    // The source link into the copied subdivide is dropped, and the link between the copies is kept.
+    // Discard external links into copied nodes and retain links between the copies.
     expect(procedure.Inputs[InputFirst(procedure, 4u)].FromNode == NoNode);
     expect(procedure.Inputs[InputFirst(procedure, 5u)].FromNode == 4u);
     expect(!r.all_of<NodeSelected>(subdivide_entity) && r.all_of<NodeSelected>(copy_subdivide.Entity) && r.all_of<NodeSelected>(copy_triangulate.Entity));
@@ -1545,7 +1509,7 @@ void TestDeleteNodes(Fixture &f) {
     }
 }
 
-// A node a move holds inserts on a link through its first geometry sockets as the move's last step, and the link's reader moves right by the shift.
+// Insert dragged nodes through their first geometry sockets and shift downstream nodes right.
 // A node without a geometry input, an unlinked input and a link whose source reads the node insert nothing.
 void TestInsertNode(Fixture &f) {
     f.Reset("insert-node");
@@ -1578,8 +1542,8 @@ void TestInsertNode(Fixture &f) {
     f.Fails(InsertNode{mesh, triangulate, 1u, 0u, 0.f});
 }
 
-// A bevel that selects nothing and a boolean missing its second mesh forward their input without a fault, and an Object Info node without an object is marked with one.
-// A restore clears the mark, and the next cook marks the node again.
+// Verify empty bevel selections and unlinked boolean inputs pass through without errors.
+// Verify an unresolved Object Info node regains its error on the next cook after restore clears it.
 void TestNodeError(Fixture &f) {
     f.Reset("node-error");
     auto &r = f.R;
@@ -1594,7 +1558,7 @@ void TestNodeError(Fixture &f) {
     f.Do(SetInlineSelection{bevel_entity, std::vector<SelectionBlock>(3u), 1u, 1u});
     expect(!r.any_of<NodeError>(bevel_entity));
     expect(Describe(meshes, f.Output(mesh)) == source);
-    // A node the result does not read is inert rather than erring.
+    // Leave nodes outside the output dependency graph unevaluated.
     const auto [_, loose_entity] = f.Add(mesh, KindOf<action::mesh::Subdivide>);
     expect(!r.any_of<NodeError>(loose_entity));
     const auto [boolean, boolean_entity] = f.Add(mesh, KindOf<procedure::Boolean>);
@@ -1621,13 +1585,11 @@ void TestNodeError(Fixture &f) {
     f.Audit();
 }
 
-// The socket carrying the parameter field at the member path.
 template<auto M, auto... Ms> uint16_t SocketOf() {
     const auto sockets = KindSockets(KindOf<field::Owner<M>>);
     constexpr std::array<uint8_t, sizeof...(Ms)> nested{uint8_t(field::IndexOf<Ms>)...};
     return uint16_t(std::ranges::find_if(sockets, [&](Socket socket) { return socket.Carries(uint8_t(field::IndexOf<M>), nested.empty() ? NoField : nested[0]); }) - sockets.begin());
 }
-// A float attribute of the domain on the record holding `value(mesh, handle)` at each element, as a kernel reads a per-element parameter.
 template<AttributeDomain D> NamedAttributeRef FloatAttribute(MeshStore &meshes, uint32_t id, auto &&value) {
     const auto attribute = meshes.AddAttribute(id, D, AttributeType::Float, "parameter").value();
     const Mesh mesh{meshes, id};
@@ -1642,15 +1604,14 @@ template<AttributeDomain D> NamedAttributeRef FloatAttribute(MeshStore &meshes, 
     }
     return meshes.AttributeRef(attribute);
 }
-// The per-vertex width each vertex of a cube reads from Position through Vector Math and Float Math.
 float WidthAt(const Mesh &mesh, he::VH v) {
     const auto p = mesh.GetPosition(v);
     return .05f * (p.x + p.y + p.z) + .2f;
 }
 
-// A value node linked into a parameter socket drives the parameter as editing it would, the parameter's own edits are inert while it is linked, a link checks its types, and a bool value into a selection selects every element or none.
-// A float attribute linked into a per-element parameter sets the parameter at each element as the kernel reading the attribute does, per vertex for a vertex bevel and a shrink/fatten and per face for a poke, an attribute of another domain marks the node, and the output keeps no cook attribute.
-// A float value stored under a name fills an attribute of the store's domain with it.
+// Verify linked values override parameter constants and boolean values select all or no elements.
+// Compare per-element attributes with kernel execution and reject attributes from incompatible domains.
+// Verify temporary cook attributes are removed from output.
 void TestParameterSockets(Fixture &f) {
     f.Reset("parameter-sockets");
     auto &r = f.R;
@@ -1706,7 +1667,6 @@ void TestParameterSockets(Fixture &f) {
         f.ValidateReplay();
         f.Do(DeleteNodes{mesh, {bevel}});
     };
-    // Position through Vector Math and Float Math, the per-element parameter the element tests link.
     const auto position = f.Add(mesh, KindOf<Position>).first;
     const auto [dot, dot_entity] = f.Add(mesh, KindOf<VectorMath>);
     const auto [add, add_entity] = f.Add(mesh, KindOf<FloatMath>);
@@ -1715,7 +1675,7 @@ void TestParameterSockets(Fixture &f) {
     f.Do(UpdateOf<&FloatMath::B>(add_entity, .2f));
     f.Do(Link{mesh, position, 0u, dot, 0u});
     f.Do(Link{mesh, dot, f.Out(mesh, dot), add, 0u});
-    // The record the operator's task leaves on a clone of the source, selecting every element and reading Param0 from the attribute `parameter` adds to the clone.
+    // Run the operator on a source clone with all elements selected and Param0 read from the added parameter attribute.
     const auto reference = [&](MeshTopologyOp op, auto &&parameter) {
         return Reference(f, source_id, [&](uint32_t clone) {
                    auto task = Op(op, 0.f, TopologyFlagSelectAll);
@@ -1726,7 +1686,6 @@ void TestParameterSockets(Fixture &f) {
             .Output;
     };
     const auto widths = [&](uint32_t clone) { return FloatAttribute<AttributeDomain::Vertex>(meshes, clone, WidthAt); };
-    // Adds the operator reading the chain into its parameter socket, between the source and the output.
     const auto add_operator = [&](uint16_t kind, uint16_t socket) {
         const auto [node, entity] = f.Add(mesh, kind);
         f.Do(Link{mesh, add, f.Out(mesh, add), node, socket});
@@ -1773,7 +1732,7 @@ void TestParameterSockets(Fixture &f) {
         expect(f.AttributeCount(f.Output(mesh)) == 0u);
         f.Do(DeleteNodes{mesh, {poke}});
     };
-    // A Vector value and a Rotation value link into the position and rotation members of the node's transform, and its scale edits as a field.
+    // Link vector and rotation values into nested transform members while editing scale directly.
     boost::ut::test("transform geometry") = [&] {
         const auto [transform, transform_entity] = f.Add(mesh, KindOf<TransformGeometry>);
         const auto [vector, vector_entity] = f.Add(mesh, KindOf<VectorValue>);

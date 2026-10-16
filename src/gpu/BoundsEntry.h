@@ -2,7 +2,7 @@
 
 #include "gpu/EditSelectionStorage.h"
 
-// One run of instance slots sharing a deform state in the posed prelude, whose first instance record holds that state.
+// A run of instance slots sharing the first instance's deform state in the posed prelude.
 struct BoundsEntry {
     uint32_t FirstInstance DEFAULT();
     uint32_t InstanceCount DEFAULT();

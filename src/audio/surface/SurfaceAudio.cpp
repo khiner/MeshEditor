@@ -11,11 +11,7 @@
 using state::Change;
 using state::On;
 
-/***** Mesoscale relief, sampled from a normal map *****/
-
 namespace {
-// The alternatives a contact can be resolved under, each named by its own environment variable and read once.
-// All are off by default.
 const struct Gates {
     bool ContactSprings, SlidingRegistration, RelaxDamping, ContactTilt;
 } Gate{
@@ -127,14 +123,12 @@ void UpdateSurfaceRelief(state::Scene &r, state::Entity node_entity, state::Enti
     r.emplace_or_replace<SurfaceRelief>(node_entity, SurfaceRelief{std::make_shared<const RoughnessTrack>(MakeProfileTrack(heights, step_length)), key, source_key});
 }
 
-/***** Scene contact inputs *****/
-
 namespace {
 // Sample spacing of the track synthesized from a surface's roughness parameters, m.
 // Uses the surface's shortest wavelength as the track sampling interval.
 float SynthesizedFinishSpacing(const ContactSurface &s) { return FinishTrackSpacing(s.ShortWavelength); }
 
-// Content key of a surface's microscale finish track. A measured profile is hashed whole.
+// Hash the complete measured profile when constructing its microscale finish key.
 uint64_t FinishTrackKey(const ContactSurface &s) {
     if (s.HasMeasuredProfile()) {
         auto key = HashParams(0x9e3779b97f4a7c15ull, s.SampleSpacing, s.Profile.size());
@@ -194,7 +188,7 @@ SamplePointBlend ShapeBlendAt(const ModalModes &modes, vec3 local_point) {
     return best;
 }
 
-// The two tracks one body contributes to a contact. Neither depends on which voice reads them.
+// Each body contributes two surface tracks shared by all voices reading that body.
 struct SideTracks {
     ContactTrack Finish, Relief;
 };
@@ -227,7 +221,7 @@ SideTracks ResolveSideTracks(const state::Scene &r, ModalAudio &m, const Sustain
             .Spacing = spacing,
         };
     };
-    // Microscale finish: a surface's measured profile, or a track synthesized from the roughness parameters it states.
+    // Microscale finish uses a measured profile or a track synthesized from the surface roughness parameters.
     const auto &s = authored ? *authored : DefaultSurface;
     if (const bool measured = s.HasMeasuredProfile(); measured || s.Roughness > 0) {
         const auto index = AdoptSurfaceTrack(surface, finish_key, [&] {
@@ -239,7 +233,7 @@ SideTracks ResolveSideTracks(const state::Scene &r, ModalAudio &m, const Sustain
         if (index >= 0) out.Finish = make_track(index, measured ? PooledTrack(surface, index)->Rms : s.Roughness, 1.f);
     }
 
-    // Mesoscale relief: this body's normal map sampled along its contact path, at its own sweep.
+    // Mesoscale relief samples this body's normal map along its own contact path.
     if (relief && node_scale > 0) {
         const auto index = AdoptSurfaceTrack(surface, relief->Key, [&] { return relief->Track; });
         // One track serves every node instancing the mesh, each sizing it by its own scale.
@@ -248,7 +242,6 @@ SideTracks ResolveSideTracks(const state::Scene &r, ModalAudio &m, const Sustain
     return out;
 }
 
-// One band of the pair's composite surface.
 struct FinishSpec {
     float Correlation{0}, Slope{0}, Sigma{0}, Cutoff{0};
     std::shared_ptr<const RoughnessTrack> Profile;
@@ -306,9 +299,8 @@ struct ResolvedContact {
         float StaticPenetration{0};
         // This side's force scale on the pair's shared element springs, from the stiffness cap.
         float SpringScale{1};
-        // Where this side's modes are read for each distributed-excitation bin.
         std::array<SamplePointBlend, MaxSpringBins> SpringBinBlend{};
-        int32_t SweepIndex{-1}; // The moving-load sweep table's pool slot. Negative leaves it off.
+        int32_t SweepIndex{-1}; // Moving-load sweep pool slot; negative disables it.
         float NoiseRms{0}; // Root of the footprint's slip-turnover force variance at the anchor, N, before the side's spring scale.
         float NoiseStiffness{0}; // The footprint's bearing stiffness at the same anchor, N/m after the side's scale.
         // Store sweep half-extent in metres and inverse pitch inertia in kg^-1 m^-2.
@@ -323,30 +315,31 @@ struct ResolvedContact {
     float StaticPenetration{0};
     float ConformalLength{0}; // u0 = h_rms/Alpha, m. Positive for a contact two faces fix the area of.
     float DampingFactor{0}; // Hunt-Crossley dissipation per unit approach speed, dimensionless.
-    uint32_t SpotCount{0}; // Cells of the asperity bed rendered along the track. Positive selects the bed.
+    uint32_t SpotCount{0}; // Asperity cells along the track; positive selects the bed.
     float SpotWeight{0};
     float SpotStiffness{0}; // k of one asperity, N/m^(3/2).
     float CellSpread{0}; // Spread of asperity heights about their cell's local mean, m.
     float SurfaceCompliance{1}; // Share of a surface excursion the bed takes, the bulk having taken the rest.
     float ShearStiffness{0}; // N/m, the patch shear spring the frictional force acts through.
     float FlankStiffness{0}; // N/m, the oblique-flank micro-slip spring the normal channel acts through.
-    // The same junction discretised over the bearing population's spread of breakaway strengths. Zero bins run the single element.
+    // The same junction discretised over the bearing population's spread of breakaway strengths.
+    // Zero bins run the single element.
     uint32_t FlankBins{0};
     std::array<FlankJunctionBin, MaxFlankBins> FlankBin{};
     float RelaxScale{0}; // N/m^2, the relaxation channel's coefficient, from the contact's second force derivative.
-    // The element/spring container (CONTACT_SPRINGS), shared by the pair. Negative leaves the bed path.
+    // The element/spring container (CONTACT_SPRINGS), shared by the pair.
+    // Negative leaves the bed path.
     int32_t SpringIndex{-1};
     float SpringRate{0}; // Elements the contact advances per output sample.
     float SlipRate{0}; // Elements the slower surface falls behind the array per output sample.
     uint32_t SlowSide{0}; // Which surface that is.
-    uint32_t SpringBins{0}; // Distributed-excitation bins across the footprint. Zero leaves the channel off.
+    uint32_t SpringBins{0}; // Distributed-excitation bins across the footprint; zero disables the channel.
     // The turnover shot process's geometry, all m.
     float JunctionSpacing{0};
     float JunctionTransit{0};
     float FootprintLength{0};
 };
 
-// The footprint's slip-turnover fluctuation off a resolved sweep table, the bearing stiffness taking `stiffness_scale`.
 void ReadTurnoverNoise(ResolvedContact::Side &side, const SurfaceAudioState &s, int32_t index, float stiffness_scale) {
     if (index < 0) return;
     const auto *table = s.SweepTables[uint32_t(index)].Live.load(std::memory_order_acquire);
@@ -675,7 +668,6 @@ ResolvedContact ResolveContact(const state::Scene &r, ModalAudio &m, const Susta
                     }();
                     const auto build_strips = [&] {
                         constexpr size_t WorkerBudget = 1ull << 30;
-                        // A field, the patch it sums from, and the other side's own field where the two are gathered apart.
                         const size_t worker_bytes = (Gate.SlidingRegistration ? 3 : 2) * sizeof(float) * size_t(columns) * rows;
                         const uint32_t affordable = uint32_t(WorkerBudget / worker_bytes);
                         const uint32_t workers = std::min<uint32_t>(
@@ -797,7 +789,6 @@ ResolvedContact ResolveContact(const state::Scene &r, ModalAudio &m, const Susta
                         surface.SpringStripsByKey.emplace(strip_key, built);
                         return built;
                     }();
-                    // The shared bands, drawn over the footprint's span the strips are free of.
                     for (const auto &d : to_draw) {
                         shared.emplace_back(
                             d.Profile ? SynthesizeProfileField({d.Profile->Heights.data(), d.Span}, d.ProfileSpacing, d.Across, d.Realization) : SynthesizeRoughnessPatch(d.Correlation, d.Slope, d.Cutoff, d.Cutoff / SurfaceSamplesPerCutoff, d.Columns, d.Rows, d.Realization),
@@ -1077,7 +1068,7 @@ ResolvedContact ResolveContact(const state::Scene &r, ModalAudio &m, const Susta
                             phi[size_t(w) * mode_count + k] = Dot(BlendedShape(bank, b0, b1, b2, bl.Weights, k), side.Normal);
                         }
                     }
-                    // The anchored element forces, whose stiffness the rows' conformity projections read.
+                    // Use anchored element forces to compute row conformity projections.
                     std::vector<float> field(count);
                     const auto anchored = AnchoredElementSums(set, pen_bucket, scale_bucket, field);
                     auto table = std::make_shared<SweepTableSet>();
@@ -1192,8 +1183,6 @@ std::optional<VoiceSet::Voice> BuildContactVoice(ModalAudio &m, const SustainedC
 }
 } // namespace
 
-/***** Core modal interface from audio/SurfaceContact.h *****/
-
 float SurfaceRoughnessOf(const state::Scene &r, state::Entity node) {
     static constexpr ContactSurface DefaultSurface{};
     const auto *surface = node != state::Null && r.valid(node) ? r.try_get<const ContactSurface>(node) : nullptr;
@@ -1208,7 +1197,6 @@ state::Entity ContactSurfaceNode(const state::Scene &r, state::Entity collider, 
 void SurfaceSetupScene(state::Scene &r, state::Entity viewport) { r.emplace_or_replace<SurfaceSoundControls>(viewport); }
 
 void RegisterSurfaceContactHandlers(state::Scene &r) {
-    // A surface belongs to a node.
     reactive(r, Change::SurfaceEdit).on<ContactSurface>(On::Create | On::Update | On::Destroy);
     // A surface with no normal map of its own inherits its material's, so a material reassignment changes the relief too.
     // A material assignment names a mesh where a surface names a node, so the two are tracked apart.

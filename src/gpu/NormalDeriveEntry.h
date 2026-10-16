@@ -16,7 +16,7 @@ struct NormalDeriveEntry {
     ConnectivityRef Connectivity DEFAULT();
     uint32_t FaceCount DEFAULT();
     uint32_t FaceBlocksSlot DEFAULT();
-    SlotOffset CornerSectors DEFAULT(), NormalSectors DEFAULT(); // The record's sector layers, without a slot while it holds none
+    SlotOffset CornerSectors DEFAULT(), NormalSectors DEFAULT(); // Optional sector layers
     uint32_t VertexNormalNamespace DEFAULT(InvalidOffset);
     uint32_t SectorNamespace DEFAULT(InvalidOffset);
     uint32_t FaceNormalNamespace DEFAULT(InvalidOffset);

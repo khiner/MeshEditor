@@ -7,7 +7,6 @@
 using VertexBlockPointOutput = metal::mesh<PointVaryings, void, VertexBlockLanes, VertexBlockLanes, metal::topology::point>;
 using VertexBlockSelectOutput = metal::mesh<ElementIdVaryings, void, VertexBlockLanes, VertexBlockLanes, metal::topology::point>;
 
-// Edit, object and excite points, colored by vertex state.
 [[mesh]] void VertexBlockPointMesh(
     VertexBlockPointOutput output, uint thread_index [[thread_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]], uint3 group [[threadgroup_position_in_grid]],
@@ -19,7 +18,7 @@ using VertexBlockSelectOutput = metal::mesh<ElementIdVaryings, void, VertexBlock
 ) {
     threadgroup uint simd_counts[VertexBlockSimdGroups];
     const Scene scene{bindless, view, theme, workspace};
-    // A point sprite spans PointSize pixels, pulled toward the camera as EditPointSprite pulls it.
+    // Use PointSize pixels and the same camera depth bias as EditPointSprite.
     const VertexBlockLane work = ResolveVertexBlockLane(scene, pc, group.x, thread_index, PointSize * 0.5f + 0.5f, NdcOffsetFactor(scene) * 1.5f);
     const uint state = work.VertexId != InvalidOffset ? EditVertexState(scene, work.Draw, work.VertexId) : 0u;
     const bool present = work.VertexId != InvalidOffset && (pc.SoundPoints == 0u || (state & STATE_SELECTED) != 0u);
@@ -40,7 +39,6 @@ using VertexBlockSelectOutput = metal::mesh<ElementIdVaryings, void, VertexBlock
     output.set_index(compact.x, compact.x);
 }
 
-// Vertex ids for picks and box selection.
 [[mesh]] void VertexBlockSelectMesh(
     VertexBlockSelectOutput output, uint thread_index [[thread_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]], uint3 group [[threadgroup_position_in_grid]],

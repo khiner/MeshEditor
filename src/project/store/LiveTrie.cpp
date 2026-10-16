@@ -8,7 +8,6 @@
 
 namespace store {
 namespace {
-// Process-wide bytes held by nodes and child arrays.
 std::atomic<uint64_t> NodeBytes{};
 Node **AllocChildren() {
     NodeBytes.fetch_add(Fanout * sizeof(Node *), std::memory_order_relaxed);
@@ -67,7 +66,7 @@ void ToInterior(LiveTrie &trie, Node *n, Node *const *adopt = nullptr) {
     }
 }
 
-// Use the settled hash of the slot, or hash the raw bytes of a value the slot holds in default state.
+// Use the cached slot hash, or hash raw value bytes for a slot in its default state.
 Hash128 ContentHash(const LiveTrie &trie, uint64_t slot, const Blob &value) {
     if (slot < trie.SlotHashes.size()) {
         const auto &e = trie.SlotHashes[slot];
@@ -372,7 +371,7 @@ LiveTrie::~LiveTrie() { ReleaseNode(*this, Root); }
 
 void LiveTrie::Write(uint64_t first, uint64_t count, std::span<const std::byte> contents) {
     CaptureImpl(*this, first, count, [&](uint64_t slot) -> std::optional<Blob> {
-        // A settled default page and a page never written hold zeros, which an absent value restores.
+        // Restore zero-filled pages as absent values.
         if ((slot + 1) * PageBytes > contents.size() || slot >= SlotHashes.size() ||
             (!SlotHashes[slot].Dirty && SlotHashes[slot].State != SlotState::Value)) return std::nullopt;
         return CopyBlob(contents.subspan(slot * PageBytes, PageBytes));

@@ -12,7 +12,6 @@ namespace {
 // An object whose gain-weighted state energy falls below this (with no active impacts) is zeroed and skipped.
 constexpr float SilentEnergy{1e-12f};
 
-// Drop impact `i`, swapping the last into its place.
 void RemoveImpact(ModalBank &b, uint32_t i) {
     b.Impacts[i] = b.Impacts.back();
     b.Impacts.pop_back();
@@ -292,7 +291,6 @@ uint32_t AddModalObject(ModalBank &b, state::Entity e, const ModalModes &modes) 
     // Allocate columns from each object's untuned mode count.
     for (auto *col : {&b.OutGain, &b.RigidInvMass, &b.RadiatorB0, &b.AirB0, &b.AirB1, &b.AirB2, &b.RecoilA1, &b.RecoilA2, &b.RadiatorZ1, &b.RadiatorZ2, &b.AirZ1, &b.AirZ2}) col->push_back(0.f);
     for (auto *col : {&b.ListenerGain, &b.DeflectionScale, &b.RetunedWorldScale}) col->push_back(1.f);
-    // Per-mode columns, which the object's own modes extend.
     for (auto *col : {&b.CoeffRe, &b.CoeffIm, &b.StateRe, &b.StateIm, &b.RadiationGain, &b.DeflectionGain, &b.QuadCompliance, &b.QuadDriveScale}) col->resize(col->size() + count, 0.f);
     b.OutPhaseIm.resize(b.OutPhaseIm.size() + count, 1.f);
     b.OutPhaseRe.resize(b.OutPhaseRe.size() + count, 0.f);
@@ -445,14 +443,12 @@ void DealObjects(ModalAudio &m, const ModalBank &b, uint32_t count) {
     for (auto &renderer : m.Renderers) std::ranges::sort(renderer.Objects);
 }
 
-// Work descriptor passed to one renderer.
 struct RenderJob {
     ModalAudio &Audio;
     ModalBank &Bank;
     uint32_t FrameCount;
 };
 
-// Renders assigned objects into one renderer-local mix.
 void RenderObjects(ModalAudio &m, ModalRenderScratch &w, ModalBank &b, uint32_t frame_count) {
     const auto impact_count = uint32_t(b.Impacts.size());
     for (const auto o : w.Objects) {

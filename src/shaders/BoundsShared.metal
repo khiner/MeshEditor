@@ -16,7 +16,8 @@ inline void FoldSharedAabb(
     threadgroup float3 *shared_min, threadgroup float3 *shared_max,
     uint lanes, uint tid, float3 lo, float3 hi
 ) {
-    // Apple GPU SIMD groups have 32 lanes. Only their partials need shared memory.
+    // Apple GPU SIMD groups have 32 lanes.
+    // Only their partials need shared memory.
     lo = simd_min(lo);
     hi = simd_max(hi);
     if ((tid & 31u) == 0u) {

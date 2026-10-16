@@ -1,7 +1,6 @@
 #include "AttributeNodes.metal"
 #include "Bindless.metal"
 
-// The value an input holds at the element of an arena address and a record handle.
 inline uint4 ReadAttributeInput(device const BindlessSet &b, AttributeInput input, uint address, uint handle, uint ordinal) {
     switch (input.Source) {
         case AttributeSource::Constant: return uint4(input.Value[0], input.Value[1], input.Value[2], input.Value[3]);

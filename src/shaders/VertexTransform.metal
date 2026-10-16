@@ -18,7 +18,6 @@ inline float3 ApplyNormalOffset(const thread Scene &scene, DrawData draw, uint v
     return DecodeNormalOffset(offset, ComputeCornerFrame(normal, position(h), position(conn.Next(h)), position(conn.Previous(h))));
 }
 
-// Returns a face corner's shading normal from its class, posed state, and optional coarse normal.
 inline float3 CornerNormal(
     const thread Scene &scene, DrawData draw, uint vertex_id, uint idx, uint face_id,
     bool coarse, float3 coarse_normal

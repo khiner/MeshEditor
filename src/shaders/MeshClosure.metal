@@ -98,7 +98,6 @@ inline bool FaceTriangleOwned(device const BindlessSet &b, SlotOffset table, uin
     return block.Owner == owner && (block.Live[(handle % MeshElementBlockSize) / 32u] & (1u << (handle % 32u)));
 }
 
-// One simd group per face marks its triangles and adds their count to Total.
 kernel void MeshClosureTriangles(
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
     constant FaceTrianglePushConstants &pc [[buffer(BufferIndex_PushConstants)]],

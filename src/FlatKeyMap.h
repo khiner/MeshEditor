@@ -3,8 +3,8 @@
 #include <bit>
 #include <vector>
 
-// Reset fixes the word width of this open-addressed uint32 map.
-// Mark consumed entries Taken so later probes skip them.
+// Reset fixes the key width.
+// Mark consumed entries Taken to exclude them from later probes.
 struct FlatKeyMap {
     static constexpr uint32_t Taken{std::numeric_limits<uint32_t>::max()};
 
@@ -49,7 +49,6 @@ private:
     size_t Hash(const uint32_t *key) const {
         uint64_t h = 0xcbf29ce484222325ull;
         for (uint32_t w = 0; w < KeyWords; ++w) h = (h ^ key[w]) * 0x100000001b3ull;
-        // Mix every key word into the low bits used for indexing.
         h ^= h >> 33;
         h *= 0xff51afd7ed558ccdull;
         h ^= h >> 33;

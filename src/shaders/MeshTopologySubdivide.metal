@@ -23,9 +23,8 @@ struct SubdivideLoop {
 
 inline uint TopoSubdivideCuts(MeshTopologyJob job) { return (job.Flags & (TopologyFlagPlaneCuts | TopologyFlagListCuts | TopologyFlagScreenCuts)) ? 1u : max(1u, uint(job.Param0)); }
 
-// Each face owns the portion of the affected halfedge work that contains its
-// source loop. Every source corner reserves one original slot and `cuts` cut
-// slots, so adjacent faces never share scratch even when handles are sparse.
+// Each face owns the portion of the affected halfedge work that contains its source loop.
+// Every source corner reserves one original slot and `cuts` cut slots, so adjacent faces never share scratch even when handles are sparse.
 inline SubdivideLoop TopoSplitLoop(TopoContext ctx, MeshTopologyJob job, uint f) {
     const uint2 range = ctx.SrcFaceRange(job, f);
     const uint width = TopoSubdivideCuts(job) + 1u;
@@ -64,7 +63,6 @@ inline float TopoCutParam(TopoContext ctx, MeshTopologyJob job, uint rep, uint i
     return float(i + 1u) / float(cuts + 1u);
 }
 
-// Builds the face's expanded loop in its exactly sized source-work slice.
 inline void TopoSubdivideExpand(TopoContext ctx, MeshTopologyJob job, uint f, thread SubdivideLoop &loop) {
     const uint2 range = ctx.SrcFaceRange(job, f);
     const uint cuts = TopoSubdivideCuts(job);

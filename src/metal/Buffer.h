@@ -23,8 +23,8 @@ enum class BufferLifetime { Canonical,
                             Workspace };
 // Tracked buffers capture and restore history in pages of this size.
 inline constexpr uint64_t HistoryPageBytes = 16u << 10;
-// Commit GPU consumers before retiring their owners. Slots, virtual mappings,
-// and physical pages survive together until the retirement fence completes.
+// Commit GPU consumers before retiring their owners.
+// Slots, virtual mappings, and physical pages survive together until the retirement fence completes.
 struct BufferContext {
     BufferContext(const Context &, BindlessSet &);
     ~BufferContext();
@@ -84,7 +84,8 @@ struct BufferFootprint {
 // A clone maps the physical pages holding its footprint at the source's offsets, reads its unmapped pages as zero, and has no CPU view.
 // Only the footprint's bytes are copied, so readers read only those.
 // Later source writes leave the clone unchanged.
-// Submit a clone's readers before destroying it. Its slot and pages retire after those readers complete.
+// Submit a clone's readers before destroying it.
+// Its slot and pages retire after those readers complete.
 std::vector<Buffer> CloneFootprints(BufferContext &, std::span<const BufferFootprint>);
 
 struct Buffer {

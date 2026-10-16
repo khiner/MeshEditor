@@ -12,24 +12,8 @@ using numeric::Radians, numeric::mat4, numeric::vec4;
 using std::ranges::max_element, std::ranges::iota_view, std::ranges::to;
 using std::views::transform;
 
-/**
-All files (present for each object):
-  - angle.npy (24K)
-  - deconvolved_0db.npy (2.3G) // Loaded dynamically
-  - distance.npy (24K)
-  - listenerXYZ.npy (72K)
-  - material_0.mtl (4.0K)
-  - material_0.png (1.2M)
-  - micID.npy (24K)
-  - transformed.obj (3.4M)
-  - vertexID.npy (24K)
-  - vertexXYZ.npy (72K)
-*/
-
 namespace {
-// The authors provide `.mtl` and `.png` material files, but they don't provide the material name.
-// However, most object names include the material name, and the rest are easy to guess.
-// A '*' indicates a guess based on the object name and the material image.
+// Infer material from object names and images; '*' marks an uncertain assignment.
 const std::unordered_map<std::string_view, std::string_view> MaterialNameForObject{
     {"CeramicKoiBowl", "Ceramic"},
     {"CeramicBowlFish", "Ceramic"},
@@ -102,7 +86,7 @@ std::expected<std::string, std::string> ValidateDirectory(const fs::path &direct
 }
 
 namespace {
-// The dataset in `directory`, naming its mesh and recordings under `reference`.
+// Return the dataset in `directory` with mesh and recording paths relative to `reference`.
 std::expected<Source, std::string> ReadDirectory(const fs::path &directory, const fs::path &reference) {
     auto name = ValidateDirectory(directory);
     if (!name) return std::unexpected{name.error()};
@@ -200,7 +184,6 @@ std::expected<std::array<LoadedSample, NumImpactVertices>, std::string> LoadSamp
             auto key = fs::path{std::format("realimpact://{}/li{}_impact{}", source.string(), listener_point_index, i)};
             all_samples[i] = {std::move(key), std::move(frames)};
         }
-        // Normalize audio to [-1, 1]
         if (max_sample > 0) {
             for (auto &[_, samples] : all_samples) {
                 for (float &sample : samples) sample /= max_sample;
@@ -212,20 +195,8 @@ std::expected<std::array<LoadedSample, NumImpactVertices>, std::string> LoadSamp
     }
 }
 
-/*
-See https://github.com/samuel-clarke/RealImpact/blob/main/preprocess_measurements.py
-Here, we reproduce the `get_mic_world_space` function, to avoid redundantly storing positions.
-The only difference is we use Y-up instead of Z-up.
-    MIC_BAR_LENGTH = 1890 - 70
-    def get_mic_world_space(angle, distance, ind):
-        mic_z = -(MIC_BAR_LENGTH/2) + ind/14 * MIC_BAR_LENGTH
-        mic_x = 230 + distance
-        mic_y = -((45/2) + 20.95) * np.ones_like(angle)
-        mic_points = np.vstack((mic_x, mic_y, mic_z)).transpose()
-        rot = Rotation.from_euler('z', angle, degrees=True)
-        pos_meters = rot.apply(mic_points) / 1000.0
-        return pos_meters
-*/
+// Adapt get_mic_world_space to Y-up coordinates.
+// https://github.com/samuel-clarke/RealImpact/blob/main/preprocess_measurements.py
 vec3 ListenerPoint::GetPosition(vec3 world_up, bool mic_center) const {
     const float angle = Radians(float(AngleDeg)), dist = float(DistanceMm);
     const vec3 pos{

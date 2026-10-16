@@ -45,7 +45,6 @@ struct BoneBillboard {
     float radius;
 };
 
-// Returns a camera-facing billboard position for an XY-plane disc with radius 0.05.
 template<typename SetT>
 inline BoneBillboard bone_sphere_billboard(const thread SceneT<SetT> &scene, Transform world, float3 vert_pos) {
     const float3 center = float3(world.P);

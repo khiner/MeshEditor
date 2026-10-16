@@ -4,14 +4,12 @@
 #include "ConnectivityRead.metal"
 #include "gpu/EditSelectionSummary.h"
 
-// A mask bit at an element's arena address.
 inline bool EditSelectionBit(const thread Scene &scene, SlotOffset range, uint address) {
     if (range.Slot == InvalidSlot) return false;
     const uint word = BindlessBuffer(uint, scene.B.Buffer, range.Slot)[(range.Offset * 32u + address) >> 5u];
     return ((word >> (address & 31u)) & 1u) != 0u;
 }
 
-// The arena address of one of the draw's element handles.
 inline uint EditElementAddress(const thread Scene &scene, DrawData draw, Element element, uint handle) {
     return element == Element::Vertex ? scene.VertexAddress(draw, handle) : element == Element::Edge ? scene.EdgeAddress(draw, handle) :
                                                                                                           scene.FaceAddress(draw, handle);

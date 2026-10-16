@@ -24,7 +24,6 @@ using numeric::Radians;
 
 namespace action::io {
 namespace {
-// Load a glTF/glb and apply its camera/animation side effects.
 void LoadGltfFile(state::Scene &r, state::Entity viewport, const std::filesystem::path &path) {
     const profile::CpuScope scope{"LoadGltfFile"};
     auto result = gltf::LoadGltf(path, r, viewport);

@@ -22,7 +22,7 @@ constexpr AcousticMaterialProperties Ceramic{.Density = 2700, .YoungModulus = 7.
 
 ContactDynamics Body(double mass, mat3 inverse_inertia, vec3 arm = {0}) { return {.Mass = mass, .InverseInertia = inverse_inertia, .ContactArm = {arm}}; }
 
-// The contact time of a strike along +z, with the striker's own compliance out of the way.
+// Measure contact duration along +z with striker compliance excluded.
 double ContactTime(const ContactDynamics &d, const AcousticMaterialProperties &material, double curvature, double area = 0, double speed = 1, double scale = 1, const Striker &striker = NullStriker) {
     return EstimateContactTime(d, 0, vec3{0, 0, 1}, speed, material, curvature, area, StrikerImpactor(striker), scale);
 }
@@ -52,7 +52,6 @@ int main() {
     "effective mass drops with an off-center strike"_test = [] {
         const double tau_center = ContactTime(Body(1.0, mat3{1.f}), Polymer, 100);
         const double tau_offset = ContactTime(Body(1.0, mat3{1.f}, vec3{0.2f, 0, 0}), Polymer, 100); // lever arm perpendicular to a z-strike
-        // Lower effective mass shortens the contact.
         expect(tau_offset < tau_center);
     };
 
@@ -61,7 +60,6 @@ int main() {
         const auto tau = [&d](double scale) { return ContactTime(d, Polymer, 100, 0, 1, scale); };
         expect(Near(tau(2.0), 2 * tau(1.0), 1e-6)); // tau scales linearly with size, in range
 
-        // Large scale saturates at the max, tiny scale at the min.
         expect(Near(tau(100.0), MaxContactTime));
         expect(Near(tau(1e-6), MinContactTime));
     };
@@ -97,9 +95,7 @@ int main() {
         expect(Near(SaturationPenetration(Curvature, Area), 3.183e-5, 1e-3));
         // Slowly enough, the patch never fills and the collision is exactly Hertz's.
         expect(Near(tau(Area, 0.1), tau(0.0, 0.1), 1e-6));
-        // A polygon far wider than the patch ever grows is the same statement from the other side.
         expect(Near(tau(1.0, 3.0), tau(0.0, 3.0), 1e-6));
-        // Fast enough, it fills and outlasts both limits.
         expect(tau(Area, 3.0) > tau(0.0, 3.0));
         expect(tau(Area, 3.0) > std::numbers::pi * std::sqrt(0.5 / PunchStiffness(0.91 / 7.2e10, Area)));
 

@@ -7,7 +7,6 @@
 #include "LineQuad.metal"
 #include "VertexBlocks.metal"
 
-// Emits normal-indicator line groups scaled to local geometry size.
 constant float NormalIndicatorLengthScale = 0.25f;
 constant uint NormalIndicatorThreads = uint(MeshletLimit::MaxVertices);
 constant uint NormalIndicatorSimdGroups = NormalIndicatorThreads / 32u;
@@ -60,7 +59,6 @@ inline void FaceNormalSegment(const thread Scene &scene, DrawData draw, uint ele
     end = start + NormalIndicatorLengthScale * sqrt(area) * scene.GetFaceNormal(draw, element);
 }
 
-// Emits one stroke per present lane from its local-space segment.
 inline void EmitNormalIndicator(
     thread NormalIndicatorOutput output, uint thread_index, uint lane, threadgroup uint *simd_counts,
     const thread Scene &scene, DrawData draw, uint element, bool faces
@@ -86,7 +84,7 @@ inline void EmitNormalIndicator(
     EmitStroke(output, compact.x, scene, clip[0], clip[1], color);
 }
 
-// Each finest cluster emits the faces whose first triangle it holds.
+// Emit each face from the finest cluster containing its first triangle.
 [[mesh]] void FaceNormalIndicatorMesh(
     NormalIndicatorOutput output,
     uint thread_index [[thread_index_in_threadgroup]],
@@ -114,7 +112,6 @@ inline void EmitNormalIndicator(
     EmitNormalIndicator(output, thread_index, lane, simd_counts, scene, work.Draw, element, true);
 }
 
-// Each lane of a canonical vertex block emits its live vertex.
 [[mesh]] void VertexNormalIndicatorMesh(
     NormalIndicatorOutput output,
     uint thread_index [[thread_index_in_threadgroup]],
@@ -128,7 +125,7 @@ inline void EmitNormalIndicator(
 ) {
     threadgroup uint simd_counts[NormalIndicatorSimdGroups];
     const Scene scene{bindless, view, theme, workspace};
-    // A stroke spans its half width around the vertex, pulled toward the camera as EmitNormalIndicator pulls it.
+    // Offset the stroke by its half width and apply the same camera depth bias as EmitNormalIndicator.
     const VertexBlockLane work = ResolveVertexBlockLane(
         scene, pc, threadgroup_position.x, thread_index, scene.Theme.EdgeWidth + 0.5f, NdcOffsetFactor(scene)
     );

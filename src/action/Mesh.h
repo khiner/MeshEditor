@@ -4,7 +4,6 @@
 #include "state/Entity.h"
 #include "viewport/RenderView.h"
 
-// Edit-mode topology operators over the selected meshes' element selections.
 namespace action::mesh {
 struct InsetPreviewCache;
 struct Hide {
@@ -13,7 +12,7 @@ struct Hide {
 struct Reveal {
     bool Select{true};
 };
-// Values match the delete topology ops.
+// Match delete topology op values.
 // Loose removes selected edges without faces and selected isolated vertices.
 enum class DeleteMode : uint32_t { Vertices,
                                    Edges,
@@ -25,8 +24,8 @@ struct Delete {
     DeleteMode Mode{DeleteMode::Vertices};
 };
 
-// Merges the selected vertices: all into one at their center or at the first or last selected vertex.
-// Collapse merges each connected run into its center, and ByDistance merges every pair within Distance.
+// Merge selected vertices at their center, first vertex, or last vertex.
+// Collapse merges each connected run at its center; ByDistance merges pairs within Distance.
 using MergeMode = GeometryMergeMode;
 struct Merge {
     MergeMode Mode{MergeMode::Center};
@@ -43,7 +42,6 @@ struct Extrude {
 };
 // Duplicates the selected faces onto copied vertices and latches a translate for the drag that follows.
 struct Duplicate {};
-// Detaches the selected faces from the rest of the mesh.
 struct Split {};
 using SeparateMode = GeometrySeparateMode;
 // Splits selected geometry, connected components, or face material groups into objects.
@@ -51,8 +49,8 @@ struct Separate {
     SeparateMode Mode{SeparateMode::Selected};
 };
 
-// Joins the faces around the selected vertices, across the selected edges, or of each selected region into one face.
-// Limited joins across edges flatter than Angle, and Degenerate collapses edges shorter than Distance.
+// Dissolve selected topology into faces.
+// Limited uses Angle; Degenerate uses Distance.
 enum class DissolveMode : uint8_t { Vertices,
                                     Edges,
                                     Faces,
@@ -79,8 +77,8 @@ enum class BeautifyMethod : uint8_t { Area,
 struct Unsubdivide {
     uint32_t Iterations{2};
 };
-// Collapses selected edges toward Ratio of the affected region's triangle count.
-// Material/attribute seams and sharp edges stay fixed; unsafe collapses are skipped.
+// Reduce selected edges toward Ratio of the region triangle count.
+// Preserve material boundaries, attribute discontinuities, and sharp edges; skip unsafe collapses.
 struct Decimate {
     float Ratio{0.5f};
 };
@@ -96,7 +94,6 @@ struct FlipNormals {};
 struct RecalculateNormals {
     bool Inside{false};
 };
-// Splits vertices along the selected edges so the faces on each side come apart.
 struct EdgeSplit {};
 // Insets the selected region, or each face on its own, by Thickness and lifts it by Depth.
 struct Inset {
@@ -120,7 +117,6 @@ struct Spin {
     vec3 Center{};
     float Offset{0.f};
 };
-// Extrudes the selection Steps times, each step moving by Offset.
 struct ExtrudeRepeat {
     uint32_t Steps{1};
     vec3 Offset{0.f, 0.f, 1.f};
@@ -140,8 +136,8 @@ struct Symmetrize {
     SymmetrizeAxis Axis{SymmetrizeAxis::X};
     bool Negative{false};
 };
-// Matches nearest reflected positions within Threshold in mesh-local space.
-// Factor blends both sides; Negative chooses the negative side at factor zero.
+// Match reflected mesh-local positions within Threshold.
+// Factor blends both sides; Negative selects the negative side at factor zero.
 struct SnapSymmetry {
     SymmetrizeAxis Axis{SymmetrizeAxis::X};
     float Threshold{0.05f}, Factor{0.5f};
@@ -151,7 +147,6 @@ struct SnapSymmetry {
 struct Solidify {
     float Thickness{0.1f};
 };
-// Builds solid struts around selected face edges.
 struct Wireframe {
     float Thickness{0.02f};
     float Offset{0.f};
@@ -175,12 +170,10 @@ struct GridFill {
 struct FillHoles {
     uint32_t Sides{4};
 };
-// Adds the convex hull of the selected vertices as triangles.
 struct ConvexHull {};
 struct EdgeRotate {};
 // Splits the faces along the selected edges and latches a translate for the split side.
 struct Rip {};
-// Bevels selected edges or vertices by Width with Segments across the profile.
 struct Bevel {
     float Width{0.1f};
     uint32_t Segments{1};
@@ -208,7 +201,7 @@ struct RelaxEdgeLoops {
 };
 enum class CircleFit : uint8_t { LeastSquares,
                                  Contract };
-// Fits selected surface boundaries and isolated wire chains to planar circles.
+// Fit selected boundaries and wire chains to planar circles.
 // Radius zero fits the source radius; Angle rotates around the fitted normal.
 struct Circularize {
     CircleFit Method{CircleFit::LeastSquares};
@@ -218,8 +211,8 @@ struct Circularize {
 enum class CurveElevation : uint8_t { None,
                                       Raise,
                                       Lower };
-// Fits unselected loop vertices through selected control points. Extend includes the
-// rest of each loop, keeping open endpoints fixed and limiting sparse closed selections.
+// Interpolate unselected loop vertices through selected control points.
+// Extend includes the remaining loop, preserving open endpoints and limiting sparse closed selections.
 struct CurveBetweenSelected {
     EdgeLoopInterpolation Interpolation{EdgeLoopInterpolation::Cubic};
     CurveElevation Elevation{CurveElevation::None};
@@ -239,8 +232,8 @@ struct ToSphere {
 struct PushPull {
     float Distance{0.1f};
 };
-// Axis is the shear plane normal; AxisOrtho is its displacement direction.
-// Local uses the active object's orientation around the shared selection center.
+// Axis specifies the shear-plane normal; AxisOrtho specifies displacement.
+// Local uses the active object orientation around the shared selection center.
 enum class ShearAxis : uint8_t { X,
                                  Y,
                                  Z };
@@ -249,8 +242,8 @@ struct Shear {
     ShearAxis Axis{ShearAxis::Z}, AxisOrtho{ShearAxis::X};
     bool Local{false};
 };
-// Warps around Center in the recorded orientation (world XY by default).
-// Automatic bounds use each edited mesh's selected vertices after OffsetAngle.
+// Warp around Center in the recorded orientation, defaulting to world XY.
+// Compute automatic bounds from each edited mesh's selected vertices after OffsetAngle.
 struct Warp {
     float Angle{6.2831853f}, OffsetAngle{0.f};
     vec3 Center{};
@@ -258,30 +251,29 @@ struct Warp {
     float Min{-1.f}, Max{1.f};
     std::unique_ptr<quat> Orientation{std::make_unique<quat>()};
 };
-// Bends from Center along the rolled view's X axis over Radius world units.
-// Clamp leaves the start side fixed and rigidly rotates the end side.
+// Bend along the rolled view X axis from Center over Radius world units.
+// Clamp fixes the start side and rigidly rotates the end side.
 struct Bend {
     float Angle{0.78539816f}, Radius{1.f}, OffsetAngle{0.f};
     vec3 Center{};
     bool Clamp{true};
     std::unique_ptr<quat> Orientation{std::make_unique<quat>()};
 };
-// Local-space random offsets keyed by Seed and canonical vertex handle, so
-// changing the selection does not change an existing vertex's random sample.
+// Seed and canonical vertex handle determine offsets independently of selection.
 struct Randomize {
     float Amount{0.1f}, Uniform{0.f}, Normal{0.f};
     uint32_t Seed{0u};
 };
-// Both slide operations preserve the UV and color values attached to each corner.
-// Chooses each vertex's incident edge nearest Direction in world space.
-// Even uses the active selected vertex's edge length, or the first selected vertex.
+// Preserve corner UVs and colors in both slide operations.
+// Choose the incident edge nearest Direction in world space.
+// Even uses the active selected vertex edge length, or the first selected vertex.
 struct VertexSlide {
     float Factor{0.5f};
     vec3 Direction{1, 0, 0};
     bool Even{false}, Flipped{false}, Clamp{true};
 };
-// Slides selected edge chains along their neighboring faces. Direction chooses
-// the positive side in world space; Even uses the active or first selected vertex.
+// Slide selected edge chains along adjacent faces.
+// Direction selects the world-space positive side; Even uses the active or first selected vertex.
 struct EdgeSlide {
     float Factor{0.5f};
     vec3 Direction{1, 0, 0};
@@ -295,8 +287,8 @@ struct MakePlanarFaces {
 enum class FlattenMethod : uint8_t { LeastSquares,
                                      FaceNormals,
                                      View };
-// Flattens selected face regions and remaining edge components independently.
-// ViewNormal is a recorded world-space direction; X/Y/Z constrain local coordinates.
+// Flatten face regions and remaining edge components independently.
+// ViewNormal is world-space; X/Y/Z constrain local coordinates.
 struct Flatten {
     FlattenMethod Method{FlattenMethod::LeastSquares};
     float Factor{1.f};
@@ -319,8 +311,8 @@ struct RotateColors {
     bool CounterClockwise{false};
 };
 struct ReverseColors {};
-// Combines the active object's mesh with the one other selected object's mesh, in the active object's space, into the active mesh's new geometry.
-// The other object stays as it is.
+// Combine two selected objects into the active mesh in its local space.
+// Preserve the other object.
 struct Boolean {
     BooleanOperation Operation{BooleanOperation::Difference};
 };
@@ -332,8 +324,8 @@ using Action = std::variant<
 void Apply(state::Scene &, state::Entity viewport, const Action &);
 // The edit-mode meshes with a selection in the viewport's edit element domain, which the operators edit.
 std::vector<state::Entity> SelectedEditMeshes(const state::Scene &, state::Entity viewport);
-// Reuses the staged inset's topology when only its continuous parameters move.
-// Returns false without writing if topology, targets, or selection changed.
+// Reuse staged inset topology for continuous parameter changes.
+// Return false without writes if topology, targets, or selection changed.
 bool UpdateInsetPreview(state::Scene &, state::Entity viewport, const Inset &, InsetPreviewCache &);
 } // namespace action::mesh
 

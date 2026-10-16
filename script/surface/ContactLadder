@@ -5,26 +5,18 @@
 # grid reports roughness exponents by speed and speed exponents by roughness over Dang 2013's operating range.
 # sweep reports roughness exponents over four corpus speeds.
 # sphere repeats the ladder with a load-defined point contact.
-# spectrum compares Hertz and linear laws by band following Perret-Liaudet 2003 section 5.3.3.
+# spectrum reports octave-band power for Hertz contact.
 # gradient varies length scale at constant surface gradient following Ben Abdelounis 2011 Eq. 8.
 # damping tests the -10 dB level change per decade of modal damping from Perret-Liaudet 2003 Fig. 16 and Dang 2013.
 # modes verifies spectral peaks at resonator eigenfrequencies following Dang 2013 Fig. 13 and Ben Abdelounis 2010.
-# rate reports shock rate against sliding speed for acceptance invariant 1b.
+# rate reports per-cell shock rate against sliding speed.
 # Dang reports roughness exponents of 0.63-0.67 and speed exponents of 0.52-0.63.
 # Ben Abdelounis reports roughness exponents of 0.8-1.16 and speed exponents of 0.7-0.96.
-# Report both exponent spreads because the level separates as Ra^n V^m.
-# Verify that parameter changes survive float32 loading before interpreting identical deterministic output.
-# Dang's roughness ladder uses three correlation lengths and therefore three surface realizations.
-# Label each exponent by axis because the cited papers reverse the m and n symbols.
-# Use one fixed lane size for all frictionless rungs to preserve geometry and prevent endpoint silence.
-# Each scene contains one body because the mono mix cannot separate multiple bodies.
-# Report the solved-bar pressure probe with every exponent.
-# LADDER_T60, LADDER_HIGH, and LADDER_PRESSURE applied only to the retired synthetic probe.
-# Constant zeta 0.02 measured roughness spread 0.322 versus 0.316 and speed spread 0.128 versus 0.108.
-# Four LADDER_SEED realizations moved exponents by 0.049 and spreads by 0.055.
-# Treat unpaired changes below approximately 0.04 per exponent or 0.05 per spread as surface variation.
-# Increasing renders from 6 s to 24 s reduced a two-seed gap from 0.090 to 0.022.
 # Re-run marginal 6 s results for at least 24 s and require consistent signs across realizations.
+# Label exponents by axis because the cited papers reverse the m and n symbols.
+# Verify parameter changes survive float32 loading before interpreting identical output.
+# Use a fixed lane size to preserve geometry and prevent endpoint silence.
+# Use one body per scene because the mono mix cannot separate bodies.
 
 import math
 import os
@@ -39,7 +31,6 @@ import generate as gen
 
 # A null change measured roughness spreads of 0.027 at 6 s and 0.012 at 24 s.
 # The 12 s default estimates a spread floor of 0.017 under square-root averaging.
-# Use LADDER_PLAY=6 for iteration and at least 24 s for marginal results.
 Play = float(os.environ.get("LADDER_PLAY", "12.0"))
 Settle = 2.0  # Seconds excluded from level measurement to remove the initial impact.
 LaneHalf = 80.0  # Metres required to contain the fastest rung.
@@ -96,8 +87,6 @@ def build(name, roughness, correlation_length, speed, shape="box", zeta=None):
     return Out / f"{name}.gltf"
 
 
-# A 2026-08-04 6 s grid measured 50 s at one job, 20 s at four, 17 s at eight, and 29 s at sixteen.
-# One-job and eight-job renders produced bit-identical grids.
 Jobs = int(os.environ.get("LADDER_JOBS", "8"))
 
 
@@ -134,10 +123,7 @@ def render(path):
 
 def level(samples):
     """Return mean power after the initial-impact interval.
-
-    Dang reports full-run time-averaged vibration level.
-    A 2026-08-10 seed-zero grid measured exponent -0.44 with median frames and +0.33 with whole-window power.
-    Measurements recorded before 2026-08-10 used median frame power and are not comparable."""
+    Use full-window power as in Dang; older median-frame measurements are not comparable."""
     start = int(Settle * 48000)
     if len(samples) <= start:
         return 0.0
@@ -190,11 +176,8 @@ def sweep():
 
 
 def gradient():
-    """Report levels while varying length scale at a fixed roughness-to-spacing ratio of 0.04.
-
-    Ben Abdelounis 2011 Eq. 8 predicts equal levels from the fixed ratio, but the source data does not vary scale independently.
-    A 2026-08-03 measurement found spreads of 6.0 dB at 0.1 m/s and 15.8 dB at 0.7 m/s.
-    Extending the probe from 7 kHz to 20 kHz produced spreads of 6.0 dB and 15.8 dB instead of 6.6 dB and 15.6 dB."""
+    """Report levels at a fixed roughness-to-spacing ratio of 0.04.
+    Ben Abdelounis 2011 Eq. 8 predicts equal levels, but its source data does not vary scale independently."""
     scales = [1e-3, 2e-4, 5e-5]  # correlation length, m
     speeds = (0.1, 0.7)
     samples = render_many([build(f"q{v}_{i}", 0.04 * lc, lc, v) for v in speeds for i, lc in enumerate(scales)])
@@ -206,15 +189,8 @@ def gradient():
 
 
 def spectrum():
-    """Report octave-band power for the current Hertz contact.
-
-    Perret-Liaudet and Rigaud 2003 section 5.3.3 compares Hertz and linear laws under the same contact-loss clamp.
-    The linear-law arm was removed with the previous engine on 2026-08-08.
-    A 2026-08-03 Hertz-minus-linear measurement produced these dB differences by octave band:
-      v=0.7 m/s  125-250 -0.15, 250-500 -0.07, 500-1k +0.69, 1k-2k -0.05, 2k-4k +0.42, 4k-8k -0.59
-      v=0.1 m/s  125-250 -0.87, 250-500 -0.14, 500-1k +0.25, 1k-2k +1.18, 2k-4k +1.66, 4k-8k +2.94
-    The 4-8 kHz band was approximately 19 dB below the dominant band.
-    Repeated unchanged runs were bit-identical on 2026-08-04."""
+    """Report octave-band power for Hertz contact.
+    See Perret-Liaudet and Rigaud 2003, section 5.3.3, for the contact-loss comparison."""
     import numpy as np
     for v in (0.1, 0.7):
         samples = np.asarray(render(build(f"sp{v}", 6.02e-6, 4.5e-4, v)), dtype=np.float64)
@@ -230,33 +206,9 @@ def spectrum():
 
 
 def rate():
-    """Report shock rate, flight fraction, bearing fraction, level, and intensity against speed.
-
-    CONTACT_REPORT counts each cell that resumes bearing load as one shock.
-    Ben Abdelounis 2011 Figs. 6 and 7 report decreasing shock rate as speed increases and the body loses contact.
-    The offline sweep rate equals speed divided by correlation length because it has no moving body.
-    A 2026-08-04 measurement at Rq 6.02 um produced:
-
-        speed   shocks/s   free    bearing   level       intensity
-        0.02    1718       0.121   0.098     1.459e-14   8.493e-18
-        0.04    2124       0.450   0.064     4.508e-14   2.123e-17
-        0.1     1984       0.736   0.036     1.358e-13   6.848e-17
-        0.2     4739       0.635   0.055     1.058e-13   2.233e-17
-        0.7     4887       0.846   0.029     2.037e-13   4.170e-17
-
-    Rate +0.323 and intensity +0.364 sum to the level slope +0.687.
-    Across Dang's five speeds, the amplitude-rate exponent is 0.647 and satisfies acceptance invariant 1b.
-    Intermediate speeds separate two regimes:
-
-        speed   0.1    0.14   0.2    0.28   0.4    0.55   0.7
-        rate    1984   3718   4739   4361   4328   4463   4887
-        free    0.736  0.647  0.635  0.734  0.794  0.833  0.846
-
-        0.10 to 0.20 m/s : rate ~ v^+1.25, superlinear
-        0.20 to 0.70 m/s : rate ~ v^+0.02, flat
-
-    Report the regime with its exponent because the aggregate 0.647 exponent spans both behaviors.
-    The reported rate is per cell at 48 kHz and supports scaling comparisons only."""
+    """Report per-cell shock rate, flight fraction, bearing fraction, level, and intensity at 48 kHz.
+    CONTACT_REPORT counts each return to bearing load as a shock.
+    Use rates for scaling comparisons; report speed-dependent regimes separately."""
     print(f"  {'speed':>6} {'shocks/s':>12} {'free':>8} {'bearing':>8} {'level':>12} {'intensity':>12}")
     rows = []
     for v in Speeds:
@@ -295,18 +247,8 @@ def rate():
 
 
 def modes():
-    """Compare rendered spectral peaks with retuned resonator eigenfrequencies.
-
-    Dang 2013 Fig. 13 and Ben Abdelounis et al. 2010 report spectral peaks at resonator eigenfrequencies.
-    Peak search uses log-power parabolic interpolation within 2 percent of each mode.
-    Slider scaling shifts the reference frequencies by 1/s, including a 490-cent shift for the 0.5 kg rig.
-    A 2026-08-05 measurement produced these offsets:
-
-        v=0.1 Rq=6.0 um   median 2.7   worst -35.0   within one bin 13/39
-        v=0.7 Rq=6.0 um   median 1.6   worst -34.5   within one bin 12/39
-        v=0.7 Rq=38.6 um  median 0.9   worst +34.7   within one bin 20/39
-    The analysis bin width is 1.46 Hz, and 17 cents is approximately 1 percent.
-    The control varies Rq from 6.0 um to 38.6 um because contact-stiffness detuning should increase with roughness."""
+    """Compare rendered spectral peaks with retuned eigenfrequencies.
+    Use Dang 2013 Fig. 13 and Ben Abdelounis 2010 as reference predictions."""
     import numpy as np
     solved = ladder_probe()
     # Apply the same mass-based frequency scaling as the renderer.
@@ -328,7 +270,6 @@ def modes():
             i = band[int(np.argmax(psd[band]))]
             if i == 0 or i + 1 >= len(psd) or psd[i] <= 0:
                 continue
-            # Interpolate the peak from three log-power bins.
             y0, y1, y2 = (math.log(max(psd[j], 1e-300)) for j in (i - 1, i, i + 1))
             denom = y0 - 2 * y1 + y2
             delta = 0.5 * (y0 - y2) / denom if denom != 0 else 0.0
@@ -343,12 +284,8 @@ def modes():
 
 
 def damping():
-    """Fit power level against modal damping ratio at a fixed operating point.
-
-    Perret-Liaudet and Rigaud 2003 Fig. 16 and Dang 2013 report -10 dB per damping decade.
-    The energy-balance prediction is power proportional to zeta^-1.
-    Measured slopes were -0.81 at 0.1 m/s and -0.78 at 0.7 m/s.
-    At zeta 0.005, the lowest mode has a 1.2 s T60 compared with the 0.1 s analysis frame."""
+    """Fit power against modal damping ratio at fixed conditions.
+    Perret-Liaudet and Rigaud 2003 Fig. 16 and Dang 2013 predict power proportional to zeta^-1."""
     rq, lc = Profiles[1] # Dang's second profile, mid-ladder
     zetas = [0.005, 0.02, 0.08, 0.32] # a 64x span, four rungs of nothing else changing
     speeds = (0.1, 0.7)

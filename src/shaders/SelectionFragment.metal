@@ -5,7 +5,6 @@
 #include "EdgeQuad.metal"
 #include "gpu/ObjectSelectionPushConstants.h"
 
-// Accumulates each covered fragment into the object-selection query.
 fragment void SelectionFragment(
     ObjectIdFragmentVaryings in [[stage_in]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],

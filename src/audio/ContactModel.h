@@ -42,8 +42,6 @@ mat3 InverseInertiaTensor(const MassProperties &);
 // Returns the contact's reduced mass in kilograms, including off-center rotational response.
 double ReducedContactMass(const ContactDynamics &, uint32_t excitable_index, vec3 impact_direction, const Impactor &);
 
-/***** Hertz contact constants (Johnson 1985) *****/
-
 // Effective compliance 1/E* = (1 - v1^2)/E1 + (1 - v2^2)/E2, in Pa^-1.
 double InvEffectiveModulus(const AcousticMaterialProperties &, const AcousticMaterialProperties &);
 
@@ -51,10 +49,12 @@ double InvEffectiveModulus(const AcousticMaterialProperties &, const AcousticMat
 // Zero curvature uses R* = 1e6 m to keep point and edge contacts finite.
 double CombinedCurvature(double curvature_a, double curvature_b);
 
-// Contact stiffness k = (4/3) E* sqrt(R*), in N/m^(3/2). Relates load to penetration by N = k*delta^(3/2).
+// Contact stiffness k = (4/3) E* sqrt(R*), in N/m^(3/2).
+// Relates load to penetration by N = k*delta^(3/2).
 double ContactStiffness(double inv_effective_modulus, double combined_curvature);
 
-// Hertz contact patch radius a = (3 N R* / (4 E*))^(1/3), in meters. Sets the contact filter's scale.
+// Hertz contact patch radius a = (3 N R* / (4 E*))^(1/3), in meters.
+// Sets the contact filter's scale.
 double ContactPatchRadius(double normal_force, double inv_effective_modulus, double combined_curvature);
 
 // Equilibrium penetration under load N: delta0 = (N/k)^(2/3), in meters.

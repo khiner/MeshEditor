@@ -1,12 +1,9 @@
 #pragma once
 
-// Compile-time field metadata derived from plain aggregates: member names and labels, enumerator names, and per-field specs.
-
 #include <string_view>
 #include <type_traits>
 
-// Display and clamping properties of one field, keyed by its owner and member name.
-// A radian field draws and edits in degrees.
+// Display radian fields in degrees.
 enum class FieldUnit : uint8_t { None,
                                  Radians };
 struct FieldSpec {
@@ -55,13 +52,11 @@ template<typename T, typename F> consteval size_t IndexOf(F T::*p) {
 }
 #pragma clang diagnostic pop
 
-// The member name the pointer template argument prints as, such as "&Instance<T>.Name".
 template<auto P> consteval std::string_view PointerName() {
     std::string_view s = __PRETTY_FUNCTION__;
     s = s.substr(0, s.rfind(']'));
     return s.substr(s.rfind('.') + 1);
 }
-// The enumerator name the value prints as, or empty for a value without an enumerator, which prints as a cast.
 template<auto E> consteval std::string_view EnumeratorName() {
     std::string_view s = __PRETTY_FUNCTION__;
     s = s.substr(0, s.rfind(']'));

@@ -39,7 +39,7 @@ struct NamedAttributeRef {
 
 // One named attribute a topology job carries from its source elements to its output elements, in its domain's run of the job's records.
 // A source without the attribute has no values slot.
-// Default holds the value bits of output elements without a source value.
+// Default contains the value bits of output elements without a source value.
 struct TopologyAttribute {
     AttributeType Type DEFAULT();
     NamedAttributeRef Source DEFAULT(), Destination DEFAULT();

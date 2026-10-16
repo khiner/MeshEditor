@@ -24,9 +24,9 @@ struct CreatedMesh {
     std::vector<vec3> AuthoredCornerNormals{};
 };
 
-// The arena work of each phase runs in source order, so a batch lays out the same way every run.
-// Authored normals recover as face sharpness on faceted faces, as edge sharpness where they disagree across an edge, and otherwise as a custom corner-normal layer.
-// A created record's corner classification, base normals and selection state derive later, through the new-mesh shading below.
+// Process arena phases in source order for deterministic layout.
+// Recover authored normals as face sharpness, edge sharpness, or custom corner normals.
+// Derive classification, base normals, and selection in the later new-mesh shading pass.
 std::vector<CreatedMesh> CreateMeshes(state::Scene &, std::span<MeshSource>);
 CreatedMesh CreateMesh(state::Scene &, MeshSource);
 

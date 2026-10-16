@@ -3,9 +3,8 @@
 #include <filesystem>
 
 namespace Paths {
-// `base` is the (read-only) directory containing the running executable.
-// `user_data` is the writable per-user data directory (projects, scratch sessions).
-// Must be called once at startup before any other `Paths` accessor.
+// Call once at startup before using any Paths accessor.
+// Use the read-only executable directory as base and writable per-user storage as user_data.
 void Init(std::filesystem::path base, std::filesystem::path user_data);
 
 const std::filesystem::path &Base();

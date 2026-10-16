@@ -208,7 +208,7 @@ void ReportCpuPhase(std::string_view title) {
 }
 
 void Report() {
-    // GPU pass intervals can overlap siblings and submission parents, so the report does not partition them like nested CPU scopes.
+    // GPU intervals can overlap siblings and parents, so report them independently.
     ReportTable("GPU pass timings (hardware timestamps)", GpuStats, false);
     ReportTable("CPU timings", CpuStats, true);
     ReportCounterTable(Counters);

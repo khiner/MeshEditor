@@ -17,12 +17,10 @@ namespace {
 using animation::Target;
 using animation::TextureTarget;
 
-// A material field `offset` bytes into PBRMaterial.
 template<animation::KeyableField F>
 ChannelTarget MaterialTarget(std::ptrdiff_t offset) {
     return {animation::StoreOf<PBRMaterial>(), uint16_t(offset), 0, animation::FieldCount<F>(), animation::FieldKind<F>()};
 }
-// The pointer row of one table field of a material extension, which a texture field lacks.
 template<typename O, typename T, typename OF, typename TF>
 void MaterialRow(std::vector<PointerRow> &rows, const std::string &prefix, std::ptrdiff_t offset, const detail::MaterialField<O, T, OF, TF> &field) {
     if constexpr (animation::KeyableField<OF>) rows.emplace_back(prefix + std::string{field.Key}, PointerSpace::Material, MaterialTarget<OF>(offset + action::detail::MemPtrOffset(field.Ours)));

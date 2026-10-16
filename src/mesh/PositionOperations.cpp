@@ -19,7 +19,6 @@ bool ValidPlane(quat orientation, vec3 center, float roll) {
     const float norm = orientation.x * orientation.x + orientation.y * orientation.y + orientation.z * orientation.z + orientation.w * orientation.w;
     return norm > 0.f && std::isfinite(norm) && Finite(center) && std::isfinite(roll);
 }
-// Each target's validated selection and exclusions as handles.
 struct TargetHandles {
     TargetHandles(const MeshStore &meshes, std::span<const PositionOperationTarget> targets) {
         std::unordered_set<uint32_t> ids;
@@ -81,7 +80,6 @@ std::vector<FaceAttributeOperationChange> EncodeFaceAttributeOperation(MeshStore
     return changes;
 }
 
-// Position operators share sparse capture and iterative canonical GPU writes.
 std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes, MeshPipelines &pipelines, mtl::ComputeChain &chain, std::span<const PositionOperationTarget> targets, PositionEditOp operation, float factor, uint32_t repeat, const PositionOperationOptions &options) {
     const auto &[axes, requested_flags, direction, gradient, center, warp, bend, randomize, slide, edge_slide, symmetry, curve, circle, transform, attribute, factor_attribute] = options;
     uint32_t flags = requested_flags;
@@ -146,8 +144,7 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
         plane_y = s * right + c * up;
         plane_center = warp ? warp->Center : bend->Center;
         if (bend) {
-            // Equivalent to Blender's shell_angle_to_dist, with a stable
-            // small-angle denominator and saturation past a quarter turn.
+            // Equivalent to Blender's shell_angle_to_dist, with a stable small-angle denominator and saturation past a quarter turn.
             const float angle = std::abs(factor);
             const float shell = angle >= std::numbers::pi_v<float> * .5f ? 1.f : 1.f / std::sin(angle);
             bend_pivot = -std::copysign(1.f, factor) * bend->Radius * shell;
@@ -265,7 +262,7 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
             auto plan = PlanFlatten(mesh, selection);
             if (plan.Vertices.empty()) continue;
             chain.Scratch.ReserveAdditional(plan.Words.size() + plan.Groups.size() + 4ull * plan.Vertices.size());
-            // Flatten's parameters hold packed groups; Planes indexes their offsets.
+            // Flatten's parameters contain packed groups; Planes indexes their offsets.
             pc.Parameters = chain.Upload(as_bytes(plan.Words));
             pc.Planes = chain.Upload(as_bytes(plan.Groups));
             pc.PlaneCount = uint32_t(plan.Groups.size());
@@ -366,8 +363,7 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
             for (const auto &pc : jobs) chain.Groups(pipelines[MeshPass::PositionStatisticsGather], pc, (pc.Count + 255u) / 256u);
         });
         const auto reduce = [&](SlotOffset input, uint32_t count) {
-            // Sphere needs a final normalization even for one partial; bounds
-            // already contain their result when a mesh fits in one group.
+            // Sphere needs a final normalization even for one partial; bounds already contain their result when a mesh fits in one group.
             if (sphere || count > 1u) {
                 do {
                     const uint32_t next = (count + 255u) / 256u;

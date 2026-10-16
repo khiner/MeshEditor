@@ -38,13 +38,13 @@ struct ContactSurface {
 struct SurfaceSoundControls {
     uint32_t MaxVoices{16}; // Cap on simultaneous sustained-contact voices.
     float SustainLevel{1.f}; // Level of the sustained-contact excitation.
-    float AccelNoiseGain{1.f}; // Level of the acceleration noise a body's rigid recoil radiates. Zero disables it.
+    float AccelNoiseGain{1.f}; // Rigid-recoil acceleration-noise gain; zero disables it.
     float Coupling{1.f}; // How much of an object's own vibration modulates the contact separation.
     float ContactDamping{1.f}; // Scale on the Hunt-Crossley dissipation the physics restitution implies.
     // A persisting contact sounds only once its slip or either sweep speed (m/s) clears its floor.
     float MinSlipSpeed{0.005f}, MinSweepSpeed{0.005f};
     // Silence one modal drive row each, so a feedback loop through the modes can be attributed to a row.
-    // The body feed and every other channel stay live.
+    // Keep the body input and other channels enabled.
     bool MuteGeometricDrive{false}, MuteFrictionDrive{false};
 };
 

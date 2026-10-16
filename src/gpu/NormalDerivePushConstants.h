@@ -3,7 +3,8 @@
 #include "gpu/ElementWork.h"
 
 // Configures two-phase normal derivation over 256-element tiles.
-// Phase 0 derives face normals. Phase 1 gathers vertex and normal-sector values through FaceNormalSlot.
+// Phase 0 derives face normals.
+// Phase 1 gathers vertex and normal-sector values through FaceNormalSlot.
 // FirstTile and the buffer slots select the dispatch's tile range and posed or base storage.
 struct NormalDerivePushConstants {
     ElementWork Work DEFAULT();

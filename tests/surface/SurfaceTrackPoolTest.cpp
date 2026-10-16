@@ -5,7 +5,6 @@
 using namespace boost::ut;
 
 namespace {
-// A track the tests can tell apart by value.
 std::shared_ptr<const RoughnessTrack> TrackWith(float spacing) {
     return std::make_shared<const RoughnessTrack>(RoughnessTrack{.Heights = std::vector<float>(4, 0.f), .Sum = std::vector<float>(5, 0.f), .Spacing = spacing});
 }
@@ -14,7 +13,6 @@ size_t FilledSlots(const ModalAudio &m) {
     return size_t(std::ranges::count_if(Surface(m).SurfaceTracks, [](const auto &slot) { return bool(slot.Owned); }));
 }
 
-// Adopt one distinct track per slot, filling the pool.
 void FillPool(ModalAudio &m) {
     for (uint64_t key = 1; key <= SurfaceAudioState::MaxSurfaceTracks; ++key) {
         expect(AdoptSurfaceTrack(Surface(m), key, [key] { return TrackWith(float(key)); }) >= 0);
@@ -74,7 +72,7 @@ int main() {
             ++builds;
             return TrackWith(1.f);
         };
-        // A contact that stops and resumes finds its track still in the pool rather than rebuilding it.
+        // Reuse the cached surface track when a contact resumes after stopping.
         BeginSurfaceTrackFrame(Surface(m));
         const auto first = AdoptSurfaceTrack(Surface(m), 7, make);
         BeginSurfaceTrackFrame(Surface(m)); // The contact goes quiet for a frame.

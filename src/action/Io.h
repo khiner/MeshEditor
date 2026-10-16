@@ -4,12 +4,9 @@
 
 #include <filesystem>
 
-// Scene/document lifecycle: new scene plus the file-IO actions that load and save it.
 namespace action::io {
-// Populate the default scene content.
 struct LoadDefaultScene {};
 
-// Load a file into the scene, choosing the importer by extension.
 struct Load {
     std::filesystem::path Path;
 };
@@ -22,7 +19,7 @@ struct SaveGltf {
 struct LoadRealImpact {
     std::filesystem::path Path;
 };
-// Start from the empty scene that clearing the document leaves, so a project begun empty records how its root state arises.
+// Record the initial document state from an empty scene so projects created without an imported scene can replay.
 struct LoadEmptyScene {};
 
 using Action = std::variant<LoadDefaultScene, Load, LoadGltf, SaveGltf, LoadRealImpact, LoadEmptyScene>;

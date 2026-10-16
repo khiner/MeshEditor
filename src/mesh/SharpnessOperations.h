@@ -13,6 +13,6 @@ struct SharpnessOperationChange {
 };
 // Selected operations use the target's selection, read on the host from masks where it names masks.
 // All-face operations affect the whole mesh.
-// Completes canonical sharpness, corner classification and normals. Triangle work
-// remains in chain.Scratch for a caller's render publication.
+// Completes canonical sharpness, corner classification and normals.
+// Triangle work remains in chain.Scratch for a caller's render publication.
 std::vector<SharpnessOperationChange> ExecuteGeometrySharpness(state::Scene &, mtl::ComputeChain &, std::span<const SharpnessOperationTarget>, EditSharpnessOperation, bool value = false, float angle = 0.f);

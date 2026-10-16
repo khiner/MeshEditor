@@ -35,10 +35,11 @@ struct Version {
 // One slot the owner applies while restoring or loading a version.
 struct SlotChange {
     uint64_t Slot{};
-    // The version's value, moved out of the trie. The owner takes it when applying and leaves it when Unchanged.
+    // The version's value, moved out of the trie.
+    // The owner takes it when applying and leaves it when Unchanged.
     Blob Incoming{};
-    bool Erase{}; // The version holds no value at Slot.
-    bool MaybeEqual{}; // The settled hash matches Incoming, so the owner compares bytes before replacing.
+    bool Erase{}; // Erase Slot in the target version.
+    bool MaybeEqual{}; // The current hash matches Incoming; compare bytes before replacing.
     bool Default{}; // Incoming hashes as a default page.
     // The owner fills these while applying.
     Blob Old{}; // The displaced live value when WasPresent and not Unchanged.
@@ -83,7 +84,8 @@ struct LiveTrie {
     void Write(uint64_t first, uint64_t count, std::span<const std::byte> contents);
     // Whether pinned versions alias slot, so its value must be captured before mutation.
     bool Uncaptured(uint64_t slot) const;
-    // Record slot's live value for pinned versions. Absent slots pass nullopt.
+    // Record slot's live value for pinned versions.
+    // Absent slots pass nullopt.
     void Capture(uint64_t slot, std::optional<Blob>);
     // Fetch only leaves that pinned versions still alias, traversing the range once.
     using CaptureFn = std::optional<Blob> (*)(void *, uint64_t);
@@ -92,32 +94,38 @@ struct LiveTrie {
     void MarkDirty(uint64_t first, uint64_t count);
     bool IsDirty(uint64_t slot) const { return slot < SlotHashes.size() && SlotHashes[slot].Dirty; }
 
-    // Slots awaiting Rehash. Rehash each, then ClearDirty.
+    // Slots awaiting Rehash.
+    // Rehash each, then ClearDirty.
     std::span<const uint64_t> Dirty() const { return DirtySlots; }
-    // Hash slot's live bytes. Absent slots pass nullopt.
+    // Hash slot's live bytes.
+    // Absent slots pass nullopt.
     void Rehash(uint64_t slot, std::optional<std::span<const std::byte>> bytes);
     void ClearDirty() { DirtySlots.clear(); }
     // Rehash dirty pages from live storage.
     void SettleFlat(std::span<const std::byte> contents);
 
-    // Require settled hashes.
+    // Require current hashes.
     Stamp CurrentStamp(uint64_t length) const;
     Version Pin(uint64_t length);
     void Release(Version &);
 
-    // Plan the slot changes that restore v. Apply them, then CommitRestore.
-    // Requires settled hashes. No other trie operation may run between the two calls.
+    // Plan the slot changes that restore v.
+    // Apply them, then CommitRestore.
+    // Requires current hashes.
+    // No other trie operation may run between the two calls.
     RestorePlan PlanRestore(const Version &);
     // Swap displaced values into the version's nodes, rehash changed slots, and return whether the hash matches the recorded stamp.
     bool CommitRestore(RestorePlan &&);
-    // Plan validated changes, erasing slots with zero hashes. Apply them, then CommitLoad.
+    // Plan validated changes, erasing slots with zero hashes.
+    // Apply them, then CommitLoad.
     RestorePlan PlanLoad(uint64_t length, std::span<const std::pair<uint64_t, Hash128>> changes, const std::unordered_map<Hash128, std::vector<std::byte>, Hash128Hasher> &leaves);
     // Capture displaced values for pinned versions and mark loaded slots dirty.
     void CommitLoad(RestorePlan &&);
 
     // Present runs of a version in slot order, bounded by its length.
     std::vector<MaterializedRun> Materialize(const Version &) const;
-    // Requires settled hashes. Return the manifest root for live data.
+    // Requires current hashes.
+    // Return the manifest root for live data.
     Hash128 ManifestRoot(uint64_t length);
     // Requires current slot hashes and child-level hashes.
     ManifestChildren ChildrenAt(uint32_t level, uint64_t index, uint64_t length) const;
@@ -132,7 +140,7 @@ struct LiveTrie {
     const TrieStats &Stats() const { return S; }
     // Checks trie structure and that all pinned Aliased nodes are reachable from the present.
     bool Check(std::string &why, const std::vector<Version> &all_versions) const;
-    // Compare settled hashes with the hashes of live non-default slots, given in slot order.
+    // Compare current hashes with the hashes of live non-default slots, given in slot order.
     bool CheckHashes(std::string &why, std::span<const std::pair<uint64_t, Hash128>> live) const;
 
     enum class SlotState : uint8_t { Unhashed,

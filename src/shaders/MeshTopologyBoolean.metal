@@ -42,7 +42,7 @@ inline float3 TopoBarycentric(float3 p, float3 a, float3 b, float3 c) {
     return uvw;
 }
 
-// Each vertex and intersection entry counts its output copies, and each triangle entry its polygon's triangles.
+// Count output copies per vertex and intersection and output triangles per input triangle polygon.
 kernel void TopologyBooleanCount(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],

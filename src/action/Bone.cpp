@@ -14,7 +14,7 @@
 #include <unordered_set>
 
 namespace {
-// Finalize armature structure after AddBone/RemoveBone. Resets pose state, re-resolves animation indices, and forces a re-evaluation of the current frame.
+// After AddBone/RemoveBone, reset pose state, resolve animation indices, and re-evaluate the current frame.
 void RebuildBoneStructure(state::Scene &r, state::Entity viewport, state::Entity arm_data_entity) {
     auto &armature = r.edit<Armature>(arm_data_entity);
     armature.FinalizeStructure();
@@ -33,7 +33,7 @@ void RebuildBoneStructure(state::Scene &r, state::Entity viewport, state::Entity
     r.edit<LastEvaluatedFrame>(viewport).Value = -1;
 }
 
-// `display_scales` holds every bone's display scale, in bone order.
+// `display_scales` contains every bone's display scale, in bone order.
 state::Entity CreateSingleBoneInstance(state::Scene &r, state::Entity arm_obj_entity, BoneId bone_id, std::span<const float> display_scales) {
     auto &arm_obj = r.edit<ArmatureObject>(arm_obj_entity);
     const auto &armature = r.get<const Armature>(arm_obj.Entity);
@@ -74,8 +74,8 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 auto &arm_obj = r.edit<ArmatureObject>(arm_obj_entity);
                 auto &armature = r.edit<Armature>(arm_obj.Entity);
 
-                // Classify: tip or body selected → extrude from tip (child); root-only → extrude from root (sibling).
-                // For root extrude, skip if parent bone's tip is also selected.
+                // Extrude tips and bodies as children, and roots as siblings.
+                // Skip a root when its parent tip is selected.
                 std::vector<BoneId> new_bone_ids;
                 std::vector<uint32_t> updated_parent_indices;
                 for (const auto e : r.view<BoneSelection, BoneIndex>()) {
@@ -135,7 +135,6 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     orig_to_new[bone.Id] = new_id;
                     duplicated.emplace_back(e, new_id);
                 }
-                // Remap: if both a bone and its parent were duplicated, point duplicate child to duplicate parent.
                 for (const auto &dup : duplicated) {
                     auto &nb = armature.Bones[*armature.FindBoneIndex(dup.second)];
                     if (const auto it = orig_to_new.find(nb.ParentBoneId); it != orig_to_new.end()) nb.ParentBoneId = it->second;

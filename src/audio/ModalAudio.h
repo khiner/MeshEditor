@@ -90,13 +90,15 @@ inline ClickFilter RecoilClickFilter(double radius, double volume, double mass, 
 // The modal synthesis bank, struct-of-arrays.
 // Each mode is a coupled-form (complex one-pole) resonator: z <- z*c + excitation, output Im(z).
 struct ModalBank {
-    // Per-mode, objects concatenated. Object o owns modes [ModeOffset[o], ModeOffset[o] + ModeCount[o]).
+    // Per-mode, objects concatenated.
+    // Object o owns modes [ModeOffset[o], ModeOffset[o] + ModeCount[o]).
     std::vector<float> CoeffRe, CoeffIm; // Resonator coefficient c = decay * exp(i*2*pi*freq/SR). Zero mutes the mode.
     std::vector<float> StateRe, StateIm; // Resonator state z
     // The mode's far-field radiation gain in Pa per unit of mass-normalized modal velocity, zero for a muted mode.
     // Converts drive state to pressure at the listener distance.
     std::vector<float> RadiationGain;
-    // Surface integral of the squared normal shape, m^2/kg at the baked size. Zero when the model has no sample surface.
+    // Surface integral of the squared normal shape, m^2/kg at the baked size.
+    // Zero when the model has no sample surface.
     std::vector<float> RadiationArea;
     // One over the radiation gain times the angular frequency, which reads modal displacement back out of the state.
     std::vector<float> DeflectionGain;
@@ -105,13 +107,15 @@ struct ModalBank {
     // QuadCompliance is the mode's full-step displacement response coefficient dt*(1 + rho^2 + 2*rho*cos(theta))/4.
     // Converts impulse-invariant drive to the central-difference response used by the quadratized solve.
     std::vector<float> QuadCompliance, QuadDriveScale;
-    // Mass-normalized mode shapes. Object o, excitation position p, mode k: index = ShapeOffset[o] + p*ModeCount[o] + k.
+    // Mass-normalized mode shapes.
+    // Object o, excitation position p, mode k: index = ShapeOffset[o] + p*ModeCount[o] + k.
     std::vector<float> ShapeX, ShapeY, ShapeZ;
 
     // Per-object.
     std::vector<state::Entity> Entities;
     std::vector<uint32_t> ModeOffset, ModeCount, ShapeOffset;
-    // Modes at or past this index are muted. A mode shape row is still ModeCount wide.
+    // Modes at or past this index are muted.
+    // A mode shape row is still ModeCount wide.
     std::vector<uint32_t> TunedModeCount;
     std::vector<uint32_t> LiveModeCount; // Modes still audible, a prefix of the tuned set
     std::vector<float> OutGain; // Output level
@@ -134,7 +138,8 @@ struct ModalBank {
     std::vector<float> RecoilA1, RecoilA2; // Shared denominator of both recoil filters.
     std::vector<float> RadiatorZ1, RadiatorZ2, AirZ1, AirZ2; // Direct-form-II-transposed states.
 
-    // One in-flight contact pulse. It generates a raised-cosine force curve via a unit-circle rotation:
+    // One in-flight contact pulse.
+    // It generates a raised-cosine force curve via a unit-circle rotation:
     // phase <- phase*rot, force = Gamma * (1 - Re(phase)) / 2.
     struct ActiveImpact {
         uint32_t Object, ExPos, SamplesLeft;
@@ -179,13 +184,16 @@ inline void ImpactGainRow(const ModalBank &b, uint32_t impact, uint32_t shape0, 
 struct ModalRenderPool {
     ~ModalRenderPool();
 
-    // Main thread. `count` includes the calling thread, so a count of one spawns nothing.
+    // Main thread.
+    // `count` includes the calling thread, so a count of one spawns nothing.
     void SetSize(uint32_t count);
-    // Main thread. Restarts the workers in `workgroup`, since a worker joins one only at startup.
+    // Main thread.
+    // Restarts the workers in `workgroup`, since a worker joins one only at startup.
     // Null places them in no group.
     void SetWorkgroup(void *workgroup);
 
-    // Audio thread. One block's use of the pool.
+    // Audio thread.
+    // One block's use of the pool.
     // Prevents resize overlap and reports width one during an active resize.
     struct Session {
         explicit Session(ModalRenderPool &);
@@ -193,7 +201,8 @@ struct ModalRenderPool {
         Session(const Session &) = delete;
         Session &operator=(const Session &) = delete;
 
-        // Renderers this block dispatches to, the caller included. Fixed for the session's life.
+        // Renderers this block dispatches to, the caller included.
+        // Fixed for the session's life.
         uint32_t Width() const { return W; }
 
         // Runs `render(context, i)` for every index below Width() and returns once they have all finished.
@@ -206,13 +215,14 @@ struct ModalRenderPool {
     };
 
 private:
-    // Stop and join every worker past `keep`, leaving the pool at that width. Requires ResizeMutex.
+    // Stop and join every worker past `keep`, leaving the pool at that width.
+    // Requires ResizeMutex.
     void StopWorkers(size_t keep);
     void ApplyLocked(uint32_t size, void *workgroup);
 
     std::vector<std::jthread> Threads;
     std::mutex ResizeMutex;
-    uint32_t Active{1}; // Renderers a session dispatches to. Guarded by ResizeMutex.
+    uint32_t Active{1}; // Session renderer count, guarded by ResizeMutex.
     void *Workgroup{nullptr};
     void (*Render)(void *, uint32_t){nullptr};
     void *Context{nullptr};
@@ -284,18 +294,22 @@ uint32_t AddModalObject(ModalBank &, state::Entity, const ModalModes &);
 // Publishes a new bank and frees the previous bank.
 void InstallModalBank(ModalAudio &, ModalBank &next);
 // Set an object's resonator coefficients from per-mode frequencies (Hz) and T60s (s).
-// Out-of-range and undamped modes are muted. Safe against concurrent rendering.
+// Out-of-range and undamped modes are muted.
+// Safe against concurrent rendering.
 // `radius_scale` preserves the physical radiation corner under object scaling.
 void TuneModalObject(ModalBank &, uint32_t object, std::span<const float> freqs, std::span<const float> t60s, float radius_scale = 1.f);
-// Overwrite an object's mode shapes in place. Returns false when the mode or shape layout differs.
+// Overwrite an object's mode shapes in place.
+// Returns false when the mode or shape layout differs.
 // Safe against concurrent rendering.
 bool SetModalObjectShapes(ModalBank &, uint32_t object, const ModalModes &);
 // Returns the object slot for an entity.
 std::optional<uint32_t> FindModalObject(const ModalBank &, state::Entity);
 
-// Enqueue an event from the main thread. Dropped when the queue is full.
+// Enqueue an event from the main thread.
+// Dropped when the queue is full.
 void EnqueueModalEvent(ModalAudio &, const ModalEvent &);
 
-// Add `frame_count` mono samples of modal synthesis into `out`, on the audio thread. Never blocks.
+// Add `frame_count` mono samples of modal synthesis into `out`, on the audio thread.
+// Never blocks.
 // The mix is pressure at the view camera: each object scales by its bank ListenerGain.
 void RenderModal(ModalAudio &, float *out, uint32_t frame_count);

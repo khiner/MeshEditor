@@ -2,7 +2,6 @@
 #include "ElementMembershipRead.metal"
 #include "gpu/TiledJobPushConstants.h"
 
-// Each tile reads one listed block of its job, and each job fills its own work.
 kernel void ElementWorkSeed(
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
     constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]],

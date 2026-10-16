@@ -73,7 +73,6 @@ void SetVertexSamples(
 }
 
 namespace {
-/***** Modal synthesis bank *****/
 
 float ModalOutGain(const state::Scene &r, state::Entity e, float scale) {
     const auto *gain = r.try_get<const ModalGain>(e);
@@ -86,7 +85,6 @@ void SetModalOutGain(const state::Scene &r, ModalBank &b, uint32_t slot, state::
     std::atomic_ref{b.OutGain[slot]}.store(ModalOutGain(r, e, UniformScaleRatio(r, e, modes)), std::memory_order_relaxed);
 }
 
-// The mean scale of the entity's world transform, which sizes its modes and displaced volume.
 float WorldMeanScale(const state::Scene &r, state::Entity e) {
     const auto *world = WorldTransformOf(r, e);
     return world ? MeanScale(world->S) : 1.f;
@@ -176,8 +174,6 @@ void RebuildModalBank(state::Scene &r) {
 
 } // namespace
 
-/***** Free functions for sound object control *****/
-
 void Stop(state::Scene &r, state::Entity e) {
     if (auto *playback = r.try_edit<SamplePlayback>(e)) playback->Stop();
     if (r.all_of<ModalModes>(e)) {
@@ -200,7 +196,8 @@ namespace {
 // Mean curvature (1/m) of the solid sphere with this mass and density. 0 for an immovable body.
 double SphereEquivalentCurvature(double density, double inv_mass) { return std::cbrt(4.0 * std::numbers::pi / 3.0 * density * inv_mass); }
 
-// A strike from a physics collision. Its presence marks `force` as the true contact impulse, not a nominal level.
+// A strike from a physics collision.
+// Its presence marks `force` as the true contact impulse, not a nominal level.
 struct PhysicsStrike {
     vec3 Direction; // node-local contact direction
     vec3 Point; // world-space contact point, which the struck body's curvature is read at
@@ -302,8 +299,6 @@ void CancelModalSolves(state::Scene &r, state::Entity e) {
     }
 }
 
-/***** Modal model derivation *****/
-
 // The material properties a model's modes derive at, folding the spec's one-mass rule into the density.
 // A dynamic rigid body's authored mass is the body's one mass, so the modes derive at the density that makes the solve's mass meet it.
 // Scaling stiffness with mass preserves specific stiffness E/rho and modal frequencies.
@@ -352,8 +347,6 @@ void RescaleModalObject(state::Scene &r, state::Entity e) {
     auto rescaled = RescaledModes(summary, modes, EffectiveModalMaterial(r, e, summary), settings ? *settings : ModalSolveSettings{});
     if (rescaled && *rescaled != modes) ReplaceModalModes(r, e, std::move(*rescaled));
 }
-
-/***** Modal solve inputs *****/
 
 void HashCombine(size_t &seed, const auto &...values) {
     const auto combine = [&](const auto &value) {
@@ -426,7 +419,8 @@ std::vector<uint32_t> UniqueSampleTriangles(std::span<const std::array<uint32_t,
 std::vector<uint32_t> SampleSurfaceTriangles(std::span<const uint32_t> triangle_indices, uint32_t vertex_count, std::span<const uint32_t> excitation_vertices) {
     if (excitation_vertices.size() < 3 || triangle_indices.size() < 3) return {};
 
-    // Vertex adjacency over the triangles' edges, in compressed rows. Each corner of a triangle neighbours the other two.
+    // Store triangle-edge vertex adjacency in compressed rows.
+    // Each triangle corner is adjacent to the other two.
     std::vector<uint32_t> row_start(vertex_count + 1, 0);
     for (const auto v : triangle_indices) row_start[v + 1] += 2;
     for (uint32_t v = 0; v < vertex_count; ++v) row_start[v + 1] += row_start[v];
@@ -506,7 +500,6 @@ SolveInputs BuildSolveInputs(const state::Scene &r, state::Entity e, state::Enti
     };
 }
 
-// True when the baked model no longer matches the current solve inputs.
 bool ModalModelStale(const state::Scene &r, state::Entity e, const SolveInputs &inputs, const AcousticMaterial &material) {
     const auto *summary = r.try_get<const ModalEigenSummary>(e);
     if (!summary) return true;
@@ -579,9 +572,9 @@ void ClearAudioScene(state::Scene &r) {
     ModalBank empty;
     InstallModalBank(*m, empty);
     r.Context.get<AudioSamples>().ByPath.clear();
-    // Clear warm-start data associated with the removed scene.
     r.Context.get<ModalWarmStart>() = {};
-    // In-flight solves target entities from the cleared scene. Their results are discarded on arrival.
+    // In-flight solves target entities from the cleared scene.
+    // Their results are discarded on arrival.
     CancelModalSolves(r);
 }
 
@@ -616,7 +609,6 @@ void RegisterAudioComponentHandlers(state::Scene &r) {
 
 void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
     if (!r.Context.find<ModalSolveJobs>()) return;
-    // Apply completed modal solves.
     auto &solve_jobs = r.Context.get<ModalSolveJobs>().Jobs;
     for (auto it = solve_jobs.begin(); it != solve_jobs.end();) {
         auto &job = **it;
@@ -692,7 +684,6 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
         } else {
             r.emplace<SoundVertices>(e, SoundVertices{meshes.AllocateSoundVertices(new_vertices)});
         }
-        // Ensure MeshActiveElement is valid for the new vertex set.
         const auto mesh_entity = r.get<const Instance>(e).Entity;
         const auto &sv = r.get<const SoundVertices>(e);
         if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) {
@@ -710,7 +701,7 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
         const auto add_owners = [&](state::Entity e) {
             if (!r.valid(e)) return;
             if (const auto body = owning_body(e); body != state::Null) bodies.push_back(body);
-            // A body's subtree leaves or joins the body enclosing it.
+            // Update enclosing-body membership when a body is added or removed from a subtree.
             if (r.all_of<PhysicsBodyHandle>(e)) {
                 if (const auto outer = owning_body(ParentOrNull(r, e)); outer != state::Null) bodies.push_back(outer);
             }
@@ -732,7 +723,8 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
     }
     // Refresh contact dynamics before the strike loop below reads them.
     for (const auto e : reactive(r, Change::ContactDynamicsDerivation)) UpdateContactDynamics(r, e);
-    // A created or replaced VertexForce is a strike. Contact pulses are one-shot.
+    // A created or replaced VertexForce is a strike.
+    // Contact pulses are one-shot.
     for (const auto e : reactive(r, Change::AudioVertexForce)) {
         if (!r.all_of<SoundVerticesModel>(e)) continue;
         const auto *vf = r.try_get<::VertexForce>(e);
@@ -748,12 +740,12 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
             }
         }
     }
-    // Start a new recording with an impact at the active vertex.
     for (const auto e : reactive(r, Change::RecordingStart)) {
         if (!r.all_of<ModalModes, SoundVertices, Recording>(e)) continue;
         if (r.get<const Recording>(e).Frame == 0) TriggerModalStrike(r, e, GetActiveVertexIndex(r, e), 1.f, 1.f);
     }
-    // Reconcile the live output device: a config change re-inits (and may change the negotiated rate), a mix change just applies level/on-off.
+    // Reinitialize the output device after configuration changes, which can change the negotiated sample rate.
+    // Apply mix changes through level and on/off controls.
     bool device_rate_changed = false;
     if (auto *res = r.Context.find<AudioDeviceResource>()) {
         if (const auto &config_tracker = reactive(r, Change::AudioConfig); !config_tracker.empty()) {
@@ -772,7 +764,6 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
 
     const auto &modal_tracker = r.Context.get<AudioTrackers>().Modes;
     if (!modal_tracker.empty() || device_rate_changed) {
-        // Ensure every modal object has tuning, gain, solve settings, and acoustic material.
         for (const auto e : modal_tracker) {
             const auto *modes = r.try_get<const ::ModalModes>(e);
             if (!modes) continue;
@@ -834,7 +825,6 @@ void UpdateModalPlacement(state::Scene &r) {
     if (!m) return;
     auto &bank = LiveBank(*m);
     const bool moved = !reactive(r, Change::WorldTransform).empty();
-    // Retune objects whose world scale changed.
     if (moved) {
         for (uint32_t slot = 0; slot < uint32_t(bank.Entities.size()); ++slot) {
             const auto e = bank.Entities[slot];

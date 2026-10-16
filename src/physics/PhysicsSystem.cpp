@@ -36,7 +36,6 @@ struct ContactSum {
     rbp::float3 Point{}, Normal{}, Slip{}, LocalA{}, LocalB{}, FrictionImpulse{};
     float NormalImpulse = 0;
 };
-// A body's authored inputs: its node's world transform, its parent, its motion and the colliders its compound holds.
 struct BodyInput {
     Transform Node;
     state::Entity Parent = state::Null;
@@ -55,7 +54,6 @@ struct ColliderInput {
     bool HasFilter = false;
     bool operator==(const ColliderInput &) const = default;
 };
-// A body in the world with the inputs it was cooked from, one leaf per collider.
 struct BodyRecord {
     physics::RbpBody Cooked;
     BodyInput Input;
@@ -76,7 +74,6 @@ struct PhysicsState {
     std::optional<rbp::World> World;
     rbp::StepSettings Settings;
     std::map<state::Entity, BodyRecord> Bodies;
-    // The body whose compound holds each collider.
     std::unordered_map<state::Entity, state::Entity> LeafOwners;
     std::map<state::Entity, JointInput> Joints;
     std::set<state::Entity> JointUpdates;
@@ -167,7 +164,7 @@ std::optional<BodyInput> ReadBody(const PhysicsState &s, const state::Scene &r, 
         if (const auto *velocity = r.try_get<const PhysicsVelocity>(entity)) body.Velocity = *velocity;
     }
     if (r.all_of<ColliderShape>(entity)) body.Colliders.push_back(entity);
-    // A solid motion body's compound holds the solid colliders below it, down to the next motion body.
+    // A solid motion body's compound contains the solid colliders below it, down to the next motion body.
     if (motion && !sensor) {
         const auto gather = [&](this const auto &self, state::Entity node) -> void {
             for (const auto child : Children{&r, node}) {
@@ -198,8 +195,8 @@ std::optional<BodyInput> ReadBody(const PhysicsState &s, const state::Scene &r, 
     return body;
 }
 
-// A joint's authored inputs, with the bodies holding its node and its connected node.
-// A dangling definition leaves the joint inactive.
+// Resolve authored joint inputs against the bodies containing its two nodes.
+// Keep dangling joint definitions inactive.
 JointInput ReadJoint(const PhysicsState &s, const state::Scene &r, state::Entity entity, const PhysicsJoint &joint) {
     const auto owner = [&](state::Entity node) { return FindAncestorIf(r, node, [&](auto ancestor) { return s.Bodies.contains(ancestor); }); };
     JointInput input{
@@ -333,7 +330,6 @@ physics::RbpBody CookBody(PhysicsState &s, const state::Scene &r, const BodyInpu
     }
 }
 
-// Drops the leaf owner entries that still name `body` for its colliders.
 void ReleaseLeaves(PhysicsState &s, state::Entity body, std::span<const state::Entity> colliders) {
     for (const auto collider : colliders) {
         if (const auto leaf = s.LeafOwners.find(collider); leaf != s.LeafOwners.end() && leaf->second == body) s.LeafOwners.erase(leaf);
@@ -370,7 +366,8 @@ void BuildJoint(PhysicsState &s, state::Scene &r, state::Entity entity) {
     const auto owner = input.Owner, connected = input.ConnectedOwner;
     auto &world = *s.World;
     if (connected == state::Null && s.WorldAnchor == rbp::NoIndex) s.WorldAnchor = world.AddBody({});
-    // KHR measures the connected frame in the joint node's frame. RBP measures A in B.
+    // KHR measures the connected frame in the joint node's frame.
+    // RBP measures A in B.
     const auto a = PoseOf(*input.Connected), b = PoseOf(input.Node);
     rbp::JointDesc desc{
         .BodyA = connected == state::Null ? s.WorldAnchor : s.Bodies.at(connected).Cooked.Body,
@@ -691,7 +688,7 @@ void ProcessChanges(state::Scene &r) {
     if (definitions) UpdateMasks(s, r);
 
     // The bodies a change reaches: each body and collider at or under a changed node, with each collider's former and current owner.
-    // `reached` holds every node the walk visits and every destroyed input, which the joints below read.
+    // `reached` contains every node the walk visits and every destroyed input, which the joints below read.
     std::vector<state::Entity> candidates, reached;
     const auto touch = [&](state::Entity e) {
         if (const auto owner = s.LeafOwners.find(e); owner != s.LeafOwners.end()) candidates.push_back(owner->second);
@@ -713,13 +710,11 @@ void ProcessChanges(state::Scene &r) {
     for (const auto mesh_entity : geometry) {
         for (const auto collider : MeshCollidersOf(r, mesh_entity)) touch(collider);
     }
-    // A definition reaches every leaf that names one.
     if (definitions) {
         for (const auto e : r.view<const ColliderMaterial>()) touch(e);
     }
     SortUnique(candidates);
 
-    // Each candidate leaves the world, joins it, or compares its inputs with the ones it was cooked from.
     struct Pending {
         state::Entity Entity;
         BodyInput Input;
@@ -737,7 +732,6 @@ void ProcessChanges(state::Scene &r) {
             if (input) added.push_back({e, std::move(*input), std::move(leaves)});
             continue;
         }
-        // A body that stops forming one leaves the world, and one turning sensor or solid joins it again.
         if (!input || input->Sensor != it->second.Input.Sensor) {
             removed.push_back(e);
             if (input) added.push_back({e, std::move(*input), std::move(leaves)});
@@ -816,8 +810,8 @@ void ProcessChanges(state::Scene &r) {
     for (const auto &pending : added) reach_subtree(pending.Entity);
     SortUnique(reached);
 
-    // A joint reads its input again when the change reaches its node, its connected node or its definition, when a body it holds left the world, or when its connected node is gone.
-    // A built joint holding a reframed body rebuilds its world joint.
+    // Refresh joints after endpoint, definition, or body changes.
+    // Rebuild joints attached to reframed bodies.
     const auto reaches = [&](state::Entity e) { return std::ranges::binary_search(reached, e); };
     const auto left = [&](state::Entity e) { return std::ranges::binary_search(removed, e); };
     std::vector<state::Entity> reread, reframed_joints;
@@ -833,7 +827,6 @@ void ProcessChanges(state::Scene &r) {
         if (s.Joints.contains(e) || (r.valid(e) && r.all_of<PhysicsJoint>(e))) reread.push_back(e);
     }
     SortUnique(reread);
-    // The re-read joints whose input is new or differs.
     std::vector<state::Entity> updated;
     bool erased = false;
     for (const auto entity : reread) {
@@ -929,7 +922,6 @@ void SamplePosesAtFrame(state::Scene &r, float frame) {
     const uint32_t hi = std::min(lo + 1, *s.Baked);
     const float t = clamped - float(lo);
     const auto lo_idx = lo - s.CacheStartFrame, hi_idx = hi - s.CacheStartFrame;
-    // The children of the bodies whose sampled pose moved them.
     std::vector<state::Entity> moved_children;
     for (const auto entity : SampleOrder(s, r)) {
         const auto &cache = r.get<const BodyPoseCache>(entity);

@@ -1,18 +1,10 @@
 #!/usr/bin/env python3
 
-"""Compare two render trees pixel by pixel and gate the result against per-scene budgets.
+"""Compare render trees against per-scene pixel budgets.
 
-The committed `render/` corpus is byte-identical run to run, so `git status` alone gates a change that
-must not move a pixel. A screen-error-bounded change (cluster LOD) deliberately moves pixels by a
-bounded amount, which no byte gate can judge. This decodes both trees and reports, per scene, how many
-pixels moved and by how much, then exits nonzero when a scene exceeds its budget.
-
-Usage:
-  script/CompareRenders <candidate-tree> [reference-tree]
-
-With no reference tree the reference is the committed corpus at HEAD, read through git (so a dirty
-working tree cannot silently become the reference). Budgets live in script/render_budgets.json.
-"""
+Usage: script/CompareRenders <candidate-tree> [reference-tree]
+The default reference is the committed corpus at HEAD.
+Use script/render_budgets.json for limits; exit nonzero on exceeded budgets."""
 
 from __future__ import annotations
 

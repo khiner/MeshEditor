@@ -1,4 +1,3 @@
-// Physics UI: "Physics" tab + per-entity physics properties.
 
 #include "PhysicsUi.h"
 #include "PhysicsSystem.h"
@@ -40,7 +39,6 @@ void RenderJointVecList(state::Entity jd_entity, const std::vector<T> &items, co
     PopID();
 }
 
-// Picks an entity holding `Target` by name, or None. Disabled with `empty_preview` while no Target exists.
 template<typename Target>
 void TargetCombo(state::Scene &r, const char *label, state::Entity current, const char *empty_preview, auto &&pick) {
     std::vector<state::Entity> choices{state::Null};
@@ -62,8 +60,6 @@ std::string SystemDisplayName(const state::Scene &r, state::Entity e) {
     return !r.all_of<const CollisionSystem>(e) ? "<invalid>" : DisplayName(r.get<const CollisionSystem>(e).Name, "{:x}", uint32_t(e));
 }
 
-// Renders a CollisionSystem multi-select combo and calls on_toggle for membership changes.
-// Renders a disabled combo when no systems exist.
 template<typename Fn>
 void RenderSystemMultiSelect(const state::Scene &r, const char *label, const std::vector<state::Entity> &selection, Fn on_toggle) {
     const auto view = r.view<const CollisionSystem>();
@@ -88,7 +84,6 @@ void RenderSystemMultiSelect(const state::Scene &r, const char *label, const std
     }
 }
 
-// Edits collision-filter membership, mode, and collision systems in the Physics tab.
 void RenderCollisionFilterBody(state::Scene &r, state::Entity filter_e) {
     const auto &filter = r.get<const CollisionFilter>(filter_e);
     RenderSystemMultiSelect(r, "Member of", filter.Systems, [&](state::Entity se, bool add) {
@@ -250,7 +245,6 @@ void physics_ui::RenderTab(state::Scene &r, state::Entity viewport) {
         );
         PushID("CollisionFilters");
 
-        // Collision matrix
         std::vector<state::Entity> filter_entities;
         for (auto e : r.view<CollisionFilter>()) filter_entities.emplace_back(e);
         if (filter_entities.size() >= 2) {
@@ -422,7 +416,6 @@ void physics_ui::RenderEntityProperties(state::Scene &r, state::Entity entity, s
         });
     }
 
-    // Motion properties editing
     if (motion) {
         Spacing();
         SeparatorText("Motion");
@@ -492,7 +485,6 @@ void physics_ui::RenderEntityProperties(state::Scene &r, state::Entity entity, s
         }
     }
 
-    // Joint properties
     if (const auto *joint = r.try_get<const PhysicsJoint>(entity)) {
         Spacing();
         SeparatorText("Joint");
@@ -506,7 +498,8 @@ void physics_ui::RenderEntityProperties(state::Scene &r, state::Entity entity, s
 
         ui::Edit{r}.Check<&PhysicsJoint::EnableCollision>();
 
-        // ConnectedNode picker. KHR joint.connectedNode is the second attachment frame.
+        // ConnectedNode picker.
+        // KHR joint.connectedNode is the second attachment frame.
         // Mirrors Blender's rigid_body_constraint object1/object2 fields.
         const auto cn = joint->ConnectedNode;
         ui::ChoiceCombo(

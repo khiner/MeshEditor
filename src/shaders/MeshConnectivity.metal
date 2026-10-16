@@ -2,7 +2,7 @@
 #define MESHCONNECTIVITY_MSL
 
 // Builds vertex-outgoing halfedges, opposites, each halfedge's edge, and each edge's first halfedge for one mesh.
-// Face halfedges hash by endpoint pair into an open-addressed table whose slot holds the lowest halfedge of each undirected edge.
+// Face halfedges hash by endpoint pair into an open-addressed table whose slot contains the lowest halfedge of each undirected edge.
 // A wire corner has no face owner and names its other endpoint through its explicit pair.
 // Each edge links its lowest forward halfedge to its lowest reverse halfedge and leaves every other incidence unlinked.
 // Edge ranks follow compact work order.
@@ -103,7 +103,6 @@ kernel void MeshConnectivityFaces(
         if (ctx.Halfedges(job).Index(h) != InvalidOffset) ctx.Owners(job)[h] = f;
 }
 
-// Empties the edge table and nulls every outgoing halfedge and partner.
 kernel void MeshConnectivityInit(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -128,7 +127,6 @@ kernel void MeshConnectivityInit(
     }
 }
 
-// Claims or joins each halfedge's edge slot and records the slot per halfedge.
 kernel void MeshConnectivityInsert(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -143,8 +141,8 @@ kernel void MeshConnectivityInsert(
     const auto corners = ctx.Corners(job);
     const uint2 ends = ConnEndpoints(ctx, job, corners, h);
     const uint3 key = ConnKey(ctx, job, corners, h);
-    // A closure may include corners belonging to vertices outside the writable
-    // vertex domain. Their incidence lists and outgoing handles remain intact.
+    // A closure may include corners belonging to vertices outside the writable vertex domain.
+    // Their incidence lists and outgoing handles remain intact.
     if (ctx.Vertices(job).Index(ends.x) != InvalidOffset) atomic_fetch_min_explicit(&ctx.AtomicOutgoing(job)[ends.x], h, memory_order_relaxed);
     device atomic_uint *table = ctx.AtomicScratch() + job.TableOffset;
     // Equal keys share a probe sequence, and atomic min selects their lowest halfedge.
@@ -162,10 +160,10 @@ kernel void MeshConnectivityInsert(
     ctx.Rep(job)[i] = slot;
 }
 
-// Match the old affected edges against the new endpoint-pair table. Source
-// bindings may name page clones while destination corners/owners are live.
-// Face edges match endpoint pairs. A wire keeps its explicit pair identity,
-// including coincident lines and zero-length input edges.
+// Match the old affected edges against the new endpoint-pair table.
+// Source bindings may name page clones while destination corners/owners are live.
+// Face edges match endpoint pairs.
+// A wire keeps its explicit pair identity, including coincident lines and zero-length input edges.
 kernel void MeshConnectivityMatchEdges(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -207,8 +205,8 @@ kernel void MeshConnectivityMatchEdges(
     }
 }
 
-// Several source edges can become one surface edge. Retain one deterministic
-// handle and retire the other claimants after all matches have been published.
+// Several source edges can become one surface edge.
+// Retain one deterministic handle and retire the other claimants after all matches have been published.
 kernel void MeshConnectivityClassifyEdges(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     uint simd_lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]],
@@ -232,7 +230,6 @@ kernel void MeshConnectivityClassifyEdges(
     }
 }
 
-// Replaces each halfedge's slot with its edge's representative and offers itself as the representative's partner.
 kernel void MeshConnectivityResolve(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -256,7 +253,6 @@ kernel void MeshConnectivityResolve(
     }
 }
 
-// Links each representative with its partner and marks the representatives per halfedge word.
 kernel void MeshConnectivityLink(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     uint simd_lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]],
@@ -330,8 +326,7 @@ kernel void MeshConnectivityRanks(
     );
 }
 
-// Both terminal prefixes are available after the rank pass, including when
-// their words were processed by different threadgroups.
+// Both terminal prefixes are available after the rank pass, including when their words were processed by different threadgroups.
 kernel void MeshConnectivityCounts(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -364,7 +359,6 @@ kernel void MeshConnectivityRetiredEdges(
     if (job.RetiredEdgeWork.Storage.Slot != InvalidSlot) MarkWork(bindless,job.RetiredEdgeWork,ctx.SourceEdges(job).Handle(i));
 }
 
-// Numbers each halfedge's edge by its representative's rank and records each edge's first halfedge.
 kernel void MeshConnectivityEdgeTables(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],

@@ -27,7 +27,6 @@ GltfRoots = [Path("external/glTF-Sample-Assets"), Path("external/glTF_Physics")]
 # Exclude glTF_Physics conformance tests and duplicate binary or embedded variants.
 ExcludedDirs = ("/glTF_Physics/tests/", "/glTF-Binary/", "/glTF-Embedded/")
 
-# Each case specifies an output basename, scene argument and optional capture settings.
 Scene = tuple[Path, str, list[str]]
 
 
@@ -63,7 +62,7 @@ def prepare_leaf(out: Path, arg: str, extra_args: list[str]) -> None:
     for f in out.parent.iterdir():
         if f.name != "run.sh": f.unlink()
     run_sh = out.parent / "run.sh"
-    run_sh.write_text(f"#!/bin/bash\n# Load this scene in the app. Run from the repository root.\nexec {shlex.join([Exe, *([arg] if arg else []), *extra_args])}\n")
+    run_sh.write_text(f"#!/bin/bash\n# Run from the repository root.\nexec {shlex.join([Exe, *([arg] if arg else []), *extra_args])}\n")
     run_sh.chmod(run_sh.stat().st_mode | 0o111)
 
 

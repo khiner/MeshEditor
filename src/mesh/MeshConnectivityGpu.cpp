@@ -9,8 +9,8 @@
 #include "mesh/VertexFanBuild.h"
 #include "state/Scene.h"
 
-// Probing stays short at a load factor below three quarters. Layout arithmetic
-// rejects an oversized job before any 32-bit offset or bit ceiling can wrap.
+// Probing stays short at a load factor below three quarters.
+// Layout arithmetic rejects an oversized job before any 32-bit offset or bit ceiling can wrap.
 uint32_t LayoutConnectivityScratch(MeshConnectivityJob &job, uint32_t first_word) {
     const uint64_t table_size = std::bit_ceil(uint64_t(job.HalfedgeCount) + job.HalfedgeCount / 2u + 1u);
     const auto words = uint32_t((uint64_t(job.HalfedgeCount) + 31u) / 32u);
@@ -68,7 +68,7 @@ void BuildConnectivityNow(state::Scene &r, std::span<const uint32_t> store_ids) 
     const profile::CpuScope scope{"ConnectivityGpu"};
     auto &meshes = r.Context.get<MeshStore>();
     const auto &arenas = meshes.Arenas();
-    // One chunk per submission, so a load holds one chunk's scratch at a time.
+    // Submit each chunk separately to bound scratch memory.
     const auto split = ChunkByScratch(uint32_t(store_ids.size()), ScratchWordBudget, [&](uint32_t i) { return ScratchWords(meshes, store_ids[i]); });
     for (const auto range : split.Chunks) {
         const auto chunk = store_ids.subspan(range.Offset, range.Count);

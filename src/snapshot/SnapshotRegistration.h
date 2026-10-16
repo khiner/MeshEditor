@@ -40,7 +40,8 @@ void EmplaceTag(state::Scene &r, state::Entity e, std::span<const std::byte>) {
 template<typename C>
 void SerializeThunk(const void *component, std::vector<std::byte> &out) {
     const auto start = out.size();
-    // Grow only the appended record. Vector capacity handles allocation growth.
+    // Grow only the appended record.
+    // Vector capacity handles allocation growth.
     zpp::bits::out archive{out, zpp::bits::exact_enlarger{}};
     archive.reset(start);
     // zpp aggregate reflection mis-encodes large const aggregates, while the output archive only reads this reference.
@@ -110,7 +111,8 @@ bool BytesMatchSerialization() {
     return encoded.size() == sizeof(C) && std::memcmp(encoded.data(), storage, sizeof(C)) == 0;
 }
 
-// Serialized values compare through their encoding. Byte-encoded and derived aggregates compare by bytes.
+// Serialized values compare through their encoding.
+// Byte-encoded and derived aggregates compare by bytes.
 template<typename C, bool Persistent>
 bool ValuesEqual(const void *a, const void *b) {
     if constexpr (std::is_empty_v<C>) {

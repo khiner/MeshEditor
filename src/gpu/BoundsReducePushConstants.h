@@ -2,7 +2,8 @@
 
 #include "gpu/ElementWork.h"
 
-// Push constants shared by pose and bounds passes. Posed-buffer slots are in SceneViewUBO.
+// Push constants shared by pose and bounds passes.
+// Posed-buffer slots are in SceneViewUBO.
 struct BoundsReducePushConstants {
     ElementWork Work DEFAULT();
     ElementWork NextWork DEFAULT();

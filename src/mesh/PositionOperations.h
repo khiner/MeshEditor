@@ -69,8 +69,8 @@ struct PositionOperationChange {
     std::vector<uint32_t> Vertices;
     std::vector<Range> Ranges;
 };
-// Encodes canonical writes and captures their pages. The caller submits the chain
-// and refreshes canonical derived geometry before subsequent operations.
+// Encodes canonical writes and captures their pages.
+// The caller submits the chain and refreshes canonical derived geometry before subsequent operations.
 std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &, MeshPipelines &, mtl::ComputeChain &, std::span<const PositionOperationTarget>, PositionEditOp, float factor, uint32_t repeat = 1u, const PositionOperationOptions & = {});
 struct FaceAttributeOperationChange {
     uint32_t TargetIndex;

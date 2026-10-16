@@ -29,11 +29,12 @@ struct SelectionMeshUpdate {
     uint32_t Root DEFAULT();
 };
 
-// The arena streams and the batch's records, which are word offsets into the work slot.
-// Mask word Masks[d].Offset + a / 32 holds the bit of the element at arena address a, and InvalidSlot Leaves and Hidden leave aggregates unwritten and nothing hidden.
-// A sparse dirty-block hash table occupies the first DirtyMask+1 words.
-// Seeds holds SeedCount seeds, and SeedUpdates the index of each seed's mesh update.
-// The dirty list starts with its entry count and the other two indirect dispatch dimensions, followed by (domain << 30 | block, update) pairs.
+// Batch record offsets are words in the work slot.
+// Masks[d].Offset + a / 32 contains the bit for arena address a.
+// InvalidSlot Leaves disables aggregate writes; InvalidSlot Hidden treats all elements as visible.
+// The first DirtyMask+1 words store the dirty-block hash table.
+// SeedUpdates maps Seeds to mesh updates.
+// The dirty list contains count, two dispatch dimensions, then (domain << 30 | block, update) pairs.
 struct SelectionUpdatePushConstants {
     uint32_t CornersSlot DEFAULT(InvalidSlot), VerticesSlot DEFAULT(InvalidSlot);
     uint32_t EdgeSharpnessSlot DEFAULT(InvalidSlot), FaceSharpnessSlot DEFAULT(InvalidSlot);
@@ -47,7 +48,7 @@ struct SelectionUpdatePushConstants {
 };
 
 // Scatters the selected elements' handles of listed (arena block, first output index) word pairs, which list blocks in ascending local order.
-// BlocksSlot holds the domain's block metadata.
+// BlocksSlot contains the domain's block metadata.
 struct SelectionGatherPushConstants {
     SlotOffset Blocks DEFAULT();
     SlotOffset Output DEFAULT();

@@ -70,7 +70,8 @@ struct ImportMesh {
     std::filesystem::path Path;
     std::unique_ptr<MeshInstanceCreateInfo> Info;
 };
-// `Mask=0` removes the component. Targets the mesh entity.
+// `Mask=0` removes the component.
+// Targets the mesh entity.
 struct SetPbrMeshFeaturesMask {
     uint32_t Mask;
     Target Target{OnActive{}};
@@ -84,12 +85,14 @@ struct UpdateMaterial {
 };
 template<typename T> inline constexpr bool IsUpdateMaterial = false;
 template<typename T> inline constexpr bool IsUpdateMaterial<UpdateMaterial<T>> = true;
-// Choose the material slot shown by the material editor. Targets the mesh entity.
+// Choose the material slot shown by the material editor.
+// Targets the mesh entity.
 struct SetMaterialSlotSelection {
     uint32_t PrimitiveIndex;
     Target Target{OnActive{}};
 };
-// Assign a material to a primitive slot. Targets the mesh entity.
+// Assign a material to a primitive slot.
+// Targets the mesh entity.
 struct SetMaterialAssignment {
     uint32_t PrimitiveIndex, MaterialIndex;
     Target Target{OnActive{}};

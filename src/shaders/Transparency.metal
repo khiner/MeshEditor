@@ -3,8 +3,8 @@
 
 #include "Varyings.metal"
 
-// Keep the nearest four surfaces in raster-depth order. Deeper layers retain their
-// coverage and mean radiance in a weighted tail rather than disappearing at capacity.
+// Keep the nearest four surfaces in raster-depth order.
+// Deeper layers retain their coverage and mean radiance in a weighted tail rather than disappearing at capacity.
 constant uint TransparencyLayers = 4u;
 struct TransparencyValues {
     half4 Colors [[raster_order_group(0)]] [TransparencyLayers];
@@ -42,8 +42,7 @@ inline TransparencyStore StoreTransparency(TransparencyValues values, float4 col
     if (isfinite(depth)) {
         const float alpha = float(incoming.a);
         if (alpha > 0.0f) {
-            // Optical density supplies both the color weight and total transmittance,
-            // keeping the explicit image block within Metal's 64-byte sample limit.
+            // Optical density supplies both the color weight and total transmittance, keeping the explicit image block within Metal's 64-byte sample limit.
             const float weight = -log(max(1.0f - alpha, 1e-6f));
             const float total = float(values.Tail.a) + weight;
             const float3 mean = mix(float3(values.Tail.rgb), float3(incoming.rgb) / alpha, weight / total);

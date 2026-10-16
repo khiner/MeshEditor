@@ -12,7 +12,6 @@ namespace {
 // Powers of two give that: 2^-18 m under 2^31 N/m^(3/2) meets 16 N.
 constexpr float RestPenetration{0x1p-18f}, RestStiffness{0x1p31f}, RestLoad{0x1p4f};
 
-// A contact travelling over both surfaces, as a scrape does.
 SustainedState MovingContact(int32_t slot) {
     SustainedState e{
         .Blend = {.Points = {0, 1, 0}, .Weights = {0.5f, 0.5f, 0.f}},
@@ -63,7 +62,7 @@ void ExpectSettles(auto &&make_state) {
     expect(Peak(whole.last(quarter)) < Peak(whole.subspan(2 * quarter, quarter)) * 2.f);
 }
 
-// A contact pressing with nothing, which drives no mode however the force model is written.
+// Verify a zero-load contact excites no modes.
 SustainedState SilentContact() {
     return {.Blend = {.Points = {0, 1, 0}, .Weights = {0.5f, 0.5f, 0.f}}, .N = {0.f, 1.f, 0.f}};
 }
@@ -266,7 +265,7 @@ int main() {
             expect(AllFinite(signal));
             return Result{std::abs(Surface(scene.Audio).VoiceCarry.front().RigidNormal), Rms(signal)};
         };
-        // One full turn over the render, which a body a few centimetres across rolling at a walk makes.
+        // Use one revolution per render, corresponding to walking speed for a body a few centimeters across.
         const auto rolling = run(2.f * std::numbers::pi_v<float> / float(Blocks)), fixed = run(0.f);
         expect(rolling.Travel < 10.f * RestPenetration) << rolling.Travel;
         expect(rolling.Level < fixed.Level * 2) << rolling.Level << fixed.Level;

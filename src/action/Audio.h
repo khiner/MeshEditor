@@ -24,24 +24,22 @@ struct DeleteSoundObject {};
 struct StartRecording {
     uint32_t FrameCount;
 };
-// Applies a solved model to the sound entity a solve was started for.
 struct ApplyModalModel {
     state::Entity SoundEntity;
     std::filesystem::path Path;
 };
-// Retain the vertices chosen before the asynchronous file dialog opens. Load frames only when applied.
+// Retain selected vertices across the asynchronous file dialog.
+// Load frames during Apply.
 struct AssignVertexSamples {
     std::unique_ptr<std::vector<uint32_t>> MeshVertices;
     std::filesystem::path Path;
 };
-// Loads the active microphone's samples into the target sound entity and makes it the entity's active microphone.
 struct ActivateRealImpactMicrophone {
     state::Entity TargetSoundEntity;
 };
 struct RemoveVertexSamples {
     std::vector<uint32_t> MeshVertices;
 };
-// Applies a RealImpact impulse at a mesh vertex.
 struct ApplyExciteImpact {
     state::Entity InstanceEntity;
     uint32_t VertexIndex;
@@ -50,7 +48,6 @@ struct ClearExciteImpacts {};
 
 // Create missing settings from the same defaults shown by the controls.
 struct EnsureModalSettings {};
-// Assigns a named material to the active entity, or to the viewport's striker.
 struct SetMaterialPreset {
     std::string Name;
     bool Striker{false};
@@ -58,7 +55,6 @@ struct SetMaterialPreset {
 struct SetSurfacePreset {
     std::string Name;
 };
-// Selects the output device at its default sample rate.
 struct SetOutputDevice {
     std::string DeviceName;
 };

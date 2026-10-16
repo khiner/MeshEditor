@@ -5,7 +5,8 @@
 #include "Varyings.metal"
 #include "gpu/MotionBlurResolvePushConstants.h"
 
-// Average the summed steps. Color and coverage are both premultiplied, so both scale together.
+// Average the summed steps.
+// Color and coverage are both premultiplied, so both scale together.
 fragment float4 MotionBlurResolveFragment(
     QuadVaryings in [[stage_in]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],

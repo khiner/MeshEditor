@@ -16,7 +16,7 @@ void PrepareMeshletOwners(state::Scene &, MeshStore::Record &owner, uint32_t top
 // Records the owner writes of every job in one dispatch, with one threadgroup per cluster.
 void RecordMeshletOwners(state::Scene &, mtl::ComputeChain &, std::span<const MeshletOwnersJob>);
 
-// Clears the owner entries that name one of the clusters among the elements their payloads name, and releases the owner range once no block holds an owner.
+// Clear element-owner entries for these clusters and release empty owner ranges.
 // Retired lists the handles of erased elements the clusters name, whose blocks may have left the record's table.
 // The clusters' records and payloads stay allocated until retirement returns.
 // Retire before publishing replacement owners.

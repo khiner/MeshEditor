@@ -6,7 +6,7 @@ enum class EventPass;
 void RegisterAudioComponentHandlers(state::Scene &);
 // Install finished modal solves and apply pending model rescales.
 void ApplyCompletedModalSolves(state::Scene &, EventPass);
-// Retune objects whose world scale changed and refresh listener gains, after the world transforms settle.
+// Retune scaled objects and refresh listener gains after world-transform updates.
 void UpdateModalPlacement(state::Scene &);
 // Strike the objects hit by the displayed frame's contacts.
 void UpdateAudioContacts(state::Scene &);
@@ -25,7 +25,8 @@ void RemoveAudioComponents(state::Scene &, state::Entity sound_entity);
 
 void ApplyModalModel(state::Scene &, state::Entity sound_entity, const std::filesystem::path &);
 
-// Assign sample[i] to mesh_vertices[i]. Used by RealImpact initial load and mic swap.
+// Assign sample[i] to mesh_vertices[i].
+// Used by RealImpact initial load and mic swap.
 // Unreferenced samples are released by the component handler.
 void SetVertexSamples(
     state::Scene &, state::Entity sound_entity,

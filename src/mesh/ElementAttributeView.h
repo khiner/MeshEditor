@@ -16,7 +16,7 @@ struct ElementAttributeView {
 // Tessellation and allocation order do not affect the corner handles.
 struct TriangleCorners {
     ElementView<uvec3> Values;
-    std::span<const uint32_t> Handles; // Optional triangle enumeration by handle, borrowed from render membership, which TriangleTable resolves into Values.Values.
+    std::span<const uint32_t> Handles; // Borrowed triangle handles; TriangleTable maps them into Values.Values.
     std::span<const uint32_t> TriangleTable;
     std::span<const uint32_t> CornerTable; // Resolves corner handles to arena addresses, and empty for packed corners whose handles are their addresses.
     size_t size() const { return Handles.empty() ? Values.size() : Handles.size(); }

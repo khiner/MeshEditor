@@ -1,7 +1,6 @@
 #ifndef LINE_QUAD_MSL
 #define LINE_QUAD_MSL
 
-// Expands each line into a six-vertex screen-space quad.
 #include "Bindless.metal"
 #include "Varyings.metal"
 

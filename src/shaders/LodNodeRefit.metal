@@ -8,7 +8,6 @@ inline void RefitError(device const BindlessSet &b,constant LodNodeRefitPushCons
     atomic_store_explicit(BindlessBufferMutable(atomic_uint,b.Buffer,pc.ErrorSlot),1u,memory_order_relaxed);
 }
 
-// A render set's table run and blocks, with its header read once.
 struct RefitSet {
     device const uint *Table;
     device const MeshElementBlock *Blocks;

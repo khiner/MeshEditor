@@ -3,7 +3,7 @@
 #include "gpu/ElementWork.h"
 #include "gpu/MeshTopologyOp.h"
 
-// One boolean of a first mesh P and a second mesh Q, which one source record holds, as word offsets of runs in the chain's scratch.
+// Scratch word offsets for a boolean between meshes P and Q in one source record.
 // Vertices, faces, triangles and triangle halfedges number P's before Q's, and the halfedge of triangle t's corner i is 3t + i.
 // An intersection is a halfedge of one mesh crossing a triangle of the other, and P's halfedges' intersections precede Q's.
 struct BooleanJob {
@@ -13,7 +13,7 @@ struct BooleanJob {
     GpuArray<uint32_t, 2> Vertices DEFAULT(), Faces DEFAULT(), Triangles DEFAULT();
     uint32_t VertexSlot DEFAULT(InvalidSlot), CornerSlot DEFAULT(InvalidSlot), TriangleSlot DEFAULT(InvalidSlot);
     uint32_t FaceTriangleStartSlot DEFAULT(InvalidSlot), VertexNormalSlot DEFAULT(InvalidSlot);
-    ConnectivityRef Connectivity DEFAULT(); // The source's, which holds both meshes' elements
+    ConnectivityRef Connectivity DEFAULT(); // Source connectivity for both meshes
     // The transform taking the second mesh's positions into the first's space.
     mat3 Rotation DEFAULT();
     vec3 Translation DEFAULT();
@@ -39,7 +39,7 @@ struct BooleanJob {
     uint32_t Labels DEFAULT(), Windings DEFAULT(), LabelArguments DEFAULT();
     // Per vertex then per intersection: its signed output count.
     uint32_t Inclusion DEFAULT();
-    // The count scan: polygon halfedges per triangle, partial edge entries per halfedge, new edge entries per intersection side, output vertices per vertex and intersection, then a terminator.
+    // Scan counts for polygon halfedges, partial edges, intersection edges, and output vertices, followed by a terminator.
     uint32_t Counts DEFAULT();
     // Per output vertex: the vertex or intersection it copies.
     uint32_t OutputEntries DEFAULT();

@@ -26,8 +26,7 @@ struct FunctionConstant {
 };
 
 // Caches shader libraries until their source or included files change.
-// Reads the built-in archive for first launch and keeps newly compiled Metal 4
-// pipelines in immutable chunks under the writable user archive path.
+// Reads the built-in archive for first launch and keeps newly compiled Metal 4 pipelines in immutable chunks under the writable user archive path.
 // PipelineCompiler() returns null on older devices, which use the classic APIs without archive caching.
 struct LibraryCache {
     LibraryCache(const Context &ctx, std::filesystem::path shaders_dir, std::filesystem::path pipeline_archive = {}, std::filesystem::path builtin_archive = {}, bool prune_archive_chunks = true, bool archive_only = false);
@@ -37,8 +36,8 @@ struct LibraryCache {
     LibraryCache(LibraryCache &&) noexcept;
 
     MTL::Library *Get(const std::filesystem::path &relative_path, const std::vector<std::string> &defines = {});
-    // Independent cache for background pipeline creation. Its archive is
-    // read-only, so it never races the foreground cache's serializer.
+    // Independent cache for background pipeline creation.
+    // Its archive is read-only, so it never races the foreground cache's serializer.
     std::unique_ptr<LibraryCache> PrewarmCache() const;
     void Clear();
     bool FlushArchive();

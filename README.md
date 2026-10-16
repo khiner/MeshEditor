@@ -1,6 +1,6 @@
 # Mesh Audio Editor
 
-Real-time mesh viewer and editor supporting conversion of meshes to rigid body audio models using Linear Modal Analysis/Synthesis.
+Real-time mesh viewer and editor that converts meshes to rigid-body audio models using linear modal analysis and synthesis.
 
 ![](screenshots/Cube.png)
 ![](screenshots/TorusBvh.png)
@@ -20,12 +20,16 @@ Real-time mesh viewer and editor supporting conversion of meshes to rigid body a
   - Load `.obj` and `.ply` mesh files (via [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply))
 * Select meshes, vertices, edges, or faces by clicking or box selection, through geometry with Blender's X-ray toggle (Alt+Z)
 * Blender-style edit-mode topology operators on the GPU
-  - Delete (X), dissolve (Ctrl+X), merge (M), extrude (E), duplicate (Shift+D), split (Y), separate (P), fill (F), triangulate (Ctrl+T), tris to quads (Alt+J), loop cut (Ctrl+R), and rip (V)
+  - Delete (X), dissolve (Ctrl+X), merge (M), extrude (E), duplicate (Shift+D), split (Y), and separate (P)
+  - Fill (F), triangulate (Ctrl+T), tris to quads (Alt+J), loop cut (Ctrl+R), and rip (V)
   - Mouse-sized inset (I), bevel edges (Ctrl+B) and vertices (Ctrl+Shift+B) with wheel or -/= segments, and knife cuts (K)
-  - Right-click, Ctrl+V, Ctrl+E, and Ctrl+F menus list the rest: subdivide, poke, edge split, rotate edge, bridge edge loops, grid fill, fill holes, solidify, connect vertex path, flip normals, spin, extrude repeat, bisect, symmetrize, convex hull, and the clean-up dissolves
-  - The history window edits any node's action parameters in place, previewing live and committing in the node's place
+  - Right-click, Ctrl+V, Ctrl+E, and Ctrl+F menus list additional operators.
+    These include subdivide, poke, edge split, rotate edge, bridge edge loops, grid fill, fill holes, and solidify.
+    They also include connect vertex path, flip normals, spin, extrude repeat, bisect, symmetrize, convex hull, and cleanup dissolves.
+  - Edit any node's action parameters in the History window, with live previews and commits at that node
   - Extrude, duplicate, and rip commit with their placement drag as one history node, and cancelling the drag cancels the operator
-  - Not ported: wire edges (extruding lone vertices and ripping edges without faces), un-subdivide, decimate, wireframe, boolean, and intersect. Merges keep doubled faces, and grid fill spans one loop
+  - Unported operators: wire edges (extruding lone vertices and ripping edges without faces), un-subdivide, decimate, wireframe, boolean, and intersect.
+    Merges retain doubled faces, and grid fill spans one loop.
 * Flat/smooth/wireframe mesh rendering
 * Translate, rotate, and nonuniformly scale meshes and instances with numeric inputs or a Blender-style transform gizmo
 * Edit the camera with the mouse wheel, numeric inputs, or a Blender-style orientation gizmo
@@ -42,13 +46,15 @@ Real-time mesh viewer and editor supporting conversion of meshes to rigid body a
 * Generate a physical audio model for any mesh; see [Physical audio modeling](#physical-audio-modeling)
   - Click on an audio mesh to excite the nearest vertex, or trigger a selected vertex in the audio menu
   - Strike any number of objects and vertices concurrently (polyphonic modal synthesis)
-  - Edit synth params (gain, fundamental frequency, decay scale, click level) in real-time
+  - Edit synthesis parameters (gain, fundamental frequency, decay scale, click level) in real-time
 * Load [RealImpact](https://samuelpclarke.com/realimpact/) object meshes and microphone positions
 
 ### Rendering and architecture
 
-* Native Metal rendering through [metal-cpp](https://developer.apple.com/metal/cpp/). **Note: This used to be a Vulkan project.** For reference, dae664bd0f2bbdfcf309ba7d000ce9890edbcb38 is the last commit SHA using Vulkan.
-* Bindless Tier-2 argument-buffer access and GPU-address vertex pulling from contiguous arenas for mesh data (vertices, indices, attributes, selection state, etc.)
+* Native Metal rendering through [metal-cpp](https://developer.apple.com/metal/cpp/).
+  The last Vulkan commit was `dae664bd0f2bbdfcf309ba7d000ce9890edbcb38`.
+* Bindless Tier-2 argument-buffer access and GPU-address vertex pulling from contiguous mesh-data arenas.
+  Arenas store vertices, indices, attributes, selection state, and other mesh data.
 * Batched indirect indexed draws with GPU-written instance counts and visibility remaps
 * Directly mapped CPU/GPU storage on unified-memory Apple Silicon
 * GPU-accelerated mouse interactions
@@ -59,7 +65,8 @@ Real-time mesh viewer and editor supporting conversion of meshes to rigid body a
 ## Physical audio modeling
 
 MeshEditor generates physical audio models from meshes using linear modal analysis and synthesis.
-The original implementation was a Georgia Tech PHYS-6260 Computational Physics project documented in the [final report](paper/PAMofPassiveRigidBodies.pdf) and poster below.
+The original implementation was a Georgia Tech PHYS-6260 Computational Physics project.
+The [final report](paper/PAMofPassiveRigidBodies.pdf) and poster below document it.
 
 ![](paper/ProjectPoster36X48.png)
 
@@ -73,7 +80,9 @@ These examples compare synthesized modal impacts with [RealImpact](https://samue
 Each synthesized impact injects a short wideband pulse at the selected vertex.
 See [the blog post](https://karlhiner.com/mesh_audio_editor) for embedded audio players.
 
-_The cylinders shown in the images represent recorded microphone positions, but all recordings come from a single microphone centered near the impacted object, and the modal audio model does not implement any audio wave radiation modeling. All modal audio samples are generated by extracting estimated surface vibrations, as if recorded from a contact microphone._
+_The cylinders mark recorded microphone positions.
+All recordings use a single microphone centered near the impacted object.
+The modal audio samples represent estimated surface vibrations, as if recorded from a contact microphone, without acoustic radiation modeling._
 
 | Object Name | Mesh | Real Impact Audio | Modal Impact Audio |
 |-|-|-|-|
@@ -88,10 +97,11 @@ _The cylinders shown in the images represent recorded microphone positions, but 
 ## glTF viewer
 
 MeshEditor is a glTF 2.0 viewer, editor, and exporter.
-glTF scene nodes are mapped to corresponding MeshEditor objects (meshes, armatures, cameras, lights, empty objects), with the scene parenting hierarchy mirroring the glTF node hierarchy.
+glTF scene nodes map to MeshEditor meshes, armatures, cameras, lights, and empty objects.
+Scene parenting preserves the glTF node hierarchy.
 Khronos-ratified extensions that affect scene appearance are imported, rendered, and editable.
 Load and save preserve glTF data except for cases listed in `tests/RoundtripTest.cpp`.
-PBR BRDF/lighting equations are taken directly from the reference [glTF-Sample-Renderer shaders](https://github.com/KhronosGroup/glTF-Sample-Renderer/blob/main/source/Renderer/shaders/).
+PBR BRDF and lighting equations come directly from the reference [glTF-Sample-Renderer shaders](https://github.com/KhronosGroup/glTF-Sample-Renderer/blob/main/source/Renderer/shaders/).
 
 Metal function constants specialize PBR variants for the current materials, lights, and image-based lighting.
 Feature-mask changes rebuild affected pipeline states from cached MSL libraries.
@@ -99,14 +109,15 @@ Feature-mask changes rebuild affected pipeline states from cached MSL libraries.
 #### glTF supported extensions
 
 ✅ supported | 🟨 partial | ⬜ not supported
+
 | Extension | Status | Notes |
 | - | - | - |
 | `KHR_mesh_quantization` | ✅ | Handled in fastgltf parser/import path |
 | `EXT_mesh_gpu_instancing` | ✅ | Imported into MeshEditor instances |
 | `KHR_lights_punctual` | ✅ | Imported into MeshEditor light entities |
 | `KHR_texture_transform` | ✅ | |
-| `KHR_texture_basisu` | ✅ | KTX2 transcoded via [basis_universal](https://github.com/BinomialLLC/basis_universal). BC7/ETC2/RGBA32 target selected based on device support |
-| `EXT_texture_webp` | ✅ | Decoded via [libwebp](https://github.com/webmproject/libwebp). Edited textures re-encode to lossless WebP on export |
+| `KHR_texture_basisu` | ✅ | Transcode KTX2 via [basis_universal](https://github.com/BinomialLLC/basis_universal); BC7/ETC2/RGBA32 selected by device support |
+| `EXT_texture_webp` | ✅ | Decode via [libwebp](https://github.com/webmproject/libwebp); re-encode edited textures to lossless WebP on export |
 | `KHR_materials_emissive_strength` | ✅ | |
 | `KHR_materials_unlit` | ✅ | |
 | `KHR_materials_specular` | ✅ | |
@@ -122,10 +133,12 @@ Feature-mask changes rebuild affected pipeline states from cached MSL libraries.
 | `KHR_materials_variants` | ✅ | |
 | `KHR_physics_rigid_bodies` | ✅ | (not yet ratified) |
 | `KHR_implicit_shapes` | 🟨 | (not yet ratified) WIP |
-| `KHR_node_visibility` | ✅ | Load and roundtrip are conformant. However, hiding a parent in the app without also hiding its descendants is dropped, since glTF can't express "parent invisible, children visible." |
+| `KHR_node_visibility` | ✅ | Conformant load and roundtrip; see the visibility limitation below |
 | `KHR_animation_pointer` | ✅ | Every mutable Object Model property of the supported extensions. |
 | `EXT_lights_image_based` | ✅ | Imported as Scene IBL when present |
-| `EXT_meshopt_compression` | ✅ | Compressed bufferViews decoded via [meshoptimizer](https://github.com/zeux/meshoptimizer) at import; geometry re-emits uncompressed on export |
+| `EXT_meshopt_compression` | ✅ | Decode compressed bufferViews via [meshoptimizer](https://github.com/zeux/meshoptimizer); export uncompressed geometry |
+
+Hiding a parent while leaving its descendants visible is dropped on export because glTF cannot represent that visibility state.
 
 ## Build & run
 
@@ -160,21 +173,41 @@ $ cd build && ./MeshEditor [file|--empty] [options]
   Clear history retains the current and last saved states as new replay baselines.
 * Open `.gltf`, `.glb`, `.obj`, `.ply`, `.project`, or `.actions` files.
   `.project` extracts saved history into an unnamed working project.
-  `.actions` holds only the history tree and the assets its actions load, and opening it replays every recorded action from the empty scene and fails on any divergence.
+  `.actions` contains the history tree and the assets loaded by its actions.
+  Opening it replays every recorded action from the empty scene and fails on divergence.
   Omit `file` to load the default scene.
 * `--empty` starts with an empty scene instead of the default scene.
 * `--quiet` / `-q` suppresses timer output.
-All of `--play`, `--record`, and `--screenshot` use the presentation look with material preview shading and hidden overlays. `--play` and `--record` run animation and physics; `--screenshot` captures the first frame.
 
-* `--play [seconds]` starts playback. Optional `[seconds]` auto-exits after the given duration. See `--record` below for how the duration is interpreted.
-* `--record path.mp4` runs playback and writes the viewport as an H.264 `.mp4` via a `ffmpeg` subprocess (must be on `PATH`). A `.wav` path records the master audio output alone, and `--record-audio` muxes it into the video.
-When a look-through camera is active, only the camera-frame sub-rect (the area inside the dimmed overlay) is recorded. Otherwise the full viewport is recorded.
-* Motion blur uses fast velocity reconstruction by default. Choose **Full sampling** in the viewport controls, or `--motion-blur N` (1–64), to average complete shutter renders for changing visibility, reflections, and lighting. `--motion-blur fast` selects the default method. Both methods share the shutter setting and keep editor overlays sharp.
+`--play`, `--record`, and `--screenshot` use material preview shading with hidden overlays.
+`--play` and `--record` run animation and physics; `--screenshot` captures the first frame.
+
+* `--play [seconds]` starts playback.
+  Optional `[seconds]` exits after the given duration.
+  See `--record` below for how the duration is interpreted.
+* `--record path.mp4` runs playback and writes the viewport as an H.264 `.mp4` via an `ffmpeg` subprocess (must be on `PATH`).
+  A `.wav` path records the master audio output alone, and `--record-audio` muxes it into the video.
+  With an active look-through camera, recording captures the camera-frame rectangle inside the dimmed overlay.
+  Otherwise the full viewport is recorded.
+* Motion blur uses fast velocity reconstruction by default.
+  Choose **Full sampling** in the viewport controls or `--motion-blur N` (1–64) to average complete shutter renders.
+  This captures changing visibility, reflections, and lighting.
+  `--motion-blur fast` selects the default method.
+  Both methods share the shutter setting and keep editor overlays sharp.
 * `--fps N` sets the recording framerate (default 60).
-* `--screenshot path.webp` writes a single image. The format is chosen by extension (`.webp` lossless, `.png`, `.jpg`/`.jpeg`), which is optional and defaults to `.webp`. The captured region matches `--record`. On its own it exits after writing; combined with `--play [seconds]` or `--record` it grabs the frame and keeps running.
+* `--screenshot path.webp` writes a single image.
+  The format is chosen by extension (`.webp` lossless, `.png`, `.jpg`/`.jpeg`), which is optional and defaults to `.webp`.
+  The captured region matches `--record`.
+  On its own, it exits after writing; combined with `--play [seconds]` or `--record`, it captures the frame and continues running.
 * `--render basename` writes the scene's corpus artifacts under `basename.*` (used by `./script/Render` — see [Render corpus](#render-corpus)).
-* `--render-queue dir` renders one scene per `dir/*.job` file (output basename followed by one command-line argument per line) in a single headless process, and parallel workers can safely share one queue. Used by `./script/Render`; capture settings are parsed the same way as direct launches.
-* `--headless` runs without a window: the viewport renders offscreen at a fixed 1280x800 (2x pixel density) extent, and any capture flags read it back. Without a capture flag it renders one frame and exits, and a duration-less `--play` exits after one timeline loop. With `MESHEDITOR_VALIDATE_ACTIONS` enabled, replay and snapshot validation also compare the complete UI rendered offscreen.
+* `--render-queue dir` renders one scene per `dir/*.job` file in a single headless process.
+  Each job contains an output basename followed by one command-line argument per line.
+  Parallel workers can safely share one queue.
+  `./script/Render` uses this option; capture settings match direct launches.
+* `--headless` runs without a window and renders offscreen at 1280x800 with 2x pixel density.
+  Capture flags read back this fixed viewport.
+  Without a capture flag it renders one frame and exits, and a duration-less `--play` exits after one timeline loop.
+  With `MESHEDITOR_VALIDATE_ACTIONS` enabled, replay and snapshot validation also compare the complete UI rendered offscreen.
 * `--timeline-end seconds` sets the timeline's end so a long play runs without looping.
 * `--frames N` renders N frames and exits.
 
@@ -190,49 +223,73 @@ View setup, applied after the scene loads:
 Profiling, used by `script/Bench`:
 
 * `--profile` prints the profile report on exit, and `--profile-json path` writes it to a file.
-* `--bench-action steady|orbit|transform|visibility|box-select|box-select-orbit|pick-cycle` drives the named interaction every frame, and `--bench-action-count N` caps how many objects the transform and visibility actions touch (default 64).
+* `--bench-action steady|orbit|transform|visibility|box-select|box-select-orbit|pick-cycle` runs the named interaction every frame.
+  `--bench-action-count N` limits transform and visibility actions to N objects (default 64).
 
-The flags can be combined freely, except `--render` excludes `--record` and `--screenshot` (it derives its own outputs). `--render --play N` caps the video at N seconds.
+The flags can be combined freely, except `--render` excludes `--record` and `--screenshot` (it derives its own outputs).
+`--render --play N` caps the video at N seconds.
 
-**Timing**: interactively, the sim runs at wall-clock rate. Recording samples the viewport at `fps`, so the file plays at the same rate as the in-app preview. `--play N` exits after N seconds — wall-clock when interactive, video-seconds when recording. Headless runs (and `--render` anywhere) are instead fixed-step and GPU-paced: one timeline frame per tick with every tick captured, so output is deterministic and `--fps` is unused.
+**Timing**: interactive simulation follows wall time.
+Recording samples the viewport at `fps`, so the file plays at the same rate as the in-app preview.
+`--play N` exits after N seconds — wall-clock when interactive, video-seconds when recording.
+Headless runs and `--render` use a fixed timestep and advance as fast as the GPU permits.
+They capture every tick at one timeline frame per tick, producing deterministic output independently of `--fps`.
 
 ### Render corpus
 
-`render/` contains committed demo output for every scene in the corpus and mirrors the source layout. It covers the built-in scenes, `res/examples/`, root audio samples, and glTF samples under `external/`. Isolation audio samples under `samples/test/` use `script/AudioCorpus`; redundant glTF format variants are skipped.
+`render/` contains committed demo output for every scene in the corpus and mirrors the source layout.
+It covers the built-in scenes, `res/examples/`, root audio samples, and glTF samples under `external/`.
+Isolation audio samples under `samples/test/` use `script/AudioCorpus`; redundant glTF format variants are skipped.
 Each scene directory contains rendered output, an `.actions` replay archive, a console `.log`, and a `run.sh` launcher.
 Static scenes use lossless `.webp` files, including one per material variant.
 Animated scenes use `.mp4` files with one timeline loop per animation clip.
 A scene with sound objects renders its audio and muxes it into the `.mp4`.
 
 Binary artifacts are stored in [git-lfs](https://git-lfs.com); fetch them after cloning:
+
 ```shell
 $ git lfs install
 $ git lfs pull
 ```
 
 Regenerate the corpus with `./script/Render`.
-`render/Benchmarks/Overlays/` adds fixed editor captures using the [overlay benchmark scene and cases](res/benchmarks/Overlays/benchmark.json). Run `script/Render --overlays-only` to update just these captures (`--no-build` uses the existing executable). These leaves contain a lossless `.webp` and a `run.sh` that reproduces the capture headlessly; console logs stay local. Overlay cases share the corpus queue, worker pool, and retry handling.
+`render/Benchmarks/Overlays/` adds fixed editor captures using the [overlay benchmark scene and cases](res/benchmarks/Overlays/benchmark.json).
+Run `script/Render --overlays-only` to update just these captures (`--no-build` uses the existing executable).
+These directories contain a lossless `.webp` and a `run.sh` that reproduces the capture headlessly; console logs stay local.
+Overlay cases share the corpus queue, worker pool, and retry handling.
 
 | Overlay cases | Coverage |
 |-|-|
 | `axes` | Grid/axis lines in front of and behind geometry-attached outlines |
-| `overview`, `orthographic` | Dense linked/mirrored meshes, normals, bounds, lines, points, camera/light helpers, animated bones and bone X-ray; perspective and orthographic views |
-| `edit-vertex`, `edit-edge`, `edit-face`, `edit-xray` | GPU box selection followed by an orbit to reveal selected/unselected elements, with and without X-ray |
+| `overview`, `orthographic` | Linked/mirrored meshes, normals, bounds, lines, points, camera/light helpers, animated bones and bone X-ray |
+| `edit-vertex`, `edit-edge`, `edit-face`, `edit-xray` | GPU box selection and orbit to reveal selected/unselected elements, with and without X-ray |
 | `pick-1` through `pick-4` | Successive picks through overlapping opaque, mirrored and blended objects, a masked hole, and cycle wraparound |
 
-Scenes render headless (no window or display needed) and in parallel (`JOBS` sets the worker count, default 8). It needs the glTF submodules, plus `ffmpeg` on `PATH` for videos.
-Rendering is fixed-step (one tick per timeline frame) and GPU-paced at a fixed extent, so artifacts are deterministic: after regenerating, `git status` shows only scenes whose rendering actually changed.
+The dense `overview` and `orthographic` cases use perspective and orthographic views, respectively.
+
+Scenes render headless (no window or display needed) and in parallel (`JOBS` sets the worker count, default 8).
+Rendering requires the glTF submodules and `ffmpeg` on `PATH` for videos.
+Rendering uses one tick per timeline frame at a fixed extent and advances as fast as the GPU permits.
+Artifacts are deterministic: after regeneration, `git status` shows only scenes whose rendering changed.
 
 #### Fidelity gate
 
-`git status` gates a change that must not move a pixel. A change that moves pixels by a bounded amount (screen-error-bounded cluster LOD) needs a measurement instead:
+Use `git status` to check changes that require identical pixels.
+Measure changes that permit bounded pixel differences, such as cluster LOD with a screen-space error limit:
 
 ```shell
 $ ./script/RenderFidelity --app-args "FLAGS"
 ```
-renders the whole corpus into `render_candidates/` with `FLAGS` handed to every render worker, leaving the committed `render/` tree alone, then reports per scene the share of pixels that moved, the largest and 99th-percentile per-channel difference, and the mean. It exits nonzero when a scene exceeds its budget in [`script/render_budgets.json`](script/render_budgets.json), where the default budget is exact and a track relaxes a scene deliberately with the measured number and the reason.
 
-`./script/CompareRenders <candidate-tree> [reference-tree]` runs the same comparison over any two render trees, writing the full report as JSON with `--json`. Omit the reference tree to judge against the corpus as committed at `HEAD`, read through git so a dirty working tree cannot become the reference. Videos are compared on decoded frames (16 sampled evenly per video by default, `--video-frames 0` for all of them) plus decoded audio, so the driver's occasional one-LSB pixel no longer flips a whole file's hash.
+This command renders the whole corpus into `render_candidates/` with `FLAGS` passed to every worker, preserving the committed `render/` tree.
+It reports each scene's changed-pixel share, largest and 99th-percentile per-channel differences, and mean difference.
+It exits nonzero when a scene exceeds its budget in [`script/render_budgets.json`](script/render_budgets.json).
+The default budget requires exact pixels; each per-scene exception records its measurement and reason.
+
+`./script/CompareRenders <candidate-tree> [reference-tree]` runs the same comparison over any two render trees, writing the full report as JSON with `--json`.
+Omit the reference tree to compare against the corpus committed at `HEAD`, read directly through Git.
+Compare decoded video frames and audio to measure occasional one-LSB driver differences at the pixel level.
+Sample 16 evenly spaced frames per video by default, or use `--video-frames 0` for every frame.
 
 ## Stack
 
@@ -254,24 +311,33 @@ renders the whole corpus into `render_candidates/` with `FLAGS` handed to every 
 
 ### Build options
 
-**glTF sample submenus**: [glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets) and [glTF_Physics](https://github.com/eoineoineoin/glTF_Physics) are git submodules under `external/`, populating `File > glTF Samples` and `File > glTF_Physics Samples`. These submenus are empty if the submodules aren't initialized:
+**glTF sample submenus**: [glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets) and [glTF_Physics](https://github.com/eoineoineoin/glTF_Physics) are Git submodules under `external/`.
+They populate `File > glTF Samples` and `File > glTF_Physics Samples`.
+These submenus are empty if the submodules aren't initialized:
+
 ```shell
 $ git submodule update --init external/glTF-Sample-Assets external/glTF_Physics
 ```
 
-**RealImpact dataset**: The [external/RealImpact](https://samuelpclarke.com/realimpact/) submodule has each object's scanned mesh, texture, and measurement metadata. Use `File > Import > RealImpact` and load `external/RealImpact/dataset/<id>_<name>/preprocessed`.
+**RealImpact dataset**: The [external/RealImpact](https://samuelpclarke.com/realimpact/) submodule has each object's scanned mesh, texture, and measurement metadata.
+Use `File > Import > RealImpact` and load `external/RealImpact/dataset/<id>_<name>/preprocessed`.
+
 ```shell
 $ git submodule update --init external/RealImpact
 ```
+
 The complete recorded RealImpact samples can be triggered interactively in the app by tapping on vertices (and compared with the generated modal audio model).
 The audio samples are 2.8 GB per object, so they're not stored in git and need to be downloaded:
+
 ```shell
 $ external/RealImpact/dataset/download.sh # every object, 128 GB
 $ external/RealImpact/dataset/download.sh 9_BowlCeramic 22_Cup # download just these two
 ```
-An object without a recordings still loads - the mesh, microphone positions, and impact vertices all appear, but no sample-based audio model is generated.
+
+An object without recordings still loads its mesh, microphone positions, and impact vertices, but has no sample-based audio model.
 
 **Quiet mode**: Disable timer output at compile time (equivalent to always passing `--quiet`):
+
 ```shell
 $ cmake -B build -DQUIET=ON .
 ```
@@ -285,10 +351,10 @@ $ script/GenerateRenderBenchmarks
 $ script/Bench run
 ```
 
-The large generated datasets under `res/benchmarks/` are ignored by git; the small `Overlays/` scene is committed for the render corpus. These scenes populate `File > Benchmarks`. Use
-`script/GenerateRenderBenchmarks --profile smoke` for a quick tooling check,
-`script/Bench list` to list cases, and `script/Bench compare before.json after.json`
-to compare runs.
+The large generated datasets under `res/benchmarks/` are ignored by Git; the small `Overlays/` scene is committed for the render corpus.
+These scenes populate `File > Benchmarks`.
+Use `script/GenerateRenderBenchmarks --profile smoke` for a quick tooling check.
+Use `script/Bench list` to list cases and `script/Bench compare before.json after.json` to compare runs.
 
 The overlay corpus and performance checks share the same scene and case settings:
 
@@ -297,7 +363,8 @@ $ script/Bench run --scene-root res/benchmarks/Overlays
 $ script/GenerateRenderBenchmarks --profile overlays --check
 ```
 
-`--profile overlays` regenerates only the committed overlay scene, preserving the large local datasets. It contains 192 linked sphere instances (786,432 logical triangles) plus the small coverage fixtures.
+`--profile overlays` regenerates only the committed overlay scene, preserving the large local datasets.
+It contains 192 linked sphere instances (786,432 logical triangles) plus the small coverage fixtures.
 
 ### Tests
 
@@ -323,9 +390,8 @@ $ ./build/tests/MeshEditorTests
 | `MeshEditorCompressTest` | `.project` archive round trip |
 | `MeshEditorModalSolveIntegrationTest` | FastFEM surface solves, modal-component conversion, warm-start retention, and material rescaling |
 
-`SURFACE_AUDIO=1` builds the surface-contact audio model (`src/audio/surface/`) and its own tests,
-benches and scores under `tests/surface/`. See [src/audio/SurfaceContact.h](src/audio/SurfaceContact.h)
-for the entry points the core modal path reaches it through.
+`SURFACE_AUDIO=1` builds the surface-contact audio model (`src/audio/surface/`) and its tests, benchmarks, and scores under `tests/surface/`.
+See [src/audio/SurfaceContact.h](src/audio/SurfaceContact.h) for its entry points from the core modal code.
 
 ```sh
 $ SURFACE_AUDIO=1 script/Build
@@ -345,8 +411,8 @@ FastFEM owns the analytical, tetrahedralization, real-mesh, and performance corp
 
 ### Update submodules
 
-Submodules live in `lib` (libraries) and `external`.
-Here is my process for updating to the tip of all the lib submodule branches:
+Submodules are in `lib` (libraries) and `external`.
+Update each library submodule to its branch tip:
 
 ```sh
 $ git submodule update --remote {path}/{submodule}

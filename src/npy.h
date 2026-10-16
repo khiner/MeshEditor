@@ -1,9 +1,7 @@
 #pragma once
 
-/*
-Copied and heavily modified the bits needed for reading .npy files from
-[libnpy](https://github.com/llohse/libnpy/blob/master/include/npy.hpp) (MIT License).
-*/
+// Adapted .npy reader from libnpy (MIT).
+// https://github.com/llohse/libnpy/blob/master/include/npy.hpp
 
 #include <algorithm>
 #include <complex>
@@ -13,11 +11,7 @@ Copied and heavily modified the bits needed for reading .npy files from
 #include <ranges>
 
 namespace npy {
-/*
-Compile-time test for byte order.
-If your compiler does not define these per default, you may want to define one of these constants manually.
-Defaults to little endian order.
-*/
+// Default to little endian when the compiler supplies no byte-order macro.
 #if defined(__BYTE_ORDER) && __BYTE_ORDER == __BIG_ENDIAN || defined(__BIG_ENDIAN__) || defined(__ARMEB__) || \
     defined(__THUMBEB__) || defined(__AARCH64EB__) || defined(_MIBSEB) || defined(__MIBSEB) || defined(__MIBSEB__)
 constexpr bool big_endian = true;
@@ -174,26 +168,6 @@ constexpr dtype_t parse_descr(std::string_view typestring) {
     return {byteorder_c, kind_c, uint32_t(std::stoul(std::string{itemsize_s}))};
 }
 
-/*
-The first 6 bytes are a magic string: exactly "x93NUMPY".
-The next 1 byte is an unsigned byte: the major version number of the file format, e.g. x01.
-The next 1 byte is an unsigned byte: the minor version number of the file format, e.g. x00.
-Note: the version of the file format is not tied to the version of the numpy package.
-The next 2 bytes form a little-endian unsigned short int: the length of the header data HEADER_LEN.
-The next HEADER_LEN bytes form the header data describing the array's format.
-It is an ASCII string which contains a Python literal expression of a dictionary.
-It is terminated by a newline and padded with spaces ('x20') to make the total length of the
-magic string + 4 + HEADER_LEN be evenly divisible by 16 for alignment purposes.
-The dictionary contains three keys:
-    "descr" : dtype.descr
-        An object that can be passed as an argument to the numpy.dtype() constructor to create the array's dtype.
-    "fortran_order" : bool
-        Whether the array data is Fortran-contiguous or not.
-        Since Fortran-contiguous arrays are a common form of non-C-contiguity, we allow them to be written directly to disk for efficiency.
-    "shape" : tuple of int
-        The shape of the array.
-        For repeatability and readability, this dictionary is formatted using pprint.pformat() so the keys are in alphabetic order.
- */
 struct header_t {
     dtype_t dtype;
     shape_t shape;
@@ -216,7 +190,8 @@ constexpr char endian_char = (big_endian ? big_endian_char : little_endian_char)
 template<typename T> constexpr bool is_complex_v = false;
 template<typename T> constexpr bool is_complex_v<std::complex<T>> = true;
 
-// numpy dtype for a C++ scalar, resolved at compile time (no RTTI). `char` maps to signed 'i'.
+// numpy dtype for a C++ scalar, resolved at compile time (no RTTI).
+// `char` maps to signed 'i'.
 template<typename T>
 constexpr dtype_t dtype_for() {
     constexpr char byteorder = sizeof(T) == 1 ? no_endian_char : endian_char;

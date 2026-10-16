@@ -20,7 +20,6 @@ from pathlib import Path
 
 OUT = Path(__file__).parent
 
-# An empty filter regenerates every scene.
 Only = frozenset()
 
 
@@ -47,7 +46,6 @@ FINISHES = {
     "Cast": {"roughness": 1e-4, "correlationLength": 1e-3, "spectralSlope": -2.0,
              "waviness": 2e-4, "wavinessLength": 2e-2},
 }
-# Maps finish names to default surface indices.
 FinishIndex = {name: i for i, name in enumerate(FINISHES)}
 
 
@@ -66,7 +64,6 @@ LaneZ = (-0.4, 0.0, 0.4, 0.8)
 BarHalf = (0.12, 0.03, 0.01)
 SphereR = 0.045  # Bodies whose scene needs a point contact stay spheres at this radius.
 GroundHalf = (0.6, 0.04, 0.12)  # A lane long enough for the whole skid.
-# The long lane supports constant-speed rolling and extended deceleration scenes.
 LongLane = {"lane_half": (4.0, 0.04, 0.12), "start_x": -3.6}
 
 
@@ -279,12 +276,8 @@ def _cached_solve(key, material, modes, min_freq, max_freq, build):
 
 
 def solved_modes(half, material, *, spacing=0.02, modes=30, min_freq=20.0, max_freq=16000.0):
-    """Modes of a box body from the real solver chain, as the dict the model embed reads.
-
-    `half` is the box's half extents in meters and `material` is one of the scene material dicts
-    (density, youngsModulus, poissonRatio, alpha, beta, in SI). The solver binary is found through
-    MODAL_SOLVE, defaulting to the build tree's MeshEditorModalSolve. Solves are cached by their
-    full configuration."""
+    """Return cached box modes using half extents in meters and SI material parameters.
+    MODAL_SOLVE overrides the build-tree MeshEditorModalSolve executable."""
     key = ("box", tuple(half), *_material_key(material), spacing, modes, min_freq, max_freq)
     return _cached_solve(key, material, modes, min_freq, max_freq, lambda: _grid_box(*half, spacing))
 
@@ -354,7 +347,6 @@ def body(label, mass, lane, surface, shape="box", *, physics_material=0, rolls=F
 
 
 def ground(label, surface, lane, *, probe=None):
-    """Describe a ground with an optional radiating modal model in `probe`."""
     return {"label": label, "surface": surface, "lane": lane, "probe": probe}
 
 
@@ -448,7 +440,6 @@ def scene(name, description, bodies, grounds, *, lane_half=None, start_x=None, s
     physics_materials = physics_materials or [Frictionless]
     buf = Buffers()
     body_shapes = list(dict.fromkeys(b["shape"] for b in bodies))
-    # `probe` replaces the default solve for every body shape.
     body_solved = {g: probe or (solved_modes(bar_half, CERAMIC) if g == "box" else solved_modes_sphere(SphereR, CERAMIC, max_freq=60000.0)) for g in body_shapes}
     models, body_model = [], {}
     for g in body_shapes:
@@ -498,13 +489,11 @@ def scene(name, description, bodies, grounds, *, lane_half=None, start_x=None, s
     for b_index, b in enumerate(bodies):
         geom, mass = b["shape"], b["mass"]
         solved = body_solved[geom]
-        # Scale geometry and modal data through mass = solved mass * s^3.
         s = (mass / solved["mass"]) ** (1.0 / 3.0)
         inertia = [i * (mass / solved["mass"]) ** (5.0 / 3.0) for i in solved["inertiaDiagonal"]]
         y_half = body_half[b_index]
         stand = 2 * body_half[b["on"]] if b["on"] is not None else 0.0
         body_speed = speed if b["speed"] is None else b["speed"]
-        # Set angular velocity for zero-slip rolling.
         motion = {"mass": mass, "inertiaDiagonal": inertia, "linearVelocity": [body_speed, 0.0, 0.0]}
         if b["rolls"]:
             motion["angularVelocity"] = [0.0, 0.0, -body_speed / y_half]
@@ -553,7 +542,6 @@ def test_scene(name, *args, **kwargs):
 
 
 def surface_scene(name, *args, **kwargs):
-    """Write one sustained-contact prediction scene under test/surface/."""
     test_scene(f"surface/{name}", *args, **kwargs)
 
 
@@ -635,12 +623,11 @@ def _quat_mul(a, b):
     )
 
 
-# A two-box steel angle provides concave geometry.
 BracketBoxes = (((0.0, 0.01, 0.0), (0.05, 0.01, 0.02)), ((-0.04, 0.035, 0.0), (0.01, 0.035, 0.02)))
 
 
 def pile():
-    """Write the full-experience five-body collision and sustained-contact scene."""
+    """Write the five-body impact and sustained-contact scene."""
     if not selected("Pile"):
         return
     buf = Buffers()
@@ -723,7 +710,6 @@ def pile():
             shapes_decl.append(shape)
             rigid_body["collider"] = {"geometry": {"shape": len(shapes_decl) - 1}, "physicsMaterial": 0}
         else:
-            # Use one child collider per bracket arm to form the compound contact geometry.
             children = []
             for center, half in BracketBoxes:
                 shapes_decl.append(box_shape(half))

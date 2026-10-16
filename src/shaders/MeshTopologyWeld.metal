@@ -3,10 +3,9 @@
 
 #include "MeshTopologyContext.metal"
 
-// Each source corner enters the stack once and leaves it once. A repeated
-// target closes a simple loop; one- and two-edge loops leave no face.
-// The hash table retains old stack indices and validates them against the
-// current stack, so popping a loop needs neither tombstones nor a table scan.
+// Each source corner enters the stack once and leaves it once.
+// A repeated target closes a simple loop; one- and two-edge loops leave no face.
+// The hash table retains old stack indices and validates them against the current stack, so popping a loop needs neither tombstones nor a table scan.
 struct TopoWeldLoops {
     device uint *Keys, *Indices;
     device packed_uint2 *Stack, *Corners; // Attribute corner, incoming edge corner.
@@ -48,8 +47,7 @@ inline void TopoPlanWeld(TopoContext ctx, MeshTopologyJob job, uint f) {
                 }
             }
             top=previous+1u;
-            // The remainder keeps its incoming edge and takes the attributes
-            // of the corner whose outgoing edge it now follows.
+            // The remainder keeps its incoming edge and takes the attributes of the corner whose outgoing edge it now follows.
             plan.Stack[previous].x=h;
         } else {
             plan.Keys[slot]=v; plan.Indices[slot]=top;
@@ -59,9 +57,8 @@ inline void TopoPlanWeld(TopoContext ctx, MeshTopologyJob job, uint f) {
     ctx.FlagFaces(job)[f]=faces;
 }
 
-// After planning, the stack/hash storage becomes immutable polygon keys and
-// per-polygon selection/keep flags. The shared edge table is reused between
-// dispatches; no extra allocation or whole-mesh face search is needed.
+// After planning, the stack/hash storage becomes immutable polygon keys and per-polygon selection/keep flags.
+// The shared edge table is reused between dispatches; no extra allocation or whole-mesh face search is needed.
 struct TopoWeldPolygon {
     TopoWeldLoops Plan;
     uint Index, Size;
@@ -151,8 +148,8 @@ inline void TopoWeldDeduplicate(TopoContext ctx, MeshTopologyJob job, uint f) {
             if (occupant==InvalidOffset) break;
             const auto other=TopoWeldPolygonAt(ctx,job,occupant);
             if (!TopoWeldEqual(ctx,job,p,other)) continue;
-            // Existing coincident faces are left intact. Only a face changed
-            // by this weld can be discarded in favor of its representative.
+            // Existing coincident faces are left intact.
+            // Only a face changed by this weld can be discarded in favor of its representative.
             if (occupant!=hi && plan.Keys[i]) {
                 plan.Keys[2u*p.Size+i]=0u;
                 if (ctx.SrcSelectedFace(job,f))

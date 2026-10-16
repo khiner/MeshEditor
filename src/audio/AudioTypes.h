@@ -4,13 +4,15 @@
 
 #include <FastFEM/Surface2Modes.h>
 
-// Persistent audio output device selection. `SampleRate` is the desired rate (0 = device default).
+// Persistent audio output device selection.
+// `SampleRate` is the desired rate (0 = device default).
 struct AudioOutputConfig {
     std::string DeviceName;
     uint32_t SampleRate{0};
 };
 
-// Persistent audio output level. Changing these applies without re-initializing the device.
+// Persistent audio output level.
+// Changing these applies without re-initializing the device.
 struct AudioOutputMix {
     bool On{true};
     bool Muted{false};
@@ -50,7 +52,8 @@ enum class SoundVerticesModel {
     Modal,
 };
 
-// Modal solve inputs beyond the surface mesh and its acoustic material. Per sound entity.
+// Modal solve inputs beyond the surface mesh and its acoustic material.
+// Per sound entity.
 struct ModalSolveSettings {
     fastfem::Discretization Discretization{fastfem::Discretization::Tet10};
     fastfem::SurfaceSolveConfig Solve{};

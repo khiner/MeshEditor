@@ -25,7 +25,6 @@ ClusterLodBuild BuildMeshletClusterLod(const MeshStore &, const MeshStore::Recor
 // Places each owner's finished DAG, retaining finest identities and allocating only new coarse records.
 void CommitClusterLods(state::Scene &, std::span<MeshStore::Record *const>, std::span<const ClusterLodBuild>);
 
-// Adds the coarse clusters and groups to the owner's sets with their geometry, then publishes each group's
-// member/proxy run and proxy IDs directly in UMA. Callers fill member IDs in
-// their established order and retain the returned coarse cluster run.
+// Adds the coarse clusters and groups to the owner's sets with their geometry, then publishes each group's member/proxy run and proxy IDs directly in UMA.
+// Callers fill member IDs in their established order and retain the returned coarse cluster run.
 RenderRun PublishClusterLodStorage(MeshStore &, MeshStore::Record &owner, const ClusterLodBuild &, std::span<const uint32_t> primitive_ids, RenderRun &groups);

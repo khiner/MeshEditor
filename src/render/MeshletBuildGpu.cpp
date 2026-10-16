@@ -30,10 +30,9 @@ struct Layout {
     }
 };
 
-// The element work bounds of one source's build.
 struct SourceWork {
     const MeshStore::Record *Record;
-    // An unowned canonical source without seeded elements gathers its triangle, edge or point membership.
+    // Gather triangle, edge, or point membership for a canonical source without a render owner or seeded elements.
     bool Gathers;
     uint32_t Endpoints, MaterialBound;
     uint64_t MaterialBlocks;
@@ -54,7 +53,6 @@ SourceWork WorkOf(const MeshletBuildSource &source) {
     };
 }
 
-// Lays out the job's build scratch from its element and primitive counts.
 void LayoutJob(Layout &layout, MeshletBuildJob &job) {
     const auto n = job.ElementCount, p = job.PrimitiveCount;
     const uint64_t tile_bound = uint64_t(BuildTiles(n)) + p;
@@ -109,7 +107,6 @@ uint64_t MeshletBuildScratchWords(const MeshStore &meshes, std::span<const Meshl
 }
 
 namespace {
-// The words one source's build takes: its membership in the chain's scratch and its build scratch with its primitives at their bound.
 uint64_t SourceBuildWords(const MeshStore &meshes, const MeshletBuildSource &source) {
     const auto work = WorkOf(source);
     MeshletBuildJob job{.Topology = source.Topology, .ElementCount = source.ElementCount, .PrimitiveCount = source.Owner ? 1u : work.MaterialBound, .BlockCount = Tiles(source.ElementCount)};
@@ -120,8 +117,8 @@ uint64_t SourceBuildWords(const MeshStore &meshes, const MeshletBuildSource &sou
 
 void ValidateSources(const MeshStore &meshes, std::span<const MeshletBuildSource> sources) {
     const auto &render = meshes.Render();
-    // Validate every borrowed binding before releasing any destination. A
-    // fragment must never own or destroy its parent's primitive/LOD records.
+    // Validate every borrowed binding before releasing any destination.
+    // A fragment must never own or destroy its parent's primitive/LOD records.
     std::unordered_map<const MeshStore::Record *, uint32_t> destinations;
     for (const auto &source : sources) {
         if (!source.Destination || source.Topology > 2u) throw std::invalid_argument("Meshlet build requires a destination and triangle, line or point topology.");
@@ -303,12 +300,12 @@ void BuildChunk(state::Scene &r, mtl::ComputeChain &chain, std::span<MeshletBuil
     render.MeshletLocalTriangles.ReserveAdditional(local_triangles);
     // A fragment's payload runs append to the ranges of its render owner, and a canonical destination's fill fresh ranges of exactly their size.
     const auto payload_owner = [&](Range group) -> MeshStore::Record & { return sources[group.Offset].Owner ? *sources[group.Offset].Owner : *sources[group.Offset].Destination; };
-    // Each destination's payload runs, as offsets in its payload owner's ranges.
+    // Store destination payload offsets relative to the payload owner ranges.
     struct PayloadRuns {
         Range Triangles, LocalTriangles, Vertices;
     };
     std::vector<PayloadRuns> payload_runs(destinations.size());
-    // Gives each job the pool positions of its payload runs and captures them for their GPU writes, once the batch appended every run, since growth moves a range.
+    // Capture payload destinations after all appends, since growth can relocate ranges.
     const auto place_payloads = [&] {
         for (uint32_t d = 0u; d < destinations.size(); ++d) {
             const auto &owner = payload_owner(destinations[d]);
@@ -472,12 +469,11 @@ void BuildChunk(state::Scene &r, mtl::ComputeChain &chain, std::span<MeshletBuil
         dispatch(MeshPass::MeshletBuildEmit, TileDomain);
         dispatch(MeshPass::MeshletBuildPrimitives, PrimitiveDomain);
     }
-    // The chain holds every build workspace through the submit that completes its readers.
+    // Retain build workspaces until submission completes their readers.
     chain.Retain(std::move(scratch));
     chain.Retain(std::move(job_buffer));
     chain.Retain(std::move(tile_buffer));
     if (owned) return;
-    // A canonical source that is its own render owner publishes the owners of the element blocks its work names.
     std::vector<MeshletOwnersJob> owner_jobs;
     for (uint32_t i = 0u; i < sources.size(); ++i) {
         const auto &source = sources[i];
@@ -518,8 +514,7 @@ void BuildGpuMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<Meshl
     if (sources.empty()) return;
     const auto &meshes = r.Context.get<const MeshStore>();
     ValidateSources(meshes, sources);
-    // Keep every topology of an owner in the same chunk: releasing or publishing
-    // that owner again in a later chunk would discard its earlier outputs.
+    // Keep every topology of an owner in the same chunk: releasing or publishing that owner again in a later chunk would discard its earlier outputs.
     struct Group {
         std::vector<MeshletBuildSource> Sources;
         uint64_t Words{};

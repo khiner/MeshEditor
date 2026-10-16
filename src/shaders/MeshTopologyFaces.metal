@@ -17,9 +17,9 @@ inline void TopoPlaneFrame(float3 n, thread float3 &u, thread float3 &v) {
 
 inline float TopoCross2(float2 a, float2 b, float2 c) { return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x); }
 
-// Blender's quad beauty: the diagonal whose two triangles keep the larger minimum area-to-perimeter ratio, avoiding flipped or empty triangles.
 // Returns true to split along corners 1 and 3 rather than 0 and 2.
 inline bool TopoSplitQuad13(float2 p0, float2 p1, float2 p2, float2 p3) {
+    // Blender's quad beauty: the diagonal whose two triangles keep the larger minimum area-to-perimeter ratio, avoiding flipped or empty triangles.
     const float area_123 = TopoCross2(p1, p2, p3), area_130 = TopoCross2(p1, p3, p0);
     const float area_012 = TopoCross2(p0, p1, p2), area_023 = TopoCross2(p0, p2, p3);
     const float eps = 1e-12f;
@@ -63,8 +63,8 @@ inline void TopoTriangulateFace(TopoContext ctx, MeshTopologyJob job, uint f, Em
 }
 
 // The join cost of the quad a triangle would form with its neighbor across halfedge `h`, or a negative value when the pair does not join.
-// Follows Blender's error: normal difference across both diagonals plus each corner's deviation from a right angle.
 inline float TopoJoinCost(TopoContext ctx, MeshTopologyJob job, uint h) {
+    // Follows Blender's error: normal difference across both diagonals plus each corner's deviation from a right angle.
     const uint opposite = ctx.SrcOpposite(job, h);
     if (opposite == InvalidOffset) return -1.f;
     const uint f = ctx.SrcFaceOf(job, h), g = ctx.SrcFaceOf(job, opposite);
@@ -139,7 +139,7 @@ inline uint TopoSectorVertex(TopoContext ctx, MeshTopologyJob job, uint h) {
     return ctx.Counts(job, TopoCountVertices)[v] + sectors_below;
 }
 
-// How many sectors an edge split leaves at vertex `v`: one per representative corner, or one for a vertex without corners.
+// Count one sector per representative corner, or one for a vertex without corners.
 inline uint TopoSectorCount(TopoContext ctx, MeshTopologyJob job, uint v) {
     if (!(ctx.FlagVertices(job)[v] & TopoTagged)) return 1u;
     const uint2 fan = ctx.SrcFan(job, v);

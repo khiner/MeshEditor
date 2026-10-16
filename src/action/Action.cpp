@@ -11,7 +11,6 @@ bool CommitRequested = false, CancelRequested = false;
 } // namespace
 
 namespace action {
-// Retains the first user action emitted during the frame.
 template<typename ActionType> void Emit(ActionType a, Phase phase) {
     if (!Emitted) Emitted.emplace(MakeAction(std::move(a)), phase);
 }
@@ -33,7 +32,6 @@ Drained Drain() {
 } // namespace action
 
 namespace {
-// Explicit instantiation provides definitions to other translation units.
 using EmitPtr = void (*)();
 template<typename DV> constexpr auto DomainEmits() {
     return []<size_t... I>(std::index_sequence<I...>) {

@@ -92,8 +92,8 @@ kernel void CornerClassificationWrite(
     const auto fan = ctx.Conn.Incoming(ctx.Vertex);
     for (uint n = 0u; n < fan.y; ++n) ctx.Write(ctx.Conn.FanCorner(fan.x+n),InvalidOffset);
     if (!(ctx.Flags(fan)&5u)) return;
-    // A single vertex owns these writes. Incoming lists are sorted, so the
-    // first unlabelled smooth corner is its component's canonical minimum.
+    // A single vertex owns these writes.
+    // Incoming lists are sorted, so the first unlabelled smooth corner is its component's canonical minimum.
     for (uint n = 0u; n < fan.y; ++n) {
         const uint h = ctx.Conn.FanCorner(fan.x+n);
         if (ctx.Conn.HalfedgeFace(h)!=InvalidOffset && !ctx.Flat(h) && ctx.Root(h) == InvalidOffset) ctx.Sector(h,fan.y);

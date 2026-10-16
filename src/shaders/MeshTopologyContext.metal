@@ -1,7 +1,6 @@
 #ifndef MESHTOPOLOGYCONTEXT_MSL
 #define MESHTOPOLOGYCONTEXT_MSL
 
-// The topology operators' view of a job: source and output arenas, scratch runs, selection, and the shared per-operator rules.
 #include "ElementWorkShared.metal"
 #include "CornerNormalOffset.metal"
 #include "BlockScan.metal"
@@ -47,14 +46,12 @@ struct TopoSourceDomain {
         return second == InvalidOffset ? second : Split + second;
     }
 };
-// A source domain's values at its compact elements, through the source's table entries.
 template<typename T> struct TopoSourceValues {
     device const T *Values;
     device const uint *Table;
     TopoSourceDomain Domain;
     T operator[](uint index) const { return Values[Resolve<MeshElementBlockSize>(Table, Domain.Handle(index))]; }
 };
-// The compact source vertex of each source corner handle.
 struct TopoCornerVertices {
     device const uint *Handles;
     device const uint *Table;
@@ -76,14 +73,12 @@ struct TopoOutputDomain {
         return BindlessBuffer(uint, B.Buffer, Handles.Slot)[Handles.Offset + index];
     }
 };
-// An output domain's values at its compact elements, through the output's table entries.
 template<typename T> struct TopoOutputValues {
     device T *Values;
     device const uint *Table;
     TopoOutputDomain Domain;
     device T &operator[](uint index) const { return Values[Resolve<MeshElementBlockSize>(Table, Domain.Handle(index))]; }
 };
-// An output domain's values at the handles of a run from First.
 template<typename T> struct TopoOutputRun {
     device T *Values;
     device const uint *Table;
@@ -91,7 +86,6 @@ template<typename T> struct TopoOutputRun {
     device T &operator[](uint index) const { return Values[Resolve<MeshElementBlockSize>(Table, First + index)]; }
 };
 
-// Writes a map entry's four sources and its bilinear weights.
 inline void TopoWriteMap(device uint *map, uint4 sources, float s, float t) {
     map[0] = sources.x;
     map[1] = sources.y;
@@ -122,14 +116,12 @@ struct TopoContext {
         else atomic_fetch_and_explicit(word, ~mask, memory_order_relaxed);
     }
 
-    // The table entries of an element domain of the source's or the output's tables.
     device const uint *Table(ElementTables t, uint domain) const {
         const SlotOffset table = domain == 0u ? t.Vertices : domain == 1u ? t.Halfedges : domain == 2u ? t.Faces : domain == 3u ? t.Edges : t.Triangles;
         return BindlessBuffer(uint, B.Buffer, table.Slot) + table.Offset;
     }
     device const uint *SrcTable(MeshTopologyJob job, uint domain) const { return Table(job.SrcConnectivity.Tables, domain); }
     device const uint *DstTable(MeshTopologyJob job, uint domain) const { return Table(job.DstConnectivity.Tables, domain); }
-    // Arena addresses of source and output handles of the domains vertex, halfedge, face, edge and triangle.
     uint SrcAddress(MeshTopologyJob job, uint domain, uint handle) const { return Resolve<MeshElementBlockSize>(SrcTable(job, domain), handle); }
     uint DstAddress(MeshTopologyJob job, uint domain, uint handle) const { return Resolve<MeshElementBlockSize>(DstTable(job, domain), handle); }
 
@@ -159,7 +151,6 @@ struct TopoContext {
     ElementValues<uchar> DstEdgeSharpness(MeshTopologyJob job) const { return {BindlessBufferMutable(uchar, B.Buffer, Pc.Destination.EdgeSharpnessSlot), DstTable(job, 3u)}; }
     TopoSourceValues<uchar> SrcFaceSharpness(MeshTopologyJob job) const { return {BindlessBuffer(uchar,B.Buffer, Pc.Source.FaceSharpnessSlot), SrcTable(job, 2u), SrcFaceDomain(job)}; }
     TopoOutputValues<uchar> DstFaceSharpness(MeshTopologyJob job) const { return {BindlessBufferMutable(uchar, B.Buffer, Pc.Destination.FaceSharpnessSlot), DstTable(job, 2u), DstFaceDomain(job)}; }
-    // Layer values of source handles, and of output handles of the job's runs.
     uint SrcElementPrimitive(MeshTopologyJob job, uint f) const { return BindlessBuffer(uint, B.ElementPrimitiveBuffer, Pc.Source.Layers.FacePrimitives.Slot)[Pc.Source.Layers.FacePrimitives.Offset + SrcFaceDomain(job).Handle(f)]; }
     void SetDstElementPrimitive(MeshTopologyJob job, uint f, uint value) const { BindlessBufferMutable(uint, B.ElementPrimitiveBuffer, Pc.Destination.Layers.FacePrimitives.Slot)[Pc.Destination.Layers.FacePrimitives.Offset + DstFaceDomain(job).Handle(f)] = value; }
     BoneDeformVertex SrcBoneDeform(MeshTopologyJob job, uint v) const { return BindlessBuffer(BoneDeformVertex, B.BoneDeformBuffer, Pc.Source.Layers.Skin.Slot)[Pc.Source.Layers.Skin.Offset + SrcVertexDomain(job).Handle(v)]; }
@@ -220,12 +211,11 @@ struct TopoContext {
         return (job.Flags&TopologyFlagSelectAll) || Scratch()[job.SelectionOffset+job.SrcVertexCount+job.SrcHalfedgeCount+f]!=0u;
     }
 
-    // Scratch runs.
     device uint *FlagVertices(MeshTopologyJob job) const { return Scratch() + job.FlagVertexOffset; }
     device uint *VertexTargets(MeshTopologyJob job) const { return Scratch() + job.VertexTargetOffset; }
     device uint *State(MeshTopologyJob job) const { return Scratch() + job.StateOffset; }
     bool DelOrig(MeshTopologyJob job) const { return job.Op == MeshTopologyOp::InsetRegion || (State(job)[0] & TopoDelOrig) != 0u; }
-    // The label run holds four face arrays then two vertex arrays.
+    // The label run contains four face arrays then two vertex arrays.
     uint LabelRun(MeshTopologyJob job, uint index) const { return job.LabelOffset + min(index, 4u) * job.SrcFaceCount + (index > 4u ? job.SrcVertexCount : 0u); }
     device uint *FaceLabels(MeshTopologyJob job) const { return Scratch() + LabelRun(job, 0u); }
     device uint *RegionBoundary(MeshTopologyJob job) const { return Scratch() + LabelRun(job, 1u); }
@@ -239,7 +229,6 @@ struct TopoContext {
     float3 TransformCopy(MeshTopologyJob job, float3 p) const { return job.CopyRotation.Unpack() * p + float3(job.CopyTranslation); }
     float PlaneDistance(MeshTopologyJob job, float3 p) const { return dot(float3(job.PlaneNormal), p) - job.PlaneOffset; }
     device uint *Table(MeshTopologyJob job) const { return Scratch() + job.TableOffset; }
-    // One of the two inward vectors of output vertex `d`.
     device packed_float3 *Inward(MeshTopologyJob job, uint d, uint slot) const { return reinterpret_cast<device packed_float3 *>(Scratch() + job.VertexInwardOffset) + 2u * d + slot; }
     uint SrcNext(MeshTopologyJob job, uint h) const { return Src(job).Next(h); }
     TopoHalfedgeScratch DissolvePrevious(MeshTopologyJob job) const { return {Scratch() + job.FaceLoopOffset, SrcHalfedgeDomain(job)}; }
@@ -264,7 +253,6 @@ struct TopoContext {
     device uint *FaceMap(MeshTopologyJob job) const { return Scratch() + job.FaceMapOffset; }
     device packed_uint2 *CornerProvenance(MeshTopologyJob job) const { return reinterpret_cast<device packed_uint2 *>(Scratch() + job.CornerProvenanceOffset); }
 
-    // Output topology.
     TopoOutputValues<packed_uint2> DstFaceRanges(MeshTopologyJob job) const { return {BindlessBufferMutable(packed_uint2, B.Buffer, job.DstConnectivity.FaceRangesSlot), DstTable(job, 2u), DstFaceDomain(job)}; }
     TopoOutputRun<uint> DstHalfedgeFaces(MeshTopologyJob job) const { return {BindlessBufferMutable(uint, B.Buffer, job.DstConnectivity.HalfedgeFacesSlot), DstTable(job, 1u), job.DstCornerOffset}; }
     TopoOutputRun<uint> DstOpposites(MeshTopologyJob job) const { return {BindlessBufferMutable(uint, B.Buffer, job.DstConnectivity.OppositesSlot), DstTable(job, 1u), job.DstCornerOffset}; }
@@ -274,7 +262,7 @@ struct TopoContext {
     void WriteVertexMap(MeshTopologyJob job, uint d, uint a, uint b, float weight) const { WriteVertexMap4(job, d, uint4(a, b, b, a), weight, 0.f); }
     uint CornerEdgeSource(MeshTopologyJob job, uint d) const { return CornerMap(job)[TopoCornerMapWords * d + 6u]; }
     bool CornerSelected(MeshTopologyJob job, uint d) const { return CornerMap(job)[TopoCornerMapWords * d + 7u] != 0u; }
-    // Writes one output corner: its vertex, its attribute sources, the source edge its arriving segment keeps, and its edge selection.
+    // Record the output vertex, attribute sources, arriving source edge, and edge selection for each output corner.
     void WriteCorner(MeshTopologyJob job, uint d, uint v_out, uint a, uint b, float weight, uint edge_source, bool selected) const {
         WriteCorner4(job, d, v_out, uint4(a, b, b, a), weight, 0.f, edge_source, selected);
     }
@@ -292,32 +280,28 @@ struct TopoContext {
 template<typename T>
 inline T TopoBilinear(T a, T b, T c, T d, float s, float t) { return mix(mix(a, b, s), mix(d, c, s), t); }
 
-// Named attributes travel as the words of their values, whose types use their component counts.
+// Encode named attributes as value words, using each type component count.
 inline TopologyAttribute TopoAttribute(TopoContext ctx, MeshTopologyJob job, uint i) {
     return reinterpret_cast<device const TopologyAttribute *>(BindlessBuffer(uint, ctx.B.Buffer, job.Attributes.Slot) + job.Attributes.Offset)[i];
 }
-// The first and end records of a domain's attributes.
 inline uint2 TopoAttributeRun(MeshTopologyJob job, AttributeDomain domain) {
     const uint d = uint(domain);
     return uint2(d ? job.AttributeEnds[d - 1u] : 0u, job.AttributeEnds[d]);
 }
-// The attribute's value at a source handle of its domain, and its default without a source value.
+// Read the source attribute at its domain handle, or return the attribute default for a missing value.
 inline uint4 TopoReadAttribute(TopoContext ctx, TopologyAttribute attribute, uint handle) {
     if (handle == InvalidOffset || attribute.Source.ValuesSlot == InvalidSlot) return uint4(attribute.Default[0], attribute.Default[1], attribute.Default[2], attribute.Default[3]);
     return ReadNamedAttribute(ctx.B, attribute.Source, attribute.Type, handle);
 }
-// The operator's parameter at a source handle: the job's per-element attribute's value there, or the constant without one.
+// Read the per-element parameter attribute, or return the constant when absent.
 inline float TopoParamAt(TopoContext ctx, NamedAttributeRef attribute, float fallback, uint handle) {
     return attribute.ValuesSlot == InvalidSlot ? fallback : as_type<float>(ReadNamedAttribute(ctx.B, attribute, AttributeType::Float, handle).x);
 }
-// The first parameter at a compact source vertex or edge.
 inline float TopoParam0Vertex(TopoContext ctx, MeshTopologyJob job, uint v) { return TopoParamAt(ctx, job.Param0Attribute, job.Param0, ctx.SrcVertexDomain(job).Handle(v)); }
 inline float TopoParam0Edge(TopoContext ctx, MeshTopologyJob job, uint e) { return TopoParamAt(ctx, job.Param0Attribute, job.Param0, ctx.SrcEdgeDomain(job).Handle(e)); }
-// Writes the attribute at an output handle of its domain.
 inline void TopoWriteAttribute(TopoContext ctx, TopologyAttribute attribute, uint handle, uint4 value) {
     WriteNamedAttribute(ctx.B, attribute.Destination, attribute.Type, handle, value);
 }
-// Writes each attribute of the domain at an output handle from its value at a source handle.
 inline void TopoCopyAttributes(TopoContext ctx, MeshTopologyJob job, AttributeDomain domain, uint handle, uint source) {
     const uint2 run = TopoAttributeRun(job, domain);
     for (uint i = run.x; i < run.y; ++i) {
@@ -334,7 +318,8 @@ inline uint4 TopoInterpolateAttribute(TopologyAttribute attribute, uint4 a, uint
 inline bool TopoTransformsCopies(MeshTopologyJob job) { return (job.Flags & TopologyFlagTransformCopies) != 0u; }
 inline bool TopoFlipsCopies(MeshTopologyJob job) { return (job.Flags & TopologyFlagFlipCopies) != 0u || job.Op == MeshTopologyOp::Solidify; }
 
-// An extruded region that borders unselected faces moves onto copied vertices. A region that borders nothing duplicates.
+// An extruded region that borders unselected faces moves onto copied vertices.
+// A region that borders nothing duplicates.
 inline bool TopoRegionMoves(TopoContext ctx, MeshTopologyJob job) { return TopologyBaseOp(job.Op) == MeshTopologyOp::ExtrudeRegion && ctx.DelOrig(job); }
 inline bool TopoRegionDuplicates(TopoContext ctx, MeshTopologyJob job) {
     return TopologyBaseOp(job.Op) == MeshTopologyOp::DuplicateGeometry || (TopologyBaseOp(job.Op) == MeshTopologyOp::ExtrudeRegion && !ctx.DelOrig(job));
@@ -354,18 +339,17 @@ inline bool TopoRegionConnectsVertex(TopoContext ctx, MeshTopologyJob job, uint 
     return (ctx.FlagVertices(job)[v]&(TopoInRegion|TopoRegionEdge))==TopoInRegion;
 }
 
-// The grid cell of a position at the merge distance, hashed for the table.
 inline int3 TopoMergeCell(float3 p, float distance) { return int3(floor(p / max(distance, 1e-9f))); }
 inline uint TopoCellHash(int3 cell) {
     return (uint(cell.x) * 73856093u) ^ (uint(cell.y) * 19349663u) ^ (uint(cell.z) * 83492791u);
 }
 inline bool TopoEdgeDissolved(TopoContext ctx, MeshTopologyJob job, uint h) { return (ctx.FlagHalfedges(job)[h] & TopoDissolved) != 0u; }
 
-// A core without faces holds only whole lines, each as the two corners at its ends, since face corners come with their faces.
+// A core without faces contains only whole lines, each as the two corners at its ends, since face corners come with their faces.
 inline bool TopoLineCore(MeshTopologyJob job) { return job.SrcFaceCount == 0u; }
 
-// Surface cleanup drops newly isolated face vertices. Vertex dissolve also drops
-// selected isolated points and joins selected vertices left with two edges.
+// Surface cleanup drops newly isolated face vertices.
+// Vertex dissolve also drops selected isolated points and joins selected vertices left with two edges.
 inline bool TopoVertexRemoved(TopoContext ctx, MeshTopologyJob job, uint v) {
     if (!TopologyIsDissolve(job.Op)) return false;
     const uint flags=ctx.FlagVertices(job)[v];
@@ -427,7 +411,8 @@ inline bool TopoDissolveOwnLoop(TopoContext ctx, MeshTopologyJob job, uint f) {
     return ctx.WalkLength(job)[root] == 0u;
 }
 
-// Edges removed directly by the selection. Face deletion instead drops edges with no surviving face.
+// Edges removed directly by the selection.
+// Face deletion instead drops edges with no surviving face.
 inline bool TopoEdgeDeleted(TopoContext ctx, MeshTopologyJob job, uint h) {
     if (job.Op==MeshTopologyOp::DeleteVertices) {
         const auto corners=ctx.SrcCorners(job);
@@ -436,7 +421,6 @@ inline bool TopoEdgeDeleted(TopoContext ctx, MeshTopologyJob job, uint h) {
     return TopologyDeletesEdges(job.Op) && ctx.SrcSelectedEdge(job,ctx.SrcEdge(job,h));
 }
 
-// Whether the operator removes a source face's own loop.
 inline bool TopoFaceDeleted(TopoContext ctx, MeshTopologyJob job, uint f) {
     const uint2 range = ctx.SrcFaceRange(job, f);
     switch (job.Op) {
@@ -521,7 +505,6 @@ inline uint TopoVertexCopies(TopoContext ctx, MeshTopologyJob job, uint v) {
     }
 }
 
-// Whether a selected face's corner at `v` moves onto the vertex's copy.
 inline bool TopoFaceUsesCopy(TopoContext ctx, MeshTopologyJob job, bool face_selected, uint v) {
     if (!face_selected) return false;
     if (job.Op != MeshTopologyOp::SplitGeometry && !TopoRegionMoves(ctx, job)) return false;
@@ -556,7 +539,6 @@ inline bool TopoOriginalVertexSelected(TopoContext ctx, MeshTopologyJob job, uin
     }
 }
 
-// Writes one output face's loop range, corner ownership, source, and selection.
 inline void TopoEmitFace(TopoContext ctx, MeshTopologyJob job, uint fd, uint base, uint count, uint source, bool selected) {
     ctx.FaceMap(job)[fd] = source;
     ctx.DstFaceRanges(job)[fd] = packed_uint2(job.DstCornerOffset + base, job.DstCornerOffset + base + count);

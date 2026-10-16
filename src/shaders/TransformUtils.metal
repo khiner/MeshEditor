@@ -11,7 +11,6 @@ inline float3 apply_pending_transform_world(const thread SceneT<SetT> &scene, fl
     return apply_edit_transform(world_pos, float3(scene.View.PendingPivot), Transform{scene.View.PendingTranslation, scene.View.PendingRotation, scene.View.PendingScale});
 }
 
-// Applies the pending object-mode transform to selected instances.
 template<typename SetT>
 inline float3 apply_object_pending_transform(const thread SceneT<SetT> &scene, DrawData draw, float3 world_pos) {
     if (scene.View.IsTransforming == 0u || scene.View.InteractionMode == InteractionMode::Edit) return world_pos;
@@ -27,7 +26,6 @@ inline float4 MeshletPosition(const thread SceneT<SetT> &scene, DrawData draw, T
     return scene.ViewProj() * float4(world_pos, 1.0f);
 }
 
-// Returns the instance's local AABB as a world-space oriented box.
 struct OrientedBounds {
     float3 Center;
     float3 Ax, Ay, Az;

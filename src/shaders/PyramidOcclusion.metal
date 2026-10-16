@@ -4,7 +4,6 @@
 #include "Bindless.metal"
 #include "ScreenSpace.metal"
 
-// The projected diameter in pixels of a world-space sphere.
 inline float ProjectedDiameterPixels(const thread Scene &scene, float3 center, float radius) {
     if (scene.View.ScreenPixelScale <= 0.0f) return 2.0f * radius / -scene.View.ScreenPixelScale;
     const float distance = max(length(center - float3(scene.View.CameraPosition)) - radius, scene.View.CameraNear);

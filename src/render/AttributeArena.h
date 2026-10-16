@@ -1,8 +1,8 @@
 #pragma once
 #include "metal/BufferArena.h"
 
-// Sparse radix addressing shares allocation and pruning while each attribute
-// retains its shader-visible node and payload layout. Zero denotes absence.
+// Sparse radix addressing shares allocation and pruning while each attribute retains its shader-visible node and payload layout.
+// Zero denotes absence.
 template<typename Node, typename T, uint32_t PayloadCount, uint32_t RadixBits, uint32_t Levels>
 class AttributeArena {
 public:

@@ -26,10 +26,11 @@ struct MeshTopologyTask {
     // A knife: the mesh-to-clip transform, the target extent in pixels, and the segment in those pixels.
     mat4 ScreenTransform{};
     vec2 Extent{}, KnifeStart{}, KnifeEnd{};
-    // A primitive list: new vertex count, grid boundary length and span, attribute-source handle,
-    // boundary handles, then primitive count and loops of (vertex, source-edge halfedge) pairs.
+    // Primitive-list header: vertex count, boundary length, span, attribute source, boundary handles, and primitive count.
+    // Follow with loops of (vertex, source-edge halfedge) pairs.
     // Grid interior positions derive on the GPU from the boundary; other lists append no vertices.
-    // Length two creates a loose edge; larger loops create faces. InvalidOffset means a new edge.
+    // Length two creates a loose edge; larger loops create faces.
+    // InvalidOffset means a new edge.
     // AppendedBase + i names the i-th listed vertex.
     // Existing handles are below AppendedBase.
     uint32_t AppendedBase{};
@@ -40,8 +41,10 @@ struct MeshTopologyTask {
     // each record is (source face, polygon count, then corner count and corner/edge pairs per polygon).
     // Decimate: count then (vertex, surviving vertex, replacement x/y/z float bits).
     std::vector<uint32_t> List{};
-    // Explicit canonical selection. None reads all three domains directly.
-    // Vertex derives selected edges/faces from selected vertices. Edge/Face preserve those domains.
+    // Explicit canonical selection.
+    // None reads all three domains directly.
+    // Vertex derives selected edges/faces from selected vertices.
+    // Edge/Face preserve those domains.
     // An empty selection selects nothing, and TopologyFlagSelectAll selects every live element in its place.
     Element SelectionElement{Element::None};
     SelectionSource Selection{};

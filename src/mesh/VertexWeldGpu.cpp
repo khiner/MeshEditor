@@ -63,7 +63,6 @@ WeldChannels Channels(const MeshStore &meshes, const WeldTarget &target) {
     return c;
 }
 
-// Returns scratch words for welding `count` vertices with the selected channels.
 uint32_t ScratchWords(uint32_t count, const WeldChannels &c) {
     const uint32_t marks = count + 1;
     return TableSize(count) + count + marks + TileCount(marks, BlockElements) + 2 * count +

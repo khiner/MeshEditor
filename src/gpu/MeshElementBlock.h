@@ -6,10 +6,10 @@
 #include <span>
 #endif
 
-// Element domains (vertices, halfedges, edges, faces and triangles) hold 256 slots per block.
+// Element domains (vertices, halfedges, edges, faces and triangles) contain 256 slots per block.
 GPU_CONSTANT uint32_t MeshElementBlockSize = 256u;
 GPU_CONSTANT uint32_t MeshElementBlockWords = MeshElementBlockSize / 32u;
-// Render domains (clusters, cluster groups, LOD nodes, LOD members and primitives) hold few members per record, in small blocks.
+// Render domains (clusters, cluster groups, LOD nodes, LOD members and primitives) contain few members per record, in small blocks.
 GPU_CONSTANT uint32_t RenderBlockSize = 8u;
 
 // One block of a domain's arena: its live mask and its owner set, whose table names it at entry Local.
@@ -34,7 +34,7 @@ struct ElementHandle {
     auto operator<=>(const ElementHandle &) const = default;
 };
 // An element's slot in its domain's arena, the identity that travels without its record.
-// A table resolves a handle to one, a block names one at each of its slots, and a word a buffer or list stores holds one a table resolved.
+// Arena address resolved from a handle through a block table.
 // A default address names no element.
 class ElementAddress {
 public:

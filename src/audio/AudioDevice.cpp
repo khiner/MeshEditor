@@ -109,7 +109,7 @@ void *DeviceWorkgroup(uint32_t device_object_id) {
     return static_cast<void *>(workgroup);
 }
 
-// Give back the reference DeviceWorkgroup handed out. Other holders keep their own.
+// Release the caller's DeviceWorkgroup reference.
 void ReleaseWorkgroup(void *workgroup) {
     if (workgroup) os_release(static_cast<os_workgroup_t>(workgroup));
 }
@@ -192,7 +192,8 @@ AudioDeviceResource::~AudioDeviceResource() {
     CloseDevice(*this);
 }
 
-// Reopen only when the device or rate changes. Volume, mute, and on/off apply live.
+// Reopen only when the device or rate changes.
+// Volume, mute, and on/off apply live.
 void ReconcileAudioDevice(AudioDeviceResource &res, const AudioOutputConfig &config, const AudioOutputMix &mix) {
     if (!res.Initialized || config.DeviceName != res.DeviceName || config.SampleRate != res.RequestedSampleRate) {
         CloseDevice(res);

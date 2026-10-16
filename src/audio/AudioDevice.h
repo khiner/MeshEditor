@@ -34,7 +34,7 @@ struct AudioDeviceResource {
     std::atomic<float> TargetGain{1.f};
     float RenderGain{1.f};
 
-    // Selection the live device was opened with, to reconcile against and reopen only on a real change.
+    // Device-open configuration used to detect changes requiring a reopen.
     std::string DeviceName; // Empty selects the system default.
     uint32_t RequestedSampleRate{0}; // 0 selects the device default.
 };

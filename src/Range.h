@@ -31,8 +31,8 @@ inline void ForEachSurvivorRun(Range active, const T &indices, auto &&copy, Inde
     copy(read, write, active.Offset + active.Count - read);
 }
 
-// Visits maximal consecutive runs as (first entry, entry count), retaining
-// entry positions for callers with parallel payload arrays.
+// Visit maximal consecutive runs as (first entry, entry count).
+// Retain entry positions for callers with parallel payload arrays.
 template<typename T, typename Index = std::identity>
 inline void ForEachIndexRun(const T &indices, auto &&visit, Index index = {}) {
     for (size_t first = 0; first < indices.size();) {

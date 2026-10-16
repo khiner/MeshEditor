@@ -12,7 +12,6 @@
 
 namespace mtl {
 namespace {
-// Copies `source`, or clears when it is null, in parallel chunks.
 void CopyBytes(std::byte *destination, const std::byte *source, uint64_t bytes) {
     constexpr uint64_t Chunk = 4u << 20;
     ParallelFor(uint32_t((bytes + Chunk - 1u) / Chunk), [&](uint32_t i) {
@@ -114,7 +113,7 @@ void BufferContext::ReleaseRetiredBuffers(size_t first) {
 uint32_t BufferContext::AllocateSlot(SlotType type) {
     const auto slot = Slots.TryAllocate(type);
     if (slot != InvalidSlot) return slot;
-    // Retired readers hold their slots until a reclaim, which a full table brings forward.
+    // Reclaim retired slots before growing a full table.
     if (!Retirements.empty() || !Retired.empty()) ReclaimRetiredBuffers(true);
     return Slots.Allocate(type);
 }
@@ -252,8 +251,8 @@ void Buffer::Reserve(uint64_t required_size) {
     try {
         Storage->Reserve(required_size);
     } catch (...) {
-        // Growth can replace the GPU address before a later page allocation
-        // fails. Keep the bindless entry valid for the original resident data.
+        // Growth can replace the GPU address before a later page allocation fails.
+        // Keep the bindless entry valid for the original resident data.
         if (previous != **this) UpdateSlot();
         throw;
     }

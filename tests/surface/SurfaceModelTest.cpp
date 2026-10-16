@@ -57,7 +57,6 @@ double CellForce(const AsperityBed &bed, double lambda, double draw) {
     return std::max(mean + draw * deviation, 0.0);
 }
 
-// A synthesized patch scaled to a real roughness, which is how a finish reaches the springs.
 std::vector<float> RoughHeights(float correlation, float slope, float cutoff, float spacing, uint32_t columns, uint32_t rows, uint32_t realization, float roughness) {
     const auto patch = SynthesizeRoughnessPatch(correlation, slope, cutoff, spacing, columns, rows, realization);
     std::vector<float> heights(patch.Heights.size());
@@ -106,7 +105,8 @@ int main() {
         expect(Near(HurstExponent(-2.0), 0.5, 1e-12)); // cast
     };
 
-    // Persson 2007 Fig. 2 plots both against H for three band ratios. These are that figure at gamma = 1.
+    // Persson 2007 Fig. 2 plots both against H for three band ratios.
+    // These are that figure at gamma = 1.
     "Persson's separation coefficients match the published figure"_test = [] {
         struct Row {
             double Hurst, BandRatio, Alpha, Beta;
@@ -175,7 +175,6 @@ int main() {
         const double k1 = ConformalStiffness(10.0, roughness, c);
         const double k2 = ConformalStiffness(20.0, roughness, c);
         expect(Near(k2 / k1, 2.0, 1e-12));
-        // A face on a face is orders softer than the flat-guard Hertz stiffness it replaces.
         expect(k1 < ContactStiffness(1 / 7.2e10, CombinedCurvature(0, 0)));
     };
 
@@ -183,15 +182,11 @@ int main() {
         expect(Near(RollOffWavevector(5e-5), 2 * std::numbers::pi / 5e-5, 1e-6));
     };
 
-    /***** The asperity bed *****/
-
     "the bed height integral reaches its unclamped limit"_test = [] {
         for (const double power : {0.5, 1.0, 1.5}) {
             expect(Near(BedHeightIntegral(40, power) / std::pow(40.0, power), 1.0, 0.01));
         }
-        // Far below it nothing bears at all.
         expect(BedHeightIntegral(-8, 1.5) < 1e-12);
-        // And it rises monotonically between.
         double previous = 0;
         for (double lambda = -4; lambda <= 4; lambda += 0.25) {
             const double v = BedHeightIntegral(lambda, 1.5);

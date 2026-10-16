@@ -14,12 +14,9 @@ struct Scene;
 } // namespace state
 template<typename T> struct BufferArena;
 
-// Canonical vertices, faces or edges a closure level reads, as work of at most Count elements.
-// Incidence bounds the fan corners of vertices, the loop corners of faces, or the fan corners of edge endpoints.
-// LoopFans bounds the fan corners of face seeds' loop vertices.
-// A seed read on the host lists, ascending and unique, the vertices whose fans those bounds count, which are its vertices, its edges' endpoints or its faces' loop vertices.
-// All marks a seed of every live element, which lists none.
-// A closure level's seeds list no vertices.
+// Bound closure elements by Count and their corner incidence by Incidence.
+// LoopFans bounds fan corners of face-seed vertices.
+// Host seeds list unique ascending vertices; All and closure-level seeds omit the list.
 struct ClosureSeed {
     ElementWork Work{};
     uint32_t Count{}, Incidence{}, LoopFans{};
@@ -27,11 +24,11 @@ struct ClosureSeed {
     bool All{};
 };
 
-// One closure level's sparse canonical sets in a chain's scratch.
-// A primitive level holds face loops and explicit wire pairs with their vertices and edges, and any retained vertices.
-// A vertex level holds its vertices with their fan corners, each fan corner's face and edge, and each fan corner's next corner, or a line corner's pair, and its edge.
-// A face or edge level's vertex seed is bounded on the host, so the vertex level it seeds records before the chain submits.
-// Counts, face and edge incidences and their seeds are valid once the chain has submitted.
+// Store sparse closure sets in chain scratch.
+// Primitive levels include face loops, wire pairs, and retained vertices.
+// Vertex levels include incident corners, faces, edges, and next corners or wire partners.
+// Host bounds allow dependent vertex levels to record before submission.
+// Read counts and derived seeds after submission.
 struct MeshClosure {
     std::array<ElementWork, 4> Elements{}; // Vertices, halfedges, faces, edges.
     std::array<uint32_t, 4> Counts{};

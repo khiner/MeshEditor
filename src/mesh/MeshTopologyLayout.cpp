@@ -120,8 +120,8 @@ uint32_t TopologyTableWords(MeshTopologyOp op, MeshStore::TopologyCounts source)
     return GpuCount(std::bit_ceil(keys + keys / 2 + 1));
 }
 
-// Assigns the job's scratch runs from `base` and returns the words they span.
-// Runs the operator does not use take no words.
+// Allocate scratch runs from `base` and return their total word count.
+// Unused operator runs consume zero words.
 uint32_t LayoutTopologyScratch(MeshTopologyJob &job, MeshStore::TopologyCounts source, MeshStore::TopologyCounts bounds, uint32_t base) {
     const auto op = job.Op;
     const uint64_t V = source.Vertices, H = source.Halfedges, F = source.Faces;
@@ -149,8 +149,7 @@ uint32_t LayoutTopologyScratch(MeshTopologyJob &job, MeshStore::TopologyCounts s
     job.FaceMapOffset = take(bounds.Faces);
     job.CornerProvenanceOffset = take(job.CornerAttributes & MeshAttributeBit_Normal ? 2ull * bounds.Halfedges : 0u);
     job.LabelOffset = take(TopologyIterates(op) ? 4 * F + 2 * V : 0u);
-    // Triangulation keeps its per-face ear links and projected corners in
-    // source-halfedge scratch, so polygon valence has no fixed shader limit.
+    // Triangulation keeps its per-face ear links and projected corners in source-halfedge scratch, so polygon valence has no fixed shader limit.
     job.HalfedgeAuxOffset = take(op == MeshTopologyOp::ExtrudeRegion ? 2ull * H : op == MeshTopologyOp::Wireframe                                                                                                                 ? 2ull * H :
                                      op == MeshTopologyOp::Triangulate || op == MeshTopologyOp::SplitConcaveFaces                                                                                                                 ? 4ull * H :
                                      op == MeshTopologyOp::EdgeSplit || (TopologyMapsWireEdges(op) && op != MeshTopologyOp::Subdivide) || (job.Flags & (TopologyFlagListCuts | TopologyFlagListSelects | TopologyFlagScreenCuts)) ? H :

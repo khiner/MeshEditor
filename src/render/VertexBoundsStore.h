@@ -86,8 +86,8 @@ public:
         group.Revision = revision;
         return {group.Roots, group.Keys, true, group.LayoutRevision};
     }
-    // A canonical edit publishes only changed vertex blocks. Keep the pose
-    // bounds dispatch keys and their sparse address map at that revision.
+    // A canonical edit publishes only changed vertex blocks.
+    // Keep the pose bounds dispatch keys and their sparse address map at that revision.
     template<typename Present>
     void UpdateBlocks(uint32_t store, uint64_t revision, std::span<const uint32_t> blocks, Present &&present) {
         const auto found = ByStore.find(store);

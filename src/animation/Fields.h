@@ -57,7 +57,8 @@ std::array<ChannelTarget, 3> TransformTargets(const state::Scene &, state::Entit
 
 bool IsChannelStore(state::TypeKey);
 
-// Reads the target's current value. Returns false when the entity lacks the field.
+// Reads the target's current value.
+// Returns false when the entity lacks the field.
 // A node without a pose reads its Transform.
 bool ReadField(const state::Scene &, state::Entity, const ChannelTarget &, std::span<float> out);
 // Writes the target's value when it differs from the current one.

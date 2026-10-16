@@ -4,9 +4,8 @@
 #include "gpu/CornerClass.h"
 #include "gpu/CornerClassMode.h"
 
-// Shared render-vertex equivalence for finest construction and local LOD
-// simplification. Callers supply corner handles of the mesh, including corners
-// retained from different source faces in a coarse triangle.
+// Shared render-vertex equivalence for finest construction and local LOD simplification.
+// Callers supply corner handles of the mesh, including corners retained from different source faces in a coarse triangle.
 struct CornerRenderKey {
     device const BindlessSet &B;
     MeshRecord Mesh;

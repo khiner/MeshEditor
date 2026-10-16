@@ -10,7 +10,7 @@ struct CornerClassificationJob {
     ElementWork Vertices DEFAULT();
     uint32_t VertexCount DEFAULT();
     uint32_t FaceCount DEFAULT();
-    SlotOffset CornerSectors DEFAULT(); // The record's sector roots, without a slot while it holds none
+    SlotOffset CornerSectors DEFAULT(); // Optional sector roots
     ElementWork DirtyBlocks DEFAULT(), NeededBlocks DEFAULT();
     uint32_t State DEFAULT(); // Batch scratch words: incoming count, then face/edge flags
 };

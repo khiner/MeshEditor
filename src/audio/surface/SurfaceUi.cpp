@@ -7,7 +7,6 @@
 
 #include "ui/HelpMarker.h" // depends on imgui
 
-// Surface finish. Ranges cover the finish presets with headroom (see surfaces::acoustic::All).
 template<> inline constexpr FieldSpec Spec<ContactSurface, "Roughness">{.Min = 1e-9, .Max = 1e-2};
 template<> inline constexpr FieldSpec Spec<ContactSurface, "CorrelationLength">{.Min = 1e-7, .Max = 1e-1};
 template<> inline constexpr FieldSpec Spec<ContactSurface, "SpectralSlope">{.Min = -3, .Max = 0, .Digits = 2};
@@ -35,7 +34,7 @@ void DrawContactSurfaceControls(state::Scene &r, state::Entity e, const ContactS
     fsurf.Slider<&ContactSurface::SpectralSlope>();
     MeshEditor::HelpMarker("Exponent of the roughness power spectrum. More negative is smoother-sounding.");
 
-    // Derived contact constants, for a contact against a like body at the object's own weight.
+    // Derive contact constants against an identical body under this object's weight.
     const auto &props = material.Properties;
     const auto *cd = r.try_get<const ContactDynamics>(e);
     const auto *modes = r.try_get<const ModalModes>(e);

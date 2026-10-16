@@ -24,7 +24,6 @@ void PushBlock(std::vector<uint32_t> &blocks, uint32_t handle, size_t first) {
     const auto block = handle / MeshElementBlockSize;
     if (blocks.size() == first || blocks.back() != block) blocks.push_back(block);
 }
-// Sorts and dedupes the values from `first` on, and returns how many remain.
 uint32_t UniqueTail(std::vector<uint32_t> &values, size_t first) {
     std::ranges::sort(values.begin() + first, values.end());
     values.erase(std::unique(values.begin() + first, values.end()), values.end());
@@ -45,7 +44,6 @@ struct FragmentBuild {
     std::vector<LodClusterRun> Runs;
 };
 
-// One owner's partitions and the finest clusters they retire.
 struct OwnerFragments {
     MeshStore::Record *Owner;
     std::span<const MeshletPatchPartition> Partitions;
@@ -64,7 +62,6 @@ std::vector<FragmentBuild> BuildFragments(state::Scene &r, mtl::ComputeChain &ch
         std::vector<MeshletBuildSource> sources;
         sources.reserve(fragment_count + fresh.size());
         std::vector<std::vector<uint32_t>> blocks(owners.size());
-        // Each fragment's partition, element domain and seed block count.
         struct Seed {
             const MeshletPatchPartition *Partition;
             uint32_t Domain, Blocks;
@@ -122,7 +119,6 @@ std::vector<FragmentBuild> BuildFragments(state::Scene &r, mtl::ComputeChain &ch
     }
 }
 
-// Removes the elements at the sorted handles from the point or line clusters that draw them, on the host, and returns the refit of the owner's nodes above them.
 LodNodeRefit RepairElementMeshletDeletion(state::Scene &r, mtl::ComputeChain &chain, MeshStore::Record &owner, uint32_t topology, std::span<const uint32_t> elements) {
     const profile::CpuScope scope{"ElementMeshletDeletion"};
     auto &meshes = r.Context.get<MeshStore>();
@@ -259,7 +255,6 @@ void RepairElementMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<
 }
 
 namespace {
-// One owner's triangle edit.
 struct TriangleRepair {
     state::Entity Entity;
     MeshletPatchInput Input;
@@ -293,7 +288,7 @@ void RepairTriangleRender(state::Scene &r, mtl::ComputeChain &chain, std::span<c
         const auto &patch = patches[i];
         profile::RecordCounter("TopologyAddedMeshlets", built[i].Added.size());
         r.emplace_or_replace<ClusterLodDemand>(entities[i]);
-        // Retired members leave their groups, and the remaining stale members refit.
+        // Remove retired members from their groups and refit retained stale members.
         std::erase_if(stale[i], [&](uint32_t cluster) { return std::ranges::binary_search(patch.Clusters, cluster); });
         refits.push_back(EditLodNodes(r, *owners[i].Owner, patch.Clusters, built[i].Runs, stale[i]));
     }
@@ -315,8 +310,7 @@ void RepairTopologyRender(state::Scene &r, mtl::ComputeChain &chain, std::span<c
     repairs.reserve(edits.size());
     for (const auto &[entity, topology] : edits) {
         const auto &record = meshes.Get(topology->StoreId);
-        // Unchanged uniform keys can retain their meshlets unless their vertex
-        // representative was a corner retired by this topology edit.
+        // Unchanged uniform keys can retain their meshlets unless their vertex representative was a corner retired by this topology edit.
         // Adding loose edges changes no surface vertices, corners, or normal sectors.
         const bool stable_keys = topology->Op == MeshTopologyOp::ExtrudeVertices || topology->Op == MeshTopologyOp::DeleteLoose ||
             (topology->Op == MeshTopologyOp::AddPrimitives && !topology->AddedTriangleCount) ||
@@ -344,7 +338,6 @@ void RepairFaceRender(state::Scene &r, mtl::ComputeChain &chain, std::span<const
         if (!changed.Count) continue;
         const auto &owner = RecordOf(r, entity);
         if (owner.ExtrasFaces.Count || !owner.PrimitiveData) throw std::invalid_argument("Local face repair requires published render ownership.");
-        // The descriptor's canonical values reflect the changed face data.
         RefreshMeshBinding(r, owner.StoreId);
         repairs.push_back({entity, {.Changed = changed.Triangles}});
         entities.push_back(entity);

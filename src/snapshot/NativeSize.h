@@ -6,8 +6,8 @@
 #include <zpp_bits.h>
 
 namespace snapshot::detail {
-// Retained native payload estimate, including nested capacities. Allocator bookkeeping
-// is excluded, as for the byte-store accounting; short strings are conservatively counted.
+// Retained native payload estimate, including nested capacities.
+// Allocator bookkeeping is excluded, as for the byte-store accounting; short strings are conservatively counted.
 template<typename T> uint64_t NativeExtra(const T &);
 struct AllocationCounter {
     static constexpr auto kind() { return zpp::bits::kind::out; }

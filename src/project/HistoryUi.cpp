@@ -22,7 +22,6 @@ concept Pair = requires(T t) { t.first; t.second; };
 template<typename T>
 concept UniquePtr = requires { typename T::deleter_type; };
 
-// "TransformSelection" reads "Transform Selection", and "Transform:S" keeps its field.
 std::string SpacedName(std::string_view name) {
     std::string out(field::detail::SpacedSize(name), '\0');
     field::detail::SpaceWords(name, out.data());
@@ -123,7 +122,7 @@ template<typename T> void DrawValue(const state::Scene &r, const char *label, T 
             }
         });
     } else if constexpr (Vector<T>) {
-        // A recorded vector can hold a whole selection, so it opens on request and draws its visible elements.
+        // A recorded vector can contain a whole selection, so it opens on request and draws its visible elements.
         if (!TreeNodeEx(label, ImGuiTreeNodeFlags_None, "%s (%zu)", label, v.size())) return;
         ImGuiListClipper clipper;
         clipper.Begin(int(v.size()));

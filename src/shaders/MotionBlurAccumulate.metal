@@ -5,7 +5,6 @@
 #include "Varyings.metal"
 #include "gpu/MotionBlurAccumulatePushConstants.h"
 
-// Adds premultiplied color and coverage for one shutter sample to the accumulation target.
 fragment float4 MotionBlurAccumulateFragment(
     QuadVaryings in [[stage_in]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],

@@ -68,7 +68,8 @@ struct SamplerDesc {
 NS::SharedPtr<MTL::SamplerState> CreateSampler(const Context &, const SamplerDesc &);
 NS::SharedPtr<MTL::SamplerState> CreateSampler(const Context &, MTL::SamplerMinMagFilter, MTL::SamplerMipFilter, MTL::SamplerAddressMode, float max_anisotropy = 1.f);
 
-// Synchronous blits from a private texture. Return false on copy failure.
+// Synchronous blits from a private texture.
+// Return false on copy failure.
 bool CopyTextureRegion(const Context &, const Texture &source, uint32_t x, uint32_t y, Extent2D, const Texture &destination);
 bool CopyTextureRegion(const Context &, const Texture &source, uint32_t x, uint32_t y, Extent2D, MTL::Buffer *destination, uint32_t bytes_per_row);
 

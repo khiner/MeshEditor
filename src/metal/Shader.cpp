@@ -86,7 +86,6 @@ void ConfigureColorAttachments(Attachments *attachments, const PassFormats &form
     }
 }
 
-// Classic pipeline descriptors also specify their depth format here.
 template<typename Descriptor>
 void ConfigureAttachments(Descriptor *descriptor, const PassFormats &formats, const std::vector<BlendState> &blends) {
     ConfigureColorAttachments(descriptor->colorAttachments(), formats, blends);
@@ -160,8 +159,8 @@ LibraryCache::LibraryCache(const Context &ctx, std::filesystem::path shaders_dir
         throw std::runtime_error(std::format("Failed to create the Metal pipeline compiler:\n{}", error ? error->localizedDescription()->utf8String() : "unknown"));
     }
 
-    // Archive chunks are immutable. Rewriting a serializer's partial capture
-    // would discard pipelines this session did not request.
+    // Archive chunks are immutable.
+    // Rewriting a serializer's partial capture would discard pipelines this session did not request.
     std::vector<NS::SharedPtr<MTL4::Archive>> archives;
     const auto load = [&](const std::filesystem::path &path) {
         error = nullptr;
@@ -186,8 +185,8 @@ std::unique_ptr<LibraryCache> LibraryCache::PrewarmCache() const {
     return std::make_unique<LibraryCache>(Ctx, ShadersDir, ArchivePath, BuiltinArchivePath, false, true);
 }
 
-// Write only newly compiled pipelines into an immutable chunk. Existing
-// archives keep every pipeline the current process did not use.
+// Write only newly compiled pipelines into an immutable chunk.
+// Existing archives keep every pipeline the current process did not use.
 LibraryCache::~LibraryCache() {
     const AutoreleaseScope pool;
     (void)FlushArchive();

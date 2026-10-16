@@ -37,7 +37,6 @@ struct HostIncidence {
         const auto range = C.FaceRange(f);
         for (auto h = range.x; h < range.y; ++h) vertices.push_back(CornerVertex(he::HH{h}));
     }
-    // Adds the faces or edges of the vertex's fan corners.
     void AddFan(Element element, uint32_t v, std::vector<uint32_t> &handles) const {
         if (!C.HasVertexBlock(v)) return;
         const auto run = C.Incoming(he::VH{v});
@@ -49,13 +48,12 @@ struct HostIncidence {
             if (element == Element::Edge && item.y != InvalidOffset) handles.push_back(*C.Edge(C.Next(h)));
         }
     }
-    // The fan corners of the vertices, counted once per listing.
     uint32_t Sum(std::span<const uint32_t> vertices) const {
         uint64_t sum = 0u;
         for (const auto v : vertices) sum += Fan(v);
         return uint32_t(std::min<uint64_t>(sum, Corners));
     }
-    // Adds a seed element's vertices, which are a vertex, a face's loop vertices or a face-owned edge's endpoints, and returns its incidence.
+    // Add a vertex, a face's loop vertices, or a face-owned edge's endpoints and return the seed incidence.
     uint32_t Add(Element element, uint32_t handle, std::vector<uint32_t> &vertices) const {
         const auto first = vertices.size();
         if (element == Element::Face) {
@@ -79,7 +77,6 @@ uint32_t DomainBlocks(const MeshArenas &a, const MeshStore::Record &record, uint
         d == 2u                                                    ? blocks(a.FaceTriangles, record.FaceData) :
                                                                      blocks(a.EdgeHalfedges, record.EdgeData);
 }
-// The bound of the record's handles in a closure domain.
 uint32_t DomainBound(const MeshArenas &a, const MeshStore::Record &record, uint32_t d) { return DomainBlocks(a, record, d) * MeshElementBlockSize; }
 
 MeshClosurePushConstants ClosureConstants(const MeshStore &meshes, uint32_t id) {
@@ -91,7 +88,6 @@ MeshClosurePushConstants ClosureConstants(const MeshStore &meshes, uint32_t id) 
     };
 }
 
-// Allocates the level's output work for the domains `bounds` names and records the expansion of `input`.
 MeshClosure EncodeClosure(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, uint32_t domain, const ClosureSeed &input, std::array<uint32_t, 4> bounds, const ClosureSeed &retained, const ClosureSeed &wires = {}, bool retain_isolated_only = false) {
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto &a = meshes.Arenas();
@@ -142,7 +138,6 @@ MeshClosure EncodeVertexClosure(state::Scene &r, mtl::ComputeChain &chain, uint3
 }
 
 namespace {
-// The incidence word and domain of a face or edge closure element.
 std::pair<uint32_t, uint32_t> IncidenceIndex(Element element) {
     if (element != Element::Face && element != Element::Edge) throw std::invalid_argument("Closure incidence is recorded for faces or edges.");
     return element == Element::Face ? std::pair{0u, 2u} : std::pair{1u, 3u};
@@ -247,7 +242,7 @@ ClosureSeed FaceSeed(const state::Scene &r, uint32_t id, const BufferArena<uint3
     const auto &record = meshes.Get(id);
     const HostIncidence incidence{meshes, id};
     ClosureSeed seed{.Work = faces, .Count = ElementWorkCount(storage, faces)};
-    // Every face of a mesh holds each of its corners once.
+    // Each face references every loop corner once.
     if (seed.Count == a.FaceTriangles.Count(record.FaceData)) {
         seed.Incidence = seed.LoopFans = incidence.Corners;
         seed.All = true;

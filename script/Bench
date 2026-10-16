@@ -392,7 +392,6 @@ def compare(args: argparse.Namespace) -> None:
     if changed_images:
         print("\nChanged validation images: " + ", ".join(changed_images))
 
-    # Compare every timed scope in addition to the headline set.
     headline = {(section, path) for section, path, _, _ in METRICS}
     changed_timings = []
     for case_id in before_cases:

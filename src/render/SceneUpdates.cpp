@@ -57,7 +57,6 @@ void RetallyMesh(state::Scene &r, state::Entity mesh_entity) {
                          });
 }
 
-// Assign placed primitives to the affected meshes' instance ranges.
 void RepointMeshInstances(state::Scene &r, std::span<const state::Entity> mesh_entities) {
     const auto &buffers = r.Context.get<GpuBuffers>();
     for (const auto mesh_entity : mesh_entities) {
@@ -108,7 +107,6 @@ void RefreshClusterLodAttributes(state::Scene &r, mtl::ComputeChain &chain, std:
     auto &render = meshes.Render();
     const auto materials = GetMaterials(r);
     const auto debug = LodDebugChannel(r);
-    // Each coarse owner's groups over primitives whose attributes changed.
     std::vector<ClusterGroupSeeds> seeds;
     std::vector<uint32_t> changed;
     for (const auto entity : mesh_entities) {
@@ -212,7 +210,7 @@ bool BuildDemandedClusterLods(state::Scene &r, mtl::ComputeChain &chain, state::
         const auto entity = demanded[i];
         const auto &mb = RecordOf(r, entity);
         const auto mesh = GetDrawnMesh(r, entity);
-        // After an edit, the build covers exactly the triangles the live finest clusters hold, per primitive in walk order.
+        // After an edit, the build covers exactly the triangles the live finest clusters contain, per primitive in walk order.
         if (mb.MeshletRevision > 1u || mb.RenderTopologies != 1u) {
             auto &triangles = live_triangles[i];
             auto &primitive_counts = live_primitive_counts[i];
@@ -229,7 +227,6 @@ bool BuildDemandedClusterLods(state::Scene &r, mtl::ComputeChain &chain, state::
                 primitive_counts.push_back(uint32_t(triangles.size() - start));
             });
         }
-        // The triangles the build covers name their corners through the record's tables.
         auto corners = meshes.GetTriangleCorners(mesh.GetStoreId());
         corners.Handles = mb.MeshletRevision > 1u || mb.RenderTopologies != 1u ? std::span<const uint32_t>{live_triangles[i]} : render.MeshletTriangleIds.Get(mb.MeshletTriangles.Values);
         inputs.push_back(CaptureMeshletInputs(mesh, meshes, corners));
@@ -275,12 +272,11 @@ bool DeriveRenderInstances(state::Scene &r) {
 }
 
 namespace {
-// A placed slot's entry in the drawing-order list, which holds every placed slot once by descending object ID.
+// Drawing-order index for a placed slot; order entries by descending object ID.
 uint32_t SlotPosition(std::span<const uint32_t> list, std::span<const uint32_t> object_ids, uint32_t slot) {
     return uint32_t(std::ranges::lower_bound(list, object_ids[slot], std::ranges::greater{}, [&](uint32_t s) { return object_ids[s]; }) - list.begin());
 }
 
-// Points the render instance of each slot in the range at its slot.
 void RebaseRenderInstances(state::Scene &r, std::span<const uint32_t> object_ids, Range slots) {
     for (uint32_t slot = slots.Offset; slot < slots.Offset + slots.Count; ++slot) r.edit<RenderInstance>(r.EntityAt(ObjectIndex(object_ids[slot]))).BufferIndex = slot;
 }
@@ -302,10 +298,9 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
     auto &buffers = r.Context.get<GpuBuffers>();
     auto &meshes = r.Context.get<MeshStore>();
     auto &scene = r.Context.get<GpuSceneState>();
-    // Released records leave the flag totals ahead of this pass's builds.
+    // Remove released records from flag totals before building new records.
     for (const auto id : meshes.TakeReleased()) buffers.Retally(id, {});
     std::vector<state::Entity> new_mesh_entities, new_extras_entities;
-    // Marks the records an earlier entity in the pass already listed, by store id.
     std::vector<uint8_t> listed;
     for (auto e : reactive(r, Change::NewBufferEntity)) {
         if (!r.valid(e)) continue;
@@ -318,10 +313,9 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
         else if (r.all_of<ObjectExtrasTag>(e) || r.all_of<ArmatureObject>(e) || r.all_of<BoneJoint>(e)) new_extras_entities.emplace_back(e);
     }
 
-    // A buffer entity whose instance range changed lays out again, which covers its entries' instances.
     const auto relayout = [&](state::Entity buffer_entity) { r.emplace_or_replace<MeshLayoutDirty>(buffer_entity); };
 
-    // Destroyed render instances leave their slots, and each owner keeping its buffer compacts once.
+    // Remove destroyed instance slots and compact each surviving owner buffer once.
     bool slots_changed = false;
     if (auto *pending = r.Context.find<PendingSlotRemovals>()) {
         auto &removals = pending->Instances;
@@ -330,7 +324,7 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
         SortUnique(removals);
         const auto object_ids = buffers.Instances.ObjectIdBuffer.GetSpan<uint32_t>();
         const auto list = buffers.GpuInstanceSlots.GetMutableSpan<uint32_t>();
-        // Each removed slot's drawing-order entry, found by the ID it holds before its buffer compacts.
+        // Each removed slot's drawing-order entry, found by the ID it contains before its buffer compacts.
         std::vector<uint32_t> erased_positions;
         erased_positions.reserve(removals.size());
         for (const auto &removal : removals) erased_positions.push_back(SlotPosition(list, object_ids, removal.Index));
@@ -339,7 +333,7 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
         });
         auto by_owner = removals | std::views::chunk_by([](const auto &a, const auto &b) { return a.Owner == b.Owner; }); // NOLINT(misc-const-correctness)
         // A survivor past an owner's first erased slot moves down by the slots erased before it.
-        // Every entry is found before any buffer compacts, while each slot still holds its ID.
+        // Every entry is found before any buffer compacts, while each slot still contains its ID.
         struct SlotMove {
             uint32_t Position, Slot;
         };
@@ -425,7 +419,7 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
             const auto old_range = mb.InstanceRange;
             mb.InstanceRange = carve(grown);
             buffers.Instances.CopyInstances(old_range.Offset, mb.InstanceRange.Offset, mb.InstanceCount);
-            // The moved slots keep their drawing-order entries, found by the IDs both ranges hold.
+            // The moved slots keep their drawing-order entries, found by the IDs both ranges contain.
             const auto ids = buffers.Instances.ObjectIdBuffer.GetSpan<uint32_t>();
             const auto list = buffers.GpuInstanceSlots.GetMutableSpan<uint32_t>();
             for (uint32_t i = 0u; i < mb.InstanceCount; ++i) list[SlotPosition(list, ids, old_range.Offset + i)] = mb.InstanceRange.Offset + i;
@@ -467,7 +461,6 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
     return {std::move(newly_inserted), std::move(new_mesh_entities), std::move(new_extras_entities), slots_changed};
 }
 
-// Resize viewport GPU resources and return whether their extent changed.
 bool SyncViewportRenderResources(state::Scene &r, state::Entity viewport) {
     auto &targets = r.Context.get<RenderTargets>();
     const auto render_extent_px = RenderExtentPx(r);

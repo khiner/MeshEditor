@@ -61,7 +61,7 @@ inline uint32_t ElementWorkRank(std::span<const uint32_t> data, ElementWork work
     }
     return InvalidOffset;
 }
-// Grows a table's hash capacity to hold `blocks` occupied blocks, moving each occupied block's key and masks into the new table.
+// Grows a table's hash capacity to store `blocks` occupied blocks, moving each occupied block's key and masks into the new table.
 inline void ReserveElementWork(BufferArena<uint32_t> &arena, ElementWork &work, uint64_t blocks) {
     if (WorkCapacity(work.Count, blocks) <= work.Capacity) return;
     auto allocation = arena.BeginAllocation();

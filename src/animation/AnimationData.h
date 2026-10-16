@@ -20,9 +20,10 @@ enum class AnimationInterpolation : uint8_t {
     CubicSpline
 };
 
-// The field a channel animates: Count floats at byte Offset of a store, addressed like an Update.
-// Component keys the store: a component on the clip's entity, the material buffer, or the entity's morph weights.
-// Index selects the material in the material buffer. Values hold the field's native units and layout.
+// Address Count floats at byte Offset in the store selected by Component.
+// Stores are the clip entity's component, material buffer, or morph weights.
+// Index selects the material in the material buffer.
+// Values use the field's native units and layout.
 struct ChannelTarget {
     state::TypeKey Component;
     uint16_t Offset{0};
@@ -68,7 +69,8 @@ struct AnimationClips {
     }
 };
 
-// The scene's animations. Active selects the animation every clip evaluates and records into.
+// The scene's animations.
+// Active selects the animation every clip evaluates and records into.
 // Record keys each changed animated property when a user edit commits.
 struct Animations {
     std::vector<std::string> Names;

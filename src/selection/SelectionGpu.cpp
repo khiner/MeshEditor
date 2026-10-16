@@ -34,7 +34,6 @@
 #include "viewport/ViewportRenderGpu.h"
 
 namespace {
-// One mesh's change to its selection in the transaction's source domain.
 struct SelectionRequest {
     state::Entity MeshEntity;
     EditSelectionOperation Operation;
@@ -69,7 +68,6 @@ void SubmitAndWait(const mtl::Context &ctx, MTL::CommandBuffer *command_buffer) 
     }
 }
 
-// Record selection passes into one command buffer and wait for them.
 void SubmitSelectionPasses(state::Scene &r, auto &&record) {
     const mtl::AutoreleaseScope native_scope;
     const auto &ctx = r.Context.get<const mtl::Context>();
@@ -380,7 +378,7 @@ void RunBoxSelectElements(state::Scene &r, state::Entity viewport, std::span<con
 
     const profile::CpuScope scope{"RunBoxSelectElements"};
 
-    // A query abandoned by a rejected transaction still holds its words.
+    // A query abandoned by a rejected transaction still contains its words.
     const auto &query = r.Context.get<const MeshStore>().Arenas().Query;
     if (const auto count = query.WordCount()) {
         const auto masks = query.Masks.GetMutableSpan<uint32_t>();
@@ -545,7 +543,7 @@ void ApplySelection(state::Scene &r, std::span<const SelectionRequest> requests,
     const auto &arenas = meshes.Arenas();
     const auto source = uint32_t(std::ranges::find(SelectionElements, element) - SelectionElements.begin());
     const std::array memberships{arenas.Vertices.Blocks.Buffer.GetSpan<MeshElementBlock>(), arenas.EdgeHalfedges.Blocks.Buffer.GetSpan<MeshElementBlock>(), arenas.FaceTriangles.Blocks.Buffer.GetSpan<MeshElementBlock>()};
-    // The query holds one canonical word per first hit, across every queried mesh.
+    // The query contains one canonical word per first hit, across every queried mesh.
     std::vector<std::pair<uint32_t, uint32_t>> query_words;
     if (query) {
         const auto &pending = arenas.Query;
@@ -576,7 +574,7 @@ void ApplySelection(state::Scene &r, std::span<const SelectionRequest> requests,
         const auto bits = meshes.GetSelectedElements(id, element).Bits;
         const auto hidden = meshes.GetHiddenElements(id, element).Bits;
         auto &update = updates.emplace_back(MeshStore::SelectionUpdate{.StoreId = id, .Source = element});
-        // Replacing or rederiving touches every block that holds a selected element in any domain.
+        // Replacement or rederivation must update every block containing a selected element in any domain.
         std::array<std::vector<uint32_t>, 3> selected;
         if (replace || rederive || operation == EditSelectionOperation::CaptureBaseline) {
             for (uint32_t d = 0u; d < 3u; ++d) {

@@ -5,7 +5,6 @@
 #   script/Tidy src/physics/PhysicsSystem.cpp
 #   script/Tidy --fix [path]
 # --fix applies the fixes and reformats the changed lines first, then reports what remains.
-# It leaves includes to the compiler and loop conversions to hand-writing.
 # Returns nonzero when findings remain.
 
 set -uo pipefail
@@ -27,7 +26,7 @@ if [[ "${Fix}" == true ]]; then
     # loop-convert names the variable after the container and spells out reference types.
     run-clang-tidy -p "${ProjectRootDir}/build" -quiet -checks=-modernize-loop-convert -export-fixes "${FixesDir}/fixes.yaml" "${Target}" >/dev/null 2>&1
     if [[ -f "${FixesDir}/fixes.yaml" ]]; then
-        # Drop each replacement that inserts an include. run-clang-tidy writes this file with PyYAML.
+        # Drop include insertions from the run-clang-tidy YAML.
         python3 - "${FixesDir}/fixes.yaml" <<'EOF'
 import sys, yaml
 path = sys.argv[1]
@@ -37,7 +36,7 @@ for diagnostic in fixes.get('Diagnostics') or []:
     message['Replacements'] = [r for r in message.get('Replacements') or [] if not r['ReplacementText'].startswith('#include')]
 yaml.safe_dump(fixes, open(path, 'w'))
 EOF
-        # -format also runs the cleanup that some fixes rely on, such as dropping the comma a removed argument leaves.
+        # -format also removes syntax left by fixes, such as a comma after a removed argument.
         clang-apply-replacements -format -style=file "${FixesDir}"
     fi
 fi

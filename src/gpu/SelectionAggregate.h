@@ -8,10 +8,11 @@ GPU_CONSTANT uint32_t SelectionSelectedSharp = 1u;
 GPU_CONSTANT uint32_t SelectionSelectedSmooth = 2u;
 GPU_CONSTANT uint32_t SelectionLiveSharp = 4u;
 GPU_CONSTANT uint32_t SelectionLiveSmooth = 8u;
-GPU_CONSTANT uint32_t SelectionBoundary = 16u; // An edge block holds an edge without an opposite halfedge.
+GPU_CONSTANT uint32_t SelectionBoundary = 16u; // Edge block includes an edge without an opposite halfedge.
 
 // One canonical 256-element block of a selectable domain.
-// Vertex blocks sum selected positions. Vertex and face blocks bound live geometry.
+// Vertex blocks sum selected positions.
+// Vertex and face blocks bound live geometry.
 struct SelectionAggregate {
     vec3 PositionSum DEFAULT();
     uint32_t Selected DEFAULT();

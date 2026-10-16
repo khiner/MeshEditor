@@ -14,7 +14,6 @@ CornerClassificationPushConstants ClassificationConstants(const MeshArenas &a) {
 } // namespace
 
 CornerClassBatch MeshStore::EncodeCornerClassification(state::Scene &r, mtl::ComputeChain &chain, std::span<const CornerClassRequest> requests) {
-    // Each job claims its two state words.
     CornerClassBatch batch{.Jobs = {chain.Scratch, 2u * uint32_t(requests.size())}};
     auto &jobs = batch.Jobs;
     jobs.Begin();
@@ -49,7 +48,6 @@ CornerClassBatch MeshStore::EncodeCornerClassification(state::Scene &r, mtl::Com
             },
             {all ? 0u : TileCount(vertex_count, TileElements)}
         );
-        // A mesh's live vertices tile by arena block.
         if (all) Buffers.Vertices.ForEachBlock(record.Vertices, [&](uint32_t b, const auto &block) { if (block.Count) jobs.Tiles[0].emplace_back(job, b); });
         batch.Targets.push_back({id, incoming, request.Complete || all});
     }
@@ -75,11 +73,12 @@ void MeshStore::PlanCornerClassification(state::Scene &r, mtl::ComputeChain &cha
         auto &record = WriteRecord(id);
         const auto uniform = !(flags & 2u) ? uint32_t(CornerClassMode::UniformFace) : !(flags & 5u) ? uint32_t(CornerClassMode::UniformVertex) :
                                                                                                       uint32_t(CornerClassMode::Mixed);
-        // A local result can preserve an already-uniform mode. Once a mesh is
-        // mixed, unaffected faces keep using their canonical flags and roots.
+        // A local result can preserve an already-uniform mode.
+        // Once a mesh is mixed, unaffected faces keep using their canonical flags and roots.
         record.Classification = complete || uniform == record.Classification ? uniform : uint32_t(CornerClassMode::Mixed);
         DerivedRecords.at(id).NormalRevision = ++NextNormalRevision;
-        // A mixed mesh holds sector roots and their normals from its first needed corner, which starts every corner at the vertex normal, and a uniform mesh holds none.
+        // Allocate mixed-sector storage on demand, initializing corners to vertex normals.
+        // Uniform meshes require no sector storage.
         if (record.Classification != uint32_t(CornerClassMode::Mixed)) {
             Buffers.CornerSectors.Release(record.CornerSectors);
             Buffers.NormalSectors.Release(record.NormalSectors);
@@ -100,7 +99,6 @@ void MeshStore::PlanCornerClassification(state::Scene &r, mtl::ComputeChain &cha
         }
         writes[i] = 1u;
     }
-    // Every job names its roots once the batch's sector ranges are held.
     for (uint32_t i = 0u; i < jobs.Jobs.size(); ++i) {
         if (writes[i]) jobs.Jobs[i].CornerSectors = Buffers.CornerSectors.Ref(Records[batch.Targets[i].StoreId].CornerSectors);
     }

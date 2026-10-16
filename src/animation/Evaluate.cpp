@@ -6,7 +6,6 @@
 
 namespace animation {
 void Evaluate(state::Scene &r, state::Entity viewport, float seconds, bool persistent) {
-    // Drop the pose of a node the active animation no longer poses.
     std::vector<state::Entity> stale;
     for (const auto entity : r.view<const PosedLocal, const Transform>()) {
         if (!PosedTransformComponents(r, viewport, entity)) stale.emplace_back(entity);
@@ -32,7 +31,7 @@ void Evaluate(state::Scene &r, state::Entity viewport, float seconds, bool persi
             if (posing) std::memcpy(reinterpret_cast<std::byte *>(&*pose) + channel.Target.Offset, value.data(), value.size() * sizeof(float));
             else WriteField(r, entity, channel.Target, value);
         }
-        // The pose writes only when it changed, so a held pose triggers none of its consumers.
+        // Publish pose writes only on changes.
         if (!pose) continue;
         if (const auto *posed = r.try_get<const PosedLocal>(entity)) {
             if (posed->Value != *pose) r.replace<PosedLocal>(entity, *pose);

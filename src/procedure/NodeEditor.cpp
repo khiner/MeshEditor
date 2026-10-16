@@ -54,15 +54,12 @@ template<typename K> constexpr KindGroup GroupOf() {
     else if constexpr (action::InTypeList<K, InstanceKinds>) return KindGroup::Instances;
     else return KindGroup::Operators;
 }
-// "RecalculateNormals" titles "Recalculate Normals".
 template<typename K> constexpr auto Title{field::detail::Spaced<field::fixed_string<state::LeafName<K>().size() + 1>{state::LeafName<K>()}>()};
 constexpr auto KindGroups{[]<typename... Ks>(action::TypeList<Ks...>) { return std::array{GroupOf<Ks>()...}; }(NodeKinds{})};
 constexpr auto KindTitles{[]<typename... Ks>(action::TypeList<Ks...>) { return std::array{Title<Ks>.c_str()...}; }(NodeKinds{})};
 
 constexpr const char *SocketLabels[]{"Geometry", "Selection", "Attribute", "Instances", "Value"};
-// A socket's label is its name, or its type's.
 const char *LabelOf(Socket socket) { return socket.Name ? socket.Name : SocketLabels[uint8_t(socket.Type)]; }
-// The socket color of each attribute type, where a two-component vector colors as a mix.
 constexpr vec4 NodeThemeColors::*TypeColors[]{
     &NodeThemeColors::FloatSocket,
     &NodeThemeColors::MixedSocket,
@@ -71,7 +68,6 @@ constexpr vec4 NodeThemeColors::*TypeColors[]{
     &NodeThemeColors::IntegerSocket,
     &NodeThemeColors::BooleanSocket,
 };
-// Geometry and instances color by socket type, and a value, attribute or selection socket by the type it carries, or as a mix of types.
 vec4 SocketColor(const NodeThemeColors &colors, Socket socket) {
     if (socket.Type == SocketType::Geometry) return colors.GeometrySocket;
     if (socket.Type == SocketType::Instances) return colors.InstancesSocket;
@@ -80,8 +76,8 @@ vec4 SocketColor(const NodeThemeColors &colors, Socket socket) {
 
 ImVec2 Im(vec2 v) { return {v.x, v.y}; }
 ImU32 U32(vec4 c) { return ColorConvertFloat4ToU32({c.x, c.y, c.z, c.w}); }
-// A socket carrying values per element draws as a diamond, as Blender draws a field, and every other socket as a circle.
-// Every port shape has an outline, in the hovered color while hovered.
+// Draw per-element value sockets as diamonds and uniform sockets as circles.
+// Use the hover color for the outline while hovered.
 void DrawSocket(ImDrawList &draw, const NodeTheme &theme, ImVec2 at, float radius, Socket socket, vec4 color, bool hovered) {
     const auto fill = U32(color), outline = U32(hovered ? theme.Colors.Hovered : theme.Colors.Outline);
     if (socket.Type == SocketType::Attribute || socket.Type == SocketType::Selection) {
@@ -95,7 +91,6 @@ void DrawSocket(ImDrawList &draw, const NodeTheme &theme, ImVec2 at, float radiu
 }
 float LengthSquared(ImVec2 v) { return v.x * v.x + v.y * v.y; }
 
-// Maps canvas units to the screen.
 struct CanvasView {
     ImVec2 Origin, Offset;
     float Zoom;
@@ -103,7 +98,6 @@ struct CanvasView {
     ImVec2 ToCanvas(ImVec2 s) const { return (s - Origin - Offset) / Zoom; }
 };
 
-// A rectangle on the screen.
 struct Rect {
     ImVec2 Min, Max;
 };
@@ -118,7 +112,6 @@ ImVec2 SocketOffset(const NodeTheme &theme, uint16_t kind, uint16_t socket, floa
     const auto row = float(input ? InputRow(kind, socket, expanded) : socket - InputCount[kind]);
     return {input ? 0.f : width, theme.TitleHeight + (row + .5f) * theme.RowHeight};
 }
-// The procedure's nodes placed on the screen for one frame, one of them expanded or none.
 struct Graph {
     const GeometryProcedure &Procedure;
     const NodeTheme &Theme;
@@ -130,12 +123,10 @@ struct Graph {
         const auto &rect = Rects[node];
         return rect.Min + SocketOffset(Theme, Procedure.Nodes[node].Kind, socket, (rect.Max.x - rect.Min.x) / View.Zoom, IsExpanded(node)) * View.Zoom;
     }
-    // The tray's chevron on the node's edge, in the row under the fixed inputs.
     ImVec2 ParametersAt(uint32_t node) const {
         const auto &rect = Rects[node];
         return {rect.Min.x, rect.Min.y + (Theme.TitleHeight + (float(ParameterRange(Procedure.Nodes[node].Kind).first) + .5f) * Theme.RowHeight) * View.Zoom};
     }
-    // The open tray's rounded rectangle on the node's edge around the parameter ports.
     Rect TrayRect(uint32_t node) const {
         const auto [first, end] = ParameterRange(Procedure.Nodes[node].Kind);
         const float reach = Theme.SocketRadius * 1.2f * View.Zoom + 3.f, half = Theme.RowHeight * .5f * View.Zoom;
@@ -144,7 +135,6 @@ struct Graph {
     }
 };
 bool Contains(const Rect &rect, ImVec2 p) { return p.x >= rect.Min.x && p.y >= rect.Min.y && p.x < rect.Max.x && p.y < rect.Max.y; }
-// Each node's rectangle is its layout position, and its layout size grown to fit its title and socket rows.
 Graph GraphOf(const state::Scene &r, const GeometryProcedure &procedure, const NodeTheme &theme, const CanvasView &view, uint32_t expanded) {
     // A node index a deletion left stale opens no tray.
     const bool open = expanded < procedure.Nodes.size() && ParameterRange(procedure.Nodes[expanded].Kind).second > ParameterRange(procedure.Nodes[expanded].Kind).first;
@@ -160,9 +150,7 @@ Graph GraphOf(const state::Scene &r, const GeometryProcedure &procedure, const N
     }
     return graph;
 }
-// Whether the node's input socket reads a link.
 bool IsLinked(const GeometryProcedure &procedure, uint32_t node, uint16_t socket) { return procedure.Inputs[InputFirst(procedure, node) + socket].FromNode != NoNode; }
-// The node's linked parameter sockets.
 std::vector<uint16_t> LinkedParameters(const GeometryProcedure &procedure, uint32_t node) {
     const auto [first, end] = ParameterRange(procedure.Nodes[node].Kind);
     std::vector<uint16_t> linked;
@@ -172,7 +160,6 @@ std::vector<uint16_t> LinkedParameters(const GeometryProcedure &procedure, uint3
     return linked;
 }
 
-// A cubic wire leaving its output to the right and entering its input from the left, with handles reaching `curving` of the horizontal span.
 using Wire = std::array<ImVec2, 4>;
 Wire WireOf(ImVec2 from, ImVec2 to, float curving) {
     const float dx = std::abs(to.x - from.x), dy = std::abs(to.y - from.y);
@@ -193,7 +180,6 @@ ImVec2 PointOn(const Wire &w, float t) {
     const float u = 1.f - t;
     return w[0] * (u * u * u) + w[1] * (3.f * u * u * t) + w[2] * (3.f * u * t * t) + w[3] * (t * t * t);
 }
-// The point of the wire, sampled as a polyline, nearest `p`.
 ImVec2 NearestOnWire(const Wire &w, ImVec2 p) {
     constexpr int Segments{24};
     auto nearest = w[0];
@@ -211,7 +197,6 @@ enum class HitType : uint8_t { None,
                                Parameters, // A node's parameters tray header
                                Node,
                                Link };
-// What lies under the cursor, where a link names the input it enters.
 struct Hit {
     HitType Type{HitType::None};
     uint32_t Node{NoNode};
@@ -250,17 +235,14 @@ Hit HitTest(const Graph &graph, ImVec2 mouse) {
     return hit;
 }
 
-// Whether a wire held at a socket of the held kind links with a socket of the kind: an output into an input, held at either end.
 bool Joins(uint16_t held_kind, uint16_t held_socket, uint16_t kind, uint16_t socket) {
     const auto held = KindSockets(held_kind)[held_socket], other = KindSockets(kind)[socket];
     if (held.Direction == other.Direction) return false;
     return held.Direction == SocketDirection::Out ? Links(held, other, kind) : Links(other, held, held_kind);
 }
-// Whether a wire held at one socket links with the other, on another node.
 bool Accepts(const GeometryProcedure &procedure, uint32_t held_node, uint16_t held_socket, uint32_t node, uint16_t socket) {
     return node != held_node && Joins(procedure.Nodes[held_node].Kind, held_socket, procedure.Nodes[node].Kind, socket);
 }
-// The sockets in the range of the node that a wire held at another node's socket links with.
 std::vector<uint16_t> LinkingSockets(const GeometryProcedure &procedure, uint32_t held_node, uint16_t held_socket, uint32_t node, std::pair<uint16_t, uint16_t> range) {
     std::vector<uint16_t> sockets;
     for (auto s = range.first; s < range.second; ++s) {
@@ -268,7 +250,6 @@ std::vector<uint16_t> LinkingSockets(const GeometryProcedure &procedure, uint32_
     }
     return sockets;
 }
-// The link a wire held at one socket makes with another.
 action::nodes::Link LinkOf(const GeometryProcedure &procedure, state::Entity mesh_entity, uint32_t held_node, uint16_t held_socket, uint32_t node, uint16_t socket) {
     const bool from_held = KindSockets(procedure.Nodes[held_node].Kind)[held_socket].Direction == SocketDirection::Out;
     return from_held ? action::nodes::Link{mesh_entity, held_node, held_socket, node, socket} : action::nodes::Link{mesh_entity, node, socket, held_node, held_socket};
@@ -284,8 +265,7 @@ void DropOnNode(NodesWindow &window, const GeometryProcedure &procedure, state::
     }
 }
 
-// A grab moves the selected nodes with the mouse from the active node's position until a click confirms, and Escape or a right click cancels.
-// It holds the active node once the node count grows past `after`.
+// Begin moving selected nodes after the node count exceeds `after`.
 void Grab(NodesWindow &window, uint32_t after) {
     window.Drag = NodeDrag::Grab;
     window.DragNode = NoNode;
@@ -294,7 +274,7 @@ void Grab(NodesWindow &window, uint32_t after) {
     window.Moved = false;
 }
 
-// Links the node a linking add appended to the socket its dropped wire held, commits the add and the link as one step, and grabs the node.
+// Commit node creation and linking as one gesture, then begin moving it.
 void ContinueLink(NodesWindow &window, state::Entity mesh_entity, const GeometryProcedure *procedure) {
     if (procedure && procedure->Nodes.size() > window.LinkAfter) {
         action::Emit(LinkOf(*procedure, mesh_entity, window.DragNode, window.DragSocket, window.LinkAfter, window.LinkSocket), action::Phase::Stage);
@@ -304,14 +284,12 @@ void ContinueLink(NodesWindow &window, state::Entity mesh_entity, const Geometry
     window.LinkAfter = NoNode;
 }
 
-// Stages the next link of a Make Link press, and commits the press with its last link.
 void ContinueMakeLink(NodesWindow &window) {
     action::Emit(window.PendingLinks.front(), action::Phase::Stage);
     window.PendingLinks.erase(window.PendingLinks.begin());
     if (window.PendingLinks.empty()) action::Commit();
 }
 
-// The procedure's selected nodes, ascending.
 std::vector<uint32_t> SelectedNodes(const state::Scene &r, const GeometryProcedure &procedure) {
     std::vector<uint32_t> selected;
     for (uint32_t n = 0u; n < procedure.Nodes.size(); ++n) {
@@ -320,10 +298,8 @@ std::vector<uint32_t> SelectedNodes(const state::Scene &r, const GeometryProcedu
     return selected;
 }
 
-// The links Make Link adds, at most one per pair of nodes adjacent left to right.
-// A pair links left into right, or right into left when only that direction has sockets.
-// It links the first unlinked input, or with `replace` the first linked one, from the first output that fits.
-// A link that would close a cycle is skipped.
+// Connect adjacent selected nodes in horizontal order, using the first compatible input.
+// Skip cycles and occupied inputs unless `replace` is set.
 std::vector<action::nodes::Link> MakeLinks(const state::Scene &r, state::Entity mesh_entity, GeometryProcedure procedure, std::vector<uint32_t> nodes, bool replace) {
     std::ranges::stable_sort(nodes, {}, [&](uint32_t n) { return r.get<const NodeLayout>(procedure.Nodes[n].Entity).Position.x; });
     const auto input_first = InputFirsts(procedure);
@@ -352,14 +328,14 @@ std::vector<action::nodes::Link> MakeLinks(const state::Scene &r, state::Entity 
     return links;
 }
 
-// A link a held node inserts on: the input it enters, its wire's point nearest the mouse, and how far its reader moves right to clear the node.
+// Record the insertion input, the wire point nearest the cursor, and the downstream displacement needed to fit the node.
 struct Insert {
     uint32_t ToNode;
     uint16_t ToSocket;
     ImVec2 At;
     float Shift;
 };
-// The link with its wire nearest the mouse within reach that the node inserts on, while the node is the one selected node.
+// Return the nearest compatible link for insertion of the sole selected node.
 std::optional<Insert> InsertTarget(const state::Scene &r, const Graph &graph, uint32_t node, ImVec2 mouse) {
     const auto &procedure = graph.Procedure;
     if (SelectedNodes(r, procedure) != std::vector{node}) return {};
@@ -377,8 +353,7 @@ std::optional<Insert> InsertTarget(const state::Scene &r, const Graph &graph, ui
     return insert;
 }
 
-// Emits the actions the canvas's presses, drags and releases make.
-// A move or grab releasing its node over the insert target inserts the node there.
+// Emit canvas actions and insert a dragged node when released over an insertion target.
 void Interact(const state::Scene &r, NodesWindow &window, state::Entity mesh_entity, const Graph &graph, const Hit &hit, const std::optional<Insert> &insert) {
     const auto &io = GetIO();
     const auto &procedure = graph.Procedure;
@@ -386,12 +361,11 @@ void Interact(const state::Scene &r, NodesWindow &window, state::Entity mesh_ent
     const auto mouse = io.MousePos;
     const bool mouse_moved = io.MouseDelta.x != 0.f || io.MouseDelta.y != 0.f;
     const auto select = [&](std::vector<uint32_t> selected, uint32_t active) { action::Emit(action::nodes::SelectNodes{mesh_entity, std::move(selected), active}); };
-    // The selected nodes follow the mouse from the held node's start.
     const auto follow = [&] {
         const auto position = Im(window.MoveStart) + (mouse - Im(window.Press)) / graph.View.Zoom;
         action::Emit(action::UpdateOf<&NodeLayout::Position>(action::OnSelectedDelta{}, vec2{position}), action::Phase::Stage);
     };
-    // A move or grab ends by committing the steps it staged with its insert, or by cancelling them.
+    // Commit staged move or grab actions together with insertion, or cancel the whole operation.
     const auto end_move = [&](bool commit) {
         if (window.Moved && commit) {
             if (insert) action::Emit(action::nodes::InsertNode{mesh_entity, window.DragNode, insert->ToNode, insert->ToSocket, insert->Shift}, action::Phase::Stage);
@@ -403,7 +377,7 @@ void Interact(const state::Scene &r, NodesWindow &window, state::Entity mesh_ent
     };
     if (window.Drag == NodeDrag::Grab) {
         if (window.DragNode == NoNode) {
-            // The grab's action applied by this frame, or it failed and there is nothing to grab.
+            // Cancel the grab if its action failed to create a node.
             if (nodes.size() <= window.GrabAfter || procedure.ActiveNode == NoNode) {
                 window.Drag = NodeDrag::None;
                 return;
@@ -429,7 +403,7 @@ void Interact(const state::Scene &r, NodesWindow &window, state::Entity mesh_ent
                 window.DragNode = hit.Node;
                 window.DragSocket = hit.Socket;
             } else if (hit.Type == HitType::Node || hit.Type == HitType::Parameters) {
-                // Shift toggles the active node out of the selection, and otherwise extends the selection to the node and makes it active.
+                // Shift-click removes the active node from selection; otherwise it extends selection and activates the clicked node.
                 const bool selected = r.all_of<NodeSelected>(nodes[hit.Node].Entity), active = hit.Node == procedure.ActiveNode;
                 if (io.KeyShift && selected && active) {
                     auto remaining = SelectedNodes(r, procedure);
@@ -456,7 +430,7 @@ void Interact(const state::Scene &r, NodesWindow &window, state::Entity mesh_ent
             OpenPopup("##AddNode");
         }
     }
-    // The hovered canvas takes the editing shortcuts, which the viewport yields while it is hovered.
+    // Route editing shortcuts to the hovered node canvas.
     if (window.Drag == NodeDrag::None && window.Hovered) {
         constexpr auto Key{ImGuiInputFlags_RouteGlobal};
         if (Shortcut(ImGuiMod_Shift | ImGuiKey_A, Key)) {
@@ -470,7 +444,6 @@ void Interact(const state::Scene &r, NodesWindow &window, state::Entity mesh_ent
         } else if (Shortcut(ImGuiMod_Shift | ImGuiKey_J, Key)) {
             window.PendingLinks = MakeLinks(r, mesh_entity, procedure, SelectedNodes(r, procedure), true);
         } else if (Shortcut(ImGuiMod_Shift | ImGuiKey_D, Key)) {
-            // The copies grab as soon as they exist.
             if (auto selected = SelectedNodes(r, procedure); !selected.empty()) {
                 action::Emit(action::nodes::DuplicateNodes{mesh_entity, std::move(selected), {}});
                 Grab(window, uint32_t(nodes.size()));
@@ -489,7 +462,6 @@ void Interact(const state::Scene &r, NodesWindow &window, state::Entity mesh_ent
         if (!IsMouseDown(ImGuiMouseButton_Left)) end_move(true);
         else if (window.Moved && IsKeyPressed(ImGuiKey_Escape)) end_move(false);
         else if (IsMouseDragging(ImGuiMouseButton_Left)) {
-            // The selected nodes follow the held node, which the press made active.
             const bool first = !window.Moved;
             if (first && window.DragNode == procedure.ActiveNode) {
                 window.Moved = true;
@@ -506,7 +478,7 @@ void Interact(const state::Scene &r, NodesWindow &window, state::Entity mesh_ent
         else if (hit.Type == HitType::Node) DropOnNode(window, procedure, mesh_entity, hit.Node, {0u, SocketCount[nodes[hit.Node].Kind]});
         else if (held.Direction == SocketDirection::In && IsLinked(procedure, window.DragNode, window.DragSocket)) action::Emit(action::nodes::Unlink{mesh_entity, window.DragNode, window.DragSocket});
         else if (window.Hovered) {
-            // A wire dropped on empty canvas opens the Add menu to link a new node there.
+            // Open Add on an empty-canvas wire drop.
             window.AddAt = vec2{graph.View.ToCanvas(mouse)};
             window.Linking = true;
             OpenPopup("##AddNode");
@@ -517,7 +489,7 @@ void Interact(const state::Scene &r, NodesWindow &window, state::Entity mesh_ent
         const auto selected = SelectedNodes(r, procedure);
         const auto press = Im(window.Press);
         if (LengthSquared(mouse - press) >= io.MouseDragThreshold * io.MouseDragThreshold) {
-            // A band selects the nodes it touches, extending the selection with Shift, and the active node stays when it remains selected.
+            // Select nodes intersecting the box, extending selection with Shift and retaining the active node while selected.
             const ImVec2 lo{std::min(press.x, mouse.x), std::min(press.y, mouse.y)}, hi{std::max(press.x, mouse.x), std::max(press.y, mouse.y)};
             std::vector<uint32_t> banded;
             for (uint32_t n = 0u; n < nodes.size(); ++n) {
@@ -534,9 +506,8 @@ void Interact(const state::Scene &r, NodesWindow &window, state::Entity mesh_ent
 }
 
 char Lower(char c) { return char(std::tolower(static_cast<unsigned char>(c))); }
-// Whether the text occurs in the label, ignoring case, where empty text occurs in every label.
 bool Matches(std::string_view label, std::string_view text) { return text.empty() || !std::ranges::search(label, text, {}, Lower, Lower).empty(); }
-// The kinds whose title contains the text ignoring case, those whose title starts with it first, each in kind order.
+// Search titles case-insensitively, placing prefix matches first.
 std::vector<uint16_t> SearchKinds(std::string_view text) {
     std::vector<uint16_t> kinds;
     for (uint16_t kind = 0u; kind < KindCount; ++kind) {
@@ -546,13 +517,11 @@ std::vector<uint16_t> SearchKinds(std::string_view text) {
     return kinds;
 }
 
-// Moves the highlight the field's user data holds down or up a row.
 int MoveHighlight(ImGuiInputTextCallbackData *data) {
     *static_cast<int *>(data->UserData) += data->EventKey == ImGuiKey_DownArrow ? 1 : -1;
     return 0;
 }
 
-// A socket of a kind that a held wire links with, as a linking menu entry named by its kind and socket.
 struct LinkingEntry {
     uint16_t Kind, Socket;
     const char *SocketName;
@@ -569,16 +538,16 @@ std::vector<LinkingEntry> LinkingEntries(uint16_t held_kind, uint16_t held_socke
     }
     return entries;
 }
-// A search result list shows this many rows at most, and scrolls past them.
 constexpr int ResultRows{10};
-// Lists the results in a region of the width capped at ResultRows rows, with the highlight clamped to them and scrolled into view once it moves from `previous`.
-// `row(i, highlighted)` draws result i's row and returns whether a click picked it, and a click or Enter picks a result with `pick(i)` and closes the popup.
+// Display at most ResultRows rows and scroll to the highlight when it changes.
+// row(i, highlighted) returns whether row i was clicked.
+// A click or Enter calls pick(i) and closes the popup.
 void DrawResults(int count, float width, int &highlight, int previous, bool enter, auto &&row, auto &&pick) {
     highlight = std::max(0, std::min(highlight, count - 1));
     const float rows = float(std::min(count, ResultRows));
     BeginChild("##results", {width, rows > 0.f ? rows * GetTextLineHeightWithSpacing() : 1.f}, ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
     for (int i = 0; i < count; ++i) {
-        // A click in the list region closes the popup itself, since the region is not the popup.
+        // Explicitly close the popup after a result-region click.
         if (row(i, i == highlight)) {
             pick(i);
             CloseCurrentPopup();
@@ -592,8 +561,8 @@ void DrawResults(int count, float width, int &highlight, int previous, bool ente
     }
 }
 
-// Add a node of the picked kind at the menu's position and grab it, picking from kind groups or search results.
-// A menu opened by dropping a wire lists every socket that fits the held one, like Blender's link search, and ContinueLink links the new node through it.
+// Add the selected node at the menu position and begin dragging it.
+// After dropping a wire, list compatible sockets and connect the new node through ContinueLink.
 void DrawAddMenu(NodesWindow &window, const NodeTheme &theme, state::Entity mesh_entity, const GeometryProcedure &procedure, bool interactive) {
     if (!BeginPopup("##AddNode")) return;
     const auto &nodes = procedure.Nodes;
@@ -608,7 +577,7 @@ void DrawAddMenu(NodesWindow &window, const NodeTheme &theme, state::Entity mesh
         window.SearchHighlight = 0;
         SetKeyboardFocusHere();
     }
-    // Up and Down move the highlight, which the history callback keeps the field from taking as navigation.
+    // Use Up and Down for result selection instead of text-history navigation.
     const auto highlight = window.SearchHighlight;
     SetNextItemWidth(GetFontSize() * 14.f);
     const bool enter = InputTextWithHint("##Search", "Search", window.Search.data(), window.Search.size(), ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackHistory, MoveHighlight, &window.SearchHighlight);
@@ -619,7 +588,6 @@ void DrawAddMenu(NodesWindow &window, const NodeTheme &theme, state::Entity mesh
         std::erase_if(entries, [&](const LinkingEntry &entry) { return !Matches(entry.Label, text); });
         float width = GetFontSize() * 14.f;
         for (const auto &entry : entries) width = std::max(width, CalcTextSize(entry.Label.c_str()).x + GetFontSize() * 2.f);
-        // Each row names its kind dimmed before its socket, as Blender's link search does.
         const auto row = [&](int i, bool highlighted) {
             PushID(i);
             const auto at = GetCursorScreenPos();
@@ -633,7 +601,7 @@ void DrawAddMenu(NodesWindow &window, const NodeTheme &theme, state::Entity mesh
         };
         DrawResults(int(entries.size()), width, window.SearchHighlight, highlight, enter, row, [&](int i) {
             if (!interactive) return;
-            // The linking socket lands on the drop point.
+            // Place the linking socket at the drop point.
             const auto &entry = entries[i];
             action::Emit(action::nodes::AddNode{mesh_entity, entry.Kind, vec2{Im(window.AddAt) - SocketOffset(theme, entry.Kind, entry.Socket, theme.NodeWidth, false)}}, action::Phase::Stage);
             window.LinkAfter = uint32_t(nodes.size());
@@ -661,7 +629,6 @@ void DrawAddMenu(NodesWindow &window, const NodeTheme &theme, state::Entity mesh
     EndPopup();
 }
 
-// Offers the sockets of the picked node that the held wire links with, and links the pick.
 void DrawPortPicker(NodesWindow &window, state::Entity mesh_entity, const GeometryProcedure &procedure, bool interactive) {
     if (window.PickNode == NoNode) return;
     if (!BeginPopup("##PickPort")) {
@@ -696,13 +663,13 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
     auto &canvas = window.Canvas;
     if (interactive) {
         if (window.Hovered) {
-            // A trackpad scroll pans, or zooms with Ctrl or Cmd held, and a mouse wheel and a pinch zoom.
+            // Pan with trackpad scrolling; zoom with Ctrl/Cmd scrolling, the mouse wheel, or a pinch.
             const auto wheel = std::exchange(frame.PreciseWheelDelta, vec2{0});
             const auto magnification = std::exchange(frame.Magnification, 0.f);
             const bool pan = frame.PreciseScrolling && !io.KeyCtrl && !io.KeySuper;
             if (pan) canvas.Offset = vec2{Im(canvas.Offset) + Im(wheel) * TrackpadPoints};
             const float steps = pan ? 0.f : wheel.y * (frame.PreciseScrolling ? TrackpadPoints / TrackpadStepPoints : 1.f);
-            // The canvas point under the cursor stays under it.
+            // Preserve the canvas point under the cursor while zooming.
             if (const auto zoom = std::clamp(canvas.Zoom * std::pow(ZoomStep, steps) * (1.f + magnification), MinZoom, MaxZoom); zoom != canvas.Zoom) {
                 const auto at = (mouse - origin - Im(canvas.Offset)) / canvas.Zoom;
                 canvas.Offset = vec2{mouse - origin - at * zoom};
@@ -720,12 +687,11 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
     const bool holding = (window.Drag == NodeDrag::Move && window.Moved) || (window.Drag == NodeDrag::Grab && window.DragNode != NoNode);
     const auto insert = holding ? InsertTarget(r, graph, window.DragNode, mouse) : std::nullopt;
     if (interactive) Interact(r, window, mesh_entity, graph, hit, insert);
-    // The mouse over a node's tray chevron opens the tray, which stays open while the mouse is in the tray's rectangle, the wire it holds is held, or the port picker is its.
+    // Keep parameters expanded while hovered, wiring, or selecting a port.
     const bool wiring = window.Drag == NodeDrag::Wire;
     const bool stays_open = graph.Expanded != NoNode && (Contains(graph.TrayRect(graph.Expanded), mouse) || (wiring && window.DragNode == graph.Expanded) || window.PickNode == graph.Expanded);
     if (hit.Type == HitType::Parameters) window.Expanded = hit.Node;
     else if (!stays_open) window.Expanded = NoNode;
-    // The held node's insert target draws lit, with a marker where the node lands on its wire.
     const auto target = window.Drag == NodeDrag::None ? std::nullopt : insert;
 
     auto &draw = *GetWindowDrawList();
@@ -759,8 +725,8 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
         const auto sockets = KindSockets(kind);
         const auto [first, end_parameter] = ParameterRange(kind);
         const bool erring = r.all_of<NodeError>(entity);
-        // Border the node in the active, selected or error color, in that order, with an inner error line on a selected erring node.
-        // ImGui strokes half a unit inside a rectangle, so grow it by that half to center the border on the node edge where the sockets sit.
+        // Prioritize active, selected, then error border colors; retain an inner error line on selected nodes with errors.
+        // Expand borders by half a unit to align ImGui strokes with socket centers.
         const bool active = n == procedure.ActiveNode, selected = r.all_of<NodeSelected>(entity);
         const auto error = U32(colors.Error);
         const auto border = active ? U32(colors.Active) : selected ? U32(colors.Selected) :
@@ -783,13 +749,11 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
             const bool hovered = hit.Type == HitType::Socket && hit.Node == n && hit.Socket == s && !dimmed;
             DrawSocket(draw, theme, at, theme.SocketRadius * zoom, sockets[s], dimmed ? colors.Dimmed : SocketColor(colors, sockets[s]), hovered);
             const auto *label = LabelOf(sockets[s]);
-            // A parameter row indents its label into the tray.
             const float x = s >= InputCount[kind] ? at.x - inset - GetFont()->CalcTextSizeA(font_size, FLT_MAX, 0.f, label).x : at.x + inset + (parameter ? theme.ParameterIndent * zoom : 0.f);
             draw.AddText(nullptr, font_size, {x, at.y - font_size * .5f}, U32(dimmed ? colors.DimmedLabel : parameter ? colors.ParameterLabel :
                                                                                                                         colors.Label),
                          label, nullptr, 0.f, &clip);
         }
-        // A closed tray's chevron is named after its linked parameters.
         if (first < end_parameter && !expanded) {
             const auto at = graph.ParametersAt(n);
             const auto linked = LinkedParameters(procedure, n);
@@ -828,7 +792,6 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
     DrawPortPicker(window, mesh_entity, procedure, interactive);
 }
 
-// Picks a mesh object by name, or none.
 bool ObjectChoice(const state::Scene &r, const char *label, state::Entity &value) {
     bool changed = false;
     const auto current = r.valid(value) ? value : state::Null;
@@ -847,8 +810,8 @@ bool ObjectChoice(const state::Scene &r, const char *label, state::Entity &value
     return changed;
 }
 
-// Commits an edited attribute name through SetAttributeName when the field deactivates.
-// The window keeps the text of the one field ImGui has active.
+// Commit attribute-name changes through SetAttributeName when the field deactivates.
+// Retain text for the single active ImGui field.
 void NameField(NodesWindow &window, state::Entity node, const char *label, const AttributeName &name, bool interactive) {
     const auto id = GetID(label);
     if (window.NameEditId != id) window.NameEdit = name;
@@ -859,15 +822,13 @@ void NameField(NodesWindow &window, state::Entity node, const char *label, const
     if (IsItemDeactivatedAfterEdit() && interactive) action::Emit(action::nodes::SetAttributeName{node, std::string{window.NameEdit.data()}});
 }
 
-// The fields of the node's parameters that read a link, by declaration index.
-// The sockets of a node's linked parameters, each naming the field it carries.
 using LinkedFields = std::vector<Socket>;
 bool ReadsLink(const LinkedFields &linked, uint8_t field, uint8_t member = NoField) {
     return std::ranges::any_of(linked, [&](Socket socket) { return socket.Carries(field, member); });
 }
 
-// Edits a nested value of a node's parameters through the value type's own editor, each field staging an Update at its offset in the node's component.
-// A member reading a link draws disabled.
+// Stage nested parameter edits at their byte offsets within the node component.
+// Disable fields whose members receive linked values.
 template<typename K, typename T>
 struct NestedEdit : ui::FieldWidgets<NestedEdit<K, T>> {
     state::Scene &R;
@@ -892,8 +853,6 @@ struct NestedEdit : ui::FieldWidgets<NestedEdit<K, T>> {
     }
 };
 
-// Draws each field of the node's parameters: a name field, a value with the field widget, or a nested value through its type's own editor.
-// A field reading a link draws disabled.
 template<typename K>
 void DrawFields(state::Scene &r, NodesWindow &window, state::Entity node, const K &value, const LinkedFields &linked, bool interactive) {
     field::ForEach(value, [&]<size_t I>(const auto &member, std::integral_constant<size_t, I>) {
@@ -903,7 +862,6 @@ void DrawFields(state::Scene &r, NodesWindow &window, state::Entity node, const 
         if constexpr (std::same_as<F, AttributeName>) {
             NameField(window, node, label, member, interactive);
         } else if constexpr (std::same_as<F, state::Entity> || ui::DrawableField<F>) {
-            // The change stages as an Update on the node, which a release commits.
             const auto widget = [&](F &v) {
                 if constexpr (std::same_as<F, state::Entity>) return ObjectChoice(r, label, v);
                 else return ui::DrawField(label, v, Spec<K, field::NameString<K, I>>);
@@ -935,8 +893,7 @@ uint32_t SelectedCount(const std::vector<SelectionBlock> &blocks) {
     return count;
 }
 
-// A node's unlinked selection input selects its inline selection: every element while absent, or the elements its masks set.
-// A capture in edit mode replaces it with the drawn record's selection, and a clear returns it to every element.
+// Use inline selection for an unlinked selection input; an absent mask selects everything.
 void DrawInlineSelection(const state::Scene &r, state::Entity viewport, state::Entity mesh_entity, const GeometryProcedure &procedure, uint32_t node, bool interactive) {
     const auto sockets = KindSockets(procedure.Nodes[node].Kind);
     const auto socket = std::ranges::find(sockets, SocketType::Selection, &Socket::Type);
@@ -965,7 +922,6 @@ void DrawInlineSelection(const state::Scene &r, state::Entity viewport, state::E
     SetItemTooltip("Use all elements");
 }
 
-// Edits the active node's parameter component, inline selection and attribute name.
 void DrawParameters(state::Scene &r, state::Entity viewport, NodesWindow &window, state::Entity mesh_entity, const GeometryProcedure &procedure, bool interactive) {
     if (procedure.ActiveNode == NoNode) {
         TextWrapped("Click a node to edit its parameters.");

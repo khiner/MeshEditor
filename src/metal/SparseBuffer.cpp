@@ -27,8 +27,8 @@ void ForEachPhysicalRun(std::span<const PhysicalPageRef> pages, auto &&visit) {
 
 SparseBuffer::SparseBuffer(const Context &ctx, uint64_t virtual_bytes) : Ctx(ctx), CpuVirtualBytes(std::bit_floor(uint64_t(ctx.Device->maxBufferLength()))) {
     const profile::CpuScope scope{"SparseBufferCreate"};
-    // Virtual reservation allocates no geometry pages. Physical storage grows
-    // on demand up to the device's per-resource address limit.
+    // Virtual reservation allocates no geometry pages.
+    // Physical storage grows on demand up to the device's per-resource address limit.
     mach_vm_address_t address{};
     CheckVm(mach_vm_allocate(mach_task_self(), &address, CpuVirtualBytes, VM_FLAGS_ANYWHERE), "Reserve CPU arena addresses");
     CpuAddress = address;

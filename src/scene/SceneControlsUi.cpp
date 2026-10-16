@@ -65,7 +65,6 @@ constexpr std::string Capitalize(std::string_view str) {
     return result;
 }
 
-// Draw the active primitive's fields, emitting a gesture-grouped update per field on change.
 void PrimitiveEditor(const PrimitiveShape &shape) {
     using primitive::MaxSize, primitive::MinSize;
     static constexpr float SizeSpeed = 0.01f;
@@ -143,7 +142,6 @@ void RenderOrthographicFields(auto &&fields, const Orthographic &orthographic) {
     fields.template Slider<&Orthographic::FarClip>("Far clip", orthographic.NearClip + MinNearFarDelta, std::max(orthographic.NearClip + MinNearFarDelta, MaxFarClip));
 }
 
-// Edits the view camera's lens value. `viewport_aspect` is the aspect of the viewport the camera renders.
 bool RenderCameraLensEditor(CameraLens &camera, float distance, float viewport_aspect) {
     bool changed = false;
     int proj_i = std::holds_alternative<Orthographic>(camera) ? 1 : 0;
@@ -158,7 +156,6 @@ bool RenderCameraLensEditor(CameraLens &camera, float distance, float viewport_a
     return changed;
 }
 
-// Edits a camera object's lens component through field updates.
 void RenderCameraLensFields(state::Scene &r, state::Entity entity) {
     const auto *perspective = r.try_get<const Perspective>(entity);
     int proj_i = perspective ? 0 : 1;
@@ -225,7 +222,6 @@ void RenderJsonBlock(const char *label, std::string_view json) {
 
 constexpr auto MetadataTableFlags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
 
-// Metadata table scaffolding: header columns, then `per_row(i)` fills each row's cells.
 void MetaTable(const char *id, std::initializer_list<const char *> cols, size_t rows, auto &&per_row) {
     if (!BeginTable(id, int(cols.size()), MetadataTableFlags)) return;
     for (const auto *col : cols) TableSetupColumn(col);
@@ -442,7 +438,6 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
             } else if (material_count == 0) {
                 TextUnformatted("No materials.");
             } else {
-                // A missing or out-of-range slot selection shows the nearest slot.
                 const auto *existing_slot = r.try_get<const MeshMaterialSlotSelection>(active_mesh_entity);
                 uint32_t slot_primitive = std::min(existing_slot ? existing_slot->PrimitiveIndex : 0u, uint32_t(primitive_materials.size() - 1));
 
@@ -498,7 +493,6 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
                     }
                     return changed;
                 };
-                // `tex` is a sub-editor over one of the material's TextureInfo fields.
                 const auto edit_texture_info = [&](const char *label, auto tex) {
                     tex.template Run<&TextureInfo::Slot>([&](uint32_t &slot) { return edit_texture_slot(std::format("{} texture", label).c_str(), slot); });
                     tex.template Run<&TextureInfo::TexCoord>([&](uint32_t &set) { return SliderUInt(std::format("{} UV set", label).c_str(), &set, 0u, 3u); });
@@ -532,7 +526,6 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
                 fields.Slider<&PBRMaterial::Ior>("IOR");
 
                 const auto pbr_features_mask = r.all_of<PbrMeshFeatures>(active_mesh_entity) ? r.get<const PbrMeshFeatures>(active_mesh_entity).Mask : 0u;
-                // Renders the section header when the feature is enabled.
                 const auto feature_toggle = [&](const char *label, PbrFeature feature) {
                     bool enabled = HasFeature(pbr_features_mask, feature);
                     if (Checkbox(label, &enabled)) {
@@ -1129,7 +1122,8 @@ static void RenderObjectTree(state::Scene &r, state::Entity viewport) {
             }
             if (request.Type != ImGuiSelectionRequestType_SetRange) continue;
 
-            // The request reflects this frame's input. ImGui's NavIdItem catches up next frame.
+            // The request reflects this frame's input.
+            // ImGui's NavIdItem catches up next frame.
             if (request.Selected) out.NavToActive = FromSelectionUserData(request.RangeDirection >= 0 ? request.RangeLastItem : request.RangeFirstItem);
 
             const auto first = FromSelectionUserData(request.RangeFirstItem), last = FromSelectionUserData(request.RangeLastItem);
@@ -1153,7 +1147,6 @@ static void RenderObjectTree(state::Scene &r, state::Entity viewport) {
 
     const auto &theme = r.get<const ViewportTheme>(viewport);
     const float row_x = GetCursorPosX(), indent = GetStyle().IndentSpacing;
-    // The rows whose open state ImGui toggled or restored this frame.
     std::vector<state::Entity> toggled;
     const auto render_row = [&](const OutlinerRows::Row &row) {
         const auto e = row.Entity;

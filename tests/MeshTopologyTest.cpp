@@ -1,4 +1,3 @@
-// Exercises mesh edits through production actions and viewport rendering.
 #include "Paths.h"
 #include "RunSuites.h"
 #include "TestMeshOrdinals.h"
@@ -66,7 +65,6 @@ void ExpectPositions(const Mesh &mesh, const VertexPositions &expected) {
     }
 }
 
-// Check the sparse summaries against canonical membership, masks and positions.
 void ExpectSelectionIndex(const MeshStore &meshes, uint32_t id) {
     if (!meshes.Get(id).SelectionSummary.Count) return;
     const Mesh mesh{meshes, id};
@@ -1146,8 +1144,7 @@ void TestLineSubdivide() {
     ExpectRenderTopology(f, id, 1u, 4u);
 }
 
-// Independent edge-based reference: every edge contributes once at each endpoint,
-// and each iteration reads the previous iteration's complete positions.
+// Independent edge-based reference: every edge contributes once at each endpoint, and each iteration reads the previous iteration's complete positions.
 
 void TestSmoothVertices() {
     Fixture f{"smooth-vertices"};
@@ -2104,8 +2101,8 @@ void TestEdgeSlideReferences() {
 }
 
 void TestEdgeSlideFacePaths() {
-    // Blender 5.2.2: forked rails in triangle strips, a pentagon, a quad turn,
-    // and nonplanar fork intersections. Only the immediate face paths move.
+    // Blender 5.2.2: forked rails in triangle strips, a pentagon, a quad turn, and nonplanar fork intersections.
+    // Only the immediate face paths move.
     const std::array<std::array<vec3, 3>, 4> reference{{
         {{{.5f, .75f, 0}, {2.375f, .5f, 0}, {4.25f, .25f, 0}}},
         {{{0, .5f, 0}, {1.72951460f, .65300971f, 0}, {2.625f, 1.5f, 0}}},
@@ -2151,7 +2148,8 @@ void TestEdgeSlideFacePaths() {
     source.Data.AddFace(std::array{0u, 1u, 4u});
     const auto id = CreateMesh(f.R, std::move(source)).StoreId;
     const auto [entity, instance] = f.AddEditable(id, Element::Edge);
-    // Nonmanifold inputs may have multiple canonical representatives. Select one.
+    // Nonmanifold inputs may have multiple canonical representatives.
+    // Select one.
     const auto edges = EdgePairOrdinals(f.ActiveMesh(), std::array<std::array<uint32_t, 2>, 1>{{{0u, 1u}}});
     expect(!edges.empty());
     const std::array selected{edges.front()};
@@ -2253,7 +2251,7 @@ void TestSlideAttributes() {
         const auto id = CreateMesh(f.R, std::move(source)).StoreId;
         const auto &a = f.R.Context.get<const MeshStore>().Arenas();
         const auto &record = f.R.Context.get<const MeshStore>().Get(id);
-        // Different values on every corner retain an explicit UV/color seam at the shared edge.
+        // Different values on every corner retain an explicit UV/color discontinuity at the shared edge.
         for (const auto face : f.MeshOf(id).faces())
             for (const auto h : f.MeshOf(id).fh_range(face)) {
                 a.CornerUvs[0].Values.Buffer.GetMutableSpan<vec2>({ElementAttribute<vec2>::Index(record.CornerUvs[0], *h), 1u})[0] = {float(*h), float(*face)};
@@ -2674,8 +2672,7 @@ void TestSnapSymmetry() {
     const auto history = *f.P->History.Present;
     f.Do(action::mesh::SnapSymmetry{.Threshold = 0.f});
     expect(*f.P->History.Present == history);
-    // Blender 5.2.2: interpolate toward positive partners, including unselected
-    // partners; center eligible vertices and leave unmatched vertices untouched.
+    // Blender 5.2.2: interpolate toward positive partners, including unselected partners; center eligible vertices and leave unmatched vertices untouched.
     // The first canonical pair owns its partner, leaving the competing vertex 7 unchanged.
     const std::array reference{vec3{-1.06f, .03f, .015f}, vec3{1.06f, .03f, .015f}, vec3{-2.015f, 1.0375f, .2375f}, vec3{2.015f, 1.0375f, .2375f}, vec3{0, 2, .3f}, vec3{4, 2, 3}, vec3{.1f, 4, .6f}};
     auto expected = original;
@@ -2708,7 +2705,8 @@ void TestUnsubdivide() {
         std::ranges::sort(faces);
         return faces;
     };
-    // bmesh.ops.unsubdivide, Blender 5.2.2 d13f752e3b9c. Compare oriented loops.
+    // bmesh.ops.unsubdivide, Blender 5.2.2 d13f752e3b9c.
+    // Compare oriented loops.
     for (const auto &reference : references) {
         Fixture f{"unsubdivide"};
         const auto size = reference.Size, width = size + 1u;
@@ -2898,8 +2896,7 @@ void TestBeautifySeams() {
         const auto mesh = f.ActiveMesh();
         const auto &a = f.R.Context.get<const MeshStore>().Arenas();
         uint32_t negative = 0u;
-        // Blender's boundary loop provenance: vertex 1 comes from the second
-        // face and vertex 3 from the first, despite their original UV seam.
+        // Blender's boundary loop provenance: vertex 1 comes from the second face and vertex 3 from the first, despite their original UV discontinuity.
         for (const auto face : mesh.faces()) {
             negative += mesh.GetNormal(face).z < 0.f;
             for (const auto h : mesh.fh_range(face)) {
@@ -3025,7 +3022,8 @@ void TestDecimate() {
             expect(mesh.VertexCount() < counts.Vertices) << "decimate fixture" << kind;
             expect(mesh.TriangleIndexCount() / 3u < counts.Triangles);
             // Blender 5.2.2 d13f752e3b9c: these half-ratio grids end at
-            // 35, 36 and 36 triangles. Collapse order and retained polygons differ.
+            // 35, 36 and 36 triangles.
+            // Collapse order and retained polygons differ.
             if (kind < 3u) {
                 expect(mesh.TriangleIndexCount() / 3u <= 36u);
                 expect(mesh.TriangleIndexCount() / 3u >= 35u);
@@ -3402,8 +3400,8 @@ void TestMixedMeshletBuild() {
         ExpectCounts(mesh, {6u, 5u, 1u, 1u});
         expect(RenderedPrimitiveCounts(meshes, id) == std::array{1u, 2u, 1u});
     };
-    // Rebuild interleaved mixed owners, clone, release, and rebuild again. Keep this
-    // allocation reuse before undo: it caught a missing pre-construction history capture.
+    // Rebuild interleaved mixed owners, clone, release, and rebuild again.
+    // Keep this allocation reuse before undo: it caught a missing pre-construction history capture.
     for (uint32_t pass = 0u; pass < 3u; ++pass) {
         mtl::ComputeChain chain{meshes.BufferContext()};
         std::array<std::array<ElementWork, 3>, 2> work;

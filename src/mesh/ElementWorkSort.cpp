@@ -12,7 +12,6 @@ uint32_t TemporaryWords(uint32_t capacity) { return capacity + 16u * ((capacity 
 uint32_t SortElementWorkWords(uint32_t capacity) { return TemporaryWords(capacity) + sizeof(ElementWorkSortJob) / sizeof(uint32_t); }
 
 void EncodeElementMembershipWork(state::Scene &r, mtl::ComputeChain &chain, std::span<const ElementWorkSeedJob> jobs) {
-    // One tile per listed block of each job.
     TiledJobBatch<ElementWorkSeedJob, 1> batch{chain.Scratch, 0u};
     batch.Begin();
     for (const auto &job : jobs) batch.AddJob(job, {job.BlockCount});
@@ -29,8 +28,8 @@ void EncodeSortElementWork(state::Scene &r, mtl::ComputeChain &chain, std::span<
         const auto temporary = storage.Allocate(TemporaryWords(domain.Capacity));
         jobs.push_back({domain, temporary.Offset});
         capacity = std::max(capacity, domain.Capacity);
-        // Work keys are one-based 256-element block numbers. Higher radix
-        // digits are zero for every key in this domain and need no passes.
+        // Work keys are one-based 256-element block numbers.
+        // Higher radix digits are zero for every key in this domain and need no passes.
         largest_key = std::max(largest_key, uint32_t((uint64_t(domain.Count) + 255u) / 256u));
     }
     const auto at = storage.Allocate(uint32_t(jobs.size()) * sizeof(ElementWorkSortJob) / sizeof(uint32_t));
@@ -38,8 +37,8 @@ void EncodeSortElementWork(state::Scene &r, mtl::ComputeChain &chain, std::span<
     ElementWorkSortPushConstants pc{.Jobs = {storage.Buffer.Slot, at.Offset}};
     const auto &pipelines = GetMeshPipelines(r);
     const auto domains = uint32_t(work.size()), groups = (capacity + 255u) / 256u;
-    // Each pass alternates the order and temporary arrays. An even number of
-    // passes leaves the final order in its canonical array for FinishWork.
+    // Each pass alternates the order and temporary arrays.
+    // An even number of passes leaves the final order in its canonical array for FinishWork.
     const uint32_t passes = std::max(2u, 2u * ((std::bit_width(largest_key) + 7u) / 8u));
     for (pc.Shift = 0u; pc.Shift < 4u * passes; pc.Shift += 4u) {
         chain.Groups(pipelines[MeshPass::ElementWorkHistogram], pc, groups, 256u, domains);

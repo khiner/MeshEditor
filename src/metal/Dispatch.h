@@ -13,7 +13,8 @@ struct ComputePipeline;
 
 // Compute passes recorded in order, each after the buffer writes of the passes before it.
 // Passes share one command buffer until the submit, and passes recorded after other committed GPU work run after it.
-// Submit is the only commit and the only wait. It commits the recorded passes, waits for them, and checks the error word.
+// Submit is the only commit and the only wait.
+// It commits the recorded passes, waits for them, and checks the error word.
 // Scratch word zero is that error word, which a pass sets when its input violates canonical ownership or topology.
 struct ComputeChain {
     // The scratch starts with room for `scratch_words`, so a transaction that knows its size does not grow it mid-recording.
@@ -44,7 +45,7 @@ struct ComputeChain {
         std::forward<Fn>(fn)(Encoder());
     }
     // Records the passes of `fn` without memory barriers between them, followed by one barrier.
-    // The passes must not read what another of them writes.
+    // Require independent reads and writes across concurrent passes.
     template<typename Fn> void Concurrent(Fn &&fn) {
         const bool outer = std::exchange(Deferring, true);
         std::forward<Fn>(fn)();

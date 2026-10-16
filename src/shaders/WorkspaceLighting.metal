@@ -1,7 +1,8 @@
 #ifndef WORKSPACELIGHTING_MSL
 #define WORKSPACELIGHTING_MSL
 
-// Blender-matching solid viewport lighting. Ported from workbench_world_light.bsl.hh.
+// Blender-matching solid viewport lighting.
+// Ported from workbench_world_light.bsl.hh.
 #include "tonemapping.metal"
 #include "Transparency.metal"
 #include "VisibilityDecode.metal"
@@ -50,12 +51,10 @@ inline float3 get_world_lighting(const thread Scene &scene, float3 base_color, f
         }
 
         float4 gloss = float4(1.0f - roughness);
-        // Reduce gloss as the smooth-light radius increases.
         gloss *= 1.0f - wrap;
         const float4 shininess = exp2(10.0f * gloss + 1.0f);
         float4 spec_light = blinn_specular(shininess, spec_angle, spec_NL);
 
-        // Approximate environment illumination.
         const float4 spec_env = wrapped_lighting(wrapped_NL, mix(wrap, float4(1.0f), roughness));
         spec_light = mix(spec_light, spec_env, wrap * wrap);
 
@@ -172,7 +171,6 @@ fragment float4 WorkspaceVisibilityFragment(
     return ShadeWorkspace(decoded.V, scene, view);
 }
 
-// X-ray display stores every workspace-shaded surface at the view's X-ray opacity.
 fragment TransparencyStore WorkspaceTransparentFragment(
     MeshletVertexVaryings meshlet_in [[stage_in]],
     TransparencyValues values [[imageblock_data]],

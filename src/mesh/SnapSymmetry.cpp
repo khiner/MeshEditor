@@ -63,8 +63,8 @@ std::vector<SymmetrySnapVertex> PlanSymmetrySnap(const MeshStore &meshes, const 
         };
         walk(walk, tree.Root, SelectionIndexLevels - 1u);
         if (partner == InvalidOffset || used.contains(partner) || (partner == v && !center)) return;
-        // Ambiguous neighborhoods use the first canonical selected pair. A
-        // destination is written once, including coincident or overlapping pairs.
+        // Ambiguous neighborhoods use the first canonical selected pair.
+        // A destination is written once, including coincident or overlapping pairs.
         used.insert(v);
         used.insert(partner);
         output.push_back({v, partner});

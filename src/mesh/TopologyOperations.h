@@ -22,13 +22,13 @@ std::optional<MeshTopologyTask> RotateEdgesTask(const Mesh &, const GeometrySele
 std::optional<MeshTopologyTask> FillTask(const MeshStore &, const Mesh &, const GeometrySelection &);
 MeshTopologyTask LoopCutTask(const Mesh &, uint32_t edge, uint32_t cuts);
 MeshTopologyTask ExtrudeStepsTask(const Mesh &, const GeometrySelection &, Element, uint32_t steps, const mat3 &, vec3 translation, vec3 center);
-// Plane operations affect the whole mesh. Execute each returned stage in order
-// with ExecuteGeometryTopologyStages so later stages include newly cut faces.
+// Plane operations affect the whole mesh.
+// Execute each returned stage in order with ExecuteGeometryTopologyStages so later stages include newly cut faces.
 std::vector<MeshTopologyTask> BisectTasks(const Mesh &, vec3 point, vec3 normal, bool clear_inner, bool clear_outer);
 std::vector<MeshTopologyTask> SymmetrizeTasks(const Mesh &, uint8_t axis, bool negative);
 MeshTopologyTask KnifeTask(const Mesh &, const GeometrySelection &, const mat4 &mesh_to_clip, vec2 extent, vec2 start, vec2 end);
 // Reference chooses the survivor and is authoritative for First/Last and Center.
 std::optional<MeshTopologyTask> MergeTask(const MeshStore &, const Mesh &, const GeometrySelection &, GeometryMergeMode, float distance, uint32_t reference);
-// Combines the closed surfaces of two different meshes, `second`'s positions taken into `first`'s space by an orientation-preserving transform, for ExecuteGeometryBoolean.
-// Either surface open, or without faces, plans no task.
+// Plan a boolean between distinct closed meshes with faces.
+// Transform second into first space with an orientation-preserving transform.
 std::optional<MeshTopologyTask> BooleanTask(const Mesh &first, const Mesh &second, BooleanOperation, const mat3 &rotation, vec3 translation);

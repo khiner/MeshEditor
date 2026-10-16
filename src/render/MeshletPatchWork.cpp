@@ -18,7 +18,6 @@ MeshletPatch PlanMeshletPatch(state::Scene &r, MeshStore::Record &owner, const B
     const auto &render = meshes.Render();
     const auto owners = render.ElementMeshlets[0].View(owner.ElementMeshlets[0]);
     const auto records = render.Meshlets.Buffer.GetSpan<MeshletRecord>();
-    // The owner's cluster at a meshlet handle.
     const auto meshlet_entries = render.Meshlets.Entries(owner.MeshletData);
     const auto record_of = [&](uint32_t cluster) -> const MeshletRecord & { return records[Resolve<RenderBlockSize>(meshlet_entries, ElementHandle{cluster}).Value()]; };
     const auto triangle_ids = render.MeshletTriangleIds.Get(owner.MeshletTriangles.Values);
@@ -29,7 +28,6 @@ MeshletPatch PlanMeshletPatch(state::Scene &r, MeshStore::Record &owner, const B
     const auto present = [&](uint32_t triangle) {
         return triangle / MeshElementBlockSize < triangle_entries.size() && triangle_entries[triangle / MeshElementBlockSize] != InvalidOffset;
     };
-    // The live finest cluster whose payload holds the triangle.
     const auto cluster_of = [&](uint32_t triangle) {
         const auto cluster = present(triangle) ? owners.GetOr(triangle, InvalidOffset) : InvalidOffset;
         if (!render.Meshlets.Contains(owner.MeshletData, ElementHandle{cluster})) throw std::invalid_argument("Meshlet patch triangle has no live render owner.");
@@ -75,8 +73,7 @@ MeshletPatch PlanMeshletPatch(state::Scene &r, MeshStore::Record &owner, const B
             const auto face = a.HalfedgeFaces.Get({meshes.HandleAddress(owner.StoreId, MeshStore::ElementDomain::Halfedge, ElementHandle{corner}).Value(), 1u})[0];
             const auto material = a.FacePrimitives.View(owner.FacePrimitives).GetOr(face);
             const auto primitive = EnsureMeshletPrimitive(r, owner, material, 0u);
-            // An ungrouped face joins an actual traversal leaf, even when the
-            // existing primitive has a separate pinned finest node for LOD.
+            // An ungrouped face joins an actual traversal leaf, even when the existing primitive has a separate pinned finest node for LOD.
             const auto node_of = [&](uint32_t node) -> const LodNode & { return render.LodNodes.Get({render.LodNodes.Address(owner.NodeData, ElementHandle{node}).Value(), 1u})[0]; };
             auto leaf = render.Primitives.Get({render.Primitives.Address(owner.PrimitiveData, ElementHandle{primitive}).Value(), 1u})[0].LodRootNode;
             while (node_of(leaf).ChildCount) leaf = node_of(leaf).ChildOffset;

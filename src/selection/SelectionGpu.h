@@ -23,11 +23,11 @@ struct SelectionSlots {
     uint32_t ObjectPickKey, ElementPickKey, ElementPickId, ObjectPickSeenBits, ObjectBoxBitset;
 };
 
-// Returns box hits in object-id order. X-ray display includes occluded objects.
+// Returns box hits in object-id order.
+// X-ray display includes occluded objects.
 std::vector<state::Entity> RunBoxSelect(state::Scene &, state::Entity viewport, std::pair<uvec2, uvec2> box_px);
 
-// Element-level box selection: collects query words, prepares their source-mask
-// changes for history, then publishes and derives the other domains on the GPU.
+// Element-level box selection: collects query words, prepares their source-mask changes for history, then publishes and derives the other domains on the GPU.
 void RunBoxSelectElements(state::Scene &, state::Entity viewport, std::span<const ElementRange> ranges, Element, std::pair<uvec2, uvec2> box_px, bool is_additive);
 
 // Returns click hits sorted by distance, depth, and object id, then advances the 8-bit epoch tag.
@@ -49,5 +49,6 @@ void RefreshElementSelectionSummaries(state::Scene &, std::span<const state::Ent
 // Brings each mesh's remembered element selection into `mode` and clears its active element.
 void ConvertElementSelections(state::Scene &, std::span<const state::Entity> mesh_entities, Element mode);
 void ApplyEditSharpness(state::Scene &, state::Entity viewport, std::span<const state::Entity> mesh_entities, EditSharpnessOperation, bool value = false, float angle = 0.f);
-// Read the shared GPU summary after selection work has completed. Other element domains have no current summary.
+// Read the shared GPU summary after selection work has completed.
+// Other element domains have no current summary.
 const EditSelectionSummary *GetElementSelectionSummary(const state::Scene &, state::Entity mesh_entity, Element);

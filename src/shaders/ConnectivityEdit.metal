@@ -1,7 +1,7 @@
 #include "ElementWorkShared.metal"
 #include "gpu/ConnectivityEditPushConstants.h"
 
-// The replaced core halfedges and faces leave the neighborhood, and the emitted handles join it.
+// Replace removed core halfedges and faces with emitted handles in the neighborhood.
 kernel void ConnectivityEditWork(
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
     constant ConnectivityEditPushConstants &pc [[buffer(BufferIndex_PushConstants)]],

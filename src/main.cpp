@@ -64,8 +64,6 @@ bool LogEnabled{true};
 using SteadyClock = std::chrono::steady_clock;
 double ElapsedMs(SteadyClock::time_point begin) { return std::chrono::duration<double, std::milli>(SteadyClock::now() - begin).count(); }
 
-// #define IMGUI_UNLIMITED_FRAME_RATE
-
 // Skip a frame when every drawable is in flight.
 NS::SharedPtr<MTL::CommandBuffer> RenderAndPresentFrame(const mtl::Context &ctx, CA::MetalLayer *layer, ImDrawData *draw_data) {
     const mtl::AutoreleaseScope native_scope;
@@ -127,7 +125,6 @@ struct GltfSampleTree {
     std::vector<GltfSample> Files;
 };
 
-// Return a glTF or GLB file's top-level extensionsUsed names without constructing an Asset.
 std::set<std::string> ReadExtensionsUsed(const fs::path &path) {
     std::ifstream f{path, std::ios::binary};
     if (!f) return {};
@@ -919,7 +916,6 @@ void ValidateRoundTrip(
 }
 #endif
 
-// Write the viewport to path and return the resolved output path on success.
 std::expected<fs::path, std::string> SaveScreenshot(state::Scene &r, const fs::path &path) {
     auto image = ReadbackViewportImage(r);
     if (!image) return std::unexpected{std::move(image.error())};
@@ -990,7 +986,6 @@ bool FrameScene(state::Scene &r, state::Entity viewport, float aspect_ratio) {
     return true;
 }
 
-// Use the default window extent for headless rendering.
 constexpr uvec2 DefaultWindowSize{1280, 800};
 
 constexpr std::string_view Usage{
@@ -1033,7 +1028,6 @@ Other:
   --help, -h                  Show this message)"
 };
 
-// Capture options parsed from the command line.
 struct CaptureRequest {
     enum class BenchmarkAction { Steady,
                                  Orbit,
@@ -1046,7 +1040,7 @@ struct CaptureRequest {
     bool Play{false};
     float PlayDuration{0};
     int Fps{60};
-    bool RecordAudio{false}; // Mux the master output into the recording. Off so the render corpus stays video only.
+    bool RecordAudio{false}; // Mux master audio; disabled for the video-only render corpus.
     fs::path RecordPath{}, ScreenshotPath{};
     fs::path RenderBasename{};
     std::optional<MotionBlur> Blur{};
@@ -1060,7 +1054,7 @@ struct CaptureRequest {
     std::optional<Element> EditMode{}; // Engaged: select mesh objects and enter this element edit mode.
     bool XRay{false};
     bool SelectAll{false};
-    float LodErrorPixels{-1.f}; // Screen-space error budget override for the cluster LOD cut. Negative leaves the viewport setting untouched.
+    float LodErrorPixels{-1.f}; // Cluster LOD error override in pixels; negative uses the viewport setting.
     uint8_t NormalOverlays{0};
     bool BoundingBoxes{false}, TetWireframe{false};
 };
@@ -1150,7 +1144,8 @@ enum class SceneStatus {
     Failed
 };
 
-// Report and clear action errors. A real failure takes precedence over unsupported extensions.
+// Report and clear action errors.
+// A real failure takes precedence over unsupported extensions.
 SceneStatus ReportActionErrors(state::Scene &r) {
     auto &errors = r.Context.get<action::Errors>();
     if (auto error = Session(r).History.TakeIntegrityError(); !error.empty()) action::Fail(r, std::move(error));
@@ -1177,7 +1172,6 @@ SceneStatus SeedScene(state::Scene &r, state::Entity viewport, const CaptureRequ
     return loaded && SelectSceneCamera(r, capture.CameraName) ? SceneStatus::Ok : SceneStatus::Failed;
 }
 
-// Coordinate scene framing, playback, screenshots, recording, and completion for both run loops.
 struct CaptureDriver {
     // Fixed-step mode captures one timeline frame per GPU-paced tick; wall-clock mode samples at 1/Fps seconds.
     CaptureDriver(state::Scene &r, state::Entity viewport, const CaptureRequest &capture, bool play, bool fixed_step)
@@ -1228,7 +1222,6 @@ struct CaptureDriver {
         }
     }
 
-    // Capture a completed render and return whether the run should end.
     bool CaptureFrame(state::Scene &r, state::Entity viewport, bool settled) {
         bool done = false;
         if (ScreenshotMode() && !ScreenshotSaved && settled) {
@@ -1263,7 +1256,6 @@ struct CaptureDriver {
                 CaptureRecordFrame(r, viewport);
                 if (loop_end) {
                     if (RenderMode()) {
-                        // Render every scene animation once in turn.
                         if (NextRenderClip < r.get<const Animations>(viewport).Names.size()) action::Emit(action::animation::SelectAnimation{NextRenderClip++});
                         else done = true;
                     } else if (PlayDuration <= 0) {
@@ -1296,7 +1288,6 @@ struct CaptureDriver {
     bool PlaybackStarted{false}, ScreenshotSaved{false}, ViewFramed{false}, RecordingStarted{false};
 };
 
-// Initialize a capture session and configure its presentation state.
 CaptureDriver BeginCaptureSession(state::Scene &r, state::Entity viewport, const CaptureRequest &capture, const char *initial_file, bool empty, bool fixed_step) {
     const auto seeded = SeedScene(r, viewport, capture, initial_file, empty);
     std::error_code ec;
@@ -1382,7 +1373,6 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
     auto &io = GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
-    // io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable; // Enable Multi-Viewport / Platform Windows
     io.IniFilename = nullptr;
     io.ConfigDebugIgnoreFocusLoss = true; // Keep input state across Cmd+Tab so in-flight gizmo drags survive focus loss.
     io.ConfigDragClickToInputText = true; // A click-release without dragging turns a Drag field into a text input.
@@ -1423,7 +1413,6 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     int bench_ticks{0};
     while (!done) {
         const auto frame_pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
-        // Report scene loading separately from frame timing.
         if (bench_ticks == 1) {
             profile::ReportCpuPhase("Scene load CPU timings");
             profile::ClearStats();
@@ -1447,7 +1436,8 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
         mac_backend.NewFrame();
         driver.ElapsedPlayTime += io.DeltaTime;
-        // Scene-affecting code reads FrameState::DeltaTime. `io.DeltaTime` is wall-clock, UI-only.
+        // Scene-affecting code reads FrameState::DeltaTime.
+        // `io.DeltaTime` is wall-clock, UI-only.
         r.Context.get<FrameState>().DeltaTime = driver.FixedStep ? driver.RenderDt : io.DeltaTime;
         const auto *ui_focus = GImGui->NavWindow;
         NewFrame();
@@ -1734,7 +1724,6 @@ SceneStatus RunHeadlessScene(state::Scene &r, state::Entity viewport, const char
         const auto extent = r.Context.get<const ViewportExtent>().Value;
         // Require this scene's first submit because queue workers preserve ready images across scenes.
         const bool settled = submitted && ViewportImageReady(r);
-        // Report scene loading separately from frame timing.
         if (settled && !profile_cleared) {
             if (profile::Enabled) {
                 const auto ms_since_start = [scene_start](auto point) { return std::chrono::duration<float, std::milli>(point - scene_start).count(); };
@@ -1816,7 +1805,7 @@ void RunHeadlessEngine(bool quiet, auto &&scenes) {
     InitViewportMedia(r);
 #endif
     profile::Init(ctx);
-    r.Context.get<FrameState>().DisplayFramebufferScale = {2, 2}; // Match the app's retina rendering (pixel density and DPI-scaled GPU state like edge-line width).
+    r.Context.get<FrameState>().DisplayFramebufferScale = {2, 2}; // Match Retina pixel density and DPI-scaled rendering.
     ProcessComponentEvents(r, viewport);
 
     scenes(r, viewport);
@@ -1845,7 +1834,6 @@ SceneStatus FinishHeadlessScene(state::Scene &r, state::Entity viewport, SceneSt
     return std::max(status, closed ? errors : SceneStatus::Failed);
 }
 
-// Run one headless scene and return its capture or load status.
 bool RunHeadless(const char *initial_file, bool quiet, bool empty, const CaptureRequest &capture) {
     bool ok = true;
     RunHeadlessEngine(quiet, [&](state::Scene &r, state::Entity viewport) {
@@ -1975,14 +1963,11 @@ std::expected<LaunchOptions, int> ParseLaunchOptions(std::span<const std::string
         }
     }
     if (capture.Fps <= 0) capture.Fps = 60;
-    // Enable audio capture for WAV output.
     if (capture.RecordPath.extension() == ".wav") capture.RecordAudio = true;
-    // Derive corpus output paths from the render basename.
     if (!capture.RenderBasename.empty() && (!capture.RecordPath.empty() || !capture.ScreenshotPath.empty())) {
         std::println(stderr, "--render cannot be combined with --record or --screenshot");
         return std::unexpected(1);
     }
-    // Derive queue capture options from each job.
     if (!render_queue.empty() && (!initial_file.empty() || !capture.RenderBasename.empty() || !capture.RecordPath.empty() || !capture.ScreenshotPath.empty())) {
         std::println(stderr, "--render-queue cannot be combined with a scene file or capture flags");
         return std::unexpected(1);

@@ -121,7 +121,7 @@ void ReleaseMeshEditWork(state::Scene &, state::Entity mesh_entity);
 // The MeshEditWork destroy handler, which releases the work's geometry work ranges.
 void ReleaseMeshEditWorkRanges(state::Scene &, state::Entity mesh_entity);
 
-// Lays out each MeshLayoutDirty mesh's bounds entries, prelude tiles, pose namespaces and per-instance deform records, and marks its bounds and display fields to recompute.
+// Rebuild dirty mesh layouts and mark bounds and display fields for recomputation.
 void LayOutMeshes(state::Scene &, state::Entity viewport);
 // The BoundsRun destroy handler, which queues the run's ranges for the settle pass to free and releases the mesh's pose namespaces.
 void ReleaseMeshLayout(state::Scene &, state::Entity mesh_entity);

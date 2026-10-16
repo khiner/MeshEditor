@@ -96,7 +96,6 @@ Bounds MergeBounds(std::span<const Bounds> bounds) {
     return result;
 }
 
-// Produces bounds that contain every member sphere and error.
 Bounds MergeSpanBounds(std::span<const Bounds> members) {
     const auto merged = meshopt_computeSphereBounds(&members.front().Center.x, members.size(), sizeof(Bounds), &members.front().Radius, sizeof(Bounds));
     Bounds result{.Center = std::bit_cast<vec3>(merged.center)};
@@ -113,7 +112,6 @@ Bounds MergeSpanBounds(std::span<const Bounds> members) {
     return result;
 }
 
-// The index of a source vertex handle into the mesh's per-vertex values.
 uint32_t SourceVertexIndex(const ClusterLodMesh &mesh, uint32_t vertex) { return mesh.VertexTable.empty() ? vertex : Resolve<MeshElementBlockSize>(mesh.VertexTable, ElementHandle{vertex}).Value(); }
 const float *SourcePosition(const ClusterLodMesh &mesh, uint32_t vertex) { return mesh.Positions + (mesh.PositionStride / sizeof(float)) * SourceVertexIndex(mesh, vertex); }
 
@@ -205,9 +203,8 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
                     body(block, first, last);
                 });
             };
-            // The earliest corner of each source vertex determines the serial
-            // weld's render-vertex order. Store source handles directly in the
-            // final corner array while finding these minima concurrently.
+            // The earliest corner of each source vertex determines the serial weld's render-vertex order.
+            // Store source handles directly in the final corner array while finding these minima concurrently.
             for_each_triangle_block([&](uint32_t, uint32_t first, uint32_t last) {
                 for (uint32_t triangle = first; triangle < last; ++triangle) {
                     const auto vertices = primitive_indices.TriangleAt(triangle);
@@ -281,7 +278,7 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
     } else {
         weld.Representative.reserve(corner_count);
         weld.Positions.reserve(corner_count);
-        // A source-vertex key reduces to its first word, the vertex, which the key map then holds alone.
+        // Use only the vertex word for source-vertex keys.
         std::vector<uint8_t> flat_face_triangles(source_vertex_only ? 0u : primitive.TriangleCount);
         for (uint32_t triangle = 0; triangle < flat_face_triangles.size(); ++triangle) {
             flat_face_triangles[triangle] = key.FlatFaceTriangle(triangle);
@@ -360,7 +357,7 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
     // The primitive extent scales every shading attribute consistently across group rebuilds.
     weld.Scale = meshopt_simplifyScale(weld.Positions.front().data(), weld_count, sizeof(weld.Positions.front()));
 
-    // Distinct render keys at one position keep every side of the seam fixed at every level.
+    // Preserve vertices at attribute discontinuities throughout simplification.
     weld.Locks.assign(weld_count, 0u);
     weld.SeamLocks.assign(weld_count, 0u);
     weld.Owners.resize(weld_count);
@@ -370,7 +367,6 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
     }
 }
 
-// One cluster the DAG is still working with, in weld-vertex indices.
 struct WorkCluster {
     std::vector<uint32_t> Vertices;
     std::vector<uint32_t> Corners; // canonical corner handle per local vertex
@@ -383,7 +379,6 @@ struct WorkCluster {
     uint32_t TriangleCount() const { return uint32_t(LocalTriangles.size() / 3u); }
 };
 
-// Counts a group's edges without allocating per edge or sorting its corners.
 struct GroupEdges {
     struct Entry {
         uint64_t Key{};
@@ -459,8 +454,8 @@ std::vector<std::vector<uint64_t>> LockBoundary(PrimitiveWeld &weld, const std::
             for (const auto vertex : clusters[member].Vertices) function(vertex);
         }
     };
-    // Only this level's vertices participate. Other levels may reference most
-    // of the repair pool, so resetting that whole pool here repeats unrelated work.
+    // Only this level's vertices participate.
+    // Other levels may reference most of the repair pool, so resetting that whole pool here repeats unrelated work.
     const auto lock_of = [&](uint32_t vertex) { return std::atomic_ref<uint8_t>{weld.Locks[vertex]}; };
     const auto owner_of = [&](uint32_t vertex) { return std::atomic_ref<uint32_t>{weld.Owners[vertex]}; };
     uint64_t level_vertices = 0u;
@@ -477,10 +472,9 @@ std::vector<std::vector<uint64_t>> LockBoundary(PrimitiveWeld &weld, const std::
         });
     }
 
-    // A material seam or a boundary against a terminal group is absent from this primitive's pending groups.
-    // Its nonphysical open edges must still stay fixed.
-    // The shared-vertex lock cannot discover that neighbor.
-    // An edge is open exactly when its undirected key occurs once in the group.
+    // Material boundaries and terminal-group boundaries lie outside the pending groups.
+    // Keep their open edges fixed because shared-vertex locks omit those neighbors.
+    // An edge is open when its undirected key occurs once in the group.
     std::vector<std::vector<uint64_t>> artificial_edges(groups.size());
     const auto lock_group_edges = [&](GroupEdges &edges, size_t group_index) {
         const auto &group = groups[group_index];
@@ -605,7 +599,6 @@ struct GroupScratch {
     bool Stuck{};
 };
 
-// Appends one cluster with indices local to `sink`.
 void EmitCluster(auto &&sink, const PrimitiveWeld &weld, const WorkCluster &cluster, uint32_t primitive, uint32_t group) {
     const auto vertex_count = uint32_t(cluster.Vertices.size());
     const uint32_t triangle_count = cluster.TriangleCount();
@@ -635,9 +628,8 @@ void EmitCluster(auto &&sink, const PrimitiveWeld &weld, const WorkCluster &clus
 }
 
 // Preserve physical-boundary provenance in the CPU reference builder too.
-// Shared partition edges keep both endpoints locked, so every newly created
-// open edge follows a physical boundary. Unchanged partition edges retain their
-// identity in the geometric position domain, independently of shading wedges.
+// Shared partition edges keep both endpoints locked, so every newly created open edge follows a physical boundary.
+// Unchanged partition edges retain their identity in the geometric position domain, independently of shading wedges.
 void ClassifyOutputBoundaries(const PrimitiveWeld &weld, const std::vector<uint64_t> &artificial, std::vector<WorkCluster> &output) {
     const auto edge = [&](const WorkCluster &cluster, uint32_t c) {
         return std::pair{weld.Remap[cluster.Vertices[cluster.LocalTriangles[c]]], weld.Remap[cluster.Vertices[cluster.LocalTriangles[c / 3u * 3u + (c + 1u) % 3u]]]};

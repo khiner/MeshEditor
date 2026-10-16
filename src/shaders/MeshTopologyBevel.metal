@@ -1,10 +1,7 @@
 #ifndef MESHTOPOLOGYBEVEL_MSL
 #define MESHTOPOLOGYBEVEL_MSL
 
-// Bevels selected edges or vertices by width Param0 with Steps segments, reading the width per vertex or per edge from the job's attribute when it carries one.
-// A face corner at a beveled vertex moves onto offset points: a corner point when both of its edges are beveled, or a point along its other edge when one is.
-// A corner with neither edge beveled uses the points its neighbors put on its edges.
-// Each beveled edge becomes a strip of quads between its two sides, and each beveled vertex a polygon of the points around it.
+// Bevel selected edges or vertices using Param0 or per-element widths and Steps profile segments.
 #include "MeshTopologyFaces.metal"
 
 
@@ -79,8 +76,6 @@ inline float3 TopoBevelCornerPoint(TopoContext ctx, MeshTopologyJob job, uint h)
     return ctx.SrcPosition(job, corners[h]) + TopoInsetCorner(ctx.SrcPosition(job, corners[prev]), ctx.SrcPosition(job, corners[h]), ctx.SrcPosition(job, corners[next]), normalize(float3(ctx.SrcFaceNormals(job)[ctx.SrcFaceOf(job, h)])), width, 0.f, true);
 }
 
-// The vertices a halfedge entry produces: its edge's points at both ends when it is an unbeveled representative,
-// its corner point when both corner edges are beveled, and its profile points when it is a beveled representative.
 struct BevelHalfedgeOutputs {
     bool EndFrom, EndTo, Corner;
     uint Profiles; // 2 * (segments - 1) for a beveled representative
@@ -121,7 +116,6 @@ inline uint TopoBevelVertexRingIndex(TopoContext ctx, MeshTopologyJob job, uint 
         ctx.Counts(job, TopoCountVertices)[entry] + (ring - 1u) * length + index;
 }
 
-// The representative halfedge of `h`'s edge, and whether `h` is it.
 inline uint TopoBevelRepresentative(TopoContext ctx, MeshTopologyJob job, uint h, thread bool &is_rep) {
     is_rep = ctx.SrcEdgeFirst(job, h);
     return is_rep ? h : ctx.SrcOpposite(job, h);
@@ -260,7 +254,7 @@ inline BevelRingInfo TopoBevelRing(TopoContext ctx, MeshTopologyJob job, uint v,
         if (opposite == InvalidOffset || opposite == start) break;
         h = opposite;
     }
-    // A closed ring drops a repeated first point.
+    // Drop the duplicate first point when closing a ring.
     if (length > 1u && TopoBevelKeyEqual(first_vertex, previous_vertex)) --length;
     return {length, first_source};
 }

@@ -39,7 +39,8 @@ struct Records {
 
     uint64_t Length() const { return C->Count(Values); }
     bool Present(uint64_t page) const { return page * RecordsPerPage < Length(); }
-    // Read an encoded page. The span remains valid until the next Read.
+    // Read an encoded page.
+    // The span remains valid until the next Read.
     std::span<const std::byte> Read(uint64_t page);
     std::span<const std::byte> Encode(const Blob &value) const { return value.View(); }
 

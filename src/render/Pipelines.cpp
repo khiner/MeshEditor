@@ -9,7 +9,6 @@ using mtl::AdditiveBlend, mtl::Blend, mtl::NoBlend, mtl::NoWrite, mtl::Premultip
 using mtl::BlendState, mtl::DepthState, mtl::FunctionConstant, mtl::FunctionRef, mtl::PassFormats, mtl::RenderPipeline;
 
 namespace {
-// Map host feature bits to generated shader function constants.
 constexpr std::array PbrSpecFeatures{
     std::pair{PbrConstant::EnablePunctual, PbrFeature::Punctual},
     std::pair{PbrConstant::EnableTransmission, PbrFeature::Transmission},

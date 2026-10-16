@@ -20,7 +20,6 @@ int WrapFrame(int frame, const TimelineRange &range) {
 
 void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
     const auto enter_presentation = [&] {
-        // Uses Rendered mode for scene lighting and material preview with the default world otherwise.
         const auto *source_assets = r.try_get<const gltf::SourceAssets>(viewport);
         const bool explicit_ibl = source_assets && source_assets->ImageBasedLight.has_value();
         const bool authored_lighting = explicit_ibl || !r.view<const LightIndex>().empty();

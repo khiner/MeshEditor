@@ -90,7 +90,6 @@ double EngineForce(double xc, double y) {
 
 double ForceOf(bool engine, double xc, double y) { return engine ? EngineForce(xc, y) : ExactForce(xc, y); }
 
-// The body height carrying the load at rest under either arm.
 double BisectRest(bool engine, double xc) {
     double lo = -2e-4, hi = 8e-4;
     for (int i = 0; i < 90; ++i) {

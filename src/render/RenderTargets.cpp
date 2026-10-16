@@ -73,7 +73,8 @@ bool RenderTargets::EnsureTransmissionResources(const mtl::Context &ctx, mtl::Ex
 }
 
 bool RenderTargets::EnsureMotionBlurResources(const mtl::Context &ctx, bool fast) {
-    if (!Resources || (MotionBlur && bool(MotionBlur->VelocityImage) == fast)) return false; // SetExtent drops it, so an allocated target is always at the color extent.
+    // SetExtent releases MotionBlur when the color extent changes.
+    if (!Resources || (MotionBlur && bool(MotionBlur->VelocityImage) == fast)) return false;
     MotionBlur = std::make_unique<MotionBlurResourcesT>(ctx, Resources->SceneColorImage.Extent, fast);
     return true;
 }

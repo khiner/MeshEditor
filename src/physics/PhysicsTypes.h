@@ -122,13 +122,15 @@ struct Cylinder {
     float Height{0.5f}, RadiusTop{0.25f}, RadiusBottom{0.25f};
     bool operator==(const Cylinder &) const = default;
 };
-// Plane lies in the XZ plane with +Y normal. Size{X,Z} == 0 means infinite along that axis.
+// Plane lies in the XZ plane with +Y normal.
+// Size{X,Z} == 0 means infinite along that axis.
 struct Plane {
     float SizeX{0.f}, SizeZ{0.f};
     bool DoubleSided{false};
     bool operator==(const Plane &) const = default;
 };
-// Mesh-backed shape kinds. Mesh reference lives on the ColliderShape wrapper.
+// Mesh-backed shape kinds.
+// Mesh reference lives on the ColliderShape wrapper.
 struct ConvexHull {
     bool operator==(const ConvexHull &) const = default;
 };
@@ -157,7 +159,8 @@ inline constexpr float DefaultMass{1};
 
 // Motion states (KHR_physics_rigid_bodies terms):
 // Static: Only ColliderShape (~Blender Passive, unanimated).
-// Dynamic: PhysicsMotion present. IsKinematic toggles infinite mass:
+// Dynamic: PhysicsMotion present.
+// IsKinematic toggles infinite mass:
 //   false: force-driven (~Blender Active)
 //   true:  velocity-constant, animation-driven (~Blender Passive, animated)
 struct PhysicsMotion {
@@ -167,7 +170,8 @@ struct PhysicsMotion {
     std::optional<vec3> InertiaDiagonal{};
     std::optional<quat> InertiaOrientation{};
     float GravityFactor{1.};
-    // Engine-specific (not in KHR_physics_rigid_bodies). Defaults match Blender.
+    // Engine-specific (not in KHR_physics_rigid_bodies).
+    // Defaults match Blender.
     float LinearDamping{0.04f}, AngularDamping{0.1f};
     bool operator==(const PhysicsMotion &) const = default;
 };

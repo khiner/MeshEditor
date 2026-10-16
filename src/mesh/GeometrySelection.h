@@ -6,7 +6,8 @@
 #include <variant>
 #include <vector>
 
-// Explicit, sorted canonical handles. Empty domains select nothing.
+// Explicit, sorted canonical handles.
+// Empty domains select nothing.
 struct GeometrySelection {
     std::vector<uint32_t> Vertices, Edges, Faces;
     const std::vector<uint32_t> &Get(Element element) const {
@@ -23,9 +24,9 @@ struct GeometrySelection {
 using SelectionBlock = std::array<uint32_t, MeshElementBlockWords>;
 template<typename T> struct BufferArena;
 
-// One domain's selection as resident mask blocks, where block First + b of Arena holds canonical block b.
-// The arena holds a block for every block the mesh owns while an operation reads or writes it, and its masks are complete when the operation reads them.
-// Bits of elements the mesh does not own select nothing.
+// Domain selection masks map Arena block First + b to canonical block b.
+// Allocate masks for every owned mesh block before use and initialize them before reading.
+// Bits outside the mesh's owned elements select nothing.
 struct SelectionMasks {
     const BufferArena<SelectionBlock> *Arena;
     uint32_t First{};

@@ -1,7 +1,6 @@
 #ifndef TRSUTILS_MSL
 #define TRSUTILS_MSL
 
-// Quaternion and TRS transform utilities.
 #include "gpu/Transform.h"
 
 inline float3 quat_rotate(float4 q, float3 v) {
@@ -10,7 +9,6 @@ inline float3 quat_rotate(float4 q, float3 v) {
 }
 
 inline float4x4 trs_to_mat4(Transform t) {
-    // Build rotation matrix from quaternion, then apply scale and translation.
     const float4 q = float4(t.R);
     const float x2 = 2.0f * q.x * q.x, y2 = 2.0f * q.y * q.y, z2 = 2.0f * q.z * q.z;
     const float xy = 2.0f * q.x * q.y, xz = 2.0f * q.x * q.z, yz = 2.0f * q.y * q.z;
