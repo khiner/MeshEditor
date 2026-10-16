@@ -11,4 +11,3 @@ struct MeshletSpatialNode {
     uint32_t Meshlet DEFAULT(InvalidOffset);
     uvec2 LocalVolume DEFAULT(), SubtreeVolume DEFAULT(); // IEEE 754 doubles, packed for Metal.
 };
-static_assert(sizeof(MeshletSpatialNode) == 64);

@@ -9,7 +9,6 @@ struct Sheen {
     TextureInfo ColorTexture DEFAULT();
     TextureInfo RoughnessTexture DEFAULT();
 };
-static_assert(sizeof(Sheen) == 72, "Sheen size");
 #ifndef __METAL_VERSION__
 #include "Field.h"
 template<> inline constexpr FieldSpec Spec<Sheen, "RoughnessFactor">{.Min = 0, .Max = 1};

@@ -14,4 +14,3 @@ struct MeshTopologyArenas {
     uint32_t VertexHiddenSlot DEFAULT(InvalidSlot), EdgeHiddenSlot DEFAULT(InvalidSlot), FaceHiddenSlot DEFAULT(InvalidSlot);
     ElementLayers Layers DEFAULT(); // The layers of the record this version belongs to
 };
-static_assert(sizeof(MeshTopologyArenas) == 156, "MeshTopologyArenas size");

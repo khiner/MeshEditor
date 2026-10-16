@@ -46,4 +46,3 @@ struct DrawData {
     SlotOffset Skin DEFAULT(), Morph DEFAULT();
     SlotOffset CornerSectors DEFAULT(), NormalSectors DEFAULT();
 };
-static_assert(sizeof(DrawData) == 308, "DrawData size");

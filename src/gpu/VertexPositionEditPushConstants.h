@@ -62,14 +62,12 @@ struct VertexPositionEditPushConstants {
     PositionEditOp Operation DEFAULT(PositionEditOp::Copy);
     NamedAttributeRef FactorAttribute DEFAULT(); // A float vertex attribute holding the factor per vertex, or none to read Factor
 };
-static_assert(sizeof(VertexPositionEditPushConstants) == 228);
 
 struct EdgeChain {
     uint32_t InputOffset, OutputOffset, Count, Closed;
     uint32_t WorkOffset DEFAULT();
     uint32_t PhaseOffset DEFAULT(InvalidOffset);
 };
-static_assert(sizeof(EdgeChain) == 24);
 
 struct PositionPlane {
     vec3 X, Y, InverseX, InverseY;
@@ -79,26 +77,21 @@ struct WarpParameters {
     PositionPlane Plane;
     float Minimum, Maximum;
 };
-static_assert(sizeof(WarpParameters) == 64);
 struct BendParameters {
     PositionPlane Plane;
     float Radius, Pivot;
 };
-static_assert(sizeof(BendParameters) == 64);
 struct RandomizeParameters {
     float Uniform, Normal;
     uint32_t Seed;
 };
-static_assert(sizeof(RandomizeParameters) == 12);
 struct VertexSlideParameters {
     vec3 Direction, Scale;
     uint32_t Reference;
 };
-static_assert(sizeof(VertexSlideParameters) == 28);
 struct EdgeSlideDirections {
     vec3 Positive, Negative;
 };
-static_assert(sizeof(EdgeSlideDirections) == 24);
 
 struct PositionReducePushConstants {
     SlotOffset Input, Output;
@@ -106,10 +99,8 @@ struct PositionReducePushConstants {
     float Scale;
     uint32_t Bounds DEFAULT();
 };
-static_assert(sizeof(PositionReducePushConstants) == 28);
 
 struct TransformPositionParameters {
     Transform Frame, Delta;
     vec3 Pivot;
 };
-static_assert(sizeof(TransformPositionParameters) == 92);

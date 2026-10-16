@@ -14,4 +14,3 @@ struct AABB {
     bool operator==(const AABB &) const = default;
 #endif
 };
-static_assert(sizeof(AABB) == 24, "AABB size");

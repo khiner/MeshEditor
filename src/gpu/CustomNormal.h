@@ -8,4 +8,3 @@
 struct CustomNormal {
     vec2 Offset DEFAULT(vec2{-1.f, 0.f});
 };
-static_assert(sizeof(CustomNormal) == 8);

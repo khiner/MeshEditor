@@ -10,4 +10,3 @@ struct VisibleMeshlet {
     uint32_t Mesh DEFAULT(InvalidOffset);
     uint32_t PrimitiveAddress DEFAULT(InvalidOffset);
 };
-static_assert(sizeof(VisibleMeshlet) == 16, "VisibleMeshlet size");

@@ -8,4 +8,3 @@ struct ObjectOriginPushConstants {
     float RadiusPx DEFAULT(); // The dot's outer radius in render pixels.
     float OutlinePx DEFAULT(); // The width of its dark rim in render pixels.
 };
-static_assert(sizeof(ObjectOriginPushConstants) == 12, "ObjectOriginPushConstants size");

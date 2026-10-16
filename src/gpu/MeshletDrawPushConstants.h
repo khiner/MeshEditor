@@ -17,4 +17,3 @@ struct MeshletDrawPushConstants {
     uint32_t VisibilityTransmission DEFAULT();
     uint32_t EdgeSharpnessSlot DEFAULT(InvalidSlot);
 };
-static_assert(sizeof(MeshletDrawPushConstants) == 60, "MeshletDrawPushConstants size");

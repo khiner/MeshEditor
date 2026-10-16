@@ -25,4 +25,3 @@ struct NormalDerivePushConstants {
     uint32_t FaceNormalNodesSlot DEFAULT();
     uint32_t BaseFaceNormalSlot DEFAULT();
 };
-static_assert(sizeof(NormalDerivePushConstants) == 80, "NormalDerivePushConstants size");

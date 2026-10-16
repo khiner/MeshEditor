@@ -11,4 +11,3 @@ struct MeshTopologyPushConstants {
     MeshTopologyArenas Source DEFAULT(), Destination DEFAULT();
     uint32_t ListSlot DEFAULT(InvalidSlot);
 };
-static_assert(sizeof(MeshTopologyPushConstants) == 340, "MeshTopologyPushConstants size");

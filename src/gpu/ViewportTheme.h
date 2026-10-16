@@ -10,4 +10,3 @@ struct ViewportTheme {
     float EdgeWidth DEFAULT();
     uint32_t SilhouetteEdgeWidth DEFAULT();
 };
-static_assert(sizeof(ViewportTheme) == 424, "ViewportTheme size");

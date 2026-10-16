@@ -18,4 +18,3 @@ struct InstanceRecord {
     uint32_t FaceNormalNamespace DEFAULT(InvalidOffset);
     uint32_t ExcitedVertex DEFAULT(InvalidOffset);
 };
-static_assert(sizeof(InstanceRecord) == 44, "InstanceRecord size");

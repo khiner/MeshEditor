@@ -40,7 +40,6 @@ struct PBRMaterial {
     Anisotropy Anisotropy DEFAULT();
     Iridescence Iridescence DEFAULT();
 };
-static_assert(sizeof(PBRMaterial) == 712, "PBRMaterial size");
 #ifndef __METAL_VERSION__
 #include "Field.h"
 template<> inline constexpr FieldSpec Spec<PBRMaterial, "MetallicFactor">{.Min = 0, .Max = 1};

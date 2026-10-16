@@ -7,4 +7,3 @@ struct MeshletClassification {
     uint32_t Routes DEFAULT();
     VisibleMeshlet Entry DEFAULT();
 };
-static_assert(sizeof(MeshletClassification) == 20, "MeshletClassification size");

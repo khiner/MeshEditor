@@ -22,8 +22,8 @@ fragment float4 ViewportCompositeFragment(
     const float3 radiance = scene_color.a > 0.0f ? scene_color.rgb / scene_color.a : float3(0.0f);
     const float3 scene_display = pc.ViewTransform == 2u ? radiance :
         pc.ViewTransform == 1u ? linearToDisplay(radiance) : linearTosRGB(radiance);
-    // Composite the display-space UI backdrop after the scene view transform.
-    const float3 base = scene_display * scene_color.a + float4(pc.Backdrop).rgb * (1.0f - scene_color.a);
+    // Composite the display-space theme background after the scene view transform.
+    const float3 base = scene_display * scene_color.a + float3(theme.Colors.Background) * (1.0f - scene_color.a);
     return float4(base * (1.0f - overlay.a) + overlay.rgb, 1.0f);
 }
 

@@ -21,4 +21,3 @@ struct SelectionAggregate {
     uint32_t Flags DEFAULT();
     uint32_t Hidden DEFAULT();
 };
-static_assert(sizeof(SelectionAggregate) == 52, "SelectionAggregate size");

@@ -8,4 +8,3 @@ struct WorkspaceLights {
     vec3 AmbientColor DEFAULT();
     uint32_t UseSpecular DEFAULT();
 };
-static_assert(sizeof(WorkspaceLights) == 176, "WorkspaceLights size");

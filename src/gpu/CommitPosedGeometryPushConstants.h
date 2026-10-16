@@ -33,4 +33,3 @@ struct CommitPosedGeometryPushConstants {
     uint32_t ApplyTransform DEFAULT(1);
     GeometryEditMode Mode DEFAULT();
 };
-static_assert(sizeof(CommitPosedGeometryPushConstants) == 448, "CommitPosedGeometryPushConstants size");

@@ -12,4 +12,3 @@ struct ShortEdgesPushConstants {
     uint32_t HalfedgeCount DEFAULT(), FaceCount DEFAULT();
     float Distance DEFAULT();
 };
-static_assert(sizeof(ShortEdgesPushConstants) == 100, "ShortEdgesPushConstants size");

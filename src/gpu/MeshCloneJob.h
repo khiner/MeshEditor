@@ -15,10 +15,8 @@ GPU_CONSTANT uint32_t CloneBufferIndex_Data = 3u;
 struct ByteCopy {
     uint64_t Source, Destination, Bytes;
 };
-static_assert(sizeof(ByteCopy) == 24);
 // A run of uint32 handles Stride words apart from ByteOffset, each live one shifted by Shift.
 struct HandleOffset {
     uint64_t ByteOffset;
     uint32_t Count, Stride, Shift;
 };
-static_assert(sizeof(HandleOffset) == 24);

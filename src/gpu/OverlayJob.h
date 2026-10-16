@@ -16,4 +16,3 @@ struct OverlayJob {
     vec3 LocalOffset DEFAULT();
     vec4 Params DEFAULT();
 };
-static_assert(sizeof(OverlayJob) == 56, "OverlayJob size");

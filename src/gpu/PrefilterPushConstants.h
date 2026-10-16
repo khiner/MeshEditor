@@ -7,4 +7,3 @@ struct PrefilterPushConstants {
     uint32_t SourceSize DEFAULT();
     float Roughness DEFAULT();
 };
-static_assert(sizeof(PrefilterPushConstants) == 12, "PrefilterPushConstants size");

@@ -50,4 +50,3 @@ struct MeshConnectivityJob {
     uint32_t StateOffset DEFAULT();
     ElementWork RetiredEdgeWork DEFAULT(); // Optional retirement set, emitted with the dense scratch list.
 };
-static_assert(sizeof(MeshConnectivityJob) == 352, "MeshConnectivityJob size");

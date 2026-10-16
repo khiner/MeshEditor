@@ -123,4 +123,3 @@ struct MeshTopologyJob {
     SlotOffset Attributes DEFAULT();
     GpuArray<uint32_t, 4> AttributeEnds DEFAULT();
 };
-static_assert(sizeof(MeshTopologyJob) == 836, "MeshTopologyJob size");

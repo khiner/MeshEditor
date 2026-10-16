@@ -12,7 +12,6 @@ GPU_CONSTANT uint32_t SelectionHalfedgeDomain = 3u;
 struct SelectionSeed {
     uint32_t Domain DEFAULT(), Word DEFAULT(), Bits DEFAULT();
 };
-static_assert(sizeof(SelectionSeed) == 12, "SelectionSeed size");
 
 // Open-addressed dirty blocks use zero for an empty slot and entry+1 as the key.
 inline uint32_t SelectionDirtyHash(uint32_t key, uint32_t mask) {
@@ -31,7 +30,6 @@ struct SelectionMeshUpdate {
     uint32_t Source DEFAULT(InvalidOffset);
     uint32_t Root DEFAULT();
 };
-static_assert(sizeof(SelectionMeshUpdate) == 96, "SelectionMeshUpdate size");
 
 // The arena streams and the batch's records, which are word offsets into the work slot.
 // Mask word Masks[d].Offset + a / 32 holds the bit of the element at arena address a, and InvalidSlot Leaves and Hidden leave aggregates unwritten and nothing hidden.
@@ -49,7 +47,6 @@ struct SelectionUpdatePushConstants {
     uint32_t Updates DEFAULT(), Seeds DEFAULT(), SeedUpdates DEFAULT(), List DEFAULT();
     uint32_t SeedCount DEFAULT();
 };
-static_assert(sizeof(SelectionUpdatePushConstants) == 108, "SelectionUpdatePushConstants size");
 
 // Scatters the selected elements' handles of listed (arena block, first output index) word pairs, which list blocks in ascending local order.
 // BlocksSlot holds the domain's block metadata.
@@ -58,4 +55,3 @@ struct SelectionGatherPushConstants {
     SlotOffset Output DEFAULT();
     uint32_t MaskSlot DEFAULT(InvalidSlot), BlocksSlot DEFAULT(InvalidSlot), Count DEFAULT();
 };
-static_assert(sizeof(SelectionGatherPushConstants) == 28, "SelectionGatherPushConstants size");

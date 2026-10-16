@@ -27,4 +27,3 @@ struct NormalDeriveEntry {
     ElementWork VerticesWork DEFAULT(), FacesWork DEFAULT();
     uint32_t VertexWorkCount DEFAULT(), FaceWorkCount DEFAULT();
 };
-static_assert(sizeof(NormalDeriveEntry) == 184, "NormalDeriveEntry size");

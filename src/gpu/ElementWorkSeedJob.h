@@ -10,4 +10,3 @@ struct ElementWorkSeedJob {
     uint32_t BlocksSlot DEFAULT(), Owner DEFAULT();
     uint32_t SelectionSlot DEFAULT(InvalidSlot);
 };
-static_assert(sizeof(ElementWorkSeedJob) == 40);

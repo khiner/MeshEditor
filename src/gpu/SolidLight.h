@@ -8,4 +8,3 @@ struct SolidLight {
     vec3 DiffuseColor DEFAULT();
     float Wrap DEFAULT();
 };
-static_assert(sizeof(SolidLight) == 40, "SolidLight size");

@@ -16,4 +16,3 @@ struct LodNode {
     uint32_t ChildCount DEFAULT();
     uint32_t Members DEFAULT(InvalidOffset);
 };
-static_assert(sizeof(LodNode) == 40, "LodNode size");

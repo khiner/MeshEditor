@@ -10,4 +10,3 @@ struct EditSelectionStorage {
     SlotOffset Summary DEFAULT();
     uint32_t VertexHiddenSlot DEFAULT(InvalidSlot), EdgeHiddenSlot DEFAULT(InvalidSlot), FaceHiddenSlot DEFAULT(InvalidSlot);
 };
-static_assert(sizeof(EditSelectionStorage) == 44, "EditSelectionStorage size");

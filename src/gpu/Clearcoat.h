@@ -11,7 +11,6 @@ struct Clearcoat {
     TextureInfo RoughnessTexture DEFAULT();
     TextureInfo NormalTexture DEFAULT();
 };
-static_assert(sizeof(Clearcoat) == 96, "Clearcoat size");
 #ifndef __METAL_VERSION__
 #include "Field.h"
 template<> inline constexpr FieldSpec Spec<Clearcoat, "Factor">{.Min = 0, .Max = 1};

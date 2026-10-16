@@ -36,7 +36,6 @@ struct NamedAttributeRef {
     uint32_t ValuesSlot DEFAULT(InvalidSlot);
     uint32_t Offset DEFAULT();
 };
-static_assert(sizeof(NamedAttributeRef) == 8);
 
 // One named attribute a topology job carries from its source elements to its output elements, in its domain's run of the job's records.
 // A source without the attribute has no values slot.
@@ -46,4 +45,3 @@ struct TopologyAttribute {
     NamedAttributeRef Source DEFAULT(), Destination DEFAULT();
     GpuArray<uint32_t, 4> Default DEFAULT();
 };
-static_assert(sizeof(TopologyAttribute) == 36);

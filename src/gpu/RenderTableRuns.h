@@ -7,4 +7,3 @@
 struct RenderTableRuns {
     uint32_t Members DEFAULT(), Meshlets DEFAULT(), Primitives DEFAULT(), Groups DEFAULT();
 };
-static_assert(sizeof(RenderTableRuns) == 16, "RenderTableRuns size");

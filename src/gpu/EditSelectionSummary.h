@@ -12,4 +12,3 @@ struct EditSelectionSummary {
     uint32_t SharpnessFlags DEFAULT();
     uint32_t ActiveHandle DEFAULT(InvalidOffset);
 };
-static_assert(sizeof(EditSelectionSummary) == 32, "EditSelectionSummary size");

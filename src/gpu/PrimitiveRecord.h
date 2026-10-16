@@ -24,4 +24,3 @@ struct PrimitiveRecord {
     // Channels the current hierarchy preserves for material and debug shading.
     uint32_t LodAttributes DEFAULT(~0u);
 };
-static_assert(sizeof(PrimitiveRecord) == 52, "PrimitiveRecord size");

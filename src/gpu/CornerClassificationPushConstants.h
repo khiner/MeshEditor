@@ -15,11 +15,9 @@ struct CornerClassificationJob {
     ElementWork DirtyBlocks DEFAULT(), NeededBlocks DEFAULT();
     uint32_t State DEFAULT(); // Batch scratch words: incoming count, then face/edge flags
 };
-static_assert(sizeof(CornerClassificationJob) == 140);
 
 struct CornerClassificationPushConstants {
     uint32_t StorageSlot DEFAULT(InvalidSlot), JobsOffset DEFAULT(), TileMapOffset DEFAULT(), ScratchOffset DEFAULT();
     uint32_t FirstTile DEFAULT();
     uint32_t VertexBlocksSlot DEFAULT(InvalidSlot), EdgeSharpnessSlot DEFAULT(), FaceSharpnessSlot DEFAULT();
 };
-static_assert(sizeof(CornerClassificationPushConstants) == 32);

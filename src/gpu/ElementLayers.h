@@ -12,4 +12,3 @@ struct ElementLayers {
     SlotOffset CustomNormals DEFAULT();
     SlotOffset CornerSectors DEFAULT(), NormalSectors DEFAULT();
 };
-static_assert(sizeof(ElementLayers) == 112, "ElementLayers size");

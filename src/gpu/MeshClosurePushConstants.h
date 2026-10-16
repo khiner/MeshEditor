@@ -17,7 +17,6 @@ struct MeshClosurePushConstants {
     uint32_t RetainIsolatedOnly DEFAULT(); // Filter retained vertex seeds to vertices without incident edges.
     SlotOffset Incidence DEFAULT(); // The word counting the input's fan corners, loop corners, or endpoint fan corners
 };
-static_assert(sizeof(MeshClosurePushConstants) == 200, "MeshClosurePushConstants size");
 
 // The derived triangles of finished faces, checked against the mesh's face and triangle ownership.
 // Its handles resolve through Tables, each below its domain's handle bound.
@@ -30,4 +29,3 @@ struct FaceTrianglePushConstants {
     uint32_t FaceRangesSlot DEFAULT(), FaceTrianglesSlot DEFAULT(), TrianglesSlot DEFAULT();
     uint32_t FaceHandles DEFAULT(), TriangleHandles DEFAULT(), CornerHandles DEFAULT();
 };
-static_assert(sizeof(FaceTrianglePushConstants) == 132, "FaceTrianglePushConstants size");

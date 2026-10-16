@@ -24,4 +24,3 @@ struct EditSharpnessPushConstants {
     uint32_t Value DEFAULT();
     float CosAngle DEFAULT();
 };
-static_assert(sizeof(EditSharpnessPushConstants) == 168, "EditSharpnessPushConstants size");

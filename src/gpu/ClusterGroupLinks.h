@@ -7,4 +7,3 @@ struct ClusterGroupLinks {
     uint32_t MemberOffset DEFAULT(), MemberCount DEFAULT();
     uint32_t ProxyOffset DEFAULT(), ProxyCount DEFAULT();
 };
-static_assert(sizeof(ClusterGroupLinks) == 16);

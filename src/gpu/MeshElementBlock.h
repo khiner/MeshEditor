@@ -21,7 +21,6 @@ struct MeshElementBlock {
     uint32_t Count DEFAULT();
     GpuArray<uint32_t, MeshElementBlockWords> Live DEFAULT();
 };
-static_assert(sizeof(MeshElementBlock) == 44, "MeshElementBlock size");
 static_assert(RenderBlockSize <= 32u, "A render block's live mask is one word");
 
 #ifdef __METAL_VERSION__

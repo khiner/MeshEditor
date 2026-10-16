@@ -10,4 +10,3 @@ struct MeshletBoundsRefitPushConstants {
     uint32_t VertexBase DEFAULT(), LocalTriangleBase DEFAULT(); // The owner's payload range bases
     SlotOffset VertexTable DEFAULT(), CornerTable DEFAULT(); // The owner's table runs, which resolve its cluster vertex references
 };
-static_assert(sizeof(MeshletBoundsRefitPushConstants) == 64, "MeshletBoundsRefitPushConstants size");

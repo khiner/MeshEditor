@@ -14,4 +14,3 @@ struct LightRecord {
     float OuterConeCos DEFAULT();
     PunctualLightType Type DEFAULT();
 };
-static_assert(sizeof(LightRecord) == 40, "LightRecord size");

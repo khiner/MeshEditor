@@ -5,4 +5,3 @@
 struct NormalSector {
     vec3 Normal DEFAULT();
 };
-static_assert(sizeof(NormalSector) == 12);

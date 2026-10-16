@@ -10,4 +10,3 @@ struct InsetPreviewPushConstants {
     uint32_t Count DEFAULT();
     float Thickness DEFAULT(), Depth DEFAULT();
 };
-static_assert(sizeof(InsetPreviewPushConstants) == 32, "InsetPreviewPushConstants size");

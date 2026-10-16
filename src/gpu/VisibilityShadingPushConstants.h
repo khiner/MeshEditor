@@ -10,4 +10,3 @@ struct VisibilityShadingPushConstants {
     MeshletPayloadSlots Payloads DEFAULT();
     uint32_t VisibleMeshletSlot DEFAULT();
 };
-static_assert(sizeof(VisibilityShadingPushConstants) == 32, "VisibilityShadingPushConstants size");

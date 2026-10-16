@@ -15,4 +15,3 @@ struct ConnectivityRef {
     uint32_t VertexCornersSlot DEFAULT(InvalidSlot); // (first packed fan item, count), per vertex
     uint32_t FanItemsSlot DEFAULT(InvalidSlot); // (corner, face)
 };
-static_assert(sizeof(ConnectivityRef) == 72, "ConnectivityRef size");

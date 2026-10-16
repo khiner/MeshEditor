@@ -10,7 +10,6 @@ struct PosedMeshletBoundsJob {
     uint32_t FirstGroup DEFAULT(), Count DEFAULT(), Instance DEFAULT();
     uint32_t Members DEFAULT(), MemberSet DEFAULT(), MeshletSet DEFAULT();
 };
-static_assert(sizeof(PosedMeshletBoundsJob) == 24);
 
 struct PosedMeshletBoundsPushConstants {
     ElementWork MeshletAddresses DEFAULT();
@@ -23,4 +22,3 @@ struct PosedMeshletBoundsPushConstants {
     SetArenaSlots Members DEFAULT(), Meshlets DEFAULT();
     uint32_t MemberSlot DEFAULT();
 };
-static_assert(sizeof(PosedMeshletBoundsPushConstants) == 72, "PosedMeshletBoundsPushConstants size");

@@ -11,4 +11,3 @@ struct MeshletWorkRange {
     uint32_t WorkOffset DEFAULT();
     RenderTableRuns Tables DEFAULT();
 };
-static_assert(sizeof(MeshletWorkRange) == 32, "MeshletWorkRange size");

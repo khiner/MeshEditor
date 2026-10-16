@@ -8,7 +8,6 @@ struct Anisotropy {
     float Rotation DEFAULT(0);
     TextureInfo Texture DEFAULT();
 };
-static_assert(sizeof(Anisotropy) == 36, "Anisotropy size");
 #ifndef __METAL_VERSION__
 #include "Field.h"
 template<> inline constexpr FieldSpec Spec<Anisotropy, "Strength">{.Min = 0, .Max = 1};

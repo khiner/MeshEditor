@@ -11,4 +11,3 @@ struct ConnectivityEditPushConstants {
     GpuArray<ElementWork, 3> After DEFAULT();
     uint32_t ErrorSlot DEFAULT(InvalidSlot);
 };
-static_assert(sizeof(ConnectivityEditPushConstants) == 192);

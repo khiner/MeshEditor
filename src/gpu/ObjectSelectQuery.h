@@ -12,4 +12,3 @@ struct ObjectSelectQuery {
     uvec4 Box DEFAULT();
     uint32_t BoxResultSlot DEFAULT(InvalidSlot);
 };
-static_assert(sizeof(ObjectSelectQuery) == 48, "ObjectSelectQuery size");

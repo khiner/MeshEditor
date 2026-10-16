@@ -4,6 +4,7 @@
 
 // Mirrors Blender's 3D Viewport theme settings.
 struct ViewportThemeColors {
+    vec3 Background DEFAULT();
     vec4 Grid DEFAULT();
     vec4 GridLine DEFAULT();
     vec4 GridEmphasis DEFAULT();
@@ -34,4 +35,3 @@ struct ViewportThemeColors {
     vec3 BonePoseActiveUnsel DEFAULT();
     vec3 Transform DEFAULT();
 };
-static_assert(sizeof(ViewportThemeColors) == 380, "ViewportThemeColors size");

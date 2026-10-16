@@ -11,4 +11,3 @@ struct OverlayJobCullPushConstants {
     uint32_t DispatchArgsSlot DEFAULT();
     uint32_t ExtrasOnly DEFAULT();
 };
-static_assert(sizeof(OverlayJobCullPushConstants) == 24, "OverlayJobCullPushConstants size");

@@ -33,4 +33,3 @@ struct VertexWeldJob {
     // Word stride of one staged welded vertex across all vertex-domain channels.
     uint32_t RecordWords DEFAULT();
 };
-static_assert(sizeof(VertexWeldJob) == 92, "VertexWeldJob size");

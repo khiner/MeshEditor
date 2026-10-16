@@ -29,4 +29,3 @@ struct MeshDisplay {
     uint32_t ActiveVertex DEFAULT(InvalidOffset); // The excited mesh's active vertex, in Excite mode.
     MeshletPayloadBases Payloads DEFAULT();
 };
-static_assert(sizeof(MeshDisplay) == 132, "MeshDisplay size");

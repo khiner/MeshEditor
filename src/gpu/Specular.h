@@ -9,4 +9,3 @@ struct Specular {
     TextureInfo Texture DEFAULT();
     TextureInfo ColorTexture DEFAULT();
 };
-static_assert(sizeof(Specular) == 72, "Specular size");

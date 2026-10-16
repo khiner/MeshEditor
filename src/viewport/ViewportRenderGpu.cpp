@@ -1494,7 +1494,6 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
             .OverlayColorSamplerSlot = samplers.OverlayColor,
             .ViewTransform = view_transform,
             .HasOverlay = overlay_pass_needed,
-            .Backdrop = settings.ClearColor,
         };
         encode::SetPushConstants(encoder, composite_pc);
         draw_quad();

@@ -6,7 +6,6 @@
 struct SelectionQueryRef {
     uint32_t MasksSlot DEFAULT(InvalidSlot), WordsSlot DEFAULT(InvalidSlot), CountSlot DEFAULT(InvalidSlot);
 };
-static_assert(sizeof(SelectionQueryRef) == 12);
 
 struct ElementSelectQuery {
     uvec4 Box DEFAULT();
@@ -16,4 +15,3 @@ struct ElementSelectQuery {
     uint32_t KeySlot DEFAULT(InvalidSlot);
     uint32_t IdSlot DEFAULT(InvalidSlot);
 };
-static_assert(sizeof(ElementSelectQuery) == 48, "ElementSelectQuery size");

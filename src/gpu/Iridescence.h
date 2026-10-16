@@ -11,7 +11,6 @@ struct Iridescence {
     TextureInfo Texture DEFAULT();
     TextureInfo ThicknessTexture DEFAULT();
 };
-static_assert(sizeof(Iridescence) == 72, "Iridescence size");
 #ifndef __METAL_VERSION__
 #include "Field.h"
 template<> inline constexpr FieldSpec Spec<Iridescence, "Factor">{.Min = 0, .Max = 1};

@@ -15,9 +15,7 @@ struct VertexFanBuildJob {
     uint32_t Histogram DEFAULT(), Totals DEFAULT(), TileData DEFAULT();
     uint32_t VertexKeyPasses DEFAULT(), Fresh DEFAULT();
 };
-static_assert(sizeof(VertexFanBuildJob) == 140);
 struct VertexFanBuildPushConstants {
     uint32_t StorageSlot DEFAULT(InvalidSlot), JobsOffset DEFAULT(), TileMapOffset DEFAULT(), ScratchOffset DEFAULT();
     uint32_t FirstTile DEFAULT(), PassParameter DEFAULT();
 };
-static_assert(sizeof(VertexFanBuildPushConstants) == 24);

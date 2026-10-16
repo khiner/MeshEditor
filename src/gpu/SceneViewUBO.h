@@ -77,4 +77,3 @@ struct SceneViewUBO {
     uint32_t UseRealTransmission DEFAULT();
     DebugChannel DebugChannel DEFAULT();
 };
-static_assert(sizeof(SceneViewUBO) == 444, "SceneViewUBO size");

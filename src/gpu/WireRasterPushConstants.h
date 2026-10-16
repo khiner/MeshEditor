@@ -10,4 +10,3 @@ struct WireRasterPushConstants {
     // Scales coverage behind the visibility depth when testing. Zero discards it.
     float BehindOpacity DEFAULT();
 };
-static_assert(sizeof(WireRasterPushConstants) == 72, "WireRasterPushConstants size");

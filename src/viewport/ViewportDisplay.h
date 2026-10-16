@@ -47,7 +47,6 @@ struct MotionBlur {
 struct ViewportDisplay {
     ViewportShadingMode ViewportShading{ViewportShadingMode::Solid};
     ViewportShadingMode FillMode{ViewportShadingMode::Solid};
-    vec4 ClearColor{0.25f, 0.25f, 0.25f, 1.f};
     bool ShowGrid{true}, ShowBoundingBoxes{false}, ShowTetWireframe{false};
     bool ShowExtras{true}, ShowBones{true}, ShowOrigins{true}, ShowOutlineSelected{true};
     bool ShowOverlays{true};

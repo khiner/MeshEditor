@@ -433,6 +433,7 @@ void BuildDefaultDockLayout(const WindowsState &windows, ImGuiID dockspace_id) {
     const auto extra_node_id = DockBuilderSplitNode(controls_node_id, ImGuiDir_Down, 0.4f, nullptr, &controls_node_id);
     const auto animation_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Down, 0.1f, nullptr, &dockspace_id);
     DockBuilderDockWindow(windows.History.Name, extra_node_id);
+    DockBuilderDockWindow(windows.Style.Name, extra_node_id);
     DockBuilderDockWindow(windows.Debug.Name, extra_node_id);
     DockBuilderDockWindow(windows.ImGuiDemo.Name, extra_node_id);
     DockBuilderDockWindow(windows.ImSpinnerDemo.Name, extra_node_id);
@@ -440,6 +441,7 @@ void BuildDefaultDockLayout(const WindowsState &windows, ImGuiID dockspace_id) {
     DockBuilderDockWindow(windows.SceneControls.Name, controls_node_id);
     DockBuilderDockWindow(windows.Animation.Name, animation_node_id);
     DockBuilderDockWindow(windows.Nodes.Name, animation_node_id);
+    DockBuilderGetNode(extra_node_id)->SelectedTabId = ImHashStr(windows.History.Name);
     DockBuilderGetNode(animation_node_id)->SelectedTabId = ImHashStr(windows.Animation.Name);
     DockBuilderDockWindow(windows.Viewport.Name, dockspace_id);
 }
@@ -502,6 +504,7 @@ EditorWindowsFrame BeginEditorWindows(
 ) {
     RenderDebugWindow(r, ctx, layer, windows, io);
     if (project::DrawHistoryWindow(Session(r), windows.History, interactive) && SaveWorkspace(r, viewport)) Session(r).ClearHistory();
+    DrawStyleWindow(r, viewport, windows.Style);
     if (windows.ImGuiDemo.Visible) ShowDemoWindow(&windows.ImGuiDemo.Visible);
     if (windows.ImSpinnerDemo.Visible) {
         if (Begin(windows.ImSpinnerDemo.Name, &windows.ImSpinnerDemo.Visible)) ImSpinner::demoSpinners();
@@ -1597,6 +1600,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             if (BeginMenu("Windows")) {
                 MenuItem(windows.History.Name, nullptr, &windows.History.Visible);
                 MenuItem(windows.Nodes.Name, nullptr, &windows.Nodes.Visible);
+                MenuItem(windows.Style.Name, nullptr, &windows.Style.Visible);
                 MenuItem(windows.Debug.Name, nullptr, &windows.Debug.Visible);
                 MenuItem(windows.ImGuiDemo.Name, nullptr, &windows.ImGuiDemo.Visible);
                 MenuItem(windows.ImSpinnerDemo.Name, nullptr, &windows.ImSpinnerDemo.Visible);

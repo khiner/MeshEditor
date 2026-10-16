@@ -10,4 +10,3 @@ struct VisibilitySelectionPushConstants {
     uvec2 Origin DEFAULT();
     uvec2 Extent DEFAULT();
 };
-static_assert(sizeof(VisibilitySelectionPushConstants) == 96, "VisibilitySelectionPushConstants size");

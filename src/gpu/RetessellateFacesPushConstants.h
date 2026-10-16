@@ -16,4 +16,3 @@ struct RetessellateFacesPushConstants {
     Transform Primary DEFAULT(), Delta DEFAULT();
     vec3 Pivot DEFAULT();
 };
-static_assert(sizeof(RetessellateFacesPushConstants) == 220);

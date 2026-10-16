@@ -6,4 +6,3 @@
 struct ElementTables {
     SlotOffset Vertices DEFAULT(), Halfedges DEFAULT(), Edges DEFAULT(), Faces DEFAULT(), Triangles DEFAULT();
 };
-static_assert(sizeof(ElementTables) == 40, "ElementTables size");

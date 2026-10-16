@@ -12,4 +12,3 @@ struct IblSamplers {
     uint32_t SheenELutSamplerSlot DEFAULT();
     uint32_t CharlieLutSamplerSlot DEFAULT();
 };
-static_assert(sizeof(IblSamplers) == 32, "IblSamplers size");

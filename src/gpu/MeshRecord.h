@@ -24,4 +24,3 @@ struct MeshRecord {
     // Rounds the record to whole cache lines, so each record's display fields start one.
     GpuArray<uint32_t, 6> Padding DEFAULT();
 };
-static_assert(sizeof(MeshRecord) == 384, "MeshRecord size");

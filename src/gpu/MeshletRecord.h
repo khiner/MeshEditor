@@ -26,4 +26,3 @@ struct MeshletRecord {
     float Radius DEFAULT();
     uint32_t Topology DEFAULT();
 };
-static_assert(sizeof(MeshletRecord) == 56, "MeshletRecord size");

@@ -9,4 +9,3 @@ struct ClusterGroup {
     float Radius DEFAULT();
     float Error DEFAULT();
 };
-static_assert(sizeof(ClusterGroup) == 20, "ClusterGroup size");

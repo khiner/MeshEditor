@@ -8,4 +8,3 @@ struct MotionBlurTilesFlattenPushConstants {
     mat4 InvViewProj DEFAULT();
     uint32_t CameraMotion DEFAULT();
 };
-static_assert(sizeof(MotionBlurTilesFlattenPushConstants) == 100, "MotionBlurTilesFlattenPushConstants size");

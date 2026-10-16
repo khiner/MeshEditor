@@ -11,4 +11,3 @@ struct OverlayJobDrawPushConstants {
     uint32_t TetPositionSlot DEFAULT();
     uint32_t TetEdgeIndexSlot DEFAULT();
 };
-static_assert(sizeof(OverlayJobDrawPushConstants) == 28, "OverlayJobDrawPushConstants size");

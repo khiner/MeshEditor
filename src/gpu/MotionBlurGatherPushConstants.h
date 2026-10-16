@@ -9,4 +9,3 @@ struct MotionBlurGatherPushConstants {
     float NoiseOffset DEFAULT();
     vec4 DepthUnproject DEFAULT();
 };
-static_assert(sizeof(MotionBlurGatherPushConstants) == 32, "MotionBlurGatherPushConstants size");

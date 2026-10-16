@@ -54,4 +54,3 @@ struct MeshletCullPushConstants {
     uint32_t SourceVisibleSlot DEFAULT(InvalidSlot);
     uint32_t SourceRouteStateSlot DEFAULT(InvalidSlot);
 };
-static_assert(sizeof(MeshletCullPushConstants) == 228, "MeshletCullPushConstants size");

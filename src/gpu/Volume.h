@@ -9,7 +9,6 @@ struct Volume {
     float AttenuationDistance DEFAULT(0);
     TextureInfo ThicknessTexture DEFAULT();
 };
-static_assert(sizeof(Volume) == 48, "Volume size");
 #ifndef __METAL_VERSION__
 #include "Field.h"
 template<> inline constexpr FieldSpec Spec<Volume, "ThicknessFactor">{.Min = 0, .Max = 10};

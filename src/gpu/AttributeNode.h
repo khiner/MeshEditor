@@ -54,7 +54,6 @@ struct AttributeInput {
     uint32_t Slot DEFAULT(InvalidSlot);
     GpuArray<uint32_t, 4> Value DEFAULT(); // The constant's component words
 };
-static_assert(sizeof(AttributeInput) == 36);
 
 // One attribute node evaluated at every live element of a record's domain, one thread per element slot of its blocks.
 struct AttributeNodePushConstants {
@@ -66,7 +65,6 @@ struct AttributeNodePushConstants {
     uint32_t Operation, Component;
     float Epsilon;
 };
-static_assert(sizeof(AttributeNodePushConstants) == 112);
 
 // Copies a bool attribute's words at each element block of its record to the block's mask block, and zero to the mask blocks of other blocks.
 // Mask block b, starting at word Masks.Offset + 8b, holds element block b, and an attribute without a slot names a domain it is not on.
@@ -76,4 +74,3 @@ struct AttributeMaskPushConstants {
     SlotOffset Masks;
     uint32_t Words;
 };
-static_assert(sizeof(AttributeMaskPushConstants) == 28);

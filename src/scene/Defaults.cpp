@@ -47,6 +47,7 @@ WorkspaceLights Defaults::WorkspaceLights{
 static ViewportTheme MakeDefaultViewportTheme() {
     ViewportTheme theme{
         .Colors{
+            .Background{0.25f, 0.25f, 0.25f},
             .Grid{0.329f, 0.329f, 0.329f, 0.502f},
             .Wire{0, 0, 0},
             .WireEdit{0, 0, 0},

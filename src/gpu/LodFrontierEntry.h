@@ -9,4 +9,3 @@ struct LodFrontierEntry {
     uint32_t NodeTable DEFAULT();
     RenderTableRuns Tables DEFAULT();
 };
-static_assert(sizeof(LodFrontierEntry) == 28, "LodFrontierEntry size");

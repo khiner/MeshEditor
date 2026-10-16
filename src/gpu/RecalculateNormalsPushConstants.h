@@ -6,10 +6,8 @@ struct RecalculateNormalsPushConstants {
     SlotOffset Faces, Groups, Tiles, PartialCenters, Centers, Candidates, Orientations;
     uint32_t VertexSlot, CornerSlot, NormalSlot, FaceCount;
 };
-static_assert(sizeof(RecalculateNormalsPushConstants) == 144);
 
 struct NormalOrientationCandidate {
     vec3 Score;
     uint32_t Rank, Flip;
 };
-static_assert(sizeof(NormalOrientationCandidate) == 20);

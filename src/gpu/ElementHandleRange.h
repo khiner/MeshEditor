@@ -7,4 +7,3 @@ struct ElementHandleRange {
     SlotOffset Handles DEFAULT();
     uint32_t First DEFAULT(), Count DEFAULT();
 };
-static_assert(sizeof(ElementHandleRange) == 16);

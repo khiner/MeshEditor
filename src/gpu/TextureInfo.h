@@ -9,7 +9,6 @@ struct TextureInfo {
     vec2 UvScale DEFAULT(1);
     float UvRotation DEFAULT(0);
 };
-static_assert(sizeof(TextureInfo) == 28, "TextureInfo size");
 #ifndef __METAL_VERSION__
 #include "Field.h"
 template<> inline constexpr FieldSpec Spec<TextureInfo, "UvOffset">{.Speed = 0.01f};

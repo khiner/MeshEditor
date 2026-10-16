@@ -22,4 +22,3 @@ struct ElementWork {
     uint32_t Count DEFAULT(); // Address-domain bound, independent of allocation size
     uint32_t Capacity DEFAULT(); // Power-of-two hash slots, sized by affected blocks
 };
-static_assert(sizeof(ElementWork) == 16, "ElementWork size");

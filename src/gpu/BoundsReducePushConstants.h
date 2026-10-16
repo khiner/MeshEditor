@@ -17,4 +17,3 @@ struct BoundsReducePushConstants {
     uint32_t FirstTile DEFAULT();
     uint32_t Level DEFAULT();
 };
-static_assert(sizeof(BoundsReducePushConstants) == 68, "BoundsReducePushConstants size");

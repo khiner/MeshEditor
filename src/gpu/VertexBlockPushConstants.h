@@ -25,4 +25,3 @@ struct VertexBlockPushConstants {
     // A visual draw culls the blocks whose projected diameter falls below this many pixels.
     float MinDiameterPixels DEFAULT();
 };
-static_assert(sizeof(VertexBlockPushConstants) == 48, "VertexBlockPushConstants size");

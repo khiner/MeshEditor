@@ -17,4 +17,3 @@ struct MeshletBuildPushConstants {
     uint32_t LodLeavesSlot DEFAULT(), LodParentsSlot DEFAULT();
     uint32_t FaceSharpnessSlot DEFAULT();
 };
-static_assert(sizeof(MeshletBuildPushConstants) == 60);

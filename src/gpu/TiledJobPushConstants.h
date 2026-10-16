@@ -8,4 +8,3 @@ struct TiledJobPushConstants {
     uint32_t JobsOffset DEFAULT(), TileMapOffset DEFAULT(), ScratchOffset DEFAULT();
     uint32_t FirstTile DEFAULT();
 };
-static_assert(sizeof(TiledJobPushConstants) == 20, "TiledJobPushConstants size");

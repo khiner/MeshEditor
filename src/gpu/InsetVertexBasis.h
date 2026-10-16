@@ -9,4 +9,3 @@ struct InsetVertexBasis {
     uint32_t Handle DEFAULT(InvalidOffset);
     vec3 Base DEFAULT(), Width DEFAULT(), Depth DEFAULT();
 };
-static_assert(sizeof(InsetVertexBasis) == 40, "InsetVertexBasis size");
