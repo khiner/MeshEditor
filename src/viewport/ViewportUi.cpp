@@ -476,6 +476,7 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
     // Without this, wheel/click events still patch the camera while the popup overlays the viewport_rect.
     if (IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
         frame.PreciseWheelDelta = {0, 0};
+        frame.Magnification = 0.f;
         return;
     }
 
@@ -658,11 +659,14 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
 
     if (!IsWindowHovered() && !frame.BoxSelectStart) return;
 
-    // Mouse wheel for camera rotation, Cmd+wheel to zoom.
+    // Mouse wheel for camera rotation, Cmd+wheel or a trackpad pinch to zoom.
     const auto &io = GetIO();
     if (const vec2 wheel = std::exchange(frame.PreciseWheelDelta, vec2{0}); wheel != vec2{0, 0}) {
         if (io.KeyCtrl || io.KeySuper) EmitViewNav(r, action::view::ZoomViewCamera{.Factor = std::pow(WheelZoomStep, -wheel.y)});
         else EmitViewNav(r, action::view::OrbitViewCamera{.DeltaRad = wheel * WheelOrbitRadPerUnit});
+    }
+    if (const float magnification = std::exchange(frame.Magnification, 0.f); magnification != 0.f) {
+        EmitViewNav(r, action::view::ZoomViewCamera{.Factor = 1.f / (1.f + magnification)});
     }
     if (OrientationGizmo::IsActive() || frame.OverlayControlsHovered) return;
 
