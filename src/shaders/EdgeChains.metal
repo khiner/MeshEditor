@@ -1,5 +1,4 @@
 #include "Bindless.metal"
-#include "gpu/Vertex.h"
 #include "gpu/VertexPositionEditPushConstants.h"
 
 inline float EdgeCurveLength(device const float *knots,uint k) {

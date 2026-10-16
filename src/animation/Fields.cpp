@@ -1,18 +1,12 @@
 #include "animation/Fields.h"
 
-#include "CameraTypes.h"
 #include "animation/MorphWeights.h"
 #include "armature/ArmatureComponents.h"
 #include "object/ObjectOps.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
-#include "render/LightComponents.h"
-#include "render/MaterialComponents.h"
 #include "render/MaterialTextureSlots.h"
 #include "state/Scene.h"
-
-#include <cmath>
-#include <cstring>
 
 namespace animation {
 namespace {

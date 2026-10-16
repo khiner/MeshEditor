@@ -2,12 +2,8 @@
 #define BOUNDSCOMBINE_MSL
 
 // Combines partial AABBs into each entry's instance bounds.
-#include "Bindless.metal"
-#include "gpu/AABB.h"
 #include "BoundsShared.metal"
-#include "gpu/BoundsReducePushConstants.h"
 #include "gpu/SelectionAggregate.h"
-#include "ElementWorkShared.metal"
 #include "VertexBounds.metal"
 
 kernel void BoundsCombineKernel(

@@ -1,8 +1,5 @@
 #pragma once
 #include "mesh/GeometrySelection.h"
-#include <cstdint>
-#include <span>
-#include <vector>
 struct MeshStore;
 struct MeshPipelines;
 

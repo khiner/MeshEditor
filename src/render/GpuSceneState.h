@@ -4,10 +4,6 @@
 #include "gpu/ElementWork.h"
 #include "state/Entity.h"
 
-#include <array>
-#include <optional>
-#include <vector>
-
 // Pose namespaces and normal outputs for one mesh entity's instance run.
 struct PosedNamespaces {
     struct NormalNamespaces {

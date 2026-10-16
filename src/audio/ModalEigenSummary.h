@@ -1,10 +1,6 @@
 #pragma once
 
 #include "AcousticMaterialProperties.h"
-#include "numeric/vec3.h"
-
-#include <cstddef>
-#include <vector>
 
 // Stores raw eigenpairs sampled at excitation positions and the material used for the solve.
 // modal::RescaleModes re-derives ModalModes for material edits that scale the FEM matrices.

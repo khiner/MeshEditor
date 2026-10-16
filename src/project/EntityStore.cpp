@@ -4,8 +4,6 @@
 #include "state/Allocation.h"
 #include "state/Scene.h"
 
-#include <stdexcept>
-
 namespace project {
 EntityStore::EntityStore(state::Scene &r, store::History &history, const snapshot::SnapshotEntries &components) : R(r), Table(r.AllocationState().Generations) {
     R.HistoryOwner = this;

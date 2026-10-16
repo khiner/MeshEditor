@@ -1,7 +1,6 @@
 #pragma once
 
 #include "gpu/MeshConnectivityJob.h"
-#include "mesh/MeshPipelines.h"
 #include "mesh/TiledJobBatch.h"
 
 // Scratch follows compact work ordinals.

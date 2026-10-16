@@ -2,7 +2,6 @@
 #define BONESPHERE_MSL
 
 // Renders bone joints by ray tracing a sphere through a camera-facing disc.
-#include "Bindless.metal"
 #include "BoneUtils.metal"
 #include "MeshletResolve.metal"
 #include "Varyings.metal"

@@ -5,9 +5,6 @@
 #include "numeric/VectorMath.h"
 
 #include <algorithm>
-#include <cmath>
-#include <span>
-#include <vector>
 
 constexpr float SampleRate{48'000};
 constexpr uint32_t BlockSize{512};

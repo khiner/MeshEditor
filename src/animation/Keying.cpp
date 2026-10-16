@@ -5,9 +5,6 @@
 #include "animation/Fields.h"
 #include "state/Scene.h"
 
-#include <algorithm>
-#include <cmath>
-
 namespace animation {
 namespace {
 // Keys closer than this in seconds replace each other.

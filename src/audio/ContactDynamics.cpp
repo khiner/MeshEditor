@@ -1,4 +1,3 @@
-#include "AudioSystem.h"
 #include "state/Scene.h"
 
 #include "ContactModel.h"
@@ -6,8 +5,6 @@
 #include "ModalModes.h"
 #include "TransformMath.h"
 #include "physics/PhysicsTypes.h"
-
-#include <algorithm>
 
 double ModalDensityRatio(const state::Scene &r, state::Entity e) {
     const auto *summary = r.try_get<const ModalEigenSummary>(e);

@@ -2,22 +2,15 @@
 #include "Profile.h"
 #include "SortUnique.h"
 #include "gpu/FaceAttributeEditPushConstants.h"
-#include "gpu/Vertex.h"
 #include "mesh/EdgeChains.h"
 #include "mesh/EdgeSlide.h"
 #include "mesh/Flatten.h"
-#include "mesh/Mesh.h"
 #include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
 #include "mesh/SnapSymmetry.h"
 #include "metal/Dispatch.h"
 #include "numeric/QuaternionMath.h"
 #include "render/ElementWorkOps.h"
-#include <algorithm>
-#include <bit>
-#include <cmath>
-#include <numbers>
-#include <stdexcept>
 #include <unordered_set>
 
 namespace {

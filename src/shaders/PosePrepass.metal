@@ -2,11 +2,9 @@
 #define POSEPREPASS_MSL
 
 // Writes posed positions at vertex arena addresses and reduces their vertex-block bounds.
-#include "Bindless.metal"
 #include "MorphDeform.metal"
 #include "ArmatureDeform.metal"
 #include "TransformUtils.metal"
-#include "gpu/BoundsReducePushConstants.h"
 #include "EditSelection.metal"
 #include "BoundsShared.metal"
 #include "VertexBounds.metal"

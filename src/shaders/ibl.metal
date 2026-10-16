@@ -4,7 +4,6 @@
 #define IBL_MSL
 
 #include "Bindless.metal"
-#include "brdf.metal"
 #include "ScreenSpace.metal"
 
 template<typename SetT>

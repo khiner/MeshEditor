@@ -2,7 +2,6 @@
 #include "Profile.h"
 #include "SortUnique.h"
 
-#include "mesh/MeshStore.h"
 #include "render/ElementWorkOps.h"
 #include "render/GpuBufferOps.h"
 #include "render/MeshletBuildGpu.h"

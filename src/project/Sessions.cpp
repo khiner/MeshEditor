@@ -5,9 +5,6 @@
 
 #include <algorithm>
 #include <charconv>
-#include <chrono>
-#include <optional>
-#include <string>
 #include <unistd.h>
 
 #ifndef RESTORE_SESSION_RETAIN

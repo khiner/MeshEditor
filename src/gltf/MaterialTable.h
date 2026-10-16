@@ -5,11 +5,6 @@
 
 #include <fastgltf/types.hpp>
 
-#include <array>
-#include <memory>
-#include <string_view>
-#include <tuple>
-
 // The glTF material extensions MeshEditor keeps, each as the fields it carries in PBRMaterial and in fastgltf under their glTF keys.
 // Import, export, the extension tally, and the animation pointer rows derive from this one description.
 namespace gltf::detail {

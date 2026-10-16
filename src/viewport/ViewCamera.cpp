@@ -1,5 +1,3 @@
-#include "numeric/vec2.h"
-
 #include "viewport/ViewCamera.h"
 
 #include "Camera.h"
@@ -7,9 +5,6 @@
 #include "viewport/RenderView.h"
 
 #include "viewport/ScreenSpace.h"
-
-#include <algorithm>
-#include <cmath>
 
 using numeric::InfinitePerspectiveRhZo, numeric::Mix, numeric::OrthoRhZo, numeric::PerspectiveRhZo;
 

@@ -1,9 +1,6 @@
 #pragma once
 
-#include <algorithm>
 #include <bit>
-#include <cstdint>
-#include <limits>
 #include <vector>
 
 // Reset fixes the word width of this open-addressed uint32 map.

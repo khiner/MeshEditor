@@ -1,16 +1,9 @@
 #pragma once
 #include "gpu/AABB.h"
-#include "gpu/BindlessBindings.h"
 #include "gpu/VertexBounds.h"
-#include "metal/Buffer.h"
-#include "metal/PhysicalPages.h"
 #include "render/AttributeArena.h"
 #include "state/Entity.h"
-#include <algorithm>
-#include <stdexcept>
-#include <unordered_map>
 #include <unordered_set>
-#include <vector>
 
 // Canonical bounds keys address one packed value arena.
 // Three small radix levels map 32-value blocks.

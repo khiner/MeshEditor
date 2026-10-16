@@ -1,15 +1,8 @@
 #include "audio/AudioDevice.h"
 #include "audio/AudioQueries.h"
-#include "audio/AudioSystem.h"
 #include "audio/ContactScene.h"
-#include "mesh/MeshStore.h"
-#include "numeric/VectorMath.h"
 #include "scene/Entity.h"
-#include "selection/SelectionComponents.h"
-#include "state/Scene.h"
 #include "viewport/ViewCamera.h"
-#include <atomic>
-#include <cmath>
 namespace fs = std::filesystem;
 uint32_t DeviceSampleRate(const state::Scene &r) {
     const auto *res = r.Context.find<AudioDeviceResource>();

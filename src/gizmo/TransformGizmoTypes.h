@@ -2,7 +2,6 @@
 
 #include "gpu/Transform.h"
 #include "numeric/QuaternionMath.h"
-#include "numeric/mat3.h"
 
 using numeric::I3;
 

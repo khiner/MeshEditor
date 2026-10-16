@@ -1,6 +1,5 @@
 #pragma once
 #include "mesh/Mesh.h"
-#include <unordered_map>
 #include <unordered_set>
 
 // Sparse face incidence, including same-direction and nonmanifold users.

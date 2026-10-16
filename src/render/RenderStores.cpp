@@ -1,18 +1,11 @@
 #include "render/RenderStores.h"
-#include "animation/AnimationTimeline.h"
 #include "animation/MorphWeights.h"
 #include "armature/ArmatureComponents.h"
 #include "mesh/MeshComponents.h"
-#include "mesh/MeshStore.h"
-#include "metal/Bindless.h"
 #include "object/PendingSync.h"
-#include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
-#include "render/Instance.h"
 #include "render/MaterialComponents.h"
 #include "render/Textures.h"
-#include "scene/Entity.h"
-#include "state/Scene.h"
 #include "viewport/ViewportDisplay.h"
 
 void InitRenderStoreContext(state::Scene &r, const mtl::Context &ctx) {

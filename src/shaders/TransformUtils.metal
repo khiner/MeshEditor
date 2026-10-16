@@ -3,7 +3,6 @@
 
 #include "gpu/AABB.h"
 #include "Bindless.metal"
-#include "Frustum.metal"
 
 #include "EditTransform.metal"
 

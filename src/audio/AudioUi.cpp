@@ -1,12 +1,6 @@
-#include "numeric/VectorMath.h"
-#include "numeric/dvec3.h"
-#include "numeric/vec2.h"
-
 #include "audio/AudioUi.h"
 
-#include "AudioSystem.h"
 #include "FileDialog.h"
-#include "ModalAudio.h"
 #include "action/Audio.h"
 #include "audio/AudioDevice.h"
 #include "audio/AudioQueries.h"
@@ -19,15 +13,11 @@
 #include "imspinner.h"
 #include "mesh/MeshStore.h"
 #include "render/Instance.h"
-#include "scene/Entity.h"
 #include "selection/SelectionComponents.h"
 #include "ui/ChoiceCombo.h"
 #include "ui/FieldEdit.h"
 #include "ui/HelpMarker.h"
 #include "viewport/InteractionComponents.h"
-#include "viewport/ViewportEvents.h"
-
-#include <string_view>
 
 using numeric::dvec3;
 

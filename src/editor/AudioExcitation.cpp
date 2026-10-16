@@ -1,10 +1,8 @@
 #include "numeric/VectorMath.h"
-#include "numeric/vec2.h"
 
 #include "editor/AudioExcitation.h"
 #include "render/Instance.h"
 #include "state/Scene.h"
-#include <cmath>
 
 // Strike impact angle relative to the surface.
 // Center strikes along surface normal, rim tilts impulse 90 degrees into the tangent plane. UI-only.

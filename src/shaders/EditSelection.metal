@@ -1,10 +1,8 @@
 #ifndef EDITSELECTION_MSL
 #define EDITSELECTION_MSL
 
-#include "Bindless.metal"
 #include "ConnectivityRead.metal"
 #include "gpu/EditSelectionSummary.h"
-#include "gpu/Element.h"
 
 // A mask bit at an element's arena address.
 inline bool EditSelectionBit(const thread Scene &scene, SlotOffset range, uint address) {

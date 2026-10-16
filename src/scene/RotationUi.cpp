@@ -4,8 +4,6 @@
 #include "numeric/Angles.h"
 #include "numeric/MatrixMath.h"
 
-#include <cmath>
-
 using numeric::AngleAxis, numeric::Degrees, numeric::Radians;
 
 quat ToRotation(const RotationUiVariant &v) {

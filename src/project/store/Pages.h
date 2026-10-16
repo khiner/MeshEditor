@@ -2,9 +2,7 @@
 
 #include "project/store/LiveTrie.h"
 
-#include <algorithm>
 #include <cassert>
-#include <cstring>
 
 namespace store {
 // Versioned zero-default byte pages over CPU or Metal storage.

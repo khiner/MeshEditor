@@ -2,7 +2,6 @@
 
 #include "gpu/ElementWork.h"
 #include "gpu/MeshElementSet.h"
-#include "gpu/Types.h"
 
 // A full-frame descriptor expands a pinned finest node's member run on the GPU, through the record's member and meshlet sets.
 // There is no per-meshlet CPU tile list, and output addresses do not depend on rank.

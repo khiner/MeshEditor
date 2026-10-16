@@ -4,10 +4,7 @@
 
 #include <algorithm>
 #include <bit>
-#include <cmath>
-#include <memory>
 #include <mutex>
-#include <new>
 #include <numbers>
 
 namespace {

@@ -1,14 +1,8 @@
 #pragma once
 
-#include "numeric/uvec2.h"
-#include "numeric/vec2.h"
-
 #include "CameraTypes.h"
-#include "action/Core.h"
 #include "gizmo/TransformGizmoTypes.h"
 #include "gpu/Element.h"
-#include "gpu/InteractionMode.h"
-#include "gpu/Transform.h"
 #include "gpu/WorkspaceLights.h"
 #include "viewport/ViewportDisplay.h"
 

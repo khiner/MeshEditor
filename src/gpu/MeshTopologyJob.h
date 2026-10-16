@@ -5,8 +5,6 @@
 #include "gpu/MeshAttributeBit.h"
 #include "gpu/MeshTopologyOp.h"
 #include "gpu/NamedAttributeRef.h"
-#include "gpu/SlotOffset.h"
-#include "gpu/Types.h"
 // One topology operator run: the source mesh, the output ranges, and the scratch layout.
 // The output fields are filled after the count scan, once the host has allocated the output at its exact counts.
 // Arena offsets index the arenas the push constants name by slot.

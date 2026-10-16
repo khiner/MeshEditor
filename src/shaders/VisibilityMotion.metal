@@ -3,7 +3,6 @@
 
 #include "VisibilityDecode.metal"
 #include "gpu/MotionBlurTilesFlattenPushConstants.h"
-#include "MotionBlurShared.metal"
 
 inline bool SameTransform(Transform a, Transform b) {
     return all(float3(a.P) == float3(b.P)) && all(float4(a.R) == float4(b.R)) && all(float3(a.S) == float3(b.S));

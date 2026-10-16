@@ -1,7 +1,6 @@
 #ifndef MESHLET_EDIT_GEOMETRY_MSL
 #define MESHLET_EDIT_GEOMETRY_MSL
 
-#include "ConnectivityRead.metal"
 #include "MeshletNonTriangle.metal"
 
 struct MeshletEditEdgeGeometry {

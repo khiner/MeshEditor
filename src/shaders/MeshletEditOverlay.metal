@@ -2,12 +2,8 @@
 #define MESHLET_EDIT_OVERLAY_MSL
 
 #include "ElementOverlay.metal"
-#include "EditSelection.metal"
 #include "MeshletEditGeometry.metal"
 #include "gpu/MeshletLimit.h"
-#include "MeshletResolve.metal"
-#include "SceneUBO.metal"
-#include "Varyings.metal"
 
 constant uint MeshletEditSimdGroups = 5u;
 using MeshletEditEdgeOutput = metal::mesh<EdgeQuadVaryings, void, uint(MeshletLimit::MaxTriangles) * 4u, uint(MeshletLimit::MaxTriangles) * 2u, metal::topology::triangle>;

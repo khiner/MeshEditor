@@ -4,12 +4,6 @@
 #include "gpu/NamedAttributeRef.h"
 #include "mesh/GeometrySelection.h"
 
-#include <concepts>
-#include <cstring>
-#include <span>
-#include <string_view>
-#include <type_traits>
-
 // A name fits Blender's 64-byte attribute name with its terminator.
 using AttributeName = std::array<char, 64>;
 // The bits of a value's components, zero beyond them.

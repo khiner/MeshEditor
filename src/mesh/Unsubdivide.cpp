@@ -1,8 +1,6 @@
 #include "mesh/Unsubdivide.h"
 #include "Profile.h"
-#include "mesh/Mesh.h"
 #include "mesh/MeshEdgeUsers.h"
-#include <algorithm>
 #include <map>
 #include <set>
 

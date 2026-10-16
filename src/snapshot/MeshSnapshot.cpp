@@ -1,6 +1,4 @@
-#include "mesh/Mesh.h"
 #include "mesh/MeshComponents.h"
-#include "mesh/PrimitiveType.h"
 #include "mesh/TetBuffers.h"
 #include "procedure/NodeTheme.h"
 #include "procedure/Procedure.h"

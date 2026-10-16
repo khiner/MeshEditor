@@ -2,10 +2,7 @@
 
 #include "Range.h"
 
-#include "numeric/vec3.h"
 #include "state/Entity.h"
-
-#include <vector>
 
 struct RenderInstance {
     state::Entity Entity;

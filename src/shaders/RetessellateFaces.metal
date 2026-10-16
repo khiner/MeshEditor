@@ -1,4 +1,3 @@
-#include "Bindless.metal"
 #include "ElementWorkShared.metal"
 #include "TransformUtils.metal"
 #include "gpu/PolygonTriangulation.h"

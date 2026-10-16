@@ -1,61 +1,40 @@
-#include "numeric/VectorMath.h"
-#include "numeric/uvec4.h"
-#include "numeric/vec2.h"
-
-#include "GltfConvert.h"
 #include "GltfScene.h"
+#include "GltfConvert.h"
 #include "MaterialTable.h"
 #include "project/Assets.h"
-#include "render/LightComponents.h"
-#include "state/Scene.h"
 
 #include "File.h"
 #include "Parallel.h"
 #include "Profile.h"
 #include "TransformMath.h"
 #include "Variant.h"
-#include "animation/AnimationData.h"
 #include "animation/AnimationTimeline.h"
 #include "animation/Clips.h"
 #include "animation/Fields.h"
 #include "animation/MorphWeights.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
-#include "audio/AcousticMaterial.h"
-#include "audio/AudioSystem.h"
 #include "audio/AudioTypes.h"
 #include "audio/ContactModel.h"
 #include "audio/ContactSurface.h"
 #include "audio/ModalModes.h"
 #include "gltf/AnimationPointers.h"
-#include "mesh/MeshAttributes.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
-#include "mesh/MeshStore.h"
 #include "object/ObjectOps.h"
-#include "physics/PhysicsTypes.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
 #include "render/PbrFeature.h"
-#include "render/Textures.h"
 #include "scene/CameraLens.h"
-#include "scene/Entity.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
-#include "scene/WorldTransform.h"
-#include "viewport/ViewportDisplay.h"
 
 #include "meshoptimizer.h"
 
 #include "numeric/FastGltf.h"
 #include <fastgltf/core.hpp>
 #include <simdjson.h>
-
-#include <bit>
-#include <numbers>
-#include <numeric>
-#include <unordered_set>
 
 namespace gltf {
 using namespace detail;

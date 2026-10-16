@@ -3,7 +3,6 @@
 #include "gpu/CornerClassMode.h"
 #include "gpu/CustomNormal.h"
 #include "gpu/NormalSector.h"
-#include "gpu/Vertex.h"
 #include "mesh/CornerNormalOffset.h"
 #include "mesh/ElementAttributeView.h"
 

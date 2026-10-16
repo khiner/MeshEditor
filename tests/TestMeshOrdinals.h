@@ -1,14 +1,7 @@
 #pragma once
 
-#include "gpu/MeshElementBlock.h"
 #include "mesh/Mesh.h"
 #include "numeric/VectorMath.h"
-
-#include <algorithm>
-#include <bit>
-#include <optional>
-#include <stdexcept>
-#include <vector>
 
 // Dense ordinal lookups and whole-mesh reductions for tests, over a domain's live elements in ascending handle order.
 namespace test {

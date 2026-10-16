@@ -1,17 +1,9 @@
 #pragma once
 
-#include "gpu/BindlessBindings.h"
-#include "gpu/SlotOffset.h"
 #include "mesh/MeshPipelines.h"
-#include "metal/BufferArena.h"
 #include "metal/Dispatch.h"
-#include "numeric/uvec2.h"
 
 #include <Metal/MTLComputeCommandEncoder.hpp>
-#include <array>
-#include <span>
-#include <utility>
-#include <vector>
 
 // A pass over one tile domain, or over the jobs themselves when Domain is PerJob.
 // Parameter reaches the kernel through the push constants' PassParameter when the constants declare one.

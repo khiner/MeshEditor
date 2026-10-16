@@ -1,7 +1,5 @@
 #include "project/store/Records.h"
 
-#include <algorithm>
-#include <bit>
 #include <cassert>
 
 namespace store {

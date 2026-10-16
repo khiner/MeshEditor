@@ -5,8 +5,6 @@
 #include "render/PbrFeature.h"
 
 #include "state/Entity.h"
-#include <array>
-#include <optional>
 
 namespace Format = mtl::Format;
 

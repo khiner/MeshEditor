@@ -2,21 +2,9 @@
 
 #include "audio/ContactModel.h"
 #include "audio/ModalAudio.h"
-#include "audio/SurfaceContact.h"
-#include "numeric/vec3.h"
 
 #include <algorithm>
-#include <array>
-#include <atomic>
-#include <bit>
 #include <cmath>
-#include <cstdint>
-#include <cstdlib>
-#include <functional>
-#include <memory>
-#include <span>
-#include <unordered_map>
-#include <vector>
 
 // SURFACE_AUDIO selects this surface-contact model through audio/SurfaceContact.h.
 

@@ -1,8 +1,6 @@
 #include "render/MeshTopologyRepair.h"
 #include "Profile.h"
 #include "SortUnique.h"
-#include "gpu/CornerClassMode.h"
-#include "mesh/MeshStore.h"
 #include "mesh/MeshTopologyEdit.h"
 #include "metal/Dispatch.h"
 #include "render/ClusterLodRepair.h"
@@ -19,7 +17,6 @@
 #include "render/SceneUpdates.h"
 #include "state/Scene.h"
 #include <map>
-#include <vector>
 
 namespace {
 // Appends the handle's block unless the values from `first` on already end with it.

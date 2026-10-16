@@ -1,14 +1,10 @@
 #pragma once
 
 #include "Range.h"
-#include "gpu/NamedAttributeRef.h"
-#include "gpu/Transform.h"
 #include "gpu/VertexPositionEditPushConstants.h"
 #include "mesh/GeometrySelection.h"
 #include "mesh/MeshClosure.h"
 #include <optional>
-#include <span>
-#include <vector>
 
 struct MeshStore;
 struct MeshPipelines;

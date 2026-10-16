@@ -1,10 +1,8 @@
 #include "ui/MacBackend.h"
 #include "MacPlatform.h"
 #import <AppKit/AppKit.h>
-#include <imgui.h>
 #include <imgui_impl_osx.h>
 #include <imgui_internal.h>
-#include <stdexcept>
 
 namespace ui {
 namespace {

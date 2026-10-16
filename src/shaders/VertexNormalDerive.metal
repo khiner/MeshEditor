@@ -3,7 +3,6 @@
 
 // Derives face, smooth-vertex, and normal-sector shading normals in deterministic corner order.
 // Fan items use Blender's corner-angle weighting of unit face normals.
-#include "Bindless.metal"
 #include "gpu/NormalDeriveEntry.h"
 #include "NormalSectorTraversal.metal"
 #include "gpu/NormalDerivePushConstants.h"

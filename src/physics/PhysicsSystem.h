@@ -2,9 +2,6 @@
 
 #include "state/Entity.h"
 
-#include <filesystem>
-#include <optional>
-
 struct PhysicsSimulationSettings;
 
 // The references to each physics material, collision system, collision filter, and joint definition.

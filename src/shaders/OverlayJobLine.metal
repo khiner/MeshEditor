@@ -1,19 +1,14 @@
 #ifndef OVERLAYJOBLINE_MSL
 #define OVERLAYJOBLINE_MSL
 
-#include "Bindless.metal"
 #include "SceneUBO.metal"
-#include "TransformUtils.metal"
 #include "ObjectExtrasTransform.metal"
 #include "LineQuad.metal"
 #include "gpu/AABB.h"
 #include "BoxWire.metal"
-#include "gpu/ExtrasLineKind.h"
-#include "gpu/InstanceRecord.h"
 #include "gpu/OverlayDispatch.h"
 #include "gpu/OverlayJob.h"
 #include "gpu/OverlayJobDrawPushConstants.h"
-#include "gpu/OverlayJobKind.h"
 
 // Emits two dedicated vertices per line from procedural extras or persistent bounds and tetrahedral buffers.
 constant uint OverlayJobGroupLines = uint(OverlayDispatch::LineGroupLines);

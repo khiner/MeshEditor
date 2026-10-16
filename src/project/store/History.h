@@ -2,16 +2,10 @@
 
 #include "project/store/LiveTrie.h"
 
-#include <array>
 #include <expected>
 #include <filesystem>
 #include <fstream>
 #include <functional>
-#include <optional>
-#include <string>
-#include <unordered_map>
-#include <utility>
-#include <vector>
 
 namespace project {
 struct ComponentPool;

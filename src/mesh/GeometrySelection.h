@@ -3,8 +3,6 @@
 #include "gpu/Element.h"
 #include "gpu/MeshElementBlock.h"
 #include "gpu/SlotOffset.h"
-#include <array>
-#include <stdexcept>
 #include <variant>
 #include <vector>
 

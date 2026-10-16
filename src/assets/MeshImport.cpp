@@ -1,13 +1,7 @@
-#include "numeric/VectorMath.h"
-#include "numeric/vec2.h"
-
 #include "assets/MeshImport.h"
 #include <format>
-#include <fstream>
-#include <numeric>
 #include <tiny_obj_loader.h>
 #include <tinyply.h>
-#include <unordered_map>
 
 namespace {
 std::optional<std::filesystem::path> ResolveTexturePath(const std::filesystem::path &base_dir, const std::string &texture_name) {

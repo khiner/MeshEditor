@@ -1,12 +1,9 @@
 #ifndef VERTEXTRANSFORM_MSL
 #define VERTEXTRANSFORM_MSL
 
-#include "Bindless.metal"
-#include "ConnectivityRead.metal"
 #include "CornerNormalOffset.metal"
 #include "SceneUBO.metal"
 #include "Varyings.metal"
-#include "gpu/CornerClass.h"
 #include "gpu/CornerClassMode.h"
 #include "MorphDeform.metal"
 #include "ArmatureDeform.metal"

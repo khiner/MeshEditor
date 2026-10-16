@@ -1,14 +1,10 @@
 #include "mesh/RecalculateNormals.h"
 #include "Profile.h"
 #include "gpu/RecalculateNormalsPushConstants.h"
-#include "mesh/Mesh.h"
 #include "mesh/MeshEdgeUsers.h"
 #include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
 #include "metal/Dispatch.h"
-#include <algorithm>
-#include <stdexcept>
-#include <unordered_set>
 
 std::vector<std::vector<uint32_t>> RecalculateFaceFlips(MeshStore &meshes, const MeshPipelines &pipelines, std::span<const uint32_t> ids, std::span<const GeometrySelection> selections, bool inside) {
     if (ids.empty()) return {};

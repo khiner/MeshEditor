@@ -3,9 +3,6 @@
 #include "project/store/Pages.h"
 #include "snapshot/SnapshotRoles.h"
 
-#include <algorithm>
-#include <memory>
-
 namespace store {
 struct History;
 } // namespace store

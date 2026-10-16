@@ -1,11 +1,6 @@
 #pragma once
 #include "mesh/MeshStore.h"
 
-#include "gpu/ElementWork.h"
-#include "state/Entity.h"
-#include <cstdint>
-#include <span>
-
 template<typename T> struct BufferArena;
 namespace mtl {
 struct ComputeChain;

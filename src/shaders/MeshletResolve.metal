@@ -1,11 +1,9 @@
 #ifndef MESHLET_RESOLVE_MSL
 #define MESHLET_RESOLVE_MSL
 
-#include "gpu/InstanceRecord.h"
 #include "gpu/MeshletDrawPushConstants.h"
 #include "gpu/MeshletRouteState.h"
 #include "MeshletShared.metal"
-#include "gpu/PrimitiveRecord.h"
 #include "gpu/VisibleMeshlet.h"
 #include "TransformUtils.metal"
 #include "EditSelection.metal"

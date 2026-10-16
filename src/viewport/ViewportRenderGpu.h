@@ -1,15 +1,10 @@
 #pragma once
 
-#include "numeric/uvec2.h"
-
 #include "Range.h"
 #include "gpu/MeshletRouteMode.h"
-#include "metal/Slots.h"
 
 #include "state/Entity.h"
-#include <optional>
 #include <span>
-#include <vector>
 
 namespace MTL {
 class CommandBuffer;

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Range.h"
-#include "gpu/ElementWork.h"
 #include "gpu/SpatialFaceQueryPushConstants.h"
 
 struct MeshTopologyTask;

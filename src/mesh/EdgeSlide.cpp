@@ -2,10 +2,6 @@
 #include "Profile.h"
 #include "mesh/MeshEdgeUsers.h"
 #include "numeric/VectorMath.h"
-#include <array>
-#include <cmath>
-#include <limits>
-#include <unordered_map>
 
 namespace {
 constexpr float Epsilon = std::numeric_limits<float>::epsilon();

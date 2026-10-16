@@ -4,9 +4,6 @@
 #include "TransformMath.h"
 #include "World.h"
 
-#include <cmath>
-#include <stdexcept>
-
 namespace physics {
 namespace {
 void CheckNonnegative(float value) {

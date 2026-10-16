@@ -1,14 +1,8 @@
-#include "numeric/vec2.h"
-
 // imgui.h must be included before this header.
 
 #pragma once
 
-#include "numeric/MatrixMath.h"
-
 #include "ui/AxisColors.h"
-
-#include <bit>
 
 namespace OrientationGizmo {
 using numeric::I3;

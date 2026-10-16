@@ -5,7 +5,6 @@
 
 #include "Bindless.metal"
 #include "gpu/MeshletGeometryEncoding.h"
-#include "gpu/MeshletPayloads.h"
 #include "gpu/MeshletRecord.h"
 #include "gpu/MeshPrimitiveTopology.h"
 #include "gpu/PrimitiveRecord.h"

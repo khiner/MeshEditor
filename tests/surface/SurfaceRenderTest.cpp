@@ -1,16 +1,8 @@
 
 #include "SeatedBench.h"
-#include "numeric/VectorMath.h"
 
 #include "Near.h"
 #include "RunSuites.h"
-
-#include <boost/ut.hpp>
-
-#include <cmath>
-#include <numbers>
-#include <span>
-#include <vector>
 
 using namespace boost::ut;
 

@@ -1,7 +1,6 @@
 #ifndef EDITSHARPNESS_MSL
 #define EDITSHARPNESS_MSL
 
-#include "Bindless.metal"
 #include "ConnectivityRead.metal"
 #include "ElementWorkShared.metal"
 #include "gpu/EditSharpnessPushConstants.h"

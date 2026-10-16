@@ -1,13 +1,9 @@
 #include "viewport/Viewport.h"
 #include "mesh/MeshComponents.h"
-#include "metal/AutoreleaseScope.h"
-#include "render/LightComponents.h"
-#include "state/Scene.h"
 
 #include "render/ViewportSubmission.h"
 #include <Metal/MTLCommandQueue.hpp>
 
-#include "CameraTypes.h"
 #include "Paths.h"
 #include "ProcessEvents.h"
 #include "Profile.h"
@@ -20,10 +16,7 @@
 #include "audio/ContactModel.h"
 #include "audio/SurfaceContact.h"
 #include "gizmo/GizmoInteraction.h"
-#include "mesh/Mesh.h"
 #include "mesh/MeshCreate.h"
-#include "mesh/MeshPipelines.h"
-#include "mesh/MeshStore.h"
 #include "mesh/MeshStores.h"
 #include "mesh/Primitives.h"
 #include "object/ObjectOps.h"
@@ -34,12 +27,10 @@
 #include "procedure/Cook.h"
 #include "procedure/NodeTheme.h"
 #include "render/GpuSceneState.h"
-#include "render/Pipelines.h"
 #include "render/RenderStores.h"
 #include "render/RenderTargets.h"
 #include "render/Textures.h"
 #include "scene/Defaults.h"
-#include "scene/Entity.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
@@ -48,13 +39,8 @@
 #include "viewport/ViewportConsumerFence.h"
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportInteractionState.h"
-#include "viewport/ViewportOps.h"
-#include "viewport/ViewportRenderGpu.h"
-#include <numbers>
 
 #include "render/GpuBuffers.h"
-
-#include <cassert>
 
 namespace {
 bool TakeRenderRequest(state::Scene &r) { return std::exchange(r.Context.get<PendingRenderRequest>().Value, false); }

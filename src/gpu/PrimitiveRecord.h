@@ -1,7 +1,6 @@
 #pragma once
 
 #include "gpu/SlotOffset.h"
-#include "gpu/Types.h"
 
 // Stores one primitive's meshlet range and LOD roots. The instance record names the mesh record they share.
 struct PrimitiveRecord {

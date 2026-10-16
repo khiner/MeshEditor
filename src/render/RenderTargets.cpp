@@ -1,9 +1,6 @@
 #include "render/RenderTargets.h"
 
-#include "metal/Bindless.h"
 #include "metal/Buffer.h"
-
-#include <bit>
 
 namespace Format = mtl::Format;
 

@@ -3,13 +3,7 @@
 
 #include "audio/ContactSurface.h"
 
-#include <algorithm>
-#include <cmath>
 #include <complex>
-#include <cstdio>
-#include <cstdlib>
-#include <numbers>
-#include <vector>
 
 namespace {
 // In-place iterative radix-2 FFT.

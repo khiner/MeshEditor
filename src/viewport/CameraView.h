@@ -1,12 +1,10 @@
 #pragma once
 
 #include "numeric/QuaternionMath.h"
-#include "numeric/vec2.h"
 
 #include "CameraTypes.h"
 #include "numeric/mat3.h"
 #include "numeric/mat4.h"
-#include "numeric/quat.h"
 #include "numeric/ray.h"
 #include "numeric/rect.h"
 

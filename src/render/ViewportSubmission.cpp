@@ -7,8 +7,6 @@
 #include "render/RenderTargets.h"
 #include "state/Scene.h"
 #include "viewport/FrameState.h"
-#include "viewport/RenderExtent.h"
-#include "viewport/Viewport.h"
 #include <Metal/MTLCommandQueue.hpp>
 ViewportRenderResources::ViewportRenderResources() = default;
 ViewportRenderResources::~ViewportRenderResources() { mtl::AutoreleaseScope::Release(InFlight); }

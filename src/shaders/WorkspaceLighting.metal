@@ -2,8 +2,6 @@
 #define WORKSPACELIGHTING_MSL
 
 // Blender-matching solid viewport lighting. Ported from workbench_world_light.bsl.hh.
-#include "Bindless.metal"
-#include "Varyings.metal"
 #include "tonemapping.metal"
 #include "Transparency.metal"
 #include "VisibilityDecode.metal"

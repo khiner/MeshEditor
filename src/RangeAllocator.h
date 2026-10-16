@@ -3,14 +3,7 @@
 #include "Range.h"
 #include "project/store/Records.h"
 
-#include <algorithm>
-#include <array>
-#include <bit>
-#include <cassert>
 #include <deque>
-#include <limits>
-#include <stdexcept>
-#include <vector>
 
 // Coalesced free ranges in a compressed binary radix tree, ordered by address.
 // A subtree's maximum free length finds the first fitting range in at most 32

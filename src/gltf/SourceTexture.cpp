@@ -3,7 +3,6 @@
 
 #include "File.h"
 #include "SourceAssets.h"
-#include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
 #include "render/GpuBuffers.h"
 #include "render/Textures.h"

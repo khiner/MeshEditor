@@ -1,15 +1,5 @@
 #pragma once
 
-#include "numeric/uvec2.h"
-#include "numeric/uvec3.h"
-#include "numeric/uvec4.h"
-
-#include "numeric/mat3.h"
-#include "numeric/mat4.h"
-#include "numeric/vec2.h"
-#include "numeric/vec3.h"
-#include "numeric/vec4.h"
-
 #include <fastgltf/tools.hpp>
 
 namespace fastgltf {

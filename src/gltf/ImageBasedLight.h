@@ -3,9 +3,7 @@
 #include "numeric/vec3.h"
 
 #include <array>
-#include <cstdint>
 #include <optional>
-#include <string>
 #include <vector>
 
 namespace gltf {

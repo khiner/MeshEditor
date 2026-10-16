@@ -1,7 +1,6 @@
 #ifndef GRIDLINES_MSL
 #define GRIDLINES_MSL
 
-#include "Bindless.metal"
 #include "OverlayFade.metal"
 #include "Varyings.metal"
 

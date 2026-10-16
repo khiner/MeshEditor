@@ -1,29 +1,12 @@
 #include "SurfaceAudio.h"
-#include "numeric/VectorMath.h"
-#include "state/Scene.h"
 
-#include "TransformMath.h"
 #include "audio/ContactScene.h"
 #include "audio/Fft.h"
-#include "audio/ModalAudio.h"
 #include "gltf/SourceTexture.h"
-#include "mesh/Mesh.h"
-#include "mesh/MeshStore.h"
-#include "numeric/vec2.h"
 #include "physics/PhysicsContact.h"
 #include "physics/PhysicsTypes.h"
 #include "render/MaterialComponents.h"
 #include "viewport/ViewportEvents.h"
-
-#include <algorithm>
-#include <cmath>
-#include <cstdio>
-#include <cstdlib>
-#include <limits>
-#include <numbers>
-#include <numeric>
-#include <optional>
-#include <unordered_map>
 
 using state::Change;
 using state::On;

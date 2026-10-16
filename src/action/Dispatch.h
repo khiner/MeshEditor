@@ -1,21 +1,11 @@
 #pragma once
 
-#include "Field.h"
-#include "action/Core.h"
 #include "action/Nodes.h"
 #include "action/ScopeResolve.h"
 #include "action/Updatable.h"
 #include "armature/ArmatureComponents.h"
-#include "mesh/PrimitiveType.h"
 #include "scene/SceneGraph.h"
-#include "scene/WorldTransform.h"
 #include "selection/Selection.h"
-#include "state/Scene.h"
-
-#include <cstring>
-#include <functional>
-#include <string>
-#include <vector>
 
 // Field access for Update on each updatable component.
 namespace action {

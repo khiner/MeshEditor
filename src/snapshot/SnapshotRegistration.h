@@ -4,9 +4,6 @@
 #include "snapshot/NativeSize.h"
 #include "snapshot/SnapshotRoles.h"
 #include "state/Scene.h"
-#include <cassert>
-#include <cstring>
-#include <stdexcept>
 
 namespace snapshot::detail {
 using Comparator = bool (*)(const void *, const void *);

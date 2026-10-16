@@ -5,8 +5,6 @@
 #include "render/LightComponents.h"
 #include "viewport/ViewCamera.h"
 
-#include <numbers>
-
 constexpr float Pi{std::numbers::pi_v<float>};
 
 void UpdateDerivedColors(ViewportTheme &);

@@ -4,8 +4,6 @@
 #include "metal/Image.h"
 
 #include <Metal/MTLBuffer.hpp>
-#include <memory>
-#include <vector>
 
 struct SampledTexture {
     MTL::Texture *Texture{nullptr};

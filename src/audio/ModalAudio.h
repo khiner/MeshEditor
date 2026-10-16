@@ -3,16 +3,9 @@
 #include "SurfaceContact.h"
 #include "numeric/vec3.h"
 
-#include "state/Entity.h"
-
-#include <array>
 #include <atomic>
-#include <cstdint>
-#include <memory>
 #include <mutex>
 #include <numbers>
-#include <optional>
-#include <span>
 #include <thread>
 #include <vector>
 

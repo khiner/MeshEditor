@@ -2,35 +2,22 @@
 #include "Profile.h"
 #include "assets/MeshImport.h"
 #include "project/Assets.h"
-#include "state/Scene.h"
 
-#include "CameraTypes.h"
 #include "Path.h"
 #include "SortUnique.h"
-#include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
 #include "assets/MaterialImport.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
-#include "mesh/MeshStore.h"
-#include "mesh/Primitives.h"
 #include "object/PendingSync.h"
-#include "physics/PhysicsTypes.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
-#include "render/LightComponents.h"
 #include "render/Textures.h"
-#include "scene/Defaults.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
-#include "scene/WorldTransform.h"
-#include "selection/Selection.h"
-#include "selection/SelectionComponents.h"
 #include "viewport/ViewCameraOps.h"
 #include "viewport/ViewportEvents.h"
-
-#include <format>
 
 namespace {
 // Unlink each affected sibling list once, including surviving children of deleted parents.

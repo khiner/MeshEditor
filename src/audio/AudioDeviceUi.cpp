@@ -1,10 +1,6 @@
 #include "action/Audio.h"
-#include "action/Emit.h"
 #include "audio/AudioDevice.h"
-#include "audio/AudioSystem.h"
-#include "audio/AudioUi.h"
 #include "ui/FieldEdit.h"
-#include <format>
 
 namespace {
 std::string SampleRateName(const AudioDeviceResource &res, uint32_t sample_rate) {

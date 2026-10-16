@@ -1,7 +1,6 @@
 #pragma once
 
 #include "gpu/SlotOffset.h"
-#include "gpu/Types.h"
 
 // Defines one dense mesh's vertex-weld inputs, outputs, and scratch layout, whose vertex handles are the ordinals of the positions.
 // Flags contain one mark per vertex plus a terminator for exclusive-scan index generation.

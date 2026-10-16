@@ -5,14 +5,7 @@
 #include "Near.h"
 #include "RunSuites.h"
 
-#include <boost/ut.hpp>
-
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <numbers>
 #include <random>
-#include <vector>
 
 using namespace boost::ut;
 

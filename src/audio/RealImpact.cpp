@@ -3,10 +3,8 @@
 #include "npy.h"
 #include "numeric/Angles.h"
 #include "numeric/MatrixMath.h"
-#include "numeric/vec4.h"
 #include "project/Assets.h"
 
-#include <numbers>
 #include <regex>
 
 using numeric::Radians, numeric::mat4, numeric::vec4;

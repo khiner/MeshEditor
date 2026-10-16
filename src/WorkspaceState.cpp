@@ -1,18 +1,12 @@
 #include "WorkspaceState.h"
 
 #include "File.h"
-#include "numeric/Serialize.h"
 #include "viewport/ViewCameraSerialize.h"
 #include "viewport/ViewportDisplay.h"
 
 #include "state/Scene.h"
 #include <imgui_internal.h>
 #include <zpp_bits.h>
-
-#include <algorithm>
-#include <bit>
-#include <cstring>
-#include <ranges>
 
 namespace workspace {
 namespace {

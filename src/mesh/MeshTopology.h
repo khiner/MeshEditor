@@ -1,13 +1,9 @@
 #pragma once
 
-#include "gpu/Element.h"
 #include "gpu/MeshTopologyOp.h"
 #include "gpu/NamedAttributeRef.h"
-#include "gpu/Types.h"
 #include "mesh/GeometrySelection.h"
 #include <optional>
-#include <span>
-#include <vector>
 
 struct MeshTopologyTask {
     uint32_t SourceId;

@@ -3,9 +3,6 @@
 #include "AcousticMaterialProperties.h"
 #include "Field.h"
 
-#include <array>
-#include <string>
-
 struct AcousticMaterial {
     std::string Name;
     AcousticMaterialProperties Properties;

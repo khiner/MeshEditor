@@ -3,8 +3,6 @@
 #import <AppKit/AppKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
-#include <utility>
-
 namespace FileDialog {
 namespace {
 NSArray<UTType *> *Types(const char *extensions) {

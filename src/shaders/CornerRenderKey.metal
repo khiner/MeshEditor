@@ -3,7 +3,6 @@
 #include "CornerNormalOffset.metal"
 #include "gpu/CornerClass.h"
 #include "gpu/CornerClassMode.h"
-#include "gpu/MeshRecord.h"
 
 // Shared render-vertex equivalence for finest construction and local LOD
 // simplification. Callers supply corner handles of the mesh, including corners

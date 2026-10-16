@@ -2,7 +2,6 @@
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "object/PendingSync.h"
-#include "state/Scene.h"
 
 namespace {
 // Whether the entity's other record component, its source handle or its evaluated mesh, names the record C names.

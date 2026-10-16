@@ -6,9 +6,6 @@
 #include "state/Scene.h"
 #include <boost/ut.hpp>
 
-#include <algorithm>
-#include <array>
-
 namespace {
 const boost::ut::suite selection_tests = [] {
     using namespace boost::ut;

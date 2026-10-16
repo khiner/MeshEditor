@@ -3,7 +3,6 @@
 #include "gpu/ConnectivityRef.h"
 #include "gpu/MeshTopologyArenas.h"
 #include "gpu/NamedAttributeRef.h"
-#include "gpu/SlotOffset.h"
 #include "mesh/PageFootprint.h"
 
 namespace state {

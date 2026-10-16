@@ -1,9 +1,6 @@
 #include "ui/FieldEdit.h"
 #include "action/Animation.h"
 #include "animation/AnimationTimeline.h"
-#include "animation/Clips.h"
-#include "animation/Fields.h"
-#include "selection/SelectionComponents.h"
 #include <imgui_internal.h>
 
 namespace ui {

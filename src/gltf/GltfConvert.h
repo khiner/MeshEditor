@@ -1,14 +1,9 @@
 #pragma once
 
-#include "SourceAssets.h"
 #include "animation/AnimationData.h"
-#include "gpu/PBRMaterial.h"
 #include "physics/PhysicsTypes.h"
 #include "render/MaterialTextureSlots.h"
-#include "render/Textures.h"
-#include <cstring>
 #include <fastgltf/types.hpp>
-#include <map>
 #include <numbers>
 
 namespace gltf::detail {

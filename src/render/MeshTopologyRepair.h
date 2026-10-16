@@ -1,8 +1,6 @@
 #pragma once
 #include "state/Entity.h"
-#include <cstdint>
 #include <span>
-#include <utility>
 #include <vector>
 struct MeshTopologyEdit;
 struct FaceTriangles;

@@ -1,15 +1,6 @@
 #pragma once
 
 #include "action/Nodes.h"
-#include "numeric/vec2.h"
-#include "state/Entity.h"
-
-#include <array>
-#include <cstdint>
-#include <optional>
-#include <string>
-#include <utility>
-#include <vector>
 
 struct TabSelection {
     uint32_t Bar{}, Tab{};

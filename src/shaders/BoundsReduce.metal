@@ -2,11 +2,8 @@
 #define BOUNDSREDUCE_MSL
 
 // Writes one partial AABB per 256-vertex_id tile for the bounds-combine pass.
-#include "Bindless.metal"
 #include "gpu/AABB.h"
 #include "BoundsShared.metal"
-#include "ElementWorkShared.metal"
-#include "gpu/BoundsReducePushConstants.h"
 #include "VertexBounds.metal"
 
 kernel void BoundsReduceKernel(

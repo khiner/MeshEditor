@@ -1,10 +1,8 @@
 #ifndef EDGEQUAD_MSL
 #define EDGEQUAD_MSL
 
-#include "Bindless.metal"
 #include "gpu/EditOverlayConstant.h"
 #include "OverlayFade.metal"
-#include "SceneUBO.metal"
 #include "Varyings.metal"
 
 constant bool IncludeOuter [[function_constant(uint(EditOverlayConstant::IncludeOuter))]];

@@ -3,10 +3,6 @@
 #include <FastFEM/SolveMonitor.h>
 #include <boost/ut.hpp>
 
-#include <array>
-#include <type_traits>
-#include <vector>
-
 using namespace boost::ut;
 
 static_assert(std::is_same_v<AcousticMaterialProperties, fastfem::AcousticMaterialProperties>);

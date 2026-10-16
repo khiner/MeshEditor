@@ -1,7 +1,6 @@
 #pragma once
 
 #include "gpu/SlotOffset.h"
-#include "gpu/Types.h"
 
 struct EditSelectionStorage {
     SlotOffset VertexBits DEFAULT();

@@ -3,18 +3,8 @@
 
 #include "audio/Fft.h"
 
-#include <algorithm>
-#include <atomic>
-#include <bit>
-#include <cmath>
 #include <complex>
-#include <cstdio>
-#include <cstdlib>
-#include <limits>
-#include <numbers>
 #include <numeric>
-#include <span>
-#include <thread>
 
 /***** Roughness tracks *****/
 

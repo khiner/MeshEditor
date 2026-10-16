@@ -2,8 +2,6 @@
 #include "Parallel.h"
 #include "Profile.h"
 #include "gpu/MeshletGeometryEncoding.h"
-#include "mesh/Mesh.h"
-#include "mesh/MeshStore.h"
 #include "metal/Dispatch.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuSceneState.h"
@@ -12,11 +10,7 @@
 #include "render/MeshletStorage.h"
 #include "state/Scene.h"
 
-#include <algorithm>
-#include <array>
-#include <cmath>
 #include <map>
-#include <unordered_map>
 #include <unordered_set>
 
 std::vector<uint32_t> ClusterGroupClosure(const RenderArenas &buffers, const MeshStore::Record &owner, std::span<const uint32_t> seeds) {

@@ -2,8 +2,6 @@
 
 #include "gpu/Types.h"
 #include <cassert>
-#include <functional>
-#include <span>
 #include <vector>
 
 struct Range {

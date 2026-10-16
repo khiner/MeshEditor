@@ -4,9 +4,6 @@
 
 #include <FastFEM/Surface2Modes.h>
 
-#include <cstdint>
-#include <string>
-
 // Persistent audio output device selection. `SampleRate` is the desired rate (0 = device default).
 struct AudioOutputConfig {
     std::string DeviceName;

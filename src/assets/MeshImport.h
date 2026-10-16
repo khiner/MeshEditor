@@ -2,8 +2,6 @@
 
 #include "mesh/MeshStore.h"
 
-#include <expected>
-
 struct ObjPlyMaterial {
     vec4 BaseColorFactor;
     float MetallicFactor, RoughnessFactor;

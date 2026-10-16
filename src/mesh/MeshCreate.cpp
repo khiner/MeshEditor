@@ -4,10 +4,8 @@
 #include "Parallel.h"
 #include "Profile.h"
 #include "SortUnique.h"
-#include "mesh/CornerNormalOffset.h"
 #include "mesh/MeshConnectivityGpu.h"
 #include "mesh/VertexWeldGpu.h"
-#include "metal/Dispatch.h"
 
 #include "state/Scene.h"
 

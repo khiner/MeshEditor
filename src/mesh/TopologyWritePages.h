@@ -2,10 +2,7 @@
 
 #include "gpu/MeshTopologyJob.h"
 #include "mesh/GeometrySelection.h"
-#include "metal/BufferArena.h"
 #include "state/Entity.h"
-
-#include <optional>
 
 // Capture the pages each topology emission phase writes into record `id`, after
 // allocation and before that phase is submitted.

@@ -1,7 +1,6 @@
 #include "Bindless.metal"
 #include "gpu/InsetPreviewPushConstants.h"
 #include "gpu/InsetVertexBasis.h"
-#include "gpu/Vertex.h"
 
 kernel void InsetPreviewPositions(
     uint i [[thread_position_in_grid]],

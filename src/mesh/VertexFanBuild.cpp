@@ -7,8 +7,6 @@
 #include "mesh/TiledJobBatch.h"
 #include "state/Scene.h"
 
-#include <memory>
-
 namespace {
 using FanBatch = TiledJobBatch<VertexFanBuildJob, 3>;
 

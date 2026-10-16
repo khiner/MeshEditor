@@ -1,8 +1,5 @@
 #include "project/store/RecordPage.h"
 
-#include <cstring>
-#include <stdexcept>
-
 namespace store {
 void RecordMask(std::vector<std::byte> &out, uint32_t mask) {
     if (out.size() < sizeof(mask)) out.resize(sizeof(mask));

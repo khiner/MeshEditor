@@ -6,23 +6,14 @@
 #include "mesh/ElementMembershipWork.h"
 #include "mesh/ElementWorkSort.h"
 #include "mesh/MeshPipelines.h"
-#include "mesh/MeshStore.h"
 #include "mesh/ScratchChunks.h"
 #include "metal/Dispatch.h"
-#include "render/ElementWorkOps.h"
 #include "render/GpuBuffers.h"
 #include "render/MeshletOwners.h"
 #include "render/MeshletSpatial.h"
 #include "state/Scene.h"
 
-#include <algorithm>
-#include <array>
-#include <bit>
 #include <format>
-#include <limits>
-#include <numeric>
-#include <stdexcept>
-#include <unordered_map>
 
 namespace {
 constexpr uint32_t TileSize = 256, RecordWords = sizeof(MeshletRecord) / sizeof(uint32_t);

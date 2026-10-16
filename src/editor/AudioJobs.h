@@ -1,9 +1,7 @@
 #pragma once
 #include "Job.h"
-#include "audio/AcousticMaterial.h"
 #include "audio/AudioSystem.h"
 #include "audio/ModalModelFile.h"
-#include "audio/ModalSolve.h"
 #include "audio/ModalWarmStart.h"
 #include <FastFEM/SolveMonitor.h>
 

@@ -4,9 +4,6 @@
 #include "gpu/SelectionAggregate.h"
 #include "metal/BufferArena.h"
 
-#include <bit>
-#include <unordered_map>
-
 // Six radix-16 levels address the 24 bits of a canonical 256-element block.
 inline constexpr uint32_t SelectionIndexLevels = 6u;
 enum class SelectionIndexMask { Selected,

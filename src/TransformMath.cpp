@@ -1,5 +1,4 @@
 #include "TransformMath.h"
-#include "numeric/VectorMath.h"
 
 Transform ToTransform(const mat4 &m) {
     const vec3 translation{m[3]};

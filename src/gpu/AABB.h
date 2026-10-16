@@ -3,7 +3,6 @@
 #include "gpu/Types.h"
 
 #ifndef __METAL_VERSION__
-#include <limits>
 #endif
 
 // Min > Max denotes empty local-space bounds and disables culling.

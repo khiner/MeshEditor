@@ -3,8 +3,6 @@
 #include "CameraTypes.h"
 #include "state/Scene.h"
 
-#include <optional>
-
 // A camera object's lens component, Perspective or Orthographic.
 inline bool HasLens(const state::Scene &r, state::Entity e) { return r.any_of<Perspective, Orthographic>(e); }
 inline std::optional<CameraLens> LensOf(const state::Scene &r, state::Entity e) {

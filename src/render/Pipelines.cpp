@@ -5,8 +5,6 @@
 #include "gpu/PbrConstant.h"
 #include "state/Scene.h"
 
-#include <array>
-
 using mtl::AdditiveBlend, mtl::Blend, mtl::NoBlend, mtl::NoWrite, mtl::PremultipliedBlend;
 using mtl::BlendState, mtl::DepthState, mtl::FunctionConstant, mtl::FunctionRef, mtl::PassFormats, mtl::RenderPipeline;
 

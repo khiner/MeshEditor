@@ -1,9 +1,6 @@
 #pragma once
 
-#include "gpu/ElementWork.h"
 #include "gpu/MeshElementBlock.h"
-#include "metal/Buffer.h"
-#include "metal/BufferArena.h"
 #include "render/ElementWorkOps.h"
 
 // The bytes of one element block of T records.

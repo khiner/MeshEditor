@@ -1,10 +1,7 @@
 #pragma once
 
 #include "metal/AutoreleaseScope.h"
-#include "metal/Buffer.h"
 #include "metal/BufferArena.h"
-
-#include <functional>
 
 namespace MTL {
 class CommandBuffer;

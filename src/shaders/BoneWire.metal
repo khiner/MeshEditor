@@ -3,7 +3,6 @@
 
 // Port of Blender's overlay_armature_shape_outline_vert.glsl.
 // Each edge loads 4 adjacency indices: [adj_left, edge_v0, edge_v1, adj_right].
-#include "Bindless.metal"
 #include "BoneUtils.metal"
 #include "MeshletResolve.metal"
 #include "LineQuad.metal"

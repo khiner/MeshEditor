@@ -5,15 +5,11 @@
 #include "mesh/Primitives.h"
 #include "object/ObjectOps.h"
 #include "render/Instance.h"
-#include "render/LightComponents.h"
 #include "scene/CameraLens.h"
 #include "scene/Defaults.h"
-#include "scene/Entity.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
-#include "scene/WorldTransform.h"
 #include "selection/Selection.h"
-#include "state/Scene.h"
 void Show(state::Scene &r, state::Entity e) { r.remove<Hidden>(e); }
 
 void Hide(state::Scene &r, state::Entity e) {

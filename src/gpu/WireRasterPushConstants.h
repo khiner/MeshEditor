@@ -1,7 +1,6 @@
 #pragma once
 
 #include "gpu/MeshletDrawPushConstants.h"
-#include "gpu/Types.h"
 
 struct WireRasterPushConstants {
     MeshletDrawPushConstants Meshlet DEFAULT();

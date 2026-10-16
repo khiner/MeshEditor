@@ -1,7 +1,6 @@
 #include "ConnectivityRead.metal"
 #include "ElementWorkShared.metal"
 #include "gpu/MeshClosurePushConstants.h"
-#include "gpu/MeshElementBlock.h"
 
 inline uint ClosureInput(device const BindlessSet &b, constant MeshClosurePushConstants &pc, uint group, uint lane) {
     const uint i = group * 256u + lane;

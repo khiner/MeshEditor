@@ -2,7 +2,6 @@
 #define IBLPREFILTER_MSL
 
 // Environment prefilter kernels bind source and destination textures directly.
-#include <metal_stdlib>
 #include "CubemapFace.metal"
 #include "gpu/CubeFacePushConstants.h"
 #include "gpu/PrefilterPushConstants.h"

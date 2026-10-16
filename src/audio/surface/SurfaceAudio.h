@@ -5,8 +5,6 @@
 
 #include "state/Scene.h"
 
-#include <memory>
-
 // The viewport's sustained-contact controls, or their defaults where no viewport has any.
 inline const SurfaceSoundControls &SurfaceControls(const state::Scene &r) {
     static constexpr SurfaceSoundControls Defaults{};

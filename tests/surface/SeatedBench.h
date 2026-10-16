@@ -6,11 +6,6 @@
 
 #include "ModalRenderFixture.h"
 
-#include <cmath>
-#include <memory>
-#include <span>
-#include <vector>
-
 inline std::shared_ptr<const RoughnessTrack> MakeTrack() {
     RoughnessTrack t{.Heights = std::vector<float>(TrackSamples), .Sum = std::vector<float>(TrackSamples + 1, 0.f), .Spacing = 1e-6f};
     uint64_t x = 0x9e3779b97f4a7c15ull;

@@ -4,7 +4,6 @@
 
 #include "state/Entity.h"
 
-#include <array>
 #include <mutex>
 #include <thread>
 

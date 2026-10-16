@@ -2,9 +2,6 @@
 
 #include "Range.h"
 
-#include <algorithm>
-#include <vector>
-
 // Elements one threadgroup covers outside the scan passes, matching the shaders' ScanTileSize.
 constexpr uint32_t TileElements{256};
 // Elements one scan block covers, four per thread, matching the shaders' ScanBlockElements.

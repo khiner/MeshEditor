@@ -1,10 +1,8 @@
 #pragma once
 
-#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
 // Decoded frames keyed by an audio file path or a synthetic source URI.

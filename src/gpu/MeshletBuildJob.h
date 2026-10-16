@@ -2,7 +2,6 @@
 
 #include "gpu/ElementWork.h"
 #include "gpu/MeshRecord.h"
-#include "gpu/SlotOffset.h"
 
 // A tile can fill eight 48-triangle meshlets without forcing a short final
 // cluster. Its 1,152 corner keys fit the shared-memory construction workspace.

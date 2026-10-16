@@ -5,7 +5,6 @@
 #include <expected>
 #include <filesystem>
 #include <span>
-#include <string>
 
 namespace project {
 // External files use repository-relative or absolute paths, and generated project files use `asset:/` paths.

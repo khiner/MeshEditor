@@ -12,7 +12,6 @@
 #pragma once
 
 #include "gltf/SourceAssets.h"
-#include "numeric/mat4.h"
 #include "state/Entity.h"
 
 #include <expected>

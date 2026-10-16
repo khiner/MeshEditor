@@ -1,9 +1,5 @@
 #pragma once
 #include "mesh/MeshStore.h"
-#include "state/Entity.h"
-#include <cstdint>
-#include <span>
-#include <vector>
 
 namespace mtl {
 struct ComputeChain;

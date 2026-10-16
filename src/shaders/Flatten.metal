@@ -1,6 +1,5 @@
 #include "Bindless.metal"
 #include "gpu/VertexPositionEditPushConstants.h"
-#include "gpu/Vertex.h"
 
 inline float4 FlattenSum(float4 value,uint lane,threadgroup float4 *work) {
     work[lane]=value;

@@ -1,13 +1,7 @@
 #pragma once
 
 #include "AcousticMaterial.h"
-#include "Field.h"
 #include "numeric/mat3.h"
-#include "numeric/quat.h"
-#include "numeric/vec3.h"
-
-#include <cstdint>
-#include <vector>
 
 using numeric::mat3, numeric::vec3;
 

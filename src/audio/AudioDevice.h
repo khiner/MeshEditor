@@ -3,8 +3,6 @@
 #include "state/Entity.h"
 
 #include <atomic>
-#include <cstdint>
-#include <string>
 #include <vector>
 
 struct AudioOutputConfig;

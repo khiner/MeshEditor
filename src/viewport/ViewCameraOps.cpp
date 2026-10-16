@@ -1,6 +1,5 @@
 #include "viewport/ViewCameraOps.h"
 #include "scene/CameraLens.h"
-#include "state/Scene.h"
 
 state::Entity LookThroughCameraEntity(const state::Scene &r) {
     const auto view = r.view<LookingThrough>();

@@ -1,15 +1,8 @@
 #pragma once
 
 #include "mesh/CornerClassBatch.h"
-#include "mesh/MeshAttributes.h"
-#include "mesh/MeshData.h"
 #include "mesh/MeshStore.h"
 #include "mesh/NormalDeriveGpu.h"
-
-#include <span>
-#include <vector>
-
-#include "state/Entity.h"
 
 // `Weld` merges vertices identical in every vertex-domain channel, which a source authored per corner needs.
 struct MeshSource {

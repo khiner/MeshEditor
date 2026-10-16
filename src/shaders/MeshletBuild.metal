@@ -1,20 +1,14 @@
 #ifndef MESHLETBUILD_MSL
 #define MESHLETBUILD_MSL
 
-#include "Bindless.metal"
 #include "CornerRenderKey.metal"
-#include "BlockScan.metal"
 #include "RadixSort.metal"
 #include "ElementWorkShared.metal"
 #include "ElementMembershipRead.metal"
 #include "EnclosingSphere.metal"
 #include "ConnectivityRead.metal"
-#include "gpu/CornerClass.h"
-#include "gpu/CornerClassMode.h"
 #include "gpu/MeshletBuildJob.h"
 #include "gpu/MeshletBuildPushConstants.h"
-#include "gpu/MeshletGeometryEncoding.h"
-#include "gpu/MeshletRecord.h"
 #include "gpu/PrimitiveRecord.h"
 #include "gpu/LodNode.h"
 

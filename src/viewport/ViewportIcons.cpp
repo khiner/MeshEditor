@@ -1,7 +1,6 @@
 #include "viewport/ViewportIcons.h"
 
 #include "Paths.h"
-#include "render/SvgResource.h"
 
 #include "state/Scene.h"
 

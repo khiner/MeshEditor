@@ -1,9 +1,5 @@
 #pragma once
 
-#include "gpu/ElementHandleRange.h"
-#include "gpu/ElementWork.h"
-#include "gpu/MeshTopologyArenas.h"
-#include "gpu/MeshTopologyJob.h"
 #include "gpu/TopologyIdentityPushConstants.h"
 #include "mesh/MeshStore.h"
 

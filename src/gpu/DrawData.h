@@ -2,8 +2,6 @@
 #include "gpu/ConnectivityRef.h"
 
 #include "gpu/EditSelectionStorage.h"
-#include "gpu/SlotOffset.h"
-#include "gpu/Types.h"
 
 // Mesh and instance state.
 // Stored references are record-relative handles, which the connectivity's tables resolve, and do not depend on primitive ranges.

@@ -5,11 +5,6 @@
 #include "Near.h"
 #include "RunSuites.h"
 
-#include <boost/ut.hpp>
-
-#include <cmath>
-#include <numbers>
-
 using numeric::quat;
 
 using namespace boost::ut;

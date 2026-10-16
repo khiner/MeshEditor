@@ -1,9 +1,6 @@
 #include "action/Physics.h"
 
-#include "Variant.h"
 #include "action/ScopeResolve.h"
-#include "scene/Entity.h"
-#include "state/Scene.h"
 
 namespace action::physics {
 namespace {

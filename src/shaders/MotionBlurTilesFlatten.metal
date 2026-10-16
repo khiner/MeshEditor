@@ -2,10 +2,8 @@
 #define MOTIONBLURTILESFLATTEN_MSL
 
 // Reduces each tile to its longest motion vector with one threadgroup per tile.
-#include "Bindless.metal"
 #include "MotionBlurShared.metal"
 #include "VisibilityMotion.metal"
-#include "gpu/MotionBlurTilesFlattenPushConstants.h"
 
 constant int FlattenThreads = 8;
 constant int FlattenBlocks = MotionBlurTileSize / FlattenThreads;

@@ -1,8 +1,6 @@
 #include "mesh/SnapSymmetry.h"
 #include "Profile.h"
 #include "mesh/MeshStore.h"
-#include <algorithm>
-#include <array>
 #include <unordered_set>
 
 std::vector<SymmetrySnapVertex> PlanSymmetrySnap(const MeshStore &meshes, const Mesh &mesh, const GeometrySelection &selection, uint32_t axis, float threshold, bool center) {

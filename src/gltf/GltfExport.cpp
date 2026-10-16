@@ -1,52 +1,34 @@
-#include "numeric/VectorMath.h"
-#include "numeric/vec2.h"
-
 #include "GltfConvert.h"
 #include "GltfScene.h"
 #include "MaterialTable.h"
 #include "project/Assets.h"
 #include "render/LightComponents.h"
 
-#include "File.h"
 #include "Profile.h"
 #include "TransformMath.h"
 #include "Variant.h"
-#include "animation/AnimationData.h"
-#include "animation/Fields.h"
 #include "animation/MorphWeights.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
-#include "audio/AcousticMaterial.h"
 #include "audio/AudioSystem.h"
-#include "audio/AudioTypes.h"
 #include "audio/ContactModel.h"
 #include "audio/ContactSurface.h"
 #include "audio/ModalModes.h"
 #include "gltf/AnimationPointers.h"
 #include "image/ImageEncode.h"
-#include "mesh/MeshAttributes.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
-#include "physics/PhysicsTypes.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
-#include "render/Textures.h"
 #include "scene/CameraLens.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
-#include "scene/WorldTransform.h"
 #include "selection/Selection.h"
 
-#include "metal/MetalContext.h"
-#include "state/Scene.h"
 #include <fastgltf/base64.hpp>
 #include <fastgltf/core.hpp>
 #include <iostream>
-
-#include <bit>
-#include <cstring>
-#include <map>
 
 namespace gltf {
 using namespace detail;

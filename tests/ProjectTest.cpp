@@ -1,4 +1,3 @@
-#include "project/Project.h"
 #include "Compress.h"
 #include "Paths.h"
 #include "RunSuites.h"
@@ -9,11 +8,8 @@
 #include "animation/MorphWeights.h"
 #include "armature/ArmatureComponents.h"
 #include "editor/Engine.h"
-#include "mesh/Mesh.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
-#include "mesh/MeshStores.h"
-#include "mesh/NormalDeriveGpu.h"
 #include "object/ObjectOps.h"
 #include "project/Assets.h"
 #include "render/GpuBuffers.h"
@@ -21,22 +17,13 @@
 #include "render/Instance.h"
 #include "render/RenderTargets.h"
 #include "render/Textures.h"
-#include "scene/Entity.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/RenderExtent.h"
-#include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
-#include "viewport/ViewportInteractionState.h"
-
-#include <algorithm>
-#include <array>
-#include <cstdio>
-#include <fstream>
-#include <numeric>
 
 using boost::ut::expect;
 

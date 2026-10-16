@@ -1,9 +1,5 @@
 #pragma once
-#include "gpu/BindlessBindings.h"
 #include "metal/BufferArena.h"
-#include <algorithm>
-#include <array>
-#include <stdexcept>
 
 // Sparse radix addressing shares allocation and pruning while each attribute
 // retains its shader-visible node and payload layout. Zero denotes absence.

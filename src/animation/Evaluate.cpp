@@ -4,8 +4,6 @@
 #include "animation/Fields.h"
 #include "state/Scene.h"
 
-#include <vector>
-
 namespace animation {
 void Evaluate(state::Scene &r, state::Entity viewport, float seconds, bool persistent) {
     // Drop the pose of a node the active animation no longer poses.

@@ -2,7 +2,6 @@
 
 #include "gizmo/TransformGizmoTypes.h"
 #include "numeric/ray.h"
-#include "numeric/vec2.h"
 
 #include <optional>
 #include <string>

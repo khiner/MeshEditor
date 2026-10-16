@@ -2,7 +2,6 @@
 #include "mesh/GeometrySelection.h"
 
 #include "Range.h"
-#include <vector>
 
 struct Mesh;
 

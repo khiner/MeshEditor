@@ -5,7 +5,6 @@
 // A face corner at a beveled vertex moves onto offset points: a corner point when both of its edges are beveled, or a point along its other edge when one is.
 // A corner with neither edge beveled uses the points its neighbors put on its edges.
 // Each beveled edge becomes a strip of quads between its two sides, and each beveled vertex a polygon of the points around it.
-#include "MeshTopologyContext.metal"
 #include "MeshTopologyFaces.metal"
 
 

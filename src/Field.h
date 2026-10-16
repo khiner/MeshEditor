@@ -2,13 +2,8 @@
 
 // Compile-time field metadata derived from plain aggregates: member names and labels, enumerator names, and per-field specs.
 
-#include <array>
-#include <cstddef>
-#include <cstdint>
-#include <limits>
 #include <string_view>
 #include <type_traits>
-#include <utility>
 
 // Display and clamping properties of one field, keyed by its owner and member name.
 // A radian field draws and edits in degrees.

@@ -1,14 +1,7 @@
 #pragma once
 
 #include "mesh/GeometrySelection.h"
-#include "numeric/vec2.h"
 #include "state/Entity.h"
-
-#include <cstdint>
-#include <functional>
-#include <string>
-#include <variant>
-#include <vector>
 
 namespace state {
 struct Scene;

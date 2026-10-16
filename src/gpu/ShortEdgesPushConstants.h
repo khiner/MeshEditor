@@ -1,8 +1,6 @@
 #pragma once
 
 #include "gpu/ConnectivityRef.h"
-#include "gpu/SlotOffset.h"
-#include "gpu/Types.h"
 
 // A dense record's halfedges and the word that marks it as holding an edge shorter than Distance.
 struct ShortEdgesPushConstants {

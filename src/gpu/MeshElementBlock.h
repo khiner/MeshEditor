@@ -3,7 +3,6 @@
 #include "gpu/Types.h"
 
 #ifndef __METAL_VERSION__
-#include <compare>
 #include <span>
 #endif
 

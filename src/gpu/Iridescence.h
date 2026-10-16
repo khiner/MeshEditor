@@ -1,7 +1,6 @@
 #pragma once
 
 #include "gpu/TextureInfo.h"
-#include "gpu/Types.h"
 
 struct Iridescence {
     float Factor DEFAULT(0);
@@ -12,7 +11,6 @@ struct Iridescence {
     TextureInfo ThicknessTexture DEFAULT();
 };
 #ifndef __METAL_VERSION__
-#include "Field.h"
 template<> inline constexpr FieldSpec Spec<Iridescence, "Factor">{.Min = 0, .Max = 1};
 template<> inline constexpr FieldSpec Spec<Iridescence, "Ior">{.Min = 1, .Max = 5};
 template<> inline constexpr FieldSpec Spec<Iridescence, "ThicknessMinimum">{.Min = 0, .Max = 1000, .Digits = 0};

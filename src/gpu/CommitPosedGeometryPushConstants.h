@@ -1,12 +1,9 @@
 #pragma once
 
-#include "gpu/ElementWork.h"
 #include "gpu/GeometryEditMode.h"
 #include "gpu/MeshElementSet.h"
 #include "gpu/NormalDeriveEntry.h"
-#include "gpu/SlotOffset.h"
 #include "gpu/Transform.h"
-#include "gpu/Types.h"
 
 // Work names the entry's vertex and face handles, MeshletAddresses its clusters, and BoundsTiles its vertex blocks in the arena.
 struct CommitPosedGeometryPushConstants {

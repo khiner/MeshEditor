@@ -4,7 +4,6 @@
 #define PUNCTUAL_MSL
 
 #include "Bindless.metal"
-#include "gpu/PunctualLightType.h"
 
 constant float LIGHT_EPSILON = 1e-4f;
 

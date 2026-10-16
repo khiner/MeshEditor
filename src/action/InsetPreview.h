@@ -1,11 +1,8 @@
 #pragma once
 
-#include "Range.h"
 #include "gpu/MeshTopologyOp.h"
 #include "metal/BufferArena.h"
 #include "state/Entity.h"
-
-#include <vector>
 
 namespace action::mesh {
 // Gesture-local metadata and GPU basis for parameter-only inset updates.

@@ -3,15 +3,12 @@
 #include "SortUnique.h"
 #include "gpu/MeshletBoundsRefitPushConstants.h"
 #include "mesh/MeshPipelines.h"
-#include "mesh/MeshStore.h"
 #include "metal/Dispatch.h"
 #include "render/ClusterLodRepair.h"
 #include "render/ElementWorkOps.h"
 #include "render/LodNodeEdit.h"
 #include "render/MeshletSpatial.h"
 #include "state/Scene.h"
-#include <stdexcept>
-#include <vector>
 
 void RefitCanonicalMeshletBounds(state::Scene &r, mtl::ComputeChain &chain, std::span<const MeshletBoundsRefitJob> jobs) {
     if (jobs.empty()) return;

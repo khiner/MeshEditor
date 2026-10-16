@@ -1,7 +1,5 @@
 #include "ElementWorkShared.metal"
-#include "gpu/BindlessBindings.h"
 #include "gpu/SpatialFaceQueryPushConstants.h"
-#include "gpu/Vertex.h"
 
 inline bool SpatialFaceAffected(device const BindlessSet &b, const SpatialFaceQueryPushConstants pc,
                                 uint face, device atomic_uint *result) {

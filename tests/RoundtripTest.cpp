@@ -1,53 +1,29 @@
 #include "Path.h"
 #include "Paths.h"
-#include "ProcessEvents.h"
 #include "RunSuites.h"
 #include "action/Errors.h"
-#include "audio/AcousticMaterial.h"
-#include "audio/AudioTypes.h"
-#include "audio/ContactModel.h"
-#include "audio/ContactSurface.h"
 #include "audio/ModalModelFile.h"
-#include "audio/ModalModes.h"
 #include "editor/Engine.h"
-#include "numeric/VectorMath.h"
 #include "project/Assets.h"
 #include <barrier>
-#include <bit>
 #include <future>
 #ifdef SURFACE_AUDIO
 #include "audio/surface/SurfaceAudio.h" // SurfaceRelief, UpdateSurfaceRelief
 #endif
 #include "gltf/GltfScene.h"
 #include "gltf/SourceTexture.h"
-#include "image/ImageDecode.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
-#include "mesh/MeshStore.h"
-#include "mesh/PrimitiveType.h"
 #include "mesh/Primitives.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
-#include "render/LightComponents.h"
 #include "render/MaterialComponents.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
-#include "scene/WorldTransform.h"
-#include "snapshot/SnapshotRoles.h"
 #include "viewport/Viewport.h"
 
 #include "numeric/FastGltf.h"
-#include "state/Scene.h"
-#include <boost/ut.hpp>
-#include <fastgltf/core.hpp>
-#include <fastgltf/tools.hpp>
 #include <simdjson.h>
-
-#include <cstring>
-#include <fstream>
-#include <map>
-#include <numeric>
-#include <set>
 
 namespace {
 namespace fs = std::filesystem;

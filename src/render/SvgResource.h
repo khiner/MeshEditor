@@ -3,7 +3,6 @@
 #include "numeric/vec2.h"
 
 #include <filesystem>
-#include <memory>
 
 using numeric::vec2;
 

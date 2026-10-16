@@ -1,38 +1,22 @@
 #include "editor/AudioIntegration.h"
-#include "numeric/VectorMath.h"
 #include "project/Assets.h"
-#include "state/Scene.h"
 
-#include "Job.h"
 #include "SortUnique.h"
-#include "action/Audio.h"
 #include "action/Errors.h"
 #include "audio/AudioDevice.h"
 #include "audio/AudioQueries.h"
-#include "audio/AudioSystem.h"
 #include "audio/ContactScene.h"
 #include "audio/FftAnalysis.h"
-#include "audio/ModalAudio.h"
-#include "audio/ModalModelFile.h"
 #include "audio/ModalSolve.h"
-#include "audio/ModalWarmStart.h"
 #include "audio/RealImpact.h"
 #include "editor/AudioExcitation.h"
 #include "editor/AudioJobs.h"
-#include "mesh/MeshStore.h"
 #include "physics/PhysicsContact.h"
-#include "physics/PhysicsTypes.h"
 #include "project/Project.h"
 #include "scene/Entity.h"
-#include "viewport/InteractionComponents.h"
 #include "viewport/ViewCamera.h"
-#include "viewport/ViewportEvents.h"
 
-#include <FastFEM/SolveMonitor.h>
-#include <atomic>
 #include <iostream>
-#include <numbers>
-#include <string_view>
 #include <unordered_set>
 
 using state::Change;

@@ -1,19 +1,12 @@
 #pragma once
 
-#include <algorithm>
-#include <array>
-#include <bit>
-
 #include "gpu/Element.h"
 #include "gpu/Vertex.h"
 #include "mesh/ElementView.h"
 
-#include "gpu/MeshElementBlock.h"
 #include "gpu/MeshPrimitiveTopology.h"
 #include "state/Entity.h"
 
-#include <optional>
-#include <span>
 #include <vector>
 
 struct TriangleVertexView;

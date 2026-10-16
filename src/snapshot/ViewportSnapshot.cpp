@@ -1,6 +1,4 @@
-#include "CameraTypes.h"
 #include "action/Core.h"
-#include "action/Mesh.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gpu/ViewportTheme.h"
 #include "gpu/WorkspaceLights.h"
@@ -10,10 +8,7 @@
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/VideoRecording.h"
-#include "viewport/ViewCamera.h"
 #include "viewport/ViewCameraSerialize.h"
-#include "viewport/ViewportDisplay.h"
-#include "viewport/ViewportEvents.h"
 #include "viewport/ViewportInteractionState.h"
 
 namespace snapshot::detail {

@@ -1,10 +1,8 @@
 #pragma once
 
 #include "gpu/ElementHandleRange.h"
-#include "gpu/ElementWork.h"
 #include "gpu/MeshTopologyJob.h"
 #include "gpu/MeshTopologyPushConstants.h"
-#include "gpu/SlotOffset.h"
 
 struct TopologyIdentityPushConstants {
     MeshTopologyPushConstants Topology DEFAULT();

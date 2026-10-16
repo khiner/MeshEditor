@@ -1,7 +1,5 @@
 #pragma once
 #include "mesh/MeshStore.h"
-#include <cstdint>
-#include <span>
 
 namespace state {
 struct Scene;

@@ -1,23 +1,9 @@
 #pragma once
 
-#include "Field.h"
 #include "action/Mesh.h"
 #include "action/Updatable.h"
 #include "gpu/AttributeNode.h"
-#include "gpu/Transform.h"
-#include "mesh/GeometrySelection.h"
 #include "mesh/NamedAttribute.h"
-#include "mesh/PrimitiveType.h"
-#include "numeric/vec2.h"
-#include "state/Entity.h"
-
-#include <algorithm>
-#include <array>
-#include <concepts>
-#include <span>
-#include <string_view>
-#include <utility>
-#include <vector>
 
 // A mesh's geometry procedure is a graph of node entities.
 // Each node holds one parameter component, and links connect output sockets to input sockets.

@@ -1,16 +1,8 @@
 #include "mesh/TopologyOperations.h"
 #include "mesh/EdgeChains.h"
-#include "mesh/Mesh.h"
 #include "mesh/MeshEdgeUsers.h"
 #include "mesh/MeshStore.h"
 #include "numeric/MatrixMath.h"
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <limits>
-#include <span>
-#include <stdexcept>
-#include <unordered_set>
 
 namespace {
 bool Finite(vec2 value) { return std::isfinite(value.x) && std::isfinite(value.y); }

@@ -2,7 +2,6 @@
 #define OVERLAYFADE_MSL
 
 #include "Bindless.metal"
-#include "SceneUBO.metal"
 
 // Scales an overlay fragment behind the scene surface by the view's X-ray fade.
 // Zero means the depth test already rejected occluded fragments.

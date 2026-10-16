@@ -3,7 +3,6 @@
 #include <zpp_bits.h>
 
 #include <filesystem>
-#include <string>
 
 // zpp::bits requires ADL hooks because std::filesystem::path is not reflectable.
 namespace std::filesystem {

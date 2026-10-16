@@ -1,9 +1,6 @@
 #include "render/GpuBufferOps.h"
-#include "Profile.h"
 
 #include "gpu/MeshletClassification.h"
-#include "mesh/Mesh.h"
-#include "mesh/MeshStore.h"
 #include "render/GpuBuffers.h"
 
 #include "state/Scene.h"

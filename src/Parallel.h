@@ -1,8 +1,6 @@
 #pragma once
 
-#include <cstdint>
 #include <dispatch/dispatch.h>
-#include <utility>
 
 // Run `body(i)` concurrently for every i in [0, count).
 // Each invocation must access only state assigned to its index.

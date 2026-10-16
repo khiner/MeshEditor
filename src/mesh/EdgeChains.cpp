@@ -1,13 +1,8 @@
 #include "mesh/EdgeChains.h"
 #include "SortUnique.h"
-#include "mesh/Mesh.h"
 #include "mesh/MeshEdgeUsers.h"
 
-#include <algorithm>
-#include <array>
 #include <ranges>
-#include <unordered_map>
-#include <unordered_set>
 
 void VisitEdgeChains(EdgeGraph &graph, const std::function<void(const std::vector<uint32_t> &, bool)> &visit) {
     std::vector<uint32_t> vertices;

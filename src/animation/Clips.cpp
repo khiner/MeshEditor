@@ -1,12 +1,8 @@
 #include "animation/Clips.h"
 #include "numeric/QuaternionMath.h"
-#include "numeric/VectorMath.h"
 
-#include "numeric/quat.h"
 #include "scene/WorldTransform.h"
 #include "state/Scene.h"
-
-#include <algorithm>
 
 namespace animation {
 namespace {

@@ -4,7 +4,6 @@
 #include "numeric/mat3.h"
 #include "numeric/mat4.h"
 
-#include <bit>
 #include <simd/matrix.h>
 
 namespace numeric {

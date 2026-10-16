@@ -1,40 +1,18 @@
-#include "numeric/uvec2.h"
-#include "numeric/vec2.h"
-
 #include "viewport/ViewportUi.h"
 
 #include "Camera.h"
-#include "Field.h"
 #include "Profile.h"
-#include "Variant.h"
 #include "Window.h"
-#include "action/Animation.h"
-#include "action/Audio.h"
-#include "action/Bone.h"
-#include "action/Build.h"
-#include "action/Mesh.h"
-#include "action/Object.h"
-#include "action/Selection.h"
-#include "action/Timeline.h"
-#include "action/View.h"
-#include "animation/AnimationTimeline.h"
-#include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gizmo/TransformGizmo.h"
-#include "gltf/SourceAssets.h"
 #include "numeric/MatrixMath.h"
 #include "procedure/Procedure.h"
 #include "project/Project.h"
 #include "render/GpuBuffers.h"
-#include "render/Instance.h"
-#include "render/LightComponents.h"
 #include "render/TextureRefs.h"
 #include "scene/CameraLens.h"
 #include "scene/Defaults.h"
-#include "scene/Entity.h"
-#include "scene/WorldTransform.h"
-#include "selection/Selection.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
@@ -48,14 +26,8 @@
 #include "viewport/ScreenSpace.h"
 #include "viewport/ViewCameraOps.h"
 #include "viewport/ViewportIcons.h"
-#include "viewport/ViewportInteractionState.h"
 #include "viewport/ViewportOps.h"
 #include <imgui_internal.h>
-
-#include "state/Scene.h"
-
-#include <algorithm>
-#include <ranges>
 
 #include "gizmo/OrientationGizmo.h"
 

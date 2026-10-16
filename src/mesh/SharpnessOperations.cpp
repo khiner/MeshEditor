@@ -3,15 +3,9 @@
 #include "mesh/CornerClassBatch.h"
 #include "mesh/ElementMembershipWork.h"
 #include "mesh/ElementWorkSort.h"
-#include "mesh/Mesh.h"
-#include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
 #include "mesh/NormalDeriveGpu.h"
-#include "metal/Dispatch.h"
 #include "state/Scene.h"
-#include <algorithm>
-#include <cmath>
-#include <stdexcept>
 #include <unordered_set>
 
 std::vector<SharpnessOperationChange> ExecuteGeometrySharpness(state::Scene &r, mtl::ComputeChain &chain, std::span<const SharpnessOperationTarget> targets, EditSharpnessOperation operation, bool value, float angle) {

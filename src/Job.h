@@ -1,11 +1,8 @@
 #pragma once
 
-#include <atomic>
-#include <chrono>
 #include <future>
 #include <memory>
 #include <optional>
-#include <string>
 
 // A background task with a monitor for progress display and cooperative cancellation.
 // `work` runs on its own thread and receives the monitor.

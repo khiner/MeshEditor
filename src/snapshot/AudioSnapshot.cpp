@@ -1,4 +1,3 @@
-#include "audio/AcousticMaterial.h"
 #include "audio/AudioSamples.h"
 #include "audio/AudioTypes.h"
 #include "audio/ContactModel.h"

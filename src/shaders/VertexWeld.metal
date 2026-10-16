@@ -5,7 +5,6 @@
 #include "Bindless.metal"
 #include "BlockScan.metal"
 #include "gpu/VertexWeldJob.h"
-#include "gpu/MeshElementBlock.h"
 #include "gpu/TiledJobPushConstants.h"
 
 constant uint WeldEmptySlot = InvalidOffset;

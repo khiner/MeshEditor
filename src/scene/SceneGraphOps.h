@@ -1,7 +1,5 @@
 #pragma once
 
-#include "state/Entity.h"
-
 // Registry-mutating scene-graph operations: reparenting.
 
 // Unlinks each child from its parent, walking each affected sibling list once.

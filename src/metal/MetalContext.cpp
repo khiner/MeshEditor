@@ -6,10 +6,8 @@
 
 #include <atomic>
 #include <bit>
-#include <format>
 #include <print>
 #include <unordered_set>
-#include <utility>
 
 namespace mtl {
 namespace {

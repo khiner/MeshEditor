@@ -2,14 +2,7 @@
 #include "ModalModes.h"
 #include "numeric/VectorMath.h"
 
-#include "state/Entity.h"
-
 #include <algorithm>
-#include <chrono>
-#include <cmath>
-#include <numbers>
-#include <span>
-#include <thread>
 
 #ifdef __APPLE__
 #include <os/workgroup.h>

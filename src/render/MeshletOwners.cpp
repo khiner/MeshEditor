@@ -1,8 +1,6 @@
 #include "render/MeshletOwners.h"
 #include "mesh/MeshPipelines.h"
-#include "mesh/MeshStore.h"
 #include "metal/Dispatch.h"
-#include "numeric/uvec2.h"
 #include "state/Scene.h"
 
 void PrepareMeshletOwners(state::Scene &r, MeshStore::Record &owner, uint32_t topology, std::span<const Range> clusters, std::span<const uint32_t> blocks, std::vector<MeshletOwnersJob> &jobs) {

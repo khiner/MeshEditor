@@ -2,11 +2,8 @@
 
 #include "CameraTypes.h"
 #include "numeric/Angles.h"
-#include "numeric/VectorMath.h"
 
 #include <algorithm>
-#include <cmath>
-#include <type_traits>
 
 using numeric::Clamp, numeric::Radians;
 

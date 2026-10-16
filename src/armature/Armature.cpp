@@ -1,7 +1,6 @@
 #include "armature/Armature.h"
 #include "TransformMath.h"
 #include "armature/ArmatureComponents.h"
-#include "numeric/VectorMath.h"
 #include "scene/Entity.h"
 #include "selection/BoneSelection.h"
 

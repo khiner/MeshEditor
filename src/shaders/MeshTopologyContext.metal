@@ -2,13 +2,11 @@
 #define MESHTOPOLOGYCONTEXT_MSL
 
 // The topology operators' view of a job: source and output arenas, scratch runs, selection, and the shared per-operator rules.
-#include "Bindless.metal"
 #include "ElementWorkShared.metal"
 #include "CornerNormalOffset.metal"
 #include "BlockScan.metal"
 #include "ConnectivityRead.metal"
 #include "gpu/MeshTopologyJob.h"
-#include "gpu/MeshTopologyOp.h"
 #include "gpu/MeshTopologyPushConstants.h"
 
 constant uint TopoTagged = 1u;

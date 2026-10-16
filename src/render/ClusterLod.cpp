@@ -1,5 +1,4 @@
 #include "render/ClusterLod.h"
-#include "numeric/VectorMath.h"
 
 #include "FlatKeyMap.h"
 #include "Parallel.h"
@@ -9,17 +8,10 @@
 
 #include "meshoptimizer.h"
 
-#include <algorithm>
 #include <atomic>
-#include <bit>
-#include <cassert>
-#include <cfloat>
-#include <cmath>
 #include <exception>
 #include <format>
-#include <limits>
 #include <mutex>
-#include <stdexcept>
 
 namespace {
 constexpr size_t PartitionSize{ClusterLodPartitionSize};

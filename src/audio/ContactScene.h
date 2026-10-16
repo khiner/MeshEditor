@@ -6,19 +6,9 @@
 #include "SoundVertices.h"
 #include "SurfaceContact.h"
 #include "TransformMath.h"
-#include "mesh/Mesh.h"
-#include "mesh/MeshStore.h"
-#include "numeric/VectorMath.h"
 #include "render/Instance.h"
 #include "render/MeshletSpatial.h"
 #include "scene/SceneGraph.h"
-#include "scene/WorldTransform.h"
-
-#include "state/Scene.h"
-
-#include <algorithm>
-#include <optional>
-#include <vector>
 
 inline const ModalSoundControls &ModalControls(const state::Scene &r) {
     static constexpr ModalSoundControls Defaults{};

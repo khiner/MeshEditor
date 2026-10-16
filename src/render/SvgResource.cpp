@@ -1,14 +1,10 @@
-#include "numeric/vec2.h"
-
 #include "render/SvgResource.h"
 
 #include "metal/ImGuiTexture.h"
 #include "metal/Image.h"
 
-#include <bit>
 #include <cmath>
 
-#include "imgui.h"
 #include "lunasvg.h"
 
 namespace {

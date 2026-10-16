@@ -1,6 +1,5 @@
 #ifndef VERTEXBOUNDS_MSL
 #define VERTEXBOUNDS_MSL
-#include "Bindless.metal"
 #include "ElementWorkShared.metal"
 #include "gpu/VertexBounds.h"
 #include "gpu/BoundsReducePushConstants.h"

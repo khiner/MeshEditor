@@ -2,7 +2,6 @@
 #define OBJECTORIGIN_MSL
 
 #include "Bindless.metal"
-#include "gpu/MeshletInstanceFlag.h"
 #include "gpu/ObjectOriginPushConstants.h"
 
 struct ObjectOriginVaryings {

@@ -1,16 +1,12 @@
 #include "action/Io.h"
 #include "editor/AudioIntegration.h"
-#include "numeric/VectorMath.h"
 #include "state/Scene.h"
 
-#include "CameraTypes.h"
 #include "Profile.h"
 #include "Variant.h"
 #include "action/Errors.h"
 #include "animation/AnimationTimeline.h"
 #include "audio/AcousticMaterial.h"
-#include "audio/AudioSystem.h"
-#include "audio/ModalModelFile.h"
 #include "audio/RealImpact.h"
 #include "audio/RealImpactComponents.h"
 #include "gltf/GltfScene.h"
@@ -23,8 +19,6 @@
 #include "viewport/Viewport.h"
 
 #include <format>
-#include <numbers>
-#include <utility>
 
 using numeric::Radians;
 

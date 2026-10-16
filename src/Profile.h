@@ -4,7 +4,6 @@
 
 #include <Metal/MTLCommandBuffer.hpp>
 #include <filesystem>
-#include <string_view>
 
 // Store CPU and GPU samples for the next report.
 namespace profile {

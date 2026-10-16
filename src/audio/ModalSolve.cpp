@@ -2,7 +2,6 @@
 #include "numeric/VectorMath.h"
 
 #include <algorithm>
-#include <cstdint>
 
 namespace {
 ModalModes Extend(fastfem::ModalModes modes) {

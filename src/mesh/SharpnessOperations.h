@@ -2,8 +2,6 @@
 #include "gpu/EditSharpnessOperation.h"
 #include "mesh/GeometrySelection.h"
 #include "mesh/MeshClosure.h"
-#include <span>
-#include <vector>
 
 struct SharpnessOperationTarget {
     uint32_t StoreId;

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "gpu/SlotOffset.h"
-#include "gpu/Types.h"
 
 // Sparse blocks contain an address block key plus eight 32-bit masks. The
 // active-slot list dispatches one 256-lane tile per occupied block. Inclusive

@@ -2,8 +2,6 @@
 
 #include "state/Entity.h"
 
-#include <cstdint>
-#include <memory>
 #include <span>
 
 // SURFACE_AUDIO selects either the surface-contact model or inert entry points at link time.

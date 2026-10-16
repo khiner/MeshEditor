@@ -2,7 +2,6 @@
 #define CONNECTIVITYREAD_MSL
 
 #include "Bindless.metal"
-#include "gpu/ConnectivityRef.h"
 
 struct ConnectivityFan {
     device const packed_uint2 *Items;

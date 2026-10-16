@@ -1,15 +1,8 @@
 #pragma once
 
-#include "Field.h"
 #include "mesh/TopologyOperations.h"
-#include "numeric/vec2.h"
-#include "numeric/vec3.h"
 #include "state/Entity.h"
 #include "viewport/RenderView.h"
-
-#include <memory>
-#include <numbers>
-#include <variant>
 
 // Edit-mode topology operators over the selected meshes' element selections.
 namespace action::mesh {

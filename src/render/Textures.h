@@ -3,12 +3,10 @@
 #include "gltf/ImageBasedLight.h"
 #include "gpu/IblSamplers.h"
 #include "metal/Image.h"
-#include "numeric/mat3.h"
 
 #include "state/Entity.h"
 #include <expected>
 #include <filesystem>
-#include <span>
 #include <variant>
 
 namespace MTL {

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "gpu/SlotOffset.h"
-#include "gpu/Types.h"
 
 // Each canonical vertex block spans this many threadgroups, one lane per element slot.
 GPU_CONSTANT uint32_t VertexBlockGroups = 4u;

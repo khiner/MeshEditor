@@ -4,7 +4,6 @@
 #include "action/Animation.h"
 #include "action/Audio.h"
 #include "action/Bone.h"
-#include "action/Core.h"
 #include "action/Emit.h"
 #include "action/Io.h"
 #include "action/Mesh.h"

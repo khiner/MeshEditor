@@ -2,8 +2,6 @@
 
 #include "gpu/ConnectivityRef.h"
 #include "gpu/ElementWork.h"
-#include "gpu/SlotOffset.h"
-#include "gpu/Types.h"
 
 // Defines one normal-derivation item with optional posed positions and push-constant-selected outputs.
 struct NormalDeriveEntry {

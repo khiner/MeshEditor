@@ -1,17 +1,8 @@
 #pragma once
-#include "gpu/BindlessBindings.h"
-#include "gpu/PoseAttributeNode.h"
 #include "mesh/PoseAttributeView.h"
-#include "metal/Buffer.h"
-#include "metal/PhysicalPages.h"
 #include "render/AttributeArena.h"
 #include "state/Entity.h"
-#include <algorithm>
-#include <array>
-#include <stdexcept>
-#include <unordered_map>
 #include <unordered_set>
-#include <vector>
 
 // Typed payloads share one node arena and one value arena per attribute.
 // Namespace roots isolate poses while canonical keys retain stable addresses.

@@ -3,10 +3,7 @@
 #include "Range.h"
 #include "armature/BoneId.h"
 #include "gpu/Transform.h"
-#include "numeric/mat4.h"
 #include "state/Entity.h"
-
-#include <vector>
 
 struct ArmatureObject {
     state::Entity Entity;

@@ -1,13 +1,7 @@
 #pragma once
 
-#include "Range.h"
-#include "gpu/BindlessBindings.h"
 #include "mesh/ElementAttributeView.h"
 #include "metal/BufferArena.h"
-
-#include <algorithm>
-#include <array>
-#include <span>
 
 // Grows a record's range of a block arena to `blocks` blocks: in place when the storage after it is free, and otherwise at twice its size or to fit, moving its values.
 // Values keep their offsets in the range, so a move changes no reference.

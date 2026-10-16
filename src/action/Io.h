@@ -3,7 +3,6 @@
 #include "state/Entity.h"
 
 #include <filesystem>
-#include <variant>
 
 // Scene/document lifecycle: new scene plus the file-IO actions that load and save it.
 namespace action::io {

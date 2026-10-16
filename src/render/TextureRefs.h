@@ -2,7 +2,6 @@
 
 #include "state/Entity.h"
 
-#include <string>
 #include <vector>
 
 struct TextureRef {

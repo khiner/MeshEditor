@@ -5,11 +5,6 @@
 
 #include <fastgltf/types.hpp>
 
-#include <optional>
-#include <string>
-#include <string_view>
-#include <vector>
-
 // The glTF Object Model pointers MeshEditor animates and the channel targets they name.
 namespace gltf {
 // The array a pointer indexes into.

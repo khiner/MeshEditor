@@ -2,7 +2,6 @@
 #define WIRERESOLVE_MSL
 
 // Composite base, incidental, selected, and active coverage in that display order.
-#include "Bindless.metal"
 #include "SceneUBO.metal"
 #include "Varyings.metal"
 #include "gpu/WireCoverage.h"

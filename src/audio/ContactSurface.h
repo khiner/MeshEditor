@@ -1,9 +1,7 @@
 #pragma once
 
 #include <array>
-#include <cstdint>
 #include <optional>
-#include <string>
 #include <vector>
 
 // Tangent-space normal map giving a surface's mesoscale structure, mirroring glTF's normalTextureInfo.

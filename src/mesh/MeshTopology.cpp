@@ -1,8 +1,6 @@
 #include "mesh/MeshTopology.h"
 #include "SortUnique.h"
 #include "mesh/MeshTopologyLayout.h"
-#include <numeric>
-#include <set>
 
 #include "Profile.h"
 #include "gpu/InsetVertexBasis.h"
@@ -17,7 +15,6 @@
 #include "mesh/MeshClone.h"
 #include "mesh/MeshTopologyEdit.h"
 #include "mesh/NormalDeriveGpu.h"
-#include "mesh/PageFootprint.h"
 #include "mesh/ScratchChunks.h"
 #include "mesh/SpatialFaceWork.h"
 #include "mesh/TopologyReadView.h"

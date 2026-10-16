@@ -2,7 +2,6 @@
 
 #include "gpu/PunctualLightType.h"
 #include "gpu/SlotOffset.h"
-#include "gpu/Types.h"
 
 // The GPU light record, uploaded from the PunctualLight component with its spot cone angles as cosines.
 struct LightRecord {

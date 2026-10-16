@@ -1,11 +1,7 @@
-#include "gpu/AABB.h"
 #include "TransformUtils.metal"
-#include "Bindless.metal"
 #include "gpu/ClusterGroup.h"
 #include "Frustum.metal"
-#include "gpu/MeshletInstanceFlag.h"
 #include "gpu/MeshletRouteMode.h"
-#include "gpu/MaterialAlphaMode.h"
 #include "gpu/LodFrontierBlockState.h"
 #include "gpu/LodFrontierEntry.h"
 #include "gpu/LodFrontierState.h"
@@ -14,14 +10,11 @@
 #include "gpu/MeshletClassification.h"
 #include "gpu/MeshletCullBlockState.h"
 #include "gpu/MeshletCullPushConstants.h"
-#include "gpu/MeshletRoute.h"
 #include "MeshletShared.metal"
 #include "gpu/MeshletRouteState.h"
 #include "gpu/MeshletWorkRange.h"
 #include "gpu/MeshletWorkState.h"
-#include "gpu/PrimitiveRecord.h"
 #include "PyramidOcclusion.metal"
-#include "gpu/VisibleMeshlet.h"
 
 constant uint CullBlockSize = 1024u;
 constant uint CullRouteCount = uint(MeshletRoute::Count);

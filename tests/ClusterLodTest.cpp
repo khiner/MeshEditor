@@ -2,8 +2,6 @@
 #include "RunSuites.h"
 #include "meshoptimizer.h"
 
-#include <bit>
-#include <cmath>
 #include <numbers>
 #include <set>
 

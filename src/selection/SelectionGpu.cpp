@@ -1,8 +1,4 @@
 #include "SortUnique.h"
-#include "metal/AutoreleaseScope.h"
-#include "numeric/VectorMath.h"
-#include "numeric/uvec2.h"
-#include "numeric/uvec4.h"
 
 #include "ProcessEvents.h"
 #include "selection/SelectionGpu.h"
@@ -14,8 +10,6 @@
 #include "Profile.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
-#include "gpu/MeshletInstanceFlag.h"
-#include "gpu/MeshletRoute.h"
 #include "gpu/ObjectSelectionPushConstants.h"
 #include "gpu/OverlayDispatch.h"
 #include "gpu/SelectionElementPushConstants.h"
@@ -28,24 +22,16 @@
 #include "metal/RenderTarget.h"
 #include "procedure/Procedure.h"
 #include "render/Encoding.h"
-#include "render/GpuBufferOps.h"
 #include "render/GpuSceneState.h"
 #include "render/Instance.h"
 #include "render/MeshTopologyRepair.h"
 #include "render/PickConstants.h"
 #include "render/Pipelines.h"
 #include "render/RenderTargets.h"
-#include "render/SceneUpdates.h"
 #include "scene/Entity.h"
 #include "selection/SelectionComponents.h"
-#include "viewport/InteractionComponents.h"
-#include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportRenderGpu.h"
-
-#include <bit>
-#include <cmath>
-#include <memory>
 
 namespace {
 // One mesh's change to its selection in the transaction's source domain.

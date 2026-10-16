@@ -1,9 +1,6 @@
 #pragma once
 #include "gpu/LodNodeRefitPushConstants.h"
 #include "mesh/MeshStore.h"
-#include <cstdint>
-#include <span>
-#include <vector>
 
 namespace mtl {
 struct ComputeChain;

@@ -3,7 +3,6 @@
 #include "animation/AnimationData.h"
 #include "state/Entity.h"
 
-#include <optional>
 #include <span>
 
 namespace state {

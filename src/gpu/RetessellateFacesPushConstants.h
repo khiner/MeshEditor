@@ -1,7 +1,6 @@
 #pragma once
 #include "gpu/ElementTables.h"
 #include "gpu/ElementWork.h"
-#include "gpu/SlotOffset.h"
 #include "gpu/Transform.h"
 
 // Sparse face handles and their offsets into reusable polygon scratch, with the record's tables resolving its handles.

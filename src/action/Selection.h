@@ -1,14 +1,9 @@
 #pragma once
 
-#include "numeric/uvec2.h"
-
-#include "numeric/vec2.h"
 #include "selection/BoneSelection.h"
 #include "state/Entity.h"
 #include "viewport/RenderView.h"
 
-#include <memory>
-#include <optional>
 #include <span>
 #include <vector>
 

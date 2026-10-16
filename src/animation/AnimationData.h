@@ -3,10 +3,6 @@
 #include "numeric/quat.h"
 #include "state/Schema.h"
 
-#include <algorithm>
-#include <cstdint>
-#include <cstring>
-#include <string>
 #include <vector>
 
 // How a channel's floats interpolate: Float lerps, Quaternion slerps, and Bool steps between 0 and 1.

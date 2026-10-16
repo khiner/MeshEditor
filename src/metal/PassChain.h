@@ -4,7 +4,6 @@
 
 #include <Metal/MTLCommandBuffer.hpp>
 #include <Metal/MTLCommandEncoder.hpp>
-#include <initializer_list>
 
 namespace mtl {
 // `Before` waits for matching `After` stages already encoded on the queue.

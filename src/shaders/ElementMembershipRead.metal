@@ -3,7 +3,6 @@
 
 #include "Bindless.metal"
 #include "gpu/ElementWorkSeedJob.h"
-#include "gpu/MeshElementBlock.h"
 
 // One 256-lane tile reads one owned block and names its live elements by handle.
 // Selection changes only which blocks and live bits participate.

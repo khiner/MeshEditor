@@ -1,9 +1,5 @@
 #pragma once
 
-#include "numeric/QuaternionMath.h"
-#include "numeric/VectorMath.h"
-#include "numeric/vec2.h"
-
 #include "viewport/CameraView.h"
 
 // Uses the viewport aspect ratio rather than the source camera's aspect ratio.

@@ -1,7 +1,6 @@
 #include "project/store/LiveTrie.h"
 #include "Parallel.h"
 
-#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <format>

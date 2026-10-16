@@ -1,7 +1,5 @@
 #pragma once
 
-#include "numeric/vec2.h"
-
 #include "gpu/SceneViewUBO.h"
 #include "viewport/CameraView.h"
 

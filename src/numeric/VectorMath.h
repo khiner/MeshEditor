@@ -1,10 +1,7 @@
 #pragma once
 
 #include "numeric/VectorOps.h"
-#include "numeric/uvec2.h"
-#include "numeric/uvec4.h"
 #include "numeric/vec2.h"
-#include "numeric/vec4.h"
 
 namespace numeric {
 template<detail::FloatingVector V> constexpr V Mix(V a, V b, typename V::value_type t) { return a * (1 - t) + b * t; }

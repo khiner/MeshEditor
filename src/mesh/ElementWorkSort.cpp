@@ -3,9 +3,7 @@
 
 #include "gpu/ElementWorkSortPushConstants.h"
 #include "gpu/TiledJobPushConstants.h"
-#include "mesh/MeshPipelines.h"
 #include "mesh/TiledJobBatch.h"
-#include "metal/Dispatch.h"
 
 namespace {
 uint32_t TemporaryWords(uint32_t capacity) { return capacity + 16u * ((capacity + 255u) / 256u) + 16u; }

@@ -2,16 +2,10 @@
 #include "metal/AutoreleaseScope.h"
 
 #include <algorithm>
-#include <cassert>
 #include <chrono>
-#include <cmath>
-#include <format>
 #include <fstream>
-#include <memory>
 #include <numeric>
 #include <print>
-#include <string>
-#include <vector>
 
 namespace profile {
 namespace {

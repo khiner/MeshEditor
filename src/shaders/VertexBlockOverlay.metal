@@ -1,10 +1,7 @@
 #ifndef VERTEXBLOCKOVERLAY_MSL
 #define VERTEXBLOCKOVERLAY_MSL
 
-#include "CompactPresent.metal"
 #include "ElementOverlay.metal"
-#include "SceneUBO.metal"
-#include "Varyings.metal"
 #include "VertexBlocks.metal"
 
 using VertexBlockPointOutput = metal::mesh<PointVaryings, void, VertexBlockLanes, VertexBlockLanes, metal::topology::point>;

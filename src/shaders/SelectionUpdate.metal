@@ -1,4 +1,3 @@
-#include "Bindless.metal"
 #include "ConnectivityRead.metal"
 #include "gpu/SelectionAggregate.h"
 #include "gpu/SelectionUpdatePushConstants.h"

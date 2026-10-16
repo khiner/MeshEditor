@@ -1,12 +1,7 @@
 #pragma once
 #include "gpu/MeshElementBlock.h"
 #include <algorithm>
-#include <bit>
 #include <cassert>
-#include <iterator>
-#include <span>
-#include <stdexcept>
-#include <utility>
 
 // Borrow a domain's live values without packing them for CPU consumers, in ascending handle order.
 // A packed soup or a dense set resolves an ordinal by offset.

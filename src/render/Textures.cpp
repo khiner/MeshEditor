@@ -1,14 +1,11 @@
 #include "render/Textures.h"
 #include "metal/AutoreleaseScope.h"
-#include "numeric/VectorMath.h"
 
 #include "File.h"
 #include "gltf/Image.h"
 #include "gpu/CubeFacePushConstants.h"
 #include "gpu/PrefilterPushConstants.h"
 #include "image/ImageDecode.h"
-#include "mesh/MeshStore.h"
-#include "metal/Bindless.h"
 #include "metal/MetalCpp.h"
 #include "project/Assets.h"
 #include "render/GpuBuffers.h"
@@ -20,11 +17,7 @@
 #include "state/Scene.h"
 #include <basisu_transcoder.h>
 
-#include <algorithm>
-#include <array>
 #include <iostream>
-#include <stdexcept>
-#include <unordered_map>
 
 namespace {
 NS::SharedPtr<MTL::SamplerState> MakeLinearSampler(const mtl::Context &ctx, MTL::SamplerAddressMode address_mode) {

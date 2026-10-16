@@ -1,12 +1,9 @@
 #ifndef NORMALINDICATOR_MSL
 #define NORMALINDICATOR_MSL
 
-#include "Bindless.metal"
-#include "ConnectivityRead.metal"
 #include "gpu/MeshletLimit.h"
 #include "MeshletResolve.metal"
 #include "SceneUBO.metal"
-#include "TransformUtils.metal"
 #include "LineQuad.metal"
 #include "VertexBlocks.metal"
 

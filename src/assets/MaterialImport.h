@@ -5,7 +5,6 @@
 #include <expected>
 #include <filesystem>
 #include <span>
-#include <string>
 #include <vector>
 
 struct ObjPlyMaterial;

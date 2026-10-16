@@ -3,7 +3,6 @@
 #include "VectorMath.h"
 #include "numeric/quat.h"
 
-#include <limits>
 #include <numbers>
 
 namespace numeric {

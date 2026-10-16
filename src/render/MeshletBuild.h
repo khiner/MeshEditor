@@ -1,17 +1,7 @@
 #pragma once
 
-#include "Range.h"
-#include "gpu/MeshRecord.h"
-#include "gpu/MeshletRecord.h"
-#include "gpu/PrimitiveRecord.h"
-#include "gpu/Vertex.h"
-#include "mesh/ElementAttributeView.h"
 #include "mesh/MeshStore.h"
 #include "render/ClusterLod.h"
-#include "render/CornerWeldKey.h"
-
-#include <span>
-#include <vector>
 
 static_assert(MaxWeldUvSets == MeshStore::MaxUvSets);
 

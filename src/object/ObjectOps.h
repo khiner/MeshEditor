@@ -7,7 +7,6 @@
 
 #include <expected>
 #include <filesystem>
-#include <span>
 
 struct Armature;
 struct MeshStore;

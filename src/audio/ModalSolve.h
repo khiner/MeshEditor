@@ -5,13 +5,6 @@
 #include "ModalModes.h"
 #include "mesh/TetMeshData.h"
 
-#include <FastFEM/Surface2Modes.h>
-
-#include <expected>
-#include <optional>
-#include <span>
-#include <string>
-
 namespace modal {
 struct SurfaceSolveResult {
     ModalModes Modes;

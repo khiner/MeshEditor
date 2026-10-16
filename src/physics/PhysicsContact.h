@@ -3,7 +3,6 @@
 #include "numeric/vec3.h"
 #include "state/Entity.h"
 
-#include <array>
 #include <vector>
 
 // Enables ContactImpact and SustainedContact reporting for a body.

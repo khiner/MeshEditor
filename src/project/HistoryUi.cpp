@@ -1,28 +1,11 @@
 #include "project/HistoryUi.h"
 
-#include "Field.h"
-#include "Variant.h"
-#include "action/Dispatch.h"
-#include "gpu/PBRMaterial.h"
 #include "project/Project.h"
-#include "scene/Entity.h"
-#include "state/Schema.h"
 #include "ui/CtrlShortcut.h"
 #include "ui/FieldEdit.h"
 #include "ui/TransformEdit.h"
 
-#include <imgui.h>
 #include <imgui_stdlib.h>
-
-#include <algorithm>
-#include <array>
-#include <bit>
-#include <filesystem>
-#include <format>
-#include <memory>
-#include <optional>
-#include <variant>
-#include <vector>
 
 namespace project {
 using namespace ImGui;

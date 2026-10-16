@@ -5,13 +5,7 @@
 #include "gpu/MeshletLimit.h"
 #include "gpu/MeshletPayloads.h"
 #include "mesh/CornerNormalView.h"
-#include "mesh/ElementAttributeView.h"
-#include "numeric/vec3.h"
 #include "render/CornerWeldKey.h"
-
-#include <cstdint>
-#include <span>
-#include <vector>
 
 // The visibility ID encoding and mesh-shader output contract fix these cluster limits.
 inline constexpr uint32_t ClusterLodMaxVertices{uint32_t(MeshletLimit::MaxVertices)};

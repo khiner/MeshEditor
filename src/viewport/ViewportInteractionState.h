@@ -1,8 +1,6 @@
 #pragma once
 
-#include "Field.h"
 #include "gizmo/TransformGizmoTypes.h"
-#include "numeric/VectorMath.h"
 
 // The pivot a transform drag rotates and scales about, recorded by the drag's first update from the selection it started on.
 struct StartPivot {

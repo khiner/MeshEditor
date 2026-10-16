@@ -1,7 +1,5 @@
 #pragma once
 #include "mesh/GeometrySelection.h"
-#include <cstdint>
-#include <vector>
 struct Mesh;
 struct MeshStore;
 struct SymmetrySnapVertex {

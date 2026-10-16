@@ -1,22 +1,9 @@
 #pragma once
 
-#include "Field.h"
 #include "gizmo/TransformGizmoTypes.h"
-#include "gpu/DebugChannel.h"
-#include "numeric/quat.h"
-#include "numeric/vec2.h"
-#include "numeric/vec3.h"
-#include "numeric/vec4.h"
 #include "physics/PhysicsTypes.h"
-#include "state/Entity.h"
 #include "state/Schema.h"
 #include "viewport/ViewportDisplay.h"
-
-#include <array>
-#include <concepts>
-#include <limits>
-#include <optional>
-#include <variant>
 
 // Node parameter enums, whose fixed underlying types make these declarations complete.
 enum class AttributeType : uint32_t;

@@ -2,13 +2,6 @@
 #include "audio/AudioSystem.h"
 #include "audio/WavWriter.h"
 
-#include <boost/ut.hpp>
-
-#include <algorithm>
-#include <cmath>
-#include <filesystem>
-#include <vector>
-
 using namespace boost::ut;
 namespace fs = std::filesystem;
 

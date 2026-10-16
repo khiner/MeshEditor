@@ -1,8 +1,6 @@
 #ifndef VISIBILITY_DECODE_MSL
 #define VISIBILITY_DECODE_MSL
 
-#include "MeshletResolve.metal"
-#include "Varyings.metal"
 #include "gpu/VisibilityShadingPushConstants.h"
 #include "MeshletNonTriangle.metal"
 #include "VertexTransform.metal"

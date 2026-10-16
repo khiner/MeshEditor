@@ -1,10 +1,6 @@
 #pragma once
-#include "Range.h"
 #include "gpu/MeshletOwnersPushConstants.h"
 #include "mesh/MeshStore.h"
-#include <cstdint>
-#include <span>
-#include <vector>
 
 namespace mtl {
 struct ComputeChain;

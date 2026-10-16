@@ -1,7 +1,6 @@
 #pragma once
 
 #include "gpu/AxisThemeColors.h"
-#include "gpu/Types.h"
 #include "gpu/ViewportThemeColors.h"
 
 struct ViewportTheme {

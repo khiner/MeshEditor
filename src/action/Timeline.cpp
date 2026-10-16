@@ -1,6 +1,5 @@
 #include "action/Timeline.h"
 #include "Variant.h"
-#include "animation/AnimationTimeline.h"
 #include "gltf/SourceAssets.h"
 #include "render/LightComponents.h"
 #include "selection/SelectionState.h"
@@ -8,7 +7,6 @@
 #include "viewport/ViewportDisplay.h"
 
 #include <cmath>
-#include <optional>
 
 namespace action::timeline {
 namespace {

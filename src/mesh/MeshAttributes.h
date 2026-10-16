@@ -3,11 +3,7 @@
 #include "gpu/MeshAttributeBit.h"
 #include "mesh/NamedAttribute.h"
 
-#include <numeric/vec2.h>
-#include <numeric/vec3.h>
-#include <numeric/vec4.h>
 #include <optional>
-#include <vector>
 
 using numeric::vec2, numeric::vec3, numeric::vec4;
 

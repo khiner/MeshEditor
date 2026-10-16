@@ -2,19 +2,11 @@
 
 #include "PhysicsUi.h"
 #include "PhysicsSystem.h"
-#include "Variant.h"
 #include "action/Physics.h"
 #include "animation/AnimationTimeline.h"
-#include "numeric/Angles.h"
-#include "numeric/VectorMath.h"
-#include "numeric/vec2.h"
-#include "scene/SceneGraph.h"
 #include "ui/ChoiceCombo.h"
 #include "ui/FieldEdit.h"
 #include "ui/ItemList.h"
-
-#include "state/Scene.h"
-#include <format>
 
 using namespace ImGui;
 

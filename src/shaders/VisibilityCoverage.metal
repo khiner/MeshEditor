@@ -1,10 +1,6 @@
 #ifndef VISIBILITY_COVERAGE_MSL
 #define VISIBILITY_COVERAGE_MSL
 
-#include "Bindless.metal"
-#include "Varyings.metal"
-#include "gpu/MaterialAlphaMode.h"
-#include "SceneUBO.metal"
 #include "VisibilityDecode.metal"
 
 inline float4 VisibilitySampleTexture(

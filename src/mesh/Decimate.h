@@ -1,8 +1,5 @@
 #pragma once
-#include "mesh/GeometrySelection.h"
 #include "mesh/MeshTopology.h"
-#include <optional>
-#include <span>
 struct Mesh;
 struct MeshStore;
 // Plan valid, least-error edge collapses over selected incidence. Positions are

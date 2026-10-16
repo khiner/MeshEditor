@@ -1,8 +1,6 @@
 #pragma once
 
 #include "gpu/EditSelectionStorage.h"
-#include "gpu/SlotOffset.h"
-#include "gpu/Types.h"
 
 // One run of instance slots sharing a deform state in the posed prelude, whose first instance record holds that state.
 struct BoundsEntry {

@@ -5,13 +5,11 @@
 #include "mesh/PageFootprint.h"
 #include "metal/Dispatch.h"
 
-#include "CornerNormalOffset.h"
 #include "Profile.h"
 #include "SortUnique.h"
 #include "project/store/Pages.h"
 
 #include <map>
-#include <numeric>
 
 namespace {
 constexpr uint32_t UniformFaceMode{uint32_t(CornerClassMode::UniformFace)};

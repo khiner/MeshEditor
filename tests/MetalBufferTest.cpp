@@ -1,10 +1,6 @@
 #include "RunSuites.h"
-#include "metal/Buffer.h"
 #include "metal/Dispatch.h"
 #include "metal/MetalCpp.h"
-
-#include <array>
-#include <optional>
 
 using namespace boost::ut;
 
@@ -17,7 +13,6 @@ int main() {
         mtl::Buffer output{buffers, as_bytes(uint32_t{10}), SlotType::Buffer, mtl::BufferLifetime::Workspace};
         NS::Error *error = nullptr;
         const auto library = NS::TransferPtr(ctx.Device->newLibrary(mtl::Str(R"(
-            #include <metal_stdlib>
             kernel void add(device uint &value [[buffer(0)]], constant uint &amount [[buffer(1)]]) {
                 value += amount;
             }

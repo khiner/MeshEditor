@@ -2,10 +2,7 @@
 
 #include "Range.h"
 
-#include <cstdint>
-#include <optional>
 #include <ranges>
-#include <span>
 
 // Derived state, do not mutate directly.
 // In Samples mode, mirrors keys of VertexSamples::PathByVertex.

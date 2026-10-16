@@ -3,10 +3,6 @@
 #include "mesh/MeshPipelines.h"
 #include "metal/Dispatch.h"
 #include "metal/MetalCpp.h"
-#include "numeric/uvec2.h"
-
-#include <algorithm>
-#include <bit>
 
 namespace {
 // Records one dispatch per buffer over its jobs, each job taking `tiles_of(job)` tiles of `width` threads.

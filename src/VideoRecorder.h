@@ -3,7 +3,6 @@
 #include "metal/Image.h"
 
 #include <filesystem>
-#include <span>
 
 struct WavWriter;
 

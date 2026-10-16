@@ -1,7 +1,5 @@
 #pragma once
 
-#include "numeric/vec2.h"
-
 // Clip-space Y points up.
 // Pixel and texture Y point down.
 constexpr vec2 NdcToUv(vec2 ndc) { return {ndc.x * 0.5f + 0.5f, 0.5f - ndc.y * 0.5f}; }

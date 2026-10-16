@@ -1,15 +1,9 @@
 #include "physics/RbpBody.h"
-#include "numeric/VectorMath.h"
 #include "physics/RbpShape.h"
 
 #include "RunSuites.h"
 #include "Solver.h"
 #include "TransformMath.h"
-
-#include <boost/ut.hpp>
-
-#include <array>
-#include <cmath>
 
 using namespace boost::ut;
 using namespace physics;

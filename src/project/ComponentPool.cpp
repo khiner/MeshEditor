@@ -4,9 +4,6 @@
 #include "project/store/RecordPage.h"
 #include "state/Scene.h"
 
-#include <cassert>
-#include <stdexcept>
-
 namespace project {
 namespace {
 std::span<const std::byte> Serialize(const snapshot::SnapshotEntry &encoding, const void *value, std::vector<std::byte> &scratch) {

@@ -7,7 +7,6 @@
 #include "mesh/Mesh.h"
 
 #include <numbers>
-#include <stdexcept>
 
 namespace physics {
 rbp::Index BuildRbpShape(rbp::World &world, const PhysicsShape &source, const Mesh *mesh, vec3 scale, rbp::Pose local) {

@@ -2,18 +2,7 @@
 #include "Parallel.h"
 #include "Profile.h"
 
-#include "mesh/Mesh.h"
-#include "mesh/MeshStore.h"
-#include "numeric/dvec3.h"
 #include "state/Scene.h"
-
-#include <algorithm>
-#include <bit>
-#include <cmath>
-#include <limits>
-#include <stdexcept>
-#include <unordered_map>
-#include <vector>
 
 namespace {
 using Node = MeshletSpatialNode;

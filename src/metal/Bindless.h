@@ -4,9 +4,6 @@
 #include "metal/MetalContext.h"
 #include "metal/Slots.h"
 
-#include <array>
-#include <vector>
-
 namespace MTL {
 class Buffer;
 class Texture;

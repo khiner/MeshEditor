@@ -1,18 +1,9 @@
 #pragma once
 
-#include "numeric/uvec2.h"
-
 #include "Window.h"
-#include "numeric/vec2.h"
 #include "viewport/ViewCameraOps.h"
 
-#include <cstddef>
 #include <filesystem>
-#include <optional>
-#include <span>
-#include <string>
-#include <string_view>
-#include <vector>
 
 namespace workspace {
 using numeric::uvec2;

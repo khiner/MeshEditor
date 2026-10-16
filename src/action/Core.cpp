@@ -1,28 +1,17 @@
 #include "action/Core.h"
-#include "CameraTypes.h"
-#include "Variant.h"
 #include "action/Dispatch.h"
-#include "action/Mesh.h"
-#include "action/ScopeResolve.h"
-#include "action/Updatable.h"
 #include "animation/AnimationData.h"
-#include "armature/ArmatureComponents.h"
 #include "audio/AudioTypes.h"
 #include "audio/ContactModel.h"
 #include "audio/ContactSurface.h"
 #include "audio/ModalModes.h"
 #include "gpu/ViewportTheme.h"
-#include "numeric/VectorMath.h"
 #include "procedure/NodeTheme.h"
 #include "procedure/Procedure.h"
 #include "render/LightComponents.h"
 #include "render/MaterialComponents.h"
-#include "scene/WorldTransform.h"
-#include "state/Scene.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewportInteractionState.h"
-
-#include <algorithm>
 
 namespace action {
 ComponentField UpdatedField(state::TypeKey key, uint16_t offset) {

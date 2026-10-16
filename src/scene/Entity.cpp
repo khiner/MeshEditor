@@ -6,7 +6,6 @@
 
 #include <charconv>
 #include <format>
-#include <unordered_map>
 
 namespace {
 struct NameHash {

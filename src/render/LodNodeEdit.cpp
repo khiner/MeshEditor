@@ -1,14 +1,10 @@
 #include "render/LodNodeEdit.h"
 #include "Profile.h"
 #include "mesh/MeshPipelines.h"
-#include "mesh/MeshStore.h"
 #include "metal/Dispatch.h"
 #include "render/ClusterLod.h"
 #include "state/Scene.h"
 #include <map>
-#include <numeric>
-#include <optional>
-#include <set>
 
 namespace {
 constexpr uint32_t MaxLeafRecords{2u * ClusterLodSpanLeafRecords}, MaxNodeChildren{2u * ClusterLodSpanNodeWidth};

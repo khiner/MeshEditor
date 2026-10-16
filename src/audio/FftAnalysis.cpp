@@ -1,7 +1,6 @@
 #include "audio/FftAnalysis.h"
 #include "audio/Fft.h"
 #include <algorithm>
-#include <cmath>
 using std::ranges::nth_element;
 std::optional<float> EstimateFundamentalFrequency(const FFTData &fft, uint32_t sample_rate) {
     const size_t n_bins = fft.Bins.size();

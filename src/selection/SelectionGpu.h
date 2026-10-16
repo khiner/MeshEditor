@@ -1,20 +1,11 @@
 #pragma once
 
-#include "numeric/uvec2.h"
-
 #include "gpu/EditSelectionOperation.h"
 #include "gpu/EditSelectionSummary.h"
 #include "gpu/EditSharpnessOperation.h"
-#include "gpu/Element.h"
 #include "metal/Bindless.h"
-#include "numeric/vec2.h"
 
 #include "state/Entity.h"
-
-#include <optional>
-#include <span>
-#include <utility>
-#include <vector>
 
 struct ElementRange;
 struct MeshStore;

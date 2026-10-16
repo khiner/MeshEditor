@@ -1,7 +1,5 @@
 #pragma once
-#include "mesh/GeometrySelection.h"
 #include "mesh/MeshTopology.h"
-#include <optional>
 
 struct Mesh;
 struct MeshStore;

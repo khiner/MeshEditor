@@ -4,8 +4,6 @@
 #include "gpu/MeshAttributeBit.h"
 #include "gpu/PBRMaterial.h"
 
-#include <algorithm>
-
 // Preserve declared material inputs even when a viewport disables an extension.
 inline uint32_t MaterialLodAttributes(const PBRMaterial &material, DebugChannel debug, bool authored_tangents) {
     uint32_t attributes = MeshAttributeBit_Normal | MeshAttributeBit_Color0;

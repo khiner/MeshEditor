@@ -1,4 +1,3 @@
-#include "Bindless.metal"
 #include "ElementWorkShared.metal"
 #include "RadixSort.metal"
 #include "gpu/VertexFanBuildJob.h"

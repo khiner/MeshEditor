@@ -7,7 +7,6 @@
 // Each edge links its lowest forward halfedge to its lowest reverse halfedge and leaves every other incidence unlinked.
 // Edge ranks follow compact work order.
 // An explicit map preserves caller-owned edge handles.
-#include "Bindless.metal"
 #include "BlockScan.metal"
 #include "ConnectivityRead.metal"
 #include "ElementWorkShared.metal"

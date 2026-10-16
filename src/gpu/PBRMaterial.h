@@ -7,9 +7,7 @@
 #include "gpu/MaterialAlphaMode.h"
 #include "gpu/Sheen.h"
 #include "gpu/Specular.h"
-#include "gpu/TextureInfo.h"
 #include "gpu/Transmission.h"
-#include "gpu/Types.h"
 #include "gpu/Volume.h"
 
 struct PBRMaterial {
@@ -41,7 +39,6 @@ struct PBRMaterial {
     Iridescence Iridescence DEFAULT();
 };
 #ifndef __METAL_VERSION__
-#include "Field.h"
 template<> inline constexpr FieldSpec Spec<PBRMaterial, "MetallicFactor">{.Min = 0, .Max = 1};
 template<> inline constexpr FieldSpec Spec<PBRMaterial, "RoughnessFactor">{.Min = 0, .Max = 1};
 template<> inline constexpr FieldSpec Spec<PBRMaterial, "NormalScale">{.Min = -2, .Max = 2};

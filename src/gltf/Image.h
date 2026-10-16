@@ -2,7 +2,6 @@
 
 #include "gltf/MimeType.h"
 
-#include <string>
 #include <vector>
 
 namespace gltf {

@@ -1,6 +1,5 @@
 #pragma once
 #include "gpu/ElementWork.h"
-#include "gpu/SlotOffset.h"
 
 struct ElementWorkSortJob {
     ElementWork Work DEFAULT();

@@ -1,13 +1,9 @@
 #pragma once
 
-#include "gpu/ElementHandleRange.h"
-#include "gpu/ElementWork.h"
-#include "gpu/MeshTopologyOp.h"
 #include "mesh/ConnectivityEditWork.h"
 #include "mesh/MeshClosure.h"
 #include "mesh/MeshTopology.h"
 #include "mesh/TopologyOutputHandles.h"
-#include "metal/BufferArena.h"
 
 namespace mtl {
 struct ComputeChain;

@@ -6,7 +6,6 @@
 #include <map>
 #include <random>
 #include <set>
-#include <type_traits>
 
 using namespace boost::ut;
 

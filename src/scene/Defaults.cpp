@@ -1,6 +1,5 @@
 #include "scene/Defaults.h"
 #include "numeric/Angles.h"
-#include "numeric/VectorMath.h"
 
 using numeric::Radians;
 

@@ -4,13 +4,10 @@
 
 // Manifold's boolean as GPU passes: a radix tree per record, edge and triangle crossings by shadow predicates with symbolic perturbation,
 // winding numbers flooded through the components the crossings leave, and each kept triangle's polygon assembled and retriangulated.
-#include "Bindless.metal"
-#include "BlockScan.metal"
 #include "ConnectivityRead.metal"
 #include "ElementWorkShared.metal"
 #include "RadixSort.metal"
 #include "MeshBooleanShared.metal"
-#include "gpu/Vertex.h"
 
 constant uint BoolRealOut = 0x80000000u; // A loop node whose edge to its next node is a polygon halfedge
 constant uint BoolNoCollision = 0xffffffffu;

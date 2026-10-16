@@ -3,8 +3,6 @@
 #include "image/ImageDecode.h"
 #include "state/Entity.h"
 
-#include <optional>
-
 namespace gltf {
 struct NormalMapRef {
     uint32_t Image{0}; // Index into SourceAssets::Images.

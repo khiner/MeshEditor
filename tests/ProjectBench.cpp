@@ -1,20 +1,10 @@
 #include "Paths.h"
 #include "RunSuites.h"
 #include "TestPaths.h"
-#include "action/Build.h"
-#include "action/Emit.h"
 #include "editor/Engine.h"
 #include "mesh/MeshStore.h"
-#include "metal/Buffer.h"
-#include "project/Project.h"
-#include "project/store/Pages.h"
 #include "scene/Entity.h"
 #include "viewport/Viewport.h"
-
-#include <algorithm>
-#include <chrono>
-#include <cstdio>
-#include <cstring>
 
 using boost::ut::expect;
 

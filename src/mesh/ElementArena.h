@@ -1,13 +1,9 @@
 #pragma once
 
-#include "Range.h"
-#include "SlottedRange.h"
-#include "gpu/BindlessBindings.h"
 #include "gpu/ElementHandleRange.h"
 #include "gpu/ElementWork.h"
 #include "gpu/MeshElementBlock.h"
 #include "gpu/MeshElementSet.h"
-#include "metal/Buffer.h"
 #include "metal/BufferArena.h"
 
 #include <set>

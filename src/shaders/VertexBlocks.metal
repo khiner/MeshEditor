@@ -1,14 +1,11 @@
 #ifndef VERTEXBLOCKS_MSL
 #define VERTEXBLOCKS_MSL
 
-#include "Bindless.metal"
 #include "Frustum.metal"
 #include "MeshletShared.metal"
 #include "PyramidOcclusion.metal"
 #include "TransformUtils.metal"
 #include "VertexBounds.metal"
-#include "gpu/InstanceRecord.h"
-#include "gpu/MeshElementBlock.h"
 #include "gpu/SelectionAggregate.h"
 #include "gpu/VertexBlockPushConstants.h"
 #include "EditSelection.metal"

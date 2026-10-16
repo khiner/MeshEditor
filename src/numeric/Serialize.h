@@ -9,8 +9,6 @@
 #include "numeric/mat4.h"
 #include "numeric/quat.h"
 #include "numeric/vec2.h"
-#include "numeric/vec3.h"
-#include "numeric/vec4.h"
 
 #include <zpp_bits.h>
 

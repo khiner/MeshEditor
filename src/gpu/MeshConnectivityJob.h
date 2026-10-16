@@ -2,8 +2,6 @@
 #include "gpu/ConnectivityRef.h"
 #include "gpu/ElementHandleRange.h"
 #include "gpu/ElementWork.h"
-#include "gpu/SlotOffset.h"
-#include "gpu/Types.h"
 // Defines a connectivity rebuild's work and scratch layout.
 // Work ordinals index scratch.
 // Every persistent reference is a record-relative handle.

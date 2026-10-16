@@ -1,20 +1,9 @@
 #include "SurfaceAudio.h"
-#include "audio/AudioUi.h"
 
-#include "TransformMath.h"
 #include "action/Action.h"
 #include "audio/ContactScene.h"
-#include "audio/ModalAudio.h"
-#include "audio/ModalModes.h"
-#include "scene/WorldTransform.h"
 #include "ui/ChoiceCombo.h"
 #include "ui/FieldEdit.h"
-
-#include "state/Scene.h"
-
-#include <atomic>
-#include <bit>
-#include <optional>
 
 #include "ui/HelpMarker.h" // depends on imgui
 

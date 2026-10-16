@@ -1,6 +1,5 @@
 #pragma once
 
-#include "gpu/ElementWork.h"
 #include "gpu/NormalDeriveEntry.h"
 #include "gpu/NormalDerivePushConstants.h"
 #include "metal/BufferArena.h"

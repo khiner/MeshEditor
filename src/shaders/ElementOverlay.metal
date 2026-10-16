@@ -4,7 +4,6 @@
 #include "LineQuad.metal"
 #include "EditSelection.metal"
 #include "SceneUBO.metal"
-#include "Varyings.metal"
 
 inline float4 EditEdgeColor(const thread Scene &scene, uint state, bool direct_selection) {
     constant ViewportThemeColors &colors = scene.Theme.Colors;

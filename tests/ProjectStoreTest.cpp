@@ -6,11 +6,8 @@
 #include "TestPaths.h"
 
 #include <csignal>
-#include <cstdio>
-#include <fstream>
 #include <map>
 #include <random>
-#include <sys/resource.h>
 
 using boost::ut::expect;
 

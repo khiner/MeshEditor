@@ -1,10 +1,6 @@
 #pragma once
 
-#include "gpu/ElementWork.h"
-#include "gpu/MeshRecord.h"
 #include "mesh/MeshStore.h"
-#include "state/Entity.h"
-#include <span>
 
 struct GpuBuffers;
 namespace mtl {

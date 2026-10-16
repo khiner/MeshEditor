@@ -4,13 +4,8 @@
 #include "metal/MslSource.h"
 
 #include <algorithm>
-#include <array>
-#include <cmath>
-#include <numeric>
 #include <print>
 #include <random>
-#include <stdexcept>
-#include <vector>
 
 struct alignas(16) Layer {
     std::array<float, 4> Color;

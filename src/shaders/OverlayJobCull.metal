@@ -6,8 +6,6 @@
 #include "gpu/MeshDispatchArgs.h"
 #include "gpu/OverlayJob.h"
 #include "gpu/OverlayJobCullPushConstants.h"
-#include "gpu/OverlayJobKind.h"
-#include "SceneUBO.metal"
 
 constant uint OverlayCullBlockSize = 256u;
 constant uint OverlayCullSimdGroups = OverlayCullBlockSize / 32u;

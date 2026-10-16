@@ -1,10 +1,7 @@
 #pragma once
 
 #include "gpu/ConnectivityRef.h"
-#include "gpu/ElementTables.h"
 #include "gpu/ElementWork.h"
-#include "gpu/SlotOffset.h"
-#include "gpu/Types.h"
 
 // Closure passes over one mesh's connectivity, reading finished input work by ordinal below InputBound.
 // Vertex input (domain 0) marks its fans, face input (domain 2) marks its loops, and edge input (domain 3) marks its endpoints.

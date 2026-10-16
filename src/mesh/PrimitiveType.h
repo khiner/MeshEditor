@@ -4,7 +4,6 @@
 #include "numeric/vec2.h"
 #include "numeric/vec3.h"
 
-#include <cstdint>
 #include <string>
 #include <variant>
 

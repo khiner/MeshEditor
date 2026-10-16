@@ -8,8 +8,6 @@
 #include "mesh/MeshStore.h"
 #include "mesh/MeshTopology.h"
 #include "metal/Dispatch.h"
-#include "numeric/VectorMath.h"
-#include "render/ElementWorkOps.h"
 #include "state/Scene.h"
 
 namespace {

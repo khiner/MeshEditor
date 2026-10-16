@@ -1,13 +1,6 @@
 #pragma once
 
-#include "Range.h"
 #include "metal/Bindless.h"
-
-#include <deque>
-#include <memory>
-#include <span>
-#include <string>
-#include <vector>
 
 namespace store {
 struct History;

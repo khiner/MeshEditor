@@ -1,14 +1,9 @@
-#include "numeric/VectorMath.h"
-#include "numeric/vec2.h"
-
+#include "physics/ColliderUpdate.h"
 #include "Variant.h"
-#include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
-#include "physics/ColliderUpdate.h"
 #include "physics/PhysicsTypes.h"
 #include "scene/Entity.h"
-#include "scene/WorldTransform.h"
 #include "state/Scene.h"
 using numeric::Max;
 

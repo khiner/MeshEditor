@@ -1,14 +1,10 @@
 #pragma once
 
-#include "numeric/dvec3.h"
-
 #include "action/Core.h"
 #include "audio/AudioTypes.h"
 #include "audio/ContactModel.h"
 #include "audio/ContactSurface.h"
 #include "audio/RealImpactComponents.h"
-
-#include <filesystem>
 
 namespace action::audio {
 using numeric::dvec3;

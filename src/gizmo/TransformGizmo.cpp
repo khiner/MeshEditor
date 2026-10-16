@@ -1,10 +1,7 @@
-#include "numeric/vec2.h"
-
 #include "gizmo/TransformGizmo.h"
 
 #include "gizmo/GizmoInteraction.h"
 #include "numeric/MatrixMath.h"
-#include "numeric/vec4.h"
 #include "viewport/ScreenSpace.h"
 #include "viewport/ViewCamera.h"
 
@@ -13,11 +10,7 @@
 #include "ui/AxisColors.h" // Must be after imgui.h
 #include "ui/DashedLine.h"
 
-#include "state/Scene.h"
-
-#include <algorithm>
 #include <format>
-#include <numbers>
 #include <span>
 
 using numeric::Clamp, numeric::Max, numeric::Sign;

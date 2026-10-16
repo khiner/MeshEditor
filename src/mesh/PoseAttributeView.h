@@ -1,6 +1,5 @@
 #pragma once
 #include "gpu/PoseAttributeNode.h"
-#include <cassert>
 #include <span>
 
 template<typename T>

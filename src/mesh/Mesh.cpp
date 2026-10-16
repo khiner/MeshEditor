@@ -1,6 +1,3 @@
-#include "numeric/VectorMath.h"
-
-#include "GeometrySelection.h"
 #include "Mesh.h"
 
 #include "MeshComponents.h"

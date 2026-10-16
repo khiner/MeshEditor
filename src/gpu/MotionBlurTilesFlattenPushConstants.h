@@ -1,6 +1,5 @@
 #pragma once
 
-#include "gpu/Types.h"
 #include "gpu/VisibilityShadingPushConstants.h"
 
 struct MotionBlurTilesFlattenPushConstants {

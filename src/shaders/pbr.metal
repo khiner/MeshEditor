@@ -2,12 +2,6 @@
 #define PBR_MSL
 
 // Adapted from KhronosGroup/glTF-Sample-Renderer.
-#include "Bindless.metal"
-#include "SceneUBO.metal"
-#include "Varyings.metal"
-#include "gpu/DebugChannel.h"
-#include "gpu/MaterialAlphaMode.h"
-#include "brdf.metal"
 #include "tonemapping.metal"
 #include "punctual.metal"
 #include "ibl.metal"

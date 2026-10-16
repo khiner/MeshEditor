@@ -1,7 +1,6 @@
 #include "ConnectivityRead.metal"
 #include "ElementWorkShared.metal"
 #include "gpu/VertexPositionEditPushConstants.h"
-#include "gpu/Vertex.h"
 #include "EditTransform.metal"
 
 // The edited record's values at its handles.

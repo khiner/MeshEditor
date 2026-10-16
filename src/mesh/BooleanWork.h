@@ -2,8 +2,6 @@
 
 #include "gpu/SlotOffset.h"
 
-#include <cstdint>
-
 struct MeshClosure;
 struct MeshTopologyTask;
 namespace mtl {

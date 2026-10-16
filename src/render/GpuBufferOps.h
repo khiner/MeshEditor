@@ -1,13 +1,7 @@
 #pragma once
-#include "mesh/ElementAttributeView.h"
 #include "mesh/MeshStore.h"
 
-#include "Range.h"
 #include "gpu/PBRMaterial.h"
-
-#include <span>
-
-#include "state/Entity.h"
 
 namespace mtl {
 struct BufferContext;

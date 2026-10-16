@@ -2,29 +2,15 @@
 #include "RunSuites.h"
 #include "TestMeshOrdinals.h"
 #include "TopologyCases.h"
-#include "mesh/BeautifyFaces.h"
-#include "mesh/Decimate.h"
 #include "mesh/GeometryRefresh.h"
-#include "mesh/Mesh.h"
 #include "mesh/MeshClone.h"
 #include "mesh/MeshCreate.h"
-#include "mesh/MeshPipelines.h"
-#include "mesh/MeshTopology.h"
 #include "mesh/Primitives.h"
 #include "mesh/SharpnessOperations.h"
 #include "mesh/SpatialFaceWork.h"
-#include "mesh/TopologyOperations.h"
 #include "mesh/Unsubdivide.h"
-#include "metal/Dispatch.h"
-#include "metal/MetalCpp.h"
-#include "metal/Shader.h"
 #include "state/Scene.h"
-#include <chrono>
-#include <cmath>
 #include <numbers>
-#include <numeric>
-#include <set>
-#include <stdexcept>
 
 using namespace boost::ut;
 

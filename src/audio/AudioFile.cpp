@@ -2,12 +2,8 @@
 #include "CoreAudioTypes.h"
 #include "WavWriter.h"
 
-#include <algorithm>
-#include <array>
 #include <cmath>
-#include <format>
 #include <iostream>
-#include <limits>
 
 namespace {
 CFURLRef FileUrl(const std::filesystem::path &path) {

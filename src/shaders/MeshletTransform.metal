@@ -1,4 +1,3 @@
-#include "MeshletResolve.metal"
 #include "gpu/MeshletLimit.h"
 #include "MeshletNonTriangle.metal"
 #include "gpu/MeshVertexConstant.h"

@@ -1,6 +1,5 @@
 #pragma once
 #include "gpu/Element.h"
-#include <cstdint>
 #include <span>
 namespace state {
 struct Scene;

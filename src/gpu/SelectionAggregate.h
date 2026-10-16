@@ -1,7 +1,6 @@
 #pragma once
 
 #include "gpu/AABB.h"
-#include "gpu/Types.h"
 
 // Aggregate flag bits.
 // Selected bits cover selected edges and faces, and the edges incident to selected vertices.

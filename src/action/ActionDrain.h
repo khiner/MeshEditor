@@ -1,7 +1,6 @@
 #pragma once
 
 #include "action/Action.h"
-#include "action/Emit.h"
 
 namespace action {
 // Contains the first user action, all system actions, and the standalone commit and cancel requests for a frame.

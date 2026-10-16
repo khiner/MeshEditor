@@ -2,7 +2,6 @@
 
 #include "numeric/vec3.h"
 
-#include <cstdint>
 #include <vector>
 
 using numeric::vec3;

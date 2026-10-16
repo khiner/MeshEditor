@@ -1,7 +1,6 @@
 #pragma once
 
 #include "gpu/ElementSelectQuery.h"
-#include "gpu/Types.h"
 
 struct SelectionElementPushConstants {
     ElementSelectQuery Query DEFAULT();

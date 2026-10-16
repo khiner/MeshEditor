@@ -3,19 +3,9 @@
 #include "AudioSystem.h"
 #include "CoreAudioTypes.h"
 
-#include "state/Scene.h"
-
 #include <algorithm>
-#include <array>
 #include <cmath>
-#include <cstddef>
 #include <format>
-#include <ranges>
-#include <stdexcept>
-
-#include <AudioUnit/AudioUnit.h>
-#include <CoreAudio/CoreAudio.h>
-#include <os/workgroup.h>
 
 static_assert(std::atomic<float>::is_always_lock_free, "The render callback requires lock-free gain updates.");
 

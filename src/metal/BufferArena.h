@@ -1,12 +1,8 @@
 #pragma once
 
-#include "RangeAllocator.h"
 #include "SlottedRange.h"
 #include "metal/Buffer.h"
 #include "project/store/History.h"
-#include "project/store/Records.h"
-
-#include <utility>
 
 template<typename T>
 struct BufferArena {

@@ -1,13 +1,10 @@
 #pragma once
 
-#include "numeric/vec2.h"
-
 #include "gpu/Element.h"
 #include "gpu/PBRMaterial.h"
 
 #include "CameraTypes.h"
 #include "action/Core.h"
-#include "mesh/MeshData.h"
 #include "mesh/PrimitiveType.h"
 #include "object/ObjectCreateInfo.h"
 #include "render/LightComponents.h"

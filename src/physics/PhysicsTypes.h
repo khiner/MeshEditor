@@ -6,7 +6,6 @@
 #include "numeric/vec3.h"
 #include "state/Entity.h"
 
-#include <optional>
 #include <vector>
 
 using numeric::quat, numeric::vec3;

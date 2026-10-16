@@ -1,6 +1,5 @@
 #pragma once
 
-#include "gpu/BindlessBindings.h"
 #include "gpu/ElementSelectQuery.h"
 #include "metal/Buffer.h"
 

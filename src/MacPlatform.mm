@@ -1,14 +1,9 @@
 #include "MacPlatform.h"
 
 #include "Paths.h"
-#include "metal/MetalCpp.h"
 
 #import <AppKit/AppKit.h>
 #import <QuartzCore/CAMetalLayer.h>
-
-#include <stdexcept>
-#include <string>
-#include <utility>
 
 @class MeshEditorView;
 

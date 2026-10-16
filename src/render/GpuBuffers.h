@@ -1,10 +1,5 @@
 #pragma once
 
-#include "Range.h"
-#include "RangeAllocator.h"
-#include "SlottedRange.h"
-#include "gpu/AABB.h"
-#include "gpu/BindlessBindings.h"
 #include "gpu/BoundsEntry.h"
 #include "gpu/InstanceRecord.h"
 #include "gpu/LightRecord.h"
@@ -14,29 +9,19 @@
 #include "gpu/MeshDispatchArgs.h"
 #include "gpu/MeshletCullBlockState.h"
 #include "gpu/MeshletInstanceFlag.h"
-#include "gpu/MeshletRoute.h"
 #include "gpu/MeshletRouteState.h"
 #include "gpu/MeshletWorkRange.h"
 #include "gpu/MeshletWorkState.h"
 #include "gpu/NormalDeriveEntry.h"
 #include "gpu/OverlayJob.h"
 #include "gpu/PBRMaterial.h"
-#include "gpu/SceneViewUBO.h"
 #include "gpu/Transform.h"
-#include "gpu/Vertex.h"
 #include "gpu/ViewportTheme.h"
 #include "gpu/VisibleMeshlet.h"
 #include "gpu/WorkspaceLights.h"
-#include "metal/Buffer.h"
-#include "metal/BufferArena.h"
 #include "render/PoseAttributeStore.h"
 #include "render/VertexBoundsStore.h"
 #include "viewport/RenderView.h"
-
-#include <algorithm>
-#include <array>
-#include <bit>
-#include <optional>
 
 // Per-instance GPU data behind one RangeAllocator, so every buffer shares the same instance offsets.
 // A slot without an instance holds a zero state, so a pass over every slot skips it.

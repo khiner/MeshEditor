@@ -1,34 +1,18 @@
 #include "procedure/NodeEditor.h"
 
-#include "Field.h"
-#include "action/Build.h"
-#include "action/Emit.h"
-#include "action/Nodes.h"
 #include "action/View.h"
 #include "mesh/Mesh.h"
-#include "mesh/MeshComponents.h"
 #include "procedure/NodeTheme.h"
 #include "procedure/Procedure.h"
 #include "render/Instance.h"
-#include "scene/Entity.h"
-#include "state/Scene.h"
 #include "ui/ChoiceCombo.h"
 #include "ui/FieldEdit.h"
 #include "ui/TransformEdit.h"
 #include "viewport/FrameState.h"
 #include "viewport/InteractionComponents.h"
 
-#include <imgui.h>
-
-#include <algorithm>
-#include <array>
 #include <bit>
-#include <cfloat>
-#include <cmath>
-#include <cstddef>
 #include <numeric>
-#include <string>
-#include <vector>
 
 namespace procedure {
 using namespace ImGui;

@@ -1,18 +1,12 @@
 #pragma once
 
-#include "numeric/uvec2.h"
-
 #include "gpu/DebugChannel.h"
 #include "gpu/InteractionMode.h"
-#include "numeric/vec2.h"
-#include "numeric/vec4.h"
 
 #include "state/Entity.h"
 
 #include <algorithm>
-#include <optional>
 #include <string>
-#include <utility>
 
 enum class ViewportShadingMode : uint8_t {
     Wireframe,

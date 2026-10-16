@@ -5,8 +5,6 @@
 #include <Metal/MTLSampler.hpp>
 #include <Metal/MTLTexture.hpp>
 #include <bit>
-#include <cstdint>
-#include <optional>
 #include <span>
 
 namespace mtl {

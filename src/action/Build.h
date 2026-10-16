@@ -2,8 +2,6 @@
 
 #include "action/Updatable.h"
 
-#include <type_traits>
-
 // Typed constructors for Update and PatchFields.
 namespace action {
 // Ms... walks from the component down to the leaf field being written.

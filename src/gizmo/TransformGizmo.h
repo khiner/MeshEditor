@@ -1,13 +1,9 @@
 #pragma once
 
-#include "numeric/vec2.h"
-
 #include <optional>
 
 #include "gizmo/TransformGizmoTypes.h"
 #include "numeric/rect.h"
-
-#include <string_view>
 
 struct ViewCamera;
 struct GizmoInteraction;

@@ -1,17 +1,7 @@
-#include "metal/MetalContext.h"
-#include "metal/MetalCpp.h"
-#include "metal/Shader.h"
 #include "mesh/MeshPipelines.h"
 #include "render/Pipelines.h"
 
-#include <cstdio>
-#include <cstdint>
-#include <filesystem>
 #include <fstream>
-#include <stdexcept>
-#include <string>
-
-#include <unistd.h>
 
 int main(int argc, char **argv) {
     if (argc != 4) {

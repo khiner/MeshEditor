@@ -1,7 +1,6 @@
 #pragma once
 
 #include "gpu/MeshElementSet.h"
-#include "gpu/Types.h"
 
 struct MeshletCullPushConstants {
     uint32_t InstanceCount DEFAULT();

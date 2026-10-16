@@ -1,8 +1,6 @@
 #pragma once
 
 #include "gpu/ConnectivityRef.h"
-#include "gpu/SlotOffset.h"
-#include "gpu/Types.h"
 
 // Selection domains are vertex, edge and face, in that order.
 // Seeds and marks also address the halfedge domain.

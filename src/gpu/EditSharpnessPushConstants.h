@@ -2,10 +2,7 @@
 #include "gpu/ConnectivityRef.h"
 
 #include "gpu/EditSharpnessOperation.h"
-#include "gpu/Element.h"
 #include "gpu/ElementWork.h"
-#include "gpu/SlotOffset.h"
-#include "gpu/Types.h"
 
 struct EditSharpnessPushConstants {
     ElementWork VertexSelection DEFAULT();

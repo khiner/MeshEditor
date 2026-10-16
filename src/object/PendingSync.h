@@ -2,8 +2,6 @@
 
 #include "Range.h"
 #include "state/Scene.h"
-#include <cstdint>
-#include <vector>
 
 // Data owners affected by object destruction, resolved against survivors after the frame's actions.
 // Destroyed components queue their store entries and buffer ranges, released together in the settle pass.

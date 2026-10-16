@@ -1,17 +1,10 @@
 #include "animation/AnimationTimeline.h"
 #include "action/Build.h"
-#include "animation/AnimationData.h"
 #include "animation/TimelineUi.h"
-#include "render/SvgResource.h"
 #include "viewport/ViewportIcons.h"
 
-#include "imgui.h"
 #include "ui/CtrlShortcut.h"
 
-#include "state/Scene.h"
-
-#include <algorithm>
-#include <cstdio>
 #include <format>
 
 using namespace ImGui;

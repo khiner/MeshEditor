@@ -1,7 +1,5 @@
 #pragma once
 
-#include "numeric/uvec2.h"
-
 #include "VideoRecorder.h"
 #include "audio/AudioTypes.h"
 

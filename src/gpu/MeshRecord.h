@@ -2,8 +2,6 @@
 #include "gpu/ConnectivityRef.h"
 #include "gpu/ElementLayers.h"
 #include "gpu/MeshDisplay.h"
-#include "gpu/SlotOffset.h"
-#include "gpu/Types.h"
 
 // Stores one mesh's display state and arena locations once, shared by every primitive and instance that draws it.
 // The connectivity's tables resolve the mesh's record-relative handles to arena addresses.

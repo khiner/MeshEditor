@@ -5,7 +5,6 @@
 // Each output line is two adjacent output corners, the first at the line's end and the second at its start, as a line source writes them.
 // A cut line emits its cut vertices and the pieces between them.
 // Any other line emits the one line it leaves: itself, its merged ends, or a dissolve chain's join, and a joining operator keeps one line per pair of ends.
-#include "MeshTopologyContext.metal"
 #include "MeshTopologySubdivide.metal"
 
 // The one output line a source line leaves, between the source-local vertices whose outputs it joins.

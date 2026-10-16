@@ -1,15 +1,9 @@
 #pragma once
 
-#include "gpu/VisibilityShadingPushConstants.h"
-#include "metal/Bindless.h"
-#include "metal/PassChain.h"
 #include "metal/Shader.h"
 #include "render/GpuBuffers.h"
-#include "render/Pipelines.h"
 
 #include <Metal/MTLComputeCommandEncoder.hpp>
-#include <Metal/MTLRenderCommandEncoder.hpp>
-#include <cassert>
 #include <print>
 
 namespace encode {

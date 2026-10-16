@@ -1,9 +1,7 @@
 #pragma once
 
-#include <cstdint>
 #include <expected>
 #include <span>
-#include <string>
 #include <vector>
 
 // Encode tightly-packed RGBA8 pixels. PNG and WebP are lossless. JPEG honors `quality` (1–100).

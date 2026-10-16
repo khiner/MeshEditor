@@ -5,7 +5,6 @@
 #include "mesh/MeshComponents.h"
 #include "render/GpuBuffers.h"
 #include "scene/Entity.h"
-#include "scene/SceneGraphOps.h"
 
 namespace {
 // Points the parent's child list at `first_child`.

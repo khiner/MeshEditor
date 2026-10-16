@@ -1,12 +1,6 @@
 #include "render/GpuBuffers.h"
 #include "render/MeshletBuild.h"
-#include "render/MeshletBuildGpu.h"
 #include "state/Scene.h"
-
-#include "mesh/Mesh.h"
-#include "mesh/MeshStore.h"
-
-#include <utility>
 
 // The mesh's shared arena locations and table runs.
 // An extras record draws its bone or joint faces with the instance transforms, naming its vertex handles through its vertex table.

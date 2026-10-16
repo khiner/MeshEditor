@@ -2,8 +2,6 @@
 #include "RunSuites.h"
 #include "metal/MetalCpp.h"
 
-#include <numeric>
-
 using namespace boost::ut;
 
 int main() {

@@ -6,11 +6,6 @@
 #include "mesh/MeshData.h"
 #include "mesh/TopologyOperations.h"
 
-#include <algorithm>
-#include <array>
-#include <optional>
-#include <string_view>
-
 // The topology operator table over a patchwork region, which the headless kernel tests and the procedure node tests share.
 namespace test {
 // A 4x4 grid with a nonplanar cell, a concave cell, a triangulated cell and a short edge, then an isolated vertex and a loose edge.

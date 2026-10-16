@@ -2,7 +2,6 @@
 #define MESHBOOLEANSHARED_MSL
 
 // A boolean job's runs, read through any context with Run<T>(offset) over the boolean's scratch storage.
-#include "Bindless.metal"
 #include "gpu/MeshBoolean.h"
 
 inline uint BoolVertexCount(BooleanJob job) { return job.Vertices[0] + job.Vertices[1]; }

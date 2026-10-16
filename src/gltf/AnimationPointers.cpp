@@ -1,6 +1,3 @@
-#include "numeric/VectorMath.h"
-#include "numeric/vec2.h"
-
 #include "gltf/AnimationPointers.h"
 
 #include "CameraTypes.h"

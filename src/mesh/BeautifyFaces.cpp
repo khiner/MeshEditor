@@ -1,15 +1,9 @@
 #include "mesh/BeautifyFaces.h"
 #include "Profile.h"
-#include "mesh/Mesh.h"
 #include "mesh/MeshEdgeUsers.h"
 #include "numeric/VectorMath.h"
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <limits>
 #include <numbers>
 #include <set>
-#include <unordered_map>
 
 namespace {
 constexpr float NoCost = std::numeric_limits<float>::max();

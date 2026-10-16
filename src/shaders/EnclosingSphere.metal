@@ -1,6 +1,5 @@
 #ifndef ENCLOSINGSPHERE_MSL
 #define ENCLOSINGSPHERE_MSL
-#include "Bindless.metal"
 #include "gpu/MeshletRecord.h"
 
 // Ritter expansion and the AABB-centred sphere both enclose the cluster's vertices.

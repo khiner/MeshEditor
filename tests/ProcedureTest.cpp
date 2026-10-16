@@ -2,46 +2,28 @@
 #include "TestMeshOrdinals.h"
 #include "TestPaths.h"
 #include "TopologyCases.h"
-#include "action/ActionDrain.h"
 #include "action/Build.h"
-#include "action/Emit.h"
 #include "action/Errors.h"
 #include "editor/Engine.h"
-#include "gpu/SceneViewUBO.h"
 #include "mesh/GeometryRefresh.h"
 #include "mesh/MeshClone.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
-#include "mesh/MeshPipelines.h"
-#include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
-#include "metal/Dispatch.h"
 #include "numeric/MatrixMath.h"
-#include "numeric/QuaternionMath.h"
 #include "object/ObjectOps.h"
 #include "procedure/Cook.h"
-#include "project/Project.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/RenderTargets.h"
 #include "render/Textures.h"
-#include "scene/Entity.h"
 #include "scene/SceneGraph.h"
-#include "state/Scene.h"
-#include "viewport/RenderExtent.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportEvents.h"
 
 #include <boost/ut.hpp>
 
-#include <bit>
-#include <cstdio>
-#include <functional>
 #include <map>
-#include <set>
-#include <source_location>
-#include <string>
-#include <tuple>
 
 using boost::ut::expect, boost::ut::fatal;
 

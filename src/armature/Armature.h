@@ -3,12 +3,8 @@
 #include "BoneConstraint.h"
 #include "armature/BoneId.h"
 #include "gpu/Transform.h"
-#include "numeric/mat3.h"
 
 #include <span>
-#include <string>
-#include <string_view>
-#include <unordered_map>
 
 inline constexpr uint32_t InvalidBoneIndex{std::numeric_limits<uint32_t>::max()};
 

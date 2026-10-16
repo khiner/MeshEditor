@@ -5,9 +5,7 @@
 #include "ModalModes.h"
 #include "mesh/TetMeshData.h"
 
-#include <expected>
 #include <filesystem>
-#include <string>
 
 namespace project {
 struct Assets;

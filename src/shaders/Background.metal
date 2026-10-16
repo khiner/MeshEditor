@@ -2,7 +2,6 @@
 #define BACKGROUND_MSL
 
 #include "gpu/BackgroundConstant.h"
-#include "Bindless.metal"
 #include "Varyings.metal"
 #include "SceneUBO.metal"
 

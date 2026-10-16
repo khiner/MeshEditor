@@ -1,7 +1,6 @@
 #pragma once
 
 #include "gpu/ElementWork.h"
-#include "gpu/Types.h"
 
 // Push constants shared by pose and bounds passes. Posed-buffer slots are in SceneViewUBO.
 struct BoundsReducePushConstants {

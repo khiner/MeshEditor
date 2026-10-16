@@ -5,8 +5,6 @@
 
 #include "state/Entity.h"
 
-#include <optional>
-#include <unordered_map>
 #include <vector>
 
 using numeric::vec3;

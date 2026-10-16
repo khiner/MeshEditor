@@ -1,7 +1,6 @@
 #pragma once
 
 #include "action/Object.h"
-#include "animation/Clips.h"
 #include "render/GpuBufferOps.h"
 #include "ui/FieldEdit.h"
 

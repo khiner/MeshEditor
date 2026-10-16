@@ -1,7 +1,6 @@
 #ifndef COMMITPOSEDGEOMETRY_MSL
 #define COMMITPOSEDGEOMETRY_MSL
 
-#include "Bindless.metal"
 #include "gpu/CommitPosedGeometryPushConstants.h"
 #include "ElementWorkShared.metal"
 #include "ConnectivityRead.metal"

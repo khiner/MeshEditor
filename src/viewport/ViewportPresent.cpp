@@ -1,6 +1,3 @@
-#include "numeric/uvec2.h"
-
-#include "state/Scene.h"
 #include "viewport/Viewport.h"
 
 #include "Camera.h"
@@ -10,14 +7,11 @@
 #include "render/RenderTargets.h"
 #include "render/Textures.h"
 #include "scene/CameraLens.h"
-#include "viewport/FrameState.h"
 #include "viewport/VideoRecording.h"
 #include "viewport/ViewCameraOps.h"
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportIcons.h"
 #include "viewport/ViewportUi.h"
-
-#include "imgui.h"
 
 #include <print>
 

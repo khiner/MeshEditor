@@ -42,11 +42,8 @@ template<typename T, size_t N> using GpuArray = metal::array<T, N>;
 #include "numeric/uvec3.h"
 #include "numeric/uvec4.h"
 #include "numeric/vec2.h"
-#include "numeric/vec3.h"
-#include "numeric/vec4.h"
 
 #include <array>
-#include <cstdint>
 
 #define GPU_CONSTANT constexpr
 #define DEFAULT(...) {__VA_ARGS__}

@@ -1,12 +1,7 @@
 #pragma once
 
-#include "Range.h"
 #include "gpu/ElementWork.h"
 #include "metal/BufferArena.h"
-
-#include <bit>
-#include <cassert>
-#include <stdexcept>
 
 inline Range WorkStorageRange(ElementWork work) { return {work.Storage.Offset, WorkHeaderWords + work.Capacity * (WorkBlockWords + 2u)}; }
 inline uint64_t WorkArgsOffset(ElementWork work, bool groups = false) { return uint64_t(work.Storage.Offset + (groups ? 5u : 2u)) * sizeof(uint32_t); }

@@ -3,9 +3,6 @@
 #include "numeric/MatrixMath.h"
 
 #include <algorithm>
-#include <cmath>
-#include <limits>
-#include <numbers>
 
 double StrikerMass(const Striker &s) {
     const double r = s.TipRadius, l = s.Length;

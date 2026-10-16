@@ -1,15 +1,9 @@
 #include "action/Nodes.h"
-#include "Variant.h"
 #include "action/Dispatch.h"
 #include "action/Errors.h"
-#include "action/Mesh.h"
-#include "mesh/Mesh.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
-#include "object/PendingSync.h"
 #include "procedure/Procedure.h"
-#include "scene/Entity.h"
-#include "state/Scene.h"
 
 namespace action::nodes {
 namespace {

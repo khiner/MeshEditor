@@ -2,7 +2,6 @@
 
 #include "gpu/ConnectivityRef.h"
 #include "gpu/ElementWork.h"
-#include "gpu/SlotOffset.h"
 
 // One mesh's classification over its vertex tiles.
 // Sparse vertex work tiles its compact order, and a job without work tiles the arena blocks of its live vertices.

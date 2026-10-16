@@ -1,9 +1,7 @@
 #ifndef VERTEXPOINT_MSL
 #define VERTEXPOINT_MSL
 
-#include "Bindless.metal"
 #include "OverlayFade.metal"
-#include "SceneUBO.metal"
 #include "Varyings.metal"
 
 fragment float4 VertexPointFragment(

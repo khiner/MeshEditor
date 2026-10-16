@@ -1,13 +1,6 @@
 #pragma once
 
-#include "gpu/MeshElementBlock.h"
 #include "mesh/SelectionIndex.h"
-
-#include <algorithm>
-#include <bit>
-#include <optional>
-#include <span>
-#include <vector>
 
 // The blocks the tree marks as `kind`, in ascending local order.
 inline std::vector<uint32_t> MarkedBlocks(const SelectionIndexView &tree, SelectionIndexMask kind, std::span<const MeshElementBlock> membership) {

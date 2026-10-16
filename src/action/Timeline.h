@@ -1,7 +1,6 @@
 #pragma once
 
 #include "animation/AnimationTimeline.h"
-#include "state/Entity.h"
 
 namespace action::timeline {
 // Enter presentation view (material-preview shading, overlays off) without starting playback.

@@ -1,8 +1,5 @@
 #pragma once
 #include "action/Action.h"
-#include <iosfwd>
-#include <limits>
-#include <vector>
 
 namespace action {
 // Each record contains a uint32 byte length followed by its domain index, leaf index, and payload.

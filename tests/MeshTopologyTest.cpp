@@ -3,43 +3,24 @@
 #include "RunSuites.h"
 #include "TestMeshOrdinals.h"
 #include "TestPaths.h"
-#include "action/Emit.h"
 #include "action/Errors.h"
 #include "editor/Engine.h"
-#include "gpu/PBRMaterial.h"
-#include "mesh/Mesh.h"
 #include "mesh/MeshClone.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshConnectivityGpu.h"
 #include "mesh/MeshCreate.h"
 #include "mesh/MeshEdgeUsers.h"
-#include "mesh/MeshPipelines.h"
-#include "metal/Dispatch.h"
 #include "numeric/MatrixMath.h"
-#include "numeric/QuaternionMath.h"
 #include "object/ObjectOps.h"
-#include "project/Project.h"
 #include "render/ElementWorkOps.h"
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
 #include "render/MeshletBuildGpu.h"
 #include "render/SceneUpdates.h"
-#include "scene/Entity.h"
 #include "selection/SelectionGpu.h"
 #include "viewport/Viewport.h"
-#include "viewport/ViewportDisplay.h"
 
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstdio>
 #include <map>
-#include <memory>
-#include <numbers>
-#include <set>
-#include <string>
-#include <utility>
-#include <vector>
 
 using boost::ut::expect;
 

@@ -1,10 +1,8 @@
 #include "Bindless.metal"
 #include "EnclosingSphere.metal"
-#include "gpu/BindlessBindings.h"
 #include "gpu/ClusterGroup.h"
 #include "gpu/LodNode.h"
 #include "gpu/LodNodeRefitPushConstants.h"
-#include "gpu/MeshletRecord.h"
 
 inline void RefitError(device const BindlessSet &b,constant LodNodeRefitPushConstants &pc) {
     atomic_store_explicit(BindlessBufferMutable(atomic_uint,b.Buffer,pc.ErrorSlot),1u,memory_order_relaxed);

@@ -2,7 +2,6 @@
 #define BONESPHEREWIRE_MSL
 
 // Renders bone-joint outlines around a camera-facing disc.
-#include "Bindless.metal"
 #include "BoneUtils.metal"
 #include "MeshletResolve.metal"
 #include "LineQuad.metal"

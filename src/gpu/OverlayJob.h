@@ -2,7 +2,6 @@
 
 #include "gpu/ExtrasLineKind.h"
 #include "gpu/OverlayJobKind.h"
-#include "gpu/Types.h"
 
 // Defines one persistent single-threadgroup procedural-line chunk with common visibility and indirect submission.
 struct OverlayJob {

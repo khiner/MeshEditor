@@ -1,5 +1,4 @@
 #pragma once
-#include <cstdint>
 #include <functional>
 namespace state {
 enum class Entity : uint32_t {};

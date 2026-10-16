@@ -2,10 +2,6 @@
 
 #include "state/Entity.h"
 
-#include <cstdint>
-#include <memory>
-#include <optional>
-#include <string>
 #include <vector>
 
 namespace state {

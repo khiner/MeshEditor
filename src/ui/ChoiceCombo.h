@@ -2,8 +2,6 @@
 
 #include <imgui.h>
 
-#include <concepts>
-#include <ranges>
 #include <string>
 
 namespace ui {

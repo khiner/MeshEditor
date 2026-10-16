@@ -1,11 +1,5 @@
 #pragma once
-#include "Range.h"
-#include "gpu/ElementWork.h"
 #include "mesh/MeshStore.h"
-#include "metal/BufferArena.h"
-#include "state/Entity.h"
-#include <span>
-#include <vector>
 
 namespace mtl {
 struct ComputeChain;

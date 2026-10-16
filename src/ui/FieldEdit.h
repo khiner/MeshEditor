@@ -1,16 +1,11 @@
 #pragma once
 
-#include "numeric/VectorMath.h"
-#include "numeric/vec2.h"
-
 // Wrap ImGui field controls in one action gesture per edit.
 // Edit{R} targets the active entity and applies Alt-modified edits to the selection.
 // Edit{R, E} targets E explicitly.
 // PatchEdit{value} edits fields of a value the caller holds and patches them onto the active entity.
 // ValueEdit{value} edits fields of a value the caller holds in place.
 
-#include "Field.h"
-#include "Variant.h"
 #include "action/Build.h"
 #include "action/Dispatch.h"
 #include "action/Emit.h"
@@ -18,17 +13,11 @@
 #include "animation/Fields.h"
 #include "animation/Keying.h"
 #include "numeric/Angles.h"
-#include "scene/Entity.h" // FindActiveEntity
 #include "scene/RotationUi.h"
-#include "state/Scene.h"
 
 #include <imgui.h>
 
-#include <algorithm>
 #include <format>
-#include <iterator>
-#include <optional>
-#include <utility>
 
 namespace ui {
 using numeric::Degrees;

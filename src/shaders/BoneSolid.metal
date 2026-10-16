@@ -1,7 +1,6 @@
 #ifndef BONESOLID_MSL
 #define BONESOLID_MSL
 
-#include "Bindless.metal"
 #include "BoneUtils.metal"
 #include "MeshletResolve.metal"
 #include "Varyings.metal"

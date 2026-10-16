@@ -2,13 +2,9 @@
 
 #include "File.h"
 #include "ProcessEvents.h"
-#include "action/Action.h"
 #include "action/ActionDrain.h"
 #include "project/EntityStore.h"
 #include "project/store/History.h"
-
-#include <memory>
-#include <span>
 
 namespace action::mesh {
 struct InsetPreviewCache;

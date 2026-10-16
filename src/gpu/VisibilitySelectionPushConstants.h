@@ -1,7 +1,6 @@
 #pragma once
 
 #include "gpu/ObjectSelectQuery.h"
-#include "gpu/Types.h"
 #include "gpu/VisibilityShadingPushConstants.h"
 
 struct VisibilitySelectionPushConstants {

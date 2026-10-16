@@ -1,6 +1,5 @@
 #include "snapshot/SnapshotRegistration.h"
 #include <set>
-#include <string>
 
 namespace snapshot {
 namespace {

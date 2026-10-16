@@ -1,16 +1,8 @@
 #include "mesh/Decimate.h"
 #include "Profile.h"
-#include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
-#include <algorithm>
-#include <array>
-#include <bit>
-#include <cmath>
 #include <map>
 #include <queue>
-#include <set>
-#include <stdexcept>
-#include <unordered_map>
 
 namespace {
 // Symmetric plane quadric, accumulated in double precision on the host.

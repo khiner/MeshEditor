@@ -1,7 +1,6 @@
 #include "ElementWorkShared.metal"
 #include "EnclosingSphere.metal"
 #include "gpu/MeshletBoundsRefitPushConstants.h"
-#include "gpu/Vertex.h"
 
 kernel void MeshletBoundsRefit(
     uint i [[thread_position_in_grid]],

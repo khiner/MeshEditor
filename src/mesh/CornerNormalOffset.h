@@ -3,10 +3,6 @@
 #include "numeric/VectorMath.h"
 
 #include "mesh/Mesh.h"
-#include "numeric/vec2.h"
-
-#include <algorithm>
-#include <cmath>
 
 // Orthonormal frame anchoring a corner's authored-normal offset.
 // Axes: the derived normal, the corner's first non-degenerate polygon edge projected off it, and their cross.

@@ -3,11 +3,8 @@
 #include "action/Core.h"
 #include "animation/AnimationData.h"
 #include "gpu/PBRMaterial.h"
-#include "gpu/Transform.h"
-#include "numeric/quat.h"
 #include "scene/WorldTransform.h"
 
-#include <array>
 #include <span>
 
 struct MaterialStore;

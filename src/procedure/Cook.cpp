@@ -7,32 +7,18 @@
 #include "mesh/MeshClone.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
-#include "mesh/MeshPipelines.h"
-#include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 #include "mesh/RecalculateNormals.h"
-#include "mesh/TopologyOperations.h"
-#include "metal/Dispatch.h"
 #include "numeric/MatrixMath.h"
-#include "numeric/QuaternionMath.h"
-#include "numeric/VectorMath.h"
 #include "object/ObjectOps.h"
 #include "object/PendingSync.h"
 #include "render/Instance.h"
 #include "render/MeshletBuildGpu.h"
-#include "scene/Entity.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
-#include "state/Scene.h"
 #include "viewport/ViewportEvents.h"
 
-#include <bit>
-#include <cstring>
-#include <expected>
 #include <format>
-#include <numbers>
-#include <optional>
-#include <string>
 
 using state::Change;
 using state::On;

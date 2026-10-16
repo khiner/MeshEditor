@@ -1,8 +1,5 @@
 #pragma once
 
-#include "Range.h"
-#include "gpu/BindlessBindings.h"
-#include "metal/Buffer.h"
 #include "metal/BufferArena.h"
 
 // Packed (canonical corner, canonical face) incidence in runs.

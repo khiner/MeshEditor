@@ -1,53 +1,30 @@
 #include "metal/AutoreleaseScope.h"
-#include "numeric/VectorMath.h"
-#include "numeric/uvec2.h"
-#include "numeric/vec2.h"
 
 #include "Compress.h"
-#include "state/Scene.h"
 
-#include "File.h"
 #include "FileDialog.h"
 #include "MacPlatform.h"
 #include "Paths.h"
-#include "ProcessEvents.h"
 #include "Profile.h"
 #include "TransformMath.h"
-#include "VideoRecorder.h"
-#include "Window.h"
 #include "WorkspaceState.h"
 #include "action/Build.h"
-#include "action/Emit.h"
 #include "action/Errors.h"
-#include "action/Io.h"
-#include "action/Selection.h"
-#include "action/View.h"
-#include "animation/AnimationData.h"
 #include "animation/TimelineUi.h"
-#include "armature/ArmatureComponents.h"
 #include "audio/AudioDevice.h"
-#include "audio/AudioSystem.h"
-#include "audio/AudioTypes.h"
 #include "audio/AudioUi.h"
-#include "audio/ModalModelFile.h"
 #include "audio/ModalModes.h"
 #include "editor/AudioIntegration.h"
 #include "editor/Engine.h"
 #include "gltf/GltfScene.h"
 #include "image/ImageEncode.h"
 #include "mesh/MeshComponents.h"
-#include "metal/Image.h"
-#include "metal/MetalContext.h"
 #include "metal/MetalCpp.h"
 #include "metal/PassChain.h"
 #include "metal/RenderTarget.h"
 #include "metal/Shader.h"
-#include "object/ObjectOps.h"
-#include "physics/PhysicsSystem.h"
-#include "physics/PhysicsTypes.h"
 #include "procedure/NodeEditor.h"
 #include "project/HistoryUi.h"
-#include "project/Project.h"
 #include "project/Sessions.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
@@ -58,42 +35,25 @@
 #include "scene/Entity.h"
 #include "scene/SceneControlsUi.h"
 #include "scene/WorldTransform.h"
-#include "selection/SelectionComponents.h"
 #include "selection/SelectionState.h"
 #include "ui/CtrlShortcut.h"
 #include "ui/MacBackend.h"
 #include "viewport/FrameState.h"
 #include "viewport/RenderExtent.h"
 #include "viewport/VideoRecording.h"
-#include "viewport/ViewCamera.h"
-#include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportConsumerFence.h"
-#include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportIcons.h"
 #include "viewport/ViewportUi.h"
 
 #include "imgui_impl_metal.h"
-#include "imgui_internal.h"
 #include "implot.h"
 #include "imspinner_demo.h"
-#include <Foundation/NSAutoreleasePool.hpp>
 
-#include <array>
-#include <bit>
-#include <chrono>
 #include <csignal>
-#include <cstdlib>
-#include <exception>
-#include <fstream>
 #include <future>
 #include <iostream>
-#include <map>
-#include <print>
 #include <set>
-
-#include <fcntl.h>
-#include <unistd.h>
 
 using std::ranges::any_of, std::ranges::all_of;
 
@@ -1673,9 +1633,10 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
 #ifdef DEBUG_BUILD
             const auto scene_revision = std::pair{Session(r).Revision, RestoreGeneration};
-            const bool validate = windows.History.ValidateRequested;
 #ifdef VALIDATE_ACTIONS
-            validate |= scene_revision != validated_revision;
+            const bool validate = windows.History.ValidateRequested || scene_revision != validated_revision;
+#else
+            const bool validate = windows.History.ValidateRequested;
 #endif
             // Scrollbars use the preceding UI frame's content size, so both frames must reflect the scene.
             const bool ui_matches_scene = ui_revision == scene_revision && previous_ui_revision == scene_revision;

@@ -6,11 +6,8 @@
 #include "project/Assets.h"
 #include "render/GpuBuffers.h"
 #include "render/MaterialComponents.h"
-#include "render/Textures.h"
 #include "state/Scene.h"
 #include <format>
-#include <map>
-#include <unordered_map>
 std::expected<std::vector<uint32_t>, std::string> ImportObjPlyMaterials(state::Scene &r, state::Entity viewport, std::span<const ObjPlyMaterial> materials, const std::filesystem::path &mesh_path) {
     struct LoadedTexture {
         DecodedImage Image;

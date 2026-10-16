@@ -7,9 +7,6 @@
 #include "state/Entity.h"
 
 #include <expected>
-#include <filesystem>
-#include <optional>
-#include <vector>
 
 using numeric::quat, numeric::vec3;
 

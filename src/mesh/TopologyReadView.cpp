@@ -5,8 +5,6 @@
 #include "mesh/MeshStore.h"
 #include "state/Scene.h"
 
-#include <numeric>
-
 void TopologyReadView::Add(state::Scene &r, uint32_t id, const MeshClosure &neighborhood, const BufferArena<uint32_t> &storage) {
     const profile::CpuScope scope{"TopologyReadView"};
     if (!neighborhood.Counts[0]) return;

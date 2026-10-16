@@ -1,8 +1,6 @@
 #include "state/Scene.h"
 #include "Range.h"
 #include "state/Allocation.h"
-#include <new>
-#include <stdexcept>
 namespace state {
 namespace {
 constexpr uint32_t Alive = 1u << 31;

@@ -4,11 +4,7 @@
 #include <zstd.h>
 
 #include <algorithm>
-#include <cstdint>
-#include <cstring>
 #include <fstream>
-#include <string>
-#include <vector>
 
 namespace fs = std::filesystem;
 

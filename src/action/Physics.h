@@ -1,9 +1,6 @@
 #pragma once
 
 #include "action/Core.h"
-#include "physics/PhysicsTypes.h"
-
-#include <string>
 
 namespace action::physics {
 // AddTrigger, RemoveTriggerNodes and SetTrigger target the active entity.

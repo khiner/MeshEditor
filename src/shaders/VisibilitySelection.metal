@@ -1,4 +1,3 @@
-#include "gpu/MeshletInstanceFlag.h"
 #include "SelectionObjectQuery.metal"
 #include "VisibilityCoverage.metal"
 #include "gpu/VisibilitySelectionPushConstants.h"

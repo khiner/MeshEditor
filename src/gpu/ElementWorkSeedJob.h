@@ -1,6 +1,5 @@
 #pragma once
 #include "gpu/ElementWork.h"
-#include "gpu/SlotOffset.h"
 
 // Each listed block contributes its live elements, masked by a selection when one is named.
 struct ElementWorkSeedJob {

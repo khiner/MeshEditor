@@ -4,10 +4,6 @@
 #include "AudioTypes.h"
 #include "state/Entity.h"
 
-#include <filesystem>
-#include <span>
-#include <vector>
-
 struct Recording {
     Recording(uint32_t frame_count) : Frames(frame_count) {}
     std::vector<float> Frames;

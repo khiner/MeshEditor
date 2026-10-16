@@ -1,11 +1,6 @@
 #pragma once
 
-#include "numeric/vec2.h"
 #include "viewport/RenderView.h"
-
-#include <cstdint>
-#include <optional>
-#include <utility>
 
 using numeric::vec2;
 

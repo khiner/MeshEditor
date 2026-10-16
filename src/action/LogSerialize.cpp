@@ -1,9 +1,6 @@
 #include "action/LogSerialize.h"
 #include "PathSerialize.h"
 #include "numeric/Serialize.h"
-#include <cstring>
-#include <istream>
-#include <ostream>
 
 namespace action {
 void SerializeAction(const Action &a, std::ostream &out) {

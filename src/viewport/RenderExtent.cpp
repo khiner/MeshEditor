@@ -1,14 +1,9 @@
-#include "numeric/uvec2.h"
-#include <cmath>
-
 #include "viewport/RenderExtent.h"
 
 #include "viewport/FrameState.h"
 #include "viewport/ViewportDisplay.h"
 
 #include "state/Scene.h"
-
-#include <algorithm>
 
 uvec2 RenderExtentPx(const state::Scene &r) {
     const auto logical_extent = r.Context.get<const ViewportExtent>().Value;

@@ -1,10 +1,7 @@
 #pragma once
 
-#include "numeric/mat4.h"
 #include "scene/WorldTransform.h"
 #include "state/Scene.h"
-
-#include <span>
 
 // A node's authored parent, present only on a node with a parent.
 struct SceneParent {

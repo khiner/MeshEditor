@@ -3,14 +3,6 @@
 #include "Near.h"
 #include "RunSuites.h"
 
-#include <boost/ut.hpp>
-
-#include <array>
-#include <cmath>
-#include <numbers>
-#include <span>
-#include <vector>
-
 using namespace boost::ut;
 
 int main() {

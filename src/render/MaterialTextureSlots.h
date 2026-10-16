@@ -4,9 +4,6 @@
 #include "gpu/PBRMaterial.h"
 #include "render/Textures.h"
 
-#include <array>
-#include <string_view>
-
 // Top-level material texture slots (PBRMaterial accessor, color space, glTF label, glTF pointer path), ordered to match MaterialTextureSlot.
 struct MaterialTextureSlotInfo {
     ::TextureInfo &(*Get)(PBRMaterial &);

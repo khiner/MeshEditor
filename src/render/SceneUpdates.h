@@ -1,10 +1,7 @@
 #pragma once
-#include "mesh/MeshStore.h"
 
 #include "selection/Selection.h"
-#include "state/Entity.h"
 #include <span>
-#include <vector>
 struct GpuBuffers;
 namespace mtl {
 struct ComputeChain;

@@ -1,20 +1,13 @@
 #include "action/Mesh.h"
-#include "ProcessEvents.h"
 #include "Profile.h"
 #include "SortUnique.h"
 #include "action/Errors.h"
 #include "action/InsetPreview.h"
-#include "action/Nodes.h"
 
-#include "gpu/FaceAttributeEditPushConstants.h"
 #include "gpu/InsetPreviewPushConstants.h"
 #include "gpu/InsetVertexBasis.h"
-#include "gpu/MeshTopologyOp.h"
-#include "gpu/Vertex.h"
-#include "gpu/VertexPositionEditPushConstants.h"
 
 #include "TransformMath.h"
-#include "Variant.h"
 #include "mesh/BeautifyFaces.h"
 #include "mesh/Decimate.h"
 #include "mesh/EditVisibility.h"
@@ -22,18 +15,12 @@
 #include "mesh/Mesh.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshPipelines.h"
-#include "mesh/MeshStore.h"
-#include "mesh/MeshTopology.h"
 #include "mesh/MeshTopologyEdit.h"
 #include "mesh/PositionOperations.h"
-#include "mesh/PrimitiveType.h"
 #include "mesh/RecalculateNormals.h"
 #include "mesh/ScratchChunks.h"
-#include "mesh/TopologyOperations.h"
 #include "mesh/Unsubdivide.h"
 #include "metal/Dispatch.h"
-#include "numeric/MatrixMath.h"
-#include "numeric/QuaternionMath.h"
 #include "object/ObjectOps.h"
 #include "procedure/Procedure.h"
 #include "project/Project.h"
@@ -43,8 +30,6 @@
 #include "render/Instance.h"
 #include "render/MeshTopologyRepair.h"
 #include "render/MeshletBuildGpu.h"
-#include "render/SceneUpdates.h"
-#include "scene/Entity.h"
 #include "scene/WorldTransform.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
@@ -52,17 +37,9 @@
 #include "state/Scene.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewportEvents.h"
-#include "viewport/ViewportInteractionState.h"
 #include "viewport/ViewportRenderGpu.h"
 
 #include <format>
-
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <numbers>
-#include <optional>
-#include <stdexcept>
 
 namespace {
 std::vector<uint32_t> EditorHiddenFaces(const MeshStore &meshes, uint32_t id) {

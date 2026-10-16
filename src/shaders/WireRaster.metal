@@ -2,14 +2,9 @@
 #define WIRERASTER_MSL
 
 // Each byte holds one coverage class; integer maxima make crossing wires deterministic.
-#include "Bindless.metal"
-#include "SceneUBO.metal"
-#include "TransformUtils.metal"
-#include "ScreenSpace.metal"
 #include "gpu/WireCoverage.h"
 #include "MeshletEditGeometry.metal"
 #include "gpu/WireRasterPushConstants.h"
-#include "EditSelection.metal"
 
 // Four 8-bit coverage maxima share one word.
 constant float WireCoverageScale = 255.0f;

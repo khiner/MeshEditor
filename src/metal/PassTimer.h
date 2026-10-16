@@ -3,10 +3,6 @@
 #include "metal/MetalContext.h"
 
 #include <Metal/MTLCounters.hpp>
-#include <memory>
-#include <optional>
-#include <string_view>
-#include <vector>
 
 namespace mtl {
 // Per-command-buffer GPU timing. Hardware samples only at encoder stage boundaries.

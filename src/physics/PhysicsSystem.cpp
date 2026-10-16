@@ -8,21 +8,12 @@
 #include "SortUnique.h"
 #include "TransformMath.h"
 #include "mesh/Mesh.h"
-#include "metal/MetalContext.h"
-#include "numeric/VectorMath.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
-#include "scene/WorldTransform.h"
-#include "state/Scene.h"
 #include "viewport/ViewportEvents.h"
 
-#include <algorithm>
-#include <array>
-#include <bit>
 #include <map>
-#include <ranges>
 #include <set>
-#include <stdexcept>
 
 using state::Change;
 using state::On;

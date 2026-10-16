@@ -4,14 +4,8 @@
 #include "metal/MslSource.h"
 
 #include <Metal/MTLComputePipeline.hpp>
-#include <Metal/MTLDepthStencil.hpp>
 #include <Metal/MTLLibrary.hpp>
 #include <Metal/MTLRenderPipeline.hpp>
-#include <filesystem>
-#include <optional>
-#include <string>
-#include <unordered_map>
-#include <vector>
 
 namespace MTL4 {
 class PipelineDescriptor;

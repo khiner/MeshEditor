@@ -5,13 +5,9 @@
 // Every operator marks, counts, scans, scatters, and gathers.
 // Source elements produce output vertices, faces, and corners at scanned offsets, and index maps carry every attribute domain into the output.
 #include "MeshTopologyBevel.metal"
-#include "MeshTopologyContext.metal"
-#include "MeshTopologyFaces.metal"
 #include "MeshTopologyLines.metal"
 #include "MeshTopologyLimited.metal"
-#include "MeshTopologySubdivide.metal"
 #include "MeshTopologyWireframe.metal"
-#include "MeshTopologyFaceSplit.metal"
 #include "MeshTopologyConcave.metal"
 #include "MeshTopologyWeld.metal"
 #include "MeshTopologyBoolean.metal"

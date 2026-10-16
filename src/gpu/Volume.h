@@ -1,7 +1,6 @@
 #pragma once
 
 #include "gpu/TextureInfo.h"
-#include "gpu/Types.h"
 
 struct Volume {
     float ThicknessFactor DEFAULT(0);
@@ -10,6 +9,5 @@ struct Volume {
     TextureInfo ThicknessTexture DEFAULT();
 };
 #ifndef __METAL_VERSION__
-#include "Field.h"
 template<> inline constexpr FieldSpec Spec<Volume, "ThicknessFactor">{.Min = 0, .Max = 10};
 #endif

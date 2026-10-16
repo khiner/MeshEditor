@@ -4,8 +4,6 @@
 #include "metal/Buffer.h"
 #include <Metal/MTLBuffer.hpp>
 
-#include <sys/wait.h>
-
 #include <print>
 
 void VideoRecorder::PipeCloser::operator()(std::FILE *p) const noexcept {

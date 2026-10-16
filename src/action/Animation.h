@@ -3,9 +3,6 @@
 #include "action/Core.h"
 #include "animation/AnimationData.h"
 
-#include <optional>
-#include <string>
-
 namespace action::animation {
 // The keys an insert or delete addresses at the current frame.
 // Selected targets are the selected bones in Pose mode and the selected objects otherwise.

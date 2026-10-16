@@ -4,9 +4,6 @@
 #include "project/store/Pages.h"
 #include "project/store/Records.h"
 
-#include <algorithm>
-#include <cassert>
-#include <cstring>
 #include <print>
 
 namespace store {

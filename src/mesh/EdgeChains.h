@@ -4,8 +4,6 @@
 #include "Range.h"
 #include "gpu/VertexPositionEditPushConstants.h"
 #include <functional>
-#include <unordered_map>
-#include <vector>
 
 struct Mesh;
 

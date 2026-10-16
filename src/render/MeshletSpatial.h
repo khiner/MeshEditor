@@ -1,11 +1,5 @@
 #pragma once
-#include "gpu/Vertex.h"
-#include "mesh/ElementAttributeView.h"
 #include "mesh/MeshStore.h"
-
-#include <array>
-#include <optional>
-#include <span>
 
 struct Mesh;
 namespace state {

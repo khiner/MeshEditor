@@ -1,19 +1,12 @@
 #include "action/Animation.h"
 
-#include "Variant.h"
 #include "action/ScopeResolve.h"
 #include "animation/AnimationTimeline.h"
 #include "animation/Clips.h"
 #include "animation/Fields.h"
 #include "animation/Keying.h"
-#include "scene/Entity.h"
-#include "selection/BoneSelection.h"
 #include "selection/Selection.h"
-#include "state/Scene.h"
 #include "viewport/InteractionComponents.h"
-
-#include <cmath>
-#include <vector>
 
 namespace action::animation {
 namespace {

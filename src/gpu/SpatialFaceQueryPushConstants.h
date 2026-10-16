@@ -2,7 +2,6 @@
 
 #include "gpu/ElementTables.h"
 #include "gpu/ElementWork.h"
-#include "gpu/Types.h"
 
 // Candidate face membership and an exact geometric predicate.
 // The record's tables resolve its handles, each below its domain's bound.
