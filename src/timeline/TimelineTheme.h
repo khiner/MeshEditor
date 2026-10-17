@@ -21,7 +21,8 @@ struct TimelineTheme {
     TimelineThemeColors Colors{};
     float RulerHeight{20}, TickLabelSpacing{80}, MinorTickSpacing{32};
     float KeyframeRadius{5}, KeyframePadding{4};
-    float PlayheadWidth{2}, PlayheadLabelRounding{3}, PlayheadLabelPaddingX{3}, PlayheadLabelPaddingY{1};
+    float PlayheadWidth{2}, PlayheadLabelRounding{3};
+    numeric::vec2 PlayheadLabelPadding{3, 1};
 };
 template<> inline constexpr field::SpecTable<TimelineTheme> Specs<TimelineTheme>{
     {&TimelineTheme::RulerHeight, {.Min = 12, .Max = 48, .Digits = 0}},
@@ -31,6 +32,5 @@ template<> inline constexpr field::SpecTable<TimelineTheme> Specs<TimelineTheme>
     {&TimelineTheme::KeyframePadding, {.Min = 0, .Max = 24, .Digits = 0}},
     {&TimelineTheme::PlayheadWidth, {.Min = .5, .Max = 8, .Digits = 1}},
     {&TimelineTheme::PlayheadLabelRounding, {.Min = 0, .Max = 12, .Digits = 1}},
-    {&TimelineTheme::PlayheadLabelPaddingX, {.Min = 0, .Max = 12, .Digits = 0}},
-    {&TimelineTheme::PlayheadLabelPaddingY, {.Min = 0, .Max = 12, .Digits = 0}},
+    {&TimelineTheme::PlayheadLabelPadding, {.Min = 0, .Max = 12, .Digits = 0}},
 };

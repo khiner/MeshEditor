@@ -22,14 +22,53 @@ void StyleColors() {
     colors[ImGuiCol_TableBorderLight] = {0.23f, 0.23f, 0.25f, 1.00f};
 }
 
-void DrawIconButton(ImVec2 min, ImVec2 max, ImU32 color, float rounding, ImDrawFlags corners, const SvgResource *icon, float icon_dim) {
-    // Leave a one-point seam between adjacent buttons in a group.
-    GetWindowDrawList()->AddRectFilled(min, max - ImVec2{1, 1}, color, rounding, corners);
-    if (!icon) return;
-    const auto saved = GetCursorScreenPos();
-    SetCursorScreenPos((min + max - ImVec2{icon_dim, icon_dim}) * 0.5f);
-    icon->DrawIcon({icon_dim, icon_dim});
-    SetCursorScreenPos(saved);
+namespace {
+struct {
+    ImGuiAxis Axis;
+    ImVec2 Size, Next;
+    int Count, Index;
+    float Rounding;
+} Group;
+} // namespace
+
+void BeginIconButtonGroup(ImGuiAxis axis, ImVec2 size, int count, float rounding) {
+    BeginGroup();
+    Group = {axis, size, GetCursorScreenPos(), count, 0, rounding};
+}
+
+bool IconButton(const char *id, const SvgResource *icon, bool active, bool enabled, float length) {
+    auto size = Group.Size;
+    if (length > 0) size[Group.Axis] = length;
+    SetCursorScreenPos(Group.Next);
+    if (!enabled) BeginDisabled();
+    const bool clicked = InvisibleButton(id, size);
+    if (!enabled) EndDisabled();
+    const auto min = GetItemRectMin(), max = GetItemRectMax();
+    const auto color = GetColorU32(!enabled ? ImGuiCol_FrameBg : active ? ImGuiCol_ButtonActive : IsItemHovered() ? ImGuiCol_ButtonHovered : ImGuiCol_Button);
+    const bool first = Group.Index == 0, last = Group.Index == Group.Count - 1;
+    const bool horizontal = Group.Axis == ImGuiAxis_X;
+    const ImDrawFlags corners = !first && !last ? ImDrawFlags_RoundNone :
+        (first ? (horizontal ? ImDrawFlags_RoundLeft : ImDrawFlags_RoundTop) : 0) | (last ? (horizontal ? ImDrawFlags_RoundRight : ImDrawFlags_RoundBottom) : 0);
+    GetWindowDrawList()->AddRectFilled(min, max, color, Group.Rounding, corners);
+    if (icon) {
+        static constexpr float IconScale{0.75f};
+        const auto center = (min + max) * 0.5f, half = ImVec2{size.y, size.y} * IconScale * 0.5f;
+        icon->DrawIcon(std::bit_cast<vec2>(center - half), std::bit_cast<vec2>(center + half));
+    }
+    Group.Next[Group.Axis] += size[Group.Axis] + IconButtonSeam;
+    ++Group.Index;
+    return clicked;
+}
+
+void EndIconButtonGroup() {
+    IM_ASSERT(Group.Index == Group.Count);
+    EndGroup();
+}
+
+void DropdownArrow() {
+    const auto center = (GetItemRectMin() + GetItemRectMax()) * 0.5f;
+    constexpr float HalfWidth{3.5f};
+    GetWindowDrawList()->AddTriangleFilled(center - ImVec2{HalfWidth, HalfWidth * 0.5f}, center + ImVec2{HalfWidth, -HalfWidth * 0.5f}, center + ImVec2{0.f, HalfWidth * 0.5f}, GetColorU32(ImGuiCol_Text));
 }
 
 void DrawInterfaceStyle(state::Scene &r, state::Entity viewport) {

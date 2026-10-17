@@ -14,8 +14,8 @@ struct SvgResource {
     SvgResource(const mtl::Context &, const std::filesystem::path &);
     ~SvgResource();
 
-    // Draw icon at given size (no interaction)
-    void DrawIcon(vec2 size) const;
+    // Draws the icon over [min, max] in the current window's draw list.
+    void DrawIcon(vec2 min, vec2 max) const;
 
 private:
     struct Impl;

@@ -92,94 +92,6 @@ void EmitViewNav(const state::Scene &r, auto &&nav) {
     else action::Emit(std::forward<decltype(nav)>(nav));
 }
 
-struct OverlayIconButtonInfo {
-    const SvgResource *Icon;
-    ImVec2 Offset;
-    ImDrawFlags Corners;
-    bool Enabled{true};
-    bool Active{false};
-    const char *Tooltip{nullptr};
-    bool Muted{false};
-};
-
-struct OverlayIconButtonStyle {
-    ImVec2 ButtonSize{36, 30};
-    float IconScale{0.75f};
-    float CornerRounding;
-};
-
-template<size_t N>
-std::optional<size_t> DrawOverlayIconButtonGroup(
-    const char *id,
-    ImVec2 start_pos,
-    const OverlayIconButtonInfo (&buttons)[N],
-    bool interactions_enabled,
-    bool *any_hovered,
-    const OverlayIconButtonStyle &style
-) {
-    const auto saved_cursor_pos = GetCursorScreenPos();
-    const float icon_dim = style.ButtonSize.y * style.IconScale;
-    std::optional<size_t> clicked_index;
-
-    PushID(id);
-    for (size_t i = 0; i < N; ++i) {
-        const auto &button = buttons[i];
-        const ImVec2 button_min = start_pos + button.Offset;
-        const ImVec2 button_max = button_min + style.ButtonSize;
-
-        bool hovered = false;
-        if (interactions_enabled) {
-            SetCursorScreenPos(button_min);
-            if (!button.Enabled) BeginDisabled();
-            PushID(int(i));
-            if (InvisibleButton("##icon", style.ButtonSize) && button.Enabled) clicked_index = i;
-            hovered = IsItemHovered();
-            PopID();
-            if (!button.Enabled) EndDisabled();
-        }
-        if (any_hovered && hovered) *any_hovered = true;
-
-        if (button.Muted) PushStyleVar(ImGuiStyleVar_Alpha, GetStyle().Alpha * 0.5f);
-        const auto bg_color = GetColorU32(
-            !button.Enabled   ? ImGuiCol_FrameBg :
-                button.Active ? ImGuiCol_ButtonActive :
-                hovered       ? ImGuiCol_ButtonHovered :
-                                ImGuiCol_Button
-        );
-        ui::DrawIconButton(button_min, button_max, bg_color, style.CornerRounding, button.Corners, button.Icon, icon_dim);
-        if (button.Muted) PopStyleVar();
-    }
-    PopID();
-    SetCursorScreenPos(saved_cursor_pos);
-    return clicked_index;
-}
-
-void DrawOverlayDropdownArrow(ImVec2 pos, ImVec2 size, const OverlayIconButtonStyle &style, const char *id, const char *popup_id, bool &any_hovered) {
-    const auto saved_cursor = GetCursorScreenPos();
-    SetCursorScreenPos(pos);
-    PushID(id);
-    InvisibleButton("##btn", size);
-    const bool arrow_hovered = IsItemHovered();
-    PopID();
-    SetCursorScreenPos(saved_cursor);
-
-    if (arrow_hovered) any_hovered = true;
-    const bool popup_open = IsPopupOpen(popup_id);
-    const auto bg_color = GetColorU32(popup_open ? ImGuiCol_ButtonActive : arrow_hovered ? ImGuiCol_ButtonHovered :
-                                                                                           ImGuiCol_Button);
-    ui::DrawIconButton(pos, pos + size, bg_color, style.CornerRounding, ImDrawFlags_RoundRight);
-
-    const auto center = pos + size * 0.5f;
-    constexpr float arrow_half = 3.5f;
-    GetWindowDrawList()->AddTriangleFilled(
-        center - ImVec2{arrow_half, arrow_half * 0.5f},
-        center + ImVec2{arrow_half, -arrow_half * 0.5f},
-        center + ImVec2{0.f, arrow_half * 0.5f},
-        GetColorU32(ImGuiCol_Text)
-    );
-    if (IsMouseClicked(0) && arrow_hovered && !popup_open) OpenPopup(popup_id);
-}
-
 // A world point's screen position in logical pixels.
 vec2 ScreenPx(const mat4 &vp, const rect &viewport_rect, vec3 p) {
     const auto cs = vp * vec4{p, 1.f};
@@ -707,80 +619,65 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
     const rect viewport_rect{ToVec2(GetWindowPos()), ToVec2(GetContentRegionAvail())};
     const bool active_transform = r.get<const GizmoInteraction>(viewport).IsUsing();
     static constexpr float OrientationGizmoSize{84};
-    const OverlayIconButtonStyle overlay_button_style{.CornerRounding = r.get<const InterfaceTheme>(viewport).IconButtonRounding};
+    const auto &interface_theme = r.get<const InterfaceTheme>(viewport);
+    const float rounding = interface_theme.IconButtonRounding;
+    const auto tool_button_size = std::bit_cast<ImVec2>(interface_theme.ToolButtonSize), header_button_size = std::bit_cast<ImVec2>(interface_theme.HeaderButtonSize);
     const float overlay_corner_gap = GetTextLineHeightWithSpacing() / 2.f;
-    const OverlayIconButtonStyle shading_button_style{
-        .ButtonSize = {overlay_button_style.ButtonSize.x * 0.75f, overlay_button_style.ButtonSize.y * 0.75f},
-        .IconScale = overlay_button_style.IconScale,
-        .CornerRounding = overlay_button_style.CornerRounding,
-    };
     // Preserve the guard through release because IsSingleClicked fires on release.
     if (!IsMouseDown(ImGuiMouseButton_Left)) frame.OverlayControlsHovered = false;
     const bool any_popup_open = IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
 
+    // Overlay buttons keep the cursor where the viewport content left it, and take no input during a transform.
+    const auto saved_cursor = GetCursorScreenPos();
+    PushItemFlag(ImGuiItemFlags_Disabled, active_transform);
     { // Transform mode pill buttons (top-left overlay)
         using enum TransformGizmo::Type;
+        using Tool = action::view::SetActiveTool::Tool;
         const auto &flags = r.get<const SelectionFlags>(viewport);
         const auto transform_type = EffectiveGizmoType(r, viewport);
-
-        const auto start_pos = std::bit_cast<ImVec2>(viewport_rect.pos) + GetWindowContentRegionMin() + ImVec2{overlay_corner_gap, overlay_corner_gap};
-        static constexpr float gap{4}; // Gap between select buttons and transform buttons
-        const float button_h = overlay_button_style.ButtonSize.y;
-        const auto make_button = [](const SvgResource *icon, ImVec2 offset, ImDrawFlags corners, bool enabled, bool active, const char *tooltip = nullptr) {
-            return OverlayIconButtonInfo{icon, offset, corners, enabled, active, tooltip};
-        };
         const auto gesture = r.get<const BoxSelectState>(viewport).Gesture;
-        const OverlayIconButtonInfo buttons[]{
-            make_button(icons.Transform.SelectBox.get(), {0.f, 0.f}, ImDrawFlags_RoundTop, true, transform_type == None && gesture == SelectionGesture::Box),
-            make_button(icons.Transform.Select.get(), {0.f, button_h}, ImDrawFlags_RoundBottom, true, transform_type == None && gesture == SelectionGesture::Click),
-            make_button(icons.Transform.Move.get(), {0.f, button_h * 2.f + gap}, ImDrawFlags_RoundTop, flags.Transformable, transform_type == Translate),
-            make_button(icons.Transform.Rotate.get(), {0.f, button_h * 3.f + gap}, ImDrawFlags_RoundNone, flags.Transformable, transform_type == Rotate),
-            make_button(icons.Transform.Scale.get(), {0.f, button_h * 4.f + gap}, ImDrawFlags_RoundNone, flags.Scalable, transform_type == Scale),
-            make_button(icons.Transform.Universal.get(), {0.f, button_h * 5.f + gap}, ImDrawFlags_RoundBottom, flags.Transformable, transform_type == Universal),
-        };
+        static constexpr float gap{4}; // Gap between select buttons and transform buttons
 
-        if (const auto clicked = DrawOverlayIconButtonGroup("TransformModes", start_pos, buttons, !active_transform, &frame.OverlayControlsHovered, overlay_button_style)) {
-            using Tool = action::view::SetActiveTool::Tool;
-            action::Emit(action::view::SetActiveTool{*clicked == 0 ? Tool::SelectBox : *clicked == 1 ? Tool::SelectClick :
-                                                         *clicked == 2                               ? Tool::Translate :
-                                                         *clicked == 3                               ? Tool::Rotate :
-                                                         *clicked == 4                               ? Tool::Scale :
-                                                                                                       Tool::Universal});
-        }
+        SetCursorScreenPos(std::bit_cast<ImVec2>(viewport_rect.pos) + GetWindowContentRegionMin() + ImVec2{overlay_corner_gap, overlay_corner_gap});
+        ui::BeginIconButtonGroup(ImGuiAxis_Y, tool_button_size, 2, rounding);
+        if (ui::IconButton("##SelectBox", icons.Transform.SelectBox.get(), transform_type == None && gesture == SelectionGesture::Box)) action::Emit(action::view::SetActiveTool{Tool::SelectBox});
+        if (ui::IconButton("##SelectClick", icons.Transform.Select.get(), transform_type == None && gesture == SelectionGesture::Click)) action::Emit(action::view::SetActiveTool{Tool::SelectClick});
+        ui::EndIconButtonGroup();
+        if (IsItemHovered()) frame.OverlayControlsHovered = true;
+
+        SetCursorScreenPos({GetItemRectMin().x, GetItemRectMax().y + gap});
+        ui::BeginIconButtonGroup(ImGuiAxis_Y, tool_button_size, 4, rounding);
+        if (ui::IconButton("##Translate", icons.Transform.Move.get(), transform_type == Translate, flags.Transformable)) action::Emit(action::view::SetActiveTool{Tool::Translate});
+        if (ui::IconButton("##Rotate", icons.Transform.Rotate.get(), transform_type == Rotate, flags.Transformable)) action::Emit(action::view::SetActiveTool{Tool::Rotate});
+        if (ui::IconButton("##Scale", icons.Transform.Scale.get(), transform_type == Scale, flags.Scalable)) action::Emit(action::view::SetActiveTool{Tool::Scale});
+        if (ui::IconButton("##Universal", icons.Transform.Universal.get(), transform_type == Universal, flags.Transformable)) action::Emit(action::view::SetActiveTool{Tool::Universal});
+        ui::EndIconButtonGroup();
+        if (IsItemHovered()) frame.OverlayControlsHovered = true;
     }
 
     const auto &settings = r.get<ViewportDisplay>(viewport);
 
-    const auto shading_arrow_w = shading_button_style.ButtonSize.y * 0.55f;
-    const float shading_button_w = shading_button_style.ButtonSize.x;
-    const float shading_group_width = shading_button_w * 4.f + shading_arrow_w;
-    const auto shading_button_h = shading_button_style.ButtonSize.y;
+    const float shading_arrow_w = header_button_size.y * 0.55f;
+    const float shading_group_width = header_button_size.x * 4.f + shading_arrow_w + ui::IconButtonSeam * 4.f;
     const auto buttons_gap = 6.f;
     const auto shading_start = std::bit_cast<ImVec2>(viewport_rect.pos + vec2{GetWindowContentRegionMax().x - shading_group_width, GetWindowContentRegionMin().y}) + ImVec2{-overlay_corner_gap, overlay_corner_gap};
 
     { // Viewport shading button group + dropdown (top-right overlay)
-        const auto start_pos = shading_start;
-        const auto make_shading_button = [&](const SvgResource *icon, float x, ImDrawFlags corners, ViewportShadingMode mode, const char *tooltip) {
-            return OverlayIconButtonInfo{icon, {x, 0.f}, corners, true, settings.ViewportShading == mode, tooltip};
+        const auto shading_button = [&](const char *id, const SvgResource *icon, ViewportShadingMode mode) {
+            if (ui::IconButton(id, icon, settings.ViewportShading == mode)) action::Emit(action::view::SetViewportShading{.Mode = mode});
         };
-        const OverlayIconButtonInfo buttons[]{
-            make_shading_button(icons.Shading.Wireframe.get(), 0.f, ImDrawFlags_RoundLeft, ViewportShadingMode::Wireframe, "Wireframe"),
-            make_shading_button(icons.Shading.Solid.get(), shading_button_w, ImDrawFlags_RoundNone, ViewportShadingMode::Solid, "Solid"),
-            make_shading_button(icons.Shading.MaterialPreview.get(), shading_button_w * 2.f, ImDrawFlags_RoundNone, ViewportShadingMode::MaterialPreview, "Material Preview"),
-            make_shading_button(icons.Shading.Rendered.get(), shading_button_w * 3.f, ImDrawFlags_RoundNone, ViewportShadingMode::Rendered, "Rendered"),
-        };
-
-        if (const auto clicked = DrawOverlayIconButtonGroup("ViewportShading", start_pos, buttons, !active_transform, &frame.OverlayControlsHovered, shading_button_style)) {
-            action::Emit(action::view::SetViewportShading{
-                .Mode = *clicked == 0 ? ViewportShadingMode::Wireframe : *clicked == 1 ? ViewportShadingMode::Solid :
-                    *clicked == 2                                                      ? ViewportShadingMode::MaterialPreview :
-                                                                                         ViewportShadingMode::Rendered,
-            });
-        }
-
-        DrawOverlayDropdownArrow(start_pos + ImVec2{shading_button_w * 4.f, 0.f}, {shading_arrow_w, shading_button_h}, shading_button_style, "##ShadingArrow", "##ShadingDropdown", frame.OverlayControlsHovered);
+        SetCursorScreenPos(shading_start);
+        ui::BeginIconButtonGroup(ImGuiAxis_X, header_button_size, 5, rounding);
+        shading_button("##Wireframe", icons.Shading.Wireframe.get(), ViewportShadingMode::Wireframe);
+        shading_button("##Solid", icons.Shading.Solid.get(), ViewportShadingMode::Solid);
+        shading_button("##MaterialPreview", icons.Shading.MaterialPreview.get(), ViewportShadingMode::MaterialPreview);
+        shading_button("##Rendered", icons.Shading.Rendered.get(), ViewportShadingMode::Rendered);
+        if (ui::IconButton("##ShadingArrow", nullptr, IsPopupOpen("##ShadingDropdown"), true, shading_arrow_w)) OpenPopup("##ShadingDropdown");
+        ui::DropdownArrow();
+        ui::EndIconButtonGroup();
+        if (IsItemHovered()) frame.OverlayControlsHovered = true;
         { // Dropdown popup
-            SetNextWindowPos(start_pos + ImVec2{shading_group_width, shading_button_h + 2.f}, ImGuiCond_Always, {1.f, 0.f});
+            SetNextWindowPos(shading_start + ImVec2{shading_group_width, header_button_size.y + 2.f}, ImGuiCond_Always, {1.f, 0.f});
             PushStyleVar(ImGuiStyleVar_WindowPadding, {8, 8});
             if (BeginPopup("##ShadingDropdown")) {
                 frame.OverlayControlsHovered = true;
@@ -975,33 +872,27 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
 
     { // X-ray toggle, left of the shading group as in Blender
         const bool applies = WorkbenchShading(settings.ViewportShading) || r.get<const Interaction>(viewport).Mode == InteractionMode::Edit;
-        const auto start_pos = shading_start - ImVec2{buttons_gap + shading_button_w, 0.f};
-        const OverlayIconButtonInfo button[]{
-            {icons.XRay.get(), {0.f, 0.f}, ImDrawFlags_RoundAll, true, XRayFlag(settings), "Toggle X-ray", !applies},
-        };
-        if (DrawOverlayIconButtonGroup("ViewportXRay", start_pos, button, !active_transform, &frame.OverlayControlsHovered, shading_button_style)) {
-            action::Emit(action::view::ToggleXRay{});
-        }
+        SetCursorScreenPos(shading_start - ImVec2{buttons_gap + header_button_size.x, 0.f});
+        ui::BeginIconButtonGroup(ImGuiAxis_X, header_button_size, 1, rounding);
+        if (!applies) PushStyleVar(ImGuiStyleVar_Alpha, GetStyle().Alpha * 0.5f);
+        if (ui::IconButton("##XRay", icons.XRay.get(), XRayFlag(settings))) action::Emit(action::view::ToggleXRay{});
+        if (!applies) PopStyleVar();
+        ui::EndIconButtonGroup();
+        if (IsItemHovered()) frame.OverlayControlsHovered = true;
     }
 
     { // Viewport overlays toggle + dropdown
-        const auto arrow_w = shading_arrow_w;
-        const auto icon_w = shading_button_w;
-        const auto button_h = shading_button_h;
-        const auto overlay_group_width = icon_w + arrow_w;
-        const auto group_start = shading_start - ImVec2{2.f * buttons_gap + shading_button_w + overlay_group_width, 0.f};
-
-        {
-            const OverlayIconButtonInfo icon_button[]{
-                {icons.Overlay.get(), {0.f, 0.f}, ImDrawFlags_RoundLeft, true, settings.ShowOverlays, "Toggle overlays"},
-            };
-            if (const auto clicked = DrawOverlayIconButtonGroup("ViewportOverlays", group_start, icon_button, !active_transform, &frame.OverlayControlsHovered, shading_button_style)) {
-                action::Emit(action::UpdateOf<&ViewportDisplay::ShowOverlays>(action::OnViewport{}, !settings.ShowOverlays));
-            }
-        }
-        DrawOverlayDropdownArrow(group_start + ImVec2{icon_w, 0.f}, {arrow_w, button_h}, shading_button_style, "##OverlayArrow", "##OverlayDropdown", frame.OverlayControlsHovered);
+        const float overlay_group_width = header_button_size.x + ui::IconButtonSeam + shading_arrow_w;
+        const auto group_start = shading_start - ImVec2{2.f * buttons_gap + header_button_size.x + overlay_group_width, 0.f};
+        SetCursorScreenPos(group_start);
+        ui::BeginIconButtonGroup(ImGuiAxis_X, header_button_size, 2, rounding);
+        if (ui::IconButton("##Overlays", icons.Overlay.get(), settings.ShowOverlays)) action::Emit(action::UpdateOf<&ViewportDisplay::ShowOverlays>(action::OnViewport{}, !settings.ShowOverlays));
+        if (ui::IconButton("##OverlayArrow", nullptr, IsPopupOpen("##OverlayDropdown"), true, shading_arrow_w)) OpenPopup("##OverlayDropdown");
+        ui::DropdownArrow();
+        ui::EndIconButtonGroup();
+        if (IsItemHovered()) frame.OverlayControlsHovered = true;
         { // Dropdown popup
-            SetNextWindowPos(group_start + ImVec2{0.f, button_h + 2.f});
+            SetNextWindowPos(group_start + ImVec2{0.f, header_button_size.y + 2.f});
             PushStyleVar(ImGuiStyleVar_WindowPadding, {8, 8});
             if (BeginPopup("##OverlayDropdown")) {
                 frame.OverlayControlsHovered = true;
@@ -1018,11 +909,12 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
             PopStyleVar();
         }
     }
+    PopItemFlag();
+    SetCursorScreenPos(saved_cursor);
 
     const auto &camera = r.get<const ViewCamera>(viewport);
     { // Orientation gizmo
-        const float shading_group_height = shading_button_style.ButtonSize.y;
-        const auto pos = viewport_rect.pos + vec2{GetWindowContentRegionMax().x - OrientationGizmoSize, GetWindowContentRegionMin().y} + vec2{-overlay_corner_gap, overlay_corner_gap * 2 + shading_group_height};
+        const auto pos = viewport_rect.pos + vec2{GetWindowContentRegionMax().x - OrientationGizmoSize, GetWindowContentRegionMin().y} + vec2{-overlay_corner_gap, overlay_corner_gap * 2 + header_button_size.y};
         if (auto interaction = OrientationGizmo::Interact(pos, OrientationGizmoSize, camera, !active_transform && !any_popup_open)) {
             std::visit(
                 overloaded{

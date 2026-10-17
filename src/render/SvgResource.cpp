@@ -41,8 +41,8 @@ SvgResource::SvgResource(const mtl::Context &ctx, const std::filesystem::path &p
     : Imp(std::make_unique<SvgResource::Impl>(ctx, path)) {}
 SvgResource::~SvgResource() = default;
 
-void SvgResource::DrawIcon(vec2 size) const {
-    if (Imp->Image) ImGui::Image(mtl::ImGuiTextureId(*Imp->Image), std::bit_cast<ImVec2>(size));
+void SvgResource::DrawIcon(vec2 min, vec2 max) const {
+    if (Imp->Image) ImGui::GetWindowDrawList()->AddImage(mtl::ImGuiTextureId(*Imp->Image), std::bit_cast<ImVec2>(min), std::bit_cast<ImVec2>(max), {0, 0}, {1, 1}, ImGui::GetColorU32(IM_COL32_WHITE));
 }
 
 std::unique_ptr<SvgResource> LoadSvg(const mtl::Context &ctx, const std::filesystem::path &path) {

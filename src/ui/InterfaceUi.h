@@ -4,13 +4,20 @@
 #include "state/Entity.h"
 
 #include "imgui.h"
+#include "imgui_internal.h"
 
 struct SvgResource;
 
 namespace ui {
 inline ImU32 U32(numeric::vec4 c) { return ImGui::ColorConvertFloat4ToU32({c.x, c.y, c.z, c.w}); }
 void StyleColors();
-// Fills an icon button's background over [min, max] and centers `icon` at `icon_dim` pixels square.
-void DrawIconButton(ImVec2 min, ImVec2 max, ImU32 color, float rounding, ImDrawFlags corners, const SvgResource *icon = nullptr, float icon_dim = 0);
+inline constexpr float IconButtonSeam{1};
+// Lays out the next `count` icon buttons edge to edge along `axis` at `size` each, with an `IconButtonSeam` between neighbors and `rounding` on the group's outer corners.
+void BeginIconButtonGroup(ImGuiAxis axis, ImVec2 size, int count, float rounding);
+// Returns true when clicked. `length` overrides the button's extent along the group axis.
+bool IconButton(const char *id, const SvgResource *icon, bool active = false, bool enabled = true, float length = 0);
+void EndIconButtonGroup();
+// Draws a dropdown arrow centered in the last item.
+void DropdownArrow();
 void DrawInterfaceStyle(state::Scene &, state::Entity viewport);
 } // namespace ui

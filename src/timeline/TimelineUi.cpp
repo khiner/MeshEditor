@@ -17,15 +17,6 @@ using namespace ImGui;
 namespace {
 constexpr float MinPixelsPerFrame{1}, MaxPixelsPerFrame{400};
 
-bool IconButton(const char *id, const SvgResource *icon, float rounding, ImDrawFlags corners = ImDrawFlags_RoundAll, float width_scale = 1.f) {
-    const float h = GetFrameHeight();
-    PushID(id);
-    const bool clicked = InvisibleButton("##btn", {h * width_scale, h});
-    ui::DrawIconButton(GetItemRectMin(), GetItemRectMax(), GetColorU32(IsItemHovered() ? ImGuiCol_ButtonHovered : ImGuiCol_Button), rounding, corners, icon, h * 0.8f);
-    PopID();
-    return clicked;
-}
-
 int ComputeMajorStep(float pixels_per_frame, float min_label_spacing) {
     static constexpr int steps[]{1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000};
     for (const int s : steps) {
@@ -67,47 +58,37 @@ std::optional<action::Action> RenderTimeline(const TimelineRange &range, const T
     {
         // Pause spans the reverse and forward play slots while playing.
         constexpr float RecordSlots{1}, TransportSlots{6}, DeltaSlots{3};
-        const auto record_p = bar_origin + ImVec2{(w - h * (RecordSlots + TransportSlots + DeltaSlots) - spacing.x * 2) * 0.5f, 0.f};
+        const float bar_w = h * (RecordSlots + TransportSlots + DeltaSlots) + ui::IconButtonSeam * (TransportSlots - 1 + DeltaSlots - 1) + spacing.x * 2;
+        const auto record_p = bar_origin + ImVec2{(w - bar_w) * 0.5f, 0.f};
         SetCursorScreenPos(record_p);
-        if (IconButton("record", nullptr, rounding, ImDrawFlags_RoundAll)) emit(action::UpdateOf<&Animations::Record>(action::OnViewport{}, !animations.Record));
+        ui::BeginIconButtonGroup(ImGuiAxis_X, {h, h}, 1, rounding);
+        if (ui::IconButton("##record", nullptr)) emit(action::UpdateOf<&Animations::Record>(action::OnViewport{}, !animations.Record));
         SetItemTooltip("Auto keying: insert keyframes for animated properties on edit");
         GetWindowDrawList()->AddCircleFilled((GetItemRectMin() + GetItemRectMax()) * 0.5f, h * 0.22f, animations.Record ? IM_COL32(230, 60, 50, 255) : IM_COL32(120, 120, 120, 255));
+        ui::EndIconButtonGroup();
 
         const auto transport_p = ImVec2{record_p.x + h * RecordSlots + spacing.x, record_p.y};
         SetCursorScreenPos(transport_p);
-        if (IconButton("jump_start", icons.JumpStart.get(), rounding, ImDrawFlags_RoundLeft)) emit(action::timeline::JumpToStart{});
-        SetCursorScreenPos({transport_p.x + h, transport_p.y});
-        if (IconButton("prev_keyframe", icons.PrevKeyframe.get(), rounding, ImDrawFlags_RoundNone)) emit(action::timeline::JumpKeyframe{.Next = false});
-        SetCursorScreenPos({transport_p.x + h * 2, transport_p.y});
+        ui::BeginIconButtonGroup(ImGuiAxis_X, {h, h}, playback.Playing ? 5 : 6, rounding);
+        if (ui::IconButton("##jump_start", icons.JumpStart.get())) emit(action::timeline::JumpToStart{});
+        if (ui::IconButton("##prev_keyframe", icons.PrevKeyframe.get())) emit(action::timeline::JumpKeyframe{.Next = false});
         if (playback.Playing) {
-            if (IconButton("pause", icons.Pause.get(), rounding, ImDrawFlags_RoundNone, 2.f)) emit(action::timeline::TogglePlay{playback.CurrentFrame});
+            if (ui::IconButton("##pause", icons.Pause.get(), false, true, h * 2 + ui::IconButtonSeam)) emit(action::timeline::TogglePlay{playback.CurrentFrame});
         } else {
-            if (IconButton("play_reverse", icons.PlayReverse.get(), rounding, ImDrawFlags_RoundNone)) emit(action::timeline::TogglePlay{playback.CurrentFrame, /*Reverse=*/true});
-            SetCursorScreenPos({transport_p.x + h * 3, transport_p.y});
-            if (IconButton("play", icons.Play.get(), rounding, ImDrawFlags_RoundNone)) emit(action::timeline::TogglePlay{playback.CurrentFrame});
+            if (ui::IconButton("##play_reverse", icons.PlayReverse.get())) emit(action::timeline::TogglePlay{playback.CurrentFrame, /*Reverse=*/true});
+            if (ui::IconButton("##play", icons.Play.get())) emit(action::timeline::TogglePlay{playback.CurrentFrame});
         }
-        SetCursorScreenPos({transport_p.x + h * 4, transport_p.y});
-        if (IconButton("next_keyframe", icons.NextKeyframe.get(), rounding, ImDrawFlags_RoundNone)) emit(action::timeline::JumpKeyframe{.Next = true});
-        SetCursorScreenPos({transport_p.x + h * 5, transport_p.y});
-        if (IconButton("jump_end", icons.JumpEnd.get(), rounding, ImDrawFlags_RoundRight)) emit(action::timeline::JumpToEnd{});
+        if (ui::IconButton("##next_keyframe", icons.NextKeyframe.get())) emit(action::timeline::JumpKeyframe{.Next = true});
+        if (ui::IconButton("##jump_end", icons.JumpEnd.get())) emit(action::timeline::JumpToEnd{});
+        ui::EndIconButtonGroup();
 
-        const auto delta_p = ImVec2{transport_p.x + h * TransportSlots + spacing.x, transport_p.y};
-        SetCursorScreenPos(delta_p);
-        if (IconButton("jump_back", icons.FramePrev.get(), rounding, ImDrawFlags_RoundLeft)) emit(action::timeline::JumpTime{.Backward = true});
-        SetCursorScreenPos({delta_p.x + h, delta_p.y});
-        if (IconButton("jump_forward", icons.FrameNext.get(), rounding, ImDrawFlags_RoundNone)) emit(action::timeline::JumpTime{.Backward = false});
-        SetCursorScreenPos({delta_p.x + h * 2, delta_p.y});
-        if (IconButton("playback_options", nullptr, rounding, ImDrawFlags_RoundRight)) OpenPopup("##PlaybackOptions");
-        {
-            const auto center = (GetItemRectMin() + GetItemRectMax()) * 0.5f;
-            constexpr float arrow_half = 3.5f;
-            GetWindowDrawList()->AddTriangleFilled(
-                center - ImVec2{arrow_half, arrow_half * 0.5f},
-                center + ImVec2{arrow_half, -arrow_half * 0.5f},
-                center + ImVec2{0.f, arrow_half * 0.5f},
-                GetColorU32(ImGuiCol_Text)
-            );
-        }
+        SetCursorScreenPos({GetItemRectMax().x + spacing.x, transport_p.y});
+        ui::BeginIconButtonGroup(ImGuiAxis_X, {h, h}, 3, rounding);
+        if (ui::IconButton("##jump_back", icons.FramePrev.get())) emit(action::timeline::JumpTime{.Backward = true});
+        if (ui::IconButton("##jump_forward", icons.FrameNext.get())) emit(action::timeline::JumpTime{.Backward = false});
+        if (ui::IconButton("##playback_options", nullptr)) OpenPopup("##PlaybackOptions");
+        ui::DropdownArrow();
+        ui::EndIconButtonGroup();
         if (BeginPopup("##PlaybackOptions")) {
             auto nav = navigation;
             bool changed = Checkbox("Wrap Timeline Navigation", &nav.Wrap);
@@ -154,13 +135,15 @@ std::optional<action::Action> RenderTimeline(const TimelineRange &range, const T
             EndCombo();
         }
         SameLine(0, spacing.x);
-        if (IconButton("add_animation", nullptr, rounding, ImDrawFlags_RoundAll)) emit(action::animation::AddAnimation{std::format("Animation {}", animations.Names.size() + 1)});
+        ui::BeginIconButtonGroup(ImGuiAxis_X, {h, h}, 1, rounding);
+        if (ui::IconButton("##add_animation", nullptr)) emit(action::animation::AddAnimation{std::format("Animation {}", animations.Names.size() + 1)});
         SetItemTooltip("Create a new animation");
         const auto plus_center = (GetItemRectMin() + GetItemRectMax()) * 0.5f;
         constexpr float arm = 4.f;
         auto *draw = GetWindowDrawList();
         draw->AddLine({plus_center.x - arm, plus_center.y}, {plus_center.x + arm, plus_center.y}, GetColorU32(ImGuiCol_Text), 1.5f);
         draw->AddLine({plus_center.x, plus_center.y - arm}, {plus_center.x, plus_center.y + arm}, GetColorU32(ImGuiCol_Text), 1.5f);
+        ui::EndIconButtonGroup();
     }
     SetCursorScreenPos(bar_origin);
     Dummy({h, h});
@@ -237,7 +220,7 @@ std::optional<action::Action> RenderTimeline(const TimelineRange &range, const T
         const auto text_size = CalcTextSize(label.c_str());
         const float lx = cfx - text_size.x * 0.5f;
         const float ly = p0.y + (ruler_h - text_size.y) * 0.5f;
-        const ImVec2 pad{theme.PlayheadLabelPaddingX, theme.PlayheadLabelPaddingY};
+        const auto pad = std::bit_cast<ImVec2>(theme.PlayheadLabelPadding);
         dl->AddRectFilled(ImVec2{lx, ly} - pad, ImVec2{lx + text_size.x, ly + text_size.y} + pad, ui::U32(colors.PlayheadLabelBackground), theme.PlayheadLabelRounding);
         dl->AddText({lx, ly}, ui::U32(colors.PlayheadLabel), label.c_str());
     }
