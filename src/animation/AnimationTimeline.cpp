@@ -4,6 +4,7 @@
 #include "viewport/ViewportIcons.h"
 
 #include "ui/CtrlShortcut.h"
+#include "ui/FieldEdit.h"
 
 #include <format>
 
@@ -71,8 +72,14 @@ std::optional<action::Action> RenderAnimationTimeline(const TimelineRange &range
     const auto bar_origin = GetCursorScreenPos();
     {
         // Pause spans the reverse and forward play slots while playing.
-        constexpr float TransportSlots{6}, DeltaSlots{3};
-        const auto transport_p = bar_origin + ImVec2{(w - h * (TransportSlots + DeltaSlots) - spacing.x) * 0.5f, 0.f};
+        constexpr float RecordSlots{1}, TransportSlots{6}, DeltaSlots{3};
+        const auto record_p = bar_origin + ImVec2{(w - h * (RecordSlots + TransportSlots + DeltaSlots) - spacing.x * 2) * 0.5f, 0.f};
+        SetCursorScreenPos(record_p);
+        if (IconButton("record", nullptr, ImDrawFlags_RoundCornersAll)) emit(action::UpdateOf<&Animations::Record>(action::OnViewport{}, !animations.Record));
+        SetItemTooltip("Auto keying: insert keyframes for animated properties on edit");
+        GetWindowDrawList()->AddCircleFilled((GetItemRectMin() + GetItemRectMax()) * 0.5f, h * 0.22f, animations.Record ? IM_COL32(230, 60, 50, 255) : IM_COL32(120, 120, 120, 255));
+
+        const auto transport_p = ImVec2{record_p.x + h * RecordSlots + spacing.x, record_p.y};
         SetCursorScreenPos(transport_p);
         if (IconButton("jump_start", icons.JumpStart.get(), ImDrawFlags_RoundCornersLeft)) emit(action::timeline::JumpToStart{});
         SetCursorScreenPos({transport_p.x + h, transport_p.y});
@@ -141,56 +148,39 @@ std::optional<action::Action> RenderAnimationTimeline(const TimelineRange &range
         }
     }
 
-    SetCursorScreenPos(bar_origin);
-    {
-        if (IconButton("record", nullptr, ImDrawFlags_RoundCornersAll)) emit(action::UpdateOf<&Animations::Record>(action::OnViewport{}, !animations.Record));
-        SetItemTooltip("Auto keying: insert keyframes for animated properties on edit");
-        const auto center = (GetItemRectMin() + GetItemRectMax()) * 0.5f;
-        GetWindowDrawList()->AddCircleFilled(center, h * 0.22f, animations.Record ? IM_COL32(230, 60, 50, 255) : IM_COL32(120, 120, 120, 255));
-        if (!animations.Names.empty()) {
-            SameLine(0, spacing.x);
-            SetNextItemWidth(GetFontSize() * 9);
-            if (BeginCombo("##animation", animations.Names[animations.Active].c_str())) {
-                for (uint32_t i = 0; i < animations.Names.size(); ++i) {
-                    PushID(int(i));
-                    if (Selectable(animations.Names[i].empty() ? "(unnamed)" : animations.Names[i].c_str(), i == animations.Active)) emit(action::animation::SelectAnimation{i});
-                    PopID();
-                }
-                EndCombo();
+    if (!animations.Names.empty()) {
+        SetCursorScreenPos(bar_origin);
+        SetNextItemWidth(GetFontSize() * 9);
+        if (BeginCombo("##animation", animations.Names[animations.Active].c_str())) {
+            for (uint32_t i = 0; i < animations.Names.size(); ++i) {
+                PushID(int(i));
+                if (Selectable(animations.Names[i].empty() ? "(unnamed)" : animations.Names[i].c_str(), i == animations.Active)) emit(action::animation::SelectAnimation{i});
+                PopID();
             }
-            SameLine(0, spacing.x);
-            if (IconButton("add_animation", nullptr, ImDrawFlags_RoundCornersAll)) emit(action::animation::AddAnimation{std::format("Animation {}", animations.Names.size() + 1)});
-            SetItemTooltip("Create a new animation");
-            const auto plus_center = (GetItemRectMin() + GetItemRectMax()) * 0.5f;
-            constexpr float arm = 4.f;
-            auto *draw = GetWindowDrawList();
-            draw->AddLine({plus_center.x - arm, plus_center.y}, {plus_center.x + arm, plus_center.y}, GetColorU32(ImGuiCol_Text), 1.5f);
-            draw->AddLine({plus_center.x, plus_center.y - arm}, {plus_center.x, plus_center.y + arm}, GetColorU32(ImGuiCol_Text), 1.5f);
+            EndCombo();
         }
+        SameLine(0, spacing.x);
+        if (IconButton("add_animation", nullptr, ImDrawFlags_RoundCornersAll)) emit(action::animation::AddAnimation{std::format("Animation {}", animations.Names.size() + 1)});
+        SetItemTooltip("Create a new animation");
+        const auto plus_center = (GetItemRectMin() + GetItemRectMax()) * 0.5f;
+        constexpr float arm = 4.f;
+        auto *draw = GetWindowDrawList();
+        draw->AddLine({plus_center.x - arm, plus_center.y}, {plus_center.x + arm, plus_center.y}, GetColorU32(ImGuiCol_Text), 1.5f);
+        draw->AddLine({plus_center.x, plus_center.y - arm}, {plus_center.x, plus_center.y + arm}, GetColorU32(ImGuiCol_Text), 1.5f);
     }
     SetCursorScreenPos(bar_origin);
     Dummy({h, h});
-    static constexpr float input_width{50};
-    SameLine(w - CalcTextSize("Frame").x - CalcTextSize("Start").x - CalcTextSize("End").x - spacing.x * 6 - input_width * 3);
-    PushItemWidth(input_width);
-    {
-        int frame = playback.CurrentFrame;
-        InputInt("Frame", &frame, 0, 0);
-        if (IsItemDeactivatedAfterEdit()) emit(action::timeline::SetFrame{frame});
-    }
-    SameLine(0, spacing.x * 2);
-    {
-        int start = range.StartFrame;
-        InputInt("Start", &start, 0, 0);
-        if (IsItemDeactivatedAfterEdit()) emit(action::timeline::SetStartFrame{start});
-    }
+    const float frame_width = GetFontSize() * 4, range_width = GetFontSize() * 11;
+    SameLine(w - frame_width - range_width - spacing.x * 3);
+    SetNextItemWidth(frame_width);
+    int frame = playback.CurrentFrame;
+    ui::Gesture(DragInt("##frame", &frame), [&] { return action::timeline::SetFrame{frame}; });
     SameLine(0, spacing.x);
-    {
-        int end = range.EndFrame;
-        InputInt("End", &end, 0, 0);
-        if (IsItemDeactivatedAfterEdit()) emit(action::timeline::SetEndFrame{end});
-    }
-    PopItemWidth();
+    SetNextItemWidth(range_width);
+    int start = range.StartFrame, end = range.EndFrame;
+    ui::Gesture(DragIntRange2("##range", &start, &end, 1.f, 0, 0, "Start %d", "End %d"), [&] {
+        return start != range.StartFrame ? action::MakeAction(action::timeline::SetStartFrame{start}) : action::MakeAction(action::timeline::SetEndFrame{end});
+    });
     SetCursorScreenPos({bar_origin.x, bar_origin.y + h});
     Dummy({0, 0});
 
