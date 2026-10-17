@@ -192,7 +192,6 @@ def app_command(
         "--frames",
         str(frames),
         "--profile",
-        "--quiet",
     ]
     command.extend(case_args(case))
     for value, flag in ((profile, "--profile-json"), (image, "--screenshot")):

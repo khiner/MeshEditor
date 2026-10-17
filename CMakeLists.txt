@@ -88,7 +88,6 @@ option(MESHEDITOR_SURFACE_AUDIO "Build the surface-contact audio model" $ENV{SUR
 
 option(MESHEDITOR_APP "Build the MeshEditor app" ON)
 option(MESHEDITOR_VALIDATE_ACTIONS "Validate replay and round-trip after every committed action" $ENV{VALIDATE_ACTIONS})
-option(QUIET "Disable Timer prints" OFF)
 set(RESTORE_SESSION_RETAIN 5 CACHE STRING "Max number of inactive unnamed projects to retain")
 if(MESHEDITOR_VALIDATE_ACTIONS AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
     message(FATAL_ERROR "MESHEDITOR_VALIDATE_ACTIONS needs a Debug build")

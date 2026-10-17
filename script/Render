@@ -85,7 +85,7 @@ def count_jobs(spool: Path) -> int:
 def run_worker(spool: Path, extra_args: list[str], scenes: list[Scene], reported_results: dict[Path, str]) -> None:
     """Process the spool, restarting after timeouts and recording structured job results."""
     while (remaining := count_jobs(spool)) > 0:
-        proc = subprocess.Popen([Exe, "--render-queue", str(spool), "-q", *extra_args], stdout=subprocess.PIPE, text=True)
+        proc = subprocess.Popen([Exe, "--render-queue", str(spool), *extra_args], stdout=subprocess.PIPE, text=True)
         lines: queue.Queue[str | None] = queue.Queue()
         threading.Thread(target=lambda: ([lines.put(l.rstrip("\n")) for l in proc.stdout], lines.put(None)), daemon=True).start()
         while True:
@@ -132,7 +132,7 @@ def overlay_scenes(render_dir: Path) -> list[Scene]:
     result = []
     for case in manifest["cases"]:
         out = render_dir / "Benchmarks" / "Overlays" / case["id"] / case["id"]
-        flags = ["--headless", "--quiet", "--frames", str(case.get("captureFrames", 1)),
+        flags = ["--headless", "--frames", str(case.get("captureFrames", 1)),
                  "--screenshot", str(out) + ".webp", *bench["case_args"](case)]
         scene = str(scenes[case["scene"]])
         result.append((out, scene, flags))

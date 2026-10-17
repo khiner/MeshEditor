@@ -8,8 +8,7 @@ target_include_directories(mesheditor_headers SYSTEM INTERFACE
 target_compile_definitions(mesheditor_headers INTERFACE
     $<$<CONFIG:Debug>:DEBUG_BUILD>
     $<$<CONFIG:Release>:RELEASE_BUILD>
-    $<$<BOOL:${MESHEDITOR_SURFACE_AUDIO}>:SURFACE_AUDIO>
-    $<$<BOOL:${QUIET}>:QUIET>)
+    $<$<BOOL:${MESHEDITOR_SURFACE_AUDIO}>:SURFACE_AUDIO>)
 
 add_library(mesheditor_serialization INTERFACE)
 target_include_directories(mesheditor_serialization SYSTEM INTERFACE "${CMAKE_SOURCE_DIR}/lib/zpp_bits")

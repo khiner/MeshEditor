@@ -177,7 +177,6 @@ $ cd build && ./MeshEditor [file|--empty] [options]
   Opening it replays every recorded action from the empty scene and fails on divergence.
   Omit `file` to load the default scene.
 * `--empty` starts with an empty scene instead of the default scene.
-* `--quiet` / `-q` suppresses timer output.
 
 `--play`, `--record`, and `--screenshot` use material preview shading with hidden overlays.
 `--play` and `--record` run animation and physics; `--screenshot` captures the first frame.
@@ -335,12 +334,6 @@ $ external/RealImpact/dataset/download.sh 9_BowlCeramic 22_Cup # download just t
 ```
 
 An object without recordings still loads its mesh, microphone positions, and impact vertices, but has no sample-based audio model.
-
-**Quiet mode**: Disable timer output at compile time (equivalent to always passing `--quiet`):
-
-```shell
-$ cmake -B build -DQUIET=ON .
-```
 
 ### Renderer benchmarks
 

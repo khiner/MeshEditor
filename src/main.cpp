@@ -60,7 +60,6 @@ using std::ranges::any_of, std::ranges::all_of;
 namespace fs = std::filesystem;
 
 namespace {
-bool LogEnabled{true};
 using SteadyClock = std::chrono::steady_clock;
 double ElapsedMs(SteadyClock::time_point begin) { return std::chrono::duration<double, std::milli>(SteadyClock::now() - begin).count(); }
 
@@ -1024,7 +1023,6 @@ Benchmarking:
   --profile-json PATH         Write the profile report to PATH
 
 Other:
-  --quiet, -q                 Suppress progress output
   --help, -h                  Show this message)"
 };
 
@@ -1346,9 +1344,7 @@ CaptureDriver BeginCaptureSession(state::Scene &r, state::Entity viewport, const
     return driver;
 }
 
-void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest &capture) {
-    LogEnabled = !quiet;
-
+void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
     MacPlatform::InitPaths();
 
     MacPlatform::Window window;
@@ -1786,9 +1782,7 @@ SceneStatus RunHeadlessScene(state::Scene &r, state::Entity viewport, const char
 }
 
 // Run scenes offscreen on a fixed-step, GPU-paced clock.
-void RunHeadlessEngine(bool quiet, auto &&scenes) {
-    LogEnabled = !quiet;
-
+void RunHeadlessEngine(auto &&scenes) {
     MacPlatform::InitPaths();
     const File::TemporaryDirectory temporary{fs::temp_directory_path()};
     if (temporary.Path.empty()) throw std::runtime_error("Cannot create headless working directory.");
@@ -1834,9 +1828,9 @@ SceneStatus FinishHeadlessScene(state::Scene &r, state::Entity viewport, SceneSt
     return std::max(status, closed ? errors : SceneStatus::Failed);
 }
 
-bool RunHeadless(const char *initial_file, bool quiet, bool empty, const CaptureRequest &capture) {
+bool RunHeadless(const char *initial_file, bool empty, const CaptureRequest &capture) {
     bool ok = true;
-    RunHeadlessEngine(quiet, [&](state::Scene &r, state::Entity viewport) {
+    RunHeadlessEngine([&](state::Scene &r, state::Entity viewport) {
         ok = FinishHeadlessScene(r, viewport, RunHeadlessScene(r, viewport, initial_file, empty, capture)) == SceneStatus::Ok;
     });
     return ok;
@@ -1847,11 +1841,6 @@ struct LaunchOptions {
     bool Empty{false}, Headless{false};
     fs::path RenderQueue{};
     CaptureRequest Capture;
-#ifdef QUIET
-    bool Quiet{true};
-#else
-    bool Quiet{false};
-#endif
 };
 
 // Queue jobs and direct launches interpret capture settings identically.
@@ -1861,15 +1850,14 @@ std::expected<LaunchOptions, int> ParseLaunchOptions(std::span<const std::string
     };
 
     LaunchOptions options{.Capture = std::move(capture_defaults)};
-    auto &[initial_file, empty, headless, render_queue, capture, quiet] = options;
+    auto &[initial_file, empty, headless, render_queue, capture] = options;
     for (auto it = args.begin(); it != args.end(); ++it) {
         const std::string_view a{*it};
         if (a == "--help" || a == "-h") {
             std::println("{}", Usage);
             return std::unexpected(0);
         }
-        if (a == "--quiet" || a == "-q") quiet = true;
-        else if (a == "--play") {
+        if (a == "--play") {
             capture.Play = true;
             if (std::next(it) != args.end() && looks_numeric(*std::next(it))) capture.PlayDuration = std::atof((++it)->c_str());
         } else if (a == "--record" && std::next(it) != args.end()) {
@@ -2008,9 +1996,9 @@ std::optional<RenderJob> ClaimRenderJob(const fs::path &spool) {
 }
 
 // Render every queued job with one engine and write each scene's console output to its log.
-bool RunHeadlessQueue(const fs::path &spool, bool quiet, const CaptureRequest &harness) {
+bool RunHeadlessQueue(const fs::path &spool, const CaptureRequest &harness) {
     bool succeeded = true;
-    RunHeadlessEngine(quiet, [&](state::Scene &r, state::Entity viewport) {
+    RunHeadlessEngine([&](state::Scene &r, state::Entity viewport) {
         const int launcher_out = ::dup(STDOUT_FILENO), launcher_err = ::dup(STDERR_FILENO);
         while (const auto job = ClaimRenderJob(spool)) {
             const auto begin = SteadyClock::now();
@@ -2062,13 +2050,13 @@ int main(int argc, char **argv) {
 
     const auto options = ParseLaunchOptions(std::vector<std::string>{argv + 1, argv + argc});
     if (!options) return options.error();
-    const auto &[file, empty, headless, render_queue, capture, quiet] = *options;
+    const auto &[file, empty, headless, render_queue, capture] = *options;
     const char *initial_file = file.empty() ? nullptr : file.c_str();
 
     bool headless_ok = true;
-    if (!render_queue.empty()) headless_ok = RunHeadlessQueue(render_queue, quiet, capture);
-    else if (headless) headless_ok = RunHeadless(initial_file, quiet, empty, capture);
-    else run(initial_file, quiet, empty, capture);
+    if (!render_queue.empty()) headless_ok = RunHeadlessQueue(render_queue, capture);
+    else if (headless) headless_ok = RunHeadless(initial_file, empty, capture);
+    else run(initial_file, empty, capture);
     // Report failed captures and headless scene loads through the process status.
     return !headless_ok || VideoRecorder::AnyFailed() ? 1 : 0;
 }
