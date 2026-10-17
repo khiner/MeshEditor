@@ -12,6 +12,8 @@
 #include "viewport/FrameState.h"
 #include "viewport/InteractionComponents.h"
 
+#include <imgui_internal.h>
+
 #include <bit>
 #include <numeric>
 
@@ -35,15 +37,8 @@ enum class KindGroup : uint8_t { SourceOutput,
                                  Generators,
                                  Instances };
 constexpr const char *GroupNames[]{"Source and Output", "Operators", "Combine", "Attributes", "Values", "Generators", "Instances"};
-constexpr vec4 NodeThemeColors::*GroupColors[]{
-    &NodeThemeColors::SourceOutput,
-    &NodeThemeColors::Operators,
-    &NodeThemeColors::Combine,
-    &NodeThemeColors::Attributes,
-    &NodeThemeColors::Values,
-    &NodeThemeColors::Generators,
-    &NodeThemeColors::Instances,
-};
+using C = NodeThemeColors;
+constexpr vec4 C::*GroupColors[]{&C::SourceOutputTitle, &C::OperatorsTitle, &C::CombineTitle, &C::AttributesTitle, &C::ValuesTitle, &C::GeneratorsTitle, &C::InstancesTitle};
 using AttributeKinds = action::TypeList<Position, Normal, Index, NamedAttribute, VectorMath, FloatMath, Compare, BooleanMath, StoreNamedAttribute, SetPosition>;
 using InstanceKinds = action::TypeList<MeshToPoints, InstanceOnPoints, RealizeInstances>;
 template<typename K> constexpr KindGroup GroupOf() {
@@ -61,15 +56,8 @@ constexpr auto KindTitles{[]<typename... Ks>(action::TypeList<Ks...>) { return s
 
 constexpr const char *SocketLabels[]{"Geometry", "Selection", "Attribute", "Instances", "Value"};
 const char *LabelOf(Socket socket) { return socket.Name ? socket.Name : SocketLabels[uint8_t(socket.Type)]; }
-constexpr vec4 NodeThemeColors::*TypeColors[]{
-    &NodeThemeColors::FloatSocket,
-    &NodeThemeColors::MixedSocket,
-    &NodeThemeColors::VectorSocket,
-    &NodeThemeColors::RotationSocket,
-    &NodeThemeColors::IntegerSocket,
-    &NodeThemeColors::BooleanSocket,
-};
-vec4 SocketColor(const NodeThemeColors &colors, Socket socket) {
+constexpr vec4 C::*TypeColors[]{&C::FloatSocket, &C::MixedSocket, &C::VectorSocket, &C::RotationSocket, &C::IntegerSocket, &C::BooleanSocket};
+vec4 SocketColor(const C &colors, Socket socket) {
     if (socket.Type == SocketType::Geometry) return colors.GeometrySocket;
     if (socket.Type == SocketType::Instances) return colors.InstancesSocket;
     return std::has_single_bit(socket.Types) ? colors.*TypeColors[std::countr_zero(socket.Types)] : colors.MixedSocket;
@@ -90,18 +78,7 @@ void DrawSocket(ImDrawList &draw, const NodeTheme &theme, ImVec2 at, float radiu
     draw.AddCircleFilled(at, radius, fill);
     draw.AddCircle(at, radius, outline, 0, theme.OutlineWidth);
 }
-float LengthSquared(ImVec2 v) { return v.x * v.x + v.y * v.y; }
 
-struct CanvasView {
-    ImVec2 Origin, Offset;
-    float Zoom;
-    ImVec2 ToScreen(ImVec2 p) const { return Origin + Offset + p * Zoom; }
-    ImVec2 ToCanvas(ImVec2 s) const { return (s - Origin - Offset) / Zoom; }
-};
-
-struct Rect {
-    ImVec2 Min, Max;
-};
 // A node shows inputs down its left edge and outputs down its right, one per row.
 // Its parameters sit in a tray under the fixed inputs, one chevron row when closed and one row per parameter when open.
 // The row an input socket sits on, and the rows the inputs take.
@@ -113,50 +90,49 @@ ImVec2 SocketOffset(const NodeTheme &theme, uint16_t kind, uint16_t socket, floa
     const auto row = float(input ? InputRow(kind, socket, expanded) : socket - InputCount[kind]);
     return {input ? 0.f : width, theme.TitleHeight + (row + .5f) * theme.RowHeight};
 }
+
+// The screen layout of a procedure's nodes, with canvas point p at Origin + p * Zoom.
 struct Graph {
     const GeometryProcedure &Procedure;
     const NodeTheme &Theme;
-    CanvasView View;
+    ImVec2 Origin;
+    float Zoom;
     uint32_t Expanded;
-    std::vector<Rect> Rects;
-    bool IsExpanded(uint32_t node) const { return node == Expanded; }
-    ImVec2 SocketAt(uint32_t node, uint16_t socket) const {
-        const auto &rect = Rects[node];
-        return rect.Min + SocketOffset(Theme, Procedure.Nodes[node].Kind, socket, (rect.Max.x - rect.Min.x) / View.Zoom, IsExpanded(node)) * View.Zoom;
-    }
-    ImVec2 ParametersAt(uint32_t node) const {
-        const auto &rect = Rects[node];
-        return {rect.Min.x, rect.Min.y + (Theme.TitleHeight + (float(ParameterRange(Procedure.Nodes[node].Kind).first) + .5f) * Theme.RowHeight) * View.Zoom};
-    }
-    Rect TrayRect(uint32_t node) const {
-        const auto [first, end] = ParameterRange(Procedure.Nodes[node].Kind);
-        const float reach = Theme.SocketRadius * 1.2f * View.Zoom + 3.f, half = Theme.RowHeight * .5f * View.Zoom;
-        const auto at = ParametersAt(node);
-        return {{at.x - reach, at.y - half}, {at.x + reach, at.y - half + float(end - first) * Theme.RowHeight * View.Zoom}};
-    }
+    std::vector<ImRect> Rects;
 };
-bool Contains(const Rect &rect, ImVec2 p) { return p.x >= rect.Min.x && p.y >= rect.Min.y && p.x < rect.Max.x && p.y < rect.Max.y; }
-Graph GraphOf(const state::Scene &r, const GeometryProcedure &procedure, const NodeTheme &theme, const CanvasView &view, uint32_t expanded) {
+Graph GraphOf(const state::Scene &r, const GeometryProcedure &procedure, const NodeTheme &theme, ImVec2 origin, float zoom, uint32_t expanded) {
     // A node index a deletion left stale opens no tray.
     const bool open = expanded < procedure.Nodes.size() && ParameterRange(procedure.Nodes[expanded].Kind).second > ParameterRange(procedure.Nodes[expanded].Kind).first;
-    Graph graph{procedure, theme, view, open ? expanded : NoNode, {}};
+    Graph graph{procedure, theme, origin, zoom, open ? expanded : NoNode, {}};
     graph.Rects.reserve(procedure.Nodes.size());
     for (uint32_t n = 0u; n < procedure.Nodes.size(); ++n) {
         const auto [entity, kind] = procedure.Nodes[n];
         const auto &layout = r.get<const NodeLayout>(entity);
-        const uint32_t inputs = InputRows(kind, graph.IsExpanded(n)), outputs = SocketCount[kind] - InputCount[kind];
+        const uint32_t inputs = InputRows(kind, n == graph.Expanded), outputs = SocketCount[kind] - InputCount[kind];
         const auto rows = float(std::max({inputs, outputs, 1u}));
         const ImVec2 min = Im(layout.Position), size{std::max(layout.Size.x, theme.NodeWidth), std::max(layout.Size.y, theme.TitleHeight + rows * theme.RowHeight + theme.NodePadding)};
-        graph.Rects.push_back({view.ToScreen(min), view.ToScreen(min + size)});
+        graph.Rects.push_back({origin + min * zoom, origin + (min + size) * zoom});
     }
     return graph;
 }
+// A collapsed node's parameters chevron sits at its first parameter socket.
+ImVec2 SocketAt(const Graph &graph, uint32_t node, uint16_t socket) {
+    const auto &rect = graph.Rects[node];
+    return rect.Min + SocketOffset(graph.Theme, graph.Procedure.Nodes[node].Kind, socket, rect.GetWidth() / graph.Zoom, node == graph.Expanded) * graph.Zoom;
+}
+ImRect TrayRect(const Graph &graph, uint32_t node) {
+    const auto [first, end] = ParameterRange(graph.Procedure.Nodes[node].Kind);
+    const float reach = graph.Theme.SocketRadius * 1.2f * graph.Zoom + 3.f, row = graph.Theme.RowHeight * graph.Zoom;
+    const auto at = SocketAt(graph, node, first);
+    return {{at.x - reach, at.y - row * .5f}, {at.x + reach, at.y + (float(end - first) - .5f) * row}};
+}
 bool IsLinked(const GeometryProcedure &procedure, uint32_t node, uint16_t socket) { return procedure.Inputs[InputFirst(procedure, node) + socket].FromNode != NoNode; }
-std::vector<uint16_t> LinkedParameters(const GeometryProcedure &procedure, uint32_t node) {
-    const auto [first, end] = ParameterRange(procedure.Nodes[node].Kind);
-    std::vector<uint16_t> linked;
+std::vector<Socket> LinkedParameters(const GeometryProcedure &procedure, uint32_t node) {
+    const auto kind = procedure.Nodes[node].Kind;
+    const auto [first, end] = ParameterRange(kind);
+    std::vector<Socket> linked;
     for (auto s = first; s < end; ++s) {
-        if (IsLinked(procedure, node, s)) linked.push_back(s);
+        if (IsLinked(procedure, node, s)) linked.push_back(KindSockets(kind)[s]);
     }
     return linked;
 }
@@ -168,29 +144,15 @@ Wire WireOf(ImVec2 from, ImVec2 to, float curving) {
     const ImVec2 handle{curving * dx * straightening, 0.f};
     return {from, from + handle, to - handle, to};
 }
+ImVec2 NearestOnWire(const Wire &w, ImVec2 p) { return ImBezierCubicClosestPoint(w[0], w[1], w[2], w[3], p, 24); }
 // Visits each linked input as `f(wire, link, node, input)`.
-template<typename F> void ForEachWire(const Graph &graph, F &&f) {
+void ForEachWire(const Graph &graph, auto &&f) {
     const auto &procedure = graph.Procedure;
     for (uint32_t n = 0u, slot = 0u; n < procedure.Nodes.size(); ++n) {
         for (uint16_t i = 0u; i < InputCount[procedure.Nodes[n].Kind]; ++i, ++slot) {
-            if (const auto link = procedure.Inputs[slot]; link.FromNode != NoNode) f(WireOf(graph.SocketAt(link.FromNode, link.FromSocket), graph.SocketAt(n, i), graph.Theme.WireCurving), link, n, i);
+            if (const auto link = procedure.Inputs[slot]; link.FromNode != NoNode) f(WireOf(SocketAt(graph, link.FromNode, link.FromSocket), SocketAt(graph, n, i), graph.Theme.WireCurving), link, n, i);
         }
     }
-}
-ImVec2 PointOn(const Wire &w, float t) {
-    const float u = 1.f - t;
-    return w[0] * (u * u * u) + w[1] * (3.f * u * u * t) + w[2] * (3.f * u * t * t) + w[3] * (t * t * t);
-}
-ImVec2 NearestOnWire(const Wire &w, ImVec2 p) {
-    constexpr int Segments{24};
-    auto nearest = w[0];
-    for (int s = 0; s < Segments; ++s) {
-        const auto a = PointOn(w, float(s) / Segments), ab = PointOn(w, float(s + 1) / Segments) - a;
-        const float length = LengthSquared(ab);
-        const float t = length > 0.f ? std::clamp(((p.x - a.x) * ab.x + (p.y - a.y) * ab.y) / length, 0.f, 1.f) : 0.f;
-        if (const auto q = a + ab * t; LengthSquared(p - q) < LengthSquared(p - nearest)) nearest = q;
-    }
-    return nearest;
 }
 
 enum class HitType : uint8_t { None,
@@ -205,33 +167,31 @@ struct Hit {
 };
 // The expanded node comes first, then sockets before node bodies, the last drawn node first, and links come last.
 Hit HitTest(const Graph &graph, ImVec2 mouse) {
-    const auto count = uint32_t(graph.Rects.size());
-    const float reach = std::max(graph.Theme.SocketRadius * graph.View.Zoom, 4.f) + 3.f;
-    const auto near = [&](ImVec2 at) { return LengthSquared(at - mouse) <= reach * reach; };
-    const auto inside = [&](uint32_t n) { return Contains(graph.Rects[n], mouse); };
+    const float reach = std::max(graph.Theme.SocketRadius * graph.Zoom, 4.f) + 3.f;
     const auto sockets = [&](uint32_t n) -> std::optional<Hit> {
         const auto kind = graph.Procedure.Nodes[n].Kind;
         const auto [first, end] = ParameterRange(kind);
+        const bool collapsed = n != graph.Expanded;
+        const auto near = [&](uint16_t s) { return ImLengthSqr(SocketAt(graph, n, s) - mouse) <= reach * reach; };
         for (uint16_t s = 0u; s < SocketCount[kind]; ++s) {
-            if (!graph.IsExpanded(n) && s >= first && s < end) continue;
-            if (near(graph.SocketAt(n, s))) return Hit{HitType::Socket, n, s};
+            if (!(collapsed && s >= first && s < end) && near(s)) return Hit{HitType::Socket, n, s};
         }
-        if (first < end && !graph.IsExpanded(n) && near(graph.ParametersAt(n))) return Hit{HitType::Parameters, n, first};
+        if (first < end && collapsed && near(first)) return Hit{HitType::Parameters, n, first};
         return {};
     };
     if (graph.Expanded != NoNode) {
         if (const auto hit = sockets(graph.Expanded)) return *hit;
-        if (inside(graph.Expanded)) return {HitType::Node, graph.Expanded, 0u};
+        if (graph.Rects[graph.Expanded].Contains(mouse)) return {HitType::Node, graph.Expanded, 0u};
     }
-    for (auto n = count; n-- > 0u;) {
+    for (auto n = uint32_t(graph.Rects.size()); n-- > 0u;) {
         if (const auto hit = sockets(n)) return *hit;
     }
-    for (auto n = count; n-- > 0u;) {
-        if (inside(n)) return {HitType::Node, n, 0u};
+    for (auto n = uint32_t(graph.Rects.size()); n-- > 0u;) {
+        if (graph.Rects[n].Contains(mouse)) return {HitType::Node, n, 0u};
     }
     Hit hit;
     ForEachWire(graph, [&](const Wire &wire, SocketLink, uint32_t node, uint16_t input) {
-        if (hit.Type == HitType::None && LengthSquared(NearestOnWire(wire, mouse) - mouse) <= LinkReach * LinkReach) hit = {HitType::Link, node, input};
+        if (hit.Type == HitType::None && ImLengthSqr(NearestOnWire(wire, mouse) - mouse) <= LinkReach * LinkReach) hit = {HitType::Link, node, input};
     });
     return hit;
 }
@@ -258,8 +218,9 @@ action::nodes::Link LinkOf(const GeometryProcedure &procedure, state::Entity mes
 // Drops the held wire on the node's sockets in the range: it links with the one socket that takes it, or the port picker offers the sockets that do.
 void DropOnNode(NodesWindow &window, const GeometryProcedure &procedure, state::Entity mesh_entity, uint32_t node, std::pair<uint16_t, uint16_t> range) {
     const auto sockets = LinkingSockets(procedure, window.DragNode, window.DragSocket, node, range);
-    if (sockets.size() == 1u) action::Emit(LinkOf(procedure, mesh_entity, window.DragNode, window.DragSocket, node, sockets.front()));
-    if (sockets.size() > 1u) {
+    if (sockets.size() == 1u) {
+        action::Emit(LinkOf(procedure, mesh_entity, window.DragNode, window.DragSocket, node, sockets.front()));
+    } else if (sockets.size() > 1u) {
         window.PickNode = node;
         window.PickRange = range;
         OpenPopup("##PickPort");
@@ -273,22 +234,6 @@ void Grab(NodesWindow &window, uint32_t after) {
     window.GrabAfter = after;
     window.Press = vec2{GetIO().MousePos};
     window.Moved = false;
-}
-
-// Commit node creation and linking as one gesture, then begin moving it.
-void ContinueLink(NodesWindow &window, state::Entity mesh_entity, const GeometryProcedure *procedure) {
-    if (procedure && procedure->Nodes.size() > window.LinkAfter) {
-        action::Emit(LinkOf(*procedure, mesh_entity, window.DragNode, window.DragSocket, window.LinkAfter, window.LinkSocket), action::Phase::Stage);
-        Grab(window, window.LinkAfter);
-    }
-    action::Commit();
-    window.LinkAfter = NoNode;
-}
-
-void ContinueMakeLink(NodesWindow &window) {
-    action::Emit(window.PendingLinks.front(), action::Phase::Stage);
-    window.PendingLinks.erase(window.PendingLinks.begin());
-    if (window.PendingLinks.empty()) action::Commit();
 }
 
 std::vector<uint32_t> SelectedNodes(const state::Scene &r, const GeometryProcedure &procedure) {
@@ -336,18 +281,16 @@ struct Insert {
     ImVec2 At;
     float Shift;
 };
-// Return the nearest compatible link for insertion of the sole selected node.
-std::optional<Insert> InsertTarget(const state::Scene &r, const Graph &graph, uint32_t node, ImVec2 mouse) {
-    const auto &procedure = graph.Procedure;
-    if (SelectedNodes(r, procedure) != std::vector{node}) return {};
-    const auto input_first = InputFirsts(procedure);
+// Return the nearest link the node inserts into.
+std::optional<Insert> InsertTarget(const Graph &graph, uint32_t node, ImVec2 mouse) {
+    const auto input_first = InputFirsts(graph.Procedure);
     std::optional<Insert> insert;
     float nearest = LinkReach * LinkReach;
     ForEachWire(graph, [&](const Wire &wire, SocketLink, uint32_t to_node, uint16_t input) {
         const auto at = NearestOnWire(wire, mouse);
-        if (const float distance = LengthSquared(at - mouse); distance <= nearest && Inserts(procedure, input_first, node, to_node, input)) {
+        if (const float distance = ImLengthSqr(at - mouse); distance <= nearest && Inserts(graph.Procedure, input_first, node, to_node, input)) {
             nearest = distance;
-            const float gap = (graph.Rects[to_node].Min.x - graph.Rects[node].Max.x) / graph.View.Zoom;
+            const float gap = (graph.Rects[to_node].Min.x - graph.Rects[node].Max.x) / graph.Zoom;
             insert = Insert{to_node, input, at, std::max(NodeSpacing - gap, 0.f)};
         }
     });
@@ -355,15 +298,20 @@ std::optional<Insert> InsertTarget(const state::Scene &r, const Graph &graph, ui
 }
 
 // Emit canvas actions and insert a dragged node when released over an insertion target.
-void Interact(const state::Scene &r, NodesWindow &window, state::Entity mesh_entity, const Graph &graph, const Hit &hit, const std::optional<Insert> &insert) {
+void Interact(const state::Scene &r, NodesWindow &window, state::Entity mesh_entity, const Graph &graph, const std::vector<uint32_t> &selected, const Hit &hit, const std::optional<Insert> &insert) {
     const auto &io = GetIO();
     const auto &procedure = graph.Procedure;
     const auto &nodes = procedure.Nodes;
     const auto mouse = io.MousePos;
     const bool mouse_moved = io.MouseDelta.x != 0.f || io.MouseDelta.y != 0.f;
-    const auto select = [&](std::vector<uint32_t> selected, uint32_t active) { action::Emit(action::nodes::SelectNodes{mesh_entity, std::move(selected), active}); };
+    const auto select = [&](std::vector<uint32_t> selection, uint32_t active) { action::Emit(action::nodes::SelectNodes{mesh_entity, std::move(selection), active}); };
+    const auto open_add = [&](bool linking) {
+        window.AddAt = vec2{(mouse - graph.Origin) / graph.Zoom};
+        window.Linking = linking;
+        OpenPopup("##AddNode");
+    };
     const auto follow = [&] {
-        const auto position = Im(window.MoveStart) + (mouse - Im(window.Press)) / graph.View.Zoom;
+        const auto position = Im(window.MoveStart) + (mouse - Im(window.Press)) / graph.Zoom;
         action::Emit(action::UpdateOf<&NodeLayout::Position>(action::OnSelectedDelta{}, vec2{position}), action::Phase::Stage);
     };
     // Commit staged move or grab actions together with insertion, or cancel the whole operation.
@@ -405,18 +353,18 @@ void Interact(const state::Scene &r, NodesWindow &window, state::Entity mesh_ent
                 window.DragSocket = hit.Socket;
             } else if (hit.Type == HitType::Node || hit.Type == HitType::Parameters) {
                 // Shift-click removes the active node from selection; otherwise it extends selection and activates the clicked node.
-                const bool selected = r.all_of<NodeSelected>(nodes[hit.Node].Entity), active = hit.Node == procedure.ActiveNode;
-                if (io.KeyShift && selected && active) {
-                    auto remaining = SelectedNodes(r, procedure);
+                const bool is_selected = r.all_of<NodeSelected>(nodes[hit.Node].Entity), active = hit.Node == procedure.ActiveNode;
+                if (io.KeyShift && is_selected && active) {
+                    auto remaining = selected;
                     std::erase(remaining, hit.Node);
                     select(std::move(remaining), NoNode);
                 } else {
-                    if (io.KeyShift || selected) {
-                        auto extended = SelectedNodes(r, procedure);
-                        if (!selected) extended.insert(std::ranges::lower_bound(extended, hit.Node), hit.Node);
-                        if (!active) select(std::move(extended), hit.Node);
-                    } else {
+                    if (!io.KeyShift && !is_selected) {
                         select({hit.Node}, hit.Node);
+                    } else if (!active) {
+                        auto extended = selected;
+                        if (!is_selected) extended.insert(std::ranges::lower_bound(extended, hit.Node), hit.Node);
+                        select(std::move(extended), hit.Node);
                     }
                     window.Drag = NodeDrag::Move;
                     window.DragNode = hit.Node;
@@ -426,27 +374,21 @@ void Interact(const state::Scene &r, NodesWindow &window, state::Entity mesh_ent
                 window.Drag = NodeDrag::Box;
             }
         } else if (IsMouseClicked(ImGuiMouseButton_Right)) {
-            window.AddAt = vec2{graph.View.ToCanvas(mouse)};
-            window.Linking = false;
-            OpenPopup("##AddNode");
+            open_add(false);
         }
     }
     // Route editing shortcuts to the hovered node canvas.
     if (window.Drag == NodeDrag::None && window.Hovered) {
         constexpr auto Key{ImGuiInputFlags_RouteGlobal};
         if (Shortcut(ImGuiMod_Shift | ImGuiKey_A, Key)) {
-            window.AddAt = vec2{graph.View.ToCanvas(mouse)};
-            window.Linking = false;
-            OpenPopup("##AddNode");
+            open_add(false);
         } else if (Shortcut(ImGuiKey_X, Key) || Shortcut(ImGuiKey_Delete, Key) || Shortcut(ImGuiKey_Backspace, Key)) {
-            if (auto selected = SelectedNodes(r, procedure); !selected.empty()) action::Emit(action::nodes::DeleteNodes{mesh_entity, std::move(selected)});
-        } else if (Shortcut(ImGuiKey_J, Key)) {
-            window.PendingLinks = MakeLinks(r, mesh_entity, procedure, SelectedNodes(r, procedure), false);
-        } else if (Shortcut(ImGuiMod_Shift | ImGuiKey_J, Key)) {
-            window.PendingLinks = MakeLinks(r, mesh_entity, procedure, SelectedNodes(r, procedure), true);
+            if (!selected.empty()) action::Emit(action::nodes::DeleteNodes{mesh_entity, selected});
+        } else if (const bool replace = Shortcut(ImGuiMod_Shift | ImGuiKey_J, Key); replace || Shortcut(ImGuiKey_J, Key)) {
+            window.PendingLinks = MakeLinks(r, mesh_entity, procedure, selected, replace);
         } else if (Shortcut(ImGuiMod_Shift | ImGuiKey_D, Key)) {
-            if (auto selected = SelectedNodes(r, procedure); !selected.empty()) {
-                action::Emit(action::nodes::DuplicateNodes{mesh_entity, std::move(selected), {}});
+            if (!selected.empty()) {
+                action::Emit(action::nodes::DuplicateNodes{mesh_entity, selected, {}});
                 Grab(window, uint32_t(nodes.size()));
             }
         } else if (Shortcut(ImGuiKey_G, Key)) {
@@ -454,9 +396,9 @@ void Interact(const state::Scene &r, NodesWindow &window, state::Entity mesh_ent
         } else if (Shortcut(ImGuiKey_A, Key)) {
             std::vector<uint32_t> all(nodes.size());
             std::ranges::iota(all, 0u);
-            if (SelectedNodes(r, procedure) != all) select(std::move(all), procedure.ActiveNode);
+            if (selected != all) select(std::move(all), procedure.ActiveNode);
         } else if (Shortcut(ImGuiMod_Alt | ImGuiKey_A, Key)) {
-            if (!SelectedNodes(r, procedure).empty() || procedure.ActiveNode != NoNode) select({}, NoNode);
+            if (!selected.empty() || procedure.ActiveNode != NoNode) select({}, NoNode);
         }
     }
     if (window.Drag == NodeDrag::Move) {
@@ -473,29 +415,21 @@ void Interact(const state::Scene &r, NodesWindow &window, state::Entity mesh_ent
         }
     }
     if (window.Drag == NodeDrag::Wire && !IsMouseDown(ImGuiMouseButton_Left)) {
-        const auto held = KindSockets(nodes[window.DragNode].Kind)[window.DragSocket];
         if (hit.Type == HitType::Socket) DropOnNode(window, procedure, mesh_entity, hit.Node, {hit.Socket, uint16_t(hit.Socket + 1u)});
         else if (hit.Type == HitType::Parameters) DropOnNode(window, procedure, mesh_entity, hit.Node, ParameterRange(nodes[hit.Node].Kind));
         else if (hit.Type == HitType::Node) DropOnNode(window, procedure, mesh_entity, hit.Node, {0u, SocketCount[nodes[hit.Node].Kind]});
-        else if (held.Direction == SocketDirection::In && IsLinked(procedure, window.DragNode, window.DragSocket)) action::Emit(action::nodes::Unlink{mesh_entity, window.DragNode, window.DragSocket});
-        else if (window.Hovered) {
-            // Open Add on an empty-canvas wire drop.
-            window.AddAt = vec2{graph.View.ToCanvas(mouse)};
-            window.Linking = true;
-            OpenPopup("##AddNode");
-        }
+        else if (KindSockets(nodes[window.DragNode].Kind)[window.DragSocket].Direction == SocketDirection::In && IsLinked(procedure, window.DragNode, window.DragSocket)) action::Emit(action::nodes::Unlink{mesh_entity, window.DragNode, window.DragSocket});
+        else if (window.Hovered) open_add(true); // Open Add on an empty-canvas wire drop.
         window.Drag = NodeDrag::None;
     }
     if (window.Drag == NodeDrag::Box && !IsMouseDown(ImGuiMouseButton_Left)) {
-        const auto selected = SelectedNodes(r, procedure);
         const auto press = Im(window.Press);
-        if (LengthSquared(mouse - press) >= io.MouseDragThreshold * io.MouseDragThreshold) {
+        if (ImLengthSqr(mouse - press) >= io.MouseDragThreshold * io.MouseDragThreshold) {
             // Select nodes intersecting the box, extending selection with Shift and retaining the active node while selected.
-            const ImVec2 lo{std::min(press.x, mouse.x), std::min(press.y, mouse.y)}, hi{std::max(press.x, mouse.x), std::max(press.y, mouse.y)};
+            const ImRect box{ImMin(press, mouse), ImMax(press, mouse)};
             std::vector<uint32_t> banded;
             for (uint32_t n = 0u; n < nodes.size(); ++n) {
-                const auto &[min, max] = graph.Rects[n];
-                if ((min.x < hi.x && min.y < hi.y && max.x > lo.x && max.y > lo.y) || (io.KeyShift && std::ranges::binary_search(selected, n))) banded.push_back(n);
+                if (box.Overlaps(graph.Rects[n]) || (io.KeyShift && std::ranges::binary_search(selected, n))) banded.push_back(n);
             }
             const auto active = std::ranges::binary_search(banded, procedure.ActiveNode) ? procedure.ActiveNode : NoNode;
             if (banded != selected || active != procedure.ActiveNode) select(std::move(banded), active);
@@ -542,28 +476,24 @@ std::vector<LinkingEntry> LinkingEntries(uint16_t held_kind, uint16_t held_socke
 constexpr int ResultRows{10};
 // Display at most ResultRows rows and scroll to the highlight when it changes.
 // row(i, highlighted) returns whether row i was clicked.
-// A click or Enter calls pick(i) and closes the popup.
-void DrawResults(int count, float width, int &highlight, int previous, bool enter, auto &&row, auto &&pick) {
+// Returns the clicked row, or the highlighted row on Enter, and closes the popup.
+std::optional<int> DrawResults(int count, float width, int &highlight, int previous, bool enter, auto &&row) {
     highlight = std::max(0, std::min(highlight, count - 1));
     const float rows = float(std::min(count, ResultRows));
     BeginChild("##results", {width, rows > 0.f ? rows * GetTextLineHeightWithSpacing() : 1.f}, ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
+    std::optional<int> picked;
     for (int i = 0; i < count; ++i) {
-        // Explicitly close the popup after a result-region click.
-        if (row(i, i == highlight)) {
-            pick(i);
-            CloseCurrentPopup();
-        }
+        if (row(i, i == highlight)) picked = i;
         if (i == highlight && highlight != previous) SetScrollHereY();
     }
     EndChild();
-    if (enter && count > 0) {
-        pick(highlight);
-        CloseCurrentPopup();
-    }
+    if (enter && count > 0) picked = highlight;
+    if (picked) CloseCurrentPopup();
+    return picked;
 }
 
 // Add the selected node at the menu position and begin dragging it.
-// After dropping a wire, list compatible sockets and connect the new node through ContinueLink.
+// After dropping a wire, list compatible sockets and connect the new node once it exists.
 void DrawAddMenu(NodesWindow &window, const NodeTheme &theme, state::Entity mesh_entity, const GeometryProcedure &procedure, bool interactive) {
     if (!BeginPopup("##AddNode")) return;
     const auto &nodes = procedure.Nodes;
@@ -589,7 +519,7 @@ void DrawAddMenu(NodesWindow &window, const NodeTheme &theme, state::Entity mesh
         std::erase_if(entries, [&](const LinkingEntry &entry) { return !Matches(entry.Label, text); });
         float width = GetFontSize() * 14.f;
         for (const auto &entry : entries) width = std::max(width, CalcTextSize(entry.Label.c_str()).x + GetFontSize() * 2.f);
-        const auto row = [&](int i, bool highlighted) {
+        const auto picked = DrawResults(int(entries.size()), width, window.SearchHighlight, highlight, enter, [&](int i, bool highlighted) {
             PushID(i);
             const auto at = GetCursorScreenPos();
             const bool clicked = Selectable("##entry", highlighted);
@@ -599,15 +529,14 @@ void DrawAddMenu(NodesWindow &window, const NodeTheme &theme, state::Entity mesh
             SameLine();
             TextUnformatted(entries[i].SocketName);
             return clicked;
-        };
-        DrawResults(int(entries.size()), width, window.SearchHighlight, highlight, enter, row, [&](int i) {
-            if (!interactive) return;
+        });
+        if (picked && interactive) {
             // Place the linking socket at the drop point.
-            const auto &entry = entries[i];
+            const auto &entry = entries[*picked];
             action::Emit(action::nodes::AddNode{mesh_entity, entry.Kind, vec2{Im(window.AddAt) - SocketOffset(theme, entry.Kind, entry.Socket, theme.NodeWidth, false)}}, action::Phase::Stage);
             window.LinkAfter = uint32_t(nodes.size());
             window.LinkSocket = entry.Socket;
-        });
+        }
     } else if (text.empty()) {
         for (uint8_t group = 0u; group < uint8_t(std::size(GroupNames)); ++group) {
             if (!BeginMenu(GroupNames[group])) continue;
@@ -618,13 +547,13 @@ void DrawAddMenu(NodesWindow &window, const NodeTheme &theme, state::Entity mesh
         }
     } else {
         const auto found = SearchKinds(text);
-        const auto row = [&](int i, bool highlighted) {
+        const auto picked = DrawResults(int(found.size()), GetFontSize() * 18.f, window.SearchHighlight, highlight, enter, [&](int i, bool highlighted) {
             const bool clicked = Selectable(KindTitles[found[i]], highlighted);
             SameLine();
             TextDisabled("%s", GroupNames[uint8_t(KindGroups[found[i]])]);
             return clicked;
-        };
-        DrawResults(int(found.size()), GetFontSize() * 18.f, window.SearchHighlight, highlight, enter, row, [&](int i) { add(found[i]); });
+        });
+        if (picked) add(found[*picked]);
     }
     if (IsKeyPressed(ImGuiKey_Escape)) CloseCurrentPopup();
     EndPopup();
@@ -659,7 +588,7 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
     InvisibleButton("##canvas", {std::max(size.x, 1.f), std::max(size.y, 1.f)}, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
     const auto end = GetItemRectMax();
     const auto mouse = io.MousePos;
-    window.Hovered = IsItemHovered() || (IsItemActive() && mouse.x >= origin.x && mouse.y >= origin.y && mouse.x < end.x && mouse.y < end.y);
+    window.Hovered = IsItemHovered() || (IsItemActive() && ImRect{origin, end}.Contains(mouse));
     SetItemKeyOwner(ImGuiKey_MouseWheelY);
     auto &canvas = window.Canvas;
     if (interactive) {
@@ -683,14 +612,16 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
             else window.Drag = NodeDrag::None;
         }
     }
-    const auto graph = GraphOf(r, procedure, theme, {origin, Im(canvas.Offset), canvas.Zoom}, window.Expanded);
+    const auto graph = GraphOf(r, procedure, theme, origin + Im(canvas.Offset), canvas.Zoom, window.Expanded);
     const auto hit = window.Hovered ? HitTest(graph, mouse) : Hit{};
+    const auto selected = SelectedNodes(r, procedure);
+    // A held node inserts into a link while it is the sole selected node.
     const bool holding = (window.Drag == NodeDrag::Move && window.Moved) || (window.Drag == NodeDrag::Grab && window.DragNode != NoNode);
-    const auto insert = holding ? InsertTarget(r, graph, window.DragNode, mouse) : std::nullopt;
-    if (interactive) Interact(r, window, mesh_entity, graph, hit, insert);
+    const auto insert = holding && selected == std::vector{window.DragNode} ? InsertTarget(graph, window.DragNode, mouse) : std::nullopt;
+    if (interactive) Interact(r, window, mesh_entity, graph, selected, hit, insert);
     // Keep parameters expanded while hovered, wiring, or selecting a port.
     const bool wiring = window.Drag == NodeDrag::Wire;
-    const bool stays_open = graph.Expanded != NoNode && (Contains(graph.TrayRect(graph.Expanded), mouse) || (wiring && window.DragNode == graph.Expanded) || window.PickNode == graph.Expanded);
+    const bool stays_open = graph.Expanded != NoNode && (TrayRect(graph, graph.Expanded).Contains(mouse) || (wiring && window.DragNode == graph.Expanded) || window.PickNode == graph.Expanded);
     if (hit.Type == HitType::Parameters) window.Expanded = hit.Node;
     else if (!stays_open) window.Expanded = NoNode;
     const auto target = window.Drag == NodeDrag::None ? std::nullopt : insert;
@@ -716,11 +647,10 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
     const auto draw_node = [&](uint32_t n) {
         const auto [entity, kind] = nodes[n];
         const auto &[min, max] = graph.Rects[n];
-        const bool expanded = graph.IsExpanded(n);
-        const float rounding = theme.Rounding * zoom, title_bottom = min.y + theme.TitleHeight * zoom;
-        const bool result = n == procedure.OutputNode;
+        const bool expanded = n == graph.Expanded;
+        const float rounding = theme.Rounding * zoom;
         draw.AddRectFilled(min, max, U32(expanded ? vec4{colors.Node.x, colors.Node.y, colors.Node.z, 1.f} : colors.Node), rounding);
-        draw.AddRectFilled(min, {max.x, title_bottom}, U32(result ? colors.OutputNode : colors.*GroupColors[uint8_t(KindGroups[kind])]), rounding, ImDrawFlags_RoundCornersTop);
+        draw.AddRectFilled(min, {max.x, min.y + theme.TitleHeight * zoom}, U32(n == procedure.OutputNode ? colors.OutputNodeTitle : colors.*GroupColors[uint8_t(KindGroups[kind])]), rounding, ImDrawFlags_RoundCornersTop);
         const ImVec4 clip{min.x, min.y, max.x, max.y};
         draw.AddText(nullptr, font_size, {min.x + theme.TitlePadding * zoom, min.y + (theme.TitleHeight * zoom - font_size) * .5f}, U32(colors.Title), KindTitles[kind], nullptr, 0.f, &clip);
         const auto sockets = KindSockets(kind);
@@ -728,35 +658,34 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
         const bool erring = r.all_of<NodeError>(entity);
         // Prioritize active, selected, then error border colors; retain an inner error line on selected nodes with errors.
         // Expand borders by half a unit to align ImGui strokes with socket centers.
-        const bool active = n == procedure.ActiveNode, selected = r.all_of<NodeSelected>(entity);
-        const auto error = U32(colors.Error);
-        const auto border = active ? U32(colors.Active) : selected ? U32(colors.Selected) :
-            erring                                                 ? error :
-                                                                     U32(colors.Border);
+        const bool active = n == procedure.ActiveNode, is_selected = r.all_of<NodeSelected>(entity);
+        const auto border = active ? colors.Active : is_selected ? colors.Selected :
+            erring                                               ? colors.Error :
+                                                                   colors.Border;
         constexpr ImVec2 StrokeInset{.5f, .5f};
-        draw.AddRect(min - StrokeInset, max + StrokeInset, border, rounding, erring || active || selected ? theme.HighlightBorderWidth : theme.BorderWidth);
-        if (erring && (active || selected)) draw.AddRect(min + ImVec2{3.f, 3.f}, max - ImVec2{3.f, 3.f}, error, rounding, 1.f);
+        draw.AddRect(min - StrokeInset, max + StrokeInset, U32(border), rounding, erring || active || is_selected ? theme.HighlightBorderWidth : theme.BorderWidth);
+        if (erring && (active || is_selected)) draw.AddRect(min + ImVec2{3.f, 3.f}, max - ImVec2{3.f, 3.f}, U32(colors.Error), rounding, 1.f);
         if (expanded) {
-            const auto tray = graph.TrayRect(n);
+            const auto tray = TrayRect(graph, n);
             draw.AddRectFilled(tray.Min, tray.Max, U32(colors.Tray), rounding);
             draw.AddRect(tray.Min, tray.Max, U32(colors.Outline), rounding, theme.OutlineWidth);
         }
         for (uint16_t s = 0u; s < uint16_t(sockets.size()); ++s) {
             const bool parameter = s >= first && s < end_parameter;
             if (parameter && !expanded) continue;
-            const auto at = graph.SocketAt(n, s);
+            const auto at = SocketAt(graph, n, s);
             const bool held = wiring && window.DragNode == n && window.DragSocket == s;
             const bool dimmed = wiring && !held && !Accepts(procedure, window.DragNode, window.DragSocket, n, s);
             const bool hovered = hit.Type == HitType::Socket && hit.Node == n && hit.Socket == s && !dimmed;
             DrawSocket(draw, theme, at, theme.SocketRadius * zoom, sockets[s], dimmed ? colors.Dimmed : SocketColor(colors, sockets[s]), hovered);
             const auto *label = LabelOf(sockets[s]);
             const float x = s >= InputCount[kind] ? at.x - inset - GetFont()->CalcTextSizeA(font_size, FLT_MAX, 0.f, label).x : at.x + inset + (parameter ? theme.ParameterIndent * zoom : 0.f);
-            draw.AddText(nullptr, font_size, {x, at.y - font_size * .5f}, U32(dimmed ? colors.DimmedLabel : parameter ? colors.ParameterLabel :
-                                                                                                                        colors.Label),
-                         label, nullptr, 0.f, &clip);
+            const auto color = dimmed ? colors.DimmedLabel : parameter ? colors.ParameterLabel :
+                                                                         colors.Label;
+            draw.AddText(nullptr, font_size, {x, at.y - font_size * .5f}, U32(color), label, nullptr, 0.f, &clip);
         }
         if (first < end_parameter && !expanded) {
-            const auto at = graph.ParametersAt(n);
+            const auto at = SocketAt(graph, n, first);
             const auto linked = LinkedParameters(procedure, n);
             const bool dimmed = wiring && LinkingSockets(procedure, window.DragNode, window.DragSocket, n, {first, end_parameter}).empty();
             const bool hovered = hit.Type == HitType::Parameters && hit.Node == n && !dimmed;
@@ -768,18 +697,18 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
             draw.AddTriangleFilled(a, b, c, color);
             draw.AddTriangle(a, b, c, U32(colors.Outline), theme.OutlineWidth);
             std::string label;
-            for (const auto s : linked) label += std::string{label.empty() ? "" : ", "} + sockets[s].Name;
+            for (const auto socket : linked) label += std::string{label.empty() ? "" : ", "} + socket.Name;
             if (label.empty()) label = "Parameters";
             draw.AddText(nullptr, font_size, {at.x + inset, at.y - font_size * .5f}, color, label.c_str(), nullptr, 0.f, &clip);
         }
     };
     for (uint32_t n = 0u; n < nodes.size(); ++n) {
-        if (!graph.IsExpanded(n)) draw_node(n);
+        if (n != graph.Expanded) draw_node(n);
     }
     if (graph.Expanded != NoNode) draw_node(graph.Expanded);
     if (target) draw.AddCircleFilled(target->At, theme.SocketRadius * zoom, U32(colors.InsertMarker));
     if (wiring) {
-        const auto socket = graph.SocketAt(window.DragNode, window.DragSocket);
+        const auto socket = SocketAt(graph, window.DragNode, window.DragSocket);
         const auto held = KindSockets(nodes[window.DragNode].Kind)[window.DragSocket];
         const auto wire = held.Direction == SocketDirection::Out ? WireOf(socket, mouse, theme.WireCurving) : WireOf(mouse, socket, theme.WireCurving);
         draw.AddBezierCubic(wire[0], wire[1], wire[2], wire[3], U32(SocketColor(colors, held)), thickness);
@@ -823,13 +752,22 @@ void NameField(NodesWindow &window, state::Entity node, const char *label, const
     if (IsItemDeactivatedAfterEdit() && interactive) action::Emit(action::nodes::SetAttributeName{node, std::string{window.NameEdit.data()}});
 }
 
-using LinkedFields = std::vector<Socket>;
-bool ReadsLink(const LinkedFields &linked, uint8_t field, uint8_t member = NoField) {
+bool ReadsLink(const std::vector<Socket> &linked, uint8_t field, uint8_t member = NoField) {
     return std::ranges::any_of(linked, [&](Socket socket) { return socket.Carries(field, member); });
 }
 
-// Stage nested parameter edits at their byte offsets within the node component.
-// Disable fields whose members receive linked values.
+// Stage a parameter edit at its byte offset within the node component, disabled while a link supplies the value.
+template<typename K, typename F>
+bool EditParameter(state::Scene &r, state::Entity node, uint16_t offset, const F &value, bool reads_link, bool delta_capable, auto &&widget) {
+    BeginDisabled(reads_link);
+    const bool changed = ui::detail::RunField(r, node, ChannelTarget{}, value, widget, /*selection=*/false, delta_capable && action::DeltaField<F>, [&](action::Target, const F &v) {
+        action::Emit(action::Update<F>{node, state::Key<K>(), offset, v}, action::Phase::Stage);
+    });
+    EndDisabled();
+    if (reads_link) SetItemTooltip("Linked");
+    return changed;
+}
+
 template<typename K, typename T>
 struct NestedEdit : ui::FieldWidgets<NestedEdit<K, T>> {
     state::Scene &R;
@@ -837,25 +775,17 @@ struct NestedEdit : ui::FieldWidgets<NestedEdit<K, T>> {
     const T &Value;
     uint16_t Base;
     uint8_t Field;
-    const LinkedFields &Linked;
+    const std::vector<Socket> &Linked;
 
     template<auto... Ms, typename Widget>
     bool Run(Widget widget, bool delta_capable = false) {
-        using F = action::detail::last_field<Ms...>;
-        const auto offset = uint16_t(Base + action::detail::FieldOffset<Ms...>());
         const bool reads_link = ReadsLink(Linked, Field, uint8_t(field::IndexOf<action::detail::last_v<Ms...>>));
-        BeginDisabled(reads_link);
-        const bool changed = ui::detail::RunField(R, Node, ChannelTarget{}, ui::ReadChain<Ms...>(Value), widget, /*selection=*/false, delta_capable && action::DeltaField<F>, [&](action::Target, const F &v) {
-            action::Emit(action::Update<F>{Node, state::Key<K>(), offset, v}, action::Phase::Stage);
-        });
-        EndDisabled();
-        if (reads_link) SetItemTooltip("Linked");
-        return changed;
+        return EditParameter<K, action::detail::last_field<Ms...>>(R, Node, uint16_t(Base + action::detail::FieldOffset<Ms...>()), ui::ReadChain<Ms...>(Value), reads_link, delta_capable, widget);
     }
 };
 
 template<typename K>
-void DrawFields(state::Scene &r, NodesWindow &window, state::Entity node, const K &value, const LinkedFields &linked, bool interactive) {
+void DrawFields(state::Scene &r, NodesWindow &window, state::Entity node, const K &value, const std::vector<Socket> &linked, bool interactive) {
     field::ForEach(value, [&]<size_t I>(const auto &member, std::integral_constant<size_t, I>) {
         using F = std::remove_cvref_t<decltype(member)>;
         const auto offset = uint16_t(reinterpret_cast<const std::byte *>(&member) - reinterpret_cast<const std::byte *>(&value));
@@ -863,17 +793,10 @@ void DrawFields(state::Scene &r, NodesWindow &window, state::Entity node, const 
         if constexpr (std::same_as<F, AttributeName>) {
             NameField(window, node, label, member, interactive);
         } else if constexpr (std::same_as<F, state::Entity> || ui::DrawableField<F>) {
-            const auto widget = [&](F &v) {
+            EditParameter<K, F>(r, node, offset, member, ReadsLink(linked, I), true, [&](F &v) {
                 if constexpr (std::same_as<F, state::Entity>) return ObjectChoice(r, label, v);
                 else return ui::DrawField(label, v, Spec<K, field::NameString<K, I>>);
-            };
-            const bool reads_link = ReadsLink(linked, I);
-            BeginDisabled(reads_link);
-            ui::detail::RunField(r, node, ChannelTarget{}, member, widget, /*selection=*/false, action::DeltaField<F>, [&](action::Target, const F &v) {
-                action::Emit(action::Update<F>{node, state::Key<K>(), offset, v}, action::Phase::Stage);
             });
-            EndDisabled();
-            if (reads_link) SetItemTooltip("Linked");
         } else if constexpr (ui::HasEditor<F>) {
             SeparatorText(label);
             PushID(label);
@@ -900,7 +823,7 @@ void DrawInlineSelection(const state::Scene &r, state::Entity viewport, state::E
     const auto socket = std::ranges::find(sockets, SocketType::Selection, &Socket::Type);
     if (socket == sockets.end()) return;
     SeparatorText("Selection");
-    if (procedure.Inputs[InputFirst(procedure, node) + uint32_t(socket - sockets.begin())].FromNode != NoNode) {
+    if (IsLinked(procedure, node, uint16_t(socket - sockets.begin()))) {
         TextDisabled("Linked");
         return;
     }
@@ -933,8 +856,7 @@ void DrawParameters(state::Scene &r, state::Entity viewport, NodesWindow &window
     const auto [active, kind] = procedure.Nodes[node];
     PushID(int(state::Integral(active)));
     SeparatorText(KindTitles[kind]);
-    LinkedFields linked;
-    for (const auto s : LinkedParameters(procedure, node)) linked.push_back(KindSockets(kind)[s]);
+    const auto linked = LinkedParameters(procedure, node);
     VisitKind(kind, [&]<typename K> {
         if constexpr (!std::is_empty_v<K>) DrawFields<K>(r, window, active, r.get<const K>(active), linked, interactive);
     });
@@ -953,8 +875,19 @@ void DrawParameters(state::Scene &r, state::Entity viewport, NodesWindow &window
 void DrawNodesWindow(state::Scene &r, state::Entity viewport, NodesWindow &window, bool interactive) {
     const auto mesh_entity = action::nodes::EditedMesh(r);
     const auto *procedure = r.try_get<const GeometryProcedure>(mesh_entity);
-    if (interactive && window.LinkAfter != NoNode) ContinueLink(window, mesh_entity, procedure);
-    else if (interactive && !window.PendingLinks.empty()) ContinueMakeLink(window);
+    if (interactive && window.LinkAfter != NoNode) {
+        // Commit node creation and linking as one gesture, then begin moving the node.
+        if (procedure && procedure->Nodes.size() > window.LinkAfter) {
+            action::Emit(LinkOf(*procedure, mesh_entity, window.DragNode, window.DragSocket, window.LinkAfter, window.LinkSocket), action::Phase::Stage);
+            Grab(window, window.LinkAfter);
+        }
+        action::Commit();
+        window.LinkAfter = NoNode;
+    } else if (interactive && !window.PendingLinks.empty()) {
+        action::Emit(window.PendingLinks.front(), action::Phase::Stage);
+        window.PendingLinks.erase(window.PendingLinks.begin());
+        if (window.PendingLinks.empty()) action::Commit();
+    }
     window.Hovered = false;
     if (!window.Visible) return;
     if (Begin(window.Name, &window.Visible)) {
@@ -981,48 +914,14 @@ void DrawNodesWindow(state::Scene &r, state::Entity viewport, NodesWindow &windo
     End();
 }
 void DrawNodeStyle(state::Scene &r, state::Entity viewport) {
-    using C = NodeThemeColors;
     ui::Edit f{r, viewport};
     if (Button("Reset")) action::Emit(action::view::ResetNodeTheme{});
     SeparatorText("Colors");
-    auto c = f.Sub<&NodeTheme::Colors>();
-    c.Color<&C::Background>();
-    c.Color<&C::Grid>();
-    c.Color<&C::Node>();
-    c.Color<&C::Tray>();
-    c.Color<&C::Title>();
-    c.Color<&C::Label>();
-    c.Color<&C::ParameterLabel>();
-    c.Color<&C::Border>();
-    c.Color<&C::Selected>();
-    c.Color<&C::Active>();
-    c.Color<&C::Error>();
-    c.Color<&C::Outline>();
-    c.Color<&C::Hovered>();
-    c.Color<&C::WireHighlight>();
-    c.Color<&C::InsertMarker>();
-    c.Color<&C::BoxSelect>();
-    c.Color<&C::BoxSelectBorder>();
-    c.Color<&C::Dimmed>();
-    c.Color<&C::DimmedLabel>();
-    c.Color<&C::Chevron>();
-    c.Color<&C::ChevronLinked>();
-    c.Color<&C::SourceOutput>("Source and output title");
-    c.Color<&C::Operators>("Operators title");
-    c.Color<&C::Combine>("Combine title");
-    c.Color<&C::Attributes>("Attributes title");
-    c.Color<&C::Values>("Values title");
-    c.Color<&C::Generators>("Generators title");
-    c.Color<&C::Instances>("Instances title");
-    c.Color<&C::OutputNode>("Output node title");
-    c.Color<&C::GeometrySocket>();
-    c.Color<&C::InstancesSocket>();
-    c.Color<&C::FloatSocket>();
-    c.Color<&C::IntegerSocket>();
-    c.Color<&C::BooleanSocket>();
-    c.Color<&C::VectorSocket>();
-    c.Color<&C::RotationSocket>();
-    c.Color<&C::MixedSocket>();
+    const auto &theme = r.get<const NodeTheme>(viewport);
+    field::ForEach(theme.Colors, [&]<size_t I>(const vec4 &color, std::integral_constant<size_t, I>) {
+        const auto offset = uint16_t(reinterpret_cast<const std::byte *>(&color) - reinterpret_cast<const std::byte *>(&theme));
+        ui::detail::RunField(r, viewport, ChannelTarget{}, color, [](vec4 &v) { return ColorEdit4(field::Label<C, I>.c_str(), &v.x); }, /*selection=*/false, /*delta_capable=*/false, [&](action::Target gesture, const vec4 &v) { action::Emit(action::Update<vec4>{f.Recorded(gesture), state::Key<NodeTheme>(), offset, v}, action::Phase::Stage); });
+    });
     SeparatorText("Sizes");
     f.Slider<&NodeTheme::NodeWidth>(nullptr, 80.f, 400.f, "%.0f");
     f.Slider<&NodeTheme::TitleHeight>(nullptr, 12.f, 48.f, "%.0f");

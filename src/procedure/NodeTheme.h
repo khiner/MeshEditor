@@ -28,14 +28,14 @@ struct NodeThemeColors {
     vec4 Chevron{Rgba8(130, 130, 130)};
     vec4 ChevronLinked{Rgba8(220, 220, 220)};
 
-    vec4 SourceOutput{Rgba8(120, 60, 60)};
-    vec4 Operators{Rgba8(40, 100, 90)};
-    vec4 Combine{Rgba8(40, 90, 110)};
-    vec4 Attributes{Rgba8(80, 60, 130)};
-    vec4 Values{Rgba8(90, 90, 90)};
-    vec4 Generators{Rgba8(50, 110, 60)};
-    vec4 Instances{Rgba8(40, 80, 140)};
-    vec4 OutputNode{Rgba8(170, 80, 70)};
+    vec4 SourceOutputTitle{Rgba8(120, 60, 60)};
+    vec4 OperatorsTitle{Rgba8(40, 100, 90)};
+    vec4 CombineTitle{Rgba8(40, 90, 110)};
+    vec4 AttributesTitle{Rgba8(80, 60, 130)};
+    vec4 ValuesTitle{Rgba8(90, 90, 90)};
+    vec4 GeneratorsTitle{Rgba8(50, 110, 60)};
+    vec4 InstancesTitle{Rgba8(40, 80, 140)};
+    vec4 OutputNodeTitle{Rgba8(170, 80, 70)};
 
     vec4 GeometrySocket{Rgba8(0, 214, 163)};
     vec4 InstancesSocket{Rgba8(59, 140, 220)};
