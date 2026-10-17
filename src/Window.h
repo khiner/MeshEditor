@@ -42,24 +42,22 @@ struct HistoryWindow : Window {
     bool EditorOpen{true};
 };
 
-// Map node position p to Origin + Offset + p * Zoom.
-// Origin is the canvas top left.
 struct NodeCanvas {
-    numeric::vec2 Offset{40, 40};
+    numeric::vec2 Offset{}; // <= 0
     float Zoom{1};
 };
 enum class NodeDrag : uint8_t { None,
                                 Pan,
                                 Move,
-                                Grab, // The selected nodes follow the mouse until a click confirms
+                                Grab,
                                 Wire,
                                 Box };
 struct NodesWindow : Window {
     NodeCanvas Canvas{};
     NodeDrag Drag{NodeDrag::None};
     numeric::vec2 Press{}; // The drag's start on the screen
-    numeric::vec2 MoveStart{}; // The held node's position when a move started
-    numeric::vec2 AddAt{}; // The canvas position the Add menu adds a node at
+    numeric::uvec2 MoveStart{}; // The held node's cell when a move started
+    numeric::uvec2 AddAt{}; // The cell the Add menu adds a node at
     uint32_t DragNode{UINT32_MAX}; // Node index for the active move, grab, or wire gesture
     uint32_t GrabAfter{}; // Start dragging the new active node after the count exceeds this value
     uint32_t LinkAfter{UINT32_MAX}; // The node count a linking add waits to grow past before it links the new node, or none
@@ -101,9 +99,7 @@ struct WindowVisibility {
     bool Viewport{true};
     bool Timeline{true};
     bool Style{true};
-    bool ImGuiDemo{false};
-    bool ImSpinnerDemo{false};
-    bool ImPlotDemo{false};
+    bool ImGuiDemo{false}, ImSpinnerDemo{false}, ImPlotDemo{false};
     bool Debug{false};
     bool History{true};
     bool Nodes{true};

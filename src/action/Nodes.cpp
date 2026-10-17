@@ -9,10 +9,12 @@ namespace action::nodes {
 namespace {
 using namespace procedure;
 
-state::Entity CreateNode(state::Scene &r, uint16_t kind, vec2 position) {
+constexpr uint32_t OutputGap{12u}; // The cells a new node leaves before the Output node.
+
+state::Entity CreateNode(state::Scene &r, uint16_t kind, uvec2 position) {
     const auto entity = r.create();
     VisitKind(kind, [&]<typename K> { r.emplace<K>(entity); });
-    r.emplace<NodeLayout>(entity, position, vec2{});
+    r.emplace<NodeLayout>(entity, position);
     return entity;
 }
 
@@ -78,7 +80,7 @@ void Apply(state::Scene &r, state::Entity, const Action &action) {
         overloaded{
             [&](const AddProcedure &a) {
                 if (!HasMesh(r, a.MeshEntity) || r.all_of<GeometryProcedure>(a.MeshEntity)) return Fail(r, "A geometry procedure needs a mesh without one");
-                const auto source = CreateNode(r, KindOf<Source>, {0.f, 0.f}), output = CreateNode(r, KindOf<Output>, {240.f, 0.f});
+                const auto source = CreateNode(r, KindOf<Source>, {0u, 0u}), output = CreateNode(r, KindOf<Output>, {OutputGap, 0u});
                 r.emplace<GeometryProcedure>(a.MeshEntity, std::vector<NodeRecord>{{source, KindOf<Source>}, {output, KindOf<Output>}}, std::vector<SocketLink>{{0u, 0u}}, 1u);
             },
             [&](const AddNode &a) {
@@ -152,7 +154,6 @@ void Apply(state::Scene &r, state::Entity, const Action &action) {
                 for (const auto n : a.Nodes) {
                     const auto [entity, kind] = procedure->Nodes[n];
                     const auto copy = CopyNode(r, entity, kind);
-                    r.patch<NodeLayout>(copy, [&](NodeLayout &layout) { layout.Position += a.Offset; });
                     copies.push_back({copy, kind});
                     const auto slot = InputFirst(*procedure, n);
                     for (uint32_t i = 0u; i < InputCount[kind]; ++i) {
@@ -222,7 +223,7 @@ void Apply(state::Scene &r, state::Entity, const Action &action) {
                 const auto reads_moved = [&](uint32_t n) {
                     return std::ranges::any_of(procedure->Inputs.begin() + input_first[n], procedure->Inputs.begin() + input_first[n + 1u], [&](SocketLink link) { return link.FromNode != NoNode && moved[link.FromNode]; });
                 };
-                moved[a.ToNode] = a.Shift != 0.f;
+                moved[a.ToNode] = a.Shift != 0u;
                 for (bool grew = moved[a.ToNode]; grew;) {
                     grew = false;
                     for (uint32_t n = 0u; n < count; ++n) {
@@ -300,7 +301,7 @@ state::Entity AppendNode(state::Scene &r, state::Entity viewport, state::Entity 
     const auto read = procedure.Inputs[InputFirst(procedure, output)];
     const auto node = uint32_t(procedure.Nodes.size());
     const auto position = r.get<const NodeLayout>(procedure.Nodes[output].Entity).Position;
-    r.patch<NodeLayout>(procedure.Nodes[output].Entity, [](NodeLayout &layout) { layout.Position.x += 240.f; });
+    r.patch<NodeLayout>(procedure.Nodes[output].Entity, [](NodeLayout &layout) { layout.Position.x += OutputGap; });
     Apply(r, viewport, AddNode{mesh_entity, kind, position});
     const auto entity = r.get<const GeometryProcedure>(mesh_entity).Nodes.back().Entity;
     Apply(r, viewport, CaptureSelection(r, mesh_entity, entity));

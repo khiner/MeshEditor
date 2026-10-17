@@ -1433,13 +1433,13 @@ void TestDuplicateNodes(Fixture &f) {
     f.Route(mesh, {0u, subdivide, triangulate});
     f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(subdivide_entity, 3u));
     f.Do(SelectNodes{mesh, {subdivide, triangulate}, subdivide});
-    f.Do(DuplicateNodes{mesh, {subdivide, triangulate}, {20.f, 20.f}});
+    f.Do(DuplicateNodes{mesh, {subdivide, triangulate}});
     const auto &procedure = r.get<const GeometryProcedure>(mesh);
     expect(procedure.Nodes.size() == 6u);
     const auto [copy_subdivide, copy_triangulate] = std::pair{procedure.Nodes[4], procedure.Nodes[5]};
     expect(copy_subdivide.Kind == KindOf<action::mesh::Subdivide> && copy_triangulate.Kind == KindOf<action::mesh::Triangulate>);
     expect(r.get<const action::mesh::Subdivide>(copy_subdivide.Entity).Cuts == 3u);
-    expect(r.get<const NodeLayout>(copy_subdivide.Entity).Position == r.get<const NodeLayout>(subdivide_entity).Position + vec2{20.f, 20.f});
+    expect(r.get<const NodeLayout>(copy_subdivide.Entity).Position == r.get<const NodeLayout>(subdivide_entity).Position);
     // Discard external links into copied nodes and retain links between the copies.
     expect(procedure.Inputs[InputFirst(procedure, 4u)].FromNode == NoNode);
     expect(procedure.Inputs[InputFirst(procedure, 5u)].FromNode == 4u);
@@ -1523,15 +1523,15 @@ void TestInsertNode(Fixture &f) {
     const auto output = f.Node(mesh, 1u);
     const auto subdivided = SelectAllReference(f, f.Source(mesh), {Op(MeshTopologyOp::Subdivide, 1.f)});
     const auto reads = [&](uint32_t node) { return r.get<const GeometryProcedure>(mesh).Inputs[InputFirst(r.get<const GeometryProcedure>(mesh), node)].FromNode; };
-    f.Fails(InsertNode{mesh, position, 1u, 0u, 0.f});
-    f.Fails(InsertNode{mesh, subdivide, triangulate, 0u, 0.f});
+    f.Fails(InsertNode{mesh, position, 1u, 0u, 0u});
+    f.Fails(InsertNode{mesh, subdivide, triangulate, 0u, 0u});
     const auto x = r.get<const NodeLayout>(output).Position.x;
     f.Do(SelectNodes{mesh, {subdivide}, subdivide});
-    f.Stage(UpdateOf<&NodeLayout::Position>(action::OnSelectedDelta{}, vec2{100.f, 0.f}));
-    f.Stage(InsertNode{mesh, subdivide, 1u, 0u, 40.f});
+    f.Stage(UpdateOf<&NodeLayout::Position>(action::OnSelectedDelta{}, uvec2{100u, 0u}));
+    f.Stage(InsertNode{mesh, subdivide, 1u, 0u, 40u});
     f.CommitGesture();
-    expect(reads(1u) == subdivide && reads(subdivide) == 0u && r.get<const NodeLayout>(f.Node(mesh, subdivide)).Position == vec2{100.f, 0.f});
-    expect(r.get<const NodeLayout>(output).Position.x == x + 40.f && r.get<const NodeLayout>(f.Node(mesh, 0u)).Position.x == 0.f);
+    expect(reads(1u) == subdivide && reads(subdivide) == 0u && r.get<const NodeLayout>(f.Node(mesh, subdivide)).Position == uvec2{100u, 0u});
+    expect(r.get<const NodeLayout>(output).Position.x == x + 40u && r.get<const NodeLayout>(f.Node(mesh, 0u)).Position.x == 0u);
     expect(Describe(meshes, f.Output(mesh)) == subdivided);
     f.ValidateReplay();
     f.Audit();
@@ -1539,7 +1539,7 @@ void TestInsertNode(Fixture &f) {
     expect(reads(1u) == 0u && reads(subdivide) == NoNode && r.get<const NodeLayout>(output).Position.x == x);
     f.P->Redo();
     f.Do(Link{mesh, triangulate, 2u, subdivide, 0u});
-    f.Fails(InsertNode{mesh, triangulate, 1u, 0u, 0.f});
+    f.Fails(InsertNode{mesh, triangulate, 1u, 0u, 0u});
 }
 
 // Verify empty bevel selections and unlinked boolean inputs pass through without errors.

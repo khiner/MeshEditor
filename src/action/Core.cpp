@@ -58,6 +58,13 @@ void ApplyUpdate(state::Scene &r, state::Entity viewport, const Update<Field> &a
                         // Accumulate in a wider signed type so an unsigned field can't wrap on a downward delta.
                         const auto value = int64_t(start(e)) + int64_t(a.Value) - int64_t(active_start);
                         write(e, Field(std::clamp<int64_t>(value, std::numeric_limits<Field>::min(), std::numeric_limits<Field>::max())));
+                    } else if constexpr (std::integral<Limit<Field>>) {
+                        using L = Limit<Field>;
+                        auto value = start(e);
+                        for (int c = 0; c < Components<Field>; ++c) {
+                            value[c] = L(std::clamp<int64_t>(int64_t(value[c]) + int64_t(a.Value[c]) - int64_t(active_start[c]), std::numeric_limits<L>::min(), std::numeric_limits<L>::max()));
+                        }
+                        write(e, value);
                     } else if constexpr (RotationField<Field>) {
                         // Rotate each target by the active target's rotation since the drag start.
                         write(e, Normalize(a.Value * Conjugate(active_start) * start(e)));

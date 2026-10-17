@@ -445,7 +445,7 @@ struct ProcedureOwnedMesh {
 };
 
 struct NodeLayout {
-    vec2 Position, Size;
+    uvec2 Position; // The top left grid cell
 };
 
 // Persist selection masks in input-block order; absent or empty masks select everything.

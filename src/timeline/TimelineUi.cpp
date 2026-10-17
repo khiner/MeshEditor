@@ -253,5 +253,6 @@ std::optional<action::Action> RenderTimeline(const TimelineRange &range, const T
 void DrawTimelineStyle(state::Scene &r, state::Entity viewport) {
     if (Button("Reset")) action::Emit(action::view::ResetTimelineTheme{});
     ui::DrawThemeColors<TimelineTheme>(r, viewport);
+    SeparatorText("Sizes");
     ui::DrawThemeSizes<TimelineTheme>(r, viewport);
 }

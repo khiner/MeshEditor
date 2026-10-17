@@ -9,17 +9,17 @@ struct Scene;
 
 // Address procedure nodes by index and update parameters on their entities.
 namespace action::nodes {
-using numeric::vec2;
+using numeric::uvec2;
 
 // Creates the procedure with a Source node linked into an Output node.
 struct AddProcedure {
     state::Entity MeshEntity;
 };
-// Append a default node with unlinked inputs and make it the active, sole selected node.
+// Append a default node at the grid cell with unlinked inputs and make it the active, sole selected node.
 struct AddNode {
     state::Entity MeshEntity;
     uint16_t Kind;
-    vec2 Position;
+    uvec2 Position;
 };
 // Links an output socket into an input socket that procedure::Links admits, replacing the input's link.
 struct Link {
@@ -57,12 +57,11 @@ struct SetInlineSelection {
 struct ApplyProcedure {
     state::Entity MeshEntity;
 };
-// Appends a copy of each node, ascending, moved by Offset, keeping the links among the copied nodes, and selects the copies.
+// Appends a copy of each node, ascending, at its cell, keeping the links among the copied nodes, and selects the copies.
 // The copy of the active node is active, or else the last copy.
 struct DuplicateNodes {
     state::Entity MeshEntity;
     std::vector<uint32_t> Nodes;
-    vec2 Offset;
 };
 // Replaces the procedure's node selection with the nodes, ascending, and makes Active the node the parameter panel edits.
 // The selection is the procedure's own and leaves the entity selection alone.
@@ -81,13 +80,13 @@ struct DeleteNodes {
 
 // Insert the node between the input and its source using the first geometry sockets.
 // Preserve an existing link on the inserted node input.
-// Move the consumer and its descendants right by Shift.
+// Move the consumer and its descendants right by Shift cells.
 struct InsertNode {
     state::Entity MeshEntity;
     uint32_t Node;
     uint32_t ToNode;
     uint16_t ToSocket;
-    float Shift;
+    uint32_t Shift;
 };
 
 using Action = std::variant<AddProcedure, AddNode, Link, Unlink, SetOutput, SetAttributeName, SetInlineSelection, ApplyProcedure, SelectNodes, DuplicateNodes, DeleteNodes, InsertNode>;

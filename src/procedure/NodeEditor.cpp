@@ -19,10 +19,10 @@
 
 namespace procedure {
 using namespace ImGui;
+using numeric::uvec2;
 using numeric::vec2;
 
 namespace {
-constexpr float NodeSpacing{60.f}; // A node inserted on a link clears the link's reader by this gap.
 constexpr float LinkReach{4.f}; // A link takes the mouse within this many pixels of its wire.
 constexpr float WireStraightening{3.5f}; // A link's handles straighten as the link nears horizontal, as in Blender.
 constexpr float MinZoom{.25f}, MaxZoom{3.f}, PanelWidth{280.f};
@@ -79,52 +79,113 @@ void DrawSocket(ImDrawList &draw, const NodeTheme &theme, ImVec2 at, float radiu
     draw.AddCircle(at, radius, outline, 0, theme.OutlineWidth);
 }
 
-// A node shows inputs down its left edge and outputs down its right, one per row.
+// A node shows inputs down its left edge and outputs down its right, one per cell row under a one-cell title.
 // Its parameters sit in a tray under the fixed inputs, one chevron row when closed and one row per parameter when open.
 // The row an input socket sits on, and the rows the inputs take.
 uint32_t InputRow(uint16_t kind, uint16_t socket, bool expanded) { return expanded ? socket : std::min<uint32_t>(socket, ParameterRange(kind).first); }
 uint32_t InputRows(uint16_t kind, bool expanded) { return expanded ? InputCount[kind] : std::min<uint32_t>(InputCount[kind], ParameterRange(kind).first + 1u); }
-// A socket's offset in canvas units from the top left of its node of the kind and width.
-ImVec2 SocketOffset(const NodeTheme &theme, uint16_t kind, uint16_t socket, float width, bool expanded) {
+
+// A grid cell's side in canvas points.
+float CellOf(const NodeTheme &theme) { return theme.FollowFrameHeight ? GetFrameHeight() : theme.GridSize; }
+uint32_t CellsOf(float cell, float points) { return std::max(1u, uint32_t(std::ceil(points / cell))); }
+
+// A node's cells: its top left and size, and whether it has inputs and outputs, which keep a free cell beside them for wires.
+struct Box {
+    uint32_t X, Y;
+    uint16_t W, H;
+    bool In, Out;
+};
+// A node of the kind takes a title row over max(input rows, output rows), as wide as its title and its widest row of labels.
+// A socket label takes at most MaxLabelCells and draws with an ellipsis past them.
+Box BoxOf(const NodeTheme &theme, float cell, uint16_t kind, bool expanded) {
+    const auto sockets = KindSockets(kind);
+    const auto [first, end] = ParameterRange(kind);
+    const uint32_t inputs = InputCount[kind], outputs = uint32_t(sockets.size()) - inputs;
+    const auto label_cells = [&](uint16_t s) {
+        const float indent = s >= first && s < end ? theme.ParameterIndent : 0.f;
+        return std::min(CellsOf(cell, theme.SocketRadius + theme.LabelSpacing * 2.f + indent + CalcTextSize(LabelOf(sockets[s])).x), uint32_t(theme.MaxLabelCells));
+    };
+    uint32_t width = CellsOf(cell, CalcTextSize(KindTitles[kind]).x + theme.TitlePadding * 2.f);
+    for (uint32_t row = 0u; row < std::max(inputs, outputs); ++row) {
+        width = std::max(width, (row < inputs ? label_cells(uint16_t(row)) : 0u) + (row < outputs ? label_cells(uint16_t(inputs + row)) : 0u));
+    }
+    return {0, 0, uint16_t(width), uint16_t(1u + std::max({InputRows(kind, expanded), outputs, 1u})), inputs > 0u, outputs > 0u};
+}
+// Whether the boxes leave a free cell beside every socket column between them: right of a when a has outputs or b inputs, and the reverse.
+bool Clear(const Box &a, const Box &b) {
+    if (a.Y >= b.Y + b.H || b.Y >= a.Y + a.H) return true;
+    return b.X >= a.X + a.W + uint32_t(a.Out || b.In) || a.X >= b.X + b.W + uint32_t(b.Out || a.In);
+}
+// A socket's cell column and row within a node of the kind and width.
+ImVec2 SocketCell(uint16_t kind, uint16_t socket, uint16_t width, bool expanded) {
     const bool input = socket < InputCount[kind];
-    const auto row = float(input ? InputRow(kind, socket, expanded) : socket - InputCount[kind]);
-    return {input ? 0.f : width, theme.TitleHeight + (row + .5f) * theme.RowHeight};
+    return {input ? 0.f : float(width), 1.f + float(input ? InputRow(kind, socket, expanded) : socket - InputCount[kind])};
 }
 
-// The screen layout of a procedure's nodes, with canvas point p at Origin + p * Zoom.
+// The screen layout of a procedure's nodes, with cell c at Origin + c * Step.
 struct Graph {
     const GeometryProcedure &Procedure;
     const NodeTheme &Theme;
     ImVec2 Origin;
+    float Step; // A cell on the screen
     float Zoom;
     uint32_t Expanded;
-    std::vector<ImRect> Rects;
+    std::vector<Box> Boxes;
 };
-Graph GraphOf(const state::Scene &r, const GeometryProcedure &procedure, const NodeTheme &theme, ImVec2 origin, float zoom, uint32_t expanded) {
+Graph GraphOf(const state::Scene &r, const GeometryProcedure &procedure, const NodeTheme &theme, ImVec2 origin, float cell, float zoom, uint32_t expanded) {
     // A node index a deletion left stale opens no tray.
     const bool open = expanded < procedure.Nodes.size() && ParameterRange(procedure.Nodes[expanded].Kind).second > ParameterRange(procedure.Nodes[expanded].Kind).first;
-    Graph graph{procedure, theme, origin, zoom, open ? expanded : NoNode, {}};
-    graph.Rects.reserve(procedure.Nodes.size());
+    Graph graph{procedure, theme, origin, cell * zoom, zoom, open ? expanded : NoNode, {}};
+    graph.Boxes.reserve(procedure.Nodes.size());
     for (uint32_t n = 0u; n < procedure.Nodes.size(); ++n) {
         const auto [entity, kind] = procedure.Nodes[n];
-        const auto &layout = r.get<const NodeLayout>(entity);
-        const uint32_t inputs = InputRows(kind, n == graph.Expanded), outputs = SocketCount[kind] - InputCount[kind];
-        const auto rows = float(std::max({inputs, outputs, 1u}));
-        const ImVec2 min = Im(layout.Position), size{std::max(layout.Size.x, theme.NodeWidth), std::max(layout.Size.y, theme.TitleHeight + rows * theme.RowHeight + theme.NodePadding)};
-        graph.Rects.push_back({origin + min * zoom, origin + (min + size) * zoom});
+        auto box = BoxOf(theme, cell, kind, n == graph.Expanded);
+        const auto position = r.get<const NodeLayout>(entity).Position;
+        box.X = position.x;
+        box.Y = position.y;
+        graph.Boxes.push_back(box);
     }
     return graph;
 }
+ImRect RectOf(const Graph &graph, const Box &box) {
+    return {graph.Origin + ImVec2{float(box.X), float(box.Y)} * graph.Step, graph.Origin + ImVec2{float(box.X + box.W), float(box.Y + box.H)} * graph.Step};
+}
 // A collapsed node's parameters chevron sits at its first parameter socket.
 ImVec2 SocketAt(const Graph &graph, uint32_t node, uint16_t socket) {
-    const auto &rect = graph.Rects[node];
-    return rect.Min + SocketOffset(graph.Theme, graph.Procedure.Nodes[node].Kind, socket, rect.GetWidth() / graph.Zoom, node == graph.Expanded) * graph.Zoom;
+    const auto &box = graph.Boxes[node];
+    return graph.Origin + (ImVec2{float(box.X), float(box.Y) + .5f} + SocketCell(graph.Procedure.Nodes[node].Kind, socket, box.W, node == graph.Expanded)) * graph.Step;
 }
 ImRect TrayRect(const Graph &graph, uint32_t node) {
     const auto [first, end] = ParameterRange(graph.Procedure.Nodes[node].Kind);
-    const float reach = graph.Theme.SocketRadius * 1.2f * graph.Zoom + 3.f, row = graph.Theme.RowHeight * graph.Zoom;
+    const float reach = graph.Theme.SocketRadius * 1.2f * graph.Zoom + 3.f, row = graph.Step;
     const auto at = SocketAt(graph, node, first);
     return {{at.x - reach, at.y - row * .5f}, {at.x + reach, at.y + (float(end - first) - .5f) * row}};
+}
+// Whether moving the selected nodes by the offset keeps each inside the canvas, with a cell for wires left of its inputs, and clear of every other node.
+bool Clears(const Graph &graph, const std::vector<uint32_t> &selected, int64_t dx, int64_t dy) {
+    for (const auto m : selected) {
+        auto box = graph.Boxes[m];
+        const int64_t x = int64_t(box.X) + dx, y = int64_t(box.Y) + dy;
+        if (x < int64_t(box.In) || y < 0) return false;
+        box.X = uint32_t(x);
+        box.Y = uint32_t(y);
+        for (uint32_t n = 0u; n < graph.Boxes.size(); ++n) {
+            if (!std::ranges::binary_search(selected, n) && !Clear(box, graph.Boxes[n])) return false;
+        }
+    }
+    return true;
+}
+constexpr int64_t PlaceReach{64}; // Rings of cells a placement searches around the wanted offset.
+// The offset nearest the wanted one that Clears, searching outward one ring of cells at a time, or none within reach.
+std::optional<std::pair<int64_t, int64_t>> Place(const Graph &graph, const std::vector<uint32_t> &selected, int64_t dx, int64_t dy) {
+    for (int64_t ring = 0; ring <= PlaceReach; ++ring) {
+        for (int64_t i = -ring; i <= ring; ++i) {
+            for (int64_t j = -ring; j <= ring; ++j) {
+                if ((std::abs(i) == ring || std::abs(j) == ring) && Clears(graph, selected, dx + i, dy + j)) return std::pair{dx + i, dy + j};
+            }
+        }
+    }
+    return {};
 }
 bool IsLinked(const GeometryProcedure &procedure, uint32_t node, uint16_t socket) { return procedure.Inputs[InputFirst(procedure, node) + socket].FromNode != NoNode; }
 std::vector<Socket> LinkedParameters(const GeometryProcedure &procedure, uint32_t node) {
@@ -181,13 +242,13 @@ Hit HitTest(const Graph &graph, ImVec2 mouse) {
     };
     if (graph.Expanded != NoNode) {
         if (const auto hit = sockets(graph.Expanded)) return *hit;
-        if (graph.Rects[graph.Expanded].Contains(mouse)) return {HitType::Node, graph.Expanded, 0u};
+        if (RectOf(graph, graph.Boxes[graph.Expanded]).Contains(mouse)) return {HitType::Node, graph.Expanded, 0u};
     }
-    for (auto n = uint32_t(graph.Rects.size()); n-- > 0u;) {
+    for (auto n = uint32_t(graph.Boxes.size()); n-- > 0u;) {
         if (const auto hit = sockets(n)) return *hit;
     }
-    for (auto n = uint32_t(graph.Rects.size()); n-- > 0u;) {
-        if (graph.Rects[n].Contains(mouse)) return {HitType::Node, n, 0u};
+    for (auto n = uint32_t(graph.Boxes.size()); n-- > 0u;) {
+        if (RectOf(graph, graph.Boxes[n]).Contains(mouse)) return {HitType::Node, n, 0u};
     }
     Hit hit;
     ForEachWire(graph, [&](const Wire &wire, SocketLink, uint32_t node, uint16_t input) {
@@ -274,12 +335,12 @@ std::vector<action::nodes::Link> MakeLinks(const state::Scene &r, state::Entity 
     return links;
 }
 
-// Record the insertion input, the wire point nearest the cursor, and the downstream displacement needed to fit the node.
+// Record the insertion input, the wire point nearest the cursor, and the cells the reader moves right to clear the node.
 struct Insert {
     uint32_t ToNode;
     uint16_t ToSocket;
     ImVec2 At;
-    float Shift;
+    uint32_t Shift;
 };
 // Return the nearest link the node inserts into.
 std::optional<Insert> InsertTarget(const Graph &graph, uint32_t node, ImVec2 mouse) {
@@ -290,8 +351,9 @@ std::optional<Insert> InsertTarget(const Graph &graph, uint32_t node, ImVec2 mou
         const auto at = NearestOnWire(wire, mouse);
         if (const float distance = ImLengthSqr(at - mouse); distance <= nearest && Inserts(graph.Procedure, input_first, node, to_node, input)) {
             nearest = distance;
-            const float gap = (graph.Rects[to_node].Min.x - graph.Rects[node].Max.x) / graph.Zoom;
-            insert = Insert{to_node, input, at, std::max(NodeSpacing - gap, 0.f)};
+            const auto &box = graph.Boxes[node], &reader = graph.Boxes[to_node];
+            const uint32_t clear = box.X + box.W + 1u;
+            insert = Insert{to_node, input, at, clear > reader.X ? clear - reader.X : 0u};
         }
     });
     return insert;
@@ -306,13 +368,19 @@ void Interact(const state::Scene &r, NodesWindow &window, state::Entity mesh_ent
     const bool mouse_moved = io.MouseDelta.x != 0.f || io.MouseDelta.y != 0.f;
     const auto select = [&](std::vector<uint32_t> selection, uint32_t active) { action::Emit(action::nodes::SelectNodes{mesh_entity, std::move(selection), active}); };
     const auto open_add = [&](bool linking) {
-        window.AddAt = vec2{(mouse - graph.Origin) / graph.Zoom};
+        const auto cell = (mouse - graph.Origin) / graph.Step;
+        window.AddAt = {std::max(std::floor(cell.x), 0.f), std::max(std::floor(cell.y), 0.f)};
         window.Linking = linking;
         OpenPopup("##AddNode");
     };
-    const auto follow = [&] {
-        const auto position = Im(window.MoveStart) + (mouse - Im(window.Press)) / graph.Zoom;
-        action::Emit(action::UpdateOf<&NodeLayout::Position>(action::OnSelectedDelta{}, vec2{position}), action::Phase::Stage);
+    // Snap the held nodes to the mouse's cell offset from the drag start, or to the nearest clear offset, or hold.
+    const auto follow = [&](bool first) {
+        const auto &held = graph.Boxes[window.DragNode];
+        const int64_t wanted_x = int64_t(window.MoveStart.x) + std::lround((mouse.x - window.Press.x) / graph.Step), wanted_y = int64_t(window.MoveStart.y) + std::lround((mouse.y - window.Press.y) / graph.Step);
+        const auto placed = Place(graph, selected, wanted_x - int64_t(held.X), wanted_y - int64_t(held.Y));
+        if (!placed) return;
+        const uvec2 at{uint32_t(int64_t(held.X) + placed->first), uint32_t(int64_t(held.Y) + placed->second)};
+        if (first || at != uvec2{held.X, held.Y}) action::Emit(action::UpdateOf<&NodeLayout::Position>(action::OnSelectedDelta{}, at), action::Phase::Stage);
     };
     // Commit staged move or grab actions together with insertion, or cancel the whole operation.
     const auto end_move = [&](bool commit) {
@@ -337,8 +405,9 @@ void Interact(const state::Scene &r, NodesWindow &window, state::Entity mesh_ent
         if (IsMouseClicked(ImGuiMouseButton_Left)) end_move(true);
         else if (IsKeyPressed(ImGuiKey_Escape) || IsMouseClicked(ImGuiMouseButton_Right)) end_move(false);
         else if (!window.Moved || mouse_moved) {
+            const bool first = !window.Moved;
             window.Moved = true;
-            follow();
+            follow(first);
         }
         return;
     }
@@ -388,7 +457,7 @@ void Interact(const state::Scene &r, NodesWindow &window, state::Entity mesh_ent
             window.PendingLinks = MakeLinks(r, mesh_entity, procedure, selected, replace);
         } else if (Shortcut(ImGuiMod_Shift | ImGuiKey_D, Key)) {
             if (!selected.empty()) {
-                action::Emit(action::nodes::DuplicateNodes{mesh_entity, selected, {}});
+                action::Emit(action::nodes::DuplicateNodes{mesh_entity, selected});
                 Grab(window, uint32_t(nodes.size()));
             }
         } else if (Shortcut(ImGuiKey_G, Key)) {
@@ -411,7 +480,7 @@ void Interact(const state::Scene &r, NodesWindow &window, state::Entity mesh_ent
                 window.MoveStart = r.get<const NodeLayout>(nodes[window.DragNode].Entity).Position;
             }
             if (!window.Moved) window.Drag = NodeDrag::None;
-            else if (first || mouse_moved) follow();
+            else if (first || mouse_moved) follow(first);
         }
     }
     if (window.Drag == NodeDrag::Wire && !IsMouseDown(ImGuiMouseButton_Left)) {
@@ -429,7 +498,7 @@ void Interact(const state::Scene &r, NodesWindow &window, state::Entity mesh_ent
             const ImRect box{ImMin(press, mouse), ImMax(press, mouse)};
             std::vector<uint32_t> banded;
             for (uint32_t n = 0u; n < nodes.size(); ++n) {
-                if (box.Overlaps(graph.Rects[n]) || (io.KeyShift && std::ranges::binary_search(selected, n))) banded.push_back(n);
+                if (box.Overlaps(RectOf(graph, graph.Boxes[n])) || (io.KeyShift && std::ranges::binary_search(selected, n))) banded.push_back(n);
             }
             const auto active = std::ranges::binary_search(banded, procedure.ActiveNode) ? procedure.ActiveNode : NoNode;
             if (banded != selected || active != procedure.ActiveNode) select(std::move(banded), active);
@@ -494,7 +563,7 @@ std::optional<int> DrawResults(int count, float width, int &highlight, int previ
 
 // Add the selected node at the menu position and begin dragging it.
 // After dropping a wire, list compatible sockets and connect the new node once it exists.
-void DrawAddMenu(NodesWindow &window, const NodeTheme &theme, state::Entity mesh_entity, const GeometryProcedure &procedure, bool interactive) {
+void DrawAddMenu(NodesWindow &window, const NodeTheme &theme, float cell, state::Entity mesh_entity, const GeometryProcedure &procedure, bool interactive) {
     if (!BeginPopup("##AddNode")) return;
     const auto &nodes = procedure.Nodes;
     const bool linking = window.Linking && window.DragNode < nodes.size();
@@ -533,7 +602,9 @@ void DrawAddMenu(NodesWindow &window, const NodeTheme &theme, state::Entity mesh
         if (picked && interactive) {
             // Place the linking socket at the drop point.
             const auto &entry = entries[*picked];
-            action::Emit(action::nodes::AddNode{mesh_entity, entry.Kind, vec2{Im(window.AddAt) - SocketOffset(theme, entry.Kind, entry.Socket, theme.NodeWidth, false)}}, action::Phase::Stage);
+            const auto socket = SocketCell(entry.Kind, entry.Socket, BoxOf(theme, cell, entry.Kind, false).W, false);
+            const uvec2 at{std::max(float(window.AddAt.x) - socket.x, 0.f), std::max(float(window.AddAt.y) - socket.y, 0.f)};
+            action::Emit(action::nodes::AddNode{mesh_entity, entry.Kind, at}, action::Phase::Stage);
             window.LinkAfter = uint32_t(nodes.size());
             window.LinkSocket = entry.Socket;
         }
@@ -612,7 +683,10 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
             else window.Drag = NodeDrag::None;
         }
     }
-    const auto graph = GraphOf(r, procedure, theme, origin + Im(canvas.Offset), canvas.Zoom, window.Expanded);
+    // Keep cell zero at or beyond the canvas corner, so no negative cell shows.
+    canvas.Offset = {std::min(canvas.Offset.x, 0.f), std::min(canvas.Offset.y, 0.f)};
+    const float cell = CellOf(theme);
+    const auto graph = GraphOf(r, procedure, theme, origin + Im(canvas.Offset), cell, canvas.Zoom, window.Expanded);
     const auto hit = window.Hovered ? HitTest(graph, mouse) : Hit{};
     const auto selected = SelectedNodes(r, procedure);
     // A held node inserts into a link while it is the sole selected node.
@@ -631,10 +705,16 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
     const auto &colors = theme.Colors;
     draw.PushClipRect(origin, end, true);
     draw.AddRectFilled(origin, end, U32(colors.Background));
-    if (const float step = theme.GridSpacing * zoom; step >= 8.f) {
-        const auto grid = U32(colors.Grid);
-        for (float x = std::fmod(canvas.Offset.x, step); x < end.x - origin.x; x += step) draw.AddLine({origin.x + x, origin.y}, {origin.x + x, end.y}, grid);
-        for (float y = std::fmod(canvas.Offset.y, step); y < end.y - origin.y; y += step) draw.AddLine({origin.x, origin.y + y}, {end.x, origin.y + y}, grid);
+    // A line at every cell, coarse at every CoarseGridCells cells from cell zero.
+    const auto grid = U32(colors.Grid), coarse_grid = U32(colors.CoarseGrid);
+    const auto coarse = int32_t(std::max<uint8_t>(theme.CoarseGridCells, 1u));
+    for (auto i = int32_t(std::floor(-canvas.Offset.x / graph.Step)); graph.Origin.x + float(i) * graph.Step < end.x; ++i) {
+        const float x = graph.Origin.x + float(i) * graph.Step;
+        draw.AddLine({x, origin.y}, {x, end.y}, i % coarse == 0 ? coarse_grid : grid);
+    }
+    for (auto i = int32_t(std::floor(-canvas.Offset.y / graph.Step)); graph.Origin.y + float(i) * graph.Step < end.y; ++i) {
+        const float y = graph.Origin.y + float(i) * graph.Step;
+        draw.AddLine({origin.x, y}, {end.x, y}, i % coarse == 0 ? coarse_grid : grid);
     }
     const float thickness = std::max(theme.WireWidth * zoom, 1.f);
     ForEachWire(graph, [&](const Wire &wire, SocketLink link, uint32_t node, uint16_t input) {
@@ -642,17 +722,29 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
         const auto color = lit ? colors.WireHighlight : SocketColor(colors, KindSockets(nodes[link.FromNode].Kind)[link.FromSocket]);
         draw.AddBezierCubic(wire[0], wire[1], wire[2], wire[3], U32(color), thickness);
     });
-    const auto font_size = GetFontSize() * zoom;
-    const float inset = (theme.SocketRadius + theme.LabelSpacing) * zoom;
+    // Draw node text at the zoomed font size, and show a truncated label's full text in a tooltip at the normal size.
+    PushFont(nullptr, GetStyle().FontSizeBase * zoom);
+    const auto font_size = GetFontSize();
+    const float inset = (theme.SocketRadius + theme.LabelSpacing) * zoom, spacing = theme.LabelSpacing * zoom, label_reach = float(theme.MaxLabelCells) * graph.Step;
+    const char *tooltip = nullptr;
+    // Draw the label from the box's left, or against its right when `right` fits, with an ellipsis past the box.
+    const auto draw_label = [&](ImVec2 min, ImVec2 max, const char *text, vec4 color, bool right) {
+        const float width = CalcTextSize(text).x;
+        const bool overflows = width > max.x - min.x;
+        if (right && !overflows) min.x = max.x - width;
+        PushStyleColor(ImGuiCol_Text, ImVec4{color.x, color.y, color.z, color.w});
+        RenderTextEllipsis(&draw, min, max, max.x, text, nullptr, nullptr);
+        PopStyleColor();
+        if (overflows && window.Hovered && IsMouseHoveringRect(min, max)) tooltip = text;
+    };
     const auto draw_node = [&](uint32_t n) {
         const auto [entity, kind] = nodes[n];
-        const auto &[min, max] = graph.Rects[n];
+        const auto [min, max] = RectOf(graph, graph.Boxes[n]);
         const bool expanded = n == graph.Expanded;
-        const float rounding = theme.Rounding * zoom;
+        const float rounding = theme.Rounding * zoom, pad = theme.TitlePadding * zoom;
         draw.AddRectFilled(min, max, U32(expanded ? vec4{colors.Node.x, colors.Node.y, colors.Node.z, 1.f} : colors.Node), rounding);
-        draw.AddRectFilled(min, {max.x, min.y + theme.TitleHeight * zoom}, U32(n == procedure.OutputNode ? colors.OutputNodeTitle : colors.*GroupColors[uint8_t(KindGroups[kind])]), rounding, ImDrawFlags_RoundTop);
-        const ImVec4 clip{min.x, min.y, max.x, max.y};
-        draw.AddText(nullptr, font_size, {min.x + theme.TitlePadding * zoom, min.y + (theme.TitleHeight * zoom - font_size) * .5f}, U32(colors.Title), KindTitles[kind], nullptr, 0.f, &clip);
+        draw.AddRectFilled(min, {max.x, min.y + graph.Step}, U32(n == procedure.OutputNode ? colors.OutputNodeTitle : colors.*GroupColors[uint8_t(KindGroups[kind])]), rounding, ImDrawFlags_RoundTop);
+        draw_label({min.x + pad, min.y + (graph.Step - font_size) * .5f}, {max.x - pad, min.y + (graph.Step + font_size) * .5f}, KindTitles[kind], colors.Title, false);
         const auto sockets = KindSockets(kind);
         const auto [first, end_parameter] = ParameterRange(kind);
         const bool erring = r.all_of<NodeError>(entity);
@@ -677,34 +769,36 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
             const bool dimmed = wiring && !held && !Accepts(procedure, window.DragNode, window.DragSocket, n, s);
             const bool hovered = hit.Type == HitType::Socket && hit.Node == n && hit.Socket == s && !dimmed;
             DrawSocket(draw, theme, at, theme.SocketRadius * zoom, sockets[s], dimmed ? colors.Dimmed : SocketColor(colors, sockets[s]), hovered);
-            const auto *label = LabelOf(sockets[s]);
-            const float x = s >= InputCount[kind] ? at.x - inset - GetFont()->CalcTextSizeA(font_size, FLT_MAX, 0.f, label).x : at.x + inset + (parameter ? theme.ParameterIndent * zoom : 0.f);
             const auto color = dimmed ? colors.DimmedLabel : parameter ? colors.ParameterLabel :
                                                                          colors.Label;
-            draw.AddText(nullptr, font_size, {x, at.y - font_size * .5f}, U32(color), label, nullptr, 0.f, &clip);
+            const float top = at.y - font_size * .5f, bottom = at.y + font_size * .5f;
+            if (s < InputCount[kind]) draw_label({at.x + inset + (parameter ? theme.ParameterIndent * zoom : 0.f), top}, {std::min(at.x + label_reach, max.x) - spacing, bottom}, LabelOf(sockets[s]), color, false);
+            else draw_label({std::max(at.x - label_reach, min.x) + spacing, top}, {at.x - inset, bottom}, LabelOf(sockets[s]), color, true);
         }
         if (first < end_parameter && !expanded) {
             const auto at = SocketAt(graph, n, first);
             const auto linked = LinkedParameters(procedure, n);
             const bool dimmed = wiring && LinkingSockets(procedure, window.DragNode, window.DragSocket, n, {first, end_parameter}).empty();
             const bool hovered = hit.Type == HitType::Parameters && hit.Node == n && !dimmed;
-            const auto color = U32(dimmed ? colors.Dimmed : hovered ? colors.Hovered :
-                                       linked.empty()               ? colors.Chevron :
-                                                                      colors.ChevronLinked);
+            const auto color = dimmed ? colors.Dimmed : hovered ? colors.Hovered :
+                linked.empty()                                  ? colors.Chevron :
+                                                                  colors.ChevronLinked;
             const float chevron = theme.SocketRadius * zoom;
             const ImVec2 a{at.x - chevron * .7f, at.y - chevron}, b{at.x - chevron * .7f, at.y + chevron}, c{at.x + chevron * .9f, at.y};
-            draw.AddTriangleFilled(a, c, b, color);
+            draw.AddTriangleFilled(a, c, b, U32(color));
             draw.AddTriangle(a, c, b, U32(colors.Outline), theme.OutlineWidth);
             std::string label;
             for (const auto socket : linked) label += std::string{label.empty() ? "" : ", "} + socket.Name;
             if (label.empty()) label = "Parameters";
-            draw.AddText(nullptr, font_size, {at.x + inset, at.y - font_size * .5f}, color, label.c_str(), nullptr, 0.f, &clip);
+            draw_label({at.x + inset, at.y - font_size * .5f}, {max.x - spacing, at.y + font_size * .5f}, label.c_str(), color, false);
         }
     };
     for (uint32_t n = 0u; n < nodes.size(); ++n) {
         if (n != graph.Expanded) draw_node(n);
     }
     if (graph.Expanded != NoNode) draw_node(graph.Expanded);
+    PopFont();
+    if (tooltip) SetTooltip("%s", tooltip);
     if (target) draw.AddCircleFilled(target->At, theme.SocketRadius * zoom, U32(colors.InsertMarker));
     if (wiring) {
         const auto socket = SocketAt(graph, window.DragNode, window.DragSocket);
@@ -719,7 +813,7 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
         draw.AddRect(box_min, box_max, U32(colors.BoxSelectBorder));
     }
     draw.PopClipRect();
-    DrawAddMenu(window, theme, mesh_entity, procedure, interactive);
+    DrawAddMenu(window, theme, cell, mesh_entity, procedure, interactive);
     DrawPortPicker(window, mesh_entity, procedure, interactive);
 }
 
@@ -917,6 +1011,13 @@ void DrawNodesWindow(state::Scene &r, state::Entity viewport, NodesWindow &windo
 void DrawNodeStyle(state::Scene &r, state::Entity viewport) {
     if (Button("Reset")) action::Emit(action::view::ResetNodeTheme{});
     ui::DrawThemeColors<NodeTheme>(r, viewport);
-    ui::DrawThemeSizes<NodeTheme>(r, viewport);
+    SeparatorText("Sizes");
+    ui::Edit edit{r, viewport};
+    BeginDisabled(r.get<const NodeTheme>(viewport).FollowFrameHeight);
+    edit.Slider<&NodeTheme::GridSize>("Grid size");
+    EndDisabled();
+    SameLine();
+    edit.Check<&NodeTheme::FollowFrameHeight>("Frame height");
+    ui::DrawThemeSizes<NodeTheme, &NodeTheme::GridSize>(r, viewport);
 }
 } // namespace procedure
