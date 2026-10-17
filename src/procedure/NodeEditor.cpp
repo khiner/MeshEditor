@@ -7,6 +7,7 @@
 #include "render/Instance.h"
 #include "ui/ChoiceCombo.h"
 #include "ui/FieldEdit.h"
+#include "ui/InterfaceUi.h"
 #include "ui/TransformEdit.h"
 #include "viewport/FrameState.h"
 #include "viewport/InteractionComponents.h"
@@ -75,7 +76,7 @@ vec4 SocketColor(const NodeThemeColors &colors, Socket socket) {
 }
 
 ImVec2 Im(vec2 v) { return {v.x, v.y}; }
-ImU32 U32(vec4 c) { return ColorConvertFloat4ToU32({c.x, c.y, c.z, c.w}); }
+using ui::U32;
 // Draw per-element value sockets as diamonds and uniform sockets as circles.
 // Use the hover color for the outline while hovered.
 void DrawSocket(ImDrawList &draw, const NodeTheme &theme, ImVec2 at, float radius, Socket socket, vec4 color, bool hovered) {

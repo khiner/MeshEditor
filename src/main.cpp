@@ -35,6 +35,7 @@
 #include "scene/SceneControlsUi.h"
 #include "scene/WorldTransform.h"
 #include "selection/SelectionState.h"
+#include "timeline/TimelineTheme.h"
 #include "timeline/TimelineUi.h"
 #include "ui/CtrlShortcut.h"
 #include "ui/InterfaceTheme.h"
@@ -461,6 +462,10 @@ void DrawStyleWindow(state::Scene &r, state::Entity viewport, Window &window) {
             procedure::DrawNodeStyle(r, viewport);
             EndTabItem();
         }
+        if (BeginTabItem("Timeline")) {
+            DrawTimelineStyle(r, viewport);
+            EndTabItem();
+        }
         if (BeginTabItem("Interface")) {
             ui::DrawInterfaceStyle(r, viewport);
             EndTabItem();
@@ -507,7 +512,7 @@ EditorWindowsFrame BeginEditorWindows(
             if (auto action = RenderTimeline(
                     r.get<const TimelineRange>(viewport), r.get<const TimelinePlayback>(viewport),
                     r.get<const TimelineView>(viewport), r.get<const TimelineNavigation>(viewport), r.get<const Animations>(viewport),
-                    keyframes, r.Context.get<const ViewportIcons>().Timeline, r.get<const InterfaceTheme>(viewport), scrubbing
+                    keyframes, r.Context.get<const ViewportIcons>().Timeline, r.get<const InterfaceTheme>(viewport), r.get<const TimelineTheme>(viewport), scrubbing
                 );
                 interactive && action) {
                 action::Emit(std::move(*action));

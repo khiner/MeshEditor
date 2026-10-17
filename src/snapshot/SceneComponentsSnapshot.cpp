@@ -10,6 +10,7 @@
 #include "scene/SceneGraph.h"
 #include "snapshot/SnapshotRegistration.h"
 #include "timeline/Timeline.h"
+#include "timeline/TimelineTheme.h"
 
 namespace snapshot::detail {
 
@@ -17,7 +18,7 @@ void RegisterScene(Tables &tables) {
     Persistent<
         Transform, PunctualLight, Name, Selected, Active, ObjectKind, Scene, ActiveScene, SceneMembership, SubElementOf,
         ScaleLocked, Instance, Hidden, SceneParent, SceneChildren, ObjectExtrasTag, Path, Perspective, Orthographic, TimelineRange,
-        TimelinePlayback, TimelineNavigation, TimelineView, AnimationClips, Animations, MorphWeightRange, ImageLight, Visibility>(tables);
+        TimelinePlayback, TimelineNavigation, TimelineView, TimelineTheme, AnimationClips, Animations, MorphWeightRange, ImageLight, Visibility>(tables);
     Derived<
         RenderInstance, WorldTransform, ModelsBuffer, LightIndex, LastEvaluatedFrame,
         PlaybackFrame>(tables);

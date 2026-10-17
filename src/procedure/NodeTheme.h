@@ -1,13 +1,9 @@
 #pragma once
 
-#include "numeric/vec4.h"
-
-#include <cstdint>
+#include "ui/Rgba8.h"
 
 namespace procedure {
 using numeric::vec4;
-
-constexpr vec4 Rgba8(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255) { return {r / 255.f, g / 255.f, b / 255.f, a / 255.f}; }
 
 struct NodeThemeColors {
     vec4 Background{Rgba8(30, 30, 33)};

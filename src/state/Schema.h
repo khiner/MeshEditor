@@ -196,6 +196,7 @@ inline constexpr std::string_view SchemaNames[] = {
     "TimelineNavigation",
     "TimelinePlayback",
     "TimelineRange",
+    "TimelineTheme",
     "TimelineView",
     "Transform",
     "TransformGizmoState",

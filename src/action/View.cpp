@@ -12,6 +12,7 @@
 #include "scene/SceneGraph.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionState.h"
+#include "timeline/TimelineTheme.h"
 #include "ui/InterfaceTheme.h"
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
@@ -75,6 +76,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             [&](ResetViewportTheme) { r.emplace_or_replace<ViewportTheme>(viewport, Defaults::ViewportTheme); },
             [&](ResetNodeTheme) { r.replace<procedure::NodeTheme>(viewport, procedure::NodeTheme{}); },
             [&](ResetInterfaceTheme) { r.replace<InterfaceTheme>(viewport, InterfaceTheme{}); },
+            [&](ResetTimelineTheme) { r.replace<TimelineTheme>(viewport, TimelineTheme{}); },
             [&](const ResetPbrLighting &a) {
                 static constexpr PBRViewportLighting Defaults{false, false, 1.f, 0.f, 0.5f, 0.f, true};
                 if (a.Rendered) r.replace<RenderedLighting>(viewport, Defaults);
