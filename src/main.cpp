@@ -10,7 +10,6 @@
 #include "WorkspaceState.h"
 #include "action/Build.h"
 #include "action/Errors.h"
-#include "animation/TimelineUi.h"
 #include "audio/AudioDevice.h"
 #include "audio/AudioUi.h"
 #include "audio/ModalModes.h"
@@ -36,7 +35,10 @@
 #include "scene/SceneControlsUi.h"
 #include "scene/WorldTransform.h"
 #include "selection/SelectionState.h"
+#include "timeline/TimelineUi.h"
 #include "ui/CtrlShortcut.h"
+#include "ui/InterfaceTheme.h"
+#include "ui/InterfaceUi.h"
 #include "ui/MacBackend.h"
 #include "viewport/FrameState.h"
 #include "viewport/RenderExtent.h"
@@ -387,7 +389,7 @@ void RevertSavedProject(state::Scene &r, state::Entity viewport) {
 void BuildDefaultDockLayout(const WindowsState &windows, ImGuiID dockspace_id) {
     auto controls_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.3f, nullptr, &dockspace_id);
     const auto extra_node_id = DockBuilderSplitNode(controls_node_id, ImGuiDir_Down, 0.4f, nullptr, &controls_node_id);
-    const auto animation_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Down, 0.1f, nullptr, &dockspace_id);
+    const auto timeline_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Down, 0.1f, nullptr, &dockspace_id);
     DockBuilderDockWindow(windows.History.Name, extra_node_id);
     DockBuilderDockWindow(windows.Style.Name, extra_node_id);
     DockBuilderDockWindow(windows.Debug.Name, extra_node_id);
@@ -395,10 +397,10 @@ void BuildDefaultDockLayout(const WindowsState &windows, ImGuiID dockspace_id) {
     DockBuilderDockWindow(windows.ImSpinnerDemo.Name, extra_node_id);
     DockBuilderDockWindow(windows.ImPlotDemo.Name, extra_node_id);
     DockBuilderDockWindow(windows.SceneControls.Name, controls_node_id);
-    DockBuilderDockWindow(windows.Animation.Name, animation_node_id);
-    DockBuilderDockWindow(windows.Nodes.Name, animation_node_id);
+    DockBuilderDockWindow(windows.Timeline.Name, timeline_node_id);
+    DockBuilderDockWindow(windows.Nodes.Name, timeline_node_id);
     DockBuilderGetNode(extra_node_id)->SelectedTabId = ImHashStr(windows.History.Name);
-    DockBuilderGetNode(animation_node_id)->SelectedTabId = ImHashStr(windows.Animation.Name);
+    DockBuilderGetNode(timeline_node_id)->SelectedTabId = ImHashStr(windows.Timeline.Name);
     DockBuilderDockWindow(windows.Viewport.Name, dockspace_id);
 }
 
@@ -459,6 +461,10 @@ void DrawStyleWindow(state::Scene &r, state::Entity viewport, Window &window) {
             procedure::DrawNodeStyle(r, viewport);
             EndTabItem();
         }
+        if (BeginTabItem("Interface")) {
+            ui::DrawInterfaceStyle(r, viewport);
+            EndTabItem();
+        }
         EndTabBar();
     }
     End();
@@ -489,19 +495,19 @@ EditorWindowsFrame BeginEditorWindows(
     }
 
     bool scrubbing = false;
-    if (windows.Animation.Visible) {
+    if (windows.Timeline.Visible) {
         PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
-        if (Begin(windows.Animation.Name, &windows.Animation.Visible, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+        if (Begin(windows.Timeline.Name, &windows.Timeline.Visible, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
             PushStyleVar(ImGuiStyleVar_FramePadding, {6, 4});
             Indent(6);
             Spacing();
             Unindent(6);
             PopStyleVar();
             const auto &keyframes = r.get<const SelectedKeyframes>(viewport).Frames;
-            if (auto action = RenderAnimationTimeline(
+            if (auto action = RenderTimeline(
                     r.get<const TimelineRange>(viewport), r.get<const TimelinePlayback>(viewport),
-                    r.get<const AnimationTimelineView>(viewport), r.get<const TimelineNavigation>(viewport), r.get<const Animations>(viewport),
-                    keyframes, r.Context.get<const ViewportIcons>().Anim, scrubbing
+                    r.get<const TimelineView>(viewport), r.get<const TimelineNavigation>(viewport), r.get<const Animations>(viewport),
+                    keyframes, r.Context.get<const ViewportIcons>().Timeline, r.get<const InterfaceTheme>(viewport), scrubbing
                 );
                 interactive && action) {
                 action::Emit(std::move(*action));
@@ -1568,7 +1574,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
                 MenuItem(windows.ImSpinnerDemo.Name, nullptr, &windows.ImSpinnerDemo.Visible);
                 MenuItem(windows.ImPlotDemo.Name, nullptr, &windows.ImPlotDemo.Visible);
                 MenuItem(windows.SceneControls.Name, nullptr, &windows.SceneControls.Visible);
-                MenuItem(windows.Animation.Name, nullptr, &windows.Animation.Visible);
+                MenuItem(windows.Timeline.Name, nullptr, &windows.Timeline.Visible);
                 MenuItem(windows.Viewport.Name, nullptr, &windows.Viewport.Visible);
                 EndMenu();
             }

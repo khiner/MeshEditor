@@ -1,7 +1,6 @@
 #include "selection/SelectionState.h"
 
 #include "SortUnique.h"
-#include "animation/AnimationTimeline.h"
 #include "animation/Clips.h"
 #include "armature/ArmatureComponents.h"
 #include "mesh/MeshComponents.h"
@@ -12,6 +11,7 @@
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
 #include "selection/SelectionGpu.h"
+#include "timeline/Timeline.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewportInteractionState.h"
 

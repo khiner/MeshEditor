@@ -5,7 +5,6 @@
 #include "Profile.h"
 #include "Variant.h"
 #include "action/Errors.h"
-#include "animation/AnimationTimeline.h"
 #include "audio/AcousticMaterial.h"
 #include "audio/RealImpact.h"
 #include "audio/RealImpactComponents.h"
@@ -15,6 +14,7 @@
 #include "numeric/Angles.h"
 #include "object/ObjectOps.h"
 #include "scene/Defaults.h"
+#include "timeline/Timeline.h"
 #include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
 

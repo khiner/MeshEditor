@@ -1,11 +1,11 @@
 #include "action/Animation.h"
 
 #include "action/ScopeResolve.h"
-#include "animation/AnimationTimeline.h"
 #include "animation/Clips.h"
 #include "animation/Fields.h"
 #include "animation/Keying.h"
 #include "selection/Selection.h"
+#include "timeline/Timeline.h"
 #include "viewport/InteractionComponents.h"
 
 namespace action::animation {

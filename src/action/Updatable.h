@@ -31,6 +31,7 @@ struct SurfaceSoundControls;
 struct TransformGizmoState;
 struct TriggerNodes;
 struct ViewportTheme;
+struct InterfaceTheme;
 
 namespace action::mesh {
 struct Delete;
@@ -93,7 +94,7 @@ template<typename... Cs> struct TypeList {};
 // The components Update can address, visited at apply time and checked at each emit site.
 using UpdatableComponents = TypeList<
     Transform, PosedLocal, BoneDelta, TransformGizmoState, OrbitToActive, ShadeSmoothAngle,
-    ViewportDisplay, ViewportTheme, MaterialPreviewLighting, RenderedLighting,
+    ViewportDisplay, ViewportTheme, InterfaceTheme, MaterialPreviewLighting, RenderedLighting,
     PunctualLight, ImageLight, Perspective, Orthographic, MaterialVariants, PrimitiveShape,
     Animations,
     PhysicsSimulationSettings, PhysicsMaterial, PhysicsMotion, PhysicsVelocity, ColliderPolicy, CollisionFilter, PhysicsJoint, ColliderMaterial, TriggerNodes,

@@ -10,7 +10,6 @@
 #include "Window.h"
 #include "action/Errors.h"
 #include "animation/AnimationData.h"
-#include "animation/AnimationTimeline.h"
 #include "audio/AudioStores.h"
 #include "audio/AudioTypes.h"
 #include "audio/ContactModel.h"
@@ -34,6 +33,8 @@
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
+#include "timeline/Timeline.h"
+#include "ui/InterfaceTheme.h"
 #include "viewport/FrameState.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewportConsumerFence.h"
@@ -233,6 +234,7 @@ void SetupScene(state::Scene &r, state::Entity viewport) {
     r.emplace_or_replace<EditMode>(viewport);
     r.emplace_or_replace<ViewportTheme>(viewport, Defaults::ViewportTheme);
     r.emplace_or_replace<procedure::NodeTheme>(viewport);
+    r.emplace_or_replace<InterfaceTheme>(viewport);
     r.emplace_or_replace<ViewCamera>(viewport, Defaults::ViewCamera);
     r.emplace_or_replace<MaterialPreviewLighting>(viewport, PBRViewportLighting{false, false, 1.f, 0.f});
     r.emplace_or_replace<RenderedLighting>(viewport, PBRViewportLighting{true, true, 1.f, 0.f});
@@ -249,7 +251,7 @@ void SetupScene(state::Scene &r, state::Entity viewport) {
     r.emplace_or_replace<ModalSoundControls>(viewport);
     r.emplace_or_replace<PlaybackFrame>(viewport);
     r.emplace_or_replace<LastEvaluatedFrame>(viewport);
-    r.emplace_or_replace<AnimationTimelineView>(viewport);
+    r.emplace_or_replace<TimelineView>(viewport);
     r.emplace_or_replace<TimelineRange>(viewport);
     r.emplace_or_replace<TimelinePlayback>(viewport);
     r.emplace_or_replace<TimelineNavigation>(viewport);

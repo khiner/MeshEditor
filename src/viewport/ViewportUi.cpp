@@ -19,6 +19,8 @@
 #include "ui/CtrlShortcut.h"
 #include "ui/DashedLine.h"
 #include "ui/FieldEdit.h"
+#include "ui/InterfaceTheme.h"
+#include "ui/InterfaceUi.h"
 #include "viewport/FrameState.h"
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
@@ -102,9 +104,8 @@ struct OverlayIconButtonInfo {
 
 struct OverlayIconButtonStyle {
     ImVec2 ButtonSize{36, 30};
-    ImVec2 Padding{0.5f, 0.5f};
     float IconScale{0.75f};
-    float CornerRounding{8.f};
+    float CornerRounding;
 };
 
 template<size_t N>
@@ -113,13 +114,11 @@ std::optional<size_t> DrawOverlayIconButtonGroup(
     ImVec2 start_pos,
     const OverlayIconButtonInfo (&buttons)[N],
     bool interactions_enabled,
-    bool *any_hovered = nullptr,
-    OverlayIconButtonStyle style = {}
+    bool *any_hovered,
+    const OverlayIconButtonStyle &style
 ) {
     const auto saved_cursor_pos = GetCursorScreenPos();
     const float icon_dim = style.ButtonSize.y * style.IconScale;
-    const ImVec2 icon_size{icon_dim, icon_dim};
-    auto &dl = *GetWindowDrawList();
     std::optional<size_t> clicked_index;
 
     PushID(id);
@@ -147,11 +146,7 @@ std::optional<size_t> DrawOverlayIconButtonGroup(
                 hovered       ? ImGuiCol_ButtonHovered :
                                 ImGuiCol_Button
         );
-        dl.AddRectFilled(button_min + style.Padding, button_max - style.Padding, bg_color, style.CornerRounding, button.Corners);
-        if (button.Icon) {
-            SetCursorScreenPos(button_min + (style.ButtonSize - icon_size) * 0.5f);
-            button.Icon->DrawIcon(std::bit_cast<vec2>(icon_size));
-        }
+        ui::DrawIconButton(button_min, button_max, bg_color, style.CornerRounding, button.Corners, button.Icon, icon_dim);
         if (button.Muted) PopStyleVar();
     }
     PopID();
@@ -169,17 +164,14 @@ void DrawOverlayDropdownArrow(ImVec2 pos, ImVec2 size, const OverlayIconButtonSt
     SetCursorScreenPos(saved_cursor);
 
     if (arrow_hovered) any_hovered = true;
-    const auto arrow_min = pos + style.Padding;
-    const auto arrow_max = pos + size - style.Padding;
     const bool popup_open = IsPopupOpen(popup_id);
     const auto bg_color = GetColorU32(popup_open ? ImGuiCol_ButtonActive : arrow_hovered ? ImGuiCol_ButtonHovered :
                                                                                            ImGuiCol_Button);
-    auto &dl = *GetWindowDrawList();
-    dl.AddRectFilled(arrow_min, arrow_max, bg_color, style.CornerRounding, ImDrawFlags_RoundCornersRight);
+    ui::DrawIconButton(pos, pos + size, bg_color, style.CornerRounding, ImDrawFlags_RoundCornersRight);
 
-    const auto center = (arrow_min + arrow_max) * 0.5f;
+    const auto center = pos + size * 0.5f;
     constexpr float arrow_half = 3.5f;
-    dl.AddTriangleFilled(
+    GetWindowDrawList()->AddTriangleFilled(
         center - ImVec2{arrow_half, arrow_half * 0.5f},
         center + ImVec2{arrow_half, -arrow_half * 0.5f},
         center + ImVec2{0.f, arrow_half * 0.5f},
@@ -715,11 +707,10 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
     const rect viewport_rect{ToVec2(GetWindowPos()), ToVec2(GetContentRegionAvail())};
     const bool active_transform = r.get<const GizmoInteraction>(viewport).IsUsing();
     static constexpr float OrientationGizmoSize{84};
-    const OverlayIconButtonStyle overlay_button_style{};
+    const OverlayIconButtonStyle overlay_button_style{.CornerRounding = r.get<const InterfaceTheme>(viewport).IconButtonRounding};
     const float overlay_corner_gap = GetTextLineHeightWithSpacing() / 2.f;
     const OverlayIconButtonStyle shading_button_style{
         .ButtonSize = {overlay_button_style.ButtonSize.x * 0.75f, overlay_button_style.ButtonSize.y * 0.75f},
-        .Padding = overlay_button_style.Padding,
         .IconScale = overlay_button_style.IconScale,
         .CornerRounding = overlay_button_style.CornerRounding * 0.75f,
     };

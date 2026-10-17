@@ -27,7 +27,7 @@ struct TimelineNavigation {
     bool Wrap{false};
 };
 
-struct AnimationTimelineView {
+struct TimelineView {
     float PixelsPerFrame{4.5f};
     float ViewCenterFrame{125.f};
 };

@@ -8,7 +8,6 @@
 #include "Profile.h"
 #include "TransformMath.h"
 #include "Variant.h"
-#include "animation/AnimationTimeline.h"
 #include "animation/Clips.h"
 #include "animation/Fields.h"
 #include "animation/MorphWeights.h"
@@ -29,6 +28,7 @@
 #include "scene/CameraLens.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
+#include "timeline/Timeline.h"
 
 #include "meshoptimizer.h"
 

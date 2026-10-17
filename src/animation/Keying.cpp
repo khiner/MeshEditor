@@ -1,9 +1,9 @@
 #include "animation/Keying.h"
 
-#include "animation/AnimationTimeline.h"
 #include "animation/Clips.h"
 #include "animation/Fields.h"
 #include "state/Scene.h"
+#include "timeline/Timeline.h"
 
 namespace animation {
 namespace {

@@ -9,7 +9,7 @@ struct ViewportIconsTransform {
 struct ViewportIconsShading {
     std::unique_ptr<SvgResource> Wireframe, Solid, MaterialPreview, Rendered;
 };
-struct AnimationIcons {
+struct TimelineIcons {
     std::unique_ptr<SvgResource> Play, PlayReverse, Pause, JumpStart, JumpEnd, FramePrev, FrameNext, PrevKeyframe, NextKeyframe;
 };
 
@@ -18,7 +18,7 @@ struct ViewportIcons {
     ViewportIconsTransform Transform;
     ViewportIconsShading Shading;
     std::unique_ptr<SvgResource> Overlay, XRay;
-    AnimationIcons Anim;
+    TimelineIcons Timeline;
 };
 
 // Emplaces the ViewportIcons context singleton and uploads each SVG into its bitmap texture.

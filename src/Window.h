@@ -82,7 +82,7 @@ struct WindowsState {
     Window
         SceneControls{"Scene controls"},
         Viewport{"Viewport"},
-        Animation{"Animation"},
+        Timeline{"Timeline"},
         Style{"Style"},
         ImGuiDemo{"Dear ImGui Demo", false},
         ImSpinnerDemo{"ImSpinner Demo", false},
@@ -99,7 +99,7 @@ struct WindowsState {
 struct WindowVisibility {
     bool SceneControls{true};
     bool Viewport{true};
-    bool Animation{true};
+    bool Timeline{true};
     bool Style{true};
     bool ImGuiDemo{false};
     bool ImSpinnerDemo{false};
@@ -113,7 +113,7 @@ inline WindowVisibility GetWindowVisibility(const WindowsState &windows) {
     return {
         windows.SceneControls.Visible,
         windows.Viewport.Visible,
-        windows.Animation.Visible,
+        windows.Timeline.Visible,
         windows.Style.Visible,
         windows.ImGuiDemo.Visible,
         windows.ImSpinnerDemo.Visible,
@@ -127,7 +127,7 @@ inline WindowVisibility GetWindowVisibility(const WindowsState &windows) {
 inline void SetWindowVisibility(WindowsState &windows, const WindowVisibility &visibility) {
     windows.SceneControls.Visible = visibility.SceneControls;
     windows.Viewport.Visible = visibility.Viewport;
-    windows.Animation.Visible = visibility.Animation;
+    windows.Timeline.Visible = visibility.Timeline;
     windows.Style.Visible = visibility.Style;
     windows.ImGuiDemo.Visible = visibility.ImGuiDemo;
     windows.ImSpinnerDemo.Visible = visibility.ImSpinnerDemo;

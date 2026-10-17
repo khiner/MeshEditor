@@ -1,0 +1,13 @@
+#pragma once
+
+#include "state/Entity.h"
+
+#include "imgui.h"
+
+struct SvgResource;
+
+namespace ui {
+// Fills an icon button's background over [min, max] inset by half a pixel, and centers `icon` at `icon_dim` pixels square.
+void DrawIconButton(ImVec2 min, ImVec2 max, ImU32 color, float rounding, ImDrawFlags corners, const SvgResource *icon = nullptr, float icon_dim = 0);
+void DrawInterfaceStyle(state::Scene &, state::Entity viewport);
+} // namespace ui

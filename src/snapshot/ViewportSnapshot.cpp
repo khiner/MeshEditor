@@ -5,6 +5,7 @@
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionState.h"
 #include "snapshot/SnapshotRegistration.h"
+#include "ui/InterfaceTheme.h"
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/VideoRecording.h"
@@ -24,7 +25,7 @@ template<> inline constexpr auto CustomEmplace<ViewCamera> = &EmplaceViewCamera;
 
 void RegisterViewport(Tables &tables) {
     Persistent<
-        ViewportTheme, WorkspaceLights, ViewCamera, LookingThrough, Interaction, EditMode, OrbitToActive,
+        ViewportTheme, InterfaceTheme, WorkspaceLights, ViewCamera, LookingThrough, Interaction, EditMode, OrbitToActive,
         ViewportDisplay, MaterialPreviewLighting, RenderedLighting, StudioEnvironment, TransformGizmoState>(tables);
     tables.Snapshots[state::Type<ViewCamera>()].History = false;
     Derived<

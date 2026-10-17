@@ -253,7 +253,7 @@ mesheditor_library(MeshEditorUi COLD
     src/project/HistoryUi.cpp
     src/VideoRecorder.cpp
     src/WorkspaceState.cpp
-    src/animation/AnimationTimeline.cpp
+    src/timeline/TimelineUi.cpp
     src/audio/AudioDeviceUi.cpp
     src/audio/AudioUi.cpp
     src/gizmo/TransformGizmo.cpp
@@ -262,6 +262,7 @@ mesheditor_library(MeshEditorUi COLD
     src/render/SvgResource.cpp
     src/scene/SceneControlsUi.cpp
     src/ui/FieldEdit.cpp
+    src/ui/InterfaceUi.cpp
     src/ui/MacBackend.mm
     src/viewport/ViewportIcons.cpp
     src/viewport/ViewportPresent.cpp

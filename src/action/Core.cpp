@@ -10,6 +10,7 @@
 #include "procedure/Procedure.h"
 #include "render/LightComponents.h"
 #include "render/MaterialComponents.h"
+#include "ui/InterfaceTheme.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewportInteractionState.h"
 
