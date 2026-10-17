@@ -44,11 +44,13 @@ bool IconButton(const char *id, const SvgResource *icon, bool active, bool enabl
     const bool clicked = InvisibleButton(id, size);
     if (!enabled) EndDisabled();
     const auto min = GetItemRectMin(), max = GetItemRectMax();
-    const auto color = GetColorU32(!enabled ? ImGuiCol_FrameBg : active ? ImGuiCol_ButtonActive : IsItemHovered() ? ImGuiCol_ButtonHovered : ImGuiCol_Button);
+    const auto color = GetColorU32(!enabled ? ImGuiCol_FrameBg : active ? ImGuiCol_ButtonActive :
+                                       IsItemHovered()                  ? ImGuiCol_ButtonHovered :
+                                                                          ImGuiCol_Button);
     const bool first = Group.Index == 0, last = Group.Index == Group.Count - 1;
     const bool horizontal = Group.Axis == ImGuiAxis_X;
     const ImDrawFlags corners = !first && !last ? ImDrawFlags_RoundNone :
-        (first ? (horizontal ? ImDrawFlags_RoundLeft : ImDrawFlags_RoundTop) : 0) | (last ? (horizontal ? ImDrawFlags_RoundRight : ImDrawFlags_RoundBottom) : 0);
+                                                  (first ? (horizontal ? ImDrawFlags_RoundLeft : ImDrawFlags_RoundTop) : 0) | (last ? (horizontal ? ImDrawFlags_RoundRight : ImDrawFlags_RoundBottom) : 0);
     GetWindowDrawList()->AddRectFilled(min, max, color, Group.Rounding, corners);
     if (icon) {
         static constexpr float IconScale{0.75f};

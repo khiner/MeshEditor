@@ -101,7 +101,7 @@ template<auto... Ms> using last_field = field::Type<last_v<Ms...>>;
 
 using Core = std::variant<
     Update<bool>, Update<uint8_t>, Update<uint32_t>, Update<float>, Update<double>,
-    Update<vec2>, Update<vec3>, Update<vec4>, Update<quat>, Update<state::Entity>, Update<std::optional<uint32_t>>, Update<std::optional<float>>,
+    Update<vec2>, Update<uvec2>, Update<vec3>, Update<vec4>, Update<quat>, Update<state::Entity>, Update<std::optional<uint32_t>>, Update<std::optional<float>>,
     Update<CollideMode>, Update<PhysicsCombineMode>,
     Update<TransformGizmo::Type>, Update<TransformGizmo::Mode>,
     Update<DebugChannel>, Update<AnisotropicFilterLevel>, Update<std::optional<MotionBlur>>,

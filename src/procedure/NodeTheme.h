@@ -9,6 +9,7 @@ using numeric::vec4;
 struct NodeThemeColors {
     vec4 Background{Rgba8(30, 30, 33)};
     vec4 Grid{Rgba8(255, 255, 255, 12)};
+    vec4 CoarseGrid{Rgba8(255, 255, 255, 28)};
     vec4 Node{Rgba8(48, 48, 52, 240)};
     vec4 Tray{Rgba8(34, 34, 38)};
     vec4 Title{Rgba8(235, 235, 235)};
@@ -50,21 +51,21 @@ struct NodeThemeColors {
 
 struct NodeTheme {
     NodeThemeColors Colors{};
-    float NodeWidth{180}, TitleHeight{24}, RowHeight{22}, NodePadding{6};
+    float GridSize{0}; // A cell's side in points, or the frame height while zero.
+    uint8_t CoarseGridCells{8}; // Cells between coarse grid lines.
+    uint8_t MaxLabelCells{10}; // The cells a socket label may take.
     float TitlePadding{6}, LabelSpacing{4}, ParameterIndent{6};
     float SocketRadius{5}, Rounding{4};
     float WireWidth{2};
     float WireCurving{.4f}; // Handles reach this fraction of the horizontal span.
-    float GridSpacing{32};
     float BorderWidth{1}, HighlightBorderWidth{2}, OutlineWidth{1};
 };
 } // namespace procedure
 
 template<> inline constexpr field::SpecTable<procedure::NodeTheme> Specs<procedure::NodeTheme>{
-    {&procedure::NodeTheme::NodeWidth, {.Min = 80, .Max = 400, .Digits = 0}},
-    {&procedure::NodeTheme::TitleHeight, {.Min = 12, .Max = 48, .Digits = 0}},
-    {&procedure::NodeTheme::RowHeight, {.Min = 12, .Max = 48, .Digits = 0}},
-    {&procedure::NodeTheme::NodePadding, {.Min = 0, .Max = 24, .Digits = 0}},
+    {&procedure::NodeTheme::GridSize, {.Min = 8, .Max = 128, .Digits = 0}},
+    {&procedure::NodeTheme::CoarseGridCells, {.Min = 2, .Max = 64}},
+    {&procedure::NodeTheme::MaxLabelCells, {.Min = 2, .Max = 64}},
     {&procedure::NodeTheme::TitlePadding, {.Min = 0, .Max = 24, .Digits = 0}},
     {&procedure::NodeTheme::LabelSpacing, {.Min = 0, .Max = 24, .Digits = 0}},
     {&procedure::NodeTheme::ParameterIndent, {.Min = 0, .Max = 24, .Digits = 0}},
@@ -72,7 +73,6 @@ template<> inline constexpr field::SpecTable<procedure::NodeTheme> Specs<procedu
     {&procedure::NodeTheme::Rounding, {.Min = 0, .Max = 12, .Digits = 1}},
     {&procedure::NodeTheme::WireWidth, {.Min = .5, .Max = 8, .Digits = 1}},
     {&procedure::NodeTheme::WireCurving, {.Min = 0, .Max = 1, .Digits = 2}},
-    {&procedure::NodeTheme::GridSpacing, {.Min = 8, .Max = 128, .Digits = 0}},
     {&procedure::NodeTheme::BorderWidth, {.Min = .5, .Max = 4, .Digits = 1}},
     {&procedure::NodeTheme::HighlightBorderWidth, {.Min = .5, .Max = 6, .Digits = 1}},
     {&procedure::NodeTheme::OutlineWidth, {.Min = 0, .Max = 4, .Digits = 1}},

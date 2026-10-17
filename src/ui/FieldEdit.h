@@ -374,12 +374,13 @@ template<typename C> void DrawThemeColors(state::Scene &r, state::Entity viewpor
     });
 }
 // Slides each scalar or vector field of the viewport's theme component C between its spec's bounds, under "Sizes".
-template<typename C> void DrawThemeSizes(state::Scene &r, state::Entity viewport) {
+// The caller draws the Skip members itself.
+template<typename C, auto... Skip> void DrawThemeSizes(state::Scene &r, state::Entity viewport) {
     const auto &theme = r.get<const C>(viewport);
     ImGui::SeparatorText("Sizes");
     field::ForEach(theme, [&]<size_t I>(const auto &value, std::integral_constant<size_t, I>) {
         using F = std::remove_cvref_t<decltype(value)>;
-        if constexpr (action::ScalarField<F> || action::VectorField<F>) {
+        if constexpr ((action::ScalarField<F> || action::VectorField<F>) && !(... || (field::IndexOf<Skip> == I))) {
             static_assert(Spec<C, I>.HasMin() && Spec<C, I>.HasMax(), "DrawThemeSizes: a size field must declare a spec with both Min and Max");
             detail::RunThemeField(r, viewport, theme, value, true, [](auto &v) { return SliderField(field::Label<C, I>.c_str(), v, Spec<C, I>); });
         }
