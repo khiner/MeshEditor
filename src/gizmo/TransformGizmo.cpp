@@ -517,7 +517,7 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
     }
     if (g.Start && g.Current->Op == Screen && g.Current->Type != Rotate) {
         const auto center = g.Current->Type == Translate ? WsToPx(f, g.Start->Transform.P) : o_px;
-        dl.AddCircle(center, SizeToPx(f, Style.InnerCircleRadSize), Color.StartGhost, 0, Style.LineWidth);
+        dl.AddCircle(center, SizeToPx(f, Style.InnerCircleRadSize), Color.StartGhost, 0, Style.LineWidth, ImDrawFlags_StrokeCenter);
     }
 
     if (type != Type::Rotate) {
@@ -666,11 +666,11 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
                 const auto p1{screen_pos({-1, -1}, false)}, p2{screen_pos({-1, 1}, false)}, p3{screen_pos({1, 1}, false)}, p4{screen_pos({1, -1}, false)};
                 const bool is_selected = g.Current && g.Current->Op == TranslatePlanes[i];
                 const auto plane_alpha = PlaneAlpha(i, transform, cam_ray);
-                dl.AddQuad(p1, p2, p3, p4, colors::MultAlpha(SelectionColor(Axes[i], is_selected), plane_alpha), 1.f);
+                dl.AddQuad(p1, p2, p3, p4, colors::MultAlpha(SelectionColor(Axes[i], is_selected), plane_alpha), 1.f, ImDrawFlags_StrokeCenter);
                 dl.AddQuadFilled(p1, p2, p3, p4, colors::MultAlpha(SelectionColor(colors::WithAlpha(Axes[i], 0.5f), is_selected), plane_alpha));
                 if (g.Start) {
                     const auto p1g{screen_pos({-1, -1}, true)}, p2g{screen_pos({-1, 1}, true)}, p3g{screen_pos({1, 1}, true)}, p4g{screen_pos({1, -1}, true)};
-                    dl.AddQuad(p1g, p2g, p3g, p4g, colors::Lighten(Color.StartGhost, 0.5f), 1.f);
+                    dl.AddQuad(p1g, p2g, p3g, p4g, colors::Lighten(Color.StartGhost, 0.5f), 1.f, ImDrawFlags_StrokeCenter);
                     dl.AddQuadFilled(p1g, p2g, p3g, p4g, Color.StartGhost);
                 }
             }
@@ -727,7 +727,7 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
         (g.Start && g.Current->Type != Rotate && g.Current->Op == Screen)) {
         const auto color = SelectionColor(IM_COL32_WHITE, g.Current && g.Current->Op == Screen);
         const auto scale = g.Start && g.Current->Type == Scale ? dt.S[0] : 1.f;
-        dl.AddCircle(o_px, SizeToPx(f, scale * Style.InnerCircleRadSize), color, 0, Style.LineWidth);
+        dl.AddCircle(o_px, SizeToPx(f, scale * Style.InnerCircleRadSize), color, 0, Style.LineWidth, ImDrawFlags_StrokeCenter);
     }
     if (type != Type::Translate && (!g.Start || g.Current == Interaction{Rotate, Screen})) {
         dl.AddCircle(
@@ -735,7 +735,8 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
             SizeToPx(f, Style.OuterCircleRadSize),
             SelectionColor(IM_COL32_WHITE, g.Current && g.Current->Op == Screen),
             0,
-            Style.LineWidth
+            Style.LineWidth,
+            ImDrawFlags_StrokeCenter
         );
     }
     if (g.Start) RenderMouseGuid(f, g.Current->Type, o_px);

@@ -650,20 +650,19 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
         const bool expanded = n == graph.Expanded;
         const float rounding = theme.Rounding * zoom;
         draw.AddRectFilled(min, max, U32(expanded ? vec4{colors.Node.x, colors.Node.y, colors.Node.z, 1.f} : colors.Node), rounding);
-        draw.AddRectFilled(min, {max.x, min.y + theme.TitleHeight * zoom}, U32(n == procedure.OutputNode ? colors.OutputNodeTitle : colors.*GroupColors[uint8_t(KindGroups[kind])]), rounding, ImDrawFlags_RoundCornersTop);
+        draw.AddRectFilled(min, {max.x, min.y + theme.TitleHeight * zoom}, U32(n == procedure.OutputNode ? colors.OutputNodeTitle : colors.*GroupColors[uint8_t(KindGroups[kind])]), rounding, ImDrawFlags_RoundTop);
         const ImVec4 clip{min.x, min.y, max.x, max.y};
         draw.AddText(nullptr, font_size, {min.x + theme.TitlePadding * zoom, min.y + (theme.TitleHeight * zoom - font_size) * .5f}, U32(colors.Title), KindTitles[kind], nullptr, 0.f, &clip);
         const auto sockets = KindSockets(kind);
         const auto [first, end_parameter] = ParameterRange(kind);
         const bool erring = r.all_of<NodeError>(entity);
         // Prioritize active, selected, then error border colors; retain an inner error line on selected nodes with errors.
-        // Expand borders by half a unit to align ImGui strokes with socket centers.
+        // Center borders on the node edge to align them with socket centers.
         const bool active = n == procedure.ActiveNode, is_selected = r.all_of<NodeSelected>(entity);
         const auto border = active ? colors.Active : is_selected ? colors.Selected :
             erring                                               ? colors.Error :
                                                                    colors.Border;
-        constexpr ImVec2 StrokeInset{.5f, .5f};
-        draw.AddRect(min - StrokeInset, max + StrokeInset, U32(border), rounding, erring || active || is_selected ? theme.HighlightBorderWidth : theme.BorderWidth);
+        draw.AddRect(min, max, U32(border), rounding, erring || active || is_selected ? theme.HighlightBorderWidth : theme.BorderWidth, ImDrawFlags_StrokeCenter);
         if (erring && (active || is_selected)) draw.AddRect(min + ImVec2{3.f, 3.f}, max - ImVec2{3.f, 3.f}, U32(colors.Error), rounding, 1.f);
         if (expanded) {
             const auto tray = TrayRect(graph, n);
@@ -694,8 +693,8 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
                                                                       colors.ChevronLinked);
             const float chevron = theme.SocketRadius * zoom;
             const ImVec2 a{at.x - chevron * .7f, at.y - chevron}, b{at.x - chevron * .7f, at.y + chevron}, c{at.x + chevron * .9f, at.y};
-            draw.AddTriangleFilled(a, b, c, color);
-            draw.AddTriangle(a, b, c, U32(colors.Outline), theme.OutlineWidth);
+            draw.AddTriangleFilled(a, c, b, color);
+            draw.AddTriangle(a, c, b, U32(colors.Outline), theme.OutlineWidth);
             std::string label;
             for (const auto socket : linked) label += std::string{label.empty() ? "" : ", "} + socket.Name;
             if (label.empty()) label = "Parameters";
@@ -714,8 +713,10 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
         draw.AddBezierCubic(wire[0], wire[1], wire[2], wire[3], U32(SocketColor(colors, held)), thickness);
     }
     if (window.Drag == NodeDrag::Box) {
-        draw.AddRectFilled(Im(window.Press), mouse, U32(colors.BoxSelect));
-        draw.AddRect(Im(window.Press), mouse, U32(colors.BoxSelectBorder));
+        const auto press = Im(window.Press);
+        const auto box_min = ImMin(press, mouse), box_max = ImMax(press, mouse);
+        draw.AddRectFilled(box_min, box_max, U32(colors.BoxSelect));
+        draw.AddRect(box_min, box_max, U32(colors.BoxSelectBorder));
     }
     draw.PopClipRect();
     DrawAddMenu(window, theme, mesh_entity, procedure, interactive);

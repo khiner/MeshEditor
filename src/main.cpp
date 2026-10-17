@@ -624,7 +624,7 @@ struct ValidationUi {
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
         io.IniFilename = nullptr;
         io.FontGlobalScale = font_scale;
-        StyleColorsDark();
+        ui::StyleColors();
         ImGui_ImplMetal_Init(ctx.Device.get());
     }
     void ActivateLive() const {
@@ -1386,7 +1386,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
     // Ctrl+Tab toggles pose mode, so ImGui's window cycling on the same chord is off.
     GetCurrentContext()->ConfigNavWindowingKeyNext = GetCurrentContext()->ConfigNavWindowingKeyPrev = 0;
 
-    StyleColorsDark();
+    ui::StyleColors();
 
     ui::MacBackend mac_backend{window};
     ImGui_ImplMetal_Init(ctx.Device.get());

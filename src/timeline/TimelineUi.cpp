@@ -17,7 +17,7 @@ using namespace ImGui;
 namespace {
 constexpr float MinPixelsPerFrame{1}, MaxPixelsPerFrame{400};
 
-bool IconButton(const char *id, const SvgResource *icon, float rounding, ImDrawFlags corners = ImDrawFlags_RoundCornersAll, float width_scale = 1.f) {
+bool IconButton(const char *id, const SvgResource *icon, float rounding, ImDrawFlags corners = ImDrawFlags_RoundAll, float width_scale = 1.f) {
     const float h = GetFrameHeight();
     PushID(id);
     const bool clicked = InvisibleButton("##btn", {h * width_scale, h});
@@ -69,35 +69,35 @@ std::optional<action::Action> RenderTimeline(const TimelineRange &range, const T
         constexpr float RecordSlots{1}, TransportSlots{6}, DeltaSlots{3};
         const auto record_p = bar_origin + ImVec2{(w - h * (RecordSlots + TransportSlots + DeltaSlots) - spacing.x * 2) * 0.5f, 0.f};
         SetCursorScreenPos(record_p);
-        if (IconButton("record", nullptr, rounding, ImDrawFlags_RoundCornersAll)) emit(action::UpdateOf<&Animations::Record>(action::OnViewport{}, !animations.Record));
+        if (IconButton("record", nullptr, rounding, ImDrawFlags_RoundAll)) emit(action::UpdateOf<&Animations::Record>(action::OnViewport{}, !animations.Record));
         SetItemTooltip("Auto keying: insert keyframes for animated properties on edit");
         GetWindowDrawList()->AddCircleFilled((GetItemRectMin() + GetItemRectMax()) * 0.5f, h * 0.22f, animations.Record ? IM_COL32(230, 60, 50, 255) : IM_COL32(120, 120, 120, 255));
 
         const auto transport_p = ImVec2{record_p.x + h * RecordSlots + spacing.x, record_p.y};
         SetCursorScreenPos(transport_p);
-        if (IconButton("jump_start", icons.JumpStart.get(), rounding, ImDrawFlags_RoundCornersLeft)) emit(action::timeline::JumpToStart{});
+        if (IconButton("jump_start", icons.JumpStart.get(), rounding, ImDrawFlags_RoundLeft)) emit(action::timeline::JumpToStart{});
         SetCursorScreenPos({transport_p.x + h, transport_p.y});
-        if (IconButton("prev_keyframe", icons.PrevKeyframe.get(), rounding, ImDrawFlags_RoundCornersNone)) emit(action::timeline::JumpKeyframe{.Next = false});
+        if (IconButton("prev_keyframe", icons.PrevKeyframe.get(), rounding, ImDrawFlags_RoundNone)) emit(action::timeline::JumpKeyframe{.Next = false});
         SetCursorScreenPos({transport_p.x + h * 2, transport_p.y});
         if (playback.Playing) {
-            if (IconButton("pause", icons.Pause.get(), rounding, ImDrawFlags_RoundCornersNone, 2.f)) emit(action::timeline::TogglePlay{playback.CurrentFrame});
+            if (IconButton("pause", icons.Pause.get(), rounding, ImDrawFlags_RoundNone, 2.f)) emit(action::timeline::TogglePlay{playback.CurrentFrame});
         } else {
-            if (IconButton("play_reverse", icons.PlayReverse.get(), rounding, ImDrawFlags_RoundCornersNone)) emit(action::timeline::TogglePlay{playback.CurrentFrame, /*Reverse=*/true});
+            if (IconButton("play_reverse", icons.PlayReverse.get(), rounding, ImDrawFlags_RoundNone)) emit(action::timeline::TogglePlay{playback.CurrentFrame, /*Reverse=*/true});
             SetCursorScreenPos({transport_p.x + h * 3, transport_p.y});
-            if (IconButton("play", icons.Play.get(), rounding, ImDrawFlags_RoundCornersNone)) emit(action::timeline::TogglePlay{playback.CurrentFrame});
+            if (IconButton("play", icons.Play.get(), rounding, ImDrawFlags_RoundNone)) emit(action::timeline::TogglePlay{playback.CurrentFrame});
         }
         SetCursorScreenPos({transport_p.x + h * 4, transport_p.y});
-        if (IconButton("next_keyframe", icons.NextKeyframe.get(), rounding, ImDrawFlags_RoundCornersNone)) emit(action::timeline::JumpKeyframe{.Next = true});
+        if (IconButton("next_keyframe", icons.NextKeyframe.get(), rounding, ImDrawFlags_RoundNone)) emit(action::timeline::JumpKeyframe{.Next = true});
         SetCursorScreenPos({transport_p.x + h * 5, transport_p.y});
-        if (IconButton("jump_end", icons.JumpEnd.get(), rounding, ImDrawFlags_RoundCornersRight)) emit(action::timeline::JumpToEnd{});
+        if (IconButton("jump_end", icons.JumpEnd.get(), rounding, ImDrawFlags_RoundRight)) emit(action::timeline::JumpToEnd{});
 
         const auto delta_p = ImVec2{transport_p.x + h * TransportSlots + spacing.x, transport_p.y};
         SetCursorScreenPos(delta_p);
-        if (IconButton("jump_back", icons.FramePrev.get(), rounding, ImDrawFlags_RoundCornersLeft)) emit(action::timeline::JumpTime{.Backward = true});
+        if (IconButton("jump_back", icons.FramePrev.get(), rounding, ImDrawFlags_RoundLeft)) emit(action::timeline::JumpTime{.Backward = true});
         SetCursorScreenPos({delta_p.x + h, delta_p.y});
-        if (IconButton("jump_forward", icons.FrameNext.get(), rounding, ImDrawFlags_RoundCornersNone)) emit(action::timeline::JumpTime{.Backward = false});
+        if (IconButton("jump_forward", icons.FrameNext.get(), rounding, ImDrawFlags_RoundNone)) emit(action::timeline::JumpTime{.Backward = false});
         SetCursorScreenPos({delta_p.x + h * 2, delta_p.y});
-        if (IconButton("playback_options", nullptr, rounding, ImDrawFlags_RoundCornersRight)) OpenPopup("##PlaybackOptions");
+        if (IconButton("playback_options", nullptr, rounding, ImDrawFlags_RoundRight)) OpenPopup("##PlaybackOptions");
         {
             const auto center = (GetItemRectMin() + GetItemRectMax()) * 0.5f;
             constexpr float arrow_half = 3.5f;
@@ -154,7 +154,7 @@ std::optional<action::Action> RenderTimeline(const TimelineRange &range, const T
             EndCombo();
         }
         SameLine(0, spacing.x);
-        if (IconButton("add_animation", nullptr, rounding, ImDrawFlags_RoundCornersAll)) emit(action::animation::AddAnimation{std::format("Animation {}", animations.Names.size() + 1)});
+        if (IconButton("add_animation", nullptr, rounding, ImDrawFlags_RoundAll)) emit(action::animation::AddAnimation{std::format("Animation {}", animations.Names.size() + 1)});
         SetItemTooltip("Create a new animation");
         const auto plus_center = (GetItemRectMin() + GetItemRectMax()) * 0.5f;
         constexpr float arm = 4.f;
@@ -216,7 +216,7 @@ std::optional<action::Action> RenderTimeline(const TimelineRange &range, const T
         }
     }
 
-    dl->AddLine({p0.x, p0.y + ruler_h}, {p1.x, p0.y + ruler_h}, ui::U32(colors.RulerLine));
+    dl->AddLineH(p0.x, p1.x, p0.y + ruler_h, ui::U32(colors.RulerLine));
 
     if (!keyframes.empty()) {
         const float kr = theme.KeyframeRadius;

@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <cmath>
 
-// A dashed line from `a` to `b`, stroked without ImDrawList::AddLine's half-pixel offset.
+// A dashed line from `a` to `b`.
 inline void DrawDashedLine(ImDrawList &dl, ImVec2 a, ImVec2 b, ImU32 color, float thickness = 1.f) {
     static constexpr float DashLen{4}, GapLen{3};
 
@@ -15,9 +15,7 @@ inline void DrawDashedLine(ImDrawList &dl, ImVec2 a, ImVec2 b, ImU32 color, floa
 
     const auto dir_unit = dir / len;
     for (float t = 0; t < len; t += DashLen + GapLen) {
-        dl.PathLineTo(a + dir_unit * t);
-        dl.PathLineTo(a + dir_unit * (t + std::min(DashLen, len - t)));
-        dl.PathStroke(color, 0, thickness);
+        dl.AddLine(a + dir_unit * t, a + dir_unit * (t + std::min(DashLen, len - t)), color, thickness);
     }
 }
 

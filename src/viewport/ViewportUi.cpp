@@ -167,7 +167,7 @@ void DrawOverlayDropdownArrow(ImVec2 pos, ImVec2 size, const OverlayIconButtonSt
     const bool popup_open = IsPopupOpen(popup_id);
     const auto bg_color = GetColorU32(popup_open ? ImGuiCol_ButtonActive : arrow_hovered ? ImGuiCol_ButtonHovered :
                                                                                            ImGuiCol_Button);
-    ui::DrawIconButton(pos, pos + size, bg_color, style.CornerRounding, ImDrawFlags_RoundCornersRight);
+    ui::DrawIconButton(pos, pos + size, bg_color, style.CornerRounding, ImDrawFlags_RoundRight);
 
     const auto center = pos + size * 0.5f;
     constexpr float arrow_half = 3.5f;
@@ -712,7 +712,7 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
     const OverlayIconButtonStyle shading_button_style{
         .ButtonSize = {overlay_button_style.ButtonSize.x * 0.75f, overlay_button_style.ButtonSize.y * 0.75f},
         .IconScale = overlay_button_style.IconScale,
-        .CornerRounding = overlay_button_style.CornerRounding * 0.75f,
+        .CornerRounding = overlay_button_style.CornerRounding,
     };
     // Preserve the guard through release because IsSingleClicked fires on release.
     if (!IsMouseDown(ImGuiMouseButton_Left)) frame.OverlayControlsHovered = false;
@@ -731,12 +731,12 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
         };
         const auto gesture = r.get<const BoxSelectState>(viewport).Gesture;
         const OverlayIconButtonInfo buttons[]{
-            make_button(icons.Transform.SelectBox.get(), {0.f, 0.f}, ImDrawFlags_RoundCornersTop, true, transform_type == None && gesture == SelectionGesture::Box),
-            make_button(icons.Transform.Select.get(), {0.f, button_h}, ImDrawFlags_RoundCornersBottom, true, transform_type == None && gesture == SelectionGesture::Click),
-            make_button(icons.Transform.Move.get(), {0.f, button_h * 2.f + gap}, ImDrawFlags_RoundCornersTop, flags.Transformable, transform_type == Translate),
-            make_button(icons.Transform.Rotate.get(), {0.f, button_h * 3.f + gap}, ImDrawFlags_RoundCornersNone, flags.Transformable, transform_type == Rotate),
-            make_button(icons.Transform.Scale.get(), {0.f, button_h * 4.f + gap}, ImDrawFlags_RoundCornersNone, flags.Scalable, transform_type == Scale),
-            make_button(icons.Transform.Universal.get(), {0.f, button_h * 5.f + gap}, ImDrawFlags_RoundCornersBottom, flags.Transformable, transform_type == Universal),
+            make_button(icons.Transform.SelectBox.get(), {0.f, 0.f}, ImDrawFlags_RoundTop, true, transform_type == None && gesture == SelectionGesture::Box),
+            make_button(icons.Transform.Select.get(), {0.f, button_h}, ImDrawFlags_RoundBottom, true, transform_type == None && gesture == SelectionGesture::Click),
+            make_button(icons.Transform.Move.get(), {0.f, button_h * 2.f + gap}, ImDrawFlags_RoundTop, flags.Transformable, transform_type == Translate),
+            make_button(icons.Transform.Rotate.get(), {0.f, button_h * 3.f + gap}, ImDrawFlags_RoundNone, flags.Transformable, transform_type == Rotate),
+            make_button(icons.Transform.Scale.get(), {0.f, button_h * 4.f + gap}, ImDrawFlags_RoundNone, flags.Scalable, transform_type == Scale),
+            make_button(icons.Transform.Universal.get(), {0.f, button_h * 5.f + gap}, ImDrawFlags_RoundBottom, flags.Transformable, transform_type == Universal),
         };
 
         if (const auto clicked = DrawOverlayIconButtonGroup("TransformModes", start_pos, buttons, !active_transform, &frame.OverlayControlsHovered, overlay_button_style)) {
@@ -764,10 +764,10 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
             return OverlayIconButtonInfo{icon, {x, 0.f}, corners, true, settings.ViewportShading == mode, tooltip};
         };
         const OverlayIconButtonInfo buttons[]{
-            make_shading_button(icons.Shading.Wireframe.get(), 0.f, ImDrawFlags_RoundCornersLeft, ViewportShadingMode::Wireframe, "Wireframe"),
-            make_shading_button(icons.Shading.Solid.get(), shading_button_w, ImDrawFlags_RoundCornersNone, ViewportShadingMode::Solid, "Solid"),
-            make_shading_button(icons.Shading.MaterialPreview.get(), shading_button_w * 2.f, ImDrawFlags_RoundCornersNone, ViewportShadingMode::MaterialPreview, "Material Preview"),
-            make_shading_button(icons.Shading.Rendered.get(), shading_button_w * 3.f, ImDrawFlags_RoundCornersNone, ViewportShadingMode::Rendered, "Rendered"),
+            make_shading_button(icons.Shading.Wireframe.get(), 0.f, ImDrawFlags_RoundLeft, ViewportShadingMode::Wireframe, "Wireframe"),
+            make_shading_button(icons.Shading.Solid.get(), shading_button_w, ImDrawFlags_RoundNone, ViewportShadingMode::Solid, "Solid"),
+            make_shading_button(icons.Shading.MaterialPreview.get(), shading_button_w * 2.f, ImDrawFlags_RoundNone, ViewportShadingMode::MaterialPreview, "Material Preview"),
+            make_shading_button(icons.Shading.Rendered.get(), shading_button_w * 3.f, ImDrawFlags_RoundNone, ViewportShadingMode::Rendered, "Rendered"),
         };
 
         if (const auto clicked = DrawOverlayIconButtonGroup("ViewportShading", start_pos, buttons, !active_transform, &frame.OverlayControlsHovered, shading_button_style)) {
@@ -977,7 +977,7 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
         const bool applies = WorkbenchShading(settings.ViewportShading) || r.get<const Interaction>(viewport).Mode == InteractionMode::Edit;
         const auto start_pos = shading_start - ImVec2{buttons_gap + shading_button_w, 0.f};
         const OverlayIconButtonInfo button[]{
-            {icons.XRay.get(), {0.f, 0.f}, ImDrawFlags_RoundCornersAll, true, XRayFlag(settings), "Toggle X-ray", !applies},
+            {icons.XRay.get(), {0.f, 0.f}, ImDrawFlags_RoundAll, true, XRayFlag(settings), "Toggle X-ray", !applies},
         };
         if (DrawOverlayIconButtonGroup("ViewportXRay", start_pos, button, !active_transform, &frame.OverlayControlsHovered, shading_button_style)) {
             action::Emit(action::view::ToggleXRay{});
@@ -993,7 +993,7 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
 
         {
             const OverlayIconButtonInfo icon_button[]{
-                {icons.Overlay.get(), {0.f, 0.f}, ImDrawFlags_RoundCornersLeft, true, settings.ShowOverlays, "Toggle overlays"},
+                {icons.Overlay.get(), {0.f, 0.f}, ImDrawFlags_RoundLeft, true, settings.ShowOverlays, "Toggle overlays"},
             };
             if (const auto clicked = DrawOverlayIconButtonGroup("ViewportOverlays", group_start, icon_button, !active_transform, &frame.OverlayControlsHovered, shading_button_style)) {
                 action::Emit(action::UpdateOf<&ViewportDisplay::ShowOverlays>(action::OnViewport{}, !settings.ShowOverlays));

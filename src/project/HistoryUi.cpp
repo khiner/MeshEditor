@@ -321,7 +321,7 @@ bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive
             while (rails) {
                 const auto bit = uint32_t{1} << std::countr_zero(rails);
                 const auto x = rail_x(std::countr_zero(rails) + 1);
-                GetWindowDrawList()->AddLine({x, top}, {x, bottom}, highlighted & bit ? active_color : rail_color);
+                GetWindowDrawList()->AddLineV(x, top, bottom, highlighted & bit ? active_color : rail_color);
                 rails &= rails - 1;
             }
         };
@@ -348,7 +348,7 @@ bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive
             if (parent && id != nodes[*parent].Children.front()) {
                 const auto branch_x = rail_x(row.Depth);
                 if (!(row.Rails & rail_bit(row.Depth))) draw_rails(rail_bit(row.Depth), above, min.y, center);
-                GetWindowDrawList()->AddLine({branch_x, center}, {min.x - 2.f, center}, active(id) ? active_color : rail_color);
+                GetWindowDrawList()->AddLineH(branch_x, min.x - 2.f, center, active(id) ? active_color : rail_color);
             }
             draw_rails(below_rails(row) & ~row.Rails, below, max.y, bottom);
             if (!interactive) return;
