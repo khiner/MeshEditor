@@ -227,6 +227,20 @@ bool DrawField(const char *label, F &v, const FieldSpec &spec) {
     }
 }
 
+// Slides the field between its spec's bounds, in degrees for a radian field.
+// A null format takes the spec's.
+template<typename F>
+bool SliderField(const char *label, F &v, const FieldSpec &spec, const char *fmt = nullptr, ImGuiSliderFlags flags = 0) {
+    using C = action::Limit<F>;
+    const char *format = fmt ? fmt : std::floating_point<C> ? detail::Format(spec) :
+                                                              nullptr;
+    if constexpr (std::same_as<F, float>) {
+        if (spec.Unit == FieldUnit::Radians) return ImGui::SliderAngle(detail::InDegrees(label).c_str(), &v, Degrees(float(spec.Min)), Degrees(float(spec.Max)), format, flags);
+    }
+    const auto lo = C(spec.Min), hi = C(spec.Max);
+    return ImGui::SliderScalarN(label, ImGuiDt<C>(), &v, action::Components<F>, &lo, &hi, format, flags);
+}
+
 // Widgets over an editor's Run<Ms...>(widget, delta_capable), which reads the field, runs the widget, and stages a change.
 // A label defaults to the field's name, and bounds, speed, and format come from the field's spec.
 template<typename Editor, auto... Prefix>
@@ -252,24 +266,11 @@ struct FieldWidgets {
         return Draw<Ms...>(label);
     }
 
-    // A null format takes the spec's, and a radian field slides in degrees.
     template<auto... Ms>
     bool Slider(const char *label = nullptr, const char *fmt = nullptr, ImGuiSliderFlags flags = 0) {
         constexpr auto spec = SpecOf<Ms...>();
         static_assert(spec.HasMin() && spec.HasMax(), "Edit::Slider: field must declare a spec with both Min and Max");
-        using F = Field<Ms...>;
-        using C = action::Limit<F>;
-        const char *format = fmt ? fmt : std::floating_point<C> ? detail::Format(spec) :
-                                                                  nullptr;
-        return Self().template Run<Ms...>([&](F &v) {
-            if constexpr (std::same_as<F, float> && spec.Unit == FieldUnit::Radians) {
-                return ImGui::SliderAngle(detail::InDegrees(LabelOr<Ms...>(label)).c_str(), &v, Degrees(float(spec.Min)), Degrees(float(spec.Max)), format, flags);
-            } else {
-                const auto lo = C(spec.Min), hi = C(spec.Max);
-                return ImGui::SliderScalarN(LabelOr<Ms...>(label), ImGuiDt<C>(), &v, action::Components<F>, &lo, &hi, format, flags);
-            }
-        },
-                                          /*delta_capable=*/true);
+        return Self().template Run<Ms...>([&](Field<Ms...> &v) { return SliderField(LabelOr<Ms...>(label), v, spec, fmt, flags); }, /*delta_capable=*/true);
     }
 
     template<auto... Ms>
@@ -343,6 +344,46 @@ struct Edit : FieldWidgets<Edit<HasEntity, Prefix...>, Prefix...> {
 
 Edit(state::Scene &) -> Edit<false>;
 Edit(state::Scene &, state::Entity) -> Edit<true>;
+
+namespace detail {
+// Runs the widget over a field of the viewport's theme component C and stages its change at the field's offset.
+template<typename C, typename F>
+void RunThemeField(state::Scene &r, state::Entity viewport, const C &theme, const F &value, bool delta_capable, auto &&widget) {
+    const auto offset = uint16_t(reinterpret_cast<const std::byte *>(&value) - reinterpret_cast<const std::byte *>(&theme));
+    const Edit edit{r, viewport};
+    RunField(r, viewport, ChannelTarget{}, value, widget, /*selection=*/false, delta_capable && action::DeltaField<F>, [&](action::Target gesture, const F &v) {
+        action::Emit(action::Update<F>{edit.Recorded(gesture), state::Key<C>(), offset, v}, action::Phase::Stage);
+    });
+}
+} // namespace detail
+
+// Edits the colors of each color group in the viewport's theme component C, under the group's name.
+template<typename C> void DrawThemeColors(state::Scene &r, state::Entity viewport) {
+    const auto &theme = r.get<const C>(viewport);
+    field::ForEach(theme, [&]<size_t I>(const auto &group, std::integral_constant<size_t, I>) {
+        using G = std::remove_cvref_t<decltype(group)>;
+        if constexpr (field::Walkable<G>) {
+            ImGui::SeparatorText(field::Label<C, I>.c_str());
+            field::ForEach(group, [&]<size_t J>(const auto &color, std::integral_constant<size_t, J>) {
+                detail::RunThemeField(r, viewport, theme, color, false, [](auto &v) {
+                    if constexpr (std::same_as<std::remove_reference_t<decltype(v)>, vec3>) return ImGui::ColorEdit3(field::Label<G, J>.c_str(), &v.x);
+                    else return ImGui::ColorEdit4(field::Label<G, J>.c_str(), &v.x);
+                });
+            });
+        }
+    });
+}
+// Slides each scalar field of the viewport's theme component C between its spec's bounds, under "Sizes".
+template<typename C> void DrawThemeSizes(state::Scene &r, state::Entity viewport) {
+    const auto &theme = r.get<const C>(viewport);
+    ImGui::SeparatorText("Sizes");
+    field::ForEach(theme, [&]<size_t I>(const auto &value, std::integral_constant<size_t, I>) {
+        if constexpr (action::ScalarField<std::remove_cvref_t<decltype(value)>>) {
+            static_assert(Spec<C, I>.HasMin() && Spec<C, I>.HasMax(), "DrawThemeSizes: a size field must declare a spec with both Min and Max");
+            detail::RunThemeField(r, viewport, theme, value, true, [](auto &v) { return SliderField(field::Label<C, I>.c_str(), v, Spec<C, I>); });
+        }
+    });
+}
 
 template<typename Component, auto... Prefix>
 struct PatchEdit : FieldWidgets<PatchEdit<Component, Prefix...>, Prefix...> {

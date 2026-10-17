@@ -33,4 +33,4 @@ struct TransformGizmoState {
     TransformGizmo::Config Config;
     TransformGizmo::Mode Mode;
 };
-template<> inline constexpr FieldSpec Spec<TransformGizmo::Config, "SnapValue">{.Min = 0.01, .Max = 100};
+template<> inline constexpr field::SpecTable<TransformGizmo::Config> Specs<TransformGizmo::Config>{{&TransformGizmo::Config::SnapValue, {.Min = 0.01, .Max = 100}}};

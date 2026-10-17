@@ -39,11 +39,13 @@ struct PBRMaterial {
     Iridescence Iridescence DEFAULT();
 };
 #ifndef __METAL_VERSION__
-template<> inline constexpr FieldSpec Spec<PBRMaterial, "MetallicFactor">{.Min = 0, .Max = 1};
-template<> inline constexpr FieldSpec Spec<PBRMaterial, "RoughnessFactor">{.Min = 0, .Max = 1};
-template<> inline constexpr FieldSpec Spec<PBRMaterial, "NormalScale">{.Min = -2, .Max = 2};
-template<> inline constexpr FieldSpec Spec<PBRMaterial, "OcclusionStrength">{.Min = 0, .Max = 1};
-template<> inline constexpr FieldSpec Spec<PBRMaterial, "AlphaCutoff">{.Min = 0, .Max = 1};
-template<> inline constexpr FieldSpec Spec<PBRMaterial, "Ior">{.Min = 1, .Max = 3};
-template<> inline constexpr FieldSpec Spec<PBRMaterial, "Dispersion">{.Min = 0, .Max = 1};
+template<> inline constexpr field::SpecTable<PBRMaterial> Specs<PBRMaterial>{
+    {&PBRMaterial::MetallicFactor, {.Min = 0, .Max = 1}},
+    {&PBRMaterial::RoughnessFactor, {.Min = 0, .Max = 1}},
+    {&PBRMaterial::NormalScale, {.Min = -2, .Max = 2}},
+    {&PBRMaterial::OcclusionStrength, {.Min = 0, .Max = 1}},
+    {&PBRMaterial::AlphaCutoff, {.Min = 0, .Max = 1}},
+    {&PBRMaterial::Ior, {.Min = 1, .Max = 3}},
+    {&PBRMaterial::Dispersion, {.Min = 0, .Max = 1}},
+};
 #endif

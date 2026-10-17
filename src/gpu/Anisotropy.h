@@ -8,6 +8,8 @@ struct Anisotropy {
     TextureInfo Texture DEFAULT();
 };
 #ifndef __METAL_VERSION__
-template<> inline constexpr FieldSpec Spec<Anisotropy, "Strength">{.Min = 0, .Max = 1};
-template<> inline constexpr FieldSpec Spec<Anisotropy, "Rotation">{.Min = 0, .Max = 6.2831853f, .Digits = 1, .Unit = FieldUnit::Radians};
+template<> inline constexpr field::SpecTable<Anisotropy> Specs<Anisotropy>{
+    {&Anisotropy::Strength, {.Min = 0, .Max = 1}},
+    {&Anisotropy::Rotation, {.Min = 0, .Max = 6.2831853f, .Digits = 1, .Unit = FieldUnit::Radians}},
+};
 #endif

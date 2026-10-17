@@ -14,8 +14,10 @@ struct PunctualLight {
 
     bool operator==(const PunctualLight &) const = default;
 };
-template<> inline constexpr FieldSpec Spec<PunctualLight, "Intensity">{.Min = 0, .Max = 1000, .Digits = 2};
-template<> inline constexpr FieldSpec Spec<PunctualLight, "Range">{.Min = 0.01, .Max = 1000, .Digits = 2};
+template<> inline constexpr field::SpecTable<PunctualLight> Specs<PunctualLight>{
+    {&PunctualLight::Intensity, {.Min = 0, .Max = 1000, .Digits = 2}},
+    {&PunctualLight::Range, {.Min = 0.01, .Max = 1000, .Digits = 2}},
+};
 
 // The scene's EXT_lights_image_based light on the viewport.
 // Rotation turns the environment and Intensity scales it.
@@ -25,7 +27,7 @@ struct ImageLight {
 
     bool operator==(const ImageLight &) const = default;
 };
-template<> inline constexpr FieldSpec Spec<ImageLight, "Intensity">{.Min = 0, .Max = 2, .Digits = 2};
+template<> inline constexpr field::SpecTable<ImageLight> Specs<ImageLight>{{&ImageLight::Intensity, {.Min = 0, .Max = 2, .Digits = 2}}};
 
 // The light's slot in the GPU light buffer.
 struct LightIndex {

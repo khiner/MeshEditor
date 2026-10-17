@@ -9,5 +9,5 @@ struct Sheen {
     TextureInfo RoughnessTexture DEFAULT();
 };
 #ifndef __METAL_VERSION__
-template<> inline constexpr FieldSpec Spec<Sheen, "RoughnessFactor">{.Min = 0, .Max = 1};
+template<> inline constexpr field::SpecTable<Sheen> Specs<Sheen>{{&Sheen::RoughnessFactor, {.Min = 0, .Max = 1}}};
 #endif

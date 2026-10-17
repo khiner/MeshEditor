@@ -795,7 +795,7 @@ void DrawFields(state::Scene &r, NodesWindow &window, state::Entity node, const 
         } else if constexpr (std::same_as<F, state::Entity> || ui::DrawableField<F>) {
             EditParameter<K, F>(r, node, offset, member, ReadsLink(linked, I), true, [&](F &v) {
                 if constexpr (std::same_as<F, state::Entity>) return ObjectChoice(r, label, v);
-                else return ui::DrawField(label, v, Spec<K, field::NameString<K, I>>);
+                else return ui::DrawField(label, v, Spec<K, I>);
             });
         } else if constexpr (ui::HasEditor<F>) {
             SeparatorText(label);
@@ -914,29 +914,8 @@ void DrawNodesWindow(state::Scene &r, state::Entity viewport, NodesWindow &windo
     End();
 }
 void DrawNodeStyle(state::Scene &r, state::Entity viewport) {
-    ui::Edit f{r, viewport};
     if (Button("Reset")) action::Emit(action::view::ResetNodeTheme{});
-    SeparatorText("Colors");
-    const auto &theme = r.get<const NodeTheme>(viewport);
-    field::ForEach(theme.Colors, [&]<size_t I>(const vec4 &color, std::integral_constant<size_t, I>) {
-        const auto offset = uint16_t(reinterpret_cast<const std::byte *>(&color) - reinterpret_cast<const std::byte *>(&theme));
-        ui::detail::RunField(r, viewport, ChannelTarget{}, color, [](vec4 &v) { return ColorEdit4(field::Label<C, I>.c_str(), &v.x); }, /*selection=*/false, /*delta_capable=*/false, [&](action::Target gesture, const vec4 &v) { action::Emit(action::Update<vec4>{f.Recorded(gesture), state::Key<NodeTheme>(), offset, v}, action::Phase::Stage); });
-    });
-    SeparatorText("Sizes");
-    f.Slider<&NodeTheme::NodeWidth>(nullptr, 80.f, 400.f, "%.0f");
-    f.Slider<&NodeTheme::TitleHeight>(nullptr, 12.f, 48.f, "%.0f");
-    f.Slider<&NodeTheme::RowHeight>(nullptr, 12.f, 48.f, "%.0f");
-    f.Slider<&NodeTheme::NodePadding>(nullptr, 0.f, 24.f, "%.0f");
-    f.Slider<&NodeTheme::TitlePadding>(nullptr, 0.f, 24.f, "%.0f");
-    f.Slider<&NodeTheme::LabelSpacing>(nullptr, 0.f, 24.f, "%.0f");
-    f.Slider<&NodeTheme::ParameterIndent>(nullptr, 0.f, 24.f, "%.0f");
-    f.Slider<&NodeTheme::SocketRadius>(nullptr, 2.f, 12.f, "%.1f");
-    f.Slider<&NodeTheme::Rounding>(nullptr, 0.f, 12.f, "%.1f");
-    f.Slider<&NodeTheme::WireWidth>(nullptr, .5f, 8.f, "%.1f");
-    f.Slider<&NodeTheme::WireCurving>(nullptr, 0.f, 1.f, "%.2f");
-    f.Slider<&NodeTheme::GridSpacing>(nullptr, 8.f, 128.f, "%.0f");
-    f.Slider<&NodeTheme::BorderWidth>(nullptr, .5f, 4.f, "%.1f");
-    f.Slider<&NodeTheme::HighlightBorderWidth>(nullptr, .5f, 6.f, "%.1f");
-    f.Slider<&NodeTheme::OutlineWidth>(nullptr, 0.f, 4.f, "%.1f");
+    ui::DrawThemeColors<NodeTheme>(r, viewport);
+    ui::DrawThemeSizes<NodeTheme>(r, viewport);
 }
 } // namespace procedure

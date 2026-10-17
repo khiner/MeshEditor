@@ -26,4 +26,4 @@ struct OrbitToActive {
 struct ShadeSmoothAngle {
     float Value{std::numbers::pi_v<float> / 6.f};
 };
-template<> inline constexpr FieldSpec Spec<ShadeSmoothAngle, "Value">{.Min = 0, .Max = std::numbers::pi, .Digits = 0, .Unit = FieldUnit::Radians};
+template<> inline constexpr field::SpecTable<ShadeSmoothAngle> Specs<ShadeSmoothAngle>{{&ShadeSmoothAngle::Value, {.Min = 0, .Max = std::numbers::pi, .Digits = 0, .Unit = FieldUnit::Radians}}};

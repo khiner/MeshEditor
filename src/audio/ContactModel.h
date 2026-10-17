@@ -20,8 +20,10 @@ struct Striker {
     float TipRadius{0.01f}; // Cap radius, also the cylinder cross-section, m
     float Length{0.19f}; // Cylinder length, m (~0.5 kg of steel at the default radius)
 };
-template<> inline constexpr FieldSpec Spec<Striker, "TipRadius">{.Min = 0.0005, .Max = 0.1, .Digits = 4};
-template<> inline constexpr FieldSpec Spec<Striker, "Length">{.Min = 0.001, .Max = 1};
+template<> inline constexpr field::SpecTable<Striker> Specs<Striker>{
+    {&Striker::TipRadius, {.Min = 0.0005, .Max = 0.1, .Digits = 4}},
+    {&Striker::Length, {.Min = 0.001, .Max = 1}},
+};
 
 // Defines the compliance, curvature, and inverse mass of one side of a Hertz contact.
 struct Impactor {

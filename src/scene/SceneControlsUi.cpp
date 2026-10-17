@@ -1077,12 +1077,11 @@ void DrawViewportStyle(state::Scene &r, state::Entity viewport) {
     a.Color<&AC::Z>("Axis Z");
     SeparatorText("Sizes");
     // UI edits full width and storage is half-width.
-    if (float full_width = theme.EdgeWidth * 2.f; SliderFloat("Edge width", &full_width, 0.5f, 4.f)) {
+    constexpr auto &edge = field::SpecOf<&ViewportTheme::EdgeWidth>;
+    if (float full_width = theme.EdgeWidth * 2.f; SliderFloat("Edge width", &full_width, float(edge.Min) * 2.f, float(edge.Max) * 2.f)) {
         f.Set<&ViewportTheme::EdgeWidth>(full_width / 2.f);
     }
-    if (uint32_t v = theme.SilhouetteEdgeWidth; SliderUInt("Silhouette edge width", &v, 1, 4)) {
-        f.Set<&ViewportTheme::SilhouetteEdgeWidth>(v);
-    }
+    f.Slider<&ViewportTheme::SilhouetteEdgeWidth>("Silhouette edge width");
 }
 
 static void RenderObjectTree(state::Scene &r, state::Entity viewport) {

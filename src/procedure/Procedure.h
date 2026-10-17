@@ -243,23 +243,29 @@ template<typename K> constexpr std::span<const Socket> FixedSockets() {
 }
 
 // Use attribute sockets for per-element parameters and value sockets for other scalar and vec3 fields.
-template<typename K, field::fixed_string Name> inline constexpr uint8_t PerElement = 0u;
-template<> inline constexpr uint8_t PerElement<action::mesh::Bevel, "Width"> = Float;
-template<> inline constexpr uint8_t PerElement<action::mesh::Poke, "Offset"> = Float;
-template<> inline constexpr uint8_t PerElement<action::mesh::Solidify, "Thickness"> = Float;
-template<> inline constexpr uint8_t PerElement<action::mesh::Wireframe, "Thickness"> = Float;
-template<> inline constexpr uint8_t PerElement<action::mesh::Inset, "Thickness"> = Float;
-template<> inline constexpr uint8_t PerElement<action::mesh::Inset, "Depth"> = Float;
-template<> inline constexpr uint8_t PerElement<action::mesh::ShrinkFatten, "Distance"> = Float;
-template<> inline constexpr uint8_t PerElement<action::mesh::SmoothVertices, "Factor"> = Float;
-template<> inline constexpr uint8_t PerElement<action::mesh::Randomize, "Amount"> = Float;
-template<> inline constexpr uint8_t PerElement<InstanceOnPoints, "Scale"> = Vec3;
-template<> inline constexpr uint8_t PerElement<InstanceOnPoints, "Rotation"> = TypeBit(AttributeType::Vec4);
-template<> inline constexpr uint8_t PerElement<VectorMath, "B"> = Vec3;
-template<> inline constexpr uint8_t PerElement<VectorMath, "Scale"> = Float;
-template<> inline constexpr uint8_t PerElement<FloatMath, "B"> = Float;
-template<> inline constexpr uint8_t PerElement<Compare, "B"> = Float | Vec3;
-template<> inline constexpr uint8_t PerElement<BooleanMath, "B"> = Bool;
+template<typename K> inline constexpr field::Table<K, uint8_t> PerElement{};
+template<> inline constexpr field::Table<action::mesh::Bevel, uint8_t> PerElement<action::mesh::Bevel>{{&action::mesh::Bevel::Width, Float}};
+template<> inline constexpr field::Table<action::mesh::Poke, uint8_t> PerElement<action::mesh::Poke>{{&action::mesh::Poke::Offset, Float}};
+template<> inline constexpr field::Table<action::mesh::Solidify, uint8_t> PerElement<action::mesh::Solidify>{{&action::mesh::Solidify::Thickness, Float}};
+template<> inline constexpr field::Table<action::mesh::Wireframe, uint8_t> PerElement<action::mesh::Wireframe>{{&action::mesh::Wireframe::Thickness, Float}};
+template<> inline constexpr field::Table<action::mesh::Inset, uint8_t> PerElement<action::mesh::Inset>{
+    {&action::mesh::Inset::Thickness, Float},
+    {&action::mesh::Inset::Depth, Float},
+};
+template<> inline constexpr field::Table<action::mesh::ShrinkFatten, uint8_t> PerElement<action::mesh::ShrinkFatten>{{&action::mesh::ShrinkFatten::Distance, Float}};
+template<> inline constexpr field::Table<action::mesh::SmoothVertices, uint8_t> PerElement<action::mesh::SmoothVertices>{{&action::mesh::SmoothVertices::Factor, Float}};
+template<> inline constexpr field::Table<action::mesh::Randomize, uint8_t> PerElement<action::mesh::Randomize>{{&action::mesh::Randomize::Amount, Float}};
+template<> inline constexpr field::Table<InstanceOnPoints, uint8_t> PerElement<InstanceOnPoints>{
+    {&InstanceOnPoints::Scale, Vec3},
+    {&InstanceOnPoints::Rotation, TypeBit(AttributeType::Vec4)},
+};
+template<> inline constexpr field::Table<VectorMath, uint8_t> PerElement<VectorMath>{
+    {&VectorMath::B, Vec3},
+    {&VectorMath::Scale, Float},
+};
+template<> inline constexpr field::Table<FloatMath, uint8_t> PerElement<FloatMath>{{&FloatMath::B, Float}};
+template<> inline constexpr field::Table<Compare, uint8_t> PerElement<Compare>{{&Compare::B, Float | Vec3}};
+template<> inline constexpr field::Table<BooleanMath, uint8_t> PerElement<BooleanMath>{{&BooleanMath::B, Bool}};
 
 // Order sockets as fixed inputs, parameter inputs, then fixed outputs.
 // Value nodes expose their parameter as an output.
@@ -276,7 +282,7 @@ template<typename K> inline constexpr auto KindSocketTable = [] {
             using F = std::remove_cvref_t<decltype(member)>;
             constexpr auto types = TypesOf<F>();
             if constexpr (types != 0u) {
-                constexpr auto per_element = PerElement<K, field::NameString<K, I>>;
+                constexpr auto per_element = PerElement<K>.ByIndex[I];
                 all[n++] = {per_element ? Attribute : Value, In, per_element ? per_element : types, false, field::Label<K, I>.c_str(), uint8_t(I)};
             } else if constexpr (field::Walkable<F>) {
                 field::ForEach(member, [&]<size_t J>(auto &nested, std::integral_constant<size_t, J>) {

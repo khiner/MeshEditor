@@ -32,12 +32,14 @@ constexpr auto serialize(auto &archive, const ModalModes &modes) {
 struct ModalGain {
     float Value{1.f};
 };
-template<> inline constexpr FieldSpec Spec<ModalGain, "Value">{.Min = 0, .Max = 2};
+template<> inline constexpr field::SpecTable<ModalGain> Specs<ModalGain>{{&ModalGain::Value, {.Min = 0, .Max = 2}}};
 
 // Per-instance synth tuning.
 struct ModalTuning {
     float FundamentalFreq{0.f}; // Target frequency of the first mode, Hz. All modes shift proportionally. 0 keeps the baked tuning.
     float T60Scale{1.f}; // Multiplies every mode's T60.
 };
-template<> inline constexpr FieldSpec Spec<ModalTuning, "FundamentalFreq">{.Min = 20, .Max = 16000, .Digits = 1};
-template<> inline constexpr FieldSpec Spec<ModalTuning, "T60Scale">{.Min = 0.1, .Max = 10};
+template<> inline constexpr field::SpecTable<ModalTuning> Specs<ModalTuning>{
+    {&ModalTuning::FundamentalFreq, {.Min = 20, .Max = 16000, .Digits = 1}},
+    {&ModalTuning::T60Scale, {.Min = 0.1, .Max = 10}},
+};

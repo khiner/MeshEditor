@@ -191,7 +191,7 @@ std::optional<action::Action> RenderTimeline(const TimelineRange &range, const T
     const auto x_to_frame = [&](float x) -> float { return (x - p0.x - area.x * 0.5f) / view.PixelsPerFrame + view.ViewCenterFrame; };
 
     if (const float sx = std::max(frame_to_x(range.StartFrame), p0.x), ex = std::min(frame_to_x(range.EndFrame), p1.x); ex > sx) {
-        dl->AddRectFilled({sx, p0.y}, {ex, p1.y}, ui::U32(colors.Range));
+        dl->AddRectFilled({sx, p0.y}, {ex, p1.y}, ui::U32(colors.FrameRange));
     }
 
     const auto major_step = ComputeMajorStep(view.PixelsPerFrame, theme.TickLabelSpacing);
@@ -268,30 +268,7 @@ std::optional<action::Action> RenderTimeline(const TimelineRange &range, const T
 }
 
 void DrawTimelineStyle(state::Scene &r, state::Entity viewport) {
-    using C = TimelineThemeColors;
-    ui::Edit f{r, viewport};
     if (Button("Reset")) action::Emit(action::view::ResetTimelineTheme{});
-    SeparatorText("Colors");
-    auto c = f.Sub<&TimelineTheme::Colors>();
-    c.Color<&C::Background>();
-    c.Color<&C::Range>("Frame range");
-    c.Color<&C::RulerLine>();
-    c.Color<&C::MajorTick>();
-    c.Color<&C::MinorTick>();
-    c.Color<&C::TickLabel>();
-    c.Color<&C::Keyframe>();
-    c.Color<&C::KeyframeOutline>();
-    c.Color<&C::Playhead>();
-    c.Color<&C::PlayheadLabel>();
-    c.Color<&C::PlayheadLabelBackground>();
-    SeparatorText("Sizes");
-    f.Slider<&TimelineTheme::RulerHeight>(nullptr, 12.f, 48.f, "%.0f");
-    f.Slider<&TimelineTheme::TickLabelSpacing>(nullptr, 20.f, 200.f, "%.0f");
-    f.Slider<&TimelineTheme::MinorTickSpacing>(nullptr, 8.f, 128.f, "%.0f");
-    f.Slider<&TimelineTheme::KeyframeRadius>(nullptr, 2.f, 12.f, "%.1f");
-    f.Slider<&TimelineTheme::KeyframePadding>(nullptr, 0.f, 24.f, "%.0f");
-    f.Slider<&TimelineTheme::PlayheadWidth>(nullptr, .5f, 8.f, "%.1f");
-    f.Slider<&TimelineTheme::PlayheadLabelRounding>(nullptr, 0.f, 12.f, "%.1f");
-    f.Slider<&TimelineTheme::PlayheadLabelPaddingX>("Playhead label padding X", 0.f, 12.f, "%.0f");
-    f.Slider<&TimelineTheme::PlayheadLabelPaddingY>("Playhead label padding Y", 0.f, 12.f, "%.0f");
+    ui::DrawThemeColors<TimelineTheme>(r, viewport);
+    ui::DrawThemeSizes<TimelineTheme>(r, viewport);
 }

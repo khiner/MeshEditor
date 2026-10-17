@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Field.h"
 #include "ui/Rgba8.h"
 
 namespace procedure {
@@ -49,10 +50,30 @@ struct NodeThemeColors {
 
 struct NodeTheme {
     NodeThemeColors Colors{};
-    float NodeWidth{180}, TitleHeight{24}, RowHeight{22}, NodePadding{6}, SocketRadius{5}, Rounding{4};
+    float NodeWidth{180}, TitleHeight{24}, RowHeight{22}, NodePadding{6};
     float TitlePadding{6}, LabelSpacing{4}, ParameterIndent{6};
-    float WireWidth{2}, GridSpacing{32};
-    float BorderWidth{1}, HighlightBorderWidth{2}, OutlineWidth{1};
+    float SocketRadius{5}, Rounding{4};
+    float WireWidth{2};
     float WireCurving{.4f}; // Handles reach this fraction of the horizontal span.
+    float GridSpacing{32};
+    float BorderWidth{1}, HighlightBorderWidth{2}, OutlineWidth{1};
 };
 } // namespace procedure
+
+template<> inline constexpr field::SpecTable<procedure::NodeTheme> Specs<procedure::NodeTheme>{
+    {&procedure::NodeTheme::NodeWidth, {.Min = 80, .Max = 400, .Digits = 0}},
+    {&procedure::NodeTheme::TitleHeight, {.Min = 12, .Max = 48, .Digits = 0}},
+    {&procedure::NodeTheme::RowHeight, {.Min = 12, .Max = 48, .Digits = 0}},
+    {&procedure::NodeTheme::NodePadding, {.Min = 0, .Max = 24, .Digits = 0}},
+    {&procedure::NodeTheme::TitlePadding, {.Min = 0, .Max = 24, .Digits = 0}},
+    {&procedure::NodeTheme::LabelSpacing, {.Min = 0, .Max = 24, .Digits = 0}},
+    {&procedure::NodeTheme::ParameterIndent, {.Min = 0, .Max = 24, .Digits = 0}},
+    {&procedure::NodeTheme::SocketRadius, {.Min = 2, .Max = 12, .Digits = 1}},
+    {&procedure::NodeTheme::Rounding, {.Min = 0, .Max = 12, .Digits = 1}},
+    {&procedure::NodeTheme::WireWidth, {.Min = .5, .Max = 8, .Digits = 1}},
+    {&procedure::NodeTheme::WireCurving, {.Min = 0, .Max = 1, .Digits = 2}},
+    {&procedure::NodeTheme::GridSpacing, {.Min = 8, .Max = 128, .Digits = 0}},
+    {&procedure::NodeTheme::BorderWidth, {.Min = .5, .Max = 4, .Digits = 1}},
+    {&procedure::NodeTheme::HighlightBorderWidth, {.Min = .5, .Max = 6, .Digits = 1}},
+    {&procedure::NodeTheme::OutlineWidth, {.Min = 0, .Max = 4, .Digits = 1}},
+};

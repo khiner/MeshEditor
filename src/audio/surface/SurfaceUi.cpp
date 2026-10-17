@@ -7,17 +7,21 @@
 
 #include "ui/HelpMarker.h" // depends on imgui
 
-template<> inline constexpr FieldSpec Spec<ContactSurface, "Roughness">{.Min = 1e-9, .Max = 1e-2};
-template<> inline constexpr FieldSpec Spec<ContactSurface, "CorrelationLength">{.Min = 1e-7, .Max = 1e-1};
-template<> inline constexpr FieldSpec Spec<ContactSurface, "SpectralSlope">{.Min = -3, .Max = 0, .Digits = 2};
+template<> inline constexpr field::SpecTable<ContactSurface> Specs<ContactSurface>{
+    {&ContactSurface::Roughness, {.Min = 1e-9, .Max = 1e-2}},
+    {&ContactSurface::CorrelationLength, {.Min = 1e-7, .Max = 1e-1}},
+    {&ContactSurface::SpectralSlope, {.Min = -3, .Max = 0, .Digits = 2}},
+};
 
-template<> inline constexpr FieldSpec Spec<SurfaceSoundControls, "MaxVoices">{.Min = 1, .Max = 64};
-template<> inline constexpr FieldSpec Spec<SurfaceSoundControls, "SustainLevel">{.Min = 0, .Max = 4};
-template<> inline constexpr FieldSpec Spec<SurfaceSoundControls, "AccelNoiseGain">{.Min = 0, .Max = 4};
-template<> inline constexpr FieldSpec Spec<SurfaceSoundControls, "Coupling">{.Min = 0, .Max = 4};
-template<> inline constexpr FieldSpec Spec<SurfaceSoundControls, "ContactDamping">{.Min = 0, .Max = 10};
-template<> inline constexpr FieldSpec Spec<SurfaceSoundControls, "MinSlipSpeed">{.Min = 0, .Max = 1};
-template<> inline constexpr FieldSpec Spec<SurfaceSoundControls, "MinSweepSpeed">{.Min = 0, .Max = 1};
+template<> inline constexpr field::SpecTable<SurfaceSoundControls> Specs<SurfaceSoundControls>{
+    {&SurfaceSoundControls::MaxVoices, {.Min = 1, .Max = 64}},
+    {&SurfaceSoundControls::SustainLevel, {.Min = 0, .Max = 4}},
+    {&SurfaceSoundControls::AccelNoiseGain, {.Min = 0, .Max = 4}},
+    {&SurfaceSoundControls::Coupling, {.Min = 0, .Max = 4}},
+    {&SurfaceSoundControls::ContactDamping, {.Min = 0, .Max = 10}},
+    {&SurfaceSoundControls::MinSlipSpeed, {.Min = 0, .Max = 1}},
+    {&SurfaceSoundControls::MinSweepSpeed, {.Min = 0, .Max = 1}},
+};
 
 using namespace ImGui;
 

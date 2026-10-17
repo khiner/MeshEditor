@@ -12,11 +12,13 @@ struct AcousticMaterial {
 // Ranges cover the acoustic material presets with headroom.
 // Limit Poisson ratio below 0.5 to keep Lame's lambda finite.
 // Set the beta floor above the logarithmic slider's zero epsilon.
-template<> inline constexpr FieldSpec Spec<AcousticMaterialProperties, "Density">{.Min = 1, .Max = 25000, .Digits = 0};
-template<> inline constexpr FieldSpec Spec<AcousticMaterialProperties, "YoungModulus">{.Min = 1e5, .Max = 1e12};
-template<> inline constexpr FieldSpec Spec<AcousticMaterialProperties, "PoissonRatio">{.Min = 0, .Max = 0.49, .Digits = 2};
-template<> inline constexpr FieldSpec Spec<AcousticMaterialProperties, "Alpha">{.Min = 0, .Max = 200};
-template<> inline constexpr FieldSpec Spec<AcousticMaterialProperties, "Beta">{.Min = 1e-9, .Max = 1e-4};
+template<> inline constexpr field::SpecTable<AcousticMaterialProperties> Specs<AcousticMaterialProperties>{
+    {&AcousticMaterialProperties::Density, {.Min = 1, .Max = 25000, .Digits = 0}},
+    {&AcousticMaterialProperties::YoungModulus, {.Min = 1e5, .Max = 1e12}},
+    {&AcousticMaterialProperties::PoissonRatio, {.Min = 0, .Max = 0.49, .Digits = 2}},
+    {&AcousticMaterialProperties::Alpha, {.Min = 0, .Max = 200}},
+    {&AcousticMaterialProperties::Beta, {.Min = 1e-9, .Max = 1e-4}},
+};
 
 // Material presets from KleinPAT, Table 4.
 // https://graphics.stanford.edu/projects/kleinpat/assets/mfpat_opt.pdf

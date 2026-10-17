@@ -11,8 +11,10 @@ struct Iridescence {
     TextureInfo ThicknessTexture DEFAULT();
 };
 #ifndef __METAL_VERSION__
-template<> inline constexpr FieldSpec Spec<Iridescence, "Factor">{.Min = 0, .Max = 1};
-template<> inline constexpr FieldSpec Spec<Iridescence, "Ior">{.Min = 1, .Max = 5};
-template<> inline constexpr FieldSpec Spec<Iridescence, "ThicknessMinimum">{.Min = 0, .Max = 1000, .Digits = 0};
-template<> inline constexpr FieldSpec Spec<Iridescence, "ThicknessMaximum">{.Min = 0, .Max = 1000, .Digits = 0};
+template<> inline constexpr field::SpecTable<Iridescence> Specs<Iridescence>{
+    {&Iridescence::Factor, {.Min = 0, .Max = 1}},
+    {&Iridescence::Ior, {.Min = 1, .Max = 5}},
+    {&Iridescence::ThicknessMinimum, {.Min = 0, .Max = 1000, .Digits = 0}},
+    {&Iridescence::ThicknessMaximum, {.Min = 0, .Max = 1000, .Digits = 0}},
+};
 #endif

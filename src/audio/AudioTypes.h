@@ -18,7 +18,7 @@ struct AudioOutputMix {
     bool Muted{false};
     float Volume{1.f};
 };
-template<> inline constexpr FieldSpec Spec<AudioOutputMix, "Volume">{.Min = 0, .Max = 1};
+template<> inline constexpr field::SpecTable<AudioOutputMix> Specs<AudioOutputMix>{{&AudioOutputMix::Volume, {.Min = 0, .Max = 1}}};
 
 // The monitor limiter's running peak envelope, in full-scale units.
 struct MonitorLimiter {
@@ -37,13 +37,15 @@ struct ModalSoundControls {
     // The speed floor suppresses large support impulses from stationary loaded bodies.
     float MinContactExcitation{1e-7f}, MinContactSpeed{0.01f};
 };
-template<> inline constexpr FieldSpec Spec<ModalSoundControls, "ModalLevel">{.Min = 0, .Max = 1};
-template<> inline constexpr FieldSpec Spec<ModalSoundControls, "ClickGain">{.Min = 0, .Max = 10};
-template<> inline constexpr FieldSpec Spec<ModalSoundControls, "SampleGain">{.Min = 0, .Max = 4};
-template<> inline constexpr FieldSpec Spec<ModalSoundControls, "RenderThreads">{.Min = 1, .Max = 16};
-template<> inline constexpr FieldSpec Spec<ModalSoundControls, "MaxImpacts">{.Min = 1, .Max = 4096};
-template<> inline constexpr FieldSpec Spec<ModalSoundControls, "MinContactExcitation">{.Min = 0, .Max = 1e-3};
-template<> inline constexpr FieldSpec Spec<ModalSoundControls, "MinContactSpeed">{.Min = 0, .Max = 5};
+template<> inline constexpr field::SpecTable<ModalSoundControls> Specs<ModalSoundControls>{
+    {&ModalSoundControls::ModalLevel, {.Min = 0, .Max = 1}},
+    {&ModalSoundControls::ClickGain, {.Min = 0, .Max = 10}},
+    {&ModalSoundControls::SampleGain, {.Min = 0, .Max = 4}},
+    {&ModalSoundControls::RenderThreads, {.Min = 1, .Max = 16}},
+    {&ModalSoundControls::MaxImpacts, {.Min = 1, .Max = 4096}},
+    {&ModalSoundControls::MinContactExcitation, {.Min = 0, .Max = 1e-3}},
+    {&ModalSoundControls::MinContactSpeed, {.Min = 0, .Max = 5}},
+};
 
 enum class SoundVerticesModel {
     // Plays impact recordings sampled at supplied object vertices.
@@ -60,14 +62,20 @@ struct ModalSolveSettings {
     uint32_t NumVertices{10};
     bool CopySoundVertices{true}; // Solve at the existing excitable vertices when present.
 };
-template<> inline constexpr FieldSpec Spec<fastfem::SurfaceSolveConfig, "Resolution">{.Min = 1, .Max = 256};
-template<> inline constexpr FieldSpec Spec<fastfem::SurfaceSolveConfig, "SurfaceSimplificationRatio">{.Min = 0.25, .Max = 1};
-template<> inline constexpr FieldSpec Spec<fastfem::SolverConfig, "NumModes">{.Min = 1, .Max = 512};
-template<> inline constexpr FieldSpec Spec<fastfem::SolverConfig, "NumFemModes">{.Min = 1, .Max = 512};
-template<> inline constexpr FieldSpec Spec<fastfem::SolverConfig, "MinModeFreq">{.Min = 20, .Max = 20000, .Digits = 0};
-template<> inline constexpr FieldSpec Spec<fastfem::SolverConfig, "MaxModeFreq">{.Min = 20, .Max = 20000, .Digits = 0};
-template<> inline constexpr FieldSpec Spec<fastfem::SolverConfig, "Tolerance">{.Min = 1e-12, .Max = 1e-3};
-template<> inline constexpr FieldSpec Spec<fastfem::SolverConfig, "MaxRestarts">{.Min = 1, .Max = 1000};
-template<> inline constexpr FieldSpec Spec<fastfem::FiniteCellConfig, "CutDepth">{.Min = 0, .Max = 8};
-template<> inline constexpr FieldSpec Spec<fastfem::FiniteCellConfig, "FictitiousScale">{.Min = 1e-12, .Max = 1e-2};
-template<> inline constexpr FieldSpec Spec<fastfem::FiniteCellConfig, "PaddingCells">{.Min = 0, .Max = 2, .Digits = 2};
+template<> inline constexpr field::SpecTable<fastfem::SurfaceSolveConfig> Specs<fastfem::SurfaceSolveConfig>{
+    {&fastfem::SurfaceSolveConfig::Resolution, {.Min = 1, .Max = 256}},
+    {&fastfem::SurfaceSolveConfig::SurfaceSimplificationRatio, {.Min = 0.25, .Max = 1}},
+};
+template<> inline constexpr field::SpecTable<fastfem::SolverConfig> Specs<fastfem::SolverConfig>{
+    {&fastfem::SolverConfig::NumModes, {.Min = 1, .Max = 512}},
+    {&fastfem::SolverConfig::NumFemModes, {.Min = 1, .Max = 512}},
+    {&fastfem::SolverConfig::MinModeFreq, {.Min = 20, .Max = 20000, .Digits = 0}},
+    {&fastfem::SolverConfig::MaxModeFreq, {.Min = 20, .Max = 20000, .Digits = 0}},
+    {&fastfem::SolverConfig::Tolerance, {.Min = 1e-12, .Max = 1e-3}},
+    {&fastfem::SolverConfig::MaxRestarts, {.Min = 1, .Max = 1000}},
+};
+template<> inline constexpr field::SpecTable<fastfem::FiniteCellConfig> Specs<fastfem::FiniteCellConfig>{
+    {&fastfem::FiniteCellConfig::CutDepth, {.Min = 0, .Max = 8}},
+    {&fastfem::FiniteCellConfig::FictitiousScale, {.Min = 1e-12, .Max = 1e-2}},
+    {&fastfem::FiniteCellConfig::PaddingCells, {.Min = 0, .Max = 2, .Digits = 2}},
+};

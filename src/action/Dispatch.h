@@ -20,7 +20,7 @@ template<typename T> void CollectFields(T &value, uint16_t base, const std::stri
         using F = std::remove_cvref_t<decltype(member)>;
         const auto offset = uint16_t(base + (reinterpret_cast<const std::byte *>(&member) - reinterpret_cast<const std::byte *>(&value)));
         const auto path = prefix + std::string{field::Name<T, I>};
-        FieldSpec spec = Spec<T, field::NameString<T, I>>;
+        FieldSpec spec = Spec<T, I>;
         if (!spec.Bounded()) {
             spec.Min = enclosing.Min;
             spec.Max = enclosing.Max;

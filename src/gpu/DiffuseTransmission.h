@@ -9,5 +9,5 @@ struct DiffuseTransmission {
     TextureInfo ColorTexture DEFAULT();
 };
 #ifndef __METAL_VERSION__
-template<> inline constexpr FieldSpec Spec<DiffuseTransmission, "Factor">{.Min = 0, .Max = 1};
+template<> inline constexpr field::SpecTable<DiffuseTransmission> Specs<DiffuseTransmission>{{&DiffuseTransmission::Factor, {.Min = 0, .Max = 1}}};
 #endif

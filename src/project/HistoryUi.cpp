@@ -158,7 +158,7 @@ template<typename T> void DrawValue(const state::Scene &r, const char *label, T 
 }
 
 template<typename T> void DrawFields(const state::Scene &r, T &value, bool &changed, bool &finished) {
-    field::ForEach(value, [&]<size_t I>(auto &member, std::integral_constant<size_t, I>) { DrawValue(r, field::Label<T, I>.c_str(), member, Spec<T, field::NameString<T, I>>, changed, finished); });
+    field::ForEach(value, [&]<size_t I>(auto &member, std::integral_constant<size_t, I>) { DrawValue(r, field::Label<T, I>.c_str(), member, Spec<T, I>, changed, finished); });
 }
 
 // The node's label names the component and field a write targets, so only its target and value draw here.

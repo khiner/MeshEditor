@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Field.h"
 #include "gpu/DebugChannel.h"
 #include "gpu/InteractionMode.h"
 
@@ -54,6 +55,10 @@ struct ViewportDisplay {
     bool XRaySolid{false}, XRayWireframe{true};
     float XRayAlpha{0.5f}, XRayAlphaWireframe{0.f};
 };
+template<> inline constexpr field::SpecTable<ViewportDisplay> Specs<ViewportDisplay>{
+    {&ViewportDisplay::XRayAlpha, {.Min = 0, .Max = 1, .Digits = 2}},
+    {&ViewportDisplay::XRayAlphaWireframe, {.Min = 0, .Max = 1, .Digits = 2}},
+};
 
 // Wireframe and Solid shade with the workspace lights and support X-ray display.
 constexpr bool WorkbenchShading(ViewportShadingMode mode) { return mode == ViewportShadingMode::Wireframe || mode == ViewportShadingMode::Solid; }
@@ -83,6 +88,14 @@ struct PBRViewportLighting {
     // Exposure in EV stops.
     // Scales linear color by 2^EV before tone mapping.
     float ExposureEV{0.f};
+};
+// Exposure stays within 10 EV of zero so 2^EV stays finite.
+template<> inline constexpr field::SpecTable<PBRViewportLighting> Specs<PBRViewportLighting>{
+    {&PBRViewportLighting::EnvIntensity, {.Min = 0, .Max = 2, .Digits = 2}},
+    {&PBRViewportLighting::EnvRotationDegrees, {.Min = -180, .Max = 180, .Digits = 1}},
+    {&PBRViewportLighting::BackgroundBlur, {.Min = 0, .Max = 1, .Digits = 2}},
+    {&PBRViewportLighting::WorldOpacity, {.Min = 0, .Max = 1, .Digits = 2}},
+    {&PBRViewportLighting::ExposureEV, {.Min = -10, .Max = 10, .Digits = 1}},
 };
 
 struct MaterialPreviewLighting {

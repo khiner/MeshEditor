@@ -11,7 +11,9 @@ struct TextureInfo {
 };
 #ifndef __METAL_VERSION__
 #include "Field.h"
-template<> inline constexpr FieldSpec Spec<TextureInfo, "UvOffset">{.Speed = 0.01f};
-template<> inline constexpr FieldSpec Spec<TextureInfo, "UvScale">{.Speed = 0.01f};
-template<> inline constexpr FieldSpec Spec<TextureInfo, "UvRotation">{.Speed = 0.01f};
+template<> inline constexpr field::SpecTable<TextureInfo> Specs<TextureInfo>{
+    {&TextureInfo::UvOffset, {.Speed = 0.01f}},
+    {&TextureInfo::UvScale, {.Speed = 0.01f}},
+    {&TextureInfo::UvRotation, {.Speed = 0.01f}},
+};
 #endif

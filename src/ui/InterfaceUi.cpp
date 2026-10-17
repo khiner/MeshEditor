@@ -18,9 +18,7 @@ void DrawIconButton(ImVec2 min, ImVec2 max, ImU32 color, float rounding, ImDrawF
 }
 
 void DrawInterfaceStyle(state::Scene &r, state::Entity viewport) {
-    Edit f{r, viewport};
     if (Button("Reset")) action::Emit(action::view::ResetInterfaceTheme{});
-    SeparatorText("Sizes");
-    f.Slider<&InterfaceTheme::IconButtonRounding>(nullptr, 0.f, 12.f, "%.1f");
+    DrawThemeSizes<InterfaceTheme>(r, viewport);
 }
 } // namespace ui

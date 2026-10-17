@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <string_view>
 #include <type_traits>
 
@@ -49,6 +50,10 @@ template<typename T, typename F> consteval size_t IndexOf(F T::*p) {
         (..., (static_cast<const void *>(&members...[Is]) == static_cast<const void *>(&(Instance<T>.*p)) ? void(index = Is) : void()));
     }(std::make_index_sequence<sizeof...(members)>{});
     return index;
+}
+template<typename T> consteval size_t Count() {
+    auto &[... members] = Instance<T>;
+    return sizeof...(members);
 }
 #pragma clang diagnostic pop
 
@@ -134,11 +139,35 @@ template<typename T, typename F> constexpr void ForEach(T &value, F &&f) {
 }
 } // namespace field
 
-// Declare `template<> inline constexpr FieldSpec Spec<T, "Member">{.Min = lo, .Max = hi};` beside the owning type.
-template<typename T, field::fixed_string Name> inline constexpr FieldSpec Spec{};
+namespace field {
+void DuplicateEntry(); // Never defined, so a second entry for one field fails to compile.
+// A value per field of T, indexed by field, with fields left out holding the default value.
+template<typename T, typename V> struct Table {
+    struct Entry {
+        size_t Index;
+        V Value;
+        template<typename F> consteval Entry(F T::*member, V value) : Index{detail::IndexOf(member)}, Value{value} {}
+    };
+    std::array<V, detail::Count<T>()> ByIndex{};
+    constexpr Table() = default;
+    consteval Table(std::initializer_list<Entry> entries) {
+        std::array<bool, detail::Count<T>()> declared{};
+        for (const auto &entry : entries) {
+            if (declared[entry.Index]) DuplicateEntry();
+            declared[entry.Index] = true;
+            ByIndex[entry.Index] = entry.Value;
+        }
+    }
+};
+template<typename T> using SpecTable = Table<T, FieldSpec>;
+} // namespace field
+
+// Declare `template<> inline constexpr field::SpecTable<T> Specs<T>{{&T::Member, {.Min = lo, .Max = hi}}, ...};` beside the owning type.
+template<typename T> inline constexpr field::SpecTable<T> Specs{};
+template<typename T, size_t I> inline constexpr const FieldSpec &Spec = Specs<T>.ByIndex[I];
 
 namespace field {
-template<auto P> inline constexpr const FieldSpec &SpecOf = Spec<Owner<P>, NameString<Owner<P>, IndexOf<P>>>;
+template<auto P> inline constexpr const FieldSpec &SpecOf = Spec<Owner<P>, IndexOf<P>>;
 
 // Bounds come from the innermost member that declares any.
 template<auto... Ms> consteval FieldSpec ChainSpec() {

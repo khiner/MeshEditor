@@ -7,5 +7,5 @@ struct Transmission {
     TextureInfo Texture DEFAULT();
 };
 #ifndef __METAL_VERSION__
-template<> inline constexpr FieldSpec Spec<Transmission, "Factor">{.Min = 0, .Max = 1};
+template<> inline constexpr field::SpecTable<Transmission> Specs<Transmission>{{&Transmission::Factor, {.Min = 0, .Max = 1}}};
 #endif

@@ -11,7 +11,9 @@ struct Clearcoat {
     TextureInfo NormalTexture DEFAULT();
 };
 #ifndef __METAL_VERSION__
-template<> inline constexpr FieldSpec Spec<Clearcoat, "Factor">{.Min = 0, .Max = 1};
-template<> inline constexpr FieldSpec Spec<Clearcoat, "RoughnessFactor">{.Min = 0, .Max = 1};
-template<> inline constexpr FieldSpec Spec<Clearcoat, "NormalScale">{.Min = -2, .Max = 2};
+template<> inline constexpr field::SpecTable<Clearcoat> Specs<Clearcoat>{
+    {&Clearcoat::Factor, {.Min = 0, .Max = 1}},
+    {&Clearcoat::RoughnessFactor, {.Min = 0, .Max = 1}},
+    {&Clearcoat::NormalScale, {.Min = -2, .Max = 2}},
+};
 #endif

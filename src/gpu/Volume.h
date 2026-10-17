@@ -9,5 +9,5 @@ struct Volume {
     TextureInfo ThicknessTexture DEFAULT();
 };
 #ifndef __METAL_VERSION__
-template<> inline constexpr FieldSpec Spec<Volume, "ThicknessFactor">{.Min = 0, .Max = 10};
+template<> inline constexpr field::SpecTable<Volume> Specs<Volume>{{&Volume::ThicknessFactor, {.Min = 0, .Max = 10}}};
 #endif

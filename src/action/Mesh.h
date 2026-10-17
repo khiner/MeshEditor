@@ -329,56 +329,84 @@ std::vector<state::Entity> SelectedEditMeshes(const state::Scene &, state::Entit
 bool UpdateInsetPreview(state::Scene &, state::Entity viewport, const Inset &, InsetPreviewCache &);
 } // namespace action::mesh
 
-template<> inline constexpr FieldSpec Spec<action::mesh::Merge, "Distance">{.Min = 0, .Max = 10, .Speed = 0.0001f, .Digits = 4};
-template<> inline constexpr FieldSpec Spec<action::mesh::Dissolve, "Angle">{.Min = 0, .Max = std::numbers::pi_v<float>, .Digits = 1, .Unit = FieldUnit::Radians};
-template<> inline constexpr FieldSpec Spec<action::mesh::Dissolve, "Distance">{.Min = 0, .Max = 10, .Speed = 0.0001f, .Digits = 4};
-template<> inline constexpr FieldSpec Spec<action::mesh::Subdivide, "Cuts">{.Min = 1};
-template<> inline constexpr FieldSpec Spec<action::mesh::SpaceEvenly, "Factor">{.Min = 0, .Max = 1};
-template<> inline constexpr FieldSpec Spec<action::mesh::Flatten, "Factor">{.Min = 0, .Max = 1};
-template<> inline constexpr FieldSpec Spec<action::mesh::RelaxEdgeLoops, "Iterations">{.Min = 1, .Max = 1000};
-template<> inline constexpr FieldSpec Spec<action::mesh::SnapSymmetry, "Threshold">{.Min = 0, .Max = 10, .Speed = 0.001f, .Digits = 4};
-template<> inline constexpr FieldSpec Spec<action::mesh::SnapSymmetry, "Factor">{.Min = 0, .Max = 1};
-template<> inline constexpr FieldSpec Spec<action::mesh::Unsubdivide, "Iterations">{.Min = 1, .Max = 1000};
-template<> inline constexpr FieldSpec Spec<action::mesh::Decimate, "Ratio">{.Min = 0, .Max = 1};
-template<> inline constexpr FieldSpec Spec<action::mesh::Poke, "Offset">{.Min = -100, .Max = 100, .Speed = 0.01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::Inset, "Thickness">{.Min = 0, .Max = 100, .Speed = 0.01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::Inset, "Depth">{.Min = -100, .Max = 100, .Speed = 0.01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::LoopCut, "Cuts">{.Min = 1};
-template<> inline constexpr FieldSpec Spec<action::mesh::Spin, "Steps">{.Min = 1};
-template<> inline constexpr FieldSpec Spec<action::mesh::Spin, "Angle">{.Min = -6.2831853f, .Max = 6.2831853f, .Digits = 1, .Unit = FieldUnit::Radians};
-template<> inline constexpr FieldSpec Spec<action::mesh::Spin, "Axis">{.Speed = 0.01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::Spin, "Center">{.Speed = 0.01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::Spin, "Offset">{.Min = -100, .Max = 100, .Speed = 0.01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::ExtrudeRepeat, "Steps">{.Min = 1};
-template<> inline constexpr FieldSpec Spec<action::mesh::ExtrudeRepeat, "Offset">{.Speed = 0.01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::Bisect, "Point">{.Speed = 0.01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::Bisect, "Normal">{.Speed = 0.01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::Solidify, "Thickness">{.Min = -100, .Max = 100, .Speed = 0.01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::Wireframe, "Thickness">{.Min = 0, .Max = 100, .Speed = 0.01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::Wireframe, "Offset">{.Min = -1, .Max = 1, .Speed = 0.01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::GridFill, "Span">{.Min = 0};
-template<> inline constexpr FieldSpec Spec<action::mesh::FillHoles, "Sides">{.Min = 0};
-template<> inline constexpr FieldSpec Spec<action::mesh::Bevel, "Width">{.Min = 0, .Max = 100, .Speed = 0.01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::Bevel, "Segments">{.Min = 1};
-template<> inline constexpr FieldSpec Spec<action::mesh::SmoothVertices, "Factor">{.Min = -10, .Max = 10, .Speed = 0.01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::SmoothVertices, "Repeat">{.Min = 1, .Max = 1000};
-template<> inline constexpr FieldSpec Spec<action::mesh::MakePlanarFaces, "Factor">{.Min = -10, .Max = 10, .Speed = 0.01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::MakePlanarFaces, "Repeat">{.Min = 1, .Max = 10000};
-template<> inline constexpr FieldSpec Spec<action::mesh::ToSphere, "Factor">{.Min = 0, .Max = 1, .Speed = 0.01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::RotateUVs, "UVSet">{.Min = 0, .Max = 3};
-template<> inline constexpr FieldSpec Spec<action::mesh::ReverseUVs, "UVSet">{.Min = 0, .Max = 3};
-template<> inline constexpr FieldSpec Spec<action::mesh::Shear, "Angle">{.Min = -6.2831853f, .Max = 6.2831853f, .Digits = 1, .Unit = FieldUnit::Radians};
-template<> inline constexpr FieldSpec Spec<action::mesh::Warp, "Angle">{.Digits = 1, .Unit = FieldUnit::Radians};
-template<> inline constexpr FieldSpec Spec<action::mesh::Warp, "OffsetAngle">{.Digits = 1, .Unit = FieldUnit::Radians};
-template<> inline constexpr FieldSpec Spec<action::mesh::Bend, "Angle">{.Digits = 1, .Unit = FieldUnit::Radians};
-template<> inline constexpr FieldSpec Spec<action::mesh::Bend, "OffsetAngle">{.Digits = 1, .Unit = FieldUnit::Radians};
-template<> inline constexpr FieldSpec Spec<action::mesh::Randomize, "Uniform">{.Min = 0, .Max = 1, .Speed = .01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::Randomize, "Amount">{.Speed = .01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::Randomize, "Normal">{.Min = 0, .Max = 1, .Speed = .01f};
-template<> inline constexpr FieldSpec Spec<action::mesh::SplitNonplanarFaces, "Angle">{.Min = 0, .Max = std::numbers::pi_v<float>, .Digits = 1, .Unit = FieldUnit::Radians};
+template<> inline constexpr field::SpecTable<action::mesh::Merge> Specs<action::mesh::Merge>{{&action::mesh::Merge::Distance, {.Min = 0, .Max = 10, .Speed = 0.0001f, .Digits = 4}}};
+template<> inline constexpr field::SpecTable<action::mesh::Dissolve> Specs<action::mesh::Dissolve>{
+    {&action::mesh::Dissolve::Angle, {.Min = 0, .Max = std::numbers::pi_v<float>, .Digits = 1, .Unit = FieldUnit::Radians}},
+    {&action::mesh::Dissolve::Distance, {.Min = 0, .Max = 10, .Speed = 0.0001f, .Digits = 4}},
+};
+template<> inline constexpr field::SpecTable<action::mesh::Subdivide> Specs<action::mesh::Subdivide>{{&action::mesh::Subdivide::Cuts, {.Min = 1}}};
+template<> inline constexpr field::SpecTable<action::mesh::SpaceEvenly> Specs<action::mesh::SpaceEvenly>{{&action::mesh::SpaceEvenly::Factor, {.Min = 0, .Max = 1}}};
+template<> inline constexpr field::SpecTable<action::mesh::Flatten> Specs<action::mesh::Flatten>{{&action::mesh::Flatten::Factor, {.Min = 0, .Max = 1}}};
+template<> inline constexpr field::SpecTable<action::mesh::RelaxEdgeLoops> Specs<action::mesh::RelaxEdgeLoops>{{&action::mesh::RelaxEdgeLoops::Iterations, {.Min = 1, .Max = 1000}}};
+template<> inline constexpr field::SpecTable<action::mesh::SnapSymmetry> Specs<action::mesh::SnapSymmetry>{
+    {&action::mesh::SnapSymmetry::Threshold, {.Min = 0, .Max = 10, .Speed = 0.001f, .Digits = 4}},
+    {&action::mesh::SnapSymmetry::Factor, {.Min = 0, .Max = 1}},
+};
+template<> inline constexpr field::SpecTable<action::mesh::Unsubdivide> Specs<action::mesh::Unsubdivide>{{&action::mesh::Unsubdivide::Iterations, {.Min = 1, .Max = 1000}}};
+template<> inline constexpr field::SpecTable<action::mesh::Decimate> Specs<action::mesh::Decimate>{{&action::mesh::Decimate::Ratio, {.Min = 0, .Max = 1}}};
+template<> inline constexpr field::SpecTable<action::mesh::Poke> Specs<action::mesh::Poke>{{&action::mesh::Poke::Offset, {.Min = -100, .Max = 100, .Speed = 0.01f}}};
+template<> inline constexpr field::SpecTable<action::mesh::Inset> Specs<action::mesh::Inset>{
+    {&action::mesh::Inset::Thickness, {.Min = 0, .Max = 100, .Speed = 0.01f}},
+    {&action::mesh::Inset::Depth, {.Min = -100, .Max = 100, .Speed = 0.01f}},
+};
+template<> inline constexpr field::SpecTable<action::mesh::LoopCut> Specs<action::mesh::LoopCut>{{&action::mesh::LoopCut::Cuts, {.Min = 1}}};
+template<> inline constexpr field::SpecTable<action::mesh::Spin> Specs<action::mesh::Spin>{
+    {&action::mesh::Spin::Steps, {.Min = 1}},
+    {&action::mesh::Spin::Angle, {.Min = -6.2831853f, .Max = 6.2831853f, .Digits = 1, .Unit = FieldUnit::Radians}},
+    {&action::mesh::Spin::Axis, {.Speed = 0.01f}},
+    {&action::mesh::Spin::Center, {.Speed = 0.01f}},
+    {&action::mesh::Spin::Offset, {.Min = -100, .Max = 100, .Speed = 0.01f}},
+};
+template<> inline constexpr field::SpecTable<action::mesh::ExtrudeRepeat> Specs<action::mesh::ExtrudeRepeat>{
+    {&action::mesh::ExtrudeRepeat::Steps, {.Min = 1}},
+    {&action::mesh::ExtrudeRepeat::Offset, {.Speed = 0.01f}},
+};
+template<> inline constexpr field::SpecTable<action::mesh::Bisect> Specs<action::mesh::Bisect>{
+    {&action::mesh::Bisect::Point, {.Speed = 0.01f}},
+    {&action::mesh::Bisect::Normal, {.Speed = 0.01f}},
+};
+template<> inline constexpr field::SpecTable<action::mesh::Solidify> Specs<action::mesh::Solidify>{{&action::mesh::Solidify::Thickness, {.Min = -100, .Max = 100, .Speed = 0.01f}}};
+template<> inline constexpr field::SpecTable<action::mesh::Wireframe> Specs<action::mesh::Wireframe>{
+    {&action::mesh::Wireframe::Thickness, {.Min = 0, .Max = 100, .Speed = 0.01f}},
+    {&action::mesh::Wireframe::Offset, {.Min = -1, .Max = 1, .Speed = 0.01f}},
+};
+template<> inline constexpr field::SpecTable<action::mesh::GridFill> Specs<action::mesh::GridFill>{{&action::mesh::GridFill::Span, {.Min = 0}}};
+template<> inline constexpr field::SpecTable<action::mesh::FillHoles> Specs<action::mesh::FillHoles>{{&action::mesh::FillHoles::Sides, {.Min = 0}}};
+template<> inline constexpr field::SpecTable<action::mesh::Bevel> Specs<action::mesh::Bevel>{
+    {&action::mesh::Bevel::Width, {.Min = 0, .Max = 100, .Speed = 0.01f}},
+    {&action::mesh::Bevel::Segments, {.Min = 1}},
+};
+template<> inline constexpr field::SpecTable<action::mesh::SmoothVertices> Specs<action::mesh::SmoothVertices>{
+    {&action::mesh::SmoothVertices::Factor, {.Min = -10, .Max = 10, .Speed = 0.01f}},
+    {&action::mesh::SmoothVertices::Repeat, {.Min = 1, .Max = 1000}},
+};
+template<> inline constexpr field::SpecTable<action::mesh::MakePlanarFaces> Specs<action::mesh::MakePlanarFaces>{
+    {&action::mesh::MakePlanarFaces::Factor, {.Min = -10, .Max = 10, .Speed = 0.01f}},
+    {&action::mesh::MakePlanarFaces::Repeat, {.Min = 1, .Max = 10000}},
+};
+template<> inline constexpr field::SpecTable<action::mesh::ToSphere> Specs<action::mesh::ToSphere>{{&action::mesh::ToSphere::Factor, {.Min = 0, .Max = 1, .Speed = 0.01f}}};
+template<> inline constexpr field::SpecTable<action::mesh::RotateUVs> Specs<action::mesh::RotateUVs>{{&action::mesh::RotateUVs::UVSet, {.Min = 0, .Max = 3}}};
+template<> inline constexpr field::SpecTable<action::mesh::ReverseUVs> Specs<action::mesh::ReverseUVs>{{&action::mesh::ReverseUVs::UVSet, {.Min = 0, .Max = 3}}};
+template<> inline constexpr field::SpecTable<action::mesh::Shear> Specs<action::mesh::Shear>{{&action::mesh::Shear::Angle, {.Min = -6.2831853f, .Max = 6.2831853f, .Digits = 1, .Unit = FieldUnit::Radians}}};
+template<> inline constexpr field::SpecTable<action::mesh::Warp> Specs<action::mesh::Warp>{
+    {&action::mesh::Warp::Angle, {.Digits = 1, .Unit = FieldUnit::Radians}},
+    {&action::mesh::Warp::OffsetAngle, {.Digits = 1, .Unit = FieldUnit::Radians}},
+};
+template<> inline constexpr field::SpecTable<action::mesh::Bend> Specs<action::mesh::Bend>{
+    {&action::mesh::Bend::Angle, {.Digits = 1, .Unit = FieldUnit::Radians}},
+    {&action::mesh::Bend::OffsetAngle, {.Digits = 1, .Unit = FieldUnit::Radians}},
+};
+template<> inline constexpr field::SpecTable<action::mesh::Randomize> Specs<action::mesh::Randomize>{
+    {&action::mesh::Randomize::Uniform, {.Min = 0, .Max = 1, .Speed = .01f}},
+    {&action::mesh::Randomize::Amount, {.Speed = .01f}},
+    {&action::mesh::Randomize::Normal, {.Min = 0, .Max = 1, .Speed = .01f}},
+};
+template<> inline constexpr field::SpecTable<action::mesh::SplitNonplanarFaces> Specs<action::mesh::SplitNonplanarFaces>{{&action::mesh::SplitNonplanarFaces::Angle, {.Min = 0, .Max = std::numbers::pi_v<float>, .Digits = 1, .Unit = FieldUnit::Radians}}};
 
-template<> inline constexpr FieldSpec Spec<action::mesh::CurveBetweenSelected, "Factor">{.Min = 0, .Max = 1};
+template<> inline constexpr field::SpecTable<action::mesh::CurveBetweenSelected> Specs<action::mesh::CurveBetweenSelected>{{&action::mesh::CurveBetweenSelected::Factor, {.Min = 0, .Max = 1}}};
 
-template<> inline constexpr FieldSpec Spec<action::mesh::Circularize, "Factor">{.Min = 0, .Max = 1};
-template<> inline constexpr FieldSpec Spec<action::mesh::Circularize, "Radius">{.Min = 0};
-template<> inline constexpr FieldSpec Spec<action::mesh::Circularize, "Angle">{.Digits = 1, .Unit = FieldUnit::Radians};
+template<> inline constexpr field::SpecTable<action::mesh::Circularize> Specs<action::mesh::Circularize>{
+    {&action::mesh::Circularize::Factor, {.Min = 0, .Max = 1}},
+    {&action::mesh::Circularize::Radius, {.Min = 0}},
+    {&action::mesh::Circularize::Angle, {.Digits = 1, .Unit = FieldUnit::Radians}},
+};

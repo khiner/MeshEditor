@@ -14,6 +14,8 @@ struct Transform {
 #endif
 };
 #ifndef __METAL_VERSION__
-template<> inline constexpr FieldSpec Spec<Transform, "P">{.Speed = 0.01f};
-template<> inline constexpr FieldSpec Spec<Transform, "S">{.Min = 0.01, .Max = 10, .Speed = 0.01f};
+template<> inline constexpr field::SpecTable<Transform> Specs<Transform>{
+    {&Transform::P, {.Speed = 0.01f}},
+    {&Transform::S, {.Min = 0.01, .Max = 10, .Speed = 0.01f}},
+};
 #endif

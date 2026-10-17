@@ -809,15 +809,14 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
                             }
                             EndCombo();
                         }
-                        edit.template Run<&L::EnvIntensity>([](float &v) { return SliderFloat("Intensity", &v, 0.f, 2.f, "%.2f"); });
-                        edit.template Run<&L::EnvRotationDegrees>([](float &v) { return SliderFloat("Rotation", &v, -180.f, 180.f, "%.1f deg"); });
+                        edit.template Slider<&L::EnvIntensity>("Intensity");
+                        edit.template Slider<&L::EnvRotationDegrees>("Rotation", "%.1f deg");
                     }
-                    edit.template Run<&L::BackgroundBlur>([](float &v) { return SliderFloat("Blur", &v, 0.f, 1.f, "%.2f"); });
-                    edit.template Run<&L::WorldOpacity>([](float &v) { return SliderFloat("World opacity", &v, 0.f, 1.f, "%.2f"); });
+                    edit.template Slider<&L::BackgroundBlur>("Blur");
+                    edit.template Slider<&L::WorldOpacity>("World opacity");
                     edit.template Check<&L::RealTransmission>("Real transmission");
                     if (IsItemHovered()) SetTooltip("Sample transmission from a pre-rendered scene framebuffer instead of from the IBL.");
-                    // AlwaysClamp: extreme typed EV values overflow exp2 into inf/NaN in the renderer.
-                    edit.template Run<&L::ExposureEV>([](float &v) { return SliderFloat("Exposure", &v, -10.f, 10.f, "%.1f EV", ImGuiSliderFlags_AlwaysClamp); });
+                    edit.template Slider<&L::ExposureEV>("Exposure", "%.1f EV");
                     PopID();
                 };
 
@@ -828,9 +827,8 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
                     else edit.Check<&ViewportDisplay::XRaySolid>("##XRay");
                     SameLine();
                     PushStyleVar(ImGuiStyleVar_Alpha, GetStyle().Alpha * (XRayFlag(settings) ? 1.f : 0.5f));
-                    const auto opacity_slider = [](float &v) { return SliderFloat("X-ray", &v, 0.f, 1.f, "%.2f"); };
-                    if (wireframe) edit.Run<&ViewportDisplay::XRayAlphaWireframe>(opacity_slider);
-                    else edit.Run<&ViewportDisplay::XRayAlpha>(opacity_slider);
+                    if (wireframe) edit.Slider<&ViewportDisplay::XRayAlphaWireframe>("X-ray");
+                    else edit.Slider<&ViewportDisplay::XRayAlpha>("X-ray");
                     PopStyleVar();
                 }
 
