@@ -61,3 +61,6 @@
 [submodule "lib/RigidBodyPhysics"]
 	path = lib/RigidBodyPhysics
 	url = git@github.com:khiner/RigidBodyPhysics.git
+[submodule "lib/simdutf"]
+	path = lib/simdutf
+	url = git@github.com:simdutf/simdutf.git

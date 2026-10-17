@@ -47,11 +47,11 @@ std::optional<uint32_t> ToIndex(size_t index, size_t upper_bound) {
     if (index >= upper_bound) return {};
     return index;
 }
-std::optional<uint32_t> ToIndex(const fastgltf::Optional<size_t> &index, size_t upper_bound) {
+std::optional<uint32_t> ToIndex(const fastgltf::optional<size_t> &index, size_t upper_bound) {
     if (!index) return {};
     return ToIndex(*index, upper_bound);
 }
-std::optional<Filter> ToFilter(const fastgltf::Optional<fastgltf::Filter> &filter) {
+std::optional<Filter> ToFilter(const fastgltf::optional<fastgltf::Filter> &filter) {
     if (!filter) return {};
     return detail::ToFilter(*filter);
 }
@@ -113,8 +113,8 @@ std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32
         out.SourceHadMimeType = mime_type != fastgltf::MimeType::None;
     };
     if (const auto *uri = std::get_if<fastgltf::sources::URI>(&image.data)) {
-        if (!uri->uri.isLocalPath()) return std::unexpected{std::format("glTF image {} URI '{}' is not a local path.", image_index, uri->uri.string())};
-        auto image_path = uri->uri.fspath();
+        if (!uri->uri->isLocalPath()) return std::unexpected{std::format("glTF image {} URI '{}' is not a local path.", image_index, uri->uri->string())};
+        auto image_path = uri->uri->fspath();
         if (image_path.is_relative()) image_path = base_dir / image_path;
         image_path = image_path.lexically_normal();
         auto bytes = File::Read(image_path);
@@ -123,7 +123,7 @@ std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32
         out.MimeType = ToMimeType(uri->mimeType);
         out.Source = Image::SourceKind::External;
         out.SourceHadMimeType = uri->mimeType != fastgltf::MimeType::None;
-        out.Uri = uri->uri.string();
+        out.Uri = uri->uri->string();
         out.SourcePath = image_path.string();
     } else if (const auto *buffer_view = std::get_if<fastgltf::sources::BufferView>(&image.data)) {
         if (buffer_view->bufferViewIndex >= asset.bufferViews.size()) {
@@ -150,7 +150,7 @@ std::expected<void, std::string> AppendVertexAttr(
     std::optional<std::vector<T>> &attr, uint32_t base_vertex, size_t count, T fill,
     uint32_t *flags = nullptr, uint32_t bit = 0, bool check_count = false
 ) {
-    const auto *const it = primitive.findAttribute(name);
+    const auto it = primitive.findAttribute(name);
     if (it == primitive.attributes.end()) {
         if (attr) attr->resize(base_vertex + count, fill);
         return {};
@@ -175,7 +175,7 @@ std::expected<void, std::string> AppendColor0(
     const fastgltf::Asset &asset, const fastgltf::Primitive &primitive, ::MeshVertexAttributes &attrs,
     uint32_t base_vertex, size_t count, uint32_t *flags = nullptr
 ) {
-    const auto *const color_it = primitive.findAttribute("COLOR_0");
+    const auto color_it = primitive.findAttribute("COLOR_0");
     if (color_it == primitive.attributes.end()) {
         if (attrs.Colors0) attrs.Colors0->resize(base_vertex + count, vec4{1.f});
         return {};
@@ -265,7 +265,7 @@ std::vector<uint32_t> ReadIndices(const fastgltf::Asset &asset, const fastgltf::
 
 // Appends a line or point primitive while preserving channel alignment across merged primitives.
 std::expected<void, std::string> AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &primitive, ::MeshData &target, ::MeshVertexAttributes &attrs) {
-    const auto *const position_it = primitive.findAttribute("POSITION");
+    const auto position_it = primitive.findAttribute("POSITION");
     if (position_it == primitive.attributes.end()) return {};
 
     const auto &position_accessor = asset.accessors[position_it->accessorIndex];
@@ -319,7 +319,7 @@ std::expected<void, std::string> AppendPrimitive(
 ) {
     if (!IsTriangleType(primitive.type)) return {};
 
-    const auto *const position_it = primitive.findAttribute("POSITION");
+    const auto position_it = primitive.findAttribute("POSITION");
     if (position_it == primitive.attributes.end()) return {};
 
     const bool has_joints = primitive.findAttribute("JOINTS_0") != primitive.attributes.end();
@@ -363,8 +363,8 @@ std::expected<void, std::string> AppendPrimitive(
         for (uint32_t set_index = 0;; ++set_index) {
             const auto j_name = std::format("JOINTS_{}", set_index);
             const auto w_name = std::format("WEIGHTS_{}", set_index);
-            const auto *const j_it = primitive.findAttribute(j_name);
-            const auto *const w_it = primitive.findAttribute(w_name);
+            const auto j_it = primitive.findAttribute(j_name);
+            const auto w_it = primitive.findAttribute(w_name);
             if (j_it == primitive.attributes.end() && w_it == primitive.attributes.end()) break;
             if ((j_it == primitive.attributes.end()) != (w_it == primitive.attributes.end())) {
                 return std::unexpected{std::format("glTF primitive has {} without {} (or vice versa).", j_name, w_name)};
@@ -446,7 +446,7 @@ std::expected<void, std::string> AppendPrimitive(
         if (morph->TangentDeltas.empty() && any_target_has("TANGENT")) morph->TangentDeltas.assign(size_t(target_count) * total_vertex_count, vec3{0.f});
         const auto copy_target = [&](uint32_t t, std::string_view name, std::vector<vec3> &channel) {
             if (channel.empty()) return;
-            const auto *it = primitive.findTargetAttribute(t, name);
+            const auto it = primitive.findTargetAttribute(t, name);
             if (it == primitive.targets[t].end()) return;
             const auto &accessor = asset.accessors[it->accessorIndex];
             if (accessor.count == vertex_count) fastgltf::copyFromAccessor<vec3>(asset, accessor, &channel[size_t(t) * total_vertex_count + base_vertex]);
@@ -525,7 +525,7 @@ std::expected<void, std::string> DecodeMeshoptCompression(fastgltf::Asset &asset
         if (comp.byteOffset + comp.byteLength > source->size()) return std::unexpected{"source range is out of bounds"};
 
         const auto *src = reinterpret_cast<const unsigned char *>(source->data() + comp.byteOffset);
-        std::vector<std::byte> decoded(comp.count * comp.byteStride);
+        fastgltf::static_vector<std::byte> decoded(fastgltf::for_overwrite, comp.count * comp.byteStride);
         auto *dst = reinterpret_cast<unsigned char *>(decoded.data());
         const int rc = [&] {
             switch (comp.mode) {
@@ -548,11 +548,11 @@ std::expected<void, std::string> DecodeMeshoptCompression(fastgltf::Asset &asset
         const auto decoded_length = decoded.size();
         auto &new_buffer = asset.buffers.emplace_back();
         new_buffer.byteLength = decoded_length;
-        new_buffer.data = fastgltf::sources::Array{fastgltf::StaticVector<std::byte>::fromVector(std::move(decoded))};
+        new_buffer.data = fastgltf::sources::Array{std::move(decoded)};
         view.bufferIndex = asset.buffers.size() - 1;
         view.byteOffset = 0;
         view.byteLength = decoded_length;
-        view.meshoptCompression = nullptr;
+        view.meshoptCompression.reset();
     }
     return {};
 }
@@ -635,7 +635,7 @@ std::expected<SourceMesh, std::string> ReadSourceMesh(const fastgltf::Asset &ass
     uint32_t triangle_vertex_count = 0;
     for (const auto &primitive : source_mesh.primitives) {
         if (!IsTriangleType(primitive.type)) continue;
-        if (const auto *it = primitive.findAttribute("POSITION"); it != primitive.attributes.end()) triangle_vertex_count += asset.accessors[it->accessorIndex].count;
+        if (const auto it = primitive.findAttribute("POSITION"); it != primitive.attributes.end()) triangle_vertex_count += asset.accessors[it->accessorIndex].count;
     }
 
     ::MeshData triangles, lines, points;
@@ -1703,15 +1703,15 @@ void ImportNodePhysics(state::Scene &r, const fastgltf::Asset &asset, const Impo
         r.emplace<SourceIndex>(e, i);
         filter_entities.emplace_back(e);
     }
-    const auto resolve_material = [&](const fastgltf::Optional<size_t> &index) {
+    const auto resolve_material = [&](const fastgltf::optional<size_t> &index) {
         const auto i = ToIndex(index, resources.Materials.size());
         return i ? resources.Materials[*i] : state::Null;
     };
-    const auto resolve_filter = [&](const fastgltf::Optional<size_t> &index) {
+    const auto resolve_filter = [&](const fastgltf::optional<size_t> &index) {
         const auto i = ToIndex(index, filter_entities.size());
         return i ? filter_entities[*i] : state::Null;
     };
-    const auto triangles_of = [&](const fastgltf::Optional<size_t> &mesh) {
+    const auto triangles_of = [&](const fastgltf::optional<size_t> &mesh) {
         const auto i = ToIndex(mesh, asset.meshes.size());
         return i ? mesh_entities[*i][size_t(MeshKind::Triangles)] : state::Null;
     };

@@ -502,8 +502,8 @@ void ComparePrimitiveGeometry(
     std::string_view path, std::vector<Diff> &out
 ) {
     if (!IsTrianglePrimitive(pa.type) || !IsTrianglePrimitive(pb.type)) return;
-    const auto *pos_a = pa.findAttribute("POSITION");
-    const auto *pos_b = pb.findAttribute("POSITION");
+    const auto pos_a = pa.findAttribute("POSITION");
+    const auto pos_b = pb.findAttribute("POSITION");
     if (pos_a == pa.attributes.end() || pos_b == pb.attributes.end()) return;
 
     const auto corners_a = CornerIndices(a, pa, a.accessors[pos_a->accessorIndex].count);
@@ -516,15 +516,15 @@ void ComparePrimitiveGeometry(
 
     for (const auto &attr : pa.attributes) {
         const std::string_view name{attr.name};
-        const auto *battr = pb.findAttribute(name);
+        const auto battr = pb.findAttribute(name);
         if (battr == pb.attributes.end()) continue; // presence diffs come from the JSON walk
         CompareGeometryAttr(a, b, attr.accessorIndex, battr->accessorIndex, name, false, corners_a, corners_b, std::format("{}.attributes.{}", path, name), out);
     }
 
-    const auto *ja = pa.findAttribute("JOINTS_0");
-    const auto *wa = pa.findAttribute("WEIGHTS_0");
-    const auto *jb = pb.findAttribute("JOINTS_0");
-    const auto *wb = pb.findAttribute("WEIGHTS_0");
+    const auto ja = pa.findAttribute("JOINTS_0");
+    const auto wa = pa.findAttribute("WEIGHTS_0");
+    const auto jb = pb.findAttribute("JOINTS_0");
+    const auto wb = pb.findAttribute("WEIGHTS_0");
     if (ja != pa.attributes.end() && wa != pa.attributes.end() && jb != pb.attributes.end() && wb != pb.attributes.end()) {
         const auto influences = [](const fastgltf::Asset &asset, size_t joints_acc, size_t weights_acc) {
             const auto joints = DecodeAccessor<uvec4>(asset, joints_acc);
@@ -544,7 +544,7 @@ void ComparePrimitiveGeometry(
     for (size_t t = 0; t < target_count; ++t) {
         for (const auto &attr : pa.targets[t]) {
             const std::string_view name{attr.name};
-            const auto *battr = pb.findTargetAttribute(t, name);
+            const auto battr = pb.findTargetAttribute(t, name);
             if (battr == pb.targets[t].end()) continue;
             CompareGeometryAttr(a, b, attr.accessorIndex, battr->accessorIndex, name, true, corners_a, corners_b, std::format("{}.targets[{}].{}", path, t, name), out);
         }
@@ -703,11 +703,11 @@ size_t CompareGltfJson(const fs::path &a_path, const fs::path &b_path, std::stri
             for (size_t i = 0; i < std::min(asset_a->images.size(), asset_b->images.size()); ++i) {
                 const auto *uri_a = std::get_if<fastgltf::sources::URI>(&asset_a->images[i].data);
                 const auto *uri_b = std::get_if<fastgltf::sources::URI>(&asset_b->images[i].data);
-                if (!uri_a || !uri_b || !uri_a->uri.isLocalPath() || !uri_b->uri.isLocalPath()) continue;
+                if (!uri_a || !uri_b || !uri_a->uri->isLocalPath() || !uri_b->uri->isLocalPath()) continue;
                 const auto ref_path = std::format("images[{}].uri", i);
                 std::erase_if(all_diffs, [&](const auto &diff) { return diff.Path == ref_path; });
-                const auto file_a = (fs::absolute(a_path).parent_path() / uri_a->uri.fspath()).lexically_normal();
-                const auto file_b = (fs::absolute(b_path).parent_path() / uri_b->uri.fspath()).lexically_normal();
+                const auto file_a = (fs::absolute(a_path).parent_path() / uri_a->uri->fspath()).lexically_normal();
+                const auto file_b = (fs::absolute(b_path).parent_path() / uri_b->uri->fspath()).lexically_normal();
                 if (file_a != file_b) all_diffs.emplace_back(ref_path, std::format("referenced file '{}' vs '{}'", file_a.string(), file_b.string()));
             }
         } else all_diffs.emplace_back("meshes", std::format("geometry parse failed: {}", !asset_a ? asset_a.error().Message : asset_b.error().Message));

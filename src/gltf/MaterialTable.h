@@ -20,7 +20,7 @@ template<typename O, typename T>
 struct MaterialNormalField {
     TextureInfo O::*Texture;
     float O::*Scale;
-    fastgltf::Optional<fastgltf::NormalTextureInfo> T::*Theirs;
+    fastgltf::optional<fastgltf::NormalTextureInfo> T::*Theirs;
     std::string_view Key;
 };
 // Represent infinite distance as zero in PBRMaterial.
@@ -36,7 +36,7 @@ struct MaterialExtension {
     std::string_view Name;
     uint16_t Bit;
     O PBRMaterial::*Ours;
-    std::unique_ptr<T> fastgltf::Material::*Theirs;
+    fastgltf::boxed_optional<T> fastgltf::Material::*Theirs;
     FieldTuple Fields;
 };
 // An extension holding one number, written when its source had it or the value left its default.
@@ -44,7 +44,7 @@ struct MaterialScalarExtension {
     std::string_view Name, Key;
     uint16_t Bit;
     float PBRMaterial::*Ours;
-    fastgltf::Optional<fastgltf::num> fastgltf::Material::*Theirs;
+    fastgltf::optional<fastgltf::num> fastgltf::Material::*Theirs;
     float Default;
 };
 

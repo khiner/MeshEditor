@@ -57,17 +57,14 @@ EncodeImageRgba8ForMime(MimeType mime, std::span<const std::byte> rgba8, uint32_
     }
     return std::unexpected{std::format("Unhandled mime type for image '{}'.", name)};
 }
-// fastgltf's name fields are pmr::string (doesn't implicit-copy from std::string).
-using FgString = std::remove_cvref_t<decltype(fastgltf::Material::name)>;
-FgString ToFgStr(std::string_view s) { return FgString{s}; }
 
-// fastgltf::Optional<T> doesn't implicit-convert from std::optional<U>.
+// fastgltf::optional<T> doesn't implicit-convert from std::optional<U>.
 template<typename T, typename U>
-fastgltf::Optional<T> ToFgOpt(const std::optional<U> &o) { return o ? fastgltf::Optional<T>{T(*o)} : fastgltf::Optional<T>{}; }
+fastgltf::optional<T> ToFgOpt(const std::optional<U> &o) { return o ? fastgltf::optional<T>{T(*o)} : fastgltf::optional<T>{}; }
 template<typename T, typename U, typename Fn>
-fastgltf::Optional<T> ToFgOpt(const std::optional<U> &o, Fn &&fn) { return o ? fastgltf::Optional<T>{fn(*o)} : fastgltf::Optional<T>{}; }
+fastgltf::optional<T> ToFgOpt(const std::optional<U> &o, Fn &&fn) { return o ? fastgltf::optional<T>{fn(*o)} : fastgltf::optional<T>{}; }
 
-std::optional<fastgltf::AccessorBoundsArray> MakeBounds(std::initializer_list<double> vals) {
+fastgltf::optional<fastgltf::AccessorBoundsArray> MakeBounds(std::initializer_list<double> vals) {
     auto arr = fastgltf::AccessorBoundsArray::ForType<double>(vals.size());
     size_t i = 0;
     for (const double v : vals) arr.set<double>(i++, v);
@@ -100,34 +97,34 @@ uint32_t AppendField(std::vector<std::byte> &buffer, std::span<const V> data, T 
 }
 
 // Emits KHR_texture_transform when the UV transform is non-default or the source declared the extension, and sets `used` on emission.
-std::unique_ptr<fastgltf::TextureTransform> MakeTextureTransform(const ::TextureInfo &ti, const TextureTransformMeta *meta, bool &used) {
+fastgltf::boxed_optional<fastgltf::TextureTransform> MakeTextureTransform(const ::TextureInfo &ti, const TextureTransformMeta *meta, bool &used) {
     const bool has_transform = ti.UvOffset.x != 0.f || ti.UvOffset.y != 0.f ||
         ti.UvScale.x != 1.f || ti.UvScale.y != 1.f ||
         ti.UvRotation != 0.f;
     const bool source_had_ext = meta && meta->SourceHadExtension;
-    if (!has_transform && !source_had_ext) return nullptr;
+    if (!has_transform && !source_had_ext) return {};
     used = true;
-    return std::make_unique<fastgltf::TextureTransform>(fastgltf::TextureTransform{
+    return fastgltf::boxed_optional<fastgltf::TextureTransform>{fastgltf::TextureTransform{
         .rotation = ti.UvRotation,
         .uvOffset = std::bit_cast<fastgltf::math::nvec2>(ti.UvOffset),
         .uvScale = std::bit_cast<fastgltf::math::nvec2>(ti.UvScale),
-        .texCoordIndex = meta && meta->SourceTexCoordOverride ? fastgltf::Optional<size_t>{*meta->SourceTexCoordOverride} : fastgltf::Optional<size_t>{},
-    });
+        .texCoordIndex = meta && meta->SourceTexCoordOverride ? fastgltf::optional<size_t>{*meta->SourceTexCoordOverride} : fastgltf::optional<size_t>{},
+    }};
 }
 
 // With meta, the parent texCoord and the extension's override are emitted separately.
 fastgltf::TextureInfo ToFgTextureInfo(const ::TextureInfo &ti, const TextureTransformMeta *meta, bool &transform_used) {
     return {.textureIndex = ti.Slot, .texCoordIndex = meta ? meta->SourceBaseTexCoord : ti.TexCoord, .transform = MakeTextureTransform(ti, meta, transform_used)};
 }
-fastgltf::Optional<fastgltf::TextureInfo> ToFgTexInfo(const ::TextureInfo &ti, const TextureTransformMeta *meta, bool &transform_used) {
+fastgltf::optional<fastgltf::TextureInfo> ToFgTexInfo(const ::TextureInfo &ti, const TextureTransformMeta *meta, bool &transform_used) {
     if (ti.Slot == InvalidSlot) return {};
     return ToFgTextureInfo(ti, meta, transform_used);
 }
-fastgltf::Optional<fastgltf::NormalTextureInfo> ToFgNormalTexInfo(const ::TextureInfo &ti, float scale, const TextureTransformMeta *meta, bool &transform_used) {
+fastgltf::optional<fastgltf::NormalTextureInfo> ToFgNormalTexInfo(const ::TextureInfo &ti, float scale, const TextureTransformMeta *meta, bool &transform_used) {
     if (ti.Slot == InvalidSlot) return {};
     return fastgltf::NormalTextureInfo{ToFgTextureInfo(ti, meta, transform_used), scale};
 }
-fastgltf::Optional<fastgltf::OcclusionTextureInfo> ToFgOcclusionTexInfo(const ::TextureInfo &ti, float strength, const TextureTransformMeta *meta, bool &transform_used) {
+fastgltf::optional<fastgltf::OcclusionTextureInfo> ToFgOcclusionTexInfo(const ::TextureInfo &ti, float strength, const TextureTransformMeta *meta, bool &transform_used) {
     if (ti.Slot == InvalidSlot) return {};
     return fastgltf::OcclusionTextureInfo{ToFgTextureInfo(ti, meta, transform_used), strength};
 }
@@ -153,9 +150,9 @@ fastgltf::Camera ConvertCameraToFg(const CameraLens &cam, std::string_view name)
             using P = std::decay_t<decltype(proj)>;
             if constexpr (std::is_same_v<P, Perspective>) {
                 return fastgltf::Camera::Perspective{
-                    .aspectRatio = proj.HasAspectRatio() ? fastgltf::Optional<fastgltf::num>{proj.AspectRatio} : fastgltf::Optional<fastgltf::num>{},
+                    .aspectRatio = proj.HasAspectRatio() ? fastgltf::optional<fastgltf::num>{proj.AspectRatio} : fastgltf::optional<fastgltf::num>{},
                     .yfov = proj.FieldOfViewRad,
-                    .zfar = proj.HasFarClip() ? fastgltf::Optional<fastgltf::num>{proj.FarClip} : fastgltf::Optional<fastgltf::num>{},
+                    .zfar = proj.HasFarClip() ? fastgltf::optional<fastgltf::num>{proj.FarClip} : fastgltf::optional<fastgltf::num>{},
                     .znear = proj.NearClip,
                 };
             } else {
@@ -169,7 +166,7 @@ fastgltf::Camera ConvertCameraToFg(const CameraLens &cam, std::string_view name)
         },
         cam
     );
-    return {.camera = std::move(camera), .name = ToFgStr(name)};
+    return {.camera = std::move(camera), .name = std::string{name}};
 }
 
 // Write channel rest values into record for export.
@@ -191,10 +188,10 @@ fastgltf::Light ConvertLightToFg(const PunctualLight &pl, std::string_view name)
         .type = type,
         .color = std::bit_cast<fastgltf::math::nvec3>(pl.Color),
         .intensity = pl.Intensity,
-        .range = (type != fastgltf::LightType::Directional && pl.Range > 0) ? fastgltf::Optional<fastgltf::num>{pl.Range} : fastgltf::Optional<fastgltf::num>{},
-        .innerConeAngle = is_spot ? fastgltf::Optional<fastgltf::num>{pl.InnerConeAngle} : fastgltf::Optional<fastgltf::num>{},
-        .outerConeAngle = is_spot ? fastgltf::Optional<fastgltf::num>{pl.OuterConeAngle} : fastgltf::Optional<fastgltf::num>{},
-        .name = ToFgStr(name),
+        .range = (type != fastgltf::LightType::Directional && pl.Range > 0) ? fastgltf::optional<fastgltf::num>{pl.Range} : fastgltf::optional<fastgltf::num>{},
+        .innerConeAngle = is_spot ? fastgltf::optional<fastgltf::num>{pl.InnerConeAngle} : fastgltf::optional<fastgltf::num>{},
+        .outerConeAngle = is_spot ? fastgltf::optional<fastgltf::num>{pl.OuterConeAngle} : fastgltf::optional<fastgltf::num>{},
+        .name = std::string{name},
     };
 }
 
@@ -431,12 +428,12 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const auto jd_view = r.view<const ::PhysicsJointDef>();
         for (const auto e : ordered_by_source(jd_view, source_index)) {
             const auto &jd = r.get<const ::PhysicsJointDef>(e);
-            fastgltf::pmr::MaybeSmallVector<fastgltf::JointLimit> limits;
+            std::vector<fastgltf::JointLimit> limits;
             limits.reserve(jd.Limits.size());
             for (const auto &lim : jd.Limits) {
-                fastgltf::pmr::SmallVector<uint8_t, 3> linear_axes;
+                fastgltf::inplace_vector<uint8_t, 3> linear_axes;
                 for (const auto a : lim.LinearAxes) linear_axes.emplace_back(a);
-                fastgltf::pmr::SmallVector<uint8_t, 3> angular_axes;
+                fastgltf::inplace_vector<uint8_t, 3> angular_axes;
                 for (const auto a : lim.AngularAxes) angular_axes.emplace_back(a);
                 limits.emplace_back(fastgltf::JointLimit{
                     .linearAxes = std::move(linear_axes),
@@ -447,7 +444,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                     .damping = lim.Damping,
                 });
             }
-            fastgltf::pmr::MaybeSmallVector<fastgltf::JointDrive> drives;
+            std::vector<fastgltf::JointDrive> drives;
             drives.reserve(jd.Drives.size());
             for (const auto &drv : jd.Drives) {
                 drives.emplace_back(fastgltf::JointDrive{
@@ -465,10 +462,10 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             asset.physicsJoints.emplace_back(fastgltf::PhysicsJoint{.limits = std::move(limits), .drives = std::move(drives)});
         }
         const auto resolve_system_names = [&](std::span<const state::Entity> systems) {
-            fastgltf::pmr::MaybeSmallVector<FgString> out;
+            std::vector<std::string> out;
             out.reserve(systems.size());
             for (const auto se : systems) {
-                if (const auto *cs = r.try_get<const CollisionSystem>(se)) out.emplace_back(ToFgStr(cs->Name));
+                if (const auto *cs = r.try_get<const CollisionSystem>(se)) out.emplace_back(cs->Name);
             }
             return out;
         };
@@ -486,11 +483,11 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     // Empty strings are omitted by fastgltf's writer.
     asset.assetInfo = fastgltf::AssetInfo{
         .gltfVersion = "2.0",
-        .minVersion = ToFgStr(sa.MinVersion),
-        .copyright = ToFgStr(sa.Copyright),
-        .generator = ToFgStr(sa.Generator),
-        .extras = ToFgStr(sa.AssetExtras),
-        .extensions = ToFgStr(sa.AssetExtensions),
+        .minVersion = sa.MinVersion,
+        .copyright = sa.Copyright,
+        .generator = sa.Generator,
+        .extras = sa.AssetExtras,
+        .extensions = sa.AssetExtensions,
     };
 
     std::vector<std::byte> bin;
@@ -509,7 +506,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     };
 
     auto AddAccessor = [&](uint32_t bufferViewIdx, uint32_t count, fastgltf::AccessorType type, fastgltf::ComponentType component,
-                           std::optional<fastgltf::AccessorBoundsArray> min = {}, std::optional<fastgltf::AccessorBoundsArray> max = {}) {
+                           fastgltf::optional<fastgltf::AccessorBoundsArray> min = {}, fastgltf::optional<fastgltf::AccessorBoundsArray> max = {}) {
         accessors.emplace_back(fastgltf::Accessor{.count = count, .type = type, .componentType = component, .max = std::move(max), .min = std::move(min), .bufferViewIndex = bufferViewIdx});
         return accessors.size() - 1;
     };
@@ -557,7 +554,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         );
     };
 
-    const auto EmitCustom = [&](fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> &out, uint32_t attribute, const auto &items, auto &&value) {
+    const auto EmitCustom = [&](std::vector<fastgltf::Attribute> &out, uint32_t attribute, const auto &items, auto &&value) {
         static constexpr std::array Types{fastgltf::AccessorType::Scalar, fastgltf::AccessorType::Vec2, fastgltf::AccessorType::Vec3, fastgltf::AccessorType::Vec4};
         const auto &entry = meshes.GetAttribute(attribute);
         const auto components = AttributeComponents(entry.Type);
@@ -568,11 +565,11 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
         const uint32_t off = AppendAligned<float>(bin, floats);
         const uint32_t bv = AddBufferView(off, floats.size() * sizeof(float), {}, fastgltf::BufferTarget::ArrayBuffer);
-        out.emplace_back(fastgltf::Attribute{ToFgStr(entry.NameView()), AddAccessor(bv, floats.size() / components, Types[components - 1u], fastgltf::ComponentType::Float)});
+        out.emplace_back(fastgltf::Attribute{std::string{entry.NameView()}, AddAccessor(bv, floats.size() / components, Types[components - 1u], fastgltf::ComponentType::Float)});
     };
 
     // Emit COLOR_0 from gathered per-corner values, preserving source component count.
-    const auto EmitColor0Values = [&](fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> &out, std::span<const vec4> colors, uint8_t component_count) {
+    const auto EmitColor0Values = [&](std::vector<fastgltf::Attribute> &out, std::span<const vec4> colors, uint8_t component_count) {
         if (component_count == 3) {
             const uint32_t vcount = colors.size();
             const uint32_t off = bin.size();
@@ -594,7 +591,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             .minFilter = ToFgOpt<fastgltf::Filter>(s.MinFilter, FromFilter),
             .wrapS = FromWrap(s.WrapS),
             .wrapT = FromWrap(s.WrapT),
-            .name = ToFgStr(s.Name),
+            .name = s.Name,
         });
     }
 
@@ -651,23 +648,21 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             if (!std::filesystem::is_regular_file(source_path, ec)) return std::unexpected{std::format("Image '{}' source '{}' is missing or unavailable.", img.Name, source_path.string())};
             const auto uri_path = source_path.lexically_relative(std::filesystem::absolute(path).parent_path());
             asset.images.emplace_back(fastgltf::Image{
-                .data = fastgltf::sources::URI{.fileByteOffset = 0, .uri = fastgltf::URI{uri_path.generic_string()}, .mimeType = img.SourceHadMimeType ? FromMimeType(img.MimeType) : fastgltf::MimeType::None},
-                .name = ToFgStr(img.Name),
+                .data = fastgltf::sources::URI{.fileByteOffset = 0, .uri = fastgltf::box<fastgltf::URI>{fastgltf::encodePercents(uri_path.generic_string())}, .mimeType = img.SourceHadMimeType ? FromMimeType(img.MimeType) : fastgltf::MimeType::None},
+                .name = img.Name,
             });
         } else if (form == Source::DataUri && !bytes.empty()) {
-            const auto fg_mime = FromMimeType(mime);
-            const auto mime_str = fg_mime == fastgltf::MimeType::None ? std::string{} : std::string{fastgltf::getMimeTypeString(fg_mime)};
-            const auto data_uri = "data:" + mime_str + ";base64," + fastgltf::base64::encode(reinterpret_cast<const uint8_t *>(bytes.data()), bytes.size());
+            const auto data_uri = "data:" + std::string{gltf::MimeTypeString(mime)} + ";base64," + fastgltf::base64::encode(reinterpret_cast<const uint8_t *>(bytes.data()), bytes.size());
             asset.images.emplace_back(fastgltf::Image{
-                .data = fastgltf::sources::URI{.fileByteOffset = 0, .uri = fastgltf::URI{data_uri}, .mimeType = fastgltf::MimeType::None},
-                .name = ToFgStr(img.Name),
+                .data = fastgltf::sources::URI{.fileByteOffset = 0, .uri = fastgltf::box<fastgltf::URI>{data_uri}, .mimeType = fastgltf::MimeType::None},
+                .name = img.Name,
             });
         } else {
             // An image without bytes keeps its required bufferView slot with one padding byte.
             const uint32_t bv = bytes.empty() ? AddBufferView(AppendAligned(bin, reinterpret_cast<const std::byte *>("\0"), 1), 1) : AddBufferView(AppendAligned(bin, bytes.data(), bytes.size()), bytes.size());
             asset.images.emplace_back(fastgltf::Image{
                 .data = fastgltf::sources::BufferView{.bufferViewIndex = bv, .mimeType = FromMimeType(mime)},
-                .name = ToFgStr(img.Name),
+                .name = img.Name,
             });
         }
     }
@@ -680,11 +675,11 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             .basisuImageIndex = ToFgOpt<size_t>(t.BasisuImageIndex),
             .ddsImageIndex = ToFgOpt<size_t>(t.DdsImageIndex),
             .webpImageIndex = ToFgOpt<size_t>(t.WebpImageIndex),
-            .name = ToFgStr(t.Name),
+            .name = t.Name,
         });
     }
 
-    std::vector<fastgltf::Optional<size_t>> material_indices(material_count);
+    std::vector<fastgltf::optional<size_t>> material_indices(material_count);
     asset.materials.reserve(material_count);
     bool uses_texture_transform = false;
     static const MaterialSourceMeta DefaultMeta{};
@@ -715,16 +710,15 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             .doubleSided = pbr.DoubleSided != 0u,
             .unlit = pbr.Unlit != 0u,
             .alphaCutoff = pbr.AlphaCutoff,
-            .name = ToFgStr(name),
+            .name = name,
         };
         for (const auto &scalar : MaterialScalarExtensions) {
-            if (bits & scalar.Bit || pbr.*scalar.Ours != scalar.Default) out.*scalar.Theirs = fastgltf::Optional<fastgltf::num>{pbr.*scalar.Ours};
+            if (bits & scalar.Bit || pbr.*scalar.Ours != scalar.Default) out.*scalar.Theirs = fastgltf::optional<fastgltf::num>{pbr.*scalar.Ours};
         }
         ForEachMaterialExtension([&](const auto &extension) {
             if (!(bits & extension.Bit)) return;
-            auto theirs = std::make_unique<typename std::remove_cvref_t<decltype(out.*extension.Theirs)>::element_type>();
-            ForEachMaterialField(extension, [&](const auto &field) { WriteField(*theirs, pbr.*extension.Ours, field, uses_texture_transform); });
-            out.*extension.Theirs = std::move(theirs);
+            auto &theirs = (out.*extension.Theirs).emplace();
+            ForEachMaterialField(extension, [&](const auto &field) { WriteField(theirs, pbr.*extension.Ours, field, uses_texture_transform); });
         });
         asset.materials.emplace_back(std::move(out));
     }
@@ -737,7 +731,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const auto *animations = r.try_get<const Animations>(viewport);
         const auto animation_names = animations ? std::span<const std::string>{animations->Names} : std::span<const std::string>{};
         asset.animations.reserve(animation_names.size());
-        for (const auto &name : animation_names) asset.animations.emplace_back(fastgltf::Animation{.name = ToFgStr(name)});
+        for (const auto &name : animation_names) asset.animations.emplace_back(fastgltf::Animation{.name = name});
         const auto push_channel = [&](size_t animation, fastgltf::AnimationChannel target, const AnimationChannel &channel) {
             const auto &times = channel.Times;
             const uint32_t t_offset = AppendAligned<float>(bin, std::span<const float>{times});
@@ -768,7 +762,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         };
         // A pointer channel names its target by export index.
         const auto pointer_channel = [](const gltf::PointerRow &row, size_t index, size_t element = 0) {
-            return fastgltf::AnimationChannel{.samplerIndex = 0, .path = fastgltf::AnimationPath::Pointer, .pointer = ToFgStr(std::vformat(row.Template, std::make_format_args(index, element)))};
+            return fastgltf::AnimationChannel{.samplerIndex = 0, .path = fastgltf::AnimationPath::Pointer, .pointer = std::vformat(row.Template, std::make_format_args(index, element))};
         };
         for (const auto [entity, clips] : r.view<const AnimationClips>().each()) {
             for (const auto &clip : clips.Clips) {
@@ -827,7 +821,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
     asset.meshes.reserve(mesh_groups.size());
     const auto &arenas = meshes.Arenas();
-    const auto emit_non_triangle_attrs = [&](fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> &out, uint32_t store_id) {
+    const auto emit_non_triangle_attrs = [&](std::vector<fastgltf::Attribute> &out, uint32_t store_id) {
         const auto &record = meshes.Get(store_id);
         if (record.HasAuthoredNormals) {
             const Mesh mesh{meshes, store_id};
@@ -849,10 +843,10 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
     };
     for (const auto &group : mesh_groups) {
-        fastgltf::pmr::MaybeSmallVector<fastgltf::Primitive, 2> primitives;
-        fastgltf::pmr::MaybeSmallVector<fastgltf::num> default_weights;
+        fastgltf::small_vector<fastgltf::Primitive, 1> primitives;
+        std::vector<fastgltf::num> default_weights;
         // Non-triangle primitives omit targets, materials, and mappings.
-        const auto push_prim = [&](fastgltf::PrimitiveType type, auto &&attrs, const fastgltf::Optional<size_t> &indices = {}) {
+        const auto push_prim = [&](fastgltf::PrimitiveType type, auto &&attrs, const fastgltf::optional<size_t> &indices = {}) {
             primitives.emplace_back(fastgltf::Primitive{.attributes = std::forward<decltype(attrs)>(attrs), .type = type, .indicesAccessor = indices});
         };
 
@@ -1012,7 +1006,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 for (uint32_t i = 0; i < export_count; ++i) {
                     positions[i] = arenas.Vertices.Get({vertex_addresses[export_refs[i].Vertex], 1u})[0].Position;
                 }
-                fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> prim_attrs;
+                std::vector<fastgltf::Attribute> prim_attrs;
                 prim_attrs.emplace_back(fastgltf::Attribute{"POSITION", AddVec3Accessor(positions, true, fastgltf::BufferTarget::ArrayBuffer)});
 
                 if (emit_normal) {
@@ -1054,12 +1048,12 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                     prim_attrs.emplace_back(fastgltf::Attribute{"WEIGHTS_0", AddDataAccessor(std::span<const vec4>(weights), fastgltf::AccessorType::Vec4, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer)});
                 }
 
-                std::pmr::vector<fastgltf::pmr::SmallVector<fastgltf::Attribute, 4>> prim_targets;
+                std::vector<std::vector<fastgltf::Attribute>> prim_targets;
                 if (target_count > 0) {
                     prim_targets.reserve(target_count);
                     std::vector<vec3> deltas(export_count);
                     for (uint32_t t = 0; t < target_count; ++t) {
-                        fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> tattrs;
+                        std::vector<fastgltf::Attribute> tattrs;
                         const auto target_base = t * total_vcount;
                         for (uint32_t i = 0; i < export_count; ++i) deltas[i] = arenas.Morph.Get(record.Morph, vertex_handles[export_refs[i].Vertex], t, target_count).PositionDelta;
                         tattrs.emplace_back(fastgltf::Attribute{"POSITION", AddVec3Accessor(deltas, false, fastgltf::BufferTarget::ArrayBuffer)});
@@ -1075,21 +1069,21 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                     }
                 }
 
-                fastgltf::Optional<size_t> indices_accessor;
+                fastgltf::optional<size_t> indices_accessor;
                 if (emit_indices) {
                     indices_accessor = AddDataAccessor(std::span<const uint32_t>(indices), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::UnsignedInt, fastgltf::BufferTarget::ElementArrayBuffer);
                 }
 
-                fastgltf::Optional<size_t> material_index;
+                fastgltf::optional<size_t> material_index;
                 if (prim_idx < primitive_materials.size()) {
                     const auto reg_idx = primitive_materials[prim_idx];
                     if (reg_idx < material_indices.size()) material_index = material_indices[reg_idx];
                 }
 
-                std::vector<fastgltf::Optional<size_t>> mappings;
+                std::vector<fastgltf::optional<size_t>> mappings;
                 if (prim_idx < layout.VariantMappings.size()) {
                     for (const auto &m : layout.VariantMappings[prim_idx]) {
-                        mappings.emplace_back(m && *m < material_indices.size() ? material_indices[*m] : fastgltf::Optional<size_t>{});
+                        mappings.emplace_back(m && *m < material_indices.size() ? material_indices[*m] : fastgltf::optional<size_t>{});
                     }
                 }
 
@@ -1128,7 +1122,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                     idx.emplace_back(mesh.VertexOrdinal(mesh.GetFromVertex(h0)));
                     idx.emplace_back(mesh.VertexOrdinal(mesh.GetToVertex(h0)));
                 }
-                fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> attrs;
+                std::vector<fastgltf::Attribute> attrs;
                 attrs.emplace_back(fastgltf::Attribute{"POSITION", AddPositionFieldAccessor.template operator()<Vertex>(std::span<const Vertex>{vertices}, &Vertex::Position, fastgltf::BufferTarget::ArrayBuffer)});
                 emit_non_triangle_attrs(attrs, mesh.GetStoreId());
                 push_prim(fastgltf::PrimitiveType::Lines, std::move(attrs), AddDataAccessor(std::span<const uint32_t>(idx), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::UnsignedInt, fastgltf::BufferTarget::ElementArrayBuffer));
@@ -1139,7 +1133,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             const auto &mesh = GetMesh(r, entity);
             const auto vertices = vertex_data(mesh);
             if (!vertices.empty()) {
-                fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> attrs;
+                std::vector<fastgltf::Attribute> attrs;
                 attrs.emplace_back(fastgltf::Attribute{"POSITION", AddPositionFieldAccessor.template operator()<Vertex>(std::span<const Vertex>{vertices}, &Vertex::Position, fastgltf::BufferTarget::ArrayBuffer)});
                 emit_non_triangle_attrs(attrs, mesh.GetStoreId());
                 push_prim(fastgltf::PrimitiveType::Points, std::move(attrs));
@@ -1150,12 +1144,12 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (primitives.empty()) {
             const vec3 stub{0.f, 0.f, 0.f};
             const uint32_t pos_acc = AddVec3Accessor(std::span<const vec3>(&stub, 1), true, fastgltf::BufferTarget::ArrayBuffer);
-            fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> attrs;
+            std::vector<fastgltf::Attribute> attrs;
             attrs.emplace_back(fastgltf::Attribute{"POSITION", pos_acc});
             push_prim(fastgltf::PrimitiveType::Points, std::move(attrs));
         }
 
-        asset.meshes.emplace_back(fastgltf::Mesh{.primitives = std::move(primitives), .weights = std::move(default_weights), .name = ToFgStr(group.Name)});
+        asset.meshes.emplace_back(fastgltf::Mesh{.primitives = std::move(primitives), .weights = std::move(default_weights), .name = group.Name});
     }
 
     // Emit one fastgltf::Skin per imported skin, in ascending source-skin-index order so the skins array is stable regardless of armature grouping.
@@ -1168,11 +1162,11 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
         std::ranges::sort(all_skins, {}, [](const auto *skin) { return skin->SkinIndex; });
         for (const auto *skin : all_skins) {
-            fastgltf::pmr::MaybeSmallVector<size_t> joints;
+            std::vector<size_t> joints;
             joints.reserve(skin->OrderedJointNodeIndices.size());
             for (const auto j : skin->OrderedJointNodeIndices) joints.emplace_back(j);
 
-            const auto ibm = [&]() -> fastgltf::Optional<size_t> {
+            const auto ibm = [&]() -> fastgltf::optional<size_t> {
                 if (skin->InverseBindMatrices.empty()) return {};
                 return AddDataAccessor(std::span<const mat4>(skin->InverseBindMatrices), fastgltf::AccessorType::Mat4, fastgltf::ComponentType::Float);
             }();
@@ -1182,7 +1176,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 .inverseBindMatrices = ibm,
                 .skeleton = ToFgOpt<size_t>(skin->SkeletonNodeIndex),
                 .joints = std::move(joints),
-                .name = ToFgStr(skin->Name),
+                .name = skin->Name,
             });
         }
     }
@@ -1255,7 +1249,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const auto *cs = r.try_get<const ColliderShape>(owner);
         if (!cs) return;
         const bool is_trigger = r.all_of<TriggerTag>(owner);
-        fastgltf::Optional<size_t> collider_mesh_idx;
+        fastgltf::optional<size_t> collider_mesh_idx;
         if (cs->MeshEntity != state::Null) {
             if (const auto mit = mesh_entity_to_index.find(cs->MeshEntity); mit != mesh_entity_to_index.end()) collider_mesh_idx = mit->second;
         }
@@ -1273,7 +1267,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 if (const auto mit = physics_material_to_index.find(cm->PhysicsMaterialEntity); mit != physics_material_to_index.end()) collider.physicsMaterial = mit->second;
                 if (const auto fit = collision_filter_to_index.find(cm->CollisionFilterEntity); fit != collision_filter_to_index.end()) collider.collisionFilter = fit->second;
             }
-            rb.collider = fastgltf::Optional<fastgltf::Collider>{std::move(collider)};
+            rb.collider = fastgltf::optional<fastgltf::Collider>{std::move(collider)};
         } else {
             fastgltf::GeometryTrigger gt{};
             if (auto fg_shape = to_fg_shape(cs->Shape)) {
@@ -1285,7 +1279,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             if (const auto *cm = r.try_get<const ColliderMaterial>(owner)) {
                 if (const auto fit = collision_filter_to_index.find(cm->CollisionFilterEntity); fit != collision_filter_to_index.end()) gt.collisionFilter = fit->second;
             }
-            rb.trigger = fastgltf::Optional<TriggerVariant>{TriggerVariant{std::move(gt)}};
+            rb.trigger = fastgltf::optional<TriggerVariant>{TriggerVariant{std::move(gt)}};
         }
     };
 
@@ -1319,7 +1313,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     std::vector<AcousticMaterial> audio_rigid_body_materials;
     std::vector<ContactSurface> audio_rigid_body_surfaces;
     // Returns a deduplicated resource index and preserves emitted order in `mirror`.
-    const auto dedupe = [](auto &mirror, const auto *value, auto &&emit) -> fastgltf::Optional<size_t> {
+    const auto dedupe = [](auto &mirror, const auto *value, auto &&emit) -> fastgltf::optional<size_t> {
         if (!value) return {};
         const auto it = std::ranges::find(mirror, *value);
         if (it != mirror.end()) return size_t(std::distance(mirror.begin(), it));
@@ -1331,22 +1325,22 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const auto &export_node = nodes[ni];
         const auto entity = export_node.Entity;
 
-        fastgltf::pmr::MaybeSmallVector<size_t> children;
+        std::vector<size_t> children;
         children.reserve(export_node.Children.size());
         for (const auto child : export_node.Children) children.emplace_back(child);
 
         if (export_node.OffsetOwner != state::Null) {
             const auto owner = export_node.OffsetOwner;
             const auto &cs = r.get<const ColliderShape>(owner);
-            auto rb = std::make_unique<fastgltf::PhysicsRigidBody>();
-            populate_collider_extension(owner, *rb);
+            fastgltf::boxed_optional<fastgltf::PhysicsRigidBody> rb;
+            populate_collider_extension(owner, rb.emplace());
             uses_physics_rigid_bodies = true;
             fastgltf::Node node{.children = std::move(children), .transform = fastgltf::TRS{.translation = std::bit_cast<fastgltf::math::fvec3>(cs.LocalOffset)}, .physicsRigidBody = std::move(rb)};
             asset.nodes.emplace_back(std::move(node));
             continue;
         }
 
-        fastgltf::Optional<size_t> mesh_index, camera_index, light_index, skin_index;
+        fastgltf::optional<size_t> mesh_index, camera_index, light_index, skin_index;
         if (const auto *inst = r.try_get<const Instance>(entity)) {
             if (const auto it = mesh_entity_to_index.find(inst->Entity); it != mesh_entity_to_index.end()) mesh_index = it->second;
         }
@@ -1390,7 +1384,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         for (const auto instance : export_node.Instances) instance_worlds.emplace_back(*WorldTransformOf(r, instance));
         const bool needs_instancing = mesh_index.has_value() && instance_worlds.size() > 1;
         if (needs_instancing) uses_gpu_instancing = true;
-        std::pmr::vector<fastgltf::Attribute> instancing;
+        std::vector<fastgltf::Attribute> instancing;
         if (needs_instancing) {
             const uint32_t count = instance_worlds.size();
             const mat4 node_world_inv = Inverse(ToMatrix(world_transform));
@@ -1429,32 +1423,32 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const bool is_trigger = r.all_of<TriggerTag>(entity);
         // An offset collider emits its geometry on the synthetic child, so the owner node carries none.
         const bool cs_on_owner = cs && !export_node.OffsetChild;
-        fastgltf::Optional<size_t> collider_mesh_idx;
+        fastgltf::optional<size_t> collider_mesh_idx;
         if (cs_on_owner && cs->MeshEntity != state::Null) {
             if (const auto mit = mesh_entity_to_index.find(cs->MeshEntity); mit != mesh_entity_to_index.end()) collider_mesh_idx = mit->second;
         }
 
-        std::unique_ptr<fastgltf::PhysicsRigidBody> physics_rigid_body;
+        fastgltf::boxed_optional<fastgltf::PhysicsRigidBody> physics_rigid_body;
         if (motion || cs_on_owner || tn || pj) {
-            physics_rigid_body = std::make_unique<fastgltf::PhysicsRigidBody>();
+            physics_rigid_body.emplace();
             uses_physics_rigid_bodies = true;
 
             if (motion) {
                 fastgltf::Motion fg_motion{.isKinematic = motion->IsKinematic};
-                if (motion->Mass) fg_motion.mass = fastgltf::Optional<fastgltf::num>{*motion->Mass};
+                if (motion->Mass) fg_motion.mass = fastgltf::optional<fastgltf::num>{*motion->Mass};
                 if (motion->CenterOfMass) fg_motion.centerOfMass = std::bit_cast<fastgltf::math::fvec3>(*motion->CenterOfMass);
                 if (motion->InertiaDiagonal) {
-                    fg_motion.inertialDiagonal = fastgltf::Optional<fastgltf::math::fvec3>{std::bit_cast<fastgltf::math::fvec3>(*motion->InertiaDiagonal)};
+                    fg_motion.inertialDiagonal = fastgltf::optional<fastgltf::math::fvec3>{std::bit_cast<fastgltf::math::fvec3>(*motion->InertiaDiagonal)};
                 }
                 if (motion->InertiaOrientation) {
-                    fg_motion.inertialOrientation = fastgltf::Optional<fastgltf::math::fvec4>{std::bit_cast<fastgltf::math::fvec4>(*motion->InertiaOrientation)};
+                    fg_motion.inertialOrientation = fastgltf::optional<fastgltf::math::fvec4>{std::bit_cast<fastgltf::math::fvec4>(*motion->InertiaOrientation)};
                 }
                 fg_motion.gravityFactor = motion->GravityFactor;
                 if (velocity) {
                     fg_motion.linearVelocity = std::bit_cast<fastgltf::math::fvec3>(velocity->Linear);
                     fg_motion.angularVelocity = std::bit_cast<fastgltf::math::fvec3>(velocity->Angular);
                 }
-                physics_rigid_body->motion = fastgltf::Optional<fastgltf::Motion>{std::move(fg_motion)};
+                physics_rigid_body->motion = fastgltf::optional<fastgltf::Motion>{std::move(fg_motion)};
             }
 
             if (cs_on_owner) populate_collider_extension(entity, *physics_rigid_body);
@@ -1464,7 +1458,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 for (const auto ne : tn->Nodes) {
                     if (const auto nit = node_index_of.find(ne); nit != node_index_of.end()) nt.nodes.emplace_back(nit->second);
                 }
-                physics_rigid_body->trigger = fastgltf::Optional<TriggerVariant>{TriggerVariant{std::move(nt)}};
+                physics_rigid_body->trigger = fastgltf::optional<TriggerVariant>{TriggerVariant{std::move(nt)}};
             }
 
             if (pj) {
@@ -1472,7 +1466,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 if (const auto cit = node_index_of.find(pj->ConnectedNode); cit != node_index_of.end()) joint.connectedNode = cit->second;
                 if (const auto dit = physics_jointdef_to_index.find(pj->JointDefEntity); dit != physics_jointdef_to_index.end()) joint.joint = dit->second;
                 joint.enableCollision = pj->EnableCollision;
-                physics_rigid_body->joint = fastgltf::Optional<fastgltf::Joint>{std::move(joint)};
+                physics_rigid_body->joint = fastgltf::optional<fastgltf::Joint>{std::move(joint)};
             }
         }
 
@@ -1487,7 +1481,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             };
         }();
 
-        fastgltf::Optional<fastgltf::AudioRigidBody> audio_rigid_body;
+        fastgltf::optional<fastgltf::AudioRigidBody> audio_rigid_body;
         const auto *modes = r.try_get<const ModalModes>(entity);
         const bool has_modal_model = modes && !modes->Freqs.empty();
         const auto *contact_surface = r.try_get<const ContactSurface>(entity);
@@ -1502,7 +1496,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 .poissonRatio = p.PoissonRatio,
                 .alpha = p.Alpha,
                 .beta = p.Beta,
-                .name = ToFgStr(acoustic_material->Name),
+                .name = acoustic_material->Name,
             });
             return asset.acousticMaterials.size() - 1;
         });
@@ -1516,7 +1510,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 .spectralSlope = contact_surface->SpectralSlope,
                 .shortWavelength = contact_surface->ShortWavelength,
                 .material = acoustic_material_index,
-                .name = ToFgStr(contact_surface->Name),
+                .name = contact_surface->Name,
             };
             if (contact_surface->HasMeasuredProfile()) {
                 out.profile = AddDataAccessor(std::span<const float>(contact_surface->Profile), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::Float);
@@ -1547,9 +1541,9 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 .decayRates = AddDataAccessor(std::span<const float>(decay_rates), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::Float),
                 .positions = AddDataAccessor(std::span<const vec3>(modes->Positions), fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float),
                 .shapes = AddDataAccessor(std::span<const vec3>(shapes), fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float),
-                .indices = modes->Indices.empty() ? fastgltf::Optional<size_t>{} : fastgltf::Optional<size_t>{AddDataAccessor(std::span<const uint32_t>(modes->Indices), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::UnsignedInt)},
+                .indices = modes->Indices.empty() ? fastgltf::optional<size_t>{} : fastgltf::optional<size_t>{AddDataAccessor(std::span<const uint32_t>(modes->Indices), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::UnsignedInt)},
                 .material = acoustic_material_index,
-                .name = ToFgStr(node_name),
+                .name = node_name,
             };
             if (const auto *mp = r.try_get<const MassProperties>(entity)) {
                 // Scales stored mass and inertia from solved density to the mesh's current material density.
@@ -1593,17 +1587,17 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             .lightIndex = light_index,
             .children = std::move(children),
             .transform = fg_transform,
+            .visible = visible,
             .instancingAttributes = std::move(instancing),
-            .name = ToFgStr(node_name),
             .physicsRigidBody = std::move(physics_rigid_body),
             .audioRigidBody = audio_rigid_body,
-            .visible = visible,
+            .name = node_name,
         });
     }
 
     // Preserves one EXT_lights_image_based resource on the default scene.
     // Per-scene IBL assignment remains outside the round-trip model.
-    fastgltf::Optional<size_t> default_scene_ibl_index;
+    fastgltf::optional<size_t> default_scene_ibl_index;
     if (sa.ImageBasedLight) {
         const auto &src_ibl = *sa.ImageBasedLight;
         const auto *image_light = r.try_get<const ImageLight>(viewport);
@@ -1613,7 +1607,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             .intensity = light.Intensity,
             .rotation = fastgltf::math::fquat(light.Rotation.x, light.Rotation.y, light.Rotation.z, light.Rotation.w),
             .specularImageSize = src_ibl.SpecularImageSize,
-            .name = ToFgStr(src_ibl.Name),
+            .name = src_ibl.Name,
         };
         ibl.specularImages.reserve(src_ibl.SpecularImageIndicesByMip.size());
         for (const auto &mip : src_ibl.SpecularImageIndicesByMip) {
@@ -1638,16 +1632,16 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         // Default = the active scene.
         std::optional<size_t> active_emitted;
         for (const auto se : scenes_ordered) {
-            fastgltf::pmr::MaybeSmallVector<size_t> scene_roots;
+            std::vector<size_t> scene_roots;
             for (const auto ni : compute_roots(se)) scene_roots.emplace_back(ni);
             if (se == active_scene) active_emitted = asset.scenes.size();
-            asset.scenes.emplace_back(fastgltf::Scene{.nodeIndices = std::move(scene_roots), .name = ToFgStr(r.get<const Scene>(se).Name)});
+            asset.scenes.emplace_back(fastgltf::Scene{.nodeIndices = std::move(scene_roots), .name = r.get<const Scene>(se).Name});
         }
         asset.defaultScene = active_emitted.value_or(0);
         if (default_scene_ibl_index) asset.scenes[*asset.defaultScene].imageBasedLightIndex = default_scene_ibl_index;
     } else {
         // No scene entities (non-glTF / runtime-built): synthesize a single scene from current roots.
-        fastgltf::pmr::MaybeSmallVector<size_t> scene_roots;
+        std::vector<size_t> scene_roots;
         for (const auto ni : compute_roots(state::Null)) scene_roots.emplace_back(ni);
         asset.scenes.emplace_back(fastgltf::Scene{.nodeIndices = std::move(scene_roots), .imageBasedLightIndex = default_scene_ibl_index});
         asset.defaultScene = 0;
@@ -1672,7 +1666,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (any_material([&](const auto &m) { return (m.*scalar.Theirs).has_value(); })) asset.extensionsUsed.emplace_back(scalar.Name);
     }
     ForEachMaterialExtension([&](const auto &extension) {
-        if (any_material([&](const auto &m) { return m.*extension.Theirs != nullptr; })) asset.extensionsUsed.emplace_back(extension.Name);
+        if (any_material([&](const auto &m) { return (m.*extension.Theirs).has_value(); })) asset.extensionsUsed.emplace_back(extension.Name);
     });
     if (const auto *mv = r.try_get<const ::MaterialVariants>(viewport); mv && !mv->Names.empty()) {
         asset.materialVariants.reserve(mv->Names.size());
@@ -1688,7 +1682,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     asset.buffers.emplace_back(fastgltf::Buffer{
         .byteLength = bin.size(),
         .data = fastgltf::sources::Vector{.bytes = std::move(bin), .mimeType = fastgltf::MimeType::None},
-        .name = ToFgStr(path.stem().string()),
+        .name = path.stem().string(),
     });
 
     asset.accessors = std::move(accessors);

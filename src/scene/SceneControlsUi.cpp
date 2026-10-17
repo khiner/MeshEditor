@@ -176,21 +176,6 @@ std::string NamedOr(const std::string &name, std::string_view fallback, uint32_t
     return name.empty() ? std::format("{}{}", fallback, i) : name;
 }
 
-constexpr std::string_view MimeTypeName(gltf::MimeType m) {
-    using gltf::MimeType;
-    switch (m) {
-        case MimeType::None: return "—";
-        case MimeType::JPEG: return "image/jpeg";
-        case MimeType::PNG: return "image/png";
-        case MimeType::KTX2: return "image/ktx2";
-        case MimeType::DDS: return "image/vnd-ms.dds";
-        case MimeType::GltfBuffer: return "model/gltf-buffer";
-        case MimeType::OctetStream: return "application/octet-stream";
-        case MimeType::WEBP: return "image/webp";
-    }
-    return "?";
-}
-
 std::string AttributeFlagsString(uint32_t flags) {
     std::string s;
     const auto add = [&](std::string_view tag) {
@@ -968,7 +953,7 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
                         TableNextColumn();
                         TextUnformatted(img.Name.c_str());
                         TableNextColumn();
-                        TextUnformatted(MimeTypeName(img.MimeType).data());
+                        TextUnformatted(img.MimeType == gltf::MimeType::None ? "—" : gltf::MimeTypeString(img.MimeType).data());
                         TableNextColumn();
                         if (img.Source == gltf::Image::SourceKind::DataUri) TextUnformatted("data URI");
                         else if (!img.SourcePath.empty()) TextUnformatted(img.SourcePath.c_str());

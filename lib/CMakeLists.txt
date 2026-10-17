@@ -19,6 +19,21 @@ add_subdirectory(RigidBodyPhysics)
 add_subdirectory(simdjson)
 target_compile_options(simdjson PRIVATE -w)
 
+# fastgltf links this simdutf::simdutf target, built with only base64 like fastgltf's own download.
+set(SIMDUTF_TESTS OFF CACHE BOOL "" FORCE)
+set(SIMDUTF_TOOLS OFF CACHE BOOL "" FORCE)
+set(SIMDUTF_ICONV OFF CACHE BOOL "" FORCE)
+add_subdirectory(simdutf)
+target_compile_options(simdutf PRIVATE -w)
+target_compile_definitions(simdutf PUBLIC
+    SIMDUTF_FEATURE_BASE64=1
+    SIMDUTF_FEATURE_DETECT_ENCODING=0
+    SIMDUTF_FEATURE_ASCII=0
+    SIMDUTF_FEATURE_LATIN1=0
+    SIMDUTF_FEATURE_UTF8=0
+    SIMDUTF_FEATURE_UTF16=0
+    SIMDUTF_FEATURE_UTF32=0)
+
 # libwebp: build only the codec libraries (no tools/extras).
 set(WEBP_BUILD_ANIM_UTILS OFF CACHE BOOL "" FORCE)
 set(WEBP_BUILD_CWEBP OFF CACHE BOOL "" FORCE)
