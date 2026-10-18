@@ -11,14 +11,14 @@ using namespace procedure;
 
 constexpr uint32_t OutputGap{12u}; // The cells a new node leaves before the Output node.
 
-state::Entity CreateNode(state::Scene &r, uint16_t kind, uvec2 position) {
+state::Entity CreateNode(state::Registry &r, uint16_t kind, uvec2 position) {
     const auto entity = r.create();
     VisitKind(kind, [&]<typename K> { r.emplace<K>(entity); });
     r.emplace<NodeLayout>(entity, position);
     return entity;
 }
 
-state::Entity CopyNode(state::Scene &r, state::Entity node, uint16_t kind) {
+state::Entity CopyNode(state::Registry &r, state::Entity node, uint16_t kind) {
     const auto copy = r.create();
     VisitKind(kind, [&]<typename K> {
         const auto parameters = r.get<const K>(node);
@@ -39,14 +39,14 @@ bool ListsNodes(const GeometryProcedure &procedure, std::span<const uint32_t> no
     return std::ranges::is_sorted(nodes) && std::ranges::adjacent_find(nodes) == nodes.end() && (nodes.empty() || nodes.back() < procedure.Nodes.size());
 }
 
-void DeselectNodes(state::Scene &r, const GeometryProcedure &procedure) {
+void DeselectNodes(state::Registry &r, const GeometryProcedure &procedure) {
     for (const auto &node : procedure.Nodes) {
         if (r.all_of<NodeSelected>(node.Entity)) r.remove<NodeSelected>(node.Entity);
     }
 }
 
 // The kind of the node's parameter component, or KindCount for an entity without one.
-uint16_t KindOfNode(const state::Scene &r, state::Entity node) {
+uint16_t KindOfNode(const state::Registry &r, state::Entity node) {
     uint16_t kind = KindCount;
     if (r.valid(node)) {
         ForEachKind([&]<typename K> {
@@ -56,7 +56,7 @@ uint16_t KindOfNode(const state::Scene &r, state::Entity node) {
     return kind;
 }
 
-template<typename K> bool Rename(state::Scene &r, state::Entity node, std::string_view name) {
+template<typename K> bool Rename(state::Registry &r, state::Entity node, std::string_view name) {
     if (!r.valid(node) || !r.all_of<K>(node)) return false;
     r.patch<K>(node, [&](K &p) {
         p.Name = {};
@@ -66,7 +66,7 @@ template<typename K> bool Rename(state::Scene &r, state::Entity node, std::strin
 }
 } // namespace
 
-void Apply(state::Scene &r, state::Entity, const Action &action) {
+void Apply(state::Registry &r, state::Entity, const Action &action) {
     // The mesh entity's procedure, or null after failing the action.
     const auto procedure_of = [&](state::Entity mesh_entity) {
         const auto *procedure = r.try_get<const GeometryProcedure>(mesh_entity);
@@ -258,7 +258,7 @@ void Apply(state::Scene &r, state::Entity, const Action &action) {
     );
 }
 
-SetInlineSelection CaptureSelection(const state::Scene &r, state::Entity mesh_entity, state::Entity node) {
+SetInlineSelection CaptureSelection(const state::Registry &r, state::Entity mesh_entity, state::Entity node) {
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto id = *DrawnStoreId(r, mesh_entity);
     SetInlineSelection selection{.Node = node};
@@ -275,7 +275,7 @@ SetInlineSelection CaptureSelection(const state::Scene &r, state::Entity mesh_en
     return selection;
 }
 
-void CopyProcedure(state::Scene &r, state::Entity from, state::Entity to) {
+void CopyProcedure(state::Registry &r, state::Entity from, state::Entity to) {
     auto procedure = r.get<const GeometryProcedure>(from);
     for (auto &[entity, kind] : procedure.Nodes) {
         const auto copy = CopyNode(r, entity, kind);
@@ -285,13 +285,13 @@ void CopyProcedure(state::Scene &r, state::Entity from, state::Entity to) {
     r.emplace<GeometryProcedure>(to, std::move(procedure));
 }
 
-state::Entity EditedMesh(const state::Scene &r) {
+state::Entity EditedMesh(const state::Registry &r) {
     const auto active = FindActiveEntity(r);
     if (active == state::Null) return state::Null;
     return HasMesh(r, active) ? active : GetMeshEntity(r, active);
 }
 
-state::Entity AppendNode(state::Scene &r, state::Entity viewport, state::Entity mesh_entity, uint16_t kind) {
+state::Entity AppendNode(state::Registry &r, state::Entity viewport, state::Entity mesh_entity, uint16_t kind) {
     const auto &procedure = r.get<const GeometryProcedure>(mesh_entity);
     const auto output = procedure.OutputNode;
     if (output == NoNode) {
@@ -311,7 +311,7 @@ state::Entity AppendNode(state::Scene &r, state::Entity viewport, state::Entity 
     return entity;
 }
 
-void ForEachResultNode(const state::Scene &r, state::Entity viewport, const std::function<void(state::Entity, state::Entity)> &fn) {
+void ForEachResultNode(const state::Registry &r, state::Entity viewport, const std::function<void(state::Entity, state::Entity)> &fn) {
     for (const auto mesh_entity : mesh::SelectedEditMeshes(r, viewport)) {
         const auto *procedure = r.try_get<const GeometryProcedure>(mesh_entity);
         if (!procedure || procedure->OutputNode == NoNode) continue;
@@ -321,11 +321,11 @@ void ForEachResultNode(const state::Scene &r, state::Entity viewport, const std:
 } // namespace action::nodes
 
 namespace action {
-state::Entity UpdateTraits<procedure::NodeLayout>::Active(const state::Scene &r) {
+state::Entity UpdateTraits<procedure::NodeLayout>::Active(const state::Registry &r) {
     const auto *procedure = r.try_get<const procedure::GeometryProcedure>(nodes::EditedMesh(r));
     return procedure && procedure->ActiveNode != procedure::NoNode ? procedure->Nodes[procedure->ActiveNode].Entity : state::Null;
 }
-void UpdateTraits<procedure::NodeLayout>::ForEachSelected(state::Scene &r, state::Entity, const std::function<void(state::Entity)> &fn) {
+void UpdateTraits<procedure::NodeLayout>::ForEachSelected(state::Registry &r, state::Entity, const std::function<void(state::Entity)> &fn) {
     const auto *procedure = r.try_get<const procedure::GeometryProcedure>(nodes::EditedMesh(r));
     if (!procedure) return;
     for (const auto &node : procedure->Nodes) {

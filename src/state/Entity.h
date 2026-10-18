@@ -1,4 +1,5 @@
 #pragma once
+
 #include <functional>
 namespace state {
 enum class Entity : uint32_t {};
@@ -7,7 +8,7 @@ constexpr uint32_t Integral(Entity e) { return uint32_t(e); }
 constexpr uint32_t Index(Entity e) { return uint32_t(e) & 0xfffffu; }
 constexpr uint32_t Generation(Entity e) { return uint32_t(e) >> 20; }
 constexpr Entity MakeEntity(uint32_t index, uint32_t generation) { return Entity{index | (generation << 20)}; }
-struct Scene;
+struct Registry;
 } // namespace state
 template<> struct std::hash<state::Entity> {
     size_t operator()(state::Entity e) const { return state::Integral(e); }

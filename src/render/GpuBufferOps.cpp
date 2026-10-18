@@ -3,16 +3,16 @@
 #include "gpu/MeshletClassification.h"
 #include "render/GpuBuffers.h"
 
-#include "state/Scene.h"
+#include "state/Registry.h"
 
-std::span<const PBRMaterial> GetMaterials(const state::Scene &r) {
+std::span<const PBRMaterial> GetMaterials(const state::Registry &r) {
     return r.Context.get<const GpuBuffers>().Materials.GetSpan<PBRMaterial>();
 }
-TriangleVertexView GetFaceIndices(const state::Scene &, const Mesh &mesh) { return mesh.TriangleVertices(); }
+TriangleVertexView GetFaceIndices(const state::Registry &, const Mesh &mesh) { return mesh.TriangleVertices(); }
 
-mtl::BufferContext &GetBufferContext(state::Scene &r) { return r.Context.get<GpuBuffers>().Ctx; }
+mtl::BufferContext &GetBufferContext(state::Registry &r) { return r.Context.get<GpuBuffers>().Ctx; }
 
-void UpdatePosedMeshletBlocks(state::Scene &r, const MeshStore::Record &owner, std::span<const uint32_t> addresses) {
+void UpdatePosedMeshletBlocks(state::Registry &r, const MeshStore::Record &owner, std::span<const uint32_t> addresses) {
     const auto &meshlets = r.Context.get<const MeshStore>().Render().Meshlets;
     // Posed bounds attach in blocks of MeshElementBlockSize addresses, each spanning several meshlet blocks.
     constexpr auto Span = MeshElementBlockSize / RenderBlockSize;
@@ -26,7 +26,7 @@ void UpdatePosedMeshletBlocks(state::Scene &r, const MeshStore::Record &owner, s
         return owner.MeshletData && std::ranges::any_of(members.subspan(first, std::min<size_t>(Span, members.size() - first)), [&](const MeshElementBlock &value) { return value.Owner == owner.MeshletData.Index && value.Count != 0u; }); }, owner.RenderTopologies);
 }
 
-void FreeInstanceRange(state::Scene &r, Range range) { r.Context.get<GpuBuffers>().Instances.Free(range); }
+void FreeInstanceRange(state::Registry &r, Range range) { r.Context.get<GpuBuffers>().Instances.Free(range); }
 
 InstanceArena::InstanceArena(mtl::BufferContext &ctx)
     : TransformBuffer(ctx, 0, SlotType::ModelBuffer),
@@ -94,7 +94,7 @@ GpuBuffers::GpuBuffers(const mtl::Context &ctx, mtl::BindlessSet &slots)
       ElementPickId{Ctx, sizeof(uint32_t)} {
 }
 
-void Reset(GpuBuffers &b, state::Scene &) {
+void Reset(GpuBuffers &b, state::Registry &) {
     b.Lights.SetUsedSize(0);
     b.PendingLightRemovals.clear();
     if (b.Materials.Count<PBRMaterial>() > 1) b.Materials.SetCount<PBRMaterial>(1u);

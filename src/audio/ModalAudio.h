@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SurfaceContact.h"
+#include "audio/AudioSchema.h"
 #include "numeric/vec3.h"
 
 #include <atomic>
@@ -294,7 +295,7 @@ uint32_t AddModalObject(ModalBank &, state::Entity, const ModalModes &);
 // Publishes a new bank and frees the previous bank.
 void InstallModalBank(ModalAudio &, ModalBank &next);
 // Publishes an empty bank.
-void Reset(ModalAudio &, state::Scene &);
+void Reset(ModalAudio &, state::Registry &);
 // Set an object's resonator coefficients from per-mode frequencies (Hz) and T60s (s).
 // Out-of-range and undamped modes are muted.
 // Safe against concurrent rendering.

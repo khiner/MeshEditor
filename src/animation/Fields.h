@@ -10,7 +10,7 @@
 struct MaterialStore;
 
 namespace state {
-struct Scene;
+struct Registry;
 } // namespace state
 
 // Channel targets built from member pointers, and byte access to the stores they name.
@@ -50,19 +50,19 @@ ChannelTarget TextureTarget(uint8_t texture, F TextureInfo::*field, uint16_t ind
 }
 
 // The entity's morph weights, or a zero-count target for an entity without them.
-ChannelTarget WeightsTarget(const state::Scene &, state::Entity);
+ChannelTarget WeightsTarget(const state::Registry &, state::Entity);
 
 // The translation, rotation, and scale targets of a node or bone.
-std::array<ChannelTarget, 3> TransformTargets(const state::Scene &, state::Entity);
+std::array<ChannelTarget, 3> TransformTargets(const state::Registry &, state::Entity);
 
 bool IsChannelStore(state::TypeKey);
 
 // Reads the target's current value.
 // Returns false when the entity lacks the field.
 // A node without a pose reads its Transform.
-bool ReadField(const state::Scene &, state::Entity, const ChannelTarget &, std::span<float> out);
+bool ReadField(const state::Registry &, state::Entity, const ChannelTarget &, std::span<float> out);
 // Writes the target's value when it differs from the current one.
-void WriteField(state::Scene &, state::Entity, const ChannelTarget &, std::span<const float>);
+void WriteField(state::Registry &, state::Entity, const ChannelTarget &, std::span<const float>);
 
 // Whether two values of the target are the same, allowing float rounding and quaternion sign.
 bool SameValue(const ChannelTarget &, std::span<const float>, std::span<const float>);

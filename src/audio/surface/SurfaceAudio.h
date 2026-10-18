@@ -2,11 +2,12 @@
 
 #include "SurfaceModel.h"
 #include "audio/ContactSurface.h"
+#include "audio/surface/AudioSurfaceSchema.h"
 
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 // The viewport's sustained-contact controls, or their defaults where no viewport has any.
-inline const SurfaceSoundControls &SurfaceControls(const state::Scene &r) {
+inline const SurfaceSoundControls &SurfaceControls(const state::Registry &r) {
     static constexpr SurfaceSoundControls Defaults{};
     const auto view = r.view<const SurfaceSoundControls>();
     return view.empty() ? Defaults : r.get<const SurfaceSoundControls>(view.front());
@@ -24,4 +25,4 @@ struct SurfaceRelief {
 // Rebuild a node's SurfaceRelief from its normal map, taken from the node's ContactSurface or else from the material of the mesh it instances.
 // Removed when neither supplies a usable one.
 // Pass `geometry_changed` when the mesh itself moved, since the track's texel size is measured from its texture coordinates.
-void UpdateSurfaceRelief(state::Scene &, state::Entity node_entity, state::Entity mesh_entity, bool geometry_changed);
+void UpdateSurfaceRelief(state::Registry &, state::Entity node_entity, state::Entity mesh_entity, bool geometry_changed);

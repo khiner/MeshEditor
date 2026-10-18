@@ -25,6 +25,7 @@
 #include "render/GpuSceneState.h"
 #include "render/MaterialComponents.h"
 #include "render/MeshletBuildGpu.h"
+#include "render/RenderChanges.h"
 #include "render/SceneUpdates.h"
 #include "render/Textures.h"
 #include "selection/SelectionComponents.h"
@@ -34,8 +35,6 @@
 #include "viewport/Viewport.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportRenderGpu.h"
-
-using state::Change;
 
 namespace project {
 namespace {
@@ -153,9 +152,9 @@ std::expected<void, std::string> WriteActionsArchive(const store::History &histo
     return {};
 }
 
-Project &Session(state::Scene &r) { return *r.Context.get<Project *>(); }
+Project &Session(state::Registry &r) { return *r.Context.get<Project *>(); }
 
-Project::Project(state::Scene &r) : Entities(r, History, snapshot::SnapshotTable()), R(r) {
+Project::Project(state::Registry &r) : Entities(r, History, snapshot::SnapshotTable()), R(r) {
     R.Context.emplace<Project *>(this);
     R.Context.emplace<Assets>();
 }
@@ -736,8 +735,8 @@ bool Project::Audit(std::string &why) {
 void Project::AfterRestore() {
     const profile::CpuScope scope{"AfterRestore"};
     const struct ReadOnly {
-        state::Scene &R;
-        explicit ReadOnly(state::Scene &r) : R(r) { R.DocumentReadOnly = true; }
+        state::Registry &R;
+        explicit ReadOnly(state::Registry &r) : R(r) { R.DocumentReadOnly = true; }
         ~ReadOnly() { R.DocumentReadOnly = false; }
     } read_only{R};
     bool sources_changed = false, manifest_changed = false, names_changed = false;
@@ -759,12 +758,12 @@ void Project::AfterRestore() {
     if (sources_changed) {
         ReleaseImportedTextures(R);
         ResetImportedEnvironment(R);
-        reactive(R, Change::SceneWorld).emplace(Viewport);
+        R.Context.get<RenderChanges>().SceneWorld.emplace(Viewport);
     } else if (manifest_changed) {
         const auto *manifest = R.try_get<const MaterializedTextures>(Viewport);
         ReleaseUnlistedTextures(R, manifest ? std::span{manifest->Items} : std::span<const MaterializedTexture>{});
     }
-    if (sources_changed || manifest_changed) reactive(R, Change::MaterializedTextures).emplace(Viewport);
+    if (sources_changed || manifest_changed) R.Context.get<RenderChanges>().MaterializedTextures.emplace(Viewport);
     auto &meshes = R.Context.get<MeshStore>();
     const auto changes = meshes.TakeChanges();
     mtl::ComputeChain chain{meshes.BufferContext()};
@@ -811,8 +810,8 @@ void Project::AfterRestore() {
     }
     RefreshEditedPositions(R, chain, positions, false);
     chain.Submit();
-    if (!buffers.Materials.History()->Trie.TakeChanged().empty()) reactive(R, Change::Materials).emplace(Viewport);
-    if (!buffers.MorphWeightBuffer.Buffer.History()->Trie.TakeChanged().empty()) reactive(R, Change::MorphWeights).emplace(Viewport);
+    if (!buffers.Materials.History()->Trie.TakeChanged().empty()) R.Context.get<RenderChanges>().Materials.emplace(Viewport);
+    if (!buffers.MorphWeightBuffer.Buffer.History()->Trie.TakeChanged().empty()) R.Context.get<RenderChanges>().MorphWeights.emplace(Viewport);
     Settle(EventPass::Restore);
 }
 } // namespace project

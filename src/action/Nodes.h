@@ -3,10 +3,6 @@
 #include "mesh/GeometrySelection.h"
 #include "state/Entity.h"
 
-namespace state {
-struct Scene;
-} // namespace state
-
 // Address procedure nodes by index and update parameters on their entities.
 namespace action::nodes {
 using numeric::uvec2;
@@ -91,18 +87,18 @@ struct InsertNode {
 
 using Action = std::variant<AddProcedure, AddNode, Link, Unlink, SetOutput, SetAttributeName, SetInlineSelection, ApplyProcedure, SelectNodes, DuplicateNodes, DeleteNodes, InsertNode>;
 
-void Apply(state::Scene &, state::Entity viewport, const Action &);
+void Apply(state::Registry &, state::Entity viewport, const Action &);
 
 // The selection of the mesh's drawn record as an inline selection for the node, over the blocks the record owns.
-SetInlineSelection CaptureSelection(const state::Scene &, state::Entity mesh_entity, state::Entity node);
+SetInlineSelection CaptureSelection(const state::Registry &, state::Entity mesh_entity, state::Entity node);
 // Gives `to` a copy of the procedure of `from` over new node entities holding copies of its nodes' components.
 // The next settle cooks the copy.
-void CopyProcedure(state::Scene &, state::Entity from, state::Entity to);
+void CopyProcedure(state::Registry &, state::Entity from, state::Entity to);
 // The mesh entity whose procedure the editor edits: the active object's mesh, or the active mesh entity.
-state::Entity EditedMesh(const state::Scene &);
+state::Entity EditedMesh(const state::Registry &);
 // Append a default node before the procedure output and capture the drawn selection.
 // Publish the resulting selection and return the node entity, or null on failure.
-state::Entity AppendNode(state::Scene &, state::Entity viewport, state::Entity mesh_entity, uint16_t kind);
+state::Entity AppendNode(state::Registry &, state::Entity viewport, state::Entity mesh_entity, uint16_t kind);
 // Visits each edit-mode mesh with a selection in the edit element domain and the node its procedure result reads.
-void ForEachResultNode(const state::Scene &, state::Entity viewport, const std::function<void(state::Entity mesh_entity, state::Entity node)> &);
+void ForEachResultNode(const state::Registry &, state::Entity viewport, const std::function<void(state::Entity mesh_entity, state::Entity node)> &);
 } // namespace action::nodes

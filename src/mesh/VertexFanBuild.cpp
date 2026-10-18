@@ -5,7 +5,7 @@
 #include "mesh/MeshStore.h"
 #include "mesh/PageFootprint.h"
 #include "mesh/TiledJobBatch.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 namespace {
 using FanBatch = TiledJobBatch<VertexFanBuildJob, 3>;
@@ -30,7 +30,7 @@ void ReleaseFormerFans(MeshStore &meshes, const FanBatch &batch) {
 }
 } // namespace
 
-void EncodeVertexFans(state::Scene &r, mtl::ComputeChain &chain, std::span<const MeshConnectivityJob> sources, std::span<const uint32_t> vertex_blocks, bool fresh) {
+void EncodeVertexFans(state::Registry &r, mtl::ComputeChain &chain, std::span<const MeshConnectivityJob> sources, std::span<const uint32_t> vertex_blocks, bool fresh) {
     // A source's scratch contains its vertex metadata, corner keys, order and temporaries, radix histograms, totals and tile data.
     const auto scratch_words = [&](const MeshConnectivityJob &source) {
         const uint64_t h = source.HalfedgeCount, v = source.VertexCount;

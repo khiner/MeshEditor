@@ -2,7 +2,7 @@
 #include "Range.h"
 #include "project/EntityStore.h"
 #include "project/store/RecordPage.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 namespace project {
 namespace {

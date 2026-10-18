@@ -1,5 +1,6 @@
 #pragma once
 
+#include "action/ActionSchema.h"
 #include "mesh/TopologyOperations.h"
 #include "state/Entity.h"
 #include "viewport/RenderView.h"
@@ -321,12 +322,12 @@ using Action = std::variant<
     Delete, Merge, Extrude, Duplicate, Split, Separate, Dissolve, Subdivide, Triangulate, TrisToQuads, Poke, FlipNormals, EdgeSplit, Inset, Fill, LoopCut,
     Spin, ExtrudeRepeat, Bisect, Symmetrize, Solidify, ConnectVertices, Knife, BridgeEdgeLoops, GridFill, FillHoles, ConvexHull, EdgeRotate, Rip, Bevel, SmoothVertices, SpaceEvenly, RelaxEdgeLoops, CurveBetweenSelected, Circularize, MakePlanarFaces, Flatten, Wireframe, SplitNonplanarFaces, SplitConcaveFaces, RotateUVs, ReverseUVs, RotateColors, ReverseColors, ShrinkFatten, ToSphere, PushPull, RecalculateNormals, BeautifyFaces, Shear, Warp, Bend, Randomize, VertexSlide, EdgeSlide, Unsubdivide, SnapSymmetry, Hide, Reveal, Decimate, Boolean>;
 
-void Apply(state::Scene &, state::Entity viewport, const Action &);
+void Apply(state::Registry &, state::Entity viewport, const Action &);
 // The edit-mode meshes with a selection in the viewport's edit element domain, which the operators edit.
-std::vector<state::Entity> SelectedEditMeshes(const state::Scene &, state::Entity viewport);
+std::vector<state::Entity> SelectedEditMeshes(const state::Registry &, state::Entity viewport);
 // Reuse staged inset topology for continuous parameter changes.
 // Return false without writes if topology, targets, or selection changed.
-bool UpdateInsetPreview(state::Scene &, state::Entity viewport, const Inset &, InsetPreviewCache &);
+bool UpdateInsetPreview(state::Registry &, state::Entity viewport, const Inset &, InsetPreviewCache &);
 } // namespace action::mesh
 
 template<> inline constexpr field::SpecTable<action::mesh::Delete> Specs<action::mesh::Delete>{{&action::mesh::Delete::Mode, {.Help = "Elements to delete, including the faces of deleted vertices or edges. Loose deletes only selected wire edges and isolated vertices."}}};

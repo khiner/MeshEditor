@@ -187,7 +187,7 @@ AudioUnit OpenDevice(AudioDeviceResource &res, AudioDeviceID device, uint32_t sa
 
 } // namespace
 
-AudioDeviceResource::AudioDeviceResource(state::Scene &r, state::Entity viewport) : R(&r), Viewport(viewport) {}
+AudioDeviceResource::AudioDeviceResource(state::Registry &r, state::Entity viewport) : R(&r), Viewport(viewport) {}
 AudioDeviceResource::~AudioDeviceResource() {
     CloseDevice(*this);
 }

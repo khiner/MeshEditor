@@ -2,6 +2,7 @@
 
 #include "Field.h"
 #include "numeric/vec2.h"
+#include "scene/SceneSchema.h"
 
 #include <cmath>
 #include <optional>

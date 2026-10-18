@@ -1,10 +1,11 @@
 #include "audio/AudioDevice.h"
 #include "audio/AudioQueries.h"
+#include "audio/AudioSchema.h"
 #include "audio/ContactScene.h"
 #include "scene/Entity.h"
 #include "viewport/ViewCamera.h"
 namespace fs = std::filesystem;
-uint32_t DeviceSampleRate(const state::Scene &r) {
+uint32_t DeviceSampleRate(const state::Registry &r) {
     const auto *res = r.Context.find<AudioDeviceResource>();
     if (res && res->SampleRate) return res->SampleRate;
     // AUDIO_SAMPLE_RATE overrides the 48 kHz default when no device provides a rate.
@@ -16,7 +17,7 @@ uint32_t DeviceSampleRate(const state::Scene &r) {
     return fallback;
 }
 
-const std::vector<float> &GetSampleFrames(const state::Scene &r, const fs::path &path) {
+const std::vector<float> &GetSampleFrames(const state::Registry &r, const fs::path &path) {
     static const std::vector<float> EmptyFrames{};
     const auto &samples = r.Context.get<const AudioSamples>().ByPath;
     const auto it = samples.find(path);
@@ -24,7 +25,7 @@ const std::vector<float> &GetSampleFrames(const state::Scene &r, const fs::path 
 }
 // Returns the active SoundVertices index derived from the mesh entity's MeshActiveElement.
 // Returns zero when no active element is set.
-uint32_t GetActiveVertexIndex(const state::Scene &r, state::Entity instance_entity) {
+uint32_t GetActiveVertexIndex(const state::Registry &r, state::Entity instance_entity) {
     const auto &excitable = r.get<const SoundVertices>(instance_entity);
     const auto mesh_entity = r.get<const Instance>(instance_entity).Entity;
     if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) {
@@ -35,7 +36,7 @@ uint32_t GetActiveVertexIndex(const state::Scene &r, state::Entity instance_enti
 }
 
 // Returns the sample-store path assigned to the instance's active mesh vertex, if any.
-std::optional<fs::path> ActiveSamplePath(const state::Scene &r, state::Entity instance_entity) {
+std::optional<fs::path> ActiveSamplePath(const state::Registry &r, state::Entity instance_entity) {
     const auto *samples = r.try_get<const VertexSamples>(instance_entity);
     if (!samples) return std::nullopt;
     const auto mesh_entity = r.get<const Instance>(instance_entity).Entity;
@@ -46,7 +47,7 @@ std::optional<fs::path> ActiveSamplePath(const state::Scene &r, state::Entity in
 }
 
 // Updates listener attenuation using inverse distance beyond ListenerDistance and a constant level within it.
-void UpdateListenerGains(const state::Scene &r, ModalBank &b, state::Entity viewport) {
+void UpdateListenerGains(const state::Registry &r, ModalBank &b, state::Entity viewport) {
     const auto *camera = r.valid(viewport) ? r.try_get<const ViewCamera>(viewport) : nullptr;
     if (!camera) return;
     const auto listener_pos = camera->Position();
@@ -59,16 +60,13 @@ void UpdateListenerGains(const state::Scene &r, ModalBank &b, state::Entity view
     }
 }
 
-namespace {
 // The device-to-main-thread ring overwrites old audio instead of blocking the callback.
 struct MasterCapture {
     std::vector<float> Ring;
     std::atomic<uint64_t> Written{0}, Read{0};
 };
 
-} // namespace
-
-uint32_t BeginAudioCapture(state::Scene &r) {
+uint32_t BeginAudioCapture(state::Registry &r) {
     const auto *res = r.Context.find<AudioDeviceResource>();
     const auto rate = res && res->SampleRate ? res->SampleRate : 0u;
     if (rate == 0) return 0;
@@ -79,15 +77,15 @@ uint32_t BeginAudioCapture(state::Scene &r) {
     return rate;
 }
 
-void EndAudioCapture(state::Scene &r) { r.Context.erase<MasterCapture>(); }
+void EndAudioCapture(state::Registry &r) { r.Context.erase<MasterCapture>(); }
 
-void RenderAudioOffline(state::Scene &r, state::Entity viewport, std::vector<float> &out, uint32_t frame_count) {
+void RenderAudioOffline(state::Registry &r, state::Entity viewport, std::vector<float> &out, uint32_t frame_count) {
     const auto first = out.size();
     out.resize(first + frame_count);
     ProcessAudio(r, viewport, out.data() + first, frame_count);
 }
 
-void DrainAudioCapture(state::Scene &r, std::vector<float> &out) {
+void DrainAudioCapture(state::Registry &r, std::vector<float> &out) {
     auto *capture = r.Context.find<MasterCapture>();
     if (!capture || capture->Ring.empty()) return;
     const auto written = capture->Written.load(std::memory_order_acquire);
@@ -107,7 +105,7 @@ void DrainAudioCapture(state::Scene &r, std::vector<float> &out) {
 constexpr float FullScalePressure{20.f};
 
 // Uses instant attack and 100 ms release while preserving relative levels below the peak envelope.
-void MonitorFrames(state::Scene &r, std::span<float> frames, MonitorLimiter &limiter) {
+void MonitorFrames(state::Registry &r, std::span<float> frames, MonitorLimiter &limiter) {
     const float release = std::exp(-1.f / (0.1f * float(DeviceSampleRate(r))));
     auto envelope = limiter.Envelope;
     for (auto &frame : frames) {
@@ -118,7 +116,7 @@ void MonitorFrames(state::Scene &r, std::span<float> frames, MonitorLimiter &lim
     limiter.Envelope = envelope;
 }
 
-void ProcessAudio(state::Scene &r, state::Entity viewport, float *output, uint32_t frame_count, bool monitor) {
+void ProcessAudio(state::Registry &r, state::Entity viewport, float *output, uint32_t frame_count, bool monitor) {
     std::fill_n(output, frame_count, 0.f);
     auto &m = r.Context.get<ModalAudio>();
     // The mix is pressure at the view camera.

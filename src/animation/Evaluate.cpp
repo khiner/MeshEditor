@@ -2,10 +2,10 @@
 
 #include "animation/Clips.h"
 #include "animation/Fields.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 namespace animation {
-void Evaluate(state::Scene &r, state::Entity viewport, float seconds, bool persistent) {
+void Evaluate(state::Registry &r, state::Entity viewport, float seconds, bool persistent) {
     std::vector<state::Entity> stale;
     for (const auto entity : r.view<const PosedLocal, const Transform>()) {
         if (!PosedTransformComponents(r, viewport, entity)) stale.emplace_back(entity);

@@ -7,7 +7,7 @@
 #include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
 #include "metal/Dispatch.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 namespace {
 uint32_t Groups(uint64_t count) { return uint32_t((count + 255u) / 256u); }
@@ -88,7 +88,7 @@ MeshClosurePushConstants ClosureConstants(const MeshStore &meshes, uint32_t id) 
     };
 }
 
-MeshClosure EncodeClosure(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, uint32_t domain, const ClosureSeed &input, std::array<uint32_t, 4> bounds, const ClosureSeed &retained, const ClosureSeed &wires = {}, bool retain_isolated_only = false) {
+MeshClosure EncodeClosure(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, uint32_t domain, const ClosureSeed &input, std::array<uint32_t, 4> bounds, const ClosureSeed &retained, const ClosureSeed &wires = {}, bool retain_isolated_only = false) {
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto &a = meshes.Arenas();
     const auto &record = meshes.Get(id);
@@ -122,7 +122,7 @@ MeshClosure EncodeClosure(state::Scene &r, mtl::ComputeChain &chain, uint32_t id
 }
 } // namespace
 
-MeshClosure EncodePrimitiveClosure(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, const ClosureSeed &faces, const ClosureSeed &wires, const ClosureSeed &retained, bool retain_isolated_only) {
+MeshClosure EncodePrimitiveClosure(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, const ClosureSeed &faces, const ClosureSeed &wires, const ClosureSeed &retained, bool retain_isolated_only) {
     const uint64_t corners = uint64_t(faces.Incidence) + 2ull * wires.Count;
     const auto bound = [](uint64_t n) { return uint32_t(std::min<uint64_t>(n, UINT32_MAX)); };
     auto closure = EncodeClosure(r, chain, id, 2u, faces, {bound(corners + retained.Count), bound(corners), faces.Count, bound(uint64_t(faces.Incidence) + wires.Count)}, retained, wires, retain_isolated_only);
@@ -131,7 +131,7 @@ MeshClosure EncodePrimitiveClosure(state::Scene &r, mtl::ComputeChain &chain, ui
     return closure;
 }
 
-MeshClosure EncodeVertexClosure(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, const ClosureSeed &vertices) {
+MeshClosure EncodeVertexClosure(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, const ClosureSeed &vertices) {
     const auto bound = [](uint64_t n) { return uint32_t(std::min<uint64_t>(n, UINT32_MAX)); };
     const uint64_t fans = vertices.Incidence;
     return EncodeClosure(r, chain, id, 0u, vertices, {vertices.Count, bound(2u * fans), bound(fans), bound(2u * fans)}, {});
@@ -144,7 +144,7 @@ std::pair<uint32_t, uint32_t> IncidenceIndex(Element element) {
 }
 } // namespace
 
-void MeshClosure::EncodeIncidence(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, Element element) {
+void MeshClosure::EncodeIncidence(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, Element element) {
     const auto [index, d] = IncidenceIndex(element);
     const auto word = IncidenceWords[index] = IncidenceWord(chain);
     if (!Bounds[d]) return;
@@ -173,7 +173,7 @@ ClosureSeed MeshClosure::Seed(Element element) const {
     return {Elements[d], Counts[d], Incidences[index]};
 }
 
-ClosureSeed EncodeEdgeVertices(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, const ClosureSeed &edges) {
+ClosureSeed EncodeEdgeVertices(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, const ClosureSeed &edges) {
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto &a = meshes.Arenas();
     const auto &record = meshes.Get(id);
@@ -189,7 +189,7 @@ ClosureSeed EncodeEdgeVertices(state::Scene &r, mtl::ComputeChain &chain, uint32
     return {.Work = pc.Work[0], .Count = count, .Incidence = edges.Incidence, .Vertices = edges.Vertices, .All = edges.All};
 }
 
-ClosureSeed EncodeAllSeed(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, Element element) {
+ClosureSeed EncodeAllSeed(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, Element element) {
     if (element != Element::Vertex && element != Element::Edge && element != Element::Face) {
         throw std::invalid_argument("A closure seed requires vertices, edges or faces.");
     }
@@ -212,7 +212,7 @@ ClosureSeed EncodeAllSeed(state::Scene &r, mtl::ComputeChain &chain, uint32_t id
     return result;
 }
 
-ClosureSeed ListSeed(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, Element element, std::span<const uint32_t> handles) {
+ClosureSeed ListSeed(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, Element element, std::span<const uint32_t> handles) {
     if (element != Element::Vertex && element != Element::Edge && element != Element::Face) {
         throw std::invalid_argument("A topology handle list requires vertices, edges or faces.");
     }
@@ -236,7 +236,7 @@ ClosureSeed ListSeed(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, Ele
     return seed;
 }
 
-ClosureSeed FaceSeed(const state::Scene &r, uint32_t id, const BufferArena<uint32_t> &storage, ElementWork faces) {
+ClosureSeed FaceSeed(const state::Registry &r, uint32_t id, const BufferArena<uint32_t> &storage, ElementWork faces) {
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto &a = meshes.Arenas();
     const auto &record = meshes.Get(id);
@@ -255,7 +255,7 @@ ClosureSeed FaceSeed(const state::Scene &r, uint32_t id, const BufferArena<uint3
     return seed;
 }
 
-ClosureSeed AroundVertices(const state::Scene &r, uint32_t id, Element element, ElementWork work, const ClosureSeed &vertices) {
+ClosureSeed AroundVertices(const state::Registry &r, uint32_t id, Element element, ElementWork work, const ClosureSeed &vertices) {
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto &a = meshes.Arenas();
     const auto &record = meshes.Get(id);
@@ -278,7 +278,7 @@ ClosureSeed AroundVertices(const state::Scene &r, uint32_t id, Element element, 
     return seed;
 }
 
-FaceTriangles EncodeFaceTriangles(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, const ClosureSeed &faces) {
+FaceTriangles EncodeFaceTriangles(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, const ClosureSeed &faces) {
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto &a = meshes.Arenas();
     const auto &record = meshes.Get(id);

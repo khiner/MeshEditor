@@ -3,6 +3,7 @@
 #include <FastFEM/Surface2Modes.h>
 
 #include "Field.h"
+#include "audio/AudioSchema.h"
 
 struct ModalModes : fastfem::ModalModes {
     std::vector<uint32_t> Vertices; // Mesh vertex indices corresponding to each excitation position in Shapes

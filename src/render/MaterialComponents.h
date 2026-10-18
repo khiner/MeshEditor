@@ -1,12 +1,9 @@
 #pragma once
 
+#include "render/RenderSchema.h"
 #include "state/Entity.h"
 
 #include <vector>
-
-namespace state {
-struct Scene;
-} // namespace state
 
 namespace store {
 struct History;
@@ -25,7 +22,7 @@ private:
     std::unique_ptr<store::Records> Tracked;
 };
 // Keeps the default material only.
-inline void Reset(MaterialStore &m, state::Scene &) {
+inline void Reset(MaterialStore &m, state::Registry &) {
     if (m.Names.size() > 1) m.ResizeNames(1);
 }
 
@@ -37,7 +34,7 @@ struct MeshMaterialSlotSelection {
 };
 
 // The material the mesh entity's selected slot shows: its pending assignment, else the mesh's primitive material.
-std::optional<uint32_t> DisplayedMaterial(const state::Scene &, state::Entity mesh_entity);
+std::optional<uint32_t> DisplayedMaterial(const state::Registry &, state::Entity mesh_entity);
 
 // Presence indicates declared glTF variants.
 // An empty Active value selects each primitive's default material.

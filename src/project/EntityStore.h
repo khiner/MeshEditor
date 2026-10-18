@@ -15,7 +15,7 @@ namespace project {
 struct ComponentPool;
 
 struct EntityStore {
-    EntityStore(state::Scene &, store::History &, const snapshot::SnapshotEntries &);
+    EntityStore(state::Registry &, store::History &, const snapshot::SnapshotEntries &);
     ~EntityStore();
 
     void Capture(state::TypeId, std::span<const state::PageMask>);
@@ -46,7 +46,7 @@ struct EntityStore {
         });
     }
 
-    state::Scene &R;
+    state::Registry &R;
     store::VersionedVector<uint32_t> &Table;
     size_t PreviousLength{};
     std::array<std::unique_ptr<ComponentPool>, state::SchemaSize> Pools;

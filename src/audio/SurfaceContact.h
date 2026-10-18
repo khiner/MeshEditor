@@ -41,11 +41,11 @@ uint32_t SurfaceActiveVoices(const ModalAudio &);
 
 // Releases state that references the replaced bank.
 void SurfaceInstallBank(ModalAudio &);
-void RegisterSurfaceContactHandlers(state::Scene &);
-void SurfaceSetupScene(state::Scene &, state::Entity viewport);
+void RegisterSurfaceContactHandlers(state::Registry &);
+void SurfaceSetupScene(state::Registry &, state::Entity viewport);
 // Recomputes edited surface state and publishes the current contacts.
-void SurfaceUpdateContacts(state::Scene &);
+void SurfaceUpdateContacts(state::Registry &);
 // Returns combined RMS asperity height in meters, or zero without the model.
-float SurfaceRoughnessOf(const state::Scene &, state::Entity node);
+float SurfaceRoughnessOf(const state::Registry &, state::Entity node);
 // Returns the collider or nearest ancestor with an acoustic surface, otherwise the body.
-state::Entity ContactSurfaceNode(const state::Scene &, state::Entity collider, state::Entity body);
+state::Entity ContactSurfaceNode(const state::Registry &, state::Entity collider, state::Entity body);

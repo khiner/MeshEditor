@@ -949,26 +949,26 @@ std::optional<ImageBasedLight> ConvertIBL(const fastgltf::Asset &asset, size_t s
     return ibl;
 }
 
-state::Entity ActiveSceneEntity(const state::Scene &r) {
+state::Entity ActiveSceneEntity(const state::Registry &r) {
     for (const auto e : r.view<const ActiveScene>()) return e;
     return state::Null;
 }
 // No SceneMembership (single-scene) means the node is in the sole scene, so always in the active one.
-bool EntityInActiveScene(const state::Scene &r, state::Entity active_scene, state::Entity e) {
+bool EntityInActiveScene(const state::Registry &r, state::Entity active_scene, state::Entity e) {
     const auto *sm = r.try_get<const SceneMembership>(e);
     return !sm || std::ranges::contains(sm->Scenes, active_scene);
 }
 
 using NodeEntity = std::pair<uint32_t, state::Entity>;
 
-void ApplySceneVisibility(state::Scene &r, state::Entity active_scene, state::Entity e, const SceneMembership &membership) {
+void ApplySceneVisibility(state::Registry &r, state::Entity active_scene, state::Entity e, const SceneMembership &membership) {
     if (std::ranges::contains(membership.Scenes, active_scene)) Show(r, e);
     else Hide(r, e);
 }
 
 // Selects the given objects, keyed by source node with armatures last.
 // The active object is the first in source order of the camera, mesh, armature, root-empty, then object priority.
-void SelectObjects(state::Scene &r, std::vector<NodeEntity> ordered) {
+void SelectObjects(state::Registry &r, std::vector<NodeEntity> ordered) {
     std::ranges::sort(ordered);
 
     const auto priority = [&](state::Entity e) {
@@ -995,7 +995,7 @@ void SelectObjects(state::Scene &r, std::vector<NodeEntity> ordered) {
 }
 // Header, samplers, images, textures, required extensions, and the default scene's IBL.
 // Embedded images keep their bytes, and external images keep a file reference.
-std::expected<SourceAssets, std::string> ReadSourceAssets(state::Scene &r, const fastgltf::Asset &asset, const std::filesystem::path &stored_path, ExtrasMap &&extras, uint32_t scene_index) {
+std::expected<SourceAssets, std::string> ReadSourceAssets(state::Registry &r, const fastgltf::Asset &asset, const std::filesystem::path &stored_path, ExtrasMap &&extras, uint32_t scene_index) {
     SourceAssets sa{
         .Copyright = asset.assetInfo ? std::string{asset.assetInfo->copyright} : std::string{},
         .Generator = asset.assetInfo ? std::string{asset.assetInfo->generator} : std::string{},
@@ -1323,7 +1323,7 @@ struct PhysicsResources {
 
 // KHR_physics_rigid_bodies document resources.
 // Collision filters follow in ImportNodePhysics with the node colliders that reference them.
-PhysicsResources ImportPhysicsResources(state::Scene &r, const fastgltf::Asset &asset) {
+PhysicsResources ImportPhysicsResources(state::Registry &r, const fastgltf::Asset &asset) {
     PhysicsResources out;
     out.Materials.reserve(asset.physicsMaterials.size());
     for (uint32_t i = 0; i < asset.physicsMaterials.size(); ++i) {
@@ -1374,7 +1374,7 @@ struct ImportedMaterials {
     std::vector<MaterializedTexture> Textures;
 };
 
-ImportedMaterials ImportMaterials(state::Scene &r, const fastgltf::Asset &asset, const SourceAssets &sa, std::span<const PBRMaterial> source_materials) {
+ImportedMaterials ImportMaterials(state::Registry &r, const fastgltf::Asset &asset, const SourceAssets &sa, std::span<const PBRMaterial> source_materials) {
     auto &slots = r.Context.get<mtl::BindlessSet>();
     auto &buffers = r.Context.get<GpuBuffers>();
     auto &textures = r.Context.get<TextureStore>();
@@ -1484,7 +1484,7 @@ PbrFeatureMask PbrFeaturesOf(std::span<const PBRMaterial> materials, std::span<c
 using MeshEntities = std::vector<std::array<state::Entity, 3>>;
 
 // Remaps primitive materials to their GPU indices, creates every part in source order, and attaches each part's layout.
-MeshEntities ImportMeshes(state::Scene &r, std::span<SourceMesh> source_meshes, std::span<const uint32_t> material_index_by_gltf_material) {
+MeshEntities ImportMeshes(state::Registry &r, std::span<SourceMesh> source_meshes, std::span<const uint32_t> material_index_by_gltf_material) {
     const auto remap = [&](uint32_t i) { return i < material_index_by_gltf_material.size() ? material_index_by_gltf_material[i] : material_index_by_gltf_material.back(); };
     struct Part {
         uint32_t Mesh;
@@ -1556,7 +1556,7 @@ struct ImportedObjects {
 };
 
 // Creates the mesh, camera, light, and empty objects of every emitted node, parents them, and stubs the nodes no scene reaches.
-ImportedObjects ImportObjects(state::Scene &r, const fastgltf::Asset &asset, const NodePlan &plan, const MeshEntities &mesh_entities) {
+ImportedObjects ImportObjects(state::Registry &r, const fastgltf::Asset &asset, const NodePlan &plan, const MeshEntities &mesh_entities) {
     auto &meshes = r.Context.get<MeshStore>();
     const auto emitted_count = size_t(std::ranges::count(plan.IsObjectEmitted, true));
     ImportedObjects objects;
@@ -1669,7 +1669,7 @@ PhysicsShape ToPhysicsShape(const fastgltf::Asset &asset, const fastgltf::Geomet
     return physics::TriangleMesh{};
 }
 
-void ImportNodePhysics(state::Scene &r, const fastgltf::Asset &asset, const ImportedObjects &objects, const MeshEntities &mesh_entities, const PhysicsResources &resources) {
+void ImportNodePhysics(state::Registry &r, const fastgltf::Asset &asset, const ImportedObjects &objects, const MeshEntities &mesh_entities, const PhysicsResources &resources) {
     // Collision system names dedupe into CollisionSystem entities shared across every filter.
     std::unordered_map<std::string, state::Entity> system_entity_by_name;
     const auto resolve_systems = [&](const auto &names) {
@@ -1777,7 +1777,7 @@ void ImportNodePhysics(state::Scene &r, const fastgltf::Asset &asset, const Impo
     }
 }
 
-void ImportAudio(state::Scene &r, const fastgltf::Asset &asset, const ImportedObjects &objects) {
+void ImportAudio(state::Registry &r, const fastgltf::Asset &asset, const ImportedObjects &objects) {
     if (asset.modalModels.empty() && asset.acousticSurfaces.empty()) return;
 
     std::vector<AcousticMaterial> acoustic_materials;
@@ -1976,7 +1976,7 @@ struct ImportedArmatures {
     std::vector<NodeEntity> Bones;
 };
 
-ImportedArmatures ImportArmatures(state::Scene &r, const fastgltf::Asset &asset, const NodePlan &plan, std::span<const ArmaturePlan> groups, const ImportedObjects &objects, std::string_view name_prefix) {
+ImportedArmatures ImportArmatures(state::Registry &r, const fastgltf::Asset &asset, const NodePlan &plan, std::span<const ArmaturePlan> groups, const ImportedObjects &objects, std::string_view name_prefix) {
     auto &meshes = r.Context.get<MeshStore>();
     ImportedArmatures out;
     out.Objects.reserve(groups.size());
@@ -2099,7 +2099,7 @@ ImportedArmatures ImportArmatures(state::Scene &r, const fastgltf::Asset &asset,
 
 // Applies KHR_node_visibility to the imported entities: a false flag hides the node and its descendants.
 // The hidden set stays closed under descent, so a hidden child's subtree is already hidden and each entity is visited once.
-void ApplySourceVisibility(state::Scene &r, const fastgltf::Asset &asset, const ImportedObjects &objects, std::span<const NodeEntity> bones) {
+void ApplySourceVisibility(state::Registry &r, const fastgltf::Asset &asset, const ImportedObjects &objects, std::span<const NodeEntity> bones) {
     std::vector<state::Entity> stack;
     const auto hide = [&](uint32_t node_index, state::Entity e) {
         if (asset.nodes[node_index].visible) return;
@@ -2122,7 +2122,7 @@ void ApplySourceVisibility(state::Scene &r, const fastgltf::Asset &asset, const 
 
 // Allocates morph weights, then parses every channel into per-entity clips of the scene animations appended for this asset.
 // Returns whether any channel was imported.
-bool ImportAnimations(state::Scene &r, const fastgltf::Asset &asset, state::Entity viewport, const ImportedObjects &objects, std::span<const state::Entity> armature_objects, std::span<const uint32_t> material_index_by_source, std::optional<uint32_t> image_light) {
+bool ImportAnimations(state::Registry &r, const fastgltf::Asset &asset, state::Entity viewport, const ImportedObjects &objects, std::span<const state::Entity> armature_objects, std::span<const uint32_t> material_index_by_source, std::optional<uint32_t> image_light) {
     // Joint nodes drive the bone entity of every armature owning them.
     struct BoneTarget {
         state::Entity Entity;
@@ -2296,7 +2296,7 @@ bool ImportAnimations(state::Scene &r, const fastgltf::Asset &asset, state::Enti
 
 // One scene entity per source scene with the default scene active.
 // In a multi-scene asset, each imported object and bone records its membership and shows only in the active scene.
-void ImportScenes(state::Scene &r, const fastgltf::Asset &asset, uint32_t scene_index, std::span<const uint32_t> scene_mask, const ImportedObjects &objects, std::span<const NodeEntity> bones) {
+void ImportScenes(state::Registry &r, const fastgltf::Asset &asset, uint32_t scene_index, std::span<const uint32_t> scene_mask, const ImportedObjects &objects, std::span<const NodeEntity> bones) {
     std::vector<state::Entity> scene_entities;
     scene_entities.reserve(asset.scenes.size());
     for (uint32_t i = 0; i < asset.scenes.size(); ++i) {
@@ -2324,7 +2324,7 @@ void ImportScenes(state::Scene &r, const fastgltf::Asset &asset, uint32_t scene_
 
 std::expected<fastgltf::Asset, LoadError> ParseGltfAsset(const std::filesystem::path &path) { return ParseAsset(path); }
 
-std::expected<LoadResult, LoadError> LoadGltf(const std::filesystem::path &source_path, state::Scene &r, state::Entity viewport) {
+std::expected<LoadResult, LoadError> LoadGltf(const std::filesystem::path &source_path, state::Registry &r, state::Entity viewport) {
     const profile::CpuScope scope{"LoadGltf"};
 
     // Parse and validate everything that can fail before the first entity or store write.
@@ -2416,7 +2416,7 @@ std::expected<LoadResult, LoadError> LoadGltf(const std::filesystem::path &sourc
     return LoadResult{.FirstCameraObject = objects.FirstCamera, .ImportedAnimation = imported_animation};
 }
 
-void SwitchActiveScene(state::Scene &r, state::Entity scene) {
+void SwitchActiveScene(state::Registry &r, state::Entity scene) {
     if (!r.all_of<Scene>(scene) || r.all_of<ActiveScene>(scene)) return;
     r.clear<ActiveScene>();
     r.emplace<ActiveScene>(scene);

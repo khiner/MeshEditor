@@ -18,8 +18,8 @@ struct ClusterGroupSeeds {
 // Marks the closure of each entity's seed groups stale on its render owner until the next repair.
 // A stale group's error is infinite, so the cut refines through it to current geometry.
 // Returns each entity's members of its stale groups in ascending order, whose traversal leaves carry those errors.
-std::vector<std::vector<uint32_t>> InvalidateClusterGroups(state::Scene &, std::span<const ClusterGroupSeeds>);
+std::vector<std::vector<uint32_t>> InvalidateClusterGroups(state::Registry &, std::span<const ClusterGroupSeeds>);
 // Rebuilds the DAG above each entity's stale groups and every group they feed, with the pools of every owner simplifying together.
 // Each primitive's kept members pool by level and re-partition as a full build of them does, and the stale groups retire with their coarse clusters.
 // The chain records each owner's traversal refit, and its next submit retires the stale groups, after which the owners have none.
-void RepairDirtyClusterGroups(state::Scene &, mtl::ComputeChain &, std::span<const state::Entity>);
+void RepairDirtyClusterGroups(state::Registry &, mtl::ComputeChain &, std::span<const state::Entity>);

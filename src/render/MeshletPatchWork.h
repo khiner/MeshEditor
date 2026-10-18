@@ -31,7 +31,7 @@ struct MeshletPatch {
 // Plans a triangle edit's render repair on the host from the owner's triangle owners and cluster payloads.
 // Source owners and cluster/group records must remain live throughout.
 // Faces with no source triangle use their material route, creating it when needed.
-MeshletPatch PlanMeshletPatch(state::Scene &, MeshStore::Record &, const BufferArena<uint32_t> &storage, const MeshletPatchInput &);
+MeshletPatch PlanMeshletPatch(state::Registry &, MeshStore::Record &, const BufferArena<uint32_t> &storage, const MeshletPatchInput &);
 
 // One fragment's clusters and the primitive, group and traversal leaf they join.
 struct MeshletPatchAdoptJob {
@@ -45,4 +45,4 @@ struct MeshletPatchAdoptJob {
 // The host publishes their membership, traversal leaves and element owner blocks, and the chain writes their owner values.
 // Return canonical element blocks in Blocks and empty the fragments.
 // Returns the adopted clusters in ascending order.
-std::vector<uint32_t> AdoptMeshletFragments(state::Scene &, mtl::ComputeChain &, MeshStore::Record &, uint32_t topology, std::span<MeshStore::Record> fragments, std::span<const MeshletPatchAdoptJob> jobs, std::span<const uint32_t> blocks);
+std::vector<uint32_t> AdoptMeshletFragments(state::Registry &, mtl::ComputeChain &, MeshStore::Record &, uint32_t topology, std::span<MeshStore::Record> fragments, std::span<const MeshletPatchAdoptJob> jobs, std::span<const uint32_t> blocks);

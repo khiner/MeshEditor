@@ -2,7 +2,7 @@
 
 #include "animation/AnimationData.h"
 #include "physics/PhysicsTypes.h"
-#include "render/MaterialTextureSlots.h"
+#include "render/MaterialTextureSchema.h"
 #include <fastgltf/types.hpp>
 #include <numbers>
 

@@ -12,7 +12,7 @@ namespace action::animation {
 namespace {
 using ::animation::KeyTarget;
 
-std::vector<state::Entity> TargetEntities(const state::Scene &r, state::Entity viewport, const Target &target) {
+std::vector<state::Entity> TargetEntities(const state::Registry &r, state::Entity viewport, const Target &target) {
     std::vector<state::Entity> entities;
     const bool pose = r.get<const Interaction>(viewport).Mode == InteractionMode::Pose;
     ForEachTarget(
@@ -32,7 +32,7 @@ std::vector<state::Entity> TargetEntities(const state::Scene &r, state::Entity v
     return entities;
 }
 
-std::vector<KeyTarget> Targets(const state::Scene &r, state::Entity viewport, const KeyScope &keys) {
+std::vector<KeyTarget> Targets(const state::Registry &r, state::Entity viewport, const KeyScope &keys) {
     std::vector<KeyTarget> targets;
     for (const auto e : TargetEntities(r, viewport, keys.Target)) {
         if (keys.Channel) targets.emplace_back(e, *keys.Channel);
@@ -43,12 +43,12 @@ std::vector<KeyTarget> Targets(const state::Scene &r, state::Entity viewport, co
     return targets;
 }
 
-float CurrentSeconds(const state::Scene &r, state::Entity viewport) {
+float CurrentSeconds(const state::Registry &r, state::Entity viewport) {
     return ::animation::FrameSeconds(r, viewport, r.get<const TimelinePlayback>(viewport).CurrentFrame);
 }
 } // namespace
 
-void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
+void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
     std::visit(
         overloaded{
             [&](const InsertKey &a) {

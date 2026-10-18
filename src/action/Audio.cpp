@@ -7,7 +7,7 @@
 #include "project/Assets.h"
 #include "render/Instance.h"
 #include "scene/Entity.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 namespace action::audio {
 namespace {
@@ -15,7 +15,7 @@ template<typename T> T Default() { return {}; }
 template<> AcousticMaterial Default<AcousticMaterial>() { return materials::acoustic::All.front(); }
 template<> ContactSurface Default<ContactSurface>() { return WithPreset({}, surfaces::acoustic::Default); }
 
-template<typename T> void Patch(state::Scene &r, state::Entity e, auto edit) {
+template<typename T> void Patch(state::Registry &r, state::Entity e, auto edit) {
     if (r.all_of<T>(e)) r.patch<T>(e, edit);
     else {
         auto value = Default<T>();
@@ -25,7 +25,7 @@ template<typename T> void Patch(state::Scene &r, state::Entity e, auto edit) {
 }
 } // namespace
 
-void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
+void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
     std::visit(
         overloaded{
             [&](const ApplyExciteImpact &a) {

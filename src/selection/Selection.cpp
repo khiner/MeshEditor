@@ -11,12 +11,12 @@
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewportInteractionState.h"
 
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 using std::ranges::find;
 
 namespace selection {
-bool HasScaleLockedInstance(const state::Scene &r, state::Entity e) {
+bool HasScaleLockedInstance(const state::Registry &r, state::Entity e) {
     for (const auto [_, instance] : r.view<const Instance, const ScaleLocked>().each()) {
         if (instance.Entity == e) return true;
     }
@@ -24,14 +24,14 @@ bool HasScaleLockedInstance(const state::Scene &r, state::Entity e) {
 }
 } // namespace selection
 
-state::Entity FindArmatureObject(const state::Scene &r, state::Entity e) {
+state::Entity FindArmatureObject(const state::Registry &r, state::Entity e) {
     if (e == state::Null) return state::Null;
     if (r.all_of<ArmatureObject>(e)) return e;
     if (const auto *sub = r.try_get<SubElementOf>(e); sub && r.all_of<ArmatureObject>(sub->Parent)) return sub->Parent;
     return state::Null;
 }
 
-state::Entity FindActiveBone(const state::Scene &r) {
+state::Entity FindActiveBone(const state::Registry &r) {
     state::Entity result = state::Null;
     for (const auto e : r.view<BoneActive>()) {
         assert(result == state::Null && "Multiple BoneActive entities");
@@ -40,12 +40,12 @@ state::Entity FindActiveBone(const state::Scene &r) {
     return result;
 }
 
-bool IsBoneEditMode(const state::Scene &r, state::Entity viewport) {
+bool IsBoneEditMode(const state::Registry &r, state::Entity viewport) {
     if (r.get<const Interaction>(viewport).Mode != InteractionMode::Edit) return false;
     return FindArmatureObject(r, FindActiveEntity(r)) != state::Null;
 }
 
-vec3 EditSelectionCenter(const state::Scene &r, state::Entity viewport) {
+vec3 EditSelectionCenter(const state::Registry &r, state::Entity viewport) {
     const auto element = r.get<const EditMode>(viewport).Value;
     vec3 center{};
     uint32_t vertex_count = 0;
@@ -59,22 +59,22 @@ vec3 EditSelectionCenter(const state::Scene &r, state::Entity viewport) {
     return vertex_count > 0 ? center / float(vertex_count) : center;
 }
 
-StartPivot TransformPivot(const state::Scene &r, state::Entity viewport) {
+StartPivot TransformPivot(const state::Registry &r, state::Entity viewport) {
     const auto &roots = r.get<const TransformRoots>(viewport);
     // Selection, position edits and history restore publish the persistent element aggregates the edit center reads.
     const bool mesh_edit = r.get<const Interaction>(viewport).Mode == InteractionMode::Edit && !IsBoneEditMode(r, viewport);
     return {mesh_edit ? EditSelectionCenter(r, viewport) : roots.PivotPosition, roots.PivotRotation};
 }
 
-bool CanDuplicate(const state::Scene &r, state::Entity viewport) {
+bool CanDuplicate(const state::Registry &r, state::Entity viewport) {
     if (r.get<const Interaction>(viewport).Mode == InteractionMode::Pose) return false;
     if (IsBoneEditMode(r, viewport)) return !r.view<BoneSelection>().empty();
     return !r.view<Selected>().empty();
 }
-bool CanDuplicateLinked(const state::Scene &r, state::Entity viewport) { return CanDuplicate(r, viewport) && !IsBoneEditMode(r, viewport); }
-bool CanDelete(const state::Scene &r, state::Entity viewport) { return CanDuplicate(r, viewport); }
+bool CanDuplicateLinked(const state::Registry &r, state::Entity viewport) { return CanDuplicate(r, viewport) && !IsBoneEditMode(r, viewport); }
+bool CanDelete(const state::Registry &r, state::Entity viewport) { return CanDuplicate(r, viewport); }
 
-std::vector<ElementRange> GetElementRangesForSelected(const state::Scene &r, state::Entity viewport) {
+std::vector<ElementRange> GetElementRangesForSelected(const state::Registry &r, state::Entity viewport) {
     const auto element = r.get<const EditMode>(viewport).Value;
     std::vector<ElementRange> ranges;
     for (const auto mesh_entity : r.get<const SelectionFlags>(viewport).Meshes) {
@@ -87,7 +87,7 @@ std::vector<ElementRange> GetElementRangesForSelected(const state::Scene &r, sta
     return ranges;
 }
 
-void Select(state::Scene &r, state::Entity e) {
+void Select(state::Registry &r, state::Entity e) {
     r.clear<Selected>();
     if (e != state::Null) {
         r.clear<Active>();
@@ -96,7 +96,7 @@ void Select(state::Scene &r, state::Entity e) {
     }
 }
 
-void SelectBone(state::Scene &r, state::Entity e) {
+void SelectBone(state::Registry &r, state::Entity e) {
     r.clear<BoneSelection>();
     if (e != state::Null) {
         r.clear<BoneActive>();
@@ -105,7 +105,7 @@ void SelectBone(state::Scene &r, state::Entity e) {
     }
 }
 
-std::vector<SelectionHit> ResolveHits(state::Scene &r, std::span<const state::Entity> raw, bool bone_mode, bool merge_parts) {
+std::vector<SelectionHit> ResolveHits(state::Registry &r, std::span<const state::Entity> raw, bool bone_mode, bool merge_parts) {
     std::vector<SelectionHit> hits;
     std::vector<uint64_t> seen((r.EntityCapacity() + 63) / 64);
     const auto first = [&](state::Entity target) {

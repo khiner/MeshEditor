@@ -20,7 +20,7 @@
 #include "mesh/TopologyReadView.h"
 #include "mesh/TopologyWritePages.h"
 #include "mesh/VertexFanBuild.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 MeshTopologyPushConstants TopologyPushConstants(const MeshStore &meshes) {
     const auto &a = meshes.Arenas();
@@ -278,7 +278,7 @@ void AddJob(Batch &batch, const MeshTopologyJob &job, const MeshTopologyTask &ta
     batch.AddJob(job, tiles);
 }
 
-void EncodeTopologyCounts(state::Scene &r, mtl::ComputeChain &chain, Batch &batch, const MeshTopologyPushConstants &pc, uint32_t rounds) {
+void EncodeTopologyCounts(state::Registry &r, mtl::ComputeChain &chain, Batch &batch, const MeshTopologyPushConstants &pc, uint32_t rounds) {
     const profile::CpuScope scope{"EncodeTopologyCounts"};
     if (batch.Jobs.front().Op == MeshTopologyOp::Boolean) {
         batch.Encode(chain, GetMeshPipelines(r), pc, BooleanCountPasses);
@@ -553,7 +553,7 @@ bool SelectsSpatialFaces(const MeshTopologyTask &task) {
 }
 } // namespace
 
-std::optional<MeshTopologyEdit::Closures> MeshTopologyEdit::RecordClosures(state::Scene &r, const MeshTopologyTask &task, std::optional<PrimitiveListReferences> face_list, const SpatialFaceWork *spatial_faces) {
+std::optional<MeshTopologyEdit::Closures> MeshTopologyEdit::RecordClosures(state::Registry &r, const MeshTopologyTask &task, std::optional<PrimitiveListReferences> face_list, const SpatialFaceWork *spatial_faces) {
     auto &chain = Chain;
     const bool fresh = TopologyCreatesRecord(task.Op);
     const auto &meshes = r.Context.get<MeshStore>();
@@ -789,7 +789,7 @@ bool MeshTopologyEdit::FinishClosures(const MeshTopologyTask &task, Closures &cl
     return core.Counts[1] || RetainsSeedVertices(task.Op);
 }
 
-void MeshTopologyEdit::PrepareCounts(state::Scene &r, const MeshTopologyTask &task, Closures &closures, const std::shared_ptr<const TopologyReadView> &view) {
+void MeshTopologyEdit::PrepareCounts(state::Registry &r, const MeshTopologyTask &task, Closures &closures, const std::shared_ptr<const TopologyReadView> &view) {
     auto &chain = Chain;
     const auto &meshes = r.Context.get<MeshStore>();
     const bool fresh = TopologyCreatesRecord(task.Op);
@@ -896,7 +896,7 @@ void MeshTopologyEdit::ReadCounts(BufferArena<uint32_t> *inset_basis) {
     }
 }
 
-std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Scene &r, mtl::ComputeChain &chain, std::span<const MeshTopologyTask> requested, BufferArena<uint32_t> *inset_basis) {
+std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Registry &r, mtl::ComputeChain &chain, std::span<const MeshTopologyTask> requested, BufferArena<uint32_t> *inset_basis) {
     const profile::CpuScope scope{"TopologyEditConstruct"};
     // A boolean edits a combined copy of its meshes, which the edit owns: a copy of the first mesh with a copy of the second joined after it.
     std::vector<MeshTopologyTask> tasks(requested.begin(), requested.end());
@@ -998,7 +998,7 @@ std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Scene &r, mtl::
     return edits;
 }
 
-void MeshTopologyEdit::PublishAll(state::Scene &r, std::span<MeshTopologyEdit> all) {
+void MeshTopologyEdit::PublishAll(state::Registry &r, std::span<MeshTopologyEdit> all) {
     const profile::CpuScope scope{"TopologyEditPublish"};
     std::vector<MeshTopologyEdit *> edits;
     for (auto &edit : all) {
@@ -1169,7 +1169,7 @@ void MeshTopologyEdit::PublishAll(state::Scene &r, std::span<MeshTopologyEdit> a
     }
 }
 
-void MeshTopologyEdit::FinishAll(state::Scene &r, std::span<MeshTopologyEdit *const> edits) {
+void MeshTopologyEdit::FinishAll(state::Registry &r, std::span<MeshTopologyEdit *const> edits) {
     const profile::CpuScope scope{"FinishTopologyEdits"};
     auto &meshes = r.Context.get<MeshStore>();
     std::vector<MeshStore::SelectionUpdate> updates;
@@ -1241,7 +1241,7 @@ GeometryTopologyResult MeshTopologyEdit::Result(const MeshStore &meshes) const {
     return result;
 }
 
-std::vector<GeometryTopologyResult> ExecuteGeometryTopology(state::Scene &r, std::span<const MeshTopologyTask> tasks) {
+std::vector<GeometryTopologyResult> ExecuteGeometryTopology(state::Registry &r, std::span<const MeshTopologyTask> tasks) {
     // Closures and counts read one common input state.
     // Fresh copies must emit before its one mutation overwrites that source's canonical values.
     std::set<uint32_t> mutated;
@@ -1266,7 +1266,7 @@ std::vector<GeometryTopologyResult> ExecuteGeometryTopology(state::Scene &r, std
     return results;
 }
 
-std::vector<GeometryTopologyResult> ExecuteGeometryTopologyStages(state::Scene &r, std::span<const MeshTopologyTask> tasks) {
+std::vector<GeometryTopologyResult> ExecuteGeometryTopologyStages(state::Registry &r, std::span<const MeshTopologyTask> tasks) {
     std::vector<GeometryTopologyResult> results;
     results.reserve(tasks.size());
     for (const auto &task : tasks) results.push_back(ExecuteGeometryTopology(r, std::span{&task, 1u}).front());
@@ -1274,7 +1274,7 @@ std::vector<GeometryTopologyResult> ExecuteGeometryTopologyStages(state::Scene &
 }
 
 namespace {
-bool HasShortEdge(state::Scene &r, uint32_t id, float distance) {
+bool HasShortEdge(state::Registry &r, uint32_t id, float distance) {
     const auto &meshes = r.Context.get<MeshStore>();
     const auto &a = meshes.Arenas();
     const auto &record = meshes.Get(id);
@@ -1295,7 +1295,7 @@ bool HasShortEdge(state::Scene &r, uint32_t id, float distance) {
 }
 } // namespace
 
-std::optional<uint32_t> ExecuteGeometryBoolean(state::Scene &r, const MeshTopologyTask &task) {
+std::optional<uint32_t> ExecuteGeometryBoolean(state::Registry &r, const MeshTopologyTask &task) {
     const auto result = ExecuteGeometryTopology(r, std::span{&task, 1u}).front();
     if (!result.Changed) return {};
     // Edges shorter than the least normal float have coincident ends, and a degenerate dissolve merges each run of them into one vertex.

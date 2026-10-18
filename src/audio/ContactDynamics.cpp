@@ -1,4 +1,4 @@
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 #include "ContactModel.h"
 #include "ModalEigenSummary.h"
@@ -6,13 +6,13 @@
 #include "TransformMath.h"
 #include "physics/PhysicsTypes.h"
 
-double ModalDensityRatio(const state::Scene &r, state::Entity e) {
+double ModalDensityRatio(const state::Registry &r, state::Entity e) {
     const auto *summary = r.try_get<const ModalEigenSummary>(e);
     const auto *mat = r.try_get<const AcousticMaterial>(e);
     return summary && mat && summary->SolvedMaterial.Density > 0 ? mat->Properties.Density / summary->SolvedMaterial.Density : 1.0;
 }
 
-void UpdateContactDynamics(state::Scene &r, state::Entity e) {
+void UpdateContactDynamics(state::Registry &r, state::Entity e) {
     const auto *mp = r.try_get<const MassProperties>(e);
     const auto *modes = r.try_get<const ModalModes>(e);
     if (!mp || !modes || modes->Positions.empty()) {

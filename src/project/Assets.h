@@ -1,5 +1,6 @@
 #pragma once
 
+#include "project/ProjectSchema.h"
 #include "state/Entity.h"
 
 #include <expected>
@@ -20,6 +21,6 @@ struct Assets {
 };
 
 // Resolve references and return other paths unchanged.
-std::filesystem::path ResolveAsset(const state::Scene &, const std::filesystem::path &);
-std::filesystem::path AssetReference(const state::Scene &, const std::filesystem::path &);
+std::filesystem::path ResolveAsset(const state::Registry &, const std::filesystem::path &);
+std::filesystem::path AssetReference(const state::Registry &, const std::filesystem::path &);
 } // namespace project

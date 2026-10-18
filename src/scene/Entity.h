@@ -1,5 +1,6 @@
 #pragma once
 
+#include "scene/SceneSchema.h"
 #include "state/Entity.h"
 
 #include <algorithm>
@@ -11,14 +12,14 @@ struct Name {
 };
 
 // Initialize/tear down the derived index of live entity names.
-void InitEntityNames(state::Scene &);
-void DeinitEntityNames(state::Scene &);
-void RebuildEntityNames(state::Scene &);
-void ReserveEntityNames(state::Scene &, size_t additional);
+void InitEntityNames(state::Registry &);
+void DeinitEntityNames(state::Registry &);
+void RebuildEntityNames(state::Registry &);
+void ReserveEntityNames(state::Registry &, size_t additional);
 
 // Choose an unused editor name and attach it to an entity.
 // A taken prefix gets a suffix past every live "{prefix}_{N}".
-Name &EmplaceUniqueName(state::Scene &, state::Entity, std::string_view prefix);
+Name &EmplaceUniqueName(state::Registry &, state::Entity, std::string_view prefix);
 // The name without one trailing `_<digits>` suffix, which a unique name or a duplicate renumbers.
 std::string_view NameStem(std::string_view);
 
@@ -85,12 +86,12 @@ inline bool ContainsInIndexOrder(std::span<const state::Entity> entities, state:
 }
 
 std::string IdString(state::Entity);
-std::string GetName(const state::Scene &, state::Entity); // Returns name if present, otherwise hex ID.
+std::string GetName(const state::Registry &, state::Entity); // Returns name if present, otherwise hex ID.
 
-state::Entity FindActiveEntity(const state::Scene &); // If no active entity, returns state::Null.
+state::Entity FindActiveEntity(const state::Registry &); // If no active entity, returns state::Null.
 
 // Mesh-data entity behind an instance.
 // GetMeshEntity returns null for non-mesh instances.
-state::Entity GetMeshEntity(const state::Scene &, state::Entity);
-state::Entity GetActiveMeshEntity(const state::Scene &);
-state::Entity FindMeshEntity(const state::Scene &, state::Entity); // Instance's mesh entity, else the entity itself.
+state::Entity GetMeshEntity(const state::Registry &, state::Entity);
+state::Entity GetActiveMeshEntity(const state::Registry &);
+state::Entity FindMeshEntity(const state::Registry &, state::Entity); // Instance's mesh entity, else the entity itself.

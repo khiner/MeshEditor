@@ -1,4 +1,5 @@
 #pragma once
+#include "audio/AudioSchema.h"
 
 #include <array>
 #include <optional>

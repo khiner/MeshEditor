@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Field.h"
+#include "timeline/TimelineSchema.h"
 #include "ui/Rgba8.h"
 
 struct TimelineThemeColors {

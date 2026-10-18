@@ -6,11 +6,11 @@
 #include "selection/Selection.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 #include "viewport/InteractionComponents.h"
 
 namespace action::selection {
-void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
+void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
     auto merge_bone_sel = [&](state::Entity e, const std::optional<BoneSel> &part, bool additive) {
         const auto sel = part ? BoneSelection::From(*part) : BoneSelection{};
         const auto *cur = r.try_get<BoneSelection>(e);

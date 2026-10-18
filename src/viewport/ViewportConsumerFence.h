@@ -1,4 +1,5 @@
 #pragma once
+#include "viewport/ViewportSchema.h"
 
 namespace MTL {
 class CommandBuffer;

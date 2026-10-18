@@ -2,6 +2,7 @@
 
 #include "gpu/InteractionMode.h"
 #include "selection/Selection.h"
+#include "selection/SelectionSchema.h"
 
 #include <unordered_set>
 
@@ -10,7 +11,7 @@ struct ModeScope {
     InteractionMode Mode;
     bool BoneEdit, Bone, MeshEdit;
 };
-ModeScope ScopeOf(const state::Scene &, state::Entity viewport);
+ModeScope ScopeOf(const state::Registry &, state::Entity viewport);
 
 // Derived viewport aggregates of the selection, each recomputed in the settle pass when its own inputs change.
 // Per-frame readers take them in O(1).
@@ -22,7 +23,7 @@ struct EditPrimaries {
 
 // One selected visible mesh instance per mesh, preferring the active instance, then the lowest entity ID.
 // Transformable chooses among the instances that are not scale-locked.
-EditPrimaries ComputeEditPrimaries(const state::Scene &);
+EditPrimaries ComputeEditPrimaries(const state::Registry &);
 
 // The selected entities a transform moves, and the pivot it turns and scales about.
 struct TransformRoots {
@@ -77,8 +78,8 @@ struct OutlinerRows {
 };
 
 // Rebuilds the rows from the scene graph and the open set.
-void BuildOutlinerRows(const state::Scene &, OutlinerRows &);
+void BuildOutlinerRows(const state::Registry &, OutlinerRows &);
 
 // Recomputes the aggregates whose inputs changed this settle, and returns the meshes whose primary edit instance changed.
 // Runs after the world transforms are current.
-std::vector<state::Entity> UpdateSelectionState(state::Scene &, state::Entity viewport);
+std::vector<state::Entity> UpdateSelectionState(state::Registry &, state::Entity viewport);

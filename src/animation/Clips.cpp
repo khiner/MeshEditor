@@ -2,7 +2,7 @@
 #include "numeric/QuaternionMath.h"
 
 #include "scene/WorldTransform.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 namespace animation {
 namespace {
@@ -14,12 +14,12 @@ uint32_t FindKeyframe(std::span<const float> times, float t) {
 }
 } // namespace
 
-state::Entity AnimationsViewport(const state::Scene &r) {
+state::Entity AnimationsViewport(const state::Registry &r) {
     for (const auto e : r.view<const Animations>()) return e;
     return state::Null;
 }
 
-const AnimationClip *ActiveClip(const state::Scene &r, state::Entity viewport, const AnimationClips &clips) {
+const AnimationClip *ActiveClip(const state::Registry &r, state::Entity viewport, const AnimationClips &clips) {
     return clips.Find(r.get<const Animations>(viewport).Active);
 }
 
@@ -52,7 +52,7 @@ void EvaluateChannel(const AnimationChannel &channel, float seconds, std::span<f
     if (rotation) StoreQuat(out.data(), Normalize(LoadQuat(out.data())));
 }
 
-float LastKeySeconds(const state::Scene &r, std::optional<uint32_t> animation) {
+float LastKeySeconds(const state::Registry &r, std::optional<uint32_t> animation) {
     float end = 0;
     for (const auto [_, clips] : r.view<const AnimationClips>().each()) {
         for (const auto &clip : clips.Clips) {
@@ -65,7 +65,7 @@ float LastKeySeconds(const state::Scene &r, std::optional<uint32_t> animation) {
     return end;
 }
 
-uint8_t PosedTransformComponents(const state::Scene &r, state::Entity viewport, state::Entity e) {
+uint8_t PosedTransformComponents(const state::Registry &r, state::Entity viewport, state::Entity e) {
     const auto *clips = viewport != state::Null ? r.try_get<const AnimationClips>(e) : nullptr;
     const auto *clip = clips ? ActiveClip(r, viewport, *clips) : nullptr;
     if (!clip) return 0;

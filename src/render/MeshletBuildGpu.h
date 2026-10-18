@@ -24,7 +24,7 @@ struct MeshletBuildSource {
 // Membership and element work live in the chain's scratch, which each chunk of sources reserves once.
 // Each chunk submits the chain for its meshlet counts, and a chunk stays under the scratch budget unless one destination exceeds it alone.
 // A build without an owner also submits for its gathered counts and for its publication, which publishes a canonical source's element owners.
-void BuildGpuMeshlets(state::Scene &, mtl::ComputeChain &, std::span<MeshletBuildSource>);
+void BuildGpuMeshlets(state::Registry &, mtl::ComputeChain &, std::span<MeshletBuildSource>);
 // The chain scratch words BuildGpuMeshlets allocates for `sources`.
 // The count excludes an owned source's elements, so a caller can take it before seeding them.
 uint64_t MeshletBuildScratchWords(const MeshStore &, std::span<const MeshletBuildSource>);
@@ -32,8 +32,8 @@ uint64_t MeshletBuildScratchWords(const MeshStore &, std::span<const MeshletBuil
 // The shared GPU bindings of a store record, including face and vertex attributes.
 MeshRecord BuildMeshRecord(const GpuBuffers &, const MeshStore &, uint32_t store_id);
 // Rewrites the record's GPU mesh record from the current bindless slots.
-void RefreshMeshBinding(state::Scene &, uint32_t store_id);
+void RefreshMeshBinding(state::Registry &, uint32_t store_id);
 
 // Create one empty primitive/LOD leaf only when a local build first uses its source material.
 // Existing routes and every untouched primitive stay in place.
-uint32_t EnsureMeshletPrimitive(state::Scene &, MeshStore::Record &, uint32_t source_primitive, uint32_t topology);
+uint32_t EnsureMeshletPrimitive(state::Registry &, MeshStore::Record &, uint32_t source_primitive, uint32_t topology);

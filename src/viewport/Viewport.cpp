@@ -25,6 +25,7 @@
 #include "procedure/Cook.h"
 #include "procedure/NodeTheme.h"
 #include "render/GpuSceneState.h"
+#include "render/Pipelines.h"
 #include "render/RenderStores.h"
 #include "render/RenderTargets.h"
 #include "render/Textures.h"
@@ -32,7 +33,7 @@
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 #include "timeline/Timeline.h"
 #include "timeline/TimelineTheme.h"
 #include "ui/InterfaceTheme.h"
@@ -45,10 +46,10 @@
 #include "render/GpuBuffers.h"
 
 namespace {
-bool TakeRenderRequest(state::Scene &r) { return std::exchange(r.Context.get<PendingRenderRequest>().Value, false); }
+bool TakeRenderRequest(state::Registry &r) { return std::exchange(r.Context.get<PendingRenderRequest>().Value, false); }
 
 // Motion blur applies in MaterialPreview/Rendered while playing, scrubbing, or capturing.
-bool MotionBlurActive(const state::Scene &r, state::Entity viewport) {
+bool MotionBlurActive(const state::Registry &r, state::Entity viewport) {
     const auto &display = r.get<const ViewportDisplay>(viewport);
     if (display.ViewportShading != ViewportShadingMode::MaterialPreview && display.ViewportShading != ViewportShadingMode::Rendered) return false;
     const auto &frame_state = r.Context.get<const FrameState>();
@@ -57,7 +58,7 @@ bool MotionBlurActive(const state::Scene &r, state::Entity viewport) {
 }
 
 // Renders shutter samples with sharp overlays and restores the current frame afterward.
-void RenderMotionBlurredFrame(state::Scene &r, state::Entity viewport) {
+void RenderMotionBlurredFrame(state::Registry &r, state::Entity viewport) {
     const mtl::AutoreleaseScope native_scope;
     const auto &ctx = r.Context.get<const mtl::Context>();
     auto &targets = r.Context.get<RenderTargets>();
@@ -144,7 +145,7 @@ void RenderMotionBlurredFrame(state::Scene &r, state::Entity viewport) {
 }
 } // namespace
 
-void SubmitViewport(state::Scene &r, state::Entity viewport) {
+void SubmitViewport(state::Registry &r, state::Entity viewport) {
     const profile::CpuScope scope{"SubmitViewport"};
     if (!ViewportImageReady(r)) return;
     auto &frame_state = r.Context.get<FrameState>();
@@ -166,7 +167,7 @@ void SubmitViewport(state::Scene &r, state::Entity viewport) {
     if (TakeRenderRequest(r)) RecordAndSubmitFrame(r, viewport);
 }
 
-state::Entity InitEngine(state::Scene &r) {
+state::Entity InitEngine(state::Registry &r) {
     const auto &ctx = r.Context.get<const mtl::Context>();
     InitRenderStoreContext(r, ctx);
     auto &slots = r.Context.get<mtl::BindlessSet>();
@@ -229,7 +230,7 @@ state::Entity InitEngine(state::Scene &r) {
     return viewport;
 }
 
-void SetupScene(state::Scene &r, state::Entity viewport) {
+void SetupScene(state::Registry &r, state::Entity viewport) {
     r.emplace_or_replace<ViewportDisplay>(viewport);
     r.emplace_or_replace<Interaction>(viewport);
     r.emplace_or_replace<EditMode>(viewport);
@@ -270,7 +271,7 @@ void SetupScene(state::Scene &r, state::Entity viewport) {
     SurfaceSetupScene(r, viewport);
 }
 
-void AddDefaultSceneContent(state::Scene &r) {
+void AddDefaultSceneContent(state::Registry &r) {
     auto &meshes = r.Context.get<MeshStore>();
     constexpr PrimitiveShape default_shape{primitive::Cuboid{}};
     const auto created = CreateMesh(r, {.Data = primitive::CreateMesh(default_shape), .FlatShaded = true});
@@ -291,7 +292,7 @@ void AddDefaultSceneContent(state::Scene &r) {
     ::AddCamera(r, meshes, {.Name = "Camera", .Transform = {.P = to_y_up_pos(CameraLoc), .R = to_y_up_rot * FromEulerAngles(CameraEulerXYZ)}, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, Perspective{.FieldOfViewRad = yfov, .FarClip = 1000, .NearClip = DefaultPerspectiveNearClip});
 }
 
-void DeinitViewport(state::Scene &r, state::Entity viewport) {
+void DeinitViewport(state::Registry &r, state::Entity viewport) {
     r.Context.erase<ViewportRenderResources>();
     r.Context.erase<SelectionSlots>();
     r.Context.erase<RenderSamplerSlots>();
@@ -313,7 +314,7 @@ void DeinitViewport(state::Scene &r, state::Entity viewport) {
     DeinitRenderStoreContext(r);
 }
 
-void PresentViewport(state::Scene &r, state::Entity viewport) {
+void PresentViewport(state::Registry &r, state::Entity viewport) {
     ProcessComponentEvents(r, viewport, EventPass::Settle);
     if (!ViewportImageReady(r)) return;
     if (MotionBlurActive(r, viewport)) {

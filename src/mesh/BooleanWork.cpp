@@ -8,14 +8,14 @@
 #include "mesh/MeshTopology.h"
 #include "mesh/ScratchChunks.h"
 #include "metal/Dispatch.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 namespace {
 // Label rounds the first component submit encodes, doubling on each submit until a round changes nothing.
 constexpr uint32_t LabelRounds{16};
 } // namespace
 
-BooleanWork::BooleanWork(state::Scene &r, mtl::ComputeChain &chain, const MeshTopologyTask &task, const MeshClosure &first, const MeshClosure &second) {
+BooleanWork::BooleanWork(state::Registry &r, mtl::ComputeChain &chain, const MeshTopologyTask &task, const MeshClosure &first, const MeshClosure &second) {
     const profile::CpuScope scope{"BooleanWork"};
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto &a = meshes.Arenas();

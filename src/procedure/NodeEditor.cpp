@@ -246,7 +246,7 @@ struct Graph {
     uint32_t Expanded;
     std::vector<Box> Boxes;
 };
-Graph GraphOf(const state::Scene &r, const GeometryProcedure &procedure, const NodeTheme &theme, ImVec2 origin, float cell, float zoom, uint32_t expanded) {
+Graph GraphOf(const state::Registry &r, const GeometryProcedure &procedure, const NodeTheme &theme, ImVec2 origin, float cell, float zoom, uint32_t expanded) {
     // A node index a deletion left stale opens no tray.
     const bool open = expanded < procedure.Nodes.size() && ParameterRange(procedure.Nodes[expanded].Kind).second > ParameterRange(procedure.Nodes[expanded].Kind).first;
     Graph graph{procedure, theme, origin, cell * zoom, zoom, open ? expanded : NoNode, {}};
@@ -411,7 +411,7 @@ void Grab(NodesWindow &window, uint32_t after) {
     window.Moved = false;
 }
 
-std::vector<uint32_t> SelectedNodes(const state::Scene &r, const GeometryProcedure &procedure) {
+std::vector<uint32_t> SelectedNodes(const state::Registry &r, const GeometryProcedure &procedure) {
     std::vector<uint32_t> selected;
     for (uint32_t n = 0u; n < procedure.Nodes.size(); ++n) {
         if (r.all_of<NodeSelected>(procedure.Nodes[n].Entity)) selected.push_back(n);
@@ -421,7 +421,7 @@ std::vector<uint32_t> SelectedNodes(const state::Scene &r, const GeometryProcedu
 
 // Connect adjacent selected nodes in horizontal order, using the first compatible input.
 // Skip cycles and occupied inputs unless `replace` is set.
-std::vector<action::nodes::Link> MakeLinks(const state::Scene &r, state::Entity mesh_entity, GeometryProcedure procedure, std::vector<uint32_t> nodes, bool replace) {
+std::vector<action::nodes::Link> MakeLinks(const state::Registry &r, state::Entity mesh_entity, GeometryProcedure procedure, std::vector<uint32_t> nodes, bool replace) {
     std::ranges::stable_sort(nodes, {}, [&](uint32_t n) { return r.get<const NodeLayout>(procedure.Nodes[n].Entity).Position.x; });
     const auto input_first = InputFirsts(procedure);
     std::vector<action::nodes::Link> links;
@@ -474,7 +474,7 @@ std::optional<Insert> InsertTarget(const Graph &graph, uint32_t node, ImVec2 mou
 }
 
 // Emit canvas actions and insert a dragged node when released over an insertion target.
-void Interact(const state::Scene &r, NodesWindow &window, state::Entity mesh_entity, const Graph &graph, const std::vector<uint32_t> &selected, const Hit &hit, const std::optional<Insert> &insert) {
+void Interact(const state::Registry &r, NodesWindow &window, state::Entity mesh_entity, const Graph &graph, const std::vector<uint32_t> &selected, const Hit &hit, const std::optional<Insert> &insert) {
     const auto &io = GetIO();
     const auto &procedure = graph.Procedure;
     const auto &nodes = procedure.Nodes;
@@ -764,7 +764,7 @@ void DrawPortPicker(NodesWindow &window, state::Entity mesh_entity, const Geomet
     EndPopup();
 }
 
-void RecordHover(const state::Scene &r, const NodesWindow &window, const GeometryProcedure &procedure, const Hit &hit) {
+void RecordHover(const state::Registry &r, const NodesWindow &window, const GeometryProcedure &procedure, const Hit &hit) {
     if (hit.Type == HitType::None) return;
     const auto [entity, kind] = procedure.Nodes[hit.Node];
     if (hit.Type == HitType::Node) {
@@ -796,7 +796,7 @@ void RecordHover(const state::Scene &r, const NodesWindow &window, const Geometr
     }
 }
 
-void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, const NodeTheme &theme, state::Entity mesh_entity, const GeometryProcedure &procedure, bool interactive) {
+void DrawCanvas(const state::Registry &r, FrameState &frame, NodesWindow &window, const NodeTheme &theme, state::Entity mesh_entity, const GeometryProcedure &procedure, bool interactive) {
     const auto &io = GetIO();
     const auto &nodes = procedure.Nodes;
     if ((window.Drag == NodeDrag::Move || window.Drag == NodeDrag::Wire || (window.Drag == NodeDrag::Grab && window.DragNode != NoNode)) && window.DragNode >= nodes.size()) window.Drag = NodeDrag::None;
@@ -959,7 +959,7 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
     DrawPortPicker(window, mesh_entity, procedure, interactive);
 }
 
-bool ObjectChoice(const state::Scene &r, const char *label, state::Entity &value) {
+bool ObjectChoice(const state::Registry &r, const char *label, state::Entity &value) {
     bool changed = false;
     const auto current = r.valid(value) ? value : state::Null;
     const auto objects = [&] {
@@ -1004,7 +1004,7 @@ concept LeafParameter = std::same_as<F, AttributeName> || std::same_as<F, state:
 // Edits a node's parameter fields through Update actions at their byte offsets in the node component.
 template<typename K, auto... Prefix>
 struct ParameterEdit : ui::FieldWidgets<Prefix...> {
-    state::Scene &R;
+    state::Registry &R;
     NodesWindow &Window;
     state::Entity Node;
     const K &Value;
@@ -1063,7 +1063,7 @@ uint32_t SelectedCount(std::span<const SelectionBlock> blocks) {
 }
 
 // Use inline selection for an unlinked selection input; an absent mask selects everything.
-void DrawInlineSelection(const state::Scene &r, state::Entity viewport, state::Entity mesh_entity, const GeometryProcedure &procedure, uint32_t node, bool interactive) {
+void DrawInlineSelection(const state::Registry &r, state::Entity viewport, state::Entity mesh_entity, const GeometryProcedure &procedure, uint32_t node, bool interactive) {
     const auto sockets = KindSockets(procedure.Nodes[node].Kind);
     const auto socket = std::ranges::find(sockets, SocketType::Selection, &Socket::Type);
     if (socket == sockets.end()) return;
@@ -1091,7 +1091,7 @@ void DrawInlineSelection(const state::Scene &r, state::Entity viewport, state::E
     ui::Describe("Clear", "Set the node's selection to all elements");
 }
 
-void DrawParameters(state::Scene &r, state::Entity viewport, NodesWindow &window, state::Entity mesh_entity, const GeometryProcedure &procedure, bool interactive) {
+void DrawParameters(state::Registry &r, state::Entity viewport, NodesWindow &window, state::Entity mesh_entity, const GeometryProcedure &procedure, bool interactive) {
     if (procedure.ActiveNode == NoNode) {
         TextWrapped("Click a node to edit its parameters.");
         TextWrapped("Right click or press Shift+A to add a node.");
@@ -1116,7 +1116,7 @@ void DrawParameters(state::Scene &r, state::Entity viewport, NodesWindow &window
 }
 } // namespace
 
-void DrawNodesWindow(state::Scene &r, state::Entity viewport, NodesWindow &window, bool interactive) {
+void DrawNodesWindow(state::Registry &r, state::Entity viewport, NodesWindow &window, bool interactive) {
     const auto mesh_entity = action::nodes::EditedMesh(r);
     const auto *procedure = r.try_get<const GeometryProcedure>(mesh_entity);
     if (interactive && window.LinkAfter != NoNode) {
@@ -1164,7 +1164,7 @@ void DrawEditor(auto &e, std::type_identity<CellSize>) {
     SameLine();
     e.template Draw<&CellSize::FollowFrameHeight>();
 }
-void DrawNodeStyle(state::Scene &r, state::Entity viewport) {
+void DrawNodeStyle(state::Registry &r, state::Entity viewport) {
     if (Button("Reset")) action::Emit(action::view::ResetNodeTheme{});
     ui::DrawFields<NodeTheme>(ui::Edit{r, viewport});
 }

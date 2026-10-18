@@ -8,6 +8,6 @@ struct ComputeChain;
 } // namespace mtl
 
 // Records sorting occupied block keys and publishing compact prefixes, with temporaries in the chain's scratch.
-void EncodeSortElementWork(state::Scene &, mtl::ComputeChain &, std::span<const ElementWork>);
+void EncodeSortElementWork(state::Registry &, mtl::ComputeChain &, std::span<const ElementWork>);
 // The chain scratch words sorting one work domain of `capacity` slots takes.
 uint32_t SortElementWorkWords(uint32_t capacity);

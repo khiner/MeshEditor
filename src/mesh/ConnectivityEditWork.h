@@ -16,7 +16,7 @@ struct MeshClosure;
 // Counts are valid once the chain has submitted.
 struct ConnectivityEditWork {
     // Work entries use handles from record id.
-    ConnectivityEditWork(state::Scene &, mtl::ComputeChain &, uint32_t id, const MeshClosure &before, const std::array<ElementWork, 2> &replaced, const std::array<ElementHandleRange, 3> &emitted);
+    ConnectivityEditWork(state::Registry &, mtl::ComputeChain &, uint32_t id, const MeshClosure &before, const std::array<ElementWork, 2> &replaced, const std::array<ElementHandleRange, 3> &emitted);
     void Finish(const mtl::ComputeChain &);
 
     std::array<ElementWork, 3> Elements{}; // Writable vertices, halfedges, faces.

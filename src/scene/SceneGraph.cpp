@@ -4,49 +4,51 @@
 #include "animation/Clips.h"
 #include "mesh/MeshComponents.h"
 #include "render/GpuBuffers.h"
+#include "render/RenderChanges.h"
 #include "scene/Entity.h"
+#include "scene/SceneChanges.h"
 
 namespace {
-void SetFirstChild(state::Scene &r, state::Entity parent, state::Entity first_child) {
+void SetFirstChild(state::Registry &r, state::Entity parent, state::Entity first_child) {
     if (r.all_of<SceneChildren>(parent)) r.patch<SceneChildren>(parent, [first_child](auto &c) { c.FirstChild = first_child; });
     else r.emplace<SceneChildren>(parent, SceneChildren{.FirstChild = first_child});
 }
 
 // Links the parentless child ahead of `next_sibling` under the parent, leaving the parent's head to the caller.
-void LinkAhead(state::Scene &r, state::Entity child, state::Entity parent, state::Entity next_sibling) {
+void LinkAhead(state::Registry &r, state::Entity child, state::Entity parent, state::Entity next_sibling) {
     if (r.all_of<SceneChildren>(child)) r.patch<SceneChildren>(child, [next_sibling](auto &c) { c.NextSibling = next_sibling; });
     else r.emplace<SceneChildren>(child, SceneChildren{.NextSibling = next_sibling});
     r.emplace<SceneParent>(child, parent);
 }
 
-state::Entity FirstChildOf(const state::Scene &r, state::Entity parent) {
+state::Entity FirstChildOf(const state::Registry &r, state::Entity parent) {
     const auto *children = r.try_get<const SceneChildren>(parent);
     return children ? children->FirstChild : state::Null;
 }
 
 // Return the node's transform slot, or UINT32_MAX when WorldTransform stores it.
 // An armature part's slot contains its display transform.
-uint32_t WorldSlot(const state::Scene &r, state::Entity e) {
+uint32_t WorldSlot(const state::Registry &r, state::Entity e) {
     const auto *render = r.try_get<const RenderInstance>(e);
     return render && !r.all_of<SubElementOf>(e) ? render->BufferIndex : UINT32_MAX;
 }
 
-const Transform *WorldTransformAt(const state::Scene &r, state::Entity e, uint32_t slot) {
+const Transform *WorldTransformAt(const state::Registry &r, state::Entity e, uint32_t slot) {
     if (slot != UINT32_MAX) return r.Context.get<const GpuBuffers>().Instances.TransformBuffer.GetSpan<Transform>({slot, 1u}).data();
     return r.try_get<const WorldTransform>(e);
 }
 
-void SetWorldTransformAt(state::Scene &r, state::Entity e, uint32_t slot, const Transform &world) {
+void SetWorldTransformAt(state::Registry &r, state::Entity e, uint32_t slot, const Transform &world) {
     if (slot != UINT32_MAX) r.Context.get<GpuBuffers>().Instances.TransformBuffer.GetMutableSpan<Transform>({slot, 1u})[0] = world;
     else r.emplace_or_replace<WorldTransform>(e, world);
-    reactive(r, state::Change::WorldTransform).emplace(e);
+    r.Context.get<SceneChanges>().WorldTransform.emplace(e);
 }
 } // namespace
 
-const Transform *WorldTransformOf(const state::Scene &r, state::Entity e) { return WorldTransformAt(r, e, WorldSlot(r, e)); }
-void SetWorldTransform(state::Scene &r, state::Entity e, const Transform &world) { SetWorldTransformAt(r, e, WorldSlot(r, e), world); }
+const Transform *WorldTransformOf(const state::Registry &r, state::Entity e) { return WorldTransformAt(r, e, WorldSlot(r, e)); }
+void SetWorldTransform(state::Registry &r, state::Entity e, const Transform &world) { SetWorldTransformAt(r, e, WorldSlot(r, e), world); }
 
-mat4 GetParentDelta(const state::Scene &r, state::Entity e) {
+mat4 GetParentDelta(const state::Registry &r, state::Entity e) {
     const auto *parent = r.try_get<const SceneParent>(e);
     return parent ? ToMatrix(*WorldTransformOf(r, parent->Parent)) : I4;
 }
@@ -64,12 +66,12 @@ ChildrenIterator Children::begin() const {
     return {R, FirstChildOf(*R, ParentEntity)};
 }
 
-state::Entity ParentOrNull(const state::Scene &r, state::Entity e) {
+state::Entity ParentOrNull(const state::Registry &r, state::Entity e) {
     const auto *parent = r.try_get<const SceneParent>(e);
     return parent ? parent->Parent : state::Null;
 }
 
-void ClearParents(state::Scene &r, std::span<const state::Entity> children) {
+void ClearParents(state::Registry &r, std::span<const state::Entity> children) {
     // Each detached child beside its parent, grouped by parent and ordered by child index within a group.
     struct Link {
         state::Entity Parent, Child;
@@ -108,12 +110,12 @@ void ClearParents(state::Scene &r, std::span<const state::Entity> children) {
     }
 }
 
-const Transform *ComposedLocal(const state::Scene &r, state::Entity e) {
+const Transform *ComposedLocal(const state::Registry &r, state::Entity e) {
     if (const auto *posed = r.try_get<const PosedLocal>(e)) return &posed->Value;
     return r.try_get<const Transform>(e);
 }
 
-void CommitEditedLocal(state::Scene &r, state::Entity e, const Transform &edited) {
+void CommitEditedLocal(state::Registry &r, state::Entity e, const Transform &edited) {
     if (!r.all_of<PosedLocal>(e)) {
         if (r.all_of<Transform>(e)) r.replace<Transform>(e, edited);
         return;
@@ -128,13 +130,13 @@ void CommitEditedLocal(state::Scene &r, state::Entity e, const Transform &edited
     });
 }
 
-Transform ComposeWorldTransform(const state::Scene &r, state::Entity e) {
+Transform ComposeWorldTransform(const state::Registry &r, state::Entity e) {
     if (const auto *world = WorldTransformOf(r, e)) return *world;
     const auto parent = ParentOrNull(r, e);
     return ToTransform((parent != state::Null ? ToMatrix(ComposeWorldTransform(r, parent)) : I4) * ToMatrix(*ComposedLocal(r, e)));
 }
 
-void RecomputeWorldTransforms(state::Scene &r, std::span<const state::Entity> roots, std::span<const state::Entity> owned, std::span<const state::Entity> held) {
+void RecomputeWorldTransforms(state::Registry &r, std::span<const state::Entity> roots, std::span<const state::Entity> owned, std::span<const state::Entity> held) {
     // Roots in ascending depth, so every parent is current before a dirty descendant composes under it.
     struct Root {
         uint32_t Depth;
@@ -158,7 +160,7 @@ void RecomputeWorldTransforms(state::Scene &r, std::span<const state::Entity> ro
     };
     std::vector<Pending> pending;
     std::vector<mat4> matrices;
-    const auto &placed = reactive(r, state::Change::RenderInstanceCreated);
+    const auto &placed = r.Context.get<const RenderChanges>().InstanceCreated;
     for (const auto &[_, root] : ordered) {
         matrices.clear();
         const auto parent = ParentOrNull(r, root);
@@ -184,12 +186,12 @@ void RecomputeWorldTransforms(state::Scene &r, std::span<const state::Entity> ro
     }
 }
 
-void SetParent(state::Scene &r, state::Entity child, state::Entity parent) {
+void SetParent(state::Registry &r, state::Entity child, state::Entity parent) {
     LinkAhead(r, child, parent, FirstChildOf(r, parent));
     SetFirstChild(r, parent, child);
 }
 
-bool SetParentKeepWorld(state::Scene &r, std::span<const state::Entity> children, state::Entity parent) {
+bool SetParentKeepWorld(state::Registry &r, std::span<const state::Entity> children, state::Entity parent) {
     std::vector<state::Entity> lineage;
     for (auto e = parent; e != state::Null; e = ParentOrNull(r, e)) lineage.push_back(e);
     bool looped = false;

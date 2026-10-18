@@ -25,14 +25,14 @@ using std::ranges::find;
 
 namespace {
 // The drag's pivot, recorded from the selection on its first update.
-const StartPivot &StartPivotOf(state::Scene &r, state::Entity viewport) {
+const StartPivot &StartPivotOf(state::Registry &r, state::Entity viewport) {
     if (const auto *pivot = r.try_get<const StartPivot>(viewport)) return *pivot;
     return r.emplace<StartPivot>(viewport, TransformPivot(r, viewport));
 }
 } // namespace
 
 namespace action::view {
-void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
+void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
     auto patch_camera_stopped = [&](auto &&fn) {
         r.patch<ViewCamera>(viewport, [&](auto &c) { fn(c); c.StopMoving(); });
     };

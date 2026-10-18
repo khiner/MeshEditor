@@ -2,11 +2,12 @@
 
 #include "metal/Bindless.h"
 #include "metal/Image.h"
+#include "render/RenderSchema.h"
 
 #include <Metal/MTLBuffer.hpp>
 
 namespace state {
-struct Scene;
+struct Registry;
 } // namespace state
 
 struct SampledTexture {
@@ -93,6 +94,6 @@ struct RenderTargets {
     std::unique_ptr<MotionBlurResourcesT> MotionBlur;
 };
 // Disables occlusion until the new scene has produced a depth pyramid.
-inline void Reset(RenderTargets &targets, state::Scene &) {
+inline void Reset(RenderTargets &targets, state::Registry &) {
     if (auto &resources = targets.Resources) resources->DepthPyramidValid = false;
 }

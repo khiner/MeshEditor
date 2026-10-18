@@ -8,10 +8,10 @@ struct TextureRef {
     uint32_t SamplerSlot;
     std::string Name;
 };
-std::vector<TextureRef> GetTextureRefs(state::Scene &);
+std::vector<TextureRef> GetTextureRefs(state::Registry &);
 
 struct HdriRefs {
     std::vector<std::string> Names;
     uint32_t ActiveIndex;
 };
-HdriRefs GetHdriRefs(state::Scene &);
+HdriRefs GetHdriRefs(state::Registry &);

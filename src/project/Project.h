@@ -4,6 +4,7 @@
 #include "ProcessEvents.h"
 #include "action/ActionDrain.h"
 #include "project/EntityStore.h"
+#include "project/ProjectSchema.h"
 #include "project/store/History.h"
 
 namespace action::mesh {
@@ -24,7 +25,7 @@ std::expected<void, std::string> WriteActionsArchive(const store::History &, con
 // Construct before engine initialization so all document entities use the versioned allocator.
 // Close history before tearing down the scene's stores.
 struct Project {
-    explicit Project(state::Scene &);
+    explicit Project(state::Registry &);
     ~Project();
     void TrackStores(state::Entity viewport);
     bool Begin(const std::filesystem::path &);
@@ -115,9 +116,9 @@ struct Project {
     // Replaces the document with the empty scene.
     void ClearDocument();
     void AfterRestore();
-    state::Scene &R;
+    state::Registry &R;
     state::Entity Viewport{state::Null};
 };
 
-Project &Session(state::Scene &);
+Project &Session(state::Registry &);
 } // namespace project

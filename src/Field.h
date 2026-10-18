@@ -1,6 +1,6 @@
 #pragma once
 
-#include "state/Schema.h"
+#include "state/Slot.h"
 
 #include <array>
 #include <optional>

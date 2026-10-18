@@ -12,7 +12,7 @@ struct ComputeChain;
 
 // Captures the base normal pages the work of record `id`'s entry writes.
 // These are its vertex and face normals and the sector normals around its vertices.
-void CaptureNormalWrites(state::Scene &, uint32_t id, const NormalDeriveEntry &, const BufferArena<uint32_t> &vertex_work, const BufferArena<uint32_t> &face_work);
+void CaptureNormalWrites(state::Registry &, uint32_t id, const NormalDeriveEntry &, const BufferArena<uint32_t> &vertex_work, const BufferArena<uint32_t> &face_work);
 
 // The record's geometry and connectivity.
 // Callers choose base or posed destinations.
@@ -20,17 +20,17 @@ std::optional<NormalDeriveEntry> MakeDeriveEntryInputs(const MeshStore &, uint32
 
 // Records the same two-phase kernel as frame and sparse edit derivation, with each entry from the record of `ids` at its index.
 // Only job metadata is uploaded, and geometry and normal values stay in their GPU arenas.
-void EncodeDeriveNormals(state::Scene &, mtl::ComputeChain &, std::span<const uint32_t> ids, std::span<const NormalDeriveEntry>, NormalDerivePushConstants);
+void EncodeDeriveNormals(state::Registry &, mtl::ComputeChain &, std::span<const uint32_t> ids, std::span<const NormalDeriveEntry>, NormalDerivePushConstants);
 // The meshes with faces among those whose every base normal derives, each with its vertex then its face membership work in the chain's scratch.
 struct AllNormalsWork {
     std::vector<uint32_t> Ids;
     std::vector<ElementWork> Work;
 };
 // Records the gather and sort of the membership of every vertex and face of the meshes with faces.
-AllNormalsWork EncodeAllNormalsMembership(state::Scene &, mtl::ComputeChain &, std::span<const uint32_t> store_ids);
+AllNormalsWork EncodeAllNormalsMembership(state::Registry &, mtl::ComputeChain &, std::span<const uint32_t> store_ids);
 // Records the base normals of every vertex and face of the meshes, once the chain submitted their membership gather.
 // The derive reads each record's corner classification as it stands when this records.
-void EncodeDeriveAllNormals(state::Scene &, mtl::ComputeChain &, const AllNormalsWork &);
+void EncodeDeriveAllNormals(state::Registry &, mtl::ComputeChain &, const AllNormalsWork &);
 // One mesh's local normal change.
 // Faces cover the changed face normals, and vertices cover every affected normal fan.
 struct LocalNormalWork {
@@ -42,4 +42,4 @@ struct LocalNormalWork {
 };
 // Records base normals after local changes to the meshes, in one derive.
 // Every change's vertices and faces are finished handle membership in `work`.
-void EncodeDeriveMeshNormals(state::Scene &, mtl::ComputeChain &, const BufferArena<uint32_t> &work, std::span<const LocalNormalWork>);
+void EncodeDeriveMeshNormals(state::Registry &, mtl::ComputeChain &, const BufferArena<uint32_t> &work, std::span<const LocalNormalWork>);

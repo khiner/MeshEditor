@@ -4,6 +4,7 @@
 #include "action/Updatable.h"
 #include "gpu/AttributeNode.h"
 #include "mesh/NamedAttribute.h"
+#include "procedure/ProcedureSchema.h"
 
 // Each procedure node is an entity with one parameter component and input/output links.
 namespace procedure {

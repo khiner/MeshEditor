@@ -1,5 +1,6 @@
 #pragma once
 
+#include "audio/AudioSchema.h"
 #include "state/Entity.h"
 
 #include <atomic>
@@ -9,12 +10,12 @@ struct AudioOutputConfig;
 struct AudioOutputMix;
 
 struct AudioDeviceResource {
-    AudioDeviceResource(state::Scene &, state::Entity viewport);
+    AudioDeviceResource(state::Registry &, state::Entity viewport);
     ~AudioDeviceResource();
     AudioDeviceResource(const AudioDeviceResource &) = delete;
     AudioDeviceResource &operator=(const AudioDeviceResource &) = delete;
 
-    state::Scene *R;
+    state::Registry *R;
     state::Entity Viewport;
 
     uint32_t SampleRate{0}; // Negotiated output rate.

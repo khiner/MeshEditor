@@ -5,9 +5,12 @@
 namespace snapshot::detail {
 
 void RegisterPhysics(Tables &tables) {
-    Persistent<
-        PhysicsSimulationSettings, PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef, PhysicsMotion,
-        ColliderShape, ColliderMaterial, ColliderPolicy, PhysicsVelocity, TriggerTag, TriggerNodes, PhysicsJoint>(tables);
-    Derived<PhysicsBodyHandle, PhysicsConstraintHandle, BodyPoseCache, MeshColliderList, ColliderListedUnder>(tables);
+    Classify(
+        tables,
+        TypeList<
+            PhysicsSimulationSettings, PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef, PhysicsMotion,
+            ColliderShape, ColliderMaterial, ColliderPolicy, PhysicsVelocity, TriggerTag, TriggerNodes, PhysicsJoint>{},
+        TypeList<PhysicsBodyHandle, PhysicsConstraintHandle, BodyPoseCache, MeshColliderList, ColliderListedUnder>{}
+    );
 }
 } // namespace snapshot::detail

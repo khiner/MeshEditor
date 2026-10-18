@@ -3,7 +3,7 @@
 #include "Variant.h"
 #include "action/Core.h"
 #include "scene/Entity.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 namespace action {
 // Visits the entities a target resolves to.
@@ -22,17 +22,17 @@ void ForEachTarget(const Target &target, state::Entity viewport, auto &&active, 
     );
 }
 
-template<typename T> state::Entity ActiveWith(const state::Scene &r) {
+template<typename T> state::Entity ActiveWith(const state::Registry &r) {
     const auto e = FindActiveEntity(r);
     return e != state::Null && r.all_of<T>(e) ? e : state::Null;
 }
-template<typename T> void ForEachSelectedWith(const state::Scene &r, auto &&fn) {
+template<typename T> void ForEachSelectedWith(const state::Registry &r, auto &&fn) {
     for (const auto e : r.view<Selected>()) {
         if (r.all_of<T>(e)) fn(e);
     }
 }
 template<typename T, typename F>
-void ForEachComponentTarget(state::Scene &r, const Target &target, state::Entity viewport, F &&fn) {
+void ForEachComponentTarget(state::Registry &r, const Target &target, state::Entity viewport, F &&fn) {
     ForEachTarget(target, viewport, [&] { return ActiveWith<T>(r); }, [&](auto &&f) { ForEachSelectedWith<T>(r, f); }, std::forward<F>(fn));
 }
 } // namespace action

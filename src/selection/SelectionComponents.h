@@ -3,6 +3,7 @@
 #include "selection/BoneSelection.h"
 #include "viewport/RenderView.h"
 
+#include "selection/SelectionSchema.h"
 #include "state/Entity.h"
 
 #include <vector>

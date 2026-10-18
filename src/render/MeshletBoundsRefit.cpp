@@ -8,9 +8,9 @@
 #include "render/ElementWorkOps.h"
 #include "render/LodNodeEdit.h"
 #include "render/MeshletSpatial.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
-void RefitCanonicalMeshletBounds(state::Scene &r, mtl::ComputeChain &chain, std::span<const MeshletBoundsRefitJob> jobs) {
+void RefitCanonicalMeshletBounds(state::Registry &r, mtl::ComputeChain &chain, std::span<const MeshletBoundsRefitJob> jobs) {
     if (jobs.empty()) return;
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto &render = meshes.Render();
@@ -45,7 +45,7 @@ void RefitCanonicalMeshletBounds(state::Scene &r, mtl::ComputeChain &chain, std:
     });
 }
 
-void StageDirtyPositionMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<const state::Entity> entities) {
+void StageDirtyPositionMeshlets(state::Registry &r, mtl::ComputeChain &chain, std::span<const state::Entity> entities) {
     const profile::CpuScope scope{"PositionCoarseInvalidate"};
     auto &meshes = r.Context.get<MeshStore>();
     auto &render = meshes.Render();

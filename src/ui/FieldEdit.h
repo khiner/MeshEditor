@@ -42,7 +42,7 @@ inline bool DragFloat4(const char *label, float *v, float speed = 1.f, float lo 
 action::Target TargetFromAlt(bool delta_capable = false);
 
 // Keying state of a field on its entity, or nothing for a field channels cannot animate there.
-std::optional<animation::ChannelState> QueryKey(const state::Scene &, state::Entity, const ChannelTarget &);
+std::optional<animation::ChannelState> QueryKey(const state::Registry &, state::Entity, const ChannelTarget &);
 
 // The hovered field or item. Every pointer refers to static storage.
 struct FieldInfo {
@@ -85,15 +85,15 @@ struct KeyTint {
 
 // Draws the keying decorator beside the last item: a dot for no channel, a diamond for a channel, filled for a key on this frame.
 // Clicking keys or unkeys the field at the current frame, on the active entity as OnActive and on any other entity by identity.
-void KeyDecorator(const state::Scene &, state::Entity, const ChannelTarget &, const animation::ChannelState &);
-inline void KeyDecorator(const state::Scene &r, state::Entity entity, const ChannelTarget &target) {
+void KeyDecorator(const state::Registry &, state::Entity, const ChannelTarget &, const animation::ChannelState &);
+inline void KeyDecorator(const state::Registry &r, state::Entity entity, const ChannelTarget &target) {
     if (const auto state = QueryKey(r, entity, target)) KeyDecorator(r, entity, target, *state);
 }
 
 namespace detail {
 // Runs `widget` over `v` and stages its change in the item's gesture through `emit(scope, v)`.
 // A field with a channel target is tinted by its keying state on `entity` and followed by its keying decorator.
-bool RunField(state::Scene &r, state::Entity entity, const ChannelTarget &channel, auto v, auto widget, bool selection, bool delta_capable, auto emit) {
+bool RunField(state::Registry &r, state::Entity entity, const ChannelTarget &channel, auto v, auto widget, bool selection, bool delta_capable, auto emit) {
     const auto state = channel.Count ? QueryKey(r, entity, channel) : std::nullopt;
     RunKey = state;
     RunSelection = selection;
@@ -358,9 +358,9 @@ struct FieldWidgets {
 template<bool HasEntity, auto... Prefix>
 struct Edit : FieldWidgets<Prefix...> {
     using Target = std::conditional_t<HasEntity, state::Entity, std::monostate>;
-    Edit(state::Scene &r, Target e = {}) : R{r}, E{e} {}
+    Edit(state::Registry &r, Target e = {}) : R{r}, E{e} {}
 
-    state::Scene &R;
+    state::Registry &R;
     [[no_unique_address]] Target E;
 
     // Return an editor with additional nested field members.
@@ -403,8 +403,8 @@ struct Edit : FieldWidgets<Prefix...> {
     }
 };
 
-Edit(state::Scene &) -> Edit<false>;
-Edit(state::Scene &, state::Entity) -> Edit<true>;
+Edit(state::Registry &) -> Edit<false>;
+Edit(state::Registry &, state::Entity) -> Edit<true>;
 
 template<typename Component, auto... Prefix>
 struct PatchEdit : FieldWidgets<Prefix...> {

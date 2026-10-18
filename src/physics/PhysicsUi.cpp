@@ -42,7 +42,7 @@ void RenderJointVecList(state::Entity jd_entity, const std::vector<T> &items, co
 }
 
 template<typename Target>
-void TargetCombo(state::Scene &r, const char *label, state::Entity current, const char *empty_preview, auto &&pick) {
+void TargetCombo(state::Registry &r, const char *label, state::Entity current, const char *empty_preview, auto &&pick) {
     std::vector<state::Entity> choices{state::Null};
     for (const auto e : r.view<const Target>()) choices.push_back(e);
     if (choices.size() == 1) {
@@ -58,11 +58,11 @@ void TargetCombo(state::Scene &r, const char *label, state::Entity current, cons
     ui::ChoiceCombo(label, current, choices, name, pick);
 }
 
-std::string SystemDisplayName(const state::Scene &r, state::Entity e) {
+std::string SystemDisplayName(const state::Registry &r, state::Entity e) {
     return !r.all_of<const CollisionSystem>(e) ? "<invalid>" : DisplayName(r.get<const CollisionSystem>(e).Name, "{:x}", uint32_t(e));
 }
 
-void RenderSystemMultiSelect(const state::Scene &r, const char *label, std::span<const state::Entity> selection, auto on_toggle) {
+void RenderSystemMultiSelect(const state::Registry &r, const char *label, std::span<const state::Entity> selection, auto on_toggle) {
     const auto view = r.view<const CollisionSystem>();
     if (view.begin() == view.end()) {
         BeginDisabled();
@@ -85,7 +85,7 @@ void RenderSystemMultiSelect(const state::Scene &r, const char *label, std::span
     }
 }
 
-void RenderCollisionFilterBody(state::Scene &r, state::Entity filter_e) {
+void RenderCollisionFilterBody(state::Registry &r, state::Entity filter_e) {
     const auto &filter = r.get<const CollisionFilter>(filter_e);
     RenderSystemMultiSelect(r, "Member of", filter.Systems, [&](state::Entity se, bool add) {
         return action::physics::ToggleFilterEntity{filter_e, action::physics::ToggleFilterEntity::List::Systems, se, add};
@@ -129,7 +129,7 @@ void DrawMatrixCell(ImDrawList *dl, ImVec2 p_min, ImVec2 p_max, bool a_to_b, boo
 // List of named entities with use count, name edit, Delete/Add buttons, and per-entry body.
 // `add` is emitted by the Add button, `rename(e, name)` returns the rename action, and `body(e, x)` renders the entry.
 template<typename T>
-void DrawNamedEntityList(state::Scene &r, const char *id, const char *add_label, auto add, auto &&rename, auto &&body) {
+void DrawNamedEntityList(state::Registry &r, const char *id, const char *add_label, auto add, auto &&rename, auto &&body) {
     PushID(id);
     std::vector<state::Entity> entities;
     for (const auto e : r.view<T>()) entities.push_back(e);
@@ -179,7 +179,7 @@ std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in, bool auto_
 }
 } // namespace
 
-void physics_ui::RenderTab(state::Scene &r, state::Entity viewport) {
+void physics_ui::RenderTab(state::Registry &r, state::Entity viewport) {
     SeparatorText("Simulation");
     Text("Bodies: %u", physics::BodyCount(r));
     ui::DrawFields<PhysicsSimulationSettings>(ui::Edit{r, viewport});
@@ -333,7 +333,7 @@ void physics_ui::RenderTab(state::Scene &r, state::Entity viewport) {
     }
 }
 
-void physics_ui::RenderEntityProperties(state::Scene &r, state::Entity entity, state::Entity viewport) {
+void physics_ui::RenderEntityProperties(state::Registry &r, state::Entity entity, state::Entity viewport) {
     if (!CollapsingHeader("Physics")) return;
 
     PushID("PhysicsEntity");

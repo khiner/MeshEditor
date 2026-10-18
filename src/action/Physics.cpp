@@ -4,15 +4,15 @@
 
 namespace action::physics {
 namespace {
-template<typename T> void Rename(state::Scene &r, state::Entity e, std::string_view name) {
+template<typename T> void Rename(state::Registry &r, state::Entity e, std::string_view name) {
     r.patch<T>(e, [&](T &x) { x.Name = name; });
 }
-template<typename T> void AddNamed(state::Scene &r, std::string_view prefix) {
+template<typename T> void AddNamed(state::Registry &r, std::string_view prefix) {
     r.emplace<T>(r.create(), T{.Name = std::string{prefix} + ' ' + std::to_string(r.view<T>().size())});
 }
 } // namespace
 
-void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
+void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
     std::visit(
         overloaded{
             [&](const SetMotionType &a) {

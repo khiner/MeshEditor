@@ -7,6 +7,7 @@
 #include "render/RenderTargets.h"
 #include "render/Textures.h"
 #include "scene/CameraLens.h"
+#include "viewport/FrameState.h"
 #include "viewport/VideoRecording.h"
 #include "viewport/ViewCameraOps.h"
 #include "viewport/ViewportDisplay.h"
@@ -17,7 +18,7 @@
 
 namespace {
 
-std::pair<uvec2, mtl::Extent2D> GetCaptureRegion(const state::Scene &r) {
+std::pair<uvec2, mtl::Extent2D> GetCaptureRegion(const state::Registry &r) {
     const auto full = r.Context.get<const RenderTargets>().Resources->FinalColorImage.Extent;
     const auto camera = LookThroughCameraEntity(r);
     const auto cd = camera != state::Null ? LensOf(r, camera) : std::nullopt;
@@ -32,15 +33,15 @@ std::pair<uvec2, mtl::Extent2D> GetCaptureRegion(const state::Scene &r) {
 }
 } // namespace
 
-void InitViewportMedia(state::Scene &r) {
+void InitViewportMedia(state::Registry &r) {
     LoadViewportIcons(r);
 }
 
-void DeinitViewportMedia(state::Scene &r) {
+void DeinitViewportMedia(state::Registry &r) {
     r.Context.erase<ViewportIcons>();
 }
 
-void DisplayViewport(state::Scene &r, state::Entity viewport) {
+void DisplayViewport(state::Registry &r, state::Entity viewport) {
     auto &dl = *ImGui::GetWindowDrawList();
     dl.ChannelsSetCurrent(0);
     if (const auto &targets = r.Context.get<const RenderTargets>(); targets.Resources) {
@@ -54,7 +55,7 @@ void DisplayViewport(state::Scene &r, state::Entity viewport) {
 }
 
 // Intentionally mutates VideoRecording outside Apply (not replayed).
-void StartRecording(state::Scene &r, state::Entity viewport, const std::filesystem::path &path, int fps, bool with_audio) {
+void StartRecording(state::Registry &r, state::Entity viewport, const std::filesystem::path &path, int fps, bool with_audio) {
     r.remove<VideoRecording>(viewport);
     EndAudioCapture(r);
     if (!r.Context.get<const RenderTargets>().Resources) {
@@ -75,17 +76,17 @@ void StartRecording(state::Scene &r, state::Entity viewport, const std::filesyst
     r.emplace<VideoRecording>(viewport, VideoRecording{.Recorder = std::make_unique<VideoRecorder>(ctx, path, region.first.x, region.first.y, region.second, fps, audio_rate), .Region = region, .Monitor = monitor, .OfflineRate = offline_rate, .Fps = fps});
 }
 
-bool IsRecording(const state::Scene &r, state::Entity viewport) {
+bool IsRecording(const state::Registry &r, state::Entity viewport) {
     const auto *rec = r.try_get<VideoRecording>(viewport);
     return rec && rec->Recorder && rec->Recorder->IsActive();
 }
 
-uint64_t CapturedFrameCount(const state::Scene &r, state::Entity viewport) {
+uint64_t CapturedFrameCount(const state::Registry &r, state::Entity viewport) {
     const auto *rec = r.try_get<VideoRecording>(viewport);
     return rec && rec->Recorder ? rec->Recorder->CapturedFrameCount() : 0;
 }
 
-void CaptureRecordFrame(state::Scene &r, state::Entity viewport) {
+void CaptureRecordFrame(state::Registry &r, state::Entity viewport) {
     const auto &targets = r.Context.get<const RenderTargets>();
     auto *rec = r.try_edit<VideoRecording>(viewport);
     if (!rec || !rec->Recorder || !rec->Recorder->IsActive() || !targets.Resources) return;
@@ -110,7 +111,7 @@ void CaptureRecordFrame(state::Scene &r, state::Entity viewport) {
     rec->Recorder->CaptureFrame(targets.Resources->FinalColorImage);
 }
 
-std::expected<ViewportImageRgba8, std::string> ReadbackViewportImage(state::Scene &r) {
+std::expected<ViewportImageRgba8, std::string> ReadbackViewportImage(state::Registry &r) {
     const auto &targets = r.Context.get<const RenderTargets>();
     if (!targets.Resources) return std::unexpected{"render resources not ready"};
 
@@ -125,6 +126,6 @@ std::expected<ViewportImageRgba8, std::string> ReadbackViewportImage(state::Scen
     return ViewportImageRgba8{std::move(pixels), extent.Width, extent.Height};
 }
 
-std::string DebugBufferHeapUsage(const state::Scene &r) {
+std::string DebugBufferHeapUsage(const state::Registry &r) {
     return r.Context.get<const GpuBuffers>().Ctx.DebugHeapUsage();
 }

@@ -8,7 +8,7 @@
 #include "render/LodNodeEdit.h"
 #include "render/MeshletBuild.h"
 #include "render/MeshletStorage.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 #include <map>
 #include <unordered_set>
@@ -114,7 +114,7 @@ void ReplaceGroupClusters(MeshStore &meshes, MeshStore::Record &owner, std::span
     }
 }
 
-std::vector<std::vector<uint32_t>> InvalidateClusterGroups(state::Scene &r, std::span<const ClusterGroupSeeds> seeds) {
+std::vector<std::vector<uint32_t>> InvalidateClusterGroups(state::Registry &r, std::span<const ClusterGroupSeeds> seeds) {
     std::vector<std::vector<uint32_t>> members(seeds.size());
     if (std::ranges::all_of(seeds, [](const auto &seed) { return seed.Groups.empty(); })) return members;
     const profile::CpuScope scope{"InvalidateClusterGroups"};
@@ -276,7 +276,7 @@ void CommitPool(MeshStore &meshes, MeshStore::Record &owner, const PoolBuild &po
 }
 } // namespace
 
-void RepairDirtyClusterGroups(state::Scene &r, mtl::ComputeChain &chain, std::span<const state::Entity> entities) {
+void RepairDirtyClusterGroups(state::Registry &r, mtl::ComputeChain &chain, std::span<const state::Entity> entities) {
     auto &meshes = r.Context.get<MeshStore>();
     auto &buffers = meshes.Render();
     struct OwnerRepair {

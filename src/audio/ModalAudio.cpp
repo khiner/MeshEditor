@@ -277,7 +277,7 @@ void InstallModalBank(ModalAudio &m, ModalBank &next) {
     SurfaceInstallBank(m);
 }
 
-void Reset(ModalAudio &m, state::Scene &) {
+void Reset(ModalAudio &m, state::Registry &) {
     ModalBank empty;
     InstallModalBank(m, empty);
 }

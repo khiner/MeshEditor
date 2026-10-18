@@ -2,9 +2,9 @@
 #include "Profile.h"
 #include "mesh/MeshStore.h"
 #include "metal/Dispatch.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
-bool EditVisibility(state::Scene &r, std::span<const uint32_t> ids, Element element, EditVisibilityOperation operation) {
+bool EditVisibility(state::Registry &r, std::span<const uint32_t> ids, Element element, EditVisibilityOperation operation) {
     constexpr std::array elements{Element::Vertex, Element::Edge, Element::Face};
     constexpr std::array domains{MeshStore::ElementDomain::Vertex, MeshStore::ElementDomain::Edge, MeshStore::ElementDomain::Face};
     const auto source = uint32_t(std::ranges::find(elements, element) - elements.begin());

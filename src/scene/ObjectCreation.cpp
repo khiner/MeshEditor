@@ -10,13 +10,13 @@
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
 #include "selection/Selection.h"
-void Show(state::Scene &r, state::Entity e) { r.remove<Hidden>(e); }
+void Show(state::Registry &r, state::Entity e) { r.remove<Hidden>(e); }
 
-void Hide(state::Scene &r, state::Entity e) {
+void Hide(state::Registry &r, state::Entity e) {
     if (!r.all_of<Hidden>(e)) r.emplace<Hidden>(e);
 }
 
-void ApplyVisibility(state::Scene &r, state::Entity e) {
+void ApplyVisibility(state::Registry &r, state::Entity e) {
     const auto hidden_under = [&](state::Entity node, bool parent_hidden) {
         const auto *visibility = r.try_get<const Visibility>(node);
         return parent_hidden || (visibility && !visibility->Visible);
@@ -33,7 +33,7 @@ void ApplyVisibility(state::Scene &r, state::Entity e) {
     apply(e, hidden);
 }
 
-void ApplySelectBehavior(state::Scene &r, state::Entity e, MeshInstanceCreateInfo::SelectBehavior behavior) {
+void ApplySelectBehavior(state::Registry &r, state::Entity e, MeshInstanceCreateInfo::SelectBehavior behavior) {
     switch (behavior) {
         case MeshInstanceCreateInfo::SelectBehavior::Exclusive:
             Select(r, e);
@@ -47,7 +47,7 @@ void ApplySelectBehavior(state::Scene &r, state::Entity e, MeshInstanceCreateInf
     }
 }
 
-state::Entity AddMeshInstance(state::Scene &r, state::Entity mesh_entity, const MeshInstanceCreateInfo &info) {
+state::Entity AddMeshInstance(state::Registry &r, state::Entity mesh_entity, const MeshInstanceCreateInfo &info) {
     const auto e = r.create();
     r.emplace<Instance>(e, mesh_entity);
     r.emplace<ObjectKind>(e, ObjectType::Mesh);
@@ -58,13 +58,13 @@ state::Entity AddMeshInstance(state::Scene &r, state::Entity mesh_entity, const 
     return e;
 }
 
-std::pair<state::Entity, state::Entity> AddMesh(state::Scene &r, uint32_t store_id, std::optional<MeshInstanceCreateInfo> info) {
+std::pair<state::Entity, state::Entity> AddMesh(state::Registry &r, uint32_t store_id, std::optional<MeshInstanceCreateInfo> info) {
     const auto mesh_entity = r.create();
     r.emplace<MeshHandle>(mesh_entity, MeshHandle{store_id});
     return {mesh_entity, info ? AddMeshInstance(r, mesh_entity, *info) : state::Null};
 }
 
-state::Entity CreateExtrasObject(state::Scene &r, ObjectType type, const ObjectCreateInfo &info, std::string_view default_name) {
+state::Entity CreateExtrasObject(state::Registry &r, ObjectType type, const ObjectCreateInfo &info, std::string_view default_name) {
     // The buffer starts empty and its wireframe is built later from the object's params.
     const auto buffer_entity = r.create();
     r.emplace<ObjectExtrasTag>(buffer_entity);
@@ -77,17 +77,17 @@ state::Entity CreateExtrasObject(state::Scene &r, ObjectType type, const ObjectC
     return e;
 }
 
-state::Entity AddEmpty(state::Scene &r, MeshStore &, const ObjectCreateInfo &info) {
+state::Entity AddEmpty(state::Registry &r, MeshStore &, const ObjectCreateInfo &info) {
     return CreateExtrasObject(r, ObjectType::Empty, info, "Empty");
 }
 
-state::Entity AddCamera(state::Scene &r, MeshStore &, const ObjectCreateInfo &info, std::optional<CameraLens> props) {
+state::Entity AddCamera(state::Registry &r, MeshStore &, const ObjectCreateInfo &info, std::optional<CameraLens> props) {
     const auto entity = CreateExtrasObject(r, ObjectType::Camera, info, "Camera");
     SetLens(r, entity, props.value_or(CameraLens{Defaults::PerspectiveCamera}));
     return entity;
 }
 
-state::Entity CreateBoneEntity(state::Scene &r, state::Entity arm_obj_entity, const Armature &armature, uint32_t bone_index, state::Entity parent_entity, float display_scale) {
+state::Entity CreateBoneEntity(state::Registry &r, state::Entity arm_obj_entity, const Armature &armature, uint32_t bone_index, state::Entity parent_entity, float display_scale) {
     const auto &bone = armature.Bones[bone_index];
     const auto bone_entity = r.create();
     r.emplace<BoneIndex>(bone_entity, bone_index);
@@ -101,7 +101,7 @@ state::Entity CreateBoneEntity(state::Scene &r, state::Entity arm_obj_entity, co
     return bone_entity;
 }
 
-void CreateBoneJoints(state::Scene &r, state::Entity arm_obj_entity, state::Entity bone_entity, state::Entity joint_entity) {
+void CreateBoneJoints(state::Registry &r, state::Entity arm_obj_entity, state::Entity bone_entity, state::Entity joint_entity) {
     const auto make = [&](bool is_tail) {
         const auto e = r.create();
         r.emplace<SubElementOf>(e, arm_obj_entity);
@@ -112,7 +112,7 @@ void CreateBoneJoints(state::Scene &r, state::Entity arm_obj_entity, state::Enti
     r.emplace<BoneJointEntities>(bone_entity, make(false), make(true));
 }
 
-void CreateBoneInstances(state::Scene &r, MeshStore &meshes, state::Entity arm_obj_entity, state::Entity arm_data_entity) {
+void CreateBoneInstances(state::Registry &r, MeshStore &meshes, state::Entity arm_obj_entity, state::Entity arm_data_entity) {
     const auto &armature = r.get<const Armature>(arm_data_entity);
     const uint32_t n = armature.Bones.size();
     if (n == 0) return;
@@ -141,7 +141,7 @@ void CreateBoneInstances(state::Scene &r, MeshStore &meshes, state::Entity arm_o
     arm_obj.JointEntity = joint_entity;
 }
 
-state::Entity AddLight(state::Scene &r, MeshStore &, const ObjectCreateInfo &info, std::optional<PunctualLight> props) {
+state::Entity AddLight(state::Registry &r, MeshStore &, const ObjectCreateInfo &info, std::optional<PunctualLight> props) {
     const auto entity = CreateExtrasObject(r, ObjectType::Light, info, "Light");
     // PunctualLight is the canonical per-light data, the GPU Lights buffer is registered from it later.
     r.emplace<PunctualLight>(entity, props.value_or(Defaults::MakePunctualLight(PunctualLightType::Point)));

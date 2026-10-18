@@ -6,7 +6,7 @@
 #include "mesh/PageFootprint.h"
 
 namespace state {
-struct Scene;
+struct Registry;
 } // namespace state
 struct MeshClosure;
 struct MeshStore;
@@ -17,9 +17,9 @@ struct MeshStore;
 // Bindings without read pages stay invalid.
 struct TopologyReadView {
     // Adds the pages the rules of a source's neighborhood read, whose work lives in `scratch`.
-    void Add(state::Scene &, uint32_t source_id, const MeshClosure &, const BufferArena<uint32_t> &scratch);
+    void Add(state::Registry &, uint32_t source_id, const MeshClosure &, const BufferArena<uint32_t> &scratch);
     // Clones the added pages and binds them, after every source of the batch is added.
-    void Clone(state::Scene &);
+    void Clone(state::Registry &);
     // A source's connectivity through its table runs in the clones.
     ConnectivityRef SourceConnectivity(const MeshStore &, uint32_t source_id) const;
     // A source's element layers at its ranges in the clones, read before its insertions move any range.

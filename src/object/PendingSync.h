@@ -1,7 +1,8 @@
 #pragma once
 
 #include "Range.h"
-#include "state/Scene.h"
+#include "object/ObjectSchema.h"
+#include "state/DirtySet.h"
 
 // Data owners affected by object destruction, resolved against survivors after the frame's actions.
 // Destroyed components queue their store entries and buffer ranges, released together in the settle pass.

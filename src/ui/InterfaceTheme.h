@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Field.h"
+#include "ui/UiSchema.h"
 
 // Editor chrome sizes shared across windows.
 struct InterfaceTheme {

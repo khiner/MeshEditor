@@ -7,3 +7,6 @@ struct WorkspaceLights {
     vec3 AmbientColor DEFAULT();
     uint32_t UseSpecular DEFAULT();
 };
+#ifndef __METAL_VERSION__
+#include "gpu/GpuSchema.h"
+#endif

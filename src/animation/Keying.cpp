@@ -2,7 +2,7 @@
 
 #include "animation/Clips.h"
 #include "animation/Fields.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 #include "timeline/Timeline.h"
 
 namespace animation {
@@ -36,7 +36,7 @@ void SetKey(AnimationChannel &channel, float seconds, std::span<const float> val
 }
 
 // Returns each emptied channel's field to rest, drops empty channels and clips, publishes the update, and removes the component when no clip remains.
-void PublishClips(state::Scene &r, state::Entity entity) {
+void PublishClips(state::Registry &r, state::Entity entity) {
     for (const auto &clip : r.get<const AnimationClips>(entity).Clips) {
         for (const auto &channel : clip.Channels) {
             if (channel.Times.empty()) WriteField(r, entity, channel.Target, channel.Rest);
@@ -51,7 +51,7 @@ void PublishClips(state::Scene &r, state::Entity entity) {
 
 // Whether the field's value differs from its channel at `seconds`.
 // A field the entity lacks never differs.
-bool FieldChanged(const state::Scene &r, state::Entity e, const AnimationChannel &channel, float seconds) {
+bool FieldChanged(const state::Registry &r, state::Entity e, const AnimationChannel &channel, float seconds) {
     std::vector<float> current(channel.Target.Count), animated(channel.Target.Count);
     if (!ReadField(r, e, channel.Target, current)) return false;
     EvaluateChannel(channel, seconds, animated);
@@ -60,7 +60,7 @@ bool FieldChanged(const state::Scene &r, state::Entity e, const AnimationChannel
 
 // Call `fn` for active channels whose field value differs from evaluation at `seconds`.
 // Stop when `fn` returns true.
-void ForEachChanged(const state::Scene &r, state::Entity viewport, float seconds, auto &&fn) {
+void ForEachChanged(const state::Registry &r, state::Entity viewport, float seconds, auto &&fn) {
     for (const auto [entity, clips] : r.view<const AnimationClips>().each()) {
         const auto *clip = ActiveClip(r, viewport, clips);
         if (!clip) continue;
@@ -71,11 +71,11 @@ void ForEachChanged(const state::Scene &r, state::Entity viewport, float seconds
 }
 } // namespace
 
-float FrameSeconds(const state::Scene &r, state::Entity viewport, int frame) {
+float FrameSeconds(const state::Registry &r, state::Entity viewport, int frame) {
     return float(std::max(0, frame - 1)) / r.get<const TimelineRange>(viewport).Fps;
 }
 
-ChannelState QueryChannel(const state::Scene &r, state::Entity viewport, const KeyTarget &key, float seconds) {
+ChannelState QueryChannel(const state::Registry &r, state::Entity viewport, const KeyTarget &key, float seconds) {
     const auto *clips = r.try_get<const AnimationClips>(key.Entity);
     const auto *clip = clips ? ActiveClip(r, viewport, *clips) : nullptr;
     const auto *channel = clip ? FindChannel(*clip, key.Target) : nullptr;
@@ -83,7 +83,7 @@ ChannelState QueryChannel(const state::Scene &r, state::Entity viewport, const K
     return {.HasChannel = true, .KeyAtFrame = FindKey(channel->Times, seconds).second, .Changed = FieldChanged(r, key.Entity, *channel, seconds)};
 }
 
-void InsertKey(state::Scene &r, state::Entity viewport, const KeyTarget &key, float seconds) {
+void InsertKey(state::Registry &r, state::Entity viewport, const KeyTarget &key, float seconds) {
     std::vector<float> value(key.Target.Count);
     if (value.empty() || !ReadField(r, key.Entity, key.Target, value)) return;
     auto &animations = r.edit<Animations>(viewport);
@@ -100,7 +100,7 @@ void InsertKey(state::Scene &r, state::Entity viewport, const KeyTarget &key, fl
     PublishClips(r, key.Entity);
 }
 
-bool DeleteKey(state::Scene &r, state::Entity viewport, const KeyTarget &key, float seconds) {
+bool DeleteKey(state::Registry &r, state::Entity viewport, const KeyTarget &key, float seconds) {
     auto *clips = r.try_edit<AnimationClips>(key.Entity);
     auto *clip = clips ? clips->Find(r.get<const Animations>(viewport).Active) : nullptr;
     auto *channel = clip ? FindChannel(*clip, key.Target) : nullptr;
@@ -114,7 +114,7 @@ bool DeleteKey(state::Scene &r, state::Entity viewport, const KeyTarget &key, fl
     return true;
 }
 
-bool DeleteKeys(state::Scene &r, state::Entity viewport, state::Entity entity, float seconds) {
+bool DeleteKeys(state::Registry &r, state::Entity viewport, state::Entity entity, float seconds) {
     const auto *clips = r.try_get<const AnimationClips>(entity);
     const auto *clip = clips ? ActiveClip(r, viewport, *clips) : nullptr;
     if (!clip) return false;
@@ -126,13 +126,13 @@ bool DeleteKeys(state::Scene &r, state::Entity viewport, state::Entity entity, f
     return any;
 }
 
-bool AnyChanged(const state::Scene &r, state::Entity viewport, float seconds) {
+bool AnyChanged(const state::Registry &r, state::Entity viewport, float seconds) {
     bool any = false;
     ForEachChanged(r, viewport, seconds, [&](const KeyTarget &) { return any = true; });
     return any;
 }
 
-void RestoreRest(state::Scene &r, uint32_t from, uint32_t to) {
+void RestoreRest(state::Registry &r, uint32_t from, uint32_t to) {
     for (const auto [entity, clips] : r.view<const AnimationClips>().each()) {
         const auto *leaving = clips.Find(from);
         if (!leaving) continue;
@@ -143,7 +143,7 @@ void RestoreRest(state::Scene &r, uint32_t from, uint32_t to) {
     }
 }
 
-void RecordChanged(state::Scene &r, state::Entity viewport, float seconds) {
+void RecordChanged(state::Registry &r, state::Entity viewport, float seconds) {
     std::vector<KeyTarget> changed;
     ForEachChanged(r, viewport, seconds, [&](const KeyTarget &key) {
         changed.emplace_back(key);

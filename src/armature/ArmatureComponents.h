@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Range.h"
+#include "armature/ArmatureSchema.h"
 #include "armature/BoneId.h"
 #include "gpu/Transform.h"
 #include "state/Entity.h"

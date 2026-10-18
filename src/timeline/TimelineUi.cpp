@@ -42,7 +42,7 @@ std::optional<action::timeline::Action> HandleTimelineShortcuts(const TimelinePl
     return {};
 }
 
-std::optional<action::Action> RenderTimeline(const TimelineRange &range, const TimelinePlayback &playback, const TimelineView &view, state::Scene &r, state::Entity viewport, const Animations &animations, std::span<const float> keyframes, const TimelineIcons &icons, const InterfaceTheme &interface_theme, const TimelineTheme &theme, bool &scrubbing) {
+std::optional<action::Action> RenderTimeline(const TimelineRange &range, const TimelinePlayback &playback, const TimelineView &view, state::Registry &r, state::Entity viewport, const Animations &animations, std::span<const float> keyframes, const TimelineIcons &icons, const InterfaceTheme &interface_theme, const TimelineTheme &theme, bool &scrubbing) {
     const float rounding = interface_theme.IconButtonRounding;
     const auto &colors = theme.Colors;
     const float ruler_h = theme.Sizes.RulerHeight;
@@ -231,7 +231,7 @@ std::optional<action::Action> RenderTimeline(const TimelineRange &range, const T
     return result;
 }
 
-void DrawTimelineStyle(state::Scene &r, state::Entity viewport) {
+void DrawTimelineStyle(state::Registry &r, state::Entity viewport) {
     if (Button("Reset")) action::Emit(action::view::ResetTimelineTheme{});
     ui::DrawFields<TimelineTheme>(ui::Edit{r, viewport});
 }

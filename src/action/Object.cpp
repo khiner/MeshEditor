@@ -17,6 +17,7 @@
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
 #include "render/MeshletBuildGpu.h"
+#include "render/RenderChanges.h"
 #include "scene/CameraLens.h"
 #include "scene/Defaults.h"
 #include "scene/SceneGraphOps.h"
@@ -27,11 +28,9 @@
 
 #include <format>
 
-using state::Change;
-
 namespace {
 // Create an armature object over `data_entity`, creating fresh armature data when null.
-state::Entity CreateArmatureObject(state::Scene &r, MeshStore &meshes, state::Entity data_entity, std::string_view name, const Transform &transform, MeshInstanceCreateInfo::SelectBehavior select) {
+state::Entity CreateArmatureObject(state::Registry &r, MeshStore &meshes, state::Entity data_entity, std::string_view name, const Transform &transform, MeshInstanceCreateInfo::SelectBehavior select) {
     if (data_entity == state::Null) {
         data_entity = r.create();
         r.emplace<Armature>(data_entity);
@@ -48,7 +47,7 @@ state::Entity CreateArmatureObject(state::Scene &r, MeshStore &meshes, state::En
 
 // A mesh instance's duplicate takes `clone`, its mesh's cloned store record.
 // The first duplicate of a clone creates its mesh entity, and the duplicates after it instance that mesh.
-state::Entity DuplicateOne(state::Scene &r, state::Entity e, uint32_t clone) {
+state::Entity DuplicateOne(state::Registry &r, state::Entity e, uint32_t clone) {
     auto &meshes = r.Context.get<MeshStore>();
     const ObjectCreateInfo create_info{
         .Name = std::format("{}_copy", GetName(r, e)),
@@ -93,7 +92,7 @@ state::Entity DuplicateOne(state::Scene &r, state::Entity e, uint32_t clone) {
     return instance;
 }
 
-state::Entity DuplicateLinkedOne(state::Scene &r, state::Entity e) {
+state::Entity DuplicateLinkedOne(state::Registry &r, state::Entity e) {
     auto &meshes = r.Context.get<MeshStore>();
     if (r.all_of<BoneSubPartOf>(e)) return state::Null;
     if (!r.all_of<Instance>(e)) {
@@ -123,13 +122,13 @@ state::Entity DuplicateLinkedOne(state::Scene &r, state::Entity e) {
 } // namespace
 
 namespace action {
-bool UpdateTraits<PrimitiveShape>::Has(const state::Scene &r, state::Entity e) { return r.all_of<PrimitiveShape>(e); }
-state::Entity UpdateTraits<PrimitiveShape>::Active(const state::Scene &r) {
+bool UpdateTraits<PrimitiveShape>::Has(const state::Registry &r, state::Entity e) { return r.all_of<PrimitiveShape>(e); }
+state::Entity UpdateTraits<PrimitiveShape>::Active(const state::Registry &r) {
     const auto e = GetActiveMeshEntity(r);
     return e != state::Null && Has(r, e) ? e : state::Null;
 }
 // Only meshes of the active primitive's kind share its fields.
-void UpdateTraits<PrimitiveShape>::ForEachSelected(state::Scene &r, state::Entity viewport, const std::function<void(state::Entity)> &fn) {
+void UpdateTraits<PrimitiveShape>::ForEachSelected(state::Registry &r, state::Entity viewport, const std::function<void(state::Entity)> &fn) {
     const auto active = Active(r);
     if (active == state::Null) return;
     const auto kind = r.get<const PrimitiveShape>(active).index();
@@ -137,20 +136,20 @@ void UpdateTraits<PrimitiveShape>::ForEachSelected(state::Scene &r, state::Entit
         if (Has(r, e) && r.get<const PrimitiveShape>(e).index() == kind) fn(e);
     }
 }
-void UpdateTraits<PrimitiveShape>::Read(const state::Scene &r, state::Entity e, uint16_t offset, void *dst, size_t size) {
+void UpdateTraits<PrimitiveShape>::Read(const state::Registry &r, state::Entity e, uint16_t offset, void *dst, size_t size) {
     std::visit([&](const auto &alt) { std::memcpy(dst, reinterpret_cast<const std::byte *>(&alt) + offset, size); }, r.get<const PrimitiveShape>(e));
 }
-void UpdateTraits<PrimitiveShape>::Write(state::Scene &r, state::Entity e, uint16_t offset, const void *src, size_t size) {
+void UpdateTraits<PrimitiveShape>::Write(state::Registry &r, state::Entity e, uint16_t offset, const void *src, size_t size) {
     if (::selection::HasScaleLockedInstance(r, e)) return;
     r.patch<PrimitiveShape>(e, [&](PrimitiveShape &s) { std::visit([&](auto &alt) { std::memcpy(reinterpret_cast<std::byte *>(&alt) + offset, src, size); }, s); });
 }
-const FieldSpec &UpdateTraits<PrimitiveShape>::Bounds(const state::Scene &r, state::Entity e, uint16_t offset) {
+const FieldSpec &UpdateTraits<PrimitiveShape>::Bounds(const state::Registry &r, state::Entity e, uint16_t offset) {
     return std::visit([&](const auto &alt) -> const FieldSpec & { return FieldAt<std::remove_cvref_t<decltype(alt)>>(offset).Spec; }, r.get<const PrimitiveShape>(e));
 }
 } // namespace action
 
 namespace action::object {
-void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
+void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
     auto &meshes = r.Context.get<MeshStore>();
     auto begin_translate = [&] { r.emplace_or_replace<StartScreenTransform>(viewport, TransformGizmo::TransformType::Translate); };
     const auto duplicate = [&](bool linked) {
@@ -297,7 +296,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 auto &materials = r.Context.get<GpuBuffers>().Materials;
                 if (a.Index >= materials.Count<PBRMaterial>()) return;
                 materials.Update(std::as_bytes(std::span{&a.Value, 1}), uint64_t(a.Index) * sizeof(PBRMaterial) + a.Offset);
-                reactive(r, Change::Materials).emplace(viewport);
+                r.Context.get<RenderChanges>().Materials.emplace(viewport);
             },
             [&](const SetMaterialSlotSelection &a) {
                 for_each_mesh_target(a.Target, [&](state::Entity e) { r.emplace_or_replace<MeshMaterialSlotSelection>(e, a.PrimitiveIndex); });

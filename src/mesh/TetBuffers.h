@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Range.h"
+#include "mesh/MeshSchema.h"
 
 // Canonical ranges of a mesh's tetrahedral wireframe geometry, in the tet arenas.
 // The geometry is written once when a modal solve loads and read only by the renderer.

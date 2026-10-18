@@ -3,9 +3,9 @@
 
 #include "mesh/MeshClosure.h"
 #include "mesh/MeshStore.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
-void TopologyReadView::Add(state::Scene &r, uint32_t id, const MeshClosure &neighborhood, const BufferArena<uint32_t> &storage) {
+void TopologyReadView::Add(state::Registry &r, uint32_t id, const MeshClosure &neighborhood, const BufferArena<uint32_t> &storage) {
     const profile::CpuScope scope{"TopologyReadView"};
     if (!neighborhood.Counts[0]) return;
     const auto &meshes = r.Context.get<const MeshStore>();
@@ -97,7 +97,7 @@ void TopologyReadView::Add(state::Scene &r, uint32_t id, const MeshClosure &neig
     });
 }
 
-void TopologyReadView::Clone(state::Scene &r) {
+void TopologyReadView::Clone(state::Registry &r) {
     const profile::CpuScope scope{"TopologyReadViewClone"};
     const auto &meshes = r.Context.get<MeshStore>();
     const auto &a = meshes.Arenas();

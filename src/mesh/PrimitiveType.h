@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Field.h"
+#include "mesh/MeshSchema.h"
 #include "numeric/vec2.h"
 #include "numeric/vec3.h"
 
@@ -86,16 +87,6 @@ template<> inline constexpr field::SpecTable<primitive::Cone> Specs<primitive::C
     {&primitive::Cone::Height, primitive::SizeSpec("Distance from the base to the tip.")},
     {&primitive::Cone::Slices, {.Min = 3, .Max = 128, .Help = "Number of segments around the side"}},
 };
-
-using PrimitiveShape = std::variant<
-    primitive::Plane,
-    primitive::Circle,
-    primitive::Cuboid,
-    primitive::IcoSphere,
-    primitive::UVSphere,
-    primitive::Torus,
-    primitive::Cylinder,
-    primitive::Cone>;
 
 inline std::string ToString(const PrimitiveShape &shape) {
     static constexpr const char *Names[]{"Plane", "Circle", "Cube", "IcoSphere", "UVSphere", "Torus", "Cylinder", "Cone"};

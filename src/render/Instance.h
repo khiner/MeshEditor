@@ -1,5 +1,6 @@
 #pragma once
 
+#include "render/RenderSchema.h"
 #include "state/Entity.h"
 
 struct Instance {

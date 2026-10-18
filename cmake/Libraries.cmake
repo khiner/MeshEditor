@@ -35,7 +35,7 @@ endfunction()
 
 mesheditor_library(MeshEditorProjectStore HOT
     src/RangeAllocator.cpp
-    src/state/Scene.cpp
+    src/state/Registry.cpp
     src/project/EntityStore.cpp
     src/project/ComponentPool.cpp
     src/project/store/Records.cpp

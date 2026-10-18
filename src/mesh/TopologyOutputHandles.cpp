@@ -5,9 +5,9 @@
 #include "mesh/MeshPipelines.h"
 #include "metal/Dispatch.h"
 #include "render/ElementWorkOps.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
-TopologyOutputHandles::TopologyOutputHandles(state::Scene &r, mtl::ComputeChain &chain, uint32_t source_id, const MeshTopologyJob &job, MeshStore::TopologyCounts bounds, SlotOffset scratch, const MeshTopologyArenas &source, TopologyIdentityPolicy policy) {
+TopologyOutputHandles::TopologyOutputHandles(state::Registry &r, mtl::ComputeChain &chain, uint32_t source_id, const MeshTopologyJob &job, MeshStore::TopologyCounts bounds, SlotOffset scratch, const MeshTopologyArenas &source, TopologyIdentityPolicy policy) {
     const profile::CpuScope scope{"TopologyOutputHandles"};
     const bool preserve = policy == TopologyIdentityPolicy::Preserve;
     if (preserve && job.SrcFaceCount && source.FaceTriangleStartSlot == InvalidSlot) {
@@ -51,7 +51,7 @@ void TopologyOutputHandles::Finish(const mtl::ComputeChain &chain) {
     }
 }
 
-void TopologyOutputHandles::Assign(state::Scene &r, mtl::ComputeChain &chain, std::array<ElementHandleRange, 2> inserted) const {
+void TopologyOutputHandles::Assign(state::Registry &r, mtl::ComputeChain &chain, std::array<ElementHandleRange, 2> inserted) const {
     for (uint32_t d = 0u; d < 2u; ++d) {
         if (inserted[d].Count != NewCounts[d]) throw std::invalid_argument("Topology identity allocation count differs from its plan.");
     }

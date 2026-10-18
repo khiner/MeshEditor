@@ -13,9 +13,9 @@ namespace ui {
 // Material channels key on the scene viewport.
 template<auto... Prefix>
 struct MaterialEdit : FieldWidgets<Prefix...> {
-    MaterialEdit(state::Scene &r, uint32_t index) : R{r}, Index{index} {}
+    MaterialEdit(state::Registry &r, uint32_t index) : R{r}, Index{index} {}
 
-    state::Scene &R;
+    state::Registry &R;
     uint32_t Index;
 
     template<auto... More>
@@ -43,7 +43,7 @@ struct MaterialEdit : FieldWidgets<Prefix...> {
     void Set(action::detail::last_field<Prefix..., Ms...> value) const { action::Emit(Action<Ms...>(std::move(value))); }
 };
 
-MaterialEdit(state::Scene &, uint32_t) -> MaterialEdit<>;
+MaterialEdit(state::Registry &, uint32_t) -> MaterialEdit<>;
 
 template<auto... Prefix>
 void DrawEditor(MaterialEdit<Prefix...> &e, std::type_identity<TextureInfo>) {

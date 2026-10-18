@@ -1,7 +1,7 @@
 #include "mesh/MeshPipelines.h"
 
 #include "Profile.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 namespace {
 // The shader file and function of each pass, in MeshPass order.
@@ -218,7 +218,7 @@ const mtl::ComputePipeline &MeshPipelines::operator[](MeshPass pass) const {
     return *pipeline;
 }
 
-MeshPipelines &GetMeshPipelines(state::Scene &r) {
+MeshPipelines &GetMeshPipelines(state::Registry &r) {
     if (auto *pipelines = r.Context.find<MeshPipelines>()) return *pipelines;
     return r.Context.emplace<MeshPipelines>(r.Context.get<mtl::LibraryCache>());
 }

@@ -4,6 +4,7 @@
 #include "metal/Shader.h"
 #include "render/PbrFeature.h"
 
+#include "render/RenderSchema.h"
 #include "state/Entity.h"
 
 namespace Format = mtl::Format;
@@ -96,4 +97,4 @@ struct Pipelines {
 };
 
 // Returns the pipeline set, compiling every pipeline on first use.
-Pipelines &GetPipelines(state::Scene &);
+Pipelines &GetPipelines(state::Registry &);

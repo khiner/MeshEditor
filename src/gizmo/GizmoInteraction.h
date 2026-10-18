@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gizmo/GizmoSchema.h"
 #include "gizmo/TransformGizmoTypes.h"
 #include "numeric/ray.h"
 

@@ -1,5 +1,6 @@
 #include "procedure/Cook.h"
 #include "procedure/Procedure.h"
+#include "procedure/ProcedureSchema.h"
 
 #include "SortUnique.h"
 #include "mesh/Decimate.h"
@@ -20,7 +21,6 @@
 
 #include <format>
 
-using state::Change;
 using state::On;
 
 namespace procedure {
@@ -54,7 +54,7 @@ constexpr std::array<uint32_t, 3> EveryElement{InvalidOffset, InvalidOffset, Inv
 using Outcome = std::expected<uint32_t, NodeFault>;
 
 // Copy canonical records only; cooking rebuilds render records for the output.
-std::vector<uint32_t> Clones(state::Scene &r, std::span<const uint32_t> ids) {
+std::vector<uint32_t> Clones(state::Registry &r, std::span<const uint32_t> ids) {
     auto &meshes = r.Context.get<MeshStore>();
     for (const auto id : ids) meshes.PlanClone(Mesh{meshes, id});
     meshes.CommitReserves();
@@ -66,7 +66,7 @@ std::vector<uint32_t> Clones(state::Scene &r, std::span<const uint32_t> ids) {
     meshes.RebuildSelectionIndex(clones);
     return clones;
 }
-uint32_t Clone(state::Scene &r, uint32_t id) { return Clones(r, std::array{id}).front(); }
+uint32_t Clone(state::Registry &r, uint32_t id) { return Clones(r, std::array{id}).front(); }
 
 std::vector<uint32_t> LocalBlocks(const MeshStore &meshes, uint32_t id, MeshStore::ElementDomain domain, std::span<const uint32_t> blocks) {
     std::vector<uint32_t> locals;
@@ -82,7 +82,7 @@ std::vector<uint32_t> LocalBlocks(const MeshStore &meshes, uint32_t id, MeshStor
 }
 
 // Reuse the prior Source output by restoring changed blocks and table entries from the source.
-uint32_t SourceCopy(state::Scene &r, uint32_t source, EvaluatedMesh &evaluated, std::optional<ResyncState> &resync, const MeshStore::Writes &between) {
+uint32_t SourceCopy(state::Registry &r, uint32_t source, EvaluatedMesh &evaluated, std::optional<ResyncState> &resync, const MeshStore::Writes &between) {
     auto &meshes = r.Context.get<MeshStore>();
     if (resync && evaluated.Source == source && meshes.TryGet(evaluated.StoreId)) {
         auto written = resync->Written;
@@ -121,30 +121,30 @@ MeshTopologyTask Task(uint32_t id, MeshTopologyOp op, const Masks &masks, float 
     return task;
 }
 // Return the output record or a node fault.
-Outcome Execute(state::Scene &r, std::optional<MeshTopologyTask> task, const Masks &masks) {
+Outcome Execute(state::Registry &r, std::optional<MeshTopologyTask> task, const Masks &masks) {
     if (!task) return std::unexpected(NodeFault::Selection);
     if (masks.Publish) PublishStoreSelection(r.Context.get<const MeshStore>(), *task);
     const auto result = ExecuteGeometryTopology(r, std::span{&*task, 1u}).front();
     return result.Changed ? result.GeometryId : task->SourceId;
 }
 // Use planned primitive handles as the task selection.
-Outcome ExecutePlanned(state::Scene &r, std::optional<MeshTopologyTask> task, const GeometrySelection &selection, const Masks &masks) {
+Outcome ExecutePlanned(state::Registry &r, std::optional<MeshTopologyTask> task, const GeometrySelection &selection, const Masks &masks) {
     if (task && task->Op == MeshTopologyOp::AddPrimitives) task->Selection = selection;
     return Execute(r, std::move(task), masks);
 }
-void ToPoints(state::Scene &r, uint32_t id) {
+void ToPoints(state::Registry &r, uint32_t id) {
     if (Mesh{r.Context.get<const MeshStore>(), id}.EdgeCount()) {
         const auto task = Task(id, MeshTopologyOp(uint32_t(DeleteMode::OnlyEdgesAndFaces)), {});
         ExecuteGeometryTopology(r, std::span{&task, 1u});
     }
 }
-void Empty(state::Scene &r, uint32_t id) {
+void Empty(state::Registry &r, uint32_t id) {
     if (Mesh{r.Context.get<const MeshStore>(), id}.VertexCount()) {
         const auto task = Task(id, MeshTopologyOp(uint32_t(DeleteMode::Vertices)), {});
         ExecuteGeometryTopology(r, std::span{&task, 1u});
     }
 }
-Outcome ExecuteStages(state::Scene &r, std::vector<MeshTopologyTask> tasks, const Masks &masks) {
+Outcome ExecuteStages(state::Registry &r, std::vector<MeshTopologyTask> tasks, const Masks &masks) {
     if (masks.Publish) {
         for (auto &task : tasks) PublishStoreSelection(r.Context.get<const MeshStore>(), task);
     }
@@ -153,7 +153,7 @@ Outcome ExecuteStages(state::Scene &r, std::vector<MeshTopologyTask> tasks, cons
     return results.back().GeometryId;
 }
 // Publish the input selection after position edits, which preserve membership.
-Outcome Reposition(state::Scene &r, uint32_t id, const Masks &masks, PositionEditOp op, float factor, uint32_t repeat, const PositionOperationOptions &options = {}, const Transform &world = {}) {
+Outcome Reposition(state::Registry &r, uint32_t id, const Masks &masks, PositionEditOp op, float factor, uint32_t repeat, const PositionOperationOptions &options = {}, const Transform &world = {}) {
     auto &meshes = r.Context.get<MeshStore>();
     const PositionOperationTarget target{.StoreId = id, .Selection = masks.In ? SelectionSource{*masks.In} : SelectionSource{AllHandles(Mesh{meshes, id})}, .World = world};
     if (ExecuteGeometryPositions(r, std::span{&target, 1u}, op, factor, repeat, options).empty()) return id;
@@ -190,7 +190,7 @@ std::expected<uint32_t, NodeFault> ElementParameter(const MeshStore &meshes, uin
     return attribute;
 }
 NamedAttributeRef RefOf(const MeshStore &meshes, uint32_t attribute) { return attribute == InvalidOffset ? NamedAttributeRef{} : meshes.AttributeRef(attribute); }
-Outcome ExecuteElement(state::Scene &r, MeshTopologyTask task, const Masks &masks, AttributeDomain domain, uint32_t param0, uint32_t param1 = InvalidOffset) {
+Outcome ExecuteElement(state::Registry &r, MeshTopologyTask task, const Masks &masks, AttributeDomain domain, uint32_t param0, uint32_t param1 = InvalidOffset) {
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto first = ElementParameter(meshes, param0, domain), second = ElementParameter(meshes, param1, domain);
     if (!first || !second) return std::unexpected(NodeFault::Attribute);
@@ -198,7 +198,7 @@ Outcome ExecuteElement(state::Scene &r, MeshTopologyTask task, const Masks &mask
     task.Param1Attribute = RefOf(meshes, *second);
     return Execute(r, std::move(task), masks);
 }
-Outcome RepositionBy(state::Scene &r, uint32_t id, const Masks &masks, PositionEditOp op, float factor, uint32_t repeat, uint32_t attribute, PositionOperationOptions options) {
+Outcome RepositionBy(state::Registry &r, uint32_t id, const Masks &masks, PositionEditOp op, float factor, uint32_t repeat, uint32_t attribute, PositionOperationOptions options) {
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto linked = ElementParameter(meshes, attribute, AttributeDomain::Vertex);
     if (!linked) return std::unexpected(linked.error());
@@ -207,8 +207,8 @@ Outcome RepositionBy(state::Scene &r, uint32_t id, const Masks &masks, PositionE
 }
 
 // Apply operators to masked elements, or every element when masks are absent.
-Outcome Run(state::Scene &r, const Delete &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp(uint32_t(p.Mode)), m), m); }
-Outcome Run(state::Scene &r, const Merge &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Registry &r, const Delete &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp(uint32_t(p.Mode)), m), m); }
+Outcome Run(state::Registry &r, const Merge &p, uint32_t id, const Masks &m) {
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto selection = Handles(meshes, id, m);
     const auto &vertices = selection.Vertices;
@@ -216,16 +216,16 @@ Outcome Run(state::Scene &r, const Merge &p, uint32_t id, const Masks &m) {
                                                                                           vertices.front();
     return ExecutePlanned(r, MergeTask(meshes, Mesh{meshes, id}, selection, p.Mode, std::max(p.Distance, 0.f), reference), selection, m);
 }
-Outcome Run(state::Scene &r, const Extrude &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Registry &r, const Extrude &p, uint32_t id, const Masks &m) {
     const auto op = p.Mode == ExtrudeMode::Vertices ? MeshTopologyOp::ExtrudeVertices : p.Mode == ExtrudeMode::Edges ? MeshTopologyOp::ExtrudeEdges :
         p.Mode == ExtrudeMode::FacesIndividual                                                                       ? MeshTopologyOp::ExtrudeFacesIndividual :
                                                                                                                        MeshTopologyOp::ExtrudeRegion;
     return Execute(r, Task(id, op, m), m);
 }
-Outcome Run(state::Scene &r, Duplicate, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::DuplicateGeometry, m), m); }
-Outcome Run(state::Scene &r, Split, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::SplitGeometry, m), m); }
+Outcome Run(state::Registry &r, Duplicate, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::DuplicateGeometry, m), m); }
+Outcome Run(state::Registry &r, Split, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::SplitGeometry, m), m); }
 // Nodes lack face edit mode, so limited dissolve reads all selected domains.
-Outcome Run(state::Scene &r, const Dissolve &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Registry &r, const Dissolve &p, uint32_t id, const Masks &m) {
     switch (p.Mode) {
         case DissolveMode::Vertices: return Execute(r, Task(id, MeshTopologyOp::DissolveVertices, m), m);
         case DissolveMode::Edges: return Execute(r, Task(id, MeshTopologyOp::DissolveEdges, m, 0.f, 0.f, p.KeepVertices ? TopologyFlagKeepVertices : 0u), m);
@@ -238,44 +238,44 @@ Outcome Run(state::Scene &r, const Dissolve &p, uint32_t id, const Masks &m) {
     }
     std::unreachable();
 }
-Outcome Run(state::Scene &r, const Subdivide &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Subdivide, m, float(std::max(p.Cuts, 1u))), m); }
-Outcome Run(state::Scene &r, Triangulate, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Triangulate, m), m); }
-Outcome Run(state::Scene &r, TrisToQuads, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::TrisToQuads, m), m); }
-Outcome Run(state::Scene &r, const Poke &p, uint32_t id, const Masks &m, const Linked &linked) {
+Outcome Run(state::Registry &r, const Subdivide &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Subdivide, m, float(std::max(p.Cuts, 1u))), m); }
+Outcome Run(state::Registry &r, Triangulate, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::Triangulate, m), m); }
+Outcome Run(state::Registry &r, TrisToQuads, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::TrisToQuads, m), m); }
+Outcome Run(state::Registry &r, const Poke &p, uint32_t id, const Masks &m, const Linked &linked) {
     return ExecuteElement(r, Task(id, MeshTopologyOp::Poke, m, p.Offset), m, AttributeDomain::Face, linked.Of<&Poke::Offset>());
 }
-Outcome Run(state::Scene &r, FlipNormals, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::FlipNormals, m), m); }
-Outcome Run(state::Scene &r, EdgeSplit, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::EdgeSplit, m), m); }
-Outcome Run(state::Scene &r, Rip, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::EdgeSplit, m, 0.f, 0.f, TopologyFlagRipSelectCopies), m); }
-Outcome Run(state::Scene &r, const Inset &p, uint32_t id, const Masks &m, const Linked &linked) {
+Outcome Run(state::Registry &r, FlipNormals, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::FlipNormals, m), m); }
+Outcome Run(state::Registry &r, EdgeSplit, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::EdgeSplit, m), m); }
+Outcome Run(state::Registry &r, Rip, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::EdgeSplit, m, 0.f, 0.f, TopologyFlagRipSelectCopies), m); }
+Outcome Run(state::Registry &r, const Inset &p, uint32_t id, const Masks &m, const Linked &linked) {
     const auto task = Task(id, p.Individual ? MeshTopologyOp::InsetIndividual : MeshTopologyOp::InsetRegion, m, std::max(p.Thickness, 0.f), p.Depth, p.Even ? TopologyFlagEvenOffset : 0u);
     return ExecuteElement(r, task, m, AttributeDomain::Vertex, linked.Of<&Inset::Thickness>(), linked.Of<&Inset::Depth>());
 }
-Outcome Run(state::Scene &r, const Solidify &p, uint32_t id, const Masks &m, const Linked &linked) {
+Outcome Run(state::Registry &r, const Solidify &p, uint32_t id, const Masks &m, const Linked &linked) {
     return ExecuteElement(r, Task(id, MeshTopologyOp::Solidify, m, p.Thickness), m, AttributeDomain::Vertex, linked.Of<&Solidify::Thickness>());
 }
-Outcome Run(state::Scene &r, const Wireframe &p, uint32_t id, const Masks &m, const Linked &linked) {
+Outcome Run(state::Registry &r, const Wireframe &p, uint32_t id, const Masks &m, const Linked &linked) {
     const auto flags = (p.Even ? TopologyFlagEvenOffset : 0u) | (p.Boundary ? TopologyFlagWireBoundary : 0u) | (p.Relative ? TopologyFlagWireRelative : 0u) | (p.Replace ? TopologyFlagWireReplace : 0u);
     const auto task = Task(id, MeshTopologyOp::Wireframe, m, std::max(p.Thickness, 0.f), std::clamp(p.Offset, -1.f, 1.f), flags);
     return ExecuteElement(r, task, m, AttributeDomain::Vertex, linked.Of<&Wireframe::Thickness>());
 }
 // A vertex bevel reads its width at each vertex, and an edge bevel at each edge.
-Outcome Run(state::Scene &r, const Bevel &p, uint32_t id, const Masks &m, const Linked &linked) {
+Outcome Run(state::Registry &r, const Bevel &p, uint32_t id, const Masks &m, const Linked &linked) {
     auto task = Task(id, p.Vertices ? MeshTopologyOp::BevelVertices : MeshTopologyOp::BevelEdges, m, std::max(p.Width, 0.f));
     task.Steps = std::max(p.Segments, 1u);
     return ExecuteElement(r, task, m, p.Vertices ? AttributeDomain::Vertex : AttributeDomain::Edge, linked.Of<&Bevel::Width>());
 }
-Outcome Run(state::Scene &r, const SmoothVertices &p, uint32_t id, const Masks &m, const Linked &linked) {
+Outcome Run(state::Registry &r, const SmoothVertices &p, uint32_t id, const Masks &m, const Linked &linked) {
     return RepositionBy(r, id, m, PositionEditOp::Smooth, p.Factor, std::clamp(p.Repeat, 1u, 1000u), linked.Of<&SmoothVertices::Factor>(), {.Axes = Axes(p.X, p.Y, p.Z)});
 }
 // Use vertex normals for node offsets, independently of viewport selection mode.
-Outcome Run(state::Scene &r, const ShrinkFatten &p, uint32_t id, const Masks &m, const Linked &linked) {
+Outcome Run(state::Registry &r, const ShrinkFatten &p, uint32_t id, const Masks &m, const Linked &linked) {
     return RepositionBy(r, id, m, PositionEditOp::ShrinkFatten, p.Distance, 1u, linked.Of<&ShrinkFatten::Distance>(), {.Flags = p.Even ? PositionEditEvenOffset : 0u});
 }
-Outcome Run(state::Scene &r, const Randomize &p, uint32_t id, const Masks &m, const Linked &linked) {
+Outcome Run(state::Registry &r, const Randomize &p, uint32_t id, const Masks &m, const Linked &linked) {
     return RepositionBy(r, id, m, PositionEditOp::Randomize, p.Amount, 1u, linked.Of<&Randomize::Amount>(), {.Randomize = PositionRandomize{p.Uniform, p.Normal, p.Seed}});
 }
-Outcome Run(state::Scene &r, const Spin &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Registry &r, const Spin &p, uint32_t id, const Masks &m) {
     if (Dot(p.Axis, p.Axis) <= 0.f) return std::unexpected(NodeFault::Parameter);
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto selection = Handles(meshes, id, m);
@@ -283,33 +283,33 @@ Outcome Run(state::Scene &r, const Spin &p, uint32_t id, const Masks &m) {
     const auto steps = float(std::max(p.Steps, 1u));
     return ExecutePlanned(r, ExtrudeStepsTask(Mesh{meshes, id}, selection, Element::None, p.Steps, ToMat3(AngleAxis(p.Angle / steps, axis)), axis * (p.Offset / steps), p.Center), selection, m);
 }
-Outcome Run(state::Scene &r, const ExtrudeRepeat &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Registry &r, const ExtrudeRepeat &p, uint32_t id, const Masks &m) {
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto selection = Handles(meshes, id, m);
     return ExecutePlanned(r, ExtrudeStepsTask(Mesh{meshes, id}, selection, Element::None, p.Steps, mat3{1.f}, p.Offset, vec3{0.f}), selection, m);
 }
-Outcome Run(state::Scene &r, const Bisect &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Registry &r, const Bisect &p, uint32_t id, const Masks &m) {
     if (Dot(p.Normal, p.Normal) <= 0.f) return std::unexpected(NodeFault::Parameter);
     return ExecuteStages(r, BisectTasks(Mesh{r.Context.get<const MeshStore>(), id}, p.Point, p.Normal, p.ClearInner, p.ClearOuter), m);
 }
-Outcome Run(state::Scene &r, const Symmetrize &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Registry &r, const Symmetrize &p, uint32_t id, const Masks &m) {
     return ExecuteStages(r, SymmetrizeTasks(Mesh{r.Context.get<const MeshStore>(), id}, uint8_t(p.Axis), p.Negative), m);
 }
-Outcome Run(state::Scene &r, const FillHoles &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Registry &r, const FillHoles &p, uint32_t id, const Masks &m) {
     const auto &meshes = r.Context.get<const MeshStore>();
     return Execute(r, FillHolesTask(meshes, Mesh{meshes, id}, p.Sides), m);
 }
-Outcome Run(state::Scene &r, ConvexHull, uint32_t id, const Masks &m) {
+Outcome Run(state::Registry &r, ConvexHull, uint32_t id, const Masks &m) {
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto selection = Handles(meshes, id, m);
     return ExecutePlanned(r, ConvexHullTask(meshes, Mesh{meshes, id}, selection), selection, m);
 }
-Outcome Run(state::Scene &r, const Decimate &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Registry &r, const Decimate &p, uint32_t id, const Masks &m) {
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto selection = Handles(meshes, id, m);
     return ExecutePlanned(r, DecimateTask(meshes, Mesh{meshes, id}, selection, p.Ratio), selection, m);
 }
-Outcome Run(state::Scene &r, const RecalculateNormals &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Registry &r, const RecalculateNormals &p, uint32_t id, const Masks &m) {
     auto &meshes = r.Context.get<MeshStore>();
     const auto selection = Handles(meshes, id, m);
     auto faces = std::move(RecalculateFaceFlips(meshes, GetMeshPipelines(r), std::array{id}, std::span{&selection, 1u}, p.Inside).front());
@@ -317,17 +317,17 @@ Outcome Run(state::Scene &r, const RecalculateNormals &p, uint32_t id, const Mas
     faces.insert(faces.begin(), uint32_t(faces.size()));
     return Execute(r, MeshTopologyTask{.SourceId = id, .Op = MeshTopologyOp::FlipNormals, .List = std::move(faces), .Selection = selection}, m);
 }
-Outcome Run(state::Scene &r, const TransformGeometry &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Registry &r, const TransformGeometry &p, uint32_t id, const Masks &m) {
     return Reposition(r, id, m, PositionEditOp::Transform, 1.f, 1u, {.Transform = PositionTransform{p.Delta, vec3{}}});
 }
-Outcome Run(state::Scene &r, const TransformElements &p, uint32_t id, const Masks &m) {
+Outcome Run(state::Registry &r, const TransformElements &p, uint32_t id, const Masks &m) {
     return Reposition(r, id, m, PositionEditOp::Transform, 1.f, 1u, {.Transform = PositionTransform{p.Delta, p.Pivot}}, p.Frame);
 }
-Outcome Run(state::Scene &r, MeshToPoints, uint32_t id, const Masks &) {
+Outcome Run(state::Registry &r, MeshToPoints, uint32_t id, const Masks &) {
     ToPoints(r, id);
     return id;
 }
-Outcome Run(state::Scene &r, const SetPosition &p, uint32_t id, uint32_t attribute, const Masks &m) {
+Outcome Run(state::Registry &r, const SetPosition &p, uint32_t id, uint32_t attribute, const Masks &m) {
     const auto &meshes = r.Context.get<const MeshStore>();
     if (attribute == InvalidOffset || meshes.GetAttribute(attribute).Type != AttributeType::Vec3 || meshes.GetAttribute(attribute).Domain != AttributeDomain::Vertex) return std::unexpected(NodeFault::Attribute);
     return Reposition(r, id, m, PositionEditOp::Attribute, 1.f, 1u, {.Flags = p.Offset ? PositionEditAttributeOffset : 0u, .Attribute = meshes.AttributeRef(attribute)});
@@ -366,7 +366,7 @@ Outcome Store(MeshStore &meshes, const StoreNamedAttribute &p, uint32_t id, cons
 }
 
 // Convert geometry to instance points using constant or linked vertex scale.
-Outcome Run(state::Scene &r, const InstanceOnPoints &p, uint32_t id, const Masks &, const Linked &linked) {
+Outcome Run(state::Registry &r, const InstanceOnPoints &p, uint32_t id, const Masks &, const Linked &linked) {
     auto &meshes = r.Context.get<MeshStore>();
     const auto rotation = ElementParameter(meshes, linked.Of<&InstanceOnPoints::Rotation>(), AttributeDomain::Vertex, AttributeType::Vec4);
     const auto scale = ElementParameter(meshes, linked.Of<&InstanceOnPoints::Scale>(), AttributeDomain::Vertex, AttributeType::Vec3);
@@ -519,7 +519,7 @@ void AssignField(auto &p, Socket socket, const AttributeValue &words) {
         }
     });
 }
-template<typename K> K Parameters(const state::Scene &r, const GeometryProcedure &procedure, const CookPlan &plan, std::span<const SocketValue> values, uint32_t node) {
+template<typename K> K Parameters(const state::Registry &r, const GeometryProcedure &procedure, const CookPlan &plan, std::span<const SocketValue> values, uint32_t node) {
     const auto [entity, kind] = procedure.Nodes[node];
     auto p = r.get<const K>(entity);
     if constexpr (field::Walkable<K>) {
@@ -550,7 +550,7 @@ struct Evaluation {
 
 // Evaluate attribute inputs into temporary attributes and derive selection masks.
 // Mark invalid attribute nodes and pass through their first input.
-Evaluation EvaluateInputs(state::Scene &r, const GeometryProcedure &procedure, const CookPlan &plan, std::vector<SocketValue> &values, uint32_t node, uint32_t id, std::optional<BufferArena<SelectionBlock>> &arena) {
+Evaluation EvaluateInputs(state::Registry &r, const GeometryProcedure &procedure, const CookPlan &plan, std::vector<SocketValue> &values, uint32_t node, uint32_t id, std::optional<BufferArena<SelectionBlock>> &arena) {
     auto &meshes = r.Context.get<MeshStore>();
     auto upstream = Upstream(procedure, plan.InputFirst, node, [&](uint32_t n) { return IsAttributeKind(procedure.Nodes[n].Kind); });
     upstream[node] = false;
@@ -641,7 +641,7 @@ Evaluation EvaluateInputs(state::Scene &r, const GeometryProcedure &procedure, c
 }
 
 // Evaluate inputs and run the node, releasing temporary attributes after their last use.
-Outcome RunNode(state::Scene &r, const GeometryProcedure &procedure, const CookPlan &plan, std::vector<SocketValue> &values, uint32_t node, uint32_t id, std::optional<BufferArena<SelectionBlock>> &arena) {
+Outcome RunNode(state::Registry &r, const GeometryProcedure &procedure, const CookPlan &plan, std::vector<SocketValue> &values, uint32_t node, uint32_t id, std::optional<BufferArena<SelectionBlock>> &arena) {
     auto &meshes = r.Context.get<MeshStore>();
     const auto [entity, kind] = procedure.Nodes[node];
     auto evaluation = EvaluateInputs(r, procedure, plan, values, node, id, arena);
@@ -691,14 +691,14 @@ Outcome RunNode(state::Scene &r, const GeometryProcedure &procedure, const CookP
 }
 
 // Derive generated shading before downstream nodes read it.
-uint32_t Generate(state::Scene &r, const Generator auto &shape) {
+uint32_t Generate(state::Registry &r, const Generator auto &shape) {
     const auto id = CreateMesh(r, {.Data = primitive::CreateMesh(shape), .FlatShaded = true}).StoreId;
     ShadeNewMeshes(r);
     return id;
 }
 
 // Return the referenced object mesh, excluding the current procedure mesh and meshes without objects.
-state::Entity ReadMesh(const state::Scene &r, state::Entity mesh_entity, const ObjectInfo &p) {
+state::Entity ReadMesh(const state::Registry &r, state::Entity mesh_entity, const ObjectInfo &p) {
     const auto read = r.valid(p.Object) ? GetMeshEntity(r, p.Object) : state::Null;
     return read != mesh_entity ? read : state::Null;
 }
@@ -715,7 +715,7 @@ std::vector<Transform> InstanceTransforms(const MeshStore &meshes, uint32_t poin
 }
 
 // Realize instances into one mesh; return nullopt for an empty result.
-std::optional<uint32_t> Realize(state::Scene &r, uint32_t points, uint32_t instance) {
+std::optional<uint32_t> Realize(state::Registry &r, uint32_t points, uint32_t instance) {
     auto &meshes = r.Context.get<MeshStore>();
     const auto transforms = InstanceTransforms(meshes, points);
     if (transforms.empty()) return {};
@@ -730,7 +730,7 @@ std::optional<uint32_t> Realize(state::Scene &r, uint32_t points, uint32_t insta
 }
 
 // Publish instance entities in transform order, retaining existing entities while the count permits.
-void PublishInstances(state::Scene &r, state::Entity mesh_entity, state::Entity instanced, std::span<const Transform> transforms) {
+void PublishInstances(state::Registry &r, state::Entity mesh_entity, state::Entity instanced, std::span<const Transform> transforms) {
     const auto *current = r.try_get<const ProcedureInstances>(mesh_entity);
     if (!current && transforms.empty()) return;
     const auto previous = current ? current->Entities : std::vector<state::Entity>{};
@@ -775,7 +775,7 @@ void PublishInstances(state::Scene &r, state::Entity mesh_entity, state::Entity 
 }
 
 // Assign the instance record to an owned mesh entity, creating or removing the entity as needed.
-state::Entity OwnMesh(state::Scene &r, state::Entity mesh_entity, uint32_t record) {
+state::Entity OwnMesh(state::Registry &r, state::Entity mesh_entity, uint32_t record) {
     const auto *owned = r.try_get<const ProcedureOwnedMesh>(mesh_entity);
     if (record == InvalidOffset) {
         r.remove<ProcedureOwnedMesh>(mesh_entity);
@@ -799,7 +799,7 @@ state::Entity OwnMesh(state::Scene &r, state::Entity mesh_entity, uint32_t recor
 // Evaluate nodes in dependency order and publish the result.
 // Mark failed nodes and pass their inputs through.
 // Release intermediate records; retain the source copy when no result is linked.
-void Cook(state::Scene &r, state::Entity mesh_entity, std::optional<BufferArena<SelectionBlock>> &arena, const MeshStore::Writes &between) {
+void Cook(state::Registry &r, state::Entity mesh_entity, std::optional<BufferArena<SelectionBlock>> &arena, const MeshStore::Writes &between) {
     auto &meshes = r.Context.get<MeshStore>();
     const auto &procedure = r.get<const GeometryProcedure>(mesh_entity);
     const auto &plan = r.get<const CookPlan>(mesh_entity);
@@ -1047,7 +1047,7 @@ void EraseNode(GeometryProcedure &procedure, uint32_t node) {
     }
 }
 
-void RemoveNode(state::Scene &r, state::Entity node) {
+void RemoveNode(state::Registry &r, state::Entity node) {
     if (r.Restoring) return;
     for (const auto [mesh_entity, procedure] : std::as_const(r).view<const GeometryProcedure>().each()) {
         const auto it = std::ranges::find(procedure.Nodes, node, &NodeRecord::Entity);
@@ -1059,32 +1059,38 @@ void RemoveNode(state::Scene &r, state::Entity node) {
 }
 
 // Queue destroyed procedure nodes for the object-removal pass.
-void QueueNodeRemovals(state::Scene &r, state::Entity mesh_entity) {
+void QueueNodeRemovals(state::Registry &r, state::Entity mesh_entity) {
     if (r.Restoring) return;
     auto &dependents = r.Context.emplace<PendingObjectRemovals>().Dependents;
     for (const auto &node : r.get<const GeometryProcedure>(mesh_entity).Nodes) dependents.push_back(node.Entity);
 }
 // Queue removed instance entities for the object-removal pass.
-void QueueInstanceRemovals(state::Scene &r, state::Entity mesh_entity) {
+void QueueInstanceRemovals(state::Registry &r, state::Entity mesh_entity) {
     if (r.Restoring) return;
     r.Context.emplace<PendingObjectRemovals>().Dependents.append_range(r.get<const ProcedureInstances>(mesh_entity).Entities);
 }
 // Queue the unused owned mesh entity for removal so its record is released with it.
-void QueueOwnedMeshRemoval(state::Scene &r, state::Entity mesh_entity) {
+void QueueOwnedMeshRemoval(state::Registry &r, state::Entity mesh_entity) {
     if (r.Restoring) return;
     r.Context.emplace<PendingObjectRemovals>().Dependents.push_back(r.get<const ProcedureOwnedMesh>(mesh_entity).MeshEntity);
 }
 } // namespace
+
+struct ProcedureChanges {
+    state::DirtySet Graph; // A geometry procedure's graph changed.
+    state::DirtySet Inputs; // A procedure's source record, a node's parameters or inline selection, a mesh's objects or a published instance's parent changed.
+};
 } // namespace procedure
 
-void RegisterProcedureHandlers(state::Scene &r) {
+void RegisterProcedureHandlers(state::Registry &r) {
     using namespace procedure;
     r.Context.emplace<CookCount>();
-    reactive(r, Change::Procedure).on<GeometryProcedure>(On::Create | On::Update);
+    auto &changes = r.Context.emplace<ProcedureChanges>();
+    changes.Graph.bind(r).on<GeometryProcedure>(On::Create | On::Update);
     r.on_destroy<GeometryProcedure, &QueueNodeRemovals>();
     r.on_destroy<ProcedureInstances, &QueueInstanceRemovals>();
     r.on_destroy<ProcedureOwnedMesh, &QueueOwnedMeshRemoval>();
-    auto &inputs = reactive(r, Change::ProcedureInputs);
+    auto &inputs = changes.Inputs.bind(r);
     inputs.on<MeshHandle>(On::Create | On::Update).on<MeshGeometryDirty>(On::Create).on<MeshPositionsChanged>(On::Create);
     inputs.on<InlineSelection>(On::Create | On::Update | On::Destroy);
     // Update published instances when an object is created or a child is detached.
@@ -1095,9 +1101,10 @@ void RegisterProcedureHandlers(state::Scene &r) {
     });
 }
 
-void SettleProcedures(state::Scene &r, bool cook) {
+void SettleProcedures(state::Registry &r, bool cook) {
     using namespace procedure;
-    const auto &changed = reactive(r, Change::Procedure);
+    const auto &changes = r.Context.get<const ProcedureChanges>();
+    const auto &changed = changes.Graph;
     for (const auto e : changed) {
         if (const auto *procedure = r.try_get<const GeometryProcedure>(e)) r.emplace_or_replace<CookPlan>(e, Plan(*procedure));
     }
@@ -1108,7 +1115,7 @@ void SettleProcedures(state::Scene &r, bool cook) {
     for (const auto e : changed) {
         if (r.all_of<GeometryProcedure, MeshHandle>(e)) cooked.push_back(e);
     }
-    for (const auto e : reactive(r, Change::ProcedureInputs)) {
+    for (const auto e : changes.Inputs) {
         if (r.all_of<GeometryProcedure, MeshHandle>(e)) cooked.push_back(e);
         else inputs.push_back(e);
     }

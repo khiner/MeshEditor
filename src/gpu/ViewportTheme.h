@@ -15,6 +15,7 @@ struct ViewportThemeUbo {
 
 #ifndef __METAL_VERSION__
 #include "Field.h"
+#include "gpu/GpuSchema.h"
 
 struct ViewportThemeSizes {
     float EdgeWidth{1};

@@ -12,34 +12,34 @@ struct Armature;
 struct MeshStore;
 
 // These operations are idempotent.
-void Show(state::Scene &, state::Entity);
-void Hide(state::Scene &, state::Entity);
+void Show(state::Registry &, state::Entity);
+void Hide(state::Registry &, state::Entity);
 // Hides or shows the node and its descendants from their Visibility flags and the parent's Hidden state.
 // Runs only when the node's own effective visibility changed.
-void ApplyVisibility(state::Scene &, state::Entity);
+void ApplyVisibility(state::Registry &, state::Entity);
 
-void ApplySelectBehavior(state::Scene &, state::Entity, MeshInstanceCreateInfo::SelectBehavior);
+void ApplySelectBehavior(state::Registry &, state::Entity, MeshInstanceCreateInfo::SelectBehavior);
 
 // Callers apply SelectBehavior after entity creation.
-std::pair<state::Entity, state::Entity> AddMesh(state::Scene &, uint32_t store_id, std::optional<MeshInstanceCreateInfo> = {});
-state::Entity AddMeshInstance(state::Scene &, state::Entity mesh_entity, const MeshInstanceCreateInfo &);
+std::pair<state::Entity, state::Entity> AddMesh(state::Registry &, uint32_t store_id, std::optional<MeshInstanceCreateInfo> = {});
+state::Entity AddMeshInstance(state::Registry &, state::Entity mesh_entity, const MeshInstanceCreateInfo &);
 
-state::Entity CreateExtrasObject(state::Scene &, ObjectType, const ObjectCreateInfo &, std::string_view default_name);
+state::Entity CreateExtrasObject(state::Registry &, ObjectType, const ObjectCreateInfo &, std::string_view default_name);
 
-state::Entity AddEmpty(state::Scene &, MeshStore &, const ObjectCreateInfo & = {});
-state::Entity AddCamera(state::Scene &, MeshStore &, const ObjectCreateInfo & = {}, std::optional<CameraLens> = {});
-state::Entity AddLight(state::Scene &, MeshStore &, const ObjectCreateInfo & = {}, std::optional<PunctualLight> = {});
+state::Entity AddEmpty(state::Registry &, MeshStore &, const ObjectCreateInfo & = {});
+state::Entity AddCamera(state::Registry &, MeshStore &, const ObjectCreateInfo & = {}, std::optional<CameraLens> = {});
+state::Entity AddLight(state::Registry &, MeshStore &, const ObjectCreateInfo & = {}, std::optional<PunctualLight> = {});
 
-std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(state::Scene &, state::Entity viewport, const std::filesystem::path &, MeshInstanceCreateInfo, bool deduplicate = false);
+std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(state::Registry &, state::Entity viewport, const std::filesystem::path &, MeshInstanceCreateInfo, bool deduplicate = false);
 
-void RequestImportMesh(state::Scene &, state::Entity viewport, std::filesystem::path, MeshInstanceCreateInfo);
+void RequestImportMesh(state::Registry &, state::Entity viewport, std::filesystem::path, MeshInstanceCreateInfo);
 
-void Destroy(state::Scene &, state::Entity viewport, state::Entity);
-void Destroy(state::Scene &, state::Entity viewport, std::span<const state::Entity>);
-void ProcessObjectRemovals(state::Scene &, state::Entity viewport);
-void ClearMeshes(state::Scene &, state::Entity viewport);
-void DestroyArmatureData(state::Scene &, state::Entity arm_obj_entity);
+void Destroy(state::Registry &, state::Entity viewport, state::Entity);
+void Destroy(state::Registry &, state::Entity viewport, std::span<const state::Entity>);
+void ProcessObjectRemovals(state::Registry &, state::Entity viewport);
+void ClearMeshes(state::Registry &, state::Entity viewport);
+void DestroyArmatureData(state::Registry &, state::Entity arm_obj_entity);
 
-state::Entity CreateBoneEntity(state::Scene &, state::Entity arm_obj_entity, const Armature &, uint32_t bone_index, state::Entity parent_entity, float display_scale);
-void CreateBoneJoints(state::Scene &, state::Entity arm_obj_entity, state::Entity bone_entity, state::Entity joint_entity);
-void CreateBoneInstances(state::Scene &, MeshStore &, state::Entity arm_obj_entity, state::Entity arm_data_entity);
+state::Entity CreateBoneEntity(state::Registry &, state::Entity arm_obj_entity, const Armature &, uint32_t bone_index, state::Entity parent_entity, float display_scale);
+void CreateBoneJoints(state::Registry &, state::Entity arm_obj_entity, state::Entity bone_entity, state::Entity joint_entity);
+void CreateBoneInstances(state::Registry &, MeshStore &, state::Entity arm_obj_entity, state::Entity arm_data_entity);

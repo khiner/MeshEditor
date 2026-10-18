@@ -1,6 +1,6 @@
 #include "action/ActionDrain.h"
 #include "action/Errors.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 using namespace action;
 
@@ -20,7 +20,7 @@ void Emit(Action a, Phase phase) {
 template<typename ActionType> void EmitSystem(ActionType a) { SystemEmitted.emplace_back(MakeAction(std::move(a))); }
 void Commit() { CommitRequested = true; }
 void Cancel() { CancelRequested = true; }
-void Fail(state::Scene &r, std::string message, bool unsupported_extensions) {
+void Fail(state::Registry &r, std::string message, bool unsupported_extensions) {
     auto &errors = r.Context.get<Errors>();
     errors.OnlyUnsupportedExtensions = unsupported_extensions && (errors.Messages.empty() || errors.OnlyUnsupportedExtensions);
     errors.Messages.push_back(std::move(message));

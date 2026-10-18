@@ -56,16 +56,16 @@ ComponentField UpdatedField(state::TypeKey, uint16_t offset);
 
 template<typename C>
 struct ComponentUpdateTraits {
-    static bool Has(const state::Scene &r, state::Entity e) { return r.all_of<C>(e); }
-    static state::Entity Active(const state::Scene &r) { return ActiveWith<C>(r); }
-    static void ForEachSelected(state::Scene &r, state::Entity, const std::function<void(state::Entity)> &fn) { ForEachSelectedWith<C>(r, fn); }
-    static void Read(const state::Scene &r, state::Entity e, uint16_t offset, void *dst, size_t size) {
+    static bool Has(const state::Registry &r, state::Entity e) { return r.all_of<C>(e); }
+    static state::Entity Active(const state::Registry &r) { return ActiveWith<C>(r); }
+    static void ForEachSelected(state::Registry &r, state::Entity, const std::function<void(state::Entity)> &fn) { ForEachSelectedWith<C>(r, fn); }
+    static void Read(const state::Registry &r, state::Entity e, uint16_t offset, void *dst, size_t size) {
         std::memcpy(dst, reinterpret_cast<const std::byte *>(&r.get<const C>(e)) + offset, size);
     }
-    static void Write(state::Scene &r, state::Entity e, uint16_t offset, const void *src, size_t size) {
+    static void Write(state::Registry &r, state::Entity e, uint16_t offset, const void *src, size_t size) {
         r.patch<C>(e, [&](C &c) { std::memcpy(reinterpret_cast<std::byte *>(&c) + offset, src, size); });
     }
-    static const FieldSpec &Bounds(const state::Scene &, state::Entity, uint16_t offset) { return FieldAt<C>(offset).Spec; }
+    static const FieldSpec &Bounds(const state::Registry &, state::Entity, uint16_t offset) { return FieldAt<C>(offset).Spec; }
 };
 template<typename C>
 struct UpdateTraits : ComponentUpdateTraits<C> {};
@@ -74,7 +74,7 @@ struct UpdateTraits : ComponentUpdateTraits<C> {};
 template<typename C>
     requires std::same_as<C, mesh::Inset> || std::same_as<C, mesh::Bevel>
 struct UpdateTraits<C> : ComponentUpdateTraits<C> {
-    static void ForEachSelected(state::Scene &r, state::Entity viewport, const std::function<void(state::Entity)> &fn) {
+    static void ForEachSelected(state::Registry &r, state::Entity viewport, const std::function<void(state::Entity)> &fn) {
         nodes::ForEachResultNode(r, viewport, [&](state::Entity, state::Entity node) {
             if (r.all_of<C>(node)) fn(node);
         });
@@ -84,11 +84,11 @@ struct UpdateTraits<C> : ComponentUpdateTraits<C> {
 // A bone delta edits the active bone, and a selection edit fans out to the selected bones.
 template<>
 struct UpdateTraits<BoneDelta> : ComponentUpdateTraits<BoneDelta> {
-    static state::Entity Active(const state::Scene &r) {
+    static state::Entity Active(const state::Registry &r) {
         const auto e = FindActiveBone(r);
         return e != state::Null && Has(r, e) ? e : state::Null;
     }
-    static void ForEachSelected(state::Scene &r, state::Entity, const std::function<void(state::Entity)> &fn) {
+    static void ForEachSelected(state::Registry &r, state::Entity, const std::function<void(state::Entity)> &fn) {
         for (const auto e : r.view<BoneSelection>()) {
             if (Has(r, e)) fn(e);
         }
@@ -98,7 +98,7 @@ struct UpdateTraits<BoneDelta> : ComponentUpdateTraits<BoneDelta> {
 // A pose edit also persists its unanimated components in the node's Transform.
 template<>
 struct UpdateTraits<PosedLocal> : ComponentUpdateTraits<PosedLocal> {
-    static void Write(state::Scene &r, state::Entity e, uint16_t offset, const void *src, size_t size) {
+    static void Write(state::Registry &r, state::Entity e, uint16_t offset, const void *src, size_t size) {
         PosedLocal edited = r.get<const PosedLocal>(e);
         std::memcpy(reinterpret_cast<std::byte *>(&edited) + offset, src, size);
         CommitEditedLocal(r, e, edited.Value);
@@ -108,25 +108,25 @@ struct UpdateTraits<PosedLocal> : ComponentUpdateTraits<PosedLocal> {
 // A node layout edit addresses the edited procedure's active node and fans out to its selected nodes.
 template<>
 struct UpdateTraits<procedure::NodeLayout> : ComponentUpdateTraits<procedure::NodeLayout> {
-    static state::Entity Active(const state::Scene &);
-    static void ForEachSelected(state::Scene &, state::Entity viewport, const std::function<void(state::Entity)> &);
+    static state::Entity Active(const state::Registry &);
+    static void ForEachSelected(state::Registry &, state::Entity viewport, const std::function<void(state::Entity)> &);
 };
 
 // Resolve PrimitiveShape through the instance mesh.
 // Selection edits affect meshes with the active shape type; rebuild them after applying changes.
 template<>
 struct UpdateTraits<PrimitiveShape> {
-    static bool Has(const state::Scene &, state::Entity);
-    static state::Entity Active(const state::Scene &);
-    static void ForEachSelected(state::Scene &, state::Entity viewport, const std::function<void(state::Entity)> &);
-    static void Read(const state::Scene &, state::Entity, uint16_t offset, void *dst, size_t size);
-    static void Write(state::Scene &, state::Entity, uint16_t offset, const void *src, size_t size);
-    static const FieldSpec &Bounds(const state::Scene &, state::Entity, uint16_t offset);
+    static bool Has(const state::Registry &, state::Entity);
+    static state::Entity Active(const state::Registry &);
+    static void ForEachSelected(state::Registry &, state::Entity viewport, const std::function<void(state::Entity)> &);
+    static void Read(const state::Registry &, state::Entity, uint16_t offset, void *dst, size_t size);
+    static void Write(state::Registry &, state::Entity, uint16_t offset, const void *src, size_t size);
+    static const FieldSpec &Bounds(const state::Registry &, state::Entity, uint16_t offset);
 };
 
 // Cache each target's initial field value for the duration of a drag.
 template<typename Field>
-Field FieldGestureStart(state::Scene &r, state::Entity e, state::TypeId comp, uint16_t offset, auto &&read) {
+Field FieldGestureStart(state::Registry &r, state::Entity e, state::TypeId comp, uint16_t offset, auto &&read) {
     static_assert(sizeof(Field) <= sizeof(DragFieldStart::Bytes));
     Field start;
     if (const auto *snap = r.try_get<DragFieldStart>(e); snap && snap->Comp == comp && snap->Offset == offset) {

@@ -6,7 +6,7 @@ namespace mtl {
 struct ComputeChain;
 } // namespace mtl
 namespace state {
-struct Scene;
+struct Registry;
 } // namespace state
 
 // Clusters [First, First + Count) that join the owner under one primitive.
@@ -25,7 +25,7 @@ struct LodNodeRefit {
 // Added clusters must belong to the owner and name their intended leaves; GPU records may still be pending.
 // Retain removed clusters and reverse links until this returns.
 // Touched clusters preserve membership; coarse geometry and group errors remain unchanged.
-[[nodiscard]] LodNodeRefit EditLodNodes(state::Scene &, MeshStore::Record &, std::span<const uint32_t> removed, std::span<const LodClusterRun> added, std::span<const uint32_t> touched);
+[[nodiscard]] LodNodeRefit EditLodNodes(state::Registry &, MeshStore::Record &, std::span<const uint32_t> removed, std::span<const LodClusterRun> added, std::span<const uint32_t> touched);
 // Records the refits depth by depth, deepest first, with every owner's nodes at a depth in one dispatch.
 // A node at a depth reads only its children's bounds, which the deeper dispatches write first.
-void RecordLodNodeRefits(state::Scene &, mtl::ComputeChain &, std::span<const LodNodeRefit>);
+void RecordLodNodeRefits(state::Registry &, mtl::ComputeChain &, std::span<const LodNodeRefit>);

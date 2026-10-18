@@ -14,7 +14,7 @@
 #include "render/Pipelines.h"
 #include "render/TextureRefs.h"
 
-#include "state/Scene.h"
+#include "state/Registry.h"
 #include <basisu_transcoder.h>
 #include <format>
 
@@ -183,7 +183,7 @@ void ReleaseCubeSamplerSlot(mtl::BindlessSet &slots, uint32_t sampler_slot) {
     slots.Release({SlotType::CubeSampler, sampler_slot});
 }
 
-void ResetImportedEnvironment(state::Scene &r) {
+void ResetImportedEnvironment(state::Registry &r) {
     auto &env = r.Context.get<EnvironmentStore>();
     if (env.ImportedSceneWorld) {
         auto &slots = r.Context.get<mtl::BindlessSet>();
@@ -240,7 +240,7 @@ std::pair<uint32_t, uint32_t> AllocateIblCubeSlots(mtl::BindlessSet &slots) {
 }
 
 std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(
-    const state::Scene &r, mtl::BindlessSet &slots,
+    const state::Registry &r, mtl::BindlessSet &slots,
     const PendingEnvironmentImport &pending, const std::vector<gltf::Image> &images
 ) {
     const auto &ctx = r.Context.get<const mtl::Context>();
@@ -414,7 +414,7 @@ EnvironmentPrefiltered CreateIblFromHdri(
     };
 }
 
-void SetStudioEnvironment(state::Scene &r, uint32_t index) {
+void SetStudioEnvironment(state::Registry &r, uint32_t index) {
     const auto &ctx = r.Context.get<const mtl::Context>();
     auto &slots = r.Context.get<mtl::BindlessSet>();
     auto &environments = r.Context.get<EnvironmentStore>();
@@ -425,13 +425,13 @@ void SetStudioEnvironment(state::Scene &r, uint32_t index) {
     environments.StudioWorld = {.Ibl = MakeIblSamplers(pre, environments), .Name = hdri.Name};
 }
 
-void SetStudioEnvironment(state::Scene &r, std::string_view name) {
+void SetStudioEnvironment(state::Registry &r, std::string_view name) {
     const auto &hdris = r.Context.get<const EnvironmentStore>().Hdris;
     const auto it = std::ranges::find(hdris, name, &HdriEntry::Name);
     SetStudioEnvironment(r, it != hdris.end() ? uint32_t(std::distance(hdris.begin(), it)) : 0u);
 }
 
-void RebuildStudioEnvironments(state::Scene &r) {
+void RebuildStudioEnvironments(state::Registry &r) {
     auto &slots = r.Context.get<mtl::BindlessSet>();
     auto &environments = r.Context.get<EnvironmentStore>();
     if (environments.Hdris.empty()) return;
@@ -481,7 +481,7 @@ std::expected<std::vector<std::byte>, std::string> ReadbackTextureRgba8(const mt
 }
 
 std::expected<TextureEntry, std::string> MaterializeTextureEntry(
-    const state::Scene &r,
+    const state::Registry &r,
     TextureUploadBatch &batch, mtl::BindlessSet &slots,
     const PendingTextureUpload &item, const std::vector<gltf::Image> &gltf_images, float max_anisotropy
 ) {
@@ -569,7 +569,7 @@ uint32_t QueueLutTexture(TextureStore &textures, mtl::BindlessSet &slots, const 
     return slot;
 }
 
-std::vector<TextureRef> GetTextureRefs(state::Scene &r) {
+std::vector<TextureRef> GetTextureRefs(state::Registry &r) {
     const auto &store = r.Context.get<TextureStore>();
     std::vector<TextureRef> refs;
     refs.reserve(store.Textures.size());
@@ -577,7 +577,7 @@ std::vector<TextureRef> GetTextureRefs(state::Scene &r) {
     return refs;
 }
 
-HdriRefs GetHdriRefs(state::Scene &r) {
+HdriRefs GetHdriRefs(state::Registry &r) {
     const auto &environments = r.Context.get<EnvironmentStore>();
     HdriRefs refs{.ActiveIndex = environments.ActiveHdriIndex};
     refs.Names.reserve(environments.Hdris.size());
@@ -585,7 +585,7 @@ HdriRefs GetHdriRefs(state::Scene &r) {
     return refs;
 }
 
-void ReleaseUnlistedTextures(state::Scene &r, std::span<const MaterializedTexture> manifest) {
+void ReleaseUnlistedTextures(state::Registry &r, std::span<const MaterializedTexture> manifest) {
     auto &slots = r.Context.get<mtl::BindlessSet>();
     auto &textures = r.Context.get<TextureStore>();
     const auto unlisted = [&](const TextureEntry &t) {
@@ -599,18 +599,18 @@ void ReleaseUnlistedTextures(state::Scene &r, std::span<const MaterializedTextur
     std::erase_if(textures.Textures, unlisted);
 }
 
-void ReleaseImportedTextures(state::Scene &r) {
+void ReleaseImportedTextures(state::Registry &r) {
     ReleaseUnlistedTextures(r, {});
     auto &textures = r.Context.get<TextureStore>();
     textures.WhiteTextureSlot = textures.Textures.empty() ? InvalidSlot : textures.Textures.front().SamplerSlot;
 }
 
-void Reset(TextureStore &textures, state::Scene &r) {
+void Reset(TextureStore &textures, state::Registry &r) {
     ReleaseImportedTextures(r);
     std::erase_if(textures.PendingUploads, [](const auto &upload) { return std::holds_alternative<PendingTextureUpload::GltfImageRef>(upload.Source); });
 }
 
-void Reset(EnvironmentStore &env, state::Scene &r) {
+void Reset(EnvironmentStore &env, state::Registry &r) {
     if (auto &pending = env.PendingImport) {
         auto &slots = r.Context.get<mtl::BindlessSet>();
         ReleaseCubeSamplerSlot(slots, pending->DiffuseCubeSlot);
@@ -621,7 +621,7 @@ void Reset(EnvironmentStore &env, state::Scene &r) {
     ResetImportedEnvironment(r);
 }
 
-void ResetImportedTexturesAndMaterials(state::Scene &r) {
+void ResetImportedTexturesAndMaterials(state::Registry &r) {
     ReleaseImportedTextures(r);
     auto &buffers = r.Context.get<GpuBuffers>();
     if (buffers.Materials.Count<PBRMaterial>() > 1) buffers.Materials.SetCount<PBRMaterial>(1u);

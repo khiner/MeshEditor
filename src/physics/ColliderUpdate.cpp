@@ -2,24 +2,25 @@
 #include "Variant.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
+#include "physics/PhysicsChanges.h"
 #include "physics/PhysicsTypes.h"
 #include "scene/Entity.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 using numeric::Max;
 
 namespace {
-state::Entity ColliderMesh(const state::Scene &r, state::Entity collider, const ColliderShape &shape) {
+state::Entity ColliderMesh(const state::Registry &r, state::Entity collider, const ColliderShape &shape) {
     return shape.MeshEntity != state::Null ? shape.MeshEntity : FindMeshEntity(r, collider);
 }
 } // namespace
 
-std::span<const state::Entity> MeshCollidersOf(const state::Scene &r, state::Entity mesh_entity) {
+std::span<const state::Entity> MeshCollidersOf(const state::Registry &r, state::Entity mesh_entity) {
     const auto *list = r.try_get<const MeshColliderList>(mesh_entity);
     return list ? std::span{list->Colliders} : std::span<const state::Entity>{};
 }
 
-void UpdateMeshColliders(state::Scene &r) {
-    for (const auto e : reactive(r, state::Change::Colliders)) {
+void UpdateMeshColliders(state::Registry &r) {
+    for (const auto e : r.Context.get<const PhysicsChanges>().Colliders) {
         if (!r.valid(e)) continue;
         const auto *shape = r.try_get<const ColliderShape>(e);
         const auto mesh_entity = shape ? ColliderMesh(r, e, *shape) : state::Null;
@@ -32,8 +33,8 @@ void UpdateMeshColliders(state::Scene &r) {
     }
 }
 
-void RegisterMeshColliderHandlers(state::Scene &r) {
-    r.on_destroy<ColliderListedUnder, [](state::Scene &r, state::Entity e) {
+void RegisterMeshColliderHandlers(state::Registry &r) {
+    r.on_destroy<ColliderListedUnder, [](state::Registry &r, state::Entity e) {
         const auto mesh_entity = r.get<const ColliderListedUnder>(e).MeshEntity;
         auto *list = r.try_edit<MeshColliderList>(mesh_entity);
         if (!list) return;
@@ -42,7 +43,7 @@ void RegisterMeshColliderHandlers(state::Scene &r) {
     }>();
 }
 
-void RederiveColliders(state::Scene &r, std::span<const state::Entity> entities) {
+void RederiveColliders(state::Registry &r, std::span<const state::Entity> entities) {
     // A collider's shape before fitting, with the store whose vertex bounds fit its dimensions, or none.
     struct Derivation {
         state::Entity Entity, MeshEntity;

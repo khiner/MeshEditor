@@ -15,13 +15,17 @@
 namespace snapshot::detail {
 
 void RegisterAudio(Tables &tables) {
-    Persistent<
-        AudioOutputConfig, AudioOutputMix, Striker, ModalSoundControls, ContactSurface, SurfaceSoundControls,
-        AcousticMaterial, VertexSamples, SoundVerticesModel, ModalModes, ModalGain, ModalTuning, ModalSolveSettings,
-        MassProperties, ModalEigenSummary, RealImpactVertices, RealImpactMicrophone, RealImpactActiveMicrophone>(tables);
+    Classify(
+        tables,
+        TypeList<
+            AudioOutputConfig, AudioOutputMix, Striker, ModalSoundControls, ContactSurface, SurfaceSoundControls,
+            AcousticMaterial, VertexSamples, SoundVerticesModel, ModalModes, ModalGain, ModalTuning, ModalSolveSettings,
+            MassProperties, ModalEigenSummary, RealImpactVertices, RealImpactMicrophone, RealImpactActiveMicrophone>{},
+        TypeList<
 #ifdef SURFACE_AUDIO
-    Derived<SurfaceRelief, SurfaceFinishKey>(tables);
+            SurfaceRelief, SurfaceFinishKey,
 #endif
-    Derived<SoundVertices, SamplePlayback, ContactDynamics, ReportContacts>(tables);
+            SoundVertices, SamplePlayback, ContactDynamics, ReportContacts>{}
+    );
 }
 } // namespace snapshot::detail

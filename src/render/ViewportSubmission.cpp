@@ -5,13 +5,13 @@
 #include "mesh/MeshStore.h"
 #include "render/GpuBuffers.h"
 #include "render/RenderTargets.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 #include "viewport/FrameState.h"
 #include <Metal/MTLCommandQueue.hpp>
 ViewportRenderResources::ViewportRenderResources() = default;
 ViewportRenderResources::~ViewportRenderResources() { mtl::AutoreleaseScope::Release(InFlight); }
 // The submitted frame's cull sees every disocclusion so far.
-void SubmitRecordedFrame(state::Scene &r, MTL::CommandBuffer *command_buffer) {
+void SubmitRecordedFrame(state::Registry &r, MTL::CommandBuffer *command_buffer) {
     const mtl::AutoreleaseScope native_scope;
     const auto &ctx = r.Context.get<const mtl::Context>();
     r.Context.get<GpuBuffers>().MeshletOcclusionStale = false;
@@ -25,7 +25,7 @@ void SubmitRecordedFrame(state::Scene &r, MTL::CommandBuffer *command_buffer) {
     r.Context.get<MeshStore>().FrameSubmitted();
 }
 
-void RecordAndSubmitFrame(state::Scene &r, state::Entity viewport, RenderPhase phase) {
+void RecordAndSubmitFrame(state::Registry &r, state::Entity viewport, RenderPhase phase) {
     const mtl::AutoreleaseScope native_scope;
     const auto &ctx = r.Context.get<const mtl::Context>();
     auto &resources = r.Context.get<ViewportRenderResources>();
@@ -35,12 +35,12 @@ void RecordAndSubmitFrame(state::Scene &r, state::Entity viewport, RenderPhase p
     SubmitRecordedFrame(r, command_buffer);
 }
 
-bool ViewportImageReady(const state::Scene &r) {
+bool ViewportImageReady(const state::Registry &r) {
     const auto extent = r.Context.get<const RenderTargets>().BuiltColorExtent();
     return extent.Width != 0 && extent.Height != 0;
 }
 
-void WaitForRender(state::Scene &r) {
+void WaitForRender(state::Registry &r) {
     const mtl::AutoreleaseScope native_scope;
     auto &frame = r.Context.get<FrameState>();
     if (!frame.RenderPending) return;

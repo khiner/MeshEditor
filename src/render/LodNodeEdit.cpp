@@ -3,7 +3,7 @@
 #include "mesh/MeshPipelines.h"
 #include "metal/Dispatch.h"
 #include "render/ClusterLod.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 #include <map>
 
 namespace {
@@ -207,7 +207,7 @@ void RestructureLeaves(OwnerNodes &nodes, const std::map<uint32_t, std::vector<u
 }
 } // namespace
 
-LodNodeRefit EditLodNodes(state::Scene &r, MeshStore::Record &owner, std::span<const uint32_t> removed, std::span<const LodClusterRun> added, std::span<const uint32_t> touched) {
+LodNodeRefit EditLodNodes(state::Registry &r, MeshStore::Record &owner, std::span<const uint32_t> removed, std::span<const LodClusterRun> added, std::span<const uint32_t> touched) {
     if (removed.empty() && added.empty() && touched.empty()) return {};
     const profile::CpuScope scope{"LodNodeEdit"};
     auto &buffers = r.Context.get<MeshStore>().Render();
@@ -363,7 +363,7 @@ LodNodeRefit EditLodNodes(state::Scene &r, MeshStore::Record &owner, std::span<c
     return refit;
 }
 
-void RecordLodNodeRefits(state::Scene &r, mtl::ComputeChain &chain, std::span<const LodNodeRefit> refits) {
+void RecordLodNodeRefits(state::Registry &r, mtl::ComputeChain &chain, std::span<const LodNodeRefit> refits) {
     // Each depth's nodes form one run of the job table.
     std::vector<uint32_t> first;
     for (const auto &refit : refits) {

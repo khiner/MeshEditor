@@ -9,7 +9,7 @@
 #include "mesh/SharpnessOperations.h"
 #include "mesh/SpatialFaceWork.h"
 #include "mesh/Unsubdivide.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 #include <numbers>
 #include <print>
 
@@ -23,7 +23,7 @@ struct GeometryFixture {
     mtl::Context Context;
     mtl::BindlessSet Slots{Context};
     mtl::BufferContext Buffers{Context, Slots};
-    state::Scene Scene;
+    state::Registry Scene;
     GeometryFixture() {
         Scene.Context.emplace<mtl::LibraryCache>(Context, Paths::Shaders());
         Scene.Context.emplace<MeshStore>(Buffers);

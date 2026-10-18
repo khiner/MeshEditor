@@ -3,6 +3,7 @@
 #include "Field.h"
 #include "gpu/Element.h"
 #include "gpu/InteractionMode.h"
+#include "viewport/ViewportSchema.h"
 
 #include <numbers>
 #include <set>

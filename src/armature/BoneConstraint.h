@@ -1,5 +1,6 @@
 #pragma once
 
+#include "armature/ArmatureSchema.h"
 #include "numeric/mat4.h"
 #include "state/Entity.h"
 
@@ -28,6 +29,6 @@ struct BoneConstraints {
 struct ConstraintTargets {
     std::unordered_map<state::Entity, std::vector<state::Entity>> Armatures;
 };
-inline void Reset(ConstraintTargets &targets, state::Scene &) { targets.Armatures.clear(); }
+inline void Reset(ConstraintTargets &targets, state::Registry &) { targets.Armatures.clear(); }
 
 // User-authored pose constraint stack.

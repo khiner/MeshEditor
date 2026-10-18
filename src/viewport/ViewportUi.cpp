@@ -87,7 +87,7 @@ bool IsSingleClicked(ImGuiMouseButton button) {
 
 // Navigation actions are not recorded.
 // During look-through, the first navigation input emits the recorded exit action.
-void EmitViewNav(const state::Scene &r, auto &&nav) {
+void EmitViewNav(const state::Registry &r, auto &&nav) {
     if (LookThroughCameraEntity(r) != state::Null) action::Emit(action::view::ExitLookThroughCamera{});
     else action::Emit(std::forward<decltype(nav)>(nav));
 }
@@ -98,20 +98,20 @@ vec2 ScreenPx(const mat4 &vp, const rect &viewport_rect, vec3 p) {
     return viewport_rect.pos + NdcToUv(vec2{cs.x, cs.y} / cs.w) * viewport_rect.size;
 }
 
-vec2 ToViewFraction(const state::Scene &r, vec2 screen_px) {
+vec2 ToViewFraction(const state::Registry &r, vec2 screen_px) {
     const auto logical = r.Context.get<const ViewportExtent>().Value;
     const auto local = screen_px - ToVec2(GetCursorScreenPos());
     return Clamp(vec2{local.x / float(std::max(logical.x, 1u)), local.y / float(std::max(logical.y, 1u))}, vec2{0}, vec2{1});
 }
 // A screen position in pixels of the render target.
-vec2 ToRenderPx(const state::Scene &r, vec2 screen_px) {
+vec2 ToRenderPx(const state::Registry &r, vec2 screen_px) {
     const auto logical = r.Context.get<const ViewportExtent>().Value;
     const auto render_extent = RenderExtentPx(r);
     const vec2 scale{logical.x > 0u ? float(render_extent.x) / float(logical.x) : 1.f, logical.y > 0u ? float(render_extent.y) / float(logical.y) : 1.f};
     return (screen_px - ToVec2(GetCursorScreenPos())) * scale;
 }
 
-void BeginMeshDrag(state::Scene &r, state::Entity viewport, FrameState &frame, MeshOperatorDrag::Op op) {
+void BeginMeshDrag(state::Registry &r, state::Entity viewport, FrameState &frame, MeshOperatorDrag::Op op) {
     const rect viewport_rect{ToVec2(GetWindowPos()), ToVec2(GetContentRegionAvail())};
     const auto &camera = r.get<const ViewCamera>(viewport);
     const auto vp = camera.Projection(viewport_rect.size.x / viewport_rect.size.y) * camera.View();
@@ -122,7 +122,7 @@ void BeginMeshDrag(state::Scene &r, state::Entity viewport, FrameState &frame, M
     frame.MeshDrag = MeshOperatorDrag{.Value = op, .StartPx = ToVec2(GetMousePos()), .CenterPx = center_px, .WorldPerPx = pixels > 0.f ? 1.f / pixels : 0.f};
 }
 
-void UpdateMeshDrag(state::Scene &r, state::Entity viewport, FrameState &frame) {
+void UpdateMeshDrag(state::Registry &r, state::Entity viewport, FrameState &frame) {
     using Op = MeshOperatorDrag::Op;
     auto &drag = *frame.MeshDrag;
     const auto mouse = ToVec2(GetMousePos());
@@ -176,7 +176,7 @@ void UpdateMeshDrag(state::Scene &r, state::Entity viewport, FrameState &frame) 
     drag.Staged = value;
 }
 
-void DrawMeshOperatorMenus(state::Scene &r, state::Entity viewport) {
+void DrawMeshOperatorMenus(state::Registry &r, state::Entity viewport) {
     using namespace action::mesh;
     const auto op = [](const char *label, auto a, action::Phase phase = action::Phase::Record) {
         if (MenuItem(label)) action::Emit(std::move(a), phase);
@@ -333,7 +333,7 @@ void DrawMeshOperatorMenus(state::Scene &r, state::Entity viewport) {
     PopStyleVar();
 }
 
-TransformGizmo::Type EffectiveGizmoType(const state::Scene &r, state::Entity viewport) {
+TransformGizmo::Type EffectiveGizmoType(const state::Registry &r, state::Entity viewport) {
     using enum TransformGizmo::Type;
     const auto type = r.get<const TransformGizmoState>(viewport).Config.Type;
     const auto &flags = r.get<const SelectionFlags>(viewport);
@@ -342,7 +342,7 @@ TransformGizmo::Type EffectiveGizmoType(const state::Scene &r, state::Entity vie
 }
 } // namespace
 
-void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
+void Interact(state::Registry &r, state::Entity viewport, FrameState &frame) {
     // Any open popup (e.g. Viewport shading dropdown) blocks viewport mouse/keyboard input.
     // Without this, wheel/click events still patch the camera while the popup overlays the viewport_rect.
     if (IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
@@ -613,7 +613,7 @@ void Interact(state::Scene &r, state::Entity viewport, FrameState &frame) {
     }
 }
 
-void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame) {
+void InteractOverlay(state::Registry &r, state::Entity viewport, FrameState &frame) {
     const profile::CpuScope scope{"ViewportOverlayUi"};
     const auto &icons = r.Context.get<const ViewportIcons>();
     const rect viewport_rect{ToVec2(GetWindowPos()), ToVec2(GetContentRegionAvail())};
@@ -967,7 +967,7 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
     r.remove<StartScreenTransform>(viewport);
 }
 
-void DrawOverlay(state::Scene &r, state::Entity viewport, FrameState &frame) {
+void DrawOverlay(state::Registry &r, state::Entity viewport, FrameState &frame) {
     const rect viewport_rect{ToVec2(GetWindowPos()), ToVec2(GetContentRegionAvail())};
     const auto axes = colors::MakeAxes(r.get<const ViewportTheme>(viewport).AxisColors);
     const auto &camera = r.get<const ViewCamera>(viewport);

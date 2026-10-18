@@ -49,7 +49,7 @@ struct Source {
 };
 
 // Read the external dataset directory named by the action.
-std::expected<Source, std::string> LoadSource(const state::Scene &, const fs::path &);
+std::expected<Source, std::string> LoadSource(const state::Registry &, const fs::path &);
 
 // Verifies `directory` is a RealImpact dataset directory (exists, contains required files, name matches).
 // Returns the object name on success, or an error message on failure.
@@ -57,7 +57,7 @@ std::expected<std::string, std::string> ValidateDirectory(const fs::path &);
 
 // Per-impact-vertex {synthetic key, audio frames} at 48kHz.
 // Keys encode (sample file, listener, impact) as realimpact://<file>/li<listener>_impact<impact>.
-std::expected<std::array<LoadedSample, NumImpactVertices>, std::string> LoadSamples(const state::Scene &, const fs::path &file, long listener_point_index);
+std::expected<std::array<LoadedSample, NumImpactVertices>, std::string> LoadSamples(const state::Registry &, const fs::path &file, long listener_point_index);
 // Return the sample file and listener group encoded in the key.
 std::optional<std::pair<fs::path, long>> SampleGroupFromKey(const fs::path &key);
 std::optional<std::string> FindObjectName(const fs::path &start_path);

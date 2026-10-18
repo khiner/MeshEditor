@@ -1,23 +1,27 @@
 #include "selection/SelectionState.h"
 
 #include "SortUnique.h"
+#include "animation/AnimationChanges.h"
 #include "animation/Clips.h"
 #include "armature/ArmatureComponents.h"
+#include "mesh/MeshChanges.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "render/GpuSceneState.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
+#include "render/RenderChanges.h"
 #include "scene/Entity.h"
+#include "scene/SceneChanges.h"
 #include "scene/SceneGraph.h"
+#include "selection/SelectionChanges.h"
 #include "selection/SelectionGpu.h"
 #include "timeline/Timeline.h"
 #include "viewport/InteractionComponents.h"
+#include "viewport/ViewportChanges.h"
 #include "viewport/ViewportInteractionState.h"
 
-using state::Change;
-
-ModeScope ScopeOf(const state::Scene &r, state::Entity viewport) {
+ModeScope ScopeOf(const state::Registry &r, state::Entity viewport) {
     const auto mode = r.get<const Interaction>(viewport).Mode;
     const bool armature = FindArmatureObject(r, FindActiveEntity(r)) != state::Null;
     const bool bone_edit = mode == InteractionMode::Edit && armature;
@@ -25,7 +29,7 @@ ModeScope ScopeOf(const state::Scene &r, state::Entity viewport) {
 }
 
 namespace {
-void ComputeRoots(const state::Scene &r, const ModeScope &scope, TransformRoots &out) {
+void ComputeRoots(const state::Registry &r, const ModeScope &scope, TransformRoots &out) {
     // Views run in entity index order, so the candidates are searchable by index.
     auto selected = scope.Bone ? r.view<const BoneSelection>() | std::ranges::to<std::vector>() : r.view<const Selected>() | std::ranges::to<std::vector>();
     if (scope.BoneEdit) {
@@ -40,7 +44,7 @@ void ComputeRoots(const state::Scene &r, const ModeScope &scope, TransformRoots 
     }
 }
 
-void ComputePivot(const state::Scene &r, const ModeScope &scope, TransformRoots &out) {
+void ComputePivot(const state::Registry &r, const ModeScope &scope, TransformRoots &out) {
     const auto active = scope.Bone ? FindActiveBone(r) : FindActiveEntity(r);
     const auto *active_world = active != state::Null ? WorldTransformOf(r, active) : nullptr;
     out.PivotRotation = active_world ? active_world->R : quat{1, 0, 0, 0};
@@ -64,8 +68,8 @@ void ComputePivot(const state::Scene &r, const ModeScope &scope, TransformRoots 
     out.PivotPosition = count > 0 ? sum / float(count) : vec3{};
 }
 
-bool PivotMoved(const state::Scene &r, const ModeScope &scope, const TransformRoots &roots) {
-    const auto &moved = reactive(r, Change::WorldTransform);
+bool PivotMoved(const state::Registry &r, const ModeScope &scope, const TransformRoots &roots) {
+    const auto &moved = r.Context.get<const SceneChanges>().WorldTransform;
     if (moved.empty()) return false;
     if (const auto active = scope.Bone ? FindActiveBone(r) : FindActiveEntity(r); active != state::Null && moved.contains(active)) return true;
     if (moved.size() < roots.Roots.size()) return std::ranges::any_of(moved, [&](state::Entity e) { return ContainsInIndexOrder(roots.Roots, e); });
@@ -78,7 +82,7 @@ SelectionSharpness Sharpness(bool any_smooth, bool any_sharp, bool mixed) {
     return any_sharp ? SelectionSharpness::Sharp : SelectionSharpness::None;
 }
 
-void ComputeFlags(const state::Scene &r, state::Entity viewport, const ModeScope &scope, const EditPrimaries &primaries, SelectionFlags &out) {
+void ComputeFlags(const state::Registry &r, state::Entity viewport, const ModeScope &scope, const EditPrimaries &primaries, SelectionFlags &out) {
     const auto &meshes = r.Context.get<const MeshStore>();
     out.Meshes.clear();
     out.AllMeshes = std::ranges::none_of(r.view<const Selected, const ObjectKind>().each(), [](const auto &entry) { return std::get<1>(entry).Value != ObjectType::Mesh; });
@@ -134,7 +138,7 @@ void ComputeFlags(const state::Scene &r, state::Entity viewport, const ModeScope
     }();
 }
 
-void ComputeKeyframes(const state::Scene &r, state::Entity viewport, SelectedKeyframes &out) {
+void ComputeKeyframes(const state::Registry &r, state::Entity viewport, SelectedKeyframes &out) {
     const float fps = r.get<const TimelineRange>(viewport).Fps;
     auto &frames = out.Frames;
     frames.clear();
@@ -163,7 +167,7 @@ void ComputeKeyframes(const state::Scene &r, state::Entity viewport, SelectedKey
     SortUnique(frames);
 }
 
-void ComputeSelectedAncestors(const state::Scene &r, OutlinerRows &out) {
+void ComputeSelectedAncestors(const state::Registry &r, OutlinerRows &out) {
     out.SelectedAncestors.clear();
     const auto mark = [&](state::Entity selected) {
         // A marked ancestor already marked its own ancestors.
@@ -174,7 +178,7 @@ void ComputeSelectedAncestors(const state::Scene &r, OutlinerRows &out) {
 }
 } // namespace
 
-EditPrimaries ComputeEditPrimaries(const state::Scene &r) {
+EditPrimaries ComputeEditPrimaries(const state::Registry &r) {
     const auto active = FindActiveEntity(r);
     const auto choose = [active](selection::PrimaryEditInstanceMap &primaries, state::Entity mesh, state::Entity instance) {
         auto &primary = primaries.try_emplace(mesh, instance).first->second;
@@ -195,7 +199,7 @@ std::optional<uint32_t> OutlinerRows::Find(state::Entity e) const {
     return RowOf[index];
 }
 
-void BuildOutlinerRows(const state::Scene &r, OutlinerRows &out) {
+void BuildOutlinerRows(const state::Registry &r, OutlinerRows &out) {
     out.Rows.clear();
     out.RowOf.assign(r.EntityCapacity(), UINT32_MAX);
     const auto roots = SortedEntities(r.view<const Name>() | std::views::filter([&](state::Entity e) { return ParentOrNull(r, e) == state::Null; }));
@@ -216,11 +220,17 @@ void BuildOutlinerRows(const state::Scene &r, OutlinerRows &out) {
     }
 }
 
-std::vector<state::Entity> UpdateSelectionState(state::Scene &r, state::Entity viewport) {
-    const bool selection = AnyChanged(r, Change::Selected, Change::ActiveInstance, Change::BoneSelection);
-    const bool interaction = AnyChanged(r, Change::InteractionMode);
-    const bool parents = AnyChanged(r, Change::SceneParent);
-    const bool instances = AnyChanged(r, Change::InstanceVisibility, Change::RenderInstanceCreated, Change::RenderInstanceDestroyed, Change::ScaleLocked);
+std::vector<state::Entity> UpdateSelectionState(state::Registry &r, state::Entity viewport) {
+    const auto &selection_changes = r.Context.get<const SelectionChanges>();
+    const auto &viewport_changes = r.Context.get<const ViewportChanges>();
+    const auto &scene_changes = r.Context.get<const SceneChanges>();
+    const auto &render_changes = r.Context.get<const RenderChanges>();
+    const auto &mesh_changes = r.Context.get<const MeshChanges>();
+    const auto &animation_changes = r.Context.get<const AnimationChanges>();
+    const bool selection = AnyChanged(selection_changes.Selected, selection_changes.ActiveInstance, selection_changes.BoneSelection);
+    const bool interaction = AnyChanged(viewport_changes.InteractionMode);
+    const bool parents = AnyChanged(scene_changes.Parent);
+    const bool instances = AnyChanged(render_changes.InstanceVisibility, render_changes.InstanceCreated, render_changes.InstanceDestroyed, scene_changes.ScaleLocked);
     const auto scope = ScopeOf(r, viewport);
 
     const bool primaries_changed = selection || interaction || instances;
@@ -240,20 +250,20 @@ std::vector<state::Entity> UpdateSelectionState(state::Scene &r, state::Entity v
     const bool roots_changed = selection || interaction || parents;
     if (roots_changed) ComputeRoots(r, scope, r.edit<TransformRoots>(viewport));
     // Preserve the initial pivot throughout the gesture.
-    if (roots_changed || AnyChanged(r, Change::TransformEnd) ||
+    if (roots_changed || AnyChanged(viewport_changes.TransformEnd) ||
         (!r.all_of<StartPivot>(viewport) && PivotMoved(r, scope, r.get<const TransformRoots>(viewport)))) {
         ComputePivot(r, scope, r.edit<TransformRoots>(viewport));
     }
 
-    if (primaries_changed || AnyChanged(r, Change::EditMode, Change::MeshGeometry) || r.Context.get<const GpuSceneState>().EditSelectionDirty) {
+    if (primaries_changed || AnyChanged(viewport_changes.EditMode, mesh_changes.Geometry) || r.Context.get<const GpuSceneState>().EditSelectionDirty) {
         ComputeFlags(r, viewport, scope, r.get<const EditPrimaries>(viewport), r.edit<SelectionFlags>(viewport));
     }
 
-    if (selection || AnyChanged(r, Change::AnimationEdited, Change::KeyframeSources, Change::MeshMaterial, Change::ActiveMaterialVariant)) {
+    if (selection || AnyChanged(animation_changes.Edited, animation_changes.KeyframeSources, mesh_changes.Material, render_changes.ActiveMaterialVariant)) {
         ComputeKeyframes(r, viewport, r.edit<SelectedKeyframes>(viewport));
     }
 
-    if (AnyChanged(r, Change::SceneHierarchy, Change::Names)) BuildOutlinerRows(r, r.edit<OutlinerRows>(viewport));
+    if (AnyChanged(scene_changes.Hierarchy, scene_changes.Names)) BuildOutlinerRows(r, r.edit<OutlinerRows>(viewport));
     if (selection || parents) ComputeSelectedAncestors(r, r.edit<OutlinerRows>(viewport));
     return changed_primaries;
 }

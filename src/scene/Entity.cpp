@@ -1,5 +1,5 @@
 #include "scene/Entity.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 #include "mesh/Mesh.h"
 #include "render/Instance.h"
@@ -13,6 +13,7 @@ struct NameHash {
     size_t operator()(std::string_view name) const { return std::hash<std::string_view>{}(name); }
 };
 template<typename V> using NameMap = std::unordered_map<std::string, V, NameHash, std::equal_to<>>;
+} // namespace
 
 // Counts rather than set membership keep the derived index correct when loading source data with duplicate names.
 struct EntityNameCounts {
@@ -20,8 +21,9 @@ struct EntityNameCounts {
     // Per stem, at least the largest N of every live "{stem}_{N}" name.
     NameMap<uint64_t> MaxSuffix;
 };
-void Reset(EntityNameCounts &names, state::Scene &) { names = {}; }
+void Reset(EntityNameCounts &names, state::Registry &) { names = {}; }
 
+namespace {
 void Track(EntityNameCounts &names, std::string_view name) {
     if (const auto it = names.Counts.find(name); it != names.Counts.end()) ++it->second;
     else names.Counts.emplace(name, 1u);
@@ -33,10 +35,10 @@ void Track(EntityNameCounts &names, std::string_view name) {
     else names.MaxSuffix.emplace(stem, suffix);
 }
 
-void TrackName(state::Scene &r, state::Entity e) {
+void TrackName(state::Registry &r, state::Entity e) {
     if (auto *names = r.Context.find<EntityNameCounts>()) Track(*names, r.get<const Name>(e).Value);
 }
-void UntrackName(state::Scene &r, state::Entity e) {
+void UntrackName(state::Registry &r, state::Entity e) {
     auto *names = r.Context.find<EntityNameCounts>();
     if (!names) return;
     const auto it = names->Counts.find(r.get<const Name>(e).Value);
@@ -44,22 +46,22 @@ void UntrackName(state::Scene &r, state::Entity e) {
 }
 } // namespace
 
-void InitEntityNames(state::Scene &r) {
+void InitEntityNames(state::Registry &r) {
     r.Context.emplace<EntityNameCounts>();
     r.on_construct<Name, &TrackName>();
     r.on_destroy<Name, &UntrackName>();
 }
-void RebuildEntityNames(state::Scene &r) {
+void RebuildEntityNames(state::Registry &r) {
     auto &names = r.Context.get<EntityNameCounts>();
     Reset(names, r);
     for (const auto &[e, name] : r.view<const Name>().each()) Track(names, name.Value);
 }
-void DeinitEntityNames(state::Scene &r) { r.Context.erase<EntityNameCounts>(); }
-void ReserveEntityNames(state::Scene &r, size_t additional) {
+void DeinitEntityNames(state::Registry &r) { r.Context.erase<EntityNameCounts>(); }
+void ReserveEntityNames(state::Registry &r, size_t additional) {
     auto &counts = r.Context.get<EntityNameCounts>().Counts;
     counts.reserve(counts.size() + additional);
 }
-Name &EmplaceUniqueName(state::Scene &r, state::Entity e, std::string_view prefix) {
+Name &EmplaceUniqueName(state::Registry &r, state::Entity e, std::string_view prefix) {
     const auto &names = r.Context.get<const EntityNameCounts>();
     if (!names.Counts.contains(prefix)) return r.emplace<Name>(e, std::string{prefix});
     const auto it = names.MaxSuffix.find(prefix);
@@ -76,7 +78,7 @@ std::string_view NameStem(std::string_view name) {
 }
 
 std::string IdString(state::Entity e) { return std::format("0x{:08x}", uint32_t(e)); }
-std::string GetName(const state::Scene &r, state::Entity e) {
+std::string GetName(const state::Registry &r, state::Entity e) {
     if (e == state::Null) return "null";
 
     if (const auto *name = r.try_get<Name>(e)) {
@@ -85,22 +87,22 @@ std::string GetName(const state::Scene &r, state::Entity e) {
     return IdString(e);
 }
 
-state::Entity FindActiveEntity(const state::Scene &registry) {
+state::Entity FindActiveEntity(const state::Registry &registry) {
     const auto all_active = registry.view<Active>();
     assert(all_active.size() <= 1);
     return all_active.empty() ? state::Null : *all_active.begin();
 }
 
-state::Entity GetMeshEntity(const state::Scene &r, state::Entity e) {
+state::Entity GetMeshEntity(const state::Registry &r, state::Entity e) {
     if (const auto *instance = r.try_get<Instance>(e); instance && HasMesh(r, instance->Entity)) return instance->Entity;
     return state::Null;
 }
-state::Entity GetActiveMeshEntity(const state::Scene &r) {
+state::Entity GetActiveMeshEntity(const state::Registry &r) {
     const auto active = FindActiveEntity(r);
     return active != state::Null ? GetMeshEntity(r, active) : state::Null;
 }
 
-state::Entity FindMeshEntity(const state::Scene &r, state::Entity entity) {
+state::Entity FindMeshEntity(const state::Registry &r, state::Entity entity) {
     if (const auto *instance = r.try_get<const Instance>(entity)) return instance->Entity;
     return entity;
 }

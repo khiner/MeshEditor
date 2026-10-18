@@ -5,6 +5,7 @@
 #include "gpu/InteractionMode.h"
 
 #include "state/Entity.h"
+#include "viewport/ViewportSchema.h"
 
 #include <algorithm>
 #include <string>
@@ -150,7 +151,7 @@ struct StudioEnvironment {
     std::string Name;
 };
 
-const PBRViewportLighting &GetActivePbrLighting(const state::Scene &, state::Entity viewport, ViewportShadingMode);
+const PBRViewportLighting &GetActivePbrLighting(const state::Registry &, state::Entity viewport, ViewportShadingMode);
 
 struct ViewportExtent {
     uvec2 Value{};

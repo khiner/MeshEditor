@@ -20,6 +20,7 @@
 #include "gpu/VisibleMeshlet.h"
 #include "gpu/WorkspaceLights.h"
 #include "render/PoseAttributeStore.h"
+#include "render/RenderSchema.h"
 #include "render/VertexBoundsStore.h"
 #include "viewport/RenderView.h"
 
@@ -245,4 +246,4 @@ struct GpuBuffers {
 };
 
 // Resets every per-scene arena, table, and tally to the scene-load baseline, keeping the GPU allocations.
-void Reset(GpuBuffers &, state::Scene &);
+void Reset(GpuBuffers &, state::Registry &);

@@ -34,8 +34,8 @@ using numeric::Degrees;
 
 using namespace ImGui;
 
-static void RenderObjectTree(state::Scene &, state::Entity viewport);
-static void RenderEntityControls(state::Scene &, state::Entity viewport, state::Entity active_entity);
+static void RenderObjectTree(state::Registry &, state::Entity viewport);
+static void RenderEntityControls(state::Registry &, state::Entity viewport, state::Entity active_entity);
 
 namespace {
 constexpr std::string_view ObjectTypeName(ObjectType type) {
@@ -124,7 +124,7 @@ bool RenderCameraLensEditor(CameraLens &camera, float distance, float viewport_a
     return changed;
 }
 
-void RenderCameraLensFields(state::Scene &r, state::Entity entity) {
+void RenderCameraLensFields(state::Registry &r, state::Entity entity) {
     const auto *perspective = r.try_get<const Perspective>(entity);
     int proj_i = perspective ? 0 : 1;
     const char *const proj_names[]{"Perspective", "Orthographic"};
@@ -187,7 +187,7 @@ void MetaTable(const char *id, std::initializer_list<const char *> cols, size_t 
 }
 } // namespace
 
-static void RenderEntityControls(state::Scene &r, state::Entity viewport, state::Entity active_entity) {
+static void RenderEntityControls(state::Registry &r, state::Entity viewport, state::Entity active_entity) {
     const auto &meshes = r.Context.get<MeshStore>();
     if (active_entity == state::Null) {
         TextUnformatted("Active object: None");
@@ -562,7 +562,7 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
     PopID();
 }
 
-void RenderControls(state::Scene &r, state::Entity viewport) {
+void RenderControls(state::Registry &r, state::Entity viewport) {
     const profile::CpuScope scope{"SceneControlsUi"};
     if (BeginTabBar("Scene controls")) {
         if (BeginTabItem("Object")) {
@@ -869,12 +869,12 @@ void RenderControls(state::Scene &r, state::Entity viewport) {
     }
 }
 
-void DrawViewportStyle(state::Scene &r, state::Entity viewport) {
+void DrawViewportStyle(state::Registry &r, state::Entity viewport) {
     if (Button("Reset")) action::Emit(action::view::ResetViewportTheme{});
     ui::DrawFields<ViewportTheme>(ui::Edit{r, viewport});
 }
 
-static void RenderObjectTree(state::Scene &r, state::Entity viewport) {
+static void RenderObjectTree(state::Registry &r, state::Entity viewport) {
     PushStyleVar(ImGuiStyleVar_ItemSpacing, {GetStyle().ItemSpacing.x, 0.f});
 
     const auto ToSelectionUserData = [](state::Entity e) -> ImGuiSelectionUserData { return ImGuiSelectionUserData(uint32_t(e)); };

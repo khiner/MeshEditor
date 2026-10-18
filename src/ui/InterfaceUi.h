@@ -19,5 +19,5 @@ bool IconButton(const char *id, const SvgResource *icon, bool active = false, bo
 void EndIconButtonGroup();
 // Draws a dropdown arrow centered in the last item.
 void DropdownArrow();
-void DrawInterfaceStyle(state::Scene &, state::Entity viewport);
+void DrawInterfaceStyle(state::Registry &, state::Entity viewport);
 } // namespace ui

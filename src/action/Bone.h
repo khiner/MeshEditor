@@ -52,5 +52,5 @@ using Action = std::variant<
     BakeConstraintChildOfInverse, ClearConstraintChildOfInverse,
     DeleteConstraint, AddConstraint>;
 
-void Apply(state::Scene &, state::Entity viewport, const Action &);
+void Apply(state::Registry &, state::Entity viewport, const Action &);
 } // namespace action::bone

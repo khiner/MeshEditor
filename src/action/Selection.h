@@ -76,5 +76,5 @@ using Action = std::variant<
     DeselectAll, SelectAll,
     ApplyBoxSelect, Pick, PickCycle, ApplyEditElementClick, ApplyTreeSelection>;
 
-void Apply(state::Scene &, state::Entity viewport, const Action &);
+void Apply(state::Registry &, state::Entity viewport, const Action &);
 } // namespace action::selection

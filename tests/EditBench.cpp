@@ -42,7 +42,7 @@ void ReportLibraries(const mtl::LibraryCache &cache, const char *phase) {
     std::println("shader_libraries,{},{},{}", cache.BinaryLibraryLoadCount(), cache.SourceLibraryCompileCount(), phase);
 }
 
-Result Capture(state::Scene &r, const char *variable) {
+Result Capture(state::Registry &r, const char *variable) {
     const char *path = std::getenv(variable);
     if (!path) return {};
     const auto &image = r.Context.get<const RenderTargets>().Resources->FinalColorImage;

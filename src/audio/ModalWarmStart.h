@@ -1,4 +1,5 @@
 #pragma once
+#include "audio/AudioSchema.h"
 
 #include <FastFEM/Surface2Modes.h>
 
@@ -8,4 +9,4 @@ struct ModalWarmStart {
     size_t OperatorHash{};
     fastfem::ModeBasis Basis{};
 };
-inline void Reset(ModalWarmStart &warm, state::Scene &) { warm = {}; }
+inline void Reset(ModalWarmStart &warm, state::Registry &) { warm = {}; }

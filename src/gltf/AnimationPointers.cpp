@@ -7,7 +7,7 @@
 #include "gltf/MaterialTable.h"
 #include "render/Instance.h"
 #include "render/LightComponents.h"
-#include "render/MaterialTextureSlots.h"
+#include "render/MaterialTextureSchema.h"
 
 #include <charconv>
 #include <format>

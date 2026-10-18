@@ -1149,7 +1149,7 @@ void MeshStore::ReleaseTets(TetBuffers tets) {
 
 Range MeshStore::AllocateSoundVertices(std::span<const uint32_t> vertices) { return Buffers.SoundVertices.Allocate(vertices); }
 void MeshStore::ReleaseSoundVertices(std::vector<Range> ranges) { Buffers.SoundVertices.Release(std::move(ranges)); }
-void MeshStore::EnsureSelectionState(state::Scene &r, mtl::ComputeChain &chain, std::span<const uint32_t> requested) {
+void MeshStore::EnsureSelectionState(state::Registry &r, mtl::ComputeChain &chain, std::span<const uint32_t> requested) {
     std::vector<uint32_t> ids{requested.begin(), requested.end()};
     SortUnique(ids);
     std::vector<SelectionUpdate> updates;
@@ -2080,7 +2080,7 @@ MeshStore::Change MeshStore::Resync(CloneCopies &copies, uint32_t id, uint32_t s
     return change;
 }
 
-void MeshStore::ResetEditState(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, uint32_t source) {
+void MeshStore::ResetEditState(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, uint32_t source) {
     SelectionUpdate update{.StoreId = id};
     auto pairs = PairBlocks(source, id);
     for (uint32_t s = 0u; s < SelectionDomains.size(); ++s) {
@@ -2102,7 +2102,7 @@ void MeshStore::ResetEditState(state::Scene &r, mtl::ComputeChain &chain, uint32
     if (Records.at(id).SelectionSummary.Count) UpdateSelection(r, chain, std::array{update});
 }
 
-void MeshStore::SelectMasks(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, const GeometryMasks &masks) {
+void MeshStore::SelectMasks(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, const GeometryMasks &masks) {
     SelectionUpdate update{.StoreId = id};
     for (uint32_t s = 0u; s < SelectionDomains.size(); ++s) {
         const auto from = masks.Get(SelectionElements[s]);
@@ -2116,7 +2116,7 @@ void MeshStore::SelectMasks(state::Scene &r, mtl::ComputeChain &chain, uint32_t 
     if (Records.at(id).SelectionSummary.Count) UpdateSelection(r, chain, std::array{update});
 }
 
-void MeshStore::Join(state::Scene &r, uint32_t id, uint32_t source) {
+void MeshStore::Join(state::Registry &r, uint32_t id, uint32_t source) {
     const profile::CpuScope scope{"JoinMeshes"};
     ReleaseRender(std::array{&WriteRecord(source)});
     // Layers either record carries cover the join, and deform channels follow the destination.
@@ -2877,7 +2877,7 @@ void MeshStore::SetExtrasIndices(uint32_t id, std::span<const uint32_t> faces, s
     record.ExtrasEdges = Buffers.Render.ExtrasEdges.Allocate(edges);
 }
 
-void Reset(MeshStore &m, state::Scene &) {
+void Reset(MeshStore &m, state::Registry &) {
     if (m.Tracked) {
         m.Tracked->Entries.Write(0, m.Records.size());
         m.Tracked->Free.Write(0, m.FreeIds.size());

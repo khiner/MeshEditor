@@ -14,6 +14,7 @@ struct Transform {
 #endif
 };
 #ifndef __METAL_VERSION__
+#include "gpu/GpuSchema.h"
 template<> inline constexpr field::SpecTable<Transform> Specs<Transform>{
     {&Transform::P, {.Speed = 0.01f, .Unit = FieldUnit::Meters, .Label = "Position", .Help = "Translation relative to the parent"}},
     {&Transform::R, {.Label = "Rotation", .Help = "Orientation relative to the parent"}},

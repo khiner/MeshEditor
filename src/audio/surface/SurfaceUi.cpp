@@ -28,7 +28,7 @@ template<> inline constexpr field::SpecTable<SurfaceSoundControls> Specs<Surface
 
 using namespace ImGui;
 
-void DrawContactSurfaceControls(state::Scene &r, state::Entity e, const ContactSurface &surface, const AcousticMaterial &material) {
+void DrawContactSurfaceControls(state::Registry &r, state::Entity e, const ContactSurface &surface, const AcousticMaterial &material) {
     SeparatorText("Surface finish");
     ui::ChoiceCombo("Presets##finish", surface.Name, surfaces::acoustic::All | std::views::transform(&ContactSurfacePreset::Name), std::identity{}, [&](const std::string &name) {
         action::Emit(action::audio::SetSurfacePreset{name});
@@ -49,14 +49,14 @@ void DrawContactSurfaceControls(state::Scene &r, state::Entity e, const ContactS
     ui::Describe("Contact filter", "Contact patch cutoff frequency, the sweep speed over twice the patch radius. Heavier load widens the patch and lowers the cutoff.");
 }
 
-void DrawSurfaceSynthControls(state::Scene &r, state::Entity viewport) {
+void DrawSurfaceSynthControls(state::Registry &r, state::Entity viewport) {
     ui::Edit f{r, viewport};
     SeparatorText("Sustained contact");
     ui::DrawFields<SurfaceSoundControls>(f);
     Text("Active voices: %u", SurfaceActiveVoices(r.Context.get<const ModalAudio>()));
 }
 
-void DrawSurfaceContactDebug(const state::Scene &r) {
+void DrawSurfaceContactDebug(const state::Registry &r) {
     const auto &surface = Surface(r.Context.get<const ModalAudio>());
 
     SeparatorText("Sustained contact");

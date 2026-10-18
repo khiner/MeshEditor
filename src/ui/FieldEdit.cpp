@@ -4,7 +4,7 @@
 #include <imgui_internal.h>
 
 namespace ui {
-std::optional<animation::ChannelState> QueryKey(const state::Scene &r, state::Entity entity, const ChannelTarget &target) {
+std::optional<animation::ChannelState> QueryKey(const state::Registry &r, state::Entity entity, const ChannelTarget &target) {
     const auto viewport = animation::AnimationsViewport(r);
     if (viewport == state::Null || entity == state::Null) return {};
     std::vector<float> value(target.Count);
@@ -26,7 +26,7 @@ KeyTint::~KeyTint() {
     if (Pushed) ImGui::PopStyleColor(Pushed);
 }
 
-void KeyDecorator(const state::Scene &r, state::Entity entity, const ChannelTarget &target, const animation::ChannelState &d) {
+void KeyDecorator(const state::Registry &r, state::Entity entity, const ChannelTarget &target, const animation::ChannelState &d) {
     ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
     ImGui::PushID(int(uint32_t(target.Component) ^ (uint32_t(target.Offset) << 16) ^ target.Index));
     const float h = ImGui::GetFrameHeight();

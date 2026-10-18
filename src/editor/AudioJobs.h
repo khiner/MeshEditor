@@ -3,6 +3,7 @@
 #include "audio/AudioSystem.h"
 #include "audio/ModalModelFile.h"
 #include "audio/ModalWarmStart.h"
+#include "editor/EditorSchema.h"
 #include <FastFEM/SolveMonitor.h>
 
 struct ModalGenerationResult {
@@ -20,7 +21,7 @@ struct ModalSolveJobs {
     std::vector<std::shared_ptr<ModalSolveJob>> Jobs;
 };
 // Cancels every solve. Each result is discarded on arrival.
-inline void Reset(ModalSolveJobs &jobs, state::Scene &) {
+inline void Reset(ModalSolveJobs &jobs, state::Registry &) {
     for (const auto &job : jobs.Jobs) job->Work.RequestCancel();
 }
 
@@ -34,7 +35,7 @@ struct SolveInputs {
     size_t OperatorHash, ModalConfigHash;
 };
 
-bool IsSolving(const state::Scene &, state::Entity);
-void LaunchModalSolve(state::Scene &, state::Entity viewport, state::Entity, const ModalSolveSettings &, const AcousticMaterial &);
-SolveInputs BuildSolveInputs(const state::Scene &, state::Entity, state::Entity mesh_entity, const ModalSolveSettings &);
-bool ModalModelStale(const state::Scene &, state::Entity, const SolveInputs &, const AcousticMaterial &);
+bool IsSolving(const state::Registry &, state::Entity);
+void LaunchModalSolve(state::Registry &, state::Entity viewport, state::Entity, const ModalSolveSettings &, const AcousticMaterial &);
+SolveInputs BuildSolveInputs(const state::Registry &, state::Entity, state::Entity mesh_entity, const ModalSolveSettings &);
+bool ModalModelStale(const state::Registry &, state::Entity, const SolveInputs &, const AcousticMaterial &);

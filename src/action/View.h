@@ -100,5 +100,5 @@ using Action = std::variant<
     TransformSelection, TransformElements, SetActiveTool, LatchTransform,
     SetStudioEnvironment, SetActiveScene>;
 
-void Apply(state::Scene &, state::Entity viewport, const Action &);
+void Apply(state::Registry &, state::Entity viewport, const Action &);
 } // namespace action::view

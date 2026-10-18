@@ -19,6 +19,7 @@
 #include "mesh/CornerNormalView.h"
 #include "mesh/ElementArena.h"
 #include "mesh/ElementAttribute.h"
+#include "mesh/MeshSchema.h"
 #include "mesh/PoseAttributeView.h"
 #include "mesh/SelectionQuery.h"
 #include "mesh/SelectionView.h"
@@ -30,7 +31,7 @@ namespace mtl {
 struct ComputeChain;
 } // namespace mtl
 namespace state {
-struct Scene;
+struct Registry;
 } // namespace state
 struct CloneCopies;
 struct CornerClassBatch;
@@ -332,7 +333,7 @@ struct MeshStore {
     // Return restored changes and invalidate their cached block lists.
     std::vector<Change> TakeChanges();
     // Refresh aggregates for restored blocks and incident blocks.
-    void ReconcileSelection(state::Scene &, mtl::ComputeChain &, std::span<const Change>);
+    void ReconcileSelection(state::Registry &, mtl::ComputeChain &, std::span<const Change>);
 
     // Capture destination pages before dispatching GPU writes to Persistent mesh data.
     void CaptureVertexEdit(uint32_t id);
@@ -397,7 +398,7 @@ struct MeshStore {
     // Move source elements into id, remapping handles and materials.
     // Use defaults for missing layers and attributes; retain id deformation channels.
     // The caller must release the emptied source record.
-    void Join(state::Scene &, uint32_t id, uint32_t source);
+    void Join(state::Registry &, uint32_t id, uint32_t source);
     // Ascending changed element blocks and released or renamed attribute IDs since TakeWrites.
     struct Writes {
         DomainBlocks Blocks{};
@@ -430,7 +431,7 @@ struct MeshStore {
     std::vector<uint32_t> TakeUnshaded() { return std::exchange(Unshaded, {}); }
     // Clears records and arenas while retaining GPU allocations.
     // Requires a cleared scene with no live StoreId references.
-    friend void Reset(MeshStore &, state::Scene &);
+    friend void Reset(MeshStore &, state::Registry &);
 
     const Record &Get(uint32_t id) const { return Records.at(id); }
     const Record *TryGet(uint32_t id) const { return id < Records.size() && Records[id].Alive ? &Records[id] : nullptr; }
@@ -533,7 +534,7 @@ struct MeshStore {
 
     // Initialize selection masks and aggregates once per record.
     // Submit the chain before reading published summaries.
-    void EnsureSelectionState(state::Scene &, mtl::ComputeChain &, std::span<const uint32_t> ids);
+    void EnsureSelectionState(state::Registry &, mtl::ComputeChain &, std::span<const uint32_t> ids);
     SelectionView GetSelectedElements(uint32_t id, Element) const;
     SelectionView GetHiddenElements(uint32_t id, Element) const;
     uint32_t GetHiddenSlot(Element) const;
@@ -570,21 +571,21 @@ struct MeshStore {
         std::array<std::vector<uint32_t>, 3> Blocks{};
         std::vector<SelectionSeed> Seeds{};
     };
-    void UpdateSelection(state::Scene &, mtl::ComputeChain &, std::span<const SelectionUpdate>);
+    void UpdateSelection(state::Registry &, mtl::ComputeChain &, std::span<const SelectionUpdate>);
     // Derive the other two domains in the supplied masks using UpdateSelection rules.
     // Preserve stored selection and aggregates; include hidden elements.
-    void DeriveSelectionMasks(state::Scene &, mtl::ComputeChain &, uint32_t id, const GeometryMasks &, Element source) const;
+    void DeriveSelectionMasks(state::Registry &, mtl::ComputeChain &, uint32_t id, const GeometryMasks &, Element source) const;
     // Clear selection, copy hidden masks from corresponding source blocks, and refresh changed aggregates.
-    void ResetEditState(state::Scene &, mtl::ComputeChain &, uint32_t id, uint32_t source);
+    void ResetEditState(state::Registry &, mtl::ComputeChain &, uint32_t id, uint32_t source);
     // Apply selection masks and refresh changed aggregates.
-    void SelectMasks(state::Scene &, mtl::ComputeChain &, uint32_t id, const GeometryMasks &);
+    void SelectMasks(state::Registry &, mtl::ComputeChain &, uint32_t id, const GeometryMasks &);
     void PublishSelectionSummary(uint32_t id);
     EditSelectionSummary &WriteSelectionSummary(uint32_t id);
     void SetSelectionBaseline(uint32_t id, Element, std::vector<std::pair<uint32_t, SelectionBlock>>, uint32_t active);
     // Builds a new clone's index after its GPU block copies have completed.
     void RebuildSelectionIndex(std::span<const uint32_t> ids);
     // Gather selected handles in ascending order into a new output range and return it.
-    Range GatherSelectedElements(state::Scene &, mtl::ComputeChain &, uint32_t id, Element, BufferArena<uint32_t> &output) const;
+    Range GatherSelectedElements(state::Registry &, mtl::ComputeChain &, uint32_t id, Element, BufferArena<uint32_t> &output) const;
     bool IsLiveElement(uint32_t id, Element, ElementHandle) const;
     uint32_t GetSelectionSlot(Element) const;
     EditSelectionStorage GetEditSelectionStorage(uint32_t id) const;
@@ -608,10 +609,10 @@ struct MeshStore {
     };
     // Encode counts and required root blocks, then submit before Plan.
     // Plan assigns classification modes, allocates mixed-sector ranges, and records root writes.
-    CornerClassBatch EncodeCornerClassification(state::Scene &, mtl::ComputeChain &, std::span<const CornerClassRequest>);
-    void PlanCornerClassification(state::Scene &, mtl::ComputeChain &, CornerClassBatch &);
+    CornerClassBatch EncodeCornerClassification(state::Registry &, mtl::ComputeChain &, std::span<const CornerClassRequest>);
+    void PlanCornerClassification(state::Registry &, mtl::ComputeChain &, CornerClassBatch &);
     // Classify all corners of the listed meshes, submitting once for planning.
-    void UpdateCornerClassification(state::Scene &, mtl::ComputeChain &, std::span<const uint32_t> ids);
+    void UpdateCornerClassification(state::Registry &, mtl::ComputeChain &, std::span<const uint32_t> ids);
     // Enumerates incident edges from canonical corner links, including boundaries.
     VertexEdgeIncidence GetVertexEdgeIncidence(uint32_t id) const;
 
@@ -741,7 +742,7 @@ decltype(auto) WithPayload(auto &render, auto &record, RenderPayload payload, au
 inline MeshletPayloadBases PayloadBasesOf(const MeshStore::Record &record) { return {record.MeshletTriangles.Values.Offset, record.MeshletVertices.Values.Offset, record.MeshletLocalTriangles.Values.Offset}; }
 
 // The live record the entity's instances draw, or null.
-const MeshStore::Record *TryRecordOf(const state::Scene &, state::Entity);
-const MeshStore::Record &RecordOf(const state::Scene &, state::Entity);
+const MeshStore::Record *TryRecordOf(const state::Registry &, state::Entity);
+const MeshStore::Record &RecordOf(const state::Registry &, state::Entity);
 // Captures the record the entity's instances draw before a write.
-MeshStore::Record &EditRecordOf(state::Scene &, state::Entity);
+MeshStore::Record &EditRecordOf(state::Registry &, state::Entity);

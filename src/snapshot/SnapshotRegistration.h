@@ -1,9 +1,10 @@
 #pragma once
 #include "PathSerialize.h"
+#include "TypeList.h"
 #include "numeric/Serialize.h"
 #include "snapshot/NativeSize.h"
 #include "snapshot/SnapshotRoles.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 namespace snapshot::detail {
 using Comparator = bool (*)(const void *, const void *);
@@ -14,7 +15,7 @@ struct Tables {
 };
 // Non-default-constructible serialized types specialize this emplacer.
 template<typename C>
-inline constexpr void (*CustomEmplace)(state::Scene &, state::Entity, std::span<const std::byte>) = nullptr;
+inline constexpr void (*CustomEmplace)(state::Registry &, state::Entity, std::span<const std::byte>) = nullptr;
 
 // Domains with mixed canonical/cache objects copy only canonical fields.
 template<typename C> C CopyNative(const C &value) { return value; }
@@ -33,7 +34,7 @@ template<typename C> struct ComponentPage : NativePage {
 };
 
 template<typename C>
-void EmplaceTag(state::Scene &r, state::Entity e, std::span<const std::byte>) {
+void EmplaceTag(state::Registry &r, state::Entity e, std::span<const std::byte>) {
     r.emplace_or_replace<C>(e);
 }
 
@@ -50,7 +51,7 @@ void SerializeThunk(const void *component, std::vector<std::byte> &out) {
 }
 
 template<typename C>
-void EmplaceSerialized(state::Scene &r, state::Entity e, std::span<const std::byte> bytes) {
+void EmplaceSerialized(state::Registry &r, state::Entity e, std::span<const std::byte> bytes) {
     if constexpr (CustomEmplace<C> != nullptr) CustomEmplace<C>(r, e, bytes);
     else {
         C value;
@@ -66,7 +67,7 @@ void SerializeBytes(const void *component, std::vector<std::byte> &out) {
 }
 
 template<typename C>
-void EmplaceBytes(state::Scene &r, state::Entity e, std::span<const std::byte> bytes) {
+void EmplaceBytes(state::Registry &r, state::Entity e, std::span<const std::byte> bytes) {
     if constexpr (CustomEmplace<C> != nullptr) CustomEmplace<C>(r, e, bytes);
     else {
         if (bytes.size() != sizeof(C)) return;
@@ -155,7 +156,7 @@ void Add(Tables &tables) {
     if constexpr (Persistent) {
         auto entry = MakeEntry<C>();
         entry.Name = state::TypeName<C>();
-        entry.Rebind = [](state::Scene &r, state::Entity previous, state::Entity current) {
+        entry.Rebind = [](state::Registry &r, state::Entity previous, state::Entity current) {
             auto value = CopyNative(r.get<C>(previous));
             r.remove<C>(previous);
             if (current != state::Null) {
@@ -178,7 +179,7 @@ void Add(Tables &tables) {
         entry.PageValue = [](const store::Blob &value, uint32_t slot) -> const void * {
             return &static_cast<const ComponentPage<C> *>(reinterpret_cast<const NativePage *>(value.Data))->Values[slot].Value;
         };
-        entry.MovePageValue = [](state::Scene &r, state::Entity e, store::Blob &value, uint32_t slot) {
+        entry.MovePageValue = [](state::Registry &r, state::Entity e, store::Blob &value, uint32_t slot) {
             auto &native = static_cast<ComponentPage<C> *>(reinterpret_cast<NativePage *>(value.Data))->Values[slot].Value;
             PrepareNative(native);
             r.emplace_or_replace<C>(e, std::move(native));
@@ -187,10 +188,12 @@ void Add(Tables &tables) {
         tables.Snapshots[id] = entry;
     }
 }
-template<typename... Cs>
-void Persistent(Tables &tables) { (Add<Cs, true>(tables), ...); }
-template<typename... Cs>
-void Derived(Tables &tables) { (Add<Cs, false>(tables), ...); }
+// Classifies one domain's Persistent and Derived components.
+template<typename... Ps, typename... Ds>
+void Classify(Tables &tables, TypeList<Ps...>, TypeList<Ds...>) {
+    (Add<Ps, true>(tables), ...);
+    (Add<Ds, false>(tables), ...);
+}
 
 void RegisterAudio(Tables &);
 void RegisterPhysics(Tables &);

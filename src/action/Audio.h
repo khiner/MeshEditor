@@ -73,5 +73,5 @@ using Action = std::variant<
     PatchFields<ModalSolveSettings, fastfem::Discretization>, PatchFields<ModalSolveSettings, fastfem::TetRefinement>,
     PatchFields<AcousticMaterial, double>, PatchFields<ContactSurface, float>>;
 
-void Apply(state::Scene &, state::Entity viewport, const Action &);
+void Apply(state::Registry &, state::Entity viewport, const Action &);
 } // namespace action::audio

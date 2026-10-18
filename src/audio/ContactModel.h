@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AcousticMaterial.h"
+#include "audio/AudioSchema.h"
 #include "numeric/mat3.h"
 
 using numeric::mat3, numeric::vec3;

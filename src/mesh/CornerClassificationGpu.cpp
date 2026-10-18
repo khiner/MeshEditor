@@ -13,7 +13,7 @@ CornerClassificationPushConstants ClassificationConstants(const MeshArenas &a) {
 }
 } // namespace
 
-CornerClassBatch MeshStore::EncodeCornerClassification(state::Scene &r, mtl::ComputeChain &chain, std::span<const CornerClassRequest> requests) {
+CornerClassBatch MeshStore::EncodeCornerClassification(state::Registry &r, mtl::ComputeChain &chain, std::span<const CornerClassRequest> requests) {
     CornerClassBatch batch{.Jobs = {chain.Scratch, 2u * uint32_t(requests.size())}};
     auto &jobs = batch.Jobs;
     jobs.Begin();
@@ -58,7 +58,7 @@ CornerClassBatch MeshStore::EncodeCornerClassification(state::Scene &r, mtl::Com
     return batch;
 }
 
-void MeshStore::PlanCornerClassification(state::Scene &r, mtl::ComputeChain &chain, CornerClassBatch &batch) {
+void MeshStore::PlanCornerClassification(state::Registry &r, mtl::ComputeChain &chain, CornerClassBatch &batch) {
     auto &jobs = batch.Jobs;
     if (jobs.Jobs.empty()) return;
     const auto state = jobs.ScratchSpan();
@@ -107,7 +107,7 @@ void MeshStore::PlanCornerClassification(state::Scene &r, mtl::ComputeChain &cha
     jobs.Encode(chain, GetMeshPipelines(r), ClassificationConstants(Buffers), WritePasses);
 }
 
-void MeshStore::UpdateCornerClassification(state::Scene &r, mtl::ComputeChain &chain, std::span<const uint32_t> ids) {
+void MeshStore::UpdateCornerClassification(state::Registry &r, mtl::ComputeChain &chain, std::span<const uint32_t> ids) {
     std::vector<CornerClassRequest> requests;
     requests.reserve(ids.size());
     for (const auto id : ids) requests.push_back({.StoreId = id});

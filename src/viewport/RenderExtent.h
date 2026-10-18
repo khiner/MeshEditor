@@ -6,4 +6,4 @@
 
 using numeric::uvec2;
 
-uvec2 RenderExtentPx(const state::Scene &);
+uvec2 RenderExtentPx(const state::Registry &);

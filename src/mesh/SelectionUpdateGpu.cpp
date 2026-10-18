@@ -34,7 +34,7 @@ uint64_t MarkBound(const MeshStore &meshes, const MeshStore::SelectionUpdate &up
 }
 } // namespace
 
-void MeshStore::UpdateSelection(state::Scene &r, mtl::ComputeChain &chain, std::span<const SelectionUpdate> updates) {
+void MeshStore::UpdateSelection(state::Registry &r, mtl::ComputeChain &chain, std::span<const SelectionUpdate> updates) {
     if (updates.empty()) return;
     const profile::CpuScope scope{"UpdateSelection"};
     const auto &pipelines = GetMeshPipelines(r);
@@ -147,7 +147,7 @@ void MeshStore::UpdateSelection(state::Scene &r, mtl::ComputeChain &chain, std::
     });
 }
 
-void MeshStore::DeriveSelectionMasks(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, const GeometryMasks &masks, Element source) const {
+void MeshStore::DeriveSelectionMasks(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, const GeometryMasks &masks, Element source) const {
     const auto &record = Records.at(id);
     const auto source_index = uint32_t(std::ranges::find(Elements, source) - Elements.begin());
     const SelectionMeshUpdate mesh{
@@ -183,7 +183,7 @@ void MeshStore::DeriveSelectionMasks(state::Scene &r, mtl::ComputeChain &chain, 
     chain.Groups(GetMeshPipelines(r)[MeshPass::UpdateSelectionBlocks], pc, count);
 }
 
-void MeshStore::ReconcileSelection(state::Scene &r, mtl::ComputeChain &chain, std::span<const Change> changes) {
+void MeshStore::ReconcileSelection(state::Registry &r, mtl::ComputeChain &chain, std::span<const Change> changes) {
     std::vector<SelectionUpdate> updates;
     for (const auto &change : changes) {
         const auto id = change.StoreId;
@@ -215,7 +215,7 @@ void MeshStore::RebuildSelectionIndex(std::span<const uint32_t> ids) {
     }
 }
 
-Range MeshStore::GatherSelectedElements(state::Scene &r, mtl::ComputeChain &chain, uint32_t id, Element element, BufferArena<uint32_t> &output) const {
+Range MeshStore::GatherSelectedElements(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, Element element, BufferArena<uint32_t> &output) const {
     const auto selection = GetSelectedElements(id, element);
     std::vector<uint32_t> blocks;
     const auto count = selection.ForEachBlock([&](uint32_t block, uint32_t before) {

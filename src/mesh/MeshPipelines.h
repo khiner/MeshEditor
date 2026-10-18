@@ -2,6 +2,7 @@
 
 #include "metal/Shader.h"
 
+#include "mesh/MeshSchema.h"
 #include "state/Entity.h"
 
 #include <mutex>
@@ -196,4 +197,4 @@ struct MeshPipelines {
 
 // Returns mesh pipelines.
 // Each pass compiles when first requested.
-MeshPipelines &GetMeshPipelines(state::Scene &);
+MeshPipelines &GetMeshPipelines(state::Registry &);

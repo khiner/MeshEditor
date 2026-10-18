@@ -2,6 +2,7 @@
 
 #include "Image.h"
 #include "ImageBasedLight.h"
+#include "gltf/GltfSchema.h"
 #include "metal/Slots.h"
 
 #include <map>

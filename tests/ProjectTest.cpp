@@ -257,7 +257,7 @@ void TestRenderInstanceDerivation() {
     auto &p = *f.P;
     auto &r = f.R;
     state::DirtySet created;
-    created.bind(r);
+    created.bind(r, state::Clearing::Explicit);
     created.on<RenderInstance>(state::On::Create | state::On::Destroy);
     const auto entity = f.AddCube();
     const auto slot = r.get<const RenderInstance>(entity).BufferIndex;

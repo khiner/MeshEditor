@@ -10,7 +10,7 @@ namespace mtl {
 struct ComputeChain;
 } // namespace mtl
 namespace state {
-struct Scene;
+struct Registry;
 } // namespace state
 template<typename T> struct BufferArena;
 
@@ -36,7 +36,7 @@ struct MeshClosure {
     uint32_t VertexFans{}; // A face or edge level's host bound on the fan corners of its vertices.
 
     // Records the loop corners of the level's faces or the fan corners of its edges' endpoints, which size the next level.
-    void EncodeIncidence(state::Scene &, mtl::ComputeChain &, uint32_t id, Element);
+    void EncodeIncidence(state::Registry &, mtl::ComputeChain &, uint32_t id, Element);
     void Finish(const mtl::ComputeChain &);
     ClosureSeed Seed(Element) const;
 
@@ -46,19 +46,19 @@ private:
 };
 
 // Edge seeds contribute only loose wires; face-owned edges arrive through the face seeds.
-MeshClosure EncodePrimitiveClosure(state::Scene &, mtl::ComputeChain &, uint32_t id, const ClosureSeed &faces, const ClosureSeed &wires = {}, const ClosureSeed &retained = {}, bool retain_isolated_only = false);
-MeshClosure EncodeVertexClosure(state::Scene &, mtl::ComputeChain &, uint32_t id, const ClosureSeed &vertices);
+MeshClosure EncodePrimitiveClosure(state::Registry &, mtl::ComputeChain &, uint32_t id, const ClosureSeed &faces, const ClosureSeed &wires = {}, const ClosureSeed &retained = {}, bool retain_isolated_only = false);
+MeshClosure EncodeVertexClosure(state::Registry &, mtl::ComputeChain &, uint32_t id, const ClosureSeed &vertices);
 // The endpoints of seed edges, as a vertex seed.
-ClosureSeed EncodeEdgeVertices(state::Scene &, mtl::ComputeChain &, uint32_t id, const ClosureSeed &edges);
+ClosureSeed EncodeEdgeVertices(state::Registry &, mtl::ComputeChain &, uint32_t id, const ClosureSeed &edges);
 // All live elements of a domain, bounded by the record's counts.
-ClosureSeed EncodeAllSeed(state::Scene &, mtl::ComputeChain &, uint32_t id, Element);
+ClosureSeed EncodeAllSeed(state::Registry &, mtl::ComputeChain &, uint32_t id, Element);
 // Listed live handles of a domain, finished on the host.
-ClosureSeed ListSeed(state::Scene &, mtl::ComputeChain &, uint32_t id, Element, std::span<const uint32_t> handles);
+ClosureSeed ListSeed(state::Registry &, mtl::ComputeChain &, uint32_t id, Element, std::span<const uint32_t> handles);
 // Finished face work, with its incidences read on the host.
-ClosureSeed FaceSeed(const state::Scene &, uint32_t id, const BufferArena<uint32_t> &, ElementWork faces);
+ClosureSeed FaceSeed(const state::Registry &, uint32_t id, const BufferArena<uint32_t> &, ElementWork faces);
 // The faces or edges around the host vertices of a seed read on the host, as `work`, that domain's work of a vertex level over that seed.
 // Its bounds and vertices are read on the host, so the face or edge level over it records before the chain submits.
-ClosureSeed AroundVertices(const state::Scene &, uint32_t id, Element, ElementWork work, const ClosureSeed &vertices);
+ClosureSeed AroundVertices(const state::Registry &, uint32_t id, Element, ElementWork work, const ClosureSeed &vertices);
 
 // The derived triangles of finished faces, checked against the mesh's face and triangle ownership.
 // Count is valid once the chain has submitted.
@@ -69,7 +69,7 @@ struct FaceTriangles {
     void Finish(const mtl::ComputeChain &);
 
 private:
-    friend FaceTriangles EncodeFaceTriangles(state::Scene &, mtl::ComputeChain &, uint32_t, const ClosureSeed &);
+    friend FaceTriangles EncodeFaceTriangles(state::Registry &, mtl::ComputeChain &, uint32_t, const ClosureSeed &);
     uint32_t TotalWord{InvalidOffset};
 };
-FaceTriangles EncodeFaceTriangles(state::Scene &, mtl::ComputeChain &, uint32_t id, const ClosureSeed &faces);
+FaceTriangles EncodeFaceTriangles(state::Registry &, mtl::ComputeChain &, uint32_t id, const ClosureSeed &faces);

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "metal/MetalSchema.h"
+
 #include <deque>
 #include <memory>
 #include <unordered_map>

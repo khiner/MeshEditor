@@ -1,12 +1,14 @@
 #pragma once
 
+#include "audio/AudioSchema.h"
+
 #include <filesystem>
 #include <map>
 #include <unordered_map>
 #include <vector>
 
 namespace state {
-struct Scene;
+struct Registry;
 } // namespace state
 
 // Decoded frames keyed by an audio file path or a synthetic source URI.
@@ -22,7 +24,7 @@ struct VertexSamples {
 struct AudioSamples {
     std::unordered_map<std::filesystem::path, std::vector<float>> ByPath;
 };
-inline void Reset(AudioSamples &samples, state::Scene &) { samples.ByPath.clear(); }
+inline void Reset(AudioSamples &samples, state::Registry &) { samples.ByPath.clear(); }
 
 struct SamplePlayback {
     uint32_t Frame{0};

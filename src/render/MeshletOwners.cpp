@@ -1,9 +1,9 @@
 #include "render/MeshletOwners.h"
 #include "mesh/MeshPipelines.h"
 #include "metal/Dispatch.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
-void PrepareMeshletOwners(state::Scene &r, MeshStore::Record &owner, uint32_t topology, std::span<const Range> clusters, std::span<const uint32_t> blocks, std::vector<MeshletOwnersJob> &jobs) {
+void PrepareMeshletOwners(state::Registry &r, MeshStore::Record &owner, uint32_t topology, std::span<const Range> clusters, std::span<const uint32_t> blocks, std::vector<MeshletOwnersJob> &jobs) {
     if (std::ranges::all_of(clusters, [](Range range) { return !range.Count; })) return;
     if (topology >= 3u || owner.ExtrasFaces.Count) throw std::invalid_argument("Meshlet owners require a canonical render owner.");
     auto &meshes = r.Context.get<MeshStore>();
@@ -35,7 +35,7 @@ void PrepareMeshletOwners(state::Scene &r, MeshStore::Record &owner, uint32_t to
     }
 }
 
-void RecordMeshletOwners(state::Scene &r, mtl::ComputeChain &chain, std::span<const MeshletOwnersJob> jobs) {
+void RecordMeshletOwners(state::Registry &r, mtl::ComputeChain &chain, std::span<const MeshletOwnersJob> jobs) {
     if (jobs.empty()) return;
     const auto &render = r.Context.get<const MeshStore>().Render();
     std::vector<uvec2> tiles;
@@ -54,7 +54,7 @@ void RecordMeshletOwners(state::Scene &r, mtl::ComputeChain &chain, std::span<co
     chain.Groups(GetMeshPipelines(r)[MeshPass::MeshletOwners], pc, pc.Count, 64u);
 }
 
-void RetireMeshletOwners(state::Scene &r, MeshStore::Record &owner, std::span<const uint32_t> clusters, std::span<const uint32_t> retired) {
+void RetireMeshletOwners(state::Registry &r, MeshStore::Record &owner, std::span<const uint32_t> clusters, std::span<const uint32_t> retired) {
     if (clusters.empty()) return;
     auto &meshes = r.Context.get<MeshStore>();
     auto &render = meshes.Render();

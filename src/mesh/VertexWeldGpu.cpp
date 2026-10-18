@@ -7,7 +7,7 @@
 #include "mesh/ScratchChunks.h"
 #include "mesh/TiledJobBatch.h"
 
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 namespace {
 enum Domain : uint32_t { Table,
@@ -69,7 +69,7 @@ uint32_t ScratchWords(uint32_t count, const WeldChannels &c) {
         (c.RecordWords + c.TangentWordsPerVertex) * count;
 }
 
-void SubmitChunk(state::Scene &r, std::span<const WeldTarget> chunk, mtl::ComputeChain &chain, Batch &batch) {
+void SubmitChunk(state::Registry &r, std::span<const WeldTarget> chunk, mtl::ComputeChain &chain, Batch &batch) {
     auto &meshes = r.Context.get<MeshStore>();
     const auto &arenas = meshes.Arenas();
     batch.Begin();
@@ -141,7 +141,7 @@ void SubmitChunk(state::Scene &r, std::span<const WeldTarget> chunk, mtl::Comput
 }
 } // namespace
 
-void WeldMeshesNow(state::Scene &r, std::span<const WeldTarget> targets) {
+void WeldMeshesNow(state::Registry &r, std::span<const WeldTarget> targets) {
     const profile::CpuScope scope{"WeldMeshes"};
     auto &meshes = r.Context.get<MeshStore>();
     std::vector<WeldTarget> work;

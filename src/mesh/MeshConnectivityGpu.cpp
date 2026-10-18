@@ -7,7 +7,7 @@
 #include "mesh/PageFootprint.h"
 #include "mesh/ScratchChunks.h"
 #include "mesh/VertexFanBuild.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 // Probing stays short at a load factor below three quarters.
 // Layout arithmetic rejects an oversized job before any 32-bit offset or bit ceiling can wrap.
@@ -63,7 +63,7 @@ uint32_t ScratchWords(const MeshStore &meshes, uint32_t id) {
 }
 } // namespace
 
-void BuildConnectivityNow(state::Scene &r, std::span<const uint32_t> store_ids) {
+void BuildConnectivityNow(state::Registry &r, std::span<const uint32_t> store_ids) {
     if (store_ids.empty()) return;
     const profile::CpuScope scope{"ConnectivityGpu"};
     auto &meshes = r.Context.get<MeshStore>();

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "metal/Image.h"
+#include "metal/MetalSchema.h"
 #include "metal/MslSource.h"
 
 #include <Metal/MTLComputePipeline.hpp>

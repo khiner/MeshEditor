@@ -2,7 +2,7 @@
 
 #include "editor/AudioExcitation.h"
 #include "render/Instance.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 #include <numbers>
 
@@ -28,7 +28,7 @@ vec3 TiltAlongNormal(vec3 n, vec2 joy) {
     return std::cos(theta) * n + std::sin(theta) * (joy.x * t + joy.y * bt) / r;
 }
 
-vec3 ExciteDirection(const state::Scene &r, state::Entity e, uint32_t vertex) {
+vec3 ExciteDirection(const state::Registry &r, state::Entity e, uint32_t vertex) {
     const auto n = VertexNormal(GetMesh(r, r.get<const Instance>(e).Entity), vertex);
     return TiltAlongNormal(n, ImpulseAngle);
 }

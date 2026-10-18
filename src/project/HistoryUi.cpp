@@ -27,7 +27,7 @@ std::string SpacedName(std::string_view name) {
     field::detail::SpaceWords(name, out.data());
     return out;
 }
-std::string TargetName(const state::Scene &r, const action::Target &target) {
+std::string TargetName(const state::Registry &r, const action::Target &target) {
     static constexpr const char *Names[]{"Active", "Selected", "Selected Delta", "Viewport"};
     const auto *e = std::get_if<state::Entity>(&target);
     if (!e) return Names[target.index()];
@@ -36,9 +36,9 @@ std::string TargetName(const state::Scene &r, const action::Target &target) {
 }
 template<typename L> std::string LeafName() { return SpacedName(state::LeafName<L>()); }
 
-template<typename T> void DrawFields(const state::Scene &, T &value, bool &changed, bool &finished);
+template<typename T> void DrawFields(const state::Registry &, T &value, bool &changed, bool &finished);
 
-template<typename T> void DrawValue(const state::Scene &r, const char *label, T &v, const FieldSpec &spec, bool &changed, bool &finished) {
+template<typename T> void DrawValue(const state::Registry &r, const char *label, T &v, const FieldSpec &spec, bool &changed, bool &finished) {
     const auto group = [&](auto &&draw) {
         if (!TreeNodeEx(label, ImGuiTreeNodeFlags_DefaultOpen)) return;
         draw();
@@ -157,12 +157,12 @@ template<typename T> void DrawValue(const state::Scene &r, const char *label, T 
     }
 }
 
-template<typename T> void DrawFields(const state::Scene &r, T &value, bool &changed, bool &finished) {
+template<typename T> void DrawFields(const state::Registry &r, T &value, bool &changed, bool &finished) {
     field::ForEach(value, [&]<size_t I>(auto &member, std::integral_constant<size_t, I>) { DrawValue(r, field::ChainLabel<field::At<T, I>{}>.c_str(), member, Spec<T, I>, changed, finished); });
 }
 
 // The node's label names the component and field a write targets, so only its target and value draw here.
-template<typename L> void DrawLeaf(const state::Scene &r, L &leaf, bool &changed, bool &finished) {
+template<typename L> void DrawLeaf(const state::Registry &r, L &leaf, bool &changed, bool &finished) {
     if constexpr (action::IsUpdate<L>) {
         Text("Target: %s", TargetName(r, leaf.Target).c_str());
         DrawValue(r, "Value", leaf.Value, action::UpdatedField(leaf.ComponentType, leaf.Offset).Field.Spec, changed, finished);

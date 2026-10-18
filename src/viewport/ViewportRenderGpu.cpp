@@ -78,7 +78,7 @@ ExtrasLine ColliderWireParams(const PhysicsShape &shape) {
     );
 }
 
-ExtrasLine ExtrasGizmoParams(const state::Scene &r, state::Entity object, ObjectType type) {
+ExtrasLine ExtrasGizmoParams(const state::Registry &r, state::Entity object, ObjectType type) {
     constexpr auto HaloLines = uint32_t(OverlayDispatch::ExtrasHaloLines);
     constexpr auto RangeSegments = uint32_t(OverlayDispatch::LightRangeSegments);
     constexpr auto SpotSegments = uint32_t(OverlayDispatch::SpotConeSegments);
@@ -123,7 +123,7 @@ ExtrasLine ExtrasGizmoParams(const state::Scene &r, state::Entity object, Object
 }
 
 // Write overlay jobs in stable threadgroup chunks; filter display and selection state on the GPU.
-void BuildOverlayJobs(const state::Scene &r, GpuBuffers &buffers, bool bounding_boxes) {
+void BuildOverlayJobs(const state::Registry &r, GpuBuffers &buffers, bool bounding_boxes) {
     constexpr uint32_t LinesPerJob{uint32_t(OverlayDispatch::LineGroupLines)};
     const auto object_ids = buffers.Instances.ObjectIdBuffer.GetSpan<uint32_t>();
     const auto for_each_instance = [&](state::Entity buffer_entity, auto &&visit) {
@@ -209,7 +209,7 @@ struct MeshDeform {
     bool PerInstance() const { return !ArmatureOffsets.empty() || !WeightOffsets.empty(); }
 };
 
-MeshDeform DeformOf(const state::Scene &r, const GpuBuffers &buffers, const MeshStore::Record &record, const ModelsBuffer &models) {
+MeshDeform DeformOf(const state::Registry &r, const GpuBuffers &buffers, const MeshStore::Record &record, const ModelsBuffer &models) {
     MeshDeform deform;
     const auto object_ids = buffers.Instances.ObjectIdBuffer.GetSpan<uint32_t>({models.InstanceRange.Offset, models.InstanceCount});
     for (uint32_t i = 0u; i < object_ids.size(); ++i) {
@@ -401,7 +401,7 @@ void RecordPrelude(MTL::ComputeCommandEncoder *compute, const Pipelines &pipelin
 }
 
 // Gather dirty bounds and optional posed work into sparse prelude lists, then consume the dirty marks.
-PreludeSource GatherPrelude(state::Scene &r, bool every_posed) {
+PreludeSource GatherPrelude(state::Registry &r, bool every_posed) {
     auto &buffers = r.Context.get<GpuBuffers>();
     const auto entries = buffers.BoundsReduceEntries.Buffer.GetSpan<BoundsEntry>();
     std::array<std::vector<uvec2>, VertexBoundsLevels> bounds;
@@ -618,7 +618,7 @@ void RecordDepthPyramid(
 }
 
 // The visibility/depth pair is still intact here; no shading variant needs velocity outputs.
-void RecordMotionBlurPostFx(state::Scene &r, state::Entity viewport, mtl::PassChain &chain, uint32_t ubo_offset) {
+void RecordMotionBlurPostFx(state::Registry &r, state::Entity viewport, mtl::PassChain &chain, uint32_t ubo_offset) {
     const auto &slots = r.Context.get<const mtl::BindlessSet>();
     const auto &buffers = r.Context.get<const GpuBuffers>();
     const auto &main = GetPipelines(r).Main;
@@ -663,7 +663,7 @@ void RecordMotionBlurPostFx(state::Scene &r, state::Entity viewport, mtl::PassCh
 }
 
 struct DisplayContext {
-    DisplayContext(const state::Scene &r, state::Entity viewport)
+    DisplayContext(const state::Registry &r, state::Entity viewport)
         : R(r), Buffers(r.Context.get<const GpuBuffers>()), Meshes(r.Context.get<const MeshStore>()),
           Settings(r.get<const ViewportDisplay>(viewport)), Mode(r.get<const Interaction>(viewport).Mode), EditElement(r.get<const EditMode>(viewport).Value),
           Primaries(r.get<const EditPrimaries>(viewport).All), SelectedMeshes(r.get<const SelectionFlags>(viewport).Meshes),
@@ -673,7 +673,7 @@ struct DisplayContext {
         }
     }
 
-    const state::Scene &R;
+    const state::Registry &R;
     const GpuBuffers &Buffers;
     const MeshStore &Meshes;
     const ViewportDisplay &Settings;
@@ -794,7 +794,7 @@ MeshDisplayState ComputeMeshDisplay(const DisplayContext &c, state::Entity mesh_
 
 // Rederives the mesh's vertex overlays, and writes its record display fields when they changed, moving its flag totals to them.
 // The tally also follows the edge sharpness an edit overlay draws, which changes apart from the display fields.
-void RefreshMeshDisplay(state::Scene &r, const DisplayContext &c, state::Entity mesh_entity, const MeshStore::Record &mb, const PosedLayout *pose) {
+void RefreshMeshDisplay(state::Registry &r, const DisplayContext &c, state::Entity mesh_entity, const MeshStore::Record &mb, const PosedLayout *pose) {
     const auto [display, overlays] = ComputeMeshDisplay(c, mesh_entity, mb, pose);
     if (overlays) r.emplace_or_replace<MeshVertexOverlays>(mesh_entity, overlays);
     else r.remove<MeshVertexOverlays>(mesh_entity);
@@ -828,7 +828,7 @@ struct LayoutContext {
 // Instances with the same deformation share one bounds entry; independently deformed instances use separate entries and poses.
 // Keep an empty static entry for meshes without instances.
 // Release bounds and pose storage when the mesh record or ModelsBuffer component is absent.
-void LayOutMesh(state::Scene &r, const LayoutContext &c, state::Entity mesh_entity) {
+void LayOutMesh(state::Registry &r, const LayoutContext &c, state::Entity mesh_entity) {
     auto &buffers = r.Context.get<GpuBuffers>();
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto &render = meshes.Render();
@@ -967,12 +967,12 @@ void LayOutMesh(state::Scene &r, const LayoutContext &c, state::Entity mesh_enti
     r.emplace_or_replace<MeshBoundsDirty>(mesh_entity);
 }
 
-void RecordSparseEditPrelude(state::Scene &, state::Entity, mtl::PassChain &);
+void RecordSparseEditPrelude(state::Registry &, state::Entity, mtl::PassChain &);
 
 // Record one phase's passes into `cb`, which is already begun with viewport and scissor set.
 // `ubo_offset` selects the view UBO instance every bind in the phase reads.
 // The phase runs the prelude over the source its recording gathered.
-void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain, const PreludeSource &prelude, RenderPhase phase, uint32_t ubo_offset, uint32_t sample_weight = 1u) {
+void RecordPhase(state::Registry &r, state::Entity viewport, mtl::PassChain &chain, const PreludeSource &prelude, RenderPhase phase, uint32_t ubo_offset, uint32_t sample_weight = 1u) {
     const profile::CpuScope scope{"RecordRenderCommandBuffer"};
     // Multi-step blur separates scene accumulation from sharp overlay rendering.
     const bool draw_scene = phase != RenderPhase::BlurResolve;
@@ -1648,7 +1648,7 @@ void DrawMeshlets(
 }
 
 void DrawVertexBlocks(
-    MTL::RenderCommandEncoder *encoder, const state::Scene &r, state::Entity mesh_entity, uint32_t instance, bool sound_points,
+    MTL::RenderCommandEncoder *encoder, const state::Registry &r, state::Entity mesh_entity, uint32_t instance, bool sound_points,
     uint32_t pyramid_slot, float min_diameter_pixels
 ) {
     const auto &buffers = r.Context.get<const GpuBuffers>();
@@ -1681,7 +1681,7 @@ void DrawVertexBlocks(
     }
 }
 
-void RecordRenderCommandBuffer(state::Scene &r, state::Entity viewport, MTL::CommandBuffer *command_buffer, RenderPhase phase) {
+void RecordRenderCommandBuffer(state::Registry &r, state::Entity viewport, MTL::CommandBuffer *command_buffer, RenderPhase phase) {
     const mtl::AutoreleaseScope native_scope;
     profile::BeginRecording();
     mtl::PassChain chain{command_buffer, profile::RecordingTimer()};
@@ -1690,7 +1690,7 @@ void RecordRenderCommandBuffer(state::Scene &r, state::Entity viewport, MTL::Com
     profile::EndRecording();
 }
 
-void RecordBlurStepsCommandBuffer(state::Scene &r, state::Entity viewport, MTL::CommandBuffer *command_buffer, std::span<const uint32_t> sample_weights) {
+void RecordBlurStepsCommandBuffer(state::Registry &r, state::Entity viewport, MTL::CommandBuffer *command_buffer, std::span<const uint32_t> sample_weights) {
     const mtl::AutoreleaseScope native_scope;
     const auto &buffers = r.Context.get<const GpuBuffers>();
     profile::BeginRecording();
@@ -1704,7 +1704,7 @@ void RecordBlurStepsCommandBuffer(state::Scene &r, state::Entity viewport, MTL::
     profile::EndRecording();
 }
 
-void UpdateAuthoredMorphShading(state::Scene &r, mtl::ComputeChain &chain, std::span<const state::Entity> mesh_entities) {
+void UpdateAuthoredMorphShading(state::Registry &r, mtl::ComputeChain &chain, std::span<const state::Entity> mesh_entities) {
     auto &meshes = r.Context.get<MeshStore>();
     auto &buffers = r.Context.get<GpuBuffers>();
     // Each position-only target gets a derive entry reading its full-weight pose directly.
@@ -1774,7 +1774,7 @@ void UpdateAuthoredMorphShading(state::Scene &r, mtl::ComputeChain &chain, std::
     }
 }
 
-void FinalizeAuthoredShading(state::Scene &r, mtl::ComputeChain &chain) {
+void FinalizeAuthoredShading(state::Registry &r, mtl::ComputeChain &chain) {
     auto &meshes = r.Context.get<MeshStore>();
     const auto authored = r.view<const AuthoredCornerNormals, const MeshHandle>() | std::ranges::to<std::vector>();
     for (const auto entity : authored) {
@@ -1795,7 +1795,7 @@ void FinalizeWork(MTL::ComputeCommandEncoder *encoder, const Pipelines &pipeline
     encoder->dispatchThreadgroups(MTL::Size(work.size(), 1, 1), ThreadgroupSize::Linear256);
 }
 
-MeshEditWork &PrepareMeshEditWork(state::Scene &r, state::Entity entity) {
+MeshEditWork &PrepareMeshEditWork(state::Registry &r, state::Entity entity) {
     auto &buffers = r.Context.get<GpuBuffers>();
     const auto mesh = GetDrawnMesh(r, entity);
     const auto id = mesh.GetStoreId();
@@ -1823,7 +1823,7 @@ MeshEditWork &PrepareMeshEditWork(state::Scene &r, state::Entity entity) {
 }
 } // namespace
 
-void ReleaseMeshEditWork(state::Scene &r, state::Entity entity) {
+void ReleaseMeshEditWork(state::Registry &r, state::Entity entity) {
     const auto *work = r.try_get<const MeshEditWork>(entity);
     if (!work) return;
     // Work that required a pose posed the mesh's bounds.
@@ -1832,7 +1832,7 @@ void ReleaseMeshEditWork(state::Scene &r, state::Entity entity) {
     r.emplace_or_replace<MeshDisplayDirty>(entity);
 }
 
-void ReleaseMeshEditWorkRanges(state::Scene &r, state::Entity entity) {
+void ReleaseMeshEditWorkRanges(state::Registry &r, state::Entity entity) {
     auto &buffers = r.Context.get<GpuBuffers>();
     const auto &w = r.get<const MeshEditWork>(entity);
     for (const auto range : {w.Candidates, w.Vertices, w.Faces, w.Normals, w.Meshlets, w.BoundsTiles}) buffers.GeometryWork.Release(WorkStorageRange(range));
@@ -1847,7 +1847,7 @@ using GeometryEditJobs = std::vector<std::pair<state::Entity, CommitPosedGeometr
 // Stale candidates seed from the vertex selection in the first submit.
 // Counts bound sparse allocation between the phases.
 // Repeated parameter changes reuse the same tables.
-void PrepareGeometryFootprints(state::Scene &r, mtl::ComputeChain &chain, GeometryEditJobs &jobs) {
+void PrepareGeometryFootprints(state::Registry &r, mtl::ComputeChain &chain, GeometryEditJobs &jobs) {
     struct Footprint {
         MeshEditWork *Work;
         CommitPosedGeometryPushConstants *Pc;
@@ -1963,7 +1963,7 @@ void PrepareGeometryFootprints(state::Scene &r, mtl::ComputeChain &chain, Geomet
     }
 }
 
-CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Scene &r, state::Entity entity, state::Entity primary, const PendingTransform *pending, const PosedNamespaces *pose = nullptr, std::span<const Range> changed = {}) {
+CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Registry &r, state::Entity entity, state::Entity primary, const PendingTransform *pending, const PosedNamespaces *pose = nullptr, std::span<const Range> changed = {}) {
     auto &buffers = r.Context.get<GpuBuffers>();
     auto &meshes = r.Context.get<MeshStore>();
     auto &w = PrepareMeshEditWork(r, entity);
@@ -2018,7 +2018,7 @@ CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Scene &r, state::Ent
 }
 
 // Binds the scene on the encoder once, so later passes on it set only their pipelines.
-void RecordGeometryEditBatch(state::Scene &r, MTL::ComputeCommandEncoder *encoder, GeometryEditJobs &commits, bool posed) {
+void RecordGeometryEditBatch(state::Registry &r, MTL::ComputeCommandEncoder *encoder, GeometryEditJobs &commits, bool posed) {
     auto &buffers = r.Context.get<GpuBuffers>();
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto &pipelines = GetPipelines(r);
@@ -2063,7 +2063,7 @@ void RecordGeometryEditBatch(state::Scene &r, MTL::ComputeCommandEncoder *encode
 }
 // Faces keep their identities and triangle ranges.
 // Canonical position edits discard affected authored tangents; those render keys and changed diagonals share one repair.
-bool RetessellateGeometry(state::Scene &r, mtl::ComputeChain &chain, GeometryEditJobs &geometry, bool preview) {
+bool RetessellateGeometry(state::Registry &r, mtl::ComputeChain &chain, GeometryEditJobs &geometry, bool preview) {
     const auto &work = r.Context.get<const GpuBuffers>().GeometryWork;
     std::vector<MeshRetessellation> inputs;
     for (const auto &[entity, edit] : geometry) {
@@ -2091,7 +2091,7 @@ bool RetessellateGeometry(state::Scene &r, mtl::ComputeChain &chain, GeometryEdi
 
 } // namespace
 
-void RefreshEditedPositions(state::Scene &r, mtl::ComputeChain &chain, std::span<const MeshVertexChanges> changes, bool retessellate) {
+void RefreshEditedPositions(state::Registry &r, mtl::ComputeChain &chain, std::span<const MeshVertexChanges> changes, bool retessellate) {
     if (changes.empty()) return;
     const profile::CpuScope scope{"RefreshEditedPositions"};
     GeometryEditJobs jobs;
@@ -2108,7 +2108,7 @@ void RefreshEditedPositions(state::Scene &r, mtl::ComputeChain &chain, std::span
     }
 }
 
-bool RefreshPreviewTessellation(state::Scene &r, state::Entity viewport) {
+bool RefreshPreviewTessellation(state::Registry &r, state::Entity viewport) {
     const auto *pending = r.try_get<const PendingTransform>(viewport);
     GeometryEditJobs jobs;
     for (const auto &[entity, primary] : r.get<const EditPrimaries>(viewport).Transformable) {
@@ -2127,7 +2127,7 @@ bool RefreshPreviewTessellation(state::Scene &r, state::Entity viewport) {
     return changed;
 }
 
-std::vector<state::Entity> CommitPosedGeometry(state::Scene &r, mtl::ComputeChain &chain, state::Entity viewport, std::span<const state::Entity> mesh_entities) {
+std::vector<state::Entity> CommitPosedGeometry(state::Registry &r, mtl::ComputeChain &chain, state::Entity viewport, std::span<const state::Entity> mesh_entities) {
     const profile::CpuScope scope{"CommitGeometry"};
     const auto *pending = r.try_get<const PendingTransform>(viewport);
     if (!pending) return {};
@@ -2150,7 +2150,7 @@ std::vector<state::Entity> CommitPosedGeometry(state::Scene &r, mtl::ComputeChai
     return entities;
 }
 
-std::vector<state::Entity> PublishEditedPositions(state::Scene &r, mtl::ComputeChain &chain, std::span<const state::Entity> entities, PositionPublication publication) {
+std::vector<state::Entity> PublishEditedPositions(state::Registry &r, mtl::ComputeChain &chain, std::span<const state::Entity> entities, PositionPublication publication) {
     const bool preview = publication == PositionPublication::Preview;
     auto &meshes = r.Context.get<MeshStore>();
     const auto &buffers = r.Context.get<GpuBuffers>();
@@ -2201,7 +2201,7 @@ std::vector<state::Entity> PublishEditedPositions(state::Scene &r, mtl::ComputeC
 }
 
 namespace {
-void RecordSparseEditPrelude(state::Scene &r, state::Entity viewport, mtl::PassChain &chain) {
+void RecordSparseEditPrelude(state::Registry &r, state::Entity viewport, mtl::PassChain &chain) {
     const auto &buffers = r.Context.get<GpuBuffers>();
     const auto &pipelines = GetPipelines(r);
     const auto *pending = r.try_get<const PendingTransform>(viewport);
@@ -2250,7 +2250,7 @@ void RecordSparseEditPrelude(state::Scene &r, state::Entity viewport, mtl::PassC
 }
 } // namespace
 
-void LayOutMeshes(state::Scene &r, state::Entity viewport) {
+void LayOutMeshes(state::Registry &r, state::Entity viewport) {
     const profile::CpuScope scope{"LayOutMeshes"};
     const bool edit_mode = r.get<const Interaction>(viewport).Mode == InteractionMode::Edit;
     const LayoutContext context{edit_mode, edit_mode && r.all_of<PendingTransform>(viewport), r.get<const EditPrimaries>(viewport).All};
@@ -2258,7 +2258,7 @@ void LayOutMeshes(state::Scene &r, state::Entity viewport) {
     r.clear<MeshLayoutDirty>();
 }
 
-void ReleaseMeshLayout(state::Scene &r, state::Entity mesh_entity) {
+void ReleaseMeshLayout(state::Registry &r, state::Entity mesh_entity) {
     const auto &run = r.get<const BoundsRun>(mesh_entity);
     auto &pending = r.Context.emplace<PendingObjectRemovals>();
     pending.BoundsEntryRanges.push_back(run.Entries);
@@ -2268,7 +2268,7 @@ void ReleaseMeshLayout(state::Scene &r, state::Entity mesh_entity) {
     if (run.Posed()) ReleasePoses(r.Context.get<GpuBuffers>(), mesh_entity);
 }
 
-void RefreshMeshDisplays(state::Scene &r, state::Entity viewport) {
+void RefreshMeshDisplays(state::Registry &r, state::Entity viewport) {
     const DisplayContext context{r, viewport};
     for (const auto mesh_entity : r.view<const MeshDisplayDirty>() | std::ranges::to<std::vector>()) {
         if (const auto *mb = TryRecordOf(r, mesh_entity)) RefreshMeshDisplay(r, context, mesh_entity, *mb, r.try_get<const PosedLayout>(mesh_entity));

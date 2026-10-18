@@ -25,4 +25,4 @@ ElementWorkSeedJob PrepareElementMembershipWork(BufferArena<uint32_t> &storage, 
 }
 
 // Records membership gathering before the shared compact work sorter.
-void EncodeElementMembershipWork(state::Scene &, mtl::ComputeChain &, std::span<const ElementWorkSeedJob>);
+void EncodeElementMembershipWork(state::Registry &, mtl::ComputeChain &, std::span<const ElementWorkSeedJob>);

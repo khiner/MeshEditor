@@ -6,7 +6,7 @@
       Capture changed pages before in-place CPU or GPU writes.
 - UI and event code emits actions whose `Apply` handlers mutate document state.
     - Direct writes are also permitted in Derived or reactive systems, engine/GPU write-back, and background-worker continuations.
-- `state::Scene` owns entity allocation, native component pages, domain services, and dirty sets.
+- `state::Registry` owns entity allocation, native component pages, domain services, and dirty sets.
     - Component and service access uses fixed compile-time schema slots, with no runtime type lookup.
     - Keep component definitions, registration, and encoding in their owning domain TUs.
     - Reads return const values.
@@ -14,7 +14,7 @@
       Mutable views capture each value they expose; use const views for reading.
     - Create/update/destroy publish lifecycle changes.
       Destroy handlers observe the old value.
-      A scene reset drops components without handlers, and each service holding scene state declares `Reset(T &, Scene &)` to restore its post-init state.
+      A scene reset drops components without handlers, and each service holding scene state declares `Reset(T &, Registry &)` to restore its post-init state.
       Managed dirty sets discard destroyed identities; explicit removal trackers retain them until consumed.
     - History owns native copies of changed CPU records and shares unchanged trie branches.
       Serialization is for hashes and persistent records, not hot value installation.

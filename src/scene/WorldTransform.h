@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gpu/Transform.h"
+#include "scene/SceneSchema.h"
 #include "state/Entity.h"
 
 // World transform for a node without an instance transform slot.
@@ -12,9 +13,9 @@ struct WorldTransform : Transform {
 
 // The node's world transform from its home, or null for a node the settle pass has not composed yet.
 // The pointer stays valid until the next instance slot placement.
-const Transform *WorldTransformOf(const state::Scene &, state::Entity);
-// Writes the node's world transform to its home and publishes Change::WorldTransform.
-void SetWorldTransform(state::Scene &, state::Entity, const Transform &);
+const Transform *WorldTransformOf(const state::Registry &, state::Entity);
+// Writes the node's world transform to its home and publishes SceneChanges::WorldTransform.
+void SetWorldTransform(state::Registry &, state::Entity, const Transform &);
 
 // Evaluated local pose of an animated node or a bone.
 // Derived.

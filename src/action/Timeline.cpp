@@ -3,7 +3,7 @@
 #include "gltf/SourceAssets.h"
 #include "render/LightComponents.h"
 #include "selection/SelectionState.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 #include "viewport/ViewportDisplay.h"
 
 #include <cmath>
@@ -18,7 +18,7 @@ int WrapFrame(int frame, const TimelineRange &range) {
 }
 } // namespace
 
-void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
+void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
     const auto enter_presentation = [&] {
         const auto *source_assets = r.try_get<const gltf::SourceAssets>(viewport);
         const bool explicit_ibl = source_assets && source_assets->ImageBasedLight.has_value();

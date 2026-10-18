@@ -1,6 +1,7 @@
 #pragma once
 
 #include "viewport/RenderView.h"
+#include "viewport/ViewportSchema.h"
 
 using numeric::vec2;
 

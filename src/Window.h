@@ -1,6 +1,7 @@
 #pragma once
 
 #include "action/Nodes.h"
+#include "viewport/ViewportSchema.h"
 
 struct TabSelection {
     uint32_t Bar{}, Tab{};

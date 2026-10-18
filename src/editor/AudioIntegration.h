@@ -3,31 +3,31 @@
 
 enum class EventPass;
 
-void RegisterAudioComponentHandlers(state::Scene &);
+void RegisterAudioComponentHandlers(state::Registry &);
 // Install finished modal solves and apply pending model rescales.
-void ApplyCompletedModalSolves(state::Scene &, EventPass);
+void ApplyCompletedModalSolves(state::Registry &, EventPass);
 // Retune scaled objects and refresh listener gains after world-transform updates.
-void UpdateModalPlacement(state::Scene &);
+void UpdateModalPlacement(state::Registry &);
 // Strike the objects hit by the displayed frame's contacts.
-void UpdateAudioContacts(state::Scene &);
+void UpdateAudioContacts(state::Registry &);
 
 // Create the modal audio context and register its component handlers.
 // Must run before a scene loads, so that loading one populates the bank.
 // The output device is separate, and capture works without it.
-void InitAudioSystem(state::Scene &);
+void InitAudioSystem(state::Registry &);
 // Destroy the modal audio context after any output device has stopped.
-void DeinitAudioSystem(state::Scene &);
-bool HasPendingModalSolves(const state::Scene &);
-void CancelModalSolves(state::Scene &);
-void RemoveAudioComponents(state::Scene &, state::Entity sound_entity);
+void DeinitAudioSystem(state::Registry &);
+bool HasPendingModalSolves(const state::Registry &);
+void CancelModalSolves(state::Registry &);
+void RemoveAudioComponents(state::Registry &, state::Entity sound_entity);
 
-void ApplyModalModel(state::Scene &, state::Entity sound_entity, const std::filesystem::path &);
+void ApplyModalModel(state::Registry &, state::Entity sound_entity, const std::filesystem::path &);
 
 // Assign sample[i] to mesh_vertices[i].
 // Used by RealImpact initial load and mic swap.
 // Unreferenced samples are released by the component handler.
 void SetVertexSamples(
-    state::Scene &, state::Entity sound_entity,
+    state::Registry &, state::Entity sound_entity,
     std::span<const uint32_t> mesh_vertices, std::span<LoadedSample>
 );
 
@@ -35,16 +35,16 @@ void SetVertexSamples(
 // Creates SoundVertices / VertexSamples / SoundVerticesModel::Samples if missing.
 // The sample store deduplicates by path.
 void AssignVertexSample(
-    state::Scene &, state::Entity sound_entity,
+    state::Registry &, state::Entity sound_entity,
     std::span<const uint32_t> mesh_vertices, const std::filesystem::path &, std::vector<float> &&frames
 );
 
 // Remove samples from every mesh vertex in `mesh_vertices`.
 // Removes audio components if the sound object ends up empty and has no modal model.
 void RemoveVertexSamples(
-    state::Scene &, state::Entity sound_entity,
+    state::Registry &, state::Entity sound_entity,
     std::span<const uint32_t> mesh_vertices
 );
 
-void Stop(state::Scene &, state::Entity sound_entity);
-void SetModel(state::Scene &, state::Entity sound_entity, SoundVerticesModel);
+void Stop(state::Registry &, state::Entity sound_entity);
+void SetModel(state::Registry &, state::Entity sound_entity, SoundVerticesModel);

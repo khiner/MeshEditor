@@ -20,10 +20,10 @@ const detail::Tables &GetTables() {
 } // namespace
 const SnapshotEntries &SnapshotTable() { return GetTables().Snapshots; }
 
-void VerifyCoverage(const state::Scene &r) {
+void VerifyCoverage(const state::Registry &r) {
     std::set<std::string> unclassified; // Stable diagnostic ordering.
     for (const auto id : r.Active) {
-        if (!r.Tables[id].empty() && !GetTables().Classified[id]) unclassified.emplace(state::SchemaNames[id]);
+        if (!r.Tables[id].empty() && !GetTables().Classified[id]) unclassified.emplace(r.Tables[id].Name);
     }
     if (unclassified.empty()) return;
 

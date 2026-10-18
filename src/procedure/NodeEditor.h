@@ -3,10 +3,10 @@
 #include "Window.h"
 
 namespace state {
-struct Scene;
+struct Registry;
 } // namespace state
 
 namespace procedure {
-void DrawNodesWindow(state::Scene &, state::Entity viewport, NodesWindow &, bool interactive);
-void DrawNodeStyle(state::Scene &, state::Entity viewport);
+void DrawNodesWindow(state::Registry &, state::Entity viewport, NodesWindow &, bool interactive);
+void DrawNodeStyle(state::Registry &, state::Entity viewport);
 } // namespace procedure

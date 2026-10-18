@@ -66,7 +66,7 @@ void PublishStoreSelection(const MeshStore &, MeshTopologyTask &);
 uint32_t TopologyScratchBound(const MeshStore &, const MeshTopologyTask &);
 
 namespace state {
-struct Scene;
+struct Registry;
 } // namespace state
 struct GeometryTopologyResult {
     uint32_t GeometryId{};
@@ -79,12 +79,12 @@ struct GeometryTopologyResult {
 // KeepSelectedFaces copies may precede their source's one mutation (separation).
 // Dependent planner stages, such as BisectTasks/SymmetrizeTasks, use ExecuteGeometryTopologyStages.
 // Results describe emitted elements; untouched elements keep their canonical handles.
-std::vector<GeometryTopologyResult> ExecuteGeometryTopology(state::Scene &, std::span<const MeshTopologyTask>);
+std::vector<GeometryTopologyResult> ExecuteGeometryTopology(state::Registry &, std::span<const MeshTopologyTask>);
 
 // Execute dependent tasks in order; each task reads the preceding task's completed geometry.
 // Returns one result per stage, including no-op stages; later stages may retire earlier handles.
-std::vector<GeometryTopologyResult> ExecuteGeometryTopologyStages(state::Scene &, std::span<const MeshTopologyTask>);
+std::vector<GeometryTopologyResult> ExecuteGeometryTopologyStages(state::Registry &, std::span<const MeshTopologyTask>);
 
 // Executes a boolean task into a new mesh, then collapses the zero-length edges that crossings at coincident points leave.
 // Returns the new mesh, or none when the task changed nothing.
-std::optional<uint32_t> ExecuteGeometryBoolean(state::Scene &, const MeshTopologyTask &);
+std::optional<uint32_t> ExecuteGeometryBoolean(state::Registry &, const MeshTopologyTask &);

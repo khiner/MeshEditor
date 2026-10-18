@@ -20,4 +20,4 @@ struct WeldTarget {
 };
 
 // Merges vertices identical across every vertex-domain channel and compacts their GPU arenas.
-void WeldMeshesNow(state::Scene &, std::span<const WeldTarget>);
+void WeldMeshesNow(state::Registry &, std::span<const WeldTarget>);

@@ -15,15 +15,16 @@
 namespace snapshot::detail {
 
 void RegisterScene(Tables &tables) {
-    Persistent<
-        Transform, PunctualLight, Name, Selected, Active, ObjectKind, Scene, ActiveScene, SceneMembership, SubElementOf,
-        ScaleLocked, Instance, Hidden, SceneParent, SceneChildren, ObjectExtrasTag, Path, Perspective, Orthographic, TimelineRange,
-        TimelinePlayback, TimelineNavigation, TimelineView, TimelineTheme, AnimationClips, Animations, MorphWeightRange, ImageLight, Visibility>(tables);
-    Derived<
-        RenderInstance, WorldTransform, ModelsBuffer, LightIndex, LastEvaluatedFrame,
-        PlaybackFrame>(tables);
-    Derived<
-        PosedLayout, MeshEditWork, MeshVertexOverlays, BoundsRun,
-        MeshletPositionsDirty, ClusterLodDirty, ClusterLodDemand, MeshDisplayDirty, MeshLayoutDirty, MeshBoundsDirty>(tables);
+    Classify(
+        tables,
+        TypeList<
+            Transform, PunctualLight, Name, Selected, Active, ObjectKind, Scene, ActiveScene, SceneMembership, SubElementOf,
+            ScaleLocked, Instance, Hidden, SceneParent, SceneChildren, ObjectExtrasTag, Path, Perspective, Orthographic, TimelineRange,
+            TimelinePlayback, TimelineNavigation, TimelineView, TimelineTheme, AnimationClips, Animations, MorphWeightRange, ImageLight, Visibility>{},
+        TypeList<
+            RenderInstance, WorldTransform, ModelsBuffer, LightIndex, LastEvaluatedFrame, PlaybackFrame,
+            PosedLayout, MeshEditWork, MeshVertexOverlays, BoundsRun,
+            MeshletPositionsDirty, ClusterLodDirty, ClusterLodDemand, MeshDisplayDirty, MeshLayoutDirty, MeshBoundsDirty>{}
+    );
 }
 } // namespace snapshot::detail

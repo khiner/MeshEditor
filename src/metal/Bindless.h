@@ -2,6 +2,7 @@
 
 #include "RangeAllocator.h"
 #include "metal/MetalContext.h"
+#include "metal/MetalSchema.h"
 #include "metal/Slots.h"
 
 namespace MTL {

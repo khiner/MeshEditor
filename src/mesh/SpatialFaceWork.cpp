@@ -8,7 +8,7 @@
 #include "mesh/MeshStore.h"
 #include "mesh/MeshTopology.h"
 #include "metal/Dispatch.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 namespace {
 void CheckSpatialState(const mtl::ComputeChain &chain, Range state) {
@@ -56,7 +56,7 @@ bool Overlaps(const MeshTopologyTask &task, const AABB &bounds) {
 }
 } // namespace
 
-SpatialFaceWork::SpatialFaceWork(state::Scene &r, mtl::ComputeChain &chain, const MeshTopologyTask &task) {
+SpatialFaceWork::SpatialFaceWork(state::Registry &r, mtl::ComputeChain &chain, const MeshTopologyTask &task) {
     const profile::CpuScope scope{"SpatialFaceCount"};
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto &record = meshes.Get(task.SourceId);
@@ -111,7 +111,7 @@ SpatialFaceWork::SpatialFaceWork(state::Scene &r, mtl::ComputeChain &chain, cons
     };
 }
 
-void SpatialFaceWork::RecordFaces(state::Scene &r, mtl::ComputeChain &chain) {
+void SpatialFaceWork::RecordFaces(state::Registry &r, mtl::ComputeChain &chain) {
     if (!CandidateCount) return;
     chain.Groups(GetMeshPipelines(r)[MeshPass::SpatialFaceQueryExpand], Pc, (CandidateCount + 255u) / 256u);
     EncodeSortElementWork(r, chain, std::span{&Faces, 1u});

@@ -1,4 +1,5 @@
 #pragma once
+#include "physics/PhysicsSchema.h"
 #include "state/Entity.h"
 #include <span>
 #include <vector>
@@ -13,10 +14,10 @@ struct ColliderListedUnder {
     state::Entity MeshEntity;
 };
 
-void RegisterMeshColliderHandlers(state::Scene &);
+void RegisterMeshColliderHandlers(state::Registry &);
 // The colliders listed under the mesh.
-std::span<const state::Entity> MeshCollidersOf(const state::Scene &, state::Entity mesh_entity);
+std::span<const state::Entity> MeshCollidersOf(const state::Registry &, state::Entity mesh_entity);
 // Moves each created or changed collider to its current mesh's list, and takes each collider whose shape left out of its list.
-void UpdateMeshColliders(state::Scene &);
+void UpdateMeshColliders(state::Registry &);
 // Rederives each entity's collider shape, fitting auto-fit dimensions to its mesh's vertex bounds.
-void RederiveColliders(state::Scene &, std::span<const state::Entity>);
+void RederiveColliders(state::Registry &, std::span<const state::Entity>);

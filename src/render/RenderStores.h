@@ -4,10 +4,10 @@ namespace mtl {
 struct Context;
 struct BufferContext;
 } // namespace mtl
-void InitRenderStoreContext(state::Scene &, const mtl::Context &);
-void RegisterRenderStoreHandlers(state::Scene &);
-mtl::BufferContext &InitRenderStores(state::Scene &);
-void InitDefaultMaterial(state::Scene &);
-void DeinitTextureStores(state::Scene &);
-void DeinitRenderStores(state::Scene &);
-void DeinitRenderStoreContext(state::Scene &);
+void InitRenderStoreContext(state::Registry &, const mtl::Context &);
+void RegisterRenderStoreHandlers(state::Registry &);
+mtl::BufferContext &InitRenderStores(state::Registry &);
+void InitDefaultMaterial(state::Registry &);
+void DeinitTextureStores(state::Registry &);
+void DeinitRenderStores(state::Registry &);
+void DeinitRenderStoreContext(state::Registry &);

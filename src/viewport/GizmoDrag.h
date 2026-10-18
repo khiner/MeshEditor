@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gpu/Transform.h"
+#include "viewport/ViewportSchema.h"
 
 struct StartTransform {
     Transform T;

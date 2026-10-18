@@ -2,6 +2,7 @@
 
 #include "gpu/Element.h"
 #include "object/ObjectCreateInfo.h"
+#include "viewport/ViewportSchema.h"
 
 #include <filesystem>
 

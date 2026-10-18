@@ -1,6 +1,6 @@
 #include "action/Io.h"
 #include "editor/AudioIntegration.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 #include "Profile.h"
 #include "Variant.h"
@@ -24,7 +24,7 @@ using numeric::Radians;
 
 namespace action::io {
 namespace {
-void LoadGltfFile(state::Scene &r, state::Entity viewport, const std::filesystem::path &path) {
+void LoadGltfFile(state::Registry &r, state::Entity viewport, const std::filesystem::path &path) {
     const profile::CpuScope scope{"LoadGltfFile"};
     auto result = gltf::LoadGltf(path, r, viewport);
     if (!result) {
@@ -40,7 +40,7 @@ void LoadGltfFile(state::Scene &r, state::Entity viewport, const std::filesystem
 }
 } // namespace
 
-void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
+void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
     std::visit(
         overloaded{
             [&](const LoadDefaultScene &) { AddDefaultSceneContent(r); },

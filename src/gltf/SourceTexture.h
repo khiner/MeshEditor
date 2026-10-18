@@ -11,11 +11,11 @@ struct NormalMapRef {
 };
 
 // Returns the resolved source image index.
-std::optional<uint32_t> TextureImageIndex(const state::Scene &, uint32_t texture_index);
+std::optional<uint32_t> TextureImageIndex(const state::Registry &, uint32_t texture_index);
 
 // Returns decoded RGBA8 source pixels.
-std::optional<DecodedImage> DecodeImageRgba8(const state::Scene &, uint32_t image_index);
+std::optional<DecodedImage> DecodeImageRgba8(const state::Registry &, uint32_t image_index);
 
 // Returns the normal map for the mesh's first primitive.
-std::optional<NormalMapRef> MeshMaterialNormalMap(const state::Scene &, state::Entity mesh_entity);
+std::optional<NormalMapRef> MeshMaterialNormalMap(const state::Registry &, state::Entity mesh_entity);
 } // namespace gltf

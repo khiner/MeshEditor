@@ -12,13 +12,16 @@
 namespace snapshot::detail {
 
 void RegisterMesh(Tables &tables) {
-    Persistent<
-        MeshActiveElement, MeshHandle, EvaluatedMesh, VertexStoreId, MeshElementSelection, MeshMaterialAssignment,
-        MeshMaterialSlotSelection, PrimitiveShape, ShadeSmoothAngle, TetBuffers, ResyncState>(tables);
-    Derived<MeshGeometryDirty, MeshPositionsChanged, AuthoredCornerNormals>(tables);
-    // Restore procedure outputs and owned entities directly; rederive only plans and node errors.
-    Persistent<procedure::GeometryProcedure, procedure::ProcedureInstances, procedure::ProcedureOwnedMesh, procedure::NodeLayout, procedure::NodeTheme, procedure::NodeSelected, procedure::InlineSelection, procedure::PublishSelection>(tables);
-    [&]<typename... Ks>(TypeList<Ks...>) { Persistent<Ks...>(tables); }(procedure::NodeKinds{});
-    Derived<procedure::CookPlan, procedure::NodeError>(tables);
+    // Restore procedure outputs and owned entities directly, and rederive only plans and node errors.
+    [&]<typename... Ks>(TypeList<Ks...>) {
+        Classify(
+            tables,
+            TypeList<
+                MeshActiveElement, MeshHandle, EvaluatedMesh, VertexStoreId, MeshElementSelection, MeshMaterialAssignment,
+                MeshMaterialSlotSelection, PrimitiveShape, ShadeSmoothAngle, TetBuffers, ResyncState,
+                procedure::GeometryProcedure, procedure::ProcedureInstances, procedure::ProcedureOwnedMesh, procedure::NodeLayout, procedure::NodeTheme, procedure::NodeSelected, procedure::InlineSelection, procedure::PublishSelection, Ks...>{},
+            TypeList<MeshGeometryDirty, MeshPositionsChanged, AuthoredCornerNormals, procedure::CookPlan, procedure::NodeError>{}
+        );
+    }(procedure::NodeKinds{});
 }
 } // namespace snapshot::detail

@@ -6,9 +6,9 @@
 #include "project/Assets.h"
 #include "render/GpuBuffers.h"
 #include "render/MaterialComponents.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 #include <format>
-std::expected<std::vector<uint32_t>, std::string> ImportObjPlyMaterials(state::Scene &r, state::Entity viewport, std::span<const ObjPlyMaterial> materials, const std::filesystem::path &mesh_path) {
+std::expected<std::vector<uint32_t>, std::string> ImportObjPlyMaterials(state::Registry &r, state::Entity viewport, std::span<const ObjPlyMaterial> materials, const std::filesystem::path &mesh_path) {
     struct LoadedTexture {
         DecodedImage Image;
         gltf::MimeType MimeType;

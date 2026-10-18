@@ -1,7 +1,7 @@
 #include "RangeAllocator.h"
 #include "RunSuites.h"
 #include "scene/Entity.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 #include <map>
 #include <random>
@@ -10,9 +10,9 @@
 using namespace boost::ut;
 
 int main() {
-    static_assert(std::same_as<decltype(std::declval<state::Scene &>().get<Name>(state::Null)), const Name &>);
+    static_assert(std::same_as<decltype(std::declval<state::Registry &>().get<Name>(state::Null)), const Name &>);
     "owned tables agree with an independent sparse model"_test = [] {
-        state::Scene r;
+        state::Registry r;
         std::mt19937 rng{173};
         std::map<state::Entity, std::pair<std::string, bool>> model;
         std::vector<state::Entity> dead;
@@ -68,7 +68,7 @@ int main() {
         expect(removed == model.size() && r.view<const Name>().empty());
     };
     "generation exhaustion retires a slot"_test = [] {
-        state::Scene r;
+        state::Registry r;
         const auto first = r.create();
         auto current = first;
         for (uint32_t i = 0; i < 0xfffu; ++i) {
@@ -82,7 +82,7 @@ int main() {
         for (unsigned i = 0; i < 70; ++i) expect(allocated.insert(r.create()).second);
     };
     "batch destruction captures page runs and preserves sparse survivors"_test = [] {
-        state::Scene r;
+        state::Registry r;
         std::vector<state::Entity> entities, targets;
         for (uint32_t i = 0; i < 160u; ++i) {
             const auto e = r.create();
@@ -104,7 +104,7 @@ int main() {
         Capture captured;
         std::vector<std::string> notified;
         r.HistoryOwner = &captured;
-        r.Capture = [](state::Scene &r, state::TypeId type, std::span<const state::PageMask> pages) {
+        r.Capture = [](state::Registry &r, state::TypeId type, std::span<const state::PageMask> pages) {
             if (type != state::Type<Name>()) return;
             auto &capture = *static_cast<Capture *>(r.HistoryOwner);
             ++capture.Calls;
@@ -113,9 +113,9 @@ int main() {
                 for (auto bits = mask; bits; bits &= bits - 1u) values.push_back(r.get<Name>(r.EntityAt(page * state::Table::PageCount + std::countr_zero(bits))).Value);
         };
         state::DirtySet destroyed;
-        destroyed.bind(r);
+        destroyed.bind(r, state::Clearing::Explicit);
         destroyed.on<Name>(state::On::Destroy);
-        r.on_destroy<Name, [](state::Scene &r, state::Entity e) {
+        r.on_destroy<Name, [](state::Registry &r, state::Entity e) {
             // Dependent component removals during a callback must not be erased twice.
             expect(!r.get<Name>(e).Value.empty());
             r.remove<Selected>(e);
@@ -147,7 +147,7 @@ int main() {
         expect(r.get<Name>(reused).Value == "survivor");
     };
     "clearing a component captures each page once and notifies every holder"_test = [] {
-        state::Scene r;
+        state::Registry r;
         std::vector<state::Entity> holders;
         for (uint32_t i = 0; i < 200u; ++i) {
             const auto e = r.create();
@@ -157,7 +157,7 @@ int main() {
         }
         std::map<uint32_t, uint32_t> captured;
         r.HistoryOwner = &captured;
-        r.Capture = [](state::Scene &r, state::TypeId type, std::span<const state::PageMask> pages) {
+        r.Capture = [](state::Registry &r, state::TypeId type, std::span<const state::PageMask> pages) {
             if (type != state::Type<Selected>()) return;
             for (const auto [page, mask] : pages) {
                 expect(r.storage<Selected>().mask(page) == mask);
@@ -165,7 +165,7 @@ int main() {
             }
         };
         state::DirtySet destroyed;
-        destroyed.bind(r);
+        destroyed.bind(r, state::Clearing::Explicit);
         destroyed.on<Selected>(state::On::Destroy);
         r.clear<Selected>();
         r.Capture = nullptr;
@@ -178,10 +178,10 @@ int main() {
         expect(r.view<const Selected>().empty());
     };
     "capture precedes mutation and dirty lifetime respects generation and reset"_test = [] {
-        state::Scene r;
+        state::Registry r;
         std::vector<std::string> old;
         r.HistoryOwner = &old;
-        r.Capture = [](state::Scene &r, state::TypeId type, std::span<const state::PageMask> pages) {
+        r.Capture = [](state::Registry &r, state::TypeId type, std::span<const state::PageMask> pages) {
             if (type == state::Type<Name>()) {
                 for (const auto [page, mask] : pages)
                     for (auto bits = mask; bits; bits &= bits - 1u) {
@@ -190,10 +190,10 @@ int main() {
                     }
             }
         };
-        auto &managed = reactive(r, state::Change::Selected);
-        managed.on<Name>(state::On::Create | state::On::Destroy);
+        state::DirtySet managed;
+        managed.bind(r).on<Name>(state::On::Create | state::On::Destroy);
         state::DirtySet removed;
-        removed.bind(r);
+        removed.bind(r, state::Clearing::Explicit);
         removed.on<Name>(state::On::Destroy);
         const auto e = r.create();
         r.emplace<Name>(e, "first");
@@ -211,9 +211,9 @@ int main() {
         expect(state::Integral(r.create()) == 0u);
     };
     "dirty parity tells whether a tag existed before the set's events"_test = [] {
-        state::Scene r;
+        state::Registry r;
         state::DirtySet tags;
-        tags.bind(r);
+        tags.bind(r, state::Clearing::Explicit);
         tags.on<Selected>(state::On::Create | state::On::Update | state::On::Destroy);
         const auto churned = r.create(), created = r.create(), destroyed = r.create(), updated = r.create();
         r.emplace<Selected>(destroyed);

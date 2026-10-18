@@ -1,5 +1,6 @@
 #pragma once
 
+#include "audio/AudioSchema.h"
 #include "state/Entity.h"
 #include <filesystem>
 #include <vector>

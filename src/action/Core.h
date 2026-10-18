@@ -1,8 +1,8 @@
 #pragma once
 
+#include "action/ActionSchema.h"
 #include "gizmo/TransformGizmoTypes.h"
 #include "physics/PhysicsTypes.h"
-#include "state/Schema.h"
 #include "viewport/ViewportDisplay.h"
 
 enum class AttributeType : uint32_t;
@@ -118,5 +118,5 @@ using Core = std::variant<
     Update<AttributeType>, Update<AttributeDomain>, Update<VectorMathOp>, Update<FloatMathOp>, Update<CompareOp>, Update<BooleanMathOp>, Update<BooleanOperation>, Update<procedure::VectorComponent>,
     DestroyEntity>;
 
-void Apply(state::Scene &, state::Entity viewport, const Core &);
+void Apply(state::Registry &, state::Entity viewport, const Core &);
 } // namespace action

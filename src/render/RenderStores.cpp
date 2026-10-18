@@ -6,9 +6,10 @@
 #include "render/GpuBuffers.h"
 #include "render/MaterialComponents.h"
 #include "render/Textures.h"
+#include "state/Registry.h"
 #include "viewport/ViewportDisplay.h"
 
-void InitRenderStoreContext(state::Scene &r, const mtl::Context &ctx) {
+void InitRenderStoreContext(state::Registry &r, const mtl::Context &ctx) {
     auto &slots = r.Context.emplace<mtl::BindlessSet>(ctx);
     r.Context.emplace<ActiveSamplerAnisotropy>(ClampMaxAnisotropy(ToMaxAnisotropy(ViewportDisplay{}.AnisotropicFilter)));
     auto &textures = r.Context.emplace<TextureStore>();
@@ -16,29 +17,29 @@ void InitRenderStoreContext(state::Scene &r, const mtl::Context &ctx) {
     r.Context.emplace<EnvironmentStore>();
 }
 
-void RegisterRenderStoreHandlers(state::Scene &r) {
-    r.on_destroy<ModelsBuffer, [](state::Scene &r, state::Entity e) {
+void RegisterRenderStoreHandlers(state::Registry &r) {
+    r.on_destroy<ModelsBuffer, [](state::Registry &r, state::Entity e) {
         r.Context.emplace<PendingSlotRemovals>().Retired.push_back(e);
     }>();
-    r.on_destroy<ArmaturePoseState, [](state::Scene &r, state::Entity e) {
+    r.on_destroy<ArmaturePoseState, [](state::Registry &r, state::Entity e) {
         r.Context.emplace<PendingObjectRemovals>().DeformRanges.append_range(r.get<const ArmaturePoseState>(e).GpuDeformRanges);
     }>();
     // History restores the tracked allocator, so a restore releases nothing.
-    r.on_destroy<MorphWeightRange, [](state::Scene &r, state::Entity e) {
+    r.on_destroy<MorphWeightRange, [](state::Registry &r, state::Entity e) {
         if (!r.Restoring) r.Context.emplace<PendingObjectRemovals>().MorphRanges.push_back(r.get<const MorphWeightRange>(e).Weights);
     }>();
-    r.on_destroy<RenderInstance, [](state::Scene &r, state::Entity e) {
+    r.on_destroy<RenderInstance, [](state::Registry &r, state::Entity e) {
         const auto &ri = r.get<const RenderInstance>(e);
         if (ri.BufferIndex == UINT32_MAX) return;
         r.Context.emplace<PendingSlotRemovals>().Instances.push_back({ri.Entity, ri.BufferIndex});
     }>();
 }
-mtl::BufferContext &InitRenderStores(state::Scene &r) {
+mtl::BufferContext &InitRenderStores(state::Registry &r) {
     auto &buffers = r.Context.emplace<GpuBuffers>(r.Context.get<const mtl::Context>(), r.Context.get<mtl::BindlessSet>());
     r.Context.emplace<MaterialStore>();
     return buffers.Ctx;
 }
-void InitDefaultMaterial(state::Scene &r) {
+void InitDefaultMaterial(state::Registry &r) {
     auto &buffers = r.Context.get<GpuBuffers>();
     auto &textures = r.Context.get<TextureStore>();
     auto &materials = r.Context.get<MaterialStore>();
@@ -58,7 +59,7 @@ void InitDefaultMaterial(state::Scene &r) {
         },
     });
 }
-void DeinitTextureStores(state::Scene &r) {
+void DeinitTextureStores(state::Registry &r) {
     auto &slots = r.Context.get<mtl::BindlessSet>();
     auto &textures = r.Context.get<TextureStore>();
     const auto &environments = r.Context.get<EnvironmentStore>();
@@ -67,8 +68,8 @@ void DeinitTextureStores(state::Scene &r) {
     r.Context.erase<EnvironmentStore>();
     r.Context.erase<TextureStore>();
 }
-void DeinitRenderStores(state::Scene &r) {
+void DeinitRenderStores(state::Registry &r) {
     r.Context.erase<GpuBuffers>();
     r.Context.erase<MaterialStore>();
 }
-void DeinitRenderStoreContext(state::Scene &r) { r.Context.erase<mtl::BindlessSet>(); }
+void DeinitRenderStoreContext(state::Registry &r) { r.Context.erase<mtl::BindlessSet>(); }

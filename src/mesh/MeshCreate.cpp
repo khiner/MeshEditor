@@ -7,7 +7,7 @@
 #include "mesh/MeshConnectivityGpu.h"
 #include "mesh/VertexWeldGpu.h"
 
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 namespace {
 // An authored corner normal within 0.05 degrees of the derived one counts as derivable and is dropped.
@@ -223,7 +223,7 @@ void InitializeSharpness(MeshStore &meshes, const Mesh &mesh, const MeshData &da
 }
 } // namespace
 
-std::vector<CreatedMesh> CreateMeshes(state::Scene &r, std::span<MeshSource> sources) {
+std::vector<CreatedMesh> CreateMeshes(state::Registry &r, std::span<MeshSource> sources) {
     auto &meshes = r.Context.get<MeshStore>();
     // One reserve per arena for the whole batch, so no allocation below grows a buffer.
     for (const auto &source : sources) {
@@ -281,9 +281,9 @@ std::vector<CreatedMesh> CreateMeshes(state::Scene &r, std::span<MeshSource> sou
     return created;
 }
 
-CreatedMesh CreateMesh(state::Scene &r, MeshSource source) { return std::move(CreateMeshes(r, {&source, 1}).front()); }
+CreatedMesh CreateMesh(state::Registry &r, MeshSource source) { return std::move(CreateMeshes(r, {&source, 1}).front()); }
 
-std::optional<NewMeshShading> EncodeNewMeshShading(state::Scene &r, mtl::ComputeChain &chain) {
+std::optional<NewMeshShading> EncodeNewMeshShading(state::Registry &r, mtl::ComputeChain &chain) {
     auto &meshes = r.Context.get<MeshStore>();
     auto ids = meshes.TakeUnshaded();
     // A record released since its creation has no shading to derive.
@@ -298,14 +298,14 @@ std::optional<NewMeshShading> EncodeNewMeshShading(state::Scene &r, mtl::Compute
     return NewMeshShading{std::move(ids), std::move(classes), std::move(normals)};
 }
 
-void DeriveNewMeshShading(state::Scene &r, mtl::ComputeChain &chain, NewMeshShading &shading) {
+void DeriveNewMeshShading(state::Registry &r, mtl::ComputeChain &chain, NewMeshShading &shading) {
     auto &meshes = r.Context.get<MeshStore>();
     meshes.PlanCornerClassification(r, chain, shading.Classes);
     EncodeDeriveAllNormals(r, chain, shading.Normals);
     meshes.EnsureSelectionState(r, chain, shading.Ids);
 }
 
-void ShadeNewMeshes(state::Scene &r) {
+void ShadeNewMeshes(state::Registry &r) {
     mtl::ComputeChain chain{r.Context.get<MeshStore>().BufferContext()};
     auto shading = EncodeNewMeshShading(r, chain);
     if (!shading) return;

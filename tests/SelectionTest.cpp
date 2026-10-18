@@ -3,7 +3,7 @@
 #include "scene/Entity.h"
 #include "selection/SelectionState.h"
 
-#include "state/Scene.h"
+#include "state/Registry.h"
 #include <boost/ut.hpp>
 
 namespace {
@@ -12,7 +12,7 @@ const boost::ut::suite selection_tests = [] {
     "primary edit instance is independent of component insertion order"_test = [] {
         std::array order{0, 1, 2};
         do {
-            state::Scene r;
+            state::Registry r;
             const auto mesh = r.create();
             const std::array instances{r.create(), r.create(), r.create()};
             for (const auto i : order) {

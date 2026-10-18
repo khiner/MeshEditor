@@ -6,9 +6,9 @@
 #include "mesh/NormalDeriveGpu.h"
 #include "metal/Dispatch.h"
 #include "render/ElementWorkOps.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
-std::vector<FaceTriangles> RetessellateMeshes(state::Scene &r, mtl::ComputeChain &chain, std::span<const MeshRetessellation> inputs) {
+std::vector<FaceTriangles> RetessellateMeshes(state::Registry &r, mtl::ComputeChain &chain, std::span<const MeshRetessellation> inputs) {
     const auto &meshes = r.Context.get<MeshStore>();
     const auto &a = meshes.Arenas();
     struct Job {
@@ -87,7 +87,7 @@ std::vector<FaceTriangles> RetessellateMeshes(state::Scene &r, mtl::ComputeChain
     return results;
 }
 
-std::vector<PositionOperationChange> ExecuteGeometryPositions(state::Scene &r, std::span<const PositionOperationTarget> targets, PositionEditOp operation, float factor, uint32_t repeat, const PositionOperationOptions &options) {
+std::vector<PositionOperationChange> ExecuteGeometryPositions(state::Registry &r, std::span<const PositionOperationTarget> targets, PositionEditOp operation, float factor, uint32_t repeat, const PositionOperationOptions &options) {
     auto &meshes = r.Context.get<MeshStore>();
     mtl::ComputeChain chain{meshes.BufferContext()};
     auto changes = EncodePositionOperations(meshes, GetMeshPipelines(r), chain, targets, operation, factor, repeat, options);

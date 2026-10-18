@@ -1,6 +1,7 @@
 #pragma once
 
 #include "numeric/vec3.h"
+#include "physics/PhysicsSchema.h"
 #include "state/Entity.h"
 
 #include <vector>

@@ -7,7 +7,7 @@
 #include "mesh/PageFootprint.h"
 #include "mesh/ScratchChunks.h"
 #include "metal/Dispatch.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 // Input fields before assigning position and normal destinations.
 // Empty for meshes without faces.
@@ -27,7 +27,7 @@ std::optional<NormalDeriveEntry> MakeDeriveEntryInputs(const MeshStore &meshes, 
     };
 }
 
-void EncodeDeriveNormals(state::Scene &r, mtl::ComputeChain &chain, std::span<const uint32_t> ids, std::span<const NormalDeriveEntry> entries, NormalDerivePushConstants pc) {
+void EncodeDeriveNormals(state::Registry &r, mtl::ComputeChain &chain, std::span<const uint32_t> ids, std::span<const NormalDeriveEntry> entries, NormalDerivePushConstants pc) {
     if (entries.empty()) return;
     const auto &meshes = r.Context.get<const MeshStore>();
     std::vector<uvec2> tiles;
@@ -62,7 +62,7 @@ void EncodeDeriveNormals(state::Scene &r, mtl::ComputeChain &chain, std::span<co
     chain.Retain(std::move(tile_buffer));
 }
 
-void CaptureNormalWrites(state::Scene &r, uint32_t id, const NormalDeriveEntry &entry, const BufferArena<uint32_t> &vertex_work, const BufferArena<uint32_t> &face_work) {
+void CaptureNormalWrites(state::Registry &r, uint32_t id, const NormalDeriveEntry &entry, const BufferArena<uint32_t> &vertex_work, const BufferArena<uint32_t> &face_work) {
     if (!entry.VertexWorkCount && !entry.FaceWorkCount) return;
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto &a = meshes.Arenas();
@@ -85,7 +85,7 @@ void CaptureNormalWrites(state::Scene &r, uint32_t id, const NormalDeriveEntry &
 }
 
 namespace {
-void EncodeDeriveBaseEntries(state::Scene &r, mtl::ComputeChain &chain, std::span<const uint32_t> ids, std::span<const NormalDeriveEntry> entries, const BufferArena<uint32_t> &work) {
+void EncodeDeriveBaseEntries(state::Registry &r, mtl::ComputeChain &chain, std::span<const uint32_t> ids, std::span<const NormalDeriveEntry> entries, const BufferArena<uint32_t> &work) {
     const auto &meshes = r.Context.get<const MeshStore>();
     for (uint32_t i = 0u; i < entries.size(); ++i) CaptureNormalWrites(r, ids[i], entries[i], work, work);
     EncodeDeriveNormals(r, chain, ids, entries, {
@@ -98,7 +98,7 @@ void EncodeDeriveBaseEntries(state::Scene &r, mtl::ComputeChain &chain, std::spa
 }
 } // namespace
 
-void EncodeDeriveMeshNormals(state::Scene &r, mtl::ComputeChain &chain, const BufferArena<uint32_t> &work, std::span<const LocalNormalWork> changes) {
+void EncodeDeriveMeshNormals(state::Registry &r, mtl::ComputeChain &chain, const BufferArena<uint32_t> &work, std::span<const LocalNormalWork> changes) {
     const auto &meshes = r.Context.get<const MeshStore>();
     std::vector<uint32_t> ids;
     std::vector<NormalDeriveEntry> entries;
@@ -116,7 +116,7 @@ void EncodeDeriveMeshNormals(state::Scene &r, mtl::ComputeChain &chain, const Bu
     EncodeDeriveBaseEntries(r, chain, ids, entries, work);
 }
 
-AllNormalsWork EncodeAllNormalsMembership(state::Scene &r, mtl::ComputeChain &chain, std::span<const uint32_t> ids) {
+AllNormalsWork EncodeAllNormalsMembership(state::Registry &r, mtl::ComputeChain &chain, std::span<const uint32_t> ids) {
     const auto &meshes = r.Context.get<const MeshStore>();
     AllNormalsWork normals;
     std::vector<ElementWorkSeedJob> seeds;
@@ -136,7 +136,7 @@ AllNormalsWork EncodeAllNormalsMembership(state::Scene &r, mtl::ComputeChain &ch
 }
 
 // Each entry is built here rather than with its membership work, since corner classification covers the sector records it references in between.
-void EncodeDeriveAllNormals(state::Scene &r, mtl::ComputeChain &chain, const AllNormalsWork &normals) {
+void EncodeDeriveAllNormals(state::Registry &r, mtl::ComputeChain &chain, const AllNormalsWork &normals) {
     const auto &meshes = r.Context.get<const MeshStore>();
     std::vector<NormalDeriveEntry> entries;
     entries.reserve(normals.Ids.size());

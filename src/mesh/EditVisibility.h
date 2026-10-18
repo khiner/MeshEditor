@@ -2,10 +2,10 @@
 #include "gpu/Element.h"
 #include <span>
 namespace state {
-struct Scene;
+struct Registry;
 } // namespace state
 enum class EditVisibilityOperation { HideSelected,
                                      HideUnselected,
                                      Reveal,
                                      RevealSelected };
-bool EditVisibility(state::Scene &, std::span<const uint32_t> meshes, Element, EditVisibilityOperation);
+bool EditVisibility(state::Registry &, std::span<const uint32_t> meshes, Element, EditVisibilityOperation);

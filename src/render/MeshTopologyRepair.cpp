@@ -15,7 +15,7 @@
 #include "render/MeshletSpatial.h"
 #include "render/MeshletStorage.h"
 #include "render/SceneUpdates.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 #include <map>
 
 namespace {
@@ -53,7 +53,7 @@ struct OwnerFragments {
 
 // Every topology seeds, builds and adopts the same primitive-bound fragments, and every owner's fragments share one build.
 // Reserve the seeds and builder work together before recording any dispatch.
-std::vector<FragmentBuild> BuildFragments(state::Scene &r, mtl::ComputeChain &chain, std::span<const OwnerFragments> owners, std::span<MeshletBuildSource> fresh = {}) {
+std::vector<FragmentBuild> BuildFragments(state::Registry &r, mtl::ComputeChain &chain, std::span<const OwnerFragments> owners, std::span<MeshletBuildSource> fresh = {}) {
     auto &meshes = r.Context.get<MeshStore>();
     size_t fragment_count = 0u;
     for (const auto &owner : owners) fragment_count += owner.Partitions.size();
@@ -119,7 +119,7 @@ std::vector<FragmentBuild> BuildFragments(state::Scene &r, mtl::ComputeChain &ch
     }
 }
 
-LodNodeRefit RepairElementMeshletDeletion(state::Scene &r, mtl::ComputeChain &chain, MeshStore::Record &owner, uint32_t topology, std::span<const uint32_t> elements) {
+LodNodeRefit RepairElementMeshletDeletion(state::Registry &r, mtl::ComputeChain &chain, MeshStore::Record &owner, uint32_t topology, std::span<const uint32_t> elements) {
     const profile::CpuScope scope{"ElementMeshletDeletion"};
     auto &meshes = r.Context.get<MeshStore>();
     auto &render = meshes.Render();
@@ -196,7 +196,7 @@ LodNodeRefit RepairElementMeshletDeletion(state::Scene &r, mtl::ComputeChain &ch
 }
 } // namespace
 
-void RepairElementMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<const ElementMeshletRepair> repairs) {
+void RepairElementMeshlets(state::Registry &r, mtl::ComputeChain &chain, std::span<const ElementMeshletRepair> repairs) {
     auto &meshes = r.Context.get<MeshStore>();
     auto &render = meshes.Render();
     const auto &a = meshes.Arenas();
@@ -261,7 +261,7 @@ struct TriangleRepair {
 };
 
 // Repairs every owner's triangle render with one fragment build and one submit, before which the host cannot read the fragments' records.
-void RepairTriangleRender(state::Scene &r, mtl::ComputeChain &chain, std::span<const TriangleRepair> repairs, std::span<MeshletBuildSource> fresh) {
+void RepairTriangleRender(state::Registry &r, mtl::ComputeChain &chain, std::span<const TriangleRepair> repairs, std::span<MeshletBuildSource> fresh) {
     const profile::CpuScope scope{"TriangleRenderRepair"};
     auto &meshes = r.Context.get<MeshStore>();
     std::vector<state::Entity> entities;
@@ -304,7 +304,7 @@ void RepairTriangleRender(state::Scene &r, mtl::ComputeChain &chain, std::span<c
 }
 } // namespace
 
-void RepairTopologyRender(state::Scene &r, mtl::ComputeChain &chain, std::span<const std::pair<state::Entity, const MeshTopologyEdit *>> edits, std::span<MeshletBuildSource> fresh) {
+void RepairTopologyRender(state::Registry &r, mtl::ComputeChain &chain, std::span<const std::pair<state::Entity, const MeshTopologyEdit *>> edits, std::span<MeshletBuildSource> fresh) {
     const auto &meshes = r.Context.get<const MeshStore>();
     std::vector<TriangleRepair> repairs;
     repairs.reserve(edits.size());
@@ -331,7 +331,7 @@ void RepairTopologyRender(state::Scene &r, mtl::ComputeChain &chain, std::span<c
     RepairTriangleRender(r, chain, repairs, fresh);
 }
 
-void RepairFaceRender(state::Scene &r, mtl::ComputeChain &chain, std::span<const std::pair<state::Entity, FaceTriangles>> changes) {
+void RepairFaceRender(state::Registry &r, mtl::ComputeChain &chain, std::span<const std::pair<state::Entity, FaceTriangles>> changes) {
     std::vector<TriangleRepair> repairs;
     std::vector<state::Entity> entities;
     for (const auto &[entity, changed] : changes) {

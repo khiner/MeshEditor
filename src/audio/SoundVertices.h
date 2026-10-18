@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Range.h"
+#include "audio/AudioSchema.h"
 
 #include <ranges>
 

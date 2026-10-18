@@ -184,7 +184,7 @@ constexpr float Snap(float v, float snap) {
 }
 constexpr vec3 Snap(vec3 v, vec3 snap) { return {Snap(v[0], snap[0]), Snap(v[1], snap[1]), Snap(v[2], snap[2])}; }
 
-using TransformGizmo::Mode;
+using TransformGizmo::Interaction, TransformGizmo::Mode;
 
 vec4 GetPlaneNormal(const Interaction &interaction, const GizmoTransform &transform, const ray &cam_ray) {
     using enum TransformType;

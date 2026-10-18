@@ -3,14 +3,14 @@
 
 struct Mesh;
 namespace state {
-struct Scene;
+struct Registry;
 } // namespace state
 
 // The initial build visits each owner's mesh once, and the owners build concurrently.
 // Thereafter these operations touch only changed finest meshlets and their spatial ancestors.
-void BuildMeshletSpatial(state::Scene &, std::span<MeshStore::Record *const>);
-void ReplaceMeshletSpatial(state::Scene &, const MeshStore::Record &, std::span<const uint32_t> removed, std::span<const uint32_t> added);
-void RefitMeshletSpatial(state::Scene &, const MeshStore::Record &, std::span<const uint32_t> changed);
+void BuildMeshletSpatial(state::Registry &, std::span<MeshStore::Record *const>);
+void ReplaceMeshletSpatial(state::Registry &, const MeshStore::Record &, std::span<const uint32_t> removed, std::span<const uint32_t> added);
+void RefitMeshletSpatial(state::Registry &, const MeshStore::Record &, std::span<const uint32_t> changed);
 
 struct SpatialSurfacePoint {
     std::array<uint32_t, 3> Vertices{}; // Canonical vertex handles.

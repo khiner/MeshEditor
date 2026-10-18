@@ -1107,7 +1107,7 @@ void TestViewportOperators(Fixture &f) {
             expect(Describe(meshes, f.Output(mesh)) == done.Output);
             ExpectRestores(f, mesh, std::array{start, done}, [&] { expect(r.valid(node) == (f.P->History.Present == done.Node)); });
             state::DirtySet cooks;
-            cooks.bind(r);
+            cooks.bind(r, state::Clearing::Explicit);
             cooks.on<EvaluatedMesh>(state::On::Create | state::On::Update);
             f.Do(action::view::SetInteractionMode{InteractionMode::Object});
             expect(cooks.empty());

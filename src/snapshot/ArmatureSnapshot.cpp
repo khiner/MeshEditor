@@ -32,9 +32,12 @@ template<> Armature CopyNative(const Armature &source) {
 template<> void PrepareNative(Armature &value) { value.RebuildCaches(); }
 
 void RegisterArmature(Tables &tables) {
-    Persistent<
-        Armature, ArmatureObject, BoneJointEntities, BoneJoint, BoneSubPartOf, BoneActive, BoneSelection, BoneConstraints,
-        ArmatureModifier, BoneIndex, BoneDisplayScale, BoneAttachment, BoneDelta>(tables);
-    Derived<PosedLocal, ArmaturePoseState>(tables);
+    Classify(
+        tables,
+        TypeList<
+            Armature, ArmatureObject, BoneJointEntities, BoneJoint, BoneSubPartOf, BoneActive, BoneSelection, BoneConstraints,
+            ArmatureModifier, BoneIndex, BoneDisplayScale, BoneAttachment, BoneDelta>{},
+        TypeList<PosedLocal, ArmaturePoseState>{}
+    );
 }
 } // namespace snapshot::detail

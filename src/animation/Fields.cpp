@@ -6,8 +6,9 @@
 #include "object/ObjectOps.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
-#include "render/MaterialTextureSlots.h"
-#include "state/Scene.h"
+#include "render/MaterialTextureSchema.h"
+#include "render/RenderChanges.h"
+#include "state/Registry.h"
 
 namespace animation {
 namespace {
@@ -27,12 +28,12 @@ uint16_t TextureSlotOffset(uint8_t texture) {
     return uint16_t(reinterpret_cast<const std::byte *>(&MaterialTextureSlots[texture].Get(m)) - reinterpret_cast<const std::byte *>(&m));
 }
 
-ChannelTarget WeightsTarget(const state::Scene &r, state::Entity e) {
+ChannelTarget WeightsTarget(const state::Registry &r, state::Entity e) {
     const auto *weights = r.try_get<const MorphWeightRange>(e);
     return {state::Key<MorphWeightRange>(), 0, 0, uint16_t(weights ? weights->Weights.Count : 0), ValueKind::Float};
 }
 
-std::array<ChannelTarget, 3> TransformTargets(const state::Scene &r, state::Entity e) {
+std::array<ChannelTarget, 3> TransformTargets(const state::Registry &r, state::Entity e) {
     if (r.all_of<BoneDelta>(e)) return {Target<&BoneDelta::Value, &Transform::P>(), Target<&BoneDelta::Value, &Transform::R>(), Target<&BoneDelta::Value, &Transform::S>()};
     return {Target<&Transform::P>(), Target<&Transform::R>(), Target<&Transform::S>()};
 }
@@ -41,7 +42,7 @@ bool IsChannelStore(state::TypeKey key) {
     return key == state::Key<MaterialStore>() || key == state::Key<MorphWeightRange>() || ForChannelComponent(key, []<typename> {});
 }
 
-bool ReadField(const state::Scene &r, state::Entity e, const ChannelTarget &target, std::span<float> out) {
+bool ReadField(const state::Registry &r, state::Entity e, const ChannelTarget &target, std::span<float> out) {
     if (out.size() != target.Count) return false;
     const auto bytes = target.Count * sizeof(float);
     if (target.Component == state::Key<MaterialStore>()) {
@@ -86,7 +87,7 @@ bool ReadField(const state::Scene &r, state::Entity e, const ChannelTarget &targ
     return found;
 }
 
-void WriteField(state::Scene &r, state::Entity e, const ChannelTarget &target, std::span<const float> in) {
+void WriteField(state::Registry &r, state::Entity e, const ChannelTarget &target, std::span<const float> in) {
     if (in.size() != target.Count) return;
     const auto source = std::as_bytes(in);
     if (target.Component == state::Key<MaterialStore>()) {
@@ -95,7 +96,7 @@ void WriteField(state::Scene &r, state::Entity e, const ChannelTarget &target, s
         const auto offset = uint64_t(target.Index) * sizeof(PBRMaterial) + target.Offset;
         if (std::ranges::equal(materials.Contents().subspan(offset, source.size()), source)) return;
         materials.Update(source, offset);
-        reactive(r, state::Change::Materials).emplace(e);
+        r.Context.get<RenderChanges>().Materials.emplace(e);
         return;
     }
     if (target.Component == state::Key<MorphWeightRange>()) {
@@ -105,7 +106,7 @@ void WriteField(state::Scene &r, state::Entity e, const ChannelTarget &target, s
         auto &buffer = r.Context.get<GpuBuffers>().MorphWeightBuffer;
         if (std::ranges::equal(std::as_bytes(buffer.Get(weights->Weights).subspan(first, target.Count)), source)) return;
         std::ranges::copy(in, buffer.GetMutable(weights->Weights).begin() + first);
-        reactive(r, state::Change::MorphWeights).emplace(e);
+        r.Context.get<RenderChanges>().MorphWeights.emplace(e);
         return;
     }
     ForChannelComponent(target.Component, [&]<typename C> {

@@ -22,17 +22,17 @@ struct MeshTopologyEdit {
     // Construct tasks on chain, optionally capturing inset bases.
     // KeepSelectedFaces and Boolean create meshes; other tasks edit their source.
     // An unchanged edit has no Output.
-    static std::vector<MeshTopologyEdit> Construct(state::Scene &, mtl::ComputeChain &, std::span<const MeshTopologyTask>, BufferArena<uint32_t> *inset_basis = nullptr);
+    static std::vector<MeshTopologyEdit> Construct(state::Registry &, mtl::ComputeChain &, std::span<const MeshTopologyTask>, BufferArena<uint32_t> *inset_basis = nullptr);
     MeshTopologyEdit(MeshTopologyEdit &&) noexcept;
     ~MeshTopologyEdit();
     // The edits of one construction share publication's submit.
     // The corner class writes and normals stay recorded on the chain, and the chain's next submit runs them.
     // Until then the host reads no normals or corner sectors and writes nothing those passes read.
-    static void PublishAll(state::Scene &, std::span<MeshTopologyEdit>);
+    static void PublishAll(state::Registry &, std::span<MeshTopologyEdit>);
     // Completes the edits in order, retires the in-place edits' sources, and records the refresh of the selection aggregates every edit changed in one update.
     // Completion submits the chain and releases the corner sector payloads the repaired blocks leave unused.
     // The host reads the refreshed selection once the chain submits again.
-    static void FinishAll(state::Scene &, std::span<MeshTopologyEdit *const>);
+    static void FinishAll(state::Registry &, std::span<MeshTopologyEdit *const>);
 
     GeometryTopologyResult Result(const MeshStore &) const;
 
@@ -75,11 +75,11 @@ private:
     MeshTopologyEdit(mtl::ComputeChain &, const MeshTopologyTask &);
     // Records the task's source closures, or returns none when the task selects no source.
     // A face list task takes its parsed face list, and a spatial task takes its finished face query.
-    std::optional<Closures> RecordClosures(state::Scene &, const MeshTopologyTask &, std::optional<PrimitiveListReferences>, const SpatialFaceWork *);
+    std::optional<Closures> RecordClosures(state::Registry &, const MeshTopologyTask &, std::optional<PrimitiveListReferences>, const SpatialFaceWork *);
     // Reads the submitted closures and returns whether the task has source elements to edit.
     bool FinishClosures(const MeshTopologyTask &, Closures &);
     // Lays out the operator's job and workspaces for its count passes, an in-place edit reading its source through `view`.
-    void PrepareCounts(state::Scene &, const MeshTopologyTask &, Closures &, const std::shared_ptr<const TopologyReadView> &view);
+    void PrepareCounts(state::Registry &, const MeshTopologyTask &, Closures &, const std::shared_ptr<const TopologyReadView> &view);
     // Reads the output counts and identity plan once the chain has submitted them.
     void ReadCounts(BufferArena<uint32_t> *inset_basis);
 };

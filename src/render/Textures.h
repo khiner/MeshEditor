@@ -4,6 +4,7 @@
 #include "gpu/IblSamplers.h"
 #include "metal/Image.h"
 
+#include "render/RenderSchema.h"
 #include "state/Entity.h"
 #include <expected>
 #include <filesystem>
@@ -195,19 +196,19 @@ std::vector<std::byte> ReadbackImageRgba8(const mtl::Context &, const mtl::Textu
 // Synchronously read mip 0 of an RGBA8 texture into host memory.
 std::expected<std::vector<std::byte>, std::string> ReadbackTextureRgba8(const mtl::Context &, const TextureEntry &);
 
-std::expected<TextureEntry, std::string> MaterializeTextureEntry(const state::Scene &, TextureUploadBatch &, mtl::BindlessSet &, const PendingTextureUpload &, const std::vector<gltf::Image> &, float max_anisotropy);
-std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(const state::Scene &, mtl::BindlessSet &, const PendingEnvironmentImport &, const std::vector<gltf::Image> &);
-void ResetImportedEnvironment(state::Scene &);
+std::expected<TextureEntry, std::string> MaterializeTextureEntry(const state::Registry &, TextureUploadBatch &, mtl::BindlessSet &, const PendingTextureUpload &, const std::vector<gltf::Image> &, float max_anisotropy);
+std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(const state::Registry &, mtl::BindlessSet &, const PendingEnvironmentImport &, const std::vector<gltf::Image> &);
+void ResetImportedEnvironment(state::Registry &);
 // Releases the imported and pending scene worlds and selects the empty one.
-void Reset(EnvironmentStore &, state::Scene &);
+void Reset(EnvironmentStore &, state::Registry &);
 // Release imported GPU textures while retaining the default white texture.
-void ReleaseImportedTextures(state::Scene &);
+void ReleaseImportedTextures(state::Registry &);
 // Releases the imported textures and their pending uploads, keeping the raw-pixel textures the engine owns.
-void Reset(TextureStore &, state::Scene &);
+void Reset(TextureStore &, state::Registry &);
 // Release the imported GPU textures that no manifest item names by slot, source image and parameters.
-void ReleaseUnlistedTextures(state::Scene &, std::span<const MaterializedTexture>);
+void ReleaseUnlistedTextures(state::Registry &, std::span<const MaterializedTexture>);
 // Release imported textures and reset to the default material.
-void ResetImportedTexturesAndMaterials(state::Scene &);
+void ResetImportedTexturesAndMaterials(state::Registry &);
 EnvironmentPrefiltered CreateIblFromHdri(const mtl::Context &, mtl::BindlessSet &, const Pipelines &, const std::filesystem::path &, std::string);
 // Allocate a 1x1x6 cubemap (1 mip) of the given linear color.
 EnvironmentPrefiltered BuildFlatColorEnvironment(const mtl::Context &, mtl::BindlessSet &, vec3 color, std::string name);
@@ -217,6 +218,6 @@ uint32_t QueueLutTexture(TextureStore &, mtl::BindlessSet &, const std::filesyst
 
 // Activates and lazily prefilters the studio HDRI at `index`.
 // Falls back to index 0 if the name is not found.
-void SetStudioEnvironment(state::Scene &, uint32_t index);
-void SetStudioEnvironment(state::Scene &, std::string_view name);
-void RebuildStudioEnvironments(state::Scene &);
+void SetStudioEnvironment(state::Registry &, uint32_t index);
+void SetStudioEnvironment(state::Registry &, std::string_view name);
+void RebuildStudioEnvironments(state::Registry &);

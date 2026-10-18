@@ -18,10 +18,10 @@ enum class TopologyIdentityPolicy { Preserve,
 
 struct TopologyOutputHandles {
     // Use batch scratch containing scanned counts and source_id matching the source work handles.
-    TopologyOutputHandles(state::Scene &, mtl::ComputeChain &, uint32_t source_id, const MeshTopologyJob &, MeshStore::TopologyCounts bounds, SlotOffset scratch, const MeshTopologyArenas &source, TopologyIdentityPolicy = TopologyIdentityPolicy::Preserve);
+    TopologyOutputHandles(state::Registry &, mtl::ComputeChain &, uint32_t source_id, const MeshTopologyJob &, MeshStore::TopologyCounts bounds, SlotOffset scratch, const MeshTopologyArenas &source, TopologyIdentityPolicy = TopologyIdentityPolicy::Preserve);
     void Finish(const mtl::ComputeChain &);
     // Records the writes of newly inserted vertex and face handles, each a run or a list, into the output maps in compact new-element order.
-    void Assign(state::Scene &, mtl::ComputeChain &, std::array<ElementHandleRange, 2> inserted) const;
+    void Assign(state::Registry &, mtl::ComputeChain &, std::array<ElementHandleRange, 2> inserted) const;
 
     Range Vertices, Faces; // Compact output ordinal -> handle, in the chain's scratch
     std::array<ElementWork, 2> New{}; // Compact output ordinals without a retained source identity

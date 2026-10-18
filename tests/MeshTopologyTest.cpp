@@ -199,7 +199,7 @@ struct Fixture : Engine {
         const auto mesh = GetMesh(R, entity);
         const auto counts = CountsOf(mesh);
         const auto positions = Positions(mesh);
-        CheckSaved([&](const state::Scene &scene, bool) {
+        CheckSaved([&](const state::Registry &scene, bool) {
             const auto restored = GetMesh(scene, entity);
             ExpectCounts(restored, counts);
             ExpectPositions(restored, positions);
@@ -293,7 +293,7 @@ void ExpectRenderedGeometry(const MeshStore &meshes, const Mesh &mesh) {
 }
 
 // Preserve explicit corner layers and loose edges without source welding.
-uint32_t CreateMixedFixture(state::Scene &scene, const MeshData &data, std::span<const std::array<uint32_t, 2>> wires, bool attributes) {
+uint32_t CreateMixedFixture(state::Registry &scene, const MeshData &data, std::span<const std::array<uint32_t, 2>> wires, bool attributes) {
     auto &meshes = scene.Context.get<MeshStore>();
     const auto &a = meshes.Arenas();
     const auto id = meshes.CreateMeshSource(MeshData{data.Positions});
@@ -655,7 +655,7 @@ void TestWireHullPreservesConnectivity() {
         const auto h = f.ActiveMesh().GetHalfedge(e, 0u);
         wires.push_back({*e, *h, *f.ActiveMesh().GetOppositeHalfedge(h), render.ElementMeshlets[1].Get(meshes.Get(id).ElementMeshlets[1], *e)});
     }
-    const auto check = [&](const state::Scene &, bool faces) {
+    const auto check = [&](const state::Registry &, bool faces) {
         const auto mesh = f.ActiveMesh();
         const auto &owner = meshes.Get(id);
         ExpectCounts(mesh, {6u, faces ? 9u : 3u, faces ? 4u : 0u, faces ? 4u : 0u});
@@ -1174,7 +1174,7 @@ void TestSparseSelectionLifecycle() {
     const auto [entity, instance] = f.AddEditable(id, Element::Vertex);
     f.SelectElements(entity, std::array{256u, 257u}, Element::Vertex);
     f.P->History.Commit("Select last block", {});
-    const auto check = [&](const state::Scene &scene, bool deleted) {
+    const auto check = [&](const state::Registry &scene, bool deleted) {
         const auto &meshes = scene.Context.get<const MeshStore>();
         expect(GetMesh(scene, entity).VertexCount() == (deleted ? 256u : 258u));
         expect(meshes.GetSelectedElements(id, Element::Vertex).Count() == (deleted ? 0u : 2u));
@@ -1911,7 +1911,7 @@ void TestRadialEdits() {
     f.P->History.Commit("Select radial edit vertices", {});
     const auto original = Positions(f.ActiveMesh());
     const auto counts = CountsOf(f.ActiveMesh());
-    const auto check = [&](const state::Scene &, bool sphere, float factor) {
+    const auto check = [&](const state::Registry &, bool sphere, float factor) {
         auto expected = original;
         for (uint32_t i = 0u; i < 4u; ++i) {
             const float radius = Length(original[i].second);
@@ -2264,7 +2264,7 @@ void TestSlideAttributes() {
             f.P->History.Commit("Select attributed slide", {});
         }
         const auto before = Positions(f.ActiveMesh());
-        const auto check = [&](const state::Scene &, bool edited) {
+        const auto check = [&](const state::Registry &, bool edited) {
             const auto mesh = f.ActiveMesh();
             ExpectCounts(mesh, {7u, 8u, 3u, 3u});
             expect((Positions(mesh) != before) == edited);
@@ -2456,7 +2456,7 @@ void TestRecalculateNormals() {
     for (const auto face : f.ActiveMesh().faces()) normals.emplace_back(face, f.ActiveMesh().GetNormal(face));
     // bmesh.ops.recalc_face_normals, Blender 5.2.2 d13f752e3b9c, including the open and nonmanifold components.
     const std::array flipped{0u, 2u, 5u, 6u, 15u};
-    const auto check = [&](const state::Scene &, bool changed, bool inside = false) {
+    const auto check = [&](const state::Registry &, bool changed, bool inside = false) {
         const auto mesh = f.ActiveMesh();
         ExpectPositions(mesh, original);
         ExpectCounts(mesh, counts);
@@ -3015,7 +3015,7 @@ void TestDecimate() {
         const auto unchanged = *f.P->History.Present;
         f.Do(action::mesh::Decimate{1.f});
         expect(*f.P->History.Present == unchanged);
-        const auto check = [&](const state::Scene &r) {
+        const auto check = [&](const state::Registry &r) {
             const auto &meshes = r.Context.get<const MeshStore>();
             const auto &a = meshes.Arenas();
             const Mesh mesh{meshes, id};
@@ -3131,7 +3131,7 @@ void TestSeparate() {
         f.SelectElements(entity, test.Selected, test.Domain);
         f.P->History.Commit("Prepare separation", {});
         const auto original = Positions(f.ActiveMesh());
-        const auto check = [&](const state::Scene &r) {
+        const auto check = [&](const state::Registry &r) {
             const auto &meshes = r.Context.get<const MeshStore>();
             const auto &a = meshes.Arenas();
             std::vector<std::vector<uint32_t>> actual;
@@ -3173,14 +3173,14 @@ void TestSeparate() {
         f.Checkpoint();
         check(f.R);
         if (test.Operation == Mode::Material) {
-            f.CheckUndoRedo([&](const state::Scene &r, bool separated) {
+            f.CheckUndoRedo([&](const state::Registry &r, bool separated) {
                 if (separated) check(r);
                 else {
                     expect(r.view<const MeshHandle>().size() == 1u);
                     ExpectPositions(f.ActiveMesh(), original);
                 }
             });
-            f.CheckSaved([&](const state::Scene &r, bool) { check(r); });
+            f.CheckSaved([&](const state::Registry &r, bool) { check(r); });
         }
     }
     Fixture f{"separate-noop"};
@@ -3469,7 +3469,7 @@ void TestMixedMeshletBuild() {
     f.Commit();
     f.Checkpoint();
     check_geometry(shift);
-    f.CheckUndoRedo([&](const state::Scene &, bool moved) { check_geometry(moved ? shift : vec3{}); });
+    f.CheckUndoRedo([&](const state::Registry &, bool moved) { check_geometry(moved ? shift : vec3{}); });
 
     f.Do(action::view::SetEditMode{.Mode = Element::Face});
     f.Do(action::selection::SelectAll{});

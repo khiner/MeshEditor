@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Field.h"
+#include "audio/AudioSchema.h"
 
 #include <FastFEM/Surface2Modes.h>
 

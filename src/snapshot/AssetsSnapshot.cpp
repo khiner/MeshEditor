@@ -6,6 +6,6 @@
 namespace snapshot::detail {
 
 void RegisterAssets(Tables &tables) {
-    Persistent<MaterialVariants, MaterializedTextures, PbrMeshFeatures, GltfNode, SourceIndex, MeshSourceLayout, HasVariantMappings, gltf::SourceAssets>(tables);
+    Classify(tables, TypeList<MaterialVariants, MaterializedTextures, PbrMeshFeatures, GltfNode, SourceIndex, MeshSourceLayout, HasVariantMappings, gltf::SourceAssets>{}, TypeList<>{});
 }
 } // namespace snapshot::detail

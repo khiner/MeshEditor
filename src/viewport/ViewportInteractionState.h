@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gizmo/TransformGizmoTypes.h"
+#include "viewport/ViewportSchema.h"
 
 // The pivot a transform drag rotates and scales about, recorded by the drag's first update from the selection it started on.
 struct StartPivot {

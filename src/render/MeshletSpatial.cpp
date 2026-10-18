@@ -2,7 +2,7 @@
 #include "Parallel.h"
 #include "Profile.h"
 
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 namespace {
 using Node = MeshletSpatialNode;
@@ -19,7 +19,7 @@ struct VolumeSource {
     TriangleVertexView Triangles;
     std::span<const uint32_t> TriangleIds; // The owner's triangle id range
 };
-VolumeSource Source(const state::Scene &r, const MeshStore::Record &owner) {
+VolumeSource Source(const state::Registry &r, const MeshStore::Record &owner) {
     const auto &meshes = r.Context.get<const MeshStore>();
     const Mesh mesh{meshes, owner.StoreId};
     return {mesh.VertexValues(), mesh.TriangleVertices(), meshes.Render().MeshletTriangleIds.Get(owner.MeshletTriangles.Values)};
@@ -217,7 +217,7 @@ struct Tree {
 
 } // namespace
 
-void BuildMeshletSpatial(state::Scene &r, std::span<MeshStore::Record *const> owners) {
+void BuildMeshletSpatial(state::Registry &r, std::span<MeshStore::Record *const> owners) {
     auto &gpu = r.Context.get<MeshStore>().Render();
     std::vector<std::vector<uint32_t>> finest(owners.size());
     for (uint32_t i = 0u; i < owners.size(); ++i) {
@@ -306,7 +306,7 @@ void BuildMeshletSpatial(state::Scene &r, std::span<MeshStore::Record *const> ow
 
 namespace {
 // Runs `edit` over the owner's tree and records the root only when the edit moved it.
-void EditTree(state::Scene &r, const MeshStore::Record &owner, auto &&edit) {
+void EditTree(state::Registry &r, const MeshStore::Record &owner, auto &&edit) {
     auto &meshes = r.Context.get<MeshStore>();
     Tree tree{meshes.Render(), meshes.Render().Meshlets.Entries(owner.MeshletData), owner.SpatialRoot, Source(r, owner)};
     edit(tree);
@@ -315,7 +315,7 @@ void EditTree(state::Scene &r, const MeshStore::Record &owner, auto &&edit) {
 }
 } // namespace
 
-void ReplaceMeshletSpatial(state::Scene &r, const MeshStore::Record &owner, std::span<const uint32_t> removed, std::span<const uint32_t> added) {
+void ReplaceMeshletSpatial(state::Registry &r, const MeshStore::Record &owner, std::span<const uint32_t> removed, std::span<const uint32_t> added) {
     const profile::CpuScope scope{"ReplaceMeshletSpatial"};
     EditTree(r, owner, [&](Tree &tree) {
         for (const auto id : removed) tree.Remove(id);
@@ -323,7 +323,7 @@ void ReplaceMeshletSpatial(state::Scene &r, const MeshStore::Record &owner, std:
     });
 }
 
-void RefitMeshletSpatial(state::Scene &r, const MeshStore::Record &owner, std::span<const uint32_t> changed) {
+void RefitMeshletSpatial(state::Registry &r, const MeshStore::Record &owner, std::span<const uint32_t> changed) {
     EditTree(r, owner, [&](Tree &tree) {
         for (const auto id : changed) {
             tree.Remove(id);

@@ -15,7 +15,7 @@
 
 namespace {
 // After AddBone/RemoveBone, reset pose state, resolve animation indices, and re-evaluate the current frame.
-void RebuildBoneStructure(state::Scene &r, state::Entity viewport, state::Entity arm_data_entity) {
+void RebuildBoneStructure(state::Registry &r, state::Entity viewport, state::Entity arm_data_entity) {
     auto &armature = r.edit<Armature>(arm_data_entity);
     armature.FinalizeStructure();
     armature.RecomputeRestWorld();
@@ -34,7 +34,7 @@ void RebuildBoneStructure(state::Scene &r, state::Entity viewport, state::Entity
 }
 
 // `display_scales` contains every bone's display scale, in bone order.
-state::Entity CreateSingleBoneInstance(state::Scene &r, state::Entity arm_obj_entity, BoneId bone_id, std::span<const float> display_scales) {
+state::Entity CreateSingleBoneInstance(state::Registry &r, state::Entity arm_obj_entity, BoneId bone_id, std::span<const float> display_scales) {
     auto &arm_obj = r.edit<ArmatureObject>(arm_obj_entity);
     const auto &armature = r.get<const Armature>(arm_obj.Entity);
     const auto new_index = *armature.FindBoneIndex(bone_id);
@@ -50,7 +50,7 @@ state::Entity CreateSingleBoneInstance(state::Scene &r, state::Entity arm_obj_en
 } // namespace
 
 namespace action::bone {
-void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
+void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
     std::visit(
         overloaded{
             [&](Add) {

@@ -11,7 +11,7 @@
 #include "render/GpuBuffers.h"
 #include "render/MeshletOwners.h"
 #include "render/MeshletSpatial.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 #include <format>
 
@@ -168,7 +168,7 @@ uint32_t OutputCount(uint64_t count) {
     return uint32_t(count);
 }
 
-void BuildChunk(state::Scene &r, mtl::ComputeChain &chain, std::span<MeshletBuildSource> sources) {
+void BuildChunk(state::Registry &r, mtl::ComputeChain &chain, std::span<MeshletBuildSource> sources) {
     const profile::CpuScope scope{"MeshletBuild"};
     auto &buffers = r.Context.get<GpuBuffers>();
     auto &meshes = r.Context.get<MeshStore>();
@@ -510,7 +510,7 @@ void BuildChunk(state::Scene &r, mtl::ComputeChain &chain, std::span<MeshletBuil
 }
 } // namespace
 
-void BuildGpuMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<MeshletBuildSource> sources) {
+void BuildGpuMeshlets(state::Registry &r, mtl::ComputeChain &chain, std::span<MeshletBuildSource> sources) {
     if (sources.empty()) return;
     const auto &meshes = r.Context.get<const MeshStore>();
     ValidateSources(meshes, sources);
@@ -541,7 +541,7 @@ void BuildGpuMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<Meshl
     }
 }
 
-uint32_t EnsureMeshletPrimitive(state::Scene &r, MeshStore::Record &owner, uint32_t source_primitive, uint32_t topology) {
+uint32_t EnsureMeshletPrimitive(state::Registry &r, MeshStore::Record &owner, uint32_t source_primitive, uint32_t topology) {
     auto &meshes = r.Context.get<MeshStore>();
     auto &render = meshes.Render();
     if (owner.ExtrasFaces.Count || topology > 2u) throw std::invalid_argument("Primitive route requires a canonical render owner and topology.");

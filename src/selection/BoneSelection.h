@@ -1,5 +1,7 @@
 #pragma once
 
+#include "selection/SelectionSchema.h"
+
 #include <cstdint>
 
 enum class BoneSel : uint8_t {

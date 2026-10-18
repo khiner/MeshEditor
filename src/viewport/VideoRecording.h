@@ -2,6 +2,7 @@
 
 #include "VideoRecorder.h"
 #include "audio/AudioTypes.h"
+#include "viewport/ViewportSchema.h"
 
 // Present on the viewport entity iff recording is active.
 struct VideoRecording {

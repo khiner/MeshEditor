@@ -2,6 +2,7 @@
 
 #include "render/SvgResource.h"
 #include "state/Entity.h"
+#include "viewport/ViewportSchema.h"
 
 struct ViewportIconsTransform {
     std::unique_ptr<SvgResource> Select, SelectBox, Move, Rotate, Scale, Universal;
@@ -22,4 +23,4 @@ struct ViewportIcons {
 };
 
 // Emplaces the ViewportIcons context singleton and uploads each SVG into its bitmap texture.
-void LoadViewportIcons(state::Scene &);
+void LoadViewportIcons(state::Registry &);

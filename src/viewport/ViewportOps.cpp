@@ -1,5 +1,5 @@
 #include "viewport/ViewportOps.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 #include "action/Bone.h"
 #include "action/Emit.h"
@@ -14,7 +14,7 @@
 #include "selection/SelectionState.h"
 #include "viewport/InteractionComponents.h"
 
-bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode mode) {
+bool SetInteractionMode(state::Registry &r, state::Entity viewport, InteractionMode mode) {
     const auto current_mode = r.get<const Interaction>(viewport).Mode;
     if (current_mode == mode) return false;
 
@@ -90,11 +90,11 @@ bool SetInteractionMode(state::Scene &r, state::Entity viewport, InteractionMode
     return true;
 }
 
-void Delete(const state::Scene &r, state::Entity viewport) {
+void Delete(const state::Registry &r, state::Entity viewport) {
     if (IsBoneEditMode(r, viewport)) action::Emit(action::bone::DeleteSelected{});
     else action::Emit(action::object::Delete{});
 }
-void Duplicate(const state::Scene &r, state::Entity viewport) {
+void Duplicate(const state::Registry &r, state::Entity viewport) {
     if (IsBoneEditMode(r, viewport)) action::Emit(action::bone::DuplicateSelected{});
     else action::Emit(action::object::Duplicate{}, action::Phase::Stage);
 }

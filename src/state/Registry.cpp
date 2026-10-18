@@ -1,12 +1,15 @@
-#include "state/Scene.h"
+#include "state/Registry.h"
 #include "Range.h"
 #include "state/Allocation.h"
+
+#include <algorithm>
+
 namespace state {
 namespace {
 constexpr uint32_t Alive = 1u << 31;
 std::byte *Bytes(Table::Page &page) { return reinterpret_cast<std::byte *>(&page); }
 
-std::vector<PageMask> RemovalPages(const Scene &r, std::span<const Entity> requested) {
+std::vector<PageMask> RemovalPages(const Registry &r, std::span<const Entity> requested) {
     std::vector<Entity> entities{requested.begin(), requested.end()};
     if (!std::ranges::is_sorted(entities, {}, Index)) std::ranges::sort(entities, {}, Index);
     std::vector<PageMask> pages;
@@ -30,7 +33,7 @@ std::vector<PageMask> OccupiedPages(const Table &table) {
     return pages;
 }
 
-void RemoveComponentPages(Scene &r, std::span<const PageMask> pages) {
+void RemoveComponentPages(Registry &r, std::span<const PageMask> pages) {
     // Capture each type's affected pages once before callbacks mutate its values.
     // Callbacks retain access to the component being destroyed until its page is unlinked.
     // Destroy handlers may bind a new table, so the index walks a list that can grow.
@@ -57,14 +60,15 @@ void RemoveComponentPages(Scene &r, std::span<const PageMask> pages) {
             table.erase(page, removed);
         }
     }
-    // Change sets are small or empty after actions; inspect their members once.
-    for (auto &set : r.Changes) {
-        for (size_t i = 0; i < set.Entities.size();) {
-            const auto e = set.Entities[i];
+    // Managed sets are small or empty after actions, so the sweep inspects their members once.
+    for (auto *set : r.Bound) {
+        if (set->Clears != Clearing::Managed) continue;
+        for (size_t i = 0; i < set->Entities.size();) {
+            const auto e = set->Entities[i];
             const auto page = Index(e) / Table::PageCount;
             const auto found = std::ranges::lower_bound(pages, page, {}, &PageMask::Page);
             if (found != pages.end() && found->Page == page &&
-                (found->Mask & (1u << (Index(e) % Table::PageCount))) && r.Living.contains(e)) set.remove(e);
+                (found->Mask & (1u << (Index(e) % Table::PageCount))) && r.Living.contains(e)) set->remove(e);
             else ++i;
         }
     }
@@ -126,14 +130,19 @@ void Table::clear() {
     Occupied.clear();
     Count = 0;
 }
-Scene::Scene() : AllocationStorage(std::make_unique<Allocation>()) {
-    for (auto &c : Changes) c.bind(*this);
-}
-Scene::~Scene() { Context.Clear(); }
+Registry::Registry() : AllocationStorage(std::make_unique<Allocation>()) {}
+Registry::~Registry() { Context.Clear(); }
 DirtySet::~DirtySet() {
     if (Owner) {
         for (auto [type, event] : Bindings) std::erase(Owner->Dirty[type][size_t(event)], this);
+        std::erase(Owner->Bound, this);
     }
+}
+DirtySet &DirtySet::bind(Registry &r, Clearing clears) {
+    Owner = &r;
+    Clears = clears;
+    r.Bound.push_back(this);
+    return *this;
 }
 void DirtySet::Grow(uint32_t index) {
     Positions.resize(index + 1, UINT32_MAX);
@@ -144,26 +153,26 @@ void DirtySet::Track(TypeId type, Event event) {
     Owner->Dirty[type][size_t(event)].push_back(this);
     Bindings.emplace_back(type, event);
 }
-void BeforeWrite(Scene &r, TypeId type, Entity e) {
+void BeforeWrite(Registry &r, TypeId type, Entity e) {
     if (r.Capture) {
         const PageMask page{Index(e) / Table::PageCount, 1u << (Index(e) % Table::PageCount)};
         r.Capture(r, type, std::span{&page, 1u});
     }
 }
-void Notify(Scene &r, TypeId type, Event event, Entity e) {
+void Notify(Registry &r, TypeId type, Event event, Entity e) {
     if (r.Restoring && !r.RestoringEvents && event != Event::Destroy) return;
     for (auto *dirty : r.Dirty[type][size_t(event)]) dirty->emplace(e, event);
     const auto &handlers = r.Handlers[type][size_t(event)];
     for (const auto &handler : std::views::reverse(handlers)) handler(r, e);
 }
-bool Scene::valid(Entity e) const { return e != Null && Index(e) < AllocationStorage->Generations.size() && AllocationStorage->Generations[Index(e)] == (Alive | Generation(e)); }
-uint32_t Scene::EntityCapacity() const { return uint32_t(AllocationStorage->Generations.size()); }
-Entity Scene::EntityAt(uint32_t index) const {
+bool Registry::valid(Entity e) const { return e != Null && Index(e) < AllocationStorage->Generations.size() && AllocationStorage->Generations[Index(e)] == (Alive | Generation(e)); }
+uint32_t Registry::EntityCapacity() const { return uint32_t(AllocationStorage->Generations.size()); }
+Entity Registry::EntityAt(uint32_t index) const {
     if (index >= EntityCapacity()) return Null;
     const auto value = AllocationStorage->Generations[index];
     return value & Alive ? MakeEntity(index, value & ~Alive) : Null;
 }
-Entity Scene::create() {
+Entity Registry::create() {
     if (DocumentReadOnly) throw std::logic_error("Entity creation during derived restoration");
     uint32_t i;
     if (AllocationStorage->Free.empty()) {
@@ -179,10 +188,10 @@ Entity Scene::create() {
     Living.insert(e);
     return e;
 }
-void Scene::destroy(Entity e) {
+void Registry::destroy(Entity e) {
     destroy(std::span{&e, 1u});
 }
-void Scene::destroy(std::span<const Entity> entities) {
+void Registry::destroy(std::span<const Entity> entities) {
     if (DocumentReadOnly) throw std::logic_error("Entity destruction during derived restoration");
     for (const auto e : entities) assert(valid(e));
     const auto pages = RemovalPages(*this, entities);
@@ -208,13 +217,13 @@ void Scene::destroy(std::span<const Entity> entities) {
     free.P.Resize(before + freed.size() * sizeof(uint32_t));
     if (!freed.empty()) std::memcpy(free.P.Storage.data() + before, freed.data(), freed.size() * sizeof(uint32_t));
 }
-void Scene::RemoveComponents(Entity e) {
+void Registry::RemoveComponents(Entity e) {
     RemoveComponents(std::span{&e, 1u});
 }
-void Scene::RemoveComponents(std::span<const Entity> entities) {
+void Registry::RemoveComponents(std::span<const Entity> entities) {
     RemoveComponentPages(*this, RemovalPages(*this, entities));
 }
-void Scene::clear(TypeId type) {
+void Registry::clear(TypeId type) {
     auto &table = Tables[type];
     if (table.empty()) return;
     const auto pages = OccupiedPages(table);
@@ -226,7 +235,7 @@ void Scene::clear(TypeId type) {
         table.erase(page, mask);
     }
 }
-void Scene::Reset() {
+void Registry::Reset() {
     for (const auto type : Active) {
         auto &table = Tables[type];
         if (table.empty()) continue;
@@ -234,12 +243,7 @@ void Scene::Reset() {
         table.clear();
     }
     ++Epoch;
-    for (const auto &type : Dirty) {
-        for (const auto &event : type) {
-            for (auto *set : event) set->clear();
-        }
-    }
-    ClearChanges();
+    for (auto *set : Bound) set->clear();
     AllocationStorage->Generations.Clear();
     AllocationStorage->Free.Clear();
     Living.clear();

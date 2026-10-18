@@ -1,6 +1,6 @@
 #include "render/GpuBuffers.h"
 #include "render/MeshletBuild.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 // The mesh's shared arena locations and table runs.
 // An extras record draws its bone or joint faces with the instance transforms, naming its vertex handles through its vertex table.
@@ -34,7 +34,7 @@ MeshRecord BuildMeshRecord(const GpuBuffers &buffers, const MeshStore &meshes, u
     };
 }
 
-void RefreshMeshBinding(state::Scene &r, uint32_t store_id) {
+void RefreshMeshBinding(state::Registry &r, uint32_t store_id) {
     auto &meshes = r.Context.get<MeshStore>();
     const auto *record = meshes.TryGet(store_id);
     if (!record || record->RenderTopologies == 0u) return;
@@ -194,7 +194,7 @@ RenderRun PublishClusterLodStorage(MeshStore &meshes, MeshStore::Record &owner, 
     return allocation;
 }
 
-void CommitClusterLods(state::Scene &r, std::span<MeshStore::Record *const> owners, std::span<const ClusterLodBuild> builds) {
+void CommitClusterLods(state::Registry &r, std::span<MeshStore::Record *const> owners, std::span<const ClusterLodBuild> builds) {
     auto &meshes = r.Context.get<MeshStore>();
     auto &buffers = meshes.Render();
     // Every arena grows once for the whole batch.

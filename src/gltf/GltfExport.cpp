@@ -170,7 +170,7 @@ fastgltf::Camera ConvertCameraToFg(const CameraLens &cam, std::string_view name)
 }
 
 // Write channel rest values into record for export.
-void OverlayRest(const state::Scene &r, state::Entity e, state::TypeKey component, uint16_t index, std::span<std::byte> record) {
+void OverlayRest(const state::Registry &r, state::Entity e, state::TypeKey component, uint16_t index, std::span<std::byte> record) {
     const auto *clips = r.try_get<const AnimationClips>(e);
     if (!clips) return;
     for (const auto &clip : clips->Clips) {
@@ -216,7 +216,7 @@ std::array<float, 4> AttributeFloats(const MeshStore &meshes, uint32_t attribute
 
 } // namespace
 
-std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, const state::Scene &r, state::Entity viewport, SaveOptions options) {
+std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, const state::Registry &r, state::Entity viewport, SaveOptions options) {
     const profile::CpuScope scope{"SaveGltf"};
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto &buffers = r.Context.get<const GpuBuffers>();

@@ -1,6 +1,6 @@
 #include "mesh/MeshStore.h"
 #include "render/MaterialComponents.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 MaterialStore::MaterialStore() = default;
 MaterialStore::~MaterialStore() = default;
@@ -15,7 +15,7 @@ void MaterialStore::ResizeNames(size_t size) {
     Names.resize(size);
 }
 
-std::optional<uint32_t> DisplayedMaterial(const state::Scene &r, state::Entity mesh_entity) {
+std::optional<uint32_t> DisplayedMaterial(const state::Registry &r, state::Entity mesh_entity) {
     const auto *slot = r.try_get<const MeshMaterialSlotSelection>(mesh_entity);
     if (!slot) return {};
     if (const auto *pending = r.try_get<const MeshMaterialAssignment>(mesh_entity); pending && pending->PrimitiveIndex == slot->PrimitiveIndex) return pending->MaterialIndex;

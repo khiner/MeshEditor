@@ -11,14 +11,14 @@ uint32_t TemporaryWords(uint32_t capacity) { return capacity + 16u * ((capacity 
 
 uint32_t SortElementWorkWords(uint32_t capacity) { return TemporaryWords(capacity) + sizeof(ElementWorkSortJob) / sizeof(uint32_t); }
 
-void EncodeElementMembershipWork(state::Scene &r, mtl::ComputeChain &chain, std::span<const ElementWorkSeedJob> jobs) {
+void EncodeElementMembershipWork(state::Registry &r, mtl::ComputeChain &chain, std::span<const ElementWorkSeedJob> jobs) {
     TiledJobBatch<ElementWorkSeedJob, 1> batch{chain.Scratch, 0u};
     batch.Begin();
     for (const auto &job : jobs) batch.AddJob(job, {job.BlockCount});
     batch.Encode(chain, GetMeshPipelines(r), TiledJobPushConstants{}, std::array{TiledPass{MeshPass::ElementWorkSeed, 0}});
 }
 
-void EncodeSortElementWork(state::Scene &r, mtl::ComputeChain &chain, std::span<const ElementWork> work) {
+void EncodeSortElementWork(state::Registry &r, mtl::ComputeChain &chain, std::span<const ElementWork> work) {
     if (work.empty()) return;
     auto &storage = chain.Scratch;
     std::vector<ElementWorkSortJob> jobs;

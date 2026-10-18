@@ -20,7 +20,7 @@ namespace action {
 ComponentField UpdatedField(state::TypeKey key, uint16_t offset) {
     std::string component;
     const FieldRange *field = &NoField;
-    ForUpdatable(state::Slot(key), [&]<typename C> {
+    ForUpdatable(key, [&]<typename C> {
         component = state::LeafName<C>();
         field = &FieldAt<C>(offset);
     });
@@ -36,8 +36,8 @@ Field ClampField(Field v, const FieldSpec &spec) {
 }
 
 template<typename Field>
-void ApplyUpdate(state::Scene &r, state::Entity viewport, const Update<Field> &a) {
-    ForUpdatable(state::Slot(a.ComponentType), [&]<typename C> {
+void ApplyUpdate(state::Registry &r, state::Entity viewport, const Update<Field> &a) {
+    ForUpdatable(a.ComponentType, [&]<typename C> {
         using Traits = UpdateTraits<C>;
         const auto write = [&](state::Entity e, Field value) {
             if constexpr (DeltaField<Field> && !RotationField<Field>) value = ClampField(value, Traits::Bounds(r, e, a.Offset));
@@ -88,7 +88,7 @@ void ApplyUpdate(state::Scene &r, state::Entity viewport, const Update<Field> &a
 }
 } // namespace
 
-void Apply(state::Scene &r, state::Entity viewport, const Core &action) {
+void Apply(state::Registry &r, state::Entity viewport, const Core &action) {
     std::visit(
         overloaded{
             [&]<typename Field>(const Update<Field> &a) { ApplyUpdate(r, viewport, a); },

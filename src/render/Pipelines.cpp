@@ -3,7 +3,7 @@
 #include "gpu/EditOverlayConstant.h"
 #include "gpu/MeshVertexConstant.h"
 #include "gpu/PbrConstant.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 using mtl::AdditiveBlend, mtl::Blend, mtl::NoBlend, mtl::NoWrite, mtl::PremultipliedBlend;
 using mtl::BlendState, mtl::DepthState, mtl::FunctionConstant, mtl::FunctionRef, mtl::PassFormats, mtl::RenderPipeline;
@@ -203,7 +203,7 @@ Pipelines::Pipelines(mtl::LibraryCache &libraries)
       DiffuseIrradiance{libraries, {"IblPrefilter.metal", "DiffuseIrradianceKernel"}},
       SpecularPrefilter{libraries, {"IblPrefilter.metal", "SpecularPrefilterKernel"}} {}
 
-Pipelines &GetPipelines(state::Scene &r) {
+Pipelines &GetPipelines(state::Registry &r) {
     if (auto *pipelines = r.Context.find<Pipelines>()) return *pipelines;
     return r.Context.emplace<Pipelines>(r.Context.get<mtl::LibraryCache>());
 }

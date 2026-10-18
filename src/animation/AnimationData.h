@@ -1,8 +1,9 @@
 #pragma once
 
+#include "animation/AnimationSchema.h"
 #include "numeric/quat.h"
-#include "state/Schema.h"
 
+#include <algorithm>
 #include <vector>
 
 // How a channel's floats interpolate: Float lerps, Quaternion slerps, and Bool steps between 0 and 1.

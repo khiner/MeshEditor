@@ -1,4 +1,5 @@
 #include "SurfaceAudio.h"
+#include "audio/surface/AudioSurfaceSchema.h"
 
 #include "audio/ContactScene.h"
 #include "audio/Fft.h"
@@ -10,7 +11,6 @@
 
 #include <print>
 
-using state::Change;
 using state::On;
 
 namespace {
@@ -67,7 +67,7 @@ float UvLengthScale(const MeshStore &meshes, const Mesh &mesh, uint32_t uv_set) 
 }
 } // namespace
 
-void UpdateSurfaceRelief(state::Scene &r, state::Entity node_entity, state::Entity mesh_entity, bool geometry_changed) {
+void UpdateSurfaceRelief(state::Registry &r, state::Entity node_entity, state::Entity mesh_entity, bool geometry_changed) {
     // A surface names its own map only to override the one the mesh's material already supplies.
     const auto *surface = r.try_get<const ContactSurface>(node_entity);
     const auto normal_map = [&]() -> std::optional<gltf::NormalMapRef> {
@@ -196,7 +196,7 @@ struct SideTracks {
 };
 
 // A body with no acoustic surface contributes the default finish, so a contact is always fully specified.
-SideTracks ResolveSideTracks(const state::Scene &r, ModalAudio &m, const SustainedContactSide &side, state::Entity node, float sample_rate) {
+SideTracks ResolveSideTracks(const state::Registry &r, ModalAudio &m, const SustainedContactSide &side, state::Entity node, float sample_rate) {
     auto &surface = Surface(m);
     static constexpr ContactSurface DefaultSurface{};
     static const uint64_t default_key = FinishTrackKey(DefaultSurface);
@@ -354,7 +354,7 @@ constexpr double MinContactSamples{6};
 // The expected maximum closing rate the stiffness cap is sized at, their simulation value, m/s.
 constexpr double MaxImpactSpeed{0.5};
 
-ResolvedContact ResolveContact(const state::Scene &r, ModalAudio &m, const SustainedContact &c, const std::array<ContactNodes, 2> &nodes, const SurfaceSoundControls &controls) {
+ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const SustainedContact &c, const std::array<ContactNodes, 2> &nodes, const SurfaceSoundControls &controls) {
     auto &surface = Surface(m);
     ResolvedContact out;
     std::array<double, 2> curvature{};
@@ -1185,34 +1185,40 @@ std::optional<VoiceSet::Voice> BuildContactVoice(ModalAudio &m, const SustainedC
 }
 } // namespace
 
-float SurfaceRoughnessOf(const state::Scene &r, state::Entity node) {
+struct SurfaceChanges {
+    state::DirtySet Edit, Material, Geometry, SoundControls;
+};
+
+float SurfaceRoughnessOf(const state::Registry &r, state::Entity node) {
     static constexpr ContactSurface DefaultSurface{};
     const auto *surface = node != state::Null && r.valid(node) ? r.try_get<const ContactSurface>(node) : nullptr;
     return (surface ? *surface : DefaultSurface).Roughness;
 }
 
 // A compound body's rubber foot and steel shell are separate collider nodes, so a contact on one takes that node's surface.
-state::Entity ContactSurfaceNode(const state::Scene &r, state::Entity collider, state::Entity body) {
+state::Entity ContactSurfaceNode(const state::Registry &r, state::Entity collider, state::Entity body) {
     return NearestNodeWith(r, collider, body, [&r](state::Entity e) { return r.all_of<ContactSurface>(e); });
 }
 
-void SurfaceSetupScene(state::Scene &r, state::Entity viewport) { r.emplace_or_replace<SurfaceSoundControls>(viewport); }
+void SurfaceSetupScene(state::Registry &r, state::Entity viewport) { r.emplace_or_replace<SurfaceSoundControls>(viewport); }
 
-void RegisterSurfaceContactHandlers(state::Scene &r) {
-    reactive(r, Change::SurfaceEdit).on<ContactSurface>(On::Create | On::Update | On::Destroy);
+void RegisterSurfaceContactHandlers(state::Registry &r) {
+    auto &changes = r.Context.emplace<SurfaceChanges>();
+    changes.Edit.bind(r).on<ContactSurface>(On::Create | On::Update | On::Destroy);
     // A surface with no normal map of its own inherits its material's, so a material reassignment changes the relief too.
     // A material assignment names a mesh where a surface names a node, so the two are tracked apart.
-    reactive(r, Change::SurfaceMaterial).on<MeshMaterialAssignment>(On::Create | On::Update);
+    changes.Material.bind(r).on<MeshMaterialAssignment>(On::Create | On::Update);
     // The relief's texel size is measured from the mesh, so an edit to the mesh restates it.
     // Tracked separately from the surface edits above so the derivation can tell which of the two it is answering.
-    reactive(r, Change::SurfaceGeometry).on<MeshGeometryDirty>(On::Create).on<MeshPositionsChanged>(On::Create);
-    reactive(r, Change::SurfaceSoundControls).on<SurfaceSoundControls>(On::Create | On::Update);
+    changes.Geometry.bind(r).on<MeshGeometryDirty>(On::Create).on<MeshPositionsChanged>(On::Create);
+    changes.SoundControls.bind(r).on<SurfaceSoundControls>(On::Create | On::Update);
 }
 
-void SurfaceUpdateContacts(state::Scene &r) {
+void SurfaceUpdateContacts(state::Registry &r) {
     auto &m = r.Context.get<ModalAudio>();
     auto &surface = Surface(m);
-    for (auto e : reactive(r, Change::SurfaceSoundControls)) {
+    const auto &changes = r.Context.get<const SurfaceChanges>();
+    for (auto e : changes.SoundControls) {
         const auto &controls = r.get<const SurfaceSoundControls>(e);
         surface.SustainLevel.store(controls.SustainLevel, std::memory_order_relaxed);
         surface.AccelNoiseGain.store(controls.AccelNoiseGain, std::memory_order_relaxed);
@@ -1223,9 +1229,7 @@ void SurfaceUpdateContacts(state::Scene &r) {
     // Re-derive the mesoscale relief of any edited surface, so a sustained contact reads it without decoding a texture.
     // Refresh every node using an edited surface or mesh because relief coordinates belong to the mesh.
     // The finish key follows the surface alone.
-    auto &surface_edits = reactive(r, Change::SurfaceEdit);
-    auto &material_edits = reactive(r, Change::SurfaceMaterial);
-    auto &mesh_edits = reactive(r, Change::SurfaceGeometry);
+    const auto &surface_edits = changes.Edit, &material_edits = changes.Material, &mesh_edits = changes.Geometry;
     if (!surface_edits.empty() || !material_edits.empty() || !mesh_edits.empty()) {
         for (const auto node : r.view<const Instance>()) {
             const auto mesh_e = r.get<const Instance>(node).Entity;

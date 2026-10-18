@@ -6,10 +6,10 @@
 #include "render/GpuBufferOps.h"
 #include "render/MeshletBuildGpu.h"
 #include "render/MeshletOwners.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 #include <map>
 
-MeshletPatch PlanMeshletPatch(state::Scene &r, MeshStore::Record &owner, const BufferArena<uint32_t> &storage, const MeshletPatchInput &input) {
+MeshletPatch PlanMeshletPatch(state::Registry &r, MeshStore::Record &owner, const BufferArena<uint32_t> &storage, const MeshletPatchInput &input) {
     const profile::CpuScope scope{"MeshletPatchPlan"};
     if (input.Sources.size() != input.Added.Count || uint64_t(input.Added.Offset) + input.Added.Count > UINT32_MAX) {
         throw std::invalid_argument("Meshlet patch provenance must cover the emitted triangle run.");
@@ -112,7 +112,7 @@ MeshletPatch PlanMeshletPatch(state::Scene &r, MeshStore::Record &owner, const B
     return patch;
 }
 
-std::vector<uint32_t> AdoptMeshletFragments(state::Scene &r, mtl::ComputeChain &chain, MeshStore::Record &owner, uint32_t topology, std::span<MeshStore::Record> fragments, std::span<const MeshletPatchAdoptJob> jobs, std::span<const uint32_t> blocks) {
+std::vector<uint32_t> AdoptMeshletFragments(state::Registry &r, mtl::ComputeChain &chain, MeshStore::Record &owner, uint32_t topology, std::span<MeshStore::Record> fragments, std::span<const MeshletPatchAdoptJob> jobs, std::span<const uint32_t> blocks) {
     const profile::CpuScope scope{"MeshletAdoptFragments"};
     if (topology > 2u || fragments.size() != jobs.size() || !owner.PrimitiveData || !owner.NodeData) {
         throw std::invalid_argument("Meshlet fragments require one matching canonical owner and job each.");

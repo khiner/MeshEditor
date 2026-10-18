@@ -2,6 +2,7 @@
 
 #include "Range.h"
 
+#include "mesh/MeshSchema.h"
 #include "state/Entity.h"
 
 struct RenderInstance {

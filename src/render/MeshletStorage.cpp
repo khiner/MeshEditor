@@ -1,8 +1,8 @@
 #include "render/MeshletStorage.h"
 #include "render/GpuBufferOps.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
-void RetireMeshletStorage(state::Scene &r, MeshStore::Record &owner, std::span<const uint32_t> clusters) {
+void RetireMeshletStorage(state::Registry &r, MeshStore::Record &owner, std::span<const uint32_t> clusters) {
     if (clusters.empty()) return;
     if (!owner.MeshletData) throw std::invalid_argument("Meshlet retirement requires owned canonical membership.");
     auto &meshes = r.Context.get<MeshStore>();

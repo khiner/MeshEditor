@@ -2,6 +2,7 @@
 
 #include "AudioSamples.h"
 #include "AudioTypes.h"
+#include "audio/AudioSchema.h"
 #include "state/Entity.h"
 
 struct Recording {
@@ -17,31 +18,31 @@ struct Recording {
 // Render the master mix, which is far-field pressure in pascals at 1 m.
 // `monitor` maps 20 Pa to full scale and soft-limits higher pressures for device output.
 // Capture paths pass null and convert pressure separately.
-void ProcessAudio(state::Scene &, state::Entity viewport, float *output, uint32_t frame_count, bool monitor = false);
+void ProcessAudio(state::Registry &, state::Entity viewport, float *output, uint32_t frame_count, bool monitor = false);
 
 // Convert captured pressure to device units in place, at the monitor level.
 // `limiter` preserves the envelope across calls for one monitored stream.
-void MonitorFrames(state::Scene &, std::span<float>, MonitorLimiter &);
+void MonitorFrames(state::Registry &, std::span<float>, MonitorLimiter &);
 
 // Capture of the master output, for muxing into a video recording.
 // The device thread writes and the main thread drains, so one of each and no locking.
 // Returns the device sample rate, or 0 when there is no device to capture.
-uint32_t BeginAudioCapture(state::Scene &);
-void EndAudioCapture(state::Scene &);
+uint32_t BeginAudioCapture(state::Registry &);
+void EndAudioCapture(state::Registry &);
 // Append everything the device has produced since the last call.
-void DrainAudioCapture(state::Scene &, std::vector<float> &);
+void DrainAudioCapture(state::Registry &, std::vector<float> &);
 
-void RenderAudioOffline(state::Scene &, state::Entity viewport, std::vector<float> &, uint32_t frame_count);
+void RenderAudioOffline(state::Registry &, state::Entity viewport, std::vector<float> &, uint32_t frame_count);
 
 // Rebuild the entity's ContactDynamics from its MassProperties, ModalModes, and mesh (surface curvature).
 // Removes ContactDynamics when the inputs are missing.
-void UpdateContactDynamics(state::Scene &, state::Entity sound_entity);
+void UpdateContactDynamics(state::Registry &, state::Entity sound_entity);
 
 // Ratio of current acoustic density to solved modal density, or one when unknown.
 // Stored mass properties scale linearly by this ratio.
-double ModalDensityRatio(const state::Scene &, state::Entity sound_entity);
+double ModalDensityRatio(const state::Registry &, state::Entity sound_entity);
 
-uint32_t DeviceSampleRate(const state::Scene &);
+uint32_t DeviceSampleRate(const state::Registry &);
 
 // Decode any CoreAudio-supported audio file to mono float frames at `sample_rate`.
 // Returns empty on failure.

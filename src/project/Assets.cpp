@@ -4,7 +4,7 @@
 #include "Paths.h"
 #include "project/store/Hash.h"
 
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 #include <format>
 
@@ -41,11 +41,11 @@ std::expected<fs::path, std::string> Assets::Store(std::string_view name, std::s
     return reference;
 }
 
-fs::path ResolveAsset(const state::Scene &r, const fs::path &path) {
+fs::path ResolveAsset(const state::Registry &r, const fs::path &path) {
     return Assets::IsReference(path) ? r.Context.get<const Assets>().Resolve(path) : path;
 }
 
-fs::path AssetReference(const state::Scene &r, const fs::path &path) {
+fs::path AssetReference(const state::Registry &r, const fs::path &path) {
     const auto *assets = r.Context.find<const Assets>();
     return assets ? assets->Reference(path) : path;
 }

@@ -2,12 +2,14 @@
 #include "project/ComponentPool.h"
 #include "project/store/History.h"
 #include "state/Allocation.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
+
+#include <algorithm>
 
 namespace project {
-EntityStore::EntityStore(state::Scene &r, store::History &history, const snapshot::SnapshotEntries &components) : R(r), Table(r.AllocationState().Generations) {
+EntityStore::EntityStore(state::Registry &r, store::History &history, const snapshot::SnapshotEntries &components) : R(r), Table(r.AllocationState().Generations) {
     R.HistoryOwner = this;
-    R.Capture = [](state::Scene &r, state::TypeId type, std::span<const state::PageMask> pages) {
+    R.Capture = [](state::Registry &r, state::TypeId type, std::span<const state::PageMask> pages) {
         if (!r.Restoring) static_cast<EntityStore *>(r.HistoryOwner)->Capture(type, pages);
     };
     Table.P.Trie.CollectChanged = true;

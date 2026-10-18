@@ -1,17 +1,17 @@
 #pragma once
 
 #include "CameraTypes.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 // A camera object's lens component, Perspective or Orthographic.
-inline bool HasLens(const state::Scene &r, state::Entity e) { return r.any_of<Perspective, Orthographic>(e); }
-inline std::optional<CameraLens> LensOf(const state::Scene &r, state::Entity e) {
+inline bool HasLens(const state::Registry &r, state::Entity e) { return r.any_of<Perspective, Orthographic>(e); }
+inline std::optional<CameraLens> LensOf(const state::Registry &r, state::Entity e) {
     if (const auto *perspective = r.try_get<const Perspective>(e)) return *perspective;
     if (const auto *orthographic = r.try_get<const Orthographic>(e)) return *orthographic;
     return {};
 }
 // Installs `lens` as the entity's one lens component.
-inline void SetLens(state::Scene &r, state::Entity e, const CameraLens &lens) {
+inline void SetLens(state::Registry &r, state::Entity e, const CameraLens &lens) {
     if (const auto *perspective = std::get_if<Perspective>(&lens)) {
         r.remove<Orthographic>(e);
         r.emplace_or_replace<Perspective>(e, *perspective);

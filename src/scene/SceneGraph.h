@@ -1,7 +1,7 @@
 #pragma once
 
 #include "scene/WorldTransform.h"
-#include "state/Scene.h"
+#include "state/Registry.h"
 
 // A node's authored parent, present only on a node with a parent.
 struct SceneParent {
@@ -19,7 +19,7 @@ struct ChildrenIterator {
     using difference_type = std::ptrdiff_t;
     using value_type = state::Entity;
 
-    const state::Scene *R;
+    const state::Registry *R;
     state::Entity Current;
 
     state::Entity operator*() const { return Current; }
@@ -33,30 +33,30 @@ struct ChildrenIterator {
 };
 
 struct Children {
-    const state::Scene *R;
+    const state::Registry *R;
     state::Entity ParentEntity;
 
     ChildrenIterator begin() const;
     ChildrenIterator end() const { return {R, state::Null}; }
 };
 
-mat4 GetParentDelta(const state::Scene &, state::Entity);
+mat4 GetParentDelta(const state::Registry &, state::Entity);
 
 // The node's parent, or null at a root.
-state::Entity ParentOrNull(const state::Scene &, state::Entity);
+state::Entity ParentOrNull(const state::Registry &, state::Entity);
 
 // The nearest of `e` and its ancestors that `pred` matches, or state::Null when none does.
-state::Entity FindAncestorIf(const state::Scene &r, state::Entity e, auto &&pred) {
+state::Entity FindAncestorIf(const state::Registry &r, state::Entity e, auto &&pred) {
     for (; e != state::Null && !pred(e); e = ParentOrNull(r, e)) {}
     return e;
 }
 
 // The local transform composing into the world transform: the pose when present, else the authored Transform.
-const Transform *ComposedLocal(const state::Scene &, state::Entity);
+const Transform *ComposedLocal(const state::Registry &, state::Entity);
 // Writes an edited local transform.
 // A posed node takes the edit in its pose, and components the active animation does not pose persist in its Transform.
-void CommitEditedLocal(state::Scene &, state::Entity, const Transform &edited);
-void PatchEditedLocal(state::Scene &r, state::Entity e, auto &&fn) {
+void CommitEditedLocal(state::Registry &, state::Entity, const Transform &edited);
+void PatchEditedLocal(state::Registry &r, state::Entity e, auto &&fn) {
     const auto *current = ComposedLocal(r, e);
     if (!current) return;
     Transform edited = *current;
@@ -65,10 +65,10 @@ void PatchEditedLocal(state::Scene &r, state::Entity e, auto &&fn) {
 }
 
 // The node's world transform, composed from its local transform under its parent's while the settle pass has not composed it yet.
-Transform ComposeWorldTransform(const state::Scene &, state::Entity);
+Transform ComposeWorldTransform(const state::Registry &, state::Entity);
 
 // Recompute roots and descendants top-down.
 // Include every node with a changed local transform, parent, or instance slot in roots.
 // Skip owned nodes and subtrees; recompute held nodes while preserving descendants.
 // Sort owned and held by entity index.
-void RecomputeWorldTransforms(state::Scene &, std::span<const state::Entity> roots, std::span<const state::Entity> owned, std::span<const state::Entity> held);
+void RecomputeWorldTransforms(state::Registry &, std::span<const state::Entity> roots, std::span<const state::Entity> owned, std::span<const state::Entity> held);

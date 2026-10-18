@@ -2,6 +2,7 @@
 
 #include "Field.h"
 #include "gpu/PunctualLightType.h"
+#include "render/RenderSchema.h"
 
 // A KHR_lights_punctual light in glTF units.
 // Range 0 is infinite, and cone angles are radians.

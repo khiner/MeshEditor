@@ -1,10 +1,11 @@
 #include "viewport/ViewportIcons.h"
 
 #include "Paths.h"
+#include "metal/MetalContext.h"
 
-#include "state/Scene.h"
+#include "state/Registry.h"
 
-void LoadViewportIcons(state::Scene &r) {
+void LoadViewportIcons(state::Registry &r) {
     const auto dir = Paths::Res() / "svg";
     const auto &ctx = r.Context.get<const mtl::Context>();
     r.Context.emplace<ViewportIcons>(

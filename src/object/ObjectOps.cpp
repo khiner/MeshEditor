@@ -13,6 +13,7 @@
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
+#include "render/RenderChanges.h"
 #include "render/Textures.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
@@ -21,7 +22,7 @@
 
 namespace {
 // Unlink each affected sibling list once, including surviving children of deleted parents.
-void ClearRelationships(state::Scene &r, std::span<const state::Entity> entities) {
+void ClearRelationships(state::Registry &r, std::span<const state::Entity> entities) {
     std::vector<state::Entity> detached;
     const auto add = [&](state::Entity e) {
         if (r.all_of<SceneParent>(e)) detached.push_back(e);
@@ -37,7 +38,7 @@ void ClearRelationships(state::Scene &r, std::span<const state::Entity> entities
 }
 } // namespace
 
-void DestroyArmatureData(state::Scene &r, state::Entity arm_obj_entity) {
+void DestroyArmatureData(state::Registry &r, state::Entity arm_obj_entity) {
     auto &meshes = r.Context.get<MeshStore>();
     auto &arm = r.edit<ArmatureObject>(arm_obj_entity);
     if (arm.JointEntity != state::Null) {
@@ -52,11 +53,11 @@ void DestroyArmatureData(state::Scene &r, state::Entity arm_obj_entity) {
     r.remove<VertexStoreId, ModelsBuffer>(arm_obj_entity);
 }
 
-void Destroy(state::Scene &r, state::Entity viewport, state::Entity e) {
+void Destroy(state::Registry &r, state::Entity viewport, state::Entity e) {
     Destroy(r, viewport, std::span{&e, 1u});
 }
 
-void Destroy(state::Scene &r, state::Entity viewport, std::span<const state::Entity> entities) {
+void Destroy(state::Registry &r, state::Entity viewport, std::span<const state::Entity> entities) {
     if (entities.empty()) return;
     const profile::CpuScope scope{"DestroyObjects"};
     auto &pending = r.Context.emplace<PendingObjectRemovals>();
@@ -108,7 +109,7 @@ void Destroy(state::Scene &r, state::Entity viewport, std::span<const state::Ent
     r.destroy(destroyed);
 }
 
-void ProcessObjectRemovals(state::Scene &r, state::Entity viewport) {
+void ProcessObjectRemovals(state::Registry &r, state::Entity viewport) {
     auto *pending = r.Context.find<PendingObjectRemovals>();
     if (!pending) return;
     const profile::CpuScope scope{"ProcessObjectRemovals"};
@@ -124,7 +125,7 @@ void ProcessObjectRemovals(state::Scene &r, state::Entity viewport) {
                 const auto slots = models ? object_ids.subspan(models->InstanceRange.Offset, models->InstanceCount) : std::span<const uint32_t>{};
                 if (std::ranges::any_of(slots, [&](uint32_t id) { const auto *instance = r.try_get<const Instance>(r.EntityAt(ObjectIndex(id))); return instance && instance->Entity == data_entity; })) survivors.push_back(data_entity);
             }
-            for (const auto e : reactive(r, state::Change::InstanceVisibility)) {
+            for (const auto e : r.Context.get<const RenderChanges>().InstanceVisibility) {
                 if (const auto *instance = r.try_get<const Instance>(e)) survivors.push_back(instance->Entity);
             }
             for (const auto data_entity : survivors) buffer_entities.remove(data_entity);
@@ -173,11 +174,11 @@ void ProcessObjectRemovals(state::Scene &r, state::Entity viewport) {
     }
 }
 
-void ClearMeshes(state::Scene &r, state::Entity viewport) {
+void ClearMeshes(state::Registry &r, state::Entity viewport) {
     Destroy(r, viewport, SortedEntities(r.view<Instance>(state::Exclude<SubElementOf>)));
 }
 
-std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(state::Scene &r, state::Entity viewport, const std::filesystem::path &path, MeshInstanceCreateInfo info, bool deduplicate) {
+std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(state::Registry &r, state::Entity viewport, const std::filesystem::path &path, MeshInstanceCreateInfo info, bool deduplicate) {
     const auto stored_path = project::ResolveAsset(r, path);
     auto result = ReadMeshFile(stored_path);
     if (!result) return std::unexpected{result.error()};
@@ -196,6 +197,6 @@ std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(s
     return entities;
 }
 
-void RequestImportMesh(state::Scene &r, state::Entity viewport, std::filesystem::path path, MeshInstanceCreateInfo info) {
+void RequestImportMesh(state::Registry &r, state::Entity viewport, std::filesystem::path path, MeshInstanceCreateInfo info) {
     r.emplace_or_replace<PendingImportMesh>(viewport, std::move(path), std::move(info));
 }

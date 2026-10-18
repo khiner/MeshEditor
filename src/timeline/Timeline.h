@@ -2,6 +2,7 @@
 
 #include "Field.h"
 #include "state/Entity.h"
+#include "timeline/TimelineSchema.h"
 
 // Start-frame and frame-rate changes invalidate baked physics frames.
 struct TimelineRange {
@@ -49,4 +50,4 @@ struct LastEvaluatedFrame {
 };
 
 // Resets playback to the start frame and invalidates the physics cache.
-void JumpToStartFrame(state::Scene &, state::Entity viewport);
+void JumpToStartFrame(state::Registry &, state::Entity viewport);

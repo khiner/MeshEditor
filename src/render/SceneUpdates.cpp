@@ -3,6 +3,7 @@
 #include "Profile.h"
 #include "SortUnique.h"
 #include "armature/ArmatureComponents.h"
+#include "mesh/MeshChanges.h"
 #include "mesh/MeshComponents.h"
 #include "metal/AutoreleaseScope.h"
 #include "object/PendingSync.h"
@@ -16,27 +17,28 @@
 #include "render/MeshletBuild.h"
 #include "render/MeshletBuildGpu.h"
 #include "render/Pipelines.h"
+#include "render/RenderChanges.h"
 #include "render/RenderTargets.h"
 #include "scene/Entity.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionState.h"
+#include "state/Registry.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/RenderExtent.h"
 #include "viewport/ViewportConsumerFence.h"
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportRenderGpu.h"
 
-using state::Change;
-uint8_t InstanceStateBits(const state::Scene &r, state::Entity e) {
+uint8_t InstanceStateBits(const state::Registry &r, state::Entity e) {
     return (r.all_of<Selected>(e) ? ElementStateSelected : 0) | (r.all_of<Active>(e) ? ElementStateActive : 0) | (r.all_of<Hidden>(e) ? InstanceStateHidden : 0);
 }
 
-bool IsSilhouetteEligible(const state::Scene &r, state::Entity mesh_entity) {
+bool IsSilhouetteEligible(const state::Registry &r, state::Entity mesh_entity) {
     if (!r.valid(mesh_entity) || r.any_of<ObjectExtrasTag, ArmatureObject, BoneJoint>(mesh_entity) || !HasMesh(r, mesh_entity)) return false;
     return r.Context.get<const MeshStore>().Arenas().FaceTriangles.Count(RecordOf(r, mesh_entity).FaceData) > 0u;
 }
 
-void RetallyMesh(state::Scene &r, state::Entity mesh_entity) {
+void RetallyMesh(state::Registry &r, state::Entity mesh_entity) {
     const auto id = DrawnStoreId(r, mesh_entity);
     auto &buffers = r.Context.get<GpuBuffers>();
     const auto &meshes = r.Context.get<const MeshStore>();
@@ -57,7 +59,7 @@ void RetallyMesh(state::Scene &r, state::Entity mesh_entity) {
                          });
 }
 
-void RepointMeshInstances(state::Scene &r, std::span<const state::Entity> mesh_entities) {
+void RepointMeshInstances(state::Registry &r, std::span<const state::Entity> mesh_entities) {
     const auto &buffers = r.Context.get<GpuBuffers>();
     for (const auto mesh_entity : mesh_entities) {
         r.emplace_or_replace<MeshLayoutDirty>(mesh_entity);
@@ -82,7 +84,7 @@ void RepointMeshInstances(state::Scene &r, std::span<const state::Entity> mesh_e
 
 namespace {
 // The debug channel material-shaded viewports show, which the LOD attributes preserve.
-DebugChannel LodDebugChannel(const state::Scene &r) {
+DebugChannel LodDebugChannel(const state::Registry &r) {
     DebugChannel debug = DebugChannel::None;
     for (const auto [_, display] : r.view<const ViewportDisplay>().each()) {
         if (!WorkbenchShading(display.ViewportShading)) debug = display.DebugChannel;
@@ -91,7 +93,7 @@ DebugChannel LodDebugChannel(const state::Scene &r) {
 }
 } // namespace
 
-bool RefreshMaterialLodAttributes(state::Scene &r) {
+bool RefreshMaterialLodAttributes(state::Registry &r) {
     const auto materials = GetMaterials(r);
     const auto debug = LodDebugChannel(r);
     std::vector<std::array<uint32_t, 2>> required(materials.size());
@@ -102,7 +104,7 @@ bool RefreshMaterialLodAttributes(state::Scene &r) {
     return true;
 }
 
-void RefreshClusterLodAttributes(state::Scene &r, mtl::ComputeChain &chain, std::span<const state::Entity> mesh_entities) {
+void RefreshClusterLodAttributes(state::Registry &r, mtl::ComputeChain &chain, std::span<const state::Entity> mesh_entities) {
     auto &meshes = r.Context.get<MeshStore>();
     auto &render = meshes.Render();
     const auto materials = GetMaterials(r);
@@ -145,7 +147,7 @@ void RefreshClusterLodAttributes(state::Scene &r, mtl::ComputeChain &chain, std:
     RecordLodNodeRefits(r, chain, refits);
 }
 
-void BuildMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<const state::Entity> mesh_entities, std::span<const state::Entity> bone_entities) {
+void BuildMeshlets(state::Registry &r, mtl::ComputeChain &chain, std::span<const state::Entity> mesh_entities, std::span<const state::Entity> bone_entities) {
     if (mesh_entities.empty() && bone_entities.empty()) return;
     for (const auto e : mesh_entities) ReleaseMeshEditWork(r, e);
     const profile::CpuScope scope{"BuildMeshlets"};
@@ -178,11 +180,11 @@ void BuildMeshlets(state::Scene &r, mtl::ComputeChain &chain, std::span<const st
     for (const auto e : mesh_entities) r.emplace_or_replace<ClusterLodDemand>(e);
 }
 
-bool EditPinsFinest(const selection::PrimaryEditInstanceMap &primaries, const state::Scene &r, state::Entity mesh_entity) {
+bool EditPinsFinest(const selection::PrimaryEditInstanceMap &primaries, const state::Registry &r, state::Entity mesh_entity) {
     return primaries.contains(mesh_entity) || r.all_of<MeshEditWork>(mesh_entity);
 }
 
-bool BuildDemandedClusterLods(state::Scene &r, mtl::ComputeChain &chain, state::Entity viewport) {
+bool BuildDemandedClusterLods(state::Registry &r, mtl::ComputeChain &chain, state::Entity viewport) {
     if (r.view<const ClusterLodDemand>().empty()) return false;
     auto &meshes = r.Context.get<MeshStore>();
     auto &render = meshes.Render();
@@ -242,11 +244,11 @@ bool BuildDemandedClusterLods(state::Scene &r, mtl::ComputeChain &chain, state::
     return true;
 }
 
-bool DeriveRenderInstances(state::Scene &r) {
+bool DeriveRenderInstances(state::Registry &r) {
     const auto &buffers = r.Context.get<GpuBuffers>();
     std::span<uint8_t> states;
     std::vector<state::Entity> retallied;
-    for (const auto e : reactive(r, state::Change::InstanceVisibility).Entities) {
+    for (const auto e : r.Context.get<const RenderChanges>().InstanceVisibility.Entities) {
         if (!r.valid(e)) continue;
         const auto *instance = r.try_get<const Instance>(e);
         if (const auto *render = r.try_get<const RenderInstance>(e)) {
@@ -277,7 +279,7 @@ uint32_t SlotPosition(std::span<const uint32_t> list, std::span<const uint32_t> 
     return uint32_t(std::ranges::lower_bound(list, object_ids[slot], std::ranges::greater{}, [&](uint32_t s) { return object_ids[s]; }) - list.begin());
 }
 
-void RebaseRenderInstances(state::Scene &r, std::span<const uint32_t> object_ids, Range slots) {
+void RebaseRenderInstances(state::Registry &r, std::span<const uint32_t> object_ids, Range slots) {
     for (uint32_t slot = slots.Offset; slot < slots.Offset + slots.Count; ++slot) r.edit<RenderInstance>(r.EntityAt(ObjectIndex(object_ids[slot]))).BufferIndex = slot;
 }
 
@@ -293,7 +295,7 @@ void MergeInsertedSlots(GpuBuffers &buffers, std::vector<uint32_t> inserted) {
 }
 } // namespace
 
-SyncResult SyncModelsBuffers(state::Scene &r) {
+SyncResult SyncModelsBuffers(state::Registry &r) {
     const profile::CpuScope scope{"SyncModelsBuffers"};
     auto &buffers = r.Context.get<GpuBuffers>();
     auto &meshes = r.Context.get<MeshStore>();
@@ -302,7 +304,7 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
     for (const auto id : meshes.TakeReleased()) buffers.Retally(id, {});
     std::vector<state::Entity> new_mesh_entities, new_extras_entities;
     std::vector<uint8_t> listed;
-    for (auto e : reactive(r, Change::NewBufferEntity)) {
+    for (auto e : r.Context.get<const MeshChanges>().NewBufferEntity) {
         if (!r.valid(e)) continue;
         // A record keeps its render data across handle changes that leave it intact.
         const auto id = DrawnStoreId(r, e);
@@ -380,7 +382,7 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
 
     // New instances by buffer, in entity order within each buffer.
     std::vector<std::pair<state::Entity, state::Entity>> placements;
-    for (auto entity : reactive(r, Change::RenderInstanceCreated)) {
+    for (auto entity : r.Context.get<const RenderChanges>().InstanceCreated) {
         if (!r.valid(entity)) continue;
         if (const auto *ri = r.try_get<const RenderInstance>(entity); ri && ri->BufferIndex == UINT32_MAX) placements.emplace_back(ri->Entity, entity);
     }
@@ -461,7 +463,7 @@ SyncResult SyncModelsBuffers(state::Scene &r) {
     return {std::move(newly_inserted), std::move(new_mesh_entities), std::move(new_extras_entities), slots_changed};
 }
 
-bool SyncViewportRenderResources(state::Scene &r, state::Entity viewport) {
+bool SyncViewportRenderResources(state::Registry &r, state::Entity viewport) {
     auto &targets = r.Context.get<RenderTargets>();
     const auto render_extent_px = RenderExtentPx(r);
     const auto render_extent = std::bit_cast<mtl::Extent2D>(render_extent_px);

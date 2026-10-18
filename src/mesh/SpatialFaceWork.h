@@ -8,16 +8,16 @@ namespace mtl {
 struct ComputeChain;
 } // namespace mtl
 namespace state {
-struct Scene;
+struct Registry;
 } // namespace state
 
 // Exact GPU face predicates over canonical candidate membership in UMA.
 // Geometry and attributes stay in the canonical arenas, independent of render caches.
 struct SpatialFaceWork {
     // Records candidate face membership.
-    SpatialFaceWork(state::Scene &, mtl::ComputeChain &, const MeshTopologyTask &);
+    SpatialFaceWork(state::Registry &, mtl::ComputeChain &, const MeshTopologyTask &);
     // Records the exact predicate and sorts its affected face work.
-    void RecordFaces(state::Scene &, mtl::ComputeChain &);
+    void RecordFaces(state::Registry &, mtl::ComputeChain &);
 
     ElementWork Faces;
     uint32_t Count{};

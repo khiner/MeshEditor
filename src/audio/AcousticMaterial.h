@@ -2,6 +2,7 @@
 
 #include "AcousticMaterialProperties.h"
 #include "Field.h"
+#include "audio/AudioSchema.h"
 
 struct AcousticMaterial {
     std::string Name;

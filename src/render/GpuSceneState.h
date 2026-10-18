@@ -2,6 +2,7 @@
 
 #include "Range.h"
 #include "gpu/ElementWork.h"
+#include "render/RenderSchema.h"
 #include "state/Entity.h"
 
 // Pose namespaces and normal outputs for one mesh entity's instance run.
@@ -102,4 +103,4 @@ struct GpuSceneState {
     // Camera lenses, lights, colliders, tets or instance slots changed, so the overlay jobs rebuild before the next record.
     bool OverlayJobsDirty{true};
 };
-inline void Reset(GpuSceneState &s, state::Scene &) { s = {}; }
+inline void Reset(GpuSceneState &s, state::Registry &) { s = {}; }

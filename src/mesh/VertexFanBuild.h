@@ -8,7 +8,7 @@ struct ComputeChain;
 
 struct MeshConnectivityJob;
 namespace state {
-struct Scene;
+struct Registry;
 } // namespace state
 
 // Records the rebuild of the packed fans of connectivity jobs' writable vertices into `chain`.
@@ -19,4 +19,4 @@ struct Scene;
 // Record after canonical corner/face ownership is available and sparse halfedge work is sorted and finished.
 // The recording captures the runs and the roots in `vertex_blocks`, the ascending blocks of every writable vertex.
 // The chain's next submit frees the writable vertices' former runs and each run's unused tail.
-void EncodeVertexFans(state::Scene &, mtl::ComputeChain &, std::span<const MeshConnectivityJob>, std::span<const uint32_t> vertex_blocks, bool fresh = false);
+void EncodeVertexFans(state::Registry &, mtl::ComputeChain &, std::span<const MeshConnectivityJob>, std::span<const uint32_t> vertex_blocks, bool fresh = false);

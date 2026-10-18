@@ -1,14 +1,16 @@
 #pragma once
 
+#include "action/ActionSchema.h"
+
 #include <vector>
 
 namespace state {
-struct Scene;
+struct Registry;
 } // namespace state
 namespace action {
 struct Errors {
     std::vector<std::string> Messages;
     bool OnlyUnsupportedExtensions{false};
 };
-void Fail(state::Scene &, std::string, bool unsupported_extensions = false);
+void Fail(state::Registry &, std::string, bool unsupported_extensions = false);
 } // namespace action

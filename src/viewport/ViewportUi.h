@@ -4,6 +4,6 @@
 
 struct FrameState;
 
-void Interact(state::Scene &, state::Entity viewport, FrameState &Frame);
-void InteractOverlay(state::Scene &, state::Entity viewport, FrameState &Frame);
-void DrawOverlay(state::Scene &, state::Entity viewport, FrameState &Frame);
+void Interact(state::Registry &, state::Entity viewport, FrameState &Frame);
+void InteractOverlay(state::Registry &, state::Entity viewport, FrameState &Frame);
+void DrawOverlay(state::Registry &, state::Entity viewport, FrameState &Frame);

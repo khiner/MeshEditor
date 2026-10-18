@@ -191,7 +191,7 @@ constexpr Exception ExactExceptions[]{
     {"nodes[*].extensions.KHR_lights_punctual.light", "renumbered to match the un-deduped lights table"},
 };
 
-template<typename C> state::Entity NodeWith(state::Scene &r) {
+template<typename C> state::Entity NodeWith(state::Registry &r) {
     for (auto e : r.view<const C>()) return e;
     return state::Null;
 }
@@ -736,12 +736,12 @@ void ForEachEntity(const state::Table &t, auto &&fn) {
 }
 
 // Require identical component presence and comparable values for every entity.
-void CompareRegistries(std::string_view name, state::Scene &a, state::Scene &b) {
+void CompareRegistries(std::string_view name, state::Registry &a, state::Registry &b) {
     using namespace boost::ut;
-    const auto components_by_entity = [](state::Scene &r) {
+    const auto components_by_entity = [](state::Registry &r) {
         std::map<state::Entity, std::set<std::string>> m;
         for (const auto id : r.Active) {
-            const std::string_view tn{state::SchemaNames[id]};
+            const auto tn = r.Tables[id].Name;
             ForEachEntity(r.Tables[id], [&](state::Entity e) { m[e].insert(std::string{tn}); });
         }
         return m;
@@ -776,7 +776,7 @@ void CompareRegistries(std::string_view name, state::Scene &a, state::Scene &b) 
     // Meshlet arena ranges follow build order, and a restore rebuilds reclassified meshes after the import built them.
     std::map<std::string, int> value_diffs;
     for (const auto id : a.Active) {
-        const auto tn = state::SchemaNames[id];
+        const auto tn = a.Tables[id].Name;
         const auto &a_set = a.Tables[id];
         const auto &b_set = b.Tables[id];
         ForEachEntity(a_set, [&](state::Entity e) {
@@ -855,7 +855,7 @@ struct SceneFixture : Engine {
     }
 };
 
-state::Entity FirstMeshNode(state::Scene &r) {
+state::Entity FirstMeshNode(state::Registry &r) {
     for (auto e : r.view<const Instance, const GltfNode>()) {
         if (r.all_of<MeshHandle>(r.get<const Instance>(e).Entity)) return e;
     }
@@ -891,7 +891,7 @@ template<typename T> Roundtripped<T> RoundtripComponent(const fs::path &sample, 
     if (!reload) return out;
     out.Node = NodeWith<T>(out.Scene->R);
     expect(out.Node != state::Null) << "no entity carries the component after reload";
-    state::Scene &reloaded = out.Scene->R;
+    state::Registry &reloaded = out.Scene->R;
     if (out.Node != state::Null) out.Value = &reloaded.get<const T>(out.Node);
     return out;
 }
@@ -995,7 +995,7 @@ void WriteCustomAttributeGltf(const fs::path &gltf) {
 })";
 }
 
-void CheckCustomAttributes(state::Scene &r, bool integer_ids) {
+void CheckCustomAttributes(state::Registry &r, bool integer_ids) {
     using namespace boost::ut;
     const auto node = FirstMeshNode(r);
     expect(fatal(node != state::Null));

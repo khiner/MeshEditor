@@ -1,6 +1,7 @@
 #pragma once
 
 #include "viewport/CameraView.h"
+#include "viewport/ViewportSchema.h"
 
 // Uses the viewport aspect ratio rather than the source camera's aspect ratio.
 struct ViewCamera : CameraView {
