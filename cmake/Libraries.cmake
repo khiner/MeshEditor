@@ -21,10 +21,10 @@ function(mesheditor_compile_policy target policy)
         set(debug_optimization -O0)
     endif()
     target_compile_options(${target} PRIVATE
-        -Wall -Wextra -Wno-missing-field-initializers -Wno-missing-designated-field-initializers -Wno-elaborated-enum-base -Wno-c++26-extensions -fno-rtti
+        -Wall -Wextra -Wno-missing-field-initializers -Wno-missing-designated-field-initializers -Wno-elaborated-enum-base -fno-rtti
         "$<$<CONFIG:Debug>:${debug_optimization}>"
         "$<$<NOT:$<CONFIG:Debug>>:-O2>")
-    set_target_properties(${target} PROPERTIES CXX_STANDARD 23 OBJCXX_STANDARD 23)
+    set_target_properties(${target} PROPERTIES CXX_STANDARD 26 OBJCXX_STANDARD 26)
     target_link_libraries(${target} PUBLIC mesheditor_headers)
 endfunction()
 
