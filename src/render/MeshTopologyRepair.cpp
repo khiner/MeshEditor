@@ -26,7 +26,7 @@ void PushBlock(std::vector<uint32_t> &blocks, uint32_t handle, size_t first) {
 }
 uint32_t UniqueTail(std::vector<uint32_t> &values, size_t first) {
     std::ranges::sort(values.begin() + first, values.end());
-    values.erase(std::unique(values.begin() + first, values.end()), values.end());
+    values.erase(std::ranges::unique(values.begin() + first, values.end()).begin(), values.end());
     return uint32_t(values.size() - first);
 }
 // Ascending runs of consecutive handles.

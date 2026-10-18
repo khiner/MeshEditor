@@ -48,7 +48,7 @@ template<typename T, size_t N> using GpuArray = metal::array<T, N>;
 #define GPU_CONSTANT constexpr
 #define DEFAULT(...) {__VA_ARGS__}
 
-template<typename T, std::size_t N> using GpuArray = std::array<T, N>;
+template<typename T, size_t N> using GpuArray = std::array<T, N>;
 #endif
 
 using numeric::mat3, numeric::mat4, numeric::quat, numeric::uvec2, numeric::uvec3, numeric::uvec4, numeric::vec2, numeric::vec3, numeric::vec4;

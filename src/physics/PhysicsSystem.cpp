@@ -661,7 +661,7 @@ void CountDefinitionUses(state::Scene &r) {
     for (const auto [_, filter] : r.view<const CollisionFilter>().each()) {
         for (const auto system : filter.Systems) use(system);
         for (const auto system : filter.CollideSystems) {
-            if (std::ranges::find(filter.Systems, system) == filter.Systems.end()) use(system);
+            if (!std::ranges::contains(filter.Systems, system)) use(system);
         }
     }
     for (const auto [_, joint] : r.view<const PhysicsJoint>().each()) use(joint.JointDefEntity);

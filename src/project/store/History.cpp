@@ -52,7 +52,7 @@ bool Take(std::span<const std::byte> &in, std::optional<uint32_t> &node) {
     return true;
 }
 
-void PutState(std::vector<std::byte> &out, const std::vector<Stamp> &stamps, const std::vector<Hash128> &roots) {
+void PutState(std::vector<std::byte> &out, std::span<const Stamp> stamps, std::span<const Hash128> roots) {
     for (size_t i = 0; i < stamps.size(); ++i) {
         Put(out, stamps[i].H);
         Put(out, stamps[i].Length);
@@ -237,7 +237,7 @@ std::expected<void, std::string> RunPipeline(History &history, auto &&per_track)
     return {};
 }
 
-void AddIntegrityError(History &history, const std::string &what) {
+void AddIntegrityError(History &history, std::string_view what) {
     if (!history.IntegrityError.empty()) history.IntegrityError += ", ";
     history.IntegrityError += what;
 }
@@ -639,7 +639,7 @@ Hash128 BuildManifest(History &history, size_t track) {
     });
 }
 
-void AppendTreeRecord(History &history, RecordKind kind, std::optional<uint32_t> parent, const std::vector<std::byte> &payload) {
+void AppendTreeRecord(History &history, RecordKind kind, std::optional<uint32_t> parent, std::span<const std::byte> payload) {
     assert(history.Streams[FileTree].is_open() && "the tree log requires Begin or Open");
     // Tree record format: [u32 len][u8 kind][u8 has parent][u32 parent if present][payload].
     std::vector<std::byte> record;
@@ -923,7 +923,7 @@ void History::Evict(uint64_t cap) {
     std::vector<uint32_t> victims;
     for (auto i = uint32_t{0}; i < Nodes.size(); ++i) {
         if (!Nodes[i].Hot) continue;
-        if (std::ranges::find(protected_nodes, i) != protected_nodes.end()) continue;
+        if (std::ranges::contains(protected_nodes, i)) continue;
         victims.push_back(i);
     }
     if (victims.empty() || !CheckIO(*this, Flush(*this))) return;

@@ -38,7 +38,7 @@ std::vector<SymmetrySnapVertex> PlanSymmetrySnap(const MeshStore &meshes, const 
                 const float d = distance(bounds);
                 if (d <= nearest) children[count++] = {child, d};
             }
-            std::sort(children.begin(), children.begin() + count, [](const auto &x, const auto &y) { return x.Distance < y.Distance; });
+            std::ranges::sort(std::span{children}.first(count), {}, &Child::Distance);
             for (uint32_t i = 0u; i < count; ++i) {
                 const auto [child, d] = children[i];
                 if (d > nearest) break;

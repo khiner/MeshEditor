@@ -62,7 +62,7 @@ std::string SystemDisplayName(const state::Scene &r, state::Entity e) {
     return !r.all_of<const CollisionSystem>(e) ? "<invalid>" : DisplayName(r.get<const CollisionSystem>(e).Name, "{:x}", uint32_t(e));
 }
 
-void RenderSystemMultiSelect(const state::Scene &r, const char *label, const std::vector<state::Entity> &selection, auto on_toggle) {
+void RenderSystemMultiSelect(const state::Scene &r, const char *label, std::span<const state::Entity> selection, auto on_toggle) {
     const auto view = r.view<const CollisionSystem>();
     if (view.begin() == view.end()) {
         BeginDisabled();
@@ -78,7 +78,7 @@ void RenderSystemMultiSelect(const state::Scene &r, const char *label, const std
 
     if (BeginCombo(label, preview.c_str())) {
         for (const auto se : view) {
-            bool member = std::ranges::find(selection, se) != selection.end();
+            bool member = std::ranges::contains(selection, se);
             if (Checkbox(SystemDisplayName(r, se).c_str(), &member)) action::Emit(on_toggle(se, member));
         }
         EndCombo();
@@ -268,7 +268,7 @@ void physics_ui::RenderTab(state::Scene &r, state::Entity viewport) {
                     TextUnformatted("Linear axes:");
                     SameLine();
                     for (uint8_t a = 0; a < 3; ++a) {
-                        bool active = std::find(limit.LinearAxes.begin(), limit.LinearAxes.end(), a) != limit.LinearAxes.end();
+                        bool active = std::ranges::contains(limit.LinearAxes, a);
                         if (Checkbox(axis_names[a], &active)) {
                             action::Emit(edit_limit([&](auto &e) {
                                 if (active) e.LinearAxes.push_back(a);
@@ -281,7 +281,7 @@ void physics_ui::RenderTab(state::Scene &r, state::Entity viewport) {
                     SameLine();
                     for (uint8_t a = 0; a < 3; ++a) {
                         PushID(a + 3);
-                        bool active = std::find(limit.AngularAxes.begin(), limit.AngularAxes.end(), a) != limit.AngularAxes.end();
+                        bool active = std::ranges::contains(limit.AngularAxes, a);
                         if (Checkbox(axis_names[a], &active)) {
                             action::Emit(edit_limit([&](auto &e) {
                                 if (active) e.AngularAxes.push_back(a);

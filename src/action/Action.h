@@ -66,7 +66,7 @@ inline bool IsRecordable(const Action &a) {
 
 // Restore the gesture base before each preview.
 // Placement-drag operators manage their own previews.
-template<typename T> inline constexpr bool Previews = !std::is_same_v<T, mesh::Extrude> && !std::is_same_v<T, mesh::Duplicate> && !std::is_same_v<T, mesh::Rip>;
+template<typename T> inline constexpr bool Previews = !std::same_as<T, mesh::Extrude> && !std::same_as<T, mesh::Duplicate> && !std::same_as<T, mesh::Rip>;
 
 inline bool IsPreview(const Action &a) {
     const auto *m = std::get_if<mesh::Action>(&a);

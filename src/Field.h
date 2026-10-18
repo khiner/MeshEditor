@@ -118,7 +118,7 @@ template<auto E> consteval std::string_view EnumeratorName() {
     std::string_view s = __PRETTY_FUNCTION__;
     s = s.substr(0, s.rfind(']'));
     s = s.substr(s.rfind(' ') + 1);
-    if (s.find('(') != std::string_view::npos) return {};
+    if (s.contains('(')) return {};
     return s.substr(s.rfind(':') + 1);
 }
 // Enumerators are the named values below the probe limit, in value order.
@@ -174,15 +174,15 @@ template<typename C, typename F, F C::*P> struct MemberTraits<P> {
 template<auto P>
     requires IsAt<std::remove_cv_t<decltype(P)>>
 struct MemberTraits<P> {
-    using Owner = typename std::remove_cv_t<decltype(P)>::Owner;
-    using Field = typename std::remove_cv_t<decltype(P)>::Field;
+    using Owner = std::remove_cv_t<decltype(P)>::Owner;
+    using Field = std::remove_cv_t<decltype(P)>::Field;
 };
 template<auto M, auto...> inline constexpr auto First = M;
 template<auto... Ms> inline constexpr auto Last = (Ms, ...);
 } // namespace detail
 
-template<auto P> using Owner = typename detail::MemberTraits<P>::Owner;
-template<auto P> using Type = typename detail::MemberTraits<P>::Field;
+template<auto P> using Owner = detail::MemberTraits<P>::Owner;
+template<auto P> using Type = detail::MemberTraits<P>::Field;
 
 template<typename T, size_t I> inline constexpr std::string_view Name = detail::PointerName<&detail::Member<T, I>()>();
 template<typename T, size_t I> inline constexpr auto NameString = fixed_string<Name<T, I>.size() + 1>{Name<T, I>};

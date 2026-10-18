@@ -4,7 +4,7 @@
 #include "audio/Fft.h"
 
 #include <complex>
-#include <numeric>
+#include <print>
 
 namespace {
 uint64_t SplitMix64(uint64_t &state) {
@@ -21,9 +21,9 @@ float NextPhase(uint64_t &state) { return UniformDraw(state) * 2 * std::numbers:
 // Fill the running integral and rescale the heights to zero mean and unit root-mean-square, returning the root-mean-square divided out.
 float Finish(RoughnessTrack &t) {
     const auto n = t.Heights.size();
-    const auto mean = float(std::accumulate(t.Heights.begin(), t.Heights.end(), 0.0) / double(n));
+    const auto mean = float(std::ranges::fold_left(t.Heights, 0.0, std::plus{}) / double(n));
     for (float &h : t.Heights) h -= mean;
-    const auto energy = std::accumulate(t.Heights.begin(), t.Heights.end(), 0.0, [](double a, float h) { return a + double(h) * double(h); });
+    const auto energy = std::ranges::fold_left(t.Heights, 0.0, [](double a, float h) { return a + double(h) * double(h); });
     const float rms = float(std::sqrt(energy / double(n)));
     if (rms > 0) {
         for (float &h : t.Heights) h /= rms;
@@ -317,9 +317,9 @@ RoughnessField SynthesizeRoughnessPatch(float correlation_length, float spectral
     fft::ComplexToReal2d(spectrum, columns, rows, field.Heights);
 
     const auto n = field.Heights.size();
-    const auto mean = float(std::accumulate(field.Heights.begin(), field.Heights.end(), 0.0) / double(n));
+    const auto mean = float(std::ranges::fold_left(field.Heights, 0.0, std::plus{}) / double(n));
     for (float &h : field.Heights) h -= mean;
-    const auto energy = std::accumulate(field.Heights.begin(), field.Heights.end(), 0.0, [](double a, float h) { return a + double(h) * double(h); });
+    const auto energy = std::ranges::fold_left(field.Heights, 0.0, [](double a, float h) { return a + double(h) * double(h); });
     if (const float rms = float(std::sqrt(energy / double(n))); rms > 0) {
         for (float &h : field.Heights) h /= rms;
     }
@@ -501,7 +501,7 @@ float HermiteForce(float f0, float f1, float d0, float d1, float h, float t, flo
 uint32_t KnotBelow(const ElementSprings &s, float engagement) {
     const auto *z = s.Engagement.data();
     if (s.KnotByExponent.empty()) {
-        const auto hi = uint32_t(std::upper_bound(z, z + s.Knots, engagement) - z);
+        const auto hi = uint32_t(std::ranges::upper_bound(z, z + s.Knots, engagement) - z);
         return hi > 0 ? hi - 1 : 0;
     }
     const auto x = int32_t(std::bit_cast<uint32_t>(engagement) >> 23) - 127;
@@ -858,8 +858,8 @@ std::vector<float> BearingDatum(const ElementSprings &s, double combined_curvatu
     }
     // A position whose balance never closed keeps whatever height it reached, and the array is read as a datum either way.
     if (unseated > 0) {
-        std::fprintf(
-            stderr, "SPRINGSEAT %u of %u positions did not close on a load of %g N, worst off by %.3g of it\n",
+        std::println(
+            stderr, "SPRINGSEAT {} of {} positions did not close on a load of {:g} N, worst off by {:.3g} of it",
             unseated, count, load, worst
         );
     }
@@ -1905,14 +1905,12 @@ struct ContactReport {
         const double seconds = double(samples) / SampleRate;
         const double cell_samples = double(CellSamples.load());
         const double peaks = double(Peaks.load());
-        std::fprintf(stderr, "CONTACT rate=%.6g shocks/s  free=%.4f  bearing=%.4f  shocks=%llu  turnover=%.6g events/s  seconds=%.3f\n", double(Shocks.load()) / seconds, double(Free.load()) / double(samples), cell_samples > 0 ? double(CellBearing.load()) / cell_samples : 0.0, static_cast<unsigned long long>(Shocks.load()), double(TurnoverEvents.load()) / seconds, seconds);
+        std::println(stderr, "CONTACT rate={:.6g} shocks/s  free={:.4f}  bearing={:.4f}  shocks={}  turnover={:.6g} events/s  seconds={:.3f}", double(Shocks.load()) / seconds, double(Free.load()) / double(samples), cell_samples > 0 ? double(CellBearing.load()) / cell_samples : 0.0, Shocks.load(), double(TurnoverEvents.load()) / seconds, seconds);
         if (peaks > 0) {
-            std::fprintf(stderr, "CONTACTPEAKS underM=%.4f under10M=%.4f under100M=%.4f peaks=%llu"
-                                 "  (Dang 0.300 0.570 1.000)\n",
-                         double(UnderLoad.load()) / peaks, double(UnderTen.load()) / peaks, double(UnderHundred.load()) / peaks, static_cast<unsigned long long>(Peaks.load()));
+            std::println(stderr, "CONTACTPEAKS underM={:.4f} under10M={:.4f} under100M={:.4f} peaks={}  (Dang 0.300 0.570 1.000)", double(UnderLoad.load()) / peaks, double(UnderTen.load()) / peaks, double(UnderHundred.load()) / peaks, Peaks.load());
         }
         if (const auto tangent = TangentSamples.load(); tangent > 0) {
-            std::fprintf(stderr, "STICK stick=%.4f transitions/s=%.6g tangent_samples=%llu\n", double(StickSamples.load()) / double(tangent), double(StickTransitions.load()) / seconds, static_cast<unsigned long long>(tangent));
+            std::println(stderr, "STICK stick={:.4f} transitions/s={:.6g} tangent_samples={}", double(StickSamples.load()) / double(tangent), double(StickTransitions.load()) / seconds, tangent);
         }
     }
 };
@@ -3076,8 +3074,8 @@ void RenderObjectCoupled(
             const bool impact_drive = !impacts.empty();
             for (size_t t = 0; t < impacts.size(); ++t) forces[nv * VoiceDrives + t] = m.ForceScratch[size_t(impacts[t]) * frame_count + s];
             if (impact_drive) {
-                std::fill(forces + VoiceDrives, forces + nv * VoiceDrives, 0.f);
-                std::fill(forces + nv * VoiceDrives + impacts.size(), forces + drives, 0.f);
+                std::ranges::fill(std::span{forces + VoiceDrives, forces + nv * VoiceDrives}, 0.f);
+                std::ranges::fill(std::span{forces + nv * VoiceDrives + impacts.size(), forces + drives}, 0.f);
                 GatherExcitation(gains, forces, uint32_t(nv) * VoiceDrives, drives, excite, count);
             }
             float air_force = 0.f;

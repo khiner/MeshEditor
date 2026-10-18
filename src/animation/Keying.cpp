@@ -11,7 +11,7 @@ namespace {
 constexpr float KeyEpsilon{1e-4f};
 
 // Return the key index at `seconds`, or the insertion index with false when no key exists.
-std::pair<size_t, bool> FindKey(const std::vector<float> &times, float seconds) {
+std::pair<size_t, bool> FindKey(std::span<const float> times, float seconds) {
     const auto it = std::ranges::lower_bound(times, seconds - KeyEpsilon);
     const size_t i = size_t(it - times.begin());
     return {i, i < times.size() && std::abs(times[i] - seconds) <= KeyEpsilon};

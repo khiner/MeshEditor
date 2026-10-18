@@ -12,7 +12,7 @@ namespace ui {
 // Edits fields of material `Index` through UpdateMaterial actions.
 // Material channels key on the scene viewport.
 template<auto... Prefix>
-struct MaterialEdit : FieldWidgets<MaterialEdit<Prefix...>, Prefix...> {
+struct MaterialEdit : FieldWidgets<Prefix...> {
     MaterialEdit(state::Scene &r, uint32_t index) : R{r}, Index{index} {}
 
     state::Scene &R;

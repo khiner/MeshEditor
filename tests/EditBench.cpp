@@ -793,7 +793,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 SingleEdit::EdgeSlide,
                 SingleEdit::ShrinkFatten,
             };
-            if (std::ranges::find(position_edits, single_edit) != position_edits.end()) {
+            if (std::ranges::contains(position_edits, single_edit)) {
                 if (edited_counts != source_counts) return std::unexpected{label + " changed topology"};
                 if (edited == base) return std::unexpected{label + " did not change positions"};
             }

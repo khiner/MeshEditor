@@ -74,7 +74,7 @@ rbp::Index BuildRbpShape(rbp::World &world, const PhysicsShape &source, const Me
             std::vector<rbp::float3> points;
             points.reserve(mesh->VertexCount());
             for (const auto vertex : mesh->vertices()) points.push_back(ToRbp(mesh->GetPosition(vertex) * scale));
-            if constexpr (std::is_same_v<std::decay_t<decltype(kind)>, ConvexHull>) return world.AddHull(points, nullptr, local);
+            if constexpr (std::same_as<std::decay_t<decltype(kind)>, ConvexHull>) return world.AddHull(points, nullptr, local);
             else {
                 auto indices = mesh->CreateTriangleIndices();
                 if (scale.x * scale.y * scale.z < 0) {

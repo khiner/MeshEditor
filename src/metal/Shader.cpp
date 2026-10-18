@@ -19,7 +19,7 @@ void RenderPipeline::Bind(MTL::RenderCommandEncoder *encoder) const {
 }
 
 namespace {
-bool DepsUnchanged(const std::vector<std::pair<std::filesystem::path, std::filesystem::file_time_type>> &deps, const std::filesystem::path &root) {
+bool DepsUnchanged(std::span<const std::pair<std::filesystem::path, std::filesystem::file_time_type>> deps, const std::filesystem::path &root) {
     std::error_code ec;
     for (const auto &[relative, mtime] : deps) {
         const auto current = std::filesystem::last_write_time(root / relative, ec);
@@ -67,7 +67,7 @@ void PrunePipelineArchives(const std::filesystem::path &base) {
 }
 
 // Both Metal descriptor families share the attachment state; only the blend enable API differs.
-void ConfigureColorAttachments(auto *attachments, const PassFormats &formats, const std::vector<BlendState> &blends) {
+void ConfigureColorAttachments(auto *attachments, const PassFormats &formats, std::span<const BlendState> blends) {
     for (size_t i = 0; i < formats.Color.size(); ++i) {
         auto *attachment = attachments->object(i);
         attachment->setPixelFormat(formats.Color[i]);
@@ -85,7 +85,7 @@ void ConfigureColorAttachments(auto *attachments, const PassFormats &formats, co
     }
 }
 
-void ConfigureAttachments(auto *descriptor, const PassFormats &formats, const std::vector<BlendState> &blends) {
+void ConfigureAttachments(auto *descriptor, const PassFormats &formats, std::span<const BlendState> blends) {
     ConfigureColorAttachments(descriptor->colorAttachments(), formats, blends);
     if (formats.Depth != MTL::PixelFormatInvalid) descriptor->setDepthAttachmentPixelFormat(formats.Depth);
 }

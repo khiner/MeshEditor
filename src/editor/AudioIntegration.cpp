@@ -16,7 +16,7 @@
 #include "scene/Entity.h"
 #include "viewport/ViewCamera.h"
 
-#include <iostream>
+#include <print>
 #include <unordered_set>
 
 using state::Change;
@@ -344,7 +344,7 @@ void HashCombine(size_t &seed, const auto &...values) {
     (combine(values), ...);
 }
 
-size_t HashOperatorInputs(const std::vector<vec3> &positions, const std::vector<uint32_t> &triangle_indices, const ModalSolveSettings &settings) {
+size_t HashOperatorInputs(std::span<const vec3> positions, std::span<const uint32_t> triangle_indices, const ModalSolveSettings &settings) {
     const auto bytes = [](const auto &v) { return std::string_view{reinterpret_cast<const char *>(v.data()), v.size() * sizeof(v[0])}; };
     const std::hash<std::string_view> hash;
     size_t seed = hash(bytes(positions));
@@ -527,7 +527,7 @@ void LaunchModalSolve(state::Scene &r, state::Entity viewport, state::Entity e, 
             {.SeedBasis = warm_basis ? &warm_basis : nullptr, .KeepBasis = inputs.Discretization == fastfem::Discretization::Tet10}, &monitor
         );
         if (!result) {
-            std::cerr << "Modal solve failed: " << result.error() << ".\n";
+            std::println(stderr, "Modal solve failed: {}.", result.error());
             return {};
         }
         // Remap vertices and the sample surface to deduplicated tet sample points.
@@ -609,7 +609,7 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
         if (!job.Work.Cancelled() && job.Epoch == r.Epoch) {
             // Intentional registry-ctx write outside Apply: the warm-start slot is a derived memo, not scene input.
             if (result->WarmStart.Basis) r.Context.get<ModalWarmStart>() = std::move(result->WarmStart);
-            if (!result->Model) std::cerr << "Modal model computation failed.\n";
+            if (!result->Model) std::println(stderr, "Modal model computation failed.");
             else if (r.valid(job.Entity) && r.all_of<ModalSolveSettings>(job.Entity)) {
                 auto path = SaveModalModelFile(r.Context.get<project::Assets>(), *result->Model);
                 if (path) r.Context.get<project::Project *>()->Enqueue(action::MakeAction(action::audio::ApplyModalModel{job.Entity, std::move(*path)}));
@@ -883,7 +883,7 @@ void RemoveAudioComponents(state::Scene &r, state::Entity e) {
 
 void ApplyModalModel(state::Scene &r, state::Entity e, const fs::path &path) {
     if (!r.valid(e) || !r.all_of<Instance>(e)) {
-        std::cerr << std::format("Modal model target entity is gone, skipping {}.\n", path.string());
+        std::println(stderr, "Modal model target entity is gone, skipping {}.", path.string());
         return;
     }
     auto data = LoadModalModelFile(project::ResolveAsset(r, path));

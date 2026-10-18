@@ -5,6 +5,7 @@
 
 #include "state/Entity.h"
 
+#include <span>
 #include <vector>
 
 using numeric::vec3;
@@ -40,7 +41,7 @@ struct SelectionHit {
 };
 
 // Resolves raw GPU hits to logical targets, collapsing bone parts and object sub-elements.
-std::vector<SelectionHit> ResolveHits(state::Scene &, const std::vector<state::Entity> &raw, bool bone_mode, bool merge_parts = false);
+std::vector<SelectionHit> ResolveHits(state::Scene &, std::span<const state::Entity> raw, bool bone_mode, bool merge_parts = false);
 
 namespace selection {
 using PrimaryEditInstanceMap = std::unordered_map<state::Entity, state::Entity>;

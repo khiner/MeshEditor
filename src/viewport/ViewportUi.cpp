@@ -688,7 +688,7 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
                 const auto render_pbr_controls = [&]<typename T>(const char *id) {
                     PushID(id);
                     const auto &lighting = r.get<const T>(viewport).Value;
-                    if (Button("Reset")) action::Emit(action::view::ResetPbrLighting{.Rendered = std::is_same_v<T, RenderedLighting>});
+                    if (Button("Reset")) action::Emit(action::view::ResetPbrLighting{.Rendered = std::same_as<T, RenderedLighting>});
                     ui::DrawFields<PBRViewportLighting>(ui::Edit{r, viewport}.template Sub<&T::Value>());
                     if (lighting.UseSceneWorld) {
                         if (r.all_of<ImageLight>(viewport)) ui::Edit{r, viewport}.Draw<&ImageLight::Intensity>();

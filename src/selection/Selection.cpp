@@ -105,7 +105,7 @@ void SelectBone(state::Scene &r, state::Entity e) {
     }
 }
 
-std::vector<SelectionHit> ResolveHits(state::Scene &r, const std::vector<state::Entity> &raw, bool bone_mode, bool merge_parts) {
+std::vector<SelectionHit> ResolveHits(state::Scene &r, std::span<const state::Entity> raw, bool bone_mode, bool merge_parts) {
     std::vector<SelectionHit> hits;
     std::vector<uint64_t> seen((r.EntityCapacity() + 63) / 64);
     const auto first = [&](state::Entity target) {

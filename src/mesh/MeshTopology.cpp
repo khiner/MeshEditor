@@ -1224,7 +1224,7 @@ GeometryTopologyResult MeshTopologyEdit::Result(const MeshStore &meshes) const {
     handles(Plan->NewFaces, result.Created.Faces);
     handles(Plan->NewEdges, result.Created.Edges);
     if (TopologyCreatesRecord(Op)) return result;
-    const auto retained = [&](std::vector<uint32_t> emitted, const std::vector<uint32_t> &created, std::vector<uint32_t> &out) {
+    const auto retained = [&](std::vector<uint32_t> emitted, std::span<const uint32_t> created, std::vector<uint32_t> &out) {
         SortUnique(emitted);
         std::ranges::set_difference(emitted, created, std::back_inserter(out));
     };

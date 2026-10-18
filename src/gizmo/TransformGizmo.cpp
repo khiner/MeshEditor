@@ -628,7 +628,7 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
                 // ImGui antialiasing requires clockwise winding.
                 float area2{0};
                 for (uint8_t i = 0, j = n - 1; i < n; j = i++) area2 += hull[j].x * hull[i].y - hull[i].x * hull[j].y;
-                if (area2 < 0) std::reverse(hull, hull + n);
+                if (area2 < 0) std::ranges::reverse(std::span{hull, n});
 
                 dl.AddConvexPolyFilled(hull, n, color);
             }
@@ -857,7 +857,7 @@ std::optional<Result> Interact(GizmoInteraction &g, const GizmoTransform &transf
             }
         }
         if (ImGui::IsKeyPressed(ImGuiKey_Period, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadDecimal, false)) {
-            if (g.NumInput.Str.find('.') == std::string::npos) g.NumInput.Str += '.';
+            if (!g.NumInput.Str.contains('.')) g.NumInput.Str += '.';
         } else if (ImGui::IsKeyPressed(ImGuiKey_Minus, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract, false)) {
             g.NumInput.Negate = !g.NumInput.Negate;
         } else if (ImGui::IsKeyPressed(ImGuiKey_Backspace)) {

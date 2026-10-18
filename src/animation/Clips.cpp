@@ -7,7 +7,7 @@
 namespace animation {
 namespace {
 // The left endpoint of the keyframe interval containing `t`.
-uint32_t FindKeyframe(const std::vector<float> &times, float t) {
+uint32_t FindKeyframe(std::span<const float> times, float t) {
     if (times.size() <= 1 || t <= times.front()) return 0;
     if (t >= times.back()) return times.size() - 2;
     return std::distance(times.begin(), std::ranges::upper_bound(times, t)) - 1;

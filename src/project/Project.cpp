@@ -76,7 +76,7 @@ std::vector<std::byte> Encode(std::vector<Project::RecordedAction> &recorded_act
     if (!recorded_actions.empty()) zpp::bits::out{bytes}(recorded_actions).or_throw();
     return bytes;
 }
-std::vector<Project::RecordedAction> Decode(const std::vector<std::byte> &bytes) {
+std::vector<Project::RecordedAction> Decode(std::span<const std::byte> bytes) {
     std::vector<Project::RecordedAction> recorded_actions;
     if (!bytes.empty()) zpp::bits::in{bytes}(recorded_actions).or_throw();
     return recorded_actions;
@@ -89,7 +89,7 @@ bool Editable(std::span<const Project::RecordedAction> recorded_actions) {
 std::filesystem::path *SourcePath(action::Action &a) {
     return std::visit([](auto &domain) {
         return std::visit([]<typename A>(A &leaf) -> std::filesystem::path * {
-            if constexpr (std::is_same_v<A, action::io::Load> || std::is_same_v<A, action::io::LoadGltf> || std::is_same_v<A, action::io::LoadRealImpact> || std::is_same_v<A, action::object::ImportMesh> || std::is_same_v<A, action::audio::AssignVertexSamples> || std::is_same_v<A, action::audio::ApplyModalModel>) return &leaf.Path;
+            if constexpr (std::same_as<A, action::io::Load> || std::same_as<A, action::io::LoadGltf> || std::same_as<A, action::io::LoadRealImpact> || std::same_as<A, action::object::ImportMesh> || std::same_as<A, action::audio::AssignVertexSamples> || std::same_as<A, action::audio::ApplyModalModel>) return &leaf.Path;
             else return nullptr;
         },
                           domain);
@@ -174,7 +174,7 @@ void Project::TrackStores(state::Entity viewport) {
     R.Context.get<GpuBuffers>().MorphWeightBuffer.Track(History, "morph.weights");
     R.Context.get<MaterialStore>().Track(History);
     History.Callbacks = {
-        .Replay = [this](const std::vector<std::byte> &bytes) { return RunRecorded(Decode(bytes)); },
+        .Replay = [this](std::span<const std::byte> bytes) { return RunRecorded(Decode(bytes)); },
         .Reset = [this](const std::filesystem::path &dir) {
             R.Context.get<Assets>().Directory = dir;
             ClearDocument(); },
@@ -550,7 +550,7 @@ void Project::FinishGesture(EventPass pass) {
     } else {
         std::vector<std::string> names;
         for (size_t i = GestureStart; i < RecordedActions.size(); ++i) {
-            if (auto name = Label(RecordedActions[i].Action); std::ranges::find(names, name) == names.end()) names.push_back(std::move(name));
+            if (auto name = Label(RecordedActions[i].Action); !std::ranges::contains(names, name)) names.push_back(std::move(name));
         }
         std::string label;
         for (const auto &name : names) label += (label.empty() ? "" : ", ") + name;

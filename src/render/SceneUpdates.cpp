@@ -139,7 +139,7 @@ void RefreshClusterLodAttributes(state::Scene &r, mtl::ComputeChain &chain, std:
     auto touched = InvalidateClusterGroups(r, seeds);
     std::vector<LodNodeRefit> refits;
     for (uint32_t i = 0u; i < seeds.size(); ++i) {
-        touched[i].erase(std::unique(touched[i].begin(), touched[i].end()), touched[i].end());
+        touched[i].erase(std::ranges::unique(touched[i]).begin(), touched[i].end());
         refits.push_back(EditLodNodes(r, EditRecordOf(r, seeds[i].Entity), {}, {}, touched[i]));
     }
     RecordLodNodeRefits(r, chain, refits);

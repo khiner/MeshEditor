@@ -213,7 +213,7 @@ struct Scene {
     void ResetEntities();
     // The non-const form binds the table to its component type on first use.
     template<typename C> Table &storage() {
-        if constexpr (std::is_same_v<std::remove_const_t<C>, Entity>) return Living;
+        if constexpr (std::same_as<std::remove_const_t<C>, Entity>) return Living;
         else {
             auto &t = Tables[Type<C>()];
             if (!t.Size) {
@@ -224,7 +224,7 @@ struct Scene {
         }
     }
     template<typename C> const Table &storage() const {
-        if constexpr (std::is_same_v<std::remove_const_t<C>, Entity>) return Living;
+        if constexpr (std::same_as<std::remove_const_t<C>, Entity>) return Living;
         else return Tables[Type<C>()];
     }
     template<typename C> const C *try_get(Entity e) const { return Tables[Type<C>()].template at<const C>(e); }
@@ -381,7 +381,7 @@ struct View<R, ExcludeList<X...>, C...> : std::ranges::view_interface<View<R, Ex
         }
     }
     template<typename T> static auto Value(R &owner, Entity e) {
-        if constexpr (std::is_empty_v<T> || std::is_same_v<std::remove_const_t<T>, Entity>) return std::tuple<>{};
+        if constexpr (std::is_empty_v<T> || std::same_as<std::remove_const_t<T>, Entity>) return std::tuple<>{};
         else if constexpr (std::is_const_v<T> || std::is_const_v<R>) return std::tie(owner.template get<T>(e));
         else return std::tie(owner.template edit<T>(e));
     }

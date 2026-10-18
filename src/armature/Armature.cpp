@@ -198,7 +198,7 @@ Transform ApplyBoneConstraint(
 ) {
     const mat4 effective_target = std::visit(
         [&]<typename T>(const T &d) -> mat4 {
-            if constexpr (std::is_same_v<T, ChildOfData>) return target_world * d.InverseMatrix;
+            if constexpr (std::same_as<T, ChildOfData>) return target_world * d.InverseMatrix;
             else return target_world;
         },
         c.Data

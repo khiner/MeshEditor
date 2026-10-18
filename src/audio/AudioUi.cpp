@@ -34,7 +34,7 @@ using namespace ImGui;
 namespace {
 constexpr ImVec2 ChartSize{-1, 160};
 
-void WriteWav(const std::vector<float> &frames, const fs::path &file_path, uint32_t sample_rate, std::optional<float> normalize_max = {}) {
+void WriteWav(std::span<const float> frames, const fs::path &file_path, uint32_t sample_rate, std::optional<float> normalize_max = {}) {
     WavWriter writer{file_path, sample_rate};
     if (!writer.IsOpen()) throw std::runtime_error(std::format("Failed to open wav file {}", file_path.string()));
     const float mult = normalize_max ? *normalize_max / *max_element(frames) : 1.0f;
@@ -42,7 +42,7 @@ void WriteWav(const std::vector<float> &frames, const fs::path &file_path, uint3
     writer.Write(frames_normed);
 }
 
-void PlotFrames(const std::vector<float> &frames, std::string_view label = "Waveform", std::optional<uint32_t> highlight_frame = {}) {
+void PlotFrames(std::span<const float> frames, std::string_view label = "Waveform", std::optional<uint32_t> highlight_frame = {}) {
     if (ImPlot::BeginPlot(label.data(), ChartSize)) {
         ImPlot::SetupAxes("Frame", "Amplitude");
         ImPlot::SetupAxisLimits(ImAxis_X1, 0, frames.size(), ImGuiCond_Always);
@@ -55,12 +55,12 @@ void PlotFrames(const std::vector<float> &frames, std::string_view label = "Wave
     }
 }
 
-void PlotMagnitudeSpectrum(const std::vector<float> &frames, uint32_t sample_rate, std::string_view label = "Magnitude spectrum", std::optional<float> highlight_freq = {}) {
-    static const std::vector<float> *frames_ptr{&frames};
+void PlotMagnitudeSpectrum(std::span<const float> frames, uint32_t sample_rate, std::string_view label = "Magnitude spectrum", std::optional<float> highlight_freq = {}) {
+    static const float *frames_ptr{frames.data()};
     static FFTData fft{ComputeFft(frames, sample_rate)};
-    if (&frames != frames_ptr) {
+    if (frames.data() != frames_ptr) {
         fft = ComputeFft(frames, sample_rate);
-        frames_ptr = &frames;
+        frames_ptr = frames.data();
     }
     if (ImPlot::BeginPlot(label.data(), ChartSize)) {
         static constexpr float MinDb = -200;

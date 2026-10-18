@@ -42,7 +42,7 @@ inline CameraLens WidenForLookThrough(const CameraLens &camera, float viewport_a
     return std::visit(
         [zoom](const auto &projection) -> CameraLens {
             using Projection = std::decay_t<decltype(projection)>;
-            if constexpr (std::is_same_v<Projection, Perspective>) {
+            if constexpr (std::same_as<Projection, Perspective>) {
                 auto widened = projection;
                 widened.FieldOfViewRad = std::min(2.f * std::atan(std::tan(projection.FieldOfViewRad * 0.5f) * zoom), Radians(179.f));
                 return widened;
@@ -60,7 +60,7 @@ inline float ScreenPixelScale(const CameraLens &camera, float viewport_height) {
     return std::visit(
         [viewport_height](const auto &projection) -> float {
             using Projection = std::decay_t<decltype(projection)>;
-            if constexpr (std::is_same_v<Projection, Perspective>) return 2.f * std::tan(projection.FieldOfViewRad * 0.5f) / viewport_height;
+            if constexpr (std::same_as<Projection, Perspective>) return 2.f * std::tan(projection.FieldOfViewRad * 0.5f) / viewport_height;
             else return -(2.f * projection.Mag.y / viewport_height);
         },
         camera

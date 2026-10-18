@@ -50,9 +50,9 @@ template<typename F> struct LimitOf {
     using Type = F;
 };
 template<VectorField F> struct LimitOf<F> {
-    using Type = typename F::value_type;
+    using Type = F::value_type;
 };
-template<typename F> using Limit = typename LimitOf<F>::Type;
+template<typename F> using Limit = LimitOf<F>::Type;
 template<typename F> inline constexpr int Components = 1;
 template<VectorField F> inline constexpr int Components<F> = int(F::ComponentCount);
 

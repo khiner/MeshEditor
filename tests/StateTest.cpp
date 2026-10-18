@@ -10,7 +10,7 @@
 using namespace boost::ut;
 
 int main() {
-    static_assert(std::is_same_v<decltype(std::declval<state::Scene &>().get<Name>(state::Null)), const Name &>);
+    static_assert(std::same_as<decltype(std::declval<state::Scene &>().get<Name>(state::Null)), const Name &>);
     "owned tables agree with an independent sparse model"_test = [] {
         state::Scene r;
         std::mt19937 rng{173};
@@ -141,7 +141,7 @@ int main() {
         }
         r.Capture = nullptr;
         const auto reused = r.create();
-        expect(std::ranges::find(entities, reused) == entities.end());
+        expect(!std::ranges::contains(entities, reused));
         r.emplace<Name>(reused, "survivor");
         r.RemoveComponents(stale);
         expect(r.get<Name>(reused).Value == "survivor");

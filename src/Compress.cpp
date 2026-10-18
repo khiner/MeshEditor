@@ -140,7 +140,7 @@ bool Decompress(const fs::path &src, const fs::path &dst) {
             if (header.size() < sizeof path_len + path_len + sizeof(uint64_t)) continue;
 
             const fs::path entry{header.begin() + sizeof path_len, header.begin() + sizeof path_len + path_len};
-            if (entry.is_absolute() || std::ranges::find(entry, "..") != entry.end()) return false;
+            if (entry.is_absolute() || std::ranges::contains(entry, "..")) return false;
             std::memcpy(&data_left, header.data() + sizeof path_len + path_len, sizeof data_left);
             header.clear();
             const auto path = dst / entry;

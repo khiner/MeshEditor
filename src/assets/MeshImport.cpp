@@ -4,7 +4,7 @@
 #include <tinyply.h>
 
 namespace {
-std::optional<std::filesystem::path> ResolveTexturePath(const std::filesystem::path &base_dir, const std::string &texture_name) {
+std::optional<std::filesystem::path> ResolveTexturePath(const std::filesystem::path &base_dir, std::string_view texture_name) {
     if (texture_name.empty()) return std::nullopt;
     auto texture_path = std::filesystem::path{texture_name};
     if (texture_path.is_relative()) texture_path = base_dir / texture_path;

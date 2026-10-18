@@ -4,7 +4,7 @@
 
 namespace action::physics {
 namespace {
-template<typename T> void Rename(state::Scene &r, state::Entity e, const std::string &name) {
+template<typename T> void Rename(state::Scene &r, state::Entity e, std::string_view name) {
     r.patch<T>(e, [&](T &x) { x.Name = name; });
 }
 template<typename T> void AddNamed(state::Scene &r, std::string_view prefix) {
@@ -77,7 +77,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 r.patch<CollisionFilter>(a.FilterEntity, [&](CollisionFilter &f) {
                     auto &vec = a.Which == ToggleFilterEntity::List::Systems ? f.Systems : f.CollideSystems;
                     if (a.Add) {
-                        if (std::ranges::find(vec, a.SystemEntity) == vec.end()) vec.emplace_back(a.SystemEntity);
+                        if (!std::ranges::contains(vec, a.SystemEntity)) vec.emplace_back(a.SystemEntity);
                     } else {
                         std::erase(vec, a.SystemEntity);
                     }

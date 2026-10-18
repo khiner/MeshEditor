@@ -276,7 +276,7 @@ ImRect TrayRect(const Graph &graph, uint32_t node) {
     return {{at.x - reach, at.y - row * .5f}, {at.x + reach, at.y + (float(end - first) - .5f) * row}};
 }
 // Whether moving the selected nodes by the offset keeps each inside the canvas, with a cell for wires left of its inputs, and clear of every other node.
-bool Clears(const Graph &graph, const std::vector<uint32_t> &selected, int64_t dx, int64_t dy) {
+bool Clears(const Graph &graph, std::span<const uint32_t> selected, int64_t dx, int64_t dy) {
     for (const auto m : selected) {
         auto box = graph.Boxes[m];
         const int64_t x = int64_t(box.X) + dx, y = int64_t(box.Y) + dy;
@@ -291,7 +291,7 @@ bool Clears(const Graph &graph, const std::vector<uint32_t> &selected, int64_t d
 }
 constexpr int64_t PlaceReach{64}; // Rings of cells a placement searches around the wanted offset.
 // The offset nearest the wanted one that Clears, searching outward one ring of cells at a time, or none within reach.
-std::optional<std::pair<int64_t, int64_t>> Place(const Graph &graph, const std::vector<uint32_t> &selected, int64_t dx, int64_t dy) {
+std::optional<std::pair<int64_t, int64_t>> Place(const Graph &graph, std::span<const uint32_t> selected, int64_t dx, int64_t dy) {
     for (int64_t ring = 0; ring <= PlaceReach; ++ring) {
         for (int64_t i = -ring; i <= ring; ++i) {
             for (int64_t j = -ring; j <= ring; ++j) {
@@ -990,7 +990,7 @@ void NameField(NodesWindow &window, state::Entity node, const char *label, const
 }
 
 template<auto M, auto... Nested>
-bool ReadsLink(const std::vector<Socket> &linked) {
+bool ReadsLink(std::span<const Socket> linked) {
     const auto member = [] {
         if constexpr (sizeof...(Nested) == 0) return NoField;
         else return uint8_t(field::IndexOf<field::detail::First<Nested...>>);
@@ -1003,7 +1003,7 @@ concept LeafParameter = std::same_as<F, AttributeName> || std::same_as<F, state:
 
 // Edits a node's parameter fields through Update actions at their byte offsets in the node component.
 template<typename K, auto... Prefix>
-struct ParameterEdit : ui::FieldWidgets<ParameterEdit<K, Prefix...>, Prefix...> {
+struct ParameterEdit : ui::FieldWidgets<Prefix...> {
     state::Scene &R;
     NodesWindow &Window;
     state::Entity Node;
@@ -1054,7 +1054,7 @@ struct ParameterEdit : ui::FieldWidgets<ParameterEdit<K, Prefix...>, Prefix...> 
     }
 };
 
-uint32_t SelectedCount(const std::vector<SelectionBlock> &blocks) {
+uint32_t SelectedCount(std::span<const SelectionBlock> blocks) {
     uint32_t count = 0u;
     for (const auto &block : blocks) {
         for (const auto word : block) count += uint32_t(std::popcount(word));

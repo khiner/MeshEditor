@@ -576,7 +576,7 @@ bool LiveTrie::CheckHashes(std::string &why, std::span<const std::pair<uint64_t,
     return true;
 }
 
-bool LiveTrie::Check(std::string &why, const std::vector<Version> &all_versions) const {
+bool LiveTrie::Check(std::string &why, std::span<const Version> all_versions) const {
     if (!CheckRec(Root, Levels, why)) return false;
     std::unordered_set<const Node *> aliased;
     CollectAliased(Root, aliased);

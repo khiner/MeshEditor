@@ -115,7 +115,7 @@ struct Planner {
         if (loop.size() > 1u && loop.front() == loop.back()) loop.pop_back();
         return loop;
     }
-    vec3 Normal(const std::vector<uint32_t> &loop, uint32_t moved = InvalidOffset, vec3 at = {}) const {
+    vec3 Normal(std::span<const uint32_t> loop, uint32_t moved = InvalidOffset, vec3 at = {}) const {
         vec3 n{};
         if (loop.empty()) return n;
         const auto p = [&](uint32_t v) { return v == moved ? at : Position(v); };

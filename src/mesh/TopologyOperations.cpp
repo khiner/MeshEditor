@@ -254,7 +254,7 @@ std::optional<MeshTopologyTask> BridgeEdgeLoopsTask(const MeshStore &meshes, con
     if (chains[0].Vertices.size() < chains[1].Vertices.size()) std::swap(chains[0], chains[1]);
     const bool closed = chains[0].Closed;
     auto &a = chains[0].Vertices, &b = chains[1].Vertices;
-    const auto flip = [&](auto &chain) { std::reverse(chain.begin() + (closed ? 1u : 0u), chain.end()); };
+    const auto flip = [&](auto &chain) { std::ranges::reverse(chain | std::views::drop(closed ? 1u : 0u)); };
     // New faces oppose the existing face along each rail.
     if (chains[0].Winding < 0) flip(a);
     if (chains[1].Winding > 0) flip(b);
@@ -314,7 +314,7 @@ std::optional<MeshTopologyTask> GridFillTask(const MeshStore &meshes, const Mesh
     auto chains = SelectedChains(mesh, selection.Edges, sources);
     if (chains.size() != 1u || !chains[0].Closed || chains[0].Vertices.size() % 2u || chains[0].Vertices.size() < 4u) return {};
     auto &loop = chains[0].Vertices;
-    if (chains[0].Winding < 0) std::reverse(loop.begin() + 1u, loop.end());
+    if (chains[0].Winding < 0) std::ranges::reverse(loop | std::views::drop(1));
     const auto length = uint32_t(loop.size());
     const auto appended_base = meshes.Arenas().Vertices.HandleBound(meshes.Get(mesh.GetStoreId()).Vertices);
     const uint32_t s = std::clamp(span == 0 ? std::max(length / 4, 1u) : span, 1u, length / 2 - 1), t = length / 2 - s;
@@ -422,7 +422,7 @@ std::optional<MeshTopologyTask> ConvexHullTask(const MeshStore &meshes, const Me
         }
     }
     for (const auto v : points) {
-        if (std::ranges::find(seed, v) == seed.end()) assign(v, 0);
+        if (!std::ranges::contains(seed, v)) assign(v, 0);
     }
     enqueue(0);
 

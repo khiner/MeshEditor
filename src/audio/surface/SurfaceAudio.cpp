@@ -8,6 +8,8 @@
 #include "render/MaterialComponents.h"
 #include "viewport/ViewportEvents.h"
 
+#include <print>
+
 using state::Change;
 using state::On;
 
@@ -149,7 +151,7 @@ void MergeCrests(std::vector<float> &into, std::span<const float> part) {
     for (size_t e = 0; e < into.size() && e < part.size(); ++e) into[e] = std::max(into[e], part[e]);
 }
 
-SamplePointBlend NearestSamplePoints(const std::vector<vec3> &positions, vec3 local_point) {
+SamplePointBlend NearestSamplePoints(std::span<const vec3> positions, vec3 local_point) {
     if (positions.size() < 2) return {};
     const auto dist2 = [&](uint32_t i) { const auto d = positions[i] - local_point; return Dot(d, d); };
     uint32_t first = 0, second = 0;
@@ -675,8 +677,8 @@ ResolvedContact ResolveContact(const state::Scene &r, ModalAudio &m, const Susta
                         );
                         // Permit one over-budget worker because ribbon construction requires at least one worker.
                         if (affordable < strip_realizations) {
-                            std::fprintf(
-                                stderr, "SPRINGBUDGET workers=%u of %u realizations, %.2f GiB each over a %.2f GiB budget, field %ux%u\n",
+                            std::println(
+                                stderr, "SPRINGBUDGET workers={} of {} realizations, {:.2f} GiB each over a {:.2f} GiB budget, field {}x{}",
                                 workers, strip_realizations, double(worker_bytes) / double(1ull << 30), double(WorkerBudget) / double(1ull << 30), columns, rows
                             );
                         }
@@ -770,7 +772,7 @@ ResolvedContact ResolveContact(const state::Scene &r, ModalAudio &m, const Susta
                             // Use the realized build when a degenerate population has no crest anchor.
                             // Report fallback because the two builds use different bearing statistics.
                             if (built->Springs.Count() == 0) {
-                                std::fprintf(stderr, "SPRINGENSEMBLE found no crest population, realized build instead, field %ux%u\n", columns, rows);
+                                std::println(stderr, "SPRINGENSEMBLE found no crest population, realized build instead, field {}x{}", columns, rows);
                                 run_gather(false);
                             }
                         }
@@ -831,8 +833,8 @@ ResolvedContact ResolveContact(const state::Scene &r, ModalAudio &m, const Susta
                     }
                     set->Reach = std::min(reach, half);
                     if (set->Reach >= half && count > 2) {
-                        std::fprintf(
-                            stderr, "SPRINGREACH reach=%u of %u elements over a %g m field, footprint %g m, so the datum does not move\n",
+                        std::println(
+                            stderr, "SPRINGREACH reach={} of {} elements over a {:g} m field, footprint {:g} m, so the datum does not move",
                             set->Reach, count, double(count) * double(set->Springs.Width), reach_width
                         );
                     }
@@ -850,14 +852,14 @@ ResolvedContact ResolveContact(const state::Scene &r, ModalAudio &m, const Susta
                     }();
                     const auto count = set->Springs.Count();
                     set->Envelope = BearingDatum(set->Springs, curv_bucket, set->Reach, load_bucket);
-                    const auto support_mean = set->Envelope.empty() ? 0.0 : std::accumulate(set->Envelope.begin(), set->Envelope.end(), 0.0) / double(set->Envelope.size());
+                    const auto support_mean = set->Envelope.empty() ? 0.0 : std::ranges::fold_left(set->Envelope, 0.0, std::plus{}) / double(set->Envelope.size());
                     for (auto &dev : set->SideCrestDev) {
                         if (dev.size() != set->Springs.Count() || set->Envelope.size() != dev.size()) {
                             dev.clear();
                             continue;
                         }
                         dev = CrestEnvelope(dev, set->Springs.Width, curv_bucket, set->Reach);
-                        const auto mean = float(std::accumulate(dev.begin(), dev.end(), 0.0) / double(dev.size()));
+                        const auto mean = float(std::ranges::fold_left(dev, 0.0, std::plus{}) / double(dev.size()));
                         for (float &v : dev) v -= mean;
                         double covariance = 0, variance = 0;
                         for (size_t e = 0; e < dev.size(); ++e) {

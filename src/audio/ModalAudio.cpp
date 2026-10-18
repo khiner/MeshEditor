@@ -99,7 +99,7 @@ void RenderObjectFast(ModalAudio &m, ModalRenderScratch &w, ModalBank &b, uint32
         for (size_t t = 0; t < impacts.size(); ++t) {
             auto *gain = &w.Gains[t * Lanes];
             ImpactGainRow(b, impacts[t], shape0, stride, k0, k, width, gain);
-            std::fill(gain + width, gain + Lanes, 0.f);
+            std::ranges::fill(std::span{gain + width, gain + Lanes}, 0.f);
         }
         for (uint32_t s = 0; s < frame_count; ++s) {
             float excite[Lanes]{};

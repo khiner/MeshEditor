@@ -38,7 +38,7 @@ bool SamePosition(const std::array<float, 3> &a, const std::array<float, 3> &b) 
     return a == b;
 }
 
-void GeneratePositionRemap(std::vector<uint32_t> &remap, const std::vector<std::array<float, 3>> &positions) {
+void GeneratePositionRemap(std::vector<uint32_t> &remap, std::span<const std::array<float, 3>> positions) {
     constexpr uint32_t BlockSize{16u * 1024u};
     const auto count = uint32_t(positions.size());
     const size_t table_size = std::bit_ceil(size_t(count) + count / 4u);
@@ -435,7 +435,7 @@ struct GroupEdges {
 };
 
 // Lock every weld vertex shared by two groups to preserve their boundary during simplification.
-std::vector<std::vector<uint64_t>> LockBoundary(PrimitiveWeld &weld, const std::vector<WorkCluster> &clusters, const std::vector<std::vector<uint32_t>> &groups, bool serial) {
+std::vector<std::vector<uint64_t>> LockBoundary(PrimitiveWeld &weld, std::span<const WorkCluster> clusters, std::span<const std::vector<uint32_t>> groups, bool serial) {
     constexpr uint8_t LockBit{uint8_t(meshopt_SimplifyVertex_Lock)};
     constexpr auto Relaxed{std::memory_order_relaxed};
     const bool parallel = !serial && groups.size() > 1u;
@@ -523,8 +523,8 @@ std::vector<std::vector<uint64_t>> LockBoundary(PrimitiveWeld &weld, const std::
     return artificial_edges;
 }
 
-std::vector<std::vector<uint32_t>> PartitionClusters(const PrimitiveWeld &weld, const std::vector<WorkCluster> &clusters, const std::vector<uint32_t> &pending) {
-    if (pending.size() <= PartitionSize) return {pending};
+std::vector<std::vector<uint32_t>> PartitionClusters(const PrimitiveWeld &weld, std::span<const WorkCluster> clusters, std::span<const uint32_t> pending) {
+    if (pending.size() <= PartitionSize) return {pending | std::ranges::to<std::vector>()};
 
     std::vector<uint32_t> cluster_indices, cluster_counts(pending.size());
     size_t total_index_count = 0;
@@ -550,8 +550,8 @@ std::vector<std::vector<uint32_t>> PartitionClusters(const PrimitiveWeld &weld, 
 
 // Halves a group's triangle count while keeping its locked boundary and render seams.
 // Returns error in mesh units without an edge-length limit.
-std::vector<uint32_t> SimplifyGroup(const PrimitiveWeld &weld, const std::vector<uint32_t> &indices, size_t target_count, float *error) {
-    if (target_count > indices.size()) return indices;
+std::vector<uint32_t> SimplifyGroup(const PrimitiveWeld &weld, std::span<const uint32_t> indices, size_t target_count, float *error) {
+    if (target_count > indices.size()) return indices | std::ranges::to<std::vector>();
 
     std::array<float, 3u + 2u * MaxWeldUvSets + 4u + 4u> attribute_weights;
     attribute_weights.fill(weld.Scale * ShadingAttributeScale);
@@ -566,7 +566,7 @@ std::vector<uint32_t> SimplifyGroup(const PrimitiveWeld &weld, const std::vector
     return lod;
 }
 
-std::vector<WorkCluster> Clusterize(const PrimitiveWeld &weld, const std::vector<uint32_t> &indices) {
+std::vector<WorkCluster> Clusterize(const PrimitiveWeld &weld, std::span<const uint32_t> indices) {
     const auto bound = meshopt_buildMeshletsBound(indices.size(), ClusterLodMaxVertices, ClusterLodMinTriangles);
     std::vector<meshopt_Meshlet> built(bound);
     std::vector<uint32_t> local_vertices(bound * ClusterLodMaxVertices);
@@ -630,7 +630,7 @@ void EmitCluster(auto &&sink, const PrimitiveWeld &weld, const WorkCluster &clus
 // Preserve physical-boundary provenance in the CPU reference builder too.
 // Shared partition edges keep both endpoints locked, so every newly created open edge follows a physical boundary.
 // Unchanged partition edges retain their identity in the geometric position domain, independently of shading wedges.
-void ClassifyOutputBoundaries(const PrimitiveWeld &weld, const std::vector<uint64_t> &artificial, std::vector<WorkCluster> &output) {
+void ClassifyOutputBoundaries(const PrimitiveWeld &weld, std::span<const uint64_t> artificial, std::vector<WorkCluster> &output) {
     const auto edge = [&](const WorkCluster &cluster, uint32_t c) {
         return std::pair{weld.Remap[cluster.Vertices[cluster.LocalTriangles[c]]], weld.Remap[cluster.Vertices[cluster.LocalTriangles[c / 3u * 3u + (c + 1u) % 3u]]]};
     };
@@ -660,7 +660,7 @@ void ClassifyOutputBoundaries(const PrimitiveWeld &weld, const std::vector<uint6
 
 // Each output vertex names the corner of its weld vertex's first member occurrence.
 // This confines a coarse cluster to corners that its finest descendants name.
-void AssignMemberCorners(const std::vector<WorkCluster> &clusters, const std::vector<uint32_t> &members, std::vector<WorkCluster> &output) {
+void AssignMemberCorners(std::span<const WorkCluster> clusters, std::span<const uint32_t> members, std::vector<WorkCluster> &output) {
     thread_local FlatKeyMap first_corners;
     size_t member_vertices = 0;
     for (const auto member : members) member_vertices += clusters[member].Vertices.size();
@@ -678,7 +678,7 @@ void AssignMemberCorners(const std::vector<WorkCluster> &clusters, const std::ve
     }
 }
 
-void RunGroup(GroupScratch &scratch, const PrimitiveWeld &weld, const std::vector<WorkCluster> &clusters, const std::vector<uint32_t> &members, const std::vector<uint64_t> &artificial, uint32_t primitive, uint32_t group) {
+void RunGroup(GroupScratch &scratch, const PrimitiveWeld &weld, std::span<const WorkCluster> clusters, std::span<const uint32_t> members, std::span<const uint64_t> artificial, uint32_t primitive, uint32_t group) {
     std::vector<Bounds> member_bounds(members.size());
     std::vector<uint32_t> merged;
     size_t merged_size = 0;

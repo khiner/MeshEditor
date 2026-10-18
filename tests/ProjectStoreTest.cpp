@@ -298,7 +298,7 @@ struct ToyApp {
         H.Track(Buf, "buf", 0);
         H.Track(PoolRecords, "pool", 1);
         H.Callbacks = {
-            .Replay = [this](const std::vector<std::byte> &a) -> std::expected<void, std::string> {
+            .Replay = [this](std::span<const std::byte> a) -> std::expected<void, std::string> {
                 if (!a.empty()) Apply(a);
                 ++Replays;
                 return {}; },
@@ -318,7 +318,7 @@ struct ToyApp {
         std::memcpy(b.data(), &seed, 4);
         return b;
     }
-    void Apply(const std::vector<std::byte> &action) {
+    void Apply(std::span<const std::byte> action) {
         uint32_t seed;
         std::memcpy(&seed, action.data(), 4);
         if (seed & 0x80000000u) {

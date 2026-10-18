@@ -212,7 +212,7 @@ std::expected<void, std::string> AppendCustomAttributes(const fastgltf::Asset &a
         const auto &accessor = asset.accessors[attribute.accessorIndex];
         if (accessor.count != count) return std::unexpected{std::format("glTF primitive {} count ({}) must match POSITION count ({}).", name, accessor.count, count)};
         if (name.size() >= AttributeName{}.size()) {
-            std::cerr << std::format("Warning: glTF attribute {} exceeds {} bytes; ignoring it.\n", name, AttributeName{}.size() - 1u);
+            std::println(stderr, "Warning: glTF attribute {} exceeds {} bytes; ignoring it.", name, AttributeName{}.size() - 1u);
             continue;
         }
         const bool integer = accessor.type == fastgltf::AccessorType::Scalar && accessor.componentType != fastgltf::ComponentType::Float && !accessor.normalized;
@@ -709,7 +709,7 @@ struct SceneTraversalData {
     std::vector<mat4> WorldTransforms;
 };
 
-SceneTraversalData TraverseSceneNodes(const fastgltf::Asset &asset, const std::vector<Transform> &local_transforms, uint32_t scene_index) {
+SceneTraversalData TraverseSceneNodes(const fastgltf::Asset &asset, std::span<const Transform> local_transforms, uint32_t scene_index) {
     const auto nodes_count = asset.nodes.size();
     SceneTraversalData traversal{.InScene = std::vector(nodes_count, false), .WorldTransforms = std::vector(nodes_count, I4)};
     if (scene_index >= asset.scenes.size()) return traversal;
@@ -734,7 +734,7 @@ SceneTraversalData TraverseSceneNodes(const fastgltf::Asset &asset, const std::v
     return traversal;
 }
 
-std::optional<uint32_t> FindNearestMarkedAncestor(uint32_t node_index, const std::vector<std::optional<uint32_t>> &parents, auto &&marked) {
+std::optional<uint32_t> FindNearestMarkedAncestor(uint32_t node_index, std::span<const std::optional<uint32_t>> parents, auto &&marked) {
     auto parent = parents[node_index];
     while (parent) {
         if (marked(*parent)) return parent;
@@ -743,7 +743,7 @@ std::optional<uint32_t> FindNearestMarkedAncestor(uint32_t node_index, const std
     return {};
 }
 
-std::optional<uint32_t> ComputeCommonAncestor(const std::vector<uint32_t> &nodes, const std::vector<std::optional<uint32_t>> &parents) {
+std::optional<uint32_t> ComputeCommonAncestor(std::span<const uint32_t> nodes, std::span<const std::optional<uint32_t>> parents) {
     if (nodes.empty()) return {};
 
     const auto build_root_path = [&](uint32_t node_index) {
@@ -793,7 +793,7 @@ std::expected<Transform, std::string> ComputeJointRestLocal(
     return ToTransform(rebased_local);
 }
 
-std::expected<std::vector<uint32_t>, std::string> BuildParentBeforeChildJointOrder(const std::vector<uint32_t> &source_joint_nodes, const std::unordered_map<uint32_t, std::optional<uint32_t>> &joint_parent_map, uint32_t armature_index) {
+std::expected<std::vector<uint32_t>, std::string> BuildParentBeforeChildJointOrder(std::span<const uint32_t> source_joint_nodes, const std::unordered_map<uint32_t, std::optional<uint32_t>> &joint_parent_map, uint32_t armature_index) {
     std::vector<uint32_t> ordered;
     ordered.reserve(source_joint_nodes.size());
 
@@ -886,7 +886,7 @@ CameraLens ConvertCamera(const fastgltf::Camera &cam) {
     return std::visit(
         [](const auto &source) -> CameraLens {
             using P = std::decay_t<decltype(source)>;
-            if constexpr (std::is_same_v<P, fastgltf::Camera::Perspective>) {
+            if constexpr (std::same_as<P, fastgltf::Camera::Perspective>) {
                 return Perspective{.FieldOfViewRad = source.yfov, .FarClip = source.zfar.value_or(std::numeric_limits<float>::infinity()), .NearClip = source.znear, .AspectRatio = source.aspectRatio.value_or(0.f)};
             } else {
                 return Orthographic{.Mag = {source.xmag, source.ymag}, .FarClip = source.zfar, .NearClip = source.znear};
@@ -956,7 +956,7 @@ state::Entity ActiveSceneEntity(const state::Scene &r) {
 // No SceneMembership (single-scene) means the node is in the sole scene, so always in the active one.
 bool EntityInActiveScene(const state::Scene &r, state::Entity active_scene, state::Entity e) {
     const auto *sm = r.try_get<const SceneMembership>(e);
-    return !sm || std::ranges::find(sm->Scenes, active_scene) != sm->Scenes.end();
+    return !sm || std::ranges::contains(sm->Scenes, active_scene);
 }
 
 using NodeEntity = std::pair<uint32_t, state::Entity>;
@@ -1053,8 +1053,7 @@ SourceMaterials ReadMaterials(const fastgltf::Asset &asset) {
     SourceMaterials out;
     out.Materials.reserve(asset.materials.size() + 1u);
     out.Metas.reserve(asset.materials.size() + 1u);
-    for (uint32_t material_index = 0; material_index < asset.materials.size(); ++material_index) {
-        const auto &material = asset.materials[material_index];
+    for (const auto &material : asset.materials) {
         MaterialSourceMeta meta{.NameWasEmpty = material.name.empty()};
         PBRMaterial pbr{
             .BaseColorFactor = ToVec4(material.pbrData.baseColorFactor),
@@ -1454,7 +1453,7 @@ ImportedMaterials ImportMaterials(state::Scene &r, const fastgltf::Asset &asset,
             auto &tex = slot.Get(gpu_material);
             if (tex.Slot == InvalidSlot) continue;
             if (tex.TexCoord > 3u) {
-                std::cerr << std::format("Warning: glTF material '{}' texture '{}' uses TEXCOORD_{}. MeshEditor currently supports TEXCOORD_0..3. Clamping to TEXCOORD_3.\n", material_name, slot.Label, tex.TexCoord);
+                std::println(stderr, "Warning: glTF material '{}' texture '{}' uses TEXCOORD_{}. MeshEditor currently supports TEXCOORD_0..3. Clamping to TEXCOORD_3.", material_name, slot.Label, tex.TexCoord);
                 tex.TexCoord = 3u;
             }
             tex.Slot = resolve_texture_slot(tex.Slot, slot.ColorSpace);
@@ -1789,7 +1788,7 @@ void ImportAudio(state::Scene &r, const fastgltf::Asset &asset, const ImportedOb
     const auto validated = [](const auto &value, double fallback, auto &&ok, std::string_view field, std::string_view name) {
         const double v = value.value_or(fallback);
         if (std::isfinite(v) && ok(v)) return v;
-        std::cerr << std::format("Warning: KHR_audio_rigid_bodies acoustic material '{}' has an invalid {} ({}); using {}.\n", name, field, v, fallback);
+        std::println(stderr, "Warning: KHR_audio_rigid_bodies acoustic material '{}' has an invalid {} ({}); using {}.", name, field, v, fallback);
         return fallback;
     };
     static constexpr auto positive = [](double v) { return v > 0; };
@@ -1821,7 +1820,7 @@ void ImportAudio(state::Scene &r, const fastgltf::Asset &asset, const ImportedOb
     // Every accessor value has to be finite, since a resonator's state never recovers from a non-finite frequency, decay, or shape.
     const auto all_finite = [](const auto &values) {
         return std::ranges::all_of(values, [](const auto &v) {
-            if constexpr (std::is_same_v<std::decay_t<decltype(v)>, vec3>) return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+            if constexpr (std::same_as<std::decay_t<decltype(v)>, vec3>) return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
             else return std::isfinite(v);
         });
     };
@@ -1854,7 +1853,7 @@ void ImportAudio(state::Scene &r, const fastgltf::Asset &asset, const ImportedOb
         if (const auto indices = ToIndex(m.indices, accessors)) {
             auto tris = read_indices(*indices);
             if (tris.size() % 3 == 0 && std::ranges::all_of(tris, [n_points](uint32_t i) { return i < n_points; })) modes.Indices = std::move(tris);
-            else std::cerr << std::format("Warning: KHR_audio_rigid_bodies modal model '{}' has sample surface indices outside its sample points; ignoring them.\n", std::string{m.name});
+            else std::println(stderr, "Warning: KHR_audio_rigid_bodies modal model '{}' has sample surface indices outside its sample points; ignoring them.", std::string{m.name});
         }
         return modes;
     };
@@ -1864,7 +1863,7 @@ void ImportAudio(state::Scene &r, const fastgltf::Asset &asset, const ImportedOb
     for (const auto &m : asset.modalModels) {
         models.emplace_back(read_model(m));
         if (models.back().Freqs.empty()) {
-            std::cerr << std::format("Warning: KHR_audio_rigid_bodies modal model '{}' has accessors that do not match, or a frequency at or below zero, or a negative decay rate; ignoring it.\n", std::string{m.name});
+            std::println(stderr, "Warning: KHR_audio_rigid_bodies modal model '{}' has accessors that do not match, or a frequency at or below zero, or a negative decay rate; ignoring it.", std::string{m.name});
         }
     }
 
@@ -1952,8 +1951,8 @@ void ImportAudio(state::Scene &r, const fastgltf::Asset &asset, const ImportedOb
                 const float body_mass = motion->Mass.value_or(DefaultMass);
                 if (std::abs(body_mass - sized_mass) > 1e-3f * std::max(body_mass, sized_mass)) {
                     const auto name = source_node.name.empty() ? std::format("node {}", node_index) : std::string{source_node.name};
-                    std::cerr << std::format(
-                        "Warning: '{}': KHR_audio_rigid_bodies mass ({:.4g} kg at the node's scale) disagrees with its KHR_physics_rigid_bodies rigid body ({:.4g} kg); using the rigid body for contact dynamics.\n",
+                    std::println(
+                        stderr, "Warning: '{}': KHR_audio_rigid_bodies mass ({:.4g} kg at the node's scale) disagrees with its KHR_physics_rigid_bodies rigid body ({:.4g} kg); using the rigid body for contact dynamics.",
                         name, sized_mass, body_mass
                     );
                 }

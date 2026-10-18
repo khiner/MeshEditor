@@ -497,7 +497,7 @@ void ReleaseTemporaries(MeshStore &meshes, uint32_t id) {
 }
 
 // Return the linked attribute or constant; return an empty operand for missing inputs.
-Operand OperandOf(const GeometryProcedure &procedure, const CookPlan &plan, const std::vector<SocketValue> &values, uint32_t node, uint32_t input) {
+Operand OperandOf(const GeometryProcedure &procedure, const CookPlan &plan, std::span<const SocketValue> values, uint32_t node, uint32_t input) {
     if (input >= InputCount[procedure.Nodes[node].Kind]) return {};
     const auto link = procedure.Inputs[plan.InputFirst[node] + input];
     if (link.FromNode == NoNode) return {};
@@ -519,7 +519,7 @@ void AssignField(auto &p, Socket socket, const AttributeValue &words) {
         }
     });
 }
-template<typename K> K Parameters(const state::Scene &r, const GeometryProcedure &procedure, const CookPlan &plan, const std::vector<SocketValue> &values, uint32_t node) {
+template<typename K> K Parameters(const state::Scene &r, const GeometryProcedure &procedure, const CookPlan &plan, std::span<const SocketValue> values, uint32_t node) {
     const auto [entity, kind] = procedure.Nodes[node];
     auto p = r.get<const K>(entity);
     if constexpr (field::Walkable<K>) {
@@ -530,7 +530,7 @@ template<typename K> K Parameters(const state::Scene &r, const GeometryProcedure
     }
     return p;
 }
-Linked LinkedParameters(const GeometryProcedure &procedure, const CookPlan &plan, const std::vector<SocketValue> &values, uint32_t node) {
+Linked LinkedParameters(const GeometryProcedure &procedure, const CookPlan &plan, std::span<const SocketValue> values, uint32_t node) {
     const auto kind = procedure.Nodes[node].Kind;
     const auto sockets = KindSockets(kind);
     const auto [first, end] = ParameterRange(kind);

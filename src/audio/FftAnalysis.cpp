@@ -30,7 +30,7 @@ std::optional<float> EstimateFundamentalFrequency(const FFTData &fft, uint32_t s
 }
 
 // Capture a short audio segment shortly after the impact for FFT.
-FFTData ComputeFft(const std::vector<float> &frames, uint32_t sample_rate) {
+FFTData ComputeFft(std::span<const float> frames, uint32_t sample_rate) {
     constexpr uint32_t FftStartFrame = 30;
     const uint32_t FftEndFrame = sample_rate / 16;
     const uint32_t n = FftEndFrame - FftStartFrame;

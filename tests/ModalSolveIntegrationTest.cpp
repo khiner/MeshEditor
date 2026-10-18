@@ -5,8 +5,8 @@
 
 using namespace boost::ut;
 
-static_assert(std::is_same_v<AcousticMaterialProperties, fastfem::AcousticMaterialProperties>);
-static_assert(std::is_same_v<MassProperties, fastfem::MassProperties>);
+static_assert(std::same_as<AcousticMaterialProperties, fastfem::AcousticMaterialProperties>);
+static_assert(std::same_as<MassProperties, fastfem::MassProperties>);
 static_assert(std::is_base_of_v<fastfem::ModalModes, ModalModes>);
 static_assert(std::is_base_of_v<fastfem::ModalEigenSummary, ModalEigenSummary>);
 

@@ -33,7 +33,7 @@ int main(int argc, char **argv) {
     for (const auto &entry : fs::directory_iterator{shaders_dir}) {
         const auto name = entry.path().filename();
         if (name.extension() != ".metal") continue;
-        if (!requested.empty() && std::ranges::find(requested, name.string()) == requested.end()) continue;
+        if (!requested.empty() && !std::ranges::contains(requested, name.string())) continue;
         sources.emplace_back(name);
     }
     std::ranges::sort(sources);

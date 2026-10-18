@@ -51,7 +51,7 @@ void TopologyReadView::Add(state::Scene &r, uint32_t id, const MeshClosure &neig
         if (!set) return;
         const auto &header = arena.Set(set);
         std::vector<uint32_t> entries(header.BlockCount);
-        std::iota(entries.begin(), entries.end(), header.First);
+        std::ranges::iota(entries, header.First);
         Pages.Add(arena.Table.Buffer, entries, sizeof(uint32_t));
     };
     table(a.Vertices, record.Vertices);

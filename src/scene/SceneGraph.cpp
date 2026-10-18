@@ -80,9 +80,9 @@ void ClearParents(state::Scene &r, std::span<const state::Entity> children) {
     detached.erase(std::ranges::unique(detached).begin(), detached.end());
     for (auto group = detached.begin(); group != detached.end();) {
         const auto parent = group->first;
-        const auto group_end = std::find_if(group, detached.end(), [parent](const auto &link) { return link.first != parent; });
+        const auto group_end = std::ranges::find_if(group, detached.end(), [parent](const auto &link) { return link.first != parent; });
         const auto detaching = [&](state::Entity child) {
-            const auto it = std::lower_bound(group, group_end, state::Index(child), [](const auto &link, uint32_t index) { return state::Index(link.second) < index; });
+            const auto it = std::ranges::lower_bound(group, group_end, state::Index(child), {}, [](const auto &link) { return state::Index(link.second); });
             return it != group_end && it->second == child;
         };
         auto remaining = group_end - group;

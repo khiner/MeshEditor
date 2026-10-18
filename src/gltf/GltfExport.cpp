@@ -28,7 +28,7 @@
 
 #include <fastgltf/base64.hpp>
 #include <fastgltf/core.hpp>
-#include <iostream>
+#include <print>
 
 namespace gltf {
 using namespace detail;
@@ -148,7 +148,7 @@ fastgltf::Camera ConvertCameraToFg(const CameraLens &cam, std::string_view name)
     auto camera = std::visit(
         [](const auto &proj) -> std::variant<fastgltf::Camera::Perspective, fastgltf::Camera::Orthographic> {
             using P = std::decay_t<decltype(proj)>;
-            if constexpr (std::is_same_v<P, Perspective>) {
+            if constexpr (std::same_as<P, Perspective>) {
                 return fastgltf::Camera::Perspective{
                     .aspectRatio = proj.HasAspectRatio() ? fastgltf::optional<fastgltf::num>{proj.AspectRatio} : fastgltf::optional<fastgltf::num>{},
                     .yfov = proj.FieldOfViewRad,
@@ -375,7 +375,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             if (entity == state::Null || nodes[ni].Parent) continue;
             if (scene != state::Null) {
                 const auto *sm = r.try_get<const SceneMembership>(entity);
-                if (sm && std::ranges::find(sm->Scenes, scene) == sm->Scenes.end()) continue;
+                if (sm && !std::ranges::contains(sm->Scenes, scene)) continue;
             }
             roots.emplace_back(ni);
         }
@@ -389,7 +389,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     {
         const auto node_in_active_scene = [&](state::Entity entity) {
             const auto *sm = entity != state::Null ? r.try_get<const SceneMembership>(entity) : nullptr;
-            return !sm || std::ranges::find(sm->Scenes, active_scene) != sm->Scenes.end();
+            return !sm || std::ranges::contains(sm->Scenes, active_scene);
         };
         const auto dfs = [&](this const auto &self, uint32_t ni) -> bool {
             auto &node = nodes[ni];
@@ -616,7 +616,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         } else if (target == gltf::MimeType::PNG) {
             return std::unexpected{std::move(enc.error())};
         } else {
-            std::cerr << std::format("Warning: image '{}': {}. Falling back to PNG.\n", name, enc.error());
+            std::println(stderr, "Warning: image '{}': {}. Falling back to PNG.", name, enc.error());
             auto png = EncodeImagePngRgba8(*rgba8, w, h, name);
             if (!png) return std::unexpected{std::move(png.error())};
             return std::pair{std::move(*png), gltf::MimeType::PNG};
@@ -640,7 +640,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             if (form == Source::External) form = Source::Embedded;
         } else if (img.IsDirty) {
             // KTX2 and DDS lack an encoder, so their source bytes stand.
-            std::cerr << std::format("Warning: image '{}' is dirty but {} re-encoding isn't supported; emitting original bytes.\n", img.Name, img.MimeType == gltf::MimeType::KTX2 ? "KTX2" : "DDS");
+            std::println(stderr, "Warning: image '{}' is dirty but {} re-encoding isn't supported; emitting original bytes.", img.Name, img.MimeType == gltf::MimeType::KTX2 ? "KTX2" : "DDS");
         }
         if (form == Source::External) {
             const auto source_path = project::ResolveAsset(r, img.SourcePath);
@@ -1321,8 +1321,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         mirror.emplace_back(*value);
         return index;
     };
-    for (uint32_t ni = 0; ni < nodes.size(); ++ni) {
-        const auto &export_node = nodes[ni];
+    for (const auto &export_node : nodes) {
         const auto entity = export_node.Entity;
 
         std::vector<size_t> children;

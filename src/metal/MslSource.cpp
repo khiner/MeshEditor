@@ -3,16 +3,14 @@
 #include <algorithm>
 #include <format>
 #include <fstream>
-#include <sstream>
+#include <iterator>
 
 namespace msl {
 namespace {
 std::string ReadFile(const std::filesystem::path &path) {
     const std::ifstream in{path, std::ios::binary};
     if (!in) throw std::runtime_error(std::format("Failed to open shader source '{}'", path.string()));
-    std::ostringstream out;
-    out << in.rdbuf();
-    return std::move(out).str();
+    return std::string{std::istreambuf_iterator<char>{in.rdbuf()}, {}};
 }
 
 std::string_view Trim(std::string_view line) {
@@ -66,7 +64,7 @@ void Append(Source &out, const std::filesystem::path &root, const std::filesyste
         ++line_number;
         const auto directive = Directive(line);
         if (directive == "ifdef" || directive == "ifndef" || directive == "if") {
-            const bool selects_side = directive != "if" && line.find("__METAL_VERSION__") != std::string_view::npos;
+            const bool selects_side = directive != "if" && line.contains("__METAL_VERSION__");
             conditionals.emplace_back(selects_side, selects_side && directive == "ifndef");
         } else if (directive == "else" && !conditionals.empty() && conditionals.back().SelectsSide) {
             conditionals.back().CpuSide = !conditionals.back().CpuSide;

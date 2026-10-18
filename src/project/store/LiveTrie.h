@@ -4,6 +4,7 @@
 #include "project/store/Manifest.h"
 
 #include <unordered_map>
+#include <span>
 #include <vector>
 
 // Versioned slots over bytes and hashes the owner supplies.
@@ -139,7 +140,7 @@ struct LiveTrie {
 
     const TrieStats &Stats() const { return S; }
     // Checks trie structure and that all pinned Aliased nodes are reachable from the present.
-    bool Check(std::string &why, const std::vector<Version> &all_versions) const;
+    bool Check(std::string &why, std::span<const Version> all_versions) const;
     // Compare current hashes with the hashes of live non-default slots, given in slot order.
     bool CheckHashes(std::string &why, std::span<const std::pair<uint64_t, Hash128>> live) const;
 

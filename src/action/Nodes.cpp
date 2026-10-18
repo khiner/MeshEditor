@@ -35,7 +35,7 @@ state::Entity CopyNode(state::Scene &r, state::Entity node, uint16_t kind) {
 }
 
 // Whether the list names distinct nodes of the procedure in ascending order.
-bool ListsNodes(const GeometryProcedure &procedure, const std::vector<uint32_t> &nodes) {
+bool ListsNodes(const GeometryProcedure &procedure, std::span<const uint32_t> nodes) {
     return std::ranges::is_sorted(nodes) && std::ranges::adjacent_find(nodes) == nodes.end() && (nodes.empty() || nodes.back() < procedure.Nodes.size());
 }
 

@@ -56,7 +56,7 @@
 
 #include <csignal>
 #include <future>
-#include <iostream>
+#include <print>
 #include <set>
 
 using std::ranges::any_of, std::ranges::all_of;
@@ -1202,7 +1202,7 @@ SceneStatus ReportActionErrors(state::Scene &r) {
     if (auto error = Session(r).History.TakeIntegrityError(); !error.empty()) action::Fail(r, std::move(error));
     if (errors.Messages.empty()) return SceneStatus::Ok;
     const auto status = errors.OnlyUnsupportedExtensions ? SceneStatus::Unsupported : SceneStatus::Failed;
-    for (const auto &message : errors.Messages) std::cerr << message << std::endl;
+    for (const auto &message : errors.Messages) std::println(stderr, "{}", message);
     errors.Messages.clear();
     return status;
 }

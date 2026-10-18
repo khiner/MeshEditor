@@ -270,7 +270,7 @@ struct ElementArena {
             const Range range{blocks[first], uint32_t(count)};
             std::ranges::fill(Blocks.GetMutable(range), MeshElementBlock{});
             const auto end = std::min<size_t>(Indexed.size(), size_t(range.Offset) + range.Count);
-            if (range.Offset < end) std::fill(Indexed.begin() + range.Offset, Indexed.begin() + end, std::pair{InvalidOffset, 0u});
+            if (range.Offset < end) std::ranges::fill(std::span{Indexed}.subspan(range.Offset, end - range.Offset), std::pair{InvalidOffset, 0u});
             Blocks.Release(range);
         });
         std::ranges::sort(tables, {}, &Range::Offset);

@@ -4,8 +4,8 @@
 #include <algorithm>
 #include <chrono>
 #include <fstream>
-#include <numeric>
 #include <print>
+#include <span>
 
 namespace profile {
 namespace {
@@ -33,7 +33,7 @@ std::unique_ptr<mtl::PassTimer> Timer;
 std::vector<CpuSpan> OpenCpu;
 std::vector<Stat> GpuStats, CpuStats, Counters;
 
-float Total(const std::vector<float> &ms) { return std::accumulate(ms.begin(), ms.end(), 0.f); }
+float Total(std::span<const float> ms) { return std::ranges::fold_left(ms, 0.f, std::plus{}); }
 
 Summary Summarize(std::vector<float> sorted) {
     if (sorted.empty()) return {};
@@ -53,7 +53,7 @@ uint32_t StatIndex(std::vector<Stat> &stats, std::string_view name, uint32_t par
     return uint32_t(stats.size() - 1);
 }
 
-void PrintSubtree(const std::vector<Stat> &stats, const std::vector<std::vector<uint32_t>> &children, uint32_t i, bool print_gaps, auto &&row, auto &&gap_row) {
+void PrintSubtree(std::span<const Stat> stats, std::span<const std::vector<uint32_t>> children, uint32_t i, bool print_gaps, auto &&row, auto &&gap_row) {
     const auto summary = Summarize(stats[i].Ms);
     row(stats[i].Depth, stats[i].Name, stats[i].Ms.size(), summary);
     float claimed = 0;
@@ -65,7 +65,7 @@ void PrintSubtree(const std::vector<Stat> &stats, const std::vector<std::vector<
 }
 
 // Print unattributed parent time when child scopes are nested inside the parent.
-void ReportTable(std::string_view title, const std::vector<Stat> &stats, bool children_run_inside_parent) {
+void ReportTable(std::string_view title, std::span<const Stat> stats, bool children_run_inside_parent) {
     if (stats.empty()) return;
     std::vector<uint32_t> roots;
     std::vector<std::vector<uint32_t>> children(stats.size());
@@ -94,7 +94,7 @@ void ReportTable(std::string_view title, const std::vector<Stat> &stats, bool ch
     for (const auto root : roots) PrintSubtree(stats, children, root, children_run_inside_parent, row, gap_row);
 }
 
-void ReportCounterTable(const std::vector<Stat> &stats) {
+void ReportCounterTable(std::span<const Stat> stats) {
     if (stats.empty()) return;
     std::println("\nRenderer workload counters");
     std::println("  {:<32} {:>7} {:>14} {:>14} {:>14} {:>14}", "counter", "samples", "mean", "median", "min", "max");
@@ -107,7 +107,7 @@ void ReportCounterTable(const std::vector<Stat> &stats) {
     }
 }
 
-void ReportJsonSection(std::ofstream &out, std::string_view name, const std::vector<Stat> &stats) {
+void ReportJsonSection(std::ofstream &out, std::string_view name, std::span<const Stat> stats) {
     out << std::format("  \"{}\": [\n", name);
     for (size_t i = 0; i < stats.size(); ++i) {
         const auto summary = Summarize(stats[i].Ms);

@@ -181,7 +181,7 @@ void ForEachArena(auto &b, auto &&f) {
     f(render.MeshRecords, ArenaInfo{}, NoAllocation);
 }
 
-template<typename Arena> using ArenaValue = typename decltype(std::declval<const Arena &>().Get(Range{}))::value_type;
+template<typename Arena> using ArenaValue = decltype(std::declval<const Arena &>().Get(Range{}))::value_type;
 
 constexpr bool SelectableDomain(Domain domain) { return domain == Domain::Vertex || domain == Domain::Edge || domain == Domain::Face; }
 
@@ -467,7 +467,7 @@ struct MeshStore::HistoryState {
             if (!info.Tracked() || info.Mirror || info.RenderRange) return;
             constexpr auto Stride = sizeof(ArenaValue<std::remove_cvref_t<decltype(arena)>>);
             if (const auto *allocation = ranges(mesh.Records[id])) {
-                if constexpr (std::is_same_v<std::remove_cvref_t<decltype(*allocation)>, ElementSetRef>) {
+                if constexpr (std::same_as<std::remove_cvref_t<decltype(*allocation)>, ElementSetRef>) {
                     if (!*allocation) return;
                     Owners[uint32_t(info.Elements)][allocation->Index] = id;
                     indexed.Sets.emplace_back(uint32_t(info.Elements), allocation->Index);
@@ -1610,7 +1610,7 @@ void MeshStore::PlanClone(const Mesh &mesh) {
     ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&ranges) {
         const auto *allocation = ranges(record);
         if (!allocation || info.Mirror) return;
-        if constexpr (std::is_same_v<std::remove_cvref_t<decltype(*allocation)>, Range>) arena.PlanAdditional(allocation->Count);
+        if constexpr (std::same_as<std::remove_cvref_t<decltype(*allocation)>, Range>) arena.PlanAdditional(allocation->Count);
         else if (*allocation) {
             WithDomain(Buffers, info.Elements, [&](const auto &owner) {
                 arena.PlanAdditional(owner.Set(*allocation).BlockCount * MeshElementBlockSize);
@@ -1761,7 +1761,7 @@ void MeshStore::CopyBlocks(CloneCopies &copies, uint32_t destination, uint32_t s
     // Element values and their mirrors, apart from the vertex fan roots, which take new fan runs below.
     ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&ranges) {
         using Allocation = std::remove_cvref_t<decltype(*ranges(src))>;
-        if constexpr (std::is_same_v<Allocation, ElementSetRef>) {
+        if constexpr (std::same_as<Allocation, ElementSetRef>) {
             if (&arena.Buffer == &Buffers.VertexCorners.Buffer) return;
             constexpr auto Bytes = uint64_t(MeshElementBlockSize) * sizeof(ArenaValue<std::remove_cvref_t<decltype(arena)>>);
             ForEachPairRun(pairs[uint32_t(info.Elements)], [&](uint32_t from, uint32_t to, uint32_t count) { CaptureCopy(copies, arena.Buffer, Bytes, from, to, count); });
@@ -1869,7 +1869,7 @@ std::vector<uint32_t> MeshStore::CloneMeshes(CloneCopies &copies, std::span<cons
         pairs.push_back(PairBlocks(source_ids[i], ids[i]));
         ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &, auto &&ranges) {
             const auto *from = ranges(src);
-            if constexpr (std::is_same_v<std::remove_cvref_t<decltype(*from)>, Range>) {
+            if constexpr (std::same_as<std::remove_cvref_t<decltype(*from)>, Range>) {
                 if (const auto *to = ranges(Records[ids[i]]); from && to->Count) CaptureCopy(copies, arena.Buffer, sizeof(ArenaValue<std::remove_cvref_t<decltype(arena)>>), from->Offset, to->Offset, from->Count);
             }
         });
@@ -2051,7 +2051,7 @@ MeshStore::Change MeshStore::Resync(CloneCopies &copies, uint32_t id, uint32_t s
     });
     for (const auto attribute : released) ReleaseAttribute(attribute);
     ForEachNamedAttribute(source, [&](uint32_t attribute, const NamedAttribute &) {
-        if (std::ranges::find(kept, attribute, &uvec2::x) == kept.end()) whole.emplace_back(attribute, 0u);
+        if (!std::ranges::contains(kept, attribute, &uvec2::x)) whole.emplace_back(attribute, 0u);
     });
     // Copy restored local blocks into retained attributes and the full source range into new attributes.
     for (const auto [from, to] : kept) {
@@ -2351,7 +2351,7 @@ void ForEachRenderValue(const MeshArenas &b, const MeshStore::Record &r, const R
         using Value = ArenaValue<std::remove_cvref_t<decltype(arena)>>;
         const auto bytes = std::as_bytes(arena.Buffer.template GetSpan<Value>());
         const auto visit = [&](uint32_t index) { fn(info, bytes.subspan(uint64_t(index) * sizeof(Value), sizeof(Value))); };
-        if constexpr (std::is_same_v<std::remove_cvref_t<decltype(*ranges(r))>, Range>) {
+        if constexpr (std::same_as<std::remove_cvref_t<decltype(*ranges(r))>, Range>) {
             if (const auto *range = ranges(r); range && info.RenderRange && info.Layer == Domain::None) {
                 for (uint32_t i = 0u; i < range->Count; ++i) visit(range->Offset + i);
             }
@@ -2594,7 +2594,7 @@ store::Hash128 MeshStore::CanonicalHash(uint32_t id) const {
         using Allocation = std::remove_cvref_t<decltype(*ranges(r))>;
         if (!info.Bits) return;
         const auto values = arena.Buffer.template GetSpan<Value>();
-        if constexpr (std::is_same_v<Allocation, ElementSetRef>) {
+        if constexpr (std::same_as<Allocation, ElementSetRef>) {
             if (&arena.Buffer == &Buffers.VertexCorners.Buffer) return;
             tables.ForEachLive(info.Elements, [&](uint32_t, uint32_t address) { put(values[address]); });
         } else if (const auto *range = ranges(r); range && range->Count) {
@@ -2844,7 +2844,7 @@ void MeshStore::ReleaseRender(std::span<Record *const> records) {
     for (auto &list : blocks) std::ranges::sort(list);
     // Clear released block masks before reuse.
     ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&) {
-        if constexpr (std::is_same_v<std::remove_cvref_t<decltype(arena)>, BufferArena<uint32_t>>) {
+        if constexpr (std::same_as<std::remove_cvref_t<decltype(arena)>, BufferArena<uint32_t>>) {
             if (!info.Render || !info.BlockIndexed) return;
             const auto words = arena.Buffer.template GetSpan<uint32_t>();
             for (const auto block : blocks[uint32_t(*info.Render)]) {

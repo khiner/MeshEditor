@@ -7,7 +7,6 @@
 #include <complex>
 #include <format>
 #include <fstream>
-#include <numeric>
 #include <ranges>
 
 namespace npy {
@@ -36,7 +35,7 @@ inline version_t read_magic(std::istream &istream) {
     std::array<char, magic_string_length + 2> buf{};
     istream.read(buf.data(), sizeof(buf));
     if (!istream) throw std::runtime_error("io error: failed reading file");
-    if (!std::equal(magic_string.begin(), magic_string.end(), buf.begin())) throw std::runtime_error("this file does not have a valid npy format.");
+    if (!std::ranges::equal(magic_string, std::span{buf}.first(magic_string.size()))) throw std::runtime_error("this file does not have a valid npy format.");
 
     return {buf[magic_string_length], buf[magic_string_length + 1]};
 }
@@ -87,7 +86,7 @@ constexpr std::string_view get_value_from_map(std::string_view mapstr) {
 }
 
 // Parse a Python dictionary with known keys that do not occur in its values.
-std::unordered_map<std::string_view, std::string_view> parse_dict(std::string_view in, const std::vector<std::string_view> &keys) {
+std::unordered_map<std::string_view, std::string_view> parse_dict(std::string_view in, std::span<const std::string_view> keys) {
     if (keys.empty()) return {};
 
     in = trim(in);
@@ -197,7 +196,7 @@ constexpr dtype_t dtype_for() {
     constexpr char byteorder = sizeof(T) == 1 ? no_endian_char : endian_char;
     if constexpr (is_complex_v<T>) return {byteorder, 'c', sizeof(T)};
     else if constexpr (std::is_floating_point_v<T>) return {byteorder, 'f', sizeof(T)};
-    else if constexpr (std::is_same_v<T, char> || std::is_signed_v<T>) return {byteorder, 'i', sizeof(T)};
+    else if constexpr (std::same_as<T, char> || std::is_signed_v<T>) return {byteorder, 'i', sizeof(T)};
     else return {byteorder, 'u', sizeof(T)};
 }
 
@@ -212,7 +211,7 @@ template<typename Scalar> inline header_t read_header(std::istream &in) {
 // Read data after advancing from the current input position and leave in after the data.
 template<typename Scalar> inline npy_data<Scalar> read_npy(std::istream &in, const header_t &header, size_t advance = 0, size_t size = 0) {
     const auto &shape = header.shape;
-    const size_t total_size = std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies());
+    const size_t total_size = std::ranges::fold_left(shape, size_t(1), std::multiplies{});
     const size_t read_size = size == 0 || size > total_size - advance ? total_size - advance : size;
     npy_data<Scalar> data{shape, header.fortran_order, std::vector<Scalar>(read_size)};
     in.seekg(std::streamoff(sizeof(Scalar)) * std::streamoff(advance), std::ios_base::cur);

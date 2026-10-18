@@ -317,7 +317,7 @@ std::string JoinIndex(std::string_view path, size_t i) { return std::format("{}[
 bool MatchesAnyChildOf(std::string_view norm, std::string_view prefix) {
     if (!norm.starts_with(prefix)) return false;
     const auto rest = norm.substr(prefix.size());
-    return !rest.empty() && rest.find('.') == std::string_view::npos && rest.find('[') == std::string_view::npos;
+    return !rest.empty() && !rest.contains('.') && !rest.contains('[');
 }
 
 bool IsMeshGeometryRefPath(std::string_view norm) {
@@ -1277,7 +1277,7 @@ int main(int argc, const char **argv) {
             if (!relocated_images.empty()) expect(project::ResolveAsset(relocated.R, relocated_images.front().SourcePath) == staged_png) << "relocated URI references another file";
             ProcessComponentEvents(fx.R, fx.Viewport);
             const auto &textures = fx.R.Context.get<TextureStore>().Textures;
-            expect(std::ranges::find(textures, 0u, &TextureEntry::SourceImageIndex) != textures.end()) << "image was not uploaded";
+            expect(std::ranges::contains(textures, 0u, &TextureEntry::SourceImageIndex)) << "image was not uploaded";
             fs::rename(staged_png, stage_dir / "CesiumLogoFlat.png.moved");
             const auto saved = gltf::SaveGltf(stage_dir / "BoxTextured-missing.gltf", fx.R, fx.Viewport);
             expect(!saved.has_value()) << "missing external image exported";

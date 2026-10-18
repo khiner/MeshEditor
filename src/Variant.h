@@ -35,9 +35,9 @@ struct variant_concat<std::variant<Ts...>, std::variant<Us...>, Rest...>
 } // namespace detail
 
 template<typename... Vs>
-using MergedVariantT = typename detail::variant_concat<typename detail::as_variant<Vs>::type...>::type;
+using MergedVariantT = detail::variant_concat<typename detail::as_variant<Vs>::type...>::type;
 
 template<typename T, typename V> struct is_variant_member : std::false_type {};
 template<typename T, typename... Ts>
-struct is_variant_member<T, std::variant<Ts...>> : std::bool_constant<(std::is_same_v<T, Ts> || ...)> {};
+struct is_variant_member<T, std::variant<Ts...>> : std::bool_constant<(std::same_as<T, Ts> || ...)> {};
 template<typename T, typename V> inline constexpr bool is_variant_member_v = is_variant_member<T, V>::value;

@@ -16,8 +16,7 @@
 
 #include "state/Scene.h"
 #include <basisu_transcoder.h>
-
-#include <iostream>
+#include <format>
 
 namespace {
 NS::SharedPtr<MTL::SamplerState> MakeLinearSampler(const mtl::Context &ctx, MTL::SamplerAddressMode address_mode) {

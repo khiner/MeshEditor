@@ -59,7 +59,7 @@ constexpr std::string Capitalize(std::string_view str) {
 
 // Edits the active mesh's primitive shape S through Update actions.
 template<typename S>
-struct ShapeEdit : ui::FieldWidgets<ShapeEdit<S>> {
+struct ShapeEdit : ui::FieldWidgets<> {
     explicit ShapeEdit(const S &shape) : Shape{shape} {}
 
     const S &Shape;
@@ -315,8 +315,8 @@ static void RenderEntityControls(state::Scene &r, state::Entity viewport, state:
             constraints ? constraints->Stack.size() : 0,
             [&](uint32_t i) {
                 return std::visit([]<typename T>(const T &) {
-                    if constexpr (std::is_same_v<T, CopyTransformsData>) return "Copy Transforms";
-                    else if constexpr (std::is_same_v<T, ChildOfData>) return "Child Of";
+                    if constexpr (std::same_as<T, CopyTransformsData>) return "Copy Transforms";
+                    else if constexpr (std::same_as<T, ChildOfData>) return "Child Of";
                     else return "?";
                 },
                                   constraints->Stack[i].Data);

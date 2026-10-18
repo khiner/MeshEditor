@@ -2461,7 +2461,7 @@ void TestRecalculateNormals() {
         ExpectCounts(mesh, counts);
         expect(f.Selection(Element::Face).Count() == selected.size());
         for (uint32_t i = 0u; i < normals.size(); ++i) {
-            const bool reverse = changed && ((std::ranges::find(flipped, i) != flipped.end()) ^ (inside && std::ranges::find(selected, i) != selected.end()));
+            const bool reverse = changed && (std::ranges::contains(flipped, i) ^ (inside && std::ranges::contains(selected, i)));
             expect(Near(mesh.GetNormal(normals[i].first), normals[i].second * (reverse ? -1.f : 1.f))) << "normal of face" << i;
         }
         const auto &a = f.R.Context.get<const MeshStore>().Arenas();

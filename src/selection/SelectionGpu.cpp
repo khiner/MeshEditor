@@ -267,7 +267,7 @@ std::optional<std::pair<state::Entity, uint32_t>> RunEditElementClick(
         RenderElementSelectionPass(r, chain, viewport, ranges, element, false, {}, {}, ElementPickTarget{mouse_px, ElementPickRadiusSq(element)});
     });
     const auto id = ReadNearestPickedElement(buffers, UINT32_MAX);
-    const auto picked = id ? std::optional{ElementAddress::Stored(*id)} : std::nullopt;
+    const auto picked = id.transform(ElementAddress::Stored);
     const auto requests = SelectionRequests(ranges, toggle ? EditSelectionOperation::PickToggle : EditSelectionOperation::PickReplace);
     ApplySelection(r, requests, element, picked);
     if (!picked) return {};

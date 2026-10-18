@@ -816,7 +816,7 @@ inline float SolveSpringAnchor(const ContactSpringSet &set, double normal_force)
     const auto &f = set.AnchorForce;
     const size_t n = f.size();
     if (n < 2 || normal_force <= 0) return 0.f;
-    if (const auto it = std::lower_bound(f.begin(), f.end(), float(normal_force)); it != f.end()) {
+    if (const auto it = std::ranges::lower_bound(f, float(normal_force)); it != f.end()) {
         const auto hi = size_t(it - f.begin());
         if (hi == 0) return z[0];
         const float df = f[hi] - f[hi - 1];

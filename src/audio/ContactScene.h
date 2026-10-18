@@ -88,7 +88,7 @@ inline vec3 UnitOrZero(vec3 v) {
 }
 
 // The sample point nearest `local_point`.
-inline uint32_t NearestSamplePoint(const std::vector<vec3> &positions, vec3 local_point) {
+inline uint32_t NearestSamplePoint(std::span<const vec3> positions, vec3 local_point) {
     const auto dist2 = [local_point](vec3 p) { const auto d = p - local_point; return Dot(d, d); };
     return uint32_t(std::ranges::distance(positions.begin(), std::ranges::min_element(positions, {}, dist2)));
 }

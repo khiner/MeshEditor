@@ -60,7 +60,7 @@ struct HistoryStats {
 struct History {
     struct Hooks {
         // Complete all writes caused by replay before returning.
-        std::function<std::expected<void, std::string>(const std::vector<std::byte> &action)> Replay{};
+        std::function<std::expected<void, std::string>(std::span<const std::byte> action)> Replay{};
         // Replace live state with the empty state that baseline actions run from, resolving project files in dir.
         std::function<void(const std::filesystem::path &dir)> Reset{};
         // Run before restoring any track.

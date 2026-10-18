@@ -305,27 +305,27 @@ bool DrawField(const char *label, F &v, const FieldSpec &spec) {
 }
 
 // Widgets over an editor's Run<Ms...>(widget, delta_capable), which reads the field, runs the widget, and stages a change.
-template<typename Editor, auto... Prefix>
+template<auto... Prefix>
 struct FieldWidgets {
     template<auto... Ms> using Field = action::detail::last_field<Prefix..., Ms...>;
 
     template<auto... Ms>
-    bool Draw(const char *label = nullptr) {
+    bool Draw(this auto &&self, const char *label = nullptr) {
         using F = Field<Ms...>;
         constexpr auto &spec = field::ChainSpecOf<Prefix..., Ms...>;
         static_assert(spec.Widget != FieldWidget::Color || std::same_as<F, vec3> || std::same_as<F, vec4>, "Edit::Draw: a color field must be a vec3 or vec4");
         static_assert(spec.Widget != FieldWidget::Slider || (spec.HasMin() && spec.HasMax()), "Edit::Draw: a slider field must declare both Min and Max");
-        return Draw<Ms...>([&](const char *chain_label, F &v) { return DrawField(label ? label : chain_label, v, spec); });
+        return self.template Draw<Ms...>([&](const char *chain_label, F &v) { return DrawField(label ? label : chain_label, v, spec); });
     }
 
     template<auto... Ms, typename Widget>
         requires std::invocable<Widget &, const char *, Field<Ms...> &>
-    bool Draw(Widget widget) {
+    bool Draw(this auto &&self, Widget widget) {
         using F = Field<Ms...>;
         constexpr auto &spec = field::ChainSpecOf<Prefix..., Ms...>;
         detail::RunKey.reset();
         detail::RunSelection = false;
-        return Self().template Run<Ms...>([&](F &v) {
+        return self.template Run<Ms...>([&](F &v) {
             const bool changed = widget(field::ChainLabel<Prefix..., Ms...>.c_str(), v);
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
                 Hovered = {
@@ -337,7 +337,7 @@ struct FieldWidgets {
                     .Selection = detail::RunSelection,
                     .Key = detail::RunKey,
                 };
-                if constexpr (requires { Self().Status; }) Hovered.Status = Self().Status;
+                if constexpr (requires { self.Status; }) Hovered.Status = self.Status;
             }
             return changed;
         },
@@ -352,14 +352,11 @@ struct FieldWidgets {
             Hovered = {.Label = field::ChainLabel<Prefix..., M>.c_str(), .Path = field::ChainPath<Prefix..., M>.c_str(), .Help = spec.Help};
         }
     }
-
-private:
-    Editor &Self() { return static_cast<Editor &>(*this); }
 };
 
 // Edits component fields on an entity through Update actions.
 template<bool HasEntity, auto... Prefix>
-struct Edit : FieldWidgets<Edit<HasEntity, Prefix...>, Prefix...> {
+struct Edit : FieldWidgets<Prefix...> {
     using Target = std::conditional_t<HasEntity, state::Entity, std::monostate>;
     Edit(state::Scene &r, Target e = {}) : R{r}, E{e} {}
 
@@ -410,7 +407,7 @@ Edit(state::Scene &) -> Edit<false>;
 Edit(state::Scene &, state::Entity) -> Edit<true>;
 
 template<typename Component, auto... Prefix>
-struct PatchEdit : FieldWidgets<PatchEdit<Component, Prefix...>, Prefix...> {
+struct PatchEdit : FieldWidgets<Prefix...> {
     explicit PatchEdit(const Component &current) : Current{current} {}
 
     const Component &Current;
@@ -441,7 +438,7 @@ struct PatchEdit : FieldWidgets<PatchEdit<Component, Prefix...>, Prefix...> {
 
 // Edits fields of `Value` in place, accumulating whether any changed, and whether a gesture finished when `finished` is given.
 template<typename T, auto... Prefix>
-struct ValueEdit : FieldWidgets<ValueEdit<T, Prefix...>, Prefix...> {
+struct ValueEdit : FieldWidgets<Prefix...> {
     ValueEdit(T &value, bool &changed, bool *finished = nullptr) : Value{value}, Changed{changed}, Finished{finished} {}
 
     T &Value;

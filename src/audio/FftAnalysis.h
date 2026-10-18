@@ -1,6 +1,7 @@
 #pragma once
 #include <complex>
 #include <optional>
+#include <span>
 #include <vector>
 struct FFTData {
     std::vector<std::complex<float>> Bins;
@@ -8,4 +9,4 @@ struct FFTData {
 };
 
 std::optional<float> EstimateFundamentalFrequency(const FFTData &, uint32_t);
-FFTData ComputeFft(const std::vector<float> &, uint32_t);
+FFTData ComputeFft(std::span<const float>, uint32_t);

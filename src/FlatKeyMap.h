@@ -44,7 +44,7 @@ private:
         for (uint32_t slot = 0; slot < Values.size(); ++slot) Place(slot);
     }
     bool Equal(uint32_t slot, const uint32_t *key) const {
-        return std::equal(key, key + KeyWords, Keys.begin() + size_t(slot) * KeyWords);
+        return std::ranges::equal(std::span{key, KeyWords}, std::span{Keys}.subspan(size_t(slot) * KeyWords, KeyWords));
     }
     size_t Hash(const uint32_t *key) const {
         uint64_t h = 0xcbf29ce484222325ull;
