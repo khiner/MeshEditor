@@ -49,32 +49,47 @@ struct NodeThemeColors {
     vec4 MixedSocket{Rgba8(150, 150, 190)};
 };
 
-struct NodeTheme {
-    NodeThemeColors Colors{};
-    bool FollowFrameHeight{true}; // Cells are one frame height, ignoring GridSize.
-    float GridSize{21}; // A cell's side in points.
-    uint8_t CoarseGridCells{8}; // Cells between coarse grid lines.
-    uint8_t MaxLabelCells{10}; // The cells a socket label may take.
+// A node grid cell's side.
+struct CellSize {
+    bool FollowFrameHeight{true};
+    float Points{21};
+};
+
+struct NodeThemeSizes {
+    CellSize Cell{};
+    uint8_t CoarseGridCells{8};
+    uint8_t MaxLabelCells{10};
     float TitlePadding{6}, LabelSpacing{4}, ParameterIndent{6};
     float SocketRadius{5}, Rounding{4};
     float WireWidth{2};
-    float WireCurving{.4f}; // Handles reach this fraction of the horizontal span.
+    float WireCurving{.4f};
     float BorderWidth{1}, HighlightBorderWidth{2}, OutlineWidth{1};
+};
+
+struct NodeTheme {
+    NodeThemeColors Colors{};
+    NodeThemeSizes Sizes{};
 };
 } // namespace procedure
 
+template<> inline constexpr field::SpecTable<procedure::CellSize> Specs<procedure::CellSize>{
+    {&procedure::CellSize::FollowFrameHeight, {.Label = "Frame height", .Help = "Make each cell one frame height, ignoring the grid size"}},
+    {&procedure::CellSize::Points, {.Min = 8, .Max = 128, .Unit = FieldUnit::Points, .Label = "Grid size", .Help = "Cell side length"}},
+};
+template<> inline constexpr field::SpecTable<procedure::NodeThemeSizes> Specs<procedure::NodeThemeSizes>{
+    {&procedure::NodeThemeSizes::CoarseGridCells, {.Min = 2, .Max = 64, .Unit = FieldUnit::Cells, .Help = "Number of cells between coarse grid lines"}},
+    {&procedure::NodeThemeSizes::MaxLabelCells, {.Min = 2, .Max = 64, .Unit = FieldUnit::Cells, .Help = "Maximum socket label width. Longer labels end in an ellipsis."}},
+    {&procedure::NodeThemeSizes::TitlePadding, {.Min = 0, .Max = 24, .Unit = FieldUnit::Points, .Help = "Space on each side of a node title"}},
+    {&procedure::NodeThemeSizes::LabelSpacing, {.Min = 0, .Max = 24, .Unit = FieldUnit::Points, .Help = "Space between a socket and its label"}},
+    {&procedure::NodeThemeSizes::ParameterIndent, {.Min = 0, .Max = 24, .Unit = FieldUnit::Points, .Help = "Extra indent of parameter socket labels"}},
+    {&procedure::NodeThemeSizes::SocketRadius, {.Min = 2, .Max = 12, .Unit = FieldUnit::Points, .Help = "Socket radius"}},
+    {&procedure::NodeThemeSizes::Rounding, {.Min = 0, .Max = 12, .Unit = FieldUnit::Points, .Help = "Node corner radius"}},
+    {&procedure::NodeThemeSizes::WireWidth, {.Min = .5, .Max = 8, .Unit = FieldUnit::Points, .Help = "Link wire width"}},
+    {&procedure::NodeThemeSizes::WireCurving, {.Min = 0, .Max = 1, .Help = "Wire curve handle length as a fraction of the link's horizontal span"}},
+    {&procedure::NodeThemeSizes::BorderWidth, {.Min = .5, .Max = 4, .Unit = FieldUnit::Points, .Help = "Node border width"}},
+    {&procedure::NodeThemeSizes::HighlightBorderWidth, {.Min = .5, .Max = 6, .Unit = FieldUnit::Points, .Help = "Border width of a selected, active, or failing node"}},
+    {&procedure::NodeThemeSizes::OutlineWidth, {.Min = 0, .Max = 4, .Unit = FieldUnit::Points, .Help = "Outline width of sockets, chevrons, and the parameter tray"}},
+};
 template<> inline constexpr field::SpecTable<procedure::NodeTheme> Specs<procedure::NodeTheme>{
-    {&procedure::NodeTheme::GridSize, {.Min = 8, .Max = 128, .Digits = 0}},
-    {&procedure::NodeTheme::CoarseGridCells, {.Min = 2, .Max = 64}},
-    {&procedure::NodeTheme::MaxLabelCells, {.Min = 2, .Max = 64}},
-    {&procedure::NodeTheme::TitlePadding, {.Min = 0, .Max = 24, .Digits = 0}},
-    {&procedure::NodeTheme::LabelSpacing, {.Min = 0, .Max = 24, .Digits = 0}},
-    {&procedure::NodeTheme::ParameterIndent, {.Min = 0, .Max = 24, .Digits = 0}},
-    {&procedure::NodeTheme::SocketRadius, {.Min = 2, .Max = 12, .Digits = 1}},
-    {&procedure::NodeTheme::Rounding, {.Min = 0, .Max = 12, .Digits = 1}},
-    {&procedure::NodeTheme::WireWidth, {.Min = .5, .Max = 8, .Digits = 1}},
-    {&procedure::NodeTheme::WireCurving, {.Min = 0, .Max = 1, .Digits = 2}},
-    {&procedure::NodeTheme::BorderWidth, {.Min = .5, .Max = 4, .Digits = 1}},
-    {&procedure::NodeTheme::HighlightBorderWidth, {.Min = .5, .Max = 6, .Digits = 1}},
-    {&procedure::NodeTheme::OutlineWidth, {.Min = 0, .Max = 4, .Digits = 1}},
+    {&procedure::NodeTheme::Colors, {.Widget = FieldWidget::Color}},
 };

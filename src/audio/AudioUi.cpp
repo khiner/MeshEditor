@@ -16,8 +16,9 @@
 #include "selection/SelectionComponents.h"
 #include "ui/ChoiceCombo.h"
 #include "ui/FieldEdit.h"
-#include "ui/HelpMarker.h"
 #include "viewport/InteractionComponents.h"
+
+#include <format>
 
 using numeric::dvec3;
 
@@ -25,7 +26,6 @@ namespace fs = std::filesystem;
 using SurfaceSolveConfig = fastfem::SurfaceSolveConfig;
 using ModalSolverConfig = fastfem::SolverConfig;
 using TetConfig = fastfem::TetrahedralizationConfig;
-using FiniteCellConfig = fastfem::FiniteCellConfig;
 
 using std::ranges::to, std::ranges::max_element;
 using std::views::transform;
@@ -155,74 +155,28 @@ void DrawModalModelSettings(
     ui::ChoiceCombo("Presets", material.Name, materials::acoustic::All | transform(&AcousticMaterial::Name), std::identity{}, [&](const std::string &name) {
         action::Emit(action::audio::SetMaterialPreset{name});
     });
-    using Props = AcousticMaterialProperties;
-    ui::PatchEdit fm{material};
-    fm.Slider<&AcousticMaterial::Properties, &Props::Density>("Density (kg/m^3)");
-    fm.Slider<&AcousticMaterial::Properties, &Props::YoungModulus>("Young's modulus (Pa)", "%.3g", ImGuiSliderFlags_Logarithmic);
-    fm.Slider<&AcousticMaterial::Properties, &Props::PoissonRatio>("Poisson's ratio");
-    double coefficients[]{material.Properties.Alpha, material.Properties.Beta * 1e6};
-    ui::Gesture(InputScalarN("Rayleigh damping alpha / beta (1/s, µs)", ImGuiDataType_Double, coefficients, 2, nullptr, nullptr, "%.3g"), [&] {
-        constexpr auto &alpha = field::SpecOf<&Props::Alpha>, &beta = field::SpecOf<&Props::Beta>;
-        return action::PatchFieldsOf<&AcousticMaterial::Properties>(std::array{&Props::Alpha, &Props::Beta}, std::array{std::clamp(coefficients[0], alpha.Min, alpha.Max), std::clamp(coefficients[1] * 1e-6, beta.Min, beta.Max)});
-    });
-    MeshEditor::HelpMarker("Mass-proportional alpha primarily damps low frequencies. Stiffness-proportional beta primarily damps high frequencies.");
+    ui::DrawFields<AcousticMaterialProperties>(ui::PatchEdit{material}.Sub<&AcousticMaterial::Properties>());
 
     DrawContactSurfaceControls(r, e, surface, material);
 
     SeparatorText("Modes");
-    fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::NumModes>("Retained modes");
-    fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::NumFemModes>("FEM eigenpairs");
-    MeshEditor::HelpMarker("The eigensolver computes this many eigenpairs before filtering the retained frequency band and mode count.");
-    float min_freq = settings.Solve.Modal.MinModeFreq, max_freq = settings.Solve.Modal.MaxModeFreq;
-    ui::Gesture(DragFloatRange2("Frequency band (Hz)", &min_freq, &max_freq, 1.f, 20.f, 20000.f, "%.0f", "%.0f"), [&] {
-        return action::PatchFieldsOf<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal>(std::array{&ModalSolverConfig::MinModeFreq, &ModalSolverConfig::MaxModeFreq}, std::array{min_freq, max_freq});
-    });
-    fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::Tolerance>("Residual tolerance", "%.1e", ImGuiSliderFlags_Logarithmic);
-    fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::MaxRestarts>("Restart limit");
-    {
-        const bool had_fundamental = settings.Solve.Modal.FundamentalFreq.has_value();
-        bool enabled = had_fundamental;
-        if (Checkbox("Fundamental override", &enabled)) {
-            fs.Set<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::FundamentalFreq>(enabled ? std::optional{440.f} : std::nullopt);
-        }
-        if (had_fundamental) {
-            SameLine();
-            fs.Run<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal, &ModalSolverConfig::FundamentalFreq>([](std::optional<float> &fundamental) {
-                return SliderFloat("##fundamental", &*fundamental, 20.f, 20000.f, "%.0f Hz", ImGuiSliderFlags_Logarithmic);
-            });
-        }
-        MeshEditor::HelpMarker("Overrides the output fundamental. Without an override, an active impact recording supplies its estimated fundamental when available.");
-    }
+    ui::DrawFields<ModalSolverConfig>(fs.Sub<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Modal>());
 
     SeparatorText("Discretization");
-    auto discretization = int(settings.Discretization);
-    bool discretization_changed = RadioButton("Tet10", &discretization, int(fastfem::Discretization::Tet10));
-    SameLine();
-    discretization_changed |= RadioButton("Finite cell", &discretization, int(fastfem::Discretization::FiniteCell));
-    if (discretization_changed) fs.Set<&ModalSolveSettings::Discretization>(fastfem::Discretization(discretization));
-
+    fs.Draw<&ModalSolveSettings::Discretization>();
+    auto solve = fs.Sub<&ModalSolveSettings::Solve>();
     if (settings.Discretization == fastfem::Discretization::Tet10) {
-        SeparatorText("Tet10 mesh");
-        fs.Enum<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Tetrahedralization, &TetConfig::Refinement>();
-        MeshEditor::HelpMarker("None: basic tetrahedralization and repair. Quality: improve element shapes. Quality + resolution: also refine to the target resolution.");
-        fs.Run<&ModalSolveSettings::Solve, &SurfaceSolveConfig::SurfaceSimplificationRatio>([](float &ratio) {
-            constexpr const auto &limits = field::SpecOf<&SurfaceSolveConfig::SurfaceSimplificationRatio>;
-            float percent = ratio * 100;
-            if (!SliderFloat("Surface detail", &percent, float(limits.Min * 100), float(limits.Max * 100), "%.1f%%", ImGuiSliderFlags_AlwaysClamp)) return false;
-            ratio = percent / 100;
-            return true;
-        },
-                                                                                            /*delta_capable=*/true);
-        MeshEditor::HelpMarker("Target percentage of surface triangles to retain before refinement. 100% keeps the original mesh.");
-        if (settings.Solve.Tetrahedralization.Refinement == fastfem::TetRefinement::QualityAndResolution) {
-            fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Resolution>("Target resolution", nullptr, ImGuiSliderFlags_AlwaysClamp);
-            MeshEditor::HelpMarker("Target divisions along the object's longest scaled axis. Higher values request finer tetrahedra. Refines the surface triangles and tetrahedron volume together.");
-        }
-        fs.Run<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Tetrahedralization, &TetConfig::Holes>([](std::vector<dvec3> &holes) {
+        SeparatorText(field::ChainLabel<&SurfaceSolveConfig::Tetrahedralization>.c_str());
+        auto tet = solve.Sub<&SurfaceSolveConfig::Tetrahedralization>();
+        ui::DrawFields<TetConfig, &TetConfig::Holes>(tet);
+        solve.Draw<&SurfaceSolveConfig::SurfaceSimplificationRatio>();
+        if (settings.Solve.Tetrahedralization.Refinement == fastfem::TetRefinement::QualityAndResolution) solve.Draw<&SurfaceSolveConfig::Resolution>();
+        tet.Draw<&TetConfig::Holes>([](const char *label, std::vector<dvec3> &holes) {
+            BeginGroup();
             bool changed = false;
             for (size_t i = 0; i < holes.size(); ++i) {
                 PushID(int(i));
-                changed |= InputScalarN("Hole seed", ImGuiDataType_Double, &holes[i].x, 3);
+                changed |= InputScalarN(label, ImGuiDataType_Double, &holes[i].x, 3);
                 SameLine();
                 if (Button("Remove")) {
                     holes.erase(holes.begin() + i);
@@ -236,41 +190,24 @@ void DrawModalModelSettings(
                 holes.emplace_back();
                 changed = true;
             }
+            EndGroup();
             return changed;
         });
-        MeshEditor::HelpMarker("Tetrahedralization excludes the connected tetrahedral region containing each point, bounded by the input surface. Coordinates use scaled local space (m).");
     } else {
-        SeparatorText("Finite-cell grid");
-        fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::Resolution>("Target resolution", nullptr, ImGuiSliderFlags_AlwaysClamp);
-        MeshEditor::HelpMarker("Target divisions along the object's longest scaled axis. The other axes use the same target spacing.");
-        fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::CutDepth>();
-        fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::FictitiousScale>(nullptr, "%.1e", ImGuiSliderFlags_Logarithmic);
-        fs.Slider<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::PaddingCells>("Padding (cells)");
-        fs.Run<&ModalSolveSettings::Solve, &SurfaceSolveConfig::FiniteCell, &FiniteCellConfig::GridOffsetCells>([](dvec3 &offset) {
-            return InputScalarN("Grid offset (cells)", ImGuiDataType_Double, &offset.x, 3);
-        });
+        ui::DrawFields<SurfaceSolveConfig, &SurfaceSolveConfig::Modal, &SurfaceSolveConfig::Tetrahedralization, &SurfaceSolveConfig::SurfaceSimplificationRatio>(solve);
     }
 
     SeparatorText("Excitation vertices");
     const uint32_t num_vertices = GetMesh(r, mesh_entity).VertexCount();
     const bool has_excitable = r.all_of<SoundVertices>(e);
     const bool reuse = has_excitable && settings.CopySoundVertices;
-    if (has_excitable) {
-        PushID("ExcitationVertices");
-        int source = reuse ? 0 : 1;
-        bool source_changed = RadioButton("Reuse existing", &source, 0);
-        SameLine();
-        source_changed |= RadioButton("Evenly spaced", &source, 1);
-        PopID();
-        if (source_changed) fs.Set<&ModalSolveSettings::CopySoundVertices>(source == 0);
-        MeshEditor::HelpMarker("Reuse existing: Solve at the object's current excitation vertices.\nEvenly spaced: Solve at new positions spread over the mesh.");
-    }
+    if (has_excitable) fs.Draw<&ModalSolveSettings::CopySoundVertices>();
     if (reuse) BeginDisabled();
-    const uint32_t min_vertices = 1, max_vertices = num_vertices;
-    if (uint32_t v = reuse ? r.get<const SoundVertices>(e).Vertices.Count : std::clamp(settings.NumVertices, 1u, num_vertices);
-        SliderScalar("Count", ImGuiDataType_U32, &v, &min_vertices, &max_vertices)) {
-        fs.Set<&ModalSolveSettings::NumVertices>(v);
-    }
+    fs.Draw<&ModalSolveSettings::NumVertices>([&](const char *label, uint32_t &count) {
+        const uint32_t min_vertices = 1, max_vertices = num_vertices;
+        count = reuse ? r.get<const SoundVertices>(e).Vertices.Count : std::clamp(count, min_vertices, max_vertices);
+        return SliderScalar(label, ImGuiDataType_U32, &count, &min_vertices, &max_vertices);
+    });
     if (reuse) EndDisabled();
 }
 
@@ -381,9 +318,8 @@ void DrawObjectAudioControls(state::Scene &r, state::Entity viewport, state::Ent
 
         if (model == SoundVerticesModel::Modal) {
             TextUnformatted("Impact angle");
-            SameLine();
-            MeshEditor::HelpMarker("Strike direction relative to the surface.\nCenter hits perpendicular to the surface. Edge hits tangent to the surface.\nRight-click to recenter.");
             ImpulseJoystick(ImpulseAngle);
+            ui::Describe("Impact angle", "Strike direction relative to the surface, from perpendicular at the center to tangent at the edge. Right-click to recenter.");
         }
     }
 
@@ -467,9 +403,8 @@ void DrawObjectAudioControls(state::Scene &r, state::Entity viewport, state::Ent
 
     if (CollapsingHeader("Synthesis")) {
         ui::Edit fe{r, e};
-        fe.Slider<&ModalGain::Value>("Gain");
-        fe.Drag<&ModalTuning::FundamentalFreq>("Fundamental (Hz)");
-        fe.Slider<&ModalTuning::T60Scale>();
+        ui::DrawFields<ModalGain>(fe);
+        ui::DrawFields<ModalTuning>(fe);
     }
 
     const bool is_recording = recording && !recording->Complete();
@@ -495,17 +430,7 @@ void DrawObjectAudioControls(state::Scene &r, state::Entity viewport, state::Ent
 void DrawGlobalSynthControls(state::Scene &r, state::Entity viewport) {
     ui::Edit f{r, viewport};
     if (!r.view<const ModalModes>().empty() && CollapsingHeader("Modal synthesis", ImGuiTreeNodeFlags_DefaultOpen)) {
-        f.Slider<&ModalSoundControls::RenderThreads>();
-        MeshEditor::HelpMarker("Objects render independently, so a scene of many ringing ones scales on this.");
-        f.Slider<&ModalSoundControls::MaxImpacts>();
-        MeshEditor::HelpMarker("Cap on simultaneous in-flight contact pulses.");
-        f.Slider<&ModalSoundControls::ModalLevel>("Modal gain");
-        MeshEditor::HelpMarker("Gain on every modal object's resonator output.");
-        f.Slider<&ModalSoundControls::ClickGain>("Click");
-        MeshEditor::HelpMarker("Level of the rigid-body acceleration-noise click.");
-        f.Slider<&ModalSoundControls::MinContactExcitation>(nullptr, "%.3g", ImGuiSliderFlags_Logarithmic);
-        f.Slider<&ModalSoundControls::MinContactSpeed>();
-        MeshEditor::HelpMarker("A physics collision sounds only above both floors: the loudest mode its impulse starts ringing, and its approach speed.");
+        ui::DrawFields<ModalSoundControls, &ModalSoundControls::SampleGain>(f);
 
         DrawSurfaceSynthControls(r, viewport);
 
@@ -514,14 +439,12 @@ void DrawGlobalSynthControls(state::Scene &r, state::Entity viewport) {
         ui::ChoiceCombo("Material", striker.Material.Name, materials::acoustic::All | transform(&AcousticMaterial::Name), std::identity{}, [&](const std::string &name) {
             action::Emit(action::audio::SetMaterialPreset{name, true});
         });
-        f.Slider<&Striker::TipRadius>("Tip radius (m)");
-        f.Slider<&Striker::Length>("Length (m)");
+        ui::DrawFields<Striker, &Striker::Material>(f);
         Text("Mass: %.3g kg", StrikerMass(striker));
-        MeshEditor::HelpMarker("The mallet that strikes objects. A harder material or lighter capsule brightens the contact, and the tip radius sets its curvature.");
+        ui::Describe("Striker mass", "Mass of the capsule mallet that strikes objects. A harder material or lighter capsule brightens the contact.");
     }
     if (!r.view<const VertexSamples>().empty() && CollapsingHeader("Samples", ImGuiTreeNodeFlags_DefaultOpen)) {
-        f.Slider<&ModalSoundControls::SampleGain>();
-        MeshEditor::HelpMarker("Level of impact-sample playback.");
+        f.Draw<&ModalSoundControls::SampleGain>();
     }
 }
 
@@ -540,19 +463,21 @@ void DrawAudioDebug(const state::Scene &r) {
     Text("Objects: %zu, modes: %zu", bank.Entities.size(), bank.CoeffRe.size());
     Text("Impacts: %u / %u", m.ActiveImpacts.load(std::memory_order_relaxed), m.MaxImpacts.load(std::memory_order_relaxed));
     Text("Energy: %.3g J, peak %.3g J", m.ModalEnergy.load(std::memory_order_relaxed), m.PeakModalEnergy.load(std::memory_order_relaxed));
-    MeshEditor::HelpMarker("Mechanical energy standing in the mode banks. A passive scene loses it between strikes, so a peak that climbs while nothing strikes is a channel feeding the modes rather than damping them.");
+    ui::Describe("Modal energy", "Mechanical energy in the mode banks, in joules. A peak that rises between strikes means a channel is feeding the modes.");
 
     SeparatorText("Render");
     const auto share = m.RenderShare.load(std::memory_order_relaxed);
+    static constexpr const char *RenderHelp{"Render time per audio block as a share of the block's duration. Above 100% the device underruns."};
     Text("Block: %.2f ms (%.0f%% of budget)", m.RenderSeconds.load(std::memory_order_relaxed) * 1e3f, share * 100);
+    ui::Describe("Render block", RenderHelp);
     Text("Worst: %.0f%%", m.PeakRenderShare.load(std::memory_order_relaxed) * 100);
-    MeshEditor::HelpMarker("What a block costs against the time it has. Past 100% the device underruns.");
+    ui::Describe("Worst render block", RenderHelp);
 
     SeparatorText("Event queue");
     const auto queued = m.EventWrite.load(std::memory_order_relaxed) - m.EventRead.load(std::memory_order_acquire);
     Text("Queued: %u / %u", queued, ModalAudio::EventCapacity);
     Text("Dropped: %llu", m.EventsDropped);
-    MeshEditor::HelpMarker("Events the queue had no room for, each one a strike or contact report the bank never saw.");
+    ui::Describe("Dropped events", "Strike and contact events dropped because the queue was full");
 
     DrawSurfaceContactDebug(r);
 }

@@ -4,7 +4,7 @@
 
 namespace action::physics {
 // AddTrigger, RemoveTriggerNodes and SetTrigger target the active entity.
-// SetMotionType, SetColliderShape and SetMotion apply to their Target.
+// SetMotionType and SetColliderShape apply to their Target.
 struct SetMotionType {
     enum class Type : uint8_t {
         None,
@@ -15,13 +15,6 @@ struct SetMotionType {
     Type Value;
     Target Target{OnActive{}};
 };
-// Replaces the whole motion record.
-// Shared ownership bounds the action variant size.
-struct SetMotion {
-    std::unique_ptr<PhysicsMotion> Value;
-    Target Target{OnActive{}};
-};
-
 // Set `LockKind` when changing the collider-shape alternative.
 struct SetColliderShape {
     PhysicsShape Shape;
@@ -90,7 +83,7 @@ struct DeleteJointVecItem {
 };
 
 using Action = std::variant<
-    SetMotionType, SetMotion, SetColliderShape, AddTrigger, RemoveTriggerNodes, SetTrigger,
+    SetMotionType, SetColliderShape, AddTrigger, RemoveTriggerNodes, SetTrigger,
     AddPhysicsMaterial, AddCollisionSystem, AddCollisionFilter, AddJointDef,
     RenamePhysicsMaterial, RenameCollisionSystem, RenameCollisionFilter, RenameJointDef,
     ToggleFilterEntity,

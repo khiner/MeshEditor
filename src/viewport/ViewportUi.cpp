@@ -687,15 +687,11 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
 
                 const auto render_pbr_controls = [&]<typename T>(const char *id) {
                     PushID(id);
-                    using L = PBRViewportLighting;
                     const auto &lighting = r.get<const T>(viewport).Value;
-                    auto edit = ui::Edit{r, viewport}.template Sub<&T::Value>();
                     if (Button("Reset")) action::Emit(action::view::ResetPbrLighting{.Rendered = std::is_same_v<T, RenderedLighting>});
-                    edit.template Check<&L::UseSceneLights>("Scene lights");
-                    SameLine();
-                    edit.template Check<&L::UseSceneWorld>("Scene world");
+                    ui::DrawFields<PBRViewportLighting>(ui::Edit{r, viewport}.template Sub<&T::Value>());
                     if (lighting.UseSceneWorld) {
-                        if (r.all_of<ImageLight>(viewport)) ui::Edit{r, viewport}.Slider<&ImageLight::Intensity>();
+                        if (r.all_of<ImageLight>(viewport)) ui::Edit{r, viewport}.Draw<&ImageLight::Intensity>();
                     } else {
                         const auto hdris = GetHdriRefs(r);
                         if (BeginCombo("Environment", hdris.Names[hdris.ActiveIndex].c_str())) {
@@ -706,26 +702,19 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
                             }
                             EndCombo();
                         }
-                        edit.template Slider<&L::EnvIntensity>("Intensity");
-                        edit.template Slider<&L::EnvRotationDegrees>("Rotation", "%.1f deg");
                     }
-                    edit.template Slider<&L::BackgroundBlur>("Blur");
-                    edit.template Slider<&L::WorldOpacity>("World opacity");
-                    edit.template Check<&L::RealTransmission>("Real transmission");
-                    if (IsItemHovered()) SetTooltip("Sample transmission from a pre-rendered scene framebuffer instead of from the IBL.");
-                    edit.template Slider<&L::ExposureEV>("Exposure", "%.1f EV");
                     PopID();
                 };
 
                 if (WorkbenchShading(current_mode)) {
                     const bool wireframe = current_mode == ViewportShadingMode::Wireframe;
                     ui::Edit edit{r, viewport};
-                    if (wireframe) edit.Check<&ViewportDisplay::XRayWireframe>("##XRay");
-                    else edit.Check<&ViewportDisplay::XRaySolid>("##XRay");
+                    if (wireframe) edit.Draw<&ViewportDisplay::XRayWireframe>("##XRay");
+                    else edit.Draw<&ViewportDisplay::XRaySolid>("##XRay");
                     SameLine();
                     PushStyleVar(ImGuiStyleVar_Alpha, GetStyle().Alpha * (XRayFlag(settings) ? 1.f : 0.5f));
-                    if (wireframe) edit.Slider<&ViewportDisplay::XRayAlphaWireframe>("X-ray");
-                    else edit.Slider<&ViewportDisplay::XRayAlpha>("X-ray");
+                    if (wireframe) edit.Draw<&ViewportDisplay::XRayAlphaWireframe>("X-ray");
+                    else edit.Draw<&ViewportDisplay::XRayAlpha>("X-ray");
                     PopStyleVar();
                 }
 
@@ -898,12 +887,7 @@ void InteractOverlay(state::Scene &r, state::Entity viewport, FrameState &frame)
                 frame.OverlayControlsHovered = true;
                 TextUnformatted("Viewport overlays");
                 Separator();
-                ui::Edit f{r, viewport};
-                f.Check<&ViewportDisplay::ShowGrid>("Grid");
-                f.Check<&ViewportDisplay::ShowExtras>("Extras");
-                f.Check<&ViewportDisplay::ShowBones>("Bones");
-                f.Check<&ViewportDisplay::ShowOrigins>("Origins");
-                f.Check<&ViewportDisplay::ShowOutlineSelected>("Outline selected");
+                ui::DrawFields<ViewportOverlays>(ui::Edit{r, viewport}.Sub<&ViewportDisplay::Overlays>());
                 EndPopup();
             }
             PopStyleVar();

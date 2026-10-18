@@ -16,7 +16,7 @@ kernel void DepthPyramidReduceKernel(
     threadgroup float *tile [[threadgroup(0)]],
     device const BindlessSetImageWrite &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
     constant DepthPyramidReducePushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {

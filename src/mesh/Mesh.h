@@ -19,13 +19,6 @@ TrianglePoint ClosestPointOnTriangle(vec3 p, vec3 a, vec3 b, vec3 c);
 namespace he {
 constexpr uint32_t null{std::numeric_limits<uint32_t>::max()};
 
-constexpr uint8_t ElementMask(Element element) { return uint8_t(element); }
-constexpr bool ElementMaskContains(uint8_t mask, Element element) { return (mask & ElementMask(element)) != 0; }
-constexpr void SetElementMask(uint8_t &mask, Element element, bool enabled) {
-    if (enabled) mask |= ElementMask(element);
-    else mask &= ~ElementMask(element);
-}
-
 constexpr std::array Elements{Element::Vertex, Element::Edge, Element::Face};
 
 constexpr std::string_view label(Element element) {

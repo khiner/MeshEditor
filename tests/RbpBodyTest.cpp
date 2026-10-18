@@ -60,7 +60,7 @@ const suite Bodies = [] {
             const auto local = rbp::At({1, 1, 2}, rbp::QuatFromRotationVector({0, 0.35f, 0}));
             const auto shape = BuildRbpShape(world, plane, nullptr, vec3{-2, -1, 3}, local);
             expect(world.Shapes[shape].Kind == rbp::ShapePlane);
-            expect(Near(world.Shapes[shape].HalfExtents, rbp::float3{plane.SizeX, 0, 1.5f * plane.SizeZ}));
+            expect(Near(world.Shapes[shape].HalfExtents, rbp::float3{plane.SizeX.value_or(0), 0, 1.5f * plane.SizeZ.value_or(0)}));
             expect(Near(world.Shapes[shape].Normal, rbp::float3{0, -1, 0}));
             const auto floor = BuildRbpBody(world, std::array{shape}, Transform{}, nullptr);
             const auto cube = world.AddShape(BoxShape(rbp::float3{0.5f, 0.5f, 0.5f}));

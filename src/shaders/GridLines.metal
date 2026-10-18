@@ -16,7 +16,7 @@ vertex GridVaryings GridLinesVertex(
     uint vertex_id [[vertex_id]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
@@ -44,11 +44,11 @@ fragment OverlayTargets GridLinesFragment(
     GridVaryings in [[stage_in]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
-    constant ViewportThemeColors &colors = scene.Theme.Colors;
+    constant DerivedThemeColors &derived = scene.Theme.Derived;
     // Intersect this pixel with y = 0 directly.
     // Interpolating infinite triangle coordinates perturbs derivatives at triangle boundaries and across redraws.
     const float2 ndc = in.Position.xy / float2(view.ViewportSize) * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f);
@@ -79,8 +79,8 @@ fragment OverlayTargets GridLinesFragment(
     const float i_emph = GridLineIntensity(pos_3d, emph_scale, camera_xz, world_d);
 
     const float frac = fract(log_dist);
-    const float4 grid_color = float4(colors.GridLine);
-    const float4 emph_color = float4(colors.GridEmphasis);
+    const float4 grid_color = float4(derived.GridLine);
+    const float4 emph_color = float4(derived.GridEmphasis);
     const float4 fine_grid = float4(grid_color.rgb, i_fine * grid_color.a * (1.0f - frac));
     const float4 base_grid = float4(mix(grid_color.rgb, emph_color.rgb, 1.0f - frac), i_base * mix(grid_color.a, emph_color.a, 1.0f - frac));
     const float4 emph_grid = float4(emph_color.rgb, i_emph * emph_color.a);
@@ -88,7 +88,7 @@ fragment OverlayTargets GridLinesFragment(
 
     const float x_axis = 1.0f - smoothstep(0.0f, 1.5f, abs(pos_3d.z) / world_d.y);
     const float z_axis = 1.0f - smoothstep(0.0f, 1.5f, abs(pos_3d.x) / world_d.x);
-    const float3 axis_color = mix(float3(colors.GridAxisX), float3(colors.GridAxisZ), step(x_axis, z_axis));
+    const float3 axis_color = mix(float3(derived.GridAxisX), float3(derived.GridAxisZ), step(x_axis, z_axis));
 
     float4 color = BlendGrids(float4(axis_color, max(x_axis, z_axis)), grid);
     color.a *= 1.0f - pow(1.0f - abs(V.y), 3.0f);

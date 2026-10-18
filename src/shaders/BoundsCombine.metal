@@ -12,7 +12,7 @@ kernel void BoundsCombineKernel(
     threadgroup float3 *shared_max [[threadgroup(1)]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
     constant BoundsReducePushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {

@@ -6,10 +6,6 @@
 struct ViewportThemeColors {
     vec3 Background DEFAULT();
     vec4 Grid DEFAULT();
-    vec4 GridLine DEFAULT();
-    vec4 GridEmphasis DEFAULT();
-    vec3 GridAxisX DEFAULT();
-    vec3 GridAxisZ DEFAULT();
     vec3 Wire DEFAULT();
     vec3 WireEdit DEFAULT();
     vec3 ObjectActive DEFAULT();
@@ -27,11 +23,7 @@ struct ViewportThemeColors {
     vec3 FaceNormal DEFAULT();
     vec3 VertexNormal DEFAULT();
     vec3 BoneSolid DEFAULT();
-    vec3 BoneActive DEFAULT();
-    vec3 BoneActiveUnsel DEFAULT();
-    vec3 BoneSelect DEFAULT();
     vec3 BonePose DEFAULT();
     vec3 BonePoseActive DEFAULT();
-    vec3 BonePoseActiveUnsel DEFAULT();
     vec3 Transform DEFAULT();
 };

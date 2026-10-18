@@ -12,7 +12,7 @@ kernel void PosedMeshletBoundsKernel(
     uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
     constant PosedMeshletBoundsPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {

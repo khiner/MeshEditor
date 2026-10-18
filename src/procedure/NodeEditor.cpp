@@ -8,7 +8,6 @@
 #include "ui/ChoiceCombo.h"
 #include "ui/FieldEdit.h"
 #include "ui/InterfaceUi.h"
-#include "ui/TransformEdit.h"
 #include "viewport/FrameState.h"
 #include "viewport/InteractionComponents.h"
 
@@ -54,6 +53,73 @@ template<typename K> constexpr auto Title{field::detail::Spaced<field::fixed_str
 constexpr auto KindGroups{[]<typename... Ks>(action::TypeList<Ks...>) { return std::array{GroupOf<Ks>()...}; }(NodeKinds{})};
 constexpr auto KindTitles{[]<typename... Ks>(action::TypeList<Ks...>) { return std::array{Title<Ks>.c_str()...}; }(NodeKinds{})};
 
+template<typename K> constexpr const char *Help{};
+template<> constexpr const char *Help<Source>{"Emits the mesh's source geometry"};
+template<> constexpr const char *Help<Output>{"Receives the procedure's result. Double-click to show this output on the mesh."};
+template<> constexpr const char *Help<Join>{"Appends the second input's geometry to the first"};
+template<> constexpr const char *Help<Boolean>{"Combines two closed meshes by union, difference, or intersection"};
+template<> constexpr const char *Help<primitive::Plane>{"Generates a rectangle in the XZ plane, facing +Y"};
+template<> constexpr const char *Help<primitive::Circle>{"Generates a disc of triangles in the XZ plane, facing +Y"};
+template<> constexpr const char *Help<primitive::Cuboid>{"Generates a box centered on the origin"};
+template<> constexpr const char *Help<primitive::IcoSphere>{"Generates a sphere by subdividing an icosahedron"};
+template<> constexpr const char *Help<primitive::UVSphere>{"Generates a sphere of slices around the Y axis and stacks along it"};
+template<> constexpr const char *Help<primitive::Torus>{"Generates a torus around the Y axis"};
+template<> constexpr const char *Help<primitive::Cylinder>{"Generates a capped cylinder along the Y axis, centered on the origin"};
+template<> constexpr const char *Help<primitive::Cone>{"Generates a capped cone along the Y axis, centered on the origin"};
+template<> constexpr const char *Help<action::mesh::Delete>{"Deletes the selected vertices, edges, or faces"};
+template<> constexpr const char *Help<action::mesh::Merge>{"Merges the selected vertices into one, or merges nearby pairs"};
+template<> constexpr const char *Help<action::mesh::Extrude>{"Extrudes the selected elements in place, joined to the geometry they came from"};
+template<> constexpr const char *Help<action::mesh::Duplicate>{"Duplicates the selected faces in place onto copied vertices"};
+template<> constexpr const char *Help<action::mesh::Split>{"Disconnects the selected faces from the unselected geometry around them"};
+template<> constexpr const char *Help<action::mesh::Dissolve>{"Removes the selected elements and joins the faces around them"};
+template<> constexpr const char *Help<action::mesh::Subdivide>{"Cuts the selected edges and splits their faces into smaller faces"};
+template<> constexpr const char *Help<action::mesh::Triangulate>{"Splits the selected faces into triangles"};
+template<> constexpr const char *Help<action::mesh::TrisToQuads>{"Joins pairs of selected triangles into quads"};
+template<> constexpr const char *Help<action::mesh::Poke>{"Fans each selected face around a new center vertex"};
+template<> constexpr const char *Help<action::mesh::FlipNormals>{"Reverses the winding and normals of the selected faces"};
+template<> constexpr const char *Help<action::mesh::EdgeSplit>{"Splits the mesh along the selected edges, disconnecting the faces on either side"};
+template<> constexpr const char *Help<action::mesh::Inset>{"Insets the selected faces, as one region or each face on its own"};
+template<> constexpr const char *Help<action::mesh::Solidify>{"Thickens the selected faces into a shell, with a rim along the region boundary"};
+template<> constexpr const char *Help<action::mesh::Wireframe>{"Builds solid struts along the edges of the selected faces"};
+template<> constexpr const char *Help<action::mesh::Bevel>{"Bevels the selected edges or vertices"};
+template<> constexpr const char *Help<action::mesh::SmoothVertices>{"Moves the selected vertices toward the mean of their edge neighbors"};
+template<> constexpr const char *Help<action::mesh::ShrinkFatten>{"Moves the selected vertices along their normals"};
+template<> constexpr const char *Help<action::mesh::Randomize>{"Offsets the selected vertices by repeatable random amounts"};
+template<> constexpr const char *Help<action::mesh::Spin>{"Extrudes the selection in steps around an axis"};
+template<> constexpr const char *Help<action::mesh::ExtrudeRepeat>{"Extrudes the selection repeatedly along an offset"};
+template<> constexpr const char *Help<action::mesh::Bisect>{"Cuts the mesh along a plane and deletes the faces on the cleared sides"};
+template<> constexpr const char *Help<action::mesh::Symmetrize>{"Mirrors one side of the mesh onto the other across an axis plane through the mesh origin"};
+template<> constexpr const char *Help<action::mesh::FillHoles>{"Fills boundary loops with faces"};
+template<> constexpr const char *Help<action::mesh::ConvexHull>{"Builds the convex hull of the selected vertices"};
+template<> constexpr const char *Help<action::mesh::Decimate>{"Reduces the selected region's triangle count by collapsing edges"};
+template<> constexpr const char *Help<action::mesh::RecalculateNormals>{"Makes the selected faces' normals point consistently outside or inside"};
+template<> constexpr const char *Help<action::mesh::Rip>{"Splits the faces along the selected edges"};
+template<> constexpr const char *Help<TransformElements>{"Moves, rotates, and scales the selected vertices around a pivot"};
+template<> constexpr const char *Help<Position>{"Emits each vertex's position"};
+template<> constexpr const char *Help<Normal>{"Emits each vertex's or face's normal"};
+template<> constexpr const char *Help<Index>{"Emits each element's index in its domain, counting live elements only"};
+template<> constexpr const char *Help<NamedAttribute>{"Emits the values of the attribute with the given name and type"};
+template<> constexpr const char *Help<VectorMath>{"Applies a vector operation to A and B per element"};
+template<> constexpr const char *Help<FloatMath>{"Applies a float operation to A and B per element"};
+template<> constexpr const char *Help<Compare>{"Emits the result of comparing A to B per element"};
+template<> constexpr const char *Help<BooleanMath>{"Applies a logical operation to A and B per element"};
+template<> constexpr const char *Help<StoreNamedAttribute>{"Writes the Value input to the named attribute of the geometry"};
+template<> constexpr const char *Help<SetPosition>{"Sets or offsets the selected vertices' positions from a vector attribute"};
+template<> constexpr const char *Help<MeshToPoints>{"Emits the input's vertices as points"};
+template<> constexpr const char *Help<InstanceOnPoints>{"Places an instance of the second input at each point of the first"};
+template<> constexpr const char *Help<RealizeInstances>{"Emits a copy of the instance geometry for each instance, placed by its transform"};
+template<> constexpr const char *Help<ObjectInfo>{"Emits another object's mesh in that mesh's local space"};
+template<> constexpr const char *Help<FloatValue>{"Emits a constant float"};
+template<> constexpr const char *Help<IntegerValue>{"Emits a constant unsigned integer"};
+template<> constexpr const char *Help<BooleanValue>{"Emits a constant boolean"};
+template<> constexpr const char *Help<VectorValue>{"Emits a constant vector"};
+template<> constexpr const char *Help<TransformGeometry>{"Moves, rotates, and scales the whole geometry about the mesh origin"};
+template<> constexpr const char *Help<RotationValue>{"Emits a constant rotation"};
+constexpr auto KindHelp{[]<typename... Ks>(action::TypeList<Ks...>) { return std::array{Help<Ks>...}; }(NodeKinds{})};
+static_assert(std::ranges::none_of(KindHelp, [](const char *help) { return help == nullptr; }), "Every node kind needs a Help sentence.");
+
+constexpr const char *FaultTexts[]{"The selection does not fit this operation.", "A parameter is invalid.", "An attribute input is missing or has the wrong type or domain.", "An input mesh is not a closed surface.", "The boolean produced no geometry.", "Geometry cannot be retrieved from the edited object."};
+
 constexpr const char *SocketLabels[]{"Geometry", "Selection", "Attribute", "Instances", "Value"};
 const char *LabelOf(Socket socket) { return socket.Name ? socket.Name : SocketLabels[uint8_t(socket.Type)]; }
 constexpr vec4 C::*TypeColors[]{&C::FloatSocket, &C::MixedSocket, &C::VectorSocket, &C::RotationSocket, &C::IntegerSocket, &C::BooleanSocket};
@@ -62,6 +128,54 @@ vec4 SocketColor(const C &colors, Socket socket) {
     if (socket.Type == SocketType::Instances) return colors.InstancesSocket;
     return std::has_single_bit(socket.Types) ? colors.*TypeColors[std::countr_zero(socket.Types)] : colors.MixedSocket;
 }
+
+constexpr const char *AttributeTypeNames[]{"Float", "2D Vector", "Vector", "Rotation", "Integer", "Boolean"};
+static_assert(std::size(AttributeTypeNames) == AttributeTypeCount);
+std::array<std::string, 512> SocketTypeTexts;
+// A socket's direction and attribute types, such as "Input, Float or Vector", built once per direction and types mask.
+const char *SocketTypeText(Socket socket) {
+    const bool input = socket.Direction == SocketDirection::In;
+    if (socket.Types == 0u) {
+        if (socket.Type == SocketType::Instances) return input ? "Input, Instances" : "Output, Instances";
+        return input ? "Input, Geometry" : "Output, Geometry";
+    }
+    auto &text = SocketTypeTexts[(input ? 0u : 256u) + socket.Types];
+    if (!text.empty()) return text.c_str();
+    text = input ? "Input, " : "Output, ";
+    if (socket.Types == AnyType) {
+        text += "any type";
+        return text.c_str();
+    }
+    for (uint32_t types = socket.Types; types != 0u;) {
+        text += AttributeTypeNames[std::countr_zero(types)];
+        types &= types - 1u;
+        if (types != 0u) text += std::has_single_bit(types) ? " or " : ", ";
+    }
+    return text.c_str();
+}
+
+// The help of the parameter field behind each socket of kind K, or null for a fixed socket.
+template<typename K> constexpr const char *FieldHelp(Socket socket) {
+    const char *help{};
+    if constexpr (field::Walkable<K>) {
+        K value{};
+        field::ForEach(value, [&]<size_t I>(auto &member, std::integral_constant<size_t, I>) {
+            using F = std::remove_cvref_t<decltype(member)>;
+            if (socket.Field != I) return;
+            help = Spec<K, I>.Help;
+            if constexpr (detail::TypesOf<F>() == 0u && field::Walkable<F>) {
+                if (socket.Member != NoField && Specs<F>.ByIndex[socket.Member].Help) help = Specs<F>.ByIndex[socket.Member].Help;
+            }
+        });
+    }
+    return help;
+}
+// Each socket's help, in Sockets order.
+constexpr auto SocketHelps{[]<typename... Ks>(action::TypeList<Ks...>) {
+    std::array<const char *, Sockets.size()> helps{};
+    (std::ranges::transform(detail::SocketsOf<Ks>(), helps.begin() + SocketFirst[KindOf<Ks>], FieldHelp<Ks>), ...);
+    return helps;
+}(NodeKinds{})};
 
 ImVec2 Im(vec2 v) { return {v.x, v.y}; }
 using ui::U32;
@@ -72,11 +186,11 @@ void DrawSocket(ImDrawList &draw, const NodeTheme &theme, ImVec2 at, float radiu
     if (socket.Type == SocketType::Attribute || socket.Type == SocketType::Selection) {
         const float r = radius * 1.2f;
         draw.AddQuadFilled({at.x, at.y - r}, {at.x + r, at.y}, {at.x, at.y + r}, {at.x - r, at.y}, fill);
-        draw.AddQuad({at.x, at.y - r}, {at.x + r, at.y}, {at.x, at.y + r}, {at.x - r, at.y}, outline, theme.OutlineWidth);
+        draw.AddQuad({at.x, at.y - r}, {at.x + r, at.y}, {at.x, at.y + r}, {at.x - r, at.y}, outline, theme.Sizes.OutlineWidth);
         return;
     }
     draw.AddCircleFilled(at, radius, fill);
-    draw.AddCircle(at, radius, outline, 0, theme.OutlineWidth);
+    draw.AddCircle(at, radius, outline, 0, theme.Sizes.OutlineWidth);
 }
 
 // A node shows inputs down its left edge and outputs down its right, one per cell row under a one-cell title.
@@ -86,7 +200,7 @@ uint32_t InputRow(uint16_t kind, uint16_t socket, bool expanded) { return expand
 uint32_t InputRows(uint16_t kind, bool expanded) { return expanded ? InputCount[kind] : std::min<uint32_t>(InputCount[kind], ParameterRange(kind).first + 1u); }
 
 // A grid cell's side in canvas points.
-float CellOf(const NodeTheme &theme) { return theme.FollowFrameHeight ? GetFrameHeight() : theme.GridSize; }
+float CellOf(const NodeTheme &theme) { return theme.Sizes.Cell.FollowFrameHeight ? GetFrameHeight() : theme.Sizes.Cell.Points; }
 uint32_t CellsOf(float cell, float points) { return std::max(1u, uint32_t(std::ceil(points / cell))); }
 
 // A node's cells: its top left and size, and whether it has inputs and outputs, which keep a free cell beside them for wires.
@@ -102,10 +216,10 @@ Box BoxOf(const NodeTheme &theme, float cell, uint16_t kind, bool expanded) {
     const auto [first, end] = ParameterRange(kind);
     const uint32_t inputs = InputCount[kind], outputs = uint32_t(sockets.size()) - inputs;
     const auto label_cells = [&](uint16_t s) {
-        const float indent = s >= first && s < end ? theme.ParameterIndent : 0.f;
-        return std::min(CellsOf(cell, theme.SocketRadius + theme.LabelSpacing * 2.f + indent + CalcTextSize(LabelOf(sockets[s])).x), uint32_t(theme.MaxLabelCells));
+        const float indent = s >= first && s < end ? theme.Sizes.ParameterIndent : 0.f;
+        return std::min(CellsOf(cell, theme.Sizes.SocketRadius + theme.Sizes.LabelSpacing * 2.f + indent + CalcTextSize(LabelOf(sockets[s])).x), uint32_t(theme.Sizes.MaxLabelCells));
     };
-    uint32_t width = CellsOf(cell, CalcTextSize(KindTitles[kind]).x + theme.TitlePadding * 2.f);
+    uint32_t width = CellsOf(cell, CalcTextSize(KindTitles[kind]).x + theme.Sizes.TitlePadding * 2.f);
     for (uint32_t row = 0u; row < std::max(inputs, outputs); ++row) {
         width = std::max(width, (row < inputs ? label_cells(uint16_t(row)) : 0u) + (row < outputs ? label_cells(uint16_t(inputs + row)) : 0u));
     }
@@ -157,7 +271,7 @@ ImVec2 SocketAt(const Graph &graph, uint32_t node, uint16_t socket) {
 }
 ImRect TrayRect(const Graph &graph, uint32_t node) {
     const auto [first, end] = ParameterRange(graph.Procedure.Nodes[node].Kind);
-    const float reach = graph.Theme.SocketRadius * 1.2f * graph.Zoom + 3.f, row = graph.Step;
+    const float reach = graph.Theme.Sizes.SocketRadius * 1.2f * graph.Zoom + 3.f, row = graph.Step;
     const auto at = SocketAt(graph, node, first);
     return {{at.x - reach, at.y - row * .5f}, {at.x + reach, at.y + (float(end - first) - .5f) * row}};
 }
@@ -211,7 +325,7 @@ void ForEachWire(const Graph &graph, auto &&f) {
     const auto &procedure = graph.Procedure;
     for (uint32_t n = 0u, slot = 0u; n < procedure.Nodes.size(); ++n) {
         for (uint16_t i = 0u; i < InputCount[procedure.Nodes[n].Kind]; ++i, ++slot) {
-            if (const auto link = procedure.Inputs[slot]; link.FromNode != NoNode) f(WireOf(SocketAt(graph, link.FromNode, link.FromSocket), SocketAt(graph, n, i), graph.Theme.WireCurving), link, n, i);
+            if (const auto link = procedure.Inputs[slot]; link.FromNode != NoNode) f(WireOf(SocketAt(graph, link.FromNode, link.FromSocket), SocketAt(graph, n, i), graph.Theme.Sizes.WireCurving), link, n, i);
         }
     }
 }
@@ -228,7 +342,7 @@ struct Hit {
 };
 // The expanded node comes first, then sockets before node bodies, the last drawn node first, and links come last.
 Hit HitTest(const Graph &graph, ImVec2 mouse) {
-    const float reach = std::max(graph.Theme.SocketRadius * graph.Zoom, 4.f) + 3.f;
+    const float reach = std::max(graph.Theme.Sizes.SocketRadius * graph.Zoom, 4.f) + 3.f;
     const auto sockets = [&](uint32_t n) -> std::optional<Hit> {
         const auto kind = graph.Procedure.Nodes[n].Kind;
         const auto [first, end] = ParameterRange(kind);
@@ -650,6 +764,38 @@ void DrawPortPicker(NodesWindow &window, state::Entity mesh_entity, const Geomet
     EndPopup();
 }
 
+void RecordHover(const state::Scene &r, const NodesWindow &window, const GeometryProcedure &procedure, const Hit &hit) {
+    if (hit.Type == HitType::None) return;
+    const auto [entity, kind] = procedure.Nodes[hit.Node];
+    if (hit.Type == HitType::Node) {
+        const auto *error = r.try_get<const NodeError>(entity);
+        ui::Hovered = {.Label = KindTitles[kind], .Path = GroupNames[uint8_t(KindGroups[kind])], .Type = KindTitles[kind], .Help = KindHelp[kind], .Status = error ? FaultTexts[uint8_t(error->Fault)] : nullptr};
+    } else if (hit.Type == HitType::Parameters) {
+        ui::Hovered = {.Label = "Parameters", .Path = KindTitles[kind], .Help = "Hover to show the node's parameter sockets. Drop a wire here to link it to a compatible parameter."};
+    } else if (hit.Type == HitType::Socket) {
+        const auto socket = KindSockets(kind)[hit.Socket];
+        const bool held = window.DragNode == hit.Node && window.DragSocket == hit.Socket;
+        const bool dimmed = window.Drag == NodeDrag::Wire && !held && !Accepts(procedure, window.DragNode, window.DragSocket, hit.Node, hit.Socket);
+        const bool linked = socket.Direction == SocketDirection::In && IsLinked(procedure, hit.Node, hit.Socket);
+        ui::Hovered = {
+            .Label = LabelOf(socket),
+            .Path = KindTitles[kind],
+            .Type = SocketTypeText(socket),
+            .Help = SocketHelps[SocketFirst[kind] + hit.Socket],
+            .Status = dimmed ? "Cannot link with the held wire" : linked ? "Linked" :
+                                                                           nullptr,
+        };
+    } else {
+        const auto link = procedure.Inputs[InputFirst(procedure, hit.Node) + hit.Socket];
+        ui::Hovered = {
+            .Label = "Link",
+            .Path = KindTitles[kind],
+            .Type = SocketTypeText(KindSockets(procedure.Nodes[link.FromNode].Kind)[link.FromSocket]),
+            .Help = "Drag the link's input end. Drop it on an output to relink it, or on empty canvas to unlink it.",
+        };
+    }
+}
+
 void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, const NodeTheme &theme, state::Entity mesh_entity, const GeometryProcedure &procedure, bool interactive) {
     const auto &io = GetIO();
     const auto &nodes = procedure.Nodes;
@@ -688,6 +834,7 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
     const float cell = CellOf(theme);
     const auto graph = GraphOf(r, procedure, theme, origin + Im(canvas.Offset), cell, canvas.Zoom, window.Expanded);
     const auto hit = window.Hovered ? HitTest(graph, mouse) : Hit{};
+    if (window.Drag == NodeDrag::None || window.Drag == NodeDrag::Wire) RecordHover(r, window, procedure, hit);
     const auto selected = SelectedNodes(r, procedure);
     // A held node inserts into a link while it is the sole selected node.
     const bool holding = (window.Drag == NodeDrag::Move && window.Moved) || (window.Drag == NodeDrag::Grab && window.DragNode != NoNode);
@@ -707,7 +854,7 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
     draw.AddRectFilled(origin, end, U32(colors.Background));
     // A line at every cell, coarse at every CoarseGridCells cells from cell zero.
     const auto grid = U32(colors.Grid), coarse_grid = U32(colors.CoarseGrid);
-    const auto coarse = int32_t(std::max<uint8_t>(theme.CoarseGridCells, 1u));
+    const auto coarse = int32_t(std::max<uint8_t>(theme.Sizes.CoarseGridCells, 1u));
     for (auto i = int32_t(std::floor(-canvas.Offset.x / graph.Step)); graph.Origin.x + float(i) * graph.Step < end.x; ++i) {
         const float x = graph.Origin.x + float(i) * graph.Step;
         draw.AddLine({x, origin.y}, {x, end.y}, i % coarse == 0 ? coarse_grid : grid);
@@ -716,32 +863,28 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
         const float y = graph.Origin.y + float(i) * graph.Step;
         draw.AddLine({origin.x, y}, {end.x, y}, i % coarse == 0 ? coarse_grid : grid);
     }
-    const float thickness = std::max(theme.WireWidth * zoom, 1.f);
+    const float thickness = std::max(theme.Sizes.WireWidth * zoom, 1.f);
     ForEachWire(graph, [&](const Wire &wire, SocketLink link, uint32_t node, uint16_t input) {
         const bool lit = (window.Drag == NodeDrag::None && hit.Type == HitType::Link && hit.Node == node && hit.Socket == input) || (target && target->ToNode == node && target->ToSocket == input);
         const auto color = lit ? colors.WireHighlight : SocketColor(colors, KindSockets(nodes[link.FromNode].Kind)[link.FromSocket]);
         draw.AddBezierCubic(wire[0], wire[1], wire[2], wire[3], U32(color), thickness);
     });
-    // Draw node text at the zoomed font size, and show a truncated label's full text in a tooltip at the normal size.
+    // Draw node text at the zoomed font size.
     PushFont(nullptr, GetStyle().FontSizeBase * zoom);
     const auto font_size = GetFontSize();
-    const float inset = (theme.SocketRadius + theme.LabelSpacing) * zoom, spacing = theme.LabelSpacing * zoom, label_reach = float(theme.MaxLabelCells) * graph.Step;
-    const char *tooltip = nullptr;
+    const float inset = (theme.Sizes.SocketRadius + theme.Sizes.LabelSpacing) * zoom, spacing = theme.Sizes.LabelSpacing * zoom, label_reach = float(theme.Sizes.MaxLabelCells) * graph.Step;
     // Draw the label from the box's left, or against its right when `right` fits, with an ellipsis past the box.
     const auto draw_label = [&](ImVec2 min, ImVec2 max, const char *text, vec4 color, bool right) {
-        const float width = CalcTextSize(text).x;
-        const bool overflows = width > max.x - min.x;
-        if (right && !overflows) min.x = max.x - width;
+        if (const float width = CalcTextSize(text).x; right && width <= max.x - min.x) min.x = max.x - width;
         PushStyleColor(ImGuiCol_Text, ImVec4{color.x, color.y, color.z, color.w});
         RenderTextEllipsis(&draw, min, max, max.x, text, nullptr, nullptr);
         PopStyleColor();
-        if (overflows && window.Hovered && IsMouseHoveringRect(min, max)) tooltip = text;
     };
     const auto draw_node = [&](uint32_t n) {
         const auto [entity, kind] = nodes[n];
         const auto [min, max] = RectOf(graph, graph.Boxes[n]);
         const bool expanded = n == graph.Expanded;
-        const float rounding = theme.Rounding * zoom, pad = theme.TitlePadding * zoom;
+        const float rounding = theme.Sizes.Rounding * zoom, pad = theme.Sizes.TitlePadding * zoom;
         draw.AddRectFilled(min, max, U32(expanded ? vec4{colors.Node.x, colors.Node.y, colors.Node.z, 1.f} : colors.Node), rounding);
         draw.AddRectFilled(min, {max.x, min.y + graph.Step}, U32(n == procedure.OutputNode ? colors.OutputNodeTitle : colors.*GroupColors[uint8_t(KindGroups[kind])]), rounding, ImDrawFlags_RoundTop);
         draw_label({min.x + pad, min.y + (graph.Step - font_size) * .5f}, {max.x - pad, min.y + (graph.Step + font_size) * .5f}, KindTitles[kind], colors.Title, false);
@@ -754,12 +897,12 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
         const auto border = active ? colors.Active : is_selected ? colors.Selected :
             erring                                               ? colors.Error :
                                                                    colors.Border;
-        draw.AddRect(min, max, U32(border), rounding, erring || active || is_selected ? theme.HighlightBorderWidth : theme.BorderWidth, ImDrawFlags_StrokeCenter);
+        draw.AddRect(min, max, U32(border), rounding, erring || active || is_selected ? theme.Sizes.HighlightBorderWidth : theme.Sizes.BorderWidth, ImDrawFlags_StrokeCenter);
         if (erring && (active || is_selected)) draw.AddRect(min + ImVec2{3.f, 3.f}, max - ImVec2{3.f, 3.f}, U32(colors.Error), rounding, 1.f);
         if (expanded) {
             const auto tray = TrayRect(graph, n);
             draw.AddRectFilled(tray.Min, tray.Max, U32(colors.Tray), rounding);
-            draw.AddRect(tray.Min, tray.Max, U32(colors.Outline), rounding, theme.OutlineWidth);
+            draw.AddRect(tray.Min, tray.Max, U32(colors.Outline), rounding, theme.Sizes.OutlineWidth);
         }
         for (uint16_t s = 0u; s < uint16_t(sockets.size()); ++s) {
             const bool parameter = s >= first && s < end_parameter;
@@ -768,11 +911,11 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
             const bool held = wiring && window.DragNode == n && window.DragSocket == s;
             const bool dimmed = wiring && !held && !Accepts(procedure, window.DragNode, window.DragSocket, n, s);
             const bool hovered = hit.Type == HitType::Socket && hit.Node == n && hit.Socket == s && !dimmed;
-            DrawSocket(draw, theme, at, theme.SocketRadius * zoom, sockets[s], dimmed ? colors.Dimmed : SocketColor(colors, sockets[s]), hovered);
+            DrawSocket(draw, theme, at, theme.Sizes.SocketRadius * zoom, sockets[s], dimmed ? colors.Dimmed : SocketColor(colors, sockets[s]), hovered);
             const auto color = dimmed ? colors.DimmedLabel : parameter ? colors.ParameterLabel :
                                                                          colors.Label;
             const float top = at.y - font_size * .5f, bottom = at.y + font_size * .5f;
-            if (s < InputCount[kind]) draw_label({at.x + inset + (parameter ? theme.ParameterIndent * zoom : 0.f), top}, {std::min(at.x + label_reach, max.x) - spacing, bottom}, LabelOf(sockets[s]), color, false);
+            if (s < InputCount[kind]) draw_label({at.x + inset + (parameter ? theme.Sizes.ParameterIndent * zoom : 0.f), top}, {std::min(at.x + label_reach, max.x) - spacing, bottom}, LabelOf(sockets[s]), color, false);
             else draw_label({std::max(at.x - label_reach, min.x) + spacing, top}, {at.x - inset, bottom}, LabelOf(sockets[s]), color, true);
         }
         if (first < end_parameter && !expanded) {
@@ -783,10 +926,10 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
             const auto color = dimmed ? colors.Dimmed : hovered ? colors.Hovered :
                 linked.empty()                                  ? colors.Chevron :
                                                                   colors.ChevronLinked;
-            const float chevron = theme.SocketRadius * zoom;
+            const float chevron = theme.Sizes.SocketRadius * zoom;
             const ImVec2 a{at.x - chevron * .7f, at.y - chevron}, b{at.x - chevron * .7f, at.y + chevron}, c{at.x + chevron * .9f, at.y};
             draw.AddTriangleFilled(a, c, b, U32(color));
-            draw.AddTriangle(a, c, b, U32(colors.Outline), theme.OutlineWidth);
+            draw.AddTriangle(a, c, b, U32(colors.Outline), theme.Sizes.OutlineWidth);
             std::string label;
             for (const auto socket : linked) label += std::string{label.empty() ? "" : ", "} + socket.Name;
             if (label.empty()) label = "Parameters";
@@ -798,12 +941,11 @@ void DrawCanvas(const state::Scene &r, FrameState &frame, NodesWindow &window, c
     }
     if (graph.Expanded != NoNode) draw_node(graph.Expanded);
     PopFont();
-    if (tooltip) SetTooltip("%s", tooltip);
-    if (target) draw.AddCircleFilled(target->At, theme.SocketRadius * zoom, U32(colors.InsertMarker));
+    if (target) draw.AddCircleFilled(target->At, theme.Sizes.SocketRadius * zoom, U32(colors.InsertMarker));
     if (wiring) {
         const auto socket = SocketAt(graph, window.DragNode, window.DragSocket);
         const auto held = KindSockets(nodes[window.DragNode].Kind)[window.DragSocket];
-        const auto wire = held.Direction == SocketDirection::Out ? WireOf(socket, mouse, theme.WireCurving) : WireOf(mouse, socket, theme.WireCurving);
+        const auto wire = held.Direction == SocketDirection::Out ? WireOf(socket, mouse, theme.Sizes.WireCurving) : WireOf(mouse, socket, theme.Sizes.WireCurving);
         draw.AddBezierCubic(wire[0], wire[1], wire[2], wire[3], U32(SocketColor(colors, held)), thickness);
     }
     if (window.Drag == NodeDrag::Box) {
@@ -847,62 +989,70 @@ void NameField(NodesWindow &window, state::Entity node, const char *label, const
     if (IsItemDeactivatedAfterEdit() && interactive) action::Emit(action::nodes::SetAttributeName{node, std::string{window.NameEdit.data()}});
 }
 
-bool ReadsLink(const std::vector<Socket> &linked, uint8_t field, uint8_t member = NoField) {
-    return std::ranges::any_of(linked, [&](Socket socket) { return socket.Carries(field, member); });
+template<auto M, auto... Nested>
+bool ReadsLink(const std::vector<Socket> &linked) {
+    const auto member = [] {
+        if constexpr (sizeof...(Nested) == 0) return NoField;
+        else return uint8_t(field::IndexOf<field::detail::First<Nested...>>);
+    }();
+    return std::ranges::any_of(linked, [&](Socket socket) { return socket.Carries(uint8_t(field::IndexOf<M>), member); });
 }
 
-// Stage a parameter edit at its byte offset within the node component, disabled while a link supplies the value.
-template<typename K, typename F>
-bool EditParameter(state::Scene &r, state::Entity node, uint16_t offset, const F &value, bool reads_link, bool delta_capable, auto &&widget) {
-    BeginDisabled(reads_link);
-    const bool changed = ui::detail::RunField(r, node, ChannelTarget{}, value, widget, /*selection=*/false, delta_capable && action::DeltaField<F>, [&](action::Target, const F &v) {
-        action::Emit(action::Update<F>{node, state::Key<K>(), offset, v}, action::Phase::Stage);
-    });
-    EndDisabled();
-    if (reads_link) SetItemTooltip("Linked");
-    return changed;
-}
+template<typename F>
+concept LeafParameter = std::same_as<F, AttributeName> || std::same_as<F, state::Entity>;
 
-template<typename K, typename T>
-struct NestedEdit : ui::FieldWidgets<NestedEdit<K, T>> {
+// Edits a node's parameter fields through Update actions at their byte offsets in the node component.
+template<typename K, auto... Prefix>
+struct ParameterEdit : ui::FieldWidgets<ParameterEdit<K, Prefix...>, Prefix...> {
     state::Scene &R;
+    NodesWindow &Window;
     state::Entity Node;
-    const T &Value;
-    uint16_t Base;
-    uint8_t Field;
+    const K &Value;
     const std::vector<Socket> &Linked;
+    bool Interactive;
+    const char *Status;
+
+    template<auto... More>
+    ParameterEdit<K, Prefix..., More...> Sub() const { return {{}, R, Window, Node, Value, Linked, Interactive, nullptr}; }
+
+    template<auto... Ms>
+    auto Read() const { return ui::ReadChain<Prefix..., Ms...>(Value); }
 
     template<auto... Ms, typename Widget>
     bool Run(Widget widget, bool delta_capable = false) {
-        const bool reads_link = ReadsLink(Linked, Field, uint8_t(field::IndexOf<action::detail::last_v<Ms...>>));
-        return EditParameter<K, action::detail::last_field<Ms...>>(R, Node, uint16_t(Base + action::detail::FieldOffset<Ms...>()), ui::ReadChain<Ms...>(Value), reads_link, delta_capable, widget);
+        using F = action::detail::last_field<Prefix..., Ms...>;
+        const bool reads_link = ReadsLink<Prefix..., Ms...>(Linked);
+        Status = reads_link ? "Linked" : nullptr;
+        BeginDisabled(reads_link);
+        const bool changed = ui::detail::RunField(R, Node, ChannelTarget{}, Read<Ms...>(), widget, /*selection=*/false, delta_capable && action::DeltaField<F>, [&](action::Target, const F &v) {
+            action::Emit(action::Update<F>{Node, state::Key<K>(), action::detail::FieldOffset<Prefix..., Ms...>(), v}, action::Phase::Stage);
+        });
+        EndDisabled();
+        return changed;
+    }
+
+    template<auto M>
+        requires LeafParameter<field::Type<M>>
+    void Leaf() {
+        using F = field::Type<M>;
+        const char *label = field::ChainLabel<Prefix..., M>.c_str();
+        if constexpr (std::same_as<F, AttributeName>) {
+            Status = nullptr;
+            NameField(Window, Node, label, ui::ReadChain<Prefix..., M>(Value), Interactive);
+        } else {
+            Run<M>([&](state::Entity &v) { return ObjectChoice(R, label, v); });
+        }
+        if (IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ui::Hovered = {
+                .Label = label,
+                .Path = field::ChainPath<Prefix..., M>.c_str(),
+                .Type = std::same_as<F, AttributeName> ? "string" : field::TypeName<F>.c_str(),
+                .Help = field::ChainSpecOf<Prefix..., M>.Help,
+                .Status = Status,
+            };
+        }
     }
 };
-
-template<typename K>
-void DrawFields(state::Scene &r, NodesWindow &window, state::Entity node, const K &value, const std::vector<Socket> &linked, bool interactive) {
-    field::ForEach(value, [&]<size_t I>(const auto &member, std::integral_constant<size_t, I>) {
-        using F = std::remove_cvref_t<decltype(member)>;
-        const auto offset = uint16_t(reinterpret_cast<const std::byte *>(&member) - reinterpret_cast<const std::byte *>(&value));
-        const char *label = field::Label<K, I>.c_str();
-        if constexpr (std::same_as<F, AttributeName>) {
-            NameField(window, node, label, member, interactive);
-        } else if constexpr (std::same_as<F, state::Entity> || ui::DrawableField<F>) {
-            EditParameter<K, F>(r, node, offset, member, ReadsLink(linked, I), true, [&](F &v) {
-                if constexpr (std::same_as<F, state::Entity>) return ObjectChoice(r, label, v);
-                else return ui::DrawField(label, v, Spec<K, I>);
-            });
-        } else if constexpr (ui::HasEditor<F>) {
-            SeparatorText(label);
-            PushID(label);
-            NestedEdit<K, F> edit{{}, r, node, member, offset, uint8_t(I), linked};
-            ui::DrawEditor(edit, std::type_identity<F>{});
-            PopID();
-        } else {
-            static_assert(false, "DrawFields: this parameter type has no widget");
-        }
-    });
-}
 
 uint32_t SelectedCount(const std::vector<SelectionBlock> &blocks) {
     uint32_t count = 0u;
@@ -933,12 +1083,12 @@ void DrawInlineSelection(const state::Scene &r, state::Entity viewport, state::E
     BeginDisabled(!edit_mode);
     if (Button("Capture") && interactive) action::Emit(action::nodes::CaptureSelection(r, mesh_entity, entity));
     EndDisabled();
-    SetItemTooltip(edit_mode ? "Use the elements selected in the viewport" : "Enter edit mode to select elements");
+    ui::Describe("Capture", "Set the node's selection to the elements selected in the viewport in edit mode");
     SameLine();
     BeginDisabled(every);
     if (Button("Clear") && interactive) action::Emit(action::nodes::SetInlineSelection{entity});
     EndDisabled();
-    SetItemTooltip("Use all elements");
+    ui::Describe("Clear", "Set the node's selection to all elements");
 }
 
 void DrawParameters(state::Scene &r, state::Entity viewport, NodesWindow &window, state::Entity mesh_entity, const GeometryProcedure &procedure, bool interactive) {
@@ -953,14 +1103,13 @@ void DrawParameters(state::Scene &r, state::Entity viewport, NodesWindow &window
     SeparatorText(KindTitles[kind]);
     const auto linked = LinkedParameters(procedure, node);
     VisitKind(kind, [&]<typename K> {
-        if constexpr (!std::is_empty_v<K>) DrawFields<K>(r, window, active, r.get<const K>(active), linked, interactive);
+        if constexpr (!std::is_empty_v<K>) ui::DrawFields<K>(ParameterEdit<K>{{}, r, window, active, r.get<const K>(active), linked, interactive, nullptr});
     });
     DrawInlineSelection(r, viewport, mesh_entity, procedure, node, interactive);
     if (const auto *error = r.try_get<const NodeError>(active)) {
-        constexpr const char *Faults[]{"The selection does not fit this operation.", "A parameter is invalid.", "An attribute input is missing or has the wrong type or domain.", "An input mesh is not a closed surface.", "The boolean produced no geometry.", "Geometry cannot be retrieved from the edited object."};
         const auto color = r.get<const NodeTheme>(viewport).Colors.Error;
         PushStyleColor(ImGuiCol_Text, {color.x, color.y, color.z, color.w});
-        TextWrapped("%s", Faults[uint8_t(error->Fault)]);
+        TextWrapped("%s", FaultTexts[uint8_t(error->Fault)]);
         PopStyleColor();
     }
     PopID();
@@ -1008,16 +1157,16 @@ void DrawNodesWindow(state::Scene &r, state::Entity viewport, NodesWindow &windo
     }
     End();
 }
-void DrawNodeStyle(state::Scene &r, state::Entity viewport) {
-    if (Button("Reset")) action::Emit(action::view::ResetNodeTheme{});
-    ui::DrawThemeColors<NodeTheme>(r, viewport);
-    SeparatorText("Sizes");
-    ui::Edit edit{r, viewport};
-    BeginDisabled(r.get<const NodeTheme>(viewport).FollowFrameHeight);
-    edit.Slider<&NodeTheme::GridSize>("Grid size");
+template<typename Editor>
+void DrawEditor(Editor &e, std::type_identity<CellSize>) {
+    BeginDisabled(e.template Read<&CellSize::FollowFrameHeight>());
+    e.template Draw<&CellSize::Points>();
     EndDisabled();
     SameLine();
-    edit.Check<&NodeTheme::FollowFrameHeight>("Frame height");
-    ui::DrawThemeSizes<NodeTheme, &NodeTheme::GridSize>(r, viewport);
+    e.template Draw<&CellSize::FollowFrameHeight>();
+}
+void DrawNodeStyle(state::Scene &r, state::Entity viewport) {
+    if (Button("Reset")) action::Emit(action::view::ResetNodeTheme{});
+    ui::DrawFields<NodeTheme>(ui::Edit{r, viewport});
 }
 } // namespace procedure

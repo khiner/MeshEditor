@@ -37,14 +37,11 @@ struct JumpTime {
 struct JumpKeyframe {
     bool Next;
 };
-struct SetNavigation {
-    TimelineNavigation Value;
-};
 struct SetView {
     float PixelsPerFrame, ViewCenterFrame;
 };
 
-using Action = std::variant<TogglePlay, CancelPlay, SetFrame, SetStartFrame, SetEndFrame, JumpToStart, JumpToEnd, OffsetFrame, JumpTime, JumpKeyframe, SetNavigation, SetView, EnterPresentation>;
+using Action = std::variant<TogglePlay, CancelPlay, SetFrame, SetStartFrame, SetEndFrame, JumpToStart, JumpToEnd, OffsetFrame, JumpTime, JumpKeyframe, SetView, EnterPresentation>;
 
 void Apply(state::Scene &, state::Entity viewport, const Action &);
 } // namespace action::timeline

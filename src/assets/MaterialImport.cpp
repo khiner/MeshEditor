@@ -98,11 +98,11 @@ std::expected<std::vector<uint32_t>, std::string> ImportObjPlyMaterials(state::S
         const auto normal_texture = resolve_texture_slot(source.NormalTexturePath, TextureColorSpace::Linear);
         scene_material_indices[material_index] = buffers.Materials.Append(PBRMaterial{
             .BaseColorFactor = source.BaseColorFactor,
+            .BaseColorTexture = {.Slot = base_color_texture != InvalidSlot ? base_color_texture : textures.WhiteTextureSlot},
             .MetallicFactor = std::clamp(source.MetallicFactor, 0.f, 1.f),
             .RoughnessFactor = std::clamp(source.RoughnessFactor, 0.f, 1.f),
-            .AlphaMode = (source.BaseColorFactor.w < 1.f || source.HasAlphaTexture) ? MaterialAlphaMode::Blend : MaterialAlphaMode::Opaque,
-            .BaseColorTexture = {.Slot = base_color_texture != InvalidSlot ? base_color_texture : textures.WhiteTextureSlot},
             .NormalTexture = {.Slot = normal_texture},
+            .AlphaMode = (source.BaseColorFactor.w < 1.f || source.HasAlphaTexture) ? MaterialAlphaMode::Blend : MaterialAlphaMode::Opaque,
         });
         sources.MaterialMetas.resize(buffers.Materials.Count<PBRMaterial>() - 1);
         auto &meta = sources.MaterialMetas.back();

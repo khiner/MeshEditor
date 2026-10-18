@@ -67,7 +67,7 @@ rbp::Index BuildRbpShape(rbp::World &world, const PhysicsShape &source, const Me
             return hull(points);
         },
         [&](const Plane &plane) {
-            return world.AddShape({.HalfExtents = {plane.SizeX * stretch.x * 0.5f, 0, plane.SizeZ * stretch.z * 0.5f}, .Normal = {0, scale.y > 0 ? 1.f : -1.f, 0}, .Kind = rbp::ShapePlane, .Local = local, .DoubleSided = plane.DoubleSided});
+            return world.AddShape({.HalfExtents = {plane.SizeX.value_or(0) * stretch.x * 0.5f, 0, plane.SizeZ.value_or(0) * stretch.z * 0.5f}, .Normal = {0, scale.y > 0 ? 1.f : -1.f, 0}, .Kind = rbp::ShapePlane, .Local = local, .DoubleSided = plane.DoubleSided});
         },
         [&](const auto &kind) {
             if (!mesh) throw std::runtime_error("A mesh collider has no mesh geometry.");

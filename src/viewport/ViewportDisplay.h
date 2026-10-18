@@ -37,15 +37,41 @@ struct MotionBlur {
     uint8_t Steps{16};
     MotionBlurMethod Method{MotionBlurMethod::Fast};
 };
+template<> inline constexpr field::SpecTable<MotionBlur> Specs<MotionBlur>{
+    {&MotionBlur::Shutter, {.Min = 0, .Max = 2, .Unit = FieldUnit::Frames, .Label = "Shutter", .Help = "Time the shutter stays open"}},
+    {&MotionBlur::Steps, {.Min = 1, .Max = 64, .Label = "Samples", .Help = "Number of renders across the shutter with Full Sampling. More samples reduce stepping."}},
+    {&MotionBlur::Method, {.Help = "Fast blurs one render with motion vectors and approximates changing visibility, reflections, and lighting. Full Sampling renders across the shutter at higher cost."}},
+};
+
+struct ViewportOverlays {
+    bool Grid{true}, Extras{true}, Bones{true}, Origins{true}, OutlineSelected{true};
+};
+template<> inline constexpr field::SpecTable<ViewportOverlays> Specs<ViewportOverlays>{
+    {&ViewportOverlays::Grid, {.Help = "Ground grid and world axes"}},
+    {&ViewportOverlays::Extras, {.Help = "Camera, light, empty, and collider wires"}},
+    {&ViewportOverlays::Bones, {.Help = "Armature bones"}},
+    {&ViewportOverlays::Origins, {.Help = "Origin points of selected and active objects"}},
+    {&ViewportOverlays::OutlineSelected, {.Help = "Outline around selected objects"}},
+};
+
+// Overlays on selected objects.
+struct SelectionOverlays {
+    bool VertexNormals{false}, FaceNormals{false}, BoundingBoxes{false}, TetWireframe{false};
+};
+template<> inline constexpr field::SpecTable<SelectionOverlays> Specs<SelectionOverlays>{
+    {&SelectionOverlays::VertexNormals, {.Help = "Normal line at each vertex of selected meshes"}},
+    {&SelectionOverlays::FaceNormals, {.Help = "Normal line at each face center of selected meshes"}},
+    {&SelectionOverlays::BoundingBoxes, {.Help = "Bounding box of each selected mesh"}},
+    {&SelectionOverlays::TetWireframe, {.Help = "Edges of the tetrahedral mesh of each selected object that has one"}},
+};
 
 // Changes require command-buffer recording.
 struct ViewportDisplay {
     ViewportShadingMode ViewportShading{ViewportShadingMode::Solid};
     ViewportShadingMode FillMode{ViewportShadingMode::Solid};
-    bool ShowGrid{true}, ShowBoundingBoxes{false}, ShowTetWireframe{false};
-    bool ShowExtras{true}, ShowBones{true}, ShowOrigins{true}, ShowOutlineSelected{true};
     bool ShowOverlays{true};
-    uint8_t NormalOverlays{0};
+    ViewportOverlays Overlays;
+    SelectionOverlays Selection;
     // Screen-space error budget for the cluster LOD cut, in pixels.
     // Zero renders original geometry alone.
     float LodErrorPixels{1.f};
@@ -56,8 +82,19 @@ struct ViewportDisplay {
     float XRayAlpha{0.5f}, XRayAlphaWireframe{0.f};
 };
 template<> inline constexpr field::SpecTable<ViewportDisplay> Specs<ViewportDisplay>{
-    {&ViewportDisplay::XRayAlpha, {.Min = 0, .Max = 1, .Digits = 2}},
-    {&ViewportDisplay::XRayAlphaWireframe, {.Min = 0, .Max = 1, .Digits = 2}},
+    {&ViewportDisplay::ViewportShading, {.Help = "Wireframe and Solid shade with the workspace lights, Material Preview with a studio environment, and Rendered with the scene lights"}},
+    {&ViewportDisplay::FillMode, {.Help = "Shading restored when wireframe is toggled off"}},
+    {&ViewportDisplay::ShowOverlays, {.Help = "Draw the viewport and selection overlays"}},
+    {&ViewportDisplay::Overlays, {.Help = "Overlays drawn in the viewport"}},
+    {&ViewportDisplay::Selection, {.Label = "Selection overlays", .Help = "Overlays drawn on selected objects"}},
+    {&ViewportDisplay::LodErrorPixels, {.Unit = FieldUnit::Pixels, .Label = "LOD error", .Help = "Largest screen-space level-of-detail error. Zero renders the original geometry."}},
+    {&ViewportDisplay::DebugChannel, {.Help = "Material or geometry channel shown in place of the shaded color"}},
+    {&ViewportDisplay::AnisotropicFilter, {.Label = "Anisotropic filtering", .Help = "Highest anisotropic filtering level. Higher levels sharpen textures viewed at grazing angles."}},
+    {&ViewportDisplay::MotionBlur, {.Help = "Blur of moving objects across the shutter interval. Absent disables it."}},
+    {&ViewportDisplay::XRaySolid, {.Label = "X-ray solid", .Help = "See through surfaces in Solid shading"}},
+    {&ViewportDisplay::XRayWireframe, {.Label = "X-ray wireframe", .Help = "See through surfaces in Wireframe shading"}},
+    {&ViewportDisplay::XRayAlpha, {.Min = 0, .Max = 1, .Label = "X-ray opacity", .Help = "Surface opacity with X-ray in Solid shading"}},
+    {&ViewportDisplay::XRayAlphaWireframe, {.Min = 0, .Max = 1, .Label = "X-ray wireframe opacity", .Help = "Surface opacity with X-ray in Wireframe shading"}},
 };
 
 // Wireframe and Solid shade with the workspace lights and support X-ray display.
@@ -91,11 +128,14 @@ struct PBRViewportLighting {
 };
 // Exposure stays within 10 EV of zero so 2^EV stays finite.
 template<> inline constexpr field::SpecTable<PBRViewportLighting> Specs<PBRViewportLighting>{
-    {&PBRViewportLighting::EnvIntensity, {.Min = 0, .Max = 2, .Digits = 2}},
-    {&PBRViewportLighting::EnvRotationDegrees, {.Min = -180, .Max = 180, .Digits = 1}},
-    {&PBRViewportLighting::BackgroundBlur, {.Min = 0, .Max = 1, .Digits = 2}},
-    {&PBRViewportLighting::WorldOpacity, {.Min = 0, .Max = 1, .Digits = 2}},
-    {&PBRViewportLighting::ExposureEV, {.Min = -10, .Max = 10, .Digits = 1}},
+    {&PBRViewportLighting::UseSceneLights, {.Label = "Scene lights", .Help = "Light with the scene's punctual lights"}},
+    {&PBRViewportLighting::UseSceneWorld, {.Label = "Scene world", .Help = "Light with the scene's image-based light instead of a studio environment"}},
+    {&PBRViewportLighting::EnvIntensity, {.Min = 0, .Max = 2, .Label = "Intensity", .Help = "Multiplier on the studio environment's lighting"}},
+    {&PBRViewportLighting::EnvRotationDegrees, {.Min = -180, .Max = 180, .Unit = FieldUnit::Degrees, .Label = "Rotation", .Help = "Rotation of the studio environment about the vertical axis"}},
+    {&PBRViewportLighting::BackgroundBlur, {.Min = 0, .Max = 1, .Label = "Blur", .Help = "Blur of the background environment"}},
+    {&PBRViewportLighting::WorldOpacity, {.Min = 0, .Max = 1, .Label = "World opacity", .Help = "Opacity of the background environment"}},
+    {&PBRViewportLighting::RealTransmission, {.Label = "Real transmission", .Help = "Sample transmission from a pre-rendered scene image instead of the image-based light"}},
+    {&PBRViewportLighting::ExposureEV, {.Min = -10, .Max = 10, .Unit = FieldUnit::Stops, .Label = "Exposure", .Help = "Scales linear color by 2^EV before tone mapping"}},
 };
 
 struct MaterialPreviewLighting {

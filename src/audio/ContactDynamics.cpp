@@ -28,8 +28,10 @@ void UpdateContactDynamics(state::Scene &r, state::Entity e) {
     if (const auto *motion = r.try_get<const PhysicsMotion>(e); motion && IsAuthoritativeDynamicBody(*motion)) {
         resolved.Mass = motion->Mass.value_or(DefaultMass);
         resolved.CenterOfMass = motion->CenterOfMass.value_or(resolved.CenterOfMass);
-        resolved.InertiaDiagonal = motion->InertiaDiagonal.value_or(resolved.InertiaDiagonal);
-        resolved.InertiaOrientation = motion->InertiaOrientation.value_or(resolved.InertiaOrientation);
+        if (motion->InertiaDiagonal) {
+            resolved.InertiaDiagonal = *motion->InertiaDiagonal;
+            resolved.InertiaOrientation = motion->InertiaOrientation;
+        }
         mass_scale = 1.0;
     }
 

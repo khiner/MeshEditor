@@ -7,6 +7,8 @@
 #include "ui/FieldEdit.h"
 #include "ui/ItemList.h"
 
+#include <format>
+
 using namespace ImGui;
 
 namespace {
@@ -151,7 +153,7 @@ void DrawNamedEntityList(state::Scene &r, const char *id, const char *add_label,
 }
 
 // Returns the edited shape iff the user changed something.
-// When `auto_fit`, dim widgets for AABB-fittable kinds are hidden — the fitter owns them.
+// Auto-fit sets the box, sphere, capsule, and cylinder dimensions, and their fields are disabled while it is on.
 std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in, bool auto_fit) {
     static const char *const shape_names[]{"Box", "Sphere", "Capsule", "Cylinder", "Plane", "Convex Hull", "Triangle Mesh"};
     auto out = in;
@@ -163,41 +165,16 @@ std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in, bool auto_
     }
     std::visit(
         overloaded{
-            [&](physics::Box &s) {
-                if (!auto_fit) changed |= ui::DragFloat3("Size", &s.Size.x, 0.01f, 0.01f, 100.f);
-            },
-            [&](physics::Sphere &s) {
-                if (!auto_fit) changed |= ui::DragFloat("Radius", &s.Radius, 0.01f, 0.001f, 100.f);
-            },
-            [&]<typename S>(S &s)
-                requires(std::same_as<S, physics::Capsule> || std::same_as<S, physics::Cylinder>)
-            {
-                if (auto_fit) return;
-                changed |= ui::DragFloat("Height", &s.Height, 0.01f, 0.001f, 100.f);
-                changed |= ui::DragFloat("Radius top", &s.RadiusTop, 0.01f, 0.001f, 100.f);
-                changed |= ui::DragFloat("Radius bottom", &s.RadiusBottom, 0.01f, 0.001f, 100.f);
-            },
-            [&](physics::Plane &s) {
-                // Plane normal is +Y; sizeX/sizeZ = 0 means infinite extent along that axis.
-                bool infinite = s.SizeX <= 0.f || s.SizeZ <= 0.f;
-                if (Checkbox("Infinite", &infinite)) {
-                    s.SizeX = s.SizeZ = infinite ? 0.f : 2.f;
-                    changed = true;
-                }
-                if (!infinite) {
-                    vec2 size{s.SizeX, s.SizeZ};
-                    if (ui::DragFloat2("Size (X, Z)", &size.x, 0.01f, 0.01f, 1000.f)) {
-                        s.SizeX = size.x;
-                        s.SizeZ = size.y;
-                        changed = true;
-                    }
-                }
-                changed |= Checkbox("Double-sided", &s.DoubleSided);
-            },
+            [&](physics::Plane &s) { ui::DrawFields<physics::Plane>(ui::ValueEdit{s, changed}); },
             [](physics::ConvexHull &) {},
             [](physics::TriangleMesh &) {},
+            [&]<typename S>(S &s) {
+                BeginDisabled(auto_fit);
+                ui::DrawFields<S>(ui::ValueEdit{s, changed});
+                EndDisabled();
             },
-            out
+        },
+        out
     );
     return changed ? std::optional{std::move(out)} : std::nullopt;
 }
@@ -206,26 +183,13 @@ std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in, bool auto_
 void physics_ui::RenderTab(state::Scene &r, state::Entity viewport) {
     SeparatorText("Simulation");
     Text("Bodies: %u", physics::BodyCount(r));
-    {
-        ui::Edit f{r, viewport};
-        f.Slider<&PhysicsSimulationSettings::SubstepsPerFrame>();
-        f.Slider<&PhysicsSimulationSettings::SolverIterations>();
-        f.Slider<&PhysicsSimulationSettings::TimeScale>(nullptr, "%.2fx");
-        f.Drag<&PhysicsSimulationSettings::Gravity>();
-    }
+    ui::DrawFields<PhysicsSimulationSettings>(ui::Edit{r, viewport});
 
     if (CollapsingHeader("Physics Materials")) {
         DrawNamedEntityList<PhysicsMaterial>(
             r, "PhysMaterials", "Add material", action::physics::AddPhysicsMaterial{},
             [](state::Entity e, std::string name) { return action::physics::RenamePhysicsMaterial{e, std::move(name)}; },
-            [&](state::Entity mat_entity, const PhysicsMaterial &) {
-                ui::Edit f{r, mat_entity};
-                f.Slider<&PhysicsMaterial::StaticFriction>();
-                f.Slider<&PhysicsMaterial::DynamicFriction>();
-                f.Slider<&PhysicsMaterial::Restitution>();
-                f.Enum<&PhysicsMaterial::FrictionCombine>();
-                f.Enum<&PhysicsMaterial::RestitutionCombine>();
-            }
+            [&](state::Entity mat_entity, const PhysicsMaterial &) { ui::DrawFields<PhysicsMaterial, &PhysicsMaterial::Name>(ui::Edit{r, mat_entity}); }
         );
     }
 
@@ -403,7 +367,7 @@ void physics_ui::RenderEntityProperties(state::Scene &r, state::Entity entity, s
         Spacing();
         SeparatorText("Collider");
 
-        ui::Edit{r}.Check<&ColliderPolicy::AutoFitDims>("Auto-fit");
+        ui::Edit{r}.Draw<&ColliderPolicy::AutoFitDims>("Auto-fit");
         auto s = RenderShapeEditor(collider->Shape, r.get<const ColliderPolicy>(entity).AutoFitDims);
         ui::Gesture(bool(s), [&, scope = ui::TargetFromAlt()] { return action::physics::SetColliderShape{*s, s->index() != collider->Shape.index(), scope}; });
 
@@ -425,64 +389,11 @@ void physics_ui::RenderEntityProperties(state::Scene &r, state::Entity entity, s
         const auto &playback = r.get<const TimelinePlayback>(viewport);
         const bool velocity_locked = playback.Playing || physics::BakedThrough(r) > range.StartFrame;
         if (velocity_locked) BeginDisabled();
-        if (r.try_get<const PhysicsVelocity>(entity)) {
-            ui::Edit f{r};
-            f.Drag<&PhysicsVelocity::Linear>("Linear velocity");
-            f.Drag<&PhysicsVelocity::Angular>("Angular velocity");
-        }
+        if (r.try_get<const PhysicsVelocity>(entity)) ui::DrawFields<PhysicsVelocity>(ui::Edit{r});
         if (velocity_locked) EndDisabled();
 
-        // Mass/inertia/damping/gravity are only meaningful for Dynamic bodies.
-        // Kinematic bodies move purely by velocity assignment; these fields are hidden to avoid noise.
-        if (!motion->IsKinematic) {
-            ui::Edit f{r};
-            f.Drag<&PhysicsMotion::GravityFactor>();
-
-            Spacing();
-            SeparatorText("Mass properties");
-
-            // Mass/inertia/CoM are std::optional with presence toggles, not flat fields Update can address.
-            PhysicsMotion edit = *motion;
-            bool motion_changed = false;
-            float mass = edit.Mass.value_or(DefaultMass);
-            if (ui::DragFloat("Mass", &mass, 0.1f, 0.001f, 1e6f, "%.3f kg")) {
-                edit.Mass = mass;
-                motion_changed = true;
-            }
-
-            bool has_inertia = edit.InertiaDiagonal.has_value();
-            if (Checkbox("Override inertia tensor", &has_inertia)) {
-                if (has_inertia) {
-                    edit.InertiaDiagonal = vec3{1.0f};
-                    edit.InertiaOrientation = quat{1, 0, 0, 0};
-                } else {
-                    edit.InertiaDiagonal.reset();
-                    edit.InertiaOrientation.reset();
-                }
-                motion_changed = true;
-            }
-            if (edit.InertiaDiagonal) {
-                motion_changed |= ui::DragFloat3("Inertia diagonal", &edit.InertiaDiagonal->x, 0.01f, 0.001f, 1e6f);
-                vec3 euler_deg = Degrees(EulerAngles(edit.InertiaOrientation.value_or(quat{1, 0, 0, 0})));
-                if (ui::DragFloat3("Inertia orientation", &euler_deg.x, 0.1f)) {
-                    edit.InertiaOrientation = FromEulerAngles(Radians(euler_deg));
-                    motion_changed = true;
-                }
-            }
-
-            if (bool has_com = edit.CenterOfMass.has_value(); Checkbox("Override center of mass", &has_com)) {
-                edit.CenterOfMass = has_com ? std::optional{vec3{0.0f}} : std::nullopt;
-                motion_changed = true;
-            }
-            if (edit.CenterOfMass) motion_changed |= ui::DragFloat3("Center of mass", &edit.CenterOfMass->x, 0.01f);
-            ui::Gesture(motion_changed, [&, scope = ui::TargetFromAlt()] { return action::physics::SetMotion{std::make_unique<PhysicsMotion>(edit), scope}; });
-
-            Spacing();
-            SeparatorText("Dynamics");
-
-            f.Drag<&PhysicsMotion::LinearDamping>("Damping translation");
-            f.Drag<&PhysicsMotion::AngularDamping>("Damping rotation");
-        }
+        // Kinematic bodies have no mass properties, gravity, or damping.
+        if (!motion->IsKinematic) ui::DrawFields<PhysicsMotion, &PhysicsMotion::IsKinematic>(ui::Edit{r});
     }
 
     if (const auto *joint = r.try_get<const PhysicsJoint>(entity)) {
@@ -496,7 +407,7 @@ void physics_ui::RenderEntityProperties(state::Scene &r, state::Entity entity, s
             Text("Limits: %zu, Drives: %zu", def->Limits.size(), def->Drives.size());
         }
 
-        ui::Edit{r}.Check<&PhysicsJoint::EnableCollision>();
+        ui::Edit{r}.Draw<&PhysicsJoint::EnableCollision>();
 
         // ConnectedNode picker.
         // KHR joint.connectedNode is the second attachment frame.

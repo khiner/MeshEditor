@@ -66,7 +66,6 @@ using Action = std::variant<
     AssignVertexSamples, RemoveVertexSamples, ActivateRealImpactMicrophone,
     ApplyExciteImpact, ClearExciteImpacts,
     SetMaterialPreset, SetSurfacePreset, SetOutputDevice,
-    PatchFields<ModalSolveSettings, float, 2>, PatchFields<AcousticMaterial, double, 2>,
     PatchFields<ModalSolveSettings, bool>, PatchFields<ModalSolveSettings, uint32_t>,
     PatchFields<ModalSolveSettings, float>, PatchFields<ModalSolveSettings, double>,
     PatchFields<ModalSolveSettings, std::optional<float>>, PatchFields<ModalSolveSettings, dvec3>,

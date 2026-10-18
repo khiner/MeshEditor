@@ -8,19 +8,20 @@ vec3 Shade(vec3 c, int offset) { return Clamp(c + float(offset) / 255.f, 0.f, 1.
 vec3 BlendShade(vec3 c1, vec3 c2, float fac, int offset = 0) { return Clamp(Mix(c1, c2, fac) + float(offset) / 255.f, 0.f, 1.f); }
 } // namespace
 
-void UpdateDerivedColors(ViewportTheme &theme) {
-    auto &c = theme.Colors;
+DerivedThemeColors DeriveThemeColors(const ViewportTheme &theme) {
+    const auto &c = theme.Colors;
     const auto &axis = theme.AxisColors;
-    // Grid-derived colors, matching Blender's overlay_instance.cc
-    c.GridLine = {Shade(vec3(c.Grid), 10), c.Grid.w};
-    c.GridEmphasis = {Shade(vec3(c.Grid), 20), 1.f};
-    c.GridAxisX = BlendShade(vec3(c.Grid), axis.X, 0.85f, -20);
-    c.GridAxisZ = BlendShade(vec3(c.Grid), axis.Z, 0.85f, -20);
-
-    c.BoneActive = Shade(c.EdgeSelectedIncidental, 60);
-    c.BoneActiveUnsel = BlendShade(c.WireEdit, c.EdgeSelectedIncidental, 0.15f);
-    c.BoneSelect = Shade(c.EdgeSelectedIncidental, -20);
-    c.BonePoseActiveUnsel = BlendShade(c.Wire, c.BonePose, 0.15f);
+    return {
+        // Grid-derived colors, matching Blender's overlay_instance.cc
+        .GridLine = {Shade(vec3(c.Grid), 10), c.Grid.w},
+        .GridEmphasis = {Shade(vec3(c.Grid), 20), 1.f},
+        .GridAxisX = BlendShade(vec3(c.Grid), axis.X, 0.85f, -20),
+        .GridAxisZ = BlendShade(vec3(c.Grid), axis.Z, 0.85f, -20),
+        .BoneActive = Shade(c.EdgeSelectedIncidental, 60),
+        .BoneActiveUnsel = BlendShade(c.WireEdit, c.EdgeSelectedIncidental, 0.15f),
+        .BoneSelect = Shade(c.EdgeSelectedIncidental, -20),
+        .BonePoseActiveUnsel = BlendShade(c.Wire, c.BonePose, 0.15f),
+    };
 }
 
 ViewCamera Defaults::ViewCamera{
@@ -43,42 +44,35 @@ WorkspaceLights Defaults::WorkspaceLights{
     .AmbientColor = {0, 0, 0},
     .UseSpecular = 1,
 };
-static ViewportTheme MakeDefaultViewportTheme() {
-    ViewportTheme theme{
-        .Colors{
-            .Background{0.25f, 0.25f, 0.25f},
-            .Grid{0.329f, 0.329f, 0.329f, 0.502f},
-            .Wire{0, 0, 0},
-            .WireEdit{0, 0, 0},
-            .ObjectActive{1, 0.627f, 0.157f},
-            .ObjectSelected{0.929f, 0.341f, 0},
-            .Light{0, 0, 0, 0.314f},
-            .Vertex{0, 0, 0},
-            .VertexSelected{1, 0.478f, 0},
-            .EdgeSelectedIncidental{1, 0.6f, 0},
-            .EdgeSelected{1, 0.847f, 0},
-            .EdgeSharp{0, 1, 1},
-            .FaceSelectedIncidental{1, 0.639f, 0, 0.2f},
-            .FaceSelected{1, 0.718f, 0, 0.2f},
-            .ElementActive{1, 1, 1, 0.2f},
-            .ElementExcited{0.549f, 1.0f, 1.0f, 1},
-            .FaceNormal{0.133f, 0.867f, 0.867f},
-            .VertexNormal{0.137f, 0.380f, 0.867f},
-            .BoneSolid{0.698f, 0.698f, 0.698f},
-            .BonePose{0.314f, 0.784f, 1.0f},
-            .BonePoseActive{0.549f, 1.0f, 1.0f},
-            .Transform{1, 1, 1},
-        },
-        .AxisColors{
-            .X{1.f, 51.f / 255.f, 82.f / 255.f},
-            .Y{139.f / 255.f, 220.f / 255.f, 0.f},
-            .Z{40.f / 255.f, 144.f / 255.f, 1.f},
-        },
-        .EdgeWidth = 0.5f, // Half-width in pixels
-        .SilhouetteEdgeWidth = 2,
-    };
-    UpdateDerivedColors(theme);
-    return theme;
-}
-
-ViewportTheme Defaults::ViewportTheme = MakeDefaultViewportTheme();
+ViewportTheme Defaults::ViewportTheme{
+    .Colors{
+        .Background{0.25f, 0.25f, 0.25f},
+        .Grid{0.329f, 0.329f, 0.329f, 0.502f},
+        .Wire{0, 0, 0},
+        .WireEdit{0, 0, 0},
+        .ObjectActive{1, 0.627f, 0.157f},
+        .ObjectSelected{0.929f, 0.341f, 0},
+        .Light{0, 0, 0, 0.314f},
+        .Vertex{0, 0, 0},
+        .VertexSelected{1, 0.478f, 0},
+        .EdgeSelectedIncidental{1, 0.6f, 0},
+        .EdgeSelected{1, 0.847f, 0},
+        .EdgeSharp{0, 1, 1},
+        .FaceSelectedIncidental{1, 0.639f, 0, 0.2f},
+        .FaceSelected{1, 0.718f, 0, 0.2f},
+        .ElementActive{1, 1, 1, 0.2f},
+        .ElementExcited{0.549f, 1.0f, 1.0f, 1},
+        .FaceNormal{0.133f, 0.867f, 0.867f},
+        .VertexNormal{0.137f, 0.380f, 0.867f},
+        .BoneSolid{0.698f, 0.698f, 0.698f},
+        .BonePose{0.314f, 0.784f, 1.0f},
+        .BonePoseActive{0.549f, 1.0f, 1.0f},
+        .Transform{1, 1, 1},
+    },
+    .AxisColors{
+        .X{1.f, 51.f / 255.f, 82.f / 255.f},
+        .Y{139.f / 255.f, 220.f / 255.f, 0.f},
+        .Z{40.f / 255.f, 144.f / 255.f, 1.f},
+    },
+    .Sizes{.EdgeWidth = 1.f, .SilhouetteEdgeWidth = 2},
+};

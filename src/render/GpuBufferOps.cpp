@@ -85,7 +85,7 @@ GpuBuffers::GpuBuffers(const mtl::Context &ctx, mtl::BindlessSet &slots)
       Lights{Ctx, sizeof(LightRecord), SlotType::LightBuffer},
       Materials{Ctx, sizeof(PBRMaterial), SlotType::MaterialBuffer},
       SceneViewUBO{Ctx, ViewUboStride() * (MaxBlurSteps + 1)},
-      ViewportThemeUBO{Ctx, sizeof(ViewportTheme)},
+      ViewportThemeUBO{Ctx, sizeof(ViewportThemeUbo)},
       WorkspaceLightsUBO{Ctx, sizeof(WorkspaceLights)},
       ObjectPickKeys{Ctx, sizeof(uint32_t)},
       ObjectPickSeenBitset{Ctx, sizeof(uint32_t)},

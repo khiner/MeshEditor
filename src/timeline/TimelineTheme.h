@@ -17,20 +17,27 @@ struct TimelineThemeColors {
     numeric::vec4 PlayheadLabelBackground{Rgba8(80, 130, 200, 200)};
 };
 
-struct TimelineTheme {
-    TimelineThemeColors Colors{};
+struct TimelineThemeSizes {
     float RulerHeight{20}, TickLabelSpacing{80}, MinorTickSpacing{32};
     float KeyframeRadius{5}, KeyframePadding{4};
     float PlayheadWidth{2}, PlayheadLabelRounding{3};
     numeric::vec2 PlayheadLabelPadding{3, 1};
 };
+template<> inline constexpr field::SpecTable<TimelineThemeSizes> Specs<TimelineThemeSizes>{
+    {&TimelineThemeSizes::RulerHeight, {.Min = 12, .Max = 48, .Unit = FieldUnit::Points, .Help = "Height of the frame number ruler"}},
+    {&TimelineThemeSizes::TickLabelSpacing, {.Min = 20, .Max = 200, .Unit = FieldUnit::Points, .Help = "Minimum space between labeled ticks"}},
+    {&TimelineThemeSizes::MinorTickSpacing, {.Min = 8, .Max = 128, .Unit = FieldUnit::Points, .Help = "Minimum labeled tick spacing that shows unlabeled ticks between them"}},
+    {&TimelineThemeSizes::KeyframeRadius, {.Min = 2, .Max = 12, .Unit = FieldUnit::Points, .Help = "Keyframe marker radius"}},
+    {&TimelineThemeSizes::KeyframePadding, {.Min = 0, .Max = 24, .Unit = FieldUnit::Points, .Help = "Space between the ruler and the keyframe markers"}},
+    {&TimelineThemeSizes::PlayheadWidth, {.Min = .5, .Max = 8, .Unit = FieldUnit::Points, .Help = "Playhead line width"}},
+    {&TimelineThemeSizes::PlayheadLabelRounding, {.Min = 0, .Max = 12, .Unit = FieldUnit::Points, .Help = "Corner radius of the playhead's frame label"}},
+    {&TimelineThemeSizes::PlayheadLabelPadding, {.Min = 0, .Max = 12, .Unit = FieldUnit::Points, .Help = "Horizontal and vertical padding around the playhead's frame label"}},
+};
+
+struct TimelineTheme {
+    TimelineThemeColors Colors{};
+    TimelineThemeSizes Sizes{};
+};
 template<> inline constexpr field::SpecTable<TimelineTheme> Specs<TimelineTheme>{
-    {&TimelineTheme::RulerHeight, {.Min = 12, .Max = 48, .Digits = 0}},
-    {&TimelineTheme::TickLabelSpacing, {.Min = 20, .Max = 200, .Digits = 0}},
-    {&TimelineTheme::MinorTickSpacing, {.Min = 8, .Max = 128, .Digits = 0}},
-    {&TimelineTheme::KeyframeRadius, {.Min = 2, .Max = 12, .Digits = 1}},
-    {&TimelineTheme::KeyframePadding, {.Min = 0, .Max = 24, .Digits = 0}},
-    {&TimelineTheme::PlayheadWidth, {.Min = .5, .Max = 8, .Digits = 1}},
-    {&TimelineTheme::PlayheadLabelRounding, {.Min = 0, .Max = 12, .Digits = 1}},
-    {&TimelineTheme::PlayheadLabelPadding, {.Min = 0, .Max = 12, .Digits = 0}},
+    {&TimelineTheme::Colors, {.Widget = FieldWidget::Color}},
 };

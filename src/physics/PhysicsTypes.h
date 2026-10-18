@@ -19,7 +19,7 @@ struct PhysicsSimulationSettings {
 template<> inline constexpr field::SpecTable<PhysicsSimulationSettings> Specs<PhysicsSimulationSettings>{
     {&PhysicsSimulationSettings::SubstepsPerFrame, {.Min = 1, .Max = 100}},
     {&PhysicsSimulationSettings::SolverIterations, {.Min = 2, .Max = 50}},
-    {&PhysicsSimulationSettings::TimeScale, {.Min = 0, .Max = 10, .Digits = 2}},
+    {&PhysicsSimulationSettings::TimeScale, {.Min = 0, .Max = 10, .Unit = FieldUnit::Factor}},
     {&PhysicsSimulationSettings::Gravity, {.Speed = 0.1f}},
 };
 
@@ -127,9 +127,9 @@ struct Cylinder {
     bool operator==(const Cylinder &) const = default;
 };
 // Plane lies in the XZ plane with +Y normal.
-// Size{X,Z} == 0 means infinite along that axis.
+// An absent size means infinite along that axis.
 struct Plane {
-    float SizeX{0.f}, SizeZ{0.f};
+    std::optional<float> SizeX{}, SizeZ{};
     bool DoubleSided{false};
     bool operator==(const Plane &) const = default;
 };
@@ -142,6 +142,27 @@ struct TriangleMesh {
     bool operator==(const TriangleMesh &) const = default;
 };
 } // namespace physics
+
+namespace physics {
+inline constexpr FieldSpec SizeSpec(double min, const char *help) { return {.Min = min, .Max = 100, .Speed = 0.01f, .Unit = FieldUnit::Meters, .Widget = FieldWidget::Drag, .Help = help}; }
+} // namespace physics
+template<> inline constexpr field::SpecTable<physics::Box> Specs<physics::Box>{{&physics::Box::Size, physics::SizeSpec(0.01, "Full extent along each local axis.")}};
+template<> inline constexpr field::SpecTable<physics::Sphere> Specs<physics::Sphere>{{&physics::Sphere::Radius, physics::SizeSpec(0.001, "Sphere radius.")}};
+template<> inline constexpr field::SpecTable<physics::Capsule> Specs<physics::Capsule>{
+    {&physics::Capsule::Height, physics::SizeSpec(0.001, "Distance between the centers of the two end spheres along local Y.")},
+    {&physics::Capsule::RadiusTop, physics::SizeSpec(0.001, "Radius of the end sphere at +Y.")},
+    {&physics::Capsule::RadiusBottom, physics::SizeSpec(0.001, "Radius of the end sphere at -Y.")},
+};
+template<> inline constexpr field::SpecTable<physics::Cylinder> Specs<physics::Cylinder>{
+    {&physics::Cylinder::Height, physics::SizeSpec(0.001, "Length along local Y.")},
+    {&physics::Cylinder::RadiusTop, physics::SizeSpec(0.001, "Radius of the cap at +Y.")},
+    {&physics::Cylinder::RadiusBottom, physics::SizeSpec(0.001, "Radius of the cap at -Y.")},
+};
+template<> inline constexpr field::SpecTable<physics::Plane> Specs<physics::Plane>{
+    {&physics::Plane::SizeX, {.Min = 0.01, .Max = 1000, .Initial = 2, .Speed = 0.01f, .Unit = FieldUnit::Meters, .Widget = FieldWidget::Drag, .Help = "Full extent along local X. Absent means the plane is infinite along X."}},
+    {&physics::Plane::SizeZ, {.Min = 0.01, .Max = 1000, .Initial = 2, .Speed = 0.01f, .Unit = FieldUnit::Meters, .Widget = FieldWidget::Drag, .Help = "Full extent along local Z. Absent means the plane is infinite along Z."}},
+    {&physics::Plane::DoubleSided, {.Help = "Collide from both sides of the plane instead of only from the +Y side"}},
+};
 
 using PhysicsShape = std::variant<
     physics::Box,
@@ -172,7 +193,7 @@ struct PhysicsMotion {
     std::optional<float> Mass{}; // nullopt = DefaultMass
     std::optional<vec3> CenterOfMass{}; // nullopt = auto-compute from shape
     std::optional<vec3> InertiaDiagonal{};
-    std::optional<quat> InertiaOrientation{};
+    quat InertiaOrientation{1, 0, 0, 0};
     float GravityFactor{1.};
     // Engine-specific (not in KHR_physics_rigid_bodies).
     // Defaults match Blender.
@@ -180,9 +201,14 @@ struct PhysicsMotion {
     bool operator==(const PhysicsMotion &) const = default;
 };
 template<> inline constexpr field::SpecTable<PhysicsMotion> Specs<PhysicsMotion>{
-    {&PhysicsMotion::GravityFactor, {.Min = -10, .Max = 10, .Speed = 0.01f}},
-    {&PhysicsMotion::LinearDamping, {.Min = 0, .Max = 1, .Speed = 0.01f}},
-    {&PhysicsMotion::AngularDamping, {.Min = 0, .Max = 1, .Speed = 0.01f}},
+    {&PhysicsMotion::IsKinematic, {.Help = "Move the body by its velocity and animation with infinite mass instead of by forces and contacts"}},
+    {&PhysicsMotion::Mass, {.Min = 0.001, .Max = 1e6, .Initial = DefaultMass, .Speed = 0.1f, .Unit = FieldUnit::Kilograms, .Widget = FieldWidget::Drag, .Help = "Body mass. Absent uses the default mass of 1 kg."}},
+    {&PhysicsMotion::CenterOfMass, {.Speed = 0.01f, .Unit = FieldUnit::Meters, .Help = "Center of mass in local coordinates. Absent computes it from the collider shape."}},
+    {&PhysicsMotion::InertiaDiagonal, {.Min = 0.001, .Max = 1e6, .Initial = 1, .Speed = 0.01f, .Widget = FieldWidget::Drag, .Help = "Principal moments of inertia. Absent computes them from the collider shape and mass."}},
+    {&PhysicsMotion::InertiaOrientation, {.Help = "Rotation of the principal inertia axes from the body axes"}},
+    {&PhysicsMotion::GravityFactor, {.Min = -10, .Max = 10, .Speed = 0.01f, .Widget = FieldWidget::Drag, .Help = "Multiplier on gravity for this body"}},
+    {&PhysicsMotion::LinearDamping, {.Min = 0, .Max = 1, .Speed = 0.01f, .Widget = FieldWidget::Drag, .Help = "Fraction of linear velocity removed per second"}},
+    {&PhysicsMotion::AngularDamping, {.Min = 0, .Max = 1, .Speed = 0.01f, .Widget = FieldWidget::Drag, .Help = "Fraction of angular velocity removed per second"}},
 };
 
 // Defines a force-driven positive-mass body whose mass properties control contact dynamics.
@@ -194,8 +220,8 @@ struct PhysicsVelocity {
     bool operator==(const PhysicsVelocity &) const = default;
 };
 template<> inline constexpr field::SpecTable<PhysicsVelocity> Specs<PhysicsVelocity>{
-    {&PhysicsVelocity::Linear, {.Speed = 0.1f}},
-    {&PhysicsVelocity::Angular, {.Speed = 0.1f}},
+    {&PhysicsVelocity::Linear, {.Speed = 0.1f, .Unit = FieldUnit::MetersPerSecond, .Label = "Linear velocity", .Help = "Initial linear velocity in the node's frame"}},
+    {&PhysicsVelocity::Angular, {.Speed = 0.1f, .Unit = FieldUnit::RadiansPerSecond, .Label = "Angular velocity", .Help = "Initial angular velocity in the node's frame"}},
 };
 
 // MeshEntity present for ConvexHull/TriangleMesh, null for primitives.

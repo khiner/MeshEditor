@@ -754,7 +754,7 @@ MeshDisplayState ComputeMeshDisplay(const DisplayContext &c, state::Entity mesh_
 
     const bool armature = r.all_of<ArmatureObject>(mesh_entity), joint = r.all_of<BoneJoint>(mesh_entity);
     const bool shaded_face_less = mesh_record && !WorkbenchShading(c.Settings.ViewportShading) && faces == 0u && mb.PrimitiveMaterials.Count > 0u;
-    const bool normals = overlays && c.Settings.NormalOverlays != 0u && std::ranges::binary_search(c.SelectedMeshes, mesh_entity);
+    const bool normals = overlays && (c.Settings.Selection.VertexNormals || c.Settings.Selection.FaceNormals) && std::ranges::binary_search(c.SelectedMeshes, mesh_entity);
     uint32_t flags = 0u;
     uint8_t vertex_overlays = 0u;
     const auto set = [&](MeshletInstanceFlag flag) { flags |= uint32_t(flag); };
@@ -769,7 +769,7 @@ MeshDisplayState ComputeMeshDisplay(const DisplayContext &c, state::Entity mesh_
     if (meshlets && !armature && !joint && !r.all_of<ObjectExtrasTag>(mesh_entity) && mesh_record && edges > 0u &&
         (faces == 0u || c.Wireframe()) && !shaded_face_less) set(MeshletInstanceFlag::Wire);
     if (armature || joint) set(MeshletInstanceFlag::OverlayOnly);
-    if (overlays && c.Settings.ShowBones) {
+    if (overlays && c.Settings.Overlays.Bones) {
         if (armature) {
             set(MeshletInstanceFlag::Bone);
             if (c.DrawsArmatureBones(mesh_entity)) set(MeshletInstanceFlag::BoneWire);
@@ -778,8 +778,8 @@ MeshDisplayState ComputeMeshDisplay(const DisplayContext &c, state::Entity mesh_
             if (c.DrawsArmatureBones(r.get<const BoneJoint>(mesh_entity).ArmatureObjectEntity)) set(MeshletInstanceFlag::BoneJointWire);
         }
     }
-    if (normals && he::ElementMaskContains(c.Settings.NormalOverlays, Element::Face) && faces > 0u) set(MeshletInstanceFlag::FaceNormal);
-    if (normals && he::ElementMaskContains(c.Settings.NormalOverlays, Element::Vertex) && edges > 0u) {
+    if (normals && c.Settings.Selection.FaceNormals && faces > 0u) set(MeshletInstanceFlag::FaceNormal);
+    if (normals && c.Settings.Selection.VertexNormals && edges > 0u) {
         set(MeshletInstanceFlag::LodPinFinest);
         draw(VertexOverlay::Normals);
     }
@@ -1006,8 +1006,8 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
     const auto &samplers = r.Context.get<const RenderSamplerSlots>();
     auto &scene_state = r.Context.get<GpuSceneState>();
 
-    if (std::exchange(scene_state.OverlayJobsDirty, false)) BuildOverlayJobs(r, buffers, settings.ShowBoundingBoxes);
-    const bool render_silhouette = show_overlays && settings.ShowOutlineSelected && !is_excite_mode &&
+    if (std::exchange(scene_state.OverlayJobsDirty, false)) BuildOverlayJobs(r, buffers, settings.Selection.BoundingBoxes);
+    const bool render_silhouette = show_overlays && settings.Overlays.OutlineSelected && !is_excite_mode &&
         buffers.FlagWork(uint32_t(MeshletInstanceFlag::Silhouette)).Meshlets > 0u;
 
     // Forward PBR specializes on whether a drawn mesh has line or point meshlets.
@@ -1202,7 +1202,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
     const bool meshlet_edit_overlay_drawn =
         buffers.FlagWork(uint32_t(MeshletInstanceFlag::EditOverlay)).Meshlets > 0;
     const bool overlay_jobs = show_overlays && buffers.OverlayJobs.UsedSize > 0u &&
-        (settings.ShowExtras || settings.ShowBoundingBoxes || settings.ShowTetWireframe);
+        (settings.Overlays.Extras || settings.Selection.BoundingBoxes || settings.Selection.TetWireframe);
     if (wire_meshlets) {
         buffers.WireCoverageBuffer.SetCount<uint32_t>(main_extent.Width * main_extent.Height);
         { // Four independent 8-bit coverage maxima share one word.
@@ -1251,10 +1251,10 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
                                                             });
     }
 
-    const bool draw_origins = show_overlays && settings.ShowOrigins && (!r.view<const Selected>().empty() || !r.view<const Active>().empty());
+    const bool draw_origins = show_overlays && settings.Overlays.Origins && (!r.view<const Selected>().empty() || !r.view<const Active>().empty());
     // Initialize overlays even when no geometry contributes color.
     const bool overlay_pass_needed = has_silhouette ||
-        (show_overlays && settings.ShowGrid) ||
+        (show_overlays && settings.Overlays.Grid) ||
         meshlet_edit_overlay_drawn || element_overlay_meshlets > 0u || vertex_overlays || wire_meshlets ||
         overlay_jobs ||
         normal_meshlets > 0u || bone_meshlets > 0u || draw_origins;
@@ -1291,7 +1291,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
             draw_quad();
         }
 
-        if (show_overlays && settings.ShowGrid) {
+        if (show_overlays && settings.Overlays.Grid) {
             main.Grid.Bind(encoder);
             encoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(9));
         }
@@ -1391,7 +1391,7 @@ void RecordPhase(state::Scene &r, state::Entity viewport, mtl::PassChain &chain,
             // In non-wireframe Object mode, "Outline selected" off suppresses bone wire outlines.
             // In wireframe+Object mode, wires are the only bone visualization so always show them.
             const bool hide_bone_outlines = !is_wireframe_mode && interaction_mode == InteractionMode::Object &&
-                (!show_overlays || !settings.ShowOutlineSelected);
+                (!show_overlays || !settings.Overlays.OutlineSelected);
             if (!hide_bone_outlines) {
                 draw_bones(main.BoneWireMesh, MeshletInstanceFlag::BoneWire, 24u);
                 draw_bones(main.BoneSphereWireMesh, MeshletInstanceFlag::BoneJointWire, 64u);

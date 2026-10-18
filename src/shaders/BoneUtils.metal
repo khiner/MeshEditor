@@ -11,16 +11,17 @@ inline float3 bone_wire_color(const thread SceneT<SetT> &scene, uint instance_st
     const bool is_selected = (instance_state & STATE_SELECTED) != 0u;
     const bool is_active = (instance_state & STATE_ACTIVE) != 0u;
     constant ViewportThemeColors &colors = scene.Theme.Colors;
+    constant DerivedThemeColors &derived = scene.Theme.Derived;
 
     if (scene.View.InteractionMode == InteractionMode::Edit) {
-        if (is_active && is_selected) return float3(colors.BoneActive);
-        if (is_active) return float3(colors.BoneActiveUnsel);
-        if (is_selected) return float3(colors.BoneSelect);
+        if (is_active && is_selected) return float3(derived.BoneActive);
+        if (is_active) return float3(derived.BoneActiveUnsel);
+        if (is_selected) return float3(derived.BoneSelect);
         return float3(colors.WireEdit);
     }
     if (scene.View.InteractionMode == InteractionMode::Pose) {
         if (is_active && is_selected) return float3(colors.BonePoseActive);
-        if (is_active) return float3(colors.BonePoseActiveUnsel);
+        if (is_active) return float3(derived.BonePoseActiveUnsel);
         if (is_selected) return float3(colors.BonePose);
         return float3(colors.Wire);
     }

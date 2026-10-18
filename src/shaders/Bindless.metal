@@ -182,7 +182,7 @@ template<typename SetT>
 struct SceneT {
     device const SetT &B;
     constant SceneViewUBO &View;
-    constant ViewportTheme &Theme;
+    constant ViewportThemeUbo &Theme;
     constant WorkspaceLights &Workspace;
 
     // Projection matrices use Metal's positive-Y-up clip space.

@@ -1214,7 +1214,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                     return fastgltf::CylinderShape{.height = c.Height, .radiusBottom = c.RadiusBottom, .radiusTop = c.RadiusTop};
                 },
                 [](const physics::Plane &p) -> std::optional<fastgltf::Shape> {
-                    return fastgltf::PlaneShape{.sizeX = p.SizeX, .sizeZ = p.SizeZ, .doubleSided = p.DoubleSided};
+                    return fastgltf::PlaneShape{.sizeX = p.SizeX.value_or(0), .sizeZ = p.SizeZ.value_or(0), .doubleSided = p.DoubleSided};
                 },
                 [](const auto &) -> std::optional<fastgltf::Shape> { return std::nullopt; },
             },
@@ -1437,11 +1437,10 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 fastgltf::Motion fg_motion{.isKinematic = motion->IsKinematic};
                 if (motion->Mass) fg_motion.mass = fastgltf::optional<fastgltf::num>{*motion->Mass};
                 if (motion->CenterOfMass) fg_motion.centerOfMass = std::bit_cast<fastgltf::math::fvec3>(*motion->CenterOfMass);
+                // The orientation is written with the diagonal it applies to.
                 if (motion->InertiaDiagonal) {
                     fg_motion.inertialDiagonal = fastgltf::optional<fastgltf::math::fvec3>{std::bit_cast<fastgltf::math::fvec3>(*motion->InertiaDiagonal)};
-                }
-                if (motion->InertiaOrientation) {
-                    fg_motion.inertialOrientation = fastgltf::optional<fastgltf::math::fvec4>{std::bit_cast<fastgltf::math::fvec4>(*motion->InertiaOrientation)};
+                    fg_motion.inertialOrientation = fastgltf::optional<fastgltf::math::fvec4>{std::bit_cast<fastgltf::math::fvec4>(motion->InertiaOrientation)};
                 }
                 fg_motion.gravityFactor = motion->GravityFactor;
                 if (velocity) {

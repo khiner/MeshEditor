@@ -21,12 +21,4 @@ template<typename C, typename F> Update<F> UpdateOfShape(Target target, F C::*me
     static_assert(std::is_trivially_copyable_v<F>, "Update<T> is for trivially-copyable fields only");
     return {std::move(target), state::Key<PrimitiveShape>(), uint16_t(detail::MemPtrOffset(member)), std::move(value)};
 }
-
-template<auto... Prefix, typename C, typename F, size_t N>
-auto PatchFieldsOf(std::array<F C::*, N> members, std::array<F, N> values) {
-    using Component = detail::first_class<Prefix...>;
-    std::array<uint16_t, N> offsets;
-    for (size_t i = 0; i < N; ++i) offsets[i] = uint16_t(detail::FieldOffset<Prefix...>() + detail::MemPtrOffset(members[i]));
-    return PatchFields<Component, F, N>{offsets, std::move(values)};
-}
 } // namespace action

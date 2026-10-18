@@ -1,17 +1,69 @@
 #pragma once
 
+#include "state/Schema.h"
+
 #include <array>
+#include <optional>
 #include <string_view>
 #include <type_traits>
 
-// Display radian fields in degrees.
+// A radian field displays in degrees.
 enum class FieldUnit : uint8_t { None,
-                                 Radians };
+                                 Radians,
+                                 Degrees,
+                                 Meters,
+                                 MetersPerSecond,
+                                 RadiansPerSecond,
+                                 Kilograms,
+                                 KilogramsPerCubicMeter,
+                                 Pascals,
+                                 PerSecond,
+                                 Seconds,
+                                 Hertz,
+                                 Nanometers,
+                                 Stops,
+                                 Points,
+                                 Pixels,
+                                 Cells,
+                                 Frames,
+                                 Factor };
+// The symbol shown after a value, in enumerator order.
+inline constexpr std::string_view UnitSymbols[]{"", "°", "°", " m", " m/s", " rad/s", " kg", " kg/m³", " Pa", " 1/s", " s", " Hz", " nm", " EV", " pt", " px", " cells", " frames", "x"};
+constexpr std::string_view UnitSymbol(FieldUnit unit) { return UnitSymbols[size_t(unit)]; }
+// Decimals a unit's values show by default.
+constexpr uint8_t UnitDigits(FieldUnit unit) {
+    switch (unit) {
+        case FieldUnit::Radians:
+        case FieldUnit::Degrees:
+        case FieldUnit::Stops:
+        case FieldUnit::Points:
+        case FieldUnit::Pixels: return 1;
+        case FieldUnit::Hertz:
+        case FieldUnit::Nanometers:
+        case FieldUnit::KilogramsPerCubicMeter: return 0;
+        default: return 3;
+    }
+}
+// Auto picks a checkbox for a bool, a combo for an enum, the rotation widget for a quaternion, a slider for a bounded number, and a drag otherwise.
+// Checkbox toggles an integer between 0 and 1.
+enum class FieldWidget : uint8_t { Auto,
+                                   Drag,
+                                   Slider,
+                                   Color,
+                                   Checkbox };
+enum class FieldScale : uint8_t { Linear,
+                                  Logarithmic };
 struct FieldSpec {
     double Min{-std::numeric_limits<double>::infinity()}, Max{std::numeric_limits<double>::infinity()};
+    double Initial{std::numeric_limits<double>::quiet_NaN()}; // The value an enabled optional field starts with, or NaN for the clamped type default
     float Speed{1.f};
-    uint8_t Digits{3};
+    std::optional<uint8_t> Digits{}; // Decimals shown for a floating-point value, or the unit's default
     FieldUnit Unit{FieldUnit::None};
+    FieldWidget Widget{FieldWidget::Auto};
+    FieldScale Scale{FieldScale::Linear};
+    const char *Label{}; // Overrides the spaced field name
+    const char *Format{}; // Overrides the number conversion built from Digits, ahead of the unit symbol
+    const char *Help{}; // A description of the field
 
     constexpr bool HasMin() const { return Min > -std::numeric_limits<double>::infinity(); }
     constexpr bool HasMax() const { return Max < std::numeric_limits<double>::infinity(); }
@@ -98,12 +150,35 @@ template<fixed_string S> consteval auto Spaced() {
     SpaceWords(S.View(), out.Chars);
     return out;
 }
+constexpr char *Append(char *out, std::string_view s) {
+    for (const char c : s) *out++ = c;
+    return out;
+}
+} // namespace detail
 
+// Member I of T, usable in a field chain in place of a member pointer.
+template<typename T, size_t I> struct At {
+    using Owner = T;
+    using Field = std::remove_cvref_t<decltype(detail::Member<T, I>())>;
+    static constexpr size_t Index = I;
+};
+template<typename T> inline constexpr bool IsAt = false;
+template<typename T, size_t I> inline constexpr bool IsAt<At<T, I>> = true;
+
+namespace detail {
 template<auto> struct MemberTraits;
 template<typename C, typename F, F C::*P> struct MemberTraits<P> {
     using Owner = C;
     using Field = F;
 };
+template<auto P>
+    requires IsAt<std::remove_cv_t<decltype(P)>>
+struct MemberTraits<P> {
+    using Owner = typename std::remove_cv_t<decltype(P)>::Owner;
+    using Field = typename std::remove_cv_t<decltype(P)>::Field;
+};
+template<auto M, auto...> inline constexpr auto First = M;
+template<auto... Ms> inline constexpr auto Last = (Ms, ...);
 } // namespace detail
 
 template<auto P> using Owner = typename detail::MemberTraits<P>::Owner;
@@ -112,8 +187,40 @@ template<auto P> using Type = typename detail::MemberTraits<P>::Field;
 template<typename T, size_t I> inline constexpr std::string_view Name = detail::PointerName<&detail::Member<T, I>()>();
 template<typename T, size_t I> inline constexpr auto NameString = fixed_string<Name<T, I>.size() + 1>{Name<T, I>};
 template<typename T, size_t I> inline constexpr auto Label = detail::Spaced<NameString<T, I>>();
-template<auto P> inline constexpr size_t IndexOf = detail::IndexOf<Owner<P>, Type<P>>(P);
+template<auto P> inline constexpr size_t IndexOf = [] {
+    if constexpr (IsAt<std::remove_cv_t<decltype(P)>>) return std::remove_cv_t<decltype(P)>::Index;
+    else return detail::IndexOf<Owner<P>, Type<P>>(P);
+}();
 template<auto P> inline constexpr auto LabelOf = Label<Owner<P>, IndexOf<P>>;
+
+template<typename T> inline constexpr auto TypeLabel = detail::Spaced<fixed_string<state::LeafName<T>().size() + 1>{state::LeafName<T>()}>();
+
+namespace detail {
+template<typename T> consteval std::string_view TypeNameView() {
+    if constexpr (std::same_as<T, bool>) return "bool";
+    else if constexpr (std::same_as<T, float>) return "float";
+    else if constexpr (std::same_as<T, double>) return "double";
+    else if constexpr (std::same_as<T, int8_t>) return "int8";
+    else if constexpr (std::same_as<T, uint8_t>) return "uint8";
+    else if constexpr (std::same_as<T, int16_t>) return "int16";
+    else if constexpr (std::same_as<T, uint16_t>) return "uint16";
+    else if constexpr (std::same_as<T, int32_t>) return "int32";
+    else if constexpr (std::same_as<T, uint32_t>) return "uint32";
+    else if constexpr (std::same_as<T, int64_t>) return "int64";
+    else if constexpr (std::same_as<T, uint64_t>) return "uint64";
+    else return state::LeafName<T>();
+}
+} // namespace detail
+template<typename T> inline constexpr auto TypeName = fixed_string<detail::TypeNameView<T>().size() + 1>{detail::TypeNameView<T>()};
+
+template<auto M> auto &Get(auto &obj) {
+    if constexpr (IsAt<std::remove_cv_t<decltype(M)>>) {
+        auto &[... members] = obj;
+        return members...[std::remove_cv_t<decltype(M)>::Index];
+    } else {
+        return obj.*M;
+    }
+}
 
 template<typename E> inline constexpr size_t EnumCount = detail::CountEnumerators<E>();
 template<typename E, size_t I> inline constexpr auto EnumeratorLabel = detail::Spaced<fixed_string<detail::EnumeratorName<E(I)>().size() + 1>{detail::EnumeratorName<E(I)>()}>();
@@ -169,7 +276,7 @@ template<typename T, size_t I> inline constexpr const FieldSpec &Spec = Specs<T>
 namespace field {
 template<auto P> inline constexpr const FieldSpec &SpecOf = Spec<Owner<P>, IndexOf<P>>;
 
-// Bounds come from the innermost member that declares any.
+// Bounds and Widget come from the innermost chain member that sets them.
 template<auto... Ms> consteval FieldSpec ChainSpec() {
     constexpr std::array specs{SpecOf<Ms>...};
     FieldSpec spec = specs.back();
@@ -177,6 +284,31 @@ template<auto... Ms> consteval FieldSpec ChainSpec() {
         spec.Min = specs[i].Min;
         spec.Max = specs[i].Max;
     }
+    for (size_t i = specs.size() - 1; i-- > 0 && spec.Widget == FieldWidget::Auto;) spec.Widget = specs[i].Widget;
     return spec;
 }
+template<auto... Ms> inline constexpr FieldSpec ChainSpecOf = ChainSpec<Ms...>();
+
+template<auto P> consteval std::string_view MemberLabel() { return SpecOf<P>.Label ? std::string_view{SpecOf<P>.Label} : LabelOf<P>.View(); }
+
+namespace detail {
+template<auto... Ms> consteval auto MakeChainPath() {
+    constexpr std::array labels{MemberLabel<Ms>()...};
+    constexpr std::string_view component = TypeLabel<Owner<First<Ms...>>>.View();
+    constexpr size_t size = [&] {
+        size_t n = component.size();
+        for (size_t i = 0; i + 1 < labels.size(); ++i) n += 3 + labels[i].size();
+        return n;
+    }();
+    fixed_string<size + 1> out{};
+    char *at = Append(out.Chars, component);
+    for (size_t i = 0; i + 1 < labels.size(); ++i) at = Append(Append(at, " / "), labels[i]);
+    return out;
+}
+} // namespace detail
+
+// The leaf's label: its spec Label or spaced name.
+template<auto... Ms> inline constexpr auto ChainLabel = fixed_string<MemberLabel<detail::Last<Ms...>>().size() + 1>{MemberLabel<detail::Last<Ms...>>()};
+// The component name and each enclosing member's label, joined by " / ".
+template<auto... Ms> inline constexpr auto ChainPath = detail::MakeChainPath<Ms...>();
 } // namespace field

@@ -5,22 +5,25 @@
 #include "ui/ChoiceCombo.h"
 #include "ui/FieldEdit.h"
 
-#include "ui/HelpMarker.h" // depends on imgui
-
 template<> inline constexpr field::SpecTable<ContactSurface> Specs<ContactSurface>{
-    {&ContactSurface::Roughness, {.Min = 1e-9, .Max = 1e-2}},
-    {&ContactSurface::CorrelationLength, {.Min = 1e-7, .Max = 1e-1}},
-    {&ContactSurface::SpectralSlope, {.Min = -3, .Max = 0, .Digits = 2}},
+    {&ContactSurface::Roughness, {.Min = 1e-9, .Max = 1e-2, .Unit = FieldUnit::Meters, .Scale = FieldScale::Logarithmic, .Label = "Roughness", .Format = "%.3g", .Help = "Root-mean-square asperity height. Independent of render material roughness."}},
+    {&ContactSurface::CorrelationLength, {.Min = 1e-7, .Max = 1e-1, .Unit = FieldUnit::Meters, .Scale = FieldScale::Logarithmic, .Label = "Correlation length", .Format = "%.3g", .Help = "Lateral asperity spacing. Sets the surface slope at a contact together with roughness."}},
+    {&ContactSurface::SpectralSlope, {.Min = -3, .Max = 0, .Help = "Exponent of the one-dimensional roughness power spectrum. More negative values sound smoother."}},
+    {&ContactSurface::ShortWavelength, {.Min = 1e-8, .Max = 1e-2, .Unit = FieldUnit::Meters, .Scale = FieldScale::Logarithmic, .Label = "Short wavelength", .Format = "%.3g", .Help = "Shortest wavelength in the synthesized roughness spectrum"}},
+    {&ContactSurface::Waviness, {.Min = 0, .Max = 1e-2, .Unit = FieldUnit::Meters, .Scale = FieldScale::Logarithmic, .Label = "Waviness", .Format = "%.3g", .Help = "Root-mean-square height of long-wavelength deviation from the nominal shape. Zero disables it."}},
+    {&ContactSurface::WavinessLength, {.Min = 1e-5, .Max = 1, .Unit = FieldUnit::Meters, .Scale = FieldScale::Logarithmic, .Label = "Waviness length", .Format = "%.3g", .Help = "Lateral scale of the waviness"}},
 };
 
 template<> inline constexpr field::SpecTable<SurfaceSoundControls> Specs<SurfaceSoundControls>{
-    {&SurfaceSoundControls::MaxVoices, {.Min = 1, .Max = 64}},
-    {&SurfaceSoundControls::SustainLevel, {.Min = 0, .Max = 4}},
-    {&SurfaceSoundControls::AccelNoiseGain, {.Min = 0, .Max = 4}},
-    {&SurfaceSoundControls::Coupling, {.Min = 0, .Max = 4}},
-    {&SurfaceSoundControls::ContactDamping, {.Min = 0, .Max = 10}},
-    {&SurfaceSoundControls::MinSlipSpeed, {.Min = 0, .Max = 1}},
-    {&SurfaceSoundControls::MinSweepSpeed, {.Min = 0, .Max = 1}},
+    {&SurfaceSoundControls::MaxVoices, {.Min = 1, .Max = 64, .Help = "Maximum number of sustained-contact voices playing at once"}},
+    {&SurfaceSoundControls::SustainLevel, {.Min = 0, .Max = 4, .Label = "Sustain level", .Help = "Level of the modal drive force from surfaces sliding in persistent contact"}},
+    {&SurfaceSoundControls::AccelNoiseGain, {.Min = 0, .Max = 4, .Label = "Acceleration noise", .Help = "Level of acceleration noise from rigid-body recoil during persistent contact. Zero disables it."}},
+    {&SurfaceSoundControls::Coupling, {.Min = 0, .Max = 4, .Help = "Object vibration fed back into the contact separation. Higher values add micro-collisions and chatter."}},
+    {&SurfaceSoundControls::ContactDamping, {.Min = 0, .Max = 10, .Help = "Scale on the Hunt-Crossley dissipation implied by the pair's restitution"}},
+    {&SurfaceSoundControls::MinSlipSpeed, {.Min = 0, .Max = 1, .Unit = FieldUnit::MetersPerSecond, .Label = "Min slip speed", .Help = "Sliding speed between the surfaces above which a persisting contact sounds"}},
+    {&SurfaceSoundControls::MinSweepSpeed, {.Min = 0, .Max = 1, .Unit = FieldUnit::MetersPerSecond, .Label = "Min sweep speed", .Help = "Speed of the contact across each surface above which a persisting contact sounds. Rolling has sweep without slip."}},
+    {&SurfaceSoundControls::MuteGeometricDrive, {.Help = "Silence the geometric modal drive row to isolate feedback through the modes. Other channels stay active."}},
+    {&SurfaceSoundControls::MuteFrictionDrive, {.Help = "Silence the friction modal drive row to isolate feedback through the modes. Other channels stay active."}},
 };
 
 using namespace ImGui;
@@ -30,13 +33,7 @@ void DrawContactSurfaceControls(state::Scene &r, state::Entity e, const ContactS
     ui::ChoiceCombo("Presets##finish", surface.Name, surfaces::acoustic::All | std::views::transform(&ContactSurfacePreset::Name), std::identity{}, [&](const std::string &name) {
         action::Emit(action::audio::SetSurfacePreset{name});
     });
-    ui::PatchEdit fsurf{surface};
-    fsurf.Slider<&ContactSurface::Roughness>("Roughness (m)", "%.3g", ImGuiSliderFlags_Logarithmic);
-    MeshEditor::HelpMarker("Root-mean-square asperity height. A physical length measured with a profilometer, unrelated to a render material's roughness.");
-    fsurf.Slider<&ContactSurface::CorrelationLength>("Correlation length (m)", "%.3g", ImGuiSliderFlags_Logarithmic);
-    MeshEditor::HelpMarker("Lateral asperity spacing. With roughness it fixes the surface gradient a contact bears on.");
-    fsurf.Slider<&ContactSurface::SpectralSlope>();
-    MeshEditor::HelpMarker("Exponent of the roughness power spectrum. More negative is smoother-sounding.");
+    ui::DrawFields<ContactSurface, &ContactSurface::Name, &ContactSurface::Profile, &ContactSurface::SampleSpacing, &ContactSurface::NormalTexture>(ui::PatchEdit{surface});
 
     // Derive contact constants against an identical body under this object's weight.
     const auto &props = material.Properties;
@@ -49,28 +46,13 @@ void DrawContactSurfaceControls(state::Scene &r, state::Entity e, const ContactS
     const double patch_radius = ContactPatchRadius(load, inv_modulus, curvature);
     Text("Stiffness %.3g N/m^1.5, patch radius %.3g um", ContactStiffness(inv_modulus, curvature), patch_radius * 1e6);
     Text("Contact filter %.0f Hz at 0.1 m/s", patch_radius > 0 ? 0.1 / (2 * patch_radius) : 0.0);
-    MeshEditor::HelpMarker("A patch of radius a cannot resolve wavelengths below about 2a, so the cutoff tracks the sweep speed and softens under heavier load.");
+    ui::Describe("Contact filter", "Contact patch cutoff frequency, the sweep speed over twice the patch radius. Heavier load widens the patch and lowers the cutoff.");
 }
 
 void DrawSurfaceSynthControls(state::Scene &r, state::Entity viewport) {
     ui::Edit f{r, viewport};
     SeparatorText("Sustained contact");
-    f.Slider<&SurfaceSoundControls::MaxVoices>();
-    MeshEditor::HelpMarker("Cap on simultaneous sustained-contact voices.");
-    f.Slider<&SurfaceSoundControls::SustainLevel>("Level##sustain");
-    MeshEditor::HelpMarker("Level of the force a persisting contact drives the modes with as the two surfaces slide over one another.");
-    f.Slider<&SurfaceSoundControls::AccelNoiseGain>("Acceleration noise");
-    MeshEditor::HelpMarker("Level of the acceleration noise a body's rigid recoil radiates while a contact persists. Zero disables it.");
-    f.Slider<&SurfaceSoundControls::Coupling>();
-    MeshEditor::HelpMarker("How much of the object's vibration modulates the contact separation. Coupling produces micro-collisions and chatter that an open-loop force cannot.");
-    f.Slider<&SurfaceSoundControls::ContactDamping>();
-    MeshEditor::HelpMarker("Scale on the Hunt-Crossley dissipation the pair's restitution implies.");
-    f.Slider<&SurfaceSoundControls::MinSlipSpeed>();
-    f.Slider<&SurfaceSoundControls::MinSweepSpeed>();
-    MeshEditor::HelpMarker("A persisting contact sounds only once its slip or either sweep speed clears its floor. Slip is how fast the surfaces slide, and sweep is how fast the contact travels over each surface, so a rolling body has sweep without slip.");
-    f.Check<&SurfaceSoundControls::MuteGeometricDrive>();
-    f.Check<&SurfaceSoundControls::MuteFrictionDrive>();
-    MeshEditor::HelpMarker("Silence one modal drive row at a time, which isolates a feedback loop through the modes to a row. The body feed and every other channel stay live.");
+    ui::DrawFields<SurfaceSoundControls>(f);
     Text("Active voices: %u", SurfaceActiveVoices(r.Context.get<const ModalAudio>()));
 }
 
@@ -80,7 +62,7 @@ void DrawSurfaceContactDebug(const state::Scene &r) {
     SeparatorText("Sustained contact");
     Text("Voices: %u / %u", r.Context.get<const ModalAudio>().ActiveVoices.load(std::memory_order_relaxed), SurfaceControls(r).MaxVoices);
     Text("Refused: %llu", surface.VoicesRefused);
-    MeshEditor::HelpMarker("Contacts the voice cap had no room for, each a body pressing on another that stays silent.");
+    ui::Describe("Refused voices", "Contacts left silent because the voice cap was full");
 
     SeparatorText("Surface tracks");
     size_t filled = 0, bytes = 0;
@@ -90,18 +72,21 @@ void DrawSurfaceContactDebug(const state::Scene &r) {
         bytes += (slot.Owned->Heights.size() + slot.Owned->Sum.size()) * sizeof(float);
     }
     Text("Slots: %zu / %u (%.1f MB)", filled, SurfaceAudioState::MaxSurfaceTracks, double(bytes) / (1024 * 1024));
-    MeshEditor::HelpMarker("Surfaces with the same finish share one slot. A slot keeps its track after its voices end, so the pool fills to what the scene has needed and stays there.");
+    ui::Describe("Surface track slots", "Surfaces with the same finish share one slot. Slots keep their tracks after their voices end.");
     Text("Named by voices: %d", std::popcount(surface.VoiceTrackMask.load(std::memory_order_relaxed)));
-    MeshEditor::HelpMarker("Slots the audio thread's voices are reading. The rest are free to take over when a new track needs the space.");
+    ui::Describe("Slots named by voices", "Slots that active voices are reading. New tracks can reuse the other slots.");
     Text("Refused: %llu", surface.SurfaceTracksRefused);
-    MeshEditor::HelpMarker("Requests the pool had no room for. Each is one surface's finish or relief, and without its track that surface sounds perfectly smooth.");
+    ui::Describe("Refused surface tracks", "Surface finish or relief tracks refused by a full pool. A surface without its track sounds perfectly smooth.");
 
     SeparatorText("Contact meter");
+    static constexpr const char *MeterHelp{"Shocks per second as parted cells take up load again, the share of samples with the contact free, and the share of cell-samples bearing load. Requires the CONTACT_REPORT environment variable."};
     if (const auto rate = surface.ContactShockRate.load(std::memory_order_relaxed); rate > 0) {
         Text("Shocks: %.4g /s", rate);
+        ui::Describe("Contact shocks", MeterHelp);
         Text("Free: %.3f, bearing: %.3f", surface.ContactFreeShare.load(std::memory_order_relaxed), surface.ContactBearingShare.load(std::memory_order_relaxed));
+        ui::Describe("Contact shares", MeterHelp);
     } else {
         TextUnformatted("Off");
+        ui::Describe("Contact meter", MeterHelp);
     }
-    MeshEditor::HelpMarker("How often a cell takes up load again after parting, the share of samples the contact stood free, and the share of cell-samples that bore. Counting them costs an atomic per cell per sample, so the meter runs only under CONTACT_REPORT.");
 }

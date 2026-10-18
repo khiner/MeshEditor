@@ -12,8 +12,10 @@ struct TextureInfo {
 #ifndef __METAL_VERSION__
 #include "Field.h"
 template<> inline constexpr field::SpecTable<TextureInfo> Specs<TextureInfo>{
-    {&TextureInfo::UvOffset, {.Speed = 0.01f}},
-    {&TextureInfo::UvScale, {.Speed = 0.01f}},
-    {&TextureInfo::UvRotation, {.Speed = 0.01f}},
+    {&TextureInfo::Slot, {.Label = "Texture", .Help = "Texture for this property. None uses the factor alone."}},
+    {&TextureInfo::TexCoord, {.Min = 0, .Max = 3, .Label = "UV set", .Help = "Texture coordinate set"}},
+    {&TextureInfo::UvOffset, {.Speed = 0.01f, .Label = "UV offset", .Help = "Translation of the texture coordinates, applied after rotation and scale"}},
+    {&TextureInfo::UvScale, {.Speed = 0.01f, .Label = "UV scale", .Help = "Scale of the texture coordinates"}},
+    {&TextureInfo::UvRotation, {.Speed = 0.01f, .Unit = FieldUnit::Radians, .Label = "UV rotation", .Help = "Counterclockwise rotation of the texture coordinates"}},
 };
 #endif

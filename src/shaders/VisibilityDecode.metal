@@ -191,7 +191,7 @@ inline ResolvedVisibility ResolveVisibilityElement(
     ResolvedVisibility result,
     device const BindlessSet &bindless,
     constant SceneViewUBO &view,
-    constant ViewportTheme &theme,
+    constant ViewportThemeUbo &theme,
     constant WorkspaceLights &workspace,
     VisibilityShadingPushConstants pc
 ) {
@@ -212,7 +212,7 @@ inline ResolvedVisibility ResolveVisibilityId(
     uint id,
     device const BindlessSet &bindless,
     constant SceneViewUBO &view,
-    constant ViewportTheme &theme,
+    constant ViewportThemeUbo &theme,
     constant WorkspaceLights &workspace,
     VisibilityShadingPushConstants pc
 ) {
@@ -223,7 +223,7 @@ inline VisibilityMetadata DecodeVisibilityMetadata(
     uint id,
     device const BindlessSet &bindless,
     constant SceneViewUBO &view,
-    constant ViewportTheme &theme,
+    constant ViewportThemeUbo &theme,
     constant WorkspaceLights &workspace,
     VisibilityShadingPushConstants pc
 ) {
@@ -342,7 +342,7 @@ inline DecodedVisibility DecodeVisibilityId(
     uint id, float2 pixel,
     device const BindlessSet &bindless,
     constant SceneViewUBO &view,
-    constant ViewportTheme &theme,
+    constant ViewportThemeUbo &theme,
     constant WorkspaceLights &workspace,
     VisibilityShadingPushConstants pc,
     bool attributes = true
@@ -357,7 +357,7 @@ inline DecodedVisibility DecodeVisibility(
     float2 pixel, texture2d<uint, access::read> visibility,
     device const BindlessSet &bindless,
     constant SceneViewUBO &view,
-    constant ViewportTheme &theme,
+    constant ViewportThemeUbo &theme,
     constant WorkspaceLights &workspace,
     VisibilityShadingPushConstants pc
 ) {

@@ -38,6 +38,7 @@
 #include "timeline/TimelineTheme.h"
 #include "timeline/TimelineUi.h"
 #include "ui/CtrlShortcut.h"
+#include "ui/FieldEdit.h"
 #include "ui/InterfaceTheme.h"
 #include "ui/InterfaceUi.h"
 #include "ui/MacBackend.h"
@@ -390,7 +391,8 @@ void RevertSavedProject(state::Scene &r, state::Entity viewport) {
 void BuildDefaultDockLayout(const WindowsState &windows, ImGuiID dockspace_id) {
     auto controls_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.3f, nullptr, &dockspace_id);
     const auto extra_node_id = DockBuilderSplitNode(controls_node_id, ImGuiDir_Down, 0.4f, nullptr, &controls_node_id);
-    const auto timeline_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Down, 0.1f, nullptr, &dockspace_id);
+    auto timeline_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Down, 0.1f, nullptr, &dockspace_id);
+    const auto info_node_id = DockBuilderSplitNode(timeline_node_id, ImGuiDir_Right, 0.25f, nullptr, &timeline_node_id);
     DockBuilderDockWindow(windows.History.Name, extra_node_id);
     DockBuilderDockWindow(windows.Style.Name, extra_node_id);
     DockBuilderDockWindow(windows.Debug.Name, extra_node_id);
@@ -400,6 +402,7 @@ void BuildDefaultDockLayout(const WindowsState &windows, ImGuiID dockspace_id) {
     DockBuilderDockWindow(windows.SceneControls.Name, controls_node_id);
     DockBuilderDockWindow(windows.Timeline.Name, timeline_node_id);
     DockBuilderDockWindow(windows.Nodes.Name, timeline_node_id);
+    DockBuilderDockWindow(windows.Info.Name, info_node_id);
     DockBuilderGetNode(extra_node_id)->SelectedTabId = ImHashStr(windows.History.Name);
     DockBuilderGetNode(timeline_node_id)->SelectedTabId = ImHashStr(windows.Timeline.Name);
     DockBuilderDockWindow(windows.Viewport.Name, dockspace_id);
@@ -475,6 +478,45 @@ void DrawStyleWindow(state::Scene &r, state::Entity viewport, Window &window) {
     End();
 }
 
+// A whole number prints without decimals, any other value in its shortest form, and both carry the unit symbol.
+void FormatBound(std::span<char> out, double value, FieldUnit unit) {
+    snprintf(out.data(), out.size(), value == std::floor(value) ? "%.0f%s" : "%g%s", value, UnitSymbol(unit).data());
+}
+
+void DrawFieldTypeLine(const char *type, const FieldSpec *spec) {
+    if (!spec || !spec->Bounded()) {
+        Text("Type: %s", type);
+        return;
+    }
+    const bool radians = spec->Unit == FieldUnit::Radians;
+    const auto bound = [radians](double value) { return radians ? double(numeric::Degrees(float(value))) : value; };
+    char lo[32] = "-inf", hi[32] = "inf";
+    if (spec->HasMin()) FormatBound(lo, bound(spec->Min), spec->Unit);
+    if (spec->HasMax()) FormatBound(hi, bound(spec->Max), spec->Unit);
+    Text("Type: %s | Range: %c%s, %s%c", type, spec->HasMin() ? '[' : '(', lo, hi, spec->HasMax() ? ']' : ')');
+}
+
+void DrawInfoWindow(state::Scene &r, Window &window) {
+    const auto info = std::exchange(ui::Hovered, {});
+    if (!window.Visible) return;
+    if (Begin(window.Name, &window.Visible)) {
+        if (!info.Label) {
+            TextDisabled("Hover a field for its description.");
+        } else {
+            TextUnformatted(info.Label);
+            if (info.Path) TextDisabled("%s", info.Path);
+            if (info.Type) DrawFieldTypeLine(info.Type, info.Spec);
+            if (info.Help) TextWrapped("%s%s", info.Help, std::string_view{info.Help}.ends_with('.') ? "" : ".");
+            if (info.Status) TextUnformatted(info.Status);
+            if (info.Selection && r.view<Selected>().size() > 1) TextUnformatted("Alt applies the edit to every selected object");
+            if (info.Key && info.Key->HasChannel) {
+                Text("%s%s", info.Key->KeyAtFrame ? "Keyed on this frame" : "Animated", info.Key->Changed ? ", changed since the key" : "");
+            }
+        }
+    }
+    End();
+}
+
 struct EditorWindowsFrame {
     uvec2 ViewportExtent{};
     bool ViewportBegun{false};
@@ -488,6 +530,7 @@ EditorWindowsFrame BeginEditorWindows(
     RenderDebugWindow(r, ctx, layer, windows, io);
     if (project::DrawHistoryWindow(Session(r), windows.History, interactive) && SaveWorkspace(r, viewport)) Session(r).ClearHistory();
     DrawStyleWindow(r, viewport, windows.Style);
+    DrawInfoWindow(r, windows.Info);
     if (windows.ImGuiDemo.Visible) ShowDemoWindow(&windows.ImGuiDemo.Visible);
     if (windows.ImSpinnerDemo.Visible) {
         if (Begin(windows.ImSpinnerDemo.Name, &windows.ImSpinnerDemo.Visible)) ImSpinner::demoSpinners();
@@ -511,7 +554,7 @@ EditorWindowsFrame BeginEditorWindows(
             const auto &keyframes = r.get<const SelectedKeyframes>(viewport).Frames;
             if (auto action = RenderTimeline(
                     r.get<const TimelineRange>(viewport), r.get<const TimelinePlayback>(viewport),
-                    r.get<const TimelineView>(viewport), r.get<const TimelineNavigation>(viewport), r.get<const Animations>(viewport),
+                    r.get<const TimelineView>(viewport), r, viewport, r.get<const Animations>(viewport),
                     keyframes, r.Context.get<const ViewportIcons>().Timeline, r.get<const InterfaceTheme>(viewport), r.get<const TimelineTheme>(viewport), scrubbing
                 );
                 interactive && action) {
@@ -1064,8 +1107,7 @@ struct CaptureRequest {
     bool XRay{false};
     bool SelectAll{false};
     float LodErrorPixels{-1.f}; // Cluster LOD error override in pixels; negative uses the viewport setting.
-    uint8_t NormalOverlays{0};
-    bool BoundingBoxes{false}, TetWireframe{false};
+    SelectionOverlays Selection{};
 };
 
 struct BenchmarkDriver {
@@ -1573,6 +1615,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
             if (BeginMenu("Windows")) {
                 MenuItem(windows.History.Name, nullptr, &windows.History.Visible);
                 MenuItem(windows.Nodes.Name, nullptr, &windows.Nodes.Visible);
+                MenuItem(windows.Info.Name, nullptr, &windows.Info.Visible);
                 MenuItem(windows.Style.Name, nullptr, &windows.Style.Visible);
                 MenuItem(windows.Debug.Name, nullptr, &windows.Debug.Visible);
                 MenuItem(windows.ImGuiDemo.Name, nullptr, &windows.ImGuiDemo.Visible);
@@ -1709,9 +1752,10 @@ SceneStatus RunHeadlessScene(state::Scene &r, state::Entity viewport, const char
     if (driver.SeedStatus != SceneStatus::Ok) {
         return driver.SeedStatus;
     }
-    if (capture.NormalOverlays != 0) Perform(r, action::UpdateOf<&ViewportDisplay::NormalOverlays>(action::OnViewport{}, capture.NormalOverlays));
-    if (capture.BoundingBoxes) Perform(r, action::UpdateOf<&ViewportDisplay::ShowBoundingBoxes>(action::OnViewport{}, true));
-    if (capture.TetWireframe) Perform(r, action::UpdateOf<&ViewportDisplay::ShowTetWireframe>(action::OnViewport{}, true));
+    if (capture.Selection.VertexNormals) Perform(r, action::UpdateOf<&ViewportDisplay::Selection, &SelectionOverlays::VertexNormals>(action::OnViewport{}, true));
+    if (capture.Selection.FaceNormals) Perform(r, action::UpdateOf<&ViewportDisplay::Selection, &SelectionOverlays::FaceNormals>(action::OnViewport{}, true));
+    if (capture.Selection.BoundingBoxes) Perform(r, action::UpdateOf<&ViewportDisplay::Selection, &SelectionOverlays::BoundingBoxes>(action::OnViewport{}, true));
+    if (capture.Selection.TetWireframe) Perform(r, action::UpdateOf<&ViewportDisplay::Selection, &SelectionOverlays::TetWireframe>(action::OnViewport{}, true));
 
     frame_state.DeltaTime = driver.RenderDt;
     int bench_frames = capture.BenchFrames;
@@ -1908,10 +1952,10 @@ std::expected<LaunchOptions, int> ParseLaunchOptions(std::span<const std::string
                 const auto end = std::min(names.find(',', start), names.size());
                 const auto item = names.substr(start, end - start);
                 start = end + 1;
-                if (item == "vertex-normals") capture.NormalOverlays |= uint8_t(Element::Vertex);
-                else if (item == "face-normals") capture.NormalOverlays |= uint8_t(Element::Face);
-                else if (item == "bounds") capture.BoundingBoxes = true;
-                else if (item == "tet-wireframe") capture.TetWireframe = true;
+                if (item == "vertex-normals") capture.Selection.VertexNormals = true;
+                else if (item == "face-normals") capture.Selection.FaceNormals = true;
+                else if (item == "bounds") capture.Selection.BoundingBoxes = true;
+                else if (item == "tet-wireframe") capture.Selection.TetWireframe = true;
                 else {
                     std::println(stderr, "Unknown display overlay '{}'.", item);
                     return std::unexpected(1);

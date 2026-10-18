@@ -109,7 +109,6 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                 }
                 if (target) set_frame(*target);
             },
-            [&](const SetNavigation &a) { r.replace<TimelineNavigation>(viewport, a.Value); },
             [&](const SetView &a) { r.replace<TimelineView>(viewport, TimelineView{a.PixelsPerFrame, a.ViewCenterFrame}); },
         },
         action

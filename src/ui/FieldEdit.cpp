@@ -42,8 +42,8 @@ void KeyDecorator(const state::Scene &r, state::Entity entity, const ChannelTarg
         if (d.KeyAtFrame) draw->AddQuadFilled(top, right, bottom, left, color);
         else draw->AddQuad(top, right, bottom, left, color, 1.5f);
     }
-    ImGui::SetItemTooltip("%s", d.KeyAtFrame ? "Delete keyframe" : d.HasChannel ? "Insert keyframe" :
-                                                                                  "Insert keyframe and start animating this property");
+    Describe("Keyframe", d.KeyAtFrame ? "Delete the keyframe at the current frame." : d.HasChannel ? "Insert a keyframe at the current frame." :
+                                                                                                     "Insert a keyframe and start animating this property.");
     if (clicked) {
         const action::animation::KeyScope keys{entity == FindActiveEntity(r) ? action::Target{action::OnActive{}} : action::Target{entity}, target};
         if (d.KeyAtFrame) action::Emit(action::animation::DeleteKey{keys});
@@ -65,8 +65,7 @@ action::Target GestureTarget{action::OnActive{}};
 bool GestureTyped{false};
 } // namespace
 
-std::optional<action::Target> FieldGesture(state::Scene &r, bool changed, bool selection, bool delta_capable) {
-    if (selection && ImGui::IsItemHovered() && r.view<Selected>().size() > 1) ImGui::SetItemTooltip("Hold Alt to apply to all selected");
+std::optional<action::Target> FieldGesture(bool changed, bool selection, bool delta_capable) {
     if (ImGui::IsItemActivated()) {
         GestureTarget = TargetFromAlt(delta_capable);
         GestureTyped = false;

@@ -21,7 +21,7 @@ kernel void MotionBlurTilesFlattenKernel(
     threadgroup float2 *max_motion [[threadgroup(1)]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
     constant MotionBlurTilesFlattenPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
     constant SceneViewUBO &previous [[buffer(5)]],

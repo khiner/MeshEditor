@@ -8,8 +8,11 @@ struct Anisotropy {
     TextureInfo Texture DEFAULT();
 };
 #ifndef __METAL_VERSION__
+#include <numbers>
+
 template<> inline constexpr field::SpecTable<Anisotropy> Specs<Anisotropy>{
-    {&Anisotropy::Strength, {.Min = 0, .Max = 1}},
-    {&Anisotropy::Rotation, {.Min = 0, .Max = 6.2831853f, .Digits = 1, .Unit = FieldUnit::Radians}},
+    {&Anisotropy::Strength, {.Min = 0, .Max = 1, .Help = "Anisotropy strength, multiplied by the texture's blue channel"}},
+    {&Anisotropy::Rotation, {.Min = 0, .Max = 2 * std::numbers::pi_v<float>, .Unit = FieldUnit::Radians, .Help = "Counterclockwise rotation of the anisotropy direction from the tangent"}},
+    {&Anisotropy::Texture, {.Help = "Direction in the red and green channels, and strength in the blue channel"}},
 };
 #endif

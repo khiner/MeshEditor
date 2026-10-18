@@ -40,7 +40,7 @@ using BoneSolidMeshOutput = metal::mesh<BoneSolidVaryings, void, 24u, 8u, metal:
     uint3 threadgroup_position [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
     constant MeshletDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
@@ -61,7 +61,7 @@ fragment OverlayTargetsDepth BoneSolidFragment(
     BoneSolidVaryings in [[stage_in]],
     bool front_facing [[front_facing]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
 ) {
     // Account for mirrored instances during manual backface culling.

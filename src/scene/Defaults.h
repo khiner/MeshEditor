@@ -7,7 +7,7 @@
 
 constexpr float Pi{std::numbers::pi_v<float>};
 
-void UpdateDerivedColors(ViewportTheme &);
+DerivedThemeColors DeriveThemeColors(const ViewportTheme &);
 
 struct Defaults {
     static constexpr vec3 WorldUp{0, 1, 0};

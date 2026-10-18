@@ -118,7 +118,7 @@ void RetuneModalObject(const state::Scene &r, ModalBank &b, uint32_t slot, state
 
     const float scale = UniformScaleRatio(r, e, modes);
     const auto *tuning = r.try_get<const ModalTuning>(e);
-    const float fundamental = tuning ? tuning->FundamentalFreq : 0.f;
+    const float fundamental = tuning ? tuning->FundamentalFreq.value_or(0.f) : 0.f;
     const float freq_ratio = (fundamental > 0 && modes.Freqs.front() > 0 ? fundamental / modes.Freqs.front() : 1.f) / scale;
     const float t60_scale = tuning ? tuning->T60Scale : 1.f;
     std::optional<double> alpha;
@@ -327,17 +327,6 @@ std::optional<ModalModes> RescaledModes(const ModalEigenSummary &summary, const 
     return modal::RescaleModes(summary, modes, props, config);
 }
 
-// A synth tuning still at its default (fundamental == the old model's lowest mode) follows the new model, while a user-set tuning stays pinned.
-void ReplaceModalModes(state::Scene &r, state::Entity e, ModalModes new_modes) {
-    const auto *tuning = r.try_get<const ModalTuning>(e);
-    const auto *old_modes = r.try_get<const ModalModes>(e);
-    if (tuning && old_modes && !old_modes->Freqs.empty() && !new_modes.Freqs.empty() &&
-        tuning->FundamentalFreq == old_modes->Freqs.front() && tuning->FundamentalFreq != new_modes.Freqs.front()) {
-        r.replace<ModalTuning>(e, ModalTuning{new_modes.Freqs.front(), tuning->T60Scale});
-    }
-    r.emplace_or_replace<ModalModes>(e, std::move(new_modes));
-}
-
 // Re-derive the entity's modal model for its effective material, from the current acoustic material and the body's one mass.
 // Poisson-ratio changes require a new solve.
 void RescaleModalObject(state::Scene &r, state::Entity e) {
@@ -345,7 +334,7 @@ void RescaleModalObject(state::Scene &r, state::Entity e) {
     const auto &summary = r.get<const ModalEigenSummary>(e);
     const auto *settings = r.try_get<const ModalSolveSettings>(e);
     auto rescaled = RescaledModes(summary, modes, EffectiveModalMaterial(r, e, summary), settings ? *settings : ModalSolveSettings{});
-    if (rescaled && *rescaled != modes) ReplaceModalModes(r, e, std::move(*rescaled));
+    if (rescaled && *rescaled != modes) r.emplace_or_replace<ModalModes>(e, std::move(*rescaled));
 }
 
 void HashCombine(size_t &seed, const auto &...values) {
@@ -767,7 +756,7 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
         for (const auto e : modal_tracker) {
             const auto *modes = r.try_get<const ::ModalModes>(e);
             if (!modes) continue;
-            if (!r.all_of<ModalTuning>(e)) r.emplace<ModalTuning>(e, modes->Freqs.empty() ? 0.f : modes->Freqs.front(), 1.f);
+            if (!r.all_of<ModalTuning>(e)) r.emplace<ModalTuning>(e);
             if (!r.all_of<ModalGain>(e)) r.emplace<ModalGain>(e);
             if (!r.all_of<ModalSolveSettings>(e)) {
                 r.emplace<ModalSolveSettings>(e, modes->Vertices.empty() ? ModalSolveSettings{} : ModalSolveSettings{.NumVertices = uint32_t(modes->Vertices.size())});
@@ -911,7 +900,7 @@ void ApplyModalModel(state::Scene &r, state::Entity e, const fs::path &path) {
         if (auto rescaled = RescaledModes(data->Summary, data->Modes, props, settings ? *settings : ModalSolveSettings{})) data->Modes = std::move(*rescaled);
     }
     r.emplace_or_replace<MassProperties>(e, data->Mass);
-    ReplaceModalModes(r, e, std::move(data->Modes));
+    r.emplace_or_replace<ModalModes>(e, std::move(data->Modes));
     r.emplace_or_replace<ModalEigenSummary>(e, std::move(data->Summary));
     auto &meshes = r.Context.get<MeshStore>();
     if (const auto *existing = r.try_get<const TetBuffers>(mesh_entity)) meshes.ReleaseTets(*existing);

@@ -89,6 +89,16 @@ namespace detail {
 // A non-virtual data-member pointer's bit pattern is the byte offset.
 template<typename P>
 constexpr std::ptrdiff_t MemPtrOffset(P p) { return std::bit_cast<std::ptrdiff_t>(p); }
+// The byte offset of member I, measured once on a default-constructed T.
+template<typename T, size_t I>
+std::ptrdiff_t MemPtrOffset(field::At<T, I>) {
+    static const auto offset = [] {
+        const T value{};
+        auto &[... members] = value;
+        return reinterpret_cast<const std::byte *>(&members...[I]) - reinterpret_cast<const std::byte *>(&value);
+    }();
+    return offset;
+}
 
 template<auto... Ms>
 uint16_t FieldOffset() { return uint16_t((MemPtrOffset(Ms) + ...)); }
@@ -101,7 +111,7 @@ template<auto... Ms> using last_field = field::Type<last_v<Ms...>>;
 
 using Core = std::variant<
     Update<bool>, Update<uint8_t>, Update<uint32_t>, Update<float>, Update<double>,
-    Update<vec2>, Update<uvec2>, Update<vec3>, Update<vec4>, Update<quat>, Update<state::Entity>, Update<std::optional<uint32_t>>, Update<std::optional<float>>,
+    Update<vec2>, Update<uvec2>, Update<vec3>, Update<vec4>, Update<quat>, Update<state::Entity>, Update<std::optional<uint32_t>>, Update<std::optional<float>>, Update<std::optional<vec3>>,
     Update<CollideMode>, Update<PhysicsCombineMode>,
     Update<TransformGizmo::Type>, Update<TransformGizmo::Mode>,
     Update<DebugChannel>, Update<AnisotropicFilterLevel>, Update<std::optional<MotionBlur>>,

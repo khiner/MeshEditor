@@ -60,7 +60,7 @@ fragment float2 MeshletSilhouetteFragment(
     bool front_facing [[front_facing]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
     constant VisibilityShadingPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
@@ -75,7 +75,7 @@ kernel void VisibilityObjectSelectionKernel(
     texture2d<float, access::read> depth [[texture(1)]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
     constant VisibilitySelectionPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
@@ -95,7 +95,7 @@ fragment void MeshletObjectPickFragment(
     bool front_facing [[front_facing]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
     constant VisibilitySelectionPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {

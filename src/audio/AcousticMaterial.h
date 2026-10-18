@@ -13,11 +13,11 @@ struct AcousticMaterial {
 // Limit Poisson ratio below 0.5 to keep Lame's lambda finite.
 // Set the beta floor above the logarithmic slider's zero epsilon.
 template<> inline constexpr field::SpecTable<AcousticMaterialProperties> Specs<AcousticMaterialProperties>{
-    {&AcousticMaterialProperties::Density, {.Min = 1, .Max = 25000, .Digits = 0}},
-    {&AcousticMaterialProperties::YoungModulus, {.Min = 1e5, .Max = 1e12}},
-    {&AcousticMaterialProperties::PoissonRatio, {.Min = 0, .Max = 0.49, .Digits = 2}},
-    {&AcousticMaterialProperties::Alpha, {.Min = 0, .Max = 200}},
-    {&AcousticMaterialProperties::Beta, {.Min = 1e-9, .Max = 1e-4}},
+    {&AcousticMaterialProperties::Density, {.Min = 1, .Max = 25000, .Unit = FieldUnit::KilogramsPerCubicMeter, .Label = "Density", .Help = "Mass per unit volume"}},
+    {&AcousticMaterialProperties::YoungModulus, {.Min = 1e5, .Max = 1e12, .Unit = FieldUnit::Pascals, .Scale = FieldScale::Logarithmic, .Label = "Young's modulus", .Format = "%.3g", .Help = "Stiffness in tension. Higher values raise every mode frequency."}},
+    {&AcousticMaterialProperties::PoissonRatio, {.Min = 0, .Max = 0.49, .Label = "Poisson's ratio", .Help = "Ratio of lateral contraction to axial extension"}},
+    {&AcousticMaterialProperties::Alpha, {.Min = 0, .Max = 200, .Unit = FieldUnit::PerSecond, .Label = "Rayleigh alpha", .Format = "%.3g", .Help = "Mass-proportional Rayleigh damping coefficient. Mostly damps low frequencies."}},
+    {&AcousticMaterialProperties::Beta, {.Min = 1e-9, .Max = 1e-4, .Unit = FieldUnit::Seconds, .Scale = FieldScale::Logarithmic, .Label = "Rayleigh beta", .Format = "%.3g", .Help = "Stiffness-proportional Rayleigh damping coefficient. Mostly damps high frequencies."}},
 };
 
 // Material presets from KleinPAT, Table 4.

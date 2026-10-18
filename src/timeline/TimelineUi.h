@@ -8,7 +8,7 @@ struct TimelineTheme;
 
 // Draws `keyframes` (sorted timeline frames) as a summary row under the ruler.
 // Sets `scrubbing` while the frame marker is pressed.
-std::optional<action::Action> RenderTimeline(const TimelineRange &, const TimelinePlayback &, const TimelineView &, const TimelineNavigation &, const Animations &, std::span<const float> keyframes, const TimelineIcons &, const InterfaceTheme &, const TimelineTheme &, bool &scrubbing);
+std::optional<action::Action> RenderTimeline(const TimelineRange &, const TimelinePlayback &, const TimelineView &, state::Scene &, state::Entity viewport, const Animations &, std::span<const float> keyframes, const TimelineIcons &, const InterfaceTheme &, const TimelineTheme &, bool &scrubbing);
 void DrawTimelineStyle(state::Scene &, state::Entity viewport);
 
 // Left/Right offset one frame, Shift+Left/Right jump to a range end, and Ctrl+Left/Right jump by the navigation delta.

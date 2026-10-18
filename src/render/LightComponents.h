@@ -15,8 +15,12 @@ struct PunctualLight {
     bool operator==(const PunctualLight &) const = default;
 };
 template<> inline constexpr field::SpecTable<PunctualLight> Specs<PunctualLight>{
-    {&PunctualLight::Intensity, {.Min = 0, .Max = 1000, .Digits = 2}},
-    {&PunctualLight::Range, {.Min = 0.01, .Max = 1000, .Digits = 2}},
+    {&PunctualLight::Range, {.Min = 0, .Max = 1000, .Unit = FieldUnit::Meters, .Help = "Distance at which the light fades to zero. Zero is infinite."}},
+    {&PunctualLight::Color, {.Widget = FieldWidget::Color, .Help = "Color of the emitted light"}},
+    {&PunctualLight::Intensity, {.Min = 0, .Max = 1000, .Help = "Brightness in candela for point and spot lights, and lux for directional lights"}},
+    {&PunctualLight::InnerConeAngle, {.Unit = FieldUnit::Radians, .Help = "Angle from the spot axis where the falloff begins"}},
+    {&PunctualLight::OuterConeAngle, {.Unit = FieldUnit::Radians, .Help = "Angle from the spot axis where the light ends"}},
+    {&PunctualLight::Type, {.Help = "Directional lights shine from infinitely far away, point lights in all directions, and spot lights in a cone"}},
 };
 
 // The scene's EXT_lights_image_based light on the viewport.
@@ -27,7 +31,7 @@ struct ImageLight {
 
     bool operator==(const ImageLight &) const = default;
 };
-template<> inline constexpr field::SpecTable<ImageLight> Specs<ImageLight>{{&ImageLight::Intensity, {.Min = 0, .Max = 2, .Digits = 2}}};
+template<> inline constexpr field::SpecTable<ImageLight> Specs<ImageLight>{{&ImageLight::Intensity, {.Min = 0, .Max = 2, .Help = "Multiplier on the scene's image-based lighting"}}};
 
 // The light's slot in the GPU light buffer.
 struct LightIndex {

@@ -476,3 +476,51 @@ struct CookPlan {
     std::vector<uint32_t> Consumers; // The inputs reading each socket slot
 };
 } // namespace procedure
+
+template<> inline constexpr field::SpecTable<procedure::Boolean> Specs<procedure::Boolean>{{&procedure::Boolean::Operation, {.Help = "Set operation on the two closed input meshes. Difference subtracts the second mesh from the first."}}};
+template<> inline constexpr field::SpecTable<procedure::Normal> Specs<procedure::Normal>{{&procedure::Normal::Domain, {.Help = "Element domain of the emitted normals: vertices or faces"}}};
+template<> inline constexpr field::SpecTable<procedure::Index> Specs<procedure::Index>{{&procedure::Index::Domain, {.Help = "Element domain of the emitted indices"}}};
+template<> inline constexpr field::SpecTable<procedure::NamedAttribute> Specs<procedure::NamedAttribute>{
+    {&procedure::NamedAttribute::Type, {.Help = "Value type of the attribute to read"}},
+    {&procedure::NamedAttribute::Name, {.Help = "Name of the attribute to read. A missing attribute faults the node."}},
+};
+template<> inline constexpr field::SpecTable<procedure::VectorMath> Specs<procedure::VectorMath>{
+    {&procedure::VectorMath::Operation, {.Help = "Operation on A and B. Dot, Length, and Distance give a float, and Scale multiplies A by Scale."}},
+    {&procedure::VectorMath::B, {.Help = "Second operand while the B input is unlinked"}},
+    {&procedure::VectorMath::Scale, {.Help = "Factor for the Scale operation while the Scale input is unlinked"}},
+};
+template<> inline constexpr field::SpecTable<procedure::FloatMath> Specs<procedure::FloatMath>{
+    {&procedure::FloatMath::Operation, {.Help = "Operation on A and B. Unary operations such as Abs, Sqrt, Sin, and Cos ignore B, and Sin and Cos take radians."}},
+    {&procedure::FloatMath::B, {.Help = "Second operand while the B input is unlinked"}},
+};
+template<> inline constexpr field::SpecTable<procedure::Compare> Specs<procedure::Compare>{
+    {&procedure::Compare::Operation, {.Help = "Comparison of A against B"}},
+    {&procedure::Compare::B, {.Help = "Value compared against A while the B input is unlinked"}},
+    {&procedure::Compare::Epsilon, {.Help = "Largest difference that Equal counts as equal"}},
+    {&procedure::Compare::Component, {.Help = "Vector component to compare. Float operands ignore it."}},
+};
+template<> inline constexpr field::SpecTable<procedure::BooleanMath> Specs<procedure::BooleanMath>{
+    {&procedure::BooleanMath::Operation, {.Help = "Logical operation on A and B. Not ignores B."}},
+    {&procedure::BooleanMath::B, {.Help = "Second operand while the B input is unlinked"}},
+};
+template<> inline constexpr field::SpecTable<procedure::StoreNamedAttribute> Specs<procedure::StoreNamedAttribute>{
+    {&procedure::StoreNamedAttribute::Name, {.Help = "Name of the attribute to write. An existing attribute with this name is replaced."}},
+    {&procedure::StoreNamedAttribute::Domain, {.Help = "Element domain for a constant value. A linked attribute value keeps its own domain."}},
+};
+template<> inline constexpr field::SpecTable<procedure::FloatValue> Specs<procedure::FloatValue>{{&procedure::FloatValue::Value, {.Help = "Float the node outputs"}}};
+template<> inline constexpr field::SpecTable<procedure::IntegerValue> Specs<procedure::IntegerValue>{{&procedure::IntegerValue::Value, {.Help = "Unsigned integer the node outputs"}}};
+template<> inline constexpr field::SpecTable<procedure::BooleanValue> Specs<procedure::BooleanValue>{{&procedure::BooleanValue::Value, {.Help = "Boolean the node outputs"}}};
+template<> inline constexpr field::SpecTable<procedure::VectorValue> Specs<procedure::VectorValue>{{&procedure::VectorValue::Value, {.Help = "Vector the node outputs"}}};
+template<> inline constexpr field::SpecTable<procedure::RotationValue> Specs<procedure::RotationValue>{{&procedure::RotationValue::Value, {.Help = "Rotation the node outputs"}}};
+template<> inline constexpr field::SpecTable<procedure::SetPosition> Specs<procedure::SetPosition>{{&procedure::SetPosition::Offset, {.Help = "Offset each selected vertex by the Position input instead of replacing its position"}}};
+template<> inline constexpr field::SpecTable<procedure::TransformElements> Specs<procedure::TransformElements>{
+    {&procedure::TransformElements::Delta, {.Help = "Translation, rotation, and scale applied to the selected vertices around Pivot"}},
+    {&procedure::TransformElements::Pivot, {.Help = "Center of rotation and scale in Frame space, in local units"}},
+    {&procedure::TransformElements::Frame, {.Help = "Transform from mesh-local positions into the space Delta applies in"}},
+};
+template<> inline constexpr field::SpecTable<procedure::TransformGeometry> Specs<procedure::TransformGeometry>{{&procedure::TransformGeometry::Delta, {.Help = "Translation, rotation, and scale applied to the whole geometry about the mesh origin"}}};
+template<> inline constexpr field::SpecTable<procedure::InstanceOnPoints> Specs<procedure::InstanceOnPoints>{
+    {&procedure::InstanceOnPoints::Scale, {.Help = "Scale of each instance while the Scale input is unlinked"}},
+    {&procedure::InstanceOnPoints::Rotation, {.Help = "Rotation of each instance while the Rotation input is unlinked"}},
+};
+template<> inline constexpr field::SpecTable<procedure::ObjectInfo> Specs<procedure::ObjectInfo>{{&procedure::ObjectInfo::Object, {.Help = "Object whose mesh the node emits. The object this procedure edits is not allowed."}}};

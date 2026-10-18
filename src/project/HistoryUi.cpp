@@ -3,8 +3,8 @@
 #include "project/Project.h"
 #include "ui/CtrlShortcut.h"
 #include "ui/FieldEdit.h"
-#include "ui/TransformEdit.h"
 
+#include <format>
 #include <imgui_stdlib.h>
 
 namespace project {
@@ -158,7 +158,7 @@ template<typename T> void DrawValue(const state::Scene &r, const char *label, T 
 }
 
 template<typename T> void DrawFields(const state::Scene &r, T &value, bool &changed, bool &finished) {
-    field::ForEach(value, [&]<size_t I>(auto &member, std::integral_constant<size_t, I>) { DrawValue(r, field::Label<T, I>.c_str(), member, Spec<T, I>, changed, finished); });
+    field::ForEach(value, [&]<size_t I>(auto &member, std::integral_constant<size_t, I>) { DrawValue(r, field::ChainLabel<field::At<T, I>{}>.c_str(), member, Spec<T, I>, changed, finished); });
 }
 
 // The node's label names the component and field a write targets, so only its target and value draw here.
@@ -259,7 +259,7 @@ bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive
         SameLine();
 #endif
         clear = Button("Clear history") && interactive;
-        SetItemTooltip("Keep the current and last saved states. Discard other undo/redo states.");
+        ui::Describe("Clear history", "Keep the current and last saved states, and discard other undo and redo states");
         Separator();
         const auto rail_bit = [](uint32_t depth) { return uint32_t{1} << (std::min(depth, 20u) - 1); };
         if (window.TreeRevision != history.Revision) {

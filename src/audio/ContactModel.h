@@ -21,8 +21,8 @@ struct Striker {
     float Length{0.19f}; // Cylinder length, m (~0.5 kg of steel at the default radius)
 };
 template<> inline constexpr field::SpecTable<Striker> Specs<Striker>{
-    {&Striker::TipRadius, {.Min = 0.0005, .Max = 0.1, .Digits = 4}},
-    {&Striker::Length, {.Min = 0.001, .Max = 1}},
+    {&Striker::TipRadius, {.Min = 0.0005, .Max = 0.1, .Digits = 4, .Unit = FieldUnit::Meters, .Label = "Tip radius", .Help = "Radius of the capsule's hemispherical cap and cylinder cross-section. Sets contact curvature."}},
+    {&Striker::Length, {.Min = 0.001, .Max = 1, .Unit = FieldUnit::Meters, .Label = "Length", .Help = "Length of the capsule's cylinder. Sets striker mass with tip radius and density."}},
 };
 
 // Defines the compliance, curvature, and inverse mass of one side of a Hertz contact.

@@ -33,4 +33,11 @@ struct TransformGizmoState {
     TransformGizmo::Config Config;
     TransformGizmo::Mode Mode;
 };
-template<> inline constexpr field::SpecTable<TransformGizmo::Config> Specs<TransformGizmo::Config>{{&TransformGizmo::Config::SnapValue, {.Min = 0.01, .Max = 100}}};
+template<> inline constexpr field::SpecTable<TransformGizmo::Config> Specs<TransformGizmo::Config>{
+    {&TransformGizmo::Config::Type, {.Help = "Transform the gizmo applies"}},
+    {&TransformGizmo::Config::SnapValue, {.Min = 0.01, .Max = 100, .Unit = FieldUnit::Meters, .Widget = FieldWidget::Drag, .Help = "Snap step per axis when translating, as a factor when scaling, and in degrees from X when rotating"}},
+    {&TransformGizmo::Config::Snap, {.Help = "Step gizmo transforms by the snap value"}},
+};
+template<> inline constexpr field::SpecTable<TransformGizmoState> Specs<TransformGizmoState>{
+    {&TransformGizmoState::Mode, {.Help = "Local aligns the gizmo axes with the active object's rotation, and World with the world axes"}},
+};

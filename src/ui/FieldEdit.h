@@ -5,6 +5,7 @@
 // Edit{R, E} targets E explicitly.
 // PatchEdit{value} patches edits onto the active entity.
 // ValueEdit{value} edits the supplied value in place.
+// DrawFields<C>(editor) draws every field of C through an editor from its Specs table.
 
 #include "action/Build.h"
 #include "action/Dispatch.h"
@@ -17,7 +18,7 @@
 
 #include <imgui.h>
 
-#include <format>
+#include <utility>
 
 namespace ui {
 using numeric::Degrees;
@@ -43,12 +44,27 @@ action::Target TargetFromAlt(bool delta_capable = false);
 // Keying state of a field on its entity, or nothing for a field channels cannot animate there.
 std::optional<animation::ChannelState> QueryKey(const state::Scene &, state::Entity, const ChannelTarget &);
 
+// The hovered field or item. Every pointer refers to static storage.
+struct FieldInfo {
+    const char *Label{}, *Path{}, *Type{}, *Help{}, *Status{};
+    const FieldSpec *Spec{};
+    bool Selection{}; // Alt applies the edit to every selected entity
+    std::optional<animation::ChannelState> Key{};
+};
+inline FieldInfo Hovered{}; // The field or described item under the mouse
+inline void Describe(const char *label, const char *help) {
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) Hovered = {.Label = label, .Help = help};
+}
+
 namespace detail {
 inline bool CompositeGestureOpen{false};
+// The keying state and selection scope of the field being run.
+inline std::optional<animation::ChannelState> RunKey{};
+inline bool RunSelection{false};
 
 // Commits, cancels, or continues the gesture of the last item, returning the target to stage a change with.
 // Returns nothing when the change is not staged.
-std::optional<action::Target> FieldGesture(state::Scene &, bool changed, bool selection, bool delta_capable);
+std::optional<action::Target> FieldGesture(bool changed, bool selection, bool delta_capable);
 
 // The channel target of the field Ms... walks to, or a zero-count target for a field channels cannot animate.
 template<auto... Ms>
@@ -80,11 +96,13 @@ namespace detail {
 template<typename Field, typename Widget, typename Emit>
 bool RunField(state::Scene &r, state::Entity entity, const ChannelTarget &channel, Field v, Widget widget, bool selection, bool delta_capable, Emit emit) {
     const auto state = channel.Count ? QueryKey(r, entity, channel) : std::nullopt;
+    RunKey = state;
+    RunSelection = selection;
     const bool changed = [&] {
         const KeyTint tint{state};
         return widget(v);
     }();
-    if (const auto target = FieldGesture(r, changed, selection, delta_capable)) emit(*target, v);
+    if (const auto target = FieldGesture(changed, selection, delta_capable)) emit(*target, v);
     if (state) KeyDecorator(r, entity, channel, *state);
     return changed;
 }
@@ -111,8 +129,8 @@ void Gesture(bool changed, MakeAction &&make) {
 
 template<auto M, auto... Rest>
 decltype(auto) ReadChain(auto &obj) {
-    if constexpr (sizeof...(Rest) == 0) return obj.*M;
-    else return ReadChain<Rest...>(obj.*M);
+    if constexpr (sizeof...(Rest) == 0) return field::Get<M>(obj);
+    else return ReadChain<Rest...>(field::Get<M>(obj));
 }
 
 template<typename F>
@@ -130,14 +148,38 @@ consteval ImGuiDataType ImGuiDt() {
     else static_assert(false, "ImGuiDt: unsupported scalar type");
 }
 
+// The number conversion, from the spec's Format or its Digits, followed by its unit symbol, so a 3-digit meter value prints as "%.3f m".
+template<typename C> std::array<char, 24> NumberFormat(const FieldSpec &spec) {
+    std::array<char, 24> out{};
+    const auto *symbol = UnitSymbol(spec.Unit).data();
+    if (spec.Format) snprintf(out.data(), out.size(), "%s%s", spec.Format, symbol);
+    else if constexpr (std::floating_point<C>) snprintf(out.data(), out.size(), "%%.%uf%s", unsigned(spec.Digits.value_or(UnitDigits(spec.Unit))), symbol);
+    else snprintf(out.data(), out.size(), "%s%s", std::signed_integral<C> ? "%d" : "%u", symbol);
+    return out;
+}
+
+template<typename T> struct OptionalTraits {
+    static constexpr bool Is = false;
+    using Value = T;
+};
+template<typename T> struct OptionalTraits<std::optional<T>> {
+    static constexpr bool Is = true;
+    using Value = T;
+};
+
+template<typename T> T InitialValue(const FieldSpec &spec) {
+    if constexpr (action::ScalarField<T> || action::VectorField<T>) {
+        using L = action::Limit<T>;
+        if (!std::isnan(spec.Initial)) return T(L(spec.Initial));
+        return T(std::clamp(L{}, action::LowerBound<T>(spec), action::UpperBound<T>(spec)));
+    } else {
+        return T{};
+    }
+}
+
 template<typename F>
 inline constexpr bool DrawableField = std::is_arithmetic_v<F> || std::is_enum_v<F> || action::VectorField<F> || std::same_as<F, quat>;
-
-namespace detail {
-inline constexpr const char *FloatFormats[]{"%.0f", "%.1f", "%.2f", "%.3f", "%.4f", "%.5f", "%.6f"};
-constexpr const char *Format(const FieldSpec &spec) { return FloatFormats[std::min<size_t>(spec.Digits, std::size(FloatFormats) - 1)]; }
-inline std::string InDegrees(const char *label) { return std::format("{} (deg)", label); }
-} // namespace detail
+template<typename T> inline constexpr bool DrawableField<std::optional<T>> = DrawableField<T>;
 
 // Edits a rotation in the representation the widget last showed: a quaternion, XYZ Euler degrees, or an axis and angle.
 inline bool RotationWidget(const char *label, quat &rotation) {
@@ -186,10 +228,24 @@ inline bool RotationWidget(const char *label, quat &rotation) {
     return changed;
 }
 
-// An enum without enumerators drags its underlying integer, and a radian field drags in degrees.
+// An enum without enumerators edits as its underlying integer, a radian field in degrees, and an optional field behind a presence checkbox.
 template<typename F>
 bool DrawField(const char *label, F &v, const FieldSpec &spec) {
-    if constexpr (std::same_as<F, bool>) {
+    if constexpr (OptionalTraits<F>::Is) {
+        ImGui::PushID(label);
+        bool present = v.has_value();
+        bool changed = ImGui::Checkbox(present ? "##present" : label, &present);
+        if (changed) {
+            if (present) v = InitialValue<typename F::value_type>(spec);
+            else v.reset();
+        }
+        if (v) {
+            ImGui::SameLine();
+            changed |= DrawField(label, *v, spec);
+        }
+        ImGui::PopID();
+        return changed;
+    } else if constexpr (std::same_as<F, bool>) {
         return ImGui::Checkbox(label, &v);
     } else if constexpr (std::is_enum_v<F>) {
         constexpr auto &values = field::EnumValues<F>;
@@ -206,93 +262,97 @@ bool DrawField(const char *label, F &v, const FieldSpec &spec) {
             return true;
         }
     } else if constexpr (std::same_as<F, quat>) {
-        return RotationWidget(label, v);
+        ImGui::BeginGroup();
+        const bool changed = RotationWidget(label, v);
+        ImGui::EndGroup();
+        return changed;
     } else if constexpr (action::ScalarField<F> || action::VectorField<F>) {
         using C = action::Limit<F>;
+        if constexpr (std::integral<F>) {
+            if (spec.Widget == FieldWidget::Checkbox) {
+                bool on = v != 0;
+                if (!ImGui::Checkbox(label, &on)) return false;
+                v = on ? 1 : 0;
+                return true;
+            }
+        }
+        if constexpr (std::same_as<F, vec3> || std::same_as<F, vec4>) {
+            if (spec.Widget == FieldWidget::Color) {
+                if constexpr (std::same_as<F, vec3>) return ImGui::ColorEdit3(label, &v.x);
+                else return ImGui::ColorEdit4(label, &v.x);
+            }
+        }
         C lo = action::LowerBound<F>(spec), hi = action::UpperBound<F>(spec);
-        const char *format = std::floating_point<C> ? detail::Format(spec) : nullptr;
+        const bool radians = spec.Unit == FieldUnit::Radians;
+        const auto number_format = NumberFormat<C>(spec);
+        const char *format = number_format.data();
+        const bool slider = spec.Widget == FieldWidget::Slider || (spec.Widget == FieldWidget::Auto && spec.HasMin() && spec.HasMax());
+        const ImGuiSliderFlags scale = spec.Scale == FieldScale::Logarithmic ? ImGuiSliderFlags_Logarithmic : ImGuiSliderFlags_None;
         if constexpr (std::same_as<F, float>) {
-            if (spec.Unit == FieldUnit::Radians) {
-                float degrees = Degrees(v);
+            if (radians) {
                 lo = Degrees(lo);
                 hi = Degrees(hi);
-                if (!ImGui::DragFloat(detail::InDegrees(label).c_str(), &degrees, DragSpeed(spec.Speed), lo, hi, format, ImGuiSliderFlags_NoSpeedTweaks | ImGuiSliderFlags_AlwaysClamp)) return false;
+                if (slider) return ImGui::SliderAngle(label, &v, lo, hi, format, scale | ImGuiSliderFlags_AlwaysClamp);
+                float degrees = Degrees(v);
+                if (!ImGui::DragFloat(label, &degrees, DragSpeed(spec.Speed), lo, hi, format, scale | ImGuiSliderFlags_NoSpeedTweaks | ImGuiSliderFlags_AlwaysClamp)) return false;
                 v = numeric::Radians(degrees);
                 return true;
             }
         }
-        return ImGui::DragScalarN(label, ImGuiDt<C>(), &v, action::Components<F>, DragSpeed(spec.Speed), spec.Bounded() ? &lo : nullptr, spec.Bounded() ? &hi : nullptr, format, ImGuiSliderFlags_NoSpeedTweaks | ImGuiSliderFlags_AlwaysClamp);
+        if (slider) return ImGui::SliderScalarN(label, ImGuiDt<C>(), &v, action::Components<F>, &lo, &hi, format, scale | ImGuiSliderFlags_AlwaysClamp);
+        return ImGui::DragScalarN(label, ImGuiDt<C>(), &v, action::Components<F>, DragSpeed(spec.Speed), spec.Bounded() ? &lo : nullptr, spec.Bounded() ? &hi : nullptr, format, scale | ImGuiSliderFlags_NoSpeedTweaks | ImGuiSliderFlags_AlwaysClamp);
     } else {
         static_assert(false, "DrawField: unsupported field type");
     }
 }
 
-// Slides the field between its spec's bounds, in degrees for a radian field.
-// A null format takes the spec's.
-template<typename F>
-bool SliderField(const char *label, F &v, const FieldSpec &spec, const char *fmt = nullptr, ImGuiSliderFlags flags = 0) {
-    using C = action::Limit<F>;
-    const char *format = fmt ? fmt : std::floating_point<C> ? detail::Format(spec) :
-                                                              nullptr;
-    if constexpr (std::same_as<F, float>) {
-        if (spec.Unit == FieldUnit::Radians) return ImGui::SliderAngle(detail::InDegrees(label).c_str(), &v, Degrees(float(spec.Min)), Degrees(float(spec.Max)), format, flags);
-    }
-    const auto lo = C(spec.Min), hi = C(spec.Max);
-    return ImGui::SliderScalarN(label, ImGuiDt<C>(), &v, action::Components<F>, &lo, &hi, format, flags);
-}
-
 // Widgets over an editor's Run<Ms...>(widget, delta_capable), which reads the field, runs the widget, and stages a change.
-// A label defaults to the field's name, and bounds, speed, and format come from the field's spec.
 template<typename Editor, auto... Prefix>
 struct FieldWidgets {
     template<auto... Ms> using Field = action::detail::last_field<Prefix..., Ms...>;
-    template<auto... Ms> static const char *LabelOr(const char *label) { return label ? label : field::LabelOf<action::detail::last_v<Prefix..., Ms...>>.c_str(); }
-    template<auto... Ms> static consteval FieldSpec SpecOf() { return field::ChainSpec<Prefix..., Ms...>(); }
 
     template<auto... Ms>
     bool Draw(const char *label = nullptr) {
-        return Self().template Run<Ms...>([&](auto &v) { return DrawField(LabelOr<Ms...>(label), v, SpecOf<Ms...>()); }, /*delta_capable=*/true);
+        using F = Field<Ms...>;
+        constexpr auto &spec = field::ChainSpecOf<Prefix..., Ms...>;
+        static_assert(spec.Widget != FieldWidget::Color || std::same_as<F, vec3> || std::same_as<F, vec4>, "Edit::Draw: a color field must be a vec3 or vec4");
+        static_assert(spec.Widget != FieldWidget::Slider || (spec.HasMin() && spec.HasMax()), "Edit::Draw: a slider field must declare both Min and Max");
+        return Draw<Ms...>([&](const char *chain_label, F &v) { return DrawField(label ? label : chain_label, v, spec); });
     }
 
-    template<auto... Ms>
-    bool Check(const char *label = nullptr) {
-        static_assert(std::same_as<Field<Ms...>, bool>, "Edit::Check: field must be a bool");
-        return Draw<Ms...>(label);
+    template<auto... Ms, typename Widget>
+        requires std::invocable<Widget &, const char *, Field<Ms...> &>
+    bool Draw(Widget widget) {
+        using F = Field<Ms...>;
+        constexpr auto &spec = field::ChainSpecOf<Prefix..., Ms...>;
+        detail::RunKey.reset();
+        detail::RunSelection = false;
+        return Self().template Run<Ms...>([&](F &v) {
+            const bool changed = widget(field::ChainLabel<Prefix..., Ms...>.c_str(), v);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                Hovered = {
+                    .Label = field::ChainLabel<Prefix..., Ms...>.c_str(),
+                    .Path = field::ChainPath<Prefix..., Ms...>.c_str(),
+                    .Type = field::TypeName<typename OptionalTraits<F>::Value>.c_str(),
+                    .Help = spec.Help,
+                    .Spec = &spec,
+                    .Selection = detail::RunSelection,
+                    .Key = detail::RunKey,
+                };
+                if constexpr (requires { Self().Status; }) Hovered.Status = Self().Status;
+            }
+            return changed;
+        },
+                                          /*delta_capable=*/true);
     }
 
-    template<auto... Ms>
-    bool Drag(const char *label = nullptr) {
-        static_assert(action::DeltaField<Field<Ms...>>, "Edit::Drag: field must be numeric");
-        return Draw<Ms...>(label);
-    }
-
-    template<auto... Ms>
-    bool Slider(const char *label = nullptr, const char *fmt = nullptr, ImGuiSliderFlags flags = 0) {
-        constexpr auto spec = SpecOf<Ms...>();
-        static_assert(spec.HasMin() && spec.HasMax(), "Edit::Slider: field must declare a spec with both Min and Max");
-        return Self().template Run<Ms...>([&](Field<Ms...> &v) { return SliderField(LabelOr<Ms...>(label), v, spec, fmt, flags); }, /*delta_capable=*/true);
-    }
-
-    template<auto... Ms>
-    bool Slider(const char *label, float lo, float hi, const char *fmt = "%.3f") {
-        return Self().template Run<Ms...>([&](float &v) { return ImGui::SliderFloat(LabelOr<Ms...>(label), &v, lo, hi, fmt); }, /*delta_capable=*/true);
-    }
-
-    // ColorEdit3 for vec3, ColorEdit4 for vec4, picked by field type.
-    template<auto... Ms>
-    bool Color(const char *label = nullptr) {
-        return Self().template Run<Ms...>([&](auto &v) {
-            using F = std::remove_reference_t<decltype(v)>;
-            if constexpr (std::same_as<F, vec3>) return ImGui::ColorEdit3(LabelOr<Ms...>(label), &v.x);
-            else if constexpr (std::same_as<F, vec4>) return ImGui::ColorEdit4(LabelOr<Ms...>(label), &v.x);
-            else static_assert(false, "Edit::Color: field must be vec3 or vec4");
-        });
-    }
-
-    template<auto... Ms>
-    bool Enum(const char *label = nullptr) {
-        static_assert(std::is_enum_v<Field<Ms...>>, "Edit::Enum: field must be an enum");
-        return Draw<Ms...>(label);
+    template<auto M>
+    void Section() {
+        ImGui::SeparatorText(field::ChainLabel<Prefix..., M>.c_str());
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            constexpr auto &spec = field::ChainSpecOf<Prefix..., M>;
+            Hovered = {.Label = field::ChainLabel<Prefix..., M>.c_str(), .Path = field::ChainPath<Prefix..., M>.c_str(), .Help = spec.Help};
+        }
     }
 
 private:
@@ -322,6 +382,12 @@ struct Edit : FieldWidgets<Edit<HasEntity, Prefix...>, Prefix...> {
         else return E == animation::AnimationsViewport(R) ? action::Target{action::OnViewport{}} : action::Target{E};
     }
 
+    template<auto... Ms>
+    auto Read() const {
+        using C = action::detail::first_class<Prefix..., Ms...>;
+        return ReadChain<Prefix..., Ms...>(R.template get<const C>(ReadFrom<C>()));
+    }
+
     // Run a widget over the field and stage its change in the item's gesture.
     template<auto... Ms, typename Widget>
     bool Run(Widget widget, bool delta_capable = false) {
@@ -345,47 +411,6 @@ struct Edit : FieldWidgets<Edit<HasEntity, Prefix...>, Prefix...> {
 Edit(state::Scene &) -> Edit<false>;
 Edit(state::Scene &, state::Entity) -> Edit<true>;
 
-namespace detail {
-// Runs the widget over a field of the viewport's theme component C and stages its change at the field's offset.
-template<typename C, typename F>
-void RunThemeField(state::Scene &r, state::Entity viewport, const C &theme, const F &value, bool delta_capable, auto &&widget) {
-    const auto offset = uint16_t(reinterpret_cast<const std::byte *>(&value) - reinterpret_cast<const std::byte *>(&theme));
-    const Edit edit{r, viewport};
-    RunField(r, viewport, ChannelTarget{}, value, widget, /*selection=*/false, delta_capable && action::DeltaField<F>, [&](action::Target gesture, const F &v) {
-        action::Emit(action::Update<F>{edit.Recorded(gesture), state::Key<C>(), offset, v}, action::Phase::Stage);
-    });
-}
-} // namespace detail
-
-// Edits the colors of each color group in the viewport's theme component C, under the group's name.
-template<typename C> void DrawThemeColors(state::Scene &r, state::Entity viewport) {
-    const auto &theme = r.get<const C>(viewport);
-    field::ForEach(theme, [&]<size_t I>(const auto &group, std::integral_constant<size_t, I>) {
-        using G = std::remove_cvref_t<decltype(group)>;
-        if constexpr (field::Walkable<G>) {
-            ImGui::SeparatorText(field::Label<C, I>.c_str());
-            field::ForEach(group, [&]<size_t J>(const auto &color, std::integral_constant<size_t, J>) {
-                detail::RunThemeField(r, viewport, theme, color, false, [](auto &v) {
-                    if constexpr (std::same_as<std::remove_reference_t<decltype(v)>, vec3>) return ImGui::ColorEdit3(field::Label<G, J>.c_str(), &v.x);
-                    else return ImGui::ColorEdit4(field::Label<G, J>.c_str(), &v.x);
-                });
-            });
-        }
-    });
-}
-// Slides each scalar or vector field of the viewport's theme component C between its spec's bounds, under "Sizes".
-// The caller draws the Skip members itself.
-template<typename C, auto... Skip> void DrawThemeSizes(state::Scene &r, state::Entity viewport) {
-    const auto &theme = r.get<const C>(viewport);
-    field::ForEach(theme, [&]<size_t I>(const auto &value, std::integral_constant<size_t, I>) {
-        using F = std::remove_cvref_t<decltype(value)>;
-        if constexpr ((action::ScalarField<F> || action::VectorField<F>) && !(... || (field::IndexOf<Skip> == I))) {
-            static_assert(Spec<C, I>.HasMin() && Spec<C, I>.HasMax(), "DrawThemeSizes: a size field must declare a spec with both Min and Max");
-            detail::RunThemeField(r, viewport, theme, value, true, [](auto &v) { return SliderField(field::Label<C, I>.c_str(), v, Spec<C, I>); });
-        }
-    });
-}
-
 template<typename Component, auto... Prefix>
 struct PatchEdit : FieldWidgets<PatchEdit<Component, Prefix...>, Prefix...> {
     explicit PatchEdit(const Component &current) : Current{current} {}
@@ -401,9 +426,12 @@ struct PatchEdit : FieldWidgets<PatchEdit<Component, Prefix...>, Prefix...> {
         return action::PatchFields<Component, F>{{action::detail::FieldOffset<Prefix..., Ms...>()}, {std::move(value)}};
     }
 
+    template<auto... Ms>
+    auto Read() const { return ReadChain<Prefix..., Ms...>(Current); }
+
     template<auto... Ms, typename Widget>
     bool Run(Widget widget, bool = false) {
-        auto value = ReadChain<Prefix..., Ms...>(Current);
+        auto value = Read<Ms...>();
         const bool changed = widget(value);
         Gesture(changed, [&] { return Action<Ms...>(std::move(value)); });
         return changed;
@@ -425,6 +453,9 @@ struct ValueEdit : FieldWidgets<ValueEdit<T, Prefix...>, Prefix...> {
     template<auto... More>
     ValueEdit<T, Prefix..., More...> Sub() const { return {Value, Changed, Finished}; }
 
+    template<auto... Ms>
+    auto Read() const { return ReadChain<Prefix..., Ms...>(Value); }
+
     template<auto... Ms, typename Widget>
     bool Run(Widget widget, bool = false) {
         const bool changed = widget(ReadChain<Prefix..., Ms...>(Value));
@@ -441,7 +472,41 @@ struct ValueEdit : FieldWidgets<ValueEdit<T, Prefix...>, Prefix...> {
 };
 template<typename T> ValueEdit(T &, bool &, bool * = nullptr) -> ValueEdit<T>;
 
-// A type with an editor of its own draws through `DrawEditor(editor, std::type_identity<T>{})` over any editor.
+// A type with its own editor draws through `DrawEditor(editor, std::type_identity<T>{})`, declared in the type's namespace.
 template<typename T>
 concept HasEditor = requires(ValueEdit<T> &e) { DrawEditor(e, std::type_identity<T>{}); };
+
+// Draws every field of C except the Skip members through the editor, in declaration order.
+template<typename C, auto... Skip, typename Editor> void DrawFields(Editor &&e);
+
+namespace detail {
+template<typename C, size_t I, auto... Skip, typename Editor>
+void DrawMember(Editor &e) {
+    if constexpr (!(... || (field::IndexOf<Skip> == I))) {
+        constexpr field::At<C, I> member{};
+        using F = field::At<C, I>::Field;
+        if constexpr (requires { e.template Leaf<member>(); }) {
+            e.template Leaf<member>();
+        } else if constexpr (requires(decltype(e.template Sub<member>()) &sub) { DrawEditor(sub, std::type_identity<F>{}); }) {
+            ImGui::PushID(int(I));
+            auto sub = e.template Sub<member>();
+            DrawEditor(sub, std::type_identity<F>{});
+            ImGui::PopID();
+        } else if constexpr (field::Walkable<F>) {
+            e.template Section<member>();
+            ImGui::PushID(int(I));
+            DrawFields<F>(e.template Sub<member>());
+            ImGui::PopID();
+        } else if constexpr (DrawableField<F>) {
+            e.template Draw<member>();
+        } else {
+            static_assert(false, "DrawFields: this field has no widget, give the editor a Leaf for it or skip it");
+        }
+    }
+}
+} // namespace detail
+
+template<typename C, auto... Skip, typename Editor> void DrawFields(Editor &&e) {
+    [&]<size_t... Is>(std::index_sequence<Is...>) { (..., detail::DrawMember<C, Is, Skip...>(e)); }(std::make_index_sequence<field::detail::Count<C>()>{});
+}
 } // namespace ui

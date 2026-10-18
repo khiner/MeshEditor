@@ -43,9 +43,6 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
                     }
                 );
             },
-            [&](const SetMotion &a) {
-                ForEachComponentTarget<PhysicsMotion>(r, a.Target, viewport, [&](state::Entity e) { r.replace<PhysicsMotion>(e, *a.Value); });
-            },
             [&](const SetColliderShape &a) {
                 ForEachComponentTarget<ColliderShape>(r, a.Target, viewport, [&](state::Entity e) {
                     const auto owner_mesh = FindMeshEntity(r, e);

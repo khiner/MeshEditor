@@ -42,7 +42,7 @@ void InitDefaultMaterial(state::Scene &r) {
     auto &buffers = r.Context.get<GpuBuffers>();
     auto &textures = r.Context.get<TextureStore>();
     auto &materials = r.Context.get<MaterialStore>();
-    buffers.Materials.Append(PBRMaterial{.MetallicFactor = 0.f, .BaseColorTexture = {.Slot = textures.WhiteTextureSlot}});
+    buffers.Materials.Append(PBRMaterial{.BaseColorTexture = {.Slot = textures.WhiteTextureSlot}, .MetallicFactor = 0.f});
     materials.AppendNames({"Default"});
 
     constexpr std::array<std::byte, 4> WhitePixels{std::byte{0xff}, std::byte{0xff}, std::byte{0xff}, std::byte{0xff}};

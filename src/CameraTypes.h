@@ -36,13 +36,13 @@ using CameraLens = std::variant<Perspective, Orthographic>;
 
 inline constexpr float MinFieldOfViewRad{0.0174533f}, MaxFieldOfViewRad{3.12414f}; // 1 and 179 degrees.
 template<> inline constexpr field::SpecTable<Perspective> Specs<Perspective>{
-    {&Perspective::FieldOfViewRad, {.Min = MinFieldOfViewRad, .Max = MaxFieldOfViewRad, .Digits = 1, .Unit = FieldUnit::Radians}},
-    {&Perspective::NearClip, {.Min = MinNearClip, .Max = MaxFarClip}},
-    {&Perspective::FarClip, {.Min = MinNearClip, .Max = MaxFarClip}},
-    {&Perspective::AspectRatio, {.Min = 0.1, .Max = 5}},
+    {&Perspective::FieldOfViewRad, {.Min = MinFieldOfViewRad, .Max = MaxFieldOfViewRad, .Unit = FieldUnit::Radians, .Label = "Field of view", .Help = "Vertical view angle"}},
+    {&Perspective::NearClip, {.Min = MinNearClip, .Max = MaxFarClip, .Unit = FieldUnit::Meters, .Help = "Distance to the near clipping plane"}},
+    {&Perspective::FarClip, {.Min = MinNearClip, .Unit = FieldUnit::Meters, .Help = "Distance to the far clipping plane. Infinity selects an infinite projection."}},
+    {&Perspective::AspectRatio, {.Min = 0, .Max = 5, .Help = "Width over height of the view. Zero uses the viewport aspect ratio."}},
 };
 template<> inline constexpr field::SpecTable<Orthographic> Specs<Orthographic>{
-    {&Orthographic::Mag, {.Min = 0.01, .Max = 100}},
-    {&Orthographic::NearClip, {.Min = MinNearClip, .Max = MaxFarClip}},
-    {&Orthographic::FarClip, {.Min = MinNearClip, .Max = MaxFarClip}},
+    {&Orthographic::Mag, {.Min = 0.01, .Max = 100, .Unit = FieldUnit::Meters, .Help = "Half the view volume's width and height"}},
+    {&Orthographic::FarClip, {.Min = MinNearClip, .Max = MaxFarClip, .Unit = FieldUnit::Meters, .Help = "Distance to the far clipping plane"}},
+    {&Orthographic::NearClip, {.Min = MinNearClip, .Max = MaxFarClip, .Unit = FieldUnit::Meters, .Help = "Distance to the near clipping plane"}},
 };

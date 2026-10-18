@@ -93,7 +93,7 @@ void SetEditMode(state::Scene &r, state::Entity viewport, Element mode) {
 }
 
 uint64_t MeshDisplaySettings(const ViewportDisplay &d) {
-    return uint64_t(d.ShowOverlays) | uint64_t(d.ShowBones) << 1u | uint64_t(d.ShowBoundingBoxes) << 2u | uint64_t(d.NormalOverlays) << 8u | uint64_t(d.ViewportShading) << 16u;
+    return uint64_t(d.ShowOverlays) | uint64_t(d.Overlays.Bones) << 1u | uint64_t(d.Selection.BoundingBoxes) << 2u | uint64_t(d.Selection.VertexNormals) << 8u | uint64_t(d.Selection.FaceNormals) << 9u | uint64_t(d.ViewportShading) << 16u;
 }
 
 // Count visible silhouette instances, excluding primary edit instances.
@@ -912,10 +912,15 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     BuildMeshlets(r, chain, meshlet_meshes, bone_mesh_entities);
     if (is_edit_mode && pass != EventPass::Restore && !reactive(r, Change::TransformPending).empty() && RefreshPreviewTessellation(r, viewport)) request();
     if (!reactive(r, Change::ViewportTheme).empty()) {
-        auto theme = r.get<const ViewportTheme>(viewport);
-        UpdateDerivedColors(theme);
-        theme.EdgeWidth *= r.Context.get<FrameState>().DisplayFramebufferScale.x;
-        buffers.ViewportThemeUBO.Update(as_bytes(theme));
+        const auto &theme = r.get<const ViewportTheme>(viewport);
+        const ViewportThemeUbo ubo{
+            .Colors = theme.Colors,
+            .Derived = DeriveThemeColors(theme),
+            .AxisColors = theme.AxisColors,
+            .EdgeWidth = theme.Sizes.EdgeWidth * 0.5f * r.Context.get<FrameState>().DisplayFramebufferScale.x,
+            .SilhouetteEdgeWidth = theme.Sizes.SilhouetteEdgeWidth,
+        };
+        buffers.ViewportThemeUBO.Update(as_bytes(ubo));
         request();
     }
     if (!reactive(r, Change::ViewportDisplay).empty()) {
@@ -1218,7 +1223,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
     {
         // Refresh normal overlays when mesh selection changes.
         const auto &display = r.get<const ViewportDisplay>(viewport);
-        const bool normals = display.ShowOverlays && display.NormalOverlays != 0u;
+        const bool normals = display.ShowOverlays && (display.Selection.VertexNormals || display.Selection.FaceNormals);
         const auto selected_before = normals ? r.get<const SelectionFlags>(viewport).Meshes : std::vector<state::Entity>{};
         for (const auto mesh_entity : UpdateSelectionState(r, viewport)) r.emplace_or_replace<MeshDisplayDirty>(mesh_entity);
         if (normals) {
@@ -1348,9 +1353,9 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
             .OverlayBehindOpacity = OverlayBehindOpacity(settings, r.get<const Interaction>(viewport).Mode),
             .SceneDepthSamplerSlot = r.Context.get<const RenderSamplerSlots>().SceneDepth,
             .ShowOverlays = settings.ShowOverlays ? 1u : 0u,
-            .ShowExtras = settings.ShowExtras ? 1u : 0u,
-            .ShowBoundingBoxes = settings.ShowBoundingBoxes ? 1u : 0u,
-            .ShowTetWireframe = settings.ShowTetWireframe ? 1u : 0u,
+            .ShowExtras = settings.Overlays.Extras ? 1u : 0u,
+            .ShowBoundingBoxes = settings.Selection.BoundingBoxes ? 1u : 0u,
+            .ShowTetWireframe = settings.Selection.TetWireframe ? 1u : 0u,
             .TransmissionFramebufferSamplerSlot = r.Context.get<const RenderSamplerSlots>().Transmission,
             .TransmissionFramebufferMipCount = targets.Transmission ? targets.Transmission->Image.MipLevels : 1u,
             .UseRealTransmission = (is_pbr_mode && active_lighting.RealTransmission && targets.Transmission) ? 1u : 0u,

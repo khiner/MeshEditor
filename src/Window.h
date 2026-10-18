@@ -82,6 +82,7 @@ struct WindowsState {
         Viewport{"Viewport"},
         Timeline{"Timeline"},
         Style{"Style"},
+        Info{"Info"},
         ImGuiDemo{"Dear ImGui Demo", false},
         ImSpinnerDemo{"ImSpinner Demo", false},
         ImPlotDemo{"ImPlot Demo", false},
@@ -99,6 +100,7 @@ struct WindowVisibility {
     bool Viewport{true};
     bool Timeline{true};
     bool Style{true};
+    bool Info{true};
     bool ImGuiDemo{false}, ImSpinnerDemo{false}, ImPlotDemo{false};
     bool Debug{false};
     bool History{true};
@@ -111,6 +113,7 @@ inline WindowVisibility GetWindowVisibility(const WindowsState &windows) {
         windows.Viewport.Visible,
         windows.Timeline.Visible,
         windows.Style.Visible,
+        windows.Info.Visible,
         windows.ImGuiDemo.Visible,
         windows.ImSpinnerDemo.Visible,
         windows.ImPlotDemo.Visible,
@@ -125,6 +128,7 @@ inline void SetWindowVisibility(WindowsState &windows, const WindowVisibility &v
     windows.Viewport.Visible = visibility.Viewport;
     windows.Timeline.Visible = visibility.Timeline;
     windows.Style.Visible = visibility.Style;
+    windows.Info.Visible = visibility.Info;
     windows.ImGuiDemo.Visible = visibility.ImGuiDemo;
     windows.ImSpinnerDemo.Visible = visibility.ImSpinnerDemo;
     windows.ImPlotDemo.Visible = visibility.ImPlotDemo;

@@ -75,7 +75,6 @@ void DropdownArrow() {
 
 void DrawInterfaceStyle(state::Scene &r, state::Entity viewport) {
     if (Button("Reset")) action::Emit(action::view::ResetInterfaceTheme{});
-    SeparatorText("Sizes");
-    DrawThemeSizes<InterfaceTheme>(r, viewport);
+    DrawFields<InterfaceTheme>(Edit{r, viewport});
 }
 } // namespace ui

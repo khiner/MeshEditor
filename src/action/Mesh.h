@@ -112,7 +112,7 @@ struct LoopCut {
 // Extrudes the selection Steps times, each step rotating Angle about Axis through Center and sliding Offset along Axis.
 struct Spin {
     uint32_t Steps{9};
-    float Angle{1.5707963f};
+    float Angle{std::numbers::pi_v<float> / 2};
     vec3 Axis{0.f, 0.f, 1.f};
     vec3 Center{};
     float Offset{0.f};
@@ -245,7 +245,7 @@ struct Shear {
 // Warp around Center in the recorded orientation, defaulting to world XY.
 // Compute automatic bounds from each edited mesh's selected vertices after OffsetAngle.
 struct Warp {
-    float Angle{6.2831853f}, OffsetAngle{0.f};
+    float Angle{2 * std::numbers::pi_v<float>}, OffsetAngle{0.f};
     vec3 Center{};
     bool AutoRange{true};
     float Min{-1.f}, Max{1.f};
@@ -329,12 +329,23 @@ std::vector<state::Entity> SelectedEditMeshes(const state::Scene &, state::Entit
 bool UpdateInsetPreview(state::Scene &, state::Entity viewport, const Inset &, InsetPreviewCache &);
 } // namespace action::mesh
 
-template<> inline constexpr field::SpecTable<action::mesh::Merge> Specs<action::mesh::Merge>{{&action::mesh::Merge::Distance, {.Min = 0, .Max = 10, .Speed = 0.0001f, .Digits = 4}}};
-template<> inline constexpr field::SpecTable<action::mesh::Dissolve> Specs<action::mesh::Dissolve>{
-    {&action::mesh::Dissolve::Angle, {.Min = 0, .Max = std::numbers::pi_v<float>, .Digits = 1, .Unit = FieldUnit::Radians}},
-    {&action::mesh::Dissolve::Distance, {.Min = 0, .Max = 10, .Speed = 0.0001f, .Digits = 4}},
+template<> inline constexpr field::SpecTable<action::mesh::Delete> Specs<action::mesh::Delete>{{&action::mesh::Delete::Mode, {.Help = "Elements to delete, including the faces of deleted vertices or edges. Loose deletes only selected wire edges and isolated vertices."}}};
+template<> inline constexpr field::SpecTable<action::mesh::Merge> Specs<action::mesh::Merge>{
+    {&action::mesh::Merge::Mode, {.Help = "Merge target: selection center, first or last selected vertex, each connected run's center, or each pair within Distance"}},
+    {&action::mesh::Merge::Distance, {.Min = 0, .Max = 10, .Speed = 0.0001f, .Digits = 4, .Help = "Largest vertex separation that By Distance merges, in local units"}},
 };
-template<> inline constexpr field::SpecTable<action::mesh::Subdivide> Specs<action::mesh::Subdivide>{{&action::mesh::Subdivide::Cuts, {.Min = 1}}};
+template<> inline constexpr field::SpecTable<action::mesh::Extrude> Specs<action::mesh::Extrude>{{&action::mesh::Extrude::Mode, {.Help = "Elements to extrude: selected faces as one region, each face individually, selected edges, or selected vertices"}}};
+template<> inline constexpr field::SpecTable<action::mesh::Dissolve> Specs<action::mesh::Dissolve>{
+    {&action::mesh::Dissolve::Mode, {.Help = "Elements to dissolve. Limited dissolves edges flatter than Angle, and Degenerate collapses edges and faces smaller than Distance."}},
+    {&action::mesh::Dissolve::Angle, {.Min = 0, .Max = std::numbers::pi_v<float>, .Unit = FieldUnit::Radians, .Help = "Largest angle between adjacent faces that Limited dissolves"}},
+    {&action::mesh::Dissolve::Distance, {.Min = 0, .Max = 10, .Speed = 0.0001f, .Digits = 4, .Help = "Largest edge length that Degenerate collapses, in local units"}},
+    {&action::mesh::Dissolve::KeepVertices, {.Help = "Keep vertices left between two remaining edges when dissolving edges"}},
+    {&action::mesh::Dissolve::AllBoundaries, {.Help = "In Limited, dissolve every selected vertex between two remaining edges, whatever their angle"}},
+    {&action::mesh::Dissolve::DelimitMaterials, {.Help = "In Limited, keep edges between faces of different materials"}},
+    {&action::mesh::Dissolve::DelimitSharpEdges, {.Help = "In Limited, keep edges marked sharp"}},
+    {&action::mesh::Dissolve::DelimitUVs, {.Help = "In Limited, keep edges where the UV coordinates on either side differ"}},
+};
+template<> inline constexpr field::SpecTable<action::mesh::Subdivide> Specs<action::mesh::Subdivide>{{&action::mesh::Subdivide::Cuts, {.Min = 1, .Help = "Number of cuts in each selected edge"}}};
 template<> inline constexpr field::SpecTable<action::mesh::SpaceEvenly> Specs<action::mesh::SpaceEvenly>{{&action::mesh::SpaceEvenly::Factor, {.Min = 0, .Max = 1}}};
 template<> inline constexpr field::SpecTable<action::mesh::Flatten> Specs<action::mesh::Flatten>{{&action::mesh::Flatten::Factor, {.Min = 0, .Max = 1}}};
 template<> inline constexpr field::SpecTable<action::mesh::RelaxEdgeLoops> Specs<action::mesh::RelaxEdgeLoops>{{&action::mesh::RelaxEdgeLoops::Iterations, {.Min = 1, .Max = 1000}}};
@@ -343,42 +354,58 @@ template<> inline constexpr field::SpecTable<action::mesh::SnapSymmetry> Specs<a
     {&action::mesh::SnapSymmetry::Factor, {.Min = 0, .Max = 1}},
 };
 template<> inline constexpr field::SpecTable<action::mesh::Unsubdivide> Specs<action::mesh::Unsubdivide>{{&action::mesh::Unsubdivide::Iterations, {.Min = 1, .Max = 1000}}};
-template<> inline constexpr field::SpecTable<action::mesh::Decimate> Specs<action::mesh::Decimate>{{&action::mesh::Decimate::Ratio, {.Min = 0, .Max = 1}}};
-template<> inline constexpr field::SpecTable<action::mesh::Poke> Specs<action::mesh::Poke>{{&action::mesh::Poke::Offset, {.Min = -100, .Max = 100, .Speed = 0.01f}}};
+template<> inline constexpr field::SpecTable<action::mesh::Decimate> Specs<action::mesh::Decimate>{{&action::mesh::Decimate::Ratio, {.Min = 0, .Max = 1, .Help = "Fraction of the selected region's triangles to keep"}}};
+template<> inline constexpr field::SpecTable<action::mesh::Poke> Specs<action::mesh::Poke>{{&action::mesh::Poke::Offset, {.Min = -100, .Max = 100, .Speed = 0.01f, .Help = "Distance each center vertex moves along its face normal, in local units"}}};
 template<> inline constexpr field::SpecTable<action::mesh::Inset> Specs<action::mesh::Inset>{
-    {&action::mesh::Inset::Thickness, {.Min = 0, .Max = 100, .Speed = 0.01f}},
-    {&action::mesh::Inset::Depth, {.Min = -100, .Max = 100, .Speed = 0.01f}},
+    {&action::mesh::Inset::Thickness, {.Min = 0, .Max = 100, .Speed = 0.01f, .Help = "Inset width from the face boundary, in local units"}},
+    {&action::mesh::Inset::Depth, {.Min = -100, .Max = 100, .Speed = 0.01f, .Help = "Distance the inset faces move along their normals, in local units"}},
+    {&action::mesh::Inset::Individual, {.Help = "Inset each selected face individually instead of the selection as one region"}},
+    {&action::mesh::Inset::Even, {.Help = "Keep the inset width even across corners"}},
 };
 template<> inline constexpr field::SpecTable<action::mesh::LoopCut> Specs<action::mesh::LoopCut>{{&action::mesh::LoopCut::Cuts, {.Min = 1}}};
 template<> inline constexpr field::SpecTable<action::mesh::Spin> Specs<action::mesh::Spin>{
-    {&action::mesh::Spin::Steps, {.Min = 1}},
-    {&action::mesh::Spin::Angle, {.Min = -6.2831853f, .Max = 6.2831853f, .Digits = 1, .Unit = FieldUnit::Radians}},
-    {&action::mesh::Spin::Axis, {.Speed = 0.01f}},
-    {&action::mesh::Spin::Center, {.Speed = 0.01f}},
-    {&action::mesh::Spin::Offset, {.Min = -100, .Max = 100, .Speed = 0.01f}},
+    {&action::mesh::Spin::Steps, {.Min = 1, .Help = "Number of extrusion steps"}},
+    {&action::mesh::Spin::Angle, {.Min = -2 * std::numbers::pi_v<float>, .Max = 2 * std::numbers::pi_v<float>, .Unit = FieldUnit::Radians, .Help = "Total rotation about Axis across all steps"}},
+    {&action::mesh::Spin::Axis, {.Speed = 0.01f, .Help = "Rotation axis direction in local space"}},
+    {&action::mesh::Spin::Center, {.Speed = 0.01f, .Help = "Point the axis passes through, in local units"}},
+    {&action::mesh::Spin::Offset, {.Min = -100, .Max = 100, .Speed = 0.01f, .Help = "Total distance along Axis across all steps, in local units"}},
 };
 template<> inline constexpr field::SpecTable<action::mesh::ExtrudeRepeat> Specs<action::mesh::ExtrudeRepeat>{
-    {&action::mesh::ExtrudeRepeat::Steps, {.Min = 1}},
-    {&action::mesh::ExtrudeRepeat::Offset, {.Speed = 0.01f}},
+    {&action::mesh::ExtrudeRepeat::Steps, {.Min = 1, .Help = "Number of extrusions"}},
+    {&action::mesh::ExtrudeRepeat::Offset, {.Speed = 0.01f, .Help = "Translation per step, in local units"}},
 };
 template<> inline constexpr field::SpecTable<action::mesh::Bisect> Specs<action::mesh::Bisect>{
-    {&action::mesh::Bisect::Point, {.Speed = 0.01f}},
-    {&action::mesh::Bisect::Normal, {.Speed = 0.01f}},
+    {&action::mesh::Bisect::Point, {.Speed = 0.01f, .Help = "Point on the cutting plane, in local units"}},
+    {&action::mesh::Bisect::Normal, {.Speed = 0.01f, .Help = "Cutting plane normal in local space. A zero normal faults the node."}},
+    {&action::mesh::Bisect::ClearInner, {.Help = "Delete faces behind the plane, opposite its normal"}},
+    {&action::mesh::Bisect::ClearOuter, {.Help = "Delete faces in front of the plane, along its normal"}},
 };
-template<> inline constexpr field::SpecTable<action::mesh::Solidify> Specs<action::mesh::Solidify>{{&action::mesh::Solidify::Thickness, {.Min = -100, .Max = 100, .Speed = 0.01f}}};
+template<> inline constexpr field::SpecTable<action::mesh::Symmetrize> Specs<action::mesh::Symmetrize>{
+    {&action::mesh::Symmetrize::Axis, {.Help = "Local axis normal to the mirror plane through the mesh origin"}},
+    {&action::mesh::Symmetrize::Negative, {.Help = "Mirror the negative side onto the positive instead of the reverse"}},
+};
+template<> inline constexpr field::SpecTable<action::mesh::Solidify> Specs<action::mesh::Solidify>{{&action::mesh::Solidify::Thickness, {.Min = -100, .Max = 100, .Speed = 0.01f, .Help = "Shell thickness behind the faces, in local units. A negative thickness extends in front of them."}}};
 template<> inline constexpr field::SpecTable<action::mesh::Wireframe> Specs<action::mesh::Wireframe>{
-    {&action::mesh::Wireframe::Thickness, {.Min = 0, .Max = 100, .Speed = 0.01f}},
-    {&action::mesh::Wireframe::Offset, {.Min = -1, .Max = 1, .Speed = 0.01f}},
+    {&action::mesh::Wireframe::Thickness, {.Min = 0, .Max = 100, .Speed = 0.01f, .Help = "Strut width and depth in local units"}},
+    {&action::mesh::Wireframe::Offset, {.Min = -1, .Max = 1, .Speed = 0.01f, .Help = "Strut position along the face normals: -1 is fully behind the faces, 0 centered on them, and 1 fully in front"}},
+    {&action::mesh::Wireframe::Replace, {.Help = "Replace selected faces with struts instead of adding to them"}},
+    {&action::mesh::Wireframe::Boundary, {.Help = "Also add struts along the selection's boundary edges"}},
+    {&action::mesh::Wireframe::Even, {.Help = "Keep the strut width even across sharp corners"}},
+    {&action::mesh::Wireframe::Relative, {.Help = "Scale each strut's width with the size of its face"}},
 };
 template<> inline constexpr field::SpecTable<action::mesh::GridFill> Specs<action::mesh::GridFill>{{&action::mesh::GridFill::Span, {.Min = 0}}};
-template<> inline constexpr field::SpecTable<action::mesh::FillHoles> Specs<action::mesh::FillHoles>{{&action::mesh::FillHoles::Sides, {.Min = 0}}};
+template<> inline constexpr field::SpecTable<action::mesh::FillHoles> Specs<action::mesh::FillHoles>{{&action::mesh::FillHoles::Sides, {.Min = 0, .Help = "Largest number of edges in a boundary loop to fill. Zero fills every hole."}}};
 template<> inline constexpr field::SpecTable<action::mesh::Bevel> Specs<action::mesh::Bevel>{
-    {&action::mesh::Bevel::Width, {.Min = 0, .Max = 100, .Speed = 0.01f}},
-    {&action::mesh::Bevel::Segments, {.Min = 1}},
+    {&action::mesh::Bevel::Width, {.Min = 0, .Max = 100, .Speed = 0.01f, .Help = "Bevel offset from each beveled element along its adjacent faces, in local units"}},
+    {&action::mesh::Bevel::Segments, {.Min = 1, .Help = "Number of faces across each bevel"}},
+    {&action::mesh::Bevel::Vertices, {.Help = "Bevel selected vertices instead of selected edges"}},
 };
 template<> inline constexpr field::SpecTable<action::mesh::SmoothVertices> Specs<action::mesh::SmoothVertices>{
-    {&action::mesh::SmoothVertices::Factor, {.Min = -10, .Max = 10, .Speed = 0.01f}},
-    {&action::mesh::SmoothVertices::Repeat, {.Min = 1, .Max = 1000}},
+    {&action::mesh::SmoothVertices::Factor, {.Min = -10, .Max = 10, .Speed = 0.01f, .Help = "Fraction of the distance each vertex moves toward its neighbors' mean per iteration. A negative factor moves it away."}},
+    {&action::mesh::SmoothVertices::Repeat, {.Min = 1, .Max = 1000, .Help = "Number of smoothing iterations"}},
+    {&action::mesh::SmoothVertices::X, {.Help = "Smooth along the local X axis"}},
+    {&action::mesh::SmoothVertices::Y, {.Help = "Smooth along the local Y axis"}},
+    {&action::mesh::SmoothVertices::Z, {.Help = "Smooth along the local Z axis"}},
 };
 template<> inline constexpr field::SpecTable<action::mesh::MakePlanarFaces> Specs<action::mesh::MakePlanarFaces>{
     {&action::mesh::MakePlanarFaces::Factor, {.Min = -10, .Max = 10, .Speed = 0.01f}},
@@ -387,26 +414,32 @@ template<> inline constexpr field::SpecTable<action::mesh::MakePlanarFaces> Spec
 template<> inline constexpr field::SpecTable<action::mesh::ToSphere> Specs<action::mesh::ToSphere>{{&action::mesh::ToSphere::Factor, {.Min = 0, .Max = 1, .Speed = 0.01f}}};
 template<> inline constexpr field::SpecTable<action::mesh::RotateUVs> Specs<action::mesh::RotateUVs>{{&action::mesh::RotateUVs::UVSet, {.Min = 0, .Max = 3}}};
 template<> inline constexpr field::SpecTable<action::mesh::ReverseUVs> Specs<action::mesh::ReverseUVs>{{&action::mesh::ReverseUVs::UVSet, {.Min = 0, .Max = 3}}};
-template<> inline constexpr field::SpecTable<action::mesh::Shear> Specs<action::mesh::Shear>{{&action::mesh::Shear::Angle, {.Min = -6.2831853f, .Max = 6.2831853f, .Digits = 1, .Unit = FieldUnit::Radians}}};
+template<> inline constexpr field::SpecTable<action::mesh::Shear> Specs<action::mesh::Shear>{{&action::mesh::Shear::Angle, {.Min = -2 * std::numbers::pi_v<float>, .Max = 2 * std::numbers::pi_v<float>, .Unit = FieldUnit::Radians}}};
 template<> inline constexpr field::SpecTable<action::mesh::Warp> Specs<action::mesh::Warp>{
-    {&action::mesh::Warp::Angle, {.Digits = 1, .Unit = FieldUnit::Radians}},
-    {&action::mesh::Warp::OffsetAngle, {.Digits = 1, .Unit = FieldUnit::Radians}},
+    {&action::mesh::Warp::Angle, {.Unit = FieldUnit::Radians}},
+    {&action::mesh::Warp::OffsetAngle, {.Unit = FieldUnit::Radians}},
 };
 template<> inline constexpr field::SpecTable<action::mesh::Bend> Specs<action::mesh::Bend>{
-    {&action::mesh::Bend::Angle, {.Digits = 1, .Unit = FieldUnit::Radians}},
-    {&action::mesh::Bend::OffsetAngle, {.Digits = 1, .Unit = FieldUnit::Radians}},
+    {&action::mesh::Bend::Angle, {.Unit = FieldUnit::Radians}},
+    {&action::mesh::Bend::OffsetAngle, {.Unit = FieldUnit::Radians}},
 };
 template<> inline constexpr field::SpecTable<action::mesh::Randomize> Specs<action::mesh::Randomize>{
-    {&action::mesh::Randomize::Uniform, {.Min = 0, .Max = 1, .Speed = .01f}},
-    {&action::mesh::Randomize::Amount, {.Speed = .01f}},
-    {&action::mesh::Randomize::Normal, {.Min = 0, .Max = 1, .Speed = .01f}},
+    {&action::mesh::Randomize::Uniform, {.Min = 0, .Max = 1, .Speed = .01f, .Help = "Blend of each offset's length from random at 0 to the full Amount at 1"}},
+    {&action::mesh::Randomize::Amount, {.Speed = .01f, .Help = "Largest offset in local units"}},
+    {&action::mesh::Randomize::Normal, {.Min = 0, .Max = 1, .Speed = .01f, .Help = "Blend of each offset's direction from random at 0 to the vertex normal at 1"}},
+    {&action::mesh::Randomize::Seed, {.Help = "Random seed"}},
 };
-template<> inline constexpr field::SpecTable<action::mesh::SplitNonplanarFaces> Specs<action::mesh::SplitNonplanarFaces>{{&action::mesh::SplitNonplanarFaces::Angle, {.Min = 0, .Max = std::numbers::pi_v<float>, .Digits = 1, .Unit = FieldUnit::Radians}}};
+template<> inline constexpr field::SpecTable<action::mesh::ShrinkFatten> Specs<action::mesh::ShrinkFatten>{
+    {&action::mesh::ShrinkFatten::Distance, {.Help = "Distance each vertex moves along its normal, in local units. A negative distance shrinks."}},
+    {&action::mesh::ShrinkFatten::Even, {.Help = "Keep the surface thickness even across sharp corners"}},
+};
+template<> inline constexpr field::SpecTable<action::mesh::RecalculateNormals> Specs<action::mesh::RecalculateNormals>{{&action::mesh::RecalculateNormals::Inside, {.Help = "Point normals inside the mesh instead of outside"}}};
+template<> inline constexpr field::SpecTable<action::mesh::SplitNonplanarFaces> Specs<action::mesh::SplitNonplanarFaces>{{&action::mesh::SplitNonplanarFaces::Angle, {.Min = 0, .Max = std::numbers::pi_v<float>, .Unit = FieldUnit::Radians}}};
 
 template<> inline constexpr field::SpecTable<action::mesh::CurveBetweenSelected> Specs<action::mesh::CurveBetweenSelected>{{&action::mesh::CurveBetweenSelected::Factor, {.Min = 0, .Max = 1}}};
 
 template<> inline constexpr field::SpecTable<action::mesh::Circularize> Specs<action::mesh::Circularize>{
     {&action::mesh::Circularize::Factor, {.Min = 0, .Max = 1}},
     {&action::mesh::Circularize::Radius, {.Min = 0}},
-    {&action::mesh::Circularize::Angle, {.Digits = 1, .Unit = FieldUnit::Radians}},
+    {&action::mesh::Circularize::Angle, {.Unit = FieldUnit::Radians}},
 };

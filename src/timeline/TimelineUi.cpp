@@ -42,10 +42,10 @@ std::optional<action::timeline::Action> HandleTimelineShortcuts(const TimelinePl
     return {};
 }
 
-std::optional<action::Action> RenderTimeline(const TimelineRange &range, const TimelinePlayback &playback, const TimelineView &view, const TimelineNavigation &navigation, const Animations &animations, std::span<const float> keyframes, const TimelineIcons &icons, const InterfaceTheme &interface_theme, const TimelineTheme &theme, bool &scrubbing) {
+std::optional<action::Action> RenderTimeline(const TimelineRange &range, const TimelinePlayback &playback, const TimelineView &view, state::Scene &r, state::Entity viewport, const Animations &animations, std::span<const float> keyframes, const TimelineIcons &icons, const InterfaceTheme &interface_theme, const TimelineTheme &theme, bool &scrubbing) {
     const float rounding = interface_theme.IconButtonRounding;
     const auto &colors = theme.Colors;
-    const float ruler_h = theme.RulerHeight;
+    const float ruler_h = theme.Sizes.RulerHeight;
     std::optional<action::Action> result;
     const auto emit = [&](auto leaf) { result = action::MakeAction(std::move(leaf)); };
     scrubbing = false;
@@ -63,7 +63,7 @@ std::optional<action::Action> RenderTimeline(const TimelineRange &range, const T
         SetCursorScreenPos(record_p);
         ui::BeginIconButtonGroup(ImGuiAxis_X, {h, h}, 1, rounding);
         if (ui::IconButton("##record", nullptr)) emit(action::UpdateOf<&Animations::Record>(action::OnViewport{}, !animations.Record));
-        SetItemTooltip("Auto keying: insert keyframes for animated properties on edit");
+        ui::Describe("Auto keying", "Insert keyframes for animated properties on edit");
         GetWindowDrawList()->AddCircleFilled((GetItemRectMin() + GetItemRectMax()) * 0.5f, h * 0.22f, animations.Record ? IM_COL32(230, 60, 50, 255) : IM_COL32(120, 120, 120, 255));
         ui::EndIconButtonGroup();
 
@@ -90,26 +90,7 @@ std::optional<action::Action> RenderTimeline(const TimelineRange &range, const T
         ui::DropdownArrow();
         ui::EndIconButtonGroup();
         if (BeginPopup("##PlaybackOptions")) {
-            auto nav = navigation;
-            bool changed = Checkbox("Wrap Timeline Navigation", &nav.Wrap);
-            Separator();
-            TextUnformatted("Jump Unit");
-            if (RadioButton("Frame", !nav.JumpInSeconds)) {
-                nav.JumpInSeconds = false;
-                changed = true;
-            }
-            SameLine();
-            if (RadioButton("Second", nav.JumpInSeconds)) {
-                nav.JumpInSeconds = true;
-                changed = true;
-            }
-            SetNextItemWidth(GetFontSize() * 5);
-            InputFloat("Delta", &nav.JumpDelta, 0.f, 0.f, "%.2f");
-            if (IsItemDeactivatedAfterEdit()) {
-                nav.JumpDelta = std::max(nav.JumpDelta, 0.1f);
-                changed = true;
-            }
-            if (changed) emit(action::timeline::SetNavigation{nav});
+            ui::DrawFields<TimelineNavigation>(ui::Edit{r, viewport});
             if (animations.Active < animations.Names.size()) {
                 Separator();
                 TextUnformatted("Animation name");
@@ -137,7 +118,7 @@ std::optional<action::Action> RenderTimeline(const TimelineRange &range, const T
         SameLine(0, spacing.x);
         ui::BeginIconButtonGroup(ImGuiAxis_X, {h, h}, 1, rounding);
         if (ui::IconButton("##add_animation", nullptr)) emit(action::animation::AddAnimation{std::format("Animation {}", animations.Names.size() + 1)});
-        SetItemTooltip("Create a new animation");
+        ui::Describe("Add animation", "Create a new animation");
         const auto plus_center = (GetItemRectMin() + GetItemRectMax()) * 0.5f;
         constexpr float arm = 4.f;
         auto *draw = GetWindowDrawList();
@@ -177,9 +158,9 @@ std::optional<action::Action> RenderTimeline(const TimelineRange &range, const T
         dl->AddRectFilled({sx, p0.y}, {ex, p1.y}, ui::U32(colors.FrameRange));
     }
 
-    const auto major_step = ComputeMajorStep(view.PixelsPerFrame, theme.TickLabelSpacing);
+    const auto major_step = ComputeMajorStep(view.PixelsPerFrame, theme.Sizes.TickLabelSpacing);
     const float major_px = major_step * view.PixelsPerFrame;
-    const bool show_minor = major_step >= 2 && major_px >= theme.MinorTickSpacing;
+    const bool show_minor = major_step >= 2 && major_px >= theme.Sizes.MinorTickSpacing;
 
     const float half_width_frames = (area.x * 0.5f) / view.PixelsPerFrame;
     const auto vis_start = int(std::floor(view.ViewCenterFrame - half_width_frames));
@@ -202,8 +183,8 @@ std::optional<action::Action> RenderTimeline(const TimelineRange &range, const T
     dl->AddLineH(p0.x, p1.x, p0.y + ruler_h, ui::U32(colors.RulerLine));
 
     if (!keyframes.empty()) {
-        const float kr = theme.KeyframeRadius;
-        const float ky = p0.y + ruler_h + kr + theme.KeyframePadding;
+        const float kr = theme.Sizes.KeyframeRadius;
+        const float ky = p0.y + ruler_h + kr + theme.Sizes.KeyframePadding;
         const auto first = std::ranges::lower_bound(keyframes, x_to_frame(p0.x - kr));
         for (auto it = first; it != keyframes.end(); ++it) {
             const float kx = frame_to_x(*it);
@@ -215,13 +196,13 @@ std::optional<action::Action> RenderTimeline(const TimelineRange &range, const T
     }
 
     if (const float cfx = frame_to_x(float(playback.CurrentFrame)); cfx >= p0.x && cfx <= p1.x) {
-        dl->AddLine({cfx, p0.y}, {cfx, p1.y}, ui::U32(colors.Playhead), theme.PlayheadWidth);
+        dl->AddLine({cfx, p0.y}, {cfx, p1.y}, ui::U32(colors.Playhead), theme.Sizes.PlayheadWidth);
         const auto label = std::format("{}", playback.CurrentFrame);
         const auto text_size = CalcTextSize(label.c_str());
         const float lx = cfx - text_size.x * 0.5f;
         const float ly = p0.y + (ruler_h - text_size.y) * 0.5f;
-        const auto pad = std::bit_cast<ImVec2>(theme.PlayheadLabelPadding);
-        dl->AddRectFilled(ImVec2{lx, ly} - pad, ImVec2{lx + text_size.x, ly + text_size.y} + pad, ui::U32(colors.PlayheadLabelBackground), theme.PlayheadLabelRounding);
+        const auto pad = std::bit_cast<ImVec2>(theme.Sizes.PlayheadLabelPadding);
+        dl->AddRectFilled(ImVec2{lx, ly} - pad, ImVec2{lx + text_size.x, ly + text_size.y} + pad, ui::U32(colors.PlayheadLabelBackground), theme.Sizes.PlayheadLabelRounding);
         dl->AddText({lx, ly}, ui::U32(colors.PlayheadLabel), label.c_str());
     }
 
@@ -252,7 +233,5 @@ std::optional<action::Action> RenderTimeline(const TimelineRange &range, const T
 
 void DrawTimelineStyle(state::Scene &r, state::Entity viewport) {
     if (Button("Reset")) action::Emit(action::view::ResetTimelineTheme{});
-    ui::DrawThemeColors<TimelineTheme>(r, viewport);
-    SeparatorText("Sizes");
-    ui::DrawThemeSizes<TimelineTheme>(r, viewport);
+    ui::DrawFields<TimelineTheme>(ui::Edit{r, viewport});
 }

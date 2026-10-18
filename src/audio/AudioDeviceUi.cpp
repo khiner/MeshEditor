@@ -2,6 +2,8 @@
 #include "audio/AudioDevice.h"
 #include "ui/FieldEdit.h"
 
+#include <format>
+
 namespace {
 std::string SampleRateName(const AudioDeviceResource &res, uint32_t sample_rate) {
     const auto &rates = res.NativeSampleRates;
@@ -17,7 +19,7 @@ void DrawAudioDeviceControls(state::Scene &r, state::Entity viewport) {
     const auto &res = r.Context.get<const AudioDeviceResource>();
     ui::Edit f{r, viewport};
 
-    f.Check<&AudioOutputMix::On>();
+    f.Draw<&AudioOutputMix::On>();
     if (!mix.On) {
         TextUnformatted("Audio device: Not started");
         return;
@@ -40,9 +42,9 @@ void DrawAudioDeviceControls(state::Scene &r, state::Entity viewport) {
         EndCombo();
     }
 
-    f.Check<&AudioOutputMix::Muted>();
+    f.Draw<&AudioOutputMix::Muted>();
     SameLine();
     if (mix.Muted) BeginDisabled();
-    f.Slider<&AudioOutputMix::Volume>();
+    f.Draw<&AudioOutputMix::Volume>();
     if (mix.Muted) EndDisabled();
 }

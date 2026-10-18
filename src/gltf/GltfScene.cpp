@@ -1059,20 +1059,20 @@ SourceMaterials ReadMaterials(const fastgltf::Asset &asset) {
         MaterialSourceMeta meta{.NameWasEmpty = material.name.empty()};
         PBRMaterial pbr{
             .BaseColorFactor = ToVec4(material.pbrData.baseColorFactor),
-            .EmissiveFactor = ToVec3(material.emissiveFactor),
+            .BaseColorTexture = ToTextureIndex(material.pbrData.baseColorTexture, asset, &meta.BaseSlotMeta[0]),
             .MetallicFactor = material.pbrData.metallicFactor,
             .RoughnessFactor = material.pbrData.roughnessFactor,
+            .MetallicRoughnessTexture = ToTextureIndex(material.pbrData.metallicRoughnessTexture, asset, &meta.BaseSlotMeta[1]),
             .NormalScale = material.normalTexture ? material.normalTexture->scale : 1.f,
+            .NormalTexture = ToTextureIndex(material.normalTexture, asset, &meta.BaseSlotMeta[2]),
             .OcclusionStrength = material.occlusionTexture ? material.occlusionTexture->strength : 1.f,
+            .OcclusionTexture = ToTextureIndex(material.occlusionTexture, asset, &meta.BaseSlotMeta[3]),
+            .EmissiveFactor = ToVec3(material.emissiveFactor),
+            .EmissiveTexture = ToTextureIndex(material.emissiveTexture, asset, &meta.BaseSlotMeta[4]),
             .AlphaMode = ToAlphaMode(material.alphaMode),
             .AlphaCutoff = material.alphaCutoff,
             .DoubleSided = material.doubleSided ? 1u : 0u,
             .Unlit = material.unlit ? 1u : 0u,
-            .BaseColorTexture = ToTextureIndex(material.pbrData.baseColorTexture, asset, &meta.BaseSlotMeta[0]),
-            .MetallicRoughnessTexture = ToTextureIndex(material.pbrData.metallicRoughnessTexture, asset, &meta.BaseSlotMeta[1]),
-            .NormalTexture = ToTextureIndex(material.normalTexture, asset, &meta.BaseSlotMeta[2]),
-            .OcclusionTexture = ToTextureIndex(material.occlusionTexture, asset, &meta.BaseSlotMeta[3]),
-            .EmissiveTexture = ToTextureIndex(material.emissiveTexture, asset, &meta.BaseSlotMeta[4]),
         };
         for (const auto &scalar : MaterialScalarExtensions) {
             if (const auto &value = material.*scalar.Theirs) {
@@ -1662,7 +1662,7 @@ PhysicsShape ToPhysicsShape(const fastgltf::Asset &asset, const fastgltf::Geomet
                 [](const fastgltf::SphereShape &s) -> PhysicsShape { return physics::Sphere{s.radius}; },
                 [](const fastgltf::CapsuleShape &s) -> PhysicsShape { return physics::Capsule{std::max(float(s.height), physics::MinShapeHeight), s.radiusTop, s.radiusBottom}; },
                 [](const fastgltf::CylinderShape &s) -> PhysicsShape { return physics::Cylinder{std::max(float(s.height), physics::MinShapeHeight), s.radiusTop, s.radiusBottom}; },
-                [](const fastgltf::PlaneShape &s) -> PhysicsShape { return physics::Plane{s.sizeX, s.sizeZ, s.doubleSided}; },
+                [](const fastgltf::PlaneShape &s) -> PhysicsShape { return physics::Plane{s.sizeX > 0 ? std::optional{float(s.sizeX)} : std::nullopt, s.sizeZ > 0 ? std::optional{float(s.sizeZ)} : std::nullopt, s.doubleSided}; },
             },
             asset.shapes[*geom.shape]
         );
@@ -1743,7 +1743,7 @@ void ImportNodePhysics(state::Scene &r, const fastgltf::Asset &asset, const Impo
                                                  .Mass = m.mass ? std::optional{float(*m.mass)} : std::nullopt,
                                                  .CenterOfMass = com != vec3{0} ? std::optional{com} : std::nullopt,
                                                  .InertiaDiagonal = m.inertialDiagonal ? std::optional{ToVec3(*m.inertialDiagonal)} : std::nullopt,
-                                                 .InertiaOrientation = m.inertialOrientation ? std::optional{std::bit_cast<quat>(*m.inertialOrientation)} : std::nullopt,
+                                                 .InertiaOrientation = m.inertialOrientation ? std::bit_cast<quat>(*m.inertialOrientation) : quat{1, 0, 0, 0},
                                                  .GravityFactor = float(m.gravityFactor),
                                              });
             if (const auto lv = ToVec3(m.linearVelocity), av = ToVec3(m.angularVelocity); lv != vec3{0} || av != vec3{0}) r.replace<PhysicsVelocity>(entity, PhysicsVelocity{lv, av});
@@ -1965,7 +1965,7 @@ void ImportAudio(state::Scene &r, const fastgltf::Asset &asset, const ImportedOb
                                                   .Mass = *motion->Mass,
                                                   .CenterOfMass = motion->CenterOfMass.value_or(vec3{0}),
                                                   .InertiaDiagonal = motion->InertiaDiagonal.value_or(vec3{0}),
-                                                  .InertiaOrientation = motion->InertiaOrientation.value_or(quat{1, 0, 0, 0}),
+                                                  .InertiaOrientation = motion->InertiaOrientation,
                                               });
         }
         if (excitable) r.emplace<SoundVerticesModel>(entity, SoundVerticesModel::Modal);

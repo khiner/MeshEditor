@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Field.h"
 #include "state/Entity.h"
 
 // Start-frame and frame-rate changes invalidate baked physics frames.
@@ -25,6 +26,11 @@ struct TimelineNavigation {
     float JumpDelta{1.f};
     bool JumpInSeconds{false};
     bool Wrap{false};
+};
+template<> inline constexpr field::SpecTable<TimelineNavigation> Specs<TimelineNavigation>{
+    {&TimelineNavigation::JumpDelta, {.Min = 0.1, .Speed = 0.1f, .Widget = FieldWidget::Drag, .Label = "Jump delta", .Help = "Distance jump buttons and Ctrl+Left/Right move the current frame, in frames or seconds"}},
+    {&TimelineNavigation::JumpInSeconds, {.Label = "Jump in seconds", .Help = "Measure the jump delta in seconds instead of frames"}},
+    {&TimelineNavigation::Wrap, {.Label = "Wrap navigation", .Help = "Wrap frame steps and keyframe jumps around the timeline range"}},
 };
 
 struct TimelineView {

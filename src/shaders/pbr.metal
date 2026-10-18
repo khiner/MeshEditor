@@ -485,7 +485,7 @@ fragment TransparencyStore PbrTransparentFragment(
     TransparencyValues values [[imageblock_data]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
 ) {
     const MeshVaryings in = FromMeshletVertexVaryings(meshlet_in);
@@ -501,7 +501,7 @@ fragment float4 PbrVisibilityFragment(
     texture2d<uint, access::read> visibility [[texture(0)]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
     constant VisibilityShadingPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {

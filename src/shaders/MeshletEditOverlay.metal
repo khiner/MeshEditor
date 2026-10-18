@@ -17,7 +17,7 @@ using MeshletSelectFacePointOutput = metal::mesh<ElementIdVaryings, void, uint(M
     uint3 group [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
     constant MeshletDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
@@ -59,7 +59,7 @@ using MeshletSelectFacePointOutput = metal::mesh<ElementIdVaryings, void, uint(M
     uint lane [[thread_index_in_simdgroup]], uint3 group [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
     constant MeshletDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
@@ -88,7 +88,7 @@ using MeshletSelectFacePointOutput = metal::mesh<ElementIdVaryings, void, uint(M
     uint lane [[thread_index_in_simdgroup]], uint3 group [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
     constant MeshletDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
@@ -117,7 +117,7 @@ using MeshletSelectFacePointOutput = metal::mesh<ElementIdVaryings, void, uint(M
     uint3 group [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
     constant MeshletDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {

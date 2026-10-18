@@ -10,6 +10,7 @@
 #include "procedure/Procedure.h"
 #include "render/LightComponents.h"
 #include "render/MaterialComponents.h"
+#include "timeline/Timeline.h"
 #include "timeline/TimelineTheme.h"
 #include "ui/InterfaceTheme.h"
 #include "viewport/InteractionComponents.h"

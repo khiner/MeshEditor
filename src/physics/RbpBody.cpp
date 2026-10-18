@@ -37,7 +37,7 @@ rbp::BodyDesc DescribeBody(RbpBody &result, const Transform &node, const Physics
         if (motion->InertiaDiagonal) {
             moments = ToRbp(*motion->InertiaDiagonal);
             for (int axis = 0; axis < 3; ++axis) CheckNonnegative(moments[axis]);
-            result.Frame.Orientation = Rotation(motion->InertiaOrientation.value_or(quat{1, 0, 0, 0}));
+            result.Frame.Orientation = Rotation(motion->InertiaOrientation);
         } else if (motion->CenterOfMass) {
             // Carry the geometry's tensor to the authored centre before choosing principal axes.
             const rbp::float3 offset = cooked.Position - result.Frame.Position;

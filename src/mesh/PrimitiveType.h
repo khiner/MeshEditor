@@ -46,36 +46,45 @@ struct Cone {
 };
 } // namespace primitive
 
-template<> inline constexpr field::SpecTable<primitive::Plane> Specs<primitive::Plane>{{&primitive::Plane::HalfExtents, {.Min = primitive::MinSize / 2, .Max = primitive::MaxSize / 2}}};
-template<> inline constexpr field::SpecTable<primitive::Circle> Specs<primitive::Circle>{
-    {&primitive::Circle::Radius, {.Min = primitive::MinSize, .Max = primitive::MaxSize}},
-    {&primitive::Circle::Segments, {.Min = 3, .Max = 128}},
+namespace primitive {
+inline constexpr FieldSpec SizeSpec(const char *help) { return {.Min = MinSize, .Max = MaxSize, .Speed = 0.01f, .Unit = FieldUnit::Meters, .Widget = FieldWidget::Drag, .Help = help}; }
+inline constexpr FieldSpec HalfExtentsSpec(const char *help) { return {.Min = MinSize / 2, .Max = MaxSize / 2, .Speed = 0.01f, .Unit = FieldUnit::Meters, .Widget = FieldWidget::Drag, .Label = "Half extents", .Help = help}; }
+} // namespace primitive
+
+template<> inline constexpr field::SpecTable<primitive::Plane> Specs<primitive::Plane>{
+    {&primitive::Plane::HalfExtents, primitive::HalfExtentsSpec("Distance from the center to each edge along X and Z.")},
 };
-template<> inline constexpr field::SpecTable<primitive::Cuboid> Specs<primitive::Cuboid>{{&primitive::Cuboid::HalfExtents, {.Min = primitive::MinSize / 2, .Max = primitive::MaxSize / 2}}};
+template<> inline constexpr field::SpecTable<primitive::Circle> Specs<primitive::Circle>{
+    {&primitive::Circle::Radius, primitive::SizeSpec("Distance from the center to the rim.")},
+    {&primitive::Circle::Segments, {.Min = 3, .Max = 128, .Help = "Number of vertices around the rim"}},
+};
+template<> inline constexpr field::SpecTable<primitive::Cuboid> Specs<primitive::Cuboid>{
+    {&primitive::Cuboid::HalfExtents, primitive::HalfExtentsSpec("Distance from the center to each face along X, Y, and Z.")},
+};
 template<> inline constexpr field::SpecTable<primitive::IcoSphere> Specs<primitive::IcoSphere>{
-    {&primitive::IcoSphere::Radius, {.Min = primitive::MinSize, .Max = primitive::MaxSize}},
-    {&primitive::IcoSphere::Subdivisions, {.Min = 1, .Max = 6}},
+    {&primitive::IcoSphere::Radius, primitive::SizeSpec("Distance from the center to each vertex.")},
+    {&primitive::IcoSphere::Subdivisions, {.Min = 1, .Max = 6, .Help = "Number of times each icosahedron triangle splits into four. Each level quadruples the face count."}},
 };
 template<> inline constexpr field::SpecTable<primitive::UVSphere> Specs<primitive::UVSphere>{
-    {&primitive::UVSphere::Radius, {.Min = primitive::MinSize, .Max = primitive::MaxSize}},
-    {&primitive::UVSphere::Slices, {.Min = 3, .Max = 128}},
-    {&primitive::UVSphere::Stacks, {.Min = 2, .Max = 64}},
+    {&primitive::UVSphere::Radius, primitive::SizeSpec("Distance from the center to the surface.")},
+    {&primitive::UVSphere::Slices, {.Min = 3, .Max = 128, .Help = "Number of segments around the vertical axis"}},
+    {&primitive::UVSphere::Stacks, {.Min = 2, .Max = 64, .Help = "Number of rings from pole to pole"}},
 };
 template<> inline constexpr field::SpecTable<primitive::Torus> Specs<primitive::Torus>{
-    {&primitive::Torus::MajorRadius, {.Min = primitive::MinSize, .Max = primitive::MaxSize}},
-    {&primitive::Torus::MinorRadius, {.Min = primitive::MinSize, .Max = primitive::MaxSize}},
-    {&primitive::Torus::MajorSegments, {.Min = 3, .Max = 256}},
-    {&primitive::Torus::MinorSegments, {.Min = 3, .Max = 256}},
+    {&primitive::Torus::MajorRadius, primitive::SizeSpec("Distance from the center to the middle of the tube.")},
+    {&primitive::Torus::MinorRadius, primitive::SizeSpec("Radius of the tube.")},
+    {&primitive::Torus::MajorSegments, {.Min = 3, .Max = 256, .Help = "Number of segments around the ring"}},
+    {&primitive::Torus::MinorSegments, {.Min = 3, .Max = 256, .Help = "Number of segments around the tube"}},
 };
 template<> inline constexpr field::SpecTable<primitive::Cylinder> Specs<primitive::Cylinder>{
-    {&primitive::Cylinder::Radius, {.Min = primitive::MinSize, .Max = primitive::MaxSize}},
-    {&primitive::Cylinder::Height, {.Min = primitive::MinSize, .Max = primitive::MaxSize}},
-    {&primitive::Cylinder::Slices, {.Min = 3, .Max = 128}},
+    {&primitive::Cylinder::Radius, primitive::SizeSpec("Radius of the caps.")},
+    {&primitive::Cylinder::Height, primitive::SizeSpec("Distance between the caps.")},
+    {&primitive::Cylinder::Slices, {.Min = 3, .Max = 128, .Help = "Number of segments around the side"}},
 };
 template<> inline constexpr field::SpecTable<primitive::Cone> Specs<primitive::Cone>{
-    {&primitive::Cone::Radius, {.Min = primitive::MinSize, .Max = primitive::MaxSize}},
-    {&primitive::Cone::Height, {.Min = primitive::MinSize, .Max = primitive::MaxSize}},
-    {&primitive::Cone::Slices, {.Min = 3, .Max = 128}},
+    {&primitive::Cone::Radius, primitive::SizeSpec("Radius of the base.")},
+    {&primitive::Cone::Height, primitive::SizeSpec("Distance from the base to the tip.")},
+    {&primitive::Cone::Slices, {.Min = 3, .Max = 128, .Help = "Number of segments around the side"}},
 };
 
 using PrimitiveShape = std::variant<

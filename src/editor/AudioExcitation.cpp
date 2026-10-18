@@ -4,6 +4,8 @@
 #include "render/Instance.h"
 #include "state/Scene.h"
 
+#include <numbers>
+
 // Strike impact angle relative to the surface.
 // Center strikes along surface normal, rim tilts impulse 90 degrees into the tangent plane.
 // UI-only.
@@ -22,7 +24,7 @@ vec3 TiltAlongNormal(vec3 n, vec2 joy) {
     const float b = n.x * n.y * a;
     const vec3 t{1.f + s * n.x * n.x * a, s * b, -s * n.x};
     const vec3 bt{b, s + n.y * n.y * a, -n.y};
-    const float theta = std::min(r, 1.f) * 1.57079633f; // radius maps to [0, pi/2]
+    const float theta = std::min(r, 1.f) * std::numbers::pi_v<float> / 2;
     return std::cos(theta) * n + std::sin(theta) * (joy.x * t + joy.y * bt) / r;
 }
 
