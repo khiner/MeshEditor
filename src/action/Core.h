@@ -87,8 +87,7 @@ template<typename C, typename F, size_t N> inline constexpr bool IsPatchFields<P
 
 namespace detail {
 // A non-virtual data-member pointer's bit pattern is the byte offset.
-template<typename P>
-constexpr std::ptrdiff_t MemPtrOffset(P p) { return std::bit_cast<std::ptrdiff_t>(p); }
+constexpr std::ptrdiff_t MemPtrOffset(auto p) { return std::bit_cast<std::ptrdiff_t>(p); }
 // The byte offset of member I, measured once on a default-constructed T.
 template<typename T, size_t I>
 std::ptrdiff_t MemPtrOffset(field::At<T, I>) {

@@ -30,8 +30,8 @@ struct MaterialEdit : FieldWidgets<MaterialEdit<Prefix...>, Prefix...> {
     template<auto... Ms>
     auto Read() const { return ReadChain<Prefix..., Ms...>(GetMaterials(R)[Index]); }
 
-    template<auto... Ms, typename Widget>
-    bool Run(Widget widget, bool = false) {
+    template<auto... Ms>
+    bool Run(auto widget, bool = false) {
         using Field = action::detail::last_field<Prefix..., Ms...>;
         return detail::RunField(
             R, animation::AnimationsViewport(R), detail::Channel<Prefix..., Ms...>(uint16_t(Index)), Read<Ms...>(), widget,

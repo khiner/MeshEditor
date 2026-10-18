@@ -38,8 +38,8 @@ struct InstanceArena {
         Allocator.Free(std::move(ranges));
     }
 
-    template<typename T, typename Index = std::identity>
-    void CompactErase(Range active, const T &indices, Index index = {}) {
+    template<typename Index = std::identity>
+    void CompactErase(Range active, const auto &indices, Index index = {}) {
         ForEachSurvivorRun(active, indices, [&](uint32_t from, uint32_t to, uint32_t count) { CopyInstances(from, to, count); }, index);
         const auto erased = uint32_t(std::ranges::size(indices));
         ClearStates({active.Offset + active.Count - erased, erased});

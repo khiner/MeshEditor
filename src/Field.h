@@ -240,7 +240,7 @@ template<typename T>
 concept Walkable = std::is_class_v<T> && std::is_aggregate_v<T> && !IsArray<T>;
 
 // Visits each member with its declaration index, as `f(member, std::integral_constant<size_t, I>{})`.
-template<typename T, typename F> constexpr void ForEach(T &value, F &&f) {
+constexpr void ForEach(auto &value, auto &&f) {
     auto &[... members] = value;
     [&]<size_t... Is>(std::index_sequence<Is...>) { (..., f(members... [Is], std::integral_constant<size_t, Is> {})); }(std::make_index_sequence<sizeof...(members)>{});
 }
@@ -253,7 +253,7 @@ template<typename T, typename V> struct Table {
     struct Entry {
         size_t Index;
         V Value;
-        template<typename F> consteval Entry(F T::*member, V value) : Index{detail::IndexOf(member)}, Value{value} {}
+        consteval Entry(auto T::*member, V value) : Index{detail::IndexOf(member)}, Value{value} {}
     };
     std::array<V, detail::Count<T>()> ByIndex{};
     constexpr Table() = default;

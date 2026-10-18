@@ -8,8 +8,7 @@
 namespace action {
 // Visits the entities a target resolves to.
 // `active()` returns the active target or null, and `selected(fn)` visits the selection for both selection targets.
-template<typename A, typename S, typename F>
-void ForEachTarget(const Target &target, state::Entity viewport, A &&active, S &&selected, F &&fn) {
+void ForEachTarget(const Target &target, state::Entity viewport, auto &&active, auto &&selected, auto &&fn) {
     std::visit(
         overloaded{
             [&](OnActive) {
@@ -27,7 +26,7 @@ template<typename T> state::Entity ActiveWith(const state::Scene &r) {
     const auto e = FindActiveEntity(r);
     return e != state::Null && r.all_of<T>(e) ? e : state::Null;
 }
-template<typename T, typename F> void ForEachSelectedWith(const state::Scene &r, F &&fn) {
+template<typename T> void ForEachSelectedWith(const state::Scene &r, auto &&fn) {
     for (const auto e : r.view<Selected>()) {
         if (r.all_of<T>(e)) fn(e);
     }

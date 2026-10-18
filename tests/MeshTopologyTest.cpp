@@ -138,11 +138,11 @@ struct Fixture : Engine {
         P->Settle();
     }
 
-    template<typename A> void Do(A a) {
+    void Do(auto a) {
         P->Do(action::MakeAction(std::move(a)));
     }
 
-    template<typename A> void Stage(A a) {
+    void Stage(auto a) {
         action::Emit(std::move(a), action::Phase::Stage);
         P->Frame(action::Drain());
     }
@@ -1430,8 +1430,7 @@ void TestSplitNonplanarLargePolygon() {
 }
 // Validate the render triangles independently of the triangulation algorithm:
 // winding and area must match the polygon, and internal directed edges cancel.
-template<typename Position>
-void ExpectPolygonTessellation(const MeshStore &meshes, const Mesh &mesh, Position position) {
+void ExpectPolygonTessellation(const MeshStore &meshes, const Mesh &mesh, auto position) {
     const auto &arenas = meshes.Arenas();
     for (const auto face : mesh.faces()) {
         std::vector<vec3> points;

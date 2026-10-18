@@ -64,8 +64,7 @@ Transform TrsToTransform(const fastgltf::TRS &trs) { return {.P = ToVec3(trs.tra
 
 // Slot initially contains a glTF texture index and later contains a bindless Scene.cpp slot.
 // Supply meta for top-level material textures that require texCoord override round trips.
-template<typename OptT>
-::TextureInfo ToTextureIndex(const OptT &opt, const fastgltf::Asset &asset, TextureTransformMeta *meta = nullptr) {
+::TextureInfo ToTextureIndex(const auto &opt, const fastgltf::Asset &asset, TextureTransformMeta *meta = nullptr) {
     if (!opt) return {};
     const auto texture_index = ToIndex(opt->textureIndex, asset.textures.size());
     if (!texture_index) return {};

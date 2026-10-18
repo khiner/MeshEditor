@@ -63,21 +63,18 @@ inline void BindScene(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSe
     encoder->setBuffer(*buffers.WorkspaceLightsUBO, 0, BufferIndex_WorkspaceLights);
 }
 
-template<typename T>
-void SetPushConstants(MTL::RenderCommandEncoder *encoder, const T &pc) {
-    encoder->setVertexBytes(&pc, sizeof(T), BufferIndex_PushConstants);
-    encoder->setMeshBytes(&pc, sizeof(T), BufferIndex_PushConstants);
-    encoder->setFragmentBytes(&pc, sizeof(T), BufferIndex_PushConstants);
+void SetPushConstants(MTL::RenderCommandEncoder *encoder, const auto &pc) {
+    encoder->setVertexBytes(&pc, sizeof(pc), BufferIndex_PushConstants);
+    encoder->setMeshBytes(&pc, sizeof(pc), BufferIndex_PushConstants);
+    encoder->setFragmentBytes(&pc, sizeof(pc), BufferIndex_PushConstants);
 }
 
-template<typename T>
-void SetMeshPushConstants(MTL::RenderCommandEncoder *encoder, const T &pc) {
-    encoder->setMeshBytes(&pc, sizeof(T), BufferIndex_PushConstants);
+void SetMeshPushConstants(MTL::RenderCommandEncoder *encoder, const auto &pc) {
+    encoder->setMeshBytes(&pc, sizeof(pc), BufferIndex_PushConstants);
 }
 
-template<typename T>
-void SetPushConstants(MTL::ComputeCommandEncoder *encoder, const T &pc) {
-    encoder->setBytes(&pc, sizeof(T), BufferIndex_PushConstants);
+void SetPushConstants(MTL::ComputeCommandEncoder *encoder, const auto &pc) {
+    encoder->setBytes(&pc, sizeof(pc), BufferIndex_PushConstants);
 }
 
 inline void SetFullViewport(MTL::RenderCommandEncoder *encoder, mtl::Extent2D extent) {

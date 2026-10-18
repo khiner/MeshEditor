@@ -22,8 +22,7 @@ public:
         bool Changed;
         uint64_t LayoutRevision;
     };
-    template<typename GetBlocks>
-    Prepared Prepare(state::Entity entity, uint32_t store, uint64_t revision, uint32_t count, GetBlocks &&get_blocks, uint32_t domain = 0u) {
+    Prepared Prepare(state::Entity entity, uint32_t store, uint64_t revision, uint32_t count, auto &&get_blocks, uint32_t domain = 0u) {
         auto &group = Groups[entity];
         if (group.Store == store && group.Domain == domain && group.Revision == revision && group.Roots.size() == count) {
             return {group.Roots, false, group.LayoutRevision};
@@ -80,8 +79,7 @@ public:
     }
 
     // Publication supplies changed canonical block IDs, so unchanged groups adopt the revision without re-enumerating their surviving membership.
-    template<typename Present>
-    void UpdateBlocks(uint32_t store, uint64_t revision, std::span<const uint32_t> blocks, Present &&present, uint32_t domain = 0u) {
+    void UpdateBlocks(uint32_t store, uint64_t revision, std::span<const uint32_t> blocks, auto &&present, uint32_t domain = 0u) {
         const auto found = ByStore.find(store);
         if (found == ByStore.end()) return;
         for (const auto entity : found->second) {

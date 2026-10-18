@@ -29,10 +29,10 @@ bool ReadFile(const std::filesystem::path &path, std::vector<std::byte> &out) {
     in.read(reinterpret_cast<char *>(out.data()), size);
     return bool(in) || size == 0;
 }
-template<typename T> bool Take(std::span<const std::byte> &in, T &v) {
-    if (in.size() < sizeof(T)) return false;
-    std::memcpy(&v, in.data(), sizeof(T));
-    in = in.subspan(sizeof(T));
+bool Take(std::span<const std::byte> &in, auto &v) {
+    if (in.size() < sizeof(v)) return false;
+    std::memcpy(&v, in.data(), sizeof(v));
+    in = in.subspan(sizeof(v));
     return true;
 }
 
@@ -101,7 +101,7 @@ struct LoadPlan {
     std::unordered_map<Hash128, std::vector<std::byte>, Hash128Hasher> Leaves;
 };
 
-template<typename H> decltype(auto) With(H &history, const History::Tracked &t, auto &&fn) {
+decltype(auto) With(auto &history, const History::Tracked &t, auto &&fn) {
     switch (t.K) {
         case History::Kind::Pages: return fn(*history.PageTracks[t.Index]);
         case History::Kind::Records: return fn(*history.RecordTracks[t.Index]);
@@ -109,7 +109,7 @@ template<typename H> decltype(auto) With(H &history, const History::Tracked &t, 
     }
     std::unreachable();
 }
-template<typename H> LiveTrie &TrieOf(H &history, const History::Tracked &t) {
+LiveTrie &TrieOf(auto &history, const History::Tracked &t) {
     return With(history, t, [](auto &owner) -> LiveTrie & { return owner.Trie; });
 }
 Stamp CurrentStamp(History &history, size_t track) {

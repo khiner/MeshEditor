@@ -18,8 +18,8 @@ inline void AppendRange(std::vector<Range> &ranges, Range range) {
 void CoalesceRanges(std::vector<Range> &);
 
 // Copy surviving runs to their compacted positions after removing sorted indices.
-template<typename T, typename Index = std::identity>
-inline void ForEachSurvivorRun(Range active, const T &indices, auto &&copy, Index index_of = {}) {
+template<typename Index = std::identity>
+inline void ForEachSurvivorRun(Range active, const auto &indices, auto &&copy, Index index_of = {}) {
     auto read = active.Offset, write = active.Offset;
     for (const auto &entry : indices) {
         const auto index = std::invoke(index_of, entry);
@@ -33,8 +33,8 @@ inline void ForEachSurvivorRun(Range active, const T &indices, auto &&copy, Inde
 
 // Visit maximal consecutive runs as (first entry, entry count).
 // Retain entry positions for callers with parallel payload arrays.
-template<typename T, typename Index = std::identity>
-inline void ForEachIndexRun(const T &indices, auto &&visit, Index index = {}) {
+template<typename Index = std::identity>
+inline void ForEachIndexRun(const auto &indices, auto &&visit, Index index = {}) {
     for (size_t first = 0; first < indices.size();) {
         auto end = first + 1;
         while (end < indices.size() && uint64_t(std::invoke(index, indices[end])) == uint64_t(std::invoke(index, indices[first])) + end - first) ++end;

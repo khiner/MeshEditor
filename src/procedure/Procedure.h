@@ -351,14 +351,14 @@ constexpr bool Links(Socket from, Socket to, uint16_t to_kind) {
     return typed && (from.Type == SocketType::Geometry || (from.Types & to.Types));
 }
 
-template<typename F> void VisitKind(uint16_t kind, F &&f) {
+void VisitKind(uint16_t kind, auto &&f) {
     [&]<typename... Ks>(action::TypeList<Ks...>) {
         uint16_t index = 0u;
         (void)((index++ == kind && (f.template operator()<Ks>(), true)) || ...);
     }(NodeKinds{});
 }
 
-template<typename F> void ForEachKind(F &&f) {
+void ForEachKind(auto &&f) {
     [&]<typename... Ks>(action::TypeList<Ks...>) { (f.template operator()<Ks>(), ...); }(NodeKinds{});
 }
 

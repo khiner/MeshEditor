@@ -505,7 +505,7 @@ Operand OperandOf(const GeometryProcedure &procedure, const CookPlan &plan, cons
     if (source.Type == SocketType::Value) return {.Constant = LinkedConstant{source.Value, AttributeType(std::countr_zero(KindSockets(procedure.Nodes[link.FromNode].Kind)[link.FromSocket].Types))}};
     return {source.Type == SocketType::Attribute ? source.Attribute : InvalidOffset};
 }
-template<typename K> void AssignField(K &p, Socket socket, const AttributeValue &words) {
+void AssignField(auto &p, Socket socket, const AttributeValue &words) {
     field::ForEach(p, [&]<size_t I>(auto &member, std::integral_constant<size_t, I>) {
         using F = std::remove_cvref_t<decltype(member)>;
         if constexpr (detail::TypesOf<F>() != 0u) {

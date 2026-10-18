@@ -118,7 +118,7 @@ template<typename C>
 concept Updatable = InTypeList<C, UpdatableComponents>;
 
 // Invokes `f.template operator()<C>()` for the updatable component in `slot`, or nothing for a key outside the list.
-template<typename F> void ForUpdatable(state::TypeId slot, F &&f) {
+void ForUpdatable(state::TypeId slot, auto &&f) {
     [&]<typename... Cs>(TypeList<Cs...>) {
         (void)((state::Type<Cs>() == slot && (f.template operator()<Cs>(), true)) || ...);
     }(UpdatableComponents{});

@@ -62,8 +62,7 @@ std::string SystemDisplayName(const state::Scene &r, state::Entity e) {
     return !r.all_of<const CollisionSystem>(e) ? "<invalid>" : DisplayName(r.get<const CollisionSystem>(e).Name, "{:x}", uint32_t(e));
 }
 
-template<typename Fn>
-void RenderSystemMultiSelect(const state::Scene &r, const char *label, const std::vector<state::Entity> &selection, Fn on_toggle) {
+void RenderSystemMultiSelect(const state::Scene &r, const char *label, const std::vector<state::Entity> &selection, auto on_toggle) {
     const auto view = r.view<const CollisionSystem>();
     if (view.begin() == view.end()) {
         BeginDisabled();

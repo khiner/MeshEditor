@@ -13,7 +13,7 @@ namespace {
 template<typename... Cs> struct TypeList {};
 using ChannelComponents = TypeList<PosedLocal, BoneDelta, Perspective, Orthographic, PunctualLight, ImageLight, Visibility>;
 
-template<typename F> bool ForChannelComponent(state::TypeKey key, F &&f) {
+bool ForChannelComponent(state::TypeKey key, auto &&f) {
     return [&]<typename... Cs>(TypeList<Cs...>) {
         return ((state::Key<Cs>() == key && (f.template operator()<Cs>(), true)) || ...);
     }(ChannelComponents{});

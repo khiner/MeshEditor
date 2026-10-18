@@ -11,8 +11,7 @@ template<typename T>
 constexpr std::span<const std::byte> as_bytes(const std::vector<T> &v) { return std::as_bytes(std::span{v}); }
 template<typename T, uint32_t N>
 constexpr std::span<const std::byte> as_bytes(const std::array<T, N> &v) { return std::as_bytes(std::span{v}); }
-template<typename T>
-constexpr std::span<const std::byte> as_bytes(const T &v) { return {reinterpret_cast<const std::byte *>(&v), sizeof(T)}; }
+constexpr std::span<const std::byte> as_bytes(const auto &v) { return {reinterpret_cast<const std::byte *>(&v), sizeof(v)}; }
 
 namespace mtl {
 struct SparseBuffer;

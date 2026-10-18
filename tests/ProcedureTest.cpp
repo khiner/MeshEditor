@@ -42,14 +42,14 @@ struct Fixture : TestDir, Engine {
         Observe = {};
         expect(P->New(Path / name));
     }
-    template<typename A> uint32_t Do(A a) {
+    uint32_t Do(auto a) {
         const auto node = P->Do(action::MakeAction(std::move(a)));
         Audit();
         if (Observe) Observe(true);
         return node.value();
     }
     // Does the action, which must fail.
-    template<typename A> void Fails(A a) {
+    void Fails(auto a) {
         P->Do(action::MakeAction(std::move(a)));
         expect(!R.Context.get<action::Errors>().Messages.empty());
         R.Context.get<action::Errors>().Messages.clear();
@@ -75,7 +75,7 @@ struct Fixture : TestDir, Engine {
         for (const auto &node : R.get<const GeometryProcedure>(mesh_entity).Nodes) entities.push_back(node.Entity);
         return entities;
     }
-    template<typename A> void Stage(A a) {
+    void Stage(auto a) {
         action::Emit(std::move(a), action::Phase::Stage);
         P->Frame(action::Drain());
         expect(R.Context.get<action::Errors>().Messages.empty());

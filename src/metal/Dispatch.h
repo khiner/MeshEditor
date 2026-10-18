@@ -25,17 +25,17 @@ struct ComputeChain {
     ComputeChain &operator=(const ComputeChain &) = delete;
 
     // Binds the pipeline, the bindless table and the push constants, then dispatches `groups` threadgroups of `width` threads.
-    template<typename PC> void Groups(const ComputePipeline &pipeline, const PC &pc, uint32_t groups, uint32_t width = 256u, uint32_t depth = 1u) {
-        Dispatch(pipeline, &pc, sizeof(PC), groups, depth, width, false);
+    void Groups(const ComputePipeline &pipeline, const auto &pc, uint32_t groups, uint32_t width = 256u, uint32_t depth = 1u) {
+        Dispatch(pipeline, &pc, sizeof(pc), groups, depth, width, false);
     }
     // Dispatches `threads` threads in threadgroups of `width`.
-    template<typename PC> void Threads(const ComputePipeline &pipeline, const PC &pc, uint32_t threads, uint32_t width = 256u) {
-        Dispatch(pipeline, &pc, sizeof(PC), threads, 1u, width, true);
+    void Threads(const ComputePipeline &pipeline, const auto &pc, uint32_t threads, uint32_t width = 256u) {
+        Dispatch(pipeline, &pc, sizeof(pc), threads, 1u, width, true);
     }
     // Dispatches the threadgroup count in the three words at `offset` bytes into `arguments`.
     // The arguments bind directly, so their buffer keeps its storage until the chain commits.
-    template<typename PC> void Indirect(const ComputePipeline &pipeline, const PC &pc, const Buffer &arguments, uint64_t offset, uint32_t width = 256u) {
-        DispatchIndirect(pipeline, &pc, sizeof(PC), arguments, offset, width);
+    void Indirect(const ComputePipeline &pipeline, const auto &pc, const Buffer &arguments, uint64_t offset, uint32_t width = 256u) {
+        DispatchIndirect(pipeline, &pc, sizeof(pc), arguments, offset, width);
     }
     // The recording encoder with the bindless table bound, for passes that bind their own arguments.
     // Such a pass ends with its own memory barrier, and the chain's later passes rebind the table.

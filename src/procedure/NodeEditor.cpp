@@ -1018,8 +1018,8 @@ struct ParameterEdit : ui::FieldWidgets<ParameterEdit<K, Prefix...>, Prefix...> 
     template<auto... Ms>
     auto Read() const { return ui::ReadChain<Prefix..., Ms...>(Value); }
 
-    template<auto... Ms, typename Widget>
-    bool Run(Widget widget, bool delta_capable = false) {
+    template<auto... Ms>
+    bool Run(auto widget, bool delta_capable = false) {
         using F = action::detail::last_field<Prefix..., Ms...>;
         const bool reads_link = ReadsLink<Prefix..., Ms...>(Linked);
         Status = reads_link ? "Linked" : nullptr;
@@ -1157,8 +1157,7 @@ void DrawNodesWindow(state::Scene &r, state::Entity viewport, NodesWindow &windo
     }
     End();
 }
-template<typename Editor>
-void DrawEditor(Editor &e, std::type_identity<CellSize>) {
+void DrawEditor(auto &e, std::type_identity<CellSize>) {
     BeginDisabled(e.template Read<&CellSize::FollowFrameHeight>());
     e.template Draw<&CellSize::Points>();
     EndDisabled();

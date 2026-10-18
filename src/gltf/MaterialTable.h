@@ -106,11 +106,11 @@ inline constexpr auto MaterialExtensions = std::tuple{
 };
 
 // Calls `fn` with each extension, in the order the extension tally lists them.
-template<typename Fn> void ForEachMaterialExtension(Fn &&fn) {
+void ForEachMaterialExtension(auto &&fn) {
     std::apply([&](const auto &...extension) { (fn(extension), ...); }, MaterialExtensions);
 }
 // Calls `fn` with each field of `extension`.
-template<typename Extension, typename Fn> void ForEachMaterialField(const Extension &extension, Fn &&fn) {
+void ForEachMaterialField(const auto &extension, auto &&fn) {
     std::apply([&](const auto &...field) { (fn(field), ...); }, extension.Fields);
 }
 } // namespace gltf::detail

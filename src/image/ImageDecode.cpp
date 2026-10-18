@@ -36,8 +36,8 @@ std::expected<void, std::string> ValidateDimensions(int width, int height, std::
     return {};
 }
 
-template<typename Result, typename Pixel, typename Load>
-std::expected<Result, std::string> DecodeImage(std::string_view image_name, Load &&load) {
+template<typename Result, typename Pixel>
+std::expected<Result, std::string> DecodeImage(std::string_view image_name, auto &&load) {
     int width{0}, height{0}, channels{0};
     void *pixels = load(&width, &height, &channels);
     if (!pixels) return std::unexpected{std::format("Failed to decode image '{}': {}", image_name, StbiFailureReasonOrUnknown())};

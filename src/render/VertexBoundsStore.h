@@ -48,8 +48,7 @@ public:
         const AABB &operator[](uint32_t key) const { return Values[Index(key)]; }
     };
     ReadView View(uint32_t root) const { return {Nodes.Buffer.GetSpan<VertexBoundsMapNode>(), Values.Buffer.GetSpan<AABB>(), Members.GetSpan<uint32_t>(), root}; }
-    template<typename GetBlocks>
-    Prepared Prepare(state::Entity entity, uint32_t store, uint64_t revision, uint32_t count, GetBlocks &&get_blocks) {
+    Prepared Prepare(state::Entity entity, uint32_t store, uint64_t revision, uint32_t count, auto &&get_blocks) {
         auto &group = Groups[entity];
         if (group.Store == store && group.Revision == revision && group.Roots.size() == count) return {group.Roots, group.Keys, false, group.LayoutRevision};
         if (group.Store != store) {
@@ -88,8 +87,7 @@ public:
     }
     // A canonical edit publishes only changed vertex blocks.
     // Keep the pose bounds dispatch keys and their sparse address map at that revision.
-    template<typename Present>
-    void UpdateBlocks(uint32_t store, uint64_t revision, std::span<const uint32_t> blocks, Present &&present) {
+    void UpdateBlocks(uint32_t store, uint64_t revision, std::span<const uint32_t> blocks, auto &&present) {
         const auto found = ByStore.find(store);
         if (found == ByStore.end()) return;
         for (const auto entity : found->second) {

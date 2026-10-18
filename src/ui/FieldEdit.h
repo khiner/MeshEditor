@@ -93,8 +93,7 @@ inline void KeyDecorator(const state::Scene &r, state::Entity entity, const Chan
 namespace detail {
 // Runs `widget` over `v` and stages its change in the item's gesture through `emit(scope, v)`.
 // A field with a channel target is tinted by its keying state on `entity` and followed by its keying decorator.
-template<typename Field, typename Widget, typename Emit>
-bool RunField(state::Scene &r, state::Entity entity, const ChannelTarget &channel, Field v, Widget widget, bool selection, bool delta_capable, Emit emit) {
+bool RunField(state::Scene &r, state::Entity entity, const ChannelTarget &channel, auto v, auto widget, bool selection, bool delta_capable, auto emit) {
     const auto state = channel.Count ? QueryKey(r, entity, channel) : std::nullopt;
     RunKey = state;
     RunSelection = selection;
@@ -116,8 +115,7 @@ inline void NoteGesture(bool edited, bool &changed, bool &finished) {
 }
 
 // Group a composite editor into one recorded action per drag.
-template<typename MakeAction>
-void Gesture(bool changed, MakeAction &&make) {
+void Gesture(bool changed, auto &&make) {
     if (changed) {
         action::Emit(make(), action::Phase::Stage);
         detail::CompositeGestureOpen = true;
@@ -389,8 +387,8 @@ struct Edit : FieldWidgets<Edit<HasEntity, Prefix...>, Prefix...> {
     }
 
     // Run a widget over the field and stage its change in the item's gesture.
-    template<auto... Ms, typename Widget>
-    bool Run(Widget widget, bool delta_capable = false) {
+    template<auto... Ms>
+    bool Run(auto widget, bool delta_capable = false) {
         using Field = action::detail::last_field<Prefix..., Ms...>;
         using C = action::detail::first_class<Prefix..., Ms...>;
         const auto entity = ReadFrom<C>();
@@ -429,8 +427,8 @@ struct PatchEdit : FieldWidgets<PatchEdit<Component, Prefix...>, Prefix...> {
     template<auto... Ms>
     auto Read() const { return ReadChain<Prefix..., Ms...>(Current); }
 
-    template<auto... Ms, typename Widget>
-    bool Run(Widget widget, bool = false) {
+    template<auto... Ms>
+    bool Run(auto widget, bool = false) {
         auto value = Read<Ms...>();
         const bool changed = widget(value);
         Gesture(changed, [&] { return Action<Ms...>(std::move(value)); });
@@ -456,8 +454,8 @@ struct ValueEdit : FieldWidgets<ValueEdit<T, Prefix...>, Prefix...> {
     template<auto... Ms>
     auto Read() const { return ReadChain<Prefix..., Ms...>(Value); }
 
-    template<auto... Ms, typename Widget>
-    bool Run(Widget widget, bool = false) {
+    template<auto... Ms>
+    bool Run(auto widget, bool = false) {
         const bool changed = widget(ReadChain<Prefix..., Ms...>(Value));
         if (Finished) NoteGesture(changed, Changed, *Finished);
         else Changed |= changed;
@@ -477,11 +475,11 @@ template<typename T>
 concept HasEditor = requires(ValueEdit<T> &e) { DrawEditor(e, std::type_identity<T>{}); };
 
 // Draws every field of C except the Skip members through the editor, in declaration order.
-template<typename C, auto... Skip, typename Editor> void DrawFields(Editor &&e);
+template<typename C, auto... Skip> void DrawFields(auto &&e);
 
 namespace detail {
-template<typename C, size_t I, auto... Skip, typename Editor>
-void DrawMember(Editor &e) {
+template<typename C, size_t I, auto... Skip>
+void DrawMember(auto &e) {
     if constexpr (!(... || (field::IndexOf<Skip> == I))) {
         constexpr field::At<C, I> member{};
         using F = field::At<C, I>::Field;
@@ -506,7 +504,7 @@ void DrawMember(Editor &e) {
 }
 } // namespace detail
 
-template<typename C, auto... Skip, typename Editor> void DrawFields(Editor &&e) {
+template<typename C, auto... Skip> void DrawFields(auto &&e) {
     [&]<size_t... Is>(std::index_sequence<Is...>) { (..., detail::DrawMember<C, Is, Skip...>(e)); }(std::make_index_sequence<field::detail::Count<C>()>{});
 }
 } // namespace ui

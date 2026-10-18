@@ -36,7 +36,7 @@ template<typename L> Action MakeAction(L &&leaf) {
     return Action{std::in_place_index<D>, std::variant_alternative_t<D, Action>{std::in_place_type<Leaf>, std::forward<L>(leaf)}};
 }
 
-template<typename F> auto MapDomains(F f) {
+auto MapDomains(auto f) {
     return [&]<size_t... Ds>(std::index_sequence<Ds...>) {
         return std::tuple{f.template operator()<std::variant_alternative_t<Ds, Action>>()...};
     }(std::make_index_sequence<std::variant_size_v<Action>>{});

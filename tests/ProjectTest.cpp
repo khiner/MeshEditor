@@ -45,7 +45,7 @@ struct Fixture : Engine {
         expect(valid);
         expect(R.Context.get<action::Errors>().Messages.empty());
     }
-    template<typename A> auto Do(A a) {
+    auto Do(auto a) {
         const auto node = P->Do(action::MakeAction(std::move(a)));
         Audit();
         return node.value();
@@ -55,7 +55,7 @@ struct Fixture : Engine {
         P->History.Commit(std::move(label), {});
         Audit();
     }
-    template<typename A> state::Entity Add(A a) {
+    state::Entity Add(auto a) {
         Do(std::move(a));
         return FindActiveEntity(R);
     }

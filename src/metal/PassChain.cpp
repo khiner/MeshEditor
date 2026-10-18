@@ -8,7 +8,7 @@ PassChain::PassChain(MTL::CommandBuffer *command_buffer, PassTimer *timer)
 
 PassChain::~PassChain() { ClosePass(); }
 
-template<typename AttachmentT> void PassChain::SampleInto(AttachmentT *attachment, std::string_view name) {
+void PassChain::SampleInto(auto *attachment, std::string_view name) {
     if (!Timer) return;
     const auto pass = Timer->Claim(name);
     if (!pass) return;

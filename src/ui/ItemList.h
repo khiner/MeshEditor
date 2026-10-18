@@ -8,8 +8,7 @@
 namespace ui {
 // Renders `count` items as tree nodes, each with a delete button, and returns the index whose delete button was pressed.
 // `label(i)` names the node and `body(i)` fills it while expanded.
-template<typename Label, typename Body>
-std::optional<uint32_t> ItemList(size_t count, Label &&label, Body &&body) {
+std::optional<uint32_t> ItemList(size_t count, auto &&label, auto &&body) {
     std::optional<uint32_t> deleted;
     for (uint32_t i = 0; i < count; ++i) {
         ImGui::PushID(int(i));

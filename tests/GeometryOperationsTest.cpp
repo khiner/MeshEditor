@@ -130,9 +130,9 @@ constexpr std::array<std::array<std::string_view, 4>, 4> AttributeNames{{
 }};
 constexpr std::array Blues{1.f, 1000.f, 1000000.f};
 
-template<AttributeScalar T> AttributeValue Bits(T value) {
+AttributeValue Bits(AttributeScalar auto value) {
     AttributeValue bits{};
-    std::memcpy(bits.data(), &value, sizeof(T));
+    std::memcpy(bits.data(), &value, sizeof(value));
     return bits;
 }
 

@@ -67,8 +67,7 @@ void PrunePipelineArchives(const std::filesystem::path &base) {
 }
 
 // Both Metal descriptor families share the attachment state; only the blend enable API differs.
-template<typename Attachments>
-void ConfigureColorAttachments(Attachments *attachments, const PassFormats &formats, const std::vector<BlendState> &blends) {
+void ConfigureColorAttachments(auto *attachments, const PassFormats &formats, const std::vector<BlendState> &blends) {
     for (size_t i = 0; i < formats.Color.size(); ++i) {
         auto *attachment = attachments->object(i);
         attachment->setPixelFormat(formats.Color[i]);
@@ -86,8 +85,7 @@ void ConfigureColorAttachments(Attachments *attachments, const PassFormats &form
     }
 }
 
-template<typename Descriptor>
-void ConfigureAttachments(Descriptor *descriptor, const PassFormats &formats, const std::vector<BlendState> &blends) {
+void ConfigureAttachments(auto *descriptor, const PassFormats &formats, const std::vector<BlendState> &blends) {
     ConfigureColorAttachments(descriptor->colorAttachments(), formats, blends);
     if (formats.Depth != MTL::PixelFormatInvalid) descriptor->setDepthAttachmentPixelFormat(formats.Depth);
 }

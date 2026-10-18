@@ -27,7 +27,7 @@ struct PassChain {
     MTL::BlitCommandEncoder *BeginBlit(std::string_view name, MTL::Stages after = {});
 
 private:
-    template<typename AttachmentT> void SampleInto(AttachmentT *attachment, std::string_view name);
+    void SampleInto(auto *attachment, std::string_view name);
 
     void ClosePass();
     void OpenPass(MTL::CommandEncoder *, std::initializer_list<Barrier>);

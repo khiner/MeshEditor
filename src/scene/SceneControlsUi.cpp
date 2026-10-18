@@ -67,8 +67,8 @@ struct ShapeEdit : ui::FieldWidgets<ShapeEdit<S>> {
     template<auto... Ms>
     auto Read() const { return ui::ReadChain<Ms...>(Shape); }
 
-    template<auto... Ms, typename Widget>
-    bool Run(Widget widget, bool = false) {
+    template<auto... Ms>
+    bool Run(auto widget, bool = false) {
         using Field = action::detail::last_field<Ms...>;
         auto value = Read<Ms...>();
         const bool changed = widget(value);

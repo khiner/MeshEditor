@@ -247,7 +247,7 @@ std::future<GltfSampleTrees> SampleTreesFuture;
 
 using project::Session;
 
-template<typename ActionType> void Perform(state::Scene &r, ActionType action) {
+void Perform(state::Scene &r, auto action) {
     Session(r).Do(action::MakeAction(std::move(action)));
 }
 

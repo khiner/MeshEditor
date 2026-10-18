@@ -83,8 +83,7 @@ struct TiledJobBatch {
     // `pc` carries the pass-specific push constants, whose storage slot and job, tile-map and scratch offsets this fills.
     // The argument words are CPU writes, so a batch uploads once per chain submit.
     // Returns the upload, which later passes of the same chain submit record over.
-    template<typename PC>
-    Upload Encode(mtl::ComputeChain &chain, const MeshPipelines &pipelines, PC pc, std::span<const TiledPass> passes) {
+    Upload Encode(mtl::ComputeChain &chain, const MeshPipelines &pipelines, auto pc, std::span<const TiledPass> passes) {
         if (RecordedSubmission == chain.Submission()) throw std::logic_error("A tiled job batch records once per chain submit.");
         RecordedSubmission = chain.Submission();
         Upload upload{.Submission = chain.Submission(), .Jobs = uint32_t(Jobs.size()), .Tiles = {}, .JobsOffset = 0u, .TileMapOffset = 0u};
@@ -106,8 +105,7 @@ struct TiledJobBatch {
         return upload;
     }
     // Records more passes over the jobs and tiles of `upload`, which this chain submit's Encode returned.
-    template<typename PC>
-    void Record(mtl::ComputeChain &chain, const MeshPipelines &pipelines, const Upload &upload, PC pc, std::span<const TiledPass> passes) {
+    void Record(mtl::ComputeChain &chain, const MeshPipelines &pipelines, const Upload &upload, auto pc, std::span<const TiledPass> passes) {
         if (upload.Submission != chain.Submission()) throw std::logic_error("A tiled job batch records over its upload in the same chain submit.");
         std::array<uint32_t, Domains> first_tile{};
         for (size_t d = 1; d < Domains; ++d) first_tile[d] = first_tile[d - 1] + upload.Tiles[d - 1];
