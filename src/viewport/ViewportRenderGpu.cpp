@@ -336,7 +336,7 @@ NormalDerivePushConstants MakeNormalDerivePc(const GpuBuffers &buffers, const Me
 }
 
 // One bounds level over `pc.Work`'s elements when it names element work, else over the source's sparse tiles at `pc.Level`.
-void RecordBoundsPass(MTL::ComputeCommandEncoder *encoder, const mtl::ComputePipeline &pipeline, const GpuBuffers &buffers, BoundsReducePushConstants pc, const PreludeSource *source = nullptr, PreludeSlot slot = PreludeSlot::BoundsLevel1) {
+void RecordBoundsPass(MTL::ComputeCommandEncoder *encoder, const mtl::ComputePipeline &pipeline, const GpuBuffers &buffers, BoundsReducePushConstants pc, std::optional<const PreludeSource &> source = {}, PreludeSlot slot = PreludeSlot::BoundsLevel1) {
     pc.BoundsEntrySlot = buffers.BoundsReduceEntries.Buffer.Slot;
     pc.BoundsSlot = buffers.Instances.BoundsBuffer.Slot;
     pc.ValuesSlot = buffers.VertexBounds.Values.Buffer.Slot;
@@ -355,7 +355,7 @@ void RecordBoundsPass(MTL::ComputeCommandEncoder *encoder, const mtl::ComputePip
 }
 
 // Posed meshlet bounds over `pc.MeshletAddresses` when it names element work, else over the source's sparse jobs.
-void RecordPosedMeshletBounds(MTL::ComputeCommandEncoder *encoder, const Pipelines &pipelines, const GpuBuffers &buffers, PosedMeshletBoundsPushConstants pc, const PreludeSource *source = nullptr) {
+void RecordPosedMeshletBounds(MTL::ComputeCommandEncoder *encoder, const Pipelines &pipelines, const GpuBuffers &buffers, PosedMeshletBoundsPushConstants pc, std::optional<const PreludeSource &> source = {}) {
     if (source) {
         pc.JobsSlot = buffers.SparsePosedMeshletBoundsJobs.Slot;
         pc.JobCount = source->MeshletJobCount;
@@ -390,13 +390,13 @@ void RecordPrelude(MTL::ComputeCommandEncoder *compute, const Pipelines &pipelin
         RecordNormalDerive(compute, normal_pipeline, derive, source, PreludeSlot::DeriveGather);
         compute->memoryBarrier(MTL::BarrierScopeBuffers);
     }
-    if (source.Has(PreludeSlot::PosedMeshletBounds)) RecordPosedMeshletBounds(compute, pipelines, buffers, {}, &source);
+    if (source.Has(PreludeSlot::PosedMeshletBounds)) RecordPosedMeshletBounds(compute, pipelines, buffers, {}, source);
     if (source.Has(PreludeSlot::BoundsLevel3)) {
-        RecordBoundsPass(compute, pipelines.BoundsCombine, buffers, {.Level = 1u}, &source, PreludeSlot::BoundsLevel1);
+        RecordBoundsPass(compute, pipelines.BoundsCombine, buffers, {.Level = 1u}, source, PreludeSlot::BoundsLevel1);
         compute->memoryBarrier(MTL::BarrierScopeBuffers);
-        RecordBoundsPass(compute, pipelines.BoundsCombine, buffers, {.Level = 2u}, &source, PreludeSlot::BoundsLevel2);
+        RecordBoundsPass(compute, pipelines.BoundsCombine, buffers, {.Level = 2u}, source, PreludeSlot::BoundsLevel2);
         compute->memoryBarrier(MTL::BarrierScopeBuffers);
-        RecordBoundsPass(compute, pipelines.BoundsCombine, buffers, {.Level = 3u}, &source, PreludeSlot::BoundsLevel3);
+        RecordBoundsPass(compute, pipelines.BoundsCombine, buffers, {.Level = 3u}, source, PreludeSlot::BoundsLevel3);
     }
 }
 

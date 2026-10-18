@@ -3,8 +3,8 @@
 #include "project/store/Blob.h"
 #include "project/store/Manifest.h"
 
-#include <unordered_map>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 // Versioned slots over bytes and hashes the owner supplies.

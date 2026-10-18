@@ -71,19 +71,23 @@ state::Entity ParentOrNull(const state::Scene &r, state::Entity e) {
 
 void ClearParents(state::Scene &r, std::span<const state::Entity> children) {
     // Each detached child beside its parent, grouped by parent and ordered by child index within a group.
-    std::vector<std::pair<state::Entity, state::Entity>> detached;
+    struct Link {
+        state::Entity Parent, Child;
+        bool operator==(const Link &) const = default;
+    };
+    std::vector<Link> detached;
     for (const auto child : children) {
         if (const auto *parent = r.try_get<const SceneParent>(child)) detached.emplace_back(parent->Parent, child);
     }
     if (detached.empty()) return;
-    std::ranges::sort(detached, {}, [](const auto &link) { return std::pair{state::Index(link.first), state::Index(link.second)}; });
+    std::ranges::sort(detached, {}, [](const auto &link) { return std::pair{state::Index(link.Parent), state::Index(link.Child)}; });
     detached.erase(std::ranges::unique(detached).begin(), detached.end());
     for (auto group = detached.begin(); group != detached.end();) {
-        const auto parent = group->first;
-        const auto group_end = std::ranges::find_if(group, detached.end(), [parent](const auto &link) { return link.first != parent; });
+        const auto parent = group->Parent;
+        const auto group_end = std::ranges::find_if(group, detached.end(), [parent](const auto &link) { return link.Parent != parent; });
         const auto detaching = [&](state::Entity child) {
-            const auto it = std::ranges::lower_bound(group, group_end, state::Index(child), {}, [](const auto &link) { return state::Index(link.second); });
-            return it != group_end && it->second == child;
+            const auto it = std::ranges::lower_bound(group, group_end, state::Index(child), {}, [](const auto &link) { return state::Index(link.Child); });
+            return it != group_end && it->Child == child;
         };
         auto remaining = group_end - group;
         auto previous = state::Null;
@@ -132,7 +136,11 @@ Transform ComposeWorldTransform(const state::Scene &r, state::Entity e) {
 
 void RecomputeWorldTransforms(state::Scene &r, std::span<const state::Entity> roots, std::span<const state::Entity> owned, std::span<const state::Entity> held) {
     // Roots in ascending depth, so every parent is current before a dirty descendant composes under it.
-    std::vector<std::pair<uint32_t, state::Entity>> ordered;
+    struct Root {
+        uint32_t Depth;
+        state::Entity Entity;
+    };
+    std::vector<Root> ordered;
     ordered.reserve(roots.size());
     for (const auto root : roots) {
         if (ContainsInIndexOrder(owned, root)) continue;
@@ -140,7 +148,7 @@ void RecomputeWorldTransforms(state::Scene &r, std::span<const state::Entity> ro
         for (auto parent = ParentOrNull(r, root); parent != state::Null; parent = ParentOrNull(r, parent)) ++depth;
         ordered.emplace_back(depth, root);
     }
-    std::ranges::sort(ordered, {}, [](const auto &entry) { return std::pair{entry.first, state::Index(entry.second)}; });
+    std::ranges::sort(ordered, {}, [](const auto &root) { return std::pair{root.Depth, state::Index(root.Entity)}; });
 
     // Each pending node with the index of its parent's world matrix, or NoParent at a root without a parent.
     static constexpr uint32_t NoParent{UINT32_MAX};

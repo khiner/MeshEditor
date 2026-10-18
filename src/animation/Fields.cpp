@@ -1,4 +1,5 @@
 #include "animation/Fields.h"
+#include "TypeList.h"
 
 #include "animation/MorphWeights.h"
 #include "armature/ArmatureComponents.h"
@@ -10,7 +11,6 @@
 
 namespace animation {
 namespace {
-template<typename... Cs> struct TypeList {};
 using ChannelComponents = TypeList<PosedLocal, BoneDelta, Perspective, Orthographic, PunctualLight, ImageLight, Visibility>;
 
 bool ForChannelComponent(state::TypeKey key, auto &&f) {

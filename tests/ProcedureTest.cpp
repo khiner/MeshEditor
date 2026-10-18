@@ -24,6 +24,7 @@
 #include <boost/ut.hpp>
 
 #include <map>
+#include <print>
 
 using boost::ut::expect, boost::ut::fatal;
 
@@ -115,14 +116,14 @@ struct Fixture : TestDir, Engine {
     void Audit() {
         std::string why;
         const bool valid = P->Audit(why);
-        if (!valid) std::printf("audit: %s\n", why.c_str());
+        if (!valid) std::println("audit: {}", why);
         expect(valid);
         expect(R.Context.get<action::Errors>().Messages.empty());
     }
     // Replays the present node's actions from its parent's state, which must reach the node's state.
     void ValidateReplay(std::source_location at = std::source_location::current()) {
         const auto why = P->History.ValidateReplay();
-        if (!why.empty()) std::printf("replay differs in %s at %u\n", why.c_str(), at.line());
+        if (!why.empty()) std::println("replay differs in {} at {}", why, at.line());
         expect(why.empty());
     }
     // Replays every recorded action, which must reach the present persistent state.

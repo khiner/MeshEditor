@@ -7,6 +7,7 @@
 
 #include <csignal>
 #include <map>
+#include <print>
 #include <random>
 
 using boost::ut::expect;
@@ -172,7 +173,7 @@ void TestPoolTrieAgainstModel() {
         std::vector<Version> versions;
         for (auto &[v, _] : pinned) versions.push_back(v);
         if (!trie.Check(why, versions)) {
-            std::printf("invariant broken at step %d: %s\n", step, why.c_str());
+            std::println("invariant broken at step {}: {}", step, why);
             expect(false);
             return;
         }
@@ -271,7 +272,7 @@ void TestBufferAgainstModel() {
         std::vector<Version> versions;
         for (auto &[v, _] : pinned) versions.push_back(v);
         if (!buf.Trie.Check(why, versions)) {
-            std::printf("buffer invariant broken at step %d: %s\n", step, why.c_str());
+            std::println("buffer invariant broken at step {}: {}", step, why);
             expect(false);
             return;
         }
@@ -447,7 +448,7 @@ void TestCommitIdentity() {
     app.H.Navigate(a);
     std::string why;
     expect(app.H.Audit(why));
-    if (!why.empty()) std::printf("  %s\n", why.c_str());
+    if (!why.empty()) std::println("  {}", why);
     app.H.Close();
 }
 
@@ -492,7 +493,7 @@ void TestReplace() {
     expect(app.State() == replaced);
     std::string why;
     expect(app.H.Audit(why));
-    if (!why.empty()) std::printf("  %s\n", why.c_str());
+    if (!why.empty()) std::println("  {}", why);
 }
 
 void TestColdLoadFailure() {

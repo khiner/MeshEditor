@@ -75,7 +75,7 @@ void Apply(state::Scene &r, state::Entity viewport, const Action &action) {
             },
             [&](const ApplyModalModel &a) { ::ApplyModalModel(r, a.SoundEntity, a.Path); },
             [&](const AssignVertexSamples &a) {
-                auto frames = LoadAudioFrames(project::ResolveAsset(r, a.Path).string(), DeviceSampleRate(r));
+                auto frames = LoadAudioFrames(project::ResolveAsset(r, a.Path), DeviceSampleRate(r));
                 if (!frames.empty()) ::AssignVertexSample(r, FindActiveEntity(r), *a.MeshVertices, a.Path, std::move(frames));
             },
             [&](const ActivateRealImpactMicrophone &a) {

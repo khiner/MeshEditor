@@ -641,7 +641,7 @@ void ApplyCompletedModalSolves(state::Scene &r, EventPass pass) {
                     samples.try_emplace(path);
                 }
             } else {
-                samples.emplace(path, LoadAudioFrames(project::ResolveAsset(r, path).string(), DeviceSampleRate(r)));
+                samples.emplace(path, LoadAudioFrames(project::ResolveAsset(r, path), DeviceSampleRate(r)));
             }
         }
         std::erase_if(samples, [&](const auto &entry) { return !used_samples.contains(entry.first); });

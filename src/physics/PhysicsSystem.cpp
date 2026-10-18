@@ -306,7 +306,7 @@ auto PoolOverflows(const rbp::World &world) {
     return std::array{o.Bodies, o.Shapes, o.ShapeVertices, o.HullFaces, o.Triangles, o.BvhNodes, o.CompoundChildren};
 }
 
-physics::RbpBody CookBody(PhysicsState &s, const state::Scene &r, const BodyInput &input, std::span<const ColliderInput> leaves, const physics::RbpBody *previous = nullptr) {
+physics::RbpBody CookBody(PhysicsState &s, const state::Scene &r, const BodyInput &input, std::span<const ColliderInput> leaves, std::optional<const physics::RbpBody &> previous = {}) {
     auto &world = *s.World;
     std::vector<rbp::Index> shapes;
     shapes.reserve(leaves.size());
@@ -321,7 +321,7 @@ physics::RbpBody CookBody(PhysicsState &s, const state::Scene &r, const BodyInpu
             shapes.push_back(shape);
             ApplyCollider(world.Shapes[shape], input.Colliders[i], leaf);
         }
-        const auto body = physics::BuildRbpBody(world, shapes, input.Node, input.Motion ? &*input.Motion : nullptr, &input.Velocity, input.Sensor, previous);
+        const auto body = physics::BuildRbpBody(world, shapes, input.Node, input.Motion, input.Velocity, input.Sensor, previous);
         world.RemoveShapes(shapes);
         return body;
     } catch (...) {
@@ -774,9 +774,9 @@ void ProcessChanges(state::Scene &r) {
             const auto old_pose = body.InitialPose;
             const auto old_mass = s.World->Masses[body.Body];
             if (recook) {
-                body = CookBody(s, r, input, next_leaves, &body);
+                body = CookBody(s, r, input, next_leaves, body);
             } else {
-                if (input != record.Input) physics::UpdateRbpBody(*s.World, body, input.Node, input.Motion ? &*input.Motion : nullptr, &input.Velocity);
+                if (input != record.Input) physics::UpdateRbpBody(*s.World, body, input.Node, input.Motion, input.Velocity);
                 // Compound children follow the collider order, so each changed leaf updates its surface in place.
                 for (uint32_t i = 0; i < next_leaves.size(); ++i) {
                     if (next_leaves[i] != record.Leaves[i]) ApplyCollider(s.World->Shapes[s.World->Child(body.Shape, i)], input.Colliders[i], next_leaves[i]);

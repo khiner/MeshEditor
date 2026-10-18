@@ -25,6 +25,8 @@
 #include "viewport/RenderExtent.h"
 #include "viewport/Viewport.h"
 
+#include <print>
+
 using boost::ut::expect;
 
 namespace {
@@ -41,7 +43,7 @@ struct Fixture : Engine {
     void Audit() {
         std::string why;
         const bool valid = P->Audit(why);
-        if (!valid) std::printf("audit: %s\n", why.c_str());
+        if (!valid) std::println("audit: {}", why);
         expect(valid);
         expect(R.Context.get<action::Errors>().Messages.empty());
     }
@@ -483,7 +485,7 @@ void CheckLayout(Fixture &f, std::string_view step) {
     const bool transforming = edit && r.all_of<PendingTransform>(f.Viewport);
     const auto &primaries = r.get<const EditPrimaries>(f.Viewport).All;
     const auto fail = [&](std::string_view what) {
-        std::printf("layout after %.*s: %.*s\n", int(step.size()), step.data(), int(what.size()), what.data());
+        std::println("layout after {}: {}", step, what);
         expect(false);
     };
     expect(r.view<const MeshLayoutDirty>().empty());
@@ -621,11 +623,11 @@ int main(int argc, char **argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     if (argc == 2 && std::string_view{argv[1]} == "--no-render") Render = false;
     else if (argc != 1) {
-        std::fprintf(stderr, "Usage: %s [--no-render]\n", argv[0]);
+        std::println(stderr, "Usage: {} [--no-render]", argv[0]);
         return 1;
     }
 
-    if (!Render) std::puts("Skipping rendered-image comparisons (--no-render).");
+    if (!Render) std::println("Skipping rendered-image comparisons (--no-render).");
     Paths::Init(MESHEDITOR_BUILD_DIR, MESHEDITOR_BUILD_DIR);
     TestSavedProject();
     TestActionsArchive();

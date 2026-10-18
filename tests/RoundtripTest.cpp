@@ -23,6 +23,7 @@
 #include "viewport/Viewport.h"
 
 #include "numeric/FastGltf.h"
+#include <print>
 #include <simdjson.h>
 
 namespace {
@@ -721,10 +722,9 @@ size_t CompareGltfJson(const fs::path &a_path, const fs::path &b_path, std::stri
     }
     if (!unexpected.empty()) {
         constexpr size_t MaxReport = 20;
-        std::cerr << "  " << unexpected.size() << " unexpected JSON diff(s) in " << sample_name
-                  << " (" << expected << " expected-divergence diff(s) filtered):\n";
-        for (size_t i = 0; i < unexpected.size() && i < MaxReport; ++i) std::cerr << "    " << unexpected[i].Path << ": " << unexpected[i].Message << "\n";
-        if (unexpected.size() > MaxReport) std::cerr << "    ... and " << (unexpected.size() - MaxReport) << " more\n";
+        std::println(stderr, "  {} unexpected JSON diff(s) in {} ({} expected-divergence diff(s) filtered):", unexpected.size(), sample_name, expected);
+        for (size_t i = 0; i < unexpected.size() && i < MaxReport; ++i) std::println(stderr, "    {}: {}", unexpected[i].Path, unexpected[i].Message);
+        if (unexpected.size() > MaxReport) std::println(stderr, "    ... and {} more", unexpected.size() - MaxReport);
     }
     return unexpected.size();
 }
@@ -839,8 +839,8 @@ struct SceneFixture : Engine {
     void Check(bool ok) {
         boost::ut::expect(ok);
         if (ok) return;
-        for (const auto &message : R.Context.get<action::Errors>().Messages) std::cerr << "  project: " << message << "\n";
-        if (const auto error = P->History.TakeIntegrityError(); !error.empty()) std::cerr << "  history: " << error << "\n";
+        for (const auto &message : R.Context.get<action::Errors>().Messages) std::println(stderr, "  project: {}", message);
+        if (const auto error = P->History.TakeIntegrityError(); !error.empty()) std::println(stderr, "  history: {}", error);
     }
     std::vector<std::byte> SaveTo(const std::filesystem::path &dir) {
         Check(P->Begin(dir));
@@ -1545,7 +1545,7 @@ int main(int argc, const char **argv) {
             if (!load) expect(!load.error().UnsupportedExtensions && load.error().Message.contains(expected_error)) << "unexpected error: " << load.error().Message;
             const auto after = CountScene(fx);
             expect(after == before) << "failed load changed the scene or a store: entities " << before.Entities << " -> " << after.Entities << ", materials " << before.Materials << " -> " << after.Materials;
-            std::cerr << std::format("  failed load '{}': entities {} -> {}, mesh handles {} -> {}, textures {} -> {}, materials {} -> {}, vertex bytes {} -> {}\n", path.filename().string(), before.Entities, after.Entities, before.MeshHandles, after.MeshHandles, before.Textures, after.Textures, before.Materials, after.Materials, before.VertexBytes, after.VertexBytes);
+            std::println(stderr, "  failed load '{}': entities {} -> {}, mesh handles {} -> {}, textures {} -> {}, materials {} -> {}, vertex bytes {} -> {}", path.filename().string(), before.Entities, after.Entities, before.MeshHandles, after.MeshHandles, before.Textures, after.Textures, before.Materials, after.Materials, before.VertexBytes, after.VertexBytes);
         }
     };
 

@@ -6,6 +6,8 @@
 #include "scene/Entity.h"
 #include "viewport/Viewport.h"
 
+#include <print>
+
 using boost::ut::expect;
 
 namespace {
@@ -75,7 +77,7 @@ void BenchScene(uint32_t slices, bool render) {
     p.Navigate(nodes.back());
     expect(p.History.ValidateReplay().empty());
     expect(p.History.TakeIntegrityError().empty());
-    std::printf("%u vertices: dense drag + commit %.3f ms, hot %.3f ms, cold %.3f ms (medians, %s render)\n", vertices, Median(edits), Median(hot), Median(cold), render ? "including" : "excluding");
+    std::println("{} vertices: dense drag + commit {:.3f} ms, hot {:.3f} ms, cold {:.3f} ms (medians, {} render)", vertices, Median(edits), Median(hot), Median(cold), render ? "including" : "excluding");
     expect(p.Close());
 }
 } // namespace
@@ -125,11 +127,11 @@ int main() {
         std::string why;
         expect(history.Audit(why));
         expect(history.TakeIntegrityError().empty());
-        std::printf("%2llu MiB: eight-byte write + commit %.4f ms, hot %.4f ms, cold %.4f ms (medians), %.0f appended bytes/edit\n", (unsigned long long)mib, Median(commits), Median(hot), Median(cold), double(appended) / 30);
+        std::println("{:2} MiB: eight-byte write + commit {:.4f} ms, hot {:.4f} ms, cold {:.4f} ms (medians), {:.0f} appended bytes/edit", mib, Median(commits), Median(hot), Median(cold), double(appended) / 30);
         history.Navigate(0);
         history.Evict(0);
         const auto stats = history.Stats();
-        std::printf("        after eviction: %llu owned bytes, %.3f MiB shared nodes\n", (unsigned long long)stats.OwnedBytes, double(stats.SharedNodeBytes) / MiB);
+        std::println("        after eviction: {} owned bytes, {:.3f} MiB shared nodes", stats.OwnedBytes, double(stats.SharedNodeBytes) / MiB);
         expect(history.Close());
     }
     for (const bool render : {false, true}) {

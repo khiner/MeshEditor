@@ -18,7 +18,7 @@ void RegisterMesh(Tables &tables) {
     Derived<MeshGeometryDirty, MeshPositionsChanged, AuthoredCornerNormals>(tables);
     // Restore procedure outputs and owned entities directly; rederive only plans and node errors.
     Persistent<procedure::GeometryProcedure, procedure::ProcedureInstances, procedure::ProcedureOwnedMesh, procedure::NodeLayout, procedure::NodeTheme, procedure::NodeSelected, procedure::InlineSelection, procedure::PublishSelection>(tables);
-    [&]<typename... Ks>(action::TypeList<Ks...>) { Persistent<Ks...>(tables); }(procedure::NodeKinds{});
+    [&]<typename... Ks>(TypeList<Ks...>) { Persistent<Ks...>(tables); }(procedure::NodeKinds{});
     Derived<procedure::CookPlan, procedure::NodeError>(tables);
 }
 } // namespace snapshot::detail

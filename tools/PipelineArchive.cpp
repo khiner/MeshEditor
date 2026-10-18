@@ -2,10 +2,11 @@
 #include "render/Pipelines.h"
 
 #include <fstream>
+#include <print>
 
 int main(int argc, char **argv) {
     if (argc != 4) {
-        std::fprintf(stderr, "usage: MeshEditorPipelineArchive <shaders-dir> <output.mtl4a> <stamp>\n");
+        std::println(stderr, "usage: MeshEditorPipelineArchive <shaders-dir> <output.mtl4a> <stamp>");
         return 2;
     }
     const auto shaders = std::filesystem::path{argv[1]};
@@ -40,11 +41,11 @@ int main(int argc, char **argv) {
             if (!file) throw std::runtime_error("Pipeline archive build stamp could not be written.");
         }
         std::filesystem::rename(stamp_tmp, stamp);
-        std::fprintf(stderr,"Pipeline archive: %u hits, %u compiled.\n",hits,compiled);
+        std::println(stderr, "Pipeline archive: {} hits, {} compiled.", hits, compiled);
         return 0;
     } catch (const std::exception &error) {
         std::filesystem::remove(stamp_tmp);
-        std::fprintf(stderr, "Pipeline archive: %s\n", error.what());
+        std::println(stderr, "Pipeline archive: {}", error.what());
         return 1;
     }
 }

@@ -341,7 +341,7 @@ struct FieldWidgets {
             }
             return changed;
         },
-                                          /*delta_capable=*/true);
+                                        /*delta_capable=*/true);
     }
 
     template<auto M>

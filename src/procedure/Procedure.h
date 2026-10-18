@@ -15,9 +15,9 @@ struct Boolean {
     BooleanOperation Operation{BooleanOperation::Difference};
 };
 
-using Generators = action::TypeList<primitive::Plane, primitive::Circle, primitive::Cuboid, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone>;
+using Generators = TypeList<primitive::Plane, primitive::Circle, primitive::Cuboid, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone>;
 template<typename K>
-concept Generator = action::InTypeList<K, Generators>;
+concept Generator = InTypeList<K, Generators>;
 
 // Attribute nodes evaluate on the geometry their reader receives, in the domain of their first attribute input.
 struct Position {}; // Emit vertex positions.
@@ -123,7 +123,7 @@ struct ObjectInfo {
 };
 
 // A node's kind is its parameter component's index in this list.
-using NodeKinds = action::TypeList<
+using NodeKinds = TypeList<
     Source, Output, Join, Boolean,
     primitive::Plane, primitive::Circle, primitive::Cuboid, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone,
     action::mesh::Delete, action::mesh::Merge, action::mesh::Extrude, action::mesh::Duplicate, action::mesh::Split, action::mesh::Dissolve,
@@ -134,9 +134,9 @@ using NodeKinds = action::TypeList<
     Position, Normal, Index, NamedAttribute, VectorMath, FloatMath, Compare, BooleanMath, StoreNamedAttribute, SetPosition,
     MeshToPoints, InstanceOnPoints, RealizeInstances, ObjectInfo,
     FloatValue, IntegerValue, BooleanValue, VectorValue, TransformGeometry, RotationValue>;
-using ValueKinds = action::TypeList<FloatValue, IntegerValue, BooleanValue, VectorValue, RotationValue>;
+using ValueKinds = TypeList<FloatValue, IntegerValue, BooleanValue, VectorValue, RotationValue>;
 template<typename K>
-concept ValueKind = action::InTypeList<K, ValueKinds>;
+concept ValueKind = InTypeList<K, ValueKinds>;
 
 // Attribute sockets accept per-element data or broadcast constants.
 // Selection sockets accept booleans and default to inline selection.
@@ -301,7 +301,7 @@ template<typename K> inline constexpr auto KindSocketTable = [] {
 }();
 
 template<typename K> constexpr std::span<const Socket> SocketsOf() { return std::span{KindSocketTable<K>.first}.first(KindSocketTable<K>.second); }
-template<typename... Ks> constexpr auto PerKind(action::TypeList<Ks...>, auto &&value) {
+template<typename... Ks> constexpr auto PerKind(TypeList<Ks...>, auto &&value) {
     return std::array<uint16_t, sizeof...(Ks)>{uint16_t(value.template operator()<Ks>())...};
 }
 } // namespace detail
@@ -321,7 +321,7 @@ inline constexpr auto SocketFirst = [] {
     return first;
 }();
 
-inline constexpr auto Sockets = []<typename... Ks>(action::TypeList<Ks...>) {
+inline constexpr auto Sockets = []<typename... Ks>(TypeList<Ks...>) {
     std::array<Socket, SocketFirst.back()> all{};
     auto *it = all.begin();
     ((it = std::ranges::copy(detail::SocketsOf<Ks>(), it).out), ...);
@@ -337,7 +337,7 @@ constexpr std::pair<uint16_t, uint16_t> ParameterRange(uint16_t kind) {
     return {uint16_t(std::ranges::count(KindSockets(kind).first(InputCount[kind]), NoField, &Socket::Field)), InputCount[kind]};
 }
 
-template<typename K> inline constexpr uint16_t KindOf = []<typename... Ks>(action::TypeList<Ks...>) {
+template<typename K> inline constexpr uint16_t KindOf = []<typename... Ks>(TypeList<Ks...>) {
     uint16_t index = 0u, found = KindCount;
     ((found = std::same_as<K, Ks> ? index : found, ++index), ...);
     return found;
@@ -352,14 +352,14 @@ constexpr bool Links(Socket from, Socket to, uint16_t to_kind) {
 }
 
 void VisitKind(uint16_t kind, auto &&f) {
-    [&]<typename... Ks>(action::TypeList<Ks...>) {
+    [&]<typename... Ks>(TypeList<Ks...>) {
         uint16_t index = 0u;
         (void)((index++ == kind && (f.template operator()<Ks>(), true)) || ...);
     }(NodeKinds{});
 }
 
 void ForEachKind(auto &&f) {
-    [&]<typename... Ks>(action::TypeList<Ks...>) { (f.template operator()<Ks>(), ...); }(NodeKinds{});
+    [&]<typename... Ks>(TypeList<Ks...>) { (f.template operator()<Ks>(), ...); }(NodeKinds{});
 }
 
 inline constexpr uint32_t NoNode = UINT32_MAX;

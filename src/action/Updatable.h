@@ -1,5 +1,6 @@
 #pragma once
 
+#include "TypeList.h"
 #include "action/Core.h"
 #include "mesh/PrimitiveType.h"
 
@@ -91,8 +92,6 @@ struct NodeTheme;
 } // namespace procedure
 
 namespace action {
-template<typename... Cs> struct TypeList {};
-
 // The components Update can address, visited at apply time and checked at each emit site.
 using UpdatableComponents = TypeList<
     Transform, PosedLocal, BoneDelta, TransformGizmoState, OrbitToActive, ShadeSmoothAngle,
@@ -112,8 +111,6 @@ using UpdatableComponents = TypeList<
     procedure::FloatValue, procedure::IntegerValue, procedure::BooleanValue, procedure::VectorValue, procedure::RotationValue, procedure::TransformGeometry,
     primitive::Plane, primitive::Circle, primitive::Cuboid, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone>;
 
-template<typename C, typename List> inline constexpr bool InTypeList = false;
-template<typename C, typename... Cs> inline constexpr bool InTypeList<C, TypeList<Cs...>> = (std::same_as<C, Cs> || ...);
 template<typename C>
 concept Updatable = InTypeList<C, UpdatableComponents>;
 

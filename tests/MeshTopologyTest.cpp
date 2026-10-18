@@ -20,6 +20,7 @@
 #include "viewport/Viewport.h"
 
 #include <map>
+#include <print>
 
 using boost::ut::expect;
 
@@ -164,7 +165,7 @@ struct Fixture : Engine {
         WaitForRender(R);
         expect(ViewportImageReady(R));
         for (const auto &message : R.Context.get<action::Errors>().Messages)
-            std::printf("action error: %s\n", message.c_str());
+            std::println("action error: {}", message);
         expect(R.Context.get<action::Errors>().Messages.empty());
         Audit();
     }
@@ -172,7 +173,7 @@ struct Fixture : Engine {
     void Audit() {
         std::string why;
         const bool valid = P->Audit(why);
-        if (!valid) std::printf("audit: %s\n", why.c_str());
+        if (!valid) std::println("audit: {}", why);
         expect(valid);
     }
 

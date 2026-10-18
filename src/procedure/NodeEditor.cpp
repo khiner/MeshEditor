@@ -38,20 +38,20 @@ enum class KindGroup : uint8_t { SourceOutput,
 constexpr const char *GroupNames[]{"Source and Output", "Operators", "Combine", "Attributes", "Values", "Generators", "Instances"};
 using C = NodeThemeColors;
 constexpr vec4 C::*GroupColors[]{&C::SourceOutputTitle, &C::OperatorsTitle, &C::CombineTitle, &C::AttributesTitle, &C::ValuesTitle, &C::GeneratorsTitle, &C::InstancesTitle};
-using AttributeKinds = action::TypeList<Position, Normal, Index, NamedAttribute, VectorMath, FloatMath, Compare, BooleanMath, StoreNamedAttribute, SetPosition>;
-using InstanceKinds = action::TypeList<MeshToPoints, InstanceOnPoints, RealizeInstances>;
+using AttributeKinds = TypeList<Position, Normal, Index, NamedAttribute, VectorMath, FloatMath, Compare, BooleanMath, StoreNamedAttribute, SetPosition>;
+using InstanceKinds = TypeList<MeshToPoints, InstanceOnPoints, RealizeInstances>;
 template<typename K> constexpr KindGroup GroupOf() {
     if constexpr (std::same_as<K, Source> || std::same_as<K, Output> || std::same_as<K, ObjectInfo>) return KindGroup::SourceOutput;
     else if constexpr (std::same_as<K, Join> || std::same_as<K, Boolean>) return KindGroup::Combine;
     else if constexpr (Generator<K>) return KindGroup::Generators;
-    else if constexpr (action::InTypeList<K, AttributeKinds>) return KindGroup::Attributes;
+    else if constexpr (InTypeList<K, AttributeKinds>) return KindGroup::Attributes;
     else if constexpr (ValueKind<K>) return KindGroup::Values;
-    else if constexpr (action::InTypeList<K, InstanceKinds>) return KindGroup::Instances;
+    else if constexpr (InTypeList<K, InstanceKinds>) return KindGroup::Instances;
     else return KindGroup::Operators;
 }
 template<typename K> constexpr auto Title{field::detail::Spaced<field::fixed_string<state::LeafName<K>().size() + 1>{state::LeafName<K>()}>()};
-constexpr auto KindGroups{[]<typename... Ks>(action::TypeList<Ks...>) { return std::array{GroupOf<Ks>()...}; }(NodeKinds{})};
-constexpr auto KindTitles{[]<typename... Ks>(action::TypeList<Ks...>) { return std::array{Title<Ks>.c_str()...}; }(NodeKinds{})};
+constexpr auto KindGroups{[]<typename... Ks>(TypeList<Ks...>) { return std::array{GroupOf<Ks>()...}; }(NodeKinds{})};
+constexpr auto KindTitles{[]<typename... Ks>(TypeList<Ks...>) { return std::array{Title<Ks>.c_str()...}; }(NodeKinds{})};
 
 template<typename K> constexpr const char *Help{};
 template<> constexpr const char *Help<Source>{"Emits the mesh's source geometry"};
@@ -115,7 +115,7 @@ template<> constexpr const char *Help<BooleanValue>{"Emits a constant boolean"};
 template<> constexpr const char *Help<VectorValue>{"Emits a constant vector"};
 template<> constexpr const char *Help<TransformGeometry>{"Moves, rotates, and scales the whole geometry about the mesh origin"};
 template<> constexpr const char *Help<RotationValue>{"Emits a constant rotation"};
-constexpr auto KindHelp{[]<typename... Ks>(action::TypeList<Ks...>) { return std::array{Help<Ks>...}; }(NodeKinds{})};
+constexpr auto KindHelp{[]<typename... Ks>(TypeList<Ks...>) { return std::array{Help<Ks>...}; }(NodeKinds{})};
 static_assert(std::ranges::none_of(KindHelp, [](const char *help) { return help == nullptr; }), "Every node kind needs a Help sentence.");
 
 constexpr const char *FaultTexts[]{"The selection does not fit this operation.", "A parameter is invalid.", "An attribute input is missing or has the wrong type or domain.", "An input mesh is not a closed surface.", "The boolean produced no geometry.", "Geometry cannot be retrieved from the edited object."};
@@ -171,7 +171,7 @@ template<typename K> constexpr const char *FieldHelp(Socket socket) {
     return help;
 }
 // Each socket's help, in Sockets order.
-constexpr auto SocketHelps{[]<typename... Ks>(action::TypeList<Ks...>) {
+constexpr auto SocketHelps{[]<typename... Ks>(TypeList<Ks...>) {
     std::array<const char *, Sockets.size()> helps{};
     (std::ranges::transform(detail::SocketsOf<Ks>(), helps.begin() + SocketFirst[KindOf<Ks>], FieldHelp<Ks>), ...);
     return helps;

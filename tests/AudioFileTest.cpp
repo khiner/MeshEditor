@@ -21,7 +21,7 @@ int main() {
             expect(writer.FramesWritten() == source.size());
         }
 
-        const auto decoded = LoadAudioFrames(path.string(), SampleRate);
+        const auto decoded = LoadAudioFrames(path, SampleRate);
         expect(decoded.size() == source.size());
         float max_error = 0.f;
         for (size_t i = 0; i < std::min(decoded.size(), source.size()); ++i) {
@@ -29,7 +29,7 @@ int main() {
         }
         expect(max_error <= 0.0000001_f) << max_error;
 
-        const auto half_rate = LoadAudioFrames(path.string(), SampleRate / 2);
+        const auto half_rate = LoadAudioFrames(path, SampleRate / 2);
         const auto expected_half_frames = source.size() / 2;
         expect(half_rate.size() >= expected_half_frames - 2);
         expect(half_rate.size() <= expected_half_frames + 2);

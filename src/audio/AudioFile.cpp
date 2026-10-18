@@ -54,18 +54,18 @@ bool WavWriter::Write(std::span<const float> frames) {
 
 uint64_t WavWriter::FramesWritten() const { return State->FramesWritten; }
 
-std::vector<float> LoadAudioFrames(std::string_view file_path, uint32_t sample_rate) {
+std::vector<float> LoadAudioFrames(const std::filesystem::path &file_path, uint32_t sample_rate) {
     CFURLRef url = FileUrl(file_path);
     ExtAudioFileRef file{nullptr};
     if (!url || ExtAudioFileOpenURL(url, &file) != noErr) {
         if (url) CFRelease(url);
-        std::println(stderr, "Failed to open audio file: {}", file_path);
+        std::println(stderr, "Failed to open audio file: {}", file_path.string());
         return {};
     }
     CFRelease(url);
     const auto fail = [&](std::string_view operation) {
         ExtAudioFileDispose(file);
-        std::println(stderr, "Failed to {} audio file: {}", operation, file_path);
+        std::println(stderr, "Failed to {} audio file: {}", operation, file_path.string());
         return std::vector<float>{};
     };
 

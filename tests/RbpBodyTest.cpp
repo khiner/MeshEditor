@@ -62,10 +62,10 @@ const suite Bodies = [] {
             expect(world.Shapes[shape].Kind == rbp::ShapePlane);
             expect(Near(world.Shapes[shape].HalfExtents, rbp::float3{plane.SizeX.value_or(0), 0, 1.5f * plane.SizeZ.value_or(0)}));
             expect(Near(world.Shapes[shape].Normal, rbp::float3{0, -1, 0}));
-            const auto floor = BuildRbpBody(world, std::array{shape}, Transform{}, nullptr);
+            const auto floor = BuildRbpBody(world, std::array{shape}, Transform{}, {});
             const auto cube = world.AddShape(BoxShape(rbp::float3{0.5f, 0.5f, 0.5f}));
             const PhysicsMotion motion{.Mass = 1};
-            const auto body = BuildRbpBody(world, std::array{cube}, Transform{.P = {1, 3, 2}}, &motion);
+            const auto body = BuildRbpBody(world, std::array{cube}, Transform{.P = {1, 3, 2}}, motion);
             const auto beyond = rbp::WorldPoint(local, plane.SizeX > 0 ? rbp::float3{2, 2, 0} : rbp::float3{0, 2, 2});
             rbp::BodyDesc miss{.Pose = rbp::At(beyond), .Shape = cube};
             const auto missed = world.AddBody(miss);
@@ -83,7 +83,7 @@ const suite Bodies = [] {
         const auto shape = world.AddShape(BoxShape(rbp::float3{1, 2, 3}, rbp::At({2, -1, 3})));
         const Transform node{.P = {7, 8, 9}, .R = numeric::AngleAxis(0.7f, numeric::Normalize(vec3{1, 2, 3}))};
         const PhysicsMotion motion{.Mass = 12};
-        const auto body = BuildRbpBody(world, std::array{shape}, node, &motion);
+        const auto body = BuildRbpBody(world, std::array{shape}, node, motion);
         expect(Near(body.Frame.Position, rbp::float3{2, -1, 3}));
         expect(std::abs(world.Masses[body.Body].InvMass - 1.f / 12) < 1e-6f);
         CheckTensor(Tensor(world, body), {52, 0, 0, 0, 40, 0, 0, 0, 20});
@@ -106,7 +106,7 @@ const suite Bodies = [] {
         rbp::World world{context};
         const auto shape = world.AddShape(BoxShape(rbp::float3{1, 2, 3}));
         const PhysicsMotion motion{.Mass = 12, .CenterOfMass = vec3{0.5f, 0.5f, 0}};
-        const auto body = BuildRbpBody(world, std::array{shape}, Transform{.S = {2, 4, 1}}, &motion);
+        const auto body = BuildRbpBody(world, std::array{shape}, Transform{.S = {2, 4, 1}}, motion);
         expect(Near(body.Frame.Position, rbp::float3{1, 2, 0}));
         CheckTensor(Tensor(world, body), {100, -24, 0, -24, 52, 0, 0, 0, 80});
     };
@@ -117,7 +117,7 @@ const suite Bodies = [] {
         const auto shape = world.AddShape(BoxShape(rbp::float3{1, 2, 3}));
         const auto turn = numeric::AngleAxis(float(std::numbers::pi / 2), vec3{0, 0, 1});
         const PhysicsMotion motion{.Mass = 0, .CenterOfMass = vec3{2, 3, 4}, .InertiaDiagonal = vec3{2, 0, 8}, .InertiaOrientation = turn};
-        const auto body = BuildRbpBody(world, std::array{shape}, Transform{}, &motion);
+        const auto body = BuildRbpBody(world, std::array{shape}, Transform{}, motion);
         expect(world.Masses[body.Body].InvMass == 0.f);
         expect(Near(world.Masses[body.Body].InvInertiaLocal, rbp::float3{0.5f, 0, 0.125f}));
         expect(Near(rbp::Rotate(body.Frame.Orientation, rbp::float3{1, 0, 0}), rbp::float3{0, 1, 0}));
@@ -130,7 +130,7 @@ const suite Bodies = [] {
         const auto a = world.AddShape(BoxShape(rbp::float3{0.5f, 0.5f, 0.5f}, rbp::At({-2, 0, 0})));
         const auto b = world.AddShape(BoxShape(rbp::float3{0.5f, 0.5f, 0.5f}, rbp::At({2, 0, 0})));
         const PhysicsMotion motion{.Mass = 6};
-        const auto body = BuildRbpBody(world, std::array{a, b}, Transform{}, &motion);
+        const auto body = BuildRbpBody(world, std::array{a, b}, Transform{}, motion);
         expect(Near(body.Frame.Position, rbp::float3{0, 0, 0}));
         CheckTensor(Tensor(world, body), {1, 0, 0, 0, 25, 0, 0, 0, 25});
     };
@@ -141,14 +141,14 @@ const suite Bodies = [] {
         const PhysicsVelocity velocity{.Linear = {1, 2, 3}, .Angular = {4, 5, 6}};
         for (bool kinematic : {false, true}) {
             const PhysicsMotion motion{.IsKinematic = kinematic, .Mass = 2};
-            const auto body = BuildRbpBody(world, {}, Transform{}, &motion, &velocity);
+            const auto body = BuildRbpBody(world, {}, Transform{}, motion, velocity);
             expect(body.Shape == rbp::NoIndex);
             expect(world.Masses[body.Body].InvMass == (kinematic ? 0.f : 0.5f));
             expect(rbp::Turns(world.Masses[body.Body]) == !kinematic);
             expect(Near(world.Velocities[body.Body].Linear, rbp::float3{1, 2, 3}));
             expect(Near(world.Velocities[body.Body].Angular, rbp::float3{4, 5, 6}));
         }
-        const auto body = BuildRbpBody(world, {}, Transform{}, nullptr, &velocity);
+        const auto body = BuildRbpBody(world, {}, Transform{}, {}, velocity);
         expect(!rbp::Moves(world.Masses[body.Body]));
         expect(Near(world.Velocities[body.Body].Linear, rbp::float3{0, 0, 0}));
     };
@@ -159,10 +159,10 @@ const suite Bodies = [] {
         const auto shape = world.AddShape(BoxShape(rbp::float3{1, 1, 1}));
         world.AddBody({});
         const PhysicsMotion motion;
-        expect(throws([&] { BuildRbpBody(world, std::array{shape}, Transform{}, &motion); }));
+        expect(throws([&] { BuildRbpBody(world, std::array{shape}, Transform{}, motion); }));
         expect(world.ShapeCount() == 1_u);
         const PhysicsMotion invalid{.InertiaDiagonal = vec3{-1, 1, 1}};
-        expect(throws([&] { BuildRbpBody(world, std::array{shape}, Transform{}, &invalid); }));
+        expect(throws([&] { BuildRbpBody(world, std::array{shape}, Transform{}, invalid); }));
         expect(world.ShapeCount() == 1_u);
         expect(world.RemoveShape(shape));
     };
@@ -172,7 +172,7 @@ const suite Bodies = [] {
         rbp::World world{context, {.Bodies = 1, .Shapes = 6, .CompoundChildren = 2}};
         const PhysicsMotion motion{.Mass = 12};
         auto source = world.AddShape(BoxShape(rbp::float3{1, 2, 3}));
-        auto body = BuildRbpBody(world, std::array{source}, Transform{}, &motion);
+        auto body = BuildRbpBody(world, std::array{source}, Transform{}, motion);
         world.RemoveShape(source);
         const auto id = world.IdOf(body.Body);
         for (int i = 0; i < 16; ++i) {
@@ -180,10 +180,10 @@ const suite Bodies = [] {
             source = world.AddShape(BoxShape(rbp::float3{half_x, 2, 3}, rbp::At({0.2f, 0, 0})));
             const auto old_shape = body.Shape;
             const PhysicsMotion invalid{.InertiaDiagonal = vec3{-1, 1, 1}};
-            expect(throws([&] { BuildRbpBody(world, std::array{source}, Transform{}, &invalid, nullptr, false, &body); }));
-            expect(throws([&] { BuildRbpBody(world, std::array{source, source}, Transform{}, &motion, nullptr, false, &body); }));
+            expect(throws([&] { BuildRbpBody(world, std::array{source}, Transform{}, invalid, {}, false, body); }));
+            expect(throws([&] { BuildRbpBody(world, std::array{source, source}, Transform{}, motion, {}, false, body); }));
             expect(world.BodyShapes[body.Body] == old_shape);
-            body = BuildRbpBody(world, std::array{source}, Transform{}, &motion, nullptr, false, &body);
+            body = BuildRbpBody(world, std::array{source}, Transform{}, motion, {}, false, body);
             expect(world.IdOf(body.Body) == id);
             expect(world.BodyCount() == 1_u);
             expect(Near(body.Frame.Position, rbp::float3{0.2f, 0, 0}));
@@ -202,11 +202,11 @@ const suite Bodies = [] {
         for (float dt : {1.f / 240, 1.f / 600}) {
             rbp::World world{context};
             const auto floor = world.AddShape(BoxShape(rbp::float3{5, 0.1f, 5}));
-            BuildRbpBody(world, std::array{floor}, Transform{}, nullptr);
+            BuildRbpBody(world, std::array{floor}, Transform{}, {});
             const auto shape = BuildRbpShape(world, physics::Capsule{.Height = 0.5498f, .RadiusTop = 0.25f, .RadiusBottom = 0.389f}, nullptr, vec3{1}, rbp::IdentityPose);
             const Transform node{.P = {3.0006042f, 2.5743825f, 0}, .R = {0.7869047f, 0.2398302f, -0.1657568f, -0.5438632f}};
             const PhysicsMotion motion{.Mass = 1, .CenterOfMass = vec3{0, -0.35f, 0}};
-            const auto body = BuildRbpBody(world, std::array{shape}, node, &motion);
+            const auto body = BuildRbpBody(world, std::array{shape}, node, motion);
             auto previous = world.Poses[body.Body].Position;
             float largest_step = 0;
             solver.Advance(world, {.DeltaTime = dt}, uint32_t(12 / dt), {}, [&](const rbp::StepResult &step) {
@@ -234,7 +234,7 @@ const suite Bodies = [] {
         const auto box = world.AddShape(BoxShape(rbp::float3{0.5f, 0.5f, 0.5f}));
         const PhysicsMotion motion{.Mass = 2, .CenterOfMass = vec3{0, 0.3f, 0}, .InertiaDiagonal = vec3{1, 2, 3}, .InertiaOrientation = numeric::AngleAxis(0.4f, vec3{1, 0, 0})};
         const Transform node{.P = {2, 0.5f, 3}};
-        const auto body = BuildRbpBody(world, std::array{box}, node, &motion);
+        const auto body = BuildRbpBody(world, std::array{box}, node, motion);
         solver.Advance(world, {}, 60);
         world.TakeContactChanges();
         solver.Step(world);

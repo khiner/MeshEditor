@@ -11,6 +11,7 @@
 #include "mesh/Unsubdivide.h"
 #include "state/Scene.h"
 #include <numbers>
+#include <print>
 
 using namespace boost::ut;
 
@@ -32,7 +33,7 @@ struct GeometryFixture {
     void Audit() {
         std::string why;
         const bool valid = Store().Audit(why);
-        if (!valid) std::printf("audit: %s\n", why.c_str());
+        if (!valid) std::println("audit: {}", why);
         expect(valid);
     }
     uint32_t Create(MeshData data) {
@@ -844,7 +845,7 @@ void RegisterGeometryOperationsTests() {
         const auto start = std::chrono::steady_clock::now();
         const auto id = RunBoolean(f, a, b, BooleanOperation::Union).value();
         const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-        std::printf("union of two %u-triangle spheres: %.1f ms\n", uint32_t(f.Get(a).DerivedTriangles().size()), 1e3 * elapsed);
+        std::println("union of two {}-triangle spheres: {:.1f} ms", f.Get(a).DerivedTriangles().size(), 1e3 * elapsed);
         expect(elapsed < 1.0);
         const auto mesh = f.Get(id);
         expect(ClosedManifold(mesh));

@@ -3,6 +3,7 @@
 #include "PhysicsTypes.h"
 #include "gpu/Shared.h"
 
+#include <optional>
 #include <span>
 
 namespace rbp {
@@ -39,11 +40,11 @@ struct RbpBody {
 // Replace previous's owned geometry when provided and preserve its body identity.
 // Restore initial states and reset dynamics before advancing a replacement.
 // Throw on invalid mass properties or exhausted pools and release partial allocations.
-RbpBody BuildRbpBody(rbp::World &, std::span<const rbp::Index> colliders, const Transform &node, const PhysicsMotion *motion, const PhysicsVelocity *velocity = nullptr, bool sensor = false, const RbpBody *previous = nullptr);
+RbpBody BuildRbpBody(rbp::World &, std::span<const rbp::Index> colliders, const Transform &node, std::optional<const PhysicsMotion &> motion, std::optional<const PhysicsVelocity &> velocity = {}, bool sensor = false, std::optional<const RbpBody &> previous = {});
 
 // Update authored properties, including a change between static and moving, without recooking geometry.
 // Restore initial states and reset dynamics before advancing.
-void UpdateRbpBody(rbp::World &, RbpBody &, const Transform &, const PhysicsMotion *, const PhysicsVelocity *);
+void UpdateRbpBody(rbp::World &, RbpBody &, const Transform &, std::optional<const PhysicsMotion &>, std::optional<const PhysicsVelocity &>);
 
 CachedPose RbpNodePose(rbp::Pose body_pose, rbp::Pose frame);
 

@@ -16,7 +16,7 @@ rbp::float4 Rotation(quat q) {
     if (!std::isfinite(length) || length < 1e-8f) throw std::invalid_argument("Physics orientation must be a finite nonzero quaternion.");
     return value / length;
 }
-rbp::BodyDesc DescribeBody(RbpBody &result, const Transform &node, const PhysicsMotion *motion, const PhysicsVelocity *velocity, bool sensor) {
+rbp::BodyDesc DescribeBody(RbpBody &result, const Transform &node, std::optional<const PhysicsMotion &> motion, std::optional<const PhysicsVelocity &> velocity, bool sensor) {
     const auto cooked = result.CookedFrame;
     result.Frame = cooked;
     rbp::AuthoredMass mass{0, {0, 0, 0}};
@@ -79,7 +79,7 @@ void StoreInitialState(rbp::World &world, RbpBody &body, const rbp::BodyDesc &de
 }
 } // namespace
 
-RbpBody BuildRbpBody(rbp::World &world, std::span<const rbp::Index> colliders, const Transform &node, const PhysicsMotion *motion, const PhysicsVelocity *velocity, bool sensor, const RbpBody *previous) {
+RbpBody BuildRbpBody(rbp::World &world, std::span<const rbp::Index> colliders, const Transform &node, std::optional<const PhysicsMotion &> motion, std::optional<const PhysicsVelocity &> velocity, bool sensor, std::optional<const RbpBody &> previous) {
     RbpBody result;
     try {
         if (!colliders.empty()) {
@@ -108,7 +108,7 @@ RbpBody BuildRbpBody(rbp::World &world, std::span<const rbp::Index> colliders, c
     }
 }
 
-void UpdateRbpBody(rbp::World &world, RbpBody &body, const Transform &node, const PhysicsMotion *motion, const PhysicsVelocity *velocity) {
+void UpdateRbpBody(rbp::World &world, RbpBody &body, const Transform &node, std::optional<const PhysicsMotion &> motion, std::optional<const PhysicsVelocity &> velocity) {
     auto updated = body;
     // A body cooked without motion weighs its geometry once it moves.
     if (motion && updated.Shape != rbp::NoIndex && !(updated.NaturalMass.InvMass > 0)) {

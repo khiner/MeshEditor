@@ -4,6 +4,7 @@
 #include "audio/ContactSurface.h"
 
 #include <complex>
+#include <print>
 
 namespace {
 // In-place iterative radix-2 FFT.
@@ -245,8 +246,8 @@ int main() {
     Reach = ElementReach(Springs, Curvature);
     const bool first_touch = std::getenv("MUTE_BEARING_DATUM") != nullptr;
     Envelope = first_touch ? ElementEnvelope(Springs, Curvature, Reach) : BearingDatum(Springs, Curvature, Reach, Load);
-    std::printf(
-        "field %ux%u at %.1f um, sigma %.1f um, %u elements of %.0f um, reach +/-%u elements, zeta_max %.1f um, datum %s\n",
+    std::println(
+        "field {}x{} at {:.1f} um, sigma {:.1f} um, {} elements of {:.0f} um, reach +/-{} elements, zeta_max {:.1f} um, datum {}",
         Nx, Ny, Spacing * 1e6, SigmaPair * 1e6, Springs.Count(), double(Springs.Width) * 1e6, Reach, zeta_max * 1e6,
         first_touch ? "first touch" : "bearing"
     );
@@ -259,18 +260,18 @@ int main() {
             dsum += yb - ye;
             dmax = std::max(dmax, std::abs(yb - ye));
         }
-        std::printf("resting height, engine less exact over 6 positions: mean %+.3f um, worst %.3f um\n", dsum / 6 * 1e6, dmax * 1e6);
+        std::println("resting height, engine less exact over 6 positions: mean {:+.3f} um, worst {:.3f} um", dsum / 6 * 1e6, dmax * 1e6);
     }
 
     const double speeds[] = {0.02, 0.1, 0.7};
     const double durations[] = {0.5, 0.3, 0.15};
-    std::printf("\nRIDING: arm, v, mean/load, sigma/mean, free, band power\n");
+    std::println("\nRIDING: arm, v, mean/load, sigma/mean, free, band power");
     double band_log[2][3];
     for (const bool engine : {false, true}) {
         for (int i = 0; i < 3; ++i) {
             const auto st = Ride(engine, speeds[i], durations[i], 0.030);
             band_log[engine][i] = std::log(std::max(st.Band, 1e-30));
-            std::printf("  %6s v=%4.2f  %6.2f %8.3f %6.3f  %10.3e\n", engine ? "engine" : "exact", speeds[i], st.MeanOverLoad, st.SigmaOverMean, st.Free, st.Band);
+            std::println("  {:>6} v={:4.2f}  {:6.2f} {:8.3f} {:6.3f}  {:10.3e}", engine ? "engine" : "exact", speeds[i], st.MeanOverLoad, st.SigmaOverMean, st.Free, st.Band);
         }
     }
     for (const bool engine : {false, true}) {
@@ -282,10 +283,10 @@ int main() {
             num += (lx[i] - mx) * (band_log[engine][i] - my);
             den += (lx[i] - mx) * (lx[i] - mx);
         }
-        std::printf("  band speed exponent %s m = %+.2f\n", engine ? "engine" : "exact", num / den / 2);
+        std::println("  band speed exponent {} m = {:+.2f}", engine ? "engine" : "exact", num / den / 2);
     }
 
-    std::printf("\nLANDINGS (mean of 6 positions): peak loads, duration ms, 90%% corner Hz\n");
+    std::println("\nLANDINGS (mean of 6 positions): peak loads, duration ms, 90% corner Hz");
     for (const double v0 : {0.03, 0.1, 0.3}) {
         for (const bool engine : {false, true}) {
             double pk = 0, ms = 0, cn = 0;
@@ -295,7 +296,7 @@ int main() {
                 ms += st.DurationMs;
                 cn += st.CornerHz;
             }
-            std::printf("  v0=%3.0f mm/s  %6s loads %7.1f  ms %6.3f  corner %6.0f\n", v0 * 1e3, engine ? "engine" : "exact", pk / 6, ms / 6, cn / 6);
+            std::println("  v0={:3.0f} mm/s  {:>6} loads {:7.1f}  ms {:6.3f}  corner {:6.0f}", v0 * 1e3, engine ? "engine" : "exact", pk / 6, ms / 6, cn / 6);
         }
     }
     return 0;

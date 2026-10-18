@@ -21,6 +21,7 @@
 #include "viewport/ViewportRenderGpu.h"
 
 #include <charconv>
+#include <print>
 
 namespace {
 double Milliseconds(auto &&run) {
@@ -37,8 +38,8 @@ double P95(std::span<double> samples) {
 }
 
 void ReportLibraries(const mtl::LibraryCache &cache, const char *phase) {
-    std::printf("pipeline_archive,%u,%u,%s\n", cache.ArchiveHitCount(), cache.CompileMissCount(), phase);
-    std::printf("shader_libraries,%u,%u,%s\n", cache.BinaryLibraryLoadCount(), cache.SourceLibraryCompileCount(), phase);
+    std::println("pipeline_archive,{},{},{}", cache.ArchiveHitCount(), cache.CompileMissCount(), phase);
+    std::println("shader_libraries,{},{},{}", cache.BinaryLibraryLoadCount(), cache.SourceLibraryCompileCount(), phase);
 }
 
 Result Capture(state::Scene &r, const char *variable) {
@@ -220,7 +221,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         if (!p.Begin(dir)) return std::unexpected{"project begin failed"};
         r.Context.get<ViewportExtent>().Value = {viewport_width, viewport_height};
         p.Settle();
-        std::fprintf(stderr, "Preparing benchmark scene...\n");
+        std::println(stderr, "Preparing benchmark scene...");
         const auto load_begin = std::chrono::steady_clock::now();
         if (scene.empty() && single_edit == SingleEdit::BeautifyFaces) {
             MeshSource source;
@@ -303,18 +304,18 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             if (largest == state::Null) return std::unexpected{"scene contains no face mesh"};
             p.Do(action::MakeAction(action::selection::Select{largest}));
         }
-        std::fprintf(stderr, "Scene prepared in %.3f s; entering Edit mode...\n", std::chrono::duration<double>(std::chrono::steady_clock::now() - load_begin).count());
+        std::println(stderr, "Scene prepared in {:.3f} s; entering Edit mode...", std::chrono::duration<double>(std::chrono::steady_clock::now() - load_begin).count());
         profile::ClearStats();
         profile::Enabled = true;
         const auto enter_ms = Milliseconds([&] { p.Do(action::MakeAction(action::view::SetInteractionMode{InteractionMode::Edit})); });
         profile::ReportCpuPhase("Edit mode entry");
         profile::Report();
         profile::ClearStats();
-        std::fprintf(stderr, "Entered Edit mode in %.3f ms; switching to face selection...\n", enter_ms);
+        std::println(stderr, "Entered Edit mode in {:.3f} ms; switching to face selection...", enter_ms);
         const auto mode_ms = Milliseconds([&] { p.Do(action::MakeAction(action::view::SetEditMode{.Mode = Element::Face})); });
         profile::ReportCpuPhase("Face selection mode");
         profile::Enabled = false;
-        std::fprintf(stderr, "Face selection mode prepared in %.3f ms.\n", mode_ms);
+        std::println(stderr, "Face selection mode prepared in {:.3f} ms.", mode_ms);
         const auto entity = GetActiveMeshEntity(r);
         auto &meshes = r.Context.get<MeshStore>();
         const auto original = GetMesh(r, entity);
@@ -369,7 +370,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             if (selected.size() != 2u) return std::unexpected{"paired-face benchmark requires adjacent faces"};
         }
         const std::array<uint32_t, 1> alternate{(selected[0] + (pair_faces ? 17u : 1u)) % faces};
-        std::fprintf(stderr, "Selecting %zu face(s) from %u vertices / %u faces...\n", selected.size(), vertices, faces);
+        std::println(stderr, "Selecting {} face(s) from {} vertices / {} faces...", selected.size(), vertices, faces);
         profile::ClearStats();
         profile::Enabled = true;
         const auto select = [&](std::span<const uint32_t> ordinals, Element element = Element::Face) {
@@ -389,7 +390,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             const auto boundary = meshes.GetBoundaryEdges(original.GetStoreId());
             uint32_t on_hole = 0u;
             for (const auto edge : fill_edges) on_hole += boundary.Contains(edge);
-            std::fprintf(stderr, "Hole boundary index: %u edges total, %u/%zu hole edges indexed.\n", boundary.Count(), on_hole, fill_edges.size());
+            std::println(stderr, "Hole boundary index: {} edges total, {}/{} hole edges indexed.", boundary.Count(), on_hole, fill_edges.size());
         }
         if (position || (single_edit != SingleEdit::None && edit.Domain != Element::Face)) {
             const auto element = position ? Element::Vertex : edit.Domain;
@@ -434,7 +435,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 select(selected_elements, Element::Vertex);
             }
             const auto selected_count = meshes.GetSelectionSummary(original.GetStoreId()).SelectedCount;
-            if (selected_count != selected_elements.size()) std::fprintf(stderr, "operator selection: expected %zu, got %u\n", selected_elements.size(), selected_count);
+            if (selected_count != selected_elements.size()) std::println(stderr, "operator selection: expected {}, got {}", selected_elements.size(), selected_count);
             if (selected_count != selected_elements.size()) return std::unexpected{"unexpected operator selection"};
             if (filling) {
                 const auto selected_edges = meshes.GetSelectedElements(original.GetStoreId(), Element::Edge);
@@ -478,7 +479,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         if (select_all && (selected_count != GetMesh(r, entity).ElementCount(r.get<const EditMode>(engine.Viewport).Value))) return std::unexpected{"select-all left elements unselected"};
         // Each face of an individual inset gains one face and one vertex per corner.
         const auto inset_added = select_all ? original.HalfEdgeCount() : added;
-        std::fprintf(stderr, "Rendering the baseline...\n");
+        std::println(stderr, "Rendering the baseline...");
         SubmitViewport(r, engine.Viewport);
         WaitForRender(r);
         // Include the renderer's first meshlet and LOD publication in the baseline used for replay, as well as the edit selection.
@@ -486,7 +487,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         const auto base = *p.History.Present;
         const auto allocated = [&] { return uint64_t(r.Context.get<const mtl::Context>().Device->currentAllocatedSize()); };
         const auto row = [&](std::string_view name, double ms, size_t count) {
-            std::printf("mesh,%u,%u,%zu,%.*s,%.6f,%llu\n", vertices, faces, count, int(name.size()), name.data(), ms, (unsigned long long)allocated());
+            std::println("mesh,{},{},{},{},{:.6f},{}", vertices, faces, count, name, ms, allocated());
         };
         const auto draw = [&](std::string_view name, size_t count) {
             const auto ms = Milliseconds([&] { SubmitViewport(r, engine.Viewport); WaitForRender(r); });
@@ -509,7 +510,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             const vec3 normal = Normalize(vec3{0.3f, 0.8f, 0.5f});
             const char *plane_offset = std::getenv("MESHEDITOR_SPATIAL_PLANE_OFFSET");
             float offset = plane_offset ? std::strtof(plane_offset, nullptr) : Dot(normal, original.CalcFaceCentroid(face));
-            std::printf("spatial_work,visited_nodes,candidate_blocks,candidate_faces,exact_faces\n");
+            std::println("spatial_work,visited_nodes,candidate_blocks,candidate_faces,exact_faces");
             const auto spatial_counts = [&](const MeshTopologyTask &task) {
                 mtl::ComputeChain chain{meshes.BufferContext()};
                 SpatialFaceWork work{r, chain, task};
@@ -522,7 +523,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 const MeshTopologyTask task{.SourceId = original.GetStoreId(), .Op = MeshTopologyOp::Subdivide, .Flags = TopologyFlagPlaneCuts | TopologyFlagSelectAll, .PlaneNormal = normal, .PlaneOffset = offset};
                 std::array<uint32_t, 4> counts{};
                 const auto elapsed = Milliseconds([&] { counts = spatial_counts(task); });
-                std::printf("spatial_plane_work,%u,%u,%u,%u\n", counts[0], counts[1], counts[2], counts[3]);
+                std::println("spatial_plane_work,{},{},{},{}", counts[0], counts[1], counts[2], counts[3]);
                 row("spatial_plane", elapsed, counts[3]);
                 return {};
             }
@@ -539,10 +540,10 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                     hi = std::max(hi, coordinate);
                 });
                 offset = hi - fraction * (hi - lo);
-                std::printf("spatial_cut_setup,%.9g,%.9g,%.9g\n", lo, hi, offset);
+                std::println("spatial_cut_setup,{:.9g},{:.9g},{:.9g}", lo, hi, offset);
                 const MeshTopologyTask probe{.SourceId = original.GetStoreId(), .Op = MeshTopologyOp::Subdivide, .Flags = TopologyFlagPlaneCuts | TopologyFlagSelectAll, .PlaneNormal = normal, .PlaneOffset = offset};
                 const auto [nodes, blocks, candidate_faces, exact_faces] = spatial_counts(probe);
-                std::printf("spatial_cut_candidates,%u,%u,%u,%u\n", nodes, blocks, candidate_faces, exact_faces);
+                std::println("spatial_cut_candidates,{},{},{},{}", nodes, blocks, candidate_faces, exact_faces);
                 if (!(exact_faces > 0u && exact_faces <= 4096u)) return std::unexpected{"near-max cut needs 1 to 4096 exact faces"};
                 profile::ClearStats();
             }
@@ -830,7 +831,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 if (mesh.FaceCount() != faces + (position ? 0u : inset_added) || mesh.VertexCount() != vertices + (position ? 0u : inset_added)) return std::unexpected{"edit counts changed unexpectedly"};
                 row("update" + std::to_string(i), elapsed, selected_count);
                 if (i == 0u && std::getenv("MESHEDITOR_EDIT_BENCH_PROFILE_FIRST")) {
-                    std::puts("First preview profile");
+                    std::println("First preview profile");
                     profile::Report();
                     profile::ClearStats();
                 }
@@ -840,7 +841,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                         ranges.push_back({handle, 1u});
                     });
                     if (ranges.empty()) return std::unexpected{"inset produced no selected vertices for refit probe"};
-                    std::fprintf(stderr, "Probing position refit for %zu selected vertices...\n", ranges.size());
+                    std::println(stderr, "Probing position refit for {} selected vertices...", ranges.size());
                     std::vector<double> refit_ms;
                     refit_ms.reserve(20u);
                     for (uint32_t sample = 0u; sample < 20u; ++sample) {
@@ -915,13 +916,13 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
 int main(int argc, char **argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     if (argc < 2 || argc == 6 || argc > 11) {
-        std::fprintf(stderr, "usage: MeshEditorEditBench <sphere-slices|scene.gltf> [updates=3] [render=0] [refit_probe=0] [viewport_width viewport_height] [position=0] [join=0] [op] [selection=one]\noperators:");
-        for (const auto &spec : EditSpecs) std::fprintf(stderr, " %s", spec.Argument);
-        std::fputs("\nselection: one (a single element for the operator) or all (every element of the operator's domain)\n", stderr);
+        std::print(stderr, "usage: MeshEditorEditBench <sphere-slices|scene.gltf> [updates=3] [render=0] [refit_probe=0] [viewport_width viewport_height] [position=0] [join=0] [op] [selection=one]\noperators:");
+        for (const auto &spec : EditSpecs) std::print(stderr, " {}", spec.Argument);
+        std::println(stderr, "\nselection: one (a single element for the operator) or all (every element of the operator's domain)");
         return 2;
     }
     const auto fail = [](std::string_view message) {
-        std::fprintf(stderr, "%.*s\n", int(message.size()), message.data());
+        std::println(stderr, "{}", message);
         return 1;
     };
     const auto scene = std::filesystem::path{argv[1]};
@@ -941,7 +942,7 @@ int main(int argc, char **argv) {
     if (spec == EditSpecs.end()) return fail("unknown benchmark operator");
     const std::string_view selection = argc > 10 ? argv[10] : "one";
     if (selection != "one" && selection != "all") return fail("selection must be one or all");
-    std::printf("kind,vertices,faces,selected,phase,milliseconds,device_bytes\n");
+    std::println("kind,vertices,faces,selected,phase,milliseconds,device_bytes");
     const auto result = Bench(slices, file ? scene : std::filesystem::path{}, updates, render != 0u, refit_probe != 0u, width, height, position != 0u, join != 0u, *spec, selection == "all");
     return result ? 0 : fail(result.error());
 }

@@ -22,6 +22,7 @@ std::vector<PageMask> RemovalPages(const Scene &r, std::span<const Entity> reque
 void RemoveComponentPages(Scene &r, std::span<const PageMask> pages) {
     // Capture each type's affected pages once before callbacks mutate its values.
     // Callbacks retain access to the component being destroyed until its page is unlinked.
+    // Destroy handlers may bind a new table, so the index walks a list that can grow.
     for (size_t i = 0; i < r.Active.size(); ++i) {
         const auto type = r.Active[i];
         auto &table = r.Tables[type];
