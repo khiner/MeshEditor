@@ -19,6 +19,10 @@ struct ModalSolveJob {
 struct ModalSolveJobs {
     std::vector<std::shared_ptr<ModalSolveJob>> Jobs;
 };
+// Cancels every solve. Each result is discarded on arrival.
+inline void Reset(ModalSolveJobs &jobs, state::Scene &) {
+    for (const auto &job : jobs.Jobs) job->Work.RequestCancel();
+}
 
 struct SolveInputs {
     std::vector<vec3> Positions; // Mesh positions at the node's world scale (SI meters)

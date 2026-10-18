@@ -11,6 +11,7 @@ struct Scene;
 struct MeshEntities {
     std::vector<state::Entity> ByStore;
 };
+inline void Reset(MeshEntities &entities, state::Scene &) { entities.ByStore.clear(); }
 
 void RegisterMeshStoreHandlers(state::Scene &);
 // The mesh entity whose handle or evaluated mesh names the store record, or null.

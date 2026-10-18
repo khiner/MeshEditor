@@ -102,3 +102,4 @@ struct GpuSceneState {
     // Camera lenses, lights, colliders, tets or instance slots changed, so the overlay jobs rebuild before the next record.
     bool OverlayJobsDirty{true};
 };
+inline void Reset(GpuSceneState &s, state::Scene &) { s = {}; }

@@ -94,34 +94,38 @@ GpuBuffers::GpuBuffers(const mtl::Context &ctx, mtl::BindlessSet &slots)
       ElementPickId{Ctx, sizeof(uint32_t)} {
 }
 
-void GpuBuffers::ResetSceneArenas() {
-    PosedPositions.Reset();
-    PosedMorphNormalDeltas.Reset();
-    PosedVertexNormals.Reset();
-    PosedFaceNormals.Reset();
-    PosedSectors.Reset();
-    PosedMeshletBounds.Reset();
-    GeometryWork.Reset();
-    VertexBounds.Reset();
-    BoundsReduceEntries.Reset();
-    NormalDeriveEntries.Reset();
-    PreludeTiles.Reset();
-    GpuInstanceSlots.UsedSize = 0;
-    LodNodeCount = 0;
-    MeshletInstanceCount = 0;
-    MeshletLodDepth = 0;
-    MeshletFlagWorkByBit = {};
-    FlagTallies.clear();
-    TopologyMeshes = {};
-    SharpEditMeshes = 0;
-    OverlayJobs.UsedSize = 0;
-    OverlayJobBlocks.UsedSize = 0;
-    VisibleOverlayJobs.UsedSize = 0;
+void Reset(GpuBuffers &b, state::Scene &) {
+    b.Lights.SetUsedSize(0);
+    b.PendingLightRemovals.clear();
+    if (b.Materials.Count<PBRMaterial>() > 1) b.Materials.SetCount<PBRMaterial>(1u);
+    b.PosedPositions.Reset();
+    b.PosedMorphNormalDeltas.Reset();
+    b.PosedVertexNormals.Reset();
+    b.PosedFaceNormals.Reset();
+    b.PosedSectors.Reset();
+    b.PosedMeshletBounds.Reset();
+    b.GeometryWork.Reset();
+    b.VertexBounds.Reset();
+    b.BoundsReduceEntries.Reset();
+    b.NormalDeriveEntries.Reset();
+    b.PreludeTiles.Reset();
+    b.GpuInstanceSlots.UsedSize = 0;
+    b.LodNodeCount = 0;
+    b.MeshletInstanceCount = 0;
+    b.MeshletLodDepth = 0;
+    b.MeshletFlagWorkByBit = {};
+    b.FlagTallies.clear();
+    b.TopologyMeshes = {};
+    b.SharpEditMeshes = 0;
+    b.OverlayJobs.UsedSize = 0;
+    b.OverlayJobBlocks.UsedSize = 0;
+    b.VisibleOverlayJobs.UsedSize = 0;
     // Reset occlusion feedback for deterministic two-phase culling after a scene clear.
-    PreviousFullCullViewProj = mat4{1};
-    ArmatureDeformBuffer.Reset();
-    MorphWeightBuffer.Reset();
-    Instances.Reset();
+    b.PreviousFullCullViewProj = mat4{1};
+    b.ArmatureDeformBuffer.Reset();
+    b.MorphWeightBuffer.Reset();
+    b.Instances.Reset();
+    b.Ctx.ReclaimRetiredBuffers();
 }
 
 void GpuBuffers::Retally(uint32_t store_id, MeshFlagTally tally) {

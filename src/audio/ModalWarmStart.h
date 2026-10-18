@@ -8,3 +8,4 @@ struct ModalWarmStart {
     size_t OperatorHash{};
     fastfem::ModeBasis Basis{};
 };
+inline void Reset(ModalWarmStart &warm, state::Scene &) { warm = {}; }

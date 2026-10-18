@@ -5,6 +5,10 @@
 
 #include <Metal/MTLBuffer.hpp>
 
+namespace state {
+struct Scene;
+} // namespace state
+
 struct SampledTexture {
     MTL::Texture *Texture{nullptr};
     MTL::SamplerState *Sampler{nullptr};
@@ -88,3 +92,7 @@ struct RenderTargets {
     std::unique_ptr<TransmissionResourcesT> Transmission;
     std::unique_ptr<MotionBlurResourcesT> MotionBlur;
 };
+// Disables occlusion until the new scene has produced a depth pyramid.
+inline void Reset(RenderTargets &targets, state::Scene &) {
+    if (auto &resources = targets.Resources) resources->DepthPyramidValid = false;
+}

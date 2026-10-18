@@ -10,14 +10,19 @@
 
 namespace state {
 struct Allocation;
+struct Scene;
+// A service holding scene state declares `void Reset(T &, Scene &)` beside its type, which returns it to its post-init state.
+// Reset touches only its own domain and engine-lifetime services, so services reset in any order.
+// An engine-lifetime service, such as the bindless set whose allocation is order-independent, declares none.
 // Fixed service slots are selected at compile time.
 // Definitions stay in the owning TU.
 struct Services {
     struct Slot {
         void *Value{};
         void (*Destroy)(void *){};
-        ~Slot() { Reset(); }
-        void Reset() {
+        void (*Reset)(void *, Scene &){};
+        ~Slot() { Release(); }
+        void Release() {
             if (Value) Destroy(std::exchange(Value, nullptr));
         }
     };
@@ -33,12 +38,13 @@ struct Services {
         if (!s.Value) {
             s.Value = static_cast<void *>(new T(std::forward<A>(args)...));
             s.Destroy = [](void *p) { delete static_cast<T *>(p); };
+            if constexpr (requires(T &t, Scene &r) { Reset(t, r); }) s.Reset = [](void *p, Scene &r) { Reset(*static_cast<T *>(p), r); };
         }
         return *static_cast<T *>(s.Value);
     }
-    template<typename T> void erase() { Slots[Type<T>()].Reset(); }
+    template<typename T> void erase() { Slots[Type<T>()].Release(); }
     void Clear() {
-        for (auto &slot : Slots) slot.Reset();
+        for (auto &slot : Slots) slot.Release();
     }
 };
 
@@ -210,7 +216,10 @@ struct Scene {
     bool valid(Entity e) const;
     uint32_t EntityCapacity() const;
     Entity EntityAt(uint32_t index) const;
-    void ResetEntities();
+    // Returns the scene to its empty state: every component, entity, change set, and scene-state service.
+    // Components drop without destroy handlers, since each service resets whole.
+    // Entity allocation restarts from zero so a replay reproduces the same identities.
+    void Reset();
     // The non-const form binds the table to its component type on first use.
     template<typename C> Table &storage() {
         if constexpr (std::same_as<std::remove_const_t<C>, Entity>) return Living;

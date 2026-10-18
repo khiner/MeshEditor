@@ -13,6 +13,7 @@ struct PhysicsDefinitionUses {
         return it != Counts.end() ? it->second : 0u;
     }
 };
+inline void Reset(PhysicsDefinitionUses &uses, state::Scene &) { uses.Counts.clear(); }
 
 namespace physics {
 void Init(state::Scene &);
@@ -20,9 +21,6 @@ void Deinit(state::Scene &);
 // Updates the bodies and joints that changed components reach, and the definition use counts.
 // A body whose inputs changed recooks, updates in place or takes new surfaces, and any change invalidates the cache.
 void ProcessChanges(state::Scene &);
-// Removes all bodies and constraints while preserving initialization.
-void Clear(state::Scene &);
-
 uint32_t BodyCount(const state::Scene &);
 
 // Returns whether `source` membership intersects `target` collision masks.

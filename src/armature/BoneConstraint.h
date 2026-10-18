@@ -28,5 +28,6 @@ struct BoneConstraints {
 struct ConstraintTargets {
     std::unordered_map<state::Entity, std::vector<state::Entity>> Armatures;
 };
+inline void Reset(ConstraintTargets &targets, state::Scene &) { targets.Armatures.clear(); }
 
 // User-authored pose constraint stack.

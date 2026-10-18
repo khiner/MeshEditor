@@ -14,6 +14,7 @@
       Mutable views capture each value they expose; use const views for reading.
     - Create/update/destroy publish lifecycle changes.
       Destroy handlers observe the old value.
+      A scene reset drops components without handlers, and each service holding scene state declares `Reset(T &, Scene &)` to restore its post-init state.
       Managed dirty sets discard destroyed identities; explicit removal trackers retain them until consumed.
     - History owns native copies of changed CPU records and shares unchanged trie branches.
       Serialization is for hashes and persistent records, not hot value installation.

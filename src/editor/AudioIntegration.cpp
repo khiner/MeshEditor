@@ -549,22 +549,7 @@ void LaunchModalSolve(state::Scene &r, state::Entity viewport, state::Entity e, 
 bool HasPendingModalSolves(const state::Scene &r) { return !r.Context.get<const ModalSolveJobs>().Jobs.empty(); }
 
 void CancelModalSolves(state::Scene &r) {
-    if (const auto *jobs = r.Context.find<ModalSolveJobs>()) {
-        for (const auto &job : jobs->Jobs) job->Work.RequestCancel();
-    }
-}
-
-void ClearAudioScene(state::Scene &r) {
-    auto *m = r.Context.find<ModalAudio>();
-    if (!m) return;
-    // Clear bank slots before entity IDs can be reused by the next scene.
-    ModalBank empty;
-    InstallModalBank(*m, empty);
-    r.Context.get<AudioSamples>().ByPath.clear();
-    r.Context.get<ModalWarmStart>() = {};
-    // In-flight solves target entities from the cleared scene.
-    // Their results are discarded on arrival.
-    CancelModalSolves(r);
+    if (auto *jobs = r.Context.find<ModalSolveJobs>()) Reset(*jobs, r);
 }
 
 void RegisterAudioComponentHandlers(state::Scene &r) {

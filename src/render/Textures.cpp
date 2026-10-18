@@ -605,11 +605,27 @@ void ReleaseImportedTextures(state::Scene &r) {
     textures.WhiteTextureSlot = textures.Textures.empty() ? InvalidSlot : textures.Textures.front().SamplerSlot;
 }
 
+void Reset(TextureStore &textures, state::Scene &r) {
+    ReleaseImportedTextures(r);
+    std::erase_if(textures.PendingUploads, [](const auto &upload) { return std::holds_alternative<PendingTextureUpload::GltfImageRef>(upload.Source); });
+}
+
+void Reset(EnvironmentStore &env, state::Scene &r) {
+    if (auto &pending = env.PendingImport) {
+        auto &slots = r.Context.get<mtl::BindlessSet>();
+        ReleaseCubeSamplerSlot(slots, pending->DiffuseCubeSlot);
+        ReleaseCubeSamplerSlot(slots, pending->SpecularCubeSlot);
+        pending.reset();
+    }
+    env.ClearRequested = false;
+    ResetImportedEnvironment(r);
+}
+
 void ResetImportedTexturesAndMaterials(state::Scene &r) {
     ReleaseImportedTextures(r);
     auto &buffers = r.Context.get<GpuBuffers>();
     if (buffers.Materials.Count<PBRMaterial>() > 1) buffers.Materials.SetCount<PBRMaterial>(1u);
     // The next material change compares against no prior attributes, since later imports reuse the released indices.
     if (auto *scene = r.Context.find<GpuSceneState>()) scene->RequiredMaterialAttributes.clear();
-    if (auto &ms = r.Context.get<MaterialStore>(); ms.Names.size() > 1) ms.ResizeNames(1);
+    Reset(r.Context.get<MaterialStore>(), r);
 }

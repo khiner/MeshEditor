@@ -20,6 +20,7 @@ struct EntityNameCounts {
     // Per stem, at least the largest N of every live "{stem}_{N}" name.
     NameMap<uint64_t> MaxSuffix;
 };
+void Reset(EntityNameCounts &names, state::Scene &) { names = {}; }
 
 void Track(EntityNameCounts &names, std::string_view name) {
     if (const auto it = names.Counts.find(name); it != names.Counts.end()) ++it->second;
@@ -50,8 +51,7 @@ void InitEntityNames(state::Scene &r) {
 }
 void RebuildEntityNames(state::Scene &r) {
     auto &names = r.Context.get<EntityNameCounts>();
-    names.Counts.clear();
-    names.MaxSuffix.clear();
+    Reset(names, r);
     for (const auto &[e, name] : r.view<const Name>().each()) Track(names, name.Value);
 }
 void DeinitEntityNames(state::Scene &r) { r.Context.erase<EntityNameCounts>(); }

@@ -609,8 +609,10 @@ void Project::ClearDocument() {
     WaitForRender(R);
     Deferred.clear();
     ClearInteraction();
-    ClearScene(R, Viewport);
-    ClearAudioScene(R);
+    R.Reset();
+    [[maybe_unused]] const auto viewport = R.create();
+    assert(viewport == Viewport);
+    SetupScene(R, Viewport);
 }
 void Project::CancelGesture() {
     if (!GestureBase) return;

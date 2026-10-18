@@ -428,9 +428,9 @@ struct MeshStore {
     std::vector<uint32_t> TakeReleased() { return std::exchange(Released, {}); }
     // Return newly created records awaiting corner classification, base normals, and selection state.
     std::vector<uint32_t> TakeUnshaded() { return std::exchange(Unshaded, {}); }
-    // Clear records and arenas while retaining GPU allocations.
+    // Clears records and arenas while retaining GPU allocations.
     // Requires a cleared scene with no live StoreId references.
-    void Clear();
+    friend void Reset(MeshStore &, state::Scene &);
 
     const Record &Get(uint32_t id) const { return Records.at(id); }
     const Record *TryGet(uint32_t id) const { return id < Records.size() && Records[id].Alive ? &Records[id] : nullptr; }

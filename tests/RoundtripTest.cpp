@@ -1179,7 +1179,7 @@ int main(int argc, const char **argv) {
 
         test(sample_name) = [&] {
             ProcessComponentEvents(fx.R, fx.Viewport);
-            ClearScene(fx.R, fx.Viewport);
+            fx.P->ClearDocument();
 
             const auto load = gltf::LoadGltf(src, fx.R, fx.Viewport);
             if (!load) return; // Loader limitation on source (e.g., unsupported extension); skips both round-trips.
@@ -1195,7 +1195,7 @@ int main(int argc, const char **argv) {
 
             const auto before = fx.SaveTo(dir);
             ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
-            ClearScene(restore_fx.R, restore_fx.Viewport);
+            restore_fx.P->ClearDocument();
             const auto after = restore_fx.LoadFrom(dir);
             ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
 

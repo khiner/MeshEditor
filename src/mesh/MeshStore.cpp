@@ -2877,30 +2877,30 @@ void MeshStore::SetExtrasIndices(uint32_t id, std::span<const uint32_t> faces, s
     record.ExtrasEdges = Buffers.Render.ExtrasEdges.Allocate(edges);
 }
 
-void MeshStore::Clear() {
-    if (Tracked) {
-        Tracked->Entries.Write(0, Records.size());
-        Tracked->Free.Write(0, FreeIds.size());
-        Tracked->Attributes.Write(0, NamedAttributes.size());
-        Tracked->AllDirty = true;
+void Reset(MeshStore &m, state::Scene &) {
+    if (m.Tracked) {
+        m.Tracked->Entries.Write(0, m.Records.size());
+        m.Tracked->Free.Write(0, m.FreeIds.size());
+        m.Tracked->Attributes.Write(0, m.NamedAttributes.size());
+        m.Tracked->AllDirty = true;
     }
-    Buffers.VertexFans.Reset();
-    Buffers.SelectionTree.Reset();
-    ForEachArena(Buffers, [](auto &arena, const ArenaInfo &, auto &&) { arena.Reset(); });
-    Records.clear();
-    DerivedRecords.clear();
-    NamedAttributes.clear();
+    m.Buffers.VertexFans.Reset();
+    m.Buffers.SelectionTree.Reset();
+    ForEachArena(m.Buffers, [](auto &arena, const ArenaInfo &, auto &&) { arena.Reset(); });
+    m.Records.clear();
+    m.DerivedRecords.clear();
+    m.NamedAttributes.clear();
     {
-        const std::scoped_lock lock{BlockListLock};
-        BlockLists.Reset();
-        BlockListEntries.clear();
-        RetiredBlockLists.clear();
+        const std::scoped_lock lock{m.BlockListLock};
+        m.BlockLists.Reset();
+        m.BlockListEntries.clear();
+        m.RetiredBlockLists.clear();
     }
-    FreeIds.clear();
-    Released.clear();
-    Unshaded.clear();
-    for (auto &log : WriteLogs) log.Extents.clear();
-    WrittenAttributes.clear();
+    m.FreeIds.clear();
+    m.Released.clear();
+    m.Unshaded.clear();
+    for (auto &log : m.WriteLogs) log.Extents.clear();
+    m.WrittenAttributes.clear();
 }
 
 VertexEdgeIncidence MeshStore::GetVertexEdgeIncidence(uint32_t id) const {

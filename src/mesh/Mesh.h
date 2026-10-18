@@ -119,7 +119,6 @@ struct MeshConnectivity {
 
     he::HH Outgoing(he::VH v) const { return {OutgoingValues[VertexAddress(*v).Value()]}; }
     he::HH Opposite(he::HH hh) const { return {OppositeValues[HalfedgeAddress(*hh).Value()]}; }
-    // Edges number by ascending first halfedge.
     he::EH Edge(he::HH hh) const { return {HalfedgeEdgeValues[HalfedgeAddress(*hh).Value()]}; }
     he::HH EdgeHalfedge(uint32_t edge) const { return {EdgeHalfedgeValues[EdgeAddress(edge).Value()]}; }
     // Each face owns its loop range [first, end) independently of neighboring faces.

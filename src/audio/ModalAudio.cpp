@@ -277,6 +277,11 @@ void InstallModalBank(ModalAudio &m, ModalBank &next) {
     SurfaceInstallBank(m);
 }
 
+void Reset(ModalAudio &m, state::Scene &) {
+    ModalBank empty;
+    InstallModalBank(m, empty);
+}
+
 uint32_t AddModalObject(ModalBank &b, state::Entity e, const ModalModes &modes) {
     const auto count = uint32_t(modes.Freqs.size());
     const auto slot = uint32_t(b.Entities.size());

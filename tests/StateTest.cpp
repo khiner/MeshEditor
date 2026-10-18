@@ -206,7 +206,7 @@ int main() {
         expect(managed.contains(next) && !managed.contains(e));
         r.destroy(next);
         expect(removed.contains(next) && !removed.contains(e));
-        r.ResetEntities();
+        r.Reset();
         expect(removed.empty() && managed.empty());
         expect(state::Integral(r.create()) == 0u);
     };

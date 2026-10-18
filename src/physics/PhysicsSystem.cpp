@@ -102,6 +102,8 @@ struct PhysicsState {
     // The next playback advance restarts the simulation from its authored state.
     void Invalidate() { Baked.reset(); }
 };
+// Removes all bodies, constraints, and contacts while preserving initialization.
+void Reset(PhysicsState &, state::Scene &);
 
 rbp::Pose PoseOf(const Transform &t) { return rbp::At(ToRbp(t.P), ToRbp(Normalize(t.R))); }
 state::Entity MotionOwner(const state::Scene &r, state::Entity e) {
@@ -234,7 +236,7 @@ void ClearContacts(PhysicsState &s, state::Scene &r) {
     sustained.Step = ++s.ContactStep;
 }
 
-void ClearSimulation(PhysicsState &s, state::Scene &r) {
+void Reset(PhysicsState &s, state::Scene &r) {
     s.Clearing = true;
     r.clear<PhysicsConstraintHandle>();
     r.clear<PhysicsBodyHandle>();
@@ -444,7 +446,7 @@ void BuildJoint(PhysicsState &s, state::Scene &r, state::Entity entity) {
 void Rebuild(state::Scene &r) {
     const profile::CpuScope scope{"PhysicsRebuild"};
     auto &s = r.Context.get<PhysicsState>();
-    ClearSimulation(s, r);
+    Reset(s, r);
     if (!s.Context) return;
     if (!s.Solver) s.Solver.emplace(*s.Context);
     UpdateMasks(s, r);
@@ -678,7 +680,7 @@ void ProcessChanges(state::Scene &r) {
     const auto destroyed = std::exchange(s.Destroyed, {});
     // Without motion or colliders, the scene forms no body.
     if (r.view<const PhysicsMotion>().empty() && r.view<const ColliderShape>().empty()) {
-        if (s.World) ClearSimulation(s, r);
+        if (s.World) Reset(s, r);
         return;
     }
     if (!s.World) {
@@ -976,8 +978,5 @@ void Init(state::Scene &r) {
 void Deinit(state::Scene &r) {
     r.Context.erase<PhysicsDefinitionUses>();
     r.Context.erase<PhysicsState>();
-}
-void Clear(state::Scene &r) {
-    if (auto *s = r.Context.find<PhysicsState>()) ClearSimulation(*s, r);
 }
 } // namespace physics

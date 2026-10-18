@@ -19,6 +19,17 @@ std::vector<PageMask> RemovalPages(const Scene &r, std::span<const Entity> reque
     return pages;
 }
 
+std::vector<PageMask> OccupiedPages(const Table &table) {
+    std::vector<PageMask> pages;
+    for (uint32_t word = 0; word < table.Occupied.size(); ++word) {
+        for (auto bits = table.Occupied[word]; bits; bits &= bits - 1u) {
+            const auto page = word * 64u + uint32_t(std::countr_zero(bits));
+            pages.push_back({page, table.mask(page)});
+        }
+    }
+    return pages;
+}
+
 void RemoveComponentPages(Scene &r, std::span<const PageMask> pages) {
     // Capture each type's affected pages once before callbacks mutate its values.
     // Callbacks retain access to the component being destroyed until its page is unlinked.
@@ -206,13 +217,7 @@ void Scene::RemoveComponents(std::span<const Entity> entities) {
 void Scene::clear(TypeId type) {
     auto &table = Tables[type];
     if (table.empty()) return;
-    std::vector<PageMask> pages;
-    for (uint32_t word = 0; word < table.Occupied.size(); ++word) {
-        for (auto bits = table.Occupied[word]; bits; bits &= bits - 1u) {
-            const auto page = word * 64u + uint32_t(std::countr_zero(bits));
-            pages.push_back({page, table.mask(page)});
-        }
-    }
+    const auto pages = OccupiedPages(table);
     if (Capture) Capture(*this, type, pages);
     for (const auto [page, _] : pages) {
         const auto mask = table.mask(page);
@@ -221,15 +226,25 @@ void Scene::clear(TypeId type) {
         table.erase(page, mask);
     }
 }
-void Scene::ResetEntities() {
+void Scene::Reset() {
+    for (const auto type : Active) {
+        auto &table = Tables[type];
+        if (table.empty()) continue;
+        if (Capture) Capture(*this, type, OccupiedPages(table));
+        table.clear();
+    }
     ++Epoch;
     for (const auto &type : Dirty) {
         for (const auto &event : type) {
             for (auto *set : event) set->clear();
         }
     }
+    ClearChanges();
     AllocationStorage->Generations.Clear();
     AllocationStorage->Free.Clear();
     Living.clear();
+    for (auto &slot : Context.Slots) {
+        if (slot.Value && slot.Reset) slot.Reset(slot.Value, *this);
+    }
 }
 } // namespace state

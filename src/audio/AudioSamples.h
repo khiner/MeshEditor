@@ -5,6 +5,10 @@
 #include <unordered_map>
 #include <vector>
 
+namespace state {
+struct Scene;
+} // namespace state
+
 // Decoded frames keyed by an audio file path or a synthetic source URI.
 using LoadedSample = std::pair<std::filesystem::path, std::vector<float>>;
 
@@ -18,6 +22,7 @@ struct VertexSamples {
 struct AudioSamples {
     std::unordered_map<std::filesystem::path, std::vector<float>> ByPath;
 };
+inline void Reset(AudioSamples &samples, state::Scene &) { samples.ByPath.clear(); }
 
 struct SamplePlayback {
     uint32_t Frame{0};

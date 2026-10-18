@@ -24,6 +24,10 @@ struct MaterialStore {
 private:
     std::unique_ptr<store::Records> Tracked;
 };
+// Keeps the default material only.
+inline void Reset(MaterialStore &m, state::Scene &) {
+    if (m.Names.size() > 1) m.ResizeNames(1);
+}
 
 struct MeshMaterialAssignment {
     uint32_t PrimitiveIndex, MaterialIndex;

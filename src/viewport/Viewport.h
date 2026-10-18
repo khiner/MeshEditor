@@ -28,7 +28,6 @@ void SubmitViewport(state::Scene &, state::Entity viewport);
 void SetupScene(state::Scene &, state::Entity viewport);
 
 void AddDefaultSceneContent(state::Scene &);
-void ClearScene(state::Scene &, state::Entity viewport);
 
 // Call after SubmitViewport, inside the viewport's Begin block.
 void DisplayViewport(state::Scene &, state::Entity viewport);

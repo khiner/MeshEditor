@@ -215,7 +215,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         SubmitTextureUploadBatch(batch);
         textures.PendingUploads.clear();
     }
-    // Rebuild restored EXT-IBL scene resources after ClearScene releases their prefiltered cubemap.
+    // Rebuild restored EXT-IBL scene resources after a document clear releases their prefiltered cubemap.
     if (!reactive(r, Change::SceneWorld).empty()) {
         const auto *src = r.try_get<const gltf::SourceAssets>(viewport);
         if (src && src->ImageBasedLight && !environments.ImportedSceneWorld && !environments.PendingImport) {
@@ -225,14 +225,7 @@ void ProcessComponentEvents(state::Scene &r, state::Entity viewport, EventPass p
         }
     }
     // Cancel a stale pending EXT-IBL import before applying a later scene-world clear.
-    if (std::exchange(environments.ClearRequested, false)) {
-        if (auto &imp = environments.PendingImport) {
-            ReleaseCubeSamplerSlot(slots, imp->DiffuseCubeSlot);
-            ReleaseCubeSamplerSlot(slots, imp->SpecularCubeSlot);
-            imp.reset();
-        }
-        ResetImportedEnvironment(r);
-    }
+    if (environments.ClearRequested) Reset(environments, r);
     if (auto &pending_env = environments.PendingImport) {
         if (const auto *src = r.try_get<const gltf::SourceAssets>(viewport)) {
             auto pre = MaterializeEnvironmentImport(r, slots, *pending_env, src->Images);

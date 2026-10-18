@@ -105,9 +105,6 @@ struct GpuBuffers {
     // The mesh store's render arenas, whose slots the culls and draws bind.
     const RenderArenas *Render{};
 
-    // Reset derived handles to a deterministic scene-load baseline.
-    void ResetSceneArenas();
-
     mtl::BufferContext Ctx;
 
     // Every instance slot in drawing order, by descending object ID, so coplanar ties resolve the same way across loads.
@@ -202,7 +199,6 @@ struct GpuBuffers {
     // Requires the scene evaluated at the capture time.
     void CaptureRenderPose(RenderPose &dst) const;
 
-    // Per-scene resource tables, reset through their own paths rather than ResetSceneArenas.
     mtl::Buffer Lights;
     // Light buffer indices freed by destroyed lights, compacted by the next event pass.
     std::vector<uint32_t> PendingLightRemovals;
@@ -247,3 +243,6 @@ struct GpuBuffers {
     mtl::Buffer GeometryNormalEntries{Ctx, 0, SlotType::Buffer};
     mtl::Buffer WireCoverageBuffer{Ctx, 0, SlotType::Buffer};
 };
+
+// Resets every per-scene arena, table, and tally to the scene-load baseline, keeping the GPU allocations.
+void Reset(GpuBuffers &, state::Scene &);

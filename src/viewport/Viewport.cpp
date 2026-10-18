@@ -19,7 +19,6 @@
 #include "mesh/MeshStores.h"
 #include "mesh/Primitives.h"
 #include "object/ObjectOps.h"
-#include "object/PendingSync.h"
 #include "physics/PhysicsStores.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
@@ -33,6 +32,7 @@
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
+#include "state/Scene.h"
 #include "timeline/Timeline.h"
 #include "timeline/TimelineTheme.h"
 #include "ui/InterfaceTheme.h"
@@ -291,48 +291,6 @@ void AddDefaultSceneContent(state::Scene &r) {
     ::AddCamera(r, meshes, {.Name = "Camera", .Transform = {.P = to_y_up_pos(CameraLoc), .R = to_y_up_rot * FromEulerAngles(CameraEulerXYZ)}, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, Perspective{.FieldOfViewRad = yfov, .FarClip = 1000, .NearClip = DefaultPerspectiveNearClip});
 }
 
-void ClearScene(state::Scene &r, state::Entity viewport) {
-    // Clear physics while its components still exist, so the next load isn't tripped by stale entity keys.
-    physics::Clear(r);
-    ClearMeshes(r, viewport);
-
-    ResetImportedEnvironment(r);
-
-    // Reset imported materials explicitly because bone visualization keeps skinned-scene mesh storage alive.
-    ResetImportedTexturesAndMaterials(r);
-
-    // Clear derived light slots so restored persistent lights register from slot zero.
-    r.Context.get<GpuBuffers>().Lights.SetCount<PunctualLight>(0);
-    r.Context.get<GpuBuffers>().PendingLightRemovals.clear();
-    // Raw-pixel uploads queued at engine init survive a clear that precedes their materialization.
-    std::erase_if(r.Context.get<TextureStore>().PendingUploads, [](const auto &upload) { return std::holds_alternative<PendingTextureUpload::GltfImageRef>(upload.Source); });
-    r.Context.get<EnvironmentStore>().PendingImport.reset();
-
-    // Destroy instances before the buffer entities they reference.
-    r.destroy(SortedEntities(r.view<const RenderInstance>()));
-    auto remaining = SortedEntities(r.view<state::Entity>());
-    std::erase(remaining, viewport);
-    r.destroy(remaining);
-    r.destroy(viewport);
-    // The arena resets below supersede the releases the destroyed components queued.
-    r.Context.erase<PendingObjectRemovals>();
-    r.Context.erase<PendingSlotRemovals>();
-
-    // Reset ordered allocators so scene replay reproduces entity IDs and GPU handles.
-    // Bindless allocation is order-independent and requires no reset.
-    r.ResetEntities();
-    r.Context.get<MeshStore>().Clear();
-    r.Context.get<GpuBuffers>().ResetSceneArenas();
-    r.Context.get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
-    r.Context.get<GpuSceneState>() = {};
-    // Disable occlusion until the new scene has produced a depth pyramid.
-    if (auto &resources = r.Context.get<RenderTargets>().Resources) resources->DepthPyramidValid = false;
-
-    [[maybe_unused]] const auto recreated = r.create();
-    assert(recreated == viewport);
-    SetupScene(r, viewport);
-}
-
 void DeinitViewport(state::Scene &r, state::Entity viewport) {
     r.Context.erase<ViewportRenderResources>();
     r.Context.erase<SelectionSlots>();
@@ -346,7 +304,7 @@ void DeinitViewport(state::Scene &r, state::Entity viewport) {
     r.Context.erase<RenderTargets>();
     if (r.valid(viewport)) r.destroy(viewport);
     // The store releases every mesh in one batch, and MeshHandle destruction still needs it present.
-    r.Context.get<MeshStore>().Clear();
+    Reset(r.Context.get<MeshStore>(), r);
     r.clear<MeshHandle>();
     DeinitTextureStores(r);
     r.Context.erase<MeshStore>();

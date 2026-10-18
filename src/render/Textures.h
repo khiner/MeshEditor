@@ -198,8 +198,12 @@ std::expected<std::vector<std::byte>, std::string> ReadbackTextureRgba8(const mt
 std::expected<TextureEntry, std::string> MaterializeTextureEntry(const state::Scene &, TextureUploadBatch &, mtl::BindlessSet &, const PendingTextureUpload &, const std::vector<gltf::Image> &, float max_anisotropy);
 std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(const state::Scene &, mtl::BindlessSet &, const PendingEnvironmentImport &, const std::vector<gltf::Image> &);
 void ResetImportedEnvironment(state::Scene &);
+// Releases the imported and pending scene worlds and selects the empty one.
+void Reset(EnvironmentStore &, state::Scene &);
 // Release imported GPU textures while retaining the default white texture.
 void ReleaseImportedTextures(state::Scene &);
+// Releases the imported textures and their pending uploads, keeping the raw-pixel textures the engine owns.
+void Reset(TextureStore &, state::Scene &);
 // Release the imported GPU textures that no manifest item names by slot, source image and parameters.
 void ReleaseUnlistedTextures(state::Scene &, std::span<const MaterializedTexture>);
 // Release imported textures and reset to the default material.
