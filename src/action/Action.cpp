@@ -21,7 +21,7 @@ template<typename ActionType> void EmitSystem(ActionType a) { SystemEmitted.empl
 void Commit() { CommitRequested = true; }
 void Cancel() { CancelRequested = true; }
 void Fail(state::Registry &r, std::string message, bool unsupported_extensions) {
-    auto &errors = r.Context.get<Errors>();
+    auto &errors = r.Resources.get<Errors>();
     errors.OnlyUnsupportedExtensions = unsupported_extensions && (errors.Messages.empty() || errors.OnlyUnsupportedExtensions);
     errors.Messages.push_back(std::move(message));
 }

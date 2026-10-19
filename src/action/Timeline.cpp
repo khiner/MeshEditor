@@ -23,7 +23,7 @@ void Apply(state::Registry &r, const Action &action) {
     const auto enter_presentation = [&] {
         const auto *source_assets = r.try_get<const gltf::SourceAssets>(state::Document);
         const bool explicit_ibl = source_assets && source_assets->ImageBasedLight.has_value();
-        const auto lighting = explicit_ibl                      ? PresentationLighting::SceneImageLight :
+        const auto lighting = explicit_ibl      ? PresentationLighting::SceneImageLight :
             !r.view<const LightIndex>().empty() ? PresentationLighting::SceneLights :
                                                   PresentationLighting::MaterialPreview;
         r.get_or_emplace<PendingViewSetup>(state::Document).Presentation = lighting;

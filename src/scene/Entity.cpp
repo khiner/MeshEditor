@@ -36,10 +36,10 @@ void Track(EntityNameCounts &names, std::string_view name) {
 }
 
 void TrackName(state::Registry &r, state::Entity e) {
-    if (auto *names = r.Context.find<EntityNameCounts>()) Track(*names, r.get<const Name>(e).Value);
+    if (auto *names = r.Resources.find<EntityNameCounts>()) Track(*names, r.get<const Name>(e).Value);
 }
 void UntrackName(state::Registry &r, state::Entity e) {
-    auto *names = r.Context.find<EntityNameCounts>();
+    auto *names = r.Resources.find<EntityNameCounts>();
     if (!names) return;
     const auto it = names->Counts.find(r.get<const Name>(e).Value);
     if (it != names->Counts.end() && --it->second == 0) names->Counts.erase(it);
@@ -47,22 +47,22 @@ void UntrackName(state::Registry &r, state::Entity e) {
 } // namespace
 
 void InitEntityNames(state::Registry &r) {
-    r.Context.emplace<EntityNameCounts>();
+    r.Resources.emplace<EntityNameCounts>();
     r.on_construct<Name, &TrackName>();
     r.on_destroy<Name, &UntrackName>();
 }
 void RebuildEntityNames(state::Registry &r) {
-    auto &names = r.Context.get<EntityNameCounts>();
+    auto &names = r.Resources.get<EntityNameCounts>();
     Reset(names, r);
     for (const auto &[e, name] : r.view<const Name>().each()) Track(names, name.Value);
 }
-void DeinitEntityNames(state::Registry &r) { r.Context.erase<EntityNameCounts>(); }
+void DeinitEntityNames(state::Registry &r) { r.Resources.erase<EntityNameCounts>(); }
 void ReserveEntityNames(state::Registry &r, size_t additional) {
-    auto &counts = r.Context.get<EntityNameCounts>().Counts;
+    auto &counts = r.Resources.get<EntityNameCounts>().Counts;
     counts.reserve(counts.size() + additional);
 }
 Name &EmplaceUniqueName(state::Registry &r, state::Entity e, std::string_view prefix) {
-    const auto &names = r.Context.get<const EntityNameCounts>();
+    const auto &names = r.Resources.get<const EntityNameCounts>();
     if (!names.Counts.contains(prefix)) return r.emplace<Name>(e, std::string{prefix});
     const auto it = names.MaxSuffix.find(prefix);
     for (auto suffix = (it != names.MaxSuffix.end() ? it->second : 0u) + 1u;; ++suffix) {

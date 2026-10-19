@@ -35,10 +35,10 @@ MeshRecord BuildMeshRecord(const GpuBuffers &buffers, const MeshStore &meshes, u
 }
 
 void RefreshMeshBinding(state::Registry &r, uint32_t store_id) {
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     const auto *record = meshes.TryGet(store_id);
     if (!record || record->RenderTopologies == 0u) return;
-    meshes.Render().MeshRecords.GetMutable({store_id, 1u})[0] = BuildMeshRecord(r.Context.get<const GpuBuffers>(), meshes, store_id);
+    meshes.Render().MeshRecords.GetMutable({store_id, 1u})[0] = BuildMeshRecord(r.Resources.get<const GpuBuffers>(), meshes, store_id);
 }
 
 MeshletBuildInputs CaptureMeshletInputs(const Mesh &mesh, const MeshStore &meshes, TriangleCorners triangle_corners) {
@@ -195,7 +195,7 @@ RenderRun PublishClusterLodStorage(MeshStore &meshes, MeshStore::Record &owner, 
 }
 
 void CommitClusterLods(state::Registry &r, std::span<MeshStore::Record *const> owners, std::span<const ClusterLodBuild> builds) {
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     auto &buffers = meshes.Render();
     // Every arena grows once for the whole batch.
     uint64_t node_count = 0u, groups = 0u, clusters = 0u, vertex_corners = 0u, local_triangles = 0u, group_ids = 0u;

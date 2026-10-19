@@ -7,8 +7,8 @@
 
 void LoadViewportIcons(state::Registry &r) {
     const auto dir = Paths::Res() / "svg";
-    const auto &ctx = r.Context.get<const mtl::Context>();
-    r.Context.emplace<ViewportIcons>(
+    const auto &ctx = r.Resources.get<const mtl::Context>();
+    r.Resources.emplace<ViewportIcons>(
         ViewportIcons{
             .Transform = {
                 .Select = LoadSvg(ctx, dir / "select.svg"),

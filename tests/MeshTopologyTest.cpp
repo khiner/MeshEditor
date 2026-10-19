@@ -135,7 +135,7 @@ struct Fixture : Engine {
     explicit Fixture(const char *name)
         : Engine{false}, Dir{(std::string{"/tmp/mesheditor-scratch/topology-"} + name).c_str()} {
         expect(P->Begin(Dir));
-        R.Context.get<Viewports>().All.front().State.Extent = {64u, 64u};
+        R.Resources.get<Viewports>().All.front().State.Extent = {64u, 64u};
         P->Settle();
     }
 
@@ -163,10 +163,10 @@ struct Fixture : Engine {
     void Checkpoint() {
         SubmitViewports(R);
         WaitForRender(R);
-        expect(ViewportImageReady(R.Context.get<const Viewports>().All.front()));
-        for (const auto &message : R.Context.get<action::Errors>().Messages)
+        expect(ViewportImageReady(R.Resources.get<const Viewports>().All.front()));
+        for (const auto &message : R.Resources.get<action::Errors>().Messages)
             std::println("action error: {}", message);
-        expect(R.Context.get<action::Errors>().Messages.empty());
+        expect(R.Resources.get<action::Errors>().Messages.empty());
         Audit();
     }
 
@@ -234,15 +234,15 @@ struct Fixture : Engine {
     }
 
     Mesh MeshOf(uint32_t id) const {
-        return Mesh{R.Context.get<const MeshStore>(), id};
+        return Mesh{R.Resources.get<const MeshStore>(), id};
     }
 
     auto Selection(Element element) const {
-        return R.Context.get<const MeshStore>().GetSelectedElements(ActiveMesh().GetStoreId(), element);
+        return R.Resources.get<const MeshStore>().GetSelectedElements(ActiveMesh().GetStoreId(), element);
     }
 
     std::unique_ptr<RenderView> View() const {
-        return std::make_unique<RenderView>(R.Context.get<const Viewports>().All.front().FrameView);
+        return std::make_unique<RenderView>(R.Resources.get<const Viewports>().All.front().FrameView);
     }
 
     void Click(vec2 at, bool toggle = false) {
@@ -250,7 +250,7 @@ struct Fixture : Engine {
     }
 
     const SceneViewUBO &FrameView() const {
-        const auto bytes = R.Context.get<const Viewports>().All.front().SceneViewUBO.Contents();
+        const auto bytes = R.Resources.get<const Viewports>().All.front().SceneViewUBO.Contents();
         return *reinterpret_cast<const SceneViewUBO *>(bytes.data());
     }
 
@@ -262,7 +262,7 @@ struct Fixture : Engine {
 
 // The small mesh's finest render clusters must contain the expected kind and primitive count.
 void ExpectRenderTopology(const Fixture &f, uint32_t id, uint32_t topology, uint32_t primitives) {
-    const auto &meshes = f.R.Context.get<const MeshStore>();
+    const auto &meshes = f.R.Resources.get<const MeshStore>();
     const auto &owner = meshes.Get(id);
     expect(owner.RenderTopologies == (1u << topology));
     expect(meshes.MeshletCount(owner) > 0u);
@@ -294,7 +294,7 @@ void ExpectRenderedGeometry(const MeshStore &meshes, const Mesh &mesh) {
 
 // Preserve explicit corner layers and loose edges without source welding.
 uint32_t CreateMixedFixture(state::Registry &scene, const MeshData &data, std::span<const std::array<uint32_t, 2>> wires, bool attributes) {
-    auto &meshes = scene.Context.get<MeshStore>();
+    auto &meshes = scene.Resources.get<MeshStore>();
     const auto &a = meshes.Arenas();
     const auto id = meshes.CreateMeshSource(MeshData{data.Positions});
     const auto count = uint32_t(data.FaceCorners.size() + 2u * wires.size());
@@ -517,7 +517,7 @@ void TestOnlyFacesPreservesEdges() {
             expect(MeshEdgeUsers::Key(*mesh.GetFromVertex(h), *mesh.GetToVertex(h)) == key);
             if (!mesh.GetConnectivity().FaceOf(h)) expect(mesh.GetOppositeHalfedge(mesh.GetOppositeHalfedge(h)) == h);
         }
-        expect(RenderedPrimitiveCounts(f.R.Context.get<const MeshStore>(), id)[1] == 6u);
+        expect(RenderedPrimitiveCounts(f.R.Resources.get<const MeshStore>(), id)[1] == 6u);
     }
 }
 
@@ -549,7 +549,7 @@ void TestDeleteEdgesPreservesOtherEdges() {
         f.Checkpoint();
         ExpectCounts(f.ActiveMesh(), {keep_vertices ? 8u : 6u, 6u, 1u, 2u});
         expect(FacePositions(f.ActiveMesh(), face) == face_positions);
-        ExpectRenderedGeometry(f.R.Context.get<const MeshStore>(), f.ActiveMesh());
+        ExpectRenderedGeometry(f.R.Resources.get<const MeshStore>(), f.ActiveMesh());
     }
 }
 
@@ -582,11 +582,11 @@ void TestDuplicateGeometry() {
         f.Selection(Element::Vertex).ForEach([&](uint32_t v) { expect(std::abs(mesh.GetPosition(he::VH{v}).z - 1.f) < 1e-5f); });
         for (const auto face : mesh.faces())
             for (const auto h : mesh.fh_range(face)) {
-                const auto &a = f.R.Context.get<const MeshStore>().Arenas();
-                expect(a.CornerColors.Get(f.R.Context.get<const MeshStore>().Get(mesh.GetStoreId()).CornerColors, *h) == vec4{.2f, .4f, .6f, 1.f});
-                expect(a.CornerUvs[0].Get(f.R.Context.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == vec2{.3f, .7f});
+                const auto &a = f.R.Resources.get<const MeshStore>().Arenas();
+                expect(a.CornerColors.Get(f.R.Resources.get<const MeshStore>().Get(mesh.GetStoreId()).CornerColors, *h) == vec4{.2f, .4f, .6f, 1.f});
+                expect(a.CornerUvs[0].Get(f.R.Resources.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == vec2{.3f, .7f});
             }
-        ExpectRenderedGeometry(f.R.Context.get<const MeshStore>(), mesh);
+        ExpectRenderedGeometry(f.R.Resources.get<const MeshStore>(), mesh);
     }
 }
 
@@ -601,7 +601,7 @@ void TestDeleteVerticesAndFaces() {
         f.Checkpoint();
         ExpectCounts(f.ActiveMesh(), {7u, vertices ? 4u : 3u, 0u, 0u});
         expect(f.Selection(element).Count() == 0u);
-        ExpectRenderedGeometry(f.R.Context.get<const MeshStore>(), f.ActiveMesh());
+        ExpectRenderedGeometry(f.R.Resources.get<const MeshStore>(), f.ActiveMesh());
     }
 }
 
@@ -627,7 +627,7 @@ void TestDeleteLoose() {
     const auto mesh = f.ActiveMesh();
     ExpectCounts(mesh, {4u, 5u, 1u, 2u});
     expect(FacePositions(mesh, face) == face_positions);
-    const auto &meshes = f.R.Context.get<const MeshStore>();
+    const auto &meshes = f.R.Resources.get<const MeshStore>();
     expect(meshes.GetHiddenElements(id, Element::Edge).Contains(*hidden));
     expect(!mesh.GetConnectivity().FaceOf(mesh.GetHalfedge(hidden, 0u)));
     ExpectRenderedGeometry(meshes, mesh);
@@ -644,7 +644,7 @@ void TestWireHullPreservesConnectivity() {
     f.SelectElements(entity, selected, Element::Vertex);
     f.P->History.Commit("Select hull vertices", {});
     f.Checkpoint();
-    const auto &meshes = f.R.Context.get<const MeshStore>();
+    const auto &meshes = f.R.Resources.get<const MeshStore>();
     const auto &render = meshes.Render();
     const auto original = Positions(f.ActiveMesh());
     struct Wire {
@@ -719,7 +719,7 @@ void TestExtrudeEdgesMixed() {
                 for (const auto v : mesh.fv_range(face)) moved += f.Selection(Element::Vertex).Contains(*v);
                 expect(moved == 2u);
             }
-        ExpectRenderedGeometry(f.R.Context.get<const MeshStore>(), mesh);
+        ExpectRenderedGeometry(f.R.Resources.get<const MeshStore>(), mesh);
     }
 }
 
@@ -743,7 +743,7 @@ void TestExtrudeRegionMixed() {
     uint32_t loose = 0u;
     for (const auto e : mesh.edges()) loose += !mesh.GetConnectivity().FaceOf(mesh.GetHalfedge(e, 0u));
     expect(loose == 3u);
-    ExpectRenderedGeometry(f.R.Context.get<const MeshStore>(), mesh);
+    ExpectRenderedGeometry(f.R.Resources.get<const MeshStore>(), mesh);
 }
 
 void TestExtrudeRegionSpinAttributes() {
@@ -773,7 +773,7 @@ void TestExtrudeRegionSpinAttributes() {
             source.Attrs.Colors0->push_back({p.x / 3.f, p.y / 3.f, .5f, 1.f});
         }
         const auto id = CreateMesh(f.R, std::move(source)).StoreId;
-        auto &meshes = f.R.Context.get<MeshStore>();
+        auto &meshes = f.R.Resources.get<MeshStore>();
         const auto &a = meshes.Arenas();
         f.AddEditable(id, Element::Face);
         f.Do(action::selection::SelectAll{});
@@ -857,7 +857,7 @@ void TestExtrudeVertices() {
         }
         expect(incident == 1u);
     });
-    ExpectRenderedGeometry(f.R.Context.get<const MeshStore>(), mesh);
+    ExpectRenderedGeometry(f.R.Resources.get<const MeshStore>(), mesh);
 }
 
 void TestCreateGeometry() {
@@ -870,7 +870,7 @@ void TestCreateGeometry() {
         source.Data.Positions = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {4, 0, 0}, {5, 0, 0}};
         source.Data.Edges = {{4u, 5u}};
         if (kind == WireFace) source.Data.Edges.insert(source.Data.Edges.end(), {{0u, 1u}, {1u, 2u}, {2u, 3u}, {3u, 0u}});
-        auto &meshes = f.R.Context.get<MeshStore>();
+        auto &meshes = f.R.Resources.get<MeshStore>();
         uint32_t id;
         if (kind == CoincidentFace) {
             source.Data.AddFace(std::array{0u, 1u, 2u});
@@ -1045,7 +1045,7 @@ void TestMergeMixed() {
         uint32_t loose = 0u;
         for (const auto e : mesh.edges()) loose += !mesh.GetConnectivity().FaceOf(mesh.GetHalfedge(e, 0u));
         expect(loose == 1u); // The collapsed face and coincident wires share one surviving edge.
-        ExpectRenderedGeometry(f.R.Context.get<const MeshStore>(), mesh);
+        ExpectRenderedGeometry(f.R.Resources.get<const MeshStore>(), mesh);
     }
 }
 
@@ -1089,9 +1089,9 @@ void TestSubdivideMixed() {
         for (const auto count : intermediate) expect(count == selected.size());
         for (const auto face : mesh.faces()) {
             expect(mesh.GetValence(face) == 6u);
-            for (const auto h : mesh.fh_range(face)) expect(f.R.Context.get<const MeshStore>().Arenas().CornerUvs[0].Get(f.R.Context.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == vec2{.3f, .7f});
+            for (const auto h : mesh.fh_range(face)) expect(f.R.Resources.get<const MeshStore>().Arenas().CornerUvs[0].Get(f.R.Resources.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == vec2{.3f, .7f});
         }
-        ExpectRenderedGeometry(f.R.Context.get<const MeshStore>(), mesh);
+        ExpectRenderedGeometry(f.R.Resources.get<const MeshStore>(), mesh);
     }
 }
 
@@ -1175,7 +1175,7 @@ void TestSparseSelectionLifecycle() {
     f.SelectElements(entity, std::array{256u, 257u}, Element::Vertex);
     f.P->History.Commit("Select last block", {});
     const auto check = [&](const state::Registry &scene, bool deleted) {
-        const auto &meshes = scene.Context.get<const MeshStore>();
+        const auto &meshes = scene.Resources.get<const MeshStore>();
         expect(GetMesh(scene, entity).VertexCount() == (deleted ? 256u : 258u));
         expect(meshes.GetSelectedElements(id, Element::Vertex).Count() == (deleted ? 0u : 2u));
         ExpectSelectionIndex(meshes, id);
@@ -1258,13 +1258,13 @@ void TestWireframeQuad() {
             if (found != expected.end()) expected.erase(found);
         }
         expect(expected.empty());
-        const auto &arenas = f.R.Context.get<const MeshStore>().Arenas();
+        const auto &arenas = f.R.Resources.get<const MeshStore>().Arenas();
         for (const auto face : mesh.faces())
             for (const auto h : mesh.fh_range(face)) {
                 const auto p = mesh.GetPosition(mesh.GetToVertex(h));
                 const vec2 uv{float(p.x > 0.f), float(p.y > 0.f)};
-                expect(arenas.CornerUvs[0].Get(f.R.Context.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == uv);
-                const auto color = arenas.CornerColors.Get(f.R.Context.get<const MeshStore>().Get(mesh.GetStoreId()).CornerColors, *h);
+                expect(arenas.CornerUvs[0].Get(f.R.Resources.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == uv);
+                const auto color = arenas.CornerColors.Get(f.R.Resources.get<const MeshStore>().Get(mesh.GetStoreId()).CornerColors, *h);
                 expect(color == vec4{uv.x, uv.y, 1.f, 1.f});
             }
         if (boundary && replace) ExpectClosedWire(mesh);
@@ -1349,11 +1349,11 @@ void TestSplitNonplanarFaces() {
             }
         }
         expect(crease);
-        const auto &arenas = f.R.Context.get<const MeshStore>().Arenas();
+        const auto &arenas = f.R.Resources.get<const MeshStore>().Arenas();
         for (const auto face : mesh.faces())
             for (const auto h : mesh.fh_range(face)) {
                 const auto p = mesh.GetPosition(mesh.GetToVertex(h));
-                expect(arenas.CornerUvs[0].Get(f.R.Context.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == vec2{p.x, p.y});
+                expect(arenas.CornerUvs[0].Get(f.R.Resources.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == vec2{p.x, p.y});
             }
         expect(f.Selection(Element::Face).Count() == 4u);
     };
@@ -1494,7 +1494,7 @@ void TestPositionRetessellation() {
     const auto vertex = original[1].first;
     const auto target = vec3{.5f, 1.f, 0.f};
     const auto delta = target - original[1].second;
-    const auto &meshes = f.R.Context.get<const MeshStore>();
+    const auto &meshes = f.R.Resources.get<const MeshStore>();
     const auto &a = meshes.Arenas();
     const auto first = a.FaceTriangles.Get({*mesh.FaceAt(0u), 1u})[0];
     const auto base_triangles = a.Triangles.Get({first, 2u}) | std::ranges::to<std::vector>();
@@ -1518,7 +1518,7 @@ void TestPositionRetessellation() {
             }
         ExpectRenderedGeometry(meshes, current);
         if (preview) {
-            const auto &buffers = f.R.Context.get<const GpuBuffers>();
+            const auto &buffers = f.R.Resources.get<const GpuBuffers>();
             const auto posed = buffers.PosedPositions.View(f.R.get<const PosedLayout>(entity).Namespaces.PositionNamespace(0u));
             expect(Near(posed[*vertex], moved));
         }
@@ -1553,7 +1553,7 @@ void TestPositionRetessellation() {
     Engine reopened{false};
     expect(reopened.P->Open(f.Dir));
     reopened.P->Settle();
-    ExpectPolygonTessellation(reopened.R.Context.get<const MeshStore>(), GetMesh(reopened.R, entity));
+    ExpectPolygonTessellation(reopened.R.Resources.get<const MeshStore>(), GetMesh(reopened.R, entity));
 }
 
 void TestDissolveCollapsedFaces() {
@@ -1581,9 +1581,9 @@ void TestDissolveCollapsedFaces() {
     for (const auto face : mesh.faces())
         for (const auto h : mesh.fh_range(face)) {
             const auto position = mesh.GetPosition(mesh.GetToVertex(h));
-            expect(f.R.Context.get<const MeshStore>().Arenas().CornerUvs[0].Get(f.R.Context.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == vec2{position.x, position.y});
+            expect(f.R.Resources.get<const MeshStore>().Arenas().CornerUvs[0].Get(f.R.Resources.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == vec2{position.x, position.y});
         }
-    ExpectRenderedGeometry(f.R.Context.get<const MeshStore>(), mesh);
+    ExpectRenderedGeometry(f.R.Resources.get<const MeshStore>(), mesh);
 }
 
 void TestLimitedDissolveSelection() {
@@ -1627,7 +1627,7 @@ void TestDissolveDelimiters() {
             const auto [entity, instance] = f.AddEditable(id, Element::Edge);
             const auto original = f.ActiveMesh();
             if (delimiter == UV) {
-                auto &meshes = f.R.Context.get<MeshStore>();
+                auto &meshes = f.R.Resources.get<MeshStore>();
                 for (const auto h : original.fh_range(original.FaceAt(1u))) meshes.Arenas().CornerUvs[0].Values.Buffer.GetMutableSpan<vec2>({ElementAttribute<vec2>::Index(meshes.Get(id).CornerUvs[0], *h), 1u})[0].x += 10.f;
             }
             if (delimiter == Sharp) {
@@ -1642,7 +1642,7 @@ void TestDissolveDelimiters() {
             f.Do(action::mesh::Dissolve{.Mode = action::mesh::DissolveMode::Limited, .DelimitMaterials = enabled && delimiter == Material, .DelimitSharpEdges = enabled && delimiter == Sharp, .DelimitUVs = enabled && delimiter == UV});
             f.Checkpoint();
             ExpectCounts(f.ActiveMesh(), enabled ? Counts{4u, 5u, 2u, 2u} : Counts{4u, 4u, 1u, 2u});
-            ExpectPolygonTessellation(f.R.Context.get<const MeshStore>(), f.ActiveMesh());
+            ExpectPolygonTessellation(f.R.Resources.get<const MeshStore>(), f.ActiveMesh());
         }
 }
 
@@ -1688,7 +1688,7 @@ void TestWeldDuplicateFaces() {
         f.Checkpoint();
         const auto mesh = f.ActiveMesh();
         ExpectCounts(mesh, {3u, 3u, 1u, 1u});
-        const auto &store = f.R.Context.get<const MeshStore>();
+        const auto &store = f.R.Resources.get<const MeshStore>();
         for (const auto face : mesh.faces())
             for (const auto h : mesh.fh_range(face)) {
                 const auto position = mesh.GetPosition(mesh.GetToVertex(h));
@@ -1714,7 +1714,7 @@ void TestWeldDistanceGroups() {
         f.Do(action::mesh::Merge{.Mode = action::mesh::MergeMode::ByDistance, .Distance = .02f});
         f.Checkpoint();
         const auto mesh = f.ActiveMesh();
-        const auto &meshes = f.R.Context.get<const MeshStore>();
+        const auto &meshes = f.R.Resources.get<const MeshStore>();
         ExpectCounts(mesh, {6u, kind == 0u ? 8u : 7u, kind == 0u ? 2u : 1u, 4u});
         const auto targets = kind == 0u ? std::array{0u, 1u, 2u, 3u, 0u, 5u, 2u, 7u} : std::array{0u, 1u, 2u, 1u, 4u, 5u, 2u, 7u};
         for (const auto vertex : mesh.vertices()) {
@@ -1759,25 +1759,25 @@ void TestConcaveFillAndDissolve() {
     f.Do(action::mesh::Fill{});
     f.Checkpoint();
     ExpectCounts(f.ActiveMesh(), {8u, 8u, 1u, 6u});
-    ExpectPolygonTessellation(f.R.Context.get<const MeshStore>(), f.ActiveMesh());
+    ExpectPolygonTessellation(f.R.Resources.get<const MeshStore>(), f.ActiveMesh());
     f.EnterEdit(Element::Face);
     f.Do(action::selection::SelectAll{});
     f.Do(action::mesh::Triangulate{});
     f.Checkpoint();
     ExpectCounts(f.ActiveMesh(), {8u, 13u, 6u, 6u});
-    ExpectPolygonTessellation(f.R.Context.get<const MeshStore>(), f.ActiveMesh());
+    ExpectPolygonTessellation(f.R.Resources.get<const MeshStore>(), f.ActiveMesh());
     f.Do(action::mesh::Dissolve{action::mesh::DissolveMode::Faces});
     f.Checkpoint();
     ExpectCounts(f.ActiveMesh(), {8u, 8u, 1u, 6u});
-    ExpectPolygonTessellation(f.R.Context.get<const MeshStore>(), f.ActiveMesh());
+    ExpectPolygonTessellation(f.R.Resources.get<const MeshStore>(), f.ActiveMesh());
     f.P->Undo();
     f.Checkpoint();
     ExpectCounts(f.ActiveMesh(), {8u, 13u, 6u, 6u});
-    ExpectPolygonTessellation(f.R.Context.get<const MeshStore>(), f.ActiveMesh());
+    ExpectPolygonTessellation(f.R.Resources.get<const MeshStore>(), f.ActiveMesh());
     f.P->Redo();
     f.Checkpoint();
     ExpectCounts(f.ActiveMesh(), {8u, 8u, 1u, 6u});
-    ExpectPolygonTessellation(f.R.Context.get<const MeshStore>(), f.ActiveMesh());
+    ExpectPolygonTessellation(f.R.Resources.get<const MeshStore>(), f.ActiveMesh());
 }
 
 void TestSplitConcaveFaces() {
@@ -1810,7 +1810,7 @@ void TestSplitConcaveFaces() {
                 const auto vertex = mesh.GetToVertex(h);
                 loop.push_back(uint32_t(std::ranges::find(original, vertex, &VertexPositions::value_type::first) - original.begin()));
                 const auto p = mesh.GetPosition(vertex);
-                expect(f.R.Context.get<const MeshStore>().Arenas().CornerUvs[0].Get(f.R.Context.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == vec2{p.x, p.y});
+                expect(f.R.Resources.get<const MeshStore>().Arenas().CornerUvs[0].Get(f.R.Resources.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == vec2{p.x, p.y});
             }
             std::rotate(loop.begin(), std::ranges::min_element(loop), loop.end());
             if (reversed && face != untouched) std::reverse(loop.begin() + 1, loop.end());
@@ -1818,7 +1818,7 @@ void TestSplitConcaveFaces() {
         }
         // bmesh.ops.connect_verts_concave partitions, Blender 5.2.2; retain winding and source corners.
         expect(actual == std::set<std::vector<uint32_t>>{{0u, 5u, 6u, 7u}, {0u, 1u, 4u, 5u}, {1u, 2u, 3u, 4u}, {8u, 9u, 10u, 11u, 12u, 13u}});
-        ExpectPolygonTessellation(f.R.Context.get<const MeshStore>(), mesh);
+        ExpectPolygonTessellation(f.R.Resources.get<const MeshStore>(), mesh);
     };
     check(false);
     const auto split = *f.P->History.Present;
@@ -2249,8 +2249,8 @@ void TestSlideAttributes() {
         source.Attrs.Colors0ComponentCount = 4u;
         source.Attrs.Tangents = std::vector<vec4>(7u, vec4{1, 0, 0, 1});
         const auto id = CreateMesh(f.R, std::move(source)).StoreId;
-        const auto &a = f.R.Context.get<const MeshStore>().Arenas();
-        const auto &record = f.R.Context.get<const MeshStore>().Get(id);
+        const auto &a = f.R.Resources.get<const MeshStore>().Arenas();
+        const auto &record = f.R.Resources.get<const MeshStore>().Get(id);
         // Different values on every corner retain an explicit UV/color discontinuity at the shared edge.
         for (const auto face : f.MeshOf(id).faces())
             for (const auto h : f.MeshOf(id).fh_range(face)) {
@@ -2270,9 +2270,9 @@ void TestSlideAttributes() {
             expect((Positions(mesh) != before) == edited);
             for (const auto face : mesh.faces())
                 for (const auto h : mesh.fh_range(face)) {
-                    expect(a.CornerUvs[0].Get(f.R.Context.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == vec2{float(*h), float(*face)});
-                    expect(a.CornerColors.Get(f.R.Context.get<const MeshStore>().Get(mesh.GetStoreId()).CornerColors, *h) == vec4{float(*h) / 16.f, 0, 1, 1});
-                    expect(a.CornerTangents.Get(f.R.Context.get<const MeshStore>().Get(mesh.GetStoreId()).CornerTangents, *h) == (edited && face != mesh.FaceAt(2u) ? vec4{} : vec4{1, 0, 0, 1}));
+                    expect(a.CornerUvs[0].Get(f.R.Resources.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == vec2{float(*h), float(*face)});
+                    expect(a.CornerColors.Get(f.R.Resources.get<const MeshStore>().Get(mesh.GetStoreId()).CornerColors, *h) == vec4{float(*h) / 16.f, 0, 1, 1});
+                    expect(a.CornerTangents.Get(f.R.Resources.get<const MeshStore>().Get(mesh.GetStoreId()).CornerTangents, *h) == (edited && face != mesh.FaceAt(2u) ? vec4{} : vec4{1, 0, 0, 1}));
                 }
         };
         f.Stage(action::view::TransformElements{});
@@ -2465,11 +2465,11 @@ void TestRecalculateNormals() {
             const bool reverse = changed && (std::ranges::contains(flipped, i) ^ (inside && std::ranges::contains(selected, i)));
             expect(Near(mesh.GetNormal(normals[i].first), normals[i].second * (reverse ? -1.f : 1.f))) << "normal of face" << i;
         }
-        const auto &a = f.R.Context.get<const MeshStore>().Arenas();
+        const auto &a = f.R.Resources.get<const MeshStore>().Arenas();
         for (const auto face : mesh.faces())
             for (const auto h : mesh.fh_range(face)) {
                 const auto p = mesh.GetPosition(mesh.GetToVertex(h));
-                expect(a.CornerUvs[0].Get(f.R.Context.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == vec2{p.x, p.y});
+                expect(a.CornerUvs[0].Get(f.R.Resources.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == vec2{p.x, p.y});
             }
     };
     f.Stage(action::mesh::RecalculateNormals{});
@@ -2523,7 +2523,7 @@ void TestEditVisibility() {
         const auto original = Positions(f.ActiveMesh());
         const auto counts = CountsOf(f.ActiveMesh());
         const auto check = [&] {
-            const auto &meshes = f.R.Context.get<const MeshStore>();
+            const auto &meshes = f.R.Resources.get<const MeshStore>();
             const auto mesh = f.ActiveMesh();
             std::vector<uint32_t> vertices, faces;
             std::vector<std::array<uint32_t, 2>> edges;
@@ -2548,13 +2548,13 @@ void TestEditVisibility() {
         f.Do(action::selection::SelectAll{});
         f.Checkpoint();
         check();
-        const auto visible = f.ActiveMesh().ElementCount(reference.Mode) - f.R.Context.get<const MeshStore>().GetHiddenElements(id, reference.Mode).Count();
+        const auto visible = f.ActiveMesh().ElementCount(reference.Mode) - f.R.Resources.get<const MeshStore>().GetHiddenElements(id, reference.Mode).Count();
         expect(f.Selection(reference.Mode).Count() == visible);
         const auto hidden_node = *f.P->History.Present;
         f.Do(action::mesh::Reveal{false});
         f.Checkpoint();
         expect(f.Selection(reference.Mode).Count() == visible);
-        for (const auto mode : {Element::Vertex, Element::Edge, Element::Face}) expect(f.R.Context.get<const MeshStore>().GetHiddenElements(id, mode).Count() == 0u);
+        for (const auto mode : {Element::Vertex, Element::Edge, Element::Face}) expect(f.R.Resources.get<const MeshStore>().GetHiddenElements(id, mode).Count() == 0u);
         // Reveal can match the hide node's parent, which history adopts directly.
         f.P->Navigate(hidden_node);
         f.Checkpoint();
@@ -2597,7 +2597,7 @@ void TestHiddenGeometryPicking() {
         f.Click(f.ViewFraction(vec3{}));
         f.Checkpoint();
         expect(f.Selection(mode).Count() == 1u) << "visible element behind hidden geometry" << uint32_t(mode);
-        const auto hidden = f.R.Context.get<const MeshStore>().GetHiddenElements(id, mode);
+        const auto hidden = f.R.Resources.get<const MeshStore>().GetHiddenElements(id, mode);
         f.Selection(mode).ForEach([&](uint32_t h) { expect(!hidden.Contains(h)); });
         f.Do(action::mesh::Hide{});
         f.Checkpoint();
@@ -2639,23 +2639,23 @@ void TestVisibilityLifecycle() {
         expect(meshes.GetHiddenElements(mesh_id, Element::Edge).Count() == 3u);
         ExpectSelectionIndex(meshes, mesh_id);
     };
-    check(f.R.Context.get<const MeshStore>(), id);
+    check(f.R.Resources.get<const MeshStore>(), id);
     f.P->Undo();
     f.Checkpoint();
     expect(f.ActiveMesh().FaceCount() == 2u);
     f.P->Redo();
     f.Checkpoint();
-    check(f.R.Context.get<const MeshStore>(), id);
+    check(f.R.Resources.get<const MeshStore>(), id);
     f.Do(action::view::SetInteractionMode{InteractionMode::Object});
     f.Do(action::object::Duplicate{});
     f.Checkpoint();
-    for (const auto [e, handle] : f.R.view<const MeshHandle>().each()) check(f.R.Context.get<const MeshStore>(), handle.StoreId);
+    for (const auto [e, handle] : f.R.view<const MeshHandle>().each()) check(f.R.Resources.get<const MeshStore>(), handle.StoreId);
     expect(f.P->Save());
     expect(f.P->Close());
     Engine reopened{false};
     expect(reopened.P->Open(f.Dir));
-    for (const auto [e, handle] : reopened.R.view<const MeshHandle>().each()) check(reopened.R.Context.get<const MeshStore>(), handle.StoreId);
-    expect(reopened.R.Context.get<action::Errors>().Messages.empty());
+    for (const auto [e, handle] : reopened.R.view<const MeshHandle>().each()) check(reopened.R.Resources.get<const MeshStore>(), handle.StoreId);
+    expect(reopened.R.Resources.get<action::Errors>().Messages.empty());
 }
 
 void TestSnapSymmetry() {
@@ -2734,15 +2734,15 @@ void TestUnsubdivide() {
         const auto original = Positions(f.ActiveMesh());
         const auto check = [&] {
             const auto mesh = f.ActiveMesh();
-            const auto &a = f.R.Context.get<const MeshStore>().Arenas();
+            const auto &a = f.R.Resources.get<const MeshStore>().Arenas();
             std::vector<std::vector<uint32_t>> actual;
             for (const auto face : mesh.faces()) {
                 std::vector<uint32_t> loop;
                 for (const auto h : mesh.fh_range(face)) {
                     const auto p = mesh.GetPosition(mesh.GetToVertex(h));
                     loop.push_back(uint32_t(p.x + float(width) * p.y));
-                    expect(a.CornerUvs[0].Get(f.R.Context.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == vec2{p.x, p.y});
-                    expect(a.CornerColors.Get(f.R.Context.get<const MeshStore>().Get(mesh.GetStoreId()).CornerColors, *h) == vec4{p.x / 4.f, p.y / 4.f, 0.f, 1.f});
+                    expect(a.CornerUvs[0].Get(f.R.Resources.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == vec2{p.x, p.y});
+                    expect(a.CornerColors.Get(f.R.Resources.get<const MeshStore>().Get(mesh.GetStoreId()).CornerColors, *h) == vec4{p.x / 4.f, p.y / 4.f, 0.f, 1.f});
                 }
                 actual.push_back(std::move(loop));
             }
@@ -2894,7 +2894,7 @@ void TestBeautifySeams() {
         f.Do(action::mesh::BeautifyFaces{});
         f.Checkpoint();
         const auto mesh = f.ActiveMesh();
-        const auto &a = f.R.Context.get<const MeshStore>().Arenas();
+        const auto &a = f.R.Resources.get<const MeshStore>().Arenas();
         uint32_t negative = 0u;
         // Blender's boundary loop provenance: vertex 1 comes from the second face and vertex 3 from the first, despite their original UV discontinuity.
         for (const auto face : mesh.faces()) {
@@ -2903,7 +2903,7 @@ void TestBeautifySeams() {
                 const auto p = mesh.GetPosition(mesh.GetToVertex(h));
                 const auto v = uint32_t(std::ranges::find(points, p) - points.begin());
                 const uint32_t from = v == 1u || v == 2u ? 1u : 0u;
-                expect(a.CornerUvs[0].Get(f.R.Context.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == vec2{float(from * 10u + v), float(from)});
+                expect(a.CornerUvs[0].Get(f.R.Resources.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == vec2{float(from * 10u + v), float(from)});
             }
         }
         expect(negative == uint32_t(reversed)) << "preserves relative face winding";
@@ -2944,17 +2944,17 @@ void TestFaceAttributes() {
             else f.Stage(action::mesh::RotateUVs{3u, true});
             f.Checkpoint();
             const auto mesh = f.ActiveMesh();
-            const auto &a = f.R.Context.get<const MeshStore>().Arenas();
+            const auto &a = f.R.Resources.get<const MeshStore>().Arenas();
             ExpectPositions(mesh, original);
             for (uint32_t face = 0u; face < faces.size(); ++face) {
                 uint32_t i = 0u;
                 for (const auto h : mesh.fh_range(mesh.FaceAt(face))) {
                     const auto before = faces[face][i], after = faces[face][face == 1u ? i : face == 0u ? quad[operation][i] :
                                                                                                           triangle[operation][i]];
-                    expect(a.CornerUvs[0].Get(f.R.Context.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == uvs[before]);
-                    expect(a.CornerUvs[3].Get(f.R.Context.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[3], *h) == uvs[edit_colors ? before : after]);
-                    expect(a.CornerColors.Get(f.R.Context.get<const MeshStore>().Get(mesh.GetStoreId()).CornerColors, *h) == colors[edit_colors ? after : before]);
-                    expect(a.CornerTangents.Get(f.R.Context.get<const MeshStore>().Get(mesh.GetStoreId()).CornerTangents, *h) == (!edit_colors && face != 1u ? vec4{} : vec4{1, 0, 0, 1}));
+                    expect(a.CornerUvs[0].Get(f.R.Resources.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == uvs[before]);
+                    expect(a.CornerUvs[3].Get(f.R.Resources.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[3], *h) == uvs[edit_colors ? before : after]);
+                    expect(a.CornerColors.Get(f.R.Resources.get<const MeshStore>().Get(mesh.GetStoreId()).CornerColors, *h) == colors[edit_colors ? after : before]);
+                    expect(a.CornerTangents.Get(f.R.Resources.get<const MeshStore>().Get(mesh.GetStoreId()).CornerTangents, *h) == (!edit_colors && face != 1u ? vec4{} : vec4{1, 0, 0, 1}));
                     ++i;
                 }
             }
@@ -3016,7 +3016,7 @@ void TestDecimate() {
         f.Do(action::mesh::Decimate{1.f});
         expect(*f.P->History.Present == unchanged);
         const auto check = [&](const state::Registry &r) {
-            const auto &meshes = r.Context.get<const MeshStore>();
+            const auto &meshes = r.Resources.get<const MeshStore>();
             const auto &a = meshes.Arenas();
             const Mesh mesh{meshes, id};
             expect(mesh.VertexCount() < counts.Vertices) << "decimate fixture" << kind;
@@ -3116,7 +3116,7 @@ void TestSeparate() {
             uvs.push_back({p.x, p.y});
             colors.push_back({p.x / 10.f, p.y, 0.f, 1.f});
         }
-        const auto material = f.R.Context.get<GpuBuffers>().Materials.Append(PBRMaterial{});
+        const auto material = f.R.Resources.get<GpuBuffers>().Materials.Append(PBRMaterial{});
         source.Primitives.MaterialIndices = {material, 0u, material};
         source.Primitives.ElementPrimitiveIndices.assign(test.Faces.empty() ? test.Vertices : test.Faces.size(), 0u);
         if (test.Faces.size() >= 2u) source.Primitives.ElementPrimitiveIndices[1] = 1u;
@@ -3132,7 +3132,7 @@ void TestSeparate() {
         f.P->History.Commit("Prepare separation", {});
         const auto original = Positions(f.ActiveMesh());
         const auto check = [&](const state::Registry &r) {
-            const auto &meshes = r.Context.get<const MeshStore>();
+            const auto &meshes = r.Resources.get<const MeshStore>();
             const auto &a = meshes.Arenas();
             std::vector<std::vector<uint32_t>> actual;
             uint32_t edges = 0u, faces = 0u, hidden = 0u;
@@ -3233,8 +3233,8 @@ void CheckFit(const char *name, MeshSource source, const auto &action, std::vect
     ExpectCounts(mesh, counts);
     for (uint32_t i = 0u; i < expected.size(); ++i)
         expect(Near(mesh.GetPosition(mesh.VertexAt(i)), expected[i])) << name << "vertex" << i;
-    ExpectReferenceAttributes(f.R.Context.get<const MeshStore>(), mesh);
-    ExpectPolygonTessellation(f.R.Context.get<const MeshStore>(), mesh);
+    ExpectReferenceAttributes(f.R.Resources.get<const MeshStore>(), mesh);
+    ExpectPolygonTessellation(f.R.Resources.get<const MeshStore>(), mesh);
 }
 
 void TestCircularize() {
@@ -3308,8 +3308,8 @@ void TestGridFill() {
     ExpectCounts(mesh, {before.Vertices + 1u, before.Edges + 4u, before.Faces + 4u, before.Triangles + 8u});
     for (const auto &[v, p] : original) expect(Near(mesh.GetPosition(v), p));
     expect(Near(mesh.GetPosition(mesh.VertexAt(mesh.VertexCount() - 1u)), {1, 1, 0}));
-    ExpectRenderedGeometry(f.R.Context.get<const MeshStore>(), mesh);
-    ExpectPolygonTessellation(f.R.Context.get<const MeshStore>(), mesh);
+    ExpectRenderedGeometry(f.R.Resources.get<const MeshStore>(), mesh);
+    ExpectPolygonTessellation(f.R.Resources.get<const MeshStore>(), mesh);
 }
 
 void TestBridgeChains() {
@@ -3335,9 +3335,9 @@ void TestBridgeChains() {
         joined += bool(mesh.GetOppositeHalfedge(h)) && bool(mesh.GetFace(h));
     }
     expect(joined == 8u); // Four cap edges and four new bridge seams.
-    ExpectReferenceAttributes(f.R.Context.get<const MeshStore>(), mesh);
-    ExpectRenderedGeometry(f.R.Context.get<const MeshStore>(), mesh);
-    ExpectPolygonTessellation(f.R.Context.get<const MeshStore>(), mesh);
+    ExpectReferenceAttributes(f.R.Resources.get<const MeshStore>(), mesh);
+    ExpectRenderedGeometry(f.R.Resources.get<const MeshStore>(), mesh);
+    ExpectPolygonTessellation(f.R.Resources.get<const MeshStore>(), mesh);
 }
 
 void TestMixedMeshSources() {
@@ -3353,7 +3353,7 @@ void TestMixedMeshSources() {
         f.AddEditable(id, Element::Vertex);
         f.Checkpoint();
         const auto mesh = f.ActiveMesh();
-        const auto &store = f.R.Context.get<const MeshStore>();
+        const auto &store = f.R.Resources.get<const MeshStore>();
         ExpectCounts(mesh, {weld ? 5u : 6u, 5u, 1u, 1u});
         ExpectRenderedGeometry(store, mesh);
         ExpectReferenceAttributes(store, mesh);
@@ -3371,7 +3371,7 @@ void TestMixedMeshSources() {
 
 void TestMixedMeshletBuild() {
     Fixture f{"mixed-meshlet-build"};
-    auto &meshes = f.R.Context.get<MeshStore>();
+    auto &meshes = f.R.Resources.get<MeshStore>();
     const MeshData data{std::vector<vec3>{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {2, 1, 0}, {2, 2, 0}, {3, 3, 0}}, {{0u, 1u, 2u}}};
     const std::array<std::array<uint32_t, 2>, 2> wires{{{2u, 3u}, {3u, 4u}}};
     std::array<uint32_t, 2> ids;
@@ -3453,7 +3453,7 @@ void TestMixedMeshletBuild() {
     f.P->Settle();
     f.Checkpoint();
     check(scene_id);
-    expect(std::ranges::all_of(f.R.Context.get<GpuBuffers>().TopologyMeshes, [](uint32_t meshes) { return meshes > 0u; }));
+    expect(std::ranges::all_of(f.R.Resources.get<GpuBuffers>().TopologyMeshes, [](uint32_t meshes) { return meshes > 0u; }));
     const auto check_geometry = [&](vec3 offset) {
         const Mesh mesh{meshes, scene_id};
         check(scene_id);
@@ -3484,7 +3484,7 @@ void TestMixedMeshletBuild() {
 
 void TestMixedMeshletLod() {
     Fixture f{"mixed-meshlet-lod"};
-    auto &meshes = f.R.Context.get<MeshStore>();
+    auto &meshes = f.R.Resources.get<MeshStore>();
     MeshSource source;
     auto &data = source.Data;
     constexpr uint32_t Side = 32u, Width = Side + 1u, GridVertices = Width * Width;
@@ -3571,7 +3571,7 @@ void TestConnectVertices() {
             const auto vertex = mesh.GetToVertex(h);
             loop.push_back(uint32_t(std::ranges::find(original, vertex, &VertexPositions::value_type::first) - original.begin()));
             const auto p = mesh.GetPosition(vertex);
-            expect(f.R.Context.get<const MeshStore>().Arenas().CornerUvs[0].Get(f.R.Context.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == vec2{p.x, p.y});
+            expect(f.R.Resources.get<const MeshStore>().Arenas().CornerUvs[0].Get(f.R.Resources.get<const MeshStore>().Get(mesh.GetStoreId()).CornerUvs[0], *h) == vec2{p.x, p.y});
         }
         std::rotate(loop.begin(), std::ranges::min_element(loop), loop.end());
         actual.insert(std::move(loop));

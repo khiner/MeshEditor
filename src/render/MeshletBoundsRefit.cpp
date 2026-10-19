@@ -12,7 +12,7 @@
 
 void RefitCanonicalMeshletBounds(state::Registry &r, mtl::ComputeChain &chain, std::span<const MeshletBoundsRefitJob> jobs) {
     if (jobs.empty()) return;
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &render = meshes.Render();
     std::vector<MeshletBoundsRefitPushConstants> dispatches;
     std::vector<std::pair<uint32_t, std::vector<uint32_t>>> refitted;
@@ -38,7 +38,7 @@ void RefitCanonicalMeshletBounds(state::Registry &r, mtl::ComputeChain &chain, s
     chain.Concurrent([&] { for (const auto &pc:dispatches) chain.Groups(pipeline,pc,(pc.Count+31u)/32u,32u); });
     if (refitted.empty()) return;
     chain.AfterSubmit([&r, refitted = std::move(refitted)] {
-        const auto &meshes = r.Context.get<MeshStore>();
+        const auto &meshes = r.Resources.get<MeshStore>();
         for (const auto &[store_id, ids] : refitted) {
             if (const auto *owner = meshes.TryGet(store_id); owner && owner->SpatialRoot != InvalidOffset) RefitMeshletSpatial(r, *owner, ids);
         }
@@ -47,7 +47,7 @@ void RefitCanonicalMeshletBounds(state::Registry &r, mtl::ComputeChain &chain, s
 
 void StageDirtyPositionMeshlets(state::Registry &r, mtl::ComputeChain &chain, std::span<const state::Entity> entities) {
     const profile::CpuScope scope{"PositionCoarseInvalidate"};
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     auto &render = meshes.Render();
     std::vector<ClusterGroupSeeds> seeds;
     std::vector<std::vector<uint32_t>> moved;

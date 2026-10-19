@@ -10,7 +10,7 @@
 
 std::vector<SharpnessOperationChange> ExecuteGeometrySharpness(state::Registry &r, mtl::ComputeChain &chain, std::span<const SharpnessOperationTarget> targets, EditSharpnessOperation operation, bool value, float angle) {
     if (uint32_t(operation) > uint32_t(EditSharpnessOperation::SetVertexEdges) || !std::isfinite(angle)) return {};
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     const auto &pipelines = GetMeshPipelines(r);
     const auto source = operation == EditSharpnessOperation::SetSelectedFaces ? Element::Face :
         operation == EditSharpnessOperation::SetSelectedEdges                 ? Element::Edge :

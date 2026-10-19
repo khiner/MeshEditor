@@ -78,7 +78,7 @@ inline constexpr TypeId UiBase = TimelineBase + TimelineCount;
 inline constexpr TypeId ViewportBase = UiBase + UiCount;
 inline constexpr TypeId SchemaSize = ViewportBase + ViewportCount;
 
-// A domain's component and service types in slot order.
+// A domain's component and resource types in slot order.
 template<TypeId Base, TypeId Count, typename... Ts> struct Schema {
     static_assert(sizeof...(Ts) == Count, "update the domain's count");
     template<typename T> static constexpr bool Has = (... || std::is_same_v<T, Ts>);

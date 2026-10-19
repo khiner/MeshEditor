@@ -19,7 +19,7 @@ std::optional<uint32_t> DisplayedMaterial(const state::Registry &r, state::Entit
     const auto *slot = r.try_get<const MeshMaterialSlotSelection>(mesh_entity);
     if (!slot) return {};
     if (const auto *pending = r.try_get<const MeshMaterialAssignment>(mesh_entity); pending && pending->PrimitiveIndex == slot->PrimitiveIndex) return pending->MaterialIndex;
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     const auto materials = meshes.Arenas().PrimitiveMaterials.Get(meshes.Get(GetMesh(r, mesh_entity).GetStoreId()).PrimitiveMaterials);
     if (slot->PrimitiveIndex >= materials.size()) return {};
     return materials[slot->PrimitiveIndex];

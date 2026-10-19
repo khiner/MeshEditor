@@ -19,7 +19,7 @@ struct ViewportEntry {
 };
 
 struct State {
-    std::vector<ViewportEntry> Viewports; // In service order.
+    std::vector<ViewportEntry> Viewports; // In resource order.
     AudioOutputConfig AudioOutput;
     WindowVisibility Windows;
     NodeCanvas NodesCanvas;

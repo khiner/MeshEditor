@@ -34,10 +34,10 @@ std::expected<std::vector<uint32_t>, std::string> ImportObjPlyMaterials(state::R
         if (const auto loaded = preload_texture(source.NormalTexturePath, source.Name, "normal"); !loaded) return std::unexpected{loaded.error()};
     }
 
-    const auto &ctx = r.Context.get<const mtl::Context>();
-    auto &slots = r.Context.get<mtl::BindlessSet>();
-    auto &buffers = r.Context.get<GpuBuffers>();
-    auto &textures = r.Context.get<TextureStore>();
+    const auto &ctx = r.Resources.get<const mtl::Context>();
+    auto &slots = r.Resources.get<mtl::BindlessSet>();
+    auto &buffers = r.Resources.get<GpuBuffers>();
+    auto &textures = r.Resources.get<TextureStore>();
     auto &sources = r.get_or_emplace<gltf::SourceAssets>(state::Document);
     auto &manifest = r.get_or_emplace<MaterializedTextures>(state::Document);
     const auto sampler_index = uint32_t(sources.Samplers.size());
@@ -69,7 +69,7 @@ std::expected<std::vector<uint32_t>, std::string> ImportObjPlyMaterials(state::R
                 .Sampler = SamplerConfig{},
                 .Name = std::format("{} ({})", texture_path.filename().string(), color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear"),
             },
-            r.Context.get<const ActiveSamplerAnisotropy>().Value
+            r.Resources.get<const ActiveSamplerAnisotropy>().Value
         );
         const auto image_index = uint32_t(sources.Images.size());
         sources.Images.emplace_back(gltf::Image{
@@ -113,7 +113,7 @@ std::expected<std::vector<uint32_t>, std::string> ImportObjPlyMaterials(state::R
     }
     SubmitTextureUploadBatch(obj_batch);
 
-    auto &material_store = r.Context.get<MaterialStore>();
+    auto &material_store = r.Resources.get<MaterialStore>();
     material_store.AppendNames(std::move(names));
 
     return scene_material_indices;

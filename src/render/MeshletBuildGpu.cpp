@@ -170,8 +170,8 @@ uint32_t OutputCount(uint64_t count) {
 
 void BuildChunk(state::Registry &r, mtl::ComputeChain &chain, std::span<MeshletBuildSource> sources) {
     const profile::CpuScope scope{"MeshletBuild"};
-    auto &buffers = r.Context.get<GpuBuffers>();
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &buffers = r.Resources.get<GpuBuffers>();
+    auto &meshes = r.Resources.get<MeshStore>();
     auto &render = meshes.Render();
     const auto &pipelines = GetMeshPipelines(r);
     Layout layout;
@@ -512,7 +512,7 @@ void BuildChunk(state::Registry &r, mtl::ComputeChain &chain, std::span<MeshletB
 
 void BuildGpuMeshlets(state::Registry &r, mtl::ComputeChain &chain, std::span<MeshletBuildSource> sources) {
     if (sources.empty()) return;
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     ValidateSources(meshes, sources);
     // Keep every topology of an owner in the same chunk: releasing or publishing that owner again in a later chunk would discard its earlier outputs.
     struct Group {
@@ -542,7 +542,7 @@ void BuildGpuMeshlets(state::Registry &r, mtl::ComputeChain &chain, std::span<Me
 }
 
 uint32_t EnsureMeshletPrimitive(state::Registry &r, MeshStore::Record &owner, uint32_t source_primitive, uint32_t topology) {
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     auto &render = meshes.Render();
     if (owner.ExtrasFaces.Count || topology > 2u) throw std::invalid_argument("Primitive route requires a canonical render owner and topology.");
     if (source_primitive >= std::max(owner.PrimitiveMaterials.Count, 1u)) throw std::out_of_range("Primitive route exceeds the mesh material domain.");

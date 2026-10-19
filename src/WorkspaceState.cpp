@@ -69,7 +69,7 @@ std::vector<WindowState> CaptureWindows(const WindowsState &windows) {
 State Capture(const state::Registry &r, const WindowsState &windows) {
     size_t ini_size = 0;
     const char *ini = ImGui::GetCurrentContext() && windows.PendingIni.empty() ? ImGui::SaveIniSettingsToMemory(&ini_size) : nullptr;
-    const auto &viewports = r.Context.get<const ::Viewports>().All;
+    const auto &viewports = r.Resources.get<const ::Viewports>().All;
     return {
         .Viewports = viewports | std::views::transform([](const Viewport &v) { return ViewportEntry{v.Id, v.Visible, v.State}; }) | std::ranges::to<std::vector>(),
         .AudioOutput = r.get<const AudioOutputConfig>(state::Document),
@@ -82,12 +82,12 @@ State Capture(const state::Registry &r, const WindowsState &windows) {
 }
 
 void Apply(state::Registry &r, WindowsState &windows, const State &state) {
-    auto &viewports = r.Context.get<::Viewports>();
+    auto &viewports = r.Resources.get<::Viewports>();
     // The live UI frame stops sampling the images of the viewports the state omits before they go.
     const bool keeps_all = std::ranges::all_of(viewports.All, [&](const Viewport &v) { return std::ranges::contains(state.Viewports, v.Id, &ViewportEntry::Id); });
-    if (auto *consumer = r.Context.get<const ViewportConsumerFence>().Value; consumer && !keeps_all) consumer->waitUntilCompleted();
-    auto &buffers = r.Context.get<GpuBuffers>().Ctx;
-    auto &slots = r.Context.get<mtl::BindlessSet>();
+    if (auto *consumer = r.Resources.get<const ViewportConsumerFence>().Value; consumer && !keeps_all) consumer->waitUntilCompleted();
+    auto &buffers = r.Resources.get<GpuBuffers>().Ctx;
+    auto &slots = r.Resources.get<mtl::BindlessSet>();
     std::vector<Viewport> applied;
     for (const auto &entry : state.Viewports) {
         auto *existing = viewports.Find(entry.Id);

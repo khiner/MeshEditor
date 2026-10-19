@@ -839,7 +839,7 @@ struct SceneFixture : Engine {
     void Check(bool ok) {
         boost::ut::expect(ok);
         if (ok) return;
-        for (const auto &message : R.Context.get<action::Errors>().Messages) std::println(stderr, "  project: {}", message);
+        for (const auto &message : R.Resources.get<action::Errors>().Messages) std::println(stderr, "  project: {}", message);
         if (const auto error = P->History.TakeIntegrityError(); !error.empty()) std::println(stderr, "  history: {}", error);
     }
     std::vector<std::byte> SaveTo(const std::filesystem::path &dir) {
@@ -999,7 +999,7 @@ void CheckCustomAttributes(state::Registry &r, bool integer_ids) {
     using namespace boost::ut;
     const auto node = FirstMeshNode(r);
     expect(fatal(node != state::Null));
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     const auto id = r.get<const MeshHandle>(r.get<const Instance>(node).Entity).StoreId;
     const Mesh mesh{meshes, id};
     expect(mesh.VertexCount() == 4u);
@@ -1038,7 +1038,7 @@ struct SceneCounts {
     bool operator==(const SceneCounts &) const = default;
 };
 SceneCounts CountScene(SceneFixture &f) {
-    auto &c = f.R.Context;
+    auto &c = f.R.Resources;
     return {
         .Entities = f.R.storage<state::Entity>().size(),
         .MeshHandles = f.R.storage<MeshHandle>().size(),
@@ -1081,7 +1081,7 @@ int main(int argc, const char **argv) {
     "project save/restore round trip"_test = [&] {
         SceneFixture f;
         {
-            auto &meshes = f.R.Context.get<MeshStore>();
+            auto &meshes = f.R.Resources.get<MeshStore>();
             const auto created = CreateMesh(f.R, {.Data = primitive::CreateMesh(primitive::Cuboid{})});
             const auto e = f.R.create();
             f.R.emplace<MeshHandle>(e, MeshHandle{created.StoreId});
@@ -1184,7 +1184,7 @@ int main(int argc, const char **argv) {
             const auto load = gltf::LoadGltf(src, fx.R);
             if (!load) return; // Loader limitation on source (e.g., unsupported extension); skips both round-trips.
             ProcessComponentEvents(fx.R); // mirror prod: a frame runs (posing skinned models) before save
-            TakePendingViewSetup(fx.R, fx.R.Context.get<Viewports>().Active()); // and its viewport step takes the import's view setup
+            TakePendingViewSetup(fx.R, fx.R.Resources.get<Viewports>().Active()); // and its viewport step takes the import's view setup
 
             const auto out_path = tmp_root / (sample_name + ".gltf");
             const auto save = gltf::SaveGltf(out_path, fx.R);
@@ -1219,11 +1219,11 @@ int main(int argc, const char **argv) {
                 expect(image.SourcePath.empty()) << "embedded image was copied to a file";
                 // A frame materializes the pending upload so the readback sees the texture.
                 ProcessComponentEvents(fx.R);
-                const auto &textures = fx.R.Context.get<TextureStore>().Textures;
+                const auto &textures = fx.R.Resources.get<TextureStore>().Textures;
                 const auto tex = std::ranges::find(textures, 0u, &TextureEntry::SourceImageIndex);
                 expect(tex != textures.end()) << "BoxTextured image was not materialized";
                 if (tex == textures.end()) return;
-                auto pixels = ReadbackTextureRgba8(fx.R.Context.get<const mtl::Context>(), *tex);
+                auto pixels = ReadbackTextureRgba8(fx.R.Resources.get<const mtl::Context>(), *tex);
                 expect(pixels.has_value()) << "readback failed";
                 if (!pixels) return;
                 original_pixels = std::move(*pixels);
@@ -1277,7 +1277,7 @@ int main(int argc, const char **argv) {
             expect(relocated_images.size() == 1u);
             if (!relocated_images.empty()) expect(project::ResolveAsset(relocated.R, relocated_images.front().SourcePath) == staged_png) << "relocated URI references another file";
             ProcessComponentEvents(fx.R);
-            const auto &textures = fx.R.Context.get<TextureStore>().Textures;
+            const auto &textures = fx.R.Resources.get<TextureStore>().Textures;
             expect(std::ranges::contains(textures, 0u, &TextureEntry::SourceImageIndex)) << "image was not uploaded";
             fs::rename(staged_png, stage_dir / "CesiumLogoFlat.png.moved");
             const auto saved = gltf::SaveGltf(stage_dir / "BoxTextured-missing.gltf", fx.R);

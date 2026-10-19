@@ -6,12 +6,12 @@
 
 namespace state {
 struct Registry;
-// A service holding scene state declares `void Reset(T &, Registry &)` beside its type, which returns it to its post-init state.
-// Reset touches only its own domain and engine-lifetime services, so services reset in any order.
-// An engine-lifetime service, such as the bindless set whose allocation is order-independent, declares none.
-// Fixed service slots are selected at compile time.
+// A resource holding scene state declares `void Reset(T &, Registry &)` beside its type, which returns it to its post-init state.
+// Reset touches only its own domain and engine-lifetime resources, so resources reset in any order.
+// An engine-lifetime resource, such as the bindless set whose allocation is order-independent, declares none.
+// Fixed resource slots are selected at compile time.
 // Definitions stay in the owning TU.
-struct Services {
+struct Resources {
     struct Slot {
         void *Value{};
         void (*Destroy)(void *){};

@@ -12,7 +12,7 @@
 
 ConnectivityEditWork::ConnectivityEditWork(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, const MeshClosure &before, const std::array<ElementWork, 2> &replaced, const std::array<ElementHandleRange, 3> &emitted) {
     const profile::CpuScope scope{"ConnectivityEditWork"};
-    const auto &meshes = r.Context.get<MeshStore>();
+    const auto &meshes = r.Resources.get<MeshStore>();
     const auto &a = meshes.Arenas();
     const auto &record = meshes.Get(id);
     const std::array capacities{a.Vertices.HandleBound(record.Vertices), a.FaceCorners.HandleBound(record.FaceCorners), a.FaceTriangles.HandleBound(record.FaceData)};

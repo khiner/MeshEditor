@@ -6,14 +6,14 @@
 #include "state/Registry.h"
 
 std::span<const PBRMaterial> GetMaterials(const state::Registry &r) {
-    return r.Context.get<const GpuBuffers>().Materials.GetSpan<PBRMaterial>();
+    return r.Resources.get<const GpuBuffers>().Materials.GetSpan<PBRMaterial>();
 }
 TriangleVertexView GetFaceIndices(const state::Registry &, const Mesh &mesh) { return mesh.TriangleVertices(); }
 
-mtl::BufferContext &GetBufferContext(state::Registry &r) { return r.Context.get<GpuBuffers>().Ctx; }
+mtl::BufferContext &GetBufferContext(state::Registry &r) { return r.Resources.get<GpuBuffers>().Ctx; }
 
 void UpdatePosedMeshletBlocks(state::Registry &r, const MeshStore::Record &owner, std::span<const uint32_t> addresses) {
-    const auto &meshlets = r.Context.get<const MeshStore>().Render().Meshlets;
+    const auto &meshlets = r.Resources.get<const MeshStore>().Render().Meshlets;
     // Posed bounds attach in blocks of MeshElementBlockSize addresses, each spanning several meshlet blocks.
     constexpr auto Span = MeshElementBlockSize / RenderBlockSize;
     std::vector<uint32_t> blocks;
@@ -21,12 +21,12 @@ void UpdatePosedMeshletBlocks(state::Registry &r, const MeshStore::Record &owner
         if (blocks.empty() || blocks.back() != address / MeshElementBlockSize) blocks.push_back(address / MeshElementBlockSize);
     }
     const auto members = meshlets.Blocks.Buffer.GetSpan<MeshElementBlock>();
-    r.Context.get<GpuBuffers>().PosedMeshletBounds.UpdateBlocks(owner.StoreId, owner.MeshletRevision, blocks, [&](uint32_t block) {
+    r.Resources.get<GpuBuffers>().PosedMeshletBounds.UpdateBlocks(owner.StoreId, owner.MeshletRevision, blocks, [&](uint32_t block) {
         const auto first = std::min<size_t>(members.size(), size_t(block) * Span);
         return owner.MeshletData && std::ranges::any_of(members.subspan(first, std::min<size_t>(Span, members.size() - first)), [&](const MeshElementBlock &value) { return value.Owner == owner.MeshletData.Index && value.Count != 0u; }); }, owner.RenderTopologies);
 }
 
-void FreeInstanceRange(state::Registry &r, Range range) { r.Context.get<GpuBuffers>().Instances.Free(range); }
+void FreeInstanceRange(state::Registry &r, Range range) { r.Resources.get<GpuBuffers>().Instances.Free(range); }
 
 InstanceArena::InstanceArena(mtl::BufferContext &ctx)
     : TransformBuffer(ctx, 0, SlotType::ModelBuffer),

@@ -16,7 +16,7 @@ void AddMaskBlocks(PageFootprint &pages, SelectionMasks masks, std::span<const u
 void CaptureTopologyEmitWrites(state::Registry &r, uint32_t id, const MeshTopologyJob &job, uint32_t triangle_count, std::span<const uint32_t> vertex_blocks, std::span<const uint32_t> face_blocks, const std::optional<GeometryMasks> &selection_output) {
     if (uint64_t(job.DstFaceCount) * 3u > job.DstHalfedgeCount) throw std::invalid_argument("Topology output faces require at least three corners.");
     if (uint64_t(job.DstCornerOffset) + job.DstHalfedgeCount > UINT32_MAX) throw std::length_error("Topology output exceeds its handle space.");
-    const auto &meshes = r.Context.get<MeshStore>();
+    const auto &meshes = r.Resources.get<MeshStore>();
     const auto &a = meshes.Arenas();
     const auto &record = meshes.Get(id);
     const auto corner_blocks = RunBlocks(a.FaceCorners.Entries(record.FaceCorners), job.DstCornerOffset, job.DstHalfedgeCount);
@@ -49,7 +49,7 @@ void CaptureTopologyEmitWrites(state::Registry &r, uint32_t id, const MeshTopolo
 }
 
 void CaptureTopologyEdgeWrites(state::Registry &r, std::span<const uint32_t> edge_blocks, const std::optional<GeometryMasks> &selection_output) {
-    const auto &a = r.Context.get<MeshStore>().Arenas();
+    const auto &a = r.Resources.get<MeshStore>().Arenas();
     PageFootprint pages;
     pages.Add(a.EdgeHalfedges.Buffer, edge_blocks, BlockBytes<uint32_t>);
     pages.Add(a.EdgeSharpness.Buffer, edge_blocks, BlockBytes<uint8_t>);
@@ -60,7 +60,7 @@ void CaptureTopologyEdgeWrites(state::Registry &r, std::span<const uint32_t> edg
 
 void CaptureTopologyNormalWrites(state::Registry &r, uint32_t id, const MeshTopologyJob &job, const BufferArena<uint32_t> &retained) {
     if (!(job.CornerAttributes & MeshAttributeBit_Normal)) return;
-    const auto &meshes = r.Context.get<MeshStore>();
+    const auto &meshes = r.Resources.get<MeshStore>();
     const auto &a = meshes.Arenas();
     const auto &record = meshes.Get(id);
     const auto corners = a.FaceCorners.Entries(record.FaceCorners);

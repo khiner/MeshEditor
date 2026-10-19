@@ -250,7 +250,7 @@ using project::Session;
 // Applies the action, and a view setup it asks for, before the next one reads or overrides the view.
 void Perform(state::Registry &r, auto action) {
     Session(r).Do(action::MakeAction(std::move(action)));
-    TakePendingViewSetup(r, r.Context.get<Viewports>().Active());
+    TakePendingViewSetup(r, r.Resources.get<Viewports>().Active());
 }
 
 // Finish GPU work and stop playback before modifying scene structure.
@@ -267,7 +267,7 @@ fs::path CachedWorkspacePath;
 std::vector<std::byte> CachedWorkspaceBytes;
 
 workspace::State CaptureWorkspace(state::Registry &r) {
-    return workspace::Capture(r, r.Context.get<const WindowsState>());
+    return workspace::Capture(r, r.Resources.get<const WindowsState>());
 }
 
 bool SaveWorkspace(state::Registry &r, bool force = true) {
@@ -304,7 +304,7 @@ fs::path NewWorkingDirectory() {
 
 // A project without a stored workspace starts from the default view values, keeping each viewport's extent.
 void ResetViewStates(state::Registry &r) {
-    for (auto &viewport : r.Context.get<Viewports>().All) viewport.State = {.Extent = viewport.State.Extent};
+    for (auto &viewport : r.Resources.get<Viewports>().All) viewport.State = {.Extent = viewport.State.Extent};
 }
 
 bool NewScene(state::Registry &r, bool empty) {
@@ -333,7 +333,7 @@ bool OpenProjectDir(state::Registry &r, const fs::path &working_dir, const fs::p
     }
     ++RestoreGeneration;
     const auto stored = saved.empty() ? workspace::Load(working_dir / workspace::FileName) : workspace::Deserialize(session.RestoredWorkspace);
-    if (stored) workspace::Apply(r, r.Context.get<WindowsState>(), *stored);
+    if (stored) workspace::Apply(r, r.Resources.get<WindowsState>(), *stored);
     else ResetViewStates(r);
     return true;
 }
@@ -391,7 +391,7 @@ void SaveProject(state::Registry &r) {
 
 void RevertSavedProject(state::Registry &r) {
     if (!Session(r).RevertSaved()) return;
-    if (const auto stored = workspace::Deserialize(Session(r).RestoredWorkspace)) workspace::Apply(r, r.Context.get<WindowsState>(), *stored);
+    if (const auto stored = workspace::Deserialize(Session(r).RestoredWorkspace)) workspace::Apply(r, r.Resources.get<WindowsState>(), *stored);
     ++RestoreGeneration;
 }
 
@@ -530,7 +530,7 @@ std::string ViewportWindowName(uint32_t id) {
 
 // The viewport window under the mouse becomes the active viewport while no gesture, button, or popup holds the input.
 void FollowHoveredViewport(state::Registry &r) {
-    const auto &frame = r.Context.get<const FrameState>();
+    const auto &frame = r.Resources.get<const FrameState>();
     if (frame.MeshDrag || frame.BoxSelectStart || r.get<const GizmoInteraction>(state::Document).IsUsing()) return;
     if (IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) return;
     const auto &io = GetIO();
@@ -539,7 +539,7 @@ void FollowHoveredViewport(state::Registry &r) {
     }
     const auto *hovered = GImGui->HoveredWindow;
     if (!hovered) return;
-    auto &viewports = r.Context.get<Viewports>();
+    auto &viewports = r.Resources.get<Viewports>();
     const auto it = std::ranges::find(viewports.All, hovered->RootWindow->ID, [](const Viewport &v) { return ImHashStr(ViewportWindowName(v.Id).c_str()); });
     if (it != viewports.All.end()) viewports.ActiveIndex = size_t(it - viewports.All.begin());
 }
@@ -551,7 +551,7 @@ struct ViewportWindow {
 };
 
 struct EditorWindowsFrame {
-    std::vector<ViewportWindow> Viewports; // In service order.
+    std::vector<ViewportWindow> Viewports; // In resource order.
 };
 
 EditorWindowsFrame BeginEditorWindows(
@@ -586,7 +586,7 @@ EditorWindowsFrame BeginEditorWindows(
             if (auto action = RenderTimeline(
                     r.get<const TimelineRange>(state::Document), r.get<const TimelinePlayback>(state::Document),
                     r.get<const TimelineView>(state::Document), r, r.get<const Animations>(state::Document),
-                    keyframes, r.Context.get<const ViewportIcons>().Timeline, r.get<const InterfaceTheme>(state::Document), r.get<const TimelineTheme>(state::Document), scrubbing
+                    keyframes, r.Resources.get<const ViewportIcons>().Timeline, r.get<const InterfaceTheme>(state::Document), r.get<const TimelineTheme>(state::Document), scrubbing
                 );
                 interactive && action) {
                 action::Emit(std::move(*action));
@@ -596,11 +596,11 @@ EditorWindowsFrame BeginEditorWindows(
         PopStyleVar();
     }
     procedure::DrawNodesWindow(r, windows.Nodes, interactive);
-    if (interactive) r.Context.get<FrameState>().Scrubbing = scrubbing;
+    if (interactive) r.Resources.get<FrameState>().Scrubbing = scrubbing;
 
     if (interactive) FollowHoveredViewport(r);
-    auto &frame_state = r.Context.get<FrameState>();
-    auto &viewports = r.Context.get<Viewports>();
+    auto &frame_state = r.Resources.get<FrameState>();
+    auto &viewports = r.Resources.get<Viewports>();
     const auto &active = viewports.Active();
     const bool closable = viewports.All.size() > 1;
     EditorWindowsFrame frame;
@@ -613,7 +613,8 @@ EditorWindowsFrame BeginEditorWindows(
         if (const auto id = ImHashStr(name.c_str()); !FindWindowByID(id) && !FindWindowSettingsByID(id)) {
             const auto *beside = viewport.Id == active.Id ? nullptr : FindWindowByName(ViewportWindowName(active.Id).c_str());
             const auto *central = DockBuilderGetCentralNode(dockspace_id);
-            SetNextWindowDockID(beside ? beside->DockId : central ? central->ID : 0);
+            SetNextWindowDockID(beside ? beside->DockId : central ? central->ID :
+                                                                    0);
         }
         PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
         bool open = true;
@@ -637,7 +638,7 @@ EditorWindowsFrame BeginEditorWindows(
 
 // Inserts each open viewport window's image beneath the overlay its window drew, after the frame's renders are submitted.
 void DisplayViewportWindows(state::Registry &r, const EditorWindowsFrame &frame) {
-    auto &viewports = r.Context.get<Viewports>();
+    auto &viewports = r.Resources.get<Viewports>();
     for (const auto &window : frame.Viewports) {
         const auto *viewport = viewports.Find(window.Id);
         if (!viewport) continue;
@@ -767,8 +768,8 @@ struct ValidationSession {
     NS::SharedPtr<MTL::Buffer> Differences;
 
     ValidationSession(state::Registry &r)
-        : Compare(r.Context.get<mtl::LibraryCache>(), {"ValidationCompare.metal", "CompareValidationImages"}),
-          Differences(mtl::NewBuffer(r.Context.get<const mtl::Context>(), 2 * sizeof(uint32_t))) {}
+        : Compare(r.Resources.get<mtl::LibraryCache>(), {"ValidationCompare.metal", "CompareValidationImages"}),
+          Differences(mtl::NewBuffer(r.Resources.get<const mtl::Context>(), 2 * sizeof(uint32_t))) {}
 };
 namespace {
 
@@ -792,9 +793,9 @@ struct ValidationInputs {
 ImDrawData *RenderValidationApp(
     state::Registry &r, const ValidationInputs &inputs
 ) {
-    const auto &ctx = r.Context.get<const mtl::Context>();
+    const auto &ctx = r.Resources.get<const mtl::Context>();
     auto &io = GetIO();
-    auto &windows = r.Context.get<WindowsState>();
+    auto &windows = r.Resources.get<WindowsState>();
     io.MousePos = {-FLT_MAX, -FLT_MAX};
     const auto render_frame = [&](bool restore_hover = false) {
         io.DisplaySize = inputs.DisplaySize;
@@ -849,15 +850,15 @@ ValidationResult RestoreForValidation(
     ValidationEngine &engine, const ValidationInputs &inputs, const store::History &live, bool replay
 ) {
     auto &restored = engine.Core->R;
-    const auto &ctx = restored.Context.get<const mtl::Context>();
+    const auto &ctx = restored.Resources.get<const mtl::Context>();
     ValidationResult result;
     auto &timings = result.Timings;
     auto begin = SteadyClock::now();
     engine.Ui.emplace(ctx);
-    restored.Context.get<WindowsState>() = {};
-    auto &frame = restored.Context.get<FrameState>();
+    restored.Resources.get<WindowsState>() = {};
+    auto &frame = restored.Resources.get<FrameState>();
     frame = {.DisplayFramebufferScale = std::bit_cast<vec2>(inputs.FramebufferScale), .Scrubbing = inputs.Scrubbing, .Capturing = inputs.Capturing};
-    restored.Context.get<Viewports>().All.front().State.Extent = inputs.Extent;
+    restored.Resources.get<Viewports>().All.front().State.Extent = inputs.Extent;
     engine.Core->P->Close();
     fs::create_directories(engine.Directory);
     std::error_code asset_ec;
@@ -868,17 +869,17 @@ ValidationResult RestoreForValidation(
 
     begin = SteadyClock::now();
     if (!engine.Core->P->Open(engine.Directory) || (replay && !engine.Core->P->Replay())) {
-        for (const auto &error : restored.Context.get<action::Errors>().Messages) std::println(stderr, "[validation] {}", error);
+        for (const auto &error : restored.Resources.get<action::Errors>().Messages) std::println(stderr, "[validation] {}", error);
         std::println(stderr, "[validation] {}", engine.Core->P->History.TakeIntegrityError());
         WriteValidationProject(live, workspace::Serialize(inputs.Workspace));
         std::abort();
     }
     timings.RestoreMs = ElapsedMs(begin);
-    workspace::Apply(restored, restored.Context.get<WindowsState>(), inputs.Workspace);
+    workspace::Apply(restored, restored.Resources.get<WindowsState>(), inputs.Workspace);
     begin = SteadyClock::now();
     restored.replace<TimelinePlayback>(state::Document, inputs.Playback);
     restored.edit<PlaybackFrame>(state::Document).Value = inputs.PlaybackFrame;
-    PresentViewport(restored, restored.Context.get<Viewports>().All.front());
+    PresentViewport(restored, restored.Resources.get<Viewports>().All.front());
     timings.ResetMs += reset_ms;
     RenderAppImage(ctx, RenderValidationApp(restored, inputs), engine.App);
     timings.RenderMs += ElapsedMs(begin);
@@ -904,9 +905,9 @@ void RequireEqual(const store::History &live, std::string_view what, std::span<c
 // Compares the restored engine's app and viewport images with the live ones, naming a divergence by `restore`.
 void CompareValidationImages(state::Registry &r, ValidationSession &session, std::string_view restore) {
     const mtl::AutoreleaseScope native_scope;
-    const auto &ctx = r.Context.get<const mtl::Context>();
-    const std::array<const mtl::Texture *, 2> expected{&session.Live.Target, &r.Context.get<const Viewports>().All.front().Targets.Resources->FinalColorImage};
-    const std::array<const mtl::Texture *, 2> restored{&session.Restored.App.Target, &session.Restored.Core->R.Context.get<const Viewports>().All.front().Targets.Resources->FinalColorImage};
+    const auto &ctx = r.Resources.get<const mtl::Context>();
+    const std::array<const mtl::Texture *, 2> expected{&session.Live.Target, &r.Resources.get<const Viewports>().All.front().Targets.Screen->FinalColorImage};
+    const std::array<const mtl::Texture *, 2> restored{&session.Restored.App.Target, &session.Restored.Core->R.Resources.get<const Viewports>().All.front().Targets.Screen->FinalColorImage};
     const std::array names{std::format("{}-app", restore), std::format("{}-viewport", restore)};
     for (uint32_t i = 0; i < restored.size(); ++i) {
         if (restored[i]->Extent != expected[i]->Extent) {
@@ -959,7 +960,7 @@ void ValidateRoundTrip(
     const auto init_ms = ElapsedMs(begin);
     begin = SteadyClock::now();
     if (presented_frame) presented_frame->waitUntilCompleted();
-    RenderAppImage(r.Context.get<const mtl::Context>(), draw_data, session->Live);
+    RenderAppImage(r.Resources.get<const mtl::Context>(), draw_data, session->Live);
     WaitForRender(r);
     if (!Session(r).History.Save()) {
         std::println(stderr, "[validation] {}", Session(r).History.TakeIntegrityError());
@@ -985,9 +986,9 @@ void ValidateRoundTrip(
         .NavId = GImGui->NavId,
         .NavCursorVisible = GImGui->NavCursorVisible,
         .NavHighlightItemUnderNav = GImGui->NavHighlightItemUnderNav,
-        .Capturing = r.Context.get<FrameState>().Capturing,
-        .Scrubbing = r.Context.get<FrameState>().Scrubbing,
-        .Extent = r.Context.get<const Viewports>().All.front().State.Extent,
+        .Capturing = r.Resources.get<FrameState>().Capturing,
+        .Scrubbing = r.Resources.get<FrameState>().Scrubbing,
+        .Extent = r.Resources.get<const Viewports>().All.front().State.Extent,
         .PlaybackFrame = r.get<const PlaybackFrame>(state::Document).Value,
         .Playback = r.get<const TimelinePlayback>(state::Document),
     };
@@ -1048,7 +1049,7 @@ bool FrameScene(state::Registry &r, Viewport &viewport, float aspect_ratio) {
     const float ty = 0.5f * std::tan(persp->FieldOfViewRad * 0.5f), tx = aspect_ratio * ty;
     constexpr float lowest = std::numeric_limits<float>::lowest();
     float top = lowest, bottom = lowest, rgt = lowest, lft = lowest;
-    const auto &buffers = r.Context.get<const GpuBuffers>();
+    const auto &buffers = r.Resources.get<const GpuBuffers>();
     AABB scene;
     bool any_bounded_instance = false;
     for (const auto [e, ri] : r.view<const RenderInstance>(state::Exclude<Hidden>).each()) {
@@ -1230,7 +1231,7 @@ bool SelectSceneCamera(state::Registry &r, std::string_view name) {
     if (name.empty()) return true;
     for (const auto [entity, node] : r.view<const GltfNode>().each()) {
         if (node.CameraName != name || !HasLens(r, entity)) continue;
-        Perform(r, action::view::SetLookThroughCamera{r.Context.get<const Viewports>().All.front().Id, entity});
+        Perform(r, action::view::SetLookThroughCamera{r.Resources.get<const Viewports>().All.front().Id, entity});
         return true;
     }
     std::println(stderr, "No scene camera named '{}'.", name);
@@ -1247,7 +1248,7 @@ enum class SceneStatus {
 // Report and clear action errors.
 // A real failure takes precedence over unsupported extensions.
 SceneStatus ReportActionErrors(state::Registry &r) {
-    auto &errors = r.Context.get<action::Errors>();
+    auto &errors = r.Resources.get<action::Errors>();
     if (auto error = Session(r).History.TakeIntegrityError(); !error.empty()) action::Fail(r, std::move(error));
     if (errors.Messages.empty()) return SceneStatus::Ok;
     const auto status = errors.OnlyUnsupportedExtensions ? SceneStatus::Unsupported : SceneStatus::Failed;
@@ -1429,14 +1430,14 @@ CaptureDriver BeginCaptureSession(state::Registry &r, const CaptureRequest &capt
     // Preserve the editor view for benchmark frames and screenshots.
     if (driver.Presenting() && capture.BenchFrames == 0) Perform(r, action::timeline::EnterPresentation{});
     // Apply the explicit overlay override after enabling presentation mode.
-    const auto &viewport = r.Context.get<const Viewports>().All.front();
+    const auto &viewport = r.Resources.get<const Viewports>().All.front();
     if (capture.Overlays) Perform(r, action::UpdateOf<&ViewportDisplay::ShowOverlays>(action::OnViewport{viewport.Id}, true));
     if (capture.LodErrorPixels >= 0.f) {
         Perform(r, action::UpdateOf<&ViewportDisplay::LodErrorPixels>(action::OnViewport{viewport.Id}, capture.LodErrorPixels));
     }
-    r.Context.get<FrameState>().FixedFrameStep = driver.FixedStep;
+    r.Resources.get<FrameState>().FixedFrameStep = driver.FixedStep;
     // Enable motion blur for video recording and preserve the current setting for still or audio-only captures.
-    r.Context.get<FrameState>().Capturing = driver.RecordingMode() && !driver.AudioOnly();
+    r.Resources.get<FrameState>().Capturing = driver.RecordingMode() && !driver.AudioOnly();
     if (capture.Blur) {
         Perform(r, action::UpdateOf<&ViewportDisplay::MotionBlur>(action::OnViewport{viewport.Id}, capture.Blur));
     }
@@ -1455,7 +1456,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
     std::optional<Engine> engine;
     engine.emplace(true);
     auto &r = engine->R;
-    const auto &ctx = r.Context.get<const mtl::Context>();
+    const auto &ctx = r.Resources.get<const mtl::Context>();
     if (!ctx.Device->supportsFamily(MTL::GPUFamilyMetal4)) throw std::runtime_error("MeshEditor renders with Metal 4, which this device does not support.");
     InitViewportMedia(r);
 
@@ -1487,10 +1488,10 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
     profile::Init(ctx);
     // Read the DPI scale from NewFrame before initializing DPI-scaled GPU state.
     mac_backend.NewFrame();
-    r.Context.get<FrameState>().DisplayFramebufferScale = std::bit_cast<vec2>(io.DisplayFramebufferScale);
+    r.Resources.get<FrameState>().DisplayFramebufferScale = std::bit_cast<vec2>(io.DisplayFramebufferScale);
     ProcessComponentEvents(r);
 
-    auto &audio_device = r.Context.emplace<AudioDeviceResource>(r);
+    auto &audio_device = r.Resources.emplace<AudioDeviceResource>(r);
     ReconcileAudioDevice(audio_device, r.get<const AudioOutputConfig>(state::Document), r.get<const AudioOutputMix>(state::Document));
 
     SampleTreesFuture = std::async(std::launch::async, BuildSampleTrees);
@@ -1507,7 +1508,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
     bool done{driver.SeedStatus != SceneStatus::Ok};
     uint8_t startup_frames_remaining{2};
     NS::SharedPtr<MTL::CommandBuffer> last_frame; // Retain across frame autorelease pools for resize waits.
-    auto &windows = r.Context.get<WindowsState>();
+    auto &windows = r.Resources.get<WindowsState>();
     int bench_ticks{0};
     while (!done) {
         const auto frame_pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
@@ -1516,16 +1517,16 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
             profile::ClearStats();
         }
         const profile::CpuScope frame_scope{"Frame"};
-        r.Context.get<ViewportConsumerFence>().Value = last_frame.get();
+        r.Resources.get<ViewportConsumerFence>().Value = last_frame.get();
         const auto events = window.PollEvents();
-        auto &frame_state = r.Context.get<FrameState>();
+        auto &frame_state = r.Resources.get<FrameState>();
         frame_state.PreciseWheelDelta = vec2{events.ScrollX, events.ScrollY};
         frame_state.PreciseScrolling = events.PreciseScrolling;
         frame_state.Magnification = events.Magnification;
         for (const auto &path : events.DroppedFiles) OpenFile(r, path);
         done = events.Quit;
-        if (driver.DurationElapsed(r.Context.get<const Viewports>().All.front())) done = true;
-        for (auto &viewport : r.Context.get<Viewports>().All) viewport.State.Camera.Active.Tick();
+        if (driver.DurationElapsed(r.Resources.get<const Viewports>().All.front())) done = true;
+        for (auto &viewport : r.Resources.get<Viewports>().All) viewport.State.Camera.Active.Tick();
 
 #ifdef DEBUG_BUILD
         const auto ui_revision = std::pair{Session(r).Revision, RestoreGeneration};
@@ -1536,7 +1537,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
         driver.ElapsedPlayTime += io.DeltaTime;
         // Scene-affecting code reads FrameState::DeltaTime.
         // `io.DeltaTime` is wall-clock, UI-only.
-        r.Context.get<FrameState>().DeltaTime = driver.FixedStep ? driver.RenderDt : io.DeltaTime;
+        r.Resources.get<FrameState>().DeltaTime = driver.FixedStep ? driver.RenderDt : io.DeltaTime;
         const auto *ui_focus = GImGui->NavWindow;
         NewFrame();
 
@@ -1673,7 +1674,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
                 MenuItem(windows.SceneControls.Name, nullptr, &windows.SceneControls.Visible);
                 MenuItem(windows.Timeline.Name, nullptr, &windows.Timeline.Visible);
                 Separator();
-                for (auto &viewport : r.Context.get<Viewports>().All) MenuItem(ViewportWindowName(viewport.Id).c_str(), nullptr, &viewport.Visible);
+                for (auto &viewport : r.Resources.get<Viewports>().All) MenuItem(ViewportWindowName(viewport.Id).c_str(), nullptr, &viewport.Visible);
                 if (MenuItem("New Viewport")) action::Emit(action::view::AddViewport{});
                 EndMenu();
             }
@@ -1690,7 +1691,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
         const auto editor_frame = BeginEditorWindows(r, ctx, layer, windows, io, dockspace_id, /*interactive=*/true);
         // Resolve the viewports after the editor windows, since opening a project applies its workspace.
         // Capture and benchmarks drive the first viewport.
-        auto &viewports = r.Context.get<Viewports>();
+        auto &viewports = r.Resources.get<Viewports>();
         auto &first_viewport = viewports.All.front();
         const auto first_window = std::ranges::find(editor_frame.Viewports, first_viewport.Id, &ViewportWindow::Id);
         const auto new_logical_extent = first_window != editor_frame.Viewports.end() ? first_window->Extent : uvec2{};
@@ -1713,7 +1714,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
         // Submit derived state and rendering before the later WaitForRender synchronizes image sampling.
         // A viewport resized in its frame step waits for the previous UI frame to stop sampling its image.
         SubmitViewports(r);
-        r.Context.get<ViewportConsumerFence>().Value = nullptr;
+        r.Resources.get<ViewportConsumerFence>().Value = nullptr;
         DisplayViewportWindows(r, editor_frame);
 
         ImGui::Render();
@@ -1723,7 +1724,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
         const bool ui_gesture_settled = UiGestureSettled(ui_focus);
         if (const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
             WaitForRender(r); // Synchronize before ImGui samples the final image.
-            if (driver.CaptureFrame(r, r.Context.get<Viewports>().All.front(), driver.Framed(viewport_settled))) done = true;
+            if (driver.CaptureFrame(r, r.Resources.get<Viewports>().All.front(), driver.Framed(viewport_settled))) done = true;
 
 #ifdef DEBUG_BUILD
             const auto scene_revision = std::pair{Session(r).Revision, RestoreGeneration};
@@ -1756,7 +1757,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
             }
 
 #ifdef DEBUG_BUILD
-            if (validation_ready && presented_frame && GetFrameCount() > 1 && viewport_settled && ViewportImageReady(r.Context.get<const Viewports>().All.front())) {
+            if (validation_ready && presented_frame && GetFrameCount() > 1 && viewport_settled && ViewportImageReady(r.Resources.get<const Viewports>().All.front())) {
                 ValidateRoundTrip(r, layer, draw_data, validation_session, presented_frame);
                 windows.History.ValidateRequested = false;
 #ifdef VALIDATE_ACTIONS
@@ -1779,7 +1780,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
     ReportActionErrors(r);
     if (last_frame) last_frame->waitUntilCompleted();
 
-    r.Context.erase<AudioDeviceResource>();
+    r.Resources.erase<AudioDeviceResource>();
 #ifdef DEBUG_BUILD
     validation_session.reset();
 #endif
@@ -1796,10 +1797,10 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
 
 SceneStatus RunHeadlessScene(state::Registry &r, const char *initial_file, bool empty, const CaptureRequest &capture) {
     // Initialize recorded inputs independently of the previous queued scene.
-    auto &frame_state = r.Context.get<FrameState>();
+    auto &frame_state = r.Resources.get<FrameState>();
     frame_state.DeltaTime = 0;
     frame_state.FixedFrameStep = false;
-    r.Context.get<Viewports>().All.front().State = {.Extent = DefaultWindowSize};
+    r.Resources.get<Viewports>().All.front().State = {.Extent = DefaultWindowSize};
     const auto scene_start = std::chrono::steady_clock::now();
     auto driver = BeginCaptureSession(r, capture, initial_file, empty, /*fixed_step=*/true);
     // Stop after reporting an initial scene-load failure.
@@ -1807,7 +1808,7 @@ SceneStatus RunHeadlessScene(state::Registry &r, const char *initial_file, bool 
         return driver.SeedStatus;
     }
     // Resolve the viewport after the scene seeds, since opening a project applies its workspace.
-    auto &viewport = r.Context.get<Viewports>().All.front();
+    auto &viewport = r.Resources.get<Viewports>().All.front();
     const action::OnViewport on_viewport{viewport.Id};
     if (capture.Selection.VertexNormals) Perform(r, action::UpdateOf<&ViewportDisplay::Selection, &SelectionOverlays::VertexNormals>(on_viewport, true));
     if (capture.Selection.FaceNormals) Perform(r, action::UpdateOf<&ViewportDisplay::Selection, &SelectionOverlays::FaceNormals>(on_viewport, true));
@@ -1821,7 +1822,7 @@ SceneStatus RunHeadlessScene(state::Registry &r, const char *initial_file, bool 
     bool submitted{false};
     bool done{false};
 #ifdef VALIDATE_ACTIONS
-    auto &validation_session = r.Context.get<std::unique_ptr<ValidationSession>>();
+    auto &validation_session = r.Resources.get<std::unique_ptr<ValidationSession>>();
     std::optional<std::pair<uint64_t, uint64_t>> validated_revision;
 #endif
     // Record readiness after the first submitted frame has complete meshlet data.
@@ -1901,22 +1902,22 @@ void RunHeadlessEngine(auto &&scenes) {
 
     Engine engine{true};
     auto &r = engine.R;
-    const auto &ctx = r.Context.get<const mtl::Context>();
+    const auto &ctx = r.Resources.get<const mtl::Context>();
 #ifdef VALIDATE_ACTIONS
     ValidationUi ui{ctx};
-    r.Context.emplace<std::unique_ptr<ValidationSession>>();
+    r.Resources.emplace<std::unique_ptr<ValidationSession>>();
     InitFonts();
     InitViewportMedia(r);
 #endif
     profile::Init(ctx);
-    r.Context.get<FrameState>().DisplayFramebufferScale = {2, 2}; // Match Retina pixel density and DPI-scaled rendering.
+    r.Resources.get<FrameState>().DisplayFramebufferScale = {2, 2}; // Match Retina pixel density and DPI-scaled rendering.
     ProcessComponentEvents(r);
 
     scenes(r);
 
     WaitForRender(r);
 #ifdef VALIDATE_ACTIONS
-    r.Context.erase<std::unique_ptr<ValidationSession>>();
+    r.Resources.erase<std::unique_ptr<ValidationSession>>();
     DeinitViewportMedia(r);
 #endif
     profile::Report();
@@ -1927,7 +1928,7 @@ void RunHeadlessEngine(auto &&scenes) {
 
 SceneStatus FinishHeadlessScene(state::Registry &r, SceneStatus status) {
     QuiesceScene(r);
-    r.Context.get<Viewports>().All.front().Recording.reset();
+    r.Resources.get<Viewports>().All.front().Recording.reset();
     EndAudioCapture(r);
     const auto working = Paths::Project(); // NOLINT(performance-unnecessary-copy-initialization) SetProject replaces the referenced path.
     const bool closed = Session(r).Close();

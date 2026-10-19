@@ -85,16 +85,16 @@ void KeepActiveDisplayed(Viewports &viewports) {
 } // namespace
 
 void AddViewport(state::Registry &r) {
-    auto &viewports = r.Context.get<Viewports>().All;
+    auto &viewports = r.Resources.get<Viewports>().All;
     const auto id = std::ranges::max(viewports | std::views::transform(&Viewport::Id)) + 1u;
-    viewports.emplace_back(id, r.Context.get<GpuBuffers>().Ctx, r.Context.get<mtl::BindlessSet>());
+    viewports.emplace_back(id, r.Resources.get<GpuBuffers>().Ctx, r.Resources.get<mtl::BindlessSet>());
 }
 
 void RemoveViewport(state::Registry &r, uint32_t id) {
-    auto &viewports = r.Context.get<Viewports>();
+    auto &viewports = r.Resources.get<Viewports>();
     const auto it = std::ranges::find(viewports.All, id, &Viewport::Id);
     if (it == viewports.All.end() || viewports.All.size() == 1) return;
-    if (auto *consumer = r.Context.get<const ViewportConsumerFence>().Value) consumer->waitUntilCompleted();
+    if (auto *consumer = r.Resources.get<const ViewportConsumerFence>().Value) consumer->waitUntilCompleted();
     const auto active_id = viewports.Active().Id;
     viewports.All.erase(it);
     const auto active = std::ranges::find(viewports.All, active_id, &Viewport::Id);
@@ -130,13 +130,13 @@ void FrameLookThrough(const state::Registry &r, Viewport &viewport) {
         ClearLookThrough(state);
         return;
     }
-    const auto extent = RenderExtentPx(viewport, r.Context.get<const FrameState>());
+    const auto extent = RenderExtentPx(viewport, r.Resources.get<const FrameState>());
     const float aspect = extent.x == 0 || extent.y == 0 ? 1.f : float(extent.x) / float(extent.y);
     state.Camera.Active.Data = WidenForLookThrough(*LensOf(r, camera), aspect);
 }
 
 RenderView CurrentView(const state::Registry &r, const Viewport &viewport) {
-    return {viewport.State.Camera.Active, RenderExtentPx(viewport, r.Context.get<const FrameState>())};
+    return {viewport.State.Camera.Active, RenderExtentPx(viewport, r.Resources.get<const FrameState>())};
 }
 
 // The active viewport takes the pending view setup, the targets follow the extent and lighting, and a view that differs from the rendered one requests a frame.
@@ -159,7 +159,7 @@ void SubmitFrame(state::Registry &r, Viewport &viewport) {
 bool MotionBlurActive(const state::Registry &r, const Viewport &viewport) {
     const auto &display = viewport.State.Display;
     if (display.ViewportShading != ViewportShadingMode::MaterialPreview && display.ViewportShading != ViewportShadingMode::Rendered) return false;
-    const auto &frame_state = r.Context.get<const FrameState>();
+    const auto &frame_state = r.Resources.get<const FrameState>();
     if (!display.MotionBlur && !frame_state.Capturing) return false;
     return r.get<const TimelinePlayback>(state::Document).Playing || frame_state.Scrubbing || frame_state.Capturing;
 }
@@ -193,7 +193,7 @@ BlurSchedule ScheduleOf(const state::Registry &r, const Viewport &viewport) {
 // Renders each viewport sharing the schedule from its shutter samples, evaluating each sample once, with sharp overlays, and restores the current frame afterward.
 void RenderMotionBlurredFrames(state::Registry &r, BlurSchedule schedule, std::span<Viewport *const> group) {
     const mtl::AutoreleaseScope native_scope;
-    const auto &ctx = r.Context.get<const mtl::Context>();
+    const auto &ctx = r.Resources.get<const mtl::Context>();
     const auto [fast, count, lo, hi] = schedule;
     const auto &range = r.get<const TimelineRange>(state::Document);
     const int current_frame = r.get<const TimelinePlayback>(state::Document).CurrentFrame;
@@ -202,8 +202,8 @@ void RenderMotionBlurredFrames(state::Registry &r, BlurSchedule schedule, std::s
     const float last_sample = fast ? hi : lo + (hi - lo) * (1.f - 0.5f / float(count));
     physics::BakeThrough(r, int(std::ceil(last_sample)), range.Fps);
 
-    auto &buffers = r.Context.get<GpuBuffers>();
-    auto &slots = r.Context.get<mtl::BindlessSet>();
+    auto &buffers = r.Resources.get<GpuBuffers>();
+    auto &slots = r.Resources.get<mtl::BindlessSet>();
     for (auto *viewport : group) {
         auto &targets = viewport->Targets;
         if (!targets.EnsureMotionBlurResources(ctx, fast)) continue;
@@ -222,7 +222,7 @@ void RenderMotionBlurredFrames(state::Registry &r, BlurSchedule schedule, std::s
         r.edit<PlaybackFrame>(state::Document).Value = pf;
         ProcessComponentEvents(r, pass);
         // The settle moves every look-through view to its camera, so each widens the camera's lens again.
-        for (auto &viewport : r.Context.get<Viewports>().All) FrameLookThrough(r, viewport);
+        for (auto &viewport : r.Resources.get<Viewports>().All) FrameLookThrough(r, viewport);
     };
 
     std::vector<uint32_t> sample_weights;
@@ -294,13 +294,13 @@ void TakePendingViewSetup(state::Registry &r, Viewport &viewport) {
 
 void SubmitViewports(state::Registry &r) {
     const profile::CpuScope scope{"SubmitViewports"};
-    auto &viewports = r.Context.get<Viewports>();
+    auto &viewports = r.Resources.get<Viewports>();
     KeepActiveDisplayed(viewports);
     for (auto &viewport : viewports.All) {
         if (viewport.Displayed()) StepViewport(r, viewport, &viewport == &viewports.Active());
     }
     // A view setup a step took can change the display settings the records derive from.
-    if (VisibleDisplays(viewports) != r.Context.get<const GpuSceneState>().Displays) ProcessComponentEvents(r, EventPass::Settle);
+    if (VisibleDisplays(viewports) != r.Resources.get<const GpuSceneState>().Displays) ProcessComponentEvents(r, EventPass::Settle);
 
     std::vector<Viewport *> blurring;
     for (auto &viewport : viewports.All) {
@@ -338,10 +338,10 @@ void SubmitViewports(state::Registry &r) {
 }
 
 void InitEngine(state::Registry &r) {
-    const auto &ctx = r.Context.get<const mtl::Context>();
+    const auto &ctx = r.Resources.get<const mtl::Context>();
     InitRenderStoreContext(r, ctx);
-    auto &slots = r.Context.get<mtl::BindlessSet>();
-    r.Context.emplace<mtl::LibraryCache>(ctx, Paths::Shaders(), Paths::UserData() / "cache" / "Pipelines.mtl4a", Paths::Base() / "cache" / "Pipelines.mtl4a");
+    auto &slots = r.Resources.get<mtl::BindlessSet>();
+    r.Resources.emplace<mtl::LibraryCache>(ctx, Paths::Shaders(), Paths::UserData() / "cache" / "Pipelines.mtl4a", Paths::Base() / "cache" / "Pipelines.mtl4a");
     GetMeshPipelines(r).PrewarmAsync();
     physics::Init(r);
     RegisterSceneComponentHandlers(r);
@@ -354,28 +354,28 @@ void InitEngine(state::Registry &r) {
     RegisterRenderStoreHandlers(r);
     [[maybe_unused]] const auto document = r.create();
     assert(document == state::Document);
-    auto &meshes = r.Context.emplace<MeshStore>(InitRenderStores(r));
-    auto &buffers = r.Context.get<GpuBuffers>();
+    auto &meshes = r.Resources.emplace<MeshStore>(InitRenderStores(r));
+    auto &buffers = r.Resources.get<GpuBuffers>();
     buffers.Render = &meshes.Render();
-    r.Context.emplace<action::Errors>();
+    r.Resources.emplace<action::Errors>();
     InitDefaultMaterial(r);
     // These engine resources outlive documents.
-    r.Context.emplace<Viewports>(buffers.Ctx, slots);
-    r.Context.emplace<ViewportConsumerFence>();
-    const auto &sel_slots = r.Context.emplace<SelectionSlots>(slots);
+    r.Resources.emplace<Viewports>(buffers.Ctx, slots);
+    r.Resources.emplace<ViewportConsumerFence>();
+    const auto &sel_slots = r.Resources.emplace<SelectionSlots>(slots);
     // Object picking grows on demand and refreshes its bindings; element picking uses fixed buffers.
     slots.SetBuffer({SlotType::Buffer, sel_slots.ObjectPickKey}, *buffers.ObjectPickKeys);
     slots.SetBuffer({SlotType::Buffer, sel_slots.ElementPickKey}, *buffers.ElementPickKey);
     slots.SetBuffer({SlotType::Buffer, sel_slots.ElementPickId}, *buffers.ElementPickId);
     slots.SetBuffer({SlotType::Buffer, sel_slots.ObjectPickSeenBits}, *buffers.ObjectPickSeenBitset);
     slots.SetBuffer({SlotType::Buffer, sel_slots.ObjectBoxBitset}, *buffers.ObjectBoxBitset);
-    r.Context.emplace<GpuSceneState>();
-    r.Context.emplace<FrameState>();
-    r.Context.emplace<ViewportRenderResources>();
-    r.Context.emplace<WindowsState>();
+    r.Resources.emplace<GpuSceneState>();
+    r.Resources.emplace<FrameState>();
+    r.Resources.emplace<ViewportRenderResources>();
+    r.Resources.emplace<WindowsState>();
 
-    auto &environments = r.Context.get<EnvironmentStore>();
-    auto &textures = r.Context.get<TextureStore>();
+    auto &environments = r.Resources.get<EnvironmentStore>();
+    auto &textures = r.Resources.get<TextureStore>();
     const auto images_dir = Paths::Res() / "images";
     environments.BrdfLutSlot = QueueLutTexture(textures, slots, images_dir / "lut_ggx.png", "DefaultGGXBRDFLUT");
     environments.SheenELutSlot = QueueLutTexture(textures, slots, images_dir / "lut_sheen_E.png", "DefaultSheenELUT");
@@ -430,7 +430,7 @@ void SetupDocument(state::Registry &r) {
 }
 
 void AddDefaultSceneContent(state::Registry &r) {
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     constexpr PrimitiveShape default_shape{primitive::Cuboid{}};
     const auto created = CreateMesh(r, {.Data = primitive::CreateMesh(default_shape), .FlatShaded = true});
     const auto [mesh_entity, _] = ::AddMesh(r, created.StoreId, MeshInstanceCreateInfo{.Name = ToString(default_shape)});
@@ -451,20 +451,20 @@ void AddDefaultSceneContent(state::Registry &r) {
 }
 
 void DeinitViewport(state::Registry &r) {
-    r.Context.erase<ViewportRenderResources>();
-    r.Context.erase<SelectionSlots>();
-    r.Context.erase<Viewports>();
-    r.Context.erase<FrameState>();
-    r.Context.erase<GpuSceneState>();
+    r.Resources.erase<ViewportRenderResources>();
+    r.Resources.erase<SelectionSlots>();
+    r.Resources.erase<Viewports>();
+    r.Resources.erase<FrameState>();
+    r.Resources.erase<GpuSceneState>();
     physics::Deinit(r);
-    r.Context.erase<MeshPipelines>();
-    r.Context.erase<Pipelines>();
+    r.Resources.erase<MeshPipelines>();
+    r.Resources.erase<Pipelines>();
     if (r.valid(state::Document)) r.destroy(state::Document);
     // The store releases every mesh in one batch, and MeshHandle destruction still needs it present.
-    Reset(r.Context.get<MeshStore>(), r);
+    Reset(r.Resources.get<MeshStore>(), r);
     r.clear<MeshHandle>();
     DeinitTextureStores(r);
-    r.Context.erase<MeshStore>();
+    r.Resources.erase<MeshStore>();
     DeinitRenderStores(r);
     DeinitEntityNames(r);
     DeinitRenderStoreContext(r);
@@ -472,7 +472,7 @@ void DeinitViewport(state::Registry &r) {
 
 void PresentViewport(state::Registry &r, Viewport &viewport) {
     ProcessComponentEvents(r, EventPass::Settle);
-    StepViewport(r, viewport, &viewport == &r.Context.get<Viewports>().Active());
+    StepViewport(r, viewport, &viewport == &r.Resources.get<Viewports>().Active());
     if (!ViewportImageReady(viewport)) return;
     if (MotionBlurActive(r, viewport)) {
         Viewport *const group[]{&viewport};

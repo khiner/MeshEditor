@@ -54,7 +54,7 @@ struct OwnerFragments {
 // Every topology seeds, builds and adopts the same primitive-bound fragments, and every owner's fragments share one build.
 // Reserve the seeds and builder work together before recording any dispatch.
 std::vector<FragmentBuild> BuildFragments(state::Registry &r, mtl::ComputeChain &chain, std::span<const OwnerFragments> owners, std::span<MeshletBuildSource> fresh = {}) {
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     size_t fragment_count = 0u;
     for (const auto &owner : owners) fragment_count += owner.Partitions.size();
     std::vector<MeshStore::Record> fragments(fragment_count);
@@ -121,7 +121,7 @@ std::vector<FragmentBuild> BuildFragments(state::Registry &r, mtl::ComputeChain 
 
 LodNodeRefit RepairElementMeshletDeletion(state::Registry &r, mtl::ComputeChain &chain, MeshStore::Record &owner, uint32_t topology, std::span<const uint32_t> elements) {
     const profile::CpuScope scope{"ElementMeshletDeletion"};
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     auto &render = meshes.Render();
     const auto endpoints = topology == 1u ? 2u : 1u;
     if ((topology != 1u && topology != 2u) || !owner.ElementMeshletBlockCounts[topology]) throw std::invalid_argument("Element deletion requires canonical point or line meshlet ownership.");
@@ -197,7 +197,7 @@ LodNodeRefit RepairElementMeshletDeletion(state::Registry &r, mtl::ComputeChain 
 } // namespace
 
 void RepairElementMeshlets(state::Registry &r, mtl::ComputeChain &chain, std::span<const ElementMeshletRepair> repairs) {
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     auto &render = meshes.Render();
     const auto &a = meshes.Arenas();
     std::vector<std::vector<MeshletPatchPartition>> partitions(repairs.size());
@@ -263,7 +263,7 @@ struct TriangleRepair {
 // Repairs every owner's triangle render with one fragment build and one submit, before which the host cannot read the fragments' records.
 void RepairTriangleRender(state::Registry &r, mtl::ComputeChain &chain, std::span<const TriangleRepair> repairs, std::span<MeshletBuildSource> fresh) {
     const profile::CpuScope scope{"TriangleRenderRepair"};
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     std::vector<state::Entity> entities;
     std::vector<MeshletPatch> patches;
     for (const auto &repair : repairs) {
@@ -305,7 +305,7 @@ void RepairTriangleRender(state::Registry &r, mtl::ComputeChain &chain, std::spa
 } // namespace
 
 void RepairTopologyRender(state::Registry &r, mtl::ComputeChain &chain, std::span<const std::pair<state::Entity, const MeshTopologyEdit *>> edits, std::span<MeshletBuildSource> fresh) {
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     std::vector<TriangleRepair> repairs;
     repairs.reserve(edits.size());
     for (const auto &[entity, topology] : edits) {

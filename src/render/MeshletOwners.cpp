@@ -6,7 +6,7 @@
 void PrepareMeshletOwners(state::Registry &r, MeshStore::Record &owner, uint32_t topology, std::span<const Range> clusters, std::span<const uint32_t> blocks, std::vector<MeshletOwnersJob> &jobs) {
     if (std::ranges::all_of(clusters, [](Range range) { return !range.Count; })) return;
     if (topology >= 3u || owner.ExtrasFaces.Count) throw std::invalid_argument("Meshlet owners require a canonical render owner.");
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     auto &owners = meshes.Render().ElementMeshlets[topology];
     auto &layer = owner.ElementMeshlets[topology];
     const auto bound = meshes.WithRenderDomain(owner, topology, [&](const auto &arena, ElementSetRef set) {
@@ -37,7 +37,7 @@ void PrepareMeshletOwners(state::Registry &r, MeshStore::Record &owner, uint32_t
 
 void RecordMeshletOwners(state::Registry &r, mtl::ComputeChain &chain, std::span<const MeshletOwnersJob> jobs) {
     if (jobs.empty()) return;
-    const auto &render = r.Context.get<const MeshStore>().Render();
+    const auto &render = r.Resources.get<const MeshStore>().Render();
     std::vector<uvec2> tiles;
     for (uint32_t j = 0u; j < jobs.size(); ++j) {
         for (uint32_t i = 0u; i < jobs[j].Count; ++i) tiles.emplace_back(j, i);
@@ -56,7 +56,7 @@ void RecordMeshletOwners(state::Registry &r, mtl::ComputeChain &chain, std::span
 
 void RetireMeshletOwners(state::Registry &r, MeshStore::Record &owner, std::span<const uint32_t> clusters, std::span<const uint32_t> retired) {
     if (clusters.empty()) return;
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     auto &render = meshes.Render();
     std::vector<uint32_t> sorted(clusters.begin(), clusters.end());
     std::array<std::vector<uint32_t>, 3> elements;

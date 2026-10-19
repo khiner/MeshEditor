@@ -118,7 +118,7 @@ std::vector<std::vector<uint32_t>> InvalidateClusterGroups(state::Registry &r, s
     std::vector<std::vector<uint32_t>> members(seeds.size());
     if (std::ranges::all_of(seeds, [](const auto &seed) { return seed.Groups.empty(); })) return members;
     const profile::CpuScope scope{"InvalidateClusterGroups"};
-    auto &buffers = r.Context.get<MeshStore>().Render();
+    auto &buffers = r.Resources.get<MeshStore>().Render();
     for (uint32_t i = 0u; i < seeds.size(); ++i) {
         if (seeds[i].Groups.empty()) continue;
         const auto &owner = RecordOf(r, seeds[i].Entity);
@@ -277,7 +277,7 @@ void CommitPool(MeshStore &meshes, MeshStore::Record &owner, const PoolBuild &po
 } // namespace
 
 void RepairDirtyClusterGroups(state::Registry &r, mtl::ComputeChain &chain, std::span<const state::Entity> entities) {
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     auto &buffers = meshes.Render();
     struct OwnerRepair {
         state::Entity Entity;
@@ -404,7 +404,7 @@ void RepairDirtyClusterGroups(state::Registry &r, mtl::ComputeChain &chain, std:
     RecordLodNodeRefits(r, chain, refits);
     // The retired clusters and stale groups stay live until the recorded refits complete, and their release clears the owner's dirty groups.
     chain.AfterSubmit([&r, repairs = std::move(repairs)] {
-        auto &meshes = r.Context.get<MeshStore>();
+        auto &meshes = r.Resources.get<MeshStore>();
         auto &buffers = meshes.Render();
         for (const auto &repair : repairs) {
             auto &owner = EditRecordOf(r, repair.Entity);

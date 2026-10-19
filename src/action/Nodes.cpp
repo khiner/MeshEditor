@@ -259,7 +259,7 @@ void Apply(state::Registry &r, const Action &action) {
 }
 
 SetInlineSelection CaptureSelection(const state::Registry &r, state::Entity mesh_entity, state::Entity node) {
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     const auto id = *DrawnStoreId(r, mesh_entity);
     SetInlineSelection selection{.Node = node};
     using D = MeshStore::ElementDomain;

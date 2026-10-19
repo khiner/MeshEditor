@@ -23,7 +23,7 @@ TopologyOutputHandles::TopologyOutputHandles(state::Registry &r, mtl::ComputeCha
     pc.Topology.Source = source;
     for (uint32_t d = 0u; d < 2u; ++d) pc.NewElements[d] = New[d] = AllocateElementWork(chain.Scratch, output[d], WorkDomainBlocks(output[d]));
     if (preserve) {
-        const auto &meshes = r.Context.get<MeshStore>();
+        const auto &meshes = r.Resources.get<MeshStore>();
         const auto &a = meshes.Arenas();
         const auto &record = meshes.Get(source_id);
         pc.RetiredElements[0] = Retired[0] = AllocateElementWork(chain.Scratch, a.Vertices.HandleBound(record.Vertices), job.SrcVertexCount);

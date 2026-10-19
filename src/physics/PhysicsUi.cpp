@@ -133,7 +133,7 @@ void DrawNamedEntityList(state::Registry &r, const char *id, const char *add_lab
     PushID(id);
     std::vector<state::Entity> entities;
     for (const auto e : r.view<T>()) entities.push_back(e);
-    const auto &uses = r.Context.get<const PhysicsDefinitionUses>();
+    const auto &uses = r.Resources.get<const PhysicsDefinitionUses>();
     const auto deleted = ui::ItemList(
         entities.size(),
         [&](uint32_t i) { return std::format("{} ({})", DisplayName(r.get<const T>(entities[i]).Name, "{:x}", uint32_t(entities[i])), uses.Count(entities[i])); },

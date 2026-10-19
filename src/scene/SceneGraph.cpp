@@ -34,14 +34,14 @@ uint32_t WorldSlot(const state::Registry &r, state::Entity e) {
 }
 
 const Transform *WorldTransformAt(const state::Registry &r, state::Entity e, uint32_t slot) {
-    if (slot != UINT32_MAX) return r.Context.get<const GpuBuffers>().Instances.TransformBuffer.GetSpan<Transform>({slot, 1u}).data();
+    if (slot != UINT32_MAX) return r.Resources.get<const GpuBuffers>().Instances.TransformBuffer.GetSpan<Transform>({slot, 1u}).data();
     return r.try_get<const WorldTransform>(e);
 }
 
 void SetWorldTransformAt(state::Registry &r, state::Entity e, uint32_t slot, const Transform &world) {
-    if (slot != UINT32_MAX) r.Context.get<GpuBuffers>().Instances.TransformBuffer.GetMutableSpan<Transform>({slot, 1u})[0] = world;
+    if (slot != UINT32_MAX) r.Resources.get<GpuBuffers>().Instances.TransformBuffer.GetMutableSpan<Transform>({slot, 1u})[0] = world;
     else r.emplace_or_replace<WorldTransform>(e, world);
-    r.Context.get<SceneChanges>().WorldTransform.emplace(e);
+    r.Resources.get<SceneChanges>().WorldTransform.emplace(e);
 }
 } // namespace
 
@@ -160,7 +160,7 @@ void RecomputeWorldTransforms(state::Registry &r, std::span<const state::Entity>
     };
     std::vector<Pending> pending;
     std::vector<mat4> matrices;
-    const auto &placed = r.Context.get<const RenderChanges>().InstanceCreated;
+    const auto &placed = r.Resources.get<const RenderChanges>().InstanceCreated;
     for (const auto &[_, root] : ordered) {
         matrices.clear();
         const auto parent = ParentOrNull(r, root);

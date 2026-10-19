@@ -25,10 +25,10 @@ struct GeometryFixture {
     mtl::BufferContext Buffers{Context, Slots};
     state::Registry Scene;
     GeometryFixture() {
-        Scene.Context.emplace<mtl::LibraryCache>(Context, Paths::Shaders());
-        Scene.Context.emplace<MeshStore>(Buffers);
+        Scene.Resources.emplace<mtl::LibraryCache>(Context, Paths::Shaders());
+        Scene.Resources.emplace<MeshStore>(Buffers);
     }
-    MeshStore &Store() { return Scene.Context.get<MeshStore>(); }
+    MeshStore &Store() { return Scene.Resources.get<MeshStore>(); }
     Mesh Get(uint32_t id) { return Mesh{Store(), id}; }
     void Audit() {
         std::string why;

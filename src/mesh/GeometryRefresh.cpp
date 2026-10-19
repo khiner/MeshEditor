@@ -9,7 +9,7 @@
 #include "state/Registry.h"
 
 std::vector<FaceTriangles> RetessellateMeshes(state::Registry &r, mtl::ComputeChain &chain, std::span<const MeshRetessellation> inputs) {
-    const auto &meshes = r.Context.get<MeshStore>();
+    const auto &meshes = r.Resources.get<MeshStore>();
     const auto &a = meshes.Arenas();
     struct Job {
         uint32_t Index;
@@ -88,7 +88,7 @@ std::vector<FaceTriangles> RetessellateMeshes(state::Registry &r, mtl::ComputeCh
 }
 
 std::vector<PositionOperationChange> ExecuteGeometryPositions(state::Registry &r, std::span<const PositionOperationTarget> targets, PositionEditOp operation, float factor, uint32_t repeat, const PositionOperationOptions &options) {
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     mtl::ComputeChain chain{meshes.BufferContext()};
     auto changes = EncodePositionOperations(meshes, GetMeshPipelines(r), chain, targets, operation, factor, repeat, options);
     chain.Submit();

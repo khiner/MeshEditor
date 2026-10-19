@@ -29,7 +29,7 @@ std::optional<NormalDeriveEntry> MakeDeriveEntryInputs(const MeshStore &meshes, 
 
 void EncodeDeriveNormals(state::Registry &r, mtl::ComputeChain &chain, std::span<const uint32_t> ids, std::span<const NormalDeriveEntry> entries, NormalDerivePushConstants pc) {
     if (entries.empty()) return;
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     std::vector<uvec2> tiles;
     const auto append = [&](uint32_t i, bool faces) {
         const auto &entry = entries[i];
@@ -64,7 +64,7 @@ void EncodeDeriveNormals(state::Registry &r, mtl::ComputeChain &chain, std::span
 
 void CaptureNormalWrites(state::Registry &r, uint32_t id, const NormalDeriveEntry &entry, const BufferArena<uint32_t> &vertex_work, const BufferArena<uint32_t> &face_work) {
     if (!entry.VertexWorkCount && !entry.FaceWorkCount) return;
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &a = meshes.Arenas();
     if (!a.BaseVertexNormals.Buffer.History() && !a.BaseFaceNormals.Buffer.History() && !a.NormalSectors.Values.Buffer.History()) return;
     const auto &record = meshes.Get(id);
@@ -86,7 +86,7 @@ void CaptureNormalWrites(state::Registry &r, uint32_t id, const NormalDeriveEntr
 
 namespace {
 void EncodeDeriveBaseEntries(state::Registry &r, mtl::ComputeChain &chain, std::span<const uint32_t> ids, std::span<const NormalDeriveEntry> entries, const BufferArena<uint32_t> &work) {
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     for (uint32_t i = 0u; i < entries.size(); ++i) CaptureNormalWrites(r, ids[i], entries[i], work, work);
     EncodeDeriveNormals(r, chain, ids, entries, {
                                                     .EdgeSharpnessSlot = meshes.Slots().EdgeSharpness,
@@ -99,7 +99,7 @@ void EncodeDeriveBaseEntries(state::Registry &r, mtl::ComputeChain &chain, std::
 } // namespace
 
 void EncodeDeriveMeshNormals(state::Registry &r, mtl::ComputeChain &chain, const BufferArena<uint32_t> &work, std::span<const LocalNormalWork> changes) {
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     std::vector<uint32_t> ids;
     std::vector<NormalDeriveEntry> entries;
     for (const auto &change : changes) {
@@ -117,7 +117,7 @@ void EncodeDeriveMeshNormals(state::Registry &r, mtl::ComputeChain &chain, const
 }
 
 AllNormalsWork EncodeAllNormalsMembership(state::Registry &r, mtl::ComputeChain &chain, std::span<const uint32_t> ids) {
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     AllNormalsWork normals;
     std::vector<ElementWorkSeedJob> seeds;
     for (const auto id : ids) {
@@ -137,7 +137,7 @@ AllNormalsWork EncodeAllNormalsMembership(state::Registry &r, mtl::ComputeChain 
 
 // Each entry is built here rather than with its membership work, since corner classification covers the sector records it references in between.
 void EncodeDeriveAllNormals(state::Registry &r, mtl::ComputeChain &chain, const AllNormalsWork &normals) {
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     std::vector<NormalDeriveEntry> entries;
     entries.reserve(normals.Ids.size());
     for (uint32_t i = 0u; i < normals.Ids.size(); ++i) {

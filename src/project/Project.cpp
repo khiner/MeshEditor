@@ -151,25 +151,25 @@ std::expected<void, std::string> WriteActionsArchive(const store::History &histo
     return {};
 }
 
-Project &Session(state::Registry &r) { return *r.Context.get<Project *>(); }
+Project &Session(state::Registry &r) { return *r.Resources.get<Project *>(); }
 
 Project::Project(state::Registry &r) : Entities(r, History, snapshot::SnapshotTable()), R(r) {
-    R.Context.emplace<Project *>(this);
-    R.Context.emplace<Assets>();
+    R.Resources.emplace<Project *>(this);
+    R.Resources.emplace<Assets>();
 }
 Project::~Project() {
     Close();
-    R.Context.erase<Project *>();
-    R.Context.erase<Assets>();
+    R.Resources.erase<Project *>();
+    R.Resources.erase<Assets>();
 }
 
 void Project::TrackStores() {
-    auto &meshes = R.Context.get<MeshStore>();
+    auto &meshes = R.Resources.get<MeshStore>();
     meshes.Track(History);
 
-    R.Context.get<GpuBuffers>().Materials.Track(History, "material.values");
-    R.Context.get<GpuBuffers>().MorphWeightBuffer.Track(History, "morph.weights");
-    R.Context.get<MaterialStore>().Track(History);
+    R.Resources.get<GpuBuffers>().Materials.Track(History, "material.values");
+    R.Resources.get<GpuBuffers>().MorphWeightBuffer.Track(History, "morph.weights");
+    R.Resources.get<MaterialStore>().Track(History);
     History.Callbacks = {
         .Replay = [this](std::span<const std::byte> bytes) {
             auto replayed = RunRecorded(Decode(bytes));
@@ -177,7 +177,7 @@ void Project::TrackStores() {
             R.remove<PendingViewSetup>(state::Document);
             return replayed; },
         .Reset = [this](const std::filesystem::path &dir) {
-            R.Context.get<Assets>().Directory = dir;
+            R.Resources.get<Assets>().Directory = dir;
             ClearDocument(); },
         .BeforeRestore = [this] {
             WaitForRender(R);
@@ -190,7 +190,7 @@ void Project::TrackStores() {
             const auto removed = Entities.RemovedEntities();
             // Destroy instances before their referenced mesh entities: each removed instance, and each instance placed in a removed mesh's range.
             const auto &render_instances = std::as_const(R).storage<RenderInstance>();
-            const auto object_ids = R.Context.get<const GpuBuffers>().Instances.ObjectIdBuffer.GetSpan<uint32_t>();
+            const auto object_ids = R.Resources.get<const GpuBuffers>().Instances.ObjectIdBuffer.GetSpan<uint32_t>();
             for (const auto e : removed) {
                 R.remove<RenderInstance>(e);
                 const auto *models = R.try_get<const ModelsBuffer>(e);
@@ -201,12 +201,12 @@ void Project::TrackStores() {
                 }
                 FreeInstanceRange(R, models->InstanceRange);
             }
-            R.Context.get<MeshStore>().FinishRestore();
+            R.Resources.get<MeshStore>().FinishRestore();
             Entities.FinishRestore(removed); },
         .AfterRestore = [this]() -> std::expected<void, std::string> {
-            const auto errors = R.Context.get<action::Errors>().Messages.size();
+            const auto errors = R.Resources.get<action::Errors>().Messages.size();
             AfterRestore();
-            const auto &messages = R.Context.get<action::Errors>().Messages;
+            const auto &messages = R.Resources.get<action::Errors>().Messages;
             if (messages.size() != errors) return std::unexpected{messages[errors]};
             return {}; },
     };
@@ -220,7 +220,7 @@ bool Project::Begin(const std::filesystem::path &dir) {
         action::Fail(R, "Cannot create or exclusively open project '" + dir.string() + "'.");
         return false;
     }
-    auto &directory = R.Context.get<Assets>().Directory;
+    auto &directory = R.Resources.get<Assets>().Directory;
     const auto previous = std::exchange(directory, dir);
     WaitForRender(R);
     Settle(EventPass::Settle);
@@ -273,13 +273,13 @@ bool Project::Open(const std::filesystem::path &dir, const std::filesystem::path
         action::Fail(R, "Project is already open or unavailable: '" + dir.string() + "'.");
         return false;
     }
-    auto &directory = R.Context.get<Assets>().Directory;
+    auto &directory = R.Resources.get<Assets>().Directory;
     const auto previous = std::exchange(directory, dir);
-    const auto errors = R.Context.get<action::Errors>().Messages.size();
+    const auto errors = R.Resources.get<action::Errors>().Messages.size();
     if (!History.Open(dir, saved ? &saved->Position : nullptr)) {
         directory = previous;
         const auto error = History.TakeIntegrityError();
-        if (R.Context.get<action::Errors>().Messages.size() == errors && !error.empty()) action::Fail(R, error);
+        if (R.Resources.get<action::Errors>().Messages.size() == errors && !error.empty()) action::Fail(R, error);
         return false;
     }
     ReleaseGesture();
@@ -367,7 +367,7 @@ bool Project::SaveAs(const std::filesystem::path &directory, std::span<const std
     }
     const auto previous_lock = std::move(DirectoryLock);
     DirectoryLock = std::move(lock);
-    R.Context.get<Assets>().Directory = History.Dir;
+    R.Resources.get<Assets>().Directory = History.Dir;
     SavedPath = directory / "Saved.project";
     if (unnamed) fs::remove_all(previous, ec);
     return true;
@@ -417,9 +417,9 @@ void Project::Tick(const action::Action &a, EventPass pass, bool staged) {
     Settle(pass);
 }
 std::expected<void, std::string> Project::RunRecorded(std::span<const RecordedAction> recorded_actions) {
-    auto &frame = R.Context.get<FrameState>();
+    auto &frame = R.Resources.get<FrameState>();
     const auto saved = frame;
-    const auto errors = R.Context.get<action::Errors>().Messages.size();
+    const auto errors = R.Resources.get<action::Errors>().Messages.size();
     for (const auto &[inputs, a] : recorded_actions) {
         // Restore playback changes between recorded actions.
         if (R.get<const TimelinePlayback>(state::Document).CurrentFrame != inputs.CurrentFrame) {
@@ -441,12 +441,12 @@ std::expected<void, std::string> Project::RunRecorded(std::span<const RecordedAc
             InsetPreview.reset();
             Tick(a, inputs.Pass, inputs.Staged);
         }
-        if (R.Context.get<action::Errors>().Messages.size() != errors) break;
+        if (R.Resources.get<action::Errors>().Messages.size() != errors) break;
     }
     InsetPreview.reset();
     EndGesture(EventPass::Settle);
     frame = saved;
-    const auto &messages = R.Context.get<action::Errors>().Messages;
+    const auto &messages = R.Resources.get<action::Errors>().Messages;
     if (messages.size() != errors) return std::unexpected{messages[errors]};
     return {};
 }
@@ -456,7 +456,7 @@ void Project::Settle(EventPass pass) {
 }
 bool Project::Record(action::Action a, EventPass pass, bool staged) {
     if (auto *path = SourcePath(a); path && !path->native().starts_with("asset:/")) {
-        const auto &assets = R.Context.get<Assets>();
+        const auto &assets = R.Resources.get<Assets>();
         std::error_code ec;
         const auto absolute = std::filesystem::absolute(*path, ec);
         if (ec) {
@@ -465,7 +465,7 @@ bool Project::Record(action::Action a, EventPass pass, bool staged) {
         }
         *path = assets.Reference(absolute);
     }
-    const auto errors = R.Context.get<action::Errors>().Messages.size();
+    const auto errors = R.Resources.get<action::Errors>().Messages.size();
     const bool recordable = action::IsRecordable(a);
     if (staged && !GestureBase && recordable) {
         GestureBase = History.Pin();
@@ -487,19 +487,19 @@ bool Project::Record(action::Action a, EventPass pass, bool staged) {
     } else {
         InsetPreview.reset();
     }
-    const auto &frame = R.Context.get<const FrameState>();
+    const auto &frame = R.Resources.get<const FrameState>();
     RecordedAction recorded_action{
         {frame.DeltaTime, R.get<const PlaybackFrame>(state::Document).Value, R.get<const TimelinePlayback>(state::Document).CurrentFrame, frame.FixedFrameStep, pass, staged},
         std::move(a),
     };
-    const auto cooks = R.Context.get<const CookCount>().Value;
+    const auto cooks = R.Resources.get<const CookCount>().Value;
     if (updated_inset) Settle(pass);
     else Tick(recorded_action.Action, pass, staged);
-    if (!recordable || R.Context.get<action::Errors>().Messages.size() != errors) return false;
+    if (!recordable || R.Resources.get<action::Errors>().Messages.size() != errors) return false;
     ++Revision;
     // A staged inset keeps its construction action and final parameter update so replay repeats the same meshlet partition and GPU refit.
     // A step that cooked a procedure over the previous step stays recorded, since the next step builds on the record it cooked.
-    if (same_kind && (preview || R.Context.get<const CookCount>().Value == cooks)) {
+    if (same_kind && (preview || R.Resources.get<const CookCount>().Value == cooks)) {
         RecordedActions.resize(*StageFirst + (updated_inset ? 1u : 0u));
         if (updated_inset) RecordedActions[*StageFirst].Inputs.PreviewSeed = true;
     } else if (staged) {
@@ -523,7 +523,7 @@ void Project::RecordKeys() {
 }
 uint32_t Project::Commit(std::string label, std::optional<uint32_t> replace) {
     // A commit indexes the mesh records its actions wrote, so a later restore costs only its own change.
-    R.Context.get<MeshStore>().IndexHistory();
+    R.Resources.get<MeshStore>().IndexHistory();
     const bool editable = Editable(RecordedActions);
     auto bytes = Encode(RecordedActions);
     const bool in_place = replace && History.Nodes[*replace].Children.empty();
@@ -595,7 +595,7 @@ void Project::ReleaseGesture() {
 void Project::ClearInteraction() {
     R.clear<StartTransform, StartBoneLength, StartPivot, StartScreenTransform, PendingTransform, action::DragFieldStart, AdditiveBoxSelectBaseline, PendingViewSetup>();
     if (auto *gizmo = R.try_edit<GizmoInteraction>(state::Document)) *gizmo = {};
-    auto &frame = R.Context.get<FrameState>();
+    auto &frame = R.Resources.get<FrameState>();
     frame.BoxSelectStart.reset();
     frame.BoxSelectEnd.reset();
     frame.BoxSelectEmitted.reset();
@@ -739,7 +739,7 @@ bool Project::Audit(std::string &why) {
         why = "Mesh store " + std::to_string(handle.StoreId) + " does not map to its entity.";
         return false;
     }
-    return R.Context.get<const MeshStore>().Audit(why) && History.Audit(why);
+    return R.Resources.get<const MeshStore>().Audit(why) && History.Audit(why);
 }
 
 void Project::AfterRestore() {
@@ -768,17 +768,17 @@ void Project::AfterRestore() {
     if (sources_changed) {
         ReleaseImportedTextures(R);
         ResetImportedEnvironment(R);
-        R.Context.get<RenderChanges>().SceneWorld.emplace(state::Document);
+        R.Resources.get<RenderChanges>().SceneWorld.emplace(state::Document);
     } else if (manifest_changed) {
         const auto *manifest = R.try_get<const MaterializedTextures>(state::Document);
         ReleaseUnlistedTextures(R, manifest ? std::span{manifest->Items} : std::span<const MaterializedTexture>{});
     }
-    if (sources_changed || manifest_changed) R.Context.get<RenderChanges>().MaterializedTextures.emplace(state::Document);
-    auto &meshes = R.Context.get<MeshStore>();
+    if (sources_changed || manifest_changed) R.Resources.get<RenderChanges>().MaterializedTextures.emplace(state::Document);
+    auto &meshes = R.Resources.get<MeshStore>();
     const auto changes = meshes.TakeChanges();
     mtl::ComputeChain chain{meshes.BufferContext()};
     meshes.ReconcileSelection(R, chain, changes);
-    auto &buffers = R.Context.get<GpuBuffers>();
+    auto &buffers = R.Resources.get<GpuBuffers>();
     // Rebind GPU mesh records after restore and remove retired records from flag totals.
     for (const auto &change : changes) {
         if (!(change.Bits & MeshStore::EntryChanged)) continue;
@@ -788,7 +788,7 @@ void Project::AfterRestore() {
     }
     // Restored deformation can move any posed mesh.
     for (const auto entity : R.view<const PosedLayout>()) R.emplace_or_replace<MeshBoundsDirty>(entity);
-    auto &scene = R.Context.get<GpuSceneState>();
+    auto &scene = R.Resources.get<GpuSceneState>();
     SortUnique(restored_meshes);
     std::vector<state::Entity> repointed;
     for (const auto entity : restored_meshes) {
@@ -820,8 +820,8 @@ void Project::AfterRestore() {
     }
     RefreshEditedPositions(R, chain, positions, false);
     chain.Submit();
-    if (!buffers.Materials.History()->Trie.TakeChanged().empty()) R.Context.get<RenderChanges>().Materials.emplace(state::Document);
-    if (!buffers.MorphWeightBuffer.Buffer.History()->Trie.TakeChanged().empty()) R.Context.get<RenderChanges>().MorphWeights.emplace(state::Document);
+    if (!buffers.Materials.History()->Trie.TakeChanged().empty()) R.Resources.get<RenderChanges>().Materials.emplace(state::Document);
+    if (!buffers.MorphWeightBuffer.Buffer.History()->Trie.TakeChanged().empty()) R.Resources.get<RenderChanges>().MorphWeights.emplace(state::Document);
     Settle(EventPass::Restore);
 }
 } // namespace project

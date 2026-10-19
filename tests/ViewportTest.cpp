@@ -1,3 +1,4 @@
+#include "viewport/Viewport.h"
 #include "Paths.h"
 #include "RunSuites.h"
 #include "TestPaths.h"
@@ -7,7 +8,6 @@
 #include "editor/Engine.h"
 #include "render/GpuSceneState.h"
 #include "render/Textures.h"
-#include "viewport/Viewport.h"
 #include "viewport/ViewportEvents.h"
 
 #include <print>
@@ -22,13 +22,13 @@ struct Fixture : Engine {
         Viewports().All.front().State.Extent = Extent;
         expect(P->New(dir));
     }
-    ::Viewports &Viewports() { return R.Context.get<::Viewports>(); }
+    ::Viewports &Viewports() { return R.Resources.get<::Viewports>(); }
     void Audit() {
         std::string why;
         const bool valid = P->Audit(why);
         if (!valid) std::println("audit: {}", why);
         expect(valid);
-        expect(R.Context.get<action::Errors>().Messages.empty());
+        expect(R.Resources.get<action::Errors>().Messages.empty());
     }
     uint32_t Do(auto a) {
         const auto node = P->Do(action::MakeAction(std::move(a)));
@@ -55,8 +55,8 @@ struct Fixture : Engine {
         WaitForRender(R);
     }
     std::vector<std::byte> Image(uint32_t id) {
-        const auto &image = Viewports().Find(id)->Targets.Resources->FinalColorImage;
-        return ReadbackImageRgba8(R.Context.get<const mtl::Context>(), image, 0, 0, image.Extent);
+        const auto &image = Viewports().Find(id)->Targets.Screen->FinalColorImage;
+        return ReadbackImageRgba8(R.Resources.get<const mtl::Context>(), image, 0, 0, image.Extent);
     }
 };
 
@@ -88,7 +88,7 @@ void TestTwoViewportsRender() {
     f.DoLive(action::view::RemoveViewport{solid_id});
     expect(Ids(f.Viewports()) == std::vector{wire_id});
     expect(f.Viewports().ActiveIndex == 0u);
-    // The service keeps its last viewport.
+    // The resource keeps its last viewport.
     f.DoLive(action::view::RemoveViewport{wire_id});
     expect(Ids(f.Viewports()) == std::vector{wire_id});
 
@@ -122,7 +122,7 @@ void TestWorkspaceViewports() {
     second.State.RenderLighting.Value.ExposureEV = 2.f;
     second.State.Orbit.Value = true;
     second.State.Extent = {32, 48};
-    const auto bytes = workspace::Serialize(workspace::Capture(f.R, f.R.Context.get<const WindowsState>()));
+    const auto bytes = workspace::Serialize(workspace::Capture(f.R, f.R.Resources.get<const WindowsState>()));
     const auto &saved = f.Viewports().All;
 
     Fixture restored{restored_dir};
@@ -134,7 +134,7 @@ void TestWorkspaceViewports() {
     const auto stored = workspace::Deserialize(bytes);
     expect(stored.has_value());
     if (!stored) return;
-    workspace::Apply(restored.R, restored.R.Context.get<WindowsState>(), *stored);
+    workspace::Apply(restored.R, restored.R.Resources.get<WindowsState>(), *stored);
     const auto &viewports = restored.Viewports().All;
     expect(Ids(restored.Viewports()) == std::vector{1u, 2u});
     if (viewports.size() != 2u) return;
@@ -169,7 +169,7 @@ void TestViewSetupAndNavigation() {
     expect(!f.R.all_of<PendingViewSetup>(state::Document));
     expect(!WorkbenchShading(f.Viewports().All.front().State.Display.ViewportShading));
     expect(!f.Viewports().All.front().State.Display.ShowOverlays);
-    expect(f.R.Context.get<const GpuSceneState>().Displays == VisibleDisplays(f.Viewports()));
+    expect(f.R.Resources.get<const GpuSceneState>().Displays == VisibleDisplays(f.Viewports()));
     second.Visible = true;
     second.State.Display.ViewportShading = ViewportShadingMode::Wireframe;
     const auto second_id = second.Id;

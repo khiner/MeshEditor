@@ -20,7 +20,7 @@ struct VolumeSource {
     std::span<const uint32_t> TriangleIds; // The owner's triangle id range
 };
 VolumeSource Source(const state::Registry &r, const MeshStore::Record &owner) {
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     const Mesh mesh{meshes, owner.StoreId};
     return {mesh.VertexValues(), mesh.TriangleVertices(), meshes.Render().MeshletTriangleIds.Get(owner.MeshletTriangles.Values)};
 }
@@ -218,7 +218,7 @@ struct Tree {
 } // namespace
 
 void BuildMeshletSpatial(state::Registry &r, std::span<MeshStore::Record *const> owners) {
-    auto &gpu = r.Context.get<MeshStore>().Render();
+    auto &gpu = r.Resources.get<MeshStore>().Render();
     std::vector<std::vector<uint32_t>> finest(owners.size());
     for (uint32_t i = 0u; i < owners.size(); ++i) {
         const auto &owner = *owners[i];
@@ -307,7 +307,7 @@ void BuildMeshletSpatial(state::Registry &r, std::span<MeshStore::Record *const>
 namespace {
 // Runs `edit` over the owner's tree and records the root only when the edit moved it.
 void EditTree(state::Registry &r, const MeshStore::Record &owner, auto &&edit) {
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     Tree tree{meshes.Render(), meshes.Render().Meshlets.Entries(owner.MeshletData), owner.SpatialRoot, Source(r, owner)};
     edit(tree);
     tree.Flush();

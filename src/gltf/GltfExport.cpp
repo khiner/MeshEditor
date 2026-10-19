@@ -218,8 +218,8 @@ std::array<float, 4> AttributeFloats(const MeshStore &meshes, uint32_t attribute
 
 std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, const state::Registry &r, SaveOptions options) {
     const profile::CpuScope scope{"SaveGltf"};
-    const auto &meshes = r.Context.get<const MeshStore>();
-    const auto &buffers = r.Context.get<const GpuBuffers>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    const auto &buffers = r.Resources.get<const GpuBuffers>();
 
     // Entities of `view` in the source order `index_of` reads, with runtime-added ones after the source range in view order.
     const auto ordered_by_source = [&](const auto &view, auto &&index_of) {
@@ -238,7 +238,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     const auto *src_assets = r.try_get<const gltf::SourceAssets>(state::Document);
     static const gltf::SourceAssets EmptySourceAssets{};
     const auto &sa = src_assets ? *src_assets : EmptySourceAssets;
-    const auto &names = r.Context.get<const MaterialStore>().Names;
+    const auto &names = r.Resources.get<const MaterialStore>().Names;
     const auto material_count = buffers.Materials.Count<PBRMaterial>();
     const auto &material_metas = src_assets ? src_assets->MaterialMetas : std::vector<MaterialSourceMeta>{};
 
@@ -599,14 +599,14 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     // A dirty image re-encodes from its GPU texture first.
     asset.images.reserve(sa.Images.size());
     std::unordered_map<uint32_t, const TextureEntry *> texture_for_image;
-    for (const auto &tex : r.Context.get<const TextureStore>().Textures) {
+    for (const auto &tex : r.Resources.get<const TextureStore>().Textures) {
         if (tex.SourceImageIndex != UINT32_MAX) texture_for_image.emplace(tex.SourceImageIndex, &tex);
     }
     const auto reencode_from_gpu = [&](uint32_t img_idx, gltf::MimeType target, std::string_view name)
         -> std::expected<std::pair<std::vector<std::byte>, gltf::MimeType>, std::string> {
         const auto it = texture_for_image.find(img_idx);
         if (it == texture_for_image.end()) return std::unexpected{std::format("Image '{}' has no GPU texture; cannot re-encode.", name)};
-        const auto *ctx = r.Context.find<const mtl::Context>();
+        const auto *ctx = r.Resources.find<const mtl::Context>();
         if (!ctx) return std::unexpected{std::format("Image '{}' needs GPU readback but no Metal context is registered.", name)};
         auto rgba8 = ReadbackTextureRgba8(*ctx, *it->second);
         if (!rgba8) return std::unexpected{std::move(rgba8.error())};

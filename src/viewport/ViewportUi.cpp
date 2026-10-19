@@ -97,22 +97,22 @@ vec2 ScreenPx(const mat4 &vp, const rect &viewport_rect, vec3 p) {
 }
 
 vec2 ToViewFraction(const state::Registry &r, vec2 screen_px) {
-    const auto logical = r.Context.get<const Viewports>().Active().State.Extent;
+    const auto logical = r.Resources.get<const Viewports>().Active().State.Extent;
     const auto local = screen_px - ToVec2(GetCursorScreenPos());
     return Clamp(vec2{local.x / float(std::max(logical.x, 1u)), local.y / float(std::max(logical.y, 1u))}, vec2{0}, vec2{1});
 }
 // A screen position in pixels of the render target.
 vec2 ToRenderPx(const state::Registry &r, vec2 screen_px) {
-    const auto &viewport = r.Context.get<const Viewports>().Active();
+    const auto &viewport = r.Resources.get<const Viewports>().Active();
     const auto logical = viewport.State.Extent;
-    const auto render_extent = RenderExtentPx(viewport, r.Context.get<const FrameState>());
+    const auto render_extent = RenderExtentPx(viewport, r.Resources.get<const FrameState>());
     const vec2 scale{logical.x > 0u ? float(render_extent.x) / float(logical.x) : 1.f, logical.y > 0u ? float(render_extent.y) / float(logical.y) : 1.f};
     return (screen_px - ToVec2(GetCursorScreenPos())) * scale;
 }
 
 void BeginMeshDrag(state::Registry &r, FrameState &frame, MeshOperatorDrag::Op op) {
     const rect viewport_rect{ToVec2(GetWindowPos()), ToVec2(GetContentRegionAvail())};
-    const auto &camera = r.Context.get<const Viewports>().Active().State.Camera.Active;
+    const auto &camera = r.Resources.get<const Viewports>().Active().State.Camera.Active;
     const auto vp = camera.Projection(viewport_rect.size.x / viewport_rect.size.y) * camera.View();
     const auto center = EditSelectionCenter(r);
     const auto center_px = ScreenPx(vp, viewport_rect, center);
@@ -151,7 +151,7 @@ void UpdateMeshDrag(state::Registry &r, FrameState &frame) {
         const auto end = ToRenderPx(r, mouse), start = ToRenderPx(r, drag.StartPx);
         const float length = Length(end - start);
         if (length <= 0.f || drag.Staged == length) return;
-        action::Emit(action::mesh::Knife{.Start = start, .End = end, .View = std::make_unique<RenderView>(r.Context.get<const Viewports>().Active().FrameView)}, action::Phase::Stage);
+        action::Emit(action::mesh::Knife{.Start = start, .End = end, .View = std::make_unique<RenderView>(r.Resources.get<const Viewports>().Active().FrameView)}, action::Phase::Stage);
         drag.Staged = length;
         return;
     }
@@ -177,7 +177,7 @@ void UpdateMeshDrag(state::Registry &r, FrameState &frame) {
 
 void DrawMeshOperatorMenus(state::Registry &r) {
     using namespace action::mesh;
-    const auto &viewport = r.Context.get<const Viewports>().Active();
+    const auto &viewport = r.Resources.get<const Viewports>().Active();
     const auto &view_orientation = viewport.FrameView.Camera.Orientation;
     const auto op = [](const char *label, auto a, action::Phase phase = action::Phase::Record) {
         if (MenuItem(label)) action::Emit(std::move(a), phase);
@@ -358,7 +358,7 @@ void Interact(state::Registry &r, FrameState &frame) {
         CurrentClickPos = GetIO().MouseClickedPos[0];
     }
 
-    const auto &viewport = r.Context.get<const Viewports>().Active();
+    const auto &viewport = r.Resources.get<const Viewports>().Active();
     const auto logical_extent = viewport.State.Extent;
     if (logical_extent.x == 0 || logical_extent.y == 0) return;
 
@@ -373,7 +373,7 @@ void Interact(state::Registry &r, FrameState &frame) {
     // Route shortcuts globally while preserving ImGui ownership for active widgets, navigation, and text input.
     constexpr auto VKey = ImGuiInputFlags_RouteGlobal;
     // The hovered node canvas takes the editing shortcuts instead.
-    const bool nodes_hovered = r.Context.get<const WindowsState>().Nodes.Hovered;
+    const bool nodes_hovered = r.Resources.get<const WindowsState>().Nodes.Hovered;
     const auto key = [&](ImGuiKeyChord chord, ImGuiInputFlags route = VKey) { return !nodes_hovered && Shortcut(chord, route); };
     const auto ctrl_key = [&](ImGuiKeyChord chord, ImGuiInputFlags route = VKey) { return !nodes_hovered && CtrlShortcut(chord, route); };
     if (r.get<const GizmoInteraction>(state::Document).IsUsing()) {
@@ -617,9 +617,9 @@ void Interact(state::Registry &r, FrameState &frame) {
 
 void InteractOverlay(state::Registry &r, FrameState &frame, const Viewport &viewport) {
     const profile::CpuScope scope{"ViewportOverlayUi"};
-    const auto &icons = r.Context.get<const ViewportIcons>();
+    const auto &icons = r.Resources.get<const ViewportIcons>();
     const rect viewport_rect{ToVec2(GetWindowPos()), ToVec2(GetContentRegionAvail())};
-    const bool active = &viewport == &r.Context.get<const Viewports>().Active();
+    const bool active = &viewport == &r.Resources.get<const Viewports>().Active();
     const bool active_transform = r.get<const GizmoInteraction>(state::Document).IsUsing();
     static constexpr float OrientationGizmoSize{84};
     const auto &interface_theme = r.get<const InterfaceTheme>(state::Document);
@@ -986,7 +986,7 @@ void DrawOverlay(state::Registry &r, FrameState &frame, const Viewport &viewport
     const rect viewport_rect{ToVec2(GetWindowPos()), ToVec2(GetContentRegionAvail())};
     const auto &camera = viewport.State.Camera.Active;
 
-    const bool active = &viewport == &r.Context.get<const Viewports>().Active();
+    const bool active = &viewport == &r.Resources.get<const Viewports>().Active();
     { // The transform gizmo, highlighted and with its guides in the active viewport whose mouse it follows.
         const auto axes = colors::MakeAxes(r.get<const ViewportTheme>(state::Document).AxisColors);
         const auto &gizmo = r.get<const GizmoInteraction>(state::Document);

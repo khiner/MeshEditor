@@ -33,18 +33,18 @@ bool Render = true;
 
 struct Fixture : Engine {
     Fixture() : Engine{true} {
-        R.Context.get<Viewports>().All.front().State.Extent = {64, 64};
+        R.Resources.get<Viewports>().All.front().State.Extent = {64, 64};
     }
     explicit Fixture(const TestDir &dir) : Fixture{} { expect(P->New(dir)); }
     std::vector<std::byte> Workspace() {
-        return workspace::Serialize(workspace::Capture(R, R.Context.emplace<WindowsState>()));
+        return workspace::Serialize(workspace::Capture(R, R.Resources.emplace<WindowsState>()));
     }
     void Audit() {
         std::string why;
         const bool valid = P->Audit(why);
         if (!valid) std::println("audit: {}", why);
         expect(valid);
-        expect(R.Context.get<action::Errors>().Messages.empty());
+        expect(R.Resources.get<action::Errors>().Messages.empty());
     }
     auto Do(auto a) {
         const auto node = P->Do(action::MakeAction(std::move(a)));
@@ -67,8 +67,8 @@ struct Fixture : Engine {
     std::vector<std::byte> Image() {
         SubmitViewports(R);
         WaitForRender(R);
-        const auto &image = R.Context.get<const Viewports>().All.front().Targets.Resources->FinalColorImage;
-        return ReadbackImageRgba8(R.Context.get<const mtl::Context>(), image, 0, 0, image.Extent);
+        const auto &image = R.Resources.get<const Viewports>().All.front().Targets.Screen->FinalColorImage;
+        return ReadbackImageRgba8(R.Resources.get<const mtl::Context>(), image, 0, 0, image.Extent);
     }
 };
 
@@ -142,7 +142,7 @@ void TestActionsArchive() {
 
     const CameraLens lens{Perspective{.FieldOfViewRad = .9f, .FarClip = 1000.f, .NearClip = .1f}};
     const ViewCamera editor_view{vec3{2, 3, 9}, vec3{0}, lens};
-    auto &view = f.R.Context.get<Viewports>().All.front();
+    auto &view = f.R.Resources.get<Viewports>().All.front();
     view.State.Camera.Active = editor_view;
     const auto camera = f.Add(action::object::AddCamera{std::make_unique<ObjectCreateInfo>(), lens});
     const auto final_node = f.Do(action::view::SetLookThroughCamera{view.Id, camera});
@@ -150,7 +150,7 @@ void TestActionsArchive() {
     expect(view.State.Camera.LookThroughSaved.value() == editor_view);
     const auto final_state = p.History.MaterializeLive();
     const auto final_camera = view.State.Camera;
-    auto &windows = f.R.Context.emplace<WindowsState>();
+    auto &windows = f.R.Resources.emplace<WindowsState>();
     windows.History.Visible = false;
     windows.PendingTabs = {{11, 12}};
     const auto final_workspace = workspace::Serialize(workspace::Capture(f.R, windows));
@@ -165,10 +165,10 @@ void TestActionsArchive() {
     const auto workspace = workspace::Deserialize(ReadArchiveMetadata(archive).value());
     expect(workspace.has_value());
     if (!workspace) return;
-    auto &restored_windows = restored.R.Context.emplace<WindowsState>();
+    auto &restored_windows = restored.R.Resources.emplace<WindowsState>();
     workspace::Apply(restored.R, restored_windows, *workspace);
     expect(workspace::Serialize(workspace::Capture(restored.R, restored_windows)) == final_workspace);
-    const auto restored_view = [&] { return restored.R.Context.get<const Viewports>().All.front().State; };
+    const auto restored_view = [&] { return restored.R.Resources.get<const Viewports>().All.front().State; };
     expect(restored_view().Camera == final_camera);
     expect(restored_view().LookThroughEntity == camera);
     restored.Audit();
@@ -269,7 +269,7 @@ void TestExternalReferences() {
     std::filesystem::remove(buffer);
     expect(!restored.P->Replay());
     expect(restored.P->History.MaterializeLive() == before_failure);
-    auto &errors = restored.R.Context.get<action::Errors>().Messages;
+    auto &errors = restored.R.Resources.get<action::Errors>().Messages;
     expect(!errors.empty());
     errors.clear();
     restored.Audit();
@@ -287,7 +287,7 @@ void TestRenderInstanceDerivation() {
     const auto slot = r.get<const RenderInstance>(entity).BufferIndex;
     const auto placed = [&](state::Entity e, bool hidden) {
         const auto *ri = r.try_get<const RenderInstance>(e);
-        return ri && r.all_of<Hidden>(e) == hidden && ((r.Context.get<const GpuBuffers>().Instances.StateBuffer.GetSpan<uint8_t>()[ri->BufferIndex] & InstanceStateHidden) != 0u) == hidden;
+        return ri && r.all_of<Hidden>(e) == hidden && ((r.Resources.get<const GpuBuffers>().Instances.StateBuffer.GetSpan<uint8_t>()[ri->BufferIndex] & InstanceStateHidden) != 0u) == hidden;
     };
     expect(placed(entity, false));
     created.clear();
@@ -318,8 +318,8 @@ void TestHiddenObjectEscapesPick() {
     Fixture f{dir};
     auto &r = f.R;
     const auto cube = f.AddCube();
-    const auto &viewport = r.Context.get<const Viewports>().All.front();
-    const RenderView view{viewport.State.Camera.Active, RenderExtentPx(viewport, r.Context.get<const FrameState>())};
+    const auto &viewport = r.Resources.get<const Viewports>().All.front();
+    const RenderView view{viewport.State.Camera.Active, RenderExtentPx(viewport, r.Resources.get<const FrameState>())};
     const auto pick = [&] { f.P->Do(action::MakeAction(action::selection::Pick{.Mouse = {0.5f, 0.5f}, .Shift = false, .View = std::make_unique<RenderView>(view)})); };
     f.Do(action::selection::DeselectAll{});
     pick();
@@ -392,7 +392,7 @@ void TestDuplicateDrawsAsItsSource() {
     const TestDir dir{"/tmp/mesheditor-scratch/project-duplicate-records"};
     Fixture f{dir};
     auto &r = f.R;
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     const auto render_owner = [&](state::Entity e) -> const MeshStore::Record & {
         return meshes.Get(r.get<const MeshHandle>(r.get<const Instance>(e).Entity).StoreId);
     };
@@ -491,7 +491,7 @@ void TestParentToDescendantFails() {
     const Chain chain{f};
     f.Do(action::selection::ExtendActive{chain.C});
     f.P->Do(action::MakeAction(action::object::ParentToActive{}));
-    auto &messages = r.Context.get<action::Errors>().Messages;
+    auto &messages = r.Resources.get<action::Errors>().Messages;
     expect(messages == std::vector<std::string>{"Loop in parents"});
     messages.clear();
     expect(ParentOrNull(r, chain.A) == state::Null);
@@ -503,8 +503,8 @@ void TestParentToDescendantFails() {
 // Verify disjoint bounds storage and compare topology and sharp-edge totals with a recount.
 void CheckLayout(Fixture &f, std::string_view step) {
     auto &r = f.R;
-    const auto &buffers = r.Context.get<const GpuBuffers>();
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &buffers = r.Resources.get<const GpuBuffers>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &render = meshes.Render();
     const bool edit = r.get<const Interaction>(state::Document).Mode == InteractionMode::Edit;
     const bool transforming = edit && r.all_of<PendingTransform>(state::Document);
@@ -636,7 +636,7 @@ void TestIncrementalLayout() {
     CheckLayout(f, "object");
     f.Do(action::object::SetSelectedSmoothShading{true});
     CheckLayout(f, "smooth");
-    f.Do(action::view::SetViewportShading{f.R.Context.get<const Viewports>().All.front().Id, ViewportShadingMode::Wireframe});
+    f.Do(action::view::SetViewportShading{f.R.Resources.get<const Viewports>().All.front().Id, ViewportShadingMode::Wireframe});
     CheckLayout(f, "wireframe");
 }
 

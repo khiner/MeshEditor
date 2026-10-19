@@ -25,11 +25,11 @@ struct RenderSamplerSlots {
     uint32_t Silhouette, SceneColor, OverlayColor, Transmission, MotionBlurOutput, Velocity, SceneDepth, DepthPyramid, OutlineOccluderPyramid;
 };
 
-// The viewport-sized attachments and the lazily allocated transmission and motion-blur targets.
+// The screen-space targets and the lazily allocated transmission and motion-blur targets.
 struct RenderTargets {
-    struct ResourcesT {
-        ResourcesT(const mtl::Context &, mtl::Extent2D, mtl::BindlessSet &);
-        ~ResourcesT();
+    struct ScreenT {
+        ScreenT(const mtl::Context &, mtl::Extent2D, mtl::BindlessSet &);
+        ~ScreenT();
 
         struct PyramidMip {
             mtl::Texture View;
@@ -85,9 +85,9 @@ struct RenderTargets {
     SampledTexture DepthPyramidSampler() const;
     SampledTexture OutlineOccluderPyramidSampler() const;
 
-    mtl::Extent2D BuiltColorExtent() const { return Resources ? Resources->SceneColorImage.Extent : mtl::Extent2D{}; }
+    mtl::Extent2D BuiltColorExtent() const { return Screen ? Screen->SceneColorImage.Extent : mtl::Extent2D{}; }
 
-    std::unique_ptr<ResourcesT> Resources;
+    std::unique_ptr<ScreenT> Screen;
     std::unique_ptr<TransmissionResourcesT> Transmission;
     std::unique_ptr<MotionBlurResourcesT> MotionBlur;
 };

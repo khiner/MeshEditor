@@ -37,7 +37,7 @@ using ::test::Op, ::test::Patchwork, ::test::PlanCase, ::test::Region, ::test::T
 struct Fixture : TestDir, Engine {
     // Runs after each action and each direct commit, told whether the present node replays from its actions.
     std::function<void(bool replays)> Observe;
-    explicit Fixture(const char *dir) : TestDir{dir}, Engine{true} { R.Context.get<Viewports>().All.front().State.Extent = {64, 64}; }
+    explicit Fixture(const char *dir) : TestDir{dir}, Engine{true} { R.Resources.get<Viewports>().All.front().State.Extent = {64, 64}; }
     void Reset(std::string_view name) {
         Observe = {};
         expect(P->New(Path / name));
@@ -51,8 +51,8 @@ struct Fixture : TestDir, Engine {
     // Does the action, which must fail.
     void Fails(auto a) {
         P->Do(action::MakeAction(std::move(a)));
-        expect(!R.Context.get<action::Errors>().Messages.empty());
-        R.Context.get<action::Errors>().Messages.clear();
+        expect(!R.Resources.get<action::Errors>().Messages.empty());
+        R.Resources.get<action::Errors>().Messages.clear();
     }
     state::Entity AddMesh(PrimitiveShape shape) {
         Do(action::object::AddMeshPrimitive{std::move(shape), std::make_unique<MeshInstanceCreateInfo>()});
@@ -78,7 +78,7 @@ struct Fixture : TestDir, Engine {
     void Stage(auto a) {
         action::Emit(std::move(a), action::Phase::Stage);
         P->Frame(action::Drain());
-        expect(R.Context.get<action::Errors>().Messages.empty());
+        expect(R.Resources.get<action::Errors>().Messages.empty());
     }
     void CommitGesture() {
         action::Commit();
@@ -95,15 +95,15 @@ struct Fixture : TestDir, Engine {
     }
     std::vector<std::byte> Image() {
         Render();
-        const auto &image = R.Context.get<const Viewports>().All.front().Targets.Resources->FinalColorImage;
-        return ReadbackImageRgba8(R.Context.get<const mtl::Context>(), image, 0, 0, image.Extent);
+        const auto &image = R.Resources.get<const Viewports>().All.front().Targets.Screen->FinalColorImage;
+        return ReadbackImageRgba8(R.Resources.get<const mtl::Context>(), image, 0, 0, image.Extent);
     }
-    const SceneViewUBO &View() const { return *reinterpret_cast<const SceneViewUBO *>(R.Context.get<const Viewports>().All.front().SceneViewUBO.Contents().data()); }
+    const SceneViewUBO &View() const { return *reinterpret_cast<const SceneViewUBO *>(R.Resources.get<const Viewports>().All.front().SceneViewUBO.Contents().data()); }
     // Renders a frame and clicks the element nearest the world position, adding it to the selection with `toggle`.
     void Click(vec3 position, bool toggle) {
         Render();
         const auto clip = View().ViewProj * vec4{position.x, position.y, position.z, 1.f};
-        Do(action::selection::ApplyEditElementClick{{.5f + .5f * clip.x / clip.w, .5f - .5f * clip.y / clip.w}, toggle, std::make_unique<RenderView>(R.Context.get<const Viewports>().All.front().FrameView)});
+        Do(action::selection::ApplyEditElementClick{{.5f + .5f * clip.x / clip.w, .5f - .5f * clip.y / clip.w}, toggle, std::make_unique<RenderView>(R.Resources.get<const Viewports>().All.front().FrameView)});
     }
     // Process direct scene writes and commit them as one history node.
     void Commit(std::string label) {
@@ -117,7 +117,7 @@ struct Fixture : TestDir, Engine {
         const bool valid = P->Audit(why);
         if (!valid) std::println("audit: {}", why);
         expect(valid);
-        expect(R.Context.get<action::Errors>().Messages.empty());
+        expect(R.Resources.get<action::Errors>().Messages.empty());
     }
     // Replays the present node's actions from its parent's state, which must reach the node's state.
     void ValidateReplay(std::source_location at = std::source_location::current()) {
@@ -131,7 +131,7 @@ struct Fixture : TestDir, Engine {
         expect(P->Replay());
         expect(P->History.MaterializeLive() == persistent);
     }
-    MeshStore &Store() { return R.Context.get<MeshStore>(); }
+    MeshStore &Store() { return R.Resources.get<MeshStore>(); }
     uint32_t Source(state::Entity mesh_entity) const { return R.get<const MeshHandle>(mesh_entity).StoreId; }
     state::Entity Object(state::Entity mesh_entity) const {
         for (const auto [e, instance] : R.view<const Instance>().each())
@@ -140,7 +140,7 @@ struct Fixture : TestDir, Engine {
     }
     // Return the evaluated procedure record when present, otherwise the source record.
     uint32_t Output(state::Entity mesh_entity) const { return *DrawnStoreId(R, mesh_entity); }
-    uint64_t Cooks() const { return R.Context.get<const CookCount>().Value; }
+    uint64_t Cooks() const { return R.Resources.get<const CookCount>().Value; }
     uint32_t Resyncs(state::Entity mesh_entity) const { return R.get<const ResyncState>(mesh_entity).Resyncs; }
     uint32_t AttributeCount(uint32_t id) {
         uint32_t count = 0u;

@@ -43,7 +43,7 @@ void EncodeVertexFans(state::Registry &r, mtl::ComputeChain &chain, std::span<co
     if (!total_words) return;
     if (total_words > UINT32_MAX) throw std::length_error("Vertex fan scratch exceeds its address space.");
     const auto batch = std::make_shared<FanBatch>(chain.Scratch, uint32_t(total_words));
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     auto &fans = meshes.VertexFans();
     std::vector<Range> runs;
     batch->Begin();

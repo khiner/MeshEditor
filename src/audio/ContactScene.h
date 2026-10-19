@@ -30,7 +30,7 @@ inline std::optional<double> SurfaceCurvature(const state::Registry &r, state::E
     if (!owner || owner->SpatialRoot == InvalidOffset) return std::nullopt;
     const auto &wt = *WorldTransformOf(r, node);
     const auto mesh = GetMesh(r, inst->Entity);
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     const auto hit = ClosestMeshletPoint(meshes.Render(), *owner, mesh.VertexValues(), mesh.TriangleVertices(), InverseTransformPoint(wt, world_point));
     // Interpolate the triangle's per-vertex curvature at the contact's barycentric weights.
     double local = 0;

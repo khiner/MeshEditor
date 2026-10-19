@@ -13,19 +13,19 @@ template<typename C> bool NamedByOther(const state::Registry &r, state::Entity e
 }
 // Each record a mesh entity owns, its source and its evaluated output, maps to the entity.
 template<typename C> void MapMeshEntity(state::Registry &r, state::Entity e) {
-    auto &entities = r.Context.get<MeshEntities>().ByStore;
+    auto &entities = r.Resources.get<MeshEntities>().ByStore;
     const auto id = r.get<const C>(e).StoreId;
     if (id >= entities.size()) entities.resize(id + 1, state::Null);
     entities[id] = e;
 }
 template<typename C> void UnmapMeshEntity(state::Registry &r, state::Entity e) {
-    auto &entities = r.Context.get<MeshEntities>().ByStore;
+    auto &entities = r.Resources.get<MeshEntities>().ByStore;
     if (const auto id = r.get<const C>(e).StoreId; id < entities.size() && entities[id] == e && !NamedByOther<C>(r, e)) entities[id] = state::Null;
 }
 // A record its owner drops outside a restore releases at the next settle, unless the owner still names it.
 template<typename C> void QueueRelease(state::Registry &r, state::Entity e) {
     if (r.Restoring || NamedByOther<C>(r, e)) return;
-    r.Context.emplace<PendingObjectRemovals>().StoreIds.push_back(r.get<const C>(e).StoreId);
+    r.Resources.emplace<PendingObjectRemovals>().StoreIds.push_back(r.get<const C>(e).StoreId);
 }
 template<typename C> void TrackRecord(state::Registry &r) {
     r.on_construct<C, &MapMeshEntity<C>>();
@@ -36,13 +36,13 @@ template<typename C> void TrackRecord(state::Registry &r) {
 } // namespace
 
 void RegisterMeshStoreHandlers(state::Registry &r) {
-    r.Context.emplace<MeshEntities>();
+    r.Resources.emplace<MeshEntities>();
     TrackRecord<MeshHandle>(r);
     TrackRecord<EvaluatedMesh>(r);
 }
 
 state::Entity MeshEntityOf(const state::Registry &r, uint32_t store_id) {
-    const auto &entities = r.Context.get<const MeshEntities>().ByStore;
+    const auto &entities = r.Resources.get<const MeshEntities>().ByStore;
     const auto e = store_id < entities.size() ? entities[store_id] : state::Null;
     if (!r.valid(e)) return state::Null;
     const auto *handle = r.try_get<const MeshHandle>(e);
@@ -52,7 +52,7 @@ state::Entity MeshEntityOf(const state::Registry &r, uint32_t store_id) {
 
 const MeshStore::Record *TryRecordOf(const state::Registry &r, state::Entity e) {
     const auto id = DrawnStoreId(r, e);
-    return id ? r.Context.get<const MeshStore>().TryGet(*id) : nullptr;
+    return id ? r.Resources.get<const MeshStore>().TryGet(*id) : nullptr;
 }
-const MeshStore::Record &RecordOf(const state::Registry &r, state::Entity e) { return r.Context.get<const MeshStore>().Get(*DrawnStoreId(r, e)); }
-MeshStore::Record &EditRecordOf(state::Registry &r, state::Entity e) { return r.Context.get<MeshStore>().WriteRecord(*DrawnStoreId(r, e)); }
+const MeshStore::Record &RecordOf(const state::Registry &r, state::Entity e) { return r.Resources.get<const MeshStore>().Get(*DrawnStoreId(r, e)); }
+MeshStore::Record &EditRecordOf(state::Registry &r, state::Entity e) { return r.Resources.get<MeshStore>().WriteRecord(*DrawnStoreId(r, e)); }

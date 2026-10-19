@@ -53,14 +53,14 @@ void DrawSurfaceSynthControls(state::Registry &r) {
     ui::Edit f{r, state::Document};
     SeparatorText("Sustained contact");
     ui::DrawFields<SurfaceSoundControls>(f);
-    Text("Active voices: %u", SurfaceActiveVoices(r.Context.get<const ModalAudio>()));
+    Text("Active voices: %u", SurfaceActiveVoices(r.Resources.get<const ModalAudio>()));
 }
 
 void DrawSurfaceContactDebug(const state::Registry &r) {
-    const auto &surface = Surface(r.Context.get<const ModalAudio>());
+    const auto &surface = Surface(r.Resources.get<const ModalAudio>());
 
     SeparatorText("Sustained contact");
-    Text("Voices: %u / %u", r.Context.get<const ModalAudio>().ActiveVoices.load(std::memory_order_relaxed), SurfaceControls(r).MaxVoices);
+    Text("Voices: %u / %u", r.Resources.get<const ModalAudio>().ActiveVoices.load(std::memory_order_relaxed), SurfaceControls(r).MaxVoices);
     Text("Refused: %llu", surface.VoicesRefused);
     ui::Describe("Refused voices", "Contacts left silent because the voice cap was full");
 

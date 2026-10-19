@@ -17,7 +17,7 @@ constexpr uint32_t LabelRounds{16};
 
 BooleanWork::BooleanWork(state::Registry &r, mtl::ComputeChain &chain, const MeshTopologyTask &task, const MeshClosure &first, const MeshClosure &second) {
     const profile::CpuScope scope{"BooleanWork"};
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &a = meshes.Arenas();
     const auto &pipelines = GetMeshPipelines(r);
     auto &scratch = chain.Scratch;

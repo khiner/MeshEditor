@@ -69,7 +69,7 @@ void ComputePivot(const state::Registry &r, const ModeScope &scope, TransformRoo
 }
 
 bool PivotMoved(const state::Registry &r, const ModeScope &scope, const TransformRoots &roots) {
-    const auto &moved = r.Context.get<const SceneChanges>().WorldTransform;
+    const auto &moved = r.Resources.get<const SceneChanges>().WorldTransform;
     if (moved.empty()) return false;
     if (const auto active = scope.Bone ? FindActiveBone(r) : FindActiveEntity(r); active != state::Null && moved.contains(active)) return true;
     if (moved.size() < roots.Roots.size()) return std::ranges::any_of(moved, [&](state::Entity e) { return ContainsInIndexOrder(roots.Roots, e); });
@@ -83,7 +83,7 @@ SelectionSharpness Sharpness(bool any_smooth, bool any_sharp, bool mixed) {
 }
 
 void ComputeFlags(const state::Registry &r, const ModeScope &scope, const EditPrimaries &primaries, SelectionFlags &out) {
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     out.Meshes.clear();
     out.AllMeshes = std::ranges::none_of(r.view<const Selected, const ObjectKind>().each(), [](const auto &entry) { return std::get<1>(entry).Value != ObjectType::Mesh; });
     out.AnyVisible = out.AnyHidden = false;
@@ -221,12 +221,12 @@ void BuildOutlinerRows(const state::Registry &r, OutlinerRows &out) {
 }
 
 std::vector<state::Entity> UpdateSelectionState(state::Registry &r) {
-    const auto &selection_changes = r.Context.get<const SelectionChanges>();
-    const auto &viewport_changes = r.Context.get<const ViewportChanges>();
-    const auto &scene_changes = r.Context.get<const SceneChanges>();
-    const auto &render_changes = r.Context.get<const RenderChanges>();
-    const auto &mesh_changes = r.Context.get<const MeshChanges>();
-    const auto &animation_changes = r.Context.get<const AnimationChanges>();
+    const auto &selection_changes = r.Resources.get<const SelectionChanges>();
+    const auto &viewport_changes = r.Resources.get<const ViewportChanges>();
+    const auto &scene_changes = r.Resources.get<const SceneChanges>();
+    const auto &render_changes = r.Resources.get<const RenderChanges>();
+    const auto &mesh_changes = r.Resources.get<const MeshChanges>();
+    const auto &animation_changes = r.Resources.get<const AnimationChanges>();
     const bool selection = AnyChanged(selection_changes.Selected, selection_changes.ActiveInstance, selection_changes.BoneSelection);
     const bool interaction = AnyChanged(viewport_changes.InteractionMode);
     const bool parents = AnyChanged(scene_changes.Parent);
@@ -255,7 +255,7 @@ std::vector<state::Entity> UpdateSelectionState(state::Registry &r) {
         ComputePivot(r, scope, r.edit<TransformRoots>(state::Document));
     }
 
-    if (primaries_changed || AnyChanged(viewport_changes.EditMode, mesh_changes.Geometry) || r.Context.get<const GpuSceneState>().EditSelectionDirty) {
+    if (primaries_changed || AnyChanged(viewport_changes.EditMode, mesh_changes.Geometry) || r.Resources.get<const GpuSceneState>().EditSelectionDirty) {
         ComputeFlags(r, scope, r.get<const EditPrimaries>(state::Document), r.edit<SelectionFlags>(state::Document));
     }
 

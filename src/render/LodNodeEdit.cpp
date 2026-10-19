@@ -210,7 +210,7 @@ void RestructureLeaves(OwnerNodes &nodes, const std::map<uint32_t, std::vector<u
 LodNodeRefit EditLodNodes(state::Registry &r, MeshStore::Record &owner, std::span<const uint32_t> removed, std::span<const LodClusterRun> added, std::span<const uint32_t> touched) {
     if (removed.empty() && added.empty() && touched.empty()) return {};
     const profile::CpuScope scope{"LodNodeEdit"};
-    auto &buffers = r.Context.get<MeshStore>().Render();
+    auto &buffers = r.Resources.get<MeshStore>().Render();
     if (!owner.MeshletData || !owner.NodeData) throw std::invalid_argument("LOD membership edit requires a live render owner.");
     OwnerNodes nodes{buffers, owner};
     // The visits insert nothing, so the owner's meshlet and node tables stay in place while they read them.
@@ -379,7 +379,7 @@ void RecordLodNodeRefits(state::Registry &r, mtl::ComputeChain &chain, std::span
     for (const auto &refit : refits) {
         for (const auto &[depth, job] : refit.Nodes) jobs[next[depth]++] = job;
     }
-    const auto &buffers = r.Context.get<const MeshStore>().Render();
+    const auto &buffers = r.Resources.get<const MeshStore>().Render();
     const auto table = chain.Upload(std::as_bytes(std::span{jobs}));
     LodNodeRefitPushConstants pc{
         .Jobs = table,

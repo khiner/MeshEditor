@@ -10,39 +10,39 @@
 #include "viewport/ViewportDisplay.h"
 
 void InitRenderStoreContext(state::Registry &r, const mtl::Context &ctx) {
-    auto &slots = r.Context.emplace<mtl::BindlessSet>(ctx);
-    r.Context.emplace<ActiveSamplerAnisotropy>(ClampMaxAnisotropy(ToMaxAnisotropy(AnisotropicFilter{}.Value)));
-    auto &textures = r.Context.emplace<TextureStore>();
+    auto &slots = r.Resources.emplace<mtl::BindlessSet>(ctx);
+    r.Resources.emplace<ActiveSamplerAnisotropy>(ClampMaxAnisotropy(ToMaxAnisotropy(AnisotropicFilter{}.Value)));
+    auto &textures = r.Resources.emplace<TextureStore>();
     textures.WhiteTextureSlot = AllocateSamplerSlot(slots);
-    r.Context.emplace<EnvironmentStore>();
+    r.Resources.emplace<EnvironmentStore>();
 }
 
 void RegisterRenderStoreHandlers(state::Registry &r) {
     r.on_destroy<ModelsBuffer, [](state::Registry &r, state::Entity e) {
-        r.Context.emplace<PendingSlotRemovals>().Retired.push_back(e);
+        r.Resources.emplace<PendingSlotRemovals>().Retired.push_back(e);
     }>();
     r.on_destroy<ArmaturePoseState, [](state::Registry &r, state::Entity e) {
-        r.Context.emplace<PendingObjectRemovals>().DeformRanges.append_range(r.get<const ArmaturePoseState>(e).GpuDeformRanges);
+        r.Resources.emplace<PendingObjectRemovals>().DeformRanges.append_range(r.get<const ArmaturePoseState>(e).GpuDeformRanges);
     }>();
     // History restores the tracked allocator, so a restore releases nothing.
     r.on_destroy<MorphWeightRange, [](state::Registry &r, state::Entity e) {
-        if (!r.Restoring) r.Context.emplace<PendingObjectRemovals>().MorphRanges.push_back(r.get<const MorphWeightRange>(e).Weights);
+        if (!r.Restoring) r.Resources.emplace<PendingObjectRemovals>().MorphRanges.push_back(r.get<const MorphWeightRange>(e).Weights);
     }>();
     r.on_destroy<RenderInstance, [](state::Registry &r, state::Entity e) {
         const auto &ri = r.get<const RenderInstance>(e);
         if (ri.BufferIndex == UINT32_MAX) return;
-        r.Context.emplace<PendingSlotRemovals>().Instances.push_back({ri.Entity, ri.BufferIndex});
+        r.Resources.emplace<PendingSlotRemovals>().Instances.push_back({ri.Entity, ri.BufferIndex});
     }>();
 }
 mtl::BufferContext &InitRenderStores(state::Registry &r) {
-    auto &buffers = r.Context.emplace<GpuBuffers>(r.Context.get<const mtl::Context>(), r.Context.get<mtl::BindlessSet>());
-    r.Context.emplace<MaterialStore>();
+    auto &buffers = r.Resources.emplace<GpuBuffers>(r.Resources.get<const mtl::Context>(), r.Resources.get<mtl::BindlessSet>());
+    r.Resources.emplace<MaterialStore>();
     return buffers.Ctx;
 }
 void InitDefaultMaterial(state::Registry &r) {
-    auto &buffers = r.Context.get<GpuBuffers>();
-    auto &textures = r.Context.get<TextureStore>();
-    auto &materials = r.Context.get<MaterialStore>();
+    auto &buffers = r.Resources.get<GpuBuffers>();
+    auto &textures = r.Resources.get<TextureStore>();
+    auto &materials = r.Resources.get<MaterialStore>();
     buffers.Materials.Append(PBRMaterial{.BaseColorTexture = {.Slot = textures.WhiteTextureSlot}, .MetallicFactor = 0.f});
     materials.AppendNames({"Default"});
 
@@ -60,16 +60,16 @@ void InitDefaultMaterial(state::Registry &r) {
     });
 }
 void DeinitTextureStores(state::Registry &r) {
-    auto &slots = r.Context.get<mtl::BindlessSet>();
-    auto &textures = r.Context.get<TextureStore>();
-    const auto &environments = r.Context.get<EnvironmentStore>();
+    auto &slots = r.Resources.get<mtl::BindlessSet>();
+    auto &textures = r.Resources.get<TextureStore>();
+    const auto &environments = r.Resources.get<EnvironmentStore>();
     ReleaseEnvironmentSamplerSlots(slots, environments);
     ReleaseTextureSlots(slots, textures.Textures);
-    r.Context.erase<EnvironmentStore>();
-    r.Context.erase<TextureStore>();
+    r.Resources.erase<EnvironmentStore>();
+    r.Resources.erase<TextureStore>();
 }
 void DeinitRenderStores(state::Registry &r) {
-    r.Context.erase<GpuBuffers>();
-    r.Context.erase<MaterialStore>();
+    r.Resources.erase<GpuBuffers>();
+    r.Resources.erase<MaterialStore>();
 }
-void DeinitRenderStoreContext(state::Registry &r) { r.Context.erase<mtl::BindlessSet>(); }
+void DeinitRenderStoreContext(state::Registry &r) { r.Resources.erase<mtl::BindlessSet>(); }

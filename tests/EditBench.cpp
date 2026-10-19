@@ -44,8 +44,8 @@ void ReportLibraries(const mtl::LibraryCache &cache, const char *phase) {
 Result Capture(state::Registry &r, const char *variable) {
     const char *path = std::getenv(variable);
     if (!path) return {};
-    const auto &image = r.Context.get<const Viewports>().All.front().Targets.Resources->FinalColorImage;
-    const auto rgba = ReadbackImageRgba8(r.Context.get<const mtl::Context>(), image, 0u, 0u, image.Extent);
+    const auto &image = r.Resources.get<const Viewports>().All.front().Targets.Screen->FinalColorImage;
+    const auto rgba = ReadbackImageRgba8(r.Resources.get<const mtl::Context>(), image, 0u, 0u, image.Extent);
     const auto file = std::unique_ptr<FILE, decltype(&std::fclose)>{std::fopen(path, "wb"), &std::fclose};
     if (!file) return std::unexpected{"failed to open frame capture"};
     if (std::fwrite(rgba.data(), 1u, rgba.size(), file.get()) != rgba.size()) return std::unexpected{"failed to write frame capture"};
@@ -215,10 +215,10 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
     auto &p = *engine.P;
     const auto result = [&]() -> Result {
         profile::Enabled = true;
-        profile::Init(r.Context.get<const mtl::Context>());
+        profile::Init(r.Resources.get<const mtl::Context>());
         profile::Enabled = false;
         if (!p.Begin(dir)) return std::unexpected{"project begin failed"};
-        r.Context.get<Viewports>().All.front().State.Extent = {viewport_width, viewport_height};
+        r.Resources.get<Viewports>().All.front().State.Extent = {viewport_width, viewport_height};
         p.Settle();
         std::println(stderr, "Preparing benchmark scene...");
         const auto load_begin = std::chrono::steady_clock::now();
@@ -316,7 +316,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         profile::Enabled = false;
         std::println(stderr, "Face selection mode prepared in {:.3f} ms.", mode_ms);
         const auto entity = GetActiveMeshEntity(r);
-        auto &meshes = r.Context.get<MeshStore>();
+        auto &meshes = r.Resources.get<MeshStore>();
         const auto original = GetMesh(r, entity);
         const auto faces = original.FaceCount(), vertices = original.VertexCount();
         const auto find_face = [&]() -> std::optional<he::FH> {
@@ -343,7 +343,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             const float distance = std::strtof(distance_text, nullptr);
             if (!(std::isfinite(distance) && distance > 0.f)) return std::unexpected{"invalid face camera distance"};
             const vec3 center = original.CalcFaceCentroid(face);
-            auto &view = r.Context.get<Viewports>().All.front().State;
+            auto &view = r.Resources.get<Viewports>().All.front().State;
             const auto lens = view.Camera.Active.Data;
             ClearLookThrough(view);
             const auto eye = center + vec3{0.2f * distance, distance, 0.5f * distance};
@@ -485,7 +485,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         // Include the renderer's first meshlet and LOD publication in the baseline used for replay, as well as the edit selection.
         p.History.Commit("benchmark selection", {});
         const auto base = *p.History.Present;
-        const auto allocated = [&] { return uint64_t(r.Context.get<const mtl::Context>().Device->currentAllocatedSize()); };
+        const auto allocated = [&] { return uint64_t(r.Resources.get<const mtl::Context>().Device->currentAllocatedSize()); };
         const auto row = [&](std::string_view name, double ms, size_t count) {
             std::println("mesh,{},{},{},{},{:.6f},{}", vertices, faces, count, name, ms, allocated());
         };
@@ -495,12 +495,12 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         };
         const auto render_step = [&](std::string_view name) -> Result {
             if (!render) return {};
-            if (!r.Context.get<const Viewports>().All.front().RenderRequested)
+            if (!r.Resources.get<const Viewports>().All.front().RenderRequested)
                 return std::unexpected{std::string{name} + " did not request a rendered frame"};
             draw(name, selected_count);
             return {};
         };
-        const auto &cache = r.Context.get<const mtl::LibraryCache>();
+        const auto &cache = r.Resources.get<const mtl::LibraryCache>();
         ReportLibraries(cache, "baseline");
         profile::ClearStats();
         profile::Enabled = !std::getenv("MESHEDITOR_EDIT_BENCH_UNPROFILED");
@@ -857,7 +857,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 }
                 if (i) warm_preview_ms.push_back(elapsed);
                 if (render) {
-                    if (!r.Context.get<const Viewports>().All.front().RenderRequested) return std::unexpected{"edit preview did not request a rendered frame"};
+                    if (!r.Resources.get<const Viewports>().All.front().RenderRequested) return std::unexpected{"edit preview did not request a rendered frame"};
                     draw("render" + std::to_string(i), selected_count);
                     if (i == 1u)
                         if (auto result = Capture(r, "MESHEDITOR_EDIT_BENCH_CAPTURE"); !result) return result;
@@ -887,7 +887,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         if (staged && render) {
             if (auto result = Capture(r, "MESHEDITOR_EDIT_BENCH_CAPTURE_EXIT"); !result) return result;
             if (std::getenv("MESHEDITOR_EDIT_BENCH_CAPTURE_FINE")) {
-                r.Context.get<Viewports>().All.front().State.Display.LodErrorPixels = 0.f;
+                r.Resources.get<Viewports>().All.front().State.Display.LodErrorPixels = 0.f;
                 p.Frame(action::Drain());
                 SubmitViewports(r);
                 WaitForRender(r);
@@ -899,7 +899,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         return {};
     }();
     if (result) {
-        ReportLibraries(r.Context.get<const mtl::LibraryCache>(), "completed");
+        ReportLibraries(r.Resources.get<const mtl::LibraryCache>(), "completed");
         profile::Report();
     }
     profile::Deinit();
@@ -907,7 +907,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
     if (!result) return result;
     std::string why;
     if (!p.Audit(why)) return std::unexpected{why};
-    if (!r.Context.get<action::Errors>().Messages.empty()) return std::unexpected{"action error"};
+    if (!r.Resources.get<action::Errors>().Messages.empty()) return std::unexpected{"action error"};
     if (!p.Close()) return std::unexpected{"project close failed"};
     return {};
 }

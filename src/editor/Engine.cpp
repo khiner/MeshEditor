@@ -4,7 +4,7 @@
 #include "viewport/Viewport.h"
 
 Engine::Engine(bool audio) : Audio(audio) {
-    R.Context.emplace<mtl::Context>();
+    R.Resources.emplace<mtl::Context>();
     P = std::make_unique<project::Project>(R);
     InitEngine(R);
     P->TrackStores();

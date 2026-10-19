@@ -131,7 +131,7 @@ void Table::clear() {
     Count = 0;
 }
 Registry::Registry() : AllocationStorage(std::make_unique<Allocation>()) {}
-Registry::~Registry() { Context.Clear(); }
+Registry::~Registry() { Resources.Clear(); }
 DirtySet::~DirtySet() {
     if (Owner) {
         for (auto [type, event] : Bindings) std::erase(Owner->Dirty[type][size_t(event)], this);
@@ -247,7 +247,7 @@ void Registry::Reset() {
     AllocationStorage->Generations.Clear();
     AllocationStorage->Free.Clear();
     Living.clear();
-    for (auto &slot : Context.Slots) {
+    for (auto &slot : Resources.Slots) {
         if (slot.Value && slot.Reset) slot.Reset(slot.Value, *this);
     }
 }

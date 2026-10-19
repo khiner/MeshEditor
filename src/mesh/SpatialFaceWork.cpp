@@ -58,7 +58,7 @@ bool Overlaps(const MeshTopologyTask &task, const AABB &bounds) {
 
 SpatialFaceWork::SpatialFaceWork(state::Registry &r, mtl::ComputeChain &chain, const MeshTopologyTask &task) {
     const profile::CpuScope scope{"SpatialFaceCount"};
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &record = meshes.Get(task.SourceId);
     const auto &a = meshes.Arenas();
     const uint32_t mode = task.Flags & TopologyFlagScreenCuts ? 2u :

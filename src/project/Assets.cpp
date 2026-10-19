@@ -42,11 +42,11 @@ std::expected<fs::path, std::string> Assets::Store(std::string_view name, std::s
 }
 
 fs::path ResolveAsset(const state::Registry &r, const fs::path &path) {
-    return Assets::IsReference(path) ? r.Context.get<const Assets>().Resolve(path) : path;
+    return Assets::IsReference(path) ? r.Resources.get<const Assets>().Resolve(path) : path;
 }
 
 fs::path AssetReference(const state::Registry &r, const fs::path &path) {
-    const auto *assets = r.Context.find<const Assets>();
+    const auto *assets = r.Resources.find<const Assets>();
     return assets ? assets->Reference(path) : path;
 }
 } // namespace project

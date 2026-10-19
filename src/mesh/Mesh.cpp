@@ -65,14 +65,14 @@ uint32_t Mesh::FaceOrdinal(FH face) const { return Store->LiveElementOrdinal(Sto
 std::span<const uint32_t> Mesh::CornerVertices() const { return Store->Arenas().FaceCorners.Get(Store->Get(StoreId).FaceCorners); }
 
 Mesh GetMesh(const state::Registry &r, state::Entity e) {
-    return {r.Context.get<const MeshStore>(), r.get<const MeshHandle>(e).StoreId};
+    return {r.Resources.get<const MeshStore>(), r.get<const MeshHandle>(e).StoreId};
 }
 std::optional<Mesh> TryGetMesh(const state::Registry &r, state::Entity e) {
     if (!HasMesh(r, e)) return std::nullopt;
     return GetMesh(r, e);
 }
 bool HasMesh(const state::Registry &r, state::Entity e) { return r.all_of<MeshHandle>(e); }
-Mesh GetDrawnMesh(const state::Registry &r, state::Entity e) { return {r.Context.get<const MeshStore>(), *DrawnStoreId(r, e)}; }
+Mesh GetDrawnMesh(const state::Registry &r, state::Entity e) { return {r.Resources.get<const MeshStore>(), *DrawnStoreId(r, e)}; }
 std::optional<uint32_t> DrawnStoreId(const state::Registry &r, state::Entity e) {
     if (const auto *evaluated = r.try_get<const EvaluatedMesh>(e)) return evaluated->StoreId;
     if (HasMesh(r, e)) return r.get<const MeshHandle>(e).StoreId;

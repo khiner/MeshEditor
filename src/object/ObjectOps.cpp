@@ -38,7 +38,7 @@ void ClearRelationships(state::Registry &r, std::span<const state::Entity> entit
 } // namespace
 
 void DestroyArmatureData(state::Registry &r, state::Entity arm_obj_entity) {
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     auto &arm = r.edit<ArmatureObject>(arm_obj_entity);
     if (arm.JointEntity != state::Null) {
         if (const auto *ref = r.try_get<VertexStoreId>(arm.JointEntity)) meshes.Release(ref->StoreId);
@@ -59,7 +59,7 @@ void Destroy(state::Registry &r, state::Entity e) {
 void Destroy(state::Registry &r, std::span<const state::Entity> entities) {
     if (entities.empty()) return;
     const profile::CpuScope scope{"DestroyObjects"};
-    auto &pending = r.Context.emplace<PendingObjectRemovals>();
+    auto &pending = r.Resources.emplace<PendingObjectRemovals>();
     ClearRelationships(r, entities);
     std::vector<state::Entity> destroyed;
     destroyed.reserve(entities.size());
@@ -76,7 +76,7 @@ void Destroy(state::Registry &r, std::span<const state::Entity> entities) {
         if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) try_add_armature_data(bone_attachment->ArmatureEntity);
 
         if (const auto *light_index = r.try_get<LightIndex>(e)) {
-            r.Context.get<GpuBuffers>().PendingLightRemovals.emplace_back(light_index->Value);
+            r.Resources.get<GpuBuffers>().PendingLightRemovals.emplace_back(light_index->Value);
         }
 
         if (r.all_of<ArmatureObject>(e)) {
@@ -107,7 +107,7 @@ void Destroy(state::Registry &r, std::span<const state::Entity> entities) {
 }
 
 void ProcessObjectRemovals(state::Registry &r) {
-    auto *pending = r.Context.find<PendingObjectRemovals>();
+    auto *pending = r.Resources.find<PendingObjectRemovals>();
     if (!pending) return;
     const profile::CpuScope scope{"ProcessObjectRemovals"};
     auto &buffer_entities = pending->Buffers, &armature_data_entities = pending->Armatures;
@@ -115,14 +115,14 @@ void ProcessObjectRemovals(state::Registry &r) {
     if (removed_objects) {
         // Shared data survives while an instance uses it: a placed instance in its slot range, or one created since the last settle.
         if (!buffer_entities.empty()) {
-            const auto object_ids = r.Context.get<const GpuBuffers>().Instances.ObjectIdBuffer.GetSpan<uint32_t>();
+            const auto object_ids = r.Resources.get<const GpuBuffers>().Instances.ObjectIdBuffer.GetSpan<uint32_t>();
             std::vector<state::Entity> survivors;
             for (const auto data_entity : buffer_entities) {
                 const auto *models = r.try_get<const ModelsBuffer>(data_entity);
                 const auto slots = models ? object_ids.subspan(models->InstanceRange.Offset, models->InstanceCount) : std::span<const uint32_t>{};
                 if (std::ranges::any_of(slots, [&](uint32_t id) { const auto *instance = r.try_get<const Instance>(r.EntityAt(ObjectIndex(id))); return instance && instance->Entity == data_entity; })) survivors.push_back(data_entity);
             }
-            for (const auto e : r.Context.get<const RenderChanges>().InstanceVisibility) {
+            for (const auto e : r.Resources.get<const RenderChanges>().InstanceVisibility) {
                 if (const auto *instance = r.try_get<const Instance>(e)) survivors.push_back(instance->Entity);
             }
             for (const auto data_entity : survivors) buffer_entities.remove(data_entity);
@@ -151,8 +151,8 @@ void ProcessObjectRemovals(state::Registry &r) {
         if (const auto *models = r.try_get<const ModelsBuffer>(e)) pending->InstanceRanges.push_back(models->InstanceRange);
     }
     if (!dependents.empty()) r.destroy(dependents);
-    auto &meshes = r.Context.get<MeshStore>();
-    auto &buffers = r.Context.get<GpuBuffers>();
+    auto &meshes = r.Resources.get<MeshStore>();
+    auto &buffers = r.Resources.get<GpuBuffers>();
     meshes.Release(pending->StoreIds);
     buffers.Instances.Free(std::move(pending->InstanceRanges));
     buffers.ArmatureDeformBuffer.Release(std::move(pending->DeformRanges));
@@ -161,7 +161,7 @@ void ProcessObjectRemovals(state::Registry &r) {
     buffers.NormalDeriveEntries.Release(std::move(pending->DeriveEntryRanges));
     buffers.PreludeTiles.Release(std::move(pending->PreludeTileRanges));
     meshes.ReleaseSoundVertices(std::move(pending->SoundVertexRanges));
-    r.Context.erase<PendingObjectRemovals>();
+    r.Resources.erase<PendingObjectRemovals>();
 
     // Release imported textures and reset the material when the final instance is removed.
     // Clear the persistent texture manifest at the same time.

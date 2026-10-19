@@ -66,7 +66,7 @@ uint32_t ScratchWords(const MeshStore &meshes, uint32_t id) {
 void BuildConnectivityNow(state::Registry &r, std::span<const uint32_t> store_ids) {
     if (store_ids.empty()) return;
     const profile::CpuScope scope{"ConnectivityGpu"};
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     const auto &arenas = meshes.Arenas();
     // Submit each chunk separately to bound scratch memory.
     const auto split = ChunkByScratch(uint32_t(store_ids.size()), ScratchWordBudget, [&](uint32_t i) { return ScratchWords(meshes, store_ids[i]); });

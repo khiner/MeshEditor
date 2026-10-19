@@ -6,7 +6,7 @@
 #include "viewport/Viewport.h"
 namespace fs = std::filesystem;
 uint32_t DeviceSampleRate(const state::Registry &r) {
-    const auto *res = r.Context.find<AudioDeviceResource>();
+    const auto *res = r.Resources.find<AudioDeviceResource>();
     if (res && res->SampleRate) return res->SampleRate;
     // AUDIO_SAMPLE_RATE overrides the 48 kHz default when no device provides a rate.
     static const uint32_t fallback = [] {
@@ -19,7 +19,7 @@ uint32_t DeviceSampleRate(const state::Registry &r) {
 
 const std::vector<float> &GetSampleFrames(const state::Registry &r, const fs::path &path) {
     static const std::vector<float> EmptyFrames{};
-    const auto &samples = r.Context.get<const AudioSamples>().ByPath;
+    const auto &samples = r.Resources.get<const AudioSamples>().ByPath;
     const auto it = samples.find(path);
     return it != samples.end() ? it->second : EmptyFrames;
 }
@@ -29,7 +29,7 @@ uint32_t GetActiveVertexIndex(const state::Registry &r, state::Entity instance_e
     const auto &excitable = r.get<const SoundVertices>(instance_entity);
     const auto mesh_entity = r.get<const Instance>(instance_entity).Entity;
     if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) {
-        const auto &meshes = r.Context.get<const MeshStore>();
+        const auto &meshes = r.Resources.get<const MeshStore>();
         if (auto vi = FindSoundVertexIndex(meshes.Arenas().SoundVertices.Get(excitable.Vertices), active->Handle)) return *vi;
     }
     return 0;
@@ -48,7 +48,7 @@ std::optional<fs::path> ActiveSamplePath(const state::Registry &r, state::Entity
 
 // Updates listener attenuation using inverse distance beyond ListenerDistance and a constant level within it.
 void UpdateListenerGains(const state::Registry &r, ModalBank &b) {
-    const auto *viewports = r.Context.find<const Viewports>();
+    const auto *viewports = r.Resources.find<const Viewports>();
     if (!viewports) return;
     const auto listener_pos = viewports->Active().State.Camera.Active.Position();
     b.GainListener = listener_pos;
@@ -67,17 +67,17 @@ struct MasterCapture {
 };
 
 uint32_t BeginAudioCapture(state::Registry &r) {
-    const auto *res = r.Context.find<AudioDeviceResource>();
+    const auto *res = r.Resources.find<AudioDeviceResource>();
     const auto rate = res && res->SampleRate ? res->SampleRate : 0u;
     if (rate == 0) return 0;
-    auto &capture = r.Context.emplace<MasterCapture>();
+    auto &capture = r.Resources.emplace<MasterCapture>();
     capture.Ring.assign(size_t(rate) * 2, 0.f);
     capture.Written.store(0, std::memory_order_relaxed);
     capture.Read.store(0, std::memory_order_relaxed);
     return rate;
 }
 
-void EndAudioCapture(state::Registry &r) { r.Context.erase<MasterCapture>(); }
+void EndAudioCapture(state::Registry &r) { r.Resources.erase<MasterCapture>(); }
 
 void RenderAudioOffline(state::Registry &r, std::vector<float> &out, uint32_t frame_count) {
     const auto first = out.size();
@@ -86,7 +86,7 @@ void RenderAudioOffline(state::Registry &r, std::vector<float> &out, uint32_t fr
 }
 
 void DrainAudioCapture(state::Registry &r, std::vector<float> &out) {
-    auto *capture = r.Context.find<MasterCapture>();
+    auto *capture = r.Resources.find<MasterCapture>();
     if (!capture || capture->Ring.empty()) return;
     const auto written = capture->Written.load(std::memory_order_acquire);
     auto read = capture->Read.load(std::memory_order_relaxed);
@@ -118,7 +118,7 @@ void MonitorFrames(state::Registry &r, std::span<float> frames, MonitorLimiter &
 
 void ProcessAudio(state::Registry &r, float *output, uint32_t frame_count, bool monitor) {
     std::fill_n(output, frame_count, 0.f);
-    auto &m = r.Context.get<ModalAudio>();
+    auto &m = r.Resources.get<ModalAudio>();
     // The mix is pressure at the view camera.
     // The device path runs this on the audio thread, which cannot read the registry, so its gains are written by the frame handler.
     // Offline rendering uses its viewport camera on the main thread.
@@ -145,7 +145,7 @@ void ProcessAudio(state::Registry &r, float *output, uint32_t frame_count, bool 
         }
     }
 
-    if (auto *capture = r.Context.find<MasterCapture>(); capture && !capture->Ring.empty()) {
+    if (auto *capture = r.Resources.find<MasterCapture>(); capture && !capture->Ring.empty()) {
         const auto capacity = uint64_t(capture->Ring.size());
         auto written = capture->Written.load(std::memory_order_relaxed);
         auto pos = size_t(written % capacity);
@@ -157,5 +157,5 @@ void ProcessAudio(state::Registry &r, float *output, uint32_t frame_count, bool 
     }
 
     // The monitor stage, after the capture tap: device units at the monitor level.
-    if (monitor) MonitorFrames(r, {output, frame_count}, r.Context.get<MonitorLimiter>());
+    if (monitor) MonitorFrames(r, {output, frame_count}, r.Resources.get<MonitorLimiter>());
 }

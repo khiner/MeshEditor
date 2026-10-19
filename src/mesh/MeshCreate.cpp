@@ -224,7 +224,7 @@ void InitializeSharpness(MeshStore &meshes, const Mesh &mesh, const MeshData &da
 } // namespace
 
 std::vector<CreatedMesh> CreateMeshes(state::Registry &r, std::span<MeshSource> sources) {
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     // One reserve per arena for the whole batch, so no allocation below grows a buffer.
     for (const auto &source : sources) {
         meshes.PlanCreate(source.Data, source.Primitives, source.Deform.has_value(), source.Morph ? source.Morph->TargetCount : 0u, source.Attrs);
@@ -284,7 +284,7 @@ std::vector<CreatedMesh> CreateMeshes(state::Registry &r, std::span<MeshSource> 
 CreatedMesh CreateMesh(state::Registry &r, MeshSource source) { return std::move(CreateMeshes(r, {&source, 1}).front()); }
 
 std::optional<NewMeshShading> EncodeNewMeshShading(state::Registry &r, mtl::ComputeChain &chain) {
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     auto ids = meshes.TakeUnshaded();
     // A record released since its creation has no shading to derive.
     std::erase_if(ids, [&](uint32_t id) { return !meshes.TryGet(id); });
@@ -299,14 +299,14 @@ std::optional<NewMeshShading> EncodeNewMeshShading(state::Registry &r, mtl::Comp
 }
 
 void DeriveNewMeshShading(state::Registry &r, mtl::ComputeChain &chain, NewMeshShading &shading) {
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     meshes.PlanCornerClassification(r, chain, shading.Classes);
     EncodeDeriveAllNormals(r, chain, shading.Normals);
     meshes.EnsureSelectionState(r, chain, shading.Ids);
 }
 
 void ShadeNewMeshes(state::Registry &r) {
-    mtl::ComputeChain chain{r.Context.get<MeshStore>().BufferContext()};
+    mtl::ComputeChain chain{r.Resources.get<MeshStore>().BufferContext()};
     auto shading = EncodeNewMeshShading(r, chain);
     if (!shading) return;
     chain.Submit();

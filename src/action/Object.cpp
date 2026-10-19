@@ -48,7 +48,7 @@ state::Entity CreateArmatureObject(state::Registry &r, MeshStore &meshes, state:
 // A mesh instance's duplicate takes `clone`, its mesh's cloned store record.
 // The first duplicate of a clone creates its mesh entity, and the duplicates after it instance that mesh.
 state::Entity DuplicateOne(state::Registry &r, state::Entity e, uint32_t clone) {
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     const ObjectCreateInfo create_info{
         .Name = std::format("{}_copy", GetName(r, e)),
         // Duplicate is created at root, so its local must match source's world.
@@ -88,12 +88,12 @@ state::Entity DuplicateOne(state::Registry &r, state::Entity e, uint32_t clone) 
     }();
     if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) r.emplace<ArmatureModifier>(instance, *armature_modifier);
     if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) r.emplace<BoneAttachment>(instance, *bone_attachment);
-    if (const auto *weights = r.try_get<const MorphWeightRange>(e)) r.emplace<MorphWeightRange>(instance, r.Context.get<GpuBuffers>().MorphWeightBuffer.Clone(weights->Weights));
+    if (const auto *weights = r.try_get<const MorphWeightRange>(e)) r.emplace<MorphWeightRange>(instance, r.Resources.get<GpuBuffers>().MorphWeightBuffer.Clone(weights->Weights));
     return instance;
 }
 
 state::Entity DuplicateLinkedOne(state::Registry &r, state::Entity e) {
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     if (r.all_of<BoneSubPartOf>(e)) return state::Null;
     if (!r.all_of<Instance>(e)) {
         const auto select_behavior = r.all_of<Selected>(e) ? MeshInstanceCreateInfo::SelectBehavior::Additive : MeshInstanceCreateInfo::SelectBehavior::None;
@@ -113,7 +113,7 @@ state::Entity DuplicateLinkedOne(state::Registry &r, state::Entity e) {
     r.emplace_or_replace<Transform>(e_new, t_new);
     if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) r.emplace<ArmatureModifier>(e_new, *armature_modifier);
     if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) r.emplace<BoneAttachment>(e_new, *bone_attachment);
-    if (const auto *weights = r.try_get<const MorphWeightRange>(e)) r.emplace<MorphWeightRange>(e_new, r.Context.get<GpuBuffers>().MorphWeightBuffer.Clone(weights->Weights));
+    if (const auto *weights = r.try_get<const MorphWeightRange>(e)) r.emplace<MorphWeightRange>(e_new, r.Resources.get<GpuBuffers>().MorphWeightBuffer.Clone(weights->Weights));
 
     r.emplace<Selected>(e_new);
 
@@ -150,7 +150,7 @@ const FieldSpec &UpdateTraits<PrimitiveShape>::Bounds(const state::Registry &r, 
 
 namespace action::object {
 void Apply(state::Registry &r, const Action &action) {
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     auto begin_translate = [&] { r.emplace_or_replace<StartScreenTransform>(state::Document, TransformGizmo::TransformType::Translate); };
     const auto duplicate = [&](bool linked) {
         if (!(linked ? CanDuplicateLinked(r) : CanDuplicate(r))) return;
@@ -293,10 +293,10 @@ void Apply(state::Registry &r, const Action &action) {
                 });
             },
             [&]<typename T>(const UpdateMaterial<T> &a) {
-                auto &materials = r.Context.get<GpuBuffers>().Materials;
+                auto &materials = r.Resources.get<GpuBuffers>().Materials;
                 if (a.Index >= materials.Count<PBRMaterial>()) return;
                 materials.Update(std::as_bytes(std::span{&a.Value, 1}), uint64_t(a.Index) * sizeof(PBRMaterial) + a.Offset);
-                r.Context.get<RenderChanges>().Materials.emplace(state::Document);
+                r.Resources.get<RenderChanges>().Materials.emplace(state::Document);
             },
             [&](const SetMaterialSlotSelection &a) {
                 for_each_mesh_target(a.Target, [&](state::Entity e) { r.emplace_or_replace<MeshMaterialSlotSelection>(e, a.PrimitiveIndex); });

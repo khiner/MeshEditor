@@ -5,7 +5,7 @@
 void RetireMeshletStorage(state::Registry &r, MeshStore::Record &owner, std::span<const uint32_t> clusters) {
     if (clusters.empty()) return;
     if (!owner.MeshletData) throw std::invalid_argument("Meshlet retirement requires owned canonical membership.");
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     const auto &render = meshes.Render();
     uint32_t finest = 0u;
     for (const auto id : clusters) {

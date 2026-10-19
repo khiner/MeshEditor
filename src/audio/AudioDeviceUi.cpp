@@ -16,7 +16,7 @@ void DrawAudioDeviceControls(state::Registry &r) {
     using namespace ImGui;
     const auto &config = r.get<const AudioOutputConfig>(state::Document);
     const auto &mix = r.get<const AudioOutputMix>(state::Document);
-    const auto &res = r.Context.get<const AudioDeviceResource>();
+    const auto &res = r.Resources.get<const AudioDeviceResource>();
     ui::Edit f{r, state::Document};
 
     f.Draw<&AudioOutputMix::On>();

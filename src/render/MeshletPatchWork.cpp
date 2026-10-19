@@ -14,7 +14,7 @@ MeshletPatch PlanMeshletPatch(state::Registry &r, MeshStore::Record &owner, cons
     if (input.Sources.size() != input.Added.Count || uint64_t(input.Added.Offset) + input.Added.Count > UINT32_MAX) {
         throw std::invalid_argument("Meshlet patch provenance must cover the emitted triangle run.");
     }
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &render = meshes.Render();
     const auto owners = render.ElementMeshlets[0].View(owner.ElementMeshlets[0]);
     const auto records = render.Meshlets.Buffer.GetSpan<MeshletRecord>();
@@ -117,7 +117,7 @@ std::vector<uint32_t> AdoptMeshletFragments(state::Registry &r, mtl::ComputeChai
     if (topology > 2u || fragments.size() != jobs.size() || !owner.PrimitiveData || !owner.NodeData) {
         throw std::invalid_argument("Meshlet fragments require one matching canonical owner and job each.");
     }
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     auto &render = meshes.Render();
     std::vector<uint32_t> added;
     std::vector<Range> ranges;

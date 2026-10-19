@@ -403,7 +403,7 @@ void RecordPrelude(MTL::ComputeCommandEncoder *compute, const Pipelines &pipelin
 
 // Gather dirty bounds and optional posed work into sparse prelude lists, then consume the dirty marks.
 PreludeSource GatherPrelude(state::Registry &r, bool every_posed) {
-    auto &buffers = r.Context.get<GpuBuffers>();
+    auto &buffers = r.Resources.get<GpuBuffers>();
     const auto entries = buffers.BoundsReduceEntries.Buffer.GetSpan<BoundsEntry>();
     std::array<std::vector<uvec2>, VertexBoundsLevels> bounds;
     std::vector<uvec2> faces, gathers;
@@ -588,7 +588,7 @@ void DrawVisibilityMeshlets(
 
 void RecordDepthPyramid(
     MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const GpuBuffers &buffers, const Viewport &viewport, const Pipelines &pipelines,
-    const RenderTargets::ResourcesT::Pyramid &pyramid, uint32_t pyramid_sampler, uint32_t first_level,
+    const RenderTargets::ScreenT::Pyramid &pyramid, uint32_t pyramid_sampler, uint32_t first_level,
     uint32_t source_sampler, mtl::Extent2D source_extent, bool nearest, uint32_t ubo_offset
 ) {
     encode::BindCompute(encoder, pipelines.DepthPyramidReduce, slots, buffers, viewport, ubo_offset);
@@ -620,13 +620,13 @@ void RecordDepthPyramid(
 
 // The visibility/depth pair is still intact here; no shading variant needs velocity outputs.
 void RecordMotionBlurPostFx(state::Registry &r, const Viewport &viewport, mtl::PassChain &chain, uint32_t ubo_offset) {
-    const auto &slots = r.Context.get<const mtl::BindlessSet>();
-    const auto &buffers = r.Context.get<const GpuBuffers>();
+    const auto &slots = r.Resources.get<const mtl::BindlessSet>();
+    const auto &buffers = r.Resources.get<const GpuBuffers>();
     const auto &main = GetPipelines(r).Main;
     const auto &targets = viewport.Targets;
     const auto &blur = *targets.MotionBlur;
     const auto &samplers = viewport.Samplers;
-    const auto extent = targets.Resources->SceneColorImage.Extent;
+    const auto extent = targets.Screen->SceneColorImage.Extent;
     const auto tiles = blur.TileImage.Extent;
     const auto view_ubo = viewport.SceneViewUBO.Contents();
     const auto &view = *reinterpret_cast<const SceneViewUBO *>(view_ubo.data() + ubo_offset);
@@ -639,8 +639,8 @@ void RecordMotionBlurPostFx(state::Registry &r, const Viewport &viewport, mtl::P
     compute->setBuffer(*viewport.SceneViewUBO, GpuBuffers::SceneViewUboOffset(1), 5);
     compute->setBuffer(*viewport.SceneViewUBO, GpuBuffers::SceneViewUboOffset(2), 6);
     compute->setBuffer(blur.TileIndirection.get(), 0, 7);
-    compute->setTexture(*targets.Resources->VisibilityImage, 0);
-    compute->setTexture(*targets.Resources->VisibilityDepth, 1);
+    compute->setTexture(*targets.Screen->VisibilityImage, 0);
+    compute->setTexture(*targets.Screen->VisibilityDepth, 1);
     compute->setTexture(*blur.VelocityImage, 2);
     compute->setTexture(*blur.TileImage, 3);
     compute->setThreadgroupMemoryLength(16, 0);
@@ -666,8 +666,8 @@ void RecordMotionBlurPostFx(state::Registry &r, const Viewport &viewport, mtl::P
 
 struct DisplayContext {
     DisplayContext(const state::Registry &r)
-        : R(r), Buffers(r.Context.get<const GpuBuffers>()), Meshes(r.Context.get<const MeshStore>()),
-          Displays(r.Context.get<const GpuSceneState>().Displays), Mode(r.get<const Interaction>(state::Document).Mode), EditElement(r.get<const EditMode>(state::Document).Value),
+        : R(r), Buffers(r.Resources.get<const GpuBuffers>()), Meshes(r.Resources.get<const MeshStore>()),
+          Displays(r.Resources.get<const GpuSceneState>().Displays), Mode(r.get<const Interaction>(state::Document).Mode), EditElement(r.get<const EditMode>(state::Document).Value),
           Primaries(r.get<const EditPrimaries>(state::Document).All), SelectedMeshes(r.get<const SelectionFlags>(state::Document).Meshes),
           Transforming(Mode == InteractionMode::Edit && r.all_of<PendingTransform>(state::Document)) {
         if (Mode == InteractionMode::Excite) {
@@ -807,7 +807,7 @@ void RefreshMeshDisplay(state::Registry &r, const DisplayContext &c, state::Enti
     if (overlays) r.emplace_or_replace<MeshVertexOverlays>(mesh_entity, overlays);
     else r.remove<MeshVertexOverlays>(mesh_entity);
     if (mb.RenderTopologies == 0u) return;
-    auto &records = r.Context.get<MeshStore>().Render().MeshRecords;
+    auto &records = r.Resources.get<MeshStore>().Render().MeshRecords;
     const bool changed = std::memcmp(&records.Get({mb.StoreId, 1u})[0].Display, &display, sizeof(MeshDisplay)) != 0;
     if (changed) records.GetMutable({mb.StoreId, 1u})[0].Display = display;
     const auto &tallies = c.Buffers.FlagTallies;
@@ -837,8 +837,8 @@ struct LayoutContext {
 // Keep an empty static entry for meshes without instances.
 // Release bounds and pose storage when the mesh record or ModelsBuffer component is absent.
 void LayOutMesh(state::Registry &r, const LayoutContext &c, state::Entity mesh_entity) {
-    auto &buffers = r.Context.get<GpuBuffers>();
-    const auto &meshes = r.Context.get<const MeshStore>();
+    auto &buffers = r.Resources.get<GpuBuffers>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &render = meshes.Render();
     const auto *models = r.try_get<const ModelsBuffer>(mesh_entity);
     const auto *record = models && HasMesh(r, mesh_entity) ? TryRecordOf(r, mesh_entity) : nullptr;
@@ -1004,9 +1004,9 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
     const bool draw_scene = phase != RenderPhase::BlurResolve;
     const bool draw_overlays = !IsBlurAccumulate(phase);
 
-    const auto &slots = r.Context.get<const mtl::BindlessSet>();
-    auto &buffers = r.Context.get<GpuBuffers>();
-    const auto &meshes = r.Context.get<MeshStore>();
+    const auto &slots = r.Resources.get<const mtl::BindlessSet>();
+    auto &buffers = r.Resources.get<GpuBuffers>();
+    const auto &meshes = r.Resources.get<MeshStore>();
     auto &pipelines = GetPipelines(r);
     auto &targets = viewport.Targets;
     const auto &view = viewport.State;
@@ -1025,7 +1025,7 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
     // Overlays need scene depth to occlude or fade unless X-ray shows them at full strength.
     const bool overlay_scene_depth = overlay_behind < 1.f;
     const bool show_overlays = settings.ShowOverlays;
-    auto &scene_state = r.Context.get<GpuSceneState>();
+    auto &scene_state = r.Resources.get<GpuSceneState>();
     // Forward PBR specializes on the viewport's lighting, the scene's material features, and whether a drawn mesh has line or point meshlets.
     const auto *pbr = show_rendered ? &pipelines.Main.Compiler.Variant(PbrFeaturesOf(view, scene_state.MeshPbrFeatures), buffers.DrawsNonTriangles()) : nullptr;
     const bool real_transmission = RealTransmission(view, scene_state.MeshPbrFeatures);
@@ -1048,7 +1048,7 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
         encode::BindScene(compute, slots, buffers, viewport, ubo_offset);
         RecordPrelude(compute, pipelines, GetMeshPipelines(r), buffers, meshes, prelude);
         // The moved geometry can reveal what any viewport's depth pyramid occludes.
-        for (auto &other : r.Context.get<Viewports>().All) other.OcclusionStale = true;
+        for (auto &other : r.Resources.get<Viewports>().All) other.OcclusionStale = true;
     }
     if (is_edit_mode && std::exchange(scene_state.EditPreludePending, false)) RecordSparseEditPrelude(r, viewport, chain);
     if (phase == RenderPhase::Prepare) return;
@@ -1056,7 +1056,7 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
     const auto draw_quad = [&] { encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4)); };
 
     const auto &main = pipelines.Main;
-    const auto main_extent = targets.Resources->SceneColorImage.Extent;
+    const auto main_extent = targets.Screen->SceneColorImage.Extent;
     const bool has_silhouette = render_silhouette && meshlet_fill;
     // Populate visibility for wireframe selection outlines and overlay depth without loading its depth into the scene pass.
     const bool need_visibility = meshlet_fill && (show_fill || has_silhouette || overlay_scene_depth);
@@ -1078,12 +1078,12 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
     const auto view_bytes = viewport.SceneViewUBO.Contents().subspan(ubo_offset, sizeof(SceneViewUBO));
     const auto &current_view_proj = reinterpret_cast<const SceneViewUBO *>(view_bytes.data())->ViewProj;
     const bool disocclusion_possible = viewport.OcclusionStale ||
-        std::memcmp(&current_view_proj, &targets.Resources->DepthPyramidViewProj, sizeof(mat4)) != 0; // NOLINT(bugprone-suspicious-memory-comparison)
+        std::memcmp(&current_view_proj, &targets.Screen->DepthPyramidViewProj, sizeof(mat4)) != 0; // NOLINT(bugprone-suspicious-memory-comparison)
     // Cached occlusion is valid only for the pose that produced it.
     // Reordering opaque surfaces across temporal phases changes the winner of equal-depth raster ties.
     if (cull_scene_meshlets) {
         // X-ray draws occluded surfaces, so it skips occlusion culling.
-        const uint32_t pyramid = show_fill && !xray && phase == RenderPhase::Full && targets.Resources->DepthPyramidValid && !disocclusion_possible ?
+        const uint32_t pyramid = show_fill && !xray && phase == RenderPhase::Full && targets.Screen->DepthPyramidValid && !disocclusion_possible ?
             samplers.DepthPyramid :
             InvalidSlot;
         RecordMeshletCull(
@@ -1105,14 +1105,14 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
         RecordMeshletVisibilityPass(chain, slots, pipelines, viewport, buffers, real_transmission, ubo_offset, {});
     }
     if (show_fill && phase == RenderPhase::Full && cull_scene_meshlets) {
-        targets.Resources->DepthPyramidViewProj = current_view_proj;
+        targets.Screen->DepthPyramidViewProj = current_view_proj;
         // Only visibility surfaces contribute to occlusion.
         auto *compute = chain.BeginCompute("DepthPyramidFinal", MTL::StageFragment);
         RecordDepthPyramid(
-            compute, slots, buffers, viewport, pipelines, targets.Resources->DepthPyramid, samplers.DepthPyramid, 0u,
-            samplers.SceneDepth, targets.Resources->VisibilityDepth.Extent, false, ubo_offset
+            compute, slots, buffers, viewport, pipelines, targets.Screen->DepthPyramid, samplers.DepthPyramid, 0u,
+            samplers.SceneDepth, targets.Screen->VisibilityDepth.Extent, false, ubo_offset
         );
-        targets.Resources->DepthPyramidValid = true;
+        targets.Screen->DepthPyramidValid = true;
     }
     if (has_silhouette) RecordSilhouetteDepthPass(chain, slots, pipelines, viewport, buffers, ubo_offset);
 
@@ -1121,13 +1121,13 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
         // Refraction samples only the world buffer.
         // The overlay composite adds the display-referred viewport backdrop.
         const std::array colors{mtl::ClearColor(*targets.Transmission->Mip0View)};
-        const auto pass = mtl::MakePassDescriptor(colors, mtl::LoadDepth(*targets.Resources->VisibilityDepth));
+        const auto pass = mtl::MakePassDescriptor(colors, mtl::LoadDepth(*targets.Screen->VisibilityDepth));
         encoder = encode::BeginScenePass(chain, pass.get(), "TransmissionPrepass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, viewport, ubo_offset);
         main.PrepassBackground.Bind(encoder);
         draw_quad();
         if (meshlet_fill && show_fill) {
             pbr->BindVisibility(encoder, true);
-            encoder->setFragmentTexture(*targets.Resources->VisibilityImage, 0u);
+            encoder->setFragmentTexture(*targets.Screen->VisibilityImage, 0u);
             encode::SetPushConstants(encoder, encode::VisibilityDecodePc(buffers));
             draw_quad();
         }
@@ -1141,9 +1141,9 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
 
     { // Shade against immutable visibility depth.
         const std::array colors{
-            mtl::ClearColor(*targets.Resources->SceneColorImage),
+            mtl::ClearColor(*targets.Screen->SceneColorImage),
         };
-        const auto depth = show_fill && meshlet_fill && !xray ? mtl::LoadDepth(*targets.Resources->VisibilityDepth) : mtl::ClearDepth(*targets.Resources->ScratchDepth);
+        const auto depth = show_fill && meshlet_fill && !xray ? mtl::LoadDepth(*targets.Screen->VisibilityDepth) : mtl::ClearDepth(*targets.Screen->ScratchDepth);
         const auto pass = mtl::MakePassDescriptor(colors, depth);
         if (transparent) {
             pass->setImageblockSampleLength(std::max(main.TransparencyInit.ImageblockSampleLength(), main.TransparencyResolve.ImageblockSampleLength()));
@@ -1178,7 +1178,7 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
             if (meshlet_fill && draw_scene && show_rendered) {
                 if (!composite_transmission) {
                     pbr->BindVisibility(encoder);
-                    encoder->setFragmentTexture(*targets.Resources->VisibilityImage, 0u);
+                    encoder->setFragmentTexture(*targets.Screen->VisibilityImage, 0u);
                     encode::SetPushConstants(encoder, encode::VisibilityDecodePc(buffers));
                     draw_quad();
                 }
@@ -1204,7 +1204,7 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
                 draw_quad();
             } else if (meshlet_fill && draw_scene) {
                 main.WorkspaceVisibility.Bind(encoder);
-                encoder->setFragmentTexture(*targets.Resources->VisibilityImage, 0u);
+                encoder->setFragmentTexture(*targets.Screen->VisibilityImage, 0u);
                 encode::SetPushConstants(encoder, encode::VisibilityDecodePc(buffers));
                 draw_quad();
             }
@@ -1237,7 +1237,7 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
         // Canonical meshlet edge owners accumulate with atomics, so threadgroups need no ordering.
         auto *wire = chain.BeginCompute("WireRaster", MTL::StageBlit | MTL::StageFragment, MTL::DispatchTypeConcurrent);
         encode::BindCompute(wire, pipelines.WireRaster, slots, buffers, viewport, ubo_offset);
-        wire->setTexture(*targets.Resources->VisibilityDepth, 0u);
+        wire->setTexture(*targets.Screen->VisibilityDepth, 0u);
         WireRasterPushConstants wire_pc{
             .Meshlet = MakeMeshletDrawPc(
                 buffers, buffers.SceneCull,
@@ -1264,16 +1264,16 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
         InvalidSlot;
     if (meshlet_edit_overlay_drawn) {
         RecordMeshletCull(chain, slots, pipelines, buffers, viewport, {
-                                                                .Mode = MeshletRouteMode::Visibility,
-                                                                .RequiredInstanceFlags = uint32_t(MeshletInstanceFlag::EditOverlay),
-                                                                .RouteMask = 1u << uint32_t(MeshletRoute::EditOverlay),
-                                                                .UboOffset = ubo_offset,
-                                                                .PyramidSamplerSlot = overlay_pyramid,
-                                                                .ExactEditGeometry = true,
-                                                                .MinEditOverlayDiameterPixels = MinEditOverlayDiameterPixels,
-                                                                .EditOverlayHasSharpEdges = buffers.SharpEditMeshes > 0u,
-                                                                .EditOutput = true,
-                                                            });
+                                                                          .Mode = MeshletRouteMode::Visibility,
+                                                                          .RequiredInstanceFlags = uint32_t(MeshletInstanceFlag::EditOverlay),
+                                                                          .RouteMask = 1u << uint32_t(MeshletRoute::EditOverlay),
+                                                                          .UboOffset = ubo_offset,
+                                                                          .PyramidSamplerSlot = overlay_pyramid,
+                                                                          .ExactEditGeometry = true,
+                                                                          .MinEditOverlayDiameterPixels = MinEditOverlayDiameterPixels,
+                                                                          .EditOverlayHasSharpEdges = buffers.SharpEditMeshes > 0u,
+                                                                          .EditOutput = true,
+                                                                      });
     }
 
     const bool draw_origins = show_overlays && settings.Overlays.Origins && (!r.view<const Selected>().empty() || !r.view<const Active>().empty());
@@ -1286,11 +1286,11 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
     if (overlay_pass_needed) { // Display-referred overlays, depth-tested against scene surfaces and outlines.
         // The outline draw initializes color and scene-plus-outline depth across the target.
         const std::array overlay_colors{
-            has_silhouette ? mtl::DiscardColor(*targets.Resources->OverlayColorImage) : mtl::ClearColor(*targets.Resources->OverlayColorImage),
+            has_silhouette ? mtl::DiscardColor(*targets.Screen->OverlayColorImage) : mtl::ClearColor(*targets.Screen->OverlayColorImage),
         };
-        const auto overlay_depth = has_silhouette ? mtl::DepthAttachment{*targets.Resources->ScratchDepth, MTL::LoadActionDontCare, MTL::StoreActionDontCare} :
-            overlays_through                      ? mtl::ClearDepth(*targets.Resources->ScratchDepth) :
-                                                    mtl::LoadDepth(*targets.Resources->VisibilityDepth);
+        const auto overlay_depth = has_silhouette ? mtl::DepthAttachment{*targets.Screen->ScratchDepth, MTL::LoadActionDontCare, MTL::StoreActionDontCare} :
+            overlays_through                      ? mtl::ClearDepth(*targets.Screen->ScratchDepth) :
+                                                    mtl::LoadDepth(*targets.Screen->VisibilityDepth);
         const auto overlay_pass = mtl::MakePassDescriptor(overlay_colors, overlay_depth);
         encoder = encode::BeginScenePass(chain, overlay_pass.get(), "OverlayPass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh | MTL::StageFragment}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, viewport, ubo_offset);
 
@@ -1403,9 +1403,9 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
         // Bone X-ray preserves overlay color and clears scratch depth to order bones against each other.
         if (bone_meshlets > 0u) {
             const std::array bone_colors{
-                mtl::LoadColor(*targets.Resources->OverlayColorImage),
+                mtl::LoadColor(*targets.Screen->OverlayColorImage),
             };
-            const auto bone_pass = mtl::MakePassDescriptor(bone_colors, {*targets.Resources->ScratchDepth, MTL::LoadActionClear, MTL::StoreActionDontCare});
+            const auto bone_pass = mtl::MakePassDescriptor(bone_colors, {*targets.Screen->ScratchDepth, MTL::LoadActionClear, MTL::StoreActionDontCare});
             encoder = encode::BeginScenePass(chain, bone_pass.get(), "BoneXRay", {{MTL::StageDispatch, MTL::StageMesh | MTL::StageFragment}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, viewport, ubo_offset);
 
             const auto draw_bones = [&](const mtl::RenderPipeline &pipeline, MeshletInstanceFlag flag, uint32_t threads, float depth_bias = 0.f) {
@@ -1450,8 +1450,8 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
         // Refraction and overlays have finished reading opaque visibility.
         // Include glass in the ID/depth pair for blur now, without changing the depth used to shade behind it.
         if (real_transmission && meshlet_fill) {
-            const std::array colors{mtl::LoadColor(*targets.Resources->VisibilityImage)};
-            const auto pass = mtl::MakePassDescriptor(colors, mtl::LoadDepth(*targets.Resources->VisibilityDepth));
+            const std::array colors{mtl::LoadColor(*targets.Screen->VisibilityImage)};
+            const auto pass = mtl::MakePassDescriptor(colors, mtl::LoadDepth(*targets.Screen->VisibilityDepth));
             auto *visibility = encode::BeginScenePass(chain, pass.get(), "BlurTransmissionVisibility", {{MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, viewport, ubo_offset);
             main.MeshletVisibilityCoverage.Bind(visibility);
             visibility->setCullMode(MTL::CullModeNone);
@@ -1461,9 +1461,9 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
     }
 
     { // View-transform the scene, then composite display-referred overlays.
-        const std::array colors{mtl::ClearColor(*targets.Resources->FinalColorImage, {0, 0, 0, 1})};
+        const std::array colors{mtl::ClearColor(*targets.Screen->FinalColorImage, {0, 0, 0, 1})};
         const auto pass = mtl::MakePassDescriptor(colors);
-        encoder = encode::BeginScenePass(chain, pass.get(), "Composite", {{MTL::StageFragment, MTL::StageFragment}}, targets.Resources->FinalColorImage.Extent, slots, buffers, viewport, ubo_offset);
+        encoder = encode::BeginScenePass(chain, pass.get(), "Composite", {{MTL::StageFragment, MTL::StageFragment}}, targets.Screen->FinalColorImage.Extent, slots, buffers, viewport, ubo_offset);
         main.ViewportComposite.Bind(encoder);
         // Debug channels write their own already-viewable values, so they pass through untransformed.
         const uint32_t view_transform = settings.DebugChannel != DebugChannel::None ? 2u : show_rendered ? 1u :
@@ -1537,12 +1537,12 @@ void RecordMeshletVisibilityPass(
     const auto &main = pipelines.Main;
     const auto &targets = viewport.Targets;
     const std::array colors{
-        mtl::ClearColor(*targets.Resources->VisibilityImage, MTL::ClearColor{double(UINT32_MAX), 0, 0, 0})
+        mtl::ClearColor(*targets.Screen->VisibilityImage, MTL::ClearColor{double(UINT32_MAX), 0, 0, 0})
     };
-    const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*targets.Resources->VisibilityDepth));
+    const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*targets.Screen->VisibilityDepth));
     auto *encoder = encode::BeginScenePass(
         chain, pass.get(), "MeshletVisibility", {{MTL::StageDispatch, MTL::StageMesh}},
-        targets.Resources->VisibilityImage.Extent, slots, buffers, viewport, ubo_offset
+        targets.Screen->VisibilityImage.Extent, slots, buffers, viewport, ubo_offset
     );
     if (scissor) encoder->setScissorRect({scissor->Origin.x, scissor->Origin.y, scissor->Extent.x, scissor->Extent.y});
     // Clear overlay depth even when no meshlets draw.
@@ -1620,14 +1620,14 @@ void RecordSilhouetteDepthPass(
     GpuBuffers &buffers, uint32_t ubo_offset
 ) {
     // Compacts the outlined surfaces the visibility image cannot resolve.
-    const auto &resources = *viewport.Targets.Resources;
+    const auto &screen = *viewport.Targets.Screen;
     const auto &samplers = viewport.Samplers;
     auto decode_pc = encode::VisibilityDecodePc(buffers);
     auto *compute = chain.BeginCompute("SilhouetteCull", MTL::StageFragment);
-    const auto &occluders = resources.OutlineOccluderPyramid;
+    const auto &occluders = screen.OutlineOccluderPyramid;
     encode::BindCompute(compute, pipelines.OutlineOccluderSeed, slots, buffers, viewport, ubo_offset);
-    compute->setTexture(*resources.VisibilityImage, 0u);
-    compute->setTexture(*resources.VisibilityDepth, 1u);
+    compute->setTexture(*screen.VisibilityImage, 0u);
+    compute->setTexture(*screen.VisibilityDepth, 1u);
     compute->setTexture(*occluders.Mips[0].View, 2u);
     encode::SetPushConstants(compute, decode_pc);
     const auto blocks = occluders.Mips[0].Extent;
@@ -1651,15 +1651,15 @@ void RecordSilhouetteDepthPass(
     RecordMeshletCompaction(compute, pipelines, buffers);
 
     // Outlined surfaces occlude each other in a private depth, so unoutlined geometry never hides an outline.
-    const std::array colors{mtl::ClearColor(*resources.SilhouetteImage)};
-    const auto pass = mtl::MakePassDescriptor(colors, {*resources.ScratchDepth, MTL::LoadActionClear, MTL::StoreActionDontCare});
+    const std::array colors{mtl::ClearColor(*screen.SilhouetteImage)};
+    const auto pass = mtl::MakePassDescriptor(colors, {*screen.ScratchDepth, MTL::LoadActionClear, MTL::StoreActionDontCare});
     auto *encoder = encode::BeginScenePass(
         chain, pass.get(), "SilhouetteDepth", {{MTL::StageDispatch, MTL::StageMesh | MTL::StageFragment}, {MTL::StageFragment, MTL::StageFragment}},
-        resources.SilhouetteImage.Extent, slots, buffers, viewport, ubo_offset
+        screen.SilhouetteImage.Extent, slots, buffers, viewport, ubo_offset
     );
     pipelines.SilhouetteSeed.Bind(encoder);
-    encoder->setFragmentTexture(*resources.VisibilityImage, 0u);
-    encoder->setFragmentTexture(*resources.VisibilityDepth, 1u);
+    encoder->setFragmentTexture(*screen.VisibilityImage, 0u);
+    encoder->setFragmentTexture(*screen.VisibilityDepth, 1u);
     encoder->setFragmentBytes(&decode_pc, sizeof(decode_pc), BufferIndex_PushConstants);
     encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));
     pipelines.Silhouette.Bind(encoder);
@@ -1689,8 +1689,8 @@ void DrawVertexBlocks(
     MTL::RenderCommandEncoder *encoder, const state::Registry &r, state::Entity mesh_entity, uint32_t instance, bool sound_points,
     uint32_t pyramid_slot, float min_diameter_pixels
 ) {
-    const auto &buffers = r.Context.get<const GpuBuffers>();
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &buffers = r.Resources.get<const GpuBuffers>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     const auto store_id = *DrawnStoreId(r, mesh_entity);
     VertexBlockPushConstants pc{
         .Instance = instance,
@@ -1742,12 +1742,12 @@ void RecordBlurStepsCommandBuffer(state::Registry &r, Viewport &viewport, MTL::C
 }
 
 void ReserveFrameScratch(state::Registry &r, std::span<Viewport *const> viewports) {
-    auto &buffers = r.Context.get<GpuBuffers>();
-    const auto &scene_state = r.Context.get<const GpuSceneState>();
+    auto &buffers = r.Resources.get<GpuBuffers>();
+    const auto &scene_state = r.Resources.get<const GpuSceneState>();
     uint64_t coverage = 0u;
     bool transmission = false;
     for (const auto *viewport : viewports) {
-        const auto extent = viewport->Targets.Resources->SceneColorImage.Extent;
+        const auto extent = viewport->Targets.Screen->SceneColorImage.Extent;
         coverage = std::max<uint64_t>(coverage, uint64_t(extent.Width) * extent.Height);
         transmission |= RealTransmission(viewport->State, scene_state.MeshPbrFeatures);
     }
@@ -1761,10 +1761,10 @@ void ReserveFrameScratch(state::Registry &r, std::span<Viewport *const> viewport
 }
 
 SceneViewUBO SceneViewOf(state::Registry &r, const Viewport &viewport, const RenderView &render_view) {
-    const auto &buffers = r.Context.get<const GpuBuffers>();
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &buffers = r.Resources.get<const GpuBuffers>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &render = meshes.Render();
-    const auto &environments = r.Context.get<const EnvironmentStore>();
+    const auto &environments = r.Resources.get<const EnvironmentStore>();
     const auto &targets = viewport.Targets;
     const auto &settings = viewport.State.Display;
     const auto interaction_mode = r.get<const Interaction>(state::Document).Mode;
@@ -1851,8 +1851,8 @@ void WriteViewUniforms(state::Registry &r, Viewport &viewport, const RenderView 
 }
 
 void UpdateAuthoredMorphShading(state::Registry &r, mtl::ComputeChain &chain, std::span<const state::Entity> mesh_entities) {
-    auto &meshes = r.Context.get<MeshStore>();
-    auto &buffers = r.Context.get<GpuBuffers>();
+    auto &meshes = r.Resources.get<MeshStore>();
+    auto &buffers = r.Resources.get<GpuBuffers>();
     // Each position-only target gets a derive entry reading its full-weight pose directly.
     std::vector<NormalDeriveEntry> entries;
     std::vector<uint32_t> entry_ids;
@@ -1921,7 +1921,7 @@ void UpdateAuthoredMorphShading(state::Registry &r, mtl::ComputeChain &chain, st
 }
 
 void FinalizeAuthoredShading(state::Registry &r, mtl::ComputeChain &chain) {
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     const auto authored = r.view<const AuthoredCornerNormals, const MeshHandle>() | std::ranges::to<std::vector>();
     for (const auto entity : authored) {
         EncodeAuthoredCornerNormals(meshes, GetMesh(r, entity), r.get<const AuthoredCornerNormals>(entity).Corners);
@@ -1942,7 +1942,7 @@ void FinalizeWork(MTL::ComputeCommandEncoder *encoder, const Pipelines &pipeline
 }
 
 MeshEditWork &PrepareMeshEditWork(state::Registry &r, state::Entity entity) {
-    auto &buffers = r.Context.get<GpuBuffers>();
+    auto &buffers = r.Resources.get<GpuBuffers>();
     const auto mesh = GetDrawnMesh(r, entity);
     const auto id = mesh.GetStoreId();
     if (const auto *work = r.try_get<const MeshEditWork>(entity)) {
@@ -1979,7 +1979,7 @@ void ReleaseMeshEditWork(state::Registry &r, state::Entity entity) {
 }
 
 void ReleaseMeshEditWorkRanges(state::Registry &r, state::Entity entity) {
-    auto &buffers = r.Context.get<GpuBuffers>();
+    auto &buffers = r.Resources.get<GpuBuffers>();
     const auto &w = r.get<const MeshEditWork>(entity);
     for (const auto range : {w.Candidates, w.Vertices, w.Faces, w.Normals, w.Meshlets, w.BoundsTiles}) buffers.GeometryWork.Release(WorkStorageRange(range));
     for (const auto level : w.BoundsLevels) buffers.GeometryWork.Release(WorkStorageRange(level));
@@ -2005,9 +2005,9 @@ void PrepareGeometryFootprints(state::Registry &r, mtl::ComputeChain &chain, Geo
     }
     if (footprints.empty()) return;
     const profile::CpuScope scope{"PrepareGeometryFootprint"};
-    auto &buffers = r.Context.get<GpuBuffers>();
-    const auto &meshes = r.Context.get<const MeshStore>();
-    const auto &slots = r.Context.get<const mtl::BindlessSet>();
+    auto &buffers = r.Resources.get<GpuBuffers>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    const auto &slots = r.Resources.get<const mtl::BindlessSet>();
     const auto &pipelines = GetPipelines(r);
     const auto update = [](const Footprint &footprint) {
         const auto &work = *footprint.Work;
@@ -2110,8 +2110,8 @@ void PrepareGeometryFootprints(state::Registry &r, mtl::ComputeChain &chain, Geo
 }
 
 CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Registry &r, state::Entity entity, state::Entity primary, const PendingTransform *pending, const PosedNamespaces *pose = nullptr, std::span<const Range> changed = {}) {
-    auto &buffers = r.Context.get<GpuBuffers>();
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &buffers = r.Resources.get<GpuBuffers>();
+    auto &meshes = r.Resources.get<MeshStore>();
     auto &w = PrepareMeshEditWork(r, entity);
     const auto mesh = GetDrawnMesh(r, entity);
     const auto id = w.StoreId;
@@ -2127,7 +2127,7 @@ CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Registry &r, state::
             w.RefreshRanges.assign(changed.begin(), changed.end());
         }
         w.CandidateReady = true;
-    } else if (!w.CandidateReady || !w.PreviewActive || (!pose && r.Context.get<const GpuSceneState>().EditSelectionDirty)) {
+    } else if (!w.CandidateReady || !w.PreviewActive || (!pose && r.Resources.get<const GpuSceneState>().EditSelectionDirty)) {
         w.CandidateReady = w.FootprintReady = false;
         if (!w.PreviewActive) ClearElementWork(buffers.GeometryWork, w.Candidates);
     }
@@ -2165,13 +2165,13 @@ CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Registry &r, state::
 
 // Binds the scene on the encoder once, so later passes on it set only their pipelines.
 void RecordGeometryEditBatch(state::Registry &r, MTL::ComputeCommandEncoder *encoder, GeometryEditJobs &commits, bool posed) {
-    auto &buffers = r.Context.get<GpuBuffers>();
-    const auto &meshes = r.Context.get<const MeshStore>();
+    auto &buffers = r.Resources.get<GpuBuffers>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &pipelines = GetPipelines(r);
-    const auto &slots = r.Context.get<const mtl::BindlessSet>();
+    const auto &slots = r.Resources.get<const mtl::BindlessSet>();
     const auto entries = buffers.GeometryNormalEntries.SetCount<NormalDeriveEntry>(commits.size());
     for (uint32_t i = 0; i < commits.size(); ++i) entries[i] = commits[i].second.Entry;
-    r.Context.get<const mtl::Context>().CommitResidency();
+    r.Resources.get<const mtl::Context>().CommitResidency();
     encode::BindBindless(encoder, slots);
     encoder->setComputePipelineState(pipelines.CommitPosedGeometry.State());
     for (auto &[entity, pc] : commits) {
@@ -2210,7 +2210,7 @@ void RecordGeometryEditBatch(state::Registry &r, MTL::ComputeCommandEncoder *enc
 // Faces keep their identities and triangle ranges.
 // Canonical position edits discard affected authored tangents; those render keys and changed diagonals share one repair.
 bool RetessellateGeometry(state::Registry &r, mtl::ComputeChain &chain, GeometryEditJobs &geometry, bool preview) {
-    const auto &work = r.Context.get<const GpuBuffers>().GeometryWork;
+    const auto &work = r.Resources.get<const GpuBuffers>().GeometryWork;
     std::vector<MeshRetessellation> inputs;
     for (const auto &[entity, edit] : geometry) {
         inputs.push_back({
@@ -2245,7 +2245,7 @@ void RefreshEditedPositions(state::Registry &r, mtl::ComputeChain &chain, std::s
     PrepareGeometryFootprints(r, chain, jobs);
     chain.Encode([&](MTL::ComputeCommandEncoder *encoder) { RecordGeometryEditBatch(r, encoder, jobs, false); });
     if (retessellate) RetessellateGeometry(r, chain, jobs, false);
-    auto &scene = r.Context.get<GpuSceneState>();
+    auto &scene = r.Resources.get<GpuSceneState>();
     scene.EditPreludePending = true;
     for (const auto &[entity, ranges] : changes) {
         auto &work = r.edit<MeshEditWork>(entity);
@@ -2265,7 +2265,7 @@ bool RefreshPreviewTessellation(state::Registry &r) {
         jobs.emplace_back(entity, PrepareGeometryEdit(r, entity, primary, previewed));
     }
     if (jobs.empty()) return false;
-    mtl::ComputeChain chain{r.Context.get<MeshStore>().BufferContext()};
+    mtl::ComputeChain chain{r.Resources.get<MeshStore>().BufferContext()};
     PrepareGeometryFootprints(r, chain, jobs);
     const bool changed = RetessellateGeometry(r, chain, jobs, true);
     for (const auto &[entity, _] : jobs) r.edit<MeshEditWork>(entity).TessellationPreview = pending != nullptr;
@@ -2286,7 +2286,7 @@ std::vector<state::Entity> CommitPosedGeometry(state::Registry &r, mtl::ComputeC
     }
     if (commits.empty()) return {};
     PrepareGeometryFootprints(r, chain, commits);
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     for (const auto &[entity, pc] : commits) meshes.CaptureVertexEdit(*DrawnStoreId(r, entity));
     chain.Encode([&](MTL::ComputeCommandEncoder *encoder) { RecordGeometryEditBatch(r, encoder, commits, false); });
     RetessellateGeometry(r, chain, commits, false);
@@ -2298,8 +2298,8 @@ std::vector<state::Entity> CommitPosedGeometry(state::Registry &r, mtl::ComputeC
 
 std::vector<state::Entity> PublishEditedPositions(state::Registry &r, mtl::ComputeChain &chain, std::span<const state::Entity> entities, PositionPublication publication) {
     const bool preview = publication == PositionPublication::Preview;
-    auto &meshes = r.Context.get<MeshStore>();
-    const auto &buffers = r.Context.get<GpuBuffers>();
+    auto &meshes = r.Resources.get<MeshStore>();
+    const auto &buffers = r.Resources.get<GpuBuffers>();
     std::vector<state::Entity> changed;
     std::vector<MeshStore::SelectionUpdate> aggregates;
     std::vector<MeshletBoundsRefitJob> refits;
@@ -2348,7 +2348,7 @@ std::vector<state::Entity> PublishEditedPositions(state::Registry &r, mtl::Compu
 
 namespace {
 void RecordSparseEditPrelude(state::Registry &r, const Viewport &viewport, mtl::PassChain &chain) {
-    const auto &buffers = r.Context.get<GpuBuffers>();
+    const auto &buffers = r.Resources.get<GpuBuffers>();
     const auto &pipelines = GetPipelines(r);
     const auto *pending = r.try_get<const PendingTransform>(state::Document);
     const auto &primaries = r.get<const EditPrimaries>(state::Document).Transformable;
@@ -2363,13 +2363,13 @@ void RecordSparseEditPrelude(state::Registry &r, const Viewport &viewport, mtl::
     if (jobs.empty()) return;
     {
         // The footprints submit before the frame records, since their counts size the edit work.
-        mtl::ComputeChain footprints{r.Context.get<const MeshStore>().BufferContext()};
+        mtl::ComputeChain footprints{r.Resources.get<const MeshStore>().BufferContext()};
         PrepareGeometryFootprints(r, footprints, jobs);
         footprints.Submit();
     }
     auto *encoder = chain.BeginCompute("EditGeometry", MTL::StageDispatch);
     // The posed bounds passes read the viewport's view uniforms.
-    encode::BindScene(encoder, r.Context.get<const mtl::BindlessSet>(), buffers, viewport);
+    encode::BindScene(encoder, r.Resources.get<const mtl::BindlessSet>(), buffers, viewport);
     RecordGeometryEditBatch(r, encoder, jobs, true);
     // Each edited mesh's entry and work, with every bounds level dispatched for all meshes before the next level's barrier.
     struct EditBounds {
@@ -2408,12 +2408,12 @@ void LayOutMeshes(state::Registry &r) {
 
 void ReleaseMeshLayout(state::Registry &r, state::Entity mesh_entity) {
     const auto &run = r.get<const BoundsRun>(mesh_entity);
-    auto &pending = r.Context.emplace<PendingObjectRemovals>();
+    auto &pending = r.Resources.emplace<PendingObjectRemovals>();
     pending.BoundsEntryRanges.push_back(run.Entries);
     pending.DeriveEntryRanges.push_back(run.DeriveEntries);
     pending.PreludeTileRanges.push_back(run.Tiles);
     // Only a posed run's mesh contains pose namespaces.
-    if (run.Posed()) ReleasePoses(r.Context.get<GpuBuffers>(), mesh_entity);
+    if (run.Posed()) ReleasePoses(r.Resources.get<GpuBuffers>(), mesh_entity);
 }
 
 void RefreshMeshDisplays(state::Registry &r) {

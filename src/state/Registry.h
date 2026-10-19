@@ -1,7 +1,7 @@
 #pragma once
 
 #include "state/DirtySet.h"
-#include "state/Services.h"
+#include "state/Resources.h"
 #include "state/View.h"
 
 namespace state {
@@ -15,7 +15,7 @@ struct Registry {
     ~Registry();
     Registry(const Registry &) = delete;
     Registry &operator=(const Registry &) = delete;
-    Services Context;
+    Resources Resources;
     std::array<Table, SchemaSize> Tables;
     std::vector<TypeId> Active; // Tables bound to a component type, in first-touch order.
     std::array<std::array<std::vector<DirtySet *>, 3>, SchemaSize> Dirty;
@@ -39,8 +39,8 @@ struct Registry {
     bool valid(Entity e) const;
     uint32_t EntityCapacity() const;
     Entity EntityAt(uint32_t index) const;
-    // Returns the registry to its empty state: every component, entity, change set, and scene-state service.
-    // Components drop without destroy handlers, since each service resets whole.
+    // Returns the registry to its empty state: every component, entity, change set, and scene-state resource.
+    // Components drop without destroy handlers, since each resource resets whole.
     // Entity allocation restarts from zero so a replay reproduces the same identities.
     void Reset();
     // The non-const form binds the table to its component type, recording the table as active on first use.

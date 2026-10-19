@@ -26,7 +26,7 @@ void Apply(state::Registry &r, const Action &action) {
         return false;
     };
     // A pending gesture resolves against the viewport it was emitted in.
-    const auto active_viewport = [&] { return r.Context.get<const Viewports>().Active().Id; };
+    const auto active_viewport = [&] { return r.Resources.get<const Viewports>().Active().Id; };
 
     std::visit(
         overloaded{

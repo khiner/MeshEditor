@@ -20,7 +20,7 @@ std::span<const state::Entity> MeshCollidersOf(const state::Registry &r, state::
 }
 
 void UpdateMeshColliders(state::Registry &r) {
-    for (const auto e : r.Context.get<const PhysicsChanges>().Colliders) {
+    for (const auto e : r.Resources.get<const PhysicsChanges>().Colliders) {
         if (!r.valid(e)) continue;
         const auto *shape = r.try_get<const ColliderShape>(e);
         const auto mesh_entity = shape ? ColliderMesh(r, e, *shape) : state::Null;
@@ -94,7 +94,7 @@ void RederiveColliders(state::Registry &r, std::span<const state::Entity> entiti
         const auto fit_id = fit_dimensions ? mesh->GetStoreId() : InvalidOffset;
         derivations.push_back({e, mesh_entity, std::move(shape), local_offset, fit_id});
     }
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     for (auto &[e, mesh_entity, shape, local_offset, fit_id] : derivations) {
         if (fit_id != InvalidOffset) {
             const auto aabb = meshes.GetSelectionRoot(fit_id, Element::Vertex).Bounds;

@@ -219,6 +219,6 @@ const mtl::ComputePipeline &MeshPipelines::operator[](MeshPass pass) const {
 }
 
 MeshPipelines &GetMeshPipelines(state::Registry &r) {
-    if (auto *pipelines = r.Context.find<MeshPipelines>()) return *pipelines;
-    return r.Context.emplace<MeshPipelines>(r.Context.get<mtl::LibraryCache>());
+    if (auto *pipelines = r.Resources.find<MeshPipelines>()) return *pipelines;
+    return r.Resources.emplace<MeshPipelines>(r.Resources.get<mtl::LibraryCache>());
 }

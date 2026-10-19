@@ -12,7 +12,7 @@ bool EditVisibility(state::Registry &r, std::span<const uint32_t> ids, Element e
     const profile::CpuScope scope{"EditVisibility"};
     const bool reveal = operation == EditVisibilityOperation::Reveal || operation == EditVisibilityOperation::RevealSelected;
     const bool select = operation == EditVisibilityOperation::RevealSelected;
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     mtl::ComputeChain chain{meshes.BufferContext()};
     std::vector<MeshStore::SelectionUpdate> updates;
     uint64_t changed = 0u;

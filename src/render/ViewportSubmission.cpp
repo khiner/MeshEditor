@@ -12,7 +12,7 @@ ViewportRenderResources::~ViewportRenderResources() { mtl::AutoreleaseScope::Rel
 
 void SubmitRecordedFrame(state::Registry &r, Viewport &viewport, MTL::CommandBuffer *command_buffer, RenderPhase phase) {
     const mtl::AutoreleaseScope native_scope;
-    const auto &ctx = r.Context.get<const mtl::Context>();
+    const auto &ctx = r.Resources.get<const mtl::Context>();
     viewport.OcclusionStale = false;
     if (phase != RenderPhase::Prepare) {
         viewport.RecordedPhase = phase;
@@ -24,15 +24,15 @@ void SubmitRecordedFrame(state::Registry &r, Viewport &viewport, MTL::CommandBuf
         const profile::CpuScope scope{"QueueSubmit"};
         mtl::Commit(command_buffer);
     }
-    auto &resources = r.Context.get<ViewportRenderResources>();
+    auto &resources = r.Resources.get<ViewportRenderResources>();
     resources.InFlight = NS::RetainPtr(command_buffer);
     resources.RenderPending = true;
-    r.Context.get<MeshStore>().FrameSubmitted();
+    r.Resources.get<MeshStore>().FrameSubmitted();
 }
 
 void RecordAndSubmitFrame(state::Registry &r, Viewport &viewport, RenderPhase phase) {
     const mtl::AutoreleaseScope native_scope;
-    const auto &ctx = r.Context.get<const mtl::Context>();
+    const auto &ctx = r.Resources.get<const mtl::Context>();
     auto *command_buffer = ctx.Queue->commandBuffer();
     RecordRenderCommandBuffer(r, viewport, command_buffer, phase);
     SubmitRecordedFrame(r, viewport, command_buffer, phase);
@@ -45,7 +45,7 @@ bool ViewportImageReady(const Viewport &viewport) {
 
 void WaitForRender(state::Registry &r) {
     const mtl::AutoreleaseScope native_scope;
-    auto &resources = r.Context.get<ViewportRenderResources>();
+    auto &resources = r.Resources.get<ViewportRenderResources>();
     if (!resources.RenderPending) return;
 
     if (resources.InFlight) {
@@ -54,8 +54,8 @@ void WaitForRender(state::Registry &r) {
     }
     profile::Resolve(resources.InFlight.get());
     resources.InFlight = nullptr;
-    r.Context.get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
-    r.Context.get<MeshStore>().FrameCompleted();
-    r.Context.get<const mtl::Context>().TrimPageCache();
+    r.Resources.get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
+    r.Resources.get<MeshStore>().FrameCompleted();
+    r.Resources.get<const mtl::Context>().TrimPageCache();
     resources.RenderPending = false;
 }

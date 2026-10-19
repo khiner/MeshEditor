@@ -188,7 +188,7 @@ void MetaTable(const char *id, std::initializer_list<const char *> cols, size_t 
 } // namespace
 
 static void RenderEntityControls(state::Registry &r, state::Entity active_entity) {
-    const auto &meshes = r.Context.get<MeshStore>();
+    const auto &meshes = r.Resources.get<MeshStore>();
     if (active_entity == state::Null) {
         TextUnformatted("Active object: None");
         return;
@@ -370,7 +370,7 @@ static void RenderEntityControls(state::Registry &r, state::Entity active_entity
 
         if (CollapsingHeader("Material")) {
             const auto &active_mesh = GetMesh(r, active_mesh_entity);
-            auto &material_store = r.Context.get<MaterialStore>();
+            auto &material_store = r.Resources.get<MaterialStore>();
             const std::span<const uint32_t> primitive_materials = meshes.Arenas().PrimitiveMaterials.Get(meshes.Get(active_mesh.GetStoreId()).PrimitiveMaterials);
             const auto materials = GetMaterials(r);
             const auto material_count = uint32_t(materials.size());
@@ -441,7 +441,7 @@ static void RenderEntityControls(state::Registry &r, state::Entity active_entity
         if (CollapsingHeader("Camera")) {
             RenderCameraLensFields(r, active_entity);
             Separator();
-            const auto &viewport = r.Context.get<const Viewports>().Active();
+            const auto &viewport = r.Resources.get<const Viewports>().Active();
             if (viewport.State.LookThroughEntity == active_entity) {
                 if (Button("Exit camera view")) action::Emit(action::view::ExitLookThroughCamera{viewport.Id});
             } else {
@@ -589,7 +589,7 @@ void RenderControls(state::Registry &r) {
                 }
                 if (interaction_mode_changed) action::Emit(action::view::SetInteractionMode{.Mode = InteractionMode(interaction_mode_value)});
                 if (interaction_mode == InteractionMode::Edit || interaction_mode == InteractionMode::Excite) {
-                    ui::ViewportEdit{r, r.Context.get<const Viewports>().Active()}.Draw<&OrbitToActive::Value>("Orbit to active");
+                    ui::ViewportEdit{r, r.Resources.get<const Viewports>().Active()}.Draw<&OrbitToActive::Value>("Orbit to active");
                 }
                 if (interaction_mode == InteractionMode::Edit && !active_is_armature_rc) {
                     AlignTextToFramePadding();
@@ -723,7 +723,7 @@ void RenderControls(state::Registry &r) {
         }
 
         if (BeginTabItem("Render")) {
-            const auto &viewport = r.Context.get<const Viewports>().Active();
+            const auto &viewport = r.Resources.get<const Viewports>().Active();
             ui::ViewportEdit f{r, viewport};
             const auto &settings = viewport.State.Display;
             ui::Edit{r, state::Document}.Draw<&AnisotropicFilter::Value>();
@@ -739,7 +739,7 @@ void RenderControls(state::Registry &r) {
                 }
             }
             // Direct mutation outside Apply: not replayable document state.
-            if (Button("Recompile shaders")) r.Context.get<FrameState>().RecompileShaders = true;
+            if (Button("Recompile shaders")) r.Resources.get<FrameState>().RecompileShaders = true;
 
             if (!r.view<Selected>().empty()) {
                 f.Section<&ViewportDisplay::Selection>();
@@ -749,7 +749,7 @@ void RenderControls(state::Registry &r) {
         }
 
         if (BeginTabItem("Camera")) {
-            const auto &viewport = r.Context.get<const Viewports>().Active();
+            const auto &viewport = r.Resources.get<const Viewports>().Active();
             const auto &camera = viewport.State.Camera.Active;
             const auto extent = viewport.State.Extent;
             const float viewport_aspect = extent.x == 0 || extent.y == 0 ? 1.f : float(extent.x) / float(extent.y);

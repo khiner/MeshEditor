@@ -46,7 +46,7 @@ bool ReadField(const state::Registry &r, state::Entity e, const ChannelTarget &t
     if (out.size() != target.Count) return false;
     const auto bytes = target.Count * sizeof(float);
     if (target.Component == state::Key<MaterialStore>()) {
-        const auto materials = r.Context.get<const GpuBuffers>().Materials.GetSpan<PBRMaterial>();
+        const auto materials = r.Resources.get<const GpuBuffers>().Materials.GetSpan<PBRMaterial>();
         if (target.Index >= materials.size()) return false;
         std::memcpy(out.data(), reinterpret_cast<const std::byte *>(&materials[target.Index]) + target.Offset, bytes);
         return true;
@@ -55,7 +55,7 @@ bool ReadField(const state::Registry &r, state::Entity e, const ChannelTarget &t
         const auto *weights = r.try_get<const MorphWeightRange>(e);
         const auto first = target.Offset / sizeof(float);
         if (!weights || first + target.Count > weights->Weights.Count) return false;
-        std::ranges::copy(r.Context.get<const GpuBuffers>().MorphWeightBuffer.Get(weights->Weights).subspan(first, target.Count), out.begin());
+        std::ranges::copy(r.Resources.get<const GpuBuffers>().MorphWeightBuffer.Get(weights->Weights).subspan(first, target.Count), out.begin());
         return true;
     }
     bool found = false;
@@ -91,22 +91,22 @@ void WriteField(state::Registry &r, state::Entity e, const ChannelTarget &target
     if (in.size() != target.Count) return;
     const auto source = std::as_bytes(in);
     if (target.Component == state::Key<MaterialStore>()) {
-        auto &materials = r.Context.get<GpuBuffers>().Materials;
+        auto &materials = r.Resources.get<GpuBuffers>().Materials;
         if (target.Index >= materials.Count<PBRMaterial>()) return;
         const auto offset = uint64_t(target.Index) * sizeof(PBRMaterial) + target.Offset;
         if (std::ranges::equal(materials.Contents().subspan(offset, source.size()), source)) return;
         materials.Update(source, offset);
-        r.Context.get<RenderChanges>().Materials.emplace(e);
+        r.Resources.get<RenderChanges>().Materials.emplace(e);
         return;
     }
     if (target.Component == state::Key<MorphWeightRange>()) {
         const auto *weights = r.try_get<const MorphWeightRange>(e);
         const auto first = target.Offset / sizeof(float);
         if (!weights || first + target.Count > weights->Weights.Count) return;
-        auto &buffer = r.Context.get<GpuBuffers>().MorphWeightBuffer;
+        auto &buffer = r.Resources.get<GpuBuffers>().MorphWeightBuffer;
         if (std::ranges::equal(std::as_bytes(buffer.Get(weights->Weights).subspan(first, target.Count)), source)) return;
         std::ranges::copy(in, buffer.GetMutable(weights->Weights).begin() + first);
-        r.Context.get<RenderChanges>().MorphWeights.emplace(e);
+        r.Resources.get<RenderChanges>().MorphWeights.emplace(e);
         return;
     }
     ForChannelComponent(target.Component, [&]<typename C> {

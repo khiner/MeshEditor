@@ -88,7 +88,7 @@ void UpdateSurfaceRelief(state::Registry &r, state::Entity node_entity, state::E
 
     // Lengths stay mesh-local, so one track serves every node instancing it, each sizing it by its own world scale.
     const auto mesh = TryGetMesh(r, mesh_entity);
-    const float length_per_uv = mesh ? UvLengthScale(r.Context.get<const MeshStore>(), *mesh, normal_map->TexCoord) : 0.f;
+    const float length_per_uv = mesh ? UvLengthScale(r.Resources.get<const MeshStore>(), *mesh, normal_map->TexCoord) : 0.f;
     // The track is fixed by the map, its texel size, and its scale, so a mesh edit that left the parameterization alone keeps it.
     const auto key = HashParams(0x2545f4914f6cdd1dull, normal_map->Image, length_per_uv, normal_map->Scale);
     if (existing && existing->Key == key) return;
@@ -1203,7 +1203,7 @@ state::Entity ContactSurfaceNode(const state::Registry &r, state::Entity collide
 void SurfaceSetupDocument(state::Registry &r) { r.emplace_or_replace<SurfaceSoundControls>(state::Document); }
 
 void RegisterSurfaceContactHandlers(state::Registry &r) {
-    auto &changes = r.Context.emplace<SurfaceChanges>();
+    auto &changes = r.Resources.emplace<SurfaceChanges>();
     changes.Edit.bind(r).on<ContactSurface>(On::Create | On::Update | On::Destroy);
     // A surface with no normal map of its own inherits its material's, so a material reassignment changes the relief too.
     // A material assignment names a mesh where a surface names a node, so the two are tracked apart.
@@ -1215,9 +1215,9 @@ void RegisterSurfaceContactHandlers(state::Registry &r) {
 }
 
 void SurfaceUpdateContacts(state::Registry &r) {
-    auto &m = r.Context.get<ModalAudio>();
+    auto &m = r.Resources.get<ModalAudio>();
     auto &surface = Surface(m);
-    const auto &changes = r.Context.get<const SurfaceChanges>();
+    const auto &changes = r.Resources.get<const SurfaceChanges>();
     for (auto e : changes.SoundControls) {
         const auto &controls = r.get<const SurfaceSoundControls>(e);
         surface.SustainLevel.store(controls.SustainLevel, std::memory_order_relaxed);
@@ -1246,7 +1246,7 @@ void SurfaceUpdateContacts(state::Registry &r) {
         else r.remove<SurfaceFinishKey>(node);
     }
 
-    const auto *sustained = r.Context.find<const PhysicsSustainedContacts>();
+    const auto *sustained = r.Resources.find<const PhysicsSustainedContacts>();
     if (!sustained || sustained->Step == surface.ContactStep) return;
 
     const std::span<const SustainedContact> active{sustained->Active};

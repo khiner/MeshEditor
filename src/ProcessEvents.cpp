@@ -103,8 +103,8 @@ void SetEditMode(state::Registry &r, Element mode) {
 // Count visible silhouette instances, excluding primary edit instances.
 void UpdateSilhouetteWork(state::Registry &r) {
     const auto &primaries = r.get<const EditPrimaries>(state::Document).All;
-    auto &buffers = r.Context.get<GpuBuffers>();
-    const auto &meshes = r.Context.get<const MeshStore>();
+    auto &buffers = r.Resources.get<GpuBuffers>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     GpuBuffers::MeshletFlagWork work{};
     for (const auto [entity, instance, render_instance] : r.view<const Selected, const Instance, const RenderInstance>(state::Exclude<Hidden>).each()) {
         if (render_instance.BufferIndex == UINT32_MAX || !IsSilhouetteEligible(r, instance.Entity)) continue;
@@ -118,7 +118,7 @@ void UpdateSilhouetteWork(state::Registry &r) {
 } // namespace
 
 void RequestRender(state::Registry &r, bool disoccludes) {
-    for (auto &viewport : r.Context.get<Viewports>().All) {
+    for (auto &viewport : r.Resources.get<Viewports>().All) {
         viewport.RenderRequested = true;
         if (disoccludes) viewport.OcclusionStale = true;
     }
@@ -126,23 +126,23 @@ void RequestRender(state::Registry &r, bool disoccludes) {
 
 void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     const bool rendering = pass == EventPass::Sample || pass == EventPass::Render;
-    const auto &ctx = r.Context.get<const mtl::Context>();
-    auto &slots = r.Context.get<mtl::BindlessSet>();
-    auto &buffers = r.Context.get<GpuBuffers>();
-    auto &meshes = r.Context.get<MeshStore>();
+    const auto &ctx = r.Resources.get<const mtl::Context>();
+    auto &slots = r.Resources.get<mtl::BindlessSet>();
+    auto &buffers = r.Resources.get<GpuBuffers>();
+    auto &meshes = r.Resources.get<MeshStore>();
     auto &render = meshes.Render();
-    auto &textures = r.Context.get<TextureStore>();
-    auto &environments = r.Context.get<EnvironmentStore>();
-    auto &viewports = r.Context.get<Viewports>();
-    const auto &selection_changes = r.Context.get<const SelectionChanges>();
-    const auto &viewport_changes = r.Context.get<const ViewportChanges>();
-    const auto &scene_changes = r.Context.get<const SceneChanges>();
-    const auto &armature_changes = r.Context.get<const ArmatureChanges>();
-    const auto &animation_changes = r.Context.get<const AnimationChanges>();
-    const auto &mesh_changes = r.Context.get<const MeshChanges>();
-    const auto &render_changes = r.Context.get<const RenderChanges>();
-    const auto &sound_vertex_changes = r.Context.get<const SoundVertexChanges>();
-    const auto &physics_changes = r.Context.get<const PhysicsChanges>();
+    auto &textures = r.Resources.get<TextureStore>();
+    auto &environments = r.Resources.get<EnvironmentStore>();
+    auto &viewports = r.Resources.get<Viewports>();
+    const auto &selection_changes = r.Resources.get<const SelectionChanges>();
+    const auto &viewport_changes = r.Resources.get<const ViewportChanges>();
+    const auto &scene_changes = r.Resources.get<const SceneChanges>();
+    const auto &armature_changes = r.Resources.get<const ArmatureChanges>();
+    const auto &animation_changes = r.Resources.get<const AnimationChanges>();
+    const auto &mesh_changes = r.Resources.get<const MeshChanges>();
+    const auto &render_changes = r.Resources.get<const RenderChanges>();
+    const auto &sound_vertex_changes = r.Resources.get<const SoundVertexChanges>();
+    const auto &physics_changes = r.Resources.get<const PhysicsChanges>();
     const profile::CpuScope profile_scope{"ProcessEvents"};
 
     // Submit before host reads of GPU results.
@@ -189,15 +189,15 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     SettleProcedures(r, pass == EventPass::Frame || pass == EventPass::Settle);
     ProcessObjectRemovals(r);
     // The records derive from the display settings the visible viewports share.
-    auto &scene_state = r.Context.get<GpuSceneState>();
+    auto &scene_state = r.Resources.get<GpuSceneState>();
     const auto displays = VisibleDisplays(viewports);
     const bool displays_changed = std::exchange(scene_state.Displays, displays) != displays;
 
-    const bool recompiled = std::exchange(r.Context.get<FrameState>().RecompileShaders, false);
+    const bool recompiled = std::exchange(r.Resources.get<FrameState>().RecompileShaders, false);
     if (recompiled) {
-        r.Context.get<mtl::LibraryCache>().Clear();
-        r.Context.erase<Pipelines>();
-        r.Context.erase<MeshPipelines>();
+        r.Resources.get<mtl::LibraryCache>().Clear();
+        r.Resources.erase<Pipelines>();
+        r.Resources.erase<MeshPipelines>();
         // Recompiled prefilter kernels must regenerate their cached cubemaps.
         RebuildStudioEnvironments(r);
         request();
@@ -218,7 +218,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         const auto &gltf_images = src ? src->Images : empty_images;
         TextureUploadBatch batch{ctx};
         for (const auto &item : textures.PendingUploads) {
-            auto entry = MaterializeTextureEntry(r, batch, slots, item, gltf_images, r.Context.get<const ActiveSamplerAnisotropy>().Value);
+            auto entry = MaterializeTextureEntry(r, batch, slots, item, gltf_images, r.Resources.get<const ActiveSamplerAnisotropy>().Value);
             if (!entry) {
                 action::Fail(r, std::format("Cannot load texture '{}': {}", item.Params.Name, entry.error()));
                 slots.Release({SlotType::Sampler, item.SamplerSlot});
@@ -285,7 +285,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         return viewport;
     };
     const auto target_px = [&](const Viewport &viewport, vec2 fraction) {
-        const auto extent = RenderExtentPx(viewport, r.Context.get<const FrameState>());
+        const auto extent = RenderExtentPx(viewport, r.Resources.get<const FrameState>());
         const auto last = Max(extent, uvec2{1}) - uvec2{1};
         return Min(uvec2{std::lround(fraction.x * float(extent.x)), std::lround(fraction.y * float(extent.y))}, last);
     };
@@ -393,7 +393,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         const bool bone_mode = r.get<const Interaction>(state::Document).Mode == InteractionMode::Pose || IsBoneEditMode(r);
         const auto active = bone_mode ? FindActiveBone(r) : FindActiveEntity(r);
         const auto logical_extent = viewport.State.Extent;
-        const auto render_extent = RenderExtentPx(viewport, r.Context.get<const FrameState>());
+        const auto render_extent = RenderExtentPx(viewport, r.Resources.get<const FrameState>());
         const float render_scale = std::max(
             logical_extent.x > 0u ? float(render_extent.x) / float(logical_extent.x) : 1.f,
             logical_extent.y > 0u ? float(render_extent.y) / float(logical_extent.y) : 1.f
@@ -425,7 +425,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         const auto &range = r.get<const TimelineRange>(state::Document);
         const auto &playback = r.get<const TimelinePlayback>(state::Document);
         auto &pf = r.edit<PlaybackFrame>(state::Document).Value;
-        auto &frame_state = r.Context.get<FrameState>();
+        auto &frame_state = r.Resources.get<FrameState>();
         anim_advanced = [&] {
             if (pass == EventPass::Restore) {
                 pf = float(playback.CurrentFrame);
@@ -914,7 +914,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
             .Colors = theme.Colors,
             .Derived = DeriveThemeColors(theme),
             .AxisColors = theme.AxisColors,
-            .EdgeWidth = theme.Sizes.EdgeWidth * 0.5f * r.Context.get<FrameState>().DisplayFramebufferScale.x,
+            .EdgeWidth = theme.Sizes.EdgeWidth * 0.5f * r.Resources.get<FrameState>().DisplayFramebufferScale.x,
             .SilhouetteEdgeWidth = theme.Sizes.SilhouetteEdgeWidth,
         };
         buffers.ViewportThemeUBO.Update(BytesOf(ubo));
@@ -926,8 +926,8 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         request();
     }
     if (const float requested = ClampMaxAnisotropy(ToMaxAnisotropy(r.get<const AnisotropicFilter>(state::Document).Value));
-        requested != r.Context.get<const ActiveSamplerAnisotropy>().Value) {
-        r.Context.get<ActiveSamplerAnisotropy>().Value = requested;
+        requested != r.Resources.get<const ActiveSamplerAnisotropy>().Value) {
+        r.Resources.get<ActiveSamplerAnisotropy>().Value = requested;
         RebuildTextureSamplers(ctx, slots, textures, requested);
         request();
     }
@@ -1001,7 +1001,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         }
 
         const auto &constraint_changes = armature_changes.BoneConstraints;
-        auto &constraint_targets = r.Context.get<ConstraintTargets>().Armatures;
+        auto &constraint_targets = r.Resources.get<ConstraintTargets>().Armatures;
         if (!constraint_changes.empty() || pass == EventPass::Restore) {
             constraint_targets.clear();
             for (const auto [bone, constraints] : r.view<const BoneConstraints>().each()) {
@@ -1311,22 +1311,22 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
     r.on_destroy<MeshHandle, [](state::Registry &r, state::Entity e) { r.remove<MeshEditWork>(e); }>();
     r.on_destroy<MeshEditWork, &ReleaseMeshEditWorkRanges>();
     r.on_destroy<BoundsRun, &ReleaseMeshLayout>();
-    auto &selection = r.Context.emplace<SelectionChanges>();
+    auto &selection = r.Resources.emplace<SelectionChanges>();
     selection.Selected.bind(r).on<Selected>(On::Create | On::Destroy);
     selection.ActiveInstance.bind(r).on<Active>(On::Create | On::Destroy);
     selection.BoneSelection.bind(r).on<BoneSelection>(On::Create | On::Update | On::Destroy).on<BoneActive>(On::Create | On::Destroy);
     selection.MeshActiveElement.bind(r).on<MeshActiveElement>(On::Create | On::Update);
-    auto &mesh = r.Context.emplace<MeshChanges>();
+    auto &mesh = r.Resources.emplace<MeshChanges>();
     mesh.Geometry.bind(r).on<MeshGeometryDirty>(On::Create).on<MeshPositionsChanged>(On::Create);
     mesh.Material.bind(r).on<MeshMaterialAssignment>(On::Create | On::Update);
     mesh.PrimitiveShape.bind(r).on<PrimitiveShape>(On::Update);
     mesh.TetMesh.bind(r).on<TetBuffers>(On::Create | On::Update | On::Destroy);
     mesh.NewBufferEntity.bind(r).on<MeshHandle>(On::Create).on<VertexStoreId>(On::Create);
-    auto &sound_vertices = r.Context.emplace<SoundVertexChanges>();
+    auto &sound_vertices = r.Resources.emplace<SoundVertexChanges>();
     sound_vertices.Vertices.bind(r).on<SoundVertices>(On::Create | On::Destroy);
     sound_vertices.Updated.bind(r).on<SoundVertices>(On::Update);
     sound_vertices.VertexForce.bind(r).on<VertexForce>(On::Create | On::Destroy);
-    auto &render = r.Context.emplace<RenderChanges>();
+    auto &render = r.Resources.emplace<RenderChanges>();
     render.InstanceVisibility.bind(r).on<Instance>(On::Create | On::Update | On::Destroy).on<Hidden>(On::Create | On::Destroy);
     render.InstanceCreated.bind(r).on<RenderInstance>(On::Create);
     render.InstanceDestroyed.bind(r).on<RenderInstance>(On::Destroy);
@@ -1339,14 +1339,14 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
     render.MorphWeights.bind(r);
     render.SceneLighting.bind(r).on<ImageLight>(On::Create | On::Update).on<LightIndex>(On::Create | On::Destroy);
     render.CameraLens.bind(r).on<Perspective>(On::Create | On::Update).on<Orthographic>(On::Create | On::Update);
-    auto &view = r.Context.emplace<ViewportChanges>();
+    auto &view = r.Resources.emplace<ViewportChanges>();
     view.InteractionMode.bind(r).on<Interaction>(On::Create | On::Update);
     view.EditMode.bind(r).on<EditMode>(On::Create | On::Update);
     view.TransformPending.bind(r).on<PendingTransform>(On::Create | On::Update | On::Destroy);
     view.TransformStart.bind(r).on<StartTransform>(On::Create);
     view.TransformEnd.bind(r).on<StartTransform>(On::Destroy);
     view.Theme.bind(r).on<ViewportTheme>(On::Create | On::Update);
-    auto &scene = r.Context.emplace<SceneChanges>();
+    auto &scene = r.Resources.emplace<SceneChanges>();
     // Publish world-transform changes through SetWorldTransform so bone display scaling reaches instance transforms.
     scene.WorldTransform.bind(r).on<BoneDisplayScale>(On::Update);
     scene.Parent.bind(r).on<SceneParent>(On::Create | On::Update | On::Destroy);
@@ -1357,11 +1357,11 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
         .on<Transform>(On::Create | On::Update)
         .on<PosedLocal>(On::Create | On::Update | On::Destroy)
         .on<SceneParent>(On::Create | On::Update | On::Destroy);
-    auto &armature = r.Context.emplace<ArmatureChanges>();
+    auto &armature = r.Resources.emplace<ArmatureChanges>();
     armature.BonePose.bind(r).on<BoneDelta>(On::Update);
     armature.BoneConstraints.bind(r).on<BoneConstraints>(On::Create | On::Update | On::Destroy);
-    r.Context.emplace<ConstraintTargets>();
-    auto &animation = r.Context.emplace<AnimationChanges>();
+    r.Resources.emplace<ConstraintTargets>();
+    auto &animation = r.Resources.emplace<AnimationChanges>();
     animation.Edited.bind(r)
         .on<AnimationClips>(On::Create | On::Update | On::Destroy)
         .on<Animations>(On::Update);

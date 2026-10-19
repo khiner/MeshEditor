@@ -70,7 +70,7 @@ uint32_t ScratchWords(uint32_t count, const WeldChannels &c) {
 }
 
 void SubmitChunk(state::Registry &r, std::span<const WeldTarget> chunk, mtl::ComputeChain &chain, Batch &batch) {
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     const auto &arenas = meshes.Arenas();
     batch.Begin();
     for (const auto &target : chunk) {
@@ -143,7 +143,7 @@ void SubmitChunk(state::Registry &r, std::span<const WeldTarget> chunk, mtl::Com
 
 void WeldMeshesNow(state::Registry &r, std::span<const WeldTarget> targets) {
     const profile::CpuScope scope{"WeldMeshes"};
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     std::vector<WeldTarget> work;
     for (const auto &target : targets) {
         if (meshes.Arenas().Vertices.Count(meshes.Get(target.StoreId).Vertices) == 0 || target.Data->FaceCount() == 0) continue;

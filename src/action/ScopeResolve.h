@@ -38,7 +38,7 @@ template<typename T, typename F>
 void ForEachComponentTarget(state::Registry &r, const Target &target, F &&fn) {
     if constexpr (ViewportState::Holds<T>) {
         const auto *on = std::get_if<OnViewport>(&target);
-        if (auto *viewport = on ? r.Context.get<Viewports>().Find(on->Id) : nullptr) fn(viewport->State.Edit<T>());
+        if (auto *viewport = on ? r.Resources.get<Viewports>().Find(on->Id) : nullptr) fn(viewport->State.Edit<T>());
     } else {
         ForEachTarget(target, [&] { return ActiveWith<T>(r); }, [&](auto &&f) { ForEachSelectedWith<T>(r, f); }, std::forward<F>(fn));
     }

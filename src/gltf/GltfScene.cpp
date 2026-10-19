@@ -1376,9 +1376,9 @@ struct ImportedMaterials {
 };
 
 ImportedMaterials ImportMaterials(state::Registry &r, const fastgltf::Asset &asset, const SourceAssets &sa, std::span<const PBRMaterial> source_materials) {
-    auto &slots = r.Context.get<mtl::BindlessSet>();
-    auto &buffers = r.Context.get<GpuBuffers>();
-    auto &textures = r.Context.get<TextureStore>();
+    auto &slots = r.Resources.get<mtl::BindlessSet>();
+    auto &buffers = r.Resources.get<GpuBuffers>();
+    auto &textures = r.Resources.get<TextureStore>();
     ImportedMaterials out;
 
     // Equivalent glTF textures share one TextureEntry, keyed by resolved image, sampler, and color space.
@@ -1462,7 +1462,7 @@ ImportedMaterials ImportMaterials(state::Registry &r, const fastgltf::Asset &ass
         out.IndexByGltfMaterial.emplace_back(buffers.Materials.Append(gpu_material));
         material_names.emplace_back(material_name);
     }
-    r.Context.get<MaterialStore>().AppendNames(std::move(material_names));
+    r.Resources.get<MaterialStore>().AppendNames(std::move(material_names));
     return out;
 }
 
@@ -1523,7 +1523,7 @@ MeshEntities ImportMeshes(state::Registry &r, std::span<SourceMesh> source_meshe
     }
 
     auto created = CreateMeshes(r, sources);
-    const auto materials = r.Context.get<const GpuBuffers>().Materials.GetSpan<PBRMaterial>();
+    const auto materials = r.Resources.get<const GpuBuffers>().Materials.GetSpan<PBRMaterial>();
     MeshEntities entities(source_meshes.size(), {state::Null, state::Null, state::Null});
     for (uint32_t part = 0; part < parts.size(); ++part) {
         auto &layout = layouts[part];
@@ -1558,7 +1558,7 @@ struct ImportedObjects {
 
 // Creates the mesh, camera, light, and empty objects of every emitted node, parents them, and stubs the nodes no scene reaches.
 ImportedObjects ImportObjects(state::Registry &r, const fastgltf::Asset &asset, const NodePlan &plan, const MeshEntities &mesh_entities) {
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     const auto emitted_count = size_t(std::ranges::count(plan.IsObjectEmitted, true));
     ImportedObjects objects;
     objects.Entities.reserve(emitted_count);
@@ -1978,7 +1978,7 @@ struct ImportedArmatures {
 };
 
 ImportedArmatures ImportArmatures(state::Registry &r, const fastgltf::Asset &asset, const NodePlan &plan, std::span<const ArmaturePlan> groups, const ImportedObjects &objects, std::string_view name_prefix) {
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     ImportedArmatures out;
     out.Objects.reserve(groups.size());
     // Skinned nodes per skin, in node order.
@@ -2139,8 +2139,8 @@ bool ImportAnimations(state::Registry &r, const fastgltf::Asset &asset, const Im
     }
 
     // Mesh instances with morph targets start at the node's weights, else the mesh defaults, in the UMA weight buffer.
-    const auto &meshes = r.Context.get<const MeshStore>();
-    auto &weight_buffer = r.Context.get<GpuBuffers>().MorphWeightBuffer;
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    auto &weight_buffer = r.Resources.get<GpuBuffers>().MorphWeightBuffer;
     std::unordered_map<uint32_t, state::Entity> morph_instance_by_node;
     for (const auto &[node_index, instance_entity] : objects.Entities) {
         const auto *instance = r.try_get<const Instance>(instance_entity);
@@ -2383,9 +2383,9 @@ std::expected<LoadResult, LoadError> LoadGltf(const std::filesystem::path &sourc
     }
     const bool imported_animation = ImportAnimations(r, asset, objects, armatures.Objects, materials.IndexByGltfMaterial, image_light);
 
-    auto &environments = r.Context.get<EnvironmentStore>();
+    auto &environments = r.Resources.get<EnvironmentStore>();
     if (const auto &source_ibl = source_assets->ImageBasedLight) {
-        const auto [diffuse_slot, specular_slot] = AllocateIblCubeSlots(r.Context.get<mtl::BindlessSet>());
+        const auto [diffuse_slot, specular_slot] = AllocateIblCubeSlots(r.Resources.get<mtl::BindlessSet>());
         environments.PendingImport = PendingEnvironmentImport{*source_ibl, diffuse_slot, specular_slot};
         environments.ClearRequested = false;
     } else {

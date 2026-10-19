@@ -185,9 +185,9 @@ void ReleaseCubeSamplerSlot(mtl::BindlessSet &slots, uint32_t sampler_slot) {
 }
 
 void ResetImportedEnvironment(state::Registry &r) {
-    auto &env = r.Context.get<EnvironmentStore>();
+    auto &env = r.Resources.get<EnvironmentStore>();
     if (env.ImportedSceneWorld) {
-        auto &slots = r.Context.get<mtl::BindlessSet>();
+        auto &slots = r.Resources.get<mtl::BindlessSet>();
         ReleaseCubeSamplerSlot(slots, env.ImportedSceneWorld->DiffuseEnv.SamplerSlot);
         ReleaseCubeSamplerSlot(slots, env.ImportedSceneWorld->SpecularEnv.SamplerSlot);
         env.ImportedSceneWorld.reset();
@@ -244,7 +244,7 @@ std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(
     const state::Registry &r, mtl::BindlessSet &slots,
     const PendingEnvironmentImport &pending, const std::vector<gltf::Image> &images
 ) {
-    const auto &ctx = r.Context.get<const mtl::Context>();
+    const auto &ctx = r.Resources.get<const mtl::Context>();
     const auto &ibl = pending.Source;
     std::vector<CubemapMipFacesF32> specular_mips;
     specular_mips.reserve(ibl.SpecularImageIndicesByMip.size());
@@ -416,18 +416,18 @@ EnvironmentPrefiltered CreateIblFromHdri(
 }
 
 IblSamplers StudioIbl(state::Registry &r, std::string_view name) {
-    auto &environments = r.Context.get<EnvironmentStore>();
+    auto &environments = r.Resources.get<EnvironmentStore>();
     auto &hdris = environments.Hdris;
     if (hdris.empty()) return environments.SceneWorld.Ibl;
     const auto it = std::ranges::find(hdris, name, &HdriEntry::Name);
     auto &hdri = it != hdris.end() ? *it : hdris.front();
-    if (!hdri.Prefiltered) hdri.Prefiltered = CreateIblFromHdri(r.Context.get<const mtl::Context>(), r.Context.get<mtl::BindlessSet>(), GetPipelines(r), hdri.Path, hdri.Name);
+    if (!hdri.Prefiltered) hdri.Prefiltered = CreateIblFromHdri(r.Resources.get<const mtl::Context>(), r.Resources.get<mtl::BindlessSet>(), GetPipelines(r), hdri.Path, hdri.Name);
     return MakeIblSamplers(*hdri.Prefiltered, environments);
 }
 
 void RebuildStudioEnvironments(state::Registry &r) {
-    auto &slots = r.Context.get<mtl::BindlessSet>();
-    for (auto &hdri : r.Context.get<EnvironmentStore>().Hdris) {
+    auto &slots = r.Resources.get<mtl::BindlessSet>();
+    for (auto &hdri : r.Resources.get<EnvironmentStore>().Hdris) {
         if (!hdri.Prefiltered) continue;
         ReleaseCubeSamplerSlot(slots, hdri.Prefiltered->DiffuseEnv.SamplerSlot);
         ReleaseCubeSamplerSlot(slots, hdri.Prefiltered->SpecularEnv.SamplerSlot);
@@ -476,7 +476,7 @@ std::expected<TextureEntry, std::string> MaterializeTextureEntry(
     TextureUploadBatch &batch, mtl::BindlessSet &slots,
     const PendingTextureUpload &item, const std::vector<gltf::Image> &gltf_images, float max_anisotropy
 ) {
-    const auto &ctx = r.Context.get<const mtl::Context>();
+    const auto &ctx = r.Resources.get<const mtl::Context>();
     if (const auto *raw = std::get_if<PendingTextureUpload::RawPixels>(&item.Source)) {
         return CreateTextureEntry(ctx, batch, slots, item.SamplerSlot, Rgba8Pixels{raw->Pixels, raw->Width, raw->Height}, item.Params, max_anisotropy);
     }
@@ -561,7 +561,7 @@ uint32_t QueueLutTexture(TextureStore &textures, mtl::BindlessSet &slots, const 
 }
 
 std::vector<TextureRef> GetTextureRefs(state::Registry &r) {
-    const auto &store = r.Context.get<TextureStore>();
+    const auto &store = r.Resources.get<TextureStore>();
     std::vector<TextureRef> refs;
     refs.reserve(store.Textures.size());
     for (const auto &t : store.Textures) refs.emplace_back(t.SamplerSlot, t.Params.Name);
@@ -569,7 +569,7 @@ std::vector<TextureRef> GetTextureRefs(state::Registry &r) {
 }
 
 HdriRefs GetHdriRefs(state::Registry &r, std::string_view selected) {
-    const auto &hdris = r.Context.get<EnvironmentStore>().Hdris;
+    const auto &hdris = r.Resources.get<EnvironmentStore>().Hdris;
     const auto it = std::ranges::find(hdris, selected, &HdriEntry::Name);
     HdriRefs refs{.ActiveIndex = it != hdris.end() ? uint32_t(std::distance(hdris.begin(), it)) : 0u};
     refs.Names.reserve(hdris.size());
@@ -578,8 +578,8 @@ HdriRefs GetHdriRefs(state::Registry &r, std::string_view selected) {
 }
 
 void ReleaseUnlistedTextures(state::Registry &r, std::span<const MaterializedTexture> manifest) {
-    auto &slots = r.Context.get<mtl::BindlessSet>();
-    auto &textures = r.Context.get<TextureStore>();
+    auto &slots = r.Resources.get<mtl::BindlessSet>();
+    auto &textures = r.Resources.get<TextureStore>();
     const auto unlisted = [&](const TextureEntry &t) {
         return t.SourceImageIndex != UINT32_MAX && std::ranges::none_of(manifest, [&](const MaterializedTexture &item) {
                    return item.SamplerSlot == t.SamplerSlot && item.SourceImageIndex == t.SourceImageIndex && item.Params == t.Params;
@@ -593,7 +593,7 @@ void ReleaseUnlistedTextures(state::Registry &r, std::span<const MaterializedTex
 
 void ReleaseImportedTextures(state::Registry &r) {
     ReleaseUnlistedTextures(r, {});
-    auto &textures = r.Context.get<TextureStore>();
+    auto &textures = r.Resources.get<TextureStore>();
     textures.WhiteTextureSlot = textures.Textures.empty() ? InvalidSlot : textures.Textures.front().SamplerSlot;
 }
 
@@ -604,7 +604,7 @@ void Reset(TextureStore &textures, state::Registry &r) {
 
 void Reset(EnvironmentStore &env, state::Registry &r) {
     if (auto &pending = env.PendingImport) {
-        auto &slots = r.Context.get<mtl::BindlessSet>();
+        auto &slots = r.Resources.get<mtl::BindlessSet>();
         ReleaseCubeSamplerSlot(slots, pending->DiffuseCubeSlot);
         ReleaseCubeSamplerSlot(slots, pending->SpecularCubeSlot);
         pending.reset();
@@ -615,9 +615,9 @@ void Reset(EnvironmentStore &env, state::Registry &r) {
 
 void ResetImportedTexturesAndMaterials(state::Registry &r) {
     ReleaseImportedTextures(r);
-    auto &buffers = r.Context.get<GpuBuffers>();
+    auto &buffers = r.Resources.get<GpuBuffers>();
     if (buffers.Materials.Count<PBRMaterial>() > 1) buffers.Materials.SetCount<PBRMaterial>(1u);
     // The next material change compares against no prior attributes, since later imports reuse the released indices.
-    if (auto *scene = r.Context.find<GpuSceneState>()) scene->RequiredMaterialAttributes.clear();
-    Reset(r.Context.get<MaterialStore>(), r);
+    if (auto *scene = r.Resources.find<GpuSceneState>()) scene->RequiredMaterialAttributes.clear();
+    Reset(r.Resources.get<MaterialStore>(), r);
 }

@@ -36,13 +36,13 @@ uint8_t InstanceStateBits(const state::Registry &r, state::Entity e) {
 
 bool IsSilhouetteEligible(const state::Registry &r, state::Entity mesh_entity) {
     if (!r.valid(mesh_entity) || r.any_of<ObjectExtrasTag, ArmatureObject, BoneJoint>(mesh_entity) || !HasMesh(r, mesh_entity)) return false;
-    return r.Context.get<const MeshStore>().Arenas().FaceTriangles.Count(RecordOf(r, mesh_entity).FaceData) > 0u;
+    return r.Resources.get<const MeshStore>().Arenas().FaceTriangles.Count(RecordOf(r, mesh_entity).FaceData) > 0u;
 }
 
 void RetallyMesh(state::Registry &r, state::Entity mesh_entity) {
     const auto id = DrawnStoreId(r, mesh_entity);
-    auto &buffers = r.Context.get<GpuBuffers>();
-    const auto &meshes = r.Context.get<const MeshStore>();
+    auto &buffers = r.Resources.get<GpuBuffers>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &render = meshes.Render();
     const auto *mb = id ? meshes.TryGet(*id) : nullptr;
     if (!mb) return;
@@ -61,7 +61,7 @@ void RetallyMesh(state::Registry &r, state::Entity mesh_entity) {
 }
 
 void RepointMeshInstances(state::Registry &r, std::span<const state::Entity> mesh_entities) {
-    const auto &buffers = r.Context.get<GpuBuffers>();
+    const auto &buffers = r.Resources.get<GpuBuffers>();
     for (const auto mesh_entity : mesh_entities) {
         r.emplace_or_replace<MeshLayoutDirty>(mesh_entity);
         r.emplace_or_replace<MeshDisplayDirty>(mesh_entity);
@@ -85,20 +85,20 @@ void RepointMeshInstances(state::Registry &r, std::span<const state::Entity> mes
 
 bool RefreshMaterialLodAttributes(state::Registry &r) {
     const auto materials = GetMaterials(r);
-    const auto debug = r.Context.get<const GpuSceneState>().Displays.DebugChannels;
+    const auto debug = r.Resources.get<const GpuSceneState>().Displays.DebugChannels;
     std::vector<std::array<uint32_t, 2>> required(materials.size());
     for (size_t i = 0; i < materials.size(); ++i) required[i] = {MaterialLodAttributes(materials[i], debug, false), MaterialLodAttributes(materials[i], debug, true)};
-    auto &cached = r.Context.get<GpuSceneState>().RequiredMaterialAttributes;
+    auto &cached = r.Resources.get<GpuSceneState>().RequiredMaterialAttributes;
     if (required == cached) return false;
     cached = std::move(required);
     return true;
 }
 
 void RefreshClusterLodAttributes(state::Registry &r, mtl::ComputeChain &chain, std::span<const state::Entity> mesh_entities) {
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     auto &render = meshes.Render();
     const auto materials = GetMaterials(r);
-    const auto debug = r.Context.get<const GpuSceneState>().Displays.DebugChannels;
+    const auto debug = r.Resources.get<const GpuSceneState>().Displays.DebugChannels;
     std::vector<ClusterGroupSeeds> seeds;
     std::vector<uint32_t> changed;
     for (const auto entity : mesh_entities) {
@@ -141,7 +141,7 @@ void BuildMeshlets(state::Registry &r, mtl::ComputeChain &chain, std::span<const
     if (mesh_entities.empty() && bone_entities.empty()) return;
     for (const auto e : mesh_entities) ReleaseMeshEditWork(r, e);
     const profile::CpuScope scope{"BuildMeshlets"};
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     std::vector<MeshletBuildSource> sources;
     sources.reserve(mesh_entities.size() * 3u + bone_entities.size());
     for (const auto entity : mesh_entities) {
@@ -176,7 +176,7 @@ bool EditPinsFinest(const selection::PrimaryEditInstanceMap &primaries, const st
 
 bool BuildDemandedClusterLods(state::Registry &r, mtl::ComputeChain &chain) {
     if (r.view<const ClusterLodDemand>().empty()) return false;
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     auto &render = meshes.Render();
     // A mesh leaves the demand set once it has a hierarchy or its meshlets take none.
     // Arena offsets follow commit order, which is the demand set's entity order.
@@ -235,10 +235,10 @@ bool BuildDemandedClusterLods(state::Registry &r, mtl::ComputeChain &chain) {
 }
 
 bool DeriveRenderInstances(state::Registry &r) {
-    const auto &buffers = r.Context.get<GpuBuffers>();
+    const auto &buffers = r.Resources.get<GpuBuffers>();
     std::span<uint8_t> states;
     std::vector<state::Entity> retallied;
-    for (const auto e : r.Context.get<const RenderChanges>().InstanceVisibility.Entities) {
+    for (const auto e : r.Resources.get<const RenderChanges>().InstanceVisibility.Entities) {
         if (!r.valid(e)) continue;
         const auto *instance = r.try_get<const Instance>(e);
         if (const auto *render = r.try_get<const RenderInstance>(e)) {
@@ -287,14 +287,14 @@ void MergeInsertedSlots(GpuBuffers &buffers, std::vector<uint32_t> inserted) {
 
 SyncResult SyncModelsBuffers(state::Registry &r) {
     const profile::CpuScope scope{"SyncModelsBuffers"};
-    auto &buffers = r.Context.get<GpuBuffers>();
-    auto &meshes = r.Context.get<MeshStore>();
-    auto &scene = r.Context.get<GpuSceneState>();
+    auto &buffers = r.Resources.get<GpuBuffers>();
+    auto &meshes = r.Resources.get<MeshStore>();
+    auto &scene = r.Resources.get<GpuSceneState>();
     // Remove released records from flag totals before building new records.
     for (const auto id : meshes.TakeReleased()) buffers.Retally(id, {});
     std::vector<state::Entity> new_mesh_entities, new_extras_entities;
     std::vector<uint8_t> listed;
-    for (auto e : r.Context.get<const MeshChanges>().NewBufferEntity) {
+    for (auto e : r.Resources.get<const MeshChanges>().NewBufferEntity) {
         if (!r.valid(e)) continue;
         // A record keeps its render data across handle changes that leave it intact.
         const auto id = DrawnStoreId(r, e);
@@ -309,7 +309,7 @@ SyncResult SyncModelsBuffers(state::Registry &r) {
 
     // Remove destroyed instance slots and compact each surviving owner buffer once.
     bool slots_changed = false;
-    if (auto *pending = r.Context.find<PendingSlotRemovals>()) {
+    if (auto *pending = r.Resources.find<PendingSlotRemovals>()) {
         auto &removals = pending->Instances;
         auto &retired = pending->Retired;
         std::ranges::sort(retired);
@@ -372,7 +372,7 @@ SyncResult SyncModelsBuffers(state::Registry &r) {
 
     // New instances by buffer, in entity order within each buffer.
     std::vector<std::pair<state::Entity, state::Entity>> placements;
-    for (auto entity : r.Context.get<const RenderChanges>().InstanceCreated) {
+    for (auto entity : r.Resources.get<const RenderChanges>().InstanceCreated) {
         if (!r.valid(entity)) continue;
         if (const auto *ri = r.try_get<const RenderInstance>(entity); ri && ri->BufferIndex == UINT32_MAX) placements.emplace_back(ri->Entity, entity);
     }
@@ -455,14 +455,14 @@ SyncResult SyncModelsBuffers(state::Registry &r) {
 
 bool SyncViewportRenderResources(state::Registry &r, Viewport &viewport) {
     auto &targets = viewport.Targets;
-    const auto render_extent = std::bit_cast<mtl::Extent2D>(RenderExtentPx(viewport, r.Context.get<const FrameState>()));
+    const auto render_extent = std::bit_cast<mtl::Extent2D>(RenderExtentPx(viewport, r.Resources.get<const FrameState>()));
     if (render_extent.Width == 0 || render_extent.Height == 0) return false;
 
-    const auto &ctx = r.Context.get<const mtl::Context>();
+    const auto &ctx = r.Resources.get<const mtl::Context>();
     const auto &samplers = viewport.Samplers;
-    auto &slots = r.Context.get<mtl::BindlessSet>();
+    auto &slots = r.Resources.get<mtl::BindlessSet>();
     const auto set_sampler = [&](uint32_t slot, SampledTexture sampled) { slots.SetSampler({SlotType::Sampler, slot}, sampled.Texture, sampled.Sampler); };
-    const bool want_transmission = RealTransmission(viewport.State, r.Context.get<const GpuSceneState>().MeshPbrFeatures);
+    const bool want_transmission = RealTransmission(viewport.State, r.Resources.get<const GpuSceneState>().MeshPbrFeatures);
     if (targets.BuiltColorExtent() == render_extent) {
         if (!targets.EnsureTransmissionResources(ctx, render_extent, want_transmission)) return false;
         set_sampler(samplers.Transmission, targets.TransmissionSampler());
@@ -470,7 +470,7 @@ bool SyncViewportRenderResources(state::Registry &r, Viewport &viewport) {
     }
 
     // Wait for the live consumer (ImGui) to finish sampling the old resources before recreating them.
-    if (auto *consumer = r.Context.get<const ViewportConsumerFence>().Value) {
+    if (auto *consumer = r.Resources.get<const ViewportConsumerFence>().Value) {
         const mtl::AutoreleaseScope native_scope;
         consumer->waitUntilCompleted();
     }
@@ -478,7 +478,7 @@ bool SyncViewportRenderResources(state::Registry &r, Viewport &viewport) {
     targets.EnsureTransmissionResources(ctx, render_extent, want_transmission);
     {
         const profile::CpuScope scope{"UpdateSamplerSlots"};
-        set_sampler(samplers.Silhouette, targets.Nearest(&targets.Resources->SilhouetteImage));
+        set_sampler(samplers.Silhouette, targets.Nearest(&targets.Screen->SilhouetteImage));
         set_sampler(samplers.SceneColor, targets.SceneColorSampler());
         set_sampler(samplers.OverlayColor, targets.OverlayColorSampler());
         set_sampler(samplers.Transmission, targets.TransmissionSampler());

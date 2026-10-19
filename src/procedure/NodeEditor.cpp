@@ -1147,7 +1147,7 @@ void DrawNodesWindow(state::Registry &r, NodesWindow &window, bool interactive) 
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0.f, 0.f});
             BeginChild("Canvas", {avail.x - panel_width - GetStyle().ItemSpacing.x, 0.f}, ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoMove);
             PopStyleVar();
-            DrawCanvas(r, r.Context.get<FrameState>(), window, r.get<const NodeTheme>(state::Document), mesh_entity, *procedure, interactive);
+            DrawCanvas(r, r.Resources.get<FrameState>(), window, r.get<const NodeTheme>(state::Document), mesh_entity, *procedure, interactive);
             EndChild();
             SameLine();
             BeginChild("Parameters", {0.f, 0.f}, ImGuiChildFlags_Borders);

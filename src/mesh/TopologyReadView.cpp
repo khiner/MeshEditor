@@ -8,7 +8,7 @@
 void TopologyReadView::Add(state::Registry &r, uint32_t id, const MeshClosure &neighborhood, const BufferArena<uint32_t> &storage) {
     const profile::CpuScope scope{"TopologyReadView"};
     if (!neighborhood.Counts[0]) return;
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &a = meshes.Arenas();
     const auto &record = meshes.Get(id);
     const auto vertex_table = a.Vertices.Entries(record.Vertices), corner_table = a.FaceCorners.Entries(record.FaceCorners);
@@ -99,7 +99,7 @@ void TopologyReadView::Add(state::Registry &r, uint32_t id, const MeshClosure &n
 
 void TopologyReadView::Clone(state::Registry &r) {
     const profile::CpuScope scope{"TopologyReadViewClone"};
-    const auto &meshes = r.Context.get<MeshStore>();
+    const auto &meshes = r.Resources.get<MeshStore>();
     const auto &a = meshes.Arenas();
     // Each binding reads its clone at the source offsets.
     std::vector<std::pair<const mtl::Buffer *, uint32_t *>> bindings{

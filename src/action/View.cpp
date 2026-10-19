@@ -36,7 +36,7 @@ namespace action::view {
 void Apply(state::Registry &r, const Action &action) {
     // Runs `fn` on the state of the viewport with `id`, if it exists.
     const auto edit_view = [&](uint32_t id, auto &&fn) {
-        if (auto *viewport = r.Context.get<Viewports>().Find(id)) fn(viewport->State);
+        if (auto *viewport = r.Resources.get<Viewports>().Find(id)) fn(viewport->State);
     };
     const auto edit_camera_stopped = [&](uint32_t id, auto &&fn) {
         edit_view(id, [&](ViewportState &s) { fn(s.Camera.Active); s.Camera.Active.StopMoving(); });

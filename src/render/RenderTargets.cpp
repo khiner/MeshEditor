@@ -5,10 +5,10 @@
 namespace Format = mtl::Format;
 
 namespace {
-RenderTargets::ResourcesT::Pyramid MakePyramid(const mtl::Context &ctx, mtl::Extent2D extent, mtl::BindlessSet &slots) {
+RenderTargets::ScreenT::Pyramid MakePyramid(const mtl::Context &ctx, mtl::Extent2D extent, mtl::BindlessSet &slots) {
     const mtl::Extent2D padded{std::bit_ceil((extent.Width + 1) / 2), std::bit_ceil((extent.Height + 1) / 2)};
     auto image = mtl::CreateTexture2D(ctx, Format::Float, padded, MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite, mtl::MipLevelCount(padded.Width, padded.Height));
-    std::vector<RenderTargets::ResourcesT::PyramidMip> mips;
+    std::vector<RenderTargets::ScreenT::PyramidMip> mips;
     mips.reserve(image.MipLevels);
     for (uint32_t mip = 0; mip < image.MipLevels; ++mip) {
         const mtl::Extent2D data_extent{((extent.Width - 1) >> (mip + 1)) + 1, ((extent.Height - 1) >> (mip + 1)) + 1};
@@ -19,7 +19,7 @@ RenderTargets::ResourcesT::Pyramid MakePyramid(const mtl::Context &ctx, mtl::Ext
 }
 } // namespace
 
-RenderTargets::ResourcesT::ResourcesT(const mtl::Context &ctx, mtl::Extent2D extent, mtl::BindlessSet &slots)
+RenderTargets::ScreenT::ScreenT(const mtl::Context &ctx, mtl::Extent2D extent, mtl::BindlessSet &slots)
     // Visibility depth remains paired with its IDs throughout shading and selection.
     : VisibilityDepth{mtl::CreateTexture2D(ctx, Format::Depth, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
       ScratchDepth{mtl::CreateTexture2D(ctx, Format::Depth, extent, MTL::TextureUsageRenderTarget)},
@@ -33,7 +33,7 @@ RenderTargets::ResourcesT::ResourcesT(const mtl::Context &ctx, mtl::Extent2D ext
       NearestSampler{mtl::CreateSampler(ctx, MTL::SamplerMinMagFilterNearest, MTL::SamplerMipFilterNearest, MTL::SamplerAddressModeClampToEdge)},
       Slots{slots} {}
 
-RenderTargets::ResourcesT::~ResourcesT() {
+RenderTargets::ScreenT::~ScreenT() {
     for (const auto *pyramid : {&DepthPyramid, &OutlineOccluderPyramid}) {
         for (const auto &mip : pyramid->Mips) Slots.Release({SlotType::Image, mip.Slot});
     }
@@ -54,7 +54,7 @@ RenderTargets::MotionBlurResourcesT::MotionBlurResourcesT(const mtl::Context &ct
 }
 
 void RenderTargets::SetExtent(const mtl::Context &ctx, mtl::Extent2D extent, mtl::BindlessSet &slots) {
-    Resources = std::make_unique<ResourcesT>(ctx, extent, slots);
+    Screen = std::make_unique<ScreenT>(ctx, extent, slots);
     Transmission.reset();
     MotionBlur.reset();
 }
@@ -74,23 +74,23 @@ bool RenderTargets::EnsureTransmissionResources(const mtl::Context &ctx, mtl::Ex
 
 bool RenderTargets::EnsureMotionBlurResources(const mtl::Context &ctx, bool fast) {
     // SetExtent releases MotionBlur when the color extent changes.
-    if (!Resources || (MotionBlur && bool(MotionBlur->VelocityImage) == fast)) return false;
-    MotionBlur = std::make_unique<MotionBlurResourcesT>(ctx, Resources->SceneColorImage.Extent, fast);
+    if (!Screen || (MotionBlur && bool(MotionBlur->VelocityImage) == fast)) return false;
+    MotionBlur = std::make_unique<MotionBlurResourcesT>(ctx, Screen->SceneColorImage.Extent, fast);
     return true;
 }
 
 SampledTexture RenderTargets::Nearest(const mtl::Texture *image) const {
-    if (!Resources) return {};
-    return {image ? **image : *Resources->SceneColorImage, Resources->NearestSampler.get()};
+    if (!Screen) return {};
+    return {image ? **image : *Screen->SceneColorImage, Screen->NearestSampler.get()};
 }
 SampledTexture RenderTargets::SceneColorSampler() const { return Nearest(nullptr); }
-SampledTexture RenderTargets::OverlayColorSampler() const { return Nearest(Resources ? &Resources->OverlayColorImage : nullptr); }
-SampledTexture RenderTargets::SceneDepthSampler() const { return Nearest(Resources ? &Resources->VisibilityDepth : nullptr); }
-SampledTexture RenderTargets::DepthPyramidSampler() const { return Nearest(Resources ? &Resources->DepthPyramid.Image : nullptr); }
-SampledTexture RenderTargets::OutlineOccluderPyramidSampler() const { return Nearest(Resources ? &Resources->OutlineOccluderPyramid.Image : nullptr); }
+SampledTexture RenderTargets::OverlayColorSampler() const { return Nearest(Screen ? &Screen->OverlayColorImage : nullptr); }
+SampledTexture RenderTargets::SceneDepthSampler() const { return Nearest(Screen ? &Screen->VisibilityDepth : nullptr); }
+SampledTexture RenderTargets::DepthPyramidSampler() const { return Nearest(Screen ? &Screen->DepthPyramid.Image : nullptr); }
+SampledTexture RenderTargets::OutlineOccluderPyramidSampler() const { return Nearest(Screen ? &Screen->OutlineOccluderPyramid.Image : nullptr); }
 SampledTexture RenderTargets::MotionBlurOutputSampler() const { return Nearest(MotionBlur ? &MotionBlur->OutputImage : nullptr); }
 SampledTexture RenderTargets::TransmissionSampler() const {
-    if (!Resources) return {};
+    if (!Screen) return {};
     if (!Transmission) return SceneColorSampler();
     return {*Transmission->Image, Transmission->Sampler.get()};
 }

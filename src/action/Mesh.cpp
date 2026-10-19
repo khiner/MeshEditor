@@ -54,8 +54,8 @@ struct EditedBlocks {
 };
 
 void UpdatePoseMembership(state::Registry &r, const MeshTopologyEdit &edit, EditedBlocks edited) {
-    auto &buffers = r.Context.get<GpuBuffers>();
-    const auto &meshes = r.Context.get<const MeshStore>();
+    auto &buffers = r.Resources.get<GpuBuffers>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &a = meshes.Arenas();
     const auto &record = meshes.Get(edit.StoreId);
     auto &[vertices, faces, corners] = edited;
@@ -110,7 +110,7 @@ void FinishTopologyEdit(state::Registry &r, state::Entity entity, const MeshTopo
     RefreshMeshBinding(r, task.SourceId);
     r.remove<PrimitiveShape, MeshActiveElement>(entity);
     r.emplace_or_replace<MeshGeometryDirty>(entity, EditSelectionAfter::Keep, ready);
-    r.Context.get<GpuSceneState>().EditSelectionDirty = true;
+    r.Resources.get<GpuSceneState>().EditSelectionDirty = true;
 }
 
 // Apply all outputs of a topology action in one history transaction.
@@ -130,7 +130,7 @@ void RunTopologyAction(state::Registry &r, std::span<const state::Entity> mesh_e
 
 // Batch render builds for copied outputs.
 void CopiedOutputBuild(state::Registry &r, const MeshTopologyEdit &edit, std::vector<MeshletBuildSource> &sources) {
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     auto &record = meshes.WriteRecord(edit.StoreId);
     const Mesh mesh{meshes, edit.StoreId};
     if (mesh.FaceCount()) sources.push_back({.Destination = &record, .Topology = 0u, .ElementCount = edit.AddedTriangleCount, .Elements = edit.AddedTriangles});
@@ -143,7 +143,7 @@ void CopiedOutputBuild(state::Registry &r, const MeshTopologyEdit &edit, std::ve
 std::vector<std::optional<uint32_t>> EditTopology(state::Registry &r, std::span<const state::Entity> mesh_entities, std::span<const MeshTopologyTask> tasks) {
     if (tasks.size() != mesh_entities.size()) throw std::invalid_argument("Topology task and entity counts differ.");
     auto &session = project::Session(r);
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     const bool insets = session.Previewing && std::ranges::any_of(tasks, [](const auto &task) {
                             return task.Op == MeshTopologyOp::InsetRegion || task.Op == MeshTopologyOp::InsetIndividual;
                         });
@@ -220,7 +220,7 @@ std::vector<std::optional<uint32_t>> EditTopology(state::Registry &r, std::span<
 void RunTasks(state::Registry &r, std::span<const state::Entity> mesh_entities, std::span<const MeshTopologyTask> tasks) {
     const profile::CpuScope scope{"TopologyAction"};
     if (tasks.empty()) return;
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     const auto split = ChunkByScratch(uint32_t(tasks.size()), ScratchWordBudget, [&](uint32_t i) { return TopologyScratchBound(meshes, tasks[i]); });
     RunTopologyAction(r, mesh_entities, [&] {
         for (const auto span : split.Chunks) EditTopology(r, mesh_entities.subspan(span.Offset, span.Count), tasks.subspan(span.Offset, span.Count));
@@ -228,7 +228,7 @@ void RunTasks(state::Registry &r, std::span<const state::Entity> mesh_entities, 
 }
 
 void RunPerMesh(state::Registry &r, std::span<const state::Entity> mesh_entities, auto &&make) {
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     std::vector<MeshTopologyTask> tasks;
     std::vector<state::Entity> entities;
     for (const auto e : mesh_entities) {
@@ -243,13 +243,13 @@ void RunPerMesh(state::Registry &r, std::span<const state::Entity> mesh_entities
 }
 
 void RunOperator(state::Registry &r, std::span<const state::Entity> mesh_entities, MeshTopologyOp op, float param0 = 0.f, float param1 = 0.f, uint32_t flags = 0) {
-    RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) { return MeshTopologyTask{.SourceId = mesh.GetStoreId(), .Op = op, .Param0 = param0, .Param1 = param1, .Flags = flags, .Selection = EditorGeometrySelection(r.Context.get<const MeshStore>(), mesh.GetStoreId())}; });
+    RunPerMesh(r, mesh_entities, [&](state::Entity, const Mesh &mesh) { return MeshTopologyTask{.SourceId = mesh.GetStoreId(), .Op = op, .Param0 = param0, .Param1 = param1, .Flags = flags, .Selection = EditorGeometrySelection(r.Resources.get<const MeshStore>(), mesh.GetStoreId())}; });
 }
 
 void SeparateSelected(state::Registry &r, std::span<const state::Entity> mesh_entities, const ::selection::PrimaryEditInstanceMap &primaries, action::mesh::SeparateMode mode) {
     std::vector<state::Entity> entities;
     std::vector<MeshTopologyTask> tasks;
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     for (const auto e : mesh_entities) {
         const auto id = *DrawnStoreId(r, e);
         const Mesh mesh{meshes, id};
@@ -278,7 +278,7 @@ void SeparateSelected(state::Registry &r, std::span<const state::Entity> mesh_en
         if (created.empty()) return;
         RequestRender(r);
         for (const auto e : created) r.emplace_or_replace<ClusterLodDemand>(e);
-        mtl::ComputeChain chain{r.Context.get<const MeshStore>().BufferContext()};
+        mtl::ComputeChain chain{r.Resources.get<const MeshStore>().BufferContext()};
         UpdateAuthoredMorphShading(r, chain, created);
         chain.Submit();
     });
@@ -315,7 +315,7 @@ void CombineSelected(state::Registry &r, const action::mesh::Boolean &boolean) {
 }
 
 std::optional<uint32_t> ActiveOrFirstSelectedEdge(const state::Registry &r, state::Entity mesh_entity, const Mesh &mesh) {
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     const auto selected = meshes.GetSelectedElements(mesh.GetStoreId(), Element::Edge);
     if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity);
         active && meshes.IsLiveElement(mesh.GetStoreId(), Element::Edge, ElementHandle{active->Handle}) && selected.Contains(active->Handle)) {
@@ -363,7 +363,7 @@ void KnifeSelected(state::Registry &r, std::span<const state::Entity> mesh_entit
 }
 
 void EditSelectedFaceAttributes(state::Registry &r, std::span<const state::Entity> targets, bool colors, uint32_t uv_set, uint32_t operation) {
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     mtl::ComputeChain chain{meshes.BufferContext()};
     std::vector<PositionOperationTarget> inputs;
     for (const auto entity : targets) {
@@ -399,7 +399,7 @@ void EditSelectedPositions(state::Registry &r, std::span<const state::Entity> ta
         (operation == PositionEditOp::Copy && (options.Flags & PositionEditFlattenDirection));
     const auto &primaries = r.get<const EditPrimaries>(state::Document).Transformable;
     if (centered) options.Center = EditSelectionCenter(r);
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     mtl::ComputeChain chain{meshes.BufferContext()};
     std::vector<PositionOperationTarget> inputs;
     std::vector<state::Entity> entities;
@@ -442,7 +442,7 @@ namespace action::mesh {
 std::vector<state::Entity> SelectedEditMeshes(const state::Registry &r) {
     std::vector<state::Entity> result;
     const auto element = r.get<const EditMode>(state::Document).Value;
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     for (const auto e : r.view<const MeshElementSelection>()) {
         if (!HasMesh(r, e)) continue;
         const auto &summary = meshes.GetSelectionSummary(*DrawnStoreId(r, e));
@@ -457,7 +457,7 @@ bool UpdateInsetPreview(state::Registry &r, const Inset &inset, InsetPreviewCach
     if (targets.empty() || targets.size() != cache.Entries.size()) return false;
     const auto op = inset.Individual ? MeshTopologyOp::InsetIndividual : MeshTopologyOp::InsetRegion;
     const auto flags = inset.Even ? TopologyFlagEvenOffset : 0u;
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     // Retain the staged face selection for parameter updates.
     // Project::Record discards the cache for other actions.
     for (size_t i = 0u; i < targets.size(); ++i) {
@@ -519,7 +519,7 @@ void Apply(state::Registry &r, const Action &action) {
         action
     );
     if (unformed) return Fail(r, "The operator has no node form for a mesh with a geometry procedure");
-    const auto &meshes = r.Context.get<const MeshStore>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
     const auto selected = [&](auto &&make) {
         RunPerMesh(r, targets, [&](state::Entity, const Mesh &mesh) { return make(mesh, EditorGeometrySelection(meshes, mesh.GetStoreId())); });
     };
@@ -529,7 +529,7 @@ void Apply(state::Registry &r, const Action &action) {
             if (HasMesh(r, entity)) ids.push_back(*DrawnStoreId(r, entity));
         }
         if (EditVisibility(r, ids, r.get<const EditMode>(state::Document).Value, operation)) {
-            r.Context.get<GpuSceneState>().EditSelectionDirty = true;
+            r.Resources.get<GpuSceneState>().EditSelectionDirty = true;
             for (const auto &[entity, instance] : r.get<const EditPrimaries>(state::Document).All) r.remove<MeshActiveElement>(entity);
         }
     };
@@ -676,14 +676,14 @@ void Apply(state::Registry &r, const Action &action) {
                 for (const auto entity : targets) ids.push_back(*DrawnStoreId(r, entity));
                 std::vector<GeometrySelection> selections;
                 selections.reserve(ids.size());
-                for (const auto id : ids) selections.push_back(EditorGeometrySelection(r.Context.get<const MeshStore>(), id));
-                auto faces = RecalculateFaceFlips(r.Context.get<MeshStore>(), GetMeshPipelines(r), ids, selections, a.Inside);
+                for (const auto id : ids) selections.push_back(EditorGeometrySelection(r.Resources.get<const MeshStore>(), id));
+                auto faces = RecalculateFaceFlips(r.Resources.get<MeshStore>(), GetMeshPipelines(r), ids, selections, a.Inside);
                 uint32_t i = 0u;
                 RunPerMesh(r, targets, [&](state::Entity, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
                     auto &list = faces[i++];
                     if (list.empty()) return {};
                     list.insert(list.begin(), uint32_t(list.size()));
-                    return MeshTopologyTask{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::FlipNormals, .List = std::move(list), .Selection = EditorGeometrySelection(r.Context.get<const MeshStore>(), mesh.GetStoreId())};
+                    return MeshTopologyTask{.SourceId = mesh.GetStoreId(), .Op = MeshTopologyOp::FlipNormals, .List = std::move(list), .Selection = EditorGeometrySelection(r.Resources.get<const MeshStore>(), mesh.GetStoreId())};
                 });
             },
             [&](EdgeSplit) { RunOperator(r, targets, MeshTopologyOp::EdgeSplit); },

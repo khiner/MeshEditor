@@ -556,7 +556,7 @@ bool SelectsSpatialFaces(const MeshTopologyTask &task) {
 std::optional<MeshTopologyEdit::Closures> MeshTopologyEdit::RecordClosures(state::Registry &r, const MeshTopologyTask &task, std::optional<PrimitiveListReferences> face_list, const SpatialFaceWork *spatial_faces) {
     auto &chain = Chain;
     const bool fresh = TopologyCreatesRecord(task.Op);
-    const auto &meshes = r.Context.get<MeshStore>();
+    const auto &meshes = r.Resources.get<MeshStore>();
     if (!HasTopologySource(meshes, task)) return std::nullopt;
     const SelectedHandles handles{meshes, StoreId, task.Selection};
     if (!(task.Flags & TopologyFlagSelectAll) && task.Op != MeshTopologyOp::AddPrimitives &&
@@ -791,7 +791,7 @@ bool MeshTopologyEdit::FinishClosures(const MeshTopologyTask &task, Closures &cl
 
 void MeshTopologyEdit::PrepareCounts(state::Registry &r, const MeshTopologyTask &task, Closures &closures, const std::shared_ptr<const TopologyReadView> &view) {
     auto &chain = Chain;
-    const auto &meshes = r.Context.get<MeshStore>();
+    const auto &meshes = r.Resources.get<MeshStore>();
     const bool fresh = TopologyCreatesRecord(task.Op);
     const auto identity = fresh ? TopologyIdentityPolicy::Fresh : TopologyIdentityPolicy::Preserve;
     auto &[face_list, around, core, neighborhood, listed, collapse_count, collapse_vertices, selection, second, boolean] = closures;
@@ -902,7 +902,7 @@ std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Registry &r, mt
     std::vector<MeshTopologyTask> tasks(requested.begin(), requested.end());
     for (auto &task : tasks) {
         if (task.Op != MeshTopologyOp::Boolean) continue;
-        auto &meshes = r.Context.get<MeshStore>();
+        auto &meshes = r.Resources.get<MeshStore>();
         const std::array sources{task.SourceId, task.SecondSourceId};
         for (const auto id : sources) meshes.PlanClone(Mesh{meshes, id});
         meshes.CommitReserves();
@@ -925,7 +925,7 @@ std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Registry &r, mt
     std::vector<std::optional<SpatialFaceWork>> spatial(tasks.size());
     {
         const profile::CpuScope stage{"TopologySourceState"};
-        const auto &meshes = r.Context.get<MeshStore>();
+        const auto &meshes = r.Resources.get<MeshStore>();
         for (uint32_t i = 0u; i < tasks.size(); ++i) {
             const auto &task = tasks[i];
             if (const auto *handles = std::get_if<GeometrySelection>(&task.Selection)) ValidateGeometrySelection(meshes, task.SourceId, *handles);
@@ -993,7 +993,7 @@ std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Registry &r, mt
     }
     // An owned source without output has no recorded reader left.
     for (auto &edit : edits) {
-        if (!edit.Output && std::exchange(edit.OwnsSource, false)) r.Context.get<MeshStore>().Release(edit.SourceId);
+        if (!edit.Output && std::exchange(edit.OwnsSource, false)) r.Resources.get<MeshStore>().Release(edit.SourceId);
     }
     return edits;
 }
@@ -1008,7 +1008,7 @@ void MeshTopologyEdit::PublishAll(state::Registry &r, std::span<MeshTopologyEdit
     }
     if (edits.empty()) return;
     auto &chain = edits.front()->Chain;
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     const auto &a = meshes.Arenas();
     const auto &pipelines = GetMeshPipelines(r);
     using D = MeshStore::ElementDomain;
@@ -1171,7 +1171,7 @@ void MeshTopologyEdit::PublishAll(state::Registry &r, std::span<MeshTopologyEdit
 
 void MeshTopologyEdit::FinishAll(state::Registry &r, std::span<MeshTopologyEdit *const> edits) {
     const profile::CpuScope scope{"FinishTopologyEdits"};
-    auto &meshes = r.Context.get<MeshStore>();
+    auto &meshes = r.Resources.get<MeshStore>();
     std::vector<MeshStore::SelectionUpdate> updates;
     for (auto *edit : edits) {
         if (edit->Finished) throw std::logic_error("Topology edit was already finished.");
@@ -1251,7 +1251,7 @@ std::vector<GeometryTopologyResult> ExecuteGeometryTopology(state::Registry &r, 
         }
         if (!TopologyCreatesRecord(task.Op)) mutated.insert(task.SourceId);
     }
-    const auto &meshes = r.Context.get<MeshStore>();
+    const auto &meshes = r.Resources.get<MeshStore>();
     mtl::ComputeChain chain{meshes.BufferContext(), TopologyScratchWords};
     auto edits = MeshTopologyEdit::Construct(r, chain, tasks);
     MeshTopologyEdit::PublishAll(r, edits);
@@ -1275,7 +1275,7 @@ std::vector<GeometryTopologyResult> ExecuteGeometryTopologyStages(state::Registr
 
 namespace {
 bool HasShortEdge(state::Registry &r, uint32_t id, float distance) {
-    const auto &meshes = r.Context.get<MeshStore>();
+    const auto &meshes = r.Resources.get<MeshStore>();
     const auto &a = meshes.Arenas();
     const auto &record = meshes.Get(id);
     mtl::ComputeChain chain{meshes.BufferContext()};
