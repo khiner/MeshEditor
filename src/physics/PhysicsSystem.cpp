@@ -631,8 +631,8 @@ void StepSimulation(PhysicsState &s, state::Registry &r, float sim_dt, uint32_t 
     }
 }
 
-void BakeFrame(state::Registry &r, state::Entity viewport, PhysicsState &s, uint32_t frame, float fps) {
-    const auto &settings = r.get<const PhysicsSimulationSettings>(viewport);
+void BakeFrame(state::Registry &r, PhysicsState &s, uint32_t frame, float fps) {
+    const auto &settings = r.get<const PhysicsSimulationSettings>(state::Document);
     const float sim_dt = (fps > 0 ? 1.f / fps : 1.f / 60) * settings.TimeScale;
     StepSimulation(s, r, sim_dt, settings.SubstepsPerFrame);
     for (auto [entity, handle, cache] : r.view<const PhysicsBodyHandle, BodyPoseCache>().each()) {
@@ -643,9 +643,9 @@ void BakeFrame(state::Registry &r, state::Entity viewport, PhysicsState &s, uint
     s.Baked = frame;
 }
 
-void UpdateSettings(state::Registry &r, state::Entity viewport, float fps) {
+void UpdateSettings(state::Registry &r, float fps) {
     auto &s = r.Context.get<PhysicsState>();
-    const auto &settings = r.get<const PhysicsSimulationSettings>(viewport);
+    const auto &settings = r.get<const PhysicsSimulationSettings>(state::Document);
     if (s.AppliedSettings == settings && s.CacheFps == fps) return;
     physics::ApplySimulationSettings(r, settings);
     s.AppliedSettings = settings;
@@ -888,9 +888,9 @@ bool DoesFilterAllow(const state::Registry &r, state::Entity source, state::Enti
     return a == masks.end() || b == masks.end() || (a->second.Layer & b->second.Collides) != 0;
 }
 void InvalidateCache(state::Registry &r) { r.Context.get<PhysicsState>().CacheInvalid = true; }
-bool AdvancePlayback(state::Registry &r, state::Entity viewport, int from_frame, int to_frame, int range_start_frame, int range_end_frame, float fps) {
+bool AdvancePlayback(state::Registry &r, int from_frame, int to_frame, int range_start_frame, int range_end_frame, float fps) {
     auto &s = r.Context.get<PhysicsState>();
-    UpdateSettings(r, viewport, fps);
+    UpdateSettings(r, fps);
     if (std::exchange(s.CacheInvalid, false) || uint32_t(range_start_frame) != s.CacheStartFrame) s.Invalidate();
     s.CacheStartFrame = range_start_frame;
     s.CacheEndFrame = range_end_frame;
@@ -899,7 +899,7 @@ bool AdvancePlayback(state::Registry &r, state::Entity viewport, int from_frame,
     const bool restarted = !s.Baked;
     if (restarted) Restart(s, r);
     if (from_frame == to_frame && !restarted) return false;
-    if (from_frame != to_frame) BakeThrough(r, viewport, to_frame, fps);
+    if (from_frame != to_frame) BakeThrough(r, to_frame, fps);
     SamplePosesAtFrame(r, float(to_frame));
     const auto &contacts = s.ContactFrames[std::clamp(uint32_t(to_frame), s.CacheStartFrame, *s.Baked) - s.CacheStartFrame];
     r.Context.get<PhysicsContactImpacts>() = contacts.Impacts;
@@ -907,17 +907,17 @@ bool AdvancePlayback(state::Registry &r, state::Entity viewport, int from_frame,
     return true;
 }
 
-void BakeThrough(state::Registry &r, state::Entity viewport, int through_frame, float fps) {
+void BakeThrough(state::Registry &r, int through_frame, float fps) {
     auto &s = r.Context.get<PhysicsState>();
     if (s.Bodies.empty()) return;
-    UpdateSettings(r, viewport, fps);
+    UpdateSettings(r, fps);
     if (!s.Baked) Restart(s, r);
     const uint32_t target = std::min(uint32_t(std::max(through_frame, int(s.CacheStartFrame))), s.CacheEndFrame);
     if (*s.Baked >= target) return;
     // Prediction records future contacts without publishing them to the audio timeline.
     auto impacts = std::move(r.Context.get<PhysicsContactImpacts>());
     auto sustained = std::move(r.Context.get<PhysicsSustainedContacts>());
-    while (*s.Baked < target) BakeFrame(r, viewport, s, *s.Baked + 1, fps);
+    while (*s.Baked < target) BakeFrame(r, s, *s.Baked + 1, fps);
     r.Context.get<PhysicsContactImpacts>() = std::move(impacts);
     r.Context.get<PhysicsSustainedContacts>() = std::move(sustained);
 }

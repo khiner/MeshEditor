@@ -6,15 +6,15 @@
 Engine::Engine(bool audio) : Audio(audio) {
     R.Context.emplace<mtl::Context>();
     P = std::make_unique<project::Project>(R);
-    Viewport = InitEngine(R); // NOLINT(cppcoreguidelines-prefer-member-initializer) Needs the Metal context and project first.
-    P->TrackStores(Viewport);
+    InitEngine(R);
+    P->TrackStores();
     if (Audio) InitAudioSystem(R);
-    SetupScene(R, Viewport);
+    SetupDocument(R);
 }
 
 Engine::~Engine() {
     WaitForRender(R);
     if (Audio) DeinitAudioSystem(R);
     P.reset();
-    DeinitViewport(R, Viewport);
+    DeinitViewport(R);
 }

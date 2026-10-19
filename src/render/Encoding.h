@@ -2,6 +2,7 @@
 
 #include "metal/Shader.h"
 #include "render/GpuBuffers.h"
+#include "viewport/Viewport.h"
 
 #include <Metal/MTLComputeCommandEncoder.hpp>
 #include <print>
@@ -35,12 +36,13 @@ inline VisibilityShadingPushConstants VisibilityDecodePc(const GpuBuffers &buffe
     return MeshletDecodePc(buffers);
 }
 
-inline void BindScene(MTL::RenderCommandEncoder *encoder, const mtl::BindlessSet &slots, const GpuBuffers &buffers, uint32_t view_offset = 0) {
+// Binds the bindless table, the document's theme, and the viewport's view uniforms at `view_offset` and workspace lights.
+inline void BindScene(MTL::RenderCommandEncoder *encoder, const mtl::BindlessSet &slots, const GpuBuffers &buffers, const Viewport &viewport, uint32_t view_offset = 0) {
     slots.UseResources(encoder);
     const auto *table = slots.Table();
-    const auto *view = *buffers.SceneViewUBO;
+    const auto *view = *viewport.SceneViewUBO;
     const auto *theme = *buffers.ViewportThemeUBO;
-    const auto *workspace = *buffers.WorkspaceLightsUBO;
+    const auto *workspace = *viewport.WorkspaceLightsUBO;
     encoder->setVertexBuffer(table, 0, BufferIndex_Bindless);
     encoder->setVertexBuffer(view, view_offset, BufferIndex_SceneView);
     encoder->setVertexBuffer(theme, 0, BufferIndex_ViewportTheme);
@@ -55,12 +57,18 @@ inline void BindScene(MTL::RenderCommandEncoder *encoder, const mtl::BindlessSet
     encoder->setFragmentBuffer(workspace, 0, BufferIndex_WorkspaceLights);
 }
 
-inline void BindScene(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const GpuBuffers &buffers, uint32_t view_offset = 0) {
+inline void BindScene(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const GpuBuffers &buffers, const Viewport &viewport, uint32_t view_offset = 0) {
     slots.UseResources(encoder);
     encoder->setBuffer(slots.Table(), 0, BufferIndex_Bindless);
-    encoder->setBuffer(*buffers.SceneViewUBO, view_offset, BufferIndex_SceneView);
+    encoder->setBuffer(*viewport.SceneViewUBO, view_offset, BufferIndex_SceneView);
     encoder->setBuffer(*buffers.ViewportThemeUBO, 0, BufferIndex_ViewportTheme);
-    encoder->setBuffer(*buffers.WorkspaceLightsUBO, 0, BufferIndex_WorkspaceLights);
+    encoder->setBuffer(*viewport.WorkspaceLightsUBO, 0, BufferIndex_WorkspaceLights);
+}
+
+// Binds the bindless table alone, for document passes that read no view.
+inline void BindBindless(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots) {
+    slots.UseResources(encoder);
+    encoder->setBuffer(slots.Table(), 0, BufferIndex_Bindless);
 }
 
 void SetPushConstants(MTL::RenderCommandEncoder *encoder, const auto &pc) {
@@ -84,20 +92,20 @@ inline void SetFullViewport(MTL::RenderCommandEncoder *encoder, mtl::Extent2D ex
 
 inline MTL::RenderCommandEncoder *BeginScenePass(
     mtl::PassChain &chain, MTL::RenderPassDescriptor *pass, std::string_view name, std::initializer_list<mtl::Barrier> barriers,
-    mtl::Extent2D extent, const mtl::BindlessSet &slots, const GpuBuffers &buffers, uint32_t view_offset = 0
+    mtl::Extent2D extent, const mtl::BindlessSet &slots, const GpuBuffers &buffers, const Viewport &viewport, uint32_t view_offset = 0
 ) {
     auto *encoder = chain.BeginRender(pass, name, barriers);
     SetFullViewport(encoder, extent);
-    BindScene(encoder, slots, buffers, view_offset);
+    BindScene(encoder, slots, buffers, viewport, view_offset);
     return encoder;
 }
 
 inline void BindCompute(
     MTL::ComputeCommandEncoder *encoder, const mtl::ComputePipeline &pipeline,
-    const mtl::BindlessSet &slots, const GpuBuffers &buffers, uint32_t view_offset = 0
+    const mtl::BindlessSet &slots, const GpuBuffers &buffers, const Viewport &viewport, uint32_t view_offset = 0
 ) {
     encoder->setComputePipelineState(pipeline.State());
-    BindScene(encoder, slots, buffers, view_offset);
+    BindScene(encoder, slots, buffers, viewport, view_offset);
 }
 
 } // namespace encode

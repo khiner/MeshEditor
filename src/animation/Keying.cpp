@@ -60,9 +60,9 @@ bool FieldChanged(const state::Registry &r, state::Entity e, const AnimationChan
 
 // Call `fn` for active channels whose field value differs from evaluation at `seconds`.
 // Stop when `fn` returns true.
-void ForEachChanged(const state::Registry &r, state::Entity viewport, float seconds, auto &&fn) {
+void ForEachChanged(const state::Registry &r, float seconds, auto &&fn) {
     for (const auto [entity, clips] : r.view<const AnimationClips>().each()) {
-        const auto *clip = ActiveClip(r, viewport, clips);
+        const auto *clip = ActiveClip(r, clips);
         if (!clip) continue;
         for (const auto &channel : clip->Channels) {
             if (FieldChanged(r, entity, channel, seconds) && fn(KeyTarget{entity, channel.Target})) return;
@@ -71,22 +71,22 @@ void ForEachChanged(const state::Registry &r, state::Entity viewport, float seco
 }
 } // namespace
 
-float FrameSeconds(const state::Registry &r, state::Entity viewport, int frame) {
-    return float(std::max(0, frame - 1)) / r.get<const TimelineRange>(viewport).Fps;
+float FrameSeconds(const state::Registry &r, int frame) {
+    return float(std::max(0, frame - 1)) / r.get<const TimelineRange>(state::Document).Fps;
 }
 
-ChannelState QueryChannel(const state::Registry &r, state::Entity viewport, const KeyTarget &key, float seconds) {
+ChannelState QueryChannel(const state::Registry &r, const KeyTarget &key, float seconds) {
     const auto *clips = r.try_get<const AnimationClips>(key.Entity);
-    const auto *clip = clips ? ActiveClip(r, viewport, *clips) : nullptr;
+    const auto *clip = clips ? ActiveClip(r, *clips) : nullptr;
     const auto *channel = clip ? FindChannel(*clip, key.Target) : nullptr;
     if (!channel) return {};
     return {.HasChannel = true, .KeyAtFrame = FindKey(channel->Times, seconds).second, .Changed = FieldChanged(r, key.Entity, *channel, seconds)};
 }
 
-void InsertKey(state::Registry &r, state::Entity viewport, const KeyTarget &key, float seconds) {
+void InsertKey(state::Registry &r, const KeyTarget &key, float seconds) {
     std::vector<float> value(key.Target.Count);
     if (value.empty() || !ReadField(r, key.Entity, key.Target, value)) return;
-    auto &animations = r.edit<Animations>(viewport);
+    auto &animations = r.edit<Animations>(state::Document);
     if (animations.Names.empty()) {
         animations.Names.emplace_back("Animation");
         animations.Active = 0;
@@ -100,9 +100,9 @@ void InsertKey(state::Registry &r, state::Entity viewport, const KeyTarget &key,
     PublishClips(r, key.Entity);
 }
 
-bool DeleteKey(state::Registry &r, state::Entity viewport, const KeyTarget &key, float seconds) {
+bool DeleteKey(state::Registry &r, const KeyTarget &key, float seconds) {
     auto *clips = r.try_edit<AnimationClips>(key.Entity);
-    auto *clip = clips ? clips->Find(r.get<const Animations>(viewport).Active) : nullptr;
+    auto *clip = clips ? clips->Find(r.get<const Animations>(state::Document).Active) : nullptr;
     auto *channel = clip ? FindChannel(*clip, key.Target) : nullptr;
     if (!channel) return false;
     const auto [i, found] = FindKey(channel->Times, seconds);
@@ -114,21 +114,21 @@ bool DeleteKey(state::Registry &r, state::Entity viewport, const KeyTarget &key,
     return true;
 }
 
-bool DeleteKeys(state::Registry &r, state::Entity viewport, state::Entity entity, float seconds) {
+bool DeleteKeys(state::Registry &r, state::Entity entity, float seconds) {
     const auto *clips = r.try_get<const AnimationClips>(entity);
-    const auto *clip = clips ? ActiveClip(r, viewport, *clips) : nullptr;
+    const auto *clip = clips ? ActiveClip(r, *clips) : nullptr;
     if (!clip) return false;
     std::vector<ChannelTarget> targets;
     targets.reserve(clip->Channels.size());
     for (const auto &channel : clip->Channels) targets.emplace_back(channel.Target);
     bool any = false;
-    for (const auto &target : targets) any |= DeleteKey(r, viewport, {entity, target}, seconds);
+    for (const auto &target : targets) any |= DeleteKey(r, {entity, target}, seconds);
     return any;
 }
 
-bool AnyChanged(const state::Registry &r, state::Entity viewport, float seconds) {
+bool AnyChanged(const state::Registry &r, float seconds) {
     bool any = false;
-    ForEachChanged(r, viewport, seconds, [&](const KeyTarget &) { return any = true; });
+    ForEachChanged(r, seconds, [&](const KeyTarget &) { return any = true; });
     return any;
 }
 
@@ -143,12 +143,12 @@ void RestoreRest(state::Registry &r, uint32_t from, uint32_t to) {
     }
 }
 
-void RecordChanged(state::Registry &r, state::Entity viewport, float seconds) {
+void RecordChanged(state::Registry &r, float seconds) {
     std::vector<KeyTarget> changed;
-    ForEachChanged(r, viewport, seconds, [&](const KeyTarget &key) {
+    ForEachChanged(r, seconds, [&](const KeyTarget &key) {
         changed.emplace_back(key);
         return false;
     });
-    for (const auto &key : changed) InsertKey(r, viewport, key, seconds);
+    for (const auto &key : changed) InsertKey(r, key, seconds);
 }
 } // namespace animation

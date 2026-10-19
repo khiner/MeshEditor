@@ -321,7 +321,7 @@ struct ElementArena {
     }
     ElementSetRef Allocate(std::span<const T> values) {
         const auto set = Allocate(uint32_t(values.size()));
-        Buffer.Update(as_bytes(values), uint64_t(Dense(set).Offset) * sizeof(T));
+        Buffer.Update(BytesOf(values), uint64_t(Dense(set).Offset) * sizeof(T));
         return set;
     }
     // Keeps the first `used` handles of an insertion into the set, a run or listed in `list`, clears the others, and shrinks `inserted` to the used ones.

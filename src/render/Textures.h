@@ -121,12 +121,11 @@ struct PendingEnvironmentImport {
 
 struct EnvironmentStore {
     std::vector<HdriEntry> Hdris;
-    uint32_t ActiveHdriIndex;
     // Sampler slots of the raw-pixel LUT textures that TextureStore materializes and owns.
     uint32_t BrdfLutSlot, SheenELutSlot, CharlieLutSlot;
     std::optional<EnvironmentPrefiltered> ImportedSceneWorld;
     EnvironmentPrefiltered EmptySceneWorld; // 1x1 flat-color cubemap used without an EXT_lights_image_based asset.
-    EnvironmentSelection SceneWorld, StudioWorld;
+    EnvironmentSelection SceneWorld;
     // An EXT_lights_image_based import the next event pass materializes.
     std::optional<PendingEnvironmentImport> PendingImport;
     // Release the imported scene world on the next event pass.
@@ -216,8 +215,8 @@ IblSamplers MakeIblSamplers(const EnvironmentPrefiltered &, const EnvironmentSto
 // Decodes a LUT image and queues it as a permanent raw-pixel upload, returning its sampler slot.
 uint32_t QueueLutTexture(TextureStore &, mtl::BindlessSet &, const std::filesystem::path &lut_path, std::string name);
 
-// Activates and lazily prefilters the studio HDRI at `index`.
-// Falls back to index 0 if the name is not found.
-void SetStudioEnvironment(state::Registry &, uint32_t index);
-void SetStudioEnvironment(state::Registry &, std::string_view name);
+// The samplers of the named studio HDRI, or of the first HDRI when none has the name, prefiltering it on first use.
+// Without studio HDRIs, the scene world's samplers.
+IblSamplers StudioIbl(state::Registry &, std::string_view name);
+// Releases every prefiltered studio HDRI, which the next frame that shows one prefilters again.
 void RebuildStudioEnvironments(state::Registry &);

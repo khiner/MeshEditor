@@ -87,7 +87,7 @@ struct InsertNode {
 
 using Action = std::variant<AddProcedure, AddNode, Link, Unlink, SetOutput, SetAttributeName, SetInlineSelection, ApplyProcedure, SelectNodes, DuplicateNodes, DeleteNodes, InsertNode>;
 
-void Apply(state::Registry &, state::Entity viewport, const Action &);
+void Apply(state::Registry &, const Action &);
 
 // The selection of the mesh's drawn record as an inline selection for the node, over the blocks the record owns.
 SetInlineSelection CaptureSelection(const state::Registry &, state::Entity mesh_entity, state::Entity node);
@@ -98,7 +98,7 @@ void CopyProcedure(state::Registry &, state::Entity from, state::Entity to);
 state::Entity EditedMesh(const state::Registry &);
 // Append a default node before the procedure output and capture the drawn selection.
 // Publish the resulting selection and return the node entity, or null on failure.
-state::Entity AppendNode(state::Registry &, state::Entity viewport, state::Entity mesh_entity, uint16_t kind);
+state::Entity AppendNode(state::Registry &, state::Entity mesh_entity, uint16_t kind);
 // Visits each edit-mode mesh with a selection in the edit element domain and the node its procedure result reads.
-void ForEachResultNode(const state::Registry &, state::Entity viewport, const std::function<void(state::Entity mesh_entity, state::Entity node)> &);
+void ForEachResultNode(const state::Registry &, const std::function<void(state::Entity mesh_entity, state::Entity node)> &);
 } // namespace action::nodes

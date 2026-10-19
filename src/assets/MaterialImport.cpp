@@ -8,7 +8,7 @@
 #include "render/MaterialComponents.h"
 #include "state/Registry.h"
 #include <format>
-std::expected<std::vector<uint32_t>, std::string> ImportObjPlyMaterials(state::Registry &r, state::Entity viewport, std::span<const ObjPlyMaterial> materials, const std::filesystem::path &mesh_path) {
+std::expected<std::vector<uint32_t>, std::string> ImportObjPlyMaterials(state::Registry &r, std::span<const ObjPlyMaterial> materials, const std::filesystem::path &mesh_path) {
     struct LoadedTexture {
         DecodedImage Image;
         gltf::MimeType MimeType;
@@ -38,8 +38,8 @@ std::expected<std::vector<uint32_t>, std::string> ImportObjPlyMaterials(state::R
     auto &slots = r.Context.get<mtl::BindlessSet>();
     auto &buffers = r.Context.get<GpuBuffers>();
     auto &textures = r.Context.get<TextureStore>();
-    auto &sources = r.get_or_emplace<gltf::SourceAssets>(viewport);
-    auto &manifest = r.get_or_emplace<MaterializedTextures>(viewport);
+    auto &sources = r.get_or_emplace<gltf::SourceAssets>(state::Document);
+    auto &manifest = r.get_or_emplace<MaterializedTextures>(state::Document);
     const auto sampler_index = uint32_t(sources.Samplers.size());
     sources.Samplers.emplace_back(gltf::Sampler{.MagFilter = gltf::Filter::Nearest, .MinFilter = gltf::Filter::Nearest, .WrapS = gltf::Wrap::Repeat, .WrapT = gltf::Wrap::Repeat});
 

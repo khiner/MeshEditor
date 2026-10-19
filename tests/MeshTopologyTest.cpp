@@ -135,7 +135,7 @@ struct Fixture : Engine {
     explicit Fixture(const char *name)
         : Engine{false}, Dir{(std::string{"/tmp/mesheditor-scratch/topology-"} + name).c_str()} {
         expect(P->Begin(Dir));
-        R.Context.get<ViewportExtent>().Value = {64u, 64u};
+        R.Context.get<Viewports>().All.front().State.Extent = {64u, 64u};
         P->Settle();
     }
 
@@ -161,9 +161,9 @@ struct Fixture : Engine {
     }
 
     void Checkpoint() {
-        SubmitViewport(R, Viewport);
+        SubmitViewports(R);
         WaitForRender(R);
-        expect(ViewportImageReady(R));
+        expect(ViewportImageReady(R.Context.get<const Viewports>().All.front()));
         for (const auto &message : R.Context.get<action::Errors>().Messages)
             std::println("action error: {}", message);
         expect(R.Context.get<action::Errors>().Messages.empty());
@@ -242,7 +242,7 @@ struct Fixture : Engine {
     }
 
     std::unique_ptr<RenderView> View() const {
-        return std::make_unique<RenderView>(R.Context.get<const GpuBuffers>().FrameView);
+        return std::make_unique<RenderView>(R.Context.get<const Viewports>().All.front().FrameView);
     }
 
     void Click(vec2 at, bool toggle = false) {
@@ -250,7 +250,7 @@ struct Fixture : Engine {
     }
 
     const SceneViewUBO &FrameView() const {
-        const auto bytes = R.Context.get<const GpuBuffers>().SceneViewUBO.Contents();
+        const auto bytes = R.Context.get<const Viewports>().All.front().SceneViewUBO.Contents();
         return *reinterpret_cast<const SceneViewUBO *>(bytes.data());
     }
 
@@ -3508,7 +3508,7 @@ void TestMixedMeshletLod() {
     const auto [entity, instance] = AddMesh(f.R, id, MeshInstanceCreateInfo{});
     f.P->Settle();
     BuildMeshlets(f.R, chain, std::array{entity}, {});
-    expect(BuildDemandedClusterLods(f.R, chain, f.Viewport));
+    expect(BuildDemandedClusterLods(f.R, chain));
     chain.Submit();
     expect(meshes.ClusterGroupCount(meshes.Get(id)) > 0u);
     const auto counts = RenderedPrimitiveCounts(meshes, id);

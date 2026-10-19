@@ -3,7 +3,7 @@
 #include "audio/AudioSchema.h"
 #include "audio/ContactScene.h"
 #include "scene/Entity.h"
-#include "viewport/ViewCamera.h"
+#include "viewport/Viewport.h"
 namespace fs = std::filesystem;
 uint32_t DeviceSampleRate(const state::Registry &r) {
     const auto *res = r.Context.find<AudioDeviceResource>();
@@ -47,10 +47,10 @@ std::optional<fs::path> ActiveSamplePath(const state::Registry &r, state::Entity
 }
 
 // Updates listener attenuation using inverse distance beyond ListenerDistance and a constant level within it.
-void UpdateListenerGains(const state::Registry &r, ModalBank &b, state::Entity viewport) {
-    const auto *camera = r.valid(viewport) ? r.try_get<const ViewCamera>(viewport) : nullptr;
-    if (!camera) return;
-    const auto listener_pos = camera->Position();
+void UpdateListenerGains(const state::Registry &r, ModalBank &b) {
+    const auto *viewports = r.Context.find<const Viewports>();
+    if (!viewports) return;
+    const auto listener_pos = viewports->Active().State.Camera.Active.Position();
     b.GainListener = listener_pos;
     for (uint32_t slot = 0; slot < uint32_t(b.Entities.size()); ++slot) {
         const auto e = b.Entities[slot];
@@ -79,10 +79,10 @@ uint32_t BeginAudioCapture(state::Registry &r) {
 
 void EndAudioCapture(state::Registry &r) { r.Context.erase<MasterCapture>(); }
 
-void RenderAudioOffline(state::Registry &r, state::Entity viewport, std::vector<float> &out, uint32_t frame_count) {
+void RenderAudioOffline(state::Registry &r, std::vector<float> &out, uint32_t frame_count) {
     const auto first = out.size();
     out.resize(first + frame_count);
-    ProcessAudio(r, viewport, out.data() + first, frame_count);
+    ProcessAudio(r, out.data() + first, frame_count);
 }
 
 void DrainAudioCapture(state::Registry &r, std::vector<float> &out) {
@@ -116,16 +116,16 @@ void MonitorFrames(state::Registry &r, std::span<float> frames, MonitorLimiter &
     limiter.Envelope = envelope;
 }
 
-void ProcessAudio(state::Registry &r, state::Entity viewport, float *output, uint32_t frame_count, bool monitor) {
+void ProcessAudio(state::Registry &r, float *output, uint32_t frame_count, bool monitor) {
     std::fill_n(output, frame_count, 0.f);
     auto &m = r.Context.get<ModalAudio>();
     // The mix is pressure at the view camera.
     // The device path runs this on the audio thread, which cannot read the registry, so its gains are written by the frame handler.
     // Offline rendering uses its viewport camera on the main thread.
-    if (!monitor) UpdateListenerGains(r, LiveBank(m), viewport);
+    if (!monitor) UpdateListenerGains(r, LiveBank(m));
     RenderModal(m, output, frame_count);
 
-    const auto *controls = r.try_get<const ModalSoundControls>(viewport);
+    const auto *controls = r.try_get<const ModalSoundControls>(state::Document);
     // Recorded samples are normalized, so they enter the pressure mix at the monitor calibration and a full-scale sample plays at full scale.
     const float sample_gain = (controls ? controls->SampleGain : ModalSoundControls{}.SampleGain) * FullScalePressure;
     for (const auto [entity, model] : r.view<const SoundVerticesModel>().each()) {

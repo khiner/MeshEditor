@@ -66,7 +66,7 @@ template<typename K> bool Rename(state::Registry &r, state::Entity node, std::st
 }
 } // namespace
 
-void Apply(state::Registry &r, state::Entity, const Action &action) {
+void Apply(state::Registry &r, const Action &action) {
     // The mesh entity's procedure, or null after failing the action.
     const auto procedure_of = [&](state::Entity mesh_entity) {
         const auto *procedure = r.try_get<const GeometryProcedure>(mesh_entity);
@@ -291,7 +291,7 @@ state::Entity EditedMesh(const state::Registry &r) {
     return HasMesh(r, active) ? active : GetMeshEntity(r, active);
 }
 
-state::Entity AppendNode(state::Registry &r, state::Entity viewport, state::Entity mesh_entity, uint16_t kind) {
+state::Entity AppendNode(state::Registry &r, state::Entity mesh_entity, uint16_t kind) {
     const auto &procedure = r.get<const GeometryProcedure>(mesh_entity);
     const auto output = procedure.OutputNode;
     if (output == NoNode) {
@@ -302,17 +302,17 @@ state::Entity AppendNode(state::Registry &r, state::Entity viewport, state::Enti
     const auto node = uint32_t(procedure.Nodes.size());
     const auto position = r.get<const NodeLayout>(procedure.Nodes[output].Entity).Position;
     r.patch<NodeLayout>(procedure.Nodes[output].Entity, [](NodeLayout &layout) { layout.Position.x += OutputGap; });
-    Apply(r, viewport, AddNode{mesh_entity, kind, position});
+    Apply(r, AddNode{mesh_entity, kind, position});
     const auto entity = r.get<const GeometryProcedure>(mesh_entity).Nodes.back().Entity;
-    Apply(r, viewport, CaptureSelection(r, mesh_entity, entity));
-    if (read.FromNode != NoNode) Apply(r, viewport, Link{mesh_entity, read.FromNode, read.FromSocket, node, 0u});
-    Apply(r, viewport, Link{mesh_entity, node, InputCount[kind], output, 0u});
+    Apply(r, CaptureSelection(r, mesh_entity, entity));
+    if (read.FromNode != NoNode) Apply(r, Link{mesh_entity, read.FromNode, read.FromSocket, node, 0u});
+    Apply(r, Link{mesh_entity, node, InputCount[kind], output, 0u});
     r.emplace<PublishSelection>(entity);
     return entity;
 }
 
-void ForEachResultNode(const state::Registry &r, state::Entity viewport, const std::function<void(state::Entity, state::Entity)> &fn) {
-    for (const auto mesh_entity : mesh::SelectedEditMeshes(r, viewport)) {
+void ForEachResultNode(const state::Registry &r, const std::function<void(state::Entity, state::Entity)> &fn) {
+    for (const auto mesh_entity : mesh::SelectedEditMeshes(r)) {
         const auto *procedure = r.try_get<const GeometryProcedure>(mesh_entity);
         if (!procedure || procedure->OutputNode == NoNode) continue;
         if (const auto read = procedure->Inputs[InputFirst(*procedure, procedure->OutputNode)]; read.FromNode != NoNode) fn(mesh_entity, procedure->Nodes[read.FromNode].Entity);
@@ -325,7 +325,7 @@ state::Entity UpdateTraits<procedure::NodeLayout>::Active(const state::Registry 
     const auto *procedure = r.try_get<const procedure::GeometryProcedure>(nodes::EditedMesh(r));
     return procedure && procedure->ActiveNode != procedure::NoNode ? procedure->Nodes[procedure->ActiveNode].Entity : state::Null;
 }
-void UpdateTraits<procedure::NodeLayout>::ForEachSelected(state::Registry &r, state::Entity, const std::function<void(state::Entity)> &fn) {
+void UpdateTraits<procedure::NodeLayout>::ForEachSelected(state::Registry &r, const std::function<void(state::Entity)> &fn) {
     const auto *procedure = r.try_get<const procedure::GeometryProcedure>(nodes::EditedMesh(r));
     if (!procedure) return;
     for (const auto &node : procedure->Nodes) {

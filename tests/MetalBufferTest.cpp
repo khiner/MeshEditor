@@ -10,7 +10,7 @@ int main() {
         mtl::Context ctx;
         mtl::BindlessSet slots{ctx};
         mtl::BufferContext buffers{ctx, slots};
-        mtl::Buffer output{buffers, as_bytes(uint32_t{10}), SlotType::Buffer, mtl::BufferLifetime::Workspace};
+        mtl::Buffer output{buffers, BytesOf(uint32_t{10}), SlotType::Buffer, mtl::BufferLifetime::Workspace};
         NS::Error *error = nullptr;
         const auto library = NS::TransferPtr(ctx.Device->newLibrary(mtl::Str(R"(
             kernel void add(device uint &value [[buffer(0)]], constant uint &amount [[buffer(1)]]) {
@@ -64,12 +64,12 @@ int main() {
         {
             mtl::Buffer source{buffers, 0u, SlotType::Buffer};
             source.SetUsedSize(mtl::HistoryPageBytes);
-            source.Update(as_bytes(Original));
+            source.Update(BytesOf(Original));
             const std::array pages{0u};
             const std::array footprint{mtl::BufferFootprint{&source, pages}};
             auto copies = mtl::CloneFootprints(buffers, footprint);
             clone.emplace(std::move(copies.front()));
-            source.Update(as_bytes(uint32_t{0xabcdef12u}));
+            source.Update(BytesOf(uint32_t{0xabcdef12u}));
             expect(source.GetSpan<uint32_t>({0u, 1u})[0] == 0xabcdef12u);
         }
         buffers.ReclaimRetiredBuffers(true);

@@ -908,7 +908,7 @@ std::optional<Result> Interact(GizmoInteraction &g, const GizmoTransform &transf
     return {};
 }
 
-void Render(GizmoInteraction &g, Type type, const ViewCamera &camera, rect viewport, const colors::AxesArray &axes) {
+void Render(const GizmoInteraction &g, Type type, const ViewCamera &camera, rect viewport, const colors::AxesArray &axes) {
     if (!g.RenderTransform) return;
 
     const auto cam_basis = camera.Basis();
@@ -917,6 +917,5 @@ void Render(GizmoInteraction &g, Type type, const ViewCamera &camera, rect viewp
     const float world_per_ndc = WorldPerNdcAt(vp, cam_basis[0], transform.P);
     const ViewFrame f{viewport, g.MousePx, world_per_ndc, vp, camera.Ray()};
     RenderImpl(g, f, transform, type, axes);
-    g.RenderTransform.reset();
 }
 } // namespace TransformGizmo

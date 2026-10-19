@@ -89,14 +89,27 @@ struct MeshLayoutDirty {};
 // A laid-out mesh whose bounds entries the next recorded prelude recomputes.
 struct MeshBoundsDirty {};
 
+// The display settings the visible viewports share, which every mesh's record display fields and the overlay jobs derive from.
+// A record takes a route or an overlay when any visible viewport shows it, and each viewport's passes select their own.
+struct DisplayUnion {
+    // Each is set when some visible viewport shows overlays, and with them bones, vertex normals or face normals.
+    bool Overlays{}, Bones{}, VertexNormals{}, FaceNormals{};
+    bool BoundingBoxes{}; // Some visible viewport selects bounding boxes.
+    bool Wireframe{}; // Some visible viewport shades in wireframe.
+    bool AllMaterialShaded{true}; // Every visible viewport shades with materials.
+    uint32_t DebugChannels{}; // One bit per debug channel a visible material-shaded viewport shows.
+
+    bool operator==(const DisplayUnion &) const = default;
+};
+
 // Host metadata for the persistent GPU scene, refreshed when scene structure or routing changes.
 struct GpuSceneState {
     // Required LOD attributes per material, without and with authored tangents.
     std::vector<std::array<uint32_t, 2>> RequiredMaterialAttributes;
     // The OR of every mesh's PBR features.
     uint32_t MeshPbrFeatures{0};
-    // The display settings every mesh's record display fields and the overlay jobs read, packed as the last settle pass saw them.
-    uint64_t MeshDisplaySettings{0};
+    // The display union every mesh's record display fields and the overlay jobs read, as the last settle pass saw it.
+    DisplayUnion Displays{};
     bool EditPreludePending{};
     // Element selection bits changed, so edit work candidates reseed.
     bool EditSelectionDirty{};

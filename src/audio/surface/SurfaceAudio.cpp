@@ -1200,7 +1200,7 @@ state::Entity ContactSurfaceNode(const state::Registry &r, state::Entity collide
     return NearestNodeWith(r, collider, body, [&r](state::Entity e) { return r.all_of<ContactSurface>(e); });
 }
 
-void SurfaceSetupScene(state::Registry &r, state::Entity viewport) { r.emplace_or_replace<SurfaceSoundControls>(viewport); }
+void SurfaceSetupDocument(state::Registry &r) { r.emplace_or_replace<SurfaceSoundControls>(state::Document); }
 
 void RegisterSurfaceContactHandlers(state::Registry &r) {
     auto &changes = r.Context.emplace<SurfaceChanges>();

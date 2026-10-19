@@ -30,10 +30,12 @@ struct ExciteSelectionBaseline {
 };
 
 // Preserve the rendered camera so replay resolves pixels with the same rasterization and culling inputs.
+// Each pending gesture resolves against the viewport it was emitted in, or the first viewport when that one is gone.
 struct PendingEditElementClick {
     vec2 Mouse;
     bool Toggle;
     RenderView View;
+    uint32_t ViewportId;
 };
 
 // Object/bone box-select awaiting GPU resolution against current scene state.
@@ -41,6 +43,7 @@ struct PendingBoxSelect {
     std::pair<vec2, vec2> Box;
     bool Additive;
     RenderView View;
+    uint32_t ViewportId;
 };
 
 // Object or bone click-pick awaiting GPU resolution.
@@ -50,6 +53,7 @@ struct PendingPick {
     bool Shift;
     bool Cycle;
     RenderView View;
+    uint32_t ViewportId;
 };
 
 enum class SelectionGesture : uint8_t {

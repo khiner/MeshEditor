@@ -15,7 +15,6 @@
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
 #include "render/Instance.h"
-#include "render/RenderTargets.h"
 #include "render/Textures.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
@@ -34,11 +33,11 @@ bool Render = true;
 
 struct Fixture : Engine {
     Fixture() : Engine{true} {
-        R.Context.get<ViewportExtent>().Value = {64, 64};
+        R.Context.get<Viewports>().All.front().State.Extent = {64, 64};
     }
     explicit Fixture(const TestDir &dir) : Fixture{} { expect(P->New(dir)); }
     std::vector<std::byte> Workspace() {
-        return workspace::Serialize(workspace::Capture(R, Viewport, R.Context.emplace<WindowsState>()));
+        return workspace::Serialize(workspace::Capture(R, R.Context.emplace<WindowsState>()));
     }
     void Audit() {
         std::string why;
@@ -66,9 +65,9 @@ struct Fixture : Engine {
         return Add(action::object::AddEmpty{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Name = std::move(name)})});
     }
     std::vector<std::byte> Image() {
-        SubmitViewport(R, Viewport);
+        SubmitViewports(R);
         WaitForRender(R);
-        const auto &image = R.Context.get<const RenderTargets>().Resources->FinalColorImage;
+        const auto &image = R.Context.get<const Viewports>().All.front().Targets.Resources->FinalColorImage;
         return ReadbackImageRgba8(R.Context.get<const mtl::Context>(), image, 0, 0, image.Extent);
     }
 };
@@ -143,17 +142,18 @@ void TestActionsArchive() {
 
     const CameraLens lens{Perspective{.FieldOfViewRad = .9f, .FarClip = 1000.f, .NearClip = .1f}};
     const ViewCamera editor_view{vec3{2, 3, 9}, vec3{0}, lens};
-    f.R.replace<ViewCamera>(f.Viewport, editor_view);
+    auto &view = f.R.Context.get<Viewports>().All.front();
+    view.State.Camera.Active = editor_view;
     const auto camera = f.Add(action::object::AddCamera{std::make_unique<ObjectCreateInfo>(), lens});
-    const auto final_node = f.Do(action::view::SetLookThroughCamera{camera});
-    expect(LookThroughCameraEntity(f.R) == camera);
-    expect(GetViewCameraState(f.R, f.Viewport).LookThroughSaved.value() == editor_view);
+    const auto final_node = f.Do(action::view::SetLookThroughCamera{view.Id, camera});
+    expect(view.State.LookThroughEntity == camera);
+    expect(view.State.Camera.LookThroughSaved.value() == editor_view);
     const auto final_state = p.History.MaterializeLive();
-    const auto final_camera = GetViewCameraState(f.R, f.Viewport);
+    const auto final_camera = view.State.Camera;
     auto &windows = f.R.Context.emplace<WindowsState>();
     windows.History.Visible = false;
     windows.PendingTabs = {{11, 12}};
-    const auto final_workspace = workspace::Serialize(workspace::Capture(f.R, f.Viewport, windows));
+    const auto final_workspace = workspace::Serialize(workspace::Capture(f.R, windows));
     expect(p.SaveArchive(archive, project::ArchiveForm::Actions, final_workspace));
     expect(ReadArchiveMetadata(archive).value() == final_workspace);
 
@@ -166,11 +166,11 @@ void TestActionsArchive() {
     expect(workspace.has_value());
     if (!workspace) return;
     auto &restored_windows = restored.R.Context.emplace<WindowsState>();
-    workspace::Apply(restored.R, restored.Viewport, restored_windows, *workspace);
-    expect(workspace::Serialize(workspace::Capture(restored.R, restored.Viewport, restored_windows)) == final_workspace);
-    expect(GetViewCameraState(restored.R, restored.Viewport).Active == final_camera.Active);
-    expect(GetViewCameraState(restored.R, restored.Viewport).LookThroughSaved == final_camera.LookThroughSaved);
-    expect(LookThroughCameraEntity(restored.R) == camera);
+    workspace::Apply(restored.R, restored_windows, *workspace);
+    expect(workspace::Serialize(workspace::Capture(restored.R, restored_windows)) == final_workspace);
+    const auto restored_view = [&] { return restored.R.Context.get<const Viewports>().All.front().State; };
+    expect(restored_view().Camera == final_camera);
+    expect(restored_view().LookThroughEntity == camera);
     restored.Audit();
 
     restored.P->Navigate(branch);
@@ -186,10 +186,34 @@ void TestActionsArchive() {
     expect(restored.P->History.MaterializeLive() == present_state);
     restored.P->Navigate(final_node);
     expect(restored.P->History.MaterializeLive() == final_state);
-    workspace::Apply(restored.R, restored.Viewport, restored_windows, *workspace);
-    expect(GetViewCameraState(restored.R, restored.Viewport).Active == final_camera.Active);
-    expect(GetViewCameraState(restored.R, restored.Viewport).LookThroughSaved == final_camera.LookThroughSaved);
+    workspace::Apply(restored.R, restored_windows, *workspace);
+    expect(restored_view().Camera == final_camera);
     restored.Audit();
+}
+
+// An Update on a document component outside history applies without recording, and its value survives a replay from the empty document.
+void TestWorkspaceComponent() {
+    const TestDir dir{"/tmp/mesheditor-scratch/project-workspace-component"}, archives{"/tmp/mesheditor-scratch/project-workspace-component-archives"}, opened{"/tmp/mesheditor-scratch/project-workspace-component-opened"};
+    const auto archive = archives.Path / "Scene.actions";
+    Fixture f{dir};
+    auto &p = *f.P;
+    f.AddCube();
+    expect(p.SaveArchive(archive, project::ArchiveForm::Actions, f.Workspace()));
+    expect(Decompress(archive, opened.Path));
+    const auto config_update = [] { return action::MakeAction(action::UpdateOf<&AudioOutputConfig::SampleRate>(state::Document, 96000u)); };
+    expect(!action::IsRecordable(config_update()));
+    expect(action::IsRecordable(action::MakeAction(action::UpdateOf<&Transform::P>(action::OnActive{}, vec3{1, 0, 0}))));
+    const auto present = p.History.Present;
+    const auto node_count = p.History.Nodes.size();
+    const auto document = p.History.MaterializeLive();
+    p.Do(config_update());
+    expect(f.R.get<const AudioOutputConfig>(state::Document).SampleRate == 96000u);
+    expect(p.History.Present == present);
+    expect(p.History.Nodes.size() == node_count);
+    expect(p.History.MaterializeLive() == document);
+    expect(p.Open(opened));
+    expect(f.R.get<const AudioOutputConfig>(state::Document).SampleRate == 96000u);
+    f.Audit();
 }
 
 void WriteFile(const std::filesystem::path &path, std::string_view text) {
@@ -294,7 +318,8 @@ void TestHiddenObjectEscapesPick() {
     Fixture f{dir};
     auto &r = f.R;
     const auto cube = f.AddCube();
-    const RenderView view{r.get<const ViewCamera>(f.Viewport), RenderExtentPx(r)};
+    const auto &viewport = r.Context.get<const Viewports>().All.front();
+    const RenderView view{viewport.State.Camera.Active, RenderExtentPx(viewport, r.Context.get<const FrameState>())};
     const auto pick = [&] { f.P->Do(action::MakeAction(action::selection::Pick{.Mouse = {0.5f, 0.5f}, .Shift = false, .View = std::make_unique<RenderView>(view)})); };
     f.Do(action::selection::DeselectAll{});
     pick();
@@ -326,7 +351,7 @@ void TestSelectedGrandchildMovesOnce() {
     const TestDir dir{"/tmp/mesheditor-scratch/project-grandchild"};
     Fixture f{dir};
     const Chain chain{f};
-    expect(f.R.get<const TransformRoots>(f.Viewport).Roots == std::vector{chain.A});
+    expect(f.R.get<const TransformRoots>(state::Document).Roots == std::vector{chain.A});
     f.Do(action::view::TransformSelection{Transform{.P = {1, 0, 0}}});
     expect(std::abs(WorldTransformOf(f.R, chain.A)->P.x - 1.f) < 1e-4f);
     expect(std::abs(WorldTransformOf(f.R, chain.C)->P.x - 1.f) < 1e-4f);
@@ -481,9 +506,9 @@ void CheckLayout(Fixture &f, std::string_view step) {
     const auto &buffers = r.Context.get<const GpuBuffers>();
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto &render = meshes.Render();
-    const bool edit = r.get<const Interaction>(f.Viewport).Mode == InteractionMode::Edit;
-    const bool transforming = edit && r.all_of<PendingTransform>(f.Viewport);
-    const auto &primaries = r.get<const EditPrimaries>(f.Viewport).All;
+    const bool edit = r.get<const Interaction>(state::Document).Mode == InteractionMode::Edit;
+    const bool transforming = edit && r.all_of<PendingTransform>(state::Document);
+    const auto &primaries = r.get<const EditPrimaries>(state::Document).All;
     const auto fail = [&](std::string_view what) {
         std::println("layout after {}: {}", step, what);
         expect(false);
@@ -611,7 +636,7 @@ void TestIncrementalLayout() {
     CheckLayout(f, "object");
     f.Do(action::object::SetSelectedSmoothShading{true});
     CheckLayout(f, "smooth");
-    f.Do(action::view::SetViewportShading{ViewportShadingMode::Wireframe});
+    f.Do(action::view::SetViewportShading{f.R.Context.get<const Viewports>().All.front().Id, ViewportShadingMode::Wireframe});
     CheckLayout(f, "wireframe");
 }
 
@@ -631,6 +656,7 @@ int main(int argc, char **argv) {
     Paths::Init(MESHEDITOR_BUILD_DIR, MESHEDITOR_BUILD_DIR);
     TestSavedProject();
     TestActionsArchive();
+    TestWorkspaceComponent();
     TestExternalReferences();
     TestRenderInstanceDerivation();
     TestHiddenObjectEscapesPick();

@@ -117,7 +117,7 @@ struct BufferArena {
     mtl::Buffer Buffer;
 
 private:
-    void WriteRange(uint32_t offset, std::span<const T> values) { Buffer.Update(as_bytes(values), offset * sizeof(T)); }
+    void WriteRange(uint32_t offset, std::span<const T> values) { Buffer.Update(BytesOf(values), offset * sizeof(T)); }
 
     RangeAllocator Allocator;
     std::unique_ptr<store::Records> Tracked;

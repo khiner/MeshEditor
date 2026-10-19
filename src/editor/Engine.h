@@ -7,7 +7,6 @@
 struct Engine {
     state::Registry R;
     std::unique_ptr<project::Project> P;
-    state::Entity Viewport{state::Null};
     bool Audio;
 
     explicit Engine(bool audio);

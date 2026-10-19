@@ -23,8 +23,7 @@ struct Records {
         [](void *v, uint64_t n) { static_cast<std::vector<T> *>(v)->resize(n); },
         [](const void *v, uint64_t i, std::vector<std::byte> &out) {
             zpp::bits::out archive{out};
-            // zpp reflects large aggregates through non-const references.
-            archive(const_cast<T &>((*static_cast<const std::vector<T> *>(v))[i])).or_throw();
+            archive((*static_cast<const std::vector<T> *>(v))[i]).or_throw();
             out.resize(archive.position());
         },
         [](void *v, uint64_t i, std::span<const std::byte> bytes) { zpp::bits::in{bytes}((*static_cast<std::vector<T> *>(v))[i]).or_throw(); },

@@ -393,12 +393,12 @@ void EditSelectedFaceAttributes(state::Registry &r, std::span<const state::Entit
     RequestRender(r);
 }
 
-void EditSelectedPositions(state::Registry &r, state::Entity viewport, std::span<const state::Entity> targets, PositionEditOp operation, float factor, uint32_t repeat, PositionOperationOptions options = {}) {
+void EditSelectedPositions(state::Registry &r, std::span<const state::Entity> targets, PositionEditOp operation, float factor, uint32_t repeat, PositionOperationOptions options = {}) {
     const bool centered = operation == PositionEditOp::ToSphere || operation == PositionEditOp::PushPull || operation == PositionEditOp::Shear;
     const bool transformed = centered || options.Warp || options.Bend || options.Slide || options.EdgeSlide ||
         (operation == PositionEditOp::Copy && (options.Flags & PositionEditFlattenDirection));
-    const auto &primaries = r.get<const EditPrimaries>(viewport).Transformable;
-    if (centered) options.Center = EditSelectionCenter(r, viewport);
+    const auto &primaries = r.get<const EditPrimaries>(state::Document).Transformable;
+    if (centered) options.Center = EditSelectionCenter(r);
     auto &meshes = r.Context.get<MeshStore>();
     mtl::ComputeChain chain{meshes.BufferContext()};
     std::vector<PositionOperationTarget> inputs;
@@ -413,7 +413,7 @@ void EditSelectedPositions(state::Registry &r, state::Entity viewport, std::span
             input.Excluded = GeometryMasks{{&a.VertexHidden}, {&a.EdgeHidden}, {&a.FaceHidden}};
         }
         if (const auto *active = r.try_get<const MeshActiveElement>(entity);
-            active && r.get<const EditMode>(viewport).Value == Element::Vertex) input.Reference = active->Handle;
+            active && r.get<const EditMode>(state::Document).Value == Element::Vertex) input.Reference = active->Handle;
         inputs.push_back(std::move(input));
         entities.push_back(entity);
     }
@@ -439,9 +439,9 @@ void EditSelectedPositions(state::Registry &r, state::Entity viewport, std::span
 } // namespace
 
 namespace action::mesh {
-std::vector<state::Entity> SelectedEditMeshes(const state::Registry &r, state::Entity viewport) {
+std::vector<state::Entity> SelectedEditMeshes(const state::Registry &r) {
     std::vector<state::Entity> result;
-    const auto element = r.get<const EditMode>(viewport).Value;
+    const auto element = r.get<const EditMode>(state::Document).Value;
     const auto &meshes = r.Context.get<const MeshStore>();
     for (const auto e : r.view<const MeshElementSelection>()) {
         if (!HasMesh(r, e)) continue;
@@ -451,9 +451,9 @@ std::vector<state::Entity> SelectedEditMeshes(const state::Registry &r, state::E
     return result;
 }
 
-bool UpdateInsetPreview(state::Registry &r, state::Entity viewport, const Inset &inset, InsetPreviewCache &cache) {
+bool UpdateInsetPreview(state::Registry &r, const Inset &inset, InsetPreviewCache &cache) {
     const profile::CpuScope scope{"UpdateInsetPreview"};
-    const auto targets = SelectedEditMeshes(r, viewport);
+    const auto targets = SelectedEditMeshes(r);
     if (targets.empty() || targets.size() != cache.Entries.size()) return false;
     const auto op = inset.Individual ? MeshTopologyOp::InsetIndividual : MeshTopologyOp::InsetRegion;
     const auto flags = inset.Even ? TopologyFlagEvenOffset : 0u;
@@ -497,23 +497,23 @@ bool UpdateInsetPreview(state::Registry &r, state::Entity viewport, const Inset 
     return true;
 }
 
-void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
+void Apply(state::Registry &r, const Action &action) {
     // Append operator nodes to procedure meshes and edit other meshes in place.
     // Hide and Reveal affect evaluated geometry; unsupported procedure operators fail.
     std::vector<state::Entity> targets, procedural;
-    for (const auto e : SelectedEditMeshes(r, viewport)) (r.all_of<procedure::GeometryProcedure>(e) ? procedural : targets).push_back(e);
+    for (const auto e : SelectedEditMeshes(r)) (r.all_of<procedure::GeometryProcedure>(e) ? procedural : targets).push_back(e);
     const bool unformed = std::visit(
         [&]<typename A>(const A &a) {
             if constexpr (procedure::KindOf<A> < procedure::KindCount) {
                 for (const auto e : procedural) {
-                    const auto node = nodes::AppendNode(r, viewport, e, procedure::KindOf<A>);
+                    const auto node = nodes::AppendNode(r, e, procedure::KindOf<A>);
                     if (node == state::Null) break;
                     r.replace<A>(node, a);
                     r.remove<MeshActiveElement>(e);
                 }
                 return false;
             } else {
-                return !std::same_as<A, Hide> && !std::same_as<A, Reveal> && std::ranges::any_of(r.get<const EditPrimaries>(viewport).All, [&](const auto &entry) { return r.all_of<procedure::GeometryProcedure>(entry.first); });
+                return !std::same_as<A, Hide> && !std::same_as<A, Reveal> && std::ranges::any_of(r.get<const EditPrimaries>(state::Document).All, [&](const auto &entry) { return r.all_of<procedure::GeometryProcedure>(entry.first); });
             }
         },
         action
@@ -525,15 +525,15 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
     };
     const auto visibility = [&](EditVisibilityOperation operation) {
         std::vector<uint32_t> ids;
-        for (const auto &[entity, instance] : r.get<const EditPrimaries>(viewport).All) {
+        for (const auto &[entity, instance] : r.get<const EditPrimaries>(state::Document).All) {
             if (HasMesh(r, entity)) ids.push_back(*DrawnStoreId(r, entity));
         }
-        if (EditVisibility(r, ids, r.get<const EditMode>(viewport).Value, operation)) {
+        if (EditVisibility(r, ids, r.get<const EditMode>(state::Document).Value, operation)) {
             r.Context.get<GpuSceneState>().EditSelectionDirty = true;
-            for (const auto &[entity, instance] : r.get<const EditPrimaries>(viewport).All) r.remove<MeshActiveElement>(entity);
+            for (const auto &[entity, instance] : r.get<const EditPrimaries>(state::Document).All) r.remove<MeshActiveElement>(entity);
         }
     };
-    const auto latch_translate = [&] { r.emplace_or_replace<StartScreenTransform>(viewport, TransformGizmo::TransformType::Translate); };
+    const auto latch_translate = [&] { r.emplace_or_replace<StartScreenTransform>(state::Document, TransformGizmo::TransformType::Translate); };
     std::visit(
         overloaded{
             [&](const Hide &a) { visibility(a.Unselected ? EditVisibilityOperation::HideUnselected : EditVisibilityOperation::HideSelected); },
@@ -548,7 +548,7 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
                     std::vector<std::pair<state::Entity, std::span<const uint32_t>>> empty;
                     empty.reserve(targets.size());
                     for (const auto entity : targets) empty.emplace_back(entity, std::span<const uint32_t>{});
-                    ApplyEditSelectionLists(r, empty, r.get<const EditMode>(viewport).Value);
+                    ApplyEditSelectionLists(r, empty, r.get<const EditMode>(state::Document).Value);
                 }
             },
             [&](const Merge &a) {
@@ -573,7 +573,7 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
             },
             [&](Split) { RunOperator(r, targets, MeshTopologyOp::SplitGeometry); },
             [&](const Separate &a) {
-                const auto &primaries = r.get<const EditPrimaries>(viewport).All;
+                const auto &primaries = r.get<const EditPrimaries>(state::Document).All;
                 std::vector<state::Entity> sources;
                 for (const auto &[entity, instance] : primaries) {
                     if (HasMesh(r, entity)) sources.push_back(entity);
@@ -583,7 +583,7 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
             [&](const Subdivide &a) { RunOperator(r, targets, MeshTopologyOp::Subdivide, float(std::max(a.Cuts, 1u))); },
             [&](const SnapSymmetry &a) {
                 if (uint32_t(a.Axis) > 2u) return;
-                EditSelectedPositions(r, viewport, targets, PositionEditOp::SnapSymmetry, std::clamp(a.Factor, 0.f, 1.f), 1u, {.Axes = 1u << uint32_t(a.Axis), .Flags = a.Negative ? PositionEditSymmetryNegative : 0u, .SnapSymmetry = PositionSymmetry{a.Threshold, a.Center}});
+                EditSelectedPositions(r, targets, PositionEditOp::SnapSymmetry, std::clamp(a.Factor, 0.f, 1.f), 1u, {.Axes = 1u << uint32_t(a.Axis), .Flags = a.Negative ? PositionEditSymmetryNegative : 0u, .SnapSymmetry = PositionSymmetry{a.Threshold, a.Center}});
             },
             [&](const Decimate &a) { selected([&](const Mesh &mesh, const GeometrySelection &selection) { return DecimateTask(meshes, mesh, selection, a.Ratio, EditorHiddenFaces(meshes, mesh.GetStoreId())); }); },
             [&](const Unsubdivide &a) {
@@ -605,17 +605,17 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
             },
             [&](TrisToQuads) { RunOperator(r, targets, MeshTopologyOp::TrisToQuads); },
             [&](const SmoothVertices &a) {
-                EditSelectedPositions(r, viewport, targets, PositionEditOp::Smooth, a.Factor, std::clamp(a.Repeat, 1u, 1000u), {.Axes = uint32_t(a.X) | (uint32_t(a.Y) << 1u) | (uint32_t(a.Z) << 2u)});
+                EditSelectedPositions(r, targets, PositionEditOp::Smooth, a.Factor, std::clamp(a.Repeat, 1u, 1000u), {.Axes = uint32_t(a.X) | (uint32_t(a.Y) << 1u) | (uint32_t(a.Z) << 2u)});
             },
             [&](const SpaceEvenly &a) {
-                EditSelectedPositions(r, viewport, targets, PositionEditOp::SpaceEvenly, std::clamp(a.Factor, 0.f, 1.f), 1u, {.Axes = uint32_t(a.X) | (uint32_t(a.Y) << 1u) | (uint32_t(a.Z) << 2u), .Flags = a.Interpolation == EdgeLoopInterpolation::Cubic ? PositionEditCurveCubic : 0u});
+                EditSelectedPositions(r, targets, PositionEditOp::SpaceEvenly, std::clamp(a.Factor, 0.f, 1.f), 1u, {.Axes = uint32_t(a.X) | (uint32_t(a.Y) << 1u) | (uint32_t(a.Z) << 2u), .Flags = a.Interpolation == EdgeLoopInterpolation::Cubic ? PositionEditCurveCubic : 0u});
             },
             [&](const RelaxEdgeLoops &a) {
                 if (!a.Iterations) return;
-                EditSelectedPositions(r, viewport, targets, PositionEditOp::RelaxEdgeLoops, 1.f, std::min(a.Iterations, 1000u), {.Flags = (a.Interpolation == EdgeLoopInterpolation::Cubic ? PositionEditCurveCubic : 0u) | (a.EvenSpacing ? PositionEditRelaxEven : 0u)});
+                EditSelectedPositions(r, targets, PositionEditOp::RelaxEdgeLoops, 1.f, std::min(a.Iterations, 1000u), {.Flags = (a.Interpolation == EdgeLoopInterpolation::Cubic ? PositionEditCurveCubic : 0u) | (a.EvenSpacing ? PositionEditRelaxEven : 0u)});
             },
-            [&](const ToSphere &a) { EditSelectedPositions(r, viewport, targets, PositionEditOp::ToSphere, a.Factor, 1u); },
-            [&](const PushPull &a) { EditSelectedPositions(r, viewport, targets, PositionEditOp::PushPull, a.Distance, 1u); },
+            [&](const ToSphere &a) { EditSelectedPositions(r, targets, PositionEditOp::ToSphere, a.Factor, 1u); },
+            [&](const PushPull &a) { EditSelectedPositions(r, targets, PositionEditOp::PushPull, a.Distance, 1u); },
             [&](const Shear &a) {
                 const auto axis = uint32_t(a.Axis), ortho = uint32_t(a.AxisOrtho);
                 if (axis > 2u || ortho > 2u || axis == ortho) return;
@@ -623,48 +623,48 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
                 normal[axis] = 1.f;
                 direction[ortho] = 1.f;
                 if (a.Local) {
-                    const auto &primaries = r.get<const EditPrimaries>(viewport).Transformable;
+                    const auto &primaries = r.get<const EditPrimaries>(state::Document).Transformable;
                     const auto active = primaries.find(GetActiveMeshEntity(r));
                     if (active == primaries.end()) return;
                     const auto &world = *WorldTransformOf(r, active->second);
                     normal = world.R * normal * (world.S[axis] < 0.f ? -1.f : 1.f);
                     direction = world.R * direction * (world.S[ortho] < 0.f ? -1.f : 1.f);
                 }
-                EditSelectedPositions(r, viewport, targets, PositionEditOp::Shear, std::tan(a.Angle), 1u, {.Direction = direction, .Gradient = Cross(direction, normal)});
+                EditSelectedPositions(r, targets, PositionEditOp::Shear, std::tan(a.Angle), 1u, {.Direction = direction, .Gradient = Cross(direction, normal)});
             },
             [&](const Warp &a) {
                 if (!a.Orientation) return;
-                EditSelectedPositions(r, viewport, targets, PositionEditOp::Warp, a.Angle, 1u, {.Warp = PositionWarp{*a.Orientation, a.Center, a.OffsetAngle, a.Min, a.Max, a.AutoRange}});
+                EditSelectedPositions(r, targets, PositionEditOp::Warp, a.Angle, 1u, {.Warp = PositionWarp{*a.Orientation, a.Center, a.OffsetAngle, a.Min, a.Max, a.AutoRange}});
             },
             [&](const Bend &a) {
                 if (!a.Orientation) return;
-                EditSelectedPositions(r, viewport, targets, PositionEditOp::Bend, a.Angle, 1u, {.Flags = a.Clamp ? PositionEditBendClamp : 0u, .Bend = PositionBend{*a.Orientation, a.Center, a.OffsetAngle, a.Radius}});
+                EditSelectedPositions(r, targets, PositionEditOp::Bend, a.Angle, 1u, {.Flags = a.Clamp ? PositionEditBendClamp : 0u, .Bend = PositionBend{*a.Orientation, a.Center, a.OffsetAngle, a.Radius}});
             },
             [&](const Randomize &a) {
-                EditSelectedPositions(r, viewport, targets, PositionEditOp::Randomize, a.Amount, 1u, {.Randomize = PositionRandomize{a.Uniform, a.Normal, a.Seed}});
+                EditSelectedPositions(r, targets, PositionEditOp::Randomize, a.Amount, 1u, {.Randomize = PositionRandomize{a.Uniform, a.Normal, a.Seed}});
             },
             [&](const VertexSlide &a) {
-                EditSelectedPositions(r, viewport, targets, PositionEditOp::VertexSlide, a.Clamp ? std::clamp(a.Factor, 0.f, 1.f) : a.Factor, 1u, {.Flags = a.Clamp ? 0u : PositionEditSlideUnclamped, .Slide = PositionSlide{a.Direction, a.Even, a.Flipped}});
+                EditSelectedPositions(r, targets, PositionEditOp::VertexSlide, a.Clamp ? std::clamp(a.Factor, 0.f, 1.f) : a.Factor, 1u, {.Flags = a.Clamp ? 0u : PositionEditSlideUnclamped, .Slide = PositionSlide{a.Direction, a.Even, a.Flipped}});
             },
             [&](const EdgeSlide &a) {
-                EditSelectedPositions(r, viewport, targets, PositionEditOp::EdgeSlide, a.Clamp ? std::clamp(a.Factor, -1.f, 1.f) : a.Factor, 1u, {.Flags = a.Clamp ? 0u : PositionEditSlideUnclamped, .EdgeSlide = PositionSlide{a.Direction, a.Even, a.Flipped}});
+                EditSelectedPositions(r, targets, PositionEditOp::EdgeSlide, a.Clamp ? std::clamp(a.Factor, -1.f, 1.f) : a.Factor, 1u, {.Flags = a.Clamp ? 0u : PositionEditSlideUnclamped, .EdgeSlide = PositionSlide{a.Direction, a.Even, a.Flipped}});
             },
             [&](const Circularize &a) {
-                EditSelectedPositions(r, viewport, targets, PositionEditOp::Copy, std::clamp(a.Factor, 0.f, 1.f), 1u, {.Axes = uint32_t(a.X) | (uint32_t(a.Y) << 1u) | (uint32_t(a.Z) << 2u), .Flags = (a.Regular ? PositionEditCurveRegular : 0u) | (a.Method == CircleFit::Contract ? PositionEditCircleContract : 0u), .Circle = PositionCircle{a.Radius, a.Angle}});
+                EditSelectedPositions(r, targets, PositionEditOp::Copy, std::clamp(a.Factor, 0.f, 1.f), 1u, {.Axes = uint32_t(a.X) | (uint32_t(a.Y) << 1u) | (uint32_t(a.Z) << 2u), .Flags = (a.Regular ? PositionEditCurveRegular : 0u) | (a.Method == CircleFit::Contract ? PositionEditCircleContract : 0u), .Circle = PositionCircle{a.Radius, a.Angle}});
             },
             [&](const CurveBetweenSelected &a) {
-                EditSelectedPositions(r, viewport, targets, PositionEditOp::Copy, std::clamp(a.Factor, 0.f, 1.f), 1u, {.Axes = uint32_t(a.X) | (uint32_t(a.Y) << 1u) | (uint32_t(a.Z) << 2u), .Flags = (a.Interpolation == EdgeLoopInterpolation::Cubic ? PositionEditCurveCubic : 0u) | (a.Regular ? PositionEditCurveRegular : 0u) | (a.Elevation == CurveElevation::Raise ? PositionEditCurveRaise : a.Elevation == CurveElevation::Lower ? PositionEditCurveLower :
-                                                                                                                                                                                                                                                                                                                                                                                                                                               0u),
-                                                                                                                       .Curve = PositionCurve{a.Extend}});
+                EditSelectedPositions(r, targets, PositionEditOp::Copy, std::clamp(a.Factor, 0.f, 1.f), 1u, {.Axes = uint32_t(a.X) | (uint32_t(a.Y) << 1u) | (uint32_t(a.Z) << 2u), .Flags = (a.Interpolation == EdgeLoopInterpolation::Cubic ? PositionEditCurveCubic : 0u) | (a.Regular ? PositionEditCurveRegular : 0u) | (a.Elevation == CurveElevation::Raise ? PositionEditCurveRaise : a.Elevation == CurveElevation::Lower ? PositionEditCurveLower :
+                                                                                                                                                                                                                                                                                                                                                                                                                                     0u),
+                                                                                                             .Curve = PositionCurve{a.Extend}});
             },
-            [&](const MakePlanarFaces &a) { EditSelectedPositions(r, viewport, targets, PositionEditOp::Planar, a.Factor, std::clamp(a.Repeat, 1u, 10000u)); },
+            [&](const MakePlanarFaces &a) { EditSelectedPositions(r, targets, PositionEditOp::Planar, a.Factor, std::clamp(a.Repeat, 1u, 10000u)); },
             [&](const Flatten &a) {
-                EditSelectedPositions(r, viewport, targets, PositionEditOp::Copy, std::clamp(a.Factor, 0.f, 1.f), 1u, {.Axes = uint32_t(a.X) | (uint32_t(a.Y) << 1u) | (uint32_t(a.Z) << 2u), .Flags = a.Method == FlattenMethod::View ? PositionEditFlattenDirection : a.Method == FlattenMethod::FaceNormals ? PositionEditFlattenNormals :
-                                                                                                                                                                                                                                                                                                                 0u,
-                                                                                                                       .Direction = a.ViewNormal});
+                EditSelectedPositions(r, targets, PositionEditOp::Copy, std::clamp(a.Factor, 0.f, 1.f), 1u, {.Axes = uint32_t(a.X) | (uint32_t(a.Y) << 1u) | (uint32_t(a.Z) << 2u), .Flags = a.Method == FlattenMethod::View ? PositionEditFlattenDirection : a.Method == FlattenMethod::FaceNormals ? PositionEditFlattenNormals :
+                                                                                                                                                                                                                                                                                                       0u,
+                                                                                                             .Direction = a.ViewNormal});
             },
             [&](const ShrinkFatten &a) {
-                EditSelectedPositions(r, viewport, targets, PositionEditOp::ShrinkFatten, a.Distance, 1u, {.Flags = (a.Even ? PositionEditEvenOffset : 0u) | (r.get<const EditMode>(viewport).Value == Element::Face ? PositionEditSelectedFaceNormals : 0u)});
+                EditSelectedPositions(r, targets, PositionEditOp::ShrinkFatten, a.Distance, 1u, {.Flags = (a.Even ? PositionEditEvenOffset : 0u) | (r.get<const EditMode>(state::Document).Value == Element::Face ? PositionEditSelectedFaceNormals : 0u)});
             },
             [&](const SplitNonplanarFaces &a) { RunOperator(r, targets, MeshTopologyOp::SplitNonplanarFaces, std::clamp(a.Angle, 0.f, std::numbers::pi_v<float>)); },
             [&](SplitConcaveFaces) { RunOperator(r, targets, MeshTopologyOp::SplitConcaveFaces); },
@@ -708,7 +708,7 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
             [&](ConnectVertices) { RunOperator(r, targets, MeshTopologyOp::ConnectVertices); },
             // A boolean combines whole objects rather than an edit selection.
             [&](const Boolean &a) { CombineSelected(r, a); },
-            [&](const Knife &a) { KnifeSelected(r, targets, r.get<const EditPrimaries>(viewport).All, a.Start, a.End, *a.View); },
+            [&](const Knife &a) { KnifeSelected(r, targets, r.get<const EditPrimaries>(state::Document).All, a.Start, a.End, *a.View); },
             [&](BridgeEdgeLoops) { selected([&](const Mesh &mesh, const GeometrySelection &selection) { return BridgeEdgeLoopsTask(meshes, mesh, selection); }); },
             [&](const GridFill &a) { selected([&](const Mesh &mesh, const GeometrySelection &selection) { return GridFillTask(meshes, mesh, selection, a.Span); }); },
             [&](const FillHoles &a) { RunPerMesh(r, targets, [&](state::Entity, const Mesh &mesh) { return FillHolesTask(meshes, mesh, a.Sides); }); },
@@ -729,7 +729,7 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
                     case Mode::Vertices: return RunOperator(r, targets, MeshTopologyOp::DissolveVertices);
                     case Mode::Edges: return RunOperator(r, targets, MeshTopologyOp::DissolveEdges, 0.f, 0.f, a.KeepVertices ? TopologyFlagKeepVertices : 0u);
                     case Mode::Faces: return RunOperator(r, targets, MeshTopologyOp::DissolveFaces);
-                    case Mode::Limited: return RunOperator(r, targets, MeshTopologyOp::DissolveLimited, std::clamp(a.Angle, 0.f, .5f * std::numbers::pi_v<float>), 0.f, (r.get<const EditMode>(viewport).Value == Element::Face ? TopologyFlagFaceSelection : 0u) | (a.AllBoundaries ? TopologyFlagAllBoundaries : 0u) | (a.DelimitMaterials ? TopologyFlagDelimitMaterial : 0u) | (a.DelimitSharpEdges ? TopologyFlagDelimitSharp : 0u) | (a.DelimitUVs ? TopologyFlagDelimitUV : 0u));
+                    case Mode::Limited: return RunOperator(r, targets, MeshTopologyOp::DissolveLimited, std::clamp(a.Angle, 0.f, .5f * std::numbers::pi_v<float>), 0.f, (r.get<const EditMode>(state::Document).Value == Element::Face ? TopologyFlagFaceSelection : 0u) | (a.AllBoundaries ? TopologyFlagAllBoundaries : 0u) | (a.DelimitMaterials ? TopologyFlagDelimitMaterial : 0u) | (a.DelimitSharpEdges ? TopologyFlagDelimitSharp : 0u) | (a.DelimitUVs ? TopologyFlagDelimitUV : 0u));
                     case Mode::Degenerate: return RunOperator(r, targets, MeshTopologyOp::DissolveDegenerate, std::max(a.Distance, 0.f));
                 }
             },

@@ -48,7 +48,7 @@ void EncodeDeriveNormals(state::Registry &r, mtl::ComputeChain &chain, std::span
     const auto face_tiles = uint32_t(tiles.size());
     for (uint32_t i = 0u; i < entries.size(); ++i) append(i, false);
     mtl::Buffer jobs{chain.Buffers, std::as_bytes(entries), SlotType::Buffer, mtl::BufferLifetime::Workspace};
-    mtl::Buffer tile_buffer{chain.Buffers, as_bytes(tiles), SlotType::Buffer, mtl::BufferLifetime::Workspace};
+    mtl::Buffer tile_buffer{chain.Buffers, BytesOf(tiles), SlotType::Buffer, mtl::BufferLifetime::Workspace};
     pc.EntriesSlot = jobs.Slot;
     pc.TileMapSlot = tile_buffer.Slot;
     pc.Work = {};

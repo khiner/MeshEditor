@@ -9,8 +9,7 @@
 std::expected<std::filesystem::path, std::string> SaveModalModelFile(project::Assets &assets, const ModalModelData &data) {
     std::vector<std::byte> bytes;
     zpp::bits::out archive{bytes};
-    // zpp's aggregate reflection mis-encodes const aggregates, so serialize through a non-const ref.
-    if (zpp::bits::failure(archive(const_cast<ModalModelData &>(data)))) return std::unexpected{"Cannot serialize modal model"};
+    if (zpp::bits::failure(archive(data))) return std::unexpected{"Cannot serialize modal model"};
     return assets.Store("modes.modal", bytes);
 }
 

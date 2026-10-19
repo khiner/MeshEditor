@@ -77,4 +77,8 @@ struct SceneViewUBO {
     uint32_t TransmissionFramebufferMipCount DEFAULT();
     uint32_t UseRealTransmission DEFAULT();
     DebugChannel DebugChannel DEFAULT();
+    // The object id of the camera the view looks through, whose overlay draws only its frame, or zero.
+    uint32_t LookThroughObjectId DEFAULT();
+    // The instance flags that pin an instance to original source geometry in this view.
+    uint32_t LodPinFlags DEFAULT();
 };

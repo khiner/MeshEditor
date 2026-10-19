@@ -23,10 +23,11 @@
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionState.h"
 #include "state/Registry.h"
+#include "viewport/FrameState.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/RenderExtent.h"
+#include "viewport/Viewport.h"
 #include "viewport/ViewportConsumerFence.h"
-#include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportRenderGpu.h"
 
 uint8_t InstanceStateBits(const state::Registry &r, state::Entity e) {
@@ -82,20 +83,9 @@ void RepointMeshInstances(state::Registry &r, std::span<const state::Entity> mes
     }
 }
 
-namespace {
-// The debug channel material-shaded viewports show, which the LOD attributes preserve.
-DebugChannel LodDebugChannel(const state::Registry &r) {
-    DebugChannel debug = DebugChannel::None;
-    for (const auto [_, display] : r.view<const ViewportDisplay>().each()) {
-        if (!WorkbenchShading(display.ViewportShading)) debug = display.DebugChannel;
-    }
-    return debug;
-}
-} // namespace
-
 bool RefreshMaterialLodAttributes(state::Registry &r) {
     const auto materials = GetMaterials(r);
-    const auto debug = LodDebugChannel(r);
+    const auto debug = r.Context.get<const GpuSceneState>().Displays.DebugChannels;
     std::vector<std::array<uint32_t, 2>> required(materials.size());
     for (size_t i = 0; i < materials.size(); ++i) required[i] = {MaterialLodAttributes(materials[i], debug, false), MaterialLodAttributes(materials[i], debug, true)};
     auto &cached = r.Context.get<GpuSceneState>().RequiredMaterialAttributes;
@@ -108,7 +98,7 @@ void RefreshClusterLodAttributes(state::Registry &r, mtl::ComputeChain &chain, s
     auto &meshes = r.Context.get<MeshStore>();
     auto &render = meshes.Render();
     const auto materials = GetMaterials(r);
-    const auto debug = LodDebugChannel(r);
+    const auto debug = r.Context.get<const GpuSceneState>().Displays.DebugChannels;
     std::vector<ClusterGroupSeeds> seeds;
     std::vector<uint32_t> changed;
     for (const auto entity : mesh_entities) {
@@ -184,7 +174,7 @@ bool EditPinsFinest(const selection::PrimaryEditInstanceMap &primaries, const st
     return primaries.contains(mesh_entity) || r.all_of<MeshEditWork>(mesh_entity);
 }
 
-bool BuildDemandedClusterLods(state::Registry &r, mtl::ComputeChain &chain, state::Entity viewport) {
+bool BuildDemandedClusterLods(state::Registry &r, mtl::ComputeChain &chain) {
     if (r.view<const ClusterLodDemand>().empty()) return false;
     auto &meshes = r.Context.get<MeshStore>();
     auto &render = meshes.Render();
@@ -196,8 +186,8 @@ bool BuildDemandedClusterLods(state::Registry &r, mtl::ComputeChain &chain, stat
         if (!mb || meshes.ClusterGroupCount(*mb) != 0u || !ClusterLodApplies(Mesh{meshes, mb->StoreId}.FaceCount() > 0u, meshes.MeshletCount(*mb))) r.remove<ClusterLodDemand>(entity);
         else demanded.push_back(entity);
     }
-    if (r.get<const Interaction>(viewport).Mode == InteractionMode::Edit && !demanded.empty()) {
-        const auto &primaries = r.get<const EditPrimaries>(viewport).All;
+    if (r.get<const Interaction>(state::Document).Mode == InteractionMode::Edit && !demanded.empty()) {
+        const auto &primaries = r.get<const EditPrimaries>(state::Document).All;
         std::erase_if(demanded, [&](state::Entity e) { return EditPinsFinest(primaries, r, e); });
     }
     if (demanded.empty()) return false;
@@ -447,9 +437,9 @@ SyncResult SyncModelsBuffers(state::Registry &r) {
             };
         }
         // Transform slots stay unwritten here, and the world-transform recompute and the bone display pass write them before submit.
-        buffers.Instances.ObjectIdBuffer.Update(as_bytes(object_ids), uint64_t(base_index) * sizeof(uint32_t));
-        buffers.Instances.StateBuffer.Update(as_bytes(states), uint64_t(base_index) * sizeof(uint8_t));
-        buffers.Instances.RecordBuffer.Update(as_bytes(instance_records), uint64_t(base_index) * sizeof(InstanceRecord));
+        buffers.Instances.ObjectIdBuffer.Update(BytesOf(object_ids), uint64_t(base_index) * sizeof(uint32_t));
+        buffers.Instances.StateBuffer.Update(BytesOf(states), uint64_t(base_index) * sizeof(uint8_t));
+        buffers.Instances.RecordBuffer.Update(BytesOf(instance_records), uint64_t(base_index) * sizeof(InstanceRecord));
         // Bounds reduction populates mesh instances; extras retain empty bounds and bypass culling.
         std::ranges::fill(buffers.Instances.GetMutableBounds({base_index, n}), AABB{});
         mb.InstanceCount = new_total;
@@ -463,31 +453,31 @@ SyncResult SyncModelsBuffers(state::Registry &r) {
     return {std::move(newly_inserted), std::move(new_mesh_entities), std::move(new_extras_entities), slots_changed};
 }
 
-bool SyncViewportRenderResources(state::Registry &r, state::Entity viewport) {
-    auto &targets = r.Context.get<RenderTargets>();
-    const auto render_extent_px = RenderExtentPx(r);
-    const auto render_extent = std::bit_cast<mtl::Extent2D>(render_extent_px);
+bool SyncViewportRenderResources(state::Registry &r, Viewport &viewport) {
+    auto &targets = viewport.Targets;
+    const auto render_extent = std::bit_cast<mtl::Extent2D>(RenderExtentPx(viewport, r.Context.get<const FrameState>()));
     if (render_extent.Width == 0 || render_extent.Height == 0) return false;
-    if (targets.BuiltColorExtent() == render_extent) return false;
 
     const auto &ctx = r.Context.get<const mtl::Context>();
-    const auto &samplers = r.Context.get<const RenderSamplerSlots>();
+    const auto &samplers = viewport.Samplers;
     auto &slots = r.Context.get<mtl::BindlessSet>();
+    const auto set_sampler = [&](uint32_t slot, SampledTexture sampled) { slots.SetSampler({SlotType::Sampler, slot}, sampled.Texture, sampled.Sampler); };
+    const bool want_transmission = RealTransmission(viewport.State, r.Context.get<const GpuSceneState>().MeshPbrFeatures);
+    if (targets.BuiltColorExtent() == render_extent) {
+        if (!targets.EnsureTransmissionResources(ctx, render_extent, want_transmission)) return false;
+        set_sampler(samplers.Transmission, targets.TransmissionSampler());
+        return true;
+    }
+
     // Wait for the live consumer (ImGui) to finish sampling the old resources before recreating them.
     if (auto *consumer = r.Context.get<const ViewportConsumerFence>().Value) {
         const mtl::AutoreleaseScope native_scope;
         consumer->waitUntilCompleted();
     }
     targets.SetExtent(ctx, render_extent, slots);
-    {
-        const auto shading = r.get<const ViewportDisplay>(viewport).ViewportShading;
-        const bool is_pbr = !WorkbenchShading(shading);
-        const bool want_transmission = is_pbr && GetActivePbrLighting(r, viewport, shading).RealTransmission && GetPipelines(r).Main.Compiler.HasFeature(PbrFeature::Transmission);
-        targets.EnsureTransmissionResources(ctx, render_extent, want_transmission);
-    }
+    targets.EnsureTransmissionResources(ctx, render_extent, want_transmission);
     {
         const profile::CpuScope scope{"UpdateSamplerSlots"};
-        const auto set_sampler = [&](uint32_t slot, SampledTexture sampled) { slots.SetSampler({SlotType::Sampler, slot}, sampled.Texture, sampled.Sampler); };
         set_sampler(samplers.Silhouette, targets.Nearest(&targets.Resources->SilhouetteImage));
         set_sampler(samplers.SceneColor, targets.SceneColorSampler());
         set_sampler(samplers.OverlayColor, targets.OverlayColorSampler());

@@ -49,8 +49,8 @@ void DrawContactSurfaceControls(state::Registry &r, state::Entity e, const Conta
     ui::Describe("Contact filter", "Contact patch cutoff frequency, the sweep speed over twice the patch radius. Heavier load widens the patch and lowers the cutoff.");
 }
 
-void DrawSurfaceSynthControls(state::Registry &r, state::Entity viewport) {
-    ui::Edit f{r, viewport};
+void DrawSurfaceSynthControls(state::Registry &r) {
+    ui::Edit f{r, state::Document};
     SeparatorText("Sustained contact");
     ui::DrawFields<SurfaceSoundControls>(f);
     Text("Active voices: %u", SurfaceActiveVoices(r.Context.get<const ModalAudio>()));

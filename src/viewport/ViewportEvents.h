@@ -27,3 +27,18 @@ struct PendingImportMesh {
     std::filesystem::path Path;
     MeshInstanceCreateInfo Info;
 };
+
+// The lighting a presentation shows: the material preview, or the rendered scene lit by its image light or by its punctual lights.
+enum class PresentationLighting : uint8_t {
+    MaterialPreview,
+    SceneImageLight,
+    SceneLights,
+};
+
+// The view a recorded action asks for, which the active viewport takes in its next frame step.
+// Navigation and replay remove it, so only a live action sets a view up.
+struct PendingViewSetup {
+    std::optional<float> WorldOpacity; // The imported world's opacity under rendered lighting.
+    state::Entity LookThroughEntity{state::Null}; // The scene camera to look through, or null.
+    std::optional<PresentationLighting> Presentation;
+};

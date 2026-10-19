@@ -28,6 +28,14 @@ enum class AnisotropicFilterLevel : uint8_t {
 // Levels are consecutive powers of two from Off->1 through X16->16.
 constexpr float ToMaxAnisotropy(AnisotropicFilterLevel level) { return float(1u << unsigned(level)); }
 
+// The document's material sampler anisotropy.
+struct AnisotropicFilter {
+    AnisotropicFilterLevel Value{AnisotropicFilterLevel::X16};
+};
+template<> inline constexpr field::SpecTable<AnisotropicFilter> Specs<AnisotropicFilter>{
+    {&AnisotropicFilter::Value, {.Label = "Anisotropic filtering", .Help = "Highest anisotropic filtering level. Higher levels sharpen textures viewed at grazing angles."}},
+};
+
 enum class MotionBlurMethod : uint8_t {
     Fast,
     FullSampling,
@@ -37,6 +45,7 @@ struct MotionBlur {
     float Shutter{0.5f};
     uint8_t Steps{16};
     MotionBlurMethod Method{MotionBlurMethod::Fast};
+    bool operator==(const MotionBlur &) const = default;
 };
 template<> inline constexpr field::SpecTable<MotionBlur> Specs<MotionBlur>{
     {&MotionBlur::Shutter, {.Min = 0, .Max = 2, .Unit = FieldUnit::Frames, .Label = "Shutter", .Help = "Time the shutter stays open"}},
@@ -46,6 +55,7 @@ template<> inline constexpr field::SpecTable<MotionBlur> Specs<MotionBlur>{
 
 struct ViewportOverlays {
     bool Grid{true}, Extras{true}, Bones{true}, Origins{true}, OutlineSelected{true};
+    bool operator==(const ViewportOverlays &) const = default;
 };
 template<> inline constexpr field::SpecTable<ViewportOverlays> Specs<ViewportOverlays>{
     {&ViewportOverlays::Grid, {.Help = "Ground grid and world axes"}},
@@ -58,6 +68,7 @@ template<> inline constexpr field::SpecTable<ViewportOverlays> Specs<ViewportOve
 // Overlays on selected objects.
 struct SelectionOverlays {
     bool VertexNormals{false}, FaceNormals{false}, BoundingBoxes{false}, TetWireframe{false};
+    bool operator==(const SelectionOverlays &) const = default;
 };
 template<> inline constexpr field::SpecTable<SelectionOverlays> Specs<SelectionOverlays>{
     {&SelectionOverlays::VertexNormals, {.Help = "Normal line at each vertex of selected meshes"}},
@@ -77,10 +88,10 @@ struct ViewportDisplay {
     // Zero renders original geometry alone.
     float LodErrorPixels{1.f};
     DebugChannel DebugChannel{DebugChannel::None};
-    AnisotropicFilterLevel AnisotropicFilter{AnisotropicFilterLevel::X16};
     std::optional<MotionBlur> MotionBlur;
     bool XRaySolid{false}, XRayWireframe{true};
     float XRayAlpha{0.5f}, XRayAlphaWireframe{0.f};
+    bool operator==(const ViewportDisplay &) const = default;
 };
 template<> inline constexpr field::SpecTable<ViewportDisplay> Specs<ViewportDisplay>{
     {&ViewportDisplay::ViewportShading, {.Help = "Wireframe and Solid shade with the workspace lights, Material Preview with a studio environment, and Rendered with the scene lights"}},
@@ -90,7 +101,6 @@ template<> inline constexpr field::SpecTable<ViewportDisplay> Specs<ViewportDisp
     {&ViewportDisplay::Selection, {.Label = "Selection overlays", .Help = "Overlays drawn on selected objects"}},
     {&ViewportDisplay::LodErrorPixels, {.Unit = FieldUnit::Pixels, .Label = "LOD error", .Help = "Largest screen-space level-of-detail error. Zero renders the original geometry."}},
     {&ViewportDisplay::DebugChannel, {.Help = "Material or geometry channel shown in place of the shaded color"}},
-    {&ViewportDisplay::AnisotropicFilter, {.Label = "Anisotropic filtering", .Help = "Highest anisotropic filtering level. Higher levels sharpen textures viewed at grazing angles."}},
     {&ViewportDisplay::MotionBlur, {.Help = "Blur of moving objects across the shutter interval. Absent disables it."}},
     {&ViewportDisplay::XRaySolid, {.Label = "X-ray solid", .Help = "See through surfaces in Solid shading"}},
     {&ViewportDisplay::XRayWireframe, {.Label = "X-ray wireframe", .Help = "See through surfaces in Wireframe shading"}},
@@ -126,6 +136,7 @@ struct PBRViewportLighting {
     // Exposure in EV stops.
     // Scales linear color by 2^EV before tone mapping.
     float ExposureEV{0.f};
+    bool operator==(const PBRViewportLighting &) const = default;
 };
 // Exposure stays within 10 EV of zero so 2^EV stays finite.
 template<> inline constexpr field::SpecTable<PBRViewportLighting> Specs<PBRViewportLighting>{
@@ -141,18 +152,15 @@ template<> inline constexpr field::SpecTable<PBRViewportLighting> Specs<PBRViewp
 
 struct MaterialPreviewLighting {
     PBRViewportLighting Value;
+    bool operator==(const MaterialPreviewLighting &) const = default;
 };
 struct RenderedLighting {
     PBRViewportLighting Value;
+    bool operator==(const RenderedLighting &) const = default;
 };
 
 // The active studio HDRI environment, by source name so it stays stable across runs (unlike the directory-scan index).
 struct StudioEnvironment {
     std::string Name;
-};
-
-const PBRViewportLighting &GetActivePbrLighting(const state::Registry &, state::Entity viewport, ViewportShadingMode);
-
-struct ViewportExtent {
-    uvec2 Value{};
+    bool operator==(const StudioEnvironment &) const = default;
 };

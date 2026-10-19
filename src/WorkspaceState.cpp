@@ -1,10 +1,12 @@
 #include "WorkspaceState.h"
 
 #include "File.h"
+#include "render/GpuBuffers.h"
 #include "viewport/ViewCameraSerialize.h"
-#include "viewport/ViewportDisplay.h"
+#include "viewport/ViewportConsumerFence.h"
 
 #include "state/Registry.h"
+#include <Metal/MTLCommandBuffer.hpp>
 #include <imgui_internal.h>
 #include <zpp_bits.h>
 
@@ -64,12 +66,13 @@ std::vector<WindowState> CaptureWindows(const WindowsState &windows) {
 }
 } // namespace
 
-State Capture(const state::Registry &r, state::Entity viewport, const WindowsState &windows) {
+State Capture(const state::Registry &r, const WindowsState &windows) {
     size_t ini_size = 0;
     const char *ini = ImGui::GetCurrentContext() && windows.PendingIni.empty() ? ImGui::SaveIniSettingsToMemory(&ini_size) : nullptr;
+    const auto &viewports = r.Context.get<const ::Viewports>().All;
     return {
-        .ViewCamera = GetViewCameraState(r, viewport),
-        .ViewportExtent = r.Context.get<const ViewportExtent>().Value,
+        .Viewports = viewports | std::views::transform([](const Viewport &v) { return ViewportEntry{v.Id, v.Visible, v.State}; }) | std::ranges::to<std::vector>(),
+        .AudioOutput = r.get<const AudioOutputConfig>(state::Document),
         .Windows = GetWindowVisibility(windows),
         .NodesCanvas = windows.Nodes.Canvas,
         .ImGuiIni = ini ? std::string{ini, ini_size} : windows.PendingIni,
@@ -78,9 +81,25 @@ State Capture(const state::Registry &r, state::Entity viewport, const WindowsSta
     };
 }
 
-void Apply(state::Registry &r, state::Entity viewport, WindowsState &windows, const State &state) {
-    r.Context.get<ViewportExtent>().Value = state.ViewportExtent;
-    SetViewCameraState(r, viewport, state.ViewCamera);
+void Apply(state::Registry &r, WindowsState &windows, const State &state) {
+    auto &viewports = r.Context.get<::Viewports>();
+    // The live UI frame stops sampling the images of the viewports the state omits before they go.
+    const bool keeps_all = std::ranges::all_of(viewports.All, [&](const Viewport &v) { return std::ranges::contains(state.Viewports, v.Id, &ViewportEntry::Id); });
+    if (auto *consumer = r.Context.get<const ViewportConsumerFence>().Value; consumer && !keeps_all) consumer->waitUntilCompleted();
+    auto &buffers = r.Context.get<GpuBuffers>().Ctx;
+    auto &slots = r.Context.get<mtl::BindlessSet>();
+    std::vector<Viewport> applied;
+    for (const auto &entry : state.Viewports) {
+        auto *existing = viewports.Find(entry.Id);
+        auto &viewport = existing ? applied.emplace_back(std::move(*existing)) : applied.emplace_back(entry.Id, buffers, slots);
+        viewport.Visible = entry.Visible;
+        viewport.State = entry.State;
+    }
+    if (applied.empty()) applied.push_back(std::move(viewports.All.front()));
+    viewports.All = std::move(applied);
+    viewports.ActiveIndex = 0;
+    // The audio settle reconciles the device with the published config.
+    r.replace<AudioOutputConfig>(state::Document, state.AudioOutput);
     SetWindowVisibility(windows, state.Windows);
     windows.Nodes.Canvas = state.NodesCanvas;
     windows.PendingIni = state.ImGuiIni;
@@ -127,30 +146,15 @@ void ApplyPending(WindowsState &windows) {
 std::vector<std::byte> Serialize(const State &state) {
     std::vector<std::byte> bytes;
     zpp::bits::out archive{bytes};
-    const bool has_saved_view = state.ViewCamera.LookThroughSaved.has_value();
-    if (zpp::bits::failure(archive(state.ViewCamera.Active, has_saved_view)) ||
-        (has_saved_view && zpp::bits::failure(archive(*state.ViewCamera.LookThroughSaved))) ||
-        zpp::bits::failure(archive(state.ViewportExtent, state.Windows, state.NodesCanvas, state.ImGuiIni, state.Tabs, state.WindowStates))) {
-        return {};
-    }
+    if (zpp::bits::failure(archive(state.Viewports, state.AudioOutput, state.Windows, state.NodesCanvas, state.ImGuiIni, state.Tabs, state.WindowStates))) return {};
     bytes.resize(archive.position());
     return bytes;
 }
 
 std::optional<State> Deserialize(std::span<const std::byte> bytes) {
     zpp::bits::in archive{bytes};
-    State state{.ViewCamera = {ViewCamera{vec3{0, 0, 1}, vec3{0}, CameraLens{}}, std::nullopt}};
-    bool has_saved_view{};
-    if (zpp::bits::failure(archive(state.ViewCamera.Active, has_saved_view))) {
-        return std::nullopt;
-    }
-    if (has_saved_view) {
-        state.ViewCamera.LookThroughSaved.emplace(vec3{0, 0, 1}, vec3{0}, CameraLens{});
-        if (zpp::bits::failure(archive(*state.ViewCamera.LookThroughSaved))) return std::nullopt;
-    }
-    if (zpp::bits::failure(archive(state.ViewportExtent, state.Windows, state.NodesCanvas, state.ImGuiIni, state.Tabs, state.WindowStates))) {
-        return std::nullopt;
-    }
+    State state;
+    if (zpp::bits::failure(archive(state.Viewports, state.AudioOutput, state.Windows, state.NodesCanvas, state.ImGuiIni, state.Tabs, state.WindowStates))) return std::nullopt;
     return state;
 }
 

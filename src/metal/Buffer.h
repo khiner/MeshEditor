@@ -7,11 +7,14 @@ struct History;
 struct Pages;
 } // namespace store
 
+// The bytes of a container's or span's elements, and of any other value's object representation.
 template<typename T>
-constexpr std::span<const std::byte> as_bytes(const std::vector<T> &v) { return std::as_bytes(std::span{v}); }
+constexpr std::span<const std::byte> BytesOf(const std::vector<T> &v) { return std::as_bytes(std::span{v}); }
 template<typename T, uint32_t N>
-constexpr std::span<const std::byte> as_bytes(const std::array<T, N> &v) { return std::as_bytes(std::span{v}); }
-constexpr std::span<const std::byte> as_bytes(const auto &v) { return {reinterpret_cast<const std::byte *>(&v), sizeof(v)}; }
+constexpr std::span<const std::byte> BytesOf(const std::array<T, N> &v) { return std::as_bytes(std::span{v}); }
+template<typename T, size_t N>
+constexpr std::span<const std::byte> BytesOf(std::span<T, N> v) { return std::as_bytes(v); }
+constexpr std::span<const std::byte> BytesOf(const auto &v) { return {reinterpret_cast<const std::byte *>(&v), sizeof(v)}; }
 
 namespace mtl {
 struct SparseBuffer;
@@ -127,7 +130,7 @@ struct Buffer {
     template<typename T> uint32_t Count() const { return uint32_t(UsedSize / sizeof(T)); }
     template<typename T> uint32_t Append(const T &value) {
         const auto index = Count<T>();
-        Update(as_bytes(value), uint64_t(index) * sizeof(T));
+        Update(BytesOf(value), uint64_t(index) * sizeof(T));
         return index;
     }
     template<typename T> std::span<const T> GetSpan(Range range) const {

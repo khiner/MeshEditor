@@ -31,7 +31,6 @@
 #include "selection/SelectionComponents.h"
 #include "viewport/FrameState.h"
 #include "viewport/GizmoDrag.h"
-#include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportRenderGpu.h"
@@ -164,8 +163,7 @@ Project::~Project() {
     R.Context.erase<Assets>();
 }
 
-void Project::TrackStores(state::Entity viewport) {
-    Viewport = viewport;
+void Project::TrackStores() {
     auto &meshes = R.Context.get<MeshStore>();
     meshes.Track(History);
 
@@ -173,7 +171,11 @@ void Project::TrackStores(state::Entity viewport) {
     R.Context.get<GpuBuffers>().MorphWeightBuffer.Track(History, "morph.weights");
     R.Context.get<MaterialStore>().Track(History);
     History.Callbacks = {
-        .Replay = [this](std::span<const std::byte> bytes) { return RunRecorded(Decode(bytes)); },
+        .Replay = [this](std::span<const std::byte> bytes) {
+            auto replayed = RunRecorded(Decode(bytes));
+            // A replayed action leaves every view where the user put it.
+            R.remove<PendingViewSetup>(state::Document);
+            return replayed; },
         .Reset = [this](const std::filesystem::path &dir) {
             R.Context.get<Assets>().Directory = dir;
             ClearDocument(); },
@@ -245,7 +247,6 @@ bool Project::New(const std::filesystem::path &dir, bool empty) {
     }
     if (History.Present && !Save()) return false;
     auto previous = History.Pin();
-    const auto camera = GetViewCameraState(R, Viewport);
     RecordedActions.clear();
     ClearDocument();
     // The root records how its scene arises, so its state replays from the empty scene.
@@ -254,7 +255,6 @@ bool Project::New(const std::filesystem::path &dir, bool empty) {
     const bool begun = Begin(dir);
     if (!begun) {
         (void)History.Restore(previous);
-        SetViewCameraState(R, Viewport, camera);
         Settle(EventPass::Settle);
     }
     History.Release(previous);
@@ -275,17 +275,14 @@ bool Project::Open(const std::filesystem::path &dir, const std::filesystem::path
     }
     auto &directory = R.Context.get<Assets>().Directory;
     const auto previous = std::exchange(directory, dir);
-    const auto camera = GetViewCameraState(R, Viewport);
     const auto errors = R.Context.get<action::Errors>().Messages.size();
     if (!History.Open(dir, saved ? &saved->Position : nullptr)) {
         directory = previous;
-        SetViewCameraState(R, Viewport, camera);
         const auto error = History.TakeIntegrityError();
         if (R.Context.get<action::Errors>().Messages.size() == errors && !error.empty()) action::Fail(R, error);
         return false;
     }
     ReleaseGesture();
-    R.remove<SavedViewCamera>(Viewport);
     for (auto &node : History.Nodes) node.Editable = Editable(Decode(node.Actions));
     // An actions open replays and pins every node on the path to the present node.
     History.Evict(MemoryCap);
@@ -302,7 +299,7 @@ bool Project::Save() {
     WaitForRender(R);
     FinishGesture(EventPass::Settle);
     // Save playback progress since the last edit.
-    Record(action::MakeAction(action::timeline::SetFrame{R.get<const TimelinePlayback>(Viewport).CurrentFrame}), EventPass::Settle);
+    Record(action::MakeAction(action::timeline::SetFrame{R.get<const TimelinePlayback>(state::Document).CurrentFrame}), EventPass::Settle);
     Commit("Playback position");
     return History.Save();
 }
@@ -415,7 +412,7 @@ bool Project::Close() {
 
 void Project::Tick(const action::Action &a, EventPass pass, bool staged) {
     Previewing = staged && action::IsPreview(a);
-    std::visit([&](const auto &domain) { Apply(R, Viewport, domain); }, a);
+    std::visit([&](const auto &domain) { Apply(R, domain); }, a);
     Previewing = false;
     Settle(pass);
 }
@@ -425,18 +422,18 @@ std::expected<void, std::string> Project::RunRecorded(std::span<const RecordedAc
     const auto errors = R.Context.get<action::Errors>().Messages.size();
     for (const auto &[inputs, a] : recorded_actions) {
         // Restore playback changes between recorded actions.
-        if (R.get<const TimelinePlayback>(Viewport).CurrentFrame != inputs.CurrentFrame) {
-            R.patch<TimelinePlayback>(Viewport, [&](auto &p) { p.CurrentFrame = inputs.CurrentFrame; });
-            R.edit<PlaybackFrame>(Viewport).Value = float(inputs.CurrentFrame);
+        if (R.get<const TimelinePlayback>(state::Document).CurrentFrame != inputs.CurrentFrame) {
+            R.patch<TimelinePlayback>(state::Document, [&](auto &p) { p.CurrentFrame = inputs.CurrentFrame; });
+            R.edit<PlaybackFrame>(state::Document).Value = float(inputs.CurrentFrame);
             Settle(EventPass::Settle);
         }
-        R.edit<PlaybackFrame>(Viewport).Value = inputs.PlaybackFrame;
+        R.edit<PlaybackFrame>(state::Document).Value = inputs.PlaybackFrame;
         frame.DeltaTime = inputs.DeltaTime;
         frame.FixedFrameStep = inputs.FixedFrameStep;
         bool updated_inset = false;
         if (inputs.Staged && InsetPreview) {
             if (const auto *mesh = std::get_if<action::mesh::Action>(&a); mesh) {
-                if (const auto *inset = std::get_if<action::mesh::Inset>(mesh)) updated_inset = action::mesh::UpdateInsetPreview(R, Viewport, *inset, *InsetPreview);
+                if (const auto *inset = std::get_if<action::mesh::Inset>(mesh)) updated_inset = action::mesh::UpdateInsetPreview(R, *inset, *InsetPreview);
             }
         }
         if (updated_inset) Settle(inputs.Pass);
@@ -454,7 +451,7 @@ std::expected<void, std::string> Project::RunRecorded(std::span<const RecordedAc
     return {};
 }
 void Project::Settle(EventPass pass) {
-    ProcessComponentEvents(R, Viewport, pass);
+    ProcessComponentEvents(R, pass);
     History.SettleHashes();
 }
 bool Project::Record(action::Action a, EventPass pass, bool staged) {
@@ -481,7 +478,7 @@ bool Project::Record(action::Action a, EventPass pass, bool staged) {
     bool updated_inset = false;
     if (same_kind && preview) {
         if (const auto *mesh = std::get_if<action::mesh::Action>(&a); mesh && InsetPreview) {
-            if (const auto *inset = std::get_if<action::mesh::Inset>(mesh)) updated_inset = action::mesh::UpdateInsetPreview(R, Viewport, *inset, *InsetPreview);
+            if (const auto *inset = std::get_if<action::mesh::Inset>(mesh)) updated_inset = action::mesh::UpdateInsetPreview(R, *inset, *InsetPreview);
         }
         if (!updated_inset) {
             InsetPreview.reset();
@@ -492,7 +489,7 @@ bool Project::Record(action::Action a, EventPass pass, bool staged) {
     }
     const auto &frame = R.Context.get<const FrameState>();
     RecordedAction recorded_action{
-        {frame.DeltaTime, R.get<const PlaybackFrame>(Viewport).Value, R.get<const TimelinePlayback>(Viewport).CurrentFrame, frame.FixedFrameStep, pass, staged},
+        {frame.DeltaTime, R.get<const PlaybackFrame>(state::Document).Value, R.get<const TimelinePlayback>(state::Document).CurrentFrame, frame.FixedFrameStep, pass, staged},
         std::move(a),
     };
     const auto cooks = R.Context.get<const CookCount>().Value;
@@ -520,9 +517,9 @@ std::optional<uint32_t> Project::Do(action::Action a, std::string label) {
     return Commit(std::move(label));
 }
 void Project::RecordKeys() {
-    if (!R.get<const Animations>(Viewport).Record) return;
-    const auto seconds = animation::FrameSeconds(R, Viewport, R.get<const TimelinePlayback>(Viewport).CurrentFrame);
-    if (animation::AnyChanged(R, Viewport, seconds)) Record(action::MakeAction(action::animation::RecordChanged{}), EventPass::Settle);
+    if (!R.get<const Animations>(state::Document).Record) return;
+    const auto seconds = animation::FrameSeconds(R, R.get<const TimelinePlayback>(state::Document).CurrentFrame);
+    if (animation::AnyChanged(R, seconds)) Record(action::MakeAction(action::animation::RecordChanged{}), EventPass::Settle);
 }
 uint32_t Project::Commit(std::string label, std::optional<uint32_t> replace) {
     // A commit indexes the mesh records its actions wrote, so a later restore costs only its own change.
@@ -562,7 +559,7 @@ void Project::FinishGesture(EventPass pass) {
 }
 void Project::EndGesture(EventPass pass) {
     R.clear<StartTransform, StartBoneLength, StartPivot, action::DragFieldStart, AdditiveBoxSelectBaseline>();
-    R.remove<StartScreenTransform>(Viewport);
+    R.remove<StartScreenTransform>(state::Document);
     Settle(pass);
 }
 Project::EditDraft &Project::DraftOf(uint32_t node) {
@@ -596,8 +593,8 @@ void Project::ReleaseGesture() {
     StageFirst.reset();
 }
 void Project::ClearInteraction() {
-    R.clear<StartTransform, StartBoneLength, StartPivot, StartScreenTransform, PendingTransform, action::DragFieldStart, AdditiveBoxSelectBaseline>();
-    if (auto *gizmo = R.try_edit<GizmoInteraction>(Viewport)) *gizmo = {};
+    R.clear<StartTransform, StartBoneLength, StartPivot, StartScreenTransform, PendingTransform, action::DragFieldStart, AdditiveBoxSelectBaseline, PendingViewSetup>();
+    if (auto *gizmo = R.try_edit<GizmoInteraction>(state::Document)) *gizmo = {};
     auto &frame = R.Context.get<FrameState>();
     frame.BoxSelectStart.reset();
     frame.BoxSelectEnd.reset();
@@ -608,10 +605,23 @@ void Project::ClearDocument() {
     WaitForRender(R);
     Deferred.clear();
     ClearInteraction();
+    // A document component outside history is workspace state, which outlives the document.
+    const auto &entries = snapshot::SnapshotTable();
+    std::vector<std::pair<state::TypeId, std::vector<std::byte>>> workspace;
+    for (state::TypeId type = 0; type < entries.size(); ++type) {
+        const auto &entry = entries[type];
+        const auto *value = entry.Emplace && !entry.History ? R.Tables[type].value(state::Document) : nullptr;
+        if (!value) continue;
+        auto &bytes = workspace.emplace_back(type, std::vector<std::byte>{}).second;
+        if (entry.Serialize) entry.Serialize(value, bytes);
+    }
     R.Reset();
-    [[maybe_unused]] const auto viewport = R.create();
-    assert(viewport == Viewport);
-    SetupScene(R, Viewport);
+    [[maybe_unused]] const auto document = R.create();
+    assert(document == state::Document);
+    SetupDocument(R);
+    for (const auto &[type, bytes] : workspace) entries[type].Emplace(R, state::Document, bytes);
+    // Every viewport renders the new document, which none of their depth pyramids saw.
+    RequestRender(R);
 }
 void Project::CancelGesture() {
     if (!GestureBase) return;
@@ -758,12 +768,12 @@ void Project::AfterRestore() {
     if (sources_changed) {
         ReleaseImportedTextures(R);
         ResetImportedEnvironment(R);
-        R.Context.get<RenderChanges>().SceneWorld.emplace(Viewport);
+        R.Context.get<RenderChanges>().SceneWorld.emplace(state::Document);
     } else if (manifest_changed) {
-        const auto *manifest = R.try_get<const MaterializedTextures>(Viewport);
+        const auto *manifest = R.try_get<const MaterializedTextures>(state::Document);
         ReleaseUnlistedTextures(R, manifest ? std::span{manifest->Items} : std::span<const MaterializedTexture>{});
     }
-    if (sources_changed || manifest_changed) R.Context.get<RenderChanges>().MaterializedTextures.emplace(Viewport);
+    if (sources_changed || manifest_changed) R.Context.get<RenderChanges>().MaterializedTextures.emplace(state::Document);
     auto &meshes = R.Context.get<MeshStore>();
     const auto changes = meshes.TakeChanges();
     mtl::ComputeChain chain{meshes.BufferContext()};
@@ -810,8 +820,8 @@ void Project::AfterRestore() {
     }
     RefreshEditedPositions(R, chain, positions, false);
     chain.Submit();
-    if (!buffers.Materials.History()->Trie.TakeChanged().empty()) R.Context.get<RenderChanges>().Materials.emplace(Viewport);
-    if (!buffers.MorphWeightBuffer.Buffer.History()->Trie.TakeChanged().empty()) R.Context.get<RenderChanges>().MorphWeights.emplace(Viewport);
+    if (!buffers.Materials.History()->Trie.TakeChanged().empty()) R.Context.get<RenderChanges>().Materials.emplace(state::Document);
+    if (!buffers.MorphWeightBuffer.Buffer.History()->Trie.TakeChanged().empty()) R.Context.get<RenderChanges>().MorphWeights.emplace(state::Document);
     Settle(EventPass::Restore);
 }
 } // namespace project

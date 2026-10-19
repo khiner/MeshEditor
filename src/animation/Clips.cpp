@@ -14,13 +14,8 @@ uint32_t FindKeyframe(std::span<const float> times, float t) {
 }
 } // namespace
 
-state::Entity AnimationsViewport(const state::Registry &r) {
-    for (const auto e : r.view<const Animations>()) return e;
-    return state::Null;
-}
-
-const AnimationClip *ActiveClip(const state::Registry &r, state::Entity viewport, const AnimationClips &clips) {
-    return clips.Find(r.get<const Animations>(viewport).Active);
+const AnimationClip *ActiveClip(const state::Registry &r, const AnimationClips &clips) {
+    return clips.Find(r.get<const Animations>(state::Document).Active);
 }
 
 void EvaluateChannel(const AnimationChannel &channel, float seconds, std::span<float> out) {
@@ -65,9 +60,9 @@ float LastKeySeconds(const state::Registry &r, std::optional<uint32_t> animation
     return end;
 }
 
-uint8_t PosedTransformComponents(const state::Registry &r, state::Entity viewport, state::Entity e) {
-    const auto *clips = viewport != state::Null ? r.try_get<const AnimationClips>(e) : nullptr;
-    const auto *clip = clips ? ActiveClip(r, viewport, *clips) : nullptr;
+uint8_t PosedTransformComponents(const state::Registry &r, state::Entity e) {
+    const auto *clips = r.all_of<Animations>(state::Document) ? r.try_get<const AnimationClips>(e) : nullptr;
+    const auto *clip = clips ? ActiveClip(r, *clips) : nullptr;
     if (!clip) return 0;
     uint8_t mask = 0;
     for (const auto &channel : clip->Channels) {

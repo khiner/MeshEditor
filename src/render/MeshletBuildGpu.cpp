@@ -231,8 +231,8 @@ void BuildChunk(state::Registry &r, mtl::ComputeChain &chain, std::span<MeshletB
         };
         jobs.push_back(job);
     }
-    job_buffer.SetUsedSize(as_bytes(jobs).size());
-    job_buffer.Update(as_bytes(jobs));
+    job_buffer.SetUsedSize(BytesOf(jobs).size());
+    job_buffer.Update(BytesOf(jobs));
     // Each stage dispatches all independent jobs together.
     // Tiles carry only job/local-group metadata.
     // Geometry and sort state stay in GPU arenas.
@@ -258,7 +258,7 @@ void BuildChunk(state::Registry &r, mtl::ComputeChain &chain, std::span<MeshletB
     };
     domain(MembershipDomain, [](const auto &job) { return job.ElementBlockCount; });
     domain(InputDomain, [](const auto &job) { return job.BlockCount; });
-    tile_buffer.Update(as_bytes(tiles));
+    tile_buffer.Update(BytesOf(tiles));
     auto pc = PushConstants(meshes);
     pc.TilesSlot = tile_buffer.Slot;
     pc.JobsSlot = job_buffer.Slot;
@@ -353,11 +353,11 @@ void BuildChunk(state::Registry &r, mtl::ComputeChain &chain, std::span<MeshletB
     domain(TileInitDomain, [](const auto &job) { return Tiles(job.TileBound); });
     domain(TileDomain, [](const auto &job) { return job.TileBound; });
     domain(PrimitiveDomain, [](const auto &job) { return job.ExistingPrimitive == InvalidOffset ? Tiles(job.PrimitiveCount) : 0u; });
-    tile_buffer.Update(as_bytes(tiles));
+    tile_buffer.Update(BytesOf(tiles));
     uint32_t radix_passes = 0u;
     for (const auto &job : jobs) radix_passes = std::max(radix_passes, job.RadixPassCount);
     scratch.SetUsedSize(layout.Words * sizeof(uint32_t));
-    job_buffer.Update(as_bytes(jobs));
+    job_buffer.Update(BytesOf(jobs));
     {
         const profile::CpuScope phase{"MeshletConstruct"};
         // The production build is one submission.
@@ -463,7 +463,7 @@ void BuildChunk(state::Registry &r, mtl::ComputeChain &chain, std::span<MeshletB
         capture(render.LodParents.Buffer, sizeof(uint32_t), node_run);
     }
     place_payloads();
-    job_buffer.Update(as_bytes(jobs));
+    job_buffer.Update(BytesOf(jobs));
     {
         const profile::CpuScope phase{"MeshletPublish"};
         dispatch(MeshPass::MeshletBuildEmit, TileDomain);

@@ -98,7 +98,7 @@ struct Sampler {
     std::string Name;
 };
 
-// Source-form scene data retained on the viewport.
+// Source-form scene data retained on the document entity.
 struct SourceAssets {
     std::string Copyright, Generator, MinVersion;
     std::string AssetExtras, AssetExtensions; // Minified JSON.

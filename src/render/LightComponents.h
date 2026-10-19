@@ -24,7 +24,7 @@ template<> inline constexpr field::SpecTable<PunctualLight> Specs<PunctualLight>
     {&PunctualLight::Type, {.Help = "Directional lights shine from infinitely far away, point lights in all directions, and spot lights in a cone"}},
 };
 
-// The scene's EXT_lights_image_based light on the viewport.
+// The scene's EXT_lights_image_based light on the document entity.
 // Rotation turns the environment and Intensity scales it.
 struct ImageLight {
     quat Rotation{1, 0, 0, 0};

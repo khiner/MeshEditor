@@ -26,10 +26,10 @@ int main(int argc, char **argv) {
             for (uint32_t i = 0; i < uint32_t(MeshPass::Count); ++i)
                 (void)mesh[MeshPass(i)];
             Pipelines render{cache};
-            render.Main.Compiler.CompilePipelines(0u, false);
-            render.Main.Compiler.CompilePipelines(0u, true);
-            render.Main.Compiler.CompilePipelines(uint32_t(PbrFeature::Punctual), false);
-            render.Main.Compiler.CompilePipelines(uint32_t(PbrFeature::Punctual), true);
+            (void)render.Main.Compiler.Variant(0u, false);
+            (void)render.Main.Compiler.Variant(0u, true);
+            (void)render.Main.Compiler.Variant(uint32_t(PbrFeature::Punctual), false);
+            (void)render.Main.Compiler.Variant(uint32_t(PbrFeature::Punctual), true);
             compiled=cache.CompileMissCount(); hits=cache.ArchiveHitCount();
             if (!cache.FlushArchive()) throw std::runtime_error("Metal pipeline archive serialization failed.");
         }

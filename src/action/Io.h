@@ -25,5 +25,5 @@ struct LoadEmptyScene {};
 using Action = std::variant<LoadDefaultScene, Load, LoadGltf, SaveGltf, LoadRealImpact, LoadEmptyScene>;
 
 // Handlers run GPU work synchronously; failures are reported through the registry's action::Errors sink.
-void Apply(state::Registry &, state::Entity viewport, const Action &);
+void Apply(state::Registry &, const Action &);
 } // namespace action::io

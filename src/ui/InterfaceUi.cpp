@@ -73,8 +73,8 @@ void DropdownArrow() {
     GetWindowDrawList()->AddTriangleFilled(center - ImVec2{HalfWidth, HalfWidth * 0.5f}, center + ImVec2{HalfWidth, -HalfWidth * 0.5f}, center + ImVec2{0.f, HalfWidth * 0.5f}, GetColorU32(ImGuiCol_Text));
 }
 
-void DrawInterfaceStyle(state::Registry &r, state::Entity viewport) {
+void DrawInterfaceStyle(state::Registry &r) {
     if (Button("Reset")) action::Emit(action::view::ResetInterfaceTheme{});
-    DrawFields<InterfaceTheme>(Edit{r, viewport});
+    DrawFields<InterfaceTheme>(Edit{r, state::Document});
 }
 } // namespace ui

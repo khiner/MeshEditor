@@ -2,9 +2,8 @@
 
 #include "VideoRecorder.h"
 #include "audio/AudioTypes.h"
-#include "viewport/ViewportSchema.h"
 
-// Present on the viewport entity iff recording is active.
+// A viewport holds one while recording.
 struct VideoRecording {
     std::unique_ptr<VideoRecorder> Recorder;
     std::pair<uvec2, mtl::Extent2D> Region; // Locked at StartRecording.

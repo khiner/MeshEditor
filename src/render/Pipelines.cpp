@@ -94,21 +94,23 @@ RenderPipeline MeshletElementRaster(mtl::LibraryCache &libraries, FunctionRef me
 
 PbrCompiler::PbrCompiler(mtl::LibraryCache &libraries, PassFormats scene) : Libraries(libraries), SceneFormats(std::move(scene)) {}
 
-bool PbrCompiler::CompilePipelines(PbrFeatureMask mask, bool non_triangle_topology) {
-    if (mask == Mask && non_triangle_topology == NonTriangleTopology && Visibility) return false;
+const PbrVariant &PbrCompiler::Variant(PbrFeatureMask mask, bool non_triangle_topology) {
+    const auto it = std::ranges::find_if(Variants, [&](const PbrVariant &v) { return v.Mask == mask && v.NonTriangleTopology == non_triangle_topology; });
+    if (it != Variants.end()) return *it;
     const auto visibility = [&](bool prepass) {
         return mtl::MakeRenderPipeline(Libraries, FunctionRef{"TexQuad.metal", "TexQuadVertex"}, PbrFragment(mask, prepass, "PbrVisibilityFragment", non_triangle_topology), SceneFormats, std::vector<BlendState>{Blend}, DepthOff);
     };
-    Visibility = visibility(false);
-    Prepass = ::HasFeature(mask, PbrFeature::Transmission) ? std::optional{visibility(true)} : std::nullopt;
-    Transparent = mtl::MakeMeshPipeline(Libraries, MeshletVertex(non_triangle_topology), PbrFragment(mask, false, "PbrTransparentFragment", non_triangle_topology), SceneFormats, std::vector<BlendState>{NoWrite}, DepthTestNoWriteLessEqual);
-    Mask = mask;
-    NonTriangleTopology = non_triangle_topology;
-    return true;
+    return Variants.emplace_back(PbrVariant{
+        .Mask = mask,
+        .NonTriangleTopology = non_triangle_topology,
+        .Transparent = mtl::MakeMeshPipeline(Libraries, MeshletVertex(non_triangle_topology), PbrFragment(mask, false, "PbrTransparentFragment", non_triangle_topology), SceneFormats, std::vector<BlendState>{NoWrite}, DepthTestNoWriteLessEqual),
+        .Visibility = visibility(false),
+        .Prepass = ::HasFeature(mask, PbrFeature::Transmission) ? std::optional{visibility(true)} : std::nullopt,
+    });
 }
 
-void PbrCompiler::BindMeshlets(MTL::RenderCommandEncoder *encoder) const { Transparent->Bind(encoder); }
-void PbrCompiler::BindVisibility(MTL::RenderCommandEncoder *encoder, bool prepass) const { (prepass ? Prepass : Visibility)->Bind(encoder); }
+void PbrVariant::BindMeshlets(MTL::RenderCommandEncoder *encoder) const { Transparent.Bind(encoder); }
+void PbrVariant::BindVisibility(MTL::RenderCommandEncoder *encoder, bool prepass) const { (prepass ? *Prepass : Visibility).Bind(encoder); }
 
 MainPipeline::MainPipeline(mtl::LibraryCache &libraries)
     : Background{CreateBackgroundPipeline(libraries, SceneFormats(), {Blend}, false)},

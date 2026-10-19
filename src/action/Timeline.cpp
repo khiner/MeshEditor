@@ -4,7 +4,7 @@
 #include "render/LightComponents.h"
 #include "selection/SelectionState.h"
 #include "state/Registry.h"
-#include "viewport/ViewportDisplay.h"
+#include "viewport/ViewportEvents.h"
 
 #include <cmath>
 
@@ -18,40 +18,29 @@ int WrapFrame(int frame, const TimelineRange &range) {
 }
 } // namespace
 
-void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
+void Apply(state::Registry &r, const Action &action) {
+    // The active viewport presents the scene in its next frame step, with its authored lighting when it has some.
     const auto enter_presentation = [&] {
-        const auto *source_assets = r.try_get<const gltf::SourceAssets>(viewport);
+        const auto *source_assets = r.try_get<const gltf::SourceAssets>(state::Document);
         const bool explicit_ibl = source_assets && source_assets->ImageBasedLight.has_value();
-        const bool authored_lighting = explicit_ibl || !r.view<const LightIndex>().empty();
-        const auto mode = authored_lighting ? ViewportShadingMode::Rendered : ViewportShadingMode::MaterialPreview;
-        r.patch<ViewportDisplay>(viewport, [&](auto &s) { s.ViewportShading = s.FillMode = mode; s.ShowOverlays = false; });
-        if (!authored_lighting && r.all_of<MaterialPreviewLighting>(viewport)) {
-            r.patch<MaterialPreviewLighting>(viewport, [](auto &l) { l.Value.WorldOpacity = 1.f; });
-        }
-        if (authored_lighting && r.all_of<RenderedLighting>(viewport)) {
-            r.patch<RenderedLighting>(viewport, [&](auto &l) {
-                if (explicit_ibl) {
-                    l.Value.BackgroundBlur = 0.f;
-                } else {
-                    l.Value.UseSceneWorld = false;
-                    l.Value.WorldOpacity = 1.f;
-                }
-            });
-        }
+        const auto lighting = explicit_ibl                      ? PresentationLighting::SceneImageLight :
+            !r.view<const LightIndex>().empty() ? PresentationLighting::SceneLights :
+                                                  PresentationLighting::MaterialPreview;
+        r.get_or_emplace<PendingViewSetup>(state::Document).Presentation = lighting;
     };
     const auto set_frame = [&](int frame) {
-        r.patch<TimelinePlayback>(viewport, [&](auto &p) { p.CurrentFrame = frame; });
-        r.edit<PlaybackFrame>(viewport).Value = frame;
+        r.patch<TimelinePlayback>(state::Document, [&](auto &p) { p.CurrentFrame = frame; });
+        r.edit<PlaybackFrame>(state::Document).Value = frame;
     };
     const auto step_frame = [&](int delta) {
-        const int frame = r.get<const TimelinePlayback>(viewport).CurrentFrame + delta;
-        set_frame(r.get<const TimelineNavigation>(viewport).Wrap ? WrapFrame(frame, r.get<const TimelineRange>(viewport)) : frame);
+        const int frame = r.get<const TimelinePlayback>(state::Document).CurrentFrame + delta;
+        set_frame(r.get<const TimelineNavigation>(state::Document).Wrap ? WrapFrame(frame, r.get<const TimelineRange>(state::Document)) : frame);
     };
     std::visit(
         overloaded{
             [&](EnterPresentation) { enter_presentation(); },
             [&](const TogglePlay &a) {
-                r.patch<TimelinePlayback>(viewport, [&](auto &p) {
+                r.patch<TimelinePlayback>(state::Document, [&](auto &p) {
                     p.Playing = !p.Playing;
                     if (p.Playing) {
                         p.Reverse = a.Reverse;
@@ -59,29 +48,29 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
                     }
                     p.CurrentFrame = a.Frame;
                 });
-                r.edit<PlaybackFrame>(viewport).Value = a.Frame;
+                r.edit<PlaybackFrame>(state::Document).Value = a.Frame;
             },
             [&](CancelPlay) {
-                if (!r.get<const TimelinePlayback>(viewport).Playing) return;
-                r.patch<TimelinePlayback>(viewport, [](auto &p) { p.Playing = false; p.CurrentFrame = p.PlayStartFrame; });
-                r.edit<PlaybackFrame>(viewport).Value = r.get<const TimelinePlayback>(viewport).CurrentFrame;
+                if (!r.get<const TimelinePlayback>(state::Document).Playing) return;
+                r.patch<TimelinePlayback>(state::Document, [](auto &p) { p.Playing = false; p.CurrentFrame = p.PlayStartFrame; });
+                r.edit<PlaybackFrame>(state::Document).Value = r.get<const TimelinePlayback>(state::Document).CurrentFrame;
             },
             [&](const SetFrame &a) { set_frame(a.Frame); },
-            [&](const SetStartFrame &a) { r.patch<TimelineRange>(viewport, [&](auto &range) { range.StartFrame = a.Frame; }); },
-            [&](const SetEndFrame &a) { r.patch<TimelineRange>(viewport, [&](auto &range) { range.EndFrame = a.Frame; }); },
-            [&](JumpToStart) { JumpToStartFrame(r, viewport); },
-            [&](JumpToEnd) { set_frame(r.get<const TimelineRange>(viewport).EndFrame); },
+            [&](const SetStartFrame &a) { r.patch<TimelineRange>(state::Document, [&](auto &range) { range.StartFrame = a.Frame; }); },
+            [&](const SetEndFrame &a) { r.patch<TimelineRange>(state::Document, [&](auto &range) { range.EndFrame = a.Frame; }); },
+            [&](JumpToStart) { JumpToStartFrame(r); },
+            [&](JumpToEnd) { set_frame(r.get<const TimelineRange>(state::Document).EndFrame); },
             [&](const OffsetFrame &a) { step_frame(a.Delta); },
             [&](const JumpTime &a) {
-                const auto &nav = r.get<const TimelineNavigation>(viewport);
-                const float frames = nav.JumpInSeconds ? nav.JumpDelta * r.get<const TimelineRange>(viewport).Fps : nav.JumpDelta;
+                const auto &nav = r.get<const TimelineNavigation>(state::Document);
+                const float frames = nav.JumpInSeconds ? nav.JumpDelta * r.get<const TimelineRange>(state::Document).Fps : nav.JumpDelta;
                 step_frame(int(std::lround(a.Backward ? -frames : frames)));
             },
             [&](const JumpKeyframe &a) {
-                const auto &keys = r.get<const SelectedKeyframes>(viewport).Frames;
-                const int current = r.get<const TimelinePlayback>(viewport).CurrentFrame;
-                const auto &range = r.get<const TimelineRange>(viewport);
-                const bool wrap = r.get<const TimelineNavigation>(viewport).Wrap;
+                const auto &keys = r.get<const SelectedKeyframes>(state::Document).Frames;
+                const int current = r.get<const TimelinePlayback>(state::Document).CurrentFrame;
+                const auto &range = r.get<const TimelineRange>(state::Document);
+                const bool wrap = r.get<const TimelineNavigation>(state::Document).Wrap;
                 // Wrapping ignores keys outside the range and continues from the far end when none remain.
                 const auto in_range = [&](float key) { return !wrap || (key >= float(range.StartFrame) && key <= float(range.EndFrame)); };
                 const auto frame_of = [](float key) { return int(std::lround(key)); };
@@ -109,7 +98,7 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
                 }
                 if (target) set_frame(*target);
             },
-            [&](const SetView &a) { r.replace<TimelineView>(viewport, TimelineView{a.PixelsPerFrame, a.ViewCenterFrame}); },
+            [&](const SetView &a) { r.replace<TimelineView>(state::Document, TimelineView{a.PixelsPerFrame, a.ViewCenterFrame}); },
         },
         action
     );

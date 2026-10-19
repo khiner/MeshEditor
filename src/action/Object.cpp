@@ -128,11 +128,11 @@ state::Entity UpdateTraits<PrimitiveShape>::Active(const state::Registry &r) {
     return e != state::Null && Has(r, e) ? e : state::Null;
 }
 // Only meshes of the active primitive's kind share its fields.
-void UpdateTraits<PrimitiveShape>::ForEachSelected(state::Registry &r, state::Entity viewport, const std::function<void(state::Entity)> &fn) {
+void UpdateTraits<PrimitiveShape>::ForEachSelected(state::Registry &r, const std::function<void(state::Entity)> &fn) {
     const auto active = Active(r);
     if (active == state::Null) return;
     const auto kind = r.get<const PrimitiveShape>(active).index();
-    for (const auto e : r.get<const SelectionFlags>(viewport).Meshes) {
+    for (const auto e : r.get<const SelectionFlags>(state::Document).Meshes) {
         if (Has(r, e) && r.get<const PrimitiveShape>(e).index() == kind) fn(e);
     }
 }
@@ -149,11 +149,11 @@ const FieldSpec &UpdateTraits<PrimitiveShape>::Bounds(const state::Registry &r, 
 } // namespace action
 
 namespace action::object {
-void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
+void Apply(state::Registry &r, const Action &action) {
     auto &meshes = r.Context.get<MeshStore>();
-    auto begin_translate = [&] { r.emplace_or_replace<StartScreenTransform>(viewport, TransformGizmo::TransformType::Translate); };
+    auto begin_translate = [&] { r.emplace_or_replace<StartScreenTransform>(state::Document, TransformGizmo::TransformType::Translate); };
     const auto duplicate = [&](bool linked) {
-        if (!(linked ? CanDuplicateLinked(r, viewport) : CanDuplicate(r, viewport))) return;
+        if (!(linked ? CanDuplicateLinked(r) : CanDuplicate(r))) return;
         const profile::CpuScope scope{linked ? "DuplicateLinked" : "Duplicate"};
         const auto entities = SortedEntities(r.view<Selected>());
         // Every duplicated mesh clones once in one batch, with its arenas reserved once, and instances sharing a mesh share its clone.
@@ -207,15 +207,15 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
     // Mesh-data components live on the object's mesh entity.
     auto for_each_mesh_target = [&](const Target &target, auto &&fn) {
         ForEachTarget(
-            target, viewport,
+            target,
             [&] { return GetActiveMeshEntity(r); },
-            [&](auto &&f) { for (const auto e : r.get<const SelectionFlags>(viewport).Meshes) f(e); },
+            [&](auto &&f) { for (const auto e : r.get<const SelectionFlags>(state::Document).Meshes) f(e); },
             fn
         );
     };
     const auto edit_selection_meshes = [&](Element element) {
         std::vector<state::Entity> result;
-        if (r.get<const EditMode>(viewport).Value != element) return result;
+        if (r.get<const EditMode>(state::Document).Value != element) return result;
         for (const auto me : r.view<const MeshElementSelection>()) {
             if (!HasMesh(r, me)) continue;
             const auto &summary = meshes.GetSelectionSummary(*DrawnStoreId(r, me));
@@ -226,8 +226,8 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
     std::visit(
         overloaded{
             [&](Delete) {
-                if (!CanDelete(r, viewport)) return;
-                Destroy(r, viewport, SortedEntities(r.view<Selected>(state::Exclude<SubElementOf>)));
+                if (!CanDelete(r)) return;
+                Destroy(r, SortedEntities(r.view<Selected>(state::Exclude<SubElementOf>)));
             },
             [&](Duplicate) { duplicate(false); },
             [&](DuplicateLinked) { duplicate(true); },
@@ -245,16 +245,16 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
                 }
             },
             [&](const SetSelectedSmoothShading &a) {
-                const auto &targets = r.get<const SelectionFlags>(viewport).Meshes;
+                const auto &targets = r.get<const SelectionFlags>(state::Document).Meshes;
                 ApplyEditSharpness(
-                    r, viewport, targets,
+                    r, targets,
                     a.Smooth ? EditSharpnessOperation::SmoothAll : EditSharpnessOperation::SetAllFaces,
                     !a.Smooth
                 );
             },
             [&](const ShadeSelectedSmoothByAngle &a) {
-                const auto &targets = r.get<const SelectionFlags>(viewport).Meshes;
-                ApplyEditSharpness(r, viewport, targets, EditSharpnessOperation::SmoothByAngle, false, a.Angle);
+                const auto &targets = r.get<const SelectionFlags>(state::Document).Meshes;
+                ApplyEditSharpness(r, targets, EditSharpnessOperation::SmoothByAngle, false, a.Angle);
             },
             [&](const SetSelectedSharp &a) {
                 const auto targets = edit_selection_meshes(a.Element);
@@ -262,7 +262,7 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
                 const auto operation = a.Element == Element::Face ? EditSharpnessOperation::SetSelectedFaces :
                     a.Element == Element::Edge                    ? EditSharpnessOperation::SetSelectedEdges :
                                                                     EditSharpnessOperation::SetVertexEdges;
-                ApplyEditSharpness(r, viewport, targets, operation, a.Sharp);
+                ApplyEditSharpness(r, targets, operation, a.Sharp);
             },
             [&](ParentToActive) {
                 const auto active = FindActiveEntity(r);
@@ -285,7 +285,7 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
                 r.emplace<PrimitiveShape>(mesh_entity, a.Shape);
                 begin_translate();
             },
-            [&](const ImportMesh &a) { RequestImportMesh(r, viewport, a.Path, *a.Info); },
+            [&](const ImportMesh &a) { RequestImportMesh(r, a.Path, *a.Info); },
             [&](const SetPbrMeshFeaturesMask &a) {
                 for_each_mesh_target(a.Target, [&](state::Entity e) {
                     if (a.Mask != 0u) r.emplace_or_replace<PbrMeshFeatures>(e, a.Mask);
@@ -296,7 +296,7 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
                 auto &materials = r.Context.get<GpuBuffers>().Materials;
                 if (a.Index >= materials.Count<PBRMaterial>()) return;
                 materials.Update(std::as_bytes(std::span{&a.Value, 1}), uint64_t(a.Index) * sizeof(PBRMaterial) + a.Offset);
-                r.Context.get<RenderChanges>().Materials.emplace(viewport);
+                r.Context.get<RenderChanges>().Materials.emplace(state::Document);
             },
             [&](const SetMaterialSlotSelection &a) {
                 for_each_mesh_target(a.Target, [&](state::Entity e) { r.emplace_or_replace<MeshMaterialSlotSelection>(e, a.PrimitiveIndex); });
@@ -306,7 +306,7 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
             },
             [&](const SetProjection &a) {
                 ForEachTarget(
-                    a.Target, viewport,
+                    a.Target,
                     [&] { const auto e = FindActiveEntity(r); return HasLens(r, e) ? e : state::Null; },
                     [&](auto &&fn) {
                         for (const auto e : r.view<Selected>()) {
@@ -321,7 +321,7 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
                 );
             },
             [&](const SetLightType &a) {
-                ForEachComponentTarget<PunctualLight>(r, a.Target, viewport, [&](auto e) {
+                ForEachComponentTarget<PunctualLight>(r, a.Target, [&](auto e) {
                     r.patch<PunctualLight>(e, [&](auto &light) {
                         auto next = Defaults::MakePunctualLight(a.Type);
                         next.Color = light.Color;
@@ -331,7 +331,7 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
                 });
             },
             [&](const SetSpotCone &a) {
-                ForEachComponentTarget<PunctualLight>(r, a.Target, viewport, [&](auto e) {
+                ForEachComponentTarget<PunctualLight>(r, a.Target, [&](auto e) {
                     r.patch<PunctualLight>(e, [&](auto &light) {
                         light.OuterConeAngle = a.OuterAngle;
                         light.InnerConeAngle = a.OuterAngle * (1.f - a.Blend);

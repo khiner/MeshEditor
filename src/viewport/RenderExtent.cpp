@@ -1,13 +1,11 @@
 #include "viewport/RenderExtent.h"
 
 #include "viewport/FrameState.h"
-#include "viewport/ViewportDisplay.h"
+#include "viewport/Viewport.h"
 
-#include "state/Registry.h"
-
-uvec2 RenderExtentPx(const state::Registry &r) {
-    const auto logical_extent = r.Context.get<const ViewportExtent>().Value;
-    const auto scale = r.Context.get<const FrameState>().DisplayFramebufferScale;
+uvec2 RenderExtentPx(const Viewport &viewport, const FrameState &frame) {
+    const auto logical_extent = viewport.State.Extent;
+    const auto scale = frame.DisplayFramebufferScale;
     const auto scaled = [](uint32_t l, float s) -> uint32_t {
         if (l == 0u) return 0u;
         return std::max(1u, uint32_t(std::lround(float(l) * (s > 0 ? s : 1.f))));

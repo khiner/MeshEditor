@@ -1063,7 +1063,7 @@ uint32_t SelectedCount(std::span<const SelectionBlock> blocks) {
 }
 
 // Use inline selection for an unlinked selection input; an absent mask selects everything.
-void DrawInlineSelection(const state::Registry &r, state::Entity viewport, state::Entity mesh_entity, const GeometryProcedure &procedure, uint32_t node, bool interactive) {
+void DrawInlineSelection(const state::Registry &r, state::Entity mesh_entity, const GeometryProcedure &procedure, uint32_t node, bool interactive) {
     const auto sockets = KindSockets(procedure.Nodes[node].Kind);
     const auto socket = std::ranges::find(sockets, SocketType::Selection, &Socket::Type);
     if (socket == sockets.end()) return;
@@ -1079,7 +1079,7 @@ void DrawInlineSelection(const state::Registry &r, state::Entity viewport, state
     if (every) TextUnformatted("All elements");
     else if (counts == std::array<uint32_t, 3>{}) TextUnformatted("No elements");
     else Text("%u vertices, %u edges, %u faces", counts[0], counts[1], counts[2]);
-    const bool edit_mode = r.get<const Interaction>(viewport).Mode == InteractionMode::Edit;
+    const bool edit_mode = r.get<const Interaction>(state::Document).Mode == InteractionMode::Edit;
     BeginDisabled(!edit_mode);
     if (Button("Capture") && interactive) action::Emit(action::nodes::CaptureSelection(r, mesh_entity, entity));
     EndDisabled();
@@ -1091,7 +1091,7 @@ void DrawInlineSelection(const state::Registry &r, state::Entity viewport, state
     ui::Describe("Clear", "Set the node's selection to all elements");
 }
 
-void DrawParameters(state::Registry &r, state::Entity viewport, NodesWindow &window, state::Entity mesh_entity, const GeometryProcedure &procedure, bool interactive) {
+void DrawParameters(state::Registry &r, NodesWindow &window, state::Entity mesh_entity, const GeometryProcedure &procedure, bool interactive) {
     if (procedure.ActiveNode == NoNode) {
         TextWrapped("Click a node to edit its parameters.");
         TextWrapped("Right click or press Shift+A to add a node.");
@@ -1105,9 +1105,9 @@ void DrawParameters(state::Registry &r, state::Entity viewport, NodesWindow &win
     VisitKind(kind, [&]<typename K> {
         if constexpr (!std::is_empty_v<K>) ui::DrawFields<K>(ParameterEdit<K>{{}, r, window, active, r.get<const K>(active), linked, interactive, nullptr});
     });
-    DrawInlineSelection(r, viewport, mesh_entity, procedure, node, interactive);
+    DrawInlineSelection(r, mesh_entity, procedure, node, interactive);
     if (const auto *error = r.try_get<const NodeError>(active)) {
-        const auto color = r.get<const NodeTheme>(viewport).Colors.Error;
+        const auto color = r.get<const NodeTheme>(state::Document).Colors.Error;
         PushStyleColor(ImGuiCol_Text, {color.x, color.y, color.z, color.w});
         TextWrapped("%s", FaultTexts[uint8_t(error->Fault)]);
         PopStyleColor();
@@ -1116,7 +1116,7 @@ void DrawParameters(state::Registry &r, state::Entity viewport, NodesWindow &win
 }
 } // namespace
 
-void DrawNodesWindow(state::Registry &r, state::Entity viewport, NodesWindow &window, bool interactive) {
+void DrawNodesWindow(state::Registry &r, NodesWindow &window, bool interactive) {
     const auto mesh_entity = action::nodes::EditedMesh(r);
     const auto *procedure = r.try_get<const GeometryProcedure>(mesh_entity);
     if (interactive && window.LinkAfter != NoNode) {
@@ -1147,11 +1147,11 @@ void DrawNodesWindow(state::Registry &r, state::Entity viewport, NodesWindow &wi
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0.f, 0.f});
             BeginChild("Canvas", {avail.x - panel_width - GetStyle().ItemSpacing.x, 0.f}, ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoMove);
             PopStyleVar();
-            DrawCanvas(r, r.Context.get<FrameState>(), window, r.get<const NodeTheme>(viewport), mesh_entity, *procedure, interactive);
+            DrawCanvas(r, r.Context.get<FrameState>(), window, r.get<const NodeTheme>(state::Document), mesh_entity, *procedure, interactive);
             EndChild();
             SameLine();
             BeginChild("Parameters", {0.f, 0.f}, ImGuiChildFlags_Borders);
-            DrawParameters(r, viewport, window, mesh_entity, *procedure, interactive);
+            DrawParameters(r, window, mesh_entity, *procedure, interactive);
             EndChild();
         }
     }
@@ -1164,8 +1164,8 @@ void DrawEditor(auto &e, std::type_identity<CellSize>) {
     SameLine();
     e.template Draw<&CellSize::FollowFrameHeight>();
 }
-void DrawNodeStyle(state::Registry &r, state::Entity viewport) {
+void DrawNodeStyle(state::Registry &r) {
     if (Button("Reset")) action::Emit(action::view::ResetNodeTheme{});
-    ui::DrawFields<NodeTheme>(ui::Edit{r, viewport});
+    ui::DrawFields<NodeTheme>(ui::Edit{r, state::Document});
 }
 } // namespace procedure

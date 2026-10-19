@@ -9,22 +9,29 @@
 
 namespace Format = mtl::Format;
 
-// Specializes PBR pipelines to the scene's active features and output attachments.
+// The PBR pipelines specialized to one feature mask and to whether drawn meshes have line or point meshlets.
+struct PbrVariant {
+    PbrFeatureMask Mask;
+    bool NonTriangleTopology;
+    mtl::RenderPipeline Transparent, Visibility;
+    std::optional<mtl::RenderPipeline> Prepass; // Present with the transmission feature.
+
+    void BindMeshlets(MTL::RenderCommandEncoder *) const;
+    void BindVisibility(MTL::RenderCommandEncoder *, bool prepass = false) const;
+};
+
+// Specializes PBR pipelines to the features each viewport shades with and to the output attachments.
+// Variants stay compiled, so a frame in flight keeps the pipelines it bound.
 struct PbrCompiler {
     PbrCompiler(mtl::LibraryCache &, mtl::PassFormats scene);
 
-    bool CompilePipelines(PbrFeatureMask, bool non_triangle_topology);
-    bool CompileTopologyPipelines(bool non_triangle_topology) { return CompilePipelines(Mask, non_triangle_topology); }
-    void BindMeshlets(MTL::RenderCommandEncoder *) const;
-    void BindVisibility(MTL::RenderCommandEncoder *, bool prepass = false) const;
-    bool HasFeature(PbrFeature f) const { return ::HasFeature(Mask, f); }
+    // The variant for the mask and topology, compiled on first use.
+    const PbrVariant &Variant(PbrFeatureMask, bool non_triangle_topology);
 
 private:
     mtl::LibraryCache &Libraries;
     mtl::PassFormats SceneFormats;
-    PbrFeatureMask Mask{0};
-    bool NonTriangleTopology{false};
-    std::optional<mtl::RenderPipeline> Transparent, Visibility, Prepass;
+    std::vector<PbrVariant> Variants;
 };
 
 struct MainPipeline {

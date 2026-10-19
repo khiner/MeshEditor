@@ -80,7 +80,6 @@ struct NodesWindow : Window {
 struct WindowsState {
     Window
         SceneControls{"Scene controls"},
-        Viewport{"Viewport"},
         Timeline{"Timeline"},
         Style{"Style"},
         Info{"Info"},
@@ -98,7 +97,6 @@ struct WindowsState {
 
 struct WindowVisibility {
     bool SceneControls{true};
-    bool Viewport{true};
     bool Timeline{true};
     bool Style{true};
     bool Info{true};
@@ -111,7 +109,6 @@ struct WindowVisibility {
 inline WindowVisibility GetWindowVisibility(const WindowsState &windows) {
     return {
         windows.SceneControls.Visible,
-        windows.Viewport.Visible,
         windows.Timeline.Visible,
         windows.Style.Visible,
         windows.Info.Visible,
@@ -126,7 +123,6 @@ inline WindowVisibility GetWindowVisibility(const WindowsState &windows) {
 
 inline void SetWindowVisibility(WindowsState &windows, const WindowVisibility &visibility) {
     windows.SceneControls.Visible = visibility.SceneControls;
-    windows.Viewport.Visible = visibility.Viewport;
     windows.Timeline.Visible = visibility.Timeline;
     windows.Style.Visible = visibility.Style;
     windows.Info.Visible = visibility.Info;

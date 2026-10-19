@@ -25,7 +25,7 @@
 #include "ui/MaterialEdit.h"
 #include "viewport/FrameState.h"
 #include "viewport/InteractionComponents.h"
-#include "viewport/ViewCameraOps.h"
+#include "viewport/Viewport.h"
 #include "viewport/ViewportOps.h"
 #include <format>
 #include <imgui_internal.h>
@@ -34,8 +34,8 @@ using numeric::Degrees;
 
 using namespace ImGui;
 
-static void RenderObjectTree(state::Registry &, state::Entity viewport);
-static void RenderEntityControls(state::Registry &, state::Entity viewport, state::Entity active_entity);
+static void RenderObjectTree(state::Registry &);
+static void RenderEntityControls(state::Registry &, state::Entity active_entity);
 
 namespace {
 constexpr std::string_view ObjectTypeName(ObjectType type) {
@@ -187,7 +187,7 @@ void MetaTable(const char *id, std::initializer_list<const char *> cols, size_t 
 }
 } // namespace
 
-static void RenderEntityControls(state::Registry &r, state::Entity viewport, state::Entity active_entity) {
+static void RenderEntityControls(state::Registry &r, state::Entity active_entity) {
     const auto &meshes = r.Context.get<MeshStore>();
     if (active_entity == state::Null) {
         TextUnformatted("Active object: None");
@@ -231,7 +231,7 @@ static void RenderEntityControls(state::Registry &r, state::Entity viewport, sta
         Text("Bones: %zu", armature.Bones.size());
     }
     Unindent();
-    const bool is_bone_edit = r.get<const Interaction>(viewport).Mode == InteractionMode::Edit && active_bone_entity != state::Null && r.all_of<BoneDisplayScale>(active_bone_entity);
+    const bool is_bone_edit = r.get<const Interaction>(state::Document).Mode == InteractionMode::Edit && active_bone_entity != state::Null && r.all_of<BoneDisplayScale>(active_bone_entity);
     // A non-object active entity, like a procedure node, has no transform.
     if ((is_bone_edit || r.all_of<Transform>(active_entity)) && CollapsingHeader("Transform")) {
         if (is_bone_edit) {
@@ -271,7 +271,7 @@ static void RenderEntityControls(state::Registry &r, state::Entity viewport, sta
             }
         } else {
             // In Pose mode, edit the active bone rather than the armature.
-            const bool is_pose_bone = r.get<const Interaction>(viewport).Mode == InteractionMode::Pose && active_bone_entity != state::Null;
+            const bool is_pose_bone = r.get<const Interaction>(state::Document).Mode == InteractionMode::Pose && active_bone_entity != state::Null;
             const auto transform_entity = is_pose_bone ? active_bone_entity : active_entity;
             // A bone edits its rest-relative delta, and an animated node edits its pose.
             const bool scale_locked = r.all_of<ScaleLocked>(transform_entity);
@@ -287,14 +287,14 @@ static void RenderEntityControls(state::Registry &r, state::Entity viewport, sta
         }
         Spacing();
         {
-            ui::Edit gizmo_edit{r, viewport};
+            ui::Edit gizmo_edit{r, state::Document};
             gizmo_edit.Draw<&TransformGizmoState::Mode>();
             ui::DrawFields<TransformGizmo::Config, &TransformGizmo::Config::Type>(gizmo_edit.Sub<&TransformGizmoState::Config>());
         }
         Spacing();
         if (TreeNode("Debug")) {
-            if (const auto label = TransformGizmo::ToString(r.get<const GizmoInteraction>(viewport)); !label.empty()) {
-                Text("%s op: %s", r.get<const GizmoInteraction>(viewport).IsUsing() ? "Active" : "Hovered", label.data());
+            if (const auto label = TransformGizmo::ToString(r.get<const GizmoInteraction>(state::Document)); !label.empty()) {
+                Text("%s op: %s", r.get<const GizmoInteraction>(state::Document).IsUsing() ? "Active" : "Hovered", label.data());
             } else {
                 TextUnformatted("Not hovering");
             }
@@ -441,10 +441,11 @@ static void RenderEntityControls(state::Registry &r, state::Entity viewport, sta
         if (CollapsingHeader("Camera")) {
             RenderCameraLensFields(r, active_entity);
             Separator();
-            if (LookThroughCameraEntity(r) == active_entity) {
-                if (Button("Exit camera view")) action::Emit(action::view::ExitLookThroughCamera{});
+            const auto &viewport = r.Context.get<const Viewports>().Active();
+            if (viewport.State.LookThroughEntity == active_entity) {
+                if (Button("Exit camera view")) action::Emit(action::view::ExitLookThroughCamera{viewport.Id});
             } else {
-                if (Button("Look through")) action::Emit(action::view::EnterLookThroughCamera{});
+                if (Button("Look through")) action::Emit(action::view::EnterLookThroughCamera{viewport.Id});
             }
         }
     }
@@ -480,7 +481,7 @@ static void RenderEntityControls(state::Registry &r, state::Entity viewport, sta
     if (const auto *instance = r.try_get<Instance>(active_entity); instance && HasMesh(r, instance->Entity)) {
         const bool has_sound = r.all_of<SoundVerticesModel>(active_entity);
         if (CollapsingHeader("Audio", has_sound ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
-            DrawObjectAudioControls(r, viewport, active_entity, GetMeshEntity(r, active_entity));
+            DrawObjectAudioControls(r, active_entity, GetMeshEntity(r, active_entity));
             if (const auto *active_mic = r.try_get<RealImpactActiveMicrophone>(active_entity)) {
                 SeparatorText("Microphone");
                 Text("Active: %s", GetName(r, active_mic->Entity).c_str());
@@ -521,13 +522,13 @@ static void RenderEntityControls(state::Registry &r, state::Entity viewport, sta
             }
         }
     }
-    physics_ui::RenderEntityProperties(r, active_entity, viewport);
+    physics_ui::RenderEntityProperties(r, active_entity);
 
     // glTF metadata: round-trip-only source state on the active entity.
     // TODO: surface per-material source metadata here once material editing UI exists:
     //   - `extras` JSON via SourceAssets::ExtrasByEntity[(Category::Materials, source_index)]
     //   - `MaterialSourceMeta::ExtensionPresence` bits (which extension blocks the source had)
-    if (const auto *sa = r.try_get<const gltf::SourceAssets>(viewport)) {
+    if (const auto *sa = r.try_get<const gltf::SourceAssets>(state::Document)) {
         const auto mesh_entity = active_instance ? active_instance->Entity : state::Null;
         const auto *mesh_layout = mesh_entity != state::Null ? r.try_get<const MeshSourceLayout>(mesh_entity) : nullptr;
         const auto *node = r.try_get<const GltfNode>(active_entity);
@@ -562,13 +563,13 @@ static void RenderEntityControls(state::Registry &r, state::Entity viewport, sta
     PopID();
 }
 
-void RenderControls(state::Registry &r, state::Entity viewport) {
+void RenderControls(state::Registry &r) {
     const profile::CpuScope scope{"SceneControlsUi"};
     if (BeginTabBar("Scene controls")) {
         if (BeginTabItem("Object")) {
             {
-                const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
-                const auto edit_mode = r.get<const EditMode>(viewport).Value;
+                const auto interaction_mode = r.get<const Interaction>(state::Document).Mode;
+                const auto edit_mode = r.get<const EditMode>(state::Document).Value;
                 PushID("InteractionMode");
                 AlignTextToFramePadding();
                 TextUnformatted("Interaction mode:");
@@ -576,10 +577,10 @@ void RenderControls(state::Registry &r, state::Entity viewport) {
                 bool interaction_mode_changed = false;
                 const auto active_entity_rc = FindActiveEntity(r);
                 const bool active_is_armature_rc = FindArmatureObject(r, active_entity_rc) != state::Null;
-                const auto &flags = r.get<const SelectionFlags>(viewport);
+                const auto &flags = r.get<const SelectionFlags>(state::Document);
                 const bool edit_allowed = flags.AllMeshes || active_is_armature_rc;
                 const bool pose_allowed = active_is_armature_rc;
-                for (const auto mode : r.get<const EnabledInteractionModes>(viewport).Value) {
+                for (const auto mode : r.get<const EnabledInteractionModes>(state::Document).Value) {
                     if (mode == InteractionMode::Edit && !edit_allowed) continue;
                     if (mode != InteractionMode::Pose || pose_allowed) {
                         SameLine();
@@ -587,9 +588,8 @@ void RenderControls(state::Registry &r, state::Entity viewport) {
                     }
                 }
                 if (interaction_mode_changed) action::Emit(action::view::SetInteractionMode{.Mode = InteractionMode(interaction_mode_value)});
-                ui::Edit viewport_edit{r, viewport};
                 if (interaction_mode == InteractionMode::Edit || interaction_mode == InteractionMode::Excite) {
-                    viewport_edit.Draw<&OrbitToActive::Value>("Orbit to active");
+                    ui::ViewportEdit{r, r.Context.get<const Viewports>().Active()}.Draw<&OrbitToActive::Value>("Orbit to active");
                 }
                 if (interaction_mode == InteractionMode::Edit && !active_is_armature_rc) {
                     AlignTextToFramePadding();
@@ -639,7 +639,7 @@ void RenderControls(state::Registry &r, state::Entity viewport) {
                 };
                 if (active != state::Null) ui::ChoiceCombo("Scene", active, scenes, scene_label, [](state::Entity e) { action::Emit(action::view::SetActiveScene{e}); });
             }
-            if (CollapsingHeader("Object tree", ImGuiTreeNodeFlags_DefaultOpen)) RenderObjectTree(r, viewport);
+            if (CollapsingHeader("Object tree", ImGuiTreeNodeFlags_DefaultOpen)) RenderObjectTree(r);
             SeparatorText("");
             if (CollapsingHeader("Add object")) {
                 static constexpr std::array AllPrimitiveShapes{
@@ -669,18 +669,18 @@ void RenderControls(state::Registry &r, state::Entity viewport) {
                 SameLine();
                 if (Button("Light")) action::Emit(action::object::AddLight{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
             }
-            if (const auto *mv = r.try_get<MaterialVariants>(viewport); mv && !mv->Names.empty() && CollapsingHeader("Material variants")) {
+            if (const auto *mv = r.try_get<MaterialVariants>(state::Document); mv && !mv->Names.empty() && CollapsingHeader("Material variants")) {
                 std::vector<std::optional<uint32_t>> variants{std::nullopt};
                 for (uint32_t i = 0; i < mv->Names.size(); ++i) variants.emplace_back(i);
                 ui::ChoiceCombo(
                     "Active variant", mv->Active, variants,
                     [&](std::optional<uint32_t> v) { return v ? NamedOr(mv->Names[*v], "Variant ", *v) : std::string{"Default"}; },
-                    [&](std::optional<uint32_t> v) { action::Emit(action::UpdateOf<&MaterialVariants::Active>(action::OnViewport{}, v)); }
+                    [&](std::optional<uint32_t> v) { action::Emit(action::UpdateOf<&MaterialVariants::Active>(state::Document, v)); }
                 );
             }
             if (!r.view<const Selected>().empty()) {
                 SeparatorText("Selection actions");
-                const auto &flags = r.get<const SelectionFlags>(viewport);
+                const auto &flags = r.get<const SelectionFlags>(state::Document);
                 if (flags.AnyVisible || flags.AnyHidden) {
                     const bool mixed_visible = flags.AnyVisible && flags.AnyHidden;
                     if (mixed_visible) PushItemFlag(ImGuiItemFlags_MixedValue, true);
@@ -693,19 +693,19 @@ void RenderControls(state::Registry &r, state::Entity viewport) {
                         if (mixed_smooth) PushItemFlag(ImGuiItemFlags_MixedValue, true);
                         if (bool set_smooth = sharpness == SelectionSharpness::Smooth; Checkbox("Smooth shading", &set_smooth)) action::Emit(action::object::SetSelectedSmoothShading{set_smooth});
                         if (mixed_smooth) PopItemFlag();
-                        if (Button("Smooth by angle")) action::Emit(action::object::ShadeSelectedSmoothByAngle{r.get<const ShadeSmoothAngle>(viewport).Value});
+                        if (Button("Smooth by angle")) action::Emit(action::object::ShadeSelectedSmoothByAngle{r.get<const ShadeSmoothAngle>(state::Document).Value});
                         SameLine();
                         SetNextItemWidth(GetFontSize() * 6);
-                        ui::Edit{r, viewport}.Draw<&ShadeSmoothAngle::Value>("##SmoothByAngle");
+                        ui::Edit{r, state::Document}.Draw<&ShadeSmoothAngle::Value>("##SmoothByAngle");
                     }
                 }
-                if (CanDuplicate(r, viewport) && Button("Duplicate")) Duplicate(r, viewport);
-                if (CanDuplicateLinked(r, viewport)) {
+                if (CanDuplicate(r) && Button("Duplicate")) Duplicate(r);
+                if (CanDuplicateLinked(r)) {
                     SameLine();
                     if (Button("Duplicate linked")) action::Emit(action::object::DuplicateLinked{}, action::Phase::Stage);
                 }
-                if (CanDelete(r, viewport) && Button("Delete")) Delete(r, viewport);
-                if (r.get<const Interaction>(viewport).Mode == InteractionMode::Pose && !r.view<const BoneSelection>().empty()) {
+                if (CanDelete(r) && Button("Delete")) Delete(r);
+                if (r.get<const Interaction>(state::Document).Mode == InteractionMode::Pose && !r.view<const BoneSelection>().empty()) {
                     AlignTextToFramePadding();
                     TextUnformatted("Clear transform:");
                     SameLine();
@@ -718,14 +718,15 @@ void RenderControls(state::Registry &r, state::Entity viewport) {
                     if (Button("Scale")) action::Emit(action::bone::ClearSelectedTransforms{.Scale = true});
                 }
             }
-            RenderEntityControls(r, viewport, FindActiveEntity(r));
+            RenderEntityControls(r, FindActiveEntity(r));
             EndTabItem();
         }
 
         if (BeginTabItem("Render")) {
-            ui::Edit f{r, viewport};
-            const auto &settings = r.get<const ViewportDisplay>(viewport);
-            f.Draw<&ViewportDisplay::AnisotropicFilter>();
+            const auto &viewport = r.Context.get<const Viewports>().Active();
+            ui::ViewportEdit f{r, viewport};
+            const auto &settings = viewport.State.Display;
+            ui::Edit{r, state::Document}.Draw<&AnisotropicFilter::Value>();
             if (CollapsingHeader("Motion blur")) {
                 if (bool enabled = settings.MotionBlur.has_value(); Checkbox("Enabled", &enabled)) {
                     f.Set<&ViewportDisplay::MotionBlur>(enabled ? std::optional{MotionBlur{}} : std::optional<MotionBlur>{});
@@ -748,33 +749,34 @@ void RenderControls(state::Registry &r, state::Entity viewport) {
         }
 
         if (BeginTabItem("Camera")) {
-            const auto &camera = r.get<const ViewCamera>(viewport);
-            const auto extent = r.Context.get<ViewportExtent>().Value;
+            const auto &viewport = r.Context.get<const Viewports>().Active();
+            const auto &camera = viewport.State.Camera.Active;
+            const auto extent = viewport.State.Extent;
             const float viewport_aspect = extent.x == 0 || extent.y == 0 ? 1.f : float(extent.x) / float(extent.y);
-            if (Button("Reset##Camera")) action::Emit(action::view::ResetViewCamera{});
+            if (Button("Reset##Camera")) action::Emit(action::view::ResetViewCamera{viewport.Id});
             {
                 vec3 target = camera.Target;
-                ui::Gesture(SliderFloat3("Target", &target.x, -10, 10), [&] { return action::view::SetViewCameraTarget{target}; });
+                ui::Gesture(SliderFloat3("Target", &target.x, -10, 10), [&] { return action::view::SetViewCameraTarget{viewport.Id, target}; });
             }
             {
                 CameraLens lens = camera.Data;
-                ui::Gesture(RenderCameraLensEditor(lens, camera.Distance, viewport_aspect), [&] { return action::view::SetViewCameraLens{lens}; });
+                ui::Gesture(RenderCameraLensEditor(lens, camera.Distance, viewport_aspect), [&] { return action::view::SetViewCameraLens{viewport.Id, lens}; });
             }
             EndTabItem();
         }
 
         if (BeginTabItem("Physics")) {
-            physics_ui::RenderTab(r, viewport);
+            physics_ui::RenderTab(r);
             EndTabItem();
         }
 
         if (BeginTabItem("Audio")) {
-            if (CollapsingHeader("Device", ImGuiTreeNodeFlags_DefaultOpen)) DrawAudioDeviceControls(r, viewport);
-            DrawGlobalSynthControls(r, viewport);
+            if (CollapsingHeader("Device", ImGuiTreeNodeFlags_DefaultOpen)) DrawAudioDeviceControls(r);
+            DrawGlobalSynthControls(r);
             EndTabItem();
         }
 
-        if (const auto *sa = r.try_get<const gltf::SourceAssets>(viewport)) {
+        if (const auto *sa = r.try_get<const gltf::SourceAssets>(state::Document)) {
             const bool has_asset = !sa->Generator.empty() || !sa->Copyright.empty() || !sa->MinVersion.empty() || !sa->AssetExtras.empty() || !sa->AssetExtensions.empty();
             const bool has_content = has_asset || !sa->ExtensionsRequired.empty() || !sa->Images.empty() || !sa->Textures.empty() || !sa->Samplers.empty();
             if (has_content && BeginTabItem("glTF metadata")) {
@@ -869,12 +871,12 @@ void RenderControls(state::Registry &r, state::Entity viewport) {
     }
 }
 
-void DrawViewportStyle(state::Registry &r, state::Entity viewport) {
+void DrawViewportStyle(state::Registry &r) {
     if (Button("Reset")) action::Emit(action::view::ResetViewportTheme{});
-    ui::DrawFields<ViewportTheme>(ui::Edit{r, viewport});
+    ui::DrawFields<ViewportTheme>(ui::Edit{r, state::Document});
 }
 
-static void RenderObjectTree(state::Registry &r, state::Entity viewport) {
+static void RenderObjectTree(state::Registry &r) {
     PushStyleVar(ImGuiStyleVar_ItemSpacing, {GetStyle().ItemSpacing.x, 0.f});
 
     const auto ToSelectionUserData = [](state::Entity e) -> ImGuiSelectionUserData { return ImGuiSelectionUserData(uint32_t(e)); };
@@ -889,7 +891,7 @@ static void RenderObjectTree(state::Registry &r, state::Entity viewport) {
         if (r.all_of<ObjectKind>(e)) return ObjectTypeName(r.get<const ObjectKind>(e).Value);
         return ObjectTypeName(ObjectType::Empty);
     };
-    const auto &outliner = r.get<const OutlinerRows>(viewport);
+    const auto &outliner = r.get<const OutlinerRows>(state::Document);
     const auto &rows = outliner.Rows;
     // Mutates `out` so begin and end batches fold into a single action.
     using Clear = action::selection::ApplyTreeSelection::ClearKind;
@@ -934,7 +936,7 @@ static void RenderObjectTree(state::Registry &r, state::Entity viewport) {
     for (const auto &request : ms_begin->Requests) begin_requests.emplace_back(request);
     const auto begin_nav_item = ms_begin->NavIdItem;
 
-    const auto &theme = r.get<const ViewportTheme>(viewport);
+    const auto &theme = r.get<const ViewportTheme>(state::Document);
     const float row_x = GetCursorPosX(), indent = GetStyle().IndentSpacing;
     std::vector<state::Entity> toggled;
     const auto render_row = [&](const OutlinerRows::Row &row) {
@@ -988,7 +990,7 @@ static void RenderObjectTree(state::Registry &r, state::Entity viewport) {
         action::Emit(std::move(tree_selection));
     }
     if (!toggled.empty()) {
-        auto &edited = r.edit<OutlinerRows>(viewport);
+        auto &edited = r.edit<OutlinerRows>(state::Document);
         for (const auto e : toggled) {
             if (!edited.Open.erase(e)) edited.Open.insert(e);
         }

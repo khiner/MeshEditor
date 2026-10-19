@@ -33,7 +33,7 @@ void EncodeSortElementWork(state::Registry &r, mtl::ComputeChain &chain, std::sp
         largest_key = std::max(largest_key, uint32_t((uint64_t(domain.Count) + 255u) / 256u));
     }
     const auto at = storage.Allocate(uint32_t(jobs.size()) * sizeof(ElementWorkSortJob) / sizeof(uint32_t));
-    storage.Buffer.Update(as_bytes(jobs), uint64_t(at.Offset) * sizeof(uint32_t));
+    storage.Buffer.Update(BytesOf(jobs), uint64_t(at.Offset) * sizeof(uint32_t));
     ElementWorkSortPushConstants pc{.Jobs = {storage.Buffer.Slot, at.Offset}};
     const auto &pipelines = GetMeshPipelines(r);
     const auto domains = uint32_t(work.size()), groups = (capacity + 255u) / 256u;

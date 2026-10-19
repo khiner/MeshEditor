@@ -25,7 +25,7 @@ template<typename T> void Patch(state::Registry &r, state::Entity e, auto edit) 
 }
 } // namespace
 
-void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
+void Apply(state::Registry &r, const Action &action) {
     std::visit(
         overloaded{
             [&](const ApplyExciteImpact &a) {
@@ -56,7 +56,7 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
             },
             [&](const SetMaterialPreset &a) {
                 if (const auto *material = materials::acoustic::Find(a.Name)) {
-                    if (a.Striker) r.patch<Striker>(viewport, [&](auto &s) { s.Material = *material; });
+                    if (a.Striker) r.patch<Striker>(state::Document, [&](auto &s) { s.Material = *material; });
                     else r.emplace_or_replace<AcousticMaterial>(FindActiveEntity(r), *material);
                 }
             },
@@ -93,7 +93,7 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
                 r.emplace_or_replace<RealImpactActiveMicrophone>(a.TargetSoundEntity, microphone);
             },
             [&](const RemoveVertexSamples &a) { ::RemoveVertexSamples(r, FindActiveEntity(r), a.MeshVertices); },
-            [&](const SetOutputDevice &a) { r.replace<AudioOutputConfig>(viewport, AudioOutputConfig{.DeviceName = a.DeviceName, .SampleRate = 0}); },
+            [&](const SetOutputDevice &a) { r.replace<AudioOutputConfig>(state::Document, AudioOutputConfig{.DeviceName = a.DeviceName, .SampleRate = 0}); },
         },
         action
     );

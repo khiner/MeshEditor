@@ -1,40 +1,25 @@
 #include "action/Core.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gpu/ViewportTheme.h"
-#include "gpu/WorkspaceLights.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionState.h"
 #include "snapshot/SnapshotRegistration.h"
 #include "ui/InterfaceTheme.h"
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
-#include "viewport/VideoRecording.h"
-#include "viewport/ViewCameraSerialize.h"
+#include "viewport/ViewportEvents.h"
 #include "viewport/ViewportInteractionState.h"
 
 namespace snapshot::detail {
-namespace {
-// ViewCamera requires a constructor seed before deserialization.
-void EmplaceViewCamera(state::Registry &r, state::Entity e, std::span<const std::byte> bytes) {
-    ViewCamera v{vec3{0, 0, 1}, vec3{0}, CameraLens{}};
-    if (zpp::bits::failure(zpp::bits::in{bytes}(v))) return;
-    r.emplace_or_replace<ViewCamera>(e, v);
-}
-} // namespace
-template<> inline constexpr auto CustomEmplace<ViewCamera> = &EmplaceViewCamera;
-
 void RegisterViewport(Tables &tables) {
     Classify(
         tables,
+        TypeList<ViewportTheme, InterfaceTheme, Interaction, EditMode, AnisotropicFilter, TransformGizmoState>{},
         TypeList<
-            ViewportTheme, InterfaceTheme, WorkspaceLights, ViewCamera, LookingThrough, Interaction, EditMode, OrbitToActive,
-            ViewportDisplay, MaterialPreviewLighting, RenderedLighting, StudioEnvironment, TransformGizmoState>{},
-        TypeList<
-            SavedViewCamera, EnabledInteractionModes, AdditiveBoxSelectBaseline, ExciteSelectionBaseline,
-            PendingEditElementClick, PendingBoxSelect, PendingPick, BoxSelectState,
-            GizmoInteraction, PendingTransform, StartPivot, StartScreenTransform, StartTransform, StartBoneLength, action::DragFieldStart, VideoRecording,
+            EnabledInteractionModes, AdditiveBoxSelectBaseline, ExciteSelectionBaseline,
+            PendingEditElementClick, PendingBoxSelect, PendingPick, PendingViewSetup, BoxSelectState,
+            GizmoInteraction, PendingTransform, StartPivot, StartScreenTransform, StartTransform, StartBoneLength, action::DragFieldStart,
             TransformRoots, EditPrimaries, SelectionFlags, SelectedKeyframes, OutlinerRows>{}
     );
-    tables.Snapshots[state::Type<ViewCamera>()].History = false;
 }
 } // namespace snapshot::detail

@@ -11,4 +11,4 @@ struct ObjPlyMaterial;
 
 // Read and decode referenced textures before uploading textures and materials.
 // Return the appended GPU material slots in source material order.
-std::expected<std::vector<uint32_t>, std::string> ImportObjPlyMaterials(state::Registry &, state::Entity viewport, std::span<const ObjPlyMaterial>, const std::filesystem::path &mesh_path);
+std::expected<std::vector<uint32_t>, std::string> ImportObjPlyMaterials(state::Registry &, std::span<const ObjPlyMaterial>, const std::filesystem::path &mesh_path);

@@ -21,8 +21,9 @@ struct PassChain;
 struct GpuBuffers;
 struct MeshStore;
 struct Pipelines;
-struct RenderSamplerSlots;
-struct RenderTargets;
+struct RenderView;
+struct SceneViewUBO;
+struct Viewport;
 
 struct MeshVertexChanges {
     state::Entity Entity;
@@ -34,7 +35,7 @@ struct MeshVertexChanges {
 // History restoration already restores triangle pages and their render ownership.
 void RefreshEditedPositions(state::Registry &, mtl::ComputeChain &, std::span<const MeshVertexChanges>, bool retessellate = true);
 // Updates captured render triangles against the pending transform and repairs changed clusters.
-bool RefreshPreviewTessellation(state::Registry &, state::Entity viewport);
+bool RefreshPreviewTessellation(state::Registry &);
 enum class PositionPublication { Commit,
                                  Preview };
 // Publishes submitted edits, or a cached preview using its prepared candidate footprint without a readback.
@@ -59,18 +60,19 @@ struct MeshletCullConfig {
     bool EditOutput{false};
 };
 
-void RecordMeshletCull(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &, MeshletCullConfig);
+// Culls against the viewport's view uniforms at `config.UboOffset`.
+void RecordMeshletCull(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &, const Viewport &, MeshletCullConfig);
 void RecordOverlayJobCull(
-    mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &,
+    mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &, const Viewport &,
     bool extras_only = false, uint32_t ubo_offset = 0
 );
 void DrawOverlayJobs(MTL::RenderCommandEncoder *, const GpuBuffers &, const MeshStore &);
 // Rasterize the current meshlet routes into the visibility/depth pair shared by shading and selection.
 void RecordMeshletVisibilityPass(
-    mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, const RenderTargets &, GpuBuffers &,
+    mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, const Viewport &, GpuBuffers &,
     bool transmission, uint32_t ubo_offset, std::optional<PixelRect> scissor
 );
-void RecordSilhouetteDepthPass(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, const RenderTargets &, const RenderSamplerSlots &, GpuBuffers &, uint32_t ubo_offset = 0);
+void RecordSilhouetteDepthPass(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, const Viewport &, GpuBuffers &, uint32_t ubo_offset = 0);
 void DrawMeshlets(
     MTL::RenderCommandEncoder *, const GpuBuffers &, uint32_t route,
     uint32_t required_instance_flags = 0, uint32_t mesh_threads = 160u,
@@ -96,11 +98,21 @@ enum class RenderPhase {
 
 constexpr bool IsBlurAccumulate(RenderPhase p) { return p == RenderPhase::BlurAccumulateFirst || p == RenderPhase::BlurAccumulate; }
 
-// Records the phase, whose prelude recomputes the bounds of the meshes MeshBoundsDirty marks, and consumes the marks.
-void RecordRenderCommandBuffer(state::Registry &, state::Entity viewport, MTL::CommandBuffer *, RenderPhase = RenderPhase::Full);
+// The view uniforms the viewport's frame reads at `view`, which prefiltering the viewport's studio environment on first use completes.
+SceneViewUBO SceneViewOf(state::Registry &, const Viewport &, const RenderView &);
+// Writes the viewport's view uniforms at `view` into instance zero, and its workspace lights.
+void WriteViewUniforms(state::Registry &, Viewport &, const RenderView &);
+
+// Reserves the scratch the frames share at the largest need over the viewports about to record, so no record grows a buffer under another viewport's frame in flight.
+// Every viewport passed has built render targets.
+void ReserveFrameScratch(state::Registry &, std::span<Viewport *const>);
+
+// Records the viewport's phase, whose prelude recomputes the bounds of the meshes MeshBoundsDirty marks, and consumes the marks.
+// Prelude work marks every viewport's occlusion stale, since it moves geometry each viewport's depth pyramid saw.
+void RecordRenderCommandBuffer(state::Registry &, Viewport &, MTL::CommandBuffer *, RenderPhase = RenderPhase::Full);
 
 // Records every blur step and the resolve into one command buffer using one view-UBO instance per step.
-void RecordBlurStepsCommandBuffer(state::Registry &, state::Entity viewport, MTL::CommandBuffer *, std::span<const uint32_t> sample_weights);
+void RecordBlurStepsCommandBuffer(state::Registry &, Viewport &, MTL::CommandBuffer *, std::span<const uint32_t> sample_weights);
 
 // Resolves whether the listed mesh entities retain authored shading normals under morphing.
 // The CPU resolves targets with authored normal deltas.
@@ -115,15 +127,15 @@ void FinalizeAuthoredShading(state::Registry &, mtl::ComputeChain &);
 
 // Records the evaluation of the final pending edit into canonical positions and affected normals on the chain.
 // Returns the committed meshes, whose changed vertices PublishEditedPositions reads once the chain submits.
-std::vector<state::Entity> CommitPosedGeometry(state::Registry &, mtl::ComputeChain &, state::Entity viewport, std::span<const state::Entity> mesh_entities);
+std::vector<state::Entity> CommitPosedGeometry(state::Registry &, mtl::ComputeChain &, std::span<const state::Entity> mesh_entities);
 // Removes the mesh's edit work, if any, and rederives its display fields, and its layout when the work required a pose, at the end of the settle pass.
 void ReleaseMeshEditWork(state::Registry &, state::Entity mesh_entity);
 // The MeshEditWork destroy handler, which releases the work's geometry work ranges.
 void ReleaseMeshEditWorkRanges(state::Registry &, state::Entity mesh_entity);
 
 // Rebuild dirty mesh layouts and mark bounds and display fields for recomputation.
-void LayOutMeshes(state::Registry &, state::Entity viewport);
+void LayOutMeshes(state::Registry &);
 // The BoundsRun destroy handler, which queues the run's ranges for the settle pass to free and releases the mesh's pose namespaces.
 void ReleaseMeshLayout(state::Registry &, state::Entity mesh_entity);
 // Rederives each MeshDisplayDirty mesh's record display fields from the scene and its pose layout.
-void RefreshMeshDisplays(state::Registry &, state::Entity viewport);
+void RefreshMeshDisplays(state::Registry &);

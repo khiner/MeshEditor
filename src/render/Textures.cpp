@@ -7,6 +7,7 @@
 #include "gpu/PrefilterPushConstants.h"
 #include "image/ImageDecode.h"
 #include "metal/MetalCpp.h"
+#include "numeric/VectorMath.h"
 #include "project/Assets.h"
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
@@ -124,7 +125,7 @@ std::expected<CubemapEntry, std::string> CreateCubemapEntryFromMipFacesF32(
         const uint32_t size = std::max(1u, base_size >> mip);
         for (uint32_t face = 0; face < 6u; ++face) {
             const auto &src = mip_faces[mip][face].Pixels;
-            mtl::Upload(image, mip, as_bytes(std::span<const float>{src}), size * 4u * sizeof(float), face);
+            mtl::Upload(image, mip, BytesOf(std::span<const float>{src}), size * 4u * sizeof(float), face);
         }
     }
 
@@ -414,34 +415,24 @@ EnvironmentPrefiltered CreateIblFromHdri(
     };
 }
 
-void SetStudioEnvironment(state::Registry &r, uint32_t index) {
-    const auto &ctx = r.Context.get<const mtl::Context>();
-    auto &slots = r.Context.get<mtl::BindlessSet>();
+IblSamplers StudioIbl(state::Registry &r, std::string_view name) {
     auto &environments = r.Context.get<EnvironmentStore>();
-    auto &hdri = environments.Hdris[index];
-    if (!hdri.Prefiltered) hdri.Prefiltered = CreateIblFromHdri(ctx, slots, GetPipelines(r), hdri.Path, hdri.Name);
-    const auto &pre = *hdri.Prefiltered;
-    environments.ActiveHdriIndex = index;
-    environments.StudioWorld = {.Ibl = MakeIblSamplers(pre, environments), .Name = hdri.Name};
-}
-
-void SetStudioEnvironment(state::Registry &r, std::string_view name) {
-    const auto &hdris = r.Context.get<const EnvironmentStore>().Hdris;
+    auto &hdris = environments.Hdris;
+    if (hdris.empty()) return environments.SceneWorld.Ibl;
     const auto it = std::ranges::find(hdris, name, &HdriEntry::Name);
-    SetStudioEnvironment(r, it != hdris.end() ? uint32_t(std::distance(hdris.begin(), it)) : 0u);
+    auto &hdri = it != hdris.end() ? *it : hdris.front();
+    if (!hdri.Prefiltered) hdri.Prefiltered = CreateIblFromHdri(r.Context.get<const mtl::Context>(), r.Context.get<mtl::BindlessSet>(), GetPipelines(r), hdri.Path, hdri.Name);
+    return MakeIblSamplers(*hdri.Prefiltered, environments);
 }
 
 void RebuildStudioEnvironments(state::Registry &r) {
     auto &slots = r.Context.get<mtl::BindlessSet>();
-    auto &environments = r.Context.get<EnvironmentStore>();
-    if (environments.Hdris.empty()) return;
-    for (auto &hdri : environments.Hdris) {
+    for (auto &hdri : r.Context.get<EnvironmentStore>().Hdris) {
         if (!hdri.Prefiltered) continue;
         ReleaseCubeSamplerSlot(slots, hdri.Prefiltered->DiffuseEnv.SamplerSlot);
         ReleaseCubeSamplerSlot(slots, hdri.Prefiltered->SpecularEnv.SamplerSlot);
         hdri.Prefiltered.reset();
     }
-    SetStudioEnvironment(r, environments.ActiveHdriIndex);
 }
 
 IblSamplers MakeIblSamplers(const EnvironmentPrefiltered &pre, const EnvironmentStore &environments) {
@@ -577,11 +568,12 @@ std::vector<TextureRef> GetTextureRefs(state::Registry &r) {
     return refs;
 }
 
-HdriRefs GetHdriRefs(state::Registry &r) {
-    const auto &environments = r.Context.get<EnvironmentStore>();
-    HdriRefs refs{.ActiveIndex = environments.ActiveHdriIndex};
-    refs.Names.reserve(environments.Hdris.size());
-    for (const auto &hdri : environments.Hdris) refs.Names.emplace_back(hdri.Name);
+HdriRefs GetHdriRefs(state::Registry &r, std::string_view selected) {
+    const auto &hdris = r.Context.get<EnvironmentStore>().Hdris;
+    const auto it = std::ranges::find(hdris, selected, &HdriEntry::Name);
+    HdriRefs refs{.ActiveIndex = it != hdris.end() ? uint32_t(std::distance(hdris.begin(), it)) : 0u};
+    refs.Names.reserve(hdris.size());
+    for (const auto &hdri : hdris) refs.Names.emplace_back(hdri.Name);
     return refs;
 }
 

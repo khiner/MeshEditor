@@ -122,7 +122,7 @@ OSStatus DataCallback(
 
     auto *frames = static_cast<float *>(output->mBuffers[0].mData);
     try {
-        ProcessAudio(*res.R, res.Viewport, frames, frame_count, true);
+        ProcessAudio(*res.R, frames, frame_count, true);
 
         const float from = res.RenderGain;
         const float to = res.TargetGain.load(std::memory_order_relaxed);
@@ -187,7 +187,7 @@ AudioUnit OpenDevice(AudioDeviceResource &res, AudioDeviceID device, uint32_t sa
 
 } // namespace
 
-AudioDeviceResource::AudioDeviceResource(state::Registry &r, state::Entity viewport) : R(&r), Viewport(viewport) {}
+AudioDeviceResource::AudioDeviceResource(state::Registry &r) : R(&r) {}
 AudioDeviceResource::~AudioDeviceResource() {
     CloseDevice(*this);
 }

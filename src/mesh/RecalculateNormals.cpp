@@ -53,7 +53,7 @@ std::vector<std::vector<uint32_t>> RecalculateFaceFlips(MeshStore &meshes, const
         const auto allocate = [&](uint32_t words) { return SlotOffset{chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(words).Offset}; };
         job.Groups = uint32_t(groups.size());
         job.Tiles = uint32_t(tiles.size());
-        job.Pc = {.Connectivity = meshes.GetConnectivityRef(id), .Faces = chain.Upload(as_bytes(job.Faces)), .Groups = chain.Upload(as_bytes(groups)), .Tiles = chain.Upload(as_bytes(tiles)), .PartialCenters = allocate(4u * job.Tiles), .Centers = allocate(3u * job.Groups), .Candidates = allocate(5u * job.Tiles), .Orientations = allocate(job.Groups), .VertexSlot = meshes.Slots().Vertices, .CornerSlot = meshes.Arenas().FaceCorners.Buffer.Slot, .NormalSlot = meshes.Arenas().BaseFaceNormals.Buffer.Slot, .FaceCount = mesh.FaceCount()};
+        job.Pc = {.Connectivity = meshes.GetConnectivityRef(id), .Faces = chain.Upload(BytesOf(job.Faces)), .Groups = chain.Upload(BytesOf(groups)), .Tiles = chain.Upload(BytesOf(tiles)), .PartialCenters = allocate(4u * job.Tiles), .Centers = allocate(3u * job.Groups), .Candidates = allocate(5u * job.Tiles), .Orientations = allocate(job.Groups), .VertexSlot = meshes.Slots().Vertices, .CornerSlot = meshes.Arenas().FaceCorners.Buffer.Slot, .NormalSlot = meshes.Arenas().BaseFaceNormals.Buffer.Slot, .FaceCount = mesh.FaceCount()};
         jobs.push_back(std::move(job));
     }
     if (!source_faces) return std::vector<std::vector<uint32_t>>(ids.size());

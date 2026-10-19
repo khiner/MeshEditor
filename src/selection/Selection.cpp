@@ -40,16 +40,16 @@ state::Entity FindActiveBone(const state::Registry &r) {
     return result;
 }
 
-bool IsBoneEditMode(const state::Registry &r, state::Entity viewport) {
-    if (r.get<const Interaction>(viewport).Mode != InteractionMode::Edit) return false;
+bool IsBoneEditMode(const state::Registry &r) {
+    if (r.get<const Interaction>(state::Document).Mode != InteractionMode::Edit) return false;
     return FindArmatureObject(r, FindActiveEntity(r)) != state::Null;
 }
 
-vec3 EditSelectionCenter(const state::Registry &r, state::Entity viewport) {
-    const auto element = r.get<const EditMode>(viewport).Value;
+vec3 EditSelectionCenter(const state::Registry &r) {
+    const auto element = r.get<const EditMode>(state::Document).Value;
     vec3 center{};
     uint32_t vertex_count = 0;
-    for (const auto &[mesh_entity, instance_entity] : r.get<const EditPrimaries>(viewport).Transformable) {
+    for (const auto &[mesh_entity, instance_entity] : r.get<const EditPrimaries>(state::Document).Transformable) {
         const auto *stats = GetElementSelectionSummary(r, mesh_entity, element);
         if (!stats || stats->SelectedVertexCount == 0) continue;
         const auto &world = *WorldTransformOf(r, instance_entity);
@@ -59,25 +59,25 @@ vec3 EditSelectionCenter(const state::Registry &r, state::Entity viewport) {
     return vertex_count > 0 ? center / float(vertex_count) : center;
 }
 
-StartPivot TransformPivot(const state::Registry &r, state::Entity viewport) {
-    const auto &roots = r.get<const TransformRoots>(viewport);
+StartPivot TransformPivot(const state::Registry &r) {
+    const auto &roots = r.get<const TransformRoots>(state::Document);
     // Selection, position edits and history restore publish the persistent element aggregates the edit center reads.
-    const bool mesh_edit = r.get<const Interaction>(viewport).Mode == InteractionMode::Edit && !IsBoneEditMode(r, viewport);
-    return {mesh_edit ? EditSelectionCenter(r, viewport) : roots.PivotPosition, roots.PivotRotation};
+    const bool mesh_edit = r.get<const Interaction>(state::Document).Mode == InteractionMode::Edit && !IsBoneEditMode(r);
+    return {mesh_edit ? EditSelectionCenter(r) : roots.PivotPosition, roots.PivotRotation};
 }
 
-bool CanDuplicate(const state::Registry &r, state::Entity viewport) {
-    if (r.get<const Interaction>(viewport).Mode == InteractionMode::Pose) return false;
-    if (IsBoneEditMode(r, viewport)) return !r.view<BoneSelection>().empty();
+bool CanDuplicate(const state::Registry &r) {
+    if (r.get<const Interaction>(state::Document).Mode == InteractionMode::Pose) return false;
+    if (IsBoneEditMode(r)) return !r.view<BoneSelection>().empty();
     return !r.view<Selected>().empty();
 }
-bool CanDuplicateLinked(const state::Registry &r, state::Entity viewport) { return CanDuplicate(r, viewport) && !IsBoneEditMode(r, viewport); }
-bool CanDelete(const state::Registry &r, state::Entity viewport) { return CanDuplicate(r, viewport); }
+bool CanDuplicateLinked(const state::Registry &r) { return CanDuplicate(r) && !IsBoneEditMode(r); }
+bool CanDelete(const state::Registry &r) { return CanDuplicate(r); }
 
-std::vector<ElementRange> GetElementRangesForSelected(const state::Registry &r, state::Entity viewport) {
-    const auto element = r.get<const EditMode>(viewport).Value;
+std::vector<ElementRange> GetElementRangesForSelected(const state::Registry &r) {
+    const auto element = r.get<const EditMode>(state::Document).Value;
     std::vector<ElementRange> ranges;
-    for (const auto mesh_entity : r.get<const SelectionFlags>(viewport).Meshes) {
+    for (const auto mesh_entity : r.get<const SelectionFlags>(state::Document).Meshes) {
         if (!r.all_of<MeshElementSelection>(mesh_entity)) continue;
         const auto mesh = GetDrawnMesh(r, mesh_entity);
         if (const auto count = mesh.ElementCount(element); count > 0) {

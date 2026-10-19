@@ -28,16 +28,15 @@ void BenchScene(uint32_t slices, bool render) {
     Engine engine{true};
     auto &r = engine.R;
     auto &p = *engine.P;
-    const auto viewport = engine.Viewport;
     expect(p.Begin(dir));
-    engine.R.Context.get<ViewportExtent>().Value = {128, 128};
+    engine.R.Context.get<Viewports>().All.front().State.Extent = {128, 128};
     p.Settle();
     p.Do(action::MakeAction(action::object::AddMeshPrimitive{primitive::UVSphere{.Slices = slices, .Stacks = slices / 2}, std::make_unique<MeshInstanceCreateInfo>()}));
     p.Do(action::MakeAction(action::view::SetInteractionMode{InteractionMode::Edit}));
     p.Do(action::MakeAction(action::selection::SelectAll{}));
     const auto finish_frame = [&] {
         if (render) {
-            SubmitViewport(r, viewport);
+            SubmitViewports(r);
             WaitForRender(r);
         }
     };
@@ -107,7 +106,7 @@ int main() {
         for (uint64_t i = 0; i < 30; ++i) {
             const uint64_t value = 1000000 + i;
             commits.push_back(Ms([&] {
-                buffer.Update(as_bytes(value));
+                buffer.Update(BytesOf(value));
                 history.Commit("eight bytes", {});
             }));
         }

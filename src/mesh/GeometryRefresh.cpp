@@ -63,7 +63,7 @@ std::vector<FaceTriangles> RetessellateMeshes(state::Registry &r, mtl::ComputeCh
     std::vector<ElementWork> changed;
     uint64_t faces = 0u, corners = 0u;
     for (auto &job : jobs) {
-        job.Pc.Faces = chain.Upload(as_bytes(job.Faces));
+        job.Pc.Faces = chain.Upload(BytesOf(job.Faces));
         job.Pc.Scratch = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(4u * job.Corners).Offset};
         job.Pc.ChangedTriangles = AllocateElementWork(chain.Scratch, a.Triangles.HandleBound(meshes.Get(inputs[job.Index].StoreId).TriangleData), job.TriangleBlocks);
         changed.push_back(job.Pc.ChangedTriangles);

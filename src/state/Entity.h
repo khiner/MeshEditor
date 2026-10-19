@@ -4,6 +4,8 @@
 namespace state {
 enum class Entity : uint32_t {};
 inline constexpr Entity Null = Entity{UINT32_MAX};
+// Entity zero holds the document components and is the first allocation after every Reset.
+inline constexpr Entity Document = Entity{0};
 constexpr uint32_t Integral(Entity e) { return uint32_t(e); }
 constexpr uint32_t Index(Entity e) { return uint32_t(e) & 0xfffffu; }
 constexpr uint32_t Generation(Entity e) { return uint32_t(e) >> 20; }

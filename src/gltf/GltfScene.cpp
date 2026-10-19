@@ -29,6 +29,7 @@
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
 #include "timeline/Timeline.h"
+#include "viewport/ViewportEvents.h"
 
 #include "meshoptimizer.h"
 
@@ -2122,7 +2123,7 @@ void ApplySourceVisibility(state::Registry &r, const fastgltf::Asset &asset, con
 
 // Allocates morph weights, then parses every channel into per-entity clips of the scene animations appended for this asset.
 // Returns whether any channel was imported.
-bool ImportAnimations(state::Registry &r, const fastgltf::Asset &asset, state::Entity viewport, const ImportedObjects &objects, std::span<const state::Entity> armature_objects, std::span<const uint32_t> material_index_by_source, std::optional<uint32_t> image_light) {
+bool ImportAnimations(state::Registry &r, const fastgltf::Asset &asset, const ImportedObjects &objects, std::span<const state::Entity> armature_objects, std::span<const uint32_t> material_index_by_source, std::optional<uint32_t> image_light) {
     // Joint nodes drive the bone entity of every armature owning them.
     struct BoneTarget {
         state::Entity Entity;
@@ -2219,11 +2220,11 @@ bool ImportAnimations(state::Registry &r, const fastgltf::Asset &asset, state::E
                 if (index < material_index_by_source.size()) {
                     auto target = row->Target;
                     target.Index = uint16_t(material_index_by_source[index]);
-                    targets.emplace_back(viewport, target);
+                    targets.emplace_back(state::Document, target);
                 }
                 break;
             case gltf::PointerSpace::ImageLight:
-                if (image_light && index == *image_light) targets.emplace_back(viewport, row->Target);
+                if (image_light && index == *image_light) targets.emplace_back(state::Document, row->Target);
                 break;
             case gltf::PointerSpace::Camera:
             case gltf::PointerSpace::Light: {
@@ -2242,7 +2243,7 @@ bool ImportAnimations(state::Registry &r, const fastgltf::Asset &asset, state::E
         return targets;
     };
 
-    auto &animations = r.get_or_emplace<Animations>(viewport);
+    auto &animations = r.get_or_emplace<Animations>(state::Document);
     const bool had_animations = !animations.Names.empty();
     bool any = false;
     for (const auto &anim : asset.animations) {
@@ -2290,7 +2291,7 @@ bool ImportAnimations(state::Registry &r, const fastgltf::Asset &asset, state::E
         any = true;
     }
     if (!had_animations) animations.Active = 0;
-    if (const float end = animation::LastKeySeconds(r); end > 0) r.patch<TimelineRange>(viewport, [&](auto &range) { range.EndFrame = int(std::ceil(end * range.Fps)); });
+    if (const float end = animation::LastKeySeconds(r); end > 0) r.patch<TimelineRange>(state::Document, [&](auto &range) { range.EndFrame = int(std::ceil(end * range.Fps)); });
     return any;
 }
 
@@ -2324,7 +2325,7 @@ void ImportScenes(state::Registry &r, const fastgltf::Asset &asset, uint32_t sce
 
 std::expected<fastgltf::Asset, LoadError> ParseGltfAsset(const std::filesystem::path &path) { return ParseAsset(path); }
 
-std::expected<LoadResult, LoadError> LoadGltf(const std::filesystem::path &source_path, state::Registry &r, state::Entity viewport) {
+std::expected<LoadResult, LoadError> LoadGltf(const std::filesystem::path &source_path, state::Registry &r) {
     const profile::CpuScope scope{"LoadGltf"};
 
     // Parse and validate everything that can fail before the first entity or store write.
@@ -2364,9 +2365,9 @@ std::expected<LoadResult, LoadError> LoadGltf(const std::filesystem::path &sourc
         ::MaterialVariants mv;
         mv.Names.reserve(asset.materialVariants.size());
         for (const auto &v : asset.materialVariants) mv.Names.emplace_back(v);
-        r.emplace_or_replace<::MaterialVariants>(viewport, std::move(mv));
+        r.emplace_or_replace<::MaterialVariants>(state::Document, std::move(mv));
     } else {
-        r.remove<::MaterialVariants>(viewport);
+        r.remove<::MaterialVariants>(state::Document);
     }
     auto materials = ImportMaterials(r, asset, *source_assets, source_materials.Materials);
     const auto mesh_entities = ImportMeshes(r, source_meshes, materials.IndexByGltfMaterial);
@@ -2378,9 +2379,9 @@ std::expected<LoadResult, LoadError> LoadGltf(const std::filesystem::path &sourc
     const auto image_light = ToIndex(asset.scenes[scene_index].imageBasedLightIndex, asset.imageBasedLights.size());
     if (image_light) {
         const auto &src_ibl = asset.imageBasedLights[*image_light];
-        r.emplace_or_replace<ImageLight>(viewport, ImageLight{Normalize(std::bit_cast<quat>(src_ibl.rotation)), std::max(0.f, src_ibl.intensity)});
+        r.emplace_or_replace<ImageLight>(state::Document, ImageLight{Normalize(std::bit_cast<quat>(src_ibl.rotation)), std::max(0.f, src_ibl.intensity)});
     }
-    const bool imported_animation = ImportAnimations(r, asset, viewport, objects, armatures.Objects, materials.IndexByGltfMaterial, image_light);
+    const bool imported_animation = ImportAnimations(r, asset, objects, armatures.Objects, materials.IndexByGltfMaterial, image_light);
 
     auto &environments = r.Context.get<EnvironmentStore>();
     if (const auto &source_ibl = source_assets->ImageBasedLight) {
@@ -2391,8 +2392,7 @@ std::expected<LoadResult, LoadError> LoadGltf(const std::filesystem::path &sourc
         environments.ClearRequested = true;
     }
     // Import-time UX default: show an imported world, hide the (empty) default world.
-    // Kept out of the reactive world passes so a snapshot restore reproduces the saved WorldOpacity rather than re-forcing this.
-    if (r.all_of<RenderedLighting>(viewport)) r.patch<RenderedLighting>(viewport, [&](auto &l) { l.Value.WorldOpacity = source_assets->ImageBasedLight ? 1.f : 0.f; });
+    r.get_or_emplace<PendingViewSetup>(state::Document).WorldOpacity = source_assets->ImageBasedLight ? 1.f : 0.f;
 
     // The document's scenes come from its first glTF import.
     // A later import brings its default scene's nodes without scene membership.
@@ -2408,10 +2408,10 @@ std::expected<LoadResult, LoadError> LoadGltf(const std::filesystem::path &sourc
         SelectObjects(r, std::move(selected));
     }
     if (!materials.Textures.empty()) {
-        auto &manifest = r.get_or_emplace<MaterializedTextures>(viewport);
+        auto &manifest = r.get_or_emplace<MaterializedTextures>(state::Document);
         manifest.Items.insert(manifest.Items.end(), std::make_move_iterator(materials.Textures.begin()), std::make_move_iterator(materials.Textures.end()));
     }
-    r.emplace_or_replace<SourceAssets>(viewport, std::move(*source_assets));
+    r.emplace_or_replace<SourceAssets>(state::Document, std::move(*source_assets));
 
     return LoadResult{.FirstCameraObject = objects.FirstCamera, .ImportedAnimation = imported_animation};
 }

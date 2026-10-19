@@ -140,7 +140,6 @@ mesheditor_library(MeshEditorScene HOT
     src/viewport/RenderExtent.cpp
     src/viewport/ViewCamera.cpp
     src/viewport/ViewCameraOps.cpp
-    src/viewport/ViewportDisplay.cpp
 )
 
 mesheditor_library(MeshEditorRender HOT
@@ -243,6 +242,7 @@ mesheditor_library(MeshEditorEditor COLD
     src/procedure/Cook.cpp
     ${native_snapshots}
     src/snapshot/SnapshotRoles.cpp
+    src/VideoRecorder.cpp
     src/viewport/Viewport.cpp
     src/viewport/ViewportOps.cpp
 )
@@ -251,7 +251,6 @@ set_property(SOURCE src/ProcessEvents.cpp src/action/View.cpp APPEND PROPERTY CO
 
 mesheditor_library(MeshEditorUi COLD
     src/project/HistoryUi.cpp
-    src/VideoRecorder.cpp
     src/WorkspaceState.cpp
     src/timeline/TimelineUi.cpp
     src/audio/AudioDeviceUi.cpp

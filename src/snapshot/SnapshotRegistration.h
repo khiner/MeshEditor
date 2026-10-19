@@ -45,8 +45,7 @@ void SerializeThunk(const void *component, std::vector<std::byte> &out) {
     // Vector capacity handles allocation growth.
     zpp::bits::out archive{out, zpp::bits::exact_enlarger{}};
     archive.reset(start);
-    // zpp aggregate reflection mis-encodes large const aggregates, while the output archive only reads this reference.
-    const auto result = archive(const_cast<C &>(*static_cast<const C *>(component)));
+    const auto result = archive(*static_cast<const C *>(component));
     out.resize(zpp::bits::failure(result) ? start : archive.position());
 }
 

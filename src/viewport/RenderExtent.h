@@ -2,8 +2,10 @@
 
 #include "numeric/uvec2.h"
 
-#include "state/Entity.h"
-
 using numeric::uvec2;
 
-uvec2 RenderExtentPx(const state::Registry &);
+struct FrameState;
+struct Viewport;
+
+// The viewport's extent in render target pixels.
+uvec2 RenderExtentPx(const Viewport &, const FrameState &);

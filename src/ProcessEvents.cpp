@@ -85,28 +85,24 @@ vec3 ComputeElementWorldPosition(const state::Registry &r, state::Entity instanc
     return {wt.P + Rotate(wt.R, wt.S * ComputeElementLocalPosition(mesh, element, handle, canonical))};
 }
 
-void SetEditMode(state::Registry &r, state::Entity viewport, Element mode) {
-    const auto current_mode = r.get<const EditMode>(viewport).Value;
+void SetEditMode(state::Registry &r, Element mode) {
+    const auto current_mode = r.get<const EditMode>(state::Document).Value;
     if (current_mode == mode) return;
 
     // Convert edit-mode selections now and other selections on their next edit-mode entry.
     std::vector<state::Entity> editing;
-    if (r.get<const Interaction>(viewport).Mode == InteractionMode::Edit) {
-        for (const auto mesh_entity : r.get<const SelectionFlags>(viewport).Meshes) {
+    if (r.get<const Interaction>(state::Document).Mode == InteractionMode::Edit) {
+        for (const auto mesh_entity : r.get<const SelectionFlags>(state::Document).Meshes) {
             if (r.all_of<MeshElementSelection>(mesh_entity)) editing.emplace_back(mesh_entity);
         }
     }
-    r.patch<EditMode>(viewport, [mode](auto &edit_mode) { edit_mode.Value = mode; });
+    r.patch<EditMode>(state::Document, [mode](auto &edit_mode) { edit_mode.Value = mode; });
     ConvertElementSelections(r, editing, mode);
 }
 
-uint64_t MeshDisplaySettings(const ViewportDisplay &d) {
-    return uint64_t(d.ShowOverlays) | uint64_t(d.Overlays.Bones) << 1u | uint64_t(d.Selection.BoundingBoxes) << 2u | uint64_t(d.Selection.VertexNormals) << 8u | uint64_t(d.Selection.FaceNormals) << 9u | uint64_t(d.ViewportShading) << 16u;
-}
-
 // Count visible silhouette instances, excluding primary edit instances.
-void UpdateSilhouetteWork(state::Registry &r, state::Entity viewport) {
-    const auto &primaries = r.get<const EditPrimaries>(viewport).All;
+void UpdateSilhouetteWork(state::Registry &r) {
+    const auto &primaries = r.get<const EditPrimaries>(state::Document).All;
     auto &buffers = r.Context.get<GpuBuffers>();
     const auto &meshes = r.Context.get<const MeshStore>();
     GpuBuffers::MeshletFlagWork work{};
@@ -122,11 +118,13 @@ void UpdateSilhouetteWork(state::Registry &r, state::Entity viewport) {
 } // namespace
 
 void RequestRender(state::Registry &r, bool disoccludes) {
-    r.Context.get<PendingRenderRequest>().Value = true;
-    if (disoccludes) r.Context.get<GpuBuffers>().MeshletOcclusionStale = true;
+    for (auto &viewport : r.Context.get<Viewports>().All) {
+        viewport.RenderRequested = true;
+        if (disoccludes) viewport.OcclusionStale = true;
+    }
 }
 
-void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPass pass) {
+void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     const bool rendering = pass == EventPass::Sample || pass == EventPass::Render;
     const auto &ctx = r.Context.get<const mtl::Context>();
     auto &slots = r.Context.get<mtl::BindlessSet>();
@@ -135,7 +133,7 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
     auto &render = meshes.Render();
     auto &textures = r.Context.get<TextureStore>();
     auto &environments = r.Context.get<EnvironmentStore>();
-    auto &targets = r.Context.get<RenderTargets>();
+    auto &viewports = r.Context.get<Viewports>();
     const auto &selection_changes = r.Context.get<const SelectionChanges>();
     const auto &viewport_changes = r.Context.get<const ViewportChanges>();
     const auto &scene_changes = r.Context.get<const SceneChanges>();
@@ -159,12 +157,11 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
     // End: every value the frame reads.
     const auto end = [&] { chain.Submit(); };
 
-    auto &pending_render = r.Context.get<PendingRenderRequest>().Value;
     const auto request = [&r](bool disoccludes = true) { RequestRender(r, disoccludes); };
 
     std::unordered_set<state::Entity> bone_state_dirty;
 
-    ProcessObjectRemovals(r, viewport);
+    ProcessObjectRemovals(r);
 
     // Preserve flat shading when regenerating primitives.
     // History restores their meshes directly.
@@ -190,11 +187,11 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
     }
     // Replan restored procedures without regenerating their restored outputs.
     SettleProcedures(r, pass == EventPass::Frame || pass == EventPass::Settle);
-    ProcessObjectRemovals(r, viewport);
-
-    // Resize render resources before the pick handlers below resolve against the rendered scene.
-    const bool resized = SyncViewportRenderResources(r, viewport);
-    if (resized) request();
+    ProcessObjectRemovals(r);
+    // The records derive from the display settings the visible viewports share.
+    auto &scene_state = r.Context.get<GpuSceneState>();
+    const auto displays = VisibleDisplays(viewports);
+    const bool displays_changed = std::exchange(scene_state.Displays, displays) != displays;
 
     const bool recompiled = std::exchange(r.Context.get<FrameState>().RecompileShaders, false);
     if (recompiled) {
@@ -208,7 +205,7 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
 
     // Restore texture data into free recorded slots while preserving textures materialized during import.
     if (!render_changes.MaterializedTextures.empty()) {
-        if (const auto *manifest = r.try_get<const MaterializedTextures>(viewport)) {
+        if (const auto *manifest = r.try_get<const MaterializedTextures>(state::Document)) {
             for (const auto &t : manifest->Items) {
                 if (!slots.Reserve(SlotType::Sampler, t.SamplerSlot)) continue;
                 textures.PendingUploads.emplace_back(PendingTextureUpload{.SamplerSlot = t.SamplerSlot, .Source = PendingTextureUpload::GltfImageRef{t.SourceImageIndex}, .Params = t.Params});
@@ -216,7 +213,7 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
         }
     }
     if (!textures.PendingUploads.empty()) {
-        const auto *src = r.try_get<const gltf::SourceAssets>(viewport);
+        const auto *src = r.try_get<const gltf::SourceAssets>(state::Document);
         static const std::vector<gltf::Image> empty_images;
         const auto &gltf_images = src ? src->Images : empty_images;
         TextureUploadBatch batch{ctx};
@@ -234,7 +231,7 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
     }
     // Rebuild restored EXT-IBL scene resources after a document clear releases their prefiltered cubemap.
     if (!render_changes.SceneWorld.empty()) {
-        const auto *src = r.try_get<const gltf::SourceAssets>(viewport);
+        const auto *src = r.try_get<const gltf::SourceAssets>(state::Document);
         if (src && src->ImageBasedLight && !environments.ImportedSceneWorld && !environments.PendingImport) {
             const auto [diffuse_slot, specular_slot] = AllocateIblCubeSlots(slots);
             environments.PendingImport = PendingEnvironmentImport{*src->ImageBasedLight, diffuse_slot, specular_slot};
@@ -244,7 +241,7 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
     // Cancel a stale pending EXT-IBL import before applying a later scene-world clear.
     if (environments.ClearRequested) Reset(environments, r);
     if (auto &pending_env = environments.PendingImport) {
-        if (const auto *src = r.try_get<const gltf::SourceAssets>(viewport)) {
+        if (const auto *src = r.try_get<const gltf::SourceAssets>(state::Document)) {
             auto pre = MaterializeEnvironmentImport(r, slots, *pending_env, src->Images);
             if (pre) {
                 auto &env = environments;
@@ -262,46 +259,44 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
         }
         pending_env.reset();
     }
-    if (!viewport_changes.StudioEnvironment.empty()) {
-        SetStudioEnvironment(r, r.get<const StudioEnvironment>(viewport).Name);
-    }
-
     // Process pending handlers before consuming the reactive trackers they update.
-    if (const auto *pending = r.try_get<const PendingSetEditMode>(viewport)) {
+    if (const auto *pending = r.try_get<const PendingSetEditMode>(state::Document)) {
         const auto mode = pending->Mode;
-        r.remove<PendingSetEditMode>(viewport);
-        SetEditMode(r, viewport, mode);
+        r.remove<PendingSetEditMode>(state::Document);
+        SetEditMode(r, mode);
     }
-    if (const auto *pending = r.try_get<PendingImportMesh>(viewport)) {
+    if (const auto *pending = r.try_get<PendingImportMesh>(state::Document)) {
         const auto path = pending->Path;
         auto info = pending->Info;
-        r.remove<PendingImportMesh>(viewport);
-        if (const auto imported = ImportMesh(r, viewport, path, std::move(info)); !imported) action::Fail(r, imported.error());
+        r.remove<PendingImportMesh>(state::Document);
+        if (const auto imported = ImportMesh(r, path, std::move(info)); !imported) action::Fail(r, imported.error());
     }
-    // Use the rendered camera for selection, culling, and LOD.
-    const auto prepare_selection = [&](const RenderView &view) {
-        auto &frame_view = *reinterpret_cast<SceneViewUBO *>(buffers.SceneViewUBO.Contents().data());
-        buffers.FrameView = view;
-        view.ApplyTo(frame_view);
+    // A gesture resolves against the viewport it was emitted in, with its targets sized and the rendered camera it saw, which selection, culling and LOD use.
+    const auto gesture_viewport = [&](uint32_t id, const RenderView &view) -> Viewport & {
+        auto *found = viewports.Find(id);
+        auto &viewport = found ? *found : viewports.All.front();
+        if (SyncViewportRenderResources(r, viewport)) viewport.RenderRequested = viewport.OcclusionStale = true;
+        WriteViewUniforms(r, viewport, view);
         // Submit restored geometry and draw records before selection.
-        if (pending_render) {
+        if (viewport.RenderRequested) {
             RecordAndSubmitFrame(r, viewport, RenderPhase::Prepare);
             WaitForRender(r);
         }
+        return viewport;
     };
-    const auto target_px = [&](vec2 fraction) {
-        const auto extent = RenderExtentPx(r);
+    const auto target_px = [&](const Viewport &viewport, vec2 fraction) {
+        const auto extent = RenderExtentPx(viewport, r.Context.get<const FrameState>());
         const auto last = Max(extent, uvec2{1}) - uvec2{1};
         return Min(uvec2{std::lround(fraction.x * float(extent.x)), std::lround(fraction.y * float(extent.y))}, last);
     };
-    if (const auto *pending = r.try_get<const PendingEditElementClick>(viewport)) {
-        const auto mouse_px = target_px(pending->Mouse);
+    if (const auto *pending = r.try_get<const PendingEditElementClick>(state::Document)) {
+        const auto &viewport = gesture_viewport(pending->ViewportId, pending->View);
+        const auto mouse_px = target_px(viewport, pending->Mouse);
         const bool toggle = pending->Toggle;
-        prepare_selection(pending->View);
-        r.remove<PendingEditElementClick>(viewport);
+        r.remove<PendingEditElementClick>(state::Document);
 
-        const auto edit_mode = r.get<const EditMode>(viewport).Value;
-        const auto ranges = GetElementRangesForSelected(r, viewport);
+        const auto edit_mode = r.get<const EditMode>(state::Document).Value;
+        const auto ranges = GetElementRangesForSelected(r);
         const auto hit = RunEditElementClick(r, viewport, ranges, edit_mode, mouse_px, toggle);
         if (!toggle) {
             for (const auto &range : ranges) r.remove<MeshActiveElement>(range.MeshEntity);
@@ -313,33 +308,33 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
             else r.emplace_or_replace<MeshActiveElement>(mesh_entity, summary.ActiveHandle);
         }
     }
-    if (const auto *pending = r.try_get<const PendingBoxSelect>(viewport)) {
-        const auto box_px = std::pair{target_px(pending->Box.first), target_px(pending->Box.second)};
+    if (const auto *pending = r.try_get<const PendingBoxSelect>(state::Document)) {
+        const auto &viewport = gesture_viewport(pending->ViewportId, pending->View);
+        const auto box_px = std::pair{target_px(viewport, pending->Box.first), target_px(viewport, pending->Box.second)};
         const bool additive = pending->Additive;
-        prepare_selection(pending->View);
-        r.remove<PendingBoxSelect>(viewport);
+        r.remove<PendingBoxSelect>(state::Document);
 
-        const auto &interaction = r.get<const Interaction>(viewport);
+        const auto &interaction = r.get<const Interaction>(state::Document);
         const bool element_mode = interaction.Mode == InteractionMode::Edit && FindArmatureObject(r, FindActiveEntity(r)) == state::Null;
         // Capture the initial selection once for additive box selection.
-        if (additive && !r.all_of<AdditiveBoxSelectBaseline>(viewport)) {
-            auto &baseline = r.emplace<AdditiveBoxSelectBaseline>(viewport);
-            if (interaction.Mode == InteractionMode::Pose || IsBoneEditMode(r, viewport)) {
+        if (additive && !r.all_of<AdditiveBoxSelectBaseline>(state::Document)) {
+            auto &baseline = r.emplace<AdditiveBoxSelectBaseline>(state::Document);
+            if (interaction.Mode == InteractionMode::Pose || IsBoneEditMode(r)) {
                 for (const auto e : r.view<BoneSelection>()) baseline.BoneSelections.emplace_back(e, r.get<BoneSelection>(e));
             } else if (!element_mode) {
                 for (const auto e : r.view<Selected>()) baseline.SelectedEntities.emplace_back(e);
             }
         }
         if (element_mode) {
-            const auto ranges = GetElementRangesForSelected(r, viewport);
+            const auto ranges = GetElementRangesForSelected(r);
             if (!additive) {
                 for (const auto &range : ranges) r.remove<MeshActiveElement>(range.MeshEntity);
             }
-            RunBoxSelectElements(r, viewport, ranges, r.get<const EditMode>(viewport).Value, box_px, additive);
+            RunBoxSelectElements(r, viewport, ranges, r.get<const EditMode>(state::Document).Value, box_px, additive);
         } else {
-            const bool bone_mode = interaction.Mode == InteractionMode::Pose || IsBoneEditMode(r, viewport);
+            const bool bone_mode = interaction.Mode == InteractionMode::Pose || IsBoneEditMode(r);
             const auto hits = ResolveHits(r, RunBoxSelect(r, viewport, box_px), bone_mode, true);
-            const auto *baseline = additive ? r.try_get<const AdditiveBoxSelectBaseline>(viewport) : nullptr;
+            const auto *baseline = additive ? r.try_get<const AdditiveBoxSelectBaseline>(state::Document) : nullptr;
             // Union the hits with the baseline selection and update only entities whose selection changes.
             state::DirtySet target;
             if (bone_mode) {
@@ -389,22 +384,22 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
             }
         }
     }
-    if (const auto *pending = r.try_get<const PendingPick>(viewport)) {
-        const auto mouse_px = target_px(pending->Mouse);
+    if (const auto *pending = r.try_get<const PendingPick>(state::Document)) {
+        const auto &viewport = gesture_viewport(pending->ViewportId, pending->View);
+        const auto mouse_px = target_px(viewport, pending->Mouse);
         const bool shift = pending->Shift, cycle = pending->Cycle;
-        prepare_selection(pending->View);
-        r.remove<PendingPick>(viewport);
+        r.remove<PendingPick>(state::Document);
 
-        const bool bone_mode = r.get<const Interaction>(viewport).Mode == InteractionMode::Pose || IsBoneEditMode(r, viewport);
+        const bool bone_mode = r.get<const Interaction>(state::Document).Mode == InteractionMode::Pose || IsBoneEditMode(r);
         const auto active = bone_mode ? FindActiveBone(r) : FindActiveEntity(r);
-        const auto logical_extent = r.Context.get<ViewportExtent>().Value;
-        const auto render_extent = RenderExtentPx(r);
+        const auto logical_extent = viewport.State.Extent;
+        const auto render_extent = RenderExtentPx(viewport, r.Context.get<const FrameState>());
         const float render_scale = std::max(
             logical_extent.x > 0u ? float(render_extent.x) / float(logical_extent.x) : 1.f,
             logical_extent.y > 0u ? float(render_extent.y) / float(logical_extent.y) : 1.f
         );
         const auto radius = std::max(1u, uint32_t(std::lround(float(ObjectSelectRadiusPx) * render_scale)));
-        const auto hits = ResolveHits(r, RunObjectPick(r, mouse_px, radius), bone_mode);
+        const auto hits = ResolveHits(r, RunObjectPick(r, viewport, mouse_px, radius), bone_mode);
         const auto pick = hits.empty() ? std::optional<SelectionHit>{} : [&]() -> std::optional<SelectionHit> {
             if (!cycle) return hits.front();
             const auto *bs = r.try_get<const BoneSelection>(active);
@@ -413,13 +408,13 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
         }();
         using namespace action::selection;
         if (pick && shift) {
-            if (active == pick->Entity && !bone_mode) Apply(r, viewport, ToggleSelected{pick->Entity});
-            else if (bone_mode) Apply(r, viewport, ExtendBoneActive{pick->Entity, pick->Part, true});
-            else Apply(r, viewport, ExtendActive{pick->Entity});
+            if (active == pick->Entity && !bone_mode) Apply(r, ToggleSelected{pick->Entity});
+            else if (bone_mode) Apply(r, ExtendBoneActive{pick->Entity, pick->Part, true});
+            else Apply(r, ExtendActive{pick->Entity});
         } else if (pick || !shift) {
-            if (pick && bone_mode) Apply(r, viewport, action::selection::SelectBone{pick->Entity, pick->Part, false});
-            else if (pick) Apply(r, viewport, action::selection::Select{pick->Entity});
-            else Apply(r, viewport, DeselectAll{});
+            if (pick && bone_mode) Apply(r, action::selection::SelectBone{pick->Entity, pick->Part, false});
+            else if (pick) Apply(r, action::selection::Select{pick->Entity});
+            else Apply(r, DeselectAll{});
         }
     }
 
@@ -427,9 +422,9 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
     bool anim_advanced;
     int evaluated_from;
     {
-        const auto &range = r.get<const TimelineRange>(viewport);
-        const auto &playback = r.get<const TimelinePlayback>(viewport);
-        auto &pf = r.edit<PlaybackFrame>(viewport).Value;
+        const auto &range = r.get<const TimelineRange>(state::Document);
+        const auto &playback = r.get<const TimelinePlayback>(state::Document);
+        auto &pf = r.edit<PlaybackFrame>(state::Document).Value;
         auto &frame_state = r.Context.get<FrameState>();
         anim_advanced = [&] {
             if (pass == EventPass::Restore) {
@@ -438,30 +433,30 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
             }
             if (rendering) return false;
             // A frame set by an action shows for one tick before playback advances.
-            if (playback.Playing && pass == EventPass::Frame && playback.CurrentFrame == r.get<const LastEvaluatedFrame>(viewport).Value) {
+            if (playback.Playing && pass == EventPass::Frame && playback.CurrentFrame == r.get<const LastEvaluatedFrame>(state::Document).Value) {
                 const float step = frame_state.FixedFrameStep ? 1.f : frame_state.DeltaTime * range.Fps;
                 pf += playback.Reverse ? -step : step;
                 if (pf > float(range.EndFrame)) pf = float(range.StartFrame);
                 else if (pf < float(range.StartFrame)) pf = float(range.EndFrame);
                 const auto new_frame = int(std::floor(pf));
-                if (new_frame != playback.CurrentFrame) r.patch<TimelinePlayback>(viewport, [&](auto &p) { p.CurrentFrame = new_frame; });
+                if (new_frame != playback.CurrentFrame) r.patch<TimelinePlayback>(state::Document, [&](auto &p) { p.CurrentFrame = new_frame; });
             } else if (!playback.Playing) {
                 pf = float(playback.CurrentFrame);
             }
-            return playback.CurrentFrame != r.edit<LastEvaluatedFrame>(viewport).Value || !animation_changes.Edited.empty();
+            return playback.CurrentFrame != r.edit<LastEvaluatedFrame>(state::Document).Value || !animation_changes.Edited.empty();
         }();
 
-        evaluated_from = r.edit<LastEvaluatedFrame>(viewport).Value;
+        evaluated_from = r.edit<LastEvaluatedFrame>(state::Document).Value;
         // Re-evaluate animation after restoring the frame, animation data, or a pose seed transform.
         const bool restore_poses = pass == EventPass::Restore &&
             (playback.CurrentFrame != evaluated_from || AnyChanged(animation_changes.Edited, scene_changes.TransformDirty));
-        if (anim_advanced || pass == EventPass::Restore) r.edit<LastEvaluatedFrame>(viewport).Value = playback.CurrentFrame;
+        if (anim_advanced || pass == EventPass::Restore) r.edit<LastEvaluatedFrame>(state::Document).Value = playback.CurrentFrame;
         // Convert 1-based display frames to animation time and preserve fractional motion-blur samples.
         const float frame_seconds = float(std::max(0, playback.CurrentFrame - 1)) / range.Fps;
         const float eval_seconds = pass == EventPass::Sample ? std::max(0.f, pf - 1.f) / range.Fps : frame_seconds;
 
         // A restore rebuilds only the derived node poses, since history restores every other animated value.
-        if (anim_advanced || rendering || restore_poses) animation::Evaluate(r, viewport, eval_seconds, pass != EventPass::Restore);
+        if (anim_advanced || rendering || restore_poses) animation::Evaluate(r, eval_seconds, pass != EventPass::Restore);
         // Request a frame even when playback leaves animated values unchanged.
         if (anim_advanced) request();
     }
@@ -471,7 +466,7 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
     auto sync = SyncModelsBuffers(r);
     if (sync.SlotsChanged) {
         request();
-        for (const auto &[mesh_entity, _] : r.get<const EditPrimaries>(viewport).All) r.emplace_or_replace<MeshDisplayDirty>(mesh_entity);
+        for (const auto &[mesh_entity, _] : r.get<const EditPrimaries>(state::Document).All) r.emplace_or_replace<MeshDisplayDirty>(mesh_entity);
     }
     if (!sync.NewlyInserted.empty()) {
         const auto records = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>();
@@ -577,7 +572,6 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
         request();
     }
 
-    auto &scene_state = r.Context.get<GpuSceneState>();
     { // Register changed and shown lights into the GPU Lights buffer, the single path for both new and restored lights.
         bool synced = false;
         for (const auto entity : render_changes.PunctualLight) {
@@ -603,7 +597,7 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
                     scene_state.OverlayJobsDirty = true;
                 }
             }
-            buffers.Lights.Update(as_bytes(gpu_light), uint64_t(index) * sizeof(LightRecord));
+            buffers.Lights.Update(BytesOf(gpu_light), uint64_t(index) * sizeof(LightRecord));
             synced = true;
         }
         if (synced) request();
@@ -637,24 +631,24 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
 
     // Commit mesh edit transforms after StartTransform is cleared.
     if (!viewport_changes.TransformEnd.empty()) {
-        if (r.get<const Interaction>(viewport).Mode == InteractionMode::Edit && FindArmatureObject(r, FindActiveEntity(r)) == state::Null) {
-            if (const auto *pending = r.try_get<const PendingTransform>(viewport); pending && pending->Delta != Transform{}) {
+        if (r.get<const Interaction>(state::Document).Mode == InteractionMode::Edit && FindArmatureObject(r, FindActiveEntity(r)) == state::Null) {
+            if (const auto *pending = r.try_get<const PendingTransform>(state::Document); pending && pending->Delta != Transform{}) {
                 // Evaluate final edits before geometry and physics updates.
                 // Preserve scale-locked geometry and record procedure transforms in their nodes.
                 std::unordered_set<state::Entity> scale_locked;
                 for (const auto [_, instance] : r.view<const Instance, const ScaleLocked>().each()) scale_locked.insert(instance.Entity);
                 std::vector<state::Entity> commit_meshes;
-                for (const auto &[mesh_entity, instance_entity] : r.get<const EditPrimaries>(viewport).Transformable) {
+                for (const auto &[mesh_entity, instance_entity] : r.get<const EditPrimaries>(state::Document).Transformable) {
                     if (!scale_locked.contains(mesh_entity) && !r.all_of<procedure::GeometryProcedure>(mesh_entity)) commit_meshes.push_back(mesh_entity);
                 }
-                const auto committed = CommitPosedGeometry(r, chain, viewport, commit_meshes);
+                const auto committed = CommitPosedGeometry(r, chain, commit_meshes);
                 if (!committed.empty()) construct();
                 for (const auto mesh_entity : PublishEditedPositions(r, chain, committed)) {
                     r.remove<PrimitiveShape>(mesh_entity);
                     r.emplace_or_replace<MeshPositionsChanged>(mesh_entity);
                 }
             }
-            r.remove<PendingTransform>(viewport);
+            r.remove<PendingTransform>(state::Document);
         }
     }
 
@@ -694,10 +688,10 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
     }
 
     { // Run before processing InteractionMode changes because selection may update the mode.
-        const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
-        auto &enabled_modes = r.edit<EnabledInteractionModes>(viewport).Value;
+        const auto interaction_mode = r.get<const Interaction>(state::Document).Mode;
+        auto &enabled_modes = r.edit<EnabledInteractionModes>(state::Document).Value;
         if (r.view<const SoundVertices>().empty()) {
-            if (interaction_mode == InteractionMode::Excite) SetInteractionMode(r, viewport, *enabled_modes.begin());
+            if (interaction_mode == InteractionMode::Excite) SetInteractionMode(r, *enabled_modes.begin());
             enabled_modes.erase(InteractionMode::Excite);
         } else if (!sound_vertex_changes.Vertices.empty()) {
             enabled_modes.insert(InteractionMode::Excite);
@@ -707,7 +701,7 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
                 }
                 request();
             } else {
-                SetInteractionMode(r, viewport, InteractionMode::Excite);
+                SetInteractionMode(r, InteractionMode::Excite);
             }
         }
     }
@@ -715,10 +709,10 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
     {
         const auto &selected_tracker = selection_changes.Selected;
         const auto &active_tracker = selection_changes.ActiveInstance;
-        const auto mode = r.get<const Interaction>(viewport).Mode;
+        const auto mode = r.get<const Interaction>(state::Document).Mode;
         if ((!selected_tracker.empty() || !active_tracker.empty()) && mode == InteractionMode::Edit) scene_state.EditPreludePending = true;
         // Convert remembered element selection when entering Edit mode with a different element mode.
-        if (const auto element = r.get<const EditMode>(viewport).Value; mode == InteractionMode::Edit && element != Element::None && !selected_tracker.empty()) {
+        if (const auto element = r.get<const EditMode>(state::Document).Value; mode == InteractionMode::Edit && element != Element::None && !selected_tracker.empty()) {
             std::vector<state::Entity> converting;
             for (const auto e : selected_tracker) {
                 const auto *instance = r.valid(e) && r.all_of<Selected>(e) ? r.try_get<const Instance>(e) : nullptr;
@@ -758,26 +752,26 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
             }
         }
     }
-    const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
+    const auto interaction_mode = r.get<const Interaction>(state::Document).Mode;
     const bool is_edit_mode = interaction_mode == InteractionMode::Edit;
     // Apply or remove the pending transform from primary-instance bounds when an edit transform starts or ends.
     if (is_edit_mode && AnyChanged(viewport_changes.TransformStart, viewport_changes.TransformEnd)) {
-        for (const auto &[mesh_entity, _] : r.get<const EditPrimaries>(viewport).All) r.emplace_or_replace<MeshLayoutDirty>(mesh_entity);
+        for (const auto &[mesh_entity, _] : r.get<const EditPrimaries>(state::Document).All) r.emplace_or_replace<MeshLayoutDirty>(mesh_entity);
         request();
     }
 
+    // Each viewport orbiting to the active element turns its view camera toward it.
     const auto orbit_to_active = [&](state::Entity instance_entity, Element element, uint32_t handle, bool canonical) {
-        if (!r.get<const OrbitToActive>(viewport).Value) return;
         const auto world_pos = ComputeElementWorldPosition(r, instance_entity, element, handle, canonical);
-        r.patch<ViewCamera>(viewport, [&](auto &camera) {
-            if (const auto dir = world_pos - camera.Target; Dot(dir, dir) >= 1e-6f) {
-                camera.SetTargetDirection(Normalize(dir));
-            }
-        });
+        for (auto &viewport : viewports.All) {
+            if (!viewport.State.Orbit.Value) continue;
+            auto &camera = viewport.State.Camera.Active;
+            if (const auto dir = world_pos - camera.Target; Dot(dir, dir) >= 1e-6f) camera.SetTargetDirection(Normalize(dir));
+        }
     };
 
     if (const auto &tracker = selection_changes.MeshActiveElement; !tracker.empty()) {
-        const auto edit_mode = r.get<const EditMode>(viewport).Value;
+        const auto edit_mode = r.get<const EditMode>(state::Document).Value;
         const auto active_entity = FindActiveEntity(r);
         const auto *active_instance = r.try_get<Instance>(active_entity);
         for (const auto mesh_entity : tracker) {
@@ -800,22 +794,15 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
         }
     }
     // Camera overlays use the lenses evaluated by animation above.
-    if (const auto &lenses = viewport_changes.CameraLens; !lenses.empty()) {
+    if (!render_changes.CameraLens.empty()) {
         scene_state.OverlayJobsDirty = true;
         request();
-        for (const auto camera_entity : lenses) {
-            if (HasLens(r, camera_entity) && r.all_of<LookingThrough>(camera_entity)) r.patch<ViewCamera>(viewport, [](auto &) {});
-        }
     }
     bool light_count_changed = false;
     if (const uint32_t required_count = r.view<const LightIndex>().size();
         buffers.Lights.Count<LightRecord>() != required_count) {
         buffers.Lights.SetCount<LightRecord>(required_count);
         light_count_changed = true;
-    }
-    if (!viewport_changes.WorkspaceLights.empty()) {
-        buffers.WorkspaceLightsUBO.Update(as_bytes(r.get<const WorkspaceLights>(viewport)));
-        request();
     }
     std::vector<state::Entity> material_meshes;
     if (const auto &tracker = mesh_changes.Material; !tracker.empty()) {
@@ -836,7 +823,7 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
     // Apply the selected variant mapping or the default material to each primitive with variant mappings.
     // Preserve assignments on meshes without variant mappings.
     if (!render_changes.ActiveMaterialVariant.empty()) {
-        const auto *mv = r.try_get<const MaterialVariants>(viewport);
+        const auto *mv = r.try_get<const MaterialVariants>(state::Document);
         const auto active = mv ? mv->Active : std::nullopt;
         for (const auto [e, layout, _] : r.view<const HasVariantMappings, const MeshSourceLayout, const MeshHandle>().each()) {
             const auto mesh = GetMesh(r, e);
@@ -850,7 +837,7 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
     }
     // Rebuild cluster attributes only when material requirements change.
     // Routing and shading read live materials each frame.
-    const bool every_mesh = AnyChanged(render_changes.Materials, viewport_changes.Display) && RefreshMaterialLodAttributes(r);
+    const bool every_mesh = (AnyChanged(render_changes.Materials) || displays_changed) && RefreshMaterialLodAttributes(r);
     if (every_mesh) {
         material_meshes.clear();
         material_meshes.reserve(r.view<const MeshHandle>().size());
@@ -886,7 +873,7 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
         request();
     }
     if (const auto &tracker = mesh_changes.Geometry; !tracker.empty()) {
-        const auto edit_mode = r.get<const EditMode>(viewport).Value;
+        const auto edit_mode = r.get<const EditMode>(state::Document).Value;
         std::vector<ElementRange> reset_ranges, carried_ranges;
         // Refresh instances of in-place repairs and restores.
         // Rebuild meshlets for other edited meshes with the new meshes.
@@ -920,9 +907,9 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
         request();
     }
     BuildMeshlets(r, chain, meshlet_meshes, bone_mesh_entities);
-    if (is_edit_mode && pass != EventPass::Restore && !viewport_changes.TransformPending.empty() && RefreshPreviewTessellation(r, viewport)) request();
+    if (is_edit_mode && pass != EventPass::Restore && !viewport_changes.TransformPending.empty() && RefreshPreviewTessellation(r)) request();
     if (!viewport_changes.Theme.empty()) {
-        const auto &theme = r.get<const ViewportTheme>(viewport);
+        const auto &theme = r.get<const ViewportTheme>(state::Document);
         const ViewportThemeUbo ubo{
             .Colors = theme.Colors,
             .Derived = DeriveThemeColors(theme),
@@ -930,20 +917,19 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
             .EdgeWidth = theme.Sizes.EdgeWidth * 0.5f * r.Context.get<FrameState>().DisplayFramebufferScale.x,
             .SilhouetteEdgeWidth = theme.Sizes.SilhouetteEdgeWidth,
         };
-        buffers.ViewportThemeUBO.Update(as_bytes(ubo));
+        buffers.ViewportThemeUBO.Update(BytesOf(ubo));
         request();
     }
-    if (!viewport_changes.Display.empty()) {
+    if (displays_changed) {
+        for (const auto e : r.view<const ModelsBuffer>()) r.emplace_or_replace<MeshDisplayDirty>(e);
+        scene_state.OverlayJobsDirty = true;
         request();
-        if (const auto settings = MeshDisplaySettings(r.get<const ViewportDisplay>(viewport)); std::exchange(scene_state.MeshDisplaySettings, settings) != settings) {
-            for (const auto e : r.view<const ModelsBuffer>()) r.emplace_or_replace<MeshDisplayDirty>(e);
-            scene_state.OverlayJobsDirty = true;
-        }
-        if (const float requested = ClampMaxAnisotropy(ToMaxAnisotropy(r.get<const ViewportDisplay>(viewport).AnisotropicFilter));
-            requested != r.Context.get<const ActiveSamplerAnisotropy>().Value) {
-            r.Context.get<ActiveSamplerAnisotropy>().Value = requested;
-            RebuildTextureSamplers(ctx, slots, textures, requested);
-        }
+    }
+    if (const float requested = ClampMaxAnisotropy(ToMaxAnisotropy(r.get<const AnisotropicFilter>(state::Document).Value));
+        requested != r.Context.get<const ActiveSamplerAnisotropy>().Value) {
+        r.Context.get<ActiveSamplerAnisotropy>().Value = requested;
+        RebuildTextureSamplers(ctx, slots, textures, requested);
+        request();
     }
     const bool mode_changed = !viewport_changes.InteractionMode.empty();
     if (mode_changed) {
@@ -959,9 +945,9 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
     }
 
     {
-        const auto &range = r.get<const TimelineRange>(viewport);
+        const auto &range = r.get<const TimelineRange>(state::Document);
         // Use interpolation instead of advancing physics during motion-blur sub-frames.
-        if (!rendering && physics::AdvancePlayback(r, viewport, evaluated_from, r.get<const TimelinePlayback>(viewport).CurrentFrame, range.StartFrame, range.EndFrame, range.Fps)) request();
+        if (!rendering && physics::AdvancePlayback(r, evaluated_from, r.get<const TimelinePlayback>(state::Document).CurrentFrame, range.StartFrame, range.EndFrame, range.Fps)) request();
     }
     // Evaluation writes materials and morph weights, so their consumers follow it.
     if (!render_changes.Materials.empty()) request();
@@ -1232,53 +1218,31 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
     select();
     {
         // Refresh normal overlays when mesh selection changes.
-        const auto &display = r.get<const ViewportDisplay>(viewport);
-        const bool normals = display.ShowOverlays && (display.Selection.VertexNormals || display.Selection.FaceNormals);
-        const auto selected_before = normals ? r.get<const SelectionFlags>(viewport).Meshes : std::vector<state::Entity>{};
-        for (const auto mesh_entity : UpdateSelectionState(r, viewport)) r.emplace_or_replace<MeshDisplayDirty>(mesh_entity);
+        const bool normals = displays.VertexNormals || displays.FaceNormals;
+        const auto selected_before = normals ? r.get<const SelectionFlags>(state::Document).Meshes : std::vector<state::Entity>{};
+        for (const auto mesh_entity : UpdateSelectionState(r)) r.emplace_or_replace<MeshDisplayDirty>(mesh_entity);
         if (normals) {
             std::vector<state::Entity> changed;
-            std::ranges::set_symmetric_difference(selected_before, r.get<const SelectionFlags>(viewport).Meshes, std::back_inserter(changed));
+            std::ranges::set_symmetric_difference(selected_before, r.get<const SelectionFlags>(state::Document).Meshes, std::back_inserter(changed));
             for (const auto mesh_entity : changed) {
                 if (r.valid(mesh_entity)) r.emplace_or_replace<MeshDisplayDirty>(mesh_entity);
             }
         }
     }
     // Build demanded LODs after meshlet publication, preserving edit-mode pins.
-    if (BuildDemandedClusterLods(r, chain, viewport)) request();
-    // Update an active scene camera before processing SceneView changes.
-    if (const auto camera = LookThroughCameraEntity(r); camera != state::Null &&
-        scene_changes.WorldTransform.contains(camera)) {
-        const auto &wt = *WorldTransformOf(r, camera);
-        r.replace<ViewCamera>(viewport, ViewCamera{wt.P, wt.R, *LensOf(r, camera)});
+    if (BuildDemandedClusterLods(r, chain)) request();
+    // Each viewport follows its moved look-through camera before its view uniforms read its view camera.
+    for (auto &viewport : viewports.All) {
+        const auto look_through = viewport.State.LookThroughEntity;
+        if (look_through == state::Null || !HasLens(r, look_through) || !scene_changes.WorldTransform.contains(look_through)) continue;
+        const auto &wt = *WorldTransformOf(r, look_through);
+        viewport.State.Camera.Active = ViewCamera{wt.P, wt.R, *LensOf(r, look_through)};
     }
-    {
-        // Update transmission specialization before the UBO reads its pipeline state.
-        const auto shading = r.get<const ViewportDisplay>(viewport).ViewportShading;
-        const bool mesh_features = !render_changes.PbrMeshFeatures.empty();
-        if (mesh_features) {
-            scene_state.MeshPbrFeatures = 0u;
-            for (const auto [_, feat] : r.view<const PbrMeshFeatures>().each()) scene_state.MeshPbrFeatures |= feat.Mask;
-        }
-        if (recompiled || mesh_features || AnyChanged(viewport_changes.Display, viewport_changes.PbrSpecialization)) {
-            // SubmitViewport refreshes all slots only on resize, so update this lazy sampler inline.
-            const auto refresh_transmission_sampler = [&] {
-                const auto info = targets.TransmissionSampler();
-                slots.SetSampler({SlotType::Sampler, r.Context.get<const RenderSamplerSlots>().Transmission}, info.Texture, info.Sampler);
-                request();
-            };
-            if (!WorkbenchShading(shading)) {
-                PbrFeatureMask pbr_mask{scene_state.MeshPbrFeatures};
-                const auto &active_lighting = GetActivePbrLighting(r, viewport, shading);
-                if (active_lighting.UseSceneLights) pbr_mask |= PbrFeature::Punctual;
-                if (GetPipelines(r).Main.Compiler.CompilePipelines(pbr_mask, buffers.DrawsNonTriangles())) request();
-                const bool want_transmission = active_lighting.RealTransmission && HasFeature(pbr_mask, PbrFeature::Transmission);
-                const auto te_px = RenderExtentPx(r);
-                if (targets.EnsureTransmissionResources(ctx, std::bit_cast<mtl::Extent2D>(te_px), want_transmission)) refresh_transmission_sampler();
-            } else if (targets.EnsureTransmissionResources(ctx, {}, false)) {
-                refresh_transmission_sampler();
-            }
-        }
+    // Each viewport's frame specializes its PBR pipelines and keeps its transmission target for these features.
+    if (!render_changes.PbrMeshFeatures.empty()) {
+        scene_state.MeshPbrFeatures = 0u;
+        for (const auto [_, feat] : r.view<const PbrMeshFeatures>().each()) scene_state.MeshPbrFeatures |= feat.Mask;
+        request();
     }
 
     end();
@@ -1286,95 +1250,8 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
     // Object transforms preserve local instance bounds.
     if (is_edit_mode && AnyChanged(viewport_changes.TransformPending, viewport_changes.TransformEnd)) scene_state.EditPreludePending = true;
 
-    const auto render_extent = RenderExtentPx(r);
-    if (buffers.FrameView != RenderView{r.get<const ViewCamera>(viewport), render_extent} ||
-        AnyChanged(viewport_changes.SceneView, viewport_changes.TransformPending, viewport_changes.Display, viewport_changes.TransformEnd) ||
-        mode_changed ||
-        light_count_changed ||
-        resized) {
-        const float aspect = render_extent.x == 0 || render_extent.y == 0 ? 1.f : float(render_extent.x) / float(render_extent.y);
-        // Update widened scene-camera FOV after viewport aspect-ratio changes.
-        if (const auto camera = LookThroughCameraEntity(r); camera != state::Null) {
-            r.edit<ViewCamera>(viewport).Data = WidenForLookThrough(*LensOf(r, camera), aspect);
-        }
-        const auto &camera = r.get<const ViewCamera>(viewport);
-        const auto &settings = r.get<const ViewportDisplay>(viewport);
-        const bool is_pbr_mode = !WorkbenchShading(settings.ViewportShading);
-        const auto &active_lighting = GetActivePbrLighting(r, viewport, settings.ViewportShading);
-        const bool use_scene_lights = is_pbr_mode && active_lighting.UseSceneLights;
-        const bool use_scene_world = is_pbr_mode && active_lighting.UseSceneWorld;
-        const auto &active_environment = use_scene_world ? environments.SceneWorld : environments.StudioWorld;
-        const auto *image_light = r.try_get<const ImageLight>(viewport);
-        const float env_intensity = use_scene_world && image_light ? image_light->Intensity : active_lighting.EnvIntensity;
-        const mat3 env_rotation = [&]() -> mat3 {
-            if (use_scene_world) return image_light ? ToMat3(image_light->Rotation) : mat3{1.f};
-            const float radians = active_lighting.EnvRotationDegrees * (Pi / 180.f);
-            const float s = std::sin(radians), c = std::cos(radians);
-            return {c, 0, -s, 0, 1, 0, s, 0, c};
-        }();
-        const float background_blur = active_lighting.BackgroundBlur;
-        const float world_opacity = is_pbr_mode ? active_lighting.WorldOpacity : 0.f;
-        const auto *pending = r.try_get<const PendingTransform>(viewport);
-        buffers.FrameView = {camera, render_extent};
-        const auto &mesh_slots = meshes.Slots();
-        SceneViewUBO view{
-            .LightCount = buffers.Lights.Count<LightRecord>(),
-            .LightSlot = buffers.Lights.Slot,
-            .UseSceneLightsRender = use_scene_lights ? 1u : 0u,
-            .EnvIntensity = env_intensity,
-            .Exposure = std::exp2(active_lighting.ExposureEV),
-            .EnvRotation = env_rotation,
-            .BackgroundBlur = background_blur,
-            .WorldOpacity = world_opacity,
-            .Ibl = active_environment.Ibl,
-            .InteractionMode = interaction_mode,
-            .EditElement = r.get<const EditMode>(viewport).Value,
-            .IsTransforming = pending ? 1u : 0u,
-            .PendingPivot = pending ? pending->Pivot : vec3{},
-            .PendingTranslation = pending ? pending->Delta.P : vec3{},
-            .PendingRotation = pending ? pending->Delta.R : quat{1, 0, 0, 0},
-            .PendingScale = pending ? pending->Delta.S : vec3{1},
-            .LodErrorPixels = settings.LodErrorPixels,
-            .EdgeSharpnessSlot = mesh_slots.EdgeSharpness,
-            .FaceSharpnessSlot = mesh_slots.FaceSharpness,
-            .BaseVertexNormalSlot = mesh_slots.BaseVertexNormal,
-            .BaseFaceNormalSlot = mesh_slots.BaseFaceNormal,
-            .FaceTriangleStartSlot = mesh_slots.FaceTriangleStart,
-            .ArmatureDeformSlot = buffers.ArmatureDeformBuffer.Buffer.Slot,
-            .MorphWeightsSlot = buffers.MorphWeightBuffer.Buffer.Slot,
-            .PosedPositionSlot = buffers.PosedPositions.Values.Buffer.Slot,
-            .PosedPositionNodesSlot = buffers.PosedPositions.Nodes.Buffer.Slot,
-            .PosedVertexNormalSlot = buffers.PosedVertexNormals.Values.Buffer.Slot,
-            .PosedVertexNormalNodesSlot = buffers.PosedVertexNormals.Nodes.Buffer.Slot,
-            .PosedSectorNodesSlot = buffers.PosedSectors.Nodes.Buffer.Slot,
-            .PosedSectorValuesSlot = buffers.PosedSectors.Values.Buffer.Slot,
-            .PosedFaceNormalSlot = buffers.PosedFaceNormals.Values.Buffer.Slot,
-            .PosedFaceNormalNodesSlot = buffers.PosedFaceNormals.Nodes.Buffer.Slot,
-            .PosedMorphNormalDeltaSlot = buffers.PosedMorphNormalDeltas.Values.Buffer.Slot,
-            .PosedMorphNormalNodesSlot = buffers.PosedMorphNormalDeltas.Nodes.Buffer.Slot,
-            .InstanceBoundsSlot = buffers.Instances.BoundsBuffer.Slot,
-            .MaterialSlot = buffers.Materials.Slot,
-            .PrimitiveMaterialSlot = mesh_slots.PrimitiveMaterial,
-            .MeshRecordSlot = render.MeshRecords.Buffer.Slot,
-            .InstanceRecordSlot = buffers.Instances.RecordBuffer.Slot,
-            .InstanceStateSlot = buffers.Instances.StateBuffer.Slot,
-            .BoneXRay = settings.ViewportShading == ViewportShadingMode::Wireframe ? 1u : 0u,
-            .XRayAlpha = XRayActive(settings) && settings.ViewportShading == ViewportShadingMode::Solid ? XRayOpacity(settings) : 1.f,
-            .OverlayBehindOpacity = OverlayBehindOpacity(settings, r.get<const Interaction>(viewport).Mode),
-            .SceneDepthSamplerSlot = r.Context.get<const RenderSamplerSlots>().SceneDepth,
-            .ShowOverlays = settings.ShowOverlays ? 1u : 0u,
-            .ShowExtras = settings.Overlays.Extras ? 1u : 0u,
-            .ShowBoundingBoxes = settings.Selection.BoundingBoxes ? 1u : 0u,
-            .ShowTetWireframe = settings.Selection.TetWireframe ? 1u : 0u,
-            .TransmissionFramebufferSamplerSlot = r.Context.get<const RenderSamplerSlots>().Transmission,
-            .TransmissionFramebufferMipCount = targets.Transmission ? targets.Transmission->Image.MipLevels : 1u,
-            .UseRealTransmission = (is_pbr_mode && active_lighting.RealTransmission && targets.Transmission) ? 1u : 0u,
-            .DebugChannel = is_pbr_mode ? settings.DebugChannel : DebugChannel::None,
-        };
-        buffers.FrameView.ApplyTo(view);
-        buffers.SceneViewUBO.Update(as_bytes(view));
-        request();
-    }
+    // Every viewport's view uniforms carry the scene lighting, the edit mode and the pending transform.
+    if (AnyChanged(render_changes.SceneLighting, viewport_changes.EditMode, viewport_changes.TransformPending, viewport_changes.TransformEnd) || light_count_changed) request();
 
     // Publish changed sound-vertex selections in one GPU transaction.
     if (!dirty_sound_selection_meshes.empty()) {
@@ -1410,17 +1287,17 @@ void ProcessComponentEvents(state::Registry &r, state::Entity viewport, EventPas
         request();
     }
     if (!r.view<const MeshLayoutDirty>().empty()) {
-        LayOutMeshes(r, viewport);
+        LayOutMeshes(r);
         request();
     }
     const bool displays_refreshed = !r.view<const MeshDisplayDirty>().empty();
     if (displays_refreshed) {
-        RefreshMeshDisplays(r, viewport);
+        RefreshMeshDisplays(r);
         request();
     }
     if (displays_refreshed || mode_changed ||
         AnyChanged(selection_changes.Selected, selection_changes.ActiveInstance, render_changes.InstanceVisibility, render_changes.InstanceDestroyed, mesh_changes.Geometry)) {
-        UpdateSilhouetteWork(r, viewport);
+        UpdateSilhouetteWork(r);
     }
     if (!rendering) {
         UpdateModalPlacement(r);
@@ -1460,27 +1337,15 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
     render.SceneWorld.bind(r).on<gltf::SourceAssets>(On::Create | On::Update);
     render.PunctualLight.bind(r).on<PunctualLight>(On::Create | On::Update).on<RenderInstance>(On::Create).on<Hidden>(On::Destroy);
     render.MorphWeights.bind(r);
+    render.SceneLighting.bind(r).on<ImageLight>(On::Create | On::Update).on<LightIndex>(On::Create | On::Destroy);
+    render.CameraLens.bind(r).on<Perspective>(On::Create | On::Update).on<Orthographic>(On::Create | On::Update);
     auto &view = r.Context.emplace<ViewportChanges>();
     view.InteractionMode.bind(r).on<Interaction>(On::Create | On::Update);
     view.EditMode.bind(r).on<EditMode>(On::Create | On::Update);
     view.TransformPending.bind(r).on<PendingTransform>(On::Create | On::Update | On::Destroy);
     view.TransformStart.bind(r).on<StartTransform>(On::Create);
     view.TransformEnd.bind(r).on<StartTransform>(On::Destroy);
-    view.Display.bind(r).on<ViewportDisplay>(On::Create | On::Update);
     view.Theme.bind(r).on<ViewportTheme>(On::Create | On::Update);
-    view.WorkspaceLights.bind(r).on<WorkspaceLights>(On::Create | On::Update);
-    view.StudioEnvironment.bind(r).on<StudioEnvironment>(On::Create | On::Update);
-    view.PbrSpecialization.bind(r)
-        .on<MaterialPreviewLighting>(On::Create | On::Update)
-        .on<RenderedLighting>(On::Create | On::Update);
-    view.SceneView.bind(r)
-        .on<ViewCamera>(On::Create | On::Update)
-        .on<ImageLight>(On::Create | On::Update)
-        .on<MaterialPreviewLighting>(On::Create | On::Update)
-        .on<RenderedLighting>(On::Create | On::Update)
-        .on<LightIndex>(On::Create | On::Destroy)
-        .on<EditMode>(On::Create | On::Update);
-    view.CameraLens.bind(r).on<Perspective>(On::Create | On::Update).on<Orthographic>(On::Create | On::Update).on<LookingThrough>(On::Create | On::Destroy);
     auto &scene = r.Context.emplace<SceneChanges>();
     // Publish world-transform changes through SetWorldTransform so bone display scaling reaches instance transforms.
     scene.WorldTransform.bind(r).on<BoneDisplayScale>(On::Update);

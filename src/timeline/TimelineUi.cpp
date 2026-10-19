@@ -42,7 +42,7 @@ std::optional<action::timeline::Action> HandleTimelineShortcuts(const TimelinePl
     return {};
 }
 
-std::optional<action::Action> RenderTimeline(const TimelineRange &range, const TimelinePlayback &playback, const TimelineView &view, state::Registry &r, state::Entity viewport, const Animations &animations, std::span<const float> keyframes, const TimelineIcons &icons, const InterfaceTheme &interface_theme, const TimelineTheme &theme, bool &scrubbing) {
+std::optional<action::Action> RenderTimeline(const TimelineRange &range, const TimelinePlayback &playback, const TimelineView &view, state::Registry &r, const Animations &animations, std::span<const float> keyframes, const TimelineIcons &icons, const InterfaceTheme &interface_theme, const TimelineTheme &theme, bool &scrubbing) {
     const float rounding = interface_theme.IconButtonRounding;
     const auto &colors = theme.Colors;
     const float ruler_h = theme.Sizes.RulerHeight;
@@ -62,7 +62,7 @@ std::optional<action::Action> RenderTimeline(const TimelineRange &range, const T
         const auto record_p = bar_origin + ImVec2{(w - bar_w) * 0.5f, 0.f};
         SetCursorScreenPos(record_p);
         ui::BeginIconButtonGroup(ImGuiAxis_X, {h, h}, 1, rounding);
-        if (ui::IconButton("##record", nullptr)) emit(action::UpdateOf<&Animations::Record>(action::OnViewport{}, !animations.Record));
+        if (ui::IconButton("##record", nullptr)) emit(action::UpdateOf<&Animations::Record>(state::Document, !animations.Record));
         ui::Describe("Auto keying", "Insert keyframes for animated properties on edit");
         GetWindowDrawList()->AddCircleFilled((GetItemRectMin() + GetItemRectMax()) * 0.5f, h * 0.22f, animations.Record ? IM_COL32(230, 60, 50, 255) : IM_COL32(120, 120, 120, 255));
         ui::EndIconButtonGroup();
@@ -90,7 +90,7 @@ std::optional<action::Action> RenderTimeline(const TimelineRange &range, const T
         ui::DropdownArrow();
         ui::EndIconButtonGroup();
         if (BeginPopup("##PlaybackOptions")) {
-            ui::DrawFields<TimelineNavigation>(ui::Edit{r, viewport});
+            ui::DrawFields<TimelineNavigation>(ui::Edit{r, state::Document});
             if (animations.Active < animations.Names.size()) {
                 Separator();
                 TextUnformatted("Animation name");
@@ -231,7 +231,7 @@ std::optional<action::Action> RenderTimeline(const TimelineRange &range, const T
     return result;
 }
 
-void DrawTimelineStyle(state::Registry &r, state::Entity viewport) {
+void DrawTimelineStyle(state::Registry &r) {
     if (Button("Reset")) action::Emit(action::view::ResetTimelineTheme{});
-    ui::DrawFields<TimelineTheme>(ui::Edit{r, viewport});
+    ui::DrawFields<TimelineTheme>(ui::Edit{r, state::Document});
 }

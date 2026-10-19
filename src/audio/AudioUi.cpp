@@ -113,7 +113,7 @@ std::optional<size_t> PlotModeData(
 }
 
 bool DrawModalModelActions(
-    state::Registry &r, state::Entity viewport, state::Entity e, state::Entity mesh_entity,
+    state::Registry &r, state::Entity e, state::Entity mesh_entity,
     const ModalSolveSettings &settings, const AcousticMaterial &material
 ) {
     const bool present = r.all_of<ModalModes>(e);
@@ -131,14 +131,14 @@ bool DrawModalModelActions(
         if (solving) BeginDisabled();
         if (Button("Create modal model ○")) {
             action::Emit(action::audio::EnsureModalSettings{});
-            LaunchModalSolve(r, viewport, e, settings, material);
+            LaunchModalSolve(r, e, settings, material);
         }
         if (solving) EndDisabled();
     }
     if (present && !solving && r.all_of<ModalSolveSettings, AcousticMaterial>(e) &&
         ModalModelStale(r, e, BuildSolveInputs(r, e, mesh_entity, settings), material)) {
         if (has_action) SameLine();
-        if (Button("Update modal model")) LaunchModalSolve(r, viewport, e, settings, material);
+        if (Button("Update modal model")) LaunchModalSolve(r, e, settings, material);
     }
     return false;
 }
@@ -212,7 +212,7 @@ void DrawModalModelSettings(
 }
 
 // Returns the active vertex in Excite mode or selected vertices in Edit mode.
-std::vector<uint32_t> GetSampleOpVertices(const state::Registry &r, state::Entity viewport, state::Entity sound_entity) {
+std::vector<uint32_t> GetSampleOpVertices(const state::Registry &r, state::Entity sound_entity) {
     if (!r.valid(sound_entity)) return {};
     const auto *inst = r.try_get<const Instance>(sound_entity);
     if (!inst) return {};
@@ -220,7 +220,7 @@ std::vector<uint32_t> GetSampleOpVertices(const state::Registry &r, state::Entit
     const auto mesh = TryGetMesh(r, mesh_entity);
     if (!mesh) return {};
 
-    const auto mode = r.get<const Interaction>(viewport).Mode;
+    const auto mode = r.get<const Interaction>(state::Document).Mode;
     if (mode == InteractionMode::Excite) {
         if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) return {active->Handle};
         return {};
@@ -258,18 +258,18 @@ bool ImpulseJoystick(vec2 &pos) {
 }
 } // namespace
 
-void DrawObjectAudioControls(state::Registry &r, state::Entity viewport, state::Entity e, state::Entity mesh_entity) {
+void DrawObjectAudioControls(state::Registry &r, state::Entity e, state::Entity mesh_entity) {
     if (e == state::Null || mesh_entity == state::Null) return;
 
     const ModalSolveSettings default_settings;
     const auto &settings = r.all_of<ModalSolveSettings>(e) ? r.get<const ModalSolveSettings>(e) : default_settings;
     const auto &material = r.all_of<AcousticMaterial>(e) ? r.get<const AcousticMaterial>(e) : materials::acoustic::All.front();
-    if (DrawModalModelActions(r, viewport, e, mesh_entity, settings, material)) return;
+    if (DrawModalModelActions(r, e, mesh_entity, settings, material)) return;
 
     // Sample ops (Add/Replace/Remove) are only available in Edit / Excite mode.
-    const auto mode = r.get<const Interaction>(viewport).Mode;
+    const auto mode = r.get<const Interaction>(state::Document).Mode;
     const bool sample_ops_available = mode == InteractionMode::Edit || mode == InteractionMode::Excite;
-    const auto op_vertices = sample_ops_available ? GetSampleOpVertices(r, viewport, e) : std::vector<uint32_t>{};
+    const auto op_vertices = sample_ops_available ? GetSampleOpVertices(r, e) : std::vector<uint32_t>{};
 
     const bool has_model = r.all_of<SoundVerticesModel>(e);
     if (!has_model) DrawModalModelSettings(r, e, mesh_entity, settings, material);
@@ -427,15 +427,15 @@ void DrawObjectAudioControls(state::Registry &r, state::Entity viewport, state::
     }
 }
 
-void DrawGlobalSynthControls(state::Registry &r, state::Entity viewport) {
-    ui::Edit f{r, viewport};
+void DrawGlobalSynthControls(state::Registry &r) {
+    ui::Edit f{r, state::Document};
     if (!r.view<const ModalModes>().empty() && CollapsingHeader("Modal synthesis", ImGuiTreeNodeFlags_DefaultOpen)) {
         ui::DrawFields<ModalSoundControls, &ModalSoundControls::SampleGain>(f);
 
-        DrawSurfaceSynthControls(r, viewport);
+        DrawSurfaceSynthControls(r);
 
         SeparatorText("Striker");
-        const auto &striker = r.get<const Striker>(viewport);
+        const auto &striker = r.get<const Striker>(state::Document);
         ui::ChoiceCombo("Material", striker.Material.Name, materials::acoustic::All | transform(&AcousticMaterial::Name), std::identity{}, [&](const std::string &name) {
             action::Emit(action::audio::SetMaterialPreset{name, true});
         });

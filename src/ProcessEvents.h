@@ -3,12 +3,7 @@
 #include "state/Entity.h"
 #include "viewport/ViewportSchema.h"
 
-// Pending viewport frame request.
-struct PendingRenderRequest {
-    bool Value{false};
-};
-
-// Queue a viewport frame and invalidate occlusion when the change can reveal hidden geometry.
+// Request a frame from every viewport, and invalidate each one's occlusion when the change can reveal hidden geometry.
 void RequestRender(state::Registry &, bool disoccludes = true);
 
 void RegisterSceneComponentHandlers(state::Registry &);
@@ -20,4 +15,4 @@ enum class EventPass { Frame,
                        Restore,
                        Sample,
                        Render };
-void ProcessComponentEvents(state::Registry &, state::Entity viewport, EventPass = EventPass::Frame);
+void ProcessComponentEvents(state::Registry &, EventPass = EventPass::Frame);

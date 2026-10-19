@@ -77,16 +77,13 @@ GpuBuffers::GpuBuffers(const mtl::Context &ctx, mtl::BindlessSet &slots)
       LodExpandArgs{Ctx, 2 * sizeof(MeshDispatchArgs), SlotType::Buffer},
       MeshletClassifications{Ctx, 0, SlotType::Buffer},
       MeshletCullBlocks{Ctx, 0, SlotType::Buffer},
-      MeshletCoarseCount{Ctx, sizeof(uint32_t), SlotType::Buffer},
       OverlayJobs{Ctx, 0, SlotType::Buffer},
       OverlayJobBlocks{Ctx, 0, SlotType::Buffer},
       VisibleOverlayJobs{Ctx, 0, SlotType::Buffer},
       OverlayJobDispatchArgs{Ctx, sizeof(MeshDispatchArgs), SlotType::Buffer},
       Lights{Ctx, sizeof(LightRecord), SlotType::LightBuffer},
       Materials{Ctx, sizeof(PBRMaterial), SlotType::MaterialBuffer},
-      SceneViewUBO{Ctx, ViewUboStride() * (MaxBlurSteps + 1)},
       ViewportThemeUBO{Ctx, sizeof(ViewportThemeUbo)},
-      WorkspaceLightsUBO{Ctx, sizeof(WorkspaceLights)},
       ObjectPickKeys{Ctx, sizeof(uint32_t)},
       ObjectPickSeenBitset{Ctx, sizeof(uint32_t)},
       ObjectBoxBitset{Ctx, sizeof(uint32_t)},
@@ -120,8 +117,6 @@ void Reset(GpuBuffers &b, state::Registry &) {
     b.OverlayJobs.UsedSize = 0;
     b.OverlayJobBlocks.UsedSize = 0;
     b.VisibleOverlayJobs.UsedSize = 0;
-    // Reset occlusion feedback for deterministic two-phase culling after a scene clear.
-    b.PreviousFullCullViewProj = mat4{1};
     b.ArmatureDeformBuffer.Reset();
     b.MorphWeightBuffer.Reset();
     b.Instances.Reset();

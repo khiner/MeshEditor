@@ -15,8 +15,8 @@
 #include "object/ObjectOps.h"
 #include "scene/Defaults.h"
 #include "timeline/Timeline.h"
-#include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
+#include "viewport/ViewportEvents.h"
 
 #include <format>
 
@@ -24,23 +24,24 @@ using numeric::Radians;
 
 namespace action::io {
 namespace {
-void LoadGltfFile(state::Registry &r, state::Entity viewport, const std::filesystem::path &path) {
+void LoadGltfFile(state::Registry &r, const std::filesystem::path &path) {
     const profile::CpuScope scope{"LoadGltfFile"};
-    auto result = gltf::LoadGltf(path, r, viewport);
+    auto result = gltf::LoadGltf(path, r);
     if (!result) {
         Fail(r, std::format("Error loading glTF file '{}': {}", path.string(), result.error().Message), result.error().UnsupportedExtensions);
         return;
     }
 
-    if (result->FirstCameraObject != state::Null) SetLookThrough(r, viewport, result->FirstCameraObject);
+    // A live load looks through the first camera, which the active viewport takes in its next frame step.
+    if (result->FirstCameraObject != state::Null) r.get_or_emplace<PendingViewSetup>(state::Document).LookThroughEntity = result->FirstCameraObject;
     if (result->ImportedAnimation) {
-        JumpToStartFrame(r, viewport);
-        r.edit<LastEvaluatedFrame>(viewport).Value = -1;
+        JumpToStartFrame(r);
+        r.edit<LastEvaluatedFrame>(state::Document).Value = -1;
     }
 }
 } // namespace
 
-void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
+void Apply(state::Registry &r, const Action &action) {
     std::visit(
         overloaded{
             [&](const LoadDefaultScene &) { AddDefaultSceneContent(r); },
@@ -48,16 +49,16 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
             [&](const Load &a) {
                 const auto &path = a.Path;
                 const auto ext = path.extension().string();
-                if (ext == ".gltf" || ext == ".glb") LoadGltfFile(r, viewport, a.Path);
-                else if (ext == ".obj" || ext == ".ply") RequestImportMesh(r, viewport, path, MeshInstanceCreateInfo{.Name = path.stem().string()});
+                if (ext == ".gltf" || ext == ".glb") LoadGltfFile(r, a.Path);
+                else if (ext == ".obj" || ext == ".ply") RequestImportMesh(r, path, MeshInstanceCreateInfo{.Name = path.stem().string()});
                 else Fail(r, std::format("Unsupported file format: '{}'", ext));
             },
             [&](const SaveGltf &a) {
-                if (auto save = gltf::SaveGltf(a.Path, r, viewport); !save) {
+                if (auto save = gltf::SaveGltf(a.Path, r); !save) {
                     Fail(r, std::format("Error saving glTF file '{}': {}", a.Path.string(), save.error()));
                 }
             },
-            [&](const LoadGltf &a) { LoadGltfFile(r, viewport, a.Path); },
+            [&](const LoadGltf &a) { LoadGltfFile(r, a.Path); },
             [&](const LoadRealImpact &a) {
                 auto source = RealImpact::LoadSource(r, a.Path);
                 if (!source) {
@@ -65,9 +66,9 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
                     return;
                 }
 
-                ClearMeshes(r, viewport);
+                ClearMeshes(r);
                 const auto imported = ImportMesh(
-                    r, viewport,
+                    r,
                     source->Mesh,
                     MeshInstanceCreateInfo{.Name = std::move(source->Name), .Transform = {.R = RealImpact::ObjectRotationToYUp}},
                     true // Weld vertices

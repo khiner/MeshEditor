@@ -12,7 +12,6 @@
 #include "object/ObjectOps.h"
 #include "render/GpuSceneState.h"
 #include "render/Instance.h"
-#include "render/RenderTargets.h"
 #include "render/Textures.h"
 #include "selection/SelectionGpu.h"
 #include "viewport/InteractionComponents.h"
@@ -45,7 +44,7 @@ void ReportLibraries(const mtl::LibraryCache &cache, const char *phase) {
 Result Capture(state::Registry &r, const char *variable) {
     const char *path = std::getenv(variable);
     if (!path) return {};
-    const auto &image = r.Context.get<const RenderTargets>().Resources->FinalColorImage;
+    const auto &image = r.Context.get<const Viewports>().All.front().Targets.Resources->FinalColorImage;
     const auto rgba = ReadbackImageRgba8(r.Context.get<const mtl::Context>(), image, 0u, 0u, image.Extent);
     const auto file = std::unique_ptr<FILE, decltype(&std::fclose)>{std::fopen(path, "wb"), &std::fclose};
     if (!file) return std::unexpected{"failed to open frame capture"};
@@ -219,7 +218,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         profile::Init(r.Context.get<const mtl::Context>());
         profile::Enabled = false;
         if (!p.Begin(dir)) return std::unexpected{"project begin failed"};
-        r.Context.get<ViewportExtent>().Value = {viewport_width, viewport_height};
+        r.Context.get<Viewports>().All.front().State.Extent = {viewport_width, viewport_height};
         p.Settle();
         std::println(stderr, "Preparing benchmark scene...");
         const auto load_begin = std::chrono::steady_clock::now();
@@ -344,10 +343,11 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             const float distance = std::strtof(distance_text, nullptr);
             if (!(std::isfinite(distance) && distance > 0.f)) return std::unexpected{"invalid face camera distance"};
             const vec3 center = original.CalcFaceCentroid(face);
-            const auto lens = r.get<ViewCamera>(engine.Viewport).Data;
-            ClearLookThrough(r, engine.Viewport);
+            auto &view = r.Context.get<Viewports>().All.front().State;
+            const auto lens = view.Camera.Active.Data;
+            ClearLookThrough(view);
             const auto eye = center + vec3{0.2f * distance, distance, 0.5f * distance};
-            r.replace<ViewCamera>(engine.Viewport, ViewCamera{eye, center, lens});
+            view.Camera.Active = ViewCamera{eye, center, lens};
         }
         const auto added = original.GetValence(face);
         const auto selected_face_halfedge = *original.fh_range(face).begin();
@@ -476,11 +476,11 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             p.Settle();
         }
         const auto selected_count = meshes.GetSelectionSummary(original.GetStoreId()).SelectedCount;
-        if (select_all && (selected_count != GetMesh(r, entity).ElementCount(r.get<const EditMode>(engine.Viewport).Value))) return std::unexpected{"select-all left elements unselected"};
+        if (select_all && (selected_count != GetMesh(r, entity).ElementCount(r.get<const EditMode>(state::Document).Value))) return std::unexpected{"select-all left elements unselected"};
         // Each face of an individual inset gains one face and one vertex per corner.
         const auto inset_added = select_all ? original.HalfEdgeCount() : added;
         std::println(stderr, "Rendering the baseline...");
-        SubmitViewport(r, engine.Viewport);
+        SubmitViewports(r);
         WaitForRender(r);
         // Include the renderer's first meshlet and LOD publication in the baseline used for replay, as well as the edit selection.
         p.History.Commit("benchmark selection", {});
@@ -490,12 +490,12 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             std::println("mesh,{},{},{},{},{:.6f},{}", vertices, faces, count, name, ms, allocated());
         };
         const auto draw = [&](std::string_view name, size_t count) {
-            const auto ms = Milliseconds([&] { SubmitViewport(r, engine.Viewport); WaitForRender(r); });
+            const auto ms = Milliseconds([&] { SubmitViewports(r); WaitForRender(r); });
             row(name, ms, count);
         };
         const auto render_step = [&](std::string_view name) -> Result {
             if (!render) return {};
-            if (!r.Context.get<const PendingRenderRequest>().Value)
+            if (!r.Context.get<const Viewports>().All.front().RenderRequested)
                 return std::unexpected{std::string{name} + " did not request a rendered frame"};
             draw(name, selected_count);
             return {};
@@ -857,7 +857,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 }
                 if (i) warm_preview_ms.push_back(elapsed);
                 if (render) {
-                    if (!r.Context.get<const PendingRenderRequest>().Value) return std::unexpected{"edit preview did not request a rendered frame"};
+                    if (!r.Context.get<const Viewports>().All.front().RenderRequested) return std::unexpected{"edit preview did not request a rendered frame"};
                     draw("render" + std::to_string(i), selected_count);
                     if (i == 1u)
                         if (auto result = Capture(r, "MESHEDITOR_EDIT_BENCH_CAPTURE"); !result) return result;
@@ -887,9 +887,9 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         if (staged && render) {
             if (auto result = Capture(r, "MESHEDITOR_EDIT_BENCH_CAPTURE_EXIT"); !result) return result;
             if (std::getenv("MESHEDITOR_EDIT_BENCH_CAPTURE_FINE")) {
-                r.patch<ViewportDisplay>(engine.Viewport, [](auto &display) { display.LodErrorPixels = 0.f; });
+                r.Context.get<Viewports>().All.front().State.Display.LodErrorPixels = 0.f;
                 p.Frame(action::Drain());
-                SubmitViewport(r, engine.Viewport);
+                SubmitViewports(r);
                 WaitForRender(r);
                 if (auto result = Capture(r, "MESHEDITOR_EDIT_BENCH_CAPTURE_FINE"); !result) return result;
             }

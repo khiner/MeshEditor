@@ -27,7 +27,7 @@ std::expected<void, std::string> WriteActionsArchive(const store::History &, con
 struct Project {
     explicit Project(state::Registry &);
     ~Project();
-    void TrackStores(state::Entity viewport);
+    void TrackStores();
     bool Begin(const std::filesystem::path &);
     bool New(const std::filesystem::path &, bool empty = true);
     bool Open(const std::filesystem::path &working, const std::filesystem::path &saved = {});
@@ -117,7 +117,6 @@ struct Project {
     void ClearDocument();
     void AfterRestore();
     state::Registry &R;
-    state::Entity Viewport{state::Null};
 };
 
 Project &Session(state::Registry &);

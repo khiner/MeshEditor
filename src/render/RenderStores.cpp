@@ -11,7 +11,7 @@
 
 void InitRenderStoreContext(state::Registry &r, const mtl::Context &ctx) {
     auto &slots = r.Context.emplace<mtl::BindlessSet>(ctx);
-    r.Context.emplace<ActiveSamplerAnisotropy>(ClampMaxAnisotropy(ToMaxAnisotropy(ViewportDisplay{}.AnisotropicFilter)));
+    r.Context.emplace<ActiveSamplerAnisotropy>(ClampMaxAnisotropy(ToMaxAnisotropy(AnisotropicFilter{}.Value)));
     auto &textures = r.Context.emplace<TextureStore>();
     textures.WhiteTextureSlot = AllocateSamplerSlot(slots);
     r.Context.emplace<EnvironmentStore>();

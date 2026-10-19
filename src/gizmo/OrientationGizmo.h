@@ -11,12 +11,8 @@ static constexpr float CircleRad = .095f, HoverCircleRad = .5f;
 
 constexpr vec3 SignedAxis(const mat3 &m, uint32_t i) { return i < 3 ? m[i] : -m[i - 3]; }
 
-struct Context {
-    std::optional<vec2> MouseDownPos;
-    std::optional<vec2> DragEndPos;
-    bool Hovered;
-    std::optional<size_t> HoveredAxis;
-    // Interact computes this layout for Render.
+// The gizmo's placement and axes for one camera.
+struct Layout {
     vec2 Center;
     float Size;
     vec3 AxisCam[6];
@@ -24,7 +20,29 @@ struct Context {
     size_t SortedIndices[6]{0, 1, 2, 3, 4, 5};
     bool Aligned[6];
 };
+
+struct Context {
+    std::optional<vec2> MouseDownPos;
+    std::optional<vec2> DragEndPos;
+    bool Hovered;
+    std::optional<size_t> HoveredAxis;
+    Layout View; // The layout of the last Interact.
+};
 static Context Ctx;
+
+Layout LayoutOf(vec2 pos, float size, const ViewCamera &camera) {
+    Layout layout{.Center = pos + vec2{size, size} * 0.5f, .Size = size};
+    const auto cam_basis = Transpose(camera.Basis());
+    for (size_t i = 0; i < 6; ++i) {
+        layout.AxisCam[i] = SignedAxis(cam_basis, i);
+        auto dir = layout.AxisCam[i] * size * (0.5f - CircleRad);
+        dir.y = -dir.y;
+        layout.AxisScreen[i] = dir;
+        layout.Aligned[i] = camera.IsAligned(SignedAxis(I3, i));
+    }
+    std::ranges::sort(layout.SortedIndices, [&](auto i, auto j) { return layout.AxisCam[i].z > layout.AxisCam[j].z; });
+    return layout;
+}
 
 bool IsActive() { return Ctx.Hovered || Ctx.MouseDownPos || Ctx.DragEndPos; }
 bool IsUsing() { return Ctx.MouseDownPos.has_value() || Ctx.DragEndPos.has_value(); }
@@ -39,9 +57,9 @@ using Interaction = std::variant<RotateBy, AlignTo>;
 
 std::optional<Interaction> Interact(vec2 pos, float size, const ViewCamera &camera, bool interactive = true) {
     const auto mouse_pos = std::bit_cast<vec2>(ImGui::GetMousePos());
-    const auto center = pos + vec2{size, size} * 0.5f;
-    Ctx.Center = center;
-    Ctx.Size = size;
+    Ctx.View = LayoutOf(pos, size, camera);
+    const auto &view = Ctx.View;
+    const auto center = view.Center;
     Ctx.HoveredAxis = std::nullopt;
 
     if (!interactive) {
@@ -52,20 +70,10 @@ std::optional<Interaction> Interact(vec2 pos, float size, const ViewCamera &came
     const auto hover_r = size * HoverCircleRad;
     Ctx.Hovered = interactive && Dot(mouse_pos - center, mouse_pos - center) <= hover_r * hover_r;
 
-    const auto cam_basis = Transpose(camera.Basis());
-    for (size_t i = 0; i < 6; ++i) {
-        Ctx.AxisCam[i] = SignedAxis(cam_basis, i);
-        auto dir = Ctx.AxisCam[i] * size * (0.5f - CircleRad);
-        dir.y = -dir.y;
-        Ctx.AxisScreen[i] = dir;
-        Ctx.Aligned[i] = camera.IsAligned(SignedAxis(I3, i));
-    }
-    std::ranges::sort(Ctx.SortedIndices, [](auto i, auto j) { return Ctx.AxisCam[i].z > Ctx.AxisCam[j].z; });
-
     if (interactive && Ctx.Hovered && !Ctx.DragEndPos) {
-        Ctx.HoveredAxis = std::ranges::min(Ctx.SortedIndices, {}, [&](size_t i) {
-            const auto mouse_delta = mouse_pos - (center + Ctx.AxisScreen[i]);
-            return Dot(mouse_delta, mouse_delta) + Ctx.AxisCam[i].z;
+        Ctx.HoveredAxis = std::ranges::min(view.SortedIndices, {}, [&](size_t i) {
+            const auto mouse_delta = mouse_pos - (center + view.AxisScreen[i]);
+            return Dot(mouse_delta, mouse_delta) + view.AxisCam[i].z;
         });
     }
 
@@ -89,7 +97,7 @@ std::optional<Interaction> Interact(vec2 pos, float size, const ViewCamera &came
     } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
         std::optional<Interaction> out;
         if (auto hovered_i = Ctx.HoveredAxis; !Ctx.DragEndPos && hovered_i) {
-            if (Ctx.Aligned[*hovered_i]) hovered_i = (*hovered_i + 3) % 6;
+            if (view.Aligned[*hovered_i]) hovered_i = (*hovered_i + 3) % 6;
             out = Interaction{AlignTo{SignedAxis(I3, *hovered_i)}};
         }
         Ctx.MouseDownPos = std::nullopt;
@@ -99,31 +107,32 @@ std::optional<Interaction> Interact(vec2 pos, float size, const ViewCamera &came
     return {};
 }
 
-void Render(const colors::AxesArray &Axes) {
+// Draws the layout, highlighting the gizmo while it is hovered or dragged and its hovered axis.
+void Render(const Layout &view, const colors::AxesArray &Axes, bool highlighted = false, std::optional<size_t> hovered_axis = {}) {
     auto &dl = *ImGui::GetWindowDrawList();
-    const auto center = Ctx.Center;
-    const auto size = Ctx.Size;
+    const auto center = view.Center;
+    const auto size = view.Size;
 
-    if (Ctx.Hovered || Ctx.DragEndPos) {
+    if (highlighted) {
         dl.AddCircleFilled(std::bit_cast<ImVec2>(center), size * HoverCircleRad, IM_COL32(120, 120, 120, 130));
     }
 
-    for (const auto i : Ctx.SortedIndices) {
-        const auto t = 1.f - 0.5f * (Ctx.AxisCam[i].z + 1); // [0, 1], 0 faces camera
+    for (const auto i : view.SortedIndices) {
+        const auto t = 1.f - 0.5f * (view.AxisCam[i].z + 1); // [0, 1], 0 faces camera
         const bool positive = i < 3;
-        const bool aligned = Ctx.Aligned[i];
+        const bool aligned = view.Aligned[i];
         const auto fill_color = positive ? colors::Blend(Axes[i + 3], Axes[i], t) :
             aligned                      ? Axes[i - 3] :
                                            colors::WithAlpha(Axes[i], t);
         const float r = size * CircleRad;
-        const auto line_end = std::bit_cast<ImVec2>(center + Ctx.AxisScreen[i]);
+        const auto line_end = std::bit_cast<ImVec2>(center + view.AxisScreen[i]);
         if (positive) dl.AddLine(std::bit_cast<ImVec2>(center), line_end, fill_color, 2.f);
         dl.AddCircleFilled(line_end, positive ? r : r - .5f, fill_color);
         if (!positive) {
             const auto color = aligned ? colors::Lighten(Axes[i - 3], .8f) : colors::Blend(Axes[i], Axes[i - 3], t);
             dl.AddCircle(line_end, r, color, 32, 1.f);
         }
-        if (const bool hovered = Ctx.HoveredAxis && *Ctx.HoveredAxis == i;
+        if (const bool hovered = hovered_axis == i;
             positive || hovered || aligned) {
             static constexpr std::string_view AxisLabels[]{"X", "Y", "Z", "-X", "-Y", "-Z"};
             const auto *const label = AxisLabels[i].data();

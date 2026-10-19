@@ -4,48 +4,50 @@
 #include "Profile.h"
 #include "mesh/MeshStore.h"
 #include "render/GpuBuffers.h"
-#include "render/RenderTargets.h"
 #include "state/Registry.h"
-#include "viewport/FrameState.h"
+#include "viewport/Viewport.h"
 #include <Metal/MTLCommandQueue.hpp>
 ViewportRenderResources::ViewportRenderResources() = default;
 ViewportRenderResources::~ViewportRenderResources() { mtl::AutoreleaseScope::Release(InFlight); }
-// The submitted frame's cull sees every disocclusion so far.
-void SubmitRecordedFrame(state::Registry &r, MTL::CommandBuffer *command_buffer) {
+
+void SubmitRecordedFrame(state::Registry &r, Viewport &viewport, MTL::CommandBuffer *command_buffer, RenderPhase phase) {
     const mtl::AutoreleaseScope native_scope;
     const auto &ctx = r.Context.get<const mtl::Context>();
-    r.Context.get<GpuBuffers>().MeshletOcclusionStale = false;
+    viewport.OcclusionStale = false;
+    if (phase != RenderPhase::Prepare) {
+        viewport.RecordedPhase = phase;
+        viewport.Rendered = viewport.State;
+        viewport.RenderRequested = false;
+    }
     ctx.CommitResidency();
     {
         const profile::CpuScope scope{"QueueSubmit"};
         mtl::Commit(command_buffer);
     }
-    r.Context.get<ViewportRenderResources>().InFlight = NS::RetainPtr(command_buffer);
-    r.Context.get<FrameState>().RenderPending = true;
+    auto &resources = r.Context.get<ViewportRenderResources>();
+    resources.InFlight = NS::RetainPtr(command_buffer);
+    resources.RenderPending = true;
     r.Context.get<MeshStore>().FrameSubmitted();
 }
 
-void RecordAndSubmitFrame(state::Registry &r, state::Entity viewport, RenderPhase phase) {
+void RecordAndSubmitFrame(state::Registry &r, Viewport &viewport, RenderPhase phase) {
     const mtl::AutoreleaseScope native_scope;
     const auto &ctx = r.Context.get<const mtl::Context>();
-    auto &resources = r.Context.get<ViewportRenderResources>();
     auto *command_buffer = ctx.Queue->commandBuffer();
     RecordRenderCommandBuffer(r, viewport, command_buffer, phase);
-    resources.RecordedPhase = phase;
-    SubmitRecordedFrame(r, command_buffer);
+    SubmitRecordedFrame(r, viewport, command_buffer, phase);
 }
 
-bool ViewportImageReady(const state::Registry &r) {
-    const auto extent = r.Context.get<const RenderTargets>().BuiltColorExtent();
+bool ViewportImageReady(const Viewport &viewport) {
+    const auto extent = viewport.Targets.BuiltColorExtent();
     return extent.Width != 0 && extent.Height != 0;
 }
 
 void WaitForRender(state::Registry &r) {
     const mtl::AutoreleaseScope native_scope;
-    auto &frame = r.Context.get<FrameState>();
-    if (!frame.RenderPending) return;
-
     auto &resources = r.Context.get<ViewportRenderResources>();
+    if (!resources.RenderPending) return;
+
     if (resources.InFlight) {
         const profile::CpuScope scope{"WaitGpu"};
         resources.InFlight->waitUntilCompleted();
@@ -55,5 +57,5 @@ void WaitForRender(state::Registry &r) {
     r.Context.get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
     r.Context.get<MeshStore>().FrameCompleted();
     r.Context.get<const mtl::Context>().TrimPageCache();
-    frame.RenderPending = false;
+    resources.RenderPending = false;
 }

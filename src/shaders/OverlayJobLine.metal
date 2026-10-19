@@ -96,7 +96,8 @@ inline float3 ColliderWirePoint(OverlayJob job, uint line, uint end) {
     return float3(point.x, height + (top ? point.y : -point.y), point.z);
 }
 
-inline ExtrasLineVertex ExtrasLineVertexAt(OverlayJob job, uint line, uint end) {
+// `look_through` draws a camera as the frame the view looks through.
+inline ExtrasLineVertex ExtrasLineVertexAt(OverlayJob job, uint line, uint end, bool look_through) {
     if (IsColliderKind(job.ExtrasKind)) return {float3(job.LocalOffset) + ColliderWirePoint(job, line, end), VCLASS_NONE};
     const float4 params = job.Params;
     if (job.ExtrasKind == ExtrasLineKind::Empty) {
@@ -105,7 +106,6 @@ inline ExtrasLineVertex ExtrasLineVertexAt(OverlayJob job, uint line, uint end) 
     }
     if (job.ExtrasKind == ExtrasLineKind::Camera) {
         const float half_w = params.x, half_h = params.y, depth = params.z;
-        const bool look_through = params.w != 0.0f;
         const float tria_size = 0.7f * 0.5f, tria_y = half_h + 0.1f * 0.5f;
         const float3 frame[4] = {
             float3(-half_w, -half_h, -depth), float3(half_w, -half_h, -depth),
@@ -163,7 +163,8 @@ inline ExtrasLineVertex ExtrasLineClipVertex(
     const thread Scene &scene, constant OverlayJobDrawPushConstants &pc,
     OverlayJob job, uint line, uint end, thread float4 &clip
 ) {
-    auto vertex_at = ExtrasLineVertexAt(job, line, end);
+    const uint object_id = BindlessBuffer(InstanceRecord, scene.B.Buffer, pc.InstanceSlot)[job.InstanceIndex].ObjectId;
+    auto vertex_at = ExtrasLineVertexAt(job, line, end, scene.View.LookThroughObjectId != 0u && object_id == scene.View.LookThroughObjectId);
     const Transform world = scene.Models(pc.ModelSlot)[job.InstanceIndex];
     vertex_at.Position = ObjectExtrasWorldPos(scene, world, vertex_at.Position, vertex_at.Class);
     clip = scene.ViewProj() * float4(vertex_at.Position, 1.0f);

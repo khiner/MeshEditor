@@ -58,17 +58,15 @@ inline CullInstance ResolveCullInstance(const thread Scene &scene, MeshletCullPu
     };
 }
 
-// Edited and deformed instances use original geometry covered by their posed bounds.
-inline bool InstancePinsFinest(CullInstance instance) {
-    return (instance.Flags & (uint(MeshletInstanceFlag::LodPinFinest) | uint(MeshletInstanceFlag::Wire) |
-        uint(MeshletInstanceFlag::FaceNormal) | uint(MeshletInstanceFlag::EdgeOverlay))) != 0u ||
-        instance.Deformed;
+// Edited and deformed instances, and those the view draws by a pinning flag, use original geometry covered by their posed bounds.
+inline bool InstancePinsFinest(const thread Scene &scene, CullInstance instance) {
+    return (instance.Flags & scene.View.LodPinFlags) != 0u || instance.Deformed;
 }
 
 // Nonpositive thresholds select original geometry.
 inline bool InstanceFinestOnly(const thread Scene &scene, MeshletCullPushConstants pc, CullInstance instance) {
     const uint edit_flags = uint(MeshletInstanceFlag::ElementSelection) | uint(MeshletInstanceFlag::EditOverlay);
-    return scene.View.LodErrorPixels <= 0.0f || InstancePinsFinest(instance) ||
+    return scene.View.LodErrorPixels <= 0.0f || InstancePinsFinest(scene, instance) ||
         (pc.ExactEditGeometry != 0u && (instance.Flags & edit_flags) != 0u);
 }
 

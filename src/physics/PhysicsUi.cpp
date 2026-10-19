@@ -179,10 +179,10 @@ std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in, bool auto_
 }
 } // namespace
 
-void physics_ui::RenderTab(state::Registry &r, state::Entity viewport) {
+void physics_ui::RenderTab(state::Registry &r) {
     SeparatorText("Simulation");
     Text("Bodies: %u", physics::BodyCount(r));
-    ui::DrawFields<PhysicsSimulationSettings>(ui::Edit{r, viewport});
+    ui::DrawFields<PhysicsSimulationSettings>(ui::Edit{r, state::Document});
 
     if (CollapsingHeader("Physics Materials")) {
         DrawNamedEntityList<PhysicsMaterial>(
@@ -333,7 +333,7 @@ void physics_ui::RenderTab(state::Registry &r, state::Entity viewport) {
     }
 }
 
-void physics_ui::RenderEntityProperties(state::Registry &r, state::Entity entity, state::Entity viewport) {
+void physics_ui::RenderEntityProperties(state::Registry &r, state::Entity entity) {
     if (!CollapsingHeader("Physics")) return;
 
     PushID("PhysicsEntity");
@@ -384,8 +384,8 @@ void physics_ui::RenderEntityProperties(state::Registry &r, state::Entity entity
         SeparatorText("Motion");
 
         // Initial velocity is editable at the authored start frame while playback is paused.
-        const auto &range = r.get<const TimelineRange>(viewport);
-        const auto &playback = r.get<const TimelinePlayback>(viewport);
+        const auto &range = r.get<const TimelineRange>(state::Document);
+        const auto &playback = r.get<const TimelinePlayback>(state::Document);
         const bool velocity_locked = playback.Playing || physics::BakedThrough(r) > range.StartFrame;
         if (velocity_locked) BeginDisabled();
         if (r.try_get<const PhysicsVelocity>(entity)) ui::DrawFields<PhysicsVelocity>(ui::Edit{r});

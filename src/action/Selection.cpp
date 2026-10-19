@@ -8,22 +8,25 @@
 #include "selection/SelectionGpu.h"
 #include "state/Registry.h"
 #include "viewport/InteractionComponents.h"
+#include "viewport/Viewport.h"
 
 namespace action::selection {
-void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
+void Apply(state::Registry &r, const Action &action) {
     auto merge_bone_sel = [&](state::Entity e, const std::optional<BoneSel> &part, bool additive) {
         const auto sel = part ? BoneSelection::From(*part) : BoneSelection{};
         const auto *cur = r.try_get<BoneSelection>(e);
         r.emplace_or_replace<BoneSelection>(e, additive && cur ? *cur | sel : sel);
     };
     // Click selection ends an active box-select drag.
-    auto end_box_select_interaction = [&] { r.remove<AdditiveBoxSelectBaseline>(viewport); };
+    auto end_box_select_interaction = [&] { r.remove<AdditiveBoxSelectBaseline>(state::Document); };
     // Object selection names scene-graph objects, which the gizmo and pivot read through their transforms.
     const auto object = [&](state::Entity e) {
         if (e == state::Null || r.all_of<Transform>(e)) return true;
         Fail(r, "Only an object can be selected");
         return false;
     };
+    // A pending gesture resolves against the viewport it was emitted in.
+    const auto active_viewport = [&] { return r.Context.get<const Viewports>().Active().Id; };
 
     std::visit(
         overloaded{
@@ -59,12 +62,12 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
             },
             [&](DeselectAll) {
                 end_box_select_interaction();
-                const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
-                if (interaction_mode == InteractionMode::Pose || IsBoneEditMode(r, viewport)) {
+                const auto interaction_mode = r.get<const Interaction>(state::Document).Mode;
+                if (interaction_mode == InteractionMode::Pose || IsBoneEditMode(r)) {
                     r.clear<BoneSelection>();
                 } else if (interaction_mode == InteractionMode::Edit) {
-                    const auto element = r.get<const EditMode>(viewport).Value;
-                    const auto ranges = GetElementRangesForSelected(r, viewport);
+                    const auto element = r.get<const EditMode>(state::Document).Value;
+                    const auto ranges = GetElementRangesForSelected(r);
                     for (const auto &range : ranges) {
                         r.remove<MeshActiveElement>(range.MeshEntity);
                     }
@@ -74,13 +77,13 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
                 }
             },
             // GPU selection resolves the rectangle after action application.
-            [&](const ApplyBoxSelect &a) { r.emplace_or_replace<PendingBoxSelect>(viewport, a.Box, a.Additive, *a.View); },
+            [&](const ApplyBoxSelect &a) { r.emplace_or_replace<PendingBoxSelect>(state::Document, a.Box, a.Additive, *a.View, active_viewport()); },
             // GPU selection resolves the pixel after action application.
-            [&](const Pick &a) { r.emplace_or_replace<PendingPick>(viewport, a.Mouse, a.Shift, false, *a.View); },
-            [&](const PickCycle &a) { r.emplace_or_replace<PendingPick>(viewport, a.Mouse, a.Shift, true, *a.View); },
+            [&](const Pick &a) { r.emplace_or_replace<PendingPick>(state::Document, a.Mouse, a.Shift, false, *a.View, active_viewport()); },
+            [&](const PickCycle &a) { r.emplace_or_replace<PendingPick>(state::Document, a.Mouse, a.Shift, true, *a.View, active_viewport()); },
             [&](const ApplyEditElementClick &a) {
                 end_box_select_interaction();
-                r.emplace_or_replace<PendingEditElementClick>(viewport, a.Mouse, a.Toggle, *a.View);
+                r.emplace_or_replace<PendingEditElementClick>(state::Document, a.Mouse, a.Toggle, *a.View, active_viewport());
             },
             [&](const ApplyTreeSelection &a) {
                 using Clear = ApplyTreeSelection::ClearKind;
@@ -114,7 +117,7 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
                 }
             },
             [&](SelectAll) {
-                const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
+                const auto interaction_mode = r.get<const Interaction>(state::Document).Mode;
                 const auto active_entity = FindActiveEntity(r);
                 const auto arm_obj_entity = FindArmatureObject(r, active_entity);
                 const bool bone_select = interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && arm_obj_entity != state::Null);
@@ -125,8 +128,8 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
                     for (const auto bone_entity : arm_obj.BoneEntities) r.emplace<BoneSelection>(bone_entity);
                     if (!arm_obj.BoneEntities.empty()) r.emplace<BoneActive>(arm_obj.BoneEntities.back());
                 } else if (interaction_mode == InteractionMode::Edit) {
-                    const auto element = r.get<const EditMode>(viewport).Value;
-                    const auto ranges = GetElementRangesForSelected(r, viewport);
+                    const auto element = r.get<const EditMode>(state::Document).Value;
+                    const auto ranges = GetElementRangesForSelected(r);
                     ApplyEditSelectionCommand(r, ranges, element, EditSelectionOperation::Fill);
                 } else if (interaction_mode == InteractionMode::Object) {
                     r.clear<Selected>();

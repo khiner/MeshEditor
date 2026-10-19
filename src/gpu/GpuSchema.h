@@ -4,9 +4,8 @@
 
 struct Transform;
 struct ViewportTheme;
-struct WorkspaceLights;
 
-using GpuSchema = state::Schema<state::GpuBase, state::GpuCount, Transform, ViewportTheme, WorkspaceLights>;
+using GpuSchema = state::Schema<state::GpuBase, state::GpuCount, Transform, ViewportTheme>;
 template<typename T>
     requires GpuSchema::Has<T>
 inline constexpr state::TypeId state::Slot<T> = GpuSchema::Of<T>();

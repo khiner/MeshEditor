@@ -12,14 +12,14 @@ template<typename T> void AddNamed(state::Registry &r, std::string_view prefix) 
 }
 } // namespace
 
-void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
+void Apply(state::Registry &r, const Action &action) {
     std::visit(
         overloaded{
             [&](const SetMotionType &a) {
                 using Type = SetMotionType::Type;
                 // Apply Selected scope only to selected entities already participating in physics.
                 ForEachTarget(
-                    a.Target, viewport,
+                    a.Target,
                     [&] { return FindActiveEntity(r); },
                     [&](auto &&fn) {
                         for (const auto e : r.view<Selected>()) {
@@ -44,7 +44,7 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
                 );
             },
             [&](const SetColliderShape &a) {
-                ForEachComponentTarget<ColliderShape>(r, a.Target, viewport, [&](state::Entity e) {
+                ForEachComponentTarget<ColliderShape>(r, a.Target, [&](state::Entity e) {
                     const auto owner_mesh = FindMeshEntity(r, e);
                     r.patch<ColliderShape>(e, [&](ColliderShape &cs) {
                         cs.Shape = a.Shape;

@@ -216,7 +216,7 @@ std::array<float, 4> AttributeFloats(const MeshStore &meshes, uint32_t attribute
 
 } // namespace
 
-std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, const state::Registry &r, state::Entity viewport, SaveOptions options) {
+std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, const state::Registry &r, SaveOptions options) {
     const profile::CpuScope scope{"SaveGltf"};
     const auto &meshes = r.Context.get<const MeshStore>();
     const auto &buffers = r.Context.get<const GpuBuffers>();
@@ -235,7 +235,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     // Read source metadata and texture, image, and sampler arrays from gltf::SourceAssets.
     // Encoded images, sampler details, and asset metadata cannot be reconstructed from registry or GPU state.
     // Emit cameras and lights from entity components and materials from PBRMaterial plus MaterialSourceMeta.
-    const auto *src_assets = r.try_get<const gltf::SourceAssets>(viewport);
+    const auto *src_assets = r.try_get<const gltf::SourceAssets>(state::Document);
     static const gltf::SourceAssets EmptySourceAssets{};
     const auto &sa = src_assets ? *src_assets : EmptySourceAssets;
     const auto &names = r.Context.get<const MaterialStore>().Names;
@@ -686,7 +686,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     for (uint32_t i = 1; i < material_count; ++i) {
         const auto source_idx = i - 1;
         auto pbr = buffers.Materials.GetSpan<PBRMaterial>()[i];
-        OverlayRest(r, viewport, state::Key<MaterialStore>(), uint16_t(i), std::as_writable_bytes(std::span{&pbr, 1}));
+        OverlayRest(r, state::Document, state::Key<MaterialStore>(), uint16_t(i), std::as_writable_bytes(std::span{&pbr, 1}));
         const auto &meta = source_idx < material_metas.size() ? material_metas[source_idx] : DefaultMeta;
         if (meta.ImplicitDefault) continue;
         material_indices[i] = asset.materials.size();
@@ -728,7 +728,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     // Other fields emit KHR_animation_pointer channels.
     bool uses_animation_pointer = false;
     {
-        const auto *animations = r.try_get<const Animations>(viewport);
+        const auto *animations = r.try_get<const Animations>(state::Document);
         const auto animation_names = animations ? std::span<const std::string>{animations->Names} : std::span<const std::string>{};
         asset.animations.reserve(animation_names.size());
         for (const auto &name : animation_names) asset.animations.emplace_back(fastgltf::Animation{.name = name});
@@ -1598,9 +1598,9 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     fastgltf::optional<size_t> default_scene_ibl_index;
     if (sa.ImageBasedLight) {
         const auto &src_ibl = *sa.ImageBasedLight;
-        const auto *image_light = r.try_get<const ImageLight>(viewport);
+        const auto *image_light = r.try_get<const ImageLight>(state::Document);
         auto light = image_light ? *image_light : ImageLight{};
-        OverlayRest(r, viewport, state::Key<ImageLight>(), 0, std::as_writable_bytes(std::span{&light, 1}));
+        OverlayRest(r, state::Document, state::Key<ImageLight>(), 0, std::as_writable_bytes(std::span{&light, 1}));
         fastgltf::ImageBasedLight ibl{
             .intensity = light.Intensity,
             .rotation = fastgltf::math::fquat(light.Rotation.x, light.Rotation.y, light.Rotation.z, light.Rotation.w),
@@ -1666,7 +1666,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     ForEachMaterialExtension([&](const auto &extension) {
         if (any_material([&](const auto &m) { return (m.*extension.Theirs).has_value(); })) asset.extensionsUsed.emplace_back(extension.Name);
     });
-    if (const auto *mv = r.try_get<const ::MaterialVariants>(viewport); mv && !mv->Names.empty()) {
+    if (const auto *mv = r.try_get<const ::MaterialVariants>(state::Document); mv && !mv->Names.empty()) {
         asset.materialVariants.reserve(mv->Names.size());
         for (const auto &v : mv->Names) asset.materialVariants.emplace_back(v);
         asset.extensionsUsed.emplace_back("KHR_materials_variants");

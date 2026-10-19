@@ -18,7 +18,7 @@ struct Recording {
 // Render the master mix, which is far-field pressure in pascals at 1 m.
 // `monitor` maps 20 Pa to full scale and soft-limits higher pressures for device output.
 // Capture paths pass null and convert pressure separately.
-void ProcessAudio(state::Registry &, state::Entity viewport, float *output, uint32_t frame_count, bool monitor = false);
+void ProcessAudio(state::Registry &, float *output, uint32_t frame_count, bool monitor = false);
 
 // Convert captured pressure to device units in place, at the monitor level.
 // `limiter` preserves the envelope across calls for one monitored stream.
@@ -32,7 +32,7 @@ void EndAudioCapture(state::Registry &);
 // Append everything the device has produced since the last call.
 void DrainAudioCapture(state::Registry &, std::vector<float> &);
 
-void RenderAudioOffline(state::Registry &, state::Entity viewport, std::vector<float> &, uint32_t frame_count);
+void RenderAudioOffline(state::Registry &, std::vector<float> &, uint32_t frame_count);
 
 // Rebuild the entity's ContactDynamics from its MassProperties, ModalModes, and mesh (surface curvature).
 // Removes ContactDynamics when the inputs are missing.

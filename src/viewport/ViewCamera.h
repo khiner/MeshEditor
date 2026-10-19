@@ -1,7 +1,6 @@
 #pragma once
 
 #include "viewport/CameraView.h"
-#include "viewport/ViewportSchema.h"
 
 // Uses the viewport aspect ratio rather than the source camera's aspect ratio.
 struct ViewCamera : CameraView {
@@ -26,6 +25,8 @@ struct ViewCamera : CameraView {
 
     bool Tick();
 
+    bool operator==(const ViewCamera &) const = default;
+
     // Returns a level world rotation whose positive Z axis follows `away`.
     static quat OrientationFromAway(vec3 away);
 
@@ -35,16 +36,9 @@ private:
         float SrcDistance, DstDistance;
         quat SrcOrientation, DstOrientation;
         uint32_t Frame;
+        bool operator==(const Animation &) const = default;
     };
     std::optional<Animation> Anim{};
 
     void ApplyDistance(float new_distance);
-};
-
-// The scene camera the document selects for look-through.
-struct LookingThrough {};
-
-// The viewport's editor view to restore when leaving look-through.
-struct SavedViewCamera {
-    ViewCamera Value;
 };

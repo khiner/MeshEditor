@@ -3,7 +3,11 @@
 #include "state/Entity.h"
 
 struct FrameState;
+struct Viewport;
 
-void Interact(state::Registry &, state::Entity viewport, FrameState &Frame);
-void InteractOverlay(state::Registry &, state::Entity viewport, FrameState &Frame);
-void DrawOverlay(state::Registry &, state::Entity viewport, FrameState &Frame);
+// Routes mouse and keyboard input in the active viewport's window.
+void Interact(state::Registry &, FrameState &Frame);
+// Draws the viewport window's controls, which take input only in the active viewport.
+void InteractOverlay(state::Registry &, FrameState &Frame, const Viewport &);
+// Draws the viewport window's overlay above its image, with the gesture guides in the active viewport.
+void DrawOverlay(state::Registry &, FrameState &Frame, const Viewport &);

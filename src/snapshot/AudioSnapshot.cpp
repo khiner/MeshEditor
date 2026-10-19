@@ -27,5 +27,7 @@ void RegisterAudio(Tables &tables) {
 #endif
             SoundVertices, SamplePlayback, ContactDynamics, ReportContacts>{}
     );
+    // The output device belongs to the workspace.
+    tables.Snapshots[state::Type<AudioOutputConfig>()].History = false;
 }
 } // namespace snapshot::detail

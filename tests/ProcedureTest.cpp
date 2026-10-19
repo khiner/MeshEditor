@@ -15,7 +15,6 @@
 #include "procedure/Cook.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
-#include "render/RenderTargets.h"
 #include "render/Textures.h"
 #include "scene/SceneGraph.h"
 #include "viewport/Viewport.h"
@@ -38,7 +37,7 @@ using ::test::Op, ::test::Patchwork, ::test::PlanCase, ::test::Region, ::test::T
 struct Fixture : TestDir, Engine {
     // Runs after each action and each direct commit, told whether the present node replays from its actions.
     std::function<void(bool replays)> Observe;
-    explicit Fixture(const char *dir) : TestDir{dir}, Engine{true} { R.Context.get<ViewportExtent>().Value = {64, 64}; }
+    explicit Fixture(const char *dir) : TestDir{dir}, Engine{true} { R.Context.get<Viewports>().All.front().State.Extent = {64, 64}; }
     void Reset(std::string_view name) {
         Observe = {};
         expect(P->New(Path / name));
@@ -91,20 +90,20 @@ struct Fixture : TestDir, Engine {
         Do(action::view::SetEditMode{.Mode = element});
     }
     void Render() {
-        SubmitViewport(R, Viewport);
+        SubmitViewports(R);
         WaitForRender(R);
     }
     std::vector<std::byte> Image() {
         Render();
-        const auto &image = R.Context.get<const RenderTargets>().Resources->FinalColorImage;
+        const auto &image = R.Context.get<const Viewports>().All.front().Targets.Resources->FinalColorImage;
         return ReadbackImageRgba8(R.Context.get<const mtl::Context>(), image, 0, 0, image.Extent);
     }
-    const SceneViewUBO &View() const { return *reinterpret_cast<const SceneViewUBO *>(R.Context.get<const GpuBuffers>().SceneViewUBO.Contents().data()); }
+    const SceneViewUBO &View() const { return *reinterpret_cast<const SceneViewUBO *>(R.Context.get<const Viewports>().All.front().SceneViewUBO.Contents().data()); }
     // Renders a frame and clicks the element nearest the world position, adding it to the selection with `toggle`.
     void Click(vec3 position, bool toggle) {
         Render();
         const auto clip = View().ViewProj * vec4{position.x, position.y, position.z, 1.f};
-        Do(action::selection::ApplyEditElementClick{{.5f + .5f * clip.x / clip.w, .5f - .5f * clip.y / clip.w}, toggle, std::make_unique<RenderView>(R.Context.get<const GpuBuffers>().FrameView)});
+        Do(action::selection::ApplyEditElementClick{{.5f + .5f * clip.x / clip.w, .5f - .5f * clip.y / clip.w}, toggle, std::make_unique<RenderView>(R.Context.get<const Viewports>().All.front().FrameView)});
     }
     // Process direct scene writes and commit them as one history node.
     void Commit(std::string label) {

@@ -17,7 +17,6 @@
 #include "render/Textures.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
-#include "viewport/ViewCameraOps.h"
 #include "viewport/ViewportEvents.h"
 
 namespace {
@@ -53,11 +52,11 @@ void DestroyArmatureData(state::Registry &r, state::Entity arm_obj_entity) {
     r.remove<VertexStoreId, ModelsBuffer>(arm_obj_entity);
 }
 
-void Destroy(state::Registry &r, state::Entity viewport, state::Entity e) {
-    Destroy(r, viewport, std::span{&e, 1u});
+void Destroy(state::Registry &r, state::Entity e) {
+    Destroy(r, std::span{&e, 1u});
 }
 
-void Destroy(state::Registry &r, state::Entity viewport, std::span<const state::Entity> entities) {
+void Destroy(state::Registry &r, std::span<const state::Entity> entities) {
     if (entities.empty()) return;
     const profile::CpuScope scope{"DestroyObjects"};
     auto &pending = r.Context.emplace<PendingObjectRemovals>();
@@ -66,8 +65,6 @@ void Destroy(state::Registry &r, state::Entity viewport, std::span<const state::
     destroyed.reserve(entities.size());
     for (const auto e : entities) {
         if (!r.valid(e)) continue;
-        if (r.all_of<LookingThrough>(e)) ClearLookThrough(r, viewport);
-
         if (const auto *instance = r.try_get<Instance>(e)) {
             if (HasMesh(r, instance->Entity) || r.all_of<ObjectExtrasTag>(instance->Entity)) pending.Buffers.emplace(instance->Entity);
         }
@@ -109,7 +106,7 @@ void Destroy(state::Registry &r, state::Entity viewport, std::span<const state::
     r.destroy(destroyed);
 }
 
-void ProcessObjectRemovals(state::Registry &r, state::Entity viewport) {
+void ProcessObjectRemovals(state::Registry &r) {
     auto *pending = r.Context.find<PendingObjectRemovals>();
     if (!pending) return;
     const profile::CpuScope scope{"ProcessObjectRemovals"};
@@ -170,21 +167,21 @@ void ProcessObjectRemovals(state::Registry &r, state::Entity viewport) {
     // Clear the persistent texture manifest at the same time.
     if (removed_objects && r.view<Instance>().empty()) {
         ResetImportedTexturesAndMaterials(r);
-        r.remove<MaterializedTextures>(viewport);
+        r.remove<MaterializedTextures>(state::Document);
     }
 }
 
-void ClearMeshes(state::Registry &r, state::Entity viewport) {
-    Destroy(r, viewport, SortedEntities(r.view<Instance>(state::Exclude<SubElementOf>)));
+void ClearMeshes(state::Registry &r) {
+    Destroy(r, SortedEntities(r.view<Instance>(state::Exclude<SubElementOf>)));
 }
 
-std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(state::Registry &r, state::Entity viewport, const std::filesystem::path &path, MeshInstanceCreateInfo info, bool deduplicate) {
+std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(state::Registry &r, const std::filesystem::path &path, MeshInstanceCreateInfo info, bool deduplicate) {
     const auto stored_path = project::ResolveAsset(r, path);
     auto result = ReadMeshFile(stored_path);
     if (!result) return std::unexpected{result.error()};
 
     if (!result->Materials.empty()) {
-        const auto imported = ImportObjPlyMaterials(r, viewport, result->Materials, stored_path);
+        const auto imported = ImportObjPlyMaterials(r, result->Materials, stored_path);
         if (!imported) return std::unexpected{imported.error()};
         for (auto &material : result->Primitives.MaterialIndices) material = (*imported)[material];
     }
@@ -197,6 +194,6 @@ std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(s
     return entities;
 }
 
-void RequestImportMesh(state::Registry &r, state::Entity viewport, std::filesystem::path path, MeshInstanceCreateInfo info) {
-    r.emplace_or_replace<PendingImportMesh>(viewport, std::move(path), std::move(info));
+void RequestImportMesh(state::Registry &r, std::filesystem::path path, MeshInstanceCreateInfo info) {
+    r.emplace_or_replace<PendingImportMesh>(state::Document, std::move(path), std::move(info));
 }

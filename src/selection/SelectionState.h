@@ -11,7 +11,7 @@ struct ModeScope {
     InteractionMode Mode;
     bool BoneEdit, Bone, MeshEdit;
 };
-ModeScope ScopeOf(const state::Registry &, state::Entity viewport);
+ModeScope ScopeOf(const state::Registry &);
 
 // Derived viewport aggregates of the selection, each recomputed in the settle pass when its own inputs change.
 // Per-frame readers take them in O(1).
@@ -82,4 +82,4 @@ void BuildOutlinerRows(const state::Registry &, OutlinerRows &);
 
 // Recomputes the aggregates whose inputs changed this settle, and returns the meshes whose primary edit instance changed.
 // Runs after the world transforms are current.
-std::vector<state::Entity> UpdateSelectionState(state::Registry &, state::Entity viewport);
+std::vector<state::Entity> UpdateSelectionState(state::Registry &);

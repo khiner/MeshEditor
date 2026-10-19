@@ -5,16 +5,16 @@
 #include "state/Registry.h"
 
 namespace animation {
-void Evaluate(state::Registry &r, state::Entity viewport, float seconds, bool persistent) {
+void Evaluate(state::Registry &r, float seconds, bool persistent) {
     std::vector<state::Entity> stale;
     for (const auto entity : r.view<const PosedLocal, const Transform>()) {
-        if (!PosedTransformComponents(r, viewport, entity)) stale.emplace_back(entity);
+        if (!PosedTransformComponents(r, entity)) stale.emplace_back(entity);
     }
     for (const auto entity : stale) r.remove<PosedLocal>(entity);
 
     std::vector<float> value;
     for (const auto [entity, clips] : r.view<const AnimationClips>().each()) {
-        const auto *clip = ActiveClip(r, viewport, clips);
+        const auto *clip = ActiveClip(r, clips);
         if (!clip) continue;
         // The node's pose, seeded from its Transform so unanimated components follow edits to it.
         std::optional<Transform> pose;

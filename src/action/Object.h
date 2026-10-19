@@ -107,5 +107,5 @@ using Action = std::variant<
     UpdateMaterial<float>, UpdateMaterial<vec2>, UpdateMaterial<vec3>, UpdateMaterial<vec4>, UpdateMaterial<uint32_t>, UpdateMaterial<MaterialAlphaMode>,
     SetLightType, SetSpotCone, SetProjection>;
 
-void Apply(state::Registry &, state::Entity viewport, const Action &);
+void Apply(state::Registry &, const Action &);
 } // namespace action::object

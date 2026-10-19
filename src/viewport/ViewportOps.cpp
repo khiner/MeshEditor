@@ -14,14 +14,14 @@
 #include "selection/SelectionState.h"
 #include "viewport/InteractionComponents.h"
 
-bool SetInteractionMode(state::Registry &r, state::Entity viewport, InteractionMode mode) {
-    const auto current_mode = r.get<const Interaction>(viewport).Mode;
+bool SetInteractionMode(state::Registry &r, InteractionMode mode) {
+    const auto current_mode = r.get<const Interaction>(state::Document).Mode;
     if (current_mode == mode) return false;
 
     const auto active_entity = FindActiveEntity(r);
     const auto active_arm = active_entity != state::Null ? FindArmatureObject(r, active_entity) : state::Null;
     const bool active_is_armature = active_arm != state::Null;
-    const auto &flags = r.get<const SelectionFlags>(viewport);
+    const auto &flags = r.get<const SelectionFlags>(state::Document);
     if (mode == InteractionMode::Edit && !flags.AllMeshes && !active_is_armature) return false;
     if (mode == InteractionMode::Pose && !active_is_armature) return false;
 
@@ -40,7 +40,7 @@ bool SetInteractionMode(state::Registry &r, state::Entity viewport, InteractionM
     };
 
     if (current_mode == InteractionMode::Excite) {
-        if (const auto *baseline = r.try_get<const ExciteSelectionBaseline>(viewport)) {
+        if (const auto *baseline = r.try_get<const ExciteSelectionBaseline>(state::Document)) {
             const auto ranges = edit_ranges(baseline->Mode);
             ApplyEditSelectionCommand(r, ranges, baseline->Mode, EditSelectionOperation::RestoreBaseline);
             for (const auto &range : ranges) {
@@ -49,19 +49,19 @@ bool SetInteractionMode(state::Registry &r, state::Entity viewport, InteractionM
                 else r.remove<MeshActiveElement>(range.MeshEntity);
             }
         }
-        r.remove<ExciteSelectionBaseline>(viewport);
+        r.remove<ExciteSelectionBaseline>(state::Document);
     } else if (mode == InteractionMode::Excite) {
-        const auto edit_element = r.get<const EditMode>(viewport).Value;
+        const auto edit_element = r.get<const EditMode>(state::Document).Value;
         const auto ranges = edit_ranges(edit_element);
         ApplyEditSelectionCommand(r, ranges, edit_element, EditSelectionOperation::CaptureBaseline);
-        r.emplace_or_replace<ExciteSelectionBaseline>(viewport, edit_element);
+        r.emplace_or_replace<ExciteSelectionBaseline>(state::Document, edit_element);
     }
 
     std::vector<state::Entity> converting;
     if (mode == InteractionMode::Edit && !active_is_armature) {
         // Take bits only for selected meshes without them.
         // A mesh that has them keeps its remembered selection, converted to the element mode it was stored in otherwise.
-        if (const auto edit_element = r.get<const EditMode>(viewport).Value; edit_element != Element::None) {
+        if (const auto edit_element = r.get<const EditMode>(state::Document).Value; edit_element != Element::None) {
             std::vector<state::Entity> taking;
             for (const auto mesh_entity : flags.Meshes) {
                 if (r.all_of<MeshElementSelection>(mesh_entity)) {
@@ -81,20 +81,20 @@ bool SetInteractionMode(state::Registry &r, state::Entity viewport, InteractionM
             }
         }
     }
-    r.patch<Interaction>(viewport, [mode](auto &s) { s.Mode = mode; });
-    ConvertElementSelections(r, converting, r.get<const EditMode>(viewport).Value);
+    r.patch<Interaction>(state::Document, [mode](auto &s) { s.Mode = mode; });
+    ConvertElementSelections(r, converting, r.get<const EditMode>(state::Document).Value);
     if (!initialize_selection.empty()) {
-        ApplyEditSelectionCommand(r, initialize_selection, r.get<const EditMode>(viewport).Value, EditSelectionOperation::Fill);
+        ApplyEditSelectionCommand(r, initialize_selection, r.get<const EditMode>(state::Document).Value, EditSelectionOperation::Fill);
     }
-    r.patch<ViewportTheme>(viewport, [](auto &) {});
+    r.patch<ViewportTheme>(state::Document, [](auto &) {});
     return true;
 }
 
-void Delete(const state::Registry &r, state::Entity viewport) {
-    if (IsBoneEditMode(r, viewport)) action::Emit(action::bone::DeleteSelected{});
+void Delete(const state::Registry &r) {
+    if (IsBoneEditMode(r)) action::Emit(action::bone::DeleteSelected{});
     else action::Emit(action::object::Delete{});
 }
-void Duplicate(const state::Registry &r, state::Entity viewport) {
-    if (IsBoneEditMode(r, viewport)) action::Emit(action::bone::DuplicateSelected{});
+void Duplicate(const state::Registry &r) {
+    if (IsBoneEditMode(r)) action::Emit(action::bone::DuplicateSelected{});
     else action::Emit(action::object::Duplicate{}, action::Phase::Stage);
 }

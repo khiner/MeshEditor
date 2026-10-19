@@ -33,5 +33,5 @@ struct SelectAnimation {
 
 using Action = std::variant<InsertKey, DeleteKey, RecordChanged, AddAnimation, RenameAnimation, SelectAnimation>;
 
-void Apply(state::Registry &, state::Entity viewport, const Action &);
+void Apply(state::Registry &, const Action &);
 } // namespace action::animation

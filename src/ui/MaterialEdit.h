@@ -34,7 +34,7 @@ struct MaterialEdit : FieldWidgets<Prefix...> {
     bool Run(auto widget, bool = false) {
         using Field = action::detail::last_field<Prefix..., Ms...>;
         return detail::RunField(
-            R, animation::AnimationsViewport(R), detail::Channel<Prefix..., Ms...>(uint16_t(Index)), Read<Ms...>(), widget,
+            R, state::Document, detail::Channel<Prefix..., Ms...>(uint16_t(Index)), Read<Ms...>(), widget,
             false, false, [&](action::Target, const Field &v) { action::Emit(Action<Ms...>(v), action::Phase::Stage); }
         );
     }

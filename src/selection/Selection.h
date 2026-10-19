@@ -13,11 +13,11 @@ using numeric::vec3;
 struct ElementRange;
 struct StartPivot;
 
-bool IsBoneEditMode(const state::Registry &, state::Entity viewport);
-bool CanDuplicate(const state::Registry &, state::Entity viewport);
-bool CanDuplicateLinked(const state::Registry &, state::Entity viewport);
-bool CanDelete(const state::Registry &, state::Entity viewport);
-std::vector<ElementRange> GetElementRangesForSelected(const state::Registry &, state::Entity viewport);
+bool IsBoneEditMode(const state::Registry &);
+bool CanDuplicate(const state::Registry &);
+bool CanDuplicateLinked(const state::Registry &);
+bool CanDelete(const state::Registry &);
+std::vector<ElementRange> GetElementRangesForSelected(const state::Registry &);
 
 // Returns the containing armature, or null if the entity is unrelated to an armature.
 state::Entity FindArmatureObject(const state::Registry &, state::Entity);
@@ -25,9 +25,9 @@ state::Entity FindArmatureObject(const state::Registry &, state::Entity);
 state::Entity FindActiveBone(const state::Registry &);
 
 // The mean world position of the selected vertices of each mesh's transformable primary instance.
-vec3 EditSelectionCenter(const state::Registry &, state::Entity viewport);
+vec3 EditSelectionCenter(const state::Registry &);
 // The pivot a transform of the current selection turns and scales about: the selection's center, with the active target's rotation.
-StartPivot TransformPivot(const state::Registry &, state::Entity viewport);
+StartPivot TransformPivot(const state::Registry &);
 
 // Exclusive select: clears Selected/Active, then selects `e` (null clears everything).
 void Select(state::Registry &, state::Entity);

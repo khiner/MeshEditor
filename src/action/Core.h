@@ -27,7 +27,9 @@ namespace action {
 struct OnActive {};
 struct OnSelected {};
 struct OnSelectedDelta {}; // Offsets each selected target by the active target's change since the drag start.
-struct OnViewport {};
+struct OnViewport {
+    uint32_t Id;
+};
 using Target = std::variant<OnActive, OnSelected, OnSelectedDelta, OnViewport, state::Entity>;
 
 // A field's value at the start of a SelectedDelta drag, so each step (and replay) computes start + delta.
@@ -118,5 +120,7 @@ using Core = std::variant<
     Update<AttributeType>, Update<AttributeDomain>, Update<VectorMathOp>, Update<FloatMathOp>, Update<CompareOp>, Update<BooleanMathOp>, Update<BooleanOperation>, Update<procedure::VectorComponent>,
     DestroyEntity>;
 
-void Apply(state::Registry &, state::Entity viewport, const Core &);
+void Apply(state::Registry &, const Core &);
+// An Update records when it targets entity components that history tracks.
+bool IsRecordable(const Core &);
 } // namespace action

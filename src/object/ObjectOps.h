@@ -30,14 +30,14 @@ state::Entity AddEmpty(state::Registry &, MeshStore &, const ObjectCreateInfo & 
 state::Entity AddCamera(state::Registry &, MeshStore &, const ObjectCreateInfo & = {}, std::optional<CameraLens> = {});
 state::Entity AddLight(state::Registry &, MeshStore &, const ObjectCreateInfo & = {}, std::optional<PunctualLight> = {});
 
-std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(state::Registry &, state::Entity viewport, const std::filesystem::path &, MeshInstanceCreateInfo, bool deduplicate = false);
+std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(state::Registry &, const std::filesystem::path &, MeshInstanceCreateInfo, bool deduplicate = false);
 
-void RequestImportMesh(state::Registry &, state::Entity viewport, std::filesystem::path, MeshInstanceCreateInfo);
+void RequestImportMesh(state::Registry &, std::filesystem::path, MeshInstanceCreateInfo);
 
-void Destroy(state::Registry &, state::Entity viewport, state::Entity);
-void Destroy(state::Registry &, state::Entity viewport, std::span<const state::Entity>);
-void ProcessObjectRemovals(state::Registry &, state::Entity viewport);
-void ClearMeshes(state::Registry &, state::Entity viewport);
+void Destroy(state::Registry &, state::Entity);
+void Destroy(state::Registry &, std::span<const state::Entity>);
+void ProcessObjectRemovals(state::Registry &);
+void ClearMeshes(state::Registry &);
 void DestroyArmatureData(state::Registry &, state::Entity arm_obj_entity);
 
 state::Entity CreateBoneEntity(state::Registry &, state::Entity arm_obj_entity, const Armature &, uint32_t bone_index, state::Entity parent_entity, float display_scale);

@@ -122,7 +122,7 @@ void CommitEditedLocal(state::Registry &r, state::Entity e, const Transform &edi
     }
     r.patch<PosedLocal>(e, [&](PosedLocal &posed) { posed.Value = edited; });
     if (!r.all_of<Transform>(e)) return;
-    const auto posed = animation::PosedTransformComponents(r, animation::AnimationsViewport(r), e);
+    const auto posed = animation::PosedTransformComponents(r, e);
     r.patch<Transform>(e, [&](Transform &t) {
         if (!(posed & animation::TranslationBit)) t.P = edited.P;
         if (!(posed & animation::RotationBit)) t.R = edited.R;

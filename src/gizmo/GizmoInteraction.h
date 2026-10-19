@@ -61,7 +61,7 @@ struct GizmoInteraction {
     // Set when Escape ends a drag, and cleared by the overlay that cancels the gesture.
     bool Cancelled{false};
 
-    // Interact writes these fields for Render and Render clears RenderTransform.
+    // The active viewport's overlay writes these fields each frame for every viewport's Render, absent without a transform target.
     std::optional<GizmoTransform> RenderTransform;
     TransformGizmo::LocalTransformDelta Delta;
     // Preserve the position used by Interact because pointer wrapping resets the mouse delta before Render.

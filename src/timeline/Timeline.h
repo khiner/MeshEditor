@@ -50,4 +50,4 @@ struct LastEvaluatedFrame {
 };
 
 // Resets playback to the start frame and invalidates the physics cache.
-void JumpToStartFrame(state::Registry &, state::Entity viewport);
+void JumpToStartFrame(state::Registry &);

@@ -43,5 +43,5 @@ struct SetView {
 
 using Action = std::variant<TogglePlay, CancelPlay, SetFrame, SetStartFrame, SetEndFrame, JumpToStart, JumpToEnd, OffsetFrame, JumpTime, JumpKeyframe, SetView, EnterPresentation>;
 
-void Apply(state::Registry &, state::Entity viewport, const Action &);
+void Apply(state::Registry &, const Action &);
 } // namespace action::timeline

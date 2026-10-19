@@ -12,6 +12,6 @@ std::vector<TextureRef> GetTextureRefs(state::Registry &);
 
 struct HdriRefs {
     std::vector<std::string> Names;
-    uint32_t ActiveIndex;
+    uint32_t ActiveIndex; // The selected HDRI, or the first when no HDRI has its name.
 };
-HdriRefs GetHdriRefs(state::Registry &);
+HdriRefs GetHdriRefs(state::Registry &, std::string_view selected);

@@ -16,7 +16,7 @@
 #include "project/Project.h"
 #include "scene/Entity.h"
 #include "scene/SceneChanges.h"
-#include "viewport/ViewCamera.h"
+#include "viewport/Viewport.h"
 
 #include <print>
 #include <unordered_set>
@@ -234,7 +234,7 @@ void TriggerModalStrike(state::Registry &r, state::Entity e, uint32_t excitable_
             imp = physics->Impactor;
         } else {
             const auto *device = r.Context.find<AudioDeviceResource>();
-            const auto *striker_ptr = device ? r.try_get<const Striker>(device->Viewport) : nullptr;
+            const auto *striker_ptr = device ? r.try_get<const Striker>(state::Document) : nullptr;
             imp = StrikerImpactor(striker_ptr ? *striker_ptr : Striker{});
         }
         const vec3 strike_point = physics ? physics->Point : TransformPoint(*WorldTransformOf(r, e), modes.Positions[excitable_index]);
@@ -497,7 +497,7 @@ bool ModalModelStale(const state::Registry &r, state::Entity e, const SolveInput
 }
 
 // Launch an async solve unless one is already running or the baked model matches the inputs.
-void LaunchModalSolve(state::Registry &r, state::Entity viewport, state::Entity e, const ModalSolveSettings &settings, const AcousticMaterial &material) {
+void LaunchModalSolve(state::Registry &r, state::Entity e, const ModalSolveSettings &settings, const AcousticMaterial &material) {
     if (!r.valid(e) || IsSolving(r, e)) return;
     const auto *inst = r.try_get<const Instance>(e);
     if (!inst || !TryGetMesh(r, inst->Entity)) return;
@@ -541,7 +541,7 @@ void LaunchModalSolve(state::Registry &r, state::Entity viewport, state::Entity 
         return {ModalModelData{std::move(result->Modes), result->Mass, std::move(result->Tetrahedra), std::move(result->Summary)}, {inputs.OperatorHash, std::move(result->Basis)}};
     };
     // Intentional registry-ctx write outside Apply: transient background-job bookkeeping.
-    r.Context.get<ModalSolveJobs>().Jobs.push_back(std::make_shared<ModalSolveJob>(e, viewport, r.Epoch, Job<ModalGenerationResult, fastfem::SolveMonitor>{GetName(r, e), std::move(work)}));
+    r.Context.get<ModalSolveJobs>().Jobs.push_back(std::make_shared<ModalSolveJob>(e, r.Epoch, Job<ModalGenerationResult, fastfem::SolveMonitor>{GetName(r, e), std::move(work)}));
 }
 
 bool HasPendingModalSolves(const state::Registry &r) { return !r.Context.get<const ModalSolveJobs>().Jobs.empty(); }
@@ -807,8 +807,8 @@ void UpdateModalPlacement(state::Registry &r) {
     }
     // Publish camera-derived object attenuation because the audio thread cannot access the registry.
     const auto *device = r.Context.find<AudioDeviceResource>();
-    const auto *camera = device && r.valid(device->Viewport) ? r.try_get<const ViewCamera>(device->Viewport) : nullptr;
-    if (camera && (moved || bank.GainListener != camera->Position())) UpdateListenerGains(r, bank, device->Viewport);
+    if (!device) return;
+    if (moved || bank.GainListener != r.Context.get<const Viewports>().Active().State.Camera.Active.Position()) UpdateListenerGains(r, bank);
 }
 
 void UpdateAudioContacts(state::Registry &r) {

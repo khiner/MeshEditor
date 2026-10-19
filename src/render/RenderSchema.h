@@ -27,15 +27,13 @@ struct MaterialVariants;
 struct PbrMeshFeatures;
 struct Pipelines;
 struct RenderChanges;
-struct RenderSamplerSlots;
-struct RenderTargets;
 struct ActiveSamplerAnisotropy;
 struct TextureStore;
 struct EnvironmentStore;
 struct MaterializedTextures;
 struct ViewportRenderResources;
 
-using RenderSchema = state::Schema<state::RenderBase, state::RenderCount, GpuBuffers, PosedLayout, MeshEditWork, MeshVertexOverlays, BoundsRun, MeshletPositionsDirty, ClusterLodDirty, ClusterLodDemand, MeshDisplayDirty, MeshLayoutDirty, MeshBoundsDirty, GpuSceneState, Instance, Hidden, Visibility, PunctualLight, ImageLight, LightIndex, MaterialStore, MeshMaterialAssignment, MeshMaterialSlotSelection, MaterialVariants, PbrMeshFeatures, Pipelines, RenderChanges, RenderSamplerSlots, RenderTargets, ActiveSamplerAnisotropy, TextureStore, EnvironmentStore, MaterializedTextures, ViewportRenderResources>;
+using RenderSchema = state::Schema<state::RenderBase, state::RenderCount, GpuBuffers, PosedLayout, MeshEditWork, MeshVertexOverlays, BoundsRun, MeshletPositionsDirty, ClusterLodDirty, ClusterLodDemand, MeshDisplayDirty, MeshLayoutDirty, MeshBoundsDirty, GpuSceneState, Instance, Hidden, Visibility, PunctualLight, ImageLight, LightIndex, MaterialStore, MeshMaterialAssignment, MeshMaterialSlotSelection, MaterialVariants, PbrMeshFeatures, Pipelines, RenderChanges, ActiveSamplerAnisotropy, TextureStore, EnvironmentStore, MaterializedTextures, ViewportRenderResources>;
 template<typename T>
     requires RenderSchema::Has<T>
 inline constexpr state::TypeId state::Slot<T> = RenderSchema::Of<T>();

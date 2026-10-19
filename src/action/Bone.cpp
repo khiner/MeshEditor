@@ -15,7 +15,7 @@
 
 namespace {
 // After AddBone/RemoveBone, reset pose state, resolve animation indices, and re-evaluate the current frame.
-void RebuildBoneStructure(state::Registry &r, state::Entity viewport, state::Entity arm_data_entity) {
+void RebuildBoneStructure(state::Registry &r, state::Entity arm_data_entity) {
     auto &armature = r.edit<Armature>(arm_data_entity);
     armature.FinalizeStructure();
     armature.RecomputeRestWorld();
@@ -30,7 +30,7 @@ void RebuildBoneStructure(state::Registry &r, state::Entity viewport, state::Ent
         ps->BoneUserOffset.assign(armature.Bones.size(), Transform{});
         ps->BonePoseWorld.assign(armature.Bones.size(), I4);
     }
-    r.edit<LastEvaluatedFrame>(viewport).Value = -1;
+    r.edit<LastEvaluatedFrame>(state::Document).Value = -1;
 }
 
 // `display_scales` contains every bone's display scale, in bone order.
@@ -50,7 +50,7 @@ state::Entity CreateSingleBoneInstance(state::Registry &r, state::Entity arm_obj
 } // namespace
 
 namespace action::bone {
-void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
+void Apply(state::Registry &r, const Action &action) {
     std::visit(
         overloaded{
             [&](Add) {
@@ -61,7 +61,7 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
                 auto &armature = r.edit<Armature>(r.get<ArmatureObject>(arm_obj_entity).Entity);
                 const auto &arm_wt = *WorldTransformOf(r, arm_obj_entity);
                 const auto new_id = armature.AddBone("Bone", {}, {.P = (Conjugate(Normalize(arm_wt.R)) * -arm_wt.P) / arm_wt.S});
-                RebuildBoneStructure(r, viewport, r.get<ArmatureObject>(arm_obj_entity).Entity);
+                RebuildBoneStructure(r, r.get<ArmatureObject>(arm_obj_entity).Entity);
 
                 const auto bone_entity = CreateSingleBoneInstance(r, arm_obj_entity, new_id, ComputeBoneDisplayScales(armature));
                 SelectBone(r, bone_entity);
@@ -98,7 +98,7 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
                 }
                 if (new_bone_ids.empty()) return;
 
-                RebuildBoneStructure(r, viewport, arm_obj.Entity);
+                RebuildBoneStructure(r, arm_obj.Entity);
                 r.clear<BoneSelection, BoneActive>();
 
                 const auto display_scales = ComputeBoneDisplayScales(armature);
@@ -111,7 +111,7 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
                 for (const auto idx : updated_parent_indices) {
                     r.replace<BoneDisplayScale>(arm_obj.BoneEntities[idx], display_scales[idx]);
                 }
-                r.emplace_or_replace<StartScreenTransform>(viewport, TransformGizmo::TransformType::Translate);
+                r.emplace_or_replace<StartScreenTransform>(state::Document, TransformGizmo::TransformType::Translate);
             },
             [&](DuplicateSelected) {
                 const auto arm_obj_entity = FindArmatureObject(r, FindActiveEntity(r));
@@ -141,7 +141,7 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
                 }
                 if (duplicated.empty()) return;
 
-                RebuildBoneStructure(r, viewport, r.get<ArmatureObject>(arm_obj_entity).Entity);
+                RebuildBoneStructure(r, r.get<ArmatureObject>(arm_obj_entity).Entity);
                 r.clear<BoneSelection, BoneActive>();
 
                 const auto display_scales = ComputeBoneDisplayScales(armature);
@@ -153,7 +153,7 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
                 }
                 r.emplace<BoneActive>(last_bone);
 
-                r.emplace_or_replace<StartScreenTransform>(viewport, TransformGizmo::TransformType::Translate);
+                r.emplace_or_replace<StartScreenTransform>(state::Document, TransformGizmo::TransformType::Translate);
             },
             [&](const ClearSelectedTransforms &a) {
                 if (FindArmatureObject(r, FindActiveEntity(r)) == state::Null) return;
@@ -206,7 +206,7 @@ void Apply(state::Registry &r, state::Entity viewport, const Action &action) {
                     arm_obj.BoneEntities.erase(arm_obj.BoneEntities.begin() + idx);
                 }
 
-                RebuildBoneStructure(r, viewport, arm_obj.Entity);
+                RebuildBoneStructure(r, arm_obj.Entity);
 
                 for (uint32_t i = 0; i < arm_obj.BoneEntities.size(); ++i) {
                     const auto e = arm_obj.BoneEntities[i];

@@ -22,6 +22,7 @@ struct EnabledInteractionModes {
 
 struct OrbitToActive {
     bool Value{false};
+    bool operator==(const OrbitToActive &) const = default;
 };
 
 struct ShadeSmoothAngle {

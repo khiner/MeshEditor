@@ -58,7 +58,7 @@ template<typename C>
 struct ComponentUpdateTraits {
     static bool Has(const state::Registry &r, state::Entity e) { return r.all_of<C>(e); }
     static state::Entity Active(const state::Registry &r) { return ActiveWith<C>(r); }
-    static void ForEachSelected(state::Registry &r, state::Entity, const std::function<void(state::Entity)> &fn) { ForEachSelectedWith<C>(r, fn); }
+    static void ForEachSelected(state::Registry &r, const std::function<void(state::Entity)> &fn) { ForEachSelectedWith<C>(r, fn); }
     static void Read(const state::Registry &r, state::Entity e, uint16_t offset, void *dst, size_t size) {
         std::memcpy(dst, reinterpret_cast<const std::byte *>(&r.get<const C>(e)) + offset, size);
     }
@@ -74,8 +74,8 @@ struct UpdateTraits : ComponentUpdateTraits<C> {};
 template<typename C>
     requires std::same_as<C, mesh::Inset> || std::same_as<C, mesh::Bevel>
 struct UpdateTraits<C> : ComponentUpdateTraits<C> {
-    static void ForEachSelected(state::Registry &r, state::Entity viewport, const std::function<void(state::Entity)> &fn) {
-        nodes::ForEachResultNode(r, viewport, [&](state::Entity, state::Entity node) {
+    static void ForEachSelected(state::Registry &r, const std::function<void(state::Entity)> &fn) {
+        nodes::ForEachResultNode(r, [&](state::Entity, state::Entity node) {
             if (r.all_of<C>(node)) fn(node);
         });
     }
@@ -88,7 +88,7 @@ struct UpdateTraits<BoneDelta> : ComponentUpdateTraits<BoneDelta> {
         const auto e = FindActiveBone(r);
         return e != state::Null && Has(r, e) ? e : state::Null;
     }
-    static void ForEachSelected(state::Registry &r, state::Entity, const std::function<void(state::Entity)> &fn) {
+    static void ForEachSelected(state::Registry &r, const std::function<void(state::Entity)> &fn) {
         for (const auto e : r.view<BoneSelection>()) {
             if (Has(r, e)) fn(e);
         }
@@ -109,7 +109,7 @@ struct UpdateTraits<PosedLocal> : ComponentUpdateTraits<PosedLocal> {
 template<>
 struct UpdateTraits<procedure::NodeLayout> : ComponentUpdateTraits<procedure::NodeLayout> {
     static state::Entity Active(const state::Registry &);
-    static void ForEachSelected(state::Registry &, state::Entity viewport, const std::function<void(state::Entity)> &);
+    static void ForEachSelected(state::Registry &, const std::function<void(state::Entity)> &);
 };
 
 // Resolve PrimitiveShape through the instance mesh.
@@ -118,7 +118,7 @@ template<>
 struct UpdateTraits<PrimitiveShape> {
     static bool Has(const state::Registry &, state::Entity);
     static state::Entity Active(const state::Registry &);
-    static void ForEachSelected(state::Registry &, state::Entity viewport, const std::function<void(state::Entity)> &);
+    static void ForEachSelected(state::Registry &, const std::function<void(state::Entity)> &);
     static void Read(const state::Registry &, state::Entity, uint16_t offset, void *dst, size_t size);
     static void Write(state::Registry &, state::Entity, uint16_t offset, const void *src, size_t size);
     static const FieldSpec &Bounds(const state::Registry &, state::Entity, uint16_t offset);

@@ -10,13 +10,12 @@ struct AudioOutputConfig;
 struct AudioOutputMix;
 
 struct AudioDeviceResource {
-    AudioDeviceResource(state::Registry &, state::Entity viewport);
+    AudioDeviceResource(state::Registry &);
     ~AudioDeviceResource();
     AudioDeviceResource(const AudioDeviceResource &) = delete;
     AudioDeviceResource &operator=(const AudioDeviceResource &) = delete;
 
     state::Registry *R;
-    state::Entity Viewport;
 
     uint32_t SampleRate{0}; // Negotiated output rate.
     // The scheduling group the device's IO thread belongs to, for threads rendering alongside it.

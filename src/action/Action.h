@@ -47,12 +47,13 @@ template<typename T> inline constexpr bool Recordable = true;
 template<> inline constexpr bool Recordable<io::SaveGltf> = false;
 // Latch state is live-only: the recorded TransformSelection already encodes the resolved transform.
 template<> inline constexpr bool Recordable<view::LatchTransform> = false;
-template<> inline constexpr bool Recordable<view::OrbitViewCamera> = false;
-template<> inline constexpr bool Recordable<view::ZoomViewCamera> = false;
-template<> inline constexpr bool Recordable<view::ResetViewCamera> = false;
-template<> inline constexpr bool Recordable<view::SetViewCameraTarget> = false;
-template<> inline constexpr bool Recordable<view::SetViewCameraLens> = false;
-template<> inline constexpr bool Recordable<view::SetViewCameraTargetDirection> = false;
+// An action naming a viewport changes it, and a viewport belongs to the workspace.
+template<typename T>
+    requires requires(const T &a) { a.ViewportId; }
+inline constexpr bool Recordable<T> = false;
+template<> inline constexpr bool Recordable<view::AddViewport> = false;
+// A presentation sets up the active viewport's view and doesn't change document state.
+template<> inline constexpr bool Recordable<timeline::EnterPresentation> = false;
 
 void Emit(Action, Phase = Phase::Record);
 
@@ -61,6 +62,7 @@ template<typename A, typename F> decltype(auto) VisitLeaf(A &&a, F &&fn) {
 }
 
 inline bool IsRecordable(const Action &a) {
+    if (const auto *core = std::get_if<Core>(&a)) return IsRecordable(*core);
     return VisitLeaf(a, []<typename L>(const L &) { return Recordable<L>; });
 }
 

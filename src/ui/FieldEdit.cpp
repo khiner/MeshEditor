@@ -5,11 +5,10 @@
 
 namespace ui {
 std::optional<animation::ChannelState> QueryKey(const state::Registry &r, state::Entity entity, const ChannelTarget &target) {
-    const auto viewport = animation::AnimationsViewport(r);
-    if (viewport == state::Null || entity == state::Null) return {};
+    if (!r.all_of<Animations>(state::Document) || entity == state::Null) return {};
     std::vector<float> value(target.Count);
     if (value.empty() || !animation::ReadField(r, entity, target, value)) return {};
-    return animation::QueryChannel(r, viewport, {entity, target}, animation::FrameSeconds(r, viewport, r.get<const TimelinePlayback>(viewport).CurrentFrame));
+    return animation::QueryChannel(r, {entity, target}, animation::FrameSeconds(r, r.get<const TimelinePlayback>(state::Document).CurrentFrame));
 }
 
 KeyTint::KeyTint(const std::optional<animation::ChannelState> &state) {

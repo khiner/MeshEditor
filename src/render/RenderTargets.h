@@ -6,10 +6,6 @@
 
 #include <Metal/MTLBuffer.hpp>
 
-namespace state {
-struct Registry;
-} // namespace state
-
 struct SampledTexture {
     MTL::Texture *Texture{nullptr};
     MTL::SamplerState *Sampler{nullptr};
@@ -53,6 +49,8 @@ struct RenderTargets {
         NS::SharedPtr<MTL::SamplerState> NearestSampler;
         mtl::BindlessSet &Slots;
         bool DepthPyramidValid{false};
+        // The view-projection of the cull whose visibility depth built the depth pyramid.
+        mat4 DepthPyramidViewProj{1};
     };
 
     // Lazily allocated, unexposed radiance sampled by real transmission.
@@ -93,7 +91,3 @@ struct RenderTargets {
     std::unique_ptr<TransmissionResourcesT> Transmission;
     std::unique_ptr<MotionBlurResourcesT> MotionBlur;
 };
-// Disables occlusion until the new scene has produced a depth pyramid.
-inline void Reset(RenderTargets &targets, state::Registry &) {
-    if (auto &resources = targets.Resources) resources->DepthPyramidValid = false;
-}

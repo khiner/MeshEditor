@@ -2,13 +2,19 @@
 #include "render/RenderSchema.h"
 #include "viewport/ViewportRenderGpu.h"
 #include <Foundation/NSSharedPtr.hpp>
-// Metal command buffers are single-use, and RecordedPhase tracks the last build.
+
+struct Viewport;
+
+// The last submitted command buffer, which on the one queue completes after every earlier one.
 struct ViewportRenderResources {
     ViewportRenderResources();
     ~ViewportRenderResources();
     NS::SharedPtr<MTL::CommandBuffer> InFlight;
-    RenderPhase RecordedPhase{RenderPhase::Full};
+    bool RenderPending{false}; // A submitted frame has not been waited on.
 };
 
-void SubmitRecordedFrame(state::Registry &, MTL::CommandBuffer *);
-void RecordAndSubmitFrame(state::Registry &, state::Entity, RenderPhase = RenderPhase::Full);
+// Commits the viewport's command buffer recording the phase, whose cull saw every disocclusion so far.
+// A phase other than Prepare takes the viewport's render request and records its state as rendered.
+void SubmitRecordedFrame(state::Registry &, Viewport &, MTL::CommandBuffer *, RenderPhase);
+// Records and submits the phase from the viewport's view uniforms.
+void RecordAndSubmitFrame(state::Registry &, Viewport &, RenderPhase = RenderPhase::Full);

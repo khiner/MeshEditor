@@ -95,7 +95,7 @@ namespace action {
 // The components Update can address, visited at apply time and checked at each emit site.
 using UpdatableComponents = TypeList<
     Transform, PosedLocal, BoneDelta, TransformGizmoState, OrbitToActive, ShadeSmoothAngle,
-    ViewportDisplay, ViewportTheme, InterfaceTheme, TimelineTheme, TimelineNavigation, MaterialPreviewLighting, RenderedLighting,
+    ViewportDisplay, AnisotropicFilter, ViewportTheme, InterfaceTheme, TimelineTheme, TimelineNavigation, MaterialPreviewLighting, RenderedLighting,
     PunctualLight, ImageLight, Perspective, Orthographic, MaterialVariants, PrimitiveShape,
     Animations,
     PhysicsSimulationSettings, PhysicsMaterial, PhysicsMotion, PhysicsVelocity, ColliderPolicy, CollisionFilter, PhysicsJoint, ColliderMaterial, TriggerNodes,

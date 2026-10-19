@@ -42,7 +42,7 @@ uint32_t SurfaceActiveVoices(const ModalAudio &);
 // Releases state that references the replaced bank.
 void SurfaceInstallBank(ModalAudio &);
 void RegisterSurfaceContactHandlers(state::Registry &);
-void SurfaceSetupScene(state::Registry &, state::Entity viewport);
+void SurfaceSetupDocument(state::Registry &);
 // Recomputes edited surface state and publishes the current contacts.
 void SurfaceUpdateContacts(state::Registry &);
 // Returns combined RMS asperity height in meters, or zero without the model.

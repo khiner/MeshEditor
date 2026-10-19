@@ -15,7 +15,7 @@ struct SelectionQuery {
         // Retry each reservation independently after a partial allocation failure.
         if (bytes > Masks.UsedSize) Masks.SetUsedSize(bytes);
         if (bytes > Words.UsedSize) Words.SetUsedSize(bytes);
-        if (bytes && !Count.UsedSize) Count.Update(as_bytes(uint32_t{0}));
+        if (bytes && !Count.UsedSize) Count.Update(BytesOf(uint32_t{0}));
     }
     uint32_t WordCount() const { return Count.UsedSize ? Count.GetSpan<uint32_t>()[0] : 0u; }
     SelectionQueryRef Ref() const { return {Masks.Slot, Words.Slot, Count.Slot}; }

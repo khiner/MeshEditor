@@ -874,19 +874,19 @@ template<typename T> Roundtripped<T> RoundtripComponent(const fs::path &sample, 
     using namespace boost::ut;
     Roundtripped<T> out;
     SceneFixture fx;
-    const auto load = gltf::LoadGltf(sample, fx.R, fx.Viewport);
+    const auto load = gltf::LoadGltf(sample, fx.R);
     expect(load.has_value()) << "load failed: " << (load ? "" : load.error().Message);
     if (!load) return out;
     const auto node = FirstMeshNode(fx.R);
     expect(node != state::Null) << "no mesh instance node in " << sample.stem().string();
     if (node == state::Null) return out;
     author(fx, node);
-    ProcessComponentEvents(fx.R, fx.Viewport); // mirror prod: a frame settles world transforms before save
-    const auto save = gltf::SaveGltf(out_path, fx.R, fx.Viewport);
+    ProcessComponentEvents(fx.R); // mirror prod: a frame settles world transforms before save
+    const auto save = gltf::SaveGltf(out_path, fx.R);
     expect(save.has_value()) << "save failed: " << (save ? "" : save.error());
     if (!save) return out;
     out.Scene = std::make_unique<SceneFixture>();
-    const auto reload = gltf::LoadGltf(out_path, out.Scene->R, out.Scene->Viewport);
+    const auto reload = gltf::LoadGltf(out_path, out.Scene->R);
     expect(reload.has_value()) << "reload failed: " << (reload ? "" : reload.error().Message);
     if (!reload) return out;
     out.Node = NodeWith<T>(out.Scene->R);
@@ -1049,7 +1049,7 @@ SceneCounts CountScene(SceneFixture &f) {
         .MaterializedTextures = f.R.storage<MaterializedTextures>().size(),
         .VertexBytes = c.get<MeshStore>().Arenas().Vertices.Buffer.UsedSize,
         .PendingEnvironment = c.get<EnvironmentStore>().PendingImport.has_value(),
-        .SourceAssets = f.R.all_of<gltf::SourceAssets>(f.Viewport),
+        .SourceAssets = f.R.all_of<gltf::SourceAssets>(state::Document),
     };
 }
 } // namespace
@@ -1106,7 +1106,7 @@ int main(int argc, const char **argv) {
             f.R.emplace<AcousticMaterial>(e, materials::acoustic::Ceramic);
             f.R.emplace<TetBuffers>(e, meshes.AllocateTets(SampleModal.Tets.Positions, SampleModal.Tets.EdgeIndices));
 
-            ProcessComponentEvents(f.R, f.Viewport);
+            ProcessComponentEvents(f.R);
         }
         const auto dir = tmp_root / "roundtrip.project";
         const auto before = f.SaveTo(dir);
@@ -1114,7 +1114,7 @@ int main(int argc, const char **argv) {
 
         SceneFixture g;
         const auto after = g.LoadFrom(dir);
-        ProcessComponentEvents(g.R, g.Viewport);
+        ProcessComponentEvents(g.R);
         expect(after == before) << "round-trip diverged at byte" << std::ranges::mismatch(before, after).in1 - before.begin() << "of" << before.size() << "/" << after.size();
         CompareRegistries("roundtrip", f.R, g.R);
     };
@@ -1157,12 +1157,12 @@ int main(int argc, const char **argv) {
         f.R.emplace<MeshHandle>(gone, MeshHandle{removed.StoreId});
         f.R.destroy(gone);
 
-        ProcessComponentEvents(f.R, f.Viewport);
+        ProcessComponentEvents(f.R);
         const auto dir = tmp_root / "destroyed.project";
         const auto before = f.SaveTo(dir);
         SceneFixture g;
         const auto after = g.LoadFrom(dir);
-        ProcessComponentEvents(g.R, g.Viewport);
+        ProcessComponentEvents(g.R);
         expect(after == before) << "destroyed-entity round-trip diverged at byte" << std::ranges::mismatch(before, after).in1 - before.begin();
         CompareRegistries("destroyed", f.R, g.R);
     };
@@ -1178,15 +1178,16 @@ int main(int argc, const char **argv) {
         const auto dir = tmp_root / std::format("{}_{}.project", sample_name, sample_index++);
 
         test(sample_name) = [&] {
-            ProcessComponentEvents(fx.R, fx.Viewport);
+            ProcessComponentEvents(fx.R);
             fx.P->ClearDocument();
 
-            const auto load = gltf::LoadGltf(src, fx.R, fx.Viewport);
+            const auto load = gltf::LoadGltf(src, fx.R);
             if (!load) return; // Loader limitation on source (e.g., unsupported extension); skips both round-trips.
-            ProcessComponentEvents(fx.R, fx.Viewport); // mirror prod: a frame runs (posing skinned models) before save
+            ProcessComponentEvents(fx.R); // mirror prod: a frame runs (posing skinned models) before save
+            TakePendingViewSetup(fx.R, fx.R.Context.get<Viewports>().Active()); // and its viewport step takes the import's view setup
 
             const auto out_path = tmp_root / (sample_name + ".gltf");
-            const auto save = gltf::SaveGltf(out_path, fx.R, fx.Viewport);
+            const auto save = gltf::SaveGltf(out_path, fx.R);
             expect(save.has_value()) << "SaveGltf failed: " << (save ? "" : save.error());
             if (save) {
                 const auto unexpected = CompareGltfJson(src, out_path, sample_name);
@@ -1194,10 +1195,10 @@ int main(int argc, const char **argv) {
             }
 
             const auto before = fx.SaveTo(dir);
-            ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
+            ProcessComponentEvents(restore_fx.R);
             restore_fx.P->ClearDocument();
             const auto after = restore_fx.LoadFrom(dir);
-            ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
+            ProcessComponentEvents(restore_fx.R);
 
             expect(after == before) << "persistent image diverged at byte" << std::ranges::mismatch(before, after).in1 - before.begin();
             CompareRegistries(sample_name, fx.R, restore_fx.R);
@@ -1213,11 +1214,11 @@ int main(int argc, const char **argv) {
             std::vector<std::byte> original_pixels;
             uint32_t width = 0, height = 0;
             const auto reloaded = RoundtripComponent<gltf::SourceAssets>(box_embedded, edit_root / "BoxTextured-dirty.gltf", [&](SceneFixture &fx, state::Entity) {
-                const auto &image = fx.R.get<const gltf::SourceAssets>(fx.Viewport).Images.front();
+                const auto &image = fx.R.get<const gltf::SourceAssets>(state::Document).Images.front();
                 expect(!image.Bytes.empty()) << "embedded image lost its bytes";
                 expect(image.SourcePath.empty()) << "embedded image was copied to a file";
                 // A frame materializes the pending upload so the readback sees the texture.
-                ProcessComponentEvents(fx.R, fx.Viewport);
+                ProcessComponentEvents(fx.R);
                 const auto &textures = fx.R.Context.get<TextureStore>().Textures;
                 const auto tex = std::ranges::find(textures, 0u, &TextureEntry::SourceImageIndex);
                 expect(tex != textures.end()) << "BoxTextured image was not materialized";
@@ -1228,7 +1229,7 @@ int main(int argc, const char **argv) {
                 original_pixels = std::move(*pixels);
                 width = tex->Image.Extent.Width;
                 height = tex->Image.Extent.Height;
-                fx.R.edit<gltf::SourceAssets>(fx.Viewport).Images.front().IsDirty = true;
+                fx.R.edit<gltf::SourceAssets>(state::Document).Images.front().IsDirty = true;
             });
             if (!reloaded.Value || original_pixels.empty()) return;
             const auto &images = reloaded.Value->Images;
@@ -1251,35 +1252,35 @@ int main(int argc, const char **argv) {
             const auto staged_png = stage_dir / "CesiumLogoFlat.png";
             expect(fs::exists(staged_png)) << "fixture missing PNG";
             SceneFixture fx;
-            const auto loaded = gltf::LoadGltf(staged_gltf, fx.R, fx.Viewport);
+            const auto loaded = gltf::LoadGltf(staged_gltf, fx.R);
             expect(loaded.has_value()) << "load failed: " << (loaded ? "" : loaded.error().Message);
             if (!loaded) return;
-            const auto &images = fx.R.get<const gltf::SourceAssets>(fx.Viewport).Images;
+            const auto &images = fx.R.get<const gltf::SourceAssets>(state::Document).Images;
             expect(images.size() == 1u);
             if (images.empty()) return;
             expect(images.front().Source == gltf::Image::SourceKind::External);
             expect(images.front().Bytes.empty()) << "external image bytes were copied";
             expect(project::ResolveAsset(fx.R, images.front().SourcePath) == staged_png);
             // OBJ imports supply a source path without an authored glTF URI.
-            fx.R.edit<gltf::SourceAssets>(fx.Viewport).Images.front().Uri.clear();
-            ProcessComponentEvents(fx.R, fx.Viewport); // mirror prod: a frame settles world transforms before save
+            fx.R.edit<gltf::SourceAssets>(state::Document).Images.front().Uri.clear();
+            ProcessComponentEvents(fx.R); // mirror prod: a frame settles world transforms before save
             const auto relocated_path = edit_root / "relocated" / "BoxTextured.gltf";
             fs::create_directories(relocated_path.parent_path());
-            const auto relocated_save = gltf::SaveGltf(relocated_path, fx.R, fx.Viewport);
+            const auto relocated_save = gltf::SaveGltf(relocated_path, fx.R);
             expect(relocated_save.has_value()) << "relocated export failed: " << (relocated_save ? "" : relocated_save.error());
             if (!relocated_save) return;
             SceneFixture relocated;
-            const auto relocated_load = gltf::LoadGltf(relocated_path, relocated.R, relocated.Viewport);
+            const auto relocated_load = gltf::LoadGltf(relocated_path, relocated.R);
             expect(relocated_load.has_value()) << "relocated import failed: " << (relocated_load ? "" : relocated_load.error().Message);
             if (!relocated_load) return;
-            const auto &relocated_images = relocated.R.get<const gltf::SourceAssets>(relocated.Viewport).Images;
+            const auto &relocated_images = relocated.R.get<const gltf::SourceAssets>(state::Document).Images;
             expect(relocated_images.size() == 1u);
             if (!relocated_images.empty()) expect(project::ResolveAsset(relocated.R, relocated_images.front().SourcePath) == staged_png) << "relocated URI references another file";
-            ProcessComponentEvents(fx.R, fx.Viewport);
+            ProcessComponentEvents(fx.R);
             const auto &textures = fx.R.Context.get<TextureStore>().Textures;
             expect(std::ranges::contains(textures, 0u, &TextureEntry::SourceImageIndex)) << "image was not uploaded";
             fs::rename(staged_png, stage_dir / "CesiumLogoFlat.png.moved");
-            const auto saved = gltf::SaveGltf(stage_dir / "BoxTextured-missing.gltf", fx.R, fx.Viewport);
+            const auto saved = gltf::SaveGltf(stage_dir / "BoxTextured-missing.gltf", fx.R);
             expect(!saved.has_value()) << "missing external image exported";
             if (!saved) expect(saved.error().contains(staged_png.string())) << saved.error();
         };
@@ -1354,7 +1355,7 @@ int main(int argc, const char **argv) {
     if (const fs::path fixture = SamplePath("tests/fixtures/KHR_audio_rigid_bodies.gltf"); fs::exists(fixture)) {
         test("audio_modal_decode_fixture") = [&] {
             SceneFixture fx;
-            const auto load = gltf::LoadGltf(fixture, fx.R, fx.Viewport);
+            const auto load = gltf::LoadGltf(fixture, fx.R);
             expect(load.has_value()) << "fixture load failed";
             if (!load) return;
 
@@ -1423,7 +1424,7 @@ int main(int argc, const char **argv) {
                     for (auto e : fx.R.view<const Instance>()) {
                         if (fx.R.get<const Instance>(e).Entity == mesh_entity) fx.R.patch<Transform>(e, [](Transform &t) { t.S = vec3{3.f}; });
                     }
-                    ProcessComponentEvents(fx.R, fx.Viewport);
+                    ProcessComponentEvents(fx.R);
                     UpdateSurfaceRelief(fx.R, node, mesh_entity, true);
                     const auto *rescaled = fx.R.try_get<const SurfaceRelief>(node);
                     expect(rescaled != nullptr) << "relief lost when the node was resized";
@@ -1461,7 +1462,7 @@ int main(int argc, const char **argv) {
             const auto staged_gltf = StageSample(normal_tangent, stage_dir);
 
             SceneFixture fx;
-            const auto load = gltf::LoadGltf(staged_gltf, fx.R, fx.Viewport);
+            const auto load = gltf::LoadGltf(staged_gltf, fx.R);
             expect(load.has_value()) << "NormalTangentTest load failed: " << (load ? "" : load.error().Message);
             if (!load) return;
 
@@ -1490,7 +1491,7 @@ int main(int argc, const char **argv) {
             }
 
             const auto out_path = stage_dir / "audio_surface_inherit.gltf";
-            const auto save = gltf::SaveGltf(out_path, fx.R, fx.Viewport);
+            const auto save = gltf::SaveGltf(out_path, fx.R);
             expect(save.has_value()) << "save failed: " << (save ? "" : save.error());
             if (!save) return;
 
@@ -1512,16 +1513,16 @@ int main(int argc, const char **argv) {
         const auto source = dir / "Custom.gltf";
         WriteCustomAttributeGltf(source);
         SceneFixture fx;
-        const auto load = gltf::LoadGltf(source, fx.R, fx.Viewport);
+        const auto load = gltf::LoadGltf(source, fx.R);
         expect(fatal(load.has_value())) << (load ? "" : load.error().Message);
         CheckCustomAttributes(fx.R, true);
-        ProcessComponentEvents(fx.R, fx.Viewport);
+        ProcessComponentEvents(fx.R);
         const auto out_path = dir / "Custom-out.gltf";
-        const auto save = gltf::SaveGltf(out_path, fx.R, fx.Viewport);
+        const auto save = gltf::SaveGltf(out_path, fx.R);
         expect(fatal(save.has_value())) << (save ? "" : save.error());
         expect(CompareGltfJson(source, out_path, "custom") == 0u);
         SceneFixture reloaded;
-        const auto reload = gltf::LoadGltf(out_path, reloaded.R, reloaded.Viewport);
+        const auto reload = gltf::LoadGltf(out_path, reloaded.R);
         expect(fatal(reload.has_value())) << (reload ? "" : reload.error().Message);
         CheckCustomAttributes(reloaded.R, false);
         // The attributes restore byte for byte through a saved project.
@@ -1540,7 +1541,7 @@ int main(int argc, const char **argv) {
         for (const auto &[drop_weights, expected_error] : cases) {
             const auto path = tmp_root / std::format("broken_{}.gltf", drop_weights ? "mesh" : "skin");
             std::ofstream{path} << BrokenSkinnedTriangleGltf(drop_weights);
-            const auto load = gltf::LoadGltf(path, fx.R, fx.Viewport);
+            const auto load = gltf::LoadGltf(path, fx.R);
             expect(!load.has_value()) << "broken document loaded";
             if (!load) expect(!load.error().UnsupportedExtensions && load.error().Message.contains(expected_error)) << "unexpected error: " << load.error().Message;
             const auto after = CountScene(fx);

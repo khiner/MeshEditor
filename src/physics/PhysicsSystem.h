@@ -35,10 +35,10 @@ std::optional<uint32_t> BakedThrough(const state::Registry &);
 void InvalidateCache(state::Registry &);
 // Advances playback and returns whether a body pose changed.
 // An invalid cache restarts at once and bakes on the next frame change, showing the cached start until then.
-bool AdvancePlayback(state::Registry &, state::Entity viewport, int from_frame, int to_frame, int range_start_frame, int range_end_frame, float fps);
+bool AdvancePlayback(state::Registry &, int from_frame, int to_frame, int range_start_frame, int range_end_frame, float fps);
 
 // Extends the contiguous cache frontier through `through_frame`, capped at the cache end.
-void BakeThrough(state::Registry &, state::Entity viewport, int through_frame, float fps);
+void BakeThrough(state::Registry &, int through_frame, float fps);
 
 // Interpolates cached body poses into the bodies' world transforms at a fractional frame.
 void SamplePosesAtFrame(state::Registry &, float frame);

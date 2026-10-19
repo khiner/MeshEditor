@@ -1,7 +1,8 @@
 #pragma once
 
 #include "Window.h"
-#include "viewport/ViewCameraOps.h"
+#include "audio/AudioTypes.h"
+#include "viewport/Viewport.h"
 
 #include <filesystem>
 
@@ -10,9 +11,16 @@ using numeric::uvec2;
 
 inline constexpr std::string_view FileName{"workspace.state"};
 
+// A viewport's identity, visibility, and view values.
+struct ViewportEntry {
+    uint32_t Id;
+    bool Visible;
+    ViewportState State;
+};
+
 struct State {
-    ViewCameraState ViewCamera;
-    uvec2 ViewportExtent{};
+    std::vector<ViewportEntry> Viewports; // In service order.
+    AudioOutputConfig AudioOutput;
     WindowVisibility Windows;
     NodeCanvas NodesCanvas;
     std::string ImGuiIni;
@@ -20,8 +28,9 @@ struct State {
     std::vector<WindowState> WindowStates;
 };
 
-State Capture(const state::Registry &, state::Entity viewport, const WindowsState &);
-void Apply(state::Registry &, state::Entity viewport, WindowsState &, const State &);
+State Capture(const state::Registry &, const WindowsState &);
+// Updates the viewports matching a stored Id in place, creates the rest, and removes the ones the state omits, keeping at least one.
+void Apply(state::Registry &, WindowsState &, const State &);
 // Apply pending layout and widget state after ImGui::Render().
 void ApplyPending(WindowsState &);
 

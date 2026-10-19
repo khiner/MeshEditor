@@ -22,8 +22,9 @@ struct Result {
 
 // Processes interaction (hover, click, drag) and returns the transform delta if actively dragging.
 // Does NOT render — call Render() afterward with the (potentially updated) transform stored in RenderTransform.
+// The overlay of the active viewport sets RenderTransform each frame, and every displayed viewport renders it.
 std::optional<Result> Interact(GizmoInteraction &, const GizmoTransform &, Config, const ViewCamera &, rect viewport, vec2 mouse_px, std::optional<TransformType> start_screen_transform = {});
 
-// Renders the gizmo (RenderTransform + Delta from the last Interact() call), then clears RenderTransform.
-void Render(GizmoInteraction &, Type, const ViewCamera &, rect viewport, const colors::AxesArray &);
+// Renders the gizmo at RenderTransform from the camera, with the highlight and guides of the interaction.
+void Render(const GizmoInteraction &, Type, const ViewCamera &, rect viewport, const colors::AxesArray &);
 } // namespace TransformGizmo

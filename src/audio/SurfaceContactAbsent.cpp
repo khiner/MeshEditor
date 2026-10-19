@@ -13,7 +13,7 @@ uint32_t SurfaceActiveVoices(const ModalAudio &) { return 0; }
 
 void SurfaceInstallBank(ModalAudio &) {}
 void RegisterSurfaceContactHandlers(state::Registry &) {}
-void SurfaceSetupScene(state::Registry &, state::Entity) {}
+void SurfaceSetupDocument(state::Registry &) {}
 void SurfaceUpdateContacts(state::Registry &) {}
 float SurfaceRoughnessOf(const state::Registry &, state::Entity) { return 0.f; }
 state::Entity ContactSurfaceNode(const state::Registry &, state::Entity, state::Entity body) { return body; }

@@ -222,18 +222,18 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
         }
         if (warp || bend) {
             const PositionPlane plane{(inverse * plane_x) * world.S, (inverse * plane_y) * world.S, local_direction(plane_x), local_direction(plane_y), {Dot(world.P - plane_center, plane_x), Dot(world.P - plane_center, plane_y)}};
-            if (warp) pc.Parameters = chain.Upload(as_bytes(WarpParameters{plane, std::min(warp->Min, warp->Max), std::max(warp->Min, warp->Max)}));
-            else pc.Parameters = chain.Upload(as_bytes(BendParameters{plane, bend->Radius, bend_pivot}));
+            if (warp) pc.Parameters = chain.Upload(BytesOf(WarpParameters{plane, std::min(warp->Min, warp->Max), std::max(warp->Min, warp->Max)}));
+            else pc.Parameters = chain.Upload(BytesOf(BendParameters{plane, bend->Radius, bend_pivot}));
         }
         if (transform) {
             auto frame = target.World;
             auto delta = transform->Delta;
             frame.R = Normalize(frame.R);
             delta.R = Normalize(delta.R);
-            pc.Parameters = chain.Upload(as_bytes(TransformPositionParameters{frame, delta, transform->Pivot}));
+            pc.Parameters = chain.Upload(BytesOf(TransformPositionParameters{frame, delta, transform->Pivot}));
         }
-        if (attribute) pc.Parameters = chain.Upload(as_bytes(*attribute));
-        if (randomize) pc.Parameters = chain.Upload(as_bytes(RandomizeParameters{std::clamp(randomize->Uniform, 0.f, 1.f), std::clamp(randomize->Normal, 0.f, 1.f), randomize->Seed}));
+        if (attribute) pc.Parameters = chain.Upload(BytesOf(*attribute));
+        if (randomize) pc.Parameters = chain.Upload(BytesOf(RandomizeParameters{std::clamp(randomize->Uniform, 0.f, 1.f), std::clamp(randomize->Normal, 0.f, 1.f), randomize->Seed}));
         if (slide || edge_slide) {
             const auto &selected = selection.Vertices;
             uint32_t reference = selected.empty() ? InvalidOffset : selected.front();
@@ -241,7 +241,7 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
             if (edge_slide) {
                 const auto directions = PlanEdgeSlide(mesh, selection, inverse * Normalize(edge_slide->Direction), world.S, reference);
                 if (directions.empty()) continue;
-                pc.Parameters = chain.Upload(as_bytes(directions));
+                pc.Parameters = chain.Upload(BytesOf(directions));
                 if (edge_slide->Even) {
                     uint32_t rank = 0u, reference_rank = 0u;
                     for (const auto v : selected) {
@@ -249,11 +249,11 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
                         ++rank;
                     }
                     const auto &ref = directions[reference_rank];
-                    pc.ReductionResult = chain.Upload(as_bytes(Length(ref.Positive - ref.Negative)));
+                    pc.ReductionResult = chain.Upload(BytesOf(Length(ref.Positive - ref.Negative)));
                 }
             } else {
                 const VertexSlideParameters parameters{inverse * Normalize(slide->Direction), world.S, reference};
-                pc.Parameters = chain.Upload(as_bytes(parameters));
+                pc.Parameters = chain.Upload(BytesOf(parameters));
                 if (slide->Even) pc.ReductionResult = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(1u).Offset};
             }
         }
@@ -263,8 +263,8 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
             if (plan.Vertices.empty()) continue;
             chain.Scratch.ReserveAdditional(plan.Words.size() + plan.Groups.size() + 4ull * plan.Vertices.size());
             // Flatten's parameters contain packed groups; Planes indexes their offsets.
-            pc.Parameters = chain.Upload(as_bytes(plan.Words));
-            pc.Planes = chain.Upload(as_bytes(plan.Groups));
+            pc.Parameters = chain.Upload(BytesOf(plan.Words));
+            pc.Planes = chain.Upload(BytesOf(plan.Groups));
             pc.PlaneCount = uint32_t(plan.Groups.size());
             batch.Batches = std::move(plan.Batches);
             vertices = std::move(plan.Vertices);
@@ -305,7 +305,7 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
                 descriptor.InputOffset += inputs.Offset;
                 if (relax || curve) descriptor.PhaseOffset += phases.Offset;
             }
-            pc.Parameters = chain.Upload(as_bytes(plan.Chains));
+            pc.Parameters = chain.Upload(BytesOf(plan.Chains));
             pc.ChainCount = uint32_t(plan.Chains.size());
             if (ordered_chains) batch.Batches = std::move(plan.Batches);
             if (circle) pc.Direction = {circle->Radius, circle->Angle, 0.f};
@@ -323,7 +323,7 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
             vertices = selection.Vertices;
         }
         if (vertices.empty()) continue;
-        pc.Handles = chain.Upload(as_bytes(vertices));
+        pc.Handles = chain.Upload(BytesOf(vertices));
         pc.Count = uint32_t(vertices.size());
         // Fitting jobs keep their own output order; only history capture needs sorted handles.
         if (edge_chains || ordered_chains) std::ranges::sort(vertices);

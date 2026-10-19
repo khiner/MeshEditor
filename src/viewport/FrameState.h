@@ -33,9 +33,7 @@ struct FrameState {
     std::optional<std::pair<std::pair<vec2, vec2>, RenderView>> BoxSelectEmitted; // The box and view the drag last staged.
     std::optional<MeshOperatorDrag> MeshDrag;
     bool OverlayControlsHovered{false};
-    bool RenderPending{false};
     bool Scrubbing{false};
-    bool MotionBlurred{false};
     bool Capturing{false};
     // Recompile every shader on the next event pass.
     bool RecompileShaders{false};
