@@ -429,13 +429,13 @@ struct ViewportEdit : FieldWidgets<Prefix...> {
     bool Run(auto widget, bool = false) {
         using Field = action::detail::last_field<Prefix..., Ms...>;
         return detail::RunField(R, state::Null, {}, Read<Ms...>(), widget, false, false, [&](action::Target, const Field &v) {
-            action::Emit(action::UpdateOf<Prefix..., Ms...>(action::OnViewport{View.Id}, v), action::Phase::Stage);
+            action::Emit(action::UpdateOf<Prefix..., Ms...>(action::OnViewport{View.Entity}, v), action::Phase::Stage);
         });
     }
 
     template<auto... Ms>
     void Set(action::detail::last_field<Prefix..., Ms...> value) const {
-        action::Emit(action::UpdateOf<Prefix..., Ms...>(action::OnViewport{View.Id}, std::move(value)));
+        action::Emit(action::UpdateOf<Prefix..., Ms...>(action::OnViewport{View.Entity}, std::move(value)));
     }
 };
 

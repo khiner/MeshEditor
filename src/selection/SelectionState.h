@@ -13,7 +13,7 @@ struct ModeScope {
 };
 ModeScope ScopeOf(const state::Registry &);
 
-// Derived viewport aggregates of the selection, each recomputed in the settle pass when its own inputs change.
+// Derived viewport aggregates of the selection in the frame's scene, each recomputed in the settle pass when its own inputs change.
 // Per-frame readers take them in O(1).
 
 // Each edited mesh's primary instance, in Edit mode only.
@@ -61,7 +61,7 @@ struct SelectedKeyframes {
     std::vector<float> Frames;
 };
 
-// The outliner's rows in draw order: sorted named roots, each followed by its open subtree.
+// The outliner's rows in draw order: the scene's sorted named roots, each followed by its open subtree.
 struct OutlinerRows {
     struct Row {
         state::Entity Entity;
@@ -72,12 +72,13 @@ struct OutlinerRows {
     std::vector<uint32_t> RowOf; // Row index by entity index, UINT32_MAX for an entity without a row.
     std::unordered_set<state::Entity> Open; // Entities whose children show.
     std::unordered_set<state::Entity> SelectedAncestors; // Ancestors of selected objects and bones.
+    state::Entity Scene{state::Null}; // The scene the rows were built for.
 
     // The entity's row, or nothing when it has none.
     std::optional<uint32_t> Find(state::Entity) const;
 };
 
-// Rebuilds the rows from the scene graph and the open set.
+// Rebuilds the rows of the frame's scene's roots from the scene graph and the open set.
 void BuildOutlinerRows(const state::Registry &, OutlinerRows &);
 
 // Recomputes the aggregates whose inputs changed this settle, and returns the meshes whose primary edit instance changed.

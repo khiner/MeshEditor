@@ -33,10 +33,20 @@
 namespace gltf {
 using namespace detail;
 namespace {
+// The source extras, and the source index of each emitted scene.
+struct ExportExtras {
+    const ExtrasMap &Source;
+    std::span<const std::optional<uint32_t>> SceneSources;
+};
+
 std::optional<std::string> EmitExtras(size_t idx, fastgltf::Category cat, void *userPtr) {
     if (!userPtr) return std::nullopt;
-    const auto &m = *static_cast<const ExtrasMap *>(userPtr);
-    if (const auto it = m.find(ExtrasKey(uint32_t(cat), idx)); it != m.end()) return it->second;
+    const auto &extras = *static_cast<const ExportExtras *>(userPtr);
+    if (cat == fastgltf::Category::Scenes) {
+        if (idx >= extras.SceneSources.size() || !extras.SceneSources[idx]) return std::nullopt;
+        idx = *extras.SceneSources[idx];
+    }
+    if (const auto it = extras.Source.find(ExtrasKey(uint32_t(cat), idx)); it != extras.Source.end()) return it->second;
     return std::nullopt;
 }
 
@@ -359,41 +369,31 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
     }
 
-    // Scenes to emit, in source order. active_scene is the default.
-    std::vector<state::Entity> scenes_ordered;
-    for (const auto e : r.view<const Scene>()) scenes_ordered.emplace_back(e);
-    std::ranges::sort(scenes_ordered, {}, [&](state::Entity e) { return source_index(e).value_or(std::numeric_limits<uint32_t>::max()); });
-    state::Entity active_scene = state::Null;
-    for (const auto e : r.view<const ActiveScene>()) active_scene = e;
+    // Scenes to emit, in source order.
+    // The acting scene is the default.
+    const auto scenes_ordered = OrderedScenes(r);
+    const auto acting_scene = FrameScene(r);
+    // The scenes with an image light, each emitting its own EXT_lights_image_based light over the source IBL images.
+    const auto image_light_scenes = sa.ImageBasedLight ? scenes_ordered | std::views::filter([&](state::Entity e) { return r.all_of<ImageLight>(e); }) | std::ranges::to<std::vector>() : std::vector<state::Entity>{};
 
-    // Returns live nodes without a live source parent, restricted by SceneMembership when scene is nonnull.
+    // Returns live nodes without a live source parent whose scene graph root is in the scene.
     // Sorts roots because glTF scene-node order is nonsemantic.
     const auto compute_roots = [&](state::Entity scene) {
-        std::vector<uint32_t> roots;
+        std::vector<size_t> roots;
         for (uint32_t ni = 0; ni < nodes.size(); ++ni) {
             const auto entity = nodes[ni].Entity;
-            if (entity == state::Null || nodes[ni].Parent) continue;
-            if (scene != state::Null) {
-                const auto *sm = r.try_get<const SceneMembership>(entity);
-                if (sm && !std::ranges::contains(sm->Scenes, scene)) continue;
-            }
+            if (entity == state::Null || nodes[ni].Parent || !InScene(r, entity, scene)) continue;
             roots.emplace_back(ni);
         }
         return roots;
     };
 
     // KHR_node_visibility: a node is hidden iff it is not a shown Instance and every child is hidden too.
-    // Stubs are unreachable from scene roots, so they default to not-hidden and emit no spurious visible:false.
     // A post-order walk from the roots fills Hidden so parents can check children without recursion or multi-pass.
-    // Nodes only in non-active scenes count as not-hidden, since their Hidden is a scene-switch artifact, not a user-set hide.
     {
-        const auto node_in_active_scene = [&](state::Entity entity) {
-            const auto *sm = entity != state::Null ? r.try_get<const SceneMembership>(entity) : nullptr;
-            return !sm || std::ranges::contains(sm->Scenes, active_scene);
-        };
         const auto dfs = [&](this const auto &self, uint32_t ni) -> bool {
             auto &node = nodes[ni];
-            bool hidden = node.Entity != state::Null && node_in_active_scene(node.Entity) && (!r.all_of<Instance>(node.Entity) || r.all_of<Hidden>(node.Entity));
+            bool hidden = node.Entity != state::Null && (!r.all_of<Instance>(node.Entity) || r.all_of<Hidden>(node.Entity));
             for (const auto child : node.Children) {
                 if (!self(child)) hidden = false;
             }
@@ -401,10 +401,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             return hidden;
         };
         for (const auto se : scenes_ordered) {
-            for (const auto ni : compute_roots(se)) dfs(ni);
-        }
-        if (scenes_ordered.empty()) {
-            for (const auto ni : compute_roots(state::Null)) dfs(ni);
+            for (const auto ni : compute_roots(se)) dfs(uint32_t(ni));
         }
     }
 
@@ -807,7 +804,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                             if (const auto it = light_entity_to_index.find(entity); it != light_entity_to_index.end()) target = pointer_channel(*row, it->second);
                             break;
                         case gltf::PointerSpace::ImageLight:
-                            if (src_assets && src_assets->ImageBasedLight) target = pointer_channel(*row, 0);
+                            if (const auto it = std::ranges::find(image_light_scenes, entity); it != image_light_scenes.end()) target = pointer_channel(*row, size_t(it - image_light_scenes.begin()));
                             break;
                     }
                     if (!target) continue;
@@ -1593,57 +1590,40 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         });
     }
 
-    // Preserves one EXT_lights_image_based resource on the default scene.
-    // Per-scene IBL assignment remains outside the round-trip model.
-    fastgltf::optional<size_t> default_scene_ibl_index;
-    if (sa.ImageBasedLight) {
-        const auto &src_ibl = *sa.ImageBasedLight;
-        const auto *image_light = r.try_get<const ImageLight>(state::Document);
-        auto light = image_light ? *image_light : ImageLight{};
-        OverlayRest(r, state::Document, state::Key<ImageLight>(), 0, std::as_writable_bytes(std::span{&light, 1}));
-        fastgltf::ImageBasedLight ibl{
-            .intensity = light.Intensity,
-            .rotation = fastgltf::math::fquat(light.Rotation.x, light.Rotation.y, light.Rotation.z, light.Rotation.w),
-            .specularImageSize = src_ibl.SpecularImageSize,
-            .name = src_ibl.Name,
-        };
-        ibl.specularImages.reserve(src_ibl.SpecularImageIndicesByMip.size());
-        for (const auto &mip : src_ibl.SpecularImageIndicesByMip) {
+    // Each light rests at its scene's unanimated image light.
+    if (const auto &src_ibl = sa.ImageBasedLight) {
+        fastgltf::ImageBasedLight source_ibl{.specularImageSize = src_ibl->SpecularImageSize, .name = src_ibl->Name};
+        source_ibl.specularImages.reserve(src_ibl->SpecularImageIndicesByMip.size());
+        for (const auto &mip : src_ibl->SpecularImageIndicesByMip) {
             std::array<size_t, 6> faces{};
             for (size_t face = 0; face < 6; ++face) faces[face] = mip[face];
-            ibl.specularImages.emplace_back(faces);
+            source_ibl.specularImages.emplace_back(faces);
         }
-        if (src_ibl.IrradianceCoefficients) {
+        if (src_ibl->IrradianceCoefficients) {
             std::array<fastgltf::math::fvec3, 9> coeffs{};
             for (size_t i = 0; i < 9; ++i) {
-                const auto &c = (*src_ibl.IrradianceCoefficients)[i];
+                const auto &c = (*src_ibl->IrradianceCoefficients)[i];
                 coeffs[i] = std::bit_cast<fastgltf::math::fvec3>(c);
             }
-            ibl.irradianceCoefficients = coeffs;
+            source_ibl.irradianceCoefficients = coeffs;
         }
-        asset.imageBasedLights.emplace_back(std::move(ibl));
-        default_scene_ibl_index = size_t{0};
+        for (const auto se : image_light_scenes) {
+            auto light = r.get<const ImageLight>(se);
+            OverlayRest(r, se, state::Key<ImageLight>(), 0, std::as_writable_bytes(std::span{&light, 1}));
+            auto &ibl = asset.imageBasedLights.emplace_back(source_ibl);
+            ibl.intensity = light.Intensity;
+            ibl.rotation = fastgltf::math::fquat(light.Rotation.x, light.Rotation.y, light.Rotation.z, light.Rotation.w);
+        }
     }
 
-    if (!scenes_ordered.empty()) {
-        // Emit every scene, including empty ones (valid glTF).
-        // Default = the active scene.
-        std::optional<size_t> active_emitted;
-        for (const auto se : scenes_ordered) {
-            std::vector<size_t> scene_roots;
-            for (const auto ni : compute_roots(se)) scene_roots.emplace_back(ni);
-            if (se == active_scene) active_emitted = asset.scenes.size();
-            asset.scenes.emplace_back(fastgltf::Scene{.nodeIndices = std::move(scene_roots), .name = r.get<const Scene>(se).Name});
-        }
-        asset.defaultScene = active_emitted.value_or(0);
-        if (default_scene_ibl_index) asset.scenes[*asset.defaultScene].imageBasedLightIndex = default_scene_ibl_index;
-    } else {
-        // No scene entities (non-glTF / runtime-built): synthesize a single scene from current roots.
-        std::vector<size_t> scene_roots;
-        for (const auto ni : compute_roots(state::Null)) scene_roots.emplace_back(ni);
-        asset.scenes.emplace_back(fastgltf::Scene{.nodeIndices = std::move(scene_roots), .imageBasedLightIndex = default_scene_ibl_index});
-        asset.defaultScene = 0;
+    // Emit every scene, including empty ones (valid glTF).
+    std::optional<size_t> acting_emitted;
+    for (const auto se : scenes_ordered) {
+        if (se == acting_scene) acting_emitted = asset.scenes.size();
+        auto &scene = asset.scenes.emplace_back(fastgltf::Scene{.nodeIndices = compute_roots(se), .name = r.get<const Name>(se).Value});
+        if (const auto it = std::ranges::find(image_light_scenes, se); it != image_light_scenes.end()) scene.imageBasedLightIndex = size_t(it - image_light_scenes.begin());
     }
+    asset.defaultScene = acting_emitted.value_or(0);
 
     asset.extensionsRequired.reserve(sa.ExtensionsRequired.size());
     for (const auto &e : sa.ExtensionsRequired) asset.extensionsRequired.emplace_back(e);
@@ -1687,8 +1667,10 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     asset.bufferViews = std::move(bufferViews);
 
     fastgltf::FileExporter exporter;
+    const auto scene_sources = scenes_ordered | std::views::transform(source_index) | std::ranges::to<std::vector>();
+    ExportExtras extras{sa.ExtrasByEntity, scene_sources};
     if (!sa.ExtrasByEntity.empty()) {
-        exporter.setUserPointer(const_cast<ExtrasMap *>(&sa.ExtrasByEntity));
+        exporter.setUserPointer(&extras);
         exporter.setExtrasWriteCallback(EmitExtras);
     }
     const auto ext = path.extension();

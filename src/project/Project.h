@@ -62,6 +62,7 @@ struct Project {
     uint64_t Revision{};
 
     struct ReplayInputs {
+        state::Entity Scene{state::Null};
         float DeltaTime{}, PlaybackFrame{};
         int CurrentFrame{};
         bool FixedFrameStep{};

@@ -20,17 +20,20 @@ void ApplyVisibility(state::Registry &, state::Entity);
 
 void ApplySelectBehavior(state::Registry &, state::Entity, MeshInstanceCreateInfo::SelectBehavior);
 
+// The mesh-data entity of the store record.
+state::Entity AddMeshData(state::Registry &, uint32_t store_id);
+// Objects created without a parent join the frame's scene.
 // Callers apply SelectBehavior after entity creation.
-std::pair<state::Entity, state::Entity> AddMesh(state::Registry &, uint32_t store_id, std::optional<MeshInstanceCreateInfo> = {});
+std::pair<state::Entity, state::Entity> AddMesh(state::Registry &, uint32_t store_id, const MeshInstanceCreateInfo &);
 state::Entity AddMeshInstance(state::Registry &, state::Entity mesh_entity, const MeshInstanceCreateInfo &);
 
 state::Entity CreateExtrasObject(state::Registry &, ObjectType, const ObjectCreateInfo &, std::string_view default_name);
 
-state::Entity AddEmpty(state::Registry &, MeshStore &, const ObjectCreateInfo & = {});
-state::Entity AddCamera(state::Registry &, MeshStore &, const ObjectCreateInfo & = {}, std::optional<CameraLens> = {});
-state::Entity AddLight(state::Registry &, MeshStore &, const ObjectCreateInfo & = {}, std::optional<PunctualLight> = {});
+state::Entity AddEmpty(state::Registry &, MeshStore &, const ObjectCreateInfo &);
+state::Entity AddCamera(state::Registry &, MeshStore &, const ObjectCreateInfo &, std::optional<CameraLens> = {});
+state::Entity AddLight(state::Registry &, MeshStore &, const ObjectCreateInfo &, std::optional<PunctualLight> = {});
 
-std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(state::Registry &, const std::filesystem::path &, MeshInstanceCreateInfo, bool deduplicate = false);
+std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(state::Registry &, const std::filesystem::path &, const MeshInstanceCreateInfo &, bool deduplicate = false);
 
 void RequestImportMesh(state::Registry &, std::filesystem::path, MeshInstanceCreateInfo);
 

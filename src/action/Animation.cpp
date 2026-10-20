@@ -22,7 +22,7 @@ std::vector<state::Entity> TargetEntities(const state::Registry &r, const Target
             if (pose) {
                 for (const auto e : r.view<const BoneSelection>()) fn(e);
             } else {
-                for (const auto e : r.view<const Selected>()) {
+                for (const auto e : SelectedIn(r)) {
                     if (r.all_of<Transform>(e)) fn(e);
                 }
             }

@@ -13,13 +13,14 @@ const boost::ut::suite selection_tests = [] {
         std::array order{0, 1, 2};
         do {
             state::Registry r;
+            r.emplace<Scene>(r.create());
             const auto mesh = r.create();
             const std::array instances{r.create(), r.create(), r.create()};
             for (const auto i : order) {
                 const auto e = instances[i];
                 r.emplace<Instance>(e, mesh);
                 r.emplace<Selected>(e);
-                r.emplace<ObjectKind>(e, ObjectType::Mesh);
+                EmplaceObject(r, e, ObjectType::Mesh);
                 r.emplace<RenderInstance>(e);
             }
             expect(ComputeEditPrimaries(r).All.at(mesh) == instances[0]);

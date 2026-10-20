@@ -3,6 +3,8 @@
 
 #include "mesh/Mesh.h"
 #include "render/Instance.h"
+#include "scene/SceneGraph.h"
+#include "viewport/FrameState.h"
 
 #include <charconv>
 #include <format>
@@ -87,11 +89,31 @@ std::string GetName(const state::Registry &r, state::Entity e) {
     return IdString(e);
 }
 
-state::Entity FindActiveEntity(const state::Registry &registry) {
+state::Entity ResolveScene(const state::Registry &r, state::Entity scene) {
+    if (r.all_of<Scene>(scene)) return scene;
+    // Views run in entity index order.
+    for (const auto e : r.view<const Scene>()) return e;
+    return state::Null;
+}
+
+state::Entity FrameScene(const state::Registry &r) {
+    const auto *frame = r.Resources.find<FrameState>();
+    return ResolveScene(r, frame ? frame->Scene : state::Null);
+}
+
+void EmplaceObject(state::Registry &r, state::Entity e, ObjectType type) {
+    r.emplace<ObjectKind>(e, type);
+    if (!r.all_of<SceneParent>(e)) r.emplace<SceneMembership>(e, std::vector{FrameScene(r)});
+}
+
+state::Entity FindActiveEntity(const state::Registry &registry, state::Entity scene) {
     const auto all_active = registry.view<Active>();
     assert(all_active.size() <= 1);
-    return all_active.empty() ? state::Null : *all_active.begin();
+    if (all_active.empty()) return state::Null;
+    const auto active = *all_active.begin();
+    return InScene(registry, active, scene) ? active : state::Null;
 }
+state::Entity FindActiveEntity(const state::Registry &registry) { return FindActiveEntity(registry, FrameScene(registry)); }
 
 state::Entity GetMeshEntity(const state::Registry &r, state::Entity e) {
     if (const auto *instance = r.try_get<Instance>(e); instance && HasMesh(r, instance->Entity)) return instance->Entity;

@@ -12,6 +12,6 @@ struct RenderChanges {
     state::DirtySet PbrMeshFeatures; // A mesh's PBR features changed.
     state::DirtySet ActiveMaterialVariant, MaterializedTextures, SceneWorld, PunctualLight;
     state::DirtySet MorphWeights; // Morph weights changed in the UMA weight buffer.
-    state::DirtySet SceneLighting; // The image light or the set of scene lights changed.
+    state::DirtySet SceneLighting; // An image light changed.
     state::DirtySet CameraLens; // A camera object's lens changed.
 };

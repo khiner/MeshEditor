@@ -18,11 +18,11 @@ void RegisterScene(Tables &tables) {
     Classify(
         tables,
         TypeList<
-            Transform, PunctualLight, Name, Selected, Active, ObjectKind, Scene, ActiveScene, SceneMembership, SubElementOf,
+            Transform, PunctualLight, Name, Selected, Active, ObjectKind, Scene, SceneMembership, SubElementOf,
             ScaleLocked, Instance, Hidden, SceneParent, SceneChildren, ObjectExtrasTag, Path, Perspective, Orthographic, TimelineRange,
             TimelinePlayback, TimelineNavigation, TimelineView, TimelineTheme, AnimationClips, Animations, MorphWeightRange, ImageLight, Visibility>{},
         TypeList<
-            RenderInstance, WorldTransform, ModelsBuffer, LightIndex, LastEvaluatedFrame, PlaybackFrame,
+            RenderInstance, WorldTransform, ModelsBuffer, LastEvaluatedFrame, PlaybackFrame,
             PosedLayout, MeshEditWork, MeshVertexOverlays, BoundsRun,
             MeshletPositionsDirty, ClusterLodDirty, ClusterLodDemand, MeshDisplayDirty, MeshLayoutDirty, MeshBoundsDirty>{}
     );

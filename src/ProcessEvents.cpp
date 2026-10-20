@@ -21,6 +21,7 @@
 #include "audio/SoundVertices.h"
 #include "editor/AudioIntegration.h"
 #include "gltf/GltfScene.h"
+#include "gpu/LightRecord.h"
 #include "mesh/MeshChanges.h"
 #include "mesh/Primitives.h"
 #include "object/ObjectOps.h"
@@ -188,10 +189,19 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     // Replan restored procedures without regenerating their restored outputs.
     SettleProcedures(r, pass == EventPass::Frame || pass == EventPass::Settle);
     ProcessObjectRemovals(r);
+    // The live viewports mirror the document's viewport entities, and a restored document acts on its active viewport's scene.
+    SyncViewports(r);
+    if (pass == EventPass::Restore) r.Resources.get<FrameState>().Scene = ActingScene(r);
     // The records derive from the display settings the visible viewports share.
     auto &scene_state = r.Resources.get<GpuSceneState>();
     const auto displays = VisibleDisplays(viewports);
     const bool displays_changed = std::exchange(scene_state.Displays, displays) != displays;
+    // A newly shown scene's states take each bone's state from the bone pass below.
+    const bool scenes_changed = SyncShownScenes(r);
+    if (scenes_changed) {
+        for (const auto arm : r.view<const ArmatureObject>()) bone_state_dirty.insert(arm);
+        request();
+    }
 
     const bool recompiled = std::exchange(r.Resources.get<FrameState>().RecompileShaders, false);
     if (recompiled) {
@@ -267,13 +277,13 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     }
     if (const auto *pending = r.try_get<PendingImportMesh>(state::Document)) {
         const auto path = pending->Path;
-        auto info = pending->Info;
+        const auto info = pending->Info;
         r.remove<PendingImportMesh>(state::Document);
-        if (const auto imported = ImportMesh(r, path, std::move(info)); !imported) action::Fail(r, imported.error());
+        if (const auto imported = ImportMesh(r, path, info); !imported) action::Fail(r, imported.error());
     }
     // A gesture resolves against the viewport it was emitted in, with its targets sized and the rendered camera it saw, which selection, culling and LOD use.
-    const auto gesture_viewport = [&](uint32_t id, const RenderView &view) -> Viewport & {
-        auto *found = viewports.Find(id);
+    const auto gesture_viewport = [&](state::Entity viewport_entity, const RenderView &view) -> Viewport & {
+        auto *found = viewports.Find(viewport_entity);
         auto &viewport = found ? *found : viewports.All.front();
         if (SyncViewportRenderResources(r, viewport)) viewport.RenderRequested = viewport.OcclusionStale = true;
         WriteViewUniforms(r, viewport, view);
@@ -290,7 +300,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         return Min(uvec2{std::lround(fraction.x * float(extent.x)), std::lround(fraction.y * float(extent.y))}, last);
     };
     if (const auto *pending = r.try_get<const PendingEditElementClick>(state::Document)) {
-        const auto &viewport = gesture_viewport(pending->ViewportId, pending->View);
+        const auto &viewport = gesture_viewport(pending->Viewport, pending->View);
         const auto mouse_px = target_px(viewport, pending->Mouse);
         const bool toggle = pending->Toggle;
         r.remove<PendingEditElementClick>(state::Document);
@@ -309,7 +319,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         }
     }
     if (const auto *pending = r.try_get<const PendingBoxSelect>(state::Document)) {
-        const auto &viewport = gesture_viewport(pending->ViewportId, pending->View);
+        const auto &viewport = gesture_viewport(pending->Viewport, pending->View);
         const auto box_px = std::pair{target_px(viewport, pending->Box.first), target_px(viewport, pending->Box.second)};
         const bool additive = pending->Additive;
         r.remove<PendingBoxSelect>(state::Document);
@@ -385,7 +395,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         }
     }
     if (const auto *pending = r.try_get<const PendingPick>(state::Document)) {
-        const auto &viewport = gesture_viewport(pending->ViewportId, pending->View);
+        const auto &viewport = gesture_viewport(pending->Viewport, pending->View);
         const auto mouse_px = target_px(viewport, pending->Mouse);
         const bool shift = pending->Shift, cycle = pending->Cycle;
         r.remove<PendingPick>(state::Document);
@@ -462,7 +472,8 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     }
 
     // Derive render instances after animation updates visibility.
-    if (DeriveRenderInstances(r)) request();
+    // A hierarchy or membership change moves nodes between scenes, so it rescopes every instance.
+    if (DeriveRenderInstances(r, AnyChanged(scene_changes.Hierarchy, scene_changes.Membership))) request();
     auto sync = SyncModelsBuffers(r);
     if (sync.SlotsChanged) {
         request();
@@ -572,60 +583,35 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         request();
     }
 
-    { // Register changed and shown lights into the GPU Lights buffer, the single path for both new and restored lights.
-        bool synced = false;
-        for (const auto entity : render_changes.PunctualLight) {
-            if (!r.all_of<PunctualLight, Instance>(entity) || r.all_of<Hidden>(entity)) continue;
-            const auto *ri = r.try_get<const RenderInstance>(entity);
-            if (!ri || ri->BufferIndex == UINT32_MAX) continue;
-            const auto index = r.all_of<LightIndex>(entity) ? r.get<const LightIndex>(entity).Value : buffers.Lights.Count<LightRecord>();
-            if (!r.all_of<LightIndex>(entity)) r.emplace<LightIndex>(entity, index);
-            const auto &light = r.get<const PunctualLight>(entity);
-            const LightRecord gpu_light{
-                .TransformSlotOffset = {buffers.Instances.TransformBuffer.Slot, ri->BufferIndex},
-                .Range = light.Range,
-                .Color = light.Color,
-                .Intensity = light.Intensity,
-                .InnerConeCos = std::cos(light.InnerConeAngle),
-                .OuterConeCos = std::cos(light.OuterConeAngle),
-                .Type = light.Type,
-            };
-            if (index >= buffers.Lights.Count<LightRecord>()) scene_state.OverlayJobsDirty = true;
-            else {
-                const auto old = buffers.Lights.GetSpan<LightRecord>()[index];
-                if (old.Type != gpu_light.Type || old.Range != gpu_light.Range || old.OuterConeCos != gpu_light.OuterConeCos || old.InnerConeCos != gpu_light.InnerConeCos) {
-                    scene_state.OverlayJobsDirty = true;
-                }
+    // Each shown scene's lights are its placed punctual lights not hidden in it, in entity index order.
+    if (scenes_changed || sync.SlotsChanged ||
+        AnyChanged(render_changes.PunctualLight, render_changes.InstanceVisibility, render_changes.InstanceDestroyed, scene_changes.Hierarchy, scene_changes.Membership)) {
+        const auto light_entities = SortedEntities(r.view<const PunctualLight, const Instance, const RenderInstance>());
+        // Overlay jobs size each light's wire from its type, range and cone.
+        const auto same_shape = [](const LightRecord &a, const LightRecord &b) {
+            return a.Type == b.Type && a.Range == b.Range && a.InnerConeCos == b.InnerConeCos && a.OuterConeCos == b.OuterConeCos;
+        };
+        std::vector<LightRecord> records;
+        for (uint32_t i = 0u; i < buffers.Scenes.size(); ++i) {
+            records.clear();
+            for (const auto entity : light_entities) {
+                const auto slot = r.get<const RenderInstance>(entity).BufferIndex;
+                if (slot == UINT32_MAX || HiddenIn(r, entity, buffers.Scenes[i])) continue;
+                const auto &light = r.get<const PunctualLight>(entity);
+                records.push_back({
+                    .TransformSlotOffset = {buffers.Instances.TransformBuffer.Slot, slot},
+                    .Range = light.Range,
+                    .Color = light.Color,
+                    .Intensity = light.Intensity,
+                    .InnerConeCos = std::cos(light.InnerConeAngle),
+                    .OuterConeCos = std::cos(light.OuterConeAngle),
+                    .Type = light.Type,
+                });
             }
-            buffers.Lights.Update(BytesOf(gpu_light), uint64_t(index) * sizeof(LightRecord));
-            synced = true;
+            auto &lights = buffers.Lights[i];
+            if (!std::ranges::equal(lights.GetSpan<LightRecord>(), records, same_shape)) scene_state.OverlayJobsDirty = true;
+            std::ranges::copy(records, lights.SetCount<LightRecord>(uint32_t(records.size())).begin());
         }
-        if (synced) request();
-    }
-
-    const auto remove_light = [&](state::Entity entity) {
-        if (const auto *light_index = r.try_get<const LightIndex>(entity)) {
-            buffers.PendingLightRemovals.emplace_back(light_index->Value);
-            r.remove<LightIndex>(entity);
-        }
-    };
-    for (const auto entity : render_changes.InstanceDestroyed) remove_light(entity);
-    for (const auto entity : render_changes.InstanceVisibility) {
-        if (r.valid(entity) && r.all_of<Hidden>(entity)) remove_light(entity);
-    }
-    if (auto &indices = buffers.PendingLightRemovals; !indices.empty()) {
-        const auto before = buffers.Lights.Count<LightRecord>();
-        SortUnique(indices);
-        std::erase_if(indices, [before](uint32_t index) { return index >= before; });
-        ForEachSurvivorRun({0u, before}, indices, [&](uint32_t from, uint32_t to, uint32_t count) {
-            if (from != to && count) buffers.Lights.Move(uint64_t(from) * sizeof(LightRecord), uint64_t(to) * sizeof(LightRecord), uint64_t(count) * sizeof(LightRecord));
-        });
-        for (const auto [entity, index] : r.view<const LightIndex>().each()) {
-            const auto shift = uint32_t(std::ranges::lower_bound(indices, index.Value) - indices.begin());
-            if (shift) r.replace<LightIndex>(entity, index.Value - shift);
-        }
-        buffers.Lights.SetCount<LightRecord>(before - indices.size());
-        indices.clear();
         request();
     }
 
@@ -728,11 +714,11 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         // Object-mode selection uses silhouette state bits and preserves occlusion.
         if (!selected_tracker.empty() || (!active_tracker.empty() && mode != InteractionMode::Object)) request(mode == InteractionMode::Edit);
 
-        std::span<uint8_t> states;
+        bool states_written = false;
         const auto write_instance_state = [&](state::Entity instance_entity) {
             if (const auto *ri = r.try_get<const RenderInstance>(instance_entity); ri && ri->BufferIndex != UINT32_MAX) {
-                if (states.empty()) states = buffers.Instances.GetMutableStates();
-                states[ri->BufferIndex] = InstanceStateBits(r, instance_entity);
+                WriteInstanceState(r, buffers, instance_entity, ri->BufferIndex, InstanceStateBits(r, instance_entity));
+                states_written = true;
             }
         };
         for (const auto *tracker : {&selected_tracker, &active_tracker}) {
@@ -741,7 +727,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
                 if (const auto arm = FindArmatureObject(r, instance_entity); arm != state::Null) bone_state_dirty.insert(arm);
             }
         }
-        if (!states.empty()) request();
+        if (states_written) request();
     }
     {
         const auto &bone_sel_tracker = selection_changes.BoneSelection;
@@ -797,12 +783,6 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     if (!render_changes.CameraLens.empty()) {
         scene_state.OverlayJobsDirty = true;
         request();
-    }
-    bool light_count_changed = false;
-    if (const uint32_t required_count = r.view<const LightIndex>().size();
-        buffers.Lights.Count<LightRecord>() != required_count) {
-        buffers.Lights.SetCount<LightRecord>(required_count);
-        light_count_changed = true;
     }
     std::vector<state::Entity> material_meshes;
     if (const auto &tracker = mesh_changes.Material; !tracker.empty()) {
@@ -989,12 +969,12 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
             const auto hidden = [&](state::Entity e) { return r.all_of<Hidden>(e) ? InstanceStateHidden : uint8_t{0}; };
             const bool joints_live = arm_obj.JointEntity != state::Null && r.valid(arm_obj.JointEntity);
             for (const auto b : bone_entities) {
-                if (const auto *ri = r.try_get<RenderInstance>(b)) buffers.Instances.UpdateState(ri->BufferIndex, uint8_t(compute_state(b, BoneSel::Body) | hidden(b)));
+                if (const auto *ri = r.try_get<RenderInstance>(b)) WriteInstanceState(r, buffers, b, ri->BufferIndex, uint8_t(compute_state(b, BoneSel::Body) | hidden(b)));
                 const auto *joints = joints_live ? r.try_get<const BoneJointEntities>(b) : nullptr;
                 if (!joints) continue;
 
                 for (const auto &[je, part] : {std::pair{joints->Head, BoneSel::Root}, {joints->Tail, BoneSel::Tip}}) {
-                    if (const auto *ri = je != state::Null ? r.try_get<const RenderInstance>(je) : nullptr) buffers.Instances.UpdateState(ri->BufferIndex, uint8_t(compute_state(b, part) | hidden(je)));
+                    if (const auto *ri = je != state::Null ? r.try_get<const RenderInstance>(je) : nullptr) WriteInstanceState(r, buffers, je, ri->BufferIndex, uint8_t(compute_state(b, part) | hidden(je)));
                 }
             }
             request();
@@ -1251,7 +1231,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     if (is_edit_mode && AnyChanged(viewport_changes.TransformPending, viewport_changes.TransformEnd)) scene_state.EditPreludePending = true;
 
     // Every viewport's view uniforms carry the scene lighting, the edit mode and the pending transform.
-    if (AnyChanged(render_changes.SceneLighting, viewport_changes.EditMode, viewport_changes.TransformPending, viewport_changes.TransformEnd) || light_count_changed) request();
+    if (AnyChanged(render_changes.SceneLighting, viewport_changes.EditMode, viewport_changes.TransformPending, viewport_changes.TransformEnd)) request();
 
     // Publish changed sound-vertex selections in one GPU transaction.
     if (!dirty_sound_selection_meshes.empty()) {
@@ -1337,7 +1317,7 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
     render.SceneWorld.bind(r).on<gltf::SourceAssets>(On::Create | On::Update);
     render.PunctualLight.bind(r).on<PunctualLight>(On::Create | On::Update).on<RenderInstance>(On::Create).on<Hidden>(On::Destroy);
     render.MorphWeights.bind(r);
-    render.SceneLighting.bind(r).on<ImageLight>(On::Create | On::Update).on<LightIndex>(On::Create | On::Destroy);
+    render.SceneLighting.bind(r).on<ImageLight>(On::Create | On::Update);
     render.CameraLens.bind(r).on<Perspective>(On::Create | On::Update).on<Orthographic>(On::Create | On::Update);
     auto &view = r.Resources.emplace<ViewportChanges>();
     view.InteractionMode.bind(r).on<Interaction>(On::Create | On::Update);
@@ -1351,7 +1331,9 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
     scene.WorldTransform.bind(r).on<BoneDisplayScale>(On::Update);
     scene.Parent.bind(r).on<SceneParent>(On::Create | On::Update | On::Destroy);
     scene.Hierarchy.bind(r).on<SceneParent>(On::Create | On::Update | On::Destroy).on<SceneChildren>(On::Create | On::Update | On::Destroy);
+    scene.Membership.bind(r).on<SceneMembership>(On::Create | On::Update | On::Destroy);
     scene.Names.bind(r).on<Name>(On::Create | On::Destroy);
+    scene.Destroyed.bind(r, state::Clearing::Explicit).on<ObjectKind>(On::Destroy).on<BoneIndex>(On::Destroy);
     scene.ScaleLocked.bind(r).on<ScaleLocked>(On::Create | On::Destroy);
     scene.TransformDirty.bind(r)
         .on<Transform>(On::Create | On::Update)

@@ -950,22 +950,7 @@ std::optional<ImageBasedLight> ConvertIBL(const fastgltf::Asset &asset, size_t s
     return ibl;
 }
 
-state::Entity ActiveSceneEntity(const state::Registry &r) {
-    for (const auto e : r.view<const ActiveScene>()) return e;
-    return state::Null;
-}
-// No SceneMembership (single-scene) means the node is in the sole scene, so always in the active one.
-bool EntityInActiveScene(const state::Registry &r, state::Entity active_scene, state::Entity e) {
-    const auto *sm = r.try_get<const SceneMembership>(e);
-    return !sm || std::ranges::contains(sm->Scenes, active_scene);
-}
-
 using NodeEntity = std::pair<uint32_t, state::Entity>;
-
-void ApplySceneVisibility(state::Registry &r, state::Entity active_scene, state::Entity e, const SceneMembership &membership) {
-    if (std::ranges::contains(membership.Scenes, active_scene)) Show(r, e);
-    else Hide(r, e);
-}
 
 // Selects the given objects, keyed by source node with armatures last.
 // The active object is the first in source order of the camera, mesh, armature, root-empty, then object priority.
@@ -1104,7 +1089,8 @@ struct NodePlan {
     // Merged over every scene with the default scene first, so a node shared between scenes keeps the default scene's placement.
     std::vector<bool> InScene;
     std::vector<mat4> WorldTransforms;
-    std::vector<uint32_t> SceneMask;
+    // Per source scene, whether its traversal reaches each node.
+    std::vector<std::vector<bool>> SceneReach;
     std::vector<bool> UsedSkin, IsBone;
     // Bone nodes render only when they also carry mesh data.
     std::vector<bool> IsObjectEmitted;
@@ -1116,8 +1102,7 @@ struct NodePlan {
     std::vector<std::vector<uint32_t>> SkinJointNodes;
 };
 
-// With `all_scenes` false, the nodes outside the default scene are planned as unreached.
-NodePlan PlanNodes(const fastgltf::Asset &asset, uint32_t scene_index, bool all_scenes) {
+NodePlan PlanNodes(const fastgltf::Asset &asset, uint32_t scene_index) {
     const auto node_count = asset.nodes.size();
     NodePlan plan{
         .Parents = BuildNodeParentTable(asset),
@@ -1126,7 +1111,7 @@ NodePlan PlanNodes(const fastgltf::Asset &asset, uint32_t scene_index, bool all_
         .SourceMatrices = std::vector<std::optional<mat4>>(node_count),
         .InScene = std::vector(node_count, false),
         .WorldTransforms = std::vector(node_count, I4),
-        .SceneMask = std::vector<uint32_t>(node_count, 0u),
+        .SceneReach = std::vector<std::vector<bool>>(asset.scenes.size()),
         .UsedSkin = std::vector(asset.skins.size(), false),
         .IsBone = std::vector(node_count, false),
         .IsObjectEmitted = std::vector(node_count, false),
@@ -1158,21 +1143,18 @@ NodePlan PlanNodes(const fastgltf::Asset &asset, uint32_t scene_index, bool all_
         }
     }
     const auto merge_scene = [&](uint32_t si) {
-        const auto t = TraverseSceneNodes(asset, plan.LocalTransforms, si);
+        auto t = TraverseSceneNodes(asset, plan.LocalTransforms, si);
         for (uint32_t i = 0; i < node_count; ++i) {
-            if (!t.InScene[i]) continue;
-            plan.SceneMask[i] |= (1u << si);
-            if (!plan.InScene[i]) {
+            if (t.InScene[i] && !plan.InScene[i]) {
                 plan.InScene[i] = true;
                 plan.WorldTransforms[i] = t.WorldTransforms[i];
             }
         }
+        plan.SceneReach[si] = std::move(t.InScene);
     };
     merge_scene(scene_index);
-    if (all_scenes) {
-        for (uint32_t s = 0; s < asset.scenes.size(); ++s) {
-            if (s != scene_index) merge_scene(s);
-        }
+    for (uint32_t s = 0; s < asset.scenes.size(); ++s) {
+        if (s != scene_index) merge_scene(s);
     }
 
     for (uint32_t node_index = 0; node_index < node_count; ++node_index) {
@@ -1530,7 +1512,7 @@ MeshEntities ImportMeshes(state::Registry &r, std::span<SourceMesh> source_meshe
         // Welding compacts the tangent deltas, so they come from the created mesh.
         layout.MorphTangentDeltas = std::move(created[part].MorphTangentDeltas);
         const auto features = parts[part].Kind == MeshKind::Triangles ? PbrFeaturesOf(materials, layout.DefaultMaterials) : PbrFeatureMask{0};
-        const auto [e, _] = ::AddMesh(r, created[part].StoreId, std::nullopt);
+        const auto e = AddMeshData(r, created[part].StoreId);
         if (!created[part].AuthoredCornerNormals.empty()) r.emplace<AuthoredCornerNormals>(e, std::move(created[part].AuthoredCornerNormals));
         const bool mapped = std::ranges::any_of(layout.VariantMappings, [](const auto &mapping) { return std::ranges::any_of(mapping, [](const auto &m) { return m.has_value(); }); });
         r.emplace<MeshSourceLayout>(e, std::move(layout));
@@ -1546,6 +1528,7 @@ struct ImportedObjects {
     std::vector<NodeEntity> Entities;
     // Serialization-only entities of the nodes no scene reaches.
     std::vector<NodeEntity> Stubs;
+    // The first camera object the default scene reaches, in node order.
     state::Entity FirstCamera{state::Null};
 
     std::span<const NodeEntity> OfNode(uint32_t node_index) const { return std::ranges::equal_range(Entities, node_index, {}, &NodeEntity::first); }
@@ -1557,7 +1540,7 @@ struct ImportedObjects {
 };
 
 // Creates the mesh, camera, light, and empty objects of every emitted node, parents them, and stubs the nodes no scene reaches.
-ImportedObjects ImportObjects(state::Registry &r, const fastgltf::Asset &asset, const NodePlan &plan, const MeshEntities &mesh_entities) {
+ImportedObjects ImportObjects(state::Registry &r, const fastgltf::Asset &asset, const NodePlan &plan, const MeshEntities &mesh_entities, uint32_t scene_index) {
     auto &meshes = r.Resources.get<MeshStore>();
     const auto emitted_count = size_t(std::ranges::count(plan.IsObjectEmitted, true));
     ImportedObjects objects;
@@ -1604,7 +1587,7 @@ ImportedObjects ImportObjects(state::Registry &r, const fastgltf::Asset &asset, 
                 SetLens(r, e, ConvertCamera(cam));
                 node.Camera = *camera_index;
                 node.CameraName = cam.name;
-                if (objects.FirstCamera == state::Null) objects.FirstCamera = e;
+                if (objects.FirstCamera == state::Null && plan.SceneReach[scene_index][node_index]) objects.FirstCamera = e;
             } else if (!mesh_index && light_index) {
                 const auto &light = asset.lights[*light_index];
                 e = ::AddLight(r, meshes, {.Name = std::move(name), .Transform = transform, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, ConvertLight(light));
@@ -2024,7 +2007,7 @@ ImportedArmatures ImportArmatures(state::Registry &r, const fastgltf::Asset &ass
 
         const auto armature_entity = r.create();
         out.Objects.emplace_back(armature_entity);
-        r.emplace<ObjectKind>(armature_entity, ObjectType::Armature);
+        EmplaceObject(r, armature_entity, ObjectType::Armature);
         r.emplace<ArmatureObject>(armature_entity, armature_data_entity);
         r.emplace<Transform>(armature_entity, arma_node ? ToTransform(plan.WorldTransforms[*arma_node]) : Transform{});
         // Preserve the armature's world transform when parenting it under its root object.
@@ -2123,7 +2106,7 @@ void ApplySourceVisibility(state::Registry &r, const fastgltf::Asset &asset, con
 
 // Allocates morph weights, then parses every channel into per-entity clips of the scene animations appended for this asset.
 // Returns whether any channel was imported.
-bool ImportAnimations(state::Registry &r, const fastgltf::Asset &asset, const ImportedObjects &objects, std::span<const state::Entity> armature_objects, std::span<const uint32_t> material_index_by_source, std::optional<uint32_t> image_light) {
+bool ImportAnimations(state::Registry &r, const fastgltf::Asset &asset, const ImportedObjects &objects, std::span<const state::Entity> armature_objects, std::span<const uint32_t> material_index_by_source, std::span<const state::Entity> scene_entities) {
     // Joint nodes drive the bone entity of every armature owning them.
     struct BoneTarget {
         state::Entity Entity;
@@ -2224,7 +2207,9 @@ bool ImportAnimations(state::Registry &r, const fastgltf::Asset &asset, const Im
                 }
                 break;
             case gltf::PointerSpace::ImageLight:
-                if (image_light && index == *image_light) targets.emplace_back(state::Document, row->Target);
+                for (uint32_t si = 0; si < asset.scenes.size(); ++si) {
+                    if (ToIndex(asset.scenes[si].imageBasedLightIndex, asset.imageBasedLights.size()) == index) targets.emplace_back(scene_entities[si], row->Target);
+                }
                 break;
             case gltf::PointerSpace::Camera:
             case gltf::PointerSpace::Light: {
@@ -2295,31 +2280,25 @@ bool ImportAnimations(state::Registry &r, const fastgltf::Asset &asset, const Im
     return any;
 }
 
-// One scene entity per source scene with the default scene active.
-// In a multi-scene asset, each imported object and bone records its membership and shows only in the active scene.
-void ImportScenes(state::Registry &r, const fastgltf::Asset &asset, uint32_t scene_index, std::span<const uint32_t> scene_mask, const ImportedObjects &objects, std::span<const NodeEntity> bones) {
-    std::vector<state::Entity> scene_entities;
-    scene_entities.reserve(asset.scenes.size());
-    for (uint32_t i = 0; i < asset.scenes.size(); ++i) {
-        const auto se = r.create();
-        r.emplace<Scene>(se, std::string{asset.scenes[i].name});
-        r.emplace<SourceIndex>(se, i);
-        if (i == scene_index) r.emplace<ActiveScene>(se);
-        scene_entities.emplace_back(se);
-    }
-    if (asset.scenes.size() <= 1) return;
-    const auto join = [&](uint32_t node_index, state::Entity e) {
-        const auto mask = scene_mask[node_index];
-        if (mask == 0u) return;
-        SceneMembership membership;
-        for (uint32_t i = 0; i < scene_entities.size(); ++i) {
-            if (mask & (1u << i)) membership.Scenes.emplace_back(scene_entities[i]);
+// Each imported root joins the scenes reaching its source node, or the acting scene when none does.
+// A root armature joins the scenes reaching its root node, or the scenes reaching its bones without a root node.
+void AssignSceneMemberships(state::Registry &r, const NodePlan &plan, std::span<const state::Entity> scene_entities, state::Entity acting, const ImportedObjects &objects, std::span<const state::Entity> armature_objects, std::span<const ArmaturePlan> groups) {
+    const auto scenes_reaching = [&](std::span<const uint32_t> nodes) {
+        std::vector<state::Entity> scenes;
+        for (uint32_t si = 0; si < scene_entities.size(); ++si) {
+            if (std::ranges::any_of(nodes, [&](uint32_t node) { return plan.SceneReach[si][node]; })) scenes.emplace_back(scene_entities[si]);
         }
-        if (r.all_of<Instance>(e)) ApplySceneVisibility(r, scene_entities[scene_index], e, membership);
-        r.emplace<SceneMembership>(e, std::move(membership));
+        if (scenes.empty()) scenes.emplace_back(acting);
+        return scenes;
     };
-    for (const auto &[node_index, e] : objects.Entities) join(node_index, e);
-    for (const auto &[node_index, e] : bones) join(node_index, e);
+    const auto assign = [&](state::Entity e, std::vector<state::Entity> scenes) {
+        if (!r.all_of<SceneParent>(e)) r.emplace_or_replace<SceneMembership>(e, std::move(scenes));
+    };
+    for (const auto &[node_index, e] : objects.Entities) assign(e, scenes_reaching(std::span{&node_index, 1u}));
+    for (uint32_t i = 0; i < armature_objects.size(); ++i) {
+        const auto &arma_node = groups[i].ArmaNode;
+        assign(armature_objects[i], scenes_reaching(arma_node ? std::span{&*arma_node, 1u} : std::span<const uint32_t>{groups[i].BoneNodes}));
+    }
 }
 } // namespace
 
@@ -2352,14 +2331,26 @@ std::expected<LoadResult, LoadError> LoadGltf(const std::filesystem::path &sourc
         source_meshes.emplace_back(std::move(*source_mesh));
     }
 
-    const bool owns_scenes = ActiveSceneEntity(r) == state::Null;
-    const auto plan = PlanNodes(asset, scene_index, owns_scenes);
+    const auto plan = PlanNodes(asset, scene_index);
     const bool any_object = std::ranges::any_of(plan.IsObjectEmitted, [](bool emitted) { return emitted; });
     const bool any_usable_skin = std::ranges::any_of(plan.SkinJointNodes, [](const auto &joints) { return !joints.empty(); });
     if (!any_object && !any_usable_skin) return std::unexpected{LoadError{.Message = std::format("glTF '{}' has no importable source objects or skins.", source_path.string())}};
     auto armature_plans = PlanArmatures(asset, plan, source_meshes, source_path);
     if (!armature_plans) return std::unexpected{LoadError{.Message = std::move(armature_plans.error())}};
 
+    // The default scene's roots join the acting scene, which the creation functions read as the frame's scene.
+    // An acting scene without roots takes the default scene's name, source index and extras, and a document without scenes takes a new one.
+    const auto frame_scene = FrameScene(r);
+    if (r.view<const Scene>().size() + asset.scenes.size() - (frame_scene != state::Null ? 1u : 0u) > MaxScenes) {
+        return std::unexpected{LoadError{.Message = std::format("glTF '{}' would bring the document past {} scenes.", source_path.string(), MaxScenes)}};
+    }
+    const auto acting = frame_scene != state::Null ? frame_scene : r.create();
+    if (std::ranges::none_of(r.view<const SceneMembership>(), [&](state::Entity root) { return InScene(r, root, acting); })) {
+        r.emplace_or_replace<Scene>(acting);
+        r.remove<Name>(acting);
+        r.emplace<Name>(acting, std::string{asset.scenes[scene_index].name});
+        r.emplace_or_replace<SourceIndex>(acting, scene_index);
+    }
     const auto physics = ImportPhysicsResources(r, asset);
     if (!asset.materialVariants.empty()) {
         ::MaterialVariants mv;
@@ -2371,17 +2362,28 @@ std::expected<LoadResult, LoadError> LoadGltf(const std::filesystem::path &sourc
     }
     auto materials = ImportMaterials(r, asset, *source_assets, source_materials.Materials);
     const auto mesh_entities = ImportMeshes(r, source_meshes, materials.IndexByGltfMaterial);
-    const auto objects = ImportObjects(r, asset, plan, mesh_entities);
+    const auto objects = ImportObjects(r, asset, plan, mesh_entities, scene_index);
     ImportNodePhysics(r, asset, objects, mesh_entities, physics);
     ImportAudio(r, asset, objects);
     const auto armatures = ImportArmatures(r, asset, plan, *armature_plans, objects, source_path.stem().string());
-    ApplySourceVisibility(r, asset, objects, armatures.Bones);
-    const auto image_light = ToIndex(asset.scenes[scene_index].imageBasedLightIndex, asset.imageBasedLights.size());
-    if (image_light) {
-        const auto &src_ibl = asset.imageBasedLights[*image_light];
-        r.emplace_or_replace<ImageLight>(state::Document, ImageLight{Normalize(std::bit_cast<quat>(src_ibl.rotation)), std::max(0.f, src_ibl.intensity)});
+    // Every other source scene becomes a scene of its own.
+    std::vector<state::Entity> scene_entities(asset.scenes.size(), acting);
+    for (uint32_t i = 0; i < asset.scenes.size(); ++i) {
+        if (i == scene_index) continue;
+        scene_entities[i] = r.create();
+        r.emplace<Scene>(scene_entities[i]);
+        r.emplace<Name>(scene_entities[i], std::string{asset.scenes[i].name});
+        r.emplace<SourceIndex>(scene_entities[i], i);
     }
-    const bool imported_animation = ImportAnimations(r, asset, objects, armatures.Objects, materials.IndexByGltfMaterial, image_light);
+    AssignSceneMemberships(r, plan, scene_entities, acting, objects, armatures.Objects, *armature_plans);
+    ApplySourceVisibility(r, asset, objects, armatures.Bones);
+    for (uint32_t i = 0; i < asset.scenes.size(); ++i) {
+        if (const auto light = ToIndex(asset.scenes[i].imageBasedLightIndex, asset.imageBasedLights.size())) {
+            const auto &src_ibl = asset.imageBasedLights[*light];
+            r.emplace_or_replace<ImageLight>(scene_entities[i], ImageLight{Normalize(std::bit_cast<quat>(src_ibl.rotation)), std::max(0.f, src_ibl.intensity)});
+        }
+    }
+    const bool imported_animation = ImportAnimations(r, asset, objects, armatures.Objects, materials.IndexByGltfMaterial, scene_entities);
 
     auto &environments = r.Resources.get<EnvironmentStore>();
     if (const auto &source_ibl = source_assets->ImageBasedLight) {
@@ -2394,17 +2396,15 @@ std::expected<LoadResult, LoadError> LoadGltf(const std::filesystem::path &sourc
     // Import-time UX default: show an imported world, hide the (empty) default world.
     r.get_or_emplace<PendingViewSetup>(state::Document).WorldOpacity = source_assets->ImageBasedLight ? 1.f : 0.f;
 
-    // The document's scenes come from its first glTF import.
-    // A later import brings its default scene's nodes without scene membership.
-    if (owns_scenes) ImportScenes(r, asset, scene_index, plan.SceneMask, objects, armatures.Bones);
     {
-        const auto active_scene = ActiveSceneEntity(r);
         std::vector<NodeEntity> selected;
         selected.reserve(objects.Entities.size() + armatures.Objects.size());
         for (const auto &[node_index, e] : objects.Entities) {
-            if (EntityInActiveScene(r, active_scene, e)) selected.emplace_back(node_index, e);
+            if (InScene(r, e, acting)) selected.emplace_back(node_index, e);
         }
-        for (const auto e : armatures.Objects) selected.emplace_back(std::numeric_limits<uint32_t>::max(), e);
+        for (const auto e : armatures.Objects) {
+            if (InScene(r, e, acting)) selected.emplace_back(std::numeric_limits<uint32_t>::max(), e);
+        }
         SelectObjects(r, std::move(selected));
     }
     if (!materials.Textures.empty()) {
@@ -2416,19 +2416,15 @@ std::expected<LoadResult, LoadError> LoadGltf(const std::filesystem::path &sourc
     return LoadResult{.FirstCameraObject = objects.FirstCamera, .ImportedAnimation = imported_animation};
 }
 
-void SwitchActiveScene(state::Registry &r, state::Entity scene) {
-    if (!r.all_of<Scene>(scene) || r.all_of<ActiveScene>(scene)) return;
-    r.clear<ActiveScene>();
-    r.emplace<ActiveScene>(scene);
-    for (const auto [e, membership, _] : r.view<const SceneMembership, const Instance>().each()) ApplySceneVisibility(r, scene, e, membership);
-    std::vector<NodeEntity> selected;
-    for (const auto [e, node, _] : r.view<const GltfNode, const ObjectKind>().each()) {
-        if (EntityInActiveScene(r, scene, e)) selected.emplace_back(node.Index.value_or(std::numeric_limits<uint32_t>::max()), e);
-    }
-    SelectObjects(r, std::move(selected));
-}
-
 static_assert(ExtrasCameras == uint32_t(fastgltf::Category::Cameras) && ExtrasMeshes == uint32_t(fastgltf::Category::Meshes) && ExtrasNodes == uint32_t(fastgltf::Category::Nodes) && ExtrasLights == uint32_t(fastgltf::Category::Lights));
+
+std::vector<state::Entity> OrderedScenes(const state::Registry &r) {
+    const auto key = [&](state::Entity e) {
+        const auto *index = r.try_get<const SourceIndex>(e);
+        return std::pair{index ? index->Value : std::numeric_limits<uint32_t>::max(), state::Index(e)};
+    };
+    return SortedEntities(r.view<const Scene>(), [&](state::Entity a, state::Entity b) { return key(a) < key(b); });
+}
 
 std::optional<std::string_view> GetExtras(const SourceAssets &sa, uint32_t category, uint32_t source_index) {
     if (const auto it = sa.ExtrasByEntity.find(ExtrasKey(category, source_index)); it != sa.ExtrasByEntity.end()) return std::string_view{it->second};

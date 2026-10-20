@@ -230,6 +230,7 @@ mesheditor_library(MeshEditorEditor COLD
     src/action/Nodes.cpp
     src/action/Object.cpp
     src/action/Physics.cpp
+    src/action/Scene.cpp
     src/action/Selection.cpp
     src/action/Timeline.cpp
     src/action/View.cpp

@@ -1,6 +1,7 @@
 #include "action/Io.h"
 #include "editor/AudioIntegration.h"
 #include "state/Registry.h"
+#include "viewport/ViewportScene.h"
 
 #include "Profile.h"
 #include "Variant.h"
@@ -42,10 +43,19 @@ void LoadGltfFile(state::Registry &r, const std::filesystem::path &path) {
 } // namespace
 
 void Apply(state::Registry &r, const Action &action) {
+    // A document starts with one scene shown by one viewport.
+    const auto add_scene = [&] {
+        const auto scene = r.create();
+        r.emplace<Scene>(scene);
+        EmplaceUniqueName(r, scene, "Scene");
+        const auto viewport = r.create();
+        r.emplace<ViewportScene>(viewport, scene);
+        EmplaceUniqueName(r, viewport, "Viewport");
+    };
     std::visit(
         overloaded{
-            [&](const LoadDefaultScene &) { AddDefaultSceneContent(r); },
-            [](const LoadEmptyScene &) {},
+            [&](const LoadDefaultScene &) { add_scene(); AddDefaultSceneContent(r); },
+            [&](const LoadEmptyScene &) { add_scene(); },
             [&](const Load &a) {
                 const auto &path = a.Path;
                 const auto ext = path.extension().string();
@@ -92,7 +102,7 @@ void Apply(state::Registry &r, const Action &action) {
 
                 const auto &listener_points = source->Listeners;
                 const auto created = CreateMesh(r, {.Data = primitive::CreateMesh({primitive::Cylinder{0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f}}), .FlatShaded = true});
-                const auto [listener_mesh_entity, _] = ::AddMesh(r, created.StoreId);
+                const auto listener_mesh_entity = AddMeshData(r, created.StoreId);
                 for (const auto &listener_point : listener_points) {
                     static const auto rot_z = AngleAxis(std::numbers::pi_v<float> / 2.f, vec3{0, 0, 1}); // Cylinder's center is along the Y axis.
                     const auto listener_instance_entity = ::AddMeshInstance(

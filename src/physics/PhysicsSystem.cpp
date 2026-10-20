@@ -43,16 +43,16 @@ struct BodyInput {
     std::optional<PhysicsMotion> Motion;
     PhysicsVelocity Velocity;
     bool Sensor = false;
+    uint64_t Scenes = 0; // The bits of the scenes the body's root is in.
     std::vector<state::Entity> Colliders;
     bool operator==(const BodyInput &) const = default;
 };
-// A collider leaf in its owner's rigid frame, with the surface and filter it collides with.
+// A collider leaf in its owner's rigid frame, with its surface and collision filter.
 struct ColliderInput {
     ColliderShape Shape;
     Transform Local{};
     PhysicsMaterial Material{};
     uint32_t Layer = ~0u, Collides = ~0u;
-    bool HasFilter = false;
     bool operator==(const ColliderInput &) const = default;
 };
 struct BodyRecord {
@@ -88,6 +88,8 @@ struct PhysicsState {
     // Posed bodies with parents before children, rebuilt after input or body set changes.
     std::optional<std::vector<state::Entity>> SampleOrder;
     std::map<state::Entity, rbp::CollisionMask> Masks;
+    // Live scenes in entity index order, each scene's position its bit in a body's scene word.
+    std::vector<state::Entity> Scenes;
     std::vector<rbp::SensorFollower> SensorFollowers;
     rbp::Index WorldAnchor = rbp::NoIndex;
     uint32_t CacheStartFrame{1}, CacheEndFrame{0};
@@ -132,6 +134,18 @@ void UpdateMasks(PhysicsState &s, const state::Registry &r) {
                                                                                                              ~mask(filter.CollideSystems);
         s.Masks.emplace(e, rbp::CollisionMask{mask(filter.Systems), collide});
     }
+    s.Scenes = r.view<const Scene>() | std::views::take(MaxScenes) | std::ranges::to<std::vector>();
+}
+
+// The bits of the scenes the entity's root is in.
+uint64_t SceneWord(const PhysicsState &s, const state::Registry &r, state::Entity e) {
+    const auto *membership = RootMembership(r, e);
+    if (!membership) return 0;
+    uint64_t word = 0;
+    for (const auto scene : membership->Scenes) {
+        if (const auto it = std::ranges::find(s.Scenes, scene); it != s.Scenes.end()) word |= uint64_t(1) << (it - s.Scenes.begin());
+    }
+    return word;
 }
 
 Transform ComposeAuthored(const Transform &parent, Transform result) {
@@ -184,6 +198,7 @@ std::optional<BodyInput> ReadBody(const PhysicsState &s, const state::Registry &
         if (node == entity) return {.S = body.Node.S};
         return ComposeAuthored(self(ParentOrNull(r, node)), r.get<const Transform>(node));
     };
+    body.Scenes = SceneWord(s, r, entity);
     leaves.reserve(body.Colliders.size());
     for (const auto collider : body.Colliders) {
         auto &leaf = leaves.emplace_back(ColliderInput{.Shape = r.get<const ColliderShape>(collider), .Local = local_transform(collider)});
@@ -192,7 +207,6 @@ std::optional<BodyInput> ReadBody(const PhysicsState &s, const state::Registry &
             if (const auto it = s.Masks.find(material->CollisionFilterEntity); it != s.Masks.end()) {
                 leaf.Layer = it->second.Layer;
                 leaf.Collides = it->second.Collides;
-                leaf.HasFilter = true;
             }
         }
         leaf.Material.Name.clear();
@@ -226,7 +240,8 @@ void ApplyCollider(rbp::Shape &shape, state::Entity entity, const ColliderInput 
     shape.UserData = uint64_t(uint32_t(entity)) + 1;
     shape.HasMaterial = true;
     shape.Surface = ToRbp(input.Material);
-    shape.HasFilter = input.HasFilter;
+    // Each leaf carries its whole mask, so the body's own mask goes unused.
+    shape.HasFilter = true;
     shape.Mask = {input.Layer, input.Collides};
 }
 
@@ -345,6 +360,7 @@ void ReleaseLeaves(PhysicsState &s, state::Entity body, std::span<const state::E
 
 void BuildBody(PhysicsState &s, state::Registry &r, state::Entity entity, BodyInput input, std::vector<ColliderInput> leaves) {
     const auto body = CookBody(s, r, input, leaves);
+    s.World->SetBodyScope(body.Body, input.Scenes);
     for (const auto collider : input.Colliders) s.LeafOwners[collider] = entity;
     if (s.Entities.size() <= body.Body) s.Entities.resize(body.Body + 1, state::Null);
     s.Entities[body.Body] = entity;
@@ -682,7 +698,9 @@ void ProcessChanges(state::Registry &r) {
     auto &s = r.Resources.get<PhysicsState>();
     const auto &inputs = changes.Input, &moved = changes.Transform, &geometry = changes.Geometry;
     const bool definitions = AnyChanged(changes.MaterialDef, changes.CollisionSystemDef, changes.CollisionFilterDef);
-    if (inputs.empty() && moved.empty() && geometry.empty() && !definitions && s.Destroyed.empty()) return;
+    const bool scenes = !changes.Scenes.empty();
+    r.Resources.get<PhysicsChanges>().Scenes.clear();
+    if (inputs.empty() && moved.empty() && geometry.empty() && !definitions && !scenes && s.Destroyed.empty()) return;
     const auto destroyed = std::exchange(s.Destroyed, {});
     // Without motion or colliders, the scene forms no body.
     if (r.view<const PhysicsMotion>().empty() && r.view<const ColliderShape>().empty()) {
@@ -693,7 +711,7 @@ void ProcessChanges(state::Registry &r) {
         Rebuild(r);
         return;
     }
-    if (definitions) UpdateMasks(s, r);
+    if (definitions || scenes) UpdateMasks(s, r);
 
     // The bodies a change reaches: each body and collider at or under a changed node, with each collider's former and current owner.
     // `reached` contains every node the walk visits and every destroyed input, which the joints below read.
@@ -720,6 +738,10 @@ void ProcessChanges(state::Registry &r) {
     }
     if (definitions) {
         for (const auto e : r.view<const ColliderMaterial>()) touch(e);
+    }
+    // A scene joining or leaving renumbers the scene bits of every body.
+    if (scenes) {
+        for (const auto e : s.Bodies | std::views::keys) touch(e);
     }
     SortUnique(candidates);
 
@@ -781,6 +803,7 @@ void ProcessChanges(state::Registry &r) {
             auto &body = record.Cooked;
             const auto old_pose = body.InitialPose;
             const auto old_mass = s.World->Masses[body.Body];
+            if (input.Scenes != record.Input.Scenes) s.World->SetBodyScope(body.Body, input.Scenes);
             if (recook) {
                 body = CookBody(s, r, input, next_leaves, body);
             } else {
@@ -965,6 +988,7 @@ void Init(state::Registry &r) {
         .on<PhysicsVelocity>(On::Create | On::Update | On::Destroy)
         .on<ColliderShape>(On::Create | On::Update | On::Destroy)
         .on<SceneParent>(On::Create | On::Update | On::Destroy)
+        .on<SceneMembership>(On::Create | On::Update | On::Destroy)
         .on<ColliderMaterial>(On::Create | On::Update | On::Destroy)
         .on<TriggerTag>(On::Create | On::Destroy)
         .on<PhysicsJoint>(On::Create | On::Update | On::Destroy)
@@ -976,6 +1000,7 @@ void Init(state::Registry &r) {
     changes.MaterialDef.bind(r).on<::PhysicsMaterial>(On::Create | On::Update | On::Destroy);
     changes.CollisionSystemDef.bind(r).on<CollisionSystem>(On::Create | On::Update | On::Destroy);
     changes.CollisionFilterDef.bind(r).on<CollisionFilter>(On::Create | On::Update | On::Destroy);
+    changes.Scenes.bind(r, state::Clearing::Explicit).on<Scene>(On::Create | On::Destroy);
     changes.BodyMesh.bind(r).on<PhysicsBodyHandle>(On::Create | On::Destroy).on<ColliderShape>(On::Create | On::Update | On::Destroy);
     changes.DefinitionUses.bind(r)
         .on<ColliderMaterial>(On::Create | On::Update | On::Destroy)

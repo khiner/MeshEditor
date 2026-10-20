@@ -12,6 +12,7 @@
 #include "gpu/BoundsReducePushConstants.h"
 #include "gpu/CommitPosedGeometryPushConstants.h"
 #include "gpu/DepthPyramidReducePushConstants.h"
+#include "gpu/LightRecord.h"
 #include "gpu/MeshletCullPushConstants.h"
 #include "gpu/MotionBlurAccumulatePushConstants.h"
 #include "gpu/MotionBlurGatherPushConstants.h"
@@ -1298,7 +1299,7 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
             main.SilhouetteEdgeColor.Bind(encoder);
             // In mesh Edit mode, suppress active silhouette (element selection drives active state differently).
             // In armature Edit/Pose mode, the active bone gets the active-color silhouette.
-            const auto active_entity = FindActiveEntity(r);
+            const auto active_entity = FindActiveEntity(r, SceneOf(r, viewport));
             const auto active_bone = FindActiveBone(r);
             const bool armature_mode = FindArmatureObject(r, active_entity) != state::Null;
             uint32_t active_object_id = 0;
@@ -1442,7 +1443,7 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
                                                   .RadiusPx = 4.f * scale,
                                                   .OutlinePx = scale,
                                               });
-            encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4), NS::UInteger(buffers.Instances.StateBuffer.UsedSize));
+            encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4), NS::UInteger(buffers.Instances.TransformBuffer.Count<Transform>()));
         }
     }
 
@@ -1773,7 +1774,8 @@ SceneViewUBO SceneViewOf(state::Registry &r, const Viewport &viewport, const Ren
     const bool use_scene_lights = is_pbr_mode && active_lighting.UseSceneLights;
     const bool use_scene_world = is_pbr_mode && active_lighting.UseSceneWorld;
     const auto ibl = use_scene_world ? environments.SceneWorld.Ibl : StudioIbl(r, viewport.State.Environment.Name);
-    const auto *image_light = r.try_get<const ImageLight>(state::Document);
+    const auto scene = SceneOf(r, viewport);
+    const auto *image_light = r.try_get<const ImageLight>(scene);
     const float env_intensity = use_scene_world && image_light ? image_light->Intensity : active_lighting.EnvIntensity;
     const mat3 env_rotation = [&]() -> mat3 {
         if (use_scene_world) return image_light ? ToMat3(image_light->Rotation) : mat3{1.f};
@@ -1784,9 +1786,10 @@ SceneViewUBO SceneViewOf(state::Registry &r, const Viewport &viewport, const Ren
     const auto *pending = r.try_get<const PendingTransform>(state::Document);
     const auto &mesh_slots = meshes.Slots();
     const auto look_through = viewport.State.LookThroughEntity;
+    const auto scene_index = ShownSceneIndex(r, scene);
     SceneViewUBO view{
-        .LightCount = buffers.Lights.Count<LightRecord>(),
-        .LightSlot = buffers.Lights.Slot,
+        .LightCount = buffers.Lights[scene_index].Count<LightRecord>(),
+        .LightSlot = buffers.Lights[scene_index].Slot,
         .UseSceneLightsRender = use_scene_lights ? 1u : 0u,
         .EnvIntensity = env_intensity,
         .Exposure = std::exp2(active_lighting.ExposureEV),
@@ -1802,7 +1805,6 @@ SceneViewUBO SceneViewOf(state::Registry &r, const Viewport &viewport, const Ren
         .PendingRotation = pending ? pending->Delta.R : quat{1, 0, 0, 0},
         .PendingScale = pending ? pending->Delta.S : vec3{1},
         .LodErrorPixels = settings.LodErrorPixels,
-        .LodPinFlags = LodPinFlagsOf(settings),
         .EdgeSharpnessSlot = mesh_slots.EdgeSharpness,
         .FaceSharpnessSlot = mesh_slots.FaceSharpness,
         .BaseVertexNormalSlot = mesh_slots.BaseVertexNormal,
@@ -1825,7 +1827,7 @@ SceneViewUBO SceneViewOf(state::Registry &r, const Viewport &viewport, const Ren
         .PrimitiveMaterialSlot = mesh_slots.PrimitiveMaterial,
         .MeshRecordSlot = render.MeshRecords.Buffer.Slot,
         .InstanceRecordSlot = buffers.Instances.RecordBuffer.Slot,
-        .InstanceStateSlot = buffers.Instances.StateBuffer.Slot,
+        .InstanceStateSlot = buffers.Instances.States[scene_index].Slot,
         .BoneXRay = settings.ViewportShading == ViewportShadingMode::Wireframe ? 1u : 0u,
         .XRayAlpha = XRayActive(settings) && settings.ViewportShading == ViewportShadingMode::Solid ? XRayOpacity(settings) : 1.f,
         .OverlayBehindOpacity = OverlayBehindOpacity(settings, interaction_mode),
@@ -1839,6 +1841,7 @@ SceneViewUBO SceneViewOf(state::Registry &r, const Viewport &viewport, const Ren
         .UseRealTransmission = (is_pbr_mode && active_lighting.RealTransmission && targets.Transmission) ? 1u : 0u,
         .DebugChannel = is_pbr_mode ? settings.DebugChannel : DebugChannel::None,
         .LookThroughObjectId = look_through != state::Null ? ObjectId(look_through) : 0u,
+        .LodPinFlags = LodPinFlagsOf(settings),
     };
     render_view.ApplyTo(view);
     return view;

@@ -32,10 +32,11 @@ namespace {
 bool Render = true;
 
 struct Fixture : Engine {
-    Fixture() : Engine{true} {
+    Fixture() : Engine{true} {}
+    explicit Fixture(const TestDir &dir) : Fixture{} {
+        expect(P->New(dir));
         R.Resources.get<Viewports>().All.front().State.Extent = {64, 64};
     }
-    explicit Fixture(const TestDir &dir) : Fixture{} { expect(P->New(dir)); }
     std::vector<std::byte> Workspace() {
         return workspace::Serialize(workspace::Capture(R, R.Resources.emplace<PanelsState>()));
     }
@@ -65,6 +66,8 @@ struct Fixture : Engine {
         return Add(action::object::AddEmpty{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Name = std::move(name)})});
     }
     std::vector<std::byte> Image() {
+        // An opened document's viewport takes the fixture's extent.
+        R.Resources.get<Viewports>().All.front().State.Extent = {64, 64};
         SubmitViewports(R);
         WaitForRender(R);
         const auto &image = R.Resources.get<const Viewports>().All.front().Targets.Screen->FinalColorImage;
@@ -145,7 +148,7 @@ void TestActionsArchive() {
     auto &view = f.R.Resources.get<Viewports>().All.front();
     view.State.Camera.Active = editor_view;
     const auto camera = f.Add(action::object::AddCamera{std::make_unique<ObjectCreateInfo>(), lens});
-    const auto final_node = f.Do(action::view::SetLookThroughCamera{view.Id, camera});
+    const auto final_node = f.Do(action::view::SetLookThroughCamera{view.Entity, camera});
     expect(view.State.LookThroughEntity == camera);
     expect(view.State.Camera.LookThroughSaved.value() == editor_view);
     const auto final_state = p.History.MaterializeLive();
@@ -287,7 +290,7 @@ void TestRenderInstanceDerivation() {
     const auto slot = r.get<const RenderInstance>(entity).BufferIndex;
     const auto placed = [&](state::Entity e, bool hidden) {
         const auto *ri = r.try_get<const RenderInstance>(e);
-        return ri && r.all_of<Hidden>(e) == hidden && ((r.Resources.get<const GpuBuffers>().Instances.StateBuffer.GetSpan<uint8_t>()[ri->BufferIndex] & InstanceStateHidden) != 0u) == hidden;
+        return ri && r.all_of<Hidden>(e) == hidden && ((r.Resources.get<const GpuBuffers>().Instances.States.front().GetSpan<uint8_t>()[ri->BufferIndex] & InstanceStateHidden) != 0u) == hidden;
     };
     expect(placed(entity, false));
     created.clear();
@@ -520,7 +523,7 @@ void CheckLayout(Fixture &f, std::string_view step) {
     for (const auto [entity, models] : r.view<const ModelsBuffer>().each()) {
         const auto *record = TryRecordOf(r, entity);
         if (!record) continue;
-        const auto states = buffers.Instances.StateBuffer.GetSpan<uint8_t>({models.InstanceRange.Offset, models.InstanceCount});
+        const auto states = buffers.Instances.States.front().GetSpan<uint8_t>({models.InstanceRange.Offset, models.InstanceCount});
         if (std::ranges::any_of(states, [](uint8_t state) { return (state & InstanceStateHidden) == 0u; }) && meshes.MeshletCount(*record) > 0u) {
             for (uint32_t topology = 0u; topology < 3u; ++topology) topology_meshes[topology] += (record->RenderTopologies >> topology) & 1u;
             const auto flags = record->RenderTopologies ? render.MeshRecords.Get({record->StoreId, 1u})[0].Display.Flags : 0u;
@@ -636,7 +639,7 @@ void TestIncrementalLayout() {
     CheckLayout(f, "object");
     f.Do(action::object::SetSelectedSmoothShading{true});
     CheckLayout(f, "smooth");
-    f.Do(action::view::SetViewportShading{f.R.Resources.get<const Viewports>().All.front().Id, ViewportShadingMode::Wireframe});
+    f.Do(action::view::SetViewportShading{f.R.Resources.get<const Viewports>().All.front().Entity, ViewportShadingMode::Wireframe});
     CheckLayout(f, "wireframe");
 }
 

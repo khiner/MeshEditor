@@ -3,6 +3,7 @@
 #include "Variant.h"
 #include "action/Core.h"
 #include "scene/Entity.h"
+#include "selection/Selection.h"
 #include "state/Registry.h"
 #include "viewport/Viewport.h"
 
@@ -29,7 +30,7 @@ template<typename T> state::Entity ActiveWith(const state::Registry &r) {
     return e != state::Null && r.all_of<T>(e) ? e : state::Null;
 }
 template<typename T> void ForEachSelectedWith(const state::Registry &r, auto &&fn) {
-    for (const auto e : r.view<Selected>()) {
+    for (const auto e : SelectedIn(r)) {
         if (r.all_of<T>(e)) fn(e);
     }
 }
@@ -38,7 +39,7 @@ template<typename T, typename F>
 void ForEachComponentTarget(state::Registry &r, const Target &target, F &&fn) {
     if constexpr (ViewportState::Holds<T>) {
         const auto *on = std::get_if<OnViewport>(&target);
-        if (auto *viewport = on ? r.Resources.get<Viewports>().Find(on->Id) : nullptr) fn(viewport->State.Edit<T>());
+        if (auto *viewport = on ? r.Resources.get<Viewports>().Find(on->Viewport) : nullptr) fn(viewport->State.Edit<T>());
     } else {
         ForEachTarget(target, [&] { return ActiveWith<T>(r); }, [&](auto &&f) { ForEachSelectedWith<T>(r, f); }, std::forward<F>(fn));
     }

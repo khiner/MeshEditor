@@ -2,7 +2,6 @@
 
 #include "gpu/BoundsEntry.h"
 #include "gpu/InstanceRecord.h"
-#include "gpu/LightRecord.h"
 #include "gpu/LodFrontierBlockState.h"
 #include "gpu/LodFrontierEntry.h"
 #include "gpu/LodFrontierState.h"
@@ -24,7 +23,7 @@
 #include "render/VertexBoundsStore.h"
 
 // Per-instance GPU data behind one RangeAllocator, so every buffer shares the same instance offsets.
-// A slot without an instance contains a zero state, so a pass over every slot skips it.
+// A slot without an instance contains a zero state in every state buffer, so a pass over every slot skips it.
 struct InstanceArena {
     InstanceArena(mtl::BufferContext &ctx);
 
@@ -45,10 +44,8 @@ struct InstanceArena {
         ClearStates({active.Offset + active.Count - erased, erased});
     }
     void CopyInstances(uint32_t src_offset, uint32_t dst_offset, uint32_t count);
-    void UpdateState(uint32_t index, uint8_t state) { StateBuffer.Update(BytesOf(state), uint64_t(index) * sizeof(uint8_t)); }
     const AABB &GetBounds(uint32_t index) const { return reinterpret_cast<const AABB *>(BoundsBuffer.Contents().data())[index]; }
     std::span<AABB> GetMutableBounds(Range range) const { return BoundsBuffer.GetMutableSpan<AABB>(range); }
-    std::span<uint8_t> GetMutableStates() const { return {reinterpret_cast<uint8_t *>(StateBuffer.GetMutableRange(0, StateBuffer.UsedSize).data()), StateBuffer.UsedSize}; }
     std::span<Transform> GetMutableTransforms() const {
         const auto mapped = TransformBuffer.GetMutableRange(0, TransformBuffer.UsedSize);
         return {reinterpret_cast<Transform *>(mapped.data()), mapped.size() / sizeof(Transform)};
@@ -57,17 +54,22 @@ struct InstanceArena {
     // Zero the used sizes and the allocator, keeping the GPU allocations for reuse.
     void Reset();
 
-    mtl::Buffer TransformBuffer, ObjectIdBuffer, StateBuffer, BoundsBuffer, RecordBuffer;
+    mtl::Buffer TransformBuffer, ObjectIdBuffer, BoundsBuffer, RecordBuffer;
+    // One state byte per slot for each shown scene, in GpuBuffers::Scenes order.
+    // A scene's states hold the instance's base state, with the hidden bit also set when the instance is outside the scene.
+    std::vector<mtl::Buffer> States;
 
 private:
     // NOLINTNEXTLINE(readability-make-member-function-const)
-    void ClearStates(Range range) { std::ranges::fill(StateBuffer.GetMutableSpan<uint8_t>(range), uint8_t{0}); }
+    void ClearStates(Range range) {
+        for (const auto &states : States) std::ranges::fill(states.GetMutableSpan<uint8_t>(range), uint8_t{0});
+    }
     void ForEachBuffer(auto &&fn) {
         fn(TransformBuffer, sizeof(Transform));
         fn(ObjectIdBuffer, sizeof(uint32_t));
-        fn(StateBuffer, sizeof(uint8_t));
         fn(BoundsBuffer, sizeof(AABB));
         fn(RecordBuffer, sizeof(InstanceRecord));
+        for (auto &states : States) fn(states, sizeof(uint8_t));
     }
 
     void EnsureCapacity(uint64_t end);
@@ -112,6 +114,8 @@ struct GpuBuffers {
     BufferArena<mat4> ArmatureDeformBuffer{Ctx, SlotType::ArmatureDeformBuffer};
     BufferArena<float> MorphWeightBuffer{Ctx, SlotType::MorphWeightBuffer};
     InstanceArena Instances;
+    // The shown scenes in entity index order, which Instances.States and Lights follow.
+    std::vector<state::Entity> Scenes;
 
     mtl::Buffer MeshletWorkRanges, MeshletWorkBlocks, MeshletWorkState, MeshletWorkDispatchArgs;
     // Span-tree traversal alternates frontiers and stores each level's size, block prefixes, and indirect arguments.
@@ -175,16 +179,18 @@ struct GpuBuffers {
         RenderPose(mtl::BufferContext &ctx)
             : Transforms(ctx, 0, SlotType::ModelBuffer),
               ArmatureDeform(ctx, 0, SlotType::ArmatureDeformBuffer),
-              MorphWeights(ctx, 0, SlotType::MorphWeightBuffer),
-              Lights(ctx, 0, SlotType::LightBuffer) {}
+              MorphWeights(ctx, 0, SlotType::MorphWeightBuffer) {}
 
-        mtl::Buffer Transforms, ArmatureDeform, MorphWeights, Lights;
+        mtl::Buffer Transforms, ArmatureDeform, MorphWeights;
+        // Each shown scene's lights, in GpuBuffers::Scenes order.
+        std::vector<mtl::Buffer> Lights;
 
-        void ApplyTo(::SceneViewUBO &view) const {
+        // Binds the pose's buffers, with the lights of the shown scene at `scene_index`.
+        void ApplyTo(::SceneViewUBO &view, uint32_t scene_index) const {
             view.ModelSlotOverride = Transforms.Slot;
             view.ArmatureDeformSlot = ArmatureDeform.Slot;
             view.MorphWeightsSlot = MorphWeights.Slot;
-            view.LightSlot = Lights.Slot;
+            view.LightSlot = Lights[scene_index].Slot;
         }
     };
 
@@ -195,9 +201,8 @@ struct GpuBuffers {
     // Requires the scene evaluated at the capture time.
     void CaptureRenderPose(RenderPose &dst) const;
 
-    mtl::Buffer Lights;
-    // Light buffer indices freed by destroyed lights, compacted by the next event pass.
-    std::vector<uint32_t> PendingLightRemovals;
+    // Each shown scene's punctual lights, in Scenes order.
+    std::vector<mtl::Buffer> Lights;
     mtl::Buffer Materials;
 
     mtl::Buffer ViewportThemeUBO;

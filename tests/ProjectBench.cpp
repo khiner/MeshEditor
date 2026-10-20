@@ -28,7 +28,7 @@ void BenchScene(uint32_t slices, bool render) {
     Engine engine{true};
     auto &r = engine.R;
     auto &p = *engine.P;
-    expect(p.Begin(dir));
+    expect(p.New(dir, true));
     engine.R.Resources.get<Viewports>().All.front().State.Extent = {128, 128};
     p.Settle();
     p.Do(action::MakeAction(action::object::AddMeshPrimitive{primitive::UVSphere{.Slices = slices, .Stacks = slices / 2}, std::make_unique<MeshInstanceCreateInfo>()}));

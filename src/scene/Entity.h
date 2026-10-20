@@ -23,17 +23,22 @@ Name &EmplaceUniqueName(state::Registry &, state::Entity, std::string_view prefi
 // The name without one trailing `_<digits>` suffix, which a unique name or a duplicate renumbers.
 std::string_view NameStem(std::string_view);
 
-// A scene: a named, possibly empty grouping of objects.
-struct Scene {
-    std::string Name;
-};
-// Tag on the currently shown scene.
-struct ActiveScene {};
-// Scenes this object is in.
-// Absent when there's only one scene (everything's in it).
+// A scene: a possibly empty grouping of objects, named by its Name.
+// A document holds at least one.
+struct Scene {};
+// A document holds at most this many scenes, one per bit of the physics scene word.
+inline constexpr uint32_t MaxScenes = 64;
+// The scenes a root node is in, never empty.
+// A node with a parent is in its root's scenes.
 struct SceneMembership {
     std::vector<state::Entity> Scenes;
 };
+
+// The scene when it holds a Scene, else the lowest-index scene, else null.
+state::Entity ResolveScene(const state::Registry &, state::Entity scene);
+// The frame's scene resolved to a live scene, which actions and the settle pass act on.
+// A registry without frame inputs acts on its lowest-index scene.
+state::Entity FrameScene(const state::Registry &);
 
 // Invariants:
 // * Zero or more entities can be Selected.
@@ -70,6 +75,9 @@ struct ObjectKind {
     ObjectType Value{ObjectType::Empty};
 };
 
+// Makes the entity an object of the type, a member of the frame's scene when it has no parent.
+void EmplaceObject(state::Registry &, state::Entity, ObjectType);
+
 // Canonical entity order for consumers whose output depends on traversal order.
 // Component storage order changes with insertion, deletion, and snapshot reconstruction.
 template<typename Compare = std::ranges::less>
@@ -88,7 +96,10 @@ inline bool ContainsInIndexOrder(std::span<const state::Entity> entities, state:
 std::string IdString(state::Entity);
 std::string GetName(const state::Registry &, state::Entity); // Returns name if present, otherwise hex ID.
 
-state::Entity FindActiveEntity(const state::Registry &); // If no active entity, returns state::Null.
+// The active entity when it is in the scene, else state::Null.
+state::Entity FindActiveEntity(const state::Registry &, state::Entity scene);
+// The active entity when it is in the frame's scene, else state::Null.
+state::Entity FindActiveEntity(const state::Registry &);
 
 // Mesh-data entity behind an instance.
 // GetMeshEntity returns null for non-mesh instances.

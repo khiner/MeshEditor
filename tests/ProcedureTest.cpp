@@ -37,10 +37,11 @@ using ::test::Op, ::test::Patchwork, ::test::PlanCase, ::test::Region, ::test::T
 struct Fixture : TestDir, Engine {
     // Runs after each action and each direct commit, told whether the present node replays from its actions.
     std::function<void(bool replays)> Observe;
-    explicit Fixture(const char *dir) : TestDir{dir}, Engine{true} { R.Resources.get<Viewports>().All.front().State.Extent = {64, 64}; }
+    explicit Fixture(const char *dir) : TestDir{dir}, Engine{true} {}
     void Reset(std::string_view name) {
         Observe = {};
         expect(P->New(Path / name));
+        R.Resources.get<Viewports>().All.front().State.Extent = {64, 64};
     }
     uint32_t Do(auto a) {
         const auto node = P->Do(action::MakeAction(std::move(a)));

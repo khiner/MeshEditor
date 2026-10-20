@@ -93,6 +93,7 @@ struct PanelsState {
     std::vector<TabSelection> PendingTabs;
     std::vector<PendingPanelState> PendingPanels;
     bool LayoutLoaded{false};
+    bool IniApplied{false}; // The ini loaded at the last frame end, so the windows it places appear this frame.
 };
 
 struct PanelVisibility {

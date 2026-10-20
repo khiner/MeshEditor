@@ -4,7 +4,7 @@
 #include "mesh/Mesh.h"
 #include "render/Instance.h"
 #include "scene/Entity.h"
-#include "scene/WorldTransform.h"
+#include "scene/SceneGraph.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
@@ -23,6 +23,11 @@ bool HasScaleLockedInstance(const state::Registry &r, state::Entity e) {
     return false;
 }
 } // namespace selection
+
+std::vector<state::Entity> SelectedIn(const state::Registry &r) {
+    const auto scene = FrameScene(r);
+    return r.view<const Selected>() | std::views::filter([&](state::Entity e) { return InScene(r, e, scene); }) | std::ranges::to<std::vector>();
+}
 
 state::Entity FindArmatureObject(const state::Registry &r, state::Entity e) {
     if (e == state::Null) return state::Null;
@@ -69,7 +74,7 @@ StartPivot TransformPivot(const state::Registry &r) {
 bool CanDuplicate(const state::Registry &r) {
     if (r.get<const Interaction>(state::Document).Mode == InteractionMode::Pose) return false;
     if (IsBoneEditMode(r)) return !r.view<BoneSelection>().empty();
-    return !r.view<Selected>().empty();
+    return !SelectedIn(r).empty();
 }
 bool CanDuplicateLinked(const state::Registry &r) { return CanDuplicate(r) && !IsBoneEditMode(r); }
 bool CanDelete(const state::Registry &r) { return CanDuplicate(r); }

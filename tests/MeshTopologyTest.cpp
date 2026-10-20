@@ -134,7 +134,7 @@ struct Fixture : Engine {
 
     explicit Fixture(const char *name)
         : Engine{false}, Dir{(std::string{"/tmp/mesheditor-scratch/topology-"} + name).c_str()} {
-        expect(P->Begin(Dir));
+        expect(P->New(Dir, true));
         R.Resources.get<Viewports>().All.front().State.Extent = {64u, 64u};
         P->Settle();
     }

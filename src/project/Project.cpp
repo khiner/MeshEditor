@@ -428,6 +428,11 @@ std::expected<void, std::string> Project::RunRecorded(std::span<const RecordedAc
             Settle(EventPass::Settle);
         }
         R.edit<PlaybackFrame>(state::Document).Value = inputs.PlaybackFrame;
+        // A change of acting scene between records rescopes the aggregates the next action reads, as the frame between them does live.
+        if (frame.Scene != inputs.Scene) {
+            frame.Scene = inputs.Scene;
+            Settle(EventPass::Settle);
+        }
         frame.DeltaTime = inputs.DeltaTime;
         frame.FixedFrameStep = inputs.FixedFrameStep;
         bool updated_inset = false;
@@ -487,9 +492,11 @@ bool Project::Record(action::Action a, EventPass pass, bool staged) {
     } else {
         InsetPreview.reset();
     }
-    const auto &frame = R.Resources.get<const FrameState>();
+    // An earlier action in the frame can change the acting scene, so each record takes it as it stands.
+    auto &frame = R.Resources.get<FrameState>();
+    frame.Scene = ActingScene(R);
     RecordedAction recorded_action{
-        {frame.DeltaTime, R.get<const PlaybackFrame>(state::Document).Value, R.get<const TimelinePlayback>(state::Document).CurrentFrame, frame.FixedFrameStep, pass, staged},
+        {frame.Scene, frame.DeltaTime, R.get<const PlaybackFrame>(state::Document).Value, R.get<const TimelinePlayback>(state::Document).CurrentFrame, frame.FixedFrameStep, pass, staged},
         std::move(a),
     };
     const auto cooks = R.Resources.get<const CookCount>().Value;
@@ -635,6 +642,7 @@ void Project::CancelGesture() {
 }
 void Project::Frame(action::Drained drained) {
     WaitForRender(R);
+    R.Resources.get<FrameState>().Scene = ActingScene(R);
     if (const auto node = std::exchange(Navigation, {})) {
         Navigate(*node);
         return;

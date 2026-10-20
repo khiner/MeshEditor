@@ -32,14 +32,25 @@ bool EditPinsFinest(const selection::PrimaryEditInstanceMap &, const state::Regi
 // Builds the cluster hierarchy for each face mesh that lacks one and that an unpinned instance draws, and returns whether any mesh took one.
 // The primitives' refreshed LOD attributes record on the chain.
 bool BuildDemandedClusterLods(state::Registry &, mtl::ComputeChain &);
-// Derives a RenderInstance for the Instance of each entity in RenderChanges::InstanceVisibility, and writes its Hidden bit into a placed instance's state.
+// Keeps one state buffer and one light buffer per shown scene, fills the states of each newly shown scene, and retallies every mesh when the shown scenes change.
+// Returns whether the shown scenes changed.
+bool SyncShownScenes(state::Registry &);
+// The scene's position among the shown scenes, or zero when the scene is not shown.
+uint32_t ShownSceneIndex(const state::Registry &, state::Entity scene);
+// Derives a RenderInstance for the Instance of each entity in RenderChanges::InstanceVisibility, and writes its hidden bit into a placed instance's state in each shown scene.
+// A rescope rewrites the hidden bit of every placed instance.
 // Returns whether a placed instance's visibility changed.
-bool DeriveRenderInstances(state::Registry &);
+bool DeriveRenderInstances(state::Registry &, bool rescope);
 // Places new render instances and compacts removed ones, and marks each buffer entity whose slots changed for layout.
 SyncResult SyncModelsBuffers(state::Registry &);
 // Sizes the viewport's targets to its render extent once the live consumer finishes sampling them, keeps the transmission target its lighting needs, and binds the sampler slot of each target that changed.
 // Returns whether a target changed.
 bool SyncViewportRenderResources(state::Registry &, Viewport &);
+// Whether the node draws hidden in the scene: Hidden, or outside the scene.
+bool HiddenIn(const state::Registry &, state::Entity, state::Entity scene);
+// The instance's Selected, Active and Hidden state bits.
 uint8_t InstanceStateBits(const state::Registry &, state::Entity);
+// Writes the base state into the slot of each shown scene's states, with the hidden bit also set in each scene the instance is outside.
+void WriteInstanceState(const state::Registry &, GpuBuffers &, state::Entity, uint32_t slot, uint8_t base);
 // Whether a mesh's selected instances outline through the screen-space silhouette, which face meshes do and extras, bones, and joints do not.
 bool IsSilhouetteEligible(const state::Registry &, state::Entity mesh_entity);

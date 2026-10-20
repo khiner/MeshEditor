@@ -15,10 +15,12 @@ void SetFirstChild(state::Registry &r, state::Entity parent, state::Entity first
 }
 
 // Links the parentless child ahead of `next_sibling` under the parent, leaving the parent's head to the caller.
+// The child joins its new root's scenes.
 void LinkAhead(state::Registry &r, state::Entity child, state::Entity parent, state::Entity next_sibling) {
     if (r.all_of<SceneChildren>(child)) r.patch<SceneChildren>(child, [next_sibling](auto &c) { c.NextSibling = next_sibling; });
     else r.emplace<SceneChildren>(child, SceneChildren{.NextSibling = next_sibling});
     r.emplace<SceneParent>(child, parent);
+    r.remove<SceneMembership>(child);
 }
 
 state::Entity FirstChildOf(const state::Registry &r, state::Entity parent) {
@@ -71,6 +73,26 @@ state::Entity ParentOrNull(const state::Registry &r, state::Entity e) {
     return parent ? parent->Parent : state::Null;
 }
 
+state::Entity MembershipRoot(const state::Registry &r, state::Entity node) {
+    for (auto e = node; e != state::Null;) {
+        if (const auto *parent = r.try_get<const SceneParent>(e)) e = parent->Parent;
+        else if (r.all_of<SceneMembership>(e)) return e;
+        else if (const auto *sub = r.try_get<const SubElementOf>(e)) e = sub->Parent;
+        else return state::Null;
+    }
+    return state::Null;
+}
+
+const SceneMembership *RootMembership(const state::Registry &r, state::Entity node) {
+    const auto root = MembershipRoot(r, node);
+    return root != state::Null ? r.try_get<const SceneMembership>(root) : nullptr;
+}
+
+bool InScene(const state::Registry &r, state::Entity node, state::Entity scene) {
+    const auto *membership = RootMembership(r, node);
+    return membership && std::ranges::contains(membership->Scenes, scene);
+}
+
 void ClearParents(state::Registry &r, std::span<const state::Entity> children) {
     // Each detached child beside its parent, grouped by parent and ordered by child index within a group.
     struct Link {
@@ -84,6 +106,11 @@ void ClearParents(state::Registry &r, std::span<const state::Entity> children) {
     if (detached.empty()) return;
     std::ranges::sort(detached, {}, [](const auto &link) { return std::pair{state::Index(link.Parent), state::Index(link.Child)}; });
     detached.erase(std::ranges::unique(detached).begin(), detached.end());
+    // Each new root keeps the scenes of the root it leaves.
+    std::vector<std::pair<state::Entity, SceneMembership>> memberships;
+    for (const auto &link : detached) {
+        if (const auto *membership = RootMembership(r, link.Parent)) memberships.emplace_back(link.Child, *membership);
+    }
     for (auto group = detached.begin(); group != detached.end();) {
         const auto parent = group->Parent;
         const auto group_end = std::ranges::find_if(group, detached.end(), [parent](const auto &link) { return link.Parent != parent; });
@@ -108,6 +135,7 @@ void ClearParents(state::Registry &r, std::span<const state::Entity> children) {
         }
         group = group_end;
     }
+    for (auto &[child, membership] : memberships) r.emplace<SceneMembership>(child, std::move(membership));
 }
 
 const Transform *ComposedLocal(const state::Registry &r, state::Entity e) {

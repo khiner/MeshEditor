@@ -514,7 +514,7 @@ void DrawInfoPanel(state::Registry &r, Panel &panel) {
             if (info.Type) DrawFieldTypeLine(info.Type, info.Spec);
             if (info.Help) TextWrapped("%s%s", info.Help, std::string_view{info.Help}.ends_with('.') ? "" : ".");
             if (info.Status) TextUnformatted(info.Status);
-            if (info.Selection && r.view<Selected>().size() > 1) TextUnformatted("Alt applies the edit to every selected object");
+            if (info.Selection && SelectedIn(r).size() > 1) TextUnformatted("Alt applies the edit to every selected object");
             if (info.Key && info.Key->HasChannel) {
                 Text("%s%s", info.Key->KeyAtFrame ? "Keyed on this frame" : "Animated", info.Key->Changed ? ", changed since the key" : "");
             }
@@ -523,9 +523,9 @@ void DrawInfoPanel(state::Registry &r, Panel &panel) {
     End();
 }
 
-// The viewport's panel title, with the Id as its ImGui ID so a title change keeps the panel.
-std::string ViewportPanelName(uint32_t id) {
-    return id == 1 ? std::string{"Viewport###Viewport1"} : std::format("Viewport {0}###Viewport{0}", id);
+// The viewport's panel shows the viewport's name under an ImGui ID its entity keeps.
+std::string ViewportPanelName(const state::Registry &r, state::Entity viewport) {
+    return std::format("{}###Viewport{}", GetName(r, viewport), state::Index(viewport));
 }
 
 // The viewport panel under the mouse becomes the active viewport while no gesture, button, or popup holds the input.
@@ -540,13 +540,13 @@ void FollowHoveredViewport(state::Registry &r) {
     const auto *hovered = GImGui->HoveredWindow;
     if (!hovered) return;
     auto &viewports = r.Resources.get<Viewports>();
-    const auto it = std::ranges::find(viewports.All, hovered->RootWindow->ID, [](const Viewport &v) { return ImHashStr(ViewportPanelName(v.Id).c_str()); });
+    const auto it = std::ranges::find(viewports.All, hovered->RootWindow->ID, [&](const Viewport &v) { return ImHashStr(ViewportPanelName(r, v.Entity).c_str()); });
     if (it != viewports.All.end()) viewports.ActiveIndex = size_t(it - viewports.All.begin());
 }
 
 // A viewport panel open this frame, with its content size.
 struct ViewportPanel {
-    uint32_t Id;
+    state::Entity Entity;
     uvec2 Extent;
 };
 
@@ -607,11 +607,11 @@ EditorPanelsFrame BeginEditorPanels(
     for (auto &viewport : viewports.All) {
         // A panel in an unselected dock tab draws nothing, so its viewport does no work this frame.
         viewport.Shown = false;
-        if (!viewport.Visible) continue;
-        const auto name = ViewportPanelName(viewport.Id);
+        if (!viewport.State.Visible) continue;
+        const auto name = ViewportPanelName(r, viewport.Entity);
         // A panel ImGui has never seen opens as a tab beside the active viewport's panel, or in the central dock node before that panel exists.
         if (const auto id = ImHashStr(name.c_str()); !FindWindowByID(id) && !FindWindowSettingsByID(id)) {
-            const auto *beside = viewport.Id == active.Id ? nullptr : FindWindowByName(ViewportPanelName(active.Id).c_str());
+            const auto *beside = viewport.Entity == active.Entity ? nullptr : FindWindowByName(ViewportPanelName(r, active.Entity).c_str());
             const auto *central = DockBuilderGetCentralNode(dockspace_id);
             SetNextWindowDockID(beside ? beside->DockId : central ? central->ID :
                                                                     0);
@@ -620,18 +620,18 @@ EditorPanelsFrame BeginEditorPanels(
         bool open = true;
         if (Begin(name.c_str(), closable ? &open : nullptr)) {
             viewport.Shown = true;
-            if (interactive && viewport.Id == active.Id) Interact(r, frame_state);
+            if (interactive && viewport.Entity == active.Entity) Interact(r, frame_state);
             auto &draw_list = *GetWindowDrawList();
             draw_list.ChannelsSplit(2);
             draw_list.ChannelsSetCurrent(1);
             InteractOverlay(r, frame_state, viewport);
             if (frame.Viewports.empty()) DrawModalJobsOverlay(r);
             const auto content_region = GetContentRegionAvail();
-            frame.Viewports.push_back({viewport.Id, {uint32_t(std::max(content_region.x, 0.f)), uint32_t(std::max(content_region.y, 0.f))}});
+            frame.Viewports.push_back({viewport.Entity, {uint32_t(std::max(content_region.x, 0.f)), uint32_t(std::max(content_region.y, 0.f))}});
         }
         End();
         PopStyleVar();
-        if (!open) action::Emit(action::view::RemoveViewport{viewport.Id});
+        if (!open) action::Emit(action::view::RemoveViewport{viewport.Entity});
     }
     return frame;
 }
@@ -640,9 +640,9 @@ EditorPanelsFrame BeginEditorPanels(
 void DisplayViewportPanels(state::Registry &r, const EditorPanelsFrame &frame) {
     auto &viewports = r.Resources.get<Viewports>();
     for (const auto &panel : frame.Viewports) {
-        const auto *viewport = viewports.Find(panel.Id);
+        const auto *viewport = viewports.Find(panel.Entity);
         if (!viewport) continue;
-        Begin(ViewportPanelName(panel.Id).c_str());
+        Begin(ViewportPanelName(r, panel.Entity).c_str());
         DisplayViewport(r, *viewport);
         GetWindowDrawList()->ChannelsMerge();
         End();
@@ -656,6 +656,22 @@ struct ValidationImage {
     NS::SharedPtr<MTL::Event> Ready;
     uint64_t Generation{};
 };
+
+// A hash of every vertex, index and command the draw data holds, equal across frames whose UI is identical.
+uint64_t DrawDataHash(const ImDrawData *draw_data) {
+    uint64_t hash = 0;
+    const auto mix = [&](const void *data, size_t bytes) { hash = hash * 0x9E3779B97F4A7C15ull + std::hash<std::string_view>{}({static_cast<const char *>(data), bytes}); };
+    for (const auto *list : draw_data->CmdLists) {
+        mix(list->VtxBuffer.Data, size_t(list->VtxBuffer.Size) * sizeof(ImDrawVert));
+        mix(list->IdxBuffer.Data, size_t(list->IdxBuffer.Size) * sizeof(ImDrawIdx));
+        for (const auto &cmd : list->CmdBuffer) {
+            mix(&cmd.ClipRect, sizeof(cmd.ClipRect));
+            mix(&cmd.ElemCount, sizeof(cmd.ElemCount));
+            mix(&cmd.TexRef, sizeof(cmd.TexRef));
+        }
+    }
+    return hash;
+}
 
 void WriteValidationProject(const store::History &history, std::span<const std::byte> workspace) {
     const auto path = fs::temp_directory_path() / "MeshEditor-validation.actions";
@@ -785,7 +801,6 @@ struct ValidationInputs {
     ImGuiID NavId{};
     bool NavCursorVisible{}, NavHighlightItemUnderNav{};
     bool Capturing{}, Scrubbing{};
-    uvec2 Extent{};
     float PlaybackFrame{};
     TimelinePlayback Playback{};
 };
@@ -858,7 +873,6 @@ ValidationResult RestoreForValidation(
     restored.Resources.get<PanelsState>() = {};
     auto &frame = restored.Resources.get<FrameState>();
     frame = {.DisplayFramebufferScale = std::bit_cast<vec2>(inputs.FramebufferScale), .Scrubbing = inputs.Scrubbing, .Capturing = inputs.Capturing};
-    restored.Resources.get<Viewports>().All.front().State.Extent = inputs.Extent;
     engine.Core->P->Close();
     fs::create_directories(engine.Directory);
     std::error_code asset_ec;
@@ -876,10 +890,13 @@ ValidationResult RestoreForValidation(
     }
     timings.RestoreMs = ElapsedMs(begin);
     workspace::Apply(restored, restored.Resources.get<PanelsState>(), inputs.Workspace);
+    frame.Scene = ActingScene(restored);
     begin = SteadyClock::now();
     restored.replace<TimelinePlayback>(state::Document, inputs.Playback);
     restored.edit<PlaybackFrame>(state::Document).Value = inputs.PlaybackFrame;
-    PresentViewport(restored, restored.Resources.get<Viewports>().All.front());
+    for (auto &viewport : restored.Resources.get<Viewports>().All) {
+        if (viewport.Displayed()) PresentViewport(restored, viewport);
+    }
     timings.ResetMs += reset_ms;
     RenderAppImage(ctx, RenderValidationApp(restored, inputs), engine.App);
     timings.RenderMs += ElapsedMs(begin);
@@ -988,7 +1005,6 @@ void ValidateRoundTrip(
         .NavHighlightItemUnderNav = GImGui->NavHighlightItemUnderNav,
         .Capturing = r.Resources.get<FrameState>().Capturing,
         .Scrubbing = r.Resources.get<FrameState>().Scrubbing,
-        .Extent = r.Resources.get<const Viewports>().All.front().State.Extent,
         .PlaybackFrame = r.get<const PlaybackFrame>(state::Document).Value,
         .Playback = r.get<const TimelinePlayback>(state::Document),
     };
@@ -1184,7 +1200,7 @@ struct BenchmarkDriver {
         switch (Action) {
             case CaptureRequest::BenchmarkAction::Steady: break;
             case CaptureRequest::BenchmarkAction::Orbit:
-                action::Emit(action::view::OrbitViewCamera{viewport.Id, {0.01f, 0.f}});
+                action::Emit(action::view::OrbitViewCamera{viewport.Entity, {0.01f, 0.f}});
                 break;
             case CaptureRequest::BenchmarkAction::Transform: {
                 const float offset = Frame % 2 == 0 ? 0.05f : 0.f;
@@ -1199,7 +1215,7 @@ struct BenchmarkDriver {
             case CaptureRequest::BenchmarkAction::BoxSelectOrbit:
                 if (Frame % 2 != 0) {
                     // Keep both benchmark viewpoints on the scene throughout long runs.
-                    action::Emit(action::view::OrbitViewCamera{viewport.Id, {Frame % 4 == 1 ? 0.6f : -0.6f, 0.f}});
+                    action::Emit(action::view::OrbitViewCamera{viewport.Entity, {Frame % 4 == 1 ? 0.6f : -0.6f, 0.f}});
                     break;
                 }
                 [[fallthrough]];
@@ -1231,7 +1247,7 @@ bool SelectSceneCamera(state::Registry &r, std::string_view name) {
     if (name.empty()) return true;
     for (const auto [entity, node] : r.view<const GltfNode>().each()) {
         if (node.CameraName != name || !HasLens(r, entity)) continue;
-        Perform(r, action::view::SetLookThroughCamera{r.Resources.get<const Viewports>().All.front().Id, entity});
+        Perform(r, action::view::SetLookThroughCamera{r.Resources.get<const Viewports>().All.front().Entity, entity});
         return true;
     }
     std::println(stderr, "No scene camera named '{}'.", name);
@@ -1431,20 +1447,20 @@ CaptureDriver BeginCaptureSession(state::Registry &r, const CaptureRequest &capt
     if (driver.Presenting() && capture.BenchFrames == 0) Perform(r, action::timeline::EnterPresentation{});
     // Apply the explicit overlay override after enabling presentation mode.
     const auto &viewport = r.Resources.get<const Viewports>().All.front();
-    if (capture.Overlays) Perform(r, action::UpdateOf<&ViewportDisplay::ShowOverlays>(action::OnViewport{viewport.Id}, true));
+    if (capture.Overlays) Perform(r, action::UpdateOf<&ViewportDisplay::ShowOverlays>(action::OnViewport{viewport.Entity}, true));
     if (capture.LodErrorPixels >= 0.f) {
-        Perform(r, action::UpdateOf<&ViewportDisplay::LodErrorPixels>(action::OnViewport{viewport.Id}, capture.LodErrorPixels));
+        Perform(r, action::UpdateOf<&ViewportDisplay::LodErrorPixels>(action::OnViewport{viewport.Entity}, capture.LodErrorPixels));
     }
     r.Resources.get<FrameState>().FixedFrameStep = driver.FixedStep;
     // Enable motion blur for video recording and preserve the current setting for still or audio-only captures.
     r.Resources.get<FrameState>().Capturing = driver.RecordingMode() && !driver.AudioOnly();
     if (capture.Blur) {
-        Perform(r, action::UpdateOf<&ViewportDisplay::MotionBlur>(action::OnViewport{viewport.Id}, capture.Blur));
+        Perform(r, action::UpdateOf<&ViewportDisplay::MotionBlur>(action::OnViewport{viewport.Entity}, capture.Blur));
     }
     if (capture.Shading) {
-        Perform(r, action::view::SetViewportShading{viewport.Id, *capture.Shading});
+        Perform(r, action::view::SetViewportShading{viewport.Entity, *capture.Shading});
     }
-    if (capture.XRay && !XRayFlag(viewport.State.Display)) Perform(r, action::view::ToggleXRay{viewport.Id});
+    if (capture.XRay && !XRayFlag(viewport.State.Display)) Perform(r, action::view::ToggleXRay{viewport.Entity});
     return driver;
 }
 
@@ -1500,10 +1516,10 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
 
 #ifdef DEBUG_BUILD
     std::unique_ptr<ValidationSession> validation_session;
-    std::pair previous_ui_revision{uint64_t{0}, RestoreGeneration};
+    std::optional<uint64_t> previous_ui_hash;
 #endif
 #ifdef VALIDATE_ACTIONS
-    auto validated_revision = previous_ui_revision;
+    std::pair validated_revision{uint64_t{0}, RestoreGeneration};
 #endif
     bool done{driver.SeedStatus != SceneStatus::Ok};
     uint8_t startup_frames_remaining{2};
@@ -1674,7 +1690,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
                 MenuItem(panels.SceneControls.Name, nullptr, &panels.SceneControls.Visible);
                 MenuItem(panels.Timeline.Name, nullptr, &panels.Timeline.Visible);
                 Separator();
-                for (auto &viewport : r.Resources.get<Viewports>().All) MenuItem(ViewportPanelName(viewport.Id).c_str(), nullptr, &viewport.Visible);
+                for (auto &viewport : r.Resources.get<Viewports>().All) MenuItem(ViewportPanelName(r, viewport.Entity).c_str(), nullptr, &viewport.State.Visible);
                 if (MenuItem("New Viewport")) action::Emit(action::view::AddViewport{});
                 EndMenu();
             }
@@ -1693,18 +1709,18 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
         // Capture and benchmarks drive the first viewport.
         auto &viewports = r.Resources.get<Viewports>();
         auto &first_viewport = viewports.All.front();
-        const auto first_panel = std::ranges::find(editor_frame.Viewports, first_viewport.Id, &ViewportPanel::Id);
+        const auto first_panel = std::ranges::find(editor_frame.Viewports, first_viewport.Entity, &ViewportPanel::Entity);
         const auto new_logical_extent = first_panel != editor_frame.Viewports.end() ? first_panel->Extent : uvec2{};
         const bool viewport_settled = new_logical_extent != uvec2{} && new_logical_extent == first_viewport.State.Extent;
         if (capture.BenchFrames > 0 && viewport_settled) {
-            if (capture.BenchAction == CaptureRequest::BenchmarkAction::Orbit) action::Emit(action::view::OrbitViewCamera{first_viewport.Id, {0.01f, 0.f}});
+            if (capture.BenchAction == CaptureRequest::BenchmarkAction::Orbit) action::Emit(action::view::OrbitViewCamera{first_viewport.Entity, {0.01f, 0.f}});
             if (++bench_ticks >= capture.BenchFrames) done = true;
         }
         // Give interaction actions priority in the single-action buffer.
         driver.EmitFrameActions(r, first_viewport, viewport_settled, new_logical_extent);
         // The viewport extent is a frame input that each recorded action carries for replay.
         for (const auto &panel : editor_frame.Viewports) {
-            if (panel.Extent != uvec2{}) viewports.Find(panel.Id)->State.Extent = panel.Extent;
+            if (panel.Extent != uvec2{}) viewports.Find(panel.Entity)->State.Extent = panel.Extent;
         }
 
         // Actions can add and remove viewports, which ends every viewport reference taken above.
@@ -1733,9 +1749,10 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
 #else
             const bool validate = panels.History.ValidateRequested;
 #endif
-            // Scrollbars use the preceding UI frame's content size, so both frames must reflect the scene.
-            const bool ui_matches_scene = ui_revision == scene_revision && previous_ui_revision == scene_revision;
-            previous_ui_revision = ui_revision;
+            // The restored UI draws until it settles, so the live frame compares only once it has settled too, which a frame identical to the one before it shows.
+            const auto ui_hash = validate ? std::optional{DrawDataHash(draw_data)} : std::nullopt;
+            const bool ui_matches_scene = ui_revision == scene_revision && ui_hash && ui_hash == previous_ui_hash;
+            previous_ui_hash = ui_hash;
             // Background progress is transient; compare only frames drawn after it disappears.
             const bool validation_ready = validate && !Session(r).HasStaged() && ui_gesture_settled && !ui_has_pending_solves && !HasPendingModalSolves(r);
             const bool present_frame = !validation_ready || ui_matches_scene;
@@ -1800,16 +1817,16 @@ SceneStatus RunHeadlessScene(state::Registry &r, const char *initial_file, bool 
     auto &frame_state = r.Resources.get<FrameState>();
     frame_state.DeltaTime = 0;
     frame_state.FixedFrameStep = false;
-    r.Resources.get<Viewports>().All.front().State = {.Extent = DefaultWindowSize};
     const auto scene_start = std::chrono::steady_clock::now();
     auto driver = BeginCaptureSession(r, capture, initial_file, empty, /*fixed_step=*/true);
     // Stop after reporting an initial scene-load failure.
     if (driver.SeedStatus != SceneStatus::Ok) {
         return driver.SeedStatus;
     }
-    // Resolve the viewport after the scene seeds, since opening a project applies its workspace.
+    // Resolve the viewport after the scene seeds, since opening a project applies its workspace, and a viewport without one takes the window size.
     auto &viewport = r.Resources.get<Viewports>().All.front();
-    const action::OnViewport on_viewport{viewport.Id};
+    if (viewport.State.Extent == uvec2{}) viewport.State.Extent = DefaultWindowSize;
+    const action::OnViewport on_viewport{viewport.Entity};
     if (capture.Selection.VertexNormals) Perform(r, action::UpdateOf<&ViewportDisplay::Selection, &SelectionOverlays::VertexNormals>(on_viewport, true));
     if (capture.Selection.FaceNormals) Perform(r, action::UpdateOf<&ViewportDisplay::Selection, &SelectionOverlays::FaceNormals>(on_viewport, true));
     if (capture.Selection.BoundingBoxes) Perform(r, action::UpdateOf<&ViewportDisplay::Selection, &SelectionOverlays::BoundingBoxes>(on_viewport, true));

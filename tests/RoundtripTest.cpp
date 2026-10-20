@@ -20,7 +20,9 @@
 #include "render/MaterialComponents.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
+#include "scene/SceneGraph.h"
 #include "viewport/Viewport.h"
+#include "viewport/ViewportEvents.h"
 
 #include "numeric/FastGltf.h"
 #include <print>
@@ -186,7 +188,6 @@ constexpr Exception ExactExceptions[]{
 
     {"meshes[*].primitives[*].material", "line/point primitives lose per-primitive material on import (merged across primitives without retaining material refs)"},
     {"meshes[*].extensions", "mesh-level extensions (e.g. KHR_xmp_json_ld) not re-emitted"},
-    {"scenes[*].extras", "not tracked on Scene"},
     {"scenes[*].extensions", "scene-level extensions not re-emitted"},
     {"nodes[*].extensions.KHR_lights_punctual.light", "renumbered to match the un-deduped lights table"},
 };
@@ -1184,7 +1185,7 @@ int main(int argc, const char **argv) {
             const auto load = gltf::LoadGltf(src, fx.R);
             if (!load) return; // Loader limitation on source (e.g., unsupported extension); skips both round-trips.
             ProcessComponentEvents(fx.R); // mirror prod: a frame runs (posing skinned models) before save
-            TakePendingViewSetup(fx.R, fx.R.Resources.get<Viewports>().Active()); // and its viewport step takes the import's view setup
+            fx.R.remove<PendingViewSetup>(state::Document); // and a viewport step takes the import's view setup, which this fixture has no viewport for
 
             const auto out_path = tmp_root / (sample_name + ".gltf");
             const auto save = gltf::SaveGltf(out_path, fx.R);
@@ -1531,6 +1532,53 @@ int main(int argc, const char **argv) {
         const auto after = restored.LoadFrom(dir / "Custom.project");
         expect(after == before);
         CheckCustomAttributes(restored.R, true);
+    };
+
+    // Every scene saves with its name, extras and roots, and the default scene saves as the default.
+    "multi_scene_round_trip"_test = [&] {
+        const auto dir = tmp_root / "scenes";
+        fs::create_directories(dir);
+        const auto source = dir / "Scenes.gltf";
+        std::ofstream{source} << R"({
+  "asset": {"version": "2.0"},
+  "scene": 1,
+  "scenes": [{"name": "Day", "nodes": [0, 1], "extras": {"hour": 12}}, {"name": "Night", "nodes": [1], "extras": {"hour": 0}}],
+  "nodes": [{"name": "Sun"}, {"name": "Ground"}]
+})";
+        const auto check = [](const state::Registry &r) {
+            const auto scene_named = [&](std::string_view name) {
+                for (const auto e : r.view<const Scene>()) {
+                    if (r.get<const Name>(e).Value == name) return e;
+                }
+                return state::Null;
+            };
+            const auto node_named = [&](std::string_view name) {
+                for (const auto e : r.view<const Name>()) {
+                    if (r.get<const Name>(e).Value == name) return e;
+                }
+                return state::Null;
+            };
+            const auto day = scene_named("Day"), night = scene_named("Night");
+            const auto sun = node_named("Sun"), ground = node_named("Ground");
+            expect(r.view<const Scene>().size() == 2u);
+            expect(day != state::Null && night != state::Null && sun != state::Null && ground != state::Null);
+            expect(FrameScene(r) == night);
+            expect(InScene(r, sun, day) && !InScene(r, sun, night));
+            expect(InScene(r, ground, day) && InScene(r, ground, night));
+        };
+        SceneFixture fx;
+        const auto load = gltf::LoadGltf(source, fx.R);
+        expect(fatal(load.has_value())) << (load ? "" : load.error().Message);
+        check(fx.R);
+        ProcessComponentEvents(fx.R);
+        const auto out_path = dir / "Scenes-out.gltf";
+        const auto save = gltf::SaveGltf(out_path, fx.R);
+        expect(fatal(save.has_value())) << (save ? "" : save.error());
+        expect(CompareGltfJson(source, out_path, "scenes") == 0u);
+        SceneFixture reloaded;
+        const auto reload = gltf::LoadGltf(out_path, reloaded.R);
+        expect(fatal(reload.has_value())) << (reload ? "" : reload.error().Message);
+        check(reloaded.R);
     };
 
     // A load that fails validation leaves the scene and every store as they were.

@@ -14,60 +14,65 @@ struct CycleInteractionMode {};
 struct SetEditMode {
     Element Mode;
 };
-// The view actions name the viewport they change by its Id.
+// The view actions name the viewport entity they change.
 struct EnterLookThroughCamera {
-    uint32_t ViewportId;
+    state::Entity Viewport;
 };
 struct ExitLookThroughCamera {
-    uint32_t ViewportId;
+    state::Entity Viewport;
 };
 struct SetLookThroughCamera {
-    uint32_t ViewportId;
+    state::Entity Viewport;
     state::Entity Entity;
 };
+// Shows `Scene` in the viewport.
+struct SetViewportScene {
+    state::Entity Viewport;
+    state::Entity Scene;
+};
 struct SetViewportShading {
-    uint32_t ViewportId;
+    state::Entity Viewport;
     ViewportShadingMode Mode;
 };
 // Flips the X-ray flag of the current shading family.
 struct ToggleXRay {
-    uint32_t ViewportId;
+    state::Entity Viewport;
 };
 struct OrbitViewCamera {
-    uint32_t ViewportId;
+    state::Entity Viewport;
     vec2 DeltaRad;
 };
 struct ZoomViewCamera {
-    uint32_t ViewportId;
+    state::Entity Viewport;
     float Factor;
 };
 struct ResetViewCamera {
-    uint32_t ViewportId;
+    state::Entity Viewport;
 };
 struct ResetViewportTheme {};
 struct ResetNodeTheme {};
 struct ResetInterfaceTheme {};
 struct ResetTimelineTheme {};
 struct ResetPbrLighting {
-    uint32_t ViewportId;
+    state::Entity Viewport;
     bool Rendered;
 };
 // Replaces the viewport's solid-mode lights.
 // Shared ownership bounds the action variant size.
 struct SetWorkspaceLights {
-    uint32_t ViewportId;
+    state::Entity Viewport;
     std::unique_ptr<WorkspaceLights> Value;
 };
 struct SetViewCameraTarget {
-    uint32_t ViewportId;
+    state::Entity Viewport;
     vec3 Target;
 };
 struct SetViewCameraLens {
-    uint32_t ViewportId;
+    state::Entity Viewport;
     CameraLens Data;
 };
 struct SetViewCameraTargetDirection {
-    uint32_t ViewportId;
+    state::Entity Viewport;
     vec3 Direction;
 };
 // Applies a delta about the selection's pivot to the selected objects or bones.
@@ -101,30 +106,25 @@ struct LatchTransform {
 // Set the viewport's studio HDRI / image-based lighting environment.
 // Identified by source HDRI name (not the directory-scan index) so it stays stable across runs.
 struct SetStudioEnvironment {
-    uint32_t ViewportId;
+    state::Entity Viewport;
     std::string Name;
 };
 
-// Make `Scene` the active scene shown in the viewport.
-struct SetActiveScene {
-    state::Entity Scene;
-};
-
-// Opens a viewport with the default view values.
+// Opens a viewport showing the frame's scene.
 struct AddViewport {};
-// Closes the viewport with the Id, unless it is the only one.
+// Closes the viewport, unless it is the only one.
 struct RemoveViewport {
-    uint32_t ViewportId;
+    state::Entity Viewport;
 };
 
 using Action = std::variant<
     SetInteractionMode, CycleInteractionMode, SetEditMode,
-    EnterLookThroughCamera, ExitLookThroughCamera, SetLookThroughCamera,
+    EnterLookThroughCamera, ExitLookThroughCamera, SetLookThroughCamera, SetViewportScene,
     SetViewportShading, ToggleXRay, OrbitViewCamera, ZoomViewCamera,
     ResetViewCamera, ResetViewportTheme, ResetNodeTheme, ResetInterfaceTheme, ResetTimelineTheme, ResetPbrLighting, SetWorkspaceLights,
     SetViewCameraTarget, SetViewCameraLens, SetViewCameraTargetDirection,
     TransformSelection, TransformElements, SetActiveTool, LatchTransform,
-    SetStudioEnvironment, SetActiveScene, AddViewport, RemoveViewport>;
+    SetStudioEnvironment, AddViewport, RemoveViewport>;
 
 void Apply(state::Registry &, const Action &);
 } // namespace action::view

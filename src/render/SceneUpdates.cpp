@@ -3,6 +3,7 @@
 #include "Profile.h"
 #include "SortUnique.h"
 #include "armature/ArmatureComponents.h"
+#include "gpu/LightRecord.h"
 #include "mesh/MeshChanges.h"
 #include "mesh/MeshComponents.h"
 #include "metal/AutoreleaseScope.h"
@@ -20,6 +21,7 @@
 #include "render/RenderChanges.h"
 #include "render/RenderTargets.h"
 #include "scene/Entity.h"
+#include "scene/SceneGraph.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionState.h"
 #include "state/Registry.h"
@@ -30,8 +32,23 @@
 #include "viewport/ViewportConsumerFence.h"
 #include "viewport/ViewportRenderGpu.h"
 
+bool HiddenIn(const state::Registry &r, state::Entity e, state::Entity scene) { return r.all_of<Hidden>(e) || !InScene(r, e, scene); }
+
 uint8_t InstanceStateBits(const state::Registry &r, state::Entity e) {
     return (r.all_of<Selected>(e) ? ElementStateSelected : 0) | (r.all_of<Active>(e) ? ElementStateActive : 0) | (r.all_of<Hidden>(e) ? InstanceStateHidden : 0);
+}
+
+namespace {
+// The base state as the scene's states hold it, hidden when the instance is outside the scene.
+uint8_t SceneState(const state::Registry &r, state::Entity e, state::Entity scene, uint8_t base) {
+    return uint8_t(base | (InScene(r, e, scene) ? 0u : InstanceStateHidden));
+}
+} // namespace
+
+void WriteInstanceState(const state::Registry &r, GpuBuffers &buffers, state::Entity e, uint32_t slot, uint8_t base) {
+    for (uint32_t i = 0u; i < buffers.Scenes.size(); ++i) {
+        buffers.Instances.States[i].Update(BytesOf(SceneState(r, e, buffers.Scenes[i], base)), uint64_t(slot) * sizeof(uint8_t));
+    }
 }
 
 bool IsSilhouetteEligible(const state::Registry &r, state::Entity mesh_entity) {
@@ -47,11 +64,14 @@ void RetallyMesh(state::Registry &r, state::Entity mesh_entity) {
     const auto *mb = id ? meshes.TryGet(*id) : nullptr;
     if (!mb) return;
     const auto *models = r.try_get<const ModelsBuffer>(mesh_entity);
-    const auto states = models ? buffers.Instances.StateBuffer.GetSpan<uint8_t>({models->InstanceRange.Offset, models->InstanceCount}) : std::span<const uint8_t>{};
+    const Range range = models ? Range{models->InstanceRange.Offset, models->InstanceCount} : Range{};
+    const auto scene_states = buffers.Instances.States | std::views::transform([&](const mtl::Buffer &states) { return states.GetSpan<uint8_t>(range); }) | std::ranges::to<std::vector>();
+    // An instance counts when some shown scene draws it.
+    const auto drawn = [&](uint32_t i) { return std::ranges::any_of(scene_states, [i](std::span<const uint8_t> states) { return (states[i] & InstanceStateHidden) == 0u; }); };
     const auto flags = mb->RenderTopologies != 0u ? render.MeshRecords.Get({*id, 1u})[0].Display.Flags : 0u;
     buffers.Retally(*id, {
                              .Flags = flags,
-                             .Instances = uint32_t(std::ranges::count_if(states, [](uint8_t state) { return (state & InstanceStateHidden) == 0u; })),
+                             .Instances = uint32_t(std::ranges::count_if(std::views::iota(0u, range.Count), drawn)),
                              .Nodes = meshes.LodNodeCount(*mb),
                              .Meshlets = meshes.MeshletCount(*mb),
                              .Depth = mb->LodDepth,
@@ -234,29 +254,72 @@ bool BuildDemandedClusterLods(state::Registry &r, mtl::ComputeChain &chain) {
     return true;
 }
 
-bool DeriveRenderInstances(state::Registry &r) {
+bool SyncShownScenes(state::Registry &r) {
+    auto &buffers = r.Resources.get<GpuBuffers>();
+    auto shown = ShownScenes(r);
+    if (shown == buffers.Scenes) return false;
+    // A scene that stays shown keeps its buffers, and the buffers of scenes no longer shown release with their slots.
+    std::vector<mtl::Buffer> states, lights;
+    states.reserve(shown.size());
+    lights.reserve(shown.size());
+    const auto slot_count = buffers.Instances.TransformBuffer.Count<Transform>();
+    for (const auto scene : shown) {
+        if (const auto it = std::ranges::find(buffers.Scenes, scene); it != buffers.Scenes.end()) {
+            const auto i = size_t(it - buffers.Scenes.begin());
+            states.emplace_back(std::move(buffers.Instances.States[i]));
+            lights.emplace_back(std::move(buffers.Lights[i]));
+            continue;
+        }
+        const auto bytes = states.emplace_back(buffers.Ctx, 0, SlotType::InstanceStateBuffer).SetCount<uint8_t>(slot_count);
+        std::ranges::fill(bytes, uint8_t{0});
+        for (const auto [e, render] : r.view<const RenderInstance>().each()) {
+            if (render.BufferIndex != UINT32_MAX) bytes[render.BufferIndex] = SceneState(r, e, scene, InstanceStateBits(r, e));
+        }
+        lights.emplace_back(buffers.Ctx, sizeof(LightRecord), SlotType::LightBuffer);
+    }
+    buffers.Scenes = std::move(shown);
+    buffers.Instances.States = std::move(states);
+    buffers.Lights = std::move(lights);
+    for (const auto mesh_entity : r.view<const ModelsBuffer>()) RetallyMesh(r, mesh_entity);
+    return true;
+}
+
+uint32_t ShownSceneIndex(const state::Registry &r, state::Entity scene) {
+    const auto &scenes = r.Resources.get<const GpuBuffers>().Scenes;
+    const auto it = std::ranges::find(scenes, scene);
+    return it != scenes.end() ? uint32_t(it - scenes.begin()) : 0u;
+}
+
+bool DeriveRenderInstances(state::Registry &r, bool rescope) {
     const auto &buffers = r.Resources.get<GpuBuffers>();
-    std::span<uint8_t> states;
+    const auto scene_states = buffers.Instances.States | std::views::transform([](const mtl::Buffer &states) { return states.GetMutableSpan<uint8_t>(); }) | std::ranges::to<std::vector>();
     std::vector<state::Entity> retallied;
+    // A placed instance takes its hidden bit in each shown scene's states in place, keeping its slot and record.
+    const auto write_hidden = [&](state::Entity e, const RenderInstance &render) {
+        if (render.BufferIndex == UINT32_MAX) return;
+        bool changed = false;
+        for (uint32_t i = 0u; i < scene_states.size(); ++i) {
+            auto &state = scene_states[i][render.BufferIndex];
+            const auto next = uint8_t((state & ~InstanceStateHidden) | (HiddenIn(r, e, buffers.Scenes[i]) ? InstanceStateHidden : 0u));
+            changed |= next != state;
+            state = next;
+        }
+        if (changed) retallied.push_back(render.Entity);
+    };
     for (const auto e : r.Resources.get<const RenderChanges>().InstanceVisibility.Entities) {
         if (!r.valid(e)) continue;
         const auto *instance = r.try_get<const Instance>(e);
         if (const auto *render = r.try_get<const RenderInstance>(e)) {
             if (instance && render->Entity == instance->Entity) {
-                // A placed instance takes its Hidden bit in place, keeping its slot and record.
-                if (render->BufferIndex == UINT32_MAX) continue;
-                if (states.empty()) states = buffers.Instances.GetMutableStates();
-                const bool hidden = r.all_of<Hidden>(e);
-                auto &state = states[render->BufferIndex];
-                const auto next = uint8_t((state & ~InstanceStateHidden) | (hidden ? InstanceStateHidden : 0u));
-                if (next == state) continue;
-                state = next;
-                retallied.push_back(render->Entity);
+                write_hidden(e, *render);
                 continue;
             }
             r.remove<RenderInstance>(e);
         }
         if (instance) r.emplace<RenderInstance>(e, instance->Entity, UINT32_MAX);
+    }
+    if (rescope) {
+        for (const auto [e, render] : r.view<const RenderInstance>().each()) write_hidden(e, render);
     }
     SortUnique(retallied);
     for (const auto mesh_entity : retallied) RetallyMesh(r, mesh_entity);
@@ -397,7 +460,7 @@ SyncResult SyncModelsBuffers(state::Registry &r) {
     std::vector<state::Entity> newly_inserted;
     newly_inserted.reserve(placements.size());
     std::vector<uint32_t> object_ids, inserted_slots;
-    std::vector<uint8_t> states;
+    std::vector<uint8_t> bases, states;
     std::vector<InstanceRecord> instance_records;
     for (const auto group : groups) {
         const auto buffer_entity = group.front().first;
@@ -420,6 +483,7 @@ SyncResult SyncModelsBuffers(state::Registry &r) {
             slots_changed = true;
         }
         object_ids.resize(n);
+        bases.resize(n);
         states.resize(n);
         instance_records.assign(n, {});
         const auto base_index = mb.InstanceRange.Offset + mb.InstanceCount;
@@ -430,7 +494,7 @@ SyncResult SyncModelsBuffers(state::Registry &r) {
             r.edit<RenderInstance>(instance_entity).BufferIndex = base_index + j;
             inserted_slots.push_back(base_index + j);
             object_ids[j] = ObjectId(instance_entity);
-            states[j] = InstanceStateBits(r, instance_entity);
+            bases[j] = InstanceStateBits(r, instance_entity);
             instance_records[j] = {
                 .Mesh = mesh_record,
                 .ObjectId = ObjectId(instance_entity),
@@ -438,7 +502,10 @@ SyncResult SyncModelsBuffers(state::Registry &r) {
         }
         // Transform slots stay unwritten here, and the world-transform recompute and the bone display pass write them before submit.
         buffers.Instances.ObjectIdBuffer.Update(BytesOf(object_ids), uint64_t(base_index) * sizeof(uint32_t));
-        buffers.Instances.StateBuffer.Update(BytesOf(states), uint64_t(base_index) * sizeof(uint8_t));
+        for (uint32_t i = 0u; i < buffers.Scenes.size(); ++i) {
+            for (uint32_t j = 0; j < n; ++j) states[j] = SceneState(r, group[j].second, buffers.Scenes[i], bases[j]);
+            buffers.Instances.States[i].Update(BytesOf(states), uint64_t(base_index) * sizeof(uint8_t));
+        }
         buffers.Instances.RecordBuffer.Update(BytesOf(instance_records), uint64_t(base_index) * sizeof(InstanceRecord));
         // Bounds reduction populates mesh instances; extras retain empty bounds and bypass culling.
         std::ranges::fill(buffers.Instances.GetMutableBounds({base_index, n}), AABB{});

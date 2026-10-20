@@ -760,9 +760,9 @@ void PublishInstances(state::Registry &r, state::Entity mesh_entity, state::Enti
             if (e == state::Null) {
                 e = r.create();
                 r.emplace<Instance>(e, instanced);
-                r.emplace<ObjectKind>(e, ObjectType::Mesh);
                 r.emplace<Transform>(e, transforms[i]);
                 SetParent(r, e, objects[o]);
+                EmplaceObject(r, e, ObjectType::Mesh);
                 ApplyVisibility(r, e);
                 continue;
             }

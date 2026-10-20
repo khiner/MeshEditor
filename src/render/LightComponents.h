@@ -33,8 +33,3 @@ struct ImageLight {
     bool operator==(const ImageLight &) const = default;
 };
 template<> inline constexpr field::SpecTable<ImageLight> Specs<ImageLight>{{&ImageLight::Intensity, {.Min = 0, .Max = 2, .Help = "Multiplier on the scene's image-based lighting"}}};
-
-// The light's slot in the GPU light buffer.
-struct LightIndex {
-    uint32_t Value{0};
-};

@@ -17,6 +17,7 @@ void SubmitRecordedFrame(state::Registry &r, Viewport &viewport, MTL::CommandBuf
     if (phase != RenderPhase::Prepare) {
         viewport.RecordedPhase = phase;
         viewport.Rendered = viewport.State;
+        viewport.RenderedScene = SceneOf(r, viewport);
         viewport.RenderRequested = false;
     }
     ctx.CommitResidency();

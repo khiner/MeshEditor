@@ -816,8 +816,11 @@ void UpdateAudioContacts(state::Registry &r) {
     // Displayed-frame collisions strike the objects they hit, once per contact point.
     if (auto *contacts = r.Resources.find<PhysicsContactImpacts>(); contacts && !contacts->Events.empty()) {
         const auto &controls = ModalControls(r);
+        const auto shown = ShownScenes(r);
         for (const auto &c : contacts->Events) {
             if (c.Speed < controls.MinContactSpeed) continue;
+            // A collision sounds when a shown scene holds both bodies.
+            if (!std::ranges::any_of(shown, [&](auto scene) { return InScene(r, c.Entity, scene) && InScene(r, c.Other, scene); })) continue;
             const auto own = ResolveContactNodes(r, c.ColliderEntity, c.Entity);
             if (!IsModalSounding(r, own.Model)) continue;
             const auto &modes = r.get<const ModalModes>(own.Model);

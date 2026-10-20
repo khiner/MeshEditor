@@ -3,7 +3,6 @@
 #include "Variant.h"
 #include "action/Nodes.h"
 #include "armature/ArmatureComponents.h"
-#include "gltf/GltfScene.h"
 #include "procedure/NodeTheme.h"
 #include "procedure/Procedure.h"
 #include "scene/CameraLens.h"
@@ -21,6 +20,7 @@
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportInteractionState.h"
 #include "viewport/ViewportOps.h"
+#include "viewport/ViewportScene.h"
 
 using std::ranges::find;
 
@@ -34,12 +34,12 @@ const StartPivot &StartPivotOf(state::Registry &r) {
 
 namespace action::view {
 void Apply(state::Registry &r, const Action &action) {
-    // Runs `fn` on the state of the viewport with `id`, if it exists.
-    const auto edit_view = [&](uint32_t id, auto &&fn) {
-        if (auto *viewport = r.Resources.get<Viewports>().Find(id)) fn(viewport->State);
+    // Runs `fn` on the viewport's state, if the viewport exists.
+    const auto edit_view = [&](state::Entity viewport_entity, auto &&fn) {
+        if (auto *viewport = r.Resources.get<Viewports>().Find(viewport_entity)) fn(viewport->State);
     };
-    const auto edit_camera_stopped = [&](uint32_t id, auto &&fn) {
-        edit_view(id, [&](ViewportState &s) { fn(s.Camera.Active); s.Camera.Active.StopMoving(); });
+    const auto edit_camera_stopped = [&](state::Entity viewport, auto &&fn) {
+        edit_view(viewport, [&](ViewportState &s) { fn(s.Camera.Active); s.Camera.Active.StopMoving(); });
     };
     std::visit(
         overloaded{
@@ -58,42 +58,50 @@ void Apply(state::Registry &r, const Action &action) {
                 const auto e = FindActiveEntity(r);
                 if (e == state::Null || !HasLens(r, e)) return;
                 const auto &wt = *WorldTransformOf(r, e);
-                edit_view(a.ViewportId, [&](ViewportState &s) {
+                edit_view(a.Viewport, [&](ViewportState &s) {
                     SetLookThrough(r, s, e);
                     s.Camera.Active.AnimateToLookThrough(wt.P, wt.R, 1.f);
                 });
             },
-            [&](const ExitLookThroughCamera &a) { edit_view(a.ViewportId, [](ViewportState &s) { ClearLookThrough(s); }); },
+            [&](const ExitLookThroughCamera &a) { edit_view(a.Viewport, [](ViewportState &s) { ClearLookThrough(s); }); },
             [&](const SetLookThroughCamera &a) {
                 if (!HasLens(r, a.Entity) || !WorldTransformOf(r, a.Entity)) return;
                 const auto &wt = *WorldTransformOf(r, a.Entity);
-                edit_view(a.ViewportId, [&](ViewportState &s) {
+                edit_view(a.Viewport, [&](ViewportState &s) {
                     SetLookThrough(r, s, a.Entity);
                     s.Camera.Active = ViewCamera{wt.P, wt.R, *LensOf(r, a.Entity)};
                 });
             },
-            [&](const OrbitViewCamera &a) { edit_view(a.ViewportId, [&](ViewportState &s) { s.Camera.Active.RotateBy(a.DeltaRad); }); },
-            [&](const ZoomViewCamera &a) { edit_view(a.ViewportId, [&](ViewportState &s) { s.Camera.Active.ZoomBy(a.Factor); }); },
-            [&](const SetStudioEnvironment &a) { edit_view(a.ViewportId, [&](ViewportState &s) { s.Environment.Name = a.Name; }); },
-            [&](const SetActiveScene &a) { gltf::SwitchActiveScene(r, a.Scene); },
-            [&](AddViewport) { ::AddViewport(r); },
-            [&](const RemoveViewport &a) { ::RemoveViewport(r, a.ViewportId); },
-            [&](const ResetViewCamera &a) { edit_camera_stopped(a.ViewportId, [](ViewCamera &c) { c = Defaults::ViewCamera; }); },
+            [&](const SetViewportScene &a) {
+                if (r.all_of<Scene>(a.Scene) && r.all_of<ViewportScene>(a.Viewport)) r.replace<ViewportScene>(a.Viewport, a.Scene);
+            },
+            [&](const OrbitViewCamera &a) { edit_view(a.Viewport, [&](ViewportState &s) { s.Camera.Active.RotateBy(a.DeltaRad); }); },
+            [&](const ZoomViewCamera &a) { edit_view(a.Viewport, [&](ViewportState &s) { s.Camera.Active.ZoomBy(a.Factor); }); },
+            [&](const SetStudioEnvironment &a) { edit_view(a.Viewport, [&](ViewportState &s) { s.Environment.Name = a.Name; }); },
+            [&](AddViewport) {
+                const auto viewport = r.create();
+                r.emplace<ViewportScene>(viewport, FrameScene(r));
+                EmplaceUniqueName(r, viewport, "Viewport");
+            },
+            [&](const RemoveViewport &a) {
+                if (r.all_of<ViewportScene>(a.Viewport) && r.view<const ViewportScene>().size() > 1) r.destroy(a.Viewport);
+            },
+            [&](const ResetViewCamera &a) { edit_camera_stopped(a.Viewport, [](ViewCamera &c) { c = Defaults::ViewCamera; }); },
             [&](ResetViewportTheme) { r.emplace_or_replace<ViewportTheme>(state::Document, Defaults::ViewportTheme); },
             [&](ResetNodeTheme) { r.replace<procedure::NodeTheme>(state::Document, procedure::NodeTheme{}); },
             [&](ResetInterfaceTheme) { r.replace<InterfaceTheme>(state::Document, InterfaceTheme{}); },
             [&](ResetTimelineTheme) { r.replace<TimelineTheme>(state::Document, TimelineTheme{}); },
             [&](const ResetPbrLighting &a) {
                 static constexpr PBRViewportLighting Defaults{false, false, 1.f, 0.f, 0.5f, 0.f, true};
-                edit_view(a.ViewportId, [&](ViewportState &s) {
+                edit_view(a.Viewport, [&](ViewportState &s) {
                     if (a.Rendered) s.RenderLighting = {Defaults};
                     else s.PreviewLighting = {Defaults};
                 });
             },
-            [&](const SetWorkspaceLights &a) { edit_view(a.ViewportId, [&](ViewportState &s) { s.Lights = *a.Value; }); },
-            [&](const SetViewCameraTarget &a) { edit_camera_stopped(a.ViewportId, [&](ViewCamera &c) { c.Target = a.Target; }); },
-            [&](const SetViewCameraLens &a) { edit_camera_stopped(a.ViewportId, [&](ViewCamera &c) { c.Data = a.Data; }); },
-            [&](const SetViewCameraTargetDirection &a) { edit_view(a.ViewportId, [&](ViewportState &s) { s.Camera.Active.SetTargetDirection(a.Direction); }); },
+            [&](const SetWorkspaceLights &a) { edit_view(a.Viewport, [&](ViewportState &s) { s.Lights = *a.Value; }); },
+            [&](const SetViewCameraTarget &a) { edit_camera_stopped(a.Viewport, [&](ViewCamera &c) { c.Target = a.Target; }); },
+            [&](const SetViewCameraLens &a) { edit_camera_stopped(a.Viewport, [&](ViewCamera &c) { c.Data = a.Data; }); },
+            [&](const SetViewCameraTargetDirection &a) { edit_view(a.Viewport, [&](ViewportState &s) { s.Camera.Active.SetTargetDirection(a.Direction); }); },
             [&](const TransformSelection &a) {
                 const bool bone_edit_mode = IsBoneEditMode(r);
                 const auto &root_selected = r.get<const TransformRoots>(state::Document).Roots;
@@ -228,13 +236,13 @@ void Apply(state::Registry &r, const Action &action) {
                 r.emplace_or_replace<StartScreenTransform>(state::Document, a.Value);
             },
             [&](const SetViewportShading &a) {
-                edit_view(a.ViewportId, [&](ViewportState &s) {
+                edit_view(a.Viewport, [&](ViewportState &s) {
                     s.Display.ViewportShading = a.Mode;
                     if (a.Mode != ViewportShadingMode::Wireframe) s.Display.FillMode = a.Mode;
                 });
             },
             [&](const ToggleXRay &a) {
-                edit_view(a.ViewportId, [](ViewportState &s) {
+                edit_view(a.Viewport, [](ViewportState &s) {
                     auto &d = s.Display;
                     if (d.ViewportShading == ViewportShadingMode::Wireframe) d.XRayWireframe = !d.XRayWireframe;
                     else d.XRaySolid = !d.XRaySolid;

@@ -2,9 +2,11 @@
 #include "Camera.h"
 #include "Path.h"
 #include "Profile.h"
+#include "SortUnique.h"
 #include "TransformMath.h"
 #include "action/Audio.h"
 #include "action/Bone.h"
+#include "action/Scene.h"
 #include "action/Selection.h"
 #include "action/View.h"
 #include "armature/Armature.h"
@@ -186,6 +188,11 @@ void MetaTable(const char *id, std::initializer_list<const char *> cols, size_t 
     EndTable();
 }
 } // namespace
+
+std::string SceneLabel(const state::Registry &r, state::Entity scene) {
+    const auto *index = r.try_get<const SourceIndex>(scene);
+    return NamedOr(r.get<const Name>(scene).Value, "Scene ", index ? index->Value : 0u);
+}
 
 static void RenderEntityControls(state::Registry &r, state::Entity active_entity) {
     const auto &meshes = r.Resources.get<MeshStore>();
@@ -443,13 +450,13 @@ static void RenderEntityControls(state::Registry &r, state::Entity active_entity
             Separator();
             const auto &viewport = r.Resources.get<const Viewports>().Active();
             if (viewport.State.LookThroughEntity == active_entity) {
-                if (Button("Exit camera view")) action::Emit(action::view::ExitLookThroughCamera{viewport.Id});
+                if (Button("Exit camera view")) action::Emit(action::view::ExitLookThroughCamera{viewport.Entity});
             } else {
-                if (Button("Look through")) action::Emit(action::view::EnterLookThroughCamera{viewport.Id});
+                if (Button("Look through")) action::Emit(action::view::EnterLookThroughCamera{viewport.Entity});
             }
         }
     }
-    if (r.all_of<LightIndex>(active_entity) &&
+    if (r.all_of<PunctualLight>(active_entity) &&
         CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen)) {
         const auto &light = r.get<const PunctualLight>(active_entity);
         ui::Edit fields{r};
@@ -624,20 +631,34 @@ void RenderControls(state::Registry &r) {
                 }
                 PopID();
             }
-            if (r.view<const Scene>().size() > 1) {
-                std::vector<state::Entity> scenes;
-                for (const auto e : r.view<const Scene>()) scenes.emplace_back(e);
-                std::ranges::sort(scenes, {}, [&](state::Entity e) {
-                    const auto *si = r.try_get<const SourceIndex>(e);
-                    return si ? si->Value : std::numeric_limits<uint32_t>::max();
-                });
-                state::Entity active = state::Null;
-                for (const auto e : r.view<const ActiveScene>()) active = e;
-                const auto scene_label = [&](state::Entity e) {
-                    const auto *si = r.try_get<const SourceIndex>(e);
-                    return NamedOr(r.get<const Scene>(e).Name, "Scene ", si ? si->Value : 0u);
-                };
-                if (active != state::Null) ui::ChoiceCombo("Scene", active, scenes, scene_label, [](state::Entity e) { action::Emit(action::view::SetActiveScene{e}); });
+            {
+                const auto acting = FrameScene(r);
+                PushID("SceneRow");
+                const auto scenes = gltf::OrderedScenes(r);
+                const auto viewport = r.Resources.get<const Viewports>().Active().Entity;
+                if (scenes.size() > 1) {
+                    const auto &style = GetStyle();
+                    const float buttons_width = CalcTextSize("New").x + CalcTextSize("Delete").x + style.FramePadding.x * 4.f + style.ItemSpacing.x * 2.f;
+                    SetNextItemWidth(GetContentRegionAvail().x - buttons_width - CalcTextSize("Scene").x - style.ItemInnerSpacing.x);
+                    ui::ChoiceCombo("Scene", acting, scenes, [&](state::Entity e) { return SceneLabel(r, e); }, [viewport](state::Entity e) { action::Emit(action::view::SetViewportScene{viewport, e}); });
+                    SameLine();
+                }
+                BeginDisabled(scenes.size() >= MaxScenes);
+                if (Button("New")) action::Emit(action::scene::Add{"Scene"});
+                EndDisabled();
+                SameLine();
+                BeginDisabled(scenes.size() == 1);
+                if (Button("Delete")) action::Emit(action::scene::Remove{acting});
+                EndDisabled();
+                // The field holds the edited name while active and the scene's name otherwise.
+                static char name[128];
+                static bool editing = false;
+                const auto &current_name = r.get<const Name>(acting).Value;
+                if (!editing) std::snprintf(name, sizeof name, "%s", current_name.c_str());
+                InputText("Name", name, sizeof name);
+                editing = IsItemActive();
+                if (IsItemDeactivatedAfterEdit() && current_name != name) action::Emit(action::scene::Rename{acting, name});
+                PopID();
             }
             if (CollapsingHeader("Object tree", ImGuiTreeNodeFlags_DefaultOpen)) RenderObjectTree(r);
             SeparatorText("");
@@ -678,7 +699,7 @@ void RenderControls(state::Registry &r) {
                     [&](std::optional<uint32_t> v) { action::Emit(action::UpdateOf<&MaterialVariants::Active>(state::Document, v)); }
                 );
             }
-            if (!r.view<const Selected>().empty()) {
+            if (!SelectedIn(r).empty()) {
                 SeparatorText("Selection actions");
                 const auto &flags = r.get<const SelectionFlags>(state::Document);
                 if (flags.AnyVisible || flags.AnyHidden) {
@@ -705,6 +726,33 @@ void RenderControls(state::Registry &r) {
                     if (Button("Duplicate linked")) action::Emit(action::object::DuplicateLinked{}, action::Phase::Stage);
                 }
                 if (CanDelete(r) && Button("Delete")) Delete(r);
+                {
+                    const auto acting = FrameScene(r);
+                    BeginDisabled(r.view<const Scene>().size() == 1);
+                    if (Button("Link to scene")) OpenPopup("##LinkScene");
+                    EndDisabled();
+                    SameLine();
+                    if (Button("Unlink from scene")) OpenPopup("##UnlinkScene");
+                    if (BeginPopup("##LinkScene")) {
+                        for (const auto e : gltf::OrderedScenes(r)) {
+                            if (e != acting && MenuItem(SceneLabel(r, e).c_str())) action::Emit(action::scene::LinkSelected{e});
+                        }
+                        EndPopup();
+                    }
+                    if (BeginPopup("##UnlinkScene")) {
+                        // A selected object's root leaves a scene only when it stays in another.
+                        std::vector<state::Entity> unlinkable;
+                        for (const auto e : SelectedIn(r)) {
+                            if (const auto &scenes = RootMembership(r, e)->Scenes; scenes.size() > 1) unlinkable.append_range(scenes);
+                        }
+                        SortUnique(unlinkable);
+                        if (unlinkable.empty()) TextDisabled("Every selected object is in one scene");
+                        for (const auto e : gltf::OrderedScenes(r)) {
+                            if (std::ranges::binary_search(unlinkable, e) && MenuItem(SceneLabel(r, e).c_str())) action::Emit(action::scene::UnlinkSelected{e});
+                        }
+                        EndPopup();
+                    }
+                }
                 if (r.get<const Interaction>(state::Document).Mode == InteractionMode::Pose && !r.view<const BoneSelection>().empty()) {
                     AlignTextToFramePadding();
                     TextUnformatted("Clear transform:");
@@ -741,7 +789,7 @@ void RenderControls(state::Registry &r) {
             // Direct mutation outside Apply: not replayable document state.
             if (Button("Recompile shaders")) r.Resources.get<FrameState>().RecompileShaders = true;
 
-            if (!r.view<Selected>().empty()) {
+            if (!SelectedIn(r).empty()) {
                 f.Section<&ViewportDisplay::Selection>();
                 ui::DrawFields<SelectionOverlays>(f.Sub<&ViewportDisplay::Selection>());
             }
@@ -753,14 +801,14 @@ void RenderControls(state::Registry &r) {
             const auto &camera = viewport.State.Camera.Active;
             const auto extent = viewport.State.Extent;
             const float viewport_aspect = extent.x == 0 || extent.y == 0 ? 1.f : float(extent.x) / float(extent.y);
-            if (Button("Reset##Camera")) action::Emit(action::view::ResetViewCamera{viewport.Id});
+            if (Button("Reset##Camera")) action::Emit(action::view::ResetViewCamera{viewport.Entity});
             {
                 vec3 target = camera.Target;
-                ui::Gesture(SliderFloat3("Target", &target.x, -10, 10), [&] { return action::view::SetViewCameraTarget{viewport.Id, target}; });
+                ui::Gesture(SliderFloat3("Target", &target.x, -10, 10), [&] { return action::view::SetViewCameraTarget{viewport.Entity, target}; });
             }
             {
                 CameraLens lens = camera.Data;
-                ui::Gesture(RenderCameraLensEditor(lens, camera.Distance, viewport_aspect), [&] { return action::view::SetViewCameraLens{viewport.Id, lens}; });
+                ui::Gesture(RenderCameraLensEditor(lens, camera.Distance, viewport_aspect), [&] { return action::view::SetViewCameraLens{viewport.Entity, lens}; });
             }
             EndTabItem();
         }
@@ -929,7 +977,7 @@ static void RenderObjectTree(state::Registry &r) {
         }
     };
 
-    const int total_selected = r.view<const Selected>().size() + r.view<const BoneSelection>().size();
+    const int total_selected = SelectedIn(r).size() + r.view<const BoneSelection>().size();
     const auto *ms_begin = BeginMultiSelect(ImGuiMultiSelectFlags_None, total_selected, -1);
     std::vector<ImGuiSelectionRequest> begin_requests;
     begin_requests.reserve(ms_begin->Requests.Size);

@@ -22,10 +22,12 @@ struct Context;
 
 #include <expected>
 #include <filesystem>
+#include <map>
 #include <vector>
 
-// The view values of one viewport.
+// A viewport's workspace state, kept per viewport entity for the session and the workspace file.
 struct ViewportState {
+    bool Visible{true}; // The panel is open.
     ViewCameraState Camera{Defaults::ViewCamera};
     state::Entity LookThroughEntity{state::Null}; // The scene camera the view looks through, or null.
     OrbitToActive Orbit;
@@ -36,7 +38,7 @@ struct ViewportState {
     StudioEnvironment Environment{"forest"};
     uvec2 Extent{}; // The view's logical size.
 
-    using Members = TypeList<ViewCameraState, state::Entity, OrbitToActive, ViewportDisplay, MaterialPreviewLighting, RenderedLighting, WorkspaceLights, StudioEnvironment, uvec2>;
+    using Members = TypeList<bool, ViewCameraState, state::Entity, OrbitToActive, ViewportDisplay, MaterialPreviewLighting, RenderedLighting, WorkspaceLights, StudioEnvironment, uvec2>;
     template<typename C> static constexpr bool Holds = InTypeList<C, Members>;
 
     template<typename C>
@@ -49,7 +51,7 @@ struct ViewportState {
     bool operator==(const ViewportState &) const = default;
 
 private:
-    static auto Tie(auto &s) { return std::tie(s.Camera, s.LookThroughEntity, s.Orbit, s.Display, s.PreviewLighting, s.RenderLighting, s.Lights, s.Environment, s.Extent); }
+    static auto Tie(auto &s) { return std::tie(s.Visible, s.Camera, s.LookThroughEntity, s.Orbit, s.Display, s.PreviewLighting, s.RenderLighting, s.Lights, s.Environment, s.Extent); }
 };
 
 // The lighting of the Rendered shading mode, and of Material Preview otherwise.
@@ -65,18 +67,18 @@ inline bool RealTransmission(const ViewportState &state, uint32_t mesh_features)
     return !WorkbenchShading(state.Display.ViewportShading) && ActivePbrLighting(state).RealTransmission && HasFeature(PbrFeaturesOf(state, mesh_features), PbrFeature::Transmission);
 }
 
-// A view onto the document, with the GPU resources its frames render into.
+// A live viewport of a document viewport entity, with the GPU resources its frames render into.
 struct Viewport {
-    Viewport(uint32_t id, mtl::BufferContext &, mtl::BindlessSet &);
+    Viewport(state::Entity, ViewportState &, mtl::BufferContext &, mtl::BindlessSet &);
 
-    uint32_t Id; // Stable within a workspace.
-    bool Visible{true}; // The panel is open.
+    state::Entity Entity; // The document's viewport entity.
+    ViewportState &State; // The entity's entry in Viewports::States.
     // The panel drew the viewport this frame, which the UI writes each frame, and always without a UI.
     bool Shown{true};
     // A displayed viewport renders and its display settings join the union the mesh records derive from.
-    bool Displayed() const { return Visible && Shown; }
-    ViewportState State{};
+    bool Displayed() const { return State.Visible && Shown; }
     std::optional<ViewportState> Rendered{}; // The state the last submitted frame rendered, absent before the first.
+    state::Entity RenderedScene{state::Null}; // The scene the last submitted frame rendered.
     std::optional<VideoRecording> Recording{};
 
     RenderTargets Targets;
@@ -94,10 +96,10 @@ struct Viewport {
     bool OcclusionStale{true};
 };
 
-// The engine-lifetime viewports, holding at least one.
+// The workspace state of every viewport entity the session has held, and the live viewports of the ones the document holds, in entity index order.
+// A state entry outlives its entity, so a viewport that returns through redo or replay keeps its view.
 struct Viewports {
-    Viewports(mtl::BufferContext &buffers, mtl::BindlessSet &slots) { All.emplace_back(1u, buffers, slots); }
-
+    std::map<state::Entity, ViewportState> States;
     std::vector<Viewport> All;
     // The viewport that receives input.
     // SubmitViewports moves it to the first displayed viewport when it is not displayed.
@@ -105,17 +107,22 @@ struct Viewports {
 
     Viewport &Active() { return All[ActiveIndex]; }
     const Viewport &Active() const { return All[ActiveIndex]; }
-    Viewport *Find(uint32_t id) {
-        const auto it = std::ranges::find(All, id, &Viewport::Id);
+    Viewport *Find(state::Entity entity) {
+        const auto it = std::ranges::find(All, entity, &Viewport::Entity);
         return it != All.end() ? &*it : nullptr;
     }
 };
 
-// Appends a viewport with the default view values and an Id above every existing one.
-void AddViewport(state::Registry &);
-// Removes the viewport with the Id unless it is the only one, once the live UI frame stops sampling its images.
-// The active viewport stays active when it remains, and the first displayed viewport becomes active otherwise.
-void RemoveViewport(state::Registry &, uint32_t id);
+// Matches the live viewports to the document's viewport entities, keeping the live state of each that remains.
+// A viewport that goes waits for the live UI frame to stop sampling its images, and the active viewport stays active when it remains.
+// Returns whether the set changed.
+bool SyncViewports(state::Registry &);
+// The viewport's scene resolved to a live scene.
+state::Entity SceneOf(const state::Registry &, const Viewport &);
+// The active viewport's scene, or the lowest-index scene without a viewport.
+state::Entity ActingScene(const state::Registry &);
+// The distinct live scenes of the displayed viewports in entity index order, or the acting scene when no viewport is displayed.
+std::vector<state::Entity> ShownScenes(const state::Registry &);
 
 struct DisplayUnion;
 // The display settings the displayed viewports share, which the mesh display records derive from.
@@ -137,6 +144,7 @@ void TakePendingViewSetup(state::Registry &, Viewport &);
 // Emplace the document components on the document entity.
 void SetupDocument(state::Registry &);
 
+// Adds the startup cube, light, and camera to the frame's scene.
 void AddDefaultSceneContent(state::Registry &);
 
 // Call after SubmitViewports, inside the viewport's Begin block.

@@ -36,7 +36,7 @@ state::Entity CreateArmatureObject(state::Registry &r, MeshStore &meshes, state:
         r.emplace<Armature>(data_entity);
     }
     const auto entity = r.create();
-    r.emplace<ObjectKind>(entity, ObjectType::Armature);
+    EmplaceObject(r, entity, ObjectType::Armature);
     r.emplace<ArmatureObject>(entity, data_entity);
     r.emplace<Transform>(entity, transform);
     EmplaceUniqueName(r, entity, name.empty() ? "Armature" : name);
@@ -108,7 +108,7 @@ state::Entity DuplicateLinkedOne(state::Registry &r, state::Entity e) {
     const auto e_new = r.create();
     EmplaceUniqueName(r, e_new, NameStem(GetName(r, e)));
     r.emplace<Instance>(e_new, mesh_entity);
-    r.emplace<ObjectKind>(e_new, ObjectType::Mesh);
+    EmplaceObject(r, e_new, ObjectType::Mesh);
     const Transform t_new{*WorldTransformOf(r, e)};
     r.emplace_or_replace<Transform>(e_new, t_new);
     if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) r.emplace<ArmatureModifier>(e_new, *armature_modifier);
@@ -155,7 +155,7 @@ void Apply(state::Registry &r, const Action &action) {
     const auto duplicate = [&](bool linked) {
         if (!(linked ? CanDuplicateLinked(r) : CanDuplicate(r))) return;
         const profile::CpuScope scope{linked ? "DuplicateLinked" : "Duplicate"};
-        const auto entities = SortedEntities(r.view<Selected>());
+        const auto entities = SelectedIn(r);
         // Every duplicated mesh clones once in one batch, with its arenas reserved once, and instances sharing a mesh share its clone.
         std::vector<uint32_t> sources, source_of(entities.size(), InvalidOffset);
         if (!linked) {
@@ -227,19 +227,19 @@ void Apply(state::Registry &r, const Action &action) {
         overloaded{
             [&](Delete) {
                 if (!CanDelete(r)) return;
-                Destroy(r, SortedEntities(r.view<Selected>(state::Exclude<SubElementOf>)));
+                Destroy(r, SelectedIn(r) | std::views::filter([&](state::Entity e) { return !r.all_of<SubElementOf>(e); }) | std::ranges::to<std::vector>());
             },
             [&](Duplicate) { duplicate(false); },
             [&](DuplicateLinked) { duplicate(true); },
             [&](ToggleHidden) {
-                for (const auto e : r.view<Selected>()) {
+                for (const auto e : SelectedIn(r)) {
                     if (r.all_of<Instance>(e) && !r.all_of<Hidden>(e)) Hide(r, e);
                     else Show(r, e);
                 }
             },
             [&](const SetSelectedVisible &a) {
-                for (const auto e : r.view<const Selected, const Instance>()) {
-                    if (r.all_of<SubElementOf>(e)) continue;
+                for (const auto e : SelectedIn(r)) {
+                    if (!r.all_of<Instance>(e) || r.all_of<SubElementOf>(e)) continue;
                     if (a.Visible) Show(r, e);
                     else Hide(r, e);
                 }
@@ -267,10 +267,10 @@ void Apply(state::Registry &r, const Action &action) {
             [&](ParentToActive) {
                 const auto active = FindActiveEntity(r);
                 if (active == state::Null) return;
-                if (SetParentKeepWorld(r, r.view<const Selected>() | std::ranges::to<std::vector>(), active)) action::Fail(r, "Loop in parents");
+                if (SetParentKeepWorld(r, SelectedIn(r), active)) action::Fail(r, "Loop in parents");
             },
             [&](ClearParent) {
-                ::ClearParents(r, r.view<const Selected>() | std::ranges::to<std::vector>());
+                ::ClearParents(r, SelectedIn(r));
             },
             [&](const AddEmpty &a) { ::AddEmpty(r, meshes, *a.Info); begin_translate(); },
             [&](const AddArmature &a) {
@@ -309,7 +309,7 @@ void Apply(state::Registry &r, const Action &action) {
                     a.Target,
                     [&] { const auto e = FindActiveEntity(r); return HasLens(r, e) ? e : state::Null; },
                     [&](auto &&fn) {
-                        for (const auto e : r.view<Selected>()) {
+                        for (const auto e : SelectedIn(r)) {
                             if (HasLens(r, e)) fn(e);
                         }
                     },

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "state/Entity.h"
 #include "viewport/RenderView.h"
 #include "viewport/ViewportSchema.h"
 
@@ -21,6 +22,8 @@ struct MeshOperatorDrag {
 };
 
 struct FrameState {
+    // The acting scene, set from ActingScene before actions apply and replayed from each recorded action.
+    state::Entity Scene{state::Null};
     float DeltaTime{0};
     bool FixedFrameStep{false};
     vec2 DisplayFramebufferScale{1, 1};

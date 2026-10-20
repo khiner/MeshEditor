@@ -28,7 +28,7 @@ struct OnActive {};
 struct OnSelected {};
 struct OnSelectedDelta {}; // Offsets each selected target by the active target's change since the drag start.
 struct OnViewport {
-    uint32_t Id;
+    state::Entity Viewport;
 };
 using Target = std::variant<OnActive, OnSelected, OnSelectedDelta, OnViewport, state::Entity>;
 

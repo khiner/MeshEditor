@@ -3,6 +3,7 @@
 #include "action/Errors.h"
 #include "armature/ArmatureComponents.h"
 #include "scene/Entity.h"
+#include "scene/SceneGraph.h"
 #include "selection/Selection.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
@@ -26,7 +27,7 @@ void Apply(state::Registry &r, const Action &action) {
         return false;
     };
     // A pending gesture resolves against the viewport it was emitted in.
-    const auto active_viewport = [&] { return r.Resources.get<const Viewports>().Active().Id; };
+    const auto active_viewport = [&] { return r.Resources.get<const Viewports>().Active().Entity; };
 
     std::visit(
         overloaded{
@@ -133,7 +134,10 @@ void Apply(state::Registry &r, const Action &action) {
                     ApplyEditSelectionCommand(r, ranges, element, EditSelectionOperation::Fill);
                 } else if (interaction_mode == InteractionMode::Object) {
                     r.clear<Selected>();
-                    for (const auto e : r.view<const ObjectKind>()) r.emplace<Selected>(e);
+                    const auto scene = FrameScene(r);
+                    for (const auto e : r.view<const ObjectKind>()) {
+                        if (InScene(r, e, scene)) r.emplace<Selected>(e);
+                    }
                 }
             },
         },

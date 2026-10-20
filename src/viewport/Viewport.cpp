@@ -5,10 +5,11 @@
 #include <Metal/MTLCommandQueue.hpp>
 
 #include "Camera.h"
+#include "Panel.h"
 #include "Paths.h"
 #include "ProcessEvents.h"
 #include "Profile.h"
-#include "Panel.h"
+#include "SortUnique.h"
 #include "action/Errors.h"
 #include "animation/AnimationData.h"
 #include "audio/AudioStores.h"
@@ -33,7 +34,7 @@
 #include "render/Textures.h"
 #include "scene/CameraLens.h"
 #include "scene/Defaults.h"
-#include "scene/WorldTransform.h"
+#include "scene/SceneGraph.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
@@ -48,11 +49,12 @@
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportInteractionState.h"
+#include "viewport/ViewportScene.h"
 
 #include "render/GpuBuffers.h"
 
-Viewport::Viewport(uint32_t id, mtl::BufferContext &buffers, mtl::BindlessSet &slots)
-    : Id(id), Samplers(slots),
+Viewport::Viewport(state::Entity entity, ViewportState &state, mtl::BufferContext &buffers, mtl::BindlessSet &slots)
+    : Entity(entity), State(state), Samplers(slots),
       SceneViewUBO(buffers, GpuBuffers::ViewUboStride() * (GpuBuffers::MaxBlurSteps + 1)),
       WorkspaceLightsUBO(buffers, sizeof(WorkspaceLights)),
       MeshletCoarseCount(buffers, sizeof(uint32_t), SlotType::Buffer) {}
@@ -78,28 +80,50 @@ DisplayUnion VisibleDisplays(const Viewports &viewports) {
 namespace {
 // Moves the active viewport to the first displayed one when it is not displayed.
 void KeepActiveDisplayed(Viewports &viewports) {
-    if (viewports.Active().Displayed()) return;
+    if (viewports.All.empty() || viewports.Active().Displayed()) return;
     const auto displayed = std::ranges::find_if(viewports.All, &Viewport::Displayed);
     if (displayed != viewports.All.end()) viewports.ActiveIndex = size_t(displayed - viewports.All.begin());
 }
 } // namespace
 
-void AddViewport(state::Registry &r) {
-    auto &viewports = r.Resources.get<Viewports>().All;
-    const auto id = std::ranges::max(viewports | std::views::transform(&Viewport::Id)) + 1u;
-    viewports.emplace_back(id, r.Resources.get<GpuBuffers>().Ctx, r.Resources.get<mtl::BindlessSet>());
+bool SyncViewports(state::Registry &r) {
+    auto &viewports = r.Resources.get<Viewports>();
+    const auto entities = SortedEntities(r.view<const ViewportScene>());
+    if (std::ranges::equal(viewports.All, entities, {}, &Viewport::Entity)) return false;
+    const bool keeps_all = std::ranges::all_of(viewports.All, [&](const Viewport &v) { return std::ranges::binary_search(entities, v.Entity); });
+    if (auto *consumer = r.Resources.get<const ViewportConsumerFence>().Value; consumer && !keeps_all) consumer->waitUntilCompleted();
+    const auto active = viewports.All.empty() ? state::Null : viewports.Active().Entity;
+    std::vector<Viewport> synced;
+    synced.reserve(entities.size());
+    for (const auto entity : entities) {
+        if (auto *existing = viewports.Find(entity)) synced.push_back(std::move(*existing));
+        else synced.emplace_back(entity, viewports.States.try_emplace(entity).first->second, r.Resources.get<GpuBuffers>().Ctx, r.Resources.get<mtl::BindlessSet>());
+    }
+    viewports.All = std::move(synced);
+    const auto it = std::ranges::find(viewports.All, active, &Viewport::Entity);
+    viewports.ActiveIndex = it != viewports.All.end() ? size_t(it - viewports.All.begin()) : 0;
+    KeepActiveDisplayed(viewports);
+    return true;
 }
 
-void RemoveViewport(state::Registry &r, uint32_t id) {
-    auto &viewports = r.Resources.get<Viewports>();
-    const auto it = std::ranges::find(viewports.All, id, &Viewport::Id);
-    if (it == viewports.All.end() || viewports.All.size() == 1) return;
-    if (auto *consumer = r.Resources.get<const ViewportConsumerFence>().Value) consumer->waitUntilCompleted();
-    const auto active_id = viewports.Active().Id;
-    viewports.All.erase(it);
-    const auto active = std::ranges::find(viewports.All, active_id, &Viewport::Id);
-    viewports.ActiveIndex = active != viewports.All.end() ? size_t(active - viewports.All.begin()) : 0;
-    KeepActiveDisplayed(viewports);
+state::Entity SceneOf(const state::Registry &r, const Viewport &viewport) {
+    const auto *shown = r.try_get<const ViewportScene>(viewport.Entity);
+    return ResolveScene(r, shown ? shown->Scene : state::Null);
+}
+
+state::Entity ActingScene(const state::Registry &r) {
+    const auto &viewports = r.Resources.get<const Viewports>();
+    return viewports.All.empty() ? ResolveScene(r, state::Null) : SceneOf(r, viewports.Active());
+}
+
+std::vector<state::Entity> ShownScenes(const state::Registry &r) {
+    std::vector<state::Entity> scenes;
+    for (const auto &viewport : r.Resources.get<const Viewports>().All) {
+        if (viewport.Displayed()) scenes.push_back(SceneOf(r, viewport));
+    }
+    if (scenes.empty()) scenes.push_back(ActingScene(r));
+    SortUnique(scenes);
+    return scenes;
 }
 
 namespace {
@@ -121,12 +145,12 @@ void ApplyPresentation(ViewportState &view, PresentationLighting lighting) {
     }
 }
 
-// Leaves look-through when the look-through entity is no longer a camera, and otherwise widens the camera's lens to the viewport's aspect.
+// Leaves look-through when the look-through entity is no longer a camera in the view's scene, and otherwise widens the camera's lens to the viewport's aspect.
 void FrameLookThrough(const state::Registry &r, Viewport &viewport) {
     auto &state = viewport.State;
     const auto camera = state.LookThroughEntity;
     if (camera == state::Null) return;
-    if (!HasLens(r, camera)) {
+    if (!HasLens(r, camera) || !InScene(r, camera, SceneOf(r, viewport))) {
         ClearLookThrough(state);
         return;
     }
@@ -139,12 +163,12 @@ RenderView CurrentView(const state::Registry &r, const Viewport &viewport) {
     return {viewport.State.Camera.Active, RenderExtentPx(viewport, r.Resources.get<const FrameState>())};
 }
 
-// The active viewport takes the pending view setup, the targets follow the extent and lighting, and a view that differs from the rendered one requests a frame.
+// The active viewport takes the pending view setup, the targets follow the extent and lighting, and a view or scene that differs from the rendered one requests a frame.
 void StepViewport(state::Registry &r, Viewport &viewport, bool active) {
     if (active) TakePendingViewSetup(r, viewport);
     FrameLookThrough(r, viewport);
     const bool targets_changed = SyncViewportRenderResources(r, viewport);
-    if (targets_changed || viewport.Rendered != viewport.State || viewport.FrameView != CurrentView(r, viewport)) {
+    if (targets_changed || viewport.Rendered != viewport.State || viewport.RenderedScene != SceneOf(r, viewport) || viewport.FrameView != CurrentView(r, viewport)) {
         viewport.RenderRequested = viewport.OcclusionStale = true;
     }
 }
@@ -240,7 +264,7 @@ void RenderMotionBlurredFrames(state::Registry &r, BlurSchedule schedule, std::s
             const auto previous_offset = GpuBuffers::SceneViewUboOffset(sample_weights.size());
             const bool same_views = std::ranges::all_of(group, [&](const Viewport *viewport) {
                 auto current_view = SceneViewOf(r, *viewport, CurrentView(r, *viewport));
-                previous.ApplyTo(current_view);
+                previous.ApplyTo(current_view, ShownSceneIndex(r, SceneOf(r, *viewport)));
                 const auto &previous_view = *reinterpret_cast<const SceneViewUBO *>(viewport->SceneViewUBO.Contents().data() + previous_offset);
                 return std::memcmp(&previous_view, &current_view, sizeof(current_view)) == 0; // NOLINT(bugprone-suspicious-memory-comparison)
             });
@@ -248,7 +272,7 @@ void RenderMotionBlurredFrames(state::Registry &r, BlurSchedule schedule, std::s
                 same_buffer(previous.Transforms, buffers.Instances.TransformBuffer) &&
                 same_buffer(previous.ArmatureDeform, buffers.ArmatureDeformBuffer.Buffer) &&
                 same_buffer(previous.MorphWeights, buffers.MorphWeightBuffer.Buffer) &&
-                same_buffer(previous.Lights, buffers.Lights)) {
+                std::ranges::equal(previous.Lights, buffers.Lights, same_buffer)) {
                 ++sample_weights.back();
                 continue;
             }
@@ -259,7 +283,7 @@ void RenderMotionBlurredFrames(state::Registry &r, BlurSchedule schedule, std::s
         buffers.CaptureRenderPose(pose);
         for (auto *viewport : group) {
             auto view = SceneViewOf(r, *viewport, CurrentView(r, *viewport));
-            pose.ApplyTo(view);
+            pose.ApplyTo(view, ShownSceneIndex(r, SceneOf(r, *viewport)));
             viewport->SceneViewUBO.Update(BytesOf(view), GpuBuffers::SceneViewUboOffset(instance));
         }
         sample_weights.push_back(1u);
@@ -299,8 +323,10 @@ void SubmitViewports(state::Registry &r) {
     for (auto &viewport : viewports.All) {
         if (viewport.Displayed()) StepViewport(r, viewport, &viewport == &viewports.Active());
     }
-    // A view setup a step took can change the display settings the records derive from.
-    if (VisibleDisplays(viewports) != r.Resources.get<const GpuSceneState>().Displays) ProcessComponentEvents(r, EventPass::Settle);
+    // A view setup a step took can change the display settings the records derive from, and each displayed viewport binds its scene's buffers.
+    if (VisibleDisplays(viewports) != r.Resources.get<const GpuSceneState>().Displays || ShownScenes(r) != r.Resources.get<const GpuBuffers>().Scenes) {
+        ProcessComponentEvents(r, EventPass::Settle);
+    }
 
     std::vector<Viewport *> blurring;
     for (auto &viewport : viewports.All) {
@@ -360,7 +386,7 @@ void InitEngine(state::Registry &r) {
     r.Resources.emplace<action::Errors>();
     InitDefaultMaterial(r);
     // These engine resources outlive documents.
-    r.Resources.emplace<Viewports>(buffers.Ctx, slots);
+    r.Resources.emplace<Viewports>();
     r.Resources.emplace<ViewportConsumerFence>();
     const auto &sel_slots = r.Resources.emplace<SelectionSlots>(slots);
     // Object picking grows on demand and refreshes its bindings; element picking uses fixed buffers.

@@ -31,7 +31,6 @@ void FreeInstanceRange(state::Registry &r, Range range) { r.Resources.get<GpuBuf
 InstanceArena::InstanceArena(mtl::BufferContext &ctx)
     : TransformBuffer(ctx, 0, SlotType::ModelBuffer),
       ObjectIdBuffer(ctx, 0, SlotType::ObjectIdBuffer),
-      StateBuffer(ctx, 0, SlotType::InstanceStateBuffer),
       BoundsBuffer(ctx, 0, SlotType::Buffer),
       RecordBuffer(ctx, 0, SlotType::Buffer) {}
 
@@ -81,7 +80,6 @@ GpuBuffers::GpuBuffers(const mtl::Context &ctx, mtl::BindlessSet &slots)
       OverlayJobBlocks{Ctx, 0, SlotType::Buffer},
       VisibleOverlayJobs{Ctx, 0, SlotType::Buffer},
       OverlayJobDispatchArgs{Ctx, sizeof(MeshDispatchArgs), SlotType::Buffer},
-      Lights{Ctx, sizeof(LightRecord), SlotType::LightBuffer},
       Materials{Ctx, sizeof(PBRMaterial), SlotType::MaterialBuffer},
       ViewportThemeUBO{Ctx, sizeof(ViewportThemeUbo)},
       ObjectPickKeys{Ctx, sizeof(uint32_t)},
@@ -92,8 +90,7 @@ GpuBuffers::GpuBuffers(const mtl::Context &ctx, mtl::BindlessSet &slots)
 }
 
 void Reset(GpuBuffers &b, state::Registry &) {
-    b.Lights.SetUsedSize(0);
-    b.PendingLightRemovals.clear();
+    for (auto &lights : b.Lights) lights.SetUsedSize(0);
     if (b.Materials.Count<PBRMaterial>() > 1) b.Materials.SetCount<PBRMaterial>(1u);
     b.PosedPositions.Reset();
     b.PosedMorphNormalDeltas.Reset();
@@ -191,5 +188,7 @@ void GpuBuffers::CaptureRenderPose(RenderPose &dst) const {
     copy_whole(Instances.TransformBuffer, dst.Transforms);
     copy_whole(ArmatureDeformBuffer.Buffer, dst.ArmatureDeform);
     copy_whole(MorphWeightBuffer.Buffer, dst.MorphWeights);
-    copy_whole(Lights, dst.Lights);
+    dst.Lights.erase(dst.Lights.begin() + std::min(dst.Lights.size(), Lights.size()), dst.Lights.end());
+    while (dst.Lights.size() < Lights.size()) dst.Lights.emplace_back(dst.Transforms.Ctx, 0, SlotType::LightBuffer);
+    for (size_t i = 0; i < Lights.size(); ++i) copy_whole(Lights[i], dst.Lights[i]);
 }

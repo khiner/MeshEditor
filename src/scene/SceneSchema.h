@@ -8,7 +8,6 @@ struct Path;
 struct EntityNameCounts;
 struct Name;
 struct Scene;
-struct ActiveScene;
 struct SceneMembership;
 struct Selected;
 struct Active;
@@ -22,7 +21,7 @@ struct SceneChildren;
 struct WorldTransform;
 struct PosedLocal;
 
-using SceneSchema = state::Schema<state::SceneBase, state::SceneCount, Orthographic, Perspective, Path, EntityNameCounts, Name, Scene, ActiveScene, SceneMembership, Selected, Active, MeshActiveElement, SubElementOf, ScaleLocked, ObjectKind, SceneChanges, SceneParent, SceneChildren, WorldTransform, PosedLocal>;
+using SceneSchema = state::Schema<state::SceneBase, state::SceneCount, Orthographic, Perspective, Path, EntityNameCounts, Name, Scene, SceneMembership, Selected, Active, MeshActiveElement, SubElementOf, ScaleLocked, ObjectKind, SceneChanges, SceneParent, SceneChildren, WorldTransform, PosedLocal>;
 template<typename T>
     requires SceneSchema::Has<T>
 inline constexpr state::TypeId state::Slot<T> = SceneSchema::Of<T>();

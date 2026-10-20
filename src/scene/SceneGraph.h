@@ -3,6 +3,8 @@
 #include "scene/WorldTransform.h"
 #include "state/Registry.h"
 
+struct SceneMembership;
+
 // A node's authored parent, present only on a node with a parent.
 struct SceneParent {
     state::Entity Parent;
@@ -44,6 +46,14 @@ mat4 GetParentDelta(const state::Registry &, state::Entity);
 
 // The node's parent, or null at a root.
 state::Entity ParentOrNull(const state::Registry &, state::Entity);
+
+// The node's root holding its scenes, or null when its root has none.
+// A sub-element without a parent resolves through the object it belongs to.
+state::Entity MembershipRoot(const state::Registry &, state::Entity node);
+// The scenes of the node's root, or null when its root has none.
+const SceneMembership *RootMembership(const state::Registry &, state::Entity node);
+// Whether the node's root is a member of the scene.
+bool InScene(const state::Registry &, state::Entity node, state::Entity scene);
 
 // The nearest of `e` and its ancestors that `pred` matches, or state::Null when none does.
 state::Entity FindAncestorIf(const state::Registry &r, state::Entity e, auto &&pred) {

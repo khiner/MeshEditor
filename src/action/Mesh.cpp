@@ -273,7 +273,7 @@ void SeparateSelected(state::Registry &r, std::span<const state::Entity> mesh_en
                 .Transform = instance != state::Null ? *WorldTransformOf(r, instance) : Transform{},
                 .Select = MeshInstanceCreateInfo::SelectBehavior::None,
             };
-            created.push_back(::AddMesh(r, *outputs[i], std::move(create)).first);
+            created.push_back(::AddMesh(r, *outputs[i], create).first);
         }
         if (created.empty()) return;
         RequestRender(r);
@@ -288,7 +288,7 @@ void SeparateSelected(state::Registry &r, std::span<const state::Entity> mesh_en
 void CombineSelected(state::Registry &r, const action::mesh::Boolean &boolean) {
     const auto active = FindActiveEntity(r);
     std::vector<state::Entity> others;
-    for (const auto e : r.view<const Selected>()) {
+    for (const auto e : SelectedIn(r)) {
         if (e != active) others.push_back(e);
     }
     if (active == state::Null || others.size() != 1u || !r.all_of<Instance>(active) || !r.all_of<Instance>(others.front())) {

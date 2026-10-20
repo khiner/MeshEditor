@@ -217,7 +217,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         profile::Enabled = true;
         profile::Init(r.Resources.get<const mtl::Context>());
         profile::Enabled = false;
-        if (!p.Begin(dir)) return std::unexpected{"project begin failed"};
+        if (!p.New(dir, true)) return std::unexpected{"project creation failed"};
         r.Resources.get<Viewports>().All.front().State.Extent = {viewport_width, viewport_height};
         p.Settle();
         std::println(stderr, "Preparing benchmark scene...");

@@ -75,10 +75,6 @@ void Destroy(state::Registry &r, std::span<const state::Entity> entities) {
         if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) try_add_armature_data(armature_modifier->ArmatureEntity);
         if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) try_add_armature_data(bone_attachment->ArmatureEntity);
 
-        if (const auto *light_index = r.try_get<LightIndex>(e)) {
-            r.Resources.get<GpuBuffers>().PendingLightRemovals.emplace_back(light_index->Value);
-        }
-
         if (r.all_of<ArmatureObject>(e)) {
             const auto &arm = r.get<ArmatureObject>(e);
             const auto retire_buffers = [&](state::Entity owner) {
@@ -175,7 +171,7 @@ void ClearMeshes(state::Registry &r) {
     Destroy(r, SortedEntities(r.view<Instance>(state::Exclude<SubElementOf>)));
 }
 
-std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(state::Registry &r, const std::filesystem::path &path, MeshInstanceCreateInfo info, bool deduplicate) {
+std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(state::Registry &r, const std::filesystem::path &path, const MeshInstanceCreateInfo &info, bool deduplicate) {
     const auto stored_path = project::ResolveAsset(r, path);
     auto result = ReadMeshFile(stored_path);
     if (!result) return std::unexpected{result.error()};
@@ -188,7 +184,7 @@ std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(s
 
     // `deduplicate` merges vertices identical in every vertex-domain channel, keeping per-corner UVs and normals.
     auto created = CreateMesh(r, {.Data = std::move(result->Mesh), .Attrs = std::move(result->Attrs), .Primitives = std::move(result->Primitives), .Weld = deduplicate});
-    const auto entities = ::AddMesh(r, created.StoreId, std::move(info));
+    const auto entities = ::AddMesh(r, created.StoreId, info);
     if (!created.AuthoredCornerNormals.empty()) r.emplace<AuthoredCornerNormals>(entities.first, std::move(created.AuthoredCornerNormals));
     r.emplace<Path>(entities.first, path);
     return entities;

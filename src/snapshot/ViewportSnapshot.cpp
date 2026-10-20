@@ -9,12 +9,13 @@
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportInteractionState.h"
+#include "viewport/ViewportScene.h"
 
 namespace snapshot::detail {
 void RegisterViewport(Tables &tables) {
     Classify(
         tables,
-        TypeList<ViewportTheme, InterfaceTheme, Interaction, EditMode, AnisotropicFilter, TransformGizmoState>{},
+        TypeList<ViewportTheme, InterfaceTheme, Interaction, EditMode, AnisotropicFilter, TransformGizmoState, ViewportScene>{},
         TypeList<
             EnabledInteractionModes, AdditiveBoxSelectBaseline, ExciteSelectionBaseline,
             PendingEditElementClick, PendingBoxSelect, PendingPick, PendingViewSetup, BoxSelectState,

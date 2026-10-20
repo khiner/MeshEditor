@@ -50,7 +50,7 @@ void ApplySelectBehavior(state::Registry &r, state::Entity e, MeshInstanceCreate
 state::Entity AddMeshInstance(state::Registry &r, state::Entity mesh_entity, const MeshInstanceCreateInfo &info) {
     const auto e = r.create();
     r.emplace<Instance>(e, mesh_entity);
-    r.emplace<ObjectKind>(e, ObjectType::Mesh);
+    EmplaceObject(r, e, ObjectType::Mesh);
     r.emplace<Transform>(e, info.Transform);
     EmplaceUniqueName(r, e, info.Name);
     if (!info.Visible) Hide(r, e);
@@ -58,10 +58,15 @@ state::Entity AddMeshInstance(state::Registry &r, state::Entity mesh_entity, con
     return e;
 }
 
-std::pair<state::Entity, state::Entity> AddMesh(state::Registry &r, uint32_t store_id, std::optional<MeshInstanceCreateInfo> info) {
+state::Entity AddMeshData(state::Registry &r, uint32_t store_id) {
     const auto mesh_entity = r.create();
     r.emplace<MeshHandle>(mesh_entity, MeshHandle{store_id});
-    return {mesh_entity, info ? AddMeshInstance(r, mesh_entity, *info) : state::Null};
+    return mesh_entity;
+}
+
+std::pair<state::Entity, state::Entity> AddMesh(state::Registry &r, uint32_t store_id, const MeshInstanceCreateInfo &info) {
+    const auto mesh_entity = AddMeshData(r, store_id);
+    return {mesh_entity, AddMeshInstance(r, mesh_entity, info)};
 }
 
 state::Entity CreateExtrasObject(state::Registry &r, ObjectType type, const ObjectCreateInfo &info, std::string_view default_name) {
@@ -69,7 +74,7 @@ state::Entity CreateExtrasObject(state::Registry &r, ObjectType type, const Obje
     const auto buffer_entity = r.create();
     r.emplace<ObjectExtrasTag>(buffer_entity);
     const auto e = r.create();
-    r.emplace<ObjectKind>(e, type);
+    EmplaceObject(r, e, type);
     r.emplace<Instance>(e, buffer_entity);
     r.emplace<Transform>(e, info.Transform);
     EmplaceUniqueName(r, e, info.Name.empty() ? default_name : info.Name);

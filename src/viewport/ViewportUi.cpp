@@ -1,8 +1,8 @@
 #include "viewport/ViewportUi.h"
 
 #include "Camera.h"
-#include "Profile.h"
 #include "Panel.h"
+#include "Profile.h"
 #include "audio/SoundVertices.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gizmo/TransformGizmo.h"
@@ -86,7 +86,7 @@ bool IsSingleClicked(ImGuiMouseButton button) {
 
 // During look-through, the first navigation input exits look-through instead.
 void EmitViewNav(const Viewport &viewport, auto &&nav) {
-    if (viewport.State.LookThroughEntity != state::Null) action::Emit(action::view::ExitLookThroughCamera{viewport.Id});
+    if (viewport.State.LookThroughEntity != state::Null) action::Emit(action::view::ExitLookThroughCamera{viewport.Entity});
     else action::Emit(std::forward<decltype(nav)>(nav));
 }
 
@@ -393,12 +393,12 @@ void Interact(state::Registry &r, FrameState &frame) {
             const auto next = current == ViewportShadingMode::Solid ? ViewportShadingMode::MaterialPreview :
                 current == ViewportShadingMode::MaterialPreview     ? ViewportShadingMode::Rendered :
                                                                       ViewportShadingMode::Solid;
-            action::Emit(action::view::SetViewportShading{.ViewportId = viewport.Id, .Mode = next});
+            action::Emit(action::view::SetViewportShading{.Viewport = viewport.Entity, .Mode = next});
         } else if (key(ImGuiMod_Shift | ImGuiKey_Z)) {
             const auto &settings = viewport.State.Display;
-            action::Emit(action::view::SetViewportShading{.ViewportId = viewport.Id, .Mode = settings.ViewportShading == ViewportShadingMode::Wireframe ? settings.FillMode : ViewportShadingMode::Wireframe});
+            action::Emit(action::view::SetViewportShading{.Viewport = viewport.Entity, .Mode = settings.ViewportShading == ViewportShadingMode::Wireframe ? settings.FillMode : ViewportShadingMode::Wireframe});
         } else if (key(ImGuiMod_Alt | ImGuiKey_Z)) {
-            action::Emit(action::view::ToggleXRay{viewport.Id});
+            action::Emit(action::view::ToggleXRay{viewport.Entity});
         }
         // Tab uses default RouteFocused (not VKey/RouteGlobal) so widget tabbing in panels keeps working.
         const bool tab_no_mods = key(ImGuiKey_Tab, ImGuiInputFlags_None);
@@ -494,7 +494,7 @@ void Interact(state::Registry &r, FrameState &frame) {
         } else if (ctrl_key(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_L)) {
             action::Emit(action::object::AddLight{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
         }
-        if (!r.view<const Selected>().empty()) {
+        if (!SelectedIn(r).empty()) {
             if (!bone_edit && !mesh_edit && key(ImGuiMod_Shift | ImGuiKey_D)) Duplicate(r);
             else if (!bone_edit && !mesh_edit && key(ImGuiMod_Alt | ImGuiKey_D)) action::Emit(action::object::DuplicateLinked{}, action::Phase::Stage);
             else if (!bone_edit && !mesh_edit && CanDelete(r) && (key(ImGuiKey_Delete) || key(ImGuiKey_Backspace))) Delete(r);
@@ -534,11 +534,11 @@ void Interact(state::Registry &r, FrameState &frame) {
 
     const auto &io = GetIO();
     if (const vec2 wheel = std::exchange(frame.PreciseWheelDelta, vec2{0}); wheel != vec2{0, 0}) {
-        if (io.KeyCtrl || io.KeySuper) EmitViewNav(viewport, action::view::ZoomViewCamera{.ViewportId = viewport.Id, .Factor = std::pow(WheelZoomStep, -wheel.y)});
-        else EmitViewNav(viewport, action::view::OrbitViewCamera{.ViewportId = viewport.Id, .DeltaRad = wheel * WheelOrbitRadPerUnit});
+        if (io.KeyCtrl || io.KeySuper) EmitViewNav(viewport, action::view::ZoomViewCamera{.Viewport = viewport.Entity, .Factor = std::pow(WheelZoomStep, -wheel.y)});
+        else EmitViewNav(viewport, action::view::OrbitViewCamera{.Viewport = viewport.Entity, .DeltaRad = wheel * WheelOrbitRadPerUnit});
     }
     if (const float magnification = std::exchange(frame.Magnification, 0.f); magnification != 0.f) {
-        EmitViewNav(viewport, action::view::ZoomViewCamera{.ViewportId = viewport.Id, .Factor = 1.f / (1.f + magnification)});
+        EmitViewNav(viewport, action::view::ZoomViewCamera{.Viewport = viewport.Entity, .Factor = 1.f / (1.f + magnification)});
     }
     if (OrientationGizmo::IsActive() || frame.OverlayControlsHovered) return;
 
@@ -668,7 +668,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, const Viewport &view
 
     { // Viewport shading button group + dropdown (top-right overlay)
         const auto shading_button = [&](const char *id, const SvgResource *icon, ViewportShadingMode mode) {
-            if (ui::IconButton(id, icon, settings.ViewportShading == mode)) action::Emit(action::view::SetViewportShading{.ViewportId = viewport.Id, .Mode = mode});
+            if (ui::IconButton(id, icon, settings.ViewportShading == mode)) action::Emit(action::view::SetViewportShading{.Viewport = viewport.Entity, .Mode = mode});
         };
         SetCursorScreenPos(shading_start);
         ui::BeginIconButtonGroup(ImGuiAxis_X, header_button_size, 5, rounding);
@@ -692,16 +692,16 @@ void InteractOverlay(state::Registry &r, FrameState &frame, const Viewport &view
                 const auto render_pbr_controls = [&]<typename T>(const char *id) {
                     PushID(id);
                     const auto &lighting = viewport.State.Get<T>().Value;
-                    if (Button("Reset")) action::Emit(action::view::ResetPbrLighting{.ViewportId = viewport.Id, .Rendered = std::same_as<T, RenderedLighting>});
+                    if (Button("Reset")) action::Emit(action::view::ResetPbrLighting{.Viewport = viewport.Entity, .Rendered = std::same_as<T, RenderedLighting>});
                     ui::DrawFields<PBRViewportLighting>(ui::ViewportEdit{r, viewport}.template Sub<&T::Value>());
                     if (lighting.UseSceneWorld) {
-                        if (r.all_of<ImageLight>(state::Document)) ui::Edit{r, state::Document}.Draw<&ImageLight::Intensity>();
+                        if (const auto scene = FrameScene(r); r.all_of<ImageLight>(scene)) ui::Edit{r, scene}.Draw<&ImageLight::Intensity>();
                     } else {
                         const auto hdris = GetHdriRefs(r, viewport.State.Environment.Name);
                         if (BeginCombo("Environment", hdris.Names[hdris.ActiveIndex].c_str())) {
                             for (uint32_t i = 0; i < hdris.Names.size(); ++i) {
                                 const bool selected = (i == hdris.ActiveIndex);
-                                if (Selectable(hdris.Names[i].c_str(), selected)) action::Emit(action::view::SetStudioEnvironment{viewport.Id, hdris.Names[i]});
+                                if (Selectable(hdris.Names[i].c_str(), selected)) action::Emit(action::view::SetStudioEnvironment{viewport.Entity, hdris.Names[i]});
                                 if (selected) SetItemDefaultFocus();
                             }
                             EndCombo();
@@ -771,7 +771,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, const Viewport &view
                             PopID();
                         }
                     }
-                    if (changed) action::Emit(action::view::SetWorkspaceLights{viewport.Id, std::make_unique<WorkspaceLights>(lights)});
+                    if (changed) action::Emit(action::view::SetWorkspaceLights{viewport.Entity, std::make_unique<WorkspaceLights>(lights)});
                 }
 
                 if (!WorkbenchShading(current_mode)) {
@@ -848,7 +848,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, const Viewport &view
                             for (const auto &entry : group.Entries) {
                                 const bool selected = entry.Value == settings.DebugChannel;
                                 if (Selectable(entry.Label, selected) && !selected) {
-                                    action::Emit(action::UpdateOf<&ViewportDisplay::DebugChannel>(action::OnViewport{viewport.Id}, entry.Value));
+                                    action::Emit(action::UpdateOf<&ViewportDisplay::DebugChannel>(action::OnViewport{viewport.Entity}, entry.Value));
                                 }
                                 if (selected) SetItemDefaultFocus();
                             }
@@ -868,7 +868,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, const Viewport &view
         SetCursorScreenPos(shading_start - ImVec2{buttons_gap + header_button_size.x, 0.f});
         ui::BeginIconButtonGroup(ImGuiAxis_X, header_button_size, 1, rounding);
         if (!applies) PushStyleVar(ImGuiStyleVar_Alpha, GetStyle().Alpha * 0.5f);
-        if (ui::IconButton("##XRay", icons.XRay.get(), XRayFlag(settings))) action::Emit(action::view::ToggleXRay{viewport.Id});
+        if (ui::IconButton("##XRay", icons.XRay.get(), XRayFlag(settings))) action::Emit(action::view::ToggleXRay{viewport.Entity});
         if (!applies) PopStyleVar();
         ui::EndIconButtonGroup();
         if (IsItemHovered()) frame.OverlayControlsHovered = true;
@@ -879,7 +879,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, const Viewport &view
         const auto group_start = shading_start - ImVec2{2.f * buttons_gap + header_button_size.x + overlay_group_width, 0.f};
         SetCursorScreenPos(group_start);
         ui::BeginIconButtonGroup(ImGuiAxis_X, header_button_size, 2, rounding);
-        if (ui::IconButton("##Overlays", icons.Overlay.get(), settings.ShowOverlays)) action::Emit(action::UpdateOf<&ViewportDisplay::ShowOverlays>(action::OnViewport{viewport.Id}, !settings.ShowOverlays));
+        if (ui::IconButton("##Overlays", icons.Overlay.get(), settings.ShowOverlays)) action::Emit(action::UpdateOf<&ViewportDisplay::ShowOverlays>(action::OnViewport{viewport.Entity}, !settings.ShowOverlays));
         if (ui::IconButton("##OverlayArrow", nullptr, IsPopupOpen("##OverlayDropdown"), true, shading_arrow_w)) OpenPopup("##OverlayDropdown");
         ui::DropdownArrow();
         ui::EndIconButtonGroup();
@@ -897,6 +897,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, const Viewport &view
             PopStyleVar();
         }
     }
+
     PopItemFlag();
     SetCursorScreenPos(saved_cursor);
 
@@ -911,8 +912,8 @@ void InteractOverlay(state::Registry &r, FrameState &frame, const Viewport &view
             if (interaction) {
                 std::visit(
                     overloaded{
-                        [&](OrientationGizmo::RotateBy rot) { EmitViewNav(viewport, action::view::OrbitViewCamera{viewport.Id, rot.Delta}); },
-                        [&](OrientationGizmo::AlignTo a) { EmitViewNav(viewport, action::view::SetViewCameraTargetDirection{viewport.Id, a.Direction}); },
+                        [&](OrientationGizmo::RotateBy rot) { EmitViewNav(viewport, action::view::OrbitViewCamera{viewport.Entity, rot.Delta}); },
+                        [&](OrientationGizmo::AlignTo a) { EmitViewNav(viewport, action::view::SetViewCameraTargetDirection{viewport.Entity, a.Direction}); },
                     },
                     *interaction
                 );

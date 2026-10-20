@@ -4,7 +4,7 @@
 // - KHR_mesh_quantization attributes decode to FLOAT and save as FLOAT.
 // - EXT_meshopt_compression buffer views decode and save uncompressed.
 // - EXT_mesh_gpu_instancing retains TRS attributes only.
-// - EXT_lights_image_based retains one source IBL on the default scene.
+// - EXT_lights_image_based retains the default scene's source IBL images, which every scene's light shares.
 // - KHR_animation_pointer channels to properties outside the pointer rows are dropped.
 // Unsupported conversions:
 // - KHR_draco_mesh_compression does not provide geometry to the importer.
@@ -82,7 +82,7 @@ struct SaveOptions {
 };
 
 // Parses and validates the whole document before creating any entity or touching any store, so a failed load leaves the scene unchanged.
-// The first import into a document brings every scene, and a later import brings its default scene without scene entities or membership.
+// The default scene's roots join the frame's scene, and every other source scene becomes a scene of its own.
 std::expected<LoadResult, LoadError> LoadGltf(const std::filesystem::path &, state::Registry &);
 // Re-encodes dirty images through the Metal context when one is registered.
 std::expected<void, std::string> SaveGltf(const std::filesystem::path &, const state::Registry &, SaveOptions = {});
@@ -90,8 +90,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &, const s
 // Parses with import extensions, loads external buffers, and decodes meshopt buffer views.
 std::expected<fastgltf::Asset, LoadError> ParseGltfAsset(const std::filesystem::path &);
 
-// Activates `scene` when it names an inactive scene.
-void SwitchActiveScene(state::Registry &, state::Entity scene);
+// The scenes in source order, then the scenes without a source, with ties in entity index order.
+std::vector<state::Entity> OrderedScenes(const state::Registry &);
 
 // Extras keys use fastgltf::Category bits.
 // These name the categories the UI reads.

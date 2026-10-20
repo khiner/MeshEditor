@@ -13,6 +13,9 @@ using numeric::vec3;
 struct ElementRange;
 struct StartPivot;
 
+// The selected nodes in the frame's scene, in entity index order.
+std::vector<state::Entity> SelectedIn(const state::Registry &);
+
 bool IsBoneEditMode(const state::Registry &);
 bool CanDuplicate(const state::Registry &);
 bool CanDuplicateLinked(const state::Registry &);

@@ -29,9 +29,9 @@ ModeScope ScopeOf(const state::Registry &r) {
 }
 
 namespace {
-void ComputeRoots(const state::Registry &r, const ModeScope &scope, TransformRoots &out) {
+void ComputeRoots(const state::Registry &r, const ModeScope &scope, std::span<const state::Entity> selected_objects, TransformRoots &out) {
     // Views run in entity index order, so the candidates are searchable by index.
-    auto selected = scope.Bone ? r.view<const BoneSelection>() | std::ranges::to<std::vector>() : r.view<const Selected>() | std::ranges::to<std::vector>();
+    auto selected = scope.Bone ? r.view<const BoneSelection>() | std::ranges::to<std::vector>() : selected_objects | std::ranges::to<std::vector>();
     if (scope.BoneEdit) {
         out.Roots = std::move(selected);
         return;
@@ -82,13 +82,15 @@ SelectionSharpness Sharpness(bool any_smooth, bool any_sharp, bool mixed) {
     return any_sharp ? SelectionSharpness::Sharp : SelectionSharpness::None;
 }
 
-void ComputeFlags(const state::Registry &r, const ModeScope &scope, const EditPrimaries &primaries, SelectionFlags &out) {
+void ComputeFlags(const state::Registry &r, const ModeScope &scope, std::span<const state::Entity> selected, const EditPrimaries &primaries, SelectionFlags &out) {
     const auto &meshes = r.Resources.get<const MeshStore>();
     out.Meshes.clear();
-    out.AllMeshes = std::ranges::none_of(r.view<const Selected, const ObjectKind>().each(), [](const auto &entry) { return std::get<1>(entry).Value != ObjectType::Mesh; });
+    out.AllMeshes = std::ranges::none_of(selected, [&](state::Entity e) { const auto *kind = r.try_get<const ObjectKind>(e); return kind && kind->Value != ObjectType::Mesh; });
     out.AnyVisible = out.AnyHidden = false;
-    for (const auto [e, instance] : r.view<const Selected, const Instance>().each()) {
-        if (HasMesh(r, instance.Entity)) out.Meshes.push_back(instance.Entity);
+    for (const auto e : selected) {
+        const auto *instance = r.try_get<const Instance>(e);
+        if (!instance) continue;
+        if (HasMesh(r, instance->Entity)) out.Meshes.push_back(instance->Entity);
         if (r.all_of<SubElementOf>(e)) continue;
         if (r.all_of<Hidden>(e)) out.AnyHidden = true;
         else out.AnyVisible = true;
@@ -97,7 +99,7 @@ void ComputeFlags(const state::Registry &r, const ModeScope &scope, const EditPr
 
     const bool edit_locked = scope.Mode == InteractionMode::Edit && std::ranges::any_of(r.view<const Instance, const ScaleLocked>().each(), [&](const auto &entry) { return std::ranges::binary_search(out.Meshes, std::get<1>(entry).Entity); });
     out.Transformable = !edit_locked;
-    out.Scalable = !edit_locked && r.view<const Selected, const ScaleLocked>().empty();
+    out.Scalable = !edit_locked && std::ranges::none_of(selected, [&](state::Entity e) { return r.all_of<ScaleLocked>(e); });
 
     // A fully smooth mesh has no sharp faces, while partial sharpness is mixed.
     // Every live face marks its mesh's face root sharp or smooth, so a root with neither belongs to a mesh without faces.
@@ -128,17 +130,19 @@ void ComputeFlags(const state::Registry &r, const ModeScope &scope, const EditPr
 
     out.HasTransformTarget = [&] {
         if (scope.Bone) return !r.view<const BoneSelection>().empty();
-        if (r.view<const Selected>().empty()) return false;
+        if (selected.empty()) return false;
         if (!scope.MeshEdit) return true;
-        for (const auto [e, instance] : r.view<const Instance, const Selected>(state::Exclude<ScaleLocked>).each()) {
-            const auto *stats = GetElementSelectionSummary(r, instance.Entity, element);
+        for (const auto e : selected) {
+            const auto *instance = r.try_get<const Instance>(e);
+            if (!instance || r.all_of<ScaleLocked>(e)) continue;
+            const auto *stats = GetElementSelectionSummary(r, instance->Entity, element);
             if (stats && stats->SelectedCount > 0) return true;
         }
         return false;
     }();
 }
 
-void ComputeKeyframes(const state::Registry &r, SelectedKeyframes &out) {
+void ComputeKeyframes(const state::Registry &r, std::span<const state::Entity> selected, SelectedKeyframes &out) {
     const float fps = r.get<const TimelineRange>(state::Document).Fps;
     auto &frames = out.Frames;
     frames.clear();
@@ -154,7 +158,7 @@ void ComputeKeyframes(const state::Registry &r, SelectedKeyframes &out) {
     };
     const auto all = [](const AnimationChannel &) { return true; };
     if (!r.view<const AnimationClips>().empty()) {
-        for (const auto e : r.view<const Selected>()) {
+        for (const auto e : selected) {
             append(e, all);
             if (const auto *armature = r.try_get<const ArmatureObject>(e)) append(armature->Entity, all);
         }
@@ -167,26 +171,27 @@ void ComputeKeyframes(const state::Registry &r, SelectedKeyframes &out) {
     SortUnique(frames);
 }
 
-void ComputeSelectedAncestors(const state::Registry &r, OutlinerRows &out) {
+void ComputeSelectedAncestors(const state::Registry &r, std::span<const state::Entity> selected, OutlinerRows &out) {
     out.SelectedAncestors.clear();
     const auto mark = [&](state::Entity selected) {
         // A marked ancestor already marked its own ancestors.
         for (auto parent = ParentOrNull(r, selected); parent != state::Null && out.SelectedAncestors.insert(parent).second;) parent = ParentOrNull(r, parent);
     };
-    for (const auto e : r.view<const Selected>()) mark(e);
+    for (const auto e : selected) mark(e);
     for (const auto e : r.view<const BoneSelection>()) mark(e);
 }
 } // namespace
 
 EditPrimaries ComputeEditPrimaries(const state::Registry &r) {
     const auto active = FindActiveEntity(r);
+    const auto scene = FrameScene(r);
     const auto choose = [active](selection::PrimaryEditInstanceMap &primaries, state::Entity mesh, state::Entity instance) {
         auto &primary = primaries.try_emplace(mesh, instance).first->second;
         if (instance == active || (primary != active && instance < primary)) primary = instance;
     };
     EditPrimaries primaries;
     for (const auto [e, instance, kind, _] : r.view<const Instance, const Selected, const ObjectKind, const RenderInstance>(state::Exclude<Hidden>).each()) {
-        if (kind.Value != ObjectType::Mesh) continue;
+        if (kind.Value != ObjectType::Mesh || !InScene(r, e, scene)) continue;
         choose(primaries.All, instance.Entity, e);
         if (!r.all_of<ScaleLocked>(e)) choose(primaries.Transformable, instance.Entity, e);
     }
@@ -200,9 +205,10 @@ std::optional<uint32_t> OutlinerRows::Find(state::Entity e) const {
 }
 
 void BuildOutlinerRows(const state::Registry &r, OutlinerRows &out) {
+    const auto scene = out.Scene = FrameScene(r);
     out.Rows.clear();
     out.RowOf.assign(r.EntityCapacity(), UINT32_MAX);
-    const auto roots = SortedEntities(r.view<const Name>() | std::views::filter([&](state::Entity e) { return ParentOrNull(r, e) == state::Null; }));
+    const auto roots = SortedEntities(r.view<const Name>() | std::views::filter([&](state::Entity e) { return ParentOrNull(r, e) == state::Null && InScene(r, e, scene); }));
     // Depth-first, so each open row's subtree follows it with its children in sibling order.
     std::vector<std::pair<state::Entity, uint32_t>> pending;
     std::vector<state::Entity> children;
@@ -227,13 +233,21 @@ std::vector<state::Entity> UpdateSelectionState(state::Registry &r) {
     const auto &render_changes = r.Resources.get<const RenderChanges>();
     const auto &mesh_changes = r.Resources.get<const MeshChanges>();
     const auto &animation_changes = r.Resources.get<const AnimationChanges>();
-    const bool selection = AnyChanged(selection_changes.Selected, selection_changes.ActiveInstance, selection_changes.BoneSelection);
+    // A scene switch or a membership change moves nodes in or out of the aggregates' scene, and a destroyed node leaves every aggregate.
+    const auto scene = FrameScene(r);
+    const bool rescoped = r.get<const OutlinerRows>(state::Document).Scene != scene || AnyChanged(scene_changes.Membership, scene_changes.Destroyed);
+    const bool selection = rescoped || AnyChanged(selection_changes.Selected, selection_changes.ActiveInstance, selection_changes.BoneSelection);
     const bool interaction = AnyChanged(viewport_changes.InteractionMode);
     const bool parents = AnyChanged(scene_changes.Parent);
     const bool instances = AnyChanged(render_changes.InstanceVisibility, render_changes.InstanceCreated, render_changes.InstanceDestroyed, scene_changes.ScaleLocked);
     const auto scope = ScopeOf(r);
 
     const bool primaries_changed = selection || interaction || instances;
+    const bool roots_changed = selection || interaction || parents;
+    const bool flags_changed = primaries_changed || AnyChanged(viewport_changes.EditMode, mesh_changes.Geometry) || r.Resources.get<const GpuSceneState>().EditSelectionDirty;
+    const bool keyframes_changed = selection || AnyChanged(animation_changes.Edited, animation_changes.KeyframeSources, mesh_changes.Material, render_changes.ActiveMaterialVariant);
+    const bool ancestors_changed = selection || parents;
+    const auto selected = roots_changed || flags_changed || keyframes_changed || ancestors_changed ? SelectedIn(r) : std::vector<state::Entity>{};
     std::vector<state::Entity> changed_primaries;
     if (primaries_changed) {
         auto &primaries = r.edit<EditPrimaries>(state::Document);
@@ -247,23 +261,23 @@ std::vector<state::Entity> UpdateSelectionState(state::Registry &r) {
         primaries = std::move(next);
     }
 
-    const bool roots_changed = selection || interaction || parents;
-    if (roots_changed) ComputeRoots(r, scope, r.edit<TransformRoots>(state::Document));
+    if (roots_changed) ComputeRoots(r, scope, selected, r.edit<TransformRoots>(state::Document));
     // Preserve the initial pivot throughout the gesture.
     if (roots_changed || AnyChanged(viewport_changes.TransformEnd) ||
         (!r.all_of<StartPivot>(state::Document) && PivotMoved(r, scope, r.get<const TransformRoots>(state::Document)))) {
         ComputePivot(r, scope, r.edit<TransformRoots>(state::Document));
     }
 
-    if (primaries_changed || AnyChanged(viewport_changes.EditMode, mesh_changes.Geometry) || r.Resources.get<const GpuSceneState>().EditSelectionDirty) {
-        ComputeFlags(r, scope, r.get<const EditPrimaries>(state::Document), r.edit<SelectionFlags>(state::Document));
+    if (flags_changed) {
+        ComputeFlags(r, scope, selected, r.get<const EditPrimaries>(state::Document), r.edit<SelectionFlags>(state::Document));
     }
 
-    if (selection || AnyChanged(animation_changes.Edited, animation_changes.KeyframeSources, mesh_changes.Material, render_changes.ActiveMaterialVariant)) {
-        ComputeKeyframes(r, r.edit<SelectedKeyframes>(state::Document));
+    if (keyframes_changed) {
+        ComputeKeyframes(r, selected, r.edit<SelectedKeyframes>(state::Document));
     }
 
-    if (AnyChanged(scene_changes.Hierarchy, scene_changes.Names)) BuildOutlinerRows(r, r.edit<OutlinerRows>(state::Document));
-    if (selection || parents) ComputeSelectedAncestors(r, r.edit<OutlinerRows>(state::Document));
+    if (rescoped || AnyChanged(scene_changes.Hierarchy, scene_changes.Names)) BuildOutlinerRows(r, r.edit<OutlinerRows>(state::Document));
+    if (ancestors_changed) ComputeSelectedAncestors(r, selected, r.edit<OutlinerRows>(state::Document));
+    r.Resources.get<SceneChanges>().Destroyed.clear();
     return changed_primaries;
 }

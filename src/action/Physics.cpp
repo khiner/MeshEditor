@@ -22,7 +22,7 @@ void Apply(state::Registry &r, const Action &action) {
                     a.Target,
                     [&] { return FindActiveEntity(r); },
                     [&](auto &&fn) {
-                        for (const auto e : r.view<Selected>()) {
+                        for (const auto e : SelectedIn(r)) {
                             if (r.any_of<ColliderShape, PhysicsMotion>(e)) fn(e);
                         }
                     },

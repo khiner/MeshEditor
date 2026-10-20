@@ -10,6 +10,7 @@
 #include "action/Nodes.h"
 #include "action/Object.h"
 #include "action/Physics.h"
+#include "action/Scene.h"
 #include "action/Selection.h"
 #include "action/Timeline.h"
 #include "action/View.h"
@@ -18,7 +19,7 @@ namespace action {
 using Action = std::variant<
     Core,
     selection::Action, object::Action, view::Action,
-    physics::Action, audio::Action, bone::Action, timeline::Action, io::Action, animation::Action, mesh::Action, nodes::Action>;
+    physics::Action, audio::Action, bone::Action, timeline::Action, io::Action, animation::Action, mesh::Action, nodes::Action, scene::Action>;
 
 static_assert(sizeof(Action) <= 64, "Keep actions at or below 64 bytes");
 
@@ -47,11 +48,13 @@ template<typename T> inline constexpr bool Recordable = true;
 template<> inline constexpr bool Recordable<io::SaveGltf> = false;
 // Latch state is live-only: the recorded TransformSelection already encodes the resolved transform.
 template<> inline constexpr bool Recordable<view::LatchTransform> = false;
-// An action naming a viewport changes it, and a viewport belongs to the workspace.
+// An action naming a viewport changes its view values, which belong to the workspace.
 template<typename T>
-    requires requires(const T &a) { a.ViewportId; }
+    requires requires(const T &a) { a.Viewport; }
 inline constexpr bool Recordable<T> = false;
-template<> inline constexpr bool Recordable<view::AddViewport> = false;
+// A viewport's existence and scene belong to the document.
+template<> inline constexpr bool Recordable<view::SetViewportScene> = true;
+template<> inline constexpr bool Recordable<view::RemoveViewport> = true;
 // A presentation sets up the active viewport's view and doesn't change document state.
 template<> inline constexpr bool Recordable<timeline::EnterPresentation> = false;
 
