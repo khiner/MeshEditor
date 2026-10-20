@@ -4,7 +4,7 @@
 
 #include <memory>
 
-struct WindowsState;
+struct PanelsState;
 struct ValidationSession;
 struct FrameState;
 struct StartTransform;
@@ -28,7 +28,7 @@ struct PendingTransform;
 struct StartScreenTransform;
 struct TransformGizmoState;
 
-using ViewportSchema = state::Schema<state::ViewportBase, state::ViewportCount, WindowsState, std::unique_ptr<ValidationSession>, FrameState, StartTransform, StartBoneLength, Interaction, EditMode, EnabledInteractionModes, ShadeSmoothAngle, ViewportChanges, ViewportConsumerFence, Viewports, AnisotropicFilter, MeshGeometryDirty, MeshPositionsChanged, PendingSetEditMode, PendingImportMesh, PendingViewSetup, ViewportIcons, StartPivot, PendingTransform, StartScreenTransform, TransformGizmoState>;
+using ViewportSchema = state::Schema<state::ViewportBase, state::ViewportCount, PanelsState, std::unique_ptr<ValidationSession>, FrameState, StartTransform, StartBoneLength, Interaction, EditMode, EnabledInteractionModes, ShadeSmoothAngle, ViewportChanges, ViewportConsumerFence, Viewports, AnisotropicFilter, MeshGeometryDirty, MeshPositionsChanged, PendingSetEditMode, PendingImportMesh, PendingViewSetup, ViewportIcons, StartPivot, PendingTransform, StartScreenTransform, TransformGizmoState>;
 template<typename T>
     requires ViewportSchema::Has<T>
 inline constexpr state::TypeId state::Slot<T> = ViewportSchema::Of<T>();

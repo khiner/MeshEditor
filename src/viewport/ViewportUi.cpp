@@ -2,7 +2,7 @@
 
 #include "Camera.h"
 #include "Profile.h"
-#include "Window.h"
+#include "Panel.h"
 #include "audio/SoundVertices.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gizmo/TransformGizmo.h"
@@ -373,7 +373,7 @@ void Interact(state::Registry &r, FrameState &frame) {
     // Route shortcuts globally while preserving ImGui ownership for active widgets, navigation, and text input.
     constexpr auto VKey = ImGuiInputFlags_RouteGlobal;
     // The hovered node canvas takes the editing shortcuts instead.
-    const bool nodes_hovered = r.Resources.get<const WindowsState>().Nodes.Hovered;
+    const bool nodes_hovered = r.Resources.get<const PanelsState>().Nodes.Hovered;
     const auto key = [&](ImGuiKeyChord chord, ImGuiInputFlags route = VKey) { return !nodes_hovered && Shortcut(chord, route); };
     const auto ctrl_key = [&](ImGuiKeyChord chord, ImGuiInputFlags route = VKey) { return !nodes_hovered && CtrlShortcut(chord, route); };
     if (r.get<const GizmoInteraction>(state::Document).IsUsing()) {

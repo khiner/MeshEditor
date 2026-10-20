@@ -8,7 +8,7 @@
 #include "Paths.h"
 #include "ProcessEvents.h"
 #include "Profile.h"
-#include "Window.h"
+#include "Panel.h"
 #include "action/Errors.h"
 #include "animation/AnimationData.h"
 #include "audio/AudioStores.h"
@@ -372,7 +372,7 @@ void InitEngine(state::Registry &r) {
     r.Resources.emplace<GpuSceneState>();
     r.Resources.emplace<FrameState>();
     r.Resources.emplace<ViewportRenderResources>();
-    r.Resources.emplace<WindowsState>();
+    r.Resources.emplace<PanelsState>();
 
     auto &environments = r.Resources.get<EnvironmentStore>();
     auto &textures = r.Resources.get<TextureStore>();

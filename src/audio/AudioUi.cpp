@@ -509,8 +509,8 @@ void DrawModalJobsOverlay(state::Registry &r) {
     const auto anchor = GetWindowPos() + ImVec2{Pad, GetWindowSize().y - Pad};
     SetNextWindowPos(anchor, ImGuiCond_Always, {0.f, 1.f});
     SetNextWindowBgAlpha(0.85f);
-    // The viewport window zeroes its window padding, so restore normal padding for the overlay.
-    // Vertical padding matches the item spacing, so each row sits evenly between the window edges and its bar.
+    // The viewport panel zeroes its window padding, so restore normal padding for the overlay.
+    // Vertical padding matches the item spacing, so each row sits evenly between the panel edges and its bar.
     PushStyleVar(ImGuiStyleVar_WindowPadding, {10.f, 6.f});
     PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
     PushStyleVar(ImGuiStyleVar_ItemSpacing, {GetStyle().ItemSpacing.x, 6.f});
@@ -519,7 +519,7 @@ void DrawModalJobsOverlay(state::Registry &r) {
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
         ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoMove;
     if (Begin("Modal solve jobs", nullptr, OverlayFlags)) {
-        // Keep the overlay above the focused viewport window.
+        // Keep the overlay above the focused viewport panel.
         BringWindowToDisplayFront(GetCurrentWindow());
         for (const auto &job : jobs) {
             const auto &monitor = *job->Work.Monitor;

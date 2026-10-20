@@ -53,7 +53,7 @@ inline constexpr TypeId SceneCount = 19; // scene and the root camera and path t
 inline constexpr TypeId SelectionCount = 15; // selection
 inline constexpr TypeId TimelineCount = 7; // timeline
 inline constexpr TypeId UiCount = 1; // ui
-inline constexpr TypeId ViewportCount = 23; // viewport and the root event, window and main types
+inline constexpr TypeId ViewportCount = 23; // viewport and the root event, panel and main types
 
 inline constexpr TypeId ActionBase = 0;
 inline constexpr TypeId AnimationBase = ActionBase + ActionCount;

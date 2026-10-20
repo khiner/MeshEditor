@@ -267,7 +267,7 @@ fs::path CachedWorkspacePath;
 std::vector<std::byte> CachedWorkspaceBytes;
 
 workspace::State CaptureWorkspace(state::Registry &r) {
-    return workspace::Capture(r, r.Resources.get<const WindowsState>());
+    return workspace::Capture(r, r.Resources.get<const PanelsState>());
 }
 
 bool SaveWorkspace(state::Registry &r, bool force = true) {
@@ -333,7 +333,7 @@ bool OpenProjectDir(state::Registry &r, const fs::path &working_dir, const fs::p
     }
     ++RestoreGeneration;
     const auto stored = saved.empty() ? workspace::Load(working_dir / workspace::FileName) : workspace::Deserialize(session.RestoredWorkspace);
-    if (stored) workspace::Apply(r, r.Resources.get<WindowsState>(), *stored);
+    if (stored) workspace::Apply(r, r.Resources.get<PanelsState>(), *stored);
     else ResetViewStates(r);
     return true;
 }
@@ -391,32 +391,32 @@ void SaveProject(state::Registry &r) {
 
 void RevertSavedProject(state::Registry &r) {
     if (!Session(r).RevertSaved()) return;
-    if (const auto stored = workspace::Deserialize(Session(r).RestoredWorkspace)) workspace::Apply(r, r.Resources.get<WindowsState>(), *stored);
+    if (const auto stored = workspace::Deserialize(Session(r).RestoredWorkspace)) workspace::Apply(r, r.Resources.get<PanelsState>(), *stored);
     ++RestoreGeneration;
 }
 
-void BuildDefaultDockLayout(const WindowsState &windows, ImGuiID dockspace_id) {
+void BuildDefaultDockLayout(const PanelsState &panels, ImGuiID dockspace_id) {
     auto controls_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.3f, nullptr, &dockspace_id);
     const auto extra_node_id = DockBuilderSplitNode(controls_node_id, ImGuiDir_Down, 0.4f, nullptr, &controls_node_id);
     auto timeline_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Down, 0.1f, nullptr, &dockspace_id);
     const auto info_node_id = DockBuilderSplitNode(timeline_node_id, ImGuiDir_Right, 0.25f, nullptr, &timeline_node_id);
-    DockBuilderDockWindow(windows.History.Name, extra_node_id);
-    DockBuilderDockWindow(windows.Style.Name, extra_node_id);
-    DockBuilderDockWindow(windows.Debug.Name, extra_node_id);
-    DockBuilderDockWindow(windows.ImGuiDemo.Name, extra_node_id);
-    DockBuilderDockWindow(windows.ImSpinnerDemo.Name, extra_node_id);
-    DockBuilderDockWindow(windows.ImPlotDemo.Name, extra_node_id);
-    DockBuilderDockWindow(windows.SceneControls.Name, controls_node_id);
-    DockBuilderDockWindow(windows.Timeline.Name, timeline_node_id);
-    DockBuilderDockWindow(windows.Nodes.Name, timeline_node_id);
-    DockBuilderDockWindow(windows.Info.Name, info_node_id);
-    DockBuilderGetNode(extra_node_id)->SelectedTabId = ImHashStr(windows.History.Name);
-    DockBuilderGetNode(timeline_node_id)->SelectedTabId = ImHashStr(windows.Timeline.Name);
+    DockBuilderDockWindow(panels.History.Name, extra_node_id);
+    DockBuilderDockWindow(panels.Style.Name, extra_node_id);
+    DockBuilderDockWindow(panels.Debug.Name, extra_node_id);
+    DockBuilderDockWindow(panels.ImGuiDemo.Name, extra_node_id);
+    DockBuilderDockWindow(panels.ImSpinnerDemo.Name, extra_node_id);
+    DockBuilderDockWindow(panels.ImPlotDemo.Name, extra_node_id);
+    DockBuilderDockWindow(panels.SceneControls.Name, controls_node_id);
+    DockBuilderDockWindow(panels.Timeline.Name, timeline_node_id);
+    DockBuilderDockWindow(panels.Nodes.Name, timeline_node_id);
+    DockBuilderDockWindow(panels.Info.Name, info_node_id);
+    DockBuilderGetNode(extra_node_id)->SelectedTabId = ImHashStr(panels.History.Name);
+    DockBuilderGetNode(timeline_node_id)->SelectedTabId = ImHashStr(panels.Timeline.Name);
 }
 
-void RenderDebugWindow(state::Registry &r, const mtl::Context &ctx, CA::MetalLayer *layer, WindowsState &windows, const ImGuiIO &io) {
-    if (!windows.Debug.Visible) return;
-    if (Begin(windows.Debug.Name, &windows.Debug.Visible)) {
+void RenderDebugPanel(state::Registry &r, const mtl::Context &ctx, CA::MetalLayer *layer, PanelsState &panels, const ImGuiIO &io) {
+    if (!panels.Debug.Visible) return;
+    if (Begin(panels.Debug.Name, &panels.Debug.Visible)) {
         if (BeginTabBar("Debug")) {
             if (BeginTabItem("ImGui")) {
                 Text("Dear ImGui %s (%d)", IMGUI_VERSION, IMGUI_VERSION_NUM);
@@ -425,7 +425,7 @@ void RenderDebugWindow(state::Registry &r, const mtl::Context &ctx, CA::MetalLay
                 const auto &g = *GImGui;
                 Text("%d visible windows, %d current allocations", io.MetricsRenderWindows, g.DebugAllocInfo.TotalAllocCount - g.DebugAllocInfo.TotalFreeCount);
                 Separator();
-                Text("See [Windows->%s] for more details.", windows.ImGuiDemo.Name);
+                Text("See [Panels->%s] for more details.", panels.ImGuiDemo.Name);
                 EndTabItem();
             }
             if (BeginTabItem("Metal")) {
@@ -460,9 +460,9 @@ void RenderDebugWindow(state::Registry &r, const mtl::Context &ctx, CA::MetalLay
     End();
 }
 
-void DrawStyleWindow(state::Registry &r, Window &window) {
-    if (!window.Visible) return;
-    if (Begin(window.Name, &window.Visible) && BeginTabBar("Style")) {
+void DrawStylePanel(state::Registry &r, Panel &panel) {
+    if (!panel.Visible) return;
+    if (Begin(panel.Name, &panel.Visible) && BeginTabBar("Style")) {
         if (BeginTabItem("Viewport")) {
             DrawViewportStyle(r);
             EndTabItem();
@@ -502,10 +502,10 @@ void DrawFieldTypeLine(const char *type, const FieldSpec *spec) {
     Text("Type: %s | Range: %c%s, %s%c", type, spec->HasMin() ? '[' : '(', lo, hi, spec->HasMax() ? ']' : ')');
 }
 
-void DrawInfoWindow(state::Registry &r, Window &window) {
+void DrawInfoPanel(state::Registry &r, Panel &panel) {
     const auto info = std::exchange(ui::Hovered, {});
-    if (!window.Visible) return;
-    if (Begin(window.Name, &window.Visible)) {
+    if (!panel.Visible) return;
+    if (Begin(panel.Name, &panel.Visible)) {
         if (!info.Label) {
             TextDisabled("Hover a field for its description.");
         } else {
@@ -523,12 +523,12 @@ void DrawInfoWindow(state::Registry &r, Window &window) {
     End();
 }
 
-// The viewport's window title, with the Id as its ImGui ID so a title change keeps the window.
-std::string ViewportWindowName(uint32_t id) {
+// The viewport's panel title, with the Id as its ImGui ID so a title change keeps the panel.
+std::string ViewportPanelName(uint32_t id) {
     return id == 1 ? std::string{"Viewport###Viewport1"} : std::format("Viewport {0}###Viewport{0}", id);
 }
 
-// The viewport window under the mouse becomes the active viewport while no gesture, button, or popup holds the input.
+// The viewport panel under the mouse becomes the active viewport while no gesture, button, or popup holds the input.
 void FollowHoveredViewport(state::Registry &r) {
     const auto &frame = r.Resources.get<const FrameState>();
     if (frame.MeshDrag || frame.BoxSelectStart || r.get<const GizmoInteraction>(state::Document).IsUsing()) return;
@@ -540,43 +540,43 @@ void FollowHoveredViewport(state::Registry &r) {
     const auto *hovered = GImGui->HoveredWindow;
     if (!hovered) return;
     auto &viewports = r.Resources.get<Viewports>();
-    const auto it = std::ranges::find(viewports.All, hovered->RootWindow->ID, [](const Viewport &v) { return ImHashStr(ViewportWindowName(v.Id).c_str()); });
+    const auto it = std::ranges::find(viewports.All, hovered->RootWindow->ID, [](const Viewport &v) { return ImHashStr(ViewportPanelName(v.Id).c_str()); });
     if (it != viewports.All.end()) viewports.ActiveIndex = size_t(it - viewports.All.begin());
 }
 
-// A viewport window open this frame, with its content size.
-struct ViewportWindow {
+// A viewport panel open this frame, with its content size.
+struct ViewportPanel {
     uint32_t Id;
     uvec2 Extent;
 };
 
-struct EditorWindowsFrame {
-    std::vector<ViewportWindow> Viewports; // In resource order.
+struct EditorPanelsFrame {
+    std::vector<ViewportPanel> Viewports; // In resource order.
 };
 
-EditorWindowsFrame BeginEditorWindows(
+EditorPanelsFrame BeginEditorPanels(
     state::Registry &r, const mtl::Context &ctx, CA::MetalLayer *layer,
-    WindowsState &windows, const ImGuiIO &io, ImGuiID dockspace_id, bool interactive
+    PanelsState &panels, const ImGuiIO &io, ImGuiID dockspace_id, bool interactive
 ) {
-    RenderDebugWindow(r, ctx, layer, windows, io);
-    if (project::DrawHistoryWindow(Session(r), windows.History, interactive) && SaveWorkspace(r)) Session(r).ClearHistory();
-    DrawStyleWindow(r, windows.Style);
-    DrawInfoWindow(r, windows.Info);
-    if (windows.ImGuiDemo.Visible) ShowDemoWindow(&windows.ImGuiDemo.Visible);
-    if (windows.ImSpinnerDemo.Visible) {
-        if (Begin(windows.ImSpinnerDemo.Name, &windows.ImSpinnerDemo.Visible)) ImSpinner::demoSpinners();
+    RenderDebugPanel(r, ctx, layer, panels, io);
+    if (project::DrawHistoryPanel(Session(r), panels.History, interactive) && SaveWorkspace(r)) Session(r).ClearHistory();
+    DrawStylePanel(r, panels.Style);
+    DrawInfoPanel(r, panels.Info);
+    if (panels.ImGuiDemo.Visible) ShowDemoWindow(&panels.ImGuiDemo.Visible);
+    if (panels.ImSpinnerDemo.Visible) {
+        if (Begin(panels.ImSpinnerDemo.Name, &panels.ImSpinnerDemo.Visible)) ImSpinner::demoSpinners();
         End();
     }
-    if (windows.ImPlotDemo.Visible) ImPlot::ShowDemoWindow(&windows.ImPlotDemo.Visible);
-    if (windows.SceneControls.Visible) {
-        if (Begin(windows.SceneControls.Name, &windows.SceneControls.Visible)) RenderControls(r);
+    if (panels.ImPlotDemo.Visible) ImPlot::ShowDemoWindow(&panels.ImPlotDemo.Visible);
+    if (panels.SceneControls.Visible) {
+        if (Begin(panels.SceneControls.Name, &panels.SceneControls.Visible)) RenderControls(r);
         End();
     }
 
     bool scrubbing = false;
-    if (windows.Timeline.Visible) {
+    if (panels.Timeline.Visible) {
         PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
-        if (Begin(windows.Timeline.Name, &windows.Timeline.Visible, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+        if (Begin(panels.Timeline.Name, &panels.Timeline.Visible, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
             PushStyleVar(ImGuiStyleVar_FramePadding, {6, 4});
             Indent(6);
             Spacing();
@@ -595,7 +595,7 @@ EditorWindowsFrame BeginEditorWindows(
         End();
         PopStyleVar();
     }
-    procedure::DrawNodesWindow(r, windows.Nodes, interactive);
+    procedure::DrawNodesPanel(r, panels.Nodes, interactive);
     if (interactive) r.Resources.get<FrameState>().Scrubbing = scrubbing;
 
     if (interactive) FollowHoveredViewport(r);
@@ -603,15 +603,15 @@ EditorWindowsFrame BeginEditorWindows(
     auto &viewports = r.Resources.get<Viewports>();
     const auto &active = viewports.Active();
     const bool closable = viewports.All.size() > 1;
-    EditorWindowsFrame frame;
+    EditorPanelsFrame frame;
     for (auto &viewport : viewports.All) {
-        // A window in an unselected dock tab draws nothing, so its viewport does no work this frame.
+        // A panel in an unselected dock tab draws nothing, so its viewport does no work this frame.
         viewport.Shown = false;
         if (!viewport.Visible) continue;
-        const auto name = ViewportWindowName(viewport.Id);
-        // A window ImGui has never seen opens as a tab beside the active viewport's window, or in the central dock node before that window exists.
+        const auto name = ViewportPanelName(viewport.Id);
+        // A panel ImGui has never seen opens as a tab beside the active viewport's panel, or in the central dock node before that panel exists.
         if (const auto id = ImHashStr(name.c_str()); !FindWindowByID(id) && !FindWindowSettingsByID(id)) {
-            const auto *beside = viewport.Id == active.Id ? nullptr : FindWindowByName(ViewportWindowName(active.Id).c_str());
+            const auto *beside = viewport.Id == active.Id ? nullptr : FindWindowByName(ViewportPanelName(active.Id).c_str());
             const auto *central = DockBuilderGetCentralNode(dockspace_id);
             SetNextWindowDockID(beside ? beside->DockId : central ? central->ID :
                                                                     0);
@@ -636,13 +636,13 @@ EditorWindowsFrame BeginEditorWindows(
     return frame;
 }
 
-// Inserts each open viewport window's image beneath the overlay its window drew, after the frame's renders are submitted.
-void DisplayViewportWindows(state::Registry &r, const EditorWindowsFrame &frame) {
+// Inserts each open viewport panel's image beneath the overlay its panel drew, after the frame's renders are submitted.
+void DisplayViewportPanels(state::Registry &r, const EditorPanelsFrame &frame) {
     auto &viewports = r.Resources.get<Viewports>();
-    for (const auto &window : frame.Viewports) {
-        const auto *viewport = viewports.Find(window.Id);
+    for (const auto &panel : frame.Viewports) {
+        const auto *viewport = viewports.Find(panel.Id);
         if (!viewport) continue;
-        Begin(ViewportWindowName(window.Id).c_str());
+        Begin(ViewportPanelName(panel.Id).c_str());
         DisplayViewport(r, *viewport);
         GetWindowDrawList()->ChannelsMerge();
         End();
@@ -795,7 +795,7 @@ ImDrawData *RenderValidationApp(
 ) {
     const auto &ctx = r.Resources.get<const mtl::Context>();
     auto &io = GetIO();
-    auto &windows = r.Resources.get<WindowsState>();
+    auto &panels = r.Resources.get<PanelsState>();
     io.MousePos = {-FLT_MAX, -FLT_MAX};
     const auto render_frame = [&](bool restore_hover = false) {
         io.DisplaySize = inputs.DisplaySize;
@@ -812,23 +812,23 @@ ImDrawData *RenderValidationApp(
         }
 
         const auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
-        if (!windows.LayoutLoaded) {
-            BuildDefaultDockLayout(windows, dockspace_id);
-            windows.LayoutLoaded = true;
+        if (!panels.LayoutLoaded) {
+            BuildDefaultDockLayout(panels, dockspace_id);
+            panels.LayoutLoaded = true;
         }
         if (BeginMainMenuBar()) {
             if (BeginMenu("File")) EndMenu();
             if (BeginMenu("Edit")) EndMenu();
-            if (BeginMenu("Windows")) EndMenu();
+            if (BeginMenu("Panels")) EndMenu();
             EndMainMenuBar();
         }
-        DisplayViewportWindows(r, BeginEditorWindows(r, ctx, inputs.Layer, windows, io, dockspace_id, /*interactive=*/false));
+        DisplayViewportPanels(r, BeginEditorPanels(r, ctx, inputs.Layer, panels, io, dockspace_id, /*interactive=*/false));
         Render();
-        workspace::ApplyPending(windows);
+        workspace::ApplyPending(panels);
     };
 
-    render_frame(); // Instantiate the windows referenced by the restored dock layout.
-    render_frame(); // Bind those windows to their dock nodes.
+    render_frame(); // Instantiate the panels referenced by the restored dock layout.
+    render_frame(); // Bind those panels to their dock nodes.
     render_frame(); // Settle docked child sizes and scrollbars.
     // Restore focus last so dock binding and the menu bar cannot move it again.
     SetWindowFocus(inputs.FocusedWindow.empty() ? nullptr : inputs.FocusedWindow.c_str());
@@ -855,7 +855,7 @@ ValidationResult RestoreForValidation(
     auto &timings = result.Timings;
     auto begin = SteadyClock::now();
     engine.Ui.emplace(ctx);
-    restored.Resources.get<WindowsState>() = {};
+    restored.Resources.get<PanelsState>() = {};
     auto &frame = restored.Resources.get<FrameState>();
     frame = {.DisplayFramebufferScale = std::bit_cast<vec2>(inputs.FramebufferScale), .Scrubbing = inputs.Scrubbing, .Capturing = inputs.Capturing};
     restored.Resources.get<Viewports>().All.front().State.Extent = inputs.Extent;
@@ -875,7 +875,7 @@ ValidationResult RestoreForValidation(
         std::abort();
     }
     timings.RestoreMs = ElapsedMs(begin);
-    workspace::Apply(restored, restored.Resources.get<WindowsState>(), inputs.Workspace);
+    workspace::Apply(restored, restored.Resources.get<PanelsState>(), inputs.Workspace);
     begin = SteadyClock::now();
     restored.replace<TimelinePlayback>(state::Document, inputs.Playback);
     restored.edit<PlaybackFrame>(state::Document).Value = inputs.PlaybackFrame;
@@ -1508,7 +1508,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
     bool done{driver.SeedStatus != SceneStatus::Ok};
     uint8_t startup_frames_remaining{2};
     NS::SharedPtr<MTL::CommandBuffer> last_frame; // Retain across frame autorelease pools for resize waits.
-    auto &windows = r.Resources.get<WindowsState>();
+    auto &panels = r.Resources.get<PanelsState>();
     int bench_ticks{0};
     while (!done) {
         const auto frame_pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
@@ -1542,9 +1542,9 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
         NewFrame();
 
         const auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
-        if (!windows.LayoutLoaded) {
-            BuildDefaultDockLayout(windows, dockspace_id);
-            windows.LayoutLoaded = true;
+        if (!panels.LayoutLoaded) {
+            BuildDefaultDockLayout(panels, dockspace_id);
+            panels.LayoutLoaded = true;
         }
 
         if (BeginMainMenuBar()) {
@@ -1662,19 +1662,19 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
                 if (MenuItem("Redo", "Cmd+Shift+Z", false, redo_target.has_value())) Session(r).RequestNavigate(*redo_target);
                 EndMenu();
             }
-            if (BeginMenu("Windows")) {
-                MenuItem(windows.History.Name, nullptr, &windows.History.Visible);
-                MenuItem(windows.Nodes.Name, nullptr, &windows.Nodes.Visible);
-                MenuItem(windows.Info.Name, nullptr, &windows.Info.Visible);
-                MenuItem(windows.Style.Name, nullptr, &windows.Style.Visible);
-                MenuItem(windows.Debug.Name, nullptr, &windows.Debug.Visible);
-                MenuItem(windows.ImGuiDemo.Name, nullptr, &windows.ImGuiDemo.Visible);
-                MenuItem(windows.ImSpinnerDemo.Name, nullptr, &windows.ImSpinnerDemo.Visible);
-                MenuItem(windows.ImPlotDemo.Name, nullptr, &windows.ImPlotDemo.Visible);
-                MenuItem(windows.SceneControls.Name, nullptr, &windows.SceneControls.Visible);
-                MenuItem(windows.Timeline.Name, nullptr, &windows.Timeline.Visible);
+            if (BeginMenu("Panels")) {
+                MenuItem(panels.History.Name, nullptr, &panels.History.Visible);
+                MenuItem(panels.Nodes.Name, nullptr, &panels.Nodes.Visible);
+                MenuItem(panels.Info.Name, nullptr, &panels.Info.Visible);
+                MenuItem(panels.Style.Name, nullptr, &panels.Style.Visible);
+                MenuItem(panels.Debug.Name, nullptr, &panels.Debug.Visible);
+                MenuItem(panels.ImGuiDemo.Name, nullptr, &panels.ImGuiDemo.Visible);
+                MenuItem(panels.ImSpinnerDemo.Name, nullptr, &panels.ImSpinnerDemo.Visible);
+                MenuItem(panels.ImPlotDemo.Name, nullptr, &panels.ImPlotDemo.Visible);
+                MenuItem(panels.SceneControls.Name, nullptr, &panels.SceneControls.Visible);
+                MenuItem(panels.Timeline.Name, nullptr, &panels.Timeline.Visible);
                 Separator();
-                for (auto &viewport : r.Resources.get<Viewports>().All) MenuItem(ViewportWindowName(viewport.Id).c_str(), nullptr, &viewport.Visible);
+                for (auto &viewport : r.Resources.get<Viewports>().All) MenuItem(ViewportPanelName(viewport.Id).c_str(), nullptr, &viewport.Visible);
                 if (MenuItem("New Viewport")) action::Emit(action::view::AddViewport{});
                 EndMenu();
             }
@@ -1688,13 +1688,13 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
         }
         if (auto action = HandleTimelineShortcuts(r.get<const TimelinePlayback>(state::Document))) std::visit([](auto leaf) { action::Emit(leaf); }, std::move(*action));
 
-        const auto editor_frame = BeginEditorWindows(r, ctx, layer, windows, io, dockspace_id, /*interactive=*/true);
-        // Resolve the viewports after the editor windows, since opening a project applies its workspace.
+        const auto editor_frame = BeginEditorPanels(r, ctx, layer, panels, io, dockspace_id, /*interactive=*/true);
+        // Resolve the viewports after the editor panels, since opening a project applies its workspace.
         // Capture and benchmarks drive the first viewport.
         auto &viewports = r.Resources.get<Viewports>();
         auto &first_viewport = viewports.All.front();
-        const auto first_window = std::ranges::find(editor_frame.Viewports, first_viewport.Id, &ViewportWindow::Id);
-        const auto new_logical_extent = first_window != editor_frame.Viewports.end() ? first_window->Extent : uvec2{};
+        const auto first_panel = std::ranges::find(editor_frame.Viewports, first_viewport.Id, &ViewportPanel::Id);
+        const auto new_logical_extent = first_panel != editor_frame.Viewports.end() ? first_panel->Extent : uvec2{};
         const bool viewport_settled = new_logical_extent != uvec2{} && new_logical_extent == first_viewport.State.Extent;
         if (capture.BenchFrames > 0 && viewport_settled) {
             if (capture.BenchAction == CaptureRequest::BenchmarkAction::Orbit) action::Emit(action::view::OrbitViewCamera{first_viewport.Id, {0.01f, 0.f}});
@@ -1703,8 +1703,8 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
         // Give interaction actions priority in the single-action buffer.
         driver.EmitFrameActions(r, first_viewport, viewport_settled, new_logical_extent);
         // The viewport extent is a frame input that each recorded action carries for replay.
-        for (const auto &window : editor_frame.Viewports) {
-            if (window.Extent != uvec2{}) viewports.Find(window.Id)->State.Extent = window.Extent;
+        for (const auto &panel : editor_frame.Viewports) {
+            if (panel.Extent != uvec2{}) viewports.Find(panel.Id)->State.Extent = panel.Extent;
         }
 
         // Actions can add and remove viewports, which ends every viewport reference taken above.
@@ -1715,10 +1715,10 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
         // A viewport resized in its frame step waits for the previous UI frame to stop sampling its image.
         SubmitViewports(r);
         r.Resources.get<ViewportConsumerFence>().Value = nullptr;
-        DisplayViewportWindows(r, editor_frame);
+        DisplayViewportPanels(r, editor_frame);
 
         ImGui::Render();
-        workspace::ApplyPending(windows);
+        workspace::ApplyPending(panels);
         mac_backend.HonorMouseWarp();
         auto *draw_data = GetDrawData();
         const bool ui_gesture_settled = UiGestureSettled(ui_focus);
@@ -1729,9 +1729,9 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
 #ifdef DEBUG_BUILD
             const auto scene_revision = std::pair{Session(r).Revision, RestoreGeneration};
 #ifdef VALIDATE_ACTIONS
-            const bool validate = windows.History.ValidateRequested || scene_revision != validated_revision;
+            const bool validate = panels.History.ValidateRequested || scene_revision != validated_revision;
 #else
-            const bool validate = windows.History.ValidateRequested;
+            const bool validate = panels.History.ValidateRequested;
 #endif
             // Scrollbars use the preceding UI frame's content size, so both frames must reflect the scene.
             const bool ui_matches_scene = ui_revision == scene_revision && previous_ui_revision == scene_revision;
@@ -1759,7 +1759,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
 #ifdef DEBUG_BUILD
             if (validation_ready && presented_frame && GetFrameCount() > 1 && viewport_settled && ViewportImageReady(r.Resources.get<const Viewports>().All.front())) {
                 ValidateRoundTrip(r, layer, draw_data, validation_session, presented_frame);
-                windows.History.ValidateRequested = false;
+                panels.History.ValidateRequested = false;
 #ifdef VALIDATE_ACTIONS
                 validated_revision = scene_revision;
 #endif

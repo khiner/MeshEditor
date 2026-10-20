@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Window.h"
+#include "Panel.h"
 #include "audio/AudioTypes.h"
 #include "viewport/Viewport.h"
 
@@ -21,18 +21,18 @@ struct ViewportEntry {
 struct State {
     std::vector<ViewportEntry> Viewports; // In resource order.
     AudioOutputConfig AudioOutput;
-    WindowVisibility Windows;
+    PanelVisibility Panels;
     NodeCanvas NodesCanvas;
     std::string ImGuiIni;
     std::vector<TabSelection> Tabs;
-    std::vector<WindowState> WindowStates;
+    std::vector<PanelState> PanelStates;
 };
 
-State Capture(const state::Registry &, const WindowsState &);
+State Capture(const state::Registry &, const PanelsState &);
 // Updates the viewports matching a stored Id in place, creates the rest, and removes the ones the state omits, keeping at least one.
-void Apply(state::Registry &, WindowsState &, const State &);
+void Apply(state::Registry &, PanelsState &, const State &);
 // Apply pending layout and widget state after ImGui::Render().
-void ApplyPending(WindowsState &);
+void ApplyPending(PanelsState &);
 
 std::vector<std::byte> Serialize(const State &);
 std::optional<State> Deserialize(std::span<const std::byte>);

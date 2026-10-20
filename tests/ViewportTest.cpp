@@ -122,7 +122,7 @@ void TestWorkspaceViewports() {
     second.State.RenderLighting.Value.ExposureEV = 2.f;
     second.State.Orbit.Value = true;
     second.State.Extent = {32, 48};
-    const auto bytes = workspace::Serialize(workspace::Capture(f.R, f.R.Resources.get<const WindowsState>()));
+    const auto bytes = workspace::Serialize(workspace::Capture(f.R, f.R.Resources.get<const PanelsState>()));
     const auto &saved = f.Viewports().All;
 
     Fixture restored{restored_dir};
@@ -134,7 +134,7 @@ void TestWorkspaceViewports() {
     const auto stored = workspace::Deserialize(bytes);
     expect(stored.has_value());
     if (!stored) return;
-    workspace::Apply(restored.R, restored.R.Resources.get<WindowsState>(), *stored);
+    workspace::Apply(restored.R, restored.R.Resources.get<PanelsState>(), *stored);
     const auto &viewports = restored.Viewports().All;
     expect(Ids(restored.Viewports()) == std::vector{1u, 2u});
     if (viewports.size() != 2u) return;

@@ -70,8 +70,8 @@ struct Viewport {
     Viewport(uint32_t id, mtl::BufferContext &, mtl::BindlessSet &);
 
     uint32_t Id; // Stable within a workspace.
-    bool Visible{true}; // The window is open.
-    // The window drew the viewport this frame, which the UI writes each frame, and always without a UI.
+    bool Visible{true}; // The panel is open.
+    // The panel drew the viewport this frame, which the UI writes each frame, and always without a UI.
     bool Shown{true};
     // A displayed viewport renders and its display settings join the union the mesh records derive from.
     bool Displayed() const { return Visible && Shown; }

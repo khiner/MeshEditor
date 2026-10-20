@@ -12,12 +12,12 @@
 
 namespace workspace {
 namespace {
-void ApplyPendingIni(WindowsState &windows) {
-    if (!ImGui::GetCurrentContext() || GImGui->WithinFrameScope || windows.PendingIni.empty()) return;
+void ApplyPendingIni(PanelsState &panels) {
+    if (!ImGui::GetCurrentContext() || GImGui->WithinFrameScope || panels.PendingIni.empty()) return;
     // Previous focus would override the restored dock-tab selection.
     ImGui::SetWindowFocus(nullptr);
-    ImGui::LoadIniSettingsFromMemory(windows.PendingIni.data(), windows.PendingIni.size());
-    windows.PendingIni.clear();
+    ImGui::LoadIniSettingsFromMemory(panels.PendingIni.data(), panels.PendingIni.size());
+    panels.PendingIni.clear();
 }
 
 void MergePending(auto &values, auto &&pending, auto key) {
@@ -29,11 +29,11 @@ void MergePending(auto &values, auto &&pending, auto key) {
     std::ranges::sort(values, {}, key);
 }
 
-std::vector<TabSelection> CaptureTabs(const WindowsState &windows) {
+std::vector<TabSelection> CaptureTabs(const PanelsState &panels) {
     std::vector<TabSelection> tabs;
     if (ImGui::GetCurrentContext()) {
         auto &pool = GImGui->TabBars;
-        tabs.reserve(size_t(pool.GetAliveCount()) + windows.PendingTabs.size());
+        tabs.reserve(size_t(pool.GetAliveCount()) + panels.PendingTabs.size());
         for (int i = 0; i < pool.GetMapSize(); ++i) {
             const auto *bar = pool.TryGetMapData(i);
             if (bar && !(bar->Flags & ImGuiTabBarFlags_DockNode) && bar->SelectedTabId) {
@@ -41,18 +41,18 @@ std::vector<TabSelection> CaptureTabs(const WindowsState &windows) {
             }
         }
     }
-    MergePending(tabs, windows.PendingTabs, &TabSelection::Bar);
+    MergePending(tabs, panels.PendingTabs, &TabSelection::Bar);
     return tabs;
 }
 
-std::vector<WindowState> CaptureWindows(const WindowsState &windows) {
-    std::vector<WindowState> states;
+std::vector<PanelState> CapturePanels(const PanelsState &panels) {
+    std::vector<PanelState> states;
     if (ImGui::GetCurrentContext()) {
         for (const auto *window : GImGui->Windows) {
             if (window->IsFallbackWindow) continue;
             if (window->Flags & (ImGuiWindowFlags_Popup | ImGuiWindowFlags_Tooltip)) continue;
             if ((window->Flags & ImGuiWindowFlags_NoSavedSettings) && !(window->Flags & ImGuiWindowFlags_ChildWindow)) continue;
-            auto &state = states.emplace_back(WindowState{window->ID, window->Scroll.x, window->Scroll.y, {}});
+            auto &state = states.emplace_back(PanelState{window->ID, window->Scroll.x, window->Scroll.y, {}});
             for (const auto &entry : window->StateStorage.Data) {
                 // App window storage contains only 32-bit scalars (int, bool, float), never pointers.
                 uint32_t value;
@@ -61,27 +61,27 @@ std::vector<WindowState> CaptureWindows(const WindowsState &windows) {
             }
         }
     }
-    MergePending(states, windows.PendingWindows | std::views::transform(&PendingWindowState::Value), &WindowState::Window);
+    MergePending(states, panels.PendingPanels | std::views::transform(&PendingPanelState::Value), &PanelState::Window);
     return states;
 }
 } // namespace
 
-State Capture(const state::Registry &r, const WindowsState &windows) {
+State Capture(const state::Registry &r, const PanelsState &panels) {
     size_t ini_size = 0;
-    const char *ini = ImGui::GetCurrentContext() && windows.PendingIni.empty() ? ImGui::SaveIniSettingsToMemory(&ini_size) : nullptr;
+    const char *ini = ImGui::GetCurrentContext() && panels.PendingIni.empty() ? ImGui::SaveIniSettingsToMemory(&ini_size) : nullptr;
     const auto &viewports = r.Resources.get<const ::Viewports>().All;
     return {
         .Viewports = viewports | std::views::transform([](const Viewport &v) { return ViewportEntry{v.Id, v.Visible, v.State}; }) | std::ranges::to<std::vector>(),
         .AudioOutput = r.get<const AudioOutputConfig>(state::Document),
-        .Windows = GetWindowVisibility(windows),
-        .NodesCanvas = windows.Nodes.Canvas,
-        .ImGuiIni = ini ? std::string{ini, ini_size} : windows.PendingIni,
-        .Tabs = CaptureTabs(windows),
-        .WindowStates = CaptureWindows(windows),
+        .Panels = GetPanelVisibility(panels),
+        .NodesCanvas = panels.Nodes.Canvas,
+        .ImGuiIni = ini ? std::string{ini, ini_size} : panels.PendingIni,
+        .Tabs = CaptureTabs(panels),
+        .PanelStates = CapturePanels(panels),
     };
 }
 
-void Apply(state::Registry &r, WindowsState &windows, const State &state) {
+void Apply(state::Registry &r, PanelsState &panels, const State &state) {
     auto &viewports = r.Resources.get<::Viewports>();
     // The live UI frame stops sampling the images of the viewports the state omits before they go.
     const bool keeps_all = std::ranges::all_of(viewports.All, [&](const Viewport &v) { return std::ranges::contains(state.Viewports, v.Id, &ViewportEntry::Id); });
@@ -100,27 +100,27 @@ void Apply(state::Registry &r, WindowsState &windows, const State &state) {
     viewports.ActiveIndex = 0;
     // The audio settle reconciles the device with the published config.
     r.replace<AudioOutputConfig>(state::Document, state.AudioOutput);
-    SetWindowVisibility(windows, state.Windows);
-    windows.Nodes.Canvas = state.NodesCanvas;
-    windows.PendingIni = state.ImGuiIni;
-    if (!windows.PendingIni.empty()) windows.LayoutLoaded = true;
-    ApplyPendingIni(windows);
-    windows.PendingTabs = state.Tabs;
-    windows.PendingWindows.clear();
-    for (const auto &window : state.WindowStates) windows.PendingWindows.push_back({window});
+    SetPanelVisibility(panels, state.Panels);
+    panels.Nodes.Canvas = state.NodesCanvas;
+    panels.PendingIni = state.ImGuiIni;
+    if (!panels.PendingIni.empty()) panels.LayoutLoaded = true;
+    ApplyPendingIni(panels);
+    panels.PendingTabs = state.Tabs;
+    panels.PendingPanels.clear();
+    for (const auto &panel : state.PanelStates) panels.PendingPanels.push_back({panel});
 }
 
-void ApplyPending(WindowsState &windows) {
+void ApplyPending(PanelsState &panels) {
     if (!ImGui::GetCurrentContext()) return;
-    ApplyPendingIni(windows);
-    std::erase_if(windows.PendingTabs, [](const TabSelection &selection) {
+    ApplyPendingIni(panels);
+    std::erase_if(panels.PendingTabs, [](const TabSelection &selection) {
         auto *bar = ImGui::TabBarFindByID(selection.Bar);
         if (!bar) return false;
         if (!ImGui::TabBarFindTabByID(bar, selection.Tab) || bar->SelectedTabId == selection.Tab) return true;
         bar->NextSelectedTabId = selection.Tab;
         return false;
     });
-    std::erase_if(windows.PendingWindows, [](PendingWindowState &pending) {
+    std::erase_if(panels.PendingPanels, [](PendingPanelState &pending) {
         auto *window = ImGui::FindWindowByID(pending.Value.Window);
         if (!window) return false;
         if (!pending.StorageApplied) {
@@ -146,7 +146,7 @@ void ApplyPending(WindowsState &windows) {
 std::vector<std::byte> Serialize(const State &state) {
     std::vector<std::byte> bytes;
     zpp::bits::out archive{bytes};
-    if (zpp::bits::failure(archive(state.Viewports, state.AudioOutput, state.Windows, state.NodesCanvas, state.ImGuiIni, state.Tabs, state.WindowStates))) return {};
+    if (zpp::bits::failure(archive(state.Viewports, state.AudioOutput, state.Panels, state.NodesCanvas, state.ImGuiIni, state.Tabs, state.PanelStates))) return {};
     bytes.resize(archive.position());
     return bytes;
 }
@@ -154,7 +154,7 @@ std::vector<std::byte> Serialize(const State &state) {
 std::optional<State> Deserialize(std::span<const std::byte> bytes) {
     zpp::bits::in archive{bytes};
     State state;
-    if (zpp::bits::failure(archive(state.Viewports, state.AudioOutput, state.Windows, state.NodesCanvas, state.ImGuiIni, state.Tabs, state.WindowStates))) return std::nullopt;
+    if (zpp::bits::failure(archive(state.Viewports, state.AudioOutput, state.Panels, state.NodesCanvas, state.ImGuiIni, state.Tabs, state.PanelStates))) return std::nullopt;
     return state;
 }
 

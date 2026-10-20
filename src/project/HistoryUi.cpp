@@ -223,10 +223,10 @@ void HandleHistoryShortcuts(Project &session) {
     if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z, ImGuiInputFlags_RouteGlobal | ImGuiInputFlags_Repeat) && redo_target) session.RequestNavigate(*redo_target);
 }
 
-bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive) {
-    if (!window.Visible) return false;
+bool DrawHistoryPanel(Project &session, HistoryPanel &panel, bool interactive) {
+    if (!panel.Visible) return false;
     bool clear = false;
-    if (Begin(window.Name, &window.Visible)) {
+    if (Begin(panel.Name, &panel.Visible)) {
         auto &history = session.History;
         const auto &nodes = history.Nodes;
         const auto present = history.Present;
@@ -255,23 +255,23 @@ bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive
             EndPopup();
         }
 #ifdef DEBUG_BUILD
-        if (Button("Validate history") && interactive) window.ValidateRequested = true;
+        if (Button("Validate history") && interactive) panel.ValidateRequested = true;
         SameLine();
 #endif
         clear = Button("Clear history") && interactive;
         ui::Describe("Clear history", "Keep the current and last saved states, and discard other undo and redo states");
         Separator();
         const auto rail_bit = [](uint32_t depth) { return uint32_t{1} << (std::min(depth, 20u) - 1); };
-        if (window.TreeRevision != history.Revision) {
-            window.Rows.clear();
-            window.RowByNode.assign(nodes.size(), std::nullopt);
+        if (panel.TreeRevision != history.Revision) {
+            panel.Rows.clear();
+            panel.RowByNode.assign(nodes.size(), std::nullopt);
             std::vector<HistoryRow> pending;
             if (!nodes.empty()) pending.push_back({0, 0});
             while (!pending.empty()) {
                 const auto row = pending.back();
                 pending.pop_back();
-                window.RowByNode[row.Node] = uint32_t(window.Rows.size());
-                window.Rows.push_back(row);
+                panel.RowByNode[row.Node] = uint32_t(panel.Rows.size());
+                panel.Rows.push_back(row);
                 const auto &children = nodes[row.Node].Children;
                 for (const auto child : children) {
                     const bool branch = child != children.front();
@@ -280,7 +280,7 @@ bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive
                     pending.push_back({child, depth, rails});
                 }
             }
-            window.TreeRevision = history.Revision;
+            panel.TreeRevision = history.Revision;
         }
         std::vector<uint32_t> lineage;
         for (auto node = present; node; node = nodes[*node].Parent) lineage.push_back(*node);
@@ -294,8 +294,8 @@ bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive
         for (const auto node : lineage) {
             const auto parent = nodes[node].Parent;
             if (!parent || node == nodes[*parent].Children.front()) continue;
-            const auto first = window.RowByNode[*parent], last = window.RowByNode[node];
-            if (first && last) active_rails.push_back({rail_bit(window.Rows[*last].Depth), *first, *last});
+            const auto first = panel.RowByNode[*parent], last = panel.RowByNode[node];
+            if (first && last) active_rails.push_back({rail_bit(panel.Rows[*last].Depth), *first, *last});
         }
         const auto active_mask = [&](size_t row, bool below) {
             auto mask = uint32_t{0};
@@ -307,9 +307,9 @@ bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive
         // An open edit highlights its node while the present node is its parent.
         // The highlighted node's editor opens below it, and the arrow collapses it.
         const auto shown = session.Editing ? session.Editing : present;
-        if (window.EditorNode != shown) {
-            window.EditorNode = shown;
-            window.EditorOpen = true;
+        if (panel.EditorNode != shown) {
+            panel.EditorNode = shown;
+            panel.EditorOpen = true;
         }
         const auto x = GetCursorPosX();
         const auto screen_x = GetCursorScreenPos().x;
@@ -327,13 +327,13 @@ bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive
         };
         const auto below_rails = [&](const HistoryRow &row) { return row.Rails | (nodes[row.Node].Children.size() > 1 ? rail_bit(row.Depth + 1) : 0); };
         const auto draw_row = [&](size_t index) {
-            const auto &row = window.Rows[index];
+            const auto &row = panel.Rows[index];
             const auto id = row.Node;
             SetCursorPosX(x + indent(row));
             auto flags = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_NoTreePushOnOpen;
             if (!nodes[id].Editable) flags |= ImGuiTreeNodeFlags_Leaf;
             if (id == shown) flags |= ImGuiTreeNodeFlags_Selected;
-            SetNextItemOpen(id == shown && window.EditorOpen);
+            SetNextItemOpen(id == shown && panel.EditorOpen);
             const auto highlight = active(id) && id != shown;
             if (highlight) PushStyleColor(ImGuiCol_Text, GetStyleColorVec4(ImGuiCol_CheckMark));
             TreeNodeEx(std::format("{}##{}", nodes[id].Label, id).c_str(), flags);
@@ -353,7 +353,7 @@ bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive
             draw_rails(below_rails(row) & ~row.Rails, below, max.y, bottom);
             if (!interactive) return;
             if (IsItemToggledOpen()) {
-                if (id == shown) window.EditorOpen = !window.EditorOpen;
+                if (id == shown) panel.EditorOpen = !panel.EditorOpen;
                 else session.RequestNavigate(id);
             } else if (IsItemClicked()) {
                 session.RequestNavigate(id);
@@ -366,21 +366,21 @@ bool DrawHistoryWindow(Project &session, HistoryWindow &window, bool interactive
                 for (auto i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) draw_row(begin + size_t(i));
             }
         };
-        const auto shown_row = shown && window.RowByNode[*shown] ? size_t(*window.RowByNode[*shown]) : window.Rows.size();
-        draw_rows(0, std::min(shown_row, window.Rows.size()));
-        if (shown_row < window.Rows.size()) {
+        const auto shown_row = shown && panel.RowByNode[*shown] ? size_t(*panel.RowByNode[*shown]) : panel.Rows.size();
+        draw_rows(0, std::min(shown_row, panel.Rows.size()));
+        if (shown_row < panel.Rows.size()) {
             draw_row(shown_row);
-            if (window.EditorOpen && nodes[*shown].Editable) {
+            if (panel.EditorOpen && nodes[*shown].Editable) {
                 const auto top = GetCursorScreenPos().y;
-                const auto editor_indent = indent(window.Rows[shown_row]) + GetTreeNodeToLabelSpacing();
+                const auto editor_indent = indent(panel.Rows[shown_row]) + GetTreeNodeToLabelSpacing();
                 Indent(editor_indent);
                 PushID(int(*shown));
                 DrawNodeEditor(session, *shown, interactive);
                 PopID();
                 Unindent(editor_indent);
-                draw_rails(below_rails(window.Rows[shown_row]), active_mask(shown_row, true), top, GetCursorScreenPos().y);
+                draw_rails(below_rails(panel.Rows[shown_row]), active_mask(shown_row, true), top, GetCursorScreenPos().y);
             }
-            draw_rows(shown_row + 1, window.Rows.size());
+            draw_rows(shown_row + 1, panel.Rows.size());
         }
     }
     End();

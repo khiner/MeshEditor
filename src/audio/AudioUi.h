@@ -11,7 +11,7 @@ void DrawAudioDebug(const state::Registry &);
 void DrawObjectAudioControls(state::Registry &, state::Entity sound_entity, state::Entity mesh_entity);
 
 // Draw the in-flight modal solve jobs as a progress overlay anchored to the current window's lower-left corner.
-// Call inside the viewport window.
+// Call inside the viewport panel.
 void DrawModalJobsOverlay(state::Registry &);
 void DrawAudioDeviceControls(state::Registry &);
 

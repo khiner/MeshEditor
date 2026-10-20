@@ -8,7 +8,7 @@ struct TabSelection {
     bool operator==(const TabSelection &) const = default;
 };
 
-struct WindowState {
+struct PanelState {
     struct StorageValue {
         uint32_t Key{}, Value{};
         bool operator==(const StorageValue &) const = default;
@@ -16,15 +16,15 @@ struct WindowState {
     uint32_t Window{};
     float X{}, Y{};
     std::vector<StorageValue> Storage;
-    bool operator==(const WindowState &) const = default;
+    bool operator==(const PanelState &) const = default;
 };
 
-struct PendingWindowState {
-    WindowState Value;
+struct PendingPanelState {
+    PanelState Value;
     bool StorageApplied{false}, ScrollApplied{false};
 };
 
-struct Window {
+struct Panel {
     const char *Name{""};
     bool Visible{true};
 };
@@ -34,7 +34,7 @@ struct HistoryRow {
     uint32_t Depth; // The original continuation stays inline; later branches nest.
     uint32_t Rails{}; // Ancestor forks with another branch below this row.
 };
-struct HistoryWindow : Window {
+struct HistoryPanel : Panel {
     bool ValidateRequested{false};
     uint64_t TreeRevision{UINT64_MAX};
     std::vector<HistoryRow> Rows{};
@@ -53,7 +53,7 @@ enum class NodeDrag : uint8_t { None,
                                 Grab,
                                 Wire,
                                 Box };
-struct NodesWindow : Window {
+struct NodesPanel : Panel {
     NodeCanvas Canvas{};
     NodeDrag Drag{NodeDrag::None};
     numeric::vec2 Press{}; // The drag's start on the screen
@@ -77,8 +77,8 @@ struct NodesWindow : Window {
     uint32_t NameEditId{}; // The name field editing NameEdit, or zero
 };
 
-struct WindowsState {
-    Window
+struct PanelsState {
+    Panel
         SceneControls{"Scene controls"},
         Timeline{"Timeline"},
         Style{"Style"},
@@ -87,15 +87,15 @@ struct WindowsState {
         ImSpinnerDemo{"ImSpinner Demo", false},
         ImPlotDemo{"ImPlot Demo", false},
         Debug{"Debug", false};
-    HistoryWindow History{{"History"}};
-    NodesWindow Nodes{{"Nodes"}};
+    HistoryPanel History{{"History"}};
+    NodesPanel Nodes{{"Nodes"}};
     std::string PendingIni;
     std::vector<TabSelection> PendingTabs;
-    std::vector<PendingWindowState> PendingWindows;
+    std::vector<PendingPanelState> PendingPanels;
     bool LayoutLoaded{false};
 };
 
-struct WindowVisibility {
+struct PanelVisibility {
     bool SceneControls{true};
     bool Timeline{true};
     bool Style{true};
@@ -106,30 +106,30 @@ struct WindowVisibility {
     bool Nodes{true};
 };
 
-inline WindowVisibility GetWindowVisibility(const WindowsState &windows) {
+inline PanelVisibility GetPanelVisibility(const PanelsState &panels) {
     return {
-        windows.SceneControls.Visible,
-        windows.Timeline.Visible,
-        windows.Style.Visible,
-        windows.Info.Visible,
-        windows.ImGuiDemo.Visible,
-        windows.ImSpinnerDemo.Visible,
-        windows.ImPlotDemo.Visible,
-        windows.Debug.Visible,
-        windows.History.Visible,
-        windows.Nodes.Visible,
+        panels.SceneControls.Visible,
+        panels.Timeline.Visible,
+        panels.Style.Visible,
+        panels.Info.Visible,
+        panels.ImGuiDemo.Visible,
+        panels.ImSpinnerDemo.Visible,
+        panels.ImPlotDemo.Visible,
+        panels.Debug.Visible,
+        panels.History.Visible,
+        panels.Nodes.Visible,
     };
 }
 
-inline void SetWindowVisibility(WindowsState &windows, const WindowVisibility &visibility) {
-    windows.SceneControls.Visible = visibility.SceneControls;
-    windows.Timeline.Visible = visibility.Timeline;
-    windows.Style.Visible = visibility.Style;
-    windows.Info.Visible = visibility.Info;
-    windows.ImGuiDemo.Visible = visibility.ImGuiDemo;
-    windows.ImSpinnerDemo.Visible = visibility.ImSpinnerDemo;
-    windows.ImPlotDemo.Visible = visibility.ImPlotDemo;
-    windows.Debug.Visible = visibility.Debug;
-    windows.History.Visible = visibility.History;
-    windows.Nodes.Visible = visibility.Nodes;
+inline void SetPanelVisibility(PanelsState &panels, const PanelVisibility &visibility) {
+    panels.SceneControls.Visible = visibility.SceneControls;
+    panels.Timeline.Visible = visibility.Timeline;
+    panels.Style.Visible = visibility.Style;
+    panels.Info.Visible = visibility.Info;
+    panels.ImGuiDemo.Visible = visibility.ImGuiDemo;
+    panels.ImSpinnerDemo.Visible = visibility.ImSpinnerDemo;
+    panels.ImPlotDemo.Visible = visibility.ImPlotDemo;
+    panels.Debug.Visible = visibility.Debug;
+    panels.History.Visible = visibility.History;
+    panels.Nodes.Visible = visibility.Nodes;
 }

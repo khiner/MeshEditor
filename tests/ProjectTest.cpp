@@ -37,7 +37,7 @@ struct Fixture : Engine {
     }
     explicit Fixture(const TestDir &dir) : Fixture{} { expect(P->New(dir)); }
     std::vector<std::byte> Workspace() {
-        return workspace::Serialize(workspace::Capture(R, R.Resources.emplace<WindowsState>()));
+        return workspace::Serialize(workspace::Capture(R, R.Resources.emplace<PanelsState>()));
     }
     void Audit() {
         std::string why;
@@ -150,10 +150,10 @@ void TestActionsArchive() {
     expect(view.State.Camera.LookThroughSaved.value() == editor_view);
     const auto final_state = p.History.MaterializeLive();
     const auto final_camera = view.State.Camera;
-    auto &windows = f.R.Resources.emplace<WindowsState>();
-    windows.History.Visible = false;
-    windows.PendingTabs = {{11, 12}};
-    const auto final_workspace = workspace::Serialize(workspace::Capture(f.R, windows));
+    auto &panels = f.R.Resources.emplace<PanelsState>();
+    panels.History.Visible = false;
+    panels.PendingTabs = {{11, 12}};
+    const auto final_workspace = workspace::Serialize(workspace::Capture(f.R, panels));
     expect(p.SaveArchive(archive, project::ArchiveForm::Actions, final_workspace));
     expect(ReadArchiveMetadata(archive).value() == final_workspace);
 
@@ -165,9 +165,9 @@ void TestActionsArchive() {
     const auto workspace = workspace::Deserialize(ReadArchiveMetadata(archive).value());
     expect(workspace.has_value());
     if (!workspace) return;
-    auto &restored_windows = restored.R.Resources.emplace<WindowsState>();
-    workspace::Apply(restored.R, restored_windows, *workspace);
-    expect(workspace::Serialize(workspace::Capture(restored.R, restored_windows)) == final_workspace);
+    auto &restored_panels = restored.R.Resources.emplace<PanelsState>();
+    workspace::Apply(restored.R, restored_panels, *workspace);
+    expect(workspace::Serialize(workspace::Capture(restored.R, restored_panels)) == final_workspace);
     const auto restored_view = [&] { return restored.R.Resources.get<const Viewports>().All.front().State; };
     expect(restored_view().Camera == final_camera);
     expect(restored_view().LookThroughEntity == camera);
@@ -186,7 +186,7 @@ void TestActionsArchive() {
     expect(restored.P->History.MaterializeLive() == present_state);
     restored.P->Navigate(final_node);
     expect(restored.P->History.MaterializeLive() == final_state);
-    workspace::Apply(restored.R, restored_windows, *workspace);
+    workspace::Apply(restored.R, restored_panels, *workspace);
     expect(restored_view().Camera == final_camera);
     restored.Audit();
 }
