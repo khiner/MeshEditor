@@ -748,6 +748,165 @@ struct ValidationUi {
     }
 };
 
+void DrawMainMenuBar(state::Registry &r, PanelsState &panels) {
+    if (BeginMainMenuBar()) {
+        if (BeginMenu("File")) {
+            if (BeginMenu("New")) {
+                if (MenuItem("Default")) NewScene(r, /*empty=*/false);
+                if (MenuItem("Empty")) NewScene(r, /*empty=*/true);
+                EndMenu();
+            }
+            if (MenuItem("Open")) {
+                FileDialog::ShowOpen("project;actions", [&](const fs::path &path) { OpenFile(r, path); }, /*directories=*/true);
+            }
+            if (MenuItem("Save", "Cmd+S")) SaveProject(r);
+            if (MenuItem("Save as...", "Cmd+Shift+S")) SaveProjectAs(r);
+            if (MenuItem("Revert to Saved", nullptr, false, !Session(r).SavedPath.empty())) RevertSavedProject(r);
+            if (BeginMenu("Restore")) {
+                const auto sessions = project::ListRestoreSessions();
+                for (const auto &session : sessions) {
+                    const std::time_t t = session.UnixSeconds;
+                    char date[32];
+                    std::strftime(date, sizeof date, "%Y-%m-%d %H:%M:%S", std::localtime(&t));
+                    const auto label = std::format("{} ({})", date, session.Path.filename().string());
+                    if (MenuItem(label.c_str())) OpenProjectDir(r, session.Path);
+                }
+                EndMenu();
+            }
+            const auto import_dialog = [](const char *extensions) {
+                FileDialog::ShowOpen(extensions, [](const fs::path &path) { action::Emit(action::io::Load{.Path = path}); });
+            };
+            if (BeginMenu("Import")) {
+                if (MenuItem("glTF 2.0 (.glb/.gltf)")) import_dialog("gltf;glb");
+                if (MenuItem("Wavefront (.obj)")) import_dialog("obj");
+                if (MenuItem("Stanford PLY (.ply)")) import_dialog("ply");
+                if (MenuItem("RealImpact")) {
+                    FileDialog::ShowPickFolder([](const fs::path &path) { action::Emit(action::io::LoadRealImpact{.Path = path}); });
+                }
+                EndMenu();
+            }
+            const auto render_tree = [&](this auto &&self, const GltfSampleTree &n, const auto &passes) -> void {
+                const auto has_visible = [&](this auto &&rec, const GltfSampleTree &m) -> bool {
+                    return any_of(m.Files, passes) || any_of(m.Children, [&](const auto &c) { return rec(c.second); });
+                };
+                struct Item {
+                    const std::string *Name;
+                    const GltfSampleTree *Child;
+                    const GltfSample *File;
+                };
+                std::vector<Item> items;
+                items.reserve(n.Children.size() + n.Files.size());
+                for (const auto &[name, c] : n.Children) items.emplace_back(&name, &c, nullptr);
+                for (const auto &f : n.Files) items.emplace_back(&f.Label, nullptr, &f);
+                std::ranges::sort(items, {}, [](const Item &it) { return *it.Name; });
+                for (const auto &it : items) {
+                    if (it.Child) {
+                        if (!has_visible(*it.Child)) continue;
+                        if (BeginMenu(it.Name->c_str())) {
+                            self(*it.Child, passes);
+                            EndMenu();
+                        }
+                    } else {
+                        if (!passes(*it.File)) continue;
+                        if (MenuItem(it.File->Label.c_str())) action::Emit(action::io::Load{.Path = it.File->Path});
+                    }
+                }
+            };
+            const auto render_submenu = [&](const char *label, const GltfSampleTree &tree) {
+                if (tree.Children.empty() && tree.Files.empty()) return;
+                if (BeginMenu(label)) {
+                    render_tree(tree, [](const GltfSample &) { return true; });
+                    EndMenu();
+                }
+            };
+            static std::optional<GltfSampleTrees> trees;
+            if (!trees && SampleTreesFuture.valid() && SampleTreesFuture.wait_for(std::chrono::seconds{0}) == std::future_status::ready) trees = SampleTreesFuture.get();
+            if (trees) {
+                render_submenu("Examples", trees->Examples);
+                render_submenu("Benchmarks", trees->Benchmarks);
+                static std::set<std::string> sample_assets_filter;
+                if (!trees->SampleAssets.Files.empty() || !trees->SampleAssets.Children.empty()) {
+                    if (BeginMenu("glTF Samples")) {
+                        if (BeginMenu("Filter extensions")) {
+                            PushItemFlag(ImGuiItemFlags_AutoClosePopups, false);
+                            for (const auto &ext : trees->SampleAssetsExtensions) {
+                                const bool checked = sample_assets_filter.contains(ext);
+                                if (MenuItem(ext.c_str(), nullptr, checked)) {
+                                    if (checked) sample_assets_filter.erase(ext);
+                                    else sample_assets_filter.insert(ext);
+                                }
+                            }
+                            PopItemFlag();
+                            EndMenu();
+                        }
+                        render_tree(trees->SampleAssets, [](const GltfSample &f) { return all_of(sample_assets_filter, [&](const auto &e) { return f.Extensions.contains(e); }); });
+                        EndMenu();
+                    }
+                }
+                render_submenu("glTF_Physics Samples", trees->Physics);
+                render_submenu("glTF_PhysicalAudio Samples", trees->PhysicalAudio);
+            }
+            if (MenuItem("Save glTF", nullptr)) {
+                FileDialog::ShowSave("gltf;glb", "scene.gltf", [](const fs::path &path) { action::Emit(action::io::SaveGltf{.Path = path}); });
+            }
+            EndMenu();
+        }
+        if (BeginMenu("Edit")) {
+            const auto &history = Session(r).History;
+            const auto undo_target = history.UndoTarget(), redo_target = history.RedoTarget();
+            if (MenuItem("Undo", "Cmd+Z", false, undo_target.has_value())) Session(r).RequestNavigate(*undo_target);
+            if (MenuItem("Redo", "Cmd+Shift+Z", false, redo_target.has_value())) Session(r).RequestNavigate(*redo_target);
+            EndMenu();
+        }
+        if (BeginMenu("Panels")) {
+            MenuItem(panels.History.Name, nullptr, &panels.History.Visible);
+            MenuItem(panels.Nodes.Name, nullptr, &panels.Nodes.Visible);
+            MenuItem(panels.Info.Name, nullptr, &panels.Info.Visible);
+            MenuItem(panels.Style.Name, nullptr, &panels.Style.Visible);
+            MenuItem(panels.Debug.Name, nullptr, &panels.Debug.Visible);
+            MenuItem(panels.ImGuiDemo.Name, nullptr, &panels.ImGuiDemo.Visible);
+            MenuItem(panels.ImSpinnerDemo.Name, nullptr, &panels.ImSpinnerDemo.Visible);
+            MenuItem(panels.ImPlotDemo.Name, nullptr, &panels.ImPlotDemo.Visible);
+            MenuItem(panels.SceneControls.Name, nullptr, &panels.SceneControls.Visible);
+            MenuItem(panels.Timeline.Name, nullptr, &panels.Timeline.Visible);
+            Separator();
+            for (const auto viewport : r.view<const Viewport>()) {
+                if (bool open = r.get<const ViewportPanel>(viewport).Open; MenuItem(ViewportPanelName(r, viewport).c_str(), nullptr, &open)) {
+                    r.patch<ViewportPanel>(viewport, [open](ViewportPanel &panel) { panel.Open = open; });
+                }
+            }
+            if (MenuItem("New Viewport")) action::Emit(action::view::AddViewport{});
+            EndMenu();
+        }
+        EndMainMenuBar();
+    }
+}
+
+EditorPanelsFrame BeginEditorFrame(state::Registry &r, const mtl::Context &ctx, CA::MetalLayer *layer, PanelsState &panels, const ImGuiIO &io, bool interactive) {
+    const auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
+    if (!panels.LayoutLoaded) {
+        BuildDefaultDockLayout(panels, dockspace_id);
+        panels.LayoutLoaded = true;
+    }
+    DrawMainMenuBar(r, panels);
+    if (interactive) {
+        project::HandleHistoryShortcuts(Session(r));
+        if (!GetIO().WantTextInput) {
+            if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiKey_S, ImGuiInputFlags_RouteGlobal)) SaveProject(r);
+            if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_S, ImGuiInputFlags_RouteGlobal)) SaveProjectAs(r);
+        }
+        if (auto action = HandleTimelineShortcuts(r.get<const TimelinePlayback>(state::Document))) std::visit([](auto leaf) { action::Emit(leaf); }, std::move(*action));
+    }
+    return BeginEditorPanels(r, ctx, layer, panels, io, dockspace_id, interactive);
+}
+
+void EndEditorFrame(state::Registry &r, PanelsState &panels, const EditorPanelsFrame &frame) {
+    DisplayViewportPanels(r, frame);
+    DrawInfoPanel(r, panels.Info);
+    Render();
+    workspace::ApplyPending(panels);
+}
+
 struct ValidationEngine {
     std::optional<Engine> Core;
     const fs::path Directory = fs::temp_directory_path() / std::format("MeshEditor-validation-{}", uintptr_t(this));
@@ -822,21 +981,7 @@ ImDrawData *RenderValidationApp(
             GImGui->NavHighlightItemUnderNav = inputs.NavHighlightItemUnderNav;
         }
 
-        const auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
-        if (!panels.LayoutLoaded) {
-            BuildDefaultDockLayout(panels, dockspace_id);
-            panels.LayoutLoaded = true;
-        }
-        if (BeginMainMenuBar()) {
-            if (BeginMenu("File")) EndMenu();
-            if (BeginMenu("Edit")) EndMenu();
-            if (BeginMenu("Panels")) EndMenu();
-            EndMainMenuBar();
-        }
-        DisplayViewportPanels(r, BeginEditorPanels(r, ctx, inputs.Layer, panels, io, dockspace_id, /*interactive=*/false));
-        DrawInfoPanel(r, panels.Info);
-        Render();
-        workspace::ApplyPending(panels);
+        EndEditorFrame(r, panels, BeginEditorFrame(r, ctx, inputs.Layer, panels, io, /*interactive=*/false));
     };
 
     render_frame(); // Instantiate the panels referenced by the restored dock layout.
@@ -1561,158 +1706,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
         const auto *ui_focus = GImGui->NavWindow;
         NewFrame();
 
-        const auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
-        if (!panels.LayoutLoaded) {
-            BuildDefaultDockLayout(panels, dockspace_id);
-            panels.LayoutLoaded = true;
-        }
-
-        if (BeginMainMenuBar()) {
-            if (BeginMenu("File")) {
-                if (BeginMenu("New")) {
-                    if (MenuItem("Default")) NewScene(r, /*empty=*/false);
-                    if (MenuItem("Empty")) NewScene(r, /*empty=*/true);
-                    EndMenu();
-                }
-                if (MenuItem("Open")) {
-                    FileDialog::ShowOpen("project;actions", [&](const fs::path &path) { OpenFile(r, path); }, /*directories=*/true);
-                }
-                if (MenuItem("Save", "Cmd+S")) SaveProject(r);
-                if (MenuItem("Save as...", "Cmd+Shift+S")) SaveProjectAs(r);
-                if (MenuItem("Revert to Saved", nullptr, false, !Session(r).SavedPath.empty())) RevertSavedProject(r);
-                if (BeginMenu("Restore")) {
-                    const auto sessions = project::ListRestoreSessions();
-                    for (const auto &session : sessions) {
-                        const std::time_t t = session.UnixSeconds;
-                        char date[32];
-                        std::strftime(date, sizeof date, "%Y-%m-%d %H:%M:%S", std::localtime(&t));
-                        const auto label = std::format("{} ({})", date, session.Path.filename().string());
-                        if (MenuItem(label.c_str())) OpenProjectDir(r, session.Path);
-                    }
-                    EndMenu();
-                }
-                const auto import_dialog = [](const char *extensions) {
-                    FileDialog::ShowOpen(extensions, [](const fs::path &path) { action::Emit(action::io::Load{.Path = path}); });
-                };
-                if (BeginMenu("Import")) {
-                    if (MenuItem("glTF 2.0 (.glb/.gltf)")) {
-                        import_dialog("gltf;glb");
-                    }
-                    if (MenuItem("Wavefront (.obj)")) {
-                        import_dialog("obj");
-                    }
-                    if (MenuItem("Stanford PLY (.ply)")) {
-                        import_dialog("ply");
-                    }
-                    if (MenuItem("RealImpact")) {
-                        FileDialog::ShowPickFolder([](const fs::path &path) { action::Emit(action::io::LoadRealImpact{.Path = path}); });
-                    }
-                    EndMenu();
-                }
-                const auto render_tree = [&](this auto &&self, const GltfSampleTree &n, const auto &passes) -> void {
-                    const auto has_visible = [&](this auto &&rec, const GltfSampleTree &m) -> bool {
-                        return any_of(m.Files, passes) || any_of(m.Children, [&](const auto &c) { return rec(c.second); });
-                    };
-                    struct Item {
-                        const std::string *Name;
-                        const GltfSampleTree *Child;
-                        const GltfSample *File;
-                    };
-                    std::vector<Item> items;
-                    items.reserve(n.Children.size() + n.Files.size());
-                    for (const auto &[name, c] : n.Children) items.emplace_back(&name, &c, nullptr);
-                    for (const auto &f : n.Files) items.emplace_back(&f.Label, nullptr, &f);
-                    std::ranges::sort(items, {}, [](const Item &it) { return *it.Name; });
-                    for (const auto &it : items) {
-                        if (it.Child) {
-                            if (!has_visible(*it.Child)) continue;
-                            if (BeginMenu(it.Name->c_str())) {
-                                self(*it.Child, passes);
-                                EndMenu();
-                            }
-                        } else {
-                            if (!passes(*it.File)) continue;
-                            if (MenuItem(it.File->Label.c_str())) action::Emit(action::io::Load{.Path = it.File->Path});
-                        }
-                    }
-                };
-                const auto render_submenu = [&](const char *label, const GltfSampleTree &tree) {
-                    if (tree.Children.empty() && tree.Files.empty()) return;
-                    if (BeginMenu(label)) {
-                        render_tree(tree, [](const GltfSample &) { return true; });
-                        EndMenu();
-                    }
-                };
-                static std::optional<GltfSampleTrees> trees;
-                if (!trees && SampleTreesFuture.valid() && SampleTreesFuture.wait_for(std::chrono::seconds{0}) == std::future_status::ready) trees = SampleTreesFuture.get();
-                if (trees) {
-                    render_submenu("Examples", trees->Examples);
-                    render_submenu("Benchmarks", trees->Benchmarks);
-                    static std::set<std::string> sample_assets_filter;
-                    if (!trees->SampleAssets.Files.empty() || !trees->SampleAssets.Children.empty()) {
-                        if (BeginMenu("glTF Samples")) {
-                            if (BeginMenu("Filter extensions")) {
-                                PushItemFlag(ImGuiItemFlags_AutoClosePopups, false);
-                                for (const auto &ext : trees->SampleAssetsExtensions) {
-                                    const bool checked = sample_assets_filter.contains(ext);
-                                    if (MenuItem(ext.c_str(), nullptr, checked)) {
-                                        if (checked) sample_assets_filter.erase(ext);
-                                        else sample_assets_filter.insert(ext);
-                                    }
-                                }
-                                PopItemFlag();
-                                EndMenu();
-                            }
-                            render_tree(trees->SampleAssets, [](const GltfSample &f) { return all_of(sample_assets_filter, [&](const auto &e) { return f.Extensions.contains(e); }); });
-                            EndMenu();
-                        }
-                    }
-                    render_submenu("glTF_Physics Samples", trees->Physics);
-                    render_submenu("glTF_PhysicalAudio Samples", trees->PhysicalAudio);
-                }
-                if (MenuItem("Save glTF", nullptr)) {
-                    FileDialog::ShowSave("gltf;glb", "scene.gltf", [](const fs::path &path) { action::Emit(action::io::SaveGltf{.Path = path}); });
-                }
-                EndMenu();
-            }
-            if (BeginMenu("Edit")) {
-                const auto &history = Session(r).History;
-                const auto undo_target = history.UndoTarget(), redo_target = history.RedoTarget();
-                if (MenuItem("Undo", "Cmd+Z", false, undo_target.has_value())) Session(r).RequestNavigate(*undo_target);
-                if (MenuItem("Redo", "Cmd+Shift+Z", false, redo_target.has_value())) Session(r).RequestNavigate(*redo_target);
-                EndMenu();
-            }
-            if (BeginMenu("Panels")) {
-                MenuItem(panels.History.Name, nullptr, &panels.History.Visible);
-                MenuItem(panels.Nodes.Name, nullptr, &panels.Nodes.Visible);
-                MenuItem(panels.Info.Name, nullptr, &panels.Info.Visible);
-                MenuItem(panels.Style.Name, nullptr, &panels.Style.Visible);
-                MenuItem(panels.Debug.Name, nullptr, &panels.Debug.Visible);
-                MenuItem(panels.ImGuiDemo.Name, nullptr, &panels.ImGuiDemo.Visible);
-                MenuItem(panels.ImSpinnerDemo.Name, nullptr, &panels.ImSpinnerDemo.Visible);
-                MenuItem(panels.ImPlotDemo.Name, nullptr, &panels.ImPlotDemo.Visible);
-                MenuItem(panels.SceneControls.Name, nullptr, &panels.SceneControls.Visible);
-                MenuItem(panels.Timeline.Name, nullptr, &panels.Timeline.Visible);
-                Separator();
-                for (const auto viewport : r.view<const Viewport>()) {
-                    if (bool open = r.get<const ViewportPanel>(viewport).Open; MenuItem(ViewportPanelName(r, viewport).c_str(), nullptr, &open)) {
-                        r.patch<ViewportPanel>(viewport, [open](ViewportPanel &panel) { panel.Open = open; });
-                    }
-                }
-                if (MenuItem("New Viewport")) action::Emit(action::view::AddViewport{});
-                EndMenu();
-            }
-            EndMainMenuBar();
-        }
-
-        project::HandleHistoryShortcuts(Session(r));
-        if (!GetIO().WantTextInput) {
-            if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiKey_S, ImGuiInputFlags_RouteGlobal)) SaveProject(r);
-            if (CtrlShortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_S, ImGuiInputFlags_RouteGlobal)) SaveProjectAs(r);
-        }
-        if (auto action = HandleTimelineShortcuts(r.get<const TimelinePlayback>(state::Document))) std::visit([](auto leaf) { action::Emit(leaf); }, std::move(*action));
-
-        const auto editor_frame = BeginEditorPanels(r, ctx, layer, panels, io, dockspace_id, /*interactive=*/true);
+        const auto editor_frame = BeginEditorFrame(r, ctx, layer, panels, io, /*interactive=*/true);
         // Resolve the viewports after the editor panels, since opening a project applies its workspace.
         // Capture and benchmarks drive the first viewport.
         const auto first_viewport = FirstViewport(r);
@@ -1740,11 +1734,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
         // A viewport resized in its frame step waits for the previous UI frame to stop sampling its image.
         SubmitViewports(r);
         r.Resources.get<ViewportConsumerFence>().Value = nullptr;
-        DisplayViewportPanels(r, editor_frame);
-        DrawInfoPanel(r, panels.Info);
-
-        ImGui::Render();
-        workspace::ApplyPending(panels);
+        EndEditorFrame(r, panels, editor_frame);
         mac_backend.HonorMouseWarp();
         auto *draw_data = GetDrawData();
         const bool ui_gesture_settled = UiGestureSettled(ui_focus);
