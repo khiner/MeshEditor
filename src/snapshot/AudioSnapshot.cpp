@@ -18,16 +18,15 @@ void RegisterAudio(Tables &tables) {
     Classify(
         tables,
         TypeList<
-            AudioOutputConfig, AudioOutputMix, Striker, ModalSoundControls, ContactSurface, SurfaceSoundControls,
+            AudioOutputMix, Striker, ModalSoundControls, ContactSurface, SurfaceSoundControls,
             AcousticMaterial, VertexSamples, SoundVerticesModel, ModalModes, ModalGain, ModalTuning, ModalSolveSettings,
             MassProperties, ModalEigenSummary, RealImpactVertices, RealImpactMicrophone, RealImpactActiveMicrophone>{},
+        TypeList<>{},
         TypeList<
 #ifdef SURFACE_AUDIO
             SurfaceRelief, SurfaceFinishKey,
 #endif
             SoundVertices, SamplePlayback, ContactDynamics, ReportContacts>{}
     );
-    // The output device belongs to the workspace.
-    tables.Snapshots[state::Type<AudioOutputConfig>()].History = false;
 }
 } // namespace snapshot::detail

@@ -4,8 +4,6 @@
 #include "state/Allocation.h"
 #include "state/Registry.h"
 
-#include <algorithm>
-
 namespace project {
 EntityStore::EntityStore(state::Registry &r, store::History &history, const snapshot::SnapshotEntries &components) : R(r), Table(r.AllocationState().Generations) {
     R.HistoryOwner = this;
@@ -16,12 +14,7 @@ EntityStore::EntityStore(state::Registry &r, store::History &history, const snap
     history.Track(Table.P, "entity.table", 0);
     history.Track(r.AllocationState().Free.P, "entity.free", 0);
     // Track pools in name order so the persisted track layout is independent of schema slot numbers.
-    std::vector<state::TypeId> tracked;
-    for (state::TypeId type = 0; type < components.size(); ++type) {
-        if (components[type].Emplace && components[type].History) tracked.push_back(type);
-    }
-    std::ranges::sort(tracked, {}, [&](state::TypeId type) { return components[type].Name; });
-    for (const auto type : tracked) {
+    for (const auto type : snapshot::TypesOf(snapshot::Role::Persistent)) {
         auto pool = std::make_unique<ComponentPool>(*this, type, components[type]);
         history.Track(*pool, "component." + std::string(components[type].Name), 1);
         Pools[type] = std::move(pool);

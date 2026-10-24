@@ -10,6 +10,7 @@ void RegisterPhysics(Tables &tables) {
         TypeList<
             PhysicsSimulationSettings, PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef, PhysicsMotion,
             ColliderShape, ColliderMaterial, ColliderPolicy, PhysicsVelocity, TriggerTag, TriggerNodes, PhysicsJoint>{},
+        TypeList<>{},
         TypeList<PhysicsBodyHandle, PhysicsConstraintHandle, BodyPoseCache, MeshColliderList, ColliderListedUnder>{}
     );
 }

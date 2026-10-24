@@ -27,7 +27,10 @@
 #include "ui/MaterialEdit.h"
 #include "viewport/FrameState.h"
 #include "viewport/InteractionComponents.h"
+#include "viewport/RenderExtent.h"
+#include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
+#include "viewport/ViewportComponents.h"
 #include "viewport/ViewportOps.h"
 #include <format>
 #include <imgui_internal.h>
@@ -448,11 +451,11 @@ static void RenderEntityControls(state::Registry &r, state::Entity active_entity
         if (CollapsingHeader("Camera")) {
             RenderCameraLensFields(r, active_entity);
             Separator();
-            const auto &viewport = r.Resources.get<const Viewports>().Active();
-            if (viewport.State.LookThroughEntity == active_entity) {
-                if (Button("Exit camera view")) action::Emit(action::view::ExitLookThroughCamera{viewport.Entity});
+            const auto viewport = FindActiveViewport(r);
+            if (r.get<const ViewCameraState>(viewport).LookThrough == active_entity) {
+                if (Button("Exit camera view")) action::Emit(action::view::ExitLookThroughCamera{viewport});
             } else {
-                if (Button("Look through")) action::Emit(action::view::EnterLookThroughCamera{viewport.Entity});
+                if (Button("Look through")) action::Emit(action::view::EnterLookThroughCamera{viewport});
             }
         }
     }
@@ -596,7 +599,7 @@ void RenderControls(state::Registry &r) {
                 }
                 if (interaction_mode_changed) action::Emit(action::view::SetInteractionMode{.Mode = InteractionMode(interaction_mode_value)});
                 if (interaction_mode == InteractionMode::Edit || interaction_mode == InteractionMode::Excite) {
-                    ui::ViewportEdit{r, r.Resources.get<const Viewports>().Active()}.Draw<&OrbitToActive::Value>("Orbit to active");
+                    ui::Edit{r, FindActiveViewport(r)}.Draw<&OrbitToActive::Value>("Orbit to active");
                 }
                 if (interaction_mode == InteractionMode::Edit && !active_is_armature_rc) {
                     AlignTextToFramePadding();
@@ -635,7 +638,7 @@ void RenderControls(state::Registry &r) {
                 const auto acting = FrameScene(r);
                 PushID("SceneRow");
                 const auto scenes = gltf::OrderedScenes(r);
-                const auto viewport = r.Resources.get<const Viewports>().Active().Entity;
+                const auto viewport = FindActiveViewport(r);
                 if (scenes.size() > 1) {
                     const auto &style = GetStyle();
                     const float buttons_width = CalcTextSize("New").x + CalcTextSize("Delete").x + style.FramePadding.x * 4.f + style.ItemSpacing.x * 2.f;
@@ -771,9 +774,9 @@ void RenderControls(state::Registry &r) {
         }
 
         if (BeginTabItem("Render")) {
-            const auto &viewport = r.Resources.get<const Viewports>().Active();
-            ui::ViewportEdit f{r, viewport};
-            const auto &settings = viewport.State.Display;
+            const auto viewport = FindActiveViewport(r);
+            ui::Edit f{r, viewport};
+            const auto &settings = r.get<const ViewportDisplay>(viewport);
             ui::Edit{r, state::Document}.Draw<&AnisotropicFilter::Value>();
             if (CollapsingHeader("Motion blur")) {
                 if (bool enabled = settings.MotionBlur.has_value(); Checkbox("Enabled", &enabled)) {
@@ -797,18 +800,17 @@ void RenderControls(state::Registry &r) {
         }
 
         if (BeginTabItem("Camera")) {
-            const auto &viewport = r.Resources.get<const Viewports>().Active();
-            const auto &camera = viewport.State.Camera.Active;
-            const auto extent = viewport.State.Extent;
-            const float viewport_aspect = extent.x == 0 || extent.y == 0 ? 1.f : float(extent.x) / float(extent.y);
-            if (Button("Reset##Camera")) action::Emit(action::view::ResetViewCamera{viewport.Entity});
+            const auto viewport = FindActiveViewport(r);
+            const auto &camera = r.get<const ViewCameraState>(viewport).Active;
+            const float viewport_aspect = AspectRatio(r.get<const ViewportPanel>(viewport).Extent);
+            if (Button("Reset##Camera")) action::Emit(action::view::ResetViewCamera{viewport});
             {
                 vec3 target = camera.Target;
-                ui::Gesture(SliderFloat3("Target", &target.x, -10, 10), [&] { return action::view::SetViewCameraTarget{viewport.Entity, target}; });
+                ui::Gesture(SliderFloat3("Target", &target.x, -10, 10), [&] { return action::view::SetViewCameraTarget{viewport, target}; });
             }
             {
                 CameraLens lens = camera.Data;
-                ui::Gesture(RenderCameraLensEditor(lens, camera.Distance, viewport_aspect), [&] { return action::view::SetViewCameraLens{viewport.Entity, lens}; });
+                ui::Gesture(RenderCameraLensEditor(lens, camera.Distance, viewport_aspect), [&] { return action::view::SetViewCameraLens{viewport, lens}; });
             }
             EndTabItem();
         }

@@ -8,6 +8,7 @@
 
 #include <charconv>
 #include <format>
+#include <set>
 
 namespace {
 struct NameHash {
@@ -20,21 +21,32 @@ template<typename V> using NameMap = std::unordered_map<std::string, V, NameHash
 // Counts rather than set membership keep the derived index correct when loading source data with duplicate names.
 struct EntityNameCounts {
     NameMap<size_t> Counts;
-    // Per stem, at least the largest N of every live "{stem}_{N}" name.
-    NameMap<uint64_t> MaxSuffix;
+    // Per stem, the N of each live "{stem}_{N}" name, once per name using it.
+    NameMap<std::multiset<uint64_t>> Suffixes;
 };
 void Reset(EntityNameCounts &names, state::Registry &) { names = {}; }
 
 namespace {
+struct StemSuffix {
+    std::string_view Stem;
+    uint64_t Suffix;
+};
+// The stem and numeric suffix of a "{stem}_{N}" name whose N fits in 64 bits.
+std::optional<StemSuffix> ParseSuffix(std::string_view name) {
+    const auto stem = NameStem(name);
+    if (stem.size() == name.size()) return {};
+    uint64_t suffix = 0;
+    if (std::from_chars(name.data() + stem.size() + 1u, name.data() + name.size(), suffix).ec != std::errc{}) return {};
+    return StemSuffix{stem, suffix};
+}
+
 void Track(EntityNameCounts &names, std::string_view name) {
     if (const auto it = names.Counts.find(name); it != names.Counts.end()) ++it->second;
     else names.Counts.emplace(name, 1u);
-    const auto stem = NameStem(name);
-    if (stem.size() == name.size()) return;
-    uint64_t suffix = 0;
-    if (std::from_chars(name.data() + stem.size() + 1u, name.data() + name.size(), suffix).ec != std::errc{}) return;
-    if (const auto it = names.MaxSuffix.find(stem); it != names.MaxSuffix.end()) it->second = std::max(it->second, suffix);
-    else names.MaxSuffix.emplace(stem, suffix);
+    const auto parsed = ParseSuffix(name);
+    if (!parsed) return;
+    if (const auto it = names.Suffixes.find(parsed->Stem); it != names.Suffixes.end()) it->second.insert(parsed->Suffix);
+    else names.Suffixes.emplace(parsed->Stem, std::multiset{parsed->Suffix});
 }
 
 void TrackName(state::Registry &r, state::Entity e) {
@@ -43,8 +55,16 @@ void TrackName(state::Registry &r, state::Entity e) {
 void UntrackName(state::Registry &r, state::Entity e) {
     auto *names = r.Resources.find<EntityNameCounts>();
     if (!names) return;
-    const auto it = names->Counts.find(r.get<const Name>(e).Value);
+    const auto &name = r.get<const Name>(e).Value;
+    const auto it = names->Counts.find(name);
     if (it != names->Counts.end() && --it->second == 0) names->Counts.erase(it);
+    const auto parsed = ParseSuffix(name);
+    if (!parsed) return;
+    const auto stem_it = names->Suffixes.find(parsed->Stem);
+    if (stem_it == names->Suffixes.end()) return;
+    auto &suffixes = stem_it->second;
+    if (const auto suffix_it = suffixes.find(parsed->Suffix); suffix_it != suffixes.end()) suffixes.erase(suffix_it);
+    if (suffixes.empty()) names->Suffixes.erase(stem_it);
 }
 } // namespace
 
@@ -66,8 +86,8 @@ void ReserveEntityNames(state::Registry &r, size_t additional) {
 Name &EmplaceUniqueName(state::Registry &r, state::Entity e, std::string_view prefix) {
     const auto &names = r.Resources.get<const EntityNameCounts>();
     if (!names.Counts.contains(prefix)) return r.emplace<Name>(e, std::string{prefix});
-    const auto it = names.MaxSuffix.find(prefix);
-    for (auto suffix = (it != names.MaxSuffix.end() ? it->second : 0u) + 1u;; ++suffix) {
+    const auto it = names.Suffixes.find(prefix);
+    for (auto suffix = (it != names.Suffixes.end() ? *it->second.rbegin() : 0u) + 1u;; ++suffix) {
         if (auto candidate = std::format("{}_{}", prefix, suffix); !names.Counts.contains(candidate)) return r.emplace<Name>(e, std::move(candidate));
     }
 }

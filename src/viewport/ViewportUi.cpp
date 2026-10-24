@@ -25,7 +25,9 @@
 #include "viewport/InteractionComponents.h"
 #include "viewport/RenderExtent.h"
 #include "viewport/ScreenSpace.h"
+#include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
+#include "viewport/ViewportComponents.h"
 #include "viewport/ViewportIcons.h"
 #include "viewport/ViewportOps.h"
 #include <imgui_internal.h>
@@ -85,8 +87,8 @@ bool IsSingleClicked(ImGuiMouseButton button) {
 }
 
 // During look-through, the first navigation input exits look-through instead.
-void EmitViewNav(const Viewport &viewport, auto &&nav) {
-    if (viewport.State.LookThroughEntity != state::Null) action::Emit(action::view::ExitLookThroughCamera{viewport.Entity});
+void EmitViewNav(const state::Registry &r, state::Entity viewport, auto &&nav) {
+    if (r.get<const ViewCameraState>(viewport).LookThrough != state::Null) action::Emit(action::view::ExitLookThroughCamera{viewport});
     else action::Emit(std::forward<decltype(nav)>(nav));
 }
 
@@ -97,22 +99,22 @@ vec2 ScreenPx(const mat4 &vp, const rect &viewport_rect, vec3 p) {
 }
 
 vec2 ToViewFraction(const state::Registry &r, vec2 screen_px) {
-    const auto logical = r.Resources.get<const Viewports>().Active().State.Extent;
+    const auto logical = r.get<const ViewportPanel>(FindActiveViewport(r)).Extent;
     const auto local = screen_px - ToVec2(GetCursorScreenPos());
     return Clamp(vec2{local.x / float(std::max(logical.x, 1u)), local.y / float(std::max(logical.y, 1u))}, vec2{0}, vec2{1});
 }
 // A screen position in pixels of the render target.
 vec2 ToRenderPx(const state::Registry &r, vec2 screen_px) {
-    const auto &viewport = r.Resources.get<const Viewports>().Active();
-    const auto logical = viewport.State.Extent;
-    const auto render_extent = RenderExtentPx(viewport, r.Resources.get<const FrameState>());
+    const auto viewport = FindActiveViewport(r);
+    const auto logical = r.get<const ViewportPanel>(viewport).Extent;
+    const auto render_extent = RenderExtentPx(r, viewport);
     const vec2 scale{logical.x > 0u ? float(render_extent.x) / float(logical.x) : 1.f, logical.y > 0u ? float(render_extent.y) / float(logical.y) : 1.f};
     return (screen_px - ToVec2(GetCursorScreenPos())) * scale;
 }
 
 void BeginMeshDrag(state::Registry &r, FrameState &frame, MeshOperatorDrag::Op op) {
     const rect viewport_rect{ToVec2(GetWindowPos()), ToVec2(GetContentRegionAvail())};
-    const auto &camera = r.Resources.get<const Viewports>().Active().State.Camera.Active;
+    const auto &camera = r.get<const ViewCameraState>(FindActiveViewport(r)).Active;
     const auto vp = camera.Projection(viewport_rect.size.x / viewport_rect.size.y) * camera.View();
     const auto center = EditSelectionCenter(r);
     const auto center_px = ScreenPx(vp, viewport_rect, center);
@@ -151,7 +153,7 @@ void UpdateMeshDrag(state::Registry &r, FrameState &frame) {
         const auto end = ToRenderPx(r, mouse), start = ToRenderPx(r, drag.StartPx);
         const float length = Length(end - start);
         if (length <= 0.f || drag.Staged == length) return;
-        action::Emit(action::mesh::Knife{.Start = start, .End = end, .View = std::make_unique<RenderView>(r.Resources.get<const Viewports>().Active().FrameView)}, action::Phase::Stage);
+        action::Emit(action::mesh::Knife{.Start = start, .End = end, .View = std::make_unique<RenderView>(r.get<const Viewport>(FindActiveViewport(r)).FrameView)}, action::Phase::Stage);
         drag.Staged = length;
         return;
     }
@@ -177,8 +179,8 @@ void UpdateMeshDrag(state::Registry &r, FrameState &frame) {
 
 void DrawMeshOperatorMenus(state::Registry &r) {
     using namespace action::mesh;
-    const auto &viewport = r.Resources.get<const Viewports>().Active();
-    const auto &view_orientation = viewport.FrameView.Camera.Orientation;
+    const auto viewport = FindActiveViewport(r);
+    const auto &view_orientation = r.get<const Viewport>(viewport).FrameView.Camera.Orientation;
     const auto op = [](const char *label, auto a, action::Phase phase = action::Phase::Record) {
         if (MenuItem(label)) action::Emit(std::move(a), phase);
     };
@@ -288,7 +290,7 @@ void DrawMeshOperatorMenus(state::Registry &r) {
     };
     const auto mesh_items = [&] {
         // The bisect plane and spin axis follow the view through the selection center.
-        const auto &camera = viewport.State.Camera.Active;
+        const auto &camera = r.get<const ViewCameraState>(viewport).Active;
         const auto center = EditSelectionCenter(r);
         op("Duplicate", action::mesh::Duplicate{}, action::Phase::Stage);
         op("Extrude Region", Extrude{}, action::Phase::Stage);
@@ -358,8 +360,8 @@ void Interact(state::Registry &r, FrameState &frame) {
         CurrentClickPos = GetIO().MouseClickedPos[0];
     }
 
-    const auto &viewport = r.Resources.get<const Viewports>().Active();
-    const auto logical_extent = viewport.State.Extent;
+    const auto viewport = FindActiveViewport(r);
+    const auto logical_extent = r.get<const ViewportPanel>(viewport).Extent;
     if (logical_extent.x == 0 || logical_extent.y == 0) return;
 
     if (frame.MeshDrag) {
@@ -389,16 +391,16 @@ void Interact(state::Registry &r, FrameState &frame) {
         if (key(ImGuiKey_Space)) action::Emit(action::timeline::TogglePlay{r.get<const TimelinePlayback>(state::Document).CurrentFrame});
         else if (ctrl_key(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Space)) action::Emit(action::timeline::TogglePlay{r.get<const TimelinePlayback>(state::Document).CurrentFrame, /*Reverse=*/true});
         else if (key(ImGuiKey_Z)) {
-            const auto current = viewport.State.Display.ViewportShading;
+            const auto current = r.get<const ViewportDisplay>(viewport).ViewportShading;
             const auto next = current == ViewportShadingMode::Solid ? ViewportShadingMode::MaterialPreview :
                 current == ViewportShadingMode::MaterialPreview     ? ViewportShadingMode::Rendered :
                                                                       ViewportShadingMode::Solid;
-            action::Emit(action::view::SetViewportShading{.Viewport = viewport.Entity, .Mode = next});
+            action::Emit(action::view::SetViewportShading{.Viewport = viewport, .Mode = next});
         } else if (key(ImGuiMod_Shift | ImGuiKey_Z)) {
-            const auto &settings = viewport.State.Display;
-            action::Emit(action::view::SetViewportShading{.Viewport = viewport.Entity, .Mode = settings.ViewportShading == ViewportShadingMode::Wireframe ? settings.FillMode : ViewportShadingMode::Wireframe});
+            const auto &settings = r.get<const ViewportDisplay>(viewport);
+            action::Emit(action::view::SetViewportShading{.Viewport = viewport, .Mode = settings.ViewportShading == ViewportShadingMode::Wireframe ? settings.FillMode : ViewportShadingMode::Wireframe});
         } else if (key(ImGuiMod_Alt | ImGuiKey_Z)) {
-            action::Emit(action::view::ToggleXRay{viewport.Entity});
+            action::Emit(action::view::ToggleXRay{viewport});
         }
         // Tab uses default RouteFocused (not VKey/RouteGlobal) so widget tabbing in panels keeps working.
         const bool tab_no_mods = key(ImGuiKey_Tab, ImGuiInputFlags_None);
@@ -534,17 +536,17 @@ void Interact(state::Registry &r, FrameState &frame) {
 
     const auto &io = GetIO();
     if (const vec2 wheel = std::exchange(frame.PreciseWheelDelta, vec2{0}); wheel != vec2{0, 0}) {
-        if (io.KeyCtrl || io.KeySuper) EmitViewNav(viewport, action::view::ZoomViewCamera{.Viewport = viewport.Entity, .Factor = std::pow(WheelZoomStep, -wheel.y)});
-        else EmitViewNav(viewport, action::view::OrbitViewCamera{.Viewport = viewport.Entity, .DeltaRad = wheel * WheelOrbitRadPerUnit});
+        if (io.KeyCtrl || io.KeySuper) EmitViewNav(r, viewport, action::view::ZoomViewCamera{.Viewport = viewport, .Factor = std::pow(WheelZoomStep, -wheel.y)});
+        else EmitViewNav(r, viewport, action::view::OrbitViewCamera{.Viewport = viewport, .DeltaRad = wheel * WheelOrbitRadPerUnit});
     }
     if (const float magnification = std::exchange(frame.Magnification, 0.f); magnification != 0.f) {
-        EmitViewNav(viewport, action::view::ZoomViewCamera{.Viewport = viewport.Entity, .Factor = 1.f / (1.f + magnification)});
+        EmitViewNav(r, viewport, action::view::ZoomViewCamera{.Viewport = viewport, .Factor = 1.f / (1.f + magnification)});
     }
     if (OrientationGizmo::IsActive() || frame.OverlayControlsHovered) return;
 
-    const auto render_extent = RenderExtentPx(viewport, frame);
+    const auto render_extent = RenderExtentPx(r, viewport);
     // Pick against the preceding rendered view; the live camera may already have advanced its animation.
-    const auto selection_view = viewport.FrameView;
+    const auto selection_view = r.get<const Viewport>(viewport).FrameView;
     const auto edit_mode = r.get<const EditMode>(state::Document).Value;
     const auto arm_obj_entity = FindArmatureObject(r, active_entity);
     const bool active_is_armature = arm_obj_entity != state::Null;
@@ -615,11 +617,10 @@ void Interact(state::Registry &r, FrameState &frame) {
     }
 }
 
-void InteractOverlay(state::Registry &r, FrameState &frame, const Viewport &viewport) {
+void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewport, bool active) {
     const profile::CpuScope scope{"ViewportOverlayUi"};
     const auto &icons = r.Resources.get<const ViewportIcons>();
     const rect viewport_rect{ToVec2(GetWindowPos()), ToVec2(GetContentRegionAvail())};
-    const bool active = &viewport == &r.Resources.get<const Viewports>().Active();
     const bool active_transform = r.get<const GizmoInteraction>(state::Document).IsUsing();
     static constexpr float OrientationGizmoSize{84};
     const auto &interface_theme = r.get<const InterfaceTheme>(state::Document);
@@ -659,7 +660,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, const Viewport &view
         if (IsItemHovered()) frame.OverlayControlsHovered = true;
     }
 
-    const auto &settings = viewport.State.Display;
+    const auto &settings = r.get<const ViewportDisplay>(viewport);
 
     const float shading_arrow_w = header_button_size.y * 0.55f;
     const float shading_group_width = header_button_size.x * 4.f + shading_arrow_w + ui::IconButtonSeam * 4.f;
@@ -668,7 +669,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, const Viewport &view
 
     { // Viewport shading button group + dropdown (top-right overlay)
         const auto shading_button = [&](const char *id, const SvgResource *icon, ViewportShadingMode mode) {
-            if (ui::IconButton(id, icon, settings.ViewportShading == mode)) action::Emit(action::view::SetViewportShading{.Viewport = viewport.Entity, .Mode = mode});
+            if (ui::IconButton(id, icon, settings.ViewportShading == mode)) action::Emit(action::view::SetViewportShading{.Viewport = viewport, .Mode = mode});
         };
         SetCursorScreenPos(shading_start);
         ui::BeginIconButtonGroup(ImGuiAxis_X, header_button_size, 5, rounding);
@@ -691,17 +692,17 @@ void InteractOverlay(state::Registry &r, FrameState &frame, const Viewport &view
 
                 const auto render_pbr_controls = [&]<typename T>(const char *id) {
                     PushID(id);
-                    const auto &lighting = viewport.State.Get<T>().Value;
-                    if (Button("Reset")) action::Emit(action::view::ResetPbrLighting{.Viewport = viewport.Entity, .Rendered = std::same_as<T, RenderedLighting>});
-                    ui::DrawFields<PBRViewportLighting>(ui::ViewportEdit{r, viewport}.template Sub<&T::Value>());
+                    const auto &lighting = r.get<const T>(viewport).Value;
+                    if (Button("Reset")) action::Emit(action::view::ResetPbrLighting{.Viewport = viewport, .Rendered = std::same_as<T, RenderedLighting>});
+                    ui::DrawFields<PBRViewportLighting>(ui::Edit{r, viewport}.template Sub<&T::Value>());
                     if (lighting.UseSceneWorld) {
                         if (const auto scene = FrameScene(r); r.all_of<ImageLight>(scene)) ui::Edit{r, scene}.Draw<&ImageLight::Intensity>();
                     } else {
-                        const auto hdris = GetHdriRefs(r, viewport.State.Environment.Name);
+                        const auto hdris = GetHdriRefs(r, r.get<const StudioEnvironment>(viewport).Name);
                         if (BeginCombo("Environment", hdris.Names[hdris.ActiveIndex].c_str())) {
                             for (uint32_t i = 0; i < hdris.Names.size(); ++i) {
                                 const bool selected = (i == hdris.ActiveIndex);
-                                if (Selectable(hdris.Names[i].c_str(), selected)) action::Emit(action::view::SetStudioEnvironment{viewport.Entity, hdris.Names[i]});
+                                if (Selectable(hdris.Names[i].c_str(), selected)) action::Emit(action::view::SetStudioEnvironment{viewport, hdris.Names[i]});
                                 if (selected) SetItemDefaultFocus();
                             }
                             EndCombo();
@@ -712,7 +713,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, const Viewport &view
 
                 if (WorkbenchShading(current_mode)) {
                     const bool wireframe = current_mode == ViewportShadingMode::Wireframe;
-                    ui::ViewportEdit edit{r, viewport};
+                    ui::Edit edit{r, viewport};
                     if (wireframe) edit.Draw<&ViewportDisplay::XRayWireframe>("##XRay");
                     else edit.Draw<&ViewportDisplay::XRaySolid>("##XRay");
                     SameLine();
@@ -730,7 +731,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, const Viewport &view
                     render_pbr_controls.template operator()<RenderedLighting>("RenderedLighting");
                 } else if (current_mode == ViewportShadingMode::Solid) {
                     SeparatorText("Solid lighting");
-                    auto lights = viewport.State.Lights;
+                    auto lights = r.get<const WorkspaceLights>(viewport);
                     bool changed = false;
                     if (Button("Reset##Lighting")) {
                         lights = Defaults::WorkspaceLights;
@@ -771,7 +772,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, const Viewport &view
                             PopID();
                         }
                     }
-                    if (changed) action::Emit(action::view::SetWorkspaceLights{viewport.Entity, std::make_unique<WorkspaceLights>(lights)});
+                    if (changed) action::Emit(action::view::SetWorkspaceLights{viewport, std::make_unique<WorkspaceLights>(lights)});
                 }
 
                 if (!WorkbenchShading(current_mode)) {
@@ -848,7 +849,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, const Viewport &view
                             for (const auto &entry : group.Entries) {
                                 const bool selected = entry.Value == settings.DebugChannel;
                                 if (Selectable(entry.Label, selected) && !selected) {
-                                    action::Emit(action::UpdateOf<&ViewportDisplay::DebugChannel>(action::OnViewport{viewport.Entity}, entry.Value));
+                                    action::Emit(action::UpdateOf<&ViewportDisplay::DebugChannel>(viewport, entry.Value));
                                 }
                                 if (selected) SetItemDefaultFocus();
                             }
@@ -868,7 +869,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, const Viewport &view
         SetCursorScreenPos(shading_start - ImVec2{buttons_gap + header_button_size.x, 0.f});
         ui::BeginIconButtonGroup(ImGuiAxis_X, header_button_size, 1, rounding);
         if (!applies) PushStyleVar(ImGuiStyleVar_Alpha, GetStyle().Alpha * 0.5f);
-        if (ui::IconButton("##XRay", icons.XRay.get(), XRayFlag(settings))) action::Emit(action::view::ToggleXRay{viewport.Entity});
+        if (ui::IconButton("##XRay", icons.XRay.get(), XRayFlag(settings))) action::Emit(action::view::ToggleXRay{viewport});
         if (!applies) PopStyleVar();
         ui::EndIconButtonGroup();
         if (IsItemHovered()) frame.OverlayControlsHovered = true;
@@ -879,7 +880,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, const Viewport &view
         const auto group_start = shading_start - ImVec2{2.f * buttons_gap + header_button_size.x + overlay_group_width, 0.f};
         SetCursorScreenPos(group_start);
         ui::BeginIconButtonGroup(ImGuiAxis_X, header_button_size, 2, rounding);
-        if (ui::IconButton("##Overlays", icons.Overlay.get(), settings.ShowOverlays)) action::Emit(action::UpdateOf<&ViewportDisplay::ShowOverlays>(action::OnViewport{viewport.Entity}, !settings.ShowOverlays));
+        if (ui::IconButton("##Overlays", icons.Overlay.get(), settings.ShowOverlays)) action::Emit(action::UpdateOf<&ViewportDisplay::ShowOverlays>(viewport, !settings.ShowOverlays));
         if (ui::IconButton("##OverlayArrow", nullptr, IsPopupOpen("##OverlayDropdown"), true, shading_arrow_w)) OpenPopup("##OverlayDropdown");
         ui::DropdownArrow();
         ui::EndIconButtonGroup();
@@ -891,7 +892,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, const Viewport &view
                 frame.OverlayControlsHovered = true;
                 TextUnformatted("Viewport overlays");
                 Separator();
-                ui::DrawFields<ViewportOverlays>(ui::ViewportEdit{r, viewport}.Sub<&ViewportDisplay::Overlays>());
+                ui::DrawFields<ViewportOverlays>(ui::Edit{r, viewport}.Sub<&ViewportDisplay::Overlays>());
                 EndPopup();
             }
             PopStyleVar();
@@ -901,7 +902,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, const Viewport &view
     PopItemFlag();
     SetCursorScreenPos(saved_cursor);
 
-    const auto &camera = viewport.State.Camera.Active;
+    const auto &camera = r.get<const ViewCameraState>(viewport).Active;
     { // Orientation gizmo
         const auto pos = viewport_rect.pos + vec2{GetWindowContentRegionMax().x - OrientationGizmoSize, GetWindowContentRegionMin().y} + vec2{-overlay_corner_gap, overlay_corner_gap * 2 + header_button_size.y};
         const auto axes = colors::MakeAxes(r.get<const ViewportTheme>(state::Document).AxisColors);
@@ -912,8 +913,8 @@ void InteractOverlay(state::Registry &r, FrameState &frame, const Viewport &view
             if (interaction) {
                 std::visit(
                     overloaded{
-                        [&](OrientationGizmo::RotateBy rot) { EmitViewNav(viewport, action::view::OrbitViewCamera{viewport.Entity, rot.Delta}); },
-                        [&](OrientationGizmo::AlignTo a) { EmitViewNav(viewport, action::view::SetViewCameraTargetDirection{viewport.Entity, a.Direction}); },
+                        [&](OrientationGizmo::RotateBy rot) { EmitViewNav(r, viewport, action::view::OrbitViewCamera{viewport, rot.Delta}); },
+                        [&](OrientationGizmo::AlignTo a) { EmitViewNav(r, viewport, action::view::SetViewCameraTargetDirection{viewport, a.Direction}); },
                     },
                     *interaction
                 );
@@ -983,11 +984,10 @@ void InteractOverlay(state::Registry &r, FrameState &frame, const Viewport &view
     r.remove<StartScreenTransform>(state::Document);
 }
 
-void DrawOverlay(state::Registry &r, FrameState &frame, const Viewport &viewport) {
+void DrawOverlay(state::Registry &r, FrameState &frame, state::Entity viewport, bool active) {
     const rect viewport_rect{ToVec2(GetWindowPos()), ToVec2(GetContentRegionAvail())};
-    const auto &camera = viewport.State.Camera.Active;
+    const auto &camera = r.get<const ViewCameraState>(viewport).Active;
 
-    const bool active = &viewport == &r.Resources.get<const Viewports>().Active();
     { // The transform gizmo, highlighted and with its guides in the active viewport whose mouse it follows.
         const auto axes = colors::MakeAxes(r.get<const ViewportTheme>(state::Document).AxisColors);
         const auto &gizmo = r.get<const GizmoInteraction>(state::Document);
@@ -1020,7 +1020,7 @@ void DrawOverlay(state::Registry &r, FrameState &frame, const Viewport &viewport
     }
 
     // Match the centered frame to the captured look-through region.
-    if (const auto look_through_entity = viewport.State.LookThroughEntity; look_through_entity != state::Null && !camera.IsAnimating()) {
+    if (const auto look_through_entity = LookThroughCamera(r, viewport); look_through_entity != state::Null && !camera.IsAnimating()) {
         if (const auto cd = LensOf(r, look_through_entity)) {
             const float cam_aspect = AspectRatio(*cd);
             const auto frame_size = vec2{viewport_rect.size.y * cam_aspect, viewport_rect.size.y} * LookThroughFrameRatio(cam_aspect, viewport_rect.size.x / viewport_rect.size.y);

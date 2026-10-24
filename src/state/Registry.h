@@ -88,6 +88,12 @@ struct Registry {
     template<typename C, typename... A> C &replace(Entity e, A &&...a) {
         return patch<C>(e, [&](C &value) { value = C{std::forward<A>(a)...}; });
     }
+    // Replaces the value when it differs and returns whether it did.
+    template<typename C> bool replace_if_changed(Entity e, const C &value) {
+        if (get<C>(e) == value) return false;
+        replace<C>(e, value);
+        return true;
+    }
     template<typename C, typename... A> C &emplace_or_replace(Entity e, A &&...a) {
         return all_of<C>(e) ? replace<C>(e, std::forward<A>(a)...) : emplace<C>(e, std::forward<A>(a)...);
     }

@@ -99,20 +99,20 @@ enum class RenderPhase {
 constexpr bool IsBlurAccumulate(RenderPhase p) { return p == RenderPhase::BlurAccumulateFirst || p == RenderPhase::BlurAccumulate; }
 
 // The view uniforms the viewport's frame reads at `view`, which prefiltering the viewport's studio environment on first use completes.
-SceneViewUBO SceneViewOf(state::Registry &, const Viewport &, const RenderView &);
+SceneViewUBO SceneViewOf(state::Registry &, state::Entity viewport, const RenderView &);
 // Writes the viewport's view uniforms at `view` into instance zero, and its workspace lights.
-void WriteViewUniforms(state::Registry &, Viewport &, const RenderView &);
+void WriteViewUniforms(state::Registry &, state::Entity viewport, const RenderView &);
 
-// Reserves the scratch the frames share at the largest need over the viewports about to record, so no record grows a buffer under another viewport's frame in flight.
-// Every viewport passed has built render targets.
-void ReserveFrameScratch(state::Registry &, std::span<Viewport *const>);
+// Size the shared scratch buffers for the largest viewport that has an image.
+// Call before recording frames, since a frame in flight must not see a buffer grow.
+void ReserveFrameScratch(state::Registry &);
 
 // Records the viewport's phase, whose prelude recomputes the bounds of the meshes MeshBoundsDirty marks, and consumes the marks.
 // Prelude work marks every viewport's occlusion stale, since it moves geometry each viewport's depth pyramid saw.
-void RecordRenderCommandBuffer(state::Registry &, Viewport &, MTL::CommandBuffer *, RenderPhase = RenderPhase::Full);
+void RecordRenderCommandBuffer(state::Registry &, state::Entity viewport, MTL::CommandBuffer *, RenderPhase = RenderPhase::Full);
 
 // Records every blur step and the resolve into one command buffer using one view-UBO instance per step.
-void RecordBlurStepsCommandBuffer(state::Registry &, Viewport &, MTL::CommandBuffer *, std::span<const uint32_t> sample_weights);
+void RecordBlurStepsCommandBuffer(state::Registry &, state::Entity viewport, MTL::CommandBuffer *, std::span<const uint32_t> sample_weights);
 
 // Resolves whether the listed mesh entities retain authored shading normals under morphing.
 // The CPU resolves targets with authored normal deltas.

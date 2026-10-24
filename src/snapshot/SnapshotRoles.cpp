@@ -20,6 +20,17 @@ const detail::Tables &GetTables() {
 } // namespace
 const SnapshotEntries &SnapshotTable() { return GetTables().Snapshots; }
 
+const std::vector<state::TypeId> &TypesOf(Role role) {
+    static const auto by_role = [] {
+        const auto &entries = SnapshotTable();
+        std::array<std::vector<state::TypeId>, 3> types;
+        for (state::TypeId type = 0; type < entries.size(); ++type) types[size_t(entries[type].Kind)].push_back(type);
+        for (auto &list : types) std::ranges::sort(list, {}, [&](state::TypeId type) { return entries[type].Name; });
+        return types;
+    }();
+    return by_role[size_t(role)];
+}
+
 void VerifyCoverage(const state::Registry &r) {
     std::set<std::string> unclassified; // Stable diagnostic ordering.
     for (const auto id : r.Active) {
@@ -27,7 +38,7 @@ void VerifyCoverage(const state::Registry &r) {
     }
     if (unclassified.empty()) return;
 
-    std::string msg = "snapshot: component(s) in scene storage are classified neither Persistent nor Derived "
+    std::string msg = "snapshot: component(s) in scene storage are classified neither Persistent, Workspace, nor Derived "
                       "(classify in the domain snapshot registration):";
     for (const auto &name : unclassified) (msg += "\n  ") += name;
     throw std::runtime_error(msg);

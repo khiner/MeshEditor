@@ -10,15 +10,16 @@
 ViewportRenderResources::ViewportRenderResources() = default;
 ViewportRenderResources::~ViewportRenderResources() { mtl::AutoreleaseScope::Release(InFlight); }
 
-void SubmitRecordedFrame(state::Registry &r, Viewport &viewport, MTL::CommandBuffer *command_buffer, RenderPhase phase) {
+void SubmitRecordedFrame(state::Registry &r, state::Entity viewport, MTL::CommandBuffer *command_buffer, RenderPhase phase) {
     const mtl::AutoreleaseScope native_scope;
     const auto &ctx = r.Resources.get<const mtl::Context>();
-    viewport.OcclusionStale = false;
+    const auto scene = SceneOf(r, viewport);
+    auto &live = r.edit<Viewport>(viewport);
+    live.OcclusionStale = false;
     if (phase != RenderPhase::Prepare) {
-        viewport.RecordedPhase = phase;
-        viewport.Rendered = viewport.State;
-        viewport.RenderedScene = SceneOf(r, viewport);
-        viewport.RenderRequested = false;
+        live.RecordedPhase = phase;
+        live.RenderedScene = scene;
+        live.RenderRequested = false;
     }
     ctx.CommitResidency();
     {
@@ -31,7 +32,7 @@ void SubmitRecordedFrame(state::Registry &r, Viewport &viewport, MTL::CommandBuf
     r.Resources.get<MeshStore>().FrameSubmitted();
 }
 
-void RecordAndSubmitFrame(state::Registry &r, Viewport &viewport, RenderPhase phase) {
+void RecordAndSubmitFrame(state::Registry &r, state::Entity viewport, RenderPhase phase) {
     const mtl::AutoreleaseScope native_scope;
     const auto &ctx = r.Resources.get<const mtl::Context>();
     auto *command_buffer = ctx.Queue->commandBuffer();

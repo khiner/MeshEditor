@@ -4,6 +4,7 @@
 #include "numeric/Serialize.h"
 #include "snapshot/NativeSize.h"
 #include "snapshot/SnapshotRoles.h"
+#include "snapshot/Workspace.h"
 #include "state/Registry.h"
 
 namespace snapshot::detail {
@@ -50,30 +51,9 @@ void SerializeThunk(const void *component, std::vector<std::byte> &out) {
 }
 
 template<typename C>
-void EmplaceSerialized(state::Registry &r, state::Entity e, std::span<const std::byte> bytes) {
-    if constexpr (CustomEmplace<C> != nullptr) CustomEmplace<C>(r, e, bytes);
-    else {
-        C value;
-        if (zpp::bits::failure(zpp::bits::in{bytes}(value))) return;
-        r.emplace_or_replace<C>(e, std::move(value));
-    }
-}
-
-template<typename C>
 void SerializeBytes(const void *component, std::vector<std::byte> &out) {
     const auto *bytes = static_cast<const std::byte *>(component);
     out.insert(out.end(), bytes, bytes + sizeof(C));
-}
-
-template<typename C>
-void EmplaceBytes(state::Registry &r, state::Entity e, std::span<const std::byte> bytes) {
-    if constexpr (CustomEmplace<C> != nullptr) CustomEmplace<C>(r, e, bytes);
-    else {
-        if (bytes.size() != sizeof(C)) return;
-        C value;
-        std::memcpy(&value, bytes.data(), sizeof(C));
-        r.emplace_or_replace<C>(e, std::move(value));
-    }
 }
 
 // The numeric types serialize their components in memory order.
@@ -101,6 +81,26 @@ template<typename T, size_t N> struct PaddingFreeTrait<std::array<T, N>> {
 template<typename C>
 constexpr bool EncodesAsBytes = PaddingFreeTrait<C>::Value;
 
+// Decodes a whole record in the entry's encoding.
+template<typename C> bool Decode(std::span<const std::byte> bytes, C &value) {
+    if constexpr (std::is_empty_v<C>) {
+        return bytes.empty();
+    } else if constexpr (EncodesAsBytes<C>) {
+        if (bytes.size() != sizeof(C)) return false;
+        std::memcpy(&value, bytes.data(), sizeof(C));
+        return true;
+    } else {
+        zpp::bits::in in{bytes};
+        return zpp::bits::success(in(value)) && in.position() == bytes.size();
+    }
+}
+
+template<typename C>
+void EmplaceDecoded(state::Registry &r, state::Entity e, std::span<const std::byte> bytes) {
+    if constexpr (CustomEmplace<C> != nullptr) CustomEmplace<C>(r, e, bytes);
+    else if (C value{}; Decode(bytes, value)) r.emplace_or_replace<C>(e, std::move(value));
+}
+
 // Checks the byte encoding against zpp on a value whose bytes count upward, so reordered or resized members differ.
 template<typename C>
 bool BytesMatchSerialization() {
@@ -113,11 +113,11 @@ bool BytesMatchSerialization() {
 
 // Serialized values compare through their encoding.
 // Byte-encoded and derived aggregates compare by bytes.
-template<typename C, bool Persistent>
+template<typename C, bool Recorded>
 bool ValuesEqual(const void *a, const void *b) {
     if constexpr (std::is_empty_v<C>) {
         return true;
-    } else if constexpr (Persistent && !EncodesAsBytes<C>) {
+    } else if constexpr (Recorded && !EncodesAsBytes<C>) {
         std::vector<std::byte> ba, bb;
         SerializeThunk<C>(a, ba);
         SerializeThunk<C>(b, bb);
@@ -128,9 +128,9 @@ bool ValuesEqual(const void *a, const void *b) {
 }
 
 // Returns nullptr for derived types without a valid comparator.
-template<typename C, bool Persistent>
+template<typename C, bool Recorded>
 constexpr Comparator MakeComparator() {
-    if constexpr (std::is_empty_v<C> || Persistent || (std::is_trivially_copyable_v<C> && std::is_aggregate_v<C>)) return &ValuesEqual<C, Persistent>;
+    if constexpr (std::is_empty_v<C> || Recorded || (std::is_trivially_copyable_v<C> && std::is_aggregate_v<C>)) return &ValuesEqual<C, Recorded>;
     else return nullptr;
 }
 
@@ -141,57 +141,98 @@ snapshot::SnapshotEntry MakeEntry() {
     if constexpr (std::is_empty_v<C>) return {Encoding::Tag, nullptr, &EmplaceTag<C>};
     else if constexpr (EncodesAsBytes<C>) {
         assert(BytesMatchSerialization<C>() && "a byte-encoded component must serialize as its object representation");
-        return {Encoding::Bytes, &SerializeBytes<C>, &EmplaceBytes<C>, sizeof(C)};
+        return {Encoding::Bytes, &SerializeBytes<C>, &EmplaceDecoded<C>, sizeof(C)};
     } else {
-        return {Encoding::Serialized, &SerializeThunk<C>, &EmplaceSerialized<C>};
+        return {Encoding::Serialized, &SerializeThunk<C>, &EmplaceDecoded<C>};
     }
 }
 
-template<typename C, bool Persistent>
+// Encodes a whole record in the entry's encoding.
+template<typename C> void Encode(const C &value, std::vector<std::byte> &out) {
+    if constexpr (!std::is_empty_v<C>) {
+        if constexpr (EncodesAsBytes<C>) SerializeBytes<C>(&value, out);
+        else SerializeThunk<C>(&value, out);
+    }
+}
+
+template<typename C> using RetainedValues = std::map<state::Entity, C>;
+template<typename C> RetainedValues<C> &Retained(state::Registry &r) {
+    return r.Resources.get<Retention>().Slots[state::Type<C>()].template Emplace<RetainedValues<C>>();
+}
+template<typename C> void Retain(state::Registry &r, state::Entity e, C value) { Retained<C>(r).insert_or_assign(e, std::move(value)); }
+template<typename C> void RetainDying(state::Registry &r, state::Entity e) { Retain(r, e, r.get<C>(e)); }
+
+template<typename C, Role ComponentRole>
 void Add(Tables &tables) {
     const auto id = state::Type<C>();
     if (std::exchange(tables.Classified[id], true)) throw std::logic_error("Duplicate snapshot component classification");
-    tables.Comparators[id] = MakeComparator<C, Persistent>();
-    if constexpr (Persistent) {
+    constexpr bool Recorded = ComponentRole != Role::Derived;
+    tables.Comparators[id] = MakeComparator<C, Recorded>();
+    if constexpr (Recorded) {
         auto entry = MakeEntry<C>();
         entry.Name = state::TypeName<C>();
-        entry.Rebind = [](state::Registry &r, state::Entity previous, state::Entity current) {
-            auto value = CopyNative(r.get<C>(previous));
-            r.remove<C>(previous);
-            if (current != state::Null) {
-                PrepareNative(value);
-                r.emplace_or_replace<C>(current, std::move(value));
-            }
-        };
-        entry.CopyPage = [](const state::Table &table, uint32_t page) {
-            auto value = std::make_unique<ComponentPage<C>>();
-            auto bytes = uint64_t(sizeof(ComponentPage<C>));
-            for (auto bits = table.mask(page); bits; bits &= bits - 1u) {
-                const auto slot = uint32_t(std::countr_zero(bits));
-                const auto &copy = *std::construct_at(&value->Values[slot].Value, CopyNative(*table.at<C>(table.entity(page, slot))));
-                value->Mask |= 1u << slot;
-                bytes += NativeExtra(copy);
-            }
-            auto *header = static_cast<NativePage *>(value.release());
-            return store::Blob{reinterpret_cast<std::byte *>(header), sizeof(ComponentPage<C>), [](void *p) { delete static_cast<ComponentPage<C> *>(static_cast<NativePage *>(p)); }, bytes};
-        };
-        entry.PageValue = [](const store::Blob &value, uint32_t slot) -> const void * {
-            return &static_cast<const ComponentPage<C> *>(reinterpret_cast<const NativePage *>(value.Data))->Values[slot].Value;
-        };
-        entry.MovePageValue = [](state::Registry &r, state::Entity e, store::Blob &value, uint32_t slot) {
-            auto &native = static_cast<ComponentPage<C> *>(reinterpret_cast<NativePage *>(value.Data))->Values[slot].Value;
-            PrepareNative(native);
-            r.emplace_or_replace<C>(e, std::move(native));
-        };
-        entry.Equal = MakeComparator<C, Persistent>();
+        entry.Key = state::Key<C>();
+        entry.Equal = MakeComparator<C, Recorded>();
+        if constexpr (ComponentRole == Role::Persistent) {
+            entry.Rebind = [](state::Registry &r, state::Entity previous, state::Entity current) {
+                auto value = CopyNative(r.get<C>(previous));
+                r.remove<C>(previous);
+                if (current != state::Null) {
+                    PrepareNative(value);
+                    r.emplace_or_replace<C>(current, std::move(value));
+                }
+            };
+            entry.CopyPage = [](const state::Table &table, uint32_t page) {
+                auto value = std::make_unique<ComponentPage<C>>();
+                auto bytes = uint64_t(sizeof(ComponentPage<C>));
+                for (auto bits = table.mask(page); bits; bits &= bits - 1u) {
+                    const auto slot = uint32_t(std::countr_zero(bits));
+                    const auto &copy = *std::construct_at(&value->Values[slot].Value, CopyNative(*table.at<C>(table.entity(page, slot))));
+                    value->Mask |= 1u << slot;
+                    bytes += NativeExtra(copy);
+                }
+                auto *header = static_cast<NativePage *>(value.release());
+                return store::Blob{reinterpret_cast<std::byte *>(header), sizeof(ComponentPage<C>), [](void *p) { delete static_cast<ComponentPage<C> *>(static_cast<NativePage *>(p)); }, bytes};
+            };
+            entry.PageValue = [](const store::Blob &value, uint32_t slot) -> const void * {
+                return &static_cast<const ComponentPage<C> *>(reinterpret_cast<const NativePage *>(value.Data))->Values[slot].Value;
+            };
+            entry.MovePageValue = [](state::Registry &r, state::Entity e, store::Blob &value, uint32_t slot) {
+                auto &native = static_cast<ComponentPage<C> *>(reinterpret_cast<NativePage *>(value.Data))->Values[slot].Value;
+                PrepareNative(native);
+                r.emplace_or_replace<C>(e, std::move(native));
+            };
+        } else {
+            entry.Connect = [](state::Registry &r) { r.on_destroy<C, &RetainDying<C>>(); };
+            entry.Return = [](state::Registry &r, state::Entity e, bool emplace) {
+                auto retained = Retained<C>(r).extract(e);
+                if (retained && emplace) r.emplace_or_replace<C>(e, std::move(retained.mapped()));
+            };
+            entry.AppendRecords = [](const state::Registry &r, std::vector<WorkspaceRecord> &records) {
+                const auto append = [&](state::Entity e, const C &value) { Encode(value, records.emplace_back(e, std::vector<std::byte>{}).second); };
+                for (const auto e : r.view<const C>()) append(e, r.get<const C>(e));
+                if (const auto *values = static_cast<const RetainedValues<C> *>(r.Resources.get<const Retention>().Slots[state::Type<C>()].Value)) {
+                    for (const auto &[e, value] : *values) append(e, value);
+                }
+            };
+            entry.Place = [](state::Registry &r, state::Entity e, std::span<const std::byte> bytes) {
+                C value{};
+                if (!Decode(bytes, value)) return;
+                // An identity without this value may become its kind of entity through history.
+                if (r.all_of<C>(e)) r.replace_if_changed(e, value);
+                else Retain(r, e, std::move(value));
+            };
+        }
         tables.Snapshots[id] = entry;
     }
+    tables.Snapshots[id].Kind = ComponentRole;
 }
-// Classifies one domain's Persistent and Derived components.
-template<typename... Ps, typename... Ds>
-void Classify(Tables &tables, TypeList<Ps...>, TypeList<Ds...>) {
-    (Add<Ps, true>(tables), ...);
-    (Add<Ds, false>(tables), ...);
+// Classifies one domain's Persistent, Workspace, and Derived components.
+template<typename... Ps, typename... Ws, typename... Ds>
+void Classify(Tables &tables, TypeList<Ps...>, TypeList<Ws...>, TypeList<Ds...>) {
+    (Add<Ps, Role::Persistent>(tables), ...);
+    (Add<Ws, Role::Workspace>(tables), ...);
+    (Add<Ds, Role::Derived>(tables), ...);
 }
 
 void RegisterAudio(Tables &);

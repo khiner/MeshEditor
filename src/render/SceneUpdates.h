@@ -1,9 +1,9 @@
 #pragma once
 
+#include "numeric/uvec2.h"
 #include "selection/Selection.h"
 #include <span>
 struct GpuBuffers;
-struct Viewport;
 namespace mtl {
 struct ComputeChain;
 } // namespace mtl
@@ -43,9 +43,9 @@ uint32_t ShownSceneIndex(const state::Registry &, state::Entity scene);
 bool DeriveRenderInstances(state::Registry &, bool rescope);
 // Places new render instances and compacts removed ones, and marks each buffer entity whose slots changed for layout.
 SyncResult SyncModelsBuffers(state::Registry &);
-// Sizes the viewport's targets to its render extent once the live consumer finishes sampling them, keeps the transmission target its lighting needs, and binds the sampler slot of each target that changed.
+// Sizes the viewport's targets to the render extent once the live consumer finishes sampling them, keeps the transmission target its lighting needs, and binds the sampler slot of each target that changed.
 // Returns whether a target changed.
-bool SyncViewportRenderResources(state::Registry &, Viewport &);
+bool SyncViewportRenderResources(state::Registry &, state::Entity viewport, numeric::uvec2 render_extent);
 // Whether the node draws hidden in the scene: Hidden, or outside the scene.
 bool HiddenIn(const state::Registry &, state::Entity, state::Entity scene);
 // The instance's Selected, Active and Hidden state bits.

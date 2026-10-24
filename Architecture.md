@@ -9,6 +9,9 @@
 - `state::Registry` owns entity allocation, native component pages, domain resources, and dirty sets.
     - Component and resource access uses fixed compile-time schema slots, with no runtime type lookup.
     - Keep component definitions, registration, and encoding in their owning domain TUs.
+    - Each component is Persistent, Workspace, or Derived, declared in its domain's snapshot registration.
+      Workspace components belong to the Persistent component that defines their entity's kind, are emplaced and removed with it, and belong to the identity through its returns from history.
+      A fresh identity starts from defaults.
     - Reads return const values.
       Use `edit` to capture before a write, or `patch` to also publish an update.
       Mutable views capture each value they expose; use const views for reading.
@@ -23,6 +26,7 @@
       Navigation and reset advance a separate epoch used to reject stale worker results.
 - Use ordered containers in Persistent components.
 - `Project::AfterRestore()` reconciles Derived state and must not mutate Persistent state.
+- After any committed action, a cold restore and a replay of the history, each with the live workspace applied, reproduce the live application exactly, including the composed UI pixels.
 - MeshEditor-owned files and records use one unversioned current format.
   Keep no schema revision fields, schema compatibility checks, legacy readers, migrations, or old-format tests.
   Imported formats follow their external specifications.

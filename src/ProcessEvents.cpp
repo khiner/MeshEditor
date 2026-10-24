@@ -57,6 +57,7 @@
 #include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportChanges.h"
+#include "viewport/ViewportComponents.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportInteractionState.h"
 #include "viewport/ViewportOps.h"
@@ -119,9 +120,9 @@ void UpdateSilhouetteWork(state::Registry &r) {
 } // namespace
 
 void RequestRender(state::Registry &r, bool disoccludes) {
-    for (auto &viewport : r.Resources.get<Viewports>().All) {
-        viewport.RenderRequested = true;
-        if (disoccludes) viewport.OcclusionStale = true;
+    for (const auto viewport : r.view<const Viewport>()) {
+        if (disoccludes) RequestFrame(r, viewport);
+        else r.edit<Viewport>(viewport).RenderRequested = true;
     }
 }
 
@@ -134,7 +135,6 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     auto &render = meshes.Render();
     auto &textures = r.Resources.get<TextureStore>();
     auto &environments = r.Resources.get<EnvironmentStore>();
-    auto &viewports = r.Resources.get<Viewports>();
     const auto &selection_changes = r.Resources.get<const SelectionChanges>();
     const auto &viewport_changes = r.Resources.get<const ViewportChanges>();
     const auto &scene_changes = r.Resources.get<const SceneChanges>();
@@ -189,12 +189,14 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     // Replan restored procedures without regenerating their restored outputs.
     SettleProcedures(r, pass == EventPass::Frame || pass == EventPass::Settle);
     ProcessObjectRemovals(r);
-    // The live viewports mirror the document's viewport entities, and a restored document acts on its active viewport's scene.
-    SyncViewports(r);
+    // A restored document acts on its active viewport's scene.
     if (pass == EventPass::Restore) r.Resources.get<FrameState>().Scene = ActingScene(r);
+    // The active viewport takes an action's view setup before the records derive from its display.
+    if (const auto viewport = FindActiveViewport(r); viewport != state::Null) TakePendingViewSetup(r, viewport);
+    else r.remove<PendingViewSetup>(state::Document);
     // The records derive from the display settings the visible viewports share.
     auto &scene_state = r.Resources.get<GpuSceneState>();
-    const auto displays = VisibleDisplays(viewports);
+    const auto displays = VisibleDisplays(r);
     const bool displays_changed = std::exchange(scene_state.Displays, displays) != displays;
     // A newly shown scene's states take each bone's state from the bone pass below.
     const bool scenes_changed = SyncShownScenes(r);
@@ -281,27 +283,26 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         r.remove<PendingImportMesh>(state::Document);
         if (const auto imported = ImportMesh(r, path, info); !imported) action::Fail(r, imported.error());
     }
-    // A gesture resolves against the viewport it was emitted in, with its targets sized and the rendered camera it saw, which selection, culling and LOD use.
-    const auto gesture_viewport = [&](state::Entity viewport_entity, const RenderView &view) -> Viewport & {
-        auto *found = viewports.Find(viewport_entity);
-        auto &viewport = found ? *found : viewports.All.front();
-        if (SyncViewportRenderResources(r, viewport)) viewport.RenderRequested = viewport.OcclusionStale = true;
+    // A gesture resolves against the viewport it was emitted in, with its targets sized to the view it saw and that view's camera, which selection, culling and LOD use.
+    const auto gesture_viewport = [&](state::Entity emitted_in, const RenderView &view) {
+        const auto viewport = r.all_of<Viewport>(emitted_in) ? emitted_in : FirstViewport(r);
+        if (SyncViewportRenderResources(r, viewport, uvec2{view.Extent.x, view.Extent.y})) RequestFrame(r, viewport);
         WriteViewUniforms(r, viewport, view);
         // Submit restored geometry and draw records before selection.
-        if (viewport.RenderRequested) {
+        if (r.get<const Viewport>(viewport).RenderRequested) {
             RecordAndSubmitFrame(r, viewport, RenderPhase::Prepare);
             WaitForRender(r);
         }
         return viewport;
     };
-    const auto target_px = [&](const Viewport &viewport, vec2 fraction) {
-        const auto extent = RenderExtentPx(viewport, r.Resources.get<const FrameState>());
+    const auto target_px = [&](const RenderView &view, vec2 fraction) {
+        const auto extent = uvec2{view.Extent.x, view.Extent.y};
         const auto last = Max(extent, uvec2{1}) - uvec2{1};
         return Min(uvec2{std::lround(fraction.x * float(extent.x)), std::lround(fraction.y * float(extent.y))}, last);
     };
     if (const auto *pending = r.try_get<const PendingEditElementClick>(state::Document)) {
-        const auto &viewport = gesture_viewport(pending->Viewport, pending->View);
-        const auto mouse_px = target_px(viewport, pending->Mouse);
+        const auto viewport = gesture_viewport(pending->Viewport, pending->View);
+        const auto mouse_px = target_px(pending->View, pending->Mouse);
         const bool toggle = pending->Toggle;
         r.remove<PendingEditElementClick>(state::Document);
 
@@ -319,8 +320,8 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         }
     }
     if (const auto *pending = r.try_get<const PendingBoxSelect>(state::Document)) {
-        const auto &viewport = gesture_viewport(pending->Viewport, pending->View);
-        const auto box_px = std::pair{target_px(viewport, pending->Box.first), target_px(viewport, pending->Box.second)};
+        const auto viewport = gesture_viewport(pending->Viewport, pending->View);
+        const auto box_px = std::pair{target_px(pending->View, pending->Box.first), target_px(pending->View, pending->Box.second)};
         const bool additive = pending->Additive;
         r.remove<PendingBoxSelect>(state::Document);
 
@@ -395,19 +396,15 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         }
     }
     if (const auto *pending = r.try_get<const PendingPick>(state::Document)) {
-        const auto &viewport = gesture_viewport(pending->Viewport, pending->View);
-        const auto mouse_px = target_px(viewport, pending->Mouse);
+        const auto viewport = gesture_viewport(pending->Viewport, pending->View);
+        const auto mouse_px = target_px(pending->View, pending->Mouse);
         const bool shift = pending->Shift, cycle = pending->Cycle;
         r.remove<PendingPick>(state::Document);
 
         const bool bone_mode = r.get<const Interaction>(state::Document).Mode == InteractionMode::Pose || IsBoneEditMode(r);
         const auto active = bone_mode ? FindActiveBone(r) : FindActiveEntity(r);
-        const auto logical_extent = viewport.State.Extent;
-        const auto render_extent = RenderExtentPx(viewport, r.Resources.get<const FrameState>());
-        const float render_scale = std::max(
-            logical_extent.x > 0u ? float(render_extent.x) / float(logical_extent.x) : 1.f,
-            logical_extent.y > 0u ? float(render_extent.y) / float(logical_extent.y) : 1.f
-        );
+        const auto scale = r.Resources.get<const FrameState>().DisplayFramebufferScale;
+        const float render_scale = std::max(scale.x, scale.y);
         const auto radius = std::max(1u, uint32_t(std::lround(float(ObjectSelectRadiusPx) * render_scale)));
         const auto hits = ResolveHits(r, RunObjectPick(r, viewport, mouse_px, radius), bone_mode);
         const auto pick = hits.empty() ? std::optional<SelectionHit>{} : [&]() -> std::optional<SelectionHit> {
@@ -749,10 +746,11 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     // Each viewport orbiting to the active element turns its view camera toward it.
     const auto orbit_to_active = [&](state::Entity instance_entity, Element element, uint32_t handle, bool canonical) {
         const auto world_pos = ComputeElementWorldPosition(r, instance_entity, element, handle, canonical);
-        for (auto &viewport : viewports.All) {
-            if (!viewport.State.Orbit.Value) continue;
-            auto &camera = viewport.State.Camera.Active;
-            if (const auto dir = world_pos - camera.Target; Dot(dir, dir) >= 1e-6f) camera.SetTargetDirection(Normalize(dir));
+        for (const auto [viewport, orbit, camera] : r.view<const OrbitToActive, const ViewCameraState>().each()) {
+            if (!orbit.Value) continue;
+            if (const auto dir = world_pos - camera.Active.Target; Dot(dir, dir) >= 1e-6f) {
+                r.patch<ViewCameraState>(viewport, [&](ViewCameraState &state) { state.Active.SetTargetDirection(Normalize(dir)); });
+            }
         }
     };
 
@@ -1211,12 +1209,20 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     }
     // Build demanded LODs after meshlet publication, preserving edit-mode pins.
     if (BuildDemandedClusterLods(r, chain)) request();
-    // Each viewport follows its moved look-through camera before its view uniforms read its view camera.
-    for (auto &viewport : viewports.All) {
-        const auto look_through = viewport.State.LookThroughEntity;
-        if (look_through == state::Null || !HasLens(r, look_through) || !scene_changes.WorldTransform.contains(look_through)) continue;
-        const auto &wt = *WorldTransformOf(r, look_through);
-        viewport.State.Camera.Active = ViewCamera{wt.P, wt.R, *LensOf(r, look_through)};
+    // Each viewport looking through a camera views through its lens widened to the viewport's aspect and follows the camera when it moves.
+    // A viewport whose camera is absent keeps its view until the camera returns.
+    for (const auto [viewport, camera] : r.view<const ViewCameraState>().each()) {
+        const auto look_through = LookThroughCamera(r, viewport);
+        if (look_through == state::Null) continue;
+        auto framed = camera;
+        const auto lens = WidenForLookThrough(*LensOf(r, look_through), AspectRatio(RenderExtentPx(r, viewport)));
+        if (scene_changes.WorldTransform.contains(look_through)) {
+            const auto &wt = *WorldTransformOf(r, look_through);
+            framed.Active = ViewCamera{wt.P, wt.R, lens};
+        } else {
+            framed.Active.Data = lens;
+        }
+        r.replace_if_changed(viewport, framed);
     }
     // Each viewport's frame specializes its PBR pipelines and keeps its transmission target for these features.
     if (!render_changes.PbrMeshFeatures.empty()) {
@@ -1283,6 +1289,8 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         UpdateModalPlacement(r);
         UpdateAudioContacts(r);
     }
+    // A changed view value requests its viewport's frame.
+    for (const auto viewport : viewport_changes.View) RequestFrame(r, viewport);
     r.ClearChanges();
     r.clear<MeshGeometryDirty, MeshPositionsChanged, MeshMaterialAssignment, MeshDisplayDirty>();
 }
@@ -1326,6 +1334,8 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
     view.TransformStart.bind(r).on<StartTransform>(On::Create);
     view.TransformEnd.bind(r).on<StartTransform>(On::Destroy);
     view.Theme.bind(r).on<ViewportTheme>(On::Create | On::Update);
+    view.View.bind(r);
+    [&]<typename... Cs>(TypeList<Cs...>) { (view.View.on<Cs>(On::Create | On::Update), ...); }(ViewValues{});
     auto &scene = r.Resources.emplace<SceneChanges>();
     // Publish world-transform changes through SetWorldTransform so bone display scaling reaches instance transforms.
     scene.WorldTransform.bind(r).on<BoneDisplayScale>(On::Update);

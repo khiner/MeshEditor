@@ -1,80 +1,26 @@
 #include "Compress.h"
 #include "Paths.h"
+#include "ProjectFixture.h"
 #include "RunSuites.h"
-#include "TestPaths.h"
-#include "WorkspaceState.h"
-#include "action/Build.h"
-#include "action/Errors.h"
 #include "animation/MorphWeights.h"
 #include "armature/ArmatureComponents.h"
-#include "editor/Engine.h"
 #include "mesh/MeshComponents.h"
-#include "mesh/MeshCreate.h"
 #include "object/ObjectOps.h"
 #include "project/Assets.h"
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
 #include "render/Instance.h"
-#include "render/Textures.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/RenderExtent.h"
-#include "viewport/Viewport.h"
-
-#include <print>
+#include "viewport/ViewCameraOps.h"
 
 using boost::ut::expect;
 
 namespace {
-bool Render = true;
-
-struct Fixture : Engine {
-    Fixture() : Engine{true} {}
-    explicit Fixture(const TestDir &dir) : Fixture{} {
-        expect(P->New(dir));
-        R.Resources.get<Viewports>().All.front().State.Extent = {64, 64};
-    }
-    std::vector<std::byte> Workspace() {
-        return workspace::Serialize(workspace::Capture(R, R.Resources.emplace<PanelsState>()));
-    }
-    void Audit() {
-        std::string why;
-        const bool valid = P->Audit(why);
-        if (!valid) std::println("audit: {}", why);
-        expect(valid);
-        expect(R.Resources.get<action::Errors>().Messages.empty());
-    }
-    auto Do(auto a) {
-        const auto node = P->Do(action::MakeAction(std::move(a)));
-        Audit();
-        return node.value();
-    }
-    void Commit(std::string label) {
-        P->Settle();
-        P->History.Commit(std::move(label), {});
-        Audit();
-    }
-    state::Entity Add(auto a) {
-        Do(std::move(a));
-        return FindActiveEntity(R);
-    }
-    state::Entity AddCube() { return Add(action::object::AddMeshPrimitive{primitive::Cuboid{}, std::make_unique<MeshInstanceCreateInfo>()}); }
-    state::Entity AddEmpty(std::string name) {
-        return Add(action::object::AddEmpty{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Name = std::move(name)})});
-    }
-    std::vector<std::byte> Image() {
-        // An opened document's viewport takes the fixture's extent.
-        R.Resources.get<Viewports>().All.front().State.Extent = {64, 64};
-        SubmitViewports(R);
-        WaitForRender(R);
-        const auto &image = R.Resources.get<const Viewports>().All.front().Targets.Screen->FinalColorImage;
-        return ReadbackImageRgba8(R.Resources.get<const mtl::Context>(), image, 0, 0, image.Extent);
-    }
-};
-
 struct State {
     std::vector<std::byte> Persistent, Image;
     explicit State(Fixture &f)
@@ -85,139 +31,6 @@ struct State {
         f.Audit();
     }
 };
-
-// A generated document restores its edited mesh and owned name through history and a saved project.
-void TestSavedProject() {
-    const TestDir dir{"/tmp/mesheditor-scratch/project-basic"}, saved{"/tmp/mesheditor-scratch/project-basic-saved"};
-    Fixture f{dir};
-    auto &p = *f.P;
-    const auto generated = f.Do(action::object::AddMeshPrimitive{primitive::Cuboid{}, std::make_unique<MeshInstanceCreateInfo>()});
-    const auto entity = FindActiveEntity(f.R);
-    const auto original_name = f.R.get<Name>(entity).Value;
-    const auto original = State{f};
-    const auto moved = f.Do(action::UpdateOf<&Transform::P>(action::OnActive{}, vec3{1, 0, 0}));
-    const auto transformed = State{f};
-    const std::string renamed{"Generated cube with an owned name"};
-    f.R.patch<Name>(entity, [&](auto &name) { name.Value = renamed; });
-    const auto named = p.History.Commit("Rename generated cube", {});
-    const auto edited = State{f};
-
-    p.Undo();
-    expect(f.R.get<Name>(entity).Value == original_name);
-    transformed.Check(f);
-    p.Redo();
-    expect(f.R.get<Name>(entity).Value == renamed);
-    edited.Check(f);
-    p.Navigate(0);
-    p.History.Evict(0);
-    p.Navigate(generated);
-    original.Check(f);
-    p.Navigate(moved);
-    transformed.Check(f);
-    p.Navigate(named);
-    expect(f.R.get<Name>(entity).Value == renamed);
-    edited.Check(f);
-
-    const auto workspace = f.Workspace();
-    expect(p.SaveAs(saved, workspace));
-    expect(p.Close());
-    Fixture reopened;
-    expect(reopened.P->Open(saved.Path / "working", saved.Path / "Saved.project"));
-    expect(reopened.P->History.Present == named);
-    expect(reopened.P->RestoredWorkspace == workspace);
-    expect(reopened.R.get<Name>(entity).Value == renamed);
-    edited.Check(reopened);
-}
-
-// Verify action replay restores the document and a history branch, and workspace restoration restores the editor camera.
-void TestActionsArchive() {
-    const TestDir dir{"/tmp/mesheditor-scratch/project-actions"}, archives{"/tmp/mesheditor-scratch/project-actions-archives"}, opened{"/tmp/mesheditor-scratch/project-actions-opened"};
-    const auto archive = archives.Path / "Scene.actions";
-    Fixture f{dir};
-    auto &p = *f.P;
-    const auto base = f.Do(action::object::AddMeshPrimitive{primitive::Cuboid{}, std::make_unique<MeshInstanceCreateInfo>()});
-    const auto present = f.Do(action::UpdateOf<&Transform::P>(action::OnActive{}, vec3{1, 0, 0}));
-    const auto present_state = p.History.MaterializeLive();
-    p.Navigate(base);
-    const auto branch = f.Do(action::UpdateOf<&Transform::P>(action::OnActive{}, vec3{0, 2, 0}));
-    const auto branch_state = p.History.MaterializeLive();
-    p.Navigate(present);
-
-    const CameraLens lens{Perspective{.FieldOfViewRad = .9f, .FarClip = 1000.f, .NearClip = .1f}};
-    const ViewCamera editor_view{vec3{2, 3, 9}, vec3{0}, lens};
-    auto &view = f.R.Resources.get<Viewports>().All.front();
-    view.State.Camera.Active = editor_view;
-    const auto camera = f.Add(action::object::AddCamera{std::make_unique<ObjectCreateInfo>(), lens});
-    const auto final_node = f.Do(action::view::SetLookThroughCamera{view.Entity, camera});
-    expect(view.State.LookThroughEntity == camera);
-    expect(view.State.Camera.LookThroughSaved.value() == editor_view);
-    const auto final_state = p.History.MaterializeLive();
-    const auto final_camera = view.State.Camera;
-    auto &panels = f.R.Resources.emplace<PanelsState>();
-    panels.History.Visible = false;
-    panels.PendingTabs = {{11, 12}};
-    const auto final_workspace = workspace::Serialize(workspace::Capture(f.R, panels));
-    expect(p.SaveArchive(archive, project::ArchiveForm::Actions, final_workspace));
-    expect(ReadArchiveMetadata(archive).value() == final_workspace);
-
-    expect(Decompress(archive, opened.Path));
-    Fixture restored;
-    expect(restored.P->Open(opened));
-    expect(restored.P->History.Present == final_node);
-    expect(restored.P->History.MaterializeLive() == final_state);
-    const auto workspace = workspace::Deserialize(ReadArchiveMetadata(archive).value());
-    expect(workspace.has_value());
-    if (!workspace) return;
-    auto &restored_panels = restored.R.Resources.emplace<PanelsState>();
-    workspace::Apply(restored.R, restored_panels, *workspace);
-    expect(workspace::Serialize(workspace::Capture(restored.R, restored_panels)) == final_workspace);
-    const auto restored_view = [&] { return restored.R.Resources.get<const Viewports>().All.front().State; };
-    expect(restored_view().Camera == final_camera);
-    expect(restored_view().LookThroughEntity == camera);
-    restored.Audit();
-
-    restored.P->Navigate(branch);
-    expect(restored.P->History.Present == branch);
-    expect(restored.P->History.MaterializeLive() == branch_state);
-    restored.Audit();
-    restored.P->Navigate(present);
-    expect(restored.P->History.MaterializeLive() == present_state);
-    restored.P->Undo();
-    expect(restored.P->History.Present == base);
-    restored.P->Redo();
-    expect(restored.P->History.Present == present);
-    expect(restored.P->History.MaterializeLive() == present_state);
-    restored.P->Navigate(final_node);
-    expect(restored.P->History.MaterializeLive() == final_state);
-    workspace::Apply(restored.R, restored_panels, *workspace);
-    expect(restored_view().Camera == final_camera);
-    restored.Audit();
-}
-
-// An Update on a document component outside history applies without recording, and its value survives a replay from the empty document.
-void TestWorkspaceComponent() {
-    const TestDir dir{"/tmp/mesheditor-scratch/project-workspace-component"}, archives{"/tmp/mesheditor-scratch/project-workspace-component-archives"}, opened{"/tmp/mesheditor-scratch/project-workspace-component-opened"};
-    const auto archive = archives.Path / "Scene.actions";
-    Fixture f{dir};
-    auto &p = *f.P;
-    f.AddCube();
-    expect(p.SaveArchive(archive, project::ArchiveForm::Actions, f.Workspace()));
-    expect(Decompress(archive, opened.Path));
-    const auto config_update = [] { return action::MakeAction(action::UpdateOf<&AudioOutputConfig::SampleRate>(state::Document, 96000u)); };
-    expect(!action::IsRecordable(config_update()));
-    expect(action::IsRecordable(action::MakeAction(action::UpdateOf<&Transform::P>(action::OnActive{}, vec3{1, 0, 0}))));
-    const auto present = p.History.Present;
-    const auto node_count = p.History.Nodes.size();
-    const auto document = p.History.MaterializeLive();
-    p.Do(config_update());
-    expect(f.R.get<const AudioOutputConfig>(state::Document).SampleRate == 96000u);
-    expect(p.History.Present == present);
-    expect(p.History.Nodes.size() == node_count);
-    expect(p.History.MaterializeLive() == document);
-    expect(p.Open(opened));
-    expect(f.R.get<const AudioOutputConfig>(state::Document).SampleRate == 96000u);
-    f.Audit();
-}
 
 void WriteFile(const std::filesystem::path &path, std::string_view text) {
     std::filesystem::create_directories(path.parent_path());
@@ -321,8 +134,8 @@ void TestHiddenObjectEscapesPick() {
     Fixture f{dir};
     auto &r = f.R;
     const auto cube = f.AddCube();
-    const auto &viewport = r.Resources.get<const Viewports>().All.front();
-    const RenderView view{viewport.State.Camera.Active, RenderExtentPx(viewport, r.Resources.get<const FrameState>())};
+    const auto viewport = FirstViewport(r);
+    const RenderView view{r.get<const ViewCameraState>(viewport).Active, RenderExtentPx(r, viewport)};
     const auto pick = [&] { f.P->Do(action::MakeAction(action::selection::Pick{.Mouse = {0.5f, 0.5f}, .Shift = false, .View = std::make_unique<RenderView>(view)})); };
     f.Do(action::selection::DeselectAll{});
     pick();
@@ -639,13 +452,14 @@ void TestIncrementalLayout() {
     CheckLayout(f, "object");
     f.Do(action::object::SetSelectedSmoothShading{true});
     CheckLayout(f, "smooth");
-    f.Do(action::view::SetViewportShading{f.R.Resources.get<const Viewports>().All.front().Entity, ViewportShadingMode::Wireframe});
+    f.Do(action::view::SetViewportShading{FirstViewport(f.R), ViewportShadingMode::Wireframe});
     CheckLayout(f, "wireframe");
 }
 
 } // namespace
 
 void TestProcedures();
+void TestHistory();
 
 int main(int argc, char **argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -657,9 +471,6 @@ int main(int argc, char **argv) {
 
     if (!Render) std::println("Skipping rendered-image comparisons (--no-render).");
     Paths::Init(MESHEDITOR_BUILD_DIR, MESHEDITOR_BUILD_DIR);
-    TestSavedProject();
-    TestActionsArchive();
-    TestWorkspaceComponent();
     TestExternalReferences();
     TestRenderInstanceDerivation();
     TestHiddenObjectEscapesPick();
@@ -669,5 +480,6 @@ int main(int argc, char **argv) {
     TestParentToDescendantFails();
     TestIncrementalLayout();
     TestProcedures();
+    TestHistory();
     return RunSuites();
 }

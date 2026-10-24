@@ -1,5 +1,6 @@
 #include "AudioDevice.h"
 
+#include "AudioOutputConfig.h"
 #include "AudioSystem.h"
 #include "CoreAudioTypes.h"
 
@@ -14,7 +15,8 @@ constexpr AudioObjectPropertyAddress DeviceNameAddress{kAudioObjectPropertyName,
 constexpr AudioObjectPropertyAddress DevicesAddress{kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
 constexpr AudioObjectPropertyAddress DefaultOutputAddress{kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
 constexpr AudioObjectPropertyAddress OutputStreamsAddress{kAudioDevicePropertyStreamConfiguration, kAudioObjectPropertyScopeOutput, kAudioObjectPropertyElementMain};
-constexpr AudioObjectPropertyAddress SampleRateAddress{kAudioDevicePropertyNominalSampleRate, kAudioObjectPropertyScopeOutput, kAudioObjectPropertyElementMain};
+// The nominal rate is a global property, and the device notifies its listeners only under this scope.
+constexpr AudioObjectPropertyAddress SampleRateAddress{kAudioDevicePropertyNominalSampleRate, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
 constexpr AudioObjectPropertyAddress SampleRatesAddress{kAudioDevicePropertyAvailableNominalSampleRates, kAudioObjectPropertyScopeOutput, kAudioObjectPropertyElementMain};
 
 void Check(OSStatus status, std::string_view operation) {
@@ -143,7 +145,17 @@ OSStatus DataCallback(
     return noErr;
 }
 
-void CloseDevice(AudioDeviceResource &res) {
+// The device reports its nominal rate from a CoreAudio thread, and the main thread follows it.
+OSStatus ReportSampleRate(AudioObjectID device, UInt32, const AudioObjectPropertyAddress *, void *context) noexcept {
+    Float64 rate{};
+    UInt32 size = sizeof(rate);
+    if (AudioObjectGetPropertyData(device, &SampleRateAddress, 0, nullptr, &size, &rate) == noErr) {
+        static_cast<AudioDeviceResource *>(context)->ReportedSampleRate.store(uint32_t(std::lround(rate)), std::memory_order_release);
+    }
+    return noErr;
+}
+
+void CloseUnit(AudioDeviceResource &res) {
     if (res.OutputUnit) {
         auto *unit = static_cast<AudioUnit>(res.OutputUnit);
         if (res.Started) AudioOutputUnitStop(unit);
@@ -151,14 +163,20 @@ void CloseDevice(AudioDeviceResource &res) {
         AudioComponentInstanceDispose(unit);
     }
     res.OutputUnit = nullptr;
-    res.SampleRate = 0;
-    res.Initialized = false;
     res.Started = false;
+}
+
+void CloseDevice(AudioDeviceResource &res) {
+    CloseUnit(res);
+    if (res.Device) AudioObjectRemovePropertyListener(res.Device, &SampleRateAddress, &ReportSampleRate, &res);
+    res.Device = kAudioObjectUnknown;
     ReleaseWorkgroup(res.RenderWorkgroup);
     res.RenderWorkgroup = nullptr;
 }
 
-AudioUnit OpenDevice(AudioDeviceResource &res, AudioDeviceID device, uint32_t sample_rate) {
+// The unit renders at the device's rate, and its stream format is fixed while it is initialized.
+void OpenUnit(AudioDeviceResource &res, AudioDeviceInfo &info, uint32_t sample_rate) {
+    const AudioDeviceID device = res.Device;
     const AudioComponentDescription description{kAudioUnitType_Output, kAudioUnitSubType_HALOutput, kAudioUnitManufacturer_Apple, 0, 0};
     auto *const component = AudioComponentFindNext(nullptr, &description);
     if (!component) throw std::runtime_error("CoreAudio HAL output component is unavailable");
@@ -178,11 +196,13 @@ AudioUnit OpenDevice(AudioDeviceResource &res, AudioDeviceID device, uint32_t sa
         const AURenderCallbackStruct callback{.inputProc = DataCallback, .inputProcRefCon = &res};
         Check(AudioUnitSetProperty(unit, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Global, 0, &callback, sizeof(callback)), "installing the render callback");
         Check(AudioUnitInitialize(unit), "initializing the HAL output unit");
-        return unit;
     } catch (...) {
         AudioComponentInstanceDispose(unit);
         throw;
     }
+    res.OutputUnit = unit;
+    info.SampleRate = sample_rate;
+    info.NativeSampleRates = SampleRates(device, sample_rate);
 }
 
 } // namespace
@@ -192,32 +212,37 @@ AudioDeviceResource::~AudioDeviceResource() {
     CloseDevice(*this);
 }
 
-// Reopen only when the device or rate changes.
-// Volume, mute, and on/off apply live.
-void ReconcileAudioDevice(AudioDeviceResource &res, const AudioOutputConfig &config, const AudioOutputMix &mix) {
-    if (!res.Initialized || config.DeviceName != res.DeviceName || config.SampleRate != res.RequestedSampleRate) {
+bool ReconcileAudioDevice(AudioDeviceResource &res, AudioDeviceInfo &info, const AudioOutputConfig &config) {
+    bool reopened = false;
+    if (res.Device == kAudioObjectUnknown || config.DeviceName != res.DeviceName) {
         CloseDevice(res);
-
-        const AudioDeviceID device = RefreshDevices(res.OutDeviceNames, config.DeviceName);
+        res.Device = RefreshDevices(info.OutDeviceNames, config.DeviceName);
+        res.DeviceName = config.DeviceName;
+        res.RequestedSampleRate = 0;
+        const auto sample_rate = uint32_t(std::lround(GetProperty<Float64>(res.Device, SampleRateAddress, "reading the device sample rate")));
+        res.ReportedSampleRate.store(sample_rate, std::memory_order_release);
+        Check(AudioObjectAddPropertyListener(res.Device, &SampleRateAddress, &ReportSampleRate, &res), "listening for the device sample rate");
+        res.RenderWorkgroup = DeviceWorkgroup(res.Device);
+        OpenUnit(res, info, sample_rate);
+        reopened = true;
+    }
+    if (config.SampleRate != res.RequestedSampleRate) {
+        res.RequestedSampleRate = config.SampleRate;
         if (config.SampleRate) {
             const Float64 requested_rate = config.SampleRate;
-            Check(AudioObjectSetPropertyData(device, &SampleRateAddress, 0, nullptr, sizeof(requested_rate), &requested_rate), "setting the device sample rate");
+            Check(AudioObjectSetPropertyData(res.Device, &SampleRateAddress, 0, nullptr, sizeof(requested_rate), &requested_rate), "requesting the device sample rate");
         }
-        const auto sample_rate = uint32_t(std::lround(GetProperty<Float64>(device, SampleRateAddress, "reading the device sample rate")));
-        res.NativeSampleRates = SampleRates(device, sample_rate);
-        res.OutputUnit = OpenDevice(res, device, sample_rate);
-        res.SampleRate = sample_rate;
-        res.RenderWorkgroup = DeviceWorkgroup(device);
-        res.Initialized = true;
-        res.DeviceName = config.DeviceName;
-        res.RequestedSampleRate = config.SampleRate;
     }
-
-    ApplyAudioMix(res, mix);
+    if (const auto reported = res.ReportedSampleRate.load(std::memory_order_acquire); reported != info.SampleRate) {
+        CloseUnit(res);
+        OpenUnit(res, info, reported);
+        reopened = true;
+    }
+    return reopened;
 }
 
 void ApplyAudioMix(AudioDeviceResource &res, const AudioOutputMix &mix) {
-    if (!res.Initialized) return;
+    if (!res.OutputUnit) return;
     const float target_gain = mix.Muted ? 0.f : mix.Volume;
     res.TargetGain.store(target_gain, std::memory_order_relaxed);
     auto *unit = static_cast<AudioUnit>(res.OutputUnit);

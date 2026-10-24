@@ -26,8 +26,6 @@ void Apply(state::Registry &r, const Action &action) {
         Fail(r, "Only an object can be selected");
         return false;
     };
-    // A pending gesture resolves against the viewport it was emitted in.
-    const auto active_viewport = [&] { return r.Resources.get<const Viewports>().Active().Entity; };
 
     std::visit(
         overloaded{
@@ -77,14 +75,14 @@ void Apply(state::Registry &r, const Action &action) {
                     r.clear<Selected>();
                 }
             },
-            // GPU selection resolves the rectangle after action application.
-            [&](const ApplyBoxSelect &a) { r.emplace_or_replace<PendingBoxSelect>(state::Document, a.Box, a.Additive, *a.View, active_viewport()); },
+            // GPU selection resolves the rectangle after action application, against the viewport the gesture was emitted in.
+            [&](const ApplyBoxSelect &a) { r.emplace_or_replace<PendingBoxSelect>(state::Document, a.Box, a.Additive, *a.View, FindActiveViewport(r)); },
             // GPU selection resolves the pixel after action application.
-            [&](const Pick &a) { r.emplace_or_replace<PendingPick>(state::Document, a.Mouse, a.Shift, false, *a.View, active_viewport()); },
-            [&](const PickCycle &a) { r.emplace_or_replace<PendingPick>(state::Document, a.Mouse, a.Shift, true, *a.View, active_viewport()); },
+            [&](const Pick &a) { r.emplace_or_replace<PendingPick>(state::Document, a.Mouse, a.Shift, false, *a.View, FindActiveViewport(r)); },
+            [&](const PickCycle &a) { r.emplace_or_replace<PendingPick>(state::Document, a.Mouse, a.Shift, true, *a.View, FindActiveViewport(r)); },
             [&](const ApplyEditElementClick &a) {
                 end_box_select_interaction();
-                r.emplace_or_replace<PendingEditElementClick>(state::Document, a.Mouse, a.Toggle, *a.View, active_viewport());
+                r.emplace_or_replace<PendingEditElementClick>(state::Document, a.Mouse, a.Toggle, *a.View, FindActiveViewport(r));
             },
             [&](const ApplyTreeSelection &a) {
                 using Clear = ApplyTreeSelection::ClearKind;

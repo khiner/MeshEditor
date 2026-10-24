@@ -16,7 +16,6 @@
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewCameraOps.h"
-#include "viewport/Viewport.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportInteractionState.h"
 #include "viewport/ViewportOps.h"
@@ -30,17 +29,22 @@ const StartPivot &StartPivotOf(state::Registry &r) {
     if (const auto *pivot = r.try_get<const StartPivot>(state::Document)) return *pivot;
     return r.emplace<StartPivot>(state::Document, TransformPivot(r));
 }
+
+// Patches the viewport's view value, when the viewport holds one.
+template<typename C> void PatchView(state::Registry &r, state::Entity viewport, auto &&fn) {
+    if (r.all_of<C>(viewport)) r.patch<C>(viewport, fn);
+}
+// Patches the viewport's active view camera and stops its transition.
+void PatchCameraStopped(state::Registry &r, state::Entity viewport, auto &&fn) {
+    PatchView<ViewCameraState>(r, viewport, [&](ViewCameraState &s) {
+        fn(s.Active);
+        s.Active.StopMoving();
+    });
+}
 } // namespace
 
 namespace action::view {
 void Apply(state::Registry &r, const Action &action) {
-    // Runs `fn` on the viewport's state, if the viewport exists.
-    const auto edit_view = [&](state::Entity viewport_entity, auto &&fn) {
-        if (auto *viewport = r.Resources.get<Viewports>().Find(viewport_entity)) fn(viewport->State);
-    };
-    const auto edit_camera_stopped = [&](state::Entity viewport, auto &&fn) {
-        edit_view(viewport, [&](ViewportState &s) { fn(s.Camera.Active); s.Camera.Active.StopMoving(); });
-    };
     std::visit(
         overloaded{
             [&](const SetInteractionMode &a) { ::SetInteractionMode(r, a.Mode); },
@@ -58,26 +62,26 @@ void Apply(state::Registry &r, const Action &action) {
                 const auto e = FindActiveEntity(r);
                 if (e == state::Null || !HasLens(r, e)) return;
                 const auto &wt = *WorldTransformOf(r, e);
-                edit_view(a.Viewport, [&](ViewportState &s) {
+                PatchView<ViewCameraState>(r, a.Viewport, [&](ViewCameraState &s) {
                     SetLookThrough(r, s, e);
-                    s.Camera.Active.AnimateToLookThrough(wt.P, wt.R, 1.f);
+                    s.Active.AnimateToLookThrough(wt.P, wt.R, 1.f);
                 });
             },
-            [&](const ExitLookThroughCamera &a) { edit_view(a.Viewport, [](ViewportState &s) { ClearLookThrough(s); }); },
+            [&](const ExitLookThroughCamera &a) { PatchView<ViewCameraState>(r, a.Viewport, [](ViewCameraState &s) { ClearLookThrough(s); }); },
             [&](const SetLookThroughCamera &a) {
                 if (!HasLens(r, a.Entity) || !WorldTransformOf(r, a.Entity)) return;
                 const auto &wt = *WorldTransformOf(r, a.Entity);
-                edit_view(a.Viewport, [&](ViewportState &s) {
+                PatchView<ViewCameraState>(r, a.Viewport, [&](ViewCameraState &s) {
                     SetLookThrough(r, s, a.Entity);
-                    s.Camera.Active = ViewCamera{wt.P, wt.R, *LensOf(r, a.Entity)};
+                    s.Active = ViewCamera{wt.P, wt.R, *LensOf(r, a.Entity)};
                 });
             },
             [&](const SetViewportScene &a) {
                 if (r.all_of<Scene>(a.Scene) && r.all_of<ViewportScene>(a.Viewport)) r.replace<ViewportScene>(a.Viewport, a.Scene);
             },
-            [&](const OrbitViewCamera &a) { edit_view(a.Viewport, [&](ViewportState &s) { s.Camera.Active.RotateBy(a.DeltaRad); }); },
-            [&](const ZoomViewCamera &a) { edit_view(a.Viewport, [&](ViewportState &s) { s.Camera.Active.ZoomBy(a.Factor); }); },
-            [&](const SetStudioEnvironment &a) { edit_view(a.Viewport, [&](ViewportState &s) { s.Environment.Name = a.Name; }); },
+            [&](const OrbitViewCamera &a) { PatchView<ViewCameraState>(r, a.Viewport, [&](ViewCameraState &s) { s.Active.RotateBy(a.DeltaRad); }); },
+            [&](const ZoomViewCamera &a) { PatchView<ViewCameraState>(r, a.Viewport, [&](ViewCameraState &s) { s.Active.ZoomBy(a.Factor); }); },
+            [&](const SetStudioEnvironment &a) { PatchView<StudioEnvironment>(r, a.Viewport, [&](StudioEnvironment &s) { s.Name = a.Name; }); },
             [&](AddViewport) {
                 const auto viewport = r.create();
                 r.emplace<ViewportScene>(viewport, FrameScene(r));
@@ -86,22 +90,20 @@ void Apply(state::Registry &r, const Action &action) {
             [&](const RemoveViewport &a) {
                 if (r.all_of<ViewportScene>(a.Viewport) && r.view<const ViewportScene>().size() > 1) r.destroy(a.Viewport);
             },
-            [&](const ResetViewCamera &a) { edit_camera_stopped(a.Viewport, [](ViewCamera &c) { c = Defaults::ViewCamera; }); },
+            [&](const ResetViewCamera &a) { PatchCameraStopped(r, a.Viewport, [](ViewCamera &c) { c = Defaults::ViewCamera; }); },
             [&](ResetViewportTheme) { r.emplace_or_replace<ViewportTheme>(state::Document, Defaults::ViewportTheme); },
             [&](ResetNodeTheme) { r.replace<procedure::NodeTheme>(state::Document, procedure::NodeTheme{}); },
             [&](ResetInterfaceTheme) { r.replace<InterfaceTheme>(state::Document, InterfaceTheme{}); },
             [&](ResetTimelineTheme) { r.replace<TimelineTheme>(state::Document, TimelineTheme{}); },
             [&](const ResetPbrLighting &a) {
                 static constexpr PBRViewportLighting Defaults{false, false, 1.f, 0.f, 0.5f, 0.f, true};
-                edit_view(a.Viewport, [&](ViewportState &s) {
-                    if (a.Rendered) s.RenderLighting = {Defaults};
-                    else s.PreviewLighting = {Defaults};
-                });
+                if (a.Rendered) PatchView<RenderedLighting>(r, a.Viewport, [](RenderedLighting &l) { l = {Defaults}; });
+                else PatchView<MaterialPreviewLighting>(r, a.Viewport, [](MaterialPreviewLighting &l) { l = {Defaults}; });
             },
-            [&](const SetWorkspaceLights &a) { edit_view(a.Viewport, [&](ViewportState &s) { s.Lights = *a.Value; }); },
-            [&](const SetViewCameraTarget &a) { edit_camera_stopped(a.Viewport, [&](ViewCamera &c) { c.Target = a.Target; }); },
-            [&](const SetViewCameraLens &a) { edit_camera_stopped(a.Viewport, [&](ViewCamera &c) { c.Data = a.Data; }); },
-            [&](const SetViewCameraTargetDirection &a) { edit_view(a.Viewport, [&](ViewportState &s) { s.Camera.Active.SetTargetDirection(a.Direction); }); },
+            [&](const SetWorkspaceLights &a) { PatchView<WorkspaceLights>(r, a.Viewport, [&](WorkspaceLights &l) { l = *a.Value; }); },
+            [&](const SetViewCameraTarget &a) { PatchCameraStopped(r, a.Viewport, [&](ViewCamera &c) { c.Target = a.Target; }); },
+            [&](const SetViewCameraLens &a) { PatchCameraStopped(r, a.Viewport, [&](ViewCamera &c) { c.Data = a.Data; }); },
+            [&](const SetViewCameraTargetDirection &a) { PatchView<ViewCameraState>(r, a.Viewport, [&](ViewCameraState &s) { s.Active.SetTargetDirection(a.Direction); }); },
             [&](const TransformSelection &a) {
                 const bool bone_edit_mode = IsBoneEditMode(r);
                 const auto &root_selected = r.get<const TransformRoots>(state::Document).Roots;
@@ -236,14 +238,13 @@ void Apply(state::Registry &r, const Action &action) {
                 r.emplace_or_replace<StartScreenTransform>(state::Document, a.Value);
             },
             [&](const SetViewportShading &a) {
-                edit_view(a.Viewport, [&](ViewportState &s) {
-                    s.Display.ViewportShading = a.Mode;
-                    if (a.Mode != ViewportShadingMode::Wireframe) s.Display.FillMode = a.Mode;
+                PatchView<ViewportDisplay>(r, a.Viewport, [&](ViewportDisplay &d) {
+                    d.ViewportShading = a.Mode;
+                    if (a.Mode != ViewportShadingMode::Wireframe) d.FillMode = a.Mode;
                 });
             },
             [&](const ToggleXRay &a) {
-                edit_view(a.Viewport, [](ViewportState &s) {
-                    auto &d = s.Display;
+                PatchView<ViewportDisplay>(r, a.Viewport, [](ViewportDisplay &d) {
                     if (d.ViewportShading == ViewportShadingMode::Wireframe) d.XRayWireframe = !d.XRayWireframe;
                     else d.XRaySolid = !d.XRaySolid;
                 });

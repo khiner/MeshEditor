@@ -18,6 +18,7 @@
 #include "render/Textures.h"
 #include "scene/SceneGraph.h"
 #include "viewport/Viewport.h"
+#include "viewport/ViewportComponents.h"
 #include "viewport/ViewportEvents.h"
 
 #include <boost/ut.hpp>
@@ -41,7 +42,7 @@ struct Fixture : TestDir, Engine {
     void Reset(std::string_view name) {
         Observe = {};
         expect(P->New(Path / name));
-        R.Resources.get<Viewports>().All.front().State.Extent = {64, 64};
+        R.replace<ViewportPanel>(FirstViewport(R), ViewportPanel{.Extent = {64, 64}});
     }
     uint32_t Do(auto a) {
         const auto node = P->Do(action::MakeAction(std::move(a)));
@@ -96,15 +97,15 @@ struct Fixture : TestDir, Engine {
     }
     std::vector<std::byte> Image() {
         Render();
-        const auto &image = R.Resources.get<const Viewports>().All.front().Targets.Screen->FinalColorImage;
+        const auto &image = R.get<const Viewport>(FirstViewport(R)).Targets.Screen->FinalColorImage;
         return ReadbackImageRgba8(R.Resources.get<const mtl::Context>(), image, 0, 0, image.Extent);
     }
-    const SceneViewUBO &View() const { return *reinterpret_cast<const SceneViewUBO *>(R.Resources.get<const Viewports>().All.front().SceneViewUBO.Contents().data()); }
+    const SceneViewUBO &View() const { return *reinterpret_cast<const SceneViewUBO *>(R.get<const Viewport>(FirstViewport(R)).SceneViewUBO.Contents().data()); }
     // Renders a frame and clicks the element nearest the world position, adding it to the selection with `toggle`.
     void Click(vec3 position, bool toggle) {
         Render();
         const auto clip = View().ViewProj * vec4{position.x, position.y, position.z, 1.f};
-        Do(action::selection::ApplyEditElementClick{{.5f + .5f * clip.x / clip.w, .5f - .5f * clip.y / clip.w}, toggle, std::make_unique<RenderView>(R.Resources.get<const Viewports>().All.front().FrameView)});
+        Do(action::selection::ApplyEditElementClick{{.5f + .5f * clip.x / clip.w, .5f - .5f * clip.y / clip.w}, toggle, std::make_unique<RenderView>(R.get<const Viewport>(FirstViewport(R)).FrameView)});
     }
     // Process direct scene writes and commit them as one history node.
     void Commit(std::string label) {

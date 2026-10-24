@@ -27,10 +27,7 @@ namespace action {
 struct OnActive {};
 struct OnSelected {};
 struct OnSelectedDelta {}; // Offsets each selected target by the active target's change since the drag start.
-struct OnViewport {
-    state::Entity Viewport;
-};
-using Target = std::variant<OnActive, OnSelected, OnSelectedDelta, OnViewport, state::Entity>;
+using Target = std::variant<OnActive, OnSelected, OnSelectedDelta, state::Entity>;
 
 // A field's value at the start of a SelectedDelta drag, so each step (and replay) computes start + delta.
 struct DragFieldStart {
@@ -121,6 +118,6 @@ using Core = std::variant<
     DestroyEntity>;
 
 void Apply(state::Registry &, const Core &);
-// An Update records when it targets entity components that history tracks.
+// An Update records unless it targets a workspace component.
 bool IsRecordable(const Core &);
 } // namespace action

@@ -10,6 +10,8 @@
 namespace action::mesh {
 struct InsetPreviewCache;
 } // namespace action::mesh
+namespace snapshot {
+} // namespace snapshot
 
 namespace project {
 // An action's name, and for a field write the component and field it names.
@@ -118,6 +120,16 @@ struct Project {
     void ClearDocument();
     void AfterRestore();
     state::Registry &R;
+
+private:
+    // The document left for another, pinned, with the workspace it had.
+    struct LeftDocument {
+        store::Snapshot Pin;
+        std::vector<std::byte> Workspace;
+    };
+    LeftDocument LeaveDocument();
+    // Restores the left document after a failed switch.
+    void ReturnToLeft(const LeftDocument &);
 };
 
 Project &Session(state::Registry &);

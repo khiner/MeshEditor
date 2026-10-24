@@ -37,6 +37,7 @@ void RegisterArmature(Tables &tables) {
         TypeList<
             Armature, ArmatureObject, BoneJointEntities, BoneJoint, BoneSubPartOf, BoneActive, BoneSelection, BoneConstraints,
             ArmatureModifier, BoneIndex, BoneDisplayScale, BoneAttachment, BoneDelta>{},
+        TypeList<>{},
         TypeList<PosedLocal, ArmaturePoseState>{}
     );
 }

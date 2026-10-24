@@ -25,7 +25,6 @@
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionState.h"
 #include "state/Registry.h"
-#include "viewport/FrameState.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/RenderExtent.h"
 #include "viewport/Viewport.h"
@@ -520,16 +519,17 @@ SyncResult SyncModelsBuffers(state::Registry &r) {
     return {std::move(newly_inserted), std::move(new_mesh_entities), std::move(new_extras_entities), slots_changed};
 }
 
-bool SyncViewportRenderResources(state::Registry &r, Viewport &viewport) {
-    auto &targets = viewport.Targets;
-    const auto render_extent = std::bit_cast<mtl::Extent2D>(RenderExtentPx(viewport, r.Resources.get<const FrameState>()));
+bool SyncViewportRenderResources(state::Registry &r, state::Entity viewport_entity, uvec2 extent) {
+    const auto render_extent = std::bit_cast<mtl::Extent2D>(extent);
     if (render_extent.Width == 0 || render_extent.Height == 0) return false;
+    const bool want_transmission = RealTransmission(r, viewport_entity, r.get<const ViewportDisplay>(viewport_entity), r.Resources.get<const GpuSceneState>().MeshPbrFeatures);
+    auto &viewport = r.edit<Viewport>(viewport_entity);
+    auto &targets = viewport.Targets;
 
     const auto &ctx = r.Resources.get<const mtl::Context>();
     const auto &samplers = viewport.Samplers;
     auto &slots = r.Resources.get<mtl::BindlessSet>();
     const auto set_sampler = [&](uint32_t slot, SampledTexture sampled) { slots.SetSampler({SlotType::Sampler, slot}, sampled.Texture, sampled.Sampler); };
-    const bool want_transmission = RealTransmission(viewport.State, r.Resources.get<const GpuSceneState>().MeshPbrFeatures);
     if (targets.BuiltColorExtent() == render_extent) {
         if (!targets.EnsureTransmissionResources(ctx, render_extent, want_transmission)) return false;
         set_sampler(samplers.Transmission, targets.TransmissionSampler());

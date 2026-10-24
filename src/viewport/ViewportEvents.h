@@ -35,7 +35,7 @@ enum class PresentationLighting : uint8_t {
     SceneLights,
 };
 
-// The view a recorded action asks for, which the active viewport takes in its next frame step.
+// The view a recorded action asks for, which the active viewport takes in the settle pass.
 // Navigation and replay remove it, so only a live action sets a view up.
 struct PendingViewSetup {
     std::optional<float> WorldOpacity; // The imported world's opacity under rendered lighting.

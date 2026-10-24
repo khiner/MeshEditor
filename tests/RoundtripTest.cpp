@@ -1185,7 +1185,6 @@ int main(int argc, const char **argv) {
             const auto load = gltf::LoadGltf(src, fx.R);
             if (!load) return; // Loader limitation on source (e.g., unsupported extension); skips both round-trips.
             ProcessComponentEvents(fx.R); // mirror prod: a frame runs (posing skinned models) before save
-            fx.R.remove<PendingViewSetup>(state::Document); // and a viewport step takes the import's view setup, which this fixture has no viewport for
 
             const auto out_path = tmp_root / (sample_name + ".gltf");
             const auto save = gltf::SaveGltf(out_path, fx.R);

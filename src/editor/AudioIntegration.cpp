@@ -5,6 +5,7 @@
 #include "SortUnique.h"
 #include "action/Errors.h"
 #include "audio/AudioDevice.h"
+#include "audio/AudioOutputConfig.h"
 #include "audio/AudioQueries.h"
 #include "audio/ContactScene.h"
 #include "audio/FftAnalysis.h"
@@ -16,6 +17,7 @@
 #include "project/Project.h"
 #include "scene/Entity.h"
 #include "scene/SceneChanges.h"
+#include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
 
 #include <print>
@@ -279,7 +281,7 @@ void TriggerModalStrike(state::Registry &r, state::Entity e, uint32_t excitable_
 struct AudioChanges {
     state::DirtySet VertexForce, ModalGain, ModalTuning, ModalSoundControls, RecordingStart;
     state::DirtySet SoundVerticesDerivation, ContactReportingDerivation, ContactDynamicsDerivation, ModelRescaleEdit;
-    state::DirtySet Config, Mix;
+    state::DirtySet Mix;
     // Explicit sets that keep destroyed entities until ApplyCompletedModalSolves consumes them.
     state::DirtySet Modes, Samples;
 };
@@ -555,6 +557,8 @@ void RegisterAudioComponentHandlers(state::Registry &r) {
     r.Resources.emplace<AudioSamples>();
     r.Resources.emplace<ModalWarmStart>();
     r.Resources.emplace<ModalSolveJobs>();
+    r.Resources.emplace<AudioOutputConfig>();
+    r.Resources.emplace<AudioDeviceInfo>();
 
     auto &changes = r.Resources.emplace<AudioChanges>();
     changes.VertexForce.bind(r).on<::VertexForce>(On::Create | On::Update | On::Destroy);
@@ -576,9 +580,15 @@ void RegisterAudioComponentHandlers(state::Registry &r) {
     changes.ModelRescaleEdit.bind(r)
         .on<AcousticMaterial>(On::Create | On::Update)
         .on<PhysicsMotion>(On::Create | On::Update | On::Destroy);
-    changes.Config.bind(r).on<AudioOutputConfig>(On::Create | On::Update);
     changes.Mix.bind(r).on<AudioOutputMix>(On::Create | On::Update);
     RegisterSurfaceContactHandlers(r);
+}
+
+void ReconcileOutputDevice(state::Registry &r, AudioDeviceResource &res) {
+    if (!ReconcileAudioDevice(res, r.Resources.get<AudioDeviceInfo>(), r.Resources.get<const AudioOutputConfig>())) return;
+    ApplyAudioMix(res, r.get<const AudioOutputMix>(state::Document));
+    // A reopened device publishes a new scheduling group, which the render threads have to be re-placed into.
+    r.Resources.get<ModalAudio>().RenderPool.SetWorkgroup(res.RenderWorkgroup);
 }
 
 void ApplyCompletedModalSolves(state::Registry &r, EventPass pass) {
@@ -719,19 +729,14 @@ void ApplyCompletedModalSolves(state::Registry &r, EventPass pass) {
         if (!r.all_of<ModalModes, SoundVertices, Recording>(e)) continue;
         if (r.get<const Recording>(e).Frame == 0) TriggerModalStrike(r, e, GetActiveVertexIndex(r, e), 1.f, 1.f);
     }
-    // Reinitialize the output device after configuration changes, which can change the negotiated sample rate.
+    // The device follows the output configuration, and a reopen can change the negotiated sample rate.
     // Apply mix changes through level and on/off controls.
     bool device_rate_changed = false;
     if (auto *res = r.Resources.find<AudioDeviceResource>()) {
-        if (const auto &config_tracker = changes.Config; !config_tracker.empty()) {
-            const uint32_t prev_rate = res->SampleRate;
-            for (const auto e : config_tracker) {
-                if (r.all_of<AudioOutputConfig, AudioOutputMix>(e)) ReconcileAudioDevice(*res, r.get<const AudioOutputConfig>(e), r.get<const AudioOutputMix>(e));
-            }
-            device_rate_changed = res->SampleRate != prev_rate;
-            // A reopened device publishes a new scheduling group, which the render threads have to be re-placed into.
-            r.Resources.get<ModalAudio>().RenderPool.SetWorkgroup(res->RenderWorkgroup);
-        }
+        const auto &info = r.Resources.get<const AudioDeviceInfo>();
+        const uint32_t prev_rate = info.SampleRate;
+        ReconcileOutputDevice(r, *res);
+        device_rate_changed = info.SampleRate != prev_rate;
         for (const auto e : changes.Mix) {
             if (r.all_of<AudioOutputMix>(e)) ApplyAudioMix(*res, r.get<const AudioOutputMix>(e));
         }
@@ -808,7 +813,8 @@ void UpdateModalPlacement(state::Registry &r) {
     // Publish camera-derived object attenuation because the audio thread cannot access the registry.
     const auto *device = r.Resources.find<AudioDeviceResource>();
     if (!device) return;
-    if (moved || bank.GainListener != r.Resources.get<const Viewports>().Active().State.Camera.Active.Position()) UpdateListenerGains(r, bank);
+    const auto listener = ListenerPosition(r);
+    if (listener && (moved || bank.GainListener != *listener)) UpdateListenerGains(r, bank, *listener);
 }
 
 void UpdateAudioContacts(state::Registry &r) {

@@ -55,7 +55,9 @@
 #include "selection/SelectionState.h"
 #include "timeline/Timeline.h"
 #include "viewport/InteractionComponents.h"
+#include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
+#include "viewport/ViewportComponents.h"
 #include "viewport/ViewportInteractionState.h"
 
 namespace {
@@ -620,7 +622,7 @@ void RecordDepthPyramid(
 }
 
 // The visibility/depth pair is still intact here; no shading variant needs velocity outputs.
-void RecordMotionBlurPostFx(state::Registry &r, const Viewport &viewport, mtl::PassChain &chain, uint32_t ubo_offset) {
+void RecordMotionBlurPostFx(state::Registry &r, const Viewport &viewport, const ViewCamera &camera, mtl::PassChain &chain, uint32_t ubo_offset) {
     const auto &slots = r.Resources.get<const mtl::BindlessSet>();
     const auto &buffers = r.Resources.get<const GpuBuffers>();
     const auto &main = GetPipelines(r).Main;
@@ -659,7 +661,7 @@ void RecordMotionBlurPostFx(state::Registry &r, const Viewport &viewport, mtl::P
     main.MotionBlurGather.Bind(render);
     render->setFragmentBuffer(blur.TileIndirection.get(), 0, 5);
     render->setFragmentTexture(*blur.TileImage, 0);
-    const auto inverse_projection = Inverse(viewport.State.Camera.Active.Projection(float(extent.Width) / float(extent.Height)));
+    const auto inverse_projection = Inverse(camera.Projection(float(extent.Width) / float(extent.Height)));
     const float noise_phase = r.get<const PlaybackFrame>(state::Document).Value * std::numbers::phi_v<float>;
     encode::SetPushConstants(render, MotionBlurGatherPushConstants{samplers.SceneDepth, samplers.Velocity, samplers.SceneColor, noise_phase - std::floor(noise_phase), {inverse_projection[2].z, inverse_projection[3].z, inverse_projection[2].w, inverse_projection[3].w}});
     render->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));
@@ -999,7 +1001,7 @@ constexpr uint32_t LodPinFlagsOf(const ViewportDisplay &settings) {
     return flags;
 }
 
-void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, const PreludeSource &prelude, RenderPhase phase, uint32_t ubo_offset, uint32_t sample_weight = 1u) {
+void RecordPhase(state::Registry &r, state::Entity viewport_entity, mtl::PassChain &chain, const PreludeSource &prelude, RenderPhase phase, uint32_t ubo_offset, uint32_t sample_weight = 1u) {
     const profile::CpuScope scope{"RecordRenderCommandBuffer"};
     // Multi-step blur separates scene accumulation from sharp overlay rendering.
     const bool draw_scene = phase != RenderPhase::BlurResolve;
@@ -1009,9 +1011,11 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
     auto &buffers = r.Resources.get<GpuBuffers>();
     const auto &meshes = r.Resources.get<MeshStore>();
     auto &pipelines = GetPipelines(r);
+    const auto &camera = r.get<const ViewCameraState>(viewport_entity).Active;
+    const auto logical_extent = r.get<const ViewportPanel>(viewport_entity).Extent;
+    auto &viewport = r.edit<Viewport>(viewport_entity);
+    const auto &settings = viewport.FrameView.Display;
     auto &targets = viewport.Targets;
-    const auto &view = viewport.State;
-    const auto &settings = view.Display;
     const auto interaction_mode = r.get<const Interaction>(state::Document).Mode;
     const auto edit_mode = r.get<const EditMode>(state::Document).Value;
     const bool is_edit_mode = interaction_mode == InteractionMode::Edit;
@@ -1027,9 +1031,11 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
     const bool overlay_scene_depth = overlay_behind < 1.f;
     const bool show_overlays = settings.ShowOverlays;
     auto &scene_state = r.Resources.get<GpuSceneState>();
-    // Forward PBR specializes on the viewport's lighting, the scene's material features, and whether a drawn mesh has line or point meshlets.
-    const auto *pbr = show_rendered ? &pipelines.Main.Compiler.Variant(PbrFeaturesOf(view, scene_state.MeshPbrFeatures), buffers.DrawsNonTriangles()) : nullptr;
-    const bool real_transmission = RealTransmission(view, scene_state.MeshPbrFeatures);
+    const auto &lighting = ActivePbrLighting(r, viewport_entity, settings);
+    // Forward PBR specializes on the scene's material features, punctual lights when the view uses the scene lights, and whether a drawn mesh has line or point meshlets.
+    const auto pbr_features = scene_state.MeshPbrFeatures | (lighting.UseSceneLights ? uint32_t(PbrFeature::Punctual) : 0u);
+    const auto *pbr = show_rendered ? &pipelines.Main.Compiler.Variant(pbr_features, buffers.DrawsNonTriangles()) : nullptr;
+    const bool real_transmission = RealTransmission(r, viewport_entity, settings, scene_state.MeshPbrFeatures);
     const auto &samplers = viewport.Samplers;
     if (std::exchange(scene_state.OverlayJobsDirty, false)) BuildOverlayJobs(r, buffers, scene_state.Displays.BoundingBoxes);
     const bool render_silhouette = show_overlays && settings.Overlays.OutlineSelected && !is_excite_mode &&
@@ -1049,7 +1055,7 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
         encode::BindScene(compute, slots, buffers, viewport, ubo_offset);
         RecordPrelude(compute, pipelines, GetMeshPipelines(r), buffers, meshes, prelude);
         // The moved geometry can reveal what any viewport's depth pyramid occludes.
-        for (auto &other : r.Resources.get<Viewports>().All) other.OcclusionStale = true;
+        for (const auto [_, other] : r.view<Viewport>().each()) other.OcclusionStale = true;
     }
     if (is_edit_mode && std::exchange(scene_state.EditPreludePending, false)) RecordSparseEditPrelude(r, viewport, chain);
     if (phase == RenderPhase::Prepare) return;
@@ -1299,7 +1305,7 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
             main.SilhouetteEdgeColor.Bind(encoder);
             // In mesh Edit mode, suppress active silhouette (element selection drives active state differently).
             // In armature Edit/Pose mode, the active bone gets the active-color silhouette.
-            const auto active_entity = FindActiveEntity(r, SceneOf(r, viewport));
+            const auto active_entity = FindActiveEntity(r, SceneOf(r, viewport_entity));
             const auto active_bone = FindActiveBone(r);
             const bool armature_mode = FindArmatureObject(r, active_entity) != state::Null;
             uint32_t active_object_id = 0;
@@ -1436,7 +1442,7 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
         }
         // Origins draw over every other overlay at a fixed size in logical pixels, one instance per instance slot.
         if (draw_origins) {
-            const float scale = float(main_extent.Width) / float(std::max(view.Extent.x, 1u));
+            const float scale = float(main_extent.Width) / float(std::max(logical_extent.x, 1u));
             main.ObjectOrigins.Bind(encoder);
             encode::SetPushConstants(encoder, ObjectOriginPushConstants{
                                                   .TransformSlot = buffers.Instances.TransformBuffer.Slot,
@@ -1458,7 +1464,7 @@ void RecordPhase(state::Registry &r, Viewport &viewport, mtl::PassChain &chain, 
             visibility->setCullMode(MTL::CullModeNone);
             DrawMeshletList(visibility, buffers, uint32_t(MeshletRoute::Transmission), 0u, false, true);
         }
-        RecordMotionBlurPostFx(r, viewport, chain, ubo_offset);
+        RecordMotionBlurPostFx(r, viewport, camera, chain, ubo_offset);
     }
 
     { // View-transform the scene, then composite display-referred overlays.
@@ -1720,7 +1726,7 @@ void DrawVertexBlocks(
     }
 }
 
-void RecordRenderCommandBuffer(state::Registry &r, Viewport &viewport, MTL::CommandBuffer *command_buffer, RenderPhase phase) {
+void RecordRenderCommandBuffer(state::Registry &r, state::Entity viewport, MTL::CommandBuffer *command_buffer, RenderPhase phase) {
     const mtl::AutoreleaseScope native_scope;
     profile::BeginRecording();
     mtl::PassChain chain{command_buffer, profile::RecordingTimer()};
@@ -1729,7 +1735,7 @@ void RecordRenderCommandBuffer(state::Registry &r, Viewport &viewport, MTL::Comm
     profile::EndRecording();
 }
 
-void RecordBlurStepsCommandBuffer(state::Registry &r, Viewport &viewport, MTL::CommandBuffer *command_buffer, std::span<const uint32_t> sample_weights) {
+void RecordBlurStepsCommandBuffer(state::Registry &r, state::Entity viewport, MTL::CommandBuffer *command_buffer, std::span<const uint32_t> sample_weights) {
     const mtl::AutoreleaseScope native_scope;
     profile::BeginRecording();
     mtl::PassChain chain{command_buffer, profile::RecordingTimer()};
@@ -1742,15 +1748,16 @@ void RecordBlurStepsCommandBuffer(state::Registry &r, Viewport &viewport, MTL::C
     profile::EndRecording();
 }
 
-void ReserveFrameScratch(state::Registry &r, std::span<Viewport *const> viewports) {
+void ReserveFrameScratch(state::Registry &r) {
     auto &buffers = r.Resources.get<GpuBuffers>();
     const auto &scene_state = r.Resources.get<const GpuSceneState>();
     uint64_t coverage = 0u;
     bool transmission = false;
-    for (const auto *viewport : viewports) {
-        const auto extent = viewport->Targets.Screen->SceneColorImage.Extent;
+    for (const auto [viewport, live] : r.view<const Viewport>().each()) {
+        if (!ViewportImageReady(live)) continue;
+        const auto extent = live.Targets.Screen->SceneColorImage.Extent;
         coverage = std::max<uint64_t>(coverage, uint64_t(extent.Width) * extent.Height);
-        transmission |= RealTransmission(viewport->State, scene_state.MeshPbrFeatures);
+        transmission |= RealTransmission(r, viewport, r.get<const ViewportDisplay>(viewport), scene_state.MeshPbrFeatures);
     }
     buffers.WireCoverageBuffer.Reserve(coverage * sizeof(uint32_t));
     const GpuBuffers::MeshletFlagWork all{buffers.LodNodeCount, buffers.MeshletInstanceCount};
@@ -1761,20 +1768,22 @@ void ReserveFrameScratch(state::Registry &r, std::span<Viewport *const> viewport
     buffers.EnsureMeshletVisibilityCapacity(buffers.EditCull, edit.Meshlets, edit.Nodes, edit.Meshlets);
 }
 
-SceneViewUBO SceneViewOf(state::Registry &r, const Viewport &viewport, const RenderView &render_view) {
+SceneViewUBO SceneViewOf(state::Registry &r, state::Entity viewport_entity, const RenderView &render_view) {
     const auto &buffers = r.Resources.get<const GpuBuffers>();
     const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &render = meshes.Render();
     const auto &environments = r.Resources.get<const EnvironmentStore>();
+    const auto &viewport = r.get<const Viewport>(viewport_entity);
+    const auto &settings = render_view.Display;
+    const auto look_through = LookThroughCamera(r, viewport_entity);
     const auto &targets = viewport.Targets;
-    const auto &settings = viewport.State.Display;
     const auto interaction_mode = r.get<const Interaction>(state::Document).Mode;
     const bool is_pbr_mode = !WorkbenchShading(settings.ViewportShading);
-    const auto &active_lighting = ActivePbrLighting(viewport.State);
+    const auto &active_lighting = ActivePbrLighting(r, viewport_entity, settings);
     const bool use_scene_lights = is_pbr_mode && active_lighting.UseSceneLights;
     const bool use_scene_world = is_pbr_mode && active_lighting.UseSceneWorld;
-    const auto ibl = use_scene_world ? environments.SceneWorld.Ibl : StudioIbl(r, viewport.State.Environment.Name);
-    const auto scene = SceneOf(r, viewport);
+    const auto ibl = use_scene_world ? environments.SceneWorld.Ibl : StudioIbl(r, r.get<const StudioEnvironment>(viewport_entity).Name);
+    const auto scene = SceneOf(r, viewport_entity);
     const auto *image_light = r.try_get<const ImageLight>(scene);
     const float env_intensity = use_scene_world && image_light ? image_light->Intensity : active_lighting.EnvIntensity;
     const mat3 env_rotation = [&]() -> mat3 {
@@ -1785,7 +1794,6 @@ SceneViewUBO SceneViewOf(state::Registry &r, const Viewport &viewport, const Ren
     }();
     const auto *pending = r.try_get<const PendingTransform>(state::Document);
     const auto &mesh_slots = meshes.Slots();
-    const auto look_through = viewport.State.LookThroughEntity;
     const auto scene_index = ShownSceneIndex(r, scene);
     SceneViewUBO view{
         .LightCount = buffers.Lights[scene_index].Count<LightRecord>(),
@@ -1847,9 +1855,11 @@ SceneViewUBO SceneViewOf(state::Registry &r, const Viewport &viewport, const Ren
     return view;
 }
 
-void WriteViewUniforms(state::Registry &r, Viewport &viewport, const RenderView &view) {
-    viewport.SceneViewUBO.Update(BytesOf(SceneViewOf(r, viewport, view)));
-    viewport.WorkspaceLightsUBO.Update(BytesOf(viewport.State.Lights));
+void WriteViewUniforms(state::Registry &r, state::Entity viewport_entity, const RenderView &view) {
+    const auto scene_view = SceneViewOf(r, viewport_entity, view);
+    auto &viewport = r.edit<Viewport>(viewport_entity);
+    viewport.SceneViewUBO.Update(BytesOf(scene_view));
+    viewport.WorkspaceLightsUBO.Update(BytesOf(r.get<const WorkspaceLights>(viewport_entity)));
     viewport.FrameView = view;
 }
 

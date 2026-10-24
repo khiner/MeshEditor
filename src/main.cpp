@@ -12,6 +12,7 @@
 #include "action/Build.h"
 #include "action/Errors.h"
 #include "audio/AudioDevice.h"
+#include "audio/AudioOutputConfig.h"
 #include "audio/AudioUi.h"
 #include "audio/ModalModes.h"
 #include "editor/AudioIntegration.h"
@@ -45,7 +46,9 @@
 #include "ui/MacBackend.h"
 #include "viewport/FrameState.h"
 #include "viewport/RenderExtent.h"
+#include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
+#include "viewport/ViewportComponents.h"
 #include "viewport/ViewportConsumerFence.h"
 #include "viewport/ViewportIcons.h"
 #include "viewport/ViewportUi.h"
@@ -247,10 +250,9 @@ std::future<GltfSampleTrees> SampleTreesFuture;
 
 using project::Session;
 
-// Applies the action, and a view setup it asks for, before the next one reads or overrides the view.
+// Applies the action, whose settle takes a view setup it asks for before the next one reads or overrides the view.
 void Perform(state::Registry &r, auto action) {
     Session(r).Do(action::MakeAction(std::move(action)));
-    TakePendingViewSetup(r, r.Resources.get<Viewports>().Active());
 }
 
 // Finish GPU work and stop playback before modifying scene structure.
@@ -302,16 +304,10 @@ fs::path NewWorkingDirectory() {
     return std::exchange(directory.Path, {});
 }
 
-// A project without a stored workspace starts from the default view values, keeping each viewport's extent.
-void ResetViewStates(state::Registry &r) {
-    for (auto &viewport : r.Resources.get<Viewports>().All) viewport.State = {.Extent = viewport.State.Extent};
-}
-
 bool NewScene(state::Registry &r, bool empty) {
     if (!SaveWorkspace(r)) return false;
     const auto dir = NewWorkingDirectory();
     if (dir.empty() || !Session(r).New(dir, empty)) return false;
-    ResetViewStates(r);
     Paths::SetProject(dir);
     ++RestoreGeneration;
     return true;
@@ -334,7 +330,6 @@ bool OpenProjectDir(state::Registry &r, const fs::path &working_dir, const fs::p
     ++RestoreGeneration;
     const auto stored = saved.empty() ? workspace::Load(working_dir / workspace::FileName) : workspace::Deserialize(session.RestoredWorkspace);
     if (stored) workspace::Apply(r, r.Resources.get<PanelsState>(), *stored);
-    else ResetViewStates(r);
     return true;
 }
 
@@ -502,6 +497,7 @@ void DrawFieldTypeLine(const char *type, const FieldSpec *spec) {
     Text("Type: %s | Range: %c%s, %s%c", type, spec->HasMin() ? '[' : '(', lo, hi, spec->HasMax() ? ']' : ')');
 }
 
+// Draws after every other panel, so it describes the item hovered in this frame.
 void DrawInfoPanel(state::Registry &r, Panel &panel) {
     const auto info = std::exchange(ui::Hovered, {});
     if (!panel.Visible) return;
@@ -539,19 +535,19 @@ void FollowHoveredViewport(state::Registry &r) {
     }
     const auto *hovered = GImGui->HoveredWindow;
     if (!hovered) return;
-    auto &viewports = r.Resources.get<Viewports>();
-    const auto it = std::ranges::find(viewports.All, hovered->RootWindow->ID, [&](const Viewport &v) { return ImHashStr(ViewportPanelName(r, v.Entity).c_str()); });
-    if (it != viewports.All.end()) viewports.ActiveIndex = size_t(it - viewports.All.begin());
+    const auto viewports = r.view<const Viewport>();
+    const auto it = std::ranges::find(viewports, hovered->RootWindow->ID, [&](state::Entity viewport) { return ImHashStr(ViewportPanelName(r, viewport).c_str()); });
+    if (it != viewports.end()) r.replace_if_changed(state::Document, ActiveViewport{*it});
 }
 
 // A viewport panel open this frame, with its content size.
-struct ViewportPanel {
+struct OpenPanel {
     state::Entity Entity;
     uvec2 Extent;
 };
 
 struct EditorPanelsFrame {
-    std::vector<ViewportPanel> Viewports; // In resource order.
+    std::vector<OpenPanel> Viewports; // In entity index order.
 };
 
 EditorPanelsFrame BeginEditorPanels(
@@ -561,7 +557,6 @@ EditorPanelsFrame BeginEditorPanels(
     RenderDebugPanel(r, ctx, layer, panels, io);
     if (project::DrawHistoryPanel(Session(r), panels.History, interactive) && SaveWorkspace(r)) Session(r).ClearHistory();
     DrawStylePanel(r, panels.Style);
-    DrawInfoPanel(r, panels.Info);
     if (panels.ImGuiDemo.Visible) ShowDemoWindow(&panels.ImGuiDemo.Visible);
     if (panels.ImSpinnerDemo.Visible) {
         if (Begin(panels.ImSpinnerDemo.Name, &panels.ImSpinnerDemo.Visible)) ImSpinner::demoSpinners();
@@ -600,18 +595,18 @@ EditorPanelsFrame BeginEditorPanels(
 
     if (interactive) FollowHoveredViewport(r);
     auto &frame_state = r.Resources.get<FrameState>();
-    auto &viewports = r.Resources.get<Viewports>();
-    const auto &active = viewports.Active();
-    const bool closable = viewports.All.size() > 1;
+    const auto viewports = r.view<const Viewport>();
+    const auto active = FindActiveViewport(r);
+    const bool closable = viewports.size() > 1;
     EditorPanelsFrame frame;
-    for (auto &viewport : viewports.All) {
+    for (const auto viewport : viewports) {
         // A panel in an unselected dock tab draws nothing, so its viewport does no work this frame.
-        viewport.Shown = false;
-        if (!viewport.State.Visible) continue;
-        const auto name = ViewportPanelName(r, viewport.Entity);
+        r.edit<Viewport>(viewport).Shown = false;
+        if (!r.get<const ViewportPanel>(viewport).Open) continue;
+        const auto name = ViewportPanelName(r, viewport);
         // A panel ImGui has never seen opens as a tab beside the active viewport's panel, or in the central dock node before that panel exists.
         if (const auto id = ImHashStr(name.c_str()); !FindWindowByID(id) && !FindWindowSettingsByID(id)) {
-            const auto *beside = viewport.Entity == active.Entity ? nullptr : FindWindowByName(ViewportPanelName(r, active.Entity).c_str());
+            const auto *beside = viewport == active ? nullptr : FindWindowByName(ViewportPanelName(r, active).c_str());
             const auto *central = DockBuilderGetCentralNode(dockspace_id);
             SetNextWindowDockID(beside ? beside->DockId : central ? central->ID :
                                                                     0);
@@ -619,31 +614,30 @@ EditorPanelsFrame BeginEditorPanels(
         PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
         bool open = true;
         if (Begin(name.c_str(), closable ? &open : nullptr)) {
-            viewport.Shown = true;
-            if (interactive && viewport.Entity == active.Entity) Interact(r, frame_state);
+            r.edit<Viewport>(viewport).Shown = true;
+            if (interactive && viewport == active) Interact(r, frame_state);
             auto &draw_list = *GetWindowDrawList();
             draw_list.ChannelsSplit(2);
             draw_list.ChannelsSetCurrent(1);
-            InteractOverlay(r, frame_state, viewport);
+            InteractOverlay(r, frame_state, viewport, viewport == active);
             if (frame.Viewports.empty()) DrawModalJobsOverlay(r);
             const auto content_region = GetContentRegionAvail();
-            frame.Viewports.push_back({viewport.Entity, {uint32_t(std::max(content_region.x, 0.f)), uint32_t(std::max(content_region.y, 0.f))}});
+            frame.Viewports.push_back({viewport, {uint32_t(std::max(content_region.x, 0.f)), uint32_t(std::max(content_region.y, 0.f))}});
         }
         End();
         PopStyleVar();
-        if (!open) action::Emit(action::view::RemoveViewport{viewport.Entity});
+        if (!open) action::Emit(action::view::RemoveViewport{viewport});
     }
     return frame;
 }
 
 // Inserts each open viewport panel's image beneath the overlay its panel drew, after the frame's renders are submitted.
 void DisplayViewportPanels(state::Registry &r, const EditorPanelsFrame &frame) {
-    auto &viewports = r.Resources.get<Viewports>();
+    const auto active = FindActiveViewport(r);
     for (const auto &panel : frame.Viewports) {
-        const auto *viewport = viewports.Find(panel.Entity);
-        if (!viewport) continue;
+        if (!r.all_of<Viewport>(panel.Entity)) continue;
         Begin(ViewportPanelName(r, panel.Entity).c_str());
-        DisplayViewport(r, *viewport);
+        DisplayViewport(r, panel.Entity, panel.Entity == active);
         GetWindowDrawList()->ChannelsMerge();
         End();
     }
@@ -793,6 +787,8 @@ struct ValidationInputs {
     fs::path WorkingDir;
 
     workspace::State Workspace;
+    AudioOutputConfig AudioOutput;
+    AudioDeviceInfo Device;
     CA::MetalLayer *Layer{};
     ImVec2 DisplaySize{}, FramebufferScale{}, MousePos{};
     ImGuiID HoveredIdPreviousFrame{};
@@ -838,6 +834,7 @@ ImDrawData *RenderValidationApp(
             EndMainMenuBar();
         }
         DisplayViewportPanels(r, BeginEditorPanels(r, ctx, inputs.Layer, panels, io, dockspace_id, /*interactive=*/false));
+        DrawInfoPanel(r, panels.Info);
         Render();
         workspace::ApplyPending(panels);
     };
@@ -890,12 +887,14 @@ ValidationResult RestoreForValidation(
     }
     timings.RestoreMs = ElapsedMs(begin);
     workspace::Apply(restored, restored.Resources.get<PanelsState>(), inputs.Workspace);
+    restored.Resources.get<AudioOutputConfig>() = inputs.AudioOutput;
+    restored.Resources.get<AudioDeviceInfo>() = inputs.Device;
     frame.Scene = ActingScene(restored);
     begin = SteadyClock::now();
     restored.replace<TimelinePlayback>(state::Document, inputs.Playback);
     restored.edit<PlaybackFrame>(state::Document).Value = inputs.PlaybackFrame;
-    for (auto &viewport : restored.Resources.get<Viewports>().All) {
-        if (viewport.Displayed()) PresentViewport(restored, viewport);
+    for (const auto viewport : restored.view<const Viewport>()) {
+        if (Displayed(restored, viewport)) PresentViewport(restored, viewport);
     }
     timings.ResetMs += reset_ms;
     RenderAppImage(ctx, RenderValidationApp(restored, inputs), engine.App);
@@ -923,8 +922,8 @@ void RequireEqual(const store::History &live, std::string_view what, std::span<c
 void CompareValidationImages(state::Registry &r, ValidationSession &session, std::string_view restore) {
     const mtl::AutoreleaseScope native_scope;
     const auto &ctx = r.Resources.get<const mtl::Context>();
-    const std::array<const mtl::Texture *, 2> expected{&session.Live.Target, &r.Resources.get<const Viewports>().All.front().Targets.Screen->FinalColorImage};
-    const std::array<const mtl::Texture *, 2> restored{&session.Restored.App.Target, &session.Restored.Core->R.Resources.get<const Viewports>().All.front().Targets.Screen->FinalColorImage};
+    const std::array<const mtl::Texture *, 2> expected{&session.Live.Target, &r.get<const Viewport>(FirstViewport(r)).Targets.Screen->FinalColorImage};
+    const std::array<const mtl::Texture *, 2> restored{&session.Restored.App.Target, &session.Restored.Core->R.get<const Viewport>(FirstViewport(session.Restored.Core->R)).Targets.Screen->FinalColorImage};
     const std::array names{std::format("{}-app", restore), std::format("{}-viewport", restore)};
     for (uint32_t i = 0; i < restored.size(); ++i) {
         if (restored[i]->Extent != expected[i]->Extent) {
@@ -992,6 +991,8 @@ void ValidateRoundTrip(
     const ValidationInputs inputs{
         .WorkingDir = Paths::Project(),
         .Workspace = CaptureWorkspace(r),
+        .AudioOutput = r.Resources.get<const AudioOutputConfig>(),
+        .Device = r.Resources.get<const AudioDeviceInfo>(),
         .Layer = layer,
         .DisplaySize = draw_data->DisplaySize,
         .FramebufferScale = draw_data->FramebufferScale,
@@ -1035,7 +1036,7 @@ void ValidateRoundTrip(
 }
 #endif
 
-std::expected<fs::path, std::string> SaveScreenshot(state::Registry &r, const Viewport &viewport, const fs::path &path) {
+std::expected<fs::path, std::string> SaveScreenshot(state::Registry &r, state::Entity viewport, const fs::path &path) {
     auto image = ReadbackViewportImage(r, viewport);
     if (!image) return std::unexpected{std::move(image.error())};
 
@@ -1055,8 +1056,8 @@ std::expected<fs::path, std::string> SaveScreenshot(state::Registry &r, const Vi
 }
 
 // Fit the scene into the middle half of the view and return false while GPU bounds are pending.
-bool FrameScene(state::Registry &r, Viewport &viewport, float aspect_ratio) {
-    const auto &cam = viewport.State.Camera.Active;
+bool FrameScene(state::Registry &r, state::Entity viewport, float aspect_ratio) {
+    const auto &cam = r.get<const ViewCameraState>(viewport).Active;
     const auto *persp = std::get_if<Perspective>(&cam.Data);
     if (!persp) return true;
 
@@ -1101,7 +1102,7 @@ bool FrameScene(state::Registry &r, Viewport &viewport, float aspect_ratio) {
     fit.FarClip = distance + plane_reach;
     fit.NearClip = std::max(distance - plane_reach, fit.FarClip / 10000.f);
 
-    viewport.State.Camera.Active = ViewCamera{center + distance * away, center, CameraLens{fit}};
+    r.patch<ViewCameraState>(viewport, [&](ViewCameraState &camera) { camera.Active = ViewCamera{center + distance * away, center, CameraLens{fit}}; });
     return true;
 }
 
@@ -1196,11 +1197,11 @@ struct BenchmarkDriver {
         }
     }
 
-    void Apply(const Viewport &viewport, uvec2 extent) {
+    void Apply(const state::Registry &r, state::Entity viewport, uvec2 extent) {
         switch (Action) {
             case CaptureRequest::BenchmarkAction::Steady: break;
             case CaptureRequest::BenchmarkAction::Orbit:
-                action::Emit(action::view::OrbitViewCamera{viewport.Entity, {0.01f, 0.f}});
+                action::Emit(action::view::OrbitViewCamera{viewport, {0.01f, 0.f}});
                 break;
             case CaptureRequest::BenchmarkAction::Transform: {
                 const float offset = Frame % 2 == 0 ? 0.05f : 0.f;
@@ -1215,7 +1216,7 @@ struct BenchmarkDriver {
             case CaptureRequest::BenchmarkAction::BoxSelectOrbit:
                 if (Frame % 2 != 0) {
                     // Keep both benchmark viewpoints on the scene throughout long runs.
-                    action::Emit(action::view::OrbitViewCamera{viewport.Entity, {Frame % 4 == 1 ? 0.6f : -0.6f, 0.f}});
+                    action::Emit(action::view::OrbitViewCamera{viewport, {Frame % 4 == 1 ? 0.6f : -0.6f, 0.f}});
                     break;
                 }
                 [[fallthrough]];
@@ -1227,13 +1228,13 @@ struct BenchmarkDriver {
                 action::Emit(action::selection::ApplyBoxSelect{
                     .Box = {vec2{inset} / size, (size - vec2{inset + 1.f}) / size},
                     .Additive = false,
-                    .View = std::make_unique<RenderView>(viewport.FrameView),
+                    .View = std::make_unique<RenderView>(r.get<const Viewport>(viewport).FrameView),
                 });
                 break;
             }
             case CaptureRequest::BenchmarkAction::PickCycle: {
                 const vec2 center{0.5f, 0.5f};
-                auto view = std::make_unique<RenderView>(viewport.FrameView);
+                auto view = std::make_unique<RenderView>(r.get<const Viewport>(viewport).FrameView);
                 if (Frame == 0) action::Emit(action::selection::Pick{center, false, std::move(view)});
                 else action::Emit(action::selection::PickCycle{center, false, std::move(view)});
                 break;
@@ -1247,7 +1248,7 @@ bool SelectSceneCamera(state::Registry &r, std::string_view name) {
     if (name.empty()) return true;
     for (const auto [entity, node] : r.view<const GltfNode>().each()) {
         if (node.CameraName != name || !HasLens(r, entity)) continue;
-        Perform(r, action::view::SetLookThroughCamera{r.Resources.get<const Viewports>().All.front().Entity, entity});
+        Perform(r, action::view::SetLookThroughCamera{FirstViewport(r), entity});
         return true;
     }
     std::println(stderr, "No scene camera named '{}'.", name);
@@ -1323,7 +1324,7 @@ struct CaptureDriver {
     }
 
     // Emit capture actions before Project::Frame, after sizing the viewport.
-    void EmitFrameActions(state::Registry &r, Viewport &viewport, bool settled, uvec2 extent) {
+    void EmitFrameActions(state::Registry &r, state::Entity viewport, bool settled, uvec2 extent) {
         if (!ViewFramed && Presenting() && extent != uvec2{}) {
             // Wait for GPU bounds before framing the launch camera.
             const bool framed = !r.view<const Perspective>().empty() || !r.view<const Orthographic>().empty() ||
@@ -1331,7 +1332,7 @@ struct CaptureDriver {
             ViewFramed = settled && framed;
         }
         // Start fixed-step playback after recording begins so the first frame is captured.
-        const bool ready = RenderMode() || (FixedStep && RecordingMode()) ? IsRecording(viewport) : (Play || RecordingMode());
+        const bool ready = RenderMode() || (FixedStep && RecordingMode()) ? IsRecording(r.get<const Viewport>(viewport)) : (Play || RecordingMode());
         if (!PlaybackStarted && Framed(settled) && ready) {
             const auto &playback = r.get<const TimelinePlayback>(state::Document);
             if (!playback.Playing) action::Emit(action::timeline::TogglePlay{playback.CurrentFrame});
@@ -1339,7 +1340,7 @@ struct CaptureDriver {
         }
     }
 
-    bool CaptureFrame(state::Registry &r, Viewport &viewport, bool settled) {
+    bool CaptureFrame(state::Registry &r, state::Entity viewport, bool settled) {
         bool done = false;
         if (ScreenshotMode() && !ScreenshotSaved && settled) {
             if (auto saved = SaveScreenshot(r, viewport, ScreenshotPath); saved) std::println("Saved screenshot: {}", saved->string());
@@ -1358,16 +1359,17 @@ struct CaptureDriver {
             }
         }
         // End the run if the single recording startup fails.
+        const auto &live = r.get<const Viewport>(viewport);
         if (RecordingMode() && settled) {
             if (!RecordingStarted) {
                 RecordingStarted = true;
                 StartRecording(r, viewport, RecordPath, RecordFps, RecordAudio);
-                if (IsRecording(viewport)) NextCapture = SteadyClock::now();
+                if (IsRecording(live)) NextCapture = SteadyClock::now();
             }
-            if (!IsRecording(viewport)) done = true;
+            if (!IsRecording(live)) done = true;
         }
         const bool loop_end = r.get<const TimelinePlayback>(state::Document).CurrentFrame == r.get<const TimelineRange>(state::Document).EndFrame;
-        if (IsRecording(viewport)) {
+        if (IsRecording(live)) {
             if (FixedStep) {
                 // Emit clip switches to avoid an extra playback tick from mid-loop Perform calls.
                 CaptureRecordFrame(r, viewport);
@@ -1446,21 +1448,21 @@ CaptureDriver BeginCaptureSession(state::Registry &r, const CaptureRequest &capt
     // Preserve the editor view for benchmark frames and screenshots.
     if (driver.Presenting() && capture.BenchFrames == 0) Perform(r, action::timeline::EnterPresentation{});
     // Apply the explicit overlay override after enabling presentation mode.
-    const auto &viewport = r.Resources.get<const Viewports>().All.front();
-    if (capture.Overlays) Perform(r, action::UpdateOf<&ViewportDisplay::ShowOverlays>(action::OnViewport{viewport.Entity}, true));
+    const auto viewport = FirstViewport(r);
+    if (capture.Overlays) Perform(r, action::UpdateOf<&ViewportDisplay::ShowOverlays>(viewport, true));
     if (capture.LodErrorPixels >= 0.f) {
-        Perform(r, action::UpdateOf<&ViewportDisplay::LodErrorPixels>(action::OnViewport{viewport.Entity}, capture.LodErrorPixels));
+        Perform(r, action::UpdateOf<&ViewportDisplay::LodErrorPixels>(viewport, capture.LodErrorPixels));
     }
     r.Resources.get<FrameState>().FixedFrameStep = driver.FixedStep;
     // Enable motion blur for video recording and preserve the current setting for still or audio-only captures.
     r.Resources.get<FrameState>().Capturing = driver.RecordingMode() && !driver.AudioOnly();
     if (capture.Blur) {
-        Perform(r, action::UpdateOf<&ViewportDisplay::MotionBlur>(action::OnViewport{viewport.Entity}, capture.Blur));
+        Perform(r, action::UpdateOf<&ViewportDisplay::MotionBlur>(viewport, capture.Blur));
     }
     if (capture.Shading) {
-        Perform(r, action::view::SetViewportShading{viewport.Entity, *capture.Shading});
+        Perform(r, action::view::SetViewportShading{viewport, *capture.Shading});
     }
-    if (capture.XRay && !XRayFlag(viewport.State.Display)) Perform(r, action::view::ToggleXRay{viewport.Entity});
+    if (capture.XRay && !XRayFlag(r.get<const ViewportDisplay>(viewport))) Perform(r, action::view::ToggleXRay{viewport});
     return driver;
 }
 
@@ -1507,8 +1509,8 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
     r.Resources.get<FrameState>().DisplayFramebufferScale = std::bit_cast<vec2>(io.DisplayFramebufferScale);
     ProcessComponentEvents(r);
 
-    auto &audio_device = r.Resources.emplace<AudioDeviceResource>(r);
-    ReconcileAudioDevice(audio_device, r.get<const AudioOutputConfig>(state::Document), r.get<const AudioOutputMix>(state::Document));
+    if (const auto stored = LoadAudioOutputConfig()) r.Resources.get<AudioOutputConfig>() = *stored;
+    ReconcileOutputDevice(r, r.Resources.emplace<AudioDeviceResource>(r));
 
     SampleTreesFuture = std::async(std::launch::async, BuildSampleTrees);
 
@@ -1541,8 +1543,10 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
         frame_state.Magnification = events.Magnification;
         for (const auto &path : events.DroppedFiles) OpenFile(r, path);
         done = events.Quit;
-        if (driver.DurationElapsed(r.Resources.get<const Viewports>().All.front())) done = true;
-        for (auto &viewport : r.Resources.get<Viewports>().All) viewport.State.Camera.Active.Tick();
+        if (driver.DurationElapsed(r.get<const Viewport>(FirstViewport(r)))) done = true;
+        for (const auto [viewport, camera] : r.view<const ViewCameraState>().each()) {
+            if (camera.Active.IsAnimating()) r.patch<ViewCameraState>(viewport, [](ViewCameraState &state) { state.Active.Tick(); });
+        }
 
 #ifdef DEBUG_BUILD
         const auto ui_revision = std::pair{Session(r).Revision, RestoreGeneration};
@@ -1690,7 +1694,11 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
                 MenuItem(panels.SceneControls.Name, nullptr, &panels.SceneControls.Visible);
                 MenuItem(panels.Timeline.Name, nullptr, &panels.Timeline.Visible);
                 Separator();
-                for (auto &viewport : r.Resources.get<Viewports>().All) MenuItem(ViewportPanelName(r, viewport.Entity).c_str(), nullptr, &viewport.State.Visible);
+                for (const auto viewport : r.view<const Viewport>()) {
+                    if (bool open = r.get<const ViewportPanel>(viewport).Open; MenuItem(ViewportPanelName(r, viewport).c_str(), nullptr, &open)) {
+                        r.patch<ViewportPanel>(viewport, [open](ViewportPanel &panel) { panel.Open = open; });
+                    }
+                }
                 if (MenuItem("New Viewport")) action::Emit(action::view::AddViewport{});
                 EndMenu();
             }
@@ -1707,20 +1715,21 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
         const auto editor_frame = BeginEditorPanels(r, ctx, layer, panels, io, dockspace_id, /*interactive=*/true);
         // Resolve the viewports after the editor panels, since opening a project applies its workspace.
         // Capture and benchmarks drive the first viewport.
-        auto &viewports = r.Resources.get<Viewports>();
-        auto &first_viewport = viewports.All.front();
-        const auto first_panel = std::ranges::find(editor_frame.Viewports, first_viewport.Entity, &ViewportPanel::Entity);
+        const auto first_viewport = FirstViewport(r);
+        const auto first_panel = std::ranges::find(editor_frame.Viewports, first_viewport, &OpenPanel::Entity);
         const auto new_logical_extent = first_panel != editor_frame.Viewports.end() ? first_panel->Extent : uvec2{};
-        const bool viewport_settled = new_logical_extent != uvec2{} && new_logical_extent == first_viewport.State.Extent;
+        const bool viewport_settled = new_logical_extent != uvec2{} && new_logical_extent == r.get<const ViewportPanel>(first_viewport).Extent;
         if (capture.BenchFrames > 0 && viewport_settled) {
-            if (capture.BenchAction == CaptureRequest::BenchmarkAction::Orbit) action::Emit(action::view::OrbitViewCamera{first_viewport.Entity, {0.01f, 0.f}});
+            if (capture.BenchAction == CaptureRequest::BenchmarkAction::Orbit) action::Emit(action::view::OrbitViewCamera{first_viewport, {0.01f, 0.f}});
             if (++bench_ticks >= capture.BenchFrames) done = true;
         }
         // Give interaction actions priority in the single-action buffer.
         driver.EmitFrameActions(r, first_viewport, viewport_settled, new_logical_extent);
         // The viewport extent is a frame input that each recorded action carries for replay.
         for (const auto &panel : editor_frame.Viewports) {
-            if (panel.Extent != uvec2{}) viewports.Find(panel.Entity)->State.Extent = panel.Extent;
+            if (panel.Extent != uvec2{} && panel.Extent != r.get<const ViewportPanel>(panel.Entity).Extent) {
+                r.patch<ViewportPanel>(panel.Entity, [&](ViewportPanel &open) { open.Extent = panel.Extent; });
+            }
         }
 
         // Actions can add and remove viewports, which ends every viewport reference taken above.
@@ -1732,6 +1741,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
         SubmitViewports(r);
         r.Resources.get<ViewportConsumerFence>().Value = nullptr;
         DisplayViewportPanels(r, editor_frame);
+        DrawInfoPanel(r, panels.Info);
 
         ImGui::Render();
         workspace::ApplyPending(panels);
@@ -1740,7 +1750,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
         const bool ui_gesture_settled = UiGestureSettled(ui_focus);
         if (const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
             WaitForRender(r); // Synchronize before ImGui samples the final image.
-            if (driver.CaptureFrame(r, r.Resources.get<Viewports>().All.front(), driver.Framed(viewport_settled))) done = true;
+            if (driver.CaptureFrame(r, FirstViewport(r), driver.Framed(viewport_settled))) done = true;
 
 #ifdef DEBUG_BUILD
             const auto scene_revision = std::pair{Session(r).Revision, RestoreGeneration};
@@ -1774,7 +1784,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
             }
 
 #ifdef DEBUG_BUILD
-            if (validation_ready && presented_frame && GetFrameCount() > 1 && viewport_settled && ViewportImageReady(r.Resources.get<const Viewports>().All.front())) {
+            if (validation_ready && presented_frame && GetFrameCount() > 1 && viewport_settled && ViewportImageReady(r.get<const Viewport>(FirstViewport(r)))) {
                 ValidateRoundTrip(r, layer, draw_data, validation_session, presented_frame);
                 panels.History.ValidateRequested = false;
 #ifdef VALIDATE_ACTIONS
@@ -1794,6 +1804,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
 
     SaveWorkspace(r);
     Session(r).Save();
+    if (!SaveAudioOutputConfig(r.Resources.get<const AudioOutputConfig>())) action::Fail(r, "Failed to save the audio output preference.");
     ReportActionErrors(r);
     if (last_frame) last_frame->waitUntilCompleted();
 
@@ -1824,13 +1835,12 @@ SceneStatus RunHeadlessScene(state::Registry &r, const char *initial_file, bool 
         return driver.SeedStatus;
     }
     // Resolve the viewport after the scene seeds, since opening a project applies its workspace, and a viewport without one takes the window size.
-    auto &viewport = r.Resources.get<Viewports>().All.front();
-    if (viewport.State.Extent == uvec2{}) viewport.State.Extent = DefaultWindowSize;
-    const action::OnViewport on_viewport{viewport.Entity};
-    if (capture.Selection.VertexNormals) Perform(r, action::UpdateOf<&ViewportDisplay::Selection, &SelectionOverlays::VertexNormals>(on_viewport, true));
-    if (capture.Selection.FaceNormals) Perform(r, action::UpdateOf<&ViewportDisplay::Selection, &SelectionOverlays::FaceNormals>(on_viewport, true));
-    if (capture.Selection.BoundingBoxes) Perform(r, action::UpdateOf<&ViewportDisplay::Selection, &SelectionOverlays::BoundingBoxes>(on_viewport, true));
-    if (capture.Selection.TetWireframe) Perform(r, action::UpdateOf<&ViewportDisplay::Selection, &SelectionOverlays::TetWireframe>(on_viewport, true));
+    const auto viewport = FirstViewport(r);
+    if (r.get<const ViewportPanel>(viewport).Extent == uvec2{}) r.patch<ViewportPanel>(viewport, [](ViewportPanel &panel) { panel.Extent = DefaultWindowSize; });
+    if (capture.Selection.VertexNormals) Perform(r, action::UpdateOf<&ViewportDisplay::Selection, &SelectionOverlays::VertexNormals>(viewport, true));
+    if (capture.Selection.FaceNormals) Perform(r, action::UpdateOf<&ViewportDisplay::Selection, &SelectionOverlays::FaceNormals>(viewport, true));
+    if (capture.Selection.BoundingBoxes) Perform(r, action::UpdateOf<&ViewportDisplay::Selection, &SelectionOverlays::BoundingBoxes>(viewport, true));
+    if (capture.Selection.TetWireframe) Perform(r, action::UpdateOf<&ViewportDisplay::Selection, &SelectionOverlays::TetWireframe>(viewport, true));
 
     frame_state.DeltaTime = driver.RenderDt;
     int bench_frames = capture.BenchFrames;
@@ -1846,10 +1856,10 @@ SceneStatus RunHeadlessScene(state::Registry &r, const char *initial_file, bool 
     std::chrono::steady_clock::time_point first_frame_at{};
     while (!done) {
         const auto frame_pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
-        if (driver.DurationElapsed(viewport)) break;
-        const auto extent = viewport.State.Extent;
+        if (driver.DurationElapsed(r.get<const Viewport>(viewport))) break;
+        const auto extent = r.get<const ViewportPanel>(viewport).Extent;
         // Require this scene's first submit because queue workers preserve ready images across scenes.
-        const bool settled = submitted && ViewportImageReady(viewport);
+        const bool settled = submitted && ViewportImageReady(r.get<const Viewport>(viewport));
         if (settled && !profile_cleared) {
             if (profile::Enabled) {
                 const auto ms_since_start = [scene_start](auto point) { return std::chrono::duration<float, std::milli>(point - scene_start).count(); };
@@ -1864,7 +1874,7 @@ SceneStatus RunHeadlessScene(state::Registry &r, const char *initial_file, bool 
         }
         {
             const profile::CpuScope scope{"Frame"};
-            if (bench_frames > 0 && settled) benchmark.Apply(viewport, RenderExtentPx(viewport, frame_state));
+            if (bench_frames > 0 && settled) benchmark.Apply(r, viewport, RenderExtentPx(r, viewport));
             driver.EmitFrameActions(r, viewport, settled, extent);
             Session(r).Frame(action::Drain());
             ReportActionErrors(r);
@@ -1880,6 +1890,8 @@ SceneStatus RunHeadlessScene(state::Registry &r, const char *initial_file, bool 
             const ValidationInputs inputs{
                 .WorkingDir = Paths::Project(),
                 .Workspace = CaptureWorkspace(r),
+                .AudioOutput = r.Resources.get<const AudioOutputConfig>(),
+                .Device = r.Resources.get<const AudioDeviceInfo>(),
                 .DisplaySize = {float(DefaultWindowSize.x), float(DefaultWindowSize.y)},
                 .FramebufferScale = std::bit_cast<ImVec2>(frame_state.DisplayFramebufferScale),
                 .MousePos = {-FLT_MAX, -FLT_MAX},
@@ -1945,7 +1957,7 @@ void RunHeadlessEngine(auto &&scenes) {
 
 SceneStatus FinishHeadlessScene(state::Registry &r, SceneStatus status) {
     QuiesceScene(r);
-    r.Resources.get<Viewports>().All.front().Recording.reset();
+    for (const auto [_, viewport] : r.view<Viewport>().each()) viewport.Recording.reset();
     EndAudioCapture(r);
     const auto working = Paths::Project(); // NOLINT(performance-unnecessary-copy-initialization) SetProject replaces the referenced path.
     const bool closed = Session(r).Close();

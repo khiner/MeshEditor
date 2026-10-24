@@ -3,7 +3,6 @@
 // Wrap ImGui field controls in one action gesture per edit.
 // Edit{R} targets the active entity and applies Alt-modified edits to the selection.
 // Edit{R, E} targets E explicitly.
-// ViewportEdit{R, V} targets the view values of viewport V.
 // PatchEdit{value} patches edits onto the active entity.
 // ValueEdit{value} edits the supplied value in place.
 // DrawFields<C>(editor) draws every field of C through an editor from its Specs table.
@@ -16,7 +15,6 @@
 #include "animation/Keying.h"
 #include "numeric/Angles.h"
 #include "scene/RotationUi.h"
-#include "viewport/Viewport.h"
 
 #include <imgui.h>
 
@@ -407,37 +405,6 @@ struct Edit : FieldWidgets<Prefix...> {
 
 Edit(state::Registry &) -> Edit<false>;
 Edit(state::Registry &, state::Entity) -> Edit<true>;
-
-// Edits view values of a viewport through Update actions targeting it.
-template<auto... Prefix>
-struct ViewportEdit : FieldWidgets<Prefix...> {
-    ViewportEdit(state::Registry &r, const Viewport &viewport) : R{r}, View{viewport} {}
-
-    state::Registry &R;
-    const Viewport &View;
-
-    template<auto... More>
-    ViewportEdit<Prefix..., More...> Sub() const { return {R, View}; }
-
-    template<auto... Ms>
-    auto Read() const {
-        using C = action::detail::first_class<Prefix..., Ms...>;
-        return ReadChain<Prefix..., Ms...>(View.State.template Get<C>());
-    }
-
-    template<auto... Ms>
-    bool Run(auto widget, bool = false) {
-        using Field = action::detail::last_field<Prefix..., Ms...>;
-        return detail::RunField(R, state::Null, {}, Read<Ms...>(), widget, false, false, [&](action::Target, const Field &v) {
-            action::Emit(action::UpdateOf<Prefix..., Ms...>(action::OnViewport{View.Entity}, v), action::Phase::Stage);
-        });
-    }
-
-    template<auto... Ms>
-    void Set(action::detail::last_field<Prefix..., Ms...> value) const {
-        action::Emit(action::UpdateOf<Prefix..., Ms...>(action::OnViewport{View.Entity}, std::move(value)));
-    }
-};
 
 template<typename Component, auto... Prefix>
 struct PatchEdit : FieldWidgets<Prefix...> {

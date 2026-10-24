@@ -1,6 +1,7 @@
 #include "action/Audio.h"
 #include "Variant.h"
 #include "action/Errors.h"
+#include "audio/AudioOutputConfig.h"
 #include "audio/RealImpact.h"
 #include "audio/SoundVertices.h"
 #include "editor/AudioIntegration.h"
@@ -93,7 +94,7 @@ void Apply(state::Registry &r, const Action &action) {
                 r.emplace_or_replace<RealImpactActiveMicrophone>(a.TargetSoundEntity, microphone);
             },
             [&](const RemoveVertexSamples &a) { ::RemoveVertexSamples(r, FindActiveEntity(r), a.MeshVertices); },
-            [&](const SetOutputDevice &a) { r.replace<AudioOutputConfig>(state::Document, AudioOutputConfig{.DeviceName = a.DeviceName, .SampleRate = 0}); },
+            [&](const SetOutputDevice &a) { r.Resources.get<AudioOutputConfig>() = {a.DeviceName, a.SampleRate}; },
         },
         action
     );

@@ -18,6 +18,7 @@
 #include "render/SceneUpdates.h"
 #include "selection/SelectionGpu.h"
 #include "viewport/Viewport.h"
+#include "viewport/ViewportComponents.h"
 
 #include <map>
 #include <print>
@@ -135,7 +136,7 @@ struct Fixture : Engine {
     explicit Fixture(const char *name)
         : Engine{false}, Dir{(std::string{"/tmp/mesheditor-scratch/topology-"} + name).c_str()} {
         expect(P->New(Dir, true));
-        R.Resources.get<Viewports>().All.front().State.Extent = {64u, 64u};
+        R.replace<ViewportPanel>(FirstViewport(R), ViewportPanel{.Extent = {64u, 64u}});
         P->Settle();
     }
 
@@ -163,7 +164,7 @@ struct Fixture : Engine {
     void Checkpoint() {
         SubmitViewports(R);
         WaitForRender(R);
-        expect(ViewportImageReady(R.Resources.get<const Viewports>().All.front()));
+        expect(ViewportImageReady(R.get<const Viewport>(FirstViewport(R))));
         for (const auto &message : R.Resources.get<action::Errors>().Messages)
             std::println("action error: {}", message);
         expect(R.Resources.get<action::Errors>().Messages.empty());
@@ -242,7 +243,7 @@ struct Fixture : Engine {
     }
 
     std::unique_ptr<RenderView> View() const {
-        return std::make_unique<RenderView>(R.Resources.get<const Viewports>().All.front().FrameView);
+        return std::make_unique<RenderView>(R.get<const Viewport>(FirstViewport(R)).FrameView);
     }
 
     void Click(vec2 at, bool toggle = false) {
@@ -250,7 +251,7 @@ struct Fixture : Engine {
     }
 
     const SceneViewUBO &FrameView() const {
-        const auto bytes = R.Resources.get<const Viewports>().All.front().SceneViewUBO.Contents();
+        const auto bytes = R.get<const Viewport>(FirstViewport(R)).SceneViewUBO.Contents();
         return *reinterpret_cast<const SceneViewUBO *>(bytes.data());
     }
 

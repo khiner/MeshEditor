@@ -29,6 +29,7 @@
 #include "render/SceneUpdates.h"
 #include "render/Textures.h"
 #include "selection/SelectionComponents.h"
+#include "snapshot/Workspace.h"
 #include "viewport/FrameState.h"
 #include "viewport/GizmoDrag.h"
 #include "viewport/Viewport.h"
@@ -172,13 +173,18 @@ void Project::TrackStores() {
     R.Resources.get<MaterialStore>().Track(History);
     History.Callbacks = {
         .Replay = [this](std::span<const std::byte> bytes) {
+            // A replayed step reproduces persistent state and leaves the workspace as it was, reconciled with the replayed document.
+            const auto workspace = snapshot::SerializeWorkspace(R);
             auto replayed = RunRecorded(Decode(bytes));
-            // A replayed action leaves every view where the user put it.
-            R.remove<PendingViewSetup>(state::Document);
+            snapshot::ApplyWorkspace(R, workspace);
+            Settle(EventPass::Settle);
             return replayed; },
         .Reset = [this](const std::filesystem::path &dir) {
             R.Resources.get<Assets>().Directory = dir;
-            ClearDocument(); },
+            // A replay from the empty state rebuilds the document and leaves the workspace as it was.
+            const auto workspace = snapshot::SerializeWorkspace(R);
+            ClearDocument();
+            snapshot::ApplyWorkspace(R, workspace); },
         .BeforeRestore = [this] {
             WaitForRender(R);
             CancelModalSolves(R);
@@ -246,18 +252,14 @@ bool Project::New(const std::filesystem::path &dir, bool empty) {
         return false;
     }
     if (History.Present && !Save()) return false;
-    auto previous = History.Pin();
     RecordedActions.clear();
-    ClearDocument();
+    auto left = LeaveDocument();
     // The root records how its scene arises, so its state replays from the empty scene.
     if (empty) Record(action::MakeAction(action::io::LoadEmptyScene{}), EventPass::Settle);
     else Record(action::MakeAction(action::io::LoadDefaultScene{}), EventPass::Settle);
     const bool begun = Begin(dir);
-    if (!begun) {
-        (void)History.Restore(previous);
-        Settle(EventPass::Settle);
-    }
-    History.Release(previous);
+    if (!begun) ReturnToLeft(left);
+    History.Release(left.Pin);
     return begun;
 }
 bool Project::Open(const std::filesystem::path &dir, const std::filesystem::path &saved_path) {
@@ -276,12 +278,20 @@ bool Project::Open(const std::filesystem::path &dir, const std::filesystem::path
     auto &directory = R.Resources.get<Assets>().Directory;
     const auto previous = std::exchange(directory, dir);
     const auto errors = R.Resources.get<action::Errors>().Messages.size();
+    // Another project loads onto the empty document.
+    std::optional<LeftDocument> left;
+    if (dir != History.Dir) left = LeaveDocument();
     if (!History.Open(dir, saved ? &saved->Position : nullptr)) {
         directory = previous;
+        if (left) {
+            ReturnToLeft(*left);
+            History.Release(left->Pin);
+        }
         const auto error = History.TakeIntegrityError();
         if (R.Resources.get<action::Errors>().Messages.size() == errors && !error.empty()) action::Fail(R, error);
         return false;
     }
+    if (left) History.Release(left->Pin);
     ReleaseGesture();
     for (auto &node : History.Nodes) node.Editable = Editable(Decode(node.Actions));
     // An actions open replays and pins every node on the path to the present node.
@@ -612,23 +622,25 @@ void Project::ClearDocument() {
     WaitForRender(R);
     Deferred.clear();
     ClearInteraction();
-    // A document component outside history is workspace state, which outlives the document.
-    const auto &entries = snapshot::SnapshotTable();
-    std::vector<std::pair<state::TypeId, std::vector<std::byte>>> workspace;
-    for (state::TypeId type = 0; type < entries.size(); ++type) {
-        const auto &entry = entries[type];
-        const auto *value = entry.Emplace && !entry.History ? R.Tables[type].value(state::Document) : nullptr;
-        if (!value) continue;
-        auto &bytes = workspace.emplace_back(type, std::vector<std::byte>{}).second;
-        if (entry.Serialize) entry.Serialize(value, bytes);
-    }
+    R.clear<Viewport>();
     R.Reset();
     [[maybe_unused]] const auto document = R.create();
     assert(document == state::Document);
     SetupDocument(R);
-    for (const auto &[type, bytes] : workspace) entries[type].Emplace(R, state::Document, bytes);
-    // Every viewport renders the new document, which none of their depth pyramids saw.
-    RequestRender(R);
+}
+Project::LeftDocument Project::LeaveDocument() {
+    LeftDocument left{History.Pin(), snapshot::SerializeWorkspace(R)};
+    ClearDocument();
+    // The left document's retained values do not return to the next document.
+    for (auto &slot : R.Resources.get<snapshot::Retention>().Slots) slot.Release();
+    return left;
+}
+void Project::ReturnToLeft(const LeftDocument &left) {
+    // The restore recreates every identity of the left document, and the applied workspace returns each one's values.
+    ClearDocument();
+    snapshot::ApplyWorkspace(R, left.Workspace);
+    (void)History.Restore(left.Pin);
+    Settle(EventPass::Settle);
 }
 void Project::CancelGesture() {
     if (!GestureBase) return;

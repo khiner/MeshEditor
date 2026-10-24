@@ -199,7 +199,7 @@ void RenderElementSelectionPass(
     auto &meshes = r.Resources.get<MeshStore>();
     auto &buffers = r.Resources.get<GpuBuffers>();
 
-    const bool xray_selection = XRayFlag(viewport.State.Display);
+    const bool xray_selection = XRayFlag(viewport.FrameView.Display);
     const auto &selection = pipelines.SelectionFragment;
     const bool degenerate_point_pass = write_bitset && xray_selection && element != Element::Vertex;
     for (const auto &range : ranges) {
@@ -256,10 +256,11 @@ void RenderElementSelectionPass(
 } // namespace
 
 std::optional<std::pair<state::Entity, uint32_t>> RunEditElementClick(
-    state::Registry &r, const Viewport &viewport,
+    state::Registry &r, state::Entity viewport_entity,
     std::span<const ElementRange> ranges, Element element, uvec2 mouse_px, bool toggle
 ) {
     if (ranges.empty() || element == Element::None) return {};
+    const auto &viewport = r.get<const Viewport>(viewport_entity);
 
     const profile::CpuScope scope{"RunElementPick"};
     auto &buffers = r.Resources.get<GpuBuffers>();
@@ -372,8 +373,9 @@ void RenderSelectionPickPass(state::Registry &r, const Viewport &viewport, mtl::
 }
 } // namespace
 
-void RunBoxSelectElements(state::Registry &r, const Viewport &viewport, std::span<const ElementRange> ranges, Element element, std::pair<uvec2, uvec2> box_px, bool is_additive) {
+void RunBoxSelectElements(state::Registry &r, state::Entity viewport_entity, std::span<const ElementRange> ranges, Element element, std::pair<uvec2, uvec2> box_px, bool is_additive) {
     if (ranges.empty()) return;
+    const auto &viewport = r.get<const Viewport>(viewport_entity);
 
     const auto [box_min, box_max] = box_px;
     if (box_min.x > box_max.x || box_min.y > box_max.y) return;
@@ -399,7 +401,7 @@ void RunBoxSelectElements(state::Registry &r, const Viewport &viewport, std::spa
     if (baseline) baseline->ElementSelectionCaptured = true;
 }
 
-std::optional<uint32_t> RunSoundVerticesVertexPick(state::Registry &r, const Viewport &viewport, state::Entity instance_entity, uvec2 mouse_px) {
+std::optional<uint32_t> RunSoundVerticesVertexPick(state::Registry &r, state::Entity viewport, state::Entity instance_entity, uvec2 mouse_px) {
     if (!r.all_of<SoundVertices>(instance_entity)) return {};
     const auto *instance = r.try_get<Instance>(instance_entity);
     if (!instance) return {};
@@ -411,7 +413,7 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(state::Registry &r, const Vie
 
     ResetElementPick(buffers);
     SubmitSelectionPasses(r, [&](mtl::PassChain &chain) {
-        RenderSelectionPickPass(r, viewport, chain, std::nullopt, false, instance_entity, ElementPickTarget{mouse_px, ElementPickRadiusSq(Element::Vertex)});
+        RenderSelectionPickPass(r, r.get<const Viewport>(viewport), chain, std::nullopt, false, instance_entity, ElementPickTarget{mouse_px, ElementPickRadiusSq(Element::Vertex)});
     });
     // Sound point pick ids are the mesh's vertex handles, which on a sparse set reach past the vertex count.
     const auto &meshes = r.Resources.get<const MeshStore>();
@@ -455,7 +457,7 @@ void ForEachHitObject(const state::Registry &r, std::span<const uint32_t> bits, 
 }
 } // namespace
 
-std::vector<state::Entity> RunObjectPick(state::Registry &r, const Viewport &viewport, uvec2 mouse_px, uint32_t radius_px) {
+std::vector<state::Entity> RunObjectPick(state::Registry &r, state::Entity viewport, uvec2 mouse_px, uint32_t radius_px) {
     const uint32_t max_object_id = PrepareObjectQuery(r);
     if (max_object_id == 0) return {};
     const auto &sel_slots = r.Resources.get<const SelectionSlots>();
@@ -471,7 +473,7 @@ std::vector<state::Entity> RunObjectPick(state::Registry &r, const Viewport &vie
     std::ranges::fill(buffers.ObjectPickSeenBitset.GetMutableSpan<uint32_t>({0, (max_object_id + 31) / 32}), 0u);
     SubmitSelectionPasses(r, [&](mtl::PassChain &chain) {
         RenderSelectionPickPass(
-            r, viewport, chain,
+            r, r.get<const Viewport>(viewport), chain,
             ObjectSelectQuery{
                 .MaxId = max_object_id,
                 .TargetPx = mouse_px,
@@ -508,7 +510,7 @@ std::vector<state::Entity> RunObjectPick(state::Registry &r, const Viewport &vie
     return entities;
 }
 
-std::vector<state::Entity> RunBoxSelect(state::Registry &r, const Viewport &viewport, std::pair<uvec2, uvec2> box_px) {
+std::vector<state::Entity> RunBoxSelect(state::Registry &r, state::Entity viewport_entity, std::pair<uvec2, uvec2> box_px) {
     const auto [box_min, box_max] = box_px;
     if (box_min.x > box_max.x || box_min.y > box_max.y) return {};
     const uint32_t max_object_id = PrepareObjectQuery(r);
@@ -517,6 +519,7 @@ std::vector<state::Entity> RunBoxSelect(state::Registry &r, const Viewport &view
     const profile::CpuScope scope{"RunBoxSelect"};
     const auto &sel_slots = r.Resources.get<const SelectionSlots>();
     std::ranges::fill(buffers.ObjectBoxBitset.GetMutableSpan<uint32_t>({0, (max_object_id + 31) / 32}), 0u);
+    const auto &viewport = r.get<const Viewport>(viewport_entity);
     SubmitSelectionPasses(r, [&](mtl::PassChain &chain) {
         RenderSelectionPickPass(
             r, viewport, chain,
@@ -526,7 +529,7 @@ std::vector<state::Entity> RunBoxSelect(state::Registry &r, const Viewport &view
                 .Box = {box_min.x, box_min.y, box_max.x, box_max.y},
                 .BoxResultSlot = sel_slots.ObjectBoxBitset,
             },
-            XRayActive(viewport.State.Display)
+            XRayActive(viewport.FrameView.Display)
         );
     });
     std::vector<state::Entity> entities;

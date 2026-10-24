@@ -3,11 +3,12 @@
 #include "audio/AudioSchema.h"
 #include "audio/ContactScene.h"
 #include "scene/Entity.h"
+#include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
 namespace fs = std::filesystem;
 uint32_t DeviceSampleRate(const state::Registry &r) {
-    const auto *res = r.Resources.find<AudioDeviceResource>();
-    if (res && res->SampleRate) return res->SampleRate;
+    const auto *info = r.Resources.find<const AudioDeviceInfo>();
+    if (info && info->SampleRate) return info->SampleRate;
     // AUDIO_SAMPLE_RATE overrides the 48 kHz default when no device provides a rate.
     static const uint32_t fallback = [] {
         const char *env = std::getenv("AUDIO_SAMPLE_RATE");
@@ -46,11 +47,14 @@ std::optional<fs::path> ActiveSamplePath(const state::Registry &r, state::Entity
     return it != samples->PathByVertex.end() ? std::optional{it->second} : std::nullopt;
 }
 
+std::optional<vec3> ListenerPosition(const state::Registry &r) {
+    const auto viewport = FindActiveViewport(r);
+    if (viewport == state::Null) return std::nullopt;
+    return r.get<const ViewCameraState>(viewport).Active.Position();
+}
+
 // Updates listener attenuation using inverse distance beyond ListenerDistance and a constant level within it.
-void UpdateListenerGains(const state::Registry &r, ModalBank &b) {
-    const auto *viewports = r.Resources.find<const Viewports>();
-    if (!viewports) return;
-    const auto listener_pos = viewports->Active().State.Camera.Active.Position();
+void UpdateListenerGains(const state::Registry &r, ModalBank &b, vec3 listener_pos) {
     b.GainListener = listener_pos;
     for (uint32_t slot = 0; slot < uint32_t(b.Entities.size()); ++slot) {
         const auto e = b.Entities[slot];
@@ -67,8 +71,8 @@ struct MasterCapture {
 };
 
 uint32_t BeginAudioCapture(state::Registry &r) {
-    const auto *res = r.Resources.find<AudioDeviceResource>();
-    const auto rate = res && res->SampleRate ? res->SampleRate : 0u;
+    const auto *info = r.Resources.find<const AudioDeviceInfo>();
+    const auto rate = info ? info->SampleRate : 0u;
     if (rate == 0) return 0;
     auto &capture = r.Resources.emplace<MasterCapture>();
     capture.Ring.assign(size_t(rate) * 2, 0.f);
@@ -122,7 +126,9 @@ void ProcessAudio(state::Registry &r, float *output, uint32_t frame_count, bool 
     // The mix is pressure at the view camera.
     // The device path runs this on the audio thread, which cannot read the registry, so its gains are written by the frame handler.
     // Offline rendering uses its viewport camera on the main thread.
-    if (!monitor) UpdateListenerGains(r, LiveBank(m));
+    if (!monitor) {
+        if (const auto listener = ListenerPosition(r)) UpdateListenerGains(r, LiveBank(m), *listener);
+    }
     RenderModal(m, output, frame_count);
 
     const auto *controls = r.try_get<const ModalSoundControls>(state::Document);

@@ -183,6 +183,7 @@ set_source_files_properties(src/physics/PhysicsSystem.cpp src/physics/RbpShape.c
 mesheditor_library(MeshEditorAudio HOT
     src/audio/AudioDevice.cpp
     src/audio/AudioFile.cpp
+    src/audio/AudioOutputConfig.cpp
     src/audio/AudioRender.cpp
     src/audio/AudioStores.cpp
     src/audio/ContactDynamics.cpp
@@ -243,6 +244,7 @@ mesheditor_library(MeshEditorEditor COLD
     src/procedure/Cook.cpp
     ${native_snapshots}
     src/snapshot/SnapshotRoles.cpp
+    src/snapshot/Workspace.cpp
     src/VideoRecorder.cpp
     src/viewport/Viewport.cpp
     src/viewport/ViewportOps.cpp

@@ -1,12 +1,13 @@
 #include "action/Audio.h"
 #include "audio/AudioDevice.h"
+#include "audio/AudioOutputConfig.h"
 #include "ui/FieldEdit.h"
 
 #include <format>
 
 namespace {
-std::string SampleRateName(const AudioDeviceResource &res, uint32_t sample_rate) {
-    const auto &rates = res.NativeSampleRates;
+std::string SampleRateName(const AudioDeviceInfo &info, uint32_t sample_rate) {
+    const auto &rates = info.NativeSampleRates;
     const bool is_native = std::ranges::contains(rates, sample_rate);
     return std::format("{}{}", sample_rate, is_native ? "*" : "");
 }
@@ -14,9 +15,9 @@ std::string SampleRateName(const AudioDeviceResource &res, uint32_t sample_rate)
 
 void DrawAudioDeviceControls(state::Registry &r) {
     using namespace ImGui;
-    const auto &config = r.get<const AudioOutputConfig>(state::Document);
+    const auto &config = r.Resources.get<const AudioOutputConfig>();
     const auto &mix = r.get<const AudioOutputMix>(state::Document);
-    const auto &res = r.Resources.get<const AudioDeviceResource>();
+    const auto &info = r.Resources.get<const AudioDeviceInfo>();
     ui::Edit f{r, state::Document};
 
     f.Draw<&AudioOutputMix::On>();
@@ -26,17 +27,17 @@ void DrawAudioDeviceControls(state::Registry &r) {
     }
 
     if (BeginCombo("Output device", config.DeviceName.empty() ? "System default" : config.DeviceName.c_str())) {
-        for (const auto &name : res.OutDeviceNames) {
+        for (const auto &name : info.OutDeviceNames) {
             const bool is_selected = name == config.DeviceName;
             if (Selectable(name.c_str(), is_selected) && !is_selected) action::Emit(action::audio::SetOutputDevice{name});
             if (is_selected) SetItemDefaultFocus();
         }
         EndCombo();
     }
-    if (BeginCombo("Sample rate", SampleRateName(res, res.SampleRate).c_str())) {
-        for (const uint32_t option : res.NativeSampleRates) {
-            const bool is_selected = option == res.SampleRate;
-            if (Selectable(SampleRateName(res, option).c_str(), is_selected) && !is_selected) f.Set<&AudioOutputConfig::SampleRate>(option);
+    if (BeginCombo("Sample rate", SampleRateName(info, info.SampleRate).c_str())) {
+        for (const uint32_t option : info.NativeSampleRates) {
+            const bool is_selected = option == info.SampleRate;
+            if (Selectable(SampleRateName(info, option).c_str(), is_selected) && !is_selected) action::Emit(action::audio::SetOutputDevice{config.DeviceName, option});
             if (is_selected) SetItemDefaultFocus();
         }
         EndCombo();

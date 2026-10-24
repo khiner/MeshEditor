@@ -151,16 +151,16 @@ template<> inline constexpr field::SpecTable<PBRViewportLighting> Specs<PBRViewp
 };
 
 struct MaterialPreviewLighting {
-    PBRViewportLighting Value;
+    PBRViewportLighting Value{false, false, 1.f, 0.f};
     bool operator==(const MaterialPreviewLighting &) const = default;
 };
 struct RenderedLighting {
-    PBRViewportLighting Value;
+    PBRViewportLighting Value{true, true, 1.f, 0.f};
     bool operator==(const RenderedLighting &) const = default;
 };
 
 // The active studio HDRI environment, by source name so it stays stable across runs (unlike the directory-scan index).
 struct StudioEnvironment {
-    std::string Name;
+    std::string Name{"forest"};
     bool operator==(const StudioEnvironment &) const = default;
 };

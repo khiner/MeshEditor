@@ -36,16 +36,6 @@ Field ClampField(Field v, const FieldSpec &spec) {
     else return std::clamp(v, lo, hi);
 }
 
-// Writes the field of the view value on the viewport the target names.
-template<typename C, typename Field>
-void ApplyViewUpdate(state::Registry &r, const Update<Field> &a) {
-    ForEachComponentTarget<C>(r, a.Target, [&](C &component) {
-        auto value = a.Value;
-        if constexpr (DeltaField<Field> && !RotationField<Field>) value = ClampField(value, FieldAt<C>(a.Offset).Spec);
-        std::memcpy(reinterpret_cast<std::byte *>(&component) + a.Offset, &value, sizeof(Field));
-    });
-}
-
 // Writes the field of the component on each entity the target resolves to.
 template<typename C, typename Field>
 void ApplyEntityUpdate(state::Registry &r, const Update<Field> &a) {
@@ -99,10 +89,7 @@ void ApplyEntityUpdate(state::Registry &r, const Update<Field> &a) {
 
 template<typename Field>
 void ApplyUpdate(state::Registry &r, const Update<Field> &a) {
-    ForUpdatable(a.ComponentType, [&]<typename C> {
-        if constexpr (ViewportState::Holds<C>) ApplyViewUpdate<C>(r, a);
-        else ApplyEntityUpdate<C>(r, a);
-    });
+    ForUpdatable(a.ComponentType, [&]<typename C> { ApplyEntityUpdate<C>(r, a); });
 }
 } // namespace
 
@@ -120,11 +107,9 @@ bool IsRecordable(const Core &action) {
     return std::visit(
         overloaded{
             []<typename Field>(const Update<Field> &a) {
-                bool tracked = false;
-                ForUpdatable(a.ComponentType, [&]<typename C> {
-                    if constexpr (!ViewportState::Holds<C>) tracked = snapshot::SnapshotTable()[state::Type<C>()].History;
-                });
-                return tracked;
+                bool recorded = false;
+                ForUpdatable(a.ComponentType, [&]<typename C> { recorded = snapshot::SnapshotTable()[state::Type<C>()].Kind != snapshot::Role::Workspace; });
+                return recorded;
             },
             [](const DestroyEntity &) { return true; },
         },

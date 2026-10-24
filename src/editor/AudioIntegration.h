@@ -2,8 +2,11 @@
 #include "audio/AudioSystem.h"
 
 enum class EventPass;
+struct AudioDeviceResource;
 
 void RegisterAudioComponentHandlers(state::Registry &);
+// Follows the output configuration and the device's reported rate, placing the render threads with a reopened unit.
+void ReconcileOutputDevice(state::Registry &, AudioDeviceResource &);
 // Install finished modal solves and apply pending model rescales.
 void ApplyCompletedModalSolves(state::Registry &, EventPass);
 // Retune scaled objects and refresh listener gains after world-transform updates.

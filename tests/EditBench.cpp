@@ -17,6 +17,7 @@
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
+#include "viewport/ViewportComponents.h"
 #include "viewport/ViewportRenderGpu.h"
 
 #include <charconv>
@@ -44,7 +45,7 @@ void ReportLibraries(const mtl::LibraryCache &cache, const char *phase) {
 Result Capture(state::Registry &r, const char *variable) {
     const char *path = std::getenv(variable);
     if (!path) return {};
-    const auto &image = r.Resources.get<const Viewports>().All.front().Targets.Screen->FinalColorImage;
+    const auto &image = r.get<const Viewport>(FirstViewport(r)).Targets.Screen->FinalColorImage;
     const auto rgba = ReadbackImageRgba8(r.Resources.get<const mtl::Context>(), image, 0u, 0u, image.Extent);
     const auto file = std::unique_ptr<FILE, decltype(&std::fclose)>{std::fopen(path, "wb"), &std::fclose};
     if (!file) return std::unexpected{"failed to open frame capture"};
@@ -218,7 +219,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         profile::Init(r.Resources.get<const mtl::Context>());
         profile::Enabled = false;
         if (!p.New(dir, true)) return std::unexpected{"project creation failed"};
-        r.Resources.get<Viewports>().All.front().State.Extent = {viewport_width, viewport_height};
+        r.replace<ViewportPanel>(FirstViewport(r), ViewportPanel{.Extent = {viewport_width, viewport_height}});
         p.Settle();
         std::println(stderr, "Preparing benchmark scene...");
         const auto load_begin = std::chrono::steady_clock::now();
@@ -343,11 +344,12 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             const float distance = std::strtof(distance_text, nullptr);
             if (!(std::isfinite(distance) && distance > 0.f)) return std::unexpected{"invalid face camera distance"};
             const vec3 center = original.CalcFaceCentroid(face);
-            auto &view = r.Resources.get<Viewports>().All.front().State;
-            const auto lens = view.Camera.Active.Data;
-            ClearLookThrough(view);
             const auto eye = center + vec3{0.2f * distance, distance, 0.5f * distance};
-            view.Camera.Active = ViewCamera{eye, center, lens};
+            r.patch<ViewCameraState>(FirstViewport(r), [&](ViewCameraState &view) {
+                const auto lens = view.Active.Data;
+                ClearLookThrough(view);
+                view.Active = ViewCamera{eye, center, lens};
+            });
         }
         const auto added = original.GetValence(face);
         const auto selected_face_halfedge = *original.fh_range(face).begin();
@@ -495,7 +497,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         };
         const auto render_step = [&](std::string_view name) -> Result {
             if (!render) return {};
-            if (!r.Resources.get<const Viewports>().All.front().RenderRequested)
+            if (!r.get<const Viewport>(FirstViewport(r)).RenderRequested)
                 return std::unexpected{std::string{name} + " did not request a rendered frame"};
             draw(name, selected_count);
             return {};
@@ -857,7 +859,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 }
                 if (i) warm_preview_ms.push_back(elapsed);
                 if (render) {
-                    if (!r.Resources.get<const Viewports>().All.front().RenderRequested) return std::unexpected{"edit preview did not request a rendered frame"};
+                    if (!r.get<const Viewport>(FirstViewport(r)).RenderRequested) return std::unexpected{"edit preview did not request a rendered frame"};
                     draw("render" + std::to_string(i), selected_count);
                     if (i == 1u)
                         if (auto result = Capture(r, "MESHEDITOR_EDIT_BENCH_CAPTURE"); !result) return result;
@@ -887,7 +889,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         if (staged && render) {
             if (auto result = Capture(r, "MESHEDITOR_EDIT_BENCH_CAPTURE_EXIT"); !result) return result;
             if (std::getenv("MESHEDITOR_EDIT_BENCH_CAPTURE_FINE")) {
-                r.Resources.get<Viewports>().All.front().State.Display.LodErrorPixels = 0.f;
+                r.patch<ViewportDisplay>(FirstViewport(r), [](ViewportDisplay &display) { display.LodErrorPixels = 0.f; });
                 p.Frame(action::Drain());
                 SubmitViewports(r);
                 WaitForRender(r);

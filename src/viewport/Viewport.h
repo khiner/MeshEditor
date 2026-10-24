@@ -1,83 +1,22 @@
 #pragma once
 
-namespace MTL {
-class CommandBuffer;
-} // namespace MTL
-
-namespace mtl {
-struct Context;
-} // namespace mtl
-
-#include "TypeList.h"
 #include "metal/Buffer.h"
-#include "render/PbrFeature.h"
 #include "render/RenderTargets.h"
-#include "scene/Defaults.h"
-#include "viewport/InteractionComponents.h"
 #include "viewport/RenderView.h"
 #include "viewport/VideoRecording.h"
-#include "viewport/ViewCameraOps.h"
-#include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportRenderGpu.h"
+#include "viewport/ViewportSchema.h"
 
 #include <expected>
 #include <filesystem>
-#include <map>
 #include <vector>
 
-// A viewport's workspace state, kept per viewport entity for the session and the workspace file.
-struct ViewportState {
-    bool Visible{true}; // The panel is open.
-    ViewCameraState Camera{Defaults::ViewCamera};
-    state::Entity LookThroughEntity{state::Null}; // The scene camera the view looks through, or null.
-    OrbitToActive Orbit;
-    ViewportDisplay Display;
-    MaterialPreviewLighting PreviewLighting{{false, false, 1.f, 0.f}};
-    RenderedLighting RenderLighting{{true, true, 1.f, 0.f}};
-    WorkspaceLights Lights{Defaults::WorkspaceLights};
-    StudioEnvironment Environment{"forest"};
-    uvec2 Extent{}; // The view's logical size.
-
-    using Members = TypeList<bool, ViewCameraState, state::Entity, OrbitToActive, ViewportDisplay, MaterialPreviewLighting, RenderedLighting, WorkspaceLights, StudioEnvironment, uvec2>;
-    template<typename C> static constexpr bool Holds = InTypeList<C, Members>;
-
-    template<typename C>
-        requires Holds<C>
-    C &Edit() { return std::get<C &>(Tie(*this)); }
-    template<typename C>
-        requires Holds<C>
-    const C &Get() const { return std::get<const C &>(Tie(*this)); }
-
-    bool operator==(const ViewportState &) const = default;
-
-private:
-    static auto Tie(auto &s) { return std::tie(s.Visible, s.Camera, s.LookThroughEntity, s.Orbit, s.Display, s.PreviewLighting, s.RenderLighting, s.Lights, s.Environment, s.Extent); }
-};
-
-// The lighting of the Rendered shading mode, and of Material Preview otherwise.
-inline const PBRViewportLighting &ActivePbrLighting(const ViewportState &state) {
-    return state.Display.ViewportShading == ViewportShadingMode::Rendered ? state.RenderLighting.Value : state.PreviewLighting.Value;
-}
-// The PBR features the view shades with: the scene's material features, and punctual lights when the view uses the scene lights.
-inline PbrFeatureMask PbrFeaturesOf(const ViewportState &state, uint32_t mesh_features) {
-    return mesh_features | (ActivePbrLighting(state).UseSceneLights ? uint32_t(PbrFeature::Punctual) : 0u);
-}
-// Whether the view shades with materials and refracts through real transmission.
-inline bool RealTransmission(const ViewportState &state, uint32_t mesh_features) {
-    return !WorkbenchShading(state.Display.ViewportShading) && ActivePbrLighting(state).RealTransmission && HasFeature(PbrFeaturesOf(state, mesh_features), PbrFeature::Transmission);
-}
-
-// A live viewport of a document viewport entity, with the GPU resources its frames render into.
+// The live render state of a viewport entity, with the GPU resources its frames render into.
 struct Viewport {
-    Viewport(state::Entity, ViewportState &, mtl::BufferContext &, mtl::BindlessSet &);
+    Viewport(mtl::BufferContext &, mtl::BindlessSet &);
 
-    state::Entity Entity; // The document's viewport entity.
-    ViewportState &State; // The entity's entry in Viewports::States.
     // The panel drew the viewport this frame, which the UI writes each frame, and always without a UI.
     bool Shown{true};
-    // A displayed viewport renders and its display settings join the union the mesh records derive from.
-    bool Displayed() const { return State.Visible && Shown; }
-    std::optional<ViewportState> Rendered{}; // The state the last submitted frame rendered, absent before the first.
     state::Entity RenderedScene{state::Null}; // The scene the last submitted frame rendered.
     std::optional<VideoRecording> Recording{};
 
@@ -96,29 +35,17 @@ struct Viewport {
     bool OcclusionStale{true};
 };
 
-// The workspace state of every viewport entity the session has held, and the live viewports of the ones the document holds, in entity index order.
-// A state entry outlives its entity, so a viewport that returns through redo or replay keeps its view.
-struct Viewports {
-    std::map<state::Entity, ViewportState> States;
-    std::vector<Viewport> All;
-    // The viewport that receives input.
-    // SubmitViewports moves it to the first displayed viewport when it is not displayed.
-    size_t ActiveIndex{0};
+// Requests the viewport's frame and marks its depth pyramid stale.
+void RequestFrame(state::Registry &, state::Entity viewport);
 
-    Viewport &Active() { return All[ActiveIndex]; }
-    const Viewport &Active() const { return All[ActiveIndex]; }
-    Viewport *Find(state::Entity entity) {
-        const auto it = std::ranges::find(All, entity, &Viewport::Entity);
-        return it != All.end() ? &*it : nullptr;
-    }
-};
-
-// Matches the live viewports to the document's viewport entities, keeping the live state of each that remains.
-// A viewport that goes waits for the live UI frame to stop sampling its images, and the active viewport stays active when it remains.
-// Returns whether the set changed.
-bool SyncViewports(state::Registry &);
+// A displayed viewport has its panel open and drawn, renders, and its display settings join the union the mesh records derive from.
+bool Displayed(const state::Registry &, state::Entity viewport);
+// The lowest-index viewport, or null without one.
+state::Entity FirstViewport(const state::Registry &);
+// The document's active viewport when it is displayed, otherwise the lowest-index displayed viewport, otherwise the lowest-index viewport, otherwise null.
+state::Entity FindActiveViewport(const state::Registry &);
 // The viewport's scene resolved to a live scene.
-state::Entity SceneOf(const state::Registry &, const Viewport &);
+state::Entity SceneOf(const state::Registry &, state::Entity viewport);
 // The active viewport's scene, or the lowest-index scene without a viewport.
 state::Entity ActingScene(const state::Registry &);
 // The distinct live scenes of the displayed viewports in entity index order, or the acting scene when no viewport is displayed.
@@ -126,7 +53,12 @@ std::vector<state::Entity> ShownScenes(const state::Registry &);
 
 struct DisplayUnion;
 // The display settings the displayed viewports share, which the mesh display records derive from.
-DisplayUnion VisibleDisplays(const Viewports &);
+DisplayUnion VisibleDisplays(const state::Registry &);
+
+// The viewport's Rendered lighting when the display shades in Rendered mode, and its Material Preview lighting otherwise.
+const PBRViewportLighting &ActivePbrLighting(const state::Registry &, state::Entity viewport, const ViewportDisplay &);
+// Whether the viewport shades with materials and refracts through real transmission.
+bool RealTransmission(const state::Registry &, state::Entity viewport, const ViewportDisplay &, uint32_t mesh_features);
 
 // Build the process-lifetime engine and create the document entity.
 void InitEngine(state::Registry &);
@@ -139,7 +71,8 @@ void DeinitViewportMedia(state::Registry &);
 // Call WaitForRender() before the ImGui frame samples the final images.
 void SubmitViewports(state::Registry &);
 // Applies the document's pending view setup to the viewport and removes it.
-void TakePendingViewSetup(state::Registry &, Viewport &);
+// A camera the setup looks through is new to the scene, so the look-through follow later in the same settle pass moves the view onto it.
+void TakePendingViewSetup(state::Registry &, state::Entity viewport);
 
 // Emplace the document components on the document entity.
 void SetupDocument(state::Registry &);
@@ -148,12 +81,13 @@ void SetupDocument(state::Registry &);
 void AddDefaultSceneContent(state::Registry &);
 
 // Call after SubmitViewports, inside the viewport's Begin block.
-void DisplayViewport(state::Registry &, const Viewport &);
+// `active` marks the document's active viewport, whose overlay draws the gesture guides.
+void DisplayViewport(state::Registry &, state::Entity viewport, bool active);
 // Waits for a pending viewport render.
 void WaitForRender(state::Registry &);
 
 // Resume on-screen display after a headless replay: render the current scene at the viewport's extent and present synchronously.
-void PresentViewport(state::Registry &, Viewport &);
+void PresentViewport(state::Registry &, state::Entity viewport);
 
 bool ViewportImageReady(const Viewport &);
 
@@ -161,9 +95,9 @@ bool ViewportImageReady(const Viewport &);
 // A look-through camera records only the framed region inside the dimmed overlay.
 // Resizing or changing look-through state after capture begins stops recording.
 // `with_audio` also captures the master output and muxes it in when the recording stops.
-void StartRecording(state::Registry &, Viewport &, const std::filesystem::path &, int fps, bool with_audio = false);
+void StartRecording(state::Registry &, state::Entity viewport, const std::filesystem::path &, int fps, bool with_audio = false);
 // Call after WaitForRender() so the source image is coherent.
-void CaptureRecordFrame(state::Registry &, Viewport &);
+void CaptureRecordFrame(state::Registry &, state::Entity viewport);
 bool IsRecording(const Viewport &);
 uint64_t CapturedFrameCount(const Viewport &);
 
@@ -173,6 +107,6 @@ struct ViewportImageRgba8 {
 };
 // Requires WaitForRender() to complete before reading the source image.
 // Returns an error message on failure.
-std::expected<ViewportImageRgba8, std::string> ReadbackViewportImage(state::Registry &, const Viewport &);
+std::expected<ViewportImageRgba8, std::string> ReadbackViewportImage(state::Registry &, state::Entity viewport);
 
 std::string DebugBufferHeapUsage(const state::Registry &);

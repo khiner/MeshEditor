@@ -3,6 +3,7 @@
 #include "FileDialog.h"
 #include "action/Audio.h"
 #include "audio/AudioDevice.h"
+#include "audio/AudioOutputConfig.h"
 #include "audio/AudioQueries.h"
 #include "audio/FftAnalysis.h"
 #include "audio/SoundVertices.h"
@@ -453,8 +454,9 @@ void DrawAudioDebug(const state::Registry &r) {
     const auto &bank = *m.Live;
 
     SeparatorText("Device");
-    if (const auto *device = r.Resources.find<AudioDeviceResource>(); device && device->Initialized) {
-        Text("%s at %u Hz", device->DeviceName.empty() ? "System default" : device->DeviceName.c_str(), device->SampleRate);
+    if (const auto rate = r.Resources.get<const AudioDeviceInfo>().SampleRate) {
+        const auto &name = r.Resources.get<const AudioOutputConfig>().DeviceName;
+        Text("%s at %u Hz", name.empty() ? "System default" : name.c_str(), rate);
     } else {
         TextUnformatted("No output device");
     }

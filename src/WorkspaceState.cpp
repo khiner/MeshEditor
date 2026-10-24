@@ -1,10 +1,10 @@
 #include "WorkspaceState.h"
 
 #include "File.h"
-#include "viewport/ViewCameraSerialize.h"
+#include "snapshot/Workspace.h"
 
-#include "state/Registry.h"
 #include <imgui_internal.h>
+#include <ranges>
 #include <zpp_bits.h>
 
 namespace workspace {
@@ -67,11 +67,8 @@ std::vector<PanelState> CapturePanels(const PanelsState &panels) {
 State Capture(const state::Registry &r, const PanelsState &panels) {
     size_t ini_size = 0;
     const char *ini = ImGui::GetCurrentContext() && panels.PendingIni.empty() ? ImGui::SaveIniSettingsToMemory(&ini_size) : nullptr;
-    const auto &viewports = r.Resources.get<const ::Viewports>();
     return {
-        .Viewports = viewports.States | std::views::transform([](const auto &entry) { return ViewportEntry{entry.first, entry.second}; }) | std::ranges::to<std::vector>(),
-        .ActiveViewport = viewports.Active().Entity,
-        .AudioOutput = r.get<const AudioOutputConfig>(state::Document),
+        .Components = snapshot::SerializeWorkspace(r),
         .Panels = GetPanelVisibility(panels),
         .NodesCanvas = panels.Nodes.Canvas,
         .ImGuiIni = ini ? std::string{ini, ini_size} : panels.PendingIni,
@@ -81,14 +78,7 @@ State Capture(const state::Registry &r, const PanelsState &panels) {
 }
 
 void Apply(state::Registry &r, PanelsState &panels, const State &state) {
-    SyncViewports(r);
-    auto &viewports = r.Resources.get<::Viewports>();
-    // Live viewports reference their entries, which assignment keeps in place.
-    for (const auto &entry : state.Viewports) viewports.States.insert_or_assign(entry.Viewport, entry.State);
-    const auto active = std::ranges::find(viewports.All, state.ActiveViewport, &Viewport::Entity);
-    viewports.ActiveIndex = active != viewports.All.end() ? size_t(active - viewports.All.begin()) : 0;
-    // The audio settle reconciles the device with the published config.
-    r.replace<AudioOutputConfig>(state::Document, state.AudioOutput);
+    snapshot::ApplyWorkspace(r, state.Components);
     SetPanelVisibility(panels, state.Panels);
     panels.Nodes.Canvas = state.NodesCanvas;
     panels.PendingIni = state.ImGuiIni;
@@ -137,7 +127,7 @@ void ApplyPending(PanelsState &panels) {
 std::vector<std::byte> Serialize(const State &state) {
     std::vector<std::byte> bytes;
     zpp::bits::out archive{bytes};
-    if (zpp::bits::failure(archive(state.Viewports, state.ActiveViewport, state.AudioOutput, state.Panels, state.NodesCanvas, state.ImGuiIni, state.Tabs, state.PanelStates))) return {};
+    if (zpp::bits::failure(archive(state.Components, state.Panels, state.NodesCanvas, state.ImGuiIni, state.Tabs, state.PanelStates))) return {};
     bytes.resize(archive.position());
     return bytes;
 }
@@ -145,7 +135,7 @@ std::vector<std::byte> Serialize(const State &state) {
 std::optional<State> Deserialize(std::span<const std::byte> bytes) {
     zpp::bits::in archive{bytes};
     State state;
-    if (zpp::bits::failure(archive(state.Viewports, state.ActiveViewport, state.AudioOutput, state.Panels, state.NodesCanvas, state.ImGuiIni, state.Tabs, state.PanelStates))) return std::nullopt;
+    if (zpp::bits::failure(archive(state.Components, state.Panels, state.NodesCanvas, state.ImGuiIni, state.Tabs, state.PanelStates))) return std::nullopt;
     return state;
 }
 

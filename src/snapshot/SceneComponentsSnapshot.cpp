@@ -21,6 +21,7 @@ void RegisterScene(Tables &tables) {
             Transform, PunctualLight, Name, Selected, Active, ObjectKind, Scene, SceneMembership, SubElementOf,
             ScaleLocked, Instance, Hidden, SceneParent, SceneChildren, ObjectExtrasTag, Path, Perspective, Orthographic, TimelineRange,
             TimelinePlayback, TimelineNavigation, TimelineView, TimelineTheme, AnimationClips, Animations, MorphWeightRange, ImageLight, Visibility>{},
+        TypeList<>{},
         TypeList<
             RenderInstance, WorldTransform, ModelsBuffer, LastEvaluatedFrame, PlaybackFrame,
             PosedLayout, MeshEditWork, MeshVertexOverlays, BoundsRun,

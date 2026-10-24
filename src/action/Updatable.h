@@ -4,7 +4,6 @@
 #include "action/Core.h"
 #include "mesh/PrimitiveType.h"
 
-struct AudioOutputConfig;
 struct AudioOutputMix;
 struct ColliderMaterial;
 struct ColliderPolicy;
@@ -99,7 +98,7 @@ using UpdatableComponents = TypeList<
     PunctualLight, ImageLight, Perspective, Orthographic, MaterialVariants, PrimitiveShape,
     Animations,
     PhysicsSimulationSettings, PhysicsMaterial, PhysicsMotion, PhysicsVelocity, ColliderPolicy, CollisionFilter, PhysicsJoint, ColliderMaterial, TriggerNodes,
-    ModalGain, ModalTuning, ModalSoundControls, Striker, SurfaceSoundControls, AudioOutputMix, AudioOutputConfig,
+    ModalGain, ModalTuning, ModalSoundControls, Striker, SurfaceSoundControls, AudioOutputMix,
     // Geometry procedure node layouts and parameters.
     procedure::NodeLayout, procedure::NodeTheme,
     mesh::Delete, mesh::Merge, mesh::Extrude, mesh::Duplicate, mesh::Split, mesh::Dissolve, mesh::Subdivide, mesh::Triangulate, mesh::TrisToQuads,

@@ -55,8 +55,10 @@ struct SetMaterialPreset {
 struct SetSurfacePreset {
     std::string Name;
 };
+// Selects the output device, at the device default rate when SampleRate is zero.
 struct SetOutputDevice {
     std::string DeviceName;
+    uint32_t SampleRate{0};
 };
 
 using Action = std::variant<

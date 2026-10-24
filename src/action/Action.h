@@ -57,6 +57,8 @@ template<> inline constexpr bool Recordable<view::SetViewportScene> = true;
 template<> inline constexpr bool Recordable<view::RemoveViewport> = true;
 // A presentation sets up the active viewport's view and doesn't change document state.
 template<> inline constexpr bool Recordable<timeline::EnterPresentation> = false;
+// The output device is a user preference.
+template<> inline constexpr bool Recordable<audio::SetOutputDevice> = false;
 
 void Emit(Action, Phase = Phase::Record);
 
