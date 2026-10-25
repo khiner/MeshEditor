@@ -83,6 +83,7 @@ struct PanelsState {
         Timeline{"Timeline"},
         Style{"Style"},
         Info{"Info"},
+        Parameters{"Parameters"},
         ImGuiDemo{"Dear ImGui Demo", false},
         ImSpinnerDemo{"ImSpinner Demo", false},
         ImPlotDemo{"ImPlot Demo", false},
@@ -101,6 +102,7 @@ struct PanelVisibility {
     bool Timeline{true};
     bool Style{true};
     bool Info{true};
+    bool Parameters{true};
     bool ImGuiDemo{false}, ImSpinnerDemo{false}, ImPlotDemo{false};
     bool Debug{false};
     bool History{true};
@@ -113,6 +115,7 @@ inline PanelVisibility GetPanelVisibility(const PanelsState &panels) {
         panels.Timeline.Visible,
         panels.Style.Visible,
         panels.Info.Visible,
+        panels.Parameters.Visible,
         panels.ImGuiDemo.Visible,
         panels.ImSpinnerDemo.Visible,
         panels.ImPlotDemo.Visible,
@@ -127,6 +130,7 @@ inline void SetPanelVisibility(PanelsState &panels, const PanelVisibility &visib
     panels.Timeline.Visible = visibility.Timeline;
     panels.Style.Visible = visibility.Style;
     panels.Info.Visible = visibility.Info;
+    panels.Parameters.Visible = visibility.Parameters;
     panels.ImGuiDemo.Visible = visibility.ImGuiDemo;
     panels.ImSpinnerDemo.Visible = visibility.ImSpinnerDemo;
     panels.ImPlotDemo.Visible = visibility.ImPlotDemo;

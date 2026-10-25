@@ -8,5 +8,6 @@ struct Registry;
 
 namespace procedure {
 void DrawNodesPanel(state::Registry &, NodesPanel &, bool interactive);
+void DrawParametersPanel(state::Registry &, NodesPanel &, Panel &, bool interactive);
 void DrawNodeStyle(state::Registry &);
 } // namespace procedure

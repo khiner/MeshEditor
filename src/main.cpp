@@ -392,9 +392,11 @@ void RevertSavedProject(state::Registry &r) {
 
 void BuildDefaultDockLayout(const PanelsState &panels, ImGuiID dockspace_id) {
     auto controls_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.3f, nullptr, &dockspace_id);
-    const auto extra_node_id = DockBuilderSplitNode(controls_node_id, ImGuiDir_Down, 0.4f, nullptr, &controls_node_id);
-    auto timeline_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Down, 0.1f, nullptr, &dockspace_id);
-    const auto info_node_id = DockBuilderSplitNode(timeline_node_id, ImGuiDir_Right, 0.25f, nullptr, &timeline_node_id);
+    auto extra_node_id = DockBuilderSplitNode(controls_node_id, ImGuiDir_Down, 0.4f, nullptr, &controls_node_id);
+    const auto info_node_id = DockBuilderSplitNode(extra_node_id, ImGuiDir_Down, 0.25f, nullptr, &extra_node_id);
+    auto nodes_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Down, 0.3f, nullptr, &dockspace_id);
+    const auto timeline_node_id = DockBuilderSplitNode(nodes_node_id, ImGuiDir_Down, 0.35f, nullptr, &nodes_node_id);
+    const auto parameters_node_id = DockBuilderSplitNode(nodes_node_id, ImGuiDir_Right, 0.25f, nullptr, &nodes_node_id);
     DockBuilderDockWindow(panels.History.Name, extra_node_id);
     DockBuilderDockWindow(panels.Style.Name, extra_node_id);
     DockBuilderDockWindow(panels.Debug.Name, extra_node_id);
@@ -403,10 +405,10 @@ void BuildDefaultDockLayout(const PanelsState &panels, ImGuiID dockspace_id) {
     DockBuilderDockWindow(panels.ImPlotDemo.Name, extra_node_id);
     DockBuilderDockWindow(panels.SceneControls.Name, controls_node_id);
     DockBuilderDockWindow(panels.Timeline.Name, timeline_node_id);
-    DockBuilderDockWindow(panels.Nodes.Name, timeline_node_id);
+    DockBuilderDockWindow(panels.Nodes.Name, nodes_node_id);
+    DockBuilderDockWindow(panels.Parameters.Name, parameters_node_id);
     DockBuilderDockWindow(panels.Info.Name, info_node_id);
     DockBuilderGetNode(extra_node_id)->SelectedTabId = ImHashStr(panels.History.Name);
-    DockBuilderGetNode(timeline_node_id)->SelectedTabId = ImHashStr(panels.Timeline.Name);
 }
 
 void RenderDebugPanel(state::Registry &r, const mtl::Context &ctx, CA::MetalLayer *layer, PanelsState &panels, const ImGuiIO &io) {
@@ -591,6 +593,7 @@ EditorPanelsFrame BeginEditorPanels(
         PopStyleVar();
     }
     procedure::DrawNodesPanel(r, panels.Nodes, interactive);
+    procedure::DrawParametersPanel(r, panels.Nodes, panels.Parameters, interactive);
     if (interactive) r.Resources.get<FrameState>().Scrubbing = scrubbing;
 
     if (interactive) FollowHoveredViewport(r);
@@ -861,6 +864,7 @@ void DrawMainMenuBar(state::Registry &r, PanelsState &panels) {
         if (BeginMenu("Panels")) {
             MenuItem(panels.History.Name, nullptr, &panels.History.Visible);
             MenuItem(panels.Nodes.Name, nullptr, &panels.Nodes.Visible);
+            MenuItem(panels.Parameters.Name, nullptr, &panels.Parameters.Visible);
             MenuItem(panels.Info.Name, nullptr, &panels.Info.Visible);
             MenuItem(panels.Style.Name, nullptr, &panels.Style.Visible);
             MenuItem(panels.Debug.Name, nullptr, &panels.Debug.Visible);

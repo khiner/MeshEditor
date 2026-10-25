@@ -24,7 +24,7 @@ using numeric::vec2;
 namespace {
 constexpr float LinkReach{4.f}; // A link takes the mouse within this many pixels of its wire.
 constexpr float WireStraightening{3.5f}; // A link's handles straighten as the link nears horizontal, as in Blender.
-constexpr float MinZoom{.25f}, MaxZoom{3.f}, PanelWidth{280.f};
+constexpr float MinZoom{.25f}, MaxZoom{3.f};
 constexpr float TrackpadPoints{10.f}; // The platform reports a trackpad's scroll at a tenth of its points.
 constexpr float ZoomStep{1.1f}, TrackpadStepPoints{100.f}; // A zoom step is one mouse wheel notch, or 100 points of trackpad scroll.
 
@@ -1142,18 +1142,24 @@ void DrawNodesPanel(state::Registry &r, NodesPanel &panel, bool interactive) {
             TextUnformatted("The mesh has no geometry procedure.");
             if (Button("Add Procedure") && interactive) action::Emit(action::nodes::AddProcedure{mesh_entity});
         } else {
-            const auto avail = GetContentRegionAvail();
-            const float panel_width = std::min(PanelWidth, avail.x * .5f);
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0.f, 0.f});
-            BeginChild("Canvas", {avail.x - panel_width - GetStyle().ItemSpacing.x, 0.f}, ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoMove);
+            BeginChild("Canvas", {0.f, 0.f}, ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoMove);
             PopStyleVar();
             DrawCanvas(r, r.Resources.get<FrameState>(), panel, r.get<const NodeTheme>(state::Document), mesh_entity, *procedure, interactive);
             EndChild();
-            SameLine();
-            BeginChild("Parameters", {0.f, 0.f}, ImGuiChildFlags_Borders);
-            DrawParameters(r, panel, mesh_entity, *procedure, interactive);
-            EndChild();
         }
+    }
+    End();
+}
+
+void DrawParametersPanel(state::Registry &r, NodesPanel &nodes, Panel &panel, bool interactive) {
+    if (!panel.Visible) return;
+    if (Begin(panel.Name, &panel.Visible)) {
+        const auto mesh_entity = action::nodes::EditedMesh(r);
+        const auto *procedure = r.try_get<const GeometryProcedure>(mesh_entity);
+        if (mesh_entity == state::Null) TextUnformatted("Select a mesh object to edit its geometry procedure.");
+        else if (!procedure) TextUnformatted("The mesh has no geometry procedure.");
+        else DrawParameters(r, nodes, mesh_entity, *procedure, interactive);
     }
     End();
 }
