@@ -1,5 +1,6 @@
 #include "mesh/MeshComponents.h"
 #include "mesh/TetBuffers.h"
+#include "procedure/InlineSelection.h"
 #include "procedure/NodeTheme.h"
 #include "procedure/Procedure.h"
 #include "render/MaterialComponents.h"

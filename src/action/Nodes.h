@@ -1,6 +1,6 @@
 #pragma once
 
-#include "mesh/GeometrySelection.h"
+#include "procedure/InlineSelection.h"
 #include "state/Entity.h"
 
 // Address procedure nodes by index and update parameters on their entities.
@@ -42,12 +42,10 @@ struct SetAttributeName {
     std::string Name;
 };
 
-// Supply vertex, edge, and face mask blocks in domain order and ascending owned-block order.
-// An empty list selects every element.
+// Replaces the node's inline selection.
 struct SetInlineSelection {
     state::Entity Node;
-    std::vector<SelectionBlock> Blocks;
-    uint32_t Vertices, Edges; // The vertex and edge block counts, with the face blocks after them
+    std::unique_ptr<procedure::InlineSelection> Selection;
 };
 // Makes the mesh's evaluated record its source and removes its procedure with its nodes.
 struct ApplyProcedure {
@@ -89,14 +87,14 @@ using Action = std::variant<AddProcedure, AddNode, Link, Unlink, SetOutput, SetA
 
 void Apply(state::Registry &, const Action &);
 
-// The selection of the mesh's drawn record as an inline selection for the node, over the blocks the record owns.
+// The selection of the mesh's drawn record in the viewport's edit domain as an inline selection for the node, over the blocks the record owns, with the mesh's active element.
 SetInlineSelection CaptureSelection(const state::Registry &, state::Entity mesh_entity, state::Entity node);
 // Gives `to` a copy of the procedure of `from` over new node entities holding copies of its nodes' components.
 // The next settle cooks the copy.
 void CopyProcedure(state::Registry &, state::Entity from, state::Entity to);
 // The mesh entity whose procedure the editor edits: the active object's mesh, or the active mesh entity.
 state::Entity EditedMesh(const state::Registry &);
-// Append a default node before the procedure output and capture the drawn selection.
+// Append a default node before the procedure output and capture the drawn selection into a node with a selection input.
 // Publish the resulting selection and return the node entity, or null on failure.
 state::Entity AppendNode(state::Registry &, state::Entity mesh_entity, uint16_t kind);
 // Visits each edit-mode mesh with a selection in the edit element domain and the node its procedure result reads.

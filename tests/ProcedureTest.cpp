@@ -10,6 +10,7 @@
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "scene/SceneGraph.h"
+#include "selection/SelectionGpu.h"
 #include "viewport/ViewportEvents.h"
 
 using boost::ut::expect, boost::ut::fatal;
@@ -96,6 +97,7 @@ struct ProcedureFixture : Fixture {
         for (auto &task : tasks) task.SourceId = id;
         expect(std::ranges::all_of(ExecuteGeometryTopologyStages(R, tasks), &GeometryTopologyResult::Changed));
     }
+    void CheckStep();
 };
 
 // The record and the selected elements a kernel edit leaves on a clone of `id`, where `edit` runs the kernel on the clone and returns the elements it selects.
@@ -146,10 +148,17 @@ Shape SelectAllReference(ProcedureFixture &f, uint32_t id, std::vector<MeshTopol
            })
         .Output;
 }
-GeometrySelection Selection(const MeshStore &meshes, uint32_t id) {
+// The vertices `inside` accepts, and the edges and faces whose vertices it all accepts.
+GeometrySelection SelectionWhere(const Mesh &mesh, auto &&inside) {
     GeometrySelection selection;
-    for (const auto [element, handles] : {std::pair{Element::Vertex, &selection.Vertices}, std::pair{Element::Edge, &selection.Edges}, std::pair{Element::Face, &selection.Faces}})
-        meshes.GetSelectedElements(id, element).ForEach([&](uint32_t handle) { handles->push_back(handle); });
+    for (const auto v : mesh.vertices())
+        if (inside(v)) selection.Vertices.push_back(*v);
+    for (const auto e : mesh.edges()) {
+        const auto h = mesh.GetHalfedge(e, 0u);
+        if (inside(mesh.GetFromVertex(h)) && inside(mesh.GetToVertex(h))) selection.Edges.push_back(*e);
+    }
+    for (const auto face : mesh.faces())
+        if (std::ranges::all_of(mesh.fv_range(face), inside)) selection.Faces.push_back(*face);
     return selection;
 }
 
@@ -160,6 +169,7 @@ struct OperatorNode {
 // The node whose cook plans the task, with parameters from the task's op, Param0, Param1, flags, steps and copy translation.
 // A merge at a target merges onto the selection's first vertex at its center, as the Center mode does.
 // The planned decimation carries no ratio, and its row's ratio is the node's default.
+// A face replacement is the area beautify that plans it.
 std::optional<OperatorNode> NodeOf(const MeshTopologyTask &task) {
     using enum MeshTopologyOp;
     using namespace action::mesh;
@@ -242,8 +252,158 @@ std::optional<OperatorNode> NodeOf(const MeshTopologyTask &task) {
                                     f.Do(UpdateOf<&Inset::Even>(n, (t.Flags & TopologyFlagEvenOffset) != 0u));
                                 }};
         case Solidify: return OperatorNode{KindOf<action::mesh::Solidify>, [](ProcedureFixture &f, state::Entity n, const MeshTopologyTask &t) { f.Do(UpdateOf<&action::mesh::Solidify::Thickness>(n, t.Param0)); }};
+        case ConnectVertices: return OperatorNode{KindOf<action::mesh::ConnectVertices>};
+        case SplitNonplanarFaces: return OperatorNode{KindOf<action::mesh::SplitNonplanarFaces>, [](ProcedureFixture &f, state::Entity n, const MeshTopologyTask &t) { f.Do(UpdateOf<&action::mesh::SplitNonplanarFaces::Angle>(n, t.Param0)); }};
+        case SplitConcaveFaces: return OperatorNode{KindOf<action::mesh::SplitConcaveFaces>};
+        case ReplaceFaces: return OperatorNode{KindOf<BeautifyFaces>};
         default: return std::nullopt;
     }
+}
+// Whether a node of the kind runs one topology task, as the kinds NodeOf returns do.
+bool RunsTask(uint16_t kind) {
+    using namespace action::mesh;
+    static constexpr std::array Kinds{KindOf<Delete>, KindOf<Dissolve>, KindOf<Merge>, KindOf<action::mesh::Decimate>, KindOf<ConvexHull>, KindOf<action::mesh::Wireframe>, KindOf<Bevel>, KindOf<action::mesh::TrisToQuads>, KindOf<action::mesh::Triangulate>, KindOf<action::mesh::FlipNormals>, KindOf<Split>, KindOf<Duplicate>, KindOf<Extrude>, KindOf<ExtrudeRepeat>, KindOf<action::mesh::Subdivide>, KindOf<action::mesh::EdgeSplit>, KindOf<Rip>, KindOf<action::mesh::Poke>, KindOf<Inset>, KindOf<action::mesh::Solidify>, KindOf<action::mesh::ConnectVertices>, KindOf<action::mesh::SplitNonplanarFaces>, KindOf<action::mesh::SplitConcaveFaces>, KindOf<BeautifyFaces>};
+    return std::ranges::contains(Kinds, kind);
+}
+// The live elements of the record that the inline selection selects, ascending, where each domain's masks follow the record's blocks in order.
+GeometrySelection LiveHandles(const MeshStore &meshes, uint32_t id, const InlineSelection &selection) {
+    GeometrySelection handles;
+    for (const auto [element, masks, listed] : {std::tuple{Element::Vertex, &selection.Vertices, &handles.Vertices}, std::tuple{Element::Edge, &selection.Edges, &handles.Edges}, std::tuple{Element::Face, &selection.Faces, &handles.Faces}}) {
+        for (uint32_t local = 0u; local < masks->size(); ++local) {
+            for (uint32_t slot = 0u; slot < MeshElementBlockSize; ++slot) {
+                const auto handle = local * MeshElementBlockSize + slot;
+                if ((*masks)[local][slot / 32u] >> (slot % 32u) & 1u && meshes.IsLiveElement(id, element, ElementHandle{handle})) listed->push_back(handle);
+            }
+        }
+    }
+    return handles;
+}
+// The task a node of a RunsTask kind runs on record `id`, planned from its parameters and inline selection as its cook plans it, or none where the cook faults the node.
+std::optional<MeshTopologyTask> TaskOf(const state::Registry &r, state::Entity node, uint16_t kind, uint32_t id) {
+    using enum MeshTopologyOp;
+    using namespace action::mesh;
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    const Mesh mesh{meshes, id};
+    const auto *inline_selection = r.try_get<const InlineSelection>(node);
+    const bool masked = inline_selection && !(inline_selection->Vertices.empty() && inline_selection->Edges.empty() && inline_selection->Faces.empty());
+    const auto domain = inline_selection ? inline_selection->Domain : Element::Vertex;
+    const auto selection = masked ? LiveHandles(meshes, id, *inline_selection) : AllHandles(mesh);
+    const auto task = [&](MeshTopologyOp op, float param0 = 0.f, float param1 = 0.f, uint32_t flags = 0u) {
+        MeshTopologyTask planned{.SourceId = id, .Op = op, .Param0 = param0, .Param1 = param1, .Flags = flags};
+        if (masked) planned.Selection = selection;
+        else planned.Flags |= TopologyFlagSelectAll;
+        return planned;
+    };
+    std::optional<MeshTopologyTask> planned;
+    VisitKind(kind, [&]<typename K> {
+        if constexpr (std::same_as<K, Delete>) {
+            planned = task(MeshTopologyOp(uint32_t(r.get<const K>(node).Mode)));
+        } else if constexpr (std::same_as<K, Dissolve>) {
+            const auto &p = r.get<const K>(node);
+            if (p.Mode == DissolveMode::Vertices) planned = task(DissolveVertices);
+            else if (p.Mode == DissolveMode::Edges) planned = task(DissolveEdges, 0.f, 0.f, p.KeepVertices ? TopologyFlagKeepVertices : 0u);
+            else if (p.Mode == DissolveMode::Faces) planned = task(DissolveFaces);
+            else if (p.Mode == DissolveMode::Degenerate) planned = task(DissolveDegenerate, std::max(p.Distance, 0.f));
+            else {
+                const auto flags = (domain == Element::Face ? TopologyFlagFaceSelection : 0u) | (p.AllBoundaries ? TopologyFlagAllBoundaries : 0u) | (p.DelimitMaterials ? TopologyFlagDelimitMaterial : 0u) | (p.DelimitSharpEdges ? TopologyFlagDelimitSharp : 0u) | (p.DelimitUVs ? TopologyFlagDelimitUV : 0u);
+                planned = task(DissolveLimited, std::clamp(p.Angle, 0.f, .5f * std::numbers::pi_v<float>), 0.f, flags);
+            }
+        } else if constexpr (std::same_as<K, Merge>) {
+            const auto &p = r.get<const K>(node);
+            const auto &vertices = selection.Vertices;
+            const auto reference = vertices.empty() ? InvalidOffset : p.Mode == MergeMode::Last ? vertices.back() :
+                                                                                                  vertices.front();
+            planned = MergeTask(meshes, mesh, selection, p.Mode, std::max(p.Distance, 0.f), reference);
+        } else if constexpr (std::same_as<K, action::mesh::Decimate>) {
+            planned = DecimateTask(meshes, mesh, selection, r.get<const K>(node).Ratio);
+        } else if constexpr (std::same_as<K, ConvexHull>) {
+            planned = ConvexHullTask(meshes, mesh, selection);
+            if (planned && planned->Op == AddPrimitives) planned->Selection = selection;
+        } else if constexpr (std::same_as<K, action::mesh::Wireframe>) {
+            const auto &p = r.get<const K>(node);
+            const auto flags = (p.Even ? TopologyFlagEvenOffset : 0u) | (p.Boundary ? TopologyFlagWireBoundary : 0u) | (p.Relative ? TopologyFlagWireRelative : 0u) | (p.Replace ? TopologyFlagWireReplace : 0u);
+            planned = task(MeshTopologyOp::Wireframe, std::max(p.Thickness, 0.f), std::clamp(p.Offset, -1.f, 1.f), flags);
+        } else if constexpr (std::same_as<K, Bevel>) {
+            const auto &p = r.get<const K>(node);
+            planned = task(p.Vertices ? BevelVertices : BevelEdges, std::max(p.Width, 0.f));
+            planned->Steps = std::max(p.Segments, 1u);
+        } else if constexpr (std::same_as<K, action::mesh::TrisToQuads>) {
+            planned = task(MeshTopologyOp::TrisToQuads);
+        } else if constexpr (std::same_as<K, action::mesh::Triangulate>) {
+            planned = task(MeshTopologyOp::Triangulate);
+        } else if constexpr (std::same_as<K, action::mesh::FlipNormals>) {
+            planned = task(MeshTopologyOp::FlipNormals);
+        } else if constexpr (std::same_as<K, Split>) {
+            planned = task(SplitGeometry);
+        } else if constexpr (std::same_as<K, Duplicate>) {
+            planned = task(DuplicateGeometry);
+        } else if constexpr (std::same_as<K, Extrude>) {
+            const auto mode = r.get<const K>(node).Mode;
+            planned = task(mode == ExtrudeMode::Vertices ? ExtrudeVertices : mode == ExtrudeMode::Edges ? ExtrudeEdges :
+                               mode == ExtrudeMode::FacesIndividual                                     ? ExtrudeFacesIndividual :
+                                                                                                          ExtrudeRegion);
+        } else if constexpr (std::same_as<K, ExtrudeRepeat>) {
+            const auto &p = r.get<const K>(node);
+            planned = ExtrudeStepsTask(mesh, selection, Element::None, p.Steps, mat3{1.f}, p.Offset, vec3{0.f});
+        } else if constexpr (std::same_as<K, action::mesh::Subdivide>) {
+            planned = task(MeshTopologyOp::Subdivide, float(std::max(r.get<const K>(node).Cuts, 1u)));
+        } else if constexpr (std::same_as<K, action::mesh::EdgeSplit>) {
+            planned = task(MeshTopologyOp::EdgeSplit);
+        } else if constexpr (std::same_as<K, Rip>) {
+            planned = task(MeshTopologyOp::EdgeSplit, 0.f, 0.f, TopologyFlagRipSelectCopies);
+        } else if constexpr (std::same_as<K, action::mesh::Poke>) {
+            planned = task(MeshTopologyOp::Poke, r.get<const K>(node).Offset);
+        } else if constexpr (std::same_as<K, Inset>) {
+            const auto &p = r.get<const K>(node);
+            planned = task(p.Individual ? InsetIndividual : InsetRegion, std::max(p.Thickness, 0.f), p.Depth, p.Even ? TopologyFlagEvenOffset : 0u);
+        } else if constexpr (std::same_as<K, action::mesh::Solidify>) {
+            planned = task(MeshTopologyOp::Solidify, r.get<const K>(node).Thickness);
+        } else if constexpr (std::same_as<K, action::mesh::ConnectVertices>) {
+            planned = task(MeshTopologyOp::ConnectVertices);
+        } else if constexpr (std::same_as<K, action::mesh::SplitNonplanarFaces>) {
+            planned = task(MeshTopologyOp::SplitNonplanarFaces, std::clamp(r.get<const K>(node).Angle, 0.f, std::numbers::pi_v<float>));
+        } else if constexpr (std::same_as<K, action::mesh::SplitConcaveFaces>) {
+            planned = task(MeshTopologyOp::SplitConcaveFaces);
+        } else if constexpr (std::same_as<K, BeautifyFaces>) {
+            planned = BeautifyFaceTask(mesh, selection, r.get<const K>(node).Method == BeautifyMethod::Angle);
+        }
+    });
+    return planned;
+}
+
+// Each procedure mesh whose Output reads a path that runs only topology tasks on its Source node draws what those tasks make of a clone of its source record, where a faulted node passes its input through.
+void ProcedureFixture::CheckStep() {
+    auto &meshes = Store();
+    bool cloned = false;
+    for (const auto [mesh, procedure] : R.view<const GeometryProcedure>().each()) {
+        const auto *plan = R.try_get<const CookPlan>(mesh);
+        if (!plan || procedure.OutputNode == NoNode) continue;
+        const auto shown = procedure.Inputs[plan->InputFirst[procedure.OutputNode]].FromNode;
+        if (shown == NoNode) continue;
+        const auto upstream = Upstream(procedure, plan->InputFirst, shown, [](uint32_t) { return true; });
+        bool sourced = false, runs = true;
+        std::vector<NodeRecord> path;
+        for (const auto n : plan->Order) {
+            if (!upstream[n]) continue;
+            const auto kind = procedure.Nodes[n].Kind;
+            if (kind == KindOf<procedure::Source> && !sourced) sourced = true;
+            else if (RunsTask(kind)) path.push_back(procedure.Nodes[n]);
+            else runs = false;
+        }
+        if (!runs || !sourced || path.empty()) continue;
+        const auto id = Clone(Source(mesh));
+        cloned = true;
+        for (const auto [node, kind] : path) {
+            if (R.all_of<NodeError>(node)) continue;
+            const auto task = TaskOf(R, node, kind, id);
+            expect(task.has_value());
+            if (task) ExecuteGeometryTopology(R, std::span{&*task, 1u});
+        }
+        expect(Describe(meshes, id) == Shaped(mesh));
+        meshes.Release(id);
+    }
+    // The present node holds mesh storage as it stood before the clones.
+    if (cloned) P->History.Revert();
 }
 
 // The output must be the kernel's, from a record of its own, with the source record unchanged.
@@ -255,12 +415,12 @@ void ExpectCooksLike(ProcedureFixture &f, state::Entity mesh, uint32_t source_id
 
 // Every operator kind cooks like its kernel on the patchwork, each generator kind like its primitive, and a fan-out cooks the read branch alone.
 void OperatorKinds(ProcedureFixture &f, Fixture &other) {
-    constexpr std::array<std::string_view, 6> WithoutNode{"RotateEdges", "ReplaceFaces", "ConnectVertices", "SplitNonplanarFaces", "SplitConcaveFaces", "KeepSelectedFaces"};
+    constexpr std::array<std::string_view, 2> WithoutNode{"RotateEdges", "KeepSelectedFaces"};
     for (const auto &c : TopologyCases) {
         if (std::ranges::contains(WithoutNode, c.Name)) continue;
         Scenario(f, other, std::string{c.Name}, [&c](ProcedureFixture &f) {
             auto &r = f.R;
-            auto &meshes = f.Store();
+            const auto &meshes = f.Store();
             const auto mesh = AddMesh(r, CreateMesh(r, {.Data = Patchwork()}).StoreId, MeshInstanceCreateInfo{}).first;
             f.Commit("Add patchwork");
             const auto source_id = f.Source(mesh);
@@ -274,33 +434,22 @@ void OperatorKinds(ProcedureFixture &f, Fixture &other) {
             if (node->Set) node->Set(f, entity, *task);
             // The region as one mask block per block the source owns in each domain, as CaptureSelection captures a drawn selection.
             const auto region = Region(Mesh{meshes, source_id});
-            SetInlineSelection selection{.Node = entity};
+            auto selection = std::make_unique<InlineSelection>();
             using D = MeshStore::ElementDomain;
-            for (const auto [domain, handles] : {std::pair{D::Vertex, &region.Vertices}, std::pair{D::Edge, &region.Edges}, std::pair{D::Face, &region.Faces}}) {
+            for (const auto [domain, handles, blocks] : {std::tuple{D::Vertex, &region.Vertices, &selection->Vertices}, std::tuple{D::Edge, &region.Edges, &selection->Edges}, std::tuple{D::Face, &region.Faces, &selection->Faces}}) {
                 for (const auto block : meshes.GetBlockList(source_id, domain).Blocks) {
-                    auto &words = selection.Blocks.emplace_back();
+                    auto &words = blocks->emplace_back();
                     for (const auto h : *handles)
                         if (h / MeshElementBlockSize == block) words[(h % MeshElementBlockSize) / 32u] |= 1u << (h % 32u);
                 }
-                if (domain == D::Vertex) selection.Vertices = uint32_t(selection.Blocks.size());
-                if (domain == D::Edge) selection.Edges = uint32_t(selection.Blocks.size()) - selection.Vertices;
             }
-            f.Do(std::move(selection));
+            f.Do(SetInlineSelection{entity, std::move(selection)});
             f.Route(mesh, {0u, index, 1u});
-            const auto reference = [&](float param0) {
-                return Reference(f, source_id, [&](uint32_t clone) {
-                           auto planned = *PlanCase(c, meshes, Mesh{meshes, clone});
-                           planned.Param0 = param0;
-                           f.Run(clone, {planned});
-                           return GeometrySelection{};
-                       })
-                    .Output;
-            };
-            ExpectCooksLike(f, mesh, source_id, source, reference(task->Param0));
+            expect(f.Output(mesh) != source_id && f.Source(mesh) == source_id && Describe(meshes, source_id) == source);
             if (task->Param0 == 0.f) return;
             task->Param0 *= 2.f;
             node->Set(f, entity, *task);
-            ExpectCooksLike(f, mesh, source_id, source, reference(task->Param0));
+            expect(f.Output(mesh) != source_id && f.Source(mesh) == source_id && Describe(meshes, source_id) == source);
         });
     }
     // Generator kinds follow PrimitiveShape's alternatives.
@@ -330,19 +479,18 @@ void OperatorKinds(ProcedureFixture &f, Fixture &other) {
         const auto [second, second_entity] = f.Append(mesh, KindOf<action::mesh::Extrude>);
         f.Do(Link{mesh, 0u, 0u, first, 0u});
         f.Do(Link{mesh, 0u, 0u, second, 0u});
-        const auto reference = SelectAllReference(f, source_id, {Op(MeshTopologyOp::ExtrudeRegion)});
         for (const auto read : {first, second}) {
             f.Do(Link{mesh, read, 2u, 1u, 0u});
             expect(!f.R.any_of<NodeError>(first_entity) && !f.R.any_of<NodeError>(second_entity));
-            ExpectCooksLike(f, mesh, source_id, source, reference);
+            expect(f.Output(mesh) != source_id && f.Source(mesh) == source_id && Describe(f.Store(), source_id) == source);
         }
     });
 }
 
-// A graph on `Mesh`, an oracle for its output, and an edit that changes a copy's output.
+// A graph on `Mesh`, an oracle for its output beyond the kernels each step checks, and an edit that changes a copy's output.
 struct Graph {
     state::Entity Mesh;
-    std::function<void(ProcedureFixture &)> Oracle;
+    std::function<void(ProcedureFixture &)> Oracle{};
     std::function<void(ProcedureFixture &, state::Entity)> Edit{};
 };
 struct GraphRow {
@@ -357,7 +505,7 @@ void Survives(ProcedureFixture &f, Fixture &other, std::span<const GraphRow> row
             auto &r = f.R;
             const auto graph = row.Build(f);
             const auto mesh = graph.Mesh;
-            graph.Oracle(f);
+            if (graph.Oracle) graph.Oracle(f);
             if (!graph.Edit) return;
             const auto output = f.Shaped(mesh);
             f.Do(action::selection::Select{f.Object(mesh)});
@@ -390,11 +538,7 @@ Graph ExtrudeSubdivide(ProcedureFixture &f) {
     expect(f.Shaped(mesh) != once);
     return {
         mesh,
-        [mesh](ProcedureFixture &f) {
-            const auto output = f.Shaped(mesh);
-            expect(output != Describe(f.Store(), f.Source(mesh)));
-            expect(output == SelectAllReference(f, f.Source(mesh), {Op(MeshTopologyOp::ExtrudeRegion), Op(MeshTopologyOp::Subdivide, 2.f)}));
-        },
+        [mesh](ProcedureFixture &f) { expect(f.Shaped(mesh) != Describe(f.Store(), f.Source(mesh))); },
         [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(f.Node(mesh, 3u), 3u)); },
     };
 }
@@ -439,16 +583,7 @@ Graph CapResync(ProcedureFixture &f) {
         [mesh](ProcedureFixture &f) {
             const auto kernel = Reference(f, f.Source(mesh), [&](uint32_t clone) {
                 const Mesh sphere{f.Store(), clone};
-                const auto above = [&](he::VH v) { return sphere.GetPosition(v).y > .9f; };
-                GeometrySelection cap;
-                for (const auto v : sphere.vertices())
-                    if (above(v)) cap.Vertices.push_back(*v);
-                for (const auto e : sphere.edges()) {
-                    const auto h = sphere.GetHalfedge(e, 0u);
-                    if (above(sphere.GetFromVertex(h)) && above(sphere.GetToVertex(h))) cap.Edges.push_back(*e);
-                }
-                for (const auto face : sphere.faces())
-                    if (std::ranges::all_of(sphere.fv_range(face), above)) cap.Faces.push_back(*face);
+                const auto cap = SelectionWhere(sphere, [&](he::VH v) { return sphere.GetPosition(v).y > .9f; });
                 f.Run(clone, {{.Op = MeshTopologyOp::InsetRegion, .Param0 = .06f, .Flags = TopologyFlagEvenOffset, .Selection = cap}});
                 return GeometrySelection{};
             });
@@ -498,16 +633,7 @@ Graph CompareSelectsExtrusion(ProcedureFixture &f) {
             const auto &meshes = f.Store();
             const auto kernel = Reference(f, f.Source(mesh), [&](uint32_t clone) {
                 const Mesh cube{meshes, clone};
-                const auto above = [&](he::VH v) { return cube.GetPosition(v).z > 0.f; };
-                GeometrySelection upper;
-                for (const auto v : cube.vertices())
-                    if (above(v)) upper.Vertices.push_back(*v);
-                for (const auto e : cube.edges()) {
-                    const auto h = cube.GetHalfedge(e, 0u);
-                    if (above(cube.GetFromVertex(h)) && above(cube.GetToVertex(h))) upper.Edges.push_back(*e);
-                }
-                for (const auto face : cube.faces())
-                    if (std::ranges::all_of(cube.fv_range(face), above)) upper.Faces.push_back(*face);
+                const auto upper = SelectionWhere(cube, [&](he::VH v) { return cube.GetPosition(v).z > 0.f; });
                 expect(upper.Faces.size() == 1u);
                 f.Run(clone, {{.Op = MeshTopologyOp::ExtrudeRegion, .Selection = upper}});
                 return GeometrySelection{};
@@ -579,6 +705,53 @@ Graph StorePromotes(ProcedureFixture &f) {
         mesh,
         [mesh](ProcedureFixture &f) { expect(RestMatches(f, mesh)); },
         [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(f.Node(mesh, 4u), 3u)); },
+    };
+}
+
+// A Store Selection of the cube's upper face keeps it through a subdivision inserted after the store, so a Delete reading it through Named Attribute removes the four faces it became.
+Graph StoreSelectionDelete(ProcedureFixture &f) {
+    const auto &meshes = f.Store();
+    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    f.Do(AddProcedure{mesh});
+    const auto [store, store_entity] = f.Append(mesh, KindOf<StoreSelection>);
+    const auto [named, named_entity] = f.Append(mesh, KindOf<procedure::NamedAttribute>);
+    const auto [remove, remove_entity] = f.Append(mesh, KindOf<action::mesh::Delete>);
+    const auto subdivide = f.Append(mesh, KindOf<action::mesh::Subdivide>).first;
+    f.Do(SetAttributeName{store_entity, "upper"});
+    f.Do(SetAttributeName{named_entity, "upper"});
+    f.Do(UpdateOf<&procedure::NamedAttribute::Type>(named_entity, AttributeType::Bool));
+    f.Do(UpdateOf<&action::mesh::Delete::Mode>(remove_entity, action::mesh::DeleteMode::OnlyFaces));
+    // The upper face as a mask over the one face block the source owns.
+    const auto source = f.Source(mesh);
+    const Mesh cube{meshes, source};
+    expect(fatal(meshes.GetBlockList(source, MeshStore::ElementDomain::Face).Blocks.size() == 1u));
+    auto selection = std::make_unique<InlineSelection>(InlineSelection{.Domain = Element::Face});
+    auto &words = selection->Faces.emplace_back();
+    for (const auto face : cube.faces())
+        if (cube.CalcFaceCentroid(face).y > .5f) words[*face / 32u] |= 1u << (*face % 32u);
+    f.Do(SetInlineSelection{store_entity, std::move(selection)});
+    f.Do(Link{mesh, named, 0u, remove, 1u});
+    f.Route(mesh, {0u, store, remove, 1u});
+    expect(Mesh{meshes, f.Output(mesh)}.FaceCount() == 5u);
+    f.Do(InsertNode{mesh, subdivide, remove, 0u, 0u});
+    return {
+        mesh,
+        [mesh, named_entity, remove_entity](ProcedureFixture &f) {
+            const auto &meshes = f.Store();
+            expect(!f.R.any_of<NodeError>(named_entity) && !f.R.any_of<NodeError>(remove_entity));
+            const auto kernel = Reference(f, f.Source(mesh), [&](uint32_t clone) {
+                f.Run(clone, {Op(MeshTopologyOp::Subdivide, 1.f, TopologyFlagSelectAll)});
+                const Mesh subdivided{meshes, clone};
+                GeometrySelection upper;
+                for (const auto face : subdivided.faces())
+                    if (subdivided.CalcFaceCentroid(face).y > .99f) upper.Faces.push_back(*face);
+                expect(upper.Faces.size() == 4u);
+                f.Run(clone, {{.Op = MeshTopologyOp(uint32_t(action::mesh::DeleteMode::OnlyFaces)), .Selection = upper}});
+                return GeometrySelection{};
+            });
+            expect(f.Shaped(mesh) == kernel.Output);
+        },
+        [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(f.Node(mesh, 5u), 2u)); },
     };
 }
 
@@ -820,9 +993,6 @@ Graph NodeEditing(ProcedureFixture &f) {
     const auto position = f.Append(mesh, KindOf<Position>).first;
     f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(subdivide_entity, 3u));
     const auto source = Describe(f.Store(), f.Source(mesh));
-    const auto subdivided = SelectAllReference(f, f.Source(mesh), {Op(MeshTopologyOp::Subdivide, 3.f)});
-    const auto triangulated = SelectAllReference(f, f.Source(mesh), {Op(MeshTopologyOp::Triangulate)});
-    const auto both = SelectAllReference(f, f.Source(mesh), {Op(MeshTopologyOp::Subdivide, 3.f), Op(MeshTopologyOp::Triangulate)});
     // Duplicates keep their parameters and only the links among them.
     f.Do(SelectNodes{mesh, {subdivide, triangulate}, subdivide});
     f.Do(DuplicateNodes{mesh, {subdivide, triangulate}});
@@ -834,37 +1004,26 @@ Graph NodeEditing(ProcedureFixture &f) {
     f.Do(SelectNodes{mesh, {subdivide}, subdivide});
     f.Stage(InsertNode{mesh, subdivide, 1u, 0u, 40u});
     f.CommitGesture();
-    expect(f.Shaped(mesh) == subdivided);
     f.Do(InsertNode{mesh, triangulate, 1u, 0u, 0u});
-    expect(f.Shaped(mesh) == both);
     // Deleting a node heals the chain through it.
     f.Do(DeleteNodes{mesh, {subdivide}});
-    expect(f.Shaped(mesh) == triangulated);
     f.Undo();
     f.Do(DeleteNodes{mesh, {subdivide, triangulate}});
     expect(f.Shaped(mesh) == source);
     f.Undo();
-    return {mesh, [mesh, both](ProcedureFixture &f) { expect(f.Shaped(mesh) == both); }};
+    return {mesh};
 }
 
-constexpr std::array<GraphRow, 16> Graphs{{
-    {"ExtrudeSubdivide", ExtrudeSubdivide},
-    {"CapResync", CapResync},
-    {"ScalePositions", ScalePositions},
-    {"CompareSelectsExtrusion", CompareSelectsExtrusion},
-    {"NamedAttributeReads", NamedAttributeReads},
-    {"StorePromotes", StorePromotes},
-    {"DomainMismatch", DomainMismatch},
-    {"JoinGenerated", JoinGenerated},
-    {"HeatSubdivide", HeatSubdivide},
-    {"BooleanIntersection", BooleanIntersection},
-    {"BooleanAction", BooleanAction},
-    {"PrimitiveShapeEdit", PrimitiveShapeEdit},
-    {"ObjectInfo", ObjectInfo},
-    {"InstancesBorrowedPublish", Instances<true, false>},
-    {"InstancesGeneratedRealize", Instances<false, true>},
-    {"NodeEditing", NodeEditing},
-}};
+bool Facing(const Mesh &mesh, he::FH face, vec3 eye) { return face && Dot(mesh.GetNormal(face), eye - mesh.CalcFaceCentroid(face)) > 0.f; }
+// The midpoints of the edges between two faces looking toward the eye.
+std::vector<vec3> FacingEdgeCenters(const Mesh &mesh, vec3 eye) {
+    std::vector<vec3> centers;
+    for (const auto e : mesh.edges()) {
+        const auto h = mesh.GetHalfedge(e, 0u);
+        if (Facing(mesh, mesh.GetFace(h), eye) && Facing(mesh, mesh.GetFace(mesh.GetOppositeHalfedge(h)), eye)) centers.push_back(.5f * (mesh.GetPosition(mesh.GetFromVertex(h)) + mesh.GetPosition(mesh.GetToVertex(h))));
+    }
+    return centers;
+}
 
 struct ViewportRow {
     std::string_view Name;
@@ -881,7 +1040,7 @@ GeometrySelection PublishedKernel(ProcedureFixture &f, uint32_t clone, MeshTopol
     task.SourceId = clone;
     PublishStoreSelection(f.Store(), task);
     f.Run(clone, {task});
-    return Selection(f.Store(), clone);
+    return EditorGeometrySelection(f.Store(), clone);
 }
 
 // Each viewport edit appends one node cooking like the kernel at the clicked elements, and a drag commits as one history node.
@@ -912,19 +1071,15 @@ void ViewportOperators(ProcedureFixture &f, Fixture &other) {
                 // The row clicks the centers of the first elements of its domain whose faces all look toward the eye.
                 const Mesh cube{meshes, f.Output(mesh)};
                 const auto eye = f.View().CameraPosition;
-                const auto facing = [&](he::FH face) { return Dot(cube.GetNormal(face), eye - cube.CalcFaceCentroid(face)) > 0.f; };
                 std::vector<vec3> centers;
                 if (row.Domain == Element::Vertex) {
                     for (const auto v : cube.vertices())
-                        if (std::ranges::all_of(cube.voh_range(v), [&](he::HH h) { return facing(cube.GetFace(h)); })) centers.push_back(cube.GetPosition(v));
+                        if (std::ranges::all_of(cube.voh_range(v), [&](he::HH h) { return Facing(cube, cube.GetFace(h), eye); })) centers.push_back(cube.GetPosition(v));
                 } else if (row.Domain == Element::Edge) {
-                    for (const auto e : cube.edges()) {
-                        const auto h = cube.GetHalfedge(e, 0u);
-                        if (facing(cube.GetFace(h)) && facing(cube.GetFace(cube.GetOppositeHalfedge(h)))) centers.push_back(.5f * (cube.GetPosition(cube.GetFromVertex(h)) + cube.GetPosition(cube.GetToVertex(h))));
-                    }
+                    centers = FacingEdgeCenters(cube, eye);
                 } else {
                     for (const auto face : cube.faces())
-                        if (facing(face)) centers.push_back(cube.CalcFaceCentroid(face));
+                        if (Facing(cube, face, eye)) centers.push_back(cube.CalcFaceCentroid(face));
                 }
                 expect(fatal(centers.size() >= row.Clicks));
                 for (uint32_t i = 0u; i < row.Clicks; ++i) f.Click(centers[i], i > 0u);
@@ -950,7 +1105,7 @@ void ViewportOperators(ProcedureFixture &f, Fixture &other) {
             expect(procedure.Nodes.size() == node_count + 1u && kind == row.Kind);
             expect(r.all_of<PublishSelection>(node) && !r.any_of<NodeError>(node));
             expect(f.P->History.Nodes[f.P->History.Present.value()].Parent == start);
-            const auto selection = Selection(meshes, f.Output(mesh));
+            const auto selection = EditorGeometrySelection(meshes, f.Output(mesh));
             const auto selected = Describe(meshes, f.Output(mesh), selection);
             expect(meshes.GetSelectionSummary(f.Output(mesh)).SelectedCount == selection.Get(row.Domain).size());
             f.Do(action::view::SetInteractionMode{InteractionMode::Object});
@@ -966,6 +1121,312 @@ void ViewportOperators(ProcedureFixture &f, Fixture &other) {
             });
             expect(kernel.Output == previous);
             expect(kernel.Selected == selected);
+        });
+    }
+}
+
+// A primitive or sourced object in World, a preparation, the edit domain and the elements selected in it, an operator gesture, and the node kind the gesture appends to a procedure mesh.
+// A row without Targets selects every element, and a row with Targets leaves World at the identity, where local positions are world positions.
+struct InPlaceRow {
+    std::string_view Name;
+    std::variant<PrimitiveShape, MeshSource (*)()> Shape;
+    Element Domain;
+    uint16_t Kind;
+    void (*Gesture)(ProcedureFixture &);
+    std::vector<vec3> (*Targets)(const Mesh &, vec3 eye){};
+    Transform World{};
+    void (*Prepare)(ProcedureFixture &){};
+};
+// A two by two grid of quads three units wide in the XZ plane facing +Y, with each vertex's X and Z as its UV and a color of its own.
+MeshSource AttributedGrid() {
+    MeshSource source;
+    auto &uvs = source.Attrs.TexCoords0.emplace();
+    auto &colors = source.Attrs.Colors0.emplace();
+    source.Attrs.Colors0ComponentCount = 4u;
+    for (uint32_t z = 0u; z < 3u; ++z)
+        for (uint32_t x = 0u; x < 3u; ++x) {
+            source.Data.Positions.push_back({3.f * (float(x) - 1.f), 0.f, 3.f * (float(z) - 1.f)});
+            uvs.push_back({float(x), float(z)});
+            colors.push_back({float(x) / 2.f, float(z) / 2.f, .25f, 1.f});
+        }
+    for (uint32_t z = 0u; z < 2u; ++z)
+        for (uint32_t x = 0u; x < 2u; ++x) {
+            const auto v = z * 3u + x;
+            source.Data.AddFace(std::array{v, v + 3u, v + 4u, v + 1u});
+        }
+    return source;
+}
+// The sharp edges and flat faces by their corner positions, and each face's corners in loop order from its least position, as position, first UV and color, each sorted.
+struct Marks {
+    std::vector<std::array<Corner, 2>> SharpEdges;
+    std::vector<std::vector<Corner>> FlatFaces;
+    std::vector<std::vector<std::array<float, 9>>> Corners;
+    bool operator==(const Marks &) const = default;
+};
+Marks MarksOf(const MeshStore &meshes, uint32_t id) {
+    const Mesh mesh{meshes, id};
+    const auto &a = meshes.Arenas();
+    const auto &record = meshes.Get(id);
+    const auto point = [&](he::VH v) {
+        const auto p = mesh.GetPosition(v);
+        return Corner{p.x, p.y, p.z};
+    };
+    Marks marks;
+    for (const auto e : mesh.edges()) {
+        if (!a.EdgeSharpness.Get({test::Address(mesh, e), 1u})[0]) continue;
+        const auto h = mesh.GetHalfedge(e, 0u);
+        const auto from = point(mesh.GetFromVertex(h)), to = point(mesh.GetToVertex(h));
+        marks.SharpEdges.push_back({std::min(from, to), std::max(from, to)});
+    }
+    const bool uvs = record.CornerAttributes & MeshAttributeBit_TexCoord0, colors = record.CornerAttributes & MeshAttributeBit_Color0;
+    for (const auto face : mesh.faces()) {
+        auto &corners = marks.Corners.emplace_back();
+        for (const auto h : mesh.fh_range(face)) {
+            const auto p = mesh.GetPosition(mesh.GetToVertex(h));
+            const auto uv = uvs ? a.CornerUvs[0].Get(record.CornerUvs[0], *h) : vec2{};
+            const auto color = colors ? a.CornerColors.Get(record.CornerColors, *h) : vec4{};
+            corners.push_back({p.x, p.y, p.z, uv.x, uv.y, color.x, color.y, color.z, color.w});
+        }
+        std::ranges::rotate(corners, std::ranges::min_element(corners));
+        if (!a.FaceSharpness.Get({test::Address(mesh, face), 1u})[0]) continue;
+        auto &flat = marks.FlatFaces.emplace_back();
+        for (const auto v : mesh.fv_range(face)) flat.push_back(point(v));
+        std::ranges::sort(flat);
+    }
+    std::ranges::sort(marks.SharpEdges);
+    std::ranges::sort(marks.FlatFaces);
+    std::ranges::sort(marks.Corners);
+    return marks;
+}
+// The centroids of the first face and a face sharing an edge with it.
+std::vector<vec3> AdjacentFaceCenters(const Mesh &mesh, vec3) {
+    const auto first = *mesh.faces().begin();
+    for (const auto h : mesh.fh_range(first)) {
+        if (const auto opposite = mesh.GetOppositeHalfedge(h); opposite && mesh.GetFace(opposite)) return {mesh.CalcFaceCentroid(first), mesh.CalcFaceCentroid(mesh.GetFace(opposite))};
+    }
+    return {};
+}
+// The centroid of the first face looking toward the eye.
+std::vector<vec3> FacingFaceCenter(const Mesh &mesh, vec3 eye) {
+    for (const auto face : mesh.faces()) {
+        if (Facing(mesh, face, eye)) return {mesh.CalcFaceCentroid(face)};
+    }
+    return {};
+}
+// The midpoint of the first edge between two faces looking toward the eye.
+std::vector<vec3> FacingEdgeCenter(const Mesh &mesh, vec3 eye) { return FacingEdgeCenters(mesh, eye) | std::views::take(1) | std::ranges::to<std::vector>(); }
+// Two edges meeting at a cuboid's corner nearest the eye, which form a chain of three vertices.
+std::vector<vec3> CornerEdgeCenters(const Mesh &mesh, vec3 eye) { return FacingEdgeCenters(mesh, eye) | std::views::take(2) | std::ranges::to<std::vector>(); }
+// The first and third equator vertices of a sphere about the origin facing the eye, in order around the equator, with one vertex between them.
+std::vector<vec3> EquatorVertices(const Mesh &mesh, vec3 eye) {
+    std::vector<vec3> equator;
+    for (const auto v : mesh.vertices()) {
+        const auto p = mesh.GetPosition(v);
+        if (std::abs(p.y) < 1e-4f && Dot(p, eye - p) > 0.f) equator.push_back(p);
+    }
+    if (equator.size() < 3u) return {};
+    std::ranges::sort(equator, {}, [](vec3 p) { return std::atan2(p.z, p.x); });
+    return {equator[0], equator[2]};
+}
+
+// Two adjacent corners of the first face looking toward the eye, the lower handle first.
+std::vector<vec3> FacingSide(const Mesh &mesh, vec3 eye) {
+    for (const auto face : mesh.faces()) {
+        if (!Facing(mesh, face, eye)) continue;
+        auto corners = mesh.fv_range(face) | std::views::take(2) | std::ranges::to<std::vector>();
+        std::ranges::sort(corners);
+        return {mesh.GetPosition(corners[0]), mesh.GetPosition(corners[1])};
+    }
+    return {};
+}
+// Two opposite corners of the first quad looking toward the eye.
+std::vector<vec3> FacingDiagonal(const Mesh &mesh, vec3 eye) {
+    for (const auto face : mesh.faces()) {
+        if (!Facing(mesh, face, eye) || mesh.GetValence(face) != 4u) continue;
+        const auto corners = mesh.fv_range(face) | std::ranges::to<std::vector>();
+        return {mesh.GetPosition(corners[0]), mesh.GetPosition(corners[2])};
+    }
+    return {};
+}
+// The midpoints of the edges with one face.
+std::vector<vec3> BoundaryEdgeCenters(const Mesh &mesh, vec3) {
+    std::vector<vec3> centers;
+    for (const auto e : mesh.edges()) {
+        const auto h = mesh.GetHalfedge(e, 0u), opposite = mesh.GetOppositeHalfedge(h);
+        if (bool(mesh.GetFace(h)) != (opposite && mesh.GetFace(opposite))) centers.push_back(.5f * (mesh.GetPosition(mesh.GetFromVertex(h)) + mesh.GetPosition(mesh.GetToVertex(h))));
+    }
+    return centers;
+}
+// The midpoints of the first edge and of its reflection through the origin.
+std::vector<vec3> OppositeEdgeCenters(const Mesh &mesh, vec3) {
+    const auto h = mesh.GetHalfedge(*mesh.edges().begin(), 0u);
+    const auto center = .5f * (mesh.GetPosition(mesh.GetFromVertex(h)) + mesh.GetPosition(mesh.GetToVertex(h)));
+    return {center, -center};
+}
+
+// Shades every face smooth.
+void ShadedSmooth(ProcedureFixture &f) { f.Do(action::object::SetSelectedSmoothShading{true}); }
+// Randomly offsets every vertex.
+template<float Amount> void Randomized(ProcedureFixture &f) {
+    f.Do(action::selection::SelectAll{});
+    f.Do(action::mesh::Randomize{.Amount = Amount, .Seed = 3u});
+}
+// Subdivides every edge three times.
+void Subdivided(ProcedureFixture &f) {
+    f.Do(action::selection::SelectAll{});
+    f.Do(action::mesh::Subdivide{.Cuts = 3u});
+}
+// Deletes every face, leaving the edges.
+void Wires(ProcedureFixture &f) {
+    f.Do(action::selection::SelectAll{});
+    f.Do(action::mesh::Delete{.Mode = action::mesh::DeleteMode::OnlyFaces});
+}
+// Dissolves five consecutive triangles of an eight-segment disc into one polygon, concave at the disc's center.
+void Notched(ProcedureFixture &f) {
+    f.Render();
+    const Mesh mesh{f.Store(), f.Output(f.R.get<const Instance>(FindActiveEntity(f.R)).Entity)};
+    std::vector<vec3> centers;
+    for (const auto face : mesh.faces()) centers.push_back(mesh.CalcFaceCentroid(face));
+    std::ranges::sort(centers, {}, [](vec3 p) { return std::atan2(p.z, p.x); });
+    for (uint32_t i = 0u; i < 5u; ++i) f.Click(centers[i], i > 0u);
+    f.Do(action::mesh::Dissolve{.Mode = action::mesh::DissolveMode::Faces});
+}
+// Triangulates every face and randomly offsets every vertex.
+void TriangulatedRandomized(ProcedureFixture &f) {
+    f.Do(action::selection::SelectAll{});
+    f.Do(action::mesh::Triangulate{});
+    f.Do(action::mesh::Randomize{.Amount = .3f, .Seed = 3u});
+}
+// Deletes the first edge between two faces looking toward the eye with its faces, which opens a boundary loop.
+void Opened(ProcedureFixture &f) {
+    f.Render();
+    const auto mesh = f.R.get<const Instance>(FindActiveEntity(f.R)).Entity;
+    f.Click(FacingEdgeCenter(Mesh{f.Store(), f.Output(mesh)}, f.View().CameraPosition).front(), false);
+    f.Do(action::mesh::Delete{.Mode = action::mesh::DeleteMode::Edges});
+}
+
+// The node each operator appends to a procedure mesh cooks what the operator makes of the plain mesh in place at the same selection, with the same sharp marks, UVs and colors.
+// Operators that edit in their mesh's world frame place the object at a rotated and unevenly scaled transform.
+void InPlaceOperators(ProcedureFixture &f, Fixture &other) {
+    using namespace action::mesh;
+    static const Transform Placed{.P = {.5f, .25f, -.5f}, .R = numeric::AngleAxis(.4f, Normalize(vec3{1.f, 2.f, 3.f})), .S = {1.f, 1.5f, .75f}};
+    static const std::array<InPlaceRow, 39> rows{{
+        {"LimitedDissolveFaces", primitive::Circle{.Radius = 5.f, .Segments = 8u}, Element::Face, KindOf<Dissolve>, [](ProcedureFixture &f) { f.Do(Dissolve{.Mode = DissolveMode::Limited}); }, AdjacentFaceCenters},
+        {"ShrinkFattenFace", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Face, KindOf<ShrinkFatten>, [](ProcedureFixture &f) { f.Do(ShrinkFatten{.Distance = .5f}); }, FacingFaceCenter},
+        {"SpaceEvenly", primitive::Cuboid{{1.f, 2.f, 3.f}}, Element::Edge, KindOf<SpaceEvenly>, [](ProcedureFixture &f) { f.Do(SpaceEvenly{}); }, CornerEdgeCenters},
+        {"RelaxEdgeLoops", primitive::Cuboid{{1.f, 2.f, 3.f}}, Element::Edge, KindOf<RelaxEdgeLoops>, [](ProcedureFixture &f) { f.Do(RelaxEdgeLoops{}); }, CornerEdgeCenters},
+        {"CurveBetweenSelected", primitive::UVSphere{.Radius = 5.f, .Slices = 8u, .Stacks = 4u}, Element::Vertex, KindOf<CurveBetweenSelected>, [](ProcedureFixture &f) { f.Do(CurveBetweenSelected{}); }, EquatorVertices},
+        {"Circularize", primitive::Cuboid{{1.f, 2.f, 3.f}}, Element::Face, KindOf<Circularize>, [](ProcedureFixture &f) { f.Do(Circularize{}); }, FacingFaceCenter},
+        {"MakePlanarFaces", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Face, KindOf<MakePlanarFaces>, [](ProcedureFixture &f) { f.Do(MakePlanarFaces{}); }, {}, {}, Randomized<.3f>},
+        {"FlattenView", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Face, KindOf<procedure::Flatten>, [](ProcedureFixture &f) { f.Do(action::mesh::Flatten{.Method = FlattenMethod::View, .ViewNormal = Normalize(vec3{1.f, 2.f, 2.f})}); }, {}, Placed},
+        {"ToSphere", primitive::Cone{.Radius = 2.f, .Height = 4.f, .Slices = 8u}, Element::Vertex, KindOf<procedure::ToSphere>, [](ProcedureFixture &f) { f.Do(action::mesh::ToSphere{}); }, {}, Placed},
+        {"PushPull", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::PushPull>, [](ProcedureFixture &f) { f.Do(action::mesh::PushPull{.Distance = .5f}); }, {}, Placed},
+        {"ShearLocal", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::Shear>, [](ProcedureFixture &f) { f.Do(action::mesh::Shear{.Local = true}); }, {}, Placed},
+        {"Warp", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::Warp>, [](ProcedureFixture &f) { f.Do(action::mesh::Warp{.Angle = 1.f, .Center = {.5f, 0.f, 0.f}, .Orientation = std::make_unique<quat>(numeric::AngleAxis(.3f, Normalize(vec3{1.f, 1.f, 0.f})))}); }, {}, Placed},
+        {"Bend", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::Bend>, [](ProcedureFixture &f) { f.Do(action::mesh::Bend{.Angle = .8f, .Radius = 2.f, .Clamp = false, .Orientation = std::make_unique<quat>(numeric::AngleAxis(.3f, Normalize(vec3{0.f, 1.f, 1.f})))}); }, {}, Placed},
+        {"VertexSlide", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::VertexSlide>, [](ProcedureFixture &f) { f.Do(action::mesh::VertexSlide{.Factor = .3f, .Direction = Normalize(vec3{1.f, .2f, .1f})}); }, {}, Placed},
+        {"EdgeSlide", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Edge, KindOf<procedure::EdgeSlide>, [](ProcedureFixture &f) { f.Do(action::mesh::EdgeSlide{.Factor = .5f, .Direction = {0.f, 1.f, 0.f}}); }, FacingEdgeCenter},
+        {"SnapSymmetry", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<SnapSymmetry>, [](ProcedureFixture &f) { f.Do(SnapSymmetry{.Threshold = .5f}); }, {}, {}, Randomized<.05f>},
+        {"VertexSlideEvenActive", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::VertexSlide>, [](ProcedureFixture &f) { f.Do(action::mesh::VertexSlide{.Factor = .3f, .Direction = Normalize(vec3{1.f, .2f, .1f}), .Even = true}); }, FacingSide, {}, Randomized<.3f>},
+        {"EdgeSlideEvenActive", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::EdgeSlide>, [](ProcedureFixture &f) { f.Do(action::mesh::EdgeSlide{.Factor = .5f, .Direction = {0.f, 1.f, 0.f}, .Even = true}); }, FacingSide, {}, Randomized<.3f>},
+        {"LoopCutActive", primitive::Cuboid{{1.f, 2.f, 3.f}}, Element::Edge, KindOf<LoopCut>, [](ProcedureFixture &f) { f.Do(LoopCut{.Cuts = 2u}); }, CornerEdgeCenters},
+        {"SplitNonplanarCuboid", primitive::Cuboid{}, Element::Face, KindOf<SplitNonplanarFaces>, [](ProcedureFixture &f) { f.Do(SplitNonplanarFaces{}); }, {}, {}, Randomized<.3f>},
+        {"SplitConcaveDisc", primitive::Circle{.Radius = 5.f, .Segments = 8u}, Element::Face, KindOf<SplitConcaveFaces>, [](ProcedureFixture &f) { f.Do(SplitConcaveFaces{}); }, {}, {}, Notched},
+        {"ConnectDiagonal", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<ConnectVertices>, [](ProcedureFixture &f) { f.Do(ConnectVertices{}); }, FacingDiagonal},
+        {"Fill", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<Fill>, [](ProcedureFixture &f) { f.Do(Fill{}); }, FacingDiagonal},
+        {"BridgeEdgeLoops", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Edge, KindOf<BridgeEdgeLoops>, [](ProcedureFixture &f) { f.Do(BridgeEdgeLoops{}); }, OppositeEdgeCenters, {}, Wires},
+        {"GridFill", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Edge, KindOf<GridFill>, [](ProcedureFixture &f) { f.Do(GridFill{}); }, BoundaryEdgeCenters, {}, Opened},
+        {"EdgeRotate", primitive::IcoSphere{.Radius = 3.f, .Subdivisions = 1u}, Element::Edge, KindOf<EdgeRotate>, [](ProcedureFixture &f) { f.Do(EdgeRotate{}); }, FacingEdgeCenter},
+        {"BeautifyFaces", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Face, KindOf<BeautifyFaces>, [](ProcedureFixture &f) { f.Do(BeautifyFaces{}); }, {}, {}, TriangulatedRandomized},
+        {"Unsubdivide", primitive::Plane{}, Element::Vertex, KindOf<Unsubdivide>, [](ProcedureFixture &f) { f.Do(Unsubdivide{}); }, {}, {}, Subdivided},
+        {"RotateUVs", AttributedGrid, Element::Face, KindOf<RotateUVs>, [](ProcedureFixture &f) { f.Do(RotateUVs{}); }, AdjacentFaceCenters},
+        {"ReverseUVs", AttributedGrid, Element::Face, KindOf<ReverseUVs>, [](ProcedureFixture &f) { f.Do(ReverseUVs{}); }, AdjacentFaceCenters},
+        {"RotateColors", AttributedGrid, Element::Face, KindOf<RotateColors>, [](ProcedureFixture &f) { f.Do(RotateColors{.CounterClockwise = true}); }, AdjacentFaceCenters},
+        {"ReverseColors", AttributedGrid, Element::Face, KindOf<ReverseColors>, [](ProcedureFixture &f) { f.Do(ReverseColors{}); }, AdjacentFaceCenters},
+        {"MarkSharpEdges", primitive::Cuboid{{1.f, 2.f, 3.f}}, Element::Edge, KindOf<procedure::MarkSharp>, [](ProcedureFixture &f) { f.Do(action::object::SetSelectedSharp{.Element = Element::Edge, .Sharp = true}); }, CornerEdgeCenters},
+        {"MarkSharpVertices", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::MarkSharp>, [](ProcedureFixture &f) { f.Do(action::object::SetSelectedSharp{.Element = Element::Vertex, .Sharp = true}); }, FacingSide},
+        {"SmoothFace", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Face, KindOf<procedure::MarkSharp>, [](ProcedureFixture &f) { f.Do(action::object::SetSelectedSharp{.Element = Element::Face, .Sharp = false}); }, FacingFaceCenter},
+        {"Knife", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Face, KindOf<procedure::Knife>, [](ProcedureFixture &f) {
+             f.Render();
+             const auto &view = f.View();
+             const auto pixel = [&](vec3 p) {
+                 const auto clip = view.ViewProj * vec4{p.x, p.y, p.z, 1.f};
+                 return vec2{(clip.x / clip.w + 1.f) * .5f * view.ViewportSize.x, (1.f - clip.y / clip.w) * .5f * view.ViewportSize.y};
+             };
+             f.Do(action::mesh::Knife{pixel(Placed.P + vec3{-4.f, .3f, 0.f}), pixel(Placed.P + vec3{4.f, -.2f, 0.f}), std::make_unique<RenderView>(f.R.get<const Viewport>(FirstViewport(f.R)).FrameView)}); }, {}, Placed},
+        {"ShadeSmooth", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Face, KindOf<procedure::ShadeSmooth>, [](ProcedureFixture &f) { f.Do(action::object::SetSelectedSmoothShading{true}); }},
+        {"ShadeFlat", primitive::UVSphere{.Radius = 2.f, .Slices = 8u, .Stacks = 4u}, Element::Face, KindOf<procedure::ShadeSmooth>, [](ProcedureFixture &f) { f.Do(action::object::SetSelectedSmoothShading{false}); }, {}, {}, ShadedSmooth},
+        {"ShadeSmoothByAngle", primitive::UVSphere{.Radius = 2.f, .Slices = 8u, .Stacks = 4u}, Element::Face, KindOf<procedure::ShadeSmoothByAngle>, [](ProcedureFixture &f) { f.Do(action::object::ShadeSelectedSmoothByAngle{.6f}); }},
+    }};
+    // A boolean with another object appends a Boolean node reading it through an Object Info node, in the space the in-place boolean maps it into.
+    Scenario(f, other, "BooleanObject", [](ProcedureFixture &f) {
+        auto &r = f.R;
+        f.Do(action::object::AddMeshPrimitive{primitive::Cuboid{}, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Transform = Placed})});
+        const auto active = FindActiveEntity(r);
+        const auto mesh = r.get<const Instance>(active).Entity;
+        const Transform world{.P = {1.f, .5f, -.25f}, .R = numeric::AngleAxis(.6f, Normalize(vec3{0.f, 1.f, 1.f})), .S = {.75f, 1.f, 1.25f}};
+        f.Do(action::object::AddMeshPrimitive{primitive::Cuboid{}, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Transform = world, .Select = MeshInstanceCreateInfo::SelectBehavior::Additive})});
+        expect(fatal(FindActiveEntity(r) == active));
+        state::Entity tool = state::Null;
+        for (const auto e : r.view<const Instance>())
+            if (e != active) tool = e;
+        const auto described = [&] { return std::pair{f.Shaped(mesh), MarksOf(f.Store(), f.Output(mesh))}; };
+        const auto before = described();
+        f.Do(action::mesh::Boolean{BooleanOperation::Difference});
+        const auto in_place = described();
+        expect(in_place != before);
+        f.Undo();
+        f.Do(AddProcedure{mesh});
+        const auto node_count = uint32_t(r.get<const GeometryProcedure>(mesh).Nodes.size());
+        f.Do(action::mesh::Boolean{BooleanOperation::Difference});
+        const auto &procedure = r.get<const GeometryProcedure>(mesh);
+        expect(fatal(procedure.Nodes.size() == node_count + 2u));
+        const auto [boolean, boolean_kind] = procedure.Nodes[node_count];
+        const auto [info, info_kind] = procedure.Nodes[node_count + 1u];
+        expect(boolean_kind == KindOf<procedure::Boolean> && info_kind == KindOf<procedure::ObjectInfo> && r.get<const procedure::ObjectInfo>(info).Object == tool);
+        expect(procedure.Inputs[InputFirst(procedure, node_count) + 1u].FromNode == node_count + 1u && procedure.ActiveNode == node_count);
+        expect(!r.any_of<NodeError>(boolean) && !r.any_of<NodeError>(info));
+        expect(described() == in_place);
+    });
+    for (const auto &row : rows) {
+        Scenario(f, other, std::string{row.Name}, [&row](ProcedureFixture &f) {
+            auto &r = f.R;
+            if (const auto *shape = std::get_if<PrimitiveShape>(&row.Shape)) {
+                f.Do(action::object::AddMeshPrimitive{*shape, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Transform = row.World})});
+            } else {
+                const auto instance = AddMesh(r, CreateMesh(r, std::get<MeshSource (*)()>(row.Shape)()).StoreId, MeshInstanceCreateInfo{.Transform = row.World}).second;
+                f.Commit("Add mesh");
+                f.Do(action::selection::Select{instance});
+            }
+            const auto mesh = r.get<const Instance>(FindActiveEntity(r)).Entity;
+            const auto described = [&] { return std::pair{f.Shaped(mesh), MarksOf(f.Store(), f.Output(mesh))}; };
+            f.EnterEdit(row.Domain);
+            if (row.Prepare) row.Prepare(f);
+            const auto select = [&] {
+                if (!row.Targets) {
+                    f.Do(action::selection::SelectAll{});
+                    return;
+                }
+                f.Render();
+                const auto targets = row.Targets(Mesh{f.Store(), f.Output(mesh)}, f.View().CameraPosition);
+                expect(fatal(!targets.empty()));
+                for (uint32_t i = 0u; i < targets.size(); ++i) f.Click(targets[i], i > 0u);
+            };
+            select();
+            const auto before = described();
+            row.Gesture(f);
+            const auto in_place = described();
+            expect(in_place != before);
+            f.Undo();
+            f.Do(AddProcedure{mesh});
+            select();
+            const auto node_count = r.get<const GeometryProcedure>(mesh).Nodes.size();
+            row.Gesture(f);
+            const auto &procedure = r.get<const GeometryProcedure>(mesh);
+            expect(fatal(procedure.Nodes.size() == node_count + 1u));
+            const auto [node, kind] = procedure.Nodes.back();
+            expect(kind == row.Kind && !r.any_of<NodeError>(node));
+            expect(described() == in_place);
         });
     }
 }
@@ -1126,6 +1587,91 @@ void ParameterSockets(ProcedureFixture &f) {
         for (const auto face : Mesh{meshes, f.Output(mesh)}.faces()) expect(values[*face] == 2.5f);
     }
 }
+
+// A graph whose display path edits nothing draws the source record itself, and one editing the source draws a copy until the edit leaves the path.
+// An unlinked Output draws the source, and applying an aliased procedure keeps the source record.
+void SourceAlias(ProcedureFixture &f) {
+    auto &r = f.R;
+    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    const auto source = f.Source(mesh);
+    const auto shape = Describe(f.Store(), source);
+    const auto aliased = [&] { return f.Output(mesh) == source && !r.all_of<ResyncState>(mesh) && f.Shaped(mesh) == shape; };
+    const auto copied = [&] { return f.Output(mesh) != source && r.all_of<ResyncState>(mesh) && Describe(f.Store(), source) == shape; };
+    f.Do(AddProcedure{mesh});
+    expect(aliased());
+    const auto extrude = f.Append(mesh, KindOf<action::mesh::Extrude>).first;
+    f.Route(mesh, {0u, extrude, 1u});
+    expect(copied());
+    const auto extruded = f.Shaped(mesh);
+    expect(extruded != shape);
+    f.Do(DeleteNodes{mesh, {extrude}});
+    expect(aliased());
+    f.Undo();
+    expect(copied() && f.Shaped(mesh) == extruded);
+    f.Redo();
+    expect(aliased());
+    // A Boolean without a second mesh reads its first and passes it through.
+    const auto boolean = f.Append(mesh, KindOf<procedure::Boolean>).first;
+    f.Route(mesh, {0u, boolean, 1u});
+    expect(aliased() && !r.any_of<NodeError>(f.Node(mesh, boolean)));
+    const auto subdivide = f.Append(mesh, KindOf<action::mesh::Subdivide>).first;
+    f.Route(mesh, {boolean, subdivide, 1u});
+    expect(copied() && Mesh{f.Store(), f.Output(mesh)}.FaceCount() == 24u);
+    f.Do(action::nodes::Unlink{mesh, 1u, 0u});
+    expect(aliased());
+    f.Undo();
+    expect(copied());
+    f.Undo();
+    expect(aliased());
+    f.Do(ApplyProcedure{mesh});
+    expect(!r.any_of<GeometryProcedure, EvaluatedMesh, ResyncState, CookPlan>(mesh));
+    expect(f.Source(mesh) == source && Describe(f.Store(), source) == shape);
+}
+
+// Instances of the source on the source's own points place a copy of the source.
+Graph SourceInstances(ProcedureFixture &f) {
+    const auto mesh = f.AddMesh(primitive::Plane{});
+    const auto source = f.Source(mesh);
+    const auto plane = Positions(f.Store(), source);
+    f.Do(AddProcedure{mesh});
+    const auto to_points = f.Append(mesh, KindOf<MeshToPoints>).first;
+    const auto instancer = f.Append(mesh, KindOf<InstanceOnPoints>).first;
+    f.Route(mesh, {0u, to_points, instancer});
+    f.Do(Link{mesh, 0u, 0u, instancer, 1u});
+    f.Route(mesh, {instancer, 1u});
+    return {
+        mesh,
+        [mesh, source, plane](ProcedureFixture &f) {
+            const auto &r = f.R;
+            const auto &entities = r.get<const ProcedureInstances>(mesh).Entities;
+            expect(fatal(entities.size() == plane.size()));
+            const auto instanced = r.get<const Instance>(entities.front()).Entity;
+            expect(instanced != mesh && f.Source(instanced) != source && Near(Positions(f.Store(), f.Source(instanced)), plane));
+            expect(f.Output(mesh) != source && Positions(f.Store(), source) == plane);
+        },
+    };
+}
+
+constexpr std::array<GraphRow, 18> Graphs{{
+    {"ExtrudeSubdivide", ExtrudeSubdivide},
+    {"CapResync", CapResync},
+    {"ScalePositions", ScalePositions},
+    {"CompareSelectsExtrusion", CompareSelectsExtrusion},
+    {"NamedAttributeReads", NamedAttributeReads},
+    {"StorePromotes", StorePromotes},
+    {"StoreSelectionDelete", StoreSelectionDelete},
+    {"DomainMismatch", DomainMismatch},
+    {"JoinGenerated", JoinGenerated},
+    {"HeatSubdivide", HeatSubdivide},
+    {"BooleanIntersection", BooleanIntersection},
+    {"BooleanAction", BooleanAction},
+    {"PrimitiveShapeEdit", PrimitiveShapeEdit},
+    {"ObjectInfo", ObjectInfo},
+    {"InstancesBorrowedPublish", Instances<true, false>},
+    {"InstancesGeneratedRealize", Instances<false, true>},
+    {"NodeEditing", NodeEditing},
+    {"SourceInstances", SourceInstances},
+}};
 } // namespace
 
 void TestProcedures() {
@@ -1134,5 +1680,7 @@ void TestProcedures() {
     OperatorKinds(f, other);
     Survives(f, other, Graphs);
     ViewportOperators(f, other);
+    InPlaceOperators(f, other);
     Scenario(f, other, "ParameterSockets", ParameterSockets);
+    Scenario(f, other, "SourceAlias", SourceAlias);
 }

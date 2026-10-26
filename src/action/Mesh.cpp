@@ -284,7 +284,11 @@ void SeparateSelected(state::Registry &r, std::span<const state::Entity> mesh_en
     });
 }
 
-// Require exactly two selected objects without geometry procedures.
+// The cells an Object Info node sits left of and below the Boolean node it feeds.
+constexpr uvec2 InfoOffset{6u, 5u};
+
+// Require exactly two selected mesh objects.
+// Append a Boolean node reading the other object through an Object Info node to a procedure mesh, and combine other meshes in place.
 void CombineSelected(state::Registry &r, const action::mesh::Boolean &boolean) {
     const auto active = FindActiveEntity(r);
     std::vector<state::Entity> others;
@@ -296,12 +300,25 @@ void CombineSelected(state::Registry &r, const action::mesh::Boolean &boolean) {
     }
     const auto first = r.get<const Instance>(active).Entity, second = r.get<const Instance>(others.front()).Entity;
     if (!HasMesh(r, first) || !HasMesh(r, second) || first == second) return action::Fail(r, "A boolean combines two different mesh objects");
-    if (r.all_of<procedure::GeometryProcedure>(first) || r.all_of<procedure::GeometryProcedure>(second)) return action::Fail(r, "A boolean combines meshes without geometry procedures");
-    const auto to_first = Inverse(ToMatrix(*WorldTransformOf(r, active))) * ToMatrix(*WorldTransformOf(r, others.front()));
+    const auto first_world = *WorldTransformOf(r, active), second_world = *WorldTransformOf(r, others.front());
+    const auto to_first = Inverse(ToMatrix(first_world)) * ToMatrix(second_world);
     const auto rotation = ToMat3(to_first);
     if (!(Determinant(rotation) > 0.f)) return action::Fail(r, "A boolean cannot combine an object mirrored relative to the active one");
-    const auto task = BooleanTask(GetMesh(r, first), GetMesh(r, second), boolean.Operation, rotation, vec3(to_first[3]));
+    const auto task = BooleanTask(GetDrawnMesh(r, first), GetDrawnMesh(r, second), boolean.Operation, rotation, vec3(to_first[3]));
     if (!task) return action::Fail(r, "A boolean combines closed surfaces");
+    if (r.all_of<procedure::GeometryProcedure>(first)) {
+        namespace nodes = action::nodes;
+        const auto boolean_entity = nodes::AppendNode(r, first, procedure::KindOf<procedure::Boolean>);
+        if (boolean_entity == state::Null) return;
+        r.replace<procedure::Boolean>(boolean_entity, boolean.Operation, first_world, second_world);
+        const auto node = uint32_t(r.get<const procedure::GeometryProcedure>(first).Nodes.size()) - 1u;
+        const auto position = r.get<const procedure::NodeLayout>(boolean_entity).Position;
+        nodes::Apply(r, nodes::AddNode{first, procedure::KindOf<procedure::ObjectInfo>, {position.x - std::min(position.x, InfoOffset.x), position.y + InfoOffset.y}});
+        r.replace<procedure::ObjectInfo>(r.get<const procedure::GeometryProcedure>(first).Nodes.back().Entity, others.front());
+        nodes::Apply(r, nodes::Link{first, node + 1u, 0u, node, 1u});
+        nodes::Apply(r, nodes::SelectNodes{first, {node}, node});
+        return;
+    }
     RunTopologyAction(r, std::array{first}, [&] {
         const auto output = ExecuteGeometryBoolean(r, *task);
         if (!output) return;
@@ -350,9 +367,14 @@ void RunTopologyStages(state::Registry &r, std::span<const state::Entity> mesh_e
     }
 }
 
-void KnifeSelected(state::Registry &r, std::span<const state::Entity> mesh_entities, const ::selection::PrimaryEditInstanceMap &primaries, vec2 start, vec2 end, const RenderView &view) {
+// The transform from world space into the view's clip space, which the knife projects the mesh with.
+mat4 ViewProjection(const RenderView &view) {
     const float aspect = view.Extent.y > 0.f ? view.Extent.x / view.Extent.y : 1.f;
-    const auto view_projection = view.Camera.Projection(aspect) * view.Camera.View();
+    return view.Camera.Projection(aspect) * view.Camera.View();
+}
+
+void KnifeSelected(state::Registry &r, std::span<const state::Entity> mesh_entities, const ::selection::PrimaryEditInstanceMap &primaries, vec2 start, vec2 end, const RenderView &view) {
+    const auto view_projection = ViewProjection(view);
     RunPerMesh(r, mesh_entities, [&](state::Entity e, const Mesh &mesh) -> std::optional<MeshTopologyTask> {
         const auto primary = primaries.find(e);
         if (primary == primaries.end()) return {};
@@ -436,6 +458,67 @@ void EditSelectedPositions(state::Registry &r, std::span<const state::Entity> ta
     chain.Submit();
 }
 
+// The world transform of the mesh's transformable primary instance, which transformed position operators edit the mesh in.
+std::optional<Transform> PrimaryFrame(const state::Registry &r, state::Entity mesh_entity) {
+    const auto &primaries = r.get<const EditPrimaries>(state::Document).Transformable;
+    const auto primary = primaries.find(mesh_entity);
+    if (primary == primaries.end()) return {};
+    return *WorldTransformOf(r, primary->second);
+}
+
+// The parameters of the node an operator appends to a procedure mesh, resolved as the in-place operator resolves them.
+// Return none for a mesh the in-place operator leaves unedited.
+template<typename A>
+    requires(procedure::KindOf<A> < procedure::KindCount)
+std::optional<A> NodeOf(const state::Registry &, state::Entity, const A &a) { return a; }
+std::optional<procedure::ToSphere> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::ToSphere &a) {
+    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::ToSphere{a.Factor, EditSelectionCenter(r), frame}; });
+}
+std::optional<procedure::PushPull> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::PushPull &a) {
+    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::PushPull{a.Distance, EditSelectionCenter(r), frame}; });
+}
+// Resolve the shear axes in world space, from the active object's orientation for a local shear.
+std::optional<procedure::Shear> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::Shear &a) {
+    const auto axis = uint32_t(a.Axis), ortho = uint32_t(a.AxisOrtho);
+    if (axis > 2u || ortho > 2u || axis == ortho) return {};
+    vec3 normal{}, direction{};
+    normal[axis] = 1.f;
+    direction[ortho] = 1.f;
+    if (a.Local) {
+        const auto active = PrimaryFrame(r, GetActiveMeshEntity(r));
+        if (!active) return {};
+        normal = active->R * normal * (active->S[axis] < 0.f ? -1.f : 1.f);
+        direction = active->R * direction * (active->S[ortho] < 0.f ? -1.f : 1.f);
+    }
+    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::Shear{a.Angle, EditSelectionCenter(r), direction, normal, frame}; });
+}
+std::optional<procedure::Warp> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::Warp &a) {
+    if (!a.Orientation) return {};
+    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::Warp{a.Angle, a.OffsetAngle, a.Center, a.AutoRange, a.Min, a.Max, *a.Orientation, frame}; });
+}
+std::optional<procedure::Bend> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::Bend &a) {
+    if (!a.Orientation) return {};
+    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::Bend{a.Angle, a.Radius, a.OffsetAngle, a.Center, a.Clamp, *a.Orientation, frame}; });
+}
+std::optional<procedure::VertexSlide> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::VertexSlide &a) {
+    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::VertexSlide{a.Factor, a.Direction, a.Even, a.Flipped, a.Clamp, frame}; });
+}
+std::optional<procedure::EdgeSlide> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::EdgeSlide &a) {
+    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::EdgeSlide{a.Factor, a.Direction, a.Even, a.Flipped, a.Clamp, frame}; });
+}
+// Only the View method reads the frame.
+std::optional<procedure::Flatten> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::Flatten &a) {
+    const auto frame = PrimaryFrame(r, mesh_entity);
+    if (!frame && a.Method == action::mesh::FlattenMethod::View) return {};
+    return procedure::Flatten{a.Method, a.Factor, a.ViewNormal, a.X, a.Y, a.Z, frame.value_or(Transform{})};
+}
+// Resolve the view's projection and the world transform of the mesh's primary instance, which the in-place knife projects the mesh with.
+std::optional<procedure::Knife> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::Knife &a) {
+    const auto &primaries = r.get<const EditPrimaries>(state::Document).All;
+    const auto primary = primaries.find(mesh_entity);
+    if (!a.View || !(a.View->Extent.x > 0.f && a.View->Extent.y > 0.f) || primary == primaries.end()) return {};
+    return procedure::Knife{a.Start, a.End, a.View->Extent, ViewProjection(*a.View), *WorldTransformOf(r, primary->second)};
+}
 } // namespace
 
 namespace action::mesh {
@@ -499,21 +582,27 @@ bool UpdateInsetPreview(state::Registry &r, const Inset &inset, InsetPreviewCach
 
 void Apply(state::Registry &r, const Action &action) {
     // Append operator nodes to procedure meshes and edit other meshes in place.
-    // Hide and Reveal affect evaluated geometry; unsupported procedure operators fail.
+    // A boolean appends its own nodes, Hide and Reveal act on the drawn geometry, and Separate fails on procedure meshes.
     std::vector<state::Entity> targets, procedural;
     for (const auto e : SelectedEditMeshes(r)) (r.all_of<procedure::GeometryProcedure>(e) ? procedural : targets).push_back(e);
     const bool unformed = std::visit(
         [&]<typename A>(const A &a) {
-            if constexpr (procedure::KindOf<A> < procedure::KindCount) {
+            if constexpr (requires { NodeOf(r, state::Null, a); }) {
                 for (const auto e : procedural) {
-                    const auto node = nodes::AppendNode(r, e, procedure::KindOf<A>);
+                    auto parameters = NodeOf(r, e, a);
+                    if (!parameters) continue;
+                    using N = decltype(parameters)::value_type;
+                    const auto node = nodes::AppendNode(r, e, procedure::KindOf<N>);
                     if (node == state::Null) break;
-                    r.replace<A>(node, a);
+                    r.replace<N>(node, std::move(*parameters));
                     r.remove<MeshActiveElement>(e);
                 }
                 return false;
+            } else if constexpr (std::same_as<A, Boolean>) {
+                return false;
             } else {
-                return !std::same_as<A, Hide> && !std::same_as<A, Reveal> && std::ranges::any_of(r.get<const EditPrimaries>(state::Document).All, [&](const auto &entry) { return r.all_of<procedure::GeometryProcedure>(entry.first); });
+                static_assert(std::same_as<A, Hide> || std::same_as<A, Reveal> || std::same_as<A, Separate>);
+                return std::same_as<A, Separate> && std::ranges::any_of(r.get<const EditPrimaries>(state::Document).All, [&](const auto &entry) { return r.all_of<procedure::GeometryProcedure>(entry.first); });
             }
         },
         action

@@ -209,7 +209,7 @@ inline void CheckHistory(Fixture &f, Fixture &other, const std::map<uint32_t, Li
     live.Check(other, true);
 }
 
-// Runs `script` on a new project in `f`, recording each node it reaches, then checks the history it built through `other`.
+// Runs `script` on a new project in `f`, recording each node it reaches after the check a fixture runs at each step, then checks the history it built through `other`.
 template<typename F> void Scenario(F &f, Fixture &other, std::string name, auto &&script) {
     boost::ut::test(name) = [&] {
         const TestDir dir{std::format("/tmp/mesheditor-scratch/{}", name).c_str()};
@@ -218,6 +218,7 @@ template<typename F> void Scenario(F &f, Fixture &other, std::string name, auto 
         std::set<uint32_t> direct;
         uint32_t last = 0;
         f.Step = [&](bool replays) {
+            if constexpr (requires { f.CheckStep(); }) f.CheckStep();
             last = f.P->History.Present.value();
             nodes.insert_or_assign(last, Live{f});
             // A direct commit leaves the store in a state no action reproduces, so the nodes after it do not replay either.

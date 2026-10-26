@@ -12,8 +12,10 @@ struct Source {}; // Emit the mesh's source geometry.
 struct Output {}; // Receive the procedure's result.
 struct Join {}; // Append the second input's geometry to the first.
 
+// Combine the inputs in the space Frame1 maps Mesh 1 into and Frame2 maps Mesh 2 into, and emit the result in Mesh 1's space.
 struct Boolean {
     BooleanOperation Operation{BooleanOperation::Difference};
+    Transform Frame1{}, Frame2{};
 };
 
 using Generators = TypeList<primitive::Plane, primitive::Circle, primitive::Cuboid, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone>;
@@ -71,6 +73,11 @@ struct StoreNamedAttribute {
     AttributeDomain Domain{AttributeDomain::Vertex};
 };
 
+// Replace the named Bool attribute with the selection, in a linked attribute's domain or else the edit domain of the inline selection.
+struct StoreSelection {
+    AttributeName Name{};
+};
+
 // Broadcast constant values received by attribute sockets.
 struct FloatValue {
     float Value{};
@@ -104,6 +111,96 @@ struct TransformGeometry {
     Transform Delta{};
 };
 
+// These position operators apply in the space Frame maps mesh-local positions into.
+// A viewport operator sets Frame to the world transform of its mesh's primary instance.
+
+// Blend the selected vertices toward their mean distance from Center.
+struct ToSphere {
+    float Factor{1.f};
+    vec3 Center{};
+    Transform Frame{};
+};
+// Move the selected vertices toward Center by Distance, or away from it for a negative distance.
+struct PushPull {
+    float Distance{0.1f};
+    vec3 Center{};
+    Transform Frame{};
+};
+// Move the selected vertices along Direction by tan(Angle) times their offset from Center along Cross(Direction, Normal).
+struct Shear {
+    float Angle{0.2f};
+    vec3 Center{}, Direction{1, 0, 0}, Normal{0, 0, 1};
+    Transform Frame{};
+};
+// Warp around Center in Orientation.
+// Compute automatic bounds from the selected vertices after OffsetAngle.
+struct Warp {
+    float Angle{2 * std::numbers::pi_v<float>}, OffsetAngle{0.f};
+    vec3 Center{};
+    bool AutoRange{true};
+    float Min{-1.f}, Max{1.f};
+    quat Orientation{};
+    Transform Frame{};
+};
+// Bend along the rolled X axis of Orientation from Center over Radius units.
+// Clamp fixes the start side and rigidly rotates the end side.
+struct Bend {
+    float Angle{0.78539816f}, Radius{1.f}, OffsetAngle{0.f};
+    vec3 Center{};
+    bool Clamp{true};
+    quat Orientation{};
+    Transform Frame{};
+};
+// Slide each selected vertex along its incident edge nearest Direction.
+// Even uses the edge length of the active selected vertex, or else the first selected vertex.
+struct VertexSlide {
+    float Factor{0.5f};
+    vec3 Direction{1, 0, 0};
+    bool Even{false}, Flipped{false}, Clamp{true};
+    Transform Frame{};
+};
+// Slide selected edge chains along adjacent faces toward the side Direction selects.
+// Even uses the active selected vertex, or else the first selected vertex.
+struct EdgeSlide {
+    float Factor{0.5f};
+    vec3 Direction{1, 0, 0};
+    bool Even{false}, Flipped{false}, Clamp{true};
+    Transform Frame{};
+};
+// Flatten face regions and remaining edge components independently.
+// View flattens along ViewNormal, and X, Y and Z constrain local coordinates.
+struct Flatten {
+    action::mesh::FlattenMethod Method{action::mesh::FlattenMethod::LeastSquares};
+    float Factor{1.f};
+    vec3 ViewNormal{0, 0, 1};
+    bool X{true}, Y{true}, Z{true};
+    Transform Frame{};
+};
+
+// Set the sharpness of the selected elements by the edit domain their selection was captured in.
+// Faces take Sharp as their flat shading, edges as their mark, and vertices mark every edge touching them.
+struct MarkSharp {
+    bool Sharp{true};
+};
+
+// Cut every edge whose projection crosses the segment from Start to End, in pixels of a view Extent pixels wide and high.
+// ViewProjection maps Frame space into the view's clip space.
+// Each cut divides its edge at the crossing's fraction along the projected edge.
+struct Knife {
+    vec2 Start{}, End{}, Extent{1, 1};
+    mat4 ViewProjection{1.f};
+    Transform Frame{};
+};
+
+// Shade every face smooth and clear every sharp mark, or shade every face flat.
+struct ShadeSmooth {
+    bool Smooth{true};
+};
+// Shade every face smooth and mark sharp each edge whose faces' normals differ by more than Angle.
+struct ShadeSmoothByAngle {
+    float Angle{std::numbers::pi_v<float> / 6.f};
+};
+
 // Instances use face-less point records with per-point rotation and scale attributes.
 inline constexpr std::string_view InstanceRotation = ".instance.rotation", InstanceScale = ".instance.scale";
 
@@ -130,9 +227,14 @@ using NodeKinds = TypeList<
     action::mesh::Delete, action::mesh::Merge, action::mesh::Extrude, action::mesh::Duplicate, action::mesh::Split, action::mesh::Dissolve,
     action::mesh::Subdivide, action::mesh::Triangulate, action::mesh::TrisToQuads, action::mesh::Poke, action::mesh::FlipNormals, action::mesh::EdgeSplit,
     action::mesh::Inset, action::mesh::Solidify, action::mesh::Wireframe, action::mesh::Bevel, action::mesh::SmoothVertices, action::mesh::ShrinkFatten,
-    action::mesh::Randomize, action::mesh::Spin, action::mesh::ExtrudeRepeat, action::mesh::Bisect, action::mesh::Symmetrize, action::mesh::FillHoles,
-    action::mesh::ConvexHull, action::mesh::Decimate, action::mesh::RecalculateNormals, action::mesh::Rip, TransformElements,
-    Position, Normal, Index, NamedAttribute, VectorMath, FloatMath, Compare, BooleanMath, StoreNamedAttribute, SetPosition,
+    action::mesh::Randomize, action::mesh::SpaceEvenly, action::mesh::RelaxEdgeLoops, action::mesh::CurveBetweenSelected, action::mesh::Circularize,
+    action::mesh::MakePlanarFaces, Flatten, ToSphere, PushPull, Shear, Warp, Bend, VertexSlide, EdgeSlide, action::mesh::SnapSymmetry,
+    action::mesh::Spin, action::mesh::ExtrudeRepeat, action::mesh::Bisect, action::mesh::Symmetrize, action::mesh::FillHoles,
+    action::mesh::ConvexHull, action::mesh::Decimate, action::mesh::RecalculateNormals, action::mesh::Rip, action::mesh::SplitNonplanarFaces,
+    action::mesh::SplitConcaveFaces, action::mesh::ConnectVertices, action::mesh::Fill, action::mesh::BridgeEdgeLoops, action::mesh::GridFill,
+    action::mesh::EdgeRotate, action::mesh::BeautifyFaces, action::mesh::Unsubdivide, action::mesh::LoopCut, Knife, action::mesh::RotateUVs,
+    action::mesh::ReverseUVs, action::mesh::RotateColors, action::mesh::ReverseColors, MarkSharp, ShadeSmooth, ShadeSmoothByAngle, TransformElements,
+    Position, Normal, Index, NamedAttribute, VectorMath, FloatMath, Compare, BooleanMath, StoreNamedAttribute, StoreSelection, SetPosition,
     MeshToPoints, InstanceOnPoints, RealizeInstances, ObjectInfo,
     FloatValue, IntegerValue, BooleanValue, VectorValue, TransformGeometry, RotationValue>;
 using ValueKinds = TypeList<FloatValue, IntegerValue, BooleanValue, VectorValue, RotationValue>;
@@ -177,7 +279,7 @@ inline constexpr uint8_t Bool{TypeBit(AttributeType::Bool)}, Float{TypeBit(Attri
 // Append parameter sockets after fixed inputs.
 // Sources and generators have no inputs.
 inline constexpr Socket SourceSockets[]{{Geometry, Out}};
-inline constexpr Socket OutputSockets[]{{Geometry, In}};
+inline constexpr Socket OutputSockets[]{{Geometry, In, 0u, true}};
 inline constexpr Socket JoinSockets[]{{Geometry, In}, {Geometry, In}, {Geometry, Out}};
 inline constexpr Socket BooleanSockets[]{{Geometry, In, 0u, true, "Mesh 1"}, {Geometry, In, 0u, true, "Mesh 2"}, {Geometry, Out}};
 inline constexpr Socket OperatorSockets[]{{Geometry, In}, {Selection, In, Bool}, {Geometry, Out}};
@@ -236,7 +338,7 @@ template<typename K> constexpr std::span<const Socket> FixedSockets() {
     else if constexpr (std::same_as<K, StoreNamedAttribute>) return StoreSockets;
     else if constexpr (std::same_as<K, SetPosition>) return SetPositionSockets;
     else if constexpr (std::same_as<K, MeshToPoints>) return PointsSockets;
-    else if constexpr (std::same_as<K, TransformGeometry>) return WholeSockets;
+    else if constexpr (std::same_as<K, TransformGeometry> || std::same_as<K, Knife> || std::same_as<K, ShadeSmooth> || std::same_as<K, ShadeSmoothByAngle>) return WholeSockets;
     else if constexpr (std::same_as<K, InstanceOnPoints>) return InstanceSockets;
     else if constexpr (std::same_as<K, RealizeInstances>) return RealizeSockets;
     else if constexpr (ValueKind<K>) return ValueSockets<K>;
@@ -449,11 +551,6 @@ struct NodeLayout {
     uvec2 Position; // The top left grid cell
 };
 
-// Persist selection masks in input-block order; absent or empty masks select everything.
-struct InlineSelection {
-    std::vector<SelectionBlock> Vertices, Edges, Faces;
-};
-
 struct PublishSelection {}; // Persistent on a node a viewport operator added, which selects its output like the operator does.
 struct NodeSelected {}; // Persistent on a node the editor has selected.
 
@@ -478,7 +575,11 @@ struct CookPlan {
 };
 } // namespace procedure
 
-template<> inline constexpr field::SpecTable<procedure::Boolean> Specs<procedure::Boolean>{{&procedure::Boolean::Operation, {.Help = "Set operation on the two closed input meshes. Difference subtracts the second mesh from the first."}}};
+template<> inline constexpr field::SpecTable<procedure::Boolean> Specs<procedure::Boolean>{
+    {&procedure::Boolean::Operation, {.Help = "Set operation on the two closed input meshes. Difference subtracts the second mesh from the first."}},
+    {&procedure::Boolean::Frame1, {.Help = "Transform from Mesh 1 positions into the space the operation applies in"}},
+    {&procedure::Boolean::Frame2, {.Help = "Transform from Mesh 2 positions into the space the operation applies in"}},
+};
 template<> inline constexpr field::SpecTable<procedure::Normal> Specs<procedure::Normal>{{&procedure::Normal::Domain, {.Help = "Element domain of the emitted normals: vertices or faces"}}};
 template<> inline constexpr field::SpecTable<procedure::Index> Specs<procedure::Index>{{&procedure::Index::Domain, {.Help = "Element domain of the emitted indices"}}};
 template<> inline constexpr field::SpecTable<procedure::NamedAttribute> Specs<procedure::NamedAttribute>{
@@ -508,6 +609,7 @@ template<> inline constexpr field::SpecTable<procedure::StoreNamedAttribute> Spe
     {&procedure::StoreNamedAttribute::Name, {.Help = "Name of the attribute to write. An existing attribute with this name is replaced."}},
     {&procedure::StoreNamedAttribute::Domain, {.Help = "Element domain for a constant value. A linked attribute value keeps its own domain."}},
 };
+template<> inline constexpr field::SpecTable<procedure::StoreSelection> Specs<procedure::StoreSelection>{{&procedure::StoreSelection::Name, {.Help = "Name of the Boolean attribute to write. An existing attribute with this name is replaced."}}};
 template<> inline constexpr field::SpecTable<procedure::FloatValue> Specs<procedure::FloatValue>{{&procedure::FloatValue::Value, {.Help = "Float the node outputs"}}};
 template<> inline constexpr field::SpecTable<procedure::IntegerValue> Specs<procedure::IntegerValue>{{&procedure::IntegerValue::Value, {.Help = "Unsigned integer the node outputs"}}};
 template<> inline constexpr field::SpecTable<procedure::BooleanValue> Specs<procedure::BooleanValue>{{&procedure::BooleanValue::Value, {.Help = "Boolean the node outputs"}}};
@@ -520,6 +622,59 @@ template<> inline constexpr field::SpecTable<procedure::TransformElements> Specs
     {&procedure::TransformElements::Frame, {.Help = "Transform from mesh-local positions into the space Delta applies in"}},
 };
 template<> inline constexpr field::SpecTable<procedure::TransformGeometry> Specs<procedure::TransformGeometry>{{&procedure::TransformGeometry::Delta, {.Help = "Translation, rotation, and scale applied to the whole geometry about the mesh origin"}}};
+template<> inline constexpr field::SpecTable<procedure::ToSphere> Specs<procedure::ToSphere>{
+    {&procedure::ToSphere::Factor, {.Min = 0, .Max = 1, .Speed = 0.01f}},
+    {&procedure::ToSphere::Center, {.Speed = 0.01f, .Help = "Sphere center in Frame space"}},
+    {&procedure::ToSphere::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
+};
+template<> inline constexpr field::SpecTable<procedure::PushPull> Specs<procedure::PushPull>{
+    {&procedure::PushPull::Center, {.Speed = 0.01f, .Help = "Point the vertices move toward, in Frame space"}},
+    {&procedure::PushPull::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
+};
+template<> inline constexpr field::SpecTable<procedure::Shear> Specs<procedure::Shear>{
+    {&procedure::Shear::Angle, {.Min = -2 * std::numbers::pi_v<float>, .Max = 2 * std::numbers::pi_v<float>, .Unit = FieldUnit::Radians}},
+    {&procedure::Shear::Center, {.Speed = 0.01f, .Help = "Point on the shear plane, in Frame space"}},
+    {&procedure::Shear::Direction, {.Speed = 0.01f, .Help = "Displacement direction in Frame space"}},
+    {&procedure::Shear::Normal, {.Speed = 0.01f, .Help = "Shear plane normal in Frame space"}},
+    {&procedure::Shear::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
+};
+template<> inline constexpr field::SpecTable<procedure::Warp> Specs<procedure::Warp>{
+    {&procedure::Warp::Angle, {.Unit = FieldUnit::Radians}},
+    {&procedure::Warp::OffsetAngle, {.Unit = FieldUnit::Radians}},
+    {&procedure::Warp::Center, {.Speed = 0.01f, .Help = "Warp center in Frame space"}},
+    {&procedure::Warp::Orientation, {.Help = "Rotation of the warp plane in Frame space"}},
+    {&procedure::Warp::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
+};
+template<> inline constexpr field::SpecTable<procedure::Bend> Specs<procedure::Bend>{
+    {&procedure::Bend::Angle, {.Unit = FieldUnit::Radians}},
+    {&procedure::Bend::OffsetAngle, {.Unit = FieldUnit::Radians}},
+    {&procedure::Bend::Center, {.Speed = 0.01f, .Help = "Bend start in Frame space"}},
+    {&procedure::Bend::Orientation, {.Help = "Rotation of the bend plane in Frame space"}},
+    {&procedure::Bend::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
+};
+template<> inline constexpr field::SpecTable<procedure::VertexSlide> Specs<procedure::VertexSlide>{
+    {&procedure::VertexSlide::Direction, {.Speed = 0.01f, .Help = "Direction in Frame space that chooses each vertex's edge"}},
+    {&procedure::VertexSlide::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
+};
+template<> inline constexpr field::SpecTable<procedure::EdgeSlide> Specs<procedure::EdgeSlide>{
+    {&procedure::EdgeSlide::Direction, {.Speed = 0.01f, .Help = "Direction in Frame space that chooses the positive side"}},
+    {&procedure::EdgeSlide::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
+};
+template<> inline constexpr field::SpecTable<procedure::Flatten> Specs<procedure::Flatten>{
+    {&procedure::Flatten::Factor, {.Min = 0, .Max = 1}},
+    {&procedure::Flatten::ViewNormal, {.Speed = 0.01f, .Help = "Flattening direction of the View method, in Frame space"}},
+    {&procedure::Flatten::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
+};
+template<> inline constexpr field::SpecTable<procedure::MarkSharp> Specs<procedure::MarkSharp>{{&procedure::MarkSharp::Sharp, {.Help = "Mark the elements sharp, or clear their marks"}}};
+template<> inline constexpr field::SpecTable<procedure::Knife> Specs<procedure::Knife>{
+    {&procedure::Knife::Start, {.Speed = 1.f, .Help = "First end of the cut segment, in view pixels from the top left"}},
+    {&procedure::Knife::End, {.Speed = 1.f, .Help = "Second end of the cut segment, in view pixels from the top left"}},
+    {&procedure::Knife::Extent, {.Min = 1, .Speed = 1.f, .Help = "Width and height of the view in pixels"}},
+    {&procedure::Knife::ViewProjection, {.Help = "Transform from Frame space into the view's clip space"}},
+    {&procedure::Knife::Frame, {.Help = "Transform from mesh-local positions into the space ViewProjection projects"}},
+};
+template<> inline constexpr field::SpecTable<procedure::ShadeSmooth> Specs<procedure::ShadeSmooth>{{&procedure::ShadeSmooth::Smooth, {.Help = "Shade smooth and clear sharp marks, or shade flat"}}};
+template<> inline constexpr field::SpecTable<procedure::ShadeSmoothByAngle> Specs<procedure::ShadeSmoothByAngle>{{&procedure::ShadeSmoothByAngle::Angle, {.Min = 0, .Max = std::numbers::pi, .Unit = FieldUnit::Radians, .Help = "Largest angle between adjacent face normals that shades smooth"}}};
 template<> inline constexpr field::SpecTable<procedure::InstanceOnPoints> Specs<procedure::InstanceOnPoints>{
     {&procedure::InstanceOnPoints::Scale, {.Help = "Scale of each instance while the Scale input is unlinked"}},
     {&procedure::InstanceOnPoints::Rotation, {.Help = "Rotation of each instance while the Rotation input is unlinked"}},

@@ -33,7 +33,7 @@ template<typename T> inline constexpr auto CanonicalChars = [] {
 template<typename T> consteval std::string_view CanonicalName() { return {CanonicalChars<T>.first.data(), CanonicalChars<T>.second}; }
 
 // Each domain owns a dense slot range and lists its types in its <Domain>Schema.h header.
-inline constexpr TypeId ActionCount = 30; // action
+inline constexpr TypeId ActionCount = 50; // action
 inline constexpr TypeId AnimationCount = 4; // animation
 inline constexpr TypeId ArmatureCount = 15; // armature
 inline constexpr TypeId AudioCount = 32; // audio
@@ -46,7 +46,7 @@ inline constexpr TypeId MeshCount = 22; // mesh
 inline constexpr TypeId MetalCount = 3; // metal
 inline constexpr TypeId ObjectCount = 2; // object
 inline constexpr TypeId PhysicsCount = 24; // physics
-inline constexpr TypeId ProcedureCount = 37; // procedure
+inline constexpr TypeId ProcedureCount = 50; // procedure
 inline constexpr TypeId ProjectCount = 2; // project
 inline constexpr TypeId RenderCount = 29; // render
 inline constexpr TypeId SceneCount = 18; // scene and the root camera and path types

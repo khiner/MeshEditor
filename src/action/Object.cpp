@@ -223,6 +223,20 @@ void Apply(state::Registry &r, const Action &action) {
         }
         return result;
     };
+    // Append a node with the parameters to each procedure mesh and return the other meshes, which edit in place.
+    const auto append_to_procedures = [&]<typename N>(std::span<const state::Entity> mesh_entities, const N &parameters) {
+        std::vector<state::Entity> targets;
+        for (const auto e : mesh_entities) {
+            if (!r.all_of<procedure::GeometryProcedure>(e)) {
+                targets.push_back(e);
+                continue;
+            }
+            const auto node = nodes::AppendNode(r, e, procedure::KindOf<N>);
+            if (node == state::Null) break;
+            r.replace<N>(node, parameters);
+        }
+        return targets;
+    };
     std::visit(
         overloaded{
             [&](Delete) {
@@ -245,20 +259,15 @@ void Apply(state::Registry &r, const Action &action) {
                 }
             },
             [&](const SetSelectedSmoothShading &a) {
-                const auto &targets = r.get<const SelectionFlags>(state::Document).Meshes;
-                ApplyEditSharpness(
-                    r, targets,
-                    a.Smooth ? EditSharpnessOperation::SmoothAll : EditSharpnessOperation::SetAllFaces,
-                    !a.Smooth
-                );
+                const auto targets = append_to_procedures(r.get<const SelectionFlags>(state::Document).Meshes, procedure::ShadeSmooth{a.Smooth});
+                ApplyEditSharpness(r, targets, a.Smooth ? EditSharpnessOperation::SmoothAll : EditSharpnessOperation::SetAllFaces, !a.Smooth);
             },
             [&](const ShadeSelectedSmoothByAngle &a) {
-                const auto &targets = r.get<const SelectionFlags>(state::Document).Meshes;
+                const auto targets = append_to_procedures(r.get<const SelectionFlags>(state::Document).Meshes, procedure::ShadeSmoothByAngle{a.Angle});
                 ApplyEditSharpness(r, targets, EditSharpnessOperation::SmoothByAngle, false, a.Angle);
             },
             [&](const SetSelectedSharp &a) {
-                const auto targets = edit_selection_meshes(a.Element);
-                if (std::ranges::any_of(targets, [&](state::Entity e) { return r.all_of<procedure::GeometryProcedure>(e); })) return action::Fail(r, "Sharp marks have no node form for a mesh with a geometry procedure");
+                const auto targets = append_to_procedures(edit_selection_meshes(a.Element), procedure::MarkSharp{a.Sharp});
                 const auto operation = a.Element == Element::Face ? EditSharpnessOperation::SetSelectedFaces :
                     a.Element == Element::Edge                    ? EditSharpnessOperation::SetSelectedEdges :
                                                                     EditSharpnessOperation::SetVertexEdges;

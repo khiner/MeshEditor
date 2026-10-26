@@ -4,6 +4,7 @@
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "procedure/Procedure.h"
+#include "viewport/InteractionComponents.h"
 
 namespace action::nodes {
 namespace {
@@ -121,14 +122,12 @@ void Apply(state::Registry &r, const Action &action) {
             },
             [&](const SetAttributeName &a) {
                 if (a.Name.empty() || a.Name.size() >= AttributeName{}.size() || a.Name.front() == '.') return Fail(r, "An attribute name needs 1 to 63 characters and no leading '.'");
-                if (!Rename<procedure::NamedAttribute>(r, a.Node, a.Name) && !Rename<StoreNamedAttribute>(r, a.Node, a.Name)) Fail(r, "Only attribute name nodes take a name");
+                if (!Rename<procedure::NamedAttribute>(r, a.Node, a.Name) && !Rename<StoreNamedAttribute>(r, a.Node, a.Name) && !Rename<StoreSelection>(r, a.Node, a.Name)) Fail(r, "Only attribute name nodes take a name");
             },
             [&](const SetInlineSelection &a) {
                 const auto kind = KindOfNode(r, a.Node);
                 if (kind == KindCount || !std::ranges::contains(KindSockets(kind), SocketType::Selection, &Socket::Type)) return Fail(r, "Only a node with a selection input takes an inline selection");
-                if (uint64_t(a.Vertices) + a.Edges > a.Blocks.size()) return Fail(r, "An inline selection's domain block counts exceed its blocks");
-                const auto vertices = a.Blocks.begin() + a.Vertices, edges = vertices + a.Edges;
-                r.emplace_or_replace<InlineSelection>(a.Node, std::vector(a.Blocks.begin(), vertices), std::vector(vertices, edges), std::vector(edges, a.Blocks.end()));
+                r.emplace_or_replace<InlineSelection>(a.Node, *a.Selection);
             },
             [&](const ApplyProcedure &a) {
                 const auto *evaluated = procedure_of(a.MeshEntity) ? r.try_get<const EvaluatedMesh>(a.MeshEntity) : nullptr;
@@ -261,18 +260,17 @@ void Apply(state::Registry &r, const Action &action) {
 SetInlineSelection CaptureSelection(const state::Registry &r, state::Entity mesh_entity, state::Entity node) {
     const auto &meshes = r.Resources.get<const MeshStore>();
     const auto id = *DrawnStoreId(r, mesh_entity);
-    SetInlineSelection selection{.Node = node};
+    const auto *active = r.try_get<const MeshActiveElement>(mesh_entity);
+    auto selection = std::make_unique<InlineSelection>(InlineSelection{.Domain = r.get<const EditMode>(state::Document).Value, .Active = active ? active->Handle : InvalidOffset});
     using D = MeshStore::ElementDomain;
-    for (const auto [domain, element] : {std::pair{D::Vertex, Element::Vertex}, std::pair{D::Edge, Element::Edge}, std::pair{D::Face, Element::Face}}) {
+    for (const auto [domain, element, blocks] : {std::tuple{D::Vertex, Element::Vertex, &selection->Vertices}, std::tuple{D::Edge, Element::Edge, &selection->Edges}, std::tuple{D::Face, Element::Face, &selection->Faces}}) {
         const auto bits = meshes.GetSelectedElements(id, element).Bits;
         for (const auto block : meshes.GetBlockList(id, domain).Blocks) {
-            auto &words = selection.Blocks.emplace_back();
+            auto &words = blocks->emplace_back();
             std::ranges::copy(bits.subspan(block * MeshElementBlockWords, MeshElementBlockWords), words.begin());
         }
-        if (domain == D::Vertex) selection.Vertices = uint32_t(selection.Blocks.size());
-        if (domain == D::Edge) selection.Edges = uint32_t(selection.Blocks.size()) - selection.Vertices;
     }
-    return selection;
+    return {node, std::move(selection)};
 }
 
 void CopyProcedure(state::Registry &r, state::Entity from, state::Entity to) {
@@ -304,7 +302,7 @@ state::Entity AppendNode(state::Registry &r, state::Entity mesh_entity, uint16_t
     r.patch<NodeLayout>(procedure.Nodes[output].Entity, [](NodeLayout &layout) { layout.Position.x += OutputGap; });
     Apply(r, AddNode{mesh_entity, kind, position});
     const auto entity = r.get<const GeometryProcedure>(mesh_entity).Nodes.back().Entity;
-    Apply(r, CaptureSelection(r, mesh_entity, entity));
+    if (std::ranges::contains(KindSockets(kind), SocketType::Selection, &Socket::Type)) Apply(r, CaptureSelection(r, mesh_entity, entity));
     if (read.FromNode != NoNode) Apply(r, Link{mesh_entity, read.FromNode, read.FromSocket, node, 0u});
     Apply(r, Link{mesh_entity, node, InputCount[kind], output, 0u});
     r.emplace<PublishSelection>(entity);

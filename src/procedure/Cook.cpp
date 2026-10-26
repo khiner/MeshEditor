@@ -1,8 +1,11 @@
 #include "procedure/Cook.h"
+#include "procedure/InlineSelection.h"
 #include "procedure/Procedure.h"
 #include "procedure/ProcedureSchema.h"
 
 #include "SortUnique.h"
+#include "TransformMath.h"
+#include "mesh/BeautifyFaces.h"
 #include "mesh/Decimate.h"
 #include "mesh/GeometryRefresh.h"
 #include "mesh/MeshClone.h"
@@ -10,6 +13,8 @@
 #include "mesh/MeshCreate.h"
 #include "mesh/Primitives.h"
 #include "mesh/RecalculateNormals.h"
+#include "mesh/SharpnessOperations.h"
+#include "mesh/Unsubdivide.h"
 #include "numeric/MatrixMath.h"
 #include "object/ObjectOps.h"
 #include "object/PendingSync.h"
@@ -26,10 +31,13 @@ using state::On;
 namespace procedure {
 namespace {
 using namespace action::mesh;
-// Optional domain masks; absent masks select every element.
+// Optional domain masks, where absent masks select every element.
+// Domain is the edit domain the node's inline selection was captured in, and Active the handle of its active element or InvalidOffset.
 // Publish copies emitted selection into the output record.
 struct Masks {
     std::optional<GeometryMasks> In;
+    Element Domain{Element::Vertex};
+    uint32_t Active{InvalidOffset};
     bool Publish{};
 };
 
@@ -81,10 +89,12 @@ std::vector<uint32_t> LocalBlocks(const MeshStore &meshes, uint32_t id, MeshStor
     return locals;
 }
 
-// Reuse the prior Source output by restoring changed blocks and table entries from the source.
+// Copy the source for the display path's first edit, or restore the prior copy's changed blocks and table entries from the source.
+// The copy takes no selection and the source's visibility, and publishing nodes determine the result's selection.
+// Source restoration stays out of the cook's writes.
 uint32_t SourceCopy(state::Registry &r, uint32_t source, EvaluatedMesh &evaluated, std::optional<ResyncState> &resync, const MeshStore::Writes &between) {
     auto &meshes = r.Resources.get<MeshStore>();
-    if (resync && evaluated.Source == source && meshes.TryGet(evaluated.StoreId)) {
+    if (resync) {
         auto written = resync->Written;
         for (const auto domain : MeshStore::ElementDomains) {
             const auto d = uint32_t(domain);
@@ -99,12 +109,15 @@ uint32_t SourceCopy(state::Registry &r, uint32_t source, EvaluatedMesh &evaluate
         meshes.ReconcileSelection(r, chain, std::span{&change, 1u});
         chain.Submit();
         ++resync->Resyncs;
-        return evaluated.StoreId;
+    } else {
+        resync.emplace();
+        evaluated = {.StoreId = Clone(r, source), .Source = source};
+        meshes.ForEachNamedAttribute(evaluated.StoreId, [&](uint32_t attribute, const auto &) { resync->Attributes.push_back(attribute); });
     }
-    meshes.Release(evaluated.StoreId);
-    resync.emplace();
-    evaluated = {.StoreId = Clone(r, source), .Source = source};
-    meshes.ForEachNamedAttribute(evaluated.StoreId, [&](uint32_t attribute, const auto &) { resync->Attributes.push_back(attribute); });
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    meshes.ResetEditState(r, chain, evaluated.StoreId, source);
+    chain.Submit();
+    meshes.TakeWrites();
     return evaluated.StoreId;
 }
 
@@ -113,6 +126,7 @@ void KeepWritten(const MeshStore &meshes, uint32_t id, ResyncState &resync, cons
 }
 
 GeometrySelection Handles(const MeshStore &meshes, uint32_t id, const Masks &masks) { return masks.In ? ReadMasks(meshes, id, *masks.In) : AllHandles(Mesh{meshes, id}); }
+SelectionSource SourceOf(const MeshStore &meshes, uint32_t id, const Masks &masks) { return masks.In ? SelectionSource{*masks.In} : SelectionSource{AllHandles(Mesh{meshes, id})}; }
 
 MeshTopologyTask Task(uint32_t id, MeshTopologyOp op, const Masks &masks, float param0 = 0.f, float param1 = 0.f, uint32_t flags = 0u) {
     MeshTopologyTask task{.SourceId = id, .Op = op, .Param0 = param0, .Param1 = param1, .Flags = flags};
@@ -152,16 +166,35 @@ Outcome ExecuteStages(state::Registry &r, std::vector<MeshTopologyTask> tasks, c
     if (std::ranges::none_of(results, &GeometryTopologyResult::Changed)) return tasks.front().SourceId;
     return results.back().GeometryId;
 }
-// Publish the input selection after position edits, which preserve membership.
+// Publish the input selection after an edit that preserves membership.
+void PublishInput(state::Registry &r, uint32_t id, const Masks &masks) {
+    if (!masks.Publish || !masks.In) return;
+    auto &meshes = r.Resources.get<MeshStore>();
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    meshes.SelectMasks(r, chain, id, *masks.In);
+    chain.Submit();
+}
+// A vertex-domain selection's active element is the reference vertex.
 Outcome Reposition(state::Registry &r, uint32_t id, const Masks &masks, PositionEditOp op, float factor, uint32_t repeat, const PositionOperationOptions &options = {}, const Transform &world = {}) {
     auto &meshes = r.Resources.get<MeshStore>();
-    const PositionOperationTarget target{.StoreId = id, .Selection = masks.In ? SelectionSource{*masks.In} : SelectionSource{AllHandles(Mesh{meshes, id})}, .World = world};
-    if (ExecuteGeometryPositions(r, std::span{&target, 1u}, op, factor, repeat, options).empty()) return id;
-    if (masks.Publish && masks.In) {
-        mtl::ComputeChain chain{meshes.BufferContext()};
-        meshes.SelectMasks(r, chain, id, *masks.In);
-        chain.Submit();
-    }
+    const PositionOperationTarget target{
+        .StoreId = id,
+        .Selection = SourceOf(meshes, id, masks),
+        .World = world,
+        .Reference = masks.Domain == Element::Vertex ? masks.Active : InvalidOffset,
+    };
+    if (!ExecuteGeometryPositions(r, std::span{&target, 1u}, op, factor, repeat, options).empty()) PublishInput(r, id, masks);
+    return id;
+}
+// Rotate the selected faces' corner UVs of a set or colors clockwise for operation 0, counterclockwise for 1, or reverse them for 2.
+Outcome EditFaceAttributes(state::Registry &r, uint32_t id, const Masks &masks, bool colors, uint32_t uv_set, uint32_t operation) {
+    if (uv_set >= MeshStore::MaxUvSets) return std::unexpected(NodeFault::Parameter);
+    auto &meshes = r.Resources.get<MeshStore>();
+    const PositionOperationTarget target{.StoreId = id, .Selection = SourceOf(meshes, id, masks)};
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    const bool edited = !EncodeFaceAttributeOperation(meshes, GetMeshPipelines(r), chain, std::span{&target, 1u}, colors, uv_set, operation).empty();
+    chain.Submit();
+    if (edited) PublishInput(r, id, masks);
     return id;
 }
 uint32_t Axes(bool x, bool y, bool z) { return uint32_t(x) | uint32_t(y) << 1u | uint32_t(z) << 2u; }
@@ -224,14 +257,13 @@ Outcome Run(state::Registry &r, const Extrude &p, uint32_t id, const Masks &m) {
 }
 Outcome Run(state::Registry &r, Duplicate, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::DuplicateGeometry, m), m); }
 Outcome Run(state::Registry &r, Split, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::SplitGeometry, m), m); }
-// Nodes lack face edit mode, so limited dissolve reads all selected domains.
 Outcome Run(state::Registry &r, const Dissolve &p, uint32_t id, const Masks &m) {
     switch (p.Mode) {
         case DissolveMode::Vertices: return Execute(r, Task(id, MeshTopologyOp::DissolveVertices, m), m);
         case DissolveMode::Edges: return Execute(r, Task(id, MeshTopologyOp::DissolveEdges, m, 0.f, 0.f, p.KeepVertices ? TopologyFlagKeepVertices : 0u), m);
         case DissolveMode::Faces: return Execute(r, Task(id, MeshTopologyOp::DissolveFaces, m), m);
         case DissolveMode::Limited: {
-            const auto flags = (p.AllBoundaries ? TopologyFlagAllBoundaries : 0u) | (p.DelimitMaterials ? TopologyFlagDelimitMaterial : 0u) | (p.DelimitSharpEdges ? TopologyFlagDelimitSharp : 0u) | (p.DelimitUVs ? TopologyFlagDelimitUV : 0u);
+            const auto flags = (m.Domain == Element::Face ? TopologyFlagFaceSelection : 0u) | (p.AllBoundaries ? TopologyFlagAllBoundaries : 0u) | (p.DelimitMaterials ? TopologyFlagDelimitMaterial : 0u) | (p.DelimitSharpEdges ? TopologyFlagDelimitSharp : 0u) | (p.DelimitUVs ? TopologyFlagDelimitUV : 0u);
             return Execute(r, Task(id, MeshTopologyOp::DissolveLimited, m, std::clamp(p.Angle, 0.f, .5f * std::numbers::pi_v<float>), 0.f, flags), m);
         }
         case DissolveMode::Degenerate: return Execute(r, Task(id, MeshTopologyOp::DissolveDegenerate, m, std::max(p.Distance, 0.f)), m);
@@ -268,12 +300,62 @@ Outcome Run(state::Registry &r, const Bevel &p, uint32_t id, const Masks &m, con
 Outcome Run(state::Registry &r, const SmoothVertices &p, uint32_t id, const Masks &m, const Linked &linked) {
     return RepositionBy(r, id, m, PositionEditOp::Smooth, p.Factor, std::clamp(p.Repeat, 1u, 1000u), linked.Of<&SmoothVertices::Factor>(), {.Axes = Axes(p.X, p.Y, p.Z)});
 }
-// Use vertex normals for node offsets, independently of viewport selection mode.
 Outcome Run(state::Registry &r, const ShrinkFatten &p, uint32_t id, const Masks &m, const Linked &linked) {
-    return RepositionBy(r, id, m, PositionEditOp::ShrinkFatten, p.Distance, 1u, linked.Of<&ShrinkFatten::Distance>(), {.Flags = p.Even ? PositionEditEvenOffset : 0u});
+    return RepositionBy(r, id, m, PositionEditOp::ShrinkFatten, p.Distance, 1u, linked.Of<&ShrinkFatten::Distance>(), {.Flags = (p.Even ? PositionEditEvenOffset : 0u) | (m.Domain == Element::Face ? PositionEditSelectedFaceNormals : 0u)});
 }
 Outcome Run(state::Registry &r, const Randomize &p, uint32_t id, const Masks &m, const Linked &linked) {
     return RepositionBy(r, id, m, PositionEditOp::Randomize, p.Amount, 1u, linked.Of<&Randomize::Amount>(), {.Randomize = PositionRandomize{p.Uniform, p.Normal, p.Seed}});
+}
+Outcome Run(state::Registry &r, const SpaceEvenly &p, uint32_t id, const Masks &m) {
+    return Reposition(r, id, m, PositionEditOp::SpaceEvenly, std::clamp(p.Factor, 0.f, 1.f), 1u, {.Axes = Axes(p.X, p.Y, p.Z), .Flags = p.Interpolation == EdgeLoopInterpolation::Cubic ? PositionEditCurveCubic : 0u});
+}
+Outcome Run(state::Registry &r, const RelaxEdgeLoops &p, uint32_t id, const Masks &m) {
+    return Reposition(r, id, m, PositionEditOp::RelaxEdgeLoops, 1.f, std::min(p.Iterations, 1000u), {.Flags = (p.Interpolation == EdgeLoopInterpolation::Cubic ? PositionEditCurveCubic : 0u) | (p.EvenSpacing ? PositionEditRelaxEven : 0u)});
+}
+Outcome Run(state::Registry &r, const CurveBetweenSelected &p, uint32_t id, const Masks &m) {
+    const auto elevation = p.Elevation == CurveElevation::Raise ? PositionEditCurveRaise : p.Elevation == CurveElevation::Lower ? PositionEditCurveLower :
+                                                                                                                                  0u;
+    const auto flags = (p.Interpolation == EdgeLoopInterpolation::Cubic ? PositionEditCurveCubic : 0u) | (p.Regular ? PositionEditCurveRegular : 0u) | elevation;
+    return Reposition(r, id, m, PositionEditOp::Copy, std::clamp(p.Factor, 0.f, 1.f), 1u, {.Axes = Axes(p.X, p.Y, p.Z), .Flags = flags, .Curve = PositionCurve{p.Extend}});
+}
+Outcome Run(state::Registry &r, const Circularize &p, uint32_t id, const Masks &m) {
+    const auto flags = (p.Regular ? PositionEditCurveRegular : 0u) | (p.Method == CircleFit::Contract ? PositionEditCircleContract : 0u);
+    return Reposition(r, id, m, PositionEditOp::Copy, std::clamp(p.Factor, 0.f, 1.f), 1u, {.Axes = Axes(p.X, p.Y, p.Z), .Flags = flags, .Circle = PositionCircle{p.Radius, p.Angle}});
+}
+Outcome Run(state::Registry &r, const MakePlanarFaces &p, uint32_t id, const Masks &m) {
+    return Reposition(r, id, m, PositionEditOp::Planar, p.Factor, std::clamp(p.Repeat, 1u, 10000u));
+}
+Outcome Run(state::Registry &r, const Flatten &p, uint32_t id, const Masks &m) {
+    const auto flags = p.Method == FlattenMethod::View ? PositionEditFlattenDirection : p.Method == FlattenMethod::FaceNormals ? PositionEditFlattenNormals :
+                                                                                                                                 0u;
+    return Reposition(r, id, m, PositionEditOp::Copy, std::clamp(p.Factor, 0.f, 1.f), 1u, {.Axes = Axes(p.X, p.Y, p.Z), .Flags = flags, .Direction = p.ViewNormal}, p.Frame);
+}
+Outcome Run(state::Registry &r, const ToSphere &p, uint32_t id, const Masks &m) {
+    return Reposition(r, id, m, PositionEditOp::ToSphere, p.Factor, 1u, {.Center = p.Center}, p.Frame);
+}
+Outcome Run(state::Registry &r, const PushPull &p, uint32_t id, const Masks &m) {
+    return Reposition(r, id, m, PositionEditOp::PushPull, p.Distance, 1u, {.Center = p.Center}, p.Frame);
+}
+Outcome Run(state::Registry &r, const Shear &p, uint32_t id, const Masks &m) {
+    return Reposition(r, id, m, PositionEditOp::Shear, std::tan(p.Angle), 1u, {.Direction = p.Direction, .Gradient = Cross(p.Direction, p.Normal), .Center = p.Center}, p.Frame);
+}
+Outcome Run(state::Registry &r, const Warp &p, uint32_t id, const Masks &m) {
+    return Reposition(r, id, m, PositionEditOp::Warp, p.Angle, 1u, {.Warp = PositionWarp{p.Orientation, p.Center, p.OffsetAngle, p.Min, p.Max, p.AutoRange}}, p.Frame);
+}
+Outcome Run(state::Registry &r, const Bend &p, uint32_t id, const Masks &m) {
+    return Reposition(r, id, m, PositionEditOp::Bend, p.Angle, 1u, {.Flags = p.Clamp ? PositionEditBendClamp : 0u, .Bend = PositionBend{p.Orientation, p.Center, p.OffsetAngle, p.Radius}}, p.Frame);
+}
+Outcome Run(state::Registry &r, const VertexSlide &p, uint32_t id, const Masks &m) {
+    const auto factor = p.Clamp ? std::clamp(p.Factor, 0.f, 1.f) : p.Factor;
+    return Reposition(r, id, m, PositionEditOp::VertexSlide, factor, 1u, {.Flags = p.Clamp ? 0u : PositionEditSlideUnclamped, .Slide = PositionSlide{p.Direction, p.Even, p.Flipped}}, p.Frame);
+}
+Outcome Run(state::Registry &r, const EdgeSlide &p, uint32_t id, const Masks &m) {
+    const auto factor = p.Clamp ? std::clamp(p.Factor, -1.f, 1.f) : p.Factor;
+    return Reposition(r, id, m, PositionEditOp::EdgeSlide, factor, 1u, {.Flags = p.Clamp ? 0u : PositionEditSlideUnclamped, .EdgeSlide = PositionSlide{p.Direction, p.Even, p.Flipped}}, p.Frame);
+}
+Outcome Run(state::Registry &r, const SnapSymmetry &p, uint32_t id, const Masks &m) {
+    if (uint32_t(p.Axis) > 2u) return std::unexpected(NodeFault::Parameter);
+    return Reposition(r, id, m, PositionEditOp::SnapSymmetry, std::clamp(p.Factor, 0.f, 1.f), 1u, {.Axes = 1u << uint32_t(p.Axis), .Flags = p.Negative ? PositionEditSymmetryNegative : 0u, .SnapSymmetry = PositionSymmetry{p.Threshold, p.Center}});
 }
 Outcome Run(state::Registry &r, const Spin &p, uint32_t id, const Masks &m) {
     if (Dot(p.Axis, p.Axis) <= 0.f) return std::unexpected(NodeFault::Parameter);
@@ -316,6 +398,88 @@ Outcome Run(state::Registry &r, const RecalculateNormals &p, uint32_t id, const 
     if (faces.empty()) return id;
     faces.insert(faces.begin(), uint32_t(faces.size()));
     return Execute(r, MeshTopologyTask{.SourceId = id, .Op = MeshTopologyOp::FlipNormals, .List = std::move(faces), .Selection = selection}, m);
+}
+Outcome Run(state::Registry &r, const SplitNonplanarFaces &p, uint32_t id, const Masks &m) {
+    return Execute(r, Task(id, MeshTopologyOp::SplitNonplanarFaces, m, std::clamp(p.Angle, 0.f, std::numbers::pi_v<float>)), m);
+}
+Outcome Run(state::Registry &r, SplitConcaveFaces, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::SplitConcaveFaces, m), m); }
+Outcome Run(state::Registry &r, ConnectVertices, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::ConnectVertices, m), m); }
+Outcome Run(state::Registry &r, Fill, uint32_t id, const Masks &m) {
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    const auto selection = Handles(meshes, id, m);
+    return ExecutePlanned(r, FillTask(meshes, Mesh{meshes, id}, selection), selection, m);
+}
+Outcome Run(state::Registry &r, BridgeEdgeLoops, uint32_t id, const Masks &m) {
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    const auto selection = Handles(meshes, id, m);
+    return ExecutePlanned(r, BridgeEdgeLoopsTask(meshes, Mesh{meshes, id}, selection), selection, m);
+}
+Outcome Run(state::Registry &r, const GridFill &p, uint32_t id, const Masks &m) {
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    const auto selection = Handles(meshes, id, m);
+    return ExecutePlanned(r, GridFillTask(meshes, Mesh{meshes, id}, selection, p.Span), selection, m);
+}
+Outcome Run(state::Registry &r, EdgeRotate, uint32_t id, const Masks &m) {
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    return Execute(r, RotateEdgesTask(Mesh{meshes, id}, Handles(meshes, id, m)), m);
+}
+Outcome Run(state::Registry &r, const BeautifyFaces &p, uint32_t id, const Masks &m) {
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    return Execute(r, BeautifyFaceTask(Mesh{meshes, id}, Handles(meshes, id, m), p.Method == BeautifyMethod::Angle), m);
+}
+// Repeat on the selected elements that survive each iteration, until an iteration changes nothing.
+Outcome Run(state::Registry &r, const Unsubdivide &p, uint32_t id, const Masks &m) {
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    auto selection = Handles(meshes, id, m);
+    auto edited = Execute(r, UnsubdivideTask(Mesh{meshes, id}, selection), m);
+    for (uint32_t i = 1u; edited && i < std::clamp(p.Iterations, 1u, 1000u); ++i) {
+        for (const auto [element, handles] : {std::pair{Element::Vertex, &selection.Vertices}, std::pair{Element::Edge, &selection.Edges}, std::pair{Element::Face, &selection.Faces}}) {
+            std::erase_if(*handles, [&](uint32_t handle) { return !meshes.IsLiveElement(*edited, element, ElementHandle{handle}); });
+        }
+        auto task = UnsubdivideTask(Mesh{meshes, *edited}, selection);
+        if (!task) break;
+        edited = Execute(r, std::move(task), m);
+    }
+    return edited;
+}
+// Cut the ring through the active selected edge, or else the first selected edge.
+Outcome Run(state::Registry &r, const LoopCut &p, uint32_t id, const Masks &m) {
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    const auto edges = Handles(meshes, id, m).Edges;
+    if (edges.empty()) return std::unexpected(NodeFault::Selection);
+    const auto edge = m.Domain == Element::Edge && std::ranges::binary_search(edges, m.Active) ? m.Active : edges.front();
+    return Execute(r, LoopCutTask(Mesh{meshes, id}, edge, p.Cuts), m);
+}
+Outcome Run(state::Registry &r, const Knife &p, uint32_t id, const Masks &m) {
+    auto task = KnifeTask(Mesh{r.Resources.get<const MeshStore>(), id}, {}, p.ViewProjection * ToMatrix(p.Frame), p.Extent, p.Start, p.End);
+    task.Flags |= TopologyFlagSelectAll;
+    return Execute(r, std::move(task), m);
+}
+Outcome Run(state::Registry &r, const RotateUVs &p, uint32_t id, const Masks &m) { return EditFaceAttributes(r, id, m, false, p.UVSet, p.CounterClockwise ? 1u : 0u); }
+Outcome Run(state::Registry &r, const ReverseUVs &p, uint32_t id, const Masks &m) { return EditFaceAttributes(r, id, m, false, p.UVSet, 2u); }
+Outcome Run(state::Registry &r, const RotateColors &p, uint32_t id, const Masks &m) { return EditFaceAttributes(r, id, m, true, 0u, p.CounterClockwise ? 1u : 0u); }
+Outcome Run(state::Registry &r, ReverseColors, uint32_t id, const Masks &m) { return EditFaceAttributes(r, id, m, true, 0u, 2u); }
+// Run the sharpness operation over the selection and publish the input selection after an edit.
+Outcome EditSharpness(state::Registry &r, uint32_t id, const Masks &masks, SelectionSource selection, EditSharpnessOperation operation, bool value, float angle = 0.f) {
+    auto &meshes = r.Resources.get<MeshStore>();
+    const SharpnessOperationTarget target{id, std::move(selection)};
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    const bool edited = !ExecuteGeometrySharpness(r, chain, std::span{&target, 1u}, operation, value, angle).empty();
+    chain.Submit();
+    if (edited) PublishInput(r, id, masks);
+    return id;
+}
+Outcome Run(state::Registry &r, const MarkSharp &p, uint32_t id, const Masks &m) {
+    const auto operation = m.Domain == Element::Face ? EditSharpnessOperation::SetSelectedFaces : m.Domain == Element::Edge ? EditSharpnessOperation::SetSelectedEdges :
+                                                                                                                              EditSharpnessOperation::SetVertexEdges;
+    return EditSharpness(r, id, m, SourceOf(r.Resources.get<const MeshStore>(), id, m), operation, p.Sharp);
+}
+// Whole-mesh sharpness operations read no selection.
+Outcome Run(state::Registry &r, const ShadeSmooth &p, uint32_t id, const Masks &m) {
+    return EditSharpness(r, id, m, GeometrySelection{}, p.Smooth ? EditSharpnessOperation::SmoothAll : EditSharpnessOperation::SetAllFaces, !p.Smooth);
+}
+Outcome Run(state::Registry &r, const ShadeSmoothByAngle &p, uint32_t id, const Masks &m) {
+    return EditSharpness(r, id, m, GeometrySelection{}, EditSharpnessOperation::SmoothByAngle, false, p.Angle);
 }
 Outcome Run(state::Registry &r, const TransformGeometry &p, uint32_t id, const Masks &m) {
     return Reposition(r, id, m, PositionEditOp::Transform, 1.f, 1u, {.Transform = PositionTransform{p.Delta, vec3{}}});
@@ -363,6 +527,25 @@ Outcome Store(MeshStore &meshes, const StoreNamedAttribute &p, uint32_t id, cons
     if (temporary == temporaries.end()) return meshes.CopyAttribute(attribute, name) ? Outcome{id} : std::unexpected(NodeFault::Attribute);
     temporaries.erase(temporary);
     return meshes.RenameAttribute(attribute, name) ? Outcome{id} : std::unexpected(NodeFault::Attribute);
+}
+
+// Replace the named Bool attribute in the domain with the selected elements, or with every element for absent masks.
+Outcome Store(MeshStore &meshes, const StoreSelection &p, uint32_t id, const Masks &masks, AttributeDomain domain) {
+    const auto name = NameOf(p.Name);
+    if (name.empty()) return std::unexpected(NodeFault::Parameter);
+    if (const auto existing = meshes.FindAttribute(id, name); existing != InvalidOffset) meshes.ReleaseAttribute(existing);
+    const auto attribute = meshes.AddAttribute(id, domain, AttributeType::Bool, name, {masks.In ? 0u : 1u});
+    if (!attribute) return std::unexpected(NodeFault::Attribute);
+    if (!masks.In) return id;
+    const auto element = domain == AttributeDomain::Face ? Element::Face : domain == AttributeDomain::Edge ? Element::Edge :
+                                                                                                             Element::Vertex;
+    const auto handles = ReadMasks(meshes, id, element, masks.In->Get(element));
+    if (handles.empty()) return id;
+    const auto count = handles.back() + 1u;
+    const auto values = std::make_unique<bool[]>(count);
+    for (const auto handle : handles) values[handle] = true;
+    meshes.SetAttribute<bool>(*attribute, 0u, std::span<const bool>{values.get(), count});
+    return id;
 }
 
 // Convert geometry to instance points using constant or linked vertex scale.
@@ -661,7 +844,12 @@ Outcome RunNode(state::Registry &r, const GeometryProcedure &procedure, const Co
     if (selection_socket < sockets.size()) {
         auto &selection = values[first + selection_socket];
         selection.Type = SocketType::Selection;
-        selection.MaskFirst = evaluation.MaskFirst ? *evaluation.MaskFirst : UploadSelection(meshes, arena, id, r.try_get<const InlineSelection>(entity));
+        const auto *inline_selection = r.try_get<const InlineSelection>(entity);
+        selection.MaskFirst = evaluation.MaskFirst ? *evaluation.MaskFirst : UploadSelection(meshes, arena, id, inline_selection);
+        if (!evaluation.MaskFirst && inline_selection) {
+            masks.Domain = inline_selection->Domain;
+            masks.Active = inline_selection->Active;
+        }
         if (const auto &f = selection.MaskFirst; f != EveryElement) masks.In = GeometryMasks{{&*arena, f[0]}, {&*arena, f[1]}, {&*arena, f[2]}};
     }
     masks.Publish = r.all_of<PublishSelection>(entity);
@@ -670,6 +858,12 @@ Outcome RunNode(state::Registry &r, const GeometryProcedure &procedure, const Co
         const auto p = Parameters<K>(r, procedure, plan, values, node);
         if constexpr (std::same_as<K, StoreNamedAttribute>) {
             edited = Store(meshes, p, id, OperandOf(procedure, plan, values, node, 1u), evaluation.Temporaries);
+        } else if constexpr (std::same_as<K, StoreSelection>) {
+            const auto linked = OperandOf(procedure, plan, values, node, 1u).Attribute;
+            const auto domain = linked != InvalidOffset ? meshes.GetAttribute(linked).Domain : masks.Domain == Element::Face ? AttributeDomain::Face :
+                masks.Domain == Element::Edge                                                                                ? AttributeDomain::Edge :
+                                                                                                                               AttributeDomain::Vertex;
+            edited = Store(meshes, p, id, masks, domain);
         } else if constexpr (std::same_as<K, SetPosition>) {
             auto position = OperandOf(procedure, plan, values, node, 1u);
             if (position.Attribute == InvalidOffset && position.Constant) {
@@ -798,7 +992,8 @@ state::Entity OwnMesh(state::Registry &r, state::Entity mesh_entity, uint32_t re
 
 // Evaluate nodes in dependency order and publish the result.
 // Mark failed nodes and pass their inputs through.
-// Release intermediate records; retain the source copy when no result is linked.
+// The result is the source record itself when the display path passes it through unedited or no result is linked.
+// Release intermediate records.
 void Cook(state::Registry &r, state::Entity mesh_entity, std::optional<BufferArena<SelectionBlock>> &arena, const MeshStore::Writes &between) {
     auto &meshes = r.Resources.get<MeshStore>();
     const auto &procedure = r.get<const GeometryProcedure>(mesh_entity);
@@ -807,6 +1002,12 @@ void Cook(state::Registry &r, state::Entity mesh_entity, std::optional<BufferAre
     auto evaluated = r.all_of<EvaluatedMesh>(mesh_entity) ? r.get<const EvaluatedMesh>(mesh_entity) : EvaluatedMesh{.StoreId = InvalidOffset};
     std::optional<ResyncState> resync;
     if (const auto *state = r.try_get<const ResyncState>(mesh_entity)) resync = *state;
+    // Keep a prior copy of this source for the display path's first edit, and release any other prior record but the source itself.
+    if (!resync || evaluated.Source != source || !meshes.TryGet(evaluated.StoreId)) {
+        if (evaluated.StoreId != source) meshes.Release(evaluated.StoreId);
+        evaluated = {.StoreId = InvalidOffset};
+        resync.reset();
+    }
     // Evaluate only nodes reachable from the output.
     const auto reached = procedure.OutputNode != NoNode ? Upstream(procedure, plan.InputFirst, procedure.OutputNode, [](uint32_t) { return true; }) : std::vector<bool>(procedure.Nodes.size());
     auto remaining = plan.Consumers;
@@ -816,24 +1017,8 @@ void Cook(state::Registry &r, state::Entity mesh_entity, std::optional<BufferAre
             if (const auto link = procedure.Inputs[plan.InputFirst[node] + i]; link.FromNode != NoNode) --remaining[plan.SocketFirst[link.FromNode] + link.FromSocket];
         }
     }
-    const auto read = [&](uint32_t node) { return remaining[plan.SocketFirst[node]] > 0u; };
-    const bool unlinked = procedure.OutputNode == NoNode || procedure.Inputs[plan.InputFirst[procedure.OutputNode]].FromNode == NoNode;
-    const bool sourced = unlinked || std::ranges::any_of(plan.Order, [&](uint32_t node) { return procedure.Nodes[node].Kind == KindOf<Source> && read(node); });
     // Release temporary cook records at completion and retain the result.
     std::vector<uint32_t> created;
-    if (sourced) {
-        created.push_back(SourceCopy(r, source, evaluated, resync, between));
-        // Clear copied selection and preserve source visibility; publishing nodes determine result selection.
-        mtl::ComputeChain chain{meshes.BufferContext()};
-        meshes.ResetEditState(r, chain, evaluated.StoreId, source);
-        chain.Submit();
-    } else {
-        meshes.Release(evaluated.StoreId);
-        evaluated = {.StoreId = InvalidOffset};
-        resync.reset();
-    }
-    // Exclude source restoration from cook writes.
-    meshes.TakeWrites();
     // Track the first-input path to preserve the source-copy record through the result.
     std::vector<bool> on_path(procedure.Nodes.size());
     for (auto node = procedure.OutputNode; node != NoNode && !on_path[node];) {
@@ -846,6 +1031,7 @@ void Cook(state::Registry &r, state::Entity mesh_entity, std::optional<BufferAre
         return plan.SocketFirst[link.FromNode] + link.FromSocket;
     };
     // Clone borrowed records before editing and owned records before additional readers.
+    // The display path's edit of this mesh's source takes the source copy.
     // Preserve the result-path record by cloning its producer instead.
     const auto take = [&](uint32_t node, uint32_t input) -> SocketValue {
         auto &taken = values[plan.SocketFirst[node] + input];
@@ -854,6 +1040,11 @@ void Cook(state::Registry &r, state::Entity mesh_entity, std::optional<BufferAre
         taken = values[slot];
         const bool last = --remaining[slot] == 0u;
         if (taken.Record == InvalidOffset || (taken.Borrowed() ? KindSockets(procedure.Nodes[node].Kind)[input].Reads : last)) return taken;
+        if (taken.Borrowed() && taken.MeshEntity == mesh_entity && on_path[node] && !input) {
+            taken.MeshEntity = state::Null;
+            taken.Record = SourceCopy(r, source, evaluated, resync, between);
+            return taken;
+        }
         const auto clone = created.emplace_back(Clone(r, taken.Record));
         if (taken.Borrowed() || !on_path[node] || input) {
             taken.MeshEntity = state::Null;
@@ -876,7 +1067,6 @@ void Cook(state::Registry &r, state::Entity mesh_entity, std::optional<BufferAre
         meshes.Release(value.Record);
         disown(value.Record);
     };
-    bool copied = false;
     uint32_t result = InvalidOffset;
     std::optional<SocketValue> published; // The instances the result reads
     for (const auto node : plan.Order) {
@@ -885,8 +1075,7 @@ void Cook(state::Registry &r, state::Entity mesh_entity, std::optional<BufferAre
         r.remove<NodeError>(entity);
         if (!reached[node] || IsAttributeKind(kind)) continue;
         if (kind == KindOf<Source>) {
-            if (!read(node)) continue;
-            values[first].Record = std::exchange(copied, true) ? created.emplace_back(Clone(r, source)) : evaluated.StoreId;
+            values[first] = {.MeshEntity = mesh_entity, .Record = source};
             continue;
         }
         if (kind == KindOf<ObjectInfo>) {
@@ -909,9 +1098,9 @@ void Cook(state::Registry &r, state::Entity mesh_entity, std::optional<BufferAre
         const auto in = take(node, 0u);
         const auto input = in.Record;
         if (kind == KindOf<Output>) {
-            // Use the Output node result, or a source copy when the Output input is unlinked.
+            // The result is this cook's record or this mesh's source, so another mesh's record is cloned.
             if (node == procedure.OutputNode) {
-                result = input;
+                result = in.Borrowed() && in.MeshEntity != mesh_entity ? created.emplace_back(Clone(r, input)) : input;
                 if (in.Type == SocketType::Instances) published = in;
             }
             continue;
@@ -927,15 +1116,21 @@ void Cook(state::Registry &r, state::Entity mesh_entity, std::optional<BufferAre
         }
         if (kind == KindOf<Boolean>) {
             const auto second = take(node, 1u);
-            const bool linked = input != InvalidOffset && second.Record != InvalidOffset;
-            const auto task = linked ? BooleanTask(Mesh{meshes, input}, Mesh{meshes, second.Record}, r.get<const Boolean>(entity).Operation, mat3{1.f}, vec3{0.f}) : std::nullopt;
+            const auto p = Parameters<Boolean>(r, procedure, plan, values, node);
+            // Map Mesh 2 into Mesh 1's space through both frames, which must keep Mesh 2 unmirrored.
+            const auto to_first = Inverse(ToMatrix(p.Frame1)) * ToMatrix(p.Frame2);
+            const auto rotation = ToMat3(to_first);
+            const bool linked = input != InvalidOffset && second.Record != InvalidOffset, oriented = Determinant(rotation) > 0.f;
+            const auto task = linked && oriented ? BooleanTask(Mesh{meshes, input}, Mesh{meshes, second.Record}, p.Operation, rotation, vec3(to_first[3])) : std::nullopt;
             const auto combined = task ? ExecuteGeometryBoolean(r, *task) : std::nullopt;
+            auto &output = values[first + InputCount[kind]];
             if (combined) {
                 created.push_back(*combined);
-                values[first + 2u].Record = *combined;
+                output.Record = *combined;
             } else {
-                if (linked) r.emplace<NodeError>(entity, !task ? NodeFault::NotClosed : NodeFault::Empty);
-                values[first + 2u] = in;
+                if (linked) r.emplace<NodeError>(entity, !oriented ? NodeFault::Parameter : !task ? NodeFault::NotClosed :
+                                                                                                    NodeFault::Empty);
+                output = in;
             }
             continue;
         }
@@ -973,15 +1168,21 @@ void Cook(state::Registry &r, state::Entity mesh_entity, std::optional<BufferAre
         transforms = InstanceTransforms(meshes, result);
         Empty(r, result);
     }
+    // Instances of this mesh's source place a clone, since this mesh draws the points.
+    if (!transforms.empty() && published->MeshEntity == mesh_entity) {
+        published->MeshEntity = state::Null;
+        published->Instance = Clone(r, published->Instance);
+    }
     const bool owns = !transforms.empty() && published->MeshEntity == state::Null;
     if (owns) disown(published->Instance);
     auto writes = meshes.TakeWrites();
-    if (result == InvalidOffset) result = sourced && !copied ? evaluated.StoreId : created.emplace_back(Clone(r, source));
+    if (result == InvalidOffset) result = source;
     if (result == evaluated.StoreId) {
         KeepWritten(meshes, result, *resync, writes.Blocks);
         std::erase_if(resync->Attributes, [&](uint32_t attribute) { return std::ranges::binary_search(writes.Attributes, attribute); });
         r.emplace_or_replace<ResyncState>(mesh_entity, std::move(*resync));
     } else {
+        meshes.Release(evaluated.StoreId);
         evaluated = {.StoreId = result};
         r.remove<ResyncState>(mesh_entity);
     }

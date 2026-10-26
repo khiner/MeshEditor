@@ -28,6 +28,7 @@ struct MeshHandle {
     uint32_t StoreId{~0u};
 };
 // The record a mesh entity's geometry procedure evaluates to, which its instances draw.
+// It is the source record itself when no node on the display path edits the source.
 struct EvaluatedMesh {
     uint32_t StoreId;
     uint32_t Source{InvalidOffset}; // The source record the evaluated record copies, or InvalidOffset for a record made otherwise

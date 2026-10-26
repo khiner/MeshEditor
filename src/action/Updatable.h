@@ -64,6 +64,26 @@ struct ConvexHull;
 struct Decimate;
 struct RecalculateNormals;
 struct Rip;
+struct SpaceEvenly;
+struct RelaxEdgeLoops;
+struct CurveBetweenSelected;
+struct Circularize;
+struct MakePlanarFaces;
+struct SnapSymmetry;
+struct SplitNonplanarFaces;
+struct SplitConcaveFaces;
+struct ConnectVertices;
+struct Fill;
+struct BridgeEdgeLoops;
+struct GridFill;
+struct EdgeRotate;
+struct BeautifyFaces;
+struct Unsubdivide;
+struct LoopCut;
+struct RotateUVs;
+struct ReverseUVs;
+struct RotateColors;
+struct ReverseColors;
 } // namespace action::mesh
 namespace procedure {
 struct Boolean;
@@ -86,6 +106,19 @@ struct BooleanValue;
 struct VectorValue;
 struct RotationValue;
 struct TransformGeometry;
+struct ToSphere;
+struct PushPull;
+struct Shear;
+struct Warp;
+struct Bend;
+struct VertexSlide;
+struct EdgeSlide;
+struct Flatten;
+struct MarkSharp;
+struct Knife;
+struct ShadeSmooth;
+struct ShadeSmoothByAngle;
+struct StoreSelection;
 struct NodeLayout;
 struct NodeTheme;
 } // namespace procedure
@@ -104,9 +137,13 @@ using UpdatableComponents = TypeList<
     mesh::Delete, mesh::Merge, mesh::Extrude, mesh::Duplicate, mesh::Split, mesh::Dissolve, mesh::Subdivide, mesh::Triangulate, mesh::TrisToQuads,
     mesh::Poke, mesh::FlipNormals, mesh::EdgeSplit, mesh::Inset, mesh::Solidify, mesh::Wireframe, mesh::Bevel, mesh::SmoothVertices, mesh::ShrinkFatten,
     mesh::Randomize, mesh::Spin, mesh::ExtrudeRepeat, mesh::Bisect, mesh::Symmetrize, mesh::FillHoles, mesh::ConvexHull, mesh::Decimate, mesh::RecalculateNormals,
-    mesh::Rip, procedure::TransformElements, procedure::Boolean,
+    mesh::Rip, mesh::SpaceEvenly, mesh::RelaxEdgeLoops, mesh::CurveBetweenSelected, mesh::Circularize, mesh::MakePlanarFaces, mesh::SnapSymmetry,
+    mesh::SplitNonplanarFaces, mesh::SplitConcaveFaces, mesh::ConnectVertices, mesh::Fill, mesh::BridgeEdgeLoops, mesh::GridFill, mesh::EdgeRotate, mesh::BeautifyFaces, mesh::Unsubdivide, mesh::LoopCut,
+    mesh::RotateUVs, mesh::ReverseUVs, mesh::RotateColors, mesh::ReverseColors, procedure::MarkSharp, procedure::Knife, procedure::ShadeSmooth, procedure::ShadeSmoothByAngle,
+    procedure::ToSphere, procedure::PushPull, procedure::Shear, procedure::Warp, procedure::Bend, procedure::VertexSlide, procedure::EdgeSlide, procedure::Flatten,
+    procedure::TransformElements, procedure::Boolean,
     procedure::Position, procedure::Normal, procedure::Index, procedure::NamedAttribute, procedure::VectorMath, procedure::FloatMath, procedure::Compare,
-    procedure::BooleanMath, procedure::StoreNamedAttribute, procedure::SetPosition, procedure::InstanceOnPoints, procedure::ObjectInfo,
+    procedure::BooleanMath, procedure::StoreNamedAttribute, procedure::StoreSelection, procedure::SetPosition, procedure::InstanceOnPoints, procedure::ObjectInfo,
     procedure::FloatValue, procedure::IntegerValue, procedure::BooleanValue, procedure::VectorValue, procedure::RotationValue, procedure::TransformGeometry,
     primitive::Plane, primitive::Circle, primitive::Cuboid, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone>;
 

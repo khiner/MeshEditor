@@ -18,6 +18,11 @@ enum class DeleteMode : uint32_t;
 enum class ExtrudeMode : uint8_t;
 enum class DissolveMode : uint8_t;
 enum class SymmetrizeAxis : uint8_t;
+enum class EdgeLoopInterpolation : uint8_t;
+enum class CircleFit : uint8_t;
+enum class CurveElevation : uint8_t;
+enum class FlattenMethod : uint8_t;
+enum class BeautifyMethod : uint8_t;
 } // namespace action::mesh
 namespace procedure {
 enum class VectorComponent : uint8_t;
@@ -114,6 +119,7 @@ using Core = std::variant<
     Update<TransformGizmo::Type>, Update<TransformGizmo::Mode>,
     Update<DebugChannel>, Update<AnisotropicFilterLevel>, Update<std::optional<MotionBlur>>,
     Update<mesh::DeleteMode>, Update<GeometryMergeMode>, Update<mesh::ExtrudeMode>, Update<mesh::DissolveMode>, Update<mesh::SymmetrizeAxis>,
+    Update<mesh::EdgeLoopInterpolation>, Update<mesh::CircleFit>, Update<mesh::CurveElevation>, Update<mesh::FlattenMethod>, Update<mesh::BeautifyMethod>,
     Update<AttributeType>, Update<AttributeDomain>, Update<VectorMathOp>, Update<FloatMathOp>, Update<CompareOp>, Update<BooleanMathOp>, Update<BooleanOperation>, Update<procedure::VectorComponent>,
     DestroyEntity>;
 

@@ -38,7 +38,7 @@ enum class KindGroup : uint8_t { SourceOutput,
 constexpr const char *GroupNames[]{"Source and Output", "Operators", "Combine", "Attributes", "Values", "Generators", "Instances"};
 using C = NodeThemeColors;
 constexpr vec4 C::*GroupColors[]{&C::SourceOutputTitle, &C::OperatorsTitle, &C::CombineTitle, &C::AttributesTitle, &C::ValuesTitle, &C::GeneratorsTitle, &C::InstancesTitle};
-using AttributeKinds = TypeList<Position, Normal, Index, NamedAttribute, VectorMath, FloatMath, Compare, BooleanMath, StoreNamedAttribute, SetPosition>;
+using AttributeKinds = TypeList<Position, Normal, Index, NamedAttribute, VectorMath, FloatMath, Compare, BooleanMath, StoreNamedAttribute, StoreSelection, SetPosition>;
 using InstanceKinds = TypeList<MeshToPoints, InstanceOnPoints, RealizeInstances>;
 template<typename K> constexpr KindGroup GroupOf() {
     if constexpr (std::same_as<K, Source> || std::same_as<K, Output> || std::same_as<K, ObjectInfo>) return KindGroup::SourceOutput;
@@ -85,6 +85,20 @@ template<> constexpr const char *Help<action::mesh::Bevel>{"Bevels the selected 
 template<> constexpr const char *Help<action::mesh::SmoothVertices>{"Moves the selected vertices toward the mean of their edge neighbors"};
 template<> constexpr const char *Help<action::mesh::ShrinkFatten>{"Moves the selected vertices along their normals"};
 template<> constexpr const char *Help<action::mesh::Randomize>{"Offsets the selected vertices by repeatable random amounts"};
+template<> constexpr const char *Help<action::mesh::SpaceEvenly>{"Spaces the vertices of the selected edge chains evenly along them"};
+template<> constexpr const char *Help<action::mesh::RelaxEdgeLoops>{"Smooths the selected edge chains, keeping their open endpoints and junctions"};
+template<> constexpr const char *Help<action::mesh::CurveBetweenSelected>{"Moves the unselected loop vertices onto a curve through the selected ones"};
+template<> constexpr const char *Help<action::mesh::Circularize>{"Fits the selected boundaries and wire chains to circles"};
+template<> constexpr const char *Help<action::mesh::MakePlanarFaces>{"Flattens the selected faces toward their planes"};
+template<> constexpr const char *Help<Flatten>{"Flattens the selected face regions and edge chains onto planes"};
+template<> constexpr const char *Help<ToSphere>{"Blends the selected vertices toward a sphere around Center"};
+template<> constexpr const char *Help<PushPull>{"Moves the selected vertices toward or away from Center"};
+template<> constexpr const char *Help<Shear>{"Shears the selected vertices along Direction"};
+template<> constexpr const char *Help<Warp>{"Warps the selected vertices around Center"};
+template<> constexpr const char *Help<Bend>{"Bends the selected vertices from Center"};
+template<> constexpr const char *Help<VertexSlide>{"Slides each selected vertex along its incident edge nearest Direction"};
+template<> constexpr const char *Help<EdgeSlide>{"Slides the selected edge chains along their adjacent faces"};
+template<> constexpr const char *Help<action::mesh::SnapSymmetry>{"Snaps the selected vertices to their mirrored partners across an axis plane"};
 template<> constexpr const char *Help<action::mesh::Spin>{"Extrudes the selection in steps around an axis"};
 template<> constexpr const char *Help<action::mesh::ExtrudeRepeat>{"Extrudes the selection repeatedly along an offset"};
 template<> constexpr const char *Help<action::mesh::Bisect>{"Cuts the mesh along a plane and deletes the faces on the cleared sides"};
@@ -94,6 +108,24 @@ template<> constexpr const char *Help<action::mesh::ConvexHull>{"Builds the conv
 template<> constexpr const char *Help<action::mesh::Decimate>{"Reduces the selected region's triangle count by collapsing edges"};
 template<> constexpr const char *Help<action::mesh::RecalculateNormals>{"Makes the selected faces' normals point consistently outside or inside"};
 template<> constexpr const char *Help<action::mesh::Rip>{"Splits the faces along the selected edges"};
+template<> constexpr const char *Help<action::mesh::SplitNonplanarFaces>{"Splits the selected faces that bend more than Angle along their diagonals"};
+template<> constexpr const char *Help<action::mesh::SplitConcaveFaces>{"Splits the selected concave faces into convex faces"};
+template<> constexpr const char *Help<action::mesh::ConnectVertices>{"Splits faces along chords between their consecutive selected vertices"};
+template<> constexpr const char *Help<action::mesh::Fill>{"Creates an edge from two selected vertices, fills the selected loops, or forms a face from the selected points"};
+template<> constexpr const char *Help<action::mesh::BridgeEdgeLoops>{"Bridges two selected edge loops or chains with a strip of faces"};
+template<> constexpr const char *Help<action::mesh::GridFill>{"Fills one selected closed loop with a grid of quads"};
+template<> constexpr const char *Help<action::mesh::EdgeRotate>{"Rotates each selected edge between its two faces"};
+template<> constexpr const char *Help<action::mesh::BeautifyFaces>{"Rearranges the selected triangles into more evenly shaped ones"};
+template<> constexpr const char *Help<action::mesh::Unsubdivide>{"Reverses subdivision by removing alternate selected vertices of regular regions"};
+template<> constexpr const char *Help<action::mesh::LoopCut>{"Cuts the edge ring through the active selected edge, or the first selected edge"};
+template<> constexpr const char *Help<Knife>{"Cuts every edge whose projection in a view crosses a screen segment"};
+template<> constexpr const char *Help<action::mesh::RotateUVs>{"Rotates the UVs of the selected faces around their corners"};
+template<> constexpr const char *Help<action::mesh::ReverseUVs>{"Reverses the order of the UVs around the selected faces"};
+template<> constexpr const char *Help<action::mesh::RotateColors>{"Rotates the colors of the selected faces around their corners"};
+template<> constexpr const char *Help<action::mesh::ReverseColors>{"Reverses the order of the colors around the selected faces"};
+template<> constexpr const char *Help<MarkSharp>{"Marks the selected edges sharp or smooth, or shades the selected faces flat or smooth"};
+template<> constexpr const char *Help<ShadeSmooth>{"Shades every face smooth and clears every sharp mark, or shades every face flat"};
+template<> constexpr const char *Help<ShadeSmoothByAngle>{"Shades every face smooth and marks the edges sharp where adjacent faces meet at more than Angle"};
 template<> constexpr const char *Help<TransformElements>{"Moves, rotates, and scales the selected vertices around a pivot"};
 template<> constexpr const char *Help<Position>{"Emits each vertex's position"};
 template<> constexpr const char *Help<Normal>{"Emits each vertex's or face's normal"};
@@ -104,6 +136,7 @@ template<> constexpr const char *Help<FloatMath>{"Applies a float operation to A
 template<> constexpr const char *Help<Compare>{"Emits the result of comparing A to B per element"};
 template<> constexpr const char *Help<BooleanMath>{"Applies a logical operation to A and B per element"};
 template<> constexpr const char *Help<StoreNamedAttribute>{"Writes the Value input to the named attribute of the geometry"};
+template<> constexpr const char *Help<StoreSelection>{"Writes the selection to the named Boolean attribute of the geometry"};
 template<> constexpr const char *Help<SetPosition>{"Sets or offsets the selected vertices' positions from a vector attribute"};
 template<> constexpr const char *Help<MeshToPoints>{"Emits the input's vertices as points"};
 template<> constexpr const char *Help<InstanceOnPoints>{"Places an instance of the second input at each point of the first"};
@@ -999,7 +1032,7 @@ bool ReadsLink(std::span<const Socket> linked) {
 }
 
 template<typename F>
-concept LeafParameter = std::same_as<F, AttributeName> || std::same_as<F, state::Entity>;
+concept LeafParameter = std::same_as<F, AttributeName> || std::same_as<F, state::Entity> || std::same_as<F, mat4>;
 
 // Edits a node's parameter fields through Update actions at their byte offsets in the node component.
 template<typename K, auto... Prefix>
@@ -1039,6 +1072,16 @@ struct ParameterEdit : ui::FieldWidgets<Prefix...> {
         if constexpr (std::same_as<F, AttributeName>) {
             Status = nullptr;
             NameField(Panel, Node, label, ui::ReadChain<Prefix..., M>(Value), Interactive);
+        } else if constexpr (std::same_as<F, mat4>) {
+            // A matrix shows its rows for reading.
+            Status = nullptr;
+            const auto &m = ui::ReadChain<Prefix..., M>(Value);
+            for (int row = 0; row < 4; ++row) {
+                std::array values{m[0][row], m[1][row], m[2][row], m[3][row]};
+                PushID(row);
+                InputFloat4(row == 0 ? label : "##row", values.data(), "%.3f", ImGuiInputTextFlags_ReadOnly);
+                PopID();
+            }
         } else {
             Run<M>([&](state::Entity &v) { return ObjectChoice(R, label, v); });
         }
@@ -1086,7 +1129,7 @@ void DrawInlineSelection(const state::Registry &r, state::Entity mesh_entity, co
     ui::Describe("Capture", "Set the node's selection to the elements selected in the viewport in edit mode");
     SameLine();
     BeginDisabled(every);
-    if (Button("Clear") && interactive) action::Emit(action::nodes::SetInlineSelection{entity});
+    if (Button("Clear") && interactive) action::Emit(action::nodes::SetInlineSelection{entity, std::make_unique<InlineSelection>(InlineSelection{.Domain = selection->Domain, .Active = selection->Active})});
     EndDisabled();
     ui::Describe("Clear", "Set the node's selection to all elements");
 }
