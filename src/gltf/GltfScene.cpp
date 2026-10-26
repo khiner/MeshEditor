@@ -1906,7 +1906,7 @@ void ImportAudio(state::Registry &r, const fastgltf::Asset &asset, const Importe
         auto model = models[*model_index];
         model.BakedScale = vec3{1.f};
         // Map each sample point to its nearest render-mesh vertex so the model stays excitable.
-        if (const auto *inst = r.try_get<const Instance>(entity); inst && r.all_of<MeshHandle>(inst->Entity)) {
+        if (const auto *inst = r.try_get<const Instance>(entity); inst && HasMesh(r, inst->Entity)) {
             const auto [it, inserted] = vertices_by_model_mesh.try_emplace({*model_index, inst->Entity});
             if (inserted) {
                 const auto mesh = GetMesh(r, inst->Entity);
@@ -2127,9 +2127,8 @@ bool ImportAnimations(state::Registry &r, const fastgltf::Asset &asset, const Im
     std::unordered_map<uint32_t, state::Entity> morph_instance_by_node;
     for (const auto &[node_index, instance_entity] : objects.Entities) {
         const auto *instance = r.try_get<const Instance>(instance_entity);
-        const auto *handle = instance ? r.try_get<const MeshHandle>(instance->Entity) : nullptr;
-        if (!handle) continue;
-        const auto &record = meshes.Get(handle->StoreId);
+        if (!instance || !HasMesh(r, instance->Entity)) continue;
+        const auto &record = meshes.Get(*DrawnStoreId(r, instance->Entity));
         if (record.MorphTargetCount == 0) continue;
         const auto &node_weights = asset.nodes[node_index].weights;
         auto weights = record.DefaultMorphWeights;

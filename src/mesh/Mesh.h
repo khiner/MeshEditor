@@ -332,13 +332,14 @@ private:
     std::span<const uint32_t> Corners{};
 };
 
-// GetMesh reads a mesh entity's source record, which asset-level readers such as export, audio and physics take.
-// TryGetMesh returns empty for other entities.
-Mesh GetMesh(const state::Registry &, state::Entity);
-std::optional<Mesh> TryGetMesh(const state::Registry &, state::Entity);
+// Whether the entity is a mesh entity, which holds a geometry procedure.
 bool HasMesh(const state::Registry &, state::Entity);
-// The store record an entity's instances draw: its evaluated procedure output, its mesh, or the vertex record of a bone or joint.
+// Whether an instance of the entity draws a mesh record: a cooked mesh entity's, or the record a procedure's instances place.
+bool DrawsMesh(const state::Registry &, state::Entity);
+// The store record an entity's instances draw: its evaluated procedure output, its owned record, or the vertex record of a bone or joint.
 // A mesh entity's drawn record is also the one edit mode edits, picks, selects and overlays.
 std::optional<uint32_t> DrawnStoreId(const state::Registry &, state::Entity);
-// The geometry a mesh entity's instances draw and edit mode edits.
-Mesh GetDrawnMesh(const state::Registry &, state::Entity);
+// The geometry an entity's instances draw, which edit mode edits and export, audio and physics read.
+// TryGetMesh returns empty for an entity drawing no mesh record.
+Mesh GetMesh(const state::Registry &, state::Entity);
+std::optional<Mesh> TryGetMesh(const state::Registry &, state::Entity);

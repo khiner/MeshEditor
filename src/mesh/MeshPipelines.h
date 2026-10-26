@@ -135,7 +135,6 @@ enum class MeshPass : uint8_t {
     TopologyBooleanScatter,
     TopologyFaceTables,
     TopologyGatherVertices,
-    InsetPreviewPositions,
     PositionVerticesGather,
     SpaceEvenlyGather,
     RelaxEdgeLoopsGather,

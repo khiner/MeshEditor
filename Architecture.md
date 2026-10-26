@@ -4,6 +4,7 @@
     - Use host-visible unified-memory buffers for direct CPU/GPU writes.
     - Store each GPU-readable live value exactly once, in its UMA buffer.
       Capture changed pages before in-place CPU or GPU writes.
+- A mesh entity's geometry is the cook of its `GeometryProcedure`, so operators edit meshes only by appending or changing nodes.
 - UI and event code emits actions whose `Apply` handlers mutate document state.
     - Direct writes are also permitted in Derived or reactive systems, engine/GPU write-back, and background-worker continuations.
 - `state::Registry` owns entity allocation, native component pages, domain resources, and dirty sets.

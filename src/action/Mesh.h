@@ -6,7 +6,6 @@
 #include "viewport/RenderView.h"
 
 namespace action::mesh {
-struct InsetPreviewCache;
 struct Hide {
     bool Unselected{false};
 };
@@ -323,11 +322,10 @@ using Action = std::variant<
     Spin, ExtrudeRepeat, Bisect, Symmetrize, Solidify, ConnectVertices, Knife, BridgeEdgeLoops, GridFill, FillHoles, ConvexHull, EdgeRotate, Rip, Bevel, SmoothVertices, SpaceEvenly, RelaxEdgeLoops, CurveBetweenSelected, Circularize, MakePlanarFaces, Flatten, Wireframe, SplitNonplanarFaces, SplitConcaveFaces, RotateUVs, ReverseUVs, RotateColors, ReverseColors, ShrinkFatten, ToSphere, PushPull, RecalculateNormals, BeautifyFaces, Shear, Warp, Bend, Randomize, VertexSlide, EdgeSlide, Unsubdivide, SnapSymmetry, Hide, Reveal, Decimate, Boolean>;
 
 void Apply(state::Registry &, const Action &);
+// Whether a later step of a stage of the action edits the nodes its first step appended, since only the action sets their parameters.
+bool Patches(const Action &);
 // The edit-mode meshes with a selection in the viewport's edit element domain, which the operators edit.
 std::vector<state::Entity> SelectedEditMeshes(const state::Registry &);
-// Reuse staged inset topology for continuous parameter changes.
-// Return false without writes if topology, targets, or selection changed.
-bool UpdateInsetPreview(state::Registry &, const Inset &, InsetPreviewCache &);
 } // namespace action::mesh
 
 template<> inline constexpr field::SpecTable<action::mesh::Delete> Specs<action::mesh::Delete>{{&action::mesh::Delete::Mode, {.Help = "Elements to delete, including the faces of deleted vertices or edges. Loose deletes only selected wire edges and isolated vertices."}}};

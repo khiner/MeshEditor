@@ -5,11 +5,11 @@
 #include "gpu/AttributeNode.h"
 #include "mesh/NamedAttribute.h"
 #include "procedure/ProcedureSchema.h"
+#include "project/store/Hash.h"
 
 // Each procedure node is an entity with one parameter component and input/output links.
 namespace procedure {
 struct Source {}; // Emit the mesh's source geometry.
-struct Output {}; // Receive the procedure's result.
 struct Join {}; // Append the second input's geometry to the first.
 
 // Combine the inputs in the space Frame1 maps Mesh 1 into and Frame2 maps Mesh 2 into, and emit the result in Mesh 1's space.
@@ -114,10 +114,11 @@ struct TransformGeometry {
 // These position operators apply in the space Frame maps mesh-local positions into.
 // A viewport operator sets Frame to the world transform of its mesh's primary instance.
 
-// Blend the selected vertices toward their mean distance from Center.
+// Blend the selected vertices toward Radius from Center, or toward their mean distance from Center for a zero radius.
 struct ToSphere {
     float Factor{1.f};
     vec3 Center{};
+    float Radius{0.f};
     Transform Frame{};
 };
 // Move the selected vertices toward Center by Distance, or away from it for a negative distance.
@@ -222,7 +223,7 @@ struct ObjectInfo {
 
 // A node's kind is its parameter component's index in this list.
 using NodeKinds = TypeList<
-    Source, Output, Join, Boolean,
+    Source, Join, Boolean,
     primitive::Plane, primitive::Circle, primitive::Cuboid, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone,
     action::mesh::Delete, action::mesh::Merge, action::mesh::Extrude, action::mesh::Duplicate, action::mesh::Split, action::mesh::Dissolve,
     action::mesh::Subdivide, action::mesh::Triangulate, action::mesh::TrisToQuads, action::mesh::Poke, action::mesh::FlipNormals, action::mesh::EdgeSplit,
@@ -279,7 +280,6 @@ inline constexpr uint8_t Bool{TypeBit(AttributeType::Bool)}, Float{TypeBit(Attri
 // Append parameter sockets after fixed inputs.
 // Sources and generators have no inputs.
 inline constexpr Socket SourceSockets[]{{Geometry, Out}};
-inline constexpr Socket OutputSockets[]{{Geometry, In, 0u, true}};
 inline constexpr Socket JoinSockets[]{{Geometry, In}, {Geometry, In}, {Geometry, Out}};
 inline constexpr Socket BooleanSockets[]{{Geometry, In, 0u, true, "Mesh 1"}, {Geometry, In, 0u, true, "Mesh 2"}, {Geometry, Out}};
 inline constexpr Socket OperatorSockets[]{{Geometry, In}, {Selection, In, Bool}, {Geometry, Out}};
@@ -325,7 +325,6 @@ template<typename K, size_t I, typename F, size_t J> inline constexpr auto Neste
 template<typename K> inline constexpr Socket ValueSockets[]{{Value, Out, TypesOf<decltype(K::Value)>()}};
 template<typename K> constexpr std::span<const Socket> FixedSockets() {
     if constexpr (std::same_as<K, Source> || std::same_as<K, ObjectInfo> || Generator<K>) return SourceSockets;
-    else if constexpr (std::same_as<K, Output>) return OutputSockets;
     else if constexpr (std::same_as<K, Join>) return JoinSockets;
     else if constexpr (std::same_as<K, Boolean>) return BooleanSockets;
     else if constexpr (std::same_as<K, Position> || std::same_as<K, Normal>) return PositionSockets;
@@ -447,9 +446,8 @@ template<typename K> inline constexpr uint16_t KindOf = []<typename... Ks>(TypeL
 }(NodeKinds{});
 
 // Accept matching socket and attribute types, values as attributes, and booleans as selections.
-// Output nodes also accept instances.
-constexpr bool Links(Socket from, Socket to, uint16_t to_kind) {
-    if (from.Type == SocketType::Instances) return to.Type == SocketType::Instances || to_kind == KindOf<Output>;
+constexpr bool Links(Socket from, Socket to) {
+    if (from.Type == SocketType::Instances) return to.Type == SocketType::Instances;
     const bool typed = from.Type == to.Type || ((from.Type == SocketType::Attribute || from.Type == SocketType::Value) && to.Type == SocketType::Selection) || (from.Type == SocketType::Value && to.Type == SocketType::Attribute);
     return typed && (from.Type == SocketType::Geometry || (from.Types & to.Types));
 }
@@ -477,12 +475,22 @@ struct SocketLink {
     uint16_t FromSocket{};
 };
 
+// The output socket carrying a node's geometry or instances, which the mesh draws when the node is displayed, or none.
+constexpr std::optional<uint16_t> ResultSocket(uint16_t kind) {
+    const auto sockets = KindSockets(kind);
+    for (uint16_t s = InputCount[kind]; s < uint16_t(sockets.size()); ++s) {
+        if (sockets[s].Type == SocketType::Geometry || sockets[s].Type == SocketType::Instances) return s;
+    }
+    return {};
+}
+
 // Persistent on the mesh entity.
+// The displayed node's result is the mesh's geometry, and the active node is the one the editor's parameter panel edits.
 struct GeometryProcedure {
     std::vector<NodeRecord> Nodes; // In authoring order
     std::vector<SocketLink> Inputs; // Each node's input sockets, in node order
-    uint32_t OutputNode{NoNode}; // Output node with the result input
-    uint32_t ActiveNode{NoNode}; // The node the editor's parameter panel edits
+    uint32_t DisplayNode{NoNode};
+    uint32_t ActiveNode{NoNode};
 };
 
 inline uint32_t InputFirst(const GeometryProcedure &procedure, uint32_t node) {
@@ -530,7 +538,7 @@ inline bool Inserts(const GeometryProcedure &procedure, std::span<const uint32_t
     const auto input = MainSocket(kind, SocketDirection::In), output = MainSocket(kind, SocketDirection::Out);
     if (link.FromNode == NoNode || link.FromNode == node || to_node == node || !input || !output) return false;
     const auto from_kind = procedure.Nodes[link.FromNode].Kind;
-    if (!Links(KindSockets(kind)[*output], KindSockets(to_kind)[to_socket], to_kind) || !Links(KindSockets(from_kind)[link.FromSocket], KindSockets(kind)[*input], kind)) return false;
+    if (!Links(KindSockets(kind)[*output], KindSockets(to_kind)[to_socket]) || !Links(KindSockets(from_kind)[link.FromSocket], KindSockets(kind)[*input])) return false;
     const auto all = [](uint32_t) { return true; };
     return !Upstream(procedure, input_first, node, all)[to_node] && !Upstream(procedure, input_first, link.FromNode, all)[node];
 }
@@ -550,6 +558,9 @@ struct ProcedureOwnedMesh {
 struct NodeLayout {
     uvec2 Position; // The top left grid cell
 };
+inline constexpr uint32_t AppendGap{12u}; // The cells an appended node sits right of the displayed node.
+// The kind's name with spaces between its words.
+template<typename K> constexpr auto Title{field::detail::Spaced<field::fixed_string<state::LeafName<K>().size() + 1>{state::LeafName<K>()}>()};
 
 struct PublishSelection {}; // Persistent on a node a viewport operator added, which selects its output like the operator does.
 struct NodeSelected {}; // Persistent on a node the editor has selected.
@@ -561,13 +572,30 @@ enum class NodeFault : uint8_t {
     Attribute, // An attribute input is missing or has the wrong type or domain
     NotClosed, // A boolean input is not a closed surface
     Empty, // A boolean produced no geometry
-    NoMesh, // An Object Info node names no mesh it can read
+    NoMesh, // An Object Info node refers to no mesh it can read, or an Instance input is unlinked
 };
 
 struct NodeError {
     NodeFault Fault;
 };
 
+// Persistent on a Source node: the mesh storage state, identified by its hash, in which record StoreId holds the node's geometry.
+// A pending state is zero, and its record holds the geometry until the node's history step ends.
+// A state without a record is empty geometry.
+struct SourceState {
+    store::Hash128 State{};
+    uint32_t StoreId{InvalidOffset};
+    bool operator==(const SourceState &) const = default;
+};
+// Persistent on a display-path node that edited its mesh's record in place: the path node whose output it edited, and the mesh storage state, identified by its hash, in which record StoreId held that output.
+// A change to the node restores the record to that state and runs the node again.
+struct EditedInput {
+    state::Entity Input{state::Null};
+    store::Hash128 State{};
+    uint32_t StoreId{InvalidOffset};
+    bool operator==(const EditedInput &) const = default;
+};
+struct StagedNode {}; // Derived on a node a preview step appended, which the stage's later steps edit.
 struct CookPlan {
     std::vector<uint32_t> Order; // Every node after the nodes it reads
     std::vector<uint32_t> InputFirst, SocketFirst; // Each node's first input and first socket slot, then the totals
@@ -625,6 +653,7 @@ template<> inline constexpr field::SpecTable<procedure::TransformGeometry> Specs
 template<> inline constexpr field::SpecTable<procedure::ToSphere> Specs<procedure::ToSphere>{
     {&procedure::ToSphere::Factor, {.Min = 0, .Max = 1, .Speed = 0.01f}},
     {&procedure::ToSphere::Center, {.Speed = 0.01f, .Help = "Sphere center in Frame space"}},
+    {&procedure::ToSphere::Radius, {.Min = 0, .Speed = 0.01f, .Help = "Distance from Center the vertices blend toward, in local units. Zero takes the selected vertices' mean distance."}},
     {&procedure::ToSphere::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
 };
 template<> inline constexpr field::SpecTable<procedure::PushPull> Specs<procedure::PushPull>{

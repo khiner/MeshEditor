@@ -436,7 +436,23 @@ bool ReadProject(History &history, const std::filesystem::path &dir, uint64_t &t
         auto payload = rest.first(len);
         rest = rest.subspan(len);
         if (!Take(payload, kind) || !Take(payload, parent)) break;
-        if (kind == RecordKind::State) {
+        if (kind == RecordKind::Kept) {
+            Hash128 state;
+            uint32_t count;
+            if (parent || !Take(payload, state) || !Take(payload, count) || payload.size() != size_t(count) * (sizeof(uint32_t) + sizeof(Hash128))) break;
+            KeptState kept;
+            for (uint32_t i = 0; i < count; ++i) {
+                uint32_t track;
+                Hash128 root;
+                Take(payload, track);
+                Take(payload, root);
+                kept.Tracks.push_back(track);
+                kept.Roots.push_back(root);
+            }
+            if (std::ranges::any_of(kept.Tracks, [&](uint32_t track) { return track >= history.Tracks.size(); })) break;
+            // A kept state whose content a partial write lost stays unresolved.
+            if (std::ranges::all_of(kept.Roots, resolvable)) history.Kept.insert_or_assign(state, std::move(kept));
+        } else if (kind == RecordKind::State) {
             HistoryNode state;
             if (!parent || *parent >= history.Nodes.size() || !TakeState(payload, state, history.Tracks.size()) || !payload.empty() || !std::ranges::all_of(state.Roots, resolvable)) break;
             history.Nodes[*parent].Stamps = std::move(state.Stamps);
@@ -530,6 +546,7 @@ bool AdoptProject(History &history, History &candidate) {
     history.Nodes = std::move(candidate.Nodes);
     history.LeafLog = std::move(candidate.LeafLog);
     history.NodeLog = std::move(candidate.NodeLog);
+    history.Kept = std::move(candidate.Kept);
     history.Dir = std::move(candidate.Dir);
     history.Streams = std::move(candidate.Streams);
     history.StreamBuffers = std::move(candidate.StreamBuffers);
@@ -636,6 +653,78 @@ Hash128 BuildManifest(History &history, size_t track) {
         };
         persist(root, trie.Levels - 1, 0);
         return root;
+    });
+}
+
+// Persist a pinned version's content and return its manifest root.
+// The version's owned leaves and the manifest nodes above them join the content logs, and the subtrees it shares with live content persist from live data.
+Hash128 PersistVersion(History &history, size_t track, const Version &v) {
+    return With(history, history.Tracks[track], [&](auto &owner) {
+        owner.Settle();
+        auto &trie = owner.Trie;
+        const auto live_length = owner.Length();
+        trie.ManifestRoot(live_length);
+        const auto limit = trie.SlotsFor(v.S.Length), live_limit = trie.SlotsFor(live_length);
+        const auto record = [&](uint32_t level, const ManifestChildren &children) {
+            const ManifestRecord manifest{level, children};
+            const auto hash = manifest.Hash();
+            if (hash != Hash128{} && !history.NodeLog.Idx.contains(hash)) AppendContent(history, history.NodeLog, hash, manifest.View());
+            return hash;
+        };
+        // The live slot's hash, which the version shares, or none beyond either length.
+        const auto live_slot = [&](uint64_t slot) {
+            if (slot >= limit || slot >= live_limit || slot >= trie.SlotHashes.size() || trie.SlotHashes[slot].State != LiveTrie::SlotState::Value) return Hash128{};
+            const auto hash = trie.SlotHashes[slot].H;
+            if (!history.LeafLog.Idx.contains(hash)) AppendContent(history, history.LeafLog, hash, owner.Read(slot));
+            return hash;
+        };
+        // Indexed roots have indexed descendants.
+        const auto persist_live = [&](this auto &&self, Hash128 hash, uint32_t level, uint64_t index) -> void {
+            if (hash == Hash128{} || history.NodeLog.Idx.contains(hash)) return;
+            const auto children = trie.ChildrenAt(level, index, live_length);
+            for (uint64_t digit = 0; digit < Fanout; ++digit) {
+                const auto child = children[digit];
+                if (child == Hash128{}) continue;
+                if (level) self(child, level - 1, index * Fanout + digit);
+                else if (!history.LeafLog.Idx.contains(child)) AppendContent(history, history.LeafLog, child, owner.Read(index * Fanout + digit));
+            }
+            AppendContent(history, history.NodeLog, hash, ManifestRecord{level, children}.View());
+        };
+        // The manifest hash of the live slots under a trie level, bounded by the version's length.
+        // A subtree within both lengths, or any subtree while the lengths agree, is the live manifest node.
+        const auto live_subtree = [&](this auto &&self, uint32_t level, uint64_t base) -> Hash128 {
+            if (base >= limit) return {};
+            if (level == 0) return live_slot(base);
+            const auto span = SlotSpan(level);
+            if (limit == live_limit || (base + span <= limit && base + span <= live_limit)) {
+                const auto &nodes = trie.Manifest[level - 1].Nodes;
+                const auto hash = base / span < nodes.size() ? nodes[base / span].Hash : Hash128{};
+                persist_live(hash, level - 1, base / span);
+                return hash;
+            }
+            ManifestChildren children{};
+            for (uint64_t digit = 0; digit < Fanout; ++digit) children[digit] = self(level - 1, base + digit * SlotSpan(level - 1));
+            return record(level - 1, children);
+        };
+        const auto walk = [&](this auto &&self, const Node *n, uint32_t level, uint64_t base) -> Hash128 {
+            if (base >= limit) return {};
+            switch (n->Kind) {
+                case NodeKind::Aliased: return live_subtree(level, base);
+                case NodeKind::Absent: return {};
+                case NodeKind::Owned: {
+                    if (n->Default) return {};
+                    if (!history.LeafLog.Idx.contains(n->Hash)) AppendContent(history, history.LeafLog, n->Hash, owner.Encode(n->Value));
+                    return n->Hash;
+                }
+                case NodeKind::Interior: {
+                    ManifestChildren children{};
+                    for (uint64_t digit = 0; digit < Fanout; ++digit) children[digit] = self(n->Children[digit], level - 1, base + digit * SlotSpan(level - 1));
+                    return record(level - 1, children);
+                }
+            }
+            std::unreachable();
+        };
+        return walk(v.Root, trie.Levels, 0);
     });
 }
 
@@ -761,6 +850,58 @@ void History::Release(Snapshot &snapshot) {
     snapshot.Versions.clear();
 }
 
+std::vector<Hash128> History::RootsOf(Hash128 state, std::span<const size_t> tracks) const {
+    if (const auto it = Kept.find(state); it != Kept.end()) {
+        std::vector<Hash128> roots;
+        for (const auto i : tracks) {
+            const auto found = std::ranges::find(it->second.Tracks, uint32_t(i));
+            if (found == it->second.Tracks.end()) return {};
+            roots.push_back(it->second.Roots[size_t(found - it->second.Tracks.begin())]);
+        }
+        return roots;
+    }
+    std::vector<Stamp> stamps(tracks.size());
+    for (const auto &n : Nodes) {
+        if (n.Stamps.size() != Tracks.size() || n.Roots.size() != Tracks.size()) continue;
+        for (size_t k = 0; k < tracks.size(); ++k) stamps[k] = n.Stamps[tracks[k]];
+        if (StateHash(stamps) != state) continue;
+        std::vector<Hash128> roots;
+        for (const auto i : tracks) roots.push_back(n.Roots[i]);
+        return roots;
+    }
+    return {};
+}
+
+namespace {
+void RecordKept(History &history, Hash128 state, std::span<const size_t> tracks, std::vector<Hash128> roots) {
+    KeptState kept;
+    std::vector<std::byte> payload;
+    Put(payload, state);
+    Put(payload, uint32_t(tracks.size()));
+    for (size_t k = 0; k < tracks.size(); ++k) {
+        kept.Tracks.push_back(uint32_t(tracks[k]));
+        Put(payload, uint32_t(tracks[k]));
+        Put(payload, roots[k]);
+    }
+    kept.Roots = std::move(roots);
+    AppendTreeRecord(history, RecordKind::Kept, std::nullopt, payload);
+    history.Kept.emplace(state, std::move(kept));
+}
+} // namespace
+
+void History::Keep(Hash128 state, std::span<const size_t> tracks) {
+    if (Kept.contains(state)) return;
+    if (auto roots = RootsOf(state, tracks); !roots.empty()) RecordKept(*this, state, tracks, std::move(roots));
+}
+
+void History::Keep(Hash128 state, std::span<const size_t> tracks, std::span<const Version> versions) {
+    if (Kept.contains(state) || !Streams[FileTree].is_open()) return;
+    std::vector<Hash128> roots;
+    roots.reserve(tracks.size());
+    for (size_t k = 0; k < tracks.size(); ++k) roots.push_back(PersistVersion(*this, tracks[k], versions[k]));
+    RecordKept(*this, state, tracks, std::move(roots));
+}
+
 bool History::Begin(const std::filesystem::path &dir, std::vector<std::byte> actions) {
     assert(Dir.empty() || Dir != dir);
     if (!CheckIO(*this, Flush(*this))) return false;
@@ -790,6 +931,7 @@ bool History::Close() {
     LeafLog.Idx.clear();
     NodeLog.Idx.clear();
     LeafLog.Size = NodeLog.Size = 0;
+    Kept.clear();
     return saved;
 }
 
@@ -874,6 +1016,7 @@ void History::Revert() {
 }
 
 bool History::Save() {
+    if (Callbacks.BeforeSave) Callbacks.BeforeSave();
     if (Present) AppendTreeRecord(*this, RecordKind::Navigate, Present, {});
     return CheckIO(*this, Flush(*this));
 }
@@ -1061,6 +1204,65 @@ bool History::Open(const std::filesystem::path &dir, const HistoryPosition *posi
     if (!adopted) return false;
     if (!pages) std::filesystem::remove(dir / ActionsLogName, ec);
     return true;
+}
+
+Hash128 StateHash(std::span<const Stamp> stamps) { return HashBytes(std::as_bytes(stamps)); }
+
+StateReader::StateReader(History &history) : Hist(history) {
+    if (Hist.Dir.empty() || !CheckIO(Hist, Flush(Hist))) return;
+    Leaves.open(Hist.Dir / Hist.LeafLog.Name, std::ios::binary);
+    Nodes.open(Hist.Dir / Hist.NodeLog.Name, std::ios::binary);
+}
+
+std::optional<std::vector<std::byte>> StateReader::Read(size_t track, Hash128 root, uint64_t slot) {
+    const auto &trie = TrieOf(Hist, Hist.Tracks[track]);
+    auto hash = root;
+    for (auto level = trie.Levels; level-- > 0 && hash != Hash128{};) {
+        uint8_t recorded;
+        ManifestChildren children;
+        if (!ReadManifestRecord(Hist, Nodes, hash, recorded, children) || recorded != level) return std::nullopt;
+        hash = children[(slot / SlotSpan(level)) % Fanout];
+    }
+    std::vector<std::byte> bytes;
+    if (hash == Hash128{}) return bytes;
+    const auto it = Hist.LeafLog.Idx.find(hash);
+    if (it == Hist.LeafLog.Idx.end() || !ReadExtent(Leaves, it->second, hash, bytes)) return std::nullopt;
+    return bytes;
+}
+
+std::optional<std::vector<uint64_t>> StateReader::DifferingSlots(size_t track, Hash128 root) {
+    std::vector<uint64_t> slots;
+    bool complete = true;
+    With(Hist, Hist.Tracks[track], [&](auto &owner) {
+        owner.Settle();
+        auto &trie = owner.Trie;
+        const auto length = owner.Length();
+        const auto live_root = trie.ManifestRoot(length);
+        const auto live_slot = [&](uint64_t slot) {
+            return slot < trie.SlotsFor(length) && slot < trie.SlotHashes.size() && trie.SlotHashes[slot].State == LiveTrie::SlotState::Value ? trie.SlotHashes[slot].H : Hash128{};
+        };
+        const auto diff = [&](this auto &&self, Hash128 live, Hash128 stored, uint32_t level, uint64_t index) -> bool {
+            if (live == stored) return true;
+            const auto before = trie.ChildrenAt(level, index, length);
+            ManifestChildren after{};
+            if (stored != Hash128{}) {
+                uint8_t recorded;
+                if (!ReadManifestRecord(Hist, Nodes, stored, recorded, after) || recorded != level) return false;
+            }
+            for (uint64_t digit = 0; digit < Fanout; ++digit) {
+                const auto child = index * Fanout + digit;
+                if (level) {
+                    if (!self(before[digit], after[digit], level - 1, child)) return false;
+                } else if (live_slot(child) != after[digit]) {
+                    slots.push_back(child);
+                }
+            }
+            return true;
+        };
+        complete = diff(live_root, root, trie.Levels - 1, 0);
+    });
+    if (!complete) return std::nullopt;
+    return slots;
 }
 
 std::expected<std::vector<uint32_t>, std::string> History::WriteActions(const std::filesystem::path &path) const {

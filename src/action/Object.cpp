@@ -45,9 +45,16 @@ state::Entity CreateArmatureObject(state::Registry &r, MeshStore &meshes, state:
     return entity;
 }
 
-// A mesh instance's duplicate takes `clone`, its mesh's cloned store record.
-// The first duplicate of a clone creates its mesh entity, and the duplicates after it instance that mesh.
-state::Entity DuplicateOne(state::Registry &r, state::Entity e, uint32_t clone) {
+// A duplicated mesh entity, the index of its drawn record's clone, and its copy once the first duplicate creates it.
+struct MeshCopy {
+    state::Entity Mesh;
+    uint32_t Clone;
+    state::Entity Copy{state::Null};
+};
+
+// A mesh instance's duplicate is an instance of its mesh's copy, which the first duplicate creates from the mesh's cloned record.
+// A procedure mesh's copy holds a copy of its procedure and draws the clone, and an owned mesh's copy is a mesh whose Source node holds the clone.
+state::Entity DuplicateOne(state::Registry &r, state::Entity e, MeshCopy *copy, std::span<const uint32_t> clones) {
     auto &meshes = r.Resources.get<MeshStore>();
     const ObjectCreateInfo create_info{
         .Name = std::format("{}_copy", GetName(r, e)),
@@ -78,14 +85,11 @@ state::Entity DuplicateOne(state::Registry &r, state::Entity e, uint32_t clone) 
     }
 
     const MeshInstanceCreateInfo info{.Name = create_info.Name, .Transform = create_info.Transform, .Select = create_info.Select, .Visible = !r.all_of<Hidden>(e)};
-    const auto instance = [&] {
-        if (const auto clone_mesh = MeshEntityOf(r, clone); clone_mesh != state::Null) return ::AddMeshInstance(r, clone_mesh, info);
-        const auto [clone_mesh, clone_instance] = ::AddMesh(r, clone, info);
-        const auto mesh_entity = r.get<const Instance>(e).Entity;
-        if (const auto *prim_shape = r.try_get<const PrimitiveShape>(mesh_entity)) r.emplace<PrimitiveShape>(clone_mesh, *prim_shape);
-        if (r.all_of<procedure::GeometryProcedure>(mesh_entity)) action::nodes::CopyProcedure(r, mesh_entity, clone_mesh);
-        return clone_instance;
-    }();
+    if (copy->Copy == state::Null) {
+        const auto clone = clones[copy->Clone];
+        copy->Copy = HasMesh(r, copy->Mesh) ? action::nodes::CopyProcedure(r, copy->Mesh, clone) : ::AddMeshData(r, clone);
+    }
+    const auto instance = ::AddMeshInstance(r, copy->Copy, info);
     if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) r.emplace<ArmatureModifier>(instance, *armature_modifier);
     if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) r.emplace<BoneAttachment>(instance, *bone_attachment);
     if (const auto *weights = r.try_get<const MorphWeightRange>(e)) r.emplace<MorphWeightRange>(instance, r.Resources.get<GpuBuffers>().MorphWeightBuffer.Clone(weights->Weights));
@@ -121,33 +125,6 @@ state::Entity DuplicateLinkedOne(state::Registry &r, state::Entity e) {
 }
 } // namespace
 
-namespace action {
-bool UpdateTraits<PrimitiveShape>::Has(const state::Registry &r, state::Entity e) { return r.all_of<PrimitiveShape>(e); }
-state::Entity UpdateTraits<PrimitiveShape>::Active(const state::Registry &r) {
-    const auto e = GetActiveMeshEntity(r);
-    return e != state::Null && Has(r, e) ? e : state::Null;
-}
-// Only meshes of the active primitive's kind share its fields.
-void UpdateTraits<PrimitiveShape>::ForEachSelected(state::Registry &r, const std::function<void(state::Entity)> &fn) {
-    const auto active = Active(r);
-    if (active == state::Null) return;
-    const auto kind = r.get<const PrimitiveShape>(active).index();
-    for (const auto e : r.get<const SelectionFlags>(state::Document).Meshes) {
-        if (Has(r, e) && r.get<const PrimitiveShape>(e).index() == kind) fn(e);
-    }
-}
-void UpdateTraits<PrimitiveShape>::Read(const state::Registry &r, state::Entity e, uint16_t offset, void *dst, size_t size) {
-    std::visit([&](const auto &alt) { std::memcpy(dst, reinterpret_cast<const std::byte *>(&alt) + offset, size); }, r.get<const PrimitiveShape>(e));
-}
-void UpdateTraits<PrimitiveShape>::Write(state::Registry &r, state::Entity e, uint16_t offset, const void *src, size_t size) {
-    if (::selection::HasScaleLockedInstance(r, e)) return;
-    r.patch<PrimitiveShape>(e, [&](PrimitiveShape &s) { std::visit([&](auto &alt) { std::memcpy(reinterpret_cast<std::byte *>(&alt) + offset, src, size); }, s); });
-}
-const FieldSpec &UpdateTraits<PrimitiveShape>::Bounds(const state::Registry &r, state::Entity e, uint16_t offset) {
-    return std::visit([&](const auto &alt) -> const FieldSpec & { return FieldAt<std::remove_cvref_t<decltype(alt)>>(offset).Spec; }, r.get<const PrimitiveShape>(e));
-}
-} // namespace action
-
 namespace action::object {
 void Apply(state::Registry &r, const Action &action) {
     auto &meshes = r.Resources.get<MeshStore>();
@@ -156,21 +133,24 @@ void Apply(state::Registry &r, const Action &action) {
         if (!(linked ? CanDuplicateLinked(r) : CanDuplicate(r))) return;
         const profile::CpuScope scope{linked ? "DuplicateLinked" : "Duplicate"};
         const auto entities = SelectedIn(r);
-        // Every duplicated mesh clones once in one batch, with its arenas reserved once, and instances sharing a mesh share its clone.
-        std::vector<uint32_t> sources, source_of(entities.size(), InvalidOffset);
+        // Every duplicated mesh's drawn record clones once in one batch, with its arenas reserved once, and instances sharing a mesh share its copy.
+        std::vector<uint32_t> sources, copy_of(entities.size(), InvalidOffset);
+        std::vector<MeshCopy> copies_of;
         if (!linked) {
-            std::unordered_map<state::Entity, uint32_t> mesh_sources;
+            std::unordered_map<state::Entity, uint32_t> mesh_copies;
             for (uint32_t i = 0u; i < entities.size(); ++i) {
                 const auto e = entities[i];
                 if (!r.all_of<Instance>(e) || r.all_of<BoneSubPartOf>(e)) continue;
                 const auto mesh_entity = r.get<Instance>(e).Entity;
-                if (r.all_of<ObjectExtrasTag>(mesh_entity) || !HasMesh(r, mesh_entity)) continue;
-                const auto [source, added] = mesh_sources.try_emplace(mesh_entity, uint32_t(sources.size()));
+                if (r.all_of<ObjectExtrasTag>(mesh_entity) || !DrawsMesh(r, mesh_entity)) continue;
+                const auto [copy, added] = mesh_copies.try_emplace(mesh_entity, uint32_t(copies_of.size()));
                 if (added) {
-                    meshes.PlanClone(GetMesh(r, mesh_entity));
-                    sources.push_back(r.get<const MeshHandle>(mesh_entity).StoreId);
+                    const auto id = *DrawnStoreId(r, mesh_entity);
+                    copies_of.push_back({mesh_entity, uint32_t(sources.size())});
+                    meshes.PlanClone(Mesh{meshes, id});
+                    sources.push_back(id);
                 }
-                source_of[i] = source->second;
+                copy_of[i] = copy->second;
             }
             meshes.CommitReserves();
         }
@@ -179,7 +159,7 @@ void Apply(state::Registry &r, const Action &action) {
         const auto clones = meshes.CloneMeshes(copies, sources, true);
         for (uint32_t i = 0u; i < entities.size(); ++i) {
             const auto src = entities[i];
-            const auto dup = linked ? DuplicateLinkedOne(r, src) : DuplicateOne(r, src, source_of[i] == InvalidOffset ? InvalidOffset : clones[source_of[i]]);
+            const auto dup = linked ? DuplicateLinkedOne(r, src) : DuplicateOne(r, src, copy_of[i] == InvalidOffset ? nullptr : &copies_of[copy_of[i]], clones);
             if (r.all_of<Active>(src)) {
                 r.remove<Active>(src);
                 r.emplace<Active>(dup);
@@ -223,19 +203,13 @@ void Apply(state::Registry &r, const Action &action) {
         }
         return result;
     };
-    // Append a node with the parameters to each procedure mesh and return the other meshes, which edit in place.
-    const auto append_to_procedures = [&]<typename N>(std::span<const state::Entity> mesh_entities, const N &parameters) {
-        std::vector<state::Entity> targets;
+    // Append a node with the parameters to each mesh.
+    const auto append = [&]<typename N>(std::span<const state::Entity> mesh_entities, const N &parameters) {
         for (const auto e : mesh_entities) {
-            if (!r.all_of<procedure::GeometryProcedure>(e)) {
-                targets.push_back(e);
-                continue;
-            }
             const auto node = nodes::AppendNode(r, e, procedure::KindOf<N>);
             if (node == state::Null) break;
             r.replace<N>(node, parameters);
         }
-        return targets;
     };
     std::visit(
         overloaded{
@@ -258,21 +232,9 @@ void Apply(state::Registry &r, const Action &action) {
                     else Hide(r, e);
                 }
             },
-            [&](const SetSelectedSmoothShading &a) {
-                const auto targets = append_to_procedures(r.get<const SelectionFlags>(state::Document).Meshes, procedure::ShadeSmooth{a.Smooth});
-                ApplyEditSharpness(r, targets, a.Smooth ? EditSharpnessOperation::SmoothAll : EditSharpnessOperation::SetAllFaces, !a.Smooth);
-            },
-            [&](const ShadeSelectedSmoothByAngle &a) {
-                const auto targets = append_to_procedures(r.get<const SelectionFlags>(state::Document).Meshes, procedure::ShadeSmoothByAngle{a.Angle});
-                ApplyEditSharpness(r, targets, EditSharpnessOperation::SmoothByAngle, false, a.Angle);
-            },
-            [&](const SetSelectedSharp &a) {
-                const auto targets = append_to_procedures(edit_selection_meshes(a.Element), procedure::MarkSharp{a.Sharp});
-                const auto operation = a.Element == Element::Face ? EditSharpnessOperation::SetSelectedFaces :
-                    a.Element == Element::Edge                    ? EditSharpnessOperation::SetSelectedEdges :
-                                                                    EditSharpnessOperation::SetVertexEdges;
-                ApplyEditSharpness(r, targets, operation, a.Sharp);
-            },
+            [&](const SetSelectedSmoothShading &a) { append(r.get<const SelectionFlags>(state::Document).Meshes, procedure::ShadeSmooth{a.Smooth}); },
+            [&](const ShadeSelectedSmoothByAngle &a) { append(r.get<const SelectionFlags>(state::Document).Meshes, procedure::ShadeSmoothByAngle{a.Angle}); },
+            [&](const SetSelectedSharp &a) { append(edit_selection_meshes(a.Element), procedure::MarkSharp{a.Sharp}); },
             [&](ParentToActive) {
                 const auto active = FindActiveEntity(r);
                 if (active == state::Null) return;
@@ -289,9 +251,18 @@ void Apply(state::Registry &r, const Action &action) {
             [&](const AddCamera &a) { ::AddCamera(r, meshes, *a.Info, a.Props); begin_translate(); },
             [&](const AddLight &a) { ::AddLight(r, meshes, *a.Info); begin_translate(); },
             [&](const AddMeshPrimitive &a) {
-                const auto created = CreateMesh(r, {.Data = primitive::CreateMesh(a.Shape), .FlatShaded = true});
-                const auto [mesh_entity, _] = ::AddMesh(r, created.StoreId, *a.Info);
-                r.emplace<PrimitiveShape>(mesh_entity, a.Shape);
+                std::visit(
+                    [&]<typename K>(const K &parameters) {
+                        const auto node = CreateProcedureNode(r, procedure::KindOf<K>, {0u, 0u});
+                        r.replace<K>(node, parameters);
+                        const auto mesh_entity = r.create();
+                        r.emplace<procedure::GeometryProcedure>(mesh_entity, RootedProcedure(r, node, procedure::KindOf<K>));
+                        auto info = *a.Info;
+                        info.Name = procedure::Title<K>.c_str();
+                        ::AddMeshInstance(r, mesh_entity, info);
+                    },
+                    a.Parameters
+                );
                 begin_translate();
             },
             [&](const ImportMesh &a) { RequestImportMesh(r, a.Path, *a.Info); },

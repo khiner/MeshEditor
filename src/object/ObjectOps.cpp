@@ -66,7 +66,7 @@ void Destroy(state::Registry &r, std::span<const state::Entity> entities) {
     for (const auto e : entities) {
         if (!r.valid(e)) continue;
         if (const auto *instance = r.try_get<Instance>(e)) {
-            if (HasMesh(r, instance->Entity) || r.all_of<ObjectExtrasTag>(instance->Entity)) pending.Buffers.emplace(instance->Entity);
+            if (HasMesh(r, instance->Entity) || DrawsMesh(r, instance->Entity) || r.all_of<ObjectExtrasTag>(instance->Entity)) pending.Buffers.emplace(instance->Entity);
         }
         const auto try_add_armature_data = [&](state::Entity data_entity) {
             if (r.valid(data_entity)) pending.Armatures.emplace(data_entity);

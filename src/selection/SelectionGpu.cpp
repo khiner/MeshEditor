@@ -20,7 +20,6 @@
 #include "metal/Dispatch.h"
 #include "metal/PassChain.h"
 #include "metal/RenderTarget.h"
-#include "procedure/Procedure.h"
 #include "render/Encoding.h"
 #include "render/GpuSceneState.h"
 #include "render/Instance.h"
@@ -745,42 +744,8 @@ GeometrySelection EditorGeometrySelection(const MeshStore &meshes, uint32_t id) 
     return selection;
 }
 
-void ApplyEditSharpness(state::Registry &r, std::span<const state::Entity> mesh_entities, EditSharpnessOperation operation, bool value, float angle) {
-    auto &meshes = r.Resources.get<MeshStore>();
-    std::vector<state::Entity> entities;
-    std::vector<SharpnessOperationTarget> targets;
-    for (const auto entity : mesh_entities) {
-        const auto *owner = HasMesh(r, entity) ? TryRecordOf(r, entity) : nullptr;
-        if (!owner || !owner->RenderTopologies || !GetMesh(r, entity).FaceCount()) continue;
-        const auto id = GetMesh(r, entity).GetStoreId();
-        targets.push_back({id, EditorGeometrySelection(meshes, id)});
-        entities.push_back(entity);
-    }
-    mtl::ComputeChain chain{meshes.BufferContext()};
-    const auto changes = ExecuteGeometrySharpness(r, chain, targets, operation, value, angle);
-    if (changes.empty()) return;
-    r.Resources.get<GpuSceneState>().EditSelectionDirty = true;
-    std::vector<uint32_t> summaries;
-    std::vector<std::pair<state::Entity, FaceTriangles>> repairs;
-    for (const auto &change : changes) {
-        const auto id = targets[change.TargetIndex].StoreId;
-        const auto entity = entities[change.TargetIndex];
-        if (meshes.Get(id).SelectionSummary.Count) summaries.push_back(id);
-        const auto *owner = TryRecordOf(r, entity);
-        // A procedure mesh's drawn record takes the source's shading when the geometry change cooks it.
-        if (owner && owner->PrimitiveData && !r.all_of<procedure::GeometryProcedure>(entity)) repairs.emplace_back(entity, change.Triangles);
-        else r.emplace_or_replace<MeshGeometryDirty>(entity, EditSelectionAfter::Keep, false);
-    }
-    chain.AfterSubmit([&meshes, summaries = std::move(summaries)] {
-        for (const auto id : summaries) meshes.PublishSelectionSummary(id);
-    });
-    RepairFaceRender(r, chain, repairs);
-    chain.Submit();
-    RequestRender(r);
-}
-
 const EditSelectionSummary *GetElementSelectionSummary(const state::Registry &r, state::Entity mesh_entity, Element element) {
-    if (element == Element::None || !r.all_of<MeshElementSelection, MeshHandle>(mesh_entity)) return nullptr;
+    if (element == Element::None || !r.all_of<MeshElementSelection, EvaluatedMesh>(mesh_entity)) return nullptr;
     const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &summary = meshes.GetSelectionSummary(*DrawnStoreId(r, mesh_entity));
     return summary.Mode == element ? &summary : nullptr;

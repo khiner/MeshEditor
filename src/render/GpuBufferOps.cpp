@@ -109,6 +109,7 @@ void Reset(GpuBuffers &b, state::Registry &) {
     b.MeshletLodDepth = 0;
     b.MeshletFlagWorkByBit = {};
     b.FlagTallies.clear();
+    b.TalliedStores.clear();
     b.TopologyMeshes = {};
     b.SharpEditMeshes = 0;
     b.OverlayJobs.UsedSize = 0;

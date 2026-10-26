@@ -31,8 +31,8 @@ bool SetInteractionMode(state::Registry &r, InteractionMode mode) {
     const auto edit_ranges = [&](Element element) {
         std::vector<ElementRange> ranges;
         if (element == Element::None) return ranges;
-        for (const auto mesh_entity : r.view<const MeshElementSelection, const MeshHandle>()) {
-            const auto mesh = GetDrawnMesh(r, mesh_entity);
+        for (const auto mesh_entity : r.view<const MeshElementSelection, const EvaluatedMesh>()) {
+            const auto mesh = GetMesh(r, mesh_entity);
             const auto count = mesh.ElementCount(element);
             if (count > 0) ranges.emplace_back(mesh_entity, count);
         }
@@ -69,11 +69,11 @@ bool SetInteractionMode(state::Registry &r, InteractionMode mode) {
                     if (meshes.Get(id).SelectionSummary.Count && meshes.GetSelectionSummary(id).Mode != edit_element) converting.push_back(mesh_entity);
                     continue;
                 }
-                if (GetDrawnMesh(r, mesh_entity).ElementCount(edit_element) == 0) continue;
+                if (GetMesh(r, mesh_entity).ElementCount(edit_element) == 0) continue;
                 taking.push_back(mesh_entity);
             }
             for (const auto mesh_entity : taking) {
-                const auto mesh = GetDrawnMesh(r, mesh_entity);
+                const auto mesh = GetMesh(r, mesh_entity);
                 r.emplace<MeshElementSelection>(mesh_entity);
                 initialize_selection.emplace_back(
                     mesh_entity, mesh.ElementCount(edit_element)

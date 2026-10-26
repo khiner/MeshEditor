@@ -33,11 +33,6 @@ kernel void PosePrepassKernel(
         float3 morph_normal_delta = float3(0);
         ApplyMorphDeform(scene, draw, pos, morph_normal_delta, i);
         pos = ApplyArmatureDeform(scene, draw, pos, i, normal);
-        if (view.IsTransforming != 0u && draw.HasPendingVertexTransform != 0u &&
-            EditSelectionBit(scene, draw.Selection.VertexBits, vertex_id)) {
-            const Transform primary = scene.Models(draw.ModelSlot)[draw.PrimaryEditInstanceIndex];
-            pos = trs_inverse_transform_point(primary, apply_pending_transform_world(scene, trs_transform_point(primary, pos)));
-        }
         if (draw.PositionNamespace != InvalidOffset) {
             const uint at=PoseAttributeIndex(bindless,view.PosedPositionNodesSlot,draw.PositionNamespace,vertex_id);
             BindlessBufferMutable(packed_float3,bindless.Buffer,view.PosedPositionSlot)[at]=packed_float3(pos);

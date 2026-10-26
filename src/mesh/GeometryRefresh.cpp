@@ -8,7 +8,7 @@
 #include "render/ElementWorkOps.h"
 #include "state/Registry.h"
 
-std::vector<FaceTriangles> RetessellateMeshes(state::Registry &r, mtl::ComputeChain &chain, std::span<const MeshRetessellation> inputs) {
+std::vector<ElementWork> EncodeRetessellation(state::Registry &r, mtl::ComputeChain &chain, std::span<const MeshRetessellation> inputs) {
     const auto &meshes = r.Resources.get<MeshStore>();
     const auto &a = meshes.Arenas();
     struct Job {
@@ -23,7 +23,7 @@ std::vector<FaceTriangles> RetessellateMeshes(state::Registry &r, mtl::ComputeCh
     for (uint32_t i = 0u; i < inputs.size(); ++i) {
         const auto &input = inputs[i];
         const auto &record = meshes.Get(input.StoreId);
-        const auto tangents = a.CornerTangents.Ref(input.Preview ? Range{} : record.CornerTangents);
+        const auto tangents = a.CornerTangents.Ref(record.CornerTangents);
         Job job{.Index = i, .Pc = input.Parameters};
         const auto face_table = a.FaceTriangles.Entries(record.FaceData);
         job.Pc.Tables = meshes.GetElementTables(input.StoreId);
@@ -56,7 +56,7 @@ std::vector<FaceTriangles> RetessellateMeshes(state::Registry &r, mtl::ComputeCh
         words += 4ull * job.Corners + 2ull * job.Faces.size() + ElementWorkWords(bound, job.TriangleBlocks) + SortElementWorkWords(WorkCapacity(bound, job.TriangleBlocks));
         jobs.push_back(std::move(job));
     }
-    std::vector<FaceTriangles> results(inputs.size());
+    std::vector<ElementWork> results(inputs.size());
     if (jobs.empty()) return results;
     const profile::CpuScope scope{"RetessellateGeometry"};
     chain.Scratch.ReserveAdditional(words);
@@ -67,23 +67,15 @@ std::vector<FaceTriangles> RetessellateMeshes(state::Registry &r, mtl::ComputeCh
         job.Pc.Scratch = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(4u * job.Corners).Offset};
         job.Pc.ChangedTriangles = AllocateElementWork(chain.Scratch, a.Triangles.HandleBound(meshes.Get(inputs[job.Index].StoreId).TriangleData), job.TriangleBlocks);
         changed.push_back(job.Pc.ChangedTriangles);
+        results[job.Index] = job.Pc.ChangedTriangles;
         faces += job.Pc.Count;
         corners += job.Corners;
     }
     const auto &pipeline = GetMeshPipelines(r)[MeshPass::RetessellateFaces];
     chain.Concurrent([&] { for (const auto &job:jobs) chain.Threads(pipeline,job.Pc,job.Pc.Count); });
     EncodeSortElementWork(r, chain, changed);
-    chain.Submit();
-    uint64_t triangles = 0u;
-    for (const auto &job : jobs) {
-        auto &result = results[job.Index];
-        result.Triangles = job.Pc.ChangedTriangles;
-        result.Count = ElementWorkCount(chain.Scratch, result.Triangles);
-        triangles += result.Count;
-    }
     profile::RecordCounter("RetessellatedFaces", faces);
     profile::RecordCounter("RetessellatedCorners", corners);
-    profile::RecordCounter("RetessellatedTriangles", triangles);
     return results;
 }
 
@@ -113,7 +105,7 @@ std::vector<PositionOperationChange> ExecuteGeometryPositions(state::Registry &r
         bounds[i].Blocks[2] = meshes.ArenaBlocks(id, MeshStore::ElementDomain::Face, chain.Scratch, neighborhood.Elements[2]);
         normals.push_back({id, neighborhood.Elements[0], neighborhood.Counts[0], neighborhood.Elements[2], neighborhood.Counts[2]});
     }
-    RetessellateMeshes(r, chain, tessellations);
+    EncodeRetessellation(r, chain, tessellations);
     EncodeDeriveMeshNormals(r, chain, chain.Scratch, normals);
     meshes.UpdateSelection(r, chain, bounds);
     chain.Submit();

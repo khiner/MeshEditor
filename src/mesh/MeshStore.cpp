@@ -8,6 +8,7 @@
 #include "Profile.h"
 #include "SortUnique.h"
 #include "project/store/Pages.h"
+#include "project/store/Records.h"
 
 #include <map>
 
@@ -432,8 +433,6 @@ struct MeshStore::HistoryState {
     std::vector<DomainStream> Streams;
     std::vector<AttributeStream> AttributeStreams;
     std::vector<IndexedRecord> Indexed;
-    // Each element layer's byte extents written since the last TakeWrites, which Ranges maps to their records.
-    std::unordered_map<mtl::Buffer *, std::vector<std::pair<uint64_t, uint64_t>>> LayerWrites;
     // Records whose ranges or sets changed since the last index, and whether every record did.
     std::vector<uint32_t> Dirty;
     bool AllDirty{true};
@@ -508,87 +507,13 @@ MeshStore::MeshStore(mtl::BufferContext &ctx)
           .BaseVertexNormal = Buffers.BaseVertexNormals.Buffer.Slot,
           .BaseFaceNormal = Buffers.BaseFaceNormals.Buffer.Slot,
       },
-      BlockLists{ctx, SlotType::Buffer} {
-    // Element value arenas, their mirrors and their membership log their writes, and selection state derives from the blocks they name.
-    ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&) {
-        if (info.Bits == SelectionChanged || !info.Tracked() || info.RenderRange || info.Elements == Domain::None) return;
-        const auto stride = uint32_t(sizeof(ArenaValue<std::remove_cvref_t<decltype(arena)>>));
-        WriteLogs.push_back({&arena.Buffer, info.Elements, info.BlockIndexed ? WriteIndex::Blocks : WriteIndex::Elements, stride});
-        if constexpr (requires { arena.Blocks; }) WriteLogs.push_back({&arena.Blocks.Buffer, info.Elements, WriteIndex::Blocks, uint32_t(sizeof(MeshElementBlock))});
-    });
-    for (auto &log : WriteLogs) log.Buffer->Writes = &log.Extents;
-}
-MeshStore::~MeshStore() = default;
-
-MeshStore::Writes MeshStore::TakeWrites() {
-    Writes writes;
-    for (auto &log : WriteLogs) {
-        auto &blocks = writes.Blocks[uint32_t(log.Domain)];
-        for (const auto [begin, end] : log.Extents) {
-            const auto first = begin / log.Stride, last = (end + log.Stride - 1u) / log.Stride;
-            if (log.Index == WriteIndex::Elements) {
-                for (auto block = first / MeshElementBlockSize; block <= (last - 1u) / MeshElementBlockSize; ++block) blocks.push_back(uint32_t(block));
-            } else {
-                for (auto block = first; block < last; ++block) blocks.push_back(uint32_t(block));
-            }
-        }
-        log.Extents.clear();
-    }
-    // A tracked store logs its layers' writes, and each written block names a local block of the record whose range contains it.
-    // Use the history index for unchanged records and current ranges for changed records.
-    if (Tracked) {
-        auto &dirty = Tracked->Dirty;
-        SortUnique(dirty);
-        const bool indexed = !Tracked->AllDirty;
-        ForEachLayer(Buffers, [&](auto &layer, const LayerInfo &info, auto &&entries, auto &&range) {
-            if (info.Render) return;
-            auto &log = Tracked->LayerWrites.at(&layer.Values.Buffer);
-            if (log.empty()) return;
-            constexpr auto Stride = sizeof(typename std::remove_cvref_t<decltype(layer)>::Block);
-            // Disjoint unindexed ranges in offset order.
-            std::vector<std::pair<Range, uint32_t>> held;
-            const auto hold = [&](uint32_t id) {
-                if (id < Records.size() && Records[id].Alive && range(Records[id])->Count) held.emplace_back(*range(Records[id]), id);
-            };
-            if (indexed) {
-                for (const auto id : dirty) hold(id);
-            } else {
-                for (uint32_t id = 0u; id < Records.size(); ++id) hold(id);
-            }
-            std::ranges::sort(held, {}, [](const auto &entry) { return entry.first.Offset; });
-            auto &blocks = writes.Blocks[uint32_t(info.Elements)];
-            const auto &ranges = Tracked->Ranges.at(&layer.Values.Buffer);
-            for (const auto [begin, end] : log) {
-                const uint64_t first = begin / Stride, last = (end + Stride - 1u) / Stride;
-                const auto take = [&](uint32_t id, uint64_t values_first, uint64_t values_end) {
-                    const auto &record = Records[id];
-                    const auto table = WithDomain(Buffers, info.Elements, [&](const auto &arena) { return arena.Entries(DomainSet(record, info.Elements)); });
-                    const auto per = std::max(entries(record), 1u);
-                    for (auto block = std::max(first, values_first); block < std::min(last, values_end); ++block) {
-                        if (const auto local = (block - values_first) / per; local < table.size() && table[local] != InvalidOffset) blocks.push_back(table[local]);
-                    }
-                };
-                if (indexed) {
-                    auto it = ranges.upper_bound(begin);
-                    if (it != ranges.begin() && std::prev(it)->second.End > begin) --it;
-                    for (; it != ranges.end() && it->first < end; ++it) {
-                        if (!std::ranges::binary_search(dirty, it->second.Id)) take(it->second.Id, it->first / Stride, it->second.End / Stride);
-                    }
-                }
-                for (auto it = std::ranges::lower_bound(held, first, {}, [](const auto &entry) { return uint64_t(entry.first.Offset) + entry.first.Count - 1u; }); it != held.end() && it->first.Offset < last; ++it) {
-                    take(it->second, it->first.Offset, uint64_t(it->first.Offset) + it->first.Count);
-                }
-            }
-            log.clear();
-        });
-    }
-    for (auto &blocks : writes.Blocks) SortUnique(blocks);
-    writes.Attributes = std::exchange(WrittenAttributes, {});
-    SortUnique(writes.Attributes);
-    return writes;
+      BlockLists{ctx, SlotType::Buffer} {}
+MeshStore::~MeshStore() {
+    for (auto &[state, version] : KeptStates) Release(version);
 }
 
 void MeshStore::Track(store::History &history) {
+    const auto first = history.Tracks.size();
     Buffers.VertexFans.Track(history, "mesh.vertexFans");
     Buffers.VertexFans.Items.Buffer.History()->Trie.CollectChanged = false;
     ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&) {
@@ -605,9 +530,6 @@ void MeshStore::Track(store::History &history) {
         }
     });
     Tracked = std::make_unique<HistoryState>(*this, history);
-    ForEachLayer(Buffers, [&](auto &layer, const LayerInfo &info, auto &&, auto &&) {
-        if (!info.Render) layer.Values.Buffer.Writes = &Tracked->LayerWrites[&layer.Values.Buffer];
-    });
     ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&) {
         if (!info.Tracked()) return;
         if (info.Named) Tracked->AttributeStreams.push_back({&arena.Buffer, uint32_t(sizeof(ArenaValue<std::remove_cvref_t<decltype(arena)>>)), *info.Named});
@@ -620,6 +542,724 @@ void MeshStore::Track(store::History &history) {
             Tracked->Streams.push_back({&arena.Sets.Buffer, info.Elements, sizeof(MeshElementSet), TopologyChanged, HistoryState::StreamKind::Sets});
         }
     });
+    Hist = &history;
+    for (auto i = first; i < history.Tracks.size(); ++i) {
+        const auto &track = history.Tracks[i];
+        TrackOwner owner{};
+        if (track.K == store::History::Kind::Pages) owner.Pages = history.PageTracks[track.Index];
+        else if (track.K == store::History::Kind::Records) owner.Records = history.RecordTracks[track.Index];
+        else continue;
+        OwnerOf.emplace(owner.Pages ? static_cast<const void *>(owner.Pages) : static_cast<const void *>(owner.Records), Owners.size());
+        TrackIndices.push_back(i);
+        Owners.push_back(owner);
+    }
+}
+
+namespace {
+void WithOwner(auto &owner, auto &&fn) {
+    if (owner.Pages) fn(*owner.Pages);
+    else fn(*owner.Records);
+}
+// A slot's encoded value in a pinned version, or empty for an absent or default slot.
+std::vector<std::byte> PinnedSlot(auto &owner, const store::Version &v, uint64_t slot) {
+    const auto &trie = owner.Trie;
+    if (!v.Root || slot >= trie.SlotsFor(v.S.Length)) return {};
+    const store::Node *n = v.Root;
+    for (auto level = trie.Levels; n->Kind == store::NodeKind::Interior; --level) n = n->Children[(slot / store::SlotSpan(level - 1)) % store::Fanout];
+    if (n->Kind == store::NodeKind::Owned) {
+        const auto bytes = owner.Encode(n->Value);
+        return {bytes.begin(), bytes.end()};
+    }
+    if (n->Kind == store::NodeKind::Absent || !owner.Present(slot)) return {};
+    const auto bytes = owner.Read(slot);
+    return {bytes.begin(), bytes.end()};
+}
+// The record at `index` of a page of serialized records, or none when the page lacks it.
+template<typename T> std::optional<T> PageRecord(std::span<const std::byte> page, uint32_t index) {
+    if (page.empty()) return std::nullopt;
+    const auto mask = store::RecordMask(page);
+    if (!(mask >> index & 1u)) return std::nullopt;
+    for (auto bits = mask;; bits &= bits - 1u) {
+        const auto value = store::TakeRecord(page);
+        if (uint32_t(std::countr_zero(bits)) != index) continue;
+        T record{};
+        zpp::bits::in{value}(record).or_throw();
+        return record;
+    }
+}
+} // namespace
+
+void MeshStore::Release(Version &version) {
+    for (size_t k = 0; k < version.Tracks.size(); ++k) WithOwner(Owners[k], [&](auto &track) { track.Trie.Release(version.Tracks[k]); });
+    version.Tracks.clear();
+}
+
+store::Hash128 MeshStore::StateHash() {
+    std::vector<store::Stamp> stamps;
+    stamps.reserve(Owners.size());
+    for (auto &owner : Owners) {
+        WithOwner(owner, [&](auto &track) {
+            track.Settle();
+            stamps.push_back(track.Trie.CurrentStamp(track.Length()));
+        });
+    }
+    return store::StateHash(stamps);
+}
+
+store::Hash128 MeshStore::KeepState() {
+    const auto state = StateHash();
+    if (KeptStates.contains(state)) return state;
+    Version version;
+    version.Tracks.reserve(Owners.size());
+    for (auto &owner : Owners) WithOwner(owner, [&](auto &track) { version.Tracks.push_back(track.Trie.Pin(track.Length())); });
+    KeptStates.emplace(state, std::move(version));
+    KeptOrder.push_back(state);
+    return state;
+}
+
+bool MeshStore::RestoreKeptState(store::Hash128 state) {
+    const auto kept = KeptStates.find(state);
+    if (kept == KeptStates.end()) return false;
+    const profile::CpuScope scope{"MeshStoreRestore"};
+    for (auto &owner : Owners) WithOwner(owner, [](auto &track) { track.Trie.ExternalWritesForbidden = true; });
+    for (size_t k = 0; k < Owners.size(); ++k) WithOwner(Owners[k], [&](auto &track) { (void)track.Restore(kept->second.Tracks[k]); });
+    for (auto &owner : Owners) WithOwner(owner, [](auto &track) { track.Trie.ExternalWritesForbidden = false; });
+    FinishRestore();
+    return true;
+}
+
+void MeshStore::RecordKeptStates(std::span<const store::Hash128> states) {
+    if (!Hist) return;
+    for (const auto state : states) {
+        if (const auto kept = KeptStates.find(state); kept != KeptStates.end()) Hist->Keep(state, TrackIndices, kept->second.Tracks);
+        else Hist->Keep(state, TrackIndices);
+    }
+}
+void MeshStore::EndStepStates(std::span<const store::Hash128> states) {
+    const auto release = [&](store::Hash128 state, bool record) {
+        const auto kept = KeptStates.find(state);
+        if (kept == KeptStates.end()) return;
+        if (record && Hist) Hist->Keep(state, TrackIndices, kept->second.Tracks);
+        Release(kept->second);
+        KeptStates.erase(kept);
+        std::erase(KeptOrder, state);
+    };
+    for (const auto state : std::vector(KeptOrder)) {
+        if (!std::ranges::contains(states, state)) release(state, std::ranges::contains(StepStates, state));
+    }
+    // The oldest kept versions beyond the limit record their states and leave, so restores of them read the content logs.
+    while (KeptOrder.size() > MaxKeptStates) release(KeptOrder.front(), true);
+    StepStates.assign(states.begin(), states.end());
+}
+
+namespace {
+// The ascending slots whose content in the pinned version differs from the track's live content, including live slots the version lacks.
+std::vector<uint64_t> DifferingSlots(auto &owner, const store::Version &v) {
+    owner.Settle();
+    const auto &trie = owner.Trie;
+    const auto limit = trie.SlotsFor(v.S.Length), live_limit = trie.SlotsFor(owner.Length());
+    std::vector<uint64_t> slots;
+    const auto live_hash = [&](uint64_t slot) {
+        return slot < live_limit && slot < trie.SlotHashes.size() && trie.SlotHashes[slot].State == store::LiveTrie::SlotState::Value ? trie.SlotHashes[slot].H : store::Hash128{};
+    };
+    const auto walk = [&](this auto &&self, const store::Node *n, uint32_t level, uint64_t base) -> void {
+        const auto end = base + store::SlotSpan(level);
+        if (base >= std::max(limit, live_limit)) return;
+        switch (n->Kind) {
+            case store::NodeKind::Aliased:
+                // Live slots past the version's length are present only live.
+                for (auto slot = std::max(base, limit); slot < std::min(end, live_limit); ++slot) {
+                    if (live_hash(slot) != store::Hash128{}) slots.push_back(slot);
+                }
+                return;
+            case store::NodeKind::Owned:
+                if (base < limit && (n->Default ? store::Hash128{} : n->Hash) != live_hash(base)) slots.push_back(base);
+                return;
+            case store::NodeKind::Absent:
+                for (auto slot = base; slot < std::min(end, live_limit); ++slot) {
+                    if (live_hash(slot) != store::Hash128{}) slots.push_back(slot);
+                }
+                return;
+            case store::NodeKind::Interior:
+                for (uint64_t digit = 0; digit < store::Fanout; ++digit) self(n->Children[digit], level - 1, base + digit * store::SlotSpan(level - 1));
+                return;
+        }
+        std::unreachable();
+    };
+    walk(v.Root, trie.Levels, 0);
+    return slots;
+}
+// Calls fn(first, end) for the byte extent of each ascending differing slot of `page_bytes` that overlaps [first, end).
+void ForEachDifferingExtent(std::span<const uint64_t> slots, uint64_t page_bytes, uint64_t first, uint64_t end, auto &&fn) {
+    for (auto it = std::ranges::lower_bound(slots, first / page_bytes); it != slots.end() && *it * page_bytes < end; ++it) {
+        fn(std::max(first, *it * page_bytes), std::min(end, (*it + 1u) * page_bytes));
+    }
+}
+} // namespace
+
+// The stored bytes of mesh storage in one state, read from the state's kept version or else the history's content logs.
+struct MeshStore::StoredState {
+    MeshStore &Meshes;
+    const Version *Pinned{};
+    std::vector<store::Hash128> Roots{};
+    std::optional<store::StateReader> Reader{};
+    // The stored bytes of each (track, slot) read so far.
+    std::map<std::pair<size_t, uint64_t>, std::vector<std::byte>> Slots{};
+    // The ascending slots of each track whose stored content differs from its live content, read once.
+    std::vector<std::optional<std::vector<uint64_t>>> DifferingByTrack;
+    // Whether a slot read found its records missing.
+    bool Failed{};
+
+    StoredState(MeshStore &meshes, store::Hash128 state) : Meshes(meshes), DifferingByTrack(meshes.Owners.size()) {
+        if (const auto kept = meshes.KeptStates.find(state); kept != meshes.KeptStates.end()) {
+            Pinned = &kept->second;
+            return;
+        }
+        if (!meshes.Hist) return;
+        Roots = meshes.Hist->RootsOf(state, meshes.TrackIndices);
+        if (!Roots.empty()) Reader.emplace(*meshes.Hist);
+    }
+    // Whether a kept version or the content logs hold the state.
+    bool Held() const { return Pinned || (Reader && Reader->Open()); }
+
+    size_t OwnerOf(const mtl::Buffer &buffer) const { return Meshes.OwnerOf.at(buffer.History()); }
+    uint64_t PageBytes(size_t k) const { return Meshes.Owners[k].Pages->PageBytes; }
+    // The stored bytes of track k's slot, empty for an absent or default slot.
+    const std::vector<std::byte> &Slot(size_t k, uint64_t slot) {
+        const auto [it, inserted] = Slots.try_emplace({k, slot});
+        if (!inserted) return it->second;
+        if (Pinned) {
+            WithOwner(Meshes.Owners[k], [&](auto &track) { it->second = PinnedSlot(track, Pinned->Tracks[k], slot); });
+        } else if (auto bytes = Reader->Read(Meshes.TrackIndices[k], Roots[k], slot)) {
+            it->second = std::move(*bytes);
+        } else {
+            Failed = true;
+        }
+        return it->second;
+    }
+    std::span<const uint64_t> Differing(size_t k) {
+        auto &differing = DifferingByTrack[k];
+        if (!differing) {
+            if (Pinned) WithOwner(Meshes.Owners[k], [&](auto &track) { differing = DifferingSlots(track, Pinned->Tracks[k]); });
+            else if (auto slots = Reader->DifferingSlots(Meshes.TrackIndices[k], Roots[k])) differing = std::move(*slots);
+            else {
+                Failed = true;
+                differing.emplace();
+            }
+        }
+        return *differing;
+    }
+    // The stored bytes of a tracked buffer, zero where its pages are absent.
+    void Read(const mtl::Buffer &buffer, uint64_t offset, std::span<std::byte> out) {
+        const auto k = OwnerOf(buffer);
+        const auto page_bytes = PageBytes(k);
+        for (uint64_t at = offset, end = offset + out.size(); at < end;) {
+            const auto page = at / page_bytes, begin = at % page_bytes, take = std::min(page_bytes - begin, end - at);
+            const auto &bytes = Slot(k, page);
+            if (bytes.size() >= begin + take) std::memcpy(out.data() + (at - offset), bytes.data() + begin, take);
+            else std::memset(out.data() + (at - offset), 0, take);
+            at += take;
+        }
+    }
+    template<typename T> T ReadAs(const mtl::Buffer &buffer, uint64_t index) {
+        T value;
+        Read(buffer, index * sizeof(T), std::as_writable_bytes(std::span{&value, 1u}));
+        return value;
+    }
+    // Copies stored bytes into the live buffer, capturing its pages.
+    void Copy(const mtl::Buffer &buffer, uint64_t from, uint64_t to, uint64_t size) {
+        if (size) Read(buffer, from, buffer.GetMutableRange(to, size));
+    }
+};
+
+std::optional<uint32_t> MeshStore::CloneStored(store::Hash128 state, uint32_t source) {
+    const profile::CpuScope scope{"CloneStored"};
+    StoredState reader{*this, state};
+    if (!reader.Held()) return std::nullopt;
+    const auto entries_owner = OwnerOf.at(&Tracked->Entries);
+    const auto stored = PageRecord<Record>(reader.Slot(entries_owner, source / store::RecordsPerPage), source % store::RecordsPerPage);
+    if (reader.Failed || !stored || !stored->Alive) return std::nullopt;
+
+    // Each domain's stored set header and table entries.
+    struct StoredSet {
+        MeshElementSet Header{};
+        std::vector<uint32_t> Entries;
+    };
+    std::array<StoredSet, 6> sets;
+    for (const auto domain : ElementDomains) {
+        WithDomain(Buffers, domain, [&](const auto &arena) {
+            const auto set = DomainSet(*stored, domain);
+            if (!set) return;
+            auto &s = sets[uint32_t(domain)];
+            s.Header = reader.ReadAs<MeshElementSet>(arena.Sets.Buffer, set.Index);
+            s.Entries.resize(s.Header.BlockCount);
+            reader.Read(arena.Table.Buffer, uint64_t(s.Header.First) * sizeof(uint32_t), std::as_writable_bytes(std::span{s.Entries}));
+        });
+    }
+    Record record{*stored};
+    ResetRender(record);
+    record.SelectionSummary = {};
+    const auto id = AcquireId(std::move(record));
+    DerivedRecords[id] = {};
+    DerivedRecords[id].NormalRevision = ++NextNormalRevision;
+    {
+        auto &dst = Records[id];
+        ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&ranges) {
+            const auto *from = ranges(*stored);
+            if (!from || info.Mirror || info.RenderRange || &arena.Buffer == &Buffers.SelectionSummary.Buffer) return;
+            auto *to = ranges(dst); // NOLINT(misc-const-correctness)
+            using Allocation = std::remove_cvref_t<decltype(*from)>;
+            if constexpr (std::same_as<Allocation, ElementSetRef>) {
+                if constexpr (requires { arena.Blocks; }) {
+                    if (!*from) return;
+                    const auto &s = sets[uint32_t(info.Elements)];
+                    *to = arena.CloneMembership(s.Header, s.Entries, [&](uint32_t block) { return reader.ReadAs<MeshElementBlock>(arena.Blocks.Buffer, block); });
+                }
+            } else if constexpr (requires { { arena.Allocate(from->Count) } -> std::same_as<Allocation>; }) {
+                *to = arena.Allocate(from->Count);
+            }
+        });
+    }
+    SyncMirrors();
+    const auto &dst = Records[id];
+    // Pair stored and live blocks at matching local indices.
+    BlockPairs pairs;
+    for (const auto domain : ElementDomains) {
+        WithDomain(Buffers, domain, [&](const auto &arena) {
+            const auto &from = sets[uint32_t(domain)].Entries;
+            const auto to = arena.Entries(DomainSet(dst, domain));
+            for (uint32_t local = 0u; local < std::min<size_t>(from.size(), to.size()); ++local) {
+                if (from[local] != InvalidOffset && to[local] != InvalidOffset) pairs[uint32_t(domain)].push_back({from[local], to[local]});
+            }
+        });
+    }
+    ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&ranges) {
+        if (!info.Tracked()) return;
+        using Allocation = std::remove_cvref_t<decltype(*ranges(*stored))>;
+        constexpr auto Stride = sizeof(ArenaValue<std::remove_cvref_t<decltype(arena)>>);
+        if constexpr (std::same_as<Allocation, ElementSetRef>) {
+            if (&arena.Buffer == &Buffers.VertexCorners.Buffer) return;
+            constexpr auto Bytes = uint64_t(MeshElementBlockSize) * Stride;
+            ForEachPairRun(pairs[uint32_t(info.Elements)], [&](uint32_t from, uint32_t to, uint32_t count) { reader.Copy(arena.Buffer, from * Bytes, to * Bytes, count * Bytes); });
+        } else if constexpr (std::same_as<Allocation, Range>) {
+            if (info.RenderRange || &arena.Buffer == &Buffers.SelectionSummary.Buffer) return;
+            const auto *from = ranges(*stored);
+            if (const auto *to = ranges(dst); from && to->Count) reader.Copy(arena.Buffer, uint64_t(from->Offset) * Stride, uint64_t(to->Offset) * Stride, uint64_t(from->Count) * Stride);
+        }
+    });
+    for (const auto domain : SelectionDomains) {
+        ForEachPairRun(pairs[uint32_t(domain)], [&](uint32_t from, uint32_t to, uint32_t count) {
+            reader.Copy(HiddenArena(Buffers, domain).Buffer, uint64_t(from) * sizeof(SelectionBlock), uint64_t(to) * sizeof(SelectionBlock), uint64_t(count) * sizeof(SelectionBlock));
+        });
+    }
+    // Each copied vertex takes a new fan run holding its stored items.
+    if (const auto &vertices = pairs[uint32_t(Domain::Vertex)]; !vertices.empty()) {
+        std::vector<std::pair<uint32_t, std::array<uvec2, MeshElementBlockSize>>> roots;
+        uint64_t fan_count = 0u;
+        for (const auto [from, to] : vertices) {
+            auto &block = roots.emplace_back(to, std::array<uvec2, MeshElementBlockSize>{}).second;
+            reader.Read(Buffers.VertexCorners.Buffer, uint64_t(from) * MeshElementBlockSize * sizeof(uvec2), std::as_writable_bytes(std::span{block}));
+            const auto live = reader.ReadAs<MeshElementBlock>(Buffers.Vertices.Blocks.Buffer, from).Live;
+            for (uint32_t slot = 0u; slot < MeshElementBlockSize; ++slot) {
+                if (!(live[slot / 32u] >> (slot % 32u) & 1u)) block[slot] = {InvalidOffset, 0u};
+                fan_count += block[slot].y;
+            }
+        }
+        if (fan_count >= InvalidOffset) throw std::length_error("Copied fan items exceed their address space.");
+        const auto fans = Buffers.VertexFans.Items.Allocate(uint32_t(fan_count));
+        uint32_t next = fans.Offset;
+        for (auto &[to, block] : roots) {
+            for (auto &root : block) {
+                if (!root.y) continue;
+                reader.Copy(Buffers.VertexFans.Items.Buffer, uint64_t(root.x) * sizeof(uvec2), uint64_t(next) * sizeof(uvec2), uint64_t(root.y) * sizeof(uvec2));
+                root.x = next;
+                next += root.y;
+            }
+            std::ranges::copy(block, Buffers.VertexCorners.GetMutable({to * MeshElementBlockSize, MeshElementBlockSize}).begin());
+        }
+    }
+    // The stored record's named attributes, in their stored order.
+    const auto attributes_owner = OwnerOf.at(&Tracked->Attributes);
+    for (uint64_t page = 0u;; ++page) {
+        const auto &bytes = reader.Slot(attributes_owner, page);
+        if (bytes.empty()) break;
+        for (uint32_t index = 0u; index < store::RecordsPerPage; ++index) {
+            const auto entry = PageRecord<NamedAttribute>(bytes, index);
+            if (!entry || entry->Record != source) continue;
+            const auto values = WithAttributeValues(Buffers.Named, entry->Type, [&](auto &arena) {
+                const auto range = arena.Allocate(entry->Values.Count);
+                constexpr auto Stride = sizeof(ArenaValue<std::remove_cvref_t<decltype(arena)>>);
+                if (range.Count) reader.Copy(arena.Buffer, uint64_t(entry->Values.Offset) * Stride, uint64_t(range.Offset) * Stride, uint64_t(range.Count) * Stride);
+                return range;
+            });
+            AcquireAttribute({.Record = id, .Domain = entry->Domain, .Type = entry->Type, .Name = entry->Name, .Values = values, .Default = entry->Default});
+        }
+    }
+    if (reader.Failed) {
+        Release(id);
+        return std::nullopt;
+    }
+    return id;
+}
+
+std::optional<MeshStore::Change> MeshStore::RestoreRecord(store::Hash128 state, uint32_t id) {
+    const profile::CpuScope scope{"RestoreRecord"};
+    if (!Tracked || id >= Records.size() || !Records[id].Alive) return std::nullopt;
+    StoredState reader{*this, state};
+    if (!reader.Held()) return std::nullopt;
+    // Copies the differing stored bytes of [first, end) over the same live bytes, and returns whether any differed.
+    const auto copy_differing = [&](const mtl::Buffer &buffer, uint64_t first, uint64_t end) {
+        const auto k = reader.OwnerOf(buffer);
+        bool any = false;
+        ForEachDifferingExtent(reader.Differing(k), reader.PageBytes(k), first, end, [&](uint64_t lo, uint64_t hi) {
+            reader.Copy(buffer, lo, lo, hi - lo);
+            any = true;
+        });
+        return any;
+    };
+    const auto stored = PageRecord<Record>(reader.Slot(OwnerOf.at(&Tracked->Entries), id / store::RecordsPerPage), id % store::RecordsPerPage);
+    if (reader.Failed || !stored || !stored->Alive) return std::nullopt;
+    auto &live = WriteRecord(id);
+    Change change{id, EntryChanged};
+    bool placed = false;
+    const auto changed_block = [&](Domain domain, uint32_t block) {
+        const auto index = domain == Domain::Halfedge ? 3u : SelectableDomain(domain) ? SelectableIndex(domain) : InvalidOffset;
+        if (index != InvalidOffset) change.Blocks[index].push_back(block);
+    };
+    // The vertices in the differing stored bytes of [first, end) of the vertex stream, as handles of the block at local `local`.
+    const auto changed_vertices = [&](uint64_t first, uint64_t end, uint32_t block, uint32_t local) {
+        constexpr auto Stride = uint64_t(sizeof(Vertex));
+        const auto page = reader.PageBytes(reader.OwnerOf(Buffers.Vertices.Buffer));
+        const auto bytes = Buffers.Vertices.Buffer.GetSpan<std::byte>({uint32_t(first), uint32_t(end - first)});
+        auto lo = first, hi = end;
+        for (; lo < hi; lo += Stride) {
+            const auto &page_bytes_ = reader.Slot(reader.OwnerOf(Buffers.Vertices.Buffer), lo / page);
+            const auto at = lo % page;
+            if (page_bytes_.size() < at + Stride ? std::ranges::any_of(bytes.subspan(lo - first, Stride), [](std::byte b) { return b != std::byte{}; }) : std::memcmp(page_bytes_.data() + at, bytes.data() + (lo - first), Stride) != 0) break;
+        }
+        if (lo >= hi) return;
+        for (; hi > lo; hi -= Stride) {
+            const auto last = hi - Stride;
+            const auto &page_bytes_ = reader.Slot(reader.OwnerOf(Buffers.Vertices.Buffer), last / page);
+            const auto at = last % page;
+            if (page_bytes_.size() < at + Stride ? std::ranges::any_of(bytes.subspan(last - first, Stride), [](std::byte b) { return b != std::byte{}; }) : std::memcmp(page_bytes_.data() + at, bytes.data() + (last - first), Stride) != 0) break;
+        }
+        const auto base = uint64_t(block) * MeshElementBlockSize * Stride;
+        change.VertexRanges.push_back({uint32_t(local * MeshElementBlockSize + (lo - base) / Stride), uint32_t((hi - lo) / Stride)});
+    };
+    // Every tracked stream keyed by a domain's blocks, with its bytes per block.
+    const auto for_each_stream = [&](Domain domain, std::optional<RenderSet> render, auto &&fn) {
+        ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&) {
+            if (!info.Tracked() || info.RenderRange || info.Named || &arena.Buffer == &Buffers.VertexCorners.Buffer) return;
+            if (render ? info.Render != render : info.Elements != domain || info.Render) return;
+            constexpr auto Stride = uint64_t(sizeof(ArenaValue<std::remove_cvref_t<decltype(arena)>>));
+            const uint64_t block_bytes = info.BlockIndexed ? Stride : Stride * (render ? RenderBlockSize : MeshElementBlockSize);
+            fn(arena.Buffer, info.Bits, block_bytes);
+        });
+    };
+    // Restores the live set `sc` of one element domain, or of the render set `render` holds, to the stored set `sp`.
+    const auto restore_set = [&](auto &arena, Domain domain, std::optional<RenderSet> render, ElementSetRef sp, ElementSetRef &sc) {
+        const auto membership_of = [&](uint32_t block) { return reader.ReadAs<MeshElementBlock>(arena.Blocks.Buffer, block); };
+        // Copies every stream of the stored block `from` into the live block `to`.
+        const auto copy_block = [&](uint32_t from, uint32_t to) {
+            for_each_stream(domain, render, [&](const mtl::Buffer &buffer, uint32_t bits, uint64_t block_bytes) {
+                reader.Copy(buffer, from * block_bytes, to * block_bytes, block_bytes);
+                change.Bits |= bits;
+            });
+            change.Bits |= TopologyChanged;
+            changed_block(domain, to);
+        };
+        // Releases the fan runs of the ascending live blocks' vertices and clears their selected and hidden slots.
+        const auto clear_blocks = [&](std::span<const uint32_t> blocks) {
+            if (domain == Domain::Vertex) {
+                std::vector<uvec2> released;
+                for (const auto b : blocks) {
+                    const auto roots = Buffers.VertexCorners.GetMutable({b * MeshElementBlockSize, MeshElementBlockSize});
+                    for (auto &root : roots) {
+                        if (root.y) released.push_back(root);
+                        root = {InvalidOffset, 0u};
+                    }
+                }
+                Buffers.VertexFans.Release(released);
+            }
+            if (SelectableDomain(domain)) {
+                EditSelectionBlocks(SelectionElements[SelectableIndex(domain)], blocks, [](uint32_t, auto &words) { words = {}; });
+                EditHiddenBlocks(SelectionElements[SelectableIndex(domain)], blocks, [](uint32_t, auto &words) { words = {}; });
+            }
+        };
+        if (!sp) {
+            if (!sc) return;
+            std::vector<uint32_t> blocks;
+            arena.ForEachBlock(sc, [&](uint32_t b, const auto &) { blocks.push_back(b); });
+            std::ranges::sort(blocks);
+            for (const auto b : blocks) changed_block(domain, b);
+            clear_blocks(blocks);
+            arena.Release(sc);
+            sc = {};
+            change.Bits |= TopologyChanged;
+            return;
+        }
+        const auto header = reader.ReadAs<MeshElementSet>(arena.Sets.Buffer, sp.Index);
+        std::vector<uint32_t> stored_table(header.BlockCount);
+        reader.Read(arena.Table.Buffer, uint64_t(header.First) * sizeof(uint32_t), std::as_writable_bytes(std::span{stored_table}));
+        std::vector<uint32_t> fresh; // The live blocks placed or moved into, which copy their stored block whole.
+        std::vector<uint32_t> moved_from;
+        if (!sc) {
+            sc = arena.CloneMembership(header, stored_table, membership_of);
+            placed = true;
+            const auto entries = arena.Entries(sc);
+            for (uint32_t local = 0u; local < stored_table.size(); ++local) {
+                if (stored_table[local] == InvalidOffset) continue;
+                fresh.push_back(entries[local]);
+                moved_from.push_back(stored_table[local]);
+            }
+        } else {
+            const std::vector<uint32_t> live_table{arena.Entries(sc).begin(), arena.Entries(sc).end()};
+            std::vector<uint32_t> cleared, locals;
+            for (uint32_t local = 0u; local < std::max(stored_table.size(), live_table.size()); ++local) {
+                const auto bp = local < stored_table.size() ? stored_table[local] : InvalidOffset;
+                const auto bc = local < live_table.size() ? live_table[local] : InvalidOffset;
+                if (bp == InvalidOffset && bc != InvalidOffset) cleared.push_back(bc);
+                else if (bp != InvalidOffset && bc == InvalidOffset) locals.push_back(local);
+            }
+            if (!cleared.empty()) {
+                std::ranges::sort(cleared);
+                clear_blocks(cleared);
+                for (const auto b : arena.Clear(sc, cleared)) changed_block(domain, b);
+                change.Bits |= TopologyChanged;
+            }
+            if (!locals.empty()) {
+                const auto added = arena.Place(sc, locals);
+                placed = true;
+                for (uint32_t i = 0u; i < locals.size(); ++i) {
+                    fresh.push_back(added[i]);
+                    moved_from.push_back(stored_table[locals[i]]);
+                }
+            }
+            const auto entries = arena.Entries(sc);
+            for (uint32_t local = 0u; local < stored_table.size(); ++local) {
+                const auto bp = stored_table[local], bc = entries[local];
+                if (bp == InvalidOffset || bc == bp || std::ranges::contains(fresh, bc)) continue;
+                fresh.push_back(bc);
+                moved_from.push_back(bp);
+            }
+        }
+        for (uint32_t i = 0u; i < fresh.size(); ++i) {
+            const auto from = moved_from[i], to = fresh[i];
+            auto block = membership_of(from);
+            block.Owner = sc.Index;
+            if (domain == Domain::Vertex) {
+                std::vector<uvec2> released;
+                for (const auto root : Buffers.VertexCorners.Get({to * MeshElementBlockSize, MeshElementBlockSize})) {
+                    if (root.y) released.push_back(root);
+                }
+                Buffers.VertexFans.Release(released);
+            }
+            copy_block(from, to);
+            arena.Blocks.GetMutable({to, 1u})[0] = block;
+            arena.Reindex({to, 1u});
+            if (domain == Domain::Vertex) {
+                std::array<uvec2, MeshElementBlockSize> roots;
+                reader.Read(Buffers.VertexCorners.Buffer, uint64_t(from) * MeshElementBlockSize * sizeof(uvec2), std::as_writable_bytes(std::span{roots}));
+                for (auto &root : roots) {
+                    if (!root.y) continue;
+                    const auto run = Buffers.VertexFans.Items.Allocate(root.y);
+                    reader.Copy(Buffers.VertexFans.Items.Buffer, uint64_t(root.x) * sizeof(uvec2), uint64_t(run.Offset) * sizeof(uvec2), uint64_t(root.y) * sizeof(uvec2));
+                    root.x = run.Offset;
+                }
+                std::ranges::copy(roots, Buffers.VertexCorners.GetMutable({to * MeshElementBlockSize, MeshElementBlockSize}).begin());
+                if (header.Count) change.VertexRanges.push_back({block.Local * MeshElementBlockSize, MeshElementBlockSize});
+            }
+        }
+        // The blocks kept at their arena index copy only the stored bytes that differ.
+        const auto members = arena.Blocks.Buffer.template GetSpan<MeshElementBlock>();
+        const auto kept_block = [&](uint32_t b) {
+            return b < members.size() && members[b].Owner == sc.Index && members[b].Local < stored_table.size() && stored_table[members[b].Local] == b && !std::ranges::contains(fresh, b);
+        };
+        for_each_stream(domain, render, [&](const mtl::Buffer &buffer, uint32_t bits, uint64_t block_bytes) {
+            const auto k = reader.OwnerOf(buffer);
+            const auto page = reader.PageBytes(k);
+            for (const auto slot : reader.Differing(k)) {
+                const auto first = slot * page, end = first + page;
+                for (auto b = uint32_t(first / block_bytes); uint64_t(b) * block_bytes < end; ++b) {
+                    if (!kept_block(b)) continue;
+                    const auto lo = std::max(first, b * block_bytes), hi = std::min(end, (b + 1u) * block_bytes);
+                    if (&buffer == &Buffers.Vertices.Buffer) changed_vertices(lo, hi, b, members[b].Local);
+                    reader.Copy(buffer, lo, lo, hi - lo);
+                    change.Bits |= bits;
+                    changed_block(domain, b);
+                }
+            }
+        });
+        {
+            const auto k = reader.OwnerOf(arena.Blocks.Buffer);
+            const auto page = reader.PageBytes(k);
+            for (const auto slot : reader.Differing(k)) {
+                const auto first = slot * page, end = first + page;
+                for (auto b = uint32_t(first / sizeof(MeshElementBlock)); uint64_t(b) * sizeof(MeshElementBlock) < end; ++b) {
+                    if (!kept_block(b)) continue;
+                    auto block = membership_of(b);
+                    block.Owner = sc.Index;
+                    if (block.Local == members[b].Local && block.Count == members[b].Count && block.Live == members[b].Live) continue;
+                    arena.Blocks.GetMutable({b, 1u})[0] = block;
+                    arena.Reindex({b, 1u});
+                    change.Bits |= TopologyChanged;
+                    changed_block(domain, b);
+                }
+            }
+        }
+        auto live_header = arena.Set(sc);
+        if (live_header.Count != header.Count || live_header.BlockCount != header.BlockCount || live_header.Flags != header.Flags || (change.Bits & TopologyChanged)) {
+            live_header.Count = header.Count;
+            live_header.BlockCount = header.BlockCount;
+            live_header.Flags = header.Flags;
+            ++live_header.Revision;
+            arena.Sets.GetMutable({sc.Index, 1u})[0] = live_header;
+            change.Bits |= TopologyChanged;
+        }
+        if (domain != Domain::Vertex) return;
+        // Vertices keep their fan runs where their roots and the items the roots refer to are unchanged.
+        const auto corners = reader.OwnerOf(Buffers.VertexCorners.Buffer), items = reader.OwnerOf(Buffers.VertexFans.Items.Buffer);
+        if (reader.Differing(corners).empty() && reader.Differing(items).empty()) return;
+        arena.ForEachBlock(sc, [&](uint32_t b, const auto &block) {
+            if (!kept_block(b)) return;
+            std::array<uvec2, MeshElementBlockSize> stored_roots;
+            reader.Read(Buffers.VertexCorners.Buffer, uint64_t(b) * MeshElementBlockSize * sizeof(uvec2), std::as_writable_bytes(std::span{stored_roots}));
+            const auto live_roots = Buffers.VertexCorners.Get({b * MeshElementBlockSize, MeshElementBlockSize});
+            bool rewritten = false;
+            for (uint32_t i = 0u; i < MeshElementBlockSize; ++i) {
+                auto &root = stored_roots[i];
+                if (root == live_roots[i]) {
+                    if (root.y) copy_differing(Buffers.VertexFans.Items.Buffer, uint64_t(root.x) * sizeof(uvec2), uint64_t(root.x + root.y) * sizeof(uvec2));
+                    continue;
+                }
+                if (live_roots[i].y) Buffers.VertexFans.Release(std::array{live_roots[i]});
+                if (root.y) {
+                    const auto run = Buffers.VertexFans.Items.Allocate(root.y);
+                    reader.Copy(Buffers.VertexFans.Items.Buffer, uint64_t(root.x) * sizeof(uvec2), uint64_t(run.Offset) * sizeof(uvec2), uint64_t(root.y) * sizeof(uvec2));
+                    root.x = run.Offset;
+                }
+                rewritten = true;
+            }
+            if (!rewritten) return;
+            std::ranges::copy(stored_roots, Buffers.VertexCorners.GetMutable({b * MeshElementBlockSize, MeshElementBlockSize}).begin());
+            change.Bits |= TopologyChanged;
+            changed_block(domain, b);
+            (void)block;
+        });
+    };
+    for (const auto domain : ElementDomains) {
+        WithDomain(Buffers, domain, [&](auto &arena) { restore_set(arena, domain, std::nullopt, DomainSet(*stored, domain), DomainSet(live, domain)); });
+    }
+    for (const auto set : RenderSets) {
+        WithRenderSet(Buffers.Render, set, [&](auto &arena) { restore_set(arena, Domain::None, set, RenderSetOf(*stored, set), RenderSetOf(live, set)); });
+    }
+    // Restores a record range to the stored range's content, at the stored offset when its storage is free, and returns whether its bytes changed.
+    const auto restore_range = [&](auto &arena, Range from, Range &to, uint32_t count) {
+        constexpr auto Stride = uint64_t(sizeof(ArenaValue<std::remove_cvref_t<decltype(arena)>>));
+        if (!from.Count) {
+            if (!to.Count) return false;
+            arena.Release(to);
+            to = {};
+            return true;
+        }
+        if (to.Count && to.Offset == from.Offset) {
+            if (to.Count > from.Count) arena.Shrink(to, from.Count);
+            else if (to.Count < from.Count && !arena.Extend(to, from.Count - to.Count)) {
+                arena.Release(to);
+                to = {};
+            }
+        } else if (to.Count) {
+            arena.Release(to);
+            to = {};
+        }
+        if (!to.Count) to = arena.Reserve(from) ? from : arena.Allocate(from.Count);
+        if (to.Offset == from.Offset) return copy_differing(arena.Buffer, uint64_t(from.Offset) * Stride, uint64_t(from.Offset + count) * Stride);
+        reader.Copy(arena.Buffer, uint64_t(from.Offset) * Stride, uint64_t(to.Offset) * Stride, uint64_t(count) * Stride);
+        return true;
+    };
+    ForEachLayer(Buffers, [&](auto &layer, const LayerInfo &info, auto &&, auto &&range) {
+        if (restore_range(layer.Values, *range(*stored), *range(live), range(*stored)->Count)) change.Bits |= info.Bits | AttributesChanged;
+    });
+    // The record's ranges outside the payload pools: its primitive materials, selection summary, point normals and primitive routes.
+    const auto record_range = [&](const ArenaInfo &info) { return info.Tracked() && info.Elements == Domain::None && !info.Render && !info.Named && info.Layer == Domain::None; };
+    ForEachArena(Buffers, [&](auto &arena, const ArenaInfo &info, auto &&ranges) {
+        if (!record_range(info)) return;
+        if constexpr (std::same_as<std::remove_cvref_t<decltype(*ranges(*stored))>, Range> && requires { arena.Reserve(Range{}); }) {
+            if (!ranges(*stored) || &arena.Buffer == &Buffers.Render.MeshletTriangleIds.Buffer || &arena.Buffer == &Buffers.Render.MeshletVertexCorners.Buffer || &arena.Buffer == &Buffers.Render.MeshletLocalTriangles.Buffer || &arena.Buffer == &Buffers.Render.GroupClusterIds.Buffer) return;
+            if (restore_range(arena, *ranges(*stored), *ranges(live), ranges(*stored)->Count)) change.Bits |= info.Bits ? info.Bits : EntryChanged;
+        }
+    });
+    for (const auto payload : RenderPayloads) {
+        WithPayload(Buffers.Render, *stored, payload, [&](auto &pool, const PayloadRange &from) {
+            WithPayload(Buffers.Render, live, payload, [&](auto &, PayloadRange &to) {
+                Range capacity{to.Values.Offset, to.Capacity};
+                restore_range(pool, {from.Values.Offset, from.Capacity}, capacity, from.Values.Count);
+                to = {{capacity.Offset, from.Values.Count}, capacity.Count};
+            });
+        });
+    }
+    // The stored record's named attributes replace the live record's, matched by name.
+    std::vector<std::pair<uint32_t, NamedAttribute>> live_attributes;
+    ForEachNamedAttribute(id, [&](uint32_t attribute, const NamedAttribute &entry) { live_attributes.emplace_back(attribute, entry); });
+    std::vector<bool> matched(live_attributes.size());
+    const auto attributes_owner = OwnerOf.at(&Tracked->Attributes);
+    for (uint64_t page = 0u;; ++page) {
+        const auto &bytes = reader.Slot(attributes_owner, page);
+        if (bytes.empty()) break;
+        for (uint32_t index = 0u; index < store::RecordsPerPage; ++index) {
+            const auto entry = PageRecord<NamedAttribute>(bytes, index);
+            if (!entry || entry->Record != id) continue;
+            const auto found = std::ranges::find_if(live_attributes, [&](const auto &candidate) { return candidate.second.NameView() == entry->NameView(); });
+            const bool reuse = found != live_attributes.end() && found->second.Domain == entry->Domain && found->second.Type == entry->Type;
+            if (found != live_attributes.end()) matched[size_t(found - live_attributes.begin())] = true;
+            if (found != live_attributes.end() && !reuse) {
+                ReleaseAttribute(found->first);
+                found->second = {};
+            }
+            Range values = reuse ? found->second.Values : Range{};
+            WithAttributeValues(Buffers.Named, entry->Type, [&](auto &arena) { restore_range(arena, entry->Values, values, entry->Values.Count); });
+            NamedAttribute restored{.Record = id, .Domain = entry->Domain, .Type = entry->Type, .Name = entry->Name, .Values = values, .Default = entry->Default};
+            if (reuse) {
+                if (found->second.Values.Offset != values.Offset || found->second.Values.Count != values.Count || found->second.Default != entry->Default) WriteAttribute(found->first) = restored;
+            } else {
+                AcquireAttribute(std::move(restored));
+            }
+            change.Bits |= AttributesChanged;
+        }
+    }
+    for (uint32_t i = 0u; i < live_attributes.size(); ++i) {
+        if (!matched[i]) {
+            ReleaseAttribute(live_attributes[i].first);
+            change.Bits |= AttributesChanged;
+        }
+    }
+    if (reader.Failed) throw std::runtime_error("The recorded mesh state lost pages its record needs.");
+    // The record takes the stored fields over the live allocations.
+    {
+        Record merged{*stored};
+        merged.StoreId = id;
+        for (const auto domain : ElementDomains) DomainSet(merged, domain) = DomainSet(live, domain);
+        for (const auto set : RenderSets) RenderSetOf(merged, set) = RenderSetOf(live, set);
+        ForEachLayer(Buffers, [&](auto &, const LayerInfo &, auto &&, auto &&range) { *range(merged) = *range(live); });
+        ForEachArena(Buffers, [&](auto &, const ArenaInfo &info, auto &&ranges) {
+            if (!record_range(info)) return;
+            if constexpr (std::same_as<std::remove_cvref_t<decltype(*ranges(*stored))>, Range>) {
+                if (ranges(*stored)) *ranges(merged) = *ranges(live);
+            }
+        });
+        for (const auto payload : RenderPayloads) WithPayload(Buffers.Render, merged, payload, [&](auto &, PayloadRange &range) { WithPayload(Buffers.Render, live, payload, [&](auto &, const PayloadRange &from) { range = from; }); });
+        merged.ExtrasFaces = live.ExtrasFaces;
+        merged.ExtrasEdges = live.ExtrasEdges;
+        live = merged;
+    }
+    if (placed) SyncMirrors();
+    DerivedRecords[id] = {};
+    DerivedRecords[id].NormalRevision = ++NextNormalRevision;
+    ReleaseBlockLists(id);
+    for (auto &blocks : change.Blocks) SortUnique(blocks);
+    std::ranges::sort(change.VertexRanges, {}, &Range::Offset);
+    return change;
 }
 
 namespace {
@@ -645,29 +1285,7 @@ void CaptureElementSet(const auto &values, const auto &elements, ElementSetRef s
     ForEachBlockRun(elements, set, [&](Range run) { CaptureRange(values, run); });
 }
 void CaptureRange(const auto &arena, ElementSetRef set) { CaptureElementSet(arena, arena, set); }
-
-// Visits selected addresses in ascending order.
-void CaptureSelected(const mtl::Buffer &buffer, uint32_t stride, SelectionView selection) {
-    const auto *history = buffer.History();
-    if (!history && !buffer.Writes) return;
-    const uint64_t page_size = history ? history->PageBytes : mtl::HistoryPageBytes;
-    std::vector<uint32_t> pages;
-    selection.ForEachAddress([&](ElementAddress address) {
-        const uint64_t offset = uint64_t(address.Value()) * stride;
-        buffer.LogWrite(offset, offset + stride);
-        const auto first = offset / page_size, end = (offset + stride + page_size - 1) / page_size;
-        for (auto page = first; page < end; ++page) {
-            if (pages.empty() || pages.back() < page) pages.push_back(uint32_t(page));
-        }
-    });
-    buffer.CaptureWritePages(pages);
-}
 } // namespace
-
-void MeshStore::CaptureVertexEdit(uint32_t id) {
-    if (!Tracked) return;
-    CaptureSelected(Buffers.Vertices.Buffer, sizeof(Vertex), GetSelectedElements(id, Element::Vertex));
-}
 
 void MeshStore::CaptureSelectionSummary(uint32_t id) {
     if (Tracked) CaptureRange(Buffers.SelectionSummary, Records.at(id).SelectionSummary);
@@ -1099,7 +1717,6 @@ void MeshStore::ReleaseAttribute(uint32_t attribute) {
     if (entry.Record == InvalidOffset) throw std::invalid_argument("Released attribute.");
     if (entry.Values.Count) WithAttributeValues(Buffers.Named, entry.Type, [&](auto &values) { values.Release(entry.Values); });
     WriteAttribute(attribute) = {};
-    WrittenAttributes.push_back(attribute);
 }
 
 std::expected<void, MeshStore::AttributeError> MeshStore::RenameAttribute(uint32_t attribute, std::string_view name) {
@@ -1108,7 +1725,6 @@ std::expected<void, MeshStore::AttributeError> MeshStore::RenameAttribute(uint32
     auto &entry = WriteAttribute(attribute);
     entry.Name = {};
     std::ranges::copy(name, entry.Name.begin());
-    WrittenAttributes.push_back(attribute);
     return {};
 }
 
@@ -1311,7 +1927,6 @@ SharpnessSummary LiveSharpness(uint32_t flags) {
 }
 } // namespace
 
-SharpnessSummary MeshStore::GetFaceSharpnessSummary(uint32_t id) const { return LiveSharpness(GetSelectionRoot(id, Element::Face).Flags); }
 SharpnessSummary MeshStore::GetEdgeSharpnessSummary(uint32_t id) const { return LiveSharpness(GetSelectionRoot(id, Element::Edge).Flags); }
 
 namespace {
@@ -1817,27 +2432,6 @@ void MeshStore::CopyBlocks(CloneCopies &copies, uint32_t destination, uint32_t s
     DerivedRecords[destination].NormalRevision = ++NextNormalRevision;
 }
 
-namespace {
-// A domain's index among a Change's blocks, or InvalidOffset for a domain it does not list.
-constexpr uint32_t ChangeIndex(Domain domain) {
-    return domain == Domain::Halfedge ? 3u : SelectableDomain(domain) ? SelectableIndex(domain) :
-                                                                        InvalidOffset;
-}
-// Queues the copy of each run of ascending local blocks from one record range to another, each local block `entries` blocks of `bytes`.
-void CopyLocalRuns(CloneCopies &copies, mtl::Buffer &buffer, uint64_t bytes, Range from, Range to, std::span<const uint32_t> locals, uint32_t entries) {
-    ForEachIndexRun(locals, [&](size_t first, size_t count) { CaptureCopy(copies, buffer, bytes, from.Offset + locals[first] * entries, to.Offset + locals[first] * entries, uint32_t(count) * entries); });
-}
-// The ascending local blocks of a domain's restored pairs.
-std::vector<uint32_t> RestoredLocals(const MeshArenas &b, Domain domain, const std::array<std::vector<uvec2>, 6> &restored) {
-    std::vector<uint32_t> locals;
-    WithDomain(b, domain, [&](const auto &arena) {
-        for (const auto pair : restored[uint32_t(domain)]) locals.push_back(arena.Blocks.Get({pair.y, 1u})[0].Local);
-    });
-    std::ranges::sort(locals);
-    return locals;
-}
-} // namespace
-
 std::vector<uint32_t> MeshStore::CloneMeshes(CloneCopies &copies, std::span<const uint32_t> source_ids, bool render) {
     const profile::CpuScope scope{"CloneMeshes"};
     std::vector<uint32_t> ids;
@@ -1902,184 +2496,6 @@ std::vector<uint32_t> MeshStore::CloneMeshes(CloneCopies &copies, std::span<cons
     return ids;
 }
 
-void MeshStore::ReleaseDomain(uint32_t id, ElementDomain domain) {
-    WithDomain(Buffers, domain, [&](auto &arena) {
-        auto &set = DomainSet(WriteRecord(id), domain);
-        std::vector<uint32_t> blocks;
-        arena.ForEachBlock(set, [&](uint32_t block, const auto &) { blocks.push_back(block); });
-        std::ranges::sort(blocks);
-        arena.Destroy(std::span{&set, 1u}, blocks);
-        set = {};
-    });
-    ForEachLayer(Buffers, [&](auto &layer, const LayerInfo &info, auto &&, auto &&range) {
-        if (info.Elements == domain && range(Records[id])->Count) layer.Release(*range(WriteRecord(id)));
-    });
-    ForEachNamedAttribute(id, [&](uint32_t attribute, const NamedAttribute &entry) {
-        if (ElementDomainOf(entry.Domain) != domain || !entry.Values.Count) return;
-        WithAttributeValues(Buffers.Named, entry.Type, [&](auto &values) { values.Release(entry.Values); });
-        WriteAttribute(attribute).Values = {};
-    });
-}
-
-void MeshStore::DetachBlocks(uint32_t id, ElementDomain domain, std::span<const uint32_t> blocks) {
-    if (blocks.empty()) return;
-    const auto cleared = WithDomain(Buffers, domain, [&](auto &arena) { return arena.Clear(DomainSet(Records[id], domain), blocks); });
-    if (SelectableDomain(domain)) EditSelectionBlocks(SelectionElements[SelectableIndex(domain)], cleared, [](uint32_t, auto &words) { words = {}; });
-    FinishEraseElements(id, domain, cleared);
-}
-
-MeshStore::Change MeshStore::Resync(CloneCopies &copies, uint32_t id, uint32_t source, const DomainBlocks &written, std::span<const uint32_t> written_attributes, std::vector<uint32_t> &attributes) {
-    const profile::CpuScope scope{"ResyncMesh"};
-    ReleaseRender(std::array{&WriteRecord(id)});
-    Change change{.StoreId = id, .Bits = GeometryChanged | TopologyChanged};
-    // Restore written blocks and blocks present in only one record; match the source table layout.
-    BlockPairs restored;
-    for (const auto domain : ElementDomains) {
-        const auto d = uint32_t(domain);
-        std::vector<uint32_t> removed;
-        WithDomain(Buffers, domain, [&](auto &arena) {
-            const auto from_set = DomainSet(Records[source], domain);
-            if (!from_set) {
-                arena.ForEachBlock(DomainSet(Records[id], domain), [&](uint32_t block, const auto &) { removed.push_back(block); });
-                if (!removed.empty()) {
-                    std::ranges::sort(removed);
-                    if (SelectableDomain(domain)) EditSelectionBlocks(SelectionElements[SelectableIndex(domain)], removed, [](uint32_t, auto &words) { words = {}; });
-                    ReleaseDomain(id, domain);
-                }
-                return;
-            }
-            const std::vector<uint32_t> from{arena.Entries(from_set).begin(), arena.Entries(from_set).end()};
-            std::vector<uint32_t> locals;
-            if (!DomainSet(Records[id], domain)) {
-                DomainSet(WriteRecord(id), domain) = arena.Create();
-                locals.resize(from.size());
-                std::ranges::iota(locals, 0u);
-            } else {
-                const auto to = arena.Entries(DomainSet(Records[id], domain));
-                const auto end = uint32_t(std::max(from.size(), to.size()));
-                for (const auto local : written[d]) {
-                    if (local < end) locals.push_back(local);
-                }
-                for (uint32_t local = 0u; local < end; ++local) {
-                    if ((local < from.size() && from[local] != InvalidOffset) != (local < to.size() && to[local] != InvalidOffset)) locals.push_back(local);
-                }
-                SortUnique(locals);
-            }
-            std::vector<uint32_t> placed;
-            {
-                const auto to = arena.Entries(DomainSet(Records[id], domain));
-                for (const auto local : locals) {
-                    const bool held = local < from.size() && from[local] != InvalidOffset, holds = local < to.size() && to[local] != InvalidOffset;
-                    if (held && !holds) placed.push_back(local);
-                    else if (!held && holds) removed.push_back(to[local]);
-                }
-            }
-            std::ranges::sort(removed);
-            DetachBlocks(id, domain, removed);
-            arena.Place(DomainSet(Records[id], domain), placed);
-            const auto to = arena.Entries(DomainSet(Records[id], domain));
-            auto &live = restored[d];
-            for (const auto local : locals) {
-                if (local < from.size() && from[local] != InvalidOffset) live.push_back({from[local], to[local]});
-            }
-            // The copy is dense when the dense source's blocks pair with consecutive blocks.
-            const auto flags = arena.Set(from_set).Flags;
-            const bool dense = (flags & 1u) && to.size() == from.size() && std::ranges::all_of(std::views::iota(size_t{0}, to.size()), [&](size_t k) { return to[k] == to[0] + k; });
-            arena.AssignLive(DomainSet(Records[id], domain), live, dense ? flags : 0u);
-        });
-        if (const auto index = ChangeIndex(domain); index != InvalidOffset) {
-            auto &blocks = change.Blocks[index];
-            for (const auto pair : restored[d]) blocks.push_back(pair.y);
-            blocks.append_range(removed);
-            SortUnique(blocks);
-        }
-    }
-    SyncMirrors();
-    {
-        const auto &src = Records[source];
-        auto &record = WriteRecord(id);
-        const auto own = record;
-        record = src;
-        record.StoreId = id;
-        record.Vertices = own.Vertices;
-        record.FaceData = own.FaceData;
-        record.EdgeData = own.EdgeData;
-        record.TriangleData = own.TriangleData;
-        record.FaceCorners = own.FaceCorners;
-        record.PrimitiveMaterials = own.PrimitiveMaterials;
-        record.SelectionSummary = own.SelectionSummary;
-        record.PointNormals = own.PointNormals;
-        record.ExtrasFaces = own.ExtrasFaces;
-        record.ExtrasEdges = own.ExtrasEdges;
-        ResetRender(record);
-        record.TriangleCount = Buffers.Triangles.Count(record.TriangleData);
-        const auto copy_range = [&](auto &arena, Range &to, Range from) {
-            if (to.Count != from.Count) {
-                if (to.Count) arena.Release(to);
-                to = from.Count ? arena.Allocate(from.Count) : Range{};
-            }
-            if (from.Count) CaptureCopy(copies, arena.Buffer, sizeof(ArenaValue<std::remove_cvref_t<decltype(arena)>>), from.Offset, to.Offset, from.Count);
-        };
-        copy_range(Buffers.PrimitiveMaterials, record.PrimitiveMaterials, src.PrimitiveMaterials);
-        copy_range(Buffers.SelectionSummary, record.SelectionSummary, src.SelectionSummary);
-        copy_range(Buffers.PointNormals, record.PointNormals, src.PointNormals);
-        ForEachLayer(Buffers, [&](auto &layer, const LayerInfo &info, auto &&entries, auto &&range) {
-            if (info.Render) return;
-            auto &to = *range(record);
-            to = *range(own);
-            const auto from = *range(src);
-            const auto per = entries(src);
-            if (!per || !from.Count) return layer.Release(to);
-            if (entries(own) != per) layer.Release(to);
-            const bool whole = !to.Count;
-            const auto bound = WithDomain(Buffers, info.Elements, [&](const auto &arena) { return arena.HandleBound(DomainSet(record, info.Elements)) / MeshElementBlockSize; });
-            layer.Cover(to, bound, per);
-            constexpr auto Bytes = sizeof(typename std::remove_cvref_t<decltype(layer)>::Block);
-            if (whole) CaptureCopy(copies, layer.Values.Buffer, Bytes, from.Offset, to.Offset, bound * per);
-            else CopyLocalRuns(copies, layer.Values.Buffer, Bytes, from, to, RestoredLocals(Buffers, info.Elements, restored), per);
-        });
-        DerivedRecords[id] = {};
-    }
-    // Reuse payloads for attributes still associated with their source copies; allocate fresh copies for the others.
-    std::vector<uvec2> kept, whole;
-    std::vector<uint32_t> released;
-    ForEachNamedAttribute(id, [&](uint32_t attribute, const NamedAttribute &entry) {
-        const bool intact = std::ranges::binary_search(attributes, attribute) && !std::ranges::binary_search(written_attributes, attribute);
-        const auto from = intact ? FindAttribute(source, entry.NameView()) : InvalidOffset;
-        if (from != InvalidOffset && NamedAttributes[from].Type == entry.Type && NamedAttributes[from].Domain == entry.Domain) kept.emplace_back(from, attribute);
-        else released.push_back(attribute);
-    });
-    for (const auto attribute : released) ReleaseAttribute(attribute);
-    ForEachNamedAttribute(source, [&](uint32_t attribute, const NamedAttribute &) {
-        if (!std::ranges::contains(kept, attribute, &uvec2::x)) whole.emplace_back(attribute, 0u);
-    });
-    // Copy restored local blocks into retained attributes and the full source range into new attributes.
-    for (const auto [from, to] : kept) {
-        const auto entry = NamedAttributes[from];
-        const auto bound = WithDomain(Buffers, ElementDomainOf(entry.Domain), [&](const auto &arena) { return arena.HandleBound(DomainSet(Records[id], ElementDomainOf(entry.Domain))) / MeshElementBlockSize; });
-        WithAttributeValues(Buffers.Named, entry.Type, [&](auto &values) {
-            auto range = NamedAttributes[to].Values;
-            if (CoverRange(values, range, bound)) WriteAttribute(to).Values = range;
-            CopyLocalRuns(copies, values.Buffer, sizeof(ArenaValue<std::remove_cvref_t<decltype(values)>>), entry.Values, range, RestoredLocals(Buffers, ElementDomainOf(entry.Domain), restored), 1u);
-        });
-    }
-    for (auto &pair : whole) {
-        const auto entry = NamedAttributes[pair.x];
-        const auto values = WithAttributeValues(Buffers.Named, entry.Type, [&](auto &arena) {
-            const auto range = arena.Allocate(entry.Values.Count);
-            if (range.Count) CaptureCopy(copies, arena.Buffer, sizeof(ArenaValue<std::remove_cvref_t<decltype(arena)>>), entry.Values.Offset, range.Offset, range.Count);
-            return range;
-        });
-        pair.y = AcquireAttribute({.Record = id, .Domain = entry.Domain, .Type = entry.Type, .Name = entry.Name, .Values = values, .Default = entry.Default});
-    }
-    attributes.clear();
-    for (const auto pair : kept) attributes.push_back(pair.y);
-    for (const auto pair : whole) attributes.push_back(pair.y);
-    std::ranges::sort(attributes);
-    CopyBlocks(copies, id, source, restored);
-    return change;
-}
-
 void MeshStore::ResetEditState(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, uint32_t source) {
     SelectionUpdate update{.StoreId = id};
     auto pairs = PairBlocks(source, id);
@@ -2113,7 +2529,7 @@ void MeshStore::SelectMasks(state::Registry &r, mtl::ComputeChain &chain, uint32
         }
         EditSelectionBlocks(SelectionElements[s], update.Blocks[s], [&](uint32_t block, auto &words) { words = mask(block); });
     }
-    if (Records.at(id).SelectionSummary.Count) UpdateSelection(r, chain, std::array{update});
+    if (Records.at(id).SelectionSummary.Count && std::ranges::any_of(update.Blocks, [](const auto &blocks) { return !blocks.empty(); })) UpdateSelection(r, chain, std::array{update});
 }
 
 void MeshStore::Join(state::Registry &r, uint32_t id, uint32_t source) {
@@ -2878,6 +3294,10 @@ void MeshStore::SetExtrasIndices(uint32_t id, std::span<const uint32_t> faces, s
 }
 
 void Reset(MeshStore &m, state::Registry &) {
+    for (auto &[state, version] : m.KeptStates) m.Release(version);
+    m.KeptStates.clear();
+    m.KeptOrder.clear();
+    m.StepStates.clear();
     if (m.Tracked) {
         m.Tracked->Entries.Write(0, m.Records.size());
         m.Tracked->Free.Write(0, m.FreeIds.size());
@@ -2899,8 +3319,6 @@ void Reset(MeshStore &m, state::Registry &) {
     m.FreeIds.clear();
     m.Released.clear();
     m.Unshaded.clear();
-    for (auto &log : m.WriteLogs) log.Extents.clear();
-    m.WrittenAttributes.clear();
 }
 
 VertexEdgeIncidence MeshStore::GetVertexEdgeIncidence(uint32_t id) const {

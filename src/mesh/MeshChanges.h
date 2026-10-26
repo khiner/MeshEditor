@@ -6,6 +6,5 @@
 // Mesh change sets, bound by RegisterSceneComponentHandlers.
 struct MeshChanges {
     state::DirtySet Geometry, Material;
-    state::DirtySet PrimitiveShape; // A primitive mesh's shape fields changed.
     state::DirtySet TetMesh, NewBufferEntity;
 };

@@ -81,7 +81,7 @@ std::vector<FaceAttributeOperationChange> EncodeFaceAttributeOperation(MeshStore
 }
 
 std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes, MeshPipelines &pipelines, mtl::ComputeChain &chain, std::span<const PositionOperationTarget> targets, PositionEditOp operation, float factor, uint32_t repeat, const PositionOperationOptions &options) {
-    const auto &[axes, requested_flags, direction, gradient, center, warp, bend, randomize, slide, edge_slide, symmetry, curve, circle, transform, attribute, factor_attribute] = options;
+    const auto &[axes, requested_flags, direction, gradient, center, warp, bend, randomize, slide, edge_slide, symmetry, curve, circle, transform, attribute, factor_attribute, sphere_radius] = options;
     uint32_t flags = requested_flags;
     if (!repeat || axes > 7u || uint32_t(operation) > uint32_t(PositionEditOp::Attribute)) return {};
     if (bool(warp) != (operation == PositionEditOp::Warp) || bool(bend) != (operation == PositionEditOp::Bend) ||
@@ -157,7 +157,7 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
         for (const auto &selection : handles.Selected) {
             const auto count = selection->Vertices.size();
             selected_count += count;
-            if (sphere || (warp && warp->AutoRange)) reduction_blocks += (count + 255u) / 256u;
+            if ((sphere && !sphere_radius) || (warp && warp->AutoRange)) reduction_blocks += (count + 255u) / 256u;
         }
         // Symmetry can also move an unselected partner for each selected vertex.
         const uint32_t vertex_words = edge_slide || symmetry ? 10u : 4u;
@@ -169,7 +169,7 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
                                                                                                                           0u;
         chain.Scratch.ReserveAdditional(vertex_words * selected_count + 4ull * reduction_blocks + 1u + uint64_t(parameter_words) * targets.size());
     }
-    const bool statistics = sphere || (warp && warp->AutoRange);
+    const bool statistics = (sphere && !sphere_radius) || (warp && warp->AutoRange);
     const auto partials = chain.Scratch.Allocate(2u * reduction_blocks);
     uint32_t partial_offset = partials.Offset;
     std::vector<VertexPositionEditPushConstants> jobs;
@@ -383,6 +383,10 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
             for (auto &pc : jobs) pc.ReductionResult = reduce(pc.ReductionBlocks, (pc.Count + 255u) / 256u);
         }
         profile::RecordCounter(sphere ? "PositionRadiusBlocks" : "PositionWarpBoundsBlocks", reduction_blocks);
+    }
+    if (sphere && sphere_radius) {
+        const auto radius = chain.Upload(BytesOf(*sphere_radius));
+        for (auto &pc : jobs) pc.ReductionResult = radius;
     }
     if (planar) {
         chain.Concurrent([&] {

@@ -213,7 +213,7 @@ MeshData CreateMesh(const Cone &p) {
     return {std::move(vertices), std::move(indices)};
 }
 
-MeshData CreateMesh(const PrimitiveShape &shape) {
+MeshData CreateMesh(const PrimitiveParameters &shape) {
     return std::visit([](const auto &s) -> MeshData { return CreateMesh(s); }, shape);
 }
 

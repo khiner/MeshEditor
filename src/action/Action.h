@@ -71,12 +71,23 @@ inline bool IsRecordable(const Action &a) {
     return VisitLeaf(a, []<typename L>(const L &) { return Recordable<L>; });
 }
 
-// Restore the gesture base before each preview.
-// Placement-drag operators manage their own previews.
+// Each later step of a preview's stage starts over from the stage base.
+// Placement-drag operators manage their own previews, and an element transform previews each update.
 template<typename T> inline constexpr bool Previews = !std::same_as<T, mesh::Extrude> && !std::same_as<T, mesh::Duplicate> && !std::same_as<T, mesh::Rip>;
 
 inline bool IsPreview(const Action &a) {
+    if (const auto *v = std::get_if<view::Action>(&a)) return std::holds_alternative<view::TransformElements>(*v);
     const auto *m = std::get_if<mesh::Action>(&a);
     return m && std::visit([]<typename L>(const L &) { return Previews<L>; }, *m);
+}
+// Whether a later preview step of a stage edits the nodes the stage's first step appended instead of appending again from the stage base.
+// An identity transform appends nothing, so its step restores the stage base.
+inline bool PatchesPreview(const Action &a) {
+    if (const auto *v = std::get_if<view::Action>(&a)) {
+        const auto *transform = std::get_if<view::TransformElements>(v);
+        return transform && transform->Delta != Transform{};
+    }
+    const auto *m = std::get_if<mesh::Action>(&a);
+    return m && mesh::Patches(*m);
 }
 } // namespace action

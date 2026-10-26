@@ -153,7 +153,6 @@ inline DrawData ComposeDraw(MeshRecord mesh, InstanceRecord instance, uint insta
         .FaceCount = mesh.FaceCount,
         .VertexCountOrHeadImageSlot = mesh.VertexCountOrHeadImageSlot,
         .Selection = selection ? display.Selection : NoEditSelection,
-        .HasPendingVertexTransform = display.HasPendingVertexTransform,
         .PrimaryEditInstanceIndex = display.PrimaryEditInstanceIndex,
         .BoneDeformOffset = display.BoneDeformOffset,
         .ArmatureDeformOffset = instance.ArmatureDeformOffset,

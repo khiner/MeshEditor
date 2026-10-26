@@ -2,6 +2,7 @@
 
 #include "MeshComponents.h"
 #include "MeshStore.h"
+#include "procedure/Procedure.h"
 
 #include "state/Registry.h"
 
@@ -64,20 +65,18 @@ uint32_t Mesh::FaceOrdinal(FH face) const { return Store->LiveElementOrdinal(Sto
 
 std::span<const uint32_t> Mesh::CornerVertices() const { return Store->Arenas().FaceCorners.Get(Store->Get(StoreId).FaceCorners); }
 
-Mesh GetMesh(const state::Registry &r, state::Entity e) {
-    return {r.Resources.get<const MeshStore>(), r.get<const MeshHandle>(e).StoreId};
-}
-std::optional<Mesh> TryGetMesh(const state::Registry &r, state::Entity e) {
-    if (!HasMesh(r, e)) return std::nullopt;
-    return GetMesh(r, e);
-}
-bool HasMesh(const state::Registry &r, state::Entity e) { return r.all_of<MeshHandle>(e); }
-Mesh GetDrawnMesh(const state::Registry &r, state::Entity e) { return {r.Resources.get<const MeshStore>(), *DrawnStoreId(r, e)}; }
+bool HasMesh(const state::Registry &r, state::Entity e) { return r.all_of<procedure::GeometryProcedure>(e); }
+bool DrawsMesh(const state::Registry &r, state::Entity e) { return r.any_of<EvaluatedMesh, MeshHandle>(e); }
 std::optional<uint32_t> DrawnStoreId(const state::Registry &r, state::Entity e) {
     if (const auto *evaluated = r.try_get<const EvaluatedMesh>(e)) return evaluated->StoreId;
-    if (HasMesh(r, e)) return r.get<const MeshHandle>(e).StoreId;
+    if (const auto *handle = r.try_get<const MeshHandle>(e)) return handle->StoreId;
     if (const auto *vertices = r.try_get<const VertexStoreId>(e)) return vertices->StoreId;
     return std::nullopt;
+}
+Mesh GetMesh(const state::Registry &r, state::Entity e) { return {r.Resources.get<const MeshStore>(), *DrawnStoreId(r, e)}; }
+std::optional<Mesh> TryGetMesh(const state::Registry &r, state::Entity e) {
+    if (!DrawsMesh(r, e)) return std::nullopt;
+    return GetMesh(r, e);
 }
 
 he::VH Mesh::GetFromVertex(HH hh) const {

@@ -47,8 +47,7 @@ struct MeshEditWork {
     // Keep only its address ranges.
     // The actual work and values remain on GPU.
     std::vector<Range> RefreshRanges;
-    bool CandidateReady{}, FootprintReady{}, Modified{}, PreviewActive{}, RequiresPose{}, TessellationPreview{};
-    Range WorkBudget;
+    bool CandidateReady{}, FootprintReady{}, Modified{}, PreviewActive{};
 };
 
 // An overlay over a mesh's canonical vertex blocks, a bit in its mesh's MeshVertexOverlays mask.

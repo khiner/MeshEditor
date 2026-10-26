@@ -7,7 +7,6 @@
 #include "gizmo/GizmoInteraction.h"
 #include "gizmo/TransformGizmo.h"
 #include "numeric/MatrixMath.h"
-#include "procedure/Procedure.h"
 #include "project/Project.h"
 #include "render/TextureRefs.h"
 #include "scene/CameraLens.h"
@@ -161,15 +160,8 @@ void UpdateMeshDrag(state::Registry &r, FrameState &frame) {
     const float travel = Length(mouse - drag.CenterPx) - Length(drag.StartPx - drag.CenterPx);
     const float value = std::max((drag.Value == Op::Inset ? -travel : travel) * drag.WorldPerPx, 0.f);
     if ((value <= 0.f && !drag.Staged) || (drag.Staged == value && !changed)) return;
-    // A drag over procedure meshes alone moves the parameters of the nodes its first step appended, one field per frame.
-    if (drag.Staged && std::ranges::all_of(r.get<const EditPrimaries>(state::Document).All, [&](const auto &entry) { return r.all_of<procedure::GeometryProcedure>(entry.first); })) {
-        using action::mesh::Inset, action::mesh::Bevel;
-        const action::Target nodes{action::OnSelected{}};
-        if (changed && drag.Value == Op::Inset) return action::Emit(action::UpdateOf<&Inset::Individual>(nodes, drag.Individual), action::Phase::Stage);
-        if (changed) return action::Emit(action::UpdateOf<&Bevel::Segments>(nodes, drag.Segments), action::Phase::Stage);
-        if (drag.Value == Op::Inset) action::Emit(action::UpdateOf<&Inset::Thickness>(nodes, value), action::Phase::Stage);
-        else action::Emit(action::UpdateOf<&Bevel::Width>(nodes, value), action::Phase::Stage);
-    } else if (drag.Value == Op::Inset) {
+    // Each step previews the operator from the stage base.
+    if (drag.Value == Op::Inset) {
         action::Emit(action::mesh::Inset{.Thickness = value, .Depth = 0.f, .Individual = drag.Individual, .Even = true}, action::Phase::Stage);
     } else {
         action::Emit(action::mesh::Bevel{.Width = value, .Segments = drag.Segments, .Vertices = drag.Value == Op::BevelVertices}, action::Phase::Stage);
@@ -932,7 +924,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
         // Transform root selections around their average position using the active entity's rotation and scale.
         const auto gizmo_active_entity = mode_scope.Bone ? FindActiveBone(r) : FindActiveEntity(r);
         const auto active_scale = gizmo_active_entity == state::Null ? vec3{1} : WorldTransformOf(r, gizmo_active_entity)->S;
-        // Edit-mode vertices only move on commit, so the pivot previews the pending delta.
+        // The edit-mode pivot is the drag's start pivot moved by the pending delta.
         const auto *start_pivot = r.try_get<const StartPivot>(state::Document);
         auto pivot = start_pivot ? *start_pivot : TransformPivot(r);
         if (mode_scope.MeshEdit) {
@@ -960,8 +952,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
         } else if (interact_result) {
             const auto &td = interact_result->Delta;
             if (mode_scope.MeshEdit) {
-                // Mesh Edit mode: store pending transform for shader-based preview.
-                // Actual vertex positions are only modified on commit.
+                // Each update emits the delta, which a transform node on each transformable mesh applies.
                 action::Emit(action::view::TransformElements{td}, action::Phase::Stage);
             } else {
                 // Store the gizmo pivot and delta for object and bone transforms.

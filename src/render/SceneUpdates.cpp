@@ -51,7 +51,7 @@ void WriteInstanceState(const state::Registry &r, GpuBuffers &buffers, state::En
 }
 
 bool IsSilhouetteEligible(const state::Registry &r, state::Entity mesh_entity) {
-    if (!r.valid(mesh_entity) || r.any_of<ObjectExtrasTag, ArmatureObject, BoneJoint>(mesh_entity) || !HasMesh(r, mesh_entity)) return false;
+    if (!r.valid(mesh_entity) || r.any_of<ObjectExtrasTag, ArmatureObject, BoneJoint>(mesh_entity) || !DrawsMesh(r, mesh_entity)) return false;
     return r.Resources.get<const MeshStore>().Arenas().FaceTriangles.Count(RecordOf(r, mesh_entity).FaceData) > 0u;
 }
 
@@ -60,8 +60,14 @@ void RetallyMesh(state::Registry &r, state::Entity mesh_entity) {
     auto &buffers = r.Resources.get<GpuBuffers>();
     const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &render = meshes.Render();
+    // An entity drawing another record than the one it tallied clears that record's tally, which a live Source record keeps otherwise.
+    if (const auto tallied = buffers.TalliedStores.find(mesh_entity); tallied != buffers.TalliedStores.end() && tallied->second != id) {
+        buffers.Retally(tallied->second, {});
+        buffers.TalliedStores.erase(tallied);
+    }
     const auto *mb = id ? meshes.TryGet(*id) : nullptr;
     if (!mb) return;
+    buffers.TalliedStores[mesh_entity] = *id;
     const auto *models = r.try_get<const ModelsBuffer>(mesh_entity);
     const Range range = models ? Range{models->InstanceRange.Offset, models->InstanceCount} : Range{};
     const auto scene_states = buffers.Instances.States | std::views::transform([&](const mtl::Buffer &states) { return states.GetSpan<uint8_t>(range); }) | std::ranges::to<std::vector>();
@@ -164,7 +170,7 @@ void BuildMeshlets(state::Registry &r, mtl::ComputeChain &chain, std::span<const
     std::vector<MeshletBuildSource> sources;
     sources.reserve(mesh_entities.size() * 3u + bone_entities.size());
     for (const auto entity : mesh_entities) {
-        const auto mesh = GetDrawnMesh(r, entity);
+        const auto mesh = GetMesh(r, entity);
         auto &mb = meshes.WriteRecord(mesh.GetStoreId());
         if (mesh.FaceCount()) sources.push_back({.Destination = &mb, .Topology = 0u, .ElementCount = mesh.TriangleIndexCount() / 3u});
         if (mesh.EdgeCount()) sources.push_back({.Destination = &mb, .Topology = 1u, .ElementCount = mesh.EdgeCount()});
@@ -201,7 +207,7 @@ bool BuildDemandedClusterLods(state::Registry &r, mtl::ComputeChain &chain) {
     // Arena offsets follow commit order, which is the demand set's entity order.
     std::vector<state::Entity> demanded;
     for (const auto entity : r.view<const ClusterLodDemand>() | std::ranges::to<std::vector>()) {
-        const auto *mb = HasMesh(r, entity) ? TryRecordOf(r, entity) : nullptr;
+        const auto *mb = DrawsMesh(r, entity) ? TryRecordOf(r, entity) : nullptr;
         if (!mb || meshes.ClusterGroupCount(*mb) != 0u || !ClusterLodApplies(Mesh{meshes, mb->StoreId}.FaceCount() > 0u, meshes.MeshletCount(*mb))) r.remove<ClusterLodDemand>(entity);
         else demanded.push_back(entity);
     }
@@ -220,7 +226,7 @@ bool BuildDemandedClusterLods(state::Registry &r, mtl::ComputeChain &chain) {
     for (uint32_t i = 0u; i < count; ++i) {
         const auto entity = demanded[i];
         const auto &mb = RecordOf(r, entity);
-        const auto mesh = GetDrawnMesh(r, entity);
+        const auto mesh = GetMesh(r, entity);
         // After an edit, the build covers exactly the triangles the live finest clusters contain, per primitive in walk order.
         if (mb.MeshletRevision > 1u || mb.RenderTopologies != 1u) {
             auto &triangles = live_triangles[i];

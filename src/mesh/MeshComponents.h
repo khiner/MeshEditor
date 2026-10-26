@@ -24,24 +24,15 @@ struct VertexStoreId {
     uint32_t StoreId;
 };
 
+// The record a procedure's instances place, held by its owned mesh entity.
 struct MeshHandle {
     uint32_t StoreId{~0u};
 };
-// The record a mesh entity's geometry procedure evaluates to, which its instances draw.
-// It is the source record itself when no node on the display path edits the source.
+// The record a mesh entity's geometry procedure evaluates to, which its instances draw and its display path edits in place.
 struct EvaluatedMesh {
     uint32_t StoreId;
-    uint32_t Source{InvalidOffset}; // The source record the evaluated record copies, or InvalidOffset for a record made otherwise
+    state::Entity Tip{state::Null}; // The last display-path node whose output the record holds, or null when the next cook evaluates every node
 };
-// Persistent on a mesh entity whose evaluated record copies its source, so the next cook restores only the blocks either record wrote.
-// It restores with the record it describes, so a cook after a restore takes the path a replay of the same actions takes.
-// The evaluated record and its source share local block indices, so a written local block names both records' blocks.
-struct ResyncState {
-    std::array<std::vector<uint32_t>, 6> Written{}; // The evaluated record's local blocks the last cook wrote
-    std::vector<uint32_t> Attributes{}; // The evaluated record's attributes holding their source attribute's copy
-    uint32_t Resyncs{}; // The cooks that restored the record since it was copied
-};
-
 // A new mesh's authored normals in polygon-corner order, held until its base normals derive and the custom corner-normal layer encodes them.
 struct AuthoredCornerNormals {
     std::vector<vec3> Corners;

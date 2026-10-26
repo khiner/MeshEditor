@@ -5,7 +5,6 @@
 #include "numeric/vec2.h"
 #include "numeric/vec3.h"
 
-#include <string>
 #include <variant>
 
 namespace primitive {
@@ -47,6 +46,9 @@ struct Cone {
 };
 } // namespace primitive
 
+// The parameters of one primitive generator.
+using PrimitiveParameters = std::variant<primitive::Plane, primitive::Circle, primitive::Cuboid, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone>;
+
 namespace primitive {
 inline constexpr FieldSpec SizeSpec(const char *help) { return {.Min = MinSize, .Max = MaxSize, .Speed = 0.01f, .Unit = FieldUnit::Meters, .Widget = FieldWidget::Drag, .Help = help}; }
 inline constexpr FieldSpec HalfExtentsSpec(const char *help) { return {.Min = MinSize / 2, .Max = MaxSize / 2, .Speed = 0.01f, .Unit = FieldUnit::Meters, .Widget = FieldWidget::Drag, .Label = "Half extents", .Help = help}; }
@@ -87,8 +89,3 @@ template<> inline constexpr field::SpecTable<primitive::Cone> Specs<primitive::C
     {&primitive::Cone::Height, primitive::SizeSpec("Distance from the base to the tip.")},
     {&primitive::Cone::Slices, {.Min = 3, .Max = 128, .Help = "Number of segments around the side"}},
 };
-
-inline std::string ToString(const PrimitiveShape &shape) {
-    static constexpr const char *Names[]{"Plane", "Circle", "Cube", "IcoSphere", "UVSphere", "Torus", "Cylinder", "Cone"};
-    return Names[shape.index()];
-}

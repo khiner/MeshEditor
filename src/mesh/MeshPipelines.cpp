@@ -131,7 +131,6 @@ constexpr std::array<std::pair<const char *, const char *>, size_t(MeshPass::Cou
     {"MeshTopology.metal", "TopologyBooleanScatter"},
     {"MeshTopology.metal", "TopologyFaceTables"},
     {"MeshTopology.metal", "TopologyGatherVertices"},
-    {"InsetPreview.metal", "InsetPreviewPositions"},
     {"VertexPositionEdit.metal", "PositionVerticesGather"},
     {"EdgeChains.metal", "SpaceEvenlyGather"},
     {"EdgeChains.metal", "RelaxEdgeLoopsGather"},

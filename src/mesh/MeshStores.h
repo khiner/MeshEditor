@@ -4,12 +4,12 @@
 
 #include <vector>
 
-// Derived: the entity holding each store record's mesh handle or evaluated mesh, by store ID, or null.
+// Derived: the entity drawing each store record, by store ID, or null.
 struct MeshEntities {
     std::vector<state::Entity> ByStore;
 };
 inline void Reset(MeshEntities &entities, state::Registry &) { entities.ByStore.clear(); }
 
 void RegisterMeshStoreHandlers(state::Registry &);
-// The mesh entity whose handle or evaluated mesh names the store record, or null.
+// The entity drawing the store record: the mesh entity evaluating to it, or the owned mesh entity holding it, or null.
 state::Entity MeshEntityOf(const state::Registry &, uint32_t store_id);

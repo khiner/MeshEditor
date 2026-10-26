@@ -15,15 +15,6 @@ kernel void FinalizeElementWorkKernel(
     FinishWork(bindless, work[group], tid, totals);
 }
 
-// Counts emissions before the host reserves sparse block tables, one add per SIMD group.
-// The host bounds each table by the blocks its domain's set spans, even when many vertices share the same faces.
-inline void CountWorkBlocks(device const BindlessSet &b, constant CommitPosedGeometryPushConstants &pc, uint field, uint amount) {
-    const uint total = simd_sum(amount);
-    if (!simd_is_first()) return;
-    device atomic_uint *count = BindlessBufferMutable(atomic_uint, b.Buffer, pc.Candidates.Storage.Slot) + pc.BudgetOffset + field;
-    atomic_fetch_add_explicit(count, total, memory_order_relaxed);
-}
-
 inline void MarkOwnedMeshlet(device const BindlessSet &b, constant CommitPosedGeometryPushConstants &pc, device const uint *meshlets, uint topology, uint handle) {
     const auto map=pc.ElementMeshlets[topology];
     if (map.Slot == InvalidSlot) return;
@@ -39,40 +30,21 @@ kernel void CommitPosedGeometryKernel(
     if (pc.Phase == 4u) {
         const uint i = WorkElement(bindless, pc.Candidates, invocation);
         if (i == InvalidOffset) return;
-        if (pc.Mode != GeometryEditMode::Refresh) {
-            device Vertex *vertices = BindlessBufferMutable(Vertex, bindless.VertexBuffer, pc.VerticesSlot);
+        if (pc.Mode == GeometryEditMode::Commit) return;
+        if (pc.Mode == GeometryEditMode::Preview) {
             const uint address = HandleAddress<MeshElementBlockSize>(bindless, pc.Entry.Connectivity.Tables.Vertices, i);
-            const bool selected = pc.SelectionSlot != InvalidSlot &&
-                (BindlessBuffer(uint, bindless.Buffer, pc.SelectionSlot)[address / 32u] & (1u << (address % 32u))) != 0u;
-            if (pc.Mode == GeometryEditMode::Commit && !selected) return;
-            const float3 base = float3(vertices[address].Position);
-            const float3 posed = pc.ApplyTransform != 0u && selected ? apply_geometry_edit_transform(base, pc.Primary, pc.Pivot, pc.Delta) : base;
-            if (pc.Mode == GeometryEditMode::Commit) {
-                if (all(base == posed)) return;
-                vertices[address].Position = packed_float3(posed);
-            } else {
-                const uint destination = PoseAttributeIndex(bindless, pc.PositionNodesSlot, pc.Entry.PositionNamespace, address);
-                device packed_float3 *output = BindlessBufferMutable(packed_float3, bindless.Buffer, pc.PositionSlot);
-                if (all(float3(output[destination]) == posed)) return;
-                output[destination] = packed_float3(posed);
-            }
+            const float3 position = float3(BindlessBuffer(Vertex, bindless.VertexBuffer, pc.VerticesSlot)[address].Position);
+            const uint destination = PoseAttributeIndex(bindless, pc.PositionNodesSlot, pc.Entry.PositionNamespace, address);
+            device packed_float3 *output = BindlessBufferMutable(packed_float3, bindless.Buffer, pc.PositionSlot);
+            if (all(float3(output[destination]) == position)) return;
+            output[destination] = packed_float3(position);
         }
         MarkWork(bindless, pc.ChangedVertices, i);
-    } else if (pc.Phase < 2u) {
+    } else if (pc.Phase == 1u) {
         const uint i = WorkElement(bindless, pc.Candidates, invocation);
         if (i == InvalidOffset) return;
         const ConnectivityView conn{bindless, pc.Entry.Connectivity, pc.Entry.FaceCount};
         const auto fan=conn.Fan(i);
-        if (pc.Phase == 0u) {
-            uint faces=0u, wires=0u;
-            for (const auto item : fan) {
-                if (item.y==InvalidOffset) ++wires;
-                else ++faces;
-            }
-            CountWorkBlocks(bindless, pc, 0u, faces);
-            CountWorkBlocks(bindless, pc, 2u, fan.Count ? wires : 1u);
-            return;
-        }
         const uint address = conn.VertexAddress(i);
         MarkWork(bindless, pc.BoundsTiles, address / 256u);
         device const uint *meshlets = SetTable(bindless, pc.MeshletSets, pc.MeshletSet);
@@ -87,11 +59,6 @@ kernel void CommitPosedGeometryKernel(
         device const uint *triangles = BindlessBuffer(uint, bindless.ObjectIdBuffer, pc.FaceTriangleStartSlot);
         const ConnectivityView conn{bindless, pc.Entry.Connectivity, pc.Entry.FaceCount};
         const uint2 loop = conn.FaceHalfedges(f);
-        if (pc.Phase == 2u) {
-            CountWorkBlocks(bindless, pc, 1u, loop.y - loop.x);
-            CountWorkBlocks(bindless, pc, 2u, loop.y - loop.x - 2u);
-            return;
-        }
         const uint first = triangles[conn.FaceAddress(f)], end = first + loop.y - loop.x - 2u;
         device const uint *corners = BindlessBuffer(uint, bindless.IndexBuffer, pc.Entry.CornersSlot);
         device const uint *meshlets = SetTable(bindless, pc.MeshletSets, pc.MeshletSet);

@@ -335,8 +335,26 @@ struct MeshStore {
     // Refresh aggregates for restored blocks and incident blocks.
     void ReconcileSelection(state::Registry &, mtl::ComputeChain &, std::span<const Change>);
 
+    // Settle the tracked storage and return the hash of its content.
+    store::Hash128 StateHash();
+    // Settle the tracked storage, pin a version of it as the kept version of its state, and return the state's hash.
+    store::Hash128 KeepState();
+    // Copy the record `source` as it stood in the state with hash `state` into a new record without render data or selection state.
+    // Read a kept version, or else the history's content logs, and return none when neither holds the state.
+    std::optional<uint32_t> CloneStored(store::Hash128 state, uint32_t source);
+    // Restore the record `id` to its content in the state with hash `state`, keeping its live allocations where they fit, and return the change that reconciles it.
+    // Read a kept version, or else the history's content logs, and return none when neither holds the state or the record is not alive in it.
+    // Complete CPU and GPU access to mesh storage first.
+    std::optional<Change> RestoreRecord(store::Hash128 state, uint32_t id);
+    // Restore every track to the kept version of the state with hash `state`, and return whether a kept version held it.
+    // Complete CPU and GPU access to mesh storage first, and reconcile the changes TakeChanges then returns.
+    bool RestoreKeptState(store::Hash128 state);
+    // Record the roots of each listed kept state in the history, persisting the content no recorded state holds.
+    void RecordKeptStates(std::span<const store::Hash128> states);
+    // End a history step that refers to the listed states: release the kept versions of every other state, recording those the previous step referred to.
+    void EndStepStates(std::span<const store::Hash128> states);
+
     // Capture destination pages before dispatching GPU writes to Persistent mesh data.
-    void CaptureVertexEdit(uint32_t id);
     void CaptureSelectionSummary(uint32_t id);
     void CaptureSelectionBlocks(Element, std::span<const uint32_t> blocks);
     void CaptureSharpnessWrite(uint32_t id, EditSharpnessOperation, const GeometrySelection &);
@@ -391,20 +409,10 @@ struct MeshStore {
     // Include render sets when `render` is true.
     // Submit queued copies before reading cloned ranges.
     std::vector<uint32_t> CloneMeshes(CloneCopies &, std::span<const uint32_t> source_ids, bool render);
-    // Resynchronize a non-render clone at ascending `written` blocks and changed table entries.
-    // Copy attributes absent from ascending `attributes`, then add their IDs to it.
-    // Return restored and removed blocks for ReconcileSelection.
-    Change Resync(CloneCopies &, uint32_t id, uint32_t source, const DomainBlocks &written, std::span<const uint32_t> written_attributes, std::vector<uint32_t> &attributes);
     // Move source elements into id, remapping handles and materials.
     // Use defaults for missing layers and attributes; retain id deformation channels.
     // The caller must release the emptied source record.
     void Join(state::Registry &, uint32_t id, uint32_t source);
-    // Ascending changed element blocks and released or renamed attribute IDs since TakeWrites.
-    struct Writes {
-        DomainBlocks Blocks{};
-        std::vector<uint32_t> Attributes{};
-    };
-    Writes TakeWrites();
     // Returns a vertex-only store ID that must be released with Release.
     uint32_t AllocateVertexBuffer(std::span<const vec3> positions, const MeshVertexAttributes &);
     void SetExtrasIndices(uint32_t id, std::span<const uint32_t> faces, std::span<const uint32_t> edges);
@@ -591,7 +599,6 @@ struct MeshStore {
     EditSelectionStorage GetEditSelectionStorage(uint32_t id) const;
     const EditSelectionSummary &GetSelectionSummary(uint32_t id) const;
 
-    SharpnessSummary GetFaceSharpnessSummary(uint32_t id) const;
     SharpnessSummary GetEdgeSharpnessSummary(uint32_t id) const;
     // Returns the class-buffer offset or a uniform-class sentinel.
     uint32_t GetCornerClassMode(uint32_t id) const;
@@ -641,6 +648,29 @@ private:
 
     struct HistoryState;
     std::unique_ptr<HistoryState> Tracked;
+    struct TrackOwner {
+        store::Pages *Pages{};
+        store::Records *Records{};
+    };
+    store::History *Hist{};
+    // Each mesh track's index in the history and its owner, in history registration order.
+    std::vector<size_t> TrackIndices;
+    std::vector<TrackOwner> Owners;
+    // Each owner's position in Owners, by its Pages or Records.
+    std::unordered_map<const void *, size_t> OwnerOf;
+    // Versions of every tracked mesh page and record, which a restore returns to exactly.
+    struct Version {
+        std::vector<store::Version> Tracks;
+    };
+    void Release(Version &);
+    struct StoredState;
+    // The kept versions stay within this count, since every pinned version slows the captures and restores of the tracks it shares.
+    static constexpr size_t MaxKeptStates = 8;
+    std::unordered_map<store::Hash128, Version, store::Hash128Hasher> KeptStates;
+    // The kept states in the order they were kept.
+    std::vector<store::Hash128> KeptOrder;
+    // The kept states the last history step referred to.
+    std::vector<store::Hash128> StepStates;
 
     // Pairs of source and destination arena blocks, indexed by ElementDomain.
     using BlockPairs = std::array<std::vector<uvec2>, 6>;
@@ -670,20 +700,6 @@ private:
     // Copy paired source blocks into destination blocks with matching live slots.
     // Values, mirrors, masks and vertex fans copy byte for byte.
     void CopyBlocks(CloneCopies &, uint32_t destination, uint32_t source, const BlockPairs &pairs);
-    // Release the domain block set and all associated layer and named-attribute ranges.
-    void ReleaseDomain(uint32_t id, ElementDomain);
-    void DetachBlocks(uint32_t id, ElementDomain, std::span<const uint32_t> blocks);
-    enum class WriteIndex : uint8_t { Elements,
-                                      Blocks };
-    struct WriteLog {
-        mtl::Buffer *Buffer;
-        ElementDomain Domain;
-        WriteIndex Index;
-        uint32_t Stride;
-        std::vector<std::pair<uint64_t, uint64_t>> Extents{};
-    };
-    std::vector<WriteLog> WriteLogs{}; // Fixed at construction, so each buffer keeps its log's address
-    std::vector<uint32_t> WrittenAttributes{};
 };
 
 decltype(auto) WithDomain(auto &arenas, MeshStore::ElementDomain domain, auto &&fn) {

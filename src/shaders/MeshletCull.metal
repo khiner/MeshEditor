@@ -48,7 +48,7 @@ inline CullInstance ResolveCullInstance(const thread Scene &scene, MeshletCullPu
     if (record.Mesh == InvalidOffset || (state & STATE_HIDDEN) != 0u) return {InvalidOffset, 0u, 0u, InvalidOffset, false};
     device const MeshDisplay &display = scene.MeshRecords(scene.View.MeshRecordSlot)[record.Mesh].Display;
     const bool deformed = record.ArmatureDeformOffset != InvalidOffset || display.MorphDeformOffset != InvalidOffset ||
-        PoseNamespace(record.PositionNamespace, display.PositionNamespace) != InvalidOffset || display.HasPendingVertexTransform != 0u;
+        PoseNamespace(record.PositionNamespace, display.PositionNamespace) != InvalidOffset;
     return {
         record.Mesh,
         InstanceFlags(display.Flags, display.PrimaryEditInstanceIndex, instance_slot, state),

@@ -80,6 +80,14 @@ struct BufferArena {
         transaction.Commit();
         return true;
     }
+    // Allocates exactly `range` when its storage is free, and returns whether it did.
+    bool Reserve(Range range) {
+        auto transaction = BeginAllocation();
+        if (!Allocator.Reserve(range)) return false;
+        Buffer.SetUsedSize(std::max(Buffer.UsedSize, uint64_t(range.Offset + range.Count) * sizeof(T)));
+        transaction.Commit();
+        return true;
+    }
     void Release(Range range) { Allocator.Free(range); }
     // Releases every range, freeing each run of adjacent ranges at once.
     void Release(std::vector<Range> ranges) {

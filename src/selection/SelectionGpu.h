@@ -2,7 +2,6 @@
 
 #include "gpu/EditSelectionOperation.h"
 #include "gpu/EditSelectionSummary.h"
-#include "gpu/EditSharpnessOperation.h"
 #include "metal/Bindless.h"
 
 #include "selection/SelectionSchema.h"
@@ -53,7 +52,6 @@ void ApplyEditSelectionLists(state::Registry &, std::span<const std::pair<state:
 void RefreshElementSelectionSummaries(state::Registry &, std::span<const state::Entity>, std::optional<Element> mode = {});
 // Brings each mesh's remembered element selection into `mode` and clears its active element.
 void ConvertElementSelections(state::Registry &, std::span<const state::Entity> mesh_entities, Element mode);
-void ApplyEditSharpness(state::Registry &, std::span<const state::Entity> mesh_entities, EditSharpnessOperation, bool value = false, float angle = 0.f);
 // Read the shared GPU summary after selection work has completed.
 // Other element domains have no current summary.
 const EditSelectionSummary *GetElementSelectionSummary(const state::Registry &, state::Entity mesh_entity, Element);

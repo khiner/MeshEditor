@@ -61,7 +61,7 @@ void TestDocumentSwitch(HistoryFixture &f, HistoryFixture &other) {
 
     f.Navigate(0);
     f.AddCube();
-    expect(f.R.all_of<MeshHandle>(viewport));
+    expect(f.R.all_of<primitive::Cuboid>(viewport));
     snapshot::ApplyWorkspace(f.R, other_workspace);
     expect(!f.R.all_of<ViewCameraState>(viewport));
     expect(snapshot::SerializeWorkspace(f.R) == other_workspace);
@@ -97,7 +97,7 @@ void TestHistory() {
         f.MoveCamera(viewport, {1, 2, 3});
         f.Undo();
         f.AddCube();
-        expect(f.R.all_of<MeshHandle>(viewport));
+        expect(f.R.all_of<primitive::Cuboid>(viewport));
         expect(!f.R.any_of<ViewportScene, ViewCameraState, Viewport>(viewport));
     });
     Scenario(f, other, "unique names", [](HistoryFixture &f) {

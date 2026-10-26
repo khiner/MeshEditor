@@ -13,18 +13,18 @@
 namespace snapshot::detail {
 
 void RegisterMesh(Tables &tables) {
-    // Restore procedure outputs and owned entities directly, and rederive only plans and node errors.
+    // Restore procedure outputs, the pins of the nodes they cooked and owned entities directly, and rederive only plans and node errors.
     Classify(
         tables,
         Concat(
             TypeList<
                 MeshActiveElement, MeshHandle, EvaluatedMesh, VertexStoreId, MeshElementSelection, MeshMaterialAssignment,
-                MeshMaterialSlotSelection, PrimitiveShape, ShadeSmoothAngle, TetBuffers, ResyncState,
-                procedure::GeometryProcedure, procedure::ProcedureInstances, procedure::ProcedureOwnedMesh, procedure::NodeLayout, procedure::NodeTheme, procedure::NodeSelected, procedure::InlineSelection, procedure::PublishSelection>{},
+                MeshMaterialSlotSelection, ShadeSmoothAngle, TetBuffers,
+                procedure::GeometryProcedure, procedure::SourceState, procedure::EditedInput, procedure::ProcedureInstances, procedure::ProcedureOwnedMesh, procedure::NodeLayout, procedure::NodeTheme, procedure::NodeSelected, procedure::InlineSelection, procedure::PublishSelection>{},
             procedure::NodeKinds{}
         ),
         TypeList<>{},
-        TypeList<MeshGeometryDirty, MeshPositionsChanged, AuthoredCornerNormals, procedure::CookPlan, procedure::NodeError>{}
+        TypeList<MeshGeometryDirty, MeshPositionsChanged, AuthoredCornerNormals, procedure::CookPlan, procedure::NodeError, procedure::StagedNode>{}
     );
 }
 } // namespace snapshot::detail

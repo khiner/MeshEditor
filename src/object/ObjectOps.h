@@ -2,6 +2,7 @@
 
 #include "CameraTypes.h"
 #include "object/ObjectCreateInfo.h"
+#include "numeric/uvec2.h"
 #include "render/LightComponents.h"
 #include "scene/Entity.h" // ObjectType
 
@@ -10,6 +11,9 @@
 
 struct Armature;
 struct MeshStore;
+namespace procedure {
+struct GeometryProcedure;
+} // namespace procedure
 
 // These operations are idempotent.
 void Show(state::Registry &, state::Entity);
@@ -20,7 +24,11 @@ void ApplyVisibility(state::Registry &, state::Entity);
 
 void ApplySelectBehavior(state::Registry &, state::Entity, MeshInstanceCreateInfo::SelectBehavior);
 
-// The mesh-data entity of the store record.
+// Creates a procedure node of the kind with default parameters at the grid cell.
+state::Entity CreateProcedureNode(state::Registry &, uint16_t kind, numeric::uvec2 position);
+// Returns a procedure of the root node of the kind, displayed, active and selected.
+procedure::GeometryProcedure RootedProcedure(state::Registry &, state::Entity root, uint16_t kind);
+// Creates a mesh entity drawing the store record, whose procedure's Source node takes the record's state as its history step ends.
 state::Entity AddMeshData(state::Registry &, uint32_t store_id);
 // Objects created without a parent join the frame's scene.
 // Callers apply SelectBehavior after entity creation.

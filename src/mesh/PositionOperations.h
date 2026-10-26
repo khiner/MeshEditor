@@ -63,6 +63,7 @@ struct PositionOperationOptions {
     std::optional<PositionTransform> Transform;
     std::optional<NamedAttributeRef> Attribute; // A vec3 vertex attribute the positions take, or add with PositionEditAttributeOffset
     NamedAttributeRef Factor{}; // A float vertex attribute holding the factor per vertex of a smooth, shrink/fatten or randomize, or none to read the factor
+    std::optional<float> SphereRadius{}; // The mean distance a sphere blend scales toward, or none for the mean distance of every target's selected vertices
 };
 struct PositionOperationChange {
     uint32_t TargetIndex;

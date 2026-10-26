@@ -187,21 +187,21 @@ void Apply(state::Registry &r, const Action &action) {
                         r.emplace<StartTransform>(instance_entity, *WorldTransformOf(r, instance_entity), ToTransform(GetParentDelta(r, instance_entity)));
                     }
                 }
-                // A transformable procedure mesh appends a transform node at the drag's first update, and each later update moves its delta.
-                const bool started = r.all_of<StartPivot>(state::Document);
+                // An update appends a transform node to each transformable mesh, or moves the delta of the node an earlier update of its stage appended, and an identity delta appends none.
                 const auto &pivot = StartPivotOf(r);
                 const auto &primaries = r.get<const EditPrimaries>(state::Document).Transformable;
-                if (started) {
-                    nodes::ForEachResultNode(r, [&](state::Entity mesh_entity, state::Entity node) {
-                        if (primaries.contains(mesh_entity) && r.all_of<procedure::TransformElements>(node)) r.patch<procedure::TransformElements>(node, [&](auto &p) { p.Delta = a.Delta; });
-                    });
-                } else {
+                if (a.Delta != Transform{}) {
                     for (const auto mesh_entity : mesh::SelectedEditMeshes(r)) {
                         const auto primary = primaries.find(mesh_entity);
-                        if (primary == primaries.end() || !r.all_of<procedure::GeometryProcedure>(mesh_entity)) continue;
+                        if (primary == primaries.end()) continue;
+                        if (const auto staged = nodes::StagedResultNode(r, mesh_entity, procedure::KindOf<procedure::TransformElements>); staged != state::Null) {
+                            r.patch<procedure::TransformElements>(staged, [&](auto &p) { p.Delta = a.Delta; });
+                            continue;
+                        }
                         const auto node = nodes::AppendNode(r, mesh_entity, procedure::KindOf<procedure::TransformElements>);
                         if (node == state::Null) return;
                         r.replace<procedure::TransformElements>(node, a.Delta, pivot.P, *WorldTransformOf(r, primary->second));
+                        r.emplace<procedure::StagedNode>(node);
                     }
                 }
                 r.emplace_or_replace<PendingTransform>(state::Document, pivot.P, pivot.R, a.Delta);

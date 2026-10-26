@@ -4,6 +4,7 @@
 #include "gpu/MeshletRouteMode.h"
 
 #include "state/Entity.h"
+#include <functional>
 #include <span>
 
 namespace MTL {
@@ -30,18 +31,13 @@ struct MeshVertexChanges {
     std::span<const Range> Ranges;
 };
 // Recomputes normals, polygon triangles and edit work for changed vertex ranges without mutating the vertices.
-// Submits where stale footprints or changed polygon triangles require host-side render repair.
-// One refresh records per chain submit.
+// Submits the chain once after recording a stale footprint, since the normal capture and the retessellation read it on the host.
+// Returns the render repair of the faces whose triangles changed, which the caller runs after the chain's next submit, or nothing.
 // History restoration already restores triangle pages and their render ownership.
-void RefreshEditedPositions(state::Registry &, mtl::ComputeChain &, std::span<const MeshVertexChanges>, bool retessellate = true);
-// Updates captured render triangles against the pending transform and repairs changed clusters.
-bool RefreshPreviewTessellation(state::Registry &);
-enum class PositionPublication { Commit,
-                                 Preview };
-// Publishes submitted edits, or a cached preview using its prepared candidate footprint without a readback.
-// Preview preserves edit work and updates selection and bounds; commit also invalidates LODs.
-// Records the remaining GPU updates on the chain and returns the meshes being published.
-std::vector<state::Entity> PublishEditedPositions(state::Registry &, mtl::ComputeChain &, std::span<const state::Entity>, PositionPublication = PositionPublication::Commit);
+std::function<void()> RefreshEditedPositions(state::Registry &, mtl::ComputeChain &, std::span<const MeshVertexChanges>, bool retessellate = true);
+// Publishes the edits the chain records, updating selection and bounds and invalidating LODs.
+// Records the remaining GPU updates on the chain.
+void PublishEditedPositions(state::Registry &, mtl::ComputeChain &, std::span<const state::Entity>);
 
 // A pixel rectangle on a render target.
 struct PixelRect {
@@ -114,6 +110,9 @@ void RecordRenderCommandBuffer(state::Registry &, state::Entity viewport, MTL::C
 // Records every blur step and the resolve into one command buffer using one view-UBO instance per step.
 void RecordBlurStepsCommandBuffer(state::Registry &, state::Entity viewport, MTL::CommandBuffer *, std::span<const uint32_t> sample_weights);
 
+// Rebinds and refreshes the meshes whose storage a restore changed, and repoints the instances of `restored_meshes`, whose drawn records it replaced.
+void ReconcileRestoredMeshes(state::Registry &, std::vector<state::Entity> restored_meshes);
+
 // Resolves whether the listed mesh entities retain authored shading normals under morphing.
 // The CPU resolves targets with authored normal deltas.
 // Position-only targets derive their full-weight poses on the chain, which submits once for them.
@@ -124,11 +123,7 @@ void UpdateAuthoredMorphShading(state::Registry &, mtl::ComputeChain &, std::spa
 // Encodes the authored corner normals of each mesh entity holding them, resolves its authored-morph-shading gate, and drops the stored normals.
 // Call once its base normals derived and the host can read them.
 void FinalizeAuthoredShading(state::Registry &, mtl::ComputeChain &);
-
-// Records the evaluation of the final pending edit into canonical positions and affected normals on the chain.
-// Returns the committed meshes, whose changed vertices PublishEditedPositions reads once the chain submits.
-std::vector<state::Entity> CommitPosedGeometry(state::Registry &, mtl::ComputeChain &, std::span<const state::Entity> mesh_entities);
-// Removes the mesh's edit work, if any, and rederives its display fields, and its layout when the work required a pose, at the end of the settle pass.
+// Removes the mesh's edit work, if any, and rederives its display fields at the end of the settle pass.
 void ReleaseMeshEditWork(state::Registry &, state::Entity mesh_entity);
 // The MeshEditWork destroy handler, which releases the work's geometry work ranges.
 void ReleaseMeshEditWorkRanges(state::Registry &, state::Entity mesh_entity);

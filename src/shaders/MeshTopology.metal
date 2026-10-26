@@ -11,7 +11,6 @@
 #include "MeshTopologyConcave.metal"
 #include "MeshTopologyWeld.metal"
 #include "MeshTopologyBoolean.metal"
-#include "gpu/InsetVertexBasis.h"
 
 inline uint3 TopoFaceOutputs(TopoContext ctx, MeshTopologyJob job, uint f) {
     if (TopologyIsMerge(job.Op)) return TopoWeldCounts(ctx,job,f);
@@ -1622,10 +1621,6 @@ kernel void TopologyGatherVertices(
         }
         if (job.Op == MeshTopologyOp::InsetRegion || job.Op == MeshTopologyOp::InsetIndividual) position += width * TopoParam0Vertex(ctx, job, v.x) + depth * TopoParamAt(ctx, job.Param1Attribute, job.Param1, ctx.SrcVertexDomain(job).Handle(v.x));
         ctx.DstVertices(job)[d].Position = position;
-        if (job.DstInsetBasis.Slot != InvalidSlot) {
-            reinterpret_cast<device InsetVertexBasis *>(BindlessBufferMutable(uint,bindless.Buffer,job.DstInsetBasis.Slot) + job.DstInsetBasis.Offset)[d] =
-                {ctx.DstVertexDomain(job).Handle(d),packed_float3(base),packed_float3(width),packed_float3(depth)};
-        }
     }
     if (job.DstFaceCount == 0u) {
         const auto src = ctx.SrcVertexNormals(job);

@@ -481,10 +481,8 @@ void SetupDocument(state::Registry &r) {
 
 void AddDefaultSceneContent(state::Registry &r) {
     auto &meshes = r.Resources.get<MeshStore>();
-    constexpr PrimitiveShape default_shape{primitive::Cuboid{}};
-    const auto created = CreateMesh(r, {.Data = primitive::CreateMesh(default_shape), .FlatShaded = true});
-    const auto [mesh_entity, _] = ::AddMesh(r, created.StoreId, MeshInstanceCreateInfo{.Name = ToString(default_shape)});
-    r.emplace<PrimitiveShape>(mesh_entity, default_shape);
+    const auto created = CreateMesh(r, {.Data = primitive::CreateMesh(primitive::Cuboid{}), .FlatShaded = true});
+    ::AddMesh(r, created.StoreId, MeshInstanceCreateInfo{.Name = "Cube"});
 
     // Match Blender's startup scene in its Z-up, negative-Y-forward frame.
     constexpr vec3 LightLoc{4.07625, 1.00545, 5.90386}, CameraLoc{7.358891, -6.925791, 4.958309}, CameraEulerXYZ{1.109319, 0, 0.815801};

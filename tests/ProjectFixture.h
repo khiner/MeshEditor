@@ -133,7 +133,7 @@ struct Fixture : Engine {
 
 inline uint64_t Cooks(const state::Registry &r) { return r.Resources.get<const CookCount>().Value; }
 
-// The live application at a node: the first viewport's image, the document, the workspace, and each mesh's drawn record.
+// The live application at a node: the first viewport's image, the document, the workspace, and the record each mesh, owned mesh and Source node holds.
 // The document and the drawn records belong to the node, while the image and the workspace follow the view, which history leaves alone, so only the present compares them.
 struct Live {
     std::vector<std::byte> Image, Document, Workspace;
@@ -142,9 +142,8 @@ struct Live {
         : Image(Render ? f.Image() : std::vector<std::byte>{}), Document(f.P->History.MaterializeLive()), Workspace(snapshot::SerializeWorkspace(f.R)), Outputs(DrawnShapes(f)) {}
     static std::map<state::Entity, Shape> DrawnShapes(Fixture &f) {
         std::map<state::Entity, Shape> shapes;
-        for (const auto e : f.R.view<const MeshHandle>()) {
-            if (const auto id = DrawnStoreId(f.R, e)) shapes.emplace(e, Describe(f.Store(), *id));
-        }
+        for (const auto e : f.R.view<const EvaluatedMesh>()) shapes.emplace(e, Describe(f.Store(), *DrawnStoreId(f.R, e)));
+        for (const auto e : f.R.view<const MeshHandle>()) shapes.emplace(e, Describe(f.Store(), *DrawnStoreId(f.R, e)));
         return shapes;
     }
     void Check(Fixture &f, bool present) const {
@@ -158,6 +157,7 @@ struct Live {
 
 // Every recorded node restores without cooking, hot and then cold, and each one made by actions replays.
 // A history made by actions alone replays whole and reopens from an actions archive, and the present reopens from a saved project, each with the workspace applied.
+// The reopened present's actions replay from its parent to the same document, before and after clearing the history.
 inline void CheckHistory(Fixture &f, Fixture &other, const std::map<uint32_t, Live> &nodes, const std::set<uint32_t> &direct, const TestDir &dir) {
     using boost::ut::expect;
     auto &p = *f.P;
@@ -207,6 +207,16 @@ inline void CheckHistory(Fixture &f, Fixture &other, const std::map<uint32_t, Li
     expect(other.P->RestoredWorkspace == bytes);
     snapshot::ApplyWorkspace(other.R, live.Workspace);
     live.Check(other, true);
+    const auto parent = other.P->History.Nodes[present].Parent;
+    if (!parent || direct.contains(present)) return;
+    const auto actions = other.P->History.Nodes[present].Actions;
+    for (const bool clear : {false, true}) {
+        other.P->Navigate(*parent);
+        if (clear) expect(other.P->ClearHistory());
+        expect(other.P->History.Callbacks.Replay(actions).has_value());
+        expect(other.P->History.MaterializeLive() == live.Document);
+        other.Audit();
+    }
 }
 
 // Runs `script` on a new project in `f`, recording each node it reaches after the check a fixture runs at each step, then checks the history it built through `other`.

@@ -27,6 +27,7 @@ enum class RecordKind : uint8_t {
     Navigate, // Restore Parent when reopening.
     Replace, // Give the node named by Parent new content and drop its descendants.
     State, // Give the node named by Parent the content its replay produced.
+    Kept, // Record the manifest roots of some tracks in the state with a given hash.
 };
 
 struct HistoryNode {
@@ -52,6 +53,15 @@ struct HistoryPosition {
     std::vector<Hash128> Roots;
 };
 
+// The hash that identifies the content of tracks with these stamps.
+Hash128 StateHash(std::span<const Stamp>);
+
+// Manifest roots of some tracks in the state with a given hash, which Clear retains.
+struct KeptState {
+    std::vector<uint32_t> Tracks;
+    std::vector<Hash128> Roots;
+};
+
 struct HistoryStats {
     uint64_t OwnedBytes{}, SharedNodeBytes{};
     size_t HotNodes{}, ColdNodes{};
@@ -63,6 +73,8 @@ struct History {
         std::function<std::expected<void, std::string>(std::span<const std::byte> action)> Replay{};
         // Replace live state with the empty state that baseline actions run from, resolving project files in dir.
         std::function<void(const std::filesystem::path &dir)> Reset{};
+        // Run before Save flushes the logs, so the records a reopened history reads are written.
+        std::function<void()> BeforeSave{};
         // Run before restoring any track.
         std::function<void()> BeforeRestore{};
         // Run after every track is restored and before enabling track writes.
@@ -114,6 +126,12 @@ struct History {
     Snapshot Pin();
     std::expected<void, std::string> Restore(const Snapshot &);
     void Release(Snapshot &);
+    // The listed tracks' manifest roots in the state whose StateHash over their stamps is `state`, from a node recording it or a kept state, or empty when none holds it.
+    std::vector<Hash128> RootsOf(Hash128 state, std::span<const size_t> tracks) const;
+    // Record the roots of the state with hash `state` that a node holds, so it resolves after Clear drops that node.
+    void Keep(Hash128 state, std::span<const size_t> tracks);
+    // Record the roots of the state with hash `state` from the listed tracks' pinned versions of it, persisting the content no recorded state holds.
+    void Keep(Hash128 state, std::span<const size_t> tracks, std::span<const Version> versions);
 
     // Record the present node, flush streams to the OS cache, and return whether all writes and flushes succeeded.
     bool Save();
@@ -168,6 +186,7 @@ struct History {
         uint64_t Size{};
     };
 
+    std::unordered_map<Hash128, KeptState, Hash128Hasher> Kept;
     std::vector<Tracked> Tracks;
     std::vector<Pages *> PageTracks;
     std::vector<Records *> RecordTracks;
@@ -184,5 +203,18 @@ struct History {
     std::array<std::vector<char>, 3> StreamBuffers; // Appends reach the OS on flush or when a buffer fills.
     std::array<std::ofstream, 3> Streams; // Leaf, node, and tree logs, buffered by StreamBuffers.
     std::string IntegrityError;
+};
+
+// Reads slots of recorded states from the content logs, flushed when the reader opens.
+struct StateReader {
+    explicit StateReader(History &);
+    bool Open() const { return Leaves && Nodes; }
+    // The slot's encoded value in the state where the track's manifest root is `root`, empty for an absent or default slot, or none for missing records.
+    std::optional<std::vector<std::byte>> Read(size_t track, Hash128 root, uint64_t slot);
+    // The ascending slots whose content in that state differs from the track's live content, or none when its records are missing.
+    std::optional<std::vector<uint64_t>> DifferingSlots(size_t track, Hash128 root);
+
+    History &Hist;
+    std::ifstream Leaves, Nodes;
 };
 } // namespace store

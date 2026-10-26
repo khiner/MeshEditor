@@ -19,10 +19,10 @@ inline constexpr uint32_t TopologyScratchWords = 64u << 10;
 // Retain source corner and triangle identities until render repair completes.
 // The document transaction restores canonical storage on cancellation.
 struct MeshTopologyEdit {
-    // Construct tasks on chain, optionally capturing inset bases.
-    // KeepSelectedFaces and Boolean create meshes; other tasks edit their source.
+    // Construct tasks on chain.
+    // KeepSelectedFaces and Boolean create meshes, and other tasks edit their source.
     // An unchanged edit has no Output.
-    static std::vector<MeshTopologyEdit> Construct(state::Registry &, mtl::ComputeChain &, std::span<const MeshTopologyTask>, BufferArena<uint32_t> *inset_basis = nullptr);
+    static std::vector<MeshTopologyEdit> Construct(state::Registry &, mtl::ComputeChain &, std::span<const MeshTopologyTask>);
     MeshTopologyEdit(MeshTopologyEdit &&) noexcept;
     ~MeshTopologyEdit();
     // The edits of one construction share publication's submit.
@@ -58,9 +58,6 @@ struct MeshTopologyEdit {
     // Handles of newly created vertices, listed in the chain's scratch when they are not one run.
     // Retained output vertices live in Output->Vertices, and overlay ownership only needs new ones.
     ElementHandleRange NewVertices{};
-    // The words of a staged inset's GPU-resident source basis in the arena Construct captured it into.
-    // Output order is local to this edit and includes retained and newly created vertices.
-    Range InsetBasis{};
     // Blocks whose edges and faces can border the repaired vertices after publication: the neighborhood's and the new ones.
     std::array<std::vector<uint32_t>, 2> RepairedBlocks; // Edges, faces
 
@@ -81,5 +78,5 @@ private:
     // Lays out the operator's job and workspaces for its count passes, an in-place edit reading its source through `view`.
     void PrepareCounts(state::Registry &, const MeshTopologyTask &, Closures &, const std::shared_ptr<const TopologyReadView> &view);
     // Reads the output counts and identity plan once the chain has submitted them.
-    void ReadCounts(BufferArena<uint32_t> *inset_basis);
+    void ReadCounts();
 };

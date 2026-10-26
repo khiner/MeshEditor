@@ -1,8 +1,10 @@
 #include "mesh/MeshClone.h"
 
 #include "mesh/MeshPipelines.h"
+#include "mesh/MeshStore.h"
 #include "metal/Dispatch.h"
 #include "metal/MetalCpp.h"
+#include "state/Registry.h"
 
 namespace {
 // Records one dispatch per buffer over its jobs, each job taking `tiles_of(job)` tiles of `width` threads.
@@ -75,3 +77,17 @@ void CloneCopies::Encode(mtl::ComputeChain &chain, const MeshPipelines &pipeline
     EncodeRuns(chain, pipelines[MeshPass::CloneCopyByteRuns], Copies, CloneRunThreads, [](const ByteCopy &job) { return uint32_t((job.Bytes + CloneCopyTileBytes - 1u) / CloneCopyTileBytes); });
     EncodeRuns(chain, pipelines[MeshPass::CloneOffsetHandles], Offsets, CloneRunThreads, [](const HandleOffset &job) { return (job.Count + CloneRunThreads - 1u) / CloneRunThreads; });
 }
+
+std::vector<uint32_t> CloneRecords(state::Registry &r, std::span<const uint32_t> ids) {
+    auto &meshes = r.Resources.get<MeshStore>();
+    for (const auto id : ids) meshes.PlanClone(Mesh{meshes, id});
+    meshes.CommitReserves();
+    CloneCopies copies;
+    auto clones = meshes.CloneMeshes(copies, ids, false);
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    copies.Encode(chain, GetMeshPipelines(r));
+    chain.Submit();
+    meshes.RebuildSelectionIndex(clones);
+    return clones;
+}
+uint32_t CloneRecord(state::Registry &r, uint32_t id) { return CloneRecords(r, std::array{id}).front(); }

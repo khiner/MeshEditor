@@ -4,6 +4,7 @@
 #include "mesh/Primitives.h"
 #include "physics/PhysicsChanges.h"
 #include "physics/PhysicsTypes.h"
+#include "procedure/Procedure.h"
 #include "scene/Entity.h"
 #include "state/Registry.h"
 using numeric::Max;
@@ -11,6 +12,22 @@ using numeric::Max;
 namespace {
 state::Entity ColliderMesh(const state::Registry &r, state::Entity collider, const ColliderShape &shape) {
     return shape.MeshEntity != state::Null ? shape.MeshEntity : FindMeshEntity(r, collider);
+}
+// The parameters of the generator a mesh displays, when every generator parameter is unlinked.
+std::optional<PrimitiveParameters> PrimitiveOf(const state::Registry &r, state::Entity mesh_entity) {
+    using namespace procedure;
+    const auto *procedure = r.try_get<const GeometryProcedure>(mesh_entity);
+    if (!procedure || procedure->DisplayNode == NoNode) return {};
+    const auto display = procedure->DisplayNode;
+    const auto first = InputFirst(*procedure, display);
+    const auto inputs = std::span{procedure->Inputs}.subspan(first, InputCount[procedure->Nodes[display].Kind]);
+    if (std::ranges::any_of(inputs, [](SocketLink input) { return input.FromNode != NoNode; })) return {};
+    std::optional<PrimitiveParameters> parameters;
+    const auto [entity, kind] = procedure->Nodes[display];
+    VisitKind(kind, [&]<typename K> {
+        if constexpr (Generator<K>) parameters = r.get<const K>(entity);
+    });
+    return parameters;
 }
 } // namespace
 
@@ -68,7 +85,7 @@ void RederiveColliders(state::Registry &r, std::span<const state::Entity> entiti
         bool authored_primitive = false;
 
         if (policy->AutoFitDims && !policy->LockedKind) {
-            if (const auto *prim = r.try_get<const PrimitiveShape>(mesh_entity)) {
+            if (const auto prim = PrimitiveOf(r, mesh_entity)) {
                 authored_primitive = true;
                 shape = std::visit(
                     overloaded{

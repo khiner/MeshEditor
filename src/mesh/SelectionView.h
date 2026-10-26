@@ -49,18 +49,6 @@ struct SelectionView {
             }
         });
     }
-    // Visits the arena address of each marked element, in ascending block order.
-    void ForEachAddress(auto &&visit) const {
-        if (!Selected) return;
-        Tree.Visit(Kind, false, [&](uint32_t block) {
-            for (uint32_t w = 0u; w < MeshElementBlockWords; ++w) {
-                for (auto bits = Bits[block * MeshElementBlockWords + w]; bits; bits &= bits - 1u) {
-                    visit(ElementAddress::InBlock<MeshElementBlockSize>(block, w * 32u + uint32_t(std::countr_zero(bits))));
-                }
-            }
-            return true;
-        });
-    }
     std::optional<uint32_t> Extreme(bool last) const {
         if (!Selected) return {};
         const auto blocks = MarkedBlocks(Tree, Kind, Membership);

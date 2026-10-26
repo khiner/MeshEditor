@@ -6,7 +6,6 @@
 #include "Profile.h"
 #include "action/Dispatch.h"
 #include "action/Errors.h"
-#include "action/InsetPreview.h"
 #include "animation/Keying.h"
 #include "armature/Armature.h"
 #include "editor/AudioIntegration.h"
@@ -19,14 +18,11 @@
 #include "procedure/Cook.h"
 #include "procedure/Procedure.h"
 #include "project/Assets.h"
-#include "render/ClusterLod.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
 #include "render/MaterialComponents.h"
-#include "render/MeshletBuildGpu.h"
 #include "render/RenderChanges.h"
-#include "render/SceneUpdates.h"
 #include "render/Textures.h"
 #include "selection/SelectionComponents.h"
 #include "snapshot/Workspace.h"
@@ -82,7 +78,7 @@ std::vector<Project::RecordedAction> Decode(std::span<const std::byte> bytes) {
 }
 bool Editable(std::span<const Project::RecordedAction> recorded_actions) {
     return std::ranges::any_of(recorded_actions, [](const auto &recorded_action) {
-        return !recorded_action.Inputs.PreviewSeed && action::VisitLeaf(recorded_action.Action, []<typename L>(const L &) { return !std::is_empty_v<L>; });
+        return action::VisitLeaf(recorded_action.Action, []<typename L>(const L &) { return !std::is_empty_v<L>; });
     });
 }
 std::filesystem::path *SourcePath(action::Action &a) {
@@ -178,7 +174,12 @@ void Project::TrackStores() {
             auto replayed = RunRecorded(Decode(bytes));
             snapshot::ApplyWorkspace(R, workspace);
             Settle(EventPass::Settle);
+            // The replayed step ends as its commit did.
+            FinishSourceStates(R);
+            EndMeshStates(R);
+            EndCookStep(R);
             return replayed; },
+        .BeforeSave = [this] { RecordMeshStates(R); },
         .Reset = [this](const std::filesystem::path &dir) {
             R.Resources.get<Assets>().Directory = dir;
             // A replay from the empty state rebuilds the document and leaves the workspace as it was.
@@ -230,10 +231,14 @@ bool Project::Begin(const std::filesystem::path &dir) {
     const auto previous = std::exchange(directory, dir);
     WaitForRender(R);
     Settle(EventPass::Settle);
+    FinishSourceStates(R);
+    EndCookStep(R);
     const bool editable = Editable(RecordedActions);
     const bool begun = History.Begin(dir, Encode(RecordedActions));
     RecordedActions.clear();
     if (begun) {
+        EndMeshStates(R);
+        RecordMeshStates(R);
         History.Nodes.front().Editable = editable;
         DirectoryLock = std::move(lock);
         SavedPath.clear();
@@ -406,6 +411,8 @@ bool Project::ClearHistory() {
         saved = ReadSavedState(*this, SavedPath);
         if (!saved) return false;
     }
+    // The Source nodes and edited inputs refer to states of the nodes Clear drops.
+    RecordMeshStates(R);
     if (!History.Clear(saved ? &saved->Position : nullptr)) return false;
     RecordedActions.clear();
     ++Revision;
@@ -413,6 +420,7 @@ bool Project::ClearHistory() {
 }
 bool Project::Close() {
     ReleaseGesture();
+    RecordMeshStates(R);
     const bool closed = History.Close();
     DirectoryLock = {};
     SavedPath.clear();
@@ -420,10 +428,8 @@ bool Project::Close() {
     return closed;
 }
 
-void Project::Tick(const action::Action &a, EventPass pass, bool staged) {
-    Previewing = staged && action::IsPreview(a);
+void Project::Tick(const action::Action &a, EventPass pass) {
     std::visit([&](const auto &domain) { Apply(R, domain); }, a);
-    Previewing = false;
     Settle(pass);
 }
 std::expected<void, std::string> Project::RunRecorded(std::span<const RecordedAction> recorded_actions) {
@@ -445,20 +451,9 @@ std::expected<void, std::string> Project::RunRecorded(std::span<const RecordedAc
         }
         frame.DeltaTime = inputs.DeltaTime;
         frame.FixedFrameStep = inputs.FixedFrameStep;
-        bool updated_inset = false;
-        if (inputs.Staged && InsetPreview) {
-            if (const auto *mesh = std::get_if<action::mesh::Action>(&a); mesh) {
-                if (const auto *inset = std::get_if<action::mesh::Inset>(mesh)) updated_inset = action::mesh::UpdateInsetPreview(R, *inset, *InsetPreview);
-            }
-        }
-        if (updated_inset) Settle(inputs.Pass);
-        else {
-            InsetPreview.reset();
-            Tick(a, inputs.Pass, inputs.Staged);
-        }
+        Tick(a, inputs.Pass);
         if (R.Resources.get<action::Errors>().Messages.size() != errors) break;
     }
-    InsetPreview.reset();
     EndGesture(EventPass::Settle);
     frame = saved;
     const auto &messages = R.Resources.get<action::Errors>().Messages;
@@ -486,39 +481,29 @@ bool Project::Record(action::Action a, EventPass pass, bool staged) {
         GestureBase = History.Pin();
         GestureStart = RecordedActions.size();
     }
-    // Reapply from the gesture base.
-    // Canonical geometry, normals and render dependencies restore only their changed pages and allocation paths.
+    // Reapply a preview from its stage's base, or edit the nodes the stage appended, whose cook restores their records to the states before them.
     const bool same_kind = staged && StageFirst && Kind(RecordedActions[*StageFirst].Action) == Kind(a);
     const bool preview = action::IsPreview(a);
-    bool updated_inset = false;
+    const bool patch = same_kind && preview && action::PatchesPreview(a);
     if (same_kind && preview) {
-        if (const auto *mesh = std::get_if<action::mesh::Action>(&a); mesh && InsetPreview) {
-            if (const auto *inset = std::get_if<action::mesh::Inset>(mesh)) updated_inset = action::mesh::UpdateInsetPreview(R, *inset, *InsetPreview);
-        }
-        if (!updated_inset) {
-            InsetPreview.reset();
-            (void)History.Restore(*GestureBase);
-        }
-    } else {
-        InsetPreview.reset();
+        if (!patch) (void)History.Restore(*StageBase);
+    } else if (staged && recordable) {
+        if (StageBase) History.Release(*StageBase);
+        StageBase = History.Pin();
     }
     // An earlier action in the frame can change the acting scene, so each record takes it as it stands.
     auto &frame = R.Resources.get<FrameState>();
     frame.Scene = ActingScene(R);
     RecordedAction recorded_action{
-        {frame.Scene, frame.DeltaTime, R.get<const PlaybackFrame>(state::Document).Value, R.get<const TimelinePlayback>(state::Document).CurrentFrame, frame.FixedFrameStep, pass, staged},
+        {frame.Scene, frame.DeltaTime, R.get<const PlaybackFrame>(state::Document).Value, R.get<const TimelinePlayback>(state::Document).CurrentFrame, frame.FixedFrameStep, pass},
         std::move(a),
     };
-    const auto cooks = R.Resources.get<const CookCount>().Value;
-    if (updated_inset) Settle(pass);
-    else Tick(recorded_action.Action, pass, staged);
+    Tick(recorded_action.Action, pass);
     if (!recordable || R.Resources.get<action::Errors>().Messages.size() != errors) return false;
     ++Revision;
-    // A staged inset keeps its construction action and final parameter update so replay repeats the same meshlet partition and GPU refit.
-    // A step that cooked a procedure over the previous step stays recorded, since the next step builds on the record it cooked.
-    if (same_kind && (preview || R.Resources.get<const CookCount>().Value == cooks)) {
-        RecordedActions.resize(*StageFirst + (updated_inset ? 1u : 0u));
-        if (updated_inset) RecordedActions[*StageFirst].Inputs.PreviewSeed = true;
+    // The last step of a kind in a stage stands for the stage.
+    if (same_kind) {
+        RecordedActions.resize(*StageFirst);
     } else if (staged) {
         StageFirst = RecordedActions.size();
     }
@@ -539,6 +524,9 @@ void Project::RecordKeys() {
     if (animation::AnyChanged(R, seconds)) Record(action::MakeAction(action::animation::RecordChanged{}), EventPass::Settle);
 }
 uint32_t Project::Commit(std::string label, std::optional<uint32_t> replace) {
+    // The step's new Source nodes take the state it ends with, which the node it commits records.
+    FinishSourceStates(R);
+    EndCookStep(R);
     // A commit indexes the mesh records its actions wrote, so a later restore costs only its own change.
     R.Resources.get<MeshStore>().IndexHistory();
     const bool editable = Editable(RecordedActions);
@@ -546,6 +534,8 @@ uint32_t Project::Commit(std::string label, std::optional<uint32_t> replace) {
     const bool in_place = replace && History.Nodes[*replace].Children.empty();
     const auto created = uint32_t(History.Nodes.size());
     const auto node = in_place ? History.Replace(*replace, std::move(bytes)) : History.Commit(std::move(label), std::move(bytes));
+    // The states the step no longer refers to persist after the step's own content, which they share.
+    EndMeshStates(R);
     // A commit matching an existing node's state keeps that node and its actions.
     if (in_place || node == created) History.Nodes[node].Editable = editable;
     Editing.reset();
@@ -555,7 +545,6 @@ uint32_t Project::Commit(std::string label, std::optional<uint32_t> replace) {
 }
 void Project::FinishGesture(EventPass pass) {
     if (!HasStaged()) return;
-    InsetPreview.reset();
     // An edit keeps the node's label, and a new node names every distinct action in the gesture, in order.
     if (Editing) {
         Settle(pass);
@@ -585,7 +574,6 @@ Project::EditDraft &Project::DraftOf(uint32_t node) {
 }
 void Project::RestageDraft() {
     if (!Draft) return;
-    InsetPreview.reset();
     if (Editing != Draft->Node && !EditNode(Draft->Node)) return;
     if (GestureBase) {
         if (!History.Restore(*GestureBase)) return;
@@ -604,9 +592,11 @@ void Project::RestageDraft() {
     ++Revision;
 }
 void Project::ReleaseGesture() {
-    InsetPreview.reset();
+    EndCookStep(R);
     if (GestureBase) History.Release(*GestureBase);
+    if (StageBase) History.Release(*StageBase);
     GestureBase.reset();
+    StageBase.reset();
     StageFirst.reset();
 }
 void Project::ClearInteraction() {
@@ -753,10 +743,10 @@ bool Project::Audit(std::string &why) {
         why = error.what();
         return false;
     }
-    // Resolve restored mesh entities by their store IDs.
-    for (const auto [entity, handle] : R.view<const MeshHandle>().each()) {
-        if (MeshEntityOf(R, handle.StoreId) == entity) continue;
-        why = "Mesh store " + std::to_string(handle.StoreId) + " does not map to its entity.";
+    // Resolve restored drawing entities by their store IDs.
+    for (const auto [entity, evaluated] : R.view<const EvaluatedMesh>().each()) {
+        if (MeshEntityOf(R, evaluated.StoreId) == entity) continue;
+        why = "Mesh store " + std::to_string(evaluated.StoreId) + " does not map to its entity.";
         return false;
     }
     return R.Resources.get<const MeshStore>().Audit(why) && History.Audit(why);
@@ -776,7 +766,7 @@ void Project::AfterRestore() {
         // The name hooks track created and destroyed names, and an overwritten name escapes them.
         names_changed |= type == state::Type<Name>() && event == state::Event::Update;
         if (type == state::Type<Armature>()) R.remove<ArmaturePoseState>(entity);
-        if ((type == state::Type<MeshHandle>() || type == state::Type<EvaluatedMesh>()) && R.all_of<MeshHandle>(entity)) restored_meshes.push_back(entity);
+        if ((type == state::Type<MeshHandle>() || type == state::Type<EvaluatedMesh>()) && DrawsMesh(R, entity) && !R.all_of<procedure::NodeLayout>(entity)) restored_meshes.push_back(entity);
         sources_changed |= type == state::Type<gltf::SourceAssets>();
         manifest_changed |= type == state::Type<MaterializedTextures>();
     }
@@ -794,52 +784,8 @@ void Project::AfterRestore() {
         ReleaseUnlistedTextures(R, manifest ? std::span{manifest->Items} : std::span<const MaterializedTexture>{});
     }
     if (sources_changed || manifest_changed) R.Resources.get<RenderChanges>().MaterializedTextures.emplace(state::Document);
-    auto &meshes = R.Resources.get<MeshStore>();
-    const auto changes = meshes.TakeChanges();
-    mtl::ComputeChain chain{meshes.BufferContext()};
-    meshes.ReconcileSelection(R, chain, changes);
+    ReconcileRestoredMeshes(R, std::move(restored_meshes));
     auto &buffers = R.Resources.get<GpuBuffers>();
-    // Rebind GPU mesh records after restore and remove retired records from flag totals.
-    for (const auto &change : changes) {
-        if (!(change.Bits & MeshStore::EntryChanged)) continue;
-        RefreshMeshBinding(R, change.StoreId);
-        if (!meshes.TryGet(change.StoreId)) buffers.Retally(change.StoreId, {});
-        if (const auto entity = MeshEntityOf(R, change.StoreId); entity != state::Null) restored_meshes.push_back(entity);
-    }
-    // Restored deformation can move any posed mesh.
-    for (const auto entity : R.view<const PosedLayout>()) R.emplace_or_replace<MeshBoundsDirty>(entity);
-    auto &scene = R.Resources.get<GpuSceneState>();
-    SortUnique(restored_meshes);
-    std::vector<state::Entity> repointed;
-    for (const auto entity : restored_meshes) {
-        R.remove<MeshletPositionsDirty, ClusterLodDirty>(entity);
-        const auto id = *DrawnStoreId(R, entity);
-        const auto *owner = meshes.TryGet(id);
-        if (!owner || owner->RenderTopologies == 0u) continue;
-        repointed.push_back(entity);
-        if (meshes.HasDirtyPositions(*owner)) R.emplace<MeshletPositionsDirty>(entity);
-        if (meshes.HasDirtyGroups(*owner)) R.emplace<ClusterLodDirty>(entity);
-        if (!meshes.ClusterGroupCount(*owner) && ClusterLodApplies(Mesh{meshes, id}.FaceCount() > 0u, meshes.MeshletCount(*owner))) R.emplace_or_replace<ClusterLodDemand>(entity);
-    }
-    // Use restored meshlet and LOD-node counts to size instance culling buffers.
-    RepointMeshInstances(R, repointed);
-    std::vector<MeshVertexChanges> positions;
-    for (const auto &change : changes) {
-        const auto entity = MeshEntityOf(R, change.StoreId);
-        if (entity == state::Null) continue;
-        if (change.Bits & ~MeshStore::SelectionChanged) {
-            ReleaseMeshEditWork(R, entity);
-            // Refresh edited positions through the source record; restore evaluated records in full.
-            if ((change.Bits & ~MeshStore::SelectionChanged) == MeshStore::GeometryChanged && !change.VertexRanges.empty() && change.StoreId == R.get<const MeshHandle>(entity).StoreId) {
-                positions.push_back({entity, change.VertexRanges});
-            }
-            RefreshMeshBinding(R, change.StoreId);
-            R.emplace_or_replace<MeshGeometryDirty>(entity, EditSelectionAfter::Keep, true);
-        }
-        if (change.Bits & MeshStore::SelectionChanged) scene.EditSelectionDirty = true;
-    }
-    RefreshEditedPositions(R, chain, positions, false);
-    chain.Submit();
     if (!buffers.Materials.History()->Trie.TakeChanged().empty()) R.Resources.get<RenderChanges>().Materials.emplace(state::Document);
     if (!buffers.MorphWeightBuffer.Buffer.History()->Trie.TakeChanged().empty()) R.Resources.get<RenderChanges>().MorphWeights.emplace(state::Document);
     Settle(EventPass::Restore);

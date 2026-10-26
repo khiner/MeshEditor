@@ -159,6 +159,8 @@ struct GpuBuffers {
     };
     // Each mesh record's tally, by store id.
     std::vector<MeshFlagTally> FlagTallies;
+    // The record each entity's instances last tallied.
+    std::unordered_map<state::Entity, uint32_t> TalliedStores;
     // Moves the mesh record's contribution to the scene and flag totals to `tally`.
     void Retally(uint32_t store_id, MeshFlagTally tally);
 

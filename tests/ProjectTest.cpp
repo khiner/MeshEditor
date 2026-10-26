@@ -6,6 +6,7 @@
 #include "armature/ArmatureComponents.h"
 #include "mesh/MeshComponents.h"
 #include "object/ObjectOps.h"
+#include "procedure/Procedure.h"
 #include "project/Assets.h"
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
@@ -57,8 +58,8 @@ void TestExternalReferences() {
         return std::get<action::io::LoadGltf>(std::get<action::io::Action>(actions.front().Action)).Path;
     };
     const auto max_x = [](Fixture &f) {
-        expect(f.R.view<const MeshHandle>().size() == 1u);
-        const auto mesh = GetMesh(f.R, *f.R.view<const MeshHandle>().begin());
+        expect(f.R.view<const procedure::GeometryProcedure>().size() == 1u);
+        const auto mesh = GetMesh(f.R, *f.R.view<const procedure::GeometryProcedure>().begin());
         float largest = 0;
         for (uint32_t i = 0; i < mesh.VertexCount(); ++i) largest = std::max(largest, mesh.GetPosition(mesh.VertexAt(i)).x);
         return largest;
@@ -202,7 +203,7 @@ void TestInstanceLifecycleRendersBack() {
     undone(other, action::object::Delete{});
 }
 
-// An unlinked duplicate copies its source's canonical values and render records onto storage of its own, so it hashes equal to its source.
+// An unlinked duplicate copies its source's drawn record onto storage of its own, which hashes equal to its source's, and keeps its source's Source states.
 // With its source's vertices turned in edit mode, which keeps their bounds, and the source hidden, the copy draws the image its source drew.
 void TestDuplicateDrawsAsItsSource() {
     const TestDir dir{"/tmp/mesheditor-scratch/project-duplicate-records"};
@@ -210,14 +211,23 @@ void TestDuplicateDrawsAsItsSource() {
     auto &r = f.R;
     const auto &meshes = r.Resources.get<const MeshStore>();
     const auto render_owner = [&](state::Entity e) -> const MeshStore::Record & {
-        return meshes.Get(r.get<const MeshHandle>(r.get<const Instance>(e).Entity).StoreId);
+        return meshes.Get(*DrawnStoreId(r, r.get<const Instance>(e).Entity));
     };
     const auto duplicate = [&](state::Entity source) {
         f.Do(action::selection::Select{source});
         const auto copy = f.Add(action::object::Duplicate{});
         expect(copy != source);
         expect(render_owner(copy).StoreId != render_owner(source).StoreId);
+        const auto states = [&](state::Entity instance) {
+            std::vector<procedure::SourceState> found;
+            for (const auto &node : r.get<const procedure::GeometryProcedure>(r.get<const Instance>(instance).Entity).Nodes) {
+                if (const auto *source = r.try_get<const procedure::SourceState>(node.Entity)) found.push_back(*source);
+            }
+            return found;
+        };
+        expect(states(copy) == states(source));
         expect(meshes.CanonicalHash(render_owner(copy).StoreId) == meshes.CanonicalHash(render_owner(source).StoreId));
+        expect(Describe(meshes, render_owner(copy).StoreId) == Describe(meshes, render_owner(source).StoreId));
         return copy;
     };
     const auto add_source = [&](MeshSource source) {
@@ -287,15 +297,15 @@ void TestDuplicateDrawsAsItsSource() {
     f.Do(action::selection::Select{point_source});
     f.Do(action::selection::ExtendActive{line_source});
     f.Do(action::selection::ExtendActive{copy});
-    const auto mesh_count = r.view<const MeshHandle>().size();
+    const auto mesh_count = r.view<const procedure::GeometryProcedure>().size();
     f.Do(action::object::Duplicate{});
-    expect(r.view<const MeshHandle>().size() == mesh_count + 3u);
+    expect(r.view<const procedure::GeometryProcedure>().size() == mesh_count + 3u);
     f.Audit();
     f.P->Undo();
-    expect(r.view<const MeshHandle>().size() == mesh_count);
+    expect(r.view<const procedure::GeometryProcedure>().size() == mesh_count);
     f.Audit();
     f.P->Redo();
-    expect(r.view<const MeshHandle>().size() == mesh_count + 3u);
+    expect(r.view<const procedure::GeometryProcedure>().size() == mesh_count + 3u);
     f.Audit();
 }
 
@@ -323,8 +333,6 @@ void CheckLayout(Fixture &f, std::string_view step) {
     const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &render = meshes.Render();
     const bool edit = r.get<const Interaction>(state::Document).Mode == InteractionMode::Edit;
-    const bool transforming = edit && r.all_of<PendingTransform>(state::Document);
-    const auto &primaries = r.get<const EditPrimaries>(state::Document).All;
     const auto fail = [&](std::string_view what) {
         std::println("layout after {}: {}", step, what);
         expect(false);
@@ -359,8 +367,7 @@ void CheckLayout(Fixture &f, std::string_view step) {
                 deformed |= record->MorphBlocksReady && r.all_of<MorphWeightRange>(instance);
             }
         }
-        const auto *work = r.try_get<const MeshEditWork>(entity);
-        const bool posed = models.InstanceCount > 0u && (deformed || (edit && ((transforming && primaries.contains(entity)) || (work && work->RequiresPose))));
+        const bool posed = models.InstanceCount > 0u && deformed;
         const uint32_t count = deformed ? models.InstanceCount : 1u;
         if (run->Entries.Count != count) fail("entry count");
         if (run->Posed() != posed || r.all_of<PosedLayout>(entity) != posed) fail("posedness");
@@ -433,9 +440,10 @@ void TestIncrementalLayout() {
     f.Do(action::view::SetEditMode{.Mode = Element::Face});
     f.Do(action::selection::SelectAll{});
     CheckLayout(f, "edit");
+    const auto cube_mesh = r.get<const Instance>(cube).Entity;
     action::Emit(action::view::TransformElements{{.P = {0.f, 1.f, 0.f}}}, action::Phase::Stage);
     f.P->Frame(action::Drain());
-    expect(r.all_of<PosedLayout>(r.get<const Instance>(cube).Entity));
+    expect(r.all_of<procedure::TransformElements>(r.get<const procedure::GeometryProcedure>(cube_mesh).Nodes.back().Entity));
     CheckLayout(f, "drag");
     action::Commit();
     f.P->Frame(action::Drain());
@@ -444,9 +452,10 @@ void TestIncrementalLayout() {
     const std::array faces{0u, 1u};
     ApplyEditSelectionLists(r, std::array{std::pair{mesh_entity, std::span<const uint32_t>{faces}}}, Element::Face);
     f.Commit("Select faces");
-    const auto mesh_count = r.view<const MeshHandle>().size();
+    const auto mesh_count = r.view<const procedure::GeometryProcedure>().size();
     f.Do(action::mesh::Separate{});
-    expect(r.view<const MeshHandle>().size() == mesh_count + 1u);
+    expect(r.view<const procedure::GeometryProcedure>().size() == mesh_count + 1u);
+    expect(r.all_of<action::mesh::Delete>(r.get<const procedure::GeometryProcedure>(mesh_entity).Nodes.back().Entity));
     CheckLayout(f, "separate");
     f.Do(action::view::SetInteractionMode{InteractionMode::Object});
     CheckLayout(f, "object");

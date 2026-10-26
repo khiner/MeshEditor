@@ -15,15 +15,6 @@
 
 using std::ranges::find;
 
-namespace selection {
-bool HasScaleLockedInstance(const state::Registry &r, state::Entity e) {
-    for (const auto [_, instance] : r.view<const Instance, const ScaleLocked>().each()) {
-        if (instance.Entity == e) return true;
-    }
-    return false;
-}
-} // namespace selection
-
 std::vector<state::Entity> SelectedIn(const state::Registry &r) {
     const auto scene = FrameScene(r);
     return r.view<const Selected>() | std::views::filter([&](state::Entity e) { return InScene(r, e, scene); }) | std::ranges::to<std::vector>();
@@ -84,7 +75,7 @@ std::vector<ElementRange> GetElementRangesForSelected(const state::Registry &r) 
     std::vector<ElementRange> ranges;
     for (const auto mesh_entity : r.get<const SelectionFlags>(state::Document).Meshes) {
         if (!r.all_of<MeshElementSelection>(mesh_entity)) continue;
-        const auto mesh = GetDrawnMesh(r, mesh_entity);
+        const auto mesh = GetMesh(r, mesh_entity);
         if (const auto count = mesh.ElementCount(element); count > 0) {
             ranges.emplace_back(mesh_entity, count);
         }

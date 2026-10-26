@@ -37,10 +37,7 @@ kernel void RetessellateFaces(
     const ElementValues<packed_uint3> triangles{BindlessBufferMutable(packed_uint3,b.Buffer,pc.TriangleSlot),BindlessBuffer(uint,b.Buffer,pc.Tables.Triangles.Slot)+pc.Tables.Triangles.Offset};
     TriangulatePolygon(n,[&](uint corner) {
         const uint v=HandleAddress<MeshElementBlockSize>(b,pc.Tables.Vertices,corners[loop.x+corner]);
-        const float3 base=float3(vertices[v].Position);
-        const bool selected=pc.ApplyTransform && pc.SelectionSlot!=InvalidSlot &&
-            (BindlessBuffer(uint,b.Buffer,pc.SelectionSlot)[v/32u]&(1u<<(v%32u)));
-        return vec3(selected ? apply_geometry_edit_transform(base,pc.Primary,pc.Pivot,pc.Delta) : base);
+        return vec3(float3(vertices[v].Position));
     },points,next,previous,[&](uvec3 local,uint t) {
         const uint3 triangle=uint3(local)+loop.x;
         if (all(uint3(triangles[first+t])==triangle)) return;

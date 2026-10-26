@@ -18,7 +18,9 @@ Real-time mesh viewer and editor that converts meshes to rigid-body audio models
 * Branching undo/redo and navigation to any recorded state through the History window
 * Save history and imported source assets in portable projects
 * Create and delete meshes and mesh instances
-  - Editable mesh primitives (Rect, Circle, Cube, IcoSphere, UVSphere, Torus, Cylinder, Cone)
+  - Every mesh is a node graph whose cook is its geometry, edited in the Nodes tab
+  - Primitives (Rect, Circle, Cube, IcoSphere, UVSphere, Torus, Cylinder, Cone) are generator nodes with editable parameters
+  - Viewport operators append nodes after the displayed node, and any node's result can be displayed
   - Load `.obj` and `.ply` mesh files (via [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply))
 * Select meshes, vertices, edges, or faces by clicking or box selection, through geometry with Blender's X-ray toggle (Alt+Z)
 * Blender-style edit-mode topology operators on the GPU

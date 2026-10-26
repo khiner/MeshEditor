@@ -18,6 +18,7 @@
 #include "image/ImageEncode.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
+#include "procedure/Procedure.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
@@ -256,12 +257,15 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     // Append runtime-created meshes after the source range.
     std::unordered_map<state::Entity, uint32_t> mesh_entity_to_index;
     uint32_t mesh_count = 0;
-    for (const auto [e, _, layout] : r.view<const MeshHandle, const MeshSourceLayout>().each()) {
+    for (const auto [e, _, layout] : r.view<const EvaluatedMesh, const MeshSourceLayout>().each()) {
         mesh_entity_to_index[e] = layout.Index;
         mesh_count = std::max(mesh_count, layout.Index + 1u);
     }
-    for (const auto e : r.view<const MeshHandle>()) {
+    for (const auto e : r.view<const EvaluatedMesh>()) {
         if (!mesh_entity_to_index.contains(e)) mesh_entity_to_index[e] = mesh_count++;
+    }
+    for (const auto [_, owned] : r.view<const procedure::ProcedureOwnedMesh>().each()) {
+        if (r.valid(owned.MeshEntity) && !mesh_entity_to_index.contains(owned.MeshEntity)) mesh_entity_to_index[owned.MeshEntity] = mesh_count++;
     }
 
     struct MeshEntitySet {

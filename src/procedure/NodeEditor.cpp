@@ -28,20 +28,20 @@ constexpr float MinZoom{.25f}, MaxZoom{3.f};
 constexpr float TrackpadPoints{10.f}; // The platform reports a trackpad's scroll at a tenth of its points.
 constexpr float ZoomStep{1.1f}, TrackpadStepPoints{100.f}; // A zoom step is one mouse wheel notch, or 100 points of trackpad scroll.
 
-enum class KindGroup : uint8_t { SourceOutput,
+enum class KindGroup : uint8_t { Sources,
                                  Operators,
                                  Combine,
                                  Attributes,
                                  Values,
                                  Generators,
                                  Instances };
-constexpr const char *GroupNames[]{"Source and Output", "Operators", "Combine", "Attributes", "Values", "Generators", "Instances"};
+constexpr const char *GroupNames[]{"Sources", "Operators", "Combine", "Attributes", "Values", "Generators", "Instances"};
 using C = NodeThemeColors;
-constexpr vec4 C::*GroupColors[]{&C::SourceOutputTitle, &C::OperatorsTitle, &C::CombineTitle, &C::AttributesTitle, &C::ValuesTitle, &C::GeneratorsTitle, &C::InstancesTitle};
+constexpr vec4 C::*GroupColors[]{&C::SourcesTitle, &C::OperatorsTitle, &C::CombineTitle, &C::AttributesTitle, &C::ValuesTitle, &C::GeneratorsTitle, &C::InstancesTitle};
 using AttributeKinds = TypeList<Position, Normal, Index, NamedAttribute, VectorMath, FloatMath, Compare, BooleanMath, StoreNamedAttribute, StoreSelection, SetPosition>;
 using InstanceKinds = TypeList<MeshToPoints, InstanceOnPoints, RealizeInstances>;
 template<typename K> constexpr KindGroup GroupOf() {
-    if constexpr (std::same_as<K, Source> || std::same_as<K, Output> || std::same_as<K, ObjectInfo>) return KindGroup::SourceOutput;
+    if constexpr (std::same_as<K, Source> || std::same_as<K, ObjectInfo>) return KindGroup::Sources;
     else if constexpr (std::same_as<K, Join> || std::same_as<K, Boolean>) return KindGroup::Combine;
     else if constexpr (Generator<K>) return KindGroup::Generators;
     else if constexpr (InTypeList<K, AttributeKinds>) return KindGroup::Attributes;
@@ -49,13 +49,11 @@ template<typename K> constexpr KindGroup GroupOf() {
     else if constexpr (InTypeList<K, InstanceKinds>) return KindGroup::Instances;
     else return KindGroup::Operators;
 }
-template<typename K> constexpr auto Title{field::detail::Spaced<field::fixed_string<state::LeafName<K>().size() + 1>{state::LeafName<K>()}>()};
 constexpr auto KindGroups{[]<typename... Ks>(TypeList<Ks...>) { return std::array{GroupOf<Ks>()...}; }(NodeKinds{})};
 constexpr auto KindTitles{[]<typename... Ks>(TypeList<Ks...>) { return std::array{Title<Ks>.c_str()...}; }(NodeKinds{})};
 
 template<typename K> constexpr const char *Help{};
 template<> constexpr const char *Help<Source>{"Emits the mesh's source geometry"};
-template<> constexpr const char *Help<Output>{"Receives the procedure's result. Double-click to show this output on the mesh."};
 template<> constexpr const char *Help<Join>{"Appends the second input's geometry to the first"};
 template<> constexpr const char *Help<Boolean>{"Combines two closed meshes by union, difference, or intersection"};
 template<> constexpr const char *Help<primitive::Plane>{"Generates a rectangle in the XZ plane, facing +Y"};
@@ -151,7 +149,7 @@ template<> constexpr const char *Help<RotationValue>{"Emits a constant rotation"
 constexpr auto KindHelp{[]<typename... Ks>(TypeList<Ks...>) { return std::array{Help<Ks>...}; }(NodeKinds{})};
 static_assert(std::ranges::none_of(KindHelp, [](const char *help) { return help == nullptr; }), "Every node kind needs a Help sentence.");
 
-constexpr const char *FaultTexts[]{"The selection does not fit this operation.", "A parameter is invalid.", "An attribute input is missing or has the wrong type or domain.", "An input mesh is not a closed surface.", "The boolean produced no geometry.", "Geometry cannot be retrieved from the edited object."};
+constexpr const char *FaultTexts[]{"The selection does not fit this operation.", "A parameter is invalid.", "An attribute input is missing or has the wrong type or domain.", "An input mesh is not a closed surface.", "The boolean produced no geometry.", "The node reads no mesh: the Object Info object has none, or the Instance input is unlinked."};
 
 constexpr const char *SocketLabels[]{"Geometry", "Selection", "Attribute", "Instances", "Value"};
 const char *LabelOf(Socket socket) { return socket.Name ? socket.Name : SocketLabels[uint8_t(socket.Type)]; }
@@ -407,7 +405,7 @@ Hit HitTest(const Graph &graph, ImVec2 mouse) {
 bool Joins(uint16_t held_kind, uint16_t held_socket, uint16_t kind, uint16_t socket) {
     const auto held = KindSockets(held_kind)[held_socket], other = KindSockets(kind)[socket];
     if (held.Direction == other.Direction) return false;
-    return held.Direction == SocketDirection::Out ? Links(held, other, kind) : Links(other, held, held_kind);
+    return held.Direction == SocketDirection::Out ? Links(held, other) : Links(other, held);
 }
 bool Accepts(const GeometryProcedure &procedure, uint32_t held_node, uint16_t held_socket, uint32_t node, uint16_t socket) {
     return node != held_node && Joins(procedure.Nodes[held_node].Kind, held_socket, procedure.Nodes[node].Kind, socket);
@@ -468,7 +466,7 @@ std::vector<action::nodes::Link> MakeLinks(const state::Registry &r, state::Enti
                 const auto current = procedure.Inputs[input_first[to] + input];
                 if ((current.FromNode != NoNode) != linked) continue;
                 for (uint16_t output = InputCount[from_kind]; output < SocketCount[from_kind]; ++output) {
-                    if (Links(KindSockets(from_kind)[output], KindSockets(to_kind)[input], to_kind) && (current.FromNode != from || current.FromSocket != output)) return action::nodes::Link{mesh_entity, from, output, to, input};
+                    if (Links(KindSockets(from_kind)[output], KindSockets(to_kind)[input]) && (current.FromNode != from || current.FromSocket != output)) return action::nodes::Link{mesh_entity, from, output, to, input};
                 }
             }
             return {};
@@ -542,7 +540,7 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
     if (panel.Drag == NodeDrag::Grab) {
         if (panel.DragNode == NoNode) {
             // Cancel the grab if its action failed to create a node.
-            if (nodes.size() <= panel.GrabAfter || procedure.ActiveNode == NoNode) {
+            if (nodes.size() <= panel.GrabAfter) {
                 panel.Drag = NodeDrag::None;
                 return;
             }
@@ -561,14 +559,13 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
     if (panel.Drag == NodeDrag::None && panel.Hovered) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
             panel.Press = vec2{mouse};
-            if (hit.Type == HitType::Node && IsMouseDoubleClicked(ImGuiMouseButton_Left) && nodes[hit.Node].Kind == KindOf<Output>) {
-                if (hit.Node != procedure.OutputNode) action::Emit(action::nodes::SetOutput{mesh_entity, hit.Node});
-            } else if (hit.Type == HitType::Socket || hit.Type == HitType::Link) {
+            if (hit.Type == HitType::Socket || hit.Type == HitType::Link) {
                 panel.Drag = NodeDrag::Wire;
                 panel.DragNode = hit.Node;
                 panel.DragSocket = hit.Socket;
             } else if (hit.Type == HitType::Node || hit.Type == HitType::Parameters) {
-                // Shift-click removes the active node from selection; otherwise it extends selection and activates the clicked node.
+                // Shift-click on the selected active node removes it from the selection.
+                // Any other click activates and displays the clicked node, and a click without Shift on an unselected node selects it alone.
                 const bool is_selected = r.all_of<NodeSelected>(nodes[hit.Node].Entity), active = hit.Node == procedure.ActiveNode;
                 if (io.KeyShift && is_selected && active) {
                     auto remaining = selected;
@@ -582,6 +579,7 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
                         if (!is_selected) extended.insert(std::ranges::lower_bound(extended, hit.Node), hit.Node);
                         select(std::move(extended), hit.Node);
                     }
+                    if (hit.Node != procedure.DisplayNode) action::Emit(action::nodes::SetDisplay{mesh_entity, hit.Node});
                     panel.Drag = NodeDrag::Move;
                     panel.DragNode = hit.Node;
                     panel.Moved = false;
@@ -612,9 +610,9 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
         } else if (Shortcut(ImGuiKey_A, Key)) {
             std::vector<uint32_t> all(nodes.size());
             std::ranges::iota(all, 0u);
-            if (selected != all) select(std::move(all), procedure.ActiveNode);
+            if (selected != all) select(std::move(all), NoNode);
         } else if (Shortcut(ImGuiMod_Alt | ImGuiKey_A, Key)) {
-            if (!selected.empty() || procedure.ActiveNode != NoNode) select({}, NoNode);
+            if (!selected.empty()) select({}, NoNode);
         }
     }
     if (panel.Drag == NodeDrag::Move) {
@@ -641,15 +639,14 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
     if (panel.Drag == NodeDrag::Box && !IsMouseDown(ImGuiMouseButton_Left)) {
         const auto press = Im(panel.Press);
         if (ImLengthSqr(mouse - press) >= io.MouseDragThreshold * io.MouseDragThreshold) {
-            // Select nodes intersecting the box, extending selection with Shift and retaining the active node while selected.
+            // Select nodes intersecting the box, extending selection with Shift.
             const ImRect box{ImMin(press, mouse), ImMax(press, mouse)};
             std::vector<uint32_t> banded;
             for (uint32_t n = 0u; n < nodes.size(); ++n) {
                 if (box.Overlaps(RectOf(graph, graph.Boxes[n])) || (io.KeyShift && std::ranges::binary_search(selected, n))) banded.push_back(n);
             }
-            const auto active = std::ranges::binary_search(banded, procedure.ActiveNode) ? procedure.ActiveNode : NoNode;
-            if (banded != selected || active != procedure.ActiveNode) select(std::move(banded), active);
-        } else if (!io.KeyShift && (!selected.empty() || procedure.ActiveNode != NoNode)) {
+            if (banded != selected) select(std::move(banded), NoNode);
+        } else if (!io.KeyShift && !selected.empty()) {
             select({}, NoNode);
         }
         panel.Drag = NodeDrag::None;
@@ -919,7 +916,7 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
         const bool expanded = n == graph.Expanded;
         const float rounding = theme.Sizes.Rounding * zoom, pad = theme.Sizes.TitlePadding * zoom;
         draw.AddRectFilled(min, max, U32(expanded ? vec4{colors.Node.x, colors.Node.y, colors.Node.z, 1.f} : colors.Node), rounding);
-        draw.AddRectFilled(min, {max.x, min.y + graph.Step}, U32(n == procedure.OutputNode ? colors.OutputNodeTitle : colors.*GroupColors[uint8_t(KindGroups[kind])]), rounding, ImDrawFlags_RoundTop);
+        draw.AddRectFilled(min, {max.x, min.y + graph.Step}, U32(n == procedure.DisplayNode ? colors.DisplayedTitle : colors.*GroupColors[uint8_t(KindGroups[kind])]), rounding, ImDrawFlags_RoundTop);
         draw_label({min.x + pad, min.y + (graph.Step - font_size) * .5f}, {max.x - pad, min.y + (graph.Step + font_size) * .5f}, KindTitles[kind], colors.Title, false);
         const auto sockets = KindSockets(kind);
         const auto [first, end_parameter] = ParameterRange(kind);
@@ -998,7 +995,7 @@ bool ObjectChoice(const state::Registry &r, const char *label, state::Entity &va
     const auto objects = [&] {
         std::vector<state::Entity> choices{state::Null};
         for (const auto [e, instance] : r.view<const Instance>().each()) {
-            if (HasMesh(r, instance.Entity)) choices.push_back(e);
+            if (DrawsMesh(r, instance.Entity)) choices.push_back(e);
         }
         return choices;
     };
@@ -1097,13 +1094,6 @@ struct ParameterEdit : ui::FieldWidgets<Prefix...> {
     }
 };
 
-uint32_t SelectedCount(std::span<const SelectionBlock> blocks) {
-    uint32_t count = 0u;
-    for (const auto &block : blocks) {
-        for (const auto word : block) count += uint32_t(std::popcount(word));
-    }
-    return count;
-}
 
 // Use inline selection for an unlinked selection input; an absent mask selects everything.
 void DrawInlineSelection(const state::Registry &r, state::Entity mesh_entity, const GeometryProcedure &procedure, uint32_t node, bool interactive) {
@@ -1117,26 +1107,31 @@ void DrawInlineSelection(const state::Registry &r, state::Entity mesh_entity, co
     }
     const auto entity = procedure.Nodes[node].Entity;
     const auto *selection = r.try_get<const InlineSelection>(entity);
-    const bool every = !selection || (selection->Vertices.empty() && selection->Edges.empty() && selection->Faces.empty());
+    const bool every = !selection || Empty(*selection);
     const auto counts = every ? std::array<uint32_t, 3>{} : std::array{SelectedCount(selection->Vertices), SelectedCount(selection->Edges), SelectedCount(selection->Faces)};
     if (every) TextUnformatted("All elements");
     else if (counts == std::array<uint32_t, 3>{}) TextUnformatted("No elements");
     else Text("%u vertices, %u edges, %u faces", counts[0], counts[1], counts[2]);
+    // A capture reads the drawn record, so the first press displays the node's input, where the cook shows the node's selection, and the next press captures.
+    const auto input = procedure.Inputs[InputFirst(procedure, node)];
+    const bool input_displayed = input.FromNode != NoNode && input.FromNode == procedure.DisplayNode && input.FromSocket == ResultSocket(procedure.Nodes[input.FromNode].Kind);
     const bool edit_mode = r.get<const Interaction>(state::Document).Mode == InteractionMode::Edit;
-    BeginDisabled(!edit_mode);
-    if (Button("Capture") && interactive) action::Emit(action::nodes::CaptureSelection(r, mesh_entity, entity));
+    BeginDisabled(!edit_mode || input.FromNode == NoNode);
+    if (Button("Capture") && interactive) {
+        if (input_displayed) action::Emit(action::nodes::CaptureSelection(r, mesh_entity, entity));
+        else action::Emit(action::nodes::SetDisplay{mesh_entity, input.FromNode});
+    }
     EndDisabled();
-    ui::Describe("Capture", "Set the node's selection to the elements selected in the viewport in edit mode");
+    ui::Describe("Capture", input_displayed ? "Set the node's selection to the elements selected in the viewport" : "Display the node's input with the node's selection in the viewport. Press again to set the node's selection to the elements selected there.");
     SameLine();
     BeginDisabled(every);
-    if (Button("Clear") && interactive) action::Emit(action::nodes::SetInlineSelection{entity, std::make_unique<InlineSelection>(InlineSelection{.Domain = selection->Domain, .Active = selection->Active})});
+    if (Button("All") && interactive) action::Emit(action::nodes::SetInlineSelection{entity, std::make_unique<InlineSelection>(InlineSelection{.Domain = selection->Domain, .Active = selection->Active})});
     EndDisabled();
-    ui::Describe("Clear", "Set the node's selection to all elements");
+    ui::Describe("All", "Set the node's selection to all elements");
 }
 
 void DrawParameters(state::Registry &r, NodesPanel &panel, state::Entity mesh_entity, const GeometryProcedure &procedure, bool interactive) {
     if (procedure.ActiveNode == NoNode) {
-        TextWrapped("Click a node to edit its parameters.");
         TextWrapped("Right click or press Shift+A to add a node.");
         return;
     }
@@ -1179,11 +1174,8 @@ void DrawNodesPanel(state::Registry &r, NodesPanel &panel, bool interactive) {
     if (!panel.Visible) return;
     if (Begin(panel.Name, &panel.Visible)) {
         if (!procedure) panel.Drag = NodeDrag::None;
-        if (mesh_entity == state::Null) {
+        if (!procedure) {
             TextUnformatted("Select a mesh object to edit its geometry procedure.");
-        } else if (!procedure) {
-            TextUnformatted("The mesh has no geometry procedure.");
-            if (Button("Add Procedure") && interactive) action::Emit(action::nodes::AddProcedure{mesh_entity});
         } else {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0.f, 0.f});
             BeginChild("Canvas", {0.f, 0.f}, ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoMove);
@@ -1200,8 +1192,7 @@ void DrawParametersPanel(state::Registry &r, NodesPanel &nodes, Panel &panel, bo
     if (Begin(panel.Name, &panel.Visible)) {
         const auto mesh_entity = action::nodes::EditedMesh(r);
         const auto *procedure = r.try_get<const GeometryProcedure>(mesh_entity);
-        if (mesh_entity == state::Null) TextUnformatted("Select a mesh object to edit its geometry procedure.");
-        else if (!procedure) TextUnformatted("The mesh has no geometry procedure.");
+        if (!procedure) TextUnformatted("Select a mesh object to edit its geometry procedure.");
         else DrawParameters(r, nodes, mesh_entity, *procedure, interactive);
     }
     End();

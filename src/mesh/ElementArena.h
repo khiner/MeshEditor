@@ -293,7 +293,11 @@ struct ElementArena {
     ElementSetRef CloneMembership(ElementSetRef source) {
         if (!source) return {};
         const auto header = Set(source);
-        const auto from = Entries(source);
+        const std::vector<uint32_t> from{Entries(source).begin(), Entries(source).end()};
+        return CloneMembership(header, from, [&](uint32_t block) { return Blocks.Get({block, 1u})[0]; });
+    }
+    // A set with the table shape and live slots of a header, its table entries and `block_of(block)` metadata, its blocks fresh and consecutive in table order.
+    ElementSetRef CloneMembership(const MeshElementSet &header, std::span<const uint32_t> from, auto &&block_of) {
         const auto owned = uint32_t(std::ranges::count_if(from, [](uint32_t b) { return b != InvalidOffset; }));
         auto block_allocation = Blocks.BeginAllocation();
         auto set_allocation = Sets.BeginAllocation();
@@ -301,12 +305,11 @@ struct ElementArena {
         const auto blocks = AllocateBlocks(owned);
         const ElementSetRef set{Sets.Allocate(1).Offset};
         const auto run = Table.Allocate(header.BlockCount);
-        const auto metadata = Blocks.Buffer.template GetSpan<MeshElementBlock>();
         std::vector<uint32_t> entries(header.BlockCount, InvalidOffset);
         std::vector<MeshElementBlock> members(owned);
         for (uint32_t local = 0u, next = 0u; local < header.BlockCount; ++local) {
             if (from[local] == InvalidOffset) continue;
-            const auto &before = metadata[from[local]];
+            const MeshElementBlock before = block_of(from[local]);
             members[next] = {.Owner = set.Index, .Local = local, .Count = before.Count, .Live = before.Live};
             entries[local] = blocks.Offset + next++;
         }
@@ -429,22 +432,6 @@ struct ElementArena {
         Destroy(std::span{&donor, 1u}, {});
         donor = {};
         return shift;
-    }
-    // Gives each pair's second block, owned by the set, the live slots of its first block, and the set the flags.
-    void AssignLive(ElementSetRef set, std::span<const uvec2> pairs, uint32_t flags) {
-        auto header = Set(set);
-        for (const auto [from, to] : pairs) {
-            const auto live = Blocks.Get({from, 1})[0].Live;
-            auto &block = Blocks.GetMutable({to, 1})[0];
-            const auto count = LiveCount(live);
-            header.Count = header.Count - block.Count + count;
-            block.Live = live;
-            block.Count = count;
-        }
-        header.Flags = flags;
-        ++header.Revision;
-        Sets.GetMutable({set.Index, 1})[0] = header;
-        for (const auto pair : pairs) Index(pair.y);
     }
     void Release(ElementSetRef set) {
         if (!set) return;

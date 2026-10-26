@@ -23,7 +23,6 @@ struct DrawData {
     uint32_t FaceCount DEFAULT();
     uint32_t VertexCountOrHeadImageSlot DEFAULT();
     EditSelectionStorage Selection DEFAULT();
-    uint32_t HasPendingVertexTransform DEFAULT();
     uint32_t PrimaryEditInstanceIndex DEFAULT(InvalidOffset);
     uint32_t BoneDeformOffset DEFAULT(InvalidOffset);
     uint32_t ArmatureDeformOffset DEFAULT(InvalidOffset);

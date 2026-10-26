@@ -15,6 +15,7 @@
 #include "gizmo/TransformGizmo.h"
 #include "gltf/GltfScene.h"
 #include "physics/PhysicsUi.h"
+#include "procedure/Procedure.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
 #include "render/PbrFeature.h"
@@ -61,26 +62,6 @@ constexpr std::string Capitalize(std::string_view str) {
     if (c >= 'a' && c <= 'z') c -= 'a' - 'A';
     return result;
 }
-
-// Edits the active mesh's primitive shape S through Update actions.
-template<typename S>
-struct ShapeEdit : ui::FieldWidgets<> {
-    explicit ShapeEdit(const S &shape) : Shape{shape} {}
-
-    const S &Shape;
-
-    template<auto... Ms>
-    auto Read() const { return ui::ReadChain<Ms...>(Shape); }
-
-    template<auto... Ms>
-    bool Run(auto widget, bool = false) {
-        using Field = action::detail::last_field<Ms...>;
-        auto value = Read<Ms...>();
-        const bool changed = widget(value);
-        ui::Gesture(changed, [&] { return action::Update<Field>{ui::TargetFromAlt(true), state::Key<PrimitiveShape>(), action::detail::FieldOffset<Ms...>(), value}; });
-        return changed;
-    }
-};
 
 std::string to_string(InteractionMode mode) {
     switch (mode) {
@@ -232,7 +213,7 @@ static void RenderEntityControls(state::Registry &r, state::Entity active_entity
     const bool is_mesh_instance = active_instance && HasMesh(r, active_instance->Entity);
     if (is_mesh_instance) {
         const auto active_mesh_entity = active_instance->Entity;
-        const auto active_mesh = GetDrawnMesh(r, active_mesh_entity);
+        const auto active_mesh = GetMesh(r, active_mesh_entity);
         TextUnformatted(
             std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", active_mesh.VertexCount(), active_mesh.EdgeCount(), active_mesh.FaceCount()).c_str()
         );
@@ -368,16 +349,6 @@ static void RenderEntityControls(state::Registry &r, state::Entity active_entity
     }
     if (is_mesh_instance) {
         const auto active_mesh_entity = active_instance->Entity;
-        if (const auto *prim_shape = r.try_get<PrimitiveShape>(active_mesh_entity)) {
-            const bool frozen = selection::HasScaleLockedInstance(r, active_mesh_entity);
-            if (frozen) BeginDisabled();
-            if (const auto update_label = std::format("Edit primitive{}", frozen ? " (frozen)" : "");
-                CollapsingHeader(update_label.c_str()) && !frozen) {
-                std::visit([](const auto &shape) { ui::DrawFields<std::decay_t<decltype(shape)>>(ShapeEdit{shape}); }, *prim_shape);
-            }
-            if (frozen) EndDisabled();
-        }
-
         if (CollapsingHeader("Material")) {
             const auto &active_mesh = GetMesh(r, active_mesh_entity);
             auto &material_store = r.Resources.get<MaterialStore>();
@@ -666,22 +637,21 @@ void RenderControls(state::Registry &r) {
             if (CollapsingHeader("Object tree", ImGuiTreeNodeFlags_DefaultOpen)) RenderObjectTree(r);
             SeparatorText("");
             if (CollapsingHeader("Add object")) {
-                static constexpr std::array AllPrimitiveShapes{
-                    PrimitiveShape{primitive::Plane{}},
-                    PrimitiveShape{primitive::Circle{}},
-                    PrimitiveShape{primitive::Cuboid{}},
-                    PrimitiveShape{primitive::IcoSphere{}},
-                    PrimitiveShape{primitive::UVSphere{}},
-                    PrimitiveShape{primitive::Torus{}},
-                    PrimitiveShape{primitive::Cylinder{}},
-                    PrimitiveShape{primitive::Cone{}},
+                static constexpr std::array Primitives{
+                    PrimitiveParameters{primitive::Plane{}},
+                    PrimitiveParameters{primitive::Circle{}},
+                    PrimitiveParameters{primitive::Cuboid{}},
+                    PrimitiveParameters{primitive::IcoSphere{}},
+                    PrimitiveParameters{primitive::UVSphere{}},
+                    PrimitiveParameters{primitive::Torus{}},
+                    PrimitiveParameters{primitive::Cylinder{}},
+                    PrimitiveParameters{primitive::Cone{}},
                 };
-
-                for (uint32_t i = 0; i < AllPrimitiveShapes.size(); ++i) {
+                for (uint32_t i = 0; i < Primitives.size(); ++i) {
                     if (i % 4 != 0) SameLine();
-                    const auto &shape = AllPrimitiveShapes[i];
-                    if (Button(ToString(shape).c_str())) {
-                        action::Emit(action::object::AddMeshPrimitive{shape, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Name = ToString(shape)})});
+                    const auto &parameters = Primitives[i];
+                    if (Button(std::visit([]<typename K>(const K &) { return procedure::Title<K>.c_str(); }, parameters))) {
+                        action::Emit(action::object::AddMeshPrimitive{parameters, std::make_unique<MeshInstanceCreateInfo>()});
                     }
                 }
                 Spacing();

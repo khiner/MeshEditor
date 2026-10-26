@@ -82,7 +82,7 @@ vec3 ComputeElementLocalPosition(const Mesh &mesh, Element element, uint32_t han
 }
 
 vec3 ComputeElementWorldPosition(const state::Registry &r, state::Entity instance_entity, Element element, uint32_t handle, bool canonical) {
-    const auto mesh = GetDrawnMesh(r, r.get<Instance>(instance_entity).Entity);
+    const auto mesh = GetMesh(r, r.get<Instance>(instance_entity).Entity);
     const auto &wt = *WorldTransformOf(r, instance_entity);
     return {wt.P + Rotate(wt.R, wt.S * ComputeElementLocalPosition(mesh, element, handle, canonical))};
 }
@@ -164,28 +164,6 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
 
     ProcessObjectRemovals(r);
 
-    // Preserve flat shading when regenerating primitives.
-    // History restores their meshes directly.
-    if (const auto &tracker = mesh_changes.PrimitiveShape; pass != EventPass::Restore && !tracker.empty()) {
-        std::vector<state::Entity> primitives;
-        for (const auto e : tracker) {
-            if (r.valid(e) && r.all_of<PrimitiveShape, MeshHandle>(e)) primitives.emplace_back(e);
-        }
-        // Arena layout follows source order.
-        std::ranges::sort(primitives);
-        std::vector<MeshSource> sources;
-        sources.reserve(primitives.size());
-        for (const auto e : primitives) {
-            sources.push_back({.Data = primitive::CreateMesh(r.get<const PrimitiveShape>(e)), .FlatShaded = meshes.GetFaceSharpnessSummary(r.get<const MeshHandle>(e).StoreId).All});
-        }
-        const auto created = CreateMeshes(r, sources);
-        for (uint32_t i = 0u; i < primitives.size(); ++i) {
-            // Erasing the handle queues the old store entry for release.
-            r.remove<MeshHandle>(primitives[i]);
-            r.emplace<MeshHandle>(primitives[i], created[i].StoreId);
-            r.emplace_or_replace<MeshGeometryDirty>(primitives[i]);
-        }
-    }
     // Replan restored procedures without regenerating their restored outputs.
     SettleProcedures(r, pass == EventPass::Frame || pass == EventPass::Settle);
     ProcessObjectRemovals(r);
@@ -612,27 +590,9 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         request();
     }
 
-    // Commit mesh edit transforms after StartTransform is cleared.
-    if (!viewport_changes.TransformEnd.empty()) {
-        if (r.get<const Interaction>(state::Document).Mode == InteractionMode::Edit && FindArmatureObject(r, FindActiveEntity(r)) == state::Null) {
-            if (const auto *pending = r.try_get<const PendingTransform>(state::Document); pending && pending->Delta != Transform{}) {
-                // Evaluate final edits before geometry and physics updates.
-                // Preserve scale-locked geometry and record procedure transforms in their nodes.
-                std::unordered_set<state::Entity> scale_locked;
-                for (const auto [_, instance] : r.view<const Instance, const ScaleLocked>().each()) scale_locked.insert(instance.Entity);
-                std::vector<state::Entity> commit_meshes;
-                for (const auto &[mesh_entity, instance_entity] : r.get<const EditPrimaries>(state::Document).Transformable) {
-                    if (!scale_locked.contains(mesh_entity) && !r.all_of<procedure::GeometryProcedure>(mesh_entity)) commit_meshes.push_back(mesh_entity);
-                }
-                const auto committed = CommitPosedGeometry(r, chain, commit_meshes);
-                if (!committed.empty()) construct();
-                for (const auto mesh_entity : PublishEditedPositions(r, chain, committed)) {
-                    r.remove<PrimitiveShape>(mesh_entity);
-                    r.emplace_or_replace<MeshPositionsChanged>(mesh_entity);
-                }
-            }
-            r.remove<PendingTransform>(state::Document);
-        }
+    // An edit transform ends when StartTransform is cleared, and its nodes hold the transform.
+    if (!viewport_changes.TransformEnd.empty() && r.get<const Interaction>(state::Document).Mode == InteractionMode::Edit && FindArmatureObject(r, FindActiveEntity(r)) == state::Null) {
+        r.remove<PendingTransform>(state::Document);
     }
 
     UpdateMeshColliders(r);
@@ -737,11 +697,6 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     }
     const auto interaction_mode = r.get<const Interaction>(state::Document).Mode;
     const bool is_edit_mode = interaction_mode == InteractionMode::Edit;
-    // Apply or remove the pending transform from primary-instance bounds when an edit transform starts or ends.
-    if (is_edit_mode && AnyChanged(viewport_changes.TransformStart, viewport_changes.TransformEnd)) {
-        for (const auto &[mesh_entity, _] : r.get<const EditPrimaries>(state::Document).All) r.emplace_or_replace<MeshLayoutDirty>(mesh_entity);
-        request();
-    }
 
     // Each viewport orbiting to the active element turns its view camera toward it.
     const auto orbit_to_active = [&](state::Entity instance_entity, Element element, uint32_t handle, bool canonical) {
@@ -786,16 +741,14 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     if (const auto &tracker = mesh_changes.Material; !tracker.empty()) {
         for (auto mesh_entity : tracker) {
             const auto *assignment = r.try_get<const MeshMaterialAssignment>(mesh_entity);
-            const auto mesh = TryGetMesh(r, mesh_entity);
-            if (!assignment || !mesh) continue;
+            if (!assignment || !r.all_of<EvaluatedMesh>(mesh_entity)) continue;
             const auto material_count = buffers.Materials.Count<PBRMaterial>();
             if (material_count == 0u) continue;
-
-            const auto primitive_materials = meshes.EditPrimitiveMaterials(mesh->GetStoreId());
-            if (assignment->PrimitiveIndex < primitive_materials.size()) {
-                primitive_materials[assignment->PrimitiveIndex] = std::min(assignment->MaterialIndex, material_count - 1u);
-                material_meshes.emplace_back(mesh_entity);
-            }
+            // A cook that replaces the drawn record carries its material table.
+            const auto primitive_materials = meshes.EditPrimitiveMaterials(*DrawnStoreId(r, mesh_entity));
+            if (assignment->PrimitiveIndex >= primitive_materials.size()) continue;
+            primitive_materials[assignment->PrimitiveIndex] = std::min(assignment->MaterialIndex, material_count - 1u);
+            material_meshes.emplace_back(mesh_entity);
         }
     }
     // Apply the selected variant mapping or the default material to each primitive with variant mappings.
@@ -803,11 +756,10 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     if (!render_changes.ActiveMaterialVariant.empty()) {
         const auto *mv = r.try_get<const MaterialVariants>(state::Document);
         const auto active = mv ? mv->Active : std::nullopt;
-        for (const auto [e, layout, _] : r.view<const HasVariantMappings, const MeshSourceLayout, const MeshHandle>().each()) {
-            const auto mesh = GetMesh(r, e);
-            const auto primitive_materials = meshes.EditPrimitiveMaterials(mesh.GetStoreId());
+        for (const auto [e, layout] : r.view<const HasVariantMappings, const MeshSourceLayout>().each()) {
             material_meshes.push_back(e);
-            for (size_t i = 0; i < layout.DefaultMaterials.size(); ++i) {
+            const auto primitive_materials = meshes.EditPrimitiveMaterials(*DrawnStoreId(r, e));
+            for (size_t i = 0; i < std::min(layout.DefaultMaterials.size(), primitive_materials.size()); ++i) {
                 const auto &mapping = layout.VariantMappings[i];
                 primitive_materials[i] = active && *active < mapping.size() && mapping[*active] ? *mapping[*active] : layout.DefaultMaterials[i];
             }
@@ -818,8 +770,10 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     const bool every_mesh = (AnyChanged(render_changes.Materials) || displays_changed) && RefreshMaterialLodAttributes(r);
     if (every_mesh) {
         material_meshes.clear();
-        material_meshes.reserve(r.view<const MeshHandle>().size());
-        for (const auto entity : r.view<const MeshHandle>()) material_meshes.push_back(entity);
+        for (const auto entity : r.view<const EvaluatedMesh>()) material_meshes.push_back(entity);
+        for (const auto [_, owned] : r.view<const procedure::ProcedureOwnedMesh>().each()) {
+            if (r.valid(owned.MeshEntity)) material_meshes.push_back(owned.MeshEntity);
+        }
     }
     if (!material_meshes.empty()) {
         if (!every_mesh) SortUnique(material_meshes);
@@ -829,13 +783,13 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         request();
     }
     if (!is_edit_mode && (!r.view<const MeshEditWork>().empty() || !r.view<const MeshletPositionsDirty>().empty() || !r.view<const ClusterLodDirty>().empty())) {
-        auto edited = r.view<const MeshletPositionsDirty, const MeshHandle>() | to<std::vector>();
+        auto edited = r.view<const MeshletPositionsDirty>() | to<std::vector>();
         if (!edited.empty() || !r.view<const ClusterLodDirty>().empty()) {
             StageDirtyPositionMeshlets(r, chain, edited);
             // Complete staged refits before repairing their traversal nodes and memberships.
             construct();
             // Stale coarse LOD rebuilds outside edit mode, including the groups staging marked.
-            const auto repaired = r.view<const ClusterLodDirty, const MeshHandle>() | to<std::vector>();
+            const auto repaired = r.view<const ClusterLodDirty>() | to<std::vector>();
             RepairDirtyClusterGroups(r, chain, repaired);
             edited.insert(edited.end(), repaired.begin(), repaired.end());
         }
@@ -872,7 +826,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
             if (!resets(mesh_entity)) continue;
 
             const auto selection_after = r.get<const MeshGeometryDirty>(mesh_entity).Selection;
-            const auto mesh = GetDrawnMesh(r, mesh_entity);
+            const auto mesh = GetMesh(r, mesh_entity);
             const uint32_t count = mesh.ElementCount(edit_mode);
             if (count == 0) continue;
 
@@ -885,7 +839,6 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         request();
     }
     BuildMeshlets(r, chain, meshlet_meshes, bone_mesh_entities);
-    if (is_edit_mode && pass != EventPass::Restore && !viewport_changes.TransformPending.empty() && RefreshPreviewTessellation(r)) request();
     if (!viewport_changes.Theme.empty()) {
         const auto &theme = r.get<const ViewportTheme>(state::Document);
         const ViewportThemeUbo ubo{
@@ -1232,7 +1185,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     }
 
     end();
-    // Send pending edit deltas through the view UBO.
+    // An edit transform's update or end requests the edit prelude on the next render.
     // Object transforms preserve local instance bounds.
     if (is_edit_mode && AnyChanged(viewport_changes.TransformPending, viewport_changes.TransformEnd)) scene_state.EditPreludePending = true;
 
@@ -1293,10 +1246,13 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     for (const auto viewport : viewport_changes.View) RequestFrame(r, viewport);
     r.ClearChanges();
     r.clear<MeshGeometryDirty, MeshPositionsChanged, MeshMaterialAssignment, MeshDisplayDirty>();
+    FinishCookPass(r);
 }
 
 void RegisterSceneComponentHandlers(state::Registry &r) {
-    r.on_destroy<MeshHandle, [](state::Registry &r, state::Entity e) { r.remove<MeshEditWork>(e); }>();
+    constexpr auto release_edit_work = [](state::Registry &r, state::Entity e) { r.remove<MeshEditWork>(e); };
+    r.on_destroy<MeshHandle, release_edit_work>();
+    r.on_destroy<EvaluatedMesh, release_edit_work>();
     r.on_destroy<MeshEditWork, &ReleaseMeshEditWorkRanges>();
     r.on_destroy<BoundsRun, &ReleaseMeshLayout>();
     auto &selection = r.Resources.emplace<SelectionChanges>();
@@ -1307,9 +1263,8 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
     auto &mesh = r.Resources.emplace<MeshChanges>();
     mesh.Geometry.bind(r).on<MeshGeometryDirty>(On::Create).on<MeshPositionsChanged>(On::Create);
     mesh.Material.bind(r).on<MeshMaterialAssignment>(On::Create | On::Update);
-    mesh.PrimitiveShape.bind(r).on<PrimitiveShape>(On::Update);
     mesh.TetMesh.bind(r).on<TetBuffers>(On::Create | On::Update | On::Destroy);
-    mesh.NewBufferEntity.bind(r).on<MeshHandle>(On::Create).on<VertexStoreId>(On::Create);
+    mesh.NewBufferEntity.bind(r).on<EvaluatedMesh>(On::Create).on<VertexStoreId>(On::Create);
     auto &sound_vertices = r.Resources.emplace<SoundVertexChanges>();
     sound_vertices.Vertices.bind(r).on<SoundVertices>(On::Create | On::Destroy);
     sound_vertices.Updated.bind(r).on<SoundVertices>(On::Update);
@@ -1331,7 +1286,6 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
     view.InteractionMode.bind(r).on<Interaction>(On::Create | On::Update);
     view.EditMode.bind(r).on<EditMode>(On::Create | On::Update);
     view.TransformPending.bind(r).on<PendingTransform>(On::Create | On::Update | On::Destroy);
-    view.TransformStart.bind(r).on<StartTransform>(On::Create);
     view.TransformEnd.bind(r).on<StartTransform>(On::Destroy);
     view.Theme.bind(r).on<ViewportTheme>(On::Create | On::Update);
     view.View.bind(r);

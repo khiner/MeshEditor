@@ -3,7 +3,6 @@
 #include "mesh/MeshTopologyLayout.h"
 
 #include "Profile.h"
-#include "gpu/InsetVertexBasis.h"
 #include "gpu/ShortEdgesPushConstants.h"
 #include "gpu/TiledJobPushConstants.h"
 #include "mesh/BooleanWork.h"
@@ -529,14 +528,6 @@ MeshTopologyEdit::MeshTopologyEdit(mtl::ComputeChain &chain, const MeshTopologyT
 MeshTopologyEdit::MeshTopologyEdit(MeshTopologyEdit &&) noexcept = default;
 MeshTopologyEdit::~MeshTopologyEdit() = default;
 
-uint32_t TopologyScratchBound(const MeshStore &meshes, const MeshTopologyTask &task) {
-    const Mesh mesh{meshes, task.SourceId};
-    constexpr uint32_t DomainBound = ScratchWordBudget / 64u;
-    const MeshStore::TopologyCounts source{std::min(mesh.VertexCount(), DomainBound), std::min(mesh.HalfEdgeCount(), DomainBound), std::min(mesh.FaceCount(), DomainBound)};
-    MeshTopologyJob job{.Op = task.Op, .Flags = task.Flags, .Steps = task.Steps, .Param0 = task.Param0, .Param1 = task.Param1, .SelectionElement = task.SelectionElement, .CornerAttributes = meshes.Get(task.SourceId).CornerAttributes, .CollapseCount = task.Op == MeshTopologyOp::MergeCollapse ? source.Vertices : 0u};
-    return LayoutTopologyScratch(job, source, TopologyOutputBounds(task, source), Batch::ArgumentWords);
-}
-
 namespace {
 // A mesh without faces edits its lines through an edge core.
 // An operator without a line rule, or a subdivide that cuts by a list, a plane or a screen segment, has no source there.
@@ -868,7 +859,7 @@ void MeshTopologyEdit::PrepareCounts(state::Registry &r, const MeshTopologyTask 
     plan.Iterates = TopologyIterates(task.Op) && !(TopologyIsDissolve(task.Op) && task.Op != MeshTopologyOp::DissolveLimited && !source_counts.Faces);
 }
 
-void MeshTopologyEdit::ReadCounts(BufferArena<uint32_t> *inset_basis) {
+void MeshTopologyEdit::ReadCounts() {
     auto &plan = *Plan;
     auto &job = plan.Jobs.Jobs[0];
     const bool fresh = plan.Identity == TopologyIdentityPolicy::Fresh;
@@ -885,10 +876,6 @@ void MeshTopologyEdit::ReadCounts(BufferArena<uint32_t> *inset_basis) {
         return;
     }
     if (!fresh) ChangedTriangles.Finish(Chain);
-    if (inset_basis && (Op == MeshTopologyOp::InsetRegion || Op == MeshTopologyOp::InsetIndividual)) {
-        InsetBasis = inset_basis->Allocate(uint32_t(uint64_t(counts.Vertices) * sizeof(InsetVertexBasis) / sizeof(uint32_t)));
-        job.DstInsetBasis = {inset_basis->Buffer.Slot, InsetBasis.Offset};
-    }
     const auto retirement = TopologyPolicy(Op)->Retirement;
     if ((Output->RetiredCounts[0] && !(retirement & RetireVertices)) ||
         (Output->RetiredCounts[1] && !(retirement & RetireFaces))) {
@@ -896,22 +883,14 @@ void MeshTopologyEdit::ReadCounts(BufferArena<uint32_t> *inset_basis) {
     }
 }
 
-std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Registry &r, mtl::ComputeChain &chain, std::span<const MeshTopologyTask> requested, BufferArena<uint32_t> *inset_basis) {
+std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Registry &r, mtl::ComputeChain &chain, std::span<const MeshTopologyTask> requested) {
     const profile::CpuScope scope{"TopologyEditConstruct"};
     // A boolean edits a combined copy of its meshes, which the edit owns: a copy of the first mesh with a copy of the second joined after it.
     std::vector<MeshTopologyTask> tasks(requested.begin(), requested.end());
     for (auto &task : tasks) {
         if (task.Op != MeshTopologyOp::Boolean) continue;
         auto &meshes = r.Resources.get<MeshStore>();
-        const std::array sources{task.SourceId, task.SecondSourceId};
-        for (const auto id : sources) meshes.PlanClone(Mesh{meshes, id});
-        meshes.CommitReserves();
-        CloneCopies copies;
-        const auto copied = meshes.CloneMeshes(copies, sources, false);
-        mtl::ComputeChain copy_chain{meshes.BufferContext()};
-        copies.Encode(copy_chain, GetMeshPipelines(r));
-        copy_chain.Submit();
-        meshes.RebuildSelectionIndex(copied);
+        const auto copied = CloneRecords(r, std::array{task.SourceId, task.SecondSourceId});
         meshes.Join(r, copied[0], copied[1]);
         meshes.Release(copied[1]);
         task.SourceId = copied[0];
@@ -989,7 +968,7 @@ std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Registry &r, mt
     // Identity planning reads the scanned counts on the GPU, so the host reads both after one submit.
     chain.Submit();
     for (auto &edit : edits) {
-        if (edit.Output) edit.ReadCounts(inset_basis);
+        if (edit.Output) edit.ReadCounts();
     }
     // An owned source without output has no recorded reader left.
     for (auto &edit : edits) {

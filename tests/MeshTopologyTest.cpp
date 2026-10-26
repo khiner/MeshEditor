@@ -11,9 +11,11 @@
 #include "mesh/MeshEdgeUsers.h"
 #include "numeric/MatrixMath.h"
 #include "object/ObjectOps.h"
+#include "procedure/Procedure.h"
 #include "render/ElementWorkOps.h"
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
+#include "render/Instance.h"
 #include "render/MeshletBuildGpu.h"
 #include "render/SceneUpdates.h"
 #include "selection/SelectionGpu.h"
@@ -238,6 +240,18 @@ struct Fixture : Engine {
         return Mesh{R.Resources.get<const MeshStore>(), id};
     }
 
+    // The mesh's first node and the state of a Source node, which the mesh's geometry starts from.
+    std::pair<state::Entity, procedure::SourceState> Root(state::Entity mesh_entity) const {
+        const auto root = R.get<const procedure::GeometryProcedure>(mesh_entity).Nodes.front().Entity;
+        const auto *source = R.try_get<const procedure::SourceState>(root);
+        return {root, source ? *source : procedure::SourceState{}};
+    }
+
+    // The record the instance's mesh draws.
+    Mesh DrawnOf(state::Entity instance) const {
+        return GetMesh(R, R.get<const Instance>(instance).Entity);
+    }
+
     auto Selection(Element element) const {
         return R.Resources.get<const MeshStore>().GetSelectedElements(ActiveMesh().GetStoreId(), element);
     }
@@ -359,7 +373,7 @@ void TestInsetGesture() {
     f.Do(action::object::AddMeshPrimitive{primitive::Cuboid{}, std::make_unique<MeshInstanceCreateInfo>()});
     const auto instance = FindActiveEntity(f.R);
     const auto entity = GetActiveMeshEntity(f.R);
-    const auto id = f.R.get<const MeshHandle>(entity).StoreId;
+    const auto root = f.Root(entity);
 
     auto other_info = std::make_unique<MeshInstanceCreateInfo>();
     other_info->Transform.P = {5.f, 0.f, 0.f};
@@ -395,7 +409,7 @@ void TestInsetGesture() {
         expect(FacePositions(mesh, untouched) == untouched_positions);
         ExpectCounts(f.MeshOf(other_id), {8u, 12u, 6u, 12u});
         ExpectPositions(f.MeshOf(other_id), other_positions);
-        expect(f.R.get<const MeshHandle>(entity).StoreId == id);
+        expect(f.Root(entity) == root);
     };
     const auto check_inset = [&](float scale) {
         const auto mesh = f.ActiveMesh();
@@ -427,7 +441,7 @@ void TestInsetGesture() {
     f.Checkpoint();
     check_inset(0.75f);
     const auto committed = Positions(f.ActiveMesh());
-    ExpectRenderTopology(f, id, 0u, 20u);
+    ExpectRenderTopology(f, *DrawnStoreId(f.R, entity), 0u, 20u);
 
     f.P->Undo();
     f.Checkpoint();
@@ -447,7 +461,7 @@ void TestInsetGesture() {
     ExpectCounts(f.ActiveMesh(), {12u, 20u, 10u, 20u});
     ExpectPositions(f.ActiveMesh(), committed);
     check_inset(0.75f);
-    ExpectRenderTopology(f, id, 0u, 20u);
+    ExpectRenderTopology(f, *DrawnStoreId(f.R, entity), 0u, 20u);
     ExpectRenderTopology(f, other_id, 0u, 12u);
     f.CheckSavedMesh(entity);
 }
@@ -462,14 +476,14 @@ void TestPointHullDelete() {
     const auto original = Positions(f.ActiveMesh());
     f.Checkpoint();
     ExpectCounts(f.ActiveMesh(), {4u, 0u, 0u, 0u});
-    ExpectRenderTopology(f, id, 2u, 4u);
+    ExpectRenderTopology(f, *DrawnStoreId(f.R, entity), 2u, 4u);
 
     f.Do(action::mesh::ConvexHull{});
     f.Checkpoint();
     ExpectCounts(f.ActiveMesh(), {4u, 6u, 4u, 4u});
     ExpectPositions(f.ActiveMesh(), original);
-    expect(f.R.get<const MeshHandle>(entity).StoreId == id);
-    ExpectRenderTopology(f, id, 0u, 4u);
+    expect(f.Root(entity).second.StoreId == id);
+    ExpectRenderTopology(f, *DrawnStoreId(f.R, entity), 0u, 4u);
 
     f.Do(action::view::SetEditMode{.Mode = Element::Face});
     f.Do(action::selection::SelectAll{});
@@ -478,13 +492,13 @@ void TestPointHullDelete() {
     f.Checkpoint();
     ExpectCounts(f.ActiveMesh(), {4u, 6u, 0u, 0u});
     ExpectPositions(f.ActiveMesh(), original);
-    ExpectRenderTopology(f, id, 1u, 6u);
+    ExpectRenderTopology(f, *DrawnStoreId(f.R, entity), 1u, 6u);
 
     f.P->Undo();
     f.Checkpoint();
     ExpectCounts(f.ActiveMesh(), {4u, 6u, 4u, 4u});
     ExpectPositions(f.ActiveMesh(), original);
-    ExpectRenderTopology(f, id, 0u, 4u);
+    ExpectRenderTopology(f, *DrawnStoreId(f.R, entity), 0u, 4u);
 }
 
 void TestOnlyFacesPreservesEdges() {
@@ -518,7 +532,7 @@ void TestOnlyFacesPreservesEdges() {
             expect(MeshEdgeUsers::Key(*mesh.GetFromVertex(h), *mesh.GetToVertex(h)) == key);
             if (!mesh.GetConnectivity().FaceOf(h)) expect(mesh.GetOppositeHalfedge(mesh.GetOppositeHalfedge(h)) == h);
         }
-        expect(RenderedPrimitiveCounts(f.R.Resources.get<const MeshStore>(), id)[1] == 6u);
+        expect(RenderedPrimitiveCounts(f.R.Resources.get<const MeshStore>(), *DrawnStoreId(f.R, entity))[1] == 6u);
     }
 }
 
@@ -649,16 +663,17 @@ void TestWireHullPreservesConnectivity() {
     const auto &render = meshes.Render();
     const auto original = Positions(f.ActiveMesh());
     struct Wire {
-        uint32_t Edge, Halfedge, Opposite, Meshlet;
+        uint32_t Edge, Halfedge, Opposite;
     };
     std::vector<Wire> wires;
     for (const auto e : f.ActiveMesh().edges()) {
         const auto h = f.ActiveMesh().GetHalfedge(e, 0u);
-        wires.push_back({*e, *h, *f.ActiveMesh().GetOppositeHalfedge(h), render.ElementMeshlets[1].Get(meshes.Get(id).ElementMeshlets[1], *e)});
+        wires.push_back({*e, *h, *f.ActiveMesh().GetOppositeHalfedge(h)});
     }
+    // The hull cooks into a record of its own, which draws each wire from one of its meshlets.
     const auto check = [&](const state::Registry &, bool faces) {
         const auto mesh = f.ActiveMesh();
-        const auto &owner = meshes.Get(id);
+        const auto &owner = meshes.Get(mesh.GetStoreId());
         ExpectCounts(mesh, {6u, faces ? 9u : 3u, faces ? 4u : 0u, faces ? 4u : 0u});
         ExpectPositions(mesh, original);
         expect(owner.RenderTopologies == (faces ? 3u : 6u));
@@ -666,8 +681,7 @@ void TestWireHullPreservesConnectivity() {
             expect(mesh.GetHalfedge(he::EH{wire.Edge}, 0u) == he::HH{wire.Halfedge});
             expect(mesh.GetOppositeHalfedge(he::HH{wire.Halfedge}) == he::HH{wire.Opposite});
             expect(!mesh.GetConnectivity().FaceOf(he::HH{wire.Halfedge}));
-            expect(render.ElementMeshlets[1].Get(owner.ElementMeshlets[1], wire.Edge) == wire.Meshlet);
-            expect(render.Meshlets.Contains(owner.MeshletData, ElementHandle{wire.Meshlet}));
+            expect(render.Meshlets.Contains(owner.MeshletData, ElementHandle{render.ElementMeshlets[1].Get(owner.ElementMeshlets[1], wire.Edge)}));
         }
     };
     check(f.R, false);
@@ -793,11 +807,11 @@ void TestExtrudeRegionSpinAttributes() {
         f.Checkpoint();
         const auto check = [&]() {
             const auto mesh = f.ActiveMesh();
-            const auto normals = meshes.GetCornerNormalView(id);
+            const auto normals = meshes.GetCornerNormalView(mesh.GetStoreId());
             // Four bottom and four top quads, plus eight boundary quads per step.
             ExpectCounts(mesh, closed ? Counts{16u, 24u, 16u, 16u} : Counts{34u, 64u, 32u, 64u});
-            expect(meshes.GetSelectedElements(id, Element::Vertex).Count() == (closed ? 4u : 9u));
-            expect(meshes.GetSelectedElements(id, Element::Face).Count() == 4u);
+            expect(meshes.GetSelectedElements(mesh.GetStoreId(), Element::Vertex).Count() == (closed ? 4u : 9u));
+            expect(meshes.GetSelectedElements(mesh.GetStoreId(), Element::Face).Count() == 4u);
             for (const auto face : mesh.faces()) {
                 const auto positions = FacePositions(mesh, face);
                 const bool reversed = closed ? positions.front().z < 5.5f : std::ranges::all_of(positions, [](vec3 p) { return std::abs(p.z) < 1e-5f; });
@@ -1104,13 +1118,13 @@ void TestLineSubdivide() {
     source.Data.Positions = {-3.f * axis, -1.f * axis, axis, 3.f * axis};
     source.Data.Edges = {{0u, 1u}, {1u, 2u}, {2u, 3u}};
     const auto id = CreateMesh(f.R, std::move(source)).StoreId;
-    const auto instance = AddMesh(f.R, id, MeshInstanceCreateInfo{}).second;
+    const auto [entity, instance] = AddMesh(f.R, id, MeshInstanceCreateInfo{});
     f.P->Settle();
     f.Do(action::selection::Select{instance});
     f.EnterEdit(Element::Edge);
     f.Checkpoint();
     ExpectCounts(f.ActiveMesh(), {4u, 3u, 0u, 0u});
-    ExpectRenderTopology(f, id, 1u, 3u);
+    ExpectRenderTopology(f, *DrawnStoreId(f.R, entity), 1u, 3u);
 
     f.Click(f.ViewFraction(vec3{0.f}));
     expect(f.Selection(Element::Edge).Count() == 1u);
@@ -1143,7 +1157,7 @@ void TestLineSubdivide() {
     std::ranges::sort(segments);
     const std::vector<std::pair<int32_t, int32_t>> ExpectedSegments{{-3, -1}, {-1, 0}, {0, 1}, {1, 3}};
     expect(segments == ExpectedSegments);
-    ExpectRenderTopology(f, id, 1u, 4u);
+    ExpectRenderTopology(f, *DrawnStoreId(f.R, entity), 1u, 4u);
 }
 
 // Independent edge-based reference: every edge contributes once at each endpoint, and each iteration reads the previous iteration's complete positions.
@@ -1162,9 +1176,8 @@ void TestSmoothVertices() {
     f.Do(action::mesh::SmoothVertices{.Factor = .5f, .Repeat = 2u, .X = false});
     f.Checkpoint();
     ExpectPositions(f.ActiveMesh(), expected);
-    const auto history = *f.P->History.Present;
     f.Do(action::mesh::SmoothVertices{.Factor = 0.f});
-    expect(*f.P->History.Present == history);
+    ExpectPositions(f.ActiveMesh(), expected);
 }
 
 void TestSparseSelectionLifecycle() {
@@ -1177,9 +1190,10 @@ void TestSparseSelectionLifecycle() {
     f.P->History.Commit("Select last block", {});
     const auto check = [&](const state::Registry &scene, bool deleted) {
         const auto &meshes = scene.Resources.get<const MeshStore>();
+        const auto drawn = GetMesh(scene, entity).GetStoreId();
         expect(GetMesh(scene, entity).VertexCount() == (deleted ? 256u : 258u));
-        expect(meshes.GetSelectedElements(id, Element::Vertex).Count() == (deleted ? 0u : 2u));
-        ExpectSelectionIndex(meshes, id);
+        expect(meshes.GetSelectedElements(drawn, Element::Vertex).Count() == (deleted ? 0u : 2u));
+        ExpectSelectionIndex(meshes, drawn);
     };
     check(f.R, false);
     f.Do(action::mesh::Delete{action::mesh::DeleteMode::Vertices});
@@ -1328,10 +1342,8 @@ void TestSplitNonplanarFaces() {
     std::vector<std::pair<he::FH, std::vector<vec3>>> unchanged;
     for (const auto face : f.ActiveMesh().faces())
         if (f.ActiveMesh().GetValence(face) != 6u) unchanged.emplace_back(face, FacePositions(f.ActiveMesh(), face));
-    const auto base = *f.P->History.Present;
     f.Do(action::mesh::SplitNonplanarFaces{.Angle = 2.f});
     f.Checkpoint();
-    expect(*f.P->History.Present == base) << "split above threshold should not create history";
     ExpectCounts(f.ActiveMesh(), counts);
     const auto check = [&] {
         const auto mesh = f.ActiveMesh();
@@ -1361,10 +1373,9 @@ void TestSplitNonplanarFaces() {
     f.Do(action::mesh::SplitNonplanarFaces{});
     f.Checkpoint();
     check();
-    const auto split = *f.P->History.Present;
     f.Do(action::mesh::SplitNonplanarFaces{});
     f.Checkpoint();
-    expect(*f.P->History.Present == split) << "planar output should not create history";
+    check();
 }
 
 void TestSplitNonplanarConcave() {
@@ -1430,10 +1441,19 @@ void TestSplitNonplanarLargePolygon() {
         for (const auto vertex : mesh.fv_range(face)) expect(std::abs(Dot(mesh.GetPosition(vertex) - center, normal)) < 1e-5f);
     }
 }
+// The face's first `count` render triangles, whose corners are halfedge handles.
+// Face triangles hold triangle handles, which a copied record places at other arena addresses.
+std::vector<uvec3> RenderTriangles(const MeshStore &meshes, const Mesh &mesh, he::FH face, uint32_t count) {
+    const auto &a = meshes.Arenas();
+    const auto first = a.FaceTriangles.Get({test::Address(mesh, face), 1u})[0];
+    std::vector<uvec3> triangles;
+    a.Triangles.ForEachAddressRun(meshes.Get(mesh.GetStoreId()).TriangleData, ElementHandle{first}, count, [&](Range run) { triangles.append_range(a.Triangles.Get(run)); });
+    return triangles;
+}
 // Validate the render triangles independently of the triangulation algorithm:
 // winding and area must match the polygon, and internal directed edges cancel.
-void ExpectPolygonTessellation(const MeshStore &meshes, const Mesh &mesh, auto position) {
-    const auto &arenas = meshes.Arenas();
+void ExpectPolygonTessellation(const MeshStore &meshes, const Mesh &mesh) {
+    const auto position = [&](he::VH vertex) { return mesh.GetPosition(vertex); };
     for (const auto face : mesh.faces()) {
         std::vector<vec3> points;
         for (const auto vertex : mesh.fv_range(face)) points.push_back(position(vertex));
@@ -1452,8 +1472,7 @@ void ExpectPolygonTessellation(const MeshStore &meshes, const Mesh &mesh, auto p
             corners.insert(*h);
             edge(*mesh.GetConnectivity().Previous(h), *h, -1);
         }
-        const auto first = arenas.FaceTriangles.Get({*face, 1u})[0];
-        for (const auto triangle : arenas.Triangles.Get({first, uint32_t(points.size() - 2u)})) {
+        for (const auto triangle : RenderTriangles(meshes, mesh, face, uint32_t(points.size() - 2u))) {
             for (uint32_t k = 0u; k < 3u; ++k) {
                 expect(corners.contains(triangle[k]));
                 edge(triangle[k], triangle[(k + 1u) % 3u], 1);
@@ -1470,10 +1489,7 @@ void ExpectPolygonTessellation(const MeshStore &meshes, const Mesh &mesh, auto p
     }
 }
 
-void ExpectPolygonTessellation(const MeshStore &meshes, const Mesh &mesh) {
-    ExpectPolygonTessellation(meshes, mesh, [&](he::VH vertex) { return mesh.GetPosition(vertex); });
-}
-
+// A drag cooks each step into the drawn record, which tessellates the moved polygon and keeps the untouched triangle's corners.
 void TestPositionRetessellation() {
     Fixture f{"position-retessellation"};
     MeshSource source;
@@ -1492,63 +1508,50 @@ void TestPositionRetessellation() {
     const auto mesh = f.ActiveMesh();
     const auto original = Positions(mesh);
     const auto counts = CountsOf(mesh);
-    const auto vertex = original[1].first;
     const auto target = vec3{.5f, 1.f, 0.f};
     const auto delta = target - original[1].second;
     const auto &meshes = f.R.Resources.get<const MeshStore>();
-    const auto &a = meshes.Arenas();
-    const auto first = a.FaceTriangles.Get({*mesh.FaceAt(0u), 1u})[0];
-    const auto base_triangles = a.Triangles.Get({first, 2u}) | std::ranges::to<std::vector>();
-    const auto untouched = a.FaceTriangles.Get({*mesh.FaceAt(1u), 1u})[0];
-    const auto untouched_triangle = a.Triangles.Get({untouched, 1u})[0];
-    const auto check = [&](vec3 moved, bool preview) {
+    const auto untouched_triangle = RenderTriangles(meshes, mesh, mesh.FaceAt(1u), 1u).front();
+    const auto check = [&](vec3 moved) {
         const auto current = f.ActiveMesh();
         ExpectCounts(current, counts);
         auto expected = original;
         expected[1].second = moved;
-        ExpectPositions(current, preview ? original : expected);
-        const auto position = [&](he::VH v) { return v == vertex ? moved : current.GetPosition(v); };
-        ExpectPolygonTessellation(meshes, current, position);
-        expect(a.Triangles.Get({untouched, 1u})[0] == untouched_triangle);
+        ExpectPositions(current, expected);
+        ExpectPolygonTessellation(meshes, current);
+        expect(RenderTriangles(meshes, current, current.FaceAt(1u), 1u).front() == untouched_triangle);
         for (const auto face : current.faces())
             for (const auto h : current.fh_range(face)) {
                 const auto v = current.GetToVertex(h);
-                const auto uv = a.CornerUvs[0].Get(meshes.Get(current.GetStoreId()).CornerUvs[0], *h);
+                const auto uv = meshes.Arenas().CornerUvs[0].Get(meshes.Get(current.GetStoreId()).CornerUvs[0], *h);
                 const auto p = original[*v].second;
                 expect(Length(uv - vec2{p.x, p.y}) < 1e-5f);
             }
         ExpectRenderedGeometry(meshes, current);
-        if (preview) {
-            const auto &buffers = f.R.Resources.get<const GpuBuffers>();
-            const auto posed = buffers.PosedPositions.View(f.R.get<const PosedLayout>(entity).Namespaces.PositionNamespace(0u));
-            expect(Near(posed[*vertex], moved));
-        }
     };
-    check(original[1].second, false);
+    check(original[1].second);
     f.Stage(action::view::TransformElements{{.P = delta}});
     f.Checkpoint();
-    check(target, true);
-    expect(!std::ranges::equal(a.Triangles.Get({first, 2u}), base_triangles));
+    check(target);
     f.Cancel();
     f.Checkpoint();
-    check(original[1].second, false);
-    expect(std::ranges::equal(a.Triangles.Get({first, 2u}), base_triangles));
+    check(original[1].second);
     f.Stage(action::view::TransformElements{{.P = delta}});
     f.Checkpoint();
     f.Commit();
     f.Checkpoint();
-    check(target, false);
+    check(target);
     f.P->Undo();
     f.Checkpoint();
-    check(original[1].second, false);
+    check(original[1].second);
     f.P->Redo();
     f.Checkpoint();
-    check(target, false);
+    check(target);
     f.P->Undo();
     const vec3 smoothed{.5f, 1.5f, 0.f};
     f.Do(action::mesh::SmoothVertices{.Factor = 1.5f});
     f.Checkpoint();
-    check(smoothed, false);
+    check(smoothed);
     expect(f.P->Save());
     expect(f.P->Close());
     Engine reopened{false};
@@ -1822,10 +1825,11 @@ void TestSplitConcaveFaces() {
         ExpectPolygonTessellation(f.R.Resources.get<const MeshStore>(), mesh);
     };
     check(false);
-    const auto split = *f.P->History.Present;
+    // Splitting convex faces leaves them, and its node's history step undoes before the first split's.
     f.Do(action::mesh::SplitConcaveFaces{});
     f.Checkpoint();
-    expect(*f.P->History.Present == split) << "convex faces should not create history";
+    check(false);
+    f.P->Undo();
     f.P->Undo();
     f.Do(action::mesh::FlipNormals{});
     f.Do(action::mesh::SplitConcaveFaces{});
@@ -1931,11 +1935,11 @@ void TestRadialEdits() {
     f.Checkpoint();
     check(f.R, false, -.4f);
     f.Cancel();
-    const auto history = *f.P->History.Present;
+    const auto unedited = Positions(f.ActiveMesh());
     f.Do(action::mesh::ToSphere{0.f});
     f.Do(action::mesh::ToSphere{-1.f});
     f.Do(action::mesh::PushPull{0.f});
-    expect(*f.P->History.Present == history);
+    ExpectPositions(f.ActiveMesh(), unedited);
     const std::array center{4u};
     f.SelectElements(entity, center, Element::Vertex);
     f.Do(action::mesh::ToSphere{});
@@ -1984,11 +1988,11 @@ void TestRadialTransformedMeshes() {
         for (uint32_t m = 0u; m < 2u; ++m) {
             auto expected = original[m];
             for (uint32_t i = 0u; i < 3u; ++i) expected[i].second = (to_sphere ? sphere : push)[m][i];
-            ExpectPositions(f.MeshOf(ids[m]), expected);
+            ExpectPositions(f.DrawnOf(instances[m]), expected);
         }
         f.Cancel();
         f.Checkpoint();
-        for (uint32_t m = 0u; m < 2u; ++m) ExpectPositions(f.MeshOf(ids[m]), original[m]);
+        for (uint32_t m = 0u; m < 2u; ++m) ExpectPositions(f.DrawnOf(instances[m]), original[m]);
     }
 }
 
@@ -2022,21 +2026,21 @@ void TestShearTransformedMeshes() {
     f.Do(action::selection::ToggleSelected{instances[1]});
     f.EnterEdit(Element::Vertex);
     f.Do(action::selection::SelectAll{});
-    const auto history = *f.P->History.Present;
+    const std::array unedited{Positions(f.DrawnOf(instances[0])), Positions(f.DrawnOf(instances[1]))};
     f.Do(action::mesh::Shear{.6f, action::mesh::ShearAxis::X, action::mesh::ShearAxis::X});
     f.Do(action::mesh::Shear{std::numeric_limits<float>::quiet_NaN()});
-    expect(*f.P->History.Present == history);
+    for (uint32_t m = 0u; m < 2u; ++m) ExpectPositions(f.DrawnOf(instances[m]), unedited[m]);
     for (const bool local : {false, true}) {
         f.Stage(action::mesh::Shear{.Angle = .6f, .Local = local});
         f.Checkpoint();
         for (uint32_t m = 0u; m < 2u; ++m) {
             auto expected = original[m];
             for (uint32_t i = 0u; i < 3u; ++i) expected[i].second = reference[uint32_t(local)][m][i];
-            ExpectPositions(f.MeshOf(ids[m]), expected);
+            ExpectPositions(f.DrawnOf(instances[m]), expected);
         }
         f.Cancel();
         f.Checkpoint();
-        for (uint32_t m = 0u; m < 2u; ++m) ExpectPositions(f.MeshOf(ids[m]), original[m]);
+        for (uint32_t m = 0u; m < 2u; ++m) ExpectPositions(f.DrawnOf(instances[m]), original[m]);
     }
 }
 
@@ -2156,10 +2160,10 @@ void TestEdgeSlideFacePaths() {
     const std::array selected{edges.front()};
     f.SelectElements(entity, selected, Element::Edge);
     f.P->History.Commit("Select nonmanifold slide edge", {});
-    const auto history = *f.P->History.Present;
+    const auto unedited = Positions(f.ActiveMesh());
     f.Do(action::mesh::EdgeSlide{});
     f.Checkpoint();
-    expect(*f.P->History.Present == history);
+    ExpectPositions(f.ActiveMesh(), unedited);
 }
 
 void TestEdgeSlideClosedLoop() {
@@ -2192,10 +2196,10 @@ void TestEdgeSlideClosedLoop() {
     // Branching selections are invalid and must not create history.
     const std::array branch{std::array{4u, 5u}, std::array{4u, 7u}, std::array{4u, 8u}};
     SelectEdgePairs(f, entity, branch);
-    const auto history = *f.P->History.Present;
+    const auto unedited = Positions(f.ActiveMesh());
     f.Do(action::mesh::EdgeSlide{});
     f.Checkpoint();
-    expect(*f.P->History.Present == history);
+    ExpectPositions(f.ActiveMesh(), unedited);
     ExpectPositions(f.ActiveMesh(), original);
 }
 
@@ -2328,10 +2332,10 @@ void TestVertexSlideReferenceAndDegeneracy() {
         ExpectPositions(f.ActiveMesh(), original);
         f.Cancel();
     }
-    const auto history = *f.P->History.Present;
+    const auto unedited = Positions(f.ActiveMesh());
     f.Do(action::mesh::VertexSlide{.Direction = {}});
     f.Do(action::mesh::VertexSlide{.Factor = std::numeric_limits<float>::quiet_NaN()});
-    expect(*f.P->History.Present == history);
+    ExpectPositions(f.ActiveMesh(), unedited);
 }
 
 void TestRandomizeControls() {
@@ -2394,9 +2398,9 @@ void TestBendReferences() {
     f.Checkpoint();
     for (const auto &[v, p] : original) expect(Length(f.ActiveMesh().GetPosition(v) - p) < .001f);
     f.Cancel();
-    const auto history = *f.P->History.Present;
+    const auto unedited = Positions(f.ActiveMesh());
     f.Do(action::mesh::Bend{.Radius = 0.f});
-    expect(*f.P->History.Present == history);
+    ExpectPositions(f.ActiveMesh(), unedited);
 }
 
 void TestWarpReferences() {
@@ -2425,9 +2429,9 @@ void TestWarpReferences() {
     f.Do(action::mesh::Warp{.Angle = 0.f});
     f.Checkpoint();
     for (const auto v : f.ActiveMesh().vertices()) expect(Near(f.ActiveMesh().GetPosition(v), vec3{0, 1, f.ActiveMesh().GetPosition(v).z}));
-    const auto history = *f.P->History.Present;
+    const auto unedited = Positions(f.ActiveMesh());
     f.Do(action::mesh::Warp{.AutoRange = false, .Min = 1.f, .Max = 1.f});
-    expect(*f.P->History.Present == history);
+    ExpectPositions(f.ActiveMesh(), unedited);
 }
 
 void TestRecalculateNormals() {
@@ -2477,11 +2481,9 @@ void TestRecalculateNormals() {
     f.Commit();
     f.Checkpoint();
     check(f.R, true);
-    const auto history = *f.P->History.Present;
     f.Do(action::mesh::RecalculateNormals{});
     f.Checkpoint();
     check(f.R, true);
-    expect(*f.P->History.Present == history) << "consistent winding must not create history";
     f.Do(action::mesh::RecalculateNormals{true});
     f.Checkpoint();
     check(f.R, true, true);
@@ -2640,22 +2642,22 @@ void TestVisibilityLifecycle() {
         expect(meshes.GetHiddenElements(mesh_id, Element::Edge).Count() == 3u);
         ExpectSelectionIndex(meshes, mesh_id);
     };
-    check(f.R.Resources.get<const MeshStore>(), id);
+    check(f.R.Resources.get<const MeshStore>(), *DrawnStoreId(f.R, entity));
     f.P->Undo();
     f.Checkpoint();
     expect(f.ActiveMesh().FaceCount() == 2u);
     f.P->Redo();
     f.Checkpoint();
-    check(f.R.Resources.get<const MeshStore>(), id);
+    check(f.R.Resources.get<const MeshStore>(), *DrawnStoreId(f.R, entity));
     f.Do(action::view::SetInteractionMode{InteractionMode::Object});
     f.Do(action::object::Duplicate{});
     f.Checkpoint();
-    for (const auto [e, handle] : f.R.view<const MeshHandle>().each()) check(f.R.Resources.get<const MeshStore>(), handle.StoreId);
+    for (const auto [e, evaluated] : f.R.view<const EvaluatedMesh>().each()) check(f.R.Resources.get<const MeshStore>(), evaluated.StoreId);
     expect(f.P->Save());
     expect(f.P->Close());
     Engine reopened{false};
     expect(reopened.P->Open(f.Dir));
-    for (const auto [e, handle] : reopened.R.view<const MeshHandle>().each()) check(reopened.R.Resources.get<const MeshStore>(), handle.StoreId);
+    for (const auto [e, evaluated] : reopened.R.view<const EvaluatedMesh>().each()) check(reopened.R.Resources.get<const MeshStore>(), evaluated.StoreId);
     expect(reopened.R.Resources.get<action::Errors>().Messages.empty());
 }
 
@@ -2670,9 +2672,8 @@ void TestSnapSymmetry() {
     f.SelectElements(entity, selected, Element::Vertex);
     f.P->History.Commit("Select symmetry vertices", {});
     const auto original = Positions(f.ActiveMesh());
-    const auto history = *f.P->History.Present;
     f.Do(action::mesh::SnapSymmetry{.Threshold = 0.f});
-    expect(*f.P->History.Present == history);
+    ExpectPositions(f.ActiveMesh(), original);
     // Blender 5.2.2: interpolate toward positive partners, including unselected partners; center eligible vertices and leave unmatched vertices untouched.
     // The first canonical pair owns its partner, leaving the competing vertex 7 unchanged.
     const std::array reference{vec3{-1.06f, .03f, .015f}, vec3{1.06f, .03f, .015f}, vec3{-2.015f, 1.0375f, .2375f}, vec3{2.015f, 1.0375f, .2375f}, vec3{0, 2, .3f}, vec3{4, 2, 3}, vec3{.1f, 4, .6f}};
@@ -2781,7 +2782,6 @@ void TestUnsubdivideLinesAndBoundaries() {
         f.SelectElements(entity, selected, Element::Vertex);
         f.P->History.Commit("Select unsubdivide boundary", {});
         const auto original = Positions(f.ActiveMesh());
-        const auto history = *f.P->History.Present;
         f.Do(action::mesh::Unsubdivide{2u});
         f.Checkpoint();
         if (kind == 0u) {
@@ -2791,10 +2791,7 @@ void TestUnsubdivideLinesAndBoundaries() {
             expect(x == std::vector<float>{0, 1, 5, 8});
             expect(f.Selection(Element::Vertex).Count() == 4u);
         } else if (kind == 1u) expect(f.ActiveMesh().VertexCount() == 8u);
-        else {
-            expect(*f.P->History.Present == history);
-            ExpectPositions(f.ActiveMesh(), original);
-        }
+        else ExpectPositions(f.ActiveMesh(), original);
     }
 }
 
@@ -2844,10 +2841,16 @@ void TestBeautifyFaces() {
         }
         std::ranges::sort(actual);
         expect(actual == expected) << "Blender beautify partition";
-        const auto edited = *f.P->History.Present;
+        const auto loops = [&] {
+            const auto beautified = f.ActiveMesh();
+            std::vector<std::vector<vec3>> faces;
+            for (const auto face : beautified.faces()) faces.push_back(FacePositions(beautified, face));
+            return faces;
+        };
+        const auto edited = loops();
         f.Do(action);
         f.Checkpoint();
-        expect(*f.P->History.Present == edited) << "beautify converges";
+        expect(loops() == edited) << "beautify converges";
     }
 }
 
@@ -2865,10 +2868,16 @@ void TestBeautifyBoundaries() {
         const std::vector<uint32_t> selected = kind ? std::vector{0u, 1u} : std::vector{0u};
         f.SelectElements(entity, selected, Element::Face);
         f.P->History.Commit("Select bounded beautify", {});
-        const auto before = *f.P->History.Present;
+        const auto loops = [&] {
+            const auto mesh = f.ActiveMesh();
+            std::vector<std::vector<vec3>> faces;
+            for (const auto face : mesh.faces()) faces.push_back(FacePositions(mesh, face));
+            return faces;
+        };
+        const auto before = loops();
         f.Do(action::mesh::BeautifyFaces{});
         f.Checkpoint();
-        expect(*f.P->History.Present == before);
+        expect(loops() == before);
     }
 }
 
@@ -3013,13 +3022,14 @@ void TestDecimate() {
         f.P->History.Commit("Select decimation region", {});
         const auto original = Positions(f.ActiveMesh());
         const auto counts = CountsOf(f.ActiveMesh());
-        const auto unchanged = *f.P->History.Present;
+        const auto unedited = Positions(f.ActiveMesh());
         f.Do(action::mesh::Decimate{1.f});
-        expect(*f.P->History.Present == unchanged);
+        ExpectPositions(f.ActiveMesh(), unedited);
         const auto check = [&](const state::Registry &r) {
             const auto &meshes = r.Resources.get<const MeshStore>();
             const auto &a = meshes.Arenas();
-            const Mesh mesh{meshes, id};
+            const auto drawn = *DrawnStoreId(r, entity);
+            const Mesh mesh{meshes, drawn};
             expect(mesh.VertexCount() < counts.Vertices) << "decimate fixture" << kind;
             expect(mesh.TriangleIndexCount() / 3u < counts.Triangles);
             // Blender 5.2.2 d13f752e3b9c: these half-ratio grids end at
@@ -3049,11 +3059,11 @@ void TestDecimate() {
                 const auto x = uint32_t(position.x), y = uint32_t(position.y);
                 const bool fixed = (kind == 3u && (x < 2u || x > 4u || y < 2u || y > 4u)) || (kind == 4u && x == 3u);
                 if (fixed) {
-                    expect(meshes.IsLiveElement(id, Element::Vertex, ElementHandle{*vertex}));
+                    expect(meshes.IsLiveElement(drawn, Element::Vertex, ElementHandle{*vertex}));
                     expect(mesh.GetPosition(vertex) == position);
                 }
             }
-            expect(meshes.GetHiddenElements(id, Element::Face).Count() == (kind == 5u ? 1u : 0u));
+            expect(meshes.GetHiddenElements(drawn, Element::Face).Count() == (kind == 5u ? 1u : 0u));
         };
         const action::mesh::Decimate action{.5f};
         f.Do(action);
@@ -3072,14 +3082,14 @@ void TestDecimate() {
             source.Data.AddFace(std::array{0u, 2u, 3u});
         }
         const auto id = CreateMesh(f.R, std::move(source)).StoreId;
-        f.AddEditable(id, Element::Vertex);
+        const auto entity = f.AddEditable(id, Element::Vertex).first;
         f.Do(action::selection::SelectAll{});
-        const auto before = *f.P->History.Present;
         const auto counts = CountsOf(f.ActiveMesh());
         f.Do(action::mesh::Decimate{0.f});
         f.Checkpoint();
+        // The node passes the closed or nonmanifold input through.
         ExpectCounts(f.ActiveMesh(), counts);
-        expect(*f.P->History.Present == before);
+        expect(f.R.all_of<action::mesh::Decimate>(f.R.get<const procedure::GeometryProcedure>(entity).Nodes.back().Entity));
     }
 }
 
@@ -3137,12 +3147,12 @@ void TestSeparate() {
             const auto &a = meshes.Arenas();
             std::vector<std::vector<uint32_t>> actual;
             uint32_t edges = 0u, faces = 0u, hidden = 0u;
-            for (const auto [e, handle] : r.view<const MeshHandle>().each()) {
-                const Mesh mesh{meshes, handle.StoreId};
+            for (const auto [e, evaluated] : r.view<const EvaluatedMesh>().each()) {
+                const Mesh mesh{meshes, evaluated.StoreId};
                 auto &vertices = actual.emplace_back();
                 for (const auto v : mesh.vertices()) vertices.push_back(uint32_t(mesh.GetPosition(v).x));
                 std::ranges::sort(vertices);
-                const auto &record = meshes.Get(handle.StoreId);
+                const auto &record = meshes.Get(evaluated.StoreId);
                 const auto palette = a.PrimitiveMaterials.Get(record.PrimitiveMaterials);
                 for (const auto face : mesh.faces()) {
                     const bool second = std::ranges::any_of(mesh.fv_range(face), [&](auto v) { return mesh.GetPosition(v).x == 3.f; });
@@ -3161,9 +3171,9 @@ void TestSeparate() {
                     }
                 edges += mesh.EdgeCount();
                 faces += mesh.FaceCount();
-                hidden += meshes.GetHiddenElements(handle.StoreId, Element::Face).Count();
+                hidden += meshes.GetHiddenElements(evaluated.StoreId, Element::Face).Count();
                 ExpectRenderedGeometry(meshes, mesh);
-                if (test.Operation == Mode::Material) ExpectSelectionIndex(meshes, handle.StoreId);
+                if (test.Operation == Mode::Material) ExpectSelectionIndex(meshes, evaluated.StoreId);
             }
             std::ranges::sort(actual);
             expect(actual == test.Expected) << "separate mode/domain" << uint32_t(test.Operation) << uint32_t(test.Domain);
@@ -3177,7 +3187,7 @@ void TestSeparate() {
             f.CheckUndoRedo([&](const state::Registry &r, bool separated) {
                 if (separated) check(r);
                 else {
-                    expect(r.view<const MeshHandle>().size() == 1u);
+                    expect(r.view<const EvaluatedMesh>().size() == 1u);
                     ExpectPositions(f.ActiveMesh(), original);
                 }
             });
@@ -3455,9 +3465,11 @@ void TestMixedMeshletBuild() {
     f.Checkpoint();
     check(scene_id);
     expect(std::ranges::all_of(f.R.Resources.get<GpuBuffers>().TopologyMeshes, [](uint32_t meshes) { return meshes > 0u; }));
+    // Edits cook the scene mesh into the record it draws.
     const auto check_geometry = [&](vec3 offset) {
-        const Mesh mesh{meshes, scene_id};
-        check(scene_id);
+        const auto drawn = *DrawnStoreId(f.R, entity);
+        const Mesh mesh{meshes, drawn};
+        check(drawn);
         for (uint32_t v = 0u; v < data.Positions.size(); ++v)
             expect(Near(mesh.GetPosition(mesh.VertexAt(v)), data.Positions[v] + offset));
     };
@@ -3477,7 +3489,7 @@ void TestMixedMeshletBuild() {
     f.Do(action::mesh::Delete{action::mesh::DeleteMode::OnlyFaces});
     f.Checkpoint();
     ExpectCounts(f.ActiveMesh(), {6u, 5u, 0u, 0u});
-    expect(RenderedPrimitiveCounts(meshes, scene_id) == std::array{0u, 5u, 1u});
+    expect(RenderedPrimitiveCounts(meshes, *DrawnStoreId(f.R, entity)) == std::array{0u, 5u, 1u});
     f.P->Undo();
     f.Checkpoint();
     check_geometry(shift);
@@ -3524,13 +3536,13 @@ void TestMixedMeshletLod() {
     f.Do(action::mesh::ConvexHull{});
     f.Checkpoint();
     ExpectCounts(f.ActiveMesh(), {before.Vertices, before.Edges + 6u, before.Faces + 4u, before.Triangles + 4u});
-    const auto after = RenderedPrimitiveCounts(meshes, id);
+    const auto after = RenderedPrimitiveCounts(meshes, *DrawnStoreId(f.R, entity));
     expect(after[1] == 2u);
     expect(after[2] == 0u);
     f.P->Undo();
     f.Checkpoint();
     ExpectCounts(f.ActiveMesh(), before);
-    expect(RenderedPrimitiveCounts(meshes, id)[2] == 4u);
+    expect(RenderedPrimitiveCounts(meshes, *DrawnStoreId(f.R, entity))[2] == 4u);
 }
 
 void TestAbsentFaceAttributes() {
@@ -3578,7 +3590,8 @@ void TestConnectVertices() {
         actual.insert(std::move(loop));
     }
     expect(actual == std::set<std::vector<uint32_t>>{{0u, 1u, 2u}, {2u, 3u, 4u}, {0u, 4u, 5u}, {0u, 2u, 4u}});
-    expect(f.Selection(Element::Face).Count() == 4u);
+    // Vertex selection mode derives the face selection from the selected vertices, which bound the middle triangle alone.
+    expect(f.Selection(Element::Face).Count() == 1u);
     expect(f.Selection(Element::Edge).Count() == 3u);
 }
 

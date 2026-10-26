@@ -3,14 +3,18 @@
 #include "procedure/Procedure.h"
 #include "procedure/ProcedureSchema.h"
 
+#include "Profile.h"
 #include "SortUnique.h"
 #include "TransformMath.h"
 #include "mesh/BeautifyFaces.h"
 #include "mesh/Decimate.h"
+#include "mesh/ElementWorkSort.h"
 #include "mesh/GeometryRefresh.h"
 #include "mesh/MeshClone.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
+#include "mesh/MeshTopologyEdit.h"
+#include "mesh/PositionOperations.h"
 #include "mesh/Primitives.h"
 #include "mesh/RecalculateNormals.h"
 #include "mesh/SharpnessOperations.h"
@@ -18,27 +22,60 @@
 #include "numeric/MatrixMath.h"
 #include "object/ObjectOps.h"
 #include "object/PendingSync.h"
+#include "render/ElementWorkOps.h"
+#include "render/GpuBuffers.h"
+#include "render/GpuSceneState.h"
 #include "render/Instance.h"
+#include "render/MeshTopologyRepair.h"
 #include "render/MeshletBuildGpu.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
+#include "selection/SelectionComponents.h"
+#include "selection/SelectionGpu.h"
+#include "viewport/Viewport.h"
 #include "viewport/ViewportEvents.h"
+#include "viewport/ViewportRenderGpu.h"
 
 #include <format>
 
 using state::On;
 
 namespace procedure {
+// The mesh the last cook pass cooked alone, and the kept states whose whole mesh storage restores exactly: the states kept while only that mesh's passes wrote mesh storage.
+struct CookPass {
+    state::Entity Mesh{state::Null};
+    // The mesh storage state the pass ended with, once it ended.
+    std::optional<store::Hash128> End;
+    std::vector<store::Hash128> Exact;
+};
+void Reset(CookPass &pass, state::Registry &) { pass = {}; }
+
 namespace {
 using namespace action::mesh;
+// Keep mesh storage as it stands as the state of each Source node whose pending state refers to `record`, or of every pending state for InvalidOffset.
+void FinishPendingSourceStates(state::Registry &r, uint32_t record) {
+    std::optional<store::Hash128> state;
+    for (const auto [entity, source] : std::as_const(r).view<const SourceState>().each()) {
+        if (source.State != store::Hash128{} || source.StoreId == InvalidOffset || (record != InvalidOffset && source.StoreId != record)) continue;
+        if (!state) state = r.Resources.get<MeshStore>().KeepState();
+        r.replace<SourceState>(entity, *state, source.StoreId);
+    }
+}
+
 // Optional domain masks, where absent masks select every element.
-// Domain is the edit domain the node's inline selection was captured in, and Active the handle of its active element or InvalidOffset.
-// Publish copies emitted selection into the output record.
 struct Masks {
     std::optional<GeometryMasks> In;
+    // The edit domain the node's inline selection was captured in.
     Element Domain{Element::Vertex};
+    // The handle of the inline selection's active element, or InvalidOffset.
     uint32_t Active{InvalidOffset};
+    // Copies the emitted selection into the output record.
     bool Publish{};
+    // The mesh entity drawing the input record with current render records, which a node edits in place and repairs, setting Repaired.
+    state::Entity Drawn{state::Null};
+    bool *Repaired{};
+    // The change a restore made to the drawn record, whose vertex ranges and blocks the next drawn position edit refreshes with its own.
+    MeshStore::Change *Refresh{};
 };
 
 // Evaluated geometry, instances, selection masks, attribute, or constant value.
@@ -61,68 +98,175 @@ constexpr std::array<uint32_t, 3> EveryElement{InvalidOffset, InvalidOffset, Inv
 // Return the output record, the input for an unchanged operation, or the reason the operation failed.
 using Outcome = std::expected<uint32_t, NodeFault>;
 
-// Copy canonical records only; cooking rebuilds render records for the output.
-std::vector<uint32_t> Clones(state::Registry &r, std::span<const uint32_t> ids) {
-    auto &meshes = r.Resources.get<MeshStore>();
-    for (const auto id : ids) meshes.PlanClone(Mesh{meshes, id});
-    meshes.CommitReserves();
-    CloneCopies copies;
-    auto clones = meshes.CloneMeshes(copies, ids, false);
-    mtl::ComputeChain chain{meshes.BufferContext()};
-    copies.Encode(chain, GetMeshPipelines(r));
-    chain.Submit();
-    meshes.RebuildSelectionIndex(clones);
-    return clones;
-}
-uint32_t Clone(state::Registry &r, uint32_t id) { return Clones(r, std::array{id}).front(); }
+// Gather edited arena blocks before erasure releases empty blocks.
+struct EditedBlocks {
+    std::vector<uint32_t> Vertices, Faces, Corners;
+};
 
-std::vector<uint32_t> LocalBlocks(const MeshStore &meshes, uint32_t id, MeshStore::ElementDomain domain, std::span<const uint32_t> blocks) {
-    std::vector<uint32_t> locals;
-    WithDomain(meshes.Arenas(), domain, [&](const auto &arena) {
-        const auto owner = DomainSet(meshes.Get(id), domain).Index;
+void UpdatePoseMembership(state::Registry &r, const MeshTopologyEdit &edit, EditedBlocks edited) {
+    auto &buffers = r.Resources.get<GpuBuffers>();
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    const auto &a = meshes.Arenas();
+    const auto &record = meshes.Get(edit.StoreId);
+    auto &[vertices, faces, corners] = edited;
+    SortUnique(vertices);
+    SortUnique(faces);
+    SortUnique(corners);
+    const auto update = [&](const auto &arena, ElementSetRef set, const auto &blocks, auto &...stores) {
         const auto members = arena.Blocks.Buffer.template GetSpan<MeshElementBlock>();
-        for (const auto block : blocks) {
-            if (owner != InvalidOffset && block < members.size() && members[block].Owner == owner) locals.push_back(members[block].Local);
-        }
-    });
-    std::ranges::sort(locals);
-    return locals;
+        const auto present = [&](uint32_t block) {
+            return block < members.size() && members[block].Owner == set.Index && members[block].Count;
+        };
+        const auto revision = set ? arena.Set(set).Revision : 0u;
+        (stores.UpdateBlocks(edit.StoreId, revision, blocks, present), ...);
+    };
+    update(a.Vertices, record.Vertices, vertices, buffers.VertexBounds, buffers.PosedPositions, buffers.PosedMorphNormalDeltas, buffers.PosedVertexNormals);
+    update(a.FaceTriangles, record.FaceData, faces, buffers.PosedFaceNormals);
+    // Posed sector normals key the corner blocks of a record with sector roots.
+    const auto corner_members = a.FaceCorners.Blocks.Buffer.GetSpan<MeshElementBlock>();
+    const auto has_sectors = [&](uint32_t block) {
+        return record.NormalSectors.Count && block < corner_members.size() && corner_members[block].Owner == record.FaceCorners.Index && corner_members[block].Count;
+    };
+    buffers.PosedSectors.UpdateBlocks(edit.StoreId, meshes.GetDerived(edit.StoreId).NormalRevision, corners, has_sectors);
 }
 
-// Copy the source for the display path's first edit, or restore the prior copy's changed blocks and table entries from the source.
-// The copy takes no selection and the source's visibility, and publishing nodes determine the result's selection.
-// Source restoration stays out of the cook's writes.
-uint32_t SourceCopy(state::Registry &r, uint32_t source, EvaluatedMesh &evaluated, std::optional<ResyncState> &resync, const MeshStore::Writes &between) {
+// Edit the record the mesh entity draws in place and repair its render, pose and selection state.
+void EditDrawnTopology(state::Registry &r, state::Entity mesh_entity, const MeshTopologyTask &task) {
     auto &meshes = r.Resources.get<MeshStore>();
-    if (resync) {
-        auto written = resync->Written;
-        for (const auto domain : MeshStore::ElementDomains) {
-            const auto d = uint32_t(domain);
-            written[d].append_range(LocalBlocks(meshes, source, domain, between.Blocks[d]));
-            SortUnique(written[d]);
-        }
-        CloneCopies copies;
-        const auto change = meshes.Resync(copies, evaluated.StoreId, source, written, between.Attributes, resync->Attributes);
-        mtl::ComputeChain chain{meshes.BufferContext()};
-        copies.Encode(chain, GetMeshPipelines(r));
+    ReleaseMeshEditWork(r, mesh_entity);
+    mtl::ComputeChain chain{meshes.BufferContext(), TopologyScratchWords};
+    auto edits = MeshTopologyEdit::Construct(r, chain, std::span{&task, 1u});
+    MeshTopologyEdit::PublishAll(r, edits);
+    auto &edit = edits.front();
+    if (!edit.Output) {
         chain.Submit();
-        meshes.ReconcileSelection(r, chain, std::span{&change, 1u});
-        chain.Submit();
-        ++resync->Resyncs;
-    } else {
-        resync.emplace();
-        evaluated = {.StoreId = Clone(r, source), .Source = source};
-        meshes.ForEachNamedAttribute(evaluated.StoreId, [&](uint32_t attribute, const auto &) { resync->Attributes.push_back(attribute); });
+        return;
     }
-    mtl::ComputeChain chain{meshes.BufferContext()};
-    meshes.ResetEditState(r, chain, evaluated.StoreId, source);
+    const auto &owner = meshes.Get(edit.StoreId);
+    std::vector<std::pair<state::Entity, const MeshTopologyEdit *>> repairs;
+    if ((owner.RenderTopologies & 1u) != 0u || edit.AddedTriangleCount) repairs.emplace_back(mesh_entity, &edit);
+    RepairTopologyRender(r, chain, repairs);
+    // Resolve edited blocks before erasure, including surviving vertices and edges whose incidence changed.
+    std::vector<ElementMeshletRepair> element_repairs;
+    using Domain = MeshStore::ElementDomain;
+    const auto &storage = edit.Chain.Scratch;
+    if (edit.Repair) {
+        auto &points = element_repairs.emplace_back(ElementMeshletRepair{.StoreId = edit.StoreId, .Topology = 2u}).Elements;
+        ForEachWorkElement(storage, edit.Repair->Elements[0], [&](uint32_t v) { points.push_back(v); });
+        ForEachWorkElement(storage, edit.Output->Retired[0], [&](uint32_t v) { points.push_back(v); });
+        auto &wires = element_repairs.emplace_back(ElementMeshletRepair{.StoreId = edit.StoreId, .Topology = 1u}).Elements;
+        const auto edges = meshes.Arenas().HalfedgeEdges.Buffer.GetSpan<uint32_t>();
+        ForEachWorkElement(storage, edit.RetiredEdges, [&](uint32_t e) { wires.push_back(e); });
+        ForEachWorkElement(storage, edit.Repair->Elements[1], [&](uint32_t h) { wires.push_back(edges[meshes.HandleAddress(edit.StoreId, Domain::Halfedge, ElementHandle{h}).Value()]); });
+    }
+    EditedBlocks edited{.Corners = edit.OldCornerBlocks};
+    if (edit.Repair) {
+        edited.Vertices.append_range(meshes.ArenaBlocks(edit.StoreId, Domain::Vertex, storage, edit.Repair->Elements[0]));
+        edited.Faces.append_range(meshes.ArenaBlocks(edit.StoreId, Domain::Face, storage, edit.Repair->Elements[2]));
+        if (meshes.Get(edit.StoreId).NormalSectors.Count) edited.Corners.append_range(meshes.ArenaBlocks(edit.StoreId, Domain::Halfedge, storage, edit.Repair->Elements[1]));
+    }
+    edited.Vertices.append_range(meshes.ArenaBlocks(edit.StoreId, Domain::Vertex, storage, edit.Output->Retired[0]));
+    edited.Faces.append_range(meshes.ArenaBlocks(edit.StoreId, Domain::Face, storage, edit.Output->Retired[1]));
+    MeshTopologyEdit::FinishAll(r, std::array{&edit});
+    UpdatePoseMembership(r, edit, std::move(edited));
+    RefreshMeshBinding(r, edit.StoreId);
+    r.Resources.get<GpuSceneState>().EditSelectionDirty = true;
+    RepairElementMeshlets(r, chain, element_repairs);
     chain.Submit();
-    meshes.TakeWrites();
-    return evaluated.StoreId;
+    // Owner maps count only rendered elements, so topology changes need no mesh scan.
+    auto &repaired = meshes.WriteRecord(edit.StoreId);
+    uint32_t mask = 0u;
+    for (uint32_t t = 0u; t < 3u; ++t) {
+        if (repaired.ElementMeshletBlockCounts[t]) mask |= 1u << t;
+    }
+    repaired.RenderTopologies = mask ? mask : 4u;
+    RefreshElementSelectionSummaries(r, std::array{mesh_entity});
 }
 
-void KeepWritten(const MeshStore &meshes, uint32_t id, ResyncState &resync, const MeshStore::DomainBlocks &written) {
-    for (const auto domain : MeshStore::ElementDomains) resync.Written[uint32_t(domain)] = LocalBlocks(meshes, id, domain, written[uint32_t(domain)]);
+// Refreshes the selection aggregates of the blocks a restore changed and clears the change.
+void PublishRestored(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, MeshStore::Change &restored) {
+    auto &meshes = r.Resources.get<MeshStore>();
+    if (meshes.Get(id).SelectionSummary.Count && std::ranges::any_of(std::span{restored.Blocks}.first(3u), [](const auto &blocks) { return !blocks.empty(); })) {
+        MeshStore::SelectionUpdate update{.StoreId = id};
+        for (uint32_t d = 0u; d < 3u; ++d) {
+            update.Blocks[d] = restored.Blocks[d];
+            SortUnique(update.Blocks[d]);
+        }
+        meshes.UpdateSelection(r, chain, std::array{update});
+    }
+    restored = {};
+}
+
+// Edit the positions of the record the mesh entity draws and refresh its normals, tessellation, render bounds and selection aggregates.
+// The vertex ranges of `refresh`, which it then clears, join the edited ranges, and its blocks refresh their aggregates with them.
+void EditDrawnPositions(state::Registry &r, state::Entity mesh_entity, const PositionOperationTarget &target, PositionEditOp op, float factor, uint32_t repeat, const PositionOperationOptions &options, MeshStore::Change *refresh) {
+    auto &meshes = r.Resources.get<MeshStore>();
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    const auto edited = EncodePositionOperations(meshes, GetMeshPipelines(r), chain, std::span{&target, 1u}, op, factor, repeat, options);
+    if (edited.empty()) {
+        chain.Submit();
+        return;
+    }
+    auto ranges = edited.front().Ranges;
+    if (refresh) {
+        ranges.append_range(refresh->VertexRanges);
+        std::ranges::sort(ranges, {}, &Range::Offset);
+        // Overlapping and touching ranges merge.
+        size_t count = 0u;
+        for (const auto range : ranges) {
+            if (!range.Count) continue;
+            if (count && range.Offset <= ranges[count - 1u].Offset + ranges[count - 1u].Count) {
+                auto &last = ranges[count - 1u];
+                last.Count = std::max(last.Offset + last.Count, range.Offset + range.Count) - last.Offset;
+            } else {
+                ranges[count++] = range;
+            }
+        }
+        ranges.resize(count);
+    }
+    // The publication refits the record's meshlets before the repair of changed triangles replaces any of them.
+    auto repair = RefreshEditedPositions(r, chain, std::array{MeshVertexChanges{mesh_entity, ranges}});
+    PublishEditedPositions(r, chain, std::array{mesh_entity});
+    if (refresh) PublishRestored(r, chain, target.StoreId, *refresh);
+    if (repair) chain.AfterSubmit(std::move(repair));
+    chain.Submit();
+}
+
+// Permute the face attribute layer of the record the mesh entity draws and repair the triangles of the faces it permuted.
+void EditDrawnFaceAttributes(state::Registry &r, state::Entity mesh_entity, const PositionOperationTarget &target, bool colors, uint32_t uv_set, uint32_t operation) {
+    auto &meshes = r.Resources.get<MeshStore>();
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    const auto changes = EncodeFaceAttributeOperation(meshes, GetMeshPipelines(r), chain, std::span{&target, 1u}, colors, uv_set, operation);
+    if (changes.empty()) {
+        chain.Submit();
+        return;
+    }
+    const auto &a = meshes.Arenas();
+    const auto &record = meshes.Get(target.StoreId);
+    const auto &faces = changes.front().Faces;
+    const auto bound = std::min(faces.Incidence, a.Triangles.Set(record.TriangleData).BlockCount);
+    const auto handles = a.Triangles.HandleBound(record.TriangleData);
+    chain.Scratch.ReserveAdditional(1u + ElementWorkWords(handles, bound) + SortElementWorkWords(WorkCapacity(handles, bound)));
+    std::vector<std::pair<state::Entity, FaceTriangles>> repairs{{mesh_entity, EncodeFaceTriangles(r, chain, target.StoreId, faces)}};
+    chain.Submit();
+    repairs.front().second.Finish(chain);
+    RepairFaceRender(r, chain, repairs);
+    chain.Submit();
+}
+
+// Set the sharpness of the record the mesh entity draws and repair the triangles whose shading it changed.
+void EditDrawnSharpness(state::Registry &r, state::Entity mesh_entity, const SharpnessOperationTarget &target, EditSharpnessOperation operation, bool value, float angle) {
+    auto &meshes = r.Resources.get<MeshStore>();
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    const auto changes = ExecuteGeometrySharpness(r, chain, std::span{&target, 1u}, operation, value, angle);
+    if (changes.empty()) {
+        chain.Submit();
+        return;
+    }
+    r.Resources.get<GpuSceneState>().EditSelectionDirty = true;
+    const std::vector<std::pair<state::Entity, FaceTriangles>> repairs{{mesh_entity, changes.front().Triangles}};
+    RepairFaceRender(r, chain, repairs);
+    chain.Submit();
 }
 
 GeometrySelection Handles(const MeshStore &meshes, uint32_t id, const Masks &masks) { return masks.In ? ReadMasks(meshes, id, *masks.In) : AllHandles(Mesh{meshes, id}); }
@@ -134,10 +278,24 @@ MeshTopologyTask Task(uint32_t id, MeshTopologyOp op, const Masks &masks, float 
     else task.Flags |= TopologyFlagSelectAll;
     return task;
 }
+// Select the input selection on the record a publishing node edits, which keeps the elements the edit leaves alone selected as the viewport operator does.
+void PublishInput(state::Registry &r, uint32_t id, const Masks &masks) {
+    if (!masks.Publish || !masks.In) return;
+    auto &meshes = r.Resources.get<MeshStore>();
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    meshes.SelectMasks(r, chain, id, *masks.In);
+    chain.Submit();
+}
 // Return the output record or a node fault.
+// An edit in place of the drawn record repairs its render records.
 Outcome Execute(state::Registry &r, std::optional<MeshTopologyTask> task, const Masks &masks) {
     if (!task) return std::unexpected(NodeFault::Selection);
     if (masks.Publish) PublishStoreSelection(r.Resources.get<const MeshStore>(), *task);
+    if (masks.Drawn != state::Null && !TopologyCreatesRecord(task->Op)) {
+        *masks.Repaired = true;
+        EditDrawnTopology(r, masks.Drawn, *task);
+        return task->SourceId;
+    }
     const auto result = ExecuteGeometryTopology(r, std::span{&*task, 1u}).front();
     return result.Changed ? result.GeometryId : task->SourceId;
 }
@@ -162,17 +320,14 @@ Outcome ExecuteStages(state::Registry &r, std::vector<MeshTopologyTask> tasks, c
     if (masks.Publish) {
         for (auto &task : tasks) PublishStoreSelection(r.Resources.get<const MeshStore>(), task);
     }
+    if (masks.Drawn != state::Null && std::ranges::none_of(tasks, [](const auto &task) { return TopologyCreatesRecord(task.Op); })) {
+        *masks.Repaired = true;
+        for (const auto &task : tasks) EditDrawnTopology(r, masks.Drawn, task);
+        return tasks.front().SourceId;
+    }
     const auto results = ExecuteGeometryTopologyStages(r, tasks);
     if (std::ranges::none_of(results, &GeometryTopologyResult::Changed)) return tasks.front().SourceId;
     return results.back().GeometryId;
-}
-// Publish the input selection after an edit that preserves membership.
-void PublishInput(state::Registry &r, uint32_t id, const Masks &masks) {
-    if (!masks.Publish || !masks.In) return;
-    auto &meshes = r.Resources.get<MeshStore>();
-    mtl::ComputeChain chain{meshes.BufferContext()};
-    meshes.SelectMasks(r, chain, id, *masks.In);
-    chain.Submit();
 }
 // A vertex-domain selection's active element is the reference vertex.
 Outcome Reposition(state::Registry &r, uint32_t id, const Masks &masks, PositionEditOp op, float factor, uint32_t repeat, const PositionOperationOptions &options = {}, const Transform &world = {}) {
@@ -183,7 +338,12 @@ Outcome Reposition(state::Registry &r, uint32_t id, const Masks &masks, Position
         .World = world,
         .Reference = masks.Domain == Element::Vertex ? masks.Active : InvalidOffset,
     };
-    if (!ExecuteGeometryPositions(r, std::span{&target, 1u}, op, factor, repeat, options).empty()) PublishInput(r, id, masks);
+    if (masks.Drawn != state::Null) {
+        *masks.Repaired = true;
+        EditDrawnPositions(r, masks.Drawn, target, op, factor, repeat, options, masks.Refresh);
+    } else {
+        ExecuteGeometryPositions(r, std::span{&target, 1u}, op, factor, repeat, options);
+    }
     return id;
 }
 // Rotate the selected faces' corner UVs of a set or colors clockwise for operation 0, counterclockwise for 1, or reverse them for 2.
@@ -191,10 +351,14 @@ Outcome EditFaceAttributes(state::Registry &r, uint32_t id, const Masks &masks, 
     if (uv_set >= MeshStore::MaxUvSets) return std::unexpected(NodeFault::Parameter);
     auto &meshes = r.Resources.get<MeshStore>();
     const PositionOperationTarget target{.StoreId = id, .Selection = SourceOf(meshes, id, masks)};
+    if (masks.Drawn != state::Null) {
+        *masks.Repaired = true;
+        EditDrawnFaceAttributes(r, masks.Drawn, target, colors, uv_set, operation);
+        return id;
+    }
     mtl::ComputeChain chain{meshes.BufferContext()};
-    const bool edited = !EncodeFaceAttributeOperation(meshes, GetMeshPipelines(r), chain, std::span{&target, 1u}, colors, uv_set, operation).empty();
+    EncodeFaceAttributeOperation(meshes, GetMeshPipelines(r), chain, std::span{&target, 1u}, colors, uv_set, operation);
     chain.Submit();
-    if (edited) PublishInput(r, id, masks);
     return id;
 }
 uint32_t Axes(bool x, bool y, bool z) { return uint32_t(x) | uint32_t(y) << 1u | uint32_t(z) << 2u; }
@@ -331,7 +495,7 @@ Outcome Run(state::Registry &r, const Flatten &p, uint32_t id, const Masks &m) {
     return Reposition(r, id, m, PositionEditOp::Copy, std::clamp(p.Factor, 0.f, 1.f), 1u, {.Axes = Axes(p.X, p.Y, p.Z), .Flags = flags, .Direction = p.ViewNormal}, p.Frame);
 }
 Outcome Run(state::Registry &r, const ToSphere &p, uint32_t id, const Masks &m) {
-    return Reposition(r, id, m, PositionEditOp::ToSphere, p.Factor, 1u, {.Center = p.Center}, p.Frame);
+    return Reposition(r, id, m, PositionEditOp::ToSphere, p.Factor, 1u, {.Center = p.Center, .SphereRadius = p.Radius > 0.f ? std::optional{p.Radius} : std::nullopt}, p.Frame);
 }
 Outcome Run(state::Registry &r, const PushPull &p, uint32_t id, const Masks &m) {
     return Reposition(r, id, m, PositionEditOp::PushPull, p.Distance, 1u, {.Center = p.Center}, p.Frame);
@@ -433,6 +597,8 @@ Outcome Run(state::Registry &r, const Unsubdivide &p, uint32_t id, const Masks &
     auto selection = Handles(meshes, id, m);
     auto edited = Execute(r, UnsubdivideTask(Mesh{meshes, id}, selection), m);
     for (uint32_t i = 1u; edited && i < std::clamp(p.Iterations, 1u, 1000u); ++i) {
+        // A publishing node's later iterations read the selection the previous iteration published, as the viewport operator does.
+        if (m.Publish) selection = EditorGeometrySelection(meshes, *edited);
         for (const auto [element, handles] : {std::pair{Element::Vertex, &selection.Vertices}, std::pair{Element::Edge, &selection.Edges}, std::pair{Element::Face, &selection.Faces}}) {
             std::erase_if(*handles, [&](uint32_t handle) { return !meshes.IsLiveElement(*edited, element, ElementHandle{handle}); });
         }
@@ -459,14 +625,18 @@ Outcome Run(state::Registry &r, const RotateUVs &p, uint32_t id, const Masks &m)
 Outcome Run(state::Registry &r, const ReverseUVs &p, uint32_t id, const Masks &m) { return EditFaceAttributes(r, id, m, false, p.UVSet, 2u); }
 Outcome Run(state::Registry &r, const RotateColors &p, uint32_t id, const Masks &m) { return EditFaceAttributes(r, id, m, true, 0u, p.CounterClockwise ? 1u : 0u); }
 Outcome Run(state::Registry &r, ReverseColors, uint32_t id, const Masks &m) { return EditFaceAttributes(r, id, m, true, 0u, 2u); }
-// Run the sharpness operation over the selection and publish the input selection after an edit.
+// Run the sharpness operation over the selection.
 Outcome EditSharpness(state::Registry &r, uint32_t id, const Masks &masks, SelectionSource selection, EditSharpnessOperation operation, bool value, float angle = 0.f) {
     auto &meshes = r.Resources.get<MeshStore>();
     const SharpnessOperationTarget target{id, std::move(selection)};
+    if (masks.Drawn != state::Null) {
+        *masks.Repaired = true;
+        EditDrawnSharpness(r, masks.Drawn, target, operation, value, angle);
+        return id;
+    }
     mtl::ComputeChain chain{meshes.BufferContext()};
-    const bool edited = !ExecuteGeometrySharpness(r, chain, std::span{&target, 1u}, operation, value, angle).empty();
+    ExecuteGeometrySharpness(r, chain, std::span{&target, 1u}, operation, value, angle);
     chain.Submit();
-    if (edited) PublishInput(r, id, masks);
     return id;
 }
 Outcome Run(state::Registry &r, const MarkSharp &p, uint32_t id, const Masks &m) {
@@ -484,7 +654,9 @@ Outcome Run(state::Registry &r, const ShadeSmoothByAngle &p, uint32_t id, const 
 Outcome Run(state::Registry &r, const TransformGeometry &p, uint32_t id, const Masks &m) {
     return Reposition(r, id, m, PositionEditOp::Transform, 1.f, 1u, {.Transform = PositionTransform{p.Delta, vec3{}}});
 }
+// An identity delta leaves the input unchanged.
 Outcome Run(state::Registry &r, const TransformElements &p, uint32_t id, const Masks &m) {
+    if (p.Delta == Transform{}) return id;
     return Reposition(r, id, m, PositionEditOp::Transform, 1.f, 1u, {.Transform = PositionTransform{p.Delta, p.Pivot}}, p.Frame);
 }
 Outcome Run(state::Registry &r, MeshToPoints, uint32_t id, const Masks &) {
@@ -571,7 +743,7 @@ std::array<uint32_t, 3> ZeroedMasks(MeshStore &meshes, std::optional<BufferArena
     std::array<uint32_t, 3> first;
     for (uint32_t d = 0u; d < 3u; ++d) {
         const auto owned = meshes.GetBlockList(id, domains[d]).Blocks;
-        const auto range = arena->Allocate(owned.empty() ? 1u : owned.back() + 1u);
+        const auto range = arena->Allocate(owned.empty() ? 1u : std::ranges::max(owned) + 1u);
         const auto masks = arena->GetMutable(range);
         std::ranges::fill(masks, SelectionBlock{});
         fill(d, owned, masks);
@@ -580,11 +752,14 @@ std::array<uint32_t, 3> ZeroedMasks(MeshStore &meshes, std::optional<BufferArena
     return first;
 }
 std::array<uint32_t, 3> UploadSelection(MeshStore &meshes, std::optional<BufferArena<SelectionBlock>> &arena, uint32_t id, const InlineSelection *selection) {
-    if (!selection || (selection->Vertices.empty() && selection->Edges.empty() && selection->Faces.empty())) return EveryElement;
+    if (!selection || Empty(*selection)) return EveryElement;
     const std::array lists{&selection->Vertices, &selection->Edges, &selection->Faces};
-    return ZeroedMasks(meshes, arena, id, [&](uint32_t d, std::span<const uint32_t> owned, std::span<SelectionBlock> masks) {
-        const auto &blocks = *lists[d];
-        for (size_t i = 0u; i < std::min(owned.size(), blocks.size()); ++i) masks[owned[i]] = blocks[i];
+    constexpr std::array domains{MeshStore::ElementDomain::Vertex, MeshStore::ElementDomain::Edge, MeshStore::ElementDomain::Face};
+    return ZeroedMasks(meshes, arena, id, [&](uint32_t d, std::span<const uint32_t>, std::span<SelectionBlock> masks) {
+        const auto entries = WithDomain(meshes.Arenas(), domains[d], [&](const auto &elements) { return elements.Entries(DomainSet(meshes.Get(id), domains[d])); });
+        ForEachSelectedBlock(*lists[d], [&](uint32_t local, const SelectionBlock &words) {
+            if (local < entries.size() && entries[local] != InvalidOffset && entries[local] < masks.size()) masks[entries[local]] = words;
+        });
     });
 }
 
@@ -824,7 +999,8 @@ Evaluation EvaluateInputs(state::Registry &r, const GeometryProcedure &procedure
 }
 
 // Evaluate inputs and run the node, releasing temporary attributes after their last use.
-Outcome RunNode(state::Registry &r, const GeometryProcedure &procedure, const CookPlan &plan, std::vector<SocketValue> &values, uint32_t node, uint32_t id, std::optional<BufferArena<SelectionBlock>> &arena) {
+// The trailing arguments become the node's Masks Drawn, Repaired and Refresh.
+Outcome RunNode(state::Registry &r, const GeometryProcedure &procedure, const CookPlan &plan, std::vector<SocketValue> &values, uint32_t node, uint32_t id, std::optional<BufferArena<SelectionBlock>> &arena, state::Entity drawn = state::Null, bool *repaired = nullptr, MeshStore::Change *refresh = nullptr) {
     auto &meshes = r.Resources.get<MeshStore>();
     const auto [entity, kind] = procedure.Nodes[node];
     auto evaluation = EvaluateInputs(r, procedure, plan, values, node, id, arena);
@@ -853,6 +1029,10 @@ Outcome RunNode(state::Registry &r, const GeometryProcedure &procedure, const Co
         if (const auto &f = selection.MaskFirst; f != EveryElement) masks.In = GeometryMasks{{&*arena, f[0]}, {&*arena, f[1]}, {&*arena, f[2]}};
     }
     masks.Publish = r.all_of<PublishSelection>(entity);
+    masks.Drawn = drawn;
+    masks.Repaired = repaired;
+    masks.Refresh = refresh;
+    PublishInput(r, id, masks);
     Outcome edited = id;
     VisitKind(kind, [&]<typename K> {
         const auto p = Parameters<K>(r, procedure, plan, values, node);
@@ -891,10 +1071,10 @@ uint32_t Generate(state::Registry &r, const Generator auto &shape) {
     return id;
 }
 
-// Return the referenced object mesh, excluding the current procedure mesh and meshes without objects.
+// Return the entity whose mesh record the referenced object draws, excluding the current procedure mesh.
 state::Entity ReadMesh(const state::Registry &r, state::Entity mesh_entity, const ObjectInfo &p) {
-    const auto read = r.valid(p.Object) ? GetMeshEntity(r, p.Object) : state::Null;
-    return read != mesh_entity ? read : state::Null;
+    const auto *instance = r.valid(p.Object) ? r.try_get<const Instance>(p.Object) : nullptr;
+    return instance && instance->Entity != mesh_entity && DrawsMesh(r, instance->Entity) ? instance->Entity : state::Null;
 }
 
 // Each point's instance transform, in vertex order.
@@ -913,7 +1093,7 @@ std::optional<uint32_t> Realize(state::Registry &r, uint32_t points, uint32_t in
     auto &meshes = r.Resources.get<MeshStore>();
     const auto transforms = InstanceTransforms(meshes, points);
     if (transforms.empty()) return {};
-    const auto clones = Clones(r, std::vector(transforms.size(), instance));
+    const auto clones = CloneRecords(r, std::vector(transforms.size(), instance));
     for (size_t i = 0u; i < clones.size(); ++i) {
         const PositionOperationTarget target{.StoreId = clones[i], .Selection = AllHandles(Mesh{meshes, clones[i]})};
         ExecuteGeometryPositions(r, std::span{&target, 1u}, PositionEditOp::Transform, 1.f, 1u, {.Transform = PositionTransform{.Delta = transforms[i]}});
@@ -990,26 +1170,256 @@ state::Entity OwnMesh(state::Registry &r, state::Entity mesh_entity, uint32_t re
     return e;
 }
 
-// Evaluate nodes in dependency order and publish the result.
+// Release a record the cook replaced, first keeping the mesh storage as the state of each Source node whose pending state refers to it.
+void ReleaseReplaced(state::Registry &r, uint32_t record) {
+    if (record == InvalidOffset) return;
+    FinishPendingSourceStates(r, record);
+    r.Resources.get<MeshStore>().Release(record);
+}
+
+// A new record holding a Source node's geometry, without selection, or none when no kept or recorded state holds it.
+// An empty source emits an empty record, and a pending state's geometry is its record as it stands.
+std::optional<uint32_t> MaterializeSource(state::Registry &r, const SourceState &source) {
+    auto &meshes = r.Resources.get<MeshStore>();
+    if (source.StoreId == InvalidOffset) {
+        const auto id = CreateMesh(r, {}).StoreId;
+        ShadeNewMeshes(r);
+        return id;
+    }
+    if (source.State == store::Hash128{}) {
+        if (!meshes.TryGet(source.StoreId)) return std::nullopt;
+        const auto id = CloneRecord(r, source.StoreId);
+        mtl::ComputeChain chain{meshes.BufferContext()};
+        meshes.ResetEditState(r, chain, id, source.StoreId);
+        chain.Submit();
+        RefreshMeshBinding(r, id);
+        return id;
+    }
+    const auto id = meshes.CloneStored(source.State, source.StoreId);
+    if (!id) return std::nullopt;
+    meshes.RebuildSelectionIndex(std::array{*id});
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    meshes.EnsureSelectionState(r, chain, std::array{*id});
+    chain.Submit();
+    RefreshMeshBinding(r, *id);
+    return id;
+}
+
+// A new record of the display path's root, which the cook owns: its Source node's geometry or its generated primitive.
+std::optional<uint32_t> MaterializeRoot(state::Registry &r, NodeRecord root) {
+    if (root.Kind == KindOf<Source>) return MaterializeSource(r, r.get<const SourceState>(root.Entity));
+    std::optional<uint32_t> id;
+    VisitKind(root.Kind, [&]<typename K> {
+        if constexpr (Generator<K>) id = Generate(r, r.get<const K>(root.Entity));
+    });
+    return id;
+}
+
+// Copy the primitive material table of the record a cook replaces, which material assignments write, into its replacement.
+void CarryMaterials(MeshStore &meshes, uint32_t from, uint32_t to) {
+    if (from == InvalidOffset || from == to || !meshes.TryGet(from)) return;
+    const auto stored = meshes.Arenas().PrimitiveMaterials.Get(meshes.Get(from).PrimitiveMaterials);
+    const std::vector<uint32_t> materials{stored.begin(), stored.end()};
+    const auto replaced = meshes.EditPrimitiveMaterials(to);
+    std::copy_n(materials.begin(), std::min(materials.size(), replaced.size()), replaced.begin());
+}
+
+// Whether the display path is a chain its record holds node by node: its root is a Source node or a generator with unlinked parameters, no link reaches a path node except the main link from the node before it, and no path node after the root feeds anything but the next path node.
+bool Chained(const GeometryProcedure &procedure, const CookPlan &plan, std::span<const uint32_t> path) {
+    if (path.empty()) return false;
+    const auto root = procedure.Nodes[path.front()].Kind;
+    bool rooted = root == KindOf<Source>;
+    VisitKind(root, [&]<typename K> { rooted |= Generator<K>; });
+    if (!rooted) return false;
+    for (const auto node : path.subspan(1u)) {
+        const auto kind = procedure.Nodes[node].Kind;
+        if (kind == KindOf<InstanceOnPoints> || kind == KindOf<RealizeInstances>) return false;
+    }
+    std::vector<uint32_t> position(procedure.Nodes.size(), NoNode);
+    for (uint32_t i = 0u; i < path.size(); ++i) position[path[i]] = i;
+    for (uint32_t node = 0u; node < procedure.Nodes.size(); ++node) {
+        for (uint32_t input = 0u; input < InputCount[procedure.Nodes[node].Kind]; ++input) {
+            const auto from = procedure.Inputs[plan.InputFirst[node] + input].FromNode;
+            if (from == NoNode) continue;
+            const bool path_link = input == 0u && position[from] != NoNode && position[node] == position[from] + 1u;
+            if ((position[node] != NoNode || (position[from] != NoNode && position[from] != 0u)) && !path_link) return false;
+        }
+    }
+    return true;
+}
+
+// The record after the display path's nodes from `first` edit it in place, each keeping the mesh storage state before it as its edited input, and whether its render records stayed current and any node faulted.
+struct PathRun {
+    uint32_t Record;
+    bool Rendered, Faulted;
+};
+// The positions of `restored`, a restore's change to the record, refresh with the first drawn position edit or after the path.
+PathRun RunPath(state::Registry &r, state::Entity mesh_entity, const GeometryProcedure &procedure, const CookPlan &plan, std::span<const uint32_t> path, size_t first, uint32_t record, bool rendered, std::optional<BufferArena<SelectionBlock>> &arena, MeshStore::Change &restored) {
+    auto &meshes = r.Resources.get<MeshStore>();
+    if (first < path.size()) FinishPendingSourceStates(r, record);
+    std::vector<SocketValue> values(plan.SocketFirst.back());
+    bool faulted = false;
+    const auto refresh_restored = [&] {
+        if (restored.VertexRanges.empty() && std::ranges::all_of(restored.Blocks, [](const auto &blocks) { return blocks.empty(); })) return;
+        mtl::ComputeChain chain{meshes.BufferContext()};
+        RefreshEditedPositions(r, chain, std::array{MeshVertexChanges{mesh_entity, restored.VertexRanges}}, false);
+        PublishRestored(r, chain, record, restored);
+        chain.Submit();
+    };
+    for (auto i = first; i < path.size(); ++i) {
+        const auto node = path[i];
+        const auto [entity, kind] = procedure.Nodes[node];
+        r.remove<NodeError>(entity);
+        const EditedInput input{procedure.Nodes[path[i - 1u]].Entity, meshes.KeepState(), record};
+        if (const auto *held = r.try_get<const EditedInput>(entity); !held || *held != input) r.emplace_or_replace<EditedInput>(entity, input);
+        if (auto &pass = r.Resources.get<CookPass>(); pass.Mesh == mesh_entity && !std::ranges::contains(pass.Exact, input.State)) pass.Exact.push_back(input.State);
+        // A chained Join or Boolean has no second input and passes its first through.
+        if (kind == KindOf<Join> || kind == KindOf<Boolean>) continue;
+        bool repaired = false;
+        if (!rendered) refresh_restored();
+        const auto edited = RunNode(r, procedure, plan, values, node, record, arena, rendered ? mesh_entity : state::Null, &repaired, &restored);
+        if (!edited) {
+            r.emplace<NodeError>(entity, edited.error());
+            faulted = true;
+        } else if (*edited != record) {
+            restored = {};
+            ReleaseReplaced(r, record);
+            record = *edited;
+            rendered = false;
+        } else if (rendered && !repaired) {
+            rendered = false;
+        }
+    }
+    refresh_restored();
+    return {record, rendered, faulted};
+}
+
+// Each element domain's set revision, which changes with the record's topology.
+std::array<uint32_t, 4> TopologyRevisions(const MeshStore &meshes, uint32_t record) {
+    using D = MeshStore::ElementDomain;
+    std::array<uint32_t, 4> revisions{};
+    for (uint32_t i = 0u; const auto domain : {D::Vertex, D::Halfedge, D::Edge, D::Face}) {
+        revisions[i++] = WithDomain(meshes.Arenas(), domain, [&](const auto &elements) {
+            const auto set = DomainSet(meshes.Get(record), domain);
+            return set ? elements.Set(set).Revision : 0u;
+        });
+    }
+    return revisions;
+}
+
+// Publish a cooked record the mesh draws, and request render records for a record without current ones.
+// A cook that changed topology derives selection from the edit domain.
+void PublishCooked(state::Registry &r, state::Entity mesh_entity, uint32_t record, state::Entity tip, bool rendered, bool topology) {
+    auto &meshes = r.Resources.get<MeshStore>();
+    const auto *live = r.try_get<const EvaluatedMesh>(mesh_entity);
+    if (!live || live->StoreId != record || live->Tip != tip) r.emplace_or_replace<EvaluatedMesh>(mesh_entity, record, tip);
+    RefreshMeshBinding(r, record);
+    const auto &cooked = meshes.Get(record);
+    const bool ready = rendered && cooked.RenderTopologies != 0u;
+    if (ready) {
+        if (meshes.HasDirtyPositions(cooked)) r.emplace_or_replace<MeshletPositionsDirty>(mesh_entity);
+        if (meshes.HasDirtyGroups(cooked)) r.emplace_or_replace<ClusterLodDirty>(mesh_entity);
+        if (!meshes.ClusterGroupCount(cooked)) r.emplace_or_replace<ClusterLodDemand>(mesh_entity);
+    }
+    r.emplace_or_replace<MeshGeometryDirty>(mesh_entity, topology ? EditSelectionAfter::Derive : EditSelectionAfter::Keep, ready);
+}
+
+// Cook a chained display path into the mesh's record.
+// The record keeps the output of the path nodes up to its tip, and the nodes after the first changed one edit it in place.
+// A changed node the record holds the output of restores the record to the state its edited input refers to, or else the path cooks from a new record of its root.
+// The whole mesh storage restores while only this mesh's cooks wrote it since the state was kept, and the record alone restores otherwise, each followed by the same nodes.
+// A copied node keeps the edited input its original holds, and the components it was created with leave it unchanged.
+void CookChain(state::Registry &r, state::Entity mesh_entity, const GeometryProcedure &procedure, const CookPlan &plan, std::span<const uint32_t> path, std::optional<BufferArena<SelectionBlock>> &arena, const state::DirtySet &changed, const state::DirtySet &created) {
+    auto &meshes = r.Resources.get<MeshStore>();
+    const auto *live = r.try_get<const EvaluatedMesh>(mesh_entity);
+    const auto prior = live && meshes.TryGet(live->StoreId) ? live->StoreId : InvalidOffset;
+    // The path nodes the record holds the output of, from the root.
+    std::vector<state::Entity> chain;
+    if (prior != InvalidOffset && live->Tip != state::Null) {
+        for (auto e = live->Tip;;) {
+            chain.push_back(e);
+            const auto *input = r.valid(e) ? r.try_get<const EditedInput>(e) : nullptr;
+            if (!input) break;
+            e = input->Input;
+        }
+        std::ranges::reverse(chain);
+    }
+    const auto entity_at = [&](size_t i) { return procedure.Nodes[path[i]].Entity; };
+    const auto edited = [&](state::Entity e) { return changed.contains(e) && !created.contains(e); };
+    size_t held = 0u;
+    if (!chain.empty() && chain.front() == entity_at(0u) && !edited(chain.front())) {
+        held = 1u;
+        while (held < chain.size() && held < path.size() && chain[held] == entity_at(held) && !edited(chain[held])) ++held;
+    }
+    auto record = prior;
+    // The record the result replaces, which a restore returns to the state before the nodes that replaced it.
+    auto replaced = prior;
+    bool rendered = prior != InvalidOffset && meshes.Get(prior).RenderTopologies != 0u;
+    MeshStore::Change restored{};
+    if (held == 0u || held < chain.size()) {
+        const auto *input = held ? r.try_get<const EditedInput>(chain[held]) : nullptr;
+        bool restored_record = false;
+        if (input && input->StoreId == prior && input->State != store::Hash128{}) {
+            WaitForRender(r);
+            if (std::ranges::contains(r.Resources.get<const CookPass>().Exact, input->State) && meshes.RestoreKeptState(input->State)) {
+                restored = ReconcileRestoredStore(r, mesh_entity);
+                restored_record = true;
+            } else if (const auto change = meshes.RestoreRecord(input->State, prior)) {
+                restored = ReconcileRestoredRecord(r, *change, mesh_entity);
+                restored_record = true;
+            }
+        }
+        if (restored_record) {
+            replaced = InvalidOffset;
+            rendered = meshes.Get(record).RenderTopologies != 0u;
+        } else {
+            const auto root = MaterializeRoot(r, procedure.Nodes[path.front()]);
+            if (!root) {
+                r.emplace_or_replace<NodeError>(entity_at(0u), NodeFault::NoMesh);
+                return;
+            }
+            record = *root;
+            r.remove<NodeError>(entity_at(0u));
+            CarryMaterials(meshes, prior, record);
+            rendered = false;
+            held = 1u;
+        }
+    } else if (held == path.size()) {
+        return;
+    }
+    const auto topology = TopologyRevisions(meshes, record);
+    const auto run = RunPath(r, mesh_entity, procedure, plan, path, held, record, rendered, arena, restored);
+    // A run that replaced its own starting record released it.
+    if (replaced != InvalidOffset && replaced != record && meshes.TryGet(replaced)) ReleaseReplaced(r, replaced);
+    OwnMesh(r, mesh_entity, InvalidOffset);
+    PublishInstances(r, mesh_entity, state::Null, {});
+    PublishCooked(r, mesh_entity, run.Record, run.Faulted ? state::Null : entity_at(path.size() - 1u), run.Rendered, run.Record != record || TopologyRevisions(meshes, run.Record) != topology);
+}
+
+// Evaluate nodes in dependency order and publish the displayed node's result.
 // Mark failed nodes and pass their inputs through.
-// The result is the source record itself when the display path passes it through unedited or no result is linked.
+// A chained display path edits the mesh's record in place, and other procedures evaluate into a new record, empty when no node is displayed or the displayed node has no result.
 // Release intermediate records.
-void Cook(state::Registry &r, state::Entity mesh_entity, std::optional<BufferArena<SelectionBlock>> &arena, const MeshStore::Writes &between) {
+void Evaluate(state::Registry &r, state::Entity mesh_entity, std::optional<BufferArena<SelectionBlock>> &arena, const state::DirtySet &changed, const state::DirtySet &created_nodes) {
     auto &meshes = r.Resources.get<MeshStore>();
     const auto &procedure = r.get<const GeometryProcedure>(mesh_entity);
     const auto &plan = r.get<const CookPlan>(mesh_entity);
-    const auto source = r.get<const MeshHandle>(mesh_entity).StoreId;
-    auto evaluated = r.all_of<EvaluatedMesh>(mesh_entity) ? r.get<const EvaluatedMesh>(mesh_entity) : EvaluatedMesh{.StoreId = InvalidOffset};
-    std::optional<ResyncState> resync;
-    if (const auto *state = r.try_get<const ResyncState>(mesh_entity)) resync = *state;
-    // Keep a prior copy of this source for the display path's first edit, and release any other prior record but the source itself.
-    if (!resync || evaluated.Source != source || !meshes.TryGet(evaluated.StoreId)) {
-        if (evaluated.StoreId != source) meshes.Release(evaluated.StoreId);
-        evaluated = {.StoreId = InvalidOffset};
-        resync.reset();
+    // Track the first-input path, which carries the record the mesh draws from the root to the displayed node.
+    const auto display = procedure.DisplayNode;
+    std::vector<bool> on_path(procedure.Nodes.size());
+    std::vector<uint32_t> path;
+    for (auto node = display; node != NoNode && !on_path[node];) {
+        on_path[node] = true;
+        path.push_back(node);
+        const auto kind = procedure.Nodes[node].Kind;
+        node = InputCount[kind] && KindSockets(kind).front().Type == SocketType::Geometry ? procedure.Inputs[plan.InputFirst[node]].FromNode : NoNode;
     }
-    // Evaluate only nodes reachable from the output.
-    const auto reached = procedure.OutputNode != NoNode ? Upstream(procedure, plan.InputFirst, procedure.OutputNode, [](uint32_t) { return true; }) : std::vector<bool>(procedure.Nodes.size());
+    std::ranges::reverse(path);
+    if (Chained(procedure, plan, path)) return CookChain(r, mesh_entity, procedure, plan, path, arena, changed, created_nodes);
+    // The record the mesh drew, which the cook releases once the result replaces it.
+    const auto prior = r.all_of<EvaluatedMesh>(mesh_entity) ? r.get<const EvaluatedMesh>(mesh_entity).StoreId : InvalidOffset;
+    // Evaluate only nodes reachable from the displayed node.
+    const auto reached = display != NoNode ? Upstream(procedure, plan.InputFirst, display, [](uint32_t) { return true; }) : std::vector<bool>(procedure.Nodes.size());
     auto remaining = plan.Consumers;
     for (uint32_t node = 0u; node < procedure.Nodes.size(); ++node) {
         if (reached[node]) continue;
@@ -1017,21 +1427,17 @@ void Cook(state::Registry &r, state::Entity mesh_entity, std::optional<BufferAre
             if (const auto link = procedure.Inputs[plan.InputFirst[node] + i]; link.FromNode != NoNode) --remaining[plan.SocketFirst[link.FromNode] + link.FromSocket];
         }
     }
+    // The display reads the displayed node's result after every node, so the result's other consumers clone it.
+    const auto result_socket = display != NoNode ? ResultSocket(procedure.Nodes[display].Kind) : std::optional<uint16_t>{};
+    if (result_socket) ++remaining[plan.SocketFirst[display] + *result_socket];
     // Release temporary cook records at completion and retain the result.
     std::vector<uint32_t> created;
-    // Track the first-input path to preserve the source-copy record through the result.
-    std::vector<bool> on_path(procedure.Nodes.size());
-    for (auto node = procedure.OutputNode; node != NoNode && !on_path[node];) {
-        on_path[node] = true;
-        node = KindSockets(procedure.Nodes[node].Kind).front().Type == SocketType::Geometry ? procedure.Inputs[plan.InputFirst[node]].FromNode : NoNode;
-    }
     std::vector<SocketValue> values(plan.SocketFirst.back());
     const auto slot_of = [&](uint32_t node, uint32_t input) {
         const auto link = procedure.Inputs[plan.InputFirst[node] + input];
         return plan.SocketFirst[link.FromNode] + link.FromSocket;
     };
     // Clone borrowed records before editing and owned records before additional readers.
-    // The display path's edit of this mesh's source takes the source copy.
     // Preserve the result-path record by cloning its producer instead.
     const auto take = [&](uint32_t node, uint32_t input) -> SocketValue {
         auto &taken = values[plan.SocketFirst[node] + input];
@@ -1040,12 +1446,7 @@ void Cook(state::Registry &r, state::Entity mesh_entity, std::optional<BufferAre
         taken = values[slot];
         const bool last = --remaining[slot] == 0u;
         if (taken.Record == InvalidOffset || (taken.Borrowed() ? KindSockets(procedure.Nodes[node].Kind)[input].Reads : last)) return taken;
-        if (taken.Borrowed() && taken.MeshEntity == mesh_entity && on_path[node] && !input) {
-            taken.MeshEntity = state::Null;
-            taken.Record = SourceCopy(r, source, evaluated, resync, between);
-            return taken;
-        }
-        const auto clone = created.emplace_back(Clone(r, taken.Record));
+        const auto clone = created.emplace_back(CloneRecord(r, taken.Record));
         if (taken.Borrowed() || !on_path[node] || input) {
             taken.MeshEntity = state::Null;
             taken.Record = clone;
@@ -1054,13 +1455,7 @@ void Cook(state::Registry &r, state::Entity mesh_entity, std::optional<BufferAre
         values[slot].Record = clone;
         return taken;
     };
-    const auto disown = [&](uint32_t record) {
-        std::erase(created, record);
-        if (record == evaluated.StoreId) {
-            evaluated = {.StoreId = InvalidOffset};
-            resync.reset();
-        }
-    };
+    const auto disown = [&](uint32_t record) { std::erase(created, record); };
     // Release a consumed record only when owned by this cook; borrowed records remain owned by their mesh entities.
     const auto consume = [&](const SocketValue &value) {
         if (value.Borrowed()) return;
@@ -1075,7 +1470,11 @@ void Cook(state::Registry &r, state::Entity mesh_entity, std::optional<BufferAre
         r.remove<NodeError>(entity);
         if (!reached[node] || IsAttributeKind(kind)) continue;
         if (kind == KindOf<Source>) {
-            values[first] = {.MeshEntity = mesh_entity, .Record = source};
+            // A pending state's record is still the source, which its readers borrow.
+            const auto &source = r.get<const SourceState>(entity);
+            if (source.State == store::Hash128{} && source.StoreId != InvalidOffset && meshes.TryGet(source.StoreId)) values[first] = {.MeshEntity = mesh_entity, .Record = source.StoreId};
+            else if (const auto materialized = MaterializeSource(r, source)) values[first].Record = created.emplace_back(*materialized);
+            else r.emplace<NodeError>(entity, NodeFault::NoMesh);
             continue;
         }
         if (kind == KindOf<ObjectInfo>) {
@@ -1097,14 +1496,6 @@ void Cook(state::Registry &r, state::Entity mesh_entity, std::optional<BufferAre
         if (generated) continue;
         const auto in = take(node, 0u);
         const auto input = in.Record;
-        if (kind == KindOf<Output>) {
-            // The result is this cook's record or this mesh's source, so another mesh's record is cloned.
-            if (node == procedure.OutputNode) {
-                result = in.Borrowed() && in.MeshEntity != mesh_entity ? created.emplace_back(Clone(r, input)) : input;
-                if (in.Type == SocketType::Instances) published = in;
-            }
-            continue;
-        }
         if (kind == KindOf<Join>) {
             const auto second = take(node, 1u);
             if (input != InvalidOffset && second.Record != InvalidOffset) {
@@ -1137,15 +1528,20 @@ void Cook(state::Registry &r, state::Entity mesh_entity, std::optional<BufferAre
         if (kind == KindOf<InstanceOnPoints>) {
             const auto instance = take(node, 1u);
             auto &output = values[first + InputCount[kind]];
-            output.Type = SocketType::Instances;
-            output.Record = input;
-            if (input != InvalidOffset && instance.Record != InvalidOffset) {
-                if (const auto placed = RunNode(r, procedure, plan, values, node, input, arena); !placed) r.emplace<NodeError>(entity, placed.error());
-                output.MeshEntity = instance.MeshEntity;
-                output.Instance = instance.Record;
+            // An unlinked Instance input faults the node, which passes its points through as geometry, as a failed placement does.
+            output = in;
+            if (input == InvalidOffset) continue;
+            if (instance.Record == InvalidOffset) {
+                r.emplace<NodeError>(entity, NodeFault::NoMesh);
                 continue;
             }
-            if (input != InvalidOffset) Empty(r, input);
+            if (const auto placed = RunNode(r, procedure, plan, values, node, input, arena)) {
+                output.Type = SocketType::Instances;
+                output.MeshEntity = instance.MeshEntity;
+                output.Instance = instance.Record;
+            } else {
+                r.emplace<NodeError>(entity, placed.error());
+            }
             continue;
         }
         if (kind == KindOf<RealizeInstances>) {
@@ -1163,39 +1559,69 @@ void Cook(state::Registry &r, state::Entity mesh_entity, std::optional<BufferAre
         if (!edited) r.emplace<NodeError>(entity, edited.error());
         values[first + InputCount[kind]].Record = edited.value_or(input);
     }
+    if (result_socket) {
+        // The result is this cook's record, so a borrowed record is cloned.
+        const auto &value = values[plan.SocketFirst[display] + *result_socket];
+        if (value.Record != InvalidOffset && (value.Type == SocketType::Geometry || value.Type == SocketType::Instances)) {
+            result = value.Borrowed() ? created.emplace_back(CloneRecord(r, value.Record)) : value.Record;
+            if (value.Type == SocketType::Instances) published = value;
+        }
+    }
     std::vector<Transform> transforms;
     if (published && result != InvalidOffset) {
         transforms = InstanceTransforms(meshes, result);
         Empty(r, result);
     }
-    // Instances of this mesh's source place a clone, since this mesh draws the points.
+    // Instances of this mesh's pending source place a clone, since this mesh draws the points.
     if (!transforms.empty() && published->MeshEntity == mesh_entity) {
         published->MeshEntity = state::Null;
-        published->Instance = Clone(r, published->Instance);
+        published->Instance = CloneRecord(r, published->Instance);
     }
     const bool owns = !transforms.empty() && published->MeshEntity == state::Null;
     if (owns) disown(published->Instance);
-    auto writes = meshes.TakeWrites();
-    if (result == InvalidOffset) result = source;
-    if (result == evaluated.StoreId) {
-        KeepWritten(meshes, result, *resync, writes.Blocks);
-        std::erase_if(resync->Attributes, [&](uint32_t attribute) { return std::ranges::binary_search(writes.Attributes, attribute); });
-        r.emplace_or_replace<ResyncState>(mesh_entity, std::move(*resync));
-    } else {
-        meshes.Release(evaluated.StoreId);
-        evaluated = {.StoreId = result};
-        r.remove<ResyncState>(mesh_entity);
+    if (result == InvalidOffset) {
+        result = CreateMesh(r, {}).StoreId;
+        ShadeNewMeshes(r);
     }
     std::erase(created, result);
     meshes.Release(created);
-    r.emplace_or_replace<EvaluatedMesh>(mesh_entity, evaluated);
+    CarryMaterials(meshes, prior, result);
+    if (prior != InvalidOffset && prior != result && meshes.TryGet(prior)) ReleaseReplaced(r, prior);
     const auto owned = OwnMesh(r, mesh_entity, owns ? published->Instance : InvalidOffset);
     PublishInstances(r, mesh_entity, owns ? owned : published ? published->MeshEntity :
                                                                 state::Null,
                      transforms);
-    RefreshMeshBinding(r, result);
-    // Recompute selection and its summary from the edit domain.
-    r.get_or_emplace<MeshGeometryDirty>(mesh_entity, EditSelectionAfter::Derive).RenderReady = false;
+    PublishCooked(r, mesh_entity, result, state::Null, false, true);
+}
+
+// Select the active node's inline selection on the mesh's record while the node reads the displayed node, so the viewport shows the elements the node edits and a capture replaces them.
+// An empty inline selection selects every element of its domain.
+void ShowActiveSelection(state::Registry &r, state::Entity mesh_entity, std::optional<BufferArena<SelectionBlock>> &arena) {
+    const auto &procedure = r.get<const GeometryProcedure>(mesh_entity);
+    const auto active = procedure.ActiveNode, display = procedure.DisplayNode;
+    if (active == NoNode || display == NoNode || active == display) return;
+    const auto [entity, kind] = procedure.Nodes[active];
+    const auto sockets = KindSockets(kind);
+    const auto selection_socket = uint32_t(std::ranges::find(sockets, SocketType::Selection, &Socket::Type) - sockets.begin());
+    if (selection_socket == sockets.size() || sockets.front().Type != SocketType::Geometry) return;
+    const auto first = InputFirst(procedure, active);
+    if (procedure.Inputs[first + selection_socket].FromNode != NoNode) return;
+    const auto [from, socket] = procedure.Inputs[first];
+    if (from != display || socket != ResultSocket(procedure.Nodes[display].Kind)) return;
+    auto &meshes = r.Resources.get<MeshStore>();
+    const auto *live = r.try_get<const EvaluatedMesh>(mesh_entity);
+    if (!live || !meshes.TryGet(live->StoreId)) return;
+    const auto *selection = r.try_get<const InlineSelection>(entity);
+    if (!selection || Empty(*selection)) {
+        ApplyEditSelectionCommand(r, std::array{ElementRange{mesh_entity, 0u}}, selection ? selection->Domain : Element::Vertex, EditSelectionOperation::Fill);
+    } else {
+        const auto masks = UploadSelection(meshes, arena, live->StoreId, selection);
+        mtl::ComputeChain chain{meshes.BufferContext()};
+        meshes.SelectMasks(r, chain, live->StoreId, {{&*arena, masks[0]}, {&*arena, masks[1]}, {&*arena, masks[2]}});
+        chain.Submit();
+    }
+    if (const auto handle = selection ? selection->Active : InvalidOffset; handle != InvalidOffset) r.emplace_or_replace<MeshActiveElement>(mesh_entity, handle);
+    else r.remove<MeshActiveElement>(mesh_entity);
 }
 
 // Order nodes after their dependencies, preserving authoring order among ready nodes.
@@ -1242,10 +1668,12 @@ void EraseNode(GeometryProcedure &procedure, uint32_t node) {
         if (link.FromNode == node) link = {};
         else if (link.FromNode != NoNode && link.FromNode > node) --link.FromNode;
     }
-    for (auto *index : {&procedure.OutputNode, &procedure.ActiveNode}) {
+    for (auto *index : {&procedure.DisplayNode, &procedure.ActiveNode}) {
         if (*index == node) *index = NoNode;
         else if (*index != NoNode && *index > node) --*index;
     }
+    // The displayed node, or else the last node, replaces a removed active node.
+    if (procedure.ActiveNode == NoNode && !procedure.Nodes.empty()) procedure.ActiveNode = procedure.DisplayNode != NoNode ? procedure.DisplayNode : uint32_t(procedure.Nodes.size()) - 1u;
 }
 
 void RemoveNode(state::Registry &r, state::Entity node) {
@@ -1279,7 +1707,8 @@ void QueueOwnedMeshRemoval(state::Registry &r, state::Entity mesh_entity) {
 
 struct ProcedureChanges {
     state::DirtySet Graph; // A geometry procedure's graph changed.
-    state::DirtySet Inputs; // A procedure's source record, a node's parameters or inline selection, a mesh's objects or a published instance's parent changed.
+    state::DirtySet Inputs; // A node's parameters or inline selection, a mesh's geometry or objects, or a published instance's parent changed.
+    state::DirtySet Created; // A node was created, whose own components the inputs list with it.
 };
 } // namespace procedure
 
@@ -1288,11 +1717,13 @@ void RegisterProcedureHandlers(state::Registry &r) {
     r.Resources.emplace<CookCount>();
     auto &changes = r.Resources.emplace<ProcedureChanges>();
     changes.Graph.bind(r).on<GeometryProcedure>(On::Create | On::Update);
+    changes.Created.bind(r).on<NodeLayout>(On::Create);
     r.on_destroy<GeometryProcedure, &QueueNodeRemovals>();
     r.on_destroy<ProcedureInstances, &QueueInstanceRemovals>();
     r.on_destroy<ProcedureOwnedMesh, &QueueOwnedMeshRemoval>();
+    r.Resources.emplace<CookPass>();
     auto &inputs = changes.Inputs.bind(r);
-    inputs.on<MeshHandle>(On::Create | On::Update).on<MeshGeometryDirty>(On::Create).on<MeshPositionsChanged>(On::Create);
+    inputs.on<MeshGeometryDirty>(On::Create).on<MeshPositionsChanged>(On::Create);
     inputs.on<InlineSelection>(On::Create | On::Update | On::Destroy);
     // Update published instances when an object is created or a child is detached.
     inputs.on<Instance>(On::Create).on<SceneParent>(On::Destroy);
@@ -1309,15 +1740,13 @@ void SettleProcedures(state::Registry &r, bool cook) {
     for (const auto e : changed) {
         if (const auto *procedure = r.try_get<const GeometryProcedure>(e)) r.emplace_or_replace<CookPlan>(e, Plan(*procedure));
     }
-    // Track changed blocks for resynchronization; history restores both sources and outputs.
-    const auto writes = r.Resources.get<MeshStore>().TakeWrites();
     if (!cook) return;
     std::vector<state::Entity> cooked, inputs;
     for (const auto e : changed) {
-        if (r.all_of<GeometryProcedure, MeshHandle>(e)) cooked.push_back(e);
+        if (r.all_of<GeometryProcedure>(e)) cooked.push_back(e);
     }
     for (const auto e : changes.Inputs) {
-        if (r.all_of<GeometryProcedure, MeshHandle>(e)) cooked.push_back(e);
+        if (r.all_of<GeometryProcedure>(e)) cooked.push_back(e);
         else inputs.push_back(e);
     }
     if (cooked.empty() && inputs.empty()) return;
@@ -1326,7 +1755,6 @@ void SettleProcedures(state::Registry &r, bool cook) {
     // Index procedures by the mesh entities read by their Object Info nodes.
     std::vector<std::pair<state::Entity, state::Entity>> reads;
     for (const auto [e, procedure] : std::as_const(r).view<const GeometryProcedure>().each()) {
-        if (!r.all_of<MeshHandle>(e)) continue;
         const auto *published = r.try_get<const ProcedureInstances>(e);
         if (std::ranges::any_of(procedure.Nodes, input, &NodeRecord::Entity) || (published && std::ranges::any_of(published->Entities, input))) cooked.push_back(e);
         for (const auto &node : procedure.Nodes) {
@@ -1357,9 +1785,64 @@ void SettleProcedures(state::Registry &r, bool cook) {
         order.push_back(e);
     };
     for (const auto e : cooked) visit(e);
+    if (order.empty()) return;
+    // The kept states restore the whole mesh storage exactly only while the passes of one mesh are its only writers.
+    auto &pass = r.Resources.get<CookPass>();
+    const auto mesh = order.size() == 1u ? order.front() : state::Null;
+    if (!(pass.End && mesh != state::Null && mesh == pass.Mesh && r.Resources.get<MeshStore>().StateHash() == *pass.End)) pass.Exact.clear();
+    pass.Mesh = mesh;
+    pass.End.reset();
     // Derive new-mesh shading before cooking dependent procedures.
-    if (!order.empty()) ShadeNewMeshes(r);
+    ShadeNewMeshes(r);
     std::optional<BufferArena<SelectionBlock>> arena;
-    for (const auto e : order) Cook(r, e, arena, writes);
+    for (const auto e : order) {
+        Evaluate(r, e, arena, changes.Inputs, changes.Created);
+        ShowActiveSelection(r, e, arena);
+    }
     r.Resources.get<CookCount>().Value += order.size();
+}
+
+void FinishCookPass(state::Registry &r) {
+    auto &pass = r.Resources.get<procedure::CookPass>();
+    if (pass.End || pass.Mesh == state::Null) return;
+    pass.End = r.Resources.get<MeshStore>().StateHash();
+}
+
+void FinishSourceStates(state::Registry &r) { procedure::FinishPendingSourceStates(r, InvalidOffset); }
+
+namespace procedure {
+namespace {
+// The states the Source nodes and edited inputs refer to, ascending.
+std::vector<store::Hash128> ReferencedStates(const state::Registry &r) {
+    std::vector<store::Hash128> states;
+    for (const auto [entity, source] : r.view<const SourceState>().each()) {
+        if (source.State != store::Hash128{}) states.push_back(source.State);
+    }
+    for (const auto [entity, input] : r.view<const EditedInput>().each()) {
+        if (input.State != store::Hash128{}) states.push_back(input.State);
+    }
+    std::ranges::sort(states, {}, [](const store::Hash128 &state) { return std::pair{state.A, state.B}; });
+    states.erase(std::ranges::unique(states).begin(), states.end());
+    return states;
+}
+} // namespace
+} // namespace procedure
+
+void EndMeshStates(state::Registry &r) {
+    const profile::CpuScope scope{"EndMeshStates"};
+    r.Resources.get<MeshStore>().EndStepStates(procedure::ReferencedStates(r));
+}
+
+void RecordMeshStates(state::Registry &r) { r.Resources.get<MeshStore>().RecordKeptStates(procedure::ReferencedStates(r)); }
+
+void ReopenSourceState(state::Registry &r, state::Entity mesh_entity) {
+    using namespace procedure;
+    const auto *evaluated = r.try_get<const EvaluatedMesh>(mesh_entity);
+    const auto *source = evaluated && r.valid(evaluated->Tip) ? r.try_get<const SourceState>(evaluated->Tip) : nullptr;
+    if (source && source->StoreId == evaluated->StoreId && source->State != store::Hash128{}) r.replace<SourceState>(evaluated->Tip, store::Hash128{}, source->StoreId);
+}
+
+void EndCookStep(state::Registry &r) {
+    r.clear<procedure::StagedNode>();
+    r.Resources.get<procedure::CookPass>().Exact.clear();
 }

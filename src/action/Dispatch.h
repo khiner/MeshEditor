@@ -112,18 +112,6 @@ struct UpdateTraits<procedure::NodeLayout> : ComponentUpdateTraits<procedure::No
     static void ForEachSelected(state::Registry &, const std::function<void(state::Entity)> &);
 };
 
-// Resolve PrimitiveShape through the instance mesh.
-// Selection edits affect meshes with the active shape type; rebuild them after applying changes.
-template<>
-struct UpdateTraits<PrimitiveShape> {
-    static bool Has(const state::Registry &, state::Entity);
-    static state::Entity Active(const state::Registry &);
-    static void ForEachSelected(state::Registry &, const std::function<void(state::Entity)> &);
-    static void Read(const state::Registry &, state::Entity, uint16_t offset, void *dst, size_t size);
-    static void Write(state::Registry &, state::Entity, uint16_t offset, const void *src, size_t size);
-    static const FieldSpec &Bounds(const state::Registry &, state::Entity, uint16_t offset);
-};
-
 // Cache each target's initial field value for the duration of a drag.
 template<typename Field>
 Field FieldGestureStart(state::Registry &r, state::Entity e, state::TypeId comp, uint16_t offset, auto &&read) {

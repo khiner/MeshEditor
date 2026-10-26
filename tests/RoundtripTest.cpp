@@ -858,7 +858,7 @@ struct SceneFixture : Engine {
 
 state::Entity FirstMeshNode(state::Registry &r) {
     for (auto e : r.view<const Instance, const GltfNode>()) {
-        if (r.all_of<MeshHandle>(r.get<const Instance>(e).Entity)) return e;
+        if (HasMesh(r, r.get<const Instance>(e).Entity)) return e;
     }
     return state::Null;
 }
@@ -1001,7 +1001,7 @@ void CheckCustomAttributes(state::Registry &r, bool integer_ids) {
     const auto node = FirstMeshNode(r);
     expect(fatal(node != state::Null));
     const auto &meshes = r.Resources.get<const MeshStore>();
-    const auto id = r.get<const MeshHandle>(r.get<const Instance>(node).Entity).StoreId;
+    const auto id = *DrawnStoreId(r, r.get<const Instance>(node).Entity);
     const Mesh mesh{meshes, id};
     expect(mesh.VertexCount() == 4u);
     const auto find = [&](std::string_view name, AttributeDomain domain, AttributeType type) {

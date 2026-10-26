@@ -2,6 +2,7 @@
 
 #include "gpu/MeshCloneJob.h"
 
+#include <span>
 #include <vector>
 
 struct MeshPipelines;
@@ -9,6 +10,9 @@ namespace mtl {
 struct Buffer;
 struct ComputeChain;
 } // namespace mtl
+namespace state {
+struct Registry;
+} // namespace state
 
 // A clone batch copies owned byte runs, then shifts the references a join moves.
 // Each buffer's runs of one kind take one dispatch, so a batch costs a fixed number of dispatches per buffer at any clone count.
@@ -31,3 +35,7 @@ private:
     Runs<ByteCopy> Copies;
     Runs<HandleOffset> Offsets;
 };
+
+// Copies the records' canonical data into new records without render data, in list order.
+std::vector<uint32_t> CloneRecords(state::Registry &, std::span<const uint32_t> ids);
+uint32_t CloneRecord(state::Registry &, uint32_t id);

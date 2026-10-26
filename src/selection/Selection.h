@@ -48,6 +48,4 @@ std::vector<SelectionHit> ResolveHits(state::Registry &, std::span<const state::
 
 namespace selection {
 using PrimaryEditInstanceMap = std::unordered_map<state::Entity, state::Entity>;
-
-bool HasScaleLockedInstance(const state::Registry &, state::Entity);
 } // namespace selection

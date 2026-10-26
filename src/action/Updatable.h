@@ -128,7 +128,7 @@ namespace action {
 using UpdatableComponents = TypeList<
     Transform, PosedLocal, BoneDelta, TransformGizmoState, OrbitToActive, ShadeSmoothAngle,
     ViewportDisplay, AnisotropicFilter, ViewportTheme, InterfaceTheme, TimelineTheme, TimelineNavigation, MaterialPreviewLighting, RenderedLighting,
-    PunctualLight, ImageLight, Perspective, Orthographic, MaterialVariants, PrimitiveShape,
+    PunctualLight, ImageLight, Perspective, Orthographic, MaterialVariants,
     Animations,
     PhysicsSimulationSettings, PhysicsMaterial, PhysicsMotion, PhysicsVelocity, ColliderPolicy, CollisionFilter, PhysicsJoint, ColliderMaterial, TriggerNodes,
     ModalGain, ModalTuning, ModalSoundControls, Striker, SurfaceSoundControls, AudioOutputMix,

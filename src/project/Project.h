@@ -7,9 +7,6 @@
 #include "project/ProjectSchema.h"
 #include "project/store/History.h"
 
-namespace action::mesh {
-struct InsetPreviewCache;
-} // namespace action::mesh
 namespace snapshot {
 } // namespace snapshot
 
@@ -69,8 +66,6 @@ struct Project {
         int CurrentFrame{};
         bool FixedFrameStep{};
         EventPass Pass{EventPass::Frame};
-        bool Staged{};
-        bool PreviewSeed{};
     };
     struct RecordedAction {
         ReplayInputs Inputs;
@@ -80,10 +75,8 @@ struct Project {
     std::vector<action::Action> Deferred;
     std::optional<size_t> StageFirst;
     std::optional<store::Snapshot> GestureBase;
+    std::optional<store::Snapshot> StageBase; // The state before the current stage's first step, which each of its previews reapplies from
     size_t GestureStart{};
-    // The action being applied is a staged preview, so mesh operators draw their output without replacing the mesh.
-    bool Previewing{false};
-    std::unique_ptr<action::mesh::InsetPreviewCache> InsetPreview;
     std::optional<uint32_t> Navigation;
     std::optional<uint32_t> Editing; // The node the open gesture replaces on commit
 
@@ -100,7 +93,7 @@ struct Project {
     // The commit that follows replaces a leaf node and forks a node with children.
     void RequestRestage() { RestageRequested = true; }
 
-    void Tick(const action::Action &, EventPass = EventPass::Frame, bool staged = false);
+    void Tick(const action::Action &, EventPass = EventPass::Frame);
     // Applies the action and records it with the frame inputs it ran under.
     bool Record(action::Action, EventPass, bool staged = false);
     std::expected<void, std::string> RunRecorded(std::span<const RecordedAction>);

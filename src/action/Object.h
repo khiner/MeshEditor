@@ -62,8 +62,9 @@ struct AddCamera {
 struct AddLight {
     std::unique_ptr<ObjectCreateInfo> Info;
 };
+// Creates a mesh whose procedure displays a generator node with the parameters.
 struct AddMeshPrimitive {
-    PrimitiveShape Shape;
+    PrimitiveParameters Parameters;
     std::unique_ptr<MeshInstanceCreateInfo> Info;
 };
 struct ImportMesh {

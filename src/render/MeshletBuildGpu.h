@@ -33,6 +33,12 @@ uint64_t MeshletBuildScratchWords(const MeshStore &, std::span<const MeshletBuil
 MeshRecord BuildMeshRecord(const GpuBuffers &, const MeshStore &, uint32_t store_id);
 // Rewrites the record's GPU mesh record from the current bindless slots.
 void RefreshMeshBinding(state::Registry &, uint32_t store_id);
+// Rebinds and refreshes the mesh whose drawn record `change` restored.
+// Returns a change to the record's positions alone, with its vertex ranges and blocks, for the caller to refresh.
+MeshStore::Change ReconcileRestoredRecord(state::Registry &, const MeshStore::Change &, state::Entity mesh_entity);
+// Rebinds and refreshes the meshes a restore of the whole mesh storage changed.
+// Returns a change to the positions alone of the record `mesh_entity` draws, for the caller to refresh.
+MeshStore::Change ReconcileRestoredStore(state::Registry &, state::Entity mesh_entity);
 
 // Create one empty primitive/LOD leaf only when a local build first uses its source material.
 // Existing routes and every untouched primitive stay in place.

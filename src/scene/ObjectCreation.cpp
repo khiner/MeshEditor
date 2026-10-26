@@ -4,6 +4,7 @@
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 #include "object/ObjectOps.h"
+#include "procedure/Procedure.h"
 #include "render/Instance.h"
 #include "scene/CameraLens.h"
 #include "scene/Defaults.h"
@@ -58,9 +59,25 @@ state::Entity AddMeshInstance(state::Registry &r, state::Entity mesh_entity, con
     return e;
 }
 
+state::Entity CreateProcedureNode(state::Registry &r, uint16_t kind, numeric::uvec2 position) {
+    const auto entity = r.create();
+    procedure::VisitKind(kind, [&]<typename K> { r.emplace<K>(entity); });
+    r.emplace<procedure::NodeLayout>(entity, position);
+    return entity;
+}
+
+procedure::GeometryProcedure RootedProcedure(state::Registry &r, state::Entity root, uint16_t kind) {
+    r.emplace<procedure::NodeSelected>(root);
+    return {{{root, kind}}, std::vector<procedure::SocketLink>(procedure::InputCount[kind]), 0u, 0u};
+}
+
 state::Entity AddMeshData(state::Registry &r, uint32_t store_id) {
+    using namespace procedure;
+    const auto source = CreateProcedureNode(r, KindOf<Source>, {0u, 0u});
+    r.emplace<SourceState>(source, store::Hash128{}, store_id);
     const auto mesh_entity = r.create();
-    r.emplace<MeshHandle>(mesh_entity, MeshHandle{store_id});
+    r.emplace<GeometryProcedure>(mesh_entity, RootedProcedure(r, source, KindOf<Source>));
+    r.emplace<EvaluatedMesh>(mesh_entity, store_id, source);
     return mesh_entity;
 }
 

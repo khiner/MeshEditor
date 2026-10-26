@@ -33,17 +33,20 @@
 #include "mesh/GeometryRefresh.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
+#include "mesh/MeshStores.h"
 #include "metal/MetalCpp.h"
 #include "metal/PassChain.h"
 #include "metal/RenderTarget.h"
 #include "numeric/MatrixMath.h"
 #include "object/PendingSync.h"
-#include "procedure/Procedure.h"
+#include "physics/PhysicsTypes.h"
+#include "render/ClusterLod.h"
 #include "render/Encoding.h"
 #include "render/GpuSceneState.h"
 #include "render/Instance.h"
 #include "render/MeshTopologyRepair.h"
 #include "render/MeshletBoundsRefit.h"
+#include "render/MeshletBuildGpu.h"
 #include "render/Pipelines.h"
 #include "render/RenderTargets.h"
 #include "render/SceneUpdates.h"
@@ -56,6 +59,7 @@
 #include "timeline/Timeline.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewCameraOps.h"
+#include "viewport/ViewportEvents.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportComponents.h"
 #include "viewport/ViewportInteractionState.h"
@@ -148,7 +152,7 @@ void BuildOverlayJobs(const state::Registry &r, GpuBuffers &buffers, bool boundi
         }
         if (bounding_boxes) {
             for (const auto [entity, instance, render_instance] : r.view<const Instance, const RenderInstance>().each()) {
-                if (HasMesh(r, instance.Entity)) emit(OverlayJob{.Kind = OverlayJobKind::Bounds, .InstanceIndex = render_instance.BufferIndex}, 12u);
+                if (DrawsMesh(r, instance.Entity)) emit(OverlayJob{.Kind = OverlayJobKind::Bounds, .InstanceIndex = render_instance.BufferIndex}, 12u);
             }
         }
         for (const auto [mesh_entity, tets] : r.view<const TetBuffers>().each()) {
@@ -671,8 +675,7 @@ struct DisplayContext {
     DisplayContext(const state::Registry &r)
         : R(r), Buffers(r.Resources.get<const GpuBuffers>()), Meshes(r.Resources.get<const MeshStore>()),
           Displays(r.Resources.get<const GpuSceneState>().Displays), Mode(r.get<const Interaction>(state::Document).Mode), EditElement(r.get<const EditMode>(state::Document).Value),
-          Primaries(r.get<const EditPrimaries>(state::Document).All), SelectedMeshes(r.get<const SelectionFlags>(state::Document).Meshes),
-          Transforming(Mode == InteractionMode::Edit && r.all_of<PendingTransform>(state::Document)) {
+          Primaries(r.get<const EditPrimaries>(state::Document).All), SelectedMeshes(r.get<const SelectionFlags>(state::Document).Meshes) {
         if (Mode == InteractionMode::Excite) {
             for (const auto [_, instance, __] : r.view<const Instance, const SoundVertices>().each()) SoundMeshes.insert(instance.Entity);
         }
@@ -686,7 +689,6 @@ struct DisplayContext {
     Element EditElement;
     const selection::PrimaryEditInstanceMap &Primaries;
     const std::vector<state::Entity> &SelectedMeshes;
-    bool Transforming; // An Edit-mode transform is pending.
     std::unordered_set<state::Entity> SoundMeshes;
 
     // Edit and Pose modes outline the active armature's bones, and Object mode the selected armatures'.
@@ -737,7 +739,7 @@ MeshDisplayState ComputeMeshDisplay(const DisplayContext &c, state::Entity mesh_
         d.MeshletBoundsNamespace = pose->Namespaces.MeshletBoundsNamespace(0);
         d.MorphNormalNamespace = pose->Namespaces.MorphNormalNamespace(0);
     }
-    const bool mesh_record = r.all_of<MeshHandle>(mesh_entity);
+    const bool mesh_record = DrawsMesh(r, mesh_entity);
     const auto &arenas = meshes.Arenas();
     const uint32_t faces = mesh_record ? arenas.FaceTriangles.Count(mb.FaceData) : 0u, edges = mesh_record ? arenas.EdgeHalfedges.Count(mb.EdgeData) : 0u;
     const bool meshlets = c.Meshes.MeshletCount(mb) > 0u;
@@ -747,8 +749,6 @@ MeshDisplayState ComputeMeshDisplay(const DisplayContext &c, state::Entity mesh_
     const auto &displays = c.Displays;
     const bool overlays = displays.Overlays;
     if (has_primary && mesh_record) {
-        // A procedure mesh's transform moves its drawn record through the node it cooks.
-        d.HasPendingVertexTransform = c.Transforming && !r.all_of<procedure::GeometryProcedure>(mesh_entity) ? 1u : 0u;
         d.PrimaryEditInstanceIndex = r.get<const RenderInstance>(primary->second).BufferIndex;
         d.Selection = meshes.GetEditSelectionStorage(mb.StoreId);
     } else if (sound && mesh_record) {
@@ -830,21 +830,17 @@ void ResizeRange(auto &arena, Range &range, uint32_t count) {
     range = arena.Allocate(count);
 }
 
-struct LayoutContext {
-    bool EditMode, Transforming;
-    const selection::PrimaryEditInstanceMap &Primaries;
-};
 
 // Allocate bounds and pose storage from the mesh inputs and mark bounds for recomputation.
 // Instances with the same deformation share one bounds entry; independently deformed instances use separate entries and poses.
 // Keep an empty static entry for meshes without instances.
 // Release bounds and pose storage when the mesh record or ModelsBuffer component is absent.
-void LayOutMesh(state::Registry &r, const LayoutContext &c, state::Entity mesh_entity) {
+void LayOutMesh(state::Registry &r, bool edit_mode, state::Entity mesh_entity) {
     auto &buffers = r.Resources.get<GpuBuffers>();
     const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &render = meshes.Render();
     const auto *models = r.try_get<const ModelsBuffer>(mesh_entity);
-    const auto *record = models && HasMesh(r, mesh_entity) ? TryRecordOf(r, mesh_entity) : nullptr;
+    const auto *record = models && DrawsMesh(r, mesh_entity) ? TryRecordOf(r, mesh_entity) : nullptr;
     const auto *old_pose = r.try_get<const PosedLayout>(mesh_entity);
     const bool was_apart = old_pose && old_pose->Namespaces.PerInstance;
     const auto reset_records = [&] {
@@ -860,15 +856,10 @@ void LayOutMesh(state::Registry &r, const LayoutContext &c, state::Entity mesh_e
     }
     const auto store_id = record->StoreId;
     // Edit mode uses the rest pose.
-    const auto deform = c.EditMode ? MeshDeform{} : DeformOf(r, buffers, *record, *models);
+    const auto deform = edit_mode ? MeshDeform{} : DeformOf(r, buffers, *record, *models);
     const bool per_instance = deform.PerInstance();
     const uint32_t count = per_instance ? models->InstanceCount : 1u;
-    // Some canonical position edits need posed bounds until their meshlets are refitted.
-    // Inset previews refit them directly.
-    const auto *edit_work = r.try_get<const MeshEditWork>(mesh_entity);
-    const bool posed = models->InstanceCount > 0u &&
-        (deform.BoneDeformOffset != InvalidOffset || deform.MorphDeformOffset != InvalidOffset ||
-         (c.EditMode && ((c.Transforming && c.Primaries.contains(mesh_entity)) || (edit_work && edit_work->RequiresPose))));
+    const bool posed = models->InstanceCount > 0u && (deform.BoneDeformOffset != InvalidOffset || deform.MorphDeformOffset != InvalidOffset);
 
     const bool new_run = !r.all_of<BoundsRun>(mesh_entity);
     auto run = new_run ? BoundsRun{} : r.get<const BoundsRun>(mesh_entity);
@@ -1863,20 +1854,97 @@ void WriteViewUniforms(state::Registry &r, state::Entity viewport_entity, const 
     viewport.FrameView = view;
 }
 
+namespace {
+// Reconciles the derived state of the records `changes` restored.
+// A change to the positions of the record `deferred` draws is left to its next refresh, and the returned change accumulates its vertex ranges and blocks.
+MeshStore::Change ReconcileChanges(state::Registry &r, std::span<const MeshStore::Change> changes, std::vector<state::Entity> restored_meshes, state::Entity deferred) {
+    const profile::CpuScope scope{"ReconcileChanges"};
+    auto &meshes = r.Resources.get<MeshStore>();
+    const auto positions_only = [](const MeshStore::Change &change) { return (change.Bits & ~(MeshStore::SelectionChanged | MeshStore::EntryChanged)) == MeshStore::GeometryChanged; };
+    const auto deferred_positions = [&](const MeshStore::Change &change) { return deferred != state::Null && positions_only(change) && MeshEntityOf(r, change.StoreId) == deferred; };
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    std::vector<MeshStore::Change> reconciled;
+    for (const auto &change : changes) {
+        if (!deferred_positions(change)) reconciled.push_back(change);
+    }
+    meshes.ReconcileSelection(r, chain, reconciled);
+    auto &buffers = r.Resources.get<GpuBuffers>();
+    // Rebind GPU mesh records after restore and remove retired records from flag totals.
+    for (const auto &change : changes) {
+        if (!(change.Bits & MeshStore::EntryChanged)) continue;
+        RefreshMeshBinding(r, change.StoreId);
+        if (!meshes.TryGet(change.StoreId)) buffers.Retally(change.StoreId, {});
+        if (const auto entity = MeshEntityOf(r, change.StoreId); entity != state::Null) restored_meshes.push_back(entity);
+    }
+    // Restored deformation can move any posed mesh.
+    for (const auto entity : r.view<const PosedLayout>()) r.emplace_or_replace<MeshBoundsDirty>(entity);
+    auto &scene = r.Resources.get<GpuSceneState>();
+    SortUnique(restored_meshes);
+    std::vector<state::Entity> repointed;
+    for (const auto entity : restored_meshes) {
+        r.remove<MeshletPositionsDirty, ClusterLodDirty>(entity);
+        const auto id = *DrawnStoreId(r, entity);
+        const auto *owner = meshes.TryGet(id);
+        if (!owner || owner->RenderTopologies == 0u) continue;
+        repointed.push_back(entity);
+        if (meshes.HasDirtyPositions(*owner)) r.emplace<MeshletPositionsDirty>(entity);
+        if (meshes.HasDirtyGroups(*owner)) r.emplace<ClusterLodDirty>(entity);
+        if (!meshes.ClusterGroupCount(*owner) && ClusterLodApplies(Mesh{meshes, id}.FaceCount() > 0u, meshes.MeshletCount(*owner))) r.emplace_or_replace<ClusterLodDemand>(entity);
+    }
+    // Use restored meshlet and LOD-node counts to size instance culling buffers.
+    RepointMeshInstances(r, repointed);
+    std::vector<MeshVertexChanges> positions;
+    MeshStore::Change deferred_change{};
+    for (const auto &change : changes) {
+        const auto entity = MeshEntityOf(r, change.StoreId);
+        if (entity == state::Null) continue;
+        if (change.Bits & ~MeshStore::SelectionChanged) {
+            // The deferred record's position refresh keeps its edit work, whose footprint its next edit reuses when it edits the same vertices.
+            if (deferred_positions(change)) {
+                deferred_change.VertexRanges.append_range(change.VertexRanges);
+                for (uint32_t d = 0u; d < change.Blocks.size(); ++d) deferred_change.Blocks[d].append_range(change.Blocks[d]);
+            } else {
+                ReleaseMeshEditWork(r, entity);
+                // Refresh edited positions through a record the entity draws as its own, and restore cooked records in full.
+                if (positions_only(change) && !change.VertexRanges.empty() && !r.all_of<EvaluatedMesh>(entity)) positions.push_back({entity, change.VertexRanges});
+            }
+            RefreshMeshBinding(r, change.StoreId);
+            r.emplace_or_replace<MeshGeometryDirty>(entity, EditSelectionAfter::Keep, true);
+        }
+        if (change.Bits & MeshStore::SelectionChanged) scene.EditSelectionDirty = true;
+    }
+    RefreshEditedPositions(r, chain, positions, false);
+    chain.Submit();
+    return deferred_change;
+}
+} // namespace
+
+void ReconcileRestoredMeshes(state::Registry &r, std::vector<state::Entity> restored_meshes) {
+    const auto changes = r.Resources.get<MeshStore>().TakeChanges();
+    ReconcileChanges(r, changes, std::move(restored_meshes), state::Null);
+}
+
+MeshStore::Change ReconcileRestoredRecord(state::Registry &r, const MeshStore::Change &change, state::Entity mesh_entity) {
+    return ReconcileChanges(r, std::span{&change, 1u}, {}, mesh_entity);
+}
+
+MeshStore::Change ReconcileRestoredStore(state::Registry &r, state::Entity mesh_entity) {
+    const auto changes = r.Resources.get<MeshStore>().TakeChanges();
+    return ReconcileChanges(r, changes, {}, mesh_entity);
+}
+
 void UpdateAuthoredMorphShading(state::Registry &r, mtl::ComputeChain &chain, std::span<const state::Entity> mesh_entities) {
     auto &meshes = r.Resources.get<MeshStore>();
     auto &buffers = r.Resources.get<GpuBuffers>();
     // Each position-only target gets a derive entry reading its full-weight pose directly.
     std::vector<NormalDeriveEntry> entries;
     std::vector<uint32_t> entry_ids;
-    std::vector<state::Entity> job_entities;
     PoseAttributeStore<vec3>::Temporary vertex_normals{buffers.PosedVertexNormals};
     PoseAttributeStore<vec3>::Temporary face_normals{buffers.PosedFaceNormals};
     PoseAttributeStore<vec3>::Temporary sectors{buffers.PosedSectors};
     for (const auto entity : mesh_entities) {
-        const auto mesh = TryGetMesh(r, entity);
-        if (!mesh) continue;
-        const auto store_id = mesh->GetStoreId();
+        const auto store_id = *DrawnStoreId(r, entity);
+        const Mesh mesh{meshes, store_id};
         const auto &record = meshes.Get(store_id);
         const auto target_count = record.MorphTargetCount;
         // A mesh without authored normals shades by derivation alone, under any morph weights.
@@ -1884,7 +1952,7 @@ void UpdateAuthoredMorphShading(state::Registry &r, mtl::ComputeChain &chain, st
         const auto entry_inputs = MakeDeriveEntryInputs(meshes, store_id);
         if (!entry_inputs) continue;
         // Resolve the authored-normal gate from every morph target.
-        UpdateMorphShadingAuthored(meshes, *mesh, {});
+        UpdateMorphShadingAuthored(meshes, mesh, {});
         if (meshes.Get(store_id).MorphShadingAuthored) continue;
         const auto normal_blocks = SectorBlocks(meshes, store_id);
         const auto vertex_blocks = PoseElementBlocks(meshes.Arenas().Vertices, record.Vertices);
@@ -1906,7 +1974,6 @@ void UpdateAuthoredMorphShading(state::Registry &r, mtl::ComputeChain &chain, st
             entry.FaceNormalNamespace = face_normals.Add(face_blocks);
             entries.emplace_back(entry);
             entry_ids.emplace_back(store_id);
-            job_entities.emplace_back(entity);
         }
     }
     if (entries.empty()) return;
@@ -1916,10 +1983,10 @@ void UpdateAuthoredMorphShading(state::Registry &r, mtl::ComputeChain &chain, st
     EncodeDeriveNormals(r, chain, entry_ids, entries, MakeNormalDerivePc(buffers, meshes, true));
     chain.Submit();
 
-    for (size_t i = 0; i < job_entities.size();) {
-        const auto entity = job_entities[i];
+    for (size_t i = 0; i < entry_ids.size();) {
+        const auto store_id = entry_ids[i];
         std::vector<CornerNormalSources> poses;
-        for (; i < job_entities.size() && job_entities[i] == entity; ++i) {
+        for (; i < entry_ids.size() && entry_ids[i] == store_id; ++i) {
             const auto &entry = entries[i];
             poses.push_back({
                 .VertexNormals = meshes.Arenas().BaseVertexNormals.Buffer.GetSpan<vec3>(),
@@ -1929,13 +1996,13 @@ void UpdateAuthoredMorphShading(state::Registry &r, mtl::ComputeChain &chain, st
                 .PosedFaceNormals = buffers.PosedFaceNormals.View(entry.FaceNormalNamespace),
             });
         }
-        UpdateMorphShadingAuthored(meshes, GetMesh(r, entity), poses);
+        UpdateMorphShadingAuthored(meshes, Mesh{meshes, store_id}, poses);
     }
 }
 
 void FinalizeAuthoredShading(state::Registry &r, mtl::ComputeChain &chain) {
     auto &meshes = r.Resources.get<MeshStore>();
-    const auto authored = r.view<const AuthoredCornerNormals, const MeshHandle>() | std::ranges::to<std::vector>();
+    const auto authored = r.view<const AuthoredCornerNormals>() | std::ranges::to<std::vector>();
     for (const auto entity : authored) {
         EncodeAuthoredCornerNormals(meshes, GetMesh(r, entity), r.get<const AuthoredCornerNormals>(entity).Corners);
     }
@@ -1956,7 +2023,7 @@ void FinalizeWork(MTL::ComputeCommandEncoder *encoder, const Pipelines &pipeline
 
 MeshEditWork &PrepareMeshEditWork(state::Registry &r, state::Entity entity) {
     auto &buffers = r.Resources.get<GpuBuffers>();
-    const auto mesh = GetDrawnMesh(r, entity);
+    const auto mesh = GetMesh(r, entity);
     const auto id = mesh.GetStoreId();
     if (const auto *work = r.try_get<const MeshEditWork>(entity)) {
         if (work->StoreId == id) return r.edit<MeshEditWork>(entity);
@@ -1966,7 +2033,6 @@ MeshEditWork &PrepareMeshEditWork(state::Registry &r, state::Entity entity) {
     r.emplace_or_replace<MeshDisplayDirty>(entity);
     auto work_allocation = buffers.GeometryWork.BeginAllocation();
     MeshEditWork w{.StoreId = id};
-    w.WorkBudget = buffers.GeometryWork.Allocate(3);
     w.Candidates = AllocateElementWork(buffers.GeometryWork, InvalidOffset);
     w.Vertices = AllocateElementWork(buffers.GeometryWork, InvalidOffset);
     w.Faces = AllocateElementWork(buffers.GeometryWork, InvalidOffset);
@@ -1983,10 +2049,7 @@ MeshEditWork &PrepareMeshEditWork(state::Registry &r, state::Entity entity) {
 } // namespace
 
 void ReleaseMeshEditWork(state::Registry &r, state::Entity entity) {
-    const auto *work = r.try_get<const MeshEditWork>(entity);
-    if (!work) return;
-    // Work that required a pose posed the mesh's bounds.
-    if (work->RequiresPose) r.emplace_or_replace<MeshLayoutDirty>(entity);
+    if (!r.all_of<MeshEditWork>(entity)) return;
     r.remove<MeshEditWork>(entity);
     r.emplace_or_replace<MeshDisplayDirty>(entity);
 }
@@ -1996,21 +2059,20 @@ void ReleaseMeshEditWorkRanges(state::Registry &r, state::Entity entity) {
     const auto &w = r.get<const MeshEditWork>(entity);
     for (const auto range : {w.Candidates, w.Vertices, w.Faces, w.Normals, w.Meshlets, w.BoundsTiles}) buffers.GeometryWork.Release(WorkStorageRange(range));
     for (const auto level : w.BoundsLevels) buffers.GeometryWork.Release(WorkStorageRange(level));
-    buffers.GeometryWork.Release(w.WorkBudget);
 }
 
 namespace {
 using GeometryEditJobs = std::vector<std::pair<state::Entity, CommitPosedGeometryPushConstants>>;
 
-// Prepares each job's reusable topological footprint before any geometry writes, one phase for every job per submit.
-// Stale candidates seed from the vertex selection in the first submit.
-// Counts bound sparse allocation between the phases.
+// Records each job's reusable topological footprint before any geometry writes.
+// Stale candidates seed from the vertex selection.
+// Every table takes the capacity of the blocks its domain spans, so no count returns to the host before the footprint records.
 // Repeated parameter changes reuse the same tables.
 void PrepareGeometryFootprints(state::Registry &r, mtl::ComputeChain &chain, GeometryEditJobs &jobs) {
     struct Footprint {
         MeshEditWork *Work;
         CommitPosedGeometryPushConstants *Pc;
-        uint64_t VertexBlocks{}, MeshletBlocks{};
+        uint64_t Candidates{};
     };
     std::vector<Footprint> footprints;
     for (auto &[entity, pc] : jobs) {
@@ -2022,25 +2084,16 @@ void PrepareGeometryFootprints(state::Registry &r, mtl::ComputeChain &chain, Geo
     const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &slots = r.Resources.get<const mtl::BindlessSet>();
     const auto &pipelines = GetPipelines(r);
-    const auto update = [](const Footprint &footprint) {
-        const auto &work = *footprint.Work;
-        auto &pc = *footprint.Pc;
-        pc.Candidates = work.Candidates;
-        pc.ChangedVertices = work.Vertices;
-        pc.Faces = work.Faces;
-        pc.Normals = work.Normals;
-        pc.MeshletAddresses = work.Meshlets;
-        pc.BoundsTiles = work.BoundsTiles;
-        pc.BudgetOffset = work.WorkBudget.Offset;
-    };
     std::vector<ElementWorkSeedJob> seeds;
     std::vector<MeshEditWork *> seeded;
-    for (const auto &footprint : footprints) {
+    for (auto &footprint : footprints) {
         auto &work = *footprint.Work;
+        footprint.Candidates = WorkBlockCount(buffers.GeometryWork, work.Candidates);
         if (work.CandidateReady) continue;
         std::vector<uint32_t> blocks;
         meshes.GetSelectedElements(work.StoreId, Element::Vertex).ForEachBlock([&](uint32_t block, uint32_t) { blocks.push_back(block); });
-        ReserveElementWork(buffers.GeometryWork, work.Candidates, uint64_t(WorkBlockCount(buffers.GeometryWork, work.Candidates)) + 2u * blocks.size());
+        footprint.Candidates += blocks.size();
+        ReserveElementWork(buffers.GeometryWork, work.Candidates, footprint.Candidates + blocks.size());
         seeds.push_back(PrepareBlockMembershipWork(chain.Scratch, meshes.Arenas().Vertices, meshes.Get(work.StoreId).Vertices, blocks, work.Candidates, meshes.GetSelectionSlot(Element::Vertex)));
         seeded.push_back(&work);
     }
@@ -2052,81 +2105,57 @@ void PrepareGeometryFootprints(state::Registry &r, mtl::ComputeChain &chain, Geo
             encoder->memoryBarrier(MTL::BarrierScopeBuffers);
         });
     }
-    for (const auto &footprint : footprints) {
-        const auto &work = *footprint.Work;
-        for (const auto item : {work.Faces, work.Normals, work.Meshlets, work.BoundsTiles}) ClearElementWork(buffers.GeometryWork, item);
-        std::ranges::fill(buffers.GeometryWork.GetMutable(work.WorkBudget), 0u);
-    }
-    const auto submit = [&](std::initializer_list<uint32_t> phases) {
-        for (const auto &footprint : footprints) update(footprint);
-        chain.Encode([&](MTL::ComputeCommandEncoder *encoder) {
-            encode::BindBindless(encoder, slots);
-            for (const auto phase : phases) {
-                encoder->setComputePipelineState(pipelines.CommitPosedGeometry.State());
-                for (const auto &footprint : footprints) {
-                    auto &pc = *footprint.Pc;
-                    pc.Phase = phase;
-                    encode::SetPushConstants(encoder, pc);
-                    DispatchWork(encoder, buffers, phase < 2u ? pc.Candidates : pc.Faces);
-                }
-                encoder->memoryBarrier(MTL::BarrierScopeBuffers);
-                if (phase != 1u && phase != 3u) continue;
-                for (const auto &footprint : footprints) {
-                    const auto &pc = *footprint.Pc;
-                    if (phase == 1u) FinalizeWork(encoder, pipelines, {pc.Faces, pc.MeshletAddresses, pc.BoundsTiles});
-                    else FinalizeWork(encoder, pipelines, {pc.Normals, pc.MeshletAddresses});
-                }
-                encoder->memoryBarrier(MTL::BarrierScopeBuffers);
-            }
-        });
-        chain.Submit();
-        for (const auto &footprint : footprints) {
-            const auto &work = *footprint.Work;
-            for (const auto item : {work.Faces, work.Normals, work.Meshlets, work.BoundsTiles}) CheckElementWork(buffers.GeometryWork, item);
-        }
-    };
-    submit({0u});
-    for (auto *work : seeded) {
-        CheckElementWork(buffers.GeometryWork, work->Candidates);
-        work->CandidateReady = true;
-    }
     const auto &a = meshes.Arenas();
     for (auto &footprint : footprints) {
         auto &work = *footprint.Work;
-        const auto candidates = WorkBlockCount(buffers.GeometryWork, work.Candidates);
-        ReserveElementWork(buffers.GeometryWork, work.Vertices, candidates);
-        ReserveElementWork(buffers.GeometryWork, work.BoundsTiles, candidates);
-        // A table's distinct blocks are at most the blocks its domain spans: the mesh's face and vertex sets, and its owner's meshlet set.
+        for (const auto item : {work.Faces, work.Normals, work.Meshlets, work.BoundsTiles}) ClearElementWork(buffers.GeometryWork, item);
+        // A table's distinct blocks are at most the blocks its domain spans: the candidates' blocks, the mesh's face and vertex sets, and its meshlet set.
         const auto &record = meshes.Get(work.StoreId);
         const uint64_t face_blocks = record.FaceData ? a.FaceTriangles.Set(record.FaceData).BlockCount : 0u;
-        footprint.VertexBlocks = a.Vertices.Set(record.Vertices).BlockCount;
-        if (const auto *owner = meshes.TryGet(work.StoreId); owner && owner->MeshletData) footprint.MeshletBlocks = meshes.Render().Meshlets.Set(owner->MeshletData).BlockCount;
-        const auto budget = buffers.GeometryWork.Get(work.WorkBudget);
-        ReserveElementWork(buffers.GeometryWork, work.Faces, std::min<uint64_t>(budget[0], face_blocks));
-        ReserveElementWork(buffers.GeometryWork, work.Meshlets, std::min<uint64_t>(budget[2], footprint.MeshletBlocks));
+        const uint64_t vertex_blocks = a.Vertices.Set(record.Vertices).BlockCount;
+        const uint64_t meshlet_blocks = record.MeshletData ? meshes.Render().Meshlets.Set(record.MeshletData).BlockCount : 0u;
+        ReserveElementWork(buffers.GeometryWork, work.Vertices, footprint.Candidates);
+        ReserveElementWork(buffers.GeometryWork, work.BoundsTiles, footprint.Candidates);
+        ReserveElementWork(buffers.GeometryWork, work.Faces, face_blocks);
+        ReserveElementWork(buffers.GeometryWork, work.Normals, vertex_blocks);
+        ReserveElementWork(buffers.GeometryWork, work.Meshlets, meshlet_blocks);
+        for (auto &level : work.BoundsLevels) ReserveElementWork(buffers.GeometryWork, level, footprint.Candidates);
+        auto &pc = *footprint.Pc;
+        pc.Candidates = work.Candidates;
+        pc.ChangedVertices = work.Vertices;
+        pc.Faces = work.Faces;
+        pc.Normals = work.Normals;
+        pc.MeshletAddresses = work.Meshlets;
+        pc.BoundsTiles = work.BoundsTiles;
+        work.CandidateReady = work.FootprintReady = true;
     }
-    submit({1u, 2u});
-    for (const auto &footprint : footprints) {
-        auto &work = *footprint.Work;
-        const auto budget = buffers.GeometryWork.Get(work.WorkBudget);
-        ReserveElementWork(buffers.GeometryWork, work.Normals, std::min<uint64_t>(budget[1], footprint.VertexBlocks));
-        ReserveElementWork(buffers.GeometryWork, work.Meshlets, std::min<uint64_t>(budget[2], footprint.MeshletBlocks));
-    }
-    submit({3u});
-    for (const auto &footprint : footprints) {
-        auto &work = *footprint.Work;
-        const auto bounds = WorkBlockCount(buffers.GeometryWork, work.BoundsTiles);
-        for (auto &level : work.BoundsLevels) ReserveElementWork(buffers.GeometryWork, level, bounds);
-        update(footprint);
-        work.FootprintReady = true;
-    }
+    chain.Encode([&](MTL::ComputeCommandEncoder *encoder) {
+        encode::BindBindless(encoder, slots);
+        // The vertex phase marks the faces, meshlets and bounds tiles around the candidates, and the face phase the normals and triangle meshlets of those faces.
+        for (const auto phase : {1u, 3u}) {
+            encoder->setComputePipelineState(pipelines.CommitPosedGeometry.State());
+            for (const auto &footprint : footprints) {
+                auto &pc = *footprint.Pc;
+                pc.Phase = phase;
+                encode::SetPushConstants(encoder, pc);
+                DispatchWork(encoder, buffers, phase == 1u ? pc.Candidates : pc.Faces);
+            }
+            encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+            for (const auto &footprint : footprints) {
+                const auto &pc = *footprint.Pc;
+                if (phase == 1u) FinalizeWork(encoder, pipelines, {pc.Faces, pc.MeshletAddresses, pc.BoundsTiles});
+                else FinalizeWork(encoder, pipelines, {pc.Normals, pc.MeshletAddresses});
+            }
+            encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+        }
+    });
 }
 
-CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Registry &r, state::Entity entity, state::Entity primary, const PendingTransform *pending, const PosedNamespaces *pose = nullptr, std::span<const Range> changed = {}) {
+CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Registry &r, state::Entity entity, const PosedNamespaces *pose = nullptr, std::span<const Range> changed = {}) {
     auto &buffers = r.Resources.get<GpuBuffers>();
     auto &meshes = r.Resources.get<MeshStore>();
     auto &w = PrepareMeshEditWork(r, entity);
-    const auto mesh = GetDrawnMesh(r, entity);
+    const auto mesh = GetMesh(r, entity);
     const auto id = w.StoreId;
     if (changed.empty()) w.RefreshRanges.clear();
     if (!changed.empty()) {
@@ -2149,13 +2178,12 @@ CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Registry &r, state::
     if (pose) {
         for (const auto &level : w.BoundsLevels) ClearElementWork(buffers.GeometryWork, level);
         SetPoseNamespaces(entry, *pose, 0);
-        w.PreviewActive = pending != nullptr;
+        w.PreviewActive = false;
     }
     return {
         .VerticesSlot = meshes.Slots().Vertices,
         .PositionSlot = buffers.PosedPositions.Values.Buffer.Slot,
         .PositionNodesSlot = buffers.PosedPositions.Nodes.Buffer.Slot,
-        .SelectionSlot = meshes.GetSelectionSlot(Element::Vertex),
         .Candidates = w.Candidates,
         .ChangedVertices = w.Vertices,
         .Faces = w.Faces,
@@ -2163,14 +2191,10 @@ CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Registry &r, state::
         .MeshletAddresses = w.Meshlets,
         .BoundsTiles = w.BoundsTiles,
         .Entry = entry,
-        .Primary = pending ? *WorldTransformOf(r, primary) : Transform{},
-        .Delta = pending ? pending->Delta : Transform{},
-        .Pivot = pending ? pending->Pivot : vec3{},
         .FaceTriangleStartSlot = meshes.Slots().FaceTriangleStart,
         .ElementMeshlets = {meshes.Render().ElementMeshlets[0].Ref(meshes.Get(id).ElementMeshlets[0]), meshes.Render().ElementMeshlets[1].Ref(meshes.Get(id).ElementMeshlets[1]), meshes.Render().ElementMeshlets[2].Ref(meshes.Get(id).ElementMeshlets[2])},
         .MeshletSets = meshes.Render().Meshlets.Slots(),
         .MeshletSet = meshes.Get(id).MeshletData.Index,
-        .ApplyTransform = pending ? 1u : 0u,
         .Mode = !changed.empty() ? GeometryEditMode::Refresh : pose ? GeometryEditMode::Preview :
                                                                       GeometryEditMode::Commit,
     };
@@ -2222,95 +2246,65 @@ void RecordGeometryEditBatch(state::Registry &r, MTL::ComputeCommandEncoder *enc
 }
 // Faces keep their identities and triangle ranges.
 // Canonical position edits discard affected authored tangents; those render keys and changed diagonals share one repair.
-bool RetessellateGeometry(state::Registry &r, mtl::ComputeChain &chain, GeometryEditJobs &geometry, bool preview) {
+// Returns the repair, which reads the changed triangles the chain's next submit reports and records on the chain again, or nothing for jobs without polygons.
+std::function<void()> RetessellateGeometry(state::Registry &r, mtl::ComputeChain &chain, const GeometryEditJobs &geometry) {
     const auto &work = r.Resources.get<const GpuBuffers>().GeometryWork;
     std::vector<MeshRetessellation> inputs;
+    std::vector<state::Entity> entities;
     for (const auto &[entity, edit] : geometry) {
         inputs.push_back({
             .StoreId = *DrawnStoreId(r, entity),
             .Work = &work,
             .Faces = edit.Faces,
-            .Parameters = {.ChangedVertices = edit.ChangedVertices, .SelectionSlot = edit.SelectionSlot, .ApplyTransform = uint32_t(preview && edit.ApplyTransform), .Primary = edit.Primary, .Delta = edit.Delta, .Pivot = edit.Pivot},
-            .Preview = preview,
+            .Parameters = {.ChangedVertices = edit.ChangedVertices},
         });
+        entities.push_back(entity);
     }
-    const auto changed = RetessellateMeshes(r, chain, inputs);
-    std::vector<std::pair<state::Entity, FaceTriangles>> repairs;
-    for (uint32_t i = 0u; i < changed.size(); ++i) {
-        if (changed[i].Count) repairs.emplace_back(geometry[i].first, changed[i]);
-    }
-    RepairFaceRender(r, chain, repairs);
-    if (!repairs.empty()) {
+    auto changed = EncodeRetessellation(r, chain, inputs);
+    if (std::ranges::none_of(changed, [](const ElementWork &triangles) { return triangles.Storage.Slot != InvalidSlot; })) return {};
+    return [&r, &chain, entities = std::move(entities), changed = std::move(changed)] {
+        std::vector<std::pair<state::Entity, FaceTriangles>> repairs;
+        for (uint32_t i = 0u; i < changed.size(); ++i) {
+            if (changed[i].Storage.Slot == InvalidSlot) continue;
+            if (const auto count = ElementWorkCount(chain.Scratch, changed[i])) {
+                FaceTriangles triangles;
+                triangles.Triangles = changed[i];
+                triangles.Count = count;
+                repairs.emplace_back(entities[i], triangles);
+            }
+        }
+        if (repairs.empty()) return;
+        RepairFaceRender(r, chain, repairs);
         // New triangle owners invalidate the cached render footprint.
         for (const auto &[entity, _] : repairs) r.edit<MeshEditWork>(entity).FootprintReady = false;
-        PrepareGeometryFootprints(r, chain, geometry);
-    }
-    return !repairs.empty();
+        chain.Submit();
+    };
 }
 
 } // namespace
 
-void RefreshEditedPositions(state::Registry &r, mtl::ComputeChain &chain, std::span<const MeshVertexChanges> changes, bool retessellate) {
-    if (changes.empty()) return;
+std::function<void()> RefreshEditedPositions(state::Registry &r, mtl::ComputeChain &chain, std::span<const MeshVertexChanges> changes, bool retessellate) {
+    if (changes.empty()) return {};
     const profile::CpuScope scope{"RefreshEditedPositions"};
     GeometryEditJobs jobs;
-    for (const auto &[entity, ranges] : changes) jobs.emplace_back(entity, PrepareGeometryEdit(r, entity, state::Null, nullptr, nullptr, ranges));
+    for (const auto &[entity, ranges] : changes) jobs.emplace_back(entity, PrepareGeometryEdit(r, entity, nullptr, ranges));
+    const bool footprints_pending = std::ranges::any_of(jobs, [&](const auto &job) { return !r.get<const MeshEditWork>(job.first).FootprintReady; });
     PrepareGeometryFootprints(r, chain, jobs);
+    // The normal capture and the retessellation read the footprint tables on the host, so a footprint recorded now completes first.
+    if (footprints_pending) chain.Submit();
     chain.Encode([&](MTL::ComputeCommandEncoder *encoder) { RecordGeometryEditBatch(r, encoder, jobs, false); });
-    if (retessellate) RetessellateGeometry(r, chain, jobs, false);
+    auto repair = retessellate ? RetessellateGeometry(r, chain, jobs) : std::function<void()>{};
     auto &scene = r.Resources.get<GpuSceneState>();
     scene.EditPreludePending = true;
     for (const auto &[entity, ranges] : changes) {
         auto &work = r.edit<MeshEditWork>(entity);
-        work.Modified = work.PreviewActive = work.RequiresPose = true;
+        work.Modified = work.PreviewActive = true;
         r.emplace_or_replace<MeshLayoutDirty>(entity);
     }
+    return repair;
 }
 
-bool RefreshPreviewTessellation(state::Registry &r) {
-    const auto *pending = r.try_get<const PendingTransform>(state::Document);
-    GeometryEditJobs jobs;
-    for (const auto &[entity, primary] : r.get<const EditPrimaries>(state::Document).Transformable) {
-        // A procedure mesh's transform cooks into its drawn record instead of previewing over it.
-        const auto *previewed = r.all_of<procedure::GeometryProcedure>(entity) ? nullptr : pending;
-        const auto *old = r.try_get<const MeshEditWork>(entity);
-        if (!previewed && (!old || !old->TessellationPreview)) continue;
-        jobs.emplace_back(entity, PrepareGeometryEdit(r, entity, primary, previewed));
-    }
-    if (jobs.empty()) return false;
-    mtl::ComputeChain chain{r.Resources.get<MeshStore>().BufferContext()};
-    PrepareGeometryFootprints(r, chain, jobs);
-    const bool changed = RetessellateGeometry(r, chain, jobs, true);
-    for (const auto &[entity, _] : jobs) r.edit<MeshEditWork>(entity).TessellationPreview = pending != nullptr;
-    chain.Submit();
-    return changed;
-}
-
-std::vector<state::Entity> CommitPosedGeometry(state::Registry &r, mtl::ComputeChain &chain, std::span<const state::Entity> mesh_entities) {
-    const profile::CpuScope scope{"CommitGeometry"};
-    const auto *pending = r.try_get<const PendingTransform>(state::Document);
-    if (!pending) return {};
-    const auto &primaries = r.get<const EditPrimaries>(state::Document).Transformable;
-    GeometryEditJobs commits;
-    for (const auto entity : mesh_entities) {
-        if (const auto primary = primaries.find(entity); primary != primaries.end()) {
-            commits.emplace_back(entity, PrepareGeometryEdit(r, entity, primary->second, pending));
-        }
-    }
-    if (commits.empty()) return {};
-    PrepareGeometryFootprints(r, chain, commits);
-    auto &meshes = r.Resources.get<MeshStore>();
-    for (const auto &[entity, pc] : commits) meshes.CaptureVertexEdit(*DrawnStoreId(r, entity));
-    chain.Encode([&](MTL::ComputeCommandEncoder *encoder) { RecordGeometryEditBatch(r, encoder, commits, false); });
-    RetessellateGeometry(r, chain, commits, false);
-    for (const auto &[entity, _] : commits) r.edit<MeshEditWork>(entity).TessellationPreview = false;
-    std::vector<state::Entity> entities;
-    for (const auto &[entity, pc] : commits) entities.push_back(entity);
-    return entities;
-}
-
-std::vector<state::Entity> PublishEditedPositions(state::Registry &r, mtl::ComputeChain &chain, std::span<const state::Entity> entities, PositionPublication publication) {
-    const bool preview = publication == PositionPublication::Preview;
+void PublishEditedPositions(state::Registry &r, mtl::ComputeChain &chain, std::span<const state::Entity> entities) {
     auto &meshes = r.Resources.get<MeshStore>();
     const auto &buffers = r.Resources.get<GpuBuffers>();
     std::vector<state::Entity> changed;
@@ -2318,23 +2312,23 @@ std::vector<state::Entity> PublishEditedPositions(state::Registry &r, mtl::Compu
     std::vector<MeshletBoundsRefitJob> refits;
     std::vector<std::vector<uint32_t>> dirty_meshlets;
     std::vector<state::Entity> dirty_entities;
+    // The candidates and their footprint bound the changed vertices, which the chain's passes are still marking.
     for (const auto entity : entities) {
         auto &w = r.edit<MeshEditWork>(entity);
-        const auto vertices = preview ? w.Candidates : w.Vertices;
-        if (!ElementWorkEmpty(buffers.GeometryWork, vertices)) {
+        const auto candidates = w.Candidates;
+        if (!ElementWorkEmpty(buffers.GeometryWork, candidates)) {
             changed.push_back(entity);
             const auto id = *DrawnStoreId(r, entity);
             if (meshes.Get(id).SelectionSummary.Count) {
                 auto &update = aggregates.emplace_back(MeshStore::SelectionUpdate{.StoreId = id});
-                update.Blocks[0] = meshes.ArenaBlocks(id, MeshStore::ElementDomain::Vertex, buffers.GeometryWork, vertices);
+                update.Blocks[0] = meshes.ArenaBlocks(id, MeshStore::ElementDomain::Vertex, buffers.GeometryWork, candidates);
                 update.Blocks[2] = meshes.ArenaBlocks(id, MeshStore::ElementDomain::Face, buffers.GeometryWork, w.Faces);
             }
             w.Modified = w.PreviewActive = true;
-            w.RequiresPose = !preview;
             r.emplace_or_replace<MeshLayoutDirty>(entity);
             const auto &owner = RecordOf(r, entity);
             refits.push_back({&owner, &buffers.GeometryWork, w.Meshlets});
-            if (!preview && meshes.ClusterGroupCount(owner) > 0u && !ElementWorkEmpty(buffers.GeometryWork, w.Meshlets)) {
+            if (meshes.ClusterGroupCount(owner) > 0u && !ElementWorkEmpty(buffers.GeometryWork, w.Meshlets)) {
                 auto &meshlets = dirty_meshlets.emplace_back();
                 ForEachWorkElement(buffers.GeometryWork, w.Meshlets, [&](uint32_t id) { meshlets.push_back(id); });
                 dirty_entities.push_back(entity);
@@ -2342,7 +2336,7 @@ std::vector<state::Entity> PublishEditedPositions(state::Registry &r, mtl::Compu
         }
     }
     {
-        const profile::CpuScope scope{preview ? "InsetRefitPass" : "PositionRefitPass"};
+        const profile::CpuScope scope{"PositionRefitPass"};
         RefitCanonicalMeshletBounds(r, chain, refits);
     }
     if (!dirty_entities.empty()) {
@@ -2356,22 +2350,15 @@ std::vector<state::Entity> PublishEditedPositions(state::Registry &r, mtl::Compu
     }
     meshes.UpdateSelection(r, chain, aggregates);
     chain.AfterSubmit([&r, changed] { RefreshElementSelectionSummaries(r, changed); });
-    return changed;
 }
 
 namespace {
 void RecordSparseEditPrelude(state::Registry &r, const Viewport &viewport, mtl::PassChain &chain) {
     const auto &buffers = r.Resources.get<GpuBuffers>();
     const auto &pipelines = GetPipelines(r);
-    const auto *pending = r.try_get<const PendingTransform>(state::Document);
-    const auto &primaries = r.get<const EditPrimaries>(state::Document).Transformable;
     GeometryEditJobs jobs;
     for (const auto [entity, pose] : r.view<const PosedLayout>().each()) {
-        const auto primary = primaries.find(entity);
-        const bool preview = pending && primary != primaries.end() && !r.all_of<procedure::GeometryProcedure>(entity);
-        const auto *old = r.try_get<const MeshEditWork>(entity);
-        if (!preview && (!old || !old->PreviewActive)) continue;
-        jobs.emplace_back(entity, PrepareGeometryEdit(r, entity, preview ? primary->second : state::Null, preview ? pending : nullptr, &pose.Namespaces));
+        if (const auto *old = r.try_get<const MeshEditWork>(entity); old && old->PreviewActive) jobs.emplace_back(entity, PrepareGeometryEdit(r, entity, &pose.Namespaces));
     }
     if (jobs.empty()) return;
     {
@@ -2414,8 +2401,7 @@ void RecordSparseEditPrelude(state::Registry &r, const Viewport &viewport, mtl::
 void LayOutMeshes(state::Registry &r) {
     const profile::CpuScope scope{"LayOutMeshes"};
     const bool edit_mode = r.get<const Interaction>(state::Document).Mode == InteractionMode::Edit;
-    const LayoutContext context{edit_mode, edit_mode && r.all_of<PendingTransform>(state::Document), r.get<const EditPrimaries>(state::Document).All};
-    for (const auto mesh_entity : r.view<const MeshLayoutDirty>() | std::ranges::to<std::vector>()) LayOutMesh(r, context, mesh_entity);
+    for (const auto mesh_entity : r.view<const MeshLayoutDirty>() | std::ranges::to<std::vector>()) LayOutMesh(r, edit_mode, mesh_entity);
     r.clear<MeshLayoutDirty>();
 }
 

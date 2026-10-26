@@ -61,9 +61,6 @@ MeshTopologyPushConstants TopologyPushConstants(const MeshStore &);
 // Points the task's emitted selection at the store's masks of its record, so its emitted elements leave selected the way the editor's operators leave them.
 // The vertex-only rule leaves incident primitives in place, so their masks follow the new vertex selection.
 void PublishStoreSelection(const MeshStore &, MeshTopologyTask &);
-// A bound on the operator scratch words the task's edit lays out, as if its local source were its whole mesh.
-// A mesh past the scratch budget counts as one at the budget's scale, since it takes a chunk to itself either way.
-uint32_t TopologyScratchBound(const MeshStore &, const MeshTopologyTask &);
 
 namespace state {
 struct Registry;

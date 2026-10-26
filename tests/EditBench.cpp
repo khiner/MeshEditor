@@ -294,7 +294,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             state::Entity largest = state::Null;
             uint32_t count = 0u;
             for (const auto [object, instance] : r.view<const Instance>().each()) {
-                if (!r.all_of<MeshHandle>(instance.Entity)) continue;
+                if (!HasMesh(r, instance.Entity)) continue;
                 const auto mesh = GetMesh(r, instance.Entity);
                 if (mesh.FaceCount() > count) {
                     largest = object;
@@ -319,10 +319,12 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         const auto entity = GetActiveMeshEntity(r);
         auto &meshes = r.Resources.get<MeshStore>();
         const auto original = GetMesh(r, entity);
+        // Edits cook the mesh into the record it draws.
+        const auto drawn = [&] { return *DrawnStoreId(r, entity); };
         const auto faces = original.FaceCount(), vertices = original.VertexCount();
         const auto find_face = [&]() -> std::optional<he::FH> {
             if (filling) {
-                const auto boundary = meshes.GetBoundaryEdges(original.GetStoreId());
+                const auto boundary = meshes.GetBoundaryEdges(drawn());
                 const auto incidence = original.GetVertexEdgeIncidence();
                 for (uint32_t delta = 0u; delta < std::min(faces, 4096u); ++delta) {
                     const auto candidate = original.FaceAt((faces / 2u + delta) % faces);
@@ -383,13 +385,13 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         profile::ReportCpuPhase("Initial selection replacement");
         profile::Report();
         profile::Enabled = false;
-        if (meshes.GetSelectionSummary(original.GetStoreId()).SelectedCount != selected.size()) return std::unexpected{"expected selected faces"};
+        if (meshes.GetSelectionSummary(drawn()).SelectedCount != selected.size()) return std::unexpected{"expected selected faces"};
         select(alternate);
         const auto select_ms = Milliseconds([&] { select(selected); });
-        if (meshes.GetSelectionSummary(original.GetStoreId()).SelectedCount != selected.size()) return std::unexpected{"expected selected faces after sparse selection"};
+        if (meshes.GetSelectionSummary(drawn()).SelectedCount != selected.size()) return std::unexpected{"expected selected faces after sparse selection"};
         if (filling) p.Do(action::MakeAction(action::mesh::Delete{action::mesh::DeleteMode::OnlyFaces}));
         if (filling) {
-            const auto boundary = meshes.GetBoundaryEdges(original.GetStoreId());
+            const auto boundary = meshes.GetBoundaryEdges(drawn());
             uint32_t on_hole = 0u;
             for (const auto edge : fill_edges) on_hole += boundary.Contains(edge);
             std::println(stderr, "Hole boundary index: {} edges total, {}/{} hole edges indexed.", boundary.Count(), on_hole, fill_edges.size());
@@ -431,16 +433,16 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             select(selected_elements, element);
             if (single_edit == SingleEdit::DeleteLoose) {
                 p.Do(action::MakeAction(action::mesh::Extrude{action::mesh::ExtrudeMode::Vertices}));
-                const auto copy = meshes.GetSelectedElements(original.GetStoreId(), Element::Vertex).First();
+                const auto copy = meshes.GetSelectedElements(drawn(), Element::Vertex).First();
                 if (!copy) return std::unexpected{"loose-delete setup did not extrude a vertex"};
                 selected_elements.push_back(*copy);
                 select(selected_elements, Element::Vertex);
             }
-            const auto selected_count = meshes.GetSelectionSummary(original.GetStoreId()).SelectedCount;
+            const auto selected_count = meshes.GetSelectionSummary(drawn()).SelectedCount;
             if (selected_count != selected_elements.size()) std::println(stderr, "operator selection: expected {}, got {}", selected_elements.size(), selected_count);
             if (selected_count != selected_elements.size()) return std::unexpected{"unexpected operator selection"};
             if (filling) {
-                const auto selected_edges = meshes.GetSelectedElements(original.GetStoreId(), Element::Edge);
+                const auto selected_edges = meshes.GetSelectedElements(drawn(), Element::Edge);
                 for (const auto edge : fill_edges)
                     if (!selected_edges.Contains(edge)) return std::unexpected{"fill did not select a hole edge"};
             }
@@ -477,7 +479,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             p.Do(action::MakeAction(action::selection::SelectAll{}));
             p.Settle();
         }
-        const auto selected_count = meshes.GetSelectionSummary(original.GetStoreId()).SelectedCount;
+        const auto selected_count = meshes.GetSelectionSummary(drawn()).SelectedCount;
         if (select_all && (selected_count != GetMesh(r, entity).ElementCount(r.get<const EditMode>(state::Document).Value))) return std::unexpected{"select-all left elements unselected"};
         // Each face of an individual inset gains one face and one vertex per corner.
         const auto inset_added = select_all ? original.HalfEdgeCount() : added;
@@ -522,7 +524,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 return std::array{work.VisitedNodes, work.CandidateBlocks, work.CandidateCount, work.Count};
             };
             if (single_edit == SingleEdit::SpatialPlane) {
-                const MeshTopologyTask task{.SourceId = original.GetStoreId(), .Op = MeshTopologyOp::Subdivide, .Flags = TopologyFlagPlaneCuts | TopologyFlagSelectAll, .PlaneNormal = normal, .PlaneOffset = offset};
+                const MeshTopologyTask task{.SourceId = drawn(), .Op = MeshTopologyOp::Subdivide, .Flags = TopologyFlagPlaneCuts | TopologyFlagSelectAll, .PlaneNormal = normal, .PlaneOffset = offset};
                 std::array<uint32_t, 4> counts{};
                 const auto elapsed = Milliseconds([&] { counts = spatial_counts(task); });
                 std::println("spatial_plane_work,{},{},{},{}", counts[0], counts[1], counts[2], counts[3]);
@@ -534,7 +536,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 if (!(std::isfinite(fraction) && fraction > 0.f && fraction < 1.f)) return std::unexpected{"invalid near-max fraction"};
                 const auto &arena = meshes.Arenas().Vertices;
                 const auto vertices_data = arena.Buffer.GetSpan<Vertex>();
-                const auto set = meshes.Get(original.GetStoreId()).Vertices;
+                const auto set = meshes.Get(drawn()).Vertices;
                 float lo = INFINITY, hi = -INFINITY;
                 arena.ForEach(set, [&](ElementHandle, ElementAddress address) {
                     const float coordinate = Dot(normal, vertices_data[address.Value()].Position);
@@ -543,7 +545,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 });
                 offset = hi - fraction * (hi - lo);
                 std::println("spatial_cut_setup,{:.9g},{:.9g},{:.9g}", lo, hi, offset);
-                const MeshTopologyTask probe{.SourceId = original.GetStoreId(), .Op = MeshTopologyOp::Subdivide, .Flags = TopologyFlagPlaneCuts | TopologyFlagSelectAll, .PlaneNormal = normal, .PlaneOffset = offset};
+                const MeshTopologyTask probe{.SourceId = drawn(), .Op = MeshTopologyOp::Subdivide, .Flags = TopologyFlagPlaneCuts | TopologyFlagSelectAll, .PlaneNormal = normal, .PlaneOffset = offset};
                 const auto [nodes, blocks, candidate_faces, exact_faces] = spatial_counts(probe);
                 std::println("spatial_cut_candidates,{},{},{},{}", nodes, blocks, candidate_faces, exact_faces);
                 if (!(exact_faces > 0u && exact_faces <= 4096u)) return std::unexpected{"near-max cut needs 1 to 4096 exact faces"};
@@ -553,7 +555,6 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 p.Do(action::MakeAction(action::mesh::Bisect{.Point = normal * offset, .Normal = normal}));
             });
             const auto after = GetMesh(r, entity);
-            if (after.GetStoreId() != original.GetStoreId()) return std::unexpected{"spatial cut replaced its canonical mesh"};
             row("spatial_cut", elapsed, after.FaceCount() - faces);
             if (std::getenv("MESHEDITOR_SPATIAL_VERIFY")) {
                 const auto edited = *p.History.Present;
@@ -578,14 +579,13 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             return {};
         }
         if (single_edit == SingleEdit::SeparateSelected) {
-            const auto entity_count = r.view<const MeshHandle>().size();
+            const auto entity_count = r.view<const EvaluatedMesh>().size();
             const auto elapsed = Milliseconds([&] { p.Do(action::MakeAction(action::mesh::Separate{})); });
-            if (r.view<const MeshHandle>().size() != entity_count + 1u) return std::unexpected{"separate did not create one mesh object"};
+            if (r.view<const EvaluatedMesh>().size() != entity_count + 1u) return std::unexpected{"separate did not create one mesh object"};
             if (GetMesh(r, entity).FaceCount() != faces - selected_count) return std::unexpected{"separate did not remove selected source faces"};
             uint32_t output = InvalidStoreId;
-            for (const auto e : r.view<const MeshHandle>()) {
-                const auto id = r.get<const MeshHandle>(e).StoreId;
-                if (id != original.GetStoreId()) output = id;
+            for (const auto [e, evaluated] : r.view<const EvaluatedMesh>().each()) {
+                if (e != entity) output = evaluated.StoreId;
             }
             if (!(output != InvalidStoreId && Mesh{meshes, output}.FaceCount() == selected_count)) return std::unexpected{"separate emitted unrelated faces"};
             row("separate_selected", elapsed, selected_count);
@@ -595,19 +595,19 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             p.Do(action::MakeAction(action::mesh::Subdivide{2u}));
             p.Do(action::MakeAction(action::view::SetInteractionMode{InteractionMode::Object}));
             const auto source = GetMesh(r, entity);
-            const auto before = r.view<const MeshHandle>().size();
+            const auto before = r.view<const EvaluatedMesh>().size();
             profile::ClearStats();
             const auto elapsed = Milliseconds([&] { p.Do(action::MakeAction(action::object::Duplicate{})); });
-            if (r.view<const MeshHandle>().size() != before + 1u) return std::unexpected{"object duplicate did not create one mesh"};
+            if (r.view<const EvaluatedMesh>().size() != before + 1u) return std::unexpected{"object duplicate did not create one mesh"};
             const auto clone = GetMesh(r, GetActiveMeshEntity(r));
             if (clone.GetStoreId() == source.GetStoreId() || clone.VertexCount() != source.VertexCount() || clone.FaceCount() != source.FaceCount())
                 return std::unexpected{"object duplicate did not preserve edited geometry"};
             row("duplicate_object", elapsed, source.FaceCount());
             const auto undo_ms = Milliseconds([&] { p.Undo(); });
-            if (r.view<const MeshHandle>().size() != before) return std::unexpected{"object duplicate undo failed"};
+            if (r.view<const EvaluatedMesh>().size() != before) return std::unexpected{"object duplicate undo failed"};
             row("duplicate_object_undo", undo_ms, source.FaceCount());
             const auto redo_ms = Milliseconds([&] { p.Redo(); });
-            if (r.view<const MeshHandle>().size() != before + 1u) return std::unexpected{"object duplicate redo failed"};
+            if (r.view<const EvaluatedMesh>().size() != before + 1u) return std::unexpected{"object duplicate redo failed"};
             row("duplicate_object_redo", redo_ms, source.FaceCount());
             if (render) draw("duplicate_object_render", source.FaceCount());
             return {};
@@ -620,7 +620,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         const auto source_edges = GetMesh(r, entity).EdgeCount();
         const bool splitting = single_edit == SingleEdit::SplitVertex || single_edit == SingleEdit::SplitEdge || single_edit == SingleEdit::SplitFace;
         const bool duplicating = single_edit == SingleEdit::DuplicateVertex || single_edit == SingleEdit::DuplicateEdge || single_edit == SingleEdit::DuplicateFace;
-        const std::array duplicate_counts{meshes.GetSelectedElements(original.GetStoreId(), Element::Vertex).Count(), meshes.GetSelectedElements(original.GetStoreId(), Element::Edge).Count(), meshes.GetSelectedElements(original.GetStoreId(), Element::Face).Count()};
+        const std::array duplicate_counts{meshes.GetSelectedElements(drawn(), Element::Vertex).Count(), meshes.GetSelectedElements(drawn(), Element::Edge).Count(), meshes.GetSelectedElements(drawn(), Element::Face).Count()};
         const bool staged = !join && single_edit == SingleEdit::None;
         std::pair<const char *, double> edit_phase{"commit", 0.0};
         if (!staged) {
@@ -751,7 +751,6 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             if (single_edit == SingleEdit::ExtrudeRegion && !select_all && scene.empty() &&
                 (edited_counts[0] != source_counts[0] + 4u || edited_counts[1] != source_counts[1] + 4u || GetMesh(r, entity).EdgeCount() != source_edges + 8u))
                 return std::unexpected{"region extrusion did not replace the selected quad and create its four sides"};
-            if (GetMesh(r, entity).GetStoreId() != original.GetStoreId()) return std::unexpected{"operator replaced the canonical mesh"};
             if (filling && (edited_counts[1] != faces)) return std::unexpected{"fill did not restore the deleted face"};
             if (join && (edited_counts[1] != faces - 1u)) return std::unexpected{"selected triangle pair did not join"};
             if (merging && (edited_counts[0] != vertices - 1u)) return std::unexpected{"selected vertex pair did not merge"};
@@ -773,7 +772,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             }
             if (single_edit == SingleEdit::Hide) {
                 if (edited_counts != source_counts) return std::unexpected{"hide changed topology"};
-                if (meshes.GetHiddenElements(original.GetStoreId(), Element::Face).Count() != selected_count)
+                if (meshes.GetHiddenElements(drawn(), Element::Face).Count() != selected_count)
                     return std::unexpected{"hide did not hide selected faces"};
             }
             if (scene.empty() && !select_all && (single_edit == SingleEdit::DissolveLimited || single_edit == SingleEdit::DissolveDelimited) &&
@@ -802,7 +801,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             }
             if (single_edit == SingleEdit::RotateUVs) {
                 if (edited_counts[0] != vertices || edited_counts[1] != faces) return std::unexpected{"UV rotation changed topology"};
-                if (!(meshes.Get(original.GetStoreId()).CornerAttributes & MeshAttributeBit_TexCoord0)) return std::unexpected{"UV rotation requires UV0"};
+                if (!(meshes.Get(drawn()).CornerAttributes & MeshAttributeBit_TexCoord0)) return std::unexpected{"UV rotation requires UV0"};
                 if (edited == base) return std::unexpected{"UV rotation did not change attributes"};
             }
             if (single_edit == SingleEdit::MakePlanarFaces && !select_all) {
@@ -839,7 +838,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 }
                 if (i == 0u && refit_probe && !position) {
                     std::vector<Range> ranges;
-                    meshes.GetSelectedElements(original.GetStoreId(), Element::Vertex).ForEach([&](uint32_t handle) {
+                    meshes.GetSelectedElements(drawn(), Element::Vertex).ForEach([&](uint32_t handle) {
                         ranges.push_back({handle, 1u});
                     });
                     if (ranges.empty()) return std::unexpected{"inset produced no selected vertices for refit probe"};
@@ -883,8 +882,8 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         }
         const auto exit_ms = Milliseconds([&] { p.Do(action::MakeAction(action::view::SetInteractionMode{InteractionMode::Object})); });
         if (staged && !r.view<const MeshEditWork>().empty()) return std::unexpected{"Edit mode exit retained geometry work"};
-        if (meshes.HasDirtyGroups(meshes.Get(original.GetStoreId()))) return std::unexpected{"edit mode exit left stale LOD groups"};
-        if (position && meshes.HasDirtyPositions(meshes.Get(original.GetStoreId()))) return std::unexpected{"position edit exit retained coarse dirt"};
+        if (meshes.HasDirtyGroups(meshes.Get(drawn()))) return std::unexpected{"edit mode exit left stale LOD groups"};
+        if (position && meshes.HasDirtyPositions(meshes.Get(drawn()))) return std::unexpected{"position edit exit retained coarse dirt"};
         if (auto result = render_step("render_exit_mode"); !result) return result;
         if (staged && render) {
             if (auto result = Capture(r, "MESHEDITOR_EDIT_BENCH_CAPTURE_EXIT"); !result) return result;

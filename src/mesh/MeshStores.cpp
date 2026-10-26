@@ -5,13 +5,13 @@
 #include "state/Registry.h"
 
 namespace {
-// Whether the entity's other record component, its source handle or its evaluated mesh, names the record C names.
-template<typename C> bool NamedByOther(const state::Registry &r, state::Entity e) {
-    using Other = std::conditional_t<std::same_as<C, MeshHandle>, EvaluatedMesh, MeshHandle>;
-    const auto *other = r.try_get<const Other>(e);
-    return other && other->StoreId == r.get<const C>(e).StoreId;
+// Whether the entity draws the record as its evaluated or held record.
+bool Draws(const state::Registry &r, state::Entity e, uint32_t id) {
+    if (const auto *evaluated = r.try_get<const EvaluatedMesh>(e); evaluated && evaluated->StoreId == id) return true;
+    const auto *handle = r.try_get<const MeshHandle>(e);
+    return handle && handle->StoreId == id;
 }
-// Each record a mesh entity owns, its source and its evaluated output, maps to the entity.
+// Each record an entity draws maps to the entity.
 template<typename C> void MapMeshEntity(state::Registry &r, state::Entity e) {
     auto &entities = r.Resources.get<MeshEntities>().ByStore;
     const auto id = r.get<const C>(e).StoreId;
@@ -20,11 +20,11 @@ template<typename C> void MapMeshEntity(state::Registry &r, state::Entity e) {
 }
 template<typename C> void UnmapMeshEntity(state::Registry &r, state::Entity e) {
     auto &entities = r.Resources.get<MeshEntities>().ByStore;
-    if (const auto id = r.get<const C>(e).StoreId; id < entities.size() && entities[id] == e && !NamedByOther<C>(r, e)) entities[id] = state::Null;
+    if (const auto id = r.get<const C>(e).StoreId; id < entities.size() && entities[id] == e) entities[id] = state::Null;
 }
-// A record its owner drops outside a restore releases at the next settle, unless the owner still names it.
+// A record its owner drops outside a restore releases at the next settle.
 template<typename C> void QueueRelease(state::Registry &r, state::Entity e) {
-    if (r.Restoring || NamedByOther<C>(r, e)) return;
+    if (r.Restoring) return;
     r.Resources.emplace<PendingObjectRemovals>().StoreIds.push_back(r.get<const C>(e).StoreId);
 }
 template<typename C> void TrackRecord(state::Registry &r) {
@@ -44,10 +44,7 @@ void RegisterMeshStoreHandlers(state::Registry &r) {
 state::Entity MeshEntityOf(const state::Registry &r, uint32_t store_id) {
     const auto &entities = r.Resources.get<const MeshEntities>().ByStore;
     const auto e = store_id < entities.size() ? entities[store_id] : state::Null;
-    if (!r.valid(e)) return state::Null;
-    const auto *handle = r.try_get<const MeshHandle>(e);
-    const auto *evaluated = r.try_get<const EvaluatedMesh>(e);
-    return (handle && handle->StoreId == store_id) || (evaluated && evaluated->StoreId == store_id) ? e : state::Null;
+    return r.valid(e) && Draws(r, e, store_id) ? e : state::Null;
 }
 
 const MeshStore::Record *TryRecordOf(const state::Registry &r, state::Entity e) {
