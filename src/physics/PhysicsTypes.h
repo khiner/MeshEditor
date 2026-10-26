@@ -145,7 +145,7 @@ struct TriangleMesh {
 } // namespace physics
 
 namespace physics {
-inline constexpr FieldSpec SizeSpec(double min, const char *help) { return {.Min = min, .Max = 100, .Speed = 0.01f, .Unit = FieldUnit::Meters, .Widget = FieldWidget::Drag, .Help = help}; }
+constexpr FieldSpec SizeSpec(double min, const char *help) { return {.Min = min, .Max = 100, .Speed = 0.01f, .Unit = FieldUnit::Meters, .Widget = FieldWidget::Drag, .Help = help}; }
 } // namespace physics
 template<> inline constexpr field::SpecTable<physics::Box> Specs<physics::Box>{{&physics::Box::Size, physics::SizeSpec(0.01, "Full extent along each local axis.")}};
 template<> inline constexpr field::SpecTable<physics::Sphere> Specs<physics::Sphere>{{&physics::Sphere::Radius, physics::SizeSpec(0.001, "Sphere radius.")}};

@@ -54,13 +54,14 @@ struct PublishSelection;
 struct NodeSelected;
 struct NodeError;
 struct SourceState;
-struct EditedInput;
+struct NodeResult;
+struct BooleanPlacement;
 struct StagedNode;
 struct CookPass;
 struct CookPlan;
 } // namespace procedure
 
-using ProcedureSchema = state::Schema<state::ProcedureBase, state::ProcedureCount, procedure::ProcedureChanges, procedure::CookPass, CookCount, procedure::NodeTheme, procedure::Source, procedure::Join, procedure::Boolean, procedure::Position, procedure::Normal, procedure::Index, procedure::NamedAttribute, procedure::VectorMath, procedure::FloatMath, procedure::Compare, procedure::BooleanMath, procedure::StoreNamedAttribute, procedure::FloatValue, procedure::IntegerValue, procedure::BooleanValue, procedure::VectorValue, procedure::RotationValue, procedure::SetPosition, procedure::TransformElements, procedure::TransformGeometry, procedure::ToSphere, procedure::PushPull, procedure::Shear, procedure::Warp, procedure::Bend, procedure::VertexSlide, procedure::EdgeSlide, procedure::Flatten, procedure::MarkSharp, procedure::Knife, procedure::ShadeSmooth, procedure::ShadeSmoothByAngle, procedure::StoreSelection, procedure::MeshToPoints, procedure::InstanceOnPoints, procedure::RealizeInstances, procedure::ObjectInfo, procedure::ProcedureNode, procedure::NodeInputs, procedure::GeometryProcedure, procedure::ProcedureInstances, procedure::ProcedureOwnedMesh, procedure::NodeLayout, procedure::InlineSelection, procedure::PublishSelection, procedure::NodeSelected, procedure::NodeError, procedure::SourceState, procedure::EditedInput, procedure::StagedNode, procedure::CookPlan>;
+using ProcedureSchema = state::Schema<state::ProcedureBase, state::ProcedureCount, procedure::ProcedureChanges, procedure::CookPass, CookCount, procedure::NodeTheme, procedure::Source, procedure::Join, procedure::Boolean, procedure::Position, procedure::Normal, procedure::Index, procedure::NamedAttribute, procedure::VectorMath, procedure::FloatMath, procedure::Compare, procedure::BooleanMath, procedure::StoreNamedAttribute, procedure::FloatValue, procedure::IntegerValue, procedure::BooleanValue, procedure::VectorValue, procedure::RotationValue, procedure::SetPosition, procedure::TransformElements, procedure::TransformGeometry, procedure::ToSphere, procedure::PushPull, procedure::Shear, procedure::Warp, procedure::Bend, procedure::VertexSlide, procedure::EdgeSlide, procedure::Flatten, procedure::MarkSharp, procedure::Knife, procedure::ShadeSmooth, procedure::ShadeSmoothByAngle, procedure::StoreSelection, procedure::MeshToPoints, procedure::InstanceOnPoints, procedure::RealizeInstances, procedure::ObjectInfo, procedure::ProcedureNode, procedure::NodeInputs, procedure::GeometryProcedure, procedure::ProcedureInstances, procedure::ProcedureOwnedMesh, procedure::NodeLayout, procedure::InlineSelection, procedure::PublishSelection, procedure::NodeSelected, procedure::NodeError, procedure::SourceState, procedure::NodeResult, procedure::BooleanPlacement, procedure::StagedNode, procedure::CookPlan>;
 template<typename T>
     requires ProcedureSchema::Has<T>
 inline constexpr state::TypeId state::Slot<T> = ProcedureSchema::Of<T>();

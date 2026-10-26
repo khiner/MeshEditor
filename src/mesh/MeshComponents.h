@@ -31,7 +31,8 @@ struct MeshHandle {
 // The record a mesh entity's geometry procedure evaluates to, which its instances draw and its display path edits in place.
 struct EvaluatedMesh {
     uint32_t StoreId;
-    state::Entity Tip{state::Null}; // The last display-path node whose output the record holds, or null when the next cook evaluates every node
+    // The last display-path node whose output the record holds, or null after a cook that faulted or evaluated a path that is not chained.
+    state::Entity Tip{state::Null};
 };
 // A new mesh's authored normals in polygon-corner order, held until its base normals derive and the custom corner-normal layer encodes them.
 struct AuthoredCornerNormals {

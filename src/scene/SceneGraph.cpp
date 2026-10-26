@@ -23,6 +23,9 @@ void LinkAhead(state::Registry &r, state::Entity child, state::Entity parent, st
     r.remove<SceneMembership>(child);
 }
 
+// The world transform of a node with the local transform under the parent's world matrix, or the local transform itself at a root.
+Transform ComposeUnder(const mat4 *parent_world, const Transform &local) { return parent_world ? ToTransform(*parent_world * ToMatrix(local)) : local; }
+
 state::Entity FirstChildOf(const state::Registry &r, state::Entity parent) {
     const auto *children = r.try_get<const SceneChildren>(parent);
     return children ? children->FirstChild : state::Null;
@@ -158,10 +161,14 @@ void CommitEditedLocal(state::Registry &r, state::Entity e, const Transform &edi
     });
 }
 
-Transform ComposeWorldTransform(const state::Registry &r, state::Entity e) {
-    if (const auto *world = WorldTransformOf(r, e)) return *world;
+Transform ComposeTransform(const state::Registry &r, state::Entity e, state::Entity frame, std::span<const state::Entity> owned) {
+    if (e == frame) return {};
+    if (ContainsInIndexOrder(owned, e)) return *WorldTransformOf(r, e);
     const auto parent = ParentOrNull(r, e);
-    return ToTransform((parent != state::Null ? ToMatrix(ComposeWorldTransform(r, parent)) : I4) * ToMatrix(*ComposedLocal(r, e)));
+    const auto &local = *ComposedLocal(r, e);
+    if (parent == frame) return local;
+    const auto parent_transform = ToMatrix(ComposeTransform(r, parent, frame, owned));
+    return ComposeUnder(&parent_transform, local);
 }
 
 void RecomputeWorldTransforms(state::Registry &r, std::span<const state::Entity> roots, std::span<const state::Entity> owned, std::span<const state::Entity> held) {
@@ -199,7 +206,7 @@ void RecomputeWorldTransforms(state::Registry &r, std::span<const state::Entity>
             pending.pop_back();
             const auto *local = ComposedLocal(r, e);
             if (!local) continue;
-            const Transform world = parent_matrix == NoParent ? *local : ToTransform(matrices[parent_matrix] * ToMatrix(*local));
+            const auto world = ComposeUnder(parent_matrix == NoParent ? nullptr : &matrices[parent_matrix], *local);
             // Skip unchanged subtrees; always initialize newly placed instance slots.
             const auto slot = WorldSlot(r, e);
             if (const auto *current = placed.contains(e) ? nullptr : WorldTransformAt(r, e, slot); current && *current == world) continue;
@@ -219,7 +226,7 @@ void SetParent(state::Registry &r, state::Entity child, state::Entity parent) {
     SetFirstChild(r, parent, child);
 }
 
-bool SetParentKeepWorld(state::Registry &r, std::span<const state::Entity> children, state::Entity parent) {
+bool SetParentKeepWorld(state::Registry &r, std::span<const state::Entity> children, state::Entity parent, std::span<const state::Entity> owned) {
     std::vector<state::Entity> lineage;
     for (auto e = parent; e != state::Null; e = ParentOrNull(r, e)) lineage.push_back(e);
     bool looped = false;
@@ -231,10 +238,10 @@ bool SetParentKeepWorld(state::Registry &r, std::span<const state::Entity> child
     }
     if (linked.empty()) return looped;
 
-    const auto parent_world_inv = Inverse(ToMatrix(ComposeWorldTransform(r, parent)));
+    const auto parent_world_inv = Inverse(ToMatrix(ComposeTransform(r, parent, state::Null, owned)));
     std::vector<Transform> locals;
     locals.reserve(linked.size());
-    for (const auto child : linked) locals.push_back(ToTransform(parent_world_inv * ToMatrix(ComposeWorldTransform(r, child))));
+    for (const auto child : linked) locals.push_back(ToTransform(parent_world_inv * ToMatrix(ComposeTransform(r, child, state::Null, owned))));
     ClearParents(r, linked);
     // Each child links at the head, so the parent's head is written once after the last.
     auto first_child = FirstChildOf(r, parent);

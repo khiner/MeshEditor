@@ -1248,6 +1248,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     }
     // A changed view value requests its viewport's frame.
     for (const auto viewport : viewport_changes.View) RequestFrame(r, viewport);
+    RecordWorldTransformChanges(r);
     r.ClearChanges();
     r.clear<MeshGeometryDirty, MeshPositionsChanged, MeshMaterialAssignment, MeshDisplayDirty>();
     FinishCookPass(r);

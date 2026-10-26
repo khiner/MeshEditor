@@ -15,14 +15,32 @@ struct DomainSelection {
     std::vector<uint32_t> Handles;
     std::vector<SelectedBlock> Blocks;
 };
-inline bool Empty(const DomainSelection &selection) { return selection.Handles.empty() && selection.Blocks.empty(); }
+
+// The number of selected slots in the blocks' masks.
+inline uint32_t SelectedCount(std::span<const SelectedBlock> blocks) {
+    uint32_t count = 0u;
+    for (const auto &[local, words] : blocks) {
+        for (const auto word : words) count += uint32_t(std::popcount(word));
+    }
+    return count;
+}
+inline uint32_t SelectedCount(const DomainSelection &selection) { return uint32_t(selection.Handles.size()) + SelectedCount(selection.Blocks); }
+// Calls visit(local block, mask) for each local block holding one of the ascending handles, in ascending order.
+void ForEachHandleBlock(std::span<const uint32_t> handles, auto &&visit) {
+    for (size_t i = 0u; i < handles.size();) {
+        const auto local = handles[i] / MeshElementBlockSize;
+        SelectionBlock words{};
+        for (; i < handles.size() && handles[i] / MeshElementBlockSize == local; ++i) {
+            const auto slot = handles[i] % MeshElementBlockSize;
+            words[slot / 32u] |= 1u << (slot % 32u);
+        }
+        visit(local, words);
+    }
+}
 
 // The selection of the ascending local blocks with their nonempty masks.
 inline DomainSelection CompactSelection(std::vector<SelectedBlock> blocks) {
-    uint64_t count = 0u;
-    for (const auto &[local, words] : blocks) {
-        for (const auto word : words) count += uint64_t(std::popcount(word));
-    }
+    const auto count = SelectedCount(blocks);
     if (count * sizeof(uint32_t) > blocks.size() * sizeof(blocks.front())) return {.Blocks = std::move(blocks)};
     DomainSelection selection;
     selection.Handles.reserve(count);
@@ -36,32 +54,13 @@ inline DomainSelection CompactSelection(std::vector<SelectedBlock> blocks) {
 // The selection of ascending handles.
 inline DomainSelection SelectionOf(std::span<const uint32_t> handles) {
     std::vector<SelectedBlock> blocks;
-    for (const auto handle : handles) {
-        const auto local = handle / MeshElementBlockSize, slot = handle % MeshElementBlockSize;
-        if (blocks.empty() || blocks.back().Local != local) blocks.push_back({local, SelectionBlock{}});
-        blocks.back().Mask[slot / 32u] |= 1u << (slot % 32u);
-    }
+    ForEachHandleBlock(handles, [&](uint32_t local, const SelectionBlock &mask) { blocks.push_back({local, mask}); });
     return CompactSelection(std::move(blocks));
 }
 // Calls visit(local block, mask) for each local block holding a selected handle, in ascending order.
 void ForEachSelectedBlock(const DomainSelection &selection, auto &&visit) {
     for (const auto &[local, words] : selection.Blocks) visit(local, words);
-    for (size_t i = 0u; i < selection.Handles.size();) {
-        const auto local = selection.Handles[i] / MeshElementBlockSize;
-        SelectionBlock words{};
-        for (; i < selection.Handles.size() && selection.Handles[i] / MeshElementBlockSize == local; ++i) {
-            const auto slot = selection.Handles[i] % MeshElementBlockSize;
-            words[slot / 32u] |= 1u << (slot % 32u);
-        }
-        visit(local, words);
-    }
-}
-inline uint32_t SelectedCount(const DomainSelection &selection) {
-    uint32_t count = uint32_t(selection.Handles.size());
-    for (const auto &[local, words] : selection.Blocks) {
-        for (const auto word : words) count += uint32_t(std::popcount(word));
-    }
-    return count;
+    ForEachHandleBlock(selection.Handles, visit);
 }
 
 // The selected handles of a node's input record, the edit domain they were captured in, and the active element's handle.

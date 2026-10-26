@@ -1386,18 +1386,25 @@ void RecordedOperators(ProcedureFixture &f, Fixture &other) {
         {"ShadeFlat", primitive::UVSphere{.Radius = 2.f, .Slices = 8u, .Stacks = 4u}, Element::Face, KindOf<procedure::ShadeSmooth>, 0x26de72431ea25cf2ull, [](ProcedureFixture &f) { f.Do(action::object::SetSelectedSmoothShading{false}); }, {}, {}, ShadedSmooth},
         {"ShadeSmoothByAngle", primitive::UVSphere{.Radius = 2.f, .Slices = 8u, .Stacks = 4u}, Element::Face, KindOf<procedure::ShadeSmoothByAngle>, 0xa655f6a012146ff2ull, [](ProcedureFixture &f) { f.Do(action::object::ShadeSelectedSmoothByAngle{.6f}); }},
     }};
-    // A boolean with another object appends a Boolean node placing its operands by both objects and reading the other through an Object Info node, which cooks the recorded difference.
-    Scenario(f, other, "BooleanObject", [](ProcedureFixture &f) {
+    // Adds an active cube at Placed and a selected second cube, the tool, and returns the active object, its mesh and the tool.
+    const auto add_cubes = [](ProcedureFixture &f) {
         auto &r = f.R;
         f.Do(action::object::AddMeshPrimitive{primitive::Cuboid{}, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Transform = Placed})});
         const auto active = FindActiveEntity(r);
-        const auto mesh = r.get<const Instance>(active).Entity;
         const Transform world{.P = {1.f, .5f, -.25f}, .R = numeric::AngleAxis(.6f, Normalize(vec3{0.f, 1.f, 1.f})), .S = {.75f, 1.f, 1.25f}};
         f.Do(action::object::AddMeshPrimitive{primitive::Cuboid{}, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Transform = world, .Select = MeshInstanceCreateInfo::SelectBehavior::Additive})});
         expect(fatal(FindActiveEntity(r) == active));
         state::Entity tool = state::Null;
         for (const auto e : r.view<const Instance>())
             if (e != active) tool = e;
+        return std::tuple{active, r.get<const Instance>(active).Entity, tool};
+    };
+    // The enclosed volume of the record the mesh draws.
+    const auto volume = [](ProcedureFixture &f, state::Entity mesh) { return test::EnclosedVolume(Mesh{f.Store(), f.Output(mesh)}).value_or(-1.0); };
+    // A boolean with another object appends a Boolean node in the active object's space and an Object Info node that emits the other object's mesh placed by that object, which cooks the recorded difference.
+    Scenario(f, other, "BooleanObject", [&](ProcedureFixture &f) {
+        auto &r = f.R;
+        const auto [active, mesh, tool] = add_cubes(f);
         const auto node_count = uint32_t(r.get<const CookPlan>(mesh).Nodes.size());
         f.Do(action::mesh::Boolean{BooleanOperation::Difference});
         const auto &procedure = r.get<const CookPlan>(mesh);
@@ -1407,18 +1414,63 @@ void RecordedOperators(ProcedureFixture &f, Fixture &other) {
         expect(boolean_kind == KindOf<procedure::Boolean> && info_kind == KindOf<procedure::ObjectInfo> && r.get<const procedure::ObjectInfo>(info).Object == tool);
         expect(procedure.Inputs[procedure.InputFirst[node_count] + 1u].FromNode == node_count + 1u && procedure.ActiveNode == node_count);
         expect(!r.any_of<NodeError>(boolean) && !r.any_of<NodeError>(info));
-        const auto &operands = r.get<const procedure::Boolean>(boolean);
-        expect(operands.Object1 == active && operands.Object2 == tool);
+        expect(r.get<const procedure::Boolean>(boolean).Space == active);
         expect(Fingerprint(f, mesh) == 0x38e0585db10ca082ull);
         // The difference follows both objects: moving either away leaves the cube whole, and moving it back cuts it again.
-        const auto volume = [&] { return test::EnclosedVolume(Mesh{f.Store(), f.Output(mesh)}).value_or(-1.0); };
         for (const auto moved : {tool, active}) {
             const auto placed = r.get<const Transform>(moved).P;
             f.Do(UpdateOf<&Transform::P>(moved, placed + vec3{10.f, 0.f, 0.f}));
-            expect(std::abs(volume() - 8.0) < 1e-4);
+            expect(std::abs(volume(f, mesh) - 8.0) < 1e-4);
             f.Do(UpdateOf<&Transform::P>(moved, placed));
             expect(Fingerprint(f, mesh) == 0x38e0585db10ca082ull);
         }
+        // A generated Mesh 2 is in this procedure's mesh space, so it stays in place relative to Mesh 1 wherever Space moves: a bar through the cube cuts a 1 x 1 x 2 tunnel.
+        const auto bar = f.Append(mesh, KindOf<primitive::Cuboid>);
+        f.Do(UpdateOf<&primitive::Cuboid::HalfExtents>(bar, vec3{.5f, .5f, 2.f}));
+        f.Do(Link{mesh, bar, f.Out(bar), boolean, 1u});
+        expect(!r.any_of<NodeError>(boolean) && std::abs(volume(f, mesh) - 6.0) < 1e-4);
+        // Its placement is the identity wherever the objects move, so moving Space cooks nothing.
+        const auto cooks = Cooks(r);
+        const auto placed = r.get<const Transform>(active).P;
+        f.Do(UpdateOf<&Transform::P>(active, placed + vec3{10.f, 0.f, 0.f}));
+        expect(Cooks(r) == cooks && std::abs(volume(f, mesh) - 6.0) < 1e-4);
+        f.Do(UpdateOf<&Transform::P>(active, placed));
+    });
+    // Moving a common parent of both objects leaves the transform between their spaces unchanged bit for bit, so the procedure does not cook, and moving one of them cooks it.
+    Scenario(f, other, "BooleanCommonParent", [&](ProcedureFixture &f) {
+        auto &r = f.R;
+        const auto parent = f.AddEmpty("Parent");
+        const auto [active, mesh, tool] = add_cubes(f);
+        f.Do(action::mesh::Boolean{BooleanOperation::Difference});
+        f.Do(action::selection::ExtendActive{parent});
+        f.Do(action::object::ParentToActive{});
+        expect(fatal(ParentOrNull(r, active) == parent && ParentOrNull(r, tool) == parent));
+        const auto cut = Fingerprint(f, mesh);
+        const auto cooks = Cooks(r);
+        f.Do(UpdateOf<&Transform::P>(parent, vec3{3.f, -2.f, 1.f}));
+        f.Do(UpdateOf<&Transform::R>(parent, numeric::AngleAxis(.7f, Normalize(vec3{1.f, 0.f, 1.f}))));
+        f.Do(UpdateOf<&Transform::S>(parent, vec3{1.5f, 1.5f, 1.5f}));
+        expect(Cooks(r) == cooks && Fingerprint(f, mesh) == cut);
+        f.Do(UpdateOf<&Transform::P>(tool, r.get<const Transform>(tool).P + vec3{10.f, 0.f, 0.f}));
+        expect(Cooks(r) == cooks + 1u && std::abs(volume(f, mesh) - 8.0) < 1e-4);
+    });
+    // A pose on an object placing an operand re-cooks the Boolean, and the next pass, which only reads the posed world transform the first published, does not cook again.
+    Scenario(f, other, "BooleanPose", [&](ProcedureFixture &f) {
+        auto &r = f.R;
+        const auto [active, mesh, tool] = add_cubes(f);
+        f.Do(action::mesh::Boolean{BooleanOperation::Difference});
+        const auto cut = Fingerprint(f, mesh);
+        const auto cooks = Cooks(r);
+        auto posed = r.get<const Transform>(tool);
+        posed.P += vec3{10.f, 0.f, 0.f};
+        r.emplace<PosedLocal>(tool, posed);
+        f.Commit("Pose tool");
+        expect(Cooks(r) == cooks + 1u && std::abs(volume(f, mesh) - 8.0) < 1e-4);
+        f.P->Settle();
+        expect(Cooks(r) == cooks + 1u);
+        r.remove<PosedLocal>(tool);
+        f.Commit("Release pose");
+        expect(Cooks(r) == cooks + 2u && Fingerprint(f, mesh) == cut);
     });
     for (const auto &row : rows) {
         Scenario(f, other, std::string{row.Name}, [&row](ProcedureFixture &f) {
@@ -1865,7 +1917,7 @@ Graph JoinedSelection(ProcedureFixture &f) {
     };
 }
 
-// A change to a node committed in an earlier step restores the record from the node's edited input.
+// A change to a node committed in an earlier step restores the record to the result of the node before it.
 void ColdRecook(ProcedureFixture &f) {
     const auto mesh = f.AddMesh(primitive::Cuboid{});
     const auto subdivide = f.Append(mesh, KindOf<action::mesh::Subdivide>);
@@ -1874,49 +1926,33 @@ void ColdRecook(ProcedureFixture &f) {
     f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(subdivide, 2u));
 }
 
-// A change to the first node after the Source restores the record in place from the node's edited input, in the session, after a cold load and after clearing the history, with the position edit and the topology nodes after it run again.
-void EditedInputRecook(ProcedureFixture &f, Fixture &other) {
-    boost::ut::test("EditedInputRecook") = [&] {
-        const TestDir dir{"/tmp/mesheditor-scratch/EditedInputRecook"}, saved{"/tmp/mesheditor-scratch/EditedInputRecook-saved"};
-        f.Begin(dir.Path);
-        const auto mesh = f.AddMesh(primitive::Cuboid{});
-        const auto subdivide = f.Append(mesh, KindOf<action::mesh::Subdivide>);
-        const auto to_sphere = f.Append(mesh, KindOf<ToSphere>);
-        const auto extrude = f.Append(mesh, KindOf<action::mesh::Extrude>);
-        f.Do(UpdateOf<&ToSphere::Factor>(to_sphere, .5f));
-        f.Route(mesh, {f.Node(mesh, 0u), subdivide, to_sphere, extrude});
-        const auto base = f.P->History.Present.value();
-        const auto record = f.Output(mesh);
-        const auto before = f.Shaped(mesh);
-        const auto edit = [&](Fixture &fixture) { fixture.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(subdivide, 2u)); };
-        edit(f);
-        // The record restores in place, so the mesh keeps drawing it.
-        expect(f.Output(mesh) == record);
-        const auto uninterrupted = f.P->History.MaterializeLive();
-        const auto shape = f.Shaped(mesh);
-        expect(shape != before);
-        f.Undo();
-        expect(f.Shaped(mesh) == before && f.Output(mesh) == record);
-        f.Redo();
-        expect(f.Shaped(mesh) == shape);
-        f.Navigate(base);
-        expect(f.P->SaveAs(saved.Path, f.Workspace()));
-        expect(f.P->Close());
-        expect(other.P->Open(saved.Path / "working", saved.Path / "Saved.project"));
-        edit(other);
-        expect(other.P->History.MaterializeLive() == uninterrupted);
-        expect(Describe(other.Store(), *DrawnStoreId(other.R, mesh)) == shape);
-        other.Audit();
-        expect(other.P->Close());
-        // Clearing history keeps the states the nodes' edited inputs refer to.
-        expect(other.P->Open(saved.Path / "working", saved.Path / "Saved.project"));
-        expect(other.P->ClearHistory());
-        edit(other);
-        expect(Describe(other.Store(), *DrawnStoreId(other.R, mesh)) == shape);
-        other.Audit();
-        expect(other.P->Close());
-    };
+// A change to the first node after the Source restores the record to the Source node's result, with the position edit and the topology node after it run again.
+void NodeResultRecook(ProcedureFixture &f) {
+    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    const auto subdivide = f.Append(mesh, KindOf<action::mesh::Subdivide>);
+    const auto to_sphere = f.Append(mesh, KindOf<ToSphere>);
+    const auto extrude = f.Append(mesh, KindOf<action::mesh::Extrude>);
+    f.Do(UpdateOf<&ToSphere::Factor>(to_sphere, .5f));
+    f.Route(mesh, {f.Node(mesh, 0u), subdivide, to_sphere, extrude});
+    f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(subdivide, 2u));
 }
+
+// Deleting the displayed tip node restores the record in place to its input node's result with one cook, which leaves the Source node's state untouched.
+void DeleteTipRestores(ProcedureFixture &f) {
+    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    const auto root = f.Node(mesh, 0u);
+    const auto subdivide = f.Append(mesh, KindOf<action::mesh::Subdivide>);
+    const auto extrude = f.Append(mesh, KindOf<action::mesh::Extrude>);
+    f.Route(mesh, {root, subdivide});
+    f.Route(mesh, {subdivide, extrude});
+    const auto record = f.Output(mesh);
+    const auto source = f.SourceOf(mesh);
+    const auto cooks = Cooks(f.R);
+    f.Do(DeleteNodes{mesh, {extrude}});
+    expect(Cooks(f.R) == cooks + 1u);
+    expect(f.Output(mesh) == record && f.SourceOf(mesh) == source);
+}
+
 constexpr std::array<GraphRow, 21> Graphs{{
     {"ExtrudeSubdivide", ExtrudeSubdivide},
     {"CapInset", CapInset},
@@ -1954,5 +1990,6 @@ void TestProcedures() {
     Scenario(f, other, "DisplayedNode", DisplayedNode);
     Scenario(f, other, "ViewportSelection", ViewportSelection);
     Scenario(f, other, "ColdRecook", ColdRecook);
-    EditedInputRecook(f, other);
+    Scenario(f, other, "NodeResultRecook", NodeResultRecook);
+    Scenario(f, other, "DeleteTipRestores", DeleteTipRestores);
 }

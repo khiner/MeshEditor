@@ -74,8 +74,11 @@ void PatchEditedLocal(state::Registry &r, state::Entity e, auto &&fn) {
     CommitEditedLocal(r, e, edited);
 }
 
-// The node's world transform, composed from its local transform under its parent's while the settle pass has not composed it yet.
-Transform ComposeWorldTransform(const state::Registry &, state::Entity);
+// The node's transform relative to the frame, which is the node, an ancestor of it or null for world space, by the rule the settle pass composes world transforms with.
+// An owned node's transform is its published world transform, so owned nodes lie only below a null frame.
+// Every other node's local transform composes under its parent's transform.
+// Sort owned by entity index.
+Transform ComposeTransform(const state::Registry &, state::Entity, state::Entity frame, std::span<const state::Entity> owned);
 
 // Recompute roots and descendants top-down.
 // Include every node with a changed local transform, parent, or instance slot in roots.

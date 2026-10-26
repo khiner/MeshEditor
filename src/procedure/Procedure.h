@@ -12,10 +12,12 @@ namespace procedure {
 struct Source {}; // Emit the mesh's source geometry.
 struct Join {}; // Append the second input's geometry to the first.
 
-// Combine the inputs, each placed by the world transform of its object or left in place without one, and emit the result in Mesh 1's space.
+// Combine the inputs and emit the result in Mesh 1's space.
+// Space's world transform places Mesh 1, and the world transform of the object Mesh 2's geometry came from places Mesh 2.
+// Mesh 2 geometry in this procedure's mesh space stays in place relative to Mesh 1.
 struct Boolean {
     BooleanOperation Operation{BooleanOperation::Difference};
-    state::Entity Object1{state::Null}, Object2{state::Null};
+    state::Entity Space{state::Null};
 };
 
 using Generators = TypeList<primitive::Plane, primitive::Circle, primitive::Cuboid, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone>;
@@ -613,21 +615,28 @@ struct SourceState {
     uint32_t StoreId{InvalidOffset};
     bool operator==(const SourceState &) const = default;
 };
-// Persistent on a display-path node that edited its mesh's record in place: the path node whose output it edited, and the mesh storage state, identified by its hash, in which record StoreId held that output.
-// A change to the node restores the record to that state and runs the node again.
-struct EditedInput {
+// Persistent on a node of the chained display path its mesh's record was last cooked through: the path node whose result it ran on, or null for the path's root, and the mesh storage state, identified by its hash, after this node ran on that result, in which record StoreId holds this node's result.
+// The path's last node holds a pending state, zero: the record holds that node's result as it stands.
+// A change to a later path node restores the record to the result of the last unchanged node before it and runs the nodes after that one.
+struct NodeResult {
     state::Entity Input{state::Null};
     store::Hash128 State{};
     uint32_t StoreId{InvalidOffset};
-    bool operator==(const EditedInput &) const = default;
+    bool operator==(const NodeResult &) const = default;
+};
+// Persistent on a Boolean node the last cook evaluated: the object whose transform placed Mesh 2, or null for Mesh 2 in this procedure's mesh space, and the transform from Mesh 2's space into Mesh 1's that the node's result was cooked with.
+// A procedure whose placing objects only moved cooks when this transform changed.
+struct BooleanPlacement {
+    state::Entity Operand{state::Null};
+    mat4 ToFirst{1.f};
+    bool operator==(const BooleanPlacement &) const = default;
 };
 struct StagedNode {}; // Derived on a node a preview step appended, which the stage's later steps edit.
 } // namespace procedure
 
 template<> inline constexpr field::SpecTable<procedure::Boolean> Specs<procedure::Boolean>{
     {&procedure::Boolean::Operation, {.Help = "Set operation on the two closed input meshes. Difference subtracts the second mesh from the first."}},
-    {&procedure::Boolean::Object1, {.Help = "Object whose world transform places Mesh 1, or none to leave Mesh 1 in place"}},
-    {&procedure::Boolean::Object2, {.Help = "Object whose world transform places Mesh 2, or none to leave Mesh 2 in place"}},
+    {&procedure::Boolean::Space, {.Help = "Object whose world transform places Mesh 1 and whose local space the result is in, or none to leave Mesh 1 in place. The object Mesh 2's geometry came from places Mesh 2."}},
 };
 template<> inline constexpr field::SpecTable<procedure::Normal> Specs<procedure::Normal>{{&procedure::Normal::Domain, {.Help = "Element domain of the emitted normals: vertices or faces"}}};
 template<> inline constexpr field::SpecTable<procedure::Index> Specs<procedure::Index>{{&procedure::Index::Domain, {.Help = "Element domain of the emitted indices"}}};

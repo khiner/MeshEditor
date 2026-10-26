@@ -19,12 +19,6 @@ auto &LastCommitted() {
     return *commands;
 }
 
-// Whether every queue has completed its committed command buffers.
-bool CommittedCompleted() {
-    const std::scoped_lock lock{CommitMutex};
-    return std::ranges::all_of(LastCommitted(), [](const auto &entry) { return entry.second->status() >= MTL::CommandBufferStatusCompleted; });
-}
-
 // Returns once every queue has completed its committed command buffers, so no submission is in flight and no GPU work reads a sparse page.
 void WaitCompleted() {
     const AutoreleaseScope pool;
@@ -97,6 +91,8 @@ Context::~Context() {
         DrainMappings();
         TrimPageCache(0u);
         CommitResidency();
+        WaitCompleted();
+        UnmappedAddresses.clear();
     }
     if (Queue) {
         const std::scoped_lock lock{CommitMutex};
@@ -107,7 +103,7 @@ Context::~Context() {
     SparseAddresses.clear();
     PagePool.reset();
     if (Queue && Residency) Queue->removeResidencySet(Residency.get());
-    AutoreleaseScope::Release(PendingMappings, PendingRetired, PendingResidentRemovals);
+    AutoreleaseScope::Release(PendingMappings, PendingRetired, UnmappedAddresses, PendingResidentRemovals);
     AutoreleaseScope::Release(ExecutionEvent, MappingEvent, Residency, Queue, Device);
 }
 
@@ -127,6 +123,7 @@ void Context::RemoveResident(MTL::Allocation *resource) const {
 void Context::UpdateMappings(const std::vector<MappingCommand> &commands) const {
     if (commands.empty()) return;
     WaitCompleted();
+    UnmappedAddresses.clear();
     for (const auto &command : commands) {
         MappingQueue->updateBufferMappings(command.Destination, command.Heap, command.Operations.data(), command.Operations.size());
     }
@@ -172,7 +169,10 @@ void Context::UpdatePendingMappings() const {
     }
     UpdateMappings(commands);
     PendingMappings.clear();
-    for (const auto &retired : PendingRetired) SparseAddresses.erase(retired.Addresses.get());
+    for (auto &retired : PendingRetired) {
+        SparseAddresses.erase(retired.Addresses.get());
+        UnmappedAddresses.push_back(std::move(retired.Addresses));
+    }
     PendingRetired.clear();
 }
 
@@ -183,7 +183,10 @@ void Context::CommitResidency() const {
         PendingResidentRemovals.clear();
         ResidencyDirty = true;
     }
-    if (Residency && std::exchange(ResidencyDirty, false)) Residency->commit();
+    if (Residency && std::exchange(ResidencyDirty, false)) {
+        WaitCompleted();
+        Residency->commit();
+    }
     if (!PendingMappings.empty()) UpdatePendingMappings();
 }
 
@@ -222,8 +225,6 @@ bool Context::OwnsSparseAddresses(MTL::Buffer *buffer) const { return SparseAddr
 
 void Context::RetireSparseAddresses(NS::SharedPtr<MTL::Buffer> buffer, std::vector<std::pair<uint64_t, uint64_t>> mapped, std::vector<std::shared_ptr<PhysicalPage>> pages) const {
     if (!buffer) return;
-    // Once no committed command buffer can read the addresses, their pages return to the pool while the addresses still map them.
-    if (CommittedCompleted()) pages.clear();
     PendingRetired.push_back({std::move(buffer), std::move(mapped), std::move(pages)});
 }
 

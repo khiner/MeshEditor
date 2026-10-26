@@ -179,13 +179,13 @@ void Project::TrackStores() {
             EndMeshStates(R);
             EndCookStep(R);
             return replayed; },
-        .BeforeSave = [this] { RecordMeshStates(R); },
         .Reset = [this](const std::filesystem::path &dir) {
             R.Resources.get<Assets>().Directory = dir;
             // A replay from the empty state rebuilds the document and leaves the workspace as it was.
             const auto workspace = snapshot::SerializeWorkspace(R);
             ClearDocument();
             snapshot::ApplyWorkspace(R, workspace); },
+        .BeforeSave = [this] { RecordMeshStates(R); },
         .BeforeRestore = [this] {
             WaitForRender(R);
             CancelModalSolves(R);
@@ -411,7 +411,7 @@ bool Project::ClearHistory() {
         saved = ReadSavedState(*this, SavedPath);
         if (!saved) return false;
     }
-    // The Source nodes and edited inputs refer to states of the nodes Clear drops.
+    // The Source nodes and node results refer to states of the nodes Clear drops.
     RecordMeshStates(R);
     if (!History.Clear(saved ? &saved->Position : nullptr)) return false;
     RecordedActions.clear();

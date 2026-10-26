@@ -359,7 +359,8 @@ state::Entity CopyProcedure(state::Registry &r, state::Entity from, uint32_t dra
         r.emplace<ProcedureNode>(copies[n], to, n + 1u < copies.size() ? copies[n + 1u] : state::Null, kind);
         r.emplace<NodeInputs>(copies[n], std::move(links));
         // The copy draws the copy of the drawn record, which holds the output of the same nodes.
-        if (const auto *input = r.try_get<const EditedInput>(plan.Nodes[n].Entity)) r.emplace<EditedInput>(copies[n], copy_of(IndexOf(plan, input->Input)), input->State, input->StoreId);
+        if (const auto *result = r.try_get<const NodeResult>(plan.Nodes[n].Entity)) r.emplace<NodeResult>(copies[n], copy_of(IndexOf(plan, result->Input)), result->State, result->StoreId);
+        if (const auto *placement = r.try_get<const BooleanPlacement>(plan.Nodes[n].Entity)) r.emplace<BooleanPlacement>(copies[n], *placement);
     }
     r.emplace<GeometryProcedure>(to, copies.empty() ? state::Null : copies.front(), copies.empty() ? state::Null : copies.back(), copy_of(plan.DisplayNode), copy_of(plan.ActiveNode));
     r.emplace<EvaluatedMesh>(to, drawn, copy_of(IndexOf(plan, tip)));

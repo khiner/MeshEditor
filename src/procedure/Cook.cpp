@@ -28,6 +28,7 @@
 #include "render/Instance.h"
 #include "render/MeshTopologyRepair.h"
 #include "render/MeshletBuildGpu.h"
+#include "scene/SceneChanges.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
 #include "selection/SelectionComponents.h"
@@ -85,6 +86,7 @@ struct SocketValue {
     // Borrow records from MeshEntity for read-only use; own records when MeshEntity is null.
     // Borrowed records remain owned by their mesh and must never be edited or released by the cook.
     state::Entity MeshEntity{state::Null};
+    state::Entity Object{state::Null}; // For geometry, the object whose local space the geometry is in, or null for this procedure's mesh space
     uint32_t Instance{InvalidOffset}; // The record an instances value's points each place, or InvalidOffset for points placing nothing
     union {
         uint32_t Record{InvalidOffset};
@@ -1079,13 +1081,31 @@ state::Entity ReadMesh(const state::Registry &r, state::Entity mesh_entity, cons
     return instance && instance->Entity != mesh_entity && DrawsMesh(r, instance->Entity) ? instance->Entity : state::Null;
 }
 
-// The object's world transform from its own and its ancestors' local transforms, or the identity for an entity without one.
-// The settle pass composes world transforms after it cooks, so the cook composes them itself.
-mat4 Placement(const state::Registry &r, state::Entity object) {
-    const auto *local = r.valid(object) ? ComposedLocal(r, object) : nullptr;
-    if (!local) return I4;
-    const auto parent = ParentOrNull(r, object);
-    return parent != state::Null ? Placement(r, parent) * ToMatrix(*local) : ToMatrix(*local);
+// The transform from the operand object's local space into Space's, by the rule the settle pass composes world transforms with, which takes each physics body's published pose.
+// Both objects compose relative to their nearest common ancestor when no physics body lies below it and its world transform is a positive uniform scaling, rotation and translation.
+// Such a world transform commutes with the rule, so the result equals the one through world transforms, and moving that ancestor leaves it unchanged bit for bit.
+// An operand in this procedure's mesh space is already in Space's, and a dead object places by the identity.
+mat4 ToFirst(const state::Registry &r, state::Entity space, state::Entity operand) {
+    if (operand == state::Null) return I4;
+    const auto owned = r.view<const BodyPoseCache>() | std::ranges::to<std::vector>();
+    // Each object and its ancestors, nearest first.
+    const auto lineage = [&](state::Entity e) {
+        std::vector<state::Entity> entities;
+        for (e = r.valid(e) ? e : state::Null; e != state::Null; e = ParentOrNull(r, e)) entities.push_back(e);
+        return entities;
+    };
+    const auto spaces = lineage(space), operands = lineage(operand);
+    const auto frame = [&] {
+        const auto common = std::ranges::find_if(operands, [&](state::Entity e) { return std::ranges::contains(spaces, e); });
+        if (common == operands.end()) return state::Null;
+        const auto bodies_below = [&](const std::vector<state::Entity> &entities) {
+            return std::ranges::any_of(entities | std::views::take_while([&](state::Entity e) { return e != *common; }), [&](state::Entity e) { return ContainsInIndexOrder(owned, e); });
+        };
+        const auto scale = ComposeTransform(r, *common, state::Null, owned).S;
+        return !bodies_below(spaces) && !bodies_below(operands) && scale.x > 0.f && scale.x == scale.y && scale.x == scale.z ? *common : state::Null;
+    }();
+    const auto placed = [&](const std::vector<state::Entity> &entities) { return entities.empty() ? I4 : ToMatrix(ComposeTransform(r, entities.front(), frame, owned)); };
+    return Inverse(placed(spaces)) * placed(operands);
 }
 
 // Each point's instance transform, in vertex order.
@@ -1259,15 +1279,26 @@ bool Chained(const CookPlan &plan, std::span<const uint32_t> path) {
     return true;
 }
 
-// The record after the display path's nodes from `first` edit it in place, each keeping the mesh storage state before it as its edited input, and whether its render records stayed current and any node faulted.
+// The record after the display path's nodes from `first` edit it in place, and whether its render records stayed current and any node faulted.
 struct PathRun {
     uint32_t Record;
     bool Rendered, Faulted;
 };
+// The record holds the output of the node before `first`.
+// That node and each node that runs keep the mesh storage state their result leaves as their NodeResult, the path's last node keeps a pending one, and the nodes from the first faulted one hold none, so the next cook runs them again.
 // The positions of `restored`, a restore's change to the record, refresh with the first drawn position edit or after the path.
 PathRun RunPath(state::Registry &r, state::Entity mesh_entity, const CookPlan &plan, std::span<const uint32_t> path, size_t first, uint32_t record, bool rendered, std::optional<BufferArena<SelectionBlock>> &arena, MeshStore::Change &restored) {
     auto &meshes = r.Resources.get<MeshStore>();
     if (first < path.size()) FinishPendingSourceStates(r, record);
+    // Keep mesh storage as it stands as the result of the path node at `i`, which the record holds.
+    const auto keep_result = [&](size_t i) {
+        const bool last = i + 1u == path.size();
+        const NodeResult result{i ? plan.Nodes[path[i - 1u]].Entity : state::Null, last ? store::Hash128{} : meshes.KeepState(), record};
+        const auto entity = plan.Nodes[path[i]].Entity;
+        if (const auto *held = r.try_get<const NodeResult>(entity); !held || *held != result) r.emplace_or_replace<NodeResult>(entity, result);
+        if (auto &pass = r.Resources.get<CookPass>(); !last && pass.Mesh == mesh_entity && !std::ranges::contains(pass.Exact, result.State)) pass.Exact.push_back(result.State);
+    };
+    keep_result(first - 1u);
     std::vector<SocketValue> values(plan.SocketFirst.back());
     bool faulted = false;
     const auto refresh_restored = [&] {
@@ -1281,25 +1312,25 @@ PathRun RunPath(state::Registry &r, state::Entity mesh_entity, const CookPlan &p
         const auto node = path[i];
         const auto [entity, kind] = plan.Nodes[node];
         r.remove<NodeError>(entity);
-        const EditedInput input{plan.Nodes[path[i - 1u]].Entity, meshes.KeepState(), record};
-        if (const auto *held = r.try_get<const EditedInput>(entity); !held || *held != input) r.emplace_or_replace<EditedInput>(entity, input);
-        if (auto &pass = r.Resources.get<CookPass>(); pass.Mesh == mesh_entity && !std::ranges::contains(pass.Exact, input.State)) pass.Exact.push_back(input.State);
         // A chained Join or Boolean has no second input and passes its first through.
-        if (kind == KindOf<Join> || kind == KindOf<Boolean>) continue;
-        bool repaired = false;
-        if (!rendered) refresh_restored();
-        const auto edited = RunNode(r, plan, values, node, record, arena, rendered ? mesh_entity : state::Null, &repaired, &restored);
-        if (!edited) {
-            r.emplace<NodeError>(entity, edited.error());
-            faulted = true;
-        } else if (*edited != record) {
-            restored = {};
-            ReleaseReplaced(r, record);
-            record = *edited;
-            rendered = false;
-        } else if (rendered && !repaired) {
-            rendered = false;
+        if (kind != KindOf<Join> && kind != KindOf<Boolean>) {
+            bool repaired = false;
+            if (!rendered) refresh_restored();
+            const auto edited = RunNode(r, plan, values, node, record, arena, rendered ? mesh_entity : state::Null, &repaired, &restored);
+            if (!edited) {
+                r.emplace<NodeError>(entity, edited.error());
+                faulted = true;
+            } else if (*edited != record) {
+                restored = {};
+                ReleaseReplaced(r, record);
+                record = *edited;
+                rendered = false;
+            } else if (rendered && !repaired) {
+                rendered = false;
+            }
         }
+        if (faulted) r.remove<NodeResult>(entity);
+        else keep_result(i);
     }
     refresh_restored();
     return {record, rendered, faulted};
@@ -1336,46 +1367,40 @@ void PublishCooked(state::Registry &r, state::Entity mesh_entity, uint32_t recor
 }
 
 // Cook a chained display path into the mesh's record.
-// The record keeps the output of the path nodes up to its tip, and the nodes after the first changed one edit it in place.
-// A changed node the record holds the output of restores the record to the state its edited input refers to, or else the path cooks from a new record of its root.
+// The held nodes are the path's unchanged prefix whose results stand: the root, and each node after it whose result was kept on the result of the node before it.
+// The nodes after the last held one edit the record in place: as it stands when it holds that node's output, else restored to that node's result state, else a new record of the root.
 // The whole mesh storage restores while only this mesh's cooks wrote it since the state was kept, and the record alone restores otherwise, each followed by the same nodes.
-// A copied node keeps the edited input its original holds, and the components it was created with leave it unchanged.
+// A copied procedure's nodes keep the results their originals hold, and the components they were created with leave them unchanged.
 void CookChain(state::Registry &r, state::Entity mesh_entity, const CookPlan &plan, std::span<const uint32_t> path, std::optional<BufferArena<SelectionBlock>> &arena, const state::DirtySet &changed, const state::DirtySet &created) {
     auto &meshes = r.Resources.get<MeshStore>();
     const auto *live = r.try_get<const EvaluatedMesh>(mesh_entity);
     const auto prior = live && meshes.TryGet(live->StoreId) ? live->StoreId : InvalidOffset;
-    // The path nodes the record holds the output of, from the root.
-    std::vector<state::Entity> chain;
-    if (prior != InvalidOffset && live->Tip != state::Null) {
-        for (auto e = live->Tip;;) {
-            chain.push_back(e);
-            const auto *input = r.valid(e) ? r.try_get<const EditedInput>(e) : nullptr;
-            if (!input) break;
-            e = input->Input;
-        }
-        std::ranges::reverse(chain);
-    }
     const auto entity_at = [&](size_t i) { return plan.Nodes[path[i]].Entity; };
     const auto edited = [&](state::Entity e) { return changed.contains(e) && !created.contains(e); };
     size_t held = 0u;
-    if (!chain.empty() && chain.front() == entity_at(0u) && !edited(chain.front())) {
-        held = 1u;
-        while (held < chain.size() && held < path.size() && chain[held] == entity_at(held) && !edited(chain[held])) ++held;
+    while (held < path.size() && !edited(entity_at(held))) {
+        if (held) {
+            const auto *result = r.try_get<const NodeResult>(entity_at(held));
+            if (!result || result->Input != entity_at(held - 1u)) break;
+        }
+        ++held;
     }
     auto record = prior;
     // The record the result replaces, which a restore returns to the state before the nodes that replaced it.
     auto replaced = prior;
     bool rendered = prior != InvalidOffset && meshes.Get(prior).RenderTopologies != 0u;
     MeshStore::Change restored{};
-    if (held == 0u || held < chain.size()) {
-        const auto *input = held ? r.try_get<const EditedInput>(chain[held]) : nullptr;
+    // Whether the record holds the output of the last held node.
+    const bool continued = prior != InvalidOffset && held && live->Tip == entity_at(held - 1u);
+    if (!continued) {
+        const auto *result = held ? r.try_get<const NodeResult>(entity_at(held - 1u)) : nullptr;
         bool restored_record = false;
-        if (input && input->StoreId == prior && input->State != store::Hash128{}) {
+        if (result && result->StoreId == prior && result->State != store::Hash128{}) {
             WaitForRender(r);
-            if (std::ranges::contains(r.Resources.get<const CookPass>().Exact, input->State) && meshes.RestoreKeptState(input->State)) {
+            if (std::ranges::contains(r.Resources.get<const CookPass>().Exact, result->State) && meshes.RestoreKeptState(result->State)) {
                 restored = ReconcileRestoredStore(r, mesh_entity);
                 restored_record = true;
-            } else if (const auto change = meshes.RestoreRecord(input->State, prior)) {
+            } else if (const auto change = meshes.RestoreRecord(result->State, prior)) {
                 restored = ReconcileRestoredRecord(r, *change, mesh_entity);
                 restored_record = true;
             }
@@ -1387,6 +1412,7 @@ void CookChain(state::Registry &r, state::Entity mesh_entity, const CookPlan &pl
             const auto root = MaterializeRoot(r, plan.Nodes[path.front()]);
             if (!root) {
                 r.emplace_or_replace<NodeError>(entity_at(0u), NodeFault::NoMesh);
+                for (const auto node : path.subspan(held)) r.remove<NodeResult>(plan.Nodes[node].Entity);
                 return;
             }
             record = *root;
@@ -1425,7 +1451,15 @@ void Evaluate(state::Registry &r, state::Entity mesh_entity, std::optional<Buffe
         node = InputCount[kind] && KindSockets(kind).front().Type == SocketType::Geometry ? plan.Inputs[plan.InputFirst[node]].FromNode : NoNode;
     }
     std::ranges::reverse(path);
-    if (Chained(plan, path)) return CookChain(r, mesh_entity, plan, path, arena, changed, created_nodes);
+    const bool chained = Chained(plan, path);
+    // Only the nodes of a chained display path hold results, and only the Boolean nodes a cook evaluates hold placements, since the cooks that skip a node would leave its result or placement stale.
+    // A chained path's Boolean nodes have no second input.
+    for (uint32_t node = 0u; node < plan.Nodes.size(); ++node) {
+        const auto entity = plan.Nodes[node].Entity;
+        if (!chained || !on_path[node]) r.remove<NodeResult>(entity);
+        if (chained) r.remove<BooleanPlacement>(entity);
+    }
+    if (chained) return CookChain(r, mesh_entity, plan, path, arena, changed, created_nodes);
     // The record the mesh drew, which the cook releases once the result replaces it.
     const auto prior = r.all_of<EvaluatedMesh>(mesh_entity) ? r.get<const EvaluatedMesh>(mesh_entity).StoreId : InvalidOffset;
     // Evaluate only nodes reachable from the displayed node.
@@ -1478,6 +1512,7 @@ void Evaluate(state::Registry &r, state::Entity mesh_entity, std::optional<Buffe
         const auto [entity, kind] = plan.Nodes[node];
         const auto first = plan.SocketFirst[node];
         r.remove<NodeError>(entity);
+        if (!reached[node]) r.remove<BooleanPlacement>(entity);
         if (!reached[node] || IsAttributeKind(kind)) continue;
         if (kind == KindOf<Source>) {
             // A pending state's record is still the source, which its readers borrow.
@@ -1488,8 +1523,9 @@ void Evaluate(state::Registry &r, state::Entity mesh_entity, std::optional<Buffe
             continue;
         }
         if (kind == KindOf<ObjectInfo>) {
-            const auto read_mesh = ReadMesh(r, mesh_entity, r.get<const ObjectInfo>(entity));
-            if (read_mesh != state::Null) values[first] = {.MeshEntity = read_mesh, .Record = *DrawnStoreId(r, read_mesh)};
+            const auto &info = r.get<const ObjectInfo>(entity);
+            const auto read_mesh = ReadMesh(r, mesh_entity, info);
+            if (read_mesh != state::Null) values[first] = {.MeshEntity = read_mesh, .Object = info.Object, .Record = *DrawnStoreId(r, read_mesh)};
             else r.emplace<NodeError>(entity, NodeFault::NoMesh);
             continue;
         }
@@ -1506,6 +1542,8 @@ void Evaluate(state::Registry &r, state::Entity mesh_entity, std::optional<Buffe
         if (generated) continue;
         const auto in = take(node, 0u);
         const auto input = in.Record;
+        // A node's geometry output is in its first input's space.
+        values[first + InputCount[kind]].Object = in.Object;
         if (kind == KindOf<Join>) {
             const auto second = take(node, 1u);
             if (input != InvalidOffset && second.Record != InvalidOffset) {
@@ -1518,8 +1556,10 @@ void Evaluate(state::Registry &r, state::Entity mesh_entity, std::optional<Buffe
         if (kind == KindOf<Boolean>) {
             const auto second = take(node, 1u);
             const auto p = Parameters<Boolean>(r, plan, values, node);
-            // Map Mesh 2 into Mesh 1's space through both objects' world transforms, which must keep Mesh 2 unmirrored.
-            const auto to_first = Inverse(Placement(r, p.Object1)) * Placement(r, p.Object2);
+            // Map Mesh 2 into Mesh 1's space, which must keep Mesh 2 unmirrored.
+            const auto to_first = ToFirst(r, p.Space, second.Object);
+            const BooleanPlacement placement{second.Object, to_first};
+            if (const auto *held = r.try_get<const BooleanPlacement>(entity); !held || *held != placement) r.emplace_or_replace<BooleanPlacement>(entity, placement);
             const auto rotation = ToMat3(to_first);
             const bool linked = input != InvalidOffset && second.Record != InvalidOffset, oriented = Determinant(rotation) > 0.f;
             const auto task = linked && oriented ? BooleanTask(Mesh{meshes, input}, Mesh{meshes, second.Record}, p.Operation, rotation, vec3(to_first[3])) : std::nullopt;
@@ -1647,7 +1687,7 @@ struct ProcedureChanges {
     state::DirtySet Graph; // A geometry procedure's graph changed, on its mesh entity or one of its node entities.
     state::DirtySet Inputs; // A node's parameters or inline selection, a mesh's geometry or objects, or a published instance's parent changed.
     state::DirtySet Created; // A node was created, whose own components the inputs list with it.
-    state::DirtySet Moved; // An entity's local transform or parent changed.
+    state::DirtySet Moved; // An entity's local transform, pose, parent or published world transform changed since the last cook pass.
 };
 } // namespace procedure
 
@@ -1694,14 +1734,14 @@ void RegisterProcedureHandlers(state::Registry &r) {
     inputs.on<InlineSelection>(On::Create | On::Update | On::Destroy);
     // Update published instances when an object is created or a child is detached.
     inputs.on<Instance>(On::Create).on<SceneParent>(On::Destroy);
-    // Boolean nodes follow the placement of the objects they refer to.
-    changes.Moved.bind(r).on<Transform>(On::Update).on<SceneParent>(On::Create | On::Destroy);
+    // Boolean nodes follow the objects whose world transforms place their operands.
+    changes.Moved.bind(r, state::Clearing::Explicit).on<Transform>(On::Update).on<PosedLocal>(On::Create | On::Update | On::Destroy).on<SceneParent>(On::Create | On::Destroy);
     ForEachKind([&]<typename K> { inputs.on<K>(On::Update); });
 }
 
 void SettleProcedures(state::Registry &r, bool cook) {
     using namespace procedure;
-    const auto &changes = r.Resources.get<const ProcedureChanges>();
+    auto &changes = r.Resources.get<ProcedureChanges>();
     // The procedure a changed mesh or node entity belongs to, or null.
     const auto procedure_of = [&](state::Entity e) {
         if (r.all_of<GeometryProcedure>(e)) return e;
@@ -1723,24 +1763,39 @@ void SettleProcedures(state::Registry &r, bool cook) {
     }
     if (cooked.empty() && inputs.empty() && changes.Moved.empty()) return;
     SortUnique(inputs);
-    const auto input = [&](state::Entity e) { return std::ranges::binary_search(inputs, e) || changes.Moved.contains(e); };
+    const auto input = [&](state::Entity e) { return std::ranges::binary_search(inputs, e); };
     for (const auto [e, published] : std::as_const(r).view<const ProcedureInstances>().each()) {
         if (std::ranges::any_of(published.Entities, input)) cooked.push_back(e);
     }
-    // Index procedures by the mesh entities read by their Object Info nodes and the objects placing their Boolean nodes' inputs, with the objects' ancestors.
+    // Index procedures by the mesh entities their Object Info nodes read and by the objects whose world transforms place Boolean operands, with the objects' ancestors.
+    // An Object Info node's object places the geometry it emits, and a Boolean node's Space places its first input.
     std::vector<std::pair<state::Entity, state::Entity>> reads;
+    const auto read_placement = [&](state::Entity procedure, state::Entity object) {
+        for (auto e = r.valid(object) ? object : state::Null; e != state::Null; e = ParentOrNull(r, e)) reads.emplace_back(procedure, e);
+    };
     for (const auto [node, info] : std::as_const(r).view<const ObjectInfo>().each()) {
-        if (const auto procedure = procedure_of(node); procedure != state::Null) reads.emplace_back(procedure, ReadMesh(r, procedure, info));
-    }
-    for (const auto [node, boolean] : std::as_const(r).view<const procedure::Boolean>().each()) {
         const auto procedure = procedure_of(node);
         if (procedure == state::Null) continue;
-        for (const auto object : {boolean.Object1, boolean.Object2}) {
-            for (auto e = r.valid(object) ? object : state::Null; e != state::Null; e = ParentOrNull(r, e)) reads.emplace_back(procedure, e);
-        }
+        reads.emplace_back(procedure, ReadMesh(r, procedure, info));
+        read_placement(procedure, info.Object);
+    }
+    for (const auto [node, boolean] : std::as_const(r).view<const procedure::Boolean>().each()) {
+        if (const auto procedure = procedure_of(node); procedure != state::Null) read_placement(procedure, boolean.Space);
     }
     for (const auto e : inputs) {
         if (const auto *instance = r.try_get<const Instance>(e); instance && r.all_of<ProcedureInstances>(instance->Entity)) cooked.push_back(instance->Entity);
+    }
+    // A procedure whose placing objects moved cooks only when the motion changed one of its Boolean nodes' placements.
+    // An edit that cooked in its own pass then does not cook again for the world transform it published, and moving a common ancestor of both operands cooks nothing.
+    std::vector<state::Entity> moved;
+    for (const auto [e, read] : reads) {
+        if (changes.Moved.contains(read)) moved.push_back(e);
+    }
+    changes.Moved.clear();
+    SortUnique(moved);
+    for (const auto [node, placement] : std::as_const(r).view<const BooleanPlacement>().each()) {
+        const auto procedure = procedure_of(node);
+        if (std::ranges::binary_search(moved, procedure) && ToFirst(r, r.get<const procedure::Boolean>(node).Space, placement.Operand) != placement.ToFirst) cooked.push_back(procedure);
     }
     SortUnique(cooked);
     // Cook dependencies before procedures that read them.
@@ -1780,6 +1835,11 @@ void SettleProcedures(state::Registry &r, bool cook) {
     r.Resources.get<CookCount>().Value += order.size();
 }
 
+void RecordWorldTransformChanges(state::Registry &r) {
+    auto &moved = r.Resources.get<procedure::ProcedureChanges>().Moved;
+    for (const auto e : r.Resources.get<const SceneChanges>().WorldTransform) moved.emplace(e);
+}
+
 void FinishCookPass(state::Registry &r) {
     auto &pass = r.Resources.get<procedure::CookPass>();
     if (pass.End || pass.Mesh == state::Null) return;
@@ -1790,14 +1850,14 @@ void FinishSourceStates(state::Registry &r) { procedure::FinishPendingSourceStat
 
 namespace procedure {
 namespace {
-// The states the Source nodes and edited inputs refer to, ascending.
+// The states the Source nodes and node results refer to, ascending.
 std::vector<store::Hash128> ReferencedStates(const state::Registry &r) {
     std::vector<store::Hash128> states;
     for (const auto [entity, source] : r.view<const SourceState>().each()) {
         if (source.State != store::Hash128{}) states.push_back(source.State);
     }
-    for (const auto [entity, input] : r.view<const EditedInput>().each()) {
-        if (input.State != store::Hash128{}) states.push_back(input.State);
+    for (const auto [entity, result] : r.view<const NodeResult>().each()) {
+        if (result.State != store::Hash128{}) states.push_back(result.State);
     }
     std::ranges::sort(states, {}, [](const store::Hash128 &state) { return std::pair{state.A, state.B}; });
     states.erase(std::ranges::unique(states).begin(), states.end());

@@ -238,7 +238,7 @@ void Apply(state::Registry &r, const Action &action) {
             [&](ParentToActive) {
                 const auto active = FindActiveEntity(r);
                 if (active == state::Null) return;
-                if (SetParentKeepWorld(r, SelectedIn(r), active)) action::Fail(r, "Loop in parents");
+                if (SetParentKeepWorld(r, SelectedIn(r), active, r.view<const BodyPoseCache>() | std::ranges::to<std::vector>())) action::Fail(r, "Loop in parents");
             },
             [&](ClearParent) {
                 ::ClearParents(r, SelectedIn(r));

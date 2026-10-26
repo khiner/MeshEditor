@@ -50,8 +50,8 @@ struct Cone {
 using PrimitiveParameters = std::variant<primitive::Plane, primitive::Circle, primitive::Cuboid, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone>;
 
 namespace primitive {
-inline constexpr FieldSpec SizeSpec(const char *help) { return {.Min = MinSize, .Max = MaxSize, .Speed = 0.01f, .Unit = FieldUnit::Meters, .Widget = FieldWidget::Drag, .Help = help}; }
-inline constexpr FieldSpec HalfExtentsSpec(const char *help) { return {.Min = MinSize / 2, .Max = MaxSize / 2, .Speed = 0.01f, .Unit = FieldUnit::Meters, .Widget = FieldWidget::Drag, .Label = "Half extents", .Help = help}; }
+constexpr FieldSpec SizeSpec(const char *help) { return {.Min = MinSize, .Max = MaxSize, .Speed = 0.01f, .Unit = FieldUnit::Meters, .Widget = FieldWidget::Drag, .Help = help}; }
+constexpr FieldSpec HalfExtentsSpec(const char *help) { return {.Min = MinSize / 2, .Max = MaxSize / 2, .Speed = 0.01f, .Unit = FieldUnit::Meters, .Widget = FieldWidget::Drag, .Label = "Half extents", .Help = help}; }
 } // namespace primitive
 
 template<> inline constexpr field::SpecTable<primitive::Plane> Specs<primitive::Plane>{

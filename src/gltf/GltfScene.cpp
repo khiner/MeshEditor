@@ -2011,7 +2011,7 @@ ImportedArmatures ImportArmatures(state::Registry &r, const fastgltf::Asset &ass
         r.emplace<ArmatureObject>(armature_entity, armature_data_entity);
         r.emplace<Transform>(armature_entity, arma_node ? ToTransform(plan.WorldTransforms[*arma_node]) : Transform{});
         // Preserve the armature's world transform when parenting it under its root object.
-        const mat4 armature_world = ToMatrix(ComposeWorldTransform(r, armature_entity));
+        const mat4 armature_world = ToMatrix(ComposeTransform(r, armature_entity, state::Null, {}));
         const auto skin_name = [&]() -> std::string {
             for (const auto skin_index : group.SkinIndices) {
                 if (const auto &name = asset.skins[skin_index].name; !name.empty()) return std::string(name);
@@ -2025,7 +2025,7 @@ ImportedArmatures ImportArmatures(state::Registry &r, const fastgltf::Asset &ass
         // Follow the root node's entity when it is an object (it may be animated), else the nearest object above it.
         if (arma_node) {
             const auto parent_node = objects.Of(*arma_node) != state::Null ? arma_node : plan.NearestObjectAncestor[*arma_node];
-            if (const auto parent_entity = parent_node ? objects.Of(*parent_node) : state::Null; parent_entity != state::Null) SetParentKeepWorld(r, std::span{&armature_entity, 1u}, parent_entity);
+            if (const auto parent_entity = parent_node ? objects.Of(*parent_node) : state::Null; parent_entity != state::Null) SetParentKeepWorld(r, std::span{&armature_entity, 1u}, parent_entity, {});
         }
 
         // glTF node.skin is deform linkage, not a transform-parent relationship.
@@ -2074,7 +2074,7 @@ ImportedArmatures ImportArmatures(state::Registry &r, const fastgltf::Asset &ass
             r.emplace<BoneConstraints>(bone_entities[i], BoneConstraints{.Stack = {BoneConstraint{
                                                                              .TargetEntity = target,
                                                                              .Influence = 1.f,
-                                                                             .Data = ChildOfData{.InverseMatrix = Inverse(ToMatrix(ComposeWorldTransform(r, target))) * (armature_world * bone.RestWorld)},
+                                                                             .Data = ChildOfData{.InverseMatrix = Inverse(ToMatrix(ComposeTransform(r, target, state::Null, {}))) * (armature_world * bone.RestWorld)},
                                                                          }}});
         }
     }
