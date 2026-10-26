@@ -1,5 +1,6 @@
 #include "ProcessEvents.h"
 #include "action/Errors.h"
+#include "action/Nodes.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
 #include "physics/ColliderUpdate.h"
@@ -100,6 +101,7 @@ void SetEditMode(state::Registry &r, Element mode) {
     }
     r.patch<EditMode>(state::Document, [mode](auto &edit_mode) { edit_mode.Value = mode; });
     ConvertElementSelections(r, editing, mode);
+    for (const auto mesh_entity : editing) action::nodes::CaptureActiveSelection(r, mesh_entity);
 }
 
 // Count visible silhouette instances, excluding primary edit instances.
@@ -296,6 +298,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
             if (summary.ActiveHandle == InvalidOffset) r.remove<MeshActiveElement>(mesh_entity);
             else r.emplace_or_replace<MeshActiveElement>(mesh_entity, summary.ActiveHandle);
         }
+        for (const auto &range : ranges) action::nodes::CaptureActiveSelection(r, range.MeshEntity);
     }
     if (const auto *pending = r.try_get<const PendingBoxSelect>(state::Document)) {
         const auto viewport = gesture_viewport(pending->Viewport, pending->View);
@@ -320,6 +323,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
                 for (const auto &range : ranges) r.remove<MeshActiveElement>(range.MeshEntity);
             }
             RunBoxSelectElements(r, viewport, ranges, r.get<const EditMode>(state::Document).Value, box_px, additive);
+            for (const auto &range : ranges) action::nodes::CaptureActiveSelection(r, range.MeshEntity);
         } else {
             const bool bone_mode = interaction.Mode == InteractionMode::Pose || IsBoneEditMode(r);
             const auto hits = ResolveHits(r, RunBoxSelect(r, viewport, box_px), bone_mode, true);

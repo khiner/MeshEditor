@@ -242,6 +242,7 @@ mesheditor_library(MeshEditorEditor COLD
     src/editor/Timeline.cpp
     src/object/ObjectOps.cpp
     src/procedure/Cook.cpp
+    src/procedure/Plan.cpp
     ${native_snapshots}
     src/snapshot/SnapshotRoles.cpp
     src/snapshot/Workspace.cpp
@@ -249,8 +250,8 @@ mesheditor_library(MeshEditorEditor COLD
     src/viewport/Viewport.cpp
     src/viewport/ViewportOps.cpp
 )
-# The settle pass and the object drag loop over every selected entity each frame.
-set_property(SOURCE src/ProcessEvents.cpp src/action/View.cpp APPEND PROPERTY COMPILE_OPTIONS -O2)
+# The settle pass and the object drag loop over every selected entity each frame, and a plan reads every node of its procedure.
+set_property(SOURCE src/ProcessEvents.cpp src/action/View.cpp src/procedure/Plan.cpp APPEND PROPERTY COMPILE_OPTIONS -O2)
 
 mesheditor_library(MeshEditorUi COLD
     src/project/HistoryUi.cpp

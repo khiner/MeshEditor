@@ -17,15 +17,12 @@ state::Entity ColliderMesh(const state::Registry &r, state::Entity collider, con
 std::optional<PrimitiveParameters> PrimitiveOf(const state::Registry &r, state::Entity mesh_entity) {
     using namespace procedure;
     const auto *procedure = r.try_get<const GeometryProcedure>(mesh_entity);
-    if (!procedure || procedure->DisplayNode == NoNode) return {};
+    if (!procedure || procedure->DisplayNode == state::Null) return {};
     const auto display = procedure->DisplayNode;
-    const auto first = InputFirst(*procedure, display);
-    const auto inputs = std::span{procedure->Inputs}.subspan(first, InputCount[procedure->Nodes[display].Kind]);
-    if (std::ranges::any_of(inputs, [](SocketLink input) { return input.FromNode != NoNode; })) return {};
+    if (std::ranges::any_of(r.get<const NodeInputs>(display).Links, [](SocketLink input) { return input.FromNode != state::Null; })) return {};
     std::optional<PrimitiveParameters> parameters;
-    const auto [entity, kind] = procedure->Nodes[display];
-    VisitKind(kind, [&]<typename K> {
-        if constexpr (Generator<K>) parameters = r.get<const K>(entity);
+    VisitKind(r.get<const ProcedureNode>(display).Kind, [&]<typename K> {
+        if constexpr (Generator<K>) parameters = r.get<const K>(display);
     });
     return parameters;
 }

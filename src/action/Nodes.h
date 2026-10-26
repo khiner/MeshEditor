@@ -3,7 +3,7 @@
 #include "procedure/InlineSelection.h"
 #include "state/Entity.h"
 
-// Address procedure nodes by index and update parameters on their entities.
+// Address procedure nodes by entity and update parameters on their entities.
 namespace action::nodes {
 using numeric::uvec2;
 
@@ -17,20 +17,20 @@ struct AddNode {
 // Links an output socket into an input socket that procedure::Links admits, replacing the input's link.
 struct Link {
     state::Entity MeshEntity;
-    uint32_t FromNode;
+    state::Entity FromNode;
     uint16_t FromSocket;
-    uint32_t ToNode;
+    state::Entity ToNode;
     uint16_t ToSocket;
 };
 struct Unlink {
     state::Entity MeshEntity;
-    uint32_t ToNode;
+    state::Entity ToNode;
     uint16_t ToSocket;
 };
 // Displays the node, so the mesh draws its result.
 struct SetDisplay {
     state::Entity MeshEntity;
-    uint32_t Node;
+    state::Entity Node;
 };
 
 // Names starting with a period are reserved for internal attributes.
@@ -48,27 +48,29 @@ struct SetInlineSelection {
 struct CollapseProcedure {
     state::Entity MeshEntity;
 };
-// Appends a copy of each node, ascending, at its cell, keeping the links among the copied nodes, and selects the copies.
+// Appends a copy of each distinct node, in list order, at its cell, keeping the links among the copied nodes, and selects the copies.
 // A Source node's copy holds a copy of its record.
 // The copy of the active node is active, or else the last copy.
 struct DuplicateNodes {
     state::Entity MeshEntity;
-    std::vector<uint32_t> Nodes;
+    std::vector<state::Entity> Nodes;
 };
-// Replaces the procedure's node selection with the nodes, ascending, and makes Active the node the parameter panel edits, or leaves that node when Active is NoNode.
+// Replaces the procedure's node selection with the distinct nodes and makes Active the node the parameter panel edits, or leaves that node when Active is null.
+// Display also makes Active the node the mesh draws, as a click on a node does.
 // The selection is the procedure's own and leaves the entity selection alone.
 struct SelectNodes {
     state::Entity MeshEntity;
-    std::vector<uint32_t> Nodes;
-    uint32_t Active{UINT32_MAX};
+    std::vector<state::Entity> Nodes;
+    state::Entity Active{state::Null};
+    bool Display{};
 };
 
-// Remove ascending node indices and reconnect through each removed chain.
+// Remove the distinct nodes and reconnect through each removed chain.
 // Use the unique linked input with the output socket type; disconnect ambiguous or incompatible inputs.
-// The display follows its node's chain the same way, and the display node replaces a removed active node.
+// The display follows its node's chain the same way, or else its node's first input, and the display node, or else the last node, replaces a removed active node.
 struct DeleteNodes {
     state::Entity MeshEntity;
-    std::vector<uint32_t> Nodes;
+    std::vector<state::Entity> Nodes;
 };
 
 // Insert the node between the input and its source using the first geometry sockets.
@@ -76,8 +78,8 @@ struct DeleteNodes {
 // Move the consumer and its descendants right by Shift cells.
 struct InsertNode {
     state::Entity MeshEntity;
-    uint32_t Node;
-    uint32_t ToNode;
+    state::Entity Node;
+    state::Entity ToNode;
     uint16_t ToSocket;
     uint32_t Shift;
 };
@@ -88,6 +90,9 @@ void Apply(state::Registry &, const Action &);
 
 // The selection of the mesh's drawn record in the viewport's edit domain as an inline selection for the node, by the record's handles, with the mesh's active element.
 SetInlineSelection CaptureSelection(const state::Registry &, state::Entity mesh_entity, state::Entity node);
+// Sets the inline selection of the mesh's viewport selection node, if any, to the selection of its drawn record.
+// Call after each change of the viewport selection, so the viewport selection is the node's selection.
+void CaptureActiveSelection(state::Registry &, state::Entity mesh_entity);
 // Creates a mesh entity with a copy of the procedure of `from` over new node entities holding copies of its nodes' components, drawing `drawn`, a copy of the record `from` draws.
 state::Entity CopyProcedure(state::Registry &, state::Entity from, uint32_t drawn);
 // The mesh entity whose procedure the editor edits: the active object's mesh, or the active mesh entity.

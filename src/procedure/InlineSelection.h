@@ -65,13 +65,13 @@ inline uint32_t SelectedCount(const DomainSelection &selection) {
 }
 
 // The selected handles of a node's input record, the edit domain they were captured in, and the active element's handle.
-// An empty selection selects everything.
+// All selects every element of the input record, as does a node without an inline selection.
 struct InlineSelection {
     DomainSelection Vertices, Edges, Faces;
     Element Domain{Element::Vertex};
     uint32_t Active{InvalidOffset};
+    bool All{};
 };
-inline bool Empty(const InlineSelection &selection) { return Empty(selection.Vertices) && Empty(selection.Edges) && Empty(selection.Faces); }
 // The inline selection of the handles, captured in the edit domain.
 inline InlineSelection SelectionOf(const GeometrySelection &handles, Element domain) {
     return {.Vertices = SelectionOf(handles.Vertices), .Edges = SelectionOf(handles.Edges), .Faces = SelectionOf(handles.Faces), .Domain = domain};

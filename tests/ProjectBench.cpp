@@ -1,8 +1,10 @@
 #include "Paths.h"
 #include "RunSuites.h"
 #include "TestPaths.h"
+#include "action/Build.h"
 #include "editor/Engine.h"
 #include "mesh/MeshStore.h"
+#include "procedure/Procedure.h"
 #include "scene/Entity.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportComponents.h"
@@ -80,6 +82,35 @@ void BenchScene(uint32_t slices, bool render) {
     std::println("{} vertices: dense drag + commit {:.3f} ms, hot {:.3f} ms, cold {:.3f} ms (medians, {} render)", vertices, Median(edits), Median(hot), Median(cold), render ? "including" : "excluding");
     expect(p.Close());
 }
+// The history bytes a node append and a parameter change copy on a procedure of the node count.
+void BenchProcedureHistory(uint32_t node_count) {
+    const TestDir dir{"mesheditor-project-procedure-bench"};
+    Paths::SetProject(dir);
+    Engine engine{true};
+    auto &r = engine.R;
+    auto &p = *engine.P;
+    expect(p.New(dir, true));
+    p.Settle();
+    p.Do(action::MakeAction(action::object::AddMeshPrimitive{primitive::Cuboid{}, std::make_unique<MeshInstanceCreateInfo>()}));
+    const auto mesh_entity = GetActiveMeshEntity(r);
+    const auto add = [&] { p.Do(action::MakeAction(action::nodes::AddNode{mesh_entity, procedure::KindOf<procedure::FloatValue>, {}})); };
+    for (uint32_t n = 1u; n < node_count; ++n) add();
+    const auto owned = [&] { return p.History.Stats().OwnedBytes; };
+    std::vector<double> appends, changes;
+    for (int i = 0; i < 30; ++i) {
+        const auto before = owned();
+        add();
+        appends.push_back(double(owned() - before));
+    }
+    const auto node = r.get<const procedure::GeometryProcedure>(mesh_entity).Last;
+    for (int i = 0; i < 30; ++i) {
+        const auto before = owned();
+        p.Do(action::MakeAction(action::UpdateOf<&procedure::FloatValue::Value>(node, float(i + 1))));
+        changes.push_back(double(owned() - before));
+    }
+    std::println("{}-node procedure: {:.0f} owned history bytes per node append, {:.0f} per parameter change (medians)", node_count, Median(appends), Median(changes));
+    expect(p.Close());
+}
 } // namespace
 
 int main() {
@@ -134,6 +165,7 @@ int main() {
         std::println("        after eviction: {} owned bytes, {:.3f} MiB shared nodes", stats.OwnedBytes, double(stats.SharedNodeBytes) / MiB);
         expect(history.Close());
     }
+    for (const uint32_t node_count : {20u, 200u}) BenchProcedureHistory(node_count);
     for (const bool render : {false, true}) {
         BenchScene(64, render);
         BenchScene(256, render);

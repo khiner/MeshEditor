@@ -12,10 +12,10 @@ namespace procedure {
 struct Source {}; // Emit the mesh's source geometry.
 struct Join {}; // Append the second input's geometry to the first.
 
-// Combine the inputs in the space Frame1 maps Mesh 1 into and Frame2 maps Mesh 2 into, and emit the result in Mesh 1's space.
+// Combine the inputs, each placed by the world transform of its object or left in place without one, and emit the result in Mesh 1's space.
 struct Boolean {
     BooleanOperation Operation{BooleanOperation::Difference};
-    Transform Frame1{}, Frame2{};
+    state::Entity Object1{state::Null}, Object2{state::Null};
 };
 
 using Generators = TypeList<primitive::Plane, primitive::Circle, primitive::Cuboid, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone>;
@@ -464,15 +464,23 @@ void ForEachKind(auto &&f) {
 }
 
 inline constexpr uint32_t NoNode = UINT32_MAX;
-struct NodeRecord {
-    state::Entity Entity;
-    uint16_t Kind;
+
+// Persistent on a node entity: the mesh entity whose procedure holds the node, the node after it in authoring order or null for the last, and its kind.
+struct ProcedureNode {
+    state::Entity Procedure{state::Null};
+    state::Entity Next{state::Null};
+    uint16_t Kind{};
 };
 
-// The output socket an input reads, or NoNode when unlinked.
+// The output socket an input reads, or a null node when unlinked.
 struct SocketLink {
-    uint32_t FromNode{NoNode};
+    state::Entity FromNode{state::Null};
     uint16_t FromSocket{};
+    bool operator==(const SocketLink &) const = default;
+};
+// Persistent on a node entity: the link of each input socket, in socket order.
+struct NodeInputs {
+    std::vector<SocketLink> Links;
 };
 
 // The output socket carrying a node's geometry or instances, which the mesh draws when the node is displayed, or none.
@@ -484,36 +492,49 @@ constexpr std::optional<uint16_t> ResultSocket(uint16_t kind) {
     return {};
 }
 
-// Persistent on the mesh entity.
+// Persistent on the mesh entity: the first and last of its nodes in authoring order, its displayed node and its active node, each null for a procedure without nodes.
 // The displayed node's result is the mesh's geometry, and the active node is the one the editor's parameter panel edits.
 struct GeometryProcedure {
-    std::vector<NodeRecord> Nodes; // In authoring order
-    std::vector<SocketLink> Inputs; // Each node's input sockets, in node order
-    uint32_t DisplayNode{NoNode};
-    uint32_t ActiveNode{NoNode};
+    state::Entity First{state::Null}, Last{state::Null};
+    state::Entity DisplayNode{state::Null}, ActiveNode{state::Null};
+    bool operator==(const GeometryProcedure &) const = default;
 };
 
-inline uint32_t InputFirst(const GeometryProcedure &procedure, uint32_t node) {
-    uint32_t first = 0u;
-    for (uint32_t n = 0u; n < node; ++n) first += InputCount[procedure.Nodes[n].Kind];
-    return first;
-}
+// The node whose inline selection is the viewport selection of the mesh's drawn record: the active node while its first input reads the displayed node's result and its selection input is unlinked, or null.
+state::Entity ViewportSelectionNode(const state::Registry &, const GeometryProcedure &);
 
-inline std::vector<uint32_t> InputFirsts(const GeometryProcedure &procedure) {
-    std::vector<uint32_t> first{0u};
-    for (const auto &node : procedure.Nodes) first.push_back(first.back() + InputCount[node.Kind]);
-    return first;
-}
+struct NodeRecord {
+    state::Entity Entity;
+    uint16_t Kind;
+};
+// The output socket an input reads by node index in its plan, or NoNode when unlinked.
+struct PlanLink {
+    uint32_t FromNode{NoNode};
+    uint16_t FromSocket{};
+};
+// Derived on the mesh entity: the procedure's nodes and links by node index, and its evaluation order.
+struct CookPlan {
+    std::vector<NodeRecord> Nodes; // In authoring order
+    std::vector<PlanLink> Inputs; // Each node's input sockets, in node order
+    uint32_t DisplayNode{NoNode}, ActiveNode{NoNode};
+    std::vector<uint32_t> Order; // Every node after the nodes it reads
+    std::vector<uint32_t> InputFirst, SocketFirst; // Each node's first input and first socket slot, then the totals
+    std::vector<uint32_t> Consumers; // The inputs reading each socket slot
+};
+// The plan of the procedure as its node components stand.
+CookPlan Plan(const state::Registry &, const GeometryProcedure &);
+// The entity of the plan's node at the index, or null for NoNode.
+inline state::Entity EntityOf(const CookPlan &plan, uint32_t node) { return node == NoNode ? state::Null : plan.Nodes[node].Entity; }
 
-// Mark upstream nodes accepted by follows, using each node input offset.
-std::vector<bool> Upstream(const GeometryProcedure &procedure, std::span<const uint32_t> input_first, uint32_t node, auto &&follows) {
-    std::vector<bool> marked(procedure.Nodes.size());
+// Mark upstream nodes accepted by follows.
+std::vector<bool> Upstream(const CookPlan &plan, uint32_t node, auto &&follows) {
+    std::vector<bool> marked(plan.Nodes.size());
     marked[node] = true;
     for (std::vector<uint32_t> stack{node}; !stack.empty();) {
         const auto n = stack.back();
         stack.pop_back();
-        for (uint32_t i = input_first[n]; i < input_first[n + 1u]; ++i) {
-            if (const auto from = procedure.Inputs[i].FromNode; from != NoNode && !marked[from] && follows(from)) {
+        for (uint32_t i = plan.InputFirst[n]; i < plan.InputFirst[n + 1u]; ++i) {
+            if (const auto from = plan.Inputs[i].FromNode; from != NoNode && !marked[from] && follows(from)) {
                 marked[from] = true;
                 stack.push_back(from);
             }
@@ -532,15 +553,15 @@ inline std::optional<uint16_t> MainSocket(uint16_t kind, SocketDirection directi
 }
 
 // Permit insertion when the main sockets match both link endpoints and the resulting links are acyclic.
-inline bool Inserts(const GeometryProcedure &procedure, std::span<const uint32_t> input_first, uint32_t node, uint32_t to_node, uint16_t to_socket) {
-    const auto link = procedure.Inputs[input_first[to_node] + to_socket];
-    const auto kind = procedure.Nodes[node].Kind, to_kind = procedure.Nodes[to_node].Kind;
+inline bool Inserts(const CookPlan &plan, uint32_t node, uint32_t to_node, uint16_t to_socket) {
+    const auto link = plan.Inputs[plan.InputFirst[to_node] + to_socket];
+    const auto kind = plan.Nodes[node].Kind, to_kind = plan.Nodes[to_node].Kind;
     const auto input = MainSocket(kind, SocketDirection::In), output = MainSocket(kind, SocketDirection::Out);
     if (link.FromNode == NoNode || link.FromNode == node || to_node == node || !input || !output) return false;
-    const auto from_kind = procedure.Nodes[link.FromNode].Kind;
+    const auto from_kind = plan.Nodes[link.FromNode].Kind;
     if (!Links(KindSockets(kind)[*output], KindSockets(to_kind)[to_socket]) || !Links(KindSockets(from_kind)[link.FromSocket], KindSockets(kind)[*input])) return false;
     const auto all = [](uint32_t) { return true; };
-    return !Upstream(procedure, input_first, node, all)[to_node] && !Upstream(procedure, input_first, link.FromNode, all)[node];
+    return !Upstream(plan, node, all)[to_node] && !Upstream(plan, link.FromNode, all)[node];
 }
 
 // Persist published instance entities grouped by parent object.
@@ -564,6 +585,11 @@ template<typename K> constexpr auto Title{field::detail::Spaced<field::fixed_str
 
 struct PublishSelection {}; // Persistent on a node a viewport operator added, which selects its output like the operator does.
 struct NodeSelected {}; // Persistent on a node the editor has selected.
+
+// Creates a procedure node of the kind with default parameters at the grid cell.
+state::Entity CreateNode(state::Registry &, uint16_t kind, uvec2 position);
+// Sets the mesh entity's procedure to the root node of the kind alone, displayed, active and selected.
+void RootProcedure(state::Registry &, state::Entity mesh_entity, state::Entity root, uint16_t kind);
 
 // Faulted nodes pass through their input, as do unchanged nodes and nodes without geometry.
 enum class NodeFault : uint8_t {
@@ -596,17 +622,12 @@ struct EditedInput {
     bool operator==(const EditedInput &) const = default;
 };
 struct StagedNode {}; // Derived on a node a preview step appended, which the stage's later steps edit.
-struct CookPlan {
-    std::vector<uint32_t> Order; // Every node after the nodes it reads
-    std::vector<uint32_t> InputFirst, SocketFirst; // Each node's first input and first socket slot, then the totals
-    std::vector<uint32_t> Consumers; // The inputs reading each socket slot
-};
 } // namespace procedure
 
 template<> inline constexpr field::SpecTable<procedure::Boolean> Specs<procedure::Boolean>{
     {&procedure::Boolean::Operation, {.Help = "Set operation on the two closed input meshes. Difference subtracts the second mesh from the first."}},
-    {&procedure::Boolean::Frame1, {.Help = "Transform from Mesh 1 positions into the space the operation applies in"}},
-    {&procedure::Boolean::Frame2, {.Help = "Transform from Mesh 2 positions into the space the operation applies in"}},
+    {&procedure::Boolean::Object1, {.Help = "Object whose world transform places Mesh 1, or none to leave Mesh 1 in place"}},
+    {&procedure::Boolean::Object2, {.Help = "Object whose world transform places Mesh 2, or none to leave Mesh 2 in place"}},
 };
 template<> inline constexpr field::SpecTable<procedure::Normal> Specs<procedure::Normal>{{&procedure::Normal::Domain, {.Help = "Element domain of the emitted normals: vertices or faces"}}};
 template<> inline constexpr field::SpecTable<procedure::Index> Specs<procedure::Index>{{&procedure::Index::Domain, {.Help = "Element domain of the emitted indices"}}};

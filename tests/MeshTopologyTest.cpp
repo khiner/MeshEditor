@@ -242,7 +242,7 @@ struct Fixture : Engine {
 
     // The mesh's first node and the state of a Source node, which the mesh's geometry starts from.
     std::pair<state::Entity, procedure::SourceState> Root(state::Entity mesh_entity) const {
-        const auto root = R.get<const procedure::GeometryProcedure>(mesh_entity).Nodes.front().Entity;
+        const auto root = R.get<const procedure::GeometryProcedure>(mesh_entity).First;
         const auto *source = R.try_get<const procedure::SourceState>(root);
         return {root, source ? *source : procedure::SourceState{}};
     }
@@ -3089,7 +3089,7 @@ void TestDecimate() {
         f.Checkpoint();
         // The node passes the closed or nonmanifold input through.
         ExpectCounts(f.ActiveMesh(), counts);
-        expect(f.R.all_of<action::mesh::Decimate>(f.R.get<const procedure::GeometryProcedure>(entity).Nodes.back().Entity));
+        expect(f.R.all_of<action::mesh::Decimate>(f.R.get<const procedure::GeometryProcedure>(entity).Last));
     }
 }
 

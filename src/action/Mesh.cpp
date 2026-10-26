@@ -106,13 +106,13 @@ void CombineSelected(state::Registry &r, const action::mesh::Boolean &boolean) {
     namespace nodes = action::nodes;
     const auto boolean_entity = nodes::AppendNode(r, first, procedure::KindOf<procedure::Boolean>);
     if (boolean_entity == state::Null) return;
-    r.replace<procedure::Boolean>(boolean_entity, boolean.Operation, first_world, second_world);
-    const auto node = uint32_t(r.get<const procedure::GeometryProcedure>(first).Nodes.size()) - 1u;
+    r.replace<procedure::Boolean>(boolean_entity, boolean.Operation, active, others.front());
     const auto position = r.get<const procedure::NodeLayout>(boolean_entity).Position;
     nodes::Apply(r, nodes::AddNode{first, procedure::KindOf<procedure::ObjectInfo>, {position.x - std::min(position.x, InfoOffset.x), position.y + InfoOffset.y}});
-    r.replace<procedure::ObjectInfo>(r.get<const procedure::GeometryProcedure>(first).Nodes.back().Entity, others.front());
-    nodes::Apply(r, nodes::Link{first, node + 1u, 0u, node, 1u});
-    nodes::Apply(r, nodes::SelectNodes{first, {node}, node});
+    const auto info = r.get<const procedure::GeometryProcedure>(first).Last;
+    r.replace<procedure::ObjectInfo>(info, others.front());
+    nodes::Apply(r, nodes::Link{first, info, 0u, boolean_entity, 1u});
+    nodes::Apply(r, nodes::SelectNodes{first, {boolean_entity}, boolean_entity});
 }
 
 // The world transform of the mesh's transformable primary instance, which transformed position operators edit the mesh in.
@@ -253,7 +253,9 @@ void Apply(state::Registry &r, const Action &action) {
             r.Resources.get<GpuSceneState>().EditSelectionDirty = true;
             for (const auto &[entity, instance] : r.get<const EditPrimaries>(state::Document).All) {
                 r.remove<MeshActiveElement>(entity);
-                if (HasMesh(r, entity)) ReopenSourceState(r, entity);
+                if (!HasMesh(r, entity)) continue;
+                ReopenSourceState(r, entity);
+                nodes::CaptureActiveSelection(r, entity);
             }
         }
     };

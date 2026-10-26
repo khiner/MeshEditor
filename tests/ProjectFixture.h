@@ -157,7 +157,7 @@ struct Live {
 
 // Every recorded node restores without cooking, hot and then cold, and each one made by actions replays.
 // A history made by actions alone replays whole and reopens from an actions archive, and the present reopens from a saved project, each with the workspace applied.
-// The reopened present's actions replay from its parent to the same document, before and after clearing the history.
+// The present's actions replay from its parent to the same document with the same number of cooks hot, after a cold open and after clearing the history.
 inline void CheckHistory(Fixture &f, Fixture &other, const std::map<uint32_t, Live> &nodes, const std::set<uint32_t> &direct, const TestDir &dir) {
     using boost::ut::expect;
     auto &p = *f.P;
@@ -198,6 +198,18 @@ inline void CheckHistory(Fixture &f, Fixture &other, const std::map<uint32_t, Li
             node_live.Check(other, node == present);
         }
     }
+    // The present's actions replay from its parent with the same number of cooks hot, after a cold open and after clearing the history, so a restore the session made in place stays in place.
+    const auto parent = p.History.Nodes[present].Parent;
+    const bool replays = parent && !direct.contains(present);
+    const auto actions = p.History.Nodes[present].Actions;
+    uint64_t replay_cooks = 0u;
+    if (replays) {
+        p.Navigate(*parent);
+        const auto cooks = Cooks(f.R);
+        expect(p.History.Callbacks.Replay(actions).has_value());
+        replay_cooks = Cooks(f.R) - cooks;
+        p.Navigate(present);
+    }
     const TestDir saved{(dir.Path.string() + "-saved").c_str()};
     const auto bytes = f.Workspace();
     expect(p.SaveAs(saved, bytes));
@@ -207,14 +219,14 @@ inline void CheckHistory(Fixture &f, Fixture &other, const std::map<uint32_t, Li
     expect(other.P->RestoredWorkspace == bytes);
     snapshot::ApplyWorkspace(other.R, live.Workspace);
     live.Check(other, true);
-    const auto parent = other.P->History.Nodes[present].Parent;
-    if (!parent || direct.contains(present)) return;
-    const auto actions = other.P->History.Nodes[present].Actions;
+    if (!replays) return;
     for (const bool clear : {false, true}) {
         other.P->Navigate(*parent);
         if (clear) expect(other.P->ClearHistory());
+        const auto cooks = Cooks(other.R);
         expect(other.P->History.Callbacks.Replay(actions).has_value());
         expect(other.P->History.MaterializeLive() == live.Document);
+        expect(Cooks(other.R) - cooks == replay_cooks);
         other.Audit();
     }
 }
@@ -241,3 +253,6 @@ template<typename F> void Scenario(F &f, Fixture &other, std::string name, auto 
         CheckHistory(f, other, nodes, direct, dir);
     };
 }
+
+// Runs the procedure scenarios.
+void TestProcedures();

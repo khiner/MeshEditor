@@ -9,7 +9,6 @@
 #include "ui/FieldEdit.h"
 #include "ui/InterfaceUi.h"
 #include "viewport/FrameState.h"
-#include "viewport/InteractionComponents.h"
 
 #include <imgui_internal.h>
 
@@ -269,7 +268,7 @@ ImVec2 SocketCell(uint16_t kind, uint16_t socket, uint16_t width, bool expanded)
 
 // The screen layout of a procedure's nodes, with cell c at Origin + c * Step.
 struct Graph {
-    const GeometryProcedure &Procedure;
+    const CookPlan &Plan;
     const NodeTheme &Theme;
     ImVec2 Origin;
     float Step; // A cell on the screen
@@ -277,13 +276,13 @@ struct Graph {
     uint32_t Expanded;
     std::vector<Box> Boxes;
 };
-Graph GraphOf(const state::Registry &r, const GeometryProcedure &procedure, const NodeTheme &theme, ImVec2 origin, float cell, float zoom, uint32_t expanded) {
+Graph GraphOf(const state::Registry &r, const CookPlan &plan, const NodeTheme &theme, ImVec2 origin, float cell, float zoom, uint32_t expanded) {
     // A node index a deletion left stale opens no tray.
-    const bool open = expanded < procedure.Nodes.size() && ParameterRange(procedure.Nodes[expanded].Kind).second > ParameterRange(procedure.Nodes[expanded].Kind).first;
-    Graph graph{procedure, theme, origin, cell * zoom, zoom, open ? expanded : NoNode, {}};
-    graph.Boxes.reserve(procedure.Nodes.size());
-    for (uint32_t n = 0u; n < procedure.Nodes.size(); ++n) {
-        const auto [entity, kind] = procedure.Nodes[n];
+    const bool open = expanded < plan.Nodes.size() && ParameterRange(plan.Nodes[expanded].Kind).second > ParameterRange(plan.Nodes[expanded].Kind).first;
+    Graph graph{plan, theme, origin, cell * zoom, zoom, open ? expanded : NoNode, {}};
+    graph.Boxes.reserve(plan.Nodes.size());
+    for (uint32_t n = 0u; n < plan.Nodes.size(); ++n) {
+        const auto [entity, kind] = plan.Nodes[n];
         auto box = BoxOf(theme, cell, kind, n == graph.Expanded);
         const auto position = r.get<const NodeLayout>(entity).Position;
         box.X = position.x;
@@ -298,10 +297,10 @@ ImRect RectOf(const Graph &graph, const Box &box) {
 // A collapsed node's parameters chevron sits at its first parameter socket.
 ImVec2 SocketAt(const Graph &graph, uint32_t node, uint16_t socket) {
     const auto &box = graph.Boxes[node];
-    return graph.Origin + (ImVec2{float(box.X), float(box.Y) + .5f} + SocketCell(graph.Procedure.Nodes[node].Kind, socket, box.W, node == graph.Expanded)) * graph.Step;
+    return graph.Origin + (ImVec2{float(box.X), float(box.Y) + .5f} + SocketCell(graph.Plan.Nodes[node].Kind, socket, box.W, node == graph.Expanded)) * graph.Step;
 }
 ImRect TrayRect(const Graph &graph, uint32_t node) {
-    const auto [first, end] = ParameterRange(graph.Procedure.Nodes[node].Kind);
+    const auto [first, end] = ParameterRange(graph.Plan.Nodes[node].Kind);
     const float reach = graph.Theme.Sizes.SocketRadius * 1.2f * graph.Zoom + 3.f, row = graph.Step;
     const auto at = SocketAt(graph, node, first);
     return {{at.x - reach, at.y - row * .5f}, {at.x + reach, at.y + (float(end - first) - .5f) * row}};
@@ -332,13 +331,13 @@ std::optional<std::pair<int64_t, int64_t>> Place(const Graph &graph, std::span<c
     }
     return {};
 }
-bool IsLinked(const GeometryProcedure &procedure, uint32_t node, uint16_t socket) { return procedure.Inputs[InputFirst(procedure, node) + socket].FromNode != NoNode; }
-std::vector<Socket> LinkedParameters(const GeometryProcedure &procedure, uint32_t node) {
-    const auto kind = procedure.Nodes[node].Kind;
+bool IsLinked(const CookPlan &plan, uint32_t node, uint16_t socket) { return plan.Inputs[plan.InputFirst[node] + socket].FromNode != NoNode; }
+std::vector<Socket> LinkedParameters(const CookPlan &plan, uint32_t node) {
+    const auto kind = plan.Nodes[node].Kind;
     const auto [first, end] = ParameterRange(kind);
     std::vector<Socket> linked;
     for (auto s = first; s < end; ++s) {
-        if (IsLinked(procedure, node, s)) linked.push_back(KindSockets(kind)[s]);
+        if (IsLinked(plan, node, s)) linked.push_back(KindSockets(kind)[s]);
     }
     return linked;
 }
@@ -353,10 +352,10 @@ Wire WireOf(ImVec2 from, ImVec2 to, float curving) {
 ImVec2 NearestOnWire(const Wire &w, ImVec2 p) { return ImBezierCubicClosestPoint(w[0], w[1], w[2], w[3], p, 24); }
 // Visits each linked input as `f(wire, link, node, input)`.
 void ForEachWire(const Graph &graph, auto &&f) {
-    const auto &procedure = graph.Procedure;
-    for (uint32_t n = 0u, slot = 0u; n < procedure.Nodes.size(); ++n) {
-        for (uint16_t i = 0u; i < InputCount[procedure.Nodes[n].Kind]; ++i, ++slot) {
-            if (const auto link = procedure.Inputs[slot]; link.FromNode != NoNode) f(WireOf(SocketAt(graph, link.FromNode, link.FromSocket), SocketAt(graph, n, i), graph.Theme.Sizes.WireCurving), link, n, i);
+    const auto &plan = graph.Plan;
+    for (uint32_t n = 0u, slot = 0u; n < plan.Nodes.size(); ++n) {
+        for (uint16_t i = 0u; i < InputCount[plan.Nodes[n].Kind]; ++i, ++slot) {
+            if (const auto link = plan.Inputs[slot]; link.FromNode != NoNode) f(WireOf(SocketAt(graph, link.FromNode, link.FromSocket), SocketAt(graph, n, i), graph.Theme.Sizes.WireCurving), link, n, i);
         }
     }
 }
@@ -375,7 +374,7 @@ struct Hit {
 Hit HitTest(const Graph &graph, ImVec2 mouse) {
     const float reach = std::max(graph.Theme.Sizes.SocketRadius * graph.Zoom, 4.f) + 3.f;
     const auto sockets = [&](uint32_t n) -> std::optional<Hit> {
-        const auto kind = graph.Procedure.Nodes[n].Kind;
+        const auto kind = graph.Plan.Nodes[n].Kind;
         const auto [first, end] = ParameterRange(kind);
         const bool collapsed = n != graph.Expanded;
         const auto near = [&](uint16_t s) { return ImLengthSqr(SocketAt(graph, n, s) - mouse) <= reach * reach; };
@@ -396,7 +395,7 @@ Hit HitTest(const Graph &graph, ImVec2 mouse) {
         if (RectOf(graph, graph.Boxes[n]).Contains(mouse)) return {HitType::Node, n, 0u};
     }
     Hit hit;
-    ForEachWire(graph, [&](const Wire &wire, SocketLink, uint32_t node, uint16_t input) {
+    ForEachWire(graph, [&](const Wire &wire, PlanLink, uint32_t node, uint16_t input) {
         if (hit.Type == HitType::None && ImLengthSqr(NearestOnWire(wire, mouse) - mouse) <= LinkReach * LinkReach) hit = {HitType::Link, node, input};
     });
     return hit;
@@ -407,25 +406,26 @@ bool Joins(uint16_t held_kind, uint16_t held_socket, uint16_t kind, uint16_t soc
     if (held.Direction == other.Direction) return false;
     return held.Direction == SocketDirection::Out ? Links(held, other) : Links(other, held);
 }
-bool Accepts(const GeometryProcedure &procedure, uint32_t held_node, uint16_t held_socket, uint32_t node, uint16_t socket) {
-    return node != held_node && Joins(procedure.Nodes[held_node].Kind, held_socket, procedure.Nodes[node].Kind, socket);
+bool Accepts(const CookPlan &plan, uint32_t held_node, uint16_t held_socket, uint32_t node, uint16_t socket) {
+    return node != held_node && Joins(plan.Nodes[held_node].Kind, held_socket, plan.Nodes[node].Kind, socket);
 }
-std::vector<uint16_t> LinkingSockets(const GeometryProcedure &procedure, uint32_t held_node, uint16_t held_socket, uint32_t node, std::pair<uint16_t, uint16_t> range) {
+std::vector<uint16_t> LinkingSockets(const CookPlan &plan, uint32_t held_node, uint16_t held_socket, uint32_t node, std::pair<uint16_t, uint16_t> range) {
     std::vector<uint16_t> sockets;
     for (auto s = range.first; s < range.second; ++s) {
-        if (Accepts(procedure, held_node, held_socket, node, s)) sockets.push_back(s);
+        if (Accepts(plan, held_node, held_socket, node, s)) sockets.push_back(s);
     }
     return sockets;
 }
-action::nodes::Link LinkOf(const GeometryProcedure &procedure, state::Entity mesh_entity, uint32_t held_node, uint16_t held_socket, uint32_t node, uint16_t socket) {
-    const bool from_held = KindSockets(procedure.Nodes[held_node].Kind)[held_socket].Direction == SocketDirection::Out;
-    return from_held ? action::nodes::Link{mesh_entity, held_node, held_socket, node, socket} : action::nodes::Link{mesh_entity, node, socket, held_node, held_socket};
+action::nodes::Link LinkOf(const CookPlan &plan, state::Entity mesh_entity, uint32_t held_node, uint16_t held_socket, uint32_t node, uint16_t socket) {
+    const bool from_held = KindSockets(plan.Nodes[held_node].Kind)[held_socket].Direction == SocketDirection::Out;
+    const auto held = plan.Nodes[held_node].Entity, other = plan.Nodes[node].Entity;
+    return from_held ? action::nodes::Link{mesh_entity, held, held_socket, other, socket} : action::nodes::Link{mesh_entity, other, socket, held, held_socket};
 }
 // Drops the held wire on the node's sockets in the range: it links with the one socket that takes it, or the port picker offers the sockets that do.
-void DropOnNode(NodesPanel &panel, const GeometryProcedure &procedure, state::Entity mesh_entity, uint32_t node, std::pair<uint16_t, uint16_t> range) {
-    const auto sockets = LinkingSockets(procedure, panel.DragNode, panel.DragSocket, node, range);
+void DropOnNode(NodesPanel &panel, const CookPlan &plan, state::Entity mesh_entity, uint32_t node, std::pair<uint16_t, uint16_t> range) {
+    const auto sockets = LinkingSockets(plan, panel.DragNode, panel.DragSocket, node, range);
     if (sockets.size() == 1u) {
-        action::Emit(LinkOf(procedure, mesh_entity, panel.DragNode, panel.DragSocket, node, sockets.front()));
+        action::Emit(LinkOf(plan, mesh_entity, panel.DragNode, panel.DragSocket, node, sockets.front()));
     } else if (sockets.size() > 1u) {
         panel.PickNode = node;
         panel.PickRange = range;
@@ -442,31 +442,38 @@ void Grab(NodesPanel &panel, uint32_t after) {
     panel.Moved = false;
 }
 
-std::vector<uint32_t> SelectedNodes(const state::Registry &r, const GeometryProcedure &procedure) {
+// The entities of the plan's nodes at the indices.
+std::vector<state::Entity> EntitiesOf(const CookPlan &plan, std::span<const uint32_t> indices) {
+    std::vector<state::Entity> entities;
+    entities.reserve(indices.size());
+    for (const auto n : indices) entities.push_back(plan.Nodes[n].Entity);
+    return entities;
+}
+std::vector<uint32_t> SelectedNodes(const state::Registry &r, const CookPlan &plan) {
     std::vector<uint32_t> selected;
-    for (uint32_t n = 0u; n < procedure.Nodes.size(); ++n) {
-        if (r.all_of<NodeSelected>(procedure.Nodes[n].Entity)) selected.push_back(n);
+    for (uint32_t n = 0u; n < plan.Nodes.size(); ++n) {
+        if (r.all_of<NodeSelected>(plan.Nodes[n].Entity)) selected.push_back(n);
     }
     return selected;
 }
 
 // Connect adjacent selected nodes in horizontal order, using the first compatible input.
 // Skip cycles and occupied inputs unless `replace` is set.
-std::vector<action::nodes::Link> MakeLinks(const state::Registry &r, state::Entity mesh_entity, GeometryProcedure procedure, std::vector<uint32_t> nodes, bool replace) {
-    std::ranges::stable_sort(nodes, {}, [&](uint32_t n) { return r.get<const NodeLayout>(procedure.Nodes[n].Entity).Position.x; });
-    const auto input_first = InputFirsts(procedure);
+std::vector<action::nodes::Link> MakeLinks(const state::Registry &r, state::Entity mesh_entity, CookPlan plan, std::vector<uint32_t> nodes, bool replace) {
+    std::ranges::stable_sort(nodes, {}, [&](uint32_t n) { return r.get<const NodeLayout>(plan.Nodes[n].Entity).Position.x; });
+    const auto &input_first = plan.InputFirst;
     std::vector<action::nodes::Link> links;
     for (size_t i = 0u; i + 1u < nodes.size(); ++i) {
         auto from = nodes[i], to = nodes[i + 1u];
-        if (InputCount[procedure.Nodes[to].Kind] == 0u || SocketCount[procedure.Nodes[from].Kind] == InputCount[procedure.Nodes[from].Kind]) std::swap(from, to);
-        if (Upstream(procedure, input_first, from, [](uint32_t) { return true; })[to]) continue;
-        const auto from_kind = procedure.Nodes[from].Kind, to_kind = procedure.Nodes[to].Kind;
+        if (InputCount[plan.Nodes[to].Kind] == 0u || SocketCount[plan.Nodes[from].Kind] == InputCount[plan.Nodes[from].Kind]) std::swap(from, to);
+        if (Upstream(plan, from, [](uint32_t) { return true; })[to]) continue;
+        const auto from_kind = plan.Nodes[from].Kind, to_kind = plan.Nodes[to].Kind;
         const auto first_link = [&](bool linked) -> std::optional<action::nodes::Link> {
             for (uint16_t input = 0u; input < InputCount[to_kind]; ++input) {
-                const auto current = procedure.Inputs[input_first[to] + input];
+                const auto current = plan.Inputs[input_first[to] + input];
                 if ((current.FromNode != NoNode) != linked) continue;
                 for (uint16_t output = InputCount[from_kind]; output < SocketCount[from_kind]; ++output) {
-                    if (Links(KindSockets(from_kind)[output], KindSockets(to_kind)[input]) && (current.FromNode != from || current.FromSocket != output)) return action::nodes::Link{mesh_entity, from, output, to, input};
+                    if (Links(KindSockets(from_kind)[output], KindSockets(to_kind)[input]) && (current.FromNode != from || current.FromSocket != output)) return action::nodes::Link{mesh_entity, plan.Nodes[from].Entity, output, plan.Nodes[to].Entity, input};
                 }
             }
             return {};
@@ -474,7 +481,7 @@ std::vector<action::nodes::Link> MakeLinks(const state::Registry &r, state::Enti
         auto link = first_link(false);
         if (!link && replace) link = first_link(true);
         if (!link) continue;
-        procedure.Inputs[input_first[to] + link->ToSocket] = {from, link->FromSocket};
+        plan.Inputs[input_first[to] + link->ToSocket] = {from, link->FromSocket};
         links.push_back(*link);
     }
     return links;
@@ -489,12 +496,11 @@ struct Insert {
 };
 // Return the nearest link the node inserts into.
 std::optional<Insert> InsertTarget(const Graph &graph, uint32_t node, ImVec2 mouse) {
-    const auto input_first = InputFirsts(graph.Procedure);
     std::optional<Insert> insert;
     float nearest = LinkReach * LinkReach;
-    ForEachWire(graph, [&](const Wire &wire, SocketLink, uint32_t to_node, uint16_t input) {
+    ForEachWire(graph, [&](const Wire &wire, PlanLink, uint32_t to_node, uint16_t input) {
         const auto at = NearestOnWire(wire, mouse);
-        if (const float distance = ImLengthSqr(at - mouse); distance <= nearest && Inserts(graph.Procedure, input_first, node, to_node, input)) {
+        if (const float distance = ImLengthSqr(at - mouse); distance <= nearest && Inserts(graph.Plan, node, to_node, input)) {
             nearest = distance;
             const auto &box = graph.Boxes[node], &reader = graph.Boxes[to_node];
             const uint32_t clear = box.X + box.W + 1u;
@@ -507,11 +513,11 @@ std::optional<Insert> InsertTarget(const Graph &graph, uint32_t node, ImVec2 mou
 // Emit canvas actions and insert a dragged node when released over an insertion target.
 void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_entity, const Graph &graph, const std::vector<uint32_t> &selected, const Hit &hit, const std::optional<Insert> &insert) {
     const auto &io = GetIO();
-    const auto &procedure = graph.Procedure;
-    const auto &nodes = procedure.Nodes;
+    const auto &plan = graph.Plan;
+    const auto &nodes = plan.Nodes;
     const auto mouse = io.MousePos;
     const bool mouse_moved = io.MouseDelta.x != 0.f || io.MouseDelta.y != 0.f;
-    const auto select = [&](std::vector<uint32_t> selection, uint32_t active) { action::Emit(action::nodes::SelectNodes{mesh_entity, std::move(selection), active}); };
+    const auto select = [&](const std::vector<uint32_t> &selection, uint32_t active, bool display = false) { action::Emit(action::nodes::SelectNodes{mesh_entity, EntitiesOf(plan, selection), active == NoNode ? state::Null : nodes[active].Entity, display}); };
     const auto open_add = [&](bool linking) {
         const auto cell = (mouse - graph.Origin) / graph.Step;
         panel.AddAt = {std::max(std::floor(cell.x), 0.f), std::max(std::floor(cell.y), 0.f)};
@@ -530,7 +536,7 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
     // Commit staged move or grab actions together with insertion, or cancel the whole operation.
     const auto end_move = [&](bool commit) {
         if (panel.Moved && commit) {
-            if (insert) action::Emit(action::nodes::InsertNode{mesh_entity, panel.DragNode, insert->ToNode, insert->ToSocket, insert->Shift}, action::Phase::Stage);
+            if (insert) action::Emit(action::nodes::InsertNode{mesh_entity, nodes[panel.DragNode].Entity, nodes[insert->ToNode].Entity, insert->ToSocket, insert->Shift}, action::Phase::Stage);
             action::Commit();
         } else if (panel.Moved) {
             action::Cancel();
@@ -544,7 +550,7 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
                 panel.Drag = NodeDrag::None;
                 return;
             }
-            panel.DragNode = procedure.ActiveNode;
+            panel.DragNode = plan.ActiveNode;
             panel.MoveStart = r.get<const NodeLayout>(nodes[panel.DragNode].Entity).Position;
         }
         if (IsMouseClicked(ImGuiMouseButton_Left)) end_move(true);
@@ -566,20 +572,23 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
             } else if (hit.Type == HitType::Node || hit.Type == HitType::Parameters) {
                 // Shift-click on the selected active node removes it from the selection.
                 // Any other click activates and displays the clicked node, and a click without Shift on an unselected node selects it alone.
-                const bool is_selected = r.all_of<NodeSelected>(nodes[hit.Node].Entity), active = hit.Node == procedure.ActiveNode;
+                const bool is_selected = r.all_of<NodeSelected>(nodes[hit.Node].Entity), active = hit.Node == plan.ActiveNode;
                 if (io.KeyShift && is_selected && active) {
                     auto remaining = selected;
                     std::erase(remaining, hit.Node);
-                    select(std::move(remaining), NoNode);
+                    select(remaining, NoNode);
                 } else {
+                    // One frame carries one emitted action, so the click's selection carries its display.
+                    const bool display = hit.Node != plan.DisplayNode;
                     if (!io.KeyShift && !is_selected) {
-                        select({hit.Node}, hit.Node);
+                        select({hit.Node}, hit.Node, display);
                     } else if (!active) {
                         auto extended = selected;
                         if (!is_selected) extended.insert(std::ranges::lower_bound(extended, hit.Node), hit.Node);
-                        select(std::move(extended), hit.Node);
+                        select(extended, hit.Node, display);
+                    } else if (display) {
+                        action::Emit(action::nodes::SetDisplay{mesh_entity, nodes[hit.Node].Entity});
                     }
-                    if (hit.Node != procedure.DisplayNode) action::Emit(action::nodes::SetDisplay{mesh_entity, hit.Node});
                     panel.Drag = NodeDrag::Move;
                     panel.DragNode = hit.Node;
                     panel.Moved = false;
@@ -597,20 +606,20 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
         if (Shortcut(ImGuiMod_Shift | ImGuiKey_A, Key)) {
             open_add(false);
         } else if (Shortcut(ImGuiKey_X, Key) || Shortcut(ImGuiKey_Delete, Key) || Shortcut(ImGuiKey_Backspace, Key)) {
-            if (!selected.empty()) action::Emit(action::nodes::DeleteNodes{mesh_entity, selected});
+            if (!selected.empty()) action::Emit(action::nodes::DeleteNodes{mesh_entity, EntitiesOf(plan, selected)});
         } else if (const bool replace = Shortcut(ImGuiMod_Shift | ImGuiKey_J, Key); replace || Shortcut(ImGuiKey_J, Key)) {
-            panel.PendingLinks = MakeLinks(r, mesh_entity, procedure, selected, replace);
+            panel.PendingLinks = MakeLinks(r, mesh_entity, plan, selected, replace);
         } else if (Shortcut(ImGuiMod_Shift | ImGuiKey_D, Key)) {
             if (!selected.empty()) {
-                action::Emit(action::nodes::DuplicateNodes{mesh_entity, selected});
+                action::Emit(action::nodes::DuplicateNodes{mesh_entity, EntitiesOf(plan, selected)});
                 Grab(panel, uint32_t(nodes.size()));
             }
         } else if (Shortcut(ImGuiKey_G, Key)) {
-            if (procedure.ActiveNode != NoNode && r.all_of<NodeSelected>(nodes[procedure.ActiveNode].Entity)) Grab(panel, uint32_t(nodes.size()) - 1u);
+            if (plan.ActiveNode != NoNode && r.all_of<NodeSelected>(nodes[plan.ActiveNode].Entity)) Grab(panel, uint32_t(nodes.size()) - 1u);
         } else if (Shortcut(ImGuiKey_A, Key)) {
             std::vector<uint32_t> all(nodes.size());
             std::ranges::iota(all, 0u);
-            if (selected != all) select(std::move(all), NoNode);
+            if (selected != all) select(all, NoNode);
         } else if (Shortcut(ImGuiMod_Alt | ImGuiKey_A, Key)) {
             if (!selected.empty()) select({}, NoNode);
         }
@@ -620,7 +629,7 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
         else if (panel.Moved && IsKeyPressed(ImGuiKey_Escape)) end_move(false);
         else if (IsMouseDragging(ImGuiMouseButton_Left)) {
             const bool first = !panel.Moved;
-            if (first && panel.DragNode == procedure.ActiveNode) {
+            if (first && panel.DragNode == plan.ActiveNode) {
                 panel.Moved = true;
                 panel.MoveStart = r.get<const NodeLayout>(nodes[panel.DragNode].Entity).Position;
             }
@@ -629,10 +638,10 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
         }
     }
     if (panel.Drag == NodeDrag::Wire && !IsMouseDown(ImGuiMouseButton_Left)) {
-        if (hit.Type == HitType::Socket) DropOnNode(panel, procedure, mesh_entity, hit.Node, {hit.Socket, uint16_t(hit.Socket + 1u)});
-        else if (hit.Type == HitType::Parameters) DropOnNode(panel, procedure, mesh_entity, hit.Node, ParameterRange(nodes[hit.Node].Kind));
-        else if (hit.Type == HitType::Node) DropOnNode(panel, procedure, mesh_entity, hit.Node, {0u, SocketCount[nodes[hit.Node].Kind]});
-        else if (KindSockets(nodes[panel.DragNode].Kind)[panel.DragSocket].Direction == SocketDirection::In && IsLinked(procedure, panel.DragNode, panel.DragSocket)) action::Emit(action::nodes::Unlink{mesh_entity, panel.DragNode, panel.DragSocket});
+        if (hit.Type == HitType::Socket) DropOnNode(panel, plan, mesh_entity, hit.Node, {hit.Socket, uint16_t(hit.Socket + 1u)});
+        else if (hit.Type == HitType::Parameters) DropOnNode(panel, plan, mesh_entity, hit.Node, ParameterRange(nodes[hit.Node].Kind));
+        else if (hit.Type == HitType::Node) DropOnNode(panel, plan, mesh_entity, hit.Node, {0u, SocketCount[nodes[hit.Node].Kind]});
+        else if (KindSockets(nodes[panel.DragNode].Kind)[panel.DragSocket].Direction == SocketDirection::In && IsLinked(plan, panel.DragNode, panel.DragSocket)) action::Emit(action::nodes::Unlink{mesh_entity, nodes[panel.DragNode].Entity, panel.DragSocket});
         else if (panel.Hovered) open_add(true); // Open Add on an empty-canvas wire drop.
         panel.Drag = NodeDrag::None;
     }
@@ -645,7 +654,7 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
             for (uint32_t n = 0u; n < nodes.size(); ++n) {
                 if (box.Overlaps(RectOf(graph, graph.Boxes[n])) || (io.KeyShift && std::ranges::binary_search(selected, n))) banded.push_back(n);
             }
-            if (banded != selected) select(std::move(banded), NoNode);
+            if (banded != selected) select(banded, NoNode);
         } else if (!io.KeyShift && !selected.empty()) {
             select({}, NoNode);
         }
@@ -707,9 +716,9 @@ std::optional<int> DrawResults(int count, float width, int &highlight, int previ
 
 // Add the selected node at the menu position and begin dragging it.
 // After dropping a wire, list compatible sockets and connect the new node once it exists.
-void DrawAddMenu(NodesPanel &panel, const NodeTheme &theme, float cell, state::Entity mesh_entity, const GeometryProcedure &procedure, bool interactive) {
+void DrawAddMenu(NodesPanel &panel, const NodeTheme &theme, float cell, state::Entity mesh_entity, const CookPlan &plan, bool interactive) {
     if (!BeginPopup("##AddNode")) return;
-    const auto &nodes = procedure.Nodes;
+    const auto &nodes = plan.Nodes;
     const bool linking = panel.Linking && panel.DragNode < nodes.size();
     const auto add = [&](uint16_t kind) {
         if (!interactive) return;
@@ -774,18 +783,18 @@ void DrawAddMenu(NodesPanel &panel, const NodeTheme &theme, float cell, state::E
     EndPopup();
 }
 
-void DrawPortPicker(NodesPanel &panel, state::Entity mesh_entity, const GeometryProcedure &procedure, bool interactive) {
+void DrawPortPicker(NodesPanel &panel, state::Entity mesh_entity, const CookPlan &plan, bool interactive) {
     if (panel.PickNode == NoNode) return;
     if (!BeginPopup("##PickPort")) {
         panel.PickNode = NoNode;
         return;
     }
-    const auto &nodes = procedure.Nodes;
+    const auto &nodes = plan.Nodes;
     const auto node = panel.PickNode;
     if (node < nodes.size() && panel.DragNode < nodes.size()) {
         const auto sockets = KindSockets(nodes[node].Kind);
-        for (const auto s : LinkingSockets(procedure, panel.DragNode, panel.DragSocket, node, panel.PickRange)) {
-            if (MenuItem(LabelOf(sockets[s])) && interactive) action::Emit(LinkOf(procedure, mesh_entity, panel.DragNode, panel.DragSocket, node, s));
+        for (const auto s : LinkingSockets(plan, panel.DragNode, panel.DragSocket, node, panel.PickRange)) {
+            if (MenuItem(LabelOf(sockets[s])) && interactive) action::Emit(LinkOf(plan, mesh_entity, panel.DragNode, panel.DragSocket, node, s));
         }
     } else {
         CloseCurrentPopup();
@@ -794,9 +803,9 @@ void DrawPortPicker(NodesPanel &panel, state::Entity mesh_entity, const Geometry
     EndPopup();
 }
 
-void RecordHover(const state::Registry &r, const NodesPanel &panel, const GeometryProcedure &procedure, const Hit &hit) {
+void RecordHover(const state::Registry &r, const NodesPanel &panel, const CookPlan &plan, const Hit &hit) {
     if (hit.Type == HitType::None) return;
-    const auto [entity, kind] = procedure.Nodes[hit.Node];
+    const auto [entity, kind] = plan.Nodes[hit.Node];
     if (hit.Type == HitType::Node) {
         const auto *error = r.try_get<const NodeError>(entity);
         ui::Hovered = {.Label = KindTitles[kind], .Path = GroupNames[uint8_t(KindGroups[kind])], .Type = KindTitles[kind], .Help = KindHelp[kind], .Status = error ? FaultTexts[uint8_t(error->Fault)] : nullptr};
@@ -805,8 +814,8 @@ void RecordHover(const state::Registry &r, const NodesPanel &panel, const Geomet
     } else if (hit.Type == HitType::Socket) {
         const auto socket = KindSockets(kind)[hit.Socket];
         const bool held = panel.DragNode == hit.Node && panel.DragSocket == hit.Socket;
-        const bool dimmed = panel.Drag == NodeDrag::Wire && !held && !Accepts(procedure, panel.DragNode, panel.DragSocket, hit.Node, hit.Socket);
-        const bool linked = socket.Direction == SocketDirection::In && IsLinked(procedure, hit.Node, hit.Socket);
+        const bool dimmed = panel.Drag == NodeDrag::Wire && !held && !Accepts(plan, panel.DragNode, panel.DragSocket, hit.Node, hit.Socket);
+        const bool linked = socket.Direction == SocketDirection::In && IsLinked(plan, hit.Node, hit.Socket);
         ui::Hovered = {
             .Label = LabelOf(socket),
             .Path = KindTitles[kind],
@@ -816,19 +825,19 @@ void RecordHover(const state::Registry &r, const NodesPanel &panel, const Geomet
                                                                            nullptr,
         };
     } else {
-        const auto link = procedure.Inputs[InputFirst(procedure, hit.Node) + hit.Socket];
+        const auto link = plan.Inputs[plan.InputFirst[hit.Node] + hit.Socket];
         ui::Hovered = {
             .Label = "Link",
             .Path = KindTitles[kind],
-            .Type = SocketTypeText(KindSockets(procedure.Nodes[link.FromNode].Kind)[link.FromSocket]),
+            .Type = SocketTypeText(KindSockets(plan.Nodes[link.FromNode].Kind)[link.FromSocket]),
             .Help = "Drag the link's input end. Drop it on an output to relink it, or on empty canvas to unlink it.",
         };
     }
 }
 
-void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, const NodeTheme &theme, state::Entity mesh_entity, const GeometryProcedure &procedure, bool interactive) {
+void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, const NodeTheme &theme, state::Entity mesh_entity, const CookPlan &plan, bool interactive) {
     const auto &io = GetIO();
-    const auto &nodes = procedure.Nodes;
+    const auto &nodes = plan.Nodes;
     if ((panel.Drag == NodeDrag::Move || panel.Drag == NodeDrag::Wire || (panel.Drag == NodeDrag::Grab && panel.DragNode != NoNode)) && panel.DragNode >= nodes.size()) panel.Drag = NodeDrag::None;
     const auto origin = GetCursorScreenPos();
     const auto size = GetContentRegionAvail();
@@ -862,10 +871,10 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
     // Keep cell zero at or beyond the canvas corner, so no negative cell shows.
     canvas.Offset = {std::min(canvas.Offset.x, 0.f), std::min(canvas.Offset.y, 0.f)};
     const float cell = CellOf(theme);
-    const auto graph = GraphOf(r, procedure, theme, origin + Im(canvas.Offset), cell, canvas.Zoom, panel.Expanded);
+    const auto graph = GraphOf(r, plan, theme, origin + Im(canvas.Offset), cell, canvas.Zoom, panel.Expanded);
     const auto hit = panel.Hovered ? HitTest(graph, mouse) : Hit{};
-    if (panel.Drag == NodeDrag::None || panel.Drag == NodeDrag::Wire) RecordHover(r, panel, procedure, hit);
-    const auto selected = SelectedNodes(r, procedure);
+    if (panel.Drag == NodeDrag::None || panel.Drag == NodeDrag::Wire) RecordHover(r, panel, plan, hit);
+    const auto selected = SelectedNodes(r, plan);
     // A held node inserts into a link while it is the sole selected node.
     const bool holding = (panel.Drag == NodeDrag::Move && panel.Moved) || (panel.Drag == NodeDrag::Grab && panel.DragNode != NoNode);
     const auto insert = holding && selected == std::vector{panel.DragNode} ? InsertTarget(graph, panel.DragNode, mouse) : std::nullopt;
@@ -894,7 +903,7 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
         draw.AddLine({origin.x, y}, {end.x, y}, i % coarse == 0 ? coarse_grid : grid);
     }
     const float thickness = std::max(theme.Sizes.WireWidth * zoom, 1.f);
-    ForEachWire(graph, [&](const Wire &wire, SocketLink link, uint32_t node, uint16_t input) {
+    ForEachWire(graph, [&](const Wire &wire, PlanLink link, uint32_t node, uint16_t input) {
         const bool lit = (panel.Drag == NodeDrag::None && hit.Type == HitType::Link && hit.Node == node && hit.Socket == input) || (target && target->ToNode == node && target->ToSocket == input);
         const auto color = lit ? colors.WireHighlight : SocketColor(colors, KindSockets(nodes[link.FromNode].Kind)[link.FromSocket]);
         draw.AddBezierCubic(wire[0], wire[1], wire[2], wire[3], U32(color), thickness);
@@ -916,14 +925,14 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
         const bool expanded = n == graph.Expanded;
         const float rounding = theme.Sizes.Rounding * zoom, pad = theme.Sizes.TitlePadding * zoom;
         draw.AddRectFilled(min, max, U32(expanded ? vec4{colors.Node.x, colors.Node.y, colors.Node.z, 1.f} : colors.Node), rounding);
-        draw.AddRectFilled(min, {max.x, min.y + graph.Step}, U32(n == procedure.DisplayNode ? colors.DisplayedTitle : colors.*GroupColors[uint8_t(KindGroups[kind])]), rounding, ImDrawFlags_RoundTop);
+        draw.AddRectFilled(min, {max.x, min.y + graph.Step}, U32(n == plan.DisplayNode ? colors.DisplayedTitle : colors.*GroupColors[uint8_t(KindGroups[kind])]), rounding, ImDrawFlags_RoundTop);
         draw_label({min.x + pad, min.y + (graph.Step - font_size) * .5f}, {max.x - pad, min.y + (graph.Step + font_size) * .5f}, KindTitles[kind], colors.Title, false);
         const auto sockets = KindSockets(kind);
         const auto [first, end_parameter] = ParameterRange(kind);
         const bool erring = r.all_of<NodeError>(entity);
         // Prioritize active, selected, then error border colors; retain an inner error line on selected nodes with errors.
         // Center borders on the node edge to align them with socket centers.
-        const bool active = n == procedure.ActiveNode, is_selected = r.all_of<NodeSelected>(entity);
+        const bool active = n == plan.ActiveNode, is_selected = r.all_of<NodeSelected>(entity);
         const auto border = active ? colors.Active : is_selected ? colors.Selected :
             erring                                               ? colors.Error :
                                                                    colors.Border;
@@ -939,7 +948,7 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
             if (parameter && !expanded) continue;
             const auto at = SocketAt(graph, n, s);
             const bool held = wiring && panel.DragNode == n && panel.DragSocket == s;
-            const bool dimmed = wiring && !held && !Accepts(procedure, panel.DragNode, panel.DragSocket, n, s);
+            const bool dimmed = wiring && !held && !Accepts(plan, panel.DragNode, panel.DragSocket, n, s);
             const bool hovered = hit.Type == HitType::Socket && hit.Node == n && hit.Socket == s && !dimmed;
             DrawSocket(draw, theme, at, theme.Sizes.SocketRadius * zoom, sockets[s], dimmed ? colors.Dimmed : SocketColor(colors, sockets[s]), hovered);
             const auto color = dimmed ? colors.DimmedLabel : parameter ? colors.ParameterLabel :
@@ -950,8 +959,8 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
         }
         if (first < end_parameter && !expanded) {
             const auto at = SocketAt(graph, n, first);
-            const auto linked = LinkedParameters(procedure, n);
-            const bool dimmed = wiring && LinkingSockets(procedure, panel.DragNode, panel.DragSocket, n, {first, end_parameter}).empty();
+            const auto linked = LinkedParameters(plan, n);
+            const bool dimmed = wiring && LinkingSockets(plan, panel.DragNode, panel.DragSocket, n, {first, end_parameter}).empty();
             const bool hovered = hit.Type == HitType::Parameters && hit.Node == n && !dimmed;
             const auto color = dimmed ? colors.Dimmed : hovered ? colors.Hovered :
                 linked.empty()                                  ? colors.Chevron :
@@ -985,8 +994,8 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
         draw.AddRect(box_min, box_max, U32(colors.BoxSelectBorder));
     }
     draw.PopClipRect();
-    DrawAddMenu(panel, theme, cell, mesh_entity, procedure, interactive);
-    DrawPortPicker(panel, mesh_entity, procedure, interactive);
+    DrawAddMenu(panel, theme, cell, mesh_entity, plan, interactive);
+    DrawPortPicker(panel, mesh_entity, plan, interactive);
 }
 
 bool ObjectChoice(const state::Registry &r, const char *label, state::Entity &value) {
@@ -1094,56 +1103,51 @@ struct ParameterEdit : ui::FieldWidgets<Prefix...> {
     }
 };
 
-
 // Use inline selection for an unlinked selection input; an absent mask selects everything.
-void DrawInlineSelection(const state::Registry &r, state::Entity mesh_entity, const GeometryProcedure &procedure, uint32_t node, bool interactive) {
-    const auto sockets = KindSockets(procedure.Nodes[node].Kind);
+void DrawInlineSelection(const state::Registry &r, state::Entity mesh_entity, const CookPlan &plan, uint32_t node, bool interactive) {
+    const auto sockets = KindSockets(plan.Nodes[node].Kind);
     const auto socket = std::ranges::find(sockets, SocketType::Selection, &Socket::Type);
     if (socket == sockets.end()) return;
     SeparatorText("Selection");
-    if (IsLinked(procedure, node, uint16_t(socket - sockets.begin()))) {
+    if (IsLinked(plan, node, uint16_t(socket - sockets.begin()))) {
         TextDisabled("Linked");
         return;
     }
-    const auto entity = procedure.Nodes[node].Entity;
+    const auto entity = plan.Nodes[node].Entity;
     const auto *selection = r.try_get<const InlineSelection>(entity);
-    const bool every = !selection || Empty(*selection);
+    const bool every = !selection || selection->All;
     const auto counts = every ? std::array<uint32_t, 3>{} : std::array{SelectedCount(selection->Vertices), SelectedCount(selection->Edges), SelectedCount(selection->Faces)};
     if (every) TextUnformatted("All elements");
     else if (counts == std::array<uint32_t, 3>{}) TextUnformatted("No elements");
     else Text("%u vertices, %u edges, %u faces", counts[0], counts[1], counts[2]);
-    // A capture reads the drawn record, so the first press displays the node's input, where the cook shows the node's selection, and the next press captures.
-    const auto input = procedure.Inputs[InputFirst(procedure, node)];
-    const bool input_displayed = input.FromNode != NoNode && input.FromNode == procedure.DisplayNode && input.FromSocket == ResultSocket(procedure.Nodes[input.FromNode].Kind);
-    const bool edit_mode = r.get<const Interaction>(state::Document).Mode == InteractionMode::Edit;
-    BeginDisabled(!edit_mode || input.FromNode == NoNode);
-    if (Button("Capture") && interactive) {
-        if (input_displayed) action::Emit(action::nodes::CaptureSelection(r, mesh_entity, entity));
-        else action::Emit(action::nodes::SetDisplay{mesh_entity, input.FromNode});
-    }
+    // While the node's input is displayed, the viewport selection is the node's selection.
+    const auto input = plan.Inputs[plan.InputFirst[node]];
+    bool in_viewport = input.FromNode != NoNode && input.FromNode == plan.DisplayNode && input.FromSocket == ResultSocket(plan.Nodes[input.FromNode].Kind);
+    BeginDisabled(input.FromNode == NoNode);
+    if (Checkbox("Select in Viewport", &in_viewport) && interactive) action::Emit(action::nodes::SetDisplay{mesh_entity, in_viewport ? plan.Nodes[input.FromNode].Entity : entity});
     EndDisabled();
-    ui::Describe("Capture", input_displayed ? "Set the node's selection to the elements selected in the viewport" : "Display the node's input with the node's selection in the viewport. Press again to set the node's selection to the elements selected there.");
+    ui::Describe("Select in Viewport", "Display the node's input, so selecting elements in the viewport sets the node's selection");
     SameLine();
     BeginDisabled(every);
-    if (Button("All") && interactive) action::Emit(action::nodes::SetInlineSelection{entity, std::make_unique<InlineSelection>(InlineSelection{.Domain = selection->Domain, .Active = selection->Active})});
+    if (Button("All") && interactive) action::Emit(action::nodes::SetInlineSelection{entity, std::make_unique<InlineSelection>(InlineSelection{.Domain = selection->Domain, .Active = selection->Active, .All = true})});
     EndDisabled();
     ui::Describe("All", "Set the node's selection to all elements");
 }
 
-void DrawParameters(state::Registry &r, NodesPanel &panel, state::Entity mesh_entity, const GeometryProcedure &procedure, bool interactive) {
-    if (procedure.ActiveNode == NoNode) {
+void DrawParameters(state::Registry &r, NodesPanel &panel, state::Entity mesh_entity, const CookPlan &plan, bool interactive) {
+    if (plan.ActiveNode == NoNode) {
         TextWrapped("Right click or press Shift+A to add a node.");
         return;
     }
-    const auto node = procedure.ActiveNode;
-    const auto [active, kind] = procedure.Nodes[node];
+    const auto node = plan.ActiveNode;
+    const auto [active, kind] = plan.Nodes[node];
     PushID(int(state::Integral(active)));
     SeparatorText(KindTitles[kind]);
-    const auto linked = LinkedParameters(procedure, node);
+    const auto linked = LinkedParameters(plan, node);
     VisitKind(kind, [&]<typename K> {
         if constexpr (!std::is_empty_v<K>) ui::DrawFields<K>(ParameterEdit<K>{{}, r, panel, active, r.get<const K>(active), linked, interactive, nullptr});
     });
-    DrawInlineSelection(r, mesh_entity, procedure, node, interactive);
+    DrawInlineSelection(r, mesh_entity, plan, node, interactive);
     if (const auto *error = r.try_get<const NodeError>(active)) {
         const auto color = r.get<const NodeTheme>(state::Document).Colors.Error;
         PushStyleColor(ImGuiCol_Text, {color.x, color.y, color.z, color.w});
@@ -1156,11 +1160,11 @@ void DrawParameters(state::Registry &r, NodesPanel &panel, state::Entity mesh_en
 
 void DrawNodesPanel(state::Registry &r, NodesPanel &panel, bool interactive) {
     const auto mesh_entity = action::nodes::EditedMesh(r);
-    const auto *procedure = r.try_get<const GeometryProcedure>(mesh_entity);
+    const auto *plan = r.try_get<const CookPlan>(mesh_entity);
     if (interactive && panel.LinkAfter != NoNode) {
         // Commit node creation and linking as one gesture, then begin moving the node.
-        if (procedure && procedure->Nodes.size() > panel.LinkAfter) {
-            action::Emit(LinkOf(*procedure, mesh_entity, panel.DragNode, panel.DragSocket, panel.LinkAfter, panel.LinkSocket), action::Phase::Stage);
+        if (plan && plan->Nodes.size() > panel.LinkAfter && panel.DragNode < plan->Nodes.size()) {
+            action::Emit(LinkOf(*plan, mesh_entity, panel.DragNode, panel.DragSocket, panel.LinkAfter, panel.LinkSocket), action::Phase::Stage);
             Grab(panel, panel.LinkAfter);
         }
         action::Commit();
@@ -1173,14 +1177,14 @@ void DrawNodesPanel(state::Registry &r, NodesPanel &panel, bool interactive) {
     panel.Hovered = false;
     if (!panel.Visible) return;
     if (Begin(panel.Name, &panel.Visible)) {
-        if (!procedure) panel.Drag = NodeDrag::None;
-        if (!procedure) {
+        if (!plan) {
+            panel.Drag = NodeDrag::None;
             TextUnformatted("Select a mesh object to edit its geometry procedure.");
         } else {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0.f, 0.f});
             BeginChild("Canvas", {0.f, 0.f}, ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoMove);
             PopStyleVar();
-            DrawCanvas(r, r.Resources.get<FrameState>(), panel, r.get<const NodeTheme>(state::Document), mesh_entity, *procedure, interactive);
+            DrawCanvas(r, r.Resources.get<FrameState>(), panel, r.get<const NodeTheme>(state::Document), mesh_entity, *plan, interactive);
             EndChild();
         }
     }
@@ -1191,9 +1195,9 @@ void DrawParametersPanel(state::Registry &r, NodesPanel &nodes, Panel &panel, bo
     if (!panel.Visible) return;
     if (Begin(panel.Name, &panel.Visible)) {
         const auto mesh_entity = action::nodes::EditedMesh(r);
-        const auto *procedure = r.try_get<const GeometryProcedure>(mesh_entity);
-        if (!procedure) TextUnformatted("Select a mesh object to edit its geometry procedure.");
-        else DrawParameters(r, nodes, mesh_entity, *procedure, interactive);
+        const auto *plan = r.try_get<const CookPlan>(mesh_entity);
+        if (!plan) TextUnformatted("Select a mesh object to edit its geometry procedure.");
+        else DrawParameters(r, nodes, mesh_entity, *plan, interactive);
     }
     End();
 }

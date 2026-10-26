@@ -80,11 +80,11 @@ inline const std::array<TopologyCase, 41> TopologyCases = [] {
         {"DissolveFaces", Op(DissolveFaces)},
         {"DissolveLimited", Op(DissolveLimited, .3f)},
         {"DissolveDegenerate", Op(DissolveDegenerate, .1f)},
-        {"MergeAtTarget", {}, [](const MeshStore &meshes, const Mesh &mesh, const GeometrySelection &selection) { return MergeTask(meshes, mesh, selection, GeometryMergeMode::Center, 0.f, selection.Vertices.front()); }},
-        {"MergeByDistance", {}, [](const MeshStore &meshes, const Mesh &mesh, const GeometrySelection &selection) { return MergeTask(meshes, mesh, selection, GeometryMergeMode::ByDistance, .1f, InvalidOffset); }},
-        {"MergeCollapse", {}, [](const MeshStore &meshes, const Mesh &mesh, const GeometrySelection &selection) { return MergeTask(meshes, mesh, selection, GeometryMergeMode::Collapse, 0.f, InvalidOffset); }},
-        {"Decimate", {}, [](const MeshStore &meshes, const Mesh &mesh, const GeometrySelection &selection) { return DecimateTask(meshes, mesh, selection, .5f); }},
-        {"RotateEdges", {}, [](const MeshStore &, const Mesh &mesh, const GeometrySelection &selection) {
+        {"MergeAtTarget", {.Op = MeshTopologyOp::MergeAtTarget}, [](const MeshStore &meshes, const Mesh &mesh, const GeometrySelection &selection) { return MergeTask(meshes, mesh, selection, GeometryMergeMode::Center, 0.f, selection.Vertices.front()); }},
+        {"MergeByDistance", {.Op = MeshTopologyOp::MergeByDistance}, [](const MeshStore &meshes, const Mesh &mesh, const GeometrySelection &selection) { return MergeTask(meshes, mesh, selection, GeometryMergeMode::ByDistance, .1f, InvalidOffset); }},
+        {"MergeCollapse", {.Op = MeshTopologyOp::MergeCollapse}, [](const MeshStore &meshes, const Mesh &mesh, const GeometrySelection &selection) { return MergeTask(meshes, mesh, selection, GeometryMergeMode::Collapse, 0.f, InvalidOffset); }},
+        {"Decimate", {.Op = MeshTopologyOp::Decimate}, [](const MeshStore &meshes, const Mesh &mesh, const GeometrySelection &selection) { return DecimateTask(meshes, mesh, selection, .5f); }},
+        {"RotateEdges", {.Op = MeshTopologyOp::RotateEdges}, [](const MeshStore &, const Mesh &mesh, const GeometrySelection &selection) {
              // Edges between two selected faces rotate.
              GeometrySelection interior;
              for (const auto edge : selection.Edges) {
@@ -93,8 +93,8 @@ inline const std::array<TopologyCase, 41> TopologyCases = [] {
              }
              return RotateEdgesTask(mesh, interior);
          }},
-        {"ReplaceFaces", {}, [](const MeshStore &, const Mesh &mesh, const GeometrySelection &selection) { return BeautifyFaceTask(mesh, selection, false); }},
-        {"AddPrimitives", {}, [](const MeshStore &meshes, const Mesh &mesh, const GeometrySelection &selection) { return ConvexHullTask(meshes, mesh, selection); }},
+        {"ReplaceFaces", {.Op = MeshTopologyOp::ReplaceFaces}, [](const MeshStore &, const Mesh &mesh, const GeometrySelection &selection) { return BeautifyFaceTask(mesh, selection, false); }},
+        {"AddPrimitives", {.Op = MeshTopologyOp::AddPrimitives}, [](const MeshStore &meshes, const Mesh &mesh, const GeometrySelection &selection) { return ConvexHullTask(meshes, mesh, selection); }},
         {"Wireframe", Op(Wireframe, .05f)},
         {"BevelVertices", Op(BevelVertices, .1f)},
         {"BevelEdges", Op(BevelEdges, .1f)},
@@ -117,7 +117,7 @@ inline const std::array<TopologyCase, 41> TopologyCases = [] {
         {"InsetIndividual", Op(InsetIndividual, .1f)},
         {"Solidify", Op(Solidify, .1f)},
         {"KeepSelectedFaces", Op(KeepSelectedFaces, 0.f, 0u, 1u, Element::Face)},
-        {"ExtrudeSteps", {}, [](const MeshStore &, const Mesh &mesh, const GeometrySelection &selection) { return std::optional{ExtrudeStepsTask(mesh, selection, Element::None, 2u, mat3{1.f}, {0.f, 0.f, 1.f}, {})}; }},
+        {"ExtrudeSteps", {.Op = MeshTopologyOp::ExtrudeRegion, .Flags = TopologyFlagTransformCopies}, [](const MeshStore &, const Mesh &mesh, const GeometrySelection &selection) { return std::optional{ExtrudeStepsTask(mesh, selection, Element::None, 2u, mat3{1.f}, {0.f, 0.f, 1.f}, {})}; }},
     }};
 }();
 } // namespace test

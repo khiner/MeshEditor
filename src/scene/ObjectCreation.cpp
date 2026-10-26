@@ -59,24 +59,12 @@ state::Entity AddMeshInstance(state::Registry &r, state::Entity mesh_entity, con
     return e;
 }
 
-state::Entity CreateProcedureNode(state::Registry &r, uint16_t kind, numeric::uvec2 position) {
-    const auto entity = r.create();
-    procedure::VisitKind(kind, [&]<typename K> { r.emplace<K>(entity); });
-    r.emplace<procedure::NodeLayout>(entity, position);
-    return entity;
-}
-
-procedure::GeometryProcedure RootedProcedure(state::Registry &r, state::Entity root, uint16_t kind) {
-    r.emplace<procedure::NodeSelected>(root);
-    return {{{root, kind}}, std::vector<procedure::SocketLink>(procedure::InputCount[kind]), 0u, 0u};
-}
-
 state::Entity AddMeshData(state::Registry &r, uint32_t store_id) {
     using namespace procedure;
-    const auto source = CreateProcedureNode(r, KindOf<Source>, {0u, 0u});
+    const auto source = CreateNode(r, KindOf<Source>, {0u, 0u});
     r.emplace<SourceState>(source, store::Hash128{}, store_id);
     const auto mesh_entity = r.create();
-    r.emplace<GeometryProcedure>(mesh_entity, RootedProcedure(r, source, KindOf<Source>));
+    RootProcedure(r, mesh_entity, source, KindOf<Source>);
     r.emplace<EvaluatedMesh>(mesh_entity, store_id, source);
     return mesh_entity;
 }
@@ -84,6 +72,22 @@ state::Entity AddMeshData(state::Registry &r, uint32_t store_id) {
 std::pair<state::Entity, state::Entity> AddMesh(state::Registry &r, uint32_t store_id, const MeshInstanceCreateInfo &info) {
     const auto mesh_entity = AddMeshData(r, store_id);
     return {mesh_entity, AddMeshInstance(r, mesh_entity, info)};
+}
+
+std::pair<state::Entity, state::Entity> AddMeshPrimitive(state::Registry &r, const PrimitiveParameters &parameters, const MeshInstanceCreateInfo &info) {
+    using namespace procedure;
+    return std::visit(
+        [&]<typename K>(const K &shape) {
+            const auto node = CreateNode(r, KindOf<K>, {0u, 0u});
+            r.replace<K>(node, shape);
+            const auto mesh_entity = r.create();
+            RootProcedure(r, mesh_entity, node, KindOf<K>);
+            auto named = info;
+            if (named.Name.empty()) named.Name = Title<K>.c_str();
+            return std::pair{mesh_entity, AddMeshInstance(r, mesh_entity, named)};
+        },
+        parameters
+    );
 }
 
 state::Entity CreateExtrasObject(state::Registry &r, ObjectType type, const ObjectCreateInfo &info, std::string_view default_name) {

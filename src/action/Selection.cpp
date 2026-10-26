@@ -1,6 +1,7 @@
 #include "action/Selection.h"
 #include "Variant.h"
 #include "action/Errors.h"
+#include "action/Nodes.h"
 #include "armature/ArmatureComponents.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
@@ -71,6 +72,7 @@ void Apply(state::Registry &r, const Action &action) {
                         r.remove<MeshActiveElement>(range.MeshEntity);
                     }
                     ApplyEditSelectionCommand(r, ranges, element, EditSelectionOperation::Clear);
+                    for (const auto &range : ranges) nodes::CaptureActiveSelection(r, range.MeshEntity);
                 } else {
                     r.clear<Selected>();
                 }
@@ -130,6 +132,7 @@ void Apply(state::Registry &r, const Action &action) {
                     const auto element = r.get<const EditMode>(state::Document).Value;
                     const auto ranges = GetElementRangesForSelected(r);
                     ApplyEditSelectionCommand(r, ranges, element, EditSelectionOperation::Fill);
+                    for (const auto &range : ranges) nodes::CaptureActiveSelection(r, range.MeshEntity);
                 } else if (interaction_mode == InteractionMode::Object) {
                     r.clear<Selected>();
                     const auto scene = FrameScene(r);

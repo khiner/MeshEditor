@@ -220,7 +220,7 @@ void TestDuplicateDrawsAsItsSource() {
         expect(render_owner(copy).StoreId != render_owner(source).StoreId);
         const auto states = [&](state::Entity instance) {
             std::vector<procedure::SourceState> found;
-            for (const auto &node : r.get<const procedure::GeometryProcedure>(r.get<const Instance>(instance).Entity).Nodes) {
+            for (const auto &node : r.get<const procedure::CookPlan>(r.get<const Instance>(instance).Entity).Nodes) {
                 if (const auto *source = r.try_get<const procedure::SourceState>(node.Entity)) found.push_back(*source);
             }
             return found;
@@ -443,7 +443,7 @@ void TestIncrementalLayout() {
     const auto cube_mesh = r.get<const Instance>(cube).Entity;
     action::Emit(action::view::TransformElements{{.P = {0.f, 1.f, 0.f}}}, action::Phase::Stage);
     f.P->Frame(action::Drain());
-    expect(r.all_of<procedure::TransformElements>(r.get<const procedure::GeometryProcedure>(cube_mesh).Nodes.back().Entity));
+    expect(r.all_of<procedure::TransformElements>(r.get<const procedure::GeometryProcedure>(cube_mesh).Last));
     CheckLayout(f, "drag");
     action::Commit();
     f.P->Frame(action::Drain());
@@ -455,7 +455,7 @@ void TestIncrementalLayout() {
     const auto mesh_count = r.view<const procedure::GeometryProcedure>().size();
     f.Do(action::mesh::Separate{});
     expect(r.view<const procedure::GeometryProcedure>().size() == mesh_count + 1u);
-    expect(r.all_of<action::mesh::Delete>(r.get<const procedure::GeometryProcedure>(mesh_entity).Nodes.back().Entity));
+    expect(r.all_of<action::mesh::Delete>(r.get<const procedure::GeometryProcedure>(mesh_entity).Last));
     CheckLayout(f, "separate");
     f.Do(action::view::SetInteractionMode{InteractionMode::Object});
     CheckLayout(f, "object");
@@ -467,7 +467,6 @@ void TestIncrementalLayout() {
 
 } // namespace
 
-void TestProcedures();
 void TestHistory();
 
 int main(int argc, char **argv) {

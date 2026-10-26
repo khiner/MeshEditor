@@ -14,7 +14,7 @@ struct CookCount {
     uint64_t Value{};
 };
 
-// Binds the procedure change sets and removes a destroyed node from its procedure.
+// Binds the procedure change sets.
 void RegisterProcedureHandlers(state::Registry &);
 // Rebuilds the plans of changed procedures.
 // With `cook`, each procedure whose graph, node parameters or inline selections changed then evaluates its result.

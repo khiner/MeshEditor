@@ -251,18 +251,7 @@ void Apply(state::Registry &r, const Action &action) {
             [&](const AddCamera &a) { ::AddCamera(r, meshes, *a.Info, a.Props); begin_translate(); },
             [&](const AddLight &a) { ::AddLight(r, meshes, *a.Info); begin_translate(); },
             [&](const AddMeshPrimitive &a) {
-                std::visit(
-                    [&]<typename K>(const K &parameters) {
-                        const auto node = CreateProcedureNode(r, procedure::KindOf<K>, {0u, 0u});
-                        r.replace<K>(node, parameters);
-                        const auto mesh_entity = r.create();
-                        r.emplace<procedure::GeometryProcedure>(mesh_entity, RootedProcedure(r, node, procedure::KindOf<K>));
-                        auto info = *a.Info;
-                        info.Name = procedure::Title<K>.c_str();
-                        ::AddMeshInstance(r, mesh_entity, info);
-                    },
-                    a.Parameters
-                );
+                ::AddMeshPrimitive(r, a.Parameters, *a.Info);
                 begin_translate();
             },
             [&](const ImportMesh &a) { RequestImportMesh(r, a.Path, *a.Info); },

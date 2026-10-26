@@ -752,7 +752,7 @@ std::array<uint32_t, 3> ZeroedMasks(MeshStore &meshes, std::optional<BufferArena
     return first;
 }
 std::array<uint32_t, 3> UploadSelection(MeshStore &meshes, std::optional<BufferArena<SelectionBlock>> &arena, uint32_t id, const InlineSelection *selection) {
-    if (!selection || Empty(*selection)) return EveryElement;
+    if (!selection || selection->All) return EveryElement;
     const std::array lists{&selection->Vertices, &selection->Edges, &selection->Faces};
     constexpr std::array domains{MeshStore::ElementDomain::Vertex, MeshStore::ElementDomain::Edge, MeshStore::ElementDomain::Face};
     return ZeroedMasks(meshes, arena, id, [&](uint32_t d, std::span<const uint32_t>, std::span<SelectionBlock> masks) {
@@ -855,12 +855,12 @@ void ReleaseTemporaries(MeshStore &meshes, uint32_t id) {
 }
 
 // Return the linked attribute or constant; return an empty operand for missing inputs.
-Operand OperandOf(const GeometryProcedure &procedure, const CookPlan &plan, std::span<const SocketValue> values, uint32_t node, uint32_t input) {
-    if (input >= InputCount[procedure.Nodes[node].Kind]) return {};
-    const auto link = procedure.Inputs[plan.InputFirst[node] + input];
+Operand OperandOf(const CookPlan &plan, std::span<const SocketValue> values, uint32_t node, uint32_t input) {
+    if (input >= InputCount[plan.Nodes[node].Kind]) return {};
+    const auto link = plan.Inputs[plan.InputFirst[node] + input];
     if (link.FromNode == NoNode) return {};
     const auto &source = values[plan.SocketFirst[link.FromNode] + link.FromSocket];
-    if (source.Type == SocketType::Value) return {.Constant = LinkedConstant{source.Value, AttributeType(std::countr_zero(KindSockets(procedure.Nodes[link.FromNode].Kind)[link.FromSocket].Types))}};
+    if (source.Type == SocketType::Value) return {.Constant = LinkedConstant{source.Value, AttributeType(std::countr_zero(KindSockets(plan.Nodes[link.FromNode].Kind)[link.FromSocket].Types))}};
     return {source.Type == SocketType::Attribute ? source.Attribute : InvalidOffset};
 }
 void AssignField(auto &p, Socket socket, const AttributeValue &words) {
@@ -877,25 +877,25 @@ void AssignField(auto &p, Socket socket, const AttributeValue &words) {
         }
     });
 }
-template<typename K> K Parameters(const state::Registry &r, const GeometryProcedure &procedure, const CookPlan &plan, std::span<const SocketValue> values, uint32_t node) {
-    const auto [entity, kind] = procedure.Nodes[node];
+template<typename K> K Parameters(const state::Registry &r, const CookPlan &plan, std::span<const SocketValue> values, uint32_t node) {
+    const auto [entity, kind] = plan.Nodes[node];
     auto p = r.get<const K>(entity);
     if constexpr (field::Walkable<K>) {
         const auto [first, end] = ParameterRange(kind);
         for (auto s = first; s < end; ++s) {
-            if (const auto value = OperandOf(procedure, plan, values, node, s).Constant) AssignField(p, KindSockets(kind)[s], value->Words);
+            if (const auto value = OperandOf(plan, values, node, s).Constant) AssignField(p, KindSockets(kind)[s], value->Words);
         }
     }
     return p;
 }
-Linked LinkedParameters(const GeometryProcedure &procedure, const CookPlan &plan, std::span<const SocketValue> values, uint32_t node) {
-    const auto kind = procedure.Nodes[node].Kind;
+Linked LinkedParameters(const CookPlan &plan, std::span<const SocketValue> values, uint32_t node) {
+    const auto kind = plan.Nodes[node].Kind;
     const auto sockets = KindSockets(kind);
     const auto [first, end] = ParameterRange(kind);
     Linked linked{kind};
     linked.Attributes.fill(InvalidOffset);
     for (auto s = first; s < end; ++s) {
-        if (sockets[s].Type == SocketType::Attribute) linked.Attributes[s] = OperandOf(procedure, plan, values, node, s).Attribute;
+        if (sockets[s].Type == SocketType::Attribute) linked.Attributes[s] = OperandOf(plan, values, node, s).Attribute;
     }
     return linked;
 }
@@ -908,16 +908,16 @@ struct Evaluation {
 
 // Evaluate attribute inputs into temporary attributes and derive selection masks.
 // Mark invalid attribute nodes and pass through their first input.
-Evaluation EvaluateInputs(state::Registry &r, const GeometryProcedure &procedure, const CookPlan &plan, std::vector<SocketValue> &values, uint32_t node, uint32_t id, std::optional<BufferArena<SelectionBlock>> &arena) {
+Evaluation EvaluateInputs(state::Registry &r, const CookPlan &plan, std::vector<SocketValue> &values, uint32_t node, uint32_t id, std::optional<BufferArena<SelectionBlock>> &arena) {
     auto &meshes = r.Resources.get<MeshStore>();
-    auto upstream = Upstream(procedure, plan.InputFirst, node, [&](uint32_t n) { return IsAttributeKind(procedure.Nodes[n].Kind); });
+    auto upstream = Upstream(plan, node, [&](uint32_t n) { return IsAttributeKind(plan.Nodes[n].Kind); });
     upstream[node] = false;
     Evaluation evaluation;
     std::vector<AttributeJob> jobs;
     for (const auto n : plan.Order) {
         if (!upstream[n]) continue;
-        const auto [entity, kind] = procedure.Nodes[n];
-        const Operands in{OperandOf(procedure, plan, values, n, 0u), OperandOf(procedure, plan, values, n, 1u), OperandOf(procedure, plan, values, n, 2u)};
+        const auto [entity, kind] = plan.Nodes[n];
+        const Operands in{OperandOf(plan, values, n, 0u), OperandOf(plan, values, n, 1u), OperandOf(plan, values, n, 2u)};
         auto &output = values[plan.SocketFirst[n] + InputCount[kind]];
         output.Type = SocketType::Attribute;
         output.Attribute = in.A.Attribute;
@@ -930,7 +930,7 @@ Evaluation EvaluateInputs(state::Registry &r, const GeometryProcedure &procedure
         }
         std::optional<AttributeJob> job;
         VisitKind(kind, [&]<typename K> {
-            if constexpr (Prepared<K>) job = Prepare(meshes, Parameters<K>(r, procedure, plan, values, n), in);
+            if constexpr (Prepared<K>) job = Prepare(meshes, Parameters<K>(r, plan, values, n), in);
         });
         if (!job) {
             r.emplace_or_replace<NodeError>(entity, NodeFault::Attribute);
@@ -952,10 +952,10 @@ Evaluation EvaluateInputs(state::Registry &r, const GeometryProcedure &procedure
     std::vector<AttributeMaskPushConstants> scatters;
     std::array<Range, 3> mask_ranges;
     std::optional<Element> from;
-    const auto sockets = KindSockets(procedure.Nodes[node].Kind);
-    for (uint32_t s = 0u; s < InputCount[procedure.Nodes[node].Kind]; ++s) {
-        if (sockets[s].Type != SocketType::Selection || procedure.Inputs[plan.InputFirst[node] + s].FromNode == NoNode) continue;
-        const auto linked = OperandOf(procedure, plan, values, node, s);
+    const auto sockets = KindSockets(plan.Nodes[node].Kind);
+    for (uint32_t s = 0u; s < InputCount[plan.Nodes[node].Kind]; ++s) {
+        if (sockets[s].Type != SocketType::Selection || plan.Inputs[plan.InputFirst[node] + s].FromNode == NoNode) continue;
+        const auto linked = OperandOf(plan, values, node, s);
         // A linked bool value selects every element, or none through empty masks.
         if (linked.Constant) {
             if (linked.Constant->Words[0] & 1u) {
@@ -1000,10 +1000,10 @@ Evaluation EvaluateInputs(state::Registry &r, const GeometryProcedure &procedure
 
 // Evaluate inputs and run the node, releasing temporary attributes after their last use.
 // The trailing arguments become the node's Masks Drawn, Repaired and Refresh.
-Outcome RunNode(state::Registry &r, const GeometryProcedure &procedure, const CookPlan &plan, std::vector<SocketValue> &values, uint32_t node, uint32_t id, std::optional<BufferArena<SelectionBlock>> &arena, state::Entity drawn = state::Null, bool *repaired = nullptr, MeshStore::Change *refresh = nullptr) {
+Outcome RunNode(state::Registry &r, const CookPlan &plan, std::vector<SocketValue> &values, uint32_t node, uint32_t id, std::optional<BufferArena<SelectionBlock>> &arena, state::Entity drawn = state::Null, bool *repaired = nullptr, MeshStore::Change *refresh = nullptr) {
     auto &meshes = r.Resources.get<MeshStore>();
-    const auto [entity, kind] = procedure.Nodes[node];
-    auto evaluation = EvaluateInputs(r, procedure, plan, values, node, id, arena);
+    const auto [entity, kind] = plan.Nodes[node];
+    auto evaluation = EvaluateInputs(r, plan, values, node, id, arena);
     const auto release = [&] {
         for (const auto attribute : evaluation.Temporaries) meshes.ReleaseAttribute(attribute);
         evaluation.Temporaries.clear();
@@ -1012,7 +1012,7 @@ Outcome RunNode(state::Registry &r, const GeometryProcedure &procedure, const Co
         release();
         return std::unexpected(NodeFault::Attribute);
     }
-    const auto linked = LinkedParameters(procedure, plan, values, node);
+    const auto linked = LinkedParameters(plan, values, node);
     const auto sockets = KindSockets(kind);
     const auto first = plan.SocketFirst[node];
     const auto selection_socket = uint32_t(std::ranges::find(sockets, SocketType::Selection, &Socket::Type) - sockets.begin());
@@ -1035,17 +1035,17 @@ Outcome RunNode(state::Registry &r, const GeometryProcedure &procedure, const Co
     PublishInput(r, id, masks);
     Outcome edited = id;
     VisitKind(kind, [&]<typename K> {
-        const auto p = Parameters<K>(r, procedure, plan, values, node);
+        const auto p = Parameters<K>(r, plan, values, node);
         if constexpr (std::same_as<K, StoreNamedAttribute>) {
-            edited = Store(meshes, p, id, OperandOf(procedure, plan, values, node, 1u), evaluation.Temporaries);
+            edited = Store(meshes, p, id, OperandOf(plan, values, node, 1u), evaluation.Temporaries);
         } else if constexpr (std::same_as<K, StoreSelection>) {
-            const auto linked = OperandOf(procedure, plan, values, node, 1u).Attribute;
+            const auto linked = OperandOf(plan, values, node, 1u).Attribute;
             const auto domain = linked != InvalidOffset ? meshes.GetAttribute(linked).Domain : masks.Domain == Element::Face ? AttributeDomain::Face :
                 masks.Domain == Element::Edge                                                                                ? AttributeDomain::Edge :
                                                                                                                                AttributeDomain::Vertex;
             edited = Store(meshes, p, id, masks, domain);
         } else if constexpr (std::same_as<K, SetPosition>) {
-            auto position = OperandOf(procedure, plan, values, node, 1u);
+            auto position = OperandOf(plan, values, node, 1u);
             if (position.Attribute == InvalidOffset && position.Constant) {
                 position.Attribute = meshes.AddAttribute(id, AttributeDomain::Vertex, position.Constant->Type, TemporaryName(node, 1u), position.Constant->Words).value();
                 evaluation.Temporaries.push_back(position.Attribute);
@@ -1075,6 +1075,15 @@ uint32_t Generate(state::Registry &r, const Generator auto &shape) {
 state::Entity ReadMesh(const state::Registry &r, state::Entity mesh_entity, const ObjectInfo &p) {
     const auto *instance = r.valid(p.Object) ? r.try_get<const Instance>(p.Object) : nullptr;
     return instance && instance->Entity != mesh_entity && DrawsMesh(r, instance->Entity) ? instance->Entity : state::Null;
+}
+
+// The object's world transform from its own and its ancestors' local transforms, or the identity for an entity without one.
+// The settle pass composes world transforms after it cooks, so the cook composes them itself.
+mat4 Placement(const state::Registry &r, state::Entity object) {
+    const auto *local = r.valid(object) ? ComposedLocal(r, object) : nullptr;
+    if (!local) return I4;
+    const auto parent = ParentOrNull(r, object);
+    return parent != state::Null ? Placement(r, parent) * ToMatrix(*local) : ToMatrix(*local);
 }
 
 // Each point's instance transform, in vertex order.
@@ -1225,21 +1234,21 @@ void CarryMaterials(MeshStore &meshes, uint32_t from, uint32_t to) {
 }
 
 // Whether the display path is a chain its record holds node by node: its root is a Source node or a generator with unlinked parameters, no link reaches a path node except the main link from the node before it, and no path node after the root feeds anything but the next path node.
-bool Chained(const GeometryProcedure &procedure, const CookPlan &plan, std::span<const uint32_t> path) {
+bool Chained(const CookPlan &plan, std::span<const uint32_t> path) {
     if (path.empty()) return false;
-    const auto root = procedure.Nodes[path.front()].Kind;
+    const auto root = plan.Nodes[path.front()].Kind;
     bool rooted = root == KindOf<Source>;
     VisitKind(root, [&]<typename K> { rooted |= Generator<K>; });
     if (!rooted) return false;
     for (const auto node : path.subspan(1u)) {
-        const auto kind = procedure.Nodes[node].Kind;
+        const auto kind = plan.Nodes[node].Kind;
         if (kind == KindOf<InstanceOnPoints> || kind == KindOf<RealizeInstances>) return false;
     }
-    std::vector<uint32_t> position(procedure.Nodes.size(), NoNode);
+    std::vector<uint32_t> position(plan.Nodes.size(), NoNode);
     for (uint32_t i = 0u; i < path.size(); ++i) position[path[i]] = i;
-    for (uint32_t node = 0u; node < procedure.Nodes.size(); ++node) {
-        for (uint32_t input = 0u; input < InputCount[procedure.Nodes[node].Kind]; ++input) {
-            const auto from = procedure.Inputs[plan.InputFirst[node] + input].FromNode;
+    for (uint32_t node = 0u; node < plan.Nodes.size(); ++node) {
+        for (uint32_t input = 0u; input < InputCount[plan.Nodes[node].Kind]; ++input) {
+            const auto from = plan.Inputs[plan.InputFirst[node] + input].FromNode;
             if (from == NoNode) continue;
             const bool path_link = input == 0u && position[from] != NoNode && position[node] == position[from] + 1u;
             if ((position[node] != NoNode || (position[from] != NoNode && position[from] != 0u)) && !path_link) return false;
@@ -1254,7 +1263,7 @@ struct PathRun {
     bool Rendered, Faulted;
 };
 // The positions of `restored`, a restore's change to the record, refresh with the first drawn position edit or after the path.
-PathRun RunPath(state::Registry &r, state::Entity mesh_entity, const GeometryProcedure &procedure, const CookPlan &plan, std::span<const uint32_t> path, size_t first, uint32_t record, bool rendered, std::optional<BufferArena<SelectionBlock>> &arena, MeshStore::Change &restored) {
+PathRun RunPath(state::Registry &r, state::Entity mesh_entity, const CookPlan &plan, std::span<const uint32_t> path, size_t first, uint32_t record, bool rendered, std::optional<BufferArena<SelectionBlock>> &arena, MeshStore::Change &restored) {
     auto &meshes = r.Resources.get<MeshStore>();
     if (first < path.size()) FinishPendingSourceStates(r, record);
     std::vector<SocketValue> values(plan.SocketFirst.back());
@@ -1268,16 +1277,16 @@ PathRun RunPath(state::Registry &r, state::Entity mesh_entity, const GeometryPro
     };
     for (auto i = first; i < path.size(); ++i) {
         const auto node = path[i];
-        const auto [entity, kind] = procedure.Nodes[node];
+        const auto [entity, kind] = plan.Nodes[node];
         r.remove<NodeError>(entity);
-        const EditedInput input{procedure.Nodes[path[i - 1u]].Entity, meshes.KeepState(), record};
+        const EditedInput input{plan.Nodes[path[i - 1u]].Entity, meshes.KeepState(), record};
         if (const auto *held = r.try_get<const EditedInput>(entity); !held || *held != input) r.emplace_or_replace<EditedInput>(entity, input);
         if (auto &pass = r.Resources.get<CookPass>(); pass.Mesh == mesh_entity && !std::ranges::contains(pass.Exact, input.State)) pass.Exact.push_back(input.State);
         // A chained Join or Boolean has no second input and passes its first through.
         if (kind == KindOf<Join> || kind == KindOf<Boolean>) continue;
         bool repaired = false;
         if (!rendered) refresh_restored();
-        const auto edited = RunNode(r, procedure, plan, values, node, record, arena, rendered ? mesh_entity : state::Null, &repaired, &restored);
+        const auto edited = RunNode(r, plan, values, node, record, arena, rendered ? mesh_entity : state::Null, &repaired, &restored);
         if (!edited) {
             r.emplace<NodeError>(entity, edited.error());
             faulted = true;
@@ -1329,7 +1338,7 @@ void PublishCooked(state::Registry &r, state::Entity mesh_entity, uint32_t recor
 // A changed node the record holds the output of restores the record to the state its edited input refers to, or else the path cooks from a new record of its root.
 // The whole mesh storage restores while only this mesh's cooks wrote it since the state was kept, and the record alone restores otherwise, each followed by the same nodes.
 // A copied node keeps the edited input its original holds, and the components it was created with leave it unchanged.
-void CookChain(state::Registry &r, state::Entity mesh_entity, const GeometryProcedure &procedure, const CookPlan &plan, std::span<const uint32_t> path, std::optional<BufferArena<SelectionBlock>> &arena, const state::DirtySet &changed, const state::DirtySet &created) {
+void CookChain(state::Registry &r, state::Entity mesh_entity, const CookPlan &plan, std::span<const uint32_t> path, std::optional<BufferArena<SelectionBlock>> &arena, const state::DirtySet &changed, const state::DirtySet &created) {
     auto &meshes = r.Resources.get<MeshStore>();
     const auto *live = r.try_get<const EvaluatedMesh>(mesh_entity);
     const auto prior = live && meshes.TryGet(live->StoreId) ? live->StoreId : InvalidOffset;
@@ -1344,7 +1353,7 @@ void CookChain(state::Registry &r, state::Entity mesh_entity, const GeometryProc
         }
         std::ranges::reverse(chain);
     }
-    const auto entity_at = [&](size_t i) { return procedure.Nodes[path[i]].Entity; };
+    const auto entity_at = [&](size_t i) { return plan.Nodes[path[i]].Entity; };
     const auto edited = [&](state::Entity e) { return changed.contains(e) && !created.contains(e); };
     size_t held = 0u;
     if (!chain.empty() && chain.front() == entity_at(0u) && !edited(chain.front())) {
@@ -1373,7 +1382,7 @@ void CookChain(state::Registry &r, state::Entity mesh_entity, const GeometryProc
             replaced = InvalidOffset;
             rendered = meshes.Get(record).RenderTopologies != 0u;
         } else {
-            const auto root = MaterializeRoot(r, procedure.Nodes[path.front()]);
+            const auto root = MaterializeRoot(r, plan.Nodes[path.front()]);
             if (!root) {
                 r.emplace_or_replace<NodeError>(entity_at(0u), NodeFault::NoMesh);
                 return;
@@ -1388,7 +1397,7 @@ void CookChain(state::Registry &r, state::Entity mesh_entity, const GeometryProc
         return;
     }
     const auto topology = TopologyRevisions(meshes, record);
-    const auto run = RunPath(r, mesh_entity, procedure, plan, path, held, record, rendered, arena, restored);
+    const auto run = RunPath(r, mesh_entity, plan, path, held, record, rendered, arena, restored);
     // A run that replaced its own starting record released it.
     if (replaced != InvalidOffset && replaced != record && meshes.TryGet(replaced)) ReleaseReplaced(r, replaced);
     OwnMesh(r, mesh_entity, InvalidOffset);
@@ -1402,50 +1411,49 @@ void CookChain(state::Registry &r, state::Entity mesh_entity, const GeometryProc
 // Release intermediate records.
 void Evaluate(state::Registry &r, state::Entity mesh_entity, std::optional<BufferArena<SelectionBlock>> &arena, const state::DirtySet &changed, const state::DirtySet &created_nodes) {
     auto &meshes = r.Resources.get<MeshStore>();
-    const auto &procedure = r.get<const GeometryProcedure>(mesh_entity);
     const auto &plan = r.get<const CookPlan>(mesh_entity);
     // Track the first-input path, which carries the record the mesh draws from the root to the displayed node.
-    const auto display = procedure.DisplayNode;
-    std::vector<bool> on_path(procedure.Nodes.size());
+    const auto display = plan.DisplayNode;
+    std::vector<bool> on_path(plan.Nodes.size());
     std::vector<uint32_t> path;
     for (auto node = display; node != NoNode && !on_path[node];) {
         on_path[node] = true;
         path.push_back(node);
-        const auto kind = procedure.Nodes[node].Kind;
-        node = InputCount[kind] && KindSockets(kind).front().Type == SocketType::Geometry ? procedure.Inputs[plan.InputFirst[node]].FromNode : NoNode;
+        const auto kind = plan.Nodes[node].Kind;
+        node = InputCount[kind] && KindSockets(kind).front().Type == SocketType::Geometry ? plan.Inputs[plan.InputFirst[node]].FromNode : NoNode;
     }
     std::ranges::reverse(path);
-    if (Chained(procedure, plan, path)) return CookChain(r, mesh_entity, procedure, plan, path, arena, changed, created_nodes);
+    if (Chained(plan, path)) return CookChain(r, mesh_entity, plan, path, arena, changed, created_nodes);
     // The record the mesh drew, which the cook releases once the result replaces it.
     const auto prior = r.all_of<EvaluatedMesh>(mesh_entity) ? r.get<const EvaluatedMesh>(mesh_entity).StoreId : InvalidOffset;
     // Evaluate only nodes reachable from the displayed node.
-    const auto reached = display != NoNode ? Upstream(procedure, plan.InputFirst, display, [](uint32_t) { return true; }) : std::vector<bool>(procedure.Nodes.size());
+    const auto reached = display != NoNode ? Upstream(plan, display, [](uint32_t) { return true; }) : std::vector<bool>(plan.Nodes.size());
     auto remaining = plan.Consumers;
-    for (uint32_t node = 0u; node < procedure.Nodes.size(); ++node) {
+    for (uint32_t node = 0u; node < plan.Nodes.size(); ++node) {
         if (reached[node]) continue;
-        for (uint32_t i = 0u; i < InputCount[procedure.Nodes[node].Kind]; ++i) {
-            if (const auto link = procedure.Inputs[plan.InputFirst[node] + i]; link.FromNode != NoNode) --remaining[plan.SocketFirst[link.FromNode] + link.FromSocket];
+        for (uint32_t i = 0u; i < InputCount[plan.Nodes[node].Kind]; ++i) {
+            if (const auto link = plan.Inputs[plan.InputFirst[node] + i]; link.FromNode != NoNode) --remaining[plan.SocketFirst[link.FromNode] + link.FromSocket];
         }
     }
     // The display reads the displayed node's result after every node, so the result's other consumers clone it.
-    const auto result_socket = display != NoNode ? ResultSocket(procedure.Nodes[display].Kind) : std::optional<uint16_t>{};
+    const auto result_socket = display != NoNode ? ResultSocket(plan.Nodes[display].Kind) : std::optional<uint16_t>{};
     if (result_socket) ++remaining[plan.SocketFirst[display] + *result_socket];
     // Release temporary cook records at completion and retain the result.
     std::vector<uint32_t> created;
     std::vector<SocketValue> values(plan.SocketFirst.back());
     const auto slot_of = [&](uint32_t node, uint32_t input) {
-        const auto link = procedure.Inputs[plan.InputFirst[node] + input];
+        const auto link = plan.Inputs[plan.InputFirst[node] + input];
         return plan.SocketFirst[link.FromNode] + link.FromSocket;
     };
     // Clone borrowed records before editing and owned records before additional readers.
     // Preserve the result-path record by cloning its producer instead.
     const auto take = [&](uint32_t node, uint32_t input) -> SocketValue {
         auto &taken = values[plan.SocketFirst[node] + input];
-        if (procedure.Inputs[plan.InputFirst[node] + input].FromNode == NoNode) return taken;
+        if (plan.Inputs[plan.InputFirst[node] + input].FromNode == NoNode) return taken;
         const auto slot = slot_of(node, input);
         taken = values[slot];
         const bool last = --remaining[slot] == 0u;
-        if (taken.Record == InvalidOffset || (taken.Borrowed() ? KindSockets(procedure.Nodes[node].Kind)[input].Reads : last)) return taken;
+        if (taken.Record == InvalidOffset || (taken.Borrowed() ? KindSockets(plan.Nodes[node].Kind)[input].Reads : last)) return taken;
         const auto clone = created.emplace_back(CloneRecord(r, taken.Record));
         if (taken.Borrowed() || !on_path[node] || input) {
             taken.MeshEntity = state::Null;
@@ -1465,7 +1473,7 @@ void Evaluate(state::Registry &r, state::Entity mesh_entity, std::optional<Buffe
     uint32_t result = InvalidOffset;
     std::optional<SocketValue> published; // The instances the result reads
     for (const auto node : plan.Order) {
-        const auto [entity, kind] = procedure.Nodes[node];
+        const auto [entity, kind] = plan.Nodes[node];
         const auto first = plan.SocketFirst[node];
         r.remove<NodeError>(entity);
         if (!reached[node] || IsAttributeKind(kind)) continue;
@@ -1486,7 +1494,7 @@ void Evaluate(state::Registry &r, state::Entity mesh_entity, std::optional<Buffe
         bool generated = false;
         VisitKind(kind, [&]<typename K> {
             if constexpr (Generator<K>) {
-                values[first + InputCount[kind]].Record = created.emplace_back(Generate(r, Parameters<K>(r, procedure, plan, values, node)));
+                values[first + InputCount[kind]].Record = created.emplace_back(Generate(r, Parameters<K>(r, plan, values, node)));
                 generated = true;
             } else if constexpr (ValueKind<K>) {
                 values[first] = {.Type = SocketType::Value, .Value = Words(r.get<const K>(entity).Value)};
@@ -1507,9 +1515,9 @@ void Evaluate(state::Registry &r, state::Entity mesh_entity, std::optional<Buffe
         }
         if (kind == KindOf<Boolean>) {
             const auto second = take(node, 1u);
-            const auto p = Parameters<Boolean>(r, procedure, plan, values, node);
-            // Map Mesh 2 into Mesh 1's space through both frames, which must keep Mesh 2 unmirrored.
-            const auto to_first = Inverse(ToMatrix(p.Frame1)) * ToMatrix(p.Frame2);
+            const auto p = Parameters<Boolean>(r, plan, values, node);
+            // Map Mesh 2 into Mesh 1's space through both objects' world transforms, which must keep Mesh 2 unmirrored.
+            const auto to_first = Inverse(Placement(r, p.Object1)) * Placement(r, p.Object2);
             const auto rotation = ToMat3(to_first);
             const bool linked = input != InvalidOffset && second.Record != InvalidOffset, oriented = Determinant(rotation) > 0.f;
             const auto task = linked && oriented ? BooleanTask(Mesh{meshes, input}, Mesh{meshes, second.Record}, p.Operation, rotation, vec3(to_first[3])) : std::nullopt;
@@ -1535,7 +1543,7 @@ void Evaluate(state::Registry &r, state::Entity mesh_entity, std::optional<Buffe
                 r.emplace<NodeError>(entity, NodeFault::NoMesh);
                 continue;
             }
-            if (const auto placed = RunNode(r, procedure, plan, values, node, input, arena)) {
+            if (const auto placed = RunNode(r, plan, values, node, input, arena)) {
                 output.Type = SocketType::Instances;
                 output.MeshEntity = instance.MeshEntity;
                 output.Instance = instance.Record;
@@ -1555,7 +1563,7 @@ void Evaluate(state::Registry &r, state::Entity mesh_entity, std::optional<Buffe
             values[first + 1u].Record = realized.value_or(input);
             continue;
         }
-        const auto edited = input != InvalidOffset ? RunNode(r, procedure, plan, values, node, input, arena) : Outcome{input};
+        const auto edited = input != InvalidOffset ? RunNode(r, plan, values, node, input, arena) : Outcome{input};
         if (!edited) r.emplace<NodeError>(entity, edited.error());
         values[first + InputCount[kind]].Record = edited.value_or(input);
     }
@@ -1594,25 +1602,16 @@ void Evaluate(state::Registry &r, state::Entity mesh_entity, std::optional<Buffe
     PublishCooked(r, mesh_entity, result, state::Null, false, true);
 }
 
-// Select the active node's inline selection on the mesh's record while the node reads the displayed node, so the viewport shows the elements the node edits and a capture replaces them.
-// An empty inline selection selects every element of its domain.
+// Select the inline selection of the mesh's viewport selection node on its record, so the viewport shows the elements the node edits.
+// A selection of all elements selects every element of its domain.
 void ShowActiveSelection(state::Registry &r, state::Entity mesh_entity, std::optional<BufferArena<SelectionBlock>> &arena) {
-    const auto &procedure = r.get<const GeometryProcedure>(mesh_entity);
-    const auto active = procedure.ActiveNode, display = procedure.DisplayNode;
-    if (active == NoNode || display == NoNode || active == display) return;
-    const auto [entity, kind] = procedure.Nodes[active];
-    const auto sockets = KindSockets(kind);
-    const auto selection_socket = uint32_t(std::ranges::find(sockets, SocketType::Selection, &Socket::Type) - sockets.begin());
-    if (selection_socket == sockets.size() || sockets.front().Type != SocketType::Geometry) return;
-    const auto first = InputFirst(procedure, active);
-    if (procedure.Inputs[first + selection_socket].FromNode != NoNode) return;
-    const auto [from, socket] = procedure.Inputs[first];
-    if (from != display || socket != ResultSocket(procedure.Nodes[display].Kind)) return;
+    const auto node = ViewportSelectionNode(r, r.get<const GeometryProcedure>(mesh_entity));
+    if (node == state::Null) return;
     auto &meshes = r.Resources.get<MeshStore>();
     const auto *live = r.try_get<const EvaluatedMesh>(mesh_entity);
     if (!live || !meshes.TryGet(live->StoreId)) return;
-    const auto *selection = r.try_get<const InlineSelection>(entity);
-    if (!selection || Empty(*selection)) {
+    const auto *selection = r.try_get<const InlineSelection>(node);
+    if (!selection || selection->All) {
         ApplyEditSelectionCommand(r, std::array{ElementRange{mesh_entity, 0u}}, selection ? selection->Domain : Element::Vertex, EditSelectionOperation::Fill);
     } else {
         const auto masks = UploadSelection(meshes, arena, live->StoreId, selection);
@@ -1624,74 +1623,11 @@ void ShowActiveSelection(state::Registry &r, state::Entity mesh_entity, std::opt
     else r.remove<MeshActiveElement>(mesh_entity);
 }
 
-// Order nodes after their dependencies, preserving authoring order among ready nodes.
-CookPlan Plan(const GeometryProcedure &procedure) {
-    const auto count = uint32_t(procedure.Nodes.size());
-    CookPlan plan{.InputFirst = InputFirsts(procedure), .SocketFirst = std::vector(count + 1u, 0u)};
-    for (uint32_t n = 0u; n < count; ++n) plan.SocketFirst[n + 1u] = plan.SocketFirst[n] + SocketCount[procedure.Nodes[n].Kind];
-    plan.Consumers.assign(plan.SocketFirst.back(), 0u);
-    // Track unread inputs per node and consumers as contiguous runs in one list.
-    std::vector<uint32_t> pending(count, 0u), consumer_first(count + 1u, 0u);
-    const auto for_each_link = [&](auto &&fn) {
-        for (uint32_t n = 0u; n < count; ++n) {
-            for (uint32_t i = plan.InputFirst[n]; i < plan.InputFirst[n + 1u]; ++i) {
-                if (const auto link = procedure.Inputs[i]; link.FromNode != NoNode) fn(n, link);
-            }
-        }
-    };
-    for_each_link([&](uint32_t n, SocketLink link) {
-        ++plan.Consumers[plan.SocketFirst[link.FromNode] + link.FromSocket];
-        ++pending[n];
-        ++consumer_first[link.FromNode + 1u];
-    });
-    for (uint32_t n = 0u; n < count; ++n) consumer_first[n + 1u] += consumer_first[n];
-    std::vector<uint32_t> consumers(consumer_first.back());
-    auto fill = consumer_first;
-    for_each_link([&](uint32_t n, SocketLink link) { consumers[fill[link.FromNode]++] = n; });
-    for (uint32_t n = 0u; n < count; ++n) {
-        if (!pending[n]) plan.Order.push_back(n);
-    }
-    for (size_t i = 0u; i < plan.Order.size(); ++i) {
-        const auto n = plan.Order[i];
-        for (uint32_t c = consumer_first[n]; c < consumer_first[n + 1u]; ++c) {
-            if (!--pending[consumers[c]]) plan.Order.push_back(consumers[c]);
-        }
-    }
-    return plan;
-}
-
-void EraseNode(GeometryProcedure &procedure, uint32_t node) {
-    const auto first = procedure.Inputs.begin() + InputFirst(procedure, node);
-    procedure.Inputs.erase(first, first + InputCount[procedure.Nodes[node].Kind]);
-    procedure.Nodes.erase(procedure.Nodes.begin() + node);
-    for (auto &link : procedure.Inputs) {
-        if (link.FromNode == node) link = {};
-        else if (link.FromNode != NoNode && link.FromNode > node) --link.FromNode;
-    }
-    for (auto *index : {&procedure.DisplayNode, &procedure.ActiveNode}) {
-        if (*index == node) *index = NoNode;
-        else if (*index != NoNode && *index > node) --*index;
-    }
-    // The displayed node, or else the last node, replaces a removed active node.
-    if (procedure.ActiveNode == NoNode && !procedure.Nodes.empty()) procedure.ActiveNode = procedure.DisplayNode != NoNode ? procedure.DisplayNode : uint32_t(procedure.Nodes.size()) - 1u;
-}
-
-void RemoveNode(state::Registry &r, state::Entity node) {
-    if (r.Restoring) return;
-    for (const auto [mesh_entity, procedure] : std::as_const(r).view<const GeometryProcedure>().each()) {
-        const auto it = std::ranges::find(procedure.Nodes, node, &NodeRecord::Entity);
-        if (it == procedure.Nodes.end()) continue;
-        const auto index = uint32_t(it - procedure.Nodes.begin());
-        r.patch<GeometryProcedure>(mesh_entity, [&](GeometryProcedure &edited) { EraseNode(edited, index); });
-        return;
-    }
-}
-
 // Queue destroyed procedure nodes for the object-removal pass.
 void QueueNodeRemovals(state::Registry &r, state::Entity mesh_entity) {
     if (r.Restoring) return;
     auto &dependents = r.Resources.emplace<PendingObjectRemovals>().Dependents;
-    for (const auto &node : r.get<const GeometryProcedure>(mesh_entity).Nodes) dependents.push_back(node.Entity);
+    for (auto node = r.get<const GeometryProcedure>(mesh_entity).First; node != state::Null; node = r.get<const ProcedureNode>(node).Next) dependents.push_back(node);
 }
 // Queue removed instance entities for the object-removal pass.
 void QueueInstanceRemovals(state::Registry &r, state::Entity mesh_entity) {
@@ -1706,17 +1642,46 @@ void QueueOwnedMeshRemoval(state::Registry &r, state::Entity mesh_entity) {
 } // namespace
 
 struct ProcedureChanges {
-    state::DirtySet Graph; // A geometry procedure's graph changed.
+    state::DirtySet Graph; // A geometry procedure's graph changed, on its mesh entity or one of its node entities.
     state::DirtySet Inputs; // A node's parameters or inline selection, a mesh's geometry or objects, or a published instance's parent changed.
     state::DirtySet Created; // A node was created, whose own components the inputs list with it.
+    state::DirtySet Moved; // An entity's local transform or parent changed.
 };
+} // namespace procedure
+
+namespace procedure {
+state::Entity ViewportSelectionNode(const state::Registry &r, const GeometryProcedure &procedure) {
+    const auto active = procedure.ActiveNode, display = procedure.DisplayNode;
+    if (active == state::Null || display == state::Null || active == display) return state::Null;
+    const auto sockets = KindSockets(r.get<const ProcedureNode>(active).Kind);
+    const auto selection = std::ranges::find(sockets, SocketType::Selection, &Socket::Type);
+    if (selection == sockets.end() || sockets.front().Type != SocketType::Geometry) return state::Null;
+    const auto &links = r.get<const NodeInputs>(active).Links;
+    const auto input = links.front();
+    const bool reads = input.FromNode == display && input.FromSocket == ResultSocket(r.get<const ProcedureNode>(display).Kind);
+    return reads && links[size_t(selection - sockets.begin())].FromNode == state::Null ? active : state::Null;
+}
+
+state::Entity CreateNode(state::Registry &r, uint16_t kind, uvec2 position) {
+    const auto entity = r.create();
+    VisitKind(kind, [&]<typename K> { r.emplace<K>(entity); });
+    r.emplace<NodeLayout>(entity, position);
+    return entity;
+}
+
+void RootProcedure(state::Registry &r, state::Entity mesh_entity, state::Entity root, uint16_t kind) {
+    r.emplace<NodeSelected>(root);
+    r.emplace<ProcedureNode>(root, mesh_entity, state::Null, kind);
+    r.emplace<NodeInputs>(root, std::vector<SocketLink>(InputCount[kind]));
+    r.emplace_or_replace<GeometryProcedure>(mesh_entity, root, root, root, root);
+}
 } // namespace procedure
 
 void RegisterProcedureHandlers(state::Registry &r) {
     using namespace procedure;
     r.Resources.emplace<CookCount>();
     auto &changes = r.Resources.emplace<ProcedureChanges>();
-    changes.Graph.bind(r).on<GeometryProcedure>(On::Create | On::Update);
+    changes.Graph.bind(r).on<GeometryProcedure>(On::Create | On::Update).on<ProcedureNode>(On::Create | On::Update).on<NodeInputs>(On::Update);
     changes.Created.bind(r).on<NodeLayout>(On::Create);
     r.on_destroy<GeometryProcedure, &QueueNodeRemovals>();
     r.on_destroy<ProcedureInstances, &QueueInstanceRemovals>();
@@ -1727,38 +1692,49 @@ void RegisterProcedureHandlers(state::Registry &r) {
     inputs.on<InlineSelection>(On::Create | On::Update | On::Destroy);
     // Update published instances when an object is created or a child is detached.
     inputs.on<Instance>(On::Create).on<SceneParent>(On::Destroy);
-    ForEachKind([&]<typename K> {
-        inputs.on<K>(On::Update);
-        r.on_destroy<K, &RemoveNode>();
-    });
+    // Boolean nodes follow the placement of the objects they refer to.
+    changes.Moved.bind(r).on<Transform>(On::Update).on<SceneParent>(On::Create | On::Destroy);
+    ForEachKind([&]<typename K> { inputs.on<K>(On::Update); });
 }
 
 void SettleProcedures(state::Registry &r, bool cook) {
     using namespace procedure;
     const auto &changes = r.Resources.get<const ProcedureChanges>();
-    const auto &changed = changes.Graph;
-    for (const auto e : changed) {
-        if (const auto *procedure = r.try_get<const GeometryProcedure>(e)) r.emplace_or_replace<CookPlan>(e, Plan(*procedure));
+    // The procedure a changed mesh or node entity belongs to, or null.
+    const auto procedure_of = [&](state::Entity e) {
+        if (r.all_of<GeometryProcedure>(e)) return e;
+        const auto *node = r.try_get<const ProcedureNode>(e);
+        return node && r.all_of<GeometryProcedure>(node->Procedure) ? node->Procedure : state::Null;
+    };
+    std::vector<state::Entity> planned;
+    for (const auto e : changes.Graph) {
+        if (const auto procedure = procedure_of(e); procedure != state::Null) planned.push_back(procedure);
     }
+    SortUnique(planned);
+    for (const auto e : planned) r.emplace_or_replace<CookPlan>(e, Plan(r, r.get<const GeometryProcedure>(e)));
     if (!cook) return;
-    std::vector<state::Entity> cooked, inputs;
-    for (const auto e : changed) {
-        if (r.all_of<GeometryProcedure>(e)) cooked.push_back(e);
-    }
+    auto cooked = std::move(planned);
+    std::vector<state::Entity> inputs;
     for (const auto e : changes.Inputs) {
-        if (r.all_of<GeometryProcedure>(e)) cooked.push_back(e);
+        if (const auto procedure = procedure_of(e); procedure != state::Null) cooked.push_back(procedure);
         else inputs.push_back(e);
     }
-    if (cooked.empty() && inputs.empty()) return;
+    if (cooked.empty() && inputs.empty() && changes.Moved.empty()) return;
     SortUnique(inputs);
-    const auto input = [&](state::Entity e) { return std::ranges::binary_search(inputs, e); };
-    // Index procedures by the mesh entities read by their Object Info nodes.
+    const auto input = [&](state::Entity e) { return std::ranges::binary_search(inputs, e) || changes.Moved.contains(e); };
+    for (const auto [e, published] : std::as_const(r).view<const ProcedureInstances>().each()) {
+        if (std::ranges::any_of(published.Entities, input)) cooked.push_back(e);
+    }
+    // Index procedures by the mesh entities read by their Object Info nodes and the objects placing their Boolean nodes' inputs, with the objects' ancestors.
     std::vector<std::pair<state::Entity, state::Entity>> reads;
-    for (const auto [e, procedure] : std::as_const(r).view<const GeometryProcedure>().each()) {
-        const auto *published = r.try_get<const ProcedureInstances>(e);
-        if (std::ranges::any_of(procedure.Nodes, input, &NodeRecord::Entity) || (published && std::ranges::any_of(published->Entities, input))) cooked.push_back(e);
-        for (const auto &node : procedure.Nodes) {
-            if (node.Kind == KindOf<ObjectInfo>) reads.emplace_back(e, ReadMesh(r, e, r.get<const ObjectInfo>(node.Entity)));
+    for (const auto [node, info] : std::as_const(r).view<const ObjectInfo>().each()) {
+        if (const auto procedure = procedure_of(node); procedure != state::Null) reads.emplace_back(procedure, ReadMesh(r, procedure, info));
+    }
+    for (const auto [node, boolean] : std::as_const(r).view<const procedure::Boolean>().each()) {
+        const auto procedure = procedure_of(node);
+        if (procedure == state::Null) continue;
+        for (const auto object : {boolean.Object1, boolean.Object2}) {
+            for (auto e = r.valid(object) ? object : state::Null; e != state::Null; e = ParentOrNull(r, e)) reads.emplace_back(procedure, e);
         }
     }
     for (const auto e : inputs) {
