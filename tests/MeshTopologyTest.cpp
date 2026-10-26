@@ -1560,6 +1560,55 @@ void TestPositionRetessellation() {
     ExpectPolygonTessellation(reopened.R.Resources.get<const MeshStore>(), GetMesh(reopened.R, entity));
 }
 
+// A quad keeps its render diagonal through drags until the split folds, and then takes the other diagonal.
+void TestStableQuadDiagonal() {
+    Fixture f{"stable-quad-diagonal"};
+    MeshSource source;
+    source.Data.Positions = {{0, 0, 0}, {2, 0, 0}, {2, 2, 0}, {0, 2, 0}};
+    source.Data.AddFace(std::array{0u, 1u, 2u, 3u});
+    const auto id = CreateMesh(f.R, std::move(source)).StoreId;
+    const auto [entity, instance] = f.AddEditable(id, Element::Vertex);
+    const auto &meshes = f.R.Resources.get<const MeshStore>();
+    // The vertices both render triangles share.
+    const auto diagonal = [&] {
+        const auto mesh = f.ActiveMesh();
+        const auto triangles = RenderTriangles(meshes, mesh, mesh.FaceAt(0u), 2u);
+        std::set<uint32_t> first_vertices, shared;
+        for (uint32_t k = 0u; k < 3u; ++k) first_vertices.insert(*mesh.GetToVertex(he::HH{triangles[0][k]}));
+        for (uint32_t k = 0u; k < 3u; ++k) {
+            if (const auto v = *mesh.GetToVertex(he::HH{triangles[1][k]}); first_vertices.contains(v)) shared.insert(v);
+        }
+        ExpectPolygonTessellation(meshes, mesh);
+        ExpectRenderedGeometry(meshes, mesh);
+        return shared;
+    };
+    const auto drag = [&](uint32_t vertex, vec3 delta) {
+        const std::array selected{vertex};
+        f.SelectElements(entity, selected, Element::Vertex);
+        f.P->History.Commit("Select quad vertex", {});
+        f.Stage(action::view::TransformElements{{.P = delta * .5f}});
+        f.Stage(action::view::TransformElements{{.P = delta}});
+        f.Commit();
+        f.Checkpoint();
+    };
+    f.Checkpoint();
+    const std::set<uint32_t> along_02{0u, 2u}, along_13{1u, 3u};
+    expect(diagonal() == along_02);
+    // Vertex 1 crosses the diagonal from vertex 0 to vertex 2, which folds that split.
+    drag(1u, {-1.5f, 1.f, 0.f});
+    expect(diagonal() == along_13);
+    // Back in the square both splits hold, so the quad keeps its diagonal.
+    drag(1u, {1.5f, -1.f, 0.f});
+    expect(diagonal() == along_13);
+    // Vertex 0 crosses the diagonal from vertex 1 to vertex 3.
+    drag(0u, {1.5f, 1.f, 0.f});
+    expect(diagonal() == along_02);
+    f.P->Undo();
+    f.Checkpoint();
+    expect(diagonal() == along_13);
+    f.CheckSaved([&](state::Registry &r, bool) { ExpectPolygonTessellation(r.Resources.get<const MeshStore>(), GetMesh(r, entity)); });
+}
+
 void TestDissolveCollapsedFaces() {
     Fixture f{"dissolve-collapsed-faces"};
     MeshSource source;
@@ -3679,6 +3728,7 @@ int main(int argc, char **argv) {
         "welding independent target groups preserves simple loops and loose edges"_test = TestWeldDistanceGroups;
         "welding duplicate faces preserves the surviving face and its attributes"_test = TestWeldDuplicateFaces;
         "position edits retessellate polygons through preview cancel commit"_test = TestPositionRetessellation;
+        "position edits keep a quad's diagonal until its split folds"_test = TestStableQuadDiagonal;
         "concave fill and dissolve emit valid render triangles"_test = TestConcaveFillAndDissolve;
         "split concave faces matches Blender partitions attributes"_test = TestSplitConcaveFaces;
     };

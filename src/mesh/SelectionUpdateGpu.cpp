@@ -59,17 +59,21 @@ void MeshStore::UpdateSelection(state::Registry &r, mtl::ComputeChain &chain, st
     }
     const auto dirty_words = std::bit_ceil(std::max(2ull, 2ull * entry_bound));
     constexpr uint32_t MeshWords = sizeof(SelectionMeshUpdate) / sizeof(uint32_t);
-    if (dirty_words + meshes.size() * MeshWords + seed_count * 4u + 3u + 2u * entry_bound >= InvalidOffset) {
+    if (dirty_words + meshes.size() * MeshWords + seed_count * 4u + 3u + (2u + MeshElementBlockWords) * entry_bound >= InvalidOffset) {
         throw std::length_error("Selection update workspace exceeds canonical addressing.");
     }
     const Range mesh_range{uint32_t(dirty_words), uint32_t(meshes.size() * MeshWords)};
     const Range seed_range{mesh_range.Offset + mesh_range.Count, uint32_t(seed_count * 3u)};
     const Range seed_updates{seed_range.Offset + seed_range.Count, uint32_t(seed_count)};
     const Range list_range{seed_updates.Offset + seed_updates.Count, uint32_t(3u + 2u * entry_bound)};
-    const auto work = std::make_shared<mtl::Buffer>(BufferContext(), uint64_t(list_range.Offset + list_range.Count) * sizeof(uint32_t), SlotType::Buffer, mtl::BufferLifetime::Workspace);
-    profile::RecordCounter("SelectionWorkspaceBytes", uint64_t(list_range.Offset + list_range.Count) * sizeof(uint32_t));
+    // Derived mask words are Persistent, so the GPU stages them and the host copies them into the masks, capturing their pages.
+    const bool derives = std::ranges::any_of(meshes, [](const SelectionMeshUpdate &mesh) { return mesh.Source != InvalidOffset; });
+    const Range staged_range{list_range.Offset + list_range.Count, derives ? uint32_t(MeshElementBlockWords * entry_bound) : 0u};
+    const auto work_words = uint64_t(staged_range.Offset + staged_range.Count);
+    const auto work = std::make_shared<mtl::Buffer>(BufferContext(), work_words * sizeof(uint32_t), SlotType::Buffer, mtl::BufferLifetime::Workspace);
+    profile::RecordCounter("SelectionWorkspaceBytes", work_words * sizeof(uint32_t));
     {
-        const auto words = work->SetCount<uint32_t>(list_range.Offset + list_range.Count);
+        const auto words = work->SetCount<uint32_t>(uint32_t(work_words));
         std::ranges::copy(std::as_bytes(std::span{meshes}), std::as_writable_bytes(words.subspan(mesh_range.Offset, mesh_range.Count)).begin());
         auto seeds = std::as_writable_bytes(words.subspan(seed_range.Offset, seed_range.Count)).begin();
         auto owners = words.subspan(seed_updates.Offset, seed_updates.Count).begin();
@@ -110,34 +114,40 @@ void MeshStore::UpdateSelection(state::Registry &r, mtl::ComputeChain &chain, st
         .SeedUpdates = seed_updates.Offset,
         .List = list_range.Offset,
         .SeedCount = uint32_t(seed_count),
+        .Staged = derives ? staged_range.Offset : InvalidOffset,
     };
     {
         const profile::CpuScope mark_scope{"SelectionMark"};
         chain.Groups(pipelines[MeshPass::MarkSelectionNeighbors], pc, uint32_t((seed_count * 32u + 255u) / 256u));
     }
-    // Derived mask words are Persistent, so their pages are captured before the GPU rewrites them.
-    if (std::ranges::any_of(meshes, [](const SelectionMeshUpdate &mesh) { return mesh.Source != InvalidOffset; })) {
-        chain.Submit();
-        const auto list = work->GetSpan<uint32_t>(list_range);
-        std::array<std::vector<uint32_t>, 3> derived;
-        for (uint32_t i = 0u; i < list[0]; ++i) {
-            const auto entry = list[3u + 2u * i], source = meshes[list[4u + 2u * i]].Source, d = entry >> 30u;
-            if (source != InvalidOffset && d != source) derived[d].push_back(entry & ((1u << 30u) - 1u));
-        }
-        for (uint32_t d = 0u; d < 3u; ++d) CaptureSelectionBlocks(Elements[d], derived[d]);
-    }
     const profile::CpuScope update_scope{"SelectionUpdateBlocks"};
     chain.Indirect(pipelines[MeshPass::UpdateSelectionBlocks], pc, *work, uint64_t(list_range.Offset) * sizeof(uint32_t));
-    chain.AfterSubmit([this, work, list_range, meshes = std::move(meshes)] {
+    chain.AfterSubmit([this, work, list_range, staged_range, meshes = std::move(meshes)] {
         const profile::CpuScope scope{"SelectionIndexUpdate"};
         const auto list = work->GetSpan<uint32_t>(list_range);
         profile::RecordCounter("SelectionUpdatedBlocks", list[0]);
-        std::vector<std::array<std::vector<uint32_t>, 3>> blocks(meshes.size());
-        for (uint32_t i = 0u; i < list[0]; ++i) {
-            const auto entry = list[3u + 2u * i];
-            blocks[list[4u + 2u * i]][entry >> 30u].push_back(entry & ((1u << 30u) - 1u));
-        }
         const std::array members{Buffers.Vertices.Blocks.Buffer.GetSpan<MeshElementBlock>(), Buffers.EdgeHalfedges.Blocks.Buffer.GetSpan<MeshElementBlock>(), Buffers.FaceTriangles.Blocks.Buffer.GetSpan<MeshElementBlock>()};
+        std::vector<std::array<std::vector<uint32_t>, 3>> blocks(meshes.size());
+        // The (block, list entry) pairs of each domain whose words the GPU derived, which are the derived entries of blocks their mesh owns.
+        std::array<std::vector<std::pair<uint32_t, uint32_t>>, 3> derived;
+        for (uint32_t i = 0u; i < list[0]; ++i) {
+            const auto entry = list[3u + 2u * i], d = entry >> 30u, block = entry & ((1u << 30u) - 1u);
+            const auto &mesh = meshes[list[4u + 2u * i]];
+            blocks[list[4u + 2u * i]][d].push_back(block);
+            if (mesh.Source != InvalidOffset && d != mesh.Source && block < members[d].size() && members[d][block].Owner == mesh.Owners[d]) derived[d].emplace_back(block, i);
+        }
+        if (staged_range.Count) {
+            const auto staged = work->GetSpan<uint32_t>(staged_range);
+            for (uint32_t d = 0u; d < 3u; ++d) {
+                if (derived[d].empty()) continue;
+                std::ranges::sort(derived[d]);
+                const auto derived_blocks = derived[d] | std::views::keys | std::ranges::to<std::vector>();
+                auto next = derived[d].begin();
+                EditSelectionBlocks(Elements[d], derived_blocks, [&](uint32_t, auto &words) {
+                    std::ranges::copy(staged.subspan((next++)->second * MeshElementBlockWords, MeshElementBlockWords), words.begin());
+                });
+            }
+        }
         const std::array leaves{Buffers.VertexAggregates.Buffer.GetSpan<SelectionAggregate>(), Buffers.EdgeAggregates.Buffer.GetSpan<SelectionAggregate>(), Buffers.FaceAggregates.Buffer.GetSpan<SelectionAggregate>()};
         for (uint32_t i = 0u; i < meshes.size(); ++i) {
             for (uint32_t d = 0u; d < 3u; ++d) {

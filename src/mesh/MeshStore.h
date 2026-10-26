@@ -356,7 +356,6 @@ struct MeshStore {
 
     // Capture destination pages before dispatching GPU writes to Persistent mesh data.
     void CaptureSelectionSummary(uint32_t id);
-    void CaptureSelectionBlocks(Element, std::span<const uint32_t> blocks);
     void CaptureSharpnessWrite(uint32_t id, EditSharpnessOperation, const GeometrySelection &);
     void CaptureConnectivityWrite(uint32_t id);
     void CaptureWeldWrite(uint32_t id);
@@ -571,7 +570,7 @@ struct MeshStore {
         });
     }
     // Refresh Blocks and blocks incident to Seeds.
-    // A valid Source derives the other domains and submits once for capture.
+    // A valid Source derives the other domains, whose masks take the derived words when the chain submits.
     // Submit before reading the updated roots.
     struct SelectionUpdate {
         uint32_t StoreId;

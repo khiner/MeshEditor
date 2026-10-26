@@ -1831,6 +1831,40 @@ Graph UnlinkedInstance(ProcedureFixture &f) {
     };
 }
 
+// The source clone takes lower blocks than the generated cube and the Join appends them after the cube's, so the joined block table is not in ascending order.
+// A Compare linked into a Delete still selects the cube's upper vertices in its higher block.
+Graph JoinedSelection(ProcedureFixture &f) {
+    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    const auto cube = f.Append(mesh, KindOf<primitive::Cuboid>);
+    const auto join = f.Append(mesh, KindOf<Join>);
+    const auto position = f.Append(mesh, KindOf<Position>);
+    const auto compare = f.Append(mesh, KindOf<Compare>);
+    const auto remove = f.Append(mesh, KindOf<action::mesh::Delete>);
+    f.Do(UpdateOf<&primitive::Cuboid::HalfExtents>(cube, vec3{1.f, 2.f, 1.f}));
+    f.Do(UpdateOf<&Compare::Component>(compare, VectorComponent::Y));
+    f.Do(UpdateOf<&Compare::B>(compare, 1.5f));
+    f.Do(Link{mesh, cube, f.Out(cube), join, 0u});
+    f.Do(Link{mesh, f.Node(mesh, 0u), 0u, join, 1u});
+    f.Do(Link{mesh, position, 0u, compare, 0u});
+    f.Do(Link{mesh, compare, f.Out(compare), remove, 1u});
+    f.Route(mesh, {join, remove});
+    return {
+        mesh,
+        [mesh, compare, remove](ProcedureFixture &f) {
+            const auto &meshes = f.Store();
+            expect(!f.R.any_of<NodeError>(compare) && !f.R.any_of<NodeError>(remove));
+            const auto id = f.Output(mesh);
+            const auto blocks = meshes.GetBlockList(id, MeshStore::ElementDomain::Vertex).Blocks;
+            expect(fatal(blocks.size() == 2u));
+            expect(blocks.back() < blocks.front());
+            const Mesh output{meshes, id};
+            expect(output.VertexCount() == 12u);
+            for (const auto v : output.vertices()) expect(output.GetPosition(v).y < 1.5f);
+        },
+        [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&Compare::B>(f.Node(mesh, 4u), .5f)); },
+    };
+}
+
 // A change to a node committed in an earlier step restores the record from the node's edited input.
 void ColdRecook(ProcedureFixture &f) {
     const auto mesh = f.AddMesh(primitive::Cuboid{});
@@ -1883,7 +1917,7 @@ void EditedInputRecook(ProcedureFixture &f, Fixture &other) {
         expect(other.P->Close());
     };
 }
-constexpr std::array<GraphRow, 20> Graphs{{
+constexpr std::array<GraphRow, 21> Graphs{{
     {"ExtrudeSubdivide", ExtrudeSubdivide},
     {"CapInset", CapInset},
     {"ScalePositions", ScalePositions},
@@ -1904,6 +1938,7 @@ constexpr std::array<GraphRow, 20> Graphs{{
     {"SourceInstances", SourceInstances},
     {"UnlinkedInstance", UnlinkedInstance},
     {"UnsubdivideSelection", UnsubdivideSelection},
+    {"JoinedSelection", JoinedSelection},
 }};
 } // namespace
 

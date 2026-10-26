@@ -95,6 +95,8 @@ struct SocketValue {
     bool Borrowed() const { return Type == SocketType::Geometry && MeshEntity != state::Null; }
 };
 constexpr std::array<uint32_t, 3> EveryElement{InvalidOffset, InvalidOffset, InvalidOffset};
+// The element domains of a selection's masks, in mask order.
+constexpr std::array SelectionDomains{MeshStore::ElementDomain::Vertex, MeshStore::ElementDomain::Edge, MeshStore::ElementDomain::Face};
 // Return the output record, the input for an unchanged operation, or the reason the operation failed.
 using Outcome = std::expected<uint32_t, NodeFault>;
 
@@ -735,28 +737,33 @@ Outcome Run(state::Registry &r, const InstanceOnPoints &p, uint32_t id, const Ma
     return scale ? Outcome{id} : std::unexpected(scale.error());
 }
 
-// Allocate zeroed masks through the last owned block, then call fill(domain, owned blocks, masks).
-std::array<uint32_t, 3> ZeroedMasks(MeshStore &meshes, std::optional<BufferArena<SelectionBlock>> &arena, uint32_t id, auto &&fill) {
-    if (!arena) arena.emplace(meshes.BufferContext(), SlotType::Buffer);
-    using D = MeshStore::ElementDomain;
-    constexpr std::array domains{D::Vertex, D::Edge, D::Face};
-    std::array<uint32_t, 3> first;
+// The masks in the arena from each selection domain's first block.
+GeometryMasks MasksAt(const BufferArena<SelectionBlock> &arena, const std::array<uint32_t, 3> &first) { return {{&arena, first[0]}, {&arena, first[1]}, {&arena, first[2]}}; }
+// Allocate each selection domain's masks through the highest block the record owns in it.
+std::array<Range, 3> AllocateMasks(MeshStore &meshes, std::optional<BufferArena<SelectionBlock>> &arena, uint32_t id) {
+    if (!arena) arena.emplace(meshes.BufferContext(), SlotType::Buffer, mtl::BufferLifetime::Workspace);
+    std::array<Range, 3> ranges;
     for (uint32_t d = 0u; d < 3u; ++d) {
-        const auto owned = meshes.GetBlockList(id, domains[d]).Blocks;
-        const auto range = arena->Allocate(owned.empty() ? 1u : std::ranges::max(owned) + 1u);
-        const auto masks = arena->GetMutable(range);
-        std::ranges::fill(masks, SelectionBlock{});
-        fill(d, owned, masks);
-        first[d] = range.Offset;
+        const auto owned = meshes.GetBlockList(id, SelectionDomains[d]).Blocks;
+        ranges[d] = arena->Allocate(owned.empty() ? 1u : std::ranges::max(owned) + 1u);
     }
-    return first;
+    return ranges;
+}
+// Allocate zeroed masks, then call fill(domain, masks).
+std::array<uint32_t, 3> ZeroedMasks(MeshStore &meshes, std::optional<BufferArena<SelectionBlock>> &arena, uint32_t id, auto &&fill) {
+    const auto ranges = AllocateMasks(meshes, arena, id);
+    for (uint32_t d = 0u; d < 3u; ++d) {
+        const auto masks = arena->GetMutable(ranges[d]);
+        std::ranges::fill(masks, SelectionBlock{});
+        fill(d, masks);
+    }
+    return {ranges[0].Offset, ranges[1].Offset, ranges[2].Offset};
 }
 std::array<uint32_t, 3> UploadSelection(MeshStore &meshes, std::optional<BufferArena<SelectionBlock>> &arena, uint32_t id, const InlineSelection *selection) {
     if (!selection || selection->All) return EveryElement;
     const std::array lists{&selection->Vertices, &selection->Edges, &selection->Faces};
-    constexpr std::array domains{MeshStore::ElementDomain::Vertex, MeshStore::ElementDomain::Edge, MeshStore::ElementDomain::Face};
-    return ZeroedMasks(meshes, arena, id, [&](uint32_t d, std::span<const uint32_t>, std::span<SelectionBlock> masks) {
-        const auto entries = WithDomain(meshes.Arenas(), domains[d], [&](const auto &elements) { return elements.Entries(DomainSet(meshes.Get(id), domains[d])); });
+    return ZeroedMasks(meshes, arena, id, [&](uint32_t d, std::span<SelectionBlock> masks) {
+        const auto entries = WithDomain(meshes.Arenas(), SelectionDomains[d], [&](const auto &elements) { return elements.Entries(DomainSet(meshes.Get(id), SelectionDomains[d])); });
         ForEachSelectedBlock(*lists[d], [&](uint32_t local, const SelectionBlock &words) {
             if (local < entries.size() && entries[local] != InvalidOffset && entries[local] < masks.size()) masks[entries[local]] = words;
         });
@@ -950,7 +957,6 @@ Evaluation EvaluateInputs(state::Registry &r, const CookPlan &plan, std::vector<
         if (pc.BlockCount) jobs.push_back(*job);
     }
     std::vector<AttributeMaskPushConstants> scatters;
-    std::array<Range, 3> mask_ranges;
     std::optional<Element> from;
     const auto sockets = KindSockets(plan.Nodes[node].Kind);
     for (uint32_t s = 0u; s < InputCount[plan.Nodes[node].Kind]; ++s) {
@@ -962,7 +968,7 @@ Evaluation EvaluateInputs(state::Registry &r, const CookPlan &plan, std::vector<
                 evaluation.MaskFirst = EveryElement;
                 break;
             }
-            evaluation.MaskFirst = ZeroedMasks(meshes, arena, id, [](uint32_t, std::span<const uint32_t>, std::span<SelectionBlock>) {});
+            evaluation.MaskFirst = ZeroedMasks(meshes, arena, id, [](uint32_t, std::span<SelectionBlock>) {});
             break;
         }
         const auto selection = linked.Attribute;
@@ -971,17 +977,13 @@ Evaluation EvaluateInputs(state::Registry &r, const CookPlan &plan, std::vector<
             evaluation.Failed = true;
             break;
         }
-        if (!arena) arena.emplace(meshes.BufferContext(), SlotType::Buffer);
-        using D = MeshStore::ElementDomain;
-        constexpr std::array domains{D::Vertex, D::Edge, D::Face};
-        constexpr std::array elements{Element::Vertex, Element::Edge, Element::Face};
         const auto ref = meshes.AttributeRef(selection);
+        const auto mask_ranges = AllocateMasks(meshes, arena, id);
         for (uint32_t d = 0u; d < 3u; ++d) {
-            const auto owned = meshes.GetBlockList(id, domains[d]).Blocks;
-            mask_ranges[d] = arena->Allocate(owned.empty() ? 1u : owned.back() + 1u);
-            const bool scattered = ElementDomainOf(attribute->Domain) == domains[d];
-            if (scattered) from = elements[d];
-            const auto [membership, owner] = WithDomain(meshes.Arenas(), domains[d], [&](const auto &elements) { return std::pair{elements.Blocks.Buffer.Slot, DomainSet(meshes.Get(id), domains[d]).Index}; });
+            const auto domain = SelectionDomains[d];
+            const bool scattered = ElementDomainOf(attribute->Domain) == domain;
+            if (scattered) from = he::Elements[d];
+            const auto [membership, owner] = WithDomain(meshes.Arenas(), domain, [&](const auto &elements) { return std::pair{elements.Blocks.Buffer.Slot, DomainSet(meshes.Get(id), domain).Index}; });
             scatters.push_back({.Attribute = scattered ? ref : NamedAttributeRef{}, .MembershipSlot = membership, .Owner = owner, .Masks = MaskBinding({&*arena, mask_ranges[d].Offset}), .Words = mask_ranges[d].Count * MeshElementBlockWords});
         }
         evaluation.MaskFirst = {mask_ranges[0].Offset, mask_ranges[1].Offset, mask_ranges[2].Offset};
@@ -993,7 +995,7 @@ Evaluation EvaluateInputs(state::Registry &r, const CookPlan &plan, std::vector<
     chain.Concurrent([&] {
         for (const auto &pc : scatters) chain.Threads(pipelines[MeshPass::AttributeSelectionMasks], pc, pc.Words);
     });
-    if (from) meshes.DeriveSelectionMasks(r, chain, id, {{&*arena, mask_ranges[0].Offset}, {&*arena, mask_ranges[1].Offset}, {&*arena, mask_ranges[2].Offset}}, *from);
+    if (from) meshes.DeriveSelectionMasks(r, chain, id, MasksAt(*arena, *evaluation.MaskFirst), *from);
     chain.Submit();
     return evaluation;
 }
@@ -1026,7 +1028,7 @@ Outcome RunNode(state::Registry &r, const CookPlan &plan, std::vector<SocketValu
             masks.Domain = inline_selection->Domain;
             masks.Active = inline_selection->Active;
         }
-        if (const auto &f = selection.MaskFirst; f != EveryElement) masks.In = GeometryMasks{{&*arena, f[0]}, {&*arena, f[1]}, {&*arena, f[2]}};
+        if (selection.MaskFirst != EveryElement) masks.In = MasksAt(*arena, selection.MaskFirst);
     }
     masks.Publish = r.all_of<PublishSelection>(entity);
     masks.Drawn = drawn;
@@ -1616,7 +1618,7 @@ void ShowActiveSelection(state::Registry &r, state::Entity mesh_entity, std::opt
     } else {
         const auto masks = UploadSelection(meshes, arena, live->StoreId, selection);
         mtl::ComputeChain chain{meshes.BufferContext()};
-        meshes.SelectMasks(r, chain, live->StoreId, {{&*arena, masks[0]}, {&*arena, masks[1]}, {&*arena, masks[2]}});
+        meshes.SelectMasks(r, chain, live->StoreId, MasksAt(*arena, masks));
         chain.Submit();
     }
     if (const auto handle = selection ? selection->Active : InvalidOffset; handle != InvalidOffset) r.emplace_or_replace<MeshActiveElement>(mesh_entity, handle);

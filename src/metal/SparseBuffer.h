@@ -13,7 +13,7 @@ namespace mtl {
 // CPU and GPU virtual ranges map the same placement-heap pages.
 // The CPU range covers the device's buffer length limit, and the GPU range covers at least FirstGpuAddressBytes.
 // Growing past the GPU range replaces it once with one as large as the CPU range, which maps the same pages.
-// The replaced address retires after submitted readers finish.
+// The replaced address unmaps in the next mapping update, after its committed readers complete.
 inline constexpr uint64_t FirstGpuAddressBytes = 1ull << 30;
 struct SparseBuffer {
     SparseBuffer(const Context &, uint64_t virtual_bytes);

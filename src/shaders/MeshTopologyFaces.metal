@@ -22,9 +22,7 @@ inline bool TopoSplitQuad13(float2 p0, float2 p1, float2 p2, float2 p3) {
     // Blender's quad beauty: the diagonal whose two triangles keep the larger minimum area-to-perimeter ratio, avoiding flipped or empty triangles.
     const float area_123 = TopoCross2(p1, p2, p3), area_130 = TopoCross2(p1, p3, p0);
     const float area_012 = TopoCross2(p0, p1, p2), area_023 = TopoCross2(p0, p2, p3);
-    const float eps = 1e-12f;
-    const bool ok_13 = (area_123 >= 0.f) == (area_130 >= 0.f) && abs(area_123) > eps && abs(area_130) > eps;
-    const bool ok_02 = (area_012 >= 0.f) == (area_023 >= 0.f) && abs(area_012) > eps && abs(area_023) > eps;
+    const bool ok_13 = QuadSplitValid(area_123, area_130), ok_02 = QuadSplitValid(area_012, area_023);
     if (!ok_02) return ok_13;
     if (!ok_13) return false;
     const float l01 = distance(p0, p1), l12 = distance(p1, p2), l23 = distance(p2, p3), l30 = distance(p3, p0);

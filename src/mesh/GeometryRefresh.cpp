@@ -43,10 +43,9 @@ std::vector<ElementWork> EncodeRetessellation(state::Registry &r, mtl::ComputeCh
             if (tangents.Slot != InvalidSlot) a.CornerTangents.Capture(record.CornerTangents, {loop.x, n});
             job.Faces.emplace_back(face, job.Corners);
             const uint32_t first = a.FaceTriangles.Get({address, 1u})[0];
-            if (n > 3u) {
-                job.Corners += n;
-                a.Triangles.ForEachAddressRun(record.TriangleData, ElementHandle{first}, n - 2u, [&](Range run) { triangle_ranges.push_back(run); });
-            }
+            if (n > 3u) a.Triangles.ForEachAddressRun(record.TriangleData, ElementHandle{first}, n - 2u, [&](Range run) { triangle_ranges.push_back(run); });
+            // Polygons beyond quads triangulate in scratch, and quads choose a diagonal without it.
+            if (n > 4u) job.Corners += n;
             job.TriangleBlocks += (uint64_t(first % MeshElementBlockSize) + n - 2u + MeshElementBlockSize - 1u) / MeshElementBlockSize;
         });
         if (job.Faces.empty()) continue;

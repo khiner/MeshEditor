@@ -94,7 +94,7 @@ bool BufferContext::ReclaimRetiredBuffers(bool wait) {
         released = true;
     }
     if (released) Ctx.CommitResidency();
-    if (wait) completed &= Ctx.DrainMappings();
+    if (wait) Ctx.DrainMappings();
     return completed;
 }
 

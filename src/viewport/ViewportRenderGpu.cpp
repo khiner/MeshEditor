@@ -2159,7 +2159,8 @@ CommitPosedGeometryPushConstants PrepareGeometryEdit(state::Registry &r, state::
     const auto id = w.StoreId;
     if (changed.empty()) w.RefreshRanges.clear();
     if (!changed.empty()) {
-        const bool same_ranges = w.CandidateReady && w.FootprintReady && w.PreviewActive &&
+        // Ranges seed the candidates without the selection, so a selection change keeps them and their footprint.
+        const bool same_ranges = w.FootprintReady && w.PreviewActive &&
             std::ranges::equal(changed, w.RefreshRanges, [](Range a, Range b) {
                                      return a.Offset == b.Offset && a.Count == b.Count;
                                  });

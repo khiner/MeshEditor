@@ -926,26 +926,27 @@ std::optional<MeshStore::Change> MeshStore::RestoreRecord(store::Hash128 state, 
         const auto index = domain == Domain::Halfedge ? 3u : SelectableDomain(domain) ? SelectableIndex(domain) : InvalidOffset;
         if (index != InvalidOffset) change.Blocks[index].push_back(block);
     };
-    // The vertices in the differing stored bytes of [first, end) of the vertex stream, as handles of the block at local `local`.
+    // Whether the stored bytes of [first, end), within one slot of a tracked buffer, differ from its live bytes.
+    const auto stored_differs = [&](const mtl::Buffer &buffer, uint64_t first, uint64_t end) {
+        const auto k = reader.OwnerOf(buffer);
+        const auto page = reader.PageBytes(k);
+        const auto &bytes = reader.Slot(k, first / page);
+        const auto at = first % page, size = end - first;
+        const auto live = buffer.GetSpan<std::byte>({uint32_t(first), uint32_t(size)});
+        if (bytes.size() < at + size) return std::ranges::any_of(live, [](std::byte b) { return b != std::byte{}; });
+        return std::memcmp(bytes.data() + at, live.data(), size) != 0;
+    };
+    // Adds the vertices in the differing stored bytes of [first, end) of the vertex stream, as handles of the block at local `local`, and returns whether any differed.
     const auto changed_vertices = [&](uint64_t first, uint64_t end, uint32_t block, uint32_t local) {
         constexpr auto Stride = uint64_t(sizeof(Vertex));
-        const auto page = reader.PageBytes(reader.OwnerOf(Buffers.Vertices.Buffer));
-        const auto bytes = Buffers.Vertices.Buffer.GetSpan<std::byte>({uint32_t(first), uint32_t(end - first)});
+        const auto &vertices = Buffers.Vertices.Buffer;
         auto lo = first, hi = end;
-        for (; lo < hi; lo += Stride) {
-            const auto &page_bytes_ = reader.Slot(reader.OwnerOf(Buffers.Vertices.Buffer), lo / page);
-            const auto at = lo % page;
-            if (page_bytes_.size() < at + Stride ? std::ranges::any_of(bytes.subspan(lo - first, Stride), [](std::byte b) { return b != std::byte{}; }) : std::memcmp(page_bytes_.data() + at, bytes.data() + (lo - first), Stride) != 0) break;
-        }
-        if (lo >= hi) return;
-        for (; hi > lo; hi -= Stride) {
-            const auto last = hi - Stride;
-            const auto &page_bytes_ = reader.Slot(reader.OwnerOf(Buffers.Vertices.Buffer), last / page);
-            const auto at = last % page;
-            if (page_bytes_.size() < at + Stride ? std::ranges::any_of(bytes.subspan(last - first, Stride), [](std::byte b) { return b != std::byte{}; }) : std::memcmp(page_bytes_.data() + at, bytes.data() + (last - first), Stride) != 0) break;
-        }
+        while (lo < hi && !stored_differs(vertices, lo, lo + Stride)) lo += Stride;
+        if (lo >= hi) return false;
+        while (hi > lo && !stored_differs(vertices, hi - Stride, hi)) hi -= Stride;
         const auto base = uint64_t(block) * MeshElementBlockSize * Stride;
         change.VertexRanges.push_back({uint32_t(local * MeshElementBlockSize + (lo - base) / Stride), uint32_t((hi - lo) / Stride)});
+        return true;
     };
     // Every tracked stream keyed by a domain's blocks, with its bytes per block.
     const auto for_each_stream = [&](Domain domain, std::optional<RenderSet> render, auto &&fn) {
@@ -1084,7 +1085,7 @@ std::optional<MeshStore::Change> MeshStore::RestoreRecord(store::Hash128 state, 
                 for (auto b = uint32_t(first / block_bytes); uint64_t(b) * block_bytes < end; ++b) {
                     if (!kept_block(b)) continue;
                     const auto lo = std::max(first, b * block_bytes), hi = std::min(end, (b + 1u) * block_bytes);
-                    if (&buffer == &Buffers.Vertices.Buffer) changed_vertices(lo, hi, b, members[b].Local);
+                    if (&buffer == &Buffers.Vertices.Buffer ? !changed_vertices(lo, hi, b, members[b].Local) : !stored_differs(buffer, lo, hi)) continue;
                     reader.Copy(buffer, lo, lo, hi - lo);
                     change.Bits |= bits;
                     changed_block(domain, b);
@@ -1289,10 +1290,6 @@ void CaptureRange(const auto &arena, ElementSetRef set) { CaptureElementSet(aren
 
 void MeshStore::CaptureSelectionSummary(uint32_t id) {
     if (Tracked) CaptureRange(Buffers.SelectionSummary, Records.at(id).SelectionSummary);
-}
-
-void MeshStore::CaptureSelectionBlocks(Element element, std::span<const uint32_t> blocks) {
-    if (Tracked) SelectionArena(Buffers, SelectionDomain(element)).Buffer.CaptureWriteElements(blocks, sizeof(SelectionBlock));
 }
 
 void MeshStore::CaptureSharpnessWrite(uint32_t id, EditSharpnessOperation operation, const GeometrySelection &selection) {

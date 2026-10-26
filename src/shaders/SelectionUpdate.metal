@@ -181,7 +181,10 @@ kernel void UpdateSelectionBlocks(
     if (source != InvalidOffset && domain != source) {
         selected = live && ctx.Derived(domain, handle, address);
         const uint word = uint((simd_vote::vote_t)simd_ballot(selected));
-        if (simd_lane == 0u) BindlessBufferMutable(uint, b.Buffer, pc.Masks[domain].Slot)[pc.Masks[domain].Offset + block * MeshElementBlockWords + simd_group] = word;
+        if (simd_lane == 0u) {
+            if (pc.Staged != InvalidOffset) ctx.Work()[pc.Staged + group * MeshElementBlockWords + simd_group] = word;
+            else BindlessBufferMutable(uint, b.Buffer, pc.Masks[domain].Slot)[pc.Masks[domain].Offset + block * MeshElementBlockWords + simd_group] = word;
+        }
     }
     if (pc.Leaves[domain] == InvalidSlot) return;
     float3 sum = 0.0f, low = FLT_MAX, high = -FLT_MAX;

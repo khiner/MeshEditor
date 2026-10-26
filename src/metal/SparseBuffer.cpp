@@ -48,10 +48,11 @@ SparseBuffer::SparseBuffer(const Context &ctx, uint64_t virtual_bytes, std::span
 
 SparseBuffer::~SparseBuffer() {
     if (CpuAddress) mach_vm_deallocate(mach_task_self(), CpuAddress, CpuVirtualBytes);
-    if (!CloneIndices.empty()) ForEachIndexRun(CloneIndices, [&](size_t first, size_t count) { Ctx.UnmapBufferPages(Gpu.get(), CloneIndices[first], count); });
-    else if (Gpu) Ctx.UnmapBufferPages(Gpu.get(), 0u, std::min(uint64_t(Gpu->length()), ResidentBytes) / PhysicalPageBytes);
-    Ctx.RetireSparseAddresses(std::move(Gpu));
-    Ctx.RetainUnmappedPages(std::move(Pages));
+    if (!Gpu) return;
+    std::vector<std::pair<uint64_t, uint64_t>> mapped;
+    if (!CloneIndices.empty()) ForEachIndexRun(CloneIndices, [&](size_t first, size_t count) { mapped.emplace_back(CloneIndices[first], count); });
+    else if (const auto count = std::min(uint64_t(Gpu->length()), ResidentBytes) / PhysicalPageBytes) mapped.emplace_back(0u, count);
+    Ctx.RetireSparseAddresses(std::move(Gpu), std::move(mapped), std::move(Pages));
 }
 
 void SparseBuffer::ReserveAddresses(uint64_t bytes) {
@@ -60,10 +61,11 @@ void SparseBuffer::ReserveAddresses(uint64_t bytes) {
     const auto size = Gpu ? CpuVirtualBytes : std::min(CpuVirtualBytes, std::max(std::bit_ceil(bytes), FirstGpuAddressBytes));
     auto next = Ctx.ReserveSparseAddresses(size);
     if (Gpu) {
-        // Submitted commands can still read the old address, so it retires after their fence.
+        // Committed commands can still read the old address, and the mapping update that unmaps it waits for them to complete.
         // Later writes and history restores use the new address through the updated bindless slot.
-        Ctx.UnmapBufferPages(Gpu.get(), 0u, ResidentBytes / PhysicalPageBytes);
-        Ctx.RetireSparseAddresses(std::move(Gpu));
+        std::vector<std::pair<uint64_t, uint64_t>> mapped;
+        if (ResidentBytes) mapped.emplace_back(0u, ResidentBytes / PhysicalPageBytes);
+        Ctx.RetireSparseAddresses(std::move(Gpu), std::move(mapped), {});
     }
     Gpu = std::move(next);
     VirtualBytes = size;

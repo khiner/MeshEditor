@@ -47,16 +47,17 @@ inline void PolygonEarClip(Points points, Next next, Previous prev, uint32_t n, 
     emit(uvec3(prev[cursor], cursor, next[cursor]), count);
 }
 
-// Project relative to the first corner and scale before computing a vector-area normal.
+// Whether two triangles splitting a quad along one diagonal share an orientation and both have area, given their projected signed areas.
+// A split that fails folds the quad or collapses a triangle.
+inline bool QuadSplitValid(float area_a, float area_b) {
+    const float eps = 1e-12f;
+    return (area_a >= 0.f) == (area_b >= 0.f) && (area_a > eps || area_a < -eps) && (area_b > eps || area_b < -eps);
+}
+
+// Projects a polygon's corners on the dominant axis of its vector-area normal, relative to the first corner and scaled by its extent.
 // This avoids translation cancellation and supports either winding and polygons in any plane.
-// Convex loops retain their original fan ordering.
-template<typename Position, typename Points, typename Next, typename Previous, typename Emit>
-inline void TriangulatePolygon(uint32_t n, Position position, Points points, Next next, Previous previous, Emit emit) {
-    if (n < 3u) return;
-    if (n == 3u) {
-        emit(uvec3{0u, 1u, 2u}, 0u);
-        return;
-    }
+template<typename Position, typename Points>
+inline void ProjectPolygon(uint32_t n, Position position, Points points) {
     const vec3 origin = position(0u);
     vec3 low = origin, high = origin;
     for (uint32_t i = 1u; i < n; ++i) {
@@ -90,6 +91,18 @@ inline void TriangulatePolygon(uint32_t n, Position position, Points points, Nex
         const vec3 p = (position(i) - origin) / scale;
         points[i] = vec2{p[x], p[y]};
     }
+}
+
+// Triangulates a polygon in its projection.
+// Convex loops retain their original fan ordering.
+template<typename Position, typename Points, typename Next, typename Previous, typename Emit>
+inline void TriangulatePolygon(uint32_t n, Position position, Points points, Next next, Previous previous, Emit emit) {
+    if (n < 3u) return;
+    if (n == 3u) {
+        emit(uvec3{0u, 1u, 2u}, 0u);
+        return;
+    }
+    ProjectPolygon(n, position, points);
     float area = 0.f;
     for (uint32_t i = 0u; i < n; ++i) area += PolygonCross2(vec2{0.f, 0.f}, points[i], points[(i + 1u) % n]);
     const float sign = area >= 0.f ? 1.f : -1.f;

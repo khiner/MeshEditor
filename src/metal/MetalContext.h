@@ -2,7 +2,6 @@
 
 #include "metal/MetalSchema.h"
 
-#include <deque>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -37,8 +36,9 @@ void Commit(MTL::CommandBuffer *);
 uint64_t CommittedCommandBuffers();
 
 // Queue-wide residency includes the physical heaps behind sparse GPU buffers.
-// A page mapping update runs while no command buffer in the process is being submitted and completes before the call that published it returns.
-// The driver races a mapping update against a submission in progress on another queue.
+// A page mapping update runs after every committed command buffer completes, and it completes before the call that published it returns.
+// An unmap waits for the next mapping update.
+// A mapping update that overlaps a submission in progress on another queue panics the kernel, and a mapping queue wait on an event counts as an update in progress.
 struct Context {
     Context();
     ~Context();
@@ -49,27 +49,25 @@ struct Context {
 
     void AddResident(MTL::Allocation *) const;
     void RemoveResident(MTL::Allocation *) const;
-    // Publishes pending mappings, retires the ranges whose readers finished, and commits residency changes.
+    // Commits residency changes, and with pending maps runs one mapping update with them and every pending unmap.
     void CommitResidency() const;
-    // Waits for every retirement's readers and returns whether they all completed without error.
-    bool DrainMappings() const;
-    // Frame boundary: release empty slabs once no retired alias can reach their heaps.
+    // Runs every pending map and unmap.
+    void DrainMappings() const;
+    // Frame boundary: runs the pending unmaps once the pages they hold exceed keep_bytes, and runs them all before it releases the empty slabs beyond keep_bytes.
     void TrimPageCache(uint64_t keep_bytes = 32u << 20) const;
-    // Each reservation is a new address object, released once its unmaps complete.
+    // Each reservation is a new address object, released after the mapping update that unmaps it.
     NS::SharedPtr<MTL::Buffer> ReserveSparseAddresses(uint64_t bytes) const;
-    void RetireSparseAddresses(NS::SharedPtr<MTL::Buffer>) const;
+    // Unmaps the (first page, page count) runs of the addresses in the next mapping update, then releases the addresses.
+    // The pages return to the pool at once when every committed command buffer has completed, and after the update otherwise.
+    void RetireSparseAddresses(NS::SharedPtr<MTL::Buffer>, std::vector<std::pair<uint64_t, uint64_t>> mapped, std::vector<std::shared_ptr<PhysicalPage>> pages) const;
     bool OwnsSparseAddresses(MTL::Buffer *) const;
-    // Unmaps the range once submitted readers finish.
-    void UnmapBufferPages(MTL::Buffer *, uint64_t first, uint64_t count) const;
-    // Pages remain owned through submitted readers, which keeps their heaps alive until the unmap.
-    void RetainUnmappedPages(std::vector<std::shared_ptr<PhysicalPage>>) const;
     PhysicalPagePool &Pages() const;
     // Explicit ordering for commands that access distinct resource aliases.
     void OrderAfterGpuWork(MTL::CommandBuffer *) const;
     // Advances with every execution-order signal, so a recorder can tell whether GPU work was committed after its command buffer began.
     uint64_t ExecutionSignals() const { return ExecutionSerial; }
     // Arguments are physical pages.
-    // CommitResidency maps them after prior Queue work completes.
+    // CommitResidency maps them after every committed command buffer completes.
     void MapBufferPages(MTL::Buffer *, MTL::Heap *, uint64_t first, uint64_t count, uint64_t heap_first) const;
 
     NS::SharedPtr<MTL::Device> Device;
@@ -78,28 +76,30 @@ struct Context {
 
 private:
     struct MappingCommand;
-    struct Retirement;
-    // Unmaps and releases each retirement whose readers completed.
-    void RetireCompleted() const;
     // Runs the mapping commands and returns once they complete.
     void UpdateMappings(const std::vector<MappingCommand> &) const;
+    // Runs one mapping update with every pending map and unmap, then releases the retired addresses and pages.
+    void UpdatePendingMappings() const;
     mutable std::shared_ptr<PhysicalPagePool> PagePool;
     mutable bool ResidencyDirty{false};
     mutable std::vector<NS::SharedPtr<MTL::Allocation>> PendingResidentRemovals;
     NS::SharedPtr<MTL4::CommandQueue> MappingQueue;
     // Mapping completion and GPU execution order are signaled on separate timelines.
     NS::SharedPtr<MTL::SharedEvent> MappingEvent, ExecutionEvent;
-    // An unmap has no heap.
     struct Mapping {
         NS::SharedPtr<MTL::Buffer> Destination;
         NS::SharedPtr<MTL::Heap> Heap;
         uint64_t First{}, Count{}, HeapFirst{};
     };
-    mutable std::vector<Mapping> PendingMappings, PendingUnmaps;
-    mutable std::deque<std::unique_ptr<Retirement>> Retirements;
-    mutable std::vector<NS::SharedPtr<MTL::Buffer>> PendingSparseAddresses;
+    // Retired addresses with the page runs they map, and the pages behind those runs while committed command buffers can read them.
+    struct Retired {
+        NS::SharedPtr<MTL::Buffer> Addresses;
+        std::vector<std::pair<uint64_t, uint64_t>> Mapped;
+        std::vector<std::shared_ptr<PhysicalPage>> Pages;
+    };
+    mutable std::vector<Mapping> PendingMappings;
+    mutable std::vector<Retired> PendingRetired;
     mutable std::unordered_map<MTL::Buffer *, NS::SharedPtr<MTL::Buffer>> SparseAddresses;
-    mutable std::vector<std::vector<std::shared_ptr<PhysicalPage>>> PendingPageRetirements;
     mutable uint64_t MappingSerial{}, ExecutionSerial{};
 };
 } // namespace mtl

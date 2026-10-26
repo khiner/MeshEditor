@@ -35,6 +35,7 @@ struct SelectionMeshUpdate {
 // The first DirtyMask+1 words store the dirty-block hash table.
 // SeedUpdates maps Seeds to mesh updates.
 // The dirty list contains count, two dispatch dimensions, then (domain << 30 | block, update) pairs.
+// A valid Staged offset receives each derived entry's mask words, eight per dirty list entry in list order, in place of Masks.
 struct SelectionUpdatePushConstants {
     uint32_t CornersSlot DEFAULT(InvalidSlot), VerticesSlot DEFAULT(InvalidSlot);
     uint32_t EdgeSharpnessSlot DEFAULT(InvalidSlot), FaceSharpnessSlot DEFAULT(InvalidSlot);
@@ -45,6 +46,7 @@ struct SelectionUpdatePushConstants {
     uint32_t DirtyMask DEFAULT(), WorkSlot DEFAULT(InvalidSlot);
     uint32_t Updates DEFAULT(), Seeds DEFAULT(), SeedUpdates DEFAULT(), List DEFAULT();
     uint32_t SeedCount DEFAULT();
+    uint32_t Staged DEFAULT(InvalidOffset);
 };
 
 // Scatters the selected elements' handles of listed (arena block, first output index) word pairs, which list blocks in ascending local order.

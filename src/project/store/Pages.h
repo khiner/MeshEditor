@@ -97,31 +97,31 @@ private:
         vector.resize(bytes);
         return vector;
     }
-    // The first and one past the last byte where two equal-size pages differ, or an empty extent when they are equal.
-    static std::pair<uint32_t, uint32_t> Difference(std::span<const std::byte> a, std::span<const std::byte> b) {
-        constexpr uint32_t Block = 256;
+    // Calls on(first, end) for each maximal run of differing 256-byte chunks of two equal-size pages, trimmed to its first and one past its last differing byte.
+    // Returns whether the pages differ.
+    static bool ForEachDifference(std::span<const std::byte> a, std::span<const std::byte> b, auto &&on) {
+        constexpr uint32_t Chunk = 256;
         const auto size = uint32_t(a.size());
-        const auto differs = [&](uint32_t at) {
-            uint64_t bits = 0;
-            for (uint32_t i = at; i < at + Block; i += sizeof(uint64_t)) {
-                uint64_t x, y;
-                std::memcpy(&x, a.data() + i, sizeof(x));
-                std::memcpy(&y, b.data() + i, sizeof(y));
-                bits |= x ^ y;
+        const auto differs = [&](uint32_t at) { return std::memcmp(a.data() + at, b.data() + at, std::min(Chunk, size - at)) != 0; };
+        bool any = false;
+        for (uint32_t at = 0; at < size;) {
+            if (!differs(at)) {
+                at += Chunk;
+                continue;
             }
-            return bits != 0;
-        };
-        uint32_t first = 0;
-        while (first + Block <= size && !differs(first)) first += Block;
-        while (first < size && a[first] == b[first]) ++first;
-        if (first == size) return {};
-        uint32_t end = size;
-        while (end - first >= Block && !differs(end - Block)) end -= Block;
-        while (a[end - 1] == b[end - 1]) --end;
-        return {first, end};
+            uint32_t end = std::min(size, at + Chunk);
+            while (end < size && differs(end)) end = std::min(size, end + Chunk);
+            uint32_t first = at, last = end;
+            while (a[first] == b[first]) ++first;
+            while (a[last - 1] == b[last - 1]) --last;
+            on(first, last);
+            any = true;
+            at = end;
+        }
+        return any;
     }
-    void NoteChanged(uint64_t slot, std::pair<uint32_t, uint32_t> extent) {
-        ChangedExtents.emplace_back(slot * PageBytes + extent.first, slot * PageBytes + extent.second);
+    void NoteChanged(uint64_t slot, uint32_t first, uint32_t end) {
+        ChangedExtents.emplace_back(slot * PageBytes + first, slot * PageBytes + end);
     }
     void Apply(RestorePlan &plan) {
         for (auto &c : plan.Changes) {
@@ -135,22 +135,23 @@ private:
                 c.Old = CopyBlob(page);
                 c.WasPresent = true;
                 std::memset(page.data(), 0, PageBytes);
-                NoteChanged(c.Slot, Difference(c.Old.View(), page));
+                ForEachDifference(c.Old.View(), page, [&](uint32_t first, uint32_t end) { NoteChanged(c.Slot, first, end); });
                 continue;
             }
             Grow((c.Slot + 1) * PageBytes);
             const auto page = Storage.subspan(c.Slot * PageBytes, PageBytes);
             assert(c.Incoming.Size == PageBytes);
-            const auto extent = Difference(page, c.Incoming.View());
-            if (extent.first == extent.second) {
+            // The pages agree outside the differing runs, so exchanging the runs exchanges the whole pages.
+            const auto differs = ForEachDifference(page, c.Incoming.View(), [&](uint32_t first, uint32_t end) {
+                std::swap_ranges(page.begin() + first, page.begin() + end, c.Incoming.Data + first);
+                NoteChanged(c.Slot, first, end);
+            });
+            if (!differs) {
                 c.Unchanged = true;
                 continue;
             }
-            // The pages agree outside the extent, so exchanging it exchanges the whole pages.
-            std::swap_ranges(page.begin() + extent.first, page.begin() + extent.second, c.Incoming.Data + extent.first);
             c.Old = std::exchange(c.Incoming, {});
             c.WasPresent = true;
-            NoteChanged(c.Slot, extent);
         }
     }
 };
