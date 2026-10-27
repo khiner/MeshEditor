@@ -190,7 +190,8 @@ void Project::TrackStores() {
             WaitForRender(R);
             CancelModalSolves(R);
             Deferred.clear();
-            ClearInteraction();
+            // A gesture's own restores keep its interaction, and every other restore drops it.
+            if (!GestureBase) ClearInteraction();
             Entities.BeginRestore(); },
         .AfterTracks = [this] {
             const profile::CpuScope scope{"RestoreAfterTracks"};
@@ -635,6 +636,7 @@ void Project::ReturnToLeft(const LeftDocument &left) {
 void Project::CancelGesture() {
     if (!GestureBase) return;
     RecordedActions.clear();
+    ClearInteraction();
     (void)History.Restore(*GestureBase);
     ReleaseGesture();
     // A cancelled edit returns to the node it was replacing.
