@@ -4,12 +4,11 @@ Real-time mesh viewer and editor that converts meshes to rigid-body audio models
 
 [Renders](https://karlhiner.com/MeshEditor/render)
 
-![](screenshots/Cube.png)
-![](screenshots/TorusBvh.png)
-![](screenshots/TorusAudioPanel.png)
-![](screenshots/RealImpact_17_IronSkillet.png)
-![](screenshots/CeramicPitcherAudioPanel.png)
-![](screenshots/HighlightedModeIndex.png)
+![](screenshots/DefaultScene.webp)
+![](screenshots/Modeling.webp)
+![](screenshots/FlightHelmet.webp)
+![](screenshots/IronSkillet.webp)
+![](screenshots/PitcherCeramic.webp)
 
 ## Features
 
