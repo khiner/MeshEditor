@@ -145,7 +145,7 @@ using UpdatableComponents = TypeList<
     procedure::Position, procedure::Normal, procedure::Index, procedure::NamedAttribute, procedure::VectorMath, procedure::FloatMath, procedure::Compare,
     procedure::BooleanMath, procedure::StoreNamedAttribute, procedure::StoreSelection, procedure::SetPosition, procedure::InstanceOnPoints, procedure::ObjectInfo,
     procedure::FloatValue, procedure::IntegerValue, procedure::BooleanValue, procedure::VectorValue, procedure::RotationValue, procedure::TransformGeometry,
-    primitive::Plane, primitive::Circle, primitive::Cuboid, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone>;
+    primitive::Plane, primitive::Circle, primitive::Cube, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone>;
 
 template<typename C>
 concept Updatable = InTypeList<C, UpdatableComponents>;

@@ -228,7 +228,7 @@ struct Fixture : Engine {
     }
 
     void Cube(Element element) {
-        Do(action::object::AddMeshPrimitive{primitive::Cuboid{}, std::make_unique<MeshInstanceCreateInfo>()});
+        Do(action::object::AddMeshPrimitive{primitive::Cube{}, std::make_unique<MeshInstanceCreateInfo>()});
         EnterEdit(element);
     }
 
@@ -370,14 +370,14 @@ void TestCubeSelectionMove() {
 
 void TestInsetGesture() {
     Fixture f{"inset-gesture"};
-    f.Do(action::object::AddMeshPrimitive{primitive::Cuboid{}, std::make_unique<MeshInstanceCreateInfo>()});
+    f.Do(action::object::AddMeshPrimitive{primitive::Cube{}, std::make_unique<MeshInstanceCreateInfo>()});
     const auto instance = FindActiveEntity(f.R);
     const auto entity = GetActiveMeshEntity(f.R);
     const auto root = f.Root(entity);
 
     auto other_info = std::make_unique<MeshInstanceCreateInfo>();
     other_info->Transform.P = {5.f, 0.f, 0.f};
-    f.Do(action::object::AddMeshPrimitive{primitive::Cuboid{}, std::move(other_info)});
+    f.Do(action::object::AddMeshPrimitive{primitive::Cube{}, std::move(other_info)});
     const auto other_id = f.ActiveMesh().GetStoreId();
     const auto other_positions = Positions(f.MeshOf(other_id));
     f.Do(action::selection::Select{instance});

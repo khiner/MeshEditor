@@ -239,7 +239,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             p.Do(action::MakeAction(action::selection::Select{instance}));
         } else if (scene.empty() && single_edit == SingleEdit::RecalculateNormals) {
             MeshSource source;
-            const auto cube = primitive::CreateMesh(primitive::Cuboid{});
+            const auto cube = primitive::CreateMesh(primitive::Cube{});
             const uint32_t count = std::max(1u, slices * slices / 12u);
             for (uint32_t i = 0u; i < count; ++i) {
                 const uint32_t base = uint32_t(source.Data.Positions.size());

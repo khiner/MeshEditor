@@ -21,7 +21,7 @@ struct Circle {
     float Radius{1};
     uint32_t Segments{32};
 };
-struct Cuboid {
+struct Cube {
     vec3 HalfExtents{1, 1, 1};
 };
 struct IcoSphere {
@@ -47,7 +47,7 @@ struct Cone {
 } // namespace primitive
 
 // The parameters of one primitive generator.
-using PrimitiveParameters = std::variant<primitive::Plane, primitive::Circle, primitive::Cuboid, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone>;
+using PrimitiveParameters = std::variant<primitive::Plane, primitive::Circle, primitive::Cube, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone>;
 
 namespace primitive {
 constexpr FieldSpec SizeSpec(const char *help) { return {.Min = MinSize, .Max = MaxSize, .Speed = 0.01f, .Unit = FieldUnit::Meters, .Widget = FieldWidget::Drag, .Help = help}; }
@@ -61,8 +61,8 @@ template<> inline constexpr field::SpecTable<primitive::Circle> Specs<primitive:
     {&primitive::Circle::Radius, primitive::SizeSpec("Distance from the center to the rim.")},
     {&primitive::Circle::Segments, {.Min = 3, .Max = 128, .Help = "Number of vertices around the rim"}},
 };
-template<> inline constexpr field::SpecTable<primitive::Cuboid> Specs<primitive::Cuboid>{
-    {&primitive::Cuboid::HalfExtents, primitive::HalfExtentsSpec("Distance from the center to each face along X, Y, and Z.")},
+template<> inline constexpr field::SpecTable<primitive::Cube> Specs<primitive::Cube>{
+    {&primitive::Cube::HalfExtents, primitive::HalfExtentsSpec("Distance from the center to each face along X, Y, and Z.")},
 };
 template<> inline constexpr field::SpecTable<primitive::IcoSphere> Specs<primitive::IcoSphere>{
     {&primitive::IcoSphere::Radius, primitive::SizeSpec("Distance from the center to each vertex.")},

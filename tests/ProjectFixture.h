@@ -116,7 +116,7 @@ struct Fixture : Engine {
         Do(std::move(a));
         return FindActiveEntity(R);
     }
-    state::Entity AddCube() { return Add(action::object::AddMeshPrimitive{primitive::Cuboid{}, std::make_unique<MeshInstanceCreateInfo>()}); }
+    state::Entity AddCube() { return Add(action::object::AddMeshPrimitive{primitive::Cube{}, std::make_unique<MeshInstanceCreateInfo>()}); }
     state::Entity AddEmpty(std::string name) {
         return Add(action::object::AddEmpty{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Name = std::move(name)})});
     }

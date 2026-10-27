@@ -91,7 +91,7 @@ void BenchProcedureHistory(uint32_t node_count) {
     auto &p = *engine.P;
     expect(p.New(dir, true));
     p.Settle();
-    p.Do(action::MakeAction(action::object::AddMeshPrimitive{primitive::Cuboid{}, std::make_unique<MeshInstanceCreateInfo>()}));
+    p.Do(action::MakeAction(action::object::AddMeshPrimitive{primitive::Cube{}, std::make_unique<MeshInstanceCreateInfo>()}));
     const auto mesh_entity = GetActiveMeshEntity(r);
     const auto add = [&] { p.Do(action::MakeAction(action::nodes::AddNode{mesh_entity, procedure::KindOf<procedure::FloatValue>, {}})); };
     for (uint32_t n = 1u; n < node_count; ++n) add();

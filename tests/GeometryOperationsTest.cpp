@@ -285,7 +285,7 @@ uint32_t Place(GeometryFixture &f, const auto &shape, vec3 offset) {
     for (auto &p : data.Positions) p += offset;
     return f.Create(std::move(data));
 }
-uint32_t Box(GeometryFixture &f, vec3 center, vec3 half = vec3{1.f}) { return Place(f, primitive::Cuboid{.HalfExtents = half}, center); }
+uint32_t Box(GeometryFixture &f, vec3 center, vec3 half = vec3{1.f}) { return Place(f, primitive::Cube{.HalfExtents = half}, center); }
 std::optional<uint32_t> RunBoolean(GeometryFixture &f, uint32_t first, uint32_t second, BooleanOperation operation) {
     const auto task = BooleanTask(f.Get(first), f.Get(second), operation, mat3{1.f}, vec3{0.f});
     const auto id = task ? ExecuteGeometryBoolean(f.Scene, *task) : std::nullopt;
@@ -588,7 +588,7 @@ void RegisterGeometryOperationsTests() {
         };
         for (const auto &c : cases) carry(c.Name, Patchwork(), [&](uint32_t id) { return PlanCase(c, f.Store(), f.Get(id)); });
         // The union keeps the attributed box's elements with their channels, and the plain box's elements take the defaults matching its absent channels.
-        carry("Boolean", primitive::CreateMesh(primitive::Cuboid{}), [&](uint32_t id) {
+        carry("Boolean", primitive::CreateMesh(primitive::Cube{}), [&](uint32_t id) {
             const auto second = Box(f, vec3{1.f});
             return BooleanTask(f.Get(id), f.Get(second), BooleanOperation::Union, mat3{1.f}, vec3{0.f});
         });

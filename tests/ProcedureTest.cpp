@@ -469,7 +469,7 @@ void OperatorKinds(ProcedureFixture &f, Fixture &other) {
         });
     }
     // Generator kinds follow PrimitiveParameters' alternatives.
-    for (const PrimitiveParameters shape : {PrimitiveParameters{primitive::Plane{}}, PrimitiveParameters{primitive::Circle{}}, PrimitiveParameters{primitive::Cuboid{}}, PrimitiveParameters{primitive::IcoSphere{}}, PrimitiveParameters{primitive::UVSphere{}}, PrimitiveParameters{primitive::Torus{}}, PrimitiveParameters{primitive::Cylinder{}}, PrimitiveParameters{primitive::Cone{}}}) {
+    for (const PrimitiveParameters shape : {PrimitiveParameters{primitive::Plane{}}, PrimitiveParameters{primitive::Circle{}}, PrimitiveParameters{primitive::Cube{}}, PrimitiveParameters{primitive::IcoSphere{}}, PrimitiveParameters{primitive::UVSphere{}}, PrimitiveParameters{primitive::Torus{}}, PrimitiveParameters{primitive::Cylinder{}}, PrimitiveParameters{primitive::Cone{}}}) {
         Scenario(f, other, std::visit([]<typename K>(const K &) { return std::string{Title<K>.c_str()}; }, shape), [shape](ProcedureFixture &f) {
             auto &meshes = f.Store();
             const auto mesh = f.AddMesh(primitive::Plane{});
@@ -605,7 +605,7 @@ Graph CapInset(ProcedureFixture &f) {
 
 // Vector Math feeding Set Position doubles vertex positions.
 Graph ScalePositions(ProcedureFixture &f) {
-    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    const auto mesh = f.AddMesh(primitive::Cube{});
     const auto position = f.Append(mesh, KindOf<Position>);
     const auto math = f.Append(mesh, KindOf<VectorMath>);
     const auto set = f.Append(mesh, KindOf<SetPosition>);
@@ -624,7 +624,7 @@ Graph ScalePositions(ProcedureFixture &f) {
 
 // Position.z compared greater than zero selects the cube's upper face for Extrude.
 Graph CompareSelectsExtrusion(ProcedureFixture &f) {
-    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    const auto mesh = f.AddMesh(primitive::Cube{});
     const auto position = f.Append(mesh, KindOf<Position>);
     const auto compare = f.Append(mesh, KindOf<Compare>);
     const auto extrude = f.Append(mesh, KindOf<action::mesh::Extrude>);
@@ -720,7 +720,7 @@ Graph StorePromotes(ProcedureFixture &f) {
 // A Store Selection of the cube's upper face keeps it through a subdivision inserted after the store, so a Delete reading it through Named Attribute removes the four faces it became.
 Graph StoreSelectionDelete(ProcedureFixture &f) {
     const auto &meshes = f.Store();
-    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    const auto mesh = f.AddMesh(primitive::Cube{});
     const auto store = f.Append(mesh, KindOf<StoreSelection>);
     const auto named = f.Append(mesh, KindOf<procedure::NamedAttribute>);
     const auto remove = f.Append(mesh, KindOf<action::mesh::Delete>);
@@ -762,7 +762,7 @@ Graph StoreSelectionDelete(ProcedureFixture &f) {
 
 // Vector Math on a vertex and a face attribute errs and forwards A, so Set Position offsets each vertex by its position.
 Graph DomainMismatch(ProcedureFixture &f) {
-    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    const auto mesh = f.AddMesh(primitive::Cube{});
     const auto position = f.Append(mesh, KindOf<Position>);
     const auto normal = f.Append(mesh, KindOf<Normal>);
     const auto math = f.Append(mesh, KindOf<VectorMath>);
@@ -785,20 +785,20 @@ Graph DomainMismatch(ProcedureFixture &f) {
 // A join of the source and a generated cube doubles the elements, and the generated vertices take the source attribute's default.
 Graph JoinGenerated(ProcedureFixture &f) {
     auto &meshes = f.Store();
-    const auto mesh = AddAttributed(f, primitive::Cuboid{}, [&](uint32_t source) {
+    const auto mesh = AddAttributed(f, primitive::Cube{}, [&](uint32_t source) {
         const auto weight = meshes.AddAttribute(source, AttributeDomain::Vertex, AttributeType::Float, "weight", AttributeValue{std::bit_cast<uint32_t>(-1.f), 0u, 0u, 0u}).value();
         for (const auto v : Mesh{meshes, source}.vertices()) {
             const float value = 5.f;
             meshes.SetAttribute<float>(weight, *v, std::span{&value, 1u});
         }
     });
-    const auto cube = f.Append(mesh, KindOf<primitive::Cuboid>);
+    const auto cube = f.Append(mesh, KindOf<primitive::Cube>);
     const auto join = f.Append(mesh, KindOf<Join>);
     f.Do(Link{mesh, f.Node(mesh, 0u), 0u, join, 0u});
     f.Do(Link{mesh, cube, f.Out(cube), join, 1u});
     f.Do(SetDisplay{mesh, join});
     const auto joined = f.Shaped(mesh);
-    f.Do(UpdateOf<&primitive::Cuboid::HalfExtents>(cube, vec3{2.f, .5f, 1.f}));
+    f.Do(UpdateOf<&primitive::Cube::HalfExtents>(cube, vec3{2.f, .5f, 1.f}));
     expect(f.Shaped(mesh) != joined);
     return {
         mesh,
@@ -819,7 +819,7 @@ Graph JoinGenerated(ProcedureFixture &f) {
             }
             expect(weights[0] == vertices && weights[1] == vertices);
         },
-        [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&primitive::Cuboid::HalfExtents>(f.Node(mesh, 1u), vec3{.5f, .5f, .5f})); },
+        [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&primitive::Cube::HalfExtents>(f.Node(mesh, 1u), vec3{.5f, .5f, .5f})); },
     };
 }
 
@@ -833,7 +833,7 @@ std::map<uint32_t, float> Heat(const MeshStore &meshes, uint32_t id) {
 // Retained vertices keep their heat, and an edge midpoint takes the mean of two corners and a face center the mean of four.
 Graph HeatSubdivide(ProcedureFixture &f) {
     auto &meshes = f.Store();
-    const auto mesh = AddAttributed(f, primitive::Cuboid{}, [&](uint32_t id) {
+    const auto mesh = AddAttributed(f, primitive::Cube{}, [&](uint32_t id) {
         const auto heat = meshes.AddAttribute(id, AttributeDomain::Vertex, AttributeType::Float, "heat").value();
         const auto vertices = meshes.Arenas().Vertices.Dense(meshes.Get(id).Vertices);
         std::vector<float> values(vertices.Count);
@@ -867,10 +867,10 @@ Graph HeatSubdivide(ProcedureFixture &f) {
 
 // A boolean intersection of the cube with a generated bar keeps the bar's middle.
 Graph BooleanIntersection(ProcedureFixture &f) {
-    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    const auto mesh = f.AddMesh(primitive::Cube{});
     const auto cube = f.Shaped(mesh);
-    const auto box = f.Append(mesh, KindOf<primitive::Cuboid>);
-    f.Do(UpdateOf<&primitive::Cuboid::HalfExtents>(box, vec3{2.f, .5f, .5f}));
+    const auto box = f.Append(mesh, KindOf<primitive::Cube>);
+    f.Do(UpdateOf<&primitive::Cube::HalfExtents>(box, vec3{2.f, .5f, .5f}));
     const auto boolean = f.Append(mesh, KindOf<procedure::Boolean>);
     f.Do(UpdateOf<&procedure::Boolean::Operation>(boolean, BooleanOperation::Intersection));
     f.Route(mesh, {f.Node(mesh, 0u), boolean});
@@ -878,7 +878,7 @@ Graph BooleanIntersection(ProcedureFixture &f) {
     expect(f.Shaped(mesh) == cube);
     f.Do(Link{mesh, box, f.Out(box), boolean, 1u});
     expect(std::abs(test::EnclosedVolume(Mesh{f.Store(), f.Output(mesh)}).value_or(-1.0) - 2.0) < 1e-4);
-    f.Do(UpdateOf<&primitive::Cuboid::HalfExtents>(box, vec3{2.f, .25f, .75f}));
+    f.Do(UpdateOf<&primitive::Cube::HalfExtents>(box, vec3{2.f, .25f, .75f}));
     return {
         mesh,
         [mesh](ProcedureFixture &f) { expect(std::abs(test::EnclosedVolume(Mesh{f.Store(), f.Output(mesh)}).value_or(-1.0) - 1.5) < 1e-4); },
@@ -889,9 +889,9 @@ Graph BooleanIntersection(ProcedureFixture &f) {
 // The boolean action makes the active object's mesh the active cube minus the other selected cube, in the active object's space.
 Graph BooleanAction(ProcedureFixture &f) {
     const auto &r = f.R;
-    const auto target = f.AddMesh(primitive::Cuboid{});
+    const auto target = f.AddMesh(primitive::Cube{});
     const auto active = FindActiveEntity(r);
-    f.Do(action::object::AddMeshPrimitive{primitive::Cuboid{}, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Transform = {.P = {1.f, 1.f, 1.f}}, .Select = MeshInstanceCreateInfo::SelectBehavior::Additive})});
+    f.Do(action::object::AddMeshPrimitive{primitive::Cube{}, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Transform = {.P = {1.f, 1.f, 1.f}}, .Select = MeshInstanceCreateInfo::SelectBehavior::Additive})});
     expect(FindActiveEntity(r) == active);
     f.Do(action::mesh::Boolean{BooleanOperation::Difference});
     return {target, [target, active](ProcedureFixture &f) {
@@ -903,10 +903,10 @@ Graph BooleanAction(ProcedureFixture &f) {
 
 // Generator parameter edits regenerate the record.
 Graph GeneratorEdit(ProcedureFixture &f) {
-    const auto mesh = f.AddGenerated(primitive::Cuboid{});
-    f.Do(UpdateOf<&primitive::Cuboid::HalfExtents>(f.Node(mesh, 0u), vec3{2.f, .5f, 1.f}));
-    f.Do(UpdateOf<&primitive::Cuboid::HalfExtents>(f.Node(mesh, 0u), vec3{1.f, 1.f, 3.f}));
-    return {mesh, [mesh](ProcedureFixture &f) { expect(Near(Positions(f.Store(), f.Output(mesh)), ShapePositions(primitive::Cuboid{{1.f, 1.f, 3.f}}))); }};
+    const auto mesh = f.AddGenerated(primitive::Cube{});
+    f.Do(UpdateOf<&primitive::Cube::HalfExtents>(f.Node(mesh, 0u), vec3{2.f, .5f, 1.f}));
+    f.Do(UpdateOf<&primitive::Cube::HalfExtents>(f.Node(mesh, 0u), vec3{1.f, 1.f, 3.f}));
+    return {mesh, [mesh](ProcedureFixture &f) { expect(Near(Positions(f.Store(), f.Output(mesh)), ShapePositions(primitive::Cube{{1.f, 1.f, 3.f}}))); }};
 }
 
 // An Object Info node reading its own procedure's mesh errs and forwards the source.
@@ -923,15 +923,15 @@ Graph ObjectInfo(ProcedureFixture &f) {
     f.Do(SetDisplay{mesh, join});
     expect(r.all_of<NodeError>(info) && !r.any_of<NodeError>(join));
     expect(f.Shaped(mesh) == plane);
-    const auto cube = f.AddMesh(primitive::Cuboid{});
-    const auto box = f.Append(cube, KindOf<primitive::Cuboid>);
+    const auto cube = f.AddMesh(primitive::Cube{});
+    const auto box = f.Append(cube, KindOf<primitive::Cube>);
     f.Do(SetDisplay{cube, box});
     f.Do(UpdateOf<&procedure::ObjectInfo::Object>(info, f.Object(cube)));
     expect(!r.any_of<NodeError>(info));
-    f.Do(UpdateOf<&primitive::Cuboid::HalfExtents>(box, vec3{.5f, .25f, .5f}));
+    f.Do(UpdateOf<&primitive::Cube::HalfExtents>(box, vec3{.5f, .25f, .5f}));
     return {mesh, [mesh](ProcedureFixture &f) {
                 auto points = ShapePositions(primitive::Plane{});
-                points.append_range(ShapePositions(primitive::Cuboid{{.5f, .25f, .5f}}));
+                points.append_range(ShapePositions(primitive::Cube{{.5f, .25f, .5f}}));
                 std::ranges::sort(points);
                 expect(Mesh{f.Store(), f.Output(mesh)}.FaceCount() == 7u && Near(Positions(f.Store(), f.Output(mesh)), points));
             }};
@@ -942,10 +942,10 @@ template<bool Borrowed, bool Realize> Graph Instances(ProcedureFixture &f) {
     const auto &r = f.R;
     const auto mesh = f.AddGenerated(primitive::Plane{});
     const auto object = FindActiveEntity(r);
-    const auto cube_mesh = f.AddGenerated(primitive::Cuboid{});
+    const auto cube_mesh = f.AddGenerated(primitive::Cube{});
     const auto to_points = f.Append(mesh, KindOf<MeshToPoints>);
     const auto instancer = f.Append(mesh, KindOf<InstanceOnPoints>);
-    const auto instance = f.Append(mesh, Borrowed ? KindOf<procedure::ObjectInfo> : KindOf<primitive::Cuboid>);
+    const auto instance = f.Append(mesh, Borrowed ? KindOf<procedure::ObjectInfo> : KindOf<primitive::Cube>);
     if constexpr (Borrowed) f.Do(UpdateOf<&procedure::ObjectInfo::Object>(instance, f.Object(cube_mesh)));
     f.Route(mesh, {f.Node(mesh, 0u), to_points, instancer});
     f.Do(Link{mesh, instance, f.Out(instance), instancer, 1u});
@@ -955,12 +955,12 @@ template<bool Borrowed, bool Realize> Graph Instances(ProcedureFixture &f) {
     }
     f.Do(UpdateOf<&InstanceOnPoints::Scale>(instancer, vec3{.5f, .5f, .5f}));
     f.Do(UpdateOf<&primitive::Plane::HalfExtents>(f.Node(mesh, 0u), vec2{2.f, 3.f}));
-    if constexpr (Borrowed) f.Do(UpdateOf<&primitive::Cuboid::HalfExtents>(f.Node(cube_mesh, 0u), vec3{.5f, .25f, .5f}));
-    else f.Do(UpdateOf<&primitive::Cuboid::HalfExtents>(instance, vec3{.5f, .25f, .5f}));
+    if constexpr (Borrowed) f.Do(UpdateOf<&primitive::Cube::HalfExtents>(f.Node(cube_mesh, 0u), vec3{.5f, .25f, .5f}));
+    else f.Do(UpdateOf<&primitive::Cube::HalfExtents>(instance, vec3{.5f, .25f, .5f}));
     Graph graph{mesh, [=](ProcedureFixture &f) {
                     const auto &r = f.R;
                     const auto &meshes = f.Store();
-                    const auto plane = ShapePositions(primitive::Plane{{2.f, 3.f}}), cube = ShapePositions(primitive::Cuboid{{.5f, .25f, .5f}});
+                    const auto plane = ShapePositions(primitive::Plane{{2.f, 3.f}}), cube = ShapePositions(primitive::Cube{{.5f, .25f, .5f}});
                     if constexpr (Realize) {
                         std::vector<Corner> realized;
                         for (const auto &p : plane)
@@ -989,7 +989,7 @@ template<bool Borrowed, bool Realize> Graph Instances(ProcedureFixture &f) {
 // Selecting, duplicating, inserting and deleting nodes leaves the output the chain they form.
 Graph NodeEditing(ProcedureFixture &f) {
     const auto &r = f.R;
-    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    const auto mesh = f.AddMesh(primitive::Cube{});
     const auto source = f.Shaped(mesh);
     const auto subdivide = f.Append(mesh, KindOf<action::mesh::Subdivide>);
     const auto triangulate = f.Append(mesh, KindOf<action::mesh::Triangulate>);
@@ -1065,7 +1065,7 @@ void ViewportOperators(ProcedureFixture &f, Fixture &other) {
             const auto domains = [](GeometrySelection &selection) {
                 return std::array{std::tuple{D::Vertex, Element::Vertex, &selection.Vertices}, std::tuple{D::Edge, Element::Edge, &selection.Edges}, std::tuple{D::Face, Element::Face, &selection.Faces}};
             };
-            const auto mesh = f.AddMesh(primitive::Cuboid{});
+            const auto mesh = f.AddMesh(primitive::Cube{});
             f.EnterEdit(row.Domain);
             f.Render();
             {
@@ -1243,7 +1243,7 @@ std::vector<vec3> FacingFaceCenter(const Mesh &mesh, vec3 eye) {
 }
 // The midpoint of the first edge between two faces looking toward the eye.
 std::vector<vec3> FacingEdgeCenter(const Mesh &mesh, vec3 eye) { return FacingEdgeCenters(mesh, eye) | std::views::take(1) | std::ranges::to<std::vector>(); }
-// Two edges meeting at a cuboid's corner nearest the eye, which form a chain of three vertices.
+// Two edges meeting at a cube's corner nearest the eye, which form a chain of three vertices.
 std::vector<vec3> CornerEdgeCenters(const Mesh &mesh, vec3 eye) { return FacingEdgeCenters(mesh, eye) | std::views::take(2) | std::ranges::to<std::vector>(); }
 // The first and third equator vertices of a sphere about the origin facing the eye, in order around the equator, with one vertex between them.
 std::vector<vec3> EquatorVertices(const Mesh &mesh, vec3 eye) {
@@ -1340,41 +1340,41 @@ void RecordedOperators(ProcedureFixture &f, Fixture &other) {
     static const Transform Placed{.P = {.5f, .25f, -.5f}, .R = numeric::AngleAxis(.4f, Normalize(vec3{1.f, 2.f, 3.f})), .S = {1.f, 1.5f, .75f}};
     static const std::array<OperatorRow, 39> rows{{
         {"LimitedDissolveFaces", primitive::Circle{.Radius = 5.f, .Segments = 8u}, Element::Face, KindOf<Dissolve>, 0x9d7f60a219ef7cf2ull, [](ProcedureFixture &f) { f.Do(Dissolve{.Mode = DissolveMode::Limited}); }, AdjacentFaceCenters},
-        {"ShrinkFattenFace", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Face, KindOf<ShrinkFatten>, 0x2ff00fd8faa7342ull, [](ProcedureFixture &f) { f.Do(ShrinkFatten{.Distance = .5f}); }, FacingFaceCenter},
-        {"SpaceEvenly", primitive::Cuboid{{1.f, 2.f, 3.f}}, Element::Edge, KindOf<SpaceEvenly>, 0xfd909392906a58faull, [](ProcedureFixture &f) { f.Do(SpaceEvenly{}); }, CornerEdgeCenters},
-        {"RelaxEdgeLoops", primitive::Cuboid{{1.f, 2.f, 3.f}}, Element::Edge, KindOf<RelaxEdgeLoops>, 0x7adaf411cc5a0b7bull, [](ProcedureFixture &f) { f.Do(RelaxEdgeLoops{}); }, CornerEdgeCenters},
+        {"ShrinkFattenFace", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Face, KindOf<ShrinkFatten>, 0x2ff00fd8faa7342ull, [](ProcedureFixture &f) { f.Do(ShrinkFatten{.Distance = .5f}); }, FacingFaceCenter},
+        {"SpaceEvenly", primitive::Cube{{1.f, 2.f, 3.f}}, Element::Edge, KindOf<SpaceEvenly>, 0xfd909392906a58faull, [](ProcedureFixture &f) { f.Do(SpaceEvenly{}); }, CornerEdgeCenters},
+        {"RelaxEdgeLoops", primitive::Cube{{1.f, 2.f, 3.f}}, Element::Edge, KindOf<RelaxEdgeLoops>, 0x7adaf411cc5a0b7bull, [](ProcedureFixture &f) { f.Do(RelaxEdgeLoops{}); }, CornerEdgeCenters},
         {"CurveBetweenSelected", primitive::UVSphere{.Radius = 5.f, .Slices = 8u, .Stacks = 4u}, Element::Vertex, KindOf<CurveBetweenSelected>, 0x48b8cce36aef7394ull, [](ProcedureFixture &f) { f.Do(CurveBetweenSelected{}); }, EquatorVertices},
-        {"Circularize", primitive::Cuboid{{1.f, 2.f, 3.f}}, Element::Face, KindOf<Circularize>, 0xe34644a8884ae607ull, [](ProcedureFixture &f) { f.Do(Circularize{}); }, FacingFaceCenter},
-        {"MakePlanarFaces", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Face, KindOf<MakePlanarFaces>, 0x7e7be948d50e0430ull, [](ProcedureFixture &f) { f.Do(MakePlanarFaces{}); }, {}, {}, Randomized<.3f>},
-        {"FlattenView", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Face, KindOf<procedure::Flatten>, 0xb2397ee6f84e42e6ull, [](ProcedureFixture &f) { f.Do(action::mesh::Flatten{.Method = FlattenMethod::View, .ViewNormal = Normalize(vec3{1.f, 2.f, 2.f})}); }, {}, Placed},
+        {"Circularize", primitive::Cube{{1.f, 2.f, 3.f}}, Element::Face, KindOf<Circularize>, 0xe34644a8884ae607ull, [](ProcedureFixture &f) { f.Do(Circularize{}); }, FacingFaceCenter},
+        {"MakePlanarFaces", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Face, KindOf<MakePlanarFaces>, 0x7e7be948d50e0430ull, [](ProcedureFixture &f) { f.Do(MakePlanarFaces{}); }, {}, {}, Randomized<.3f>},
+        {"FlattenView", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Face, KindOf<procedure::Flatten>, 0xb2397ee6f84e42e6ull, [](ProcedureFixture &f) { f.Do(action::mesh::Flatten{.Method = FlattenMethod::View, .ViewNormal = Normalize(vec3{1.f, 2.f, 2.f})}); }, {}, Placed},
         {"ToSphere", primitive::Cone{.Radius = 2.f, .Height = 4.f, .Slices = 8u}, Element::Vertex, KindOf<procedure::ToSphere>, 0x2470285c3aa67a25ull, [](ProcedureFixture &f) { f.Do(action::mesh::ToSphere{}); }, {}, Placed},
-        {"PushPull", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::PushPull>, 0x9d362c76fc3b4222ull, [](ProcedureFixture &f) { f.Do(action::mesh::PushPull{.Distance = .5f}); }, {}, Placed},
-        {"ShearLocal", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::Shear>, 0x845dc6891da1c7f2ull, [](ProcedureFixture &f) { f.Do(action::mesh::Shear{.Local = true}); }, {}, Placed},
-        {"Warp", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::Warp>, 0x29fcc570816d46efull, [](ProcedureFixture &f) { f.Do(action::mesh::Warp{.Angle = 1.f, .Center = {.5f, 0.f, 0.f}, .Orientation = std::make_unique<quat>(numeric::AngleAxis(.3f, Normalize(vec3{1.f, 1.f, 0.f})))}); }, {}, Placed},
-        {"Bend", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::Bend>, 0x193360401e7f9919ull, [](ProcedureFixture &f) { f.Do(action::mesh::Bend{.Angle = .8f, .Radius = 2.f, .Clamp = false, .Orientation = std::make_unique<quat>(numeric::AngleAxis(.3f, Normalize(vec3{0.f, 1.f, 1.f})))}); }, {}, Placed},
-        {"VertexSlide", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::VertexSlide>, 0x815064164d8c48c2ull, [](ProcedureFixture &f) { f.Do(action::mesh::VertexSlide{.Factor = .3f, .Direction = Normalize(vec3{1.f, .2f, .1f})}); }, {}, Placed},
-        {"EdgeSlide", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Edge, KindOf<procedure::EdgeSlide>, 0x72da6642c85c8ac2ull, [](ProcedureFixture &f) { f.Do(action::mesh::EdgeSlide{.Factor = .5f, .Direction = {0.f, 1.f, 0.f}}); }, FacingEdgeCenter},
-        {"SnapSymmetry", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<SnapSymmetry>, 0xe29e1f318642b782ull, [](ProcedureFixture &f) { f.Do(SnapSymmetry{.Threshold = .5f}); }, {}, {}, Randomized<.05f>},
-        {"VertexSlideEvenActive", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::VertexSlide>, 0x6a6a3848f7831314ull, [](ProcedureFixture &f) { f.Do(action::mesh::VertexSlide{.Factor = .3f, .Direction = Normalize(vec3{1.f, .2f, .1f}), .Even = true}); }, FacingSide, {}, Randomized<.3f>},
-        {"EdgeSlideEvenActive", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::EdgeSlide>, 0xb1f7e0a1da31983dull, [](ProcedureFixture &f) { f.Do(action::mesh::EdgeSlide{.Factor = .5f, .Direction = {0.f, 1.f, 0.f}, .Even = true}); }, FacingSide, {}, Randomized<.3f>},
-        {"LoopCutActive", primitive::Cuboid{{1.f, 2.f, 3.f}}, Element::Edge, KindOf<LoopCut>, 0x10b3e9b664300622ull, [](ProcedureFixture &f) { f.Do(LoopCut{.Cuts = 2u}); }, CornerEdgeCenters},
-        {"SplitNonplanarCuboid", primitive::Cuboid{}, Element::Face, KindOf<SplitNonplanarFaces>, 0xba7ee32f43a24e84ull, [](ProcedureFixture &f) { f.Do(SplitNonplanarFaces{}); }, {}, {}, Randomized<.3f>},
+        {"PushPull", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::PushPull>, 0x9d362c76fc3b4222ull, [](ProcedureFixture &f) { f.Do(action::mesh::PushPull{.Distance = .5f}); }, {}, Placed},
+        {"ShearLocal", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::Shear>, 0x845dc6891da1c7f2ull, [](ProcedureFixture &f) { f.Do(action::mesh::Shear{.Local = true}); }, {}, Placed},
+        {"Warp", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::Warp>, 0x29fcc570816d46efull, [](ProcedureFixture &f) { f.Do(action::mesh::Warp{.Angle = 1.f, .Center = {.5f, 0.f, 0.f}, .Orientation = std::make_unique<quat>(numeric::AngleAxis(.3f, Normalize(vec3{1.f, 1.f, 0.f})))}); }, {}, Placed},
+        {"Bend", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::Bend>, 0x193360401e7f9919ull, [](ProcedureFixture &f) { f.Do(action::mesh::Bend{.Angle = .8f, .Radius = 2.f, .Clamp = false, .Orientation = std::make_unique<quat>(numeric::AngleAxis(.3f, Normalize(vec3{0.f, 1.f, 1.f})))}); }, {}, Placed},
+        {"VertexSlide", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::VertexSlide>, 0x815064164d8c48c2ull, [](ProcedureFixture &f) { f.Do(action::mesh::VertexSlide{.Factor = .3f, .Direction = Normalize(vec3{1.f, .2f, .1f})}); }, {}, Placed},
+        {"EdgeSlide", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Edge, KindOf<procedure::EdgeSlide>, 0x72da6642c85c8ac2ull, [](ProcedureFixture &f) { f.Do(action::mesh::EdgeSlide{.Factor = .5f, .Direction = {0.f, 1.f, 0.f}}); }, FacingEdgeCenter},
+        {"SnapSymmetry", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<SnapSymmetry>, 0xe29e1f318642b782ull, [](ProcedureFixture &f) { f.Do(SnapSymmetry{.Threshold = .5f}); }, {}, {}, Randomized<.05f>},
+        {"VertexSlideEvenActive", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::VertexSlide>, 0x6a6a3848f7831314ull, [](ProcedureFixture &f) { f.Do(action::mesh::VertexSlide{.Factor = .3f, .Direction = Normalize(vec3{1.f, .2f, .1f}), .Even = true}); }, FacingSide, {}, Randomized<.3f>},
+        {"EdgeSlideEvenActive", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::EdgeSlide>, 0xb1f7e0a1da31983dull, [](ProcedureFixture &f) { f.Do(action::mesh::EdgeSlide{.Factor = .5f, .Direction = {0.f, 1.f, 0.f}, .Even = true}); }, FacingSide, {}, Randomized<.3f>},
+        {"LoopCutActive", primitive::Cube{{1.f, 2.f, 3.f}}, Element::Edge, KindOf<LoopCut>, 0x10b3e9b664300622ull, [](ProcedureFixture &f) { f.Do(LoopCut{.Cuts = 2u}); }, CornerEdgeCenters},
+        {"SplitNonplanarCube", primitive::Cube{}, Element::Face, KindOf<SplitNonplanarFaces>, 0xba7ee32f43a24e84ull, [](ProcedureFixture &f) { f.Do(SplitNonplanarFaces{}); }, {}, {}, Randomized<.3f>},
         {"SplitConcaveDisc", primitive::Circle{.Radius = 5.f, .Segments = 8u}, Element::Face, KindOf<SplitConcaveFaces>, 0xcfa4b6519fb148d2ull, [](ProcedureFixture &f) { f.Do(SplitConcaveFaces{}); }, {}, {}, Notched},
-        {"ConnectDiagonal", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<ConnectVertices>, 0xb136037f318c5ac2ull, [](ProcedureFixture &f) { f.Do(ConnectVertices{}); }, FacingDiagonal},
-        {"Fill", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<Fill>, 0x7c06b3169d079ce2ull, [](ProcedureFixture &f) { f.Do(Fill{}); }, FacingDiagonal},
-        {"BridgeEdgeLoops", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Edge, KindOf<BridgeEdgeLoops>, 0xc676e92a61a1aa82ull, [](ProcedureFixture &f) { f.Do(BridgeEdgeLoops{}); }, OppositeEdgeCenters, {}, Wires},
-        {"GridFill", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Edge, KindOf<GridFill>, 0x6384c60043138282ull, [](ProcedureFixture &f) { f.Do(GridFill{}); }, BoundaryEdgeCenters, {}, Opened},
+        {"ConnectDiagonal", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<ConnectVertices>, 0xb136037f318c5ac2ull, [](ProcedureFixture &f) { f.Do(ConnectVertices{}); }, FacingDiagonal},
+        {"Fill", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<Fill>, 0x7c06b3169d079ce2ull, [](ProcedureFixture &f) { f.Do(Fill{}); }, FacingDiagonal},
+        {"BridgeEdgeLoops", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Edge, KindOf<BridgeEdgeLoops>, 0xc676e92a61a1aa82ull, [](ProcedureFixture &f) { f.Do(BridgeEdgeLoops{}); }, OppositeEdgeCenters, {}, Wires},
+        {"GridFill", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Edge, KindOf<GridFill>, 0x6384c60043138282ull, [](ProcedureFixture &f) { f.Do(GridFill{}); }, BoundaryEdgeCenters, {}, Opened},
         {"EdgeRotate", primitive::IcoSphere{.Radius = 3.f, .Subdivisions = 1u}, Element::Edge, KindOf<EdgeRotate>, 0xcad4838bfffb586full, [](ProcedureFixture &f) { f.Do(EdgeRotate{}); }, FacingEdgeCenter},
-        {"BeautifyFaces", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Face, KindOf<BeautifyFaces>, 0xc9c17ac413c1468bull, [](ProcedureFixture &f) { f.Do(BeautifyFaces{}); }, {}, {}, TriangulatedRandomized},
+        {"BeautifyFaces", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Face, KindOf<BeautifyFaces>, 0xc9c17ac413c1468bull, [](ProcedureFixture &f) { f.Do(BeautifyFaces{}); }, {}, {}, TriangulatedRandomized},
         {"Unsubdivide", primitive::Plane{}, Element::Vertex, KindOf<Unsubdivide>, 0x1161622a953771d2ull, [](ProcedureFixture &f) { f.Do(Unsubdivide{}); }, {}, {}, Subdivided},
         {"RotateUVs", AttributedGrid, Element::Face, KindOf<RotateUVs>, 0x8c705a4d446978b2ull, [](ProcedureFixture &f) { f.Do(RotateUVs{}); }, AdjacentFaceCenters},
         {"ReverseUVs", AttributedGrid, Element::Face, KindOf<ReverseUVs>, 0xd794f9f5f0c51232ull, [](ProcedureFixture &f) { f.Do(ReverseUVs{}); }, AdjacentFaceCenters},
         {"RotateColors", AttributedGrid, Element::Face, KindOf<RotateColors>, 0xc1f62ebd4e569352ull, [](ProcedureFixture &f) { f.Do(RotateColors{.CounterClockwise = true}); }, AdjacentFaceCenters},
         {"ReverseColors", AttributedGrid, Element::Face, KindOf<ReverseColors>, 0xf240377728750772ull, [](ProcedureFixture &f) { f.Do(ReverseColors{}); }, AdjacentFaceCenters},
-        {"MarkSharpEdges", primitive::Cuboid{{1.f, 2.f, 3.f}}, Element::Edge, KindOf<procedure::MarkSharp>, 0xaf74c97303be8d62ull, [](ProcedureFixture &f) { f.Do(action::object::SetSelectedSharp{.Element = Element::Edge, .Sharp = true}); }, CornerEdgeCenters},
-        {"MarkSharpVertices", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::MarkSharp>, 0x7d0d307e27f220e2ull, [](ProcedureFixture &f) { f.Do(action::object::SetSelectedSharp{.Element = Element::Vertex, .Sharp = true}); }, FacingSide},
-        {"SmoothFace", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Face, KindOf<procedure::MarkSharp>, 0x9ab8278bab26cbe2ull, [](ProcedureFixture &f) { f.Do(action::object::SetSelectedSharp{.Element = Element::Face, .Sharp = false}); }, FacingFaceCenter},
-        {"Knife", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Face, KindOf<procedure::Knife>, 0xd5a12f0a93af004full, [](ProcedureFixture &f) {
+        {"MarkSharpEdges", primitive::Cube{{1.f, 2.f, 3.f}}, Element::Edge, KindOf<procedure::MarkSharp>, 0xaf74c97303be8d62ull, [](ProcedureFixture &f) { f.Do(action::object::SetSelectedSharp{.Element = Element::Edge, .Sharp = true}); }, CornerEdgeCenters},
+        {"MarkSharpVertices", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::MarkSharp>, 0x7d0d307e27f220e2ull, [](ProcedureFixture &f) { f.Do(action::object::SetSelectedSharp{.Element = Element::Vertex, .Sharp = true}); }, FacingSide},
+        {"SmoothFace", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Face, KindOf<procedure::MarkSharp>, 0x9ab8278bab26cbe2ull, [](ProcedureFixture &f) { f.Do(action::object::SetSelectedSharp{.Element = Element::Face, .Sharp = false}); }, FacingFaceCenter},
+        {"Knife", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Face, KindOf<procedure::Knife>, 0xd5a12f0a93af004full, [](ProcedureFixture &f) {
              f.Render();
              const auto &view = f.View();
              const auto pixel = [&](vec3 p) {
@@ -1382,17 +1382,17 @@ void RecordedOperators(ProcedureFixture &f, Fixture &other) {
                  return vec2{(clip.x / clip.w + 1.f) * .5f * view.ViewportSize.x, (1.f - clip.y / clip.w) * .5f * view.ViewportSize.y};
              };
              f.Do(action::mesh::Knife{pixel(Placed.P + vec3{-4.f, .3f, 0.f}), pixel(Placed.P + vec3{4.f, -.2f, 0.f}), std::make_unique<RenderView>(f.R.get<const Viewport>(FirstViewport(f.R)).FrameView)}); }, {}, Placed},
-        {"ShadeSmooth", primitive::Cuboid{{2.f, 2.f, 2.f}}, Element::Face, KindOf<procedure::ShadeSmooth>, 0x402f5a2f4c86f02ull, [](ProcedureFixture &f) { f.Do(action::object::SetSelectedSmoothShading{true}); }},
+        {"ShadeSmooth", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Face, KindOf<procedure::ShadeSmooth>, 0x402f5a2f4c86f02ull, [](ProcedureFixture &f) { f.Do(action::object::SetSelectedSmoothShading{true}); }},
         {"ShadeFlat", primitive::UVSphere{.Radius = 2.f, .Slices = 8u, .Stacks = 4u}, Element::Face, KindOf<procedure::ShadeSmooth>, 0x26de72431ea25cf2ull, [](ProcedureFixture &f) { f.Do(action::object::SetSelectedSmoothShading{false}); }, {}, {}, ShadedSmooth},
         {"ShadeSmoothByAngle", primitive::UVSphere{.Radius = 2.f, .Slices = 8u, .Stacks = 4u}, Element::Face, KindOf<procedure::ShadeSmoothByAngle>, 0xa655f6a012146ff2ull, [](ProcedureFixture &f) { f.Do(action::object::ShadeSelectedSmoothByAngle{.6f}); }},
     }};
     // Adds an active cube at Placed and a selected second cube, the tool, and returns the active object, its mesh and the tool.
     const auto add_cubes = [](ProcedureFixture &f) {
         auto &r = f.R;
-        f.Do(action::object::AddMeshPrimitive{primitive::Cuboid{}, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Transform = Placed})});
+        f.Do(action::object::AddMeshPrimitive{primitive::Cube{}, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Transform = Placed})});
         const auto active = FindActiveEntity(r);
         const Transform world{.P = {1.f, .5f, -.25f}, .R = numeric::AngleAxis(.6f, Normalize(vec3{0.f, 1.f, 1.f})), .S = {.75f, 1.f, 1.25f}};
-        f.Do(action::object::AddMeshPrimitive{primitive::Cuboid{}, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Transform = world, .Select = MeshInstanceCreateInfo::SelectBehavior::Additive})});
+        f.Do(action::object::AddMeshPrimitive{primitive::Cube{}, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Transform = world, .Select = MeshInstanceCreateInfo::SelectBehavior::Additive})});
         expect(fatal(FindActiveEntity(r) == active));
         state::Entity tool = state::Null;
         for (const auto e : r.view<const Instance>())
@@ -1425,8 +1425,8 @@ void RecordedOperators(ProcedureFixture &f, Fixture &other) {
             expect(Fingerprint(f, mesh) == 0x38e0585db10ca082ull);
         }
         // A generated Mesh 2 is in this procedure's mesh space, so it stays in place relative to Mesh 1 wherever Space moves: a bar through the cube cuts a 1 x 1 x 2 tunnel.
-        const auto bar = f.Append(mesh, KindOf<primitive::Cuboid>);
-        f.Do(UpdateOf<&primitive::Cuboid::HalfExtents>(bar, vec3{.5f, .5f, 2.f}));
+        const auto bar = f.Append(mesh, KindOf<primitive::Cube>);
+        f.Do(UpdateOf<&primitive::Cube::HalfExtents>(bar, vec3{.5f, .5f, 2.f}));
         f.Do(Link{mesh, bar, f.Out(bar), boolean, 1u});
         expect(!r.any_of<NodeError>(boolean) && std::abs(volume(f, mesh) - 6.0) < 1e-4);
         // Its placement is the identity wherever the objects move, so moving Space cooks nothing.
@@ -1533,7 +1533,7 @@ void ParameterSockets(ProcedureFixture &f) {
     auto &r = f.R;
     auto &meshes = f.Store();
     using action::mesh::Bevel, action::mesh::ShrinkFatten, action::mesh::Poke;
-    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    const auto mesh = f.AddMesh(primitive::Cube{});
     const auto source = f.Shaped(mesh);
     const auto output = [&] { return f.Shaped(mesh); };
     const auto real = f.Append(mesh, KindOf<FloatValue>);
@@ -1663,7 +1663,7 @@ void ParameterSockets(ProcedureFixture &f) {
 // A displayed node with an unlinked geometry input draws an empty record, and collapsing gives the new Source node the state of the record the mesh draws.
 void SourceStates(ProcedureFixture &f) {
     const auto &r = f.R;
-    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    const auto mesh = f.AddMesh(primitive::Cube{});
     const auto source = f.SourceOf(mesh);
     const auto record = f.Output(mesh);
     const auto shape = f.Shaped(mesh);
@@ -1725,7 +1725,7 @@ Graph SourceInstances(ProcedureFixture &f) {
 // Removing the active node activates the displayed node, and deleting the displayed node displays the node its chain reads, or a Join's first input reads.
 void DisplayedNode(ProcedureFixture &f) {
     const auto &r = f.R;
-    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    const auto mesh = f.AddMesh(primitive::Cube{});
     const auto source = f.Shaped(mesh);
     const auto extrude = f.Append(mesh, KindOf<action::mesh::Extrude>);
     f.Route(mesh, {f.Node(mesh, 0u), extrude});
@@ -1766,7 +1766,7 @@ void DisplayedNode(ProcedureFixture &f) {
     }
     expect(f.Shaped(mesh) == source);
     // Deleting a displayed Join displays the node its first input reads.
-    const auto box = f.Append(mesh, KindOf<primitive::Cuboid>);
+    const auto box = f.Append(mesh, KindOf<primitive::Cube>);
     const auto join = f.Append(mesh, KindOf<Join>);
     f.Do(Link{mesh, f.Node(mesh, 0u), 0u, join, 0u});
     f.Do(Link{mesh, box, f.Out(box), join, 1u});
@@ -1780,7 +1780,7 @@ void DisplayedNode(ProcedureFixture &f) {
 void ViewportSelection(ProcedureFixture &f) {
     const auto &r = f.R;
     const auto &meshes = f.Store();
-    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    const auto mesh = f.AddMesh(primitive::Cube{});
     const auto source = f.Shaped(mesh);
     const auto extrude = f.Append(mesh, KindOf<action::mesh::Extrude>);
     // The upper face of the source record with its vertices and edges, and its first vertex active.
@@ -1886,13 +1886,13 @@ Graph UnlinkedInstance(ProcedureFixture &f) {
 // The source clone takes lower blocks than the generated cube and the Join appends them after the cube's, so the joined block table is not in ascending order.
 // A Compare linked into a Delete still selects the cube's upper vertices in its higher block.
 Graph JoinedSelection(ProcedureFixture &f) {
-    const auto mesh = f.AddMesh(primitive::Cuboid{});
-    const auto cube = f.Append(mesh, KindOf<primitive::Cuboid>);
+    const auto mesh = f.AddMesh(primitive::Cube{});
+    const auto cube = f.Append(mesh, KindOf<primitive::Cube>);
     const auto join = f.Append(mesh, KindOf<Join>);
     const auto position = f.Append(mesh, KindOf<Position>);
     const auto compare = f.Append(mesh, KindOf<Compare>);
     const auto remove = f.Append(mesh, KindOf<action::mesh::Delete>);
-    f.Do(UpdateOf<&primitive::Cuboid::HalfExtents>(cube, vec3{1.f, 2.f, 1.f}));
+    f.Do(UpdateOf<&primitive::Cube::HalfExtents>(cube, vec3{1.f, 2.f, 1.f}));
     f.Do(UpdateOf<&Compare::Component>(compare, VectorComponent::Y));
     f.Do(UpdateOf<&Compare::B>(compare, 1.5f));
     f.Do(Link{mesh, cube, f.Out(cube), join, 0u});
@@ -1919,7 +1919,7 @@ Graph JoinedSelection(ProcedureFixture &f) {
 
 // A change to a node committed in an earlier step restores the record to the result of the node before it.
 void ColdRecook(ProcedureFixture &f) {
-    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    const auto mesh = f.AddMesh(primitive::Cube{});
     const auto subdivide = f.Append(mesh, KindOf<action::mesh::Subdivide>);
     const auto extrude = f.Append(mesh, KindOf<action::mesh::Extrude>);
     f.Route(mesh, {f.Node(mesh, 0u), subdivide, extrude});
@@ -1928,7 +1928,7 @@ void ColdRecook(ProcedureFixture &f) {
 
 // A change to the first node after the Source restores the record to the Source node's result, with the position edit and the topology node after it run again.
 void NodeResultRecook(ProcedureFixture &f) {
-    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    const auto mesh = f.AddMesh(primitive::Cube{});
     const auto subdivide = f.Append(mesh, KindOf<action::mesh::Subdivide>);
     const auto to_sphere = f.Append(mesh, KindOf<ToSphere>);
     const auto extrude = f.Append(mesh, KindOf<action::mesh::Extrude>);
@@ -1939,7 +1939,7 @@ void NodeResultRecook(ProcedureFixture &f) {
 
 // Deleting the displayed tip node restores the record in place to its input node's result with one cook, which leaves the Source node's state untouched.
 void DeleteTipRestores(ProcedureFixture &f) {
-    const auto mesh = f.AddMesh(primitive::Cuboid{});
+    const auto mesh = f.AddMesh(primitive::Cube{});
     const auto root = f.Node(mesh, 0u);
     const auto subdivide = f.Append(mesh, KindOf<action::mesh::Subdivide>);
     const auto extrude = f.Append(mesh, KindOf<action::mesh::Extrude>);

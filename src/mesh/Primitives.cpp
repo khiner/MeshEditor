@@ -28,7 +28,7 @@ MeshData CreateMesh(const Circle &p) {
     };
 }
 
-MeshData CreateMesh(const Cuboid &p) {
+MeshData CreateMesh(const Cube &p) {
     const auto x = p.HalfExtents.x, y = p.HalfExtents.y, z = p.HalfExtents.z;
     return {
         {

@@ -6,7 +6,7 @@
 namespace primitive {
 MeshData CreateMesh(const Plane &);
 MeshData CreateMesh(const Circle &);
-MeshData CreateMesh(const Cuboid &);
+MeshData CreateMesh(const Cube &);
 MeshData CreateMesh(const IcoSphere &);
 MeshData CreateMesh(const UVSphere &);
 MeshData CreateMesh(const Torus &);

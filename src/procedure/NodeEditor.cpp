@@ -57,7 +57,7 @@ template<> constexpr const char *Help<Join>{"Appends the second input's geometry
 template<> constexpr const char *Help<Boolean>{"Combines two closed meshes by union, difference, or intersection"};
 template<> constexpr const char *Help<primitive::Plane>{"Generates a rectangle in the XZ plane, facing +Y"};
 template<> constexpr const char *Help<primitive::Circle>{"Generates a disc of triangles in the XZ plane, facing +Y"};
-template<> constexpr const char *Help<primitive::Cuboid>{"Generates a box centered on the origin"};
+template<> constexpr const char *Help<primitive::Cube>{"Generates a box centered on the origin"};
 template<> constexpr const char *Help<primitive::IcoSphere>{"Generates a sphere by subdividing an icosahedron"};
 template<> constexpr const char *Help<primitive::UVSphere>{"Generates a sphere of slices around the Y axis and stacks along it"};
 template<> constexpr const char *Help<primitive::Torus>{"Generates a torus around the Y axis"};

@@ -1083,7 +1083,7 @@ int main(int argc, const char **argv) {
         SceneFixture f;
         {
             auto &meshes = f.R.Resources.get<MeshStore>();
-            const auto created = CreateMesh(f.R, {.Data = primitive::CreateMesh(primitive::Cuboid{})});
+            const auto created = CreateMesh(f.R, {.Data = primitive::CreateMesh(primitive::Cube{})});
             const auto e = f.R.create();
             f.R.emplace<MeshHandle>(e, MeshHandle{created.StoreId});
             f.R.emplace<Name>(e, "Cube");
@@ -1150,11 +1150,11 @@ int main(int argc, const char **argv) {
     "project save omits destroyed mesh entities"_test = [&] {
         SceneFixture f;
         const auto keep = f.R.create();
-        const auto kept = CreateMesh(f.R, {.Data = primitive::CreateMesh(primitive::Cuboid{})});
+        const auto kept = CreateMesh(f.R, {.Data = primitive::CreateMesh(primitive::Cube{})});
         f.R.emplace<MeshHandle>(keep, MeshHandle{kept.StoreId});
 
         const auto gone = f.R.create();
-        const auto removed = CreateMesh(f.R, {.Data = primitive::CreateMesh(primitive::Cuboid{})});
+        const auto removed = CreateMesh(f.R, {.Data = primitive::CreateMesh(primitive::Cube{})});
         f.R.emplace<MeshHandle>(gone, MeshHandle{removed.StoreId});
         f.R.destroy(gone);
 

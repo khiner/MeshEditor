@@ -640,7 +640,7 @@ void RenderControls(state::Registry &r) {
                 static constexpr std::array Primitives{
                     PrimitiveParameters{primitive::Plane{}},
                     PrimitiveParameters{primitive::Circle{}},
-                    PrimitiveParameters{primitive::Cuboid{}},
+                    PrimitiveParameters{primitive::Cube{}},
                     PrimitiveParameters{primitive::IcoSphere{}},
                     PrimitiveParameters{primitive::UVSphere{}},
                     PrimitiveParameters{primitive::Torus{}},

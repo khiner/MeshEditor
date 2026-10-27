@@ -86,7 +86,7 @@ void RederiveColliders(state::Registry &r, std::span<const state::Entity> entiti
                 authored_primitive = true;
                 shape = std::visit(
                     overloaded{
-                        [](const primitive::Cuboid &s) -> PhysicsShape { return physics::Box{s.HalfExtents * 2.f}; },
+                        [](const primitive::Cube &s) -> PhysicsShape { return physics::Box{s.HalfExtents * 2.f}; },
                         [](const primitive::Plane &s) -> PhysicsShape { return physics::Plane{s.HalfExtents.x * 2.f, s.HalfExtents.y * 2.f}; },
                         [](const primitive::IcoSphere &s) -> PhysicsShape { return physics::Sphere{s.Radius}; },
                         [](const primitive::UVSphere &s) -> PhysicsShape { return physics::Sphere{s.Radius}; },
