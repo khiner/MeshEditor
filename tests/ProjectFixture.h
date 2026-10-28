@@ -201,12 +201,13 @@ inline void CheckHistory(Fixture &f, Fixture &other, const std::map<uint32_t, Li
     // The present's actions replay from its parent with the same number of cooks hot, after a cold open and after clearing the history, so a restore the session made in place stays in place.
     const auto parent = p.History.Nodes[present].Parent;
     const bool replays = parent && !direct.contains(present);
-    const auto actions = p.History.Nodes[present].Actions;
+    const auto actions = p.History.ActionsOf(p.History.Nodes[present]) | std::ranges::to<std::vector>();
+    const auto workspaces = p.History.WorkspacesOf(p.History.Nodes[present]) | std::ranges::to<std::vector>();
     uint64_t replay_cooks = 0u;
     if (replays) {
         p.Navigate(*parent);
         const auto cooks = Cooks(f.R);
-        expect(p.History.Callbacks.Replay(actions).has_value());
+        expect(p.History.Callbacks.Replay(p.History, actions, workspaces).has_value());
         replay_cooks = Cooks(f.R) - cooks;
         p.Navigate(present);
     }
@@ -224,7 +225,7 @@ inline void CheckHistory(Fixture &f, Fixture &other, const std::map<uint32_t, Li
         other.P->Navigate(*parent);
         if (clear) expect(other.P->ClearHistory());
         const auto cooks = Cooks(other.R);
-        expect(other.P->History.Callbacks.Replay(actions).has_value());
+        expect(other.P->History.Callbacks.Replay(other.P->History, actions, workspaces).has_value());
         expect(other.P->History.MaterializeLive() == live.Document);
         expect(Cooks(other.R) - cooks == replay_cooks);
         other.Audit();

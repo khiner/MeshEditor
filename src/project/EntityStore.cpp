@@ -5,11 +5,12 @@
 #include "state/Registry.h"
 
 namespace project {
-EntityStore::EntityStore(state::Registry &r, store::History &history, const snapshot::SnapshotEntries &components) : R(r), Table(r.AllocationState().Generations) {
+EntityStore::EntityStore(state::Registry &r, store::History &history, const snapshot::SnapshotEntries &components) : R(r), Workspace(r, components), Table(r.AllocationState().Generations) {
     R.HistoryOwner = this;
     R.Capture = [](state::Registry &r, state::TypeId type, std::span<const state::PageMask> pages) {
-        if (!r.Restoring) static_cast<EntityStore *>(r.HistoryOwner)->Capture(type, pages);
+        static_cast<EntityStore *>(r.HistoryOwner)->Capture(type, pages);
     };
+    history.Workspace = &Workspace;
     Table.P.Trie.CollectChanged = true;
     history.Track(Table.P, "entity.table", 0);
     history.Track(r.AllocationState().Free.P, "entity.free", 0);
@@ -27,10 +28,12 @@ EntityStore::~EntityStore() {
 }
 
 void EntityStore::Capture(state::TypeId type, std::span<const state::PageMask> pages) {
-    if (const auto &pool = Pools[type]) {
-        if (R.DocumentReadOnly) throw std::logic_error("Persistent component mutation during history restoration: " + std::string(pool->Encoding.Name));
-        pool->Capture(pages);
-    }
+    Workspace.Capture(type, pages);
+    if (!R.Restoring)
+        if (const auto &pool = Pools[type]) {
+            if (R.DocumentReadOnly) throw std::logic_error("Persistent component mutation during history restoration: " + std::string(pool->Encoding.Name));
+            pool->Capture(pages);
+        }
 }
 
 void EntityStore::BeginRestore() {

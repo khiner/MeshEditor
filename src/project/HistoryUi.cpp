@@ -1,5 +1,6 @@
 #include "project/HistoryUi.h"
 
+#include "armature/ArmatureComponents.h"
 #include "project/Project.h"
 #include "ui/CtrlShortcut.h"
 #include "ui/FieldEdit.h"
@@ -44,23 +45,30 @@ template<typename T> void DrawValue(const state::Registry &r, const char *label,
         draw();
         TreePop();
     };
-    if constexpr (std::same_as<T, state::Entity>) {
-        const auto *current = v == state::Null ? nullptr : r.try_get<const Name>(v);
+    if constexpr (std::same_as<T, state::Entity> || state::IsEntityRef<T>) {
+        auto &entity = [&]() -> state::Entity & {
+            if constexpr (state::IsEntityRef<T>) return v.Value;
+            else return v;
+        }();
+        const auto *current = entity == state::Null ? nullptr : r.try_get<const Name>(entity);
         bool edited = false;
         if (BeginCombo(label, current ? current->Value.c_str() : "None")) {
-            if (Selectable("None", v == state::Null)) {
-                v = state::Null;
+            if (Selectable("None", entity == state::Null)) {
+                entity = state::Null;
                 edited = true;
             }
-            const auto named = r.view<const Name>() | std::ranges::to<std::vector>();
+            const auto named = [&] {
+                if constexpr (state::IsEntityRef<T>) return r.view<const Name, const typename T::ComponentType>() | std::ranges::to<std::vector>();
+                else return r.view<const Name>() | std::ranges::to<std::vector>();
+            }();
             ImGuiListClipper clipper;
             clipper.Begin(int(named.size()));
             while (clipper.Step()) {
                 for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
                     const auto e = named[i];
                     PushID(int(state::Integral(e)));
-                    if (Selectable(r.get<const Name>(e).Value.c_str(), e == v)) {
-                        v = e;
+                    if (Selectable(r.get<const Name>(e).Value.c_str(), e == entity)) {
+                        entity = e;
                         edited = true;
                     }
                     PopID();
@@ -82,15 +90,14 @@ template<typename T> void DrawValue(const state::Registry &r, const char *label,
     } else if constexpr (Optional<T>) {
         PushID(label);
         bool present = v.has_value();
-        if (Checkbox(present ? "##present" : label, &present)) {
+        if (Checkbox("##present", &present)) {
             if (present) v.emplace();
             else v.reset();
             changed = finished = true;
         }
-        if (v) {
-            SameLine();
-            DrawValue(r, label, *v, spec, changed, finished);
-        }
+        SameLine();
+        if (v) DrawValue(r, label, *v, spec, changed, finished);
+        else TextUnformatted(label);
         PopID();
     } else if constexpr (Variant<T>) {
         constexpr size_t N = std::variant_size_v<T>;
@@ -192,13 +199,13 @@ void DrawNodeEditor(Project &session, uint32_t node, bool interactive) {
     auto &draft = session.DraftOf(node);
     size_t leaves = 0;
     for (const auto &recorded_action : draft.RecordedActions) {
-        leaves += action::VisitLeaf(recorded_action.Action, []<typename L>(const L &) { return !std::is_empty_v<L>; });
+        leaves += action::VisitLeaf(recorded_action, []<typename L>(const L &) { return !std::is_empty_v<L>; });
     }
     bool changed = false, finished = false;
     for (size_t i = 0; auto &recorded_action : draft.RecordedActions) {
         PushID(int(i++));
-        if (leaves > 1) SeparatorText(SpacedName(Label(recorded_action.Action)).c_str());
-        action::VisitLeaf(recorded_action.Action, [&]<typename L>(L &leaf) {
+        if (leaves > 1) SeparatorText(SpacedName(Label(recorded_action)).c_str());
+        action::VisitLeaf(recorded_action, [&]<typename L>(L &leaf) {
             if constexpr (!std::is_empty_v<L>) DrawLeaf(session.R, leaf, changed, finished);
         });
         PopID();

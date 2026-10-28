@@ -4,6 +4,7 @@
 #include "gpu/EditSelectionSummary.h"
 #include "metal/Bindless.h"
 
+#include "selection/Selection.h"
 #include "selection/SelectionSchema.h"
 #include "state/Entity.h"
 
@@ -33,16 +34,19 @@ std::vector<state::Entity> RunBoxSelect(state::Registry &, state::Entity viewpor
 // The X-ray flag includes occluded elements.
 void RunBoxSelectElements(state::Registry &, state::Entity viewport, std::span<const ElementRange> ranges, Element, std::pair<uvec2, uvec2> box_px, bool is_additive);
 
+bool SelectionThrough(const state::Registry &, state::Entity viewport);
+uvec2 SelectionPixel(vec2 extent, vec2 fraction);
+std::optional<SelectionHit> PickObject(state::Registry &, state::Entity viewport, uvec2 mouse_px, bool cycle = false);
+
 // Returns click hits sorted by distance, depth, and object id, then advances the 8-bit epoch tag.
 std::vector<state::Entity> RunObjectPick(state::Registry &, state::Entity viewport, uvec2 mouse_px, uint32_t radius_px = 0);
 
 // Pick the nearest sound-vertex of an instance under the cursor.
 std::optional<uint32_t> RunSoundVerticesVertexPick(state::Registry &, state::Entity viewport, state::Entity instance_entity, uvec2 mouse_px);
 
-// Runs an element-level pick, mutation, derivation, and summary on the GPU.
-// Returns the hit only for CPU editor mirrors.
-// The X-ray flag includes occluded elements.
-std::optional<std::pair<state::Entity, uint32_t>> RunEditElementClick(state::Registry &, state::Entity viewport, std::span<const ElementRange> ranges, Element, uvec2 mouse_px, bool toggle);
+// Resolves a click to a mesh identity and canonical element handle without changing selection.
+std::optional<ElementHit> RunEditElementPick(state::Registry &, state::Entity viewport, Element, uvec2 mouse_px);
+std::optional<ElementHit> ApplyEditElementPick(state::Registry &, std::span<const ElementRange>, Element, std::optional<ElementHit>, bool toggle);
 
 void ApplyEditSelectionCommand(state::Registry &, std::span<const ElementRange>, Element, EditSelectionOperation);
 // Replaces each mesh's selection with its listed elements, relative to the domain's first block.

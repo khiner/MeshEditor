@@ -61,6 +61,7 @@ template<> inline constexpr bool Recordable<timeline::EnterPresentation> = false
 template<> inline constexpr bool Recordable<audio::SetOutputDevice> = false;
 
 void Emit(Action, Phase = Phase::Record);
+void Emit(std::vector<Action>, Phase = Phase::Record);
 
 template<typename A, typename F> decltype(auto) VisitLeaf(A &&a, F &&fn) {
     return std::visit([&](auto &&domain) { return std::visit(fn, domain); }, std::forward<A>(a));

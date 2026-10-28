@@ -36,6 +36,7 @@
 #include "scene/Entity.h"
 #include "scene/SceneControlsUi.h"
 #include "scene/WorldTransform.h"
+#include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
 #include "timeline/TimelineTheme.h"
 #include "timeline/TimelineUi.h"
@@ -529,7 +530,7 @@ std::string ViewportPanelName(const state::Registry &r, state::Entity viewport) 
 // The viewport panel under the mouse becomes the active viewport while no gesture, button, or popup holds the input.
 void FollowHoveredViewport(state::Registry &r) {
     const auto &frame = r.Resources.get<const FrameState>();
-    if (frame.MeshDrag || frame.BoxSelectStart || r.get<const GizmoInteraction>(state::Document).IsUsing()) return;
+    if (frame.MeshDrag || frame.BoxDrag || r.get<const GizmoInteraction>(state::Document).IsUsing()) return;
     if (IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) return;
     const auto &io = GetIO();
     for (int button = 0; button < ImGuiMouseButton_COUNT; ++button) {
@@ -1341,12 +1342,9 @@ struct BenchmarkDriver {
         entities.resize(std::min<size_t>(entities.size(), capture.BenchActionCount));
         Transforms.reserve(entities.size());
         for (const auto entity : entities) Transforms.emplace_back(entity, r.get<const Transform>(entity));
-        if (Action == CaptureRequest::BenchmarkAction::Visibility && !entities.empty()) {
-            action::EmitSystem(action::selection::ApplyTreeSelection{.Entities = entities, .SelectCount = uint32_t(entities.size()), .NavToActive = entities.front(), .Clear = action::selection::ApplyTreeSelection::ClearKind::All});
-        }
     }
 
-    void Apply(const state::Registry &r, state::Entity viewport, uvec2 extent) {
+    void Apply(state::Registry &r, state::Entity viewport, uvec2 extent) {
         switch (Action) {
             case CaptureRequest::BenchmarkAction::Steady: break;
             case CaptureRequest::BenchmarkAction::Orbit:
@@ -1354,14 +1352,22 @@ struct BenchmarkDriver {
                 break;
             case CaptureRequest::BenchmarkAction::Transform: {
                 const float offset = Frame % 2 == 0 ? 0.05f : 0.f;
-                for (const auto &[entity, base] : Transforms) {
-                    action::EmitSystem(action::UpdateOf<&Transform::P>(entity, base.P + vec3{0, offset, 0}));
-                }
+                std::vector<action::Action> actions;
+                for (const auto &[entity, base] : Transforms) actions.push_back(action::MakeAction(action::UpdateOf<&Transform::P>(entity, base.P + vec3{0, offset, 0})));
+                action::Emit(std::move(actions));
                 break;
             }
-            case CaptureRequest::BenchmarkAction::Visibility:
-                action::Emit(action::object::SetSelectedVisible{Frame % 2 != 0});
+            case CaptureRequest::BenchmarkAction::Visibility: {
+                std::vector<action::Action> actions;
+                if (Frame == 0 && !Transforms.empty()) {
+                    std::vector<state::Entity> entities;
+                    for (const auto &[entity, _] : Transforms) entities.push_back(entity);
+                    actions.push_back(action::MakeAction(action::selection::ApplyTreeSelection{.Entities = entities, .SelectCount = uint32_t(entities.size()), .NavToActive = entities.front(), .Clear = action::selection::ApplyTreeSelection::ClearKind::All}));
+                }
+                actions.push_back(action::MakeAction(action::object::SetSelectedVisible{Frame % 2 != 0}));
+                action::Emit(std::move(actions));
                 break;
+            }
             case CaptureRequest::BenchmarkAction::BoxSelectOrbit:
                 if (Frame % 2 != 0) {
                     // Keep both benchmark viewpoints on the scene throughout long runs.
@@ -1377,15 +1383,12 @@ struct BenchmarkDriver {
                 action::Emit(action::selection::ApplyBoxSelect{
                     .Box = {vec2{inset} / size, (size - vec2{inset + 1.f}) / size},
                     .Additive = false,
-                    .View = std::make_unique<RenderView>(r.get<const Viewport>(viewport).FrameView),
                 });
                 break;
             }
             case CaptureRequest::BenchmarkAction::PickCycle: {
-                const vec2 center{0.5f, 0.5f};
-                auto view = std::make_unique<RenderView>(r.get<const Viewport>(viewport).FrameView);
-                if (Frame == 0) action::Emit(action::selection::Pick{center, false, std::move(view)});
-                else action::Emit(action::selection::PickCycle{center, false, std::move(view)});
+                const auto center = SelectionPixel(r.get<const Viewport>(viewport).FrameView.Extent, {.5f, .5f});
+                action::Emit(action::selection::Pick{false, PickObject(r, viewport, center, Frame != 0)});
                 break;
             }
         }
@@ -1693,9 +1696,6 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
         for (const auto &path : events.DroppedFiles) OpenFile(r, path);
         done = events.Quit;
         if (driver.DurationElapsed(r.get<const Viewport>(FirstViewport(r)))) done = true;
-        for (const auto [viewport, camera] : r.view<const ViewCameraState>().each()) {
-            if (camera.Active.IsAnimating()) r.patch<ViewCameraState>(viewport, [](ViewCameraState &state) { state.Active.Tick(); });
-        }
 
 #ifdef DEBUG_BUILD
         const auto ui_revision = std::pair{Session(r).Revision, RestoreGeneration};
@@ -1709,6 +1709,11 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
         r.Resources.get<FrameState>().DeltaTime = driver.FixedStep ? driver.RenderDt : io.DeltaTime;
         const auto *ui_focus = GImGui->NavWindow;
         NewFrame();
+        if (IsMouseClicked(ImGuiMouseButton_Left)) {
+            for (const auto [viewport, camera] : r.view<const ViewCameraState>().each()) {
+                if (camera.Active.IsAnimating()) r.edit<ViewCameraState>(viewport).Active.StopMoving();
+            }
+        }
 
         const auto editor_frame = BeginEditorFrame(r, ctx, layer, panels, io, /*interactive=*/true);
         // Resolve the viewports after the editor panels, since opening a project applies its workspace.
@@ -1721,18 +1726,31 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
             if (capture.BenchAction == CaptureRequest::BenchmarkAction::Orbit) action::Emit(action::view::OrbitViewCamera{first_viewport, {0.01f, 0.f}});
             if (++bench_ticks >= capture.BenchFrames) done = true;
         }
-        // Give interaction actions priority in the single-action buffer.
+        // Give interaction gestures priority in the frame buffer.
         driver.EmitFrameActions(r, first_viewport, viewport_settled, new_logical_extent);
-        // The viewport extent is a frame input that each recorded action carries for replay.
-        for (const auto &panel : editor_frame.Viewports) {
-            if (panel.Extent != uvec2{} && panel.Extent != r.get<const ViewportPanel>(panel.Entity).Extent) {
-                r.patch<ViewportPanel>(panel.Entity, [&](ViewportPanel &open) { open.Extent = panel.Extent; });
+        if (frame_state.BoxDrag) {
+            const auto active = FindActiveViewport(r);
+            const auto panel = std::ranges::find(editor_frame.Viewports, active, &OpenPanel::Entity);
+            if (panel == editor_frame.Viewports.end() || panel->Extent != r.get<const ViewportPanel>(active).Extent || frame_state.DisplayFramebufferScale != std::bit_cast<vec2>(io.DisplayFramebufferScale)) {
+                action::Commit();
+                frame_state.BoxDrag.reset();
             }
         }
-
         // Actions can add and remove viewports, which ends every viewport reference taken above.
         Session(r).Frame(action::Drain());
         ReportActionErrors(r);
+        if (!frame_state.BoxDrag) {
+            for (const auto [viewport, camera] : r.view<const ViewCameraState>().each()) {
+                if (camera.Active.IsAnimating()) r.patch<ViewCameraState>(viewport, [](ViewCameraState &state) { state.Active.Tick(); });
+            }
+        }
+        // Apply the next raster mapping after actions against the displayed mapping finish.
+        frame_state.DisplayFramebufferScale = std::bit_cast<vec2>(io.DisplayFramebufferScale);
+        for (const auto &panel : editor_frame.Viewports) {
+            if (r.all_of<ViewportPanel>(panel.Entity) && panel.Extent != uvec2{} && panel.Extent != r.get<const ViewportPanel>(panel.Entity).Extent) {
+                r.patch<ViewportPanel>(panel.Entity, [&](ViewportPanel &open) { open.Extent = panel.Extent; });
+            }
+        }
 
         // Submit derived state and rendering before the later WaitForRender synchronizes image sampling.
         // A viewport resized in its frame step waits for the previous UI frame to stop sampling its image.

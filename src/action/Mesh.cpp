@@ -1,5 +1,7 @@
 #include "action/Mesh.h"
 #include "action/Errors.h"
+#include "viewport/ViewCameraOps.h"
+#include "viewport/Viewport.h"
 
 #include "TransformMath.h"
 #include "mesh/EditVisibility.h"
@@ -188,33 +190,42 @@ std::optional<procedure::Shear> NodeOf(const state::Registry &r, state::Entity m
     }
     return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::Shear{a.Angle, EditSelectionCenter(r), direction, normal, frame}; });
 }
+const ViewCamera &ActionCamera(const state::Registry &r) { return r.get<const ViewCameraState>(FindActiveViewport(r)).Active; }
 std::optional<procedure::Warp> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::Warp &a) {
-    if (!a.Orientation) return {};
-    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::Warp{a.Angle, a.OffsetAngle, a.Center, a.AutoRange, a.Min, a.Max, *a.Orientation, frame}; });
+    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::Warp{a.Angle, a.OffsetAngle, a.Center, a.AutoRange, a.Min, a.Max, ActionCamera(r).Orientation, frame}; });
 }
 std::optional<procedure::Bend> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::Bend &a) {
-    if (!a.Orientation) return {};
-    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::Bend{a.Angle, a.Radius, a.OffsetAngle, a.Center, a.Clamp, *a.Orientation, frame}; });
+    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::Bend{a.Angle, a.Radius, a.OffsetAngle, a.Center, a.Clamp, ActionCamera(r).Orientation, frame}; });
+}
+vec3 ActionDirection(const state::Registry &r, vec3 value, bool view_space) {
+    return view_space ? ActionCamera(r).Orientation * value : value;
+}
+std::optional<procedure::Spin> NodeOf(const state::Registry &r, state::Entity, const action::mesh::Spin &a) {
+    return procedure::Spin{a.Steps, a.Angle, ActionDirection(r, a.Axis, a.ViewSpace), a.Center, a.Offset};
+}
+std::optional<procedure::Bisect> NodeOf(const state::Registry &r, state::Entity, const action::mesh::Bisect &a) {
+    return procedure::Bisect{a.Point, ActionDirection(r, a.Normal, a.ViewSpace), a.ClearInner, a.ClearOuter};
 }
 std::optional<procedure::VertexSlide> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::VertexSlide &a) {
-    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::VertexSlide{a.Factor, a.Direction, a.Even, a.Flipped, a.Clamp, frame}; });
+    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::VertexSlide{a.Factor, ActionDirection(r, a.Direction, a.ViewSpace), a.Even, a.Flipped, a.Clamp, frame}; });
 }
 std::optional<procedure::EdgeSlide> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::EdgeSlide &a) {
-    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::EdgeSlide{a.Factor, a.Direction, a.Even, a.Flipped, a.Clamp, frame}; });
+    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::EdgeSlide{a.Factor, ActionDirection(r, a.Direction, a.ViewSpace), a.Even, a.Flipped, a.Clamp, frame}; });
 }
 // Only the View method reads the frame.
 std::optional<procedure::Flatten> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::Flatten &a) {
     const auto frame = PrimaryFrame(r, mesh_entity);
     if (!frame && a.Method == action::mesh::FlattenMethod::View) return {};
-    return procedure::Flatten{a.Method, a.Factor, a.ViewNormal, a.X, a.Y, a.Z, frame.value_or(Transform{})};
+    return procedure::Flatten{a.Method, a.Factor, a.Method == action::mesh::FlattenMethod::View ? ActionCamera(r).Forward() : vec3{0, 0, 1}, a.X, a.Y, a.Z, frame.value_or(Transform{})};
 }
 // Resolve the view's projection and the world transform of the mesh's primary instance, which the knife projects the mesh with.
 std::optional<procedure::Knife> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::Knife &a) {
     const auto &primaries = r.get<const EditPrimaries>(state::Document).All;
     const auto primary = primaries.find(mesh_entity);
-    if (!a.View || !(a.View->Extent.x > 0.f && a.View->Extent.y > 0.f) || primary == primaries.end()) return {};
-    const auto &camera = a.View->Camera;
-    return procedure::Knife{a.Start, a.End, a.View->Extent, camera.Projection(a.View->Extent.x / a.View->Extent.y) * camera.View(), *WorldTransformOf(r, primary->second)};
+    const auto view = CurrentRenderView(r, FindActiveViewport(r));
+    if (!(view.Extent.x > 0.f && view.Extent.y > 0.f) || primary == primaries.end()) return {};
+    const auto &camera = view.Camera;
+    return procedure::Knife{a.Start, a.End, view.Extent, camera.Projection(view.Extent.x / view.Extent.y) * camera.View(), *WorldTransformOf(r, primary->second)};
 }
 } // namespace
 

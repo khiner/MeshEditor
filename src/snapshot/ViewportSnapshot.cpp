@@ -6,6 +6,7 @@
 #include "selection/SelectionState.h"
 #include "snapshot/SnapshotRegistration.h"
 #include "ui/InterfaceTheme.h"
+#include "viewport/FrameState.h"
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewCameraSerialize.h"
@@ -16,14 +17,20 @@
 #include "viewport/ViewportScene.h"
 
 namespace snapshot::detail {
+template<> ViewCameraState CopyNative(const ViewCameraState &source) {
+    auto value = source;
+    value.Active.StopMoving();
+    if (value.LookThroughSaved) value.LookThroughSaved->StopMoving();
+    return value;
+}
 void RegisterViewport(Tables &tables) {
     Classify(
         tables,
         TypeList<ViewportTheme, InterfaceTheme, Interaction, EditMode, AnisotropicFilter, TransformGizmoState, ViewportScene>{},
-        Concat(TypeList<ActiveViewport>{}, ViewValues{}),
+        Concat(TypeList<ActiveViewport, ActionInputs>{}, ViewValues{}),
         TypeList<
             Viewport, EnabledInteractionModes, AdditiveBoxSelectBaseline, ExciteSelectionBaseline,
-            PendingEditElementClick, PendingBoxSelect, PendingPick, PendingViewSetup, BoxSelectState,
+            PendingBoxSelect, PendingViewSetup, BoxSelectState,
             GizmoInteraction, PendingTransform, StartPivot, StartScreenTransform, StartTransform, StartBoneLength, action::DragFieldStart,
             TransformRoots, EditPrimaries, SelectionFlags, SelectedKeyframes, OutlinerRows>{}
     );

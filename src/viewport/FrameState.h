@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ProcessEvents.h"
 #include "state/Entity.h"
 #include "viewport/RenderView.h"
 #include "viewport/ViewportSchema.h"
@@ -21,6 +22,23 @@ struct MeshOperatorDrag {
     std::optional<float> Staged;
 };
 
+struct BoxSelectDrag {
+    vec2 Start, End;
+    bool Additive; // Shift was held at mouse-down.
+    std::optional<std::pair<std::pair<vec2, vec2>, RenderView>> Emitted; // The box and view last staged.
+};
+
+// Execution inputs sampled at action boundaries, outside the editable action payload.
+struct ActionInputs {
+    state::Entity Scene{state::Null};
+    float DeltaTime{}, PlaybackFrame{};
+    int CurrentFrame{1};
+    bool FixedFrameStep{};
+    EventPass Pass{EventPass::Frame};
+    vec2 FramebufferScale{1, 1};
+    bool operator==(const ActionInputs &) const = default;
+};
+
 struct FrameState {
     // The acting scene, set from ActingScene before actions apply and replayed from each recorded action.
     state::Entity Scene{state::Null};
@@ -31,9 +49,7 @@ struct FrameState {
     vec2 PreciseWheelDelta{0, 0};
     bool PreciseScrolling{false}; // The wheel delta is a trackpad's scroll
     float Magnification{0}; // The trackpad pinch's summed magnification
-    std::optional<vec2> BoxSelectStart, BoxSelectEnd;
-    bool BoxSelectAdditive{false}; // Shift was held at the box's click.
-    std::optional<std::pair<std::pair<vec2, vec2>, RenderView>> BoxSelectEmitted; // The box and view the drag last staged.
+    std::optional<BoxSelectDrag> BoxDrag;
     std::optional<MeshOperatorDrag> MeshDrag;
     bool OverlayControlsHovered{false};
     bool Scrubbing{false};

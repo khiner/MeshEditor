@@ -12,7 +12,10 @@ namespace snapshot {
 // Retention outlives a registry reset.
 struct Retention {
     std::array<state::Resources::Slot, state::SchemaSize> Slots;
+    bool Installing{};
 };
+
+void CaptureWorkspace(state::Registry &, state::TypeId, state::Entity);
 
 // Emplaces the retention resource and retains each dying Workspace value under its identity.
 void BindRetention(state::Registry &);

@@ -28,9 +28,39 @@
 #include "render/Pipelines.h"
 #include "scene/Entity.h"
 #include "selection/SelectionComponents.h"
+#include "viewport/FrameState.h"
+#include "viewport/InteractionComponents.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportRenderGpu.h"
+
+namespace {
+bool ElementQuery(const state::Registry &r) {
+    return r.get<const Interaction>(state::Document).Mode == InteractionMode::Edit && !IsBoneEditMode(r);
+}
+} // namespace
+
+bool SelectionThrough(const state::Registry &r, state::Entity viewport) {
+    const auto &display = r.get<const ViewportDisplay>(viewport);
+    return ElementQuery(r) ? XRayFlag(display) : XRayActive(display);
+}
+
+uvec2 SelectionPixel(vec2 extent, vec2 fraction) {
+    return Min(uvec2{std::lround(fraction.x * extent.x), std::lround(fraction.y * extent.y)}, Max(uvec2{extent.x, extent.y}, uvec2{1}) - uvec2{1});
+}
+
+std::optional<SelectionHit> PickObject(state::Registry &r, state::Entity viewport, uvec2 mouse_px, bool cycle) {
+    const auto scale = r.Resources.get<const FrameState>().DisplayFramebufferScale;
+    const auto radius = std::max(1u, uint32_t(std::lround(float(ObjectSelectRadiusPx) * std::max(scale.x, scale.y))));
+    const bool bone_mode = r.get<const Interaction>(state::Document).Mode == InteractionMode::Pose || IsBoneEditMode(r);
+    const auto active = bone_mode ? FindActiveBone(r) : FindActiveEntity(r);
+    const auto hits = ResolveHits(r, RunObjectPick(r, viewport, mouse_px, radius), bone_mode);
+    if (hits.empty()) return {};
+    if (!cycle) return hits.front();
+    const auto *bs = r.try_get<const BoneSelection>(active);
+    auto it = std::ranges::find_if(hits, [&](const SelectionHit &h) { return HitEntity(h) == active && (!HitPart(h) || (bs && bs->Has(*HitPart(h)))); });
+    return it != hits.end() && ++it != hits.end() ? *it : hits.front();
+}
 
 namespace {
 struct SelectionRequest {
@@ -254,10 +284,11 @@ void RenderElementSelectionPass(
 
 } // namespace
 
-std::optional<std::pair<state::Entity, uint32_t>> RunEditElementClick(
+std::optional<ElementHit> RunEditElementPick(
     state::Registry &r, state::Entity viewport_entity,
-    std::span<const ElementRange> ranges, Element element, uvec2 mouse_px, bool toggle
+    Element element, uvec2 mouse_px
 ) {
+    const auto ranges = GetElementRangesForSelected(r, element);
     if (ranges.empty() || element == Element::None) return {};
     const auto &viewport = r.get<const Viewport>(viewport_entity);
 
@@ -269,12 +300,10 @@ std::optional<std::pair<state::Entity, uint32_t>> RunEditElementClick(
     });
     const auto id = ReadNearestPickedElement(buffers, UINT32_MAX);
     const auto picked = id.transform(ElementAddress::Stored);
-    const auto requests = SelectionRequests(ranges, toggle ? EditSelectionOperation::PickToggle : EditSelectionOperation::PickReplace);
-    ApplySelection(r, requests, element, picked);
     if (!picked) return {};
     const auto &meshes = r.Resources.get<const MeshStore>();
     for (const auto &range : ranges) {
-        if (const auto handle = meshes.LiveHandleAt(*DrawnStoreId(r, range.MeshEntity), element, *picked)) return std::pair{range.MeshEntity, handle->Value};
+        if (const auto handle = meshes.LiveHandleAt(*DrawnStoreId(r, range.MeshEntity), element, *picked)) return ElementHit{range.MeshEntity, handle->Value};
     }
     return {};
 }
@@ -675,6 +704,21 @@ void ApplySelection(state::Registry &r, std::span<const SelectionRequest> reques
     r.Resources.get<GpuSceneState>().EditSelectionDirty = true;
 }
 } // namespace
+
+std::optional<ElementHit> ApplyEditElementPick(state::Registry &r, std::span<const ElementRange> ranges, Element element, std::optional<ElementHit> hit, bool toggle) {
+    if (element == Element::None) return {};
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    std::optional<ElementAddress> picked;
+    if (hit && std::ranges::contains(ranges, hit->MeshEntity, &ElementRange::MeshEntity)) {
+        const auto id = DrawnStoreId(r, hit->MeshEntity);
+        if (id && meshes.IsLiveElement(*id, element, ElementHandle{hit->Handle})) {
+            const auto domain = SelectionDomains[std::countr_zero(uint32_t(element))];
+            picked = meshes.HandleAddress(*id, domain, ElementHandle{hit->Handle});
+        }
+    }
+    ApplySelection(r, SelectionRequests(ranges, toggle ? EditSelectionOperation::PickToggle : EditSelectionOperation::PickReplace), element, picked);
+    return picked ? hit : std::nullopt;
+}
 
 void ApplyEditSelectionCommand(
     state::Registry &r, std::span<const ElementRange> ranges,

@@ -86,6 +86,8 @@ struct RotateColors;
 struct ReverseColors;
 } // namespace action::mesh
 namespace procedure {
+struct Spin;
+struct Bisect;
 struct Boolean;
 struct Position;
 struct Normal;
@@ -136,7 +138,7 @@ using UpdatableComponents = TypeList<
     procedure::NodeLayout, procedure::NodeTheme,
     mesh::Delete, mesh::Merge, mesh::Extrude, mesh::Duplicate, mesh::Split, mesh::Dissolve, mesh::Subdivide, mesh::Triangulate, mesh::TrisToQuads,
     mesh::Poke, mesh::FlipNormals, mesh::EdgeSplit, mesh::Inset, mesh::Solidify, mesh::Wireframe, mesh::Bevel, mesh::SmoothVertices, mesh::ShrinkFatten,
-    mesh::Randomize, mesh::Spin, mesh::ExtrudeRepeat, mesh::Bisect, mesh::Symmetrize, mesh::FillHoles, mesh::ConvexHull, mesh::Decimate, mesh::RecalculateNormals,
+    mesh::Randomize, procedure::Spin, mesh::ExtrudeRepeat, procedure::Bisect, mesh::Symmetrize, mesh::FillHoles, mesh::ConvexHull, mesh::Decimate, mesh::RecalculateNormals,
     mesh::Rip, mesh::SpaceEvenly, mesh::RelaxEdgeLoops, mesh::CurveBetweenSelected, mesh::Circularize, mesh::MakePlanarFaces, mesh::SnapSymmetry,
     mesh::SplitNonplanarFaces, mesh::SplitConcaveFaces, mesh::ConnectVertices, mesh::Fill, mesh::BridgeEdgeLoops, mesh::GridFill, mesh::EdgeRotate, mesh::BeautifyFaces, mesh::Unsubdivide, mesh::LoopCut,
     mesh::RotateUVs, mesh::ReverseUVs, mesh::RotateColors, mesh::ReverseColors, procedure::MarkSharp, procedure::Knife, procedure::ShadeSmooth, procedure::ShadeSmoothByAngle,

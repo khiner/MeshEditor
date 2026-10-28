@@ -3,10 +3,9 @@
 #include "action/Action.h"
 
 namespace action {
-// Contains the first user action, all system actions, and the standalone commit and cancel requests for a frame.
+// Contains at most one ordered user gesture and the standalone commit and cancel requests for a frame.
 struct Drained {
-    std::optional<std::pair<Action, Phase>> Emitted;
-    std::vector<Action> System;
+    std::optional<std::pair<std::vector<Action>, Phase>> Emitted;
     bool CommitRequested, CancelRequested;
 };
 

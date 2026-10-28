@@ -1,9 +1,11 @@
 #pragma once
 
+#include "Field.h"
 #include "action/ActionSchema.h"
 #include "mesh/TopologyOperations.h"
+#include "numeric/vec2.h"
 #include "state/Entity.h"
-#include "viewport/RenderView.h"
+#include <numbers>
 
 namespace action::mesh {
 struct Hide {
@@ -116,6 +118,7 @@ struct Spin {
     vec3 Axis{0.f, 0.f, 1.f};
     vec3 Center{};
     float Offset{0.f};
+    bool ViewSpace{false};
 };
 struct ExtrudeRepeat {
     uint32_t Steps{1};
@@ -127,6 +130,7 @@ struct Bisect {
     vec3 Normal{1.f, 0.f, 0.f};
     bool ClearInner{false};
     bool ClearOuter{false};
+    bool ViewSpace{false};
 };
 // Mirrors the mesh's positive side of Axis onto its negative side across the mesh origin and welds the vertices on the plane.
 enum class SymmetrizeAxis : uint8_t { X,
@@ -154,10 +158,9 @@ struct Wireframe {
 };
 // Splits faces along chords between their consecutive selected vertices.
 struct ConnectVertices {};
-// Cuts every edge crossing the screen segment from Start to End, in pixels of View.
+// Cuts every edge crossing the screen segment from Start to End, in viewport pixels.
 struct Knife {
     vec2 Start, End;
-    std::unique_ptr<RenderView> View;
 };
 
 // Bridges two selected open chains or closed loops of boundary or loose edges with a strip of faces.
@@ -242,14 +245,13 @@ struct Shear {
     ShearAxis Axis{ShearAxis::Z}, AxisOrtho{ShearAxis::X};
     bool Local{false};
 };
-// Warp around Center in the recorded orientation, defaulting to world XY.
+// Warp around Center in the viewport orientation.
 // Compute automatic bounds from each edited mesh's selected vertices after OffsetAngle.
 struct Warp {
     float Angle{2 * std::numbers::pi_v<float>}, OffsetAngle{0.f};
     vec3 Center{};
     bool AutoRange{true};
     float Min{-1.f}, Max{1.f};
-    std::unique_ptr<quat> Orientation{std::make_unique<quat>()};
 };
 // Bend along the rolled view X axis from Center over Radius world units.
 // Clamp fixes the start side and rigidly rotates the end side.
@@ -257,7 +259,6 @@ struct Bend {
     float Angle{0.78539816f}, Radius{1.f}, OffsetAngle{0.f};
     vec3 Center{};
     bool Clamp{true};
-    std::unique_ptr<quat> Orientation{std::make_unique<quat>()};
 };
 // Seed and canonical vertex handle determine offsets independently of selection.
 struct Randomize {
@@ -271,6 +272,7 @@ struct VertexSlide {
     float Factor{0.5f};
     vec3 Direction{1, 0, 0};
     bool Even{false}, Flipped{false}, Clamp{true};
+    bool ViewSpace{false};
 };
 // Slide selected edge chains along adjacent faces.
 // Direction selects the world-space positive side; Even uses the active or first selected vertex.
@@ -278,6 +280,7 @@ struct EdgeSlide {
     float Factor{0.5f};
     vec3 Direction{1, 0, 0};
     bool Even{false}, Flipped{false}, Clamp{true};
+    bool ViewSpace{false};
 };
 // Flattens selected polygons toward their original planes, averaging at shared vertices.
 struct MakePlanarFaces {
@@ -288,11 +291,10 @@ enum class FlattenMethod : uint8_t { LeastSquares,
                                      FaceNormals,
                                      View };
 // Flatten face regions and remaining edge components independently.
-// ViewNormal is world-space; X/Y/Z constrain local coordinates.
+// X/Y/Z constrain local coordinates.
 struct Flatten {
     FlattenMethod Method{FlattenMethod::LeastSquares};
     float Factor{1.f};
-    vec3 ViewNormal{0, 0, 1};
     bool X{true}, Y{true}, Z{true};
 };
 // Splits warped selected polygons along legal diagonals above the normal angle limit.

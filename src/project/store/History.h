@@ -9,6 +9,7 @@
 
 namespace project {
 struct ComponentPool;
+struct WorkspacePool;
 } // namespace project
 
 // Branching history over registered tracks with opaque action bytes.
@@ -27,14 +28,26 @@ enum class RecordKind : uint8_t {
     Navigate, // Restore Parent when reopening.
     Replace, // Give the node named by Parent new content and drop its descendants.
     State, // Give the node named by Parent the content its replay produced.
+    Workspace, // A workspace version referenced by recorded actions.
     Kept, // Record the manifest roots of some tracks in the state with a given hash.
 };
 
+struct WorkspaceVersion {
+    Stamp S{};
+    Hash128 Root{};
+    Version Hot{};
+    uint32_t Refs{};
+};
+struct HistoryRange {
+    uint64_t First{}, Count{};
+    bool empty() const { return Count == 0; }
+};
 struct HistoryNode {
     std::optional<uint32_t> Parent;
     std::vector<uint32_t> Children;
     std::optional<uint32_t> RedoChild; // The child on the most recently active lineage.
-    std::vector<std::byte> Actions; // The recorded actions, encoded by the project.
+    HistoryRange Actions; // Into the flat encoded action bytes.
+    HistoryRange Workspaces; // Into the parallel workspace references.
     std::string Label;
     uint32_t Depth{};
     bool ReplayBaseline{true}; // Replay starts from this node's stored state, and a baseline without state runs its actions from the empty state.
@@ -70,7 +83,7 @@ struct HistoryStats {
 struct History {
     struct Hooks {
         // Complete all writes caused by replay before returning.
-        std::function<std::expected<void, std::string>(std::span<const std::byte> action)> Replay{};
+        std::function<std::expected<void, std::string>(History &, std::span<const std::byte>, std::span<const uint32_t>)> Replay{};
         // Replace live state with the empty state that baseline actions run from, resolving project files in dir.
         std::function<void(const std::filesystem::path &dir)> Reset{};
         // Run before Save flushes the logs, so the records a reopened history reads are written.
@@ -90,7 +103,7 @@ struct History {
     void Track(project::ComponentPool &, std::string name, int phase);
     // Create a history with live state as node 0, reached by `actions` from the empty state, in a directory other than the currently open project.
     // Return false on failure and preserve the current tree.
-    bool Begin(const std::filesystem::path &dir, std::vector<std::byte> actions = {});
+    bool Begin(const std::filesystem::path &dir, std::vector<std::byte> actions = {}, std::vector<uint32_t> workspaces = {});
     // Restore position, or the latest working position when omitted, after validating the format and target.
     // Build the history tree from the actions log when content logs are absent.
     // Replay the present node from empty state.
@@ -102,9 +115,9 @@ struct History {
     bool Relocate(const std::filesystem::path &dir);
 
     // Record live state and return its node ID, reusing a matching present, child, or parent node.
-    uint32_t Commit(std::string label, std::vector<std::byte> actions);
+    uint32_t Commit(std::string label, std::vector<std::byte> actions, std::vector<uint32_t> workspaces = {});
     // Record live state as `node`'s new content under its label, drop the node's descendants, and make it present.
-    uint32_t Replace(uint32_t node, std::vector<std::byte> actions);
+    uint32_t Replace(uint32_t node, std::vector<std::byte> actions, std::vector<uint32_t> workspaces = {});
     // Call after CPU and GPU writes complete.
     void SettleHashes();
     // Restore node from its snapshot, its stored data, or a replay from its nearest ancestor with state, and update Present.
@@ -122,6 +135,15 @@ struct History {
     }
     // Discard uncommitted edits and restore the present node.
     void Revert();
+    std::span<const std::byte> ActionsOf(const HistoryNode &n) const { return std::span{ActionBytes}.subspan(n.Actions.First, n.Actions.Count); }
+    std::span<const uint32_t> WorkspacesOf(const HistoryNode &n) const { return std::span{WorkspaceRefs}.subspan(n.Workspaces.First, n.Workspaces.Count); }
+    void StoreActions(HistoryNode &, std::span<const std::byte>, std::span<const uint32_t>);
+    void CompactActions();
+    uint32_t CaptureWorkspace();
+    void RetainWorkspace(uint32_t);
+    void ReleaseWorkspace(uint32_t);
+    std::expected<void, std::string> RestoreWorkspace(uint32_t);
+    void PersistWorkspaces();
     // Pin live state independently of the tree.
     Snapshot Pin();
     std::expected<void, std::string> Restore(const Snapshot &);
@@ -168,7 +190,8 @@ struct History {
 
     enum class Kind : uint8_t { Pages,
                                 Records,
-                                Pool };
+                                Pool,
+                                Workspace };
     struct Tracked {
         std::string Name;
         int Phase;
@@ -186,12 +209,17 @@ struct History {
         uint64_t Size{};
     };
 
+    project::WorkspacePool *Workspace{};
+    std::vector<WorkspaceVersion> Workspaces;
+    uint32_t WrittenWorkspaces{};
     std::unordered_map<Hash128, KeptState, Hash128Hasher> Kept;
     std::vector<Tracked> Tracks;
     std::vector<Pages *> PageTracks;
     std::vector<Records *> RecordTracks;
     std::vector<project::ComponentPool *> PoolTracks;
     std::vector<size_t> Order; // Track indices in restore order.
+    std::vector<std::byte> ActionBytes;
+    std::vector<uint32_t> WorkspaceRefs;
     std::vector<HistoryNode> Nodes;
     std::optional<uint32_t> Present;
     uint64_t VisitCounter{};

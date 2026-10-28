@@ -13,6 +13,8 @@
     - Each component is Persistent, Workspace, or Derived, declared in its domain's snapshot registration.
       Workspace components belong to the Persistent component that defines their entity's kind, are emplaced and removed with it, and belong to the identity through its returns from history.
       A fresh identity starts from defaults.
+      Every recorded action references the workspace page version captured before it runs; document navigation leaves the live workspace in place.
+      Action payloads contain intent, and execution reads document state and the captured workspace.
     - Reads return const values.
       Use `edit` to capture before a write, or `patch` to also publish an update.
       Mutable views capture each value they expose; use const views for reading.

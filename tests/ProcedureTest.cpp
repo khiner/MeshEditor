@@ -12,6 +12,8 @@
 #include "render/Instance.h"
 #include "scene/SceneGraph.h"
 #include "selection/SelectionGpu.h"
+#include "viewport/InteractionComponents.h"
+#include "viewport/ViewCameraOps.h"
 #include "viewport/ViewportEvents.h"
 
 using boost::ut::expect, boost::ut::fatal;
@@ -78,7 +80,7 @@ struct ProcedureFixture : Fixture {
     void Click(vec3 position, bool toggle) {
         Render();
         const auto clip = View().ViewProj * vec4{position.x, position.y, position.z, 1.f};
-        Do(action::selection::ApplyEditElementClick{{.5f + .5f * clip.x / clip.w, .5f - .5f * clip.y / clip.w}, toggle, std::make_unique<RenderView>(R.get<const Viewport>(FirstViewport(R)).FrameView)});
+        Do(action::selection::ApplyEditElementClick{toggle, RunEditElementPick(R, FirstViewport(R), R.get<const EditMode>(state::Document).Value, SelectionPixel(View().ViewportSize, {.5f + .5f * clip.x / clip.w, .5f - .5f * clip.y / clip.w}))});
     }
     // The state of the mesh's first Source node.
     SourceState SourceOf(state::Entity mesh_entity) const {
@@ -1346,12 +1348,12 @@ void RecordedOperators(ProcedureFixture &f, Fixture &other) {
         {"CurveBetweenSelected", primitive::UVSphere{.Radius = 5.f, .Slices = 8u, .Stacks = 4u}, Element::Vertex, KindOf<CurveBetweenSelected>, 0x48b8cce36aef7394ull, [](ProcedureFixture &f) { f.Do(CurveBetweenSelected{}); }, EquatorVertices},
         {"Circularize", primitive::Cube{{1.f, 2.f, 3.f}}, Element::Face, KindOf<Circularize>, 0xe34644a8884ae607ull, [](ProcedureFixture &f) { f.Do(Circularize{}); }, FacingFaceCenter},
         {"MakePlanarFaces", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Face, KindOf<MakePlanarFaces>, 0x7e7be948d50e0430ull, [](ProcedureFixture &f) { f.Do(MakePlanarFaces{}); }, {}, {}, Randomized<.3f>},
-        {"FlattenView", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Face, KindOf<procedure::Flatten>, 0xb2397ee6f84e42e6ull, [](ProcedureFixture &f) { f.Do(action::mesh::Flatten{.Method = FlattenMethod::View, .ViewNormal = Normalize(vec3{1.f, 2.f, 2.f})}); }, {}, Placed},
+        {"FlattenView", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Face, KindOf<procedure::Flatten>, 0xc5a379f30a5ba0f2ull, [](ProcedureFixture &f) { f.R.patch<ViewCameraState>(FirstViewport(f.R), [](auto &v) { v.Active.Orientation = ViewCamera::OrientationFromAway(Normalize(vec3{1.f, 2.f, 2.f})); }); f.Do(action::mesh::Flatten{.Method = FlattenMethod::View}); }, {}, Placed},
         {"ToSphere", primitive::Cone{.Radius = 2.f, .Height = 4.f, .Slices = 8u}, Element::Vertex, KindOf<procedure::ToSphere>, 0x2470285c3aa67a25ull, [](ProcedureFixture &f) { f.Do(action::mesh::ToSphere{}); }, {}, Placed},
         {"PushPull", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::PushPull>, 0x9d362c76fc3b4222ull, [](ProcedureFixture &f) { f.Do(action::mesh::PushPull{.Distance = .5f}); }, {}, Placed},
         {"ShearLocal", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::Shear>, 0x845dc6891da1c7f2ull, [](ProcedureFixture &f) { f.Do(action::mesh::Shear{.Local = true}); }, {}, Placed},
-        {"Warp", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::Warp>, 0x29fcc570816d46efull, [](ProcedureFixture &f) { f.Do(action::mesh::Warp{.Angle = 1.f, .Center = {.5f, 0.f, 0.f}, .Orientation = std::make_unique<quat>(numeric::AngleAxis(.3f, Normalize(vec3{1.f, 1.f, 0.f})))}); }, {}, Placed},
-        {"Bend", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::Bend>, 0x193360401e7f9919ull, [](ProcedureFixture &f) { f.Do(action::mesh::Bend{.Angle = .8f, .Radius = 2.f, .Clamp = false, .Orientation = std::make_unique<quat>(numeric::AngleAxis(.3f, Normalize(vec3{0.f, 1.f, 1.f})))}); }, {}, Placed},
+        {"Warp", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::Warp>, 0x29fcc570816d46efull, [](ProcedureFixture &f) { f.R.patch<ViewCameraState>(FirstViewport(f.R), [](auto &v) { v.Active.Orientation = numeric::AngleAxis(.3f, Normalize(vec3{1.f, 1.f, 0.f})); }); f.Do(action::mesh::Warp{.Angle = 1.f, .Center = {.5f, 0.f, 0.f}}); }, {}, Placed},
+        {"Bend", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::Bend>, 0x193360401e7f9919ull, [](ProcedureFixture &f) { f.R.patch<ViewCameraState>(FirstViewport(f.R), [](auto &v) { v.Active.Orientation = numeric::AngleAxis(.3f, Normalize(vec3{0.f, 1.f, 1.f})); }); f.Do(action::mesh::Bend{.Angle = .8f, .Radius = 2.f, .Clamp = false}); }, {}, Placed},
         {"VertexSlide", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::VertexSlide>, 0x815064164d8c48c2ull, [](ProcedureFixture &f) { f.Do(action::mesh::VertexSlide{.Factor = .3f, .Direction = Normalize(vec3{1.f, .2f, .1f})}); }, {}, Placed},
         {"EdgeSlide", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Edge, KindOf<procedure::EdgeSlide>, 0x72da6642c85c8ac2ull, [](ProcedureFixture &f) { f.Do(action::mesh::EdgeSlide{.Factor = .5f, .Direction = {0.f, 1.f, 0.f}}); }, FacingEdgeCenter},
         {"SnapSymmetry", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<SnapSymmetry>, 0xe29e1f318642b782ull, [](ProcedureFixture &f) { f.Do(SnapSymmetry{.Threshold = .5f}); }, {}, {}, Randomized<.05f>},
@@ -1381,7 +1383,7 @@ void RecordedOperators(ProcedureFixture &f, Fixture &other) {
                  const auto clip = view.ViewProj * vec4{p.x, p.y, p.z, 1.f};
                  return vec2{(clip.x / clip.w + 1.f) * .5f * view.ViewportSize.x, (1.f - clip.y / clip.w) * .5f * view.ViewportSize.y};
              };
-             f.Do(action::mesh::Knife{pixel(Placed.P + vec3{-4.f, .3f, 0.f}), pixel(Placed.P + vec3{4.f, -.2f, 0.f}), std::make_unique<RenderView>(f.R.get<const Viewport>(FirstViewport(f.R)).FrameView)}); }, {}, Placed},
+             f.Do(action::mesh::Knife{pixel(Placed.P + vec3{-4.f, .3f, 0.f}), pixel(Placed.P + vec3{4.f, -.2f, 0.f})}); }, {}, Placed},
         {"ShadeSmooth", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Face, KindOf<procedure::ShadeSmooth>, 0x402f5a2f4c86f02ull, [](ProcedureFixture &f) { f.Do(action::object::SetSelectedSmoothShading{true}); }},
         {"ShadeFlat", primitive::UVSphere{.Radius = 2.f, .Slices = 8u, .Stacks = 4u}, Element::Face, KindOf<procedure::ShadeSmooth>, 0x26de72431ea25cf2ull, [](ProcedureFixture &f) { f.Do(action::object::SetSelectedSmoothShading{false}); }, {}, {}, ShadedSmooth},
         {"ShadeSmoothByAngle", primitive::UVSphere{.Radius = 2.f, .Slices = 8u, .Stacks = 4u}, Element::Face, KindOf<procedure::ShadeSmoothByAngle>, 0xa655f6a012146ff2ull, [](ProcedureFixture &f) { f.Do(action::object::ShadeSelectedSmoothByAngle{.6f}); }},

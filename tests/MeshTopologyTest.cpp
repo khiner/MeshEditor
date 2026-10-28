@@ -19,6 +19,7 @@
 #include "render/MeshletBuildGpu.h"
 #include "render/SceneUpdates.h"
 #include "selection/SelectionGpu.h"
+#include "viewport/InteractionComponents.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportComponents.h"
 
@@ -256,12 +257,8 @@ struct Fixture : Engine {
         return R.Resources.get<const MeshStore>().GetSelectedElements(ActiveMesh().GetStoreId(), element);
     }
 
-    std::unique_ptr<RenderView> View() const {
-        return std::make_unique<RenderView>(R.get<const Viewport>(FirstViewport(R)).FrameView);
-    }
-
     void Click(vec2 at, bool toggle = false) {
-        Do(action::selection::ApplyEditElementClick{at, toggle, View()});
+        Do(action::selection::ApplyEditElementClick{toggle, RunEditElementPick(R, FirstViewport(R), R.get<const EditMode>(state::Document).Value, SelectionPixel(R.get<const Viewport>(FirstViewport(R)).FrameView.Extent, at))});
     }
 
     const SceneViewUBO &FrameView() const {
@@ -1121,12 +1118,16 @@ void TestLineSubdivide() {
     const auto [entity, instance] = AddMesh(f.R, id, MeshInstanceCreateInfo{});
     f.P->Settle();
     f.Do(action::selection::Select{instance});
-    f.EnterEdit(Element::Edge);
+    f.EnterEdit(Element::None);
     f.Checkpoint();
     ExpectCounts(f.ActiveMesh(), {4u, 3u, 0u, 0u});
     ExpectRenderTopology(f, *DrawnStoreId(f.R, entity), 1u, 3u);
 
-    f.Click(f.ViewFraction(vec3{0.f}));
+    const auto selected = f.Selection(Element::Edge).Count();
+    const auto hit = RunEditElementPick(f.R, FirstViewport(f.R), Element::Edge, SelectionPixel(f.FrameView().ViewportSize, f.ViewFraction(vec3{0.f})));
+    expect(hit.has_value() && f.Selection(Element::Edge).Count() == selected);
+    f.Do(action::view::SetEditMode{Element::Edge});
+    f.Do(action::selection::ApplyEditElementClick{false, hit});
     expect(f.Selection(Element::Edge).Count() == 1u);
     f.Do(action::mesh::Subdivide{1u});
     f.Checkpoint();

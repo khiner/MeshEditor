@@ -1,8 +1,7 @@
 #pragma once
 
-#include "selection/BoneSelection.h"
+#include "selection/Selection.h"
 #include "state/Entity.h"
-#include "viewport/RenderView.h"
 
 #include <span>
 #include <vector>
@@ -31,28 +30,18 @@ struct ExtendBoneActive {
 struct DeselectAll {};
 struct SelectAll {};
 
-// Positions are fractions of the recorded view, so the selection passes resolve them at any render size.
+// Positions are fractions of the viewport raster extent.
 struct ApplyBoxSelect {
     std::pair<vec2, vec2> Box;
     bool Additive;
-    std::unique_ptr<RenderView> View;
 };
-// Object/bone click pick; the hit entity is resolved against current scene state when applied.
 struct Pick {
-    vec2 Mouse;
     bool Shift;
-    std::unique_ptr<RenderView> View;
-};
-// Re-click at the same spot to cycle to the next overlapping hit under the cursor.
-struct PickCycle {
-    vec2 Mouse;
-    bool Shift;
-    std::unique_ptr<RenderView> View;
+    std::optional<SelectionHit> Hit;
 };
 struct ApplyEditElementClick {
-    vec2 Mouse;
     bool Toggle;
-    std::unique_ptr<RenderView> View;
+    std::optional<ElementHit> Hit;
 };
 struct ApplyTreeSelection {
     enum class ClearKind : uint8_t { None,
@@ -74,7 +63,7 @@ struct ApplyTreeSelection {
 using Action = std::variant<
     Select, ToggleSelected, SelectBone, ExtendActive, ExtendBoneActive,
     DeselectAll, SelectAll,
-    ApplyBoxSelect, Pick, PickCycle, ApplyEditElementClick, ApplyTreeSelection>;
+    ApplyBoxSelect, Pick, ApplyEditElementClick, ApplyTreeSelection>;
 
 void Apply(state::Registry &, const Action &);
 } // namespace action::selection

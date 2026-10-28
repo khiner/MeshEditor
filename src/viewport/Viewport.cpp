@@ -35,6 +35,7 @@
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
+#include "snapshot/SnapshotRoles.h"
 #include "snapshot/Workspace.h"
 #include "state/Registry.h"
 #include "timeline/Timeline.h"
@@ -193,21 +194,44 @@ void TakePendingViewSetup(state::Registry &r, state::Entity viewport) {
     r.replace_if_changed(viewport, rendered);
 }
 
-namespace {
-RenderView CurrentView(const state::Registry &r, state::Entity viewport) {
+RenderView CurrentRenderView(const state::Registry &r, state::Entity viewport) {
     return {r.get<const ViewCameraState>(viewport).Active, RenderExtentPx(r, viewport), r.get<const ViewportDisplay>(viewport)};
 }
 
+void ReconcileWorkspace(state::Registry &r) {
+    const auto &entries = snapshot::SnapshotTable();
+    const auto restore = [&]<typename C>(state::Entity e) {
+        entries[state::Type<C>()].Return(r, e, true);
+        EmplaceAbsent<C>(r, e);
+    };
+    for (auto e : r.view<const ViewportScene>()) {
+        [&]<typename... Cs>(TypeList<Cs...>) { (restore.template operator()<Cs>(e), ...); }(ViewValues{});
+    }
+    if (r.valid(state::Document)) {
+        restore.template operator()<ActiveViewport>(state::Document);
+        restore.template operator()<ActionInputs>(state::Document);
+    }
+}
+namespace {
 // The targets follow the view's extent and the lighting, and a scene or view that differs from the rendered one requests a frame.
 // Returns the view the viewport's frame renders.
 RenderView StepViewport(state::Registry &r, state::Entity viewport) {
-    const auto view = CurrentView(r, viewport);
+    const auto view = CurrentRenderView(r, viewport);
     const bool targets_changed = SyncViewportRenderResources(r, viewport, uvec2{view.Extent.x, view.Extent.y});
     const auto &live = r.get<const Viewport>(viewport);
     if (targets_changed || live.RenderedScene != SceneOf(r, viewport) || live.FrameView != view) RequestFrame(r, viewport);
     return view;
 }
 
+} // namespace
+void PrepareSelectionViewport(state::Registry &r, state::Entity viewport) {
+    WriteViewUniforms(r, viewport, StepViewport(r, viewport));
+    if (r.get<const Viewport>(viewport).RenderRequested) {
+        RecordAndSubmitFrame(r, viewport, RenderPhase::Prepare);
+        WaitForRender(r);
+    }
+}
+namespace {
 // Records and submits the viewport's frame at the view.
 void SubmitFrame(state::Registry &r, state::Entity viewport, const RenderView &view) {
     WriteViewUniforms(r, viewport, view);
@@ -297,7 +321,7 @@ void RenderMotionBlurredFrames(state::Registry &r, BlurSchedule schedule, std::s
             const auto &previous = buffers.BlurPoses[sample_weights.size() - 1];
             const auto previous_offset = GpuBuffers::SceneViewUboOffset(sample_weights.size());
             const bool same_views = std::ranges::all_of(group, [&](state::Entity viewport) {
-                auto current_view = SceneViewOf(r, viewport, CurrentView(r, viewport));
+                auto current_view = SceneViewOf(r, viewport, CurrentRenderView(r, viewport));
                 previous.ApplyTo(current_view, ShownSceneIndex(r, SceneOf(r, viewport)));
                 const auto &previous_view = *reinterpret_cast<const SceneViewUBO *>(r.get<const Viewport>(viewport).SceneViewUBO.Contents().data() + previous_offset);
                 return std::memcmp(&previous_view, &current_view, sizeof(current_view)) == 0; // NOLINT(bugprone-suspicious-memory-comparison)
@@ -316,7 +340,7 @@ void RenderMotionBlurredFrames(state::Registry &r, BlurSchedule schedule, std::s
         auto &pose = buffers.BlurPoses[instance - 1u];
         buffers.CaptureRenderPose(pose);
         for (const auto viewport : group) {
-            auto view = SceneViewOf(r, viewport, CurrentView(r, viewport));
+            auto view = SceneViewOf(r, viewport, CurrentRenderView(r, viewport));
             pose.ApplyTo(view, ShownSceneIndex(r, SceneOf(r, viewport)));
             r.edit<Viewport>(viewport).SceneViewUBO.Update(BytesOf(view), GpuBuffers::SceneViewUboOffset(instance));
         }
@@ -326,7 +350,7 @@ void RenderMotionBlurredFrames(state::Registry &r, BlurSchedule schedule, std::s
     r.edit<PlaybackFrame>(state::Document).Value = settled_pf;
     ReserveFrameScratch(r);
     for (const auto viewport : group) {
-        WriteViewUniforms(r, viewport, CurrentView(r, viewport));
+        WriteViewUniforms(r, viewport, CurrentRenderView(r, viewport));
         auto *command_buffer = ctx.Queue->commandBuffer();
         if (fast) RecordRenderCommandBuffer(r, viewport, command_buffer, RenderPhase::BlurFast);
         else RecordBlurStepsCommandBuffer(r, viewport, command_buffer, sample_weights);

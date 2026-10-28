@@ -232,15 +232,14 @@ bool DrawField(const char *label, F &v, const FieldSpec &spec) {
     if constexpr (OptionalTraits<F>::Is) {
         ImGui::PushID(label);
         bool present = v.has_value();
-        bool changed = ImGui::Checkbox(present ? "##present" : label, &present);
+        bool changed = ImGui::Checkbox("##present", &present);
         if (changed) {
             if (present) v = InitialValue<typename F::value_type>(spec);
             else v.reset();
         }
-        if (v) {
-            ImGui::SameLine();
-            changed |= DrawField(label, *v, spec);
-        }
+        ImGui::SameLine();
+        if (v) changed |= DrawField(label, *v, spec);
+        else ImGui::TextUnformatted(label);
         ImGui::PopID();
         return changed;
     } else if constexpr (std::same_as<F, bool>) {

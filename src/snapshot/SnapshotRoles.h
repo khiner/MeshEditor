@@ -11,12 +11,15 @@ struct Table;
 } // namespace state
 
 namespace snapshot {
+struct WorkspacePageHeader {
+    state::TypeId Type;
+};
 struct NativePage {
     uint32_t Mask{};
 };
 enum class Role : uint8_t {
     Persistent, // Recorded in history and the project.
-    Workspace, // Saved in the workspace file outside history, and retained with its identity.
+    Workspace, // Captured for action execution, retained with its identity, and left live by document navigation.
     Derived, // Rebuilt from Persistent state.
 };
 enum class Encoding : uint8_t {
@@ -41,7 +44,13 @@ struct SnapshotEntry {
     const void *(*PageValue)(const store::Blob &, uint32_t slot){};
     void (*MovePageValue)(state::Registry &, state::Entity, store::Blob &, uint32_t slot){};
     bool (*Equal)(const void *, const void *){};
+    // Workspace pages include retained values and full owner identities.
+    store::Blob (*CopyWorkspacePage)(const state::Registry &, uint32_t){};
+    void (*EncodeWorkspacePage)(const store::Blob &, std::vector<std::byte> &){};
+    void (*ReadWorkspacePage)(const state::Registry &, uint32_t, std::vector<std::byte> &){};
+    void (*ApplyWorkspacePage)(state::Registry &, uint32_t, store::Blob &){};
     // Workspace only.
+    void (*ClearRetained)(state::Registry &){};
     void (*Connect)(state::Registry &){}; // Retains each dying value under its identity.
     void (*Return)(state::Registry &, state::Entity, bool emplace){}; // Takes the identity's retained value, emplacing or replacing it when asked.
     void (*AppendRecords)(const state::Registry &, std::vector<WorkspaceRecord> &){}; // Appends live values in index order, then retained values in identity order.

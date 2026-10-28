@@ -11,6 +11,7 @@
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
 #include "render/Instance.h"
+#include "render/SceneUpdates.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
 #include "selection/SelectionGpu.h"
@@ -55,7 +56,7 @@ void TestExternalReferences() {
 })");
     const auto recorded_path = [](Fixture &f) {
         const auto &actions = f.P->DraftOf(*f.P->History.Present).RecordedActions;
-        return std::get<action::io::LoadGltf>(std::get<action::io::Action>(actions.front().Action)).Path;
+        return std::get<action::io::LoadGltf>(std::get<action::io::Action>(actions.front())).Path;
     };
     const auto max_x = [](Fixture &f) {
         expect(f.R.view<const procedure::GeometryProcedure>().size() == 1u);
@@ -136,8 +137,14 @@ void TestHiddenObjectEscapesPick() {
     auto &r = f.R;
     const auto cube = f.AddCube();
     const auto viewport = FirstViewport(r);
-    const RenderView view{r.get<const ViewCameraState>(viewport).Active, RenderExtentPx(r, viewport)};
-    const auto pick = [&] { f.P->Do(action::MakeAction(action::selection::Pick{.Mouse = {0.5f, 0.5f}, .Shift = false, .View = std::make_unique<RenderView>(view)})); };
+    f.Image();
+    const std::pair box{uvec2{24, 24}, uvec2{40, 40}};
+    const auto boxed = RunBoxSelect(r, viewport, box);
+    SyncViewportRenderResources(r, viewport, {96, 80});
+    f.Do(action::selection::DeselectAll{});
+    f.Do(action::selection::ApplyBoxSelect{{vec2{.375f}, vec2{.625f}}, false});
+    expect(std::ranges::equal(r.view<const Selected>(), boxed));
+    const auto pick = [&] { f.P->Do(action::MakeAction(action::selection::Pick{false, PickObject(r, viewport, {32, 32})})); };
     f.Do(action::selection::DeselectAll{});
     pick();
     expect(r.all_of<Selected>(cube));

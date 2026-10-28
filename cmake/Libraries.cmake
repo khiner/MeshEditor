@@ -38,6 +38,7 @@ mesheditor_library(MeshEditorProjectStore HOT
     src/state/Registry.cpp
     src/project/EntityStore.cpp
     src/project/ComponentPool.cpp
+    src/project/WorkspacePool.cpp
     src/project/store/Records.cpp
     src/project/store/RecordPage.cpp
     src/project/store/LiveTrie.cpp

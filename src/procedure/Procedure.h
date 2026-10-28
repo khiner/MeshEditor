@@ -135,6 +135,16 @@ struct Shear {
     vec3 Center{}, Direction{1, 0, 0}, Normal{0, 0, 1};
     Transform Frame{};
 };
+struct Spin {
+    uint32_t Steps{9};
+    float Angle{std::numbers::pi_v<float> / 2};
+    vec3 Axis{0, 0, 1}, Center{};
+    float Offset{};
+};
+struct Bisect {
+    vec3 Point{}, Normal{1, 0, 0};
+    bool ClearInner{}, ClearOuter{};
+};
 // Warp around Center in Orientation.
 // Compute automatic bounds from the selected vertices after OffsetAngle.
 struct Warp {
@@ -232,7 +242,7 @@ using NodeKinds = TypeList<
     action::mesh::Inset, action::mesh::Solidify, action::mesh::Wireframe, action::mesh::Bevel, action::mesh::SmoothVertices, action::mesh::ShrinkFatten,
     action::mesh::Randomize, action::mesh::SpaceEvenly, action::mesh::RelaxEdgeLoops, action::mesh::CurveBetweenSelected, action::mesh::Circularize,
     action::mesh::MakePlanarFaces, Flatten, ToSphere, PushPull, Shear, Warp, Bend, VertexSlide, EdgeSlide, action::mesh::SnapSymmetry,
-    action::mesh::Spin, action::mesh::ExtrudeRepeat, action::mesh::Bisect, action::mesh::Symmetrize, action::mesh::FillHoles,
+    Spin, action::mesh::ExtrudeRepeat, Bisect, action::mesh::Symmetrize, action::mesh::FillHoles,
     action::mesh::ConvexHull, action::mesh::Decimate, action::mesh::RecalculateNormals, action::mesh::Rip, action::mesh::SplitNonplanarFaces,
     action::mesh::SplitConcaveFaces, action::mesh::ConnectVertices, action::mesh::Fill, action::mesh::BridgeEdgeLoops, action::mesh::GridFill,
     action::mesh::EdgeRotate, action::mesh::BeautifyFaces, action::mesh::Unsubdivide, action::mesh::LoopCut, Knife, action::mesh::RotateUVs,
@@ -739,3 +749,17 @@ template<> inline constexpr field::SpecTable<procedure::InstanceOnPoints> Specs<
     {&procedure::InstanceOnPoints::Rotation, {.Help = "Rotation of each instance while the Rotation input is unlinked"}},
 };
 template<> inline constexpr field::SpecTable<procedure::ObjectInfo> Specs<procedure::ObjectInfo>{{&procedure::ObjectInfo::Object, {.Help = "Object whose mesh the node emits. The object this procedure edits is not allowed."}}};
+
+template<> inline constexpr field::SpecTable<procedure::Spin> Specs<procedure::Spin>{
+    {&procedure::Spin::Steps, field::SpecOf<&action::mesh::Spin::Steps>},
+    {&procedure::Spin::Angle, field::SpecOf<&action::mesh::Spin::Angle>},
+    {&procedure::Spin::Axis, field::SpecOf<&action::mesh::Spin::Axis>},
+    {&procedure::Spin::Center, field::SpecOf<&action::mesh::Spin::Center>},
+    {&procedure::Spin::Offset, field::SpecOf<&action::mesh::Spin::Offset>},
+};
+template<> inline constexpr field::SpecTable<procedure::Bisect> Specs<procedure::Bisect>{
+    {&procedure::Bisect::Point, field::SpecOf<&action::mesh::Bisect::Point>},
+    {&procedure::Bisect::Normal, field::SpecOf<&action::mesh::Bisect::Normal>},
+    {&procedure::Bisect::ClearInner, field::SpecOf<&action::mesh::Bisect::ClearInner>},
+    {&procedure::Bisect::ClearOuter, field::SpecOf<&action::mesh::Bisect::ClearOuter>},
+};

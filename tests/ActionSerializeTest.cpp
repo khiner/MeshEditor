@@ -82,6 +82,19 @@ int main(int argc, const char **argv) {
         }
     };
 
+    "object and bone hits round-trip without unrelated fields"_test = [] {
+        for (const auto &hit : {std::optional<SelectionHit>{}, std::optional<SelectionHit>{ObjectHit{{state::Entity{42}}}}, std::optional<SelectionHit>{BoneHit{{state::Entity{43}}, BoneSel::Tip}}}) {
+            auto action = MakeAction(action::selection::Pick{true, hit});
+            auto stream = MakeStream();
+            SerializeAction(action, stream);
+            StreamActions(stream, [&](Action &&decoded) {
+                const auto &pick = std::get<action::selection::Pick>(std::get<action::selection::Action>(decoded));
+                expect(pick.Hit == hit);
+                expect(pick.Shift);
+            });
+        }
+    };
+
     "back-to-back records read back in order"_test = [] {
         auto out = MakeStream();
         std::vector<std::pair<size_t, size_t>> written;

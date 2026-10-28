@@ -36,7 +36,6 @@
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
 #include "render/MeshletBoundsRefit.h"
-#include "render/PickConstants.h"
 #include "render/Pipelines.h"
 #include "render/RenderChanges.h"
 #include "render/RenderTargets.h"
@@ -263,46 +262,11 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         r.remove<PendingImportMesh>(state::Document);
         if (const auto imported = ImportMesh(r, path, info); !imported) action::Fail(r, imported.error());
     }
-    // A gesture resolves against the viewport it was emitted in, with its targets sized to the view it saw and that view's camera, which selection, culling and LOD use.
-    const auto gesture_viewport = [&](state::Entity emitted_in, const RenderView &view) {
-        const auto viewport = r.all_of<Viewport>(emitted_in) ? emitted_in : FirstViewport(r);
-        if (SyncViewportRenderResources(r, viewport, uvec2{view.Extent.x, view.Extent.y})) RequestFrame(r, viewport);
-        WriteViewUniforms(r, viewport, view);
-        // Submit restored geometry and draw records before selection.
-        if (r.get<const Viewport>(viewport).RenderRequested) {
-            RecordAndSubmitFrame(r, viewport, RenderPhase::Prepare);
-            WaitForRender(r);
-        }
-        return viewport;
-    };
-    const auto target_px = [&](const RenderView &view, vec2 fraction) {
-        const auto extent = uvec2{view.Extent.x, view.Extent.y};
-        const auto last = Max(extent, uvec2{1}) - uvec2{1};
-        return Min(uvec2{std::lround(fraction.x * float(extent.x)), std::lround(fraction.y * float(extent.y))}, last);
-    };
-    if (const auto *pending = r.try_get<const PendingEditElementClick>(state::Document)) {
-        const auto viewport = gesture_viewport(pending->Viewport, pending->View);
-        const auto mouse_px = target_px(pending->View, pending->Mouse);
-        const bool toggle = pending->Toggle;
-        r.remove<PendingEditElementClick>(state::Document);
-
-        const auto edit_mode = r.get<const EditMode>(state::Document).Value;
-        const auto ranges = GetElementRangesForSelected(r);
-        const auto hit = RunEditElementClick(r, viewport, ranges, edit_mode, mouse_px, toggle);
-        if (!toggle) {
-            for (const auto &range : ranges) r.remove<MeshActiveElement>(range.MeshEntity);
-        }
-        if (hit) {
-            const auto mesh_entity = hit->first;
-            const auto &summary = meshes.GetSelectionSummary(*DrawnStoreId(r, mesh_entity));
-            if (summary.ActiveHandle == InvalidOffset) r.remove<MeshActiveElement>(mesh_entity);
-            else r.emplace_or_replace<MeshActiveElement>(mesh_entity, summary.ActiveHandle);
-        }
-        for (const auto &range : ranges) action::nodes::CaptureActiveSelection(r, range.MeshEntity);
-    }
     if (const auto *pending = r.try_get<const PendingBoxSelect>(state::Document)) {
-        const auto viewport = gesture_viewport(pending->Viewport, pending->View);
-        const auto box_px = std::pair{target_px(pending->View, pending->Box.first), target_px(pending->View, pending->Box.second)};
+        const auto viewport = pending->Viewport;
+        PrepareSelectionViewport(r, viewport);
+        const auto extent = RenderExtentPx(r, viewport);
+        const auto box_px = std::pair{SelectionPixel(vec2{extent.x, extent.y}, pending->Box.first), SelectionPixel(vec2{extent.x, extent.y}, pending->Box.second)};
         const bool additive = pending->Additive;
         r.remove<PendingBoxSelect>(state::Document);
 
@@ -340,13 +304,13 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
                     }
                 }
                 for (const auto &hit : hits) {
-                    const auto sel = hit.Part ? BoneSelection::From(*hit.Part) : BoneSelection{};
-                    if (target.contains(hit.Entity)) {
-                        auto &part = parts[target.Positions[state::Index(hit.Entity)]].second;
+                    const auto sel = BoneSelection::From(std::get<BoneHit>(hit).Part);
+                    if (target.contains(HitEntity(hit))) {
+                        auto &part = parts[target.Positions[state::Index(HitEntity(hit))]].second;
                         part = additive ? part | sel : sel;
                     } else {
-                        target.emplace(hit.Entity);
-                        parts.emplace_back(hit.Entity, sel);
+                        target.emplace(HitEntity(hit));
+                        parts.emplace_back(HitEntity(hit), sel);
                     }
                 }
                 std::vector<state::Entity> deselected;
@@ -365,7 +329,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
                         if (r.valid(e)) target.emplace(e);
                     }
                 }
-                for (const auto &hit : hits) target.emplace(hit.Entity);
+                for (const auto &hit : hits) target.emplace(HitEntity(hit));
                 std::vector<state::Entity> deselected;
                 for (const auto e : r.view<const Selected>()) {
                     if (!target.contains(e)) deselected.emplace_back(e);
@@ -377,36 +341,6 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
             }
         }
     }
-    if (const auto *pending = r.try_get<const PendingPick>(state::Document)) {
-        const auto viewport = gesture_viewport(pending->Viewport, pending->View);
-        const auto mouse_px = target_px(pending->View, pending->Mouse);
-        const bool shift = pending->Shift, cycle = pending->Cycle;
-        r.remove<PendingPick>(state::Document);
-
-        const bool bone_mode = r.get<const Interaction>(state::Document).Mode == InteractionMode::Pose || IsBoneEditMode(r);
-        const auto active = bone_mode ? FindActiveBone(r) : FindActiveEntity(r);
-        const auto scale = r.Resources.get<const FrameState>().DisplayFramebufferScale;
-        const float render_scale = std::max(scale.x, scale.y);
-        const auto radius = std::max(1u, uint32_t(std::lround(float(ObjectSelectRadiusPx) * render_scale)));
-        const auto hits = ResolveHits(r, RunObjectPick(r, viewport, mouse_px, radius), bone_mode);
-        const auto pick = hits.empty() ? std::optional<SelectionHit>{} : [&]() -> std::optional<SelectionHit> {
-            if (!cycle) return hits.front();
-            const auto *bs = r.try_get<const BoneSelection>(active);
-            auto it = std::ranges::find_if(hits, [&](const SelectionHit &h) { return h.Entity == active && (!h.Part || (bs && bs->Has(*h.Part))); });
-            return it != hits.end() && ++it != hits.end() ? *it : hits.front();
-        }();
-        using namespace action::selection;
-        if (pick && shift) {
-            if (active == pick->Entity && !bone_mode) Apply(r, ToggleSelected{pick->Entity});
-            else if (bone_mode) Apply(r, ExtendBoneActive{pick->Entity, pick->Part, true});
-            else Apply(r, ExtendActive{pick->Entity});
-        } else if (pick || !shift) {
-            if (pick && bone_mode) Apply(r, action::selection::SelectBone{pick->Entity, pick->Part, false});
-            else if (pick) Apply(r, action::selection::Select{pick->Entity});
-            else Apply(r, DeselectAll{});
-        }
-    }
-
     // Evaluate animation before synchronizing render state.
     bool anim_advanced;
     int evaluated_from;
@@ -1170,7 +1104,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     // A viewport whose camera is absent keeps its view until the camera returns.
     for (const auto [viewport, camera] : r.view<const ViewCameraState>().each()) {
         const auto look_through = LookThroughCamera(r, viewport);
-        if (look_through == state::Null) continue;
+        if (look_through == state::Null || r.Resources.get<const FrameState>().BoxDrag) continue;
         auto framed = camera;
         const auto lens = WidenForLookThrough(*LensOf(r, look_through), AspectRatio(RenderExtentPx(r, viewport)));
         if (scene_changes.WorldTransform.contains(look_through)) {

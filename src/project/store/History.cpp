@@ -1,10 +1,12 @@
 #include "project/store/History.h"
 
 #include "project/ComponentPool.h"
+#include "project/WorkspacePool.h"
 #include "project/store/Pages.h"
 #include "project/store/Records.h"
 
 #include <print>
+#include <unordered_set>
 
 namespace store {
 namespace {
@@ -70,19 +72,32 @@ bool TakeState(std::span<const std::byte> &in, HistoryNode &node, size_t tracks)
 }
 
 // Node actions format: [u32 size][actions][u32 size][label].
-void PutActions(std::vector<std::byte> &out, const HistoryNode &node) {
-    Put(out, uint32_t(node.Actions.size()));
-    out.insert(out.end(), node.Actions.begin(), node.Actions.end());
+void PutActions(const History &history, std::vector<std::byte> &out, const HistoryNode &node, std::span<const uint32_t> remap = {}) {
+    const auto actions = history.ActionsOf(node);
+    const auto workspaces = history.WorkspacesOf(node);
+    Put(out, uint32_t(actions.size()));
+    out.insert(out.end(), actions.begin(), actions.end());
+    Put(out, uint32_t(workspaces.size()));
+    for (auto id : workspaces) Put(out, remap.empty() ? id : remap[id]);
     Put(out, uint32_t(node.Label.size()));
     const auto *label = reinterpret_cast<const std::byte *>(node.Label.data());
     out.insert(out.end(), label, label + node.Label.size());
 }
 
-bool TakeActions(std::span<const std::byte> &in, HistoryNode &node) {
+bool TakeActions(History &history, std::span<const std::byte> &in, HistoryNode &node) {
     uint32_t actions_size, label_size;
     if (!Take(in, actions_size) || in.size() < actions_size) return false;
-    node.Actions.assign(in.begin(), in.begin() + actions_size);
+    node.Actions = {history.ActionBytes.size(), actions_size};
+    history.ActionBytes.insert(history.ActionBytes.end(), in.begin(), in.begin() + actions_size);
     in = in.subspan(actions_size);
+    uint32_t contexts;
+    if (!Take(in, contexts) || contexts > in.size() / sizeof(uint32_t)) return false;
+    node.Workspaces = {history.WorkspaceRefs.size(), contexts};
+    for (uint32_t i = 0; i < contexts; ++i) {
+        uint32_t id;
+        if (!Take(in, id)) return false;
+        history.WorkspaceRefs.push_back(id);
+    }
     if (!Take(in, label_size) || in.size() < label_size) return false;
     node.Label.assign(reinterpret_cast<const char *>(in.data()), label_size);
     in = in.subspan(label_size);
@@ -90,9 +105,9 @@ bool TakeActions(std::span<const std::byte> &in, HistoryNode &node) {
 }
 
 // A node without state records only its actions.
-std::vector<std::byte> NodePayload(const HistoryNode &node) {
+std::vector<std::byte> NodePayload(const History &history, const HistoryNode &node) {
     std::vector<std::byte> payload;
-    PutActions(payload, node);
+    PutActions(history, payload, node);
     PutState(payload, node.Stamps, node.Roots);
     return payload;
 }
@@ -106,29 +121,34 @@ decltype(auto) With(auto &history, const History::Tracked &t, auto &&fn) {
         case History::Kind::Pages: return fn(*history.PageTracks[t.Index]);
         case History::Kind::Records: return fn(*history.RecordTracks[t.Index]);
         case History::Kind::Pool: return fn(*history.PoolTracks[t.Index]);
+        case History::Kind::Workspace: return fn(*history.Workspace);
     }
     std::unreachable();
+}
+const History::Tracked &TrackAt(const History &history, size_t track) {
+    static const History::Tracked workspace{"workspace", 0, History::Kind::Workspace, 0};
+    return track == history.Tracks.size() ? workspace : history.Tracks[track];
 }
 LiveTrie &TrieOf(auto &history, const History::Tracked &t) {
     return With(history, t, [](auto &owner) -> LiveTrie & { return owner.Trie; });
 }
 Stamp CurrentStamp(History &history, size_t track) {
-    return With(history, history.Tracks[track], [](auto &owner) {
+    return With(history, TrackAt(history, track), [](auto &owner) {
         owner.Settle();
         return owner.Trie.CurrentStamp(owner.Length());
     });
 }
 Version PinTrack(History &history, size_t track) {
-    return With(history, history.Tracks[track], [](auto &owner) {
+    return With(history, TrackAt(history, track), [](auto &owner) {
         owner.Settle();
         return owner.Trie.Pin(owner.Length());
     });
 }
 bool RestoreTrack(History &history, size_t track, const Version &v) {
-    return With(history, history.Tracks[track], [&](auto &owner) { return owner.Restore(v); });
+    return With(history, TrackAt(history, track), [&](auto &owner) { return owner.Restore(v); });
 }
 void LoadTrack(History &history, size_t track, uint64_t length, const LoadPlan &plan) {
-    With(history, history.Tracks[track], [&](auto &owner) { owner.Load(length, plan.Changes[track], plan.Leaves); });
+    With(history, TrackAt(history, track), [&](auto &owner) { owner.Load(length, plan.Changes[track], plan.Leaves); });
 }
 // Serialize present slots of a version as [u64 length][u64 count]([u64 slot][u32 size][bytes])*.
 void MaterializeTrack(History &history, size_t track, const Version &v, std::vector<std::byte> &out) {
@@ -142,7 +162,7 @@ void MaterializeTrack(History &history, size_t track, const Version &v, std::vec
         out.insert(out.end(), bytes.begin(), bytes.end());
         ++count;
     };
-    With(history, history.Tracks[track], [&](auto &owner) {
+    With(history, TrackAt(history, track), [&](auto &owner) {
         for (const auto &run : owner.Trie.Materialize(v)) {
             if (run.Owned) put(run.Slot, owner.Encode(*run.Owned));
             else {
@@ -155,7 +175,7 @@ void MaterializeTrack(History &history, size_t track, const Version &v, std::vec
     std::memcpy(out.data() + count_pos, &count, sizeof(count));
 }
 bool CheckTrackHashes(History &history, size_t track, std::string &why) {
-    return With(history, history.Tracks[track], [&](auto &owner) {
+    return With(history, TrackAt(history, track), [&](auto &owner) {
         owner.Settle();
         std::vector<std::pair<uint64_t, Hash128>> live;
         for (uint64_t s = 0, n = owner.Trie.SlotsFor(owner.Length()); s < n; ++s) {
@@ -181,7 +201,7 @@ struct PipelineScope {
 
 // Replays a node from its parent's state, returning an action error or the first track whose stamp differs.
 std::string ReplayStep(History &history, const HistoryNode &node) {
-    const auto replayed = history.Callbacks.Replay(node.Actions);
+    const auto replayed = history.Callbacks.Replay(history, history.ActionsOf(node), history.WorkspacesOf(node));
     if (!replayed) return replayed.error();
     for (size_t i = 0; i < history.Tracks.size(); ++i) {
         if (CurrentStamp(history, i) != node.Stamps[i]) return history.Tracks[i].Name;
@@ -198,6 +218,7 @@ std::vector<std::byte> MaterializeSnapshot(History &history, const Snapshot &s) 
 uint64_t OwnedBytes(const History &history) {
     uint64_t total = 0;
     for (const auto &t : history.Tracks) total += TrieOf(history, t).Stats().OwnedBytes;
+    if (history.Workspace) total += history.Workspace->Trie.Stats().OwnedBytes;
     return total;
 }
 
@@ -283,6 +304,9 @@ void DropDescendants(History &history, uint32_t node) {
         pending.append_range(n.Children);
         n.Children.clear();
         n.RedoChild.reset();
+        for (auto id : history.WorkspacesOf(n)) history.ReleaseWorkspace(id);
+        n.Workspaces = {};
+        n.Actions = {};
         if (n.Hot) history.Release(*n.Hot);
         n.Hot.reset();
     }
@@ -436,7 +460,14 @@ bool ReadProject(History &history, const std::filesystem::path &dir, uint64_t &t
         auto payload = rest.first(len);
         rest = rest.subspan(len);
         if (!Take(payload, kind) || !Take(payload, parent)) break;
-        if (kind == RecordKind::Kept) {
+        if (kind == RecordKind::Workspace) {
+            WorkspaceVersion version;
+            if (!parent || !Take(payload, version.S) || !Take(payload, version.Root) || !payload.empty() || !resolvable(version.Root)) break;
+            if (*parent > history.Workspaces.size()) break;
+            if (*parent == history.Workspaces.size()) history.Workspaces.emplace_back();
+            history.Workspaces[*parent] = std::move(version);
+            history.WrittenWorkspaces = uint32_t(history.Workspaces.size());
+        } else if (kind == RecordKind::Kept) {
             Hash128 state;
             uint32_t count;
             if (parent || !Take(payload, state) || !Take(payload, count) || payload.size() != size_t(count) * (sizeof(uint32_t) + sizeof(Hash128))) break;
@@ -459,9 +490,10 @@ bool ReadProject(History &history, const std::filesystem::path &dir, uint64_t &t
             history.Nodes[*parent].Roots = std::move(state.Roots);
         } else if (kind != RecordKind::Navigate) {
             HistoryNode n;
-            if (!TakeActions(payload, n) || (!payload.empty() && !TakeState(payload, n, history.Tracks.size()))) break;
+            if (!TakeActions(history, payload, n) || (!payload.empty() && !TakeState(payload, n, history.Tracks.size()))) break;
             if (kind == RecordKind::Root ? parent.has_value() : !parent || *parent >= history.Nodes.size()) break;
-            if (!std::ranges::all_of(n.Roots, resolvable)) break;
+            if (!std::ranges::all_of(n.Roots, resolvable) || std::ranges::any_of(history.WorkspacesOf(n), [&](auto id) { return id >= history.Workspaces.size(); })) break;
+            for (auto id : history.WorkspacesOf(n)) history.RetainWorkspace(id);
             std::optional<HistoryNode> saved;
             if (kind == RecordKind::Root && !payload.empty()) {
                 saved.emplace();
@@ -473,6 +505,8 @@ bool ReadProject(History &history, const std::filesystem::path &dir, uint64_t &t
             if (kind == RecordKind::Replace) {
                 DropDescendants(history, *parent);
                 auto &target = history.Nodes[*parent];
+                for (auto id : history.WorkspacesOf(target)) history.ReleaseWorkspace(id);
+                target.Workspaces = std::move(n.Workspaces);
                 target.Actions = std::move(n.Actions);
                 target.Label = std::move(n.Label);
                 target.Stamps = std::move(n.Stamps);
@@ -483,6 +517,8 @@ bool ReadProject(History &history, const std::filesystem::path &dir, uint64_t &t
                 continue;
             }
             if (kind == RecordKind::Root) {
+                for (const auto &old : history.Nodes)
+                    for (auto id : history.WorkspacesOf(old)) history.ReleaseWorkspace(id);
                 history.Nodes.clear();
                 if (saved) {
                     history.Nodes.push_back(std::move(*saved));
@@ -506,6 +542,7 @@ bool ReadProject(History &history, const std::filesystem::path &dir, uint64_t &t
         }
         tree_size += 4 + len;
     }
+    history.CompactActions();
     // Exclude manifests with missing descendants from deduplication after a partial write.
     std::erase_if(history.NodeLog.Idx, [&](const auto &entry) { return !resolvable(entry.first); });
     return !history.Nodes.empty();
@@ -521,16 +558,25 @@ bool ReadActions(History &history, const std::filesystem::path &dir) {
     uint32_t count;
     uint32_t present;
     if (!Take(in, magic) || magic != ActionsMagic || !Take(in, count) || !Take(in, present) || present >= count) return false;
+    uint32_t versions;
+    if (!Take(in, versions) || versions > in.size() / (sizeof(Stamp) + sizeof(Hash128))) return false;
+    history.Workspaces.resize(versions);
+    for (auto &v : history.Workspaces)
+        if (!Take(in, v.S) || !Take(in, v.Root)) return false;
     for (auto i = uint32_t{0}; i < count; ++i) {
         std::optional<uint32_t> parent;
         HistoryNode n;
-        if (!Take(in, parent) || (i ? !parent || *parent >= i : parent.has_value()) || !TakeActions(in, n)) return false;
+        if (!Take(in, parent) || (i ? !parent || *parent >= i : parent.has_value()) || !TakeActions(history, in, n)) return false;
         if (i) {
             n.Parent = parent;
             n.Depth = history.Nodes[*parent].Depth + 1;
             n.ReplayBaseline = false;
             history.Nodes[*parent].Children.push_back(i);
             history.Nodes[*parent].RedoChild = i;
+        }
+        for (auto id : history.WorkspacesOf(n)) {
+            if (id >= history.Workspaces.size()) return false;
+            history.RetainWorkspace(id);
         }
         history.Nodes.push_back(std::move(n));
     }
@@ -543,6 +589,12 @@ bool AdoptProject(History &history, History &candidate) {
     if (!CheckIO(history, Flush(candidate))) return false;
     CloseStreams(history);
     for (auto i = uint32_t{0}; i < history.Nodes.size(); ++i) ReleaseNode(history, i);
+    for (auto &v : history.Workspaces)
+        if (v.Hot.Root) history.Workspace->Trie.Release(v.Hot);
+    history.Workspaces = std::move(candidate.Workspaces);
+    history.WrittenWorkspaces = candidate.WrittenWorkspaces;
+    history.ActionBytes = std::move(candidate.ActionBytes);
+    history.WorkspaceRefs = std::move(candidate.WorkspaceRefs);
     history.Nodes = std::move(candidate.Nodes);
     history.LeafLog = std::move(candidate.LeafLog);
     history.NodeLog = std::move(candidate.NodeLog);
@@ -557,55 +609,60 @@ bool AdoptProject(History &history, History &candidate) {
     return true;
 }
 
-// Validate against current live data, including uncommitted edits, before mutating any track.
+// Visit changed leaves, validating that the stored tree fits its target length.
+bool DiffManifest(History &history, std::ifstream &nodes, size_t track, Hash128 root, uint64_t limit, auto &&visit) {
+    auto &trie = TrieOf(history, TrackAt(history, track));
+    if (limit > SlotSpan(trie.Levels)) return false;
+    const auto live = CurrentStamp(history, track);
+    const auto live_limit = trie.SlotsFor(live.Length);
+    const auto diff = [&](this auto &&self, Hash128 before, Hash128 after, uint32_t level, uint64_t index) -> bool {
+        if (before == after && (after == Hash128{} || limit >= live_limit || (index + 1) * SlotSpan(level) <= limit)) return true;
+        if (!level) return (after == Hash128{} || index < limit) && visit(index, before, after);
+        const auto old_children = trie.ChildrenAt(level - 1, index, live.Length);
+        ManifestChildren children{};
+        if (after != Hash128{}) {
+            uint8_t recorded;
+            if (!ReadManifestRecord(history, nodes, after, recorded, children) || recorded != level - 1) return false;
+        }
+        for (uint64_t digit = 0; digit < Fanout; ++digit)
+            if (!self(old_children[digit], children[digit], level - 1, index * Fanout + digit)) return false;
+        return true;
+    };
+    return diff(trie.ManifestRoot(live.Length), root, trie.Levels, 0);
+}
+
+// Validate hashes and content before mutating a document or workspace track.
+bool PrepareTrackLoad(StateReader &reader, size_t track, Stamp target, Hash128 root, std::vector<std::pair<uint64_t, Hash128>> &changes, std::unordered_map<Hash128, std::vector<std::byte>, Hash128Hasher> &leaves) {
+    auto &history = reader.Hist;
+    auto &trie = TrieOf(history, TrackAt(history, track));
+    auto state = CurrentStamp(history, track).H;
+    const bool valid = reader.Open() && DiffManifest(history, reader.Nodes, track, root, trie.SlotsFor(target.Length), [&](uint64_t slot, Hash128 before, Hash128 after) {
+                           if (before != Hash128{}) {
+                               const Term term{slot, before};
+                               state.A -= term.L0;
+                               state.B -= term.L1;
+                           }
+                           if (after != Hash128{}) {
+                               const Term term{slot, after};
+                               state.A += term.L0;
+                               state.B += term.L1;
+                               const auto it = history.LeafLog.Idx.find(after);
+                               if (it == history.LeafLog.Idx.end() || (trie.PageBytes && it->second.Size != trie.PageBytes)) return false;
+                               const auto [leaf, inserted] = leaves.try_emplace(after);
+                               if (inserted && !ReadExtent(reader.Leaves, it->second, after, leaf->second)) return false;
+                           }
+                           changes.emplace_back(slot, after);
+                           return true;
+                       });
+    return valid && state == target.H;
+}
+
 bool PrepareLoad(History &history, uint32_t node, LoadPlan &plan) {
     const auto &n = history.Nodes[node];
-    std::ifstream leaves{history.Dir / history.LeafLog.Name, std::ios::binary}, nodes_in{history.Dir / history.NodeLog.Name, std::ios::binary};
-    if (!leaves || !nodes_in) return false;
+    StateReader reader{history};
     plan.Changes.resize(history.Tracks.size());
-    for (size_t i = 0; i < history.Tracks.size(); ++i) {
-        auto &trie = TrieOf(history, history.Tracks[i]);
-        const auto limit = trie.SlotsFor(n.Stamps[i].Length);
-        if (limit > SlotSpan(trie.Levels)) return false;
-        const auto live_stamp = CurrentStamp(history, i);
-        const auto live_root = trie.ManifestRoot(live_stamp.Length);
-        const auto live_limit = trie.SlotsFor(live_stamp.Length);
-        auto state = live_stamp.H;
-        const auto diff = [&](this auto &&self, Hash128 live, Hash128 target, uint32_t level, uint64_t index) -> bool {
-            // Validate target slots beyond the new length even when subtree hashes match.
-            if (live == target && (target == Hash128{} || limit >= live_limit || (index + 1) * SlotSpan(level) <= limit)) return true;
-            if (level) {
-                const auto before = trie.ChildrenAt(level - 1, index, live_stamp.Length);
-                ManifestChildren after{};
-                if (target != Hash128{}) {
-                    uint8_t recorded_level;
-                    if (!ReadManifestRecord(history, nodes_in, target, recorded_level, after) || recorded_level != level - 1) return false;
-                }
-                for (uint64_t digit = 0; digit < Fanout; ++digit) {
-                    if (!self(before[digit], after[digit], level - 1, index * Fanout + digit)) return false;
-                }
-                return true;
-            }
-            if (target != Hash128{} && index >= limit) return false;
-            if (live != Hash128{}) {
-                const Term term{index, live};
-                state.A -= term.L0;
-                state.B -= term.L1;
-            }
-            if (target != Hash128{}) {
-                const Term term{index, target};
-                state.A += term.L0;
-                state.B += term.L1;
-                const auto it = history.LeafLog.Idx.find(target);
-                if (it == history.LeafLog.Idx.end() || (trie.PageBytes && it->second.Size != trie.PageBytes)) return false;
-                const auto [leaf, inserted] = plan.Leaves.try_emplace(target);
-                if (inserted && !ReadExtent(leaves, it->second, target, leaf->second)) return false;
-            }
-            plan.Changes[i].emplace_back(index, target);
-            return true;
-        };
-        if (!diff(live_root, n.Roots[i], trie.Levels, 0) || state != n.Stamps[i].H) return false;
-    }
+    for (size_t i = 0; i < history.Tracks.size(); ++i)
+        if (!PrepareTrackLoad(reader, i, n.Stamps[i], n.Roots[i], plan.Changes[i], plan.Leaves)) return false;
     return true;
 }
 
@@ -634,7 +691,7 @@ void AppendContent(History &history, History::ContentLog &log, Hash128 hash, std
 }
 
 Hash128 BuildManifest(History &history, size_t track) {
-    return With(history, history.Tracks[track], [&](auto &owner) {
+    return With(history, TrackAt(history, track), [&](auto &owner) {
         owner.Settle();
         const auto length = owner.Length();
         auto &trie = owner.Trie;
@@ -659,7 +716,7 @@ Hash128 BuildManifest(History &history, size_t track) {
 // Persist a pinned version's content and return its manifest root.
 // The version's owned leaves and the manifest nodes above them join the content logs, and the subtrees it shares with live content persist from live data.
 Hash128 PersistVersion(History &history, size_t track, const Version &v) {
-    return With(history, history.Tracks[track], [&](auto &owner) {
+    return With(history, TrackAt(history, track), [&](auto &owner) {
         owner.Settle();
         auto &trie = owner.Trie;
         const auto live_length = owner.Length();
@@ -754,7 +811,7 @@ void PersistNode(History &history, RecordKind kind, uint32_t node) {
     assert(history.Streams[FileTree].is_open() && "commit requires Begin or Open");
     auto &n = history.Nodes[node];
     n.Roots = PersistContent(history, n);
-    AppendTreeRecord(history, kind, kind == RecordKind::Replace ? node : n.Parent, NodePayload(n));
+    AppendTreeRecord(history, kind, kind == RecordKind::Replace ? node : n.Parent, NodePayload(history, n));
 }
 
 std::expected<void, std::string> RestoreNode(History &history, uint32_t node) {
@@ -786,7 +843,7 @@ std::expected<void, std::string> ReplayPath(History &history, std::optional<uint
     if (!origin) history.Callbacks.Reset(history.Dir);
     for (const auto id : path) {
         auto &n = history.Nodes[id];
-        const auto replayed = history.Callbacks.Replay(n.Actions);
+        const auto replayed = history.Callbacks.Replay(history, history.ActionsOf(n), history.WorkspacesOf(n));
         if (!replayed) return replayed;
         n.Stamps = CurrentStamps(history);
         n.Roots = PersistContent(history, n);
@@ -902,16 +959,98 @@ void History::Keep(Hash128 state, std::span<const size_t> tracks, std::span<cons
     RecordKept(*this, state, tracks, std::move(roots));
 }
 
-bool History::Begin(const std::filesystem::path &dir, std::vector<std::byte> actions) {
+void History::StoreActions(HistoryNode &node, std::span<const std::byte> actions, std::span<const uint32_t> workspaces) {
+    node.Actions = {ActionBytes.size(), actions.size()};
+    node.Workspaces = {WorkspaceRefs.size(), workspaces.size()};
+    ActionBytes.insert(ActionBytes.end(), actions.begin(), actions.end());
+    WorkspaceRefs.insert(WorkspaceRefs.end(), workspaces.begin(), workspaces.end());
+}
+void History::CompactActions() {
+    auto bytes = std::exchange(ActionBytes, {});
+    auto refs = std::exchange(WorkspaceRefs, {});
+    for (auto &node : Nodes) StoreActions(node, std::span{bytes}.subspan(node.Actions.First, node.Actions.Count), std::span{refs}.subspan(node.Workspaces.First, node.Workspaces.Count));
+}
+
+uint32_t History::CaptureWorkspace() {
+    Workspace->Settle();
+    const auto stamp = Workspace->Trie.CurrentStamp(Workspace->Length());
+    if (!Workspaces.empty() && Workspaces.back().S == stamp) {
+        if (!Workspaces.back().Hot.Root) Workspaces.back().Hot = Workspace->Pin();
+        ++Workspaces.back().Refs;
+        return uint32_t(Workspaces.size() - 1);
+    }
+    Workspaces.push_back({.S = stamp, .Hot = Workspace->Pin(), .Refs = 1});
+    return uint32_t(Workspaces.size() - 1);
+}
+void History::RetainWorkspace(uint32_t id) { ++Workspaces.at(id).Refs; }
+void History::ReleaseWorkspace(uint32_t id) {
+    auto &v = Workspaces.at(id);
+    if (--v.Refs == 0 && v.Hot.Root) Workspace->Trie.Release(v.Hot);
+    while (Workspaces.size() > WrittenWorkspaces && !Workspaces.back().Refs) Workspaces.pop_back();
+}
+void History::PersistWorkspaces() {
+    while (WrittenWorkspaces < Workspaces.size()) {
+        auto &v = Workspaces[WrittenWorkspaces];
+        if (v.Hot.Root) v.Root = PersistVersion(*this, Tracks.size(), v.Hot);
+        std::vector<std::byte> bytes;
+        Put(bytes, v.S);
+        Put(bytes, v.Root);
+        AppendTreeRecord(*this, RecordKind::Workspace, WrittenWorkspaces++, bytes);
+    }
+}
+std::expected<void, std::string> History::RestoreWorkspace(uint32_t id) {
+    if (!Workspace || id >= Workspaces.size()) return std::unexpected{"Missing action workspace"};
+    auto &v = Workspaces[id];
+    Workspace->Settle();
+    if (v.Hot.Root) {
+        if (!Workspace->Restore(v.Hot)) return std::unexpected{"Workspace restore mismatch"};
+    } else {
+        StateReader reader{*this};
+        std::vector<std::pair<uint64_t, Hash128>> changes;
+        std::unordered_map<Hash128, std::vector<std::byte>, Hash128Hasher> leaves;
+        if (!PrepareTrackLoad(reader, Tracks.size(), v.S, v.Root, changes, leaves)) return std::unexpected{"Missing or corrupt workspace pages"};
+        Workspace->Load(v.S.Length, changes, leaves);
+        Workspace->Settle();
+        if (Workspace->Trie.CurrentStamp(Workspace->Length()) != v.S) return std::unexpected{"Workspace load mismatch"};
+        v.Hot = Workspace->Pin();
+    }
+    return {};
+}
+
+bool History::Begin(const std::filesystem::path &dir, std::vector<std::byte> actions, std::vector<uint32_t> workspaces) {
     assert(Dir.empty() || Dir != dir);
-    if (!CheckIO(*this, Flush(*this))) return false;
-    History candidate{.Tracks = Tracks, .PageTracks = PageTracks, .RecordTracks = RecordTracks, .PoolTracks = PoolTracks, .Order = Order, .Dir = dir};
+    const auto fail = [&] {
+        for (auto id : workspaces) ReleaseWorkspace(id);
+        return false;
+    };
+    if (!CheckIO(*this, Flush(*this))) return fail();
+    History candidate{.Workspace = Workspace, .Tracks = Tracks, .PageTracks = PageTracks, .RecordTracks = RecordTracks, .PoolTracks = PoolTracks, .Order = Order, .Dir = dir};
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
-    if (ec) return CheckIO(*this, "cannot create " + dir.string() + ": " + ec.message());
-    if (!CheckIO(*this, OpenStreams(candidate.Streams, candidate.StreamBuffers, dir, true))) return false;
+    if (ec) {
+        CheckIO(*this, "cannot create " + dir.string() + ": " + ec.message());
+        return fail();
+    }
+    if (!CheckIO(*this, OpenStreams(candidate.Streams, candidate.StreamBuffers, dir, true))) return fail();
     Append(candidate, FileTree, std::as_bytes(std::span{&TreeMagic, 1u}));
-    HistoryNode root{.Actions = std::move(actions), .Label = "Root", .Hot = Pin(), .Stamps = CurrentStamps(*this)};
+    std::unordered_map<uint32_t, uint32_t> remapped;
+    for (auto &id : workspaces) {
+        const auto original = id;
+        auto [it, added] = remapped.try_emplace(id, uint32_t(candidate.Workspaces.size()));
+        if (added) {
+            auto v = Workspaces.at(id);
+            if (!v.Hot.Root) throw std::logic_error("New history requires hot initial workspace");
+            ++v.Hot.Root->Refs;
+            v.Refs = 0;
+            candidate.Workspaces.push_back(v);
+        }
+        id = it->second;
+        candidate.RetainWorkspace(id);
+        ReleaseWorkspace(original);
+    }
+    candidate.PersistWorkspaces();
+    HistoryNode root{.Label = "Root", .Hot = Pin(), .Stamps = CurrentStamps(*this)};
+    candidate.StoreActions(root, actions, workspaces);
     candidate.Nodes.push_back(std::move(root));
     SetPresent(candidate, 0);
     PersistNode(candidate, RecordKind::Root, 0);
@@ -924,6 +1063,12 @@ bool History::Close() {
     const bool saved = CheckIO(*this, Flush(*this)) && CheckIO(*this, CloseStreams(*this));
     for (auto i = uint32_t{0}; i < Nodes.size(); ++i) ReleaseNode(*this, i);
     Nodes.clear();
+    ActionBytes.clear();
+    WorkspaceRefs.clear();
+    for (auto &v : Workspaces)
+        if (v.Hot.Root) Workspace->Trie.Release(v.Hot);
+    Workspaces.clear();
+    WrittenWorkspaces = 0;
     ++Revision;
     Present.reset();
     VisitCounter = 0;
@@ -947,10 +1092,11 @@ bool History::Relocate(const std::filesystem::path &dir) {
     return true;
 }
 
-uint32_t History::Commit(std::string label, std::vector<std::byte> actions) {
+uint32_t History::Commit(std::string label, std::vector<std::byte> actions, std::vector<uint32_t> workspaces) {
     assert(Present);
     const auto stamps = CurrentStamps(*this);
     if (stamps == Nodes[*Present].Stamps) {
+        for (auto id : workspaces) ReleaseWorkspace(id);
         Adopt(*this, *Nodes[*Present].Hot); // Release redundant copies for equal state.
         return *Present;
     }
@@ -959,6 +1105,7 @@ uint32_t History::Commit(std::string label, std::vector<std::byte> actions) {
         if (n.Hot) Adopt(*this, *n.Hot);
         else n.Hot = Pin();
         SetPresent(*this, node);
+        for (auto id : workspaces) ReleaseWorkspace(id);
         AppendTreeRecord(*this, RecordKind::Navigate, node, {});
         return node;
     };
@@ -967,25 +1114,30 @@ uint32_t History::Commit(std::string label, std::vector<std::byte> actions) {
     }
     if (const auto parent = Nodes[*Present].Parent; parent && Nodes[*parent].Stamps == stamps) return adopt(*parent);
     const auto id = uint32_t(Nodes.size());
-    HistoryNode n{.Parent = Present, .Actions = std::move(actions), .Label = std::move(label), .Depth = Nodes[*Present].Depth + 1, .ReplayBaseline = false, .Hot = Pin(), .Stamps = stamps};
+    HistoryNode n{.Parent = Present, .Label = std::move(label), .Depth = Nodes[*Present].Depth + 1, .ReplayBaseline = false, .Hot = Pin(), .Stamps = stamps};
+    StoreActions(n, actions, workspaces);
     Nodes.push_back(std::move(n));
     Nodes[*Present].Children.push_back(id);
     ++Revision;
     SetPresent(*this, id);
+    PersistWorkspaces();
     PersistNode(*this, RecordKind::Action, id);
     return id;
 }
 
-uint32_t History::Replace(uint32_t node, std::vector<std::byte> actions) {
+uint32_t History::Replace(uint32_t node, std::vector<std::byte> actions, std::vector<uint32_t> workspaces) {
     assert(node < Nodes.size() && Nodes[node].Parent);
     DropDescendants(*this, node);
     auto &n = Nodes[node];
     if (n.Hot) Release(*n.Hot);
-    n.Actions = std::move(actions);
+    for (auto id : WorkspacesOf(n)) ReleaseWorkspace(id);
+    StoreActions(n, actions, workspaces);
+    PersistWorkspaces();
     n.Stamps = CurrentStamps(*this);
     n.Hot = Pin();
     ++Revision;
     SetPresent(*this, node);
+    CompactActions();
     PersistNode(*this, RecordKind::Replace, node);
     return node;
 }
@@ -1040,15 +1192,19 @@ bool History::Clear(const HistoryPosition *saved) {
     live.Hot = Pin();
     live.Stamps = std::move(stamps);
     for (size_t i = 0; i < Tracks.size(); ++i) live.Roots.push_back(BuildManifest(*this, i));
-    auto payload = NodePayload(live);
+    auto payload = NodePayload(*this, live);
     if (current) PutState(payload, saved->Stamps, saved->Roots);
     AppendTreeRecord(*this, RecordKind::Root, std::nullopt, payload);
     if (!CheckIO(*this, Flush(*this))) {
         Release(*live.Hot);
         return false;
     }
+    for (const auto &n : Nodes)
+        for (auto id : WorkspacesOf(n)) ReleaseWorkspace(id);
     for (auto i = uint32_t{0}; i < Nodes.size(); ++i) ReleaseNode(*this, i);
     Nodes = std::move(retained);
+    ActionBytes.clear();
+    WorkspaceRefs.clear();
     VisitCounter = 0;
     ++Revision;
     SetPresent(*this, current);
@@ -1056,6 +1212,14 @@ bool History::Clear(const HistoryPosition *saved) {
 }
 
 void History::Evict(uint64_t cap) {
+    if (Workspace && OwnedBytes(*this) > cap) {
+        PersistWorkspaces();
+        if (!CheckIO(*this, Flush(*this))) return;
+        for (auto &v : Workspaces) {
+            if (OwnedBytes(*this) <= cap) break;
+            Workspace->Trie.Release(v.Hot);
+        }
+    }
     if (!Present || OwnedBytes(*this) <= cap) return;
     std::vector<uint32_t> protected_nodes;
     auto node = Present;
@@ -1145,7 +1309,16 @@ bool History::Check(std::string &why) const {
     return true;
 }
 
-bool History::Audit(std::string &why) { return Check(why) && CheckHashes(*this, why); }
+bool History::Audit(std::string &why) {
+    if (!Check(why) || !CheckHashes(*this, why)) return false;
+    if (Workspace) {
+        std::vector<Version> versions;
+        for (const auto &v : Workspaces)
+            if (v.Hot.Root) versions.push_back(v.Hot);
+        if (!Workspace->Trie.Check(why, versions) || !CheckTrackHashes(*this, Tracks.size(), why)) return false;
+    }
+    return true;
+}
 
 std::optional<uint32_t> History::FindPosition(const HistoryPosition &position) const {
     const auto matches = [&](const HistoryNode &node) { return node.Stamps == position.Stamps && node.Roots == position.Roots; };
@@ -1157,13 +1330,16 @@ std::optional<uint32_t> History::FindPosition(const HistoryPosition &position) c
 
 bool History::Open(const std::filesystem::path &dir, const HistoryPosition *position) {
     if (!CheckIO(*this, Flush(*this))) return false;
-    History candidate{.Tracks = Tracks, .PageTracks = PageTracks, .RecordTracks = RecordTracks, .PoolTracks = PoolTracks, .Order = Order, .Callbacks = Callbacks};
+    History candidate{.Workspace = Workspace, .Tracks = Tracks, .PageTracks = PageTracks, .RecordTracks = RecordTracks, .PoolTracks = PoolTracks, .Order = Order, .Callbacks = Callbacks};
     // Reconstruct states by replay when content logs are absent.
     std::error_code ec;
-    const bool pages = std::filesystem::exists(dir / LeafLog.Name, ec);
+    const bool pages = std::filesystem::exists(dir / TreeLogName, ec);
     uint64_t tree_size{};
     if (pages ? !ReadProject(candidate, dir, tree_size) : !ReadActions(candidate, dir)) {
         return CheckIO(*this, "cannot open project: invalid format or missing or corrupt records");
+    }
+    if (!pages && candidate.Workspace) {
+        if (!ScanContentLog(candidate, candidate.LeafLog) || !ScanContentLog(candidate, candidate.NodeLog)) return false;
     }
     if (position) candidate.Present = candidate.FindPosition(*position);
     // The present node replays from its nearest ancestor with state, which loads from the content logs.
@@ -1179,11 +1355,12 @@ bool History::Open(const std::filesystem::path &dir, const HistoryPosition *posi
             if (ec) return CheckIO(*this, "cannot truncate " + (dir / name).string() + ": " + ec.message());
         }
     }
-    if (!CheckIO(*this, OpenStreams(candidate.Streams, candidate.StreamBuffers, dir, !pages))) return false;
+    if (!CheckIO(*this, OpenStreams(candidate.Streams, candidate.StreamBuffers, dir, false))) return false;
     if (!pages) {
         // The actions log becomes a tree log of nodes without state.
         Append(candidate, FileTree, std::as_bytes(std::span{&TreeMagic, 1u}));
-        for (auto i = uint32_t{0}; i < candidate.Nodes.size(); ++i) AppendTreeRecord(candidate, i ? RecordKind::Action : RecordKind::Root, candidate.Nodes[i].Parent, NodePayload(candidate.Nodes[i]));
+        candidate.PersistWorkspaces();
+        for (auto i = uint32_t{0}; i < candidate.Nodes.size(); ++i) AppendTreeRecord(candidate, i ? RecordKind::Action : RecordKind::Root, candidate.Nodes[i].Parent, NodePayload(candidate, candidate.Nodes[i]));
         AppendTreeRecord(candidate, RecordKind::Navigate, candidate.Present, {});
     }
     auto original = Pin();
@@ -1215,7 +1392,7 @@ StateReader::StateReader(History &history) : Hist(history) {
 }
 
 std::optional<std::vector<std::byte>> StateReader::Read(size_t track, Hash128 root, uint64_t slot) {
-    const auto &trie = TrieOf(Hist, Hist.Tracks[track]);
+    const auto &trie = TrieOf(Hist, TrackAt(Hist, track));
     auto hash = root;
     for (auto level = trie.Levels; level-- > 0 && hash != Hash128{};) {
         uint8_t recorded;
@@ -1232,36 +1409,11 @@ std::optional<std::vector<std::byte>> StateReader::Read(size_t track, Hash128 ro
 
 std::optional<std::vector<uint64_t>> StateReader::DifferingSlots(size_t track, Hash128 root) {
     std::vector<uint64_t> slots;
-    bool complete = true;
-    With(Hist, Hist.Tracks[track], [&](auto &owner) {
-        owner.Settle();
-        auto &trie = owner.Trie;
-        const auto length = owner.Length();
-        const auto live_root = trie.ManifestRoot(length);
-        const auto live_slot = [&](uint64_t slot) {
-            return slot < trie.SlotsFor(length) && slot < trie.SlotHashes.size() && trie.SlotHashes[slot].State == LiveTrie::SlotState::Value ? trie.SlotHashes[slot].H : Hash128{};
-        };
-        const auto diff = [&](this auto &&self, Hash128 live, Hash128 stored, uint32_t level, uint64_t index) -> bool {
-            if (live == stored) return true;
-            const auto before = trie.ChildrenAt(level, index, length);
-            ManifestChildren after{};
-            if (stored != Hash128{}) {
-                uint8_t recorded;
-                if (!ReadManifestRecord(Hist, Nodes, stored, recorded, after) || recorded != level) return false;
-            }
-            for (uint64_t digit = 0; digit < Fanout; ++digit) {
-                const auto child = index * Fanout + digit;
-                if (level) {
-                    if (!self(before[digit], after[digit], level - 1, child)) return false;
-                } else if (live_slot(child) != after[digit]) {
-                    slots.push_back(child);
-                }
-            }
+    const auto &trie = TrieOf(Hist, TrackAt(Hist, track));
+    if (!DiffManifest(Hist, Nodes, track, root, SlotSpan(trie.Levels), [&](uint64_t slot, Hash128, Hash128) {
+            slots.push_back(slot);
             return true;
-        };
-        complete = diff(live_root, root, trie.Levels - 1, 0);
-    });
-    if (!complete) return std::nullopt;
+        })) return std::nullopt;
     return slots;
 }
 
@@ -1277,14 +1429,57 @@ std::expected<std::vector<uint32_t>, std::string> History::WriteActions(const st
     Put(out, ActionsMagic);
     Put(out, uint32_t(kept.size()));
     Put(out, *ids[*Present]);
+    std::vector<uint32_t> workspace_ids(Workspaces.size(), UINT32_MAX), used;
+    for (auto id : kept)
+        for (auto w : WorkspacesOf(Nodes[id])) {
+            if (workspace_ids[w] != UINT32_MAX) continue;
+            workspace_ids[w] = uint32_t(used.size());
+            used.push_back(w);
+        }
+    Put(out, uint32_t(used.size()));
+    for (auto w : used) {
+        Put(out, Workspaces[w].S);
+        Put(out, Workspaces[w].Root);
+    }
     for (const auto id : kept) {
         Put(out, Nodes[id].Parent ? ids[*Nodes[id].Parent] : std::nullopt);
-        PutActions(out, Nodes[id]);
+        PutActions(*this, out, Nodes[id], workspace_ids);
     }
     std::ofstream file{path, std::ios::binary | std::ios::trunc};
     file.write(reinterpret_cast<const char *>(out.data()), std::streamsize(out.size()));
     file.close();
     if (!file) return std::unexpected{"cannot write " + path.string()};
+    if (Workspace) {
+        if (path.parent_path() == Dir) return std::unexpected{"Action export needs a separate directory"};
+        std::ifstream nodes{Dir / NodeLog.Name, std::ios::binary}, leaves{Dir / LeafLog.Name, std::ios::binary};
+        std::ofstream nodes_out{path.parent_path() / NodeLog.Name, std::ios::binary}, leaves_out{path.parent_path() / LeafLog.Name, std::ios::binary};
+        std::array<std::unordered_set<Hash128, Hash128Hasher>, 2> copied;
+        const auto copy = [&](this auto &&self, Hash128 hash, bool node) -> bool {
+            if (hash == Hash128{} || !copied[node].insert(hash).second) return true;
+            const auto &log = node ? NodeLog : LeafLog;
+            const auto found = log.Idx.find(hash);
+            std::vector<std::byte> bytes;
+            if (found == log.Idx.end() || !ReadExtent(node ? nodes : leaves, found->second, hash, bytes)) return false;
+            if (node) {
+                uint8_t level;
+                ManifestChildren children;
+                if (!ReadManifestRecord(*this, nodes, hash, level, children)) return false;
+                for (auto child : children)
+                    if (!self(child, level != 0)) return false;
+            }
+            auto &output = node ? nodes_out : leaves_out;
+            const auto size = uint32_t(bytes.size());
+            output.write(reinterpret_cast<const char *>(&hash), sizeof(hash));
+            output.write(reinterpret_cast<const char *>(&size), sizeof(size));
+            output.write(reinterpret_cast<const char *>(bytes.data()), size);
+            return bool(output);
+        };
+        for (auto w : used)
+            if (!copy(Workspaces[w].Root, true)) return std::unexpected{"Cannot export workspace pages"};
+        nodes_out.close();
+        leaves_out.close();
+        if (!nodes_out || !leaves_out) return std::unexpected{"Cannot write workspace pages"};
+    }
     return kept;
 }
 } // namespace store

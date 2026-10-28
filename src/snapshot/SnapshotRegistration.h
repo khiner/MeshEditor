@@ -155,13 +155,39 @@ template<typename C> void Encode(const C &value, std::vector<std::byte> &out) {
     }
 }
 
-template<typename C> using RetainedValues = std::map<state::Entity, C>;
+struct WorkspaceOrder {
+    bool operator()(state::Entity a, state::Entity b) const {
+        return std::pair{state::Index(a), state::Generation(a)} < std::pair{state::Index(b), state::Generation(b)};
+    }
+};
+template<typename C> using RetainedValues = std::map<state::Entity, C, WorkspaceOrder>;
 template<typename C> RetainedValues<C> &Retained(state::Registry &r) {
     return r.Resources.get<Retention>().Slots[state::Type<C>()].template Emplace<RetainedValues<C>>();
 }
-template<typename C> void Retain(state::Registry &r, state::Entity e, C value) { Retained<C>(r).insert_or_assign(e, std::move(value)); }
-template<typename C> void RetainDying(state::Registry &r, state::Entity e) { Retain(r, e, r.get<C>(e)); }
-
+template<typename C> void Retain(state::Registry &r, state::Entity e, C value) {
+    CaptureWorkspace(r, state::Type<C>(), e);
+    Retained<C>(r).insert_or_assign(e, std::move(value));
+}
+template<typename C> void RetainDying(state::Registry &r, state::Entity e) {
+    if (!r.Resources.get<const Retention>().Installing) Retain(r, e, CopyNative(r.get<C>(e)));
+}
+template<typename C> void VisitWorkspacePage(const state::Registry &r, uint32_t page, auto &&fn) {
+    const auto &table = r.storage<C>();
+    const auto *retained = static_cast<const RetainedValues<C> *>(r.Resources.get<const Retention>().Slots[state::Type<C>()].Value);
+    for (auto bits = table.mask(page); bits; bits &= bits - 1u) {
+        const auto live = table.entity(page, uint32_t(std::countr_zero(bits)));
+        fn(live, *table.template at<C>(live));
+    }
+    if (retained) {
+        for (auto it = retained->lower_bound(state::MakeEntity(page * state::Table::PageCount, 0)); it != retained->end() && state::Index(it->first) / state::Table::PageCount == page; ++it) {
+            if (!table.contains(it->first)) fn(it->first, it->second);
+        }
+    }
+}
+template<typename C> struct WorkspacePage : WorkspacePageHeader {
+    WorkspacePage() : WorkspacePageHeader{state::Type<C>()} {}
+    std::vector<std::pair<state::Entity, C>> Values;
+};
 template<typename C, Role ComponentRole>
 void Add(Tables &tables) {
     const auto id = state::Type<C>();
@@ -203,9 +229,63 @@ void Add(Tables &tables) {
                 r.emplace_or_replace<C>(e, std::move(native));
             };
         } else {
+            entry.CopyWorkspacePage = [](const state::Registry &r, uint32_t page) {
+                std::unique_ptr<WorkspacePage<C>> values;
+                uint64_t bytes = sizeof(WorkspacePage<C>);
+                VisitWorkspacePage<C>(r, page, [&](state::Entity e, const C &v) {
+                    if (!values) values = std::make_unique<WorkspacePage<C>>();
+                    const auto &copy = values->Values.emplace_back(e, CopyNative(v)).second;
+                    bytes += NativeExtra(copy);
+                });
+                if (!values) return store::Blob{};
+                std::ranges::sort(values->Values, WorkspaceOrder{}, &std::pair<state::Entity, C>::first);
+                bytes += values->Values.capacity() * sizeof(std::pair<state::Entity, C>);
+                auto *header = static_cast<WorkspacePageHeader *>(values.release());
+                return store::Blob{reinterpret_cast<std::byte *>(header), sizeof(WorkspacePage<C>), [](void *p) { delete static_cast<WorkspacePage<C> *>(static_cast<WorkspacePageHeader *>(p)); }, bytes};
+            };
+            entry.ReadWorkspacePage = [](const state::Registry &r, uint32_t page, std::vector<std::byte> &out) {
+                std::vector<std::pair<state::Entity, const C *>> values;
+                VisitWorkspacePage<C>(r, page, [&](state::Entity e, const C &v) { values.emplace_back(e, &v); });
+                std::ranges::sort(values, WorkspaceOrder{}, &std::pair<state::Entity, const C *>::first);
+                out.clear();
+                if (values.empty()) return;
+                zpp::bits::out archive{out};
+                archive(uint32_t(values.size())).or_throw();
+                for (const auto &[e, value] : values) archive(e, *value).or_throw();
+            };
+            entry.EncodeWorkspacePage = [](const store::Blob &blob, std::vector<std::byte> &out) {
+                out.clear();
+                zpp::bits::out{out}(static_cast<const WorkspacePage<C> *>(reinterpret_cast<const WorkspacePageHeader *>(blob.Data))->Values).or_throw();
+            };
+            entry.ApplyWorkspacePage = [](state::Registry &r, uint32_t page, store::Blob &blob) {
+                std::vector<std::pair<state::Entity, C>> decoded;
+                if (blob.Data && !blob.Destroy) zpp::bits::in{blob.View()}(decoded).or_throw();
+                auto &values = blob.Destroy ? static_cast<WorkspacePage<C> *>(reinterpret_cast<WorkspacePageHeader *>(blob.Data))->Values : decoded;
+                auto &retained = Retained<C>(r);
+                auto it = retained.lower_bound(state::MakeEntity(page * state::Table::PageCount, 0));
+                while (it != retained.end() && state::Index(it->first) / state::Table::PageCount == page) it = retained.erase(it);
+                const auto &table = r.storage<C>();
+                for (auto bits = table.mask(page); bits; bits &= bits - 1u) {
+                    const auto e = table.entity(page, uint32_t(std::countr_zero(bits)));
+                    if (!std::ranges::binary_search(values, e, WorkspaceOrder{}, &std::pair<state::Entity, C>::first)) r.remove<C>(e);
+                }
+                for (auto &[e, value] : values) {
+                    if (r.all_of<C>(e)) r.replace_if_changed(e, value);
+                    else retained.insert_or_assign(e, std::move(value));
+                }
+            };
+            entry.ClearRetained = [](state::Registry &r) {
+                auto &values = Retained<C>(r);
+                for (const auto &[e, value] : values) CaptureWorkspace(r, state::Type<C>(), e);
+                values.clear();
+            };
             entry.Connect = [](state::Registry &r) { r.on_destroy<C, &RetainDying<C>>(); };
             entry.Return = [](state::Registry &r, state::Entity e, bool emplace) {
-                auto retained = Retained<C>(r).extract(e);
+                auto &values = Retained<C>(r);
+                const auto found = values.find(e);
+                if (found == values.end()) return;
+                CaptureWorkspace(r, state::Type<C>(), e);
+                auto retained = values.extract(found);
                 if (retained && emplace) r.emplace_or_replace<C>(e, std::move(retained.mapped()));
             };
             entry.AppendRecords = [](const state::Registry &r, std::vector<WorkspaceRecord> &records) {

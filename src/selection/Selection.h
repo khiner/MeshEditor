@@ -1,11 +1,13 @@
 #pragma once
 
+#include "gpu/Element.h"
 #include "numeric/vec3.h"
 #include "selection/BoneSelection.h"
 
 #include "state/Entity.h"
 
 #include <span>
+#include <variant>
 #include <vector>
 
 using numeric::vec3;
@@ -20,7 +22,7 @@ bool IsBoneEditMode(const state::Registry &);
 bool CanDuplicate(const state::Registry &);
 bool CanDuplicateLinked(const state::Registry &);
 bool CanDelete(const state::Registry &);
-std::vector<ElementRange> GetElementRangesForSelected(const state::Registry &);
+std::vector<ElementRange> GetElementRangesForSelected(const state::Registry &, std::optional<Element> = {});
 
 // Returns the containing armature, or null if the entity is unrelated to an armature.
 state::Entity FindArmatureObject(const state::Registry &, state::Entity);
@@ -37,10 +39,29 @@ void Select(state::Registry &, state::Entity);
 // Exclusive bone select: clears BoneSelection/BoneActive, then selects `e` (null clears everything).
 void SelectBone(state::Registry &, state::Entity);
 
-struct SelectionHit {
-    state::Entity Entity;
-    std::optional<BoneSel> Part{};
-    bool operator==(const SelectionHit &) const = default;
+struct ObjectKind;
+struct BoneIndex;
+struct ObjectHit {
+    state::EntityRef<ObjectKind> Entity;
+    bool operator==(const ObjectHit &) const = default;
+};
+struct BoneHit {
+    state::EntityRef<BoneIndex> Entity;
+    BoneSel Part{BoneSel::Body};
+    bool operator==(const BoneHit &) const = default;
+};
+using SelectionHit = std::variant<ObjectHit, BoneHit>;
+inline state::Entity HitEntity(const SelectionHit &hit) {
+    return std::visit([](const auto &h) { return h.Entity.Value; }, hit);
+}
+inline std::optional<BoneSel> HitPart(const SelectionHit &hit) {
+    if (const auto *bone = std::get_if<BoneHit>(&hit)) return bone->Part;
+    return {};
+}
+
+struct ElementHit {
+    state::Entity MeshEntity{state::Null};
+    uint32_t Handle{};
 };
 
 // Resolves raw GPU hits to logical targets, collapsing bone parts and object sub-elements.

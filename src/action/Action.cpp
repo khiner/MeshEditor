@@ -5,19 +5,20 @@
 using namespace action;
 
 namespace {
-std::optional<std::pair<Action, Phase>> Emitted;
-std::vector<Action> SystemEmitted;
+std::optional<std::pair<std::vector<Action>, Phase>> Emitted;
 bool CommitRequested = false, CancelRequested = false;
 } // namespace
 
 namespace action {
-template<typename ActionType> void Emit(ActionType a, Phase phase) {
-    if (!Emitted) Emitted.emplace(MakeAction(std::move(a)), phase);
-}
+template<typename ActionType> void Emit(ActionType a, Phase phase) { Emit(MakeAction(std::move(a)), phase); }
 void Emit(Action a, Phase phase) {
-    if (!Emitted) Emitted.emplace(std::move(a), phase);
+    std::vector<Action> actions;
+    actions.push_back(std::move(a));
+    Emit(std::move(actions), phase);
 }
-template<typename ActionType> void EmitSystem(ActionType a) { SystemEmitted.emplace_back(MakeAction(std::move(a))); }
+void Emit(std::vector<Action> actions, Phase phase) {
+    if (!Emitted && !actions.empty()) Emitted.emplace(std::move(actions), phase);
+}
 void Commit() { CommitRequested = true; }
 void Cancel() { CancelRequested = true; }
 void Fail(state::Registry &r, std::string message, bool unsupported_extensions) {
@@ -27,7 +28,7 @@ void Fail(state::Registry &r, std::string message, bool unsupported_extensions) 
 }
 
 Drained Drain() {
-    return {std::exchange(Emitted, {}), std::exchange(SystemEmitted, {}), std::exchange(CommitRequested, false), std::exchange(CancelRequested, false)};
+    return {std::exchange(Emitted, {}), std::exchange(CommitRequested, false), std::exchange(CancelRequested, false)};
 }
 } // namespace action
 
@@ -36,9 +37,8 @@ using EmitPtr = void (*)();
 template<typename DV> constexpr auto DomainEmits() {
     return []<size_t... I>(std::index_sequence<I...>) {
         const auto inst = [](auto fn) { return reinterpret_cast<EmitPtr>(fn); };
-        return std::array<EmitPtr, 2 * sizeof...(I)>{
+        return std::array<EmitPtr, sizeof...(I)>{
             inst(static_cast<void (*)(std::variant_alternative_t<I, DV>, Phase)>(&Emit))...,
-            inst(static_cast<void (*)(std::variant_alternative_t<I, DV>)>(&EmitSystem))...,
         };
     }(std::make_index_sequence<std::variant_size_v<DV>>{});
 }

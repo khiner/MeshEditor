@@ -3,6 +3,8 @@
 #include "action/Errors.h"
 #include "action/Nodes.h"
 #include "armature/ArmatureComponents.h"
+#include "mesh/Mesh.h"
+#include "mesh/MeshStore.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
 #include "selection/Selection.h"
@@ -78,13 +80,40 @@ void Apply(state::Registry &r, const Action &action) {
                 }
             },
             // GPU selection resolves the rectangle after action application, against the viewport the gesture was emitted in.
-            [&](const ApplyBoxSelect &a) { r.emplace_or_replace<PendingBoxSelect>(state::Document, a.Box, a.Additive, *a.View, FindActiveViewport(r)); },
-            // GPU selection resolves the pixel after action application.
-            [&](const Pick &a) { r.emplace_or_replace<PendingPick>(state::Document, a.Mouse, a.Shift, false, *a.View, FindActiveViewport(r)); },
-            [&](const PickCycle &a) { r.emplace_or_replace<PendingPick>(state::Document, a.Mouse, a.Shift, true, *a.View, FindActiveViewport(r)); },
+            [&](const ApplyBoxSelect &a) { r.emplace_or_replace<PendingBoxSelect>(state::Document, a.Box, a.Additive, FindActiveViewport(r)); },
+            [&](const Pick &a) {
+                const auto &pick = a.Hit;
+                const bool shift = a.Shift;
+                const bool bone_mode = r.get<const Interaction>(state::Document).Mode == InteractionMode::Pose || IsBoneEditMode(r);
+                const auto entity = pick ? HitEntity(*pick) : state::Null;
+                const auto part = pick ? HitPart(*pick) : std::nullopt;
+                if (pick && (bone_mode != part.has_value() || (bone_mode ? !r.all_of<BoneIndex>(entity) : !object(entity)))) return;
+                const auto active = bone_mode ? FindActiveBone(r) : FindActiveEntity(r);
+                if (pick && shift) {
+                    if (active == entity && !bone_mode) Apply(r, ToggleSelected{entity});
+                    else if (bone_mode) Apply(r, ExtendBoneActive{entity, part, true});
+                    else Apply(r, ExtendActive{entity});
+                } else if (pick || !shift) {
+                    if (pick && bone_mode) Apply(r, SelectBone{entity, part, false});
+                    else if (pick) Apply(r, Select{entity});
+                    else Apply(r, DeselectAll{});
+                }
+            },
             [&](const ApplyEditElementClick &a) {
                 end_box_select_interaction();
-                r.emplace_or_replace<PendingEditElementClick>(state::Document, a.Mouse, a.Toggle, *a.View, FindActiveViewport(r));
+                const auto edit_mode = r.get<const EditMode>(state::Document).Value;
+                const auto ranges = GetElementRangesForSelected(r);
+                const auto hit = ApplyEditElementPick(r, ranges, edit_mode, a.Hit, a.Toggle);
+                if (!a.Toggle) {
+                    for (const auto &range : ranges) r.remove<MeshActiveElement>(range.MeshEntity);
+                }
+                if (hit) {
+                    const auto mesh_entity = hit->MeshEntity;
+                    const auto &summary = r.Resources.get<const MeshStore>().GetSelectionSummary(*DrawnStoreId(r, mesh_entity));
+                    if (summary.ActiveHandle == InvalidOffset) r.remove<MeshActiveElement>(mesh_entity);
+                    else r.emplace_or_replace<MeshActiveElement>(mesh_entity, summary.ActiveHandle);
+                }
+                for (const auto &range : ranges) nodes::CaptureActiveSelection(r, range.MeshEntity);
             },
             [&](const ApplyTreeSelection &a) {
                 using Clear = ApplyTreeSelection::ClearKind;

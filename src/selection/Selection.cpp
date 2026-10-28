@@ -70,8 +70,8 @@ bool CanDuplicate(const state::Registry &r) {
 bool CanDuplicateLinked(const state::Registry &r) { return CanDuplicate(r) && !IsBoneEditMode(r); }
 bool CanDelete(const state::Registry &r) { return CanDuplicate(r); }
 
-std::vector<ElementRange> GetElementRangesForSelected(const state::Registry &r) {
-    const auto element = r.get<const EditMode>(state::Document).Value;
+std::vector<ElementRange> GetElementRangesForSelected(const state::Registry &r, std::optional<Element> domain) {
+    const auto element = domain.value_or(r.get<const EditMode>(state::Document).Value);
     std::vector<ElementRange> ranges;
     for (const auto mesh_entity : r.get<const SelectionFlags>(state::Document).Meshes) {
         if (!r.all_of<MeshElementSelection>(mesh_entity)) continue;
@@ -112,18 +112,18 @@ std::vector<SelectionHit> ResolveHits(state::Registry &r, std::span<const state:
         return true;
     };
     const auto merge = [&](state::Entity target) {
-        if (merge_parts) find(hits, target, &SelectionHit::Entity)->Part = {};
+        if (merge_parts) std::get<BoneHit>(*find(hits, target, HitEntity)).Part = BoneSel::Body;
     };
     for (const auto e : raw) {
         if (bone_mode && r.all_of<BoneIndex>(e)) {
-            if (first(e)) hits.emplace_back(e, BoneSel::Body);
+            if (first(e)) hits.emplace_back(BoneHit{{e}, BoneSel::Body});
             else merge(e);
         } else if (bone_mode && r.all_of<BoneSubPartOf>(e)) {
             const auto &sub = r.get<BoneSubPartOf>(e);
-            if (first(sub.BoneEntity)) hits.emplace_back(sub.BoneEntity, sub.IsTip ? BoneSel::Tip : BoneSel::Root);
+            if (first(sub.BoneEntity)) hits.emplace_back(BoneHit{{sub.BoneEntity}, sub.IsTip ? BoneSel::Tip : BoneSel::Root});
             else merge(sub.BoneEntity);
         } else if (!bone_mode) {
-            if (const auto target = r.all_of<SubElementOf>(e) ? r.get<SubElementOf>(e).Parent : e; first(target)) hits.emplace_back(target);
+            if (const auto target = r.all_of<SubElementOf>(e) ? r.get<SubElementOf>(e).Parent : e; first(target)) hits.emplace_back(ObjectHit{{target}});
         }
     }
     return hits;

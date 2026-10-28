@@ -1,7 +1,7 @@
 #pragma once
 
-#include "selection/BoneSelection.h"
-#include "viewport/RenderView.h"
+#include "gpu/Element.h"
+#include "selection/Selection.h"
 
 #include "selection/SelectionSchema.h"
 #include "state/Entity.h"
@@ -29,30 +29,10 @@ struct ExciteSelectionBaseline {
     Element Mode{Element::None};
 };
 
-// Preserve the rendered camera so replay resolves pixels with the same rasterization and culling inputs.
-// Each pending gesture resolves against the viewport it was emitted in, or the first viewport when that one is gone.
-struct PendingEditElementClick {
-    vec2 Mouse;
-    bool Toggle;
-    RenderView View;
-    state::Entity Viewport;
-};
-
 // Object/bone box-select awaiting GPU resolution against current scene state.
 struct PendingBoxSelect {
     std::pair<vec2, vec2> Box;
     bool Additive;
-    RenderView View;
-    state::Entity Viewport;
-};
-
-// Object or bone click-pick awaiting GPU resolution.
-// Cycle advances to the next overlapping hit.
-struct PendingPick {
-    vec2 Mouse;
-    bool Shift;
-    bool Cycle;
-    RenderView View;
     state::Entity Viewport;
 };
 

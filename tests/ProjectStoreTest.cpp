@@ -299,7 +299,7 @@ struct ToyApp {
         H.Track(Buf, "buf", 0);
         H.Track(PoolRecords, "pool", 1);
         H.Callbacks = {
-            .Replay = [this](std::span<const std::byte> a) -> std::expected<void, std::string> {
+            .Replay = [this](store::History &, std::span<const std::byte> a, std::span<const uint32_t>) -> std::expected<void, std::string> {
                 if (!a.empty()) Apply(a);
                 ++Replays;
                 return {}; },

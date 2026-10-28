@@ -7,18 +7,15 @@
 #include "project/ProjectSchema.h"
 #include "project/store/History.h"
 
-namespace snapshot {
-} // namespace snapshot
-
 namespace project {
 // An action's name, and for a field write the component and field it names.
 std::string Label(const action::Action &);
 
-// A project archive contains the working directory, and an actions archive contains the recorded actions and their assets.
+// A project archive contains the working directory; an actions archive contains actions, their workspace pages, and their assets.
 // Both archive forms save one final workspace snapshot.
 enum class ArchiveForm : uint8_t { Project,
                                    Actions };
-// Write the actions, their assets, and the final workspace, or return why it cannot.
+// Write the actions, their workspace pages and assets, and the final workspace, or return why it cannot.
 std::expected<void, std::string> WriteActionsArchive(const store::History &, const std::filesystem::path &path, std::span<const std::byte> workspace);
 
 // Construct before engine initialization so all document entities use the versioned allocator.
@@ -60,18 +57,8 @@ struct Project {
     uint64_t MemoryCap{64ull << 20};
     uint64_t Revision{};
 
-    struct ReplayInputs {
-        state::Entity Scene{state::Null};
-        float DeltaTime{}, PlaybackFrame{};
-        int CurrentFrame{};
-        bool FixedFrameStep{};
-        EventPass Pass{EventPass::Frame};
-    };
-    struct RecordedAction {
-        ReplayInputs Inputs;
-        action::Action Action;
-    };
-    std::vector<RecordedAction> RecordedActions;
+    std::vector<action::Action> RecordedActions;
+    std::vector<uint32_t> RecordedWorkspaces;
     std::vector<action::Action> Deferred;
     std::optional<size_t> StageFirst;
     std::optional<store::Snapshot> GestureBase;
@@ -83,7 +70,7 @@ struct Project {
     struct EditDraft {
         uint32_t Node;
         uint64_t Revision; // The history revision the actions were decoded at.
-        std::vector<RecordedAction> RecordedActions;
+        std::vector<action::Action> RecordedActions;
     };
     std::optional<EditDraft> Draft;
     bool RestageRequested{false};
@@ -94,9 +81,11 @@ struct Project {
     void RequestRestage() { RestageRequested = true; }
 
     void Tick(const action::Action &, EventPass = EventPass::Frame);
-    // Applies the action and records it with the frame inputs it ran under.
+    // Captures the workspace before each recorded action, then applies it.
     bool Record(action::Action, EventPass, bool staged = false);
-    std::expected<void, std::string> RunRecorded(std::span<const RecordedAction>);
+    bool Record(std::span<action::Action>, EventPass, bool staged);
+    std::expected<void, std::string> RunRecorded(store::History &, std::span<const action::Action>, std::span<const uint32_t>);
+    void ResizeRecorded(size_t);
     // Records the actions as a new node, replacing `replace` when it has no children and adding a sibling otherwise.
     uint32_t Commit(std::string label, std::optional<uint32_t> replace = {});
     void FinishGesture(EventPass);
@@ -118,7 +107,7 @@ private:
     // The document left for another, pinned, with the workspace it had.
     struct LeftDocument {
         store::Snapshot Pin;
-        std::vector<std::byte> Workspace;
+        store::Version Workspace;
     };
     LeftDocument LeaveDocument();
     // Restores the left document after a failed switch.

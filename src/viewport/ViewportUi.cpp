@@ -87,6 +87,7 @@ bool IsSingleClicked(ImGuiMouseButton button) {
 
 // During look-through, the first navigation input exits look-through instead.
 void EmitViewNav(const state::Registry &r, state::Entity viewport, auto &&nav) {
+    if (r.Resources.get<const FrameState>().BoxDrag) return;
     if (r.get<const ViewCameraState>(viewport).LookThrough != state::Null) action::Emit(action::view::ExitLookThroughCamera{viewport});
     else action::Emit(std::forward<decltype(nav)>(nav));
 }
@@ -152,7 +153,7 @@ void UpdateMeshDrag(state::Registry &r, FrameState &frame) {
         const auto end = ToRenderPx(r, mouse), start = ToRenderPx(r, drag.StartPx);
         const float length = Length(end - start);
         if (length <= 0.f || drag.Staged == length) return;
-        action::Emit(action::mesh::Knife{.Start = start, .End = end, .View = std::make_unique<RenderView>(r.get<const Viewport>(FindActiveViewport(r)).FrameView)}, action::Phase::Stage);
+        action::Emit(action::mesh::Knife{.Start = start, .End = end}, action::Phase::Stage);
         drag.Staged = length;
         return;
     }
@@ -171,8 +172,6 @@ void UpdateMeshDrag(state::Registry &r, FrameState &frame) {
 
 void DrawMeshOperatorMenus(state::Registry &r) {
     using namespace action::mesh;
-    const auto viewport = FindActiveViewport(r);
-    const auto &view_orientation = r.get<const Viewport>(viewport).FrameView.Camera.Orientation;
     const auto op = [](const char *label, auto a, action::Phase phase = action::Phase::Record) {
         if (MenuItem(label)) action::Emit(std::move(a), phase);
     };
@@ -200,14 +199,14 @@ void DrawMeshOperatorMenus(state::Registry &r) {
         op("Smooth Vertices", SmoothVertices{});
         op("Curve Between Selected", CurveBetweenSelected{});
         op("To Circle", Circularize{});
-        op("Flatten", Flatten{.ViewNormal = view_orientation * vec3{0, 0, 1}});
+        op("Flatten", Flatten{});
         op("Randomize", Randomize{});
-        op("Vertex Slide", VertexSlide{.Direction = view_orientation * vec3{1, 0, 0}});
+        op("Vertex Slide", VertexSlide{.ViewSpace = true});
         op("To Sphere", ToSphere{});
         op("Push/Pull", PushPull{});
         op("Shear", Shear{});
-        if (MenuItem("Warp")) action::Emit(Warp{.Orientation = std::make_unique<quat>(view_orientation)});
-        if (MenuItem("Bend")) action::Emit(Bend{.Orientation = std::make_unique<quat>(view_orientation)});
+        if (MenuItem("Warp")) action::Emit(Warp{});
+        if (MenuItem("Bend")) action::Emit(Bend{});
         op("Shrink/Fatten", ShrinkFatten{});
         op("Bevel Vertices", Bevel{.Vertices = true});
         op("New Edge/Face from Vertices", Fill{});
@@ -223,12 +222,12 @@ void DrawMeshOperatorMenus(state::Registry &r) {
         op("Dissolve Vertices", Dissolve{DissolveMode::Vertices});
     };
     const auto edge_items = [&] {
-        op("Edge Slide", EdgeSlide{.Direction = view_orientation * vec3{1, 0, 0}});
+        op("Edge Slide", EdgeSlide{.ViewSpace = true});
         op("Space Evenly", SpaceEvenly{});
         op("Relax Edge Loops", RelaxEdgeLoops{});
         op("Curve Between Selected", CurveBetweenSelected{});
         op("To Circle", Circularize{});
-        op("Flatten", Flatten{.ViewNormal = view_orientation * vec3{0, 0, 1}});
+        op("Flatten", Flatten{});
         op("Extrude Edges", Extrude{ExtrudeMode::Edges}, action::Phase::Stage);
         op("Bevel Edges", Bevel{});
         op("Bridge Edge Loops", BridgeEdgeLoops{});
@@ -249,7 +248,7 @@ void DrawMeshOperatorMenus(state::Registry &r) {
         op("Poke Faces", Poke{});
         op("Make Planar Faces", MakePlanarFaces{});
         op("To Circle", Circularize{});
-        op("Flatten", Flatten{.ViewNormal = view_orientation * vec3{0, 0, 1}});
+        op("Flatten", Flatten{});
         op("Shrink/Fatten", ShrinkFatten{});
         op("Split Non-Planar Faces", SplitNonplanarFaces{});
         op("Split Concave Faces", SplitConcaveFaces{});
@@ -282,7 +281,6 @@ void DrawMeshOperatorMenus(state::Registry &r) {
     };
     const auto mesh_items = [&] {
         // The bisect plane and spin axis follow the view through the selection center.
-        const auto &camera = r.get<const ViewCameraState>(viewport).Active;
         const auto center = EditSelectionCenter(r);
         op("Duplicate", action::mesh::Duplicate{}, action::Phase::Stage);
         op("Extrude Region", Extrude{}, action::Phase::Stage);
@@ -293,14 +291,14 @@ void DrawMeshOperatorMenus(state::Registry &r) {
             op("By Material", Separate{SeparateMode::Material});
         });
         Separator();
-        op("Bisect", Bisect{.Point = center, .Normal = camera.Basis()[0]});
+        op("Bisect", Bisect{.Point = center, .ViewSpace = true});
         op("Symmetrize", Symmetrize{});
         op("Snap to Symmetry", SnapSymmetry{});
         Separator();
         op("Hide Selected", action::mesh::Hide{});
         op("Hide Unselected", action::mesh::Hide{true});
         op("Reveal", action::mesh::Reveal{});
-        op("Spin", Spin{.Axis = camera.Forward(), .Center = center});
+        op("Spin", Spin{.Center = center, .ViewSpace = true});
         op("Extrude Repeat", ExtrudeRepeat{});
         op("Convex Hull", ConvexHull{});
         Separator();
@@ -524,7 +522,7 @@ void Interact(state::Registry &r, FrameState &frame) {
     }
     if (active_transform) return; // Only transform gizmo should consume viewport mouse input while active.
 
-    if (!IsWindowHovered() && !frame.BoxSelectStart) return;
+    if (!IsWindowHovered() && !frame.BoxDrag) return;
 
     const auto &io = GetIO();
     if (const vec2 wheel = std::exchange(frame.PreciseWheelDelta, vec2{0}); wheel != vec2{0, 0}) {
@@ -537,7 +535,7 @@ void Interact(state::Registry &r, FrameState &frame) {
     if (OrientationGizmo::IsActive() || frame.OverlayControlsHovered) return;
 
     const auto render_extent = RenderExtentPx(r, viewport);
-    // Pick against the preceding rendered view; the live camera may already have advanced its animation.
+    // Camera advancement follows input and action execution.
     const auto selection_view = r.get<const Viewport>(viewport).FrameView;
     const auto edit_mode = r.get<const EditMode>(state::Document).Value;
     const auto arm_obj_entity = FindArmatureObject(r, active_entity);
@@ -545,25 +543,21 @@ void Interact(state::Registry &r, FrameState &frame) {
     const bool bone_mode = interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && active_is_armature);
     if (r.get<const BoxSelectState>(state::Document).Gesture == SelectionGesture::Box && interaction_mode != InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
-            frame.BoxSelectStart = frame.BoxSelectEnd = ToVec2(GetMousePos());
-            frame.BoxSelectAdditive = IsKeyDown(ImGuiMod_Shift);
-            frame.BoxSelectEmitted.reset();
-        } else if (IsMouseDown(ImGuiMouseButton_Left) && frame.BoxSelectStart) {
-            frame.BoxSelectEnd = ToVec2(GetMousePos());
+            frame.BoxDrag = BoxSelectDrag{ToVec2(GetMousePos()), ToVec2(GetMousePos()), IsKeyDown(ImGuiMod_Shift), {}};
+        } else if (IsMouseDown(ImGuiMouseButton_Left) && frame.BoxDrag) {
+            frame.BoxDrag->End = ToVec2(GetMousePos());
             // A box or view the drag already resolved selects nothing new.
-            if (const auto box = ComputeBoxSelect(*frame.BoxSelectStart, *frame.BoxSelectEnd, ToVec2(GetCursorScreenPos()), logical_extent);
-                box && frame.BoxSelectEmitted != std::pair{*box, selection_view}) {
-                frame.BoxSelectEmitted = {*box, selection_view};
+            if (const auto box = ComputeBoxSelect(frame.BoxDrag->Start, frame.BoxDrag->End, ToVec2(GetCursorScreenPos()), logical_extent);
+                box && frame.BoxDrag->Emitted != std::pair{*box, selection_view}) {
+                frame.BoxDrag->Emitted = {*box, selection_view};
                 // The hit set (object/bone instances or edit-mode elements) is resolved later.
-                action::Emit(action::selection::ApplyBoxSelect{.Box = *box, .Additive = frame.BoxSelectAdditive, .View = std::make_unique<RenderView>(selection_view)}, action::Phase::Stage);
+                action::Emit(action::selection::ApplyBoxSelect{.Box = *box, .Additive = frame.BoxDrag->Additive}, action::Phase::Stage);
             }
-        } else if (!IsMouseDown(ImGuiMouseButton_Left) && frame.BoxSelectStart) {
-            frame.BoxSelectStart.reset();
-            frame.BoxSelectEnd.reset();
-            frame.BoxSelectEmitted.reset();
+        } else if (!IsMouseDown(ImGuiMouseButton_Left) && frame.BoxDrag) {
+            frame.BoxDrag.reset();
             action::Commit();
         }
-        if (frame.BoxSelectStart) return;
+        if (frame.BoxDrag) return;
     }
 
     const auto mouse_pos_render = ToRenderPx(r, ToVec2(GetMousePos()));
@@ -572,6 +566,7 @@ void Interact(state::Registry &r, FrameState &frame) {
     // ImGui's origin and the picking pass's pixel rows both start at the top left.
     const uvec2 mouse_px{Clamp(mouse_pos_render.x, 0.0f, max_x), Clamp(mouse_pos_render.y, 0.0f, max_y)};
     const auto mouse = ToViewFraction(r, ToVec2(GetMousePos()));
+    const auto pick_px = SelectionPixel(selection_view.Extent, mouse);
 
     if (interaction_mode == InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -588,10 +583,11 @@ void Interact(state::Registry &r, FrameState &frame) {
         return;
     }
     if (interaction_mode == InteractionMode::Edit && !active_is_armature && ctrl_key(ImGuiMod_Ctrl | ImGuiKey_R)) {
-        // The pick takes the edge under the cursor, and the cut follows once the pick resolves.
-        if (edit_mode != Element::Edge) action::Emit(action::view::SetEditMode{.Mode = Element::Edge});
-        action::EmitSystem(action::selection::ApplyEditElementClick{.Mouse = mouse, .Toggle = false, .View = std::make_unique<RenderView>(selection_view)});
-        action::EmitSystem(action::mesh::LoopCut{});
+        std::vector<action::Action> actions;
+        if (edit_mode != Element::Edge) actions.push_back(action::MakeAction(action::view::SetEditMode{.Mode = Element::Edge}));
+        actions.push_back(action::MakeAction(action::selection::ApplyEditElementClick{false, RunEditElementPick(r, viewport, Element::Edge, pick_px)}));
+        actions.push_back(action::MakeAction(action::mesh::LoopCut{}));
+        action::Emit(std::move(actions));
         return;
     }
     if (interaction_mode == InteractionMode::Edit && !active_is_armature && IsMouseClicked(ImGuiMouseButton_Right)) OpenPopup("##MeshContext");
@@ -600,12 +596,10 @@ void Interact(state::Registry &r, FrameState &frame) {
 
     if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
         const bool toggle = IsKeyDown(ImGuiMod_Shift) || IsKeyDown(ImGuiMod_Ctrl) || IsKeyDown(ImGuiMod_Super);
-        action::Emit(action::selection::ApplyEditElementClick{.Mouse = mouse, .Toggle = toggle, .View = std::make_unique<RenderView>(selection_view)});
+        action::Emit(action::selection::ApplyEditElementClick{toggle, RunEditElementPick(r, viewport, edit_mode, pick_px)});
     } else if (interaction_mode == InteractionMode::Object || bone_mode) {
         const bool shift = IsKeyDown(ImGuiMod_Shift);
-        // The GPU pick and selection resolution run later, and a re-click at the same spot cycles to the next overlapping hit.
-        if (ImLengthSqr(CurrentClickPos - PrevClickPos) > 16) action::Emit(action::selection::Pick{mouse, shift, std::make_unique<RenderView>(selection_view)});
-        else action::Emit(action::selection::PickCycle{mouse, shift, std::make_unique<RenderView>(selection_view)});
+        action::Emit(action::selection::Pick{shift, PickObject(r, viewport, pick_px, ImLengthSqr(CurrentClickPos - PrevClickPos) <= 16)});
     }
 }
 
@@ -996,10 +990,10 @@ void DrawOverlay(state::Registry &r, FrameState &frame, state::Entity viewport, 
         // Inset and bevel size by the mouse's distance from the selection center, so they show the same guide as scale and rotate.
         if (frame.MeshDrag && frame.MeshDrag->Value != MeshOperatorDrag::Op::Knife) DrawDashedGuide(*GetWindowDrawList(), std::bit_cast<ImVec2>(frame.MeshDrag->CenterPx), GetMousePos());
 
-        if (frame.BoxSelectStart && frame.BoxSelectEnd) {
+        if (frame.BoxDrag) {
             auto &dl = *GetWindowDrawList();
-            const auto box_min = Min(*frame.BoxSelectStart, *frame.BoxSelectEnd);
-            const auto box_max = Max(*frame.BoxSelectStart, *frame.BoxSelectEnd);
+            const auto box_min = Min(frame.BoxDrag->Start, frame.BoxDrag->End);
+            const auto box_max = Max(frame.BoxDrag->Start, frame.BoxDrag->End);
             dl.AddRectFilled(std::bit_cast<ImVec2>(box_min), std::bit_cast<ImVec2>(box_max), IM_COL32(255, 255, 255, 30));
 
             static constexpr auto outline_color{IM_COL32(255, 255, 255, 200)};

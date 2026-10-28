@@ -96,9 +96,9 @@ template<> constexpr const char *Help<Bend>{"Bends the selected vertices from Ce
 template<> constexpr const char *Help<VertexSlide>{"Slides each selected vertex along its incident edge nearest Direction"};
 template<> constexpr const char *Help<EdgeSlide>{"Slides the selected edge chains along their adjacent faces"};
 template<> constexpr const char *Help<action::mesh::SnapSymmetry>{"Snaps the selected vertices to their mirrored partners across an axis plane"};
-template<> constexpr const char *Help<action::mesh::Spin>{"Extrudes the selection in steps around an axis"};
+template<> constexpr const char *Help<Spin>{"Extrudes the selection in steps around an axis"};
 template<> constexpr const char *Help<action::mesh::ExtrudeRepeat>{"Extrudes the selection repeatedly along an offset"};
-template<> constexpr const char *Help<action::mesh::Bisect>{"Cuts the mesh along a plane and deletes the faces on the cleared sides"};
+template<> constexpr const char *Help<Bisect>{"Cuts the mesh along a plane and deletes the faces on the cleared sides"};
 template<> constexpr const char *Help<action::mesh::Symmetrize>{"Mirrors one side of the mesh onto the other across an axis plane through the mesh origin"};
 template<> constexpr const char *Help<action::mesh::FillHoles>{"Fills boundary loops with faces"};
 template<> constexpr const char *Help<action::mesh::ConvexHull>{"Builds the convex hull of the selected vertices"};

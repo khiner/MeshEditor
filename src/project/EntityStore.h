@@ -1,5 +1,6 @@
 #pragma once
 
+#include "project/WorkspacePool.h"
 #include "project/store/Pages.h"
 #include "snapshot/SnapshotRoles.h"
 
@@ -47,6 +48,7 @@ struct EntityStore {
     }
 
     state::Registry &R;
+    WorkspacePool Workspace;
     store::VersionedVector<uint32_t> &Table;
     size_t PreviousLength{};
     std::array<std::unique_ptr<ComponentPool>, state::SchemaSize> Pools;

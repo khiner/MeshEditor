@@ -59,9 +59,9 @@
 #include "timeline/Timeline.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewCameraOps.h"
-#include "viewport/ViewportEvents.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportComponents.h"
+#include "viewport/ViewportEvents.h"
 #include "viewport/ViewportInteractionState.h"
 
 namespace {
@@ -674,7 +674,7 @@ void RecordMotionBlurPostFx(state::Registry &r, const Viewport &viewport, const 
 struct DisplayContext {
     DisplayContext(const state::Registry &r)
         : R(r), Buffers(r.Resources.get<const GpuBuffers>()), Meshes(r.Resources.get<const MeshStore>()),
-          Displays(r.Resources.get<const GpuSceneState>().Displays), Mode(r.get<const Interaction>(state::Document).Mode), EditElement(r.get<const EditMode>(state::Document).Value),
+          Displays(r.Resources.get<const GpuSceneState>().Displays), Mode(r.get<const Interaction>(state::Document).Mode),
           Primaries(r.get<const EditPrimaries>(state::Document).All), SelectedMeshes(r.get<const SelectionFlags>(state::Document).Meshes) {
         if (Mode == InteractionMode::Excite) {
             for (const auto [_, instance, __] : r.view<const Instance, const SoundVertices>().each()) SoundMeshes.insert(instance.Entity);
@@ -686,7 +686,6 @@ struct DisplayContext {
     const MeshStore &Meshes;
     const DisplayUnion &Displays;
     InteractionMode Mode;
-    Element EditElement;
     const selection::PrimaryEditInstanceMap &Primaries;
     const std::vector<state::Entity> &SelectedMeshes;
     std::unordered_set<state::Entity> SoundMeshes;
@@ -768,7 +767,8 @@ MeshDisplayState ComputeMeshDisplay(const DisplayContext &c, state::Entity mesh_
     const auto draw = [&](VertexOverlay overlay) { vertex_overlays |= uint8_t(1u << uint32_t(overlay)); };
     if (IsSilhouetteEligible(r, mesh_entity)) set(MeshletInstanceFlag::SilhouetteEligible);
     if (EditPinsFinest(c.Primaries, r, mesh_entity) || c.Meshes.HasDirtyPositions(mb)) set(MeshletInstanceFlag::LodPinFinest);
-    if (has_primary && meshlets && mesh_record && Mesh{meshes, mb.StoreId}.ElementCount(c.EditElement) > 0u) set(MeshletInstanceFlag::ElementSelection);
+    // A click can query another element domain before its mode action applies.
+    if (has_primary && meshlets && mesh_record) set(MeshletInstanceFlag::ElementSelection);
     if (overlays && c.Mode == InteractionMode::Edit && has_primary && mesh_record && meshlets) {
         set(MeshletInstanceFlag::EditOverlay);
         draw(VertexOverlay::EditPoints);
@@ -829,7 +829,6 @@ void ResizeRange(auto &arena, Range &range, uint32_t count) {
     arena.Release(range);
     range = arena.Allocate(count);
 }
-
 
 // Allocate bounds and pose storage from the mesh inputs and mark bounds for recomputation.
 // Instances with the same deformation share one bounds entry; independently deformed instances use separate entries and poses.

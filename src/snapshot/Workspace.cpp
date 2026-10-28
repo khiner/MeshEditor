@@ -13,6 +13,12 @@ struct Section {
 };
 } // namespace
 
+void CaptureWorkspace(state::Registry &r, state::TypeId type, state::Entity e) {
+    if (!r.Capture) return;
+    const state::PageMask page{state::Index(e) / state::Table::PageCount, 1u << (state::Index(e) % state::Table::PageCount)};
+    r.Capture(r, type, std::span{&page, 1u});
+}
+
 void BindRetention(state::Registry &r) {
     r.Resources.emplace<Retention>();
     const auto &entries = SnapshotTable();

@@ -10,6 +10,7 @@
 #include "procedure/Procedure.h"
 #include "render/LightComponents.h"
 #include "render/MaterialComponents.h"
+#include "scene/CameraLens.h"
 #include "snapshot/SnapshotRoles.h"
 #include "timeline/Timeline.h"
 #include "timeline/TimelineTheme.h"

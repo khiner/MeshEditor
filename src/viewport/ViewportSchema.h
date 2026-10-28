@@ -7,6 +7,7 @@
 struct PanelsState;
 struct ValidationSession;
 struct FrameState;
+struct ActionInputs;
 struct StartTransform;
 struct StartBoneLength;
 struct Interaction;
@@ -37,7 +38,7 @@ struct StartScreenTransform;
 struct TransformGizmoState;
 struct ViewportScene;
 
-using ViewportSchema = state::Schema<state::ViewportBase, state::ViewportCount, PanelsState, std::unique_ptr<ValidationSession>, FrameState, StartTransform, StartBoneLength, Interaction, EditMode, EnabledInteractionModes, ShadeSmoothAngle, ViewportChanges, ViewportConsumerFence, AnisotropicFilter, MeshGeometryDirty, MeshPositionsChanged, PendingSetEditMode, PendingImportMesh, PendingViewSetup, ViewportIcons, StartPivot, PendingTransform, StartScreenTransform, TransformGizmoState, ViewportScene, Viewport, ViewportPanel, ActiveViewport, ViewCameraState, OrbitToActive, ViewportDisplay, MaterialPreviewLighting, RenderedLighting, StudioEnvironment>;
+using ViewportSchema = state::Schema<state::ViewportBase, state::ViewportCount, PanelsState, std::unique_ptr<ValidationSession>, FrameState, StartTransform, StartBoneLength, Interaction, EditMode, EnabledInteractionModes, ShadeSmoothAngle, ViewportChanges, ViewportConsumerFence, AnisotropicFilter, MeshGeometryDirty, MeshPositionsChanged, PendingSetEditMode, PendingImportMesh, PendingViewSetup, ViewportIcons, StartPivot, PendingTransform, StartScreenTransform, TransformGizmoState, ViewportScene, Viewport, ViewportPanel, ActiveViewport, ViewCameraState, OrbitToActive, ViewportDisplay, MaterialPreviewLighting, RenderedLighting, StudioEnvironment, ActionInputs>;
 template<typename T>
     requires ViewportSchema::Has<T>
 inline constexpr state::TypeId state::Slot<T> = ViewportSchema::Of<T>();

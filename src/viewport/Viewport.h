@@ -37,6 +37,9 @@ struct Viewport {
 
 // Requests the viewport's frame and marks its depth pyramid stale.
 void RequestFrame(state::Registry &, state::Entity viewport);
+RenderView CurrentRenderView(const state::Registry &, state::Entity viewport);
+void PrepareSelectionViewport(state::Registry &, state::Entity viewport);
+void ReconcileWorkspace(state::Registry &);
 
 // A displayed viewport has its panel open and drawn, renders, and its display settings join the union the mesh records derive from.
 bool Displayed(const state::Registry &, state::Entity viewport);
