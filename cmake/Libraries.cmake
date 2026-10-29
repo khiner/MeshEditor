@@ -136,6 +136,7 @@ mesheditor_library(MeshEditorScene HOT
     src/scene/Entity.cpp
     src/scene/ObjectCreation.cpp
     src/scene/RotationUi.cpp
+    src/scene/Hierarchy.cpp
     src/scene/SceneGraph.cpp
     src/selection/Selection.cpp
     src/viewport/RenderExtent.cpp
@@ -244,6 +245,11 @@ mesheditor_library(MeshEditorEditor COLD
     src/object/ObjectOps.cpp
     src/procedure/Cook.cpp
     src/procedure/Plan.cpp
+    src/procedure/Subnetwork.cpp
+    src/procedure/Network.cpp
+    src/procedure/SceneReferences.cpp
+    src/scene/HierarchyInstance.cpp
+    src/scene/HierarchyGeometry.cpp
     ${native_snapshots}
     src/snapshot/SnapshotRoles.cpp
     src/snapshot/Workspace.cpp
@@ -263,6 +269,7 @@ mesheditor_library(MeshEditorUi COLD
     src/gizmo/TransformGizmo.cpp
     src/physics/PhysicsUi.cpp
     src/procedure/NodeEditor.cpp
+    src/procedure/SceneNodes.cpp
     src/render/SvgResource.cpp
     src/scene/SceneControlsUi.cpp
     src/ui/FieldEdit.cpp

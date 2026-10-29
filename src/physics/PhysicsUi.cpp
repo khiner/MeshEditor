@@ -127,9 +127,9 @@ void DrawMatrixCell(ImDrawList *dl, ImVec2 p_min, ImVec2 p_max, bool a_to_b, boo
 }
 
 // List of named entities with use count, name edit, Delete/Add buttons, and per-entry body.
-// `add` is emitted by the Add button, `rename(e, name)` returns the rename action, and `body(e, x)` renders the entry.
+// Both the list and node inspector use RenderResourceProperties for editing.
 template<typename T>
-void DrawNamedEntityList(state::Registry &r, const char *id, const char *add_label, auto add, auto &&rename, auto &&body) {
+void DrawNamedEntityList(state::Registry &r, const char *id, const char *add_label, auto add) {
     PushID(id);
     std::vector<state::Entity> entities;
     for (const auto e : r.view<T>()) entities.push_back(e);
@@ -137,14 +137,7 @@ void DrawNamedEntityList(state::Registry &r, const char *id, const char *add_lab
     const auto deleted = ui::ItemList(
         entities.size(),
         [&](uint32_t i) { return std::format("{} ({})", DisplayName(r.get<const T>(entities[i]).Name, "{:x}", uint32_t(entities[i])), uses.Count(entities[i])); },
-        [&](uint32_t i) {
-            const auto e = entities[i];
-            const auto &x = r.get<const T>(e);
-            char buf[128];
-            snprintf(buf, sizeof(buf), "%s", x.Name.c_str());
-            if (InputText("Name", buf, sizeof(buf))) action::Emit(rename(e, std::string{buf}));
-            body(e, x);
-        }
+        [&](uint32_t i) { physics_ui::RenderResourceProperties(r, entities[i]); }
     );
     if (deleted) action::Emit(action::DestroyEntity{entities[*deleted]});
     if (Button(add_label)) action::Emit(add);
@@ -179,33 +172,100 @@ std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in, bool auto_
 }
 } // namespace
 
+namespace {
+void RenderJointDefinition(state::Entity jd_entity, const PhysicsJointDef &jd) {
+    static const char *const axis_names[]{"X", "Y", "Z"};
+    RenderJointVecList<PhysicsJointLimit>(jd_entity, jd.Limits, "Limit", "Add limit", [&](const auto &limit, auto &&edit_limit) {
+        const auto axes = [&](const char *label, auto member, bool angular) {
+            TextUnformatted(label);
+            SameLine();
+            for (uint8_t a = 0; a < 3; ++a) {
+                if (angular) PushID(a + 3);
+                bool active = std::ranges::contains(limit.*member, a);
+                if (Checkbox(axis_names[a], &active)) action::Emit(edit_limit([&](auto &e) {
+                    if (active) (e.*member).push_back(a);
+                    else std::erase(e.*member, a);
+                }));
+                if (a < 2) SameLine();
+                if (angular) PopID();
+            }
+        };
+        axes("Linear axes:", &PhysicsJointLimit::LinearAxes, false);
+        axes("Angular axes:", &PhysicsJointLimit::AngularAxes, true);
+        const auto bound = [&](const char *label, const char *id, auto member) {
+            bool enabled = (limit.*member).has_value();
+            float value = (limit.*member).value_or(0.f);
+            if (Checkbox(label, &enabled)) action::Emit(edit_limit([&](auto &e) { e.*member = enabled ? std::optional{value} : std::nullopt; }));
+            if (enabled) {
+                SameLine();
+                ui::Gesture(ui::DragFloat(id, &value, .01f), [&] { return edit_limit([&](auto &e) { e.*member = value; }); });
+            }
+        };
+        bound("Min", "##min", &PhysicsJointLimit::Min);
+        bound("Max", "##max", &PhysicsJointLimit::Max);
+
+        bool soft = limit.Stiffness.has_value();
+        if (Checkbox("Soft limit", &soft)) action::Emit(edit_limit([&](auto &e) { e.Stiffness = soft ? std::optional{1000.0f} : std::nullopt; }));
+        if (limit.Stiffness) {
+            float stiffness = *limit.Stiffness, damping = limit.Damping;
+            ui::Gesture(ui::DragFloat("Stiffness", &stiffness, 1.0f, 0.0f, 1e6f), [&] { return edit_limit([&](auto &e) { e.Stiffness = stiffness; }); });
+            ui::Gesture(ui::DragFloat("Damping", &damping, 0.1f, 0.0f, 1e4f), [&] { return edit_limit([&](auto &e) { e.Damping = damping; }); });
+        }
+    });
+
+    Spacing();
+
+    RenderJointVecList<PhysicsJointDrive>(jd_entity, jd.Drives, "Drive", "Add drive", [&](const auto &drive, auto &&edit_drive) {
+        if (auto type = int(drive.Type); Combo("Type", &type, "Linear\0Angular\0")) action::Emit(edit_drive([&](auto &e) { e.Type = PhysicsDriveType(type); }));
+        if (int axis = drive.Axis; Combo("Axis", &axis, "X\0Y\0Z\0")) action::Emit(edit_drive([&](auto &e) { e.Axis = uint8_t(axis); }));
+        if (auto mode = int(drive.Mode); Combo("Mode", &mode, "Force\0Acceleration\0")) action::Emit(edit_drive([&](auto &e) { e.Mode = PhysicsDriveMode(mode); }));
+        float max_force = drive.MaxForce, pos_target = drive.PositionTarget, vel_target = drive.VelocityTarget;
+        float stiffness = drive.Stiffness, damping = drive.Damping;
+        ui::Gesture(ui::DragFloat("Max force", &max_force, 1.0f, 0.0f, 1e6f), [&] { return edit_drive([&](auto &e) { e.MaxForce = max_force; }); });
+        ui::Gesture(ui::DragFloat("Position target", &pos_target, 0.01f), [&] { return edit_drive([&](auto &e) { e.PositionTarget = pos_target; }); });
+        ui::Gesture(ui::DragFloat("Velocity target", &vel_target, 0.01f), [&] { return edit_drive([&](auto &e) { e.VelocityTarget = vel_target; }); });
+        ui::Gesture(ui::DragFloat("Stiffness", &stiffness, 1.0f, 0.0f, 1e6f), [&] { return edit_drive([&](auto &e) { e.Stiffness = stiffness; }); });
+        ui::Gesture(ui::DragFloat("Damping", &damping, 0.1f, 0.0f, 1e4f), [&] { return edit_drive([&](auto &e) { e.Damping = damping; }); });
+    });
+}
+} // namespace
+
+bool physics_ui::RenderResourceProperties(state::Registry &r, state::Entity entity) {
+    const auto rename = [&](const auto &value) {
+        char name[256];
+        snprintf(name, sizeof name, "%s", value.Name.c_str());
+        if (InputText("Name", name, sizeof name)) action::Emit(action::physics::RenameResource{entity, name});
+    };
+    if (const auto *m = r.try_get<const PhysicsMaterial>(entity)) {
+        rename(*m);
+        ui::DrawFields<PhysicsMaterial, &PhysicsMaterial::Name>(ui::Edit{r, entity});
+    } else if (const auto *system = r.try_get<const CollisionSystem>(entity)) {
+        rename(*system);
+    } else if (const auto *filter = r.try_get<const CollisionFilter>(entity)) {
+        rename(*filter);
+        RenderCollisionFilterBody(r, entity);
+    } else if (const auto *joint = r.try_get<const PhysicsJointDef>(entity)) {
+        rename(*joint);
+        RenderJointDefinition(entity, *joint);
+    } else return false;
+    return true;
+}
+
 void physics_ui::RenderTab(state::Registry &r) {
     SeparatorText("Simulation");
     Text("Bodies: %u", physics::BodyCount(r));
     ui::DrawFields<PhysicsSimulationSettings>(ui::Edit{r, state::Document});
 
     if (CollapsingHeader("Physics Materials")) {
-        DrawNamedEntityList<PhysicsMaterial>(
-            r, "PhysMaterials", "Add material", action::physics::AddPhysicsMaterial{},
-            [](state::Entity e, std::string name) { return action::physics::RenamePhysicsMaterial{e, std::move(name)}; },
-            [&](state::Entity mat_entity, const PhysicsMaterial &) { ui::DrawFields<PhysicsMaterial, &PhysicsMaterial::Name>(ui::Edit{r, mat_entity}); }
-        );
+        DrawNamedEntityList<PhysicsMaterial>(r, "PhysMaterials", "Add material", action::physics::AddPhysicsMaterial{});
     }
 
     if (CollapsingHeader("Collision Systems")) {
-        DrawNamedEntityList<CollisionSystem>(
-            r, "CollisionSystems", "Add system", action::physics::AddCollisionSystem{},
-            [](state::Entity e, std::string name) { return action::physics::RenameCollisionSystem{e, std::move(name)}; },
-            [](state::Entity, const CollisionSystem &) {}
-        );
+        DrawNamedEntityList<CollisionSystem>(r, "CollisionSystems", "Add system", action::physics::AddCollisionSystem{});
     }
 
     if (CollapsingHeader("Collision Filters")) {
-        DrawNamedEntityList<CollisionFilter>(
-            r, "CollisionFilters", "Add filter", action::physics::AddCollisionFilter{},
-            [](state::Entity e, std::string name) { return action::physics::RenameCollisionFilter{e, std::move(name)}; },
-            [&](state::Entity fe, const CollisionFilter &) { RenderCollisionFilterBody(r, fe); }
-        );
+        DrawNamedEntityList<CollisionFilter>(r, "CollisionFilters", "Add filter", action::physics::AddCollisionFilter{});
         PushID("CollisionFilters");
 
         std::vector<state::Entity> filter_entities;
@@ -259,84 +319,17 @@ void physics_ui::RenderTab(state::Registry &r) {
     }
 
     if (CollapsingHeader("Joint Definitions")) {
-        DrawNamedEntityList<PhysicsJointDef>(
-            r, "JointDefs", "Add joint definition", action::physics::AddJointDef{},
-            [](state::Entity e, std::string name) { return action::physics::RenameJointDef{e, std::move(name)}; },
-            [&](state::Entity jd_entity, const PhysicsJointDef &jd) {
-                static const char *const axis_names[]{"X", "Y", "Z"};
-                RenderJointVecList<PhysicsJointLimit>(jd_entity, jd.Limits, "Limit", "Add limit", [&](const auto &limit, auto &&edit_limit) {
-                    TextUnformatted("Linear axes:");
-                    SameLine();
-                    for (uint8_t a = 0; a < 3; ++a) {
-                        bool active = std::ranges::contains(limit.LinearAxes, a);
-                        if (Checkbox(axis_names[a], &active)) {
-                            action::Emit(edit_limit([&](auto &e) {
-                                if (active) e.LinearAxes.push_back(a);
-                                else std::erase(e.LinearAxes, a);
-                            }));
-                        }
-                        if (a < 2) SameLine();
-                    }
-                    TextUnformatted("Angular axes:");
-                    SameLine();
-                    for (uint8_t a = 0; a < 3; ++a) {
-                        PushID(a + 3);
-                        bool active = std::ranges::contains(limit.AngularAxes, a);
-                        if (Checkbox(axis_names[a], &active)) {
-                            action::Emit(edit_limit([&](auto &e) {
-                                if (active) e.AngularAxes.push_back(a);
-                                else std::erase(e.AngularAxes, a);
-                            }));
-                        }
-                        if (a < 2) SameLine();
-                        PopID();
-                    }
-
-                    bool has_min = limit.Min.has_value(), has_max = limit.Max.has_value();
-                    float min_val = limit.Min.value_or(0.0f), max_val = limit.Max.value_or(0.0f);
-                    if (Checkbox("Min", &has_min)) action::Emit(edit_limit([&](auto &e) { e.Min = has_min ? std::optional{min_val} : std::nullopt; }));
-                    if (has_min) {
-                        SameLine();
-                        ui::Gesture(ui::DragFloat("##min", &min_val, 0.01f), [&] { return edit_limit([&](auto &e) { e.Min = min_val; }); });
-                    }
-                    if (Checkbox("Max", &has_max)) action::Emit(edit_limit([&](auto &e) { e.Max = has_max ? std::optional{max_val} : std::nullopt; }));
-                    if (has_max) {
-                        SameLine();
-                        ui::Gesture(ui::DragFloat("##max", &max_val, 0.01f), [&] { return edit_limit([&](auto &e) { e.Max = max_val; }); });
-                    }
-
-                    bool soft = limit.Stiffness.has_value();
-                    if (Checkbox("Soft limit", &soft)) action::Emit(edit_limit([&](auto &e) { e.Stiffness = soft ? std::optional{1000.0f} : std::nullopt; }));
-                    if (limit.Stiffness) {
-                        float stiffness = *limit.Stiffness, damping = limit.Damping;
-                        ui::Gesture(ui::DragFloat("Stiffness", &stiffness, 1.0f, 0.0f, 1e6f), [&] { return edit_limit([&](auto &e) { e.Stiffness = stiffness; }); });
-                        ui::Gesture(ui::DragFloat("Damping", &damping, 0.1f, 0.0f, 1e4f), [&] { return edit_limit([&](auto &e) { e.Damping = damping; }); });
-                    }
-                });
-
-                Spacing();
-
-                RenderJointVecList<PhysicsJointDrive>(jd_entity, jd.Drives, "Drive", "Add drive", [&](const auto &drive, auto &&edit_drive) {
-                    if (auto type = int(drive.Type); Combo("Type", &type, "Linear\0Angular\0")) action::Emit(edit_drive([&](auto &e) { e.Type = PhysicsDriveType(type); }));
-                    if (int axis = drive.Axis; Combo("Axis", &axis, "X\0Y\0Z\0")) action::Emit(edit_drive([&](auto &e) { e.Axis = uint8_t(axis); }));
-                    if (auto mode = int(drive.Mode); Combo("Mode", &mode, "Force\0Acceleration\0")) action::Emit(edit_drive([&](auto &e) { e.Mode = PhysicsDriveMode(mode); }));
-                    float max_force = drive.MaxForce, pos_target = drive.PositionTarget, vel_target = drive.VelocityTarget;
-                    float stiffness = drive.Stiffness, damping = drive.Damping;
-                    ui::Gesture(ui::DragFloat("Max force", &max_force, 1.0f, 0.0f, 1e6f), [&] { return edit_drive([&](auto &e) { e.MaxForce = max_force; }); });
-                    ui::Gesture(ui::DragFloat("Position target", &pos_target, 0.01f), [&] { return edit_drive([&](auto &e) { e.PositionTarget = pos_target; }); });
-                    ui::Gesture(ui::DragFloat("Velocity target", &vel_target, 0.01f), [&] { return edit_drive([&](auto &e) { e.VelocityTarget = vel_target; }); });
-                    ui::Gesture(ui::DragFloat("Stiffness", &stiffness, 1.0f, 0.0f, 1e6f), [&] { return edit_drive([&](auto &e) { e.Stiffness = stiffness; }); });
-                    ui::Gesture(ui::DragFloat("Damping", &damping, 0.1f, 0.0f, 1e4f), [&] { return edit_drive([&](auto &e) { e.Damping = damping; }); });
-                });
-            }
-        );
+        DrawNamedEntityList<PhysicsJointDef>(r, "JointDefs", "Add joint definition", action::physics::AddJointDef{});
     }
 }
 
-void physics_ui::RenderEntityProperties(state::Registry &r, state::Entity entity) {
+void physics_ui::RenderEntityProperties(state::Registry &r, state::Entity entity, bool explicit_target) {
     if (!CollapsingHeader("Physics")) return;
 
     PushID("PhysicsEntity");
+    const action::Target active_target = explicit_target ? action::Target{entity} : action::Target{action::OnActive{}};
+    const auto scope = [&] { return explicit_target ? action::Target{entity} : ui::TargetFromAlt(); };
+    ui::Edit fields{r, explicit_target ? std::optional{entity} : std::nullopt};
 
     const auto *motion = r.try_get<const PhysicsMotion>(entity);
     const auto *collider = r.try_get<const ColliderShape>(entity);
@@ -360,22 +353,22 @@ void physics_ui::RenderEntityProperties(state::Registry &r, state::Entity entity
     SameLine();
     changed |= RadioButton("Dynamic", &motion_type, int(MType::Dynamic));
 
-    if (changed) action::Emit(action::physics::SetMotionType{MType(motion_type), ui::TargetFromAlt()});
+    if (changed) action::Emit(action::physics::SetMotionType{MType(motion_type), scope()});
 
     if (collider) { // Collider shape editing
         Spacing();
         SeparatorText("Collider");
 
-        ui::Edit{r}.Draw<&ColliderPolicy::AutoFitDims>("Auto-fit");
+        fields.Draw<&ColliderPolicy::AutoFitDims>("Auto-fit");
         auto s = RenderShapeEditor(collider->Shape, r.get<const ColliderPolicy>(entity).AutoFitDims);
-        ui::Gesture(bool(s), [&, scope = ui::TargetFromAlt()] { return action::physics::SetColliderShape{*s, s->index() != collider->Shape.index(), scope}; });
+        ui::Gesture(bool(s), [&, target = scope()] { return action::physics::SetColliderShape{*s, s->index() != collider->Shape.index(), target}; });
 
         const auto &material = r.get<const ColliderMaterial>(entity);
-        TargetCombo<PhysicsMaterial>(r, "Physics material", material.PhysicsMaterialEntity, "No materials defined", [](state::Entity e) {
-            action::Emit(action::UpdateActive<&ColliderMaterial::PhysicsMaterialEntity>(e));
+        TargetCombo<PhysicsMaterial>(r, "Physics material", material.PhysicsMaterialEntity, "No materials defined", [&](state::Entity e) {
+            action::Emit(action::UpdateOf<&ColliderMaterial::PhysicsMaterialEntity>(active_target, e));
         });
-        TargetCombo<CollisionFilter>(r, "Collision filter", material.CollisionFilterEntity, "No filters defined", [](state::Entity e) {
-            action::Emit(action::UpdateActive<&ColliderMaterial::CollisionFilterEntity>(e));
+        TargetCombo<CollisionFilter>(r, "Collision filter", material.CollisionFilterEntity, "No filters defined", [&](state::Entity e) {
+            action::Emit(action::UpdateOf<&ColliderMaterial::CollisionFilterEntity>(active_target, e));
         });
     }
 
@@ -388,25 +381,25 @@ void physics_ui::RenderEntityProperties(state::Registry &r, state::Entity entity
         const auto &playback = r.get<const TimelinePlayback>(state::Document);
         const bool velocity_locked = playback.Playing || physics::BakedThrough(r) > range.StartFrame;
         if (velocity_locked) BeginDisabled();
-        if (r.try_get<const PhysicsVelocity>(entity)) ui::DrawFields<PhysicsVelocity>(ui::Edit{r});
+        if (r.try_get<const PhysicsVelocity>(entity)) ui::DrawFields<PhysicsVelocity>(fields);
         if (velocity_locked) EndDisabled();
 
         // Kinematic bodies have no mass properties, gravity, or damping.
-        if (!motion->IsKinematic) ui::DrawFields<PhysicsMotion, &PhysicsMotion::IsKinematic>(ui::Edit{r});
+        if (!motion->IsKinematic) ui::DrawFields<PhysicsMotion, &PhysicsMotion::IsKinematic>(fields);
     }
 
     if (const auto *joint = r.try_get<const PhysicsJoint>(entity)) {
         Spacing();
         SeparatorText("Joint");
 
-        TargetCombo<PhysicsJointDef>(r, "Definition", joint->JointDefEntity, "No joint definitions", [](state::Entity e) {
-            action::Emit(action::UpdateActive<&PhysicsJoint::JointDefEntity>(e));
+        TargetCombo<PhysicsJointDef>(r, "Definition", joint->JointDefEntity, "No joint definitions", [&](state::Entity e) {
+            action::Emit(action::UpdateOf<&PhysicsJoint::JointDefEntity>(active_target, e));
         });
         if (const auto *def = joint->JointDefEntity != state::Null && r.valid(joint->JointDefEntity) ? r.try_get<const PhysicsJointDef>(joint->JointDefEntity) : nullptr) {
             Text("Limits: %zu, Drives: %zu", def->Limits.size(), def->Drives.size());
         }
 
-        ui::Edit{r}.Draw<&PhysicsJoint::EnableCollision>();
+        fields.Draw<&PhysicsJoint::EnableCollision>();
 
         // ConnectedNode picker.
         // KHR joint.connectedNode is the second attachment frame.
@@ -422,7 +415,7 @@ void physics_ui::RenderEntityProperties(state::Registry &r, state::Entity entity
                 return nodes;
             },
             [&](state::Entity e) { return e == state::Null ? std::string{"None"} : GetName(r, e); },
-            [](state::Entity e) { action::Emit(action::UpdateActive<&PhysicsJoint::ConnectedNode>(e)); }
+            [&](state::Entity e) { action::Emit(action::UpdateOf<&PhysicsJoint::ConnectedNode>(active_target, e)); }
         );
     }
 
@@ -431,22 +424,22 @@ void physics_ui::RenderEntityProperties(state::Registry &r, state::Entity entity
         SeparatorText("Trigger (compound)");
         PushID("Trigger");
         Text("Compound trigger: %zu nodes", trigger_nodes->Nodes.size());
-        TargetCombo<CollisionFilter>(r, "Collision filter", trigger_nodes->CollisionFilterEntity, "No filters defined", [](state::Entity e) {
-            action::Emit(action::UpdateActive<&TriggerNodes::CollisionFilterEntity>(e));
+        TargetCombo<CollisionFilter>(r, "Collision filter", trigger_nodes->CollisionFilterEntity, "No filters defined", [&](state::Entity e) {
+            action::Emit(action::UpdateOf<&TriggerNodes::CollisionFilterEntity>(active_target, e));
         });
-        if (Button("Remove Trigger")) action::Emit(action::physics::RemoveTriggerNodes{});
+        if (Button("Remove Trigger")) action::Emit(action::physics::RemoveTriggerNodes{active_target});
         PopID();
     } else {
         Spacing();
         const bool is_shape_trigger = collider && r.all_of<const TriggerTag>(entity);
         if (collider) {
             if (is_shape_trigger) {
-                if (Button("Convert to Collider")) action::Emit(action::physics::SetTrigger{false});
+                if (Button("Convert to Collider")) action::Emit(action::physics::SetTrigger{false, active_target});
             } else {
-                if (Button("Convert to Trigger")) action::Emit(action::physics::SetTrigger{true});
+                if (Button("Convert to Trigger")) action::Emit(action::physics::SetTrigger{true, active_target});
             }
         } else if (Button("Add Trigger")) {
-            action::Emit(action::physics::AddTrigger{});
+            action::Emit(action::physics::AddTrigger{active_target});
         }
     }
 

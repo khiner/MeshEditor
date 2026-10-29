@@ -147,7 +147,7 @@ void ComputeKeyframes(const state::Registry &r, std::span<const state::Entity> s
     auto &frames = out.Frames;
     frames.clear();
     const auto append = [&](state::Entity e, auto &&include) {
-        const auto *clips = r.try_get<const AnimationClips>(e);
+        const auto *clips = animation::ClipsOf(r, e);
         const auto *clip = clips ? animation::ActiveClip(r, *clips) : nullptr;
         if (!clip) return;
         for (const auto &channel : clip->Channels) {

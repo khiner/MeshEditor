@@ -40,6 +40,7 @@ struct MeshletVertexVaryings {
     float WorldScale [[user(WorldScale)]] [[flat]];
     uint ObjectId [[user(ObjectId)]] [[flat]];
     uint ElementId [[user(ElementId)]] [[flat]];
+    int Facing [[user(Facing)]] [[flat]];
     uint Topology [[user(Topology)]] [[flat]];
     float2 PointCoord [[user(PointCoord)]];
 };
@@ -151,6 +152,16 @@ struct ElementIdFragmentVaryings {
     float4 Position [[position]];
     uint ElementId [[user(ElementId)]] [[flat]];
 };
+
+struct FaceIdFragmentVaryings {
+    float4 Position [[position]];
+    uint ElementId [[user(ElementId)]] [[flat]];
+    int Facing [[user(Facing)]] [[flat]]; // Zero accepts both sides, positive accepts front faces, negative accepts back faces.
+};
+
+inline bool FaceCulled(int facing, bool front_facing) {
+    return facing != 0 && front_facing != (facing > 0);
+}
 
 struct OverlayTargets {
     float4 Color [[color(0)]];

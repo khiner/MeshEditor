@@ -20,6 +20,7 @@ void InitRenderStoreContext(state::Registry &r, const mtl::Context &ctx) {
 void RegisterRenderStoreHandlers(state::Registry &r) {
     r.on_destroy<ModelsBuffer, [](state::Registry &r, state::Entity e) {
         r.Resources.emplace<PendingSlotRemovals>().Retired.push_back(e);
+        if (!r.Restoring) r.Resources.emplace<PendingObjectRemovals>().InstanceRanges.push_back(r.get<const ModelsBuffer>(e).InstanceRange);
     }>();
     r.on_destroy<ArmaturePoseState, [](state::Registry &r, state::Entity e) {
         r.Resources.emplace<PendingObjectRemovals>().DeformRanges.append_range(r.get<const ArmaturePoseState>(e).GpuDeformRanges);
@@ -43,7 +44,7 @@ void InitDefaultMaterial(state::Registry &r) {
     auto &buffers = r.Resources.get<GpuBuffers>();
     auto &textures = r.Resources.get<TextureStore>();
     auto &materials = r.Resources.get<MaterialStore>();
-    buffers.Materials.Append(PBRMaterial{.BaseColorTexture = {.Slot = textures.WhiteTextureSlot}, .MetallicFactor = 0.f});
+    buffers.Materials.Append(PBRMaterial{.BaseColorTexture = {.Slot = textures.WhiteTextureSlot}, .MetallicFactor = 0.f, .DoubleSided = 1u});
     materials.AppendNames({"Default"});
 
     constexpr std::array<std::byte, 4> WhitePixels{std::byte{0xff}, std::byte{0xff}, std::byte{0xff}, std::byte{0xff}};

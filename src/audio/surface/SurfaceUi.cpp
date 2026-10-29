@@ -1,4 +1,5 @@
 #include "SurfaceAudio.h"
+#include "scene/HierarchyInstance.h"
 
 #include "action/Action.h"
 #include "audio/ContactScene.h"
@@ -31,14 +32,14 @@ using namespace ImGui;
 void DrawContactSurfaceControls(state::Registry &r, state::Entity e, const ContactSurface &surface, const AcousticMaterial &material) {
     SeparatorText("Surface finish");
     ui::ChoiceCombo("Presets##finish", surface.Name, surfaces::acoustic::All | std::views::transform(&ContactSurfacePreset::Name), std::identity{}, [&](const std::string &name) {
-        action::Emit(action::audio::SetSurfacePreset{name});
+        action::Emit(action::audio::SetSurfacePreset{name, e});
     });
-    ui::DrawFields<ContactSurface, &ContactSurface::Name, &ContactSurface::Profile, &ContactSurface::SampleSpacing, &ContactSurface::NormalTexture>(ui::PatchEdit{surface});
+    ui::DrawFields<ContactSurface, &ContactSurface::Name, &ContactSurface::Profile, &ContactSurface::SampleSpacing, &ContactSurface::NormalTexture>(ui::PatchEdit{surface, e});
 
     // Derive contact constants against an identical body under this object's weight.
     const auto &props = material.Properties;
     const auto *cd = r.try_get<const ContactDynamics>(e);
-    const auto *modes = r.try_get<const ModalModes>(e);
+    const auto *modes = r.try_get<const ModalModes>(HierarchySource(r, e));
     const auto sample_curvature = modes && !modes->Positions.empty() ? SurfaceCurvature(r, e, TransformPoint(*WorldTransformOf(r, e), modes->Positions.front())) : std::nullopt;
     const double curvature = CombinedCurvature(sample_curvature.value_or(0.0), 0.0);
     const double inv_modulus = InvEffectiveModulus(props, props);

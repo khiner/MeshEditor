@@ -327,6 +327,13 @@ struct MeshStore {
     void TrimInsertedElements(uint32_t id, ElementDomain, ElementHandleRange &inserted, const BufferArena<uint32_t> &list, uint32_t used);
 
     void Track(store::History &);
+    // Read and retain intermediate states in the history supplying a replay.
+    struct HistoryScope {
+        MeshStore &Meshes;
+        store::History *Previous;
+        HistoryScope(MeshStore &, store::History &);
+        ~HistoryScope();
+    };
     void FinishRestore();
     // Index changed records for sparse history restoration.
     void IndexHistory();

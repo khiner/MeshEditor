@@ -1,7 +1,9 @@
 #include "animation/Evaluate.h"
 
+#include "TransformMath.h"
 #include "animation/Clips.h"
 #include "animation/Fields.h"
+#include "scene/HierarchyInstance.h"
 #include "state/Registry.h"
 
 namespace animation {
@@ -13,8 +15,8 @@ void Evaluate(state::Registry &r, float seconds, bool persistent) {
     for (const auto entity : stale) r.remove<PosedLocal>(entity);
 
     std::vector<float> value;
-    for (const auto [entity, clips] : r.view<const AnimationClips>().each()) {
-        const auto *clip = ActiveClip(r, clips);
+    for (const auto entity : AnimatedEntities(r)) {
+        const auto *clip = ActiveClip(r, *ClipsOf(r, entity));
         if (!clip) continue;
         // The node's pose, seeded from its Transform so unanimated components follow edits to it.
         std::optional<Transform> pose;
@@ -22,7 +24,7 @@ void Evaluate(state::Registry &r, float seconds, bool persistent) {
             const bool posing = channel.Target.Component == state::Key<PosedLocal>();
             if (!posing && !persistent) continue;
             if (posing && !pose) {
-                const auto *transform = r.try_get<const Transform>(entity);
+                const auto *transform = r.try_get<const Transform>(HierarchySource(r, entity));
                 if (!transform) break;
                 pose = *transform;
             }
@@ -33,6 +35,9 @@ void Evaluate(state::Registry &r, float seconds, bool persistent) {
         }
         // Publish pose writes only on changes.
         if (!pose) continue;
+        ForEachHierarchyPlacement(r, entity, [&](state::Entity e, state::Entity source) {
+            *pose = ToTransform(ToMatrix(r.get<const Transform>(e)) * Inverse(ToMatrix(r.get<const Transform>(source))) * ToMatrix(*pose));
+        });
         if (const auto *posed = r.try_get<const PosedLocal>(entity)) {
             if (posed->Value != *pose) r.replace<PosedLocal>(entity, *pose);
         } else {

@@ -10,6 +10,7 @@
 #ifdef SURFACE_AUDIO
 #include "audio/surface/SurfaceAudio.h" // SurfaceRelief, UpdateSurfaceRelief
 #endif
+#include "armature/ArmatureComponents.h"
 #include "gltf/GltfScene.h"
 #include "gltf/SourceTexture.h"
 #include "mesh/MeshComponents.h"
@@ -20,7 +21,9 @@
 #include "render/MaterialComponents.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
+#include "scene/HierarchyInstance.h"
 #include "scene/SceneGraph.h"
+#include "snapshot/Workspace.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportEvents.h"
 
@@ -850,8 +853,9 @@ struct SceneFixture : Engine {
         Check(P->Close());
         return image;
     }
-    std::vector<std::byte> LoadFrom(const std::filesystem::path &dir) {
+    std::vector<std::byte> LoadFrom(const std::filesystem::path &dir, std::span<const std::byte> workspace = {}) {
         Check(P->Open(dir));
+        if (!workspace.empty()) snapshot::ApplyWorkspace(R, workspace);
         return P->History.MaterializeLive();
     }
 };
@@ -1065,6 +1069,37 @@ int main(int argc, const char **argv) {
     Paths::SetProject(tmp_root);
     const auto samples = SampleRoots | transform([](auto root) { return CollectGltfSamples(SamplePath(root)); }) | join | to<std::vector>();
 
+    "hierarchy_skin_export"_test = [&] {
+        SceneFixture source;
+        const auto path = fs::path{MESHEDITOR_SOURCE_DIR} / "external/glTF-Sample-Assets/Models/RiggedSimple/glTF/RiggedSimple.gltf";
+        expect(gltf::LoadGltf(path, source.R).has_value()) << fatal;
+        ProcessComponentEvents(source.R);
+        const auto armature = *source.R.view<const ArmatureObject>().begin();
+        auto root = armature;
+        while (ParentOrNull(source.R, root) != state::Null) root = ParentOrNull(source.R, root);
+        const auto original_skins = source.R.view<const ArmatureModifier>().size();
+        const auto instance = CreateHierarchyInstance(source.R, root, Transform{.P = {5, 0, 0}});
+        expect(instance != state::Null) << fatal;
+        ProcessComponentEvents(source.R);
+        expect(source.R.view<const ArmatureModifier>().size() == original_skins * 2);
+        const auto output = tmp_root / "HierarchyRig.gltf";
+        const auto saved = gltf::SaveGltf(output, source.R);
+        expect(saved.has_value()) << (saved ? "" : saved.error()) << fatal;
+        SceneFixture restored;
+        const auto loaded = gltf::LoadGltf(output, restored.R);
+        expect(loaded.has_value()) << (loaded ? "" : loaded.error().Message) << fatal;
+        ProcessComponentEvents(restored.R);
+        expect(restored.R.view<const ArmatureModifier>().size() == original_skins * 2);
+        std::vector<state::Entity> armatures;
+        for (const auto [_, skin] : restored.R.view<const ArmatureModifier>().each()) {
+            armatures.push_back(skin.ArmatureObjectEntity);
+            expect(restored.R.all_of<ArmatureObject, ArmaturePoseState>(skin.ArmatureObjectEntity));
+        }
+        std::ranges::sort(armatures);
+        armatures.erase(std::ranges::unique(armatures).begin(), armatures.end());
+        expect(armatures.size() == 2u);
+    };
+
     "snapshot encoding appends within reserved capacity"_test = [] {
         constexpr size_t prefix = 65536;
         std::vector<std::byte> bytes(prefix, std::byte{42});
@@ -1114,7 +1149,7 @@ int main(int argc, const char **argv) {
         expect(before.size() > sizeof(uint64_t));
 
         SceneFixture g;
-        const auto after = g.LoadFrom(dir);
+        const auto after = g.LoadFrom(dir, snapshot::SerializeWorkspace(f.R));
         ProcessComponentEvents(g.R);
         expect(after == before) << "round-trip diverged at byte" << std::ranges::mismatch(before, after).in1 - before.begin() << "of" << before.size() << "/" << after.size();
         CompareRegistries("roundtrip", f.R, g.R);
@@ -1162,7 +1197,7 @@ int main(int argc, const char **argv) {
         const auto dir = tmp_root / "destroyed.project";
         const auto before = f.SaveTo(dir);
         SceneFixture g;
-        const auto after = g.LoadFrom(dir);
+        const auto after = g.LoadFrom(dir, snapshot::SerializeWorkspace(f.R));
         ProcessComponentEvents(g.R);
         expect(after == before) << "destroyed-entity round-trip diverged at byte" << std::ranges::mismatch(before, after).in1 - before.begin();
         CompareRegistries("destroyed", f.R, g.R);
@@ -1197,7 +1232,7 @@ int main(int argc, const char **argv) {
             const auto before = fx.SaveTo(dir);
             ProcessComponentEvents(restore_fx.R);
             restore_fx.P->ClearDocument();
-            const auto after = restore_fx.LoadFrom(dir);
+            const auto after = restore_fx.LoadFrom(dir, snapshot::SerializeWorkspace(fx.R));
             ProcessComponentEvents(restore_fx.R);
 
             expect(after == before) << "persistent image diverged at byte" << std::ranges::mismatch(before, after).in1 - before.begin();

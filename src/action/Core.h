@@ -73,11 +73,12 @@ struct Update {
     T Value;
 };
 
-// Assigns authored fields of the active entity's component together, preserving the rest of it.
+// Assigns authored fields together, creating the component from domain defaults when absent.
 template<typename Component, typename Field, size_t N = 1>
 struct PatchFields {
     std::array<uint16_t, N> Offsets;
     std::array<Field, N> Values;
+    state::Entity Entity{state::Null};
 };
 
 struct DestroyEntity {
@@ -123,6 +124,8 @@ using Core = std::variant<
     Update<AttributeType>, Update<AttributeDomain>, Update<VectorMathOp>, Update<FloatMathOp>, Update<CompareOp>, Update<BooleanMathOp>, Update<BooleanOperation>, Update<procedure::VectorComponent>,
     DestroyEntity>;
 
+// Read an existing editable field as its typed Update action; invalid component/field addresses return nothing.
+std::optional<Core> ReadUpdate(const state::Registry &, state::Entity, state::TypeKey, uint16_t offset);
 void Apply(state::Registry &, const Core &);
 // An Update records unless it targets a workspace component.
 bool IsRecordable(const Core &);

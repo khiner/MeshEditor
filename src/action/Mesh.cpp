@@ -100,6 +100,7 @@ void CombineSelected(state::Registry &r, const action::mesh::Boolean &boolean) {
     }
     const auto first = r.get<const Instance>(active).Entity, second = r.get<const Instance>(others.front()).Entity;
     if (!HasMesh(r, first) || !DrawsMesh(r, second) || first == second) return action::Fail(r, "A boolean combines two different mesh objects");
+    if (!procedure::ObjectReferencesAcyclic(r, {}, others.front(), first)) return action::Fail(r, "Object references would create a geometry dependency cycle");
     const auto first_world = *WorldTransformOf(r, active), second_world = *WorldTransformOf(r, others.front());
     const auto to_first = Inverse(ToMatrix(first_world)) * ToMatrix(second_world);
     const auto rotation = ToMat3(to_first);
@@ -110,11 +111,11 @@ void CombineSelected(state::Registry &r, const action::mesh::Boolean &boolean) {
     if (boolean_entity == state::Null) return;
     r.replace<procedure::Boolean>(boolean_entity, boolean.Operation, active);
     const auto position = r.get<const procedure::NodeLayout>(boolean_entity).Position;
-    nodes::Apply(r, nodes::AddNode{first, procedure::KindOf<procedure::ObjectInfo>, {position.x - std::min(position.x, InfoOffset.x), position.y + InfoOffset.y}});
+    nodes::Apply(r, nodes::AddNode{first, procedure::KindOf<procedure::ObjectInfo>, {position.x - std::min(position.x, InfoOffset.x), position.y + InfoOffset.y}, procedure::ContainerOf(r, boolean_entity)});
     const auto info = r.get<const procedure::GeometryProcedure>(first).Last;
     r.replace<procedure::ObjectInfo>(info, others.front());
     nodes::Apply(r, nodes::Link{first, info, 0u, boolean_entity, 1u});
-    nodes::Apply(r, nodes::SelectNodes{first, {boolean_entity}, boolean_entity});
+    nodes::Apply(r, nodes::SelectItems{first, {boolean_entity}, {{boolean_entity}}});
 }
 
 // The world transform of the mesh's transformable primary instance, which transformed position operators edit the mesh in.

@@ -8,6 +8,7 @@
 #include "scene/CameraLens.h"
 #include "scene/Defaults.h"
 #include "scene/Entity.h"
+#include "scene/HierarchyInstance.h"
 #include "scene/SceneGraph.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionState.h"
@@ -178,8 +179,8 @@ void Apply(state::Registry &r, const Action &action) {
                         if (const auto *ds = r.try_get<BoneDisplayScale>(e)) r.emplace<StartBoneLength>(e, ds->Value);
                     }
                 }
-                for (const auto &[e, local] : locals) PatchEditedLocal(r, e, [&](auto &t) { t = local; });
-                for (const auto &[e, length] : bone_scales) r.emplace_or_replace<BoneDisplayScale>(e, length);
+                for (const auto &[e, local] : locals) PatchEditedLocal(r, HierarchyEditTarget(r, e, true), [&](auto &t) { t = local; });
+                for (const auto &[e, length] : bone_scales) r.emplace_or_replace<BoneDisplayScale>(HierarchySource(r, e), length);
             },
             [&](const TransformElements &a) {
                 for (const auto &[_, instance_entity] : r.get<const EditPrimaries>(state::Document).Transformable) {
@@ -194,6 +195,15 @@ void Apply(state::Registry &r, const Action &action) {
                     for (const auto mesh_entity : mesh::SelectedEditMeshes(r)) {
                         const auto primary = primaries.find(mesh_entity);
                         if (primary == primaries.end()) continue;
+                        if (const auto staged = nodes::StagedResultNode(r, mesh_entity, procedure::KindOf<mesh::Extrude>); staged != state::Null && a.Delta.R == quat{1.f, 0.f, 0.f, 0.f} && a.Delta.S == vec3{1.f}) {
+                            const auto frame = *WorldTransformOf(r, primary->second);
+                            r.patch<mesh::Extrude>(staged, [&](auto &p) {
+                                p.Offset = (Conjugate(frame.R) * a.Delta.P) / frame.S;
+                                p.OffsetScale = 1.f;
+                                p.AlongNormals = false;
+                            });
+                            continue;
+                        }
                         if (const auto staged = nodes::StagedResultNode(r, mesh_entity, procedure::KindOf<procedure::TransformElements>); staged != state::Null) {
                             r.patch<procedure::TransformElements>(staged, [&](auto &p) { p.Delta = a.Delta; });
                             continue;

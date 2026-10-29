@@ -27,8 +27,6 @@ void BuildMeshlets(state::Registry &, mtl::ComputeChain &, std::span<const state
 bool RefreshMaterialLodAttributes(state::Registry &);
 // Refreshes primitive dependencies and records the refit of coarse groups those changes invalidate.
 void RefreshClusterLodAttributes(state::Registry &, mtl::ComputeChain &, std::span<const state::Entity>);
-// Every instance of an edited mesh draws original geometry, since an element pick can land on any of them.
-bool EditPinsFinest(const selection::PrimaryEditInstanceMap &, const state::Registry &, state::Entity mesh_entity);
 // Builds the cluster hierarchy for each face mesh that lacks one and that an unpinned instance draws, and returns whether any mesh took one.
 // The primitives' refreshed LOD attributes record on the chain.
 bool BuildDemandedClusterLods(state::Registry &, mtl::ComputeChain &);

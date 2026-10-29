@@ -195,12 +195,8 @@ void BuildMeshlets(state::Registry &r, mtl::ComputeChain &chain, std::span<const
     for (const auto e : mesh_entities) r.emplace_or_replace<ClusterLodDemand>(e);
 }
 
-bool EditPinsFinest(const selection::PrimaryEditInstanceMap &primaries, const state::Registry &r, state::Entity mesh_entity) {
-    return primaries.contains(mesh_entity) || r.all_of<MeshEditWork>(mesh_entity);
-}
-
 bool BuildDemandedClusterLods(state::Registry &r, mtl::ComputeChain &chain) {
-    if (r.view<const ClusterLodDemand>().empty()) return false;
+    if (r.DocumentReadOnly || r.view<const ClusterLodDemand>().empty()) return false;
     auto &meshes = r.Resources.get<MeshStore>();
     auto &render = meshes.Render();
     // A mesh leaves the demand set once it has a hierarchy or its meshlets take none.
@@ -213,7 +209,7 @@ bool BuildDemandedClusterLods(state::Registry &r, mtl::ComputeChain &chain) {
     }
     if (r.get<const Interaction>(state::Document).Mode == InteractionMode::Edit && !demanded.empty()) {
         const auto &primaries = r.get<const EditPrimaries>(state::Document).All;
-        std::erase_if(demanded, [&](state::Entity e) { return EditPinsFinest(primaries, r, e); });
+        std::erase_if(demanded, [&](state::Entity e) { return primaries.contains(e); });
     }
     if (demanded.empty()) return false;
     for (const auto entity : demanded) r.remove<ClusterLodDemand>(entity);

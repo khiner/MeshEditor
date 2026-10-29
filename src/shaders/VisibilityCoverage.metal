@@ -26,10 +26,11 @@ inline uint CoveredMeshletObject(
     const uint topology = MeshletPrimitiveTopology(resolved.Meshlet);
     const uint material_index = MeshletPrimitiveMaterialIndex(scene, resolved.Primitive);
     device const PBRMaterial &material = scene.Materials(view.MaterialSlot)[material_index];
+    const bool cull_backfaces = CullBackfaces(view, material.DoubleSided);
     if (topology == uint(MeshPrimitiveTopology::Triangle)) {
         const float3 scale = float3(MeshletWorld(scene, resolved.Draw).S);
         const bool authored_front_facing = scale.x * scale.y * scale.z < 0.0f ? !front_facing : front_facing;
-        if (material.DoubleSided == 0u && !authored_front_facing) discard_fragment();
+        if (cull_backfaces && !authored_front_facing) discard_fragment();
     }
     const bool alpha_mask = material.AlphaMode == MaterialAlphaMode::Mask;
     const bool transmission_mask = transmission && material.Unlit == 0u &&
@@ -43,7 +44,7 @@ inline uint CoveredMeshletObject(
         resolved.Triangle = resolved.Payloads.TriangleIds[resolved.Meshlet.TriangleOffset + logical_element];
     }
     const VisibilityCoverageValues coverage = DecodeVisibilityCoverage(scene, resolved, pixel, view);
-    if (topology != uint(MeshPrimitiveTopology::Triangle) && material.DoubleSided == 0u &&
+    if (topology != uint(MeshPrimitiveTopology::Triangle) && cull_backfaces &&
         !IsFrontFacing(scene, coverage.WorldNormal, coverage.WorldPosition)) discard_fragment();
     if (topology == uint(MeshPrimitiveTopology::Point) &&
         length(coverage.PointCoord - float2(0.5f)) > 0.5f) discard_fragment();

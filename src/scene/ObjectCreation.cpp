@@ -51,11 +51,12 @@ void ApplySelectBehavior(state::Registry &r, state::Entity e, MeshInstanceCreate
 state::Entity AddMeshInstance(state::Registry &r, state::Entity mesh_entity, const MeshInstanceCreateInfo &info) {
     const auto e = r.create();
     r.emplace<Instance>(e, mesh_entity);
-    EmplaceObject(r, e, ObjectType::Mesh);
+    EmplaceObject(r, e, ObjectType::Mesh, info.Scene);
     r.emplace<Transform>(e, info.Transform);
     EmplaceUniqueName(r, e, info.Name);
     if (!info.Visible) Hide(r, e);
     ApplySelectBehavior(r, e, info.Select);
+    procedure::PlaceInNetwork(r, info.Network, e);
     return e;
 }
 
@@ -95,11 +96,12 @@ state::Entity CreateExtrasObject(state::Registry &r, ObjectType type, const Obje
     const auto buffer_entity = r.create();
     r.emplace<ObjectExtrasTag>(buffer_entity);
     const auto e = r.create();
-    EmplaceObject(r, e, type);
+    EmplaceObject(r, e, type, info.Scene);
     r.emplace<Instance>(e, buffer_entity);
     r.emplace<Transform>(e, info.Transform);
     EmplaceUniqueName(r, e, info.Name.empty() ? default_name : info.Name);
     ApplySelectBehavior(r, e, info.Select);
+    procedure::PlaceInNetwork(r, info.Network, e);
     return e;
 }
 

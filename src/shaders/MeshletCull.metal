@@ -1,4 +1,5 @@
 #include "TransformUtils.metal"
+#include "SceneUBO.metal"
 #include "gpu/ClusterGroup.h"
 #include "Frustum.metal"
 #include "gpu/MeshletRouteMode.h"
@@ -30,8 +31,8 @@ struct RoutedMeshlet {
 
 inline uint RouteBit(MeshletRoute route) { return 1u << uint(route); }
 
-inline MeshletRoute OpaqueVisibilityRoute(PBRMaterial material, Transform world) {
-    if (material.DoubleSided != 0u) return MeshletRoute::OpaqueDoubleSided;
+inline MeshletRoute OpaqueVisibilityRoute(bool cull_backfaces, Transform world) {
+    if (!cull_backfaces) return MeshletRoute::OpaqueDoubleSided;
     const float3 scale = float3(world.S);
     return scale.x * scale.y * scale.z < 0.0f ? MeshletRoute::OpaqueCullFront : MeshletRoute::OpaqueCullBack;
 }
@@ -234,7 +235,8 @@ inline RoutedMeshlet ClassifyMeshlet(
     if (mode != MeshletRouteMode::Single) material = scene.Materials(scene.View.MaterialSlot)[MeshletPrimitiveMaterialIndex(scene, primitive)];
     const bool edit_overlay = (instance.Flags & uint(MeshletInstanceFlag::EditOverlay)) != 0u;
     const bool overlay_only = (instance.Flags & uint(MeshletInstanceFlag::OverlayOnly)) != 0u;
-    const bool cone_visible = mode == MeshletRouteMode::Single || material.DoubleSided != 0u ||
+    const bool cull_backfaces = CullBackfaces(scene.View, material.DoubleSided);
+    const bool cone_visible = mode == MeshletRouteMode::Single || !cull_backfaces ||
         MeshletConeVisible(scene, meshlet, world, instance.Deformed);
     const bool occluded = !overlay_only && can_occlude && pc.PyramidSamplerSlot != InvalidSlot &&
         MeshletOccluded(scene, pc.PyramidSamplerSlot, world_center, bounds.Ax, bounds.Ay, bounds.Az,
@@ -248,7 +250,7 @@ inline RoutedMeshlet ClassifyMeshlet(
         result.Routes = RouteBit(MeshletRoute::OpaqueCullBack);
     } else {
         const bool alpha_mask = material.AlphaMode == MaterialAlphaMode::Mask;
-        const MeshletRoute opaque_route = triangle_topology ? OpaqueVisibilityRoute(material, world) : MeshletRoute::Coverage;
+        const MeshletRoute opaque_route = triangle_topology ? OpaqueVisibilityRoute(cull_backfaces, world) : MeshletRoute::Coverage;
         if (mode == MeshletRouteMode::Visibility || mode == MeshletRouteMode::Selection) {
             result.Routes = RouteBit(alpha_mask ? MeshletRoute::Coverage : opaque_route);
         } else if (material.AlphaMode == MaterialAlphaMode::Blend) {

@@ -54,6 +54,12 @@ struct MeshTopologyTask {
     Element StoreSelectionSource{Element::None};
 };
 
+struct ExtrusionSource {
+    uint32_t Output, Source;
+    vec3 Normal;
+    bool operator==(const ExtrusionSource &) const = default;
+};
+
 struct MeshStore;
 struct MeshTopologyPushConstants;
 // Canonical arena bindings shared by topology emission and transfer passes.

@@ -76,7 +76,7 @@ struct ObjectKind {
 };
 
 // Makes the entity an object of the type, a member of the frame's scene when it has no parent.
-void EmplaceObject(state::Registry &, state::Entity, ObjectType);
+void EmplaceObject(state::Registry &, state::Entity, ObjectType, state::Entity scene = state::Null);
 
 // Canonical entity order for consumers whose output depends on traversal order.
 // Component storage order changes with insertion, deletion, and snapshot reconstruction.

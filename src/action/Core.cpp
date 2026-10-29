@@ -1,5 +1,6 @@
 #include "action/Core.h"
 #include "action/Dispatch.h"
+#include "action/Errors.h"
 #include "animation/AnimationData.h"
 #include "audio/AudioTypes.h"
 #include "audio/ContactModel.h"
@@ -8,9 +9,11 @@
 #include "gpu/ViewportTheme.h"
 #include "procedure/NodeTheme.h"
 #include "procedure/Procedure.h"
+#include "render/Instance.h"
 #include "render/LightComponents.h"
 #include "render/MaterialComponents.h"
 #include "scene/CameraLens.h"
+#include "scene/HierarchyInstance.h"
 #include "snapshot/SnapshotRoles.h"
 #include "timeline/Timeline.h"
 #include "timeline/TimelineTheme.h"
@@ -29,6 +32,25 @@ ComponentField UpdatedField(state::TypeKey key, uint16_t offset) {
     return {std::move(component), *field};
 }
 
+std::optional<Core> ReadUpdate(const state::Registry &r, state::Entity entity, state::TypeKey key, uint16_t offset) {
+    std::optional<Core> result;
+    ForUpdatable(key, [&]<typename C> {
+        const auto *component = r.try_get<const C>(entity);
+        if (!component || snapshot::SnapshotTable()[state::Type<C>()].Kind == snapshot::Role::Workspace) return;
+        const auto visit = [&](this const auto &self, const auto &value) -> void {
+            using V = std::remove_cvref_t<decltype(value)>;
+            const auto at = reinterpret_cast<const std::byte *>(&value) - reinterpret_cast<const std::byte *>(component);
+            if constexpr (std::constructible_from<Core, Update<V>>) {
+                if (at == offset) result = Update<V>{entity, key, offset, value};
+            } else if constexpr (field::Walkable<V>) {
+                field::ForEach(value, [&](const auto &member, auto) { self(member); });
+            }
+        };
+        visit(*component);
+    });
+    return result;
+}
+
 namespace {
 template<typename Field>
 Field ClampField(Field v, const FieldSpec &spec) {
@@ -41,7 +63,25 @@ Field ClampField(Field v, const FieldSpec &spec) {
 template<typename C, typename Field>
 void ApplyEntityUpdate(state::Registry &r, const Update<Field> &a) {
     using Traits = UpdateTraits<C>;
+    if constexpr (std::same_as<C, procedure::ObjectInfo> && std::same_as<Field, state::Entity>) {
+        std::vector<state::Entity> nodes;
+        ForEachTarget(a.Target, [&] { return Traits::Active(r); }, [&](auto &&fn) { Traits::ForEachSelected(r, fn); }, [&](state::Entity e) { if (Traits::Has(r, e)) nodes.push_back(e); });
+        if (!procedure::ObjectReferencesAcyclic(r, nodes, a.Value)) return Fail(r, "Object references would create a geometry dependency cycle");
+    }
+    if constexpr (std::same_as<C, procedure::InstanceOnPoints> && std::same_as<Field, state::Entity>) {
+        if (a.Value != state::Null && !r.all_of<ObjectKind>(a.Value)) return Fail(r, "Choose an object hierarchy as the prototype");
+        bool cycle = false;
+        ForEachTarget(a.Target, [&] { return Traits::Active(r); }, [&](auto &&fn) { Traits::ForEachSelected(r, fn); }, [&](state::Entity node) {
+            const auto *owner = r.try_get<const procedure::ProcedureNode>(node);
+            if (!owner) return;
+            for (const auto [object, instance] : r.view<const Instance>().each())
+                if (instance.Entity == owner->Procedure && HierarchyParentCycle(r, a.Value, object)) cycle = true; });
+        if (cycle) return Fail(r, "The prototype would recursively instance its producer");
+    }
     const auto write = [&](state::Entity e, Field value) {
+        constexpr bool placement = std::same_as<C, Transform> || std::same_as<C, PosedLocal> || std::same_as<C, Visibility>;
+        if constexpr (std::same_as<Field, state::Entity>) std::tie(e, value) = HierarchyReferenceTarget(r, e, value, placement);
+        else e = HierarchyEditTarget(r, e, placement);
         if constexpr (DeltaField<Field> && !RotationField<Field>) value = ClampField(value, Traits::Bounds(r, e, a.Offset));
         Traits::Write(r, e, a.Offset, &value, sizeof(Field));
     };

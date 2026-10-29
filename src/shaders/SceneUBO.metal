@@ -5,6 +5,16 @@
 
 constant float PointSize = 8.0f;
 
+inline bool CullBackfaces(constant SceneViewUBO &view, uint double_sided) {
+    return view.BackfaceCulling == BackfaceCullingMode::Always ||
+        (view.BackfaceCulling == BackfaceCullingMode::Material && double_sided == 0u);
+}
+
+inline int BackfaceCullFacing(constant SceneViewUBO &view, uint double_sided, float3 scale) {
+    if (!CullBackfaces(view, double_sided)) return 0;
+    return scale.x * scale.y * scale.z < 0.0f ? -1 : 1;
+}
+
 template<typename SetT>
 inline bool IsFrontFacing(const thread SceneT<SetT> &scene, float3 normal, float3 world_pos) {
     return dot(normal, float3(scene.View.CameraPosition) - world_pos) >= 0.0f;

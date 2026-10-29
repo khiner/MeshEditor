@@ -41,6 +41,9 @@ enum class ExtrudeMode : uint8_t { Region,
                                    Vertices };
 struct Extrude {
     ExtrudeMode Mode{ExtrudeMode::Region};
+    vec3 Offset{};
+    float OffsetScale{};
+    bool AlongNormals{true};
 };
 // Duplicates the selected faces onto copied vertices and latches a translate for the drag that follows.
 struct Duplicate {};
@@ -335,7 +338,12 @@ template<> inline constexpr field::SpecTable<action::mesh::Merge> Specs<action::
     {&action::mesh::Merge::Mode, {.Help = "Merge target: selection center, first or last selected vertex, each connected run's center, or each pair within Distance"}},
     {&action::mesh::Merge::Distance, {.Min = 0, .Max = 10, .Speed = 0.0001f, .Digits = 4, .Help = "Largest vertex separation that By Distance merges, in local units"}},
 };
-template<> inline constexpr field::SpecTable<action::mesh::Extrude> Specs<action::mesh::Extrude>{{&action::mesh::Extrude::Mode, {.Help = "Elements to extrude: selected faces as one region, each face individually, selected edges, or selected vertices"}}};
+template<> inline constexpr field::SpecTable<action::mesh::Extrude> Specs<action::mesh::Extrude>{
+    {&action::mesh::Extrude::Mode, {.Help = "Elements to extrude: selected faces as one region, each face individually, selected edges, or selected vertices"}},
+    {&action::mesh::Extrude::Offset, {.Speed = .01f, .Help = "Direction multiplied by Offset Scale when Along Normals is disabled. A connected field supplies directions on input vertices, or input faces for Individual Faces."}},
+    {&action::mesh::Extrude::OffsetScale, {.Speed = .01f, .Help = "Displacement multiplier, or distance for a unit direction. Fields use the same input domain as Offset."}},
+    {&action::mesh::Extrude::AlongNormals, {.Help = "Use the input region's average face normal, individual face normals, or vertex normals. A connected Offset field overrides this default."}},
+};
 template<> inline constexpr field::SpecTable<action::mesh::Dissolve> Specs<action::mesh::Dissolve>{
     {&action::mesh::Dissolve::Mode, {.Help = "Elements to dissolve. Limited dissolves edges flatter than Angle, and Degenerate collapses edges and faces smaller than Distance."}},
     {&action::mesh::Dissolve::Angle, {.Min = 0, .Max = std::numbers::pi_v<float>, .Unit = FieldUnit::Radians, .Help = "Largest angle between adjacent faces that Limited dissolves"}},

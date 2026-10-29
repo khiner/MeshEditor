@@ -291,7 +291,7 @@ bool UiGestureSettled(const ImGuiWindow *frame_focus) {
     // Dock decorations can still show the old focus when menus or widgets change it during the frame.
     // A closed menu leaves focus on its undrawn popup for one frame until ImGui refocuses under it.
     const auto *focus = GImGui->NavWindow;
-    if (focus != frame_focus || (focus && !focus->Active) || !GImGui->OpenPopupStack.empty() || GImGui->MovingWindow || GImGui->DragDropActive) return false;
+    if (focus != frame_focus || (focus && !focus->Active) || GImGui->ActiveId || GImGui->ActiveIdPreviousFrame || !GImGui->OpenPopupStack.empty() || GImGui->MovingWindow || GImGui->DragDropActive) return false;
     const auto &io = GetIO();
     for (int button = 0; button < ImGuiMouseButton_COUNT; ++button) {
         if (io.MouseDown[button] || io.MouseReleased[button]) return false;
@@ -995,7 +995,17 @@ ImDrawData *RenderValidationApp(
     // Restore focus last so dock binding and the menu bar cannot move it again.
     SetWindowFocus(inputs.FocusedWindow.empty() ? nullptr : inputs.FocusedWindow.c_str());
     io.MousePos = inputs.MousePos;
-    render_frame(/*restore_hover=*/true); // Apply live hover history after the restored hit regions settle.
+    std::optional<uint64_t> previous;
+    for (uint32_t frame = 0;; ++frame) {
+        render_frame(/*restore_hover=*/true);
+        const auto hash = DrawDataHash(GetDrawData());
+        if (previous == hash) break;
+        if (frame == 15) {
+            std::println(stderr, "[validation] restored UI did not settle");
+            std::abort();
+        }
+        previous = hash;
+    }
     if (const std::string_view focused = GImGui->NavWindow ? GImGui->NavWindow->Name : ""; focused != inputs.FocusedWindow) {
         std::println(stderr, "[validation] focus DIVERGED (live '{}' / restored '{}')", inputs.FocusedWindow, focused);
         std::abort();
@@ -1364,7 +1374,7 @@ struct BenchmarkDriver {
                     for (const auto &[entity, _] : Transforms) entities.push_back(entity);
                     actions.push_back(action::MakeAction(action::selection::ApplyTreeSelection{.Entities = entities, .SelectCount = uint32_t(entities.size()), .NavToActive = entities.front(), .Clear = action::selection::ApplyTreeSelection::ClearKind::All}));
                 }
-                actions.push_back(action::MakeAction(action::object::SetSelectedVisible{Frame % 2 != 0}));
+                actions.push_back(action::MakeAction(action::object::SetVisible{Frame % 2 != 0}));
                 action::Emit(std::move(actions));
                 break;
             }
@@ -1699,6 +1709,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
 
 #ifdef DEBUG_BUILD
         const auto ui_revision = std::pair{Session(r).Revision, RestoreGeneration};
+        const bool ui_has_staged = Session(r).HasStaged();
         const bool ui_has_pending_solves = HasPendingModalSolves(r);
 #endif
 
@@ -1772,7 +1783,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
             const bool validate = panels.History.ValidateRequested;
 #endif
             // The restored UI draws until it settles, so the live frame compares only once it has settled too, which a frame identical to the one before it shows.
-            const auto ui_hash = validate ? std::optional{DrawDataHash(draw_data)} : std::nullopt;
+            const auto ui_hash = validate && !ui_has_staged && ui_revision == scene_revision ? std::optional{DrawDataHash(draw_data)} : std::nullopt;
             const bool ui_matches_scene = ui_revision == scene_revision && ui_hash && ui_hash == previous_ui_hash;
             previous_ui_hash = ui_hash;
             // Background progress is transient; compare only frames drawn after it disappears.

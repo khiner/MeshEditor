@@ -209,7 +209,7 @@ void RecordSceneCounters(const GpuBuffers &buffers, const Viewport &viewport) {
 struct MeshDeform {
     uint32_t BoneDeformOffset{InvalidOffset}, ArmatureDeformOffset{InvalidOffset}, MorphDeformOffset{InvalidOffset};
     uint32_t MorphTargetCount{0};
-    // The armature data entities whose poses deform the mesh.
+    // The armature objects whose poses deform the mesh.
     std::vector<state::Entity> Armatures;
     // By instance in slot order, InvalidOffset for an instance without that deformation, and empty when no instance has it.
     std::vector<uint32_t> ArmatureOffsets, WeightOffsets;
@@ -223,14 +223,14 @@ MeshDeform DeformOf(const state::Registry &r, const GpuBuffers &buffers, const M
     for (uint32_t i = 0u; i < object_ids.size(); ++i) {
         const auto instance = r.EntityAt(ObjectIndex(object_ids[i]));
         if (const auto *modifier = record.SkinBlocksReady ? r.try_get<const ArmatureModifier>(instance) : nullptr) {
-            const auto *pose_state = r.try_get<const ArmaturePoseState>(modifier->ArmatureEntity);
+            const auto *pose_state = r.try_get<const ArmaturePoseState>(modifier->ArmatureObjectEntity);
             if (pose_state && modifier->SkinSlot < pose_state->GpuDeformRanges.size()) {
                 const auto offset = pose_state->GpuDeformRanges[modifier->SkinSlot].Offset;
                 if (deform.BoneDeformOffset == InvalidOffset) {
                     deform.BoneDeformOffset = 0u;
                     deform.ArmatureDeformOffset = offset;
                 }
-                if (!std::ranges::contains(deform.Armatures, modifier->ArmatureEntity)) deform.Armatures.push_back(modifier->ArmatureEntity);
+                if (!std::ranges::contains(deform.Armatures, modifier->ArmatureObjectEntity)) deform.Armatures.push_back(modifier->ArmatureObjectEntity);
                 if (deform.ArmatureOffsets.empty()) deform.ArmatureOffsets.assign(object_ids.size(), InvalidOffset);
                 deform.ArmatureOffsets[i] = offset;
             }
@@ -766,7 +766,7 @@ MeshDisplayState ComputeMeshDisplay(const DisplayContext &c, state::Entity mesh_
     const auto set = [&](MeshletInstanceFlag flag) { flags |= uint32_t(flag); };
     const auto draw = [&](VertexOverlay overlay) { vertex_overlays |= uint8_t(1u << uint32_t(overlay)); };
     if (IsSilhouetteEligible(r, mesh_entity)) set(MeshletInstanceFlag::SilhouetteEligible);
-    if (EditPinsFinest(c.Primaries, r, mesh_entity) || c.Meshes.HasDirtyPositions(mb)) set(MeshletInstanceFlag::LodPinFinest);
+    if (c.Primaries.contains(mesh_entity) || c.Meshes.HasDirtyPositions(mb)) set(MeshletInstanceFlag::LodPinFinest);
     // A click can query another element domain before its mode action applies.
     if (has_primary && meshlets && mesh_record) set(MeshletInstanceFlag::ElementSelection);
     if (overlays && c.Mode == InteractionMode::Edit && has_primary && mesh_record && meshlets) {
@@ -1789,6 +1789,9 @@ SceneViewUBO SceneViewOf(state::Registry &r, state::Entity viewport_entity, cons
         .LightCount = buffers.Lights[scene_index].Count<LightRecord>(),
         .LightSlot = buffers.Lights[scene_index].Slot,
         .UseSceneLightsRender = use_scene_lights ? 1u : 0u,
+        .BackfaceCulling = is_pbr_mode                                                         ? BackfaceCullingMode::Material :
+            settings.ViewportShading == ViewportShadingMode::Solid && settings.BackfaceCulling ? BackfaceCullingMode::Always :
+                                                                                                 BackfaceCullingMode::None,
         .EnvIntensity = env_intensity,
         .Exposure = std::exp2(active_lighting.ExposureEV),
         .EnvRotation = env_rotation,
@@ -1897,6 +1900,11 @@ MeshStore::Change ReconcileChanges(state::Registry &r, std::span<const MeshStore
     for (const auto &change : changes) {
         const auto entity = MeshEntityOf(r, change.StoreId);
         if (entity == state::Null) continue;
+        if (!DrawsMesh(r, entity)) {
+            r.emplace_or_replace<MeshDisplayDirty>(entity);
+            r.emplace_or_replace<MeshLayoutDirty>(entity);
+            continue;
+        }
         if (change.Bits & ~MeshStore::SelectionChanged) {
             // The deferred record's position refresh keeps its edit work, whose footprint its next edit reuses when it edits the same vertices.
             if (deferred_positions(change)) {

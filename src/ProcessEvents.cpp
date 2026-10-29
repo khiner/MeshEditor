@@ -43,6 +43,7 @@
 #include "render/ViewportSubmission.h"
 #include "scene/CameraLens.h"
 #include "scene/Defaults.h"
+#include "scene/HierarchyInstance.h"
 #include "scene/SceneChanges.h"
 #include "scene/SceneGraph.h"
 #include "selection/SelectionChanges.h"
@@ -163,10 +164,15 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
 
     std::unordered_set<state::Entity> bone_state_dirty;
 
+    if (pass != EventPass::Restore) {
+        PublishHierarchyInstances(r);
+        procedure::ReconcileNetworkPorts(r);
+    } else Reset(r.Resources.get<HierarchyChanges>(), r);
     ProcessObjectRemovals(r);
 
     // Replan restored procedures without regenerating their restored outputs.
     SettleProcedures(r, pass == EventPass::Frame || pass == EventPass::Settle);
+    if (pass != EventPass::Restore) CollectHierarchyDefinitions(r);
     ProcessObjectRemovals(r);
     // A restored document acts on its active viewport's scene.
     if (pass == EventPass::Restore) r.Resources.get<FrameState>().Scene = ActingScene(r);
@@ -404,9 +410,9 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     for (const auto [arm_obj_entity, arm_obj_comp] : r.view<const ArmatureObject>().each()) {
         const auto data_entity = arm_obj_comp.Entity;
         const auto *armature = r.try_get<const Armature>(data_entity);
-        if (!armature || armature->Bones.empty() || r.all_of<ArmaturePoseState>(data_entity)) continue;
+        if (!armature || armature->Bones.empty() || r.all_of<ArmaturePoseState>(arm_obj_entity)) continue;
         const auto n = armature->Bones.size();
-        r.emplace<ArmaturePoseState>(data_entity, ArmaturePoseState{.BoneUserOffset = std::vector<Transform>(n), .BonePoseWorld = std::vector<mat4>(n, I4)});
+        r.emplace<ArmaturePoseState>(arm_obj_entity, ArmaturePoseState{.BoneUserOffset = std::vector<Transform>(n), .BonePoseWorld = std::vector<mat4>(n, I4)});
         // Compose bone poses from rest and delta, preserving rest scale.
         for (uint32_t i = 0; i < n && i < arm_obj_comp.BoneEntities.size(); ++i) {
             const auto b = arm_obj_comp.BoneEntities[i];
@@ -422,18 +428,18 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         uint32_t total_joints = 0;
         std::vector<state::Entity> pending_armatures;
         for (const auto [arm_obj_entity, arm_obj_comp] : r.view<const ArmatureObject>().each()) {
-            const auto *pose_state = r.try_edit<ArmaturePoseState>(arm_obj_comp.Entity);
+            const auto *pose_state = r.try_edit<ArmaturePoseState>(arm_obj_entity);
             if (!pose_state || !pose_state->GpuDeformRanges.empty()) continue;
             const auto *armature = r.try_get<const Armature>(arm_obj_comp.Entity);
             if (armature && !armature->Skins.empty()) {
                 for (const auto &skin : armature->Skins) total_joints += skin.OrderedJointNodeIndices.size();
-                pending_armatures.emplace_back(arm_obj_comp.Entity);
+                pending_armatures.emplace_back(arm_obj_entity);
             }
         }
         buffers.ArmatureDeformBuffer.ReserveAdditional(total_joints);
-        for (const auto arm_data_entity : pending_armatures) {
-            auto &pose_state = r.edit<ArmaturePoseState>(arm_data_entity);
-            const auto &armature = r.get<const Armature>(arm_data_entity);
+        for (const auto arm_obj_entity : pending_armatures) {
+            auto &pose_state = r.edit<ArmaturePoseState>(arm_obj_entity);
+            const auto &armature = r.get<const Armature>(r.get<const ArmatureObject>(arm_obj_entity).Entity);
             pose_state.GpuDeformRanges.reserve(armature.Skins.size());
             for (const auto &skin : armature.Skins) {
                 pose_state.GpuDeformRanges.emplace_back(buffers.ArmatureDeformBuffer.Allocate(skin.OrderedJointNodeIndices.size()));
@@ -441,13 +447,17 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         }
         if (!pending_armatures.empty()) {
             for (const auto [_, instance, modifier] : r.view<const Instance, const ArmatureModifier>().each()) {
-                if (std::ranges::contains(pending_armatures, modifier.ArmatureEntity)) r.emplace_or_replace<MeshLayoutDirty>(instance.Entity);
+                if (std::ranges::contains(pending_armatures, modifier.ArmatureObjectEntity)) r.emplace_or_replace<MeshLayoutDirty>(instance.Entity);
             }
             request();
         }
     }
 
     std::unordered_set<state::Entity> dirty_sound_selection_meshes;
+
+    for (const auto object : armature_changes.SkinBinding) {
+        if (const auto *instance = r.try_get<const Instance>(object)) r.emplace_or_replace<MeshLayoutDirty>(instance->Entity);
+    }
 
     // Derive classification, normals, and selection for new meshes in one batch.
     if (auto shading = EncodeNewMeshShading(r, chain)) {
@@ -777,13 +787,14 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         request();
     }
     BuildMeshlets(r, chain, meshlet_meshes, bone_mesh_entities);
-    if (!viewport_changes.Theme.empty()) {
-        const auto &theme = r.get<const ViewportTheme>(state::Document);
+    const auto &theme = r.get<const ViewportTheme>(state::Document);
+    const float edge_width = theme.Sizes.EdgeWidth * 0.5f * r.Resources.get<const FrameState>().DisplayFramebufferScale.x;
+    if (!viewport_changes.Theme.empty() || buffers.ViewportThemeUBO.GetSpan<ViewportThemeUbo>().front().EdgeWidth != edge_width) {
         const ViewportThemeUbo ubo{
             .Colors = theme.Colors,
             .Derived = DeriveThemeColors(theme),
             .AxisColors = theme.AxisColors,
-            .EdgeWidth = theme.Sizes.EdgeWidth * 0.5f * r.Resources.get<FrameState>().DisplayFramebufferScale.x,
+            .EdgeWidth = edge_width,
             .SilhouetteEdgeWidth = theme.Sizes.SilhouetteEdgeWidth,
         };
         buffers.ViewportThemeUBO.Update(BytesOf(ubo));
@@ -816,7 +827,11 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     {
         const auto &range = r.get<const TimelineRange>(state::Document);
         // Use interpolation instead of advancing physics during motion-blur sub-frames.
-        if (!rendering && physics::AdvancePlayback(r, evaluated_from, r.get<const TimelinePlayback>(state::Document).CurrentFrame, range.StartFrame, range.EndFrame, range.Fps)) request();
+        if (!rendering) {
+            const auto frame = r.get<const TimelinePlayback>(state::Document).CurrentFrame;
+            if (physics::AdvancePlayback(r, evaluated_from, frame, range.StartFrame, range.EndFrame, range.Fps)) request();
+            else if (std::ranges::any_of(sync.NewlyInserted, [&](auto e) { return r.all_of<BodyPoseCache>(e); })) physics::SamplePosesAtFrame(r, float(frame));
+        }
     }
     // Evaluation writes materials and morph weights, so their consumers follow it.
     if (!render_changes.Materials.empty()) request();
@@ -911,12 +926,13 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
             SortUnique(posed_armatures);
         }
         std::vector<state::Entity> synced_armatures;
+        std::vector<std::pair<state::Entity, state::Entity>> edited_rests;
         for (const auto arm_obj_entity : posed_armatures) {
             // The constraint target map can name an armature deleted since it was built.
             const auto *arm_obj = r.try_get<const ArmatureObject>(arm_obj_entity);
             if (!arm_obj) continue;
             const auto &arm_obj_comp = *arm_obj;
-            auto *pose_state = r.try_edit<ArmaturePoseState>(arm_obj_comp.Entity);
+            auto *pose_state = r.try_edit<ArmaturePoseState>(arm_obj_entity);
             if (!pose_state) continue;
 
             const auto &armature = r.get<Armature>(arm_obj_comp.Entity);
@@ -1026,6 +1042,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
                     edited.Bones[i].InvRestWorld = Inverse(edited.Bones[i].RestWorld);
                 }
                 edited.RecomputeInverseBindMatrices();
+                edited_rests.emplace_back(arm_obj_comp.Entity, arm_obj_entity);
             }
             if (need_sync) {
                 // A skinless armature has no deform ranges and no posed bounds entries.
@@ -1033,9 +1050,22 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
                     for (uint32_t s = 0; s < pose_state->GpuDeformRanges.size(); ++s) {
                         ComputeDeformMatrices(armature, s, pose_state->BonePoseWorld, buffers.ArmatureDeformBuffer.GetMutable(pose_state->GpuDeformRanges[s]));
                     }
-                    synced_armatures.push_back(arm_obj_comp.Entity);
+                    synced_armatures.push_back(arm_obj_entity);
                 }
                 request();
+            }
+        }
+        // Shared rest edits update every occurrence's edit-mode bones without sharing its pose or constraint state.
+        for (const auto [data, edited_object] : edited_rests) {
+            const auto &armature = r.get<const Armature>(data);
+            for (const auto [object, arm] : r.view<const ArmatureObject>().each()) {
+                if (arm.Entity != data || object == edited_object) continue;
+                auto &pose = r.edit<ArmaturePoseState>(object);
+                for (uint32_t i = 0; i < arm.BoneEntities.size(); ++i) {
+                    const auto &rest = armature.Bones[i];
+                    r.patch<PosedLocal>(arm.BoneEntities[i], [&](auto &posed) { posed.Value.P = rest.RestLocal.P; posed.Value.R = rest.RestLocal.R; });
+                    pose.BonePoseWorld[i] = rest.RestWorld;
+                }
             }
         }
         // Recompute bounds for meshes skinned by the updated armatures.
@@ -1189,6 +1219,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
 }
 
 void RegisterSceneComponentHandlers(state::Registry &r) {
+    RegisterHierarchyInstances(r);
     constexpr auto release_edit_work = [](state::Registry &r, state::Entity e) { r.remove<MeshEditWork>(e); };
     r.on_destroy<MeshHandle, release_edit_work>();
     r.on_destroy<EvaluatedMesh, release_edit_work>();
@@ -1245,6 +1276,7 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
     auto &armature = r.Resources.emplace<ArmatureChanges>();
     armature.BonePose.bind(r).on<BoneDelta>(On::Update);
     armature.BoneConstraints.bind(r).on<BoneConstraints>(On::Create | On::Update | On::Destroy);
+    armature.SkinBinding.bind(r).on<ArmatureModifier>(On::Create | On::Update | On::Destroy);
     r.Resources.emplace<ConstraintTargets>();
     auto &animation = r.Resources.emplace<AnimationChanges>();
     animation.Edited.bind(r)

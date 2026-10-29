@@ -5,11 +5,8 @@
 #include "Varyings.metal"
 #include "gpu/SelectionElementPushConstants.h"
 
-[[early_fragment_tests]]
-fragment void SelectionElementBitsetBoxFragment(
-    ElementIdFragmentVaryings in [[stage_in]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SelectionElementPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+inline void WriteElementBox(
+    ElementIdFragmentVaryings in, device const BindlessSet &bindless, constant SelectionElementPushConstants &pc
 ) {
     if (in.ElementId == 0u) return;
     const uint2 frag_px = uint2(in.Position.xy);
@@ -22,6 +19,25 @@ fragment void SelectionElementBitsetBoxFragment(
         const uint index = atomic_fetch_add_explicit(count, 1u, memory_order_relaxed);
         BindlessBufferMutable(uint, bindless.Buffer, pc.Query.Results.WordsSlot)[index] = bit_idx >> 5u;
     }
+}
+
+[[early_fragment_tests]]
+fragment void SelectionElementBitsetBoxFragment(
+    ElementIdFragmentVaryings in [[stage_in]],
+    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
+    constant SelectionElementPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+) {
+    WriteElementBox(in, bindless, pc);
+}
+
+[[early_fragment_tests]]
+fragment void SelectionFaceBitsetBoxFragment(
+    FaceIdFragmentVaryings in [[stage_in]], bool front_facing [[front_facing]],
+    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
+    constant SelectionElementPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+) {
+    if (FaceCulled(in.Facing, front_facing)) return;
+    WriteElementBox({in.Position, in.ElementId}, bindless, pc);
 }
 
 #endif

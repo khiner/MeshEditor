@@ -2,7 +2,9 @@
 #include "SortUnique.h"
 #include "Variant.h"
 #include "action/Errors.h"
+#include "action/ScopeResolve.h"
 #include "object/ObjectOps.h"
+#include "procedure/Network.h"
 #include "scene/SceneGraph.h"
 #include "selection/Selection.h"
 #include "state/Registry.h"
@@ -12,9 +14,12 @@
 
 namespace action::scene {
 namespace {
-// The distinct roots of the selected nodes in the frame's scene.
-std::vector<state::Entity> SelectedRoots(const state::Registry &r) {
-    auto roots = SelectedIn(r) | std::views::transform([&](state::Entity e) { return MembershipRoot(r, e); }) | std::ranges::to<std::vector>();
+// The distinct membership roots addressed by the action.
+std::vector<state::Entity> TargetRoots(const state::Registry &r, const Target &target) {
+    std::vector<state::Entity> roots;
+    ForEachTarget(target, [&] { return FindActiveEntity(r); }, [&](auto &&fn) { for (const auto e : SelectedIn(r)) fn(e); }, [&](state::Entity e) {
+        const auto root = MembershipRoot(r, e);
+        if (root != state::Null) roots.push_back(root); });
     SortUnique(roots);
     return roots;
 }
@@ -50,6 +55,7 @@ void Apply(state::Registry &r, const Action &action) {
                 for (const auto [viewport, shown] : r.view<const ViewportScene>().each()) {
                     if (shown.Scene == a.Scene) r.replace<ViewportScene>(viewport, remaining);
                 }
+                procedure::RemoveNetworkSubnets(r, a.Scene);
                 r.destroy(a.Scene);
             },
             [&](const Rename &a) {
@@ -59,12 +65,12 @@ void Apply(state::Registry &r, const Action &action) {
             },
             [&](const LinkSelected &a) {
                 if (!r.all_of<Scene>(a.Scene)) return;
-                for (const auto root : SelectedRoots(r)) {
+                for (const auto root : TargetRoots(r, a.Target)) {
                     if (!std::ranges::contains(r.get<const SceneMembership>(root).Scenes, a.Scene)) r.patch<SceneMembership>(root, [&](auto &m) { m.Scenes.push_back(a.Scene); });
                 }
             },
             [&](const UnlinkSelected &a) {
-                for (const auto root : SelectedRoots(r)) {
+                for (const auto root : TargetRoots(r, a.Target)) {
                     const auto &scenes = r.get<const SceneMembership>(root).Scenes;
                     if (scenes.size() > 1 && std::ranges::contains(scenes, a.Scene)) r.patch<SceneMembership>(root, [&](auto &m) { std::erase(m.Scenes, a.Scene); });
                 }

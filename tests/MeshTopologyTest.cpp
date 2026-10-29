@@ -20,6 +20,7 @@
 #include "render/SceneUpdates.h"
 #include "selection/SelectionGpu.h"
 #include "viewport/InteractionComponents.h"
+#include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportComponents.h"
 
@@ -2423,6 +2424,8 @@ void TestRandomizeControls() {
 
 void TestBendReferences() {
     Fixture f{"bend-reference"};
+    // The reference coordinates use the world XY plane as the viewport plane.
+    f.R.patch<ViewCameraState>(FirstViewport(f.R), [](auto &view) { view.Active.Orientation = {}; });
     const std::array points{vec3{-1, 0, 0}, vec3{1, 0, 1}, vec3{2, 0, 2}, vec3{3, 0, 3}};
     const float root2 = std::sqrt(2.f);
     const std::array expected{vec3{-1, 0, 0}, vec3{root2, root2 - 2.f, 1}, vec3{2, -2, 2}, vec3{2, -3, 3}};
@@ -2455,6 +2458,8 @@ void TestBendReferences() {
 
 void TestWarpReferences() {
     Fixture f{"warp-reference"};
+    // The reference coordinates use the world XY plane as the viewport plane.
+    f.R.patch<ViewCameraState>(FirstViewport(f.R), [](auto &view) { view.Active.Orientation = {}; });
     MeshSource source;
     // Span two reduction tiles; displacement is independent of the height.
     for (uint32_t z = 0u; z < 53u; ++z)

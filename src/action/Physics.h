@@ -3,8 +3,7 @@
 #include "action/Core.h"
 
 namespace action::physics {
-// AddTrigger, RemoveTriggerNodes and SetTrigger target the active entity.
-// SetMotionType and SetColliderShape apply to their Target.
+// Entity operations apply to their Target, defaulting to the active entity.
 struct SetMotionType {
     enum class Type : uint8_t {
         None,
@@ -22,11 +21,16 @@ struct SetColliderShape {
     Target Target{OnActive{}};
 };
 
-struct AddTrigger {};
-struct RemoveTriggerNodes {};
-// Marks the active entity's ColliderShape as a sensor.
+struct AddTrigger {
+    Target Target{OnActive{}};
+};
+struct RemoveTriggerNodes {
+    Target Target{OnActive{}};
+};
+// Marks the targeted ColliderShape as a sensor.
 struct SetTrigger {
     bool Value;
+    Target Target{OnActive{}};
 };
 
 // Document-level resources, created with an ordinal name.
@@ -34,19 +38,7 @@ struct AddPhysicsMaterial {};
 struct AddCollisionSystem {};
 struct AddCollisionFilter {};
 struct AddJointDef {};
-struct RenamePhysicsMaterial {
-    state::Entity Entity;
-    std::string Name;
-};
-struct RenameCollisionSystem {
-    state::Entity Entity;
-    std::string Name;
-};
-struct RenameCollisionFilter {
-    state::Entity Entity;
-    std::string Name;
-};
-struct RenameJointDef {
+struct RenameResource {
     state::Entity Entity;
     std::string Name;
 };
@@ -85,7 +77,7 @@ struct DeleteJointVecItem {
 using Action = std::variant<
     SetMotionType, SetColliderShape, AddTrigger, RemoveTriggerNodes, SetTrigger,
     AddPhysicsMaterial, AddCollisionSystem, AddCollisionFilter, AddJointDef,
-    RenamePhysicsMaterial, RenameCollisionSystem, RenameCollisionFilter, RenameJointDef,
+    RenameResource,
     ToggleFilterEntity,
     SetJointVecItem<PhysicsJointLimit>, AddJointVecItem<PhysicsJointLimit>, DeleteJointVecItem<PhysicsJointLimit>,
     SetJointVecItem<PhysicsJointDrive>, AddJointVecItem<PhysicsJointDrive>, DeleteJointVecItem<PhysicsJointDrive>>;

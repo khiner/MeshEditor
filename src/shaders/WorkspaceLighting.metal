@@ -173,12 +173,14 @@ fragment float4 WorkspaceVisibilityFragment(
 
 fragment TransparencyStore WorkspaceTransparentFragment(
     MeshletVertexVaryings meshlet_in [[stage_in]],
+    bool front_facing [[front_facing]],
     TransparencyValues values [[imageblock_data]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
     constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
 ) {
+    if (FaceCulled(meshlet_in.Facing, front_facing)) discard_fragment();
     const MeshVaryings in = FromMeshletVertexVaryings(meshlet_in);
     const Scene scene{bindless, view, theme, workspace};
     float4 shaded = ShadeWorkspace(in, scene, view);

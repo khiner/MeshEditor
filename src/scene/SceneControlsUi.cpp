@@ -35,13 +35,13 @@
 #include "viewport/ViewportOps.h"
 #include <format>
 #include <imgui_internal.h>
+#include <imgui_stdlib.h>
 
 using numeric::Degrees;
 
 using namespace ImGui;
 
 static void RenderObjectTree(state::Registry &);
-static void RenderEntityControls(state::Registry &, state::Entity active_entity);
 
 namespace {
 constexpr std::string_view ObjectTypeName(ObjectType type) {
@@ -110,11 +110,11 @@ bool RenderCameraLensEditor(CameraLens &camera, float distance, float viewport_a
     return changed;
 }
 
-void RenderCameraLensFields(state::Registry &r, state::Entity entity) {
+void RenderCameraLensFields(state::Registry &r, state::Entity entity, bool explicit_target) {
     const auto *perspective = r.try_get<const Perspective>(entity);
     int proj_i = perspective ? 0 : 1;
     const char *const proj_names[]{"Perspective", "Orthographic"};
-    if (Combo("Projection", &proj_i, proj_names, IM_ARRAYSIZE(proj_names))) action::Emit(action::object::SetProjection{proj_i == 1, ui::TargetFromAlt()});
+    if (Combo("Projection", &proj_i, proj_names, IM_ARRAYSIZE(proj_names))) action::Emit(action::object::SetProjection{proj_i == 1, explicit_target ? action::Target{entity} : ui::TargetFromAlt()});
     ui::Edit fields{r, entity};
     if (perspective) {
         RenderPerspectiveFields(fields, *perspective);
@@ -178,7 +178,14 @@ std::string SceneLabel(const state::Registry &r, state::Entity scene) {
     return NamedOr(r.get<const Name>(scene).Value, "Scene ", index ? index->Value : 0u);
 }
 
-static void RenderEntityControls(state::Registry &r, state::Entity active_entity) {
+void EntityControls(state::Registry &r, state::Entity active_entity, state::Entity active_bone_entity, bool explicit_target) {
+    const auto fields_for = [&](state::Entity e) {
+        return ui::Edit{r, explicit_target ? std::optional{e} : std::nullopt};
+    };
+    const auto target_for = [&](state::Entity e) {
+        return explicit_target ? action::Target{e} : ui::TargetFromAlt();
+    };
+    const auto bone_target = explicit_target ? active_bone_entity : state::Null;
     const auto &meshes = r.Resources.get<MeshStore>();
     if (active_entity == state::Null) {
         TextUnformatted("Active object: None");
@@ -186,7 +193,46 @@ static void RenderEntityControls(state::Registry &r, state::Entity active_entity
     }
 
     PushID("EntityControls");
+    if (const auto *member = r.try_get<const HierarchyMember>(active_entity)) {
+        TextWrapped("Shared definition: %s", GetName(r, member->Source).c_str());
+        if (Button("Make hierarchy independent")) action::Emit(action::object::MakeIndependent{member->Root});
+    }
     Text("Active entity: %s", GetName(r, active_entity).c_str());
+    if (r.all_of<ObjectKind>(active_entity) && !r.any_of<SubElementOf, BoneIndex>(active_entity)) {
+        auto name = GetName(r, active_entity);
+        ui::Gesture(InputText("Name", &name), [&] { return action::object::Rename{active_entity, name}; });
+        ui::ActionField("Visible", !r.all_of<Hidden>(active_entity), [&](bool visible) { return action::object::SetVisible{visible, target_for(active_entity)}; }, {.Help = "Show this object in the viewport."});
+        const auto parent = ParentOrNull(r, active_entity);
+        if (BeginCombo("Parent", parent == state::Null ? "None" : GetName(r, parent).c_str())) {
+            if (Selectable("None", parent == state::Null)) action::Emit(action::object::ClearParent{active_entity});
+            for (const auto candidate : SortedEntities(r.view<const ObjectKind>())) {
+                if (candidate == active_entity || r.any_of<SubElementOf, BoneIndex>(candidate)) continue;
+                bool descendant = false;
+                for (auto ancestor = candidate; ancestor != state::Null; ancestor = ParentOrNull(r, ancestor)) descendant |= ancestor == active_entity;
+                if (descendant) continue;
+                PushID(int(state::Integral(candidate)));
+                if (Selectable(GetName(r, candidate).c_str(), parent == candidate)) action::Emit(action::object::SetParent{active_entity, candidate});
+                PopID();
+            }
+            EndCombo();
+        }
+        if (const auto *membership = RootMembership(r, active_entity); membership && TreeNode("Scenes")) {
+            const auto root = MembershipRoot(r, active_entity);
+            if (root != active_entity) Text("Membership of %s", GetName(r, root).c_str());
+            for (const auto scene : SortedEntities(r.view<const Scene>())) {
+                bool included = std::ranges::contains(membership->Scenes, scene);
+                BeginDisabled(included && membership->Scenes.size() == 1);
+                PushID(int(state::Integral(scene)));
+                if (Checkbox(SceneLabel(r, scene).c_str(), &included)) {
+                    if (included) action::Emit(action::scene::LinkSelected{scene, active_entity});
+                    else action::Emit(action::scene::UnlinkSelected{scene, active_entity});
+                }
+                PopID();
+                EndDisabled();
+            }
+            TreePop();
+        }
+    }
     Indent();
 
     if (const auto *parent = r.try_get<const SceneParent>(active_entity)) {
@@ -208,7 +254,6 @@ static void RenderEntityControls(state::Registry &r, state::Entity active_entity
     }
     const auto object_type = r.all_of<ObjectKind>(active_entity) ? r.get<const ObjectKind>(active_entity).Value : ObjectType::Empty;
     Text("Object type: %s", ObjectTypeName(object_type).data());
-    const auto active_bone_entity = FindActiveBone(r);
     const auto *active_instance = r.try_get<Instance>(active_entity);
     const bool is_mesh_instance = active_instance && HasMesh(r, active_instance->Entity);
     if (is_mesh_instance) {
@@ -257,6 +302,7 @@ static void RenderEntityControls(state::Registry &r, state::Entity active_entity
                         .LocalP = Conjugate(pd.R) * ((head - pd.P) / pd.S),
                         .LocalR = Conjugate(pd.R) * new_rot,
                         .DisplayScale = new_length,
+                        .BoneEntity = bone_target,
                     });
                 }
             }
@@ -272,9 +318,9 @@ static void RenderEntityControls(state::Registry &r, state::Entity active_entity
                 edit.template Draw<&Transform::S>(scale_locked ? "Scale (frozen)" : nullptr);
                 if (scale_locked) EndDisabled();
             };
-            if (r.all_of<BoneDelta>(transform_entity)) draw(ui::Edit{r}.Sub<&BoneDelta::Value>());
-            else if (r.all_of<PosedLocal>(transform_entity)) draw(ui::Edit{r}.Sub<&PosedLocal::Value>());
-            else draw(ui::Edit{r});
+            if (r.all_of<BoneDelta>(transform_entity)) draw(fields_for(transform_entity).Sub<&BoneDelta::Value>());
+            else if (r.all_of<PosedLocal>(transform_entity)) draw(fields_for(transform_entity).Sub<&PosedLocal::Value>());
+            else draw(fields_for(transform_entity));
         }
         Spacing();
         {
@@ -326,25 +372,25 @@ static void RenderEntityControls(state::Registry &r, state::Entity active_entity
                     return e == state::Null ? std::string{"None"} : name && !name->Value.empty() ? name->Value :
                                                                                                    IdString(e);
                 };
-                ui::ChoiceCombo("Target", c.TargetEntity, targets, target_name, [&](state::Entity te) { action::Emit(action::bone::SetConstraintTarget{i, te}); });
+                ui::ChoiceCombo("Target", c.TargetEntity, targets, target_name, [&](state::Entity te) { action::Emit(action::bone::SetConstraintTarget{i, te, bone_target}); });
                 if (std::holds_alternative<ChildOfData>(c.Data)) {
                     if (Button("Set Inverse") && c.TargetEntity != state::Null && r.valid(c.TargetEntity)) {
-                        action::Emit(action::bone::BakeConstraintChildOfInverse{i});
+                        action::Emit(action::bone::BakeConstraintChildOfInverse{i, bone_target});
                     }
                     SameLine();
                     if (Button("Clear Inverse")) {
-                        action::Emit(action::bone::ClearConstraintChildOfInverse{i});
+                        action::Emit(action::bone::ClearConstraintChildOfInverse{i, bone_target});
                     }
                 }
                 if (float influence = c.Influence; SliderFloat("Influence", &influence, 0.f, 1.f)) {
-                    action::Emit(action::bone::SetConstraintInfluence{i, influence});
+                    action::Emit(action::bone::SetConstraintInfluence{i, influence, bone_target});
                 }
             }
         );
-        if (deleted) action::Emit(action::bone::DeleteConstraint{*deleted});
-        if (Button("Add Copy Transforms")) action::Emit(action::bone::AddConstraint{action::bone::BoneConstraintKind::CopyTransforms});
+        if (deleted) action::Emit(action::bone::DeleteConstraint{*deleted, bone_target});
+        if (Button("Add Copy Transforms")) action::Emit(action::bone::AddConstraint{action::bone::BoneConstraintKind::CopyTransforms, bone_target});
         SameLine();
-        if (Button("Add Child Of")) action::Emit(action::bone::AddConstraint{action::bone::BoneConstraintKind::ChildOf});
+        if (Button("Add Child Of")) action::Emit(action::bone::AddConstraint{action::bone::BoneConstraintKind::ChildOf, bone_target});
         PopID();
     }
     if (is_mesh_instance) {
@@ -372,7 +418,7 @@ static void RenderEntityControls(state::Registry &r, state::Entity active_entity
                     const uint32_t material_index = std::min(primitive_materials[primitive_index], material_count - 1);
                     if (const auto label = std::format("Slot {:L}: {}", primitive_index, material_name(material_index));
                         Selectable(label.c_str(), slot_primitive == primitive_index) && slot_primitive != primitive_index) {
-                        action::Emit(action::object::SetMaterialSlotSelection{primitive_index});
+                        action::Emit(action::object::SetMaterialSlotSelection{primitive_index, target_for(active_mesh_entity)});
                         slot_primitive = primitive_index;
                     }
                 }
@@ -384,7 +430,7 @@ static void RenderEntityControls(state::Registry &r, state::Entity active_entity
                     for (uint32_t i = 0; i < material_count; ++i) {
                         if (const auto option_name = material_name(i);
                             Selectable(option_name.c_str(), material_index == i)) {
-                            action::Emit(action::object::SetMaterialAssignment{slot_primitive, i, ui::TargetFromAlt()});
+                            action::Emit(action::object::SetMaterialAssignment{slot_primitive, i, target_for(active_mesh_entity)});
                             material_index = i;
                         }
                     }
@@ -399,7 +445,7 @@ static void RenderEntityControls(state::Registry &r, state::Entity active_entity
                     bool enabled = HasFeature(pbr_features_mask, feature);
                     if (Checkbox(label, &enabled)) {
                         const auto mask = enabled ? pbr_features_mask | uint32_t(feature) : pbr_features_mask & ~uint32_t(feature);
-                        action::Emit(action::object::SetPbrMeshFeaturesMask{mask, ui::TargetFromAlt()});
+                        action::Emit(action::object::SetPbrMeshFeaturesMask{mask, target_for(active_mesh_entity)});
                     }
                     if (enabled) SeparatorText(label);
                     return enabled;
@@ -420,7 +466,7 @@ static void RenderEntityControls(state::Registry &r, state::Entity active_entity
     }
     if (HasLens(r, active_entity)) {
         if (CollapsingHeader("Camera")) {
-            RenderCameraLensFields(r, active_entity);
+            RenderCameraLensFields(r, active_entity, explicit_target);
             Separator();
             const auto viewport = FindActiveViewport(r);
             if (r.get<const ViewCameraState>(viewport).LookThrough == active_entity) {
@@ -433,10 +479,10 @@ static void RenderEntityControls(state::Registry &r, state::Entity active_entity
     if (r.all_of<PunctualLight>(active_entity) &&
         CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen)) {
         const auto &light = r.get<const PunctualLight>(active_entity);
-        ui::Edit fields{r};
+        auto fields = fields_for(active_entity);
         const char *const type_names[]{"Directional", "Point", "Spot"};
         if (auto type_i = int(light.Type); Combo("Type", &type_i, type_names, IM_ARRAYSIZE(type_names))) {
-            action::Emit(action::object::SetLightType{PunctualLightType(type_i), ui::TargetFromAlt()});
+            action::Emit(action::object::SetLightType{PunctualLightType(type_i), target_for(active_entity)});
         }
         fields.Draw<&PunctualLight::Color>();
         fields.Draw<&PunctualLight::Intensity>();
@@ -455,7 +501,7 @@ static void RenderEntityControls(state::Registry &r, state::Entity active_entity
             const bool blend_changed = SliderFloat("Blend", &blend, 0.f, 1.f, "%.2f");
             ui::KeyDecorator(r, active_entity, animation::Target<&PunctualLight::InnerConeAngle>());
             ui::Gesture(size_changed || blend_changed, [&] {
-                return action::object::SetSpotCone{std::clamp(outer, 0.f, MaxCone), std::clamp(blend, 0.f, 1.f), ui::TargetFromAlt()};
+                return action::object::SetSpotCone{std::clamp(outer, 0.f, MaxCone), std::clamp(blend, 0.f, 1.f), target_for(active_entity)};
             });
         }
     }
@@ -497,13 +543,13 @@ static void RenderEntityControls(state::Registry &r, state::Entity active_entity
                 if (is_active) {
                     Text("Active for: %s", target_name.c_str());
                 } else if (Button(std::format("Set as active for {}", target_name).c_str())) {
-                    action::Emit(action::audio::ActivateRealImpactMicrophone{target});
+                    action::Emit(action::audio::ActivateRealImpactMicrophone{target, active_entity});
                 }
                 if (Button("Select sound object")) action::Emit(action::selection::Select{target});
             }
         }
     }
-    physics_ui::RenderEntityProperties(r, active_entity);
+    physics_ui::RenderEntityProperties(r, active_entity, explicit_target);
 
     // glTF metadata: round-trip-only source state on the active entity.
     // TODO: surface per-material source metadata here once material editing UI exists:
@@ -542,6 +588,10 @@ static void RenderEntityControls(state::Registry &r, state::Entity active_entity
     }
 
     PopID();
+}
+
+void RenderEntityControls(state::Registry &r, state::Entity entity, state::Entity bone) {
+    EntityControls(r, entity, bone, true);
 }
 
 void RenderControls(state::Registry &r) {
@@ -678,7 +728,7 @@ void RenderControls(state::Registry &r) {
                 if (flags.AnyVisible || flags.AnyHidden) {
                     const bool mixed_visible = flags.AnyVisible && flags.AnyHidden;
                     if (mixed_visible) PushItemFlag(ImGuiItemFlags_MixedValue, true);
-                    if (bool set_visible = flags.AnyVisible && !flags.AnyHidden; Checkbox("Visible", &set_visible)) action::Emit(action::object::SetSelectedVisible{set_visible});
+                    if (bool set_visible = flags.AnyVisible && !flags.AnyHidden; Checkbox("Visible", &set_visible)) action::Emit(action::object::SetVisible{set_visible});
                     if (mixed_visible) PopItemFlag();
 
                     if (const auto sharpness = flags.FaceSharpness; sharpness != SelectionSharpness::None) {
@@ -739,7 +789,7 @@ void RenderControls(state::Registry &r) {
                     if (Button("Scale")) action::Emit(action::bone::ClearSelectedTransforms{.Scale = true});
                 }
             }
-            RenderEntityControls(r, FindActiveEntity(r));
+            EntityControls(r, FindActiveEntity(r), FindActiveBone(r), false);
             EndTabItem();
         }
 

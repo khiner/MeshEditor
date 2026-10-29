@@ -1,5 +1,6 @@
 #include "animation/Fields.h"
 #include "TypeList.h"
+#include "action/Dispatch.h"
 
 #include "animation/MorphWeights.h"
 #include "armature/ArmatureComponents.h"
@@ -40,6 +41,14 @@ std::array<ChannelTarget, 3> TransformTargets(const state::Registry &r, state::E
 
 bool IsChannelStore(state::TypeKey key) {
     return key == state::Key<MaterialStore>() || key == state::Key<MorphWeightRange>() || ForChannelComponent(key, []<typename> {});
+}
+
+std::string FieldLabel(const ChannelTarget &target) {
+    if (target.Component == state::Key<MaterialStore>()) return "Material: " + action::FieldAt<PBRMaterial>(target.Offset).Path;
+    if (target.Component == state::Key<MorphWeightRange>()) return "Morph weights";
+    std::string label;
+    ForChannelComponent(target.Component, [&]<typename C> { label = action::FieldAt<C>(target.Offset).Path; });
+    return label;
 }
 
 bool ReadField(const state::Registry &r, state::Entity e, const ChannelTarget &target, std::span<float> out) {

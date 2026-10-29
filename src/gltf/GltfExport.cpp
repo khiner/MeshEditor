@@ -3,10 +3,12 @@
 #include "MaterialTable.h"
 #include "project/Assets.h"
 #include "render/LightComponents.h"
+#include "scene/HierarchyInstance.h"
 
 #include "Profile.h"
 #include "TransformMath.h"
 #include "Variant.h"
+#include "animation/Clips.h"
 #include "animation/MorphWeights.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
@@ -182,7 +184,7 @@ fastgltf::Camera ConvertCameraToFg(const CameraLens &cam, std::string_view name)
 
 // Write channel rest values into record for export.
 void OverlayRest(const state::Registry &r, state::Entity e, state::TypeKey component, uint16_t index, std::span<std::byte> record) {
-    const auto *clips = r.try_get<const AnimationClips>(e);
+    const auto *clips = animation::ClipsOf(r, e);
     if (!clips) return;
     for (const auto &clip : clips->Clips) {
         for (const auto &channel : clip.Channels) {
@@ -340,20 +342,35 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             }
         }
         for (const auto [e, _t, kind] : r.view<const Transform, const ObjectKind>().each()) {
-            if (kind.Value == ObjectType::Armature || node_index_of.contains(e)) continue; // Armatures round-trip via skins.
+            if (node_index_of.contains(e)) continue;
+            if (kind.Value == ObjectType::Armature) {
+                const auto &arm = r.get<const ArmatureObject>(e);
+                if (std::ranges::any_of(arm.BoneEntities, [&](state::Entity bone) { return r.all_of<GltfNode>(bone); })) continue;
+            }
             node_index_of[e] = uint32_t(nodes.size());
             auto &node = nodes.emplace_back();
             node.Entity = e;
             node.Instances = {e};
         }
+        for (const auto bone : SortedEntities(r.view<const BoneIndex>())) {
+            if (node_index_of.contains(bone)) continue;
+            node_index_of[bone] = uint32_t(nodes.size());
+            nodes.emplace_back().Entity = bone;
+        }
         std::vector<std::vector<std::pair<uint32_t, uint32_t>>> children(nodes.size());
         for (uint32_t ni = 0; ni < nodes.size(); ++ni) {
             const auto *node = r.try_get<const GltfNode>(nodes[ni].Entity);
-            if (!node || !node->Parent) continue;
-            const auto pit = source_to_dense.find(*node->Parent);
-            if (pit == source_to_dense.end()) continue;
-            nodes[ni].Parent = pit->second;
-            children[pit->second].emplace_back(node->Sibling.value_or(ni), ni);
+            if (node && node->Parent) {
+                const auto pit = source_to_dense.find(*node->Parent);
+                if (pit == source_to_dense.end()) continue;
+                nodes[ni].Parent = pit->second;
+                children[pit->second].emplace_back(node->Sibling.value_or(ni), ni);
+            } else if (!node) {
+                if (const auto parent = node_index_of.find(ParentOrNull(r, nodes[ni].Entity)); parent != node_index_of.end()) {
+                    nodes[ni].Parent = parent->second;
+                    children[parent->second].emplace_back(ni, ni);
+                }
+            }
         }
         // A collider with a local offset emits its geometry on a synthetic child node carrying the offset.
         for (uint32_t ni = 0, count = uint32_t(nodes.size()); ni < count; ++ni) {
@@ -765,14 +782,15 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const auto pointer_channel = [](const gltf::PointerRow &row, size_t index, size_t element = 0) {
             return fastgltf::AnimationChannel{.samplerIndex = 0, .path = fastgltf::AnimationPath::Pointer, .pointer = std::vformat(row.Template, std::make_format_args(index, element))};
         };
-        for (const auto [entity, clips] : r.view<const AnimationClips>().each()) {
-            for (const auto &clip : clips.Clips) {
+        for (const auto entity : animation::AnimatedEntities(r)) {
+            for (const auto &clip : animation::ClipsOf(r, entity)->Clips) {
                 if (clip.Animation >= animation_names.size()) continue;
                 for (const auto &source : clip.Channels) {
                     if (source.Times.empty() || source.Target.Count == 0) continue;
                     const auto *row = gltf::RowOf(source.Target);
                     if (!row) continue;
                     auto channel = source;
+                    animation::PlaceChannel(r, entity, channel);
                     std::optional<fastgltf::AnimationChannel> target;
                     switch (row->Space) {
                         case gltf::PointerSpace::Node: {
@@ -783,7 +801,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                                 const auto *arm = arm_obj != state::Null ? r.try_get<const Armature>(r.get<const ArmatureObject>(arm_obj).Entity) : nullptr;
                                 const auto index = r.get<const BoneIndex>(entity).Index;
                                 if (arm && index < arm->Bones.size()) {
-                                    node = arm->Bones[index].JointNodeIndex;
+                                    if (const auto it = node_index_of.find(entity); it != node_index_of.end()) node = it->second;
                                     ConvertBoneChannel(channel, arm->Bones[index].RestLocal, false);
                                 }
                             } else if (const auto it = node_index_of.find(entity); it != node_index_of.end()) {
@@ -1153,32 +1171,48 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         asset.meshes.emplace_back(fastgltf::Mesh{.primitives = std::move(primitives), .weights = std::move(default_weights), .name = group.Name});
     }
 
-    // Emit one fastgltf::Skin per imported skin, in ascending source-skin-index order so the skins array is stable regardless of armature grouping.
-    // Rest locals and bone names live in the engine's Armature and round-trip through node entries instead.
-    std::unordered_map<uint32_t, uint32_t> skin_remap;
+    // Each armature placement binds its own joint nodes while sharing rest and inverse-bind definitions.
+    std::map<std::pair<state::Entity, uint32_t>, uint32_t> skin_remap;
     {
-        std::vector<const ArmatureImportedSkin *> all_skins;
-        for (const auto [_, arm] : r.view<const Armature>().each()) {
-            for (const auto &skin : arm.Skins) all_skins.emplace_back(&skin);
+        struct SkinBinding {
+            uint32_t SourceIndex;
+            state::Entity Object;
+            uint32_t Slot;
+        };
+        std::vector<SkinBinding> bindings;
+        for (const auto [object, ao] : r.view<const ArmatureObject>().each()) {
+            const auto &arm = r.get<const Armature>(ao.Entity);
+            for (uint32_t slot = 0; slot < arm.Skins.size(); ++slot) bindings.push_back({arm.Skins[slot].SkinIndex, object, slot});
         }
-        std::ranges::sort(all_skins, {}, [](const auto *skin) { return skin->SkinIndex; });
-        for (const auto *skin : all_skins) {
+        std::ranges::sort(bindings, {}, [](const auto &b) { return std::tuple{b.SourceIndex, b.Object, b.Slot}; });
+        for (const auto &binding : bindings) {
+            const auto &ao = r.get<const ArmatureObject>(binding.Object);
+            const auto &arm = r.get<const Armature>(ao.Entity);
+            const auto &skin = arm.Skins[binding.Slot];
             std::vector<size_t> joints;
-            joints.reserve(skin->OrderedJointNodeIndices.size());
-            for (const auto j : skin->OrderedJointNodeIndices) joints.emplace_back(j);
-
+            for (const auto bone : arm.JointOrderToBoneIndex[binding.Slot]) {
+                if (bone < ao.BoneEntities.size()) {
+                    if (const auto joint = node_index_of.find(ao.BoneEntities[bone]); joint != node_index_of.end()) joints.push_back(joint->second);
+                }
+            }
+            if (joints.size() != skin.OrderedJointNodeIndices.size()) continue;
+            fastgltf::optional<size_t> skeleton;
+            if (r.all_of<HierarchyMember>(binding.Object) || !std::ranges::any_of(ao.BoneEntities, [&](state::Entity bone) { return r.all_of<GltfNode>(bone); })) {
+                if (const auto parent = node_index_of.find(binding.Object); parent != node_index_of.end()) skeleton = parent->second;
+            } else if (skin.SkeletonNodeIndex) {
+                for (const auto [e, node] : r.view<const GltfNode>().each()) {
+                    if (node.Index == skin.SkeletonNodeIndex && node_index_of.contains(e)) {
+                        skeleton = node_index_of.at(e);
+                        break;
+                    }
+                }
+            }
             const auto ibm = [&]() -> fastgltf::optional<size_t> {
-                if (skin->InverseBindMatrices.empty()) return {};
-                return AddDataAccessor(std::span<const mat4>(skin->InverseBindMatrices), fastgltf::AccessorType::Mat4, fastgltf::ComponentType::Float);
+                if (skin.InverseBindMatrices.empty()) return {};
+                return AddDataAccessor(std::span<const mat4>(skin.InverseBindMatrices), fastgltf::AccessorType::Mat4, fastgltf::ComponentType::Float);
             }();
-
-            skin_remap[skin->SkinIndex] = asset.skins.size();
-            asset.skins.emplace_back(fastgltf::Skin{
-                .inverseBindMatrices = ibm,
-                .skeleton = ToFgOpt<size_t>(skin->SkeletonNodeIndex),
-                .joints = std::move(joints),
-                .name = skin->Name,
-            });
+            skin_remap[{binding.Object, binding.Slot}] = asset.skins.size();
+            asset.skins.emplace_back(fastgltf::Skin{.inverseBindMatrices = ibm, .skeleton = skeleton, .joints = std::move(joints), .name = skin.Name});
         }
     }
 
@@ -1348,7 +1382,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (const auto lit = light_entity_to_index.find(entity); lit != light_entity_to_index.end()) light_index = lit->second;
         if (const auto *am = r.try_get<const ArmatureModifier>(entity)) {
             if (const auto *arm = r.try_get<const Armature>(am->ArmatureEntity); arm && am->SkinSlot < arm->Skins.size()) {
-                if (const auto sit = skin_remap.find(arm->Skins[am->SkinSlot].SkinIndex); sit != skin_remap.end()) skin_index = sit->second;
+                if (const auto sit = skin_remap.find({am->ArmatureObjectEntity, am->SkinSlot}); sit != skin_remap.end()) skin_index = sit->second;
             }
         }
 
@@ -1481,7 +1515,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }();
 
         fastgltf::optional<fastgltf::AudioRigidBody> audio_rigid_body;
-        const auto *modes = r.try_get<const ModalModes>(entity);
+        const auto *modes = r.try_get<const ModalModes>(HierarchySource(r, entity));
         const bool has_modal_model = modes && !modes->Freqs.empty();
         const auto *contact_surface = r.try_get<const ContactSurface>(entity);
         const bool has_acoustic_surface = contact_surface != nullptr;

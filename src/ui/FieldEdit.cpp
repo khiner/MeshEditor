@@ -1,9 +1,28 @@
 #include "ui/FieldEdit.h"
+#include "Panel.h"
 #include "action/Animation.h"
+#include "procedure/Network.h"
 #include "timeline/Timeline.h"
 #include <imgui_internal.h>
 
 namespace ui {
+void FieldPromotionMenu(const state::Registry &r, const procedure::PromotedField &field) {
+    const auto *panels = r.Resources.find<const PanelsState>();
+    if (!panels || !r.all_of<procedure::NetworkSubnet>(panels->Nodes.Canvas.Network)) return;
+    const auto network = panels->Nodes.Canvas.Network;
+    ImGui::PushID(int(state::Integral(field.Entity)));
+    ImGui::PushID(int(field.Component));
+    ImGui::PushID(int(field.Offset));
+    if (ImGui::BeginPopupContextItem("FieldPromotion")) {
+        const bool member = std::ranges::contains(procedure::NetworkItems(r, network), procedure::NetworkItem{field.Entity});
+        if (ImGui::MenuItem("Expose on subnet", nullptr, false, member)) action::Emit(action::nodes::ExposePort{network, field, std::make_unique<std::string>(action::UpdatedField(field.Component, field.Offset).Field.Path)});
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();
+    ImGui::PopID();
+    ImGui::PopID();
+}
+
 std::optional<animation::ChannelState> QueryKey(const state::Registry &r, state::Entity entity, const ChannelTarget &target) {
     if (!r.all_of<Animations>(state::Document) || entity == state::Null) return {};
     std::vector<float> value(target.Count);

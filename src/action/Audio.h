@@ -11,18 +11,26 @@ using numeric::dvec3;
 
 struct SetModel {
     SoundVerticesModel Model;
+    state::Entity Entity{state::Null};
 };
 struct SetExciteVertex {
     uint32_t VertexIndex;
     uint32_t MeshVertex;
+    state::Entity Entity{state::Null};
 };
 struct StartExcite {
     uint32_t Vertex;
+    state::Entity Entity{state::Null};
 };
-struct StopExcite {};
-struct DeleteSoundObject {};
+struct StopExcite {
+    state::Entity Entity{state::Null};
+};
+struct DeleteSoundObject {
+    state::Entity Entity{state::Null};
+};
 struct StartRecording {
     uint32_t FrameCount;
+    state::Entity Entity{state::Null};
 };
 struct ApplyModalModel {
     state::Entity SoundEntity;
@@ -33,12 +41,15 @@ struct ApplyModalModel {
 struct AssignVertexSamples {
     std::unique_ptr<std::vector<uint32_t>> MeshVertices;
     std::filesystem::path Path;
+    state::Entity Entity{state::Null};
 };
 struct ActivateRealImpactMicrophone {
     state::Entity TargetSoundEntity;
+    state::Entity Entity{state::Null};
 };
 struct RemoveVertexSamples {
     std::vector<uint32_t> MeshVertices;
+    state::Entity Entity{state::Null};
 };
 struct ApplyExciteImpact {
     state::Entity InstanceEntity;
@@ -47,13 +58,17 @@ struct ApplyExciteImpact {
 struct ClearExciteImpacts {};
 
 // Create missing settings from the same defaults shown by the controls.
-struct EnsureModalSettings {};
+struct EnsureModalSettings {
+    state::Entity Entity{state::Null};
+};
 struct SetMaterialPreset {
     std::string Name;
     bool Striker{false};
+    state::Entity Entity{state::Null};
 };
 struct SetSurfacePreset {
     std::string Name;
+    state::Entity Entity{state::Null};
 };
 // Selects the output device, at the device default rate when SampleRate is zero.
 struct SetOutputDevice {

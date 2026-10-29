@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gpu/BackfaceCullingMode.h"
 #include "gpu/DebugChannel.h"
 #include "gpu/Element.h"
 #include "gpu/IblSamplers.h"
@@ -14,6 +15,7 @@ struct SceneViewUBO {
     uint32_t LightCount DEFAULT();
     uint32_t LightSlot DEFAULT();
     uint32_t UseSceneLightsRender DEFAULT();
+    BackfaceCullingMode BackfaceCulling DEFAULT(BackfaceCullingMode::None);
     float EnvIntensity DEFAULT();
     float Exposure DEFAULT();
     mat3 EnvRotation DEFAULT();

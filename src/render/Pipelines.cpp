@@ -146,8 +146,8 @@ MainPipeline::MainPipeline(mtl::LibraryCache &libraries)
 
 SelectionFragmentPipeline::SelectionFragmentPipeline(mtl::LibraryCache &libraries)
     : MeshletFaces{
-          MeshletElementRaster(libraries, MeshletVertex(), false, false),
-          MeshletElementRaster(libraries, MeshletVertex(), true, false),
+          CreateMeshPipeline(libraries, FunctionRef{"SelectionElementPick.metal", "SelectionFacePickFragment"}, SelectionFormats(), {}, DepthTestNoWriteLessEqual, {"MeshletEditOverlay.metal", "MeshletSelectFaceMesh"}),
+          CreateMeshPipeline(libraries, FunctionRef{"SelectionElementBitsetBox.metal", "SelectionFaceBitsetBoxFragment"}, SelectionFormats(), {}, DepthTestNoWriteLessEqual, {"MeshletEditOverlay.metal", "MeshletSelectFaceMesh"}),
           CreateMeshPipeline(libraries, FunctionRef{"SelectionElementPick.metal", "SelectionElementPickFragment"}, SelectionFormats(), {}, DepthOff),
           CreateMeshPipeline(libraries, FunctionRef{"SelectionElementBitsetBox.metal", "SelectionElementBitsetBoxFragment"}, SelectionFormats(), {}, DepthOff),
       },

@@ -1,12 +1,10 @@
 #include "action/Physics.h"
+#include "TypeList.h"
 
 #include "action/ScopeResolve.h"
 
 namespace action::physics {
 namespace {
-template<typename T> void Rename(state::Registry &r, state::Entity e, std::string_view name) {
-    r.patch<T>(e, [&](T &x) { x.Name = name; });
-}
 template<typename T> void AddNamed(state::Registry &r, std::string_view prefix) {
     r.emplace<T>(r.create(), T{.Name = std::string{prefix} + ' ' + std::to_string(r.view<T>().size())});
 }
@@ -27,6 +25,7 @@ void Apply(state::Registry &r, const Action &action) {
                         }
                     },
                     [&](state::Entity e) {
+                        e = HierarchySource(r, e);
                         const bool want_motion = a.Value == Type::Kinematic || a.Value == Type::Dynamic;
                         const bool want_collider = a.Value == Type::Static || want_motion;
                         if (!want_motion) r.remove<PhysicsMotion>(e);
@@ -53,26 +52,30 @@ void Apply(state::Registry &r, const Action &action) {
                     if (a.LockKind) r.patch<ColliderPolicy>(e, [](ColliderPolicy &p) { p.LockedKind = true; });
                 });
             },
-            [&](AddTrigger) {
-                const auto e = FindActiveEntity(r);
-                r.emplace<ColliderShape>(e);
-                r.emplace<ColliderPolicy>(e);
-                r.emplace<TriggerTag>(e);
+            [&](const AddTrigger &a) {
+                ForEachComponentTarget<Transform>(r, a.Target, [&](state::Entity e) {
+                    r.get_or_emplace<ColliderShape>(e);
+                    r.get_or_emplace<ColliderPolicy>(e);
+                    r.emplace_or_replace<TriggerTag>(e);
+                });
             },
-            [&](RemoveTriggerNodes) { r.remove<TriggerNodes>(FindActiveEntity(r)); },
+            [&](const RemoveTriggerNodes &a) {
+                ForEachComponentTarget<TriggerNodes>(r, a.Target, [&](state::Entity e) { r.remove<TriggerNodes>(e); });
+            },
             [&](const SetTrigger &a) {
-                const auto e = FindActiveEntity(r);
-                if (a.Value) r.emplace_or_replace<TriggerTag>(e);
-                else r.remove<TriggerTag>(e);
+                ForEachComponentTarget<ColliderShape>(r, a.Target, [&](state::Entity e) {
+                    if (a.Value) r.emplace_or_replace<TriggerTag>(e);
+                    else r.remove<TriggerTag>(e);
+                });
             },
             [&](AddPhysicsMaterial) { AddNamed<PhysicsMaterial>(r, "Material"); },
             [&](AddCollisionSystem) { AddNamed<CollisionSystem>(r, "System"); },
             [&](AddCollisionFilter) { AddNamed<CollisionFilter>(r, "Filter"); },
             [&](AddJointDef) { AddNamed<PhysicsJointDef>(r, "Joint"); },
-            [&](const RenamePhysicsMaterial &a) { Rename<PhysicsMaterial>(r, a.Entity, a.Name); },
-            [&](const RenameCollisionSystem &a) { Rename<CollisionSystem>(r, a.Entity, a.Name); },
-            [&](const RenameCollisionFilter &a) { Rename<CollisionFilter>(r, a.Entity, a.Name); },
-            [&](const RenameJointDef &a) { Rename<PhysicsJointDef>(r, a.Entity, a.Name); },
+            [&](const RenameResource &a) {
+                const auto rename = [&]<typename T>() { if (r.all_of<T>(a.Entity)) r.patch<T>(a.Entity, [&](auto &v) { v.Name = a.Name; }); };
+                [&]<typename... T>(TypeList<T...>) { (rename.template operator()<T>(), ...); }(TypeList<PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef>{});
+            },
             [&](const ToggleFilterEntity &a) {
                 r.patch<CollisionFilter>(a.FilterEntity, [&](CollisionFilter &f) {
                     auto &vec = a.Which == ToggleFilterEntity::List::Systems ? f.Systems : f.CollideSystems;

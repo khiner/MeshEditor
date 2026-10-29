@@ -56,6 +56,7 @@ inline uint MeshletVisibilityId(uint visible_index, uint triangle) {
         out.WorldScale = face.WorldScale;
         out.ObjectId = face.ObjectId;
         out.ElementId = face.ElementId;
+        out.Facing = BackfaceCullFacing(view, scene.Materials(view.MaterialSlot)[face.MaterialIndex].DoubleSided, float3(world.S));
         out.Topology = topology;
         out.PointCoord = float2(0.0f);
     } else {
@@ -72,6 +73,7 @@ inline uint MeshletVisibilityId(uint visible_index, uint triangle) {
         out.WorldScale = (scale.x + scale.y + scale.z) / 3.0f;
         out.ObjectId = work.Instance.ObjectId;
         out.ElementId = scene.ElementPickId(work.Draw, topology == uint(MeshPrimitiveTopology::Line), element);
+        out.Facing = 0;
         out.Topology = topology;
         out.PointCoord = PointQuadCorners[corner] * 0.5f + 0.5f;
         // Alpha zero marks an unselected instance for fill recoloring during shading.

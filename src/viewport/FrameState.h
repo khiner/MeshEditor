@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ProcessEvents.h"
+#include "gpu/Transform.h"
 #include "state/Entity.h"
 #include "viewport/RenderView.h"
 #include "viewport/ViewportSchema.h"
@@ -40,6 +41,11 @@ struct ActionInputs {
 };
 
 struct FrameState {
+    struct OperationDrag {
+        state::Entity Node{state::Null};
+        Transform Value;
+    };
+    std::optional<OperationDrag> OperationStart;
     // The acting scene, set from ActingScene before actions apply and replayed from each recorded action.
     state::Entity Scene{state::Null};
     float DeltaTime{0};

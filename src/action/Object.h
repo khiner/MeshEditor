@@ -29,9 +29,16 @@ struct SetProjection {
 struct Delete {};
 struct Duplicate {};
 struct DuplicateLinked {};
+struct InstantiateHierarchy {
+    state::Entity Source;
+};
+struct MakeIndependent {
+    state::Entity Root;
+};
 struct ToggleHidden {};
-struct SetSelectedVisible {
+struct SetVisible {
     bool Visible;
+    Target Target{OnSelected{}};
 };
 struct SetSelectedSmoothShading {
     bool Smooth;
@@ -47,7 +54,16 @@ struct SetSelectedSharp {
     bool Sharp;
 };
 struct ParentToActive {};
-struct ClearParent {};
+struct ClearParent {
+    Target Target{OnSelected{}};
+};
+struct SetParent {
+    state::Entity Entity, Parent;
+};
+struct Rename {
+    state::Entity Entity;
+    std::string Name;
+};
 
 struct AddEmpty {
     std::unique_ptr<ObjectCreateInfo> Info;
@@ -100,9 +116,9 @@ struct SetMaterialAssignment {
 };
 
 using Action = std::variant<
-    Delete, Duplicate, DuplicateLinked, ToggleHidden, SetSelectedVisible, SetSelectedSmoothShading, ShadeSelectedSmoothByAngle,
+    Delete, Duplicate, DuplicateLinked, InstantiateHierarchy, MakeIndependent, ToggleHidden, SetVisible, SetSelectedSmoothShading, ShadeSelectedSmoothByAngle,
     SetSelectedSharp,
-    ParentToActive, ClearParent,
+    ParentToActive, ClearParent, SetParent, Rename,
     AddEmpty, AddArmature, AddCamera, AddLight, AddMeshPrimitive, ImportMesh,
     SetPbrMeshFeaturesMask, SetMaterialSlotSelection, SetMaterialAssignment,
     UpdateMaterial<float>, UpdateMaterial<vec2>, UpdateMaterial<vec3>, UpdateMaterial<vec4>, UpdateMaterial<uint32_t>, UpdateMaterial<MaterialAlphaMode>,

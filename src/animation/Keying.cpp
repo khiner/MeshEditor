@@ -1,4 +1,5 @@
 #include "animation/Keying.h"
+#include "scene/HierarchyInstance.h"
 
 #include "animation/Clips.h"
 #include "animation/Fields.h"
@@ -76,14 +77,15 @@ float FrameSeconds(const state::Registry &r, int frame) {
 }
 
 ChannelState QueryChannel(const state::Registry &r, const KeyTarget &key, float seconds) {
-    const auto *clips = r.try_get<const AnimationClips>(key.Entity);
+    const auto *clips = ClipsOf(r, key.Entity);
     const auto *clip = clips ? ActiveClip(r, *clips) : nullptr;
     const auto *channel = clip ? FindChannel(*clip, key.Target) : nullptr;
     if (!channel) return {};
-    return {.HasChannel = true, .KeyAtFrame = FindKey(channel->Times, seconds).second, .Changed = FieldChanged(r, key.Entity, *channel, seconds)};
+    return {.HasChannel = true, .KeyAtFrame = FindKey(channel->Times, seconds).second, .Changed = FieldChanged(r, HierarchySource(r, key.Entity), *channel, seconds)};
 }
 
-void InsertKey(state::Registry &r, const KeyTarget &key, float seconds) {
+void InsertKey(state::Registry &r, const KeyTarget &requested, float seconds) {
+    const KeyTarget key{HierarchySource(r, requested.Entity), requested.Target};
     std::vector<float> value(key.Target.Count);
     if (value.empty() || !ReadField(r, key.Entity, key.Target, value)) return;
     auto &animations = r.edit<Animations>(state::Document);
@@ -100,7 +102,8 @@ void InsertKey(state::Registry &r, const KeyTarget &key, float seconds) {
     PublishClips(r, key.Entity);
 }
 
-bool DeleteKey(state::Registry &r, const KeyTarget &key, float seconds) {
+bool DeleteKey(state::Registry &r, const KeyTarget &requested, float seconds) {
+    const KeyTarget key{HierarchySource(r, requested.Entity), requested.Target};
     auto *clips = r.try_edit<AnimationClips>(key.Entity);
     auto *clip = clips ? clips->Find(r.get<const Animations>(state::Document).Active) : nullptr;
     auto *channel = clip ? FindChannel(*clip, key.Target) : nullptr;
@@ -115,6 +118,7 @@ bool DeleteKey(state::Registry &r, const KeyTarget &key, float seconds) {
 }
 
 bool DeleteKeys(state::Registry &r, state::Entity entity, float seconds) {
+    entity = HierarchySource(r, entity);
     const auto *clips = r.try_get<const AnimationClips>(entity);
     const auto *clip = clips ? ActiveClip(r, *clips) : nullptr;
     if (!clip) return false;

@@ -977,6 +977,32 @@ std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Registry &r, mt
     return edits;
 }
 
+std::vector<ExtrusionSource> MeshTopologyEdit::ExtrusionSources(const MeshStore &meshes) const {
+    std::vector<ExtrusionSource> sources;
+    if (!Output) return sources;
+    if (Published) throw std::logic_error("Extrusion sources must be read before publication.");
+    const auto &job = Plan->Jobs.Jobs[0];
+    const auto counts = Chain.Scratch.Get({Plan->Jobs.ScratchBinding().Offset + job.CountsOffset, job.CountEntries});
+    const auto output = Chain.Scratch.Get(Output->Vertices);
+    const Mesh mesh{meshes, SourceId};
+    uint32_t index = 0u;
+    if (Op == MeshTopologyOp::ExtrudeFacesIndividual) {
+        ForEachWorkElement(Chain.Scratch, job.SrcFaceWork, [&](uint32_t face) {
+            const auto entry = job.SrcVertexCount + job.SrcHalfedgeCount + index++;
+            const auto normal = mesh.GetNormal(he::FH{face});
+            for (auto v = counts[entry]; v < counts[entry + 1u]; ++v) sources.push_back({v, face, normal});
+        });
+    } else if (Op == MeshTopologyOp::ExtrudeRegion || Op == MeshTopologyOp::ExtrudeEdges || Op == MeshTopologyOp::ExtrudeVertices) {
+        ForEachWorkElement(Chain.Scratch, job.SrcVertexWork, [&](uint32_t vertex) {
+            const auto entry = index++;
+            for (auto v = counts[entry]; v < counts[entry + 1u]; ++v) {
+                if (output[v] == InvalidOffset) sources.push_back({v, vertex, mesh.GetNormal(he::VH{vertex})});
+            }
+        });
+    }
+    return sources;
+}
+
 void MeshTopologyEdit::PublishAll(state::Registry &r, std::span<MeshTopologyEdit> all) {
     const profile::CpuScope scope{"TopologyEditPublish"};
     std::vector<MeshTopologyEdit *> edits;

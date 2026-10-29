@@ -121,9 +121,9 @@ state::Entity FrameScene(const state::Registry &r) {
     return ResolveScene(r, frame ? frame->Scene : state::Null);
 }
 
-void EmplaceObject(state::Registry &r, state::Entity e, ObjectType type) {
+void EmplaceObject(state::Registry &r, state::Entity e, ObjectType type, state::Entity scene) {
     r.emplace<ObjectKind>(e, type);
-    if (!r.all_of<SceneParent>(e)) r.emplace<SceneMembership>(e, std::vector{FrameScene(r)});
+    if (!r.all_of<SceneParent>(e)) r.emplace<SceneMembership>(e, std::vector{scene == state::Null ? FrameScene(r) : scene});
 }
 
 state::Entity FindActiveEntity(const state::Registry &registry, state::Entity scene) {

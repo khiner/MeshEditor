@@ -8,8 +8,9 @@ namespace {
 // Whether the entity draws the record as its evaluated or held record.
 bool Draws(const state::Registry &r, state::Entity e, uint32_t id) {
     if (const auto *evaluated = r.try_get<const EvaluatedMesh>(e); evaluated && evaluated->StoreId == id) return true;
-    const auto *handle = r.try_get<const MeshHandle>(e);
-    return handle && handle->StoreId == id;
+    if (const auto *handle = r.try_get<const MeshHandle>(e); handle && handle->StoreId == id) return true;
+    const auto *vertices = r.try_get<const VertexStoreId>(e);
+    return vertices && vertices->StoreId == id;
 }
 // Each record an entity draws maps to the entity.
 template<typename C> void MapMeshEntity(state::Registry &r, state::Entity e) {
@@ -39,6 +40,7 @@ void RegisterMeshStoreHandlers(state::Registry &r) {
     r.Resources.emplace<MeshEntities>();
     TrackRecord<MeshHandle>(r);
     TrackRecord<EvaluatedMesh>(r);
+    TrackRecord<VertexStoreId>(r);
 }
 
 state::Entity MeshEntityOf(const state::Registry &r, uint32_t store_id) {

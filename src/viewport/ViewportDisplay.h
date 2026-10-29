@@ -91,6 +91,7 @@ struct ViewportDisplay {
     std::optional<MotionBlur> MotionBlur;
     bool XRaySolid{false}, XRayWireframe{true};
     float XRayAlpha{0.5f}, XRayAlphaWireframe{0.f};
+    bool BackfaceCulling{false};
     bool operator==(const ViewportDisplay &) const = default;
 };
 template<> inline constexpr field::SpecTable<ViewportDisplay> Specs<ViewportDisplay>{
@@ -106,6 +107,7 @@ template<> inline constexpr field::SpecTable<ViewportDisplay> Specs<ViewportDisp
     {&ViewportDisplay::XRayWireframe, {.Label = "X-ray wireframe", .Help = "See through surfaces in Wireframe shading"}},
     {&ViewportDisplay::XRayAlpha, {.Min = 0, .Max = 1, .Label = "X-ray opacity", .Help = "Surface opacity with X-ray in Solid shading"}},
     {&ViewportDisplay::XRayAlphaWireframe, {.Min = 0, .Max = 1, .Label = "X-ray wireframe opacity", .Help = "Surface opacity with X-ray in Wireframe shading"}},
+    {&ViewportDisplay::BackfaceCulling, {.Label = "Backface Culling", .Help = "Hide back-facing surfaces in Solid shading, regardless of material sidedness"}},
 };
 
 // Wireframe and Solid shade with the workspace lights and support X-ray display.

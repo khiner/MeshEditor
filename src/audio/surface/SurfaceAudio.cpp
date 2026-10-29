@@ -1,5 +1,6 @@
 #include "SurfaceAudio.h"
 #include "audio/surface/AudioSurfaceSchema.h"
+#include "scene/HierarchyInstance.h"
 
 #include "audio/ContactScene.h"
 #include "audio/Fft.h"
@@ -362,7 +363,7 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
         auto &side = out.Sides[i];
         curvature[i] = SurfaceCurvature(r, nodes[i].Geometry, c.Point).value_or(0.0);
         // Reject sides with inconsistent shape and position counts or missing bodies.
-        const auto *modes = r.valid(nodes[i].Model) ? r.try_get<const ModalModes>(nodes[i].Model) : nullptr;
+        const auto *modes = r.valid(nodes[i].Model) ? r.try_get<const ModalModes>(HierarchySource(r, nodes[i].Model)) : nullptr;
         const auto *transform = modes ? WorldTransformOf(r, nodes[i].Model) : nullptr;
         if (!transform || modes->Positions.empty() || modes->Shapes.size() != modes->Positions.size()) continue;
 
@@ -1014,7 +1015,7 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
             for (uint32_t i = 0; i < c.Sides.size(); ++i) {
                 auto &side = out.Sides[i];
                 if (side.ModelEntity == state::Null) continue;
-                const auto *modes = r.try_get<const ModalModes>(side.ModelEntity);
+                const auto *modes = r.try_get<const ModalModes>(HierarchySource(r, side.ModelEntity));
                 const auto *transform = WorldTransformOf(r, side.ModelEntity);
                 if (!modes || !transform) continue;
                 for (uint32_t bb = 0; bb < bin_count; ++bb) {
@@ -1041,7 +1042,7 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
                 auto &side = out.Sides[i];
                 if (side.ModelEntity == state::Null) continue;
                 if (Length(c.Sides[i].SweepVelocity) > 0.01f * speed) continue;
-                const auto *modes = r.try_get<const ModalModes>(side.ModelEntity);
+                const auto *modes = r.try_get<const ModalModes>(HierarchySource(r, side.ModelEntity));
                 const auto *transform = WorldTransformOf(r, side.ModelEntity);
                 const auto slot = FindModalObject(bank, side.ModelEntity);
                 if (!modes || !transform || !slot) continue;

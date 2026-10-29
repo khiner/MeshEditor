@@ -1,6 +1,7 @@
 #include "action/Object.h"
 #include "Camera.h"
 #include "Profile.h"
+#include "SortUnique.h"
 #include "action/Dispatch.h"
 #include "action/Errors.h"
 #include "animation/MorphWeights.h"
@@ -20,6 +21,7 @@
 #include "render/RenderChanges.h"
 #include "scene/CameraLens.h"
 #include "scene/Defaults.h"
+#include "scene/HierarchyInstance.h"
 #include "scene/SceneGraphOps.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
@@ -30,13 +32,13 @@
 
 namespace {
 // Create an armature object over `data_entity`, creating fresh armature data when null.
-state::Entity CreateArmatureObject(state::Registry &r, MeshStore &meshes, state::Entity data_entity, std::string_view name, const Transform &transform, MeshInstanceCreateInfo::SelectBehavior select) {
+state::Entity CreateArmatureObject(state::Registry &r, MeshStore &meshes, state::Entity data_entity, std::string_view name, const Transform &transform, MeshInstanceCreateInfo::SelectBehavior select, state::Entity scene = state::Null) {
     if (data_entity == state::Null) {
         data_entity = r.create();
         r.emplace<Armature>(data_entity);
     }
     const auto entity = r.create();
-    EmplaceObject(r, entity, ObjectType::Armature);
+    EmplaceObject(r, entity, ObjectType::Armature, scene);
     r.emplace<ArmatureObject>(entity, data_entity);
     r.emplace<Transform>(entity, transform);
     EmplaceUniqueName(r, entity, name.empty() ? "Armature" : name);
@@ -132,7 +134,20 @@ void Apply(state::Registry &r, const Action &action) {
     const auto duplicate = [&](bool linked) {
         if (!(linked ? CanDuplicateLinked(r) : CanDuplicate(r))) return;
         const profile::CpuScope scope{linked ? "DuplicateLinked" : "Duplicate"};
-        const auto entities = SelectedIn(r);
+        auto entities = SelectedIn(r);
+        const auto selected = entities;
+        std::erase_if(entities, [&](state::Entity e) {
+            for (auto parent = ParentOrNull(r, e); parent != state::Null; parent = ParentOrNull(r, parent))
+                if (std::ranges::contains(selected, parent)) return true;
+            return false;
+        });
+        const auto hierarchy = [&](state::Entity e) {
+            const auto *object = r.try_get<const Instance>(e);
+            const auto *generated = object ? r.try_get<const procedure::ProcedureInstances>(object->Entity) : nullptr;
+            const bool children = std::ranges::any_of(Children{&r, e}, [&](state::Entity child) { return r.all_of<ObjectKind>(child) && (!generated || !std::ranges::contains(generated->Entities, child)); });
+            if (linked && r.all_of<ArmatureObject>(e) && !children && !r.all_of<HierarchyInstance>(e)) return false;
+            return r.all_of<HierarchyInstance>(e) || children || (r.all_of<ObjectKind>(e) && r.get<const ObjectKind>(e).Value != ObjectType::Mesh);
+        };
         // Every duplicated mesh's drawn record clones once in one batch, with its arenas reserved once, and instances sharing a mesh share its copy.
         std::vector<uint32_t> sources, copy_of(entities.size(), InvalidOffset);
         std::vector<MeshCopy> copies_of;
@@ -140,7 +155,7 @@ void Apply(state::Registry &r, const Action &action) {
             std::unordered_map<state::Entity, uint32_t> mesh_copies;
             for (uint32_t i = 0u; i < entities.size(); ++i) {
                 const auto e = entities[i];
-                if (!r.all_of<Instance>(e) || r.all_of<BoneSubPartOf>(e)) continue;
+                if (hierarchy(e) || !r.all_of<Instance>(e) || r.all_of<BoneSubPartOf>(e)) continue;
                 const auto mesh_entity = r.get<Instance>(e).Entity;
                 if (r.all_of<ObjectExtrasTag>(mesh_entity) || !DrawsMesh(r, mesh_entity)) continue;
                 const auto [copy, added] = mesh_copies.try_emplace(mesh_entity, uint32_t(copies_of.size()));
@@ -159,7 +174,12 @@ void Apply(state::Registry &r, const Action &action) {
         const auto clones = meshes.CloneMeshes(copies, sources, true);
         for (uint32_t i = 0u; i < entities.size(); ++i) {
             const auto src = entities[i];
-            const auto dup = linked ? DuplicateLinkedOne(r, src) : DuplicateOne(r, src, copy_of[i] == InvalidOffset ? nullptr : &copies_of[copy_of[i]], clones);
+            const auto dup = hierarchy(src) ? CreateHierarchyInstance(r, src, *WorldTransformOf(r, src)) : linked ? DuplicateLinkedOne(r, src) :
+                                                                                                                    DuplicateOne(r, src, copy_of[i] == InvalidOffset ? nullptr : &copies_of[copy_of[i]], clones);
+            if (hierarchy(src)) {
+                if (!linked) MakeHierarchyIndependent(r, dup);
+                r.emplace_or_replace<Selected>(dup);
+            }
             if (r.all_of<Active>(src)) {
                 r.remove<Active>(src);
                 r.emplace<Active>(dup);
@@ -211,26 +231,43 @@ void Apply(state::Registry &r, const Action &action) {
             r.replace<N>(node, parameters);
         }
     };
+    const bool valid_creation = std::visit([&](const auto &a) {
+        if constexpr (requires { a.Info; }) {
+            if (!a.Info || (a.Info->Scene != state::Null && !r.all_of<Scene>(a.Info->Scene))) return false;
+            return a.Info->Network == state::Null || (r.all_of<procedure::NetworkSubnet>(a.Info->Network) && procedure::NetworkRoot(r, a.Info->Network) == (a.Info->Scene == state::Null ? FrameScene(r) : a.Info->Scene));
+        } else return true;
+    },
+                                           action);
+    if (!valid_creation) return action::Fail(r, "The creation scene does not exist");
     std::visit(
         overloaded{
             [&](Delete) {
                 if (!CanDelete(r)) return;
-                Destroy(r, SelectedIn(r) | std::views::filter([&](state::Entity e) { return !r.all_of<SubElementOf>(e); }) | std::ranges::to<std::vector>());
+                auto removed = SelectedIn(r) | std::views::filter([&](state::Entity e) { return !r.all_of<SubElementOf>(e); }) | std::views::transform([&](state::Entity e) { return HierarchyEditTarget(r, e, true); }) | std::ranges::to<std::vector>();
+                SortUnique(removed);
+                Destroy(r, removed);
             },
             [&](Duplicate) { duplicate(false); },
             [&](DuplicateLinked) { duplicate(true); },
+            [&](const InstantiateHierarchy &a) {
+                if (!r.all_of<ObjectKind>(a.Source)) return Fail(r, "Choose an object hierarchy");
+                const auto root = CreateHierarchyInstance(r, a.Source, ComposeTransform(r, a.Source, state::Null, {}));
+                if (root != state::Null) ApplySelectBehavior(r, root, MeshInstanceCreateInfo::SelectBehavior::Exclusive);
+            },
+            [&](const MakeIndependent &a) { MakeHierarchyIndependent(r, a.Root); },
             [&](ToggleHidden) {
                 for (const auto e : SelectedIn(r)) {
-                    if (r.all_of<Instance>(e) && !r.all_of<Hidden>(e)) Hide(r, e);
-                    else Show(r, e);
+                    const auto target = HierarchyEditTarget(r, e, true);
+                    if (!r.all_of<Hidden>(e)) Hide(r, target);
+                    else Show(r, target);
                 }
             },
-            [&](const SetSelectedVisible &a) {
-                for (const auto e : SelectedIn(r)) {
-                    if (!r.all_of<Instance>(e) || r.all_of<SubElementOf>(e)) continue;
+            [&](const SetVisible &a) {
+                ForEachTarget(a.Target, [&] { return FindActiveEntity(r); }, [&](auto &&fn) { for (const auto e : SelectedIn(r)) fn(e); }, [&](state::Entity e) {
+                    if (!r.all_of<ObjectKind>(e) || r.all_of<SubElementOf>(e)) return;
+                    e = HierarchyEditTarget(r, e, true);
                     if (a.Visible) Show(r, e);
-                    else Hide(r, e);
-                }
+                    else Hide(r, e); });
             },
             [&](const SetSelectedSmoothShading &a) { append(r.get<const SelectionFlags>(state::Document).Meshes, procedure::ShadeSmooth{a.Smooth}); },
             [&](const ShadeSelectedSmoothByAngle &a) { append(r.get<const SelectionFlags>(state::Document).Meshes, procedure::ShadeSmoothByAngle{a.Angle}); },
@@ -238,21 +275,45 @@ void Apply(state::Registry &r, const Action &action) {
             [&](ParentToActive) {
                 const auto active = FindActiveEntity(r);
                 if (active == state::Null) return;
-                if (SetParentKeepWorld(r, SelectedIn(r), active, r.view<const BodyPoseCache>() | std::ranges::to<std::vector>())) action::Fail(r, "Loop in parents");
+                std::vector<std::pair<state::Entity, state::Entity>> targets;
+                for (const auto e : SelectedIn(r))
+                    if (e != active) targets.push_back(HierarchyReferenceTarget(r, e, active, true));
+                SortUnique(targets);
+                for (const auto [entity, parent] : targets)
+                    if (HierarchyParentCycle(r, entity, parent)) return Fail(r, "Loop in parents");
+                const auto owned = r.view<const BodyPoseCache>() | std::ranges::to<std::vector>();
+                for (const auto [entity, parent] : targets) SetParentKeepWorld(r, std::array{entity}, parent, owned);
             },
-            [&](ClearParent) {
-                ::ClearParents(r, SelectedIn(r));
+            [&](const ClearParent &a) {
+                std::vector<state::Entity> targets;
+                ForEachTarget(a.Target, [&] { return FindActiveEntity(r); }, [&](auto &&fn) { for (const auto e : SelectedIn(r)) fn(e); }, [&](state::Entity e) {
+                    if (r.valid(e)) targets.push_back(HierarchyEditTarget(r, e, true)); });
+                SortUnique(targets);
+                ::ClearParents(r, targets);
             },
-            [&](const AddEmpty &a) { ::AddEmpty(r, meshes, *a.Info); begin_translate(); },
+            [&](const SetParent &a) {
+                if (!r.all_of<ObjectKind>(a.Entity) || !r.all_of<ObjectKind>(a.Parent) || r.any_of<SubElementOf, BoneIndex>(a.Entity) || r.any_of<SubElementOf, BoneIndex>(a.Parent)) return action::Fail(r, "Parenting requires two scene objects");
+                const auto [entity, parent] = HierarchyReferenceTarget(r, a.Entity, a.Parent, true);
+                if (HierarchyParentCycle(r, entity, parent)) return Fail(r, "Loop in parents");
+                SetParentKeepWorld(r, std::array{entity}, parent, r.view<const BodyPoseCache>() | std::ranges::to<std::vector>());
+            },
+            [&](const Rename &a) {
+                if (!r.all_of<ObjectKind>(a.Entity) || r.any_of<SubElementOf, BoneIndex>(a.Entity)) return action::Fail(r, "Renaming requires a scene object");
+                const auto entity = HierarchyEditTarget(r, a.Entity, true);
+                r.remove<Name>(entity);
+                EmplaceUniqueName(r, entity, a.Name);
+            },
+            [&](const AddEmpty &a) { ::AddEmpty(r, meshes, *a.Info); if (a.Info->BeginTranslate) begin_translate(); },
             [&](const AddArmature &a) {
-                CreateArmatureObject(r, meshes, state::Null, a.Info->Name, a.Info->Transform, a.Info->Select);
-                begin_translate();
+                const auto entity = CreateArmatureObject(r, meshes, state::Null, a.Info->Name, a.Info->Transform, a.Info->Select, a.Info->Scene);
+                procedure::PlaceInNetwork(r, a.Info->Network, entity);
+                if (a.Info->BeginTranslate) begin_translate();
             },
-            [&](const AddCamera &a) { ::AddCamera(r, meshes, *a.Info, a.Props); begin_translate(); },
-            [&](const AddLight &a) { ::AddLight(r, meshes, *a.Info); begin_translate(); },
+            [&](const AddCamera &a) { ::AddCamera(r, meshes, *a.Info, a.Props); if (a.Info->BeginTranslate) begin_translate(); },
+            [&](const AddLight &a) { ::AddLight(r, meshes, *a.Info); if (a.Info->BeginTranslate) begin_translate(); },
             [&](const AddMeshPrimitive &a) {
                 ::AddMeshPrimitive(r, a.Parameters, *a.Info);
-                begin_translate();
+                if (a.Info->BeginTranslate) begin_translate();
             },
             [&](const ImportMesh &a) { RequestImportMesh(r, a.Path, *a.Info); },
             [&](const SetPbrMeshFeaturesMask &a) {

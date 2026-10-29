@@ -3,6 +3,7 @@
 #include "audio/AudioSchema.h"
 #include "audio/ContactScene.h"
 #include "scene/Entity.h"
+#include "scene/HierarchyInstance.h"
 #include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
 namespace fs = std::filesystem;
@@ -38,7 +39,7 @@ uint32_t GetActiveVertexIndex(const state::Registry &r, state::Entity instance_e
 
 // Returns the sample-store path assigned to the instance's active mesh vertex, if any.
 std::optional<fs::path> ActiveSamplePath(const state::Registry &r, state::Entity instance_entity) {
-    const auto *samples = r.try_get<const VertexSamples>(instance_entity);
+    const auto *samples = r.try_get<const VertexSamples>(HierarchySource(r, instance_entity));
     if (!samples) return std::nullopt;
     const auto mesh_entity = r.get<const Instance>(instance_entity).Entity;
     const auto *active = r.try_get<const MeshActiveElement>(mesh_entity);

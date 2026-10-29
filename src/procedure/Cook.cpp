@@ -2,6 +2,7 @@
 #include "procedure/InlineSelection.h"
 #include "procedure/Procedure.h"
 #include "procedure/ProcedureSchema.h"
+#include "scene/HierarchyInstance.h"
 
 #include "Profile.h"
 #include "SortUnique.h"
@@ -86,6 +87,7 @@ struct SocketValue {
     // Borrow records from MeshEntity for read-only use; own records when MeshEntity is null.
     // Borrowed records remain owned by their mesh and must never be edited or released by the cook.
     state::Entity MeshEntity{state::Null};
+    state::Entity Prototype{state::Null};
     state::Entity Object{state::Null}; // For geometry, the object whose local space the geometry is in, or null for this procedure's mesh space
     uint32_t Instance{InvalidOffset}; // The record an instances value's points each place, or InvalidOffset for points placing nothing
     union {
@@ -134,15 +136,26 @@ void UpdatePoseMembership(state::Registry &r, const MeshTopologyEdit &edit, Edit
     buffers.PosedSectors.UpdateBlocks(edit.StoreId, meshes.GetDerived(edit.StoreId).NormalRevision, corners, has_sectors);
 }
 
-// Edit the record the mesh entity draws in place and repair its render, pose and selection state.
-void EditDrawnTopology(state::Registry &r, state::Entity mesh_entity, const MeshTopologyTask &task) {
+// Edit topology in place, repairing render, pose and selection state when the record is drawn.
+void EditTopology(state::Registry &r, state::Entity mesh_entity, const MeshTopologyTask &task, std::vector<ExtrusionSource> *sources = nullptr) {
     auto &meshes = r.Resources.get<MeshStore>();
-    ReleaseMeshEditWork(r, mesh_entity);
+    if (mesh_entity != state::Null) ReleaseMeshEditWork(r, mesh_entity);
     mtl::ComputeChain chain{meshes.BufferContext(), TopologyScratchWords};
     auto edits = MeshTopologyEdit::Construct(r, chain, std::span{&task, 1u});
+    if (sources) *sources = edits.front().ExtrusionSources(meshes);
     MeshTopologyEdit::PublishAll(r, edits);
     auto &edit = edits.front();
     if (!edit.Output) {
+        if (mesh_entity == state::Null) MeshTopologyEdit::FinishAll(r, std::array{&edit});
+        chain.Submit();
+        return;
+    }
+    if (sources) {
+        const auto handles = chain.Scratch.Get(edit.Output->Vertices);
+        for (auto &source : *sources) source.Output = handles[source.Output];
+    }
+    if (mesh_entity == state::Null) {
+        MeshTopologyEdit::FinishAll(r, std::array{&edit});
         chain.Submit();
         return;
     }
@@ -297,7 +310,7 @@ Outcome Execute(state::Registry &r, std::optional<MeshTopologyTask> task, const 
     if (masks.Publish) PublishStoreSelection(r.Resources.get<const MeshStore>(), *task);
     if (masks.Drawn != state::Null && !TopologyCreatesRecord(task->Op)) {
         *masks.Repaired = true;
-        EditDrawnTopology(r, masks.Drawn, *task);
+        EditTopology(r, masks.Drawn, *task);
         return task->SourceId;
     }
     const auto result = ExecuteGeometryTopology(r, std::span{&*task, 1u}).front();
@@ -326,7 +339,7 @@ Outcome ExecuteStages(state::Registry &r, std::vector<MeshTopologyTask> tasks, c
     }
     if (masks.Drawn != state::Null && std::ranges::none_of(tasks, [](const auto &task) { return TopologyCreatesRecord(task.Op); })) {
         *masks.Repaired = true;
-        for (const auto &task : tasks) EditDrawnTopology(r, masks.Drawn, task);
+        for (const auto &task : tasks) EditTopology(r, masks.Drawn, task);
         return tasks.front().SourceId;
     }
     const auto results = ExecuteGeometryTopologyStages(r, tasks);
@@ -417,11 +430,109 @@ Outcome Run(state::Registry &r, const Merge &p, uint32_t id, const Masks &m) {
                                                                                           vertices.front();
     return ExecutePlanned(r, MergeTask(meshes, Mesh{meshes, id}, selection, p.Mode, std::max(p.Distance, 0.f), reference), selection, m);
 }
-Outcome Run(state::Registry &r, const Extrude &p, uint32_t id, const Masks &m) {
-    const auto op = p.Mode == ExtrudeMode::Vertices ? MeshTopologyOp::ExtrudeVertices : p.Mode == ExtrudeMode::Edges ? MeshTopologyOp::ExtrudeEdges :
-        p.Mode == ExtrudeMode::FacesIndividual                                                                       ? MeshTopologyOp::ExtrudeFacesIndividual :
-                                                                                                                       MeshTopologyOp::ExtrudeRegion;
-    return Execute(r, Task(id, op, m), m);
+store::Hash128 SelectionKey(const state::Registry &r, state::Entity node) {
+    const auto *selection = r.try_get<const InlineSelection>(node);
+    if (!selection || selection->All) return {};
+    std::vector<uint32_t> words{uint32_t(selection->Domain), selection->Active};
+    for (const auto *domain : {&selection->Vertices, &selection->Edges, &selection->Faces}) {
+        words.push_back(uint32_t(domain->Handles.size()));
+        words.append_range(domain->Handles);
+        words.push_back(uint32_t(domain->Blocks.size()));
+        for (const auto &[local, mask] : domain->Blocks) {
+            words.push_back(local);
+            words.append_range(mask);
+        }
+    }
+    return store::HashBytes(std::as_bytes(std::span{words}));
+}
+
+enum class TopologyReuse { None,
+                           Input,
+                           Restored };
+
+Outcome RunExtrude(state::Registry &r, state::Entity node, const Extrude &p, uint32_t id, const Masks &m, const Linked &linked, TopologyReuse reuse, std::vector<uint32_t> &temporaries, bool retain) {
+    auto &meshes = r.Resources.get<MeshStore>();
+    const auto domain = p.Mode == ExtrudeMode::FacesIndividual ? AttributeDomain::Face : AttributeDomain::Vertex;
+    const auto offset = ElementParameter(meshes, linked.Of<&Extrude::Offset>(), domain, AttributeType::Vec3);
+    const auto scale = ElementParameter(meshes, linked.Of<&Extrude::OffsetScale>(), domain);
+    if (!offset || !scale) return std::unexpected(NodeFault::Attribute);
+    const auto key = retain ? SelectionKey(r, node) : store::Hash128{};
+    const auto *prior = retain ? r.try_get<const NodeResult>(node) : nullptr;
+    const auto *cached = r.try_get<const NodeExtrusion>(node);
+    const auto *stage = reuse != TopologyReuse::None && prior && cached && prior->StoreId == id && cached->Mode == p.Mode && cached->Selection == key ? cached : nullptr;
+    NodeExtrusion computed{.Selection = key, .Mode = p.Mode};
+    std::vector<std::pair<uint32_t, vec3>> offsets;
+    const bool fields = *offset != InvalidOffset || *scale != InvalidOffset;
+    if (!stage || fields) {
+        const auto selection = Handles(meshes, id, m);
+        const Mesh input{meshes, id};
+        if (!stage) {
+            for (const auto face : selection.Faces) computed.RegionNormal += input.GetNormal(he::FH{face});
+            if (Length(computed.RegionNormal) > 0.f) computed.RegionNormal = Normalize(computed.RegionNormal);
+            stage = &computed;
+        }
+        if (fields) {
+            const auto &elements = domain == AttributeDomain::Face ? selection.Faces : selection.Vertices;
+            for (const auto source : elements) {
+                const auto normal = p.Mode == ExtrudeMode::Region ? stage->RegionNormal : domain == AttributeDomain::Face ? input.GetNormal(he::FH{source}) :
+                                                                                                                            input.GetNormal(he::VH{source});
+                const auto direction = *offset != InvalidOffset ? meshes.AttributeView<vec3>(*offset)[source] : p.AlongNormals ? normal :
+                                                                                                                                 p.Offset;
+                offsets.emplace_back(source, direction * (*scale != InvalidOffset ? meshes.AttributeView<float>(*scale)[source] : p.OffsetScale));
+            }
+            std::ranges::sort(offsets, {}, &std::pair<uint32_t, vec3>::first);
+        }
+    }
+    for (const auto attribute : temporaries) meshes.ReleaseAttribute(attribute);
+    temporaries.clear();
+    bool restored = reuse == TopologyReuse::Restored;
+    if (!restored && stage->State != store::Hash128{}) {
+        WaitForRender(r);
+        if (const auto change = meshes.RestoreRecord(stage->State, id)) {
+            const auto refreshed = ReconcileRestoredRecord(r, *change, m.Drawn);
+            if (m.Refresh) *m.Refresh = refreshed;
+            restored = true;
+        }
+    }
+    if (!restored) {
+        computed.RegionNormal = stage->RegionNormal;
+        stage = &computed;
+        const auto op = p.Mode == ExtrudeMode::Vertices ? MeshTopologyOp::ExtrudeVertices : p.Mode == ExtrudeMode::Edges ? MeshTopologyOp::ExtrudeEdges :
+            p.Mode == ExtrudeMode::FacesIndividual                                                                       ? MeshTopologyOp::ExtrudeFacesIndividual :
+                                                                                                                           MeshTopologyOp::ExtrudeRegion;
+        auto task = Task(id, op, m);
+        if (m.Publish) PublishStoreSelection(meshes, task);
+        EditTopology(r, m.Drawn, task, &computed.Vertices);
+        if (retain) computed.State = meshes.KeepState();
+    }
+    GeometrySelection selected;
+    for (const auto &vertex : stage->Vertices) selected.Vertices.push_back(vertex.Output);
+    SortUnique(selected.Vertices);
+    if (m.Drawn != state::Null) *m.Repaired = true;
+    if (!selected.Vertices.empty() && (p.OffsetScale != 0.f || *scale != InvalidOffset)) {
+        const PositionOperationTarget target{.StoreId = id, .Selection = std::move(selected)};
+        const bool common = offsets.empty() && (!p.AlongNormals || p.Mode == ExtrudeMode::Region);
+        uint32_t attribute = InvalidOffset;
+        PositionOperationOptions options;
+        if (common) {
+            options.Transform = PositionTransform{.Delta = {.P = (p.AlongNormals ? stage->RegionNormal : p.Offset) * p.OffsetScale}};
+        } else {
+            attribute = meshes.AddAttribute(id, AttributeDomain::Vertex, AttributeType::Vec3, ".cook.extrude-offset").value();
+            for (const auto &vertex : stage->Vertices) {
+                const auto normal = p.Mode == ExtrudeMode::Region ? stage->RegionNormal : vertex.Normal;
+                const vec3 displacement = offsets.empty() ? (p.AlongNormals ? normal : p.Offset) * p.OffsetScale : std::ranges::lower_bound(offsets, vertex.Source, {}, &std::pair<uint32_t, vec3>::first)->second;
+                meshes.SetAttribute<vec3>(attribute, vertex.Output, std::span{&displacement, 1u});
+            }
+            options.Flags = PositionEditAttributeOffset;
+            options.Attribute = meshes.AttributeRef(attribute);
+        }
+        const auto operation = common ? PositionEditOp::Transform : PositionEditOp::Attribute;
+        if (m.Drawn != state::Null) EditDrawnPositions(r, m.Drawn, target, operation, 1.f, 1u, options, m.Refresh);
+        else ExecuteGeometryPositions(r, std::span{&target, 1u}, operation, 1.f, 1u, options);
+        if (attribute != InvalidOffset) meshes.ReleaseAttribute(attribute);
+    }
+    if (retain && stage == &computed) r.emplace_or_replace<NodeExtrusion>(node, std::move(computed));
+    return id;
 }
 Outcome Run(state::Registry &r, Duplicate, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::DuplicateGeometry, m), m); }
 Outcome Run(state::Registry &r, Split, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::SplitGeometry, m), m); }
@@ -867,24 +978,11 @@ void ReleaseTemporaries(MeshStore &meshes, uint32_t id) {
 Operand OperandOf(const CookPlan &plan, std::span<const SocketValue> values, uint32_t node, uint32_t input) {
     if (input >= InputCount[plan.Nodes[node].Kind]) return {};
     const auto link = plan.Inputs[plan.InputFirst[node] + input];
+    if (link.Constant) return {.Constant = LinkedConstant{link.Constant->Words, link.Constant->Type}};
     if (link.FromNode == NoNode) return {};
     const auto &source = values[plan.SocketFirst[link.FromNode] + link.FromSocket];
     if (source.Type == SocketType::Value) return {.Constant = LinkedConstant{source.Value, AttributeType(std::countr_zero(KindSockets(plan.Nodes[link.FromNode].Kind)[link.FromSocket].Types))}};
     return {source.Type == SocketType::Attribute ? source.Attribute : InvalidOffset};
-}
-void AssignField(auto &p, Socket socket, const AttributeValue &words) {
-    field::ForEach(p, [&]<size_t I>(auto &member, std::integral_constant<size_t, I>) {
-        using F = std::remove_cvref_t<decltype(member)>;
-        if constexpr (detail::TypesOf<F>() != 0u) {
-            if (socket.Carries(I)) std::memcpy(&member, words.data(), sizeof(member));
-        } else if constexpr (field::Walkable<F>) {
-            field::ForEach(member, [&]<size_t J>(auto &nested, std::integral_constant<size_t, J>) {
-                if constexpr (detail::TypesOf<std::remove_cvref_t<decltype(nested)>>() != 0u) {
-                    if (socket.Carries(I, J)) std::memcpy(&nested, words.data(), sizeof(nested));
-                }
-            });
-        }
-    });
 }
 template<typename K> K Parameters(const state::Registry &r, const CookPlan &plan, std::span<const SocketValue> values, uint32_t node) {
     const auto [entity, kind] = plan.Nodes[node];
@@ -892,7 +990,7 @@ template<typename K> K Parameters(const state::Registry &r, const CookPlan &plan
     if constexpr (field::Walkable<K>) {
         const auto [first, end] = ParameterRange(kind);
         for (auto s = first; s < end; ++s) {
-            if (const auto value = OperandOf(plan, values, node, s).Constant) AssignField(p, KindSockets(kind)[s], value->Words);
+            if (const auto value = OperandOf(plan, values, node, s).Constant) AssignSocketParameter(p, KindSockets(kind)[s], value->Words);
         }
     }
     return p;
@@ -1002,9 +1100,13 @@ Evaluation EvaluateInputs(state::Registry &r, const CookPlan &plan, std::vector<
     return evaluation;
 }
 
+enum class RunMode { Publish,
+                     Transient,
+                     Handle };
+
 // Evaluate inputs and run the node, releasing temporary attributes after their last use.
 // The trailing arguments become the node's Masks Drawn, Repaired and Refresh.
-Outcome RunNode(state::Registry &r, const CookPlan &plan, std::vector<SocketValue> &values, uint32_t node, uint32_t id, std::optional<BufferArena<SelectionBlock>> &arena, state::Entity drawn = state::Null, bool *repaired = nullptr, MeshStore::Change *refresh = nullptr) {
+Outcome RunNode(state::Registry &r, const CookPlan &plan, std::vector<SocketValue> &values, uint32_t node, uint32_t id, std::optional<BufferArena<SelectionBlock>> &arena, state::Entity drawn = state::Null, bool *repaired = nullptr, MeshStore::Change *refresh = nullptr, TopologyReuse reuse_topology = TopologyReuse::None, RunMode mode = RunMode::Publish) {
     auto &meshes = r.Resources.get<MeshStore>();
     const auto [entity, kind] = plan.Nodes[node];
     auto evaluation = EvaluateInputs(r, plan, values, node, id, arena);
@@ -1036,11 +1138,35 @@ Outcome RunNode(state::Registry &r, const CookPlan &plan, std::vector<SocketValu
     masks.Drawn = drawn;
     masks.Repaired = repaired;
     masks.Refresh = refresh;
-    PublishInput(r, id, masks);
+    if (mode != RunMode::Transient && std::ranges::any_of(HandleSpecs, [&](const auto &spec) { return spec.Kind == kind; })) {
+        if (reuse_topology == TopologyReuse::None || !r.all_of<NodeHandle>(entity)) {
+            const auto selected = Handles(meshes, id, masks);
+            const Mesh input{meshes, id};
+            NodeHandle support;
+            for (const auto vertex : selected.Vertices) support.Center += input.GetPosition(he::VH{vertex});
+            if (!selected.Vertices.empty()) support.Center /= float(selected.Vertices.size());
+            for (const auto face : selected.Faces) support.Normal += input.GetNormal(he::FH{face});
+            if (Length(support.Normal) > 0.f) support.Normal = Normalize(support.Normal);
+            r.emplace_or_replace<NodeHandle>(entity, support);
+        }
+    }
+    if (mode == RunMode::Handle) {
+        release();
+        return id;
+    }
+    if (reuse_topology != TopologyReuse::Restored) PublishInput(r, id, masks);
     Outcome edited = id;
     VisitKind(kind, [&]<typename K> {
         const auto p = Parameters<K>(r, plan, values, node);
-        if constexpr (std::same_as<K, StoreNamedAttribute>) {
+        if constexpr (std::same_as<K, Extrude>) {
+            auto extrusion = p;
+            for (uint32_t socket = 0u; socket < InputCount[kind]; ++socket) {
+                if (!sockets[socket].Carries(uint8_t(field::IndexOf<&Extrude::Offset>))) continue;
+                const auto &input = plan.Inputs[plan.InputFirst[node] + socket];
+                if (input.FromNode != NoNode || input.Constant) extrusion.AlongNormals = false;
+            }
+            edited = RunExtrude(r, entity, extrusion, id, masks, linked, evaluation.MaskFirst ? TopologyReuse::None : reuse_topology, evaluation.Temporaries, mode == RunMode::Publish);
+        } else if constexpr (std::same_as<K, StoreNamedAttribute>) {
             edited = Store(meshes, p, id, OperandOf(plan, values, node, 1u), evaluation.Temporaries);
         } else if constexpr (std::same_as<K, StoreSelection>) {
             const auto linked = OperandOf(plan, values, node, 1u).Attribute;
@@ -1135,7 +1261,7 @@ std::optional<uint32_t> Realize(state::Registry &r, uint32_t points, uint32_t in
 }
 
 // Publish instance entities in transform order, retaining existing entities while the count permits.
-void PublishInstances(state::Registry &r, state::Entity mesh_entity, state::Entity instanced, std::span<const Transform> transforms) {
+void PublishInstances(state::Registry &r, state::Entity mesh_entity, state::Entity instanced, std::span<const Transform> transforms, state::Entity prototype = state::Null) {
     const auto *current = r.try_get<const ProcedureInstances>(mesh_entity);
     if (!current && transforms.empty()) return;
     const auto previous = current ? current->Entities : std::vector<state::Entity>{};
@@ -1157,21 +1283,29 @@ void PublishInstances(state::Registry &r, state::Entity mesh_entity, state::Enti
         if (object != objects.end() && *object == parent && kept[o] < count) published[o * count + kept[o]++] = e;
         else extras.push_back(e);
     }
-    ClearParents(r, extras);
-    r.destroy(extras);
+    Destroy(r, extras);
     for (uint32_t o = 0u; o < objects.size(); ++o) {
         for (uint32_t i = 0u; i < count; ++i) {
             auto &e = published[o * count + i];
             if (e == state::Null) {
-                e = r.create();
-                r.emplace<Instance>(e, instanced);
-                r.emplace<Transform>(e, transforms[i]);
+                e = prototype != state::Null ? CreateHierarchyInstance(r, prototype, transforms[i]) : r.create();
+                if (prototype == state::Null) r.emplace<Instance>(e, instanced);
+                r.emplace_or_replace<Transform>(e, transforms[i]);
                 SetParent(r, e, objects[o]);
-                EmplaceObject(r, e, ObjectType::Mesh);
+                if (prototype == state::Null) EmplaceObject(r, e, ObjectType::Mesh);
                 ApplyVisibility(r, e);
                 continue;
             }
-            if (r.get<const Instance>(e).Entity != instanced) r.replace<Instance>(e, instanced);
+            if (prototype != state::Null) BindHierarchyInstance(r, e, prototype);
+            else if (r.all_of<HierarchyInstance>(e)) {
+                const auto placement = r.get<const Transform>(e);
+                Destroy(r, e);
+                e = r.create();
+                r.emplace<Transform>(e, placement);
+                r.emplace<Instance>(e, instanced);
+                SetParent(r, e, objects[o]);
+                EmplaceObject(r, e, ObjectType::Mesh);
+            } else if (r.get<const Instance>(e).Entity != instanced) r.replace<Instance>(e, instanced);
             if (r.get<const Transform>(e) != transforms[i]) r.replace<Transform>(e, transforms[i]);
         }
     }
@@ -1269,9 +1403,13 @@ bool Chained(const CookPlan &plan, std::span<const uint32_t> path) {
     std::vector<uint32_t> position(plan.Nodes.size(), NoNode);
     for (uint32_t i = 0u; i < path.size(); ++i) position[path[i]] = i;
     for (uint32_t node = 0u; node < plan.Nodes.size(); ++node) {
+        if (!plan.Demanded[node]) continue;
         for (uint32_t input = 0u; input < InputCount[plan.Nodes[node].Kind]; ++input) {
             const auto from = plan.Inputs[plan.InputFirst[node] + input].FromNode;
             if (from == NoNode) continue;
+            bool field = IsAttributeKind(plan.Nodes[from].Kind);
+            VisitKind(plan.Nodes[from].Kind, [&]<typename K> { field |= ValueKind<K>; });
+            if (position[node] != NoNode && position[node] != 0u && field) continue;
             const bool path_link = input == 0u && position[from] != NoNode && position[node] == position[from] + 1u;
             if ((position[node] != NoNode || (position[from] != NoNode && position[from] != 0u)) && !path_link) return false;
         }
@@ -1287,19 +1425,24 @@ struct PathRun {
 // The record holds the output of the node before `first`.
 // That node and each node that runs keep the mesh storage state their result leaves as their NodeResult, the path's last node keeps a pending one, and the nodes from the first faulted one hold none, so the next cook runs them again.
 // The positions of `restored`, a restore's change to the record, refresh with the first drawn position edit or after the path.
-PathRun RunPath(state::Registry &r, state::Entity mesh_entity, const CookPlan &plan, std::span<const uint32_t> path, size_t first, uint32_t record, bool rendered, std::optional<BufferArena<SelectionBlock>> &arena, MeshStore::Change &restored) {
+PathRun RunPath(state::Registry &r, state::Entity mesh_entity, const CookPlan &plan, std::span<const uint32_t> path, size_t first, uint32_t record, bool rendered, std::optional<BufferArena<SelectionBlock>> &arena, MeshStore::Change &restored, TopologyReuse reuse_topology) {
     auto &meshes = r.Resources.get<MeshStore>();
     if (first < path.size()) FinishPendingSourceStates(r, record);
     // Keep mesh storage as it stands as the result of the path node at `i`, which the record holds.
     const auto keep_result = [&](size_t i) {
         const bool last = i + 1u == path.size();
-        const NodeResult result{i ? plan.Nodes[path[i - 1u]].Entity : state::Null, last ? store::Hash128{} : meshes.KeepState(), record};
         const auto entity = plan.Nodes[path[i]].Entity;
+        const NodeResult result{i ? plan.Nodes[path[i - 1u]].Entity : state::Null, last ? store::Hash128{} : meshes.KeepState(), record};
         if (const auto *held = r.try_get<const NodeResult>(entity); !held || *held != result) r.emplace_or_replace<NodeResult>(entity, result);
         if (auto &pass = r.Resources.get<CookPass>(); !last && pass.Mesh == mesh_entity && !std::ranges::contains(pass.Exact, result.State)) pass.Exact.push_back(result.State);
     };
-    keep_result(first - 1u);
+    if (reuse_topology != TopologyReuse::Restored) keep_result(first - 1u);
     std::vector<SocketValue> values(plan.SocketFirst.back());
+    for (uint32_t n = 0; n < plan.Nodes.size(); ++n) {
+        VisitKind(plan.Nodes[n].Kind, [&]<typename K> {
+            if constexpr (ValueKind<K>) values[plan.SocketFirst[n]] = {.Type = SocketType::Value, .Value = Words(r.get<const K>(plan.Nodes[n].Entity).Value)};
+        });
+    }
     bool faulted = false;
     const auto refresh_restored = [&] {
         if (restored.VertexRanges.empty() && std::ranges::all_of(restored.Blocks, [](const auto &blocks) { return blocks.empty(); })) return;
@@ -1316,7 +1459,7 @@ PathRun RunPath(state::Registry &r, state::Entity mesh_entity, const CookPlan &p
         if (kind != KindOf<Join> && kind != KindOf<Boolean>) {
             bool repaired = false;
             if (!rendered) refresh_restored();
-            const auto edited = RunNode(r, plan, values, node, record, arena, rendered ? mesh_entity : state::Null, &repaired, &restored);
+            const auto edited = RunNode(r, plan, values, node, record, arena, rendered ? mesh_entity : state::Null, &repaired, &restored, i == first ? reuse_topology : TopologyReuse::None);
             if (!edited) {
                 r.emplace<NodeError>(entity, edited.error());
                 faulted = true;
@@ -1329,7 +1472,7 @@ PathRun RunPath(state::Registry &r, state::Entity mesh_entity, const CookPlan &p
                 rendered = false;
             }
         }
-        if (faulted) r.remove<NodeResult>(entity);
+        if (faulted) r.remove<NodeResult, NodeExtrusion, NodeHandle>(entity);
         else keep_result(i);
     }
     refresh_restored();
@@ -1376,7 +1519,13 @@ void CookChain(state::Registry &r, state::Entity mesh_entity, const CookPlan &pl
     const auto *live = r.try_get<const EvaluatedMesh>(mesh_entity);
     const auto prior = live && meshes.TryGet(live->StoreId) ? live->StoreId : InvalidOffset;
     const auto entity_at = [&](size_t i) { return plan.Nodes[path[i]].Entity; };
-    const auto edited = [&](state::Entity e) { return changed.contains(e) && !created.contains(e); };
+    std::vector<bool> invalid(plan.Nodes.size());
+    for (const auto n : plan.Order) {
+        invalid[n] = changed.contains(plan.Nodes[n].Entity) && !created.contains(plan.Nodes[n].Entity);
+        for (const auto &input : std::span{plan.Inputs}.subspan(plan.InputFirst[n], InputsOf(plan, n)))
+            if (input.FromNode != NoNode) invalid[n] = invalid[n] || invalid[input.FromNode];
+    }
+    const auto edited = [&](state::Entity e) { return invalid[IndexOf(plan, e)]; };
     size_t held = 0u;
     while (held < path.size() && !edited(entity_at(held))) {
         if (held) {
@@ -1392,10 +1541,30 @@ void CookChain(state::Registry &r, state::Entity mesh_entity, const CookPlan &pl
     MeshStore::Change restored{};
     // Whether the record holds the output of the last held node.
     const bool continued = prior != InvalidOffset && held && live->Tip == entity_at(held - 1u);
+    auto reuse_topology = continued ? TopologyReuse::Input : TopologyReuse::None;
     if (!continued) {
         const auto *result = held ? r.try_get<const NodeResult>(entity_at(held - 1u)) : nullptr;
         bool restored_record = false;
-        if (result && result->StoreId == prior && result->State != store::Hash128{}) {
+        store::Hash128 topology_state{};
+        if (result && held < path.size() && plan.Nodes[path[held]].Kind == KindOf<Extrude> && result->StoreId == prior) {
+            const auto node = path[held];
+            const auto entity = entity_at(held);
+            const auto *cached = r.try_get<const NodeResult>(entity);
+            const auto *topology = r.try_get<const NodeExtrusion>(entity);
+            const auto inputs = std::span{plan.Inputs}.subspan(plan.InputFirst[node], InputsOf(plan, node));
+            const bool plain = std::ranges::all_of(inputs.subspan(1u), [](const auto &input) { return input.FromNode == NoNode && !input.Constant; });
+            if (plain && cached && cached->Input == entity_at(held - 1u) && cached->StoreId == prior && topology &&
+                topology->Mode == r.get<const Extrude>(entity).Mode && topology->Selection == SelectionKey(r, entity)) topology_state = topology->State;
+        }
+        if (topology_state != store::Hash128{}) {
+            WaitForRender(r);
+            if (const auto change = meshes.RestoreRecord(topology_state, prior)) {
+                restored = ReconcileRestoredRecord(r, *change, mesh_entity);
+                restored_record = true;
+                reuse_topology = TopologyReuse::Restored;
+            }
+        }
+        if (!restored_record && result && result->StoreId == prior && result->State != store::Hash128{}) {
             WaitForRender(r);
             if (std::ranges::contains(r.Resources.get<const CookPass>().Exact, result->State) && meshes.RestoreKeptState(result->State)) {
                 restored = ReconcileRestoredStore(r, mesh_entity);
@@ -1406,13 +1575,14 @@ void CookChain(state::Registry &r, state::Entity mesh_entity, const CookPlan &pl
             }
         }
         if (restored_record) {
+            if (reuse_topology != TopologyReuse::Restored) reuse_topology = TopologyReuse::Input;
             replaced = InvalidOffset;
             rendered = meshes.Get(record).RenderTopologies != 0u;
         } else {
             const auto root = MaterializeRoot(r, plan.Nodes[path.front()]);
             if (!root) {
                 r.emplace_or_replace<NodeError>(entity_at(0u), NodeFault::NoMesh);
-                for (const auto node : path.subspan(held)) r.remove<NodeResult>(plan.Nodes[node].Entity);
+                for (const auto node : path.subspan(held)) r.remove<NodeResult, NodeExtrusion, NodeHandle>(plan.Nodes[node].Entity);
                 return;
             }
             record = *root;
@@ -1425,7 +1595,7 @@ void CookChain(state::Registry &r, state::Entity mesh_entity, const CookPlan &pl
         return;
     }
     const auto topology = TopologyRevisions(meshes, record);
-    const auto run = RunPath(r, mesh_entity, plan, path, held, record, rendered, arena, restored);
+    const auto run = RunPath(r, mesh_entity, plan, path, held, record, rendered, arena, restored, reuse_topology);
     // A run that replaced its own starting record released it.
     if (replaced != InvalidOffset && replaced != record && meshes.TryGet(replaced)) ReleaseReplaced(r, replaced);
     OwnMesh(r, mesh_entity, InvalidOffset);
@@ -1437,11 +1607,11 @@ void CookChain(state::Registry &r, state::Entity mesh_entity, const CookPlan &pl
 // Mark failed nodes and pass their inputs through.
 // A chained display path edits the mesh's record in place, and other procedures evaluate into a new record, empty when no node is displayed or the displayed node has no result.
 // Release intermediate records.
-void Evaluate(state::Registry &r, state::Entity mesh_entity, std::optional<BufferArena<SelectionBlock>> &arena, const state::DirtySet &changed, const state::DirtySet &created_nodes) {
+void Evaluate(state::Registry &r, state::Entity mesh_entity, std::optional<BufferArena<SelectionBlock>> &arena, const state::DirtySet &changed, const state::DirtySet &created_nodes, const CookPlan *handle_plan = nullptr) {
     auto &meshes = r.Resources.get<MeshStore>();
-    const auto &plan = r.get<const CookPlan>(mesh_entity);
+    const auto &plan = handle_plan ? *handle_plan : r.get<const CookPlan>(mesh_entity);
     // Track the first-input path, which carries the record the mesh draws from the root to the displayed node.
-    const auto display = plan.DisplayNode;
+    const auto display = plan.ResultNode;
     std::vector<bool> on_path(plan.Nodes.size());
     std::vector<uint32_t> path;
     for (auto node = display; node != NoNode && !on_path[node];) {
@@ -1451,26 +1621,20 @@ void Evaluate(state::Registry &r, state::Entity mesh_entity, std::optional<Buffe
         node = InputCount[kind] && KindSockets(kind).front().Type == SocketType::Geometry ? plan.Inputs[plan.InputFirst[node]].FromNode : NoNode;
     }
     std::ranges::reverse(path);
-    const bool chained = Chained(plan, path);
+    const bool chained = !handle_plan && Chained(plan, path);
     // Only the nodes of a chained display path hold results, and only the Boolean nodes a cook evaluates hold placements, since the cooks that skip a node would leave its result or placement stale.
     // A chained path's Boolean nodes have no second input.
     for (uint32_t node = 0u; node < plan.Nodes.size(); ++node) {
         const auto entity = plan.Nodes[node].Entity;
-        if (!chained || !on_path[node]) r.remove<NodeResult>(entity);
+        if (!handle_plan && (!chained || !on_path[node])) r.remove<NodeResult, NodeExtrusion, NodeHandle>(entity);
         if (chained) r.remove<BooleanPlacement>(entity);
     }
     if (chained) return CookChain(r, mesh_entity, plan, path, arena, changed, created_nodes);
     // The record the mesh drew, which the cook releases once the result replaces it.
     const auto prior = r.all_of<EvaluatedMesh>(mesh_entity) ? r.get<const EvaluatedMesh>(mesh_entity).StoreId : InvalidOffset;
     // Evaluate only nodes reachable from the displayed node.
-    const auto reached = display != NoNode ? Upstream(plan, display, [](uint32_t) { return true; }) : std::vector<bool>(plan.Nodes.size());
+    const auto &reached = plan.Demanded;
     auto remaining = plan.Consumers;
-    for (uint32_t node = 0u; node < plan.Nodes.size(); ++node) {
-        if (reached[node]) continue;
-        for (uint32_t i = 0u; i < InputCount[plan.Nodes[node].Kind]; ++i) {
-            if (const auto link = plan.Inputs[plan.InputFirst[node] + i]; link.FromNode != NoNode) --remaining[plan.SocketFirst[link.FromNode] + link.FromSocket];
-        }
-    }
     // The display reads the displayed node's result after every node, so the result's other consumers clone it.
     const auto result_socket = display != NoNode ? ResultSocket(plan.Nodes[display].Kind) : std::optional<uint16_t>{};
     if (result_socket) ++remaining[plan.SocketFirst[display] + *result_socket];
@@ -1542,6 +1706,10 @@ void Evaluate(state::Registry &r, state::Entity mesh_entity, std::optional<Buffe
         if (generated) continue;
         const auto in = take(node, 0u);
         const auto input = in.Record;
+        if (handle_plan && node == display) {
+            if (input != InvalidOffset) RunNode(r, plan, values, node, input, arena, state::Null, nullptr, nullptr, TopologyReuse::None, RunMode::Handle);
+            break;
+        }
         // A node's geometry output is in its first input's space.
         values[first + InputCount[kind]].Object = in.Object;
         if (kind == KindOf<Join>) {
@@ -1581,12 +1749,18 @@ void Evaluate(state::Registry &r, state::Entity mesh_entity, std::optional<Buffe
             // An unlinked Instance input faults the node, which passes its points through as geometry, as a failed placement does.
             output = in;
             if (input == InvalidOffset) continue;
-            if (instance.Record == InvalidOffset) {
+            const auto prototype = r.get<const InstanceOnPoints>(entity).Prototype;
+            if (prototype != state::Null && !r.all_of<ObjectKind>(prototype)) {
+                r.emplace<NodeError>(entity, NodeFault::Parameter);
+                continue;
+            }
+            if (instance.Record == InvalidOffset && prototype == state::Null) {
                 r.emplace<NodeError>(entity, NodeFault::NoMesh);
                 continue;
             }
             if (const auto placed = RunNode(r, plan, values, node, input, arena)) {
                 output.Type = SocketType::Instances;
+                output.Prototype = prototype;
                 output.MeshEntity = instance.MeshEntity;
                 output.Instance = instance.Record;
             } else {
@@ -1595,6 +1769,11 @@ void Evaluate(state::Registry &r, state::Entity mesh_entity, std::optional<Buffe
             continue;
         }
         if (kind == KindOf<RealizeInstances>) {
+            if (in.Prototype != state::Null) {
+                r.emplace<NodeError>(entity, NodeFault::Parameter);
+                values[first + 1u] = in;
+                continue;
+            }
             const auto realized = input != InvalidOffset && in.Instance != InvalidOffset ? Realize(r, input, in.Instance) : std::nullopt;
             if (realized) {
                 consume(in);
@@ -1605,9 +1784,13 @@ void Evaluate(state::Registry &r, state::Entity mesh_entity, std::optional<Buffe
             values[first + 1u].Record = realized.value_or(input);
             continue;
         }
-        const auto edited = input != InvalidOffset ? RunNode(r, plan, values, node, input, arena) : Outcome{input};
+        const auto edited = input != InvalidOffset ? RunNode(r, plan, values, node, input, arena, state::Null, nullptr, nullptr, TopologyReuse::None, handle_plan ? RunMode::Transient : RunMode::Publish) : Outcome{input};
         if (!edited) r.emplace<NodeError>(entity, edited.error());
         values[first + InputCount[kind]].Record = edited.value_or(input);
+    }
+    if (handle_plan) {
+        meshes.Release(created);
+        return;
     }
     if (result_socket) {
         // The result is this cook's record, so a borrowed record is cloned.
@@ -1627,7 +1810,7 @@ void Evaluate(state::Registry &r, state::Entity mesh_entity, std::optional<Buffe
         published->MeshEntity = state::Null;
         published->Instance = CloneRecord(r, published->Instance);
     }
-    const bool owns = !transforms.empty() && published->MeshEntity == state::Null;
+    const bool owns = !transforms.empty() && published->Prototype == state::Null && published->MeshEntity == state::Null;
     if (owns) disown(published->Instance);
     if (result == InvalidOffset) {
         result = CreateMesh(r, {}).StoreId;
@@ -1640,7 +1823,7 @@ void Evaluate(state::Registry &r, state::Entity mesh_entity, std::optional<Buffe
     const auto owned = OwnMesh(r, mesh_entity, owns ? published->Instance : InvalidOffset);
     PublishInstances(r, mesh_entity, owns ? owned : published ? published->MeshEntity :
                                                                 state::Null,
-                     transforms);
+                     transforms, published ? published->Prototype : state::Null);
     PublishCooked(r, mesh_entity, result, state::Null, false, true);
 }
 
@@ -1674,7 +1857,7 @@ void QueueNodeRemovals(state::Registry &r, state::Entity mesh_entity) {
 // Queue removed instance entities for the object-removal pass.
 void QueueInstanceRemovals(state::Registry &r, state::Entity mesh_entity) {
     if (r.Restoring) return;
-    r.Resources.emplace<PendingObjectRemovals>().Dependents.append_range(r.get<const ProcedureInstances>(mesh_entity).Entities);
+    r.Resources.emplace<PendingObjectRemovals>().Objects.append_range(r.get<const ProcedureInstances>(mesh_entity).Entities);
 }
 // Queue the unused owned mesh entity for removal so its record is released with it.
 void QueueOwnedMeshRemoval(state::Registry &r, state::Entity mesh_entity) {
@@ -1683,7 +1866,27 @@ void QueueOwnedMeshRemoval(state::Registry &r, state::Entity mesh_entity) {
 }
 } // namespace
 
+bool PrepareOperationHandle(state::Registry &r, state::Entity node) {
+    if (r.all_of<NodeHandle>(node)) return true;
+    const auto mesh = r.get<const ProcedureNode>(node).Procedure;
+    auto target = r.get<const GeometryProcedure>(mesh);
+    target.DisplayNode = node;
+    target.DisplayPort.reset();
+    const auto plan = Compile(r, target);
+    std::optional<BufferArena<SelectionBlock>> arena;
+    const state::DirtySet none;
+    Evaluate(r, mesh, arena, none, none, &plan);
+    return r.all_of<NodeHandle>(node);
+}
+
 struct ProcedureChanges {
+    state::DirtySet Selection;
+    state::DirtySet HandleInputs;
+    state::DirtySet References;
+    state::DirtySet Objects;
+    uint64_t ReferencesEpoch{};
+    std::vector<std::pair<state::Entity, state::Entity>> Readers;
+    std::vector<std::pair<state::Entity, state::Entity>> PlacementReaders;
     state::DirtySet Graph; // A geometry procedure's graph changed, on its mesh entity or one of its node entities.
     state::DirtySet Inputs; // A node's parameters or inline selection, a mesh's geometry or objects, or a published instance's parent changed.
     state::DirtySet Created; // A node was created, whose own components the inputs list with it.
@@ -1693,14 +1896,14 @@ struct ProcedureChanges {
 
 namespace procedure {
 state::Entity ViewportSelectionNode(const state::Registry &r, const GeometryProcedure &procedure) {
-    const auto active = procedure.ActiveNode, display = procedure.DisplayNode;
+    const auto active = procedure.First == state::Null ? state::Null : ActiveNodeOf(r, r.get<const ProcedureNode>(procedure.First).Procedure), display = procedure.DisplayNode;
     if (active == state::Null || display == state::Null || active == display) return state::Null;
     const auto sockets = KindSockets(r.get<const ProcedureNode>(active).Kind);
     const auto selection = std::ranges::find(sockets, SocketType::Selection, &Socket::Type);
     if (selection == sockets.end() || sockets.front().Type != SocketType::Geometry) return state::Null;
     const auto &links = r.get<const NodeInputs>(active).Links;
-    const auto input = links.front();
-    const bool reads = input.FromNode == display && input.FromSocket == ResultSocket(r.get<const ProcedureNode>(display).Kind);
+    const auto input = ResolveSocket(r, links.front(), true).Source;
+    const bool reads = input.FromNode != state::Null && input == ResolveSocket(r, DisplayLink(r, procedure), true).Source;
     return reads && links[size_t(selection - sockets.begin())].FromNode == state::Null ? active : state::Null;
 }
 
@@ -1712,10 +1915,10 @@ state::Entity CreateNode(state::Registry &r, uint16_t kind, uvec2 position) {
 }
 
 void RootProcedure(state::Registry &r, state::Entity mesh_entity, state::Entity root, uint16_t kind) {
-    r.emplace<NodeSelected>(root);
     r.emplace<ProcedureNode>(root, mesh_entity, state::Null, kind);
     r.emplace<NodeInputs>(root, std::vector<SocketLink>(InputCount[kind]));
-    r.emplace_or_replace<GeometryProcedure>(mesh_entity, root, root, root, root);
+    r.emplace_or_replace<GeometryProcedure>(mesh_entity, root, root, root);
+    r.emplace_or_replace<NetworkActive>(mesh_entity, NetworkItem{root}, std::vector<NetworkItem>{{root}});
 }
 } // namespace procedure
 
@@ -1723,8 +1926,16 @@ void RegisterProcedureHandlers(state::Registry &r) {
     using namespace procedure;
     r.Resources.emplace<CookCount>();
     auto &changes = r.Resources.emplace<ProcedureChanges>();
-    changes.Graph.bind(r).on<GeometryProcedure>(On::Create | On::Update).on<ProcedureNode>(On::Create | On::Update).on<NodeInputs>(On::Update);
+    changes.Graph.bind(r).on<InstanceOnPoints>(On::Update).on<GeometryProcedure>(On::Create | On::Update).on<ProcedureNode>(On::Create | On::Update).on<NodeInputs>(On::Update).on<NodeBypassed>(On::Create | On::Destroy).on<SubnetInterface>(On::Create | On::Update | On::Destroy).on<NodeContainer>(On::Create | On::Update | On::Destroy);
+    changes.Selection.bind(r).on<NetworkActive>(On::Create | On::Update);
+    changes.HandleInputs.bind(r).on<InlineSelection>(On::Create | On::Update | On::Destroy);
     changes.Created.bind(r).on<NodeLayout>(On::Create);
+    changes.Objects.bind(r, state::Clearing::Explicit).on<Instance>(On::Create | On::Update | On::Destroy);
+    changes.References.bind(r, state::Clearing::Explicit)
+        .on<ObjectInfo>(On::Create | On::Update | On::Destroy)
+        .on<procedure::Boolean>(On::Create | On::Update | On::Destroy)
+        .on<Instance>(On::Create | On::Update | On::Destroy)
+        .on<SceneParent>(On::Create | On::Update | On::Destroy);
     r.on_destroy<GeometryProcedure, &QueueNodeRemovals>();
     r.on_destroy<ProcedureInstances, &QueueInstanceRemovals>();
     r.on_destroy<ProcedureOwnedMesh, &QueueOwnedMeshRemoval>();
@@ -1748,48 +1959,133 @@ void SettleProcedures(state::Registry &r, bool cook) {
         const auto *node = r.try_get<const ProcedureNode>(e);
         return node && r.all_of<GeometryProcedure>(node->Procedure) ? node->Procedure : state::Null;
     };
-    std::vector<state::Entity> planned;
+    std::vector<state::Entity> planned, rewired;
     for (const auto e : changes.Graph) {
-        if (const auto procedure = procedure_of(e); procedure != state::Null) planned.push_back(procedure);
+        if (const auto procedure = procedure_of(e); procedure != state::Null) {
+            planned.push_back(procedure);
+            if (e != procedure) rewired.push_back(procedure);
+        }
     }
     SortUnique(planned);
-    for (const auto e : planned) r.emplace_or_replace<CookPlan>(e, Plan(r, r.get<const GeometryProcedure>(e)));
+    SortUnique(rewired);
+    std::vector<state::Entity> cooked;
+    for (const auto e : planned) {
+        const auto &procedure = r.get<const GeometryProcedure>(e);
+        const auto *previous_plan = r.try_get<const CookPlan>(e);
+        if (previous_plan && !std::ranges::binary_search(rewired, e) &&
+            (previous_plan->Nodes.empty() ? procedure.First == state::Null : previous_plan->Nodes.front().Entity == procedure.First && previous_plan->Nodes.back().Entity == procedure.Last)) {
+            const auto result = EntityOf(*previous_plan, previous_plan->ResultNode);
+            r.patch<CookPlan>(e, [&](auto &plan) { BindDisplay(r, procedure, plan); ++plan.Revision; });
+            const auto &plan = r.get<const CookPlan>(e);
+            if (cook && result != EntityOf(plan, plan.ResultNode)) cooked.push_back(e);
+            continue;
+        }
+        auto compiled = Compile(r, procedure);
+        compiled.Revision = previous_plan ? previous_plan->Revision + 1 : 1;
+        if (cook && (!previous_plan || EntityOf(*previous_plan, previous_plan->ResultNode) != EntityOf(compiled, compiled.ResultNode))) cooked.push_back(e);
+        if (cook && previous_plan) {
+            for (uint32_t n = 0; n < compiled.Nodes.size(); ++n) {
+                const auto entity = compiled.Nodes[n].Entity;
+                const auto before = IndexOf(*previous_plan, entity);
+                bool changed = before == NoNode;
+                if (!changed) {
+                    changed = InputsOf(compiled, n) != InputsOf(*previous_plan, before);
+                    for (uint16_t i = 0; !changed && i < InputsOf(compiled, n); ++i) {
+                        const auto a = compiled.Inputs[compiled.InputFirst[n] + i], b = previous_plan->Inputs[previous_plan->InputFirst[before] + i];
+                        changed = EntityOf(compiled, a.FromNode) != EntityOf(*previous_plan, b.FromNode) || a.FromSocket != b.FromSocket || a.Constant != b.Constant;
+                    }
+                }
+                if (changed) changes.Inputs.emplace(entity);
+            }
+        }
+        r.emplace_or_replace<CookPlan>(e, std::move(compiled));
+    }
+    const auto demanded = [&](state::Entity e, state::Entity procedure) {
+        const auto &plan = r.get<const CookPlan>(procedure);
+        const auto node = IndexOf(plan, e);
+        return node != NoNode && plan.Demanded[node];
+    };
+    if (changes.ReferencesEpoch != r.Epoch || !changes.References.empty() || !planned.empty()) {
+        changes.Readers.clear();
+        changes.PlacementReaders.clear();
+        const auto placement = [&](state::Entity procedure, state::Entity object) {
+            for (auto e = r.valid(object) ? object : state::Null; e != state::Null; e = ParentOrNull(r, e)) changes.PlacementReaders.emplace_back(e, procedure);
+        };
+        for (const auto [node, info] : std::as_const(r).view<const ObjectInfo>().each()) {
+            const auto procedure = procedure_of(node);
+            if (procedure == state::Null || !demanded(node, procedure)) continue;
+            if (cook && changes.Objects.contains(info.Object)) {
+                changes.Inputs.emplace(node);
+                cooked.push_back(procedure);
+            }
+            if (const auto *instance = r.try_get<const Instance>(info.Object); instance && instance->Entity != procedure) changes.Readers.emplace_back(instance->Entity, procedure);
+            placement(procedure, info.Object);
+        }
+        for (const auto [node, boolean] : std::as_const(r).view<const procedure::Boolean>().each()) {
+            if (const auto procedure = procedure_of(node); procedure != state::Null && demanded(node, procedure)) placement(procedure, boolean.Space);
+        }
+        SortUnique(changes.Readers);
+        SortUnique(changes.PlacementReaders);
+        changes.References.clear();
+        changes.Objects.clear();
+        changes.ReferencesEpoch = r.Epoch;
+    }
     if (!cook) return;
-    auto cooked = std::move(planned);
+    std::vector<state::Entity> affected = planned;
+    for (const auto e : changes.Inputs)
+        if (const auto owner = procedure_of(e); owner != state::Null) affected.push_back(owner);
+    SortUnique(affected);
+    for (const auto owner : affected) {
+        const auto &plan = r.get<const CookPlan>(owner);
+        std::vector<bool> invalid(plan.Nodes.size());
+        for (const auto n : plan.Order) {
+            bool upstream = changes.Inputs.contains(owner);
+            for (const auto &input : std::span{plan.Inputs}.subspan(plan.InputFirst[n], InputsOf(plan, n)))
+                if (input.FromNode != NoNode) upstream |= invalid[input.FromNode];
+            const auto e = plan.Nodes[n].Entity;
+            invalid[n] = upstream || changes.Inputs.contains(e);
+            if (plan.Demanded[n] || !invalid[n]) continue;
+            r.remove<NodeResult, NodeExtrusion>(e);
+            if (upstream || changes.HandleInputs.contains(e) || changes.Graph.contains(e)) r.remove<NodeHandle>(e);
+        }
+    }
+    const bool handle_dirty = !affected.empty() || !changes.Moved.empty();
+    const auto handle = [&] {
+        if (!handle_dirty) return;
+        if (const auto *active = r.try_get<const OperationHandle>(state::Document); active && r.all_of<ProcedureNode>(active->Node)) PrepareOperationHandle(r, active->Node);
+    };
     std::vector<state::Entity> inputs;
     for (const auto e : changes.Inputs) {
-        if (const auto procedure = procedure_of(e); procedure != state::Null) cooked.push_back(procedure);
-        else inputs.push_back(e);
+        if (const auto procedure = procedure_of(e); procedure != state::Null) {
+            if (e == procedure || demanded(e, procedure)) cooked.push_back(procedure);
+        } else inputs.push_back(e);
     }
-    if (cooked.empty() && inputs.empty() && changes.Moved.empty()) return;
+    SortUnique(cooked);
+    std::optional<BufferArena<SelectionBlock>> selection_arena;
+    for (const auto e : changes.Selection) {
+        if (r.all_of<GeometryProcedure>(e) && !std::ranges::binary_search(cooked, e)) ShowActiveSelection(r, e, selection_arena);
+    }
+    if (cooked.empty() && inputs.empty() && changes.Moved.empty()) {
+        handle();
+        return;
+    }
     SortUnique(inputs);
     const auto input = [&](state::Entity e) { return std::ranges::binary_search(inputs, e); };
     for (const auto [e, published] : std::as_const(r).view<const ProcedureInstances>().each()) {
         if (std::ranges::any_of(published.Entities, input)) cooked.push_back(e);
     }
-    // Index procedures by the mesh entities their Object Info nodes read and by the objects whose world transforms place Boolean operands, with the objects' ancestors.
-    // An Object Info node's object places the geometry it emits, and a Boolean node's Space places its first input.
-    std::vector<std::pair<state::Entity, state::Entity>> reads;
-    const auto read_placement = [&](state::Entity procedure, state::Entity object) {
-        for (auto e = r.valid(object) ? object : state::Null; e != state::Null; e = ParentOrNull(r, e)) reads.emplace_back(procedure, e);
+    const auto readers_of = [](const auto &readers, state::Entity source) {
+        const auto [first, last] = std::ranges::equal_range(readers, source, {}, &std::pair<state::Entity, state::Entity>::first);
+        return std::ranges::subrange(first, last);
     };
-    for (const auto [node, info] : std::as_const(r).view<const ObjectInfo>().each()) {
-        const auto procedure = procedure_of(node);
-        if (procedure == state::Null) continue;
-        reads.emplace_back(procedure, ReadMesh(r, procedure, info));
-        read_placement(procedure, info.Object);
-    }
-    for (const auto [node, boolean] : std::as_const(r).view<const procedure::Boolean>().each()) {
-        if (const auto procedure = procedure_of(node); procedure != state::Null) read_placement(procedure, boolean.Space);
-    }
     for (const auto e : inputs) {
         if (const auto *instance = r.try_get<const Instance>(e); instance && r.all_of<ProcedureInstances>(instance->Entity)) cooked.push_back(instance->Entity);
     }
     // A procedure whose placing objects moved cooks only when the motion changed one of its Boolean nodes' placements.
     // An edit that cooked in its own pass then does not cook again for the world transform it published, and moving a common ancestor of both operands cooks nothing.
     std::vector<state::Entity> moved;
-    for (const auto [e, read] : reads) {
-        if (changes.Moved.contains(read)) moved.push_back(e);
+    for (const auto source : changes.Moved) {
+        for (const auto [_, reader] : readers_of(changes.PlacementReaders, source)) moved.push_back(reader);
     }
     changes.Moved.clear();
     SortUnique(moved);
@@ -1798,41 +2094,48 @@ void SettleProcedures(state::Registry &r, bool cook) {
         if (std::ranges::binary_search(moved, procedure) && ToFirst(r, r.get<const procedure::Boolean>(node).Space, placement.Operand) != placement.ToFirst) cooked.push_back(procedure);
     }
     SortUnique(cooked);
-    // Cook dependencies before procedures that read them.
-    const auto cooking = [&](state::Entity e) { return std::ranges::binary_search(cooked, e); };
-    for (bool grew = true; grew;) {
-        grew = false;
-        for (const auto [e, read] : reads) {
-            if (cooking(e) || (!cooking(read) && !input(read))) continue;
-            cooked.insert(std::ranges::lower_bound(cooked, e), e);
-            grew = true;
+    // Propagate only through the displayed geometry dependencies.
+    std::vector<state::Entity> queue = cooked;
+    queue.append_range(inputs);
+    for (size_t i = 0; i < queue.size(); ++i) {
+        for (const auto [_, reader] : readers_of(changes.Readers, queue[i])) {
+            const auto at = std::ranges::lower_bound(cooked, reader);
+            if (at != cooked.end() && *at == reader) continue;
+            cooked.insert(at, reader);
+            queue.push_back(reader);
         }
     }
-    std::vector<state::Entity> order, seen;
-    const auto visit = [&](this const auto &self, state::Entity e) -> void {
-        if (std::ranges::contains(seen, e)) return;
-        seen.push_back(e);
-        for (const auto [reader, read] : reads) {
-            if (reader == e && cooking(read)) self(read);
-        }
-        order.push_back(e);
+    const auto index_of = [&](state::Entity entity) {
+        const auto at = std::ranges::lower_bound(cooked, entity);
+        return at != cooked.end() && *at == entity ? uint32_t(at - cooked.begin()) : NoNode;
     };
-    for (const auto e : cooked) visit(e);
-    if (order.empty()) return;
+    const auto order = DependencyOrder(uint32_t(cooked.size()), [&](auto visit) {
+        for (const auto [source, reader] : changes.Readers) {
+            const auto from = index_of(source), to = index_of(reader);
+            if (from != NoNode && to != NoNode) visit(from, to);
+        }
+    });
+    assert(order.size() == cooked.size());
+    if (order.empty()) {
+        handle();
+        return;
+    }
     // The kept states restore the whole mesh storage exactly only while the passes of one mesh are its only writers.
     auto &pass = r.Resources.get<CookPass>();
-    const auto mesh = order.size() == 1u ? order.front() : state::Null;
+    const auto mesh = order.size() == 1u ? cooked[order.front()] : state::Null;
     if (!(pass.End && mesh != state::Null && mesh == pass.Mesh && r.Resources.get<MeshStore>().StateHash() == *pass.End)) pass.Exact.clear();
     pass.Mesh = mesh;
     pass.End.reset();
     // Derive new-mesh shading before cooking dependent procedures.
     ShadeNewMeshes(r);
     std::optional<BufferArena<SelectionBlock>> arena;
-    for (const auto e : order) {
+    for (const auto n : order) {
+        const auto e = cooked[n];
         Evaluate(r, e, arena, changes.Inputs, changes.Created);
         ShowActiveSelection(r, e, arena);
     }
     r.Resources.get<CookCount>().Value += order.size();
+    handle();
 }
 
 void RecordWorldTransformChanges(state::Registry &r) {
@@ -1859,6 +2162,7 @@ std::vector<store::Hash128> ReferencedStates(const state::Registry &r) {
     for (const auto [entity, result] : r.view<const NodeResult>().each()) {
         if (result.State != store::Hash128{}) states.push_back(result.State);
     }
+    for (const auto [_, extrusion] : r.view<const NodeExtrusion>().each()) states.push_back(extrusion.State);
     std::ranges::sort(states, {}, [](const store::Hash128 &state) { return std::pair{state.A, state.B}; });
     states.erase(std::ranges::unique(states).begin(), states.end());
     return states;

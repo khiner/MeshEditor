@@ -19,6 +19,8 @@ inline constexpr uint32_t TopologyScratchWords = 64u << 10;
 // Retain source corner and triangle identities until render repair completes.
 // The document transaction restores canonical storage on cancellation.
 struct MeshTopologyEdit {
+    // Read before publication: output vertex ordinals and their input vertex or individual-face handles and normals.
+    std::vector<ExtrusionSource> ExtrusionSources(const MeshStore &) const;
     // Construct tasks on chain.
     // KeepSelectedFaces and Boolean create meshes, and other tasks edit their source.
     // An unchanged edit has no Output.

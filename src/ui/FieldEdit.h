@@ -90,10 +90,12 @@ inline void KeyDecorator(const state::Registry &r, state::Entity entity, const C
     if (const auto state = QueryKey(r, entity, target)) KeyDecorator(r, entity, target, *state);
 }
 
+void FieldPromotionMenu(const state::Registry &, const procedure::PromotedField &);
+
 namespace detail {
 // Runs `widget` over `v` and stages its change in the item's gesture through `emit(scope, v)`.
 // A field with a channel target is tinted by its keying state on `entity` and followed by its keying decorator.
-bool RunField(state::Registry &r, state::Entity entity, const ChannelTarget &channel, auto v, auto widget, bool selection, bool delta_capable, auto emit) {
+bool RunField(state::Registry &r, state::Entity entity, const ChannelTarget &channel, auto v, auto widget, bool selection, bool delta_capable, auto emit, const procedure::PromotedField *promoted = nullptr) {
     const auto state = channel.Count ? QueryKey(r, entity, channel) : std::nullopt;
     RunKey = state;
     RunSelection = selection;
@@ -102,6 +104,7 @@ bool RunField(state::Registry &r, state::Entity entity, const ChannelTarget &cha
         return widget(v);
     }();
     if (const auto target = FieldGesture(changed, selection, delta_capable)) emit(*target, v);
+    if (promoted) FieldPromotionMenu(r, *promoted);
     if (state) KeyDecorator(r, entity, channel, *state);
     return changed;
 }
@@ -303,6 +306,14 @@ bool DrawField(const char *label, F &v, const FieldSpec &spec) {
     }
 }
 
+// Edits a computed value through its action, using the standard field widget and gesture handling.
+template<typename T>
+void ActionField(const char *label, T value, auto make_action, const FieldSpec &spec = {}, bool interactive = true) {
+    const bool changed = DrawField(label, value, spec);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) Hovered = {.Label = label, .Path = label, .Type = field::TypeName<T>.c_str(), .Help = spec.Help};
+    if (interactive && detail::FieldGesture(changed, false, false)) action::Emit(make_action(value), action::Phase::Stage);
+}
+
 // Widgets over an editor's Run<Ms...>(widget, delta_capable), which reads the field, runs the widget, and stages a change.
 template<auto... Prefix>
 struct FieldWidgets {
@@ -354,26 +365,23 @@ struct FieldWidgets {
 };
 
 // Edits component fields on an entity through Update actions.
-template<bool HasEntity, auto... Prefix>
+template<auto... Prefix>
 struct Edit : FieldWidgets<Prefix...> {
-    using Target = std::conditional_t<HasEntity, state::Entity, std::monostate>;
-    Edit(state::Registry &r, Target e = {}) : R{r}, E{e} {}
+    Edit(state::Registry &r, std::optional<state::Entity> e = {}) : R{r}, E{e} {}
 
     state::Registry &R;
-    [[no_unique_address]] Target E;
+    std::optional<state::Entity> E;
 
     // Return an editor with additional nested field members.
     template<auto... More>
-    Edit<HasEntity, Prefix..., More...> Sub() const { return {R, E}; }
+    Edit<Prefix..., More...> Sub() const { return {R, E}; }
 
     template<typename C> state::Entity ReadFrom() const {
-        if constexpr (HasEntity) return E;
-        else return action::UpdateTraits<C>::Active(R);
+        return E ? *E : action::UpdateTraits<C>::Active(R);
     }
     // The target an edit records: the gesture's target for an active-entity editor, otherwise the entity.
     action::Target Recorded(action::Target gesture) const {
-        if constexpr (!HasEntity) return gesture;
-        else return action::Target{E};
+        return E ? action::Target{*E} : gesture;
     }
 
     template<auto... Ms>
@@ -388,10 +396,11 @@ struct Edit : FieldWidgets<Prefix...> {
         using Field = action::detail::last_field<Prefix..., Ms...>;
         using C = action::detail::first_class<Prefix..., Ms...>;
         const auto entity = ReadFrom<C>();
+        const procedure::PromotedField promoted{entity, state::Key<C>(), action::detail::FieldOffset<Prefix..., Ms...>()};
         return detail::RunField(
             R, entity, detail::Channel<Prefix..., Ms...>(), ReadChain<Prefix..., Ms...>(R.template get<const C>(entity)), widget,
-            !HasEntity, delta_capable && action::DeltaField<Field>,
-            [&](action::Target gesture, const Field &v) { action::Emit(action::UpdateOf<Prefix..., Ms...>(Recorded(gesture), v), action::Phase::Stage); }
+            !E, delta_capable && action::DeltaField<Field>,
+            [&](action::Target gesture, const Field &v) { action::Emit(action::UpdateOf<Prefix..., Ms...>(Recorded(gesture), v), action::Phase::Stage); }, &promoted
         );
     }
 
@@ -402,22 +411,22 @@ struct Edit : FieldWidgets<Prefix...> {
     }
 };
 
-Edit(state::Registry &) -> Edit<false>;
-Edit(state::Registry &, state::Entity) -> Edit<true>;
+Edit(state::Registry &, std::optional<state::Entity> = {}) -> Edit<>;
 
 template<typename Component, auto... Prefix>
 struct PatchEdit : FieldWidgets<Prefix...> {
-    explicit PatchEdit(const Component &current) : Current{current} {}
+    explicit PatchEdit(const Component &current, state::Entity entity = state::Null) : Current{current}, Entity{entity} {}
 
     const Component &Current;
+    state::Entity Entity;
 
     template<auto... More>
-    PatchEdit<Component, Prefix..., More...> Sub() const { return PatchEdit<Component, Prefix..., More...>{Current}; }
+    PatchEdit<Component, Prefix..., More...> Sub() const { return PatchEdit<Component, Prefix..., More...>{Current, Entity}; }
 
     template<auto... Ms>
     auto Action(action::detail::last_field<Prefix..., Ms...> value) const {
         using F = action::detail::last_field<Prefix..., Ms...>;
-        return action::PatchFields<Component, F>{{action::detail::FieldOffset<Prefix..., Ms...>()}, {std::move(value)}};
+        return action::PatchFields<Component, F>{{action::detail::FieldOffset<Prefix..., Ms...>()}, {std::move(value)}, Entity};
     }
 
     template<auto... Ms>

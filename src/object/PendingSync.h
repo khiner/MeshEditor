@@ -12,6 +12,7 @@ struct PendingObjectRemovals {
     std::vector<Range> InstanceRanges, DeformRanges, MorphRanges, SoundVertexRanges;
     // Destroyed bounds runs' bounds entries, derive entries and prelude tile words.
     std::vector<Range> BoundsEntryRanges, DeriveEntryRanges, PreludeTileRanges;
+    std::vector<state::Entity> Objects;
     std::vector<state::Entity> Dependents; // Entities a destroyed entity owned, destroyed after it
 };
 

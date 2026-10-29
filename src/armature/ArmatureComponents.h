@@ -55,7 +55,7 @@ struct BoneDelta {
     Transform Value;
 };
 
-// Derived from the bone deltas plus the Armature rest pose.
+// Derived on each armature object from its bone deltas and the shared rest pose.
 struct ArmaturePoseState {
     std::vector<Transform> BoneUserOffset;
     std::vector<mat4> BonePoseWorld;

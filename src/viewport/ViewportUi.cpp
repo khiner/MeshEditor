@@ -3,11 +3,14 @@
 #include "Camera.h"
 #include "Panel.h"
 #include "Profile.h"
+#include "TransformMath.h"
 #include "audio/SoundVertices.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gizmo/TransformGizmo.h"
 #include "numeric/MatrixMath.h"
+#include "procedure/Procedure.h"
 #include "project/Project.h"
+#include "render/Instance.h"
 #include "render/TextureRefs.h"
 #include "scene/CameraLens.h"
 #include "scene/Defaults.h"
@@ -326,8 +329,99 @@ void DrawMeshOperatorMenus(state::Registry &r) {
     PopStyleVar();
 }
 
+const procedure::OperationHandle *ActiveOperation(const state::Registry &r) {
+    const auto *handle = r.try_get<const procedure::OperationHandle>(state::Document);
+    if (!handle) return nullptr;
+    const auto *node = r.try_get<const procedure::ProcedureNode>(handle->Node);
+    const auto *object = r.try_get<const Instance>(handle->Object);
+    return node && object && object->Entity == node->Procedure && r.all_of<procedure::NodeHandle>(handle->Node) ? handle : nullptr;
+}
+
+bool DrawOperationHandle(state::Registry &r, FrameState &frame, const ViewCamera &camera, rect viewport_rect) {
+    using H = procedure::HandleParameter;
+    const auto *handle = ActiveOperation(r);
+    if (!handle) {
+        frame.OperationStart.reset();
+        return false;
+    }
+    const auto node = handle->Node;
+    const auto &support = r.get<const procedure::NodeHandle>(node);
+    const auto world = *WorldTransformOf(r, handle->Object);
+    auto center = TransformPoint(world, support.Center);
+    const auto saved_cursor = GetCursorScreenPos();
+    PushID("OperationHandle");
+    const bool transform = handle->Parameter == H::Transform || handle->Parameter == H::ExtrudeOffset;
+    if (!transform) {
+        const auto vp = camera.Projection(viewport_rect.size.x / viewport_rect.size.y) * camera.View();
+        const auto at = ScreenPx(vp, viewport_rect, center);
+        SetCursorScreenPos(ImVec2{at.x + 12.f, at.y + 12.f});
+        SetNextItemWidth(130.f);
+        const auto scalar = [&]<auto Member>(const char *label) {
+            using C = field::Owner<Member>;
+            auto value = r.get<const C>(node).*Member;
+            ui::Gesture(DragFloat(label, &value, .01f), [&] { return action::UpdateOf<Member>(node, value); });
+        };
+        if (handle->Parameter == H::ExtrudeScale) scalar.operator()<&action::mesh::Extrude::OffsetScale>("Offset Scale");
+        if (handle->Parameter == H::BevelWidth) scalar.operator()<&action::mesh::Bevel::Width>("Width");
+        if (handle->Parameter == H::InsetThickness) scalar.operator()<&action::mesh::Inset::Thickness>("Thickness");
+        if (handle->Parameter == H::InsetDepth) scalar.operator()<&action::mesh::Inset::Depth>("Depth");
+        frame.OverlayControlsHovered |= IsItemHovered() || IsItemActive();
+    } else {
+        Transform value;
+        Transform parameter_frame;
+        if (handle->Parameter == H::Transform) {
+            const auto &p = r.get<const procedure::TransformElements>(node);
+            value = p.Delta;
+            parameter_frame = p.Frame;
+            const auto before = TransformPoint(p.Frame, support.Center);
+            const auto after = p.Pivot + p.Delta.P + p.Delta.R * ((before - p.Pivot) * p.Delta.S);
+            center = TransformPoint(world, InverseTransformPoint(p.Frame, after));
+        } else {
+            const auto &p = r.get<const action::mesh::Extrude>(node);
+            value.P = (p.AlongNormals ? support.Normal : p.Offset) * p.OffsetScale;
+            center = TransformPoint(world, support.Center + value.P);
+        }
+        auto &gizmo = r.edit<GizmoInteraction>(state::Document);
+        const bool was_using = gizmo.IsUsing();
+        if (!was_using || !frame.OperationStart || frame.OperationStart->Node != node) frame.OperationStart = FrameState::OperationDrag{node, value};
+        const auto &settings = r.get<const TransformGizmoState>(state::Document);
+        auto config = settings.Config;
+        config.Type = handle->Parameter == H::Transform ? TransformGizmo::Type::Universal : TransformGizmo::Type::Translate;
+        const GizmoTransform placement{{.P = center, .R = world.R * Conjugate(parameter_frame.R)}, settings.Mode};
+        const auto interaction = TransformGizmo::Interact(gizmo, placement, config, camera, viewport_rect, ToVec2(GetMousePos()) + frame.AccumulatedWrapMouseDelta);
+        if (gizmo.Cancelled) {
+            gizmo.Cancelled = false;
+            frame.OperationStart.reset();
+            action::Cancel();
+        } else if (interaction) {
+            const auto &delta = interaction->Delta;
+            auto changed = frame.OperationStart->Value;
+            changed.P += parameter_frame.R * (((Conjugate(world.R) * delta.P) / world.S) * parameter_frame.S);
+            const auto relative = parameter_frame.R * Conjugate(world.R);
+            changed.R = Normalize(relative * delta.R * Conjugate(relative) * changed.R);
+            changed.S *= delta.S;
+            if (handle->Parameter == H::ExtrudeOffset) action::Emit(action::nodes::SetExtrudeOffset{node, changed.P}, action::Phase::Stage);
+            else if (gizmo.Current->Type == TransformGizmo::TransformType::Translate) action::Emit(action::UpdateOf<&procedure::TransformElements::Delta, &Transform::P>(node, changed.P), action::Phase::Stage);
+            else if (gizmo.Current->Type == TransformGizmo::TransformType::Rotate) action::Emit(action::UpdateOf<&procedure::TransformElements::Delta, &Transform::R>(node, changed.R), action::Phase::Stage);
+            else action::Emit(action::UpdateOf<&procedure::TransformElements::Delta, &Transform::S>(node, changed.S), action::Phase::Stage);
+        } else if (was_using) {
+            frame.OperationStart.reset();
+            action::Commit();
+        }
+        gizmo.RenderTransform = placement;
+        if (interaction) gizmo.RenderTransform->P = interaction->Start.P + interaction->Delta.P;
+    }
+    PopID();
+    SetCursorScreenPos(saved_cursor);
+    return true;
+}
+
 TransformGizmo::Type EffectiveGizmoType(const state::Registry &r) {
     using enum TransformGizmo::Type;
+    if (const auto *handle = ActiveOperation(r)) {
+        return handle->Parameter == procedure::HandleParameter::Transform ? Universal : handle->Parameter == procedure::HandleParameter::ExtrudeOffset ? Translate :
+                                                                                                                                                         None;
+    }
     const auto type = r.get<const TransformGizmoState>(state::Document).Config.Type;
     const auto &flags = r.get<const SelectionFlags>(state::Document);
     if (!flags.Transformable) return None;
@@ -700,6 +794,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
                 if (WorkbenchShading(current_mode)) {
                     const bool wireframe = current_mode == ViewportShadingMode::Wireframe;
                     ui::Edit edit{r, viewport};
+                    if (!wireframe) edit.Draw<&ViewportDisplay::BackfaceCulling>();
                     if (wireframe) edit.Draw<&ViewportDisplay::XRayWireframe>("##XRay");
                     else edit.Draw<&ViewportDisplay::XRaySolid>("##XRay");
                     SameLine();
@@ -914,7 +1009,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
     const auto mode_scope = ScopeOf(r);
 
     r.edit<GizmoInteraction>(state::Document).RenderTransform.reset();
-    if (r.get<const SelectionFlags>(state::Document).HasTransformTarget) { // Transform gizmo
+    if (!DrawOperationHandle(r, frame, camera, viewport_rect) && r.get<const SelectionFlags>(state::Document).HasTransformTarget) { // Transform gizmo
         // Transform root selections around their average position using the active entity's rotation and scale.
         const auto gizmo_active_entity = mode_scope.Bone ? FindActiveBone(r) : FindActiveEntity(r);
         const auto active_scale = gizmo_active_entity == state::Null ? vec3{1} : WorldTransformOf(r, gizmo_active_entity)->S;

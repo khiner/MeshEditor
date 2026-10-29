@@ -1,4 +1,5 @@
 #include "audio/AudioUi.h"
+#include "scene/HierarchyInstance.h"
 
 #include "FileDialog.h"
 #include "action/Audio.h"
@@ -117,12 +118,12 @@ bool DrawModalModelActions(
     state::Registry &r, state::Entity e, state::Entity mesh_entity,
     const ModalSolveSettings &settings, const AcousticMaterial &material
 ) {
-    const bool present = r.all_of<ModalModes>(e);
+    const bool present = r.all_of<ModalModes>(HierarchySource(r, e));
     const bool solving = IsSolving(r, e);
     bool has_action = false;
     if (r.all_of<SoundVerticesModel>(e)) {
         if (Button(present ? "Delete sound object ●" : "Delete sound object")) {
-            action::Emit(action::audio::DeleteSoundObject{});
+            action::Emit(action::audio::DeleteSoundObject{e});
             return true;
         }
         has_action = true;
@@ -131,7 +132,7 @@ bool DrawModalModelActions(
         if (has_action) SameLine();
         if (solving) BeginDisabled();
         if (Button("Create modal model ○")) {
-            action::Emit(action::audio::EnsureModalSettings{});
+            action::Emit(action::audio::EnsureModalSettings{e});
             LaunchModalSolve(r, e, settings, material);
         }
         if (solving) EndDisabled();
@@ -150,13 +151,13 @@ void DrawModalModelSettings(
 ) {
     const ContactSurface default_surface = WithPreset({}, surfaces::acoustic::Default);
     const auto &surface = r.all_of<ContactSurface>(e) ? r.get<const ContactSurface>(e) : default_surface;
-    ui::PatchEdit fs{settings};
+    ui::PatchEdit fs{settings, e};
 
     SeparatorText("Material properties");
     ui::ChoiceCombo("Presets", material.Name, materials::acoustic::All | transform(&AcousticMaterial::Name), std::identity{}, [&](const std::string &name) {
-        action::Emit(action::audio::SetMaterialPreset{name});
+        action::Emit(action::audio::SetMaterialPreset{name, false, e});
     });
-    ui::DrawFields<AcousticMaterialProperties>(ui::PatchEdit{material}.Sub<&AcousticMaterial::Properties>());
+    ui::DrawFields<AcousticMaterialProperties>(ui::PatchEdit{material, e}.Sub<&AcousticMaterial::Properties>());
 
     DrawContactSurfaceControls(r, e, surface, material);
 
@@ -275,8 +276,8 @@ void DrawObjectAudioControls(state::Registry &r, state::Entity e, state::Entity 
     const bool has_model = r.all_of<SoundVerticesModel>(e);
     if (!has_model) DrawModalModelSettings(r, e, mesh_entity, settings, material);
 
-    const auto *samples = r.try_get<const VertexSamples>(e);
-    const auto *modal_modes = r.try_get<const ModalModes>(e);
+    const auto *samples = r.try_get<const VertexSamples>(HierarchySource(r, e));
+    const auto *modal_modes = r.try_get<const ModalModes>(HierarchySource(r, e));
     const auto *excitable = r.try_get<const SoundVertices>(e);
     auto model = has_model ? r.get<SoundVerticesModel>(e) : SoundVerticesModel::Samples;
     const auto *recording = r.try_get<const Recording>(e);
@@ -292,7 +293,7 @@ void DrawObjectAudioControls(state::Registry &r, state::Entity e, state::Entity 
         PopID();
         if (model_changed) {
             model = SoundVerticesModel(edit_model);
-            action::Emit(action::audio::SetModel{model});
+            action::Emit(action::audio::SetModel{model, e});
         }
     }
 
@@ -304,14 +305,14 @@ void DrawObjectAudioControls(state::Registry &r, state::Entity e, state::Entity 
             (model == SoundVerticesModel::Modal && (!recording || recording->Complete()));
         if (!can_excite) BeginDisabled();
         Button("Excite");
-        if (IsItemActivated()) action::Emit(action::audio::StartExcite{active_vertex});
-        else if (IsItemDeactivated()) action::Emit(action::audio::StopExcite{});
+        if (IsItemActivated()) action::Emit(action::audio::StartExcite{active_vertex, e});
+        else if (IsItemDeactivated()) action::Emit(action::audio::StopExcite{e});
         if (!can_excite) EndDisabled();
         SameLine();
         if (BeginCombo("Vertex", std::to_string(active_vertex).c_str())) {
             for (uint32_t vi = 0; vi < excitable_vertices.size(); ++vi) {
                 if (const auto vertex = excitable_vertices[vi]; Selectable(std::to_string(vertex).c_str(), vi == active_vi)) {
-                    action::Emit(action::audio::SetExciteVertex{vi, vertex});
+                    action::Emit(action::audio::SetExciteVertex{vi, vertex, e});
                 }
             }
             EndCombo();
@@ -337,8 +338,8 @@ void DrawObjectAudioControls(state::Registry &r, state::Entity e, state::Entity 
             if (n == 0) BeginDisabled();
             if (const auto assign_label = n > 1 ? std::format("Assign sample to {} vertices…", n) : std::string{with_sample ? "Replace sample…" : "Assign sample…"};
                 Button(assign_label.c_str())) {
-                FileDialog::ShowOpen("wav;mp3;flac;ogg;opus", [verts = op_vertices](const fs::path &path) mutable {
-                    action::Emit(action::audio::AssignVertexSamples{std::make_unique<std::vector<uint32_t>>(std::move(verts)), path});
+                FileDialog::ShowOpen("wav;mp3;flac;ogg;opus", [verts = op_vertices, e](const fs::path &path) mutable {
+                    action::Emit(action::audio::AssignVertexSamples{std::make_unique<std::vector<uint32_t>>(std::move(verts)), path, e});
                 });
             }
             if (n == 0) EndDisabled();
@@ -346,7 +347,7 @@ void DrawObjectAudioControls(state::Registry &r, state::Entity e, state::Entity 
                 SameLine();
                 if (const auto remove_label = with_sample > 1 ? std::format("Remove {} samples", with_sample) : std::string{"Remove sample"};
                     Button(remove_label.c_str())) {
-                    action::Emit(action::audio::RemoveVertexSamples{std::move(op_with_sample)});
+                    action::Emit(action::audio::RemoveVertexSamples{std::move(op_with_sample), e});
                     return;
                 }
             }
@@ -411,7 +412,7 @@ void DrawObjectAudioControls(state::Registry &r, state::Entity e, state::Entity 
     const bool is_recording = recording && !recording->Complete();
     if (is_recording) BeginDisabled();
     static constexpr uint32_t RecordFrames = 208'592; // Same length as RealImpact recordings.
-    if (Button("Record strike")) action::Emit(action::audio::StartRecording{RecordFrames});
+    if (Button("Record strike")) action::Emit(action::audio::StartRecording{RecordFrames, e});
     if (is_recording) EndDisabled();
 
     if (samples && recording && recording->Complete()) {

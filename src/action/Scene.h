@@ -1,6 +1,6 @@
 #pragma once
 
-#include "state/Entity.h"
+#include "action/Core.h"
 
 #include <string>
 #include <variant>
@@ -21,10 +21,12 @@ struct Rename {
 // Adds the scene to the scenes of each selected node's root.
 struct LinkSelected {
     state::Entity Scene;
+    Target Target{OnSelected{}};
 };
 // Removes the scene from the scenes of each selected node's root that is in another scene.
 struct UnlinkSelected {
     state::Entity Scene;
+    Target Target{OnSelected{}};
 };
 
 using Action = std::variant<Add, Remove, Rename, LinkSelected, UnlinkSelected>;

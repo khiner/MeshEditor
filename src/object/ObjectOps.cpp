@@ -2,6 +2,7 @@
 #include "Profile.h"
 #include "assets/MeshImport.h"
 #include "project/Assets.h"
+#include "scene/HierarchyInstance.h"
 
 #include "Path.h"
 #include "SortUnique.h"
@@ -10,10 +11,10 @@
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
 #include "object/PendingSync.h"
-#include "render/GpuBufferOps.h"
+#include "physics/PhysicsTypes.h"
+#include "procedure/Network.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
-#include "render/RenderChanges.h"
 #include "render/Textures.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
@@ -38,17 +39,11 @@ void ClearRelationships(state::Registry &r, std::span<const state::Entity> entit
 } // namespace
 
 void DestroyArmatureData(state::Registry &r, state::Entity arm_obj_entity) {
-    auto &meshes = r.Resources.get<MeshStore>();
     auto &arm = r.edit<ArmatureObject>(arm_obj_entity);
     if (arm.JointEntity != state::Null) {
-        if (const auto *ref = r.try_get<VertexStoreId>(arm.JointEntity)) meshes.Release(ref->StoreId);
-        if (const auto *models = r.try_get<ModelsBuffer>(arm.JointEntity)) FreeInstanceRange(r, models->InstanceRange);
-        r.remove<VertexStoreId, ModelsBuffer>(arm.JointEntity);
         r.destroy(arm.JointEntity);
         arm.JointEntity = state::Null;
     }
-    if (const auto *ref = r.try_get<VertexStoreId>(arm_obj_entity)) meshes.Release(ref->StoreId);
-    if (const auto *models = r.try_get<ModelsBuffer>(arm_obj_entity)) FreeInstanceRange(r, models->InstanceRange);
     r.remove<VertexStoreId, ModelsBuffer>(arm_obj_entity);
 }
 
@@ -57,6 +52,9 @@ void Destroy(state::Registry &r, state::Entity e) {
 }
 
 void Destroy(state::Registry &r, std::span<const state::Entity> entities) {
+    if (entities.empty()) return;
+    const auto expanded = PrepareHierarchyRemoval(r, entities);
+    entities = expanded;
     if (entities.empty()) return;
     const profile::CpuScope scope{"DestroyObjects"};
     auto &pending = r.Resources.emplace<PendingObjectRemovals>();
@@ -68,6 +66,7 @@ void Destroy(state::Registry &r, std::span<const state::Entity> entities) {
         if (const auto *instance = r.try_get<Instance>(e)) {
             if (HasMesh(r, instance->Entity) || DrawsMesh(r, instance->Entity) || r.all_of<ObjectExtrasTag>(instance->Entity)) pending.Buffers.emplace(instance->Entity);
         }
+        if (const auto *collider = r.try_get<const ColliderShape>(e); collider && r.valid(collider->MeshEntity)) pending.Buffers.emplace(collider->MeshEntity);
         const auto try_add_armature_data = [&](state::Entity data_entity) {
             if (r.valid(data_entity)) pending.Armatures.emplace(data_entity);
         };
@@ -77,15 +76,7 @@ void Destroy(state::Registry &r, std::span<const state::Entity> entities) {
 
         if (r.all_of<ArmatureObject>(e)) {
             const auto &arm = r.get<ArmatureObject>(e);
-            const auto retire_buffers = [&](state::Entity owner) {
-                if (const auto *ref = r.try_get<VertexStoreId>(owner)) pending.StoreIds.push_back(ref->StoreId);
-                if (const auto *models = r.try_get<ModelsBuffer>(owner)) pending.InstanceRanges.push_back(models->InstanceRange);
-            };
-            retire_buffers(e);
-            if (arm.JointEntity != state::Null) {
-                retire_buffers(arm.JointEntity);
-                destroyed.push_back(arm.JointEntity);
-            }
+            if (arm.JointEntity != state::Null) destroyed.push_back(arm.JointEntity);
             for (const auto bone_entity : arm.BoneEntities) {
                 if (const auto *joints = r.try_get<BoneJointEntities>(bone_entity)) {
                     if (joints->Head != state::Null) destroyed.push_back(joints->Head);
@@ -96,8 +87,10 @@ void Destroy(state::Registry &r, std::span<const state::Entity> entities) {
             destroyed.append_range(arm.BoneEntities);
         }
 
+        procedure::RemoveNetworkSubnets(r, e);
         destroyed.push_back(e);
     }
+    SortUnique(destroyed);
     const profile::CpuScope component_scope{"DestroyObjectComponents"};
     r.destroy(destroyed);
 }
@@ -106,47 +99,26 @@ void ProcessObjectRemovals(state::Registry &r) {
     auto *pending = r.Resources.find<PendingObjectRemovals>();
     if (!pending) return;
     const profile::CpuScope scope{"ProcessObjectRemovals"};
-    auto &buffer_entities = pending->Buffers, &armature_data_entities = pending->Armatures;
-    const bool removed_objects = !buffer_entities.empty() || !armature_data_entities.empty();
-    if (removed_objects) {
-        // Shared data survives while an instance uses it: a placed instance in its slot range, or one created since the last settle.
-        if (!buffer_entities.empty()) {
-            const auto object_ids = r.Resources.get<const GpuBuffers>().Instances.ObjectIdBuffer.GetSpan<uint32_t>();
-            std::vector<state::Entity> survivors;
-            for (const auto data_entity : buffer_entities) {
-                const auto *models = r.try_get<const ModelsBuffer>(data_entity);
-                const auto slots = models ? object_ids.subspan(models->InstanceRange.Offset, models->InstanceCount) : std::span<const uint32_t>{};
-                if (std::ranges::any_of(slots, [&](uint32_t id) { const auto *instance = r.try_get<const Instance>(r.EntityAt(ObjectIndex(id))); return instance && instance->Entity == data_entity; })) survivors.push_back(data_entity);
-            }
-            for (const auto e : r.Resources.get<const RenderChanges>().InstanceVisibility) {
-                if (const auto *instance = r.try_get<const Instance>(e)) survivors.push_back(instance->Entity);
-            }
-            for (const auto data_entity : survivors) buffer_entities.remove(data_entity);
-        }
-        if (!armature_data_entities.empty()) {
-            for (const auto [_, arm] : r.view<const ArmatureObject>().each()) armature_data_entities.remove(arm.Entity);
-            for (const auto [_, modifier] : r.view<const ArmatureModifier>().each()) armature_data_entities.remove(modifier.ArmatureEntity);
-            for (const auto [_, attachment] : r.view<const BoneAttachment>().each()) armature_data_entities.remove(attachment.ArmatureEntity);
-        }
-        auto buffers_to_destroy = SortedEntities(buffer_entities);
-        for (const auto entity : buffers_to_destroy) {
-            if (const auto *ref = r.try_get<VertexStoreId>(entity)) pending->StoreIds.push_back(ref->StoreId);
-            if (const auto *models = r.try_get<ModelsBuffer>(entity)) pending->InstanceRanges.push_back(models->InstanceRange);
-        }
-        buffers_to_destroy.append_range(armature_data_entities);
-        std::erase_if(buffers_to_destroy, [&](state::Entity e) { return !r.valid(e); });
-        // Destroyed mesh handles and pose states queue their releases below.
-        const profile::CpuScope scope{"DestroyDataComponents"};
-        r.destroy(buffers_to_destroy);
+    bool removed_objects = false;
+    while (!pending->Objects.empty() || !pending->Buffers.empty() || !pending->Armatures.empty() || !pending->Dependents.empty()) {
+        auto objects = std::exchange(pending->Objects, {});
+        Destroy(r, objects);
+        auto &geometry = pending->Buffers, &armatures = pending->Armatures;
+        removed_objects |= !geometry.empty() || !armatures.empty();
+        for (const auto [_, instance] : r.view<const Instance>().each()) geometry.remove(instance.Entity);
+        for (const auto [_, collider] : r.view<const ColliderShape>().each()) geometry.remove(collider.MeshEntity);
+        for (const auto [_, arm] : r.view<const ArmatureObject>().each()) armatures.remove(arm.Entity);
+        for (const auto [_, modifier] : r.view<const ArmatureModifier>().each()) armatures.remove(modifier.ArmatureEntity);
+        for (const auto [_, attachment] : r.view<const BoneAttachment>().each()) armatures.remove(attachment.ArmatureEntity);
+        auto removed = std::exchange(pending->Dependents, {});
+        removed.append_range(geometry);
+        removed.append_range(armatures);
+        geometry.clear();
+        armatures.clear();
+        SortUnique(removed);
+        std::erase_if(removed, [&](state::Entity e) { return !r.valid(e); });
+        r.destroy(removed);
     }
-    auto &dependents = pending->Dependents;
-    std::erase_if(dependents, [&](state::Entity e) { return !r.valid(e); });
-    SortUnique(dependents);
-    // A dependent mesh entity's instance range frees with it.
-    for (const auto e : dependents) {
-        if (const auto *models = r.try_get<const ModelsBuffer>(e)) pending->InstanceRanges.push_back(models->InstanceRange);
-    }
-    if (!dependents.empty()) r.destroy(dependents);
     auto &meshes = r.Resources.get<MeshStore>();
     auto &buffers = r.Resources.get<GpuBuffers>();
     meshes.Release(pending->StoreIds);

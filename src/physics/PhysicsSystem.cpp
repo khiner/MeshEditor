@@ -961,8 +961,9 @@ void SamplePosesAtFrame(state::Registry &r, float frame) {
         const auto rotation = Slerp(a.R, b.R, t);
         const auto &world = *WorldTransformOf(r, entity);
         // A body already at its sampled pose has a consistent subtree.
-        if (world.P == position && world.R == rotation) continue;
-        SetWorldTransform(r, entity, {position, rotation, world.S});
+        const auto scale = s.Bodies.at(entity).Input.Node.S;
+        if (world.P == position && world.R == rotation && world.S == scale) continue;
+        SetWorldTransform(r, entity, {position, rotation, scale});
         moved_children.append_range(Children{&r, entity});
     }
     // The moved bodies' subtrees recompose in one pass, leaving every posed body to its own sample.

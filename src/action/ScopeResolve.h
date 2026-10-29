@@ -3,6 +3,7 @@
 #include "Variant.h"
 #include "action/Core.h"
 #include "scene/Entity.h"
+#include "scene/HierarchyInstance.h"
 #include "selection/Selection.h"
 #include "state/Registry.h"
 
@@ -34,6 +35,6 @@ template<typename T> void ForEachSelectedWith(const state::Registry &r, auto &&f
 // Visits each entity holding T that the target resolves to.
 template<typename T, typename F>
 void ForEachComponentTarget(state::Registry &r, const Target &target, F &&fn) {
-    ForEachTarget(target, [&] { return ActiveWith<T>(r); }, [&](auto &&f) { ForEachSelectedWith<T>(r, f); }, std::forward<F>(fn));
+    ForEachTarget(target, [&] { return ActiveWith<T>(r); }, [&](auto &&f) { ForEachSelectedWith<T>(r, f); }, [&](state::Entity e) { fn(HierarchySource(r, e)); });
 }
 } // namespace action

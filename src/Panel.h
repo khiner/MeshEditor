@@ -43,9 +43,17 @@ struct HistoryPanel : Panel {
     bool EditorOpen{true};
 };
 
+struct NetworkCanvas {
+    state::Entity Network{state::Null};
+    numeric::vec2 Offset{};
+    float Zoom{1};
+};
 struct NodeCanvas {
     numeric::vec2 Offset{}; // <= 0
     float Zoom{1};
+    state::Entity Network{state::Null};
+    state::Entity Object{state::Null};
+    std::vector<NetworkCanvas> Locations;
 };
 enum class NodeDrag : uint8_t { None,
                                 Pan,
@@ -53,12 +61,20 @@ enum class NodeDrag : uint8_t { None,
                                 Grab,
                                 Wire,
                                 Box };
+namespace procedure {
+struct CookPlan;
+}
 struct NodesPanel : Panel {
+    std::shared_ptr<procedure::CookPlan> NetworkView;
+    state::Entity ViewedNetwork{state::Null};
     NodeCanvas Canvas{};
+    uint64_t Epoch{};
     NodeDrag Drag{NodeDrag::None};
     numeric::vec2 Press{}; // The drag's start on the screen
     numeric::uvec2 MoveStart{}; // The held node's cell when a move started
     numeric::uvec2 AddAt{}; // The cell the Add menu adds a node at
+    uint32_t ContextNode{UINT32_MAX};
+    uint16_t ContextSocket{UINT16_MAX};
     uint32_t DragNode{UINT32_MAX}; // Node index for the active move, grab, or wire gesture
     uint32_t GrabAfter{}; // Start dragging the new active node after the count exceeds this value
     uint32_t LinkAfter{UINT32_MAX}; // The node count a linking add waits to grow past before it links the new node, or none

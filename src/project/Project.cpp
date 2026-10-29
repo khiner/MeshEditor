@@ -165,6 +165,7 @@ void Project::TrackStores() {
     History.Callbacks = {
         .Replay = [this](store::History &source, std::span<const std::byte> bytes, std::span<const uint32_t> workspaces) {
             // A replayed step reproduces persistent state and leaves the workspace as it was, reconciled with the replayed document.
+            const MeshStore::HistoryScope source_history{R.Resources.get<MeshStore>(), source};
             auto replayed = RunRecorded(source, Decode(bytes), workspaces);
             Settle(EventPass::Settle);
             // The replayed step ends as its commit did.
@@ -641,6 +642,7 @@ void Project::ClearInteraction() {
     if (auto *gizmo = R.try_edit<GizmoInteraction>(state::Document)) *gizmo = {};
     auto &frame = R.Resources.get<FrameState>();
     frame.BoxDrag.reset();
+    frame.OperationStart.reset();
 }
 void Project::ClearDocument() {
     WaitForRender(R);
@@ -792,6 +794,7 @@ bool Project::Audit(std::string &why) {
 
 void Project::AfterRestore() {
     const profile::CpuScope scope{"AfterRestore"};
+    ReconcileWorkspace(R);
     const struct ReadOnly {
         state::Registry &R;
         explicit ReadOnly(state::Registry &r) : R(r) { R.DocumentReadOnly = true; }
@@ -803,14 +806,15 @@ void Project::AfterRestore() {
     for (const auto &[type, entity, event] : Entities.TakeChanges()) {
         // The name hooks track created and destroyed names, and an overwritten name escapes them.
         names_changed |= type == state::Type<Name>() && event == state::Event::Update;
-        if (type == state::Type<Armature>()) R.remove<ArmaturePoseState>(entity);
+        if (type == state::Type<Armature>()) {
+            for (const auto [object, armature] : R.view<const ArmatureObject>().each())
+                if (armature.Entity == entity) R.remove<ArmaturePoseState>(object);
+        } else if (type == state::Type<ArmatureObject>()) R.remove<ArmaturePoseState>(entity);
         if ((type == state::Type<MeshHandle>() || type == state::Type<EvaluatedMesh>()) && DrawsMesh(R, entity) && !R.all_of<procedure::NodeLayout>(entity)) restored_meshes.push_back(entity);
         sources_changed |= type == state::Type<gltf::SourceAssets>();
         manifest_changed |= type == state::Type<MaterializedTextures>();
     }
     if (names_changed) RebuildEntityNames(R);
-    // Recompute restored procedure errors during the next cook.
-    R.clear<procedure::NodeError>();
     // Restored sources can contain other pixels at a manifest's slots, so every texture and the IBL decode again.
     // A manifest restored over unchanged sources keeps each texture it still lists, and the settle pass uploads the rest.
     if (sources_changed) {

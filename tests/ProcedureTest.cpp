@@ -2,26 +2,37 @@
 #include "ProjectFixture.h"
 #include "TestMeshOrdinals.h"
 #include "TopologyCases.h"
+#include "animation/Clips.h"
+#include "animation/Fields.h"
+#include "armature/Armature.h"
+#include "armature/ArmatureComponents.h"
+#include "armature/BoneConstraint.h"
+#include "audio/AudioTypes.h"
+#include "audio/ModalModes.h"
 #include "mesh/GeometryRefresh.h"
 #include "mesh/MeshClone.h"
 #include "mesh/Primitives.h"
 #include "mesh/Unsubdivide.h"
 #include "numeric/MatrixMath.h"
 #include "object/ObjectOps.h"
+#include "procedure/NodeEditor.h"
 #include "render/GpuBuffers.h"
+#include "render/GpuSceneState.h"
 #include "render/Instance.h"
+#include "scene/HierarchyInstance.h"
 #include "scene/SceneGraph.h"
 #include "selection/SelectionGpu.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewCameraOps.h"
 #include "viewport/ViewportEvents.h"
+#include <imgui_internal.h>
 
 using boost::ut::expect, boost::ut::fatal;
 
 namespace {
 using namespace procedure;
 using action::UpdateOf;
-using action::nodes::AddNode, action::nodes::CollapseProcedure, action::nodes::DeleteNodes, action::nodes::DuplicateNodes, action::nodes::InsertNode, action::nodes::Link, action::nodes::SelectNodes, action::nodes::SetAttributeName, action::nodes::SetDisplay, action::nodes::SetInlineSelection;
+using action::nodes::AddNode, action::nodes::CollapseProcedure, action::nodes::DeleteNodes, action::nodes::DuplicateNodes, action::nodes::InsertNode, action::nodes::Link, action::nodes::SelectItems, action::nodes::SetAttributeName, action::nodes::SetDisplay, action::nodes::SetInlineSelection;
 using ::test::Op, ::test::Patchwork, ::test::Region, ::test::TopologyCases;
 
 struct ProcedureFixture : Fixture {
@@ -42,6 +53,7 @@ struct ProcedureFixture : Fixture {
         Do(CollapseProcedure{mesh});
         return mesh;
     }
+    // Adds an unlinked node without changing the displayed stage.
     state::Entity Append(state::Entity mesh_entity, uint16_t kind) {
         Do(AddNode{mesh_entity, kind, {}});
         return R.get<const GeometryProcedure>(mesh_entity).Last;
@@ -417,14 +429,16 @@ void ProcedureFixture::CheckStep() {
     auto &meshes = Store();
     bool cloned = false;
     for (const auto [mesh, plan] : R.view<const CookPlan>().each()) {
-        if (plan.DisplayNode == NoNode) continue;
-        const auto upstream = Upstream(plan, plan.DisplayNode, [](uint32_t) { return true; });
+        if (plan.ResultNode == NoNode) continue;
+        const auto upstream = Upstream(plan, plan.ResultNode, [](uint32_t) { return true; });
         std::optional<SourceState> source;
         std::vector<NodeRecord> path;
         bool runs = true;
         for (const auto n : plan.Order) {
             if (!upstream[n]) continue;
+            if (std::ranges::any_of(std::span{plan.Inputs}.subspan(plan.InputFirst[n], plan.InputFirst[n + 1] - plan.InputFirst[n]), [](const auto &input) { return input.Constant.has_value(); })) runs = false;
             const auto [node, kind] = plan.Nodes[n];
+            if (kind == KindOf<action::mesh::Extrude> && R.get<const action::mesh::Extrude>(node).OffsetScale != 0.f) runs = false;
             if (kind == KindOf<procedure::Source> && !source) source = R.get<const SourceState>(node);
             else if (RunsTask(kind)) path.push_back(plan.Nodes[n]);
             else runs = false;
@@ -520,8 +534,35 @@ void Survives(ProcedureFixture &f, Fixture &other, std::span<const GraphRow> row
             const auto graph = row.Build(f);
             const auto mesh = graph.Mesh;
             if (graph.Oracle) graph.Oracle(f);
-            if (!graph.Edit) return;
             const auto output = f.Shaped(mesh);
+            const auto display = r.get<const GeometryProcedure>(mesh);
+            f.Do(SetDisplay{mesh});
+            expect(f.Shaped(mesh) == Shape{});
+            const auto *instances = r.try_get<const ProcedureInstances>(mesh);
+            expect(!instances || instances->Entities.empty());
+            f.Do(SetDisplay{mesh, display.DisplayNode, display.DisplayPort});
+            expect(f.Shaped(mesh) == output);
+            f.Do(AddNode{mesh, KindOf<action::mesh::Bevel>, {}});
+            const auto unused = r.get<const GeometryProcedure>(mesh).Last;
+            expect(r.get<const GeometryProcedure>(mesh).DisplayNode == display.DisplayNode);
+            expect(f.Shaped(mesh) == output);
+            const auto cooks = Cooks(r);
+            f.Do(UpdateOf<&action::mesh::Bevel::Width>(unused, .2f));
+            std::vector<state::Entity> groups;
+            auto member = r.get<const GeometryProcedure>(mesh).DisplayNode;
+            for (int depth = 0; depth < 2; ++depth) {
+                f.Do(action::nodes::GroupNodes{mesh, {member}});
+                member = r.get<const GeometryProcedure>(mesh).Last;
+                groups.push_back(member);
+                expect(f.Shaped(mesh) == output && Cooks(r) == cooks);
+            }
+            if (!graph.Edit) {
+                for (const auto group : groups | std::views::reverse) {
+                    f.Do(action::nodes::UngroupNodes{group});
+                    expect(f.Shaped(mesh) == output && Cooks(r) == cooks);
+                }
+                return;
+            }
             f.Do(action::selection::Select{f.Object(mesh)});
             f.Do(action::object::Duplicate{});
             const auto copy = r.get<const Instance>(FindActiveEntity(r)).Entity;
@@ -556,6 +597,47 @@ Graph ExtrudeSubdivide(ProcedureFixture &f) {
         [mesh](ProcedureFixture &f) { expect(f.Shaped(mesh) != f.SourceShape(mesh)); },
         [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(f.Node(mesh, 2u), 3u)); },
     };
+}
+
+void ExtrudeDisplacement(ProcedureFixture &f) {
+    using E = action::mesh::Extrude;
+    using M = action::mesh::ExtrudeMode;
+    for (const auto mode : {M::Region, M::Edges, M::FacesIndividual, M::Vertices}) {
+        const auto mesh = f.AddMesh(primitive::Plane{});
+        const Mesh plane{f.Store(), f.Output(mesh)};
+        const auto normal = plane.GetNormal(*plane.faces().begin());
+        const auto extrude = f.Append(mesh, KindOf<E>);
+        f.Do(UpdateOf<&E::Mode>(extrude, mode));
+        f.Route(mesh, {f.Node(mesh, 0u), extrude});
+        const auto topology = f.R.get<const NodeExtrusion>(extrude).State;
+        const auto zero = f.Shaped(mesh);
+        for (const float distance : {.25f, .75f, -.5f, 0.f}) {
+            f.Do(UpdateOf<&E::OffsetScale>(extrude, distance));
+            expect(f.R.get<const NodeExtrusion>(extrude).State == topology);
+            const Mesh result{f.Store(), f.Output(mesh)};
+            uint32_t displaced = 0u;
+            for (const auto vertex : result.vertices()) {
+                const float height = Dot(result.GetPosition(vertex), normal);
+                expect(std::abs(height) < .0001f || std::abs(height - distance) < .0001f);
+                if (std::abs(height - distance) < .0001f) ++displaced;
+            }
+            expect(displaced >= 4u);
+            if (distance == 0.f) expect(f.Shaped(mesh) == zero);
+        }
+        f.Do(UpdateOf<&E::AlongNormals>(extrude, false));
+        f.Do(UpdateOf<&E::Offset>(extrude, vec3{.3f, -.2f, .7f}));
+        f.Do(UpdateOf<&E::OffsetScale>(extrude, 2.f));
+        expect(f.Shaped(mesh) != zero);
+        const auto subdivide = f.Append(mesh, KindOf<action::mesh::Subdivide>);
+        f.Route(mesh, {f.Node(mesh, 0u), extrude, subdivide});
+        const auto downstream = f.Shaped(mesh);
+        f.Do(action::nodes::SetOperationHandle{extrude, f.Object(mesh), HandleParameter::ExtrudeScale});
+        f.Do(UpdateOf<&E::OffsetScale>(extrude, 1.f));
+        f.Do(action::nodes::SetOperationHandle{});
+        expect(f.R.get<const GeometryProcedure>(mesh).DisplayNode == subdivide);
+        expect(f.Shaped(mesh) != downstream);
+        expect(f.R.get<const NodeExtrusion>(extrude).State == topology);
+    }
 }
 
 // A sphere's cap above y = 0.9, with a vertex moved before its Source node's state is kept, insets through Position, Compare and Inset.
@@ -998,7 +1080,12 @@ Graph NodeEditing(ProcedureFixture &f) {
     const auto position = f.Append(mesh, KindOf<Position>);
     f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(subdivide, 3u));
     // Duplicates keep their parameters and only the links among them.
-    f.Do(SelectNodes{mesh, {subdivide, triangulate}, subdivide});
+    const auto cooks = r.Resources.get<const CookCount>().Value;
+    const auto shown = r.get<const GeometryProcedure>(mesh).DisplayNode;
+    f.Do(SelectItems{mesh, {subdivide}, {{subdivide}, {triangulate}}});
+    f.Do(UpdateOf<&NodeLayout::Position>(subdivide, uvec2{12u, 4u}));
+    expect(r.Resources.get<const CookCount>().Value == cooks);
+    expect(r.get<const GeometryProcedure>(mesh).DisplayNode == shown && f.Shaped(mesh) == source);
     f.Do(DuplicateNodes{mesh, {subdivide, triangulate}});
     const auto &procedure = r.get<const CookPlan>(mesh);
     expect(procedure.Nodes.size() == 6u && r.get<const action::mesh::Subdivide>(procedure.Nodes[4].Entity).Cuts == 3u);
@@ -1006,9 +1093,15 @@ Graph NodeEditing(ProcedureFixture &f) {
     // Displaying a node cooks the chain it ends, inserting a node into the displayed link cooks through it, and a node without a geometry input inserts nothing.
     f.Route(mesh, {f.Node(mesh, 0u), triangulate});
     f.Fails(InsertNode{mesh, position, triangulate, 0u, 0u});
-    f.Do(SelectNodes{mesh, {subdivide}, subdivide});
+    f.Do(SelectItems{mesh, {subdivide}, {{subdivide}}});
     f.Stage(InsertNode{mesh, subdivide, triangulate, 0u, 40u});
     f.CommitGesture();
+    const auto refined = f.Shaped(mesh);
+    f.Do(action::nodes::SetBypass{subdivide, true});
+    expect(f.Shaped(mesh) != refined);
+    expect(r.get<const CookPlan>(mesh).Wires[r.get<const CookPlan>(mesh).InputFirst[2u]].FromNode == 1u);
+    f.Do(action::nodes::SetBypass{subdivide, false});
+    expect(f.Shaped(mesh) == refined);
     // Deleting a node heals the chain through it, and the display follows a deleted displayed node's chain.
     f.Do(DeleteNodes{mesh, {subdivide}});
     f.Undo();
@@ -1414,7 +1507,7 @@ void RecordedOperators(ProcedureFixture &f, Fixture &other) {
         const auto [boolean, boolean_kind] = procedure.Nodes[node_count];
         const auto [info, info_kind] = procedure.Nodes[node_count + 1u];
         expect(boolean_kind == KindOf<procedure::Boolean> && info_kind == KindOf<procedure::ObjectInfo> && r.get<const procedure::ObjectInfo>(info).Object == tool);
-        expect(procedure.Inputs[procedure.InputFirst[node_count] + 1u].FromNode == node_count + 1u && procedure.ActiveNode == node_count);
+        expect(procedure.Inputs[procedure.InputFirst[node_count] + 1u].FromNode == node_count + 1u && ActiveIndex(r, procedure) == node_count);
         expect(!r.any_of<NodeError>(boolean) && !r.any_of<NodeError>(info));
         expect(r.get<const procedure::Boolean>(boolean).Space == active);
         expect(Fingerprint(f, mesh) == 0x38e0585db10ca082ull);
@@ -1662,7 +1755,7 @@ void ParameterSockets(ProcedureFixture &f) {
 }
 
 // A chained display path edits the record its Source node refers to in place, and the Source node's state keeps the geometry a cook from the root reads.
-// A displayed node with an unlinked geometry input draws an empty record, and collapsing gives the new Source node the state of the record the mesh draws.
+// Disconnecting the displayed path restores its upstream result, and collapsing captures the displayed geometry.
 void SourceStates(ProcedureFixture &f) {
     const auto &r = f.R;
     const auto mesh = f.AddMesh(primitive::Cube{});
@@ -1690,7 +1783,7 @@ void SourceStates(ProcedureFixture &f) {
     f.Route(mesh, {boolean, subdivide});
     expect(Mesh{f.Store(), f.Output(mesh)}.FaceCount() == 24u);
     f.Do(action::nodes::Unlink{mesh, subdivide, 0u});
-    expect(Mesh{f.Store(), f.Output(mesh)}.VertexCount() == 0u);
+    expect(r.get<const GeometryProcedure>(mesh).DisplayNode == boolean && f.Shaped(mesh) == shape);
     f.Undo();
     expect(Mesh{f.Store(), f.Output(mesh)}.FaceCount() == 24u);
     f.Undo();
@@ -1736,35 +1829,36 @@ void DisplayedNode(ProcedureFixture &f) {
     f.Do(action::mesh::Subdivide{1u});
     {
         const auto &procedure = r.get<const CookPlan>(mesh);
-        expect(procedure.Nodes.size() == 3u && procedure.DisplayNode == 2u && procedure.ActiveNode == 2u);
+        expect(procedure.Nodes.size() == 3u && procedure.DisplayNode == 2u && ActiveIndex(r, procedure) == 2u);
         expect(procedure.Nodes[procedure.Inputs[procedure.InputFirst[2u]].FromNode].Entity == extrude);
     }
     const auto extrude_x = r.get<const NodeLayout>(extrude).Position.x;
     f.Do(SetDisplay{mesh, f.Node(mesh, 0u)});
     expect(f.Shaped(mesh) == source);
-    // A click selects, activates and displays its node in one action.
-    f.Do(SelectNodes{mesh, {extrude}, extrude, true});
+    // Selection preserves display; an explicit display action switches the stage.
+    f.Do(SelectItems{mesh, {extrude}, {{extrude}}});
+    f.Do(SetDisplay{mesh, extrude});
     expect(r.get<const GeometryProcedure>(mesh).DisplayNode == extrude && f.Shaped(mesh) != source);
     f.Do(SetDisplay{mesh, f.Node(mesh, 0u)});
     f.Do(action::selection::SelectAll{});
     f.Do(action::mesh::Subdivide{1u});
     {
         const auto &procedure = r.get<const CookPlan>(mesh);
-        expect(procedure.Nodes.size() == 4u && procedure.DisplayNode == 3u && procedure.ActiveNode == 3u);
+        expect(procedure.Nodes.size() == 4u && procedure.DisplayNode == 3u && ActiveIndex(r, procedure) == 3u);
         expect(procedure.Inputs[procedure.InputFirst[3u]].FromNode == 0u && procedure.Inputs[procedure.InputFirst[1u]].FromNode == 0u);
         expect(r.get<const NodeLayout>(extrude).Position.x == extrude_x + AppendGap);
     }
     f.Do(action::view::SetInteractionMode{InteractionMode::Object});
-    f.Do(SelectNodes{mesh, {extrude}, extrude});
+    f.Do(SelectItems{mesh, {extrude}, {{extrude}}});
     f.Do(DeleteNodes{mesh, {extrude}});
     {
         const auto &procedure = r.get<const CookPlan>(mesh);
-        expect(procedure.Nodes.size() == 3u && procedure.DisplayNode == 2u && procedure.ActiveNode == 2u);
+        expect(procedure.Nodes.size() == 3u && procedure.DisplayNode == 2u && ActiveIndex(r, procedure) == 2u);
     }
     f.Do(DeleteNodes{mesh, {f.Node(mesh, 2u)}});
     {
         const auto &procedure = r.get<const CookPlan>(mesh);
-        expect(procedure.Nodes.size() == 2u && procedure.DisplayNode == 0u && procedure.ActiveNode == 0u);
+        expect(procedure.Nodes.size() == 2u && procedure.DisplayNode == 0u && ActiveIndex(r, procedure) == 0u);
     }
     expect(f.Shaped(mesh) == source);
     // Deleting a displayed Join displays the node its first input reads.
@@ -1776,6 +1870,56 @@ void DisplayedNode(ProcedureFixture &f) {
     expect(f.Shaped(mesh) != source);
     f.Do(DeleteNodes{mesh, {join}});
     expect(r.get<const GeometryProcedure>(mesh).DisplayNode == f.Node(mesh, 0u) && f.Shaped(mesh) == source);
+
+    // Connecting extends the displayed path; disconnecting returns to the severed wire's source, including through nested ports and bypass.
+    for (const int depth : {0, 2}) {
+        const auto owner = f.AddMesh(primitive::Cube{}), root = f.Node(owner, 0u);
+        const auto cube = f.Shaped(owner);
+        const auto bevel = f.Append(owner, KindOf<action::mesh::Bevel>), tail = f.Append(owner, KindOf<TransformGeometry>);
+        f.Do(UpdateOf<&TransformGeometry::Delta, &Transform::P>(tail, vec3{1, 2, 3}));
+        f.Do(Link{owner, bevel, f.Out(bevel), tail, 0u});
+        auto input = bevel;
+        uint16_t socket = 0u;
+        for (int level = 0; level < depth; ++level) {
+            f.Do(action::nodes::GroupNodes{owner, level == 0 ? std::vector{bevel, tail} : std::vector{input}});
+            const auto group = r.get<const GeometryProcedure>(owner).Last;
+            f.Do(action::nodes::ExposeSocket{group, input, socket, "Geometry"});
+            input = group;
+            socket = r.get<const SubnetInterface>(group).Ports.back().Id;
+        }
+        const auto displayed = [&] { return ResolveSocket(r, DisplayLink(r, r.get<const GeometryProcedure>(owner))).Source.FromNode; };
+        for (const bool bypass : {false, true}) {
+            f.Do(action::nodes::SetBypass{bevel, bypass});
+            expect(r.get<const GeometryProcedure>(owner).DisplayNode == root && f.Shaped(owner) == cube);
+            f.Do(Link{owner, root, f.Out(root), input, socket});
+            expect(displayed() == tail && f.Shaped(owner) != cube);
+            const auto result = f.Shaped(owner);
+            f.Do(action::nodes::Unlink{owner, tail, 0u});
+            expect(r.get<const GeometryProcedure>(owner).DisplayNode == bevel);
+            f.Do(Link{owner, bevel, f.Out(bevel), tail, 0u});
+            expect(displayed() == tail && f.Shaped(owner) == result);
+            f.Do(action::nodes::Unlink{owner, input, socket});
+            expect(r.get<const GeometryProcedure>(owner).DisplayNode == root && f.Shaped(owner) == cube);
+        }
+        if (depth) {
+            f.Do(action::nodes::SetBypass{input, true});
+            f.Do(Link{owner, root, f.Out(root), input, socket});
+            f.Do(action::nodes::Unlink{owner, tail, 0u});
+            expect(r.get<const GeometryProcedure>(owner).DisplayNode == input && f.Shaped(owner) == cube);
+            f.Do(Link{owner, bevel, f.Out(bevel), tail, 0u});
+            f.Do(action::nodes::Unlink{owner, input, socket});
+            expect(r.get<const GeometryProcedure>(owner).DisplayNode == root && f.Shaped(owner) == cube);
+            f.Do(action::nodes::SetBypass{input, false});
+        }
+        f.Do(AddNode{owner, KindOf<Join>, {}, ContainerOf(r, bevel)});
+        const auto branch = r.get<const GeometryProcedure>(owner).Last;
+        f.Do(Link{owner, bevel, f.Out(bevel), branch, 0u});
+        f.Do(Link{owner, root, f.Out(root), input, socket});
+        expect(r.get<const GeometryProcedure>(owner).DisplayNode == bevel);
+        f.Do(Link{owner, tail, f.Out(tail), branch, 1u});
+        f.Do(action::nodes::Unlink{owner, branch, 1u});
+        expect(r.get<const GeometryProcedure>(owner).DisplayNode == bevel);
+    }
 }
 
 // While the active node's input is displayed, the drawn record shows the node's selection and active element, each viewport selection change sets the node's selection, which later cooks keep, and a selection of all elements shows every element.
@@ -1955,6 +2099,317 @@ void DeleteTipRestores(ProcedureFixture &f) {
     expect(f.Output(mesh) == record && f.SourceOf(mesh) == source);
 }
 
+// Grouping changes presentation only, and nested interfaces edit the same underlying fields.
+void SceneNetworks(ProcedureFixture &f) {
+    using namespace action::nodes;
+    const auto cube = f.AddCube();
+    const auto light = f.Add(action::object::AddLight{std::make_unique<ObjectCreateInfo>()});
+    f.Do(AssignReference{{{light}, ReferenceKind::Parent}, {cube}});
+    f.Do(action::animation::AddAnimation{"Animation"});
+    for (const auto network : {FrameScene(f.R), state::Document}) {
+        const auto items = NetworkItems(f.R, network);
+        const auto shapes = Live::DrawnShapes(f);
+        const auto cooks = Cooks(f.R);
+        std::vector<state::Entity> groups;
+        auto members = items;
+        for (int depth = 0; depth < 2; ++depth) {
+            f.Do(GroupItems{network, members});
+            const auto group = f.R.get<const NetworkActive>(network).Item.Entity;
+            groups.push_back(group);
+            members = {{group}};
+            f.Do(MoveNodes{network, {{{group}, {uint32_t(depth + 2), 3u}}}});
+            expect(NetworkLeaves(f.R, group) == items);
+            if (network != state::Document) {
+                f.Do(ExposePort{group, PromotedField{light, state::Key<PunctualLight>(), action::detail::FieldOffset<&PunctualLight::Intensity>()}, std::make_unique<std::string>("Intensity")});
+                f.Do(SetPortValue{group, f.R.get<const SubnetInterface>(group).Ports.back().Id, {std::bit_cast<uint32_t>(17.f + depth)}});
+                expect(f.R.get<const PunctualLight>(light).Intensity == 17.f + depth);
+            }
+        }
+        for (const auto group : groups | std::views::reverse) f.Do(UngroupItems{group});
+        expect(NetworkItems(f.R, network) == items && Live::DrawnShapes(f) == shapes && Cooks(f.R) == cooks);
+        expect(ParentOrNull(f.R, light) == cube);
+    }
+}
+
+// Interactive and read-only drawing produce the same UI on every page, including after history navigation.
+void CanvasEquivalence(ProcedureFixture &f) {
+    const auto mesh = f.AddGenerated(primitive::Cube{});
+    const auto node = f.Append(mesh, KindOf<action::mesh::Subdivide>);
+    f.Route(mesh, {f.Node(mesh, 0), node});
+    f.Do(action::nodes::GroupNodes{mesh, {node}});
+    const auto subnet = f.R.get<const GeometryProcedure>(mesh).Last;
+    f.Do(action::physics::AddJointDef{});
+    f.Do(action::animation::AddAnimation{"Animation"});
+    auto *context = ImGui::CreateContext();
+    auto &io = ImGui::GetIO();
+    io.IniFilename = nullptr;
+    io.DisplaySize = {1400, 900};
+    io.Fonts->Build();
+    NodesPanel panel{{"Nodes"}};
+    Panel parameters{"Parameters"};
+    const auto frame = [&](bool interactive = false) {
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos({0, 0});
+        ImGui::SetNextWindowSize({950, 850});
+        DrawNodesPanel(f.R, panel, interactive);
+        ImGui::SetNextWindowPos({950, 0});
+        ImGui::SetNextWindowSize({450, 850});
+        DrawParametersPanel(f.R, panel, parameters, interactive);
+        ImGui::Render();
+        std::vector<std::byte> drawn;
+        for (const auto *list : ImGui::GetDrawData()->CmdLists) {
+            drawn.append_range(std::as_bytes(std::span{list->VtxBuffer.Data, size_t(list->VtxBuffer.Size)}));
+            drawn.append_range(std::as_bytes(std::span{list->IdxBuffer.Data, size_t(list->IdxBuffer.Size)}));
+        }
+        expect(!drawn.empty());
+        return drawn;
+    };
+    const auto cooks = Cooks(f.R);
+    for (const auto network : {FrameScene(f.R), state::Document, mesh, subnet}) {
+        EnterNetwork(panel, network);
+        frame();
+        frame();
+        const auto drawn = frame(true);
+        expect(frame() == drawn);
+        f.Undo();
+        f.Redo();
+        expect(frame() == drawn);
+        if (network == state::Document) {
+            for (const auto item : NetworkItems(f.R, network)) {
+                f.Do(SelectItems{network, item, {item}});
+                frame();
+            }
+        }
+    }
+    expect(Cooks(f.R) == cooks);
+    ImGui::DestroyContext(context);
+}
+
+state::Entity AnimatedAssembly(ProcedureFixture &f) {
+    const auto root = f.AddEmpty("Assembly");
+    const auto mesh = f.AddGenerated(primitive::Cube{});
+    const auto operand = f.Object(mesh);
+    const auto result = f.AddGenerated(primitive::Plane{});
+    const auto info = f.Append(result, KindOf<procedure::ObjectInfo>);
+    f.Do(UpdateOf<&procedure::ObjectInfo::Object>(info, operand));
+    f.Do(SetDisplay{result, info});
+    const auto light = f.Add(action::object::AddLight{std::make_unique<ObjectCreateInfo>()});
+    for (const auto child : {operand, f.Object(result), light}) f.Do(action::object::SetParent{child, root});
+    f.R.patch<Animations>(state::Document, [](auto &a) { a.Names = {"Animation"}; a.Active = 0; });
+    f.R.emplace<AnimationClips>(root, std::vector<AnimationClip>{{0, {{animation::Target<&Transform::P>(), AnimationInterpolation::Linear, {0, 1}, {0, 0, 0, 2, 0, 0}, {0, 0, 0}}}}});
+    f.R.emplace<AnimationClips>(light, std::vector<AnimationClip>{{0, {{animation::Target<&PunctualLight::Intensity>(), AnimationInterpolation::Linear, {0, 1}, {2, 8}, {2}}}}});
+    f.Commit("Animate assembly");
+    return root;
+}
+state::Entity Mechanism(ProcedureFixture &f) {
+    const auto root = f.AddEmpty("Mechanism"), a = f.AddCube(), b = f.AddCube();
+    for (const auto child : {a, b}) {
+        f.Do(action::object::SetParent{child, root});
+        f.Do(action::physics::SetMotionType{action::physics::SetMotionType::Type::Kinematic, child});
+    }
+    f.Do(UpdateOf<&Transform::P>(b, vec3{3, 0, 0}));
+    const auto definition = f.R.create();
+    f.R.emplace<PhysicsJointDef>(definition);
+    f.R.emplace<PhysicsJoint>(a, b, definition);
+    f.R.emplace<TriggerNodes>(root, std::vector{a, b});
+    ModalModes modes;
+    modes.Freqs = {440};
+    modes.T60s = {1};
+    modes.Shapes = {{{1, 0, 0}}};
+    modes.Positions = {{-1, -1, -1}};
+    modes.Vertices = {0};
+    f.R.emplace<ModalModes>(a, modes);
+    f.R.emplace<SoundVerticesModel>(a, SoundVerticesModel::Modal);
+    f.R.emplace<ModalGain>(a);
+    f.Commit("Bind mechanism domains");
+    return root;
+}
+state::Entity ImportedRig(ProcedureFixture &f) {
+    f.Do(action::io::LoadGltf{std::filesystem::path{MESHEDITOR_SOURCE_DIR} / "external/glTF-Sample-Assets/Models/RiggedSimple/glTF/RiggedSimple.gltf"});
+    auto root = *f.R.view<const ArmatureObject>().begin();
+    while (ParentOrNull(f.R, root) != state::Null) root = ParentOrNull(f.R, root);
+    return root;
+}
+
+// Detaching a nested instance preserves its geometry and animated appearance; source edits then leave it independent.
+void Hierarchies(ProcedureFixture &f, Fixture &other) {
+    for (const auto [name, build] : std::array<std::pair<const char *, state::Entity (*)(ProcedureFixture &)>, 3>{{{"Assembly", AnimatedAssembly}, {"Mechanism", Mechanism}, {"Rig", ImportedRig}}}) {
+        Scenario(f, other, std::string{"Hierarchy"} + name, [&](ProcedureFixture &f) {
+            const auto source = build(f);
+            const auto inner = f.Add(action::object::InstantiateHierarchy{source});
+            const auto root = f.Add(action::object::InstantiateHierarchy{inner});
+            f.Do(UpdateOf<&Transform::P>(root, vec3{2, 0, 0}));
+            const auto members = f.R.get<const HierarchyInstance>(root).Members;
+            auto edited = state::Null;
+            for (const auto &member : members) {
+                if (const auto *object = f.R.try_get<const Instance>(member.Entity); object && DrawnStoreId(f.R, object->Entity)) {
+                    expect(f.Shaped(object->Entity) == f.Shaped(f.R.get<const Instance>(member.Source).Entity));
+                    edited = HierarchySource(f.R, member.Entity);
+                }
+            }
+            for (const auto &member : members) f.Do(action::object::SetVisible{false, HierarchySource(f.R, member.Entity)});
+            f.Do(action::selection::Select{inner});
+            f.Do(action::object::Delete{});
+            f.Do(action::selection::DeselectAll{});
+            std::array<std::vector<std::byte>, 2> images;
+            for (int frame = 0; frame < 2; ++frame) {
+                f.Do(action::timeline::SetFrame{1 + frame * 30});
+                if (Render) images[frame] = f.Image();
+            }
+            f.Do(action::object::MakeIndependent{root});
+            for (int frame = 0; frame < 2; ++frame) {
+                f.Do(action::timeline::SetFrame{1 + frame * 30});
+                if (Render) expect(f.Image() == images[frame]);
+            }
+            const auto independent = Live::DrawnShapes(f);
+            f.Do(UpdateOf<&Transform::P>(edited, vec3{9, 0, 0}));
+            expect(Live::DrawnShapes(f) == independent);
+            if (Render) expect(f.Image() == images.back());
+        });
+    }
+}
+
+void ObjectDependencies(ProcedureFixture &f) {
+    const auto a = f.AddGenerated(primitive::Cube{});
+    const auto root = f.Node(a, 0u);
+    const auto b = f.AddGenerated(primitive::Plane{});
+    const auto bi = f.Append(b, KindOf<procedure::ObjectInfo>);
+    f.Do(UpdateOf<&procedure::ObjectInfo::Object>(bi, f.Object(a)));
+    f.Do(SetDisplay{b, bi});
+    const auto c = f.AddGenerated(primitive::Plane{});
+    const auto ci = f.Append(c, KindOf<procedure::ObjectInfo>);
+    f.Do(UpdateOf<&procedure::ObjectInfo::Object>(ci, f.Object(b)));
+    f.Do(SetDisplay{c, ci});
+    auto cooks = Cooks(f.R);
+    f.Do(UpdateOf<&primitive::Cube::HalfExtents>(root, vec3{2.f, .5f, 1.f}));
+    expect(Cooks(f.R) == cooks + 3u);
+    expect(f.Shaped(a) == f.Shaped(b) && f.Shaped(a) == f.Shaped(c));
+    const auto dormant = f.Append(a, KindOf<primitive::Cube>);
+    cooks = Cooks(f.R);
+    f.Do(UpdateOf<&primitive::Cube::HalfExtents>(dormant, vec3{4.f, 1.f, 2.f}));
+    expect(Cooks(f.R) == cooks);
+    const auto cycle = f.Append(a, KindOf<procedure::ObjectInfo>);
+    cooks = Cooks(f.R);
+    f.Fails(UpdateOf<&procedure::ObjectInfo::Object>(cycle, f.Object(c)));
+    expect(f.R.get<const procedure::ObjectInfo>(cycle).Object == state::Null && Cooks(f.R) == cooks);
+    f.Do(action::selection::Select{f.Object(c)});
+    f.Do(action::selection::ExtendActive{f.Object(a)});
+    const auto node_count = f.R.get<const CookPlan>(a).Nodes.size();
+    f.Fails(action::mesh::Boolean{BooleanOperation::Difference});
+    expect(f.R.get<const CookPlan>(a).Nodes.size() == node_count && Cooks(f.R) == cooks);
+    f.Do(SetDisplay{b, f.Node(b, 0u)});
+    cooks = Cooks(f.R);
+    f.Do(UpdateOf<&primitive::Cube::HalfExtents>(root, vec3{1.f, 1.f, 3.f}));
+    expect(Cooks(f.R) == cooks + 1u);
+    expect(f.Shaped(b) == f.Shaped(c));
+    f.Do(SetDisplay{b, bi});
+    expect(f.Shaped(a) == f.Shaped(b) && f.Shaped(a) == f.Shaped(c));
+    const auto object_a = f.Object(a);
+    f.Do(action::selection::Select{object_a});
+    f.Do(action::object::Delete{});
+    expect(f.R.all_of<NodeError>(bi));
+}
+
+void HiddenSharedGeometry(ProcedureFixture &f) {
+    const auto original = f.AddCube();
+    const auto mesh = f.R.get<const Instance>(original).Entity;
+    const auto shape = f.Shaped(mesh);
+    const auto hidden = f.Add(action::object::DuplicateLinked{});
+    f.Do(action::object::SetVisible{false, hidden});
+    f.Do(action::selection::Select{original});
+    f.Do(action::object::Delete{});
+    expect(f.R.valid(mesh) && f.R.get<const Instance>(hidden).Entity == mesh);
+    expect(f.Shaped(mesh) == shape);
+    f.Do(action::object::SetVisible{true, hidden});
+    expect(f.Shaped(mesh) == shape);
+    f.Do(action::selection::Select{hidden});
+    f.Do(action::object::Delete{});
+    expect(!f.R.valid(mesh));
+}
+
+void ProceduralHierarchies(ProcedureFixture &f) {
+    auto &r = f.R;
+    const auto source = f.AddEmpty("Prototype");
+    const auto light = f.Add(action::object::AddLight{std::make_unique<ObjectCreateInfo>()});
+    f.Do(action::object::SetParent{light, source});
+    const auto mesh = f.AddGenerated(primitive::Plane{});
+    const auto producer = f.Object(mesh);
+    const auto points = f.Append(mesh, KindOf<MeshToPoints>);
+    const auto instances = f.Append(mesh, KindOf<InstanceOnPoints>);
+    f.Do(UpdateOf<&InstanceOnPoints::Prototype>(instances, source));
+    f.Route(mesh, {f.Node(mesh, 0u), points, instances});
+    const auto roots = r.get<const ProcedureInstances>(mesh).Entities;
+    expect(roots.size() == 4u);
+    for (const auto root : roots) {
+        expect(r.all_of<HierarchyInstance>(root));
+        expect(ParentOrNull(r, root) == producer);
+        expect(r.get<const HierarchyInstance>(root).Members.size() == 2u);
+    }
+    f.Do(UpdateOf<&PunctualLight::Intensity>(light, 23.f));
+    expect(r.get<const ProcedureInstances>(mesh).Entities == roots);
+    for (const auto root : roots) {
+        const auto &members = r.get<const HierarchyInstance>(root).Members;
+        const auto copied = std::ranges::find(members, light, &HierarchyInstance::Member::Source)->Entity;
+        expect(r.get<const PunctualLight>(copied).Intensity == 23.f);
+    }
+    f.Fails(UpdateOf<&InstanceOnPoints::Prototype>(instances, producer));
+    const auto realize = f.Append(mesh, KindOf<RealizeInstances>);
+    f.Do(Link{mesh, instances, f.Out(instances), realize, 0});
+    f.Do(SetDisplay{mesh, realize});
+    expect(r.all_of<NodeError>(realize));
+    expect(r.get<const ProcedureInstances>(mesh).Entities == roots);
+    f.Do(SetDisplay{mesh, f.Node(mesh, 0u)});
+    for (const auto root : roots) expect(!r.valid(root));
+    f.Do(action::selection::Select{source});
+    f.Do(action::object::Delete{});
+    expect(r.all_of<HierarchyDefinition>(source));
+    expect(r.valid(light));
+    f.Do(SetDisplay{mesh, instances});
+    expect(r.get<const ProcedureInstances>(mesh).Entities.size() == 4u);
+    f.Do(SetDisplay{mesh, f.Node(mesh, 0u)});
+    f.Do(UpdateOf<&InstanceOnPoints::Prototype>(instances, state::Null));
+    expect(!r.valid(source) && !r.valid(light));
+}
+
+void LinkedSkinPoses(ProcedureFixture &f) {
+    f.Do(action::io::LoadGltf{std::filesystem::path{MESHEDITOR_SOURCE_DIR} / "external/glTF-Sample-Assets/Models/RiggedSimple/glTF/RiggedSimple.gltf"});
+    auto &r = f.R;
+    const auto skinned = *r.view<const ArmatureModifier>().begin();
+    const auto modifier = r.get<const ArmatureModifier>(skinned);
+    const auto first = modifier.ArmatureObjectEntity;
+    f.Do(action::selection::Select{first});
+    const auto second = f.Add(action::object::DuplicateLinked{});
+    if (r.all_of<HierarchyInstance>(second)) f.Do(action::object::MakeIndependent{second});
+    f.Do(action::selection::Select{skinned});
+    const auto mesh_copy = f.Add(action::object::DuplicateLinked{});
+    r.patch<ArmatureModifier>(mesh_copy, [&](auto &binding) { binding.ArmatureObjectEntity = second; });
+    f.Commit("Bind the copied skin to its armature occurrence");
+    const auto target = f.Add(action::object::AddEmpty{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Transform = {.P = {3.f, 0.f, 0.f}}})});
+    const auto second_bone = r.get<const ArmatureObject>(second).BoneEntities.front();
+    f.Do(action::bone::AddConstraint{action::bone::BoneConstraintKind::CopyTransforms, second_bone});
+    f.Do(action::bone::SetConstraintTarget{0u, target, second_bone});
+    const auto check = [&] {
+        const auto &a = r.get<const ArmaturePoseState>(first), &b = r.get<const ArmaturePoseState>(second);
+        const auto &layout = r.get<const PosedLayout>(r.get<const Instance>(skinned).Entity);
+        expect(std::ranges::contains(layout.Armatures, first) && std::ranges::contains(layout.Armatures, second));
+        expect(!a.GpuDeformRanges.empty() && a.GpuDeformRanges.size() == b.GpuDeformRanges.size()) << fatal;
+        const auto &buffers = r.Resources.get<const GpuBuffers>();
+        for (uint32_t skin = 0; skin < a.GpuDeformRanges.size(); ++skin) {
+            expect(a.GpuDeformRanges[skin].Offset != b.GpuDeformRanges[skin].Offset);
+            const auto one = buffers.ArmatureDeformBuffer.Get(a.GpuDeformRanges[skin]);
+            const auto two = buffers.ArmatureDeformBuffer.Get(b.GpuDeformRanges[skin]);
+            std::vector<mat4> expected(two.size());
+            ComputeDeformMatrices(r.get<const Armature>(modifier.ArmatureEntity), skin, b.BonePoseWorld, expected);
+            expect(std::ranges::equal(two, expected));
+            expect(!std::ranges::equal(one, two));
+        }
+    };
+    check();
+    f.Undo();
+    f.Redo();
+    check();
+}
+
 constexpr std::array<GraphRow, 21> Graphs{{
     {"ExtrudeSubdivide", ExtrudeSubdivide},
     {"CapInset", CapInset},
@@ -1987,11 +2442,19 @@ void TestProcedures() {
     Survives(f, other, Graphs);
     ViewportOperators(f, other);
     RecordedOperators(f, other);
+    Hierarchies(f, other);
+    Scenario(f, other, "SceneNetworks", SceneNetworks);
+    Scenario(f, other, "CanvasEquivalence", CanvasEquivalence);
     Scenario(f, other, "ParameterSockets", ParameterSockets);
     Scenario(f, other, "SourceStates", SourceStates);
     Scenario(f, other, "DisplayedNode", DisplayedNode);
     Scenario(f, other, "ViewportSelection", ViewportSelection);
     Scenario(f, other, "ColdRecook", ColdRecook);
     Scenario(f, other, "NodeResultRecook", NodeResultRecook);
+    Scenario(f, other, "ExtrudeDisplacement", ExtrudeDisplacement);
     Scenario(f, other, "DeleteTipRestores", DeleteTipRestores);
+    Scenario(f, other, "HiddenSharedGeometry", HiddenSharedGeometry);
+    Scenario(f, other, "ProceduralHierarchies", ProceduralHierarchies);
+    Scenario(f, other, "LinkedSkinPoses", LinkedSkinPoses);
+    Scenario(f, other, "ObjectDependencies", ObjectDependencies);
 }

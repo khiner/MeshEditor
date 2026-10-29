@@ -8,6 +8,7 @@
 #include "TransformMath.h"
 #include "render/Instance.h"
 #include "render/MeshletSpatial.h"
+#include "scene/HierarchyInstance.h"
 #include "scene/SceneGraph.h"
 
 inline const ModalSoundControls &ModalControls(const state::Registry &r) {
@@ -18,7 +19,7 @@ inline const ModalSoundControls &ModalControls(const state::Registry &r) {
 
 // A body that sounds by modal synthesis.
 inline bool IsModalSounding(const state::Registry &r, state::Entity e) {
-    return r.valid(e) && r.all_of<ModalModes, SoundVertices, SoundVerticesModel>(e) && r.get<SoundVerticesModel>(e) == SoundVerticesModel::Modal;
+    return r.valid(e) && r.all_of<ModalModes>(HierarchySource(r, e)) && r.all_of<SoundVertices, SoundVerticesModel>(e) && r.get<SoundVerticesModel>(e) == SoundVerticesModel::Modal;
 }
 
 // Mean surface curvature (1/m) where a contact touches a node, read from that node's own mesh at `world_point`.

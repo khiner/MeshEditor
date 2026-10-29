@@ -512,6 +512,9 @@ MeshStore::~MeshStore() {
     for (auto &[state, version] : KeptStates) Release(version);
 }
 
+MeshStore::HistoryScope::HistoryScope(MeshStore &meshes, store::History &history) : Meshes{meshes}, Previous{std::exchange(meshes.Hist, &history)} {}
+MeshStore::HistoryScope::~HistoryScope() { Meshes.Hist = Previous; }
+
 void MeshStore::Track(store::History &history) {
     const auto first = history.Tracks.size();
     Buffers.VertexFans.Track(history, "mesh.vertexFans");
@@ -923,7 +926,8 @@ std::optional<MeshStore::Change> MeshStore::RestoreRecord(store::Hash128 state, 
     Change change{id, EntryChanged};
     bool placed = false;
     const auto changed_block = [&](Domain domain, uint32_t block) {
-        const auto index = domain == Domain::Halfedge ? 3u : SelectableDomain(domain) ? SelectableIndex(domain) : InvalidOffset;
+        const auto index = domain == Domain::Halfedge ? 3u : SelectableDomain(domain) ? SelectableIndex(domain) :
+                                                                                        InvalidOffset;
         if (index != InvalidOffset) change.Blocks[index].push_back(block);
     };
     // Whether the stored bytes of [first, end), within one slot of a tracked buffer, differ from its live bytes.

@@ -56,6 +56,7 @@ ChannelTarget WeightsTarget(const state::Registry &, state::Entity);
 std::array<ChannelTarget, 3> TransformTargets(const state::Registry &, state::Entity);
 
 bool IsChannelStore(state::TypeKey);
+std::string FieldLabel(const ChannelTarget &);
 
 // Reads the target's current value.
 // Returns false when the entity lacks the field.

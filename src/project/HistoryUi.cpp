@@ -177,6 +177,7 @@ template<typename L> void DrawLeaf(const state::Registry &r, L &leaf, bool &chan
         Text("Material %u", leaf.Index);
         DrawValue(r, "Value", leaf.Value, action::FieldAt<PBRMaterial>(leaf.Offset).Spec, changed, finished);
     } else if constexpr (action::IsPatchFields<L>) {
+        Text("Target: %s", TargetName(r, leaf.Entity == state::Null ? action::Target{action::OnActive{}} : action::Target{leaf.Entity}).c_str());
         [&]<typename C, typename F, size_t N>(action::PatchFields<C, F, N> &patch) {
             for (size_t i = 0; i < N; ++i) {
                 const auto &field = action::FieldAt<C>(patch.Offsets[i]);

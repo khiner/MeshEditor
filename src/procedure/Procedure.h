@@ -1,8 +1,11 @@
 #pragma once
 
+#include "procedure/Network.h"
+
 #include "action/Mesh.h"
 #include "action/Updatable.h"
 #include "gpu/AttributeNode.h"
+#include "mesh/MeshTopology.h"
 #include "mesh/NamedAttribute.h"
 #include "procedure/ProcedureSchema.h"
 #include "project/store/Hash.h"
@@ -221,6 +224,7 @@ struct MeshToPoints {}; // Emit the input's vertices as points.
 
 // Place an instance of the second input at each point of the first, with Rotation and Scale per point.
 struct InstanceOnPoints {
+    state::Entity Prototype{state::Null};
     vec3 Scale{1, 1, 1};
     quat Rotation{1, 0, 0, 0};
 };
@@ -232,6 +236,13 @@ struct RealizeInstances {}; // Emit a copy of the instance geometry per instance
 struct ObjectInfo {
     state::Entity Object{state::Null};
 };
+
+template<typename K> inline constexpr auto ObjectInput = nullptr;
+template<> inline constexpr auto ObjectInput<ObjectInfo> = &ObjectInfo::Object;
+template<> inline constexpr auto ObjectInput<Boolean> = &Boolean::Space;
+template<> inline constexpr auto ObjectInput<InstanceOnPoints> = &InstanceOnPoints::Prototype;
+
+struct Subnet {};
 
 // A node's kind is its parameter component's index in this list.
 using NodeKinds = TypeList<
@@ -249,7 +260,7 @@ using NodeKinds = TypeList<
     action::mesh::ReverseUVs, action::mesh::RotateColors, action::mesh::ReverseColors, MarkSharp, ShadeSmooth, ShadeSmoothByAngle, TransformElements,
     Position, Normal, Index, NamedAttribute, VectorMath, FloatMath, Compare, BooleanMath, StoreNamedAttribute, StoreSelection, SetPosition,
     MeshToPoints, InstanceOnPoints, RealizeInstances, ObjectInfo,
-    FloatValue, IntegerValue, BooleanValue, VectorValue, TransformGeometry, RotationValue>;
+    FloatValue, IntegerValue, BooleanValue, VectorValue, TransformGeometry, RotationValue, Subnet>;
 using ValueKinds = TypeList<FloatValue, IntegerValue, BooleanValue, VectorValue, RotationValue>;
 template<typename K>
 concept ValueKind = InTypeList<K, ValueKinds>;
@@ -261,7 +272,8 @@ enum class SocketType : uint8_t { Geometry,
                                   Selection,
                                   Attribute,
                                   Instances,
-                                  Value };
+                                  Value,
+                                  Reference };
 
 enum class SocketDirection : uint8_t { In,
                                        Out };
@@ -336,7 +348,8 @@ template<typename K, size_t I, typename F, size_t J> inline constexpr auto Neste
 
 template<typename K> inline constexpr Socket ValueSockets[]{{Value, Out, TypesOf<decltype(K::Value)>()}};
 template<typename K> constexpr std::span<const Socket> FixedSockets() {
-    if constexpr (std::same_as<K, Source> || std::same_as<K, ObjectInfo> || Generator<K>) return SourceSockets;
+    if constexpr (std::same_as<K, Subnet>) return std::span<const Socket>{};
+    else if constexpr (std::same_as<K, Source> || std::same_as<K, ObjectInfo> || Generator<K>) return SourceSockets;
     else if constexpr (std::same_as<K, Join>) return JoinSockets;
     else if constexpr (std::same_as<K, Boolean>) return BooleanSockets;
     else if constexpr (std::same_as<K, Position> || std::same_as<K, Normal>) return PositionSockets;
@@ -358,6 +371,10 @@ template<typename K> constexpr std::span<const Socket> FixedSockets() {
 
 // Use attribute sockets for per-element parameters and value sockets for other scalar and vec3 fields.
 template<typename K> inline constexpr field::Table<K, uint8_t> PerElement{};
+template<> inline constexpr field::Table<action::mesh::Extrude, uint8_t> PerElement<action::mesh::Extrude>{
+    {&action::mesh::Extrude::Offset, Vec3},
+    {&action::mesh::Extrude::OffsetScale, Float},
+};
 template<> inline constexpr field::Table<action::mesh::Bevel, uint8_t> PerElement<action::mesh::Bevel>{{&action::mesh::Bevel::Width, Float}};
 template<> inline constexpr field::Table<action::mesh::Poke, uint8_t> PerElement<action::mesh::Poke>{{&action::mesh::Poke::Offset, Float}};
 template<> inline constexpr field::Table<action::mesh::Solidify, uint8_t> PerElement<action::mesh::Solidify>{{&action::mesh::Solidify::Thickness, Float}};
@@ -444,8 +461,28 @@ inline constexpr auto Sockets = []<typename... Ks>(TypeList<Ks...>) {
 
 constexpr std::span<const Socket> KindSockets(uint16_t kind) { return std::span{Sockets}.subspan(SocketFirst[kind], SocketCount[kind]); }
 
+void VisitSocketParameter(auto &parameters, Socket socket, auto &&visit) {
+    if constexpr (field::Walkable<std::remove_cvref_t<decltype(parameters)>>) {
+        field::ForEach(parameters, [&]<size_t I>(auto &member, std::integral_constant<size_t, I>) {
+            if (socket.Field != I) return;
+            using F = std::remove_cvref_t<decltype(member)>;
+            if constexpr (detail::TypesOf<F>() != 0u) {
+                if (socket.Member == NoField) visit(member);
+            } else if constexpr (field::Walkable<F>) {
+                field::ForEach(member, [&]<size_t J>(auto &nested, std::integral_constant<size_t, J>) {
+                    if constexpr (detail::TypesOf<std::remove_cvref_t<decltype(nested)>>() != 0u)
+                        if (socket.Member == J) visit(nested);
+                });
+            }
+        });
+    }
+}
+void AssignSocketParameter(auto &parameters, Socket socket, const AttributeValue &words) {
+    VisitSocketParameter(parameters, socket, [&](auto &value) { std::memcpy(&value, words.data(), sizeof(value)); });
+}
+
 // Evaluate attribute nodes on each consumer geometry input.
-constexpr bool IsAttributeKind(uint16_t kind) { return KindSockets(kind).front().Type == SocketType::Attribute; }
+constexpr bool IsAttributeKind(uint16_t kind) { return !KindSockets(kind).empty() && KindSockets(kind).front().Type == SocketType::Attribute; }
 
 constexpr std::pair<uint16_t, uint16_t> ParameterRange(uint16_t kind) {
     return {uint16_t(std::ranges::count(KindSockets(kind).first(InputCount[kind]), NoField, &Socket::Field)), InputCount[kind]};
@@ -456,6 +493,23 @@ template<typename K> inline constexpr uint16_t KindOf = []<typename... Ks>(TypeL
     ((found = std::same_as<K, Ks> ? index : found, ++index), ...);
     return found;
 }(NodeKinds{});
+
+struct HandleSpec {
+    uint16_t Kind;
+    const char *Label;
+    uint64_t Fields;
+    bool Reads(Socket socket) const { return socket.Field < 64 && (Fields & (uint64_t{1} << socket.Field)); }
+};
+template<auto... Members> inline constexpr uint64_t HandleFields = ((uint64_t{1} << field::IndexOf<Members>) | ...);
+// Indexed by HandleParameter, shared by action validation and the viewport-handle menu.
+inline constexpr std::array HandleSpecs{
+    HandleSpec{KindOf<TransformElements>, "Transform", HandleFields<&TransformElements::Delta>},
+    HandleSpec{KindOf<action::mesh::Extrude>, "Offset", HandleFields<&action::mesh::Extrude::Offset, &action::mesh::Extrude::OffsetScale, &action::mesh::Extrude::AlongNormals>},
+    HandleSpec{KindOf<action::mesh::Extrude>, "Offset Scale", HandleFields<&action::mesh::Extrude::OffsetScale>},
+    HandleSpec{KindOf<action::mesh::Bevel>, "Width", HandleFields<&action::mesh::Bevel::Width>},
+    HandleSpec{KindOf<action::mesh::Inset>, "Thickness", HandleFields<&action::mesh::Inset::Thickness>},
+    HandleSpec{KindOf<action::mesh::Inset>, "Depth", HandleFields<&action::mesh::Inset::Depth>},
+};
 
 // Accept matching socket and attribute types, values as attributes, and booleans as selections.
 constexpr bool Links(Socket from, Socket to) {
@@ -471,6 +525,8 @@ void VisitKind(uint16_t kind, auto &&f) {
     }(NodeKinds{});
 }
 
+bool PrepareOperationHandle(state::Registry &, state::Entity);
+
 void ForEachKind(auto &&f) {
     [&]<typename... Ks>(TypeList<Ks...>) { (f.template operator()<Ks>(), ...); }(NodeKinds{});
 }
@@ -484,12 +540,49 @@ struct ProcedureNode {
     uint16_t Kind{};
 };
 
-// The output socket an input reads, or a null node when unlinked.
-struct SocketLink {
-    state::Entity FromNode{state::Null};
-    uint16_t FromSocket{};
-    bool operator==(const SocketLink &) const = default;
+struct PortValue {
+    AttributeValue Words{};
+    AttributeType Type{AttributeType::Float};
+    bool operator==(const PortValue &) const = default;
 };
+struct SubnetPort {
+    uint16_t Id{};
+    std::string Name;
+    SocketType Type{SocketType::Geometry};
+    SocketDirection Direction{SocketDirection::In};
+    uint8_t Types{};
+    PortBinding Binding;
+    PortValue Default;
+    SocketLink &Source() { return std::get<SocketLink>(Binding); }
+    const SocketLink &Source() const { return std::get<SocketLink>(Binding); }
+};
+struct SubnetInterface {
+    uint32_t NextId{};
+    std::vector<SubnetPort> Ports;
+};
+struct NodeContainer {
+    state::Entity Parent{state::Null};
+};
+struct SocketEdit {
+    state::Entity Node;
+    uint16_t Socket;
+    SocketLink Source;
+};
+struct ResolvedSocket {
+    SocketLink Source;
+    std::optional<PortValue> Constant;
+    bool Cycle{};
+};
+state::Entity ContainerOf(const state::Registry &, state::Entity node);
+const SubnetPort *PortOf(const state::Registry &, state::Entity subnet, uint16_t port);
+Socket SocketOf(const state::Registry &, state::Entity node, uint16_t socket);
+SocketLink InputOf(const state::Registry &, state::Entity node, uint16_t socket);
+void SetInput(state::Registry &, state::Entity node, uint16_t socket, SocketLink);
+ResolvedSocket ResolveSocket(const state::Registry &, SocketLink, bool bypass = false, const SocketEdit * = nullptr);
+std::optional<uint16_t> SubnetBypassInput(const state::Registry &, state::Entity, uint16_t output);
+std::optional<PortValue> ParameterDefault(const state::Registry &, state::Entity node, uint16_t socket);
+void SetParameterDefault(state::Registry &, state::Entity node, uint16_t socket, PortValue);
+
 // Persistent on a node entity: the link of each input socket, in socket order.
 struct NodeInputs {
     std::vector<SocketLink> Links;
@@ -504,13 +597,18 @@ constexpr std::optional<uint16_t> ResultSocket(uint16_t kind) {
     return {};
 }
 
-// Persistent on the mesh entity: the first and last of its nodes in authoring order, its displayed node and its active node, each null for a procedure without nodes.
-// The displayed node's result is the mesh's geometry, and the active node is the one the editor's parameter panel edits.
+// Persistent on the mesh entity: the authoring list and the node whose result is displayed.
 struct GeometryProcedure {
     state::Entity First{state::Null}, Last{state::Null};
-    state::Entity DisplayNode{state::Null}, ActiveNode{state::Null};
+    state::Entity DisplayNode{state::Null};
+    std::optional<uint16_t> DisplayPort;
     bool operator==(const GeometryProcedure &) const = default;
 };
+
+std::optional<uint16_t> ResultSocket(const state::Registry &, state::Entity);
+SocketLink DisplayLink(const state::Registry &, const GeometryProcedure &);
+
+struct NodeBypassed {};
 
 // The node whose inline selection is the viewport selection of the mesh's drawn record: the active node while its first input reads the displayed node's result and its selection input is unlinked, or null.
 state::Entity ViewportSelectionNode(const state::Registry &, const GeometryProcedure &);
@@ -520,39 +618,95 @@ struct NodeRecord {
     uint16_t Kind;
 };
 // The output socket an input reads by node index in its plan, or NoNode when unlinked.
+struct NodeLink {
+    uint32_t FromNode{NoNode};
+    uint16_t FromSocket{};
+    bool operator==(const NodeLink &) const = default;
+};
 struct PlanLink {
     uint32_t FromNode{NoNode};
     uint16_t FromSocket{};
+    std::optional<PortValue> Constant;
+    bool operator==(const PlanLink &) const = default;
 };
 // Derived on the mesh entity: the procedure's nodes and links by node index, and its evaluation order.
 struct CookPlan {
+    uint64_t Revision{};
+    std::vector<Socket> ViewSockets;
+    std::vector<uint16_t> ViewSocketIds;
     std::vector<NodeRecord> Nodes; // In authoring order
-    std::vector<PlanLink> Inputs; // Each node's input sockets, in node order
-    uint32_t DisplayNode{NoNode}, ActiveNode{NoNode};
+    std::vector<uint32_t> ByEntity; // Node indices in entity order
+    std::vector<PlanLink> Inputs; // Resolved execution inputs
+    std::vector<NodeLink> Wires; // Authored inputs for editor interactions
+    uint32_t DisplayNode{NoNode}, ResultNode{NoNode};
     std::vector<uint32_t> Order; // Every node after the nodes it reads
     std::vector<uint32_t> InputFirst, SocketFirst; // Each node's first input and first socket slot, then the totals
     std::vector<uint32_t> Consumers; // The inputs reading each socket slot
+    std::vector<bool> Demanded; // Resolved ancestors of the displayed result
 };
 // The plan of the procedure as its node components stand.
-CookPlan Plan(const state::Registry &, const GeometryProcedure &);
+std::vector<state::Entity> NodesOf(const state::Registry &, const GeometryProcedure &);
+CookPlan Plan(const state::Registry &, const GeometryProcedure &, bool bypass = false, const SocketEdit * = nullptr);
+CookPlan Compile(const state::Registry &, const GeometryProcedure &);
+bool ObjectReferencesAcyclic(const state::Registry &, std::span<const state::Entity> nodes, state::Entity object, state::Entity additional_reader = state::Null, std::optional<std::pair<state::Entity, state::Entity>> binding = {});
+void BindDisplay(const state::Registry &, const GeometryProcedure &, CookPlan &);
+CookPlan ProjectNetwork(const state::Registry &, state::Entity owner, state::Entity container);
+inline uint16_t InputsOf(const CookPlan &plan, uint32_t node) { return uint16_t(plan.InputFirst[node + 1] - plan.InputFirst[node]); }
+inline std::span<const Socket> NodeSockets(const CookPlan &plan, uint32_t node) {
+    return plan.ViewSocketIds.empty() ? KindSockets(plan.Nodes[node].Kind) : std::span{plan.ViewSockets}.subspan(plan.SocketFirst[node], plan.SocketFirst[node + 1] - plan.SocketFirst[node]);
+}
+inline uint16_t SocketId(const CookPlan &plan, uint32_t node, uint16_t socket) {
+    return plan.ViewSocketIds.empty() ? socket : plan.ViewSocketIds[plan.SocketFirst[node] + socket];
+}
+inline std::pair<uint16_t, uint16_t> ParameterRange(const CookPlan &plan, uint32_t node) {
+    return plan.Nodes[node].Kind == KindOf<Subnet> ? std::pair<uint16_t, uint16_t>{InputsOf(plan, node), InputsOf(plan, node)} : ParameterRange(plan.Nodes[node].Kind);
+}
+std::optional<uint16_t> BypassInput(uint16_t kind);
+state::Entity ActiveNodeOf(const state::Registry &, state::Entity mesh_entity);
+void IndexNodes(CookPlan &);
+uint32_t IndexOf(const CookPlan &, state::Entity);
+uint32_t ActiveIndex(const state::Registry &, const CookPlan &);
 // The entity of the plan's node at the index, or null for NoNode.
 inline state::Entity EntityOf(const CookPlan &plan, uint32_t node) { return node == NoNode ? state::Null : plan.Nodes[node].Entity; }
 
+// Enumerate (source, reader) edges twice to order nodes without retaining a second edge list.
+// Nodes in a cycle and their dependents are omitted; ready nodes retain input order.
+std::vector<uint32_t> DependencyOrder(uint32_t count, auto &&edges) {
+    std::vector<uint32_t> pending(count), first(count + 1u);
+    edges([&](uint32_t source, uint32_t reader) { ++pending[reader]; ++first[source + 1u]; });
+    for (uint32_t n = 0; n < count; ++n) first[n + 1u] += first[n];
+    std::vector<uint32_t> readers(first.back());
+    auto fill = first;
+    edges([&](uint32_t source, uint32_t reader) { readers[fill[source]++] = reader; });
+    std::vector<uint32_t> order;
+    order.reserve(count);
+    for (uint32_t n = 0; n < count; ++n)
+        if (!pending[n]) order.push_back(n);
+    for (size_t i = 0; i < order.size(); ++i)
+        for (uint32_t at = first[order[i]]; at < first[order[i] + 1u]; ++at)
+            if (!--pending[readers[at]]) order.push_back(readers[at]);
+    return order;
+}
+
 // Mark upstream nodes accepted by follows.
-std::vector<bool> Upstream(const CookPlan &plan, uint32_t node, auto &&follows) {
-    std::vector<bool> marked(plan.Nodes.size());
+std::vector<bool> Upstream(std::span<const uint32_t> first, auto inputs, uint32_t node, auto &&follows) {
+    std::vector<bool> marked(first.empty() ? 0u : first.size() - 1u);
+    if (node == NoNode) return marked;
     marked[node] = true;
     for (std::vector<uint32_t> stack{node}; !stack.empty();) {
         const auto n = stack.back();
         stack.pop_back();
-        for (uint32_t i = plan.InputFirst[n]; i < plan.InputFirst[n + 1u]; ++i) {
-            if (const auto from = plan.Inputs[i].FromNode; from != NoNode && !marked[from] && follows(from)) {
+        for (uint32_t i = first[n]; i < first[n + 1u]; ++i) {
+            if (const auto from = inputs[i].FromNode; from != NoNode && !marked[from] && follows(from)) {
                 marked[from] = true;
                 stack.push_back(from);
             }
         }
     }
     return marked;
+}
+inline std::vector<bool> Upstream(const CookPlan &plan, uint32_t node, auto &&follows, bool authored = false) {
+    return authored ? Upstream(plan.InputFirst, std::span{plan.Wires}, node, follows) : Upstream(plan.InputFirst, std::span{plan.Inputs}, node, follows);
 }
 
 // Return the first geometry socket in the requested direction for link insertion, or none.
@@ -566,14 +720,13 @@ inline std::optional<uint16_t> MainSocket(uint16_t kind, SocketDirection directi
 
 // Permit insertion when the main sockets match both link endpoints and the resulting links are acyclic.
 inline bool Inserts(const CookPlan &plan, uint32_t node, uint32_t to_node, uint16_t to_socket) {
-    const auto link = plan.Inputs[plan.InputFirst[to_node] + to_socket];
-    const auto kind = plan.Nodes[node].Kind, to_kind = plan.Nodes[to_node].Kind;
+    const auto link = plan.Wires[plan.InputFirst[to_node] + to_socket];
+    const auto kind = plan.Nodes[node].Kind;
     const auto input = MainSocket(kind, SocketDirection::In), output = MainSocket(kind, SocketDirection::Out);
     if (link.FromNode == NoNode || link.FromNode == node || to_node == node || !input || !output) return false;
-    const auto from_kind = plan.Nodes[link.FromNode].Kind;
-    if (!Links(KindSockets(kind)[*output], KindSockets(to_kind)[to_socket]) || !Links(KindSockets(from_kind)[link.FromSocket], KindSockets(kind)[*input])) return false;
+    if (!Links(NodeSockets(plan, node)[*output], NodeSockets(plan, to_node)[to_socket]) || !Links(NodeSockets(plan, link.FromNode)[link.FromSocket], NodeSockets(plan, node)[*input])) return false;
     const auto all = [](uint32_t) { return true; };
-    return !Upstream(plan, node, all)[to_node] && !Upstream(plan, link.FromNode, all)[node];
+    return !Upstream(plan, node, all, true)[to_node] && !Upstream(plan, link.FromNode, all, true)[node];
 }
 
 // Persist published instance entities grouped by parent object.
@@ -596,7 +749,6 @@ inline constexpr uint32_t AppendGap{12u}; // The cells an appended node sits rig
 template<typename K> constexpr auto Title{field::detail::Spaced<field::fixed_string<state::LeafName<K>().size() + 1>{state::LeafName<K>()}>()};
 
 struct PublishSelection {}; // Persistent on a node a viewport operator added, which selects its output like the operator does.
-struct NodeSelected {}; // Persistent on a node the editor has selected.
 
 // Creates a procedure node of the kind with default parameters at the grid cell.
 state::Entity CreateNode(state::Registry &, uint16_t kind, uvec2 position);
@@ -633,6 +785,21 @@ struct NodeResult {
     store::Hash128 State{};
     uint32_t StoreId{InvalidOffset};
     bool operator==(const NodeResult &) const = default;
+};
+struct NodeExtrusion {
+    store::Hash128 State{}, Selection{};
+    action::mesh::ExtrudeMode Mode{};
+    vec3 RegionNormal{};
+    std::vector<ExtrusionSource> Vertices;
+    bool operator==(const NodeExtrusion &) const = default;
+};
+struct NodeHandle {
+    vec3 Center{}, Normal{};
+    bool operator==(const NodeHandle &) const = default;
+};
+struct OperationHandle {
+    state::Entity Node{state::Null}, Object{state::Null};
+    HandleParameter Parameter{};
 };
 // Persistent on a Boolean node the last cook evaluated: the object whose transform placed Mesh 2, or null for Mesh 2 in this procedure's mesh space, and the transform from Mesh 2's space into Mesh 1's that the node's result was cooked with.
 // A procedure whose placing objects only moved cooks when this transform changed.
@@ -745,6 +912,7 @@ template<> inline constexpr field::SpecTable<procedure::Knife> Specs<procedure::
 template<> inline constexpr field::SpecTable<procedure::ShadeSmooth> Specs<procedure::ShadeSmooth>{{&procedure::ShadeSmooth::Smooth, {.Help = "Shade smooth and clear sharp marks, or shade flat"}}};
 template<> inline constexpr field::SpecTable<procedure::ShadeSmoothByAngle> Specs<procedure::ShadeSmoothByAngle>{{&procedure::ShadeSmoothByAngle::Angle, {.Min = 0, .Max = std::numbers::pi, .Unit = FieldUnit::Radians, .Help = "Largest angle between adjacent face normals that shades smooth"}}};
 template<> inline constexpr field::SpecTable<procedure::InstanceOnPoints> Specs<procedure::InstanceOnPoints>{
+    {&procedure::InstanceOnPoints::Prototype, {.Help = "Object hierarchy placed at each point. When empty, use the Instance geometry input."}},
     {&procedure::InstanceOnPoints::Scale, {.Help = "Scale of each instance while the Scale input is unlinked"}},
     {&procedure::InstanceOnPoints::Rotation, {.Help = "Rotation of each instance while the Rotation input is unlinked"}},
 };

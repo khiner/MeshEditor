@@ -17,9 +17,17 @@ Real-time mesh viewer and editor that converts meshes to rigid-body audio models
 * Branching undo/redo and navigation to any recorded state through the History window
 * Save history and imported source assets in portable projects
 * Create and delete meshes and mesh instances
-  - Every mesh is a node graph whose cook is its geometry, edited in the Nodes tab
+  - The Nodes panel opens the current scene and navigates to document resources, object geometry, and armature bones
+  - Every mesh has a geometry procedure with an explicit display flag, independent of node selection and layout
+  - Geometry subnets retain their internal nodes and expose named input/output ports and parameter defaults; compatible nodes and subnets can be bypassed
+  - Scene and resource subnets group nodes independently of transform parenting and scene membership, with nested navigation and exposed fields that edit the original objects
+  - Typed scene-reference ports connect parenting, shared geometry, materials, textures, rigs, physics relationships, and hierarchy sources across subnet boundaries
+  - Selection and layout remain undoable, and viewport operators append to the displayed stage
+  - Extrude owns its offset vector, scale, and normal direction; the initial viewport drag edits that node, and subsequent transforms remain separate operations
+  - Explicit Transform, Extrude, Bevel, and Inset handles edit upstream parameters while the downstream result stays displayed
+  - Hierarchy instances share a source definition with independent placement and visibility, including lights, cameras, rigs, animation, physics, and audio; make independent detaches the owned hierarchy
+  - Procedural instancing accepts a hierarchy prototype, with generated objects available through the producer's inspector; mesh realization reports hierarchy inputs instead of discarding their contents
   - Primitives (Rect, Circle, Cube, IcoSphere, UVSphere, Torus, Cylinder, Cone) are generator nodes with editable parameters
-  - Viewport operators append nodes after the displayed node, and any node's result can be displayed
   - Load `.obj` and `.ply` mesh files (via [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply))
 * Select meshes, vertices, edges, or faces by clicking or box selection, through geometry with Blender's X-ray toggle (Alt+Z)
 * Blender-style edit-mode topology operators on the GPU

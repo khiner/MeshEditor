@@ -109,11 +109,11 @@ void TestRenderInstanceDerivation() {
     };
     expect(placed(entity, false));
     created.clear();
-    f.Do(action::object::SetSelectedVisible{false});
+    f.Do(action::object::SetVisible{false});
     expect(placed(entity, true) && r.get<const RenderInstance>(entity).BufferIndex == slot);
-    f.Do(action::object::SetSelectedVisible{true});
+    f.Do(action::object::SetVisible{true});
     expect(placed(entity, false) && r.get<const RenderInstance>(entity).BufferIndex == slot);
-    f.Do(action::object::SetSelectedVisible{false});
+    f.Do(action::object::SetVisible{false});
     expect(placed(entity, true));
     p.Undo();
     expect(placed(entity, false));
@@ -122,7 +122,7 @@ void TestRenderInstanceDerivation() {
     expect(created.empty());
     const auto duplicate = f.Add(action::object::Duplicate{});
     expect(duplicate != entity && r.all_of<Instance>(duplicate) && placed(duplicate, true) && created.contains(duplicate));
-    f.Do(action::object::SetSelectedVisible{true});
+    f.Do(action::object::SetVisible{true});
     expect(placed(duplicate, false));
     const auto other_mesh = r.get<const Instance>(f.AddCube()).Entity;
     r.replace<Instance>(duplicate, other_mesh);
@@ -148,10 +148,94 @@ void TestHiddenObjectEscapesPick() {
     f.Do(action::selection::DeselectAll{});
     pick();
     expect(r.all_of<Selected>(cube));
-    f.Do(action::object::SetSelectedVisible{false});
+    f.Do(action::object::SetVisible{false});
     f.Do(action::selection::DeselectAll{});
     pick();
     expect(r.view<const Selected>().empty());
+}
+
+void TestExtrudedClosedRegionVisibility() {
+    if (!Render) return;
+    const TestDir dir{"/tmp/mesheditor-scratch/project-extrude-visibility"};
+    Fixture f{dir};
+    auto &r = f.R;
+    const auto cube = f.AddCube(), viewport = FirstViewport(r);
+    r.patch<ViewportDisplay>(viewport, [](auto &v) { v.ShowOverlays = false; });
+    const std::array directions{vec3{1, .2f, .3f}, vec3{-1, .2f, .3f}, vec3{.2f, 1, .3f}, vec3{.2f, -1, .3f}, vec3{.2f, .3f, 1}, vec3{.2f, .3f, -1}};
+    const auto image = [&](vec3 direction) {
+        r.patch<ViewCameraState>(viewport, [&](auto &v) { v.Active = ViewCamera{8.f * Normalize(direction), vec3{}, v.Active.Data}; });
+        return f.Image();
+    };
+    const std::array modes{ViewportShadingMode::Solid, ViewportShadingMode::MaterialPreview, ViewportShadingMode::Rendered};
+    std::array<std::array<std::vector<std::byte>, directions.size()>, modes.size()> before;
+    for (size_t mode = 0; mode < modes.size(); ++mode) {
+        f.Do(action::view::SetViewportShading{viewport, modes[mode]});
+        for (size_t i = 0; i < directions.size(); ++i) before[mode][i] = image(directions[i]);
+    }
+    f.Do(action::view::SetInteractionMode{InteractionMode::Edit});
+    f.Do(action::view::SetEditMode{Element::Face});
+    f.Do(action::selection::SelectAll{});
+    action::Emit(action::mesh::Extrude{}, action::Phase::Stage);
+    f.P->Frame(action::Drain());
+    action::Emit(action::view::TransformElements{{.P = {50, 50, 50}}}, action::Phase::Stage);
+    f.P->Frame(action::Drain());
+    action::Commit();
+    f.P->Frame(action::Drain());
+    f.ValidateReplay();
+    expect(GetMesh(r, cube).FaceCount() == 12u);
+    for (size_t mode = 0; mode < modes.size(); ++mode) {
+        f.Do(action::view::SetViewportShading{viewport, modes[mode]});
+        f.Do(action::view::SetInteractionMode{InteractionMode::Object});
+        for (size_t i = 0; i < directions.size(); ++i) expect(image(directions[i]) == before[mode][i]);
+        f.Do(action::view::SetInteractionMode{InteractionMode::Edit});
+        for (const auto direction : directions) {
+            image(direction);
+            const auto hit = RunEditElementPick(r, viewport, Element::Face, {32, 32});
+            expect(hit.has_value());
+            if (!hit) continue;
+            const auto mesh = GetMesh(r, cube);
+            vec3 center{};
+            uint32_t count{};
+            for (const auto v : mesh.fv_range(he::FH{hit->Handle})) {
+                center += mesh.GetPosition(v);
+                ++count;
+            }
+            expect(Dot(center / float(count), direction) > 0.f);
+        }
+    }
+}
+
+// Drawing and object/face picking agree on visibility across viewport and material culling policies.
+void TestViewportBackfacePolicy() {
+    if (!Render) return;
+    const TestDir dir{"/tmp/mesheditor-scratch/project-backface-policy"};
+    Fixture f{dir};
+    auto &r = f.R;
+    f.Add(action::object::AddMeshPrimitive{primitive::Plane{}, std::make_unique<MeshInstanceCreateInfo>()});
+    const auto viewport = FirstViewport(r);
+    r.patch<ViewportDisplay>(viewport, [](auto &v) { v.ShowOverlays = false; v.XRayWireframe = false; });
+    r.patch<ViewCameraState>(viewport, [](auto &v) { v.Active = ViewCamera{vec3{0, -5, .1f}, vec3{}, v.Active.Data}; });
+    const auto cooks = Cooks(r);
+    for (const auto mode : {ViewportShadingMode::Solid, ViewportShadingMode::Wireframe, ViewportShadingMode::MaterialPreview, ViewportShadingMode::Rendered}) {
+        f.Do(action::view::SetViewportShading{viewport, mode});
+        for (const bool cull : {false, true}) {
+            f.Do(action::UpdateOf<&ViewportDisplay::BackfaceCulling>(viewport, cull));
+            for (const auto double_sided : {0u, 1u}) {
+                f.Do(action::object::UpdateMaterial<uint32_t>{0, offsetof(PBRMaterial, DoubleSided), double_sided});
+                f.Do(action::view::SetInteractionMode{InteractionMode::Object});
+                f.Do(action::object::SetVisible{false});
+                const auto empty = f.Image();
+                f.Do(action::object::SetVisible{true});
+                const bool visible = mode == ViewportShadingMode::Wireframe || (mode == ViewportShadingMode::Solid ? !cull : double_sided != 0u);
+                expect((f.Image() != empty) == visible);
+                expect(PickObject(r, viewport, {32, 32}).has_value() == visible);
+                f.Do(action::view::SetInteractionMode{InteractionMode::Edit});
+                f.Image();
+                expect(RunEditElementPick(r, viewport, Element::Face, {32, 32}).has_value() == visible);
+            }
+        }
+    }
+    expect(Cooks(r) == cooks);
 }
 
 // Three empties A, B and C, chained A > B > C, with A and C selected and A active.
@@ -204,7 +288,7 @@ void TestInstanceLifecycleRendersBack() {
         for (size_t i = 0u; i < sizeof...(leaves); ++i) f.P->Undo();
         before.Check(f);
     };
-    undone(first, action::object::SetSelectedVisible{false});
+    undone(first, action::object::SetVisible{false});
     undone(linked, action::object::Delete{});
     undone(other, action::object::DuplicateLinked{}, action::view::TransformSelection{Transform{.P = {0, 2, 0}}});
     undone(other, action::object::Delete{});
@@ -284,9 +368,9 @@ void TestDuplicateDrawsAsItsSource() {
     f.Do(action::view::SetInteractionMode{InteractionMode::Object});
     // Only the sphere draws in both images.
     f.Do(action::selection::SelectAll{});
-    f.Do(action::object::SetSelectedVisible{false});
+    f.Do(action::object::SetVisible{false});
     f.Do(action::selection::Select{source});
-    f.Do(action::object::SetSelectedVisible{true});
+    f.Do(action::object::SetVisible{true});
     const auto before = f.Image();
     const auto copy = duplicate(source);
     f.Do(action::selection::Select{source});
@@ -297,7 +381,7 @@ void TestDuplicateDrawsAsItsSource() {
     action::Commit();
     f.P->Frame(action::Drain());
     f.Do(action::view::SetInteractionMode{InteractionMode::Object});
-    f.Do(action::object::SetSelectedVisible{false});
+    f.Do(action::object::SetVisible{false});
     f.Do(action::selection::Select{copy});
     if (Render) expect(f.Image() == before);
     f.Audit();
@@ -369,7 +453,7 @@ void CheckLayout(Fixture &f, std::string_view step) {
             for (const auto id : buffers.Instances.ObjectIdBuffer.GetSpan<uint32_t>({models.InstanceRange.Offset, models.InstanceCount})) {
                 const auto instance = r.EntityAt(ObjectIndex(id));
                 const auto *modifier = record->SkinBlocksReady ? r.try_get<const ArmatureModifier>(instance) : nullptr;
-                const auto *pose_state = modifier ? r.try_get<const ArmaturePoseState>(modifier->ArmatureEntity) : nullptr;
+                const auto *pose_state = modifier ? r.try_get<const ArmaturePoseState>(modifier->ArmatureObjectEntity) : nullptr;
                 deformed |= pose_state && modifier->SkinSlot < pose_state->GpuDeformRanges.size();
                 deformed |= record->MorphBlocksReady && r.all_of<MorphWeightRange>(instance);
             }
@@ -435,7 +519,7 @@ void TestIncrementalLayout() {
     CheckLayout(f, "add");
     const auto copy = f.Add(action::object::Duplicate{});
     CheckLayout(f, "duplicate");
-    f.Do(action::object::SetSelectedVisible{false});
+    f.Do(action::object::SetVisible{false});
     CheckLayout(f, "hide");
     f.Do(action::object::Delete{});
     expect(!r.valid(copy));
@@ -489,6 +573,8 @@ int main(int argc, char **argv) {
     TestExternalReferences();
     TestRenderInstanceDerivation();
     TestHiddenObjectEscapesPick();
+    TestExtrudedClosedRegionVisibility();
+    TestViewportBackfacePolicy();
     TestSelectedGrandchildMovesOnce();
     TestInstanceLifecycleRendersBack();
     TestDuplicateDrawsAsItsSource();

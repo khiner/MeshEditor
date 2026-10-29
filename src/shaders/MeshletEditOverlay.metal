@@ -10,6 +10,42 @@ using MeshletEditEdgeOutput = metal::mesh<EdgeQuadVaryings, void, uint(MeshletLi
 using MeshletSelectEdgeOutput = metal::mesh<ElementIdFragmentVaryings, void, uint(MeshletLimit::MaxTriangles) * 2u, uint(MeshletLimit::MaxTriangles), metal::topology::line>;
 using MeshletSelectEdgePointOutput = metal::mesh<ElementIdVaryings, void, uint(MeshletLimit::MaxTriangles) * 2u, uint(MeshletLimit::MaxTriangles) * 2u, metal::topology::point>;
 using MeshletSelectFacePointOutput = metal::mesh<ElementIdVaryings, void, uint(MeshletLimit::MaxTriangles) * 3u, uint(MeshletLimit::MaxTriangles) * 3u, metal::topology::point>;
+using MeshletSelectFaceOutput = metal::mesh<FaceIdFragmentVaryings, void, uint(MeshletLimit::MaxTriangles) * 3u, uint(MeshletLimit::MaxTriangles), metal::topology::triangle>;
+
+[[mesh]] void MeshletSelectFaceMesh(
+    MeshletSelectFaceOutput output, uint thread_index [[thread_index_in_threadgroup]],
+    uint3 group [[threadgroup_position_in_grid]],
+    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
+    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
+    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    constant MeshletDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+) {
+    const Scene scene{bindless, view, theme, workspace};
+    const MeshletWork work = ResolveMeshletWork(scene, pc, group.x);
+    if (!work.Valid || MeshletPrimitiveTopology(work.Meshlet) != uint(MeshPrimitiveTopology::Triangle)) {
+        output.set_primitive_count(0u);
+        return;
+    }
+    output.set_primitive_count(work.Meshlet.TriangleCount);
+    if (thread_index >= work.Meshlet.TriangleCount) return;
+    const uint triangle = work.Payloads.TriangleIds[work.Meshlet.TriangleOffset + thread_index];
+    const auto corners = ResolveMeshletCorners(scene, work.Draw, work.Payloads, work.Meshlet, triangle, thread_index);
+    const uint face = scene.TriangleFace(work.Draw, triangle);
+    const bool hidden = EditElementHidden(scene, work.Draw, Element::Face, face);
+    const Transform world = MeshletWorld(scene, work.Draw);
+    const float3 scale = float3(world.S);
+    const uint material = MeshletFaceMaterialIndex(scene, work.Draw, face);
+    const int facing = BackfaceCullFacing(view, scene.Materials(view.MaterialSlot)[material].DoubleSided, scale);
+    for (uint corner = 0u; corner < 3u; ++corner) {
+        const uint index = thread_index * 3u + corner;
+        output.set_vertex(index, FaceIdFragmentVaryings{
+            hidden ? float4(0.0f) : MeshletPosition(scene, work.Draw, world, corners.VertexIds[corner]),
+            scene.FacePickId(work.Draw, face), facing,
+        });
+        output.set_index(index, index);
+    }
+}
 
 [[mesh]] void MeshletEditEdgeMesh(
     MeshletEditEdgeOutput output, uint thread_index [[thread_index_in_threadgroup]],

@@ -151,7 +151,7 @@ inline float4 ShadePbr(
 
     device const PBRMaterial &material = scene.Materials(view.MaterialSlot)[in.MaterialIndex];
     const float3 world_normal = ShadingWorldNormal(in);
-    if (material.DoubleSided == 0u && !IsFrontFacing(scene, world_normal, in.WorldPosition)) discard_fragment();
+    if (CullBackfaces(scene.View, material.DoubleSided) && !IsFrontFacing(scene, world_normal, in.WorldPosition)) discard_fragment();
 
     float4 base_color = float4(material.BaseColorFactor);
     if (material.BaseColorTexture.Slot != InvalidSlot) base_color *= ctx.SampleTexture(material.BaseColorTexture);
