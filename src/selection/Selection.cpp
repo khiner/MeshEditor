@@ -2,6 +2,7 @@
 
 #include "armature/ArmatureComponents.h"
 #include "mesh/Mesh.h"
+#include "procedure/Procedure.h"
 #include "render/Instance.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
@@ -37,6 +38,7 @@ state::Entity FindActiveBone(const state::Registry &r) {
 }
 
 bool IsBoneEditMode(const state::Registry &r) {
+    if (r.all_of<procedure::SelectionEditing>(state::Document)) return false;
     if (r.get<const Interaction>(state::Document).Mode != InteractionMode::Edit) return false;
     return FindArmatureObject(r, FindActiveEntity(r)) != state::Null;
 }

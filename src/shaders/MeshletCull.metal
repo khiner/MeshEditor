@@ -242,7 +242,7 @@ inline RoutedMeshlet ClassifyMeshlet(
         MeshletOccluded(scene, pc.PyramidSamplerSlot, world_center, bounds.Ax, bounds.Ay, bounds.Az,
                         EditEdgeMarginPixels(scene, pc));
 
-    if (overlay_only) {
+    if (overlay_only && (pc.RequiredInstanceFlags & uint(MeshletInstanceFlag::ElementSelection)) == 0u) {
         result.Routes = 0u;
     } else if (mode == MeshletRouteMode::Visibility && !triangle_topology) {
         result.Routes = 0u;

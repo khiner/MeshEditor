@@ -125,6 +125,10 @@ struct SetBypass {
     state::Entity Node;
     bool Enabled;
 };
+struct EditSelection {
+    state::Entity Node, Object;
+};
+struct FinishSelection {};
 struct SetOperationHandle {
     state::Entity Node{state::Null}, Object{state::Null};
     procedure::HandleParameter Parameter{};
@@ -175,14 +179,11 @@ struct InsertNode {
     uint32_t Shift;
 };
 
-using Action = std::variant<AddNode, Link, Unlink, SetDisplay, SetBypass, SetOperationHandle, SetExtrudeOffset, MoveNodes, SelectItems, GroupItems, UngroupItems, MoveItems, RenameNetwork, ExposePort, AssignReference, GroupNodes, UngroupNodes, ExposeSocket, SetPortValue, RenamePort, RemovePort, MovePort, SetAttributeName, SetInlineSelection, CollapseProcedure, DuplicateNodes, DeleteNodes, InsertNode>;
+using Action = std::variant<AddNode, Link, Unlink, SetDisplay, SetBypass, EditSelection, FinishSelection, SetOperationHandle, SetExtrudeOffset, MoveNodes, SelectItems, GroupItems, UngroupItems, MoveItems, RenameNetwork, ExposePort, AssignReference, GroupNodes, UngroupNodes, ExposeSocket, SetPortValue, RenamePort, RemovePort, MovePort, SetAttributeName, SetInlineSelection, CollapseProcedure, DuplicateNodes, DeleteNodes, InsertNode>;
 
 void Apply(state::Registry &, const Action &);
 
-// The selection of the mesh's drawn record in the viewport's edit domain as an inline selection for the node, by the record's handles, with the mesh's active element.
-SetInlineSelection CaptureSelection(const state::Registry &, state::Entity mesh_entity, state::Entity node);
-// Sets the inline selection of the mesh's viewport selection node, if any, to the selection of its drawn record.
-// Call after each change of the viewport selection, so the viewport selection is the node's selection.
+// Copies viewport selection changes into the node being edited by the active selection task.
 void CaptureActiveSelection(state::Registry &, state::Entity mesh_entity);
 // Creates a mesh entity with a copy of the procedure of `from` over new node entities holding copies of its nodes' components, drawing `drawn`, a copy of the record `from` draws.
 state::Entity CopyProcedure(state::Registry &, state::Entity from, uint32_t drawn);

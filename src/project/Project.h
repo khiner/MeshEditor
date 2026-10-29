@@ -88,7 +88,7 @@ struct Project {
     void ResizeRecorded(size_t);
     // Records the actions as a new node, replacing `replace` when it has no children and adding a sibling otherwise.
     uint32_t Commit(std::string label, std::optional<uint32_t> replace = {});
-    void FinishGesture(EventPass);
+    void FinishGesture(EventPass, bool keep_selection = false);
     // Removes the drag-start records a gesture's updates made.
     void EndGesture(EventPass);
     // Moves to `node`'s parent so the open gesture replaces the node on commit.

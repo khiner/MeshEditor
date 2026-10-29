@@ -1,4 +1,5 @@
 #include "viewport/ViewportRenderGpu.h"
+#include "procedure/Procedure.h"
 #include "render/LightComponents.h"
 
 #include "Camera.h"
@@ -779,7 +780,8 @@ MeshDisplayState ComputeMeshDisplay(const DisplayContext &c, state::Entity mesh_
         if (faces == 0u) set(MeshletInstanceFlag::SolidWire);
         if (faces == 0u && !material_face_less) set(MeshletInstanceFlag::MaterialWire);
     }
-    if (armature || joint) set(MeshletInstanceFlag::OverlayOnly);
+    const auto *selection_edit = r.try_get<const procedure::SelectionEditing>(state::Document);
+    if (armature || joint || (selection_edit && selection_edit->Mesh == mesh_entity)) set(MeshletInstanceFlag::OverlayOnly);
     if (displays.Bones) {
         if (armature) {
             set(MeshletInstanceFlag::Bone);

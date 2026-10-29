@@ -277,7 +277,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         r.remove<PendingBoxSelect>(state::Document);
 
         const auto &interaction = r.get<const Interaction>(state::Document);
-        const bool element_mode = interaction.Mode == InteractionMode::Edit && FindArmatureObject(r, FindActiveEntity(r)) == state::Null;
+        const bool element_mode = interaction.Mode == InteractionMode::Edit && !IsBoneEditMode(r);
         // Capture the initial selection once for additive box selection.
         if (additive && !r.all_of<AdditiveBoxSelectBaseline>(state::Document)) {
             auto &baseline = r.emplace<AdditiveBoxSelectBaseline>(state::Document);

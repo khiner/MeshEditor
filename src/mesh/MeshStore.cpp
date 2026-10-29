@@ -2346,12 +2346,11 @@ uint32_t MeshStore::BeginTopologyOutput(uint32_t source, std::span<const uint32_
         .Alive = true,
     };
     std::ranges::copy(materials, Buffers.PrimitiveMaterials.GetMutable(record.PrimitiveMaterials).begin());
-    Buffers.SelectionSummary.GetMutable(record.SelectionSummary)[0] = {};
     std::vector<NamedAttribute> attributes;
     const auto add = [&](uint32_t, const NamedAttribute &entry) { attributes.push_back({.Domain = entry.Domain, .Type = entry.Type, .Name = entry.Name, .Default = entry.Default}); };
     ForEachNamedAttribute(source, add);
     const auto id = AcquireId(std::move(record));
-    CaptureSelectionSummary(id);
+    WriteSelectionSummary(id) = {};
     for (auto &attribute : attributes) {
         attribute.Record = id;
         AcquireAttribute(std::move(attribute));

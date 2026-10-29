@@ -11,12 +11,34 @@
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
 #include "render/Textures.h"
+#include "scene/SceneGraph.h"
+#include "selection/SelectionComponents.h"
+#include "selection/SelectionGpu.h"
 #include "state/EntityReferences.h"
 #include "viewport/InteractionComponents.h"
+#include "viewport/ViewportEvents.h"
 
 namespace action::nodes {
 namespace {
 using namespace procedure;
+
+InlineSelection CaptureSelection(const state::Registry &r, state::Entity mesh_entity) {
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    const auto id = *DrawnStoreId(r, mesh_entity);
+    const auto *active = r.try_get<const MeshActiveElement>(mesh_entity);
+    InlineSelection selection{.Domain = r.get<const EditMode>(state::Document).Value, .Active = active ? active->Handle : InvalidOffset};
+    for (const auto [element, captured] : {std::pair{Element::Vertex, &selection.Vertices}, std::pair{Element::Edge, &selection.Edges}, std::pair{Element::Face, &selection.Faces}}) {
+        const auto selected = meshes.GetSelectedElements(id, element);
+        std::vector<SelectedBlock> blocks;
+        selected.ForEachBlock([&](uint32_t block, uint32_t) {
+            SelectionBlock words;
+            std::ranges::copy(selected.Bits.subspan(block * MeshElementBlockWords, MeshElementBlockWords), words.begin());
+            blocks.push_back({selected.Membership[block].Local, words});
+        });
+        *captured = CompactSelection(std::move(blocks));
+    }
+    return selection;
+}
 
 bool HandleWritable(const state::Registry &r, state::Entity node, HandleParameter parameter) {
     const auto *record = r.try_get<const ProcedureNode>(node);
@@ -341,6 +363,46 @@ void Apply(state::Registry &r, const Action &action) {
                     p.AlongNormals = false;
                 });
             },
+            [&](const EditSelection &a) {
+                const auto *node = r.try_get<const ProcedureNode>(a.Node);
+                const auto *object = r.try_get<const Instance>(a.Object);
+                if (!node || !object || object->Entity != node->Procedure || r.all_of<SelectionEditing>(state::Document)) return Fail(r, "Selection editing needs a node and its scene placement");
+                const auto sockets = KindSockets(node->Kind);
+                const auto selection = std::ranges::find(sockets, SocketType::Selection, &Socket::Type);
+                if (selection == sockets.end() || sockets.front().Type != SocketType::Geometry || InputOf(r, a.Node, uint16_t(selection - sockets.begin())).FromNode != state::Null) return Fail(r, "Selection editing needs an unconnected Selection input");
+                const auto *world = WorldTransformOf(r, a.Object);
+                const auto *membership = RootMembership(r, a.Object);
+                if (!world || !membership) return Fail(r, "Selection editing needs a placed scene object");
+                const auto id = SelectionInput(r, a.Node);
+                if (id == InvalidOffset) return Fail(r, "Connect input geometry before editing selection");
+                const auto mesh = r.create(), placement = r.create();
+                r.emplace<EvaluatedMesh>(mesh, id, state::Null);
+                r.emplace<MeshGeometryDirty>(mesh, EditSelectionAfter::Keep);
+                r.emplace<MeshElementSelection>(mesh);
+                r.emplace<SceneMembership>(placement, *membership);
+                r.emplace<Transform>(placement, *world);
+                r.emplace<Instance>(placement, mesh);
+                std::optional<InlineSelection> prior;
+                if (r.all_of<MeshElementSelection>(node->Procedure)) {
+                    prior = CaptureSelection(r, node->Procedure);
+                    prior->Domain = r.Resources.get<const MeshStore>().GetSelectionSummary(*DrawnStoreId(r, node->Procedure)).Mode;
+                }
+                r.emplace<SelectionEditing>(state::Document, a.Node, mesh, placement, r.get<const Interaction>(state::Document).Mode, r.get<const EditMode>(state::Document).Value, std::move(prior));
+                const auto *inline_selection = r.try_get<const InlineSelection>(a.Node);
+                r.patch<Interaction>(state::Document, [](auto &s) { s.Mode = InteractionMode::Edit; });
+                r.patch<EditMode>(state::Document, [&](auto &s) { if (inline_selection) s.Value = inline_selection->Domain; });
+                SetMeshSelection(r, mesh, inline_selection);
+            },
+            [&](FinishSelection) {
+                if (!r.all_of<SelectionEditing>(state::Document)) return;
+                const auto saved = std::move(r.edit<SelectionEditing>(state::Document));
+                if (saved.PriorSelection) SetMeshSelection(r, r.get<const ProcedureNode>(saved.Node).Procedure, &*saved.PriorSelection);
+                r.remove<SelectionEditing>(state::Document);
+                r.destroy(saved.Placement);
+                r.destroy(saved.Mesh);
+                r.patch<Interaction>(state::Document, [&](auto &s) { s.Mode = saved.PriorMode; });
+                r.patch<EditMode>(state::Document, [&](auto &s) { s.Value = saved.PriorElement; });
+            },
             [&](const SetOperationHandle &a) {
                 if (a.Node == state::Null) {
                     r.remove<OperationHandle>(state::Document);
@@ -509,27 +571,9 @@ void Apply(state::Registry &r, const Action &action) {
     );
 }
 
-SetInlineSelection CaptureSelection(const state::Registry &r, state::Entity mesh_entity, state::Entity node) {
-    const auto &meshes = r.Resources.get<const MeshStore>();
-    const auto id = *DrawnStoreId(r, mesh_entity);
-    const auto *active = r.try_get<const MeshActiveElement>(mesh_entity);
-    auto selection = std::make_unique<InlineSelection>(InlineSelection{.Domain = r.get<const EditMode>(state::Document).Value, .Active = active ? active->Handle : InvalidOffset});
-    for (const auto [element, captured] : {std::pair{Element::Vertex, &selection->Vertices}, std::pair{Element::Edge, &selection->Edges}, std::pair{Element::Face, &selection->Faces}}) {
-        const auto selected = meshes.GetSelectedElements(id, element);
-        std::vector<SelectedBlock> blocks;
-        selected.ForEachBlock([&](uint32_t block, uint32_t) {
-            SelectionBlock words;
-            std::ranges::copy(selected.Bits.subspan(block * MeshElementBlockWords, MeshElementBlockWords), words.begin());
-            blocks.push_back({selected.Membership[block].Local, words});
-        });
-        *captured = CompactSelection(std::move(blocks));
-    }
-    return {node, std::move(selection)};
-}
 
 void CaptureActiveSelection(state::Registry &r, state::Entity mesh_entity) {
-    const auto *procedure = r.try_get<const GeometryProcedure>(mesh_entity);
-    if (const auto node = procedure ? ViewportSelectionNode(r, *procedure) : state::Null; node != state::Null) Apply(r, CaptureSelection(r, mesh_entity, node));
+    if (const auto *task = r.try_get<const SelectionEditing>(state::Document); task && task->Mesh == mesh_entity) r.emplace_or_replace<InlineSelection>(task->Node, CaptureSelection(r, mesh_entity));
 }
 
 state::Entity CopyProcedure(state::Registry &r, state::Entity from, uint32_t drawn) {
@@ -582,7 +626,7 @@ state::Entity AppendNode(state::Registry &r, state::Entity mesh_entity, uint16_t
     }
     Apply(r, Action{AddNode{mesh_entity, kind, {displayed.x + AppendGap, displayed.y}, ContainerOf(r, display)}});
     const auto entity = r.get<const GeometryProcedure>(mesh_entity).Last;
-    if (std::ranges::contains(KindSockets(kind), SocketType::Selection, &Socket::Type)) Apply(r, CaptureSelection(r, mesh_entity, entity));
+    if (std::ranges::contains(KindSockets(kind), SocketType::Selection, &Socket::Type)) r.emplace<InlineSelection>(entity, CaptureSelection(r, mesh_entity));
     Apply(r, Link{mesh_entity, display, *result, entity, 0u});
     Apply(r, SetDisplay{mesh_entity, entity});
     r.emplace<PublishSelection>(entity);

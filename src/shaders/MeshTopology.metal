@@ -961,7 +961,7 @@ kernel void TopologyScatterVertices(
     const uint entry = ctx.VertexEntry(v);
     device const uint *offsets = ctx.Counts(job, TopoCountVertices);
     const uint count = offsets[entry + 1u] - offsets[entry];
-    if (TopologyIsBevel(job.Op)) {
+    if (TopologyIsBevel(job.Op) && (ctx.FlagVertices(job)[v] & TopoInRegion)) {
         // Every profile ring is built from the same counted boundary.
         // The last ring receives the cap, wound against the surrounding quads.
         device const uint *face_offsets = ctx.Counts(job, TopoCountFaces);

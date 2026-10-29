@@ -1,5 +1,7 @@
 #pragma once
 
+#include "gpu/InteractionMode.h"
+#include "procedure/InlineSelection.h"
 #include "procedure/Network.h"
 
 #include "action/Mesh.h"
@@ -526,6 +528,8 @@ void VisitKind(uint16_t kind, auto &&f) {
 }
 
 bool PrepareOperationHandle(state::Registry &, state::Entity);
+uint32_t SelectionInput(state::Registry &, state::Entity node);
+void SetMeshSelection(state::Registry &, state::Entity mesh, const InlineSelection *);
 
 void ForEachKind(auto &&f) {
     [&]<typename... Ks>(TypeList<Ks...>) { (f.template operator()<Ks>(), ...); }(NodeKinds{});
@@ -609,9 +613,6 @@ std::optional<uint16_t> ResultSocket(const state::Registry &, state::Entity);
 SocketLink DisplayLink(const state::Registry &, const GeometryProcedure &);
 
 struct NodeBypassed {};
-
-// The node whose inline selection is the viewport selection of the mesh's drawn record: the active node while its first input reads the displayed node's result and its selection input is unlinked, or null.
-state::Entity ViewportSelectionNode(const state::Registry &, const GeometryProcedure &);
 
 struct NodeRecord {
     state::Entity Entity;
@@ -796,6 +797,12 @@ struct NodeExtrusion {
 struct NodeHandle {
     vec3 Center{}, Normal{};
     bool operator==(const NodeHandle &) const = default;
+};
+struct SelectionEditing {
+    state::Entity Node, Mesh, Placement;
+    InteractionMode PriorMode;
+    Element PriorElement;
+    std::optional<InlineSelection> PriorSelection;
 };
 struct OperationHandle {
     state::Entity Node{state::Null}, Object{state::Null};

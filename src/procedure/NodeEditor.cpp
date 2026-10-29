@@ -1203,6 +1203,15 @@ struct ParameterEdit : ui::FieldWidgets<Prefix...> {
     }
 };
 
+state::Entity ViewportObject(const state::Registry &r, state::Entity mesh) {
+    const auto object = r.Resources.get<const PanelsState>().Nodes.Canvas.Object;
+    if (const auto *instance = r.try_get<const Instance>(object); instance && instance->Entity == mesh) return object;
+    for (const auto [e, instance] : r.view<const Instance>().each()) {
+        if (instance.Entity == mesh && InScene(r, e, FrameScene(r)) && !r.all_of<Hidden>(e)) return e;
+    }
+    return state::Null;
+}
+
 // Use inline selection for an unlinked selection input; an absent mask selects everything.
 void DrawInlineSelection(const state::Registry &r, state::Entity mesh_entity, const CookPlan &plan, uint32_t node, bool interactive) {
     if (plan.Nodes[node].Kind == KindOf<Subnet>) return;
@@ -1221,13 +1230,19 @@ void DrawInlineSelection(const state::Registry &r, state::Entity mesh_entity, co
     if (every) TextUnformatted("All elements");
     else if (counts == std::array<uint32_t, 3>{}) TextUnformatted("No elements");
     else Text("%u vertices, %u edges, %u faces", counts[0], counts[1], counts[2]);
-    // While the node's input is displayed, the viewport selection is the node's selection.
-    const auto input = ResolveSocket(r, r.get<const NodeInputs>(entity).Links.front(), true).Source;
-    bool in_viewport = ViewportSelectionNode(r, r.get<const GeometryProcedure>(mesh_entity)) == entity;
-    BeginDisabled(input.FromNode == state::Null);
-    if (Checkbox("Select in Viewport", &in_viewport) && interactive) action::Emit(action::nodes::SetDisplay{mesh_entity, in_viewport ? input.FromNode : entity});
+    const auto *task = r.try_get<const SelectionEditing>(state::Document);
+    if (task && task->Node == entity) {
+        if (Button("Done") && interactive) action::Emit(action::nodes::FinishSelection{});
+        SameLine();
+        if (Button("Cancel") && interactive) action::Cancel();
+        return;
+    }
+    const auto input = ResolveSocket(r, InputOf(r, entity, 0u), true).Source;
+    const auto object = ViewportObject(r, mesh_entity);
+    BeginDisabled(input.FromNode == state::Null || object == state::Null || task);
+    if (Button("Edit selection...") && interactive) action::Emit(action::nodes::EditSelection{entity, object});
     EndDisabled();
-    ui::Describe("Select in Viewport", "Display the node's input, so selecting elements in the viewport sets the node's selection");
+    ui::Describe("Edit selection...", "Select input vertices, edges or faces over the displayed result. Enter commits one undo step; Esc cancels.");
     SameLine();
     BeginDisabled(every);
     if (Button("All") && interactive) action::Emit(action::nodes::SetInlineSelection{entity, std::make_unique<InlineSelection>(InlineSelection{.Domain = selection->Domain, .Active = selection->Active, .All = true})});
@@ -1264,14 +1279,7 @@ void DrawParameters(state::Registry &r, NodesPanel &panel, state::Entity mesh_en
     }
     const auto linked = LinkedParameters(plan, node);
     if (std::ranges::any_of(HandleSpecs, [&](const auto &spec) { return spec.Kind == kind; })) {
-        auto object = panel.Canvas.Object;
-        const auto *instance = r.try_get<const Instance>(object);
-        if (!instance || instance->Entity != mesh_entity) {
-            object = state::Null;
-            for (const auto [e, placement] : r.view<const Instance>().each()) {
-                if (placement.Entity == mesh_entity && (object == state::Null || e < object)) object = e;
-            }
-        }
+        const auto object = ViewportObject(r, mesh_entity);
         BeginDisabled(object == state::Null);
         if (BeginMenu("Viewport handle")) {
             for (uint8_t i = 0; i < HandleSpecs.size(); ++i) {

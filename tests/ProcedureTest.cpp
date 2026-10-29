@@ -1922,61 +1922,85 @@ void DisplayedNode(ProcedureFixture &f) {
     }
 }
 
-// While the active node's input is displayed, the drawn record shows the node's selection and active element, each viewport selection change sets the node's selection, which later cooks keep, and a selection of all elements shows every element.
+// Editing input selections keeps Display and the viewport selection independent, and commits or cancels the whole task.
 void ViewportSelection(ProcedureFixture &f) {
-    const auto &r = f.R;
-    const auto &meshes = f.Store();
-    const auto mesh = f.AddMesh(primitive::Cube{});
-    const auto source = f.Shaped(mesh);
-    const auto extrude = f.Append(mesh, KindOf<action::mesh::Extrude>);
-    // The upper face of the source record with its vertices and edges, and its first vertex active.
-    const Mesh cube{meshes, f.Output(mesh)};
-    GeometrySelection upper;
-    for (const auto face : cube.faces()) {
-        if (cube.CalcFaceCentroid(face).y <= .5f) continue;
-        upper.Faces.push_back(*face);
-        for (const auto v : cube.fv_range(face)) upper.Vertices.push_back(*v);
-        for (const auto h : cube.fh_range(face)) upper.Edges.push_back(*cube.GetEdge(h));
+    auto &r = f.R;
+    for (const auto [kind, vertices] : {std::pair{KindOf<action::mesh::Extrude>, false}, {KindOf<action::mesh::Bevel>, false}, {KindOf<action::mesh::Bevel>, true}, {KindOf<TransformElements>, false}}) {
+        const auto mesh = kind == KindOf<action::mesh::Bevel> ? f.AddMesh(primitive::Cube{}) : f.AddGenerated(primitive::Cube{});
+        const auto node = f.Append(mesh, kind);
+        if (vertices) f.Do(UpdateOf<&action::mesh::Bevel::Vertices>(node, true));
+        f.Route(mesh, {f.Node(mesh, 0u), node});
+        if (kind == KindOf<TransformElements>) f.Do(action::nodes::GroupNodes{mesh, {node}});
+        const auto display = r.get<const GeometryProcedure>(mesh).DisplayNode;
+        for (const auto mode : {InteractionMode::Object, InteractionMode::Edit}) {
+            f.Do(action::view::SetInteractionMode{mode});
+            if (mode == InteractionMode::Edit) {
+                f.Do(action::view::SetEditMode{Element::Vertex});
+                f.Do(action::selection::ApplyEditElementClick{false, ElementHit{mesh, *GetMesh(r, mesh).VertexAt(0u)}});
+            }
+            for (const bool cancel : {true, false}) {
+                const auto before = f.Shaped(mesh);
+                const auto prior_elements = EditorGeometrySelection(f.Store(), f.Output(mesh));
+                const auto present = f.P->History.Present;
+                const auto selected = SelectedIn(r);
+                const auto element = r.get<const EditMode>(state::Document).Value;
+                const auto edit = [&](auto a) {
+                    action::Emit(std::move(a));
+                    f.P->Frame(action::Drain());
+                    f.Audit();
+                    expect(f.P->HasStaged() && f.P->History.Present == present);
+                    expect(r.get<const GeometryProcedure>(mesh).DisplayNode == display);
+                };
+                edit(action::nodes::EditSelection{node, f.Object(mesh)});
+                const auto input = r.get<const SelectionEditing>(state::Document).Mesh;
+                expect(GetMesh(r, input).FaceCount() == 6u);
+                edit(action::view::SetEditMode{Element::Face});
+                edit(action::selection::DeselectAll{});
+                expect(SelectedCount(r.get<const InlineSelection>(node).Faces) == 0u);
+                f.Render();
+                const Mesh cage = GetMesh(r, input);
+                he::FH face;
+                for (const auto candidate : cage.faces()) {
+                    if (Dot(cage.GetNormal(candidate), f.View().CameraPosition - cage.CalcFaceCentroid(candidate)) > 0.f) {
+                        face = candidate;
+                        break;
+                    }
+                }
+                const auto clip = f.View().ViewProj * vec4{cage.CalcFaceCentroid(face), 1.f};
+                const auto hit = RunEditElementPick(r, FirstViewport(r), Element::Face, SelectionPixel(f.View().ViewportSize, {.5f + .5f * clip.x / clip.w, .5f - .5f * clip.y / clip.w}));
+                expect(fatal(hit.has_value()));
+                expect(hit->MeshEntity == input);
+                edit(action::selection::ApplyEditElementClick{false, hit});
+                expect(SelectedCount(r.get<const InlineSelection>(node).Faces) == 1u);
+                const auto output = GetMesh(r, mesh);
+                expect(output.HasClosedSurface());
+                if (kind == KindOf<action::mesh::Bevel>) {
+                    const auto shaped = f.Shaped(mesh);
+                    const auto selected = f.Store().GetSelectedElements(f.Output(input), Element::Vertex);
+                    for (const auto v : cage.vertices()) {
+                        if (selected.Contains(*v)) continue;
+                        const auto p = cage.GetPosition(v);
+                        expect(std::ranges::contains(shaped.Vertices, Corner{p.x, p.y, p.z}));
+                    }
+                }
+                edit(action::selection::SelectAll{});
+                expect(SelectedCount(r.get<const InlineSelection>(node).Faces) == 6u);
+                if (cancel) {
+                    action::Cancel();
+                    f.P->Frame(action::Drain());
+                    expect(f.P->History.Present == present && f.Shaped(mesh) == before);
+                } else {
+                    f.Do(action::nodes::FinishSelection{});
+                    expect(f.P->History.Nodes[*f.P->History.Present].Parent == present);
+                }
+                expect(!f.P->HasStaged() && !r.all_of<SelectionEditing>(state::Document));
+                expect(SelectedIn(r) == selected && r.get<const Interaction>(state::Document).Mode == mode && r.get<const EditMode>(state::Document).Value == element);
+                expect(r.get<const GeometryProcedure>(mesh).DisplayNode == display);
+                const auto restored = EditorGeometrySelection(f.Store(), f.Output(mesh));
+                expect(restored.Vertices == prior_elements.Vertices && restored.Edges == prior_elements.Edges && restored.Faces == prior_elements.Faces);
+            }
+        }
     }
-    expect(fatal(upper.Faces.size() == 1u));
-    auto selection = SelectionOfHandles(upper, Element::Face);
-    selection->Active = upper.Vertices.front();
-    f.Do(SetInlineSelection{extrude, std::move(selection)});
-    f.Route(mesh, {f.Node(mesh, 0u), extrude});
-    const auto extruded = f.Shaped(mesh);
-    expect(extruded != source);
-    f.EnterEdit(Element::Face);
-    f.Do(SetDisplay{mesh, f.Node(mesh, 0u)});
-    expect(f.Shaped(mesh) == source);
-    auto shown = EditorGeometrySelection(meshes, f.Output(mesh));
-    std::ranges::sort(shown.Faces);
-    std::ranges::sort(upper.Faces);
-    expect(shown.Faces == upper.Faces && shown.Vertices.size() == 4u && shown.Edges.size() == 4u);
-    expect(r.get<const MeshActiveElement>(mesh).Handle == upper.Vertices.front());
-    // Selecting every face sets the node's selection, and a cook of the mesh keeps it.
-    f.Do(action::selection::SelectAll{});
-    expect(SelectedCount(r.get<const InlineSelection>(extrude).Faces) == 6u);
-    f.Do(UpdateOf<&action::mesh::Extrude::Mode>(extrude, action::mesh::ExtrudeMode::Edges));
-    expect(EditorGeometrySelection(meshes, f.Output(mesh)).Faces.size() == 6u);
-    // Deselecting every face leaves the node no elements, which a cook keeps unselected.
-    f.Do(action::selection::DeselectAll{});
-    const auto &cleared = r.get<const InlineSelection>(extrude);
-    expect(!cleared.All && SelectedCount(cleared.Faces) == 0u && SelectedCount(cleared.Vertices) == 0u);
-    f.Do(UpdateOf<&action::mesh::Extrude::Mode>(extrude, action::mesh::ExtrudeMode::Region));
-    expect(EditorGeometrySelection(meshes, f.Output(mesh)).Faces.empty());
-    // Clicking the upper face selects it for the node, which then extrudes it again.
-    f.Render();
-    const Mesh drawn{meshes, f.Output(mesh)};
-    const auto top = he::FH{upper.Faces.front()};
-    expect(fatal(Dot(drawn.GetNormal(top), f.View().CameraPosition - drawn.CalcFaceCentroid(top)) > 0.f));
-    f.Click(drawn.CalcFaceCentroid(top), false);
-    const auto &clicked = r.get<const InlineSelection>(extrude);
-    expect(SelectedCount(clicked.Faces) == 1u && clicked.Domain == Element::Face && clicked.Active == *top);
-    f.Do(SetDisplay{mesh, extrude});
-    expect(f.Shaped(mesh) == extruded);
-    f.Do(SetInlineSelection{extrude, std::make_unique<InlineSelection>(InlineSelection{.Domain = Element::Face, .All = true})});
-    f.Do(SetDisplay{mesh, f.Node(mesh, 0u)});
-    expect(EditorGeometrySelection(meshes, f.Output(mesh)).Faces.size() == 6u && !r.all_of<MeshActiveElement>(mesh));
 }
 
 // An Unsubdivide node's first pass publishes the selection the kernel publishes, and its second pass reads that selection as the viewport operator's second iteration does.

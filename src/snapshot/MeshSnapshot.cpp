@@ -20,7 +20,7 @@ void RegisterMesh(Tables &tables) {
             TypeList<
                 MeshActiveElement, MeshHandle, EvaluatedMesh, VertexStoreId, MeshElementSelection, MeshMaterialAssignment,
                 MeshMaterialSlotSelection, ShadeSmoothAngle, TetBuffers,
-                procedure::ProcedureNode, procedure::NodeInputs, procedure::GeometryProcedure, procedure::NetworkActive, procedure::NodeBypassed, procedure::NetworkLayout, procedure::NetworkSubnet, procedure::SubnetInterface, procedure::NodeContainer, procedure::NodeError, procedure::SourceState, procedure::NodeResult, procedure::NodeExtrusion, procedure::NodeHandle, procedure::OperationHandle, procedure::BooleanPlacement, procedure::ProcedureInstances, procedure::ProcedureOwnedMesh, procedure::NodeLayout, procedure::NodeTheme, procedure::InlineSelection, procedure::PublishSelection>{},
+                procedure::ProcedureNode, procedure::NodeInputs, procedure::GeometryProcedure, procedure::NetworkActive, procedure::NodeBypassed, procedure::NetworkLayout, procedure::NetworkSubnet, procedure::SubnetInterface, procedure::NodeContainer, procedure::NodeError, procedure::SourceState, procedure::NodeResult, procedure::NodeExtrusion, procedure::NodeHandle, procedure::OperationHandle, procedure::SelectionEditing, procedure::BooleanPlacement, procedure::ProcedureInstances, procedure::ProcedureOwnedMesh, procedure::NodeLayout, procedure::NodeTheme, procedure::InlineSelection, procedure::PublishSelection>{},
             procedure::NodeKinds{}
         ),
         TypeList<>{},

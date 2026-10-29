@@ -1,4 +1,5 @@
 #include "SortUnique.h"
+#include "procedure/Procedure.h"
 
 #include "ProcessEvents.h"
 #include "selection/SelectionGpu.h"
@@ -182,7 +183,8 @@ void RecordSelectionVisibility(
     auto &buffers = r.Resources.get<GpuBuffers>();
     const auto &slots = r.Resources.get<const mtl::BindlessSet>();
     const auto &pipelines = GetPipelines(r);
-    RecordMeshletCull(chain, slots, pipelines, buffers, viewport, {.Mode = mode, .ExactEditGeometry = exact_edit_geometry});
+    const uint32_t flags = exact_edit_geometry && r.all_of<procedure::SelectionEditing>(state::Document) ? uint32_t(MeshletInstanceFlag::ElementSelection) : 0u;
+    RecordMeshletCull(chain, slots, pipelines, buffers, viewport, {.Mode = mode, .RequiredInstanceFlags = flags, .ExactEditGeometry = exact_edit_geometry});
     RecordMeshletVisibilityPass(chain, slots, pipelines, viewport, buffers, false, 0u, rect);
 }
 

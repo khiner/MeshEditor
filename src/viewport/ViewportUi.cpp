@@ -462,7 +462,27 @@ void Interact(state::Registry &r, FrameState &frame) {
     const bool nodes_hovered = r.Resources.get<const PanelsState>().Nodes.Hovered;
     const auto key = [&](ImGuiKeyChord chord, ImGuiInputFlags route = VKey) { return !nodes_hovered && Shortcut(chord, route); };
     const auto ctrl_key = [&](ImGuiKeyChord chord, ImGuiInputFlags route = VKey) { return !nodes_hovered && CtrlShortcut(chord, route); };
-    if (r.get<const GizmoInteraction>(state::Document).IsUsing()) {
+    const bool selection_task = r.all_of<procedure::SelectionEditing>(state::Document);
+    const auto finish_key = [&](ImGuiKey key) { return frame.BoxDrag ? IsKeyPressed(key, false) : Shortcut(key, VKey); };
+    if (selection_task && (finish_key(ImGuiKey_Escape) || finish_key(ImGuiKey_Enter))) {
+        if (IsKeyPressed(ImGuiKey_Escape)) action::Cancel();
+        else action::Emit(action::nodes::FinishSelection{});
+        frame.BoxDrag.reset();
+        if (IsMouseDown(ImGuiMouseButton_Left)) SetKeyOwner(ImGuiKey_MouseLeft, GetID("EditSelection"), ImGuiInputFlags_LockUntilRelease);
+        return;
+    }
+    if (!r.get<const GizmoInteraction>(state::Document).IsUsing()) {
+        if (interaction_mode == InteractionMode::Edit) {
+            if (key(ImGuiKey_1)) action::Emit(action::view::SetEditMode{Element::Vertex});
+            else if (key(ImGuiKey_2)) action::Emit(action::view::SetEditMode{Element::Edge});
+            else if (key(ImGuiKey_3)) action::Emit(action::view::SetEditMode{Element::Face});
+        }
+        if (key(ImGuiKey_A)) action::Emit(action::selection::SelectAll{});
+        if (key(ImGuiMod_Alt | ImGuiKey_A)) action::Emit(action::selection::DeselectAll{});
+    }
+    if (selection_task) {
+        if (key(ImGuiMod_Alt | ImGuiKey_Z)) action::Emit(action::view::ToggleXRay{viewport});
+    } else if (r.get<const GizmoInteraction>(state::Document).IsUsing()) {
         // During an active transform, only allow transform switching shortcuts.
         if (key(ImGuiKey_G) && flags.Transformable) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Translate}, action::Phase::Cancel);
         else if (key(ImGuiKey_R) && flags.Transformable) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Rotate}, action::Phase::Cancel);
@@ -499,13 +519,6 @@ void Interact(state::Registry &r, FrameState &frame) {
                 action::Emit(action::view::CycleInteractionMode{});
             }
         }
-        if (interaction_mode == InteractionMode::Edit) {
-            if (key(ImGuiKey_1)) action::Emit(action::view::SetEditMode{.Mode = Element::Vertex});
-            else if (key(ImGuiKey_2)) action::Emit(action::view::SetEditMode{.Mode = Element::Edge});
-            else if (key(ImGuiKey_3)) action::Emit(action::view::SetEditMode{.Mode = Element::Face});
-        }
-        if (key(ImGuiKey_A)) action::Emit(action::selection::SelectAll{});
-        if (key(ImGuiMod_Alt | ImGuiKey_A)) action::Emit(action::selection::DeselectAll{});
         const bool bone_edit = interaction_mode == InteractionMode::Edit && FindArmatureObject(r, active_entity) != state::Null;
         const bool mesh_edit = interaction_mode == InteractionMode::Edit && !bone_edit;
         if (mesh_edit) {
@@ -633,7 +646,7 @@ void Interact(state::Registry &r, FrameState &frame) {
     const auto selection_view = r.get<const Viewport>(viewport).FrameView;
     const auto edit_mode = r.get<const EditMode>(state::Document).Value;
     const auto arm_obj_entity = FindArmatureObject(r, active_entity);
-    const bool active_is_armature = arm_obj_entity != state::Null;
+    const bool active_is_armature = arm_obj_entity != state::Null && !selection_task;
     const bool bone_mode = interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && active_is_armature);
     if (r.get<const BoxSelectState>(state::Document).Gesture == SelectionGesture::Box && interaction_mode != InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -676,7 +689,7 @@ void Interact(state::Registry &r, FrameState &frame) {
         }
         return;
     }
-    if (interaction_mode == InteractionMode::Edit && !active_is_armature && ctrl_key(ImGuiMod_Ctrl | ImGuiKey_R)) {
+    if (interaction_mode == InteractionMode::Edit && !active_is_armature && !selection_task && ctrl_key(ImGuiMod_Ctrl | ImGuiKey_R)) {
         std::vector<action::Action> actions;
         if (edit_mode != Element::Edge) actions.push_back(action::MakeAction(action::view::SetEditMode{.Mode = Element::Edge}));
         actions.push_back(action::MakeAction(action::selection::ApplyEditElementClick{false, RunEditElementPick(r, viewport, Element::Edge, pick_px)}));
@@ -684,7 +697,7 @@ void Interact(state::Registry &r, FrameState &frame) {
         action::Emit(std::move(actions));
         return;
     }
-    if (interaction_mode == InteractionMode::Edit && !active_is_armature && IsMouseClicked(ImGuiMouseButton_Right)) OpenPopup("##MeshContext");
+    if (interaction_mode == InteractionMode::Edit && !active_is_armature && !selection_task && IsMouseClicked(ImGuiMouseButton_Right)) OpenPopup("##MeshContext");
     if (!IsSingleClicked(ImGuiMouseButton_Left)) return;
     if (interaction_mode == InteractionMode::Edit && edit_mode == Element::None && !active_is_armature) return;
 
@@ -983,6 +996,18 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
     PopItemFlag();
     SetCursorScreenPos(saved_cursor);
 
+    const auto *task = r.try_get<const procedure::SelectionEditing>(state::Document);
+    if (task) {
+        SetCursorScreenPos(std::bit_cast<ImVec2>(viewport_rect.pos + vec2{80.f, 12.f}));
+        procedure::VisitKind(r.get<const procedure::ProcedureNode>(task->Node).Kind, []<typename K> { Text("Edit selection: %s", procedure::Title<K>.c_str()); });
+        SameLine();
+        if (Button("Done (Enter)")) action::Emit(action::nodes::FinishSelection{});
+        SameLine();
+        if (Button("Cancel (Esc)")) action::Cancel();
+        if (IsAnyItemHovered()) frame.OverlayControlsHovered = true;
+        TextUnformatted("Input geometry | 1 Vertices  2 Edges  3 Faces");
+        SetCursorScreenPos(saved_cursor);
+    }
     const auto &camera = r.get<const ViewCameraState>(viewport).Active;
     { // Orientation gizmo
         const auto pos = viewport_rect.pos + vec2{GetWindowContentRegionMax().x - OrientationGizmoSize, GetWindowContentRegionMin().y} + vec2{-overlay_corner_gap, overlay_corner_gap * 2 + header_button_size.y};
@@ -1009,7 +1034,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
     const auto mode_scope = ScopeOf(r);
 
     r.edit<GizmoInteraction>(state::Document).RenderTransform.reset();
-    if (!DrawOperationHandle(r, frame, camera, viewport_rect) && r.get<const SelectionFlags>(state::Document).HasTransformTarget) { // Transform gizmo
+    if (!task && !DrawOperationHandle(r, frame, camera, viewport_rect) && r.get<const SelectionFlags>(state::Document).HasTransformTarget) { // Transform gizmo
         // Transform root selections around their average position using the active entity's rotation and scale.
         const auto gizmo_active_entity = mode_scope.Bone ? FindActiveBone(r) : FindActiveEntity(r);
         const auto active_scale = gizmo_active_entity == state::Null ? vec3{1} : WorldTransformOf(r, gizmo_active_entity)->S;
@@ -1056,7 +1081,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
         if (interact_result) gizmo.RenderTransform->P = interact_result->Start.P + interact_result->Delta.P;
     }
 
-    if (mode_scope.MeshEdit) {
+    if (mode_scope.MeshEdit && !task) {
         DrawMeshOperatorMenus(r);
     }
 

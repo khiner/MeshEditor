@@ -6,6 +6,9 @@
 #include "Profile.h"
 #include "action/Dispatch.h"
 #include "action/Errors.h"
+#include "action/Nodes.h"
+#include "action/Selection.h"
+#include "action/View.h"
 #include "animation/Keying.h"
 #include "armature/Armature.h"
 #include "editor/AudioIntegration.h"
@@ -65,6 +68,14 @@ template<typename A> bool Is(const action::Action &a) {
     const auto *domain = std::get_if<action::DomainIndex<A>>(&a);
     return domain && std::holds_alternative<A>(*domain);
 }
+bool ContinuesSelection(const action::Action &a) {
+    if (const auto *view = std::get_if<action::view::Action>(&a)) {
+        if (const auto *tool = std::get_if<action::view::SetActiveTool>(view)) return tool->Value == action::view::SetActiveTool::Tool::SelectBox || tool->Value == action::view::SetActiveTool::Tool::SelectClick;
+    }
+    return !action::IsRecordable(a) || Is<action::nodes::FinishSelection>(a) || Is<action::selection::ApplyEditElementClick>(a) ||
+        Is<action::selection::ApplyBoxSelect>(a) || Is<action::selection::SelectAll>(a) || Is<action::selection::DeselectAll>(a) || Is<action::view::SetEditMode>(a);
+}
+
 // A node's recorded actions, with no bytes for a node that records none, whose state no recorded actions rebuild.
 // The output archive takes a mutable reference, since zpp aggregate reflection mis-encodes a const aggregate.
 std::vector<std::byte> Encode(std::vector<action::Action> &recorded_actions) {
@@ -546,10 +557,13 @@ bool Project::Record(std::span<action::Action> actions, EventPass pass, bool sta
 std::optional<uint32_t> Project::Do(action::Action a, std::string label) {
     WaitForRender(R);
     if (label.empty()) label = Label(a);
-    FinishGesture(EventPass::Settle);
-    if (!Record(std::move(a), EventPass::Frame)) return History.Present;
+    FinishGesture(EventPass::Settle, ContinuesSelection(a));
+    const bool begins_selection = Is<action::nodes::EditSelection>(a);
+    if (!Record(std::move(a), EventPass::Frame, begins_selection) || R.all_of<procedure::SelectionEditing>(state::Document)) return History.Present;
     RecordKeys();
-    return Commit(std::move(label));
+    const auto committed = Commit(std::move(label));
+    ReleaseGesture();
+    return committed;
 }
 void Project::RecordKeys() {
     if (!R.get<const Animations>(state::Document).Record) return;
@@ -557,6 +571,7 @@ void Project::RecordKeys() {
     if (animation::AnyChanged(R, seconds)) Record(action::MakeAction(action::animation::RecordChanged{}), EventPass::Settle);
 }
 uint32_t Project::Commit(std::string label, std::optional<uint32_t> replace) {
+    if (!RecordedActions.empty() && Is<action::nodes::EditSelection>(RecordedActions.front())) label = "Edit selection";
     // The step's new Source nodes take the state it ends with, which the node it commits records.
     FinishSourceStates(R);
     EndCookStep(R);
@@ -576,8 +591,16 @@ uint32_t Project::Commit(std::string label, std::optional<uint32_t> replace) {
     History.Evict(MemoryCap);
     return node;
 }
-void Project::FinishGesture(EventPass pass) {
+void Project::FinishGesture(EventPass pass, bool keep_selection) {
     if (!HasStaged()) return;
+    if (keep_selection && R.all_of<procedure::SelectionEditing>(state::Document)) {
+        EndGesture(pass);
+        if (StageBase) History.Release(*StageBase);
+        StageBase.reset();
+        StageFirst.reset();
+        return;
+    }
+    if (R.all_of<procedure::SelectionEditing>(state::Document)) Record(action::MakeAction(action::nodes::FinishSelection{}), pass);
     // An edit keeps the node's label, and a new node names every distinct action in the gesture, in order.
     if (Editing) {
         Settle(pass);
@@ -715,18 +738,22 @@ void Project::Frame(action::Drained drained) {
                 pass = EventPass::Settle;
             }
         } else {
-            if (phase == action::Phase::Record) FinishGesture(EventPass::Settle);
+            if (R.all_of<procedure::SelectionEditing>(state::Document) && std::ranges::any_of(actions, [](const auto &a) { return !ContinuesSelection(a); })) {
+                FinishGesture(EventPass::Settle);
+            }
+            if (phase == action::Phase::Record) FinishGesture(EventPass::Settle, true);
             const auto label = Label(actions.back());
-            const bool recordable = Record(actions, pass, phase == action::Phase::Stage);
-            if (phase == action::Phase::Record && recordable) {
+            const bool recordable = Record(actions, pass, phase == action::Phase::Stage || Is<action::nodes::EditSelection>(actions.front()));
+            if (phase == action::Phase::Record && recordable && !R.all_of<procedure::SelectionEditing>(state::Document)) {
                 RecordKeys();
                 Commit(label);
+                ReleaseGesture();
             }
         }
         pass = EventPass::Settle;
     }
     if (drained.CommitRequested && HasStaged()) {
-        FinishGesture(pass);
+        FinishGesture(pass, true);
         pass = EventPass::Settle;
     }
     if (!HasStaged()) {

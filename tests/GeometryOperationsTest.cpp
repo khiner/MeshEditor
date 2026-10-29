@@ -544,13 +544,18 @@ void RegisterGeometryOperationsTests() {
         chain.Submit();
         expect(vertex_work.Count == 1u);
     };
-    "topology operators read mask selections like handle lists"_test = [] {
+    "topology operators preserve unselected vertices and agree on masks and lists"_test = [] {
         GeometryFixture f;
         MaskWriter masks{f.Buffers};
         for (const auto &c : TopologyCases) {
             boost::ut::test(std::string{c.Name}) = [&] {
                 const auto listed_id = f.Create(Patchwork()), masked_id = f.Create(Patchwork());
-                const auto listed = PlanCase(c, f.Store(), f.Get(listed_id));
+                const auto source = f.Get(listed_id);
+                const auto selected = Region(source);
+                auto untouched = AllHandles(source).Vertices;
+                std::erase_if(untouched, [&](uint32_t v) { return std::ranges::binary_search(selected.Vertices, v); });
+                const auto positions = Shapes(source, Element::Vertex, untouched);
+                const auto listed = PlanCase(c, f.Store(), source);
                 auto masked = PlanCase(c, f.Store(), f.Get(masked_id));
                 expect(fatal(listed.has_value() && masked.has_value()));
                 masked->Selection = masks.Write(f.Store(), masked_id, std::get<GeometrySelection>(masked->Selection));
@@ -558,6 +563,8 @@ void RegisterGeometryOperationsTests() {
                 const auto by_masks = Describe(f.Store(), masked_id, f.Run(*masked));
                 expect(by_list.Changed);
                 expect(by_list == by_masks);
+                if (listed->Op != MeshTopologyOp::KeepSelectedFaces)
+                    expect(std::ranges::all_of(positions, [&](const auto &point) { return std::ranges::contains(by_list.Elements[6], point); }));
             };
         }
     };

@@ -607,7 +607,8 @@ void RenderControls(state::Registry &r) {
                 auto interaction_mode_value = int(interaction_mode);
                 bool interaction_mode_changed = false;
                 const auto active_entity_rc = FindActiveEntity(r);
-                const bool active_is_armature_rc = FindArmatureObject(r, active_entity_rc) != state::Null;
+                const auto *selection_task = r.try_get<const procedure::SelectionEditing>(state::Document);
+                const bool active_is_armature_rc = !selection_task && FindArmatureObject(r, active_entity_rc) != state::Null;
                 const auto &flags = r.get<const SelectionFlags>(state::Document);
                 const bool edit_allowed = flags.AllMeshes || active_is_armature_rc;
                 const bool pose_allowed = active_is_armature_rc;
@@ -633,7 +634,8 @@ void RenderControls(state::Registry &r) {
                     }
                     const auto active_entity = FindActiveEntity(r);
                     const auto *active_instance = active_entity != state::Null ? r.try_get<const Instance>(active_entity) : nullptr;
-                    const auto active_mesh = active_instance && HasMesh(r, active_instance->Entity) ? active_instance->Entity : state::Null;
+                    const auto active_mesh = selection_task ? selection_task->Mesh : active_instance && HasMesh(r, active_instance->Entity) ? active_instance->Entity :
+                                                                                                                                              state::Null;
                     const auto *active_stats = active_mesh != state::Null ? GetElementSelectionSummary(r, active_mesh, edit_mode) : nullptr;
                     const uint32_t selected_count = active_stats ? active_stats->SelectedCount : 0u;
                     const auto sharpness = flags.ElementSharpness;

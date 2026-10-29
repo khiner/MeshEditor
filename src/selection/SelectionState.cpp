@@ -7,6 +7,7 @@
 #include "mesh/MeshChanges.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
+#include "procedure/Procedure.h"
 #include "render/GpuSceneState.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
@@ -23,7 +24,7 @@
 
 ModeScope ScopeOf(const state::Registry &r) {
     const auto mode = r.get<const Interaction>(state::Document).Mode;
-    const bool armature = FindArmatureObject(r, FindActiveEntity(r)) != state::Null;
+    const bool armature = !r.all_of<procedure::SelectionEditing>(state::Document) && FindArmatureObject(r, FindActiveEntity(r)) != state::Null;
     const bool bone_edit = mode == InteractionMode::Edit && armature;
     return {mode, bone_edit, bone_edit || (mode == InteractionMode::Pose && armature), mode == InteractionMode::Edit && !bone_edit};
 }
@@ -83,6 +84,7 @@ SelectionSharpness Sharpness(bool any_smooth, bool any_sharp, bool mixed) {
 }
 
 void ComputeFlags(const state::Registry &r, const ModeScope &scope, std::span<const state::Entity> selected, const EditPrimaries &primaries, SelectionFlags &out) {
+    const auto *task = r.try_get<const procedure::SelectionEditing>(state::Document);
     const auto &meshes = r.Resources.get<const MeshStore>();
     out.Meshes.clear();
     out.AllMeshes = std::ranges::none_of(selected, [&](state::Entity e) { const auto *kind = r.try_get<const ObjectKind>(e); return kind && kind->Value != ObjectType::Mesh; });
@@ -95,9 +97,13 @@ void ComputeFlags(const state::Registry &r, const ModeScope &scope, std::span<co
         if (r.all_of<Hidden>(e)) out.AnyHidden = true;
         else out.AnyVisible = true;
     }
+    if (task) {
+        out.Meshes = {task->Mesh};
+        out.AllMeshes = true;
+    }
     SortUnique(out.Meshes);
 
-    const bool edit_locked = scope.Mode == InteractionMode::Edit && std::ranges::any_of(r.view<const Instance, const ScaleLocked>().each(), [&](const auto &entry) { return std::ranges::binary_search(out.Meshes, std::get<1>(entry).Entity); });
+    const bool edit_locked = task || (scope.Mode == InteractionMode::Edit && std::ranges::any_of(r.view<const Instance, const ScaleLocked>().each(), [&](const auto &entry) { return std::ranges::binary_search(out.Meshes, std::get<1>(entry).Entity); }));
     out.Transformable = !edit_locked;
     out.Scalable = !edit_locked && std::ranges::none_of(selected, [&](state::Entity e) { return r.all_of<ScaleLocked>(e); });
 
@@ -129,6 +135,7 @@ void ComputeFlags(const state::Registry &r, const ModeScope &scope, std::span<co
     out.ElementSharpness = Sharpness(element_smooth, element_sharp, false);
 
     out.HasTransformTarget = [&] {
+        if (task) return false;
         if (scope.Bone) return !r.view<const BoneSelection>().empty();
         if (selected.empty()) return false;
         if (!scope.MeshEdit) return true;
@@ -183,6 +190,7 @@ void ComputeSelectedAncestors(const state::Registry &r, std::span<const state::E
 } // namespace
 
 EditPrimaries ComputeEditPrimaries(const state::Registry &r) {
+    if (const auto *task = r.try_get<const procedure::SelectionEditing>(state::Document)) return {{{task->Mesh, task->Placement}}, {}};
     const auto active = FindActiveEntity(r);
     const auto scene = FrameScene(r);
     const auto choose = [active](selection::PrimaryEditInstanceMap &primaries, state::Entity mesh, state::Entity instance) {
