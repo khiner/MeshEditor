@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gpu/Element.h"
+#include "metal/Command.h"
 #include "metal/Shader.h"
 #include "render/PbrFeature.h"
 
@@ -16,8 +17,8 @@ struct PbrVariant {
     mtl::RenderPipeline Transparent, Visibility;
     std::optional<mtl::RenderPipeline> Prepass; // Present with the transmission feature.
 
-    void BindMeshlets(MTL::RenderCommandEncoder *) const;
-    void BindVisibility(MTL::RenderCommandEncoder *, bool prepass = false) const;
+    void BindMeshlets(mtl::RenderEncoder) const;
+    void BindVisibility(mtl::RenderEncoder, bool prepass = false) const;
 };
 
 // Specializes PBR pipelines to the features each viewport shades with and to the output attachments.
@@ -101,6 +102,8 @@ struct Pipelines {
     mtl::ComputePipeline DepthPyramidReduce;
     // The environment prefilter passes run once per loaded environment and bind their textures directly.
     mtl::ComputePipeline EquirectToCubemap, DiffuseIrradiance, SpecularPrefilter;
+    // Fills a texture's mip chain from its first level.
+    mtl::ComputePipeline MipDownsample;
 };
 
 // Returns the pipeline set, compiling every pipeline on first use.

@@ -6,7 +6,6 @@
 #include "gpu/LightRecord.h"
 #include "mesh/MeshChanges.h"
 #include "mesh/MeshComponents.h"
-#include "metal/AutoreleaseScope.h"
 #include "object/PendingSync.h"
 #include "render/ClusterLodRepair.h"
 #include "render/GpuBufferOps.h"
@@ -535,10 +534,7 @@ bool SyncViewportRenderResources(state::Registry &r, state::Entity viewport_enti
     }
 
     // Wait for the live consumer (ImGui) to finish sampling the old resources before recreating them.
-    if (auto *consumer = r.Resources.get<const ViewportConsumerFence>().Value) {
-        const mtl::AutoreleaseScope native_scope;
-        consumer->waitUntilCompleted();
-    }
+    (void)ctx.Wait(r.Resources.get<const ViewportConsumerFence>().Value);
     targets.SetExtent(ctx, render_extent, slots);
     targets.EnsureTransmissionResources(ctx, render_extent, want_transmission);
     {

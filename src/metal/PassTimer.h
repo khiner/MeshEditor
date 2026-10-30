@@ -2,11 +2,12 @@
 
 #include "metal/MetalContext.h"
 
-#include <Metal/MTLCounters.hpp>
+#include <Metal/MTL4Counters.hpp>
+#include <optional>
+#include <string_view>
 
 namespace mtl {
-// Per-command-buffer GPU timing.
-// Hardware samples only at encoder stage boundaries.
+// Per-command GPU timing from timestamps written at each pass's start and end.
 struct PassTimer {
     struct Pass {
         std::string_view Name;
@@ -17,24 +18,25 @@ struct PassTimer {
 
     static std::unique_ptr<PassTimer> Create(const Context &, uint32_t max_passes = 64);
 
-    // Returns the start/end sample-pair index, or nullopt when full.
+    // Returns the start/end timestamp-pair index, or nullopt when full.
     std::optional<uint32_t> Claim(std::string_view name);
 
-    MTL::CounterSampleBuffer *Buffer() const { return SampleBuffer.get(); }
+    MTL4::CounterHeap *Heap() const { return CounterHeap.get(); }
 
-    // Resolves completed sample pairs and omits unwritten or already resolved pairs.
+    // Resolves completed timestamp pairs and omits unwritten or already resolved pairs.
     std::vector<Pass> Resolve();
 
     void Reset() { Names.clear(); }
 
 private:
-    PassTimer(NS::SharedPtr<MTL::CounterSampleBuffer> buffer, uint32_t max_passes)
-        : SampleBuffer(std::move(buffer)), MaxPasses(max_passes), LastTimestamps(max_passes * 2, 0u) {}
+    PassTimer(NS::SharedPtr<MTL4::CounterHeap> heap, uint64_t ticks_per_second, uint32_t max_passes)
+        : CounterHeap(std::move(heap)), TicksPerSecond(ticks_per_second), MaxPasses(max_passes), LastTimestamps(max_passes * 2, 0u) {}
 
-    NS::SharedPtr<MTL::CounterSampleBuffer> SampleBuffer;
+    NS::SharedPtr<MTL4::CounterHeap> CounterHeap;
+    uint64_t TicksPerSecond;
     uint32_t MaxPasses;
     std::vector<std::string_view> Names;
-    // Reset only clears labels: unused slots can retain the preceding command's samples.
+    // Reset only clears labels: unused entries can retain the preceding command's timestamps.
     std::vector<uint64_t> LastTimestamps;
 };
 } // namespace mtl

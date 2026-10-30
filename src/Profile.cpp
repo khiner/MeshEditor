@@ -189,10 +189,10 @@ void RecordCounter(std::string_view name, double value) {
     Counters[StatIndex(Counters, name, NoParent)].Ms.emplace_back(float(value));
 }
 
-void Resolve(MTL::CommandBuffer *command_buffer) {
+void Resolve(const mtl::Completion &completion) {
     const mtl::AutoreleaseScope native_scope;
-    if (!Enabled || !command_buffer) return;
-    const auto ms = float((command_buffer->GPUEndTime() - command_buffer->GPUStartTime()) * 1e3);
+    if (!Enabled) return;
+    const auto ms = float((completion.GpuEndTime - completion.GpuStartTime) * 1e3);
     const auto submit = StatIndex(GpuStats, "Submit", NoParent);
     if (ms > 0.f) GpuStats[submit].Ms.emplace_back(ms);
     if (!Timer) return;

@@ -2,16 +2,15 @@
 
 #include "gltf/ImageBasedLight.h"
 #include "gpu/IblSamplers.h"
+#include "metal/Command.h"
 #include "metal/Image.h"
+#include "metal/Mipmaps.h"
 
 #include "state/Entity.h"
 #include <expected>
 #include <filesystem>
+#include <optional>
 #include <variant>
-
-namespace MTL {
-class CommandBuffer;
-} // namespace MTL
 
 namespace mtl {
 struct BindlessSet;
@@ -147,13 +146,18 @@ struct MaterializedTextures {
     std::vector<MaterializedTexture> Items;
 };
 
-// One command buffer carries every mip generation of a materialization pass.
+// One command carries every mip generation of a materialization pass.
 struct TextureUploadBatch {
-    explicit TextureUploadBatch(const mtl::Context &);
+    TextureUploadBatch(const mtl::Context &, const mtl::ComputePipeline &downsample);
     ~TextureUploadBatch();
     TextureUploadBatch(const TextureUploadBatch &) = delete;
     TextureUploadBatch &operator=(const TextureUploadBatch &) = delete;
-    NS::SharedPtr<MTL::CommandBuffer> Cb;
+    // Records the texture's mip generation, which the submit completes.
+    void GenerateMipmaps(const mtl::Texture &);
+    const mtl::ComputePipeline &Downsample;
+    std::optional<mtl::Command> Cmd;
+    NS::SharedPtr<MTL4::ComputeCommandEncoder> Encoder;
+    std::vector<mtl::MipChain> Chains;
 };
 
 void SubmitTextureUploadBatch(TextureUploadBatch &);

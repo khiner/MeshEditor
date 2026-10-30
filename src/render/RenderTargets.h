@@ -2,9 +2,8 @@
 
 #include "metal/Bindless.h"
 #include "metal/Image.h"
+#include "metal/Mipmaps.h"
 #include "render/RenderSchema.h"
-
-#include <Metal/MTLBuffer.hpp>
 
 struct SampledTexture {
     MTL::Texture *Texture{nullptr};
@@ -59,6 +58,7 @@ struct RenderTargets {
 
         mtl::Texture Image;
         mtl::Texture Mip0View;
+        mtl::MipChain Mips;
         NS::SharedPtr<MTL::SamplerState> Sampler;
     };
 
@@ -67,7 +67,7 @@ struct RenderTargets {
         MotionBlurResourcesT(const mtl::Context &, mtl::Extent2D, bool fast);
 
         mtl::Texture OutputImage, VelocityImage, TileImage;
-        NS::SharedPtr<MTL::Buffer> TileIndirection;
+        mtl::ResidentBuffer TileIndirection;
     };
 
     void SetExtent(const mtl::Context &, mtl::Extent2D, mtl::BindlessSet &);

@@ -2,7 +2,6 @@
 
 #include "metal/PassTimer.h"
 
-#include <Metal/MTLCommandBuffer.hpp>
 #include <filesystem>
 
 namespace profile {
@@ -20,8 +19,8 @@ void BeginCpu(std::string_view name);
 void EndCpu();
 void RecordCounter(std::string_view name, double value);
 
-// Resolve timing after the command buffer completes.
-void Resolve(MTL::CommandBuffer *);
+// Resolve timing from a completed command's feedback.
+void Resolve(const mtl::Completion &);
 // Clear samples while no scope or recording is active.
 void ClearStats();
 void ReportCpuPhase(std::string_view title);

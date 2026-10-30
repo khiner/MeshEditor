@@ -1,8 +1,6 @@
 #include "VideoRecorder.h"
 
 #include "audio/WavWriter.h"
-#include "metal/Buffer.h"
-#include <Metal/MTLBuffer.hpp>
 
 #include <print>
 
@@ -58,7 +56,7 @@ VideoRecorder::VideoRecorder(
         return;
     }
 
-    Staging = mtl::NewBuffer(ctx, FrameBytes);
+    Staging = mtl::ResidentBuffer{ctx, FrameBytes};
 
     // Encode video with audio to a sidecar because muxing requires a completed video stream.
     auto video_path = output_path;
@@ -132,13 +130,13 @@ void VideoRecorder::CaptureFrame(const mtl::Texture &texture) {
         return;
     }
 
-    if (!mtl::CopyTextureRegion(*Ctx, texture, OffsetX, OffsetY, Ex, Staging.get(), Ex.Width * 4)) {
+    if (!mtl::CopyTextureRegion(*Ctx, texture, OffsetX, OffsetY, Ex, *Staging, Ex.Width * 4)) {
         std::println(stderr, "VideoRecorder: frame copy failed; stopping.");
         Stop();
         return;
     }
 
-    if (const auto written = std::fwrite(Staging->contents(), 1, FrameBytes, Pipe.get()); written != FrameBytes) {
+    if (const auto written = std::fwrite(Staging.Contents().data(), 1, FrameBytes, Pipe.get()); written != FrameBytes) {
         std::println(stderr, "VideoRecorder: pipe write short ({}/{}); stopping.", written, FrameBytes);
         Stop();
         return;

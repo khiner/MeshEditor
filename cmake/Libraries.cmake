@@ -56,9 +56,9 @@ target_link_libraries(mesheditor_image_codecs PRIVATE mesheditor_support webp)
 add_library(mesheditor_imgui STATIC
     lib/imgui/imgui.cpp lib/imgui/imgui_draw.cpp lib/imgui/imgui_tables.cpp
     lib/imgui/imgui_widgets.cpp lib/imgui/imgui_demo.cpp lib/imgui/misc/cpp/imgui_stdlib.cpp
-    lib/imgui/backends/imgui_impl_metal.mm lib/imgui/backends/imgui_impl_osx.mm)
+    lib/imgui/backends/imgui_impl_osx.mm)
 target_include_directories(mesheditor_imgui SYSTEM PUBLIC lib/imgui lib/imgui/backends lib/imgui/misc/cpp lib/metal-cpp)
-target_compile_definitions(mesheditor_imgui PUBLIC IMGUI_DEFINE_MATH_OPERATORS IMGUI_IMPL_METAL_CPP)
+target_compile_definitions(mesheditor_imgui PUBLIC IMGUI_DEFINE_MATH_OPERATORS)
 target_compile_options(mesheditor_imgui PRIVATE -O2 -w)
 target_link_libraries(mesheditor_imgui PRIVATE "-framework Metal" "-framework AppKit" "-framework QuartzCore" "-framework GameController")
 add_library(mesheditor_implot STATIC lib/implot/implot.cpp lib/implot/implot_items.cpp lib/implot/implot_demo.cpp)
@@ -74,8 +74,10 @@ mesheditor_library(MeshEditorMetal HOT
     src/metal/Buffer.cpp
     src/metal/Dispatch.cpp
     src/metal/Image.cpp
+    src/metal/ImGuiRenderer.cpp
     src/metal/MetalContext.cpp
     src/metal/MetalCppImpl.cpp
+    src/metal/Mipmaps.cpp
     src/metal/MslSource.cpp
     src/metal/PassChain.cpp
     src/metal/PassTimer.cpp
@@ -294,7 +296,7 @@ else()
 endif()
 
 target_include_directories(MeshEditorMetal SYSTEM PUBLIC lib/metal-cpp)
-target_link_libraries(MeshEditorMetal PUBLIC MeshEditorProjectStore mesheditor_support PRIVATE "-framework Metal" "-framework Foundation" "-framework QuartzCore")
+target_link_libraries(MeshEditorMetal PUBLIC MeshEditorProjectStore mesheditor_support mesheditor_imgui PRIVATE "-framework Metal" "-framework Foundation" "-framework QuartzCore")
 target_link_libraries(MeshEditorMesh PUBLIC MeshEditorMetal PRIVATE meshoptimizer mesheditor_serialization)
 target_link_libraries(MeshEditorScene PUBLIC MeshEditorMesh)
 target_link_libraries(MeshEditorRender PUBLIC MeshEditorScene PRIVATE meshoptimizer mesheditor_image_codecs basisu_transcoder)

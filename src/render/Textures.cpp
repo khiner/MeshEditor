@@ -7,6 +7,8 @@
 #include "gpu/PrefilterPushConstants.h"
 #include "image/ImageDecode.h"
 #include "metal/MetalCpp.h"
+#include "metal/Mipmaps.h"
+#include "metal/PassChain.h"
 #include "numeric/VectorMath.h"
 #include "project/Assets.h"
 #include "render/GpuBuffers.h"
@@ -148,20 +150,31 @@ KtxFormatPair SelectKtx2Format(const mtl::Context &ctx, TextureColorSpace cs) {
 
 } // namespace
 
-TextureUploadBatch::TextureUploadBatch(const mtl::Context &ctx) {
+TextureUploadBatch::TextureUploadBatch(const mtl::Context &ctx, const mtl::ComputePipeline &downsample) : Downsample(downsample) {
     const mtl::AutoreleaseScope native_scope;
-    Cb = NS::RetainPtr(ctx.Queue->commandBuffer());
+    Cmd.emplace(ctx.Begin());
 }
 
-TextureUploadBatch::~TextureUploadBatch() { mtl::AutoreleaseScope::Release(Cb); }
+TextureUploadBatch::~TextureUploadBatch() {
+    const mtl::AutoreleaseScope native_scope;
+    if (Encoder) Encoder->endEncoding();
+    Cmd.reset();
+}
+
+void TextureUploadBatch::GenerateMipmaps(const mtl::Texture &image) {
+    const mtl::AutoreleaseScope native_scope;
+    if (!Encoder) Encoder = NS::RetainPtr(Cmd->BeginCompute().Pass);
+    mtl::RecordMipmaps({&*Cmd, Encoder.get()}, Downsample, Chains.emplace_back(mtl::CreateMipChain(image)));
+}
 
 void SubmitTextureUploadBatch(TextureUploadBatch &batch) {
     const mtl::AutoreleaseScope native_scope;
-    if (!batch.Cb) return;
-    mtl::Commit(batch.Cb.get());
+    if (!batch.Cmd) return;
+    if (const auto encoder = std::exchange(batch.Encoder, {})) encoder->endEncoding();
     // Complete uploads before immediate readback and binding.
-    batch.Cb->waitUntilCompleted();
-    batch.Cb = nullptr;
+    (void)batch.Cmd->Ctx.Run(std::move(*batch.Cmd));
+    batch.Cmd.reset();
+    batch.Chains.clear();
 }
 
 void ReleaseTextureSlots(mtl::BindlessSet &slots, std::span<const TextureEntry> textures) {
@@ -218,13 +231,10 @@ TextureEntry CreateTextureEntry(
     mtl::Texture image;
     if (const auto *rgba = std::get_if<Rgba8Pixels>(&pixels)) {
         const uint32_t mip_levels = params.Sampler.UsesMipmaps ? mtl::MipLevelCount(rgba->Width, rgba->Height) : 1u;
-        image = mtl::CreateTexture2D(ctx, ToTextureFormat(params.ColorSpace), {rgba->Width, rgba->Height}, MTL::TextureUsageShaderRead, mip_levels, MTL::StorageModeShared);
+        const auto usage = mip_levels > 1 ? MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite : MTL::TextureUsageShaderRead;
+        image = mtl::CreateTexture2D(ctx, ToTextureFormat(params.ColorSpace), {rgba->Width, rgba->Height}, usage, mip_levels, MTL::StorageModeShared);
         mtl::Upload(image, 0, rgba->Pixels, rgba->Width * 4u);
-        if (mip_levels > 1) {
-            auto *blit = batch.Cb->blitCommandEncoder();
-            blit->generateMipmaps(*image);
-            blit->endEncoding();
-        }
+        if (mip_levels > 1) batch.GenerateMipmaps(image);
     } else {
         const auto &ktx = std::get<Ktx2Pixels>(pixels);
         image = mtl::CreateTexture2D(ctx, ktx.Format, {ktx.Width, ktx.Height}, MTL::TextureUsageShaderRead, uint32_t(ktx.Mips.size()));
@@ -347,6 +357,7 @@ EnvironmentPrefiltered CreateIblFromHdri(
 
     const uint32_t raw_size = 512, raw_mips = mtl::MipLevelCount(raw_size, raw_size);
     const auto raw_cube = mtl::CreateTextureCube(ctx, rgba32f, raw_size, MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite, raw_mips);
+    const auto raw_mip_chain = mtl::CreateMipChain(raw_cube);
     const auto raw_cube_write = mtl::CreateCubeMipView(raw_cube, 0);
 
     const uint32_t diff_size = 32;
@@ -365,30 +376,24 @@ EnvironmentPrefiltered CreateIblFromHdri(
     const auto raw_cube_sampler = MakeLinearSampler(ctx, MTL::SamplerAddressModeClampToEdge);
 
     const auto prefilter_faces = [](
-                                     MTL::ComputeCommandEncoder *compute, const mtl::ComputePipeline &pipeline,
+                                     mtl::ComputeEncoder compute, const mtl::ComputePipeline &pipeline,
                                      MTL::Texture *source, MTL::SamplerState *sampler, MTL::Texture *target, const auto &pc, uint32_t face_size
                                  ) {
-        compute->setComputePipelineState(pipeline.State());
-        compute->setTexture(source, 0);
-        compute->setSamplerState(sampler, 0);
-        compute->setTexture(target, 1);
-        compute->setBytes(&pc, sizeof(pc), 0);
+        pipeline.Bind(compute);
+        compute.Cmd->SetTexture(source, 0);
+        compute.Cmd->SetSampler(sampler, 0);
+        compute.Cmd->SetTexture(target, 1);
+        compute.Cmd->SetBytes(pc, 0);
         compute->dispatchThreadgroups(MTL::Size((face_size + 7) / 8, (face_size + 7) / 8, 6), MTL::Size(8, 8, 1));
     };
 
-    auto *command_buffer = ctx.Queue->commandBuffer();
+    auto command = ctx.Begin();
     {
-        auto *compute = command_buffer->computeCommandEncoder();
+        mtl::PassChain chain{command};
+        const auto compute = chain.BeginCompute("EnvironmentPrefilter");
         prefilter_faces(compute, pipelines.EquirectToCubemap, *equirect, equirect_sampler.get(), *raw_cube_write, CubeFacePushConstants{.FaceSize = raw_size}, raw_size);
-        compute->endEncoding();
-    }
-    {
-        auto *blit = command_buffer->blitCommandEncoder();
-        blit->generateMipmaps(*raw_cube);
-        blit->endEncoding();
-    }
-    {
-        auto *compute = command_buffer->computeCommandEncoder();
+        mtl::ComputeBarrier(compute);
+        mtl::RecordMipmaps(compute, pipelines.MipDownsample, raw_mip_chain);
         prefilter_faces(compute, pipelines.DiffuseIrradiance, *raw_cube, raw_cube_sampler.get(), *diff_write, CubeFacePushConstants{.FaceSize = diff_size}, diff_size);
 
         for (uint32_t mip = 0; mip < spec_mips; ++mip) {
@@ -396,11 +401,9 @@ EnvironmentPrefiltered CreateIblFromHdri(
             const PrefilterPushConstants pc{.FaceSize = mip_face_size, .SourceSize = raw_size, .Roughness = float(mip) / float(spec_mips - 1)};
             prefilter_faces(compute, pipelines.SpecularPrefilter, *raw_cube, raw_cube_sampler.get(), *spec_writes[mip], pc, mip_face_size);
         }
-        compute->endEncoding();
     }
     // Complete GPU work before releasing temporary textures.
-    mtl::Commit(command_buffer);
-    command_buffer->waitUntilCompleted();
+    (void)ctx.Run(std::move(command));
 
     auto diff_sampler = MakeLinearSampler(ctx, MTL::SamplerAddressModeClampToEdge);
     auto spec_sampler = MakeLinearSampler(ctx, MTL::SamplerAddressModeClampToEdge);
@@ -453,7 +456,7 @@ std::vector<std::byte> ReadbackImageRgba8(const mtl::Context &ctx, const mtl::Te
     std::vector<std::byte> out(byte_size);
     // A private attachment cannot be read directly, so it blits into a shared texture first.
     if (texture.Handle->storageMode() == MTL::StorageModePrivate) {
-        const auto staging = mtl::CreateUntrackedTexture2D(ctx, texture.Handle->pixelFormat(), extent, MTL::TextureUsageShaderRead);
+        const auto staging = mtl::CreateTexture2D(ctx, texture.Handle->pixelFormat(), extent, MTL::TextureUsageShaderRead);
         if (!mtl::CopyTextureRegion(ctx, texture, x, y, extent, staging)) {
             throw std::runtime_error("Failed to read back a private Metal texture.");
         }

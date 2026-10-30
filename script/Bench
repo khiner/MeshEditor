@@ -20,8 +20,8 @@ DEFAULT_SCENES = ROOT / "res" / "benchmarks"
 DEFAULT_EXE = ROOT / "build" / "MeshEditor"
 # Headline metrics use full profile paths because scope names can repeat.
 METRICS = (
-    ("cpuMs", "Frame/SubmitViewport/ProcessEvents", "CPU update", 1.0),
-    ("cpuMs", "Frame/SubmitViewport/RecordRenderCommandBuffer", "CPU record", 1.0),
+    ("cpuMs", "Frame/ProcessEvents", "CPU update", 1.0),
+    ("cpuMs", "Frame/SubmitViewports/RecordRenderCommandBuffer", "CPU record", 1.0),
     ("gpuMs", "Submit", "GPU", 1.0),
     ("counters", "DeviceAllocatedBytes", "memory MiB", 1 / (1024 * 1024)),
 )

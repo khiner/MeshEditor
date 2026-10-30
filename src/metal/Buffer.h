@@ -26,24 +26,24 @@ enum class BufferLifetime { Canonical,
 // Tracked buffers capture and restore history in pages of this size.
 inline constexpr uint64_t HistoryPageBytes = 16u << 10;
 // Commit GPU consumers before retiring their owners.
-// Slots, virtual mappings, and physical pages survive together until the retirement fence completes.
+// Slots, virtual mappings, and physical pages survive together until the serial fencing their retirement completes.
 struct BufferContext {
     BufferContext(const Context &, BindlessSet &);
     ~BufferContext();
     BufferContext(const BufferContext &) = delete;
     BufferContext(BufferContext &&) = delete;
 
-    // Fences the buffers retired since the last reclaim behind committed GPU work and releases the batches whose fence completed.
+    // Fences the buffers retired since the last reclaim behind the latest commit and releases the batches whose fence completed.
     // Chain submits, finished frames and scene resets reclaim, so allocations never wait for retired readers.
-    bool ReclaimRetiredBuffers(bool wait = false);
-    // Fences the buffers retired since the last reclaim behind `command`, which runs after every committed GPU command buffer.
-    void FenceRetiredBuffers(MTL::CommandBuffer *command);
+    void ReclaimRetiredBuffers(bool wait = false);
+    // Fences the buffers retired since the last reclaim behind the commit `serial`, which completes after every commit before it.
+    void FenceRetiredBuffers(uint64_t serial);
     // Releases the retired buffers from `first` on at once, since every GPU reader of theirs has completed or none read them.
     void ReleaseRetiredBuffers(size_t first = 0u);
     // A free slot, reclaiming retired readers' slots only when the table is full.
     uint32_t AllocateSlot(SlotType);
     // A workspace of at least `bytes` that starts with `prefix` and reads zero after it.
-    NS::SharedPtr<MTL::Buffer> AcquireWorkspace(uint64_t bytes, std::span<const std::byte> prefix);
+    ResidentBuffer AcquireWorkspace(uint64_t bytes, std::span<const std::byte> prefix);
 
     std::string DebugHeapUsage() const;
 
@@ -51,7 +51,7 @@ struct BufferContext {
     BindlessSet &Slots;
     // A workspace and the bytes written to it, which are the ones a reuse clears.
     struct UsedWorkspace {
-        NS::SharedPtr<MTL::Buffer> Buffer;
+        ResidentBuffer Buffer;
         uint64_t Used{};
     };
     struct RetiredBuffer {
@@ -62,7 +62,7 @@ struct BufferContext {
     std::vector<RetiredBuffer> Retired;
     struct RetirementBatch {
         std::vector<RetiredBuffer> Buffers;
-        NS::SharedPtr<MTL::CommandBuffer> Fence;
+        uint64_t Serial;
     };
     std::deque<RetirementBatch> Retirements;
 
@@ -72,9 +72,6 @@ private:
     std::array<std::vector<UsedWorkspace>, 64> WorkspaceCache;
     uint64_t CachedWorkspaceBytes{};
 };
-
-// A zero size defers allocation.
-NS::SharedPtr<MTL::Buffer> NewBuffer(const Context &, uint64_t size);
 
 struct Buffer;
 // Increasing unique resident history pages of one canonical buffer.
@@ -149,7 +146,7 @@ struct Buffer {
 private:
     friend std::vector<Buffer> CloneFootprints(BufferContext &, std::span<const BufferFootprint>);
     std::shared_ptr<SparseBuffer> Storage;
-    NS::SharedPtr<MTL::Buffer> Workspace;
+    ResidentBuffer Workspace;
     std::vector<BufferContext::UsedWorkspace> PreviousWorkspaces;
     BufferLifetime Lifetime{BufferLifetime::Canonical};
     std::unique_ptr<store::Pages> Tracked;

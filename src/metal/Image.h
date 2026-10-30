@@ -5,6 +5,7 @@
 #include <Metal/MTLSampler.hpp>
 #include <Metal/MTLTexture.hpp>
 #include <bit>
+#include <optional>
 #include <span>
 
 namespace mtl {
@@ -22,32 +23,25 @@ struct Extent2D {
     bool operator==(const Extent2D &) const = default;
 };
 
+// A texture resident on the queue for its lifetime.
 struct Texture {
     Texture() = default;
-    Texture(const Context &, NS::SharedPtr<MTL::Texture>, Extent2D, uint32_t mip_levels = 1, bool track_residency = true);
-    Texture(const Texture &) = delete;
-    Texture &operator=(const Texture &) = delete;
-    Texture(Texture &&) noexcept;
-    Texture &operator=(Texture &&) noexcept;
-    ~Texture();
+    Texture(const Context &ctx, NS::SharedPtr<MTL::Texture> handle, Extent2D extent, uint32_t mip_levels = 1)
+        : Handle{ctx, std::move(handle)}, Extent{extent}, MipLevels{mip_levels} {}
 
-    NS::SharedPtr<MTL::Texture> Handle;
+    Resident<MTL::Texture> Handle;
     Extent2D Extent{};
     uint32_t MipLevels{1};
 
     MTL::Texture *operator*() const { return Handle.get(); }
     explicit operator bool() const { return bool(Handle); }
-
-private:
-    friend Texture MipView(const Texture &, uint32_t mip, MTL::TextureType, uint32_t layers);
-    const Context *ResidencyContext{};
 };
 
 // `storage` disambiguates CPU-visible textures from private attachments with the same usage.
 Texture CreateTexture2D(const Context &, MTL::PixelFormat, Extent2D, MTL::TextureUsage, uint32_t mip_levels = 1, std::optional<MTL::StorageMode> storage = {});
-// Directly encoded short-lived textures do not belong in the queue-wide residency set.
-Texture CreateUntrackedTexture2D(const Context &, MTL::PixelFormat, Extent2D, MTL::TextureUsage, std::optional<MTL::StorageMode> storage = {});
 Texture CreateTextureCube(const Context &, MTL::PixelFormat, uint32_t size, MTL::TextureUsage, uint32_t mip_levels = 1);
+// A view of one mip as the given type with `layers` slices, resident alongside the texture.
+Texture MipView(const Texture &, uint32_t mip, MTL::TextureType, uint32_t layers);
 Texture CreateMipView(const Texture &, uint32_t mip);
 Texture CreateCubeMipView(const Texture &, uint32_t mip);
 
@@ -66,7 +60,7 @@ struct SamplerDesc {
 NS::SharedPtr<MTL::SamplerState> CreateSampler(const Context &, const SamplerDesc &);
 NS::SharedPtr<MTL::SamplerState> CreateSampler(const Context &, MTL::SamplerMinMagFilter, MTL::SamplerMipFilter, MTL::SamplerAddressMode, float max_anisotropy = 1.f);
 
-// Synchronous blits from a private texture.
+// Synchronous copies from a private texture.
 // Return false on copy failure.
 bool CopyTextureRegion(const Context &, const Texture &source, uint32_t x, uint32_t y, Extent2D, const Texture &destination);
 bool CopyTextureRegion(const Context &, const Texture &source, uint32_t x, uint32_t y, Extent2D, MTL::Buffer *destination, uint32_t bytes_per_row);

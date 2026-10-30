@@ -1,7 +1,5 @@
 #include "render/RenderTargets.h"
 
-#include "metal/Buffer.h"
-
 namespace Format = mtl::Format;
 
 namespace {
@@ -40,8 +38,9 @@ RenderTargets::ScreenT::~ScreenT() {
 }
 
 RenderTargets::TransmissionResourcesT::TransmissionResourcesT(const mtl::Context &ctx, mtl::Extent2D extent)
-    : Image{mtl::CreateTexture2D(ctx, Format::HdrColor, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead, mtl::MipLevelCount(extent.Width, extent.Height))},
+    : Image{mtl::CreateTexture2D(ctx, Format::HdrColor, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite, mtl::MipLevelCount(extent.Width, extent.Height))},
       Mip0View{mtl::CreateMipView(Image, 0)},
+      Mips{mtl::CreateMipChain(Image)},
       Sampler{mtl::CreateSampler(ctx, MTL::SamplerMinMagFilterLinear, MTL::SamplerMipFilterLinear, MTL::SamplerAddressModeClampToEdge)} {}
 
 RenderTargets::MotionBlurResourcesT::MotionBlurResourcesT(const mtl::Context &ctx, mtl::Extent2D extent, bool fast)
@@ -50,7 +49,7 @@ RenderTargets::MotionBlurResourcesT::MotionBlurResourcesT(const mtl::Context &ct
     const mtl::Extent2D tiles{(extent.Width + 31u) / 32u, (extent.Height + 31u) / 32u};
     VelocityImage = mtl::CreateTexture2D(ctx, Format::HdrColor, extent, MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite);
     TileImage = mtl::CreateTexture2D(ctx, Format::HdrColor, tiles, MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite);
-    TileIndirection = mtl::NewBuffer(ctx, 2u * tiles.Width * tiles.Height * sizeof(uint32_t));
+    TileIndirection = mtl::ResidentBuffer{ctx, 2u * tiles.Width * tiles.Height * sizeof(uint32_t)};
 }
 
 void RenderTargets::SetExtent(const mtl::Context &ctx, mtl::Extent2D extent, mtl::BindlessSet &slots) {

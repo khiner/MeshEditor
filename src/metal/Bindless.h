@@ -9,13 +9,11 @@ namespace MTL {
 class Buffer;
 class Texture;
 class SamplerState;
-class Resource;
-class RenderCommandEncoder;
-class ComputeCommandEncoder;
 } // namespace MTL
 
 namespace mtl {
 // Tier-2 argument buffer mirroring the shader BindlessSet.
+// Every resource it references is resident on the queue.
 struct BindlessSet {
     explicit BindlessSet(const Context &);
     ~BindlessSet();
@@ -32,25 +30,16 @@ struct BindlessSet {
     void SetTexture(uint32_t slot, MTL::Texture *);
     void SetSampler(TypedSlot, MTL::Texture *, MTL::SamplerState *);
     void Clear(TypedSlot);
-    void UseResources(MTL::RenderCommandEncoder *) const;
-    void UseResources(MTL::ComputeCommandEncoder *) const;
-    // Changes whenever the buffers UseResources declares change.
-    uint64_t ResourceRevision() const { return Revision; }
 
     MTL::Buffer *Table() const { return ArgumentBuffer.get(); }
 
 private:
     size_t EntryOffset(SlotType, uint32_t slot) const;
     uint64_t *EntryAt(SlotType, uint32_t slot) const;
-    void Track(TypedSlot, MTL::Resource *);
 
     const Context &Ctx;
     NS::SharedPtr<MTL::Buffer> ArgumentBuffer;
     std::array<RangeAllocator, SlotTypeCount> Allocators;
-    std::array<std::vector<uint32_t>, SlotTypeCount> BufferIndices;
-    std::vector<MTL::Resource *> BufferResources;
-    std::vector<TypedSlot> BufferOwners;
-    uint64_t Revision{};
 };
 
 // Slots allocated from one set and released together when the owner goes away.

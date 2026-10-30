@@ -43,7 +43,7 @@ private:
     mtl::Extent2D Ex{};
     size_t FrameBytes{0};
 
-    NS::SharedPtr<MTL::Buffer> Staging;
+    mtl::ResidentBuffer Staging;
 
     std::unique_ptr<std::FILE, PipeCloser> Pipe;
     uint64_t FrameCount{0};

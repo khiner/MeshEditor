@@ -3,8 +3,6 @@
 #include "mesh/MeshPipelines.h"
 #include "metal/Dispatch.h"
 
-#include <Metal/MTLComputeCommandEncoder.hpp>
-
 // A pass over one tile domain, or over the jobs themselves when Domain is PerJob.
 // Parameter reaches the kernel through the push constants' PassParameter when the constants declare one.
 // An indirect pass takes its threadgroup count from the domain's argument words, which a kernel may zero to skip the passes after it.
@@ -114,7 +112,7 @@ struct TiledJobBatch {
         pc.TileMapOffset = upload.TileMapOffset;
         pc.ScratchOffset = ScratchOffset;
         // Eight simd-group sums and the threadgroup total, padded to Metal's 16-byte granule.
-        chain.Encode([](MTL::ComputeCommandEncoder *encoder) { encoder->setThreadgroupMemoryLength(48, 0); });
+        chain.Encode([](mtl::ComputeEncoder encoder) { SetThreadgroupMemoryLength(encoder, 48, 0); });
         for (const auto &pass : passes) {
             const auto groups = pass.Domain == PerJob ? upload.Jobs : upload.Tiles[pass.Domain];
             if (groups == 0) continue;

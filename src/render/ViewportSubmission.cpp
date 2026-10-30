@@ -6,11 +6,8 @@
 #include "render/GpuBuffers.h"
 #include "state/Registry.h"
 #include "viewport/Viewport.h"
-#include <Metal/MTLCommandQueue.hpp>
-ViewportRenderResources::ViewportRenderResources() = default;
-ViewportRenderResources::~ViewportRenderResources() { mtl::AutoreleaseScope::Release(InFlight); }
 
-void SubmitRecordedFrame(state::Registry &r, state::Entity viewport, MTL::CommandBuffer *command_buffer, RenderPhase phase) {
+void SubmitRecordedFrame(state::Registry &r, state::Entity viewport, mtl::Command &&command, RenderPhase phase) {
     const mtl::AutoreleaseScope native_scope;
     const auto &ctx = r.Resources.get<const mtl::Context>();
     const auto scene = SceneOf(r, viewport);
@@ -21,13 +18,11 @@ void SubmitRecordedFrame(state::Registry &r, state::Entity viewport, MTL::Comman
         live.RenderedScene = scene;
         live.RenderRequested = false;
     }
-    ctx.CommitResidency();
+    auto &resources = r.Resources.get<ViewportRenderResources>();
     {
         const profile::CpuScope scope{"QueueSubmit"};
-        mtl::Commit(command_buffer);
+        resources.InFlight = ctx.Commit(std::move(command));
     }
-    auto &resources = r.Resources.get<ViewportRenderResources>();
-    resources.InFlight = NS::RetainPtr(command_buffer);
     resources.RenderPending = true;
     r.Resources.get<MeshStore>().FrameSubmitted();
 }
@@ -35,9 +30,9 @@ void SubmitRecordedFrame(state::Registry &r, state::Entity viewport, MTL::Comman
 void RecordAndSubmitFrame(state::Registry &r, state::Entity viewport, RenderPhase phase) {
     const mtl::AutoreleaseScope native_scope;
     const auto &ctx = r.Resources.get<const mtl::Context>();
-    auto *command_buffer = ctx.Queue->commandBuffer();
-    RecordRenderCommandBuffer(r, viewport, command_buffer, phase);
-    SubmitRecordedFrame(r, viewport, command_buffer, phase);
+    auto command = ctx.Begin();
+    RecordRenderCommandBuffer(r, viewport, command, phase);
+    SubmitRecordedFrame(r, viewport, std::move(command), phase);
 }
 
 bool ViewportImageReady(const Viewport &viewport) {
@@ -50,12 +45,11 @@ void WaitForRender(state::Registry &r) {
     auto &resources = r.Resources.get<ViewportRenderResources>();
     if (!resources.RenderPending) return;
 
-    if (resources.InFlight) {
+    {
         const profile::CpuScope scope{"WaitGpu"};
-        resources.InFlight->waitUntilCompleted();
+        profile::Resolve(r.Resources.get<const mtl::Context>().Wait(resources.InFlight));
     }
-    profile::Resolve(resources.InFlight.get());
-    resources.InFlight = nullptr;
+    resources.InFlight = 0u;
     r.Resources.get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
     r.Resources.get<MeshStore>().FrameCompleted();
     r.Resources.get<const mtl::Context>().TrimPageCache();

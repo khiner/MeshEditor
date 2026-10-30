@@ -210,7 +210,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         const auto &gltf_images = src ? src->Images : empty_images;
         std::vector<std::expected<DecodedTexture, std::string>> decoded(textures.PendingUploads.size());
         ParallelFor(uint32_t(decoded.size()), [&](uint32_t i) { decoded[i] = DecodeTextureSource(r, textures.PendingUploads[i], gltf_images); });
-        TextureUploadBatch batch{ctx};
+        TextureUploadBatch batch{ctx, GetPipelines(r).MipDownsample};
         const auto anisotropy = r.Resources.get<const ActiveSamplerAnisotropy>().Value;
         for (uint32_t i = 0; i < decoded.size(); ++i) {
             const auto &item = textures.PendingUploads[i];

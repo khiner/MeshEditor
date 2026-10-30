@@ -2,9 +2,9 @@
 #include "metal/AutoreleaseScope.h"
 
 namespace mtl {
-NS::SharedPtr<MTL::RenderPassDescriptor> MakePassDescriptor(std::span<const ColorAttachment> colors, DepthAttachment depth) {
+NS::SharedPtr<MTL4::RenderPassDescriptor> MakePassDescriptor(std::span<const ColorAttachment> colors, DepthAttachment depth) {
     const AutoreleaseScope pool;
-    auto descriptor = NS::TransferPtr(MTL::RenderPassDescriptor::alloc()->init());
+    auto descriptor = NS::TransferPtr(MTL4::RenderPassDescriptor::alloc()->init());
     for (size_t i = 0; i < colors.size(); ++i) {
         const auto &color = colors[i];
         if (!color.Texture) continue;

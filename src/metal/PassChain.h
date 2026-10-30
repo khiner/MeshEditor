@@ -1,9 +1,7 @@
 #pragma once
 
+#include "metal/Command.h"
 #include "metal/PassTimer.h"
-
-#include <Metal/MTLCommandBuffer.hpp>
-#include <Metal/MTLCommandEncoder.hpp>
 
 namespace mtl {
 // `Before` waits for matching `After` stages already encoded on the queue.
@@ -11,30 +9,34 @@ struct Barrier {
     MTL::Stages After, Before;
 };
 
-// Callers must declare cross-pass dependencies for bindless resources because Metal cannot track them automatically.
+// Callers declare cross-pass dependencies, since Metal 4 tracks no resource hazards.
+// The first pass of a command waits for every earlier command on the queue, and each later pass for the stages its barriers declare.
 // Opening a pass closes the previous encoder, and destruction closes the final encoder.
 // Borrows the command and encoders inside the containing operation's AutoreleaseScope.
 struct PassChain {
-    PassChain(MTL::CommandBuffer *, PassTimer * = nullptr);
+    PassChain(Command &, PassTimer * = nullptr);
     ~PassChain();
 
     PassChain(const PassChain &) = delete;
     PassChain &operator=(const PassChain &) = delete;
 
-    MTL::RenderCommandEncoder *BeginRender(MTL::RenderPassDescriptor *, std::string_view name, std::initializer_list<Barrier> = {});
-    // Use concurrent dispatch only when dispatches have no data dependencies.
-    MTL::ComputeCommandEncoder *BeginCompute(std::string_view name, MTL::Stages after = {}, MTL::DispatchType dispatch = MTL::DispatchTypeSerial);
-    MTL::BlitCommandEncoder *BeginBlit(std::string_view name, MTL::Stages after = {});
+    RenderEncoder BeginRender(const MTL4::RenderPassDescriptor *, std::string_view name, std::initializer_list<Barrier> = {});
+    // Dispatches encode without ordering between them, so dependent dispatches need a ComputeBarrier.
+    ComputeEncoder BeginCompute(std::string_view name, MTL::Stages after = {});
+    // A compute encoder for copies and fills, which run in the blit stage.
+    // The pass is untimed, since a compute encoder's timestamps wait for dispatches only.
+    ComputeEncoder BeginBlit(MTL::Stages after = {});
+
+    Command &Cmd;
 
 private:
-    void SampleInto(auto *attachment, std::string_view name);
-
     void ClosePass();
-    void OpenPass(MTL::CommandEncoder *, std::initializer_list<Barrier>);
+    void OpenPass(MTL4::CommandEncoder *, MTL::Stages own, std::initializer_list<Barrier>);
 
-    MTL::CommandBuffer *CommandBuffer;
     PassTimer *Timer;
-    MTL::CommandEncoder *Open{nullptr};
+    MTL4::CommandEncoder *Open{nullptr};
+    MTL4::RenderCommandEncoder *OpenRender{nullptr};
+    std::optional<uint32_t> OpenSlot;
     bool Encoded{false};
 };
 } // namespace mtl

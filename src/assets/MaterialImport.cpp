@@ -6,6 +6,7 @@
 #include "project/Assets.h"
 #include "render/GpuBuffers.h"
 #include "render/MaterialComponents.h"
+#include "render/Pipelines.h"
 #include "state/Registry.h"
 #include <format>
 std::expected<std::vector<uint32_t>, std::string> ImportObjPlyMaterials(state::Registry &r, std::span<const ObjPlyMaterial> materials, const std::filesystem::path &mesh_path) {
@@ -43,7 +44,7 @@ std::expected<std::vector<uint32_t>, std::string> ImportObjPlyMaterials(state::R
     const auto sampler_index = uint32_t(sources.Samplers.size());
     sources.Samplers.emplace_back(gltf::Sampler{.MagFilter = gltf::Filter::Nearest, .MinFilter = gltf::Filter::Nearest, .WrapS = gltf::Wrap::Repeat, .WrapT = gltf::Wrap::Repeat});
 
-    TextureUploadBatch obj_batch{ctx};
+    TextureUploadBatch obj_batch{ctx, GetPipelines(r).MipDownsample};
     std::unordered_map<std::string, uint32_t> texture_slot_cache;
     std::unordered_map<uint32_t, uint32_t> source_texture_indices;
     const auto resolve_texture_slot =

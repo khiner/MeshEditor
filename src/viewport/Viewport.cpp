@@ -143,7 +143,7 @@ void RemoveViewport(state::Registry &r, state::Entity viewport) {
 
 // The live UI frame stops sampling the viewport's images before they go.
 void WaitForViewportConsumer(state::Registry &r, state::Entity) {
-    if (auto *consumer = r.Resources.get<const ViewportConsumerFence>().Value) consumer->waitUntilCompleted();
+    (void)r.Resources.get<const mtl::Context>().Wait(r.Resources.get<const ViewportConsumerFence>().Value);
 }
 
 void RegisterViewportHandlers(state::Registry &r) {
@@ -345,10 +345,10 @@ void RenderMotionBlurredFrames(state::Registry &r, BlurSchedule schedule, std::s
     ReserveFrameScratch(r);
     for (const auto viewport : group) {
         WriteViewUniforms(r, viewport, CurrentRenderView(r, viewport));
-        auto *command_buffer = ctx.Queue->commandBuffer();
-        if (fast) RecordRenderCommandBuffer(r, viewport, command_buffer, RenderPhase::BlurFast);
-        else RecordBlurStepsCommandBuffer(r, viewport, command_buffer, sample_weights);
-        SubmitRecordedFrame(r, viewport, command_buffer, fast ? RenderPhase::BlurFast : RenderPhase::BlurAccumulate);
+        auto command = ctx.Begin();
+        if (fast) RecordRenderCommandBuffer(r, viewport, command, RenderPhase::BlurFast);
+        else RecordBlurStepsCommandBuffer(r, viewport, command, sample_weights);
+        SubmitRecordedFrame(r, viewport, std::move(command), fast ? RenderPhase::BlurFast : RenderPhase::BlurAccumulate);
     }
     WaitForRender(r);
 }

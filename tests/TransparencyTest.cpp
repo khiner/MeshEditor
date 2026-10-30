@@ -1,7 +1,10 @@
 // Compare the production tile compositor with depth-sorted source-over, including reversed draws and overflow.
 #include "TestPaths.h"
+#include "metal/Command.h"
+#include "metal/Image.h"
 #include "metal/MetalCpp.h"
 #include "metal/MslSource.h"
+#include "metal/RenderTarget.h"
 
 #include <algorithm>
 #include <print>
@@ -15,8 +18,8 @@ struct alignas(16) Layer {
 int main(int argc, char **argv) {
     (void)argc;
     auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
-    auto device = NS::TransferPtr(MTL::CreateSystemDefaultDevice());
-    auto queue = NS::TransferPtr(device->newCommandQueue());
+    mtl::Context ctx;
+    auto *device = ctx.Device.get();
     auto source = msl::Load(ShadersDir(argv[0]), "Transparency.metal").Text;
     source += R"(
 struct TestLayer { float4 Color; float Depth; };
@@ -32,54 +35,51 @@ fragment TransparencyStore TestFragment(TestVaryings in [[stage_in]], Transparen
     NS::Error *error = nullptr;
     auto library = NS::TransferPtr(device->newLibrary(NS::String::string(source.c_str(), NS::UTF8StringEncoding), nullptr, &error));
     if (!library) throw std::runtime_error(error->localizedDescription()->utf8String());
+    const auto compiler_descriptor = NS::TransferPtr(MTL4::CompilerDescriptor::alloc()->init());
+    auto compiler = NS::TransferPtr(device->newCompiler(compiler_descriptor.get(), &error));
+    if (!compiler) throw std::runtime_error(error->localizedDescription()->utf8String());
+    const auto function = [&](const char *name) {
+        auto descriptor = NS::TransferPtr(MTL4::LibraryFunctionDescriptor::alloc()->init());
+        descriptor->setName(NS::String::string(name, NS::UTF8StringEncoding));
+        descriptor->setLibrary(library.get());
+        return descriptor;
+    };
     const auto pipeline = [&](const char *fragment) {
-        auto descriptor = NS::TransferPtr(MTL::RenderPipelineDescriptor::alloc()->init());
-        auto vertex = NS::TransferPtr(library->newFunction(NS::String::string("TestVertex", NS::UTF8StringEncoding)));
-        auto frag = NS::TransferPtr(library->newFunction(NS::String::string(fragment, NS::UTF8StringEncoding)));
-        descriptor->setVertexFunction(vertex.get());
-        descriptor->setFragmentFunction(frag.get());
+        auto descriptor = NS::TransferPtr(MTL4::RenderPipelineDescriptor::alloc()->init());
+        const auto vertex = function("TestVertex"), frag = function(fragment);
+        descriptor->setVertexFunctionDescriptor(vertex.get());
+        descriptor->setFragmentFunctionDescriptor(frag.get());
         descriptor->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatRGBA16Float);
-        auto state = NS::TransferPtr(device->newRenderPipelineState(descriptor.get(), &error));
+        auto state = NS::TransferPtr(compiler->newRenderPipelineState(descriptor.get(), nullptr, &error));
         if (!state) throw std::runtime_error(error->localizedDescription()->utf8String());
         return state;
     };
     const auto init = pipeline("TransparencyInitFragment");
     const auto insert = pipeline("TestFragment");
     const auto resolve = pipeline("TransparencyResolveFragment");
-    auto descriptor = NS::TransferPtr(MTL::TextureDescriptor::alloc()->init());
-    descriptor->setWidth(1);
-    descriptor->setHeight(1);
-    descriptor->setPixelFormat(MTL::PixelFormatRGBA16Float);
-    descriptor->setStorageMode(MTL::StorageModeShared);
-    descriptor->setUsage(MTL::TextureUsageRenderTarget);
-    auto target = NS::TransferPtr(device->newTexture(descriptor.get()));
+    const auto target = mtl::CreateTexture2D(ctx, MTL::PixelFormatRGBA16Float, {1, 1}, MTL::TextureUsageRenderTarget, 1, MTL::StorageModeShared);
     const auto render = [&](const std::vector<Layer> &layers) {
-        auto pass = MTL::RenderPassDescriptor::renderPassDescriptor();
-        auto color = pass->colorAttachments()->object(0);
-        color->setTexture(target.get());
-        color->setLoadAction(MTL::LoadActionClear);
-        color->setStoreAction(MTL::StoreActionStore);
-        color->setClearColor({0.125, 0.25, 0.5, 1});
+        const std::array colors{mtl::ClearColor(*target, {0.125, 0.25, 0.5, 1})};
+        const auto pass = mtl::MakePassDescriptor(colors);
         pass->setTileWidth(16);
         pass->setTileHeight(16);
         pass->setImageblockSampleLength(std::max({init->imageblockSampleLength(), insert->imageblockSampleLength(), resolve->imageblockSampleLength()}));
-        auto *command = queue->commandBuffer();
-        auto *encoder = command->renderCommandEncoder(pass);
+        auto command = ctx.Begin();
+        const auto encoder = command.BeginRender(pass.get());
+        encoder->barrierAfterQueueStages(MTL::StageAll, MTL::StageFragment, MTL4::VisibilityOptionDevice);
         const Layer full{{0, 0, 0, 0}, 0.5f};
         const auto draw = [&](MTL::RenderPipelineState *state, const Layer &layer) {
             encoder->setRenderPipelineState(state);
-            encoder->setVertexBytes(&layer, sizeof(layer), 0);
+            command.SetBytes(layer, 0);
             encoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(3));
         };
         draw(init.get(), full);
         for (const auto &layer : layers) draw(insert.get(), layer);
         draw(resolve.get(), full);
         encoder->endEncoding();
-        command->commit();
-        command->waitUntilCompleted();
-        if (command->error()) throw std::runtime_error(command->error()->localizedDescription()->utf8String());
+        if (const auto completion = ctx.Run(std::move(command)); !completion.Error.empty()) throw std::runtime_error(completion.Error);
         std::array<_Float16, 4> pixel{};
-        target->getBytes(pixel.data(), sizeof(pixel), MTL::Region::Make2D(0, 0, 1, 1), 0);
+        target.Handle->getBytes(pixel.data(), sizeof(pixel), MTL::Region::Make2D(0, 0, 1, 1), 0);
         return std::array<float, 4>{pixel[0], pixel[1], pixel[2], pixel[3]};
     };
     const auto reference = [](std::vector<Layer> layers) {

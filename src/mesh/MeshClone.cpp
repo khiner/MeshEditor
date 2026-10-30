@@ -25,17 +25,17 @@ void EncodeRuns(mtl::ComputeChain &chain, const mtl::ComputePipeline &pipeline, 
     first_tiles.push_back(uint32_t(tiles.size()));
     mtl::Buffer job_buffer{chain.Buffers, std::as_bytes(std::span{jobs}), SlotType::Buffer, mtl::BufferLifetime::Workspace};
     mtl::Buffer tile_buffer{chain.Buffers, std::as_bytes(std::span{tiles}), SlotType::Buffer, mtl::BufferLifetime::Workspace};
-    chain.Encode([&](MTL::ComputeCommandEncoder *encoder) {
-        encoder->setComputePipelineState(pipeline.State());
-        encoder->setBuffer(*job_buffer, 0, CloneBufferIndex_Jobs);
+    chain.Encode([&](mtl::ComputeEncoder encoder) {
+        pipeline.Bind(encoder);
+        encoder.Cmd->SetBuffer(*job_buffer, 0, CloneBufferIndex_Jobs);
         for (uint32_t b = 0u; b < runs.Buffers.size(); ++b) {
             const auto count = first_tiles[b + 1u] - first_tiles[b];
             if (!count) continue;
-            encoder->setBuffer(**runs.Buffers[b], 0, CloneBufferIndex_Data);
-            encoder->setBuffer(*tile_buffer, uint64_t(first_tiles[b]) * sizeof(uvec2), CloneBufferIndex_Tiles);
+            encoder.Cmd->SetBuffer(**runs.Buffers[b], 0, CloneBufferIndex_Data);
+            encoder.Cmd->SetBuffer(*tile_buffer, uint64_t(first_tiles[b]) * sizeof(uvec2), CloneBufferIndex_Tiles);
             encoder->dispatchThreadgroups(MTL::Size(count, 1, 1), MTL::Size(width, 1, 1));
         }
-        encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+        mtl::ComputeBarrier(encoder);
     });
     chain.Retain(std::move(job_buffer));
     chain.Retain(std::move(tile_buffer));

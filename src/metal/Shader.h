@@ -1,5 +1,6 @@
 #pragma once
 
+#include "metal/Command.h"
 #include "metal/Image.h"
 #include "metal/MetalSchema.h"
 #include "metal/MslSource.h"
@@ -116,7 +117,7 @@ struct DepthState {
 
 // A render or mesh pipeline state with the depth-stencil state its passes bind alongside it.
 struct RenderPipeline {
-    void Bind(MTL::RenderCommandEncoder *) const;
+    void Bind(RenderEncoder) const;
     uint32_t ImageblockSampleLength() const { return uint32_t(PipelineState->imageblockSampleLength()); }
 
     NS::SharedPtr<MTL::RenderPipelineState> PipelineState;
@@ -135,7 +136,7 @@ RenderPipeline MakeMeshPipeline(
 struct ComputePipeline {
     ComputePipeline(LibraryCache &, FunctionRef);
 
-    MTL::ComputePipelineState *State() const { return PipelineState.get(); }
+    void Bind(ComputeEncoder) const;
 
     NS::SharedPtr<MTL::ComputePipelineState> PipelineState;
 };

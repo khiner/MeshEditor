@@ -109,8 +109,8 @@ const PbrVariant &PbrCompiler::Variant(PbrFeatureMask mask, bool non_triangle_to
     });
 }
 
-void PbrVariant::BindMeshlets(MTL::RenderCommandEncoder *encoder) const { Transparent.Bind(encoder); }
-void PbrVariant::BindVisibility(MTL::RenderCommandEncoder *encoder, bool prepass) const { (prepass ? *Prepass : Visibility).Bind(encoder); }
+void PbrVariant::BindMeshlets(mtl::RenderEncoder encoder) const { Transparent.Bind(encoder); }
+void PbrVariant::BindVisibility(mtl::RenderEncoder encoder, bool prepass) const { (prepass ? *Prepass : Visibility).Bind(encoder); }
 
 MainPipeline::MainPipeline(mtl::LibraryCache &libraries)
     : Background{CreateBackgroundPipeline(libraries, SceneFormats(), {Blend}, false)},
@@ -203,7 +203,8 @@ Pipelines::Pipelines(mtl::LibraryCache &libraries)
       DepthPyramidReduce{libraries, {"DepthPyramidReduce.metal", "DepthPyramidReduceKernel"}},
       EquirectToCubemap{libraries, {"IblPrefilter.metal", "EquirectToCubemapKernel"}},
       DiffuseIrradiance{libraries, {"IblPrefilter.metal", "DiffuseIrradianceKernel"}},
-      SpecularPrefilter{libraries, {"IblPrefilter.metal", "SpecularPrefilterKernel"}} {}
+      SpecularPrefilter{libraries, {"IblPrefilter.metal", "SpecularPrefilterKernel"}},
+      MipDownsample{libraries, {"MipDownsample.metal", "MipDownsampleKernel"}} {}
 
 Pipelines &GetPipelines(state::Registry &r) {
     if (auto *pipelines = r.Resources.find<Pipelines>()) return *pipelines;

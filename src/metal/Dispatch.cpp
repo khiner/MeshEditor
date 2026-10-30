@@ -27,7 +27,7 @@ ComputeChain::~ComputeChain() {
         std::fputs("A compute chain was destroyed with unsubmitted passes.\n", stderr);
         std::abort();
     }
-    if (const auto encoder = std::exchange(Encoding, {})) encoder->endEncoding();
+    EndEncoding();
     Recording.reset();
     // A chain that never committed leaves its scratch unread, so the scratch releases without a fence.
     if (!Committed) {
@@ -38,7 +38,7 @@ ComputeChain::~ComputeChain() {
 }
 
 void ComputeChain::Barrier() {
-    if (std::exchange(DeferredBarrier, false) && Encoding) Encoding->memoryBarrier(MTL::BarrierScopeBuffers);
+    if (std::exchange(DeferredBarrier, false) && Encoding) ComputeBarrier({&*Recording, Encoding.get()});
 }
 
 void ComputeChain::EndEncoding() {
@@ -46,41 +46,26 @@ void ComputeChain::EndEncoding() {
     if (const auto encoder = std::exchange(Encoding, {})) encoder->endEncoding();
 }
 
-MTL::ComputeCommandEncoder *ComputeChain::Encoder() {
-    const auto &ctx = Buffers.Ctx;
-    if (!Recording) {
-        Recording = NS::RetainPtr(ctx.Queue->commandBuffer());
-        ctx.OrderAfterGpuWork(Recording.get());
-        RecordingSignals = ctx.ExecutionSignals();
-        OrderedCommits = CommittedCommandBuffers();
-    } else if (ctx.ExecutionSignals() != RecordingSignals) {
-        // Wait for prior submissions before dependent reads.
-        EndEncoding();
-        ctx.OrderAfterGpuWork(Recording.get());
-        RecordingSignals = ctx.ExecutionSignals();
-        OrderedCommits = CommittedCommandBuffers();
-    }
+ComputeEncoder ComputeChain::Encoder() {
+    if (!Recording) Recording.emplace(Buffers.Ctx.Begin());
     if (!Encoding) {
-        Encoding = NS::RetainPtr(Recording->computeCommandEncoder());
-        DeclaredResources = ~0ull;
+        const auto encoder = Recording->BeginCompute();
+        // The passes read what every earlier command wrote.
+        encoder->barrierAfterQueueStages(MTL::StageAll, MTL::StageDispatch | MTL::StageBlit, MTL4::VisibilityOptionDevice);
+        Encoding = NS::RetainPtr(encoder.Pass);
     }
-    // Buffers created after the last declaration join it before the next pass reads them.
-    if (DeclaredResources != Buffers.Slots.ResourceRevision()) {
-        Buffers.Slots.UseResources(Encoding.get());
-        DeclaredResources = Buffers.Slots.ResourceRevision();
-    }
-    Encoding->setBuffer(Buffers.Slots.Table(), 0, BufferIndex_Bindless);
-    return Encoding.get();
+    Recording->SetBuffer(Buffers.Slots.Table(), 0, BufferIndex_Bindless);
+    return {&*Recording, Encoding.get()};
 }
 
 // Binds the pipeline and push constants, runs `dispatch` on the encoder, and orders the passes after it.
 void ComputeChain::Record(const ComputePipeline &pipeline, const void *pc, uint32_t bytes, auto &&dispatch) {
-    auto *encoder = Encoder();
-    encoder->setComputePipelineState(pipeline.State());
-    encoder->setBytes(pc, bytes, BufferIndex_PushConstants);
+    const auto encoder = Encoder();
+    pipeline.Bind(encoder);
+    encoder.Cmd->SetBytes(std::span{static_cast<const std::byte *>(pc), bytes}, BufferIndex_PushConstants);
     dispatch(encoder);
     if (Deferring) DeferredBarrier = true;
-    else encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    else ComputeBarrier(encoder);
 }
 
 void ComputeChain::Dispatch(const ComputePipeline &pipeline, const void *pc, uint32_t bytes, uint32_t count, uint32_t depth, uint32_t width, bool threads) {
@@ -90,7 +75,7 @@ void ComputeChain::Dispatch(const ComputePipeline &pipeline, const void *pc, uin
         const auto groups = (threads ? (uint64_t(count) + width - 1u) / width : count) * depth;
         profile::RecordCounter("ComputeThreadgroups", groups);
     }
-    Record(pipeline, pc, bytes, [&](MTL::ComputeCommandEncoder *encoder) {
+    Record(pipeline, pc, bytes, [&](ComputeEncoder encoder) {
         if (threads) encoder->dispatchThreads(MTL::Size(count, 1, 1), MTL::Size(width, 1, 1));
         else encoder->dispatchThreadgroups(MTL::Size(count, 1, depth), MTL::Size(width, 1, 1));
     });
@@ -99,7 +84,7 @@ void ComputeChain::Dispatch(const ComputePipeline &pipeline, const void *pc, uin
 void ComputeChain::DispatchIndirect(const ComputePipeline &pipeline, const void *pc, uint32_t bytes, const Buffer &arguments, uint64_t offset, uint32_t width) {
     const AutoreleaseScope pool;
     profile::RecordCounter("ComputeIndirectDispatches", 1u);
-    Record(pipeline, pc, bytes, [&](MTL::ComputeCommandEncoder *encoder) { encoder->dispatchThreadgroups(*arguments, offset, MTL::Size(width, 1, 1)); });
+    Record(pipeline, pc, bytes, [&](ComputeEncoder encoder) { encoder->dispatchThreadgroups((*arguments)->gpuAddress() + offset, MTL::Size(width, 1, 1)); });
 }
 
 void ComputeChain::Retain(Buffer &&buffer) { Retained.push_back(std::move(buffer)); }
@@ -112,18 +97,15 @@ void ComputeChain::Submit() {
     if (Recording) {
         const profile::CpuScope scope{"ComputeChainSubmit"};
         EndEncoding();
-        // The command buffer fences the buffers retired while recording, so it runs after every command buffer committed before it.
-        if (CommittedCommandBuffers() != OrderedCommits) Buffers.Ctx.OrderAfterGpuWork(Recording.get());
-        Buffers.FenceRetiredBuffers(Recording.get());
-        // Encoding can allocate buffers, so residency commits after it.
-        Buffers.Ctx.CommitResidency();
-        const auto command = std::exchange(Recording, {});
-        Commit(command.get());
+        const auto serial = Buffers.Ctx.Commit(std::move(*Recording));
+        Recording.reset();
+        // The command fences the buffers retired while recording, since it runs after every command committed before it.
+        Buffers.FenceRetiredBuffers(serial);
         Committed = true;
-        command->waitUntilCompleted();
-        if (command->status() == MTL::CommandBufferStatusError) throw std::runtime_error("GPU compute chain failed.");
-        if (profile::Enabled) profile::RecordCounter("ComputeGpuMicroseconds", (command->GPUEndTime() - command->GPUStartTime()) * 1e6);
-        // The retained buffers and the scratch workspaces growth replaced had their last readers in the command buffer.
+        const auto completion = Buffers.Ctx.Wait(serial);
+        if (!completion.Error.empty()) throw std::runtime_error("GPU compute chain failed: " + completion.Error);
+        if (profile::Enabled) profile::RecordCounter("ComputeGpuMicroseconds", (completion.GpuEndTime - completion.GpuStartTime) * 1e6);
+        // The retained buffers and the scratch workspaces growth replaced had their last readers in the command.
         Retained.clear();
         Scratch.Buffer.RetirePreviousWorkspaces();
         Buffers.ReleaseRetiredBuffers();

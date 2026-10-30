@@ -13,9 +13,23 @@ void LibraryCache::Clear() {
     Entries.clear();
 }
 
-void RenderPipeline::Bind(MTL::RenderCommandEncoder *encoder) const {
-    encoder->setRenderPipelineState(PipelineState.get());
-    encoder->setDepthStencilState(DepthStencilState.get());
+void RenderPipeline::Bind(RenderEncoder encoder) const {
+    auto &state = encoder.Cmd->State;
+    if (state.Pipeline != PipelineState.get()) {
+        encoder->setRenderPipelineState(PipelineState.get());
+        state.Pipeline = PipelineState.get();
+    }
+    if (state.DepthStencil != DepthStencilState.get()) {
+        encoder->setDepthStencilState(DepthStencilState.get());
+        state.DepthStencil = DepthStencilState.get();
+    }
+}
+
+void ComputePipeline::Bind(ComputeEncoder encoder) const {
+    auto &state = encoder.Cmd->State;
+    if (state.Pipeline == PipelineState.get()) return;
+    encoder->setComputePipelineState(PipelineState.get());
+    state.Pipeline = PipelineState.get();
 }
 
 namespace {

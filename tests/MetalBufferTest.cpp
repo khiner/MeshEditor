@@ -1,5 +1,6 @@
 #include "metal/Dispatch.h"
 #include "metal/MetalCpp.h"
+#include "metal/PassChain.h"
 #include <boost/ut.hpp>
 
 using namespace boost::ut;
@@ -28,22 +29,24 @@ const boost::ut::suite MetalBuffer = [] {
 
         mtl::ComputeChain chain{buffers};
         const auto add = [&](uint32_t amount) {
-            chain.Encode([&](MTL::ComputeCommandEncoder *encoder) {
+            chain.Encode([&](mtl::ComputeEncoder encoder) {
                 encoder->setComputePipelineState(pipeline.get());
-                encoder->setBuffer(*output, 0u, 0u);
-                encoder->setBytes(&amount, sizeof(amount), 1u);
+                encoder.Cmd->SetBuffer(*output, 0u, 0u);
+                encoder.Cmd->SetBytes(amount, 1u);
                 encoder->dispatchThreads(MTL::Size{1u, 1u, 1u}, MTL::Size{1u, 1u, 1u});
-                encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+                mtl::ComputeBarrier(encoder);
             });
         };
         add(3u);
-        // This committed write executes before the chain and forces its next call to open a new encoder.
-        auto *write = ctx.Queue->commandBuffer();
-        ctx.OrderAfterGpuWork(write);
-        auto *blit = write->blitCommandEncoder();
-        blit->fillBuffer(*output, NS::Range::Make(0u, sizeof(uint32_t)), 1u);
-        blit->endEncoding();
-        write->commit();
+        // This committed write executes before the chain, whose command waits for every earlier commit.
+        {
+            auto write = ctx.Begin();
+            {
+                mtl::PassChain chain{write};
+                chain.BeginBlit()->fillBuffer(*output, NS::Range::Make(0u, sizeof(uint32_t)), 1u);
+            }
+            (void)ctx.Commit(std::move(write));
+        }
         add(5u);
         chain.Submit();
         expect(output.GetSpan<uint32_t>({0u, 1u})[0] == 0x01010109u);
@@ -58,7 +61,7 @@ const boost::ut::suite MetalBuffer = [] {
         mtl::BindlessSet slots{ctx};
         mtl::BufferContext buffers{ctx, slots};
         const auto gate = NS::TransferPtr(ctx.Device->newSharedEvent());
-        const auto readback = NS::TransferPtr(ctx.Device->newBuffer(4u, MTL::ResourceStorageModeShared));
+        const mtl::ResidentBuffer readback{ctx, 4u};
         std::optional<mtl::Buffer> clone;
         constexpr uint32_t Original = 0x12345678u;
         {
@@ -76,22 +79,20 @@ const boost::ut::suite MetalBuffer = [] {
         const auto source_slot = slots.Allocate(SlotType::Buffer);
 
         const auto retired_slot = clone->Slot;
-        auto *reader = ctx.Queue->commandBuffer();
-        reader->encodeWait(gate.get(), 1u);
-        auto *encoder = reader->blitCommandEncoder();
-        encoder->copyFromBuffer(**clone, 0u, readback.get(), 0u, 4u);
-        encoder->endEncoding();
-        ctx.CommitResidency();
-        reader->commit();
+        auto reader = ctx.Begin();
+        reader.WaitEvent(gate.get(), 1u);
+        const auto copy = reader.BeginCompute();
+        copy->copyFromBuffer(**clone, 0u, *readback, 0u, 4u);
+        copy->endEncoding();
+        const auto serial = ctx.Commit(std::move(reader));
         clone.reset();
         buffers.ReclaimRetiredBuffers();
         const auto next_slot = slots.Allocate(SlotType::Buffer);
         expect(next_slot != retired_slot);
 
         gate->setSignaledValue(1u);
-        reader->waitUntilCompleted();
-        expect(reader->status() == MTL::CommandBufferStatusCompleted);
-        expect(*static_cast<const uint32_t *>(readback->contents()) == Original);
+        expect(ctx.Wait(serial).Error.empty());
+        expect(*reinterpret_cast<const uint32_t *>(readback.Contents().data()) == Original);
         buffers.ReclaimRetiredBuffers(true);
         slots.Release({SlotType::Buffer, source_slot});
         slots.Release({SlotType::Buffer, next_slot});

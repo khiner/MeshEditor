@@ -74,38 +74,28 @@ std::vector<SelectionRequest> SelectionRequests(std::span<const ElementRange> ra
     return requests;
 }
 
-void SubmitAndWait(const mtl::Context &ctx, MTL::CommandBuffer *command_buffer) {
+mtl::Completion SubmitAndWait(const mtl::Context &ctx, mtl::Command &&command) {
     const profile::CpuScope scope{"SelectionSubmit"};
-    // Selection culling may allocate bindless buffers while encoding.
-    {
-        const profile::CpuScope residency_scope{"SelectionResidency"};
-        ctx.CommitResidency();
-    }
-    mtl::Commit(command_buffer);
-    {
-        const profile::CpuScope wait_scope{"SelectionWait"};
-        command_buffer->waitUntilCompleted();
-    }
-    if (command_buffer->status() == MTL::CommandBufferStatusError) {
-        const auto *error = command_buffer->error();
-        throw std::runtime_error(std::string{"GPU selection command failed: "} + (error ? error->localizedDescription()->utf8String() : "unknown Metal error"));
-    }
+    const auto serial = ctx.Commit(std::move(command));
+    const profile::CpuScope wait_scope{"SelectionWait"};
+    auto completion = ctx.Wait(serial);
+    if (!completion.Error.empty()) throw std::runtime_error("GPU selection command failed: " + completion.Error);
+    return completion;
 }
 
 void SubmitSelectionPasses(state::Registry &r, auto &&record) {
     const mtl::AutoreleaseScope native_scope;
     const auto &ctx = r.Resources.get<const mtl::Context>();
-    auto *command_buffer = ctx.Queue->commandBuffer();
+    auto command = ctx.Begin();
     { // End the final pass before submission.
         const struct RecordingScope {
             RecordingScope() { profile::BeginRecording(); }
             ~RecordingScope() { profile::EndRecording(); }
         } recording;
-        mtl::PassChain chain{command_buffer, profile::RecordingTimer()};
+        mtl::PassChain chain{command, profile::RecordingTimer()};
         record(chain);
     }
-    SubmitAndWait(ctx, command_buffer);
-    profile::Resolve(command_buffer);
+    profile::Resolve(SubmitAndWait(ctx, std::move(command)));
 }
 
 struct ElementPickTarget {
@@ -208,7 +198,7 @@ void RunSelectionPass(
         pass->setRenderTargetWidth(extent.Width);
         pass->setRenderTargetHeight(extent.Height);
         // The pick resolve reads the key an earlier raster wrote, and bindless buffers carry no tracked hazard.
-        auto *encoder = encode::BeginScenePass(chain, pass.get(), "SelectionPass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh}, {MTL::StageBlit | MTL::StageFragment, MTL::StageFragment}}, extent, slots, buffers, viewport);
+        const auto encoder = encode::BeginScenePass(chain, pass.get(), "SelectionPass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh}, {MTL::StageBlit | MTL::StageFragment, MTL::StageFragment}}, extent, slots, buffers, viewport);
         record_draws(encoder, extent, index == 1u);
     }
 }
@@ -245,7 +235,7 @@ void RenderElementSelectionPass(
                                                         .ExactEditGeometry = true,
                                                     }},
         pick.has_value(),
-        [&](auto *encoder, mtl::Extent2D, bool resolve_id) {
+        [&](mtl::RenderEncoder encoder, mtl::Extent2D, bool resolve_id) {
             const SelectionElementPushConstants element_pc{MakeElementQuery(sel_slots, {box_min.x, box_min.y, box_max.x, box_max.y}, write_bitset ? meshes.Arenas().Query.Ref() : SelectionQueryRef{}, pick, resolve_id)};
             if (write_bitset) encoder->setScissorRect({query_rect->Origin.x, query_rect->Origin.y, query_rect->Extent.x, query_rect->Extent.y});
             // Edges draw once per triangle corner.
@@ -256,7 +246,7 @@ void RenderElementSelectionPass(
             };
             const auto &pipeline = selection.ElementRaster(element, write_bitset, xray_selection);
             pipeline.Bind(encoder);
-            encoder->setFragmentBytes(&element_pc, sizeof(element_pc), BufferIndex_PushConstants);
+            encode::SetFragmentPushConstants(encoder, element_pc);
             if (element == Element::Edge) draw_edges();
             else if (element == Element::Face) DrawMeshlets(encoder, buffers, 0u, uint32_t(MeshletInstanceFlag::ElementSelection), 160u);
             else {
@@ -270,7 +260,7 @@ void RenderElementSelectionPass(
                     selection.MeshletFaceXRayPointsBitsetBox :
                     selection.MeshletEdgeXRayPointsBitsetBox;
                 point_pipeline.Bind(encoder);
-                encoder->setFragmentBytes(&element_pc, sizeof(element_pc), BufferIndex_PushConstants);
+                encode::SetFragmentPushConstants(encoder, element_pc);
                 if (element == Element::Face) DrawMeshlets(encoder, buffers, 0u, uint32_t(MeshletInstanceFlag::ElementSelection), 64u);
                 else draw_edges();
             }
@@ -324,10 +314,10 @@ void RecordVisibilityObjectSelection(
     if (!rect) return;
     RecordSelectionVisibility(r, viewport, chain, *rect, MeshletRouteMode::Selection);
 
-    auto *encoder = chain.BeginCompute("VisibilityObjectSelection", MTL::StageFragment);
+    const auto encoder = chain.BeginCompute("VisibilityObjectSelection", MTL::StageFragment);
     encode::BindCompute(encoder, pipelines.VisibilityObjectSelection, slots, buffers, viewport);
-    encoder->setTexture(*screen.VisibilityImage, 0u);
-    encoder->setTexture(*screen.VisibilityDepth, 1u);
+    encoder.Cmd->SetTexture(*screen.VisibilityImage, 0u);
+    encoder.Cmd->SetTexture(*screen.VisibilityDepth, 1u);
     encode::SetPushConstants(encoder, VisibilitySelectionPushConstants{encode::VisibilityDecodePc(buffers), query, rect->Origin, rect->Extent});
     encoder->dispatchThreadgroups(
         MTL::Size((rect->Extent.x + 15u) / 16u, (rect->Extent.y + 15u) / 16u, 1u),
@@ -355,11 +345,11 @@ void RenderSelectionPickPass(state::Registry &r, const Viewport &viewport, mtl::
     const bool sound = sound_instance != state::Null;
     const auto sound_rect = sound && pick ? RadiusRect(pick->Px, pick->RadiusSq, viewport.Targets.Screen->ScratchDepth.Extent) : std::nullopt;
     if (sound && !sound_rect) return;
-    RunSelectionPass(r, viewport, chain, sound_rect, false, std::nullopt, pick.has_value(), [&](auto *encoder, mtl::Extent2D, bool resolve_id) {
+    RunSelectionPass(r, viewport, chain, sound_rect, false, std::nullopt, pick.has_value(), [&](mtl::RenderEncoder encoder, mtl::Extent2D, bool resolve_id) {
         if (sound) {
             const SelectionElementPushConstants point_pc{MakeElementQuery(sel_slots, {}, {}, pick, resolve_id)};
             selection.ElementRaster(Element::Vertex, false, false).Bind(encoder);
-            encoder->setFragmentBytes(&point_pc, sizeof(point_pc), BufferIndex_PushConstants);
+            encode::SetFragmentPushConstants(encoder, point_pc);
             DrawVertexBlocks(encoder, r, r.get<const Instance>(sound_instance).Entity, r.get<const RenderInstance>(sound_instance).BufferIndex, true);
         }
         if (object) {
@@ -368,9 +358,9 @@ void RenderSelectionPickPass(state::Registry &r, const Viewport &viewport, mtl::
             encoder->setScissorRect({rect->Origin.x, rect->Origin.y, rect->Extent.x, rect->Extent.y});
             if (raster_all) {
                 selection.ObjectPick.Bind(encoder);
-                encoder->setCullMode(MTL::CullModeNone); // Shared coverage handles sidedness and mirrored transforms.
+                SetCullMode(encoder, MTL::CullModeNone); // Shared coverage handles sidedness and mirrored transforms.
                 const VisibilitySelectionPushConstants pc{encode::MeshletDecodePc(buffers), *object};
-                encoder->setFragmentBytes(&pc, sizeof(pc), BufferIndex_PushConstants);
+                encode::SetFragmentPushConstants(encoder, pc);
                 for (const auto route : {MeshletRoute::OpaqueCullBack, MeshletRoute::OpaqueCullFront, MeshletRoute::OpaqueDoubleSided, MeshletRoute::Coverage, MeshletRoute::Blend}) {
                     DrawMeshlets(encoder, buffers, uint32_t(route));
                 }
@@ -378,19 +368,19 @@ void RenderSelectionPickPass(state::Registry &r, const Viewport &viewport, mtl::
             const ObjectSelectionPushConstants sel_pc{*object};
             if (buffers.FlagWork(uint32_t(MeshletInstanceFlag::Bone)).Meshlets > 0u) {
                 selection.BoneSolid.Bind(encoder);
-                encoder->setFragmentBytes(&sel_pc, sizeof(sel_pc), BufferIndex_PushConstants);
+                encode::SetFragmentPushConstants(encoder, sel_pc);
                 DrawMeshlets(encoder, buffers, uint32_t(MeshletRoute::Overlay), uint32_t(MeshletInstanceFlag::Bone), 24u);
             }
             if (buffers.FlagWork(uint32_t(MeshletInstanceFlag::BoneJoint)).Meshlets > 0u) {
                 selection.BoneSphere.Bind(encoder);
-                encoder->setFragmentBytes(&sel_pc, sizeof(sel_pc), BufferIndex_PushConstants);
+                encode::SetFragmentPushConstants(encoder, sel_pc);
                 DrawMeshlets(
                     encoder, buffers, uint32_t(MeshletRoute::Overlay),
                     uint32_t(MeshletInstanceFlag::BoneJoint), uint32_t(OverlayDispatch::BoneSphereVertices)
                 );
             }
             selection.OverlayJobLines.Bind(encoder);
-            encoder->setFragmentBytes(&sel_pc, sizeof(sel_pc), BufferIndex_PushConstants);
+            encode::SetFragmentPushConstants(encoder, sel_pc);
             DrawOverlayJobs(encoder, buffers, r.Resources.get<const MeshStore>());
         }
     });

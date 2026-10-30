@@ -21,6 +21,7 @@
 #include "gltf/GltfScene.h"
 #include "image/ImageEncode.h"
 #include "mesh/MeshComponents.h"
+#include "metal/ImGuiRenderer.h"
 #include "metal/MetalCpp.h"
 #include "metal/PassChain.h"
 #include "metal/RenderTarget.h"
@@ -54,7 +55,6 @@
 #include "viewport/ViewportIcons.h"
 #include "viewport/ViewportUi.h"
 
-#include "imgui_impl_metal.h"
 #include "implot.h"
 #include "imspinner_demo.h"
 
@@ -71,26 +71,46 @@ namespace {
 using SteadyClock = std::chrono::steady_clock;
 double ElapsedMs(SteadyClock::time_point begin) { return std::chrono::duration<double, std::milli>(SteadyClock::now() - begin).count(); }
 
+// The layer's drawable textures, resident while the layer keeps its size.
+struct DrawableResidency {
+    const mtl::Context &Ctx;
+    std::vector<NS::SharedPtr<MTL::Texture>> Textures;
+    CGSize Size{};
+
+    ~DrawableResidency() {
+        for (const auto &texture : Textures) Ctx.RemoveResident(texture.get());
+    }
+    void Add(CA::MetalLayer *layer, MTL::Texture *texture) {
+        if (const auto size = layer->drawableSize(); size.width != Size.width || size.height != Size.height) {
+            for (const auto &resident : Textures) Ctx.RemoveResident(resident.get());
+            Textures.clear();
+            Size = size;
+        }
+        if (std::ranges::any_of(Textures, [&](const auto &resident) { return resident.get() == texture; })) return;
+        Ctx.AddResident(texture);
+        Textures.push_back(NS::RetainPtr(texture));
+    }
+};
+
 // Skip a frame when every drawable is in flight.
-NS::SharedPtr<MTL::CommandBuffer> RenderAndPresentFrame(const mtl::Context &ctx, CA::MetalLayer *layer, ImDrawData *draw_data) {
+// Returns the serial of the presented frame, or zero.
+uint64_t RenderAndPresentFrame(const mtl::Context &ctx, mtl::ImGuiRenderer &ui, DrawableResidency &drawables, CA::MetalLayer *layer, ImDrawData *draw_data) {
     const mtl::AutoreleaseScope native_scope;
     const profile::CpuScope scope{"ImGuiRenderSubmit"};
-    const auto *drawable = layer->nextDrawable();
-    if (!drawable) return {};
+    auto *drawable = layer->nextDrawable();
+    if (!drawable) return 0u;
 
+    drawables.Add(layer, drawable->texture());
     const std::array colors{mtl::ClearColor(drawable->texture(), {0.45, 0.55, 0.60, 1.0})};
     const auto pass = mtl::MakePassDescriptor(colors);
-    auto *command_buffer = ctx.Queue->commandBuffer();
-    ImGui_ImplMetal_NewFrame(pass.get());
-    auto *encoder = command_buffer->renderCommandEncoder(pass.get());
-    ImGui_ImplMetal_RenderDrawData(draw_data, command_buffer, encoder);
-    encoder->endEncoding();
+    auto command = ctx.Begin();
     {
-        const profile::CpuScope present_scope{"Present"};
-        command_buffer->presentDrawable(drawable);
+        mtl::PassChain chain{command};
+        ui.Render(draw_data, chain.BeginRender(pass.get(), "ImGui"));
     }
-    mtl::Commit(command_buffer);
-    return NS::RetainPtr(command_buffer);
+    const profile::CpuScope present_scope{"Present"};
+    command.Present(drawable);
+    return ctx.Commit(std::move(command));
 }
 
 using namespace ImGui;
@@ -265,6 +285,10 @@ void QuiesceScene(state::Registry &r) {
 
 constexpr std::string_view ProjectExt{".project"}, ActionsExt{".actions"};
 fs::path HeadlessDirectory;
+#ifdef VALIDATE_ACTIONS
+// The headless engine's ImGui renderer, which draws the validation images.
+mtl::ImGuiRenderer *HeadlessValidationRenderer{};
+#endif
 uint64_t RestoreGeneration{};
 fs::path CachedWorkspacePath;
 std::vector<std::byte> CachedWorkspaceBytes;
@@ -644,12 +668,6 @@ void DisplayViewportPanels(state::Registry &r, const EditorPanelsFrame &frame) {
 
 #ifdef DEBUG_BUILD
 
-struct ValidationImage {
-    mtl::Texture Target;
-    NS::SharedPtr<MTL::Event> Ready;
-    uint64_t Generation{};
-};
-
 // A hash of every vertex, index and command the draw data holds, equal across frames whose UI is identical.
 uint64_t DrawDataHash(const ImDrawData *draw_data) {
     uint64_t hash = 0;
@@ -682,44 +700,38 @@ fs::path WriteValidationImage(const mtl::Context &ctx, std::string_view name, co
     return out ? path : fs::path{};
 }
 
-void RenderAppImage(const mtl::Context &ctx, ImDrawData *draw_data, ValidationImage &image) {
+// Renders the UI into the image and returns once the render completes.
+void RenderAppImage(const mtl::Context &ctx, mtl::ImGuiRenderer &ui, ImDrawData *draw_data, mtl::Texture &image) {
     const mtl::AutoreleaseScope native_scope;
     const mtl::Extent2D extent{
         uint32_t(std::ceil(draw_data->DisplaySize.x * draw_data->FramebufferScale.x)),
         uint32_t(std::ceil(draw_data->DisplaySize.y * draw_data->FramebufferScale.y)),
     };
-    if (!image.Ready) image.Ready = NS::TransferPtr(ctx.Device->newEvent());
-    if (!image.Target || image.Target.Extent != extent) {
-        image.Target = mtl::CreateUntrackedTexture2D(
+    if (!image || image.Extent != extent) {
+        image = mtl::CreateTexture2D(
             ctx, mtl::Format::Color, extent,
-            MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead, MTL::StorageModePrivate
+            MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead, 1, MTL::StorageModePrivate
         );
     }
-    const std::array colors{mtl::ClearColor(*image.Target, {0.45, 0.55, 0.60, 1.0})};
+    const std::array colors{mtl::ClearColor(*image, {0.45, 0.55, 0.60, 1.0})};
     const auto pass = mtl::MakePassDescriptor(colors);
-    ImGui_ImplMetal_NewFrame(pass.get());
-    auto *command_buffer = ctx.Queue->commandBuffer();
+    auto command = ctx.Begin();
     {
-        mtl::PassChain chain{command_buffer};
-        auto *encoder = chain.BeginRender(pass.get(), "ValidationApp");
-        ImGui_ImplMetal_RenderDrawData(draw_data, command_buffer, encoder);
+        mtl::PassChain chain{command};
+        ui.Render(draw_data, chain.BeginRender(pass.get(), "ValidationApp"));
     }
-    command_buffer->encodeSignalEvent(image.Ready.get(), ++image.Generation);
-    command_buffer->addCompletedHandler([](MTL::CommandBuffer *completed) {
-        const mtl::AutoreleaseScope native_scope;
-        if (const auto *error = completed->error()) {
-            std::println(stderr, "[validation] app render failed: {}", error->localizedDescription()->utf8String());
-            std::abort();
-        }
-    });
-    mtl::Commit(command_buffer);
+    if (const auto completion = ctx.Run(std::move(command)); !completion.Error.empty()) {
+        std::println(stderr, "[validation] app render failed: {}", completion.Error);
+        std::abort();
+    }
 }
 
+// An ImGui context sharing the live context's font atlas, whose draw data the live renderer draws.
 struct ValidationUi {
     ImGuiContext *LiveImGui{ImGui::GetCurrentContext()}, *Gui{};
     ImPlotContext *LiveImPlot{ImPlot::GetCurrentContext()}, *Plot{};
 
-    ValidationUi(const mtl::Context &ctx) {
+    ValidationUi() {
         auto *fonts = LiveImGui ? GetIO().Fonts : nullptr;
         const auto font_scale = LiveImGui ? GetIO().FontGlobalScale : 1.f;
         Gui = ImGui::CreateContext(fonts);
@@ -728,10 +740,10 @@ struct ValidationUi {
         ImPlot::SetCurrentContext(Plot);
         auto &io = GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
+        io.BackendFlags |= mtl::ImGuiRenderer::BackendFlags;
         io.IniFilename = nullptr;
         io.FontGlobalScale = font_scale;
         ui::StyleColors();
-        ImGui_ImplMetal_Init(ctx.Device.get());
     }
     void ActivateLive() const {
         ImGui::SetCurrentContext(LiveImGui);
@@ -740,7 +752,6 @@ struct ValidationUi {
     ~ValidationUi() {
         ImGui::SetCurrentContext(Gui);
         ImPlot::SetCurrentContext(Plot);
-        ImGui_ImplMetal_Shutdown();
         ImPlot::DestroyContext(Plot);
         ImGui::DestroyContext(Gui);
         ActivateLive();
@@ -904,7 +915,7 @@ void EndEditorFrame(state::Registry &r, PanelsState &panels, const EditorPanelsF
 struct ValidationEngine {
     std::optional<Engine> Core;
     const fs::path Directory = fs::temp_directory_path() / std::format("MeshEditor-validation-{}", uintptr_t(this));
-    ValidationImage App;
+    mtl::Texture App;
     std::optional<ValidationUi> Ui;
 
     ValidationEngine() {
@@ -926,13 +937,13 @@ struct ValidationEngine {
 // One offscreen engine restores by replay and then cold from the stored state, each compared with the live session before the next.
 struct ValidationSession {
     ValidationEngine Restored;
-    ValidationImage Live;
+    mtl::Texture Live;
     mtl::ComputePipeline Compare;
-    NS::SharedPtr<MTL::Buffer> Differences;
+    mtl::ResidentBuffer Differences;
 
     ValidationSession(state::Registry &r)
         : Compare(r.Resources.get<mtl::LibraryCache>(), {"ValidationCompare.metal", "CompareValidationImages"}),
-          Differences(mtl::NewBuffer(r.Resources.get<const mtl::Context>(), 2 * sizeof(uint32_t))) {}
+          Differences(r.Resources.get<const mtl::Context>(), 2 * sizeof(uint32_t)) {}
 };
 namespace {
 
@@ -1007,15 +1018,15 @@ struct ValidationResult {
     RestoreTimings Timings;
 };
 
+// Restores the live history into the engine and draws its UI with the live context's renderer.
 ValidationResult RestoreForValidation(
-    ValidationEngine &engine, const ValidationInputs &inputs, const store::History &live, bool replay
+    ValidationEngine &engine, const mtl::Context &ctx, mtl::ImGuiRenderer &ui, const ValidationInputs &inputs, const store::History &live, bool replay
 ) {
     auto &restored = engine.Core->R;
-    const auto &ctx = restored.Resources.get<const mtl::Context>();
     ValidationResult result;
     auto &timings = result.Timings;
     auto begin = SteadyClock::now();
-    engine.Ui.emplace(ctx);
+    engine.Ui.emplace();
     restored.Resources.get<PanelsState>() = {};
     auto &frame = restored.Resources.get<FrameState>();
     frame = {.DisplayFramebufferScale = std::bit_cast<vec2>(inputs.FramebufferScale), .Scrubbing = inputs.Scrubbing, .Capturing = inputs.Capturing};
@@ -1046,7 +1057,21 @@ ValidationResult RestoreForValidation(
         if (Displayed(restored, viewport)) PresentViewport(restored, viewport);
     }
     timings.ResetMs += reset_ms;
-    RenderAppImage(ctx, RenderValidationApp(restored, inputs), engine.App);
+    auto *draw_data = RenderValidationApp(restored, inputs);
+    // The restored engine's own textures are resident on its queue, so they join the live residency set until the live render completes.
+    WaitForRender(restored);
+    const auto atlas_texture = [&](ImTextureID id) { return any_of(*draw_data->Textures, [id](const auto *texture) { return texture->TexID == id; }); };
+    std::vector<MTL::Texture *> textures;
+    for (const auto *list : draw_data->CmdLists) {
+        for (const auto &cmd : list->CmdBuffer) {
+            const auto id = cmd.GetTexID();
+            if (id == ImTextureID_Invalid || atlas_texture(id)) continue;
+            if (auto *texture = reinterpret_cast<MTL::Texture *>(id); !std::ranges::contains(textures, texture)) textures.push_back(texture);
+        }
+    }
+    for (auto *texture : textures) ctx.AddResident(texture);
+    RenderAppImage(ctx, ui, draw_data, engine.App);
+    for (auto *texture : textures) ctx.RemoveResident(texture);
     timings.RenderMs += ElapsedMs(begin);
     begin = SteadyClock::now();
     result.State = engine.Core->P->History.MaterializeLive();
@@ -1071,8 +1096,9 @@ void RequireEqual(const store::History &live, std::string_view what, std::span<c
 void CompareValidationImages(state::Registry &r, ValidationSession &session, std::string_view restore) {
     const mtl::AutoreleaseScope native_scope;
     const auto &ctx = r.Resources.get<const mtl::Context>();
-    const std::array<const mtl::Texture *, 2> expected{&session.Live.Target, &r.get<const Viewport>(FirstViewport(r)).Targets.Screen->FinalColorImage};
-    const std::array<const mtl::Texture *, 2> restored{&session.Restored.App.Target, &session.Restored.Core->R.get<const Viewport>(FirstViewport(session.Restored.Core->R)).Targets.Screen->FinalColorImage};
+    const auto &restored_viewport = session.Restored.Core->R.get<const Viewport>(FirstViewport(session.Restored.Core->R)).Targets.Screen->FinalColorImage;
+    const std::array<const mtl::Texture *, 2> expected{&session.Live, &r.get<const Viewport>(FirstViewport(r)).Targets.Screen->FinalColorImage};
+    const std::array<const mtl::Texture *, 2> restored{&session.Restored.App, &restored_viewport};
     const std::array names{std::format("{}-app", restore), std::format("{}-viewport", restore)};
     for (uint32_t i = 0; i < restored.size(); ++i) {
         if (restored[i]->Extent != expected[i]->Extent) {
@@ -1081,26 +1107,26 @@ void CompareValidationImages(state::Registry &r, ValidationSession &session, std
             std::abort();
         }
     }
-    auto *differences = static_cast<uint32_t *>(session.Differences->contents());
+    auto *differences = reinterpret_cast<uint32_t *>(session.Differences.Contents().data());
     std::fill_n(differences, restored.size(), UINT32_MAX);
-    auto *command_buffer = ctx.Queue->commandBuffer();
-    // Each app event follows its engine's viewport render; queues may finish in any order.
-    for (const auto *image : {&session.Live, &session.Restored.App}) command_buffer->encodeWait(image->Ready.get(), image->Generation);
+    // The restored engine's viewport image is resident on its own queue, so the compare makes it resident on the live one until it completes.
+    ctx.AddResident(*restored_viewport);
+    auto command = ctx.Begin();
     {
-        mtl::PassChain chain{command_buffer};
-        auto *encoder = chain.BeginCompute("ValidationCompare");
-        encoder->setComputePipelineState(session.Compare.State());
+        mtl::PassChain chain{command};
+        const auto encoder = chain.BeginCompute("ValidationCompare");
+        session.Compare.Bind(encoder);
         for (uint32_t i = 0; i < restored.size(); ++i) {
-            encoder->setTexture(**expected[i], 0);
-            encoder->setTexture(**restored[i], 1);
-            encoder->setBuffer(session.Differences.get(), i * sizeof(uint32_t), 0);
+            command.SetTexture(**expected[i], 0);
+            command.SetTexture(**restored[i], 1);
+            command.SetBuffer(*session.Differences, i * sizeof(uint32_t), 0);
             const auto extent = expected[i]->Extent;
             encoder->dispatchThreads(MTL::Size(extent.Width, extent.Height, 1), MTL::Size(16, 16, 1));
         }
     }
-    mtl::Commit(command_buffer);
-    command_buffer->waitUntilCompleted();
-    if (const auto *error = command_buffer->error()) throw std::runtime_error(error->localizedDescription()->utf8String());
+    const auto completion = ctx.Run(std::move(command));
+    ctx.RemoveResident(*restored_viewport);
+    if (!completion.Error.empty()) throw std::runtime_error(completion.Error);
     for (uint32_t i = 0; i < restored.size(); ++i) {
         if (differences[i] == UINT32_MAX) continue;
         const auto byte = differences[i], pixel = byte / 4;
@@ -1117,15 +1143,16 @@ void CompareValidationImages(state::Registry &r, ValidationSession &session, std
 // Compare Persistent state, viewport pixels, and composed UI pixels after action replay and cold restoration.
 void ValidateRoundTrip(
     state::Registry &r, CA::MetalLayer *layer,
-    ImDrawData *draw_data, std::unique_ptr<ValidationSession> &session, MTL::CommandBuffer *presented_frame = nullptr
+    ImDrawData *draw_data, std::unique_ptr<ValidationSession> &session, mtl::ImGuiRenderer &ui, uint64_t presented_frame = 0u
 ) {
     const auto total_begin = SteadyClock::now();
     auto begin = total_begin;
     if (!session) session = std::make_unique<ValidationSession>(r);
     const auto init_ms = ElapsedMs(begin);
     begin = SteadyClock::now();
-    if (presented_frame) presented_frame->waitUntilCompleted();
-    RenderAppImage(r.Resources.get<const mtl::Context>(), draw_data, session->Live);
+    const auto &ctx = r.Resources.get<const mtl::Context>();
+    (void)ctx.Wait(presented_frame);
+    RenderAppImage(ctx, ui, draw_data, session->Live);
     WaitForRender(r);
     if (!Session(r).History.Save()) {
         std::println(stderr, "[validation] {}", Session(r).History.TakeIntegrityError());
@@ -1161,13 +1188,13 @@ void ValidateRoundTrip(
 
     const auto capture_ms = ElapsedMs(begin);
     const auto &live = Session(r).History;
-    const auto replay = RestoreForValidation(session->Restored, inputs, live, true);
+    const auto replay = RestoreForValidation(session->Restored, ctx, ui, inputs, live, true);
     begin = SteadyClock::now();
     const auto workspace_bytes = workspace::Serialize(inputs.Workspace);
     RequireEqual(live, "replay state", live_state, replay.State, workspace_bytes);
     CompareValidationImages(r, *session, "replay");
     auto compare_ms = ElapsedMs(begin);
-    const auto restored = RestoreForValidation(session->Restored, inputs, live, false);
+    const auto restored = RestoreForValidation(session->Restored, ctx, ui, inputs, live, false);
     begin = SteadyClock::now();
     RequireEqual(live, "stored state", live_state, restored.State, workspace_bytes);
     RequireEqual(live, "replay/stored workspace", replay.Workspace, restored.Workspace, workspace_bytes);
@@ -1653,7 +1680,9 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
     ui::StyleColors();
 
     ui::MacBackend mac_backend{window};
-    ImGui_ImplMetal_Init(ctx.Device.get());
+    std::optional<mtl::ImGuiRenderer> ui;
+    ui.emplace(r.Resources.get<mtl::LibraryCache>(), mtl::Format::Color);
+    DrawableResidency drawables{ctx};
 
     InitFonts();
 
@@ -1679,7 +1708,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
 #endif
     bool done{driver.SeedStatus != SceneStatus::Ok};
     uint8_t startup_frames_remaining{2};
-    NS::SharedPtr<MTL::CommandBuffer> last_frame; // Retain across frame autorelease pools for resize waits.
+    uint64_t last_frame{}; // The presented frame's serial, for resize waits.
     auto &panels = r.Resources.get<PanelsState>();
     int bench_ticks{0};
     while (!done) {
@@ -1689,7 +1718,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
             profile::ClearStats();
         }
         const profile::CpuScope frame_scope{"Frame"};
-        r.Resources.get<ViewportConsumerFence>().Value = last_frame.get();
+        r.Resources.get<ViewportConsumerFence>().Value = last_frame;
         const auto events = window.PollEvents();
         auto &frame_state = r.Resources.get<FrameState>();
         frame_state.PreciseWheelDelta = vec2{events.ScrollX, events.ScrollY};
@@ -1758,7 +1787,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
         // Submit derived state and rendering before the later WaitForRender synchronizes image sampling.
         // A viewport resized in its frame step waits for the previous UI frame to stop sampling its image.
         SubmitViewports(r);
-        r.Resources.get<ViewportConsumerFence>().Value = nullptr;
+        r.Resources.get<ViewportConsumerFence>().Value = 0u;
         EndEditorFrame(r, panels, editor_frame);
         mac_backend.HonorMouseWarp();
         auto *draw_data = GetDrawData();
@@ -1785,22 +1814,22 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
             constexpr bool present_frame{true};
 #endif
 
-            MTL::CommandBuffer *presented_frame{nullptr};
+            uint64_t presented_frame{};
             if (present_frame) {
-                if (auto frame = RenderAndPresentFrame(ctx, layer, draw_data)) {
+                if (const auto frame = RenderAndPresentFrame(ctx, *ui, drawables, layer, draw_data)) {
                     // ImGui makes newly bound dock nodes visible on the following frame.
                     if (startup_frames_remaining > 0 && --startup_frames_remaining == 0) {
-                        frame->waitUntilCompleted();
+                        (void)ctx.Wait(frame);
                         window.Show();
                     }
-                    presented_frame = frame.get();
-                    last_frame = std::move(frame);
+                    presented_frame = frame;
+                    last_frame = frame;
                 }
             }
 
 #ifdef DEBUG_BUILD
             if (validation_ready && presented_frame && GetFrameCount() > 1 && viewport_settled && ViewportImageReady(r.get<const Viewport>(FirstViewport(r)))) {
-                ValidateRoundTrip(r, layer, draw_data, validation_session, presented_frame);
+                ValidateRoundTrip(r, layer, draw_data, validation_session, *ui, presented_frame);
                 panels.History.ValidateRequested = false;
 #ifdef VALIDATE_ACTIONS
                 validated_revision = scene_revision;
@@ -1821,7 +1850,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
     Session(r).Save();
     if (!SaveAudioOutputConfig(r.Resources.get<const AudioOutputConfig>())) action::Fail(r, "Failed to save the audio output preference.");
     ReportActionErrors(r);
-    if (last_frame) last_frame->waitUntilCompleted();
+    (void)ctx.Wait(last_frame);
 
     r.Resources.erase<AudioDeviceResource>();
 #ifdef DEBUG_BUILD
@@ -1830,9 +1859,9 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
     DeinitViewportMedia(r);
     profile::Report();
     profile::Deinit();
+    ui.reset();
     engine.reset();
 
-    ImGui_ImplMetal_Shutdown();
     mac_backend.Shutdown();
     ImPlot::DestroyContext();
     ImGui::DestroyContext();
@@ -1912,7 +1941,7 @@ SceneStatus RunHeadlessScene(state::Registry &r, const char *initial_file, bool 
                 .MousePos = {-FLT_MAX, -FLT_MAX},
             };
             auto *draw_data = RenderValidationApp(r, inputs);
-            ValidateRoundTrip(r, nullptr, draw_data, validation_session);
+            ValidateRoundTrip(r, nullptr, draw_data, validation_session, *HeadlessValidationRenderer);
             validated_revision = revision;
         }
 #endif
@@ -1947,7 +1976,9 @@ void RunHeadlessEngine(auto &&scenes) {
     auto &r = engine.R;
     const auto &ctx = r.Resources.get<const mtl::Context>();
 #ifdef VALIDATE_ACTIONS
-    ValidationUi ui{ctx};
+    ValidationUi ui;
+    mtl::ImGuiRenderer renderer{r.Resources.get<mtl::LibraryCache>(), mtl::Format::Color};
+    HeadlessValidationRenderer = &renderer;
     r.Resources.emplace<std::unique_ptr<ValidationSession>>();
     InitFonts();
     InitViewportMedia(r);
@@ -1961,6 +1992,7 @@ void RunHeadlessEngine(auto &&scenes) {
     WaitForRender(r);
 #ifdef VALIDATE_ACTIONS
     r.Resources.erase<std::unique_ptr<ValidationSession>>();
+    HeadlessValidationRenderer = nullptr;
     DeinitViewportMedia(r);
 #endif
     profile::Report();
@@ -2194,6 +2226,7 @@ int main(int argc, char **argv) {
     std::set_terminate([]() {
         try {
             if (const auto eptr = std::current_exception()) std::rethrow_exception(eptr);
+            std::println(stderr, "Terminated without an active exception");
         } catch (const std::exception &e) {
             std::println(stderr, "{}", e.what());
         } catch (...) {

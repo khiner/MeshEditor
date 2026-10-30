@@ -2,14 +2,10 @@
 
 #include "Range.h"
 #include "gpu/MeshletRouteMode.h"
+#include "metal/Command.h"
 
 #include "state/Entity.h"
 #include <span>
-
-namespace MTL {
-class CommandBuffer;
-class RenderCommandEncoder;
-} // namespace MTL
 
 namespace mtl {
 struct BindlessSet;
@@ -61,7 +57,7 @@ void RecordOverlayJobCull(
     mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &, const Viewport &,
     bool extras_only = false, uint32_t ubo_offset = 0
 );
-void DrawOverlayJobs(MTL::RenderCommandEncoder *, const GpuBuffers &, const MeshStore &);
+void DrawOverlayJobs(mtl::RenderEncoder, const GpuBuffers &, const MeshStore &);
 // Rasterize the current meshlet routes into the visibility/depth pair shared by shading and selection.
 void RecordMeshletVisibilityPass(
     mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, const Viewport &, GpuBuffers &,
@@ -69,7 +65,7 @@ void RecordMeshletVisibilityPass(
 );
 void RecordSilhouetteDepthPass(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, const Viewport &, GpuBuffers &, uint32_t ubo_offset = 0);
 void DrawMeshlets(
-    MTL::RenderCommandEncoder *, const GpuBuffers &, uint32_t route,
+    mtl::RenderEncoder, const GpuBuffers &, uint32_t route,
     uint32_t required_instance_flags = 0, uint32_t mesh_threads = 160u,
     uint32_t edit_edge_corner = 0u
 );
@@ -77,7 +73,7 @@ void DrawMeshlets(
 // A block culls against its static or posed bounds, the depth pyramid at `pyramid_slot`, and a minimum projected diameter.
 // Sound points draw only the selected vertices.
 void DrawVertexBlocks(
-    MTL::RenderCommandEncoder *, const state::Registry &, state::Entity mesh_entity, uint32_t instance, bool sound_points = false,
+    mtl::RenderEncoder, const state::Registry &, state::Entity mesh_entity, uint32_t instance, bool sound_points = false,
     uint32_t pyramid_slot = InvalidSlot, float min_diameter_pixels = 0.0f
 );
 
@@ -104,10 +100,10 @@ void ReserveFrameScratch(state::Registry &);
 
 // Records the viewport's phase, whose prelude recomputes the bounds of the meshes MeshBoundsDirty marks, and consumes the marks.
 // Prelude work marks every viewport's occlusion stale, since it moves geometry each viewport's depth pyramid saw.
-void RecordRenderCommandBuffer(state::Registry &, state::Entity viewport, MTL::CommandBuffer *, RenderPhase = RenderPhase::Full);
+void RecordRenderCommandBuffer(state::Registry &, state::Entity viewport, mtl::Command &, RenderPhase = RenderPhase::Full);
 
-// Records every blur step and the resolve into one command buffer using one view-UBO instance per step.
-void RecordBlurStepsCommandBuffer(state::Registry &, state::Entity viewport, MTL::CommandBuffer *, std::span<const uint32_t> sample_weights);
+// Records every blur step and the resolve into one command using one view-UBO instance per step.
+void RecordBlurStepsCommandBuffer(state::Registry &, state::Entity viewport, mtl::Command &, std::span<const uint32_t> sample_weights);
 
 // Rebinds and refreshes the meshes whose storage a restore changed, and repoints the instances of `restored_meshes`, whose drawn records it replaced.
 void ReconcileRestoredMeshes(state::Registry &, std::vector<state::Entity> restored_meshes);

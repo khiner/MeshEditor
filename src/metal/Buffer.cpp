@@ -26,13 +26,10 @@ BufferContext::BufferContext(const Context &ctx, BindlessSet &slots) : Ctx(ctx),
 BufferContext::~BufferContext() {
     const AutoreleaseScope pool;
     ReclaimRetiredBuffers(true);
-    for (const auto &bin : WorkspaceCache) {
-        for (const auto &workspace : bin) Ctx.RemoveResident(workspace.Buffer.get());
-    }
     AutoreleaseScope::Release(WorkspaceCache, Retirements, Retired);
 }
 
-NS::SharedPtr<MTL::Buffer> BufferContext::AcquireWorkspace(uint64_t bytes, std::span<const std::byte> prefix) {
+ResidentBuffer BufferContext::AcquireWorkspace(uint64_t bytes, std::span<const std::byte> prefix) {
     if (bytes > std::bit_floor(uint64_t(Ctx.Device->maxBufferLength()))) throw std::length_error("Metal workspace address space exhausted.");
     const auto capacity = std::bit_ceil(std::max(bytes, uint64_t{16u << 10}));
     if (!capacity || capacity > Ctx.Device->maxBufferLength()) throw std::length_error("Metal workspace address space exhausted.");
@@ -44,10 +41,9 @@ NS::SharedPtr<MTL::Buffer> BufferContext::AcquireWorkspace(uint64_t bytes, std::
         CachedWorkspaceBytes -= capacity;
     } else {
         // A new Metal buffer starts zeroed.
-        workspace.Buffer = NewBuffer(Ctx, capacity);
-        Ctx.AddResident(workspace.Buffer.get());
+        workspace.Buffer = ResidentBuffer{Ctx, capacity};
     }
-    auto *contents = static_cast<std::byte *>(workspace.Buffer->contents());
+    auto *contents = workspace.Buffer.Contents().data();
     CopyBytes(contents, prefix.data(), prefix.size());
     // A recycled workspace has no pending GPU users, so the host clears the bytes its last use wrote after the prefix.
     if (workspace.Used > prefix.size()) CopyBytes(contents + prefix.size(), nullptr, workspace.Used - prefix.size());
@@ -56,11 +52,8 @@ NS::SharedPtr<MTL::Buffer> BufferContext::AcquireWorkspace(uint64_t bytes, std::
 
 void BufferContext::RecycleWorkspace(UsedWorkspace workspace) {
     constexpr uint64_t cache_limit = 128u << 20;
-    const auto bytes = uint64_t(workspace.Buffer->length());
-    if (bytes > cache_limit - CachedWorkspaceBytes) {
-        Ctx.RemoveResident(workspace.Buffer.get());
-        return;
-    }
+    const auto bytes = workspace.Buffer.Length();
+    if (bytes > cache_limit - CachedWorkspaceBytes) return;
     WorkspaceCache[std::countr_zero(bytes)].push_back(std::move(workspace));
     CachedWorkspaceBytes += bytes;
 }
@@ -71,35 +64,29 @@ void BufferContext::Release(std::span<RetiredBuffer> buffers) {
     }
 }
 
-bool BufferContext::ReclaimRetiredBuffers(bool wait) {
+void BufferContext::ReclaimRetiredBuffers(bool wait) {
     const AutoreleaseScope pool;
     bool released = false;
-    bool completed = true;
     if (!Retired.empty()) {
         // Mapping work can still be pending after the last render submit.
         // Publish it before fencing the storage and slots that it references.
-        auto *fence = Ctx.Queue->commandBuffer();
-        Ctx.OrderAfterGpuWork(fence);
-        FenceRetiredBuffers(fence);
-        Commit(fence);
+        Ctx.CommitResidency();
+        FenceRetiredBuffers(Ctx.LatestSerial());
     }
     while (!Retirements.empty()) {
         auto &batch = Retirements.front();
-        if (wait) batch.Fence->waitUntilCompleted();
-        const auto status = batch.Fence->status();
-        if (status != MTL::CommandBufferStatusCompleted && status != MTL::CommandBufferStatusError) break;
-        completed &= status == MTL::CommandBufferStatusCompleted;
+        if (wait) (void)Ctx.Wait(batch.Serial);
+        if (!Ctx.Completed(batch.Serial)) break;
         Release(batch.Buffers);
         Retirements.pop_front();
         released = true;
     }
     if (released) Ctx.CommitResidency();
     if (wait) Ctx.DrainMappings();
-    return completed;
 }
 
-void BufferContext::FenceRetiredBuffers(MTL::CommandBuffer *command) {
-    if (!Retired.empty()) Retirements.push_back({std::exchange(Retired, {}), NS::RetainPtr(command)});
+void BufferContext::FenceRetiredBuffers(uint64_t serial) {
+    if (!Retired.empty()) Retirements.push_back({std::exchange(Retired, {}), serial});
 }
 
 void BufferContext::ReleaseRetiredBuffers(size_t first) {
@@ -116,14 +103,6 @@ uint32_t BufferContext::AllocateSlot(SlotType type) {
     // Reclaim retired slots before growing a full table.
     if (!Retirements.empty() || !Retired.empty()) ReclaimRetiredBuffers(true);
     return Slots.Allocate(type);
-}
-
-NS::SharedPtr<MTL::Buffer> NewBuffer(const Context &ctx, uint64_t size) {
-    const AutoreleaseScope pool;
-    if (size == 0) return {};
-    auto buffer = NS::TransferPtr(ctx.Device->newBuffer(size, MTL::ResourceStorageModeShared));
-    if (!buffer) throw std::runtime_error("Failed to allocate a Metal buffer.");
-    return buffer;
 }
 
 std::string BufferContext::DebugHeapUsage() const {
@@ -209,12 +188,12 @@ void Buffer::UpdateSlot() {
     Ctx.Slots.SetBuffer({Type, Slot}, **this);
 }
 
-MTL::Buffer *Buffer::operator*() const { return Workspace ? Workspace.get() : Storage ? Storage->Gpu.get() :
-                                                                                        nullptr; }
+MTL::Buffer *Buffer::operator*() const { return Workspace ? *Workspace : Storage ? Storage->Gpu.get() :
+                                                                                   nullptr; }
 
 std::span<std::byte> Buffer::Contents() const {
-    return Workspace ? std::span{static_cast<std::byte *>(Workspace->contents()), Workspace->length()} : Storage ? Storage->Contents() :
-                                                                                                                   std::span<std::byte>{};
+    return Workspace ? Workspace.Contents() : Storage ? Storage->Contents() :
+                                                        std::span<std::byte>{};
 }
 
 void Buffer::Move(uint64_t from, uint64_t to, uint64_t size) const {
