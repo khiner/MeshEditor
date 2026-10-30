@@ -1,11 +1,11 @@
-#include "RunSuites.h"
+#include <boost/ut.hpp>
 #include "audio/AudioSystem.h"
 #include "audio/WavWriter.h"
 
 using namespace boost::ut;
 namespace fs = std::filesystem;
 
-int main() {
+const boost::ut::suite AudioFile = [] {
     "CoreAudio float wav round trip"_test = [] {
         constexpr uint32_t SampleRate = 48'000;
         const auto path = fs::temp_directory_path() / "MeshEditor-audio-file-test.wav";
@@ -36,6 +36,4 @@ int main() {
 
         fs::remove(path);
     };
-
-    return RunSuites();
-}
+};

@@ -10,7 +10,7 @@ static_assert(std::same_as<MassProperties, fastfem::MassProperties>);
 static_assert(std::is_base_of_v<fastfem::ModalModes, ModalModes>);
 static_assert(std::is_base_of_v<fastfem::ModalEigenSummary, ModalEigenSummary>);
 
-int main() {
+const boost::ut::suite ModalSolve = [] {
     "FastFEM surface solve integrates with modal components"_test = [] {
         const std::vector<vec3> positions{
             {0, 0, 0},
@@ -71,4 +71,4 @@ int main() {
         expect(rescaled->Vertices == current.Vertices);
         expect(rescaled->Indices == current.Indices);
     };
-}
+};

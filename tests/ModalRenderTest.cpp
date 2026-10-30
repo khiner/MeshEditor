@@ -1,11 +1,11 @@
 
 #include "ModalRenderFixture.h"
 #include "Near.h"
-#include "RunSuites.h"
+#include <boost/ut.hpp>
 
 using namespace boost::ut;
 
-int main() {
+const boost::ut::suite ModalRender = [] {
     "excitations superpose linearly"_test = [] {
         const auto render = [](std::span<const ModalEvent> events) {
             ModalScene scene{1, 64, 0.2f, 1};
@@ -53,6 +53,4 @@ int main() {
         expect(slow > 0._f);
         expect(Near(double(fast) / double(slow), 1.0, 2e-2)) << slow << fast;
     };
-
-    return RunSuites();
-}
+};

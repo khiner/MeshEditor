@@ -1,7 +1,7 @@
 #include "Compress.h"
 #include "File.h"
 
-#include "RunSuites.h"
+#include <boost/ut.hpp>
 
 #include <map>
 
@@ -25,7 +25,7 @@ std::map<std::string, std::vector<std::byte>> Snapshot(const fs::path &dir) {
     return files;
 }
 } // namespace
-int main() {
+const boost::ut::suite Archives = [] {
     "compress/decompress round trip"_test = [] {
         const auto root = fs::temp_directory_path() / "MeshEditor-compress-test";
         fs::remove_all(root);
@@ -59,6 +59,4 @@ int main() {
         fs::remove_all(missing);
         expect(!Compress(missing, missing / "out.project"));
     };
-
-    return RunSuites();
-}
+};

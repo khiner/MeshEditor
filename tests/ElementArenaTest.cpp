@@ -1,10 +1,10 @@
 #include "mesh/ElementArena.h"
-#include "RunSuites.h"
+#include <boost/ut.hpp>
 #include "metal/MetalCpp.h"
 
 using namespace boost::ut;
 
-int main() {
+const boost::ut::suite Arenas = [] {
     "an insertion fills an interior hole before growing the table"_test = [] {
         const auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
         mtl::Context ctx;
@@ -34,5 +34,4 @@ int main() {
         expect(arena.Set(set).BlockCount == 5u);
         expect(arena.Entries(set)[1] == InvalidOffset);
     };
-    return RunSuites();
-}
+};

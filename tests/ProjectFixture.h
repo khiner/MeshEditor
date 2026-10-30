@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Compress.h"
+#include "MeshChecks.h"
 #include "TestPaths.h"
 #include "WorkspaceState.h"
 #include "action/Build.h"
@@ -11,9 +12,11 @@
 #include "mesh/MeshCreate.h"
 #include "mesh/MeshStore.h"
 #include "procedure/Cook.h"
+#include "render/Instance.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
 #include "snapshot/Workspace.h"
+#include "viewport/InteractionComponents.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportComponents.h"
 
@@ -139,18 +142,38 @@ struct Live {
     std::vector<std::byte> Image, Document, Workspace;
     std::map<state::Entity, Shape> Outputs;
     explicit Live(Fixture &f)
-        : Image(Render ? f.Image() : std::vector<std::byte>{}), Document(f.P->History.MaterializeLive()), Workspace(snapshot::SerializeWorkspace(f.R)), Outputs(DrawnShapes(f)) {}
+        : Image(Render ? f.Image() : std::vector<std::byte>{}), Document(f.P->History.MaterializeLive()), Workspace(snapshot::SerializeWorkspace(f.R)), Outputs(DrawnShapes(f)) {
+        CheckRecords(f);
+    }
     static std::map<state::Entity, Shape> DrawnShapes(Fixture &f) {
         std::map<state::Entity, Shape> shapes;
         for (const auto e : f.R.view<const EvaluatedMesh>()) shapes.emplace(e, Describe(f.Store(), *DrawnStoreId(f.R, e)));
         for (const auto e : f.R.view<const MeshHandle>()) shapes.emplace(e, Describe(f.Store(), *DrawnStoreId(f.R, e)));
         return shapes;
     }
+    // Every drawn record's polygon tessellation agrees with its elements, and so do its render primitives once a frame has built them.
+    // The records of the meshes in edit mode also keep a selection index that agrees with their elements.
+    static void CheckRecords(Fixture &f) {
+        const auto &meshes = f.Store();
+        std::set<uint32_t> drawn;
+        for (const auto e : f.R.view<const EvaluatedMesh>()) drawn.insert(*DrawnStoreId(f.R, e));
+        for (const auto e : f.R.view<const MeshHandle>()) drawn.insert(*DrawnStoreId(f.R, e));
+        for (const auto id : drawn) {
+            const Mesh mesh{meshes, id};
+            test::ExpectPolygonTessellation(meshes, mesh);
+            if (Render && meshes.Get(id).RenderTopologies) test::ExpectRenderedGeometry(meshes, mesh);
+        }
+        if (f.R.get<const Interaction>(state::Document).Mode != InteractionMode::Edit) return;
+        for (const auto [e, instance] : f.R.view<const Selected, const Instance>().each()) {
+            if (const auto id = DrawnStoreId(f.R, instance.Entity)) test::ExpectSelectionIndex(meshes, *id);
+        }
+    }
     void Check(Fixture &f, bool present) const {
         if (present && Render) boost::ut::expect(f.Image() == Image);
         boost::ut::expect(f.P->History.MaterializeLive() == Document);
         if (present) boost::ut::expect(snapshot::SerializeWorkspace(f.R) == Workspace);
         boost::ut::expect(DrawnShapes(f) == Outputs);
+        CheckRecords(f);
         f.Audit();
     }
 };

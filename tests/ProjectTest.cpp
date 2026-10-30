@@ -562,24 +562,27 @@ void TestHistory();
 
 int main(int argc, char **argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    if (argc == 2 && std::string_view{argv[1]} == "--no-render") Render = false;
-    else if (argc != 1) {
-        std::println(stderr, "Usage: {} [--no-render]", argv[0]);
-        return 1;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string_view{argv[i]} == "--no-render") Render = false;
+        else if (argv[i][0] == '-') {
+            std::println(stderr, "Usage: {} [--no-render] [test name filter]", argv[0]);
+            return 1;
+        } else boost::ut::cfg<boost::ut::override> = {.filter = argv[i]};
     }
 
     if (!Render) std::println("Skipping rendered-image comparisons (--no-render).");
     Paths::Init(MESHEDITOR_BUILD_DIR, MESHEDITOR_BUILD_DIR);
-    TestExternalReferences();
-    TestRenderInstanceDerivation();
-    TestHiddenObjectEscapesPick();
-    TestExtrudedClosedRegionVisibility();
-    TestViewportBackfacePolicy();
-    TestSelectedGrandchildMovesOnce();
-    TestInstanceLifecycleRendersBack();
-    TestDuplicateDrawsAsItsSource();
-    TestParentToDescendantFails();
-    TestIncrementalLayout();
+    using boost::ut::test;
+    test("external references") = TestExternalReferences;
+    test("render instance derivation") = TestRenderInstanceDerivation;
+    test("hidden object escapes pick") = TestHiddenObjectEscapesPick;
+    test("extruded closed region visibility") = TestExtrudedClosedRegionVisibility;
+    test("viewport backface policy") = TestViewportBackfacePolicy;
+    test("selected grandchild moves once") = TestSelectedGrandchildMovesOnce;
+    test("instance lifecycle renders back") = TestInstanceLifecycleRendersBack;
+    test("duplicate draws as its source") = TestDuplicateDrawsAsItsSource;
+    test("parent to descendant fails") = TestParentToDescendantFails;
+    test("incremental layout") = TestIncrementalLayout;
     TestProcedures();
     TestHistory();
     return RunSuites();

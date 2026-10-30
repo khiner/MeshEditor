@@ -383,16 +383,15 @@ $ ./build/tests/MeshEditorTests
 
 | Target | Covers |
 |-|-|
-| `MeshEditorTests` | glTF roundtrip |
-| `MeshEditorActionSerializeTest` | Every action alternative through the action log |
-| `MeshEditorProjectTest` | Persistent state, rendering, replay, and archive relocation across mesh edits and glTF samples |
-| `MeshEditorStateTest` | Sparse native tables, entity generations, mutation capture, and dirty-set lifetime |
-| `MeshEditorProjectStoreTest` | Full-copy version/history models, manifest reconstruction, and persistence failures |
+| `MeshEditorTests` | glTF roundtrip over every sample, every action alternative through the action log, edit selection primaries |
+| `MeshEditorProjectTest` | Every history scenario replays, restores cold and reopens to the same document and image: procedures, viewport gestures, each mesh operator against its kernel and Blender references, hierarchies and glTF samples |
+| `MeshEditorGeometryTest` | The headless mesh kernels over every topology operator: mask and list selections agree, unselected geometry and named attributes survive, booleans yield the expected solids, plus element arenas, Metal buffers and cluster LOD builds |
+| `MeshEditorStoreTest` | Sparse native tables, entity generations, mutation capture and dirty sets against a model, version and history models, persistence failures, `.project` archives |
+| `MeshEditorAudioTest` | Hertz and punch contact laws over a grid, inertia decomposition, modal superposition, thread and rate independence, wav round trips, FastFEM surface solves |
+| `MeshEditorPhysicsTest` | Rigid body mass properties against analytic tensors over random colliders, shape scaling, failure and replacement |
 | `MeshEditorProjectBench` | Sparse buffer edits and complete mesh-edit frames |
-| `MeshEditorContactModelTest` | Hertz contact time, effective mass, inertia decomposition |
-| `MeshEditorModalRenderTest` | Superposition, thread independence, and the click's rate independence |
-| `MeshEditorCompressTest` | `.project` archive round trip |
-| `MeshEditorModalSolveIntegrationTest` | FastFEM surface solves, modal-component conversion, warm-start retention, and material rescaling |
+
+Every test executable takes a test name pattern as its first argument, and `MeshEditorProjectTest` also takes `--no-render`.
 
 `SURFACE_AUDIO=1` builds the surface-contact audio model (`src/audio/surface/`) and its tests, benchmarks, and scores under `tests/surface/`.
 See [src/audio/SurfaceContact.h](src/audio/SurfaceContact.h) for its entry points from the core modal code.

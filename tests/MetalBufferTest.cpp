@@ -1,10 +1,10 @@
-#include "RunSuites.h"
+#include <boost/ut.hpp>
 #include "metal/Dispatch.h"
 #include "metal/MetalCpp.h"
 
 using namespace boost::ut;
 
-int main() {
+const boost::ut::suite MetalBuffer = [] {
     "a compute chain owns its recording across calls and intervening submissions"_test = [] {
         const auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
         mtl::Context ctx;
@@ -96,5 +96,4 @@ int main() {
         slots.Release({SlotType::Buffer, source_slot});
         slots.Release({SlotType::Buffer, next_slot});
     };
-    return RunSuites();
-}
+};

@@ -1,5 +1,5 @@
 #include "render/ClusterLod.h"
-#include "RunSuites.h"
+#include <boost/ut.hpp>
 #include "meshoptimizer.h"
 
 #include <numbers>
@@ -191,7 +191,7 @@ std::vector<uint32_t> LodWords(const ClusterLodBuild &build) {
 
 } // namespace
 
-int main() {
+const boost::ut::suite ClusterLod = [] {
     "serial and parallel LOD builds preserve identical geometry bounds and errors"_test = [] {
         for (const bool seam : {false, true}) {
             const auto fixture = seam ? SeamGridFixture(48u) : SphereFixture(48u, 96u);
@@ -257,5 +257,4 @@ int main() {
         expect(!left.empty());
         expect(left == right);
     };
-    return RunSuites();
-}
+};

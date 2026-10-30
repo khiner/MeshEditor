@@ -34,14 +34,14 @@ jobs:
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build tests
-        run: cmake --build build --target MeshEditorTests MeshEditorActionSerializeTest MeshEditorModalSolveIntegrationTest MeshEditorProjectStoreTest MeshEditorProjectTest
+        run: cmake --build build --target MeshEditorTests MeshEditorAudioTest MeshEditorStoreTest MeshEditorGeometryTest MeshEditorProjectTest
 
       - name: Run tests
         run: |
-          ./build/tests/MeshEditorActionSerializeTest
-          ./build/tests/MeshEditorModalSolveIntegrationTest
           ./build/tests/MeshEditorTests
-          ./build/tests/MeshEditorProjectStoreTest
+          ./build/tests/MeshEditorAudioTest
+          ./build/tests/MeshEditorStoreTest
+          ./build/tests/MeshEditorGeometryTest
           # The hosted VM's Metal encoder lacks the renderer's queue-barrier API.
           ./build/tests/MeshEditorProjectTest --no-render
 

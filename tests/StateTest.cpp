@@ -1,5 +1,5 @@
 #include "RangeAllocator.h"
-#include "RunSuites.h"
+#include <boost/ut.hpp>
 #include "scene/Entity.h"
 #include "state/Registry.h"
 
@@ -9,7 +9,7 @@
 
 using namespace boost::ut;
 
-int main() {
+const boost::ut::suite State = [] {
     static_assert(std::same_as<decltype(std::declval<state::Registry &>().get<Name>(state::Null)), const Name &>);
     "owned tables agree with an independent sparse model"_test = [] {
         state::Registry r;
@@ -261,5 +261,4 @@ int main() {
         const auto restored = all.Allocate(end);
         expect(restored.Offset == 0u && restored.Count == end);
     };
-    return RunSuites();
-}
+};

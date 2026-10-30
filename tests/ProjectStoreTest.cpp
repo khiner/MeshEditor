@@ -2,7 +2,7 @@
 #include "project/store/Pages.h"
 #include "project/store/Records.h"
 
-#include "RunSuites.h"
+#include <boost/ut.hpp>
 #include "TestPaths.h"
 
 #include <csignal>
@@ -665,17 +665,16 @@ void TestClearHistory() {
 }
 } // namespace
 
-int main() {
-    TestRecordPagesAcrossResize();
-    TestPoolTrieAgainstModel();
-    TestCaptureEpoch();
-    TestBufferAgainstModel();
-    TestHistoryAgainstModel();
-    TestCommitIdentity();
-    TestReplace();
-    TestColdLoadFailure();
-    TestLogOpenFailure();
-    TestTornTailRecovery();
-    TestClearHistory();
-    return RunSuites();
-}
+const boost::ut::suite ProjectStore = [] {
+    boost::ut::test("record pages across resize") = TestRecordPagesAcrossResize;
+    boost::ut::test("pool trie against a model") = TestPoolTrieAgainstModel;
+    boost::ut::test("capture epoch") = TestCaptureEpoch;
+    boost::ut::test("buffer against a model") = TestBufferAgainstModel;
+    boost::ut::test("history against a model") = TestHistoryAgainstModel;
+    boost::ut::test("commit identity") = TestCommitIdentity;
+    boost::ut::test("replace") = TestReplace;
+    boost::ut::test("cold load failure") = TestColdLoadFailure;
+    boost::ut::test("log open failure") = TestLogOpenFailure;
+    boost::ut::test("torn tail recovery") = TestTornTailRecovery;
+    boost::ut::test("clear history") = TestClearHistory;
+};

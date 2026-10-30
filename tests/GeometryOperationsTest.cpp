@@ -1,3 +1,4 @@
+#include "MeshChecks.h"
 #include "Paths.h"
 #include "RunSuites.h"
 #include "TestMeshOrdinals.h"
@@ -261,8 +262,8 @@ void CheckAttributed(const MeshStore &meshes, uint32_t id, const std::set<int32_
         const auto face = handle.Value;
         const auto value = fi[face];
         if (copied) expect(value >= 0 && uint32_t(value) < face_count);
-        else expect(value == int32_t(a.FacePrimitives.Get(record.FacePrimitives, face)));
-        expect(ff[face] == FaceFloat(value));
+        else expect(value == int32_t(a.FacePrimitives.Get(record.FacePrimitives, face))) << "face" << face << "int" << value << "primitive" << a.FacePrimitives.Get(record.FacePrimitives, face);
+        expect(ff[face] == FaceFloat(value)) << "face" << face << "int" << value << "float" << ff[face];
         expect(fv[face] == FaceVector(value));
         expect(fb[face] == (a.FaceSharpness.Get({address.Value(), 1u})[0] != 0u));
     });
@@ -307,44 +308,6 @@ bool Solid(const Mesh &mesh, double volume) { return ClosedManifold(mesh) && std
 } // namespace
 
 void RegisterGeometryOperationsTests() {
-    "headless topology uses explicit masks and returns created geometry"_test = [] {
-        GeometryFixture f;
-        const auto id = f.Create(Quad());
-        const auto selected = AllHandles(f.Get(id));
-        expect(!f.Store().Get(id).MeshletData);
-        for (const auto op : {MeshTopologyOp::DuplicateGeometry, MeshTopologyOp::ExtrudeRegion, MeshTopologyOp::DeleteLoose}) {
-            const auto empty = f.Run({.SourceId = id, .Op = op});
-            expect(!empty.Changed);
-            expect(f.Get(id).VertexCount() == 4u);
-            expect(f.Get(id).FaceCount() == 1u);
-        }
-        const auto duplicated = f.Run({.SourceId = id, .Op = MeshTopologyOp::DuplicateGeometry, .Flags = TopologyFlagTransformCopies, .CopyRotation = mat3{1.f}, .CopyTranslation = {4.f, 0.f, 0.f}, .Selection = selected});
-        expect(duplicated.Changed);
-        expect(duplicated.GeometryId == id);
-        expect(duplicated.Created.Vertices.size() == 4u);
-        expect(duplicated.Created.Faces.size() == 1u);
-        expect(duplicated.Retained.Vertices.size() == 4u);
-        expect(f.Get(id).FaceCount() == 2u);
-        const auto &bounds = f.Store().GetSelectionRoot(id, Element::Vertex).Bounds;
-        expect(bounds.Min.x == -1.f);
-        expect(bounds.Max.x == 5.f);
-        expect(f.Store().GetBoundaryEdges(id).Count() == 8u);
-        expect(f.Store().GetSelectedElements(id, Element::Vertex).Count() == 0u);
-        expect(!f.Store().Get(id).MeshletData);
-        const auto extrude_id = f.Create(Quad());
-        const auto extruded = f.Run({.SourceId = extrude_id, .Op = MeshTopologyOp::ExtrudeRegion, .Selection = AllHandles(f.Get(extrude_id))});
-        expect(extruded.Changed);
-        expect(extruded.Created.Vertices.size() == 4u);
-        expect(f.Get(extrude_id).FaceCount() == 6u);
-        expect(f.Get(extrude_id).HasClosedSurface());
-        const auto extracted = f.Run({.SourceId = id, .Op = MeshTopologyOp::KeepSelectedFaces, .SelectionElement = Element::Face, .Selection = GeometrySelection{.Faces = duplicated.Created.Faces}});
-        expect(extracted.Changed);
-        expect(extracted.GeometryId != id);
-        expect(f.Get(extracted.GeometryId).VertexCount() == 4u);
-        expect(f.Get(extracted.GeometryId).FaceCount() == 1u);
-        expect(f.Store().GetBoundaryEdges(extracted.GeometryId).Count() == 4u);
-        expect(f.Store().GetSelectionRoot(extracted.GeometryId, Element::Vertex).Bounds.Min.x == 3.f);
-    };
     "headless loose deletion ignores document visibility and selection"_test = [] {
         GeometryFixture f;
         MeshData data{{{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {2.f, 0.f, 0.f}, {3.f, 0.f, 0.f}}};
@@ -357,51 +320,6 @@ void RegisterGeometryOperationsTests() {
         expect(removed.Changed);
         expect(f.Get(id).VertexCount() == 0u);
         expect(f.Get(id).EdgeCount() == 0u);
-    };
-    "extracted geometry chains edits and preserves source attributes"_test = [] {
-        GeometryFixture f;
-        MeshVertexAttributes attributes;
-        const std::array texcoords{vec2{.2f, .7f}, vec2{.3f, .6f}, vec2{.4f, .5f}, vec2{.5f, .4f}};
-        attributes.TexCoords0 = std::vector<vec2>(texcoords.begin(), texcoords.end());
-        attributes.Colors0 = std::vector<vec4>(4u, {.1f, .3f, .5f, 1.f});
-        attributes.Colors0ComponentCount = 4u;
-        const auto source = CreateMesh(f.Scene, {.Data = Quad(), .Attrs = std::move(attributes)}).StoreId;
-        ShadeNewMeshes(f.Scene);
-        const auto extracted = f.Run({.SourceId = source, .Op = MeshTopologyOp::KeepSelectedFaces, .SelectionElement = Element::Face, .Selection = AllHandles(f.Get(source))});
-        const auto output_id = extracted.GeometryId;
-        const auto selection = extracted.Created;
-        expect(extracted.Changed);
-        expect(output_id != source);
-        const auto original = f.Get(source).GetPosition(*f.Get(source).vertices().begin());
-        const PositionOperationTarget target{.StoreId = output_id, .Selection = selection};
-        const auto changes = ExecuteGeometryPositions(f.Scene, std::span{&target, 1u}, PositionEditOp::PushPull, .25f, 1u, {.Center = {0.f, 0.f, 2.f}});
-        f.Audit();
-        expect(changes.size() == 1u);
-        expect(f.Get(source).GetPosition(*f.Get(source).vertices().begin()) == original);
-        expect(f.Get(output_id).GetPosition(*f.Get(output_id).vertices().begin()).z > 0.f);
-        {
-            mtl::ComputeChain chain{f.Store().BufferContext()};
-            const auto permuted = EncodeFaceAttributeOperation(f.Store(), GetMeshPipelines(f.Scene), chain, std::span{&target, 1u}, false, 0u, 0u);
-            expect(permuted.size() == 1u);
-            chain.Submit();
-        }
-        for (const auto corner : f.Get(source).fh_range(f.Get(source).FaceAt(0u)))
-            expect(f.Store().Arenas().CornerUvs[0].Get(f.Store().Get(f.Get(source).GetStoreId()).CornerUvs[0], *corner) == texcoords[f.Get(source).VertexOrdinal(f.Get(source).GetToVertex(corner))]);
-        for (const auto corner : f.Get(output_id).fh_range(f.Get(output_id).FaceAt(0u)))
-            expect(f.Store().Arenas().CornerUvs[0].Get(f.Store().Get(f.Get(output_id).GetStoreId()).CornerUvs[0], *corner) == texcoords[(f.Get(output_id).VertexOrdinal(f.Get(output_id).GetToVertex(corner)) + 3u) % 4u]);
-        const auto triangulated = f.Run({.SourceId = output_id, .Op = MeshTopologyOp::Triangulate, .SelectionElement = Element::Face, .Selection = selection});
-        expect(triangulated.Changed);
-        expect(triangulated.Created.Faces.size() == 1u);
-        expect(triangulated.Retained.Faces.size() == 1u);
-        expect(f.Get(output_id).FaceCount() == 2u);
-        expect(f.Get(source).FaceCount() == 1u);
-        for (const auto face : f.Get(output_id).faces())
-            for (const auto corner : f.Get(output_id).fh_range(face)) {
-                expect(f.Store().Arenas().CornerUvs[0].Get(f.Store().Get(f.Get(output_id).GetStoreId()).CornerUvs[0], *corner) == texcoords[(f.Get(output_id).VertexOrdinal(f.Get(output_id).GetToVertex(corner)) + 3u) % 4u]);
-                expect(f.Store().Arenas().CornerColors.Get(f.Store().Get(f.Get(output_id).GetStoreId()).CornerColors, *corner) == vec4{.1f, .3f, .5f, 1.f});
-            }
-        expect(!f.Store().Get(output_id).MeshletData);
-        expect(f.Scene.Living.size() == 0u);
     };
     "headless affine transforms share editor frame math"_test = [] {
         GeometryFixture f;
@@ -569,16 +487,6 @@ void RegisterGeometryOperationsTests() {
         }
     };
     "named attributes carry through topology operators on every domain"_test = [] {
-        using enum MeshTopologyOp;
-        const std::array<TopologyCase, 7> cases{{
-            {"ExtrudeRegion", Op(ExtrudeRegion)},
-            {"Subdivide", Op(Subdivide, 1.f)},
-            {"DuplicateGeometry", Op(DuplicateGeometry)},
-            {"DeleteFaces", Op(DeleteFaces)},
-            {"InsetRegion", Op(InsetRegion, .1f)},
-            {"MergeByDistance", {}, [](const MeshStore &meshes, const Mesh &mesh, const GeometrySelection &selection) { return MergeTask(meshes, mesh, selection, GeometryMergeMode::ByDistance, .1f, InvalidOffset); }},
-            {"KeepSelectedFaces", Op(KeepSelectedFaces, 0.f, 0u, 1u, Element::Face)},
-        }};
         GeometryFixture f;
         // Runs the task planned over the attributed shape and checks every element before and after against the channels.
         const auto carry = [&](std::string_view name, MeshData shape, auto &&plan) {
@@ -593,7 +501,10 @@ void RegisterGeometryOperationsTests() {
                 CheckAttributed(f.Store(), result.GeometryId, edge_values, face_count, result.GeometryId != id);
             };
         };
-        for (const auto &c : cases) carry(c.Name, Patchwork(), [&](uint32_t id) { return PlanCase(c, f.Store(), f.Get(id)); });
+        // Decimation keeps every edge between primitives, and the attributed shape makes each face its own primitive, so it has nothing to collapse there.
+        // A convex hull's new faces take a source face's primitive while their named attributes take the defaults, so the hull does not follow the channels.
+        for (const auto &c : TopologyCases)
+            if (c.Task.Op != MeshTopologyOp::Decimate && c.Task.Op != MeshTopologyOp::AddPrimitives) carry(c.Name, Patchwork(), [&](uint32_t id) { return PlanCase(c, f.Store(), f.Get(id)); });
         // The union keeps the attributed box's elements with their channels, and the plain box's elements take the defaults matching its absent channels.
         carry("Boolean", primitive::CreateMesh(primitive::Cube{}), [&](uint32_t id) {
             const auto second = Box(f, vec3{1.f});
@@ -861,4 +772,40 @@ void RegisterGeometryOperationsTests() {
         const double d = std::sqrt(.5 * .5 + .3 * .3 + .2 * .2), lens = std::numbers::pi * (4.0 + d) * (2.0 - d) * (2.0 - d) / 12.0;
         expect(std::abs(::test::EnclosedVolume(mesh).value_or(-1.0) - (2.0 * ::test::EnclosedVolume(f.Get(a)).value_or(-1.0) - lens)) < 2e-2);
     };
+    "mixed sources weld wire endpoints onto a surface and keep their corner attributes"_test = [] {
+        GeometryFixture f;
+        for (const bool weld : {false, true}) {
+            MeshSource source{.Weld = weld};
+            source.Data.Positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {2, 0, 0}, {3, 0, 0}, {0, 0, 0}};
+            source.Data.AddFace(std::array{0u, 1u, 2u});
+            source.Data.Edges = {{5, 3}, {3, 4}};
+            auto &uvs = source.Attrs.TexCoords0.emplace();
+            for (uint32_t i = 0u; i < source.Data.Positions.size(); ++i) uvs.push_back({float(i), .25f});
+            const auto id = CreateMesh(f.Scene, std::move(source)).StoreId;
+            ShadeNewMeshes(f.Scene);
+            f.Audit();
+            const auto mesh = f.Get(id);
+            expect(mesh.VertexCount() == (weld ? 5u : 6u) && mesh.EdgeCount() == 5u && mesh.FaceCount() == 1u);
+            const auto uv = [&](he::HH h) { return f.Store().Arenas().CornerUvs[0].Get(f.Store().Get(id).CornerUvs[0], *h); };
+            for (const auto face : mesh.faces())
+                for (const auto h : mesh.fh_range(face)) expect(uv(h) == vec2{float(mesh.VertexOrdinal(mesh.GetToVertex(h))), .25f});
+            for (const auto edge : mesh.edges()) {
+                const auto h = mesh.GetHalfedge(edge, 0u);
+                if (mesh.GetFace(h)) continue;
+                // A wire endpoint welded onto the surface keeps its source corner value.
+                for (const auto corner : {h, mesh.GetOppositeHalfedge(h)}) {
+                    const auto p = mesh.GetPosition(mesh.GetToVertex(corner));
+                    expect(uv(corner).x == (p.x == 0.f ? 5.f : p.x + 1.f));
+                }
+            }
+        }
+    };
+}
+
+int main(int argc, char **argv) {
+    if (argc > 1) cfg<override> = {.filter = argv[1]};
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    Paths::Init(MESHEDITOR_BUILD_DIR, MESHEDITOR_BUILD_DIR);
+    RegisterGeometryOperationsTests();
+    return RunSuites();
 }
