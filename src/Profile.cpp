@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <fstream>
+#include <mutex>
 #include <print>
 #include <span>
 
@@ -32,6 +33,7 @@ thread_local bool CpuOwner{false};
 std::unique_ptr<mtl::PassTimer> Timer;
 std::vector<CpuSpan> OpenCpu;
 std::vector<Stat> GpuStats, CpuStats, Counters;
+std::mutex CountersMutex;
 
 float Total(std::span<const float> ms) { return std::ranges::fold_left(ms, 0.f, std::plus{}); }
 
@@ -182,6 +184,8 @@ void EndCpu() {
 
 void RecordCounter(std::string_view name, double value) {
     if (!Enabled) return;
+    // Parallel builds record counters from worker threads.
+    const std::scoped_lock lock{CountersMutex};
     Counters[StatIndex(Counters, name, NoParent)].Ms.emplace_back(float(value));
 }
 
