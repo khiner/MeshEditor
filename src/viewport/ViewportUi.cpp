@@ -17,6 +17,7 @@
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
+#include "ui/ChoiceCombo.h"
 #include "ui/CtrlShortcut.h"
 #include "ui/DashedLine.h"
 #include "ui/FieldEdit.h"
@@ -186,6 +187,11 @@ void DrawMeshOperatorMenus(state::Registry &r) {
     const auto merge_items = [&] {
         for (size_t i = 0; i < field::EnumCount<MergeMode>; ++i) op(field::EnumLabels<MergeMode>[i], Merge { field::EnumValues<MergeMode>[i] });
     };
+    const auto separate_items = [&] {
+        op("Selection", Separate{});
+        op("By Loose Parts", Separate{SeparateMode::LooseParts});
+        op("By Material", Separate{SeparateMode::Material});
+    };
     const auto delete_items = [&] {
         for (size_t i = 0; i < 5; ++i) op(field::EnumLabels<DeleteMode>[i], action::mesh::Delete { field::EnumValues<DeleteMode>[i] });
         Separator();
@@ -208,8 +214,8 @@ void DrawMeshOperatorMenus(state::Registry &r) {
         op("To Sphere", ToSphere{});
         op("Push/Pull", PushPull{});
         op("Shear", Shear{});
-        if (MenuItem("Warp")) action::Emit(Warp{});
-        if (MenuItem("Bend")) action::Emit(Bend{});
+        op("Warp", Warp{});
+        op("Bend", Bend{});
         op("Shrink/Fatten", ShrinkFatten{});
         op("Bevel Vertices", Bevel{.Vertices = true});
         op("New Edge/Face from Vertices", Fill{});
@@ -217,11 +223,7 @@ void DrawMeshOperatorMenus(state::Registry &r) {
         op("Rip Vertices", Rip{}, action::Phase::Stage);
         Separator();
         submenu("Merge Vertices", merge_items);
-        submenu("Separate", [&] {
-            op("Selection", Separate{});
-            op("By Loose Parts", Separate{SeparateMode::LooseParts});
-            op("By Material", Separate{SeparateMode::Material});
-        });
+        submenu("Separate", separate_items);
         op("Dissolve Vertices", Dissolve{DissolveMode::Vertices});
     };
     const auto edge_items = [&] {
@@ -288,11 +290,7 @@ void DrawMeshOperatorMenus(state::Registry &r) {
         op("Duplicate", action::mesh::Duplicate{}, action::Phase::Stage);
         op("Extrude Region", Extrude{}, action::Phase::Stage);
         op("Split", Split{});
-        submenu("Separate", [&] {
-            op("Selection", Separate{});
-            op("By Loose Parts", Separate{SeparateMode::LooseParts});
-            op("By Material", Separate{SeparateMode::Material});
-        });
+        submenu("Separate", separate_items);
         Separator();
         op("Bisect", Bisect{.Point = center, .ViewSpace = true});
         op("Symmetrize", Symmetrize{});
@@ -464,6 +462,15 @@ void Interact(state::Registry &r, FrameState &frame) {
     const auto ctrl_key = [&](ImGuiKeyChord chord, ImGuiInputFlags route = VKey) { return !nodes_hovered && CtrlShortcut(chord, route); };
     const bool selection_task = r.all_of<procedure::SelectionEditing>(state::Document);
     const auto finish_key = [&](ImGuiKey key) { return frame.BoxDrag ? IsKeyPressed(key, false) : Shortcut(key, VKey); };
+    // G, R and S start or switch to a translate, rotate or scale of the selection.
+    const auto latch_transform = [&] {
+        using TransformGizmo::TransformType;
+        if (key(ImGuiKey_G) && flags.Transformable) action::Emit(action::view::LatchTransform{TransformType::Translate}, action::Phase::Cancel);
+        else if (key(ImGuiKey_R) && flags.Transformable) action::Emit(action::view::LatchTransform{TransformType::Rotate}, action::Phase::Cancel);
+        else if (key(ImGuiKey_S) && flags.Scalable) action::Emit(action::view::LatchTransform{TransformType::Scale}, action::Phase::Cancel);
+        else return false;
+        return true;
+    };
     if (selection_task && (finish_key(ImGuiKey_Escape) || finish_key(ImGuiKey_Enter))) {
         if (IsKeyPressed(ImGuiKey_Escape)) action::Cancel();
         else action::Emit(action::nodes::FinishSelection{});
@@ -484,9 +491,7 @@ void Interact(state::Registry &r, FrameState &frame) {
         if (key(ImGuiMod_Alt | ImGuiKey_Z)) action::Emit(action::view::ToggleXRay{viewport});
     } else if (r.get<const GizmoInteraction>(state::Document).IsUsing()) {
         // During an active transform, only allow transform switching shortcuts.
-        if (key(ImGuiKey_G) && flags.Transformable) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Translate}, action::Phase::Cancel);
-        else if (key(ImGuiKey_R) && flags.Transformable) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Rotate}, action::Phase::Cancel);
-        else if (key(ImGuiKey_S) && flags.Scalable) action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Scale}, action::Phase::Cancel);
+        latch_transform();
     } else {
         if (interaction_mode != InteractionMode::Edit) {
             if (key(ImGuiKey_I)) action::Emit(action::animation::InsertKey{{.Target = action::OnSelected{}}});
@@ -600,15 +605,7 @@ void Interact(state::Registry &r, FrameState &frame) {
             else if (interaction_mode == InteractionMode::Pose && key(ImGuiMod_Alt | ImGuiKey_G)) action::Emit(action::bone::ClearSelectedTransforms{.Position = true});
             else if (interaction_mode == InteractionMode::Pose && key(ImGuiMod_Alt | ImGuiKey_R)) action::Emit(action::bone::ClearSelectedTransforms{.Rotation = true});
             else if (interaction_mode == InteractionMode::Pose && key(ImGuiMod_Alt | ImGuiKey_S)) action::Emit(action::bone::ClearSelectedTransforms{.Scale = true});
-            else if (key(ImGuiKey_G) && flags.Transformable) {
-                // Start transform gizmo in both Object and Edit modes.
-                // In Edit mode, shader applies transform to selected vertices.
-                // In Object mode, shader applies transform to selected instances.
-                action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Translate}, action::Phase::Cancel);
-            } else if (key(ImGuiKey_R) && flags.Transformable) {
-                action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Rotate}, action::Phase::Cancel);
-            } else if (key(ImGuiKey_S) && flags.Scalable) {
-                action::Emit(action::view::LatchTransform{TransformGizmo::TransformType::Scale}, action::Phase::Cancel);
+            else if (latch_transform()) {
             } else if (key(ImGuiKey_H)) {
                 action::Emit(action::object::ToggleHidden{});
             } else if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_P)) {
@@ -792,14 +789,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
                         if (const auto scene = FrameScene(r); r.all_of<ImageLight>(scene)) ui::Edit{r, scene}.Draw<&ImageLight::Intensity>();
                     } else {
                         const auto hdris = GetHdriRefs(r, r.get<const StudioEnvironment>(viewport).Name);
-                        if (BeginCombo("Environment", hdris.Names[hdris.ActiveIndex].c_str())) {
-                            for (uint32_t i = 0; i < hdris.Names.size(); ++i) {
-                                const bool selected = (i == hdris.ActiveIndex);
-                                if (Selectable(hdris.Names[i].c_str(), selected)) action::Emit(action::view::SetStudioEnvironment{viewport, hdris.Names[i]});
-                                if (selected) SetItemDefaultFocus();
-                            }
-                            EndCombo();
-                        }
+                        ui::ChoiceCombo("Environment", hdris.Names[hdris.ActiveIndex], hdris.Names, std::identity{}, [&](const std::string &name) { action::Emit(action::view::SetStudioEnvironment{viewport, name}); });
                     }
                     PopID();
                 };

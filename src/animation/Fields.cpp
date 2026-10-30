@@ -1,15 +1,12 @@
 #include "animation/Fields.h"
-#include "TypeList.h"
 #include "action/Dispatch.h"
 
 #include "animation/MorphWeights.h"
-#include "armature/ArmatureComponents.h"
 #include "object/ObjectOps.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/MaterialTextureSchema.h"
 #include "render/RenderChanges.h"
-#include "state/Registry.h"
 
 namespace animation {
 namespace {

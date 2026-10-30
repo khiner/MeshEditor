@@ -1,7 +1,6 @@
 #include "viewport/ViewCameraOps.h"
 #include "scene/CameraLens.h"
 #include "scene/SceneGraph.h"
-#include "state/Registry.h"
 #include "viewport/Viewport.h"
 
 void SetLookThrough(const state::Registry &r, ViewCameraState &state, state::Entity target) {

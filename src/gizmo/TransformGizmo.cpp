@@ -95,41 +95,21 @@ std::string_view ToString(const GizmoInteraction &g) {
 namespace {
 using enum InteractionOp;
 
-constexpr InteractionOp AxisOp(uint32_t axis_i) {
-    if (axis_i == 0) return AxisX;
-    if (axis_i == 1) return AxisY;
-    if (axis_i == 2) return AxisZ;
-
-    assert(false);
-    return AxisX;
-}
-
-constexpr InteractionOp TranslatePlanes[]{InteractionOp::YZ, InteractionOp::ZX, InteractionOp::XY};
-
+// Axis ops and translate planes follow their enumerator order, each plane normal to the axis of its index.
+constexpr InteractionOp AxisOp(uint32_t axis_i) { return InteractionOp(axis_i); }
+constexpr InteractionOp TranslatePlanes[]{YZ, ZX, XY};
 constexpr std::optional<uint32_t> TranslatePlaneIndex(InteractionOp plane) {
-    if (plane == YZ) return 0;
-    if (plane == ZX) return 1;
-    if (plane == XY) return 2;
-    return {};
+    if (plane < YZ || plane > XY) return {};
+    return uint32_t(plane) - uint32_t(YZ);
 }
-constexpr uint32_t AxisIndex(InteractionOp op) {
-    if (op == AxisX) return 0;
-    if (op == AxisY) return 1;
-    if (op == AxisZ) return 2;
-    if (auto i = TranslatePlaneIndex(op)) return *i;
-
-    assert(false);
-    return -1;
-}
-
-constexpr std::optional<std::pair<InteractionOp, InteractionOp>> PlaneAxes(InteractionOp plane) {
-    if (plane == YZ) return std::pair{AxisY, AxisZ};
-    if (plane == ZX) return std::pair{AxisZ, AxisX};
-    if (plane == XY) return std::pair{AxisX, AxisY};
-    return {};
-}
-
+constexpr uint32_t AxisIndex(InteractionOp op) { return op <= AxisZ ? uint32_t(op) : *TranslatePlaneIndex(op); }
 constexpr std::pair<uint32_t, uint32_t> PerpendicularAxes(uint32_t axis_i) { return {(axis_i + 1) % 3, (axis_i + 2) % 3}; }
+constexpr std::optional<std::pair<InteractionOp, InteractionOp>> PlaneAxes(InteractionOp plane) {
+    const auto i = TranslatePlaneIndex(plane);
+    if (!i) return {};
+    const auto [a, b] = PerpendicularAxes(*i);
+    return std::pair{AxisOp(a), AxisOp(b)};
+}
 
 constexpr vec3 ScaleVecForOp(InteractionOp op, float v) {
     if (op == AxisX || op == AxisY || op == AxisZ) {
@@ -663,16 +643,15 @@ void RenderImpl(const GizmoInteraction &g, const ViewFrame &f, const GizmoTransf
                     const auto uv = s * Style.PlaneQuadSize * 0.5f + 0.5f * mult;
                     return WsToPx(f, m.P + m.AxisDirWs(ui) * w2s * uv.x + m.AxisDirWs(vi) * w2s * uv.y);
                 };
-                const auto p1{screen_pos({-1, -1}, false)}, p2{screen_pos({-1, 1}, false)}, p3{screen_pos({1, 1}, false)}, p4{screen_pos({1, -1}, false)};
+                const auto draw_quad = [&](bool ghost, ImU32 outline, ImU32 fill) {
+                    const auto p1{screen_pos({-1, -1}, ghost)}, p2{screen_pos({-1, 1}, ghost)}, p3{screen_pos({1, 1}, ghost)}, p4{screen_pos({1, -1}, ghost)};
+                    dl.AddQuad(p1, p2, p3, p4, outline, 1.f, ImDrawFlags_StrokeCenter);
+                    dl.AddQuadFilled(p1, p2, p3, p4, fill);
+                };
                 const bool is_selected = g.Current && g.Current->Op == TranslatePlanes[i];
                 const auto plane_alpha = PlaneAlpha(i, transform, cam_ray);
-                dl.AddQuad(p1, p2, p3, p4, colors::MultAlpha(SelectionColor(Axes[i], is_selected), plane_alpha), 1.f, ImDrawFlags_StrokeCenter);
-                dl.AddQuadFilled(p1, p2, p3, p4, colors::MultAlpha(SelectionColor(colors::WithAlpha(Axes[i], 0.5f), is_selected), plane_alpha));
-                if (g.Start) {
-                    const auto p1g{screen_pos({-1, -1}, true)}, p2g{screen_pos({-1, 1}, true)}, p3g{screen_pos({1, 1}, true)}, p4g{screen_pos({1, -1}, true)};
-                    dl.AddQuad(p1g, p2g, p3g, p4g, colors::Lighten(Color.StartGhost, 0.5f), 1.f, ImDrawFlags_StrokeCenter);
-                    dl.AddQuadFilled(p1g, p2g, p3g, p4g, Color.StartGhost);
-                }
+                draw_quad(false, colors::MultAlpha(SelectionColor(Axes[i], is_selected), plane_alpha), colors::MultAlpha(SelectionColor(colors::WithAlpha(Axes[i], 0.5f), is_selected), plane_alpha));
+                if (g.Start) draw_quad(true, colors::Lighten(Color.StartGhost, 0.5f), Color.StartGhost);
             }
         }
     }

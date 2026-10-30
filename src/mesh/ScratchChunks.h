@@ -1,7 +1,5 @@
 #pragma once
 
-#include "Range.h"
-
 // Elements one threadgroup covers outside the scan passes, matching the shaders' ScanTileSize.
 constexpr uint32_t TileElements{256};
 // Elements one scan block covers, four per thread, matching the shaders' ScanBlockElements.
@@ -11,7 +9,6 @@ constexpr uint32_t BlockElements{1024};
 constexpr uint32_t ScratchWordBudget{96u << 20};
 
 constexpr uint32_t TileCount(uint32_t count, uint32_t per_tile) { return count / per_tile + (count % per_tile != 0); }
-constexpr uint32_t BitWords(uint32_t bits) { return bits / 32u + (bits % 32u != 0); }
 
 // Runs of a work list, each sized so one submit's scratch stays under the budget.
 // An item wider than the budget takes a chunk to itself.

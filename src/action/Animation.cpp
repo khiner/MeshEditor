@@ -4,7 +4,6 @@
 #include "animation/Clips.h"
 #include "animation/Fields.h"
 #include "animation/Keying.h"
-#include "selection/Selection.h"
 #include "timeline/Timeline.h"
 #include "viewport/InteractionComponents.h"
 

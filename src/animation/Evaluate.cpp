@@ -4,7 +4,6 @@
 #include "animation/Clips.h"
 #include "animation/Fields.h"
 #include "scene/HierarchyInstance.h"
-#include "state/Registry.h"
 
 namespace animation {
 void Evaluate(state::Registry &r, float seconds, bool persistent) {

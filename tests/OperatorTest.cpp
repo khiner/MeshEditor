@@ -1,5 +1,5 @@
-#include "ProcedureFixture.h"
 #include "MeshChecks.h"
+#include "ProcedureFixture.h"
 #include "TestMeshOrdinals.h"
 #include "mesh/Primitives.h"
 #include "numeric/MatrixMath.h"
@@ -680,29 +680,29 @@ void RecordedOperators(ProcedureFixture &f, Fixture &other) {
         {.Name = "SnapSymmetryZeroThreshold", .Shape = Symmetric, .Domain = Element::Vertex, .Kind = KindOf<SnapSymmetry>, .Gesture = [](ProcedureFixture &f) { f.Do(SnapSymmetry{.Threshold = 0.f}); }, .Select = {0, 2, 4, 5, 6, 7}, .Expected = {.Unchanged = true}},
         // A bend about the world plane onto a quarter circle, which stays put near zero angle, and a warp that continues downward beyond its bounds, with the world XY plane as the viewport plane.
         {.Name = "Bend", .Shape = BendChain, .Domain = Element::Vertex, .Kind = KindOf<procedure::Bend>, .Gesture = [](ProcedureFixture &f) { LookDown(f); f.Do(action::mesh::Bend{.Angle = std::numbers::pi_v<float> / 2.f, .Radius = 2.f}); }, .World = BendWorld, .Expected = {.Positions = [] {
-            std::vector<vec3> positions;
-            const float root2 = std::sqrt(2.f);
-            for (const auto p : {vec3{-1, 0, 0}, vec3{root2, root2 - 2.f, 1}, vec3{2, -2, 2}, vec3{2, -3, 3}}) positions.push_back(Local(BendWorld, p));
-            return positions;
-        }()}},
+                                                                                                                                                                         std::vector<vec3> positions;
+                                                                                                                                                                         const float root2 = std::sqrt(2.f);
+                                                                                                                                                                         for (const auto p : {vec3{-1, 0, 0}, vec3{root2, root2 - 2.f, 1}, vec3{2, -2, 2}, vec3{2, -3, 3}}) positions.push_back(Local(BendWorld, p));
+                                                                                                                                                                         return positions;
+                                                                                                                                                                     }()}},
         {.Name = "BendSmallAngle", .Shape = BendChain, .Domain = Element::Vertex, .Kind = KindOf<procedure::Bend>, .Gesture = [](ProcedureFixture &f) { LookDown(f); f.Do(action::mesh::Bend{.Angle = 1e-6f, .Radius = 2.f, .Clamp = false}); }, .World = BendWorld, .Expected = {.Positions = BendChain().Data.Positions}},
         {.Name = "BendZeroRadius", .Shape = BendChain, .Domain = Element::Vertex, .Kind = KindOf<procedure::Bend>, .Gesture = [](ProcedureFixture &f) { LookDown(f); f.Do(action::mesh::Bend{.Radius = 0.f}); }, .World = BendWorld, .Expected = {.Unchanged = true}},
         {.Name = "Warp", .Shape = Columns, .Domain = Element::Vertex, .Kind = KindOf<procedure::Warp>, .Gesture = [](ProcedureFixture &f) { LookDown(f); f.Do(action::mesh::Warp{.Angle = std::numbers::pi_v<float>, .AutoRange = false, .Min = 2.f, .Max = -2.f}); }, .Expected = {.Positions = [] {
-            std::vector<vec3> positions;
-            for (uint32_t i = 0u; i < 265u; ++i) positions.push_back(std::array{vec3{-1, -1, 0}, vec3{-1, 0, 0}, vec3{0, 1, 0}, vec3{1, 0, 0}, vec3{1, -1, 0}}[i % 5u] + vec3{0, 0, float(i / 5u)});
-            return positions;
-        }()}},
+                                                                                                                                                   std::vector<vec3> positions;
+                                                                                                                                                   for (uint32_t i = 0u; i < 265u; ++i) positions.push_back(std::array{vec3{-1, -1, 0}, vec3{-1, 0, 0}, vec3{0, 1, 0}, vec3{1, 0, 0}, vec3{1, -1, 0}}[i % 5u] + vec3{0, 0, float(i / 5u)});
+                                                                                                                                                   return positions;
+                                                                                                                                               }()}},
         {.Name = "WarpAuto", .Shape = Columns, .Domain = Element::Vertex, .Kind = KindOf<procedure::Warp>, .Gesture = [](ProcedureFixture &f) { LookDown(f); f.Do(action::mesh::Warp{.Angle = std::numbers::pi_v<float>, .AutoRange = true, .Min = 2.f, .Max = -2.f}); }, .Expected = {.Positions = [] {
-            std::vector<vec3> positions;
-            const float root3 = std::sqrt(3.f) * .5f;
-            for (uint32_t i = 0u; i < 265u; ++i) positions.push_back(std::array{vec3{-1, 0, 0}, vec3{-root3, .5f, 0}, vec3{0, 1, 0}, vec3{root3, .5f, 0}, vec3{1, 0, 0}}[i % 5u] + vec3{0, 0, float(i / 5u)});
-            return positions;
-        }()}},
+                                                                                                                                                       std::vector<vec3> positions;
+                                                                                                                                                       const float root3 = std::sqrt(3.f) * .5f;
+                                                                                                                                                       for (uint32_t i = 0u; i < 265u; ++i) positions.push_back(std::array{vec3{-1, 0, 0}, vec3{-root3, .5f, 0}, vec3{0, 1, 0}, vec3{root3, .5f, 0}, vec3{1, 0, 0}}[i % 5u] + vec3{0, 0, float(i / 5u)});
+                                                                                                                                                       return positions;
+                                                                                                                                                   }()}},
         {.Name = "WarpFlat", .Shape = Columns, .Domain = Element::Vertex, .Kind = KindOf<procedure::Warp>, .Gesture = [](ProcedureFixture &f) { LookDown(f); f.Do(action::mesh::Warp{.Angle = 0.f}); }, .Expected = {.Positions = [] {
-            std::vector<vec3> positions;
-            for (uint32_t i = 0u; i < 265u; ++i) positions.push_back({0, 1, float(i / 5u)});
-            return positions;
-        }()}},
+                                                                                                                                                       std::vector<vec3> positions;
+                                                                                                                                                       for (uint32_t i = 0u; i < 265u; ++i) positions.push_back({0, 1, float(i / 5u)});
+                                                                                                                                                       return positions;
+                                                                                                                                                   }()}},
         {.Name = "WarpEmptyRange", .Shape = Columns, .Domain = Element::Vertex, .Kind = KindOf<procedure::Warp>, .Gesture = [](ProcedureFixture &f) { LookDown(f); f.Do(action::mesh::Warp{.AutoRange = false, .Min = 1.f, .Max = 1.f}); }, .Expected = {.Unchanged = true}},
         // bmesh.ops.unsubdivide, beautify_fill and connect_verts_concave partitions, Blender 5.2.2 d13f752e3b9c, as oriented loops of source vertices.
         {.Name = "UnsubdivideOnce", .Shape = +[] { return Grid(3u); }, .Domain = Element::Vertex, .Kind = KindOf<Unsubdivide>, .Gesture = [](ProcedureFixture &f) { f.Do(Unsubdivide{1u}); }, .Expected = {.Faces = {{9, 4, 1, 6}, {0, 1, 4}, {14, 9, 6, 11}, {9, 12, 4}, {9, 14, 12}, {1, 3, 6}, {11, 15, 14}, {3, 11, 6}}}},
@@ -738,11 +738,11 @@ void RecordedOperators(ProcedureFixture &f, Fixture &other) {
         {.Name = "SeparateLooseCube", .Shape = primitive::Cube{}, .Domain = Element::Face, .Kind = NoKind, .Gesture = [](ProcedureFixture &f) { f.Do(Separate{SeparateMode::LooseParts}); }},
         {.Name = "SeparateMaterialCube", .Shape = primitive::Cube{}, .Domain = Element::Face, .Kind = NoKind, .Gesture = [](ProcedureFixture &f) { f.Do(Separate{SeparateMode::Material}); }},
         {.Name = "AbsentFaceLayers", .Shape = primitive::Cube{}, .Domain = Element::Face, .Kind = NoKind, .Gesture = [](ProcedureFixture &f) {
-            f.Do(RotateColors{});
-            f.Do(ReverseColors{});
-            f.Do(RotateUVs{3u});
-            f.Do(ReverseUVs{3u});
-        }},
+             f.Do(RotateColors{});
+             f.Do(ReverseColors{});
+             f.Do(RotateUVs{3u});
+             f.Do(ReverseUVs{3u});
+         }},
     };
     // Adds an active cube at Placed and a selected second cube, the tool, and returns the active object, its mesh and the tool.
     const auto add_cubes = [](ProcedureFixture &f) {
@@ -895,8 +895,8 @@ void RecordedOperators(ProcedureFixture &f, Fixture &other) {
     }
 }
 
-
-std::string_view DomainName(Element domain) { return domain == Element::Vertex ? "Vertices" : domain == Element::Edge ? "Edges" : "Faces"; }
+std::string_view DomainName(Element domain) { return domain == Element::Vertex ? "Vertices" : domain == Element::Edge ? "Edges" :
+                                                                                                                        "Faces"; }
 
 // Two unit quads side by side and an unconnected vertex.
 MeshSource TwoQuads() { return Sourced({{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {0, 1, 0}, {1, 1, 0}, {2, 1, 0}, {3, 1, 0}}, {{0, 1, 4, 3}, {1, 2, 5, 4}}); }

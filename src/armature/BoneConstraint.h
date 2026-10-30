@@ -1,6 +1,5 @@
 #pragma once
 
-#include "armature/ArmatureSchema.h"
 #include "numeric/mat4.h"
 #include "state/Entity.h"
 

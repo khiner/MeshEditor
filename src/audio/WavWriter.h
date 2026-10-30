@@ -1,8 +1,5 @@
 #pragma once
 
-#include <filesystem>
-#include <span>
-
 // Streams mono float frames into a 32-bit float wav file.
 struct WavWriter {
     // Opens the file for writing.

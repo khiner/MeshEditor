@@ -98,12 +98,6 @@ struct GridVaryings {
     float4 Position [[position]];
 };
 
-struct ObjectIdVaryings {
-    float4 Position [[position]];
-    float PointSize [[point_size]];
-    uint ObjectId [[user(ObjectId)]] [[flat]];
-};
-
 struct ObjectIdFragmentVaryings {
     float4 Position [[position]];
     uint ObjectId [[user(ObjectId)]] [[flat]];

@@ -1,5 +1,4 @@
 #include "audio/AudioUi.h"
-#include "scene/HierarchyInstance.h"
 
 #include "FileDialog.h"
 #include "action/Audio.h"
@@ -309,14 +308,7 @@ void DrawObjectAudioControls(state::Registry &r, state::Entity e, state::Entity 
         else if (IsItemDeactivated()) action::Emit(action::audio::StopExcite{e});
         if (!can_excite) EndDisabled();
         SameLine();
-        if (BeginCombo("Vertex", std::to_string(active_vertex).c_str())) {
-            for (uint32_t vi = 0; vi < excitable_vertices.size(); ++vi) {
-                if (const auto vertex = excitable_vertices[vi]; Selectable(std::to_string(vertex).c_str(), vi == active_vi)) {
-                    action::Emit(action::audio::SetExciteVertex{vi, vertex, e});
-                }
-            }
-            EndCombo();
-        }
+        ui::ChoiceCombo("Vertex", active_vi, std::views::iota(0u, uint32_t(excitable_vertices.size())), [&](uint32_t vi) { return std::to_string(excitable_vertices[vi]); }, [&](uint32_t vi) { action::Emit(action::audio::SetExciteVertex{vi, excitable_vertices[vi], e}); });
 
         if (model == SoundVerticesModel::Modal) {
             TextUnformatted("Impact angle");

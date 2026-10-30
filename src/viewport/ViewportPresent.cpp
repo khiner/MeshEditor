@@ -6,7 +6,6 @@
 #include "render/GpuBuffers.h"
 #include "render/Textures.h"
 #include "scene/CameraLens.h"
-#include "viewport/FrameState.h"
 #include "viewport/ViewCameraOps.h"
 #include "viewport/ViewportComponents.h"
 #include "viewport/ViewportIcons.h"

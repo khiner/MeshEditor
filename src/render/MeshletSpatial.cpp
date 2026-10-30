@@ -66,6 +66,19 @@ uint64_t Key(vec3 center) {
     return key;
 }
 uint64_t Key(const Node &node) { return uint64_t(node.Key.y) << 32u | node.Key.x; }
+
+// Sets the node's box and subtree volume from its meshlet bounds and its children, which `read` resolves by id.
+void Refit(Node &node, AABB box, auto &&read) {
+    double volume = UnpackVolume(node.LocalVolume);
+    for (const auto child_id : {node.Left, node.Right}) {
+        if (child_id == InvalidOffset) continue;
+        const auto &child = read(child_id);
+        box = Join(box, child.Box);
+        volume += UnpackVolume(child.SubtreeVolume);
+    }
+    node.Box = box;
+    node.SubtreeVolume = VolumeBits(volume);
+}
 uvec2 KeyWords(uint64_t key) { return {uint32_t(key), uint32_t(key >> 32u)}; }
 bool Before(uint64_t a, uint32_t ai, uint64_t b, uint32_t bi) { return a == b ? ai < bi : a < b; }
 
@@ -97,20 +110,7 @@ struct Tree {
     }
     void Fix(uint32_t id) {
         auto node = Read(id);
-        auto box = Bounds(Meshlet(id));
-        double volume = UnpackVolume(node.LocalVolume);
-        if (node.Left != InvalidOffset) {
-            const auto child = Read(node.Left);
-            box = Join(box, child.Box);
-            volume += UnpackVolume(child.SubtreeVolume);
-        }
-        if (node.Right != InvalidOffset) {
-            const auto child = Read(node.Right);
-            box = Join(box, child.Box);
-            volume += UnpackVolume(child.SubtreeVolume);
-        }
-        node.Box = box;
-        node.SubtreeVolume = VolumeBits(volume);
+        Refit(node, Bounds(Meshlet(id)), [&](uint32_t child) { return Read(child); });
         Write(id, node);
     }
     void FixUp(uint32_t id) {
@@ -130,42 +130,27 @@ struct Tree {
         else throw std::logic_error("Spatial parent does not own its child.");
         Write(parent, node);
     }
-    void RotateLeft(uint32_t id) {
-        auto a = Read(id), b = Read(a.Right);
-        const auto right = a.Right, parent = a.Parent;
-        a.Right = b.Left;
-        a.Parent = right;
-        if (a.Right != InvalidOffset) {
-            auto child = Read(a.Right);
+    // Raises the `Far` child of `id` into its place, with `id` becoming that child's `Near` child.
+    template<uint32_t Node::*Far, uint32_t Node::*Near> void Rotate(uint32_t id) {
+        auto a = Read(id), b = Read(a.*Far);
+        const auto raised = a.*Far, parent = a.Parent;
+        a.*Far = b.*Near;
+        a.Parent = raised;
+        if (a.*Far != InvalidOffset) {
+            auto child = Read(a.*Far);
             child.Parent = id;
-            Write(a.Right, child);
+            Write(a.*Far, child);
         }
-        b.Left = id;
+        b.*Near = id;
         b.Parent = parent;
         Write(id, a);
-        Write(right, b);
-        Link(parent, id, right);
+        Write(raised, b);
+        Link(parent, id, raised);
         Fix(id);
-        Fix(right);
+        Fix(raised);
     }
-    void RotateRight(uint32_t id) {
-        auto a = Read(id), b = Read(a.Left);
-        const auto left = a.Left, parent = a.Parent;
-        a.Left = b.Right;
-        a.Parent = left;
-        if (a.Left != InvalidOffset) {
-            auto child = Read(a.Left);
-            child.Parent = id;
-            Write(a.Left, child);
-        }
-        b.Right = id;
-        b.Parent = parent;
-        Write(id, a);
-        Write(left, b);
-        Link(parent, id, left);
-        Fix(id);
-        Fix(left);
-    }
+    void RotateLeft(uint32_t id) { Rotate<&Node::Right, &Node::Left>(id); }
+    void RotateRight(uint32_t id) { Rotate<&Node::Left, &Node::Right>(id); }
     void Insert(uint32_t id) {
         const auto record = Meshlet(id);
         if (record.RefinedGroup != InvalidOffset || record.Topology != 0u) throw std::invalid_argument("Spatial index only accepts finest triangle meshlets.");
@@ -285,21 +270,7 @@ void BuildMeshletSpatial(state::Registry &r, std::span<MeshStore::Record *const>
             if (node.Right != InvalidOffset) order.push_back(node.Right);
         }
         for (const auto handle : std::views::reverse(postorder)) {
-            auto &node = read(handle);
-            auto box = Bounds(gpu.Meshlets.Get({Resolve<RenderBlockSize>(entries, ElementHandle{handle}).Value(), 1u})[0]);
-            double volume = UnpackVolume(node.LocalVolume);
-            if (node.Left != InvalidOffset) {
-                const auto &child = read(node.Left);
-                box = Join(box, child.Box);
-                volume += UnpackVolume(child.SubtreeVolume);
-            }
-            if (node.Right != InvalidOffset) {
-                const auto &child = read(node.Right);
-                box = Join(box, child.Box);
-                volume += UnpackVolume(child.SubtreeVolume);
-            }
-            node.Box = box;
-            node.SubtreeVolume = VolumeBits(volume);
+            Refit(read(handle), Bounds(gpu.Meshlets.Get({Resolve<RenderBlockSize>(entries, ElementHandle{handle}).Value(), 1u})[0]), read);
         }
     });
 }

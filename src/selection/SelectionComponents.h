@@ -1,12 +1,6 @@
 #pragma once
 
-#include "gpu/Element.h"
 #include "selection/Selection.h"
-
-#include "selection/SelectionSchema.h"
-#include "state/Entity.h"
-
-#include <vector>
 
 constexpr uint32_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1};
 

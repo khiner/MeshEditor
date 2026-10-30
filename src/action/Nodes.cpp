@@ -3,7 +3,6 @@
 #include "action/Errors.h"
 #include "action/Selection.h"
 #include "animation/AnimationData.h"
-#include "armature/ArmatureComponents.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "procedure/Cook.h"
@@ -11,9 +10,7 @@
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
 #include "render/Textures.h"
-#include "scene/SceneGraph.h"
 #include "selection/SelectionComponents.h"
-#include "selection/SelectionGpu.h"
 #include "state/EntityReferences.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewportEvents.h"
@@ -570,7 +567,6 @@ void Apply(state::Registry &r, const Action &action) {
         action
     );
 }
-
 
 void CaptureActiveSelection(state::Registry &r, state::Entity mesh_entity) {
     if (const auto *task = r.try_get<const SelectionEditing>(state::Document); task && task->Mesh == mesh_entity) r.emplace_or_replace<InlineSelection>(task->Node, CaptureSelection(r, mesh_entity));

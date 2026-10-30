@@ -4,7 +4,6 @@
 #include "gpu/IblSamplers.h"
 #include "metal/Image.h"
 
-#include "render/RenderSchema.h"
 #include "state/Entity.h"
 #include <expected>
 #include <filesystem>

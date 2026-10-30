@@ -9,7 +9,6 @@
 #include "render/Instance.h"
 #include "scene/Entity.h"
 #include "scene/HierarchyInstance.h"
-#include "state/Registry.h"
 
 namespace action::audio {
 namespace {
@@ -69,13 +68,9 @@ void Apply(state::Registry &r, const Action &action) {
                     if (a.Name == preset.Name) Patch<ContactSurface>(r, definition(a.Entity), [&](auto &s) { s = WithPreset(std::move(s), preset); });
                 }
             },
-            [&]<typename C, typename F, size_t N>(const PatchFields<C, F, N> &a) {
-                Patch<C>(r, definition(a.Entity), [&](C &c) {
-                    for (size_t i = 0; i < N; ++i) {
-                        assert(size_t(a.Offsets[i]) + sizeof(F) <= sizeof(C));
-                        *reinterpret_cast<F *>(reinterpret_cast<std::byte *>(&c) + a.Offsets[i]) = a.Values[i];
-                    }
-                });
+            [&]<typename C, typename F>(const PatchFields<C, F> &a) {
+                assert(size_t(a.Offset) + sizeof(F) <= sizeof(C));
+                Patch<C>(r, definition(a.Entity), [&](C &c) { *reinterpret_cast<F *>(reinterpret_cast<std::byte *>(&c) + a.Offset) = a.Value; });
             },
             [&](const ApplyModalModel &a) { ::ApplyModalModel(r, definition(a.SoundEntity), a.Path); },
             [&](const AssignVertexSamples &a) {

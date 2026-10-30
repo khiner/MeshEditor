@@ -10,7 +10,6 @@
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
 #include "mesh/MeshStores.h"
-#include "mesh/Primitives.h"
 #include "object/ObjectOps.h"
 #include "procedure/Procedure.h"
 #include "render/GpuBuffers.h"
@@ -21,10 +20,7 @@
 #include "render/RenderChanges.h"
 #include "scene/CameraLens.h"
 #include "scene/Defaults.h"
-#include "scene/HierarchyInstance.h"
 #include "scene/SceneGraphOps.h"
-#include "selection/SelectionComponents.h"
-#include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
 #include "viewport/InteractionComponents.h"
 
@@ -73,7 +69,7 @@ state::Entity DuplicateOne(state::Registry &r, state::Entity e, MeshCopy *copy, 
             }
             return copy_entity;
         }
-        return ::AddEmpty(r, meshes, create_info);
+        return ::AddEmpty(r, create_info);
     }
 
     // Bone sub-entities (head/tail joints, bone instances) are not independently duplicable.
@@ -81,9 +77,9 @@ state::Entity DuplicateOne(state::Registry &r, state::Entity e, MeshCopy *copy, 
 
     // Object extras (Camera, Empty, Light) have Instance but create their own wireframe mesh.
     if (r.all_of<ObjectExtrasTag>(r.get<Instance>(e).Entity)) {
-        if (const auto lens = LensOf(r, e)) return ::AddCamera(r, meshes, create_info, *lens);
-        if (const auto *light = r.try_get<const PunctualLight>(e)) return ::AddLight(r, meshes, create_info, *light);
-        return ::AddEmpty(r, meshes, create_info);
+        if (const auto lens = LensOf(r, e)) return ::AddCamera(r, create_info, *lens);
+        if (const auto *light = r.try_get<const PunctualLight>(e)) return ::AddLight(r, create_info, *light);
+        return ::AddEmpty(r, create_info);
     }
 
     const MeshInstanceCreateInfo info{.Name = create_info.Name, .Transform = create_info.Transform, .Select = create_info.Select, .Visible = !r.all_of<Hidden>(e)};
@@ -107,7 +103,7 @@ state::Entity DuplicateLinkedOne(state::Registry &r, state::Entity e) {
         if (const auto *armature = r.try_get<ArmatureObject>(e)) {
             return CreateArmatureObject(r, meshes, armature->Entity, std::format("{}_copy", GetName(r, e)), *WorldTransformOf(r, e), select_behavior);
         }
-        return ::AddEmpty(r, meshes, {.Name = std::format("{}_copy", GetName(r, e)), .Transform = *WorldTransformOf(r, e), .Select = select_behavior});
+        return ::AddEmpty(r, {.Name = std::format("{}_copy", GetName(r, e)), .Transform = *WorldTransformOf(r, e), .Select = select_behavior});
     }
 
     const auto mesh_entity = r.get<Instance>(e).Entity;
@@ -213,15 +209,9 @@ void Apply(state::Registry &r, const Action &action) {
             fn
         );
     };
+    // The edit meshes with a selection in the element domain, which is the edit domain or none.
     const auto edit_selection_meshes = [&](Element element) {
-        std::vector<state::Entity> result;
-        if (r.get<const EditMode>(state::Document).Value != element) return result;
-        for (const auto me : r.view<const MeshElementSelection>()) {
-            if (!HasMesh(r, me)) continue;
-            const auto &summary = meshes.GetSelectionSummary(*DrawnStoreId(r, me));
-            if (summary.Mode == element && summary.SelectedCount > 0) result.push_back(me);
-        }
-        return result;
+        return r.get<const EditMode>(state::Document).Value == element ? mesh::SelectedEditMeshes(r) : std::vector<state::Entity>{};
     };
     // Append a node with the parameters to each mesh.
     const auto append = [&]<typename N>(std::span<const state::Entity> mesh_entities, const N &parameters) {
@@ -303,14 +293,14 @@ void Apply(state::Registry &r, const Action &action) {
                 r.remove<Name>(entity);
                 EmplaceUniqueName(r, entity, a.Name);
             },
-            [&](const AddEmpty &a) { ::AddEmpty(r, meshes, *a.Info); if (a.Info->BeginTranslate) begin_translate(); },
+            [&](const AddEmpty &a) { ::AddEmpty(r, *a.Info); if (a.Info->BeginTranslate) begin_translate(); },
             [&](const AddArmature &a) {
                 const auto entity = CreateArmatureObject(r, meshes, state::Null, a.Info->Name, a.Info->Transform, a.Info->Select, a.Info->Scene);
                 procedure::PlaceInNetwork(r, a.Info->Network, entity);
                 if (a.Info->BeginTranslate) begin_translate();
             },
-            [&](const AddCamera &a) { ::AddCamera(r, meshes, *a.Info, a.Props); if (a.Info->BeginTranslate) begin_translate(); },
-            [&](const AddLight &a) { ::AddLight(r, meshes, *a.Info); if (a.Info->BeginTranslate) begin_translate(); },
+            [&](const AddCamera &a) { ::AddCamera(r, *a.Info, a.Props); if (a.Info->BeginTranslate) begin_translate(); },
+            [&](const AddLight &a) { ::AddLight(r, *a.Info); if (a.Info->BeginTranslate) begin_translate(); },
             [&](const AddMeshPrimitive &a) {
                 ::AddMeshPrimitive(r, a.Parameters, *a.Info);
                 if (a.Info->BeginTranslate) begin_translate();

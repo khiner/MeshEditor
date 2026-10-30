@@ -3,7 +3,6 @@
 #include "PhysicsTypes.h"
 #include "gpu/Shared.h"
 
-#include <optional>
 #include <span>
 
 namespace rbp {

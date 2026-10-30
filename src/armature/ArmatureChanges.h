@@ -1,8 +1,5 @@
 #pragma once
 
-#include "armature/ArmatureSchema.h"
-#include "state/DirtySet.h"
-
 // Bone change sets, bound by RegisterSceneComponentHandlers.
 struct ArmatureChanges {
     state::DirtySet BonePose; // A bone's pose delta changed.

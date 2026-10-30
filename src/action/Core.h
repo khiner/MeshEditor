@@ -73,11 +73,11 @@ struct Update {
     T Value;
 };
 
-// Assigns authored fields together, creating the component from domain defaults when absent.
-template<typename Component, typename Field, size_t N = 1>
+// Assigns the field at byte `Offset` of the component, creating the component from domain defaults when absent.
+template<typename Component, typename Field>
 struct PatchFields {
-    std::array<uint16_t, N> Offsets;
-    std::array<Field, N> Values;
+    uint16_t Offset;
+    Field Value;
     state::Entity Entity{state::Null};
 };
 
@@ -88,7 +88,7 @@ struct DestroyEntity {
 template<typename T> inline constexpr bool IsUpdate = false;
 template<typename T> inline constexpr bool IsUpdate<Update<T>> = true;
 template<typename T> inline constexpr bool IsPatchFields = false;
-template<typename C, typename F, size_t N> inline constexpr bool IsPatchFields<PatchFields<C, F, N>> = true;
+template<typename C, typename F> inline constexpr bool IsPatchFields<PatchFields<C, F>> = true;
 
 namespace detail {
 // A non-virtual data-member pointer's bit pattern is the byte offset.

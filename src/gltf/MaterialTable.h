@@ -1,9 +1,6 @@
 #pragma once
 
 #include "SourceAssets.h"
-#include "gpu/PBRMaterial.h"
-
-#include <fastgltf/types.hpp>
 
 // The glTF material extensions MeshEditor keeps, each as the fields it carries in PBRMaterial and in fastgltf under their glTF keys.
 // Import, export, the extension tally, and the animation pointer rows derive from this one description.

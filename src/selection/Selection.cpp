@@ -3,7 +3,6 @@
 #include "armature/ArmatureComponents.h"
 #include "mesh/Mesh.h"
 #include "procedure/Procedure.h"
-#include "render/Instance.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
 #include "selection/SelectionComponents.h"
@@ -11,8 +10,6 @@
 #include "selection/SelectionState.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewportInteractionState.h"
-
-#include "state/Registry.h"
 
 using std::ranges::find;
 

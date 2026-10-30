@@ -1,6 +1,5 @@
 #pragma once
 
-#include "animation/AnimationSchema.h"
 #include "state/DirtySet.h"
 
 // Animation change sets, bound by RegisterSceneComponentHandlers.

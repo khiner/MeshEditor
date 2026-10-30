@@ -1,5 +1,4 @@
 #pragma once
-#include "render/RenderSchema.h"
 #include "viewport/ViewportRenderGpu.h"
 #include <Foundation/NSSharedPtr.hpp>
 

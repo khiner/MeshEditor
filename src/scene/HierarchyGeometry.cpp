@@ -1,15 +1,8 @@
-#include "action/Nodes.h"
-#include "mesh/MeshClone.h"
-#include "mesh/MeshComponents.h"
-#include "mesh/MeshStores.h"
 #include "object/PendingSync.h"
-#include "physics/PhysicsTypes.h"
 #include "procedure/Procedure.h"
 #include "render/Instance.h"
-#include "scene/Entity.h"
 #include "scene/HierarchyInstance.h"
 #include "state/EntityReferences.h"
-#include "state/Registry.h"
 
 namespace {
 using namespace procedure;

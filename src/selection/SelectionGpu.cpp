@@ -1,7 +1,6 @@
 #include "SortUnique.h"
 #include "procedure/Procedure.h"
 
-#include "ProcessEvents.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
 #include "state/Registry.h"
@@ -17,23 +16,18 @@
 #include "gpu/VisibilitySelectionPushConstants.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
-#include "mesh/SharpnessOperations.h"
 #include "metal/Dispatch.h"
 #include "metal/PassChain.h"
 #include "metal/RenderTarget.h"
 #include "render/Encoding.h"
 #include "render/GpuSceneState.h"
 #include "render/Instance.h"
-#include "render/MeshTopologyRepair.h"
 #include "render/PickConstants.h"
 #include "render/Pipelines.h"
 #include "scene/Entity.h"
 #include "selection/SelectionComponents.h"
 #include "viewport/FrameState.h"
 #include "viewport/InteractionComponents.h"
-#include "viewport/Viewport.h"
-#include "viewport/ViewportEvents.h"
-#include "viewport/ViewportRenderGpu.h"
 
 namespace {
 bool ElementQuery(const state::Registry &r) {

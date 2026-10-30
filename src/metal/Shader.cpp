@@ -66,15 +66,13 @@ void PrunePipelineArchives(const std::filesystem::path &base) {
     }
 }
 
-// Both Metal descriptor families share the attachment state; only the blend enable API differs.
-void ConfigureColorAttachments(auto *attachments, const PassFormats &formats, std::span<const BlendState> blends) {
+void ConfigureColorAttachments(MTL4::RenderPipelineColorAttachmentDescriptorArray *attachments, const PassFormats &formats, std::span<const BlendState> blends) {
     for (size_t i = 0; i < formats.Color.size(); ++i) {
         auto *attachment = attachments->object(i);
         attachment->setPixelFormat(formats.Color[i]);
         const auto blend = i < blends.size() ? blends[i] : NoBlend;
         attachment->setWriteMask(blend.WriteMask ? MTL::ColorWriteMaskAll : MTL::ColorWriteMaskNone);
-        if constexpr (requires { attachment->setBlendingEnabled(blend.Enabled); }) attachment->setBlendingEnabled(blend.Enabled);
-        else attachment->setBlendingState(blend.Enabled ? MTL4::BlendStateEnabled : MTL4::BlendStateDisabled);
+        attachment->setBlendingState(blend.Enabled ? MTL4::BlendStateEnabled : MTL4::BlendStateDisabled);
         if (!blend.Enabled) continue;
         attachment->setSourceRGBBlendFactor(blend.SourceRgb);
         attachment->setDestinationRGBBlendFactor(blend.DestRgb);
@@ -83,11 +81,6 @@ void ConfigureColorAttachments(auto *attachments, const PassFormats &formats, st
         attachment->setDestinationAlphaBlendFactor(blend.DestAlpha);
         attachment->setAlphaBlendOperation(MTL::BlendOperationAdd);
     }
-}
-
-void ConfigureAttachments(auto *descriptor, const PassFormats &formats, std::span<const BlendState> blends) {
-    ConfigureColorAttachments(descriptor->colorAttachments(), formats, blends);
-    if (formats.Depth != MTL::PixelFormatInvalid) descriptor->setDepthAttachmentPixelFormat(formats.Depth);
 }
 
 NS::SharedPtr<MTL::DepthStencilState> MakeDepthState(LibraryCache &cache, const std::optional<DepthState> &depth) {
@@ -110,18 +103,6 @@ NS::SharedPtr<MTL::FunctionConstantValues> MakeConstantValues(const FunctionRef 
     return values;
 }
 
-NS::SharedPtr<MTL::Function> MakeFunction(LibraryCache &cache, const FunctionRef &ref) {
-    auto *library = cache.Get(ref.Path, ref.Defines);
-    NS::Error *error = nullptr;
-    auto function = ref.Constants.empty() ?
-        NS::TransferPtr(library->newFunction(Str(ref.Name).get())) :
-        NS::TransferPtr(library->newFunction(Str(ref.Name).get(), MakeConstantValues(ref).get(), &error));
-    if (!function) {
-        throw std::runtime_error(std::format("No function '{}' in '{}':\n{}", ref.Name, ref.Path.string(), error ? error->localizedDescription()->utf8String() : "unknown"));
-    }
-    return function;
-}
-
 NS::SharedPtr<MTL4::FunctionDescriptor> MakeFunctionDescriptor(LibraryCache &cache, const FunctionRef &ref) {
     const auto *library = cache.Get(ref.Path, ref.Defines);
     auto function = NS::TransferPtr(MTL4::LibraryFunctionDescriptor::alloc()->init());
@@ -142,7 +123,6 @@ LibraryCache::LibraryCache(const Context &ctx, std::filesystem::path shaders_dir
       BuiltinArchivePath(std::move(builtin_archive)),
       PruneArchiveChunks(prune_archive_chunks), ReadArchiveOnly(archive_only) {
     const AutoreleaseScope pool;
-    if (!Ctx.Device->supportsFamily(MTL::GPUFamilyMetal4)) return;
     const auto compiler_descriptor = NS::TransferPtr(MTL4::CompilerDescriptor::alloc()->init());
     NS::SharedPtr<MTL4::PipelineDataSetSerializer> serializer;
     if (!ArchivePath.empty() && !ReadArchiveOnly) {
@@ -278,109 +258,56 @@ MTL::Library *LibraryCache::Get(const std::filesystem::path &relative_path, cons
     return entry.Library.get();
 }
 
+namespace {
+// `set_primary` installs the vertex or mesh function and its stage settings on the descriptor.
+template<typename Descriptor>
 RenderPipeline MakeRenderPipeline(
-    LibraryCache &cache, FunctionRef vertex, std::optional<FunctionRef> fragment, const PassFormats &formats,
-    const std::vector<BlendState> &blends, std::optional<DepthState> depth
+    LibraryCache &cache, const FunctionRef &primary, const std::optional<FunctionRef> &fragment, const PassFormats &formats,
+    std::span<const BlendState> blends, std::optional<DepthState> depth, const char *family, auto &&set_primary
 ) {
     const AutoreleaseScope pool;
-    if (!cache.PipelineCompiler()) {
-        const auto descriptor = NS::TransferPtr(MTL::RenderPipelineDescriptor::alloc()->init());
-        const auto vertex_function = MakeFunction(cache, vertex);
-        descriptor->setVertexFunction(vertex_function.get());
-        NS::SharedPtr<MTL::Function> fragment_function;
-        if (fragment) {
-            fragment_function = MakeFunction(cache, *fragment);
-            descriptor->setFragmentFunction(fragment_function.get());
-        }
-        ConfigureAttachments(descriptor.get(), formats, blends);
-        NS::Error *error = nullptr;
-        auto state = NS::TransferPtr(cache.Ctx.Device->newRenderPipelineState(descriptor.get(), &error));
-        if (!state) {
-            throw std::runtime_error(std::format("Failed to create the render pipeline for '{}':\n{}", vertex.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
-        }
-        return {std::move(state), MakeDepthState(cache, depth)};
-    }
-    const auto descriptor = NS::TransferPtr(MTL4::RenderPipelineDescriptor::alloc()->init());
-    const auto vertex_function = MakeFunctionDescriptor(cache, vertex);
-    descriptor->setVertexFunctionDescriptor(vertex_function.get());
+    const auto descriptor = NS::TransferPtr(Descriptor::alloc()->init());
+    const auto primary_function = MakeFunctionDescriptor(cache, primary);
+    set_primary(descriptor.get(), primary_function.get());
     NS::SharedPtr<MTL4::FunctionDescriptor> fragment_function;
     if (fragment) {
         fragment_function = MakeFunctionDescriptor(cache, *fragment);
         descriptor->setFragmentFunctionDescriptor(fragment_function.get());
     }
     ConfigureColorAttachments(descriptor->colorAttachments(), formats, blends);
-
     NS::Error *error = nullptr;
     auto state = cache.FindRenderPipeline(descriptor.get());
     const auto archive_hit = bool(state);
     if (!state) state = NS::TransferPtr(cache.PipelineCompiler()->newRenderPipelineState(descriptor.get(), nullptr, &error));
-    if (!state) {
-        throw std::runtime_error(std::format("Failed to create the render pipeline for '{}':\n{}", vertex.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
-    }
+    if (!state) throw std::runtime_error(std::format("Failed to create the {} pipeline for '{}':\n{}", family, primary.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
     if (!archive_hit) cache.NotePipelineCreated();
     return {std::move(state), MakeDepthState(cache, depth)};
+}
+} // namespace
+
+RenderPipeline MakeRenderPipeline(
+    LibraryCache &cache, FunctionRef vertex, std::optional<FunctionRef> fragment, const PassFormats &formats,
+    const std::vector<BlendState> &blends, std::optional<DepthState> depth
+) {
+    return MakeRenderPipeline<MTL4::RenderPipelineDescriptor>(cache, vertex, fragment, formats, blends, depth, "render", [](auto *descriptor, auto *function) {
+        descriptor->setVertexFunctionDescriptor(function);
+    });
 }
 
 RenderPipeline MakeMeshPipeline(
     LibraryCache &cache, FunctionRef mesh, std::optional<FunctionRef> fragment, const PassFormats &formats,
     const std::vector<BlendState> &blends, std::optional<DepthState> depth
 ) {
-    const AutoreleaseScope pool;
-    if (!cache.PipelineCompiler()) {
-        const auto descriptor = NS::TransferPtr(MTL::MeshRenderPipelineDescriptor::alloc()->init());
-        const auto mesh_function = MakeFunction(cache, mesh);
-        descriptor->setMeshFunction(mesh_function.get());
+    return MakeRenderPipeline<MTL4::MeshRenderPipelineDescriptor>(cache, mesh, fragment, formats, blends, depth, "mesh render", [](auto *descriptor, auto *function) {
+        descriptor->setMeshFunctionDescriptor(function);
         descriptor->setMaxTotalThreadsPerMeshThreadgroup(160);
         descriptor->setMeshThreadgroupSizeIsMultipleOfThreadExecutionWidth(true);
         descriptor->setMaxTotalThreadgroupsPerMeshGrid(MaxMeshThreadgroupsPerGrid);
-        NS::SharedPtr<MTL::Function> fragment_function;
-        if (fragment) {
-            fragment_function = MakeFunction(cache, *fragment);
-            descriptor->setFragmentFunction(fragment_function.get());
-        }
-        ConfigureAttachments(descriptor.get(), formats, blends);
-        NS::Error *error = nullptr;
-        auto state = NS::TransferPtr(cache.Ctx.Device->newRenderPipelineState(descriptor.get(), MTL::PipelineOptionNone, nullptr, &error));
-        if (!state) {
-            throw std::runtime_error(std::format("Failed to create the mesh render pipeline for '{}':\n{}", mesh.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
-        }
-        return {std::move(state), MakeDepthState(cache, depth)};
-    }
-    const auto descriptor = NS::TransferPtr(MTL4::MeshRenderPipelineDescriptor::alloc()->init());
-    const auto mesh_function = MakeFunctionDescriptor(cache, mesh);
-    descriptor->setMeshFunctionDescriptor(mesh_function.get());
-    descriptor->setMaxTotalThreadsPerMeshThreadgroup(160);
-    descriptor->setMeshThreadgroupSizeIsMultipleOfThreadExecutionWidth(true);
-    descriptor->setMaxTotalThreadgroupsPerMeshGrid(MaxMeshThreadgroupsPerGrid);
-    NS::SharedPtr<MTL4::FunctionDescriptor> fragment_function;
-    if (fragment) {
-        fragment_function = MakeFunctionDescriptor(cache, *fragment);
-        descriptor->setFragmentFunctionDescriptor(fragment_function.get());
-    }
-    ConfigureColorAttachments(descriptor->colorAttachments(), formats, blends);
-
-    NS::Error *error = nullptr;
-    auto state = cache.FindRenderPipeline(descriptor.get());
-    const auto archive_hit = bool(state);
-    if (!state) state = NS::TransferPtr(cache.PipelineCompiler()->newRenderPipelineState(descriptor.get(), nullptr, &error));
-    if (!state) {
-        throw std::runtime_error(std::format("Failed to create the mesh render pipeline for '{}':\n{}", mesh.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
-    }
-    if (!archive_hit) cache.NotePipelineCreated();
-    return {std::move(state), MakeDepthState(cache, depth)};
+    });
 }
 
 ComputePipeline::ComputePipeline(LibraryCache &cache, FunctionRef fn) {
     const AutoreleaseScope pool;
-    if (!cache.PipelineCompiler()) {
-        const auto function = MakeFunction(cache, fn);
-        NS::Error *error = nullptr;
-        PipelineState = NS::TransferPtr(cache.Ctx.Device->newComputePipelineState(function.get(), &error));
-        if (!PipelineState) {
-            throw std::runtime_error(std::format("Failed to create the compute pipeline for '{}':\n{}", fn.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
-        }
-        return;
-    }
     const auto descriptor = NS::TransferPtr(MTL4::ComputePipelineDescriptor::alloc()->init());
     descriptor->setLabel(Str(fn.Name).get());
     const auto function = MakeFunctionDescriptor(cache, fn);

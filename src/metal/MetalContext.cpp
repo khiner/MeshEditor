@@ -15,14 +15,14 @@ std::atomic<uint64_t> CommittedCount;
 // The last command buffer committed on each queue, until a mapping update waits for it to complete.
 std::mutex CommitMutex;
 auto &LastCommitted() {
-    static auto *const commands = new std::vector<std::pair<MTL::CommandQueue *, NS::SharedPtr<MTL::CommandBuffer>>>;
+    static auto *const commands = new std::unordered_map<MTL::CommandQueue *, NS::SharedPtr<MTL::CommandBuffer>>;
     return *commands;
 }
 
 // Returns once every queue has completed its committed command buffers, so no submission is in flight and no GPU work reads a sparse page.
 void WaitCompleted() {
     const AutoreleaseScope pool;
-    std::vector<std::pair<MTL::CommandQueue *, NS::SharedPtr<MTL::CommandBuffer>>> pending;
+    std::unordered_map<MTL::CommandQueue *, NS::SharedPtr<MTL::CommandBuffer>> pending;
     {
         const std::scoped_lock lock{CommitMutex};
         pending = std::exchange(LastCommitted(), {});
@@ -41,10 +41,7 @@ void Commit(MTL::CommandBuffer *command) {
     command->commit();
     CommittedCount.fetch_add(1u, std::memory_order_relaxed);
     const std::scoped_lock lock{CommitMutex};
-    auto &committed = LastCommitted();
-    auto *const queue = command->commandQueue();
-    if (const auto entry = std::ranges::find(committed, queue, &std::pair<MTL::CommandQueue *, NS::SharedPtr<MTL::CommandBuffer>>::first); entry != committed.end()) entry->second = NS::RetainPtr(command);
-    else committed.emplace_back(queue, NS::RetainPtr(command));
+    LastCommitted()[command->commandQueue()] = NS::RetainPtr(command);
 }
 
 uint64_t CommittedCommandBuffers() { return CommittedCount.load(std::memory_order_relaxed); }
@@ -59,6 +56,7 @@ Context::Context() {
     auto device = NS::TransferPtr(MTL::CreateSystemDefaultDevice());
     if (!device) throw std::runtime_error("No Metal device.");
     if (!device->hasUnifiedMemory()) throw std::runtime_error("MeshEditor targets unified-memory Apple Silicon.");
+    if (!device->supportsFamily(MTL::GPUFamilyMetal4)) throw std::runtime_error("MeshEditor renders with Metal 4, which this device does not support.");
     if (!device->supportsPlacementSparse()) throw std::runtime_error("MeshEditor requires Metal placement sparse buffers (macOS 26.4 or later, Apple M2 or later).");
     if (device->argumentBuffersSupport() < MTL::ArgumentBuffersTier2) {
         throw std::runtime_error("The bindless argument buffer needs argument buffer tier 2.");
@@ -96,7 +94,7 @@ Context::~Context() {
     }
     if (Queue) {
         const std::scoped_lock lock{CommitMutex};
-        std::erase_if(LastCommitted(), [&](const auto &entry) { return entry.first == Queue.get(); });
+        LastCommitted().erase(Queue.get());
     }
     if (MappingQueue && Residency) MappingQueue->removeResidencySet(Residency.get());
     MappingQueue.reset();

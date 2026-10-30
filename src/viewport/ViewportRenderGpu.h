@@ -4,7 +4,6 @@
 #include "gpu/MeshletRouteMode.h"
 
 #include "state/Entity.h"
-#include <functional>
 #include <span>
 
 namespace MTL {

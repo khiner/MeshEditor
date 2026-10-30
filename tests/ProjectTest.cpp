@@ -1,23 +1,18 @@
-#include "Compress.h"
 #include "Paths.h"
 #include "ProjectFixture.h"
 #include "RunSuites.h"
 #include "animation/MorphWeights.h"
 #include "armature/ArmatureComponents.h"
-#include "mesh/MeshComponents.h"
 #include "object/ObjectOps.h"
 #include "procedure/Procedure.h"
 #include "project/Assets.h"
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
-#include "render/Instance.h"
 #include "render/SceneUpdates.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
-#include "viewport/InteractionComponents.h"
-#include "viewport/RenderExtent.h"
 #include "viewport/ViewCameraOps.h"
 
 using boost::ut::expect;
@@ -46,7 +41,7 @@ void WriteTriangle(const std::filesystem::path &path, float x) {
 
 // External source references replay current contents and preserve the document when a dependency is missing.
 void TestExternalReferences() {
-    const TestDir dir{"/tmp/mesheditor-scratch/project-external"}, source{"/tmp/mesheditor-scratch/project-external-source"}, archives{"/tmp/mesheditor-scratch/project-external-archives"}, opened{"/tmp/mesheditor-scratch/project-external-opened"};
+    const TestDir source{"/tmp/mesheditor-scratch/project-external-source"}, archives{"/tmp/mesheditor-scratch/project-external-archives"}, opened{"/tmp/mesheditor-scratch/project-external-opened"};
     const auto gltf = source.Path / "Triangle.gltf", buffer = source.Path / "Triangle.bin", archive = archives.Path / "Triangle.actions";
     WriteFile(gltf, R"({
   "asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],
@@ -66,7 +61,7 @@ void TestExternalReferences() {
         return largest;
     };
     WriteTriangle(buffer, 1.f);
-    Fixture f{dir};
+    ScratchFixture f{"/tmp/mesheditor-scratch/project-external"};
     f.Do(action::io::LoadGltf{gltf});
     expect(recorded_path(f) == gltf && recorded_path(f).is_absolute());
     expect(max_x(f) == 1.f);
@@ -94,8 +89,7 @@ void TestExternalReferences() {
 }
 
 void TestRenderInstanceDerivation() {
-    const TestDir dir{"/tmp/mesheditor-scratch/project-render-instance"};
-    Fixture f{dir};
+    ScratchFixture f{"/tmp/mesheditor-scratch/project-render-instance"};
     auto &p = *f.P;
     auto &r = f.R;
     state::DirtySet created;
@@ -132,8 +126,7 @@ void TestRenderInstanceDerivation() {
 }
 
 void TestHiddenObjectEscapesPick() {
-    const TestDir dir{"/tmp/mesheditor-scratch/project-hidden-pick"};
-    Fixture f{dir};
+    ScratchFixture f{"/tmp/mesheditor-scratch/project-hidden-pick"};
     auto &r = f.R;
     const auto cube = f.AddCube();
     const auto viewport = FirstViewport(r);
@@ -156,8 +149,7 @@ void TestHiddenObjectEscapesPick() {
 
 void TestExtrudedClosedRegionVisibility() {
     if (!Render) return;
-    const TestDir dir{"/tmp/mesheditor-scratch/project-extrude-visibility"};
-    Fixture f{dir};
+    ScratchFixture f{"/tmp/mesheditor-scratch/project-extrude-visibility"};
     auto &r = f.R;
     const auto cube = f.AddCube(), viewport = FirstViewport(r);
     r.patch<ViewportDisplay>(viewport, [](auto &v) { v.ShowOverlays = false; });
@@ -208,8 +200,7 @@ void TestExtrudedClosedRegionVisibility() {
 // Drawing and object/face picking agree on visibility across viewport and material culling policies.
 void TestViewportBackfacePolicy() {
     if (!Render) return;
-    const TestDir dir{"/tmp/mesheditor-scratch/project-backface-policy"};
-    Fixture f{dir};
+    ScratchFixture f{"/tmp/mesheditor-scratch/project-backface-policy"};
     auto &r = f.R;
     f.Add(action::object::AddMeshPrimitive{primitive::Plane{}, std::make_unique<MeshInstanceCreateInfo>()});
     const auto viewport = FirstViewport(r);
@@ -256,8 +247,7 @@ struct Chain {
 
 // Apply the parent transform once to a selected descendant by excluding the descendant from transform roots.
 void TestSelectedGrandchildMovesOnce() {
-    const TestDir dir{"/tmp/mesheditor-scratch/project-grandchild"};
-    Fixture f{dir};
+    ScratchFixture f{"/tmp/mesheditor-scratch/project-grandchild"};
     const Chain chain{f};
     expect(f.R.get<const TransformRoots>(state::Document).Roots == std::vector{chain.A});
     f.Do(action::view::TransformSelection{Transform{.P = {1, 0, 0}}});
@@ -266,8 +256,7 @@ void TestSelectedGrandchildMovesOnce() {
 }
 
 void TestInstanceLifecycleRendersBack() {
-    const TestDir dir{"/tmp/mesheditor-scratch/project-instance-lifecycle"};
-    Fixture f{dir};
+    ScratchFixture f{"/tmp/mesheditor-scratch/project-instance-lifecycle"};
     auto &r = f.R;
     const auto add_cube = [&](float x) {
         const auto cube = f.AddCube();
@@ -297,8 +286,7 @@ void TestInstanceLifecycleRendersBack() {
 // An unlinked duplicate copies its source's drawn record onto storage of its own, which hashes equal to its source's, and keeps its source's Source states.
 // With its source's vertices turned in edit mode, which keeps their bounds, and the source hidden, the copy draws the image its source drew.
 void TestDuplicateDrawsAsItsSource() {
-    const TestDir dir{"/tmp/mesheditor-scratch/project-duplicate-records"};
-    Fixture f{dir};
+    ScratchFixture f{"/tmp/mesheditor-scratch/project-duplicate-records"};
     auto &r = f.R;
     const auto &meshes = r.Resources.get<const MeshStore>();
     const auto render_owner = [&](state::Entity e) -> const MeshStore::Record & {
@@ -402,8 +390,7 @@ void TestDuplicateDrawsAsItsSource() {
 
 // Parenting an object to its own descendant fails and leaves the hierarchy without a cycle.
 void TestParentToDescendantFails() {
-    const TestDir dir{"/tmp/mesheditor-scratch/project-parent-cycle"};
-    Fixture f{dir};
+    ScratchFixture f{"/tmp/mesheditor-scratch/project-parent-cycle"};
     auto &r = f.R;
     const Chain chain{f};
     f.Do(action::selection::ExtendActive{chain.C});
@@ -503,8 +490,7 @@ void CheckLayout(Fixture &f, std::string_view step) {
 
 // Verify mesh layout updates only when mesh inputs change across scene load, history, transforms, separation, and shading.
 void TestIncrementalLayout() {
-    const TestDir dir{"/tmp/mesheditor-scratch/project-incremental-layout"};
-    Fixture f{dir};
+    ScratchFixture f{"/tmp/mesheditor-scratch/project-incremental-layout"};
     auto &r = f.R;
     f.Do(action::io::LoadGltf{std::filesystem::path{MESHEDITOR_SOURCE_DIR} / "external/glTF-Sample-Assets/Models/RiggedSimple/glTF/RiggedSimple.gltf"});
     expect(!r.view<const PosedLayout>().empty());

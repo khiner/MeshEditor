@@ -2,7 +2,6 @@
 #include "gpu/ElementWorkSeedJob.h"
 #include "mesh/ElementArena.h"
 #include "render/ElementWorkOps.h"
-#include "state/Entity.h"
 
 namespace mtl {
 struct ComputeChain;

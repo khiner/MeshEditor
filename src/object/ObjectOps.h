@@ -32,9 +32,9 @@ state::Entity AddMeshInstance(state::Registry &, state::Entity mesh_entity, cons
 
 state::Entity CreateExtrasObject(state::Registry &, ObjectType, const ObjectCreateInfo &, std::string_view default_name);
 
-state::Entity AddEmpty(state::Registry &, MeshStore &, const ObjectCreateInfo &);
-state::Entity AddCamera(state::Registry &, MeshStore &, const ObjectCreateInfo &, std::optional<CameraLens> = {});
-state::Entity AddLight(state::Registry &, MeshStore &, const ObjectCreateInfo &, std::optional<PunctualLight> = {});
+state::Entity AddEmpty(state::Registry &, const ObjectCreateInfo &);
+state::Entity AddCamera(state::Registry &, const ObjectCreateInfo &, std::optional<CameraLens> = {});
+state::Entity AddLight(state::Registry &, const ObjectCreateInfo &, std::optional<PunctualLight> = {});
 
 std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(state::Registry &, const std::filesystem::path &, const MeshInstanceCreateInfo &, bool deduplicate = false);
 

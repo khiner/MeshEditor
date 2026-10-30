@@ -154,10 +154,7 @@ Buffer::Buffer(BufferContext &ctx, uint64_t size) : Ctx(ctx) { Reserve(size); }
 Buffer::Buffer(Buffer &&other) noexcept
     : Ctx(other.Ctx), Slot(other.Slot), UsedSize(other.UsedSize),
       Storage(std::move(other.Storage)), Workspace(std::move(other.Workspace)), PreviousWorkspaces(std::move(other.PreviousWorkspaces)), Lifetime(other.Lifetime), Tracked(std::move(other.Tracked)), Type(other.Type) {
-    if (Tracked) {
-        Tracked->Backing = this;
-        Tracked->Len = &UsedSize;
-    }
+    BindTracked();
     other.Slot = InvalidSlot;
 }
 
@@ -173,13 +170,16 @@ Buffer &Buffer::operator=(Buffer &&other) noexcept {
         Lifetime = other.Lifetime;
         Type = other.Type;
         Tracked = std::move(other.Tracked);
-        if (Tracked) {
-            Tracked->Backing = this;
-            Tracked->Len = &UsedSize;
-        }
+        BindTracked();
         other.Slot = InvalidSlot;
     }
     return *this;
+}
+
+void Buffer::BindTracked() {
+    if (!Tracked) return;
+    Tracked->Backing = this;
+    Tracked->Len = &UsedSize;
 }
 
 Buffer::~Buffer() {

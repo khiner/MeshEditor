@@ -1057,6 +1057,22 @@ SceneCounts CountScene(SceneFixture &f) {
         .SourceAssets = f.R.all_of<gltf::SourceAssets>(state::Document),
     };
 }
+
+// Loads `source` into `fx`, saves it to `out_path` matching the source JSON, and reloads the save, checking each loaded registry with `check(r, imported)`.
+void RoundTripJson(SceneFixture &fx, const fs::path &source, const fs::path &out_path, std::string_view name, auto &&check) {
+    using namespace boost::ut;
+    const auto load = gltf::LoadGltf(source, fx.R);
+    expect(fatal(load.has_value())) << (load ? "" : load.error().Message);
+    check(fx.R, true);
+    ProcessComponentEvents(fx.R);
+    const auto save = gltf::SaveGltf(out_path, fx.R);
+    expect(fatal(save.has_value())) << (save ? "" : save.error());
+    expect(CompareGltfJson(source, out_path, name) == 0u);
+    SceneFixture reloaded;
+    const auto reload = gltf::LoadGltf(out_path, reloaded.R);
+    expect(fatal(reload.has_value())) << (reload ? "" : reload.error().Message);
+    check(reloaded.R, false);
+}
 } // namespace
 int main(int argc, const char **argv) {
     using namespace boost::ut;
@@ -1548,18 +1564,7 @@ int main(int argc, const char **argv) {
         const auto source = dir / "Custom.gltf";
         WriteCustomAttributeGltf(source);
         SceneFixture fx;
-        const auto load = gltf::LoadGltf(source, fx.R);
-        expect(fatal(load.has_value())) << (load ? "" : load.error().Message);
-        CheckCustomAttributes(fx.R, true);
-        ProcessComponentEvents(fx.R);
-        const auto out_path = dir / "Custom-out.gltf";
-        const auto save = gltf::SaveGltf(out_path, fx.R);
-        expect(fatal(save.has_value())) << (save ? "" : save.error());
-        expect(CompareGltfJson(source, out_path, "custom") == 0u);
-        SceneFixture reloaded;
-        const auto reload = gltf::LoadGltf(out_path, reloaded.R);
-        expect(fatal(reload.has_value())) << (reload ? "" : reload.error().Message);
-        CheckCustomAttributes(reloaded.R, false);
+        RoundTripJson(fx, source, dir / "Custom-out.gltf", "custom", [](state::Registry &r, bool imported) { CheckCustomAttributes(r, imported); });
         // The attributes restore byte for byte through a saved project.
         const auto before = fx.SaveTo(dir / "Custom.project");
         SceneFixture restored;
@@ -1601,18 +1606,7 @@ int main(int argc, const char **argv) {
             expect(InScene(r, ground, day) && InScene(r, ground, night));
         };
         SceneFixture fx;
-        const auto load = gltf::LoadGltf(source, fx.R);
-        expect(fatal(load.has_value())) << (load ? "" : load.error().Message);
-        check(fx.R);
-        ProcessComponentEvents(fx.R);
-        const auto out_path = dir / "Scenes-out.gltf";
-        const auto save = gltf::SaveGltf(out_path, fx.R);
-        expect(fatal(save.has_value())) << (save ? "" : save.error());
-        expect(CompareGltfJson(source, out_path, "scenes") == 0u);
-        SceneFixture reloaded;
-        const auto reload = gltf::LoadGltf(out_path, reloaded.R);
-        expect(fatal(reload.has_value())) << (reload ? "" : reload.error().Message);
-        check(reloaded.R);
+        RoundTripJson(fx, source, dir / "Scenes-out.gltf", "scenes", [&](state::Registry &r, bool) { check(r); });
     };
 
     // A load that fails validation leaves the scene and every store as they were.

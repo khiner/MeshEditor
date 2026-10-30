@@ -1,7 +1,5 @@
 #include "editor/AudioIntegration.h"
-#include "editor/EditorSchema.h"
 #include "project/Assets.h"
-#include "scene/HierarchyInstance.h"
 
 #include "SortUnique.h"
 #include "action/Errors.h"
@@ -18,7 +16,6 @@
 #include "project/Project.h"
 #include "scene/Entity.h"
 #include "scene/SceneChanges.h"
-#include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
 
 #include <print>

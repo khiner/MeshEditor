@@ -1,5 +1,4 @@
 #pragma once
-#include "physics/PhysicsSchema.h"
 #include "state/Entity.h"
 #include <span>
 #include <vector>

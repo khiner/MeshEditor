@@ -15,28 +15,6 @@ template<typename V> V CreateVariantByIndex(size_t i) {
     }(std::make_index_sequence<N>{});
 }
 
-namespace detail {
-template<typename T> struct as_variant {
-    using type = std::variant<T>;
-};
-template<typename... Ts> struct as_variant<std::variant<Ts...>> {
-    using type = std::variant<Ts...>;
-};
-
-template<typename...> struct variant_concat {
-    using type = std::variant<>;
-};
-template<typename... Ts> struct variant_concat<std::variant<Ts...>> {
-    using type = std::variant<Ts...>;
-};
-template<typename... Ts, typename... Us, typename... Rest>
-struct variant_concat<std::variant<Ts...>, std::variant<Us...>, Rest...>
-    : variant_concat<std::variant<Ts..., Us...>, Rest...> {};
-} // namespace detail
-
-template<typename... Vs>
-using MergedVariantT = detail::variant_concat<typename detail::as_variant<Vs>::type...>::type;
-
 template<typename T, typename V> struct is_variant_member : std::false_type {};
 template<typename T, typename... Ts>
 struct is_variant_member<T, std::variant<Ts...>> : std::bool_constant<(std::same_as<T, Ts> || ...)> {};

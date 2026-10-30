@@ -1,7 +1,5 @@
 #pragma once
 
-#include "state/Slot.h"
-
 struct AudioChanges;
 struct ModalSolveJobs;
 

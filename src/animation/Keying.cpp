@@ -3,7 +3,6 @@
 
 #include "animation/Clips.h"
 #include "animation/Fields.h"
-#include "state/Registry.h"
 #include "timeline/Timeline.h"
 
 namespace animation {

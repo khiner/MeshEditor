@@ -5,7 +5,6 @@
 #include "render/TextureRefs.h"
 #include "ui/FieldEdit.h"
 
-#include <algorithm>
 #include <format>
 
 namespace ui {

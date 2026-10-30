@@ -18,7 +18,9 @@ void ChoiceCombo(const char *label, const T &current, Choices &&choices, Name &&
             for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
                 const auto &choice = listed[i];
                 const bool selected = choice == current;
+                ImGui::PushID(i);
                 if (ImGui::Selectable(std::string{name(choice)}.c_str(), selected) && !selected) pick(choice);
+                ImGui::PopID();
                 if (selected) ImGui::SetItemDefaultFocus();
             }
         }

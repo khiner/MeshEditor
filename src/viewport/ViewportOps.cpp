@@ -6,7 +6,6 @@
 #include "action/Object.h"
 #include "audio/SoundVertices.h"
 #include "gpu/ViewportTheme.h"
-#include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "scene/Entity.h"
 #include "selection/SelectionComponents.h"

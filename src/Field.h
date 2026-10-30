@@ -2,6 +2,7 @@
 
 #include "state/Slot.h"
 
+#include <algorithm>
 #include <array>
 #include <optional>
 #include <string_view>
@@ -233,6 +234,8 @@ template<typename E> inline constexpr auto EnumValues = []<size_t... Is>(std::in
 template<typename E> inline constexpr auto EnumLabels = []<size_t... Is>(std::index_sequence<Is...>) {
     return std::array<const char *, EnumCount<E>>{EnumeratorLabel<E, size_t(EnumValues<E>[Is])>.c_str()...};
 }(std::make_index_sequence<EnumCount<E>>{});
+// The label of an enumerator.
+template<typename E> constexpr const char *EnumLabel(E value) { return EnumLabels<E>[std::ranges::find(EnumValues<E>, value) - EnumValues<E>.begin()]; }
 
 template<typename T> inline constexpr bool IsArray = false;
 template<typename T, size_t N> inline constexpr bool IsArray<std::array<T, N>> = true;

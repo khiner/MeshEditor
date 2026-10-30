@@ -1,7 +1,5 @@
 #include "procedure/Cook.h"
-#include "procedure/InlineSelection.h"
 #include "procedure/Procedure.h"
-#include "procedure/ProcedureSchema.h"
 #include "scene/HierarchyInstance.h"
 #include "viewport/InteractionComponents.h"
 
@@ -16,12 +14,10 @@
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
 #include "mesh/MeshTopologyEdit.h"
-#include "mesh/PositionOperations.h"
 #include "mesh/Primitives.h"
 #include "mesh/RecalculateNormals.h"
 #include "mesh/SharpnessOperations.h"
 #include "mesh/Unsubdivide.h"
-#include "numeric/MatrixMath.h"
 #include "object/ObjectOps.h"
 #include "object/PendingSync.h"
 #include "render/ElementWorkOps.h"
@@ -37,7 +33,6 @@
 #include "selection/SelectionGpu.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportEvents.h"
-#include "viewport/ViewportRenderGpu.h"
 
 #include <format>
 
@@ -322,6 +317,12 @@ Outcome ExecutePlanned(state::Registry &r, std::optional<MeshTopologyTask> task,
     if (task && task->Op == MeshTopologyOp::AddPrimitives) task->Selection = selection;
     return Execute(r, std::move(task), masks);
 }
+// Run the task `plan` builds from the mesh and its masked selection.
+Outcome Planned(state::Registry &r, uint32_t id, const Masks &masks, auto &&plan) {
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    const auto selection = Handles(meshes, id, masks);
+    return ExecutePlanned(r, plan(meshes, Mesh{meshes, id}, selection), selection, masks);
+}
 void ToPoints(state::Registry &r, uint32_t id) {
     if (Mesh{r.Resources.get<const MeshStore>(), id}.EdgeCount()) {
         const auto task = Task(id, MeshTopologyOp(uint32_t(DeleteMode::OnlyEdgesAndFaces)), {});
@@ -424,12 +425,12 @@ Outcome RepositionBy(state::Registry &r, uint32_t id, const Masks &masks, Positi
 // Apply operators to masked elements, or every element when masks are absent.
 Outcome Run(state::Registry &r, const Delete &p, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp(uint32_t(p.Mode)), m), m); }
 Outcome Run(state::Registry &r, const Merge &p, uint32_t id, const Masks &m) {
-    const auto &meshes = r.Resources.get<const MeshStore>();
-    const auto selection = Handles(meshes, id, m);
-    const auto &vertices = selection.Vertices;
-    const auto reference = vertices.empty() ? InvalidOffset : p.Mode == MergeMode::Last ? vertices.back() :
-                                                                                          vertices.front();
-    return ExecutePlanned(r, MergeTask(meshes, Mesh{meshes, id}, selection, p.Mode, std::max(p.Distance, 0.f), reference), selection, m);
+    return Planned(r, id, m, [&](const MeshStore &meshes, Mesh mesh, const GeometrySelection &selection) {
+        const auto &vertices = selection.Vertices;
+        const auto reference = vertices.empty() ? InvalidOffset : p.Mode == MergeMode::Last ? vertices.back() :
+                                                                                              vertices.front();
+        return MergeTask(meshes, mesh, selection, p.Mode, std::max(p.Distance, 0.f), reference);
+    });
 }
 store::Hash128 SelectionKey(const state::Registry &r, state::Entity node) {
     const auto *selection = r.try_get<const InlineSelection>(node);
@@ -639,16 +640,12 @@ Outcome Run(state::Registry &r, const SnapSymmetry &p, uint32_t id, const Masks 
 }
 Outcome Run(state::Registry &r, const Spin &p, uint32_t id, const Masks &m) {
     if (Dot(p.Axis, p.Axis) <= 0.f) return std::unexpected(NodeFault::Parameter);
-    const auto &meshes = r.Resources.get<const MeshStore>();
-    const auto selection = Handles(meshes, id, m);
     const auto axis = Normalize(p.Axis);
     const auto steps = float(std::max(p.Steps, 1u));
-    return ExecutePlanned(r, ExtrudeStepsTask(Mesh{meshes, id}, selection, Element::None, p.Steps, ToMat3(AngleAxis(p.Angle / steps, axis)), axis * (p.Offset / steps), p.Center), selection, m);
+    return Planned(r, id, m, [&](const MeshStore &, Mesh mesh, const GeometrySelection &selection) { return ExtrudeStepsTask(mesh, selection, Element::None, p.Steps, ToMat3(AngleAxis(p.Angle / steps, axis)), axis * (p.Offset / steps), p.Center); });
 }
 Outcome Run(state::Registry &r, const ExtrudeRepeat &p, uint32_t id, const Masks &m) {
-    const auto &meshes = r.Resources.get<const MeshStore>();
-    const auto selection = Handles(meshes, id, m);
-    return ExecutePlanned(r, ExtrudeStepsTask(Mesh{meshes, id}, selection, Element::None, p.Steps, mat3{1.f}, p.Offset, vec3{0.f}), selection, m);
+    return Planned(r, id, m, [&](const MeshStore &, Mesh mesh, const GeometrySelection &selection) { return ExtrudeStepsTask(mesh, selection, Element::None, p.Steps, mat3{1.f}, p.Offset, vec3{0.f}); });
 }
 Outcome Run(state::Registry &r, const Bisect &p, uint32_t id, const Masks &m) {
     if (Dot(p.Normal, p.Normal) <= 0.f) return std::unexpected(NodeFault::Parameter);
@@ -662,14 +659,10 @@ Outcome Run(state::Registry &r, const FillHoles &p, uint32_t id, const Masks &m)
     return Execute(r, FillHolesTask(meshes, Mesh{meshes, id}, p.Sides), m);
 }
 Outcome Run(state::Registry &r, ConvexHull, uint32_t id, const Masks &m) {
-    const auto &meshes = r.Resources.get<const MeshStore>();
-    const auto selection = Handles(meshes, id, m);
-    return ExecutePlanned(r, ConvexHullTask(meshes, Mesh{meshes, id}, selection), selection, m);
+    return Planned(r, id, m, [](const MeshStore &meshes, Mesh mesh, const GeometrySelection &selection) { return ConvexHullTask(meshes, mesh, selection); });
 }
 Outcome Run(state::Registry &r, const Decimate &p, uint32_t id, const Masks &m) {
-    const auto &meshes = r.Resources.get<const MeshStore>();
-    const auto selection = Handles(meshes, id, m);
-    return ExecutePlanned(r, DecimateTask(meshes, Mesh{meshes, id}, selection, p.Ratio), selection, m);
+    return Planned(r, id, m, [&](const MeshStore &meshes, Mesh mesh, const GeometrySelection &selection) { return DecimateTask(meshes, mesh, selection, p.Ratio); });
 }
 Outcome Run(state::Registry &r, const RecalculateNormals &p, uint32_t id, const Masks &m) {
     auto &meshes = r.Resources.get<MeshStore>();
@@ -685,27 +678,19 @@ Outcome Run(state::Registry &r, const SplitNonplanarFaces &p, uint32_t id, const
 Outcome Run(state::Registry &r, SplitConcaveFaces, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::SplitConcaveFaces, m), m); }
 Outcome Run(state::Registry &r, ConnectVertices, uint32_t id, const Masks &m) { return Execute(r, Task(id, MeshTopologyOp::ConnectVertices, m), m); }
 Outcome Run(state::Registry &r, Fill, uint32_t id, const Masks &m) {
-    const auto &meshes = r.Resources.get<const MeshStore>();
-    const auto selection = Handles(meshes, id, m);
-    return ExecutePlanned(r, FillTask(meshes, Mesh{meshes, id}, selection), selection, m);
+    return Planned(r, id, m, [](const MeshStore &meshes, Mesh mesh, const GeometrySelection &selection) { return FillTask(meshes, mesh, selection); });
 }
 Outcome Run(state::Registry &r, BridgeEdgeLoops, uint32_t id, const Masks &m) {
-    const auto &meshes = r.Resources.get<const MeshStore>();
-    const auto selection = Handles(meshes, id, m);
-    return ExecutePlanned(r, BridgeEdgeLoopsTask(meshes, Mesh{meshes, id}, selection), selection, m);
+    return Planned(r, id, m, [](const MeshStore &meshes, Mesh mesh, const GeometrySelection &selection) { return BridgeEdgeLoopsTask(meshes, mesh, selection); });
 }
 Outcome Run(state::Registry &r, const GridFill &p, uint32_t id, const Masks &m) {
-    const auto &meshes = r.Resources.get<const MeshStore>();
-    const auto selection = Handles(meshes, id, m);
-    return ExecutePlanned(r, GridFillTask(meshes, Mesh{meshes, id}, selection, p.Span), selection, m);
+    return Planned(r, id, m, [&](const MeshStore &meshes, Mesh mesh, const GeometrySelection &selection) { return GridFillTask(meshes, mesh, selection, p.Span); });
 }
 Outcome Run(state::Registry &r, EdgeRotate, uint32_t id, const Masks &m) {
-    const auto &meshes = r.Resources.get<const MeshStore>();
-    return Execute(r, RotateEdgesTask(Mesh{meshes, id}, Handles(meshes, id, m)), m);
+    return Planned(r, id, m, [](const MeshStore &, Mesh mesh, const GeometrySelection &selection) { return RotateEdgesTask(mesh, selection); });
 }
 Outcome Run(state::Registry &r, const BeautifyFaces &p, uint32_t id, const Masks &m) {
-    const auto &meshes = r.Resources.get<const MeshStore>();
-    return Execute(r, BeautifyFaceTask(Mesh{meshes, id}, Handles(meshes, id, m), p.Method == BeautifyMethod::Angle), m);
+    return Planned(r, id, m, [&](const MeshStore &, Mesh mesh, const GeometrySelection &selection) { return BeautifyFaceTask(mesh, selection, p.Method == BeautifyMethod::Angle); });
 }
 // Repeat on the selected elements that survive each iteration, until an iteration changes nothing.
 Outcome Run(state::Registry &r, const Unsubdivide &p, uint32_t id, const Masks &m) {
@@ -1742,7 +1727,8 @@ uint32_t Evaluate(state::Registry &r, state::Entity mesh_entity, const CookPlan 
                 created.push_back(*combined);
                 output.Record = *combined;
             } else {
-                if (linked) fail(!oriented ? NodeFault::Parameter : !task ? NodeFault::NotClosed : NodeFault::Empty);
+                if (linked) fail(!oriented ? NodeFault::Parameter : !task ? NodeFault::NotClosed :
+                                                                            NodeFault::Empty);
                 output = in;
             }
             continue;

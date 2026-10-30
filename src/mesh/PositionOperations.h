@@ -4,7 +4,6 @@
 #include "gpu/VertexPositionEditPushConstants.h"
 #include "mesh/GeometrySelection.h"
 #include "mesh/MeshClosure.h"
-#include <optional>
 
 struct MeshStore;
 struct MeshPipelines;

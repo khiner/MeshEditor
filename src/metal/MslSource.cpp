@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <format>
 #include <fstream>
-#include <iterator>
 
 namespace msl {
 namespace {

@@ -2,7 +2,6 @@
 
 #include "CameraTypes.h"
 #include "animation/Fields.h"
-#include "animation/MorphWeights.h"
 #include "armature/ArmatureComponents.h"
 #include "gltf/MaterialTable.h"
 #include "render/Instance.h"

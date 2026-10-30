@@ -3,6 +3,7 @@
 #include "TypeList.h"
 #include "action/Core.h"
 #include "mesh/PrimitiveType.h"
+#include "procedure/ProcedureSchema.h"
 
 struct AudioOutputMix;
 struct ColliderMaterial;
@@ -34,96 +35,6 @@ struct TriggerNodes;
 struct ViewportTheme;
 struct InterfaceTheme;
 struct TimelineTheme;
-
-namespace action::mesh {
-struct Delete;
-struct Merge;
-struct Extrude;
-struct Duplicate;
-struct Split;
-struct Dissolve;
-struct Subdivide;
-struct Triangulate;
-struct TrisToQuads;
-struct Poke;
-struct FlipNormals;
-struct EdgeSplit;
-struct Inset;
-struct Solidify;
-struct Wireframe;
-struct Bevel;
-struct SmoothVertices;
-struct ShrinkFatten;
-struct Randomize;
-struct Spin;
-struct ExtrudeRepeat;
-struct Bisect;
-struct Symmetrize;
-struct FillHoles;
-struct ConvexHull;
-struct Decimate;
-struct RecalculateNormals;
-struct Rip;
-struct SpaceEvenly;
-struct RelaxEdgeLoops;
-struct CurveBetweenSelected;
-struct Circularize;
-struct MakePlanarFaces;
-struct SnapSymmetry;
-struct SplitNonplanarFaces;
-struct SplitConcaveFaces;
-struct ConnectVertices;
-struct Fill;
-struct BridgeEdgeLoops;
-struct GridFill;
-struct EdgeRotate;
-struct BeautifyFaces;
-struct Unsubdivide;
-struct LoopCut;
-struct RotateUVs;
-struct ReverseUVs;
-struct RotateColors;
-struct ReverseColors;
-} // namespace action::mesh
-namespace procedure {
-struct Spin;
-struct Bisect;
-struct Boolean;
-struct Position;
-struct Normal;
-struct Index;
-struct NamedAttribute;
-struct VectorMath;
-struct FloatMath;
-struct Compare;
-struct BooleanMath;
-struct StoreNamedAttribute;
-struct SetPosition;
-struct TransformElements;
-struct InstanceOnPoints;
-struct ObjectInfo;
-struct FloatValue;
-struct IntegerValue;
-struct BooleanValue;
-struct VectorValue;
-struct RotationValue;
-struct TransformGeometry;
-struct ToSphere;
-struct PushPull;
-struct Shear;
-struct Warp;
-struct Bend;
-struct VertexSlide;
-struct EdgeSlide;
-struct Flatten;
-struct MarkSharp;
-struct Knife;
-struct ShadeSmooth;
-struct ShadeSmoothByAngle;
-struct StoreSelection;
-struct NodeLayout;
-struct NodeTheme;
-} // namespace procedure
 
 namespace action {
 // The components Update can address, visited at apply time and checked at each emit site.

@@ -2,8 +2,8 @@
 #include "project/store/Pages.h"
 #include "project/store/Records.h"
 
-#include <boost/ut.hpp>
 #include "TestPaths.h"
+#include <boost/ut.hpp>
 
 #include <csignal>
 #include <map>
@@ -295,6 +295,12 @@ struct ToyApp {
 
     int Replays{};
 
+    // Saves and closes the history, then opens it again from the directory.
+    void Reopen(const TestDir &dir) {
+        expect(H.Save());
+        expect(H.Close());
+        expect(H.Open(dir));
+    }
     ToyApp() {
         H.Track(Buf, "buf", 0);
         H.Track(PoolRecords, "pool", 1);
@@ -436,9 +442,7 @@ void TestCommitIdentity() {
     expect(app.H.Nodes[b].Hot.has_value());
     expect(app.H.Nodes.size() == count);
     expect(app.Replays == replays_before);
-    expect(app.H.Save());
-    expect(app.H.Close());
-    expect(app.H.Open(dir));
+    app.Reopen(dir);
     expect(!app.H.Nodes[a].Hot);
     app.Step(Fill1);
     expect(app.H.Present == a);
@@ -482,9 +486,7 @@ void TestReplace() {
     expect(app.State() == replaced);
     expect(app.H.Replay().empty());
     expect(app.State() == replaced);
-    expect(app.H.Save());
-    expect(app.H.Close());
-    expect(app.H.Open(dir));
+    app.Reopen(dir);
     expect(app.H.Present == b);
     expect(app.H.Nodes[b].Children.empty());
     expect(!app.H.CanRedo());
@@ -626,9 +628,7 @@ void TestTornTailRecovery() {
         expect(app.H.Present == last_node);
         expect(app.State() == lost);
         expect(app.H.TakeIntegrityError().empty());
-        expect(app.H.Save());
-        expect(app.H.Close());
-        expect(app.H.Open(dir));
+        app.Reopen(dir);
         expect(app.H.Present == last_node);
         expect(app.State() == lost);
     }
@@ -649,9 +649,7 @@ void TestClearHistory() {
     expect(app.State() == baseline);
     app.Step(3);
     const auto continued = app.State();
-    expect(app.H.Save());
-    expect(app.H.Close());
-    expect(app.H.Open(dir));
+    app.Reopen(dir);
     expect(app.H.Nodes.size() == 3u && app.H.Present == 2);
     expect(app.State() == continued);
     app.H.Undo();

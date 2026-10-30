@@ -5,11 +5,6 @@
 #include "viewport/RenderView.h"
 #include "viewport/VideoRecording.h"
 #include "viewport/ViewportRenderGpu.h"
-#include "viewport/ViewportSchema.h"
-
-#include <expected>
-#include <filesystem>
-#include <vector>
 
 // The live render state of a viewport entity, with the GPU resources its frames render into.
 struct Viewport {

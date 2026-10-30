@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Field.h"
-#include "procedure/ProcedureSchema.h"
 #include "ui/Rgba8.h"
 
 namespace procedure {

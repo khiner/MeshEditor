@@ -1,7 +1,6 @@
 #pragma once
 
 #include "BoneConstraint.h"
-#include "armature/ArmatureSchema.h"
 #include "armature/BoneId.h"
 #include "gpu/Transform.h"
 

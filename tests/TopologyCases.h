@@ -2,8 +2,6 @@
 
 #include "mesh/BeautifyFaces.h"
 #include "mesh/Decimate.h"
-#include "mesh/Mesh.h"
-#include "mesh/MeshData.h"
 #include "mesh/TopologyOperations.h"
 
 // The topology operator table over a patchwork region, which the headless kernel tests and the procedure node tests share.

@@ -2,8 +2,6 @@
 
 #include "procedure/ProcedureSchema.h"
 
-#include <cstdint>
-
 namespace state {
 struct Registry;
 enum class Entity : uint32_t;

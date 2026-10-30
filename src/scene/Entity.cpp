@@ -1,5 +1,4 @@
 #include "scene/Entity.h"
-#include "state/Registry.h"
 
 #include "mesh/Mesh.h"
 #include "render/Instance.h"

@@ -1,6 +1,6 @@
-#include <boost/ut.hpp>
 #include "metal/Dispatch.h"
 #include "metal/MetalCpp.h"
+#include <boost/ut.hpp>
 
 using namespace boost::ut;
 

@@ -1,22 +1,13 @@
-#include "SortUnique.h"
 #include "action/Bone.h"
 #include "action/Build.h"
 #include "action/Dispatch.h"
 #include "action/Errors.h"
-#include "action/Nodes.h"
 #include "action/Object.h"
-#include "armature/ArmatureComponents.h"
 #include "armature/BoneConstraint.h"
-#include "mesh/Mesh.h"
-#include "mesh/MeshStore.h"
-#include "physics/PhysicsTypes.h"
 #include "procedure/Procedure.h"
 #include "render/GpuBufferOps.h"
 #include "render/Instance.h"
-#include "render/MaterialComponents.h"
 #include "render/Textures.h"
-#include "scene/HierarchyInstance.h"
-#include "scene/SceneGraph.h"
 
 namespace procedure {
 namespace {

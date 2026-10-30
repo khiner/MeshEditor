@@ -9,8 +9,6 @@
 #include "viewport/Viewport.h"
 #include "viewport/ViewportComponents.h"
 
-#include <print>
-
 using boost::ut::expect;
 
 namespace {

@@ -4,8 +4,6 @@
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
 
-#include "state/Entity.h"
-
 #include <expected>
 
 using numeric::quat, numeric::vec3;

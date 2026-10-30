@@ -10,7 +10,6 @@
 #include "mesh/SpatialFaceWork.h"
 #include "metal/MetalCpp.h"
 #include "object/ObjectOps.h"
-#include "render/GpuSceneState.h"
 #include "render/Instance.h"
 #include "render/Textures.h"
 #include "selection/SelectionGpu.h"
@@ -18,7 +17,6 @@
 #include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportComponents.h"
-#include "viewport/ViewportRenderGpu.h"
 
 #include <charconv>
 #include <print>
@@ -121,80 +119,83 @@ enum class SingleEdit { None,
                         SplitConcaveFaces,
                         Wireframe,
                         DissolveDegenerate };
+template<typename A> action::Action Edit(A a) { return action::MakeAction(std::move(a)); }
+// `Make` builds the edit's action, or is null for an edit the benchmark drives itself.
 struct EditSpec {
     SingleEdit Op;
     const char *Argument;
     Element Domain = Element::Face;
+    action::Action (*Make)() = nullptr;
 };
 constexpr std::array EditSpecs{
     EditSpec{SingleEdit::None, "inset"},
     EditSpec{SingleEdit::SeparateSelected, "separate-selected"},
     EditSpec{SingleEdit::SpatialPlane, "spatial-plane"},
     EditSpec{SingleEdit::SpatialCut, "spatial-cut"},
-    EditSpec{SingleEdit::EdgeSplit, "edge-split", Element::Edge},
-    EditSpec{SingleEdit::BevelEdge, "bevel-edge", Element::Edge},
-    EditSpec{SingleEdit::BevelVertex, "bevel-vertex", Element::Vertex},
-    EditSpec{SingleEdit::DissolveEdge, "dissolve-edge", Element::Edge},
-    EditSpec{SingleEdit::EdgeRotate, "edge-rotate", Element::Edge},
-    EditSpec{SingleEdit::ExtrudeEdge, "extrude-edge", Element::Edge},
-    EditSpec{SingleEdit::ExtrudeRegion, "extrude-region"},
-    EditSpec{SingleEdit::ExtrudeVertex, "extrude-vertex", Element::Vertex},
-    EditSpec{SingleEdit::NewEdge, "new-edge", Element::Vertex},
-    EditSpec{SingleEdit::DuplicateVertex, "duplicate-vertex", Element::Vertex},
-    EditSpec{SingleEdit::DuplicateEdge, "duplicate-edge", Element::Edge},
-    EditSpec{SingleEdit::DuplicateFace, "duplicate-face"},
-    EditSpec{SingleEdit::SplitVertex, "split-vertex", Element::Vertex},
-    EditSpec{SingleEdit::SplitEdge, "split-edge", Element::Edge},
-    EditSpec{SingleEdit::SplitFace, "split-face"},
-    EditSpec{SingleEdit::SubdivideEdge, "subdivide-edge", Element::Edge},
-    EditSpec{SingleEdit::LoopCut, "loop-cut", Element::Edge},
-    EditSpec{SingleEdit::FillFace, "fill-face", Element::Edge},
-    EditSpec{SingleEdit::FillHoles, "fill-holes", Element::Edge},
-    EditSpec{SingleEdit::Bridge, "bridge", Element::Edge},
-    EditSpec{SingleEdit::GridFill, "grid-fill", Element::Edge},
-    EditSpec{SingleEdit::SpaceEvenly, "space-evenly", Element::Edge},
-    EditSpec{SingleEdit::RelaxEdgeLoops, "relax-edge-loops", Element::Edge},
-    EditSpec{SingleEdit::Flatten, "flatten", Element::Edge},
-    EditSpec{SingleEdit::CurveBetweenSelected, "curve-between-selected", Element::Vertex},
-    EditSpec{SingleEdit::Circularize, "circularize", Element::Edge},
-    EditSpec{SingleEdit::DeleteLoose, "delete-loose", Element::Vertex},
-    EditSpec{SingleEdit::DeleteEdge, "delete-edge", Element::Edge},
-    EditSpec{SingleEdit::DeleteOnlyEdgeFaces, "delete-only-edge-faces", Element::Edge},
-    EditSpec{SingleEdit::DeleteFaces, "delete-faces"},
-    EditSpec{SingleEdit::DeleteOnlyFaces, "delete-only-faces"},
-    EditSpec{SingleEdit::DeleteVertex, "delete-vertex", Element::Vertex},
-    EditSpec{SingleEdit::DissolveVertex, "dissolve-vertex", Element::Vertex},
-    EditSpec{SingleEdit::DissolveFace, "dissolve-face"},
-    EditSpec{SingleEdit::DissolveLimited, "dissolve-limited"},
-    EditSpec{SingleEdit::DissolveDelimited, "dissolve-delimited"},
+    EditSpec{SingleEdit::EdgeSplit, "edge-split", Element::Edge, [] { return Edit(action::mesh::EdgeSplit{}); }},
+    EditSpec{SingleEdit::BevelEdge, "bevel-edge", Element::Edge, [] { return Edit(action::mesh::Bevel{.Width = 0.01f}); }},
+    EditSpec{SingleEdit::BevelVertex, "bevel-vertex", Element::Vertex, [] { return Edit(action::mesh::Bevel{.Width = 0.01f, .Vertices = true}); }},
+    EditSpec{SingleEdit::DissolveEdge, "dissolve-edge", Element::Edge, [] { return Edit(action::mesh::Dissolve{action::mesh::DissolveMode::Edges}); }},
+    EditSpec{SingleEdit::EdgeRotate, "edge-rotate", Element::Edge, [] { return Edit(action::mesh::EdgeRotate{}); }},
+    EditSpec{SingleEdit::ExtrudeEdge, "extrude-edge", Element::Edge, [] { return Edit(action::mesh::Extrude{action::mesh::ExtrudeMode::Edges}); }},
+    EditSpec{SingleEdit::ExtrudeRegion, "extrude-region", Element::Face, [] { return Edit(action::mesh::Extrude{}); }},
+    EditSpec{SingleEdit::ExtrudeVertex, "extrude-vertex", Element::Vertex, [] { return Edit(action::mesh::Extrude{action::mesh::ExtrudeMode::Vertices}); }},
+    EditSpec{SingleEdit::NewEdge, "new-edge", Element::Vertex, [] { return Edit(action::mesh::Fill{}); }},
+    EditSpec{SingleEdit::DuplicateVertex, "duplicate-vertex", Element::Vertex, [] { return Edit(action::mesh::Duplicate{}); }},
+    EditSpec{SingleEdit::DuplicateEdge, "duplicate-edge", Element::Edge, [] { return Edit(action::mesh::Duplicate{}); }},
+    EditSpec{SingleEdit::DuplicateFace, "duplicate-face", Element::Face, [] { return Edit(action::mesh::Duplicate{}); }},
+    EditSpec{SingleEdit::SplitVertex, "split-vertex", Element::Vertex, [] { return Edit(action::mesh::Split{}); }},
+    EditSpec{SingleEdit::SplitEdge, "split-edge", Element::Edge, [] { return Edit(action::mesh::Split{}); }},
+    EditSpec{SingleEdit::SplitFace, "split-face", Element::Face, [] { return Edit(action::mesh::Split{}); }},
+    EditSpec{SingleEdit::SubdivideEdge, "subdivide-edge", Element::Edge, [] { return Edit(action::mesh::Subdivide{.Cuts = 1u}); }},
+    EditSpec{SingleEdit::LoopCut, "loop-cut", Element::Edge, [] { return Edit(action::mesh::LoopCut{1u}); }},
+    EditSpec{SingleEdit::FillFace, "fill-face", Element::Edge, [] { return Edit(action::mesh::Fill{}); }},
+    EditSpec{SingleEdit::FillHoles, "fill-holes", Element::Edge, [] { return Edit(action::mesh::FillHoles{4u}); }},
+    EditSpec{SingleEdit::Bridge, "bridge", Element::Edge, [] { return Edit(action::mesh::BridgeEdgeLoops{}); }},
+    EditSpec{SingleEdit::GridFill, "grid-fill", Element::Edge, [] { return Edit(action::mesh::GridFill{2u}); }},
+    EditSpec{SingleEdit::SpaceEvenly, "space-evenly", Element::Edge, [] { return Edit(action::mesh::SpaceEvenly{}); }},
+    EditSpec{SingleEdit::RelaxEdgeLoops, "relax-edge-loops", Element::Edge, [] { return Edit(action::mesh::RelaxEdgeLoops{}); }},
+    EditSpec{SingleEdit::Flatten, "flatten", Element::Edge, [] { return Edit(action::mesh::Flatten{}); }},
+    EditSpec{SingleEdit::CurveBetweenSelected, "curve-between-selected", Element::Vertex, [] { return Edit(action::mesh::CurveBetweenSelected{}); }},
+    EditSpec{SingleEdit::Circularize, "circularize", Element::Edge, [] { return Edit(action::mesh::Circularize{}); }},
+    EditSpec{SingleEdit::DeleteLoose, "delete-loose", Element::Vertex, [] { return Edit(action::mesh::Delete{action::mesh::DeleteMode::Loose}); }},
+    EditSpec{SingleEdit::DeleteEdge, "delete-edge", Element::Edge, [] { return Edit(action::mesh::Delete{action::mesh::DeleteMode::Edges}); }},
+    EditSpec{SingleEdit::DeleteOnlyEdgeFaces, "delete-only-edge-faces", Element::Edge, [] { return Edit(action::mesh::Delete{action::mesh::DeleteMode::OnlyEdgesAndFaces}); }},
+    EditSpec{SingleEdit::DeleteFaces, "delete-faces", Element::Face, [] { return Edit(action::mesh::Delete{action::mesh::DeleteMode::Faces}); }},
+    EditSpec{SingleEdit::DeleteOnlyFaces, "delete-only-faces", Element::Face, [] { return Edit(action::mesh::Delete{action::mesh::DeleteMode::OnlyFaces}); }},
+    EditSpec{SingleEdit::DeleteVertex, "delete-vertex", Element::Vertex, [] { return Edit(action::mesh::Delete{action::mesh::DeleteMode::Vertices}); }},
+    EditSpec{SingleEdit::DissolveVertex, "dissolve-vertex", Element::Vertex, [] { return Edit(action::mesh::Dissolve{.Mode = action::mesh::DissolveMode::Vertices}); }},
+    EditSpec{SingleEdit::DissolveFace, "dissolve-face", Element::Face, [] { return Edit(action::mesh::Dissolve{.Mode = action::mesh::DissolveMode::Faces}); }},
+    EditSpec{SingleEdit::DissolveLimited, "dissolve-limited", Element::Face, [] { return Edit(action::mesh::Dissolve{.Mode = action::mesh::DissolveMode::Limited, .Angle = 3.14159f}); }},
+    EditSpec{SingleEdit::DissolveDelimited, "dissolve-delimited", Element::Face, [] { return Edit(action::mesh::Dissolve{.Mode = action::mesh::DissolveMode::Limited, .Angle = 3.14159f, .DelimitMaterials = true, .DelimitSharpEdges = true, .DelimitUVs = true}); }},
     EditSpec{SingleEdit::SharpFace, "sharp-face"},
     EditSpec{SingleEdit::MergeDistance, "merge-distance", Element::Vertex},
-    EditSpec{SingleEdit::MergeCenter, "merge-center", Element::Vertex},
-    EditSpec{SingleEdit::MergeCorners, "merge-corners", Element::Vertex},
-    EditSpec{SingleEdit::MergeCollapse, "merge-collapse", Element::Vertex},
+    EditSpec{SingleEdit::MergeCenter, "merge-center", Element::Vertex, [] { return Edit(action::mesh::Merge{.Mode = action::mesh::MergeMode::Center}); }},
+    EditSpec{SingleEdit::MergeCorners, "merge-corners", Element::Vertex, [] { return Edit(action::mesh::Merge{.Mode = action::mesh::MergeMode::Center}); }},
+    EditSpec{SingleEdit::MergeCollapse, "merge-collapse", Element::Vertex, [] { return Edit(action::mesh::Merge{.Mode = action::mesh::MergeMode::Collapse}); }},
     EditSpec{SingleEdit::DissolveDegenerate, "dissolve-degenerate", Element::Vertex},
-    EditSpec{SingleEdit::RecalculateNormals, "recalculate-normals"},
-    EditSpec{SingleEdit::SnapSymmetry, "snap-symmetry"},
-    EditSpec{SingleEdit::Hide, "hide"},
+    EditSpec{SingleEdit::RecalculateNormals, "recalculate-normals", Element::Face, [] { return Edit(action::mesh::RecalculateNormals{}); }},
+    EditSpec{SingleEdit::SnapSymmetry, "snap-symmetry", Element::Face, [] { return Edit(action::mesh::SnapSymmetry{.Threshold = .001f}); }},
+    EditSpec{SingleEdit::Hide, "hide", Element::Face, [] { return Edit(action::mesh::Hide{}); }},
     EditSpec{SingleEdit::DuplicateObject, "duplicate-object"},
-    EditSpec{SingleEdit::Unsubdivide, "unsubdivide"},
-    EditSpec{SingleEdit::Decimate, "decimate"},
-    EditSpec{SingleEdit::BeautifyFaces, "beautify-faces"},
-    EditSpec{SingleEdit::ToSphere, "to-sphere"},
-    EditSpec{SingleEdit::PushPull, "push-pull"},
-    EditSpec{SingleEdit::Shear, "shear"},
-    EditSpec{SingleEdit::Warp, "warp"},
-    EditSpec{SingleEdit::Bend, "bend"},
-    EditSpec{SingleEdit::Randomize, "randomize"},
-    EditSpec{SingleEdit::VertexSlide, "vertex-slide"},
-    EditSpec{SingleEdit::EdgeSlide, "edge-slide", Element::Edge},
-    EditSpec{SingleEdit::ShrinkFatten, "shrink-fatten", Element::Vertex},
-    EditSpec{SingleEdit::SmoothVertices, "smooth-vertices", Element::Vertex},
-    EditSpec{SingleEdit::RotateUVs, "rotate-uvs"},
-    EditSpec{SingleEdit::MakePlanarFaces, "planar-faces"},
-    EditSpec{SingleEdit::SplitNonplanarFaces, "split-nonplanar"},
-    EditSpec{SingleEdit::SplitConcaveFaces, "split-concave"},
-    EditSpec{SingleEdit::Wireframe, "wireframe"},
+    EditSpec{SingleEdit::Unsubdivide, "unsubdivide", Element::Face, [] { return Edit(action::mesh::Unsubdivide{1u}); }},
+    EditSpec{SingleEdit::Decimate, "decimate", Element::Face, [] { return Edit(action::mesh::Decimate{}); }},
+    EditSpec{SingleEdit::BeautifyFaces, "beautify-faces", Element::Face, [] { return Edit(action::mesh::BeautifyFaces{}); }},
+    EditSpec{SingleEdit::ToSphere, "to-sphere", Element::Face, [] { return Edit(action::mesh::ToSphere{}); }},
+    EditSpec{SingleEdit::PushPull, "push-pull", Element::Face, [] { return Edit(action::mesh::PushPull{.Distance = .01f}); }},
+    EditSpec{SingleEdit::Shear, "shear", Element::Face, [] { return Edit(action::mesh::Shear{}); }},
+    EditSpec{SingleEdit::Warp, "warp", Element::Face, [] { return Edit(action::mesh::Warp{.Angle = 1.f}); }},
+    EditSpec{SingleEdit::Bend, "bend", Element::Face, [] { return Edit(action::mesh::Bend{.Clamp = false}); }},
+    EditSpec{SingleEdit::Randomize, "randomize", Element::Face, [] { return Edit(action::mesh::Randomize{.Amount = .01f, .Uniform = .5f, .Normal = .5f, .Seed = 7u}); }},
+    EditSpec{SingleEdit::VertexSlide, "vertex-slide", Element::Face, [] { return Edit(action::mesh::VertexSlide{.Factor = .1f, .Even = true}); }},
+    EditSpec{SingleEdit::EdgeSlide, "edge-slide", Element::Edge, [] { return Edit(action::mesh::EdgeSlide{.Factor = .1f, .Even = true}); }},
+    EditSpec{SingleEdit::ShrinkFatten, "shrink-fatten", Element::Vertex, [] { return Edit(action::mesh::ShrinkFatten{.Distance = .01f, .Even = true}); }},
+    EditSpec{SingleEdit::SmoothVertices, "smooth-vertices", Element::Vertex, [] { return Edit(action::mesh::SmoothVertices{}); }},
+    EditSpec{SingleEdit::RotateUVs, "rotate-uvs", Element::Face, [] { return Edit(action::mesh::RotateUVs{}); }},
+    EditSpec{SingleEdit::MakePlanarFaces, "planar-faces", Element::Face, [] { return Edit(action::mesh::MakePlanarFaces{}); }},
+    EditSpec{SingleEdit::SplitNonplanarFaces, "split-nonplanar", Element::Face, [] { return Edit(action::mesh::SplitNonplanarFaces{}); }},
+    EditSpec{SingleEdit::SplitConcaveFaces, "split-concave", Element::Face, [] { return Edit(action::mesh::SplitConcaveFaces{}); }},
+    EditSpec{SingleEdit::Wireframe, "wireframe", Element::Face, [] { return Edit(action::mesh::Wireframe{}); }},
 };
 // The selected face and its valence stay fixed while the unselected mesh grows.
 // Select-all replaces the operator's selection with every element of its domain, and inset then insets each face individually.
@@ -223,6 +224,12 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         p.Settle();
         std::println(stderr, "Preparing benchmark scene...");
         const auto load_begin = std::chrono::steady_clock::now();
+        // Adds the source as a mesh object and selects it.
+        const auto place = [&](MeshSource source) {
+            const auto [entity, instance] = AddMesh(r, CreateMesh(r, std::move(source)).StoreId, MeshInstanceCreateInfo{});
+            p.Settle();
+            p.Do(action::MakeAction(action::selection::Select{instance}));
+        };
         if (scene.empty() && single_edit == SingleEdit::BeautifyFaces) {
             MeshSource source;
             const uint32_t count = std::max(1u, slices * slices / 4u);
@@ -233,10 +240,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 source.Data.AddFace(std::array{base, base + 1u, base + 3u});
                 source.Data.AddFace(std::array{base + 1u, base + 2u, base + 3u});
             }
-            const auto id = CreateMesh(r, std::move(source)).StoreId;
-            const auto [entity, instance] = AddMesh(r, id, MeshInstanceCreateInfo{});
-            p.Settle();
-            p.Do(action::MakeAction(action::selection::Select{instance}));
+            place(std::move(source));
         } else if (scene.empty() && single_edit == SingleEdit::RecalculateNormals) {
             MeshSource source;
             const auto cube = primitive::CreateMesh(primitive::Cube{});
@@ -251,43 +255,35 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                     source.Data.AddFace(face);
                 }
             }
-            const auto id = CreateMesh(r, std::move(source)).StoreId;
-            const auto [entity, instance] = AddMesh(r, id, MeshInstanceCreateInfo{});
-            p.Settle();
-            p.Do(action::MakeAction(action::selection::Select{instance}));
+            place(std::move(source));
         } else if (scene.empty() && (single_edit == SingleEdit::Bridge || single_edit == SingleEdit::GridFill || single_edit == SingleEdit::SpaceEvenly || single_edit == SingleEdit::RelaxEdgeLoops || single_edit == SingleEdit::Flatten || single_edit == SingleEdit::CurveBetweenSelected || single_edit == SingleEdit::Circularize || single_edit == SingleEdit::DissolveDelimited || single_edit == SingleEdit::RotateUVs || single_edit == SingleEdit::VertexSlide || single_edit == SingleEdit::EdgeSlide)) {
             MeshSource source{.Data = primitive::CreateMesh(primitive::UVSphere{.Slices = slices, .Stacks = slices / 2})};
+            // Loose edges above the sphere: a closed ring or an open chain through the points, or two separate edges for Bridge.
+            struct Strip {
+                SingleEdit Edit;
+                bool Closed;
+                std::vector<vec3> Points;
+            };
+            const Strip strips[]{
+                {SingleEdit::GridFill, true, {{0, 0, 2}, {1, 0, 2}, {2, 0, 2}, {2, 1, 2}, {2, 2, 2}, {1, 2, 2}, {0, 2, 2}, {0, 1, 2}}},
+                {SingleEdit::Circularize, true, {{0, 0, 2}, {2, 0, 2}, {3, 1, 2}, {2, 3, 2}, {-1, 2, 2}}},
+                {SingleEdit::CurveBetweenSelected, false, {{0, 0, 2}, {1, 1, 2}, {2, 0, 2}, {3, -1, 2}, {4, 0, 2}}},
+                {SingleEdit::Flatten, false, {{0, 0, 2}, {2, 0, 2}, {2, 2, 3}, {0, 2, 2}}},
+                {SingleEdit::SpaceEvenly, false, {{0, 0, 2}, {.25f, 1, 2}, {2, 0, 2}, {3, 2, 2}, {5, 0, 2}}},
+                {SingleEdit::RelaxEdgeLoops, false, {{0, 0, 2}, {.25f, 1, 2}, {2, 0, 2}, {3, 2, 2}, {5, 0, 2}}},
+            };
+            const auto first = uint32_t(source.Data.Positions.size());
             if (single_edit == SingleEdit::Bridge) {
-                const auto first = uint32_t(source.Data.Positions.size());
                 source.Data.Positions.insert(source.Data.Positions.end(), {{0, 0, 2}, {1, 0, 2}, {0, 1, 2}, {1, 1, 2}});
                 source.Data.Edges = {{first, first + 1u}, {first + 2u, first + 3u}};
-            } else if (single_edit == SingleEdit::GridFill) {
-                const auto first = uint32_t(source.Data.Positions.size());
-                source.Data.Positions.insert(source.Data.Positions.end(), {{0, 0, 2}, {1, 0, 2}, {2, 0, 2}, {2, 1, 2}, {2, 2, 2}, {1, 2, 2}, {0, 2, 2}, {0, 1, 2}});
-                for (uint32_t i = 0u; i < 8u; ++i) source.Data.Edges.push_back({first + i, first + (i + 1u) % 8u});
-            } else if (single_edit == SingleEdit::Circularize) {
-                const auto first = uint32_t(source.Data.Positions.size());
-                source.Data.Positions.insert(source.Data.Positions.end(), {{0, 0, 2}, {2, 0, 2}, {3, 1, 2}, {2, 3, 2}, {-1, 2, 2}});
-                for (uint32_t i = 0u; i < 5u; ++i) source.Data.Edges.push_back({first + i, first + (i + 1u) % 5u});
-            } else if (single_edit == SingleEdit::CurveBetweenSelected) {
-                const auto first = uint32_t(source.Data.Positions.size());
-                source.Data.Positions.insert(source.Data.Positions.end(), {{0, 0, 2}, {1, 1, 2}, {2, 0, 2}, {3, -1, 2}, {4, 0, 2}});
-                for (uint32_t i = 0u; i < 4u; ++i) source.Data.Edges.push_back({first + i, first + i + 1u});
-            } else if (single_edit == SingleEdit::Flatten) {
-                const auto first = uint32_t(source.Data.Positions.size());
-                source.Data.Positions.insert(source.Data.Positions.end(), {{0, 0, 2}, {2, 0, 2}, {2, 2, 3}, {0, 2, 2}});
-                for (uint32_t i = 0u; i < 3u; ++i) source.Data.Edges.push_back({first + i, first + i + 1u});
-            } else if (single_edit == SingleEdit::SpaceEvenly || single_edit == SingleEdit::RelaxEdgeLoops) {
-                const auto first = uint32_t(source.Data.Positions.size());
-                source.Data.Positions.insert(source.Data.Positions.end(), {{0, 0, 2}, {.25f, 1, 2}, {2, 0, 2}, {3, 2, 2}, {5, 0, 2}});
-                for (uint32_t i = 0u; i < 4u; ++i) source.Data.Edges.push_back({first + i, first + i + 1u});
+            } else if (const auto strip = std::ranges::find(strips, single_edit, &Strip::Edit); strip != std::end(strips)) {
+                const auto n = uint32_t(strip->Points.size());
+                source.Data.Positions.append_range(strip->Points);
+                for (uint32_t i = 0u; i + (strip->Closed ? 0u : 1u) < n; ++i) source.Data.Edges.push_back({first + i, first + (i + 1u) % n});
             }
             auto &uvs = source.Attrs.TexCoords0.emplace();
             for (const auto position : source.Data.Positions) uvs.push_back({position.x, position.y});
-            const auto id = CreateMesh(r, std::move(source)).StoreId;
-            const auto [entity, instance] = AddMesh(r, id, MeshInstanceCreateInfo{});
-            p.Settle();
-            p.Do(action::MakeAction(action::selection::Select{instance}));
+            place(std::move(source));
         } else if (scene.empty()) p.Do(action::MakeAction(action::object::AddMeshPrimitive{primitive::UVSphere{.Slices = slices, .Stacks = slices / 2}, std::make_unique<MeshInstanceCreateInfo>()}));
         else {
             p.Do(action::MakeAction(action::io::LoadGltf{scene}));
@@ -631,67 +627,11 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 p.Do(action::MakeAction(action::object::SetSelectedSharp{.Element = Element::Face, .Sharp = !bool(meshes.Arenas().FaceSharpness.Get({test::Address(original, face), 1u})[0])}));
             };
             const auto edit_ms = Milliseconds([&] {
-                if (join) p.Do(action::MakeAction(action::mesh::TrisToQuads{}));
-                else if (single_edit == SingleEdit::EdgeSplit) p.Do(action::MakeAction(action::mesh::EdgeSplit{}));
-                else if (single_edit == SingleEdit::DissolveEdge) p.Do(action::MakeAction(action::mesh::Dissolve{action::mesh::DissolveMode::Edges}));
-                else if (single_edit == SingleEdit::EdgeRotate) p.Do(action::MakeAction(action::mesh::EdgeRotate{}));
-                else if (single_edit == SingleEdit::ExtrudeEdge) p.Do(action::MakeAction(action::mesh::Extrude{action::mesh::ExtrudeMode::Edges}));
-                else if (single_edit == SingleEdit::ExtrudeRegion) p.Do(action::MakeAction(action::mesh::Extrude{}));
-                else if (single_edit == SingleEdit::ExtrudeVertex) p.Do(action::MakeAction(action::mesh::Extrude{action::mesh::ExtrudeMode::Vertices}));
-                else if (splitting) p.Do(action::MakeAction(action::mesh::Split{}));
-                else if (duplicating) p.Do(action::MakeAction(action::mesh::Duplicate{}));
-                else if (single_edit == SingleEdit::NewEdge) p.Do(action::MakeAction(action::mesh::Fill{}));
-                else if (single_edit == SingleEdit::SubdivideEdge) p.Do(action::MakeAction(action::mesh::Subdivide{.Cuts = 1u}));
-                else if (single_edit == SingleEdit::LoopCut) p.Do(action::MakeAction(action::mesh::LoopCut{1u}));
-                else if (single_edit == SingleEdit::FillFace) p.Do(action::MakeAction(action::mesh::Fill{}));
-                else if (single_edit == SingleEdit::Bridge) p.Do(action::MakeAction(action::mesh::BridgeEdgeLoops{}));
-                else if (single_edit == SingleEdit::GridFill) p.Do(action::MakeAction(action::mesh::GridFill{2u}));
-                else if (single_edit == SingleEdit::SpaceEvenly) p.Do(action::MakeAction(action::mesh::SpaceEvenly{}));
-                else if (single_edit == SingleEdit::RelaxEdgeLoops) p.Do(action::MakeAction(action::mesh::RelaxEdgeLoops{}));
-                else if (single_edit == SingleEdit::Flatten) p.Do(action::MakeAction(action::mesh::Flatten{}));
-                else if (single_edit == SingleEdit::CurveBetweenSelected) p.Do(action::MakeAction(action::mesh::CurveBetweenSelected{}));
-                else if (single_edit == SingleEdit::Circularize) p.Do(action::MakeAction(action::mesh::Circularize{}));
-                else if (single_edit == SingleEdit::FillHoles) p.Do(action::MakeAction(action::mesh::FillHoles{4u}));
-                else if (single_edit == SingleEdit::DeleteLoose) p.Do(action::MakeAction(action::mesh::Delete{action::mesh::DeleteMode::Loose}));
-                else if (single_edit == SingleEdit::DeleteEdge) p.Do(action::MakeAction(action::mesh::Delete{action::mesh::DeleteMode::Edges}));
-                else if (single_edit == SingleEdit::DeleteOnlyEdgeFaces) p.Do(action::MakeAction(action::mesh::Delete{action::mesh::DeleteMode::OnlyEdgesAndFaces}));
-                else if (single_edit == SingleEdit::DeleteFaces) p.Do(action::MakeAction(action::mesh::Delete{action::mesh::DeleteMode::Faces}));
-                else if (single_edit == SingleEdit::DeleteOnlyFaces) p.Do(action::MakeAction(action::mesh::Delete{action::mesh::DeleteMode::OnlyFaces}));
-                else if (single_edit == SingleEdit::DeleteVertex) p.Do(action::MakeAction(action::mesh::Delete{action::mesh::DeleteMode::Vertices}));
-                else if (single_edit == SingleEdit::DissolveVertex) p.Do(action::MakeAction(action::mesh::Dissolve{.Mode = action::mesh::DissolveMode::Vertices}));
-                else if (single_edit == SingleEdit::RecalculateNormals) p.Do(action::MakeAction(action::mesh::RecalculateNormals{}));
-                else if (single_edit == SingleEdit::SnapSymmetry) p.Do(action::MakeAction(action::mesh::SnapSymmetry{.Threshold = .001f}));
-                else if (single_edit == SingleEdit::Hide) p.Do(action::MakeAction(action::mesh::Hide{}));
-                else if (single_edit == SingleEdit::Unsubdivide) p.Do(action::MakeAction(action::mesh::Unsubdivide{1u}));
-                else if (single_edit == SingleEdit::Decimate) p.Do(action::MakeAction(action::mesh::Decimate{}));
-                else if (single_edit == SingleEdit::BeautifyFaces) p.Do(action::MakeAction(action::mesh::BeautifyFaces{}));
-                else if (single_edit == SingleEdit::ToSphere) p.Do(action::MakeAction(action::mesh::ToSphere{}));
-                else if (single_edit == SingleEdit::PushPull) p.Do(action::MakeAction(action::mesh::PushPull{.Distance = .01f}));
-                else if (single_edit == SingleEdit::Shear) p.Do(action::MakeAction(action::mesh::Shear{}));
-                else if (single_edit == SingleEdit::Warp) p.Do(action::MakeAction(action::mesh::Warp{.Angle = 1.f}));
-                else if (single_edit == SingleEdit::Bend) p.Do(action::MakeAction(action::mesh::Bend{.Clamp = false}));
-                else if (single_edit == SingleEdit::Randomize) p.Do(action::MakeAction(action::mesh::Randomize{.Amount = .01f, .Uniform = .5f, .Normal = .5f, .Seed = 7u}));
-                else if (single_edit == SingleEdit::VertexSlide) p.Do(action::MakeAction(action::mesh::VertexSlide{.Factor = .1f, .Even = true}));
-                else if (single_edit == SingleEdit::EdgeSlide) p.Do(action::MakeAction(action::mesh::EdgeSlide{.Factor = .1f, .Even = true}));
-                else if (single_edit == SingleEdit::ShrinkFatten) p.Do(action::MakeAction(action::mesh::ShrinkFatten{.Distance = .01f, .Even = true}));
-                else if (single_edit == SingleEdit::SmoothVertices) p.Do(action::MakeAction(action::mesh::SmoothVertices{}));
-                else if (single_edit == SingleEdit::RotateUVs) p.Do(action::MakeAction(action::mesh::RotateUVs{}));
-                else if (single_edit == SingleEdit::MakePlanarFaces) p.Do(action::MakeAction(action::mesh::MakePlanarFaces{}));
-                else if (single_edit == SingleEdit::SplitNonplanarFaces) p.Do(action::MakeAction(action::mesh::SplitNonplanarFaces{}));
-                else if (single_edit == SingleEdit::SplitConcaveFaces) p.Do(action::MakeAction(action::mesh::SplitConcaveFaces{}));
-                else if (single_edit == SingleEdit::Wireframe) p.Do(action::MakeAction(action::mesh::Wireframe{}));
-                else if (single_edit == SingleEdit::DissolveFace) p.Do(action::MakeAction(action::mesh::Dissolve{.Mode = action::mesh::DissolveMode::Faces}));
-                else if ((single_edit == SingleEdit::DissolveLimited || single_edit == SingleEdit::DissolveDelimited)) p.Do(action::MakeAction(action::mesh::Dissolve{.Mode = action::mesh::DissolveMode::Limited, .Angle = 3.14159f, .DelimitMaterials = single_edit == SingleEdit::DissolveDelimited, .DelimitSharpEdges = single_edit == SingleEdit::DissolveDelimited, .DelimitUVs = single_edit == SingleEdit::DissolveDelimited}));
-                else if (single_edit == SingleEdit::MergeDistance) {
-                    p.Do(action::MakeAction(action::mesh::Merge{.Mode = action::mesh::MergeMode::ByDistance, .Distance = pair_distance()}));
-                } else if (single_edit == SingleEdit::MergeCenter || single_edit == SingleEdit::MergeCorners) {
-                    p.Do(action::MakeAction(action::mesh::Merge{.Mode = action::mesh::MergeMode::Center}));
-                } else if (single_edit == SingleEdit::MergeCollapse) {
-                    p.Do(action::MakeAction(action::mesh::Merge{.Mode = action::mesh::MergeMode::Collapse}));
-                } else if (single_edit == SingleEdit::DissolveDegenerate) {
-                    p.Do(action::MakeAction(action::mesh::Dissolve{.Mode = action::mesh::DissolveMode::Degenerate, .Distance = pair_distance()}));
-                } else if (single_edit == SingleEdit::SharpFace) toggle_sharp();
-                else p.Do(action::MakeAction(action::mesh::Bevel{.Width = 0.01f, .Vertices = single_edit == SingleEdit::BevelVertex}));
+                if (join) p.Do(Edit(action::mesh::TrisToQuads{}));
+                else if (single_edit == SingleEdit::MergeDistance) p.Do(Edit(action::mesh::Merge{.Mode = action::mesh::MergeMode::ByDistance, .Distance = pair_distance()}));
+                else if (single_edit == SingleEdit::DissolveDegenerate) p.Do(Edit(action::mesh::Dissolve{.Mode = action::mesh::DissolveMode::Degenerate, .Distance = pair_distance()}));
+                else if (single_edit == SingleEdit::SharpFace) toggle_sharp();
+                else p.Do(edit.Make());
             });
             const auto edited = *p.History.Present;
             const auto edited_counts = counts();

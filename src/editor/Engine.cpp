@@ -1,6 +1,5 @@
 #include "editor/Engine.h"
 #include "editor/AudioIntegration.h"
-#include "metal/MetalContext.h"
 #include "viewport/Viewport.h"
 
 Engine::Engine(bool audio) : Audio(audio) {

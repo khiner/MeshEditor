@@ -153,6 +153,8 @@ private:
     std::vector<BufferContext::UsedWorkspace> PreviousWorkspaces;
     BufferLifetime Lifetime{BufferLifetime::Canonical};
     std::unique_ptr<store::Pages> Tracked;
+    // Points the tracked pages at this buffer's storage and used size.
+    void BindTracked();
     void Retire();
     void UpdateSlot();
 

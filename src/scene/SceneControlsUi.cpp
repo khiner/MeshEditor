@@ -20,7 +20,6 @@
 #include "render/MaterialComponents.h"
 #include "render/PbrFeature.h"
 #include "scene/CameraLens.h"
-#include "scene/Defaults.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
 #include "ui/ChoiceCombo.h"
@@ -33,7 +32,6 @@
 #include "viewport/Viewport.h"
 #include "viewport/ViewportComponents.h"
 #include "viewport/ViewportOps.h"
-#include <format>
 #include <imgui_internal.h>
 #include <imgui_stdlib.h>
 
@@ -44,33 +42,6 @@ using namespace ImGui;
 static void RenderObjectTree(state::Registry &);
 
 namespace {
-constexpr std::string_view ObjectTypeName(ObjectType type) {
-    switch (type) {
-        case ObjectType::Empty: return "Empty";
-        case ObjectType::Mesh: return "Mesh";
-        case ObjectType::Armature: return "Armature";
-        case ObjectType::Camera: return "Camera";
-        case ObjectType::Light: return "Light";
-    }
-}
-
-constexpr std::string Capitalize(std::string_view str) {
-    if (str.empty()) return {};
-
-    std::string result{str};
-    char &c = result[0];
-    if (c >= 'a' && c <= 'z') c -= 'a' - 'A';
-    return result;
-}
-
-std::string to_string(InteractionMode mode) {
-    switch (mode) {
-        case InteractionMode::Object: return "Object";
-        case InteractionMode::Edit: return "Edit";
-        case InteractionMode::Excite: return "Excite";
-        case InteractionMode::Pose: return "Pose";
-    }
-}
 
 using namespace he;
 
@@ -202,20 +173,20 @@ void EntityControls(state::Registry &r, state::Entity active_entity, state::Enti
         auto name = GetName(r, active_entity);
         ui::Gesture(InputText("Name", &name), [&] { return action::object::Rename{active_entity, name}; });
         ui::ActionField("Visible", !r.all_of<Hidden>(active_entity), [&](bool visible) { return action::object::SetVisible{visible, target_for(active_entity)}; }, {.Help = "Show this object in the viewport."});
-        const auto parent = ParentOrNull(r, active_entity);
-        if (BeginCombo("Parent", parent == state::Null ? "None" : GetName(r, parent).c_str())) {
-            if (Selectable("None", parent == state::Null)) action::Emit(action::object::ClearParent{active_entity});
+        // The objects outside the active object's subtree can parent it.
+        const auto parents = [&] {
+            std::vector<state::Entity> candidates{state::Null};
             for (const auto candidate : SortedEntities(r.view<const ObjectKind>())) {
-                if (candidate == active_entity || r.any_of<SubElementOf, BoneIndex>(candidate)) continue;
+                if (r.any_of<SubElementOf, BoneIndex>(candidate)) continue;
                 bool descendant = false;
                 for (auto ancestor = candidate; ancestor != state::Null; ancestor = ParentOrNull(r, ancestor)) descendant |= ancestor == active_entity;
-                if (descendant) continue;
-                PushID(int(state::Integral(candidate)));
-                if (Selectable(GetName(r, candidate).c_str(), parent == candidate)) action::Emit(action::object::SetParent{active_entity, candidate});
-                PopID();
+                if (!descendant) candidates.push_back(candidate);
             }
-            EndCombo();
-        }
+            return candidates;
+        };
+        ui::ChoiceCombo("Parent", ParentOrNull(r, active_entity), parents, [&](state::Entity e) { return e == state::Null ? std::string{"None"} : GetName(r, e); }, [&](state::Entity e) {
+            if (e == state::Null) action::Emit(action::object::ClearParent{active_entity});
+            else action::Emit(action::object::SetParent{active_entity, e}); });
         if (const auto *membership = RootMembership(r, active_entity); membership && TreeNode("Scenes")) {
             const auto root = MembershipRoot(r, active_entity);
             if (root != active_entity) Text("Membership of %s", GetName(r, root).c_str());
@@ -253,7 +224,7 @@ void EntityControls(state::Registry &r, state::Entity active_entity, state::Enti
         Text("Attached bone ID: %u", bone_attachment->Bone);
     }
     const auto object_type = r.all_of<ObjectKind>(active_entity) ? r.get<const ObjectKind>(active_entity).Value : ObjectType::Empty;
-    Text("Object type: %s", ObjectTypeName(object_type).data());
+    Text("Object type: %s", field::EnumLabel(object_type));
     const auto *active_instance = r.try_get<Instance>(active_entity);
     const bool is_mesh_instance = active_instance && HasMesh(r, active_instance->Entity);
     if (is_mesh_instance) {
@@ -425,17 +396,10 @@ void EntityControls(state::Registry &r, state::Entity active_entity, state::Enti
                 EndChild();
 
                 uint32_t material_index = std::min(DisplayedMaterial(r, active_mesh_entity).value_or(primitive_materials[slot_primitive]), material_count - 1);
-                if (const auto assigned_material_name = material_name(material_index);
-                    BeginCombo("Assigned material", assigned_material_name.c_str())) {
-                    for (uint32_t i = 0; i < material_count; ++i) {
-                        if (const auto option_name = material_name(i);
-                            Selectable(option_name.c_str(), material_index == i)) {
-                            action::Emit(action::object::SetMaterialAssignment{slot_primitive, i, target_for(active_mesh_entity)});
-                            material_index = i;
-                        }
-                    }
-                    EndCombo();
-                }
+                ui::ChoiceCombo("Assigned material", material_index, std::views::iota(0u, material_count), material_name, [&](uint32_t i) {
+                    action::Emit(action::object::SetMaterialAssignment{slot_primitive, i, target_for(active_mesh_entity)});
+                    material_index = i;
+                });
 
                 ui::MaterialEdit fields{r, material_index};
                 ui::DrawFields<PBRMaterial, &PBRMaterial::Sheen, &PBRMaterial::Specular, &PBRMaterial::Transmission, &PBRMaterial::DiffuseTransmission, &PBRMaterial::Volume, &PBRMaterial::Clearcoat, &PBRMaterial::Anisotropy, &PBRMaterial::Iridescence>(fields);
@@ -616,7 +580,7 @@ void RenderControls(state::Registry &r) {
                     if (mode == InteractionMode::Edit && !edit_allowed) continue;
                     if (mode != InteractionMode::Pose || pose_allowed) {
                         SameLine();
-                        interaction_mode_changed |= RadioButton(to_string(mode).c_str(), &interaction_mode_value, int(mode));
+                        interaction_mode_changed |= RadioButton(field::EnumLabel(mode), &interaction_mode_value, int(mode));
                     }
                 }
                 if (interaction_mode_changed) action::Emit(action::view::SetInteractionMode{.Mode = InteractionMode(interaction_mode_value)});
@@ -628,9 +592,8 @@ void RenderControls(state::Registry &r) {
                     TextUnformatted("Edit mode:");
                     auto type_interaction_mode = int(edit_mode);
                     for (const auto element : Elements) {
-                        const auto name = Capitalize(label(element));
                         SameLine();
-                        if (RadioButton(name.c_str(), &type_interaction_mode, int(element))) action::Emit(action::view::SetEditMode{.Mode = element});
+                        if (RadioButton(field::EnumLabel(element), &type_interaction_mode, int(element))) action::Emit(action::view::SetEditMode{.Mode = element});
                     }
                     const auto active_entity = FindActiveEntity(r);
                     const auto *active_instance = active_entity != state::Null ? r.try_get<const Instance>(active_entity) : nullptr;
@@ -960,8 +923,8 @@ static void RenderObjectTree(state::Registry &r) {
 
     const auto GetEntityTypeName = [&](state::Entity e) -> std::string_view {
         if (r.all_of<BoneIndex>(e)) return "Bone";
-        if (r.all_of<ObjectKind>(e)) return ObjectTypeName(r.get<const ObjectKind>(e).Value);
-        return ObjectTypeName(ObjectType::Empty);
+        if (r.all_of<ObjectKind>(e)) return field::EnumLabel(r.get<const ObjectKind>(e).Value);
+        return field::EnumLabel(ObjectType::Empty);
     };
     const auto &outliner = r.get<const OutlinerRows>(state::Document);
     const auto &rows = outliner.Rows;

@@ -1,6 +1,5 @@
 #include "project/HistoryUi.h"
 
-#include "armature/ArmatureComponents.h"
 #include "project/Project.h"
 #include "ui/CtrlShortcut.h"
 #include "ui/FieldEdit.h"
@@ -178,13 +177,9 @@ template<typename L> void DrawLeaf(const state::Registry &r, L &leaf, bool &chan
         DrawValue(r, "Value", leaf.Value, action::FieldAt<PBRMaterial>(leaf.Offset).Spec, changed, finished);
     } else if constexpr (action::IsPatchFields<L>) {
         Text("Target: %s", TargetName(r, leaf.Entity == state::Null ? action::Target{action::OnActive{}} : action::Target{leaf.Entity}).c_str());
-        [&]<typename C, typename F, size_t N>(action::PatchFields<C, F, N> &patch) {
-            for (size_t i = 0; i < N; ++i) {
-                const auto &field = action::FieldAt<C>(patch.Offsets[i]);
-                PushID(int(i));
-                DrawValue(r, field.Path.c_str(), patch.Values[i], field.Spec, changed, finished);
-                PopID();
-            }
+        [&]<typename C, typename F>(action::PatchFields<C, F> &patch) {
+            const auto &field = action::FieldAt<C>(patch.Offset);
+            DrawValue(r, field.Path.c_str(), patch.Value, field.Spec, changed, finished);
         }(leaf);
     } else if constexpr (ui::HasEditor<L>) {
         ui::ValueEdit edit{leaf, changed, &finished};

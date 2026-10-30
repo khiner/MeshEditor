@@ -1,9 +1,5 @@
 #pragma once
 
-#include "Field.h"
-#include "state/Entity.h"
-#include <variant>
-
 namespace state {
 // Visits entity references in native component records and their nested values.
 void ForEachEntity(auto &value, auto &&visit) {

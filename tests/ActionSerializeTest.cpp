@@ -40,7 +40,8 @@ template<class> constexpr bool IsOptional = false;
 template<class T> constexpr bool IsOptional<std::optional<T>> = true;
 template<class> constexpr bool IsVariant = false;
 template<class... Ts> constexpr bool IsVariant<std::variant<Ts...>> = true;
-template<class T> concept Components = requires(T v) { v.x; v.y; };
+template<class T>
+concept Components = requires(T v) { v.x; v.y; };
 
 // Writes a distinct value into every member of a payload, through containers, optionals, owning pointers and variants, so a round trip that drops or defaults a member shows.
 // A variant takes its last alternative, and a null owning pointer takes a filled value, since zpp::bits serializes neither a null pointer nor an empty choice.

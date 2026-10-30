@@ -1,8 +1,5 @@
 #pragma once
 
-#include "scene/SceneSchema.h"
-#include "state/DirtySet.h"
-
 // Scene graph change sets, bound by RegisterSceneComponentHandlers.
 struct SceneChanges {
     state::DirtySet WorldTransform; // A world transform or a bone's display scale changed.

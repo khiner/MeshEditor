@@ -28,9 +28,6 @@ inline float DragSpeed(float speed) { return ImGui::GetIO().KeyShift ? speed * 0
 inline bool DragFloat(const char *label, float *v, float speed = 1.f, float lo = 0.f, float hi = 0.f, const char *fmt = "%.3f") {
     return ImGui::DragFloat(label, v, DragSpeed(speed), lo, hi, fmt, ImGuiSliderFlags_NoSpeedTweaks);
 }
-inline bool DragFloat2(const char *label, float *v, float speed = 1.f, float lo = 0.f, float hi = 0.f, const char *fmt = "%.3f") {
-    return ImGui::DragFloat2(label, v, DragSpeed(speed), lo, hi, fmt, ImGuiSliderFlags_NoSpeedTweaks);
-}
 inline bool DragFloat3(const char *label, float *v, float speed = 1.f, float lo = 0.f, float hi = 0.f, const char *fmt = "%.3f") {
     return ImGui::DragFloat3(label, v, DragSpeed(speed), lo, hi, fmt, ImGuiSliderFlags_NoSpeedTweaks);
 }
@@ -426,7 +423,7 @@ struct PatchEdit : FieldWidgets<Prefix...> {
     template<auto... Ms>
     auto Action(action::detail::last_field<Prefix..., Ms...> value) const {
         using F = action::detail::last_field<Prefix..., Ms...>;
-        return action::PatchFields<Component, F>{{action::detail::FieldOffset<Prefix..., Ms...>()}, {std::move(value)}, Entity};
+        return action::PatchFields<Component, F>{action::detail::FieldOffset<Prefix..., Ms...>(), std::move(value), Entity};
     }
 
     template<auto... Ms>

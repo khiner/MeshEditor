@@ -80,22 +80,15 @@ Texture CreateTextureCube(const Context &ctx, MTL::PixelFormat format, uint32_t 
     return Create(ctx, MTL::TextureTypeCube, format, {size, size}, usage, mip_levels, StorageFor(usage));
 }
 
-Texture CreateMipView(const Texture &texture, uint32_t mip) {
+// A view of one mip of the texture, which shares its residency tracking.
+Texture MipView(const Texture &texture, uint32_t mip, MTL::TextureType type, uint32_t layers) {
     const AutoreleaseScope pool;
-    auto handle = NS::TransferPtr(texture.Handle->newTextureView(
-        texture.Handle->pixelFormat(), texture.Handle->textureType(),
-        NS::Range::Make(mip, 1), NS::Range::Make(0, texture.Handle->arrayLength())
-    ));
+    auto handle = NS::TransferPtr(texture.Handle->newTextureView(texture.Handle->pixelFormat(), type, NS::Range::Make(mip, 1), NS::Range::Make(0, layers)));
     return {*texture.ResidencyContext, std::move(handle), {std::max(texture.Extent.Width >> mip, 1u), std::max(texture.Extent.Height >> mip, 1u)}};
 }
 
-Texture CreateCubeMipView(const Texture &texture, uint32_t mip) {
-    const AutoreleaseScope pool;
-    auto handle = NS::TransferPtr(texture.Handle->newTextureView(
-        texture.Handle->pixelFormat(), MTL::TextureType2DArray, NS::Range::Make(mip, 1), NS::Range::Make(0, 6)
-    ));
-    return {*texture.ResidencyContext, std::move(handle), {std::max(texture.Extent.Width >> mip, 1u), std::max(texture.Extent.Height >> mip, 1u)}};
-}
+Texture CreateMipView(const Texture &texture, uint32_t mip) { return MipView(texture, mip, texture.Handle->textureType(), uint32_t(texture.Handle->arrayLength())); }
+Texture CreateCubeMipView(const Texture &texture, uint32_t mip) { return MipView(texture, mip, MTL::TextureType2DArray, 6u); }
 
 NS::SharedPtr<MTL::SamplerState> CreateSampler(const Context &ctx, const SamplerDesc &desc) {
     const AutoreleaseScope pool;

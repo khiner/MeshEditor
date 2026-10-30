@@ -1,8 +1,5 @@
 #pragma once
 
-#include "render/RenderSchema.h"
-#include "state/DirtySet.h"
-
 // Render instance, material, lighting, and environment change sets, bound by RegisterSceneComponentHandlers.
 struct RenderChanges {
     state::DirtySet InstanceVisibility; // An Instance or Hidden change that the settle pass derives RenderInstance from.

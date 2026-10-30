@@ -1,9 +1,5 @@
 #pragma once
 
-#include "gpu/DebugChannel.h"
-#include "gpu/MeshAttributeBit.h"
-#include "gpu/PBRMaterial.h"
-
 // Preserve declared material inputs even when a viewport disables an extension, and the inputs each debug channel in `debug_channels` shows.
 // `debug_channels` holds one bit per DebugChannel.
 inline uint32_t MaterialLodAttributes(const PBRMaterial &material, uint32_t debug_channels, bool authored_tangents) {

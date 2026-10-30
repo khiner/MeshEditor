@@ -1,6 +1,7 @@
 #include "action/Audio.h"
 #include "audio/AudioDevice.h"
 #include "audio/AudioOutputConfig.h"
+#include "ui/ChoiceCombo.h"
 #include "ui/FieldEdit.h"
 
 #include <format>
@@ -26,22 +27,8 @@ void DrawAudioDeviceControls(state::Registry &r) {
         return;
     }
 
-    if (BeginCombo("Output device", config.DeviceName.empty() ? "System default" : config.DeviceName.c_str())) {
-        for (const auto &name : info.OutDeviceNames) {
-            const bool is_selected = name == config.DeviceName;
-            if (Selectable(name.c_str(), is_selected) && !is_selected) action::Emit(action::audio::SetOutputDevice{name});
-            if (is_selected) SetItemDefaultFocus();
-        }
-        EndCombo();
-    }
-    if (BeginCombo("Sample rate", SampleRateName(info, info.SampleRate).c_str())) {
-        for (const uint32_t option : info.NativeSampleRates) {
-            const bool is_selected = option == info.SampleRate;
-            if (Selectable(SampleRateName(info, option).c_str(), is_selected) && !is_selected) action::Emit(action::audio::SetOutputDevice{config.DeviceName, option});
-            if (is_selected) SetItemDefaultFocus();
-        }
-        EndCombo();
-    }
+    ui::ChoiceCombo("Output device", config.DeviceName, info.OutDeviceNames, [](const std::string &name) { return name.empty() ? "System default" : name.c_str(); }, [](const std::string &name) { action::Emit(action::audio::SetOutputDevice{name}); });
+    ui::ChoiceCombo("Sample rate", info.SampleRate, info.NativeSampleRates, [&](uint32_t option) { return SampleRateName(info, option); }, [&](uint32_t option) { action::Emit(action::audio::SetOutputDevice{config.DeviceName, option}); });
 
     f.Draw<&AudioOutputMix::Muted>();
     SameLine();

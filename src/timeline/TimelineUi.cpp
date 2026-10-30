@@ -1,10 +1,8 @@
 #include "timeline/TimelineUi.h"
-#include "action/Build.h"
-#include "action/View.h"
-#include "timeline/Timeline.h"
 #include "viewport/ViewportIcons.h"
 
 #include "timeline/TimelineTheme.h"
+#include "ui/ChoiceCombo.h"
 #include "ui/CtrlShortcut.h"
 #include "ui/FieldEdit.h"
 #include "ui/InterfaceTheme.h"
@@ -107,14 +105,7 @@ std::optional<action::Action> RenderTimeline(const TimelineRange &range, const T
     if (!animations.Names.empty()) {
         SetCursorScreenPos(bar_origin);
         SetNextItemWidth(GetFontSize() * 9);
-        if (BeginCombo("##animation", animations.Names[animations.Active].c_str())) {
-            for (uint32_t i = 0; i < animations.Names.size(); ++i) {
-                PushID(int(i));
-                if (Selectable(animations.Names[i].empty() ? "(unnamed)" : animations.Names[i].c_str(), i == animations.Active)) emit(action::animation::SelectAnimation{i});
-                PopID();
-            }
-            EndCombo();
-        }
+        ui::ChoiceCombo("##animation", animations.Active, std::views::iota(0u, uint32_t(animations.Names.size())), [&](uint32_t i) { return animations.Names[i].empty() ? "(unnamed)" : animations.Names[i].c_str(); }, [&](uint32_t i) { emit(action::animation::SelectAnimation{i}); });
         SameLine(0, spacing.x);
         ui::BeginIconButtonGroup(ImGuiAxis_X, {h, h}, 1, rounding);
         if (ui::IconButton("##add_animation", nullptr)) emit(action::animation::AddAnimation{std::format("Animation {}", animations.Names.size() + 1)});

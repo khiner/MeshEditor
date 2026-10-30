@@ -35,7 +35,6 @@
 
 #include "numeric/FastGltf.h"
 #include <fastgltf/core.hpp>
-#include <simdjson.h>
 
 namespace gltf {
 using namespace detail;
@@ -1541,7 +1540,6 @@ struct ImportedObjects {
 
 // Creates the mesh, camera, light, and empty objects of every emitted node, parents them, and stubs the nodes no scene reaches.
 ImportedObjects ImportObjects(state::Registry &r, const fastgltf::Asset &asset, const NodePlan &plan, const MeshEntities &mesh_entities, uint32_t scene_index) {
-    auto &meshes = r.Resources.get<MeshStore>();
     const auto emitted_count = size_t(std::ranges::count(plan.IsObjectEmitted, true));
     ImportedObjects objects;
     objects.Entities.reserve(emitted_count);
@@ -1583,18 +1581,18 @@ ImportedObjects ImportObjects(state::Registry &r, const fastgltf::Asset &asset, 
                 }
             } else if (!mesh_index && camera_index) {
                 const auto &cam = asset.cameras[*camera_index];
-                e = ::AddCamera(r, meshes, {.Name = std::move(name), .Transform = transform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
+                e = ::AddCamera(r, {.Name = std::move(name), .Transform = transform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
                 SetLens(r, e, ConvertCamera(cam));
                 node.Camera = *camera_index;
                 node.CameraName = cam.name;
                 if (objects.FirstCamera == state::Null && plan.SceneReach[scene_index][node_index]) objects.FirstCamera = e;
             } else if (!mesh_index && light_index) {
                 const auto &light = asset.lights[*light_index];
-                e = ::AddLight(r, meshes, {.Name = std::move(name), .Transform = transform, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, ConvertLight(light));
+                e = ::AddLight(r, {.Name = std::move(name), .Transform = transform, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, ConvertLight(light));
                 node.Light = *light_index;
                 node.LightName = light.name;
             } else {
-                e = ::AddEmpty(r, meshes, {.Name = std::move(name), .Transform = transform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
+                e = ::AddEmpty(r, {.Name = std::move(name), .Transform = transform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
             }
             // Record a source name the runtime name replaced or synthesized.
             if (raw_name.empty()) node.EmptyName = true;

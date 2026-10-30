@@ -1,8 +1,6 @@
 #pragma once
 
-#include "numeric/uvec2.h"
 #include "selection/Selection.h"
-#include <span>
 struct GpuBuffers;
 namespace mtl {
 struct ComputeChain;

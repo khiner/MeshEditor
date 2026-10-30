@@ -4,8 +4,6 @@
 #include "numeric/Serialize.h"
 #include "project/Assets.h"
 
-#include <zpp_bits.h>
-
 std::expected<std::filesystem::path, std::string> SaveModalModelFile(project::Assets &assets, const ModalModelData &data) {
     std::vector<std::byte> bytes;
     zpp::bits::out archive{bytes};

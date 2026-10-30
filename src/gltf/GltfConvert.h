@@ -4,7 +4,6 @@
 #include "physics/PhysicsTypes.h"
 #include "render/MaterialTextureSchema.h"
 #include <fastgltf/types.hpp>
-#include <numbers>
 
 namespace gltf::detail {
 using ExtrasMap = std::map<uint64_t, std::string>;

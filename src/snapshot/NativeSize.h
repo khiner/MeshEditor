@@ -1,9 +1,7 @@
 #pragma once
 
-#include <filesystem>
 #include <map>
 #include <unordered_map>
-#include <zpp_bits.h>
 
 namespace snapshot::detail {
 // Retained native payload estimate, including nested capacities.

@@ -1,5 +1,4 @@
 #include "scene/HierarchyInstance.h"
-#include "state/Registry.h"
 
 #include "ContactModel.h"
 #include "ModalEigenSummary.h"

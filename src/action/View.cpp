@@ -6,7 +6,6 @@
 #include "procedure/NodeTheme.h"
 #include "procedure/Procedure.h"
 #include "scene/CameraLens.h"
-#include "scene/Defaults.h"
 #include "scene/Entity.h"
 #include "scene/HierarchyInstance.h"
 #include "scene/SceneGraph.h"

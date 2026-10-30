@@ -41,6 +41,16 @@ void RenderJointVecList(state::Entity jd_entity, const std::vector<T> &items, co
     PopID();
 }
 
+// A row of radio buttons over every enumerator of E, true when one changes `value`.
+template<typename E> bool RadioRow(int &value) {
+    bool changed = false;
+    for (size_t i = 0; i < field::EnumCount<E>; ++i) {
+        if (i) SameLine();
+        changed |= RadioButton(field::EnumLabels<E>[i], &value, int(field::EnumValues<E>[i]));
+    }
+    return changed;
+}
+
 template<typename Target>
 void TargetCombo(state::Registry &r, const char *label, state::Entity current, const char *empty_preview, auto &&pick) {
     std::vector<state::Entity> choices{state::Null};
@@ -94,11 +104,7 @@ void RenderCollisionFilterBody(state::Registry &r, state::Entity filter_e) {
     auto mode = int(filter.Mode);
     TextUnformatted("Collide with:");
     SameLine();
-    bool mode_changed = RadioButton("All", &mode, int(CollideMode::All));
-    SameLine();
-    mode_changed |= RadioButton("Allowlist", &mode, int(CollideMode::Allowlist));
-    SameLine();
-    mode_changed |= RadioButton("Blocklist", &mode, int(CollideMode::Blocklist));
+    const bool mode_changed = RadioRow<CollideMode>(mode);
     if (mode_changed) action::Emit(action::UpdateOf<&CollisionFilter::Mode>(filter_e, CollideMode(mode)));
 
     if (mode != int(CollideMode::All)) {
@@ -345,15 +351,7 @@ void physics_ui::RenderEntityProperties(state::Registry &r, state::Entity entity
     AlignTextToFramePadding();
     TextUnformatted("Motion type:");
     SameLine();
-    bool changed = RadioButton("None", &motion_type, int(MType::None));
-    SameLine();
-    changed |= RadioButton("Static", &motion_type, int(MType::Static));
-    SameLine();
-    changed |= RadioButton("Kinematic", &motion_type, int(MType::Kinematic));
-    SameLine();
-    changed |= RadioButton("Dynamic", &motion_type, int(MType::Dynamic));
-
-    if (changed) action::Emit(action::physics::SetMotionType{MType(motion_type), scope()});
+    if (RadioRow<MType>(motion_type)) action::Emit(action::physics::SetMotionType{MType(motion_type), scope()});
 
     if (collider) { // Collider shape editing
         Spacing();

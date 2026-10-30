@@ -1,7 +1,4 @@
 #pragma once
-#include "audio/AudioSchema.h"
-
-#include <FastFEM/Surface2Modes.h>
 
 // Stores the latest full eigenvector basis for matching Tet10 operator inputs.
 // One scene-level slot supports the object under active editing.

@@ -1,6 +1,5 @@
 #include "viewport/ViewportRenderGpu.h"
 #include "procedure/Procedure.h"
-#include "render/LightComponents.h"
 
 #include "Camera.h"
 #include "Profile.h"
@@ -40,7 +39,6 @@
 #include "metal/RenderTarget.h"
 #include "numeric/MatrixMath.h"
 #include "object/PendingSync.h"
-#include "physics/PhysicsTypes.h"
 #include "render/ClusterLod.h"
 #include "render/Encoding.h"
 #include "render/GpuSceneState.h"
@@ -49,18 +47,15 @@
 #include "render/MeshletBoundsRefit.h"
 #include "render/MeshletBuildGpu.h"
 #include "render/Pipelines.h"
-#include "render/RenderTargets.h"
 #include "render/SceneUpdates.h"
 #include "render/Textures.h"
 #include "scene/CameraLens.h"
 #include "scene/Entity.h"
-#include "scene/WorldTransform.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
 #include "timeline/Timeline.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewCameraOps.h"
-#include "viewport/Viewport.h"
 #include "viewport/ViewportComponents.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportInteractionState.h"
@@ -1053,6 +1048,12 @@ void RecordPhase(state::Registry &r, state::Entity viewport_entity, mtl::PassCha
     if (phase == RenderPhase::Prepare) return;
     MTL::RenderCommandEncoder *encoder = nullptr;
     const auto draw_quad = [&] { encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4)); };
+    // Shades the visibility image over the full target with the bound pipeline.
+    const auto decode_visibility = [&] {
+        encoder->setFragmentTexture(*targets.Screen->VisibilityImage, 0u);
+        encode::SetPushConstants(encoder, encode::VisibilityDecodePc(buffers));
+        draw_quad();
+    };
 
     const auto &main = pipelines.Main;
     const auto main_extent = targets.Screen->SceneColorImage.Extent;
@@ -1126,9 +1127,7 @@ void RecordPhase(state::Registry &r, state::Entity viewport_entity, mtl::PassCha
         draw_quad();
         if (meshlet_fill && show_fill) {
             pbr->BindVisibility(encoder, true);
-            encoder->setFragmentTexture(*targets.Screen->VisibilityImage, 0u);
-            encode::SetPushConstants(encoder, encode::VisibilityDecodePc(buffers));
-            draw_quad();
+            decode_visibility();
         }
 
         // Generate the transmission mip chain sampled across roughness.
@@ -1177,9 +1176,7 @@ void RecordPhase(state::Registry &r, state::Entity viewport_entity, mtl::PassCha
             if (meshlet_fill && draw_scene && show_rendered) {
                 if (!composite_transmission) {
                     pbr->BindVisibility(encoder);
-                    encoder->setFragmentTexture(*targets.Screen->VisibilityImage, 0u);
-                    encode::SetPushConstants(encoder, encode::VisibilityDecodePc(buffers));
-                    draw_quad();
+                    decode_visibility();
                 }
                 if (transparent) {
                     main.TransparencyInit.Bind(encoder);
@@ -1203,9 +1200,7 @@ void RecordPhase(state::Registry &r, state::Entity viewport_entity, mtl::PassCha
                 draw_quad();
             } else if (meshlet_fill && draw_scene) {
                 main.WorkspaceVisibility.Bind(encoder);
-                encoder->setFragmentTexture(*targets.Screen->VisibilityImage, 0u);
-                encode::SetPushConstants(encoder, encode::VisibilityDecodePc(buffers));
-                draw_quad();
+                decode_visibility();
             }
         }
     }

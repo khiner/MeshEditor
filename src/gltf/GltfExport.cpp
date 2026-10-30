@@ -31,7 +31,6 @@
 
 #include <fastgltf/base64.hpp>
 #include <fastgltf/core.hpp>
-#include <print>
 
 namespace gltf {
 using namespace detail;
@@ -133,13 +132,10 @@ fastgltf::optional<fastgltf::TextureInfo> ToFgTexInfo(const ::TextureInfo &ti, c
     if (ti.Slot == InvalidSlot) return {};
     return ToFgTextureInfo(ti, meta, transform_used);
 }
-fastgltf::optional<fastgltf::NormalTextureInfo> ToFgNormalTexInfo(const ::TextureInfo &ti, float scale, const TextureTransformMeta *meta, bool &transform_used) {
+// A normal or occlusion texture info, which extend the texture info with a scale or strength.
+template<typename Info> fastgltf::optional<Info> ToFgScaledTexInfo(const ::TextureInfo &ti, float factor, const TextureTransformMeta *meta, bool &transform_used) {
     if (ti.Slot == InvalidSlot) return {};
-    return fastgltf::NormalTextureInfo{ToFgTextureInfo(ti, meta, transform_used), scale};
-}
-fastgltf::optional<fastgltf::OcclusionTextureInfo> ToFgOcclusionTexInfo(const ::TextureInfo &ti, float strength, const TextureTransformMeta *meta, bool &transform_used) {
-    if (ti.Slot == InvalidSlot) return {};
-    return fastgltf::OcclusionTextureInfo{ToFgTextureInfo(ti, meta, transform_used), strength};
+    return Info{ToFgTextureInfo(ti, meta, transform_used), factor};
 }
 
 template<typename O, typename T, typename OF, typename TF>
@@ -149,7 +145,7 @@ void WriteField(T &theirs, const O &ours, const MaterialField<O, T, OF, TF> &fie
 }
 template<typename O, typename T>
 void WriteField(T &theirs, const O &ours, const MaterialNormalField<O, T> &field, bool &transform_used) {
-    theirs.*field.Theirs = ToFgNormalTexInfo(ours.*field.Texture, ours.*field.Scale, nullptr, transform_used);
+    theirs.*field.Theirs = ToFgScaledTexInfo<fastgltf::NormalTextureInfo>(ours.*field.Texture, ours.*field.Scale, nullptr, transform_used);
 }
 template<typename O, typename T>
 void WriteField(T &theirs, const O &ours, const MaterialDistanceField<O, T> &field, bool &) {
@@ -535,41 +531,24 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         return AddAccessor(bv, data.size(), type, component);
     };
 
-    const auto AddVec3Accessor = [&](std::span<const vec3> data, bool with_bounds, fastgltf::BufferTarget target) {
-        const uint32_t vcount = data.size();
-        if (!with_bounds || vcount == 0) return AddDataAccessor(data, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float, target);
-        vec3 lo = data[0], hi = data[0];
-        for (const auto &p : data) {
-            lo = Min(lo, p);
-            hi = Max(hi, p);
-        }
-        const uint32_t off = AppendAligned<vec3>(bin, data);
-        const uint32_t bv = AddBufferView(off, vcount * sizeof(vec3), {}, target);
-        return AddAccessor(
-            bv, vcount, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float,
-            MakeBounds({lo.x, lo.y, lo.z}), MakeBounds({hi.x, hi.y, hi.z})
-        );
+    // The least and greatest coordinates of the points, or none without points.
+    const auto bounds_of = [](auto &&points) {
+        std::optional<std::pair<vec3, vec3>> bounds;
+        for (const vec3 p : points) bounds = bounds ? std::pair{Min(bounds->first, p), Max(bounds->second, p)} : std::pair{p, p};
+        return bounds;
     };
-
-    const auto AddFieldAccessor = [&]<typename T, typename V>(std::span<const V> data, T V::*field, fastgltf::AccessorType type, fastgltf::BufferTarget target) {
-        const uint32_t off = AppendField<T>(bin, data, field);
-        const uint32_t bv = AddBufferView(off, data.size() * sizeof(T), {}, target);
-        return AddAccessor(bv, data.size(), type, fastgltf::ComponentType::Float);
+    // A VEC3 float accessor over the `vcount` points appended at `off`, carrying their bounds when given.
+    const auto AddVec3At = [&](uint32_t off, uint32_t vcount, fastgltf::BufferTarget target, const std::optional<std::pair<vec3, vec3>> &bounds) {
+        const uint32_t bv = AddBufferView(off, vcount * sizeof(vec3), {}, target);
+        if (!bounds) return AddAccessor(bv, vcount, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float);
+        const auto &[lo, hi] = *bounds;
+        return AddAccessor(bv, vcount, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float, MakeBounds({lo.x, lo.y, lo.z}), MakeBounds({hi.x, hi.y, hi.z}));
+    };
+    const auto AddVec3Accessor = [&](std::span<const vec3> data, bool with_bounds, fastgltf::BufferTarget target) {
+        return AddVec3At(AppendAligned<vec3>(bin, data), data.size(), target, with_bounds ? bounds_of(data) : std::nullopt);
     };
     const auto AddPositionFieldAccessor = [&]<typename V>(std::span<const V> data, vec3 V::*field, fastgltf::BufferTarget target) {
-        const uint32_t vcount = data.size();
-        if (vcount == 0) return AddFieldAccessor.template operator()<vec3>(data, field, fastgltf::AccessorType::Vec3, target);
-        vec3 lo = data[0].*field, hi = lo;
-        for (const auto &v : data) {
-            lo = Min(lo, v.*field);
-            hi = Max(hi, v.*field);
-        }
-        const uint32_t off = AppendField<vec3>(bin, data, field);
-        const uint32_t bv = AddBufferView(off, vcount * sizeof(vec3), {}, target);
-        return AddAccessor(
-            bv, vcount, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float,
-            MakeBounds({lo.x, lo.y, lo.z}), MakeBounds({hi.x, hi.y, hi.z})
-        );
+        return AddVec3At(AppendField<vec3>(bin, data, field), data.size(), target, bounds_of(data | std::views::transform([&](const V &v) { return v.*field; })));
     };
 
     const auto EmitCustom = [&](std::vector<fastgltf::Attribute> &out, uint32_t attribute, const auto &items, auto &&value) {
@@ -720,8 +699,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 .baseColorTexture = ToFgTexInfo(pbr.BaseColorTexture, &meta.BaseSlotMeta[0], uses_texture_transform),
                 .metallicRoughnessTexture = ToFgTexInfo(pbr.MetallicRoughnessTexture, &meta.BaseSlotMeta[1], uses_texture_transform),
             },
-            .normalTexture = ToFgNormalTexInfo(pbr.NormalTexture, pbr.NormalScale, &meta.BaseSlotMeta[2], uses_texture_transform),
-            .occlusionTexture = ToFgOcclusionTexInfo(pbr.OcclusionTexture, pbr.OcclusionStrength, &meta.BaseSlotMeta[3], uses_texture_transform),
+            .normalTexture = ToFgScaledTexInfo<fastgltf::NormalTextureInfo>(pbr.NormalTexture, pbr.NormalScale, &meta.BaseSlotMeta[2], uses_texture_transform),
+            .occlusionTexture = ToFgScaledTexInfo<fastgltf::OcclusionTextureInfo>(pbr.OcclusionTexture, pbr.OcclusionStrength, &meta.BaseSlotMeta[3], uses_texture_transform),
             .emissiveTexture = ToFgTexInfo(pbr.EmissiveTexture, &meta.BaseSlotMeta[4], uses_texture_transform),
             .emissiveFactor = std::bit_cast<fastgltf::math::nvec3>(pbr.EmissiveFactor),
             .alphaMode = FromAlphaMode(pbr.AlphaMode),
@@ -1550,7 +1529,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 out.sampleSpacing = contact_surface->SampleSpacing;
             }
             if (const auto &nt = contact_surface->NormalTexture; nt && nt->Texture < asset.textures.size()) {
-                out.normalTexture = ToFgNormalTexInfo({.Slot = nt->Texture, .TexCoord = nt->TexCoord}, nt->Scale, nullptr, uses_texture_transform);
+                out.normalTexture = ToFgScaledTexInfo<fastgltf::NormalTextureInfo>({.Slot = nt->Texture, .TexCoord = nt->TexCoord}, nt->Scale, nullptr, uses_texture_transform);
             }
             asset.acousticSurfaces.emplace_back(std::move(out));
             return asset.acousticSurfaces.size() - 1;

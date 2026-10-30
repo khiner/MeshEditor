@@ -28,7 +28,6 @@ struct FunctionConstant {
 
 // Caches shader libraries until their source or included files change.
 // Reads the built-in archive for first launch and keeps newly compiled Metal 4 pipelines in immutable chunks under the writable user archive path.
-// PipelineCompiler() returns null on older devices, which use the classic APIs without archive caching.
 struct LibraryCache {
     LibraryCache(const Context &ctx, std::filesystem::path shaders_dir, std::filesystem::path pipeline_archive = {}, std::filesystem::path builtin_archive = {}, bool prune_archive_chunks = true, bool archive_only = false);
     ~LibraryCache();

@@ -1,11 +1,8 @@
 #include "animation/Clips.h"
 #include "TransformMath.h"
-#include "numeric/QuaternionMath.h"
 
 #include "scene/Entity.h"
 #include "scene/HierarchyInstance.h"
-#include "scene/WorldTransform.h"
-#include "state/Registry.h"
 
 namespace animation {
 namespace {

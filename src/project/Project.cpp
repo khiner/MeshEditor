@@ -1,40 +1,27 @@
 #include "project/Project.h"
-#include "SortUnique.h"
 
 #include "Compress.h"
 #include "PathSerialize.h"
 #include "Profile.h"
 #include "action/Dispatch.h"
 #include "action/Errors.h"
-#include "action/Nodes.h"
-#include "action/Selection.h"
-#include "action/View.h"
 #include "animation/Keying.h"
-#include "armature/Armature.h"
 #include "editor/AudioIntegration.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gltf/SourceAssets.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStores.h"
-#include "metal/Dispatch.h"
 #include "numeric/Serialize.h"
 #include "procedure/Cook.h"
 #include "procedure/Procedure.h"
 #include "project/Assets.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
-#include "render/GpuSceneState.h"
 #include "render/MaterialComponents.h"
 #include "render/RenderChanges.h"
 #include "render/Textures.h"
-#include "selection/SelectionComponents.h"
-#include "snapshot/Workspace.h"
 #include "viewport/FrameState.h"
-#include "viewport/GizmoDrag.h"
-#include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
-#include "viewport/ViewportEvents.h"
-#include "viewport/ViewportRenderGpu.h"
 
 namespace project {
 namespace {
@@ -126,10 +113,8 @@ std::string Label(const action::Action &a) {
         } else if constexpr (action::object::IsUpdateMaterial<A>) {
             return "Update Material:" + action::FieldAt<PBRMaterial>(leaf.Offset).Path;
         } else if constexpr (action::IsPatchFields<A>) {
-            return [&]<typename C, typename F, size_t N>(const action::PatchFields<C, F, N> &patch) {
-                std::string label = "Patch " + std::string{state::LeafName<C>()} + ":";
-                for (size_t i = 0; i < N; ++i) label += (i ? ", " : "") + action::FieldAt<C>(patch.Offsets[i]).Path;
-                return label;
+            return [&]<typename C, typename F>(const action::PatchFields<C, F> &patch) {
+                return "Patch " + std::string{state::LeafName<C>()} + ":" + action::FieldAt<C>(patch.Offset).Path;
             }(leaf);
         } else {
             return std::string{state::LeafName<A>()};

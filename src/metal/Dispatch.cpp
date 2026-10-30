@@ -73,6 +73,16 @@ MTL::ComputeCommandEncoder *ComputeChain::Encoder() {
     return Encoding.get();
 }
 
+// Binds the pipeline and push constants, runs `dispatch` on the encoder, and orders the passes after it.
+void ComputeChain::Record(const ComputePipeline &pipeline, const void *pc, uint32_t bytes, auto &&dispatch) {
+    auto *encoder = Encoder();
+    encoder->setComputePipelineState(pipeline.State());
+    encoder->setBytes(pc, bytes, BufferIndex_PushConstants);
+    dispatch(encoder);
+    if (Deferring) DeferredBarrier = true;
+    else encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+}
+
 void ComputeChain::Dispatch(const ComputePipeline &pipeline, const void *pc, uint32_t bytes, uint32_t count, uint32_t depth, uint32_t width, bool threads) {
     const AutoreleaseScope pool;
     if (!count || !depth) return;
@@ -80,24 +90,16 @@ void ComputeChain::Dispatch(const ComputePipeline &pipeline, const void *pc, uin
         const auto groups = (threads ? (uint64_t(count) + width - 1u) / width : count) * depth;
         profile::RecordCounter("ComputeThreadgroups", groups);
     }
-    auto *encoder = Encoder();
-    encoder->setComputePipelineState(pipeline.State());
-    encoder->setBytes(pc, bytes, BufferIndex_PushConstants);
-    if (threads) encoder->dispatchThreads(MTL::Size(count, 1, 1), MTL::Size(width, 1, 1));
-    else encoder->dispatchThreadgroups(MTL::Size(count, 1, depth), MTL::Size(width, 1, 1));
-    if (Deferring) DeferredBarrier = true;
-    else encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    Record(pipeline, pc, bytes, [&](MTL::ComputeCommandEncoder *encoder) {
+        if (threads) encoder->dispatchThreads(MTL::Size(count, 1, 1), MTL::Size(width, 1, 1));
+        else encoder->dispatchThreadgroups(MTL::Size(count, 1, depth), MTL::Size(width, 1, 1));
+    });
 }
 
 void ComputeChain::DispatchIndirect(const ComputePipeline &pipeline, const void *pc, uint32_t bytes, const Buffer &arguments, uint64_t offset, uint32_t width) {
     const AutoreleaseScope pool;
     profile::RecordCounter("ComputeIndirectDispatches", 1u);
-    auto *encoder = Encoder();
-    encoder->setComputePipelineState(pipeline.State());
-    encoder->setBytes(pc, bytes, BufferIndex_PushConstants);
-    encoder->dispatchThreadgroups(*arguments, offset, MTL::Size(width, 1, 1));
-    if (Deferring) DeferredBarrier = true;
-    else encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    Record(pipeline, pc, bytes, [&](MTL::ComputeCommandEncoder *encoder) { encoder->dispatchThreadgroups(*arguments, offset, MTL::Size(width, 1, 1)); });
 }
 
 void ComputeChain::Retain(Buffer &&buffer) { Retained.push_back(std::move(buffer)); }

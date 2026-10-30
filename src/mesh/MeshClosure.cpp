@@ -77,6 +77,17 @@ uint32_t DomainBlocks(const MeshArenas &a, const MeshStore::Record &record, uint
         d == 2u                                                    ? blocks(a.FaceTriangles, record.FaceData) :
                                                                      blocks(a.EdgeHalfedges, record.EdgeData);
 }
+// The store, its arenas and the record of a mesh id.
+struct StoreRecord {
+    const MeshStore &Meshes;
+    const MeshArenas &Arenas;
+    const MeshStore::Record &Record;
+};
+StoreRecord RecordAt(const state::Registry &r, uint32_t id) {
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    return {meshes, meshes.Arenas(), meshes.Get(id)};
+}
+
 uint32_t DomainBound(const MeshArenas &a, const MeshStore::Record &record, uint32_t d) { return DomainBlocks(a, record, d) * MeshElementBlockSize; }
 
 MeshClosurePushConstants ClosureConstants(const MeshStore &meshes, uint32_t id) {
@@ -89,9 +100,7 @@ MeshClosurePushConstants ClosureConstants(const MeshStore &meshes, uint32_t id) 
 }
 
 MeshClosure EncodeClosure(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, uint32_t domain, const ClosureSeed &input, std::array<uint32_t, 4> bounds, const ClosureSeed &retained, const ClosureSeed &wires = {}, bool retain_isolated_only = false) {
-    const auto &meshes = r.Resources.get<const MeshStore>();
-    const auto &a = meshes.Arenas();
-    const auto &record = meshes.Get(id);
+    const auto [meshes, a, record] = RecordAt(r, id);
     MeshClosure closure;
     closure.Bounds = bounds;
     closure.Elements[domain] = input.Work;
@@ -174,9 +183,7 @@ ClosureSeed MeshClosure::Seed(Element element) const {
 }
 
 ClosureSeed EncodeEdgeVertices(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, const ClosureSeed &edges) {
-    const auto &meshes = r.Resources.get<const MeshStore>();
-    const auto &a = meshes.Arenas();
-    const auto &record = meshes.Get(id);
+    const auto [meshes, a, record] = RecordAt(r, id);
     const auto count = uint32_t(std::min<uint64_t>(2ull * edges.Count, a.Vertices.Count(record.Vertices)));
     auto pc = ClosureConstants(meshes, id);
     pc.Work[0] = AllocateElementWork(chain.Scratch, DomainBound(a, record, 0u), std::min(count, DomainBlocks(a, record, 0u)));
@@ -193,9 +200,7 @@ ClosureSeed EncodeAllSeed(state::Registry &r, mtl::ComputeChain &chain, uint32_t
     if (element != Element::Vertex && element != Element::Edge && element != Element::Face) {
         throw std::invalid_argument("A closure seed requires vertices, edges or faces.");
     }
-    const auto &meshes = r.Resources.get<const MeshStore>();
-    const auto &a = meshes.Arenas();
-    const auto &record = meshes.Get(id);
+    const auto [meshes, a, record] = RecordAt(r, id);
     const auto corners = a.FaceCorners.Count(record.FaceCorners);
     ClosureSeed result{.Incidence = corners, .LoopFans = corners, .All = true};
     const auto gather = [&](const auto &arena, ElementSetRef set) {
@@ -216,9 +221,7 @@ ClosureSeed ListSeed(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, 
     if (element != Element::Vertex && element != Element::Edge && element != Element::Face) {
         throw std::invalid_argument("A topology handle list requires vertices, edges or faces.");
     }
-    const auto &meshes = r.Resources.get<const MeshStore>();
-    const auto &a = meshes.Arenas();
-    const auto &record = meshes.Get(id);
+    const auto [meshes, a, record] = RecordAt(r, id);
     const HostIncidence incidence{meshes, id};
     ClosureSeed seed;
     uint64_t sum = 0u;
@@ -237,9 +240,7 @@ ClosureSeed ListSeed(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, 
 }
 
 ClosureSeed FaceSeed(const state::Registry &r, uint32_t id, const BufferArena<uint32_t> &storage, ElementWork faces) {
-    const auto &meshes = r.Resources.get<const MeshStore>();
-    const auto &a = meshes.Arenas();
-    const auto &record = meshes.Get(id);
+    const auto [meshes, a, record] = RecordAt(r, id);
     const HostIncidence incidence{meshes, id};
     ClosureSeed seed{.Work = faces, .Count = ElementWorkCount(storage, faces)};
     // Each face references every loop corner once.
@@ -256,9 +257,7 @@ ClosureSeed FaceSeed(const state::Registry &r, uint32_t id, const BufferArena<ui
 }
 
 ClosureSeed AroundVertices(const state::Registry &r, uint32_t id, Element element, ElementWork work, const ClosureSeed &vertices) {
-    const auto &meshes = r.Resources.get<const MeshStore>();
-    const auto &a = meshes.Arenas();
-    const auto &record = meshes.Get(id);
+    const auto [meshes, a, record] = RecordAt(r, id);
     const HostIncidence incidence{meshes, id};
     ClosureSeed seed{.Work = work, .All = vertices.All};
     if (vertices.All) {
@@ -279,9 +278,7 @@ ClosureSeed AroundVertices(const state::Registry &r, uint32_t id, Element elemen
 }
 
 FaceTriangles EncodeFaceTriangles(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, const ClosureSeed &faces) {
-    const auto &meshes = r.Resources.get<const MeshStore>();
-    const auto &a = meshes.Arenas();
-    const auto &record = meshes.Get(id);
+    const auto [meshes, a, record] = RecordAt(r, id);
     FaceTriangles result;
     result.TotalWord = IncidenceWord(chain);
     // A face with n loop corners derives n - 2 triangles.

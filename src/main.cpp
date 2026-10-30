@@ -398,12 +398,7 @@ void BuildDefaultDockLayout(const PanelsState &panels, ImGuiID dockspace_id) {
     auto nodes_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Down, 0.3f, nullptr, &dockspace_id);
     const auto timeline_node_id = DockBuilderSplitNode(nodes_node_id, ImGuiDir_Down, 0.35f, nullptr, &nodes_node_id);
     const auto parameters_node_id = DockBuilderSplitNode(nodes_node_id, ImGuiDir_Right, 0.25f, nullptr, &nodes_node_id);
-    DockBuilderDockWindow(panels.History.Name, extra_node_id);
-    DockBuilderDockWindow(panels.Style.Name, extra_node_id);
-    DockBuilderDockWindow(panels.Debug.Name, extra_node_id);
-    DockBuilderDockWindow(panels.ImGuiDemo.Name, extra_node_id);
-    DockBuilderDockWindow(panels.ImSpinnerDemo.Name, extra_node_id);
-    DockBuilderDockWindow(panels.ImPlotDemo.Name, extra_node_id);
+    for (const Panel *panel : std::array<const Panel *, 6>{&panels.History, &panels.Style, &panels.Debug, &panels.ImGuiDemo, &panels.ImSpinnerDemo, &panels.ImPlotDemo}) DockBuilderDockWindow(panel->Name, extra_node_id);
     DockBuilderDockWindow(panels.SceneControls.Name, controls_node_id);
     DockBuilderDockWindow(panels.Timeline.Name, timeline_node_id);
     DockBuilderDockWindow(panels.Nodes.Name, nodes_node_id);
@@ -863,17 +858,7 @@ void DrawMainMenuBar(state::Registry &r, PanelsState &panels) {
             EndMenu();
         }
         if (BeginMenu("Panels")) {
-            MenuItem(panels.History.Name, nullptr, &panels.History.Visible);
-            MenuItem(panels.Nodes.Name, nullptr, &panels.Nodes.Visible);
-            MenuItem(panels.Parameters.Name, nullptr, &panels.Parameters.Visible);
-            MenuItem(panels.Info.Name, nullptr, &panels.Info.Visible);
-            MenuItem(panels.Style.Name, nullptr, &panels.Style.Visible);
-            MenuItem(panels.Debug.Name, nullptr, &panels.Debug.Visible);
-            MenuItem(panels.ImGuiDemo.Name, nullptr, &panels.ImGuiDemo.Visible);
-            MenuItem(panels.ImSpinnerDemo.Name, nullptr, &panels.ImSpinnerDemo.Visible);
-            MenuItem(panels.ImPlotDemo.Name, nullptr, &panels.ImPlotDemo.Visible);
-            MenuItem(panels.SceneControls.Name, nullptr, &panels.SceneControls.Visible);
-            MenuItem(panels.Timeline.Name, nullptr, &panels.Timeline.Visible);
+            for (auto *panel : AllPanels(panels)) MenuItem(panel->Name, nullptr, &panel->Visible);
             Separator();
             for (const auto viewport : r.view<const Viewport>()) {
                 if (bool open = r.get<const ViewportPanel>(viewport).Open; MenuItem(ViewportPanelName(r, viewport).c_str(), nullptr, &open)) {
@@ -1215,6 +1200,11 @@ std::expected<fs::path, std::string> SaveScreenshot(state::Registry &r, state::E
     return out_path;
 }
 
+void ReportScreenshot(state::Registry &r, state::Entity viewport, const fs::path &path) {
+    if (auto saved = SaveScreenshot(r, viewport, path); saved) std::println("Saved screenshot: {}", saved->string());
+    else std::println(stderr, "Screenshot: {}", saved.error());
+}
+
 // Fit the scene into the middle half of the view and return false while GPU bounds are pending.
 bool FrameScene(state::Registry &r, state::Entity viewport, float aspect_ratio) {
     const auto &cam = r.get<const ViewCameraState>(viewport).Active;
@@ -1505,8 +1495,7 @@ struct CaptureDriver {
     bool CaptureFrame(state::Registry &r, state::Entity viewport, bool settled) {
         bool done = false;
         if (ScreenshotMode() && !ScreenshotSaved && settled) {
-            if (auto saved = SaveScreenshot(r, viewport, ScreenshotPath); saved) std::println("Saved screenshot: {}", saved->string());
-            else std::println(stderr, "Screenshot: {}", saved.error());
+            ReportScreenshot(r, viewport, ScreenshotPath);
             // Save the default image before each material variant.
             const auto *mv = RenderMode() ? r.try_get<const MaterialVariants>(state::Document) : nullptr;
             if (mv && NextRenderVariant < mv->Names.size()) {
@@ -1637,7 +1626,6 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
     engine.emplace(true);
     auto &r = engine->R;
     const auto &ctx = r.Resources.get<const mtl::Context>();
-    if (!ctx.Device->supportsFamily(MTL::GPUFamilyMetal4)) throw std::runtime_error("MeshEditor renders with Metal 4, which this device does not support.");
     InitViewportMedia(r);
 
     auto *const layer = window.Layer();
@@ -1928,8 +1916,7 @@ SceneStatus RunHeadlessScene(state::Registry &r, const char *initial_file, bool 
             // Render every ready benchmark tick and stop after the requested count.
             if (settled && --bench_frames == 0) {
                 if (driver.ScreenshotMode()) {
-                    if (auto saved = SaveScreenshot(r, viewport, driver.ScreenshotPath); saved) std::println("Saved screenshot: {}", saved->string());
-                    else std::println(stderr, "Screenshot: {}", saved.error());
+                    ReportScreenshot(r, viewport, driver.ScreenshotPath);
                 }
                 done = true;
             }

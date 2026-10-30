@@ -1,10 +1,5 @@
 #pragma once
 
-#include <imgui.h>
-
-#include <algorithm>
-#include <cmath>
-
 // A dashed line from `a` to `b`.
 inline void DrawDashedLine(ImDrawList &dl, ImVec2 a, ImVec2 b, ImU32 color, float thickness = 1.f) {
     static constexpr float DashLen{4}, GapLen{3};

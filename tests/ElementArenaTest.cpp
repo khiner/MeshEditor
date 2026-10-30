@@ -1,6 +1,6 @@
 #include "mesh/ElementArena.h"
-#include <boost/ut.hpp>
 #include "metal/MetalCpp.h"
+#include <boost/ut.hpp>
 
 using namespace boost::ut;
 

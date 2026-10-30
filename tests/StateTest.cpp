@@ -1,7 +1,7 @@
 #include "RangeAllocator.h"
-#include <boost/ut.hpp>
 #include "scene/Entity.h"
 #include "state/Registry.h"
+#include <boost/ut.hpp>
 
 #include <map>
 #include <random>

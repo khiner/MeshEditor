@@ -1,9 +1,7 @@
 #pragma once
 
-#include "Range.h"
 #include "gpu/ElementWork.h"
 #include "render/RenderSchema.h"
-#include "state/Entity.h"
 
 // Pose namespaces and normal outputs for one mesh entity's instance run.
 struct PosedNamespaces {

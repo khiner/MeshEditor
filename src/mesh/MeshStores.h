@@ -1,5 +1,4 @@
 #pragma once
-#include "mesh/MeshSchema.h"
 #include "state/Entity.h"
 
 #include <vector>

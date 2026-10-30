@@ -7,10 +7,8 @@
 #include "action/Build.h"
 #include "action/Errors.h"
 #include "editor/Engine.h"
-#include "mesh/Mesh.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
-#include "mesh/MeshStore.h"
 #include "procedure/Cook.h"
 #include "render/Instance.h"
 #include "render/Textures.h"
@@ -19,12 +17,6 @@
 #include "viewport/InteractionComponents.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportComponents.h"
-
-#include <boost/ut.hpp>
-
-#include <map>
-#include <print>
-#include <set>
 
 // Compares rendered images, which --no-render skips.
 inline bool Render{true};
@@ -132,6 +124,10 @@ struct Fixture : Engine {
         const auto &image = R.get<const Viewport>(FirstViewport(R)).Targets.Screen->FinalColorImage;
         return ReadbackImageRgba8(R.Resources.get<const mtl::Context>(), image, 0, 0, image.Extent);
     }
+};
+// A fixture in a fresh project directory named `dir` under the temporary root, which outlives the engine.
+struct ScratchFixture : TestDir, Fixture {
+    explicit ScratchFixture(const char *dir) : TestDir{dir}, Fixture{static_cast<const TestDir &>(*this)} {}
 };
 
 inline uint64_t Cooks(const state::Registry &r) { return r.Resources.get<const CookCount>().Value; }

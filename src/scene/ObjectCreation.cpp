@@ -48,15 +48,21 @@ void ApplySelectBehavior(state::Registry &r, state::Entity e, MeshInstanceCreate
     }
 }
 
-state::Entity AddMeshInstance(state::Registry &r, state::Entity mesh_entity, const MeshInstanceCreateInfo &info) {
+// Creates an object of the type instancing `instanced`, placed by the mesh or object creation `info` in its scene and network.
+state::Entity PlaceObject(state::Registry &r, ObjectType type, state::Entity instanced, const auto &info, std::string_view name) {
     const auto e = r.create();
-    r.emplace<Instance>(e, mesh_entity);
-    EmplaceObject(r, e, ObjectType::Mesh, info.Scene);
+    r.emplace<Instance>(e, instanced);
+    EmplaceObject(r, e, type, info.Scene);
     r.emplace<Transform>(e, info.Transform);
-    EmplaceUniqueName(r, e, info.Name);
-    if (!info.Visible) Hide(r, e);
+    EmplaceUniqueName(r, e, name);
     ApplySelectBehavior(r, e, info.Select);
     procedure::PlaceInNetwork(r, info.Network, e);
+    return e;
+}
+
+state::Entity AddMeshInstance(state::Registry &r, state::Entity mesh_entity, const MeshInstanceCreateInfo &info) {
+    const auto e = PlaceObject(r, ObjectType::Mesh, mesh_entity, info, info.Name);
+    if (!info.Visible) Hide(r, e);
     return e;
 }
 
@@ -95,21 +101,14 @@ state::Entity CreateExtrasObject(state::Registry &r, ObjectType type, const Obje
     // The buffer starts empty and its wireframe is built later from the object's params.
     const auto buffer_entity = r.create();
     r.emplace<ObjectExtrasTag>(buffer_entity);
-    const auto e = r.create();
-    EmplaceObject(r, e, type, info.Scene);
-    r.emplace<Instance>(e, buffer_entity);
-    r.emplace<Transform>(e, info.Transform);
-    EmplaceUniqueName(r, e, info.Name.empty() ? default_name : info.Name);
-    ApplySelectBehavior(r, e, info.Select);
-    procedure::PlaceInNetwork(r, info.Network, e);
-    return e;
+    return PlaceObject(r, type, buffer_entity, info, info.Name.empty() ? default_name : info.Name);
 }
 
-state::Entity AddEmpty(state::Registry &r, MeshStore &, const ObjectCreateInfo &info) {
+state::Entity AddEmpty(state::Registry &r, const ObjectCreateInfo &info) {
     return CreateExtrasObject(r, ObjectType::Empty, info, "Empty");
 }
 
-state::Entity AddCamera(state::Registry &r, MeshStore &, const ObjectCreateInfo &info, std::optional<CameraLens> props) {
+state::Entity AddCamera(state::Registry &r, const ObjectCreateInfo &info, std::optional<CameraLens> props) {
     const auto entity = CreateExtrasObject(r, ObjectType::Camera, info, "Camera");
     SetLens(r, entity, props.value_or(CameraLens{Defaults::PerspectiveCamera}));
     return entity;
@@ -169,7 +168,7 @@ void CreateBoneInstances(state::Registry &r, MeshStore &meshes, state::Entity ar
     arm_obj.JointEntity = joint_entity;
 }
 
-state::Entity AddLight(state::Registry &r, MeshStore &, const ObjectCreateInfo &info, std::optional<PunctualLight> props) {
+state::Entity AddLight(state::Registry &r, const ObjectCreateInfo &info, std::optional<PunctualLight> props) {
     const auto entity = CreateExtrasObject(r, ObjectType::Light, info, "Light");
     // PunctualLight is the canonical per-light data, the GPU Lights buffer is registered from it later.
     r.emplace<PunctualLight>(entity, props.value_or(Defaults::MakePunctualLight(PunctualLightType::Point)));

@@ -1,6 +1,6 @@
-#include <boost/ut.hpp>
 #include "audio/AudioSystem.h"
 #include "audio/WavWriter.h"
+#include <boost/ut.hpp>
 
 using namespace boost::ut;
 namespace fs = std::filesystem;

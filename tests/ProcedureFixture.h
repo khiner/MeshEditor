@@ -5,10 +5,7 @@
 #include "mesh/MeshClone.h"
 #include "numeric/MatrixMath.h"
 #include "procedure/Procedure.h"
-#include "render/Instance.h"
 #include "selection/SelectionGpu.h"
-#include "viewport/InteractionComponents.h"
-#include "viewport/ViewportEvents.h"
 
 // A project fixture for procedure scenarios, with node authoring, viewport clicks and kernel references on clones of a mesh's source.
 struct ProcedureFixture : Fixture {
@@ -153,7 +150,6 @@ inline GeometrySelection PublishedKernel(ProcedureFixture &f, uint32_t clone, Me
     f.Run(clone, {task});
     return EditorGeometrySelection(f.Store(), clone);
 }
-
 
 // Runs the viewport gesture rows, the recorded operator rows and the mesh edit scenarios.
 void TestOperators(ProcedureFixture &f, Fixture &other);

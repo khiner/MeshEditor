@@ -1,7 +1,5 @@
 #include "action/Core.h"
 #include "gizmo/GizmoInteraction.h"
-#include "gpu/ViewportTheme.h"
-#include "gpu/WorkspaceLights.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionState.h"
 #include "snapshot/SnapshotRegistration.h"

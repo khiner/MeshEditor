@@ -19,17 +19,13 @@
 #include "render/MeshletBuildGpu.h"
 #include "render/Pipelines.h"
 #include "render/RenderChanges.h"
-#include "render/RenderTargets.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionState.h"
-#include "state/Registry.h"
 #include "viewport/InteractionComponents.h"
-#include "viewport/RenderExtent.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportConsumerFence.h"
-#include "viewport/ViewportRenderGpu.h"
 
 bool HiddenIn(const state::Registry &r, state::Entity e, state::Entity scene) { return r.all_of<Hidden>(e) || !InScene(r, e, scene); }
 

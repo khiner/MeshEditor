@@ -9,19 +9,16 @@
 #include <webp/encode.h>
 
 namespace {
-void AppendToVector(void *ctx, void *data, int size) {
-    if (size <= 0) return;
-    auto *out = static_cast<std::vector<std::byte> *>(ctx);
-    const auto offset = out->size();
-    out->resize(offset + size);
-    std::memcpy(out->data() + offset, data, size);
+void Append(std::vector<std::byte> &out, const void *data, size_t size) {
+    const auto offset = out.size();
+    out.resize(offset + size);
+    std::memcpy(out.data() + offset, data, size);
 }
-
+void AppendToVector(void *ctx, void *data, int size) {
+    if (size > 0) Append(*static_cast<std::vector<std::byte> *>(ctx), data, size_t(size));
+}
 int WebPAppendToVector(const uint8_t *data, size_t size, const WebPPicture *picture) {
-    auto *out = static_cast<std::vector<std::byte> *>(picture->custom_ptr);
-    const auto offset = out->size();
-    out->resize(offset + size);
-    std::memcpy(out->data() + offset, data, size);
+    Append(*static_cast<std::vector<std::byte> *>(picture->custom_ptr), data, size);
     return 1;
 }
 

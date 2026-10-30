@@ -266,9 +266,7 @@ struct PhysicsJoint {
 
 // --- Internal (not serialized to glTF) ---
 
-struct PhysicsBodyHandle {
-    uint32_t BodyId{UINT32_MAX};
-};
+struct PhysicsBodyHandle {};
 struct PhysicsConstraintHandle {
     uint32_t ConstraintIndex{UINT32_MAX};
 };

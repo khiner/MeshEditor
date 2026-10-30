@@ -1,25 +1,20 @@
 #include "viewport/Viewport.h"
-#include "mesh/MeshComponents.h"
 
 #include "render/ViewportSubmission.h"
 #include <Metal/MTLCommandQueue.hpp>
 
 #include "Panel.h"
 #include "Paths.h"
-#include "ProcessEvents.h"
 #include "Profile.h"
 #include "SortUnique.h"
 #include "action/Errors.h"
 #include "animation/AnimationData.h"
 #include "audio/AudioStores.h"
-#include "audio/AudioTypes.h"
 #include "audio/ContactModel.h"
 #include "audio/SurfaceContact.h"
 #include "gizmo/GizmoInteraction.h"
-#include "gpu/WorkspaceLights.h"
 #include "mesh/MeshCreate.h"
 #include "mesh/MeshStores.h"
-#include "mesh/Primitives.h"
 #include "object/ObjectOps.h"
 #include "physics/PhysicsStores.h"
 #include "physics/PhysicsSystem.h"
@@ -31,7 +26,6 @@
 #include "render/RenderStores.h"
 #include "render/SceneUpdates.h"
 #include "render/Textures.h"
-#include "scene/Defaults.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
@@ -468,43 +462,20 @@ void InitEngine(state::Registry &r) {
     std::ranges::sort(environments.Hdris, {}, &HdriEntry::Name);
 }
 
+// Gives the document each component's default value, in declaration order.
 void SetupDocument(state::Registry &r) {
-    r.emplace_or_replace<ActiveViewport>(state::Document);
-    r.emplace_or_replace<Interaction>(state::Document);
-    r.emplace_or_replace<EditMode>(state::Document);
+    const auto defaults = [&]<typename... Cs>(TypeList<Cs...>) { (r.emplace_or_replace<Cs>(state::Document), ...); };
+    defaults(TypeList<ActiveViewport, Interaction, EditMode>{});
     r.emplace_or_replace<ViewportTheme>(state::Document, Defaults::ViewportTheme);
-    r.emplace_or_replace<procedure::NodeTheme>(state::Document);
-    r.emplace_or_replace<InterfaceTheme>(state::Document);
-    r.emplace_or_replace<TimelineTheme>(state::Document);
-    r.emplace_or_replace<EnabledInteractionModes>(state::Document);
-    r.emplace_or_replace<TransformGizmoState>(state::Document);
-    r.emplace_or_replace<AnisotropicFilter>(state::Document);
+    defaults(TypeList<procedure::NodeTheme, InterfaceTheme, TimelineTheme, EnabledInteractionModes, TransformGizmoState, AnisotropicFilter>{});
     physics::ApplySimulationSettings(r, r.emplace_or_replace<PhysicsSimulationSettings>(state::Document));
-
-    r.emplace_or_replace<AudioOutputMix>(state::Document);
-    r.emplace_or_replace<Striker>(state::Document);
-    r.emplace_or_replace<ModalSoundControls>(state::Document);
-    r.emplace_or_replace<PlaybackFrame>(state::Document);
-    r.emplace_or_replace<LastEvaluatedFrame>(state::Document);
-    r.emplace_or_replace<TimelineView>(state::Document);
-    r.emplace_or_replace<TimelineRange>(state::Document);
-    r.emplace_or_replace<TimelinePlayback>(state::Document);
-    r.emplace_or_replace<TimelineNavigation>(state::Document);
-    r.emplace_or_replace<Animations>(state::Document);
-    r.emplace_or_replace<ShadeSmoothAngle>(state::Document);
-    r.emplace_or_replace<BoxSelectState>(state::Document);
-    r.emplace_or_replace<GizmoInteraction>(state::Document);
-    // The empty scene's selection aggregates, which the settle pass keeps current.
-    r.emplace_or_replace<TransformRoots>(state::Document);
-    r.emplace_or_replace<EditPrimaries>(state::Document);
-    r.emplace_or_replace<SelectionFlags>(state::Document);
-    r.emplace_or_replace<SelectedKeyframes>(state::Document);
-    r.emplace_or_replace<OutlinerRows>(state::Document);
+    defaults(TypeList<AudioOutputMix, Striker, ModalSoundControls, PlaybackFrame, LastEvaluatedFrame, TimelineView, TimelineRange, TimelinePlayback, TimelineNavigation, Animations, ShadeSmoothAngle, BoxSelectState, GizmoInteraction,
+                      // The empty scene's selection aggregates, which the settle pass keeps current.
+                      TransformRoots, EditPrimaries, SelectionFlags, SelectedKeyframes, OutlinerRows>{});
     SurfaceSetupDocument(r);
 }
 
 void AddDefaultSceneContent(state::Registry &r) {
-    auto &meshes = r.Resources.get<MeshStore>();
     AddMeshPrimitive(r, primitive::Cube{}, MeshInstanceCreateInfo{.Name = "Cube"});
 
     // Match Blender's startup scene in its Z-up, negative-Y-forward frame.
@@ -517,8 +488,8 @@ void AddDefaultSceneContent(state::Registry &r) {
     const float hfov = 2 * std::atan(SensorX / (2 * Lens));
     const float yfov = 2 * std::atan(std::tan(hfov * 0.5) * RenderH / RenderW);
 
-    ::AddLight(r, meshes, {.Name = "Light", .Transform = {.P = to_y_up_pos(LightLoc)}, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
-    ::AddCamera(r, meshes, {.Name = "Camera", .Transform = {.P = to_y_up_pos(CameraLoc), .R = to_y_up_rot * FromEulerAngles(CameraEulerXYZ)}, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, Perspective{.FieldOfViewRad = yfov, .FarClip = 1000, .NearClip = DefaultPerspectiveNearClip});
+    ::AddLight(r, {.Name = "Light", .Transform = {.P = to_y_up_pos(LightLoc)}, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
+    ::AddCamera(r, {.Name = "Camera", .Transform = {.P = to_y_up_pos(CameraLoc), .R = to_y_up_rot * FromEulerAngles(CameraEulerXYZ)}, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, Perspective{.FieldOfViewRad = yfov, .FarClip = 1000, .NearClip = DefaultPerspectiveNearClip});
 }
 
 void DeinitViewport(state::Registry &r) {

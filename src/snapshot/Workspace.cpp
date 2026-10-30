@@ -2,7 +2,6 @@
 #include "snapshot/SnapshotRoles.h"
 #include "state/Registry.h"
 
-#include <algorithm>
 #include <zpp_bits.h>
 
 namespace snapshot {

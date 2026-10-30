@@ -1,6 +1,6 @@
 #include "gpu/MeshCloneJob.h"
 // Copies each run sixteen bytes per thread, a whole vector when the run is aligned to it.
-kernel void CopyByteRuns(device uchar *bytes [[buffer(CloneBufferIndex_Data)]], device const ByteCopy *jobs [[buffer(CloneBufferIndex_Jobs)]], device const uint2 *tiles [[buffer(CloneBufferIndex_Tiles)]],
+kernel void CloneCopyByteRuns(device uchar *bytes [[buffer(CloneBufferIndex_Data)]], device const ByteCopy *jobs [[buffer(CloneBufferIndex_Jobs)]], device const uint2 *tiles [[buffer(CloneBufferIndex_Tiles)]],
     uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]]) {
     const uint2 tile=tiles[group]; const ByteCopy job=jobs[tile.x];
     const ulong first=ulong(tile.y)*CloneCopyTileBytes+ulong(lane)*CloneCopyThreadBytes;
@@ -11,7 +11,7 @@ kernel void CopyByteRuns(device uchar *bytes [[buffer(CloneBufferIndex_Data)]], 
     }
     for (ulong i=first, end=min(first+CloneCopyThreadBytes,job.Bytes); i<end; ++i) bytes[job.Destination+i]=bytes[job.Source+i];
 }
-kernel void OffsetHandles(device uchar *bytes [[buffer(CloneBufferIndex_Data)]], device const HandleOffset *jobs [[buffer(CloneBufferIndex_Jobs)]],
+kernel void CloneOffsetHandles(device uchar *bytes [[buffer(CloneBufferIndex_Data)]], device const HandleOffset *jobs [[buffer(CloneBufferIndex_Jobs)]],
     device const uint2 *tiles [[buffer(CloneBufferIndex_Tiles)]],
     uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]]) {
     const uint2 tile=tiles[group]; const HandleOffset job=jobs[tile.x];

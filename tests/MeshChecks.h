@@ -1,15 +1,11 @@
 #pragma once
 
 #include "TestMeshOrdinals.h"
-#include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
 
 #include <boost/ut.hpp>
 
-#include <format>
 #include <map>
-#include <set>
-#include <string>
 
 // Whole-record invariants over a mesh's selection index, render primitives and polygon tessellation.
 namespace test {
@@ -81,7 +77,6 @@ inline void ExpectSelectionIndex(const MeshStore &meshes, uint32_t id) {
     boost::ut::expect(expected_boundary == actual_boundary);
 }
 
-
 inline std::array<uint32_t, 3> RenderedPrimitiveCounts(const MeshStore &meshes, uint32_t id) {
     std::array<uint32_t, 3> counts{};
     const auto set = meshes.Get(id).MeshletData;
@@ -101,7 +96,6 @@ inline void ExpectRenderedGeometry(const MeshStore &meshes, const Mesh &mesh) {
     if (meshes.ClusterGroupCount(meshes.Get(mesh.GetStoreId())) > 0u) actual[0] = expected[0];
     boost::ut::expect(actual == expected) << "rendered" << actual[0] << actual[1] << actual[2] << "elements" << expected[0] << expected[1] << expected[2];
 }
-
 
 // The face's first `count` render triangles, whose corners are halfedge handles.
 // Face triangles hold triangle handles, which a copied record places at other arena addresses.

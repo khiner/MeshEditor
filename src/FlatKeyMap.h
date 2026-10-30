@@ -1,7 +1,6 @@
 #pragma once
 
 #include <bit>
-#include <vector>
 
 // Reset fixes the key width.
 // Mark consumed entries Taken to exclude them from later probes.

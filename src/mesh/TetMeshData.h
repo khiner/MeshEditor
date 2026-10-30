@@ -1,9 +1,5 @@
 #pragma once
 
-#include "numeric/vec3.h"
-
-#include <vector>
-
 using numeric::vec3;
 
 struct TetMeshData {

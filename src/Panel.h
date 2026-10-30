@@ -3,6 +3,8 @@
 #include "action/Nodes.h"
 #include "viewport/ViewportSchema.h"
 
+#include <array>
+
 struct TabSelection {
     uint32_t Bar{}, Tab{};
     bool operator==(const TabSelection &) const = default;
@@ -125,32 +127,20 @@ struct PanelVisibility {
     bool Nodes{true};
 };
 
+// Every panel in the order the Panels menu lists them, and each one's visibility flag.
+template<typename Panels> std::array<std::conditional_t<std::is_const_v<Panels>, const Panel *, Panel *>, 11> AllPanels(Panels &panels) {
+    return {&panels.History, &panels.Nodes, &panels.Parameters, &panels.Info, &panels.Style, &panels.Debug, &panels.ImGuiDemo, &panels.ImSpinnerDemo, &panels.ImPlotDemo, &panels.SceneControls, &panels.Timeline};
+}
+inline constexpr std::array PanelFlags{&PanelVisibility::History, &PanelVisibility::Nodes, &PanelVisibility::Parameters, &PanelVisibility::Info, &PanelVisibility::Style, &PanelVisibility::Debug, &PanelVisibility::ImGuiDemo, &PanelVisibility::ImSpinnerDemo, &PanelVisibility::ImPlotDemo, &PanelVisibility::SceneControls, &PanelVisibility::Timeline};
+
 inline PanelVisibility GetPanelVisibility(const PanelsState &panels) {
-    return {
-        panels.SceneControls.Visible,
-        panels.Timeline.Visible,
-        panels.Style.Visible,
-        panels.Info.Visible,
-        panels.Parameters.Visible,
-        panels.ImGuiDemo.Visible,
-        panels.ImSpinnerDemo.Visible,
-        panels.ImPlotDemo.Visible,
-        panels.Debug.Visible,
-        panels.History.Visible,
-        panels.Nodes.Visible,
-    };
+    PanelVisibility visibility;
+    const auto all = AllPanels(panels);
+    for (size_t i = 0; i < all.size(); ++i) visibility.*PanelFlags[i] = all[i]->Visible;
+    return visibility;
 }
 
 inline void SetPanelVisibility(PanelsState &panels, const PanelVisibility &visibility) {
-    panels.SceneControls.Visible = visibility.SceneControls;
-    panels.Timeline.Visible = visibility.Timeline;
-    panels.Style.Visible = visibility.Style;
-    panels.Info.Visible = visibility.Info;
-    panels.Parameters.Visible = visibility.Parameters;
-    panels.ImGuiDemo.Visible = visibility.ImGuiDemo;
-    panels.ImSpinnerDemo.Visible = visibility.ImSpinnerDemo;
-    panels.ImPlotDemo.Visible = visibility.ImPlotDemo;
-    panels.Debug.Visible = visibility.Debug;
-    panels.History.Visible = visibility.History;
-    panels.Nodes.Visible = visibility.Nodes;
+    const auto all = AllPanels(panels);
+    for (size_t i = 0; i < all.size(); ++i) all[i]->Visible = visibility.*PanelFlags[i];
 }

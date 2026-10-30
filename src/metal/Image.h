@@ -15,7 +15,6 @@ inline constexpr auto Depth = MTL::PixelFormatDepth32Float;
 inline constexpr auto Float = MTL::PixelFormatR32Float;
 inline constexpr auto Float2 = MTL::PixelFormatRG32Float;
 inline constexpr auto Uint = MTL::PixelFormatR32Uint;
-inline constexpr auto Uint2 = MTL::PixelFormatRG32Uint;
 } // namespace Format
 
 struct Extent2D {
@@ -40,8 +39,7 @@ struct Texture {
     explicit operator bool() const { return bool(Handle); }
 
 private:
-    friend Texture CreateMipView(const Texture &, uint32_t);
-    friend Texture CreateCubeMipView(const Texture &, uint32_t);
+    friend Texture MipView(const Texture &, uint32_t mip, MTL::TextureType, uint32_t layers);
     const Context *ResidencyContext{};
 };
 

@@ -47,17 +47,6 @@ inline OrientedBounds TransformBounds(AABB bounds, Transform world) {
     };
 }
 
-// Returns true for frustum intersections and pending-transform previews with stale recorded bounds.
-template<typename SetT>
-inline bool InstanceInFrustum(const thread SceneT<SetT> &scene, DrawData draw) {
-    if (scene.View.InstanceBoundsSlot == InvalidSlot || scene.View.IsTransforming != 0u) return true;
-    const auto bounds = TransformBounds(
-        BindlessBuffer(AABB, scene.B.Buffer, scene.View.InstanceBoundsSlot)[draw.FirstInstance],
-        scene.Models(draw.ModelSlot)[draw.FirstInstance]
-    );
-    return !bounds.Valid || in_frustum(scene.ViewProj(), bounds.Center, bounds.Ax, bounds.Ay, bounds.Az);
-}
-
 // KHR_texture_transform: scale, then rotate, then offset.
 inline float2 ApplyUvTransform(float2 uv, float2 uv_offset, float2 uv_scale, float uv_rotation) {
     const float s = sin(uv_rotation);

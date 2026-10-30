@@ -18,7 +18,6 @@
 #include "selection/SelectionState.h"
 #include "state/Registry.h"
 #include "viewport/InteractionComponents.h"
-#include "viewport/ViewportRenderGpu.h"
 
 #include <format>
 

@@ -1,8 +1,6 @@
 #pragma once
 
 #include <future>
-#include <memory>
-#include <optional>
 
 // Run `work` on a background thread with progress reporting and cooperative cancellation.
 template<typename Result, typename MonitorType>

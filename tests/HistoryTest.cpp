@@ -1,14 +1,9 @@
 #include "ProjectFixture.h"
-#include "action/ActionDrain.h"
 #include "audio/AudioOutputConfig.h"
-#include "gpu/WorkspaceLights.h"
 #include "project/HistoryUi.h"
-#include "scene/SceneGraph.h"
 #include "selection/SelectionGpu.h"
 #include "viewport/FrameState.h"
-#include "viewport/InteractionComponents.h"
 #include "viewport/ViewCameraOps.h"
-#include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportScene.h"
 #include <imgui_internal.h>
 
@@ -74,8 +69,7 @@ void TestDocumentSwitch(HistoryFixture &f, HistoryFixture &other) {
 }
 // Exercise the production generic editors through ImGui activation and the history restage/commit path.
 void TestHitEditor() {
-    const TestDir dir{"/tmp/mesheditor-scratch/history-hit-editor"};
-    Fixture f{dir};
+    ScratchFixture f{"/tmp/mesheditor-scratch/history-hit-editor"};
     const auto object = f.AddEmpty("Object choice");
     f.AddEmpty("Other");
     const auto node = f.Do(action::selection::Pick{false, ObjectHit{{object}}});

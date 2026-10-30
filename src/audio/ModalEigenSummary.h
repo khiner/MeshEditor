@@ -1,8 +1,5 @@
 #pragma once
 
-#include "AcousticMaterialProperties.h"
-#include "audio/AudioSchema.h"
-
 // Stores raw eigenpairs sampled at excitation positions and the material used for the solve.
 // modal::RescaleModes re-derives ModalModes for material edits that scale the FEM matrices.
 struct ModalEigenSummary : fastfem::ModalEigenSummary {

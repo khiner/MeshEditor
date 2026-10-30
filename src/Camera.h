@@ -3,8 +3,6 @@
 #include "CameraTypes.h"
 #include "numeric/Angles.h"
 
-#include <algorithm>
-
 using numeric::Clamp, numeric::Radians;
 
 inline float AspectRatio(const CameraLens &camera) {

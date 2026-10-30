@@ -154,6 +154,17 @@ std::unordered_map<uint64_t, uint32_t> SelectedEdgeSources(const Mesh &mesh, std
     return sources;
 }
 
+// The vertex adjacency of the selected edges keyed by their vertex pairs.
+EdgeGraph NeighborsOf(const std::unordered_map<uint64_t, uint32_t> &sources) {
+    EdgeGraph neighbors;
+    for (const auto &[key, h] : sources) {
+        const auto a = uint32_t(key >> 32u), b = uint32_t(key);
+        neighbors[a].push_back(b);
+        neighbors[b].push_back(a);
+    }
+    return neighbors;
+}
+
 struct SelectedChain {
     std::vector<uint32_t> Vertices;
     bool Closed{};
@@ -163,12 +174,7 @@ struct SelectedChain {
 std::vector<SelectedChain> SelectedChains(const Mesh &mesh, std::span<const uint32_t> selected_edges, std::unordered_map<uint64_t, uint32_t> &sources) {
     sources = SelectedEdgeSources(mesh, selected_edges, true);
     const auto &c = mesh.GetConnectivity();
-    EdgeGraph neighbors;
-    for (const auto &[key, h] : sources) {
-        const auto a = uint32_t(key >> 32u), b = uint32_t(key);
-        neighbors[a].push_back(b);
-        neighbors[b].push_back(a);
-    }
+    auto neighbors = NeighborsOf(sources);
     for (const auto &[v, adjacent] : neighbors) {
         if (adjacent.size() > 2u) return {};
     }
@@ -526,12 +532,7 @@ std::optional<MeshTopologyTask> FillTask(const MeshStore &meshes, const Mesh &me
     }
     auto loops = BoundaryLoops(meshes, mesh, selection.Edges, true);
     if (loops.empty()) {
-        EdgeGraph neighbors;
-        for (const auto &[key, h] : sources) {
-            const auto a = uint32_t(key >> 32u), b = uint32_t(key);
-            neighbors[a].push_back(b);
-            neighbors[b].push_back(a);
-        }
+        auto neighbors = NeighborsOf(sources);
         if (std::ranges::all_of(neighbors, [](const auto &entry) { return entry.second.size() <= 2u; })) {
             std::vector<std::vector<uint32_t>> chains;
             VisitEdgeChains(neighbors, [&](const auto &chain, bool) { chains.push_back(chain); });

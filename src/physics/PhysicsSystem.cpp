@@ -9,7 +9,6 @@
 #include "SortUnique.h"
 #include "TransformMath.h"
 #include "mesh/Mesh.h"
-#include "physics/PhysicsSchema.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
 #include "viewport/ViewportEvents.h"
@@ -364,7 +363,7 @@ void BuildBody(PhysicsState &s, state::Registry &r, state::Entity entity, BodyIn
     for (const auto collider : input.Colliders) s.LeafOwners[collider] = entity;
     if (s.Entities.size() <= body.Body) s.Entities.resize(body.Body + 1, state::Null);
     s.Entities[body.Body] = entity;
-    r.emplace_or_replace<PhysicsBodyHandle>(entity, PhysicsBodyHandle{body.Body});
+    r.emplace_or_replace<PhysicsBodyHandle>(entity);
     if (input.Motion) r.emplace_or_replace<BodyPoseCache>(entity, BodyPoseCache{{physics::RbpNodePose(body.InitialPose, body.Frame)}});
     s.Bodies.emplace(entity, BodyRecord{body, std::move(input), std::move(leaves)});
 }
@@ -651,7 +650,7 @@ void BakeFrame(state::Registry &r, PhysicsState &s, uint32_t frame, float fps) {
     const auto &settings = r.get<const PhysicsSimulationSettings>(state::Document);
     const float sim_dt = (fps > 0 ? 1.f / fps : 1.f / 60) * settings.TimeScale;
     StepSimulation(s, r, sim_dt, settings.SubstepsPerFrame);
-    for (auto [entity, handle, cache] : r.view<const PhysicsBodyHandle, BodyPoseCache>().each()) {
+    for (auto [entity, cache] : r.view<const PhysicsBodyHandle, BodyPoseCache>().each()) {
         const auto &body = s.Bodies.at(entity).Cooked;
         cache.Frames.push_back(physics::RbpNodePose(s.World->Poses[body.Body], body.Frame));
     }
@@ -974,7 +973,7 @@ void SamplePosesAtFrame(state::Registry &r, float frame) {
 void Init(state::Registry &r) {
     auto &s = r.Resources.emplace<PhysicsState>();
     r.Resources.emplace<PhysicsDefinitionUses>();
-    if (r.Resources.get<const mtl::Context>().Device->supportsFamily(MTL::GPUFamilyMetal4)) s.Context.emplace();
+    s.Context.emplace();
     r.Resources.emplace<PhysicsContactImpacts>();
     r.Resources.emplace<PhysicsSustainedContacts>();
     RegisterMeshColliderHandlers(r);

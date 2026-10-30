@@ -1,13 +1,10 @@
 #include "action/Scene.h"
 #include "SortUnique.h"
-#include "Variant.h"
 #include "action/Errors.h"
 #include "action/ScopeResolve.h"
 #include "object/ObjectOps.h"
 #include "procedure/Network.h"
 #include "scene/SceneGraph.h"
-#include "selection/Selection.h"
-#include "state/Registry.h"
 #include "viewport/ViewportScene.h"
 
 #include <format>

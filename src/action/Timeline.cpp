@@ -5,7 +5,6 @@
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
 #include "selection/SelectionState.h"
-#include "state/Registry.h"
 #include "viewport/ViewportEvents.h"
 
 #include <cmath>
@@ -78,28 +77,15 @@ void Apply(state::Registry &r, const Action &action) {
                 // Wrapping ignores keys outside the range and continues from the far end when none remain.
                 const auto in_range = [&](float key) { return !wrap || (key >= float(range.StartFrame) && key <= float(range.EndFrame)); };
                 const auto frame_of = [](float key) { return int(std::lround(key)); };
-                std::optional<int> target;
-                if (a.Next) {
-                    for (const float key : keys) {
-                        if (in_range(key) && frame_of(key) > current) {
-                            target = frame_of(key);
-                            break;
-                        }
+                // The first key in the order past the current frame, or the first key at all when wrapping.
+                const auto first_past = [&](auto &&ordered, auto &&past) -> std::optional<int> {
+                    for (const float key : ordered) {
+                        if (in_range(key) && past(frame_of(key))) return frame_of(key);
                     }
-                    if (!target && wrap) {
-                        if (const auto it = std::ranges::find_if(keys, in_range); it != keys.end()) target = frame_of(*it);
-                    }
-                } else {
-                    for (const auto key : std::views::reverse(keys)) {
-                        if (in_range(key) && frame_of(key) < current) {
-                            target = frame_of(key);
-                            break;
-                        }
-                    }
-                    if (!target && wrap) {
-                        if (const auto it = std::ranges::find_if(keys.rbegin(), keys.rend(), in_range); it != keys.rend()) target = frame_of(*it);
-                    }
-                }
+                    if (const auto it = wrap ? std::ranges::find_if(ordered, in_range) : std::ranges::end(ordered); it != std::ranges::end(ordered)) return frame_of(*it);
+                    return std::nullopt;
+                };
+                const auto target = a.Next ? first_past(keys, [&](int frame) { return frame > current; }) : first_past(std::views::reverse(keys), [&](int frame) { return frame < current; });
                 if (target) set_frame(*target);
             },
             [&](const SetView &a) { r.replace<TimelineView>(state::Document, TimelineView{a.PixelsPerFrame, a.ViewCenterFrame}); },

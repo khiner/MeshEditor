@@ -1,6 +1,5 @@
 #pragma once
 
-#include "physics/PhysicsSchema.h"
 #include "state/DirtySet.h"
 
 // Physics change sets, bound by physics::Init.

@@ -1,7 +1,6 @@
 #include "MeshChecks.h"
 #include "Paths.h"
 #include "RunSuites.h"
-#include "TestMeshOrdinals.h"
 #include "TopologyCases.h"
 #include "mesh/GeometryRefresh.h"
 #include "mesh/MeshClone.h"
@@ -12,7 +11,6 @@
 #include "mesh/Unsubdivide.h"
 #include "state/Registry.h"
 #include <numbers>
-#include <print>
 
 using namespace boost::ut;
 

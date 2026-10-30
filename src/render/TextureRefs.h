@@ -1,9 +1,5 @@
 #pragma once
 
-#include "state/Entity.h"
-
-#include <vector>
-
 struct TextureRef {
     uint32_t SamplerSlot;
     std::string Name;

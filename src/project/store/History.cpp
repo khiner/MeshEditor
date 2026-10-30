@@ -690,25 +690,26 @@ void AppendContent(History &history, History::ContentLog &log, Hash128 hash, std
     log.Size += ContentHeader + payload.size();
 }
 
+// Persists the live manifest node of the hash at the indexed position, with the nodes and leaves under it the logs lack.
+// Indexed roots have indexed descendants.
+void PersistLiveSubtree(History &history, auto &owner, uint64_t length, Hash128 hash, uint32_t level, uint64_t index) {
+    if (hash == Hash128{} || history.NodeLog.Idx.contains(hash)) return;
+    const auto children = owner.Trie.ChildrenAt(level, index, length);
+    for (uint64_t digit = 0; digit < Fanout; ++digit) {
+        const auto child = children[digit];
+        if (child == Hash128{}) continue;
+        if (level) PersistLiveSubtree(history, owner, length, child, level - 1, index * Fanout + digit);
+        else if (!history.LeafLog.Idx.contains(child)) AppendContent(history, history.LeafLog, child, owner.Read(index * Fanout + digit));
+    }
+    AppendContent(history, history.NodeLog, hash, ManifestRecord{level, children}.View());
+}
+
 Hash128 BuildManifest(History &history, size_t track) {
     return With(history, TrackAt(history, track), [&](auto &owner) {
         owner.Settle();
         const auto length = owner.Length();
-        auto &trie = owner.Trie;
-        const auto root = trie.ManifestRoot(length);
-        // Indexed roots have indexed descendants.
-        const auto persist = [&](this auto &&self, Hash128 hash, uint32_t level, uint64_t index) -> void {
-            if (hash == Hash128{} || history.NodeLog.Idx.contains(hash)) return;
-            const auto children = trie.ChildrenAt(level, index, length);
-            for (uint64_t digit = 0; digit < Fanout; ++digit) {
-                const auto child = children[digit];
-                if (child == Hash128{}) continue;
-                if (level) self(child, level - 1, index * Fanout + digit);
-                else if (!history.LeafLog.Idx.contains(child)) AppendContent(history, history.LeafLog, child, owner.Read(index * Fanout + digit));
-            }
-            AppendContent(history, history.NodeLog, hash, ManifestRecord{level, children}.View());
-        };
-        persist(root, trie.Levels - 1, 0);
+        const auto root = owner.Trie.ManifestRoot(length);
+        PersistLiveSubtree(history, owner, length, root, owner.Trie.Levels - 1, 0);
         return root;
     });
 }
@@ -735,18 +736,6 @@ Hash128 PersistVersion(History &history, size_t track, const Version &v) {
             if (!history.LeafLog.Idx.contains(hash)) AppendContent(history, history.LeafLog, hash, owner.Read(slot));
             return hash;
         };
-        // Indexed roots have indexed descendants.
-        const auto persist_live = [&](this auto &&self, Hash128 hash, uint32_t level, uint64_t index) -> void {
-            if (hash == Hash128{} || history.NodeLog.Idx.contains(hash)) return;
-            const auto children = trie.ChildrenAt(level, index, live_length);
-            for (uint64_t digit = 0; digit < Fanout; ++digit) {
-                const auto child = children[digit];
-                if (child == Hash128{}) continue;
-                if (level) self(child, level - 1, index * Fanout + digit);
-                else if (!history.LeafLog.Idx.contains(child)) AppendContent(history, history.LeafLog, child, owner.Read(index * Fanout + digit));
-            }
-            AppendContent(history, history.NodeLog, hash, ManifestRecord{level, children}.View());
-        };
         // The manifest hash of the live slots under a trie level, bounded by the version's length.
         // A subtree within both lengths, or any subtree while the lengths agree, is the live manifest node.
         const auto live_subtree = [&](this auto &&self, uint32_t level, uint64_t base) -> Hash128 {
@@ -756,7 +745,7 @@ Hash128 PersistVersion(History &history, size_t track, const Version &v) {
             if (limit == live_limit || (base + span <= limit && base + span <= live_limit)) {
                 const auto &nodes = trie.Manifest[level - 1].Nodes;
                 const auto hash = base / span < nodes.size() ? nodes[base / span].Hash : Hash128{};
-                persist_live(hash, level - 1, base / span);
+                PersistLiveSubtree(history, owner, live_length, hash, level - 1, base / span);
                 return hash;
             }
             ManifestChildren children{};

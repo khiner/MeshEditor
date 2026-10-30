@@ -79,6 +79,7 @@ private:
     void Barrier();
     // Ends the compute encoder after the barrier a concurrent group deferred.
     void EndEncoding();
+    void Record(const ComputePipeline &, const void *pc, uint32_t bytes, auto &&dispatch);
     void Dispatch(const ComputePipeline &, const void *pc, uint32_t bytes, uint32_t count, uint32_t depth, uint32_t width, bool threads);
     void DispatchIndirect(const ComputePipeline &, const void *pc, uint32_t bytes, const Buffer &arguments, uint64_t offset, uint32_t width);
 
