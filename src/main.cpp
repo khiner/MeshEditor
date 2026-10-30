@@ -747,6 +747,8 @@ struct ValidationUi {
     }
 };
 
+#endif
+
 void DrawMainMenuBar(state::Registry &r, PanelsState &panels) {
     if (BeginMainMenuBar()) {
         if (BeginMenu("File")) {
@@ -896,6 +898,8 @@ void EndEditorFrame(state::Registry &r, PanelsState &panels, const EditorPanelsF
     Render();
     workspace::ApplyPending(panels);
 }
+
+#ifdef DEBUG_BUILD
 
 struct ValidationEngine {
     std::optional<Engine> Core;
