@@ -112,7 +112,7 @@ bool Decompress(const fs::path &src, const fs::path &dst) {
     if (!dctx) return false;
 
     std::error_code ec;
-    std::ofstream cur;
+    std::ofstream output;
     uint64_t data_left = 0;
     std::vector<char> header;
 
@@ -121,13 +121,13 @@ bool Decompress(const fs::path &src, const fs::path &dst) {
         for (size_t off = 0; off < n;) {
             if (data_left > 0) {
                 const size_t take = std::min<uint64_t>(data_left, n - off);
-                cur.write(buf + off, std::streamsize(take));
-                if (!cur) return false;
+                output.write(buf + off, std::streamsize(take));
+                if (!output) return false;
 
                 off += take;
                 if ((data_left -= take) == 0) {
-                    cur.close();
-                    if (!cur) return false;
+                    output.close();
+                    if (!output) return false;
                 }
                 continue;
             }
@@ -146,12 +146,14 @@ bool Decompress(const fs::path &src, const fs::path &dst) {
             const auto path = dst / entry;
             if (const auto parent = path.parent_path(); !parent.empty()) fs::create_directories(parent, ec);
             if (ec) return false;
-            cur.open(path, std::ios::binary | std::ios::trunc);
-            if (!cur) return false;
+            // Each entry gets a new stream.
+            // Reopening a stream that was closed without writes leaves it unbuffered, and it then makes one write call per byte.
+            output = std::ofstream{path, std::ios::binary | std::ios::trunc};
+            if (!output) return false;
 
             if (data_left == 0) {
-                cur.close();
-                if (!cur) return false;
+                output.close();
+                if (!output) return false;
             }
         }
         return true;
@@ -168,5 +170,5 @@ bool Decompress(const fs::path &src, const fs::path &dst) {
         }
     }
     // A well-formed archive ends exactly at an entry boundary.
-    return in.eof() && remaining == 0 && data_left == 0 && header.empty() && !cur.is_open() && !cur.fail();
+    return in.eof() && remaining == 0 && data_left == 0 && header.empty() && !output.is_open() && !output.fail();
 }

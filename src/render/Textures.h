@@ -194,7 +194,19 @@ std::vector<std::byte> ReadbackImageRgba8(const mtl::Context &, const mtl::Textu
 // Synchronously read mip 0 of an RGBA8 texture into host memory.
 std::expected<std::vector<std::byte>, std::string> ReadbackTextureRgba8(const mtl::Context &, const TextureEntry &);
 
-std::expected<TextureEntry, std::string> MaterializeTextureEntry(const state::Registry &, TextureUploadBatch &, mtl::BindlessSet &, const PendingTextureUpload &, const std::vector<gltf::Image> &, float max_anisotropy);
+// The host pixels of a pending upload: RGBA8 rows, or every transcoded KTX2 level located in `Data` by its MipUpload.
+struct DecodedTexture {
+    std::vector<std::byte> Data;
+    std::vector<MipUpload> Mips;
+    MTL::PixelFormat Format{};
+    uint32_t Width{}, Height{};
+    uint32_t SourceImageIndex{UINT32_MAX};
+};
+// Reads, decodes or transcodes the upload's source on the calling thread, taking raw pixels out of the upload.
+// Independent uploads decode concurrently.
+std::expected<DecodedTexture, std::string> DecodeTextureSource(const state::Registry &, PendingTextureUpload &, const std::vector<gltf::Image> &);
+// Uploads the decoded pixels and binds the sampler at the upload's slot.
+TextureEntry MaterializeTextureEntry(const mtl::Context &, TextureUploadBatch &, mtl::BindlessSet &, const PendingTextureUpload &, const DecodedTexture &, float max_anisotropy);
 std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(const state::Registry &, mtl::BindlessSet &, const PendingEnvironmentImport &, const std::vector<gltf::Image> &);
 void ResetImportedEnvironment(state::Registry &);
 // Releases the imported and pending scene worlds and selects the empty one.

@@ -7,6 +7,7 @@
 #include "render/SceneUpdates.h"
 
 #include "Camera.h"
+#include "Parallel.h"
 #include "Profile.h"
 #include "SortUnique.h"
 #include "TransformMath.h"
@@ -207,15 +208,18 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         const auto *src = r.try_get<const gltf::SourceAssets>(state::Document);
         static const std::vector<gltf::Image> empty_images;
         const auto &gltf_images = src ? src->Images : empty_images;
+        std::vector<std::expected<DecodedTexture, std::string>> decoded(textures.PendingUploads.size());
+        ParallelFor(uint32_t(decoded.size()), [&](uint32_t i) { decoded[i] = DecodeTextureSource(r, textures.PendingUploads[i], gltf_images); });
         TextureUploadBatch batch{ctx};
-        for (const auto &item : textures.PendingUploads) {
-            auto entry = MaterializeTextureEntry(r, batch, slots, item, gltf_images, r.Resources.get<const ActiveSamplerAnisotropy>().Value);
-            if (!entry) {
-                action::Fail(r, std::format("Cannot load texture '{}': {}", item.Params.Name, entry.error()));
+        const auto anisotropy = r.Resources.get<const ActiveSamplerAnisotropy>().Value;
+        for (uint32_t i = 0; i < decoded.size(); ++i) {
+            const auto &item = textures.PendingUploads[i];
+            if (!decoded[i]) {
+                action::Fail(r, std::format("Cannot load texture '{}': {}", item.Params.Name, decoded[i].error()));
                 slots.Release({SlotType::Sampler, item.SamplerSlot});
                 continue;
             }
-            textures.Textures.emplace_back(std::move(*entry));
+            textures.Textures.emplace_back(MaterializeTextureEntry(ctx, batch, slots, item, *decoded[i], anisotropy));
         }
         SubmitTextureUploadBatch(batch);
         textures.PendingUploads.clear();

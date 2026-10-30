@@ -471,14 +471,9 @@ std::expected<std::vector<std::byte>, std::string> ReadbackTextureRgba8(const mt
     return ReadbackImageRgba8(ctx, entry.Image, 0, 0, entry.Image.Extent);
 }
 
-std::expected<TextureEntry, std::string> MaterializeTextureEntry(
-    const state::Registry &r,
-    TextureUploadBatch &batch, mtl::BindlessSet &slots,
-    const PendingTextureUpload &item, const std::vector<gltf::Image> &gltf_images, float max_anisotropy
-) {
-    const auto &ctx = r.Resources.get<const mtl::Context>();
-    if (const auto *raw = std::get_if<PendingTextureUpload::RawPixels>(&item.Source)) {
-        return CreateTextureEntry(ctx, batch, slots, item.SamplerSlot, Rgba8Pixels{raw->Pixels, raw->Width, raw->Height}, item.Params, max_anisotropy);
+std::expected<DecodedTexture, std::string> DecodeTextureSource(const state::Registry &r, PendingTextureUpload &item, const std::vector<gltf::Image> &gltf_images) {
+    if (auto *raw = std::get_if<PendingTextureUpload::RawPixels>(&item.Source)) {
+        return DecodedTexture{.Data = std::move(raw->Pixels), .Width = raw->Width, .Height = raw->Height};
     }
     const auto &ref = std::get<PendingTextureUpload::GltfImageRef>(item.Source);
     if (ref.ImageIndex >= gltf_images.size()) {
@@ -496,24 +491,22 @@ std::expected<TextureEntry, std::string> MaterializeTextureEntry(
     if (source.MimeType != gltf::MimeType::KTX2) {
         auto decoded = DecodeImageRgba8(bytes, source.Name);
         if (!decoded) return std::unexpected{std::move(decoded.error())};
-        auto entry = CreateTextureEntry(ctx, batch, slots, item.SamplerSlot, Rgba8Pixels{decoded->Pixels, decoded->Width, decoded->Height}, item.Params, max_anisotropy);
-        entry.SourceImageIndex = ref.ImageIndex;
-        return entry;
+        return DecodedTexture{.Data = std::move(decoded->Pixels), .Width = decoded->Width, .Height = decoded->Height, .SourceImageIndex = ref.ImageIndex};
     }
 
-    basist::basisu_transcoder_init();
+    // The transcoder's global tables initialize once, before any thread transcodes.
+    [[maybe_unused]] static const bool transcoder_ready = (basist::basisu_transcoder_init(), true);
 
     basist::ktx2_transcoder transcoder;
     if (!transcoder.init(bytes.data(), uint32_t(bytes.size()))) return std::unexpected{std::format("Failed to parse KTX2 image '{}'.", source.Name)};
     if (!transcoder.start_transcoding()) return std::unexpected{std::format("Failed to start transcoding KTX2 image '{}'.", source.Name)};
 
-    const auto [texture_format, basis_fmt] = SelectKtx2Format(ctx, item.Params.ColorSpace);
+    const auto [texture_format, basis_fmt] = SelectKtx2Format(r.Resources.get<const mtl::Context>(), item.Params.ColorSpace);
     const uint32_t width = transcoder.get_width(), height = transcoder.get_height();
     const uint32_t mip_levels = transcoder.get_levels();
 
-    std::vector<std::byte> all_mip_data;
-    std::vector<MipUpload> mips;
-    mips.reserve(mip_levels);
+    DecodedTexture decoded{.Format = texture_format, .Width = width, .Height = height, .SourceImageIndex = ref.ImageIndex};
+    decoded.Mips.reserve(mip_levels);
     size_t offset = 0;
     const uint32_t block_bytes = basist::basis_get_bytes_per_block_or_pixel(basis_fmt);
     // A block format addresses rows of blocks, an uncompressed one rows of pixels.
@@ -523,19 +516,25 @@ std::expected<TextureEntry, std::string> MaterializeTextureEntry(
         const uint32_t mip_bytes = basist::basis_compute_transcoded_image_size_in_bytes(basis_fmt, mip_w, mip_h);
         const uint32_t block_count = mip_bytes / basist::basis_get_bytes_per_block_or_pixel(basis_fmt);
 
-        const size_t prev_size = all_mip_data.size();
-        all_mip_data.resize(prev_size + mip_bytes);
-        if (!transcoder.transcode_image_level(mip, 0, 0, all_mip_data.data() + prev_size, block_count, basis_fmt)) {
+        const size_t prev_size = decoded.Data.size();
+        decoded.Data.resize(prev_size + mip_bytes);
+        if (!transcoder.transcode_image_level(mip, 0, 0, decoded.Data.data() + prev_size, block_count, basis_fmt)) {
             return std::unexpected{std::format("Failed to transcode KTX2 image '{}' mip {}.", source.Name, mip)};
         }
 
         const uint32_t bytes_per_row = block_compressed ? ((mip_w + 3u) / 4u) * block_bytes : mip_w * block_bytes;
-        mips.emplace_back(mip, offset, mip_bytes, bytes_per_row);
+        decoded.Mips.emplace_back(mip, offset, mip_bytes, bytes_per_row);
         offset += mip_bytes;
     }
+    return decoded;
+}
 
-    auto entry = CreateTextureEntry(ctx, batch, slots, item.SamplerSlot, Ktx2Pixels{texture_format, width, height, all_mip_data, mips}, item.Params, max_anisotropy);
-    entry.SourceImageIndex = ref.ImageIndex;
+TextureEntry MaterializeTextureEntry(const mtl::Context &ctx, TextureUploadBatch &batch, mtl::BindlessSet &slots, const PendingTextureUpload &item, const DecodedTexture &decoded, float max_anisotropy) {
+    const TexturePixels pixels = decoded.Mips.empty() ?
+        TexturePixels{Rgba8Pixels{decoded.Data, decoded.Width, decoded.Height}} :
+        TexturePixels{Ktx2Pixels{decoded.Format, decoded.Width, decoded.Height, decoded.Data, decoded.Mips}};
+    auto entry = CreateTextureEntry(ctx, batch, slots, item.SamplerSlot, pixels, item.Params, max_anisotropy);
+    entry.SourceImageIndex = decoded.SourceImageIndex;
     return entry;
 }
 

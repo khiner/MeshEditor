@@ -4,7 +4,6 @@
 #include <atomic>
 #include <cassert>
 #include <format>
-#include <unordered_set>
 
 namespace store {
 namespace {
@@ -313,7 +312,12 @@ void MaterializeRec(Node *n, uint32_t level, uint64_t base, uint64_t limit, std:
     }
 }
 
+// Each audit takes the next mark, which no node holds before it.
+uint64_t AuditMark = 0;
+
+// The present reaches only interior and aliased nodes, every one of which this audit marks.
 bool CheckRec(Node *n, uint32_t level, std::string &why) {
+    n->Mark = AuditMark;
     if (n->Refs == 0) {
         why = "node with zero refs reachable";
         return false;
@@ -337,24 +341,17 @@ bool CheckRec(Node *n, uint32_t level, std::string &why) {
     return false;
 }
 
-void CollectAliased(Node *n, std::unordered_set<const Node *> &out) {
-    if (n->Kind == NodeKind::Aliased) out.insert(n);
-    else if (n->Kind == NodeKind::Interior) {
-        for (uint32_t i = 0; i < Fanout; ++i) CollectAliased(n->Children[i], out);
-    }
-}
-
-bool CheckVersionRec(Node *n, const std::unordered_set<const Node *> &present_aliased, std::string &why) {
+// A node this audit marked is verified, so a subtree many versions share costs one walk, and an unmarked aliased node lies outside the present.
+bool CheckVersionRec(Node *n, std::string &why) {
+    if (n->Mark == AuditMark) return true;
+    n->Mark = AuditMark;
     if (n->Kind == NodeKind::Aliased) {
-        if (!present_aliased.contains(n)) {
-            why = "pinned version holds an aliased node the present does not";
-            return false;
-        }
-        return true;
+        why = "pinned version holds an aliased node the present does not";
+        return false;
     }
     if (n->Kind == NodeKind::Interior) {
         for (uint32_t i = 0; i < Fanout; ++i) {
-            if (!CheckVersionRec(n->Children[i], present_aliased, why)) return false;
+            if (!CheckVersionRec(n->Children[i], why)) return false;
         }
     }
     return true;
@@ -577,11 +574,10 @@ bool LiveTrie::CheckHashes(std::string &why, std::span<const std::pair<uint64_t,
 }
 
 bool LiveTrie::Check(std::string &why, std::span<const Version> all_versions) const {
+    ++AuditMark;
     if (!CheckRec(Root, Levels, why)) return false;
-    std::unordered_set<const Node *> aliased;
-    CollectAliased(Root, aliased);
     for (const auto &v : all_versions) {
-        if (v.Root && !CheckVersionRec(v.Root, aliased, why)) return false;
+        if (v.Root && !CheckVersionRec(v.Root, why)) return false;
     }
     return true;
 }

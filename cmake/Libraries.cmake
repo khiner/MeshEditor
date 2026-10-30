@@ -45,10 +45,9 @@ mesheditor_library(MeshEditorProjectStore HOT
     src/project/store/History.cpp)
 target_link_libraries(MeshEditorProjectStore PUBLIC mesheditor_serialization)
 
-mesheditor_library(mesheditor_support COLD src/File.cpp src/Paths.cpp src/Compress.cpp src/project/Assets.cpp)
+mesheditor_library(mesheditor_support HOT src/File.cpp src/Paths.cpp src/Compress.cpp src/project/Assets.cpp)
 target_include_directories(mesheditor_support SYSTEM PRIVATE lib/basis_universal/zstd)
 target_link_libraries(mesheditor_support PRIVATE basisu_transcoder)
-set_property(SOURCE src/project/Assets.cpp APPEND PROPERTY COMPILE_OPTIONS -O2)
 
 mesheditor_library(mesheditor_image_codecs HOT src/image/ImageDecode.cpp src/image/ImageEncode.cpp)
 target_include_directories(mesheditor_image_codecs SYSTEM PRIVATE lib/lunasvg/plutovg/source)
@@ -197,7 +196,7 @@ mesheditor_library(MeshEditorAudio HOT
     src/audio/ModalSolve.cpp
 )
 
-mesheditor_library(MeshEditorAssets COLD
+mesheditor_library(MeshEditorAssets HOT
     src/assets/MaterialImport.cpp
     src/assets/MeshImport.cpp
     src/audio/RealImpact.cpp

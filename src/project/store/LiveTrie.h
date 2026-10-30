@@ -22,6 +22,7 @@ struct Node {
     uint32_t Refs;
     NodeKind Kind;
     bool Default{}; // Owned zero-default pages, recorded when the value is captured.
+    uint64_t Mark{}; // The audit that last verified the node, so each audit walks a shared subtree once.
     Blob Value; // Owned only
     Node **Children; // Interior only
     Hash128 Hash; // Owned only: the content hash of Value

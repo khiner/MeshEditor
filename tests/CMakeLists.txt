@@ -1,7 +1,7 @@
 # Test executables link the production libraries rather than recompiling their sources.
 function(mesheditor_test target source)
     add_executable(${target} ${source})
-    mesheditor_compile_policy(${target} COLD)
+    mesheditor_compile_policy(${target} HOT)
     target_link_libraries(${target} PRIVATE Boost::ut ${ARGN})
     target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 endfunction()
@@ -39,7 +39,6 @@ foreach(target IN ITEMS MeshEditorTests MeshEditorPhysicsTest)
 endforeach()
 
 mesheditor_test(MeshEditorProjectBench ProjectBench.cpp MeshEditorEditor)
-target_compile_options(MeshEditorProjectBench PRIVATE -O2)
 target_compile_definitions(MeshEditorProjectBench PRIVATE MESHEDITOR_BUILD_DIR="${CMAKE_BINARY_DIR}")
 rbp_copy_shaders(MeshEditorProjectBench)
 mesheditor_test(MeshEditorEditBench EditBench.cpp MeshEditorEditor)
