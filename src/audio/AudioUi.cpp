@@ -1,6 +1,7 @@
 #include "audio/AudioUi.h"
 
 #include "FileDialog.h"
+#include "Paths.h"
 #include "action/Audio.h"
 #include "audio/AudioDevice.h"
 #include "audio/AudioOutputConfig.h"
@@ -413,11 +414,12 @@ void DrawObjectAudioControls(state::Registry &r, state::Entity e, state::Entity 
         SameLine();
         if (Button("Save wav files")) {
             const auto name = GetName(r, e);
-            static const auto WavOutDir = fs::path{".."} / "audio_samples";
+            const auto out_dir = Paths::UserData() / "audio_samples";
+            fs::create_directories(out_dir);
             const auto sr = DeviceSampleRate(r);
-            WriteWav(recording->Frames, WavOutDir / std::format("{}-modal", name), sr);
+            WriteWav(recording->Frames, out_dir / std::format("{}-modal", name), sr);
             if (const auto path = ActiveSamplePath(r, e)) {
-                WriteWav(GetSampleFrames(r, *path), WavOutDir / std::format("{}-impact", name), sr);
+                WriteWav(GetSampleFrames(r, *path), out_dir / std::format("{}-impact", name), sr);
             }
         }
     }
