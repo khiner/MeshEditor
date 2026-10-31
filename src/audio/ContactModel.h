@@ -3,8 +3,9 @@
 #include "AcousticMaterial.h"
 #include "audio/AudioSchema.h"
 #include "numeric/mat3.h"
+#include "numeric/vec2.h"
 
-using numeric::mat3, numeric::vec3;
+using numeric::mat3, numeric::vec2, numeric::vec3;
 
 using MassProperties = fastfem::MassProperties;
 
@@ -20,6 +21,8 @@ struct Striker {
     AcousticMaterial Material{materials::acoustic::Steel};
     float TipRadius{0.01f}; // Cap radius, also the cylinder cross-section, m
     float Length{0.19f}; // Cylinder length, m (~0.5 kg of steel at the default radius)
+    // A manual strike's direction in the unit disk, along the surface normal at the center and tangent to the surface at the rim.
+    vec2 Tilt{0, 0};
 };
 template<> inline constexpr field::SpecTable<Striker> Specs<Striker>{
     {&Striker::TipRadius, {.Min = 0.0005, .Max = 0.1, .Digits = 4, .Unit = FieldUnit::Meters, .Label = "Tip radius", .Help = "Radius of the capsule's hemispherical cap and cylinder cross-section. Sets contact curvature."}},

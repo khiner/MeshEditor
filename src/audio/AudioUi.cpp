@@ -10,6 +10,7 @@
 #include "audio/WavWriter.h"
 #include "editor/AudioExcitation.h"
 #include "editor/AudioJobs.h"
+#include "imgui_internal.h"
 #include "implot.h"
 #include "imspinner.h"
 #include "mesh/MeshStore.h"
@@ -234,7 +235,7 @@ std::vector<uint32_t> GetSampleOpVertices(const state::Registry &r, state::Entit
     return vertices;
 }
 
-// Circular pad returning a position in the unit disk (center = zero).
+// Circular pad editing a position in the unit disk (center = zero).
 // Drag to set, right-click recenters.
 bool ImpulseJoystick(vec2 &pos) {
     constexpr float radius{32.f};
@@ -251,6 +252,7 @@ bool ImpulseJoystick(vec2 &pos) {
         pos = {0, 0};
         changed = true;
     }
+    if (changed) MarkItemEdited(GetItemID());
     auto &dl = *GetWindowDrawList();
     dl.AddCircleFilled(center, radius, GetColorU32(ImGuiCol_FrameBg));
     dl.AddCircle(center, radius, GetColorU32(ImGuiCol_Border));
@@ -312,7 +314,7 @@ void DrawObjectAudioControls(state::Registry &r, state::Entity e, state::Entity 
 
         if (model == SoundVerticesModel::Modal) {
             TextUnformatted("Impact angle");
-            ImpulseJoystick(ImpulseAngle);
+            ui::Edit{r, state::Document}.Run<&Striker::Tilt>(ImpulseJoystick);
             ui::Describe("Impact angle", "Strike direction relative to the surface, from perpendicular at the center to tangent at the edge. Right-click to recenter.");
         }
     }
@@ -377,7 +379,7 @@ void DrawObjectAudioControls(state::Registry &r, state::Entity e, state::Entity 
         if (const auto hovered = PlotModeData(modes.T60s, "Mode T60s", "", "T60 decay time (s)", hovered_mode_index)) new_hovered_index = hovered;
         const auto active_gains = [&]() -> std::vector<float> {
             if (active_vi >= modes.Shapes.size()) return {};
-            const auto j = TiltAlongNormal(VertexNormal(GetMesh(r, mesh_entity), r.Resources.get<const MeshStore>().Arenas().SoundVertices.Get(excitable->Vertices)[active_vi]), ImpulseAngle);
+            const auto j = TiltAlongNormal(VertexNormal(GetMesh(r, mesh_entity), r.Resources.get<const MeshStore>().Arenas().SoundVertices.Get(excitable->Vertices)[active_vi]), r.get<const Striker>(state::Document).Tilt);
             return modes.Shapes[active_vi] | transform([&](const vec3 &s) { return std::abs(Dot(s, j)); }) | to<std::vector<float>>();
         }();
         if (!active_gains.empty()) {

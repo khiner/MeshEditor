@@ -1,15 +1,11 @@
 #include "numeric/VectorMath.h"
 
+#include "audio/ContactModel.h"
 #include "editor/AudioExcitation.h"
 #include "render/Instance.h"
 #include "state/Registry.h"
 
 #include <numbers>
-
-// Strike impact angle relative to the surface.
-// Center strikes along surface normal, rim tilts impulse 90 degrees into the tangent plane.
-// UI-only.
-vec2 ImpulseAngle{0, 0};
 
 // Unit surface normal at a mesh vertex.
 vec3 VertexNormal(const Mesh &mesh, uint32_t vertex) { return Normalize(mesh.GetNormal(mesh.VertexAt(vertex))); }
@@ -30,5 +26,5 @@ vec3 TiltAlongNormal(vec3 n, vec2 joy) {
 
 vec3 ExciteDirection(const state::Registry &r, state::Entity e, uint32_t vertex) {
     const auto n = VertexNormal(GetMesh(r, r.get<const Instance>(e).Entity), vertex);
-    return TiltAlongNormal(n, ImpulseAngle);
+    return TiltAlongNormal(n, r.get<const Striker>(state::Document).Tilt);
 }
