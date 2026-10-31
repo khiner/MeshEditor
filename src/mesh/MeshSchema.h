@@ -20,12 +20,13 @@ struct Circle;
 struct Cube;
 struct IcoSphere;
 struct UVSphere;
+struct QuadSphere;
 struct Torus;
 struct Cylinder;
 struct Cone;
 } // namespace primitive
 
-using MeshSchema = state::Schema<state::MeshBase, state::MeshCount, MeshChanges, RenderInstance, ModelsBuffer, VertexStoreId, MeshHandle, EvaluatedMesh, AuthoredCornerNormals, ObjectExtrasTag, MeshPipelines, MeshStore, MeshEntities, primitive::Plane, primitive::Circle, primitive::Cube, primitive::IcoSphere, primitive::UVSphere, primitive::Torus, primitive::Cylinder, primitive::Cone, TetBuffers>;
+using MeshSchema = state::Schema<state::MeshBase, state::MeshCount, MeshChanges, RenderInstance, ModelsBuffer, VertexStoreId, MeshHandle, EvaluatedMesh, AuthoredCornerNormals, ObjectExtrasTag, MeshPipelines, MeshStore, MeshEntities, primitive::Plane, primitive::Circle, primitive::Cube, primitive::IcoSphere, primitive::UVSphere, primitive::QuadSphere, primitive::Torus, primitive::Cylinder, primitive::Cone, TetBuffers>;
 template<typename T>
     requires MeshSchema::Has<T>
 inline constexpr state::TypeId state::Slot<T> = MeshSchema::Of<T>();

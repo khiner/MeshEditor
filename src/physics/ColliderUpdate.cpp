@@ -88,8 +88,9 @@ void RederiveColliders(state::Registry &r, std::span<const state::Entity> entiti
                         [](const primitive::Plane &s) -> PhysicsShape { return physics::Plane{s.HalfExtents.x * 2.f, s.HalfExtents.y * 2.f}; },
                         [](const primitive::IcoSphere &s) -> PhysicsShape { return physics::Sphere{s.Radius}; },
                         [](const primitive::UVSphere &s) -> PhysicsShape { return physics::Sphere{s.Radius}; },
+                        [](const primitive::QuadSphere &s) -> PhysicsShape { return physics::Sphere{s.Radius}; },
                         [](const primitive::Cylinder &s) -> PhysicsShape { return physics::Cylinder{s.Height, s.Radius, s.Radius}; },
-                        [](const primitive::Cone &s) -> PhysicsShape { return physics::Cylinder{s.Height, 0.f, s.Radius}; },
+                        [](const primitive::Cone &s) -> PhysicsShape { return physics::Cylinder{s.Height, s.TopRadius, s.Radius}; },
                         [](const auto &) -> PhysicsShape { return physics::ConvexHull{}; },
                     },
                     *prim

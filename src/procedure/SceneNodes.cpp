@@ -421,7 +421,7 @@ void DrawSceneAddMenu(const state::Registry &r, state::Entity network) {
         if (MenuItem("Collision filter")) action::Emit(action::physics::AddCollisionFilter{});
         if (MenuItem("Joint definition")) action::Emit(action::physics::AddJointDef{});
     } else {
-        const std::array<PrimitiveParameters, 8> primitives{primitive::Plane{}, primitive::Circle{}, primitive::Cube{}, primitive::UVSphere{}, primitive::IcoSphere{}, primitive::Torus{}, primitive::Cylinder{}, primitive::Cone{}};
+        const std::array<PrimitiveParameters, 9> primitives{primitive::Plane{}, primitive::Circle{}, primitive::Cube{}, primitive::UVSphere{}, primitive::IcoSphere{}, primitive::QuadSphere{}, primitive::Torus{}, primitive::Cylinder{}, primitive::Cone{}};
         for (const auto &primitive : primitives) {
             if (MenuItem(std::visit([]<typename K>(const K &) { return Title<K>.c_str(); }, primitive))) action::Emit(action::object::AddMeshPrimitive{primitive, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Scene = root, .BeginTranslate = false, .Network = container})});
         }

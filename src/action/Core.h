@@ -27,6 +27,10 @@ enum class BeautifyMethod : uint8_t;
 namespace procedure {
 enum class VectorComponent : uint8_t;
 } // namespace procedure
+namespace primitive {
+enum class FillType : uint8_t;
+enum class QuadSphereMethod : uint8_t;
+} // namespace primitive
 
 namespace action {
 struct OnActive {};
@@ -121,7 +125,7 @@ using Core = std::variant<
     Update<DebugChannel>, Update<AnisotropicFilterLevel>, Update<std::optional<MotionBlur>>,
     Update<mesh::DeleteMode>, Update<GeometryMergeMode>, Update<mesh::ExtrudeMode>, Update<mesh::DissolveMode>, Update<mesh::SymmetrizeAxis>,
     Update<mesh::EdgeLoopInterpolation>, Update<mesh::CircleFit>, Update<mesh::CurveElevation>, Update<mesh::FlattenMethod>, Update<mesh::BeautifyMethod>,
-    Update<AttributeType>, Update<AttributeDomain>, Update<VectorMathOp>, Update<FloatMathOp>, Update<CompareOp>, Update<BooleanMathOp>, Update<BooleanOperation>, Update<procedure::VectorComponent>,
+    Update<AttributeType>, Update<AttributeDomain>, Update<VectorMathOp>, Update<FloatMathOp>, Update<CompareOp>, Update<BooleanMathOp>, Update<BooleanOperation>, Update<procedure::VectorComponent>, Update<primitive::FillType>, Update<primitive::QuadSphereMethod>,
     DestroyEntity>;
 
 // Read an existing editable field as its typed Update action; invalid component/field addresses return nothing.

@@ -9,6 +9,7 @@ MeshData CreateMesh(const Circle &);
 MeshData CreateMesh(const Cube &);
 MeshData CreateMesh(const IcoSphere &);
 MeshData CreateMesh(const UVSphere &);
+MeshData CreateMesh(const QuadSphere &);
 MeshData CreateMesh(const Torus &);
 MeshData CreateMesh(const Cylinder &);
 MeshData CreateMesh(const Cone &);

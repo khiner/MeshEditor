@@ -59,13 +59,14 @@ template<> constexpr const char *Help<Source>{"Emits the mesh's source geometry"
 template<> constexpr const char *Help<Join>{"Appends the second input's geometry to the first"};
 template<> constexpr const char *Help<Boolean>{"Combines two closed meshes by union, difference, or intersection"};
 template<> constexpr const char *Help<primitive::Plane>{"Generates a rectangle in the XZ plane, facing +Y"};
-template<> constexpr const char *Help<primitive::Circle>{"Generates a disc of triangles in the XZ plane, facing +Y"};
+template<> constexpr const char *Help<primitive::Circle>{"Generates a circle in the XZ plane, facing +Y"};
 template<> constexpr const char *Help<primitive::Cube>{"Generates a box centered on the origin"};
 template<> constexpr const char *Help<primitive::IcoSphere>{"Generates a sphere by subdividing an icosahedron"};
 template<> constexpr const char *Help<primitive::UVSphere>{"Generates a sphere of slices around the Y axis and stacks along it"};
+template<> constexpr const char *Help<primitive::QuadSphere>{"Generates a sphere of quads by mapping a subdivided cube onto it"};
 template<> constexpr const char *Help<primitive::Torus>{"Generates a torus around the Y axis"};
-template<> constexpr const char *Help<primitive::Cylinder>{"Generates a capped cylinder along the Y axis, centered on the origin"};
-template<> constexpr const char *Help<primitive::Cone>{"Generates a capped cone along the Y axis, centered on the origin"};
+template<> constexpr const char *Help<primitive::Cylinder>{"Generates a cylinder along the Y axis, centered on the origin"};
+template<> constexpr const char *Help<primitive::Cone>{"Generates a cone or frustum along the Y axis, centered on the origin"};
 template<> constexpr const char *Help<action::mesh::Delete>{"Deletes the selected vertices, edges, or faces"};
 template<> constexpr const char *Help<action::mesh::Merge>{"Merges the selected vertices into one, or merges nearby pairs"};
 template<> constexpr const char *Help<action::mesh::Extrude>{"Extrudes the selected elements in place, joined to the geometry they came from"};

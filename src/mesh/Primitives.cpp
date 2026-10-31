@@ -14,18 +14,22 @@ MeshData CreateMesh(const Plane &p) {
     };
 }
 
-MeshData CreateMesh(const Circle &p) {
-    const auto [radius, n] = p;
-    auto vertices =
-        iota_view{0u, n} |
-        transform([radius, n](uint32_t i) { return vec3{radius * __cospi(2.f * i / n), 0, -radius * __sinpi(2.f * i / n)}; }) |
-        to<std::vector>();
-    vertices.emplace_back(0, 0, 0);
+// Close the loop `ring` lists, in its orientation, with one face or with triangles around a new vertex at `center`.
+void Close(MeshData &data, FillType fill, std::vector<uint32_t> ring, vec3 center) {
+    if (fill == FillType::Face) data.AddFace(ring);
+    if (fill == FillType::Fan) {
+        const auto c = uint32_t(data.Positions.size());
+        data.Positions.push_back(center);
+        for (uint32_t i = 0; i < ring.size(); ++i) data.AddFace(std::array{ring[i], ring[(i + 1) % ring.size()], c});
+    }
+}
 
-    return {
-        std::move(vertices),
-        iota_view{0u, n} | transform([n](uint32_t i) { return std::vector<uint32_t>{i, (i + 1) % n, n}; }) | to<std::vector>()
-    };
+MeshData CreateMesh(const Circle &p) {
+    const auto [radius, n, fill] = p;
+    MeshData data{iota_view{0u, n} | transform([radius, n](uint32_t i) { return vec3{radius * __cospi(2.f * i / n), 0, -radius * __sinpi(2.f * i / n)}; }) | to<std::vector>()};
+    Close(data, fill, iota_view{0u, n} | to<std::vector>(), {0, 0, 0});
+    if (fill == FillType::None) data.Edges = iota_view{0u, n} | transform([n](uint32_t i) { return std::array{i, (i + 1) % n}; }) | to<std::vector>();
+    return data;
 }
 
 MeshData CreateMesh(const Cube &p) {
@@ -139,6 +143,43 @@ MeshData CreateMesh(const UVSphere &p) {
     return {std::move(vertices), std::move(indices)};
 }
 
+MeshData CreateMesh(const QuadSphere &p) {
+    const auto [radius, n, method] = p;
+    // Each axis warps independently by the tangent of its angle from the face center, scaled so a face edge lands on the neighbor's face.
+    // The even-area angle, about 49.77 degrees, minimizes area distortion between quads.
+    const float angle = method == QuadSphereMethod::EvenAngle ? std::numbers::pi_v<float> / 4 : 0.8687f;
+    const auto warp = [angle, n, scale = 1.f / std::tan(angle)](uint32_t i) { return std::tan((2.f * i / n - 1.f) * angle) * scale; };
+
+    std::vector<vec3> vertices;
+    std::unordered_map<uint32_t, uint32_t> index;
+    const auto vertex = [&](std::array<uint32_t, 3> g) {
+        const auto [it, inserted] = index.try_emplace((g[0] * (n + 1) + g[1]) * (n + 1) + g[2], uint32_t(vertices.size()));
+        if (inserted) vertices.push_back(Normalize(vec3{warp(g[0]), warp(g[1]), warp(g[2])}) * radius);
+        return it->second;
+    };
+    std::vector<std::vector<uint32_t>> faces;
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+        const uint32_t b = (axis + 1) % 3, c = (axis + 2) % 3;
+        for (const uint32_t side : {n, 0u}) {
+            const auto at = [&](uint32_t bi, uint32_t cj) {
+                std::array<uint32_t, 3> g;
+                g[axis] = side;
+                g[b] = bi;
+                g[c] = cj;
+                return vertex(g);
+            };
+            for (uint32_t i = 0; i < n; ++i) {
+                for (uint32_t j = 0; j < n; ++j) {
+                    std::vector quad{at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)};
+                    if (side == 0) std::ranges::reverse(quad);
+                    faces.push_back(std::move(quad));
+                }
+            }
+        }
+    }
+    return {std::move(vertices), faces};
+}
+
 MeshData CreateMesh(const Torus &p) {
     const auto [major_radius, minor_radius, n_major, n_minor] = p;
     std::vector<vec3> vertices;
@@ -169,48 +210,32 @@ MeshData CreateMesh(const Torus &p) {
 }
 
 MeshData CreateMesh(const Cylinder &p) {
-    const auto [radius, height, slices] = p;
-    std::vector<vec3> vertices(2 * slices);
-    for (uint32_t i = 0; i < slices; i++) {
-        const float a = 2.f * i / slices;
-        const float x = __cospi(a), z = __sinpi(a);
-        vertices[i] = {x * radius, -height / 2, z * radius};
-        vertices[i + slices] = {x * radius, height / 2, z * radius};
-    }
-
-    std::vector<std::vector<uint32_t>> faces(slices + 2);
-    faces[0] = iota_view{0u, slices} | to<std::vector>();
-    for (uint32_t i = 0; i < slices; ++i) {
-        faces[i + 1] = {
-            i,
-            i + slices,
-            (i + 1) % slices + slices,
-            (i + 1) % slices,
-        };
-    }
-    // Reverse the top face to preserve outward winding.
-    faces[slices + 1] = iota_view{0u, slices} |
-        transform([slices](int i) { return slices + i; }) |
-        std::views::reverse | to<std::vector>();
-
-    return {std::move(vertices), std::move(faces)};
+    const auto [radius, height, slices, cap] = p;
+    return CreateMesh(Cone{radius, height, radius, slices, cap});
 }
 
 MeshData CreateMesh(const Cone &p) {
-    const auto [radius, height, slices] = p;
-    std::vector vertices =
-        iota_view{0u, slices} | transform([&](uint32_t i) {
-            return vec3{radius * __cospi(2.f * i / slices), -height / 2, radius * __sinpi(2.f * i / slices)};
-        }) |
-        to<std::vector>();
-    vertices.emplace_back(0, height / 2, 0);
+    const auto [radius, height, top_radius, slices, cap] = p;
+    // The base ring, then the top ring or the tip.
+    const bool tip = top_radius <= 0.f;
+    MeshData data;
+    const auto ring = [&](float r, float y) {
+        for (uint32_t i = 0; i < slices; ++i) data.Positions.emplace_back(r * __cospi(2.f * i / slices), y, r * __sinpi(2.f * i / slices));
+    };
+    ring(radius, -height / 2);
+    if (tip) data.Positions.emplace_back(0, height / 2, 0);
+    else ring(top_radius, height / 2);
 
-    std::vector<std::vector<uint32_t>> indices =
-        iota_view{0u, slices} |
-        transform([slices](uint32_t i) { return std::vector<uint32_t>{slices, (i + 1) % slices, i}; }) | to<std::vector>();
-    indices.emplace_back(iota_view{0u, slices} | to<std::vector>());
-
-    return {std::move(vertices), std::move(indices)};
+    const uint32_t top = slices;
+    Close(data, cap, iota_view{0u, slices} | to<std::vector>(), {0, -height / 2, 0});
+    for (uint32_t i = 0; i < slices; ++i) {
+        const uint32_t j = (i + 1) % slices;
+        if (tip) data.AddFace(std::array{i, top, j});
+        else data.AddFace(std::array{i, top + i, top + j, j});
+    }
+    // The top loop runs in reverse to face outward.
+    if (!tip) Close(data, cap, iota_view{0u, slices} | transform([top](uint32_t i) { return top + i; }) | std::views::reverse | to<std::vector>(), {0, height / 2, 0});
+    return data;
 }
 
 MeshData CreateMesh(const PrimitiveParameters &shape) {

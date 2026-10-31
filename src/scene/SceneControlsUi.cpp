@@ -658,6 +658,7 @@ void RenderControls(state::Registry &r) {
                     PrimitiveParameters{primitive::Cube{}},
                     PrimitiveParameters{primitive::IcoSphere{}},
                     PrimitiveParameters{primitive::UVSphere{}},
+                    PrimitiveParameters{primitive::QuadSphere{}},
                     PrimitiveParameters{primitive::Torus{}},
                     PrimitiveParameters{primitive::Cylinder{}},
                     PrimitiveParameters{primitive::Cone{}},
