@@ -26,8 +26,21 @@ struct PendingPanelState {
     bool StorageApplied{false}, ScrollApplied{false};
 };
 
+struct PanelVisibility {
+    bool SceneControls{true};
+    bool Timeline{true};
+    bool Style{true};
+    bool Info{true};
+    bool Parameters{true};
+    bool ImGuiDemo{false}, ImSpinnerDemo{false}, ImPlotDemo{false};
+    bool Debug{false};
+    bool History{true};
+    bool Nodes{true};
+};
+
 struct Panel {
-    const char *Name{""};
+    const char *Name;
+    bool PanelVisibility::*Flag; // The panel's flag in the workspace's PanelVisibility
     bool Visible{true};
 };
 
@@ -97,17 +110,17 @@ struct NodesPanel : Panel {
 
 struct PanelsState {
     Panel
-        SceneControls{"Scene controls"},
-        Timeline{"Timeline"},
-        Style{"Style"},
-        Info{"Info"},
-        Parameters{"Parameters"},
-        ImGuiDemo{"Dear ImGui Demo", false},
-        ImSpinnerDemo{"ImSpinner Demo", false},
-        ImPlotDemo{"ImPlot Demo", false},
-        Debug{"Debug", false};
-    HistoryPanel History{{"History"}};
-    NodesPanel Nodes{{"Nodes"}};
+        SceneControls{"Scene controls", &PanelVisibility::SceneControls},
+        Timeline{"Timeline", &PanelVisibility::Timeline},
+        Style{"Style", &PanelVisibility::Style},
+        Info{"Info", &PanelVisibility::Info},
+        Parameters{"Parameters", &PanelVisibility::Parameters},
+        ImGuiDemo{"Dear ImGui Demo", &PanelVisibility::ImGuiDemo, false},
+        ImSpinnerDemo{"ImSpinner Demo", &PanelVisibility::ImSpinnerDemo, false},
+        ImPlotDemo{"ImPlot Demo", &PanelVisibility::ImPlotDemo, false},
+        Debug{"Debug", &PanelVisibility::Debug, false};
+    HistoryPanel History{{"History", &PanelVisibility::History}};
+    NodesPanel Nodes{{"Nodes", &PanelVisibility::Nodes}};
     std::string PendingIni;
     std::vector<TabSelection> PendingTabs;
     std::vector<PendingPanelState> PendingPanels;
@@ -115,32 +128,18 @@ struct PanelsState {
     bool IniApplied{false}; // The ini loaded at the last frame end, so the windows it places appear this frame.
 };
 
-struct PanelVisibility {
-    bool SceneControls{true};
-    bool Timeline{true};
-    bool Style{true};
-    bool Info{true};
-    bool Parameters{true};
-    bool ImGuiDemo{false}, ImSpinnerDemo{false}, ImPlotDemo{false};
-    bool Debug{false};
-    bool History{true};
-    bool Nodes{true};
-};
-
-// Every panel in the order the Panels menu lists them, and each one's visibility flag.
-template<typename Panels> std::array<std::conditional_t<std::is_const_v<Panels>, const Panel *, Panel *>, 11> AllPanels(Panels &panels) {
-    return {&panels.History, &panels.Nodes, &panels.Parameters, &panels.Info, &panels.Style, &panels.Debug, &panels.ImGuiDemo, &panels.ImSpinnerDemo, &panels.ImPlotDemo, &panels.SceneControls, &panels.Timeline};
+// Every panel in the order the Panels menu lists them.
+template<typename Panels> auto AllPanels(Panels &panels) {
+    using P = std::conditional_t<std::is_const_v<Panels>, const Panel *, Panel *>;
+    return std::to_array<P>({&panels.History, &panels.Nodes, &panels.Parameters, &panels.Info, &panels.Style, &panels.Debug, &panels.ImGuiDemo, &panels.ImSpinnerDemo, &panels.ImPlotDemo, &panels.SceneControls, &panels.Timeline});
 }
-inline constexpr std::array PanelFlags{&PanelVisibility::History, &PanelVisibility::Nodes, &PanelVisibility::Parameters, &PanelVisibility::Info, &PanelVisibility::Style, &PanelVisibility::Debug, &PanelVisibility::ImGuiDemo, &PanelVisibility::ImSpinnerDemo, &PanelVisibility::ImPlotDemo, &PanelVisibility::SceneControls, &PanelVisibility::Timeline};
 
 inline PanelVisibility GetPanelVisibility(const PanelsState &panels) {
     PanelVisibility visibility;
-    const auto all = AllPanels(panels);
-    for (size_t i = 0; i < all.size(); ++i) visibility.*PanelFlags[i] = all[i]->Visible;
+    for (const auto *panel : AllPanels(panels)) visibility.*panel->Flag = panel->Visible;
     return visibility;
 }
 
 inline void SetPanelVisibility(PanelsState &panels, const PanelVisibility &visibility) {
-    const auto all = AllPanels(panels);
-    for (size_t i = 0; i < all.size(); ++i) all[i]->Visible = visibility.*PanelFlags[i];
+    for (auto *panel : AllPanels(panels)) panel->Visible = visibility.*panel->Flag;
 }
