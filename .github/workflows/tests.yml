@@ -7,6 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
+  # The hosted VM's paravirtual GPU has no Metal 4, so it runs the binaries that create no Metal context.
   test:
     runs-on: macos-26
     timeout-minutes: 60
@@ -34,16 +35,36 @@ jobs:
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build tests
-        run: cmake --build build --target MeshEditorTests MeshEditorAudioTest MeshEditorStoreTest MeshEditorGeometryTest MeshEditorProjectTest
+        run: cmake --build build --target MeshEditorAudioTest MeshEditorStoreTest
+
+      - name: Run tests
+        run: |
+          ./build/tests/MeshEditorAudioTest
+          ./build/tests/MeshEditorStoreTest
+
+  # The Metal tests run on a self-hosted Apple silicon machine, which only same-repository branches may use.
+  metal-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64, metal4]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+        env:
+          GIT_LFS_SKIP_SMUDGE: 1
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DMESHEDITOR_APP=OFF -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build tests
+        run: cmake --build build --target MeshEditorTests MeshEditorGeometryTest MeshEditorProjectTest
 
       - name: Run tests
         run: |
           ./build/tests/MeshEditorTests
-          ./build/tests/MeshEditorAudioTest
-          ./build/tests/MeshEditorStoreTest
           ./build/tests/MeshEditorGeometryTest
-          # The hosted VM's Metal encoder lacks the renderer's queue-barrier API.
-          ./build/tests/MeshEditorProjectTest --no-render
+          ./build/tests/MeshEditorProjectTest
 
   modal-corpus:
     runs-on: macos-26
