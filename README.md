@@ -27,12 +27,12 @@ Real-time mesh viewer and editor that converts meshes to rigid-body audio models
   - Explicit Transform, Extrude, Bevel, and Inset handles edit upstream parameters while the downstream result stays displayed
   - Hierarchy instances share a source definition with independent placement and visibility, including lights, cameras, rigs, animation, physics, and audio; make independent detaches the owned hierarchy
   - Procedural instancing accepts a hierarchy prototype, with generated objects available through the producer's inspector; mesh realization reports hierarchy inputs instead of discarding their contents
-  - Primitives (Plane, Circle, Cube, IcoSphere, UVSphere, QuadSphere, Torus, Cylinder, Cone) are generator nodes with editable parameters
+  - Primitives (Plane, Circle, Cube, IcoSphere, UVSphere, QuadSphere, Torus, Cylinder) are generator nodes with editable parameters
   - Load `.obj` and `.ply` mesh files (via [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply))
 * Select meshes, vertices, edges, or faces by clicking or box selection, through geometry with Blender's X-ray toggle (Alt+Z)
 * Blender-style edit-mode topology operators on the GPU
   - Delete (X), dissolve (Ctrl+X), merge (M), extrude (E), duplicate (Shift+D), split (Y), and separate (P)
-  - Fill (F), triangulate (Ctrl+T), tris to quads (Alt+J), loop cut (Ctrl+R), and rip (V)
+  - Fill (F), triangulate (Ctrl+T), tris to quads (Alt+J), loop cut and slide (Ctrl+R), and rip (V)
   - Mouse-sized inset (I), bevel edges (Ctrl+B) and vertices (Ctrl+Shift+B) with wheel or -/= segments, and knife cuts (K)
   - Right-click, Ctrl+V, Ctrl+E, and Ctrl+F menus list additional operators.
     These include subdivide, poke, edge split, rotate edge, bridge edge loops, grid fill, fill holes, and solidify.

@@ -1,6 +1,4 @@
-#ifndef EDITSHARPNESS_MSL
-#define EDITSHARPNESS_MSL
-
+#pragma once
 #include "ConnectivityRead.metal"
 #include "ElementWorkShared.metal"
 #include "gpu/EditSharpnessPushConstants.h"
@@ -9,7 +7,7 @@ struct EditSharpnessContext {
     device const BindlessSet &B;
     constant EditSharpnessPushConstants &Pc;
 
-    ConnectivityView Connectivity() const { return {B, Pc.Connectivity, Pc.FaceCount}; }
+    ConnectivityView Connectivity() const { return {B, Pc.Connectivity}; }
     bool VertexSelected(uint vertex_id) const {
         return WorkRank(B, Pc.VertexSelection, vertex_id) != InvalidOffset;
     }
@@ -19,13 +17,8 @@ struct EditSharpnessContext {
     void WriteVertexEdge(uint vertex_id, uint edge) const {
         if (edge == InvalidOffset) return;
         const auto conn = Connectivity();
-        const uint h = conn.EdgeHalfedge(edge);
-        device const uint *corners = BindlessBuffer(uint, B.IndexBuffer, Pc.CornersSlot);
-        const uint a = corners[conn.HalfedgeAddress(h)], b = corners[conn.HalfedgeAddress(conn.Previous(h))];
-        const uint other = a == vertex_id ? b : a;
-        // Adjacent selected vertices share an edge.
-        // Its lower selected endpoint owns the byte write.
-        // No concurrent stores to the same edge occur.
+        const uint other = conn.OtherEnd(conn.EdgeHalfedge(edge), vertex_id);
+        // Only the lower endpoint of an edge between selected vertices writes its byte, so no two lanes store to the same edge.
         if (other < vertex_id && VertexSelected(other)) return;
         WriteEdge(edge, Pc.Value);
     }
@@ -56,13 +49,11 @@ kernel void EditSharpnessKernel(
     const uint edge = WorkGroupElement(bindless,pc.EdgeWork,i);
     if (pc.Operation == EditSharpnessOperation::SmoothByAngle) {
         const auto conn = ctx.Connectivity();
-        const uint h = conn.EdgeHalfedge(edge), opposite = conn.Opposite(h);
-        if (opposite != InvalidOffset) {
+        const uint2 faces = conn.EdgeFaces(edge);
+        if (faces.x != InvalidOffset && faces.y != InvalidOffset) {
             device const packed_float3 *normals = BindlessBuffer(packed_float3, bindless.Buffer, pc.FaceNormalsSlot);
-            value = dot(float3(normals[conn.FaceAddress(conn.HalfedgeFace(h))]), float3(normals[conn.FaceAddress(conn.HalfedgeFace(opposite))])) < pc.CosAngle ? 1u : 0u;
+            value = dot(float3(normals[conn.FaceAddress(faces.x)]), float3(normals[conn.FaceAddress(faces.y)])) < pc.CosAngle ? 1u : 0u;
         }
     }
     ctx.WriteEdge(edge, value);
 }
-
-#endif

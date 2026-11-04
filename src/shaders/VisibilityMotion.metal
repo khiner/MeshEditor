@@ -1,6 +1,4 @@
-#ifndef VISIBILITYMOTION_MSL
-#define VISIBILITYMOTION_MSL
-
+#pragma once
 #include "VisibilityDecode.metal"
 #include "gpu/MotionBlurTilesFlattenPushConstants.h"
 
@@ -16,7 +14,7 @@ inline float3 ShutterPosition(const thread Scene &scene, DrawData draw, uint ver
     return apply_object_pending_transform(scene, draw, trs_transform_point(MeshletWorld(scene, draw), position));
 }
 
-// Reject shutter endpoints behind the camera instead of producing unbounded or NaN streaks.
+// A shutter endpoint behind the camera gives zero motion instead of an unbounded or NaN streak.
 inline float2 ShutterMotion(float2 uv, float4 clip) {
     return clip.w > 1e-6f && all(isfinite(clip)) ? uv - ndc_to_uv(clip.xy / clip.w) : float2(0.0f);
 }
@@ -30,7 +28,6 @@ inline float4 VisibilityMotion(
     const float3 world = homogeneous.xyz / homogeneous.w;
     float4 prev_world = float4(world, 1.0f), next_world = prev_world;
     if (id == VisibilityBackground) {
-        // An orthographic world background is a uniform direction, with no screen-space motion.
         if (pc.CameraMotion == 0u || scene.View.ScreenPixelScale < 0.0f) return float4(0.0f);
         prev_world = next_world = float4(WorldBackgroundDirection(scene, ndc), 0.0f);
     } else {
@@ -41,7 +38,6 @@ inline float4 VisibilityMotion(
         const bool deformed = draw.BoneDeformOffset != InvalidOffset || draw.MorphDeformOffset != InvalidOffset;
         if (!deformed && SameTransform(current, prev) && SameTransform(current, after)) {
             if (pc.CameraMotion == 0u) return float4(0.0f);
-            // Static geometry needs only depth reprojection, regardless of its tessellation.
         } else if (!deformed && scene.View.IsTransforming == 0u && all(abs(float3(current.S)) > 1e-20f)) {
             const float3 local = trs_inverse_transform_point(current, world);
             prev_world = float4(trs_transform_point(prev, local), 1.0f);
@@ -68,5 +64,3 @@ inline float4 VisibilityMotion(
     }
     return float4(-ShutterMotion(uv, previous.ViewProj() * prev_world), ShutterMotion(uv, next.ViewProj() * next_world));
 }
-
-#endif

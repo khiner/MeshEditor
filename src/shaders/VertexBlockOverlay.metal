@@ -1,6 +1,4 @@
-#ifndef VERTEXBLOCKOVERLAY_MSL
-#define VERTEXBLOCKOVERLAY_MSL
-
+#pragma once
 #include "ElementOverlay.metal"
 #include "VertexBlocks.metal"
 
@@ -18,7 +16,6 @@ using VertexBlockSelectOutput = metal::mesh<ElementIdVaryings, void, VertexBlock
 ) {
     threadgroup uint simd_counts[VertexBlockSimdGroups];
     const Scene scene{bindless, view, theme, workspace};
-    // Use PointSize pixels and the same camera depth bias as EditPointSprite.
     const VertexBlockLane work = ResolveVertexBlockLane(scene, pc, group.x, thread_index, PointSize * 0.5f + 0.5f, NdcOffsetFactor(scene) * 1.5f);
     const uint state = work.VertexId != InvalidOffset ? EditVertexState(scene, work.Draw, work.VertexId) : 0u;
     const bool present = work.VertexId != InvalidOffset && (pc.SoundPoints == 0u || (state & STATE_SELECTED) != 0u);
@@ -65,5 +62,3 @@ using VertexBlockSelectOutput = metal::mesh<ElementIdVaryings, void, VertexBlock
     output.set_vertex(compact.x, out);
     output.set_index(compact.x, compact.x);
 }
-
-#endif

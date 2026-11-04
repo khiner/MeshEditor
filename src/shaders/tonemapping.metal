@@ -1,8 +1,5 @@
-// Adapted from KhronosGroup/glTF-Sample-Renderer (tonemapping.glsl)
-
-#ifndef TONEMAPPING_MSL
-#define TONEMAPPING_MSL
-
+#pragma once
+// Adapted from KhronosGroup/glTF-Sample-Renderer tonemapping.glsl.
 #include <metal_stdlib>
 using namespace metal;
 
@@ -31,7 +28,5 @@ inline float3 toneMapPBRNeutral(float3 color) {
     return mix(color, float3(newPeak), g);
 }
 
-// Display transform: tone map, then sRGB encode.
 inline float3 linearToDisplay(float3 color) { return linearTosRGB(toneMapPBRNeutral(color)); }
 
-#endif

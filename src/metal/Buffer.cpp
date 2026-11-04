@@ -25,6 +25,7 @@ void CopyBytes(std::byte *destination, const std::byte *source, uint64_t bytes) 
 BufferContext::BufferContext(const Context &ctx, BindlessSet &slots) : Ctx(ctx), Slots(slots) {}
 BufferContext::~BufferContext() {
     const AutoreleaseScope pool;
+    const Context::TeardownScope teardown{Ctx};
     ReclaimRetiredBuffers(true);
     AutoreleaseScope::Release(WorkspaceCache, Retirements, Retired);
 }
@@ -69,7 +70,7 @@ void BufferContext::ReclaimRetiredBuffers(bool wait) {
     bool released = false;
     if (!Retired.empty()) {
         // Mapping work can still be pending after the last render submit.
-        // Publish it before fencing the storage and slots that it references.
+        // It commits before the fence over the storage and slots it references.
         Ctx.CommitResidency();
         FenceRetiredBuffers(Ctx.LatestSerial());
     }
@@ -100,7 +101,6 @@ void BufferContext::ReleaseRetiredBuffers(size_t first) {
 uint32_t BufferContext::AllocateSlot(SlotType type) {
     const auto slot = Slots.TryAllocate(type);
     if (slot != InvalidSlot) return slot;
-    // Reclaim retired slots before growing a full table.
     if (!Retirements.empty() || !Retired.empty()) ReclaimRetiredBuffers(true);
     return Slots.Allocate(type);
 }
@@ -218,7 +218,7 @@ void Buffer::Reserve(uint64_t required_size) {
         const AutoreleaseScope pool;
         auto next = Ctx.AcquireWorkspace(required_size, Contents().first(UsedSize));
         // An encoder may retain a direct binding made before this growth.
-        // Keep old allocations owned until the workspace's consumers retire.
+        // Old allocations stay owned until the workspace's consumers retire.
         if (Workspace) PreviousWorkspaces.push_back({std::move(Workspace), UsedSize});
         Workspace = std::move(next);
         UpdateSlot();
@@ -230,7 +230,7 @@ void Buffer::Reserve(uint64_t required_size) {
         Storage->Reserve(required_size);
     } catch (...) {
         // Growth can replace the GPU address before a later page allocation fails.
-        // Keep the bindless entry valid for the original resident data.
+        // The slot update keeps the bindless entry valid for the resident data.
         if (previous != **this) UpdateSlot();
         throw;
     }
@@ -261,7 +261,6 @@ void Buffer::CaptureWritePages(std::span<const uint32_t> pages) const {
     }
     if (!Tracked) return;
     const profile::CpuScope scope{"HistoryCapturePages"};
-    // Each run of consecutive pages captures in one trie descent.
     ForEachIndexRun(pages, [&](size_t first, size_t count) {
         Tracked->Write(uint64_t(pages[first]) * HistoryPageBytes, uint64_t(count) * HistoryPageBytes);
     });

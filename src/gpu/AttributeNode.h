@@ -1,7 +1,7 @@
 #pragma once
 
+#include "gpu/ElementWork.h"
 #include "gpu/NamedAttributeRef.h"
-#include "gpu/SlotOffset.h"
 
 enum class VectorMathOp : uint32_t {
     Add,
@@ -39,10 +39,9 @@ enum class BooleanMathOp : uint32_t {
     Xor,
 };
 
-// Where an attribute node input reads each element's value.
 enum class AttributeSource : uint32_t {
-    Constant, // Value at every element
-    Named, // Attribute's value at the element
+    Constant,
+    Named,
     Positions, // Vertex position in the vertex arena at Slot
     Vectors, // Packed float3 at the element's arena address in the buffer at Slot
     Ordinal, // Element's rank among the record's live elements of the domain
@@ -52,13 +51,12 @@ struct AttributeInput {
     AttributeType Type DEFAULT(AttributeType::Float);
     NamedAttributeRef Attribute DEFAULT();
     uint32_t Slot DEFAULT(InvalidSlot);
-    GpuArray<uint32_t, 4> Value DEFAULT(); // The constant's component words
+    GpuArray<uint32_t, 4> Value DEFAULT();
 };
 
 // One attribute node evaluated at every live element of a record's domain, one thread per element slot of its blocks.
 struct AttributeNodePushConstants {
-    SlotOffset Blocks; // The record's ascending domain blocks, followed by their inclusive live prefix
-    uint32_t BlockCount, MembershipSlot;
+    DomainBlocks Blocks;
     AttributeInput A, B;
     NamedAttributeRef Output;
     AttributeType OutputType;

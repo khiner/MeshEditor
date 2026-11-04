@@ -1,10 +1,7 @@
-#ifndef MESHTOPOLOGYLIMITED_MSL
-#define MESHTOPOLOGYLIMITED_MSL
-
+#pragma once
 #include "MeshTopologyContext.metal"
 
-// An edge's two face users can disagree in any UV set or material, or carry an explicit sharp mark.
-// These are canonical arena reads over affected edges.
+// Whether the job's delimit flags stop a dissolve at an edge: a sharp mark, or face users that differ in material or in any UV set.
 inline bool TopoLimitedDelimiter(TopoContext ctx,MeshTopologyJob job,uint h,uint opposite) {
     if ((job.Flags&TopologyFlagDelimitSharp) && ctx.SrcEdgeSharpness(job)[ctx.SrcEdge(job,h)]) return true;
     // Primitive indices are the mesh's material slots, including distinct slots that currently reference the same material.
@@ -28,13 +25,12 @@ inline TopoLimitedWork TopoLimited(TopoContext ctx,MeshTopologyJob job) {
     return {reinterpret_cast<device packed_uint2 *>(base),base+2u*job.SrcVertexCount,base+3u*job.SrcVertexCount};
 }
 
-// Build chains of selected degree-two vertices.
-// Their endpoints, branches and unselected vertices stay outside the chains and are never written by them.
+// Links each selected vertex left with two edges into a chain, labeled by itself.
 inline void TopoLimitedPrepare(TopoContext ctx,MeshTopologyJob job,uint v) {
     const auto work=TopoLimited(ctx,job);
     work.Labels[v]=InvalidOffset;
     if ((job.Param0<=0.f && !(job.Flags&TopologyFlagAllBoundaries)) || !ctx.SrcSelectedVertex(job,v) ||
-        ctx.VertexEdgeTotal(job)[v]-ctx.VertexEdgeDissolved(job)[v]!=2u) return;
+        TopoRemainingEdges(ctx,job,v)!=2u) return;
     const auto src=ctx.Src(job);
     uint2 neighbors=uint2(InvalidOffset);
     uint first_edge=InvalidOffset,count=0u;
@@ -48,7 +44,7 @@ inline void TopoLimitedPrepare(TopoContext ctx,MeshTopologyJob job,uint v) {
             const uint e=src.Edge(h);
             if (e==first_edge) continue;
             const auto corners=ctx.SrcCorners(job);
-            const uint a=corners[h],b=corners[ctx.SrcPrev(job,h)];
+            const uint a=corners[h],b=ctx.SrcFrom(job, h);
             if (count<2u) neighbors[count++]=a==v ? b : a;
             first_edge=e;
         }
@@ -60,7 +56,7 @@ inline void TopoLimitedPrepare(TopoContext ctx,MeshTopologyJob job,uint v) {
 
 inline void TopoLimitedJump(TopoContext ctx,MeshTopologyJob job,uint v) {
     const auto work=TopoLimited(ctx,job);
-    device atomic_uint *labels=ctx.Atomic(work.Labels);
+    device atomic_uint *labels=AtomicWord(work.Labels);
     const uint old=atomic_load_explicit(labels+v,memory_order_relaxed);
     if (old==InvalidOffset) return;
     const uint2 neighbors=uint2(work.Neighbors[v]);
@@ -70,10 +66,7 @@ inline void TopoLimitedJump(TopoContext ctx,MeshTopologyJob job,uint v) {
     if (atomic_fetch_min_explicit(labels+v,root,memory_order_relaxed)>root) ctx.State(job)[1]=1u;
 }
 
-// One GPU thread owns each chain.
-// A removal changes only its two neighbors, which re-enter the queue if needed.
-// Bound queue visits by N initial vertices plus two neighbors per removal.
-// Recheck angles after each removal to preserve accumulated curvature.
+// The chain root's thread dissolves the chain's vertices whose turn stays within the angle limit.
 inline void TopoLimitedSimplify(TopoContext ctx,MeshTopologyJob job,uint root) {
     if (!(ctx.State(job)[0]&TopoLabelsConverged)) return;
     const auto work=TopoLimited(ctx,job);
@@ -100,7 +93,7 @@ inline void TopoLimitedSimplify(TopoContext ctx,MeshTopologyJob job,uint root) {
         head=work.Queue[v]; if (head==InvalidOffset) tail=InvalidOffset;
         flags[v]&=~TopoLimitedQueued;
         const uint2 neighbors=uint2(work.Neighbors[v]);
-        if (neighbors.x==neighbors.y || ctx.VertexEdgeTotal(job)[v]-ctx.VertexEdgeDissolved(job)[v]!=2u) continue;
+        if (neighbors.x==neighbors.y || TopoRemainingEdges(ctx,job,v)!=2u) continue;
         if (!(job.Flags&TopologyFlagAllBoundaries)) {
             const float3 p=ctx.SrcPosition(job,v),a=ctx.SrcPosition(job,neighbors.x)-p,b=ctx.SrcPosition(job,neighbors.y)-p;
             const float product=length_squared(a)*length_squared(b);
@@ -118,5 +111,3 @@ inline void TopoLimitedSimplify(TopoContext ctx,MeshTopologyJob job,uint root) {
         }
     }
 }
-
-#endif

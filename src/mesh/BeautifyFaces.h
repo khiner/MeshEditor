@@ -1,5 +1,8 @@
 #pragma once
 #include "mesh/MeshTopology.h"
 struct Mesh;
-// Plans only connectivity; positions remain in the canonical UMA vertex buffer.
-std::optional<MeshTopologyTask> BeautifyFaceTask(const Mesh &, const GeometrySelection &, bool angle);
+namespace state {
+struct Registry;
+}
+// Rotates the selected triangles' shared edges until each quad they form passes the Delaunay empty-circle test.
+std::optional<MeshTopologyTask> BeautifyFaceTask(state::Registry &, const Mesh &, const GeometrySelection &);

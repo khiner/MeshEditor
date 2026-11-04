@@ -1,10 +1,7 @@
-#ifndef MESHTOPOLOGYFACESPLIT_MSL
-#define MESHTOPOLOGYFACESPLIT_MSL
-
+#pragma once
 #include "MeshTopologyFaces.metal"
 
 // A face owns at most n-2 polygons and 3n-6 loop nodes.
-// Count builds this plan once for nonplanar splitting or convex partitioning; scatter consumes it.
 struct FaceSplitPolygons {
     device uint *Source, *Next, *Prev, *Start, *Length;
     device packed_float3 *Positions;
@@ -123,7 +120,6 @@ inline uint3 TopoNonplanarCount(TopoContext ctx, MeshTopologyJob job, uint f) {
             }
         }
         if (best.x == InvalidOffset || angle_cos >= threshold) { ++face; continue; }
-        // Keep a..b in this polygon and b..a in the appended one.
         const uint a_copy = nodes++, b_copy = nodes++;
         const uint before_a = plan.Prev[best.x], after_b = plan.Next[best.y];
         plan.Source[a_copy] = plan.Source[best.x];
@@ -156,4 +152,3 @@ inline void TopoFaceSplitEmit(TopoContext ctx, MeshTopologyJob job, uint f, uint
         base += count;
     }
 }
-#endif

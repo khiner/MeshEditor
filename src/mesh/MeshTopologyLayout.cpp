@@ -1,4 +1,5 @@
 #include "mesh/MeshTopologyLayout.h"
+#include "gpu/PolygonTriangulation.h"
 #include "mesh/ScratchChunks.h"
 
 namespace {
@@ -6,7 +7,8 @@ uint32_t GpuCount(uint64_t count) {
     if (count > UINT32_MAX) throw std::length_error("Topology reservation exceeds the GPU's 32-bit element or scratch address space.");
     return uint32_t(count);
 }
-uint32_t Cuts(float value) {
+uint32_t Cuts(uint32_t flags, float value) {
+    if (flags & TopologyFlagSingleCut) return 1u;
     if (!std::isfinite(value) || double(value) > double(UINT32_MAX)) throw std::length_error("Topology cut count is outside the GPU address space.");
     return value < 1.f ? 1u : uint32_t(value);
 }
@@ -17,8 +19,7 @@ MeshStore::TopologyCounts TopologyOutputBounds(const MeshTopologyTask &task, Mes
     const auto counts = [](uint64_t v, uint64_t h, uint64_t f) {
         return MeshStore::TopologyCounts{GpuCount(v), GpuCount(h), GpuCount(f)};
     };
-    // Welding can split faces at repeated targets and leave loose edges.
-    // Each face keeps at least three of the source corners.
+    // Welding can leave loose edges, and each face keeps at least three of the source corners.
     if (TopologyIsMerge(task.Op)) return counts(V, 2 * H, F ? H / 3u : 0u);
     switch (TopologyBaseOp(task.Op)) {
         case MeshTopologyOp::DeleteVertices:
@@ -38,11 +39,13 @@ MeshStore::TopologyCounts TopologyOutputBounds(const MeshTopologyTask &task, Mes
         case MeshTopologyOp::ExtrudeFacesIndividual: return counts(V + H, 5 * H, F + H);
         case MeshTopologyOp::Wireframe: return counts(4 * V + H, 17 * H, F + 4 * H);
         case MeshTopologyOp::Subdivide: {
-            const uint64_t c = (task.Flags & (TopologyFlagPlaneCuts | TopologyFlagListCuts | TopologyFlagScreenCuts)) ? 1u : Cuts(task.Param0);
+            const uint64_t c = Cuts(task.Flags, task.Param0);
             const uint64_t width = GpuCount(c + 1);
             const auto rows = GpuCount(width * width), inner = GpuCount(c * c);
             const auto face_rows = GpuCount(uint64_t(rows) * F), hc = GpuCount(H * c);
-            return counts(V + hc + GpuCount(uint64_t(inner) * F), 4ull * face_rows + H + 2ull * hc, uint64_t(face_rows) + hc + F);
+            // A partition fills a quad with twice a grid's triangles, and face points add a quad per corner.
+            const uint64_t partition = (task.Flags & TopologyFlagListCounts) ? face_rows : 0u, quads = (task.Flags & TopologyFlagFacePoints) ? H : 0u;
+            return counts(V + hc + GpuCount(uint64_t(inner) * F) + F, 4ull * face_rows + H + 2ull * hc + 6ull * partition + 4ull * quads, uint64_t(face_rows) + hc + F + 2ull * partition + quads);
         }
         case MeshTopologyOp::Triangulate:
         case MeshTopologyOp::SplitNonplanarFaces:
@@ -107,6 +110,8 @@ MeshStore::TopologyCounts TopologyOutputBounds(const MeshTopologyTask &task, Mes
         }
         case MeshTopologyOp::ConnectVertices:
         case MeshTopologyOp::RotateEdges: return counts(V, 3 * H, H);
+        // Each lattice point owns seven edges and six tetrahedra of up to two triangles.
+        case MeshTopologyOp::LevelSet: return counts(7 * V, 36 * V, 12 * V);
         default: return source;
     }
 }
@@ -121,7 +126,6 @@ uint32_t TopologyTableWords(MeshTopologyOp op, MeshStore::TopologyCounts source)
 }
 
 // Allocate scratch runs from `base` and return their total word count.
-// Unused operator runs consume zero words.
 uint32_t LayoutTopologyScratch(MeshTopologyJob &job, MeshStore::TopologyCounts source, MeshStore::TopologyCounts bounds, uint32_t base) {
     const auto op = job.Op;
     const uint64_t V = source.Vertices, H = source.Halfedges, F = source.Faces;
@@ -142,33 +146,34 @@ uint32_t LayoutTopologyScratch(MeshTopologyJob &job, MeshStore::TopologyCounts s
     job.VertexTargetOffset = take(V);
     job.FlagHalfedgeOffset = take(H);
     job.FlagFaceOffset = take(F);
-    job.CountsOffset = take(4ull * job.CountEntries);
-    job.CountBlockOffset = take(4ull * job.CountBlockCount);
-    job.VertexMapOffset = take(std::max(6ull * bounds.Vertices, bounds.Faces ? 4ull * bounds.Halfedges : 0ull));
+    job.CountsOffset = take(uint64_t(TopologyCountQuantities) * job.CountEntries);
+    job.CountBlockOffset = take(uint64_t(TopologyCountQuantities) * job.CountBlockCount);
+    job.VertexMapOffset = take(std::max(6ull * bounds.Vertices, bounds.Faces ? 2ull * PolygonTriangulationWords * bounds.Halfedges : 0ull));
     job.CornerMapOffset = take(8ull * bounds.Halfedges);
     job.FaceMapOffset = take(bounds.Faces);
     job.CornerProvenanceOffset = take(job.CornerAttributes & MeshAttributeBit_Normal ? 2ull * bounds.Halfedges : 0u);
     job.LabelOffset = take(TopologyIterates(op) ? 4 * F + 2 * V : 0u);
-    // Triangulation keeps its per-face ear links and projected corners in source-halfedge scratch, so polygon valence has no fixed shader limit.
-    job.HalfedgeAuxOffset = take(op == MeshTopologyOp::ExtrudeRegion ? 2ull * H : op == MeshTopologyOp::Wireframe                                                                                                                 ? 2ull * H :
-                                     op == MeshTopologyOp::Triangulate || op == MeshTopologyOp::SplitConcaveFaces                                                                                                                 ? 4ull * H :
-                                     op == MeshTopologyOp::EdgeSplit || (TopologyMapsWireEdges(op) && op != MeshTopologyOp::Subdivide) || (job.Flags & (TopologyFlagListCuts | TopologyFlagListSelects | TopologyFlagScreenCuts)) ? H :
-                                                                                                                                                                                                                                    0u);
+    // Triangulation keeps ear links, projected corners and ear costs per source halfedge, so polygon valence has no shader limit.
+    job.HalfedgeAuxOffset = take(op == MeshTopologyOp::ExtrudeRegion ? 2ull * H : op == MeshTopologyOp::Wireframe                                                                                        ? 2ull * H :
+                                     op == MeshTopologyOp::Triangulate || op == MeshTopologyOp::SplitConcaveFaces                                                                                        ? 2ull * PolygonTriangulationWords * H :
+                                     op == MeshTopologyOp::EdgeSplit || (TopologyMapsWireEdges(op) && op != MeshTopologyOp::Subdivide) || (job.Flags & (TopologyFlagEdgeLists | TopologyFlagScreenCuts)) ? H :
+                                                                                                                                                                                                           0u);
     job.WireEdgeMapOffset = op == MeshTopologyOp::Subdivide || op == MeshTopologyOp::ExtrudeRegion ? take(H) : job.HalfedgeAuxOffset;
     const uint64_t split_width = op == MeshTopologyOp::Subdivide ?
-        uint64_t((job.Flags & (TopologyFlagPlaneCuts | TopologyFlagListCuts | TopologyFlagScreenCuts)) ? 1u : Cuts(job.Param0)) + 1u :
+        uint64_t(Cuts(job.Flags, job.Param0)) + 1u :
         1u;
     job.FaceLoopOffset = take(TopologyIsDissolve(op) && TopologyJoinsLines(op) ? ((F ? H : 0ull) + (op == MeshTopologyOp::DissolveLimited ? 4ull * V : 0ull)) : TopologyIsMerge(op) ? (F ? 14ull * H : 0ull) :
                                   op == MeshTopologyOp::SplitConcaveFaces                                                                                                           ? 29ull * H :
                                   op == MeshTopologyOp::SplitNonplanarFaces                                                                                                         ? 14ull * H :
                                   op == MeshTopologyOp::Subdivide                                                                                                                   ? 12ull * H * split_width :
                                                                                                                                                                                       0u);
+    job.TangentOffset = take(op == MeshTopologyOp::Subdivide && (job.Flags & TopologyFlagBezier) ? 5ull * H : 0u);
     job.TableOffset = take(table);
     uint64_t collapse_words = 0;
     if (op == MeshTopologyOp::MergeCollapse && job.CollapseCount) {
         const uint64_t n = job.CollapseCount;
-        collapse_words = 3u * n + 16u * ((n + 255u) / 256u) + 16u;
-        for (uint64_t level = n;; level = (level + 255u) / 256u) {
+        collapse_words = 3u * n + 16u * TileCount(n, TileElements) + 16u;
+        for (uint64_t level = n;; level = TileCount(level, TileElements)) {
             collapse_words += 4u * level;
             if (level <= 256u) break;
         }

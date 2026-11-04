@@ -1,6 +1,4 @@
-#ifndef VERTEXTRANSFORM_MSL
-#define VERTEXTRANSFORM_MSL
-
+#pragma once
 #include "CornerNormalOffset.metal"
 #include "SceneUBO.metal"
 #include "Varyings.metal"
@@ -10,10 +8,10 @@
 #include "TransformUtils.metal"
 #include "EditSelection.metal"
 
-// Rebuild from current local polygon positions so offsets follow deformation.
+// Decodes the offset in the corner frame of the current local positions, so offsets follow deformation.
 inline float3 ApplyNormalOffset(const thread Scene &scene, DrawData draw, uint vertex_id, float3 normal, float2 offset) {
     const uint h = vertex_id;
-    const ConnectivityView conn{scene.B, draw.Connectivity, draw.FaceCount};
+    const ConnectivityView conn{scene.B, draw.Connectivity};
     const auto position = [&](uint corner) { return scene.GetLocalPosition(draw, scene.CornerVertex(draw, corner)); };
     return DecodeNormalOffset(offset, ComputeCornerFrame(normal, position(h), position(conn.Next(h)), position(conn.Previous(h))));
 }
@@ -42,20 +40,19 @@ inline float3 CornerNormal(
         const float2 offset = CustomNormalOffset(scene.B, draw.CustomNormals, vertex_id);
         if (offset.x >= 0.f) normal = ApplyNormalOffset(scene, draw, vertex_id, normal, offset);
     }
-    // glTF morphed normal: normalize(N0 + sum(w_t * NormalDelta_t)).
+    // The glTF morphed normal is normalize(N0 + sum(w_t * NormalDelta_t)).
     if (draw.MorphShadingAuthored != 0u) {
         normal = NormalizeOrZero(normal + float3(scene.PosedMorphNormalDeltas(scene.View.PosedMorphNormalDeltaSlot)[PoseAttributeIndex(scene.B, scene.View.PosedMorphNormalNodesSlot, draw.MorphNormalNamespace, scene.VertexAddress(draw, idx))]));
     }
     return normal;
 }
 
-// `vertex_id` and `vertex_index` name a face draw's corner and another draw's vertex, and `idx` the vertex.
+// `vertex_id` and `vertex_index` hold a face draw's corner and another draw's vertex, and `idx` holds the vertex.
 inline MeshVaryings TransformVertex(
     const thread Scene &scene, DrawData draw, uint vertex_id, uint vertex_index, uint idx,
     bool face_attributes = true, bool shading_normal = true,
     bool coarse = false, float3 coarse_normal = float3(0.0f)
 ) {
-    // Motion-blur steps use captured transforms without modifying DrawData.
     const uint model_slot = scene.View.ModelSlotOverride != InvalidSlot ? scene.View.ModelSlotOverride : draw.ModelSlot;
     const Transform world = scene.Models(model_slot)[draw.FirstInstance];
 
@@ -66,7 +63,6 @@ inline MeshVaryings TransformVertex(
     const bool is_face_draw = draw.TriangleSlot != InvalidSlot;
     float3 normal = is_face_draw ? float3(0) : scene.GetVertexNormal(draw, idx);
     if (is_face_draw && (face_attributes || shading_normal)) {
-        // Coarse-cluster corners have no source-face identity.
         if (!coarse) face_id = scene.CornerFace(draw, vertex_index);
         if (shading_normal) normal = CornerNormal(scene, draw, vertex_id, idx, face_id, coarse, coarse_normal);
         if (face_attributes && face_id != InvalidOffset) element_state = EditFaceState(scene, draw, face_id);
@@ -145,5 +141,3 @@ inline MeshVaryings TransformVertex(
         .WorldScale = face_attributes ? (world_scale.x + world_scale.y + world_scale.z) / 3.0f : 0.0f,
     };
 }
-
-#endif

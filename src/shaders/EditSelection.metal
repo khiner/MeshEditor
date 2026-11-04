@@ -1,6 +1,4 @@
-#ifndef EDITSELECTION_MSL
-#define EDITSELECTION_MSL
-
+#pragma once
 #include "ConnectivityRead.metal"
 #include "gpu/EditSelectionSummary.h"
 
@@ -32,7 +30,7 @@ inline EditSelectionSummary EditSelectionInfo(const thread Scene &scene, DrawDat
 inline bool EditVertexTouchesActive(const thread Scene &scene, DrawData draw, uint vertex_id, EditSelectionSummary summary) {
     if (summary.ActiveHandle == InvalidOffset) return false;
     if (summary.Mode == Element::Vertex) return vertex_id == summary.ActiveHandle;
-    const ConnectivityView conn{scene.B, draw.Connectivity, draw.FaceCount};
+    const ConnectivityView conn{scene.B, draw.Connectivity};
     for (const auto item : conn.Fan(vertex_id)) {
         const uint h = item.x;
         if (summary.Mode == Element::Face) {
@@ -49,17 +47,10 @@ inline uint EditVertexState(const thread Scene &scene, DrawData draw, uint verte
         (EditVertexTouchesActive(scene, draw, vertex_id, summary) ? STATE_ACTIVE : 0u);
 }
 
-inline ConnectivityView EditConnectivity(const thread Scene &scene, DrawData draw) {
-    return {scene.B, draw.Connectivity, draw.FaceCount};
-}
-
 inline bool EditEdgeTouchesActiveFace(const thread Scene &scene, DrawData draw, uint edge, uint active_face) {
     if (draw.FaceCount == 0u) return false;
-    const auto conn = EditConnectivity(scene, draw);
-    const uint halfedge = conn.EdgeHalfedge(edge);
-    if (conn.HalfedgeFace(halfedge) == active_face) return true;
-    const uint opposite = conn.Opposite(halfedge);
-    return opposite != InvalidOffset && conn.HalfedgeFace(opposite) == active_face;
+    const ConnectivityView conn{scene.B, draw.Connectivity};
+    return any(conn.EdgeFaces(edge) == active_face);
 }
 
 inline uint EditEdgeEndpointState(const thread Scene &scene, DrawData draw, uint edge, uint vertex_id) {
@@ -80,5 +71,3 @@ inline uint EditFaceState(const thread Scene &scene, DrawData draw, uint face) {
     return (EditSelectionBit(scene, draw.Selection.FaceBits, scene.FaceAddress(draw, face)) ? STATE_SELECTED : 0u) |
         (summary.Mode == Element::Face && summary.ActiveHandle == face ? STATE_ACTIVE : 0u);
 }
-
-#endif

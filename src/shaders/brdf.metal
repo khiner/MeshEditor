@@ -1,8 +1,5 @@
+#pragma once
 // Adapted from KhronosGroup/glTF-Sample-Renderer (brdf.glsl)
-
-#ifndef BRDF_MSL
-#define BRDF_MSL
-
 #include <metal_stdlib>
 using namespace metal;
 
@@ -32,8 +29,6 @@ inline float3 BRDF_specularGGX(float alpha_roughness, float NdotL, float NdotV, 
     return float3(V_GGX(NdotL, NdotV, alpha_roughness) * D_GGX(NdotH, alpha_roughness));
 }
 
-// KHR_materials_anisotropy — anisotropic GGX BRDF.
-// Adapted from KhronosGroup/glTF-Sample-Renderer (brdf.glsl).
 inline float D_GGX_anisotropic(float NdotH, float TdotH, float BdotH, float at, float ab) {
     const float a2 = at * ab;
     const float3 f = float3(ab * TdotH, at * BdotH, a2 * NdotH);
@@ -58,7 +53,6 @@ inline float3 BRDF_specularGGXAnisotropy(float alpha_roughness, float anisotropy
     );
 }
 
-// KHR_materials_sheen — Charlie sheen BRDF.
 // Estevez and Kulla, "Production Friendly Microfacet Sheen BRDF", SIGGRAPH 2017.
 inline float lambdaSheenNumericHelper(float x, float alpha_g) {
     const float one_minus_alpha_sq = (1.0 - alpha_g) * (1.0 - alpha_g);
@@ -92,4 +86,3 @@ inline float3 BRDF_specularSheen(float3 sheen_color, float sheen_roughness, floa
     return sheen_color * D_Charlie(sheen_roughness, NdotH) * V_Sheen(NdotL, NdotV, sheen_roughness);
 }
 
-#endif

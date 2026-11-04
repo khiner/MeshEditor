@@ -1,6 +1,4 @@
-#ifndef ELEMENTOVERLAY_MSL
-#define ELEMENTOVERLAY_MSL
-
+#pragma once
 #include "LineQuad.metal"
 #include "EditSelection.metal"
 #include "SceneUBO.metal"
@@ -31,7 +29,8 @@ inline EdgeQuadVaryings EditEdgeQuadCorner(
 ) {
     constant ViewportThemeColors &colors = scene.Theme.Colors;
     const float edge_width = scene.Theme.EdgeWidth;
-    // EdgeWidth is a half-width; sharp marks add one band and every edge adds a 0.5px AA fringe.
+    // EdgeWidth is a half-width.
+    // Sharp marks add one band and every edge adds a 0.5px AA fringe.
     const float half_width = edge_width + (sharp ? max(edge_width, 1.0f) : 0.0f) + 0.5f;
 
     auto out = StrokeQuadCorner(scene, clip0, clip1, color,
@@ -67,5 +66,3 @@ inline PointVaryings ElementPointSprite(
     }
     return out;
 }
-
-#endif

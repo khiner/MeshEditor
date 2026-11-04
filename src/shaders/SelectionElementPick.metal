@@ -1,6 +1,4 @@
-#ifndef SELECTIONELEMENTPICK_MSL
-#define SELECTIONELEMENTPICK_MSL
-
+#pragma once
 #include "SelectionPickKey.metal"
 #include "Varyings.metal"
 #include "gpu/SelectionElementPushConstants.h"
@@ -23,5 +21,3 @@ fragment void SelectionFacePickFragment(
     if (FaceCulled(in.Facing, front_facing)) return;
     WriteElementPick(bindless, pc.Query, uint2(in.Position.xy), in.Position.z, in.ElementId);
 }
-
-#endif

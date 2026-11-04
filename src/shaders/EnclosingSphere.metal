@@ -1,11 +1,8 @@
-#ifndef ENCLOSINGSPHERE_MSL
-#define ENCLOSINGSPHERE_MSL
+#pragma once
 #include "gpu/MeshletRecord.h"
 
-// Ritter expansion and the AABB-centred sphere both enclose the cluster's vertices.
-// The tighter sphere wins, and its radius is measured again against every vertex.
 // Cone culling applies only when every triangle's first local index flags a flat face normal.
-// Local names the cluster's first local triangle, and position reads a local vertex.
+// `local` points at the cluster's first local triangle, and `position` reads a local vertex.
 template<typename ReadPosition>
 inline void FitClusterBounds(thread MeshletRecord &record, device const uchar *local, ReadPosition position) {
     float3 lo = float3(INFINITY), hi = float3(-INFINITY), lower[3], upper[3];
@@ -65,7 +62,6 @@ struct EnclosingSphereScratch {
 };
 struct EnclosingSphereResult { float4 Sphere; float Error; };
 
-// Seven-axis extrema, deterministic Ritter expansion and a final containment pass over child spheres, in one 128-thread reduction.
 // Readers return a negative radius for an absent sample, and count is nonzero.
 template<typename Reader>
 inline EnclosingSphereResult EncloseSpheres(thread const Reader &reader,uint count,uint tid,uint lane,uint simd,
@@ -145,4 +141,3 @@ inline EnclosingSphereResult EncloseSpheres(thread const Reader &reader,uint cou
     threadgroup_barrier(mem_flags::mem_threadgroup);
     return {scratch.sphere,scratch.merged_error};
 }
-#endif

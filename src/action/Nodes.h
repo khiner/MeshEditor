@@ -5,7 +5,6 @@
 #include "procedure/Network.h"
 #include "state/Entity.h"
 
-// Address procedure nodes by entity and update parameters on their entities.
 namespace action::nodes {
 using numeric::uvec2;
 
@@ -16,6 +15,19 @@ struct AddNode {
     uint16_t Kind;
     uvec2 Position;
     state::Entity Parent{state::Null};
+};
+// Append a named subnet built from procedure::Macros at the grid cell and make it the active, sole selected node.
+struct AddMacro {
+    state::Entity MeshEntity;
+    uint16_t Macro;
+    uvec2 Position;
+    state::Entity Parent{state::Null};
+};
+// Append a macro's subnet reading the displayed node's result, display it, capture the drawn selection into its selection port, and set its value ports in order.
+// A later step of a stage sets the values of the subnet its first step appended.
+struct AppendMacro {
+    uint16_t Macro;
+    std::vector<std::array<uint32_t, 4>> Values{};
 };
 // Links an output socket into an input socket that procedure::Links admits, replacing the input's link.
 struct Link {
@@ -69,6 +81,8 @@ struct RemovePort {
     state::Entity Subnet;
     uint16_t Port;
 };
+void Apply(state::Registry &, const AddMacro &);
+void Apply(state::Registry &, const AppendMacro &);
 void Apply(state::Registry &, const GroupNodes &);
 void Apply(state::Registry &, const UngroupNodes &);
 void Apply(state::Registry &, const ExposeSocket &);
@@ -144,7 +158,6 @@ struct SetAttributeName {
     std::string Name;
 };
 
-// Replaces the node's inline selection.
 struct SetInlineSelection {
     state::Entity Node;
     std::unique_ptr<procedure::InlineSelection> Selection;
@@ -161,15 +174,15 @@ struct DuplicateNodes {
     std::vector<state::Entity> Nodes;
 };
 // Remove the distinct nodes and reconnect through each removed chain.
-// Use the unique linked input with the output socket type; disconnect ambiguous or incompatible inputs.
-// The display follows its node's chain the same way, or else its node's first input, and the display node, or else the last node, replaces a removed active node.
+// Reconnect through the unique linked input of the output's socket type, and disconnect ambiguous or incompatible inputs.
+// The display follows its node's chain the same way, or else its node's first input.
+// The display node, or else the last node, replaces a removed active node.
 struct DeleteNodes {
     state::Entity MeshEntity;
     std::vector<state::Entity> Nodes;
 };
 
-// Insert the node between the input and its source using the first geometry sockets.
-// Preserve an existing link on the inserted node input.
+// Insert the node between the input and its source using the first geometry sockets, preserving an existing link on the node's input.
 // Move the consumer and its descendants right by Shift cells.
 struct InsertNode {
     state::Entity MeshEntity;
@@ -179,13 +192,13 @@ struct InsertNode {
     uint32_t Shift;
 };
 
-using Action = std::variant<AddNode, Link, Unlink, SetDisplay, SetBypass, EditSelection, FinishSelection, SetOperationHandle, SetExtrudeOffset, MoveNodes, SelectItems, GroupItems, UngroupItems, MoveItems, RenameNetwork, ExposePort, AssignReference, GroupNodes, UngroupNodes, ExposeSocket, SetPortValue, RenamePort, RemovePort, MovePort, SetAttributeName, SetInlineSelection, CollapseProcedure, DuplicateNodes, DeleteNodes, InsertNode>;
+using Action = std::variant<AddNode, AddMacro, AppendMacro, Link, Unlink, SetDisplay, SetBypass, EditSelection, FinishSelection, SetOperationHandle, SetExtrudeOffset, MoveNodes, SelectItems, GroupItems, UngroupItems, MoveItems, RenameNetwork, ExposePort, AssignReference, GroupNodes, UngroupNodes, ExposeSocket, SetPortValue, RenamePort, RemovePort, MovePort, SetAttributeName, SetInlineSelection, CollapseProcedure, DuplicateNodes, DeleteNodes, InsertNode>;
 
 void Apply(state::Registry &, const Action &);
 
 // Copies viewport selection changes into the node being edited by the active selection task.
 void CaptureActiveSelection(state::Registry &, state::Entity mesh_entity);
-// Creates a mesh entity with a copy of the procedure of `from` over new node entities holding copies of its nodes' components, drawing `drawn`, a copy of the record `from` draws.
+// Creates a mesh entity whose procedure copies the one of `from` over new node entities, drawing `drawn`, a copy of the record `from` draws.
 state::Entity CopyProcedure(state::Registry &, state::Entity from, uint32_t drawn);
 // The mesh entity whose procedure the editor edits: the active object's mesh, or the active mesh entity.
 state::Entity EditedMesh(const state::Registry &);
@@ -195,6 +208,6 @@ state::Entity EditedMesh(const state::Registry &);
 state::Entity AppendNode(state::Registry &, state::Entity mesh_entity, uint16_t kind);
 // The mesh's displayed node when a preview step of the current stage appended it with the kind, or null.
 state::Entity StagedResultNode(const state::Registry &, state::Entity mesh_entity, uint16_t kind);
-// Visits each edit-mode mesh with a selection in the edit element domain and its displayed node.
-void ForEachResultNode(const state::Registry &, const std::function<void(state::Entity mesh_entity, state::Entity node)> &);
+// Visits the displayed node of each edit-mode mesh with a selection in the edit element domain.
+void ForEachResultNode(const state::Registry &, const std::function<void(state::Entity node)> &);
 } // namespace action::nodes

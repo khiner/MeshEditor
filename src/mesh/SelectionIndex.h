@@ -7,12 +7,10 @@
 // Six radix-16 levels address the 24 bits of a canonical 256-element block.
 inline constexpr uint32_t SelectionIndexLevels = 6u;
 enum class SelectionIndexMask { Selected,
-                                Boundary,
-                                Hidden,
-                                Unselected };
+                                Hidden };
 struct SelectionIndexNode {
     std::array<uint32_t, 16> Children;
-    uint32_t Parent{InvalidOffset}, Slot{}, Active{}, Selected{}, Boundary{}, Hidden{}, Unselected{};
+    uint32_t Parent{InvalidOffset}, Slot{}, Active{}, Selected{}, Hidden{};
 };
 
 struct SelectionIndexView {
@@ -20,37 +18,28 @@ struct SelectionIndexView {
     std::span<const SelectionAggregate> Leaves;
     uint32_t Root{InvalidOffset};
 
-    // Only branches containing selected elements (or boundary edges) are visited.
-    // A false callback result stops the walk, including for a first/last query.
-    void Visit(SelectionIndexMask kind, bool reverse, auto &&visit) const {
+    void Visit(SelectionIndexMask kind, auto &&visit) const {
         if (Root == InvalidOffset) return;
-        const auto walk = [&](auto &&self, uint32_t id, uint32_t level) -> bool {
+        const auto walk = [&](auto &&self, uint32_t id, uint32_t level) -> void {
             const auto &node = Nodes[id];
-            auto mask = kind == SelectionIndexMask::Boundary ? node.Boundary : kind == SelectionIndexMask::Hidden ? node.Hidden :
-                kind == SelectionIndexMask::Unselected                                                            ? node.Unselected :
-                                                                                                                    node.Selected;
-            while (mask) {
-                const auto slot = reverse ? 31u - uint32_t(std::countl_zero(mask)) : uint32_t(std::countr_zero(mask));
-                mask &= ~(1u << slot);
-                const auto child = node.Children[slot];
-                if (level ? !self(self, child, level - 1u) : !visit(child)) return false;
+            for (auto mask = kind == SelectionIndexMask::Hidden ? node.Hidden : node.Selected; mask; mask &= mask - 1u) {
+                const auto child = node.Children[uint32_t(std::countr_zero(mask))];
+                if (level) self(self, child, level - 1u);
+                else visit(child);
             }
-            return true;
         };
         walk(walk, Root, SelectionIndexLevels - 1u);
     }
 };
 
-// Derived ownership and partial aggregates.
-// The GPU produces canonical block aggregates; after submission the CPU repairs only their six ancestor paths.
-// All GPU-readable aggregate values stay in UMA, including each mesh's root.
+// Derived block ownership and partial aggregates over the canonical block aggregates the GPU writes.
 struct SelectionIndex {
     explicit SelectionIndex(mtl::BufferContext &ctx) : Aggregates{ctx, SlotType::Buffer} {}
     SelectionIndexView Read(uint32_t root, std::span<const SelectionAggregate> leaves) const {
         return {Nodes, leaves, root < Roots.size() ? Roots[root] : InvalidOffset};
     }
-    // Prune canonical block ownership by its existing reduced geometry bounds.
-    // Bounds stay in UMA; traversal reads no vertex values and uploads only leaf block IDs.
+    // Visits each live leaf block whose bounds and ancestors' bounds pass `overlap`.
+    // Returns the nodes visited, or zero without a root.
     uint32_t VisitBounds(uint32_t root, std::span<const SelectionAggregate> leaves, auto &&overlap, auto &&visit) const {
         if (root >= Roots.size() || Roots[root] == InvalidOffset) return 0u;
         uint32_t visited = 0u;
@@ -91,7 +80,10 @@ struct SelectionIndex {
     BufferArena<SelectionAggregate> Aggregates;
     std::vector<SelectionIndexNode> Nodes;
     std::vector<uint32_t> Roots;
-    // The owner at the last completed update.
-    // Restore uses it to retire a block from its former tree even when canonical membership now has no owner.
+    // The owner at the last completed update, which lets restore retire a block from its former tree after canonical membership loses its owner.
     std::array<std::unordered_map<uint32_t, uint32_t>, 3> Owners;
 };
+
+inline void ReleaseMesh(SelectionIndex &index, uint32_t id) {
+    for (uint32_t d = 0u; d < 3u; ++d) index.Release(3u * id + d);
+}

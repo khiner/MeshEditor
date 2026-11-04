@@ -8,8 +8,7 @@
 #include "selection/Selection.h"
 
 namespace action {
-// Use the innermost field range containing the offset.
-// Inherit enclosing bounds when the field has none.
+// A field's byte range in its component, its path, and its spec, which takes the enclosing bounds when it has none.
 struct FieldRange {
     uint16_t Offset, Size;
     std::string Path;
@@ -75,7 +74,7 @@ template<typename C>
     requires std::same_as<C, mesh::Inset> || std::same_as<C, mesh::Bevel>
 struct UpdateTraits<C> : ComponentUpdateTraits<C> {
     static void ForEachSelected(state::Registry &r, const std::function<void(state::Entity)> &fn) {
-        nodes::ForEachResultNode(r, [&](state::Entity, state::Entity node) {
+        nodes::ForEachResultNode(r, [&](state::Entity node) {
             if (r.all_of<C>(node)) fn(node);
         });
     }

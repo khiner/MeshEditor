@@ -1,6 +1,4 @@
-#ifndef SELECTIONELEMENTBITSETBOX_MSL
-#define SELECTIONELEMENTBITSETBOX_MSL
-
+#pragma once
 #include "Bindless.metal"
 #include "Varyings.metal"
 #include "gpu/SelectionElementPushConstants.h"
@@ -39,5 +37,3 @@ fragment void SelectionFaceBitsetBoxFragment(
     if (FaceCulled(in.Facing, front_facing)) return;
     WriteElementBox({in.Position, in.ElementId}, bindless, pc);
 }
-
-#endif

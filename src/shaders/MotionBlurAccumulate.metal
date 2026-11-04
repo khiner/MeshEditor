@@ -1,6 +1,4 @@
-#ifndef MOTIONBLURACCUMULATE_MSL
-#define MOTIONBLURACCUMULATE_MSL
-
+#pragma once
 #include "Bindless.metal"
 #include "Varyings.metal"
 #include "gpu/MotionBlurAccumulatePushConstants.h"
@@ -16,5 +14,3 @@ fragment float4 MotionBlurAccumulateFragment(
     const Scene scene{bindless, view, theme, workspace};
     return scene.SampleTex(pc.SceneSamplerSlot, in.TexCoord) * pc.Weight;
 }
-
-#endif

@@ -1,4 +1,4 @@
-#include "Path.h"
+#include "MeshWalk.h"
 #include "Paths.h"
 #include "RunSuites.h"
 #include "action/Errors.h"
@@ -8,14 +8,12 @@
 #include <barrier>
 #include <future>
 #ifdef SURFACE_AUDIO
-#include "audio/surface/SurfaceAudio.h" // SurfaceRelief, UpdateSurfaceRelief
+#include "audio/surface/SurfaceAudio.h"
 #endif
 #include "armature/ArmatureComponents.h"
 #include "gltf/GltfScene.h"
 #include "gltf/SourceTexture.h"
 #include "mesh/MeshComponents.h"
-#include "mesh/MeshCreate.h"
-#include "mesh/Primitives.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
@@ -24,8 +22,6 @@
 #include "scene/HierarchyInstance.h"
 #include "scene/SceneGraph.h"
 #include "snapshot/Workspace.h"
-#include "viewport/Viewport.h"
-#include "viewport/ViewportEvents.h"
 
 #include "numeric/FastGltf.h"
 #include <print>
@@ -40,8 +36,6 @@ std::vector<fs::path> CollectGltfSamples(const fs::path &root) {
     if (!fs::exists(root)) return out;
     for (const auto &entry : fs::directory_iterator{root}) {
         if (!entry.is_directory()) continue;
-        // Collect all Khronos variant directories prefixed with glTF.
-        // Use the sample root when no variant directory exists.
         std::vector<fs::path> search_dirs;
         for (const auto &sub : fs::directory_iterator{entry.path()}) {
             if (sub.is_directory() && sub.path().filename().string().starts_with("glTF")) {
@@ -61,8 +55,7 @@ std::vector<fs::path> CollectGltfSamples(const fs::path &root) {
     return out;
 }
 
-// Copy a sample and every file beside it into `dir`, so a test can move or rewrite the asset's external files.
-// Returns the staged glTF.
+// Copies a sample and every file beside it into `dir`, so a test can move or rewrite the asset's external files.
 fs::path StageSample(const fs::path &sample_gltf, const fs::path &dir) {
     fs::create_directories(dir);
     for (const auto &entry : fs::directory_iterator{sample_gltf.parent_path()}) {
@@ -78,28 +71,25 @@ fs::path MakeRoundtripDir() {
     return dir;
 }
 
-// Resolve submodule samples from the CMake-provided repository root.
 constexpr std::string_view SampleRoots[]{
     "external/glTF-Sample-Assets/Models",
     "external/glTF_Physics/samples",
+    "tests/fixtures",
 };
 
 fs::path SamplePath(std::string_view relative_to_repo_root) { return fs::path{MESHEDITOR_SOURCE_DIR} / relative_to_repo_root; }
 
 // Exact patterns match one JSON path, while subtree patterns include descendants.
-// Use subtree patterns only for encoding-dependent structures.
 struct Exception {
     std::string_view Pattern;
     std::string_view Why;
 };
 
 constexpr Exception SubtreeExceptions[]{
-    // Export repacks buffer and accessor layout while preserving referenced values.
     {"buffers", "re-packed into a single buffer on export"},
     {"bufferViews", "bufferView layout and order depend on our emission order"},
     {"accessors", "accessor order depends on our emission choices; position-indexed JSON compare can't tell semantically equivalent accessors apart (semantic shape is verified indirectly via mesh/primitive/animation references)"},
 
-    // These extensions are omitted during import or export.
     {"extensionsUsed", "extensionsUsed is computed from what we re-emit; membership/order diverges when extension data isn't fully re-emitted"},
     {"extensions.KHR_xmp_json_ld", "not imported"},
     {"extensions.KHR_xmp", "not imported"},
@@ -109,7 +99,6 @@ constexpr Exception SubtreeExceptions[]{
     {"animations[*].channels", "channels are re-emitted in scene entity order, so their positions and sampler indices differ from the source"},
     {"animations[*].samplers", "samplers follow the re-emitted channel order"},
 
-    // Import duplicates lights shared by source nodes, changing table and node indices.
     {"extensions.KHR_lights_punctual.lights", "per-node PunctualLight components aren't deduped on save"},
 };
 
@@ -135,7 +124,6 @@ constexpr Exception ExactExceptions[]{
     {"materials[*].extensions.KHR_materials_clearcoat.clearcoatTexture.texCoord", "default 0 omitted"},
     {"materials[*].extensions.KHR_materials_iridescence.iridescenceThicknessMaximum", "default 400 omitted"},
     {"materials[*].pbrMetallicRoughness.baseColorTexture.extensions.KHR_texture_transform.offset", "default [0,0] offset omitted"},
-    // fastgltf omits default KHR_texture_transform fields from base material textures.
     {"materials[*].pbrMetallicRoughness.metallicRoughnessTexture.extensions.KHR_texture_transform.offset", "default [0,0] offset omitted"},
     {"materials[*].pbrMetallicRoughness.metallicRoughnessTexture.extensions.KHR_texture_transform.scale", "default [1,1] scale omitted"},
     {"materials[*].pbrMetallicRoughness.metallicRoughnessTexture.extensions.KHR_texture_transform.rotation", "default 0 rotation omitted"},
@@ -167,7 +155,6 @@ constexpr Exception ExactExceptions[]{
     {"nodes[*].extensions.KHR_physics_rigid_bodies.motion.centerOfMass", "default [0,0,0] omitted"},
     {"nodes[*].extensions.KHR_node_visibility", "extension block only emitted for visible:false (default true is omitted)"},
     {"meshes[*].primitives[*].mode", "default 4 (triangles) omitted"},
-    // fastgltf omits default TRS fields and preserves matrix-form nodes as matrices.
     {"nodes[*].translation", "default [0,0,0] omitted"},
     {"nodes[*].rotation", "default [0,0,0,1] omitted"},
     {"nodes[*].scale", "default [1,1,1] omitted"},
@@ -186,7 +173,6 @@ constexpr Exception ExactExceptions[]{
     {"materials[*].pbrMetallicRoughness", "emitted even for extension-only / specular-glossiness materials"},
 
     {"images[*].bufferView", "bufferView index depends on emission order"},
-    // Export converts strip, fan, and loop primitives to list form and changes their index accessors.
     {"meshes[*].primitives[*].indices", "strip/fan/loop primitive modes are unfolded to list mode on save; source Points with indices lose them"},
 
     {"meshes[*].primitives[*].material", "line/point primitives lose per-primitive material on import (merged across primitives without retaining material refs)"},
@@ -198,34 +184,6 @@ constexpr Exception ExactExceptions[]{
 template<typename C> state::Entity NodeWith(state::Registry &r) {
     for (auto e : r.view<const C>()) return e;
     return state::Null;
-}
-
-// Check that a KHR_audio_rigid_bodies model's accessor reference has the given type and count.
-// At namespace scope so `==` is the builtin comparison, not a boost::ut expression.
-bool AccessorShapeIs(simdjson::dom::element root, simdjson::dom::element model, std::string_view key, std::string_view type, uint64_t count) {
-    uint64_t idx;
-    if (model[key].get_uint64().get(idx) != simdjson::SUCCESS) return false;
-    auto acc = root["accessors"].at(idx);
-    std::string_view t;
-    uint64_t c = 0;
-    return acc["type"].get_string().get(t) == simdjson::SUCCESS && t == type &&
-        acc["count"].get_uint64().get(c) == simdjson::SUCCESS && c == count;
-}
-
-std::optional<simdjson::dom::element> OnlyAudioEntry(simdjson::dom::element doc, std::string_view key) {
-    simdjson::dom::array table;
-    if (doc["extensions"]["KHR_audio_rigid_bodies"][key].get_array().get(table) != simdjson::SUCCESS || table.size() != 1) return std::nullopt;
-    simdjson::dom::element entry;
-    if (table.at(0).get(entry) != simdjson::SUCCESS) return std::nullopt;
-    return entry;
-}
-
-std::optional<uint64_t> NodeAudioIndex(simdjson::dom::element doc, std::string_view key) {
-    for (auto node : doc["nodes"]) {
-        uint64_t index;
-        if (node["extensions"]["KHR_audio_rigid_bodies"][key].get_uint64().get(index) == simdjson::SUCCESS) return index;
-    }
-    return std::nullopt;
 }
 
 std::string NormalizePath(std::string_view path) {
@@ -264,7 +222,7 @@ struct Diff {
     std::string Path, Message;
 };
 
-// Allow relative error from JSON conversion and source values truncated to three or four significant digits.
+// Numbers match within the error of JSON conversion and of source values truncated to three or four significant digits.
 constexpr double AbsEps = 1e-6;
 constexpr double RelEps = 1e-3;
 
@@ -315,10 +273,7 @@ std::string_view TypeName(ElType t) {
 std::string JoinKey(std::string_view path, std::string_view key) { return path.empty() ? std::string{key} : std::format("{}.{}", path, key); }
 std::string JoinIndex(std::string_view path, size_t i) { return std::format("{}[{}]", path, i); }
 
-// --- Semantic accessor-reference resolution ---
-// Accessor indices are emission-order-dependent, so their numeric values never compare.
-// Mesh-geometry references compare by dereferenced per-corner content (CompareMeshGeometry).
-// Other references compare by the resolved accessor's (type, count) shape (CompareAccessorShape).
+// Accessor indices depend on emission order, so their numeric values never compare.
 bool MatchesAnyChildOf(std::string_view norm, std::string_view prefix) {
     if (!norm.starts_with(prefix)) return false;
     const auto rest = norm.substr(prefix.size());
@@ -345,7 +300,6 @@ std::optional<simdjson::dom::element> ResolveAccessor(simdjson::dom::element roo
     return accessors.at(index);
 }
 
-// Compare accessor type and count after import normalizes component types and buffer layout.
 // Indices widen to uint32, joints narrow to uint16, and quantized attributes decode to float.
 void CompareAccessorShape(simdjson::dom::element src, simdjson::dom::element out, std::string_view ref_path, std::vector<Diff> &diffs) {
     std::string_view src_type, out_type;
@@ -375,7 +329,7 @@ bool IsTrianglePrimitive(fastgltf::PrimitiveType t) {
     return t == fastgltf::PrimitiveType::Triangles || t == fastgltf::PrimitiveType::TriangleStrip || t == fastgltf::PrimitiveType::TriangleFan;
 }
 
-// Corner vertex indices in the importer's triangulation order (strips/fans unfold to lists).
+// Corner vertex indices in the importer's triangulation order, where strips and fans unfold to lists.
 std::vector<uint32_t> CornerIndices(const fastgltf::Asset &asset, const fastgltf::Primitive &prim, size_t vertex_count) {
     std::vector<uint32_t> indices;
     if (prim.indicesAccessor) {
@@ -399,7 +353,6 @@ std::vector<uint32_t> CornerIndices(const fastgltf::Asset &asset, const fastgltf
     return corners;
 }
 
-// Unit-direction compare: normalize both and accept a small angle.
 // Faceted-face normals re-derive from positions on export, so exact equality is too strict for them.
 bool DirectionEq(vec3 a, vec3 b) {
     const auto la = numeric::Length(a), lb = numeric::Length(b);
@@ -444,7 +397,7 @@ void CompareCornerValues(
     }
 }
 
-// COLOR_n decodes to vec4 with the importer's VEC3 -> w=1 padding.
+// COLOR_n decodes to vec4, and the importer pads VEC3 with w = 1.
 std::vector<vec4> DecodeColorAccessor(const fastgltf::Asset &asset, size_t accessor_index) {
     if (asset.accessors[accessor_index].type == fastgltf::AccessorType::Vec3) {
         const auto rgb = DecodeAccessor<vec3>(asset, accessor_index);
@@ -456,7 +409,6 @@ std::vector<vec4> DecodeColorAccessor(const fastgltf::Asset &asset, size_t acces
     return DecodeAccessor<vec4>(asset, accessor_index);
 }
 
-// A custom attribute decodes to floats, padded to four components.
 std::vector<vec4> DecodeCustomAccessor(const fastgltf::Asset &asset, size_t accessor_index) {
     const auto pad = [](const auto &values, auto &&widen) {
         std::vector<vec4> out;
@@ -483,7 +435,7 @@ void CompareGeometryAttr(
         CompareCornerValues(decode(a, acc_a), decode(b, acc_b), corners_a, corners_b, path, eq, out);
     };
     if (morph_delta) {
-        // Target deltas (POSITION/NORMAL/TANGENT) are all VEC3 and pass through import untouched.
+        // POSITION, NORMAL and TANGENT target deltas are all VEC3 and pass through import untouched.
         if (name == "POSITION" || name == "NORMAL" || name == "TANGENT") compare(DecodeAccessor<vec3>, VecEq<vec3>);
     } else if (name == "POSITION") {
         compare(DecodeAccessor<vec3>, VecEq<vec3>);
@@ -498,7 +450,6 @@ void CompareGeometryAttr(
     } else if (name.starts_with('_')) {
         compare(DecodeCustomAccessor, VecEq<vec4>);
     }
-    // JOINTS_n/WEIGHTS_n compare jointly in ComparePrimitiveGeometry.
 }
 
 void ComparePrimitiveGeometry(
@@ -522,7 +473,7 @@ void ComparePrimitiveGeometry(
     for (const auto &attr : pa.attributes) {
         const std::string_view name{attr.name};
         const auto battr = pb.findAttribute(name);
-        if (battr == pb.attributes.end()) continue; // presence diffs come from the JSON walk
+        if (battr == pb.attributes.end()) continue;
         CompareGeometryAttr(a, b, attr.accessorIndex, battr->accessorIndex, name, false, corners_a, corners_b, std::format("{}.attributes.{}", path, name), out);
     }
 
@@ -578,7 +529,7 @@ std::optional<std::vector<double>> NumberArray(simdjson::dom::array arr) {
     return out;
 }
 
-// Accept q and -q because matrix decomposition does not preserve quaternion sign.
+// q and -q match, since matrix decomposition does not preserve quaternion sign.
 bool QuaternionsEqual(simdjson::dom::array a, simdjson::dom::array b) {
     const auto va = NumberArray(a), vb = NumberArray(b);
     if (!va || !vb || va->size() != 4 || vb->size() != 4) return false;
@@ -591,7 +542,7 @@ bool QuaternionsEqual(simdjson::dom::array a, simdjson::dom::array b) {
     return eq_signed(1.0) || eq_signed(-1.0);
 }
 
-// glTF `scene.nodes` is an unordered set (schema: uniqueItems), so compare the root indices as a multiset — we emit them ascending, source order is arbitrary.
+// glTF `scene.nodes` is an unordered set, so the root indices compare as a multiset.
 bool SameNumberMultiset(simdjson::dom::array a, simdjson::dom::array b) {
     auto va = NumberArray(a), vb = NumberArray(b);
     if (!va || !vb || va->size() != vb->size()) return false;
@@ -602,10 +553,9 @@ bool SameNumberMultiset(simdjson::dom::array a, simdjson::dom::array b) {
 
 void CompareJson(simdjson::dom::element a, simdjson::dom::element b, std::string_view path, std::vector<Diff> &out, simdjson::dom::element root_a, simdjson::dom::element root_b) {
     const auto ta = a.type(), tb = b.type();
-    // Numbers compare with epsilon regardless of int/uint/double subtype.
     if (IsNumber(ta) && IsNumber(tb)) {
         const auto norm = NormalizePath(path);
-        if (IsMeshGeometryRefPath(norm)) return; // content-compared by CompareMeshGeometry
+        if (IsMeshGeometryRefPath(norm)) return;
         if (IsShapeAccessorRefPath(norm)) {
             const auto src_acc = ResolveAccessor(root_a, size_t(AsNumber(a)));
             const auto out_acc = ResolveAccessor(root_b, size_t(AsNumber(b)));
@@ -679,12 +629,11 @@ void CompareJson(simdjson::dom::element a, simdjson::dom::element b, std::string
         case ElType::NULL_VALUE:
             break;
         default:
-            break; // numbers handled above
+            break;
     }
 }
 
 // Compares parsed glTF JSON with known exceptions and reports up to 20 unexpected differences.
-// Returns the total unexpected-difference count.
 size_t CompareGltfJson(const fs::path &a_path, const fs::path &b_path, std::string_view sample_name) {
     using namespace boost::ut;
     simdjson::dom::parser pa, pb;
@@ -698,7 +647,6 @@ size_t CompareGltfJson(const fs::path &a_path, const fs::path &b_path, std::stri
     std::vector<Diff> all_diffs;
     CompareJson(ea, eb, "", all_diffs, ea, eb);
 
-    // Geometry content compare over dereferenced accessor data (the JSON walk skips those refs).
     {
         const auto asset_a = gltf::ParseGltfAsset(a_path);
         const auto asset_b = gltf::ParseGltfAsset(b_path);
@@ -733,13 +681,11 @@ size_t CompareGltfJson(const fs::path &a_path, const fs::path &b_path, std::stri
     return unexpected.size();
 }
 
-// Calls fn with each live entity of a table in entity index order.
 void ForEachEntity(const state::Table &t, auto &&fn) {
     for (uint32_t p = 0; p < t.pages(); ++p)
         for (auto m = t.mask(p); m; m &= m - 1) fn(t.entity(p, std::countr_zero(m)));
 }
 
-// Require identical component presence and comparable values for every entity.
 void CompareRegistries(std::string_view name, state::Registry &a, state::Registry &b) {
     using namespace boost::ut;
     const auto components_by_entity = [](state::Registry &r) {
@@ -790,7 +736,6 @@ void CompareRegistries(std::string_view name, state::Registry &a, state::Registr
         });
     }
 
-    // Require exact component presence, including types excluded from value comparison.
     const auto present_detail = [&] {
         std::string s;
         const auto dump = [&](const char *label, const std::map<std::string, int> &h) {
@@ -860,6 +805,12 @@ struct SceneFixture : Engine {
     }
 };
 
+bool Load(const fs::path &path, SceneFixture &fx) {
+    const auto load = gltf::LoadGltf(path, fx.R);
+    boost::ut::expect(load.has_value()) << "load failed:" << path.string() << (load ? "" : load.error().Message);
+    return load.has_value();
+}
+
 state::Entity FirstMeshNode(state::Registry &r) {
     for (auto e : r.view<const Instance, const GltfNode>()) {
         if (HasMesh(r, r.get<const Instance>(e).Entity)) return e;
@@ -867,137 +818,19 @@ state::Entity FirstMeshNode(state::Registry &r) {
     return state::Null;
 }
 
-// Return the reloaded scene and first entity with T after a save/load round trip.
-// Return null Value when any step fails.
-template<typename T> struct Roundtripped {
-    std::unique_ptr<SceneFixture> Scene;
-    state::Entity Node{state::Null};
-    const T *Value{nullptr};
-};
-
-template<typename T> Roundtripped<T> RoundtripComponent(const fs::path &sample, const fs::path &out_path, auto &&author) {
+// Loads the sample, applies the edit, saves to the output path after a frame settles, and reloads the saved file.
+std::unique_ptr<SceneFixture> RoundtripEdited(const fs::path &sample, const fs::path &out_path, auto &&edit) {
     using namespace boost::ut;
-    Roundtripped<T> out;
     SceneFixture fx;
-    const auto load = gltf::LoadGltf(sample, fx.R);
-    expect(load.has_value()) << "load failed: " << (load ? "" : load.error().Message);
-    if (!load) return out;
-    const auto node = FirstMeshNode(fx.R);
-    expect(node != state::Null) << "no mesh instance node in " << sample.stem().string();
-    if (node == state::Null) return out;
-    author(fx, node);
-    ProcessComponentEvents(fx.R); // mirror prod: a frame settles world transforms before save
+    if (!Load(sample, fx)) return nullptr;
+    edit(fx);
+    ProcessComponentEvents(fx.R); // A frame settles world transforms before save, as in the app.
     const auto save = gltf::SaveGltf(out_path, fx.R);
     expect(save.has_value()) << "save failed: " << (save ? "" : save.error());
-    if (!save) return out;
-    out.Scene = std::make_unique<SceneFixture>();
-    const auto reload = gltf::LoadGltf(out_path, out.Scene->R);
-    expect(reload.has_value()) << "reload failed: " << (reload ? "" : reload.error().Message);
-    if (!reload) return out;
-    out.Node = NodeWith<T>(out.Scene->R);
-    expect(out.Node != state::Null) << "no entity carries the component after reload";
-    state::Registry &reloaded = out.Scene->R;
-    if (out.Node != state::Null) out.Value = &reloaded.get<const T>(out.Node);
-    return out;
-}
-
-bool FloatsEq(std::span<const float> a, std::span<const float> b) {
-    return a.size() == b.size() && std::ranges::equal(a, b, [](float x, float y) { return NumberEq(x, y); });
-}
-bool Vec3sEq(std::span<const vec3> a, std::span<const vec3> b) {
-    return a.size() == b.size() && std::ranges::equal(a, b, VecEq<vec3>);
-}
-// Tolerance equality over the fields a glTF round trip carries.
-bool ModesEq(const ModalModes &a, const ModalModes &b) {
-    return FloatsEq(a.Freqs, b.Freqs) && FloatsEq(a.T60s, b.T60s) && Vec3sEq(a.Positions, b.Positions) && a.Indices == b.Indices &&
-        a.Shapes.size() == b.Shapes.size() && std::ranges::equal(a.Shapes, b.Shapes, Vec3sEq);
-}
-bool SurfacesEq(const ContactSurface &a, const ContactSurface &b) {
-    const bool textures_eq = a.NormalTexture.has_value() == b.NormalTexture.has_value() &&
-        (!a.NormalTexture || (a.NormalTexture->Texture == b.NormalTexture->Texture && a.NormalTexture->TexCoord == b.NormalTexture->TexCoord && NumberEq(a.NormalTexture->Scale, b.NormalTexture->Scale)));
-    return a.Name == b.Name && NumberEq(a.Roughness, b.Roughness) && NumberEq(a.CorrelationLength, b.CorrelationLength) && NumberEq(a.SpectralSlope, b.SpectralSlope) &&
-        NumberEq(a.ShortWavelength, b.ShortWavelength) && NumberEq(a.Waviness, b.Waviness) && NumberEq(a.WavinessLength, b.WavinessLength) &&
-        FloatsEq(a.Profile, b.Profile) && NumberEq(a.SampleSpacing, b.SampleSpacing) && textures_eq;
-}
-bool AcousticMaterialsEq(const AcousticMaterial &a, const AcousticMaterial &b) {
-    const auto &pa = a.Properties, &pb = b.Properties;
-    return a.Name == b.Name && NumberEq(pa.Density, pb.Density) && NumberEq(pa.YoungModulus, pb.YoungModulus) && NumberEq(pa.PoissonRatio, pb.PoissonRatio) && NumberEq(pa.Alpha, pb.Alpha) && NumberEq(pa.Beta, pb.Beta);
-}
-
-// Use an unreachable rig to test armature-root failure.
-// Removing WEIGHTS_0 instead tests mesh-parse failure.
-std::string BrokenSkinnedTriangleGltf(bool drop_weights) {
-    // 3 positions, 3 ubyte4 joints, and 3 float4 weights, all zero.
-    const std::string buffer(128, 'A');
-    return std::format(R"({{
-  "asset": {{"version": "2.0"}},
-  "scene": 0,
-  "scenes": [{{"nodes": [0]}}],
-  "nodes": [
-    {{"mesh": 0, "skin": 0, "name": "Skinned"}},
-    {{"children": [2], "name": "Rig"}},
-    {{"name": "Joint"}}
-  ],
-  "skins": [{{"joints": [2]}}],
-  "meshes": [{{"primitives": [{{"attributes": {{"POSITION": 0, "JOINTS_0": 1{}}}}}]}}],
-  "accessors": [
-    {{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [0, 0, 0]}},
-    {{"bufferView": 1, "componentType": 5121, "count": 3, "type": "VEC4"}},
-    {{"bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC4"}}
-  ],
-  "bufferViews": [
-    {{"buffer": 0, "byteOffset": 0, "byteLength": 36}},
-    {{"buffer": 0, "byteOffset": 36, "byteLength": 12}},
-    {{"buffer": 0, "byteOffset": 48, "byteLength": 48}}
-  ],
-  "buffers": [{{"byteLength": 96, "uri": "data:application/octet-stream;base64,{}"}}]
-}})",
-                       drop_weights ? "" : ", \"WEIGHTS_0\": 2", buffer);
-}
-
-// Two triangles of a quad as six unindexed vertices, which weld at the shared diagonal.
-// _TEMPERATURE, _CUSTOM and the integer _ID agree across the weld, and _SEAM differs there.
-void WriteCustomAttributeGltf(const fs::path &gltf) {
-    const std::array<vec3, 6> positions{{{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 0, 0}, {1, 1, 0}, {0, 1, 0}}};
-    const auto temperature = [](vec3 p) { return 1.f + p.x + 2.f * p.y; };
-    std::array<float, 6> temperatures;
-    std::array<vec3, 6> custom;
-    std::array<uint16_t, 6> ids;
-    for (size_t i = 0; i < positions.size(); ++i) {
-        temperatures[i] = temperature(positions[i]);
-        custom[i] = {positions[i].x + 1.f, 2.f * positions[i].y, -3.f};
-        ids[i] = uint16_t(7.f + temperature(positions[i]));
-    }
-    const std::array<vec2, 6> seams{{{0, 0}, {1, 0}, {1, 1}, {5, 5}, {6, 6}, {0, 1}}};
-    std::ofstream bin{gltf.parent_path() / "custom.bin", std::ios::binary};
-    const auto write = [&](const auto &values) { bin.write(reinterpret_cast<const char *>(values.data()), std::streamsize(values.size() * sizeof(values[0]))); };
-    write(positions);
-    write(temperatures);
-    write(custom);
-    write(seams);
-    write(ids);
-    std::ofstream{gltf} << R"({
-  "asset": {"version": "2.0"},
-  "scene": 0,
-  "scenes": [{"nodes": [0]}],
-  "nodes": [{"mesh": 0}],
-  "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "_TEMPERATURE": 1, "_CUSTOM": 2, "_SEAM": 3, "_ID": 4}}]}],
-  "accessors": [
-    {"bufferView": 0, "componentType": 5126, "count": 6, "type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 0]},
-    {"bufferView": 1, "componentType": 5126, "count": 6, "type": "SCALAR"},
-    {"bufferView": 2, "componentType": 5126, "count": 6, "type": "VEC3"},
-    {"bufferView": 3, "componentType": 5126, "count": 6, "type": "VEC2"},
-    {"bufferView": 4, "componentType": 5123, "count": 6, "type": "SCALAR"}
-  ],
-  "bufferViews": [
-    {"buffer": 0, "byteOffset": 0, "byteLength": 72},
-    {"buffer": 0, "byteOffset": 72, "byteLength": 24},
-    {"buffer": 0, "byteOffset": 96, "byteLength": 72},
-    {"buffer": 0, "byteOffset": 168, "byteLength": 48},
-    {"buffer": 0, "byteOffset": 216, "byteLength": 12}
-  ],
-  "buffers": [{"byteLength": 228, "uri": "custom.bin"}]
-})";
+    if (!save) return nullptr;
+    auto reloaded = std::make_unique<SceneFixture>();
+    if (!Load(out_path, *reloaded)) return nullptr;
+    return reloaded;
 }
 
 void CheckCustomAttributes(state::Registry &r, bool integer_ids) {
@@ -1019,7 +852,7 @@ void CheckCustomAttributes(state::Registry &r, bool integer_ids) {
     const auto custom = meshes.AttributeView<vec3>(find("_CUSTOM", AttributeDomain::Vertex, AttributeType::Vec3));
     const auto id_attribute = find("_ID", AttributeDomain::Vertex, integer_ids ? AttributeType::Int : AttributeType::Float);
     for (const auto v : mesh.vertices()) {
-        const auto p = mesh.GetPosition(v);
+        const auto p = test::Position(mesh, v);
         const auto expected = 1.f + p.x + 2.f * p.y;
         expect(temperature[*v] == expected);
         expect(custom[*v] == vec3{p.x + 1.f, 2.f * p.y, -3.f});
@@ -1029,13 +862,12 @@ void CheckCustomAttributes(state::Registry &r, bool integer_ids) {
     const auto seam = meshes.AttributeView<vec2>(find("_SEAM", AttributeDomain::Corner, AttributeType::Vec2));
     std::vector<std::pair<float, float>> seams;
     for (const auto face : mesh.faces())
-        for (const auto corner : mesh.fh_range(face)) seams.emplace_back(seam[*corner].x, seam[*corner].y);
+        for (const auto corner : test::FaceHalfedges(mesh, face)) seams.emplace_back(seam[*corner].x, seam[*corner].y);
     std::ranges::sort(seams);
     expect(seams == std::vector<std::pair<float, float>>{{0, 0}, {0, 1}, {1, 0}, {1, 1}, {5, 5}, {6, 6}});
 }
 
 // Every count a load changes, so a failed load can prove it changed none of them.
-// Every bindless slot an import allocates pairs with a pending upload or environment import, which these counts cover.
 struct SceneCounts {
     size_t Entities, MeshHandles, Textures, PendingUploads, Materials, MaterialNames, MaterializedTextures;
     uint64_t VertexBytes;
@@ -1058,21 +890,95 @@ SceneCounts CountScene(SceneFixture &f) {
     };
 }
 
-// Loads `source` into `fx`, saves it to `out_path` matching the source JSON, and reloads the save, checking each loaded registry with `check(r, imported)`.
-void RoundTripJson(SceneFixture &fx, const fs::path &source, const fs::path &out_path, std::string_view name, auto &&check) {
-    using namespace boost::ut;
-    const auto load = gltf::LoadGltf(source, fx.R);
-    expect(fatal(load.has_value())) << (load ? "" : load.error().Message);
-    check(fx.R, true);
-    ProcessComponentEvents(fx.R);
-    const auto save = gltf::SaveGltf(out_path, fx.R);
-    expect(fatal(save.has_value())) << (save ? "" : save.error());
-    expect(CompareGltfJson(source, out_path, name) == 0u);
-    SceneFixture reloaded;
-    const auto reload = gltf::LoadGltf(out_path, reloaded.R);
-    expect(fatal(reload.has_value())) << (reload ? "" : reload.error().Message);
-    check(reloaded.R, false);
-}
+// Each runs on the fixture's import and, with `imported` false, on the import of its export.
+struct FixtureCheck {
+    std::string_view Name;
+    void (*Check)(state::Registry &, bool imported);
+};
+
+const FixtureCheck FixtureChecks[]{
+    // Custom attributes import per vertex where the weld agrees and per corner where it does not.
+    // Integers export as floats, since glTF vertex attributes have no 32-bit integers.
+    {"CustomAttributes", CheckCustomAttributes},
+    // The comparator ignores the default scene index, and the second scene is the default.
+    {"MultiScene", [](state::Registry &r, bool) {
+         using namespace boost::ut;
+         const auto scene = FrameScene(r);
+         expect(fatal(scene != state::Null));
+         expect(r.get<const Name>(scene).Value == "Night");
+     }},
+    // Accessor contents are opaque to the comparator, so the hand-authored model's values check its decoding.
+    {"KHR_audio_rigid_bodies", [](state::Registry &r, bool) {
+         using namespace boost::ut;
+         const auto bell = NodeWith<ModalModes>(r);
+         expect(fatal(bell != state::Null));
+         const auto &m = r.get<const ModalModes>(bell);
+         expect(m.Freqs.size() == 1u && NumberEq(m.Freqs[0], 220.0));
+         // A decay rate of 2 per second is the T60 ln(1000) / 2.
+         expect(m.T60s.size() == 1u && NumberEq(m.T60s[0], 6.907755278982137 / 2.0));
+         expect(m.Positions.size() == 1u && VecEq(m.Positions[0], vec3{1.5f, -0.5f, 0.25f}));
+         expect(m.Shapes.size() == 1u && m.Shapes[0].size() == 1u && VecEq(m.Shapes[0][0], vec3{0.3f, 0.4f, -0.6f}));
+     }},
+    // Shapes are mode-major on the wire, so a transposed layout swaps the two shapes checked here.
+    {"AudioModal", [](state::Registry &r, bool) {
+         using namespace boost::ut;
+         const auto node = NodeWith<ModalModes>(r);
+         expect(fatal(node != state::Null));
+         const auto &m = r.get<const ModalModes>(node);
+         expect(m.Vertices.size() == m.Positions.size());
+         expect(r.all_of<SoundVerticesModel>(node) && r.get<const SoundVerticesModel>(node) == SoundVerticesModel::Modal);
+         expect(fatal(m.Shapes.size() == 3u && m.Shapes[0].size() == 3u));
+         expect(VecEq(m.Shapes[0][2], vec3{-0.05f, 0.06f, 0.07f}) && VecEq(m.Shapes[2][0], vec3{0.05f, -0.3f, 0.12f}));
+     }},
+    // The measured profile is accessor content, which the comparator skips.
+    {"AudioSurface", [](state::Registry &r, bool) {
+         using namespace boost::ut;
+         const auto node = NodeWith<ContactSurface>(r);
+         expect(fatal(node != state::Null));
+         expect(std::ranges::equal(r.get<const ContactSurface>(node).Profile, std::array{0.f, 1e-6f, -1e-6f, 0.5e-6f}));
+#ifdef SURFACE_AUDIO
+         const auto mesh_entity = r.get<const Instance>(node).Entity;
+         UpdateSurfaceRelief(r, node, mesh_entity, true);
+         const auto *relief = r.try_get<const SurfaceRelief>(node);
+         expect(fatal(relief != nullptr)) << "no mesoscale relief derived from the normal map";
+         expect(relief->Track->Spacing > 1e-3f && relief->Track->Spacing < 1e-2f) << "texel size";
+         const auto spacing = relief->Track->Spacing, rms = relief->Track->Rms;
+         for (auto e : r.view<const Instance>()) {
+             if (r.get<const Instance>(e).Entity == mesh_entity) r.patch<Transform>(e, [](Transform &t) { t.S = vec3{3.f}; });
+         }
+         ProcessComponentEvents(r);
+         UpdateSurfaceRelief(r, node, mesh_entity, true);
+         const auto *rescaled = r.try_get<const SurfaceRelief>(node);
+         expect(fatal(rescaled != nullptr)) << "relief lost when the node was resized";
+         expect(NumberEq(rescaled->Track->Spacing, spacing)) << "node scale leaked into the track spacing";
+         expect(NumberEq(rescaled->Track->Rms, rms)) << "node scale leaked into the track height";
+#endif
+     }},
+#ifdef SURFACE_AUDIO
+    // A surface without its own normal map takes its relief from the material's, against a real tangent-space normal map.
+    {"AudioSurfaceInherited", [](state::Registry &r, bool) {
+         using namespace boost::ut;
+         const auto node = NodeWith<ContactSurface>(r);
+         expect(fatal(node != state::Null));
+         const auto mesh_entity = r.get<const Instance>(node).Entity;
+         const auto inherited = gltf::MeshMaterialNormalMap(r, mesh_entity);
+         const auto expected_image = gltf::TextureImageIndex(r, 2);
+         expect(fatal(inherited.has_value() && expected_image.has_value())) << "material normal map not resolved";
+         expect(inherited->Image == *expected_image) << "wrong material normal map";
+         UpdateSurfaceRelief(r, node, mesh_entity, true);
+         const auto *relief = r.try_get<const SurfaceRelief>(node);
+         expect(fatal(relief != nullptr)) << "no relief derived from the material's normal map";
+         expect(relief->Track->Spacing > 0.f) << "texel size";
+         expect(relief->Track->Rms > 0.f) << "relief has no height";
+         expect(relief->Track->Heights.size() == relief->Track->Sum.size() - 1) << "relief track integral";
+     }},
+#endif
+};
+
+constexpr std::pair<std::string_view, std::string_view> InvalidFixtureErrors[]{
+    {"JointsWithoutWeights", "JOINTS_0 without WEIGHTS_0"},
+    {"UnreachableArmatureRoot", "armature root node"},
+};
 } // namespace
 int main(int argc, const char **argv) {
     using namespace boost::ut;
@@ -1086,92 +992,31 @@ int main(int argc, const char **argv) {
     const auto samples = SampleRoots | transform([](auto root) { return CollectGltfSamples(SamplePath(root)); }) | join | to<std::vector>();
 
     "hierarchy_skin_export"_test = [&] {
-        SceneFixture source;
-        const auto path = fs::path{MESHEDITOR_SOURCE_DIR} / "external/glTF-Sample-Assets/Models/RiggedSimple/glTF/RiggedSimple.gltf";
-        expect(gltf::LoadGltf(path, source.R).has_value()) << fatal;
-        ProcessComponentEvents(source.R);
-        const auto armature = *source.R.view<const ArmatureObject>().begin();
-        auto root = armature;
-        while (ParentOrNull(source.R, root) != state::Null) root = ParentOrNull(source.R, root);
-        const auto original_skins = source.R.view<const ArmatureModifier>().size();
-        const auto instance = CreateHierarchyInstance(source.R, root, Transform{.P = {5, 0, 0}});
-        expect(instance != state::Null) << fatal;
-        ProcessComponentEvents(source.R);
-        expect(source.R.view<const ArmatureModifier>().size() == original_skins * 2);
-        const auto output = tmp_root / "HierarchyRig.gltf";
-        const auto saved = gltf::SaveGltf(output, source.R);
-        expect(saved.has_value()) << (saved ? "" : saved.error()) << fatal;
-        SceneFixture restored;
-        const auto loaded = gltf::LoadGltf(output, restored.R);
-        expect(loaded.has_value()) << (loaded ? "" : loaded.error().Message) << fatal;
-        ProcessComponentEvents(restored.R);
-        expect(restored.R.view<const ArmatureModifier>().size() == original_skins * 2);
+        size_t original_skins = 0;
+        const auto restored = RoundtripEdited(SamplePath("external/glTF-Sample-Assets/Models/RiggedSimple/glTF/RiggedSimple.gltf"), tmp_root / "HierarchyRig.gltf", [&](SceneFixture &source) {
+            ProcessComponentEvents(source.R);
+            auto root = *source.R.view<const ArmatureObject>().begin();
+            while (ParentOrNull(source.R, root) != state::Null) root = ParentOrNull(source.R, root);
+            original_skins = source.R.view<const ArmatureModifier>().size();
+            const auto instance = CreateHierarchyInstance(source.R, root, Transform{.P = {5, 0, 0}});
+            expect(instance != state::Null) << fatal;
+            ProcessComponentEvents(source.R);
+            expect(source.R.view<const ArmatureModifier>().size() == original_skins * 2);
+        });
+        expect(fatal(restored != nullptr));
+        ProcessComponentEvents(restored->R);
+        expect(restored->R.view<const ArmatureModifier>().size() == original_skins * 2);
         std::vector<state::Entity> armatures;
-        for (const auto [_, skin] : restored.R.view<const ArmatureModifier>().each()) {
+        for (const auto [_, skin] : restored->R.view<const ArmatureModifier>().each()) {
             armatures.push_back(skin.ArmatureObjectEntity);
-            expect(restored.R.all_of<ArmatureObject, ArmaturePoseState>(skin.ArmatureObjectEntity));
+            expect(restored->R.all_of<ArmatureObject, ArmaturePoseState>(skin.ArmatureObjectEntity));
         }
         std::ranges::sort(armatures);
         armatures.erase(std::ranges::unique(armatures).begin(), armatures.end());
         expect(armatures.size() == 2u);
     };
 
-    "snapshot encoding appends within reserved capacity"_test = [] {
-        constexpr size_t prefix = 65536;
-        std::vector<std::byte> bytes(prefix, std::byte{42});
-        bytes.reserve(prefix + 256);
-        const auto capacity = bytes.capacity();
-        Name name{"appended record"}, decoded;
-        snapshot::SnapshotTable()[state::Type<Name>()].Serialize(&name, bytes);
-        expect(bytes.capacity() == capacity);
-        expect(std::ranges::all_of(bytes | std::views::take(prefix), [](auto b) { return b == std::byte{42}; }));
-        zpp::bits::in{std::span{bytes}.subspan(prefix)}(decoded).or_throw();
-        expect(decoded.Value == name.Value);
-    };
-
-    // Require an identical persistent image and registry after restoring into a fresh scene.
-    "project save/restore round trip"_test = [&] {
-        SceneFixture f;
-        {
-            auto &meshes = f.R.Resources.get<MeshStore>();
-            const auto created = CreateMesh(f.R, {.Data = primitive::CreateMesh(primitive::Cube{})});
-            const auto e = f.R.create();
-            f.R.emplace<MeshHandle>(e, MeshHandle{created.StoreId});
-            f.R.emplace<Name>(e, "Cube");
-            f.R.emplace<ObjectKind>(e, ObjectType::Mesh);
-            f.R.emplace<MeshActiveElement>(e, 7u);
-            f.R.emplace<Selected>(e);
-            f.R.emplace<Path>(e, "/tmp/scene.gltf");
-
-            const auto light = f.R.create();
-            f.R.emplace<PunctualLight>(light, PunctualLight{.Range = 12.f, .Color = {0.2f, 0.4f, 0.6f}, .Intensity = 3.f});
-            f.R.emplace<Name>(light, "Lamp");
-
-            const auto sound = f.R.create();
-            f.R.emplace<Instance>(sound, Instance{e});
-            f.R.emplace<ModalModes>(sound, SampleModal.Modes);
-            f.R.emplace<MassProperties>(sound, SampleModal.Mass);
-            f.R.emplace<ModalEigenSummary>(sound, SampleModal.Summary);
-            f.R.emplace<SoundVerticesModel>(sound, SoundVerticesModel::Modal);
-            f.R.emplace<ModalGain>(sound, ModalGain{0.6f});
-            f.R.emplace<ModalTuning>(sound, ModalTuning{440.f, 1.2f});
-            f.R.emplace<AcousticMaterial>(e, materials::acoustic::Ceramic);
-            f.R.emplace<TetBuffers>(e, meshes.AllocateTets(SampleModal.Tets.Positions, SampleModal.Tets.EdgeIndices));
-
-            ProcessComponentEvents(f.R);
-        }
-        const auto dir = tmp_root / "roundtrip.project";
-        const auto before = f.SaveTo(dir);
-        expect(before.size() > sizeof(uint64_t));
-
-        SceneFixture g;
-        const auto after = g.LoadFrom(dir, snapshot::SerializeWorkspace(f.R));
-        ProcessComponentEvents(g.R);
-        expect(after == before) << "round-trip diverged at byte" << std::ranges::mismatch(before, after).in1 - before.begin() << "of" << before.size() << "/" << after.size();
-        CompareRegistries("roundtrip", f.R, g.R);
-    };
-
-    // Require exact modal-result round trips and reuse of identical content-addressed files.
+    // A modal result round-trips exactly, and identical content reuses its content-addressed file.
     "modal model file round trip"_test = [] {
         project::Assets assets{.Directory = Paths::Project()};
         const auto stored = SaveModalModelFile(assets, SampleModal);
@@ -1197,45 +1042,26 @@ int main(int argc, const char **argv) {
         }
     };
 
-    // A destroyed entity leaves deletion history in its pools, and the persistent image reflects live state alone.
-    "project save omits destroyed mesh entities"_test = [&] {
-        SceneFixture f;
-        const auto keep = f.R.create();
-        const auto kept = CreateMesh(f.R, {.Data = primitive::CreateMesh(primitive::Cube{})});
-        f.R.emplace<MeshHandle>(keep, MeshHandle{kept.StoreId});
-
-        const auto gone = f.R.create();
-        const auto removed = CreateMesh(f.R, {.Data = primitive::CreateMesh(primitive::Cube{})});
-        f.R.emplace<MeshHandle>(gone, MeshHandle{removed.StoreId});
-        f.R.destroy(gone);
-
-        ProcessComponentEvents(f.R);
-        const auto dir = tmp_root / "destroyed.project";
-        const auto before = f.SaveTo(dir);
-        SceneFixture g;
-        const auto after = g.LoadFrom(dir, snapshot::SerializeWorkspace(f.R));
-        ProcessComponentEvents(g.R);
-        expect(after == before) << "destroyed-entity round-trip diverged at byte" << std::ranges::mismatch(before, after).in1 - before.begin();
-        CompareRegistries("destroyed", f.R, g.R);
-    };
-
-    // Check each sample through JSON comparison and byte-identical project restoration.
-    // Compare registries for derived components omitted from the persistent image.
+    // Registries compare for derived components omitted from the persistent image.
     SceneFixture fx;
     SceneFixture restore_fx;
     size_t sample_index = 0;
     for (const auto &src : samples) {
         const auto sample_name = src.stem().string();
-        // Variants of one model share a stem, so number the project directories.
+        // Variants of one model share a stem, so project directories are numbered.
         const auto dir = tmp_root / std::format("{}_{}.project", sample_name, sample_index++);
 
-        test(sample_name) = [&] {
+        boost::ut::test(sample_name) = [&] {
             ProcessComponentEvents(fx.R);
             fx.P->ClearDocument();
 
             const auto load = gltf::LoadGltf(src, fx.R);
-            if (!load) return; // Loader limitation on source (e.g., unsupported extension); skips both round-trips.
-            ProcessComponentEvents(fx.R); // mirror prod: a frame runs (posing skinned models) before save
+            // A sample fails to load only for an extension the loader does not support, which skips both round trips.
+            if (!load) {
+                expect(load.error().UnsupportedExtensions) << load.error().Message;
+                return;
+            }
+            ProcessComponentEvents(fx.R); // A frame poses skinned models before save, as in the app.
 
             const auto out_path = tmp_root / (sample_name + ".gltf");
             const auto save = gltf::SaveGltf(out_path, fx.R);
@@ -1245,26 +1071,49 @@ int main(int argc, const char **argv) {
                 expect(unexpected == 0) << unexpected << " unexpected JSON diff(s)";
             }
 
-            const auto before = fx.SaveTo(dir);
             ProcessComponentEvents(restore_fx.R);
             restore_fx.P->ClearDocument();
+            const auto before = fx.SaveTo(dir);
+            expect(before.size() > sizeof(uint64_t));
             const auto after = restore_fx.LoadFrom(dir, snapshot::SerializeWorkspace(fx.R));
             ProcessComponentEvents(restore_fx.R);
-
-            expect(after == before) << "persistent image diverged at byte" << std::ranges::mismatch(before, after).in1 - before.begin();
+            expect(after == before) << sample_name << "persistent image diverged at byte" << std::ranges::mismatch(before, after).in1 - before.begin() << "of" << before.size() << "/" << after.size();
             CompareRegistries(sample_name, fx.R, restore_fx.R);
+
+            const auto check = std::ranges::find(FixtureChecks, sample_name, &FixtureCheck::Name);
+            if (check == std::ranges::end(FixtureChecks) || !save) return;
+            check->Check(fx.R, true);
+            SceneFixture reloaded;
+            if (!Load(out_path, reloaded)) return;
+            check->Check(reloaded.R, false);
         };
     }
+
+    "invalid fixtures leave the scene untouched"_test = [&] {
+        const auto invalid = CollectGltfSamples(SamplePath("tests/fixtures/invalid"));
+        expect(invalid.size() == std::size(InvalidFixtureErrors));
+        SceneFixture fx;
+        const auto before = CountScene(fx);
+        for (const auto &path : invalid) {
+            const auto name = path.stem().string();
+            const auto load = gltf::LoadGltf(path, fx.R);
+            expect(fatal(!load.has_value())) << name << " loaded";
+            const auto expected_error = std::ranges::find(InvalidFixtureErrors, name, &std::pair<std::string_view, std::string_view>::first);
+            expect(expected_error != std::ranges::end(InvalidFixtureErrors) && !load.error().UnsupportedExtensions && load.error().Message.contains(expected_error->second)) << name << " error: " << load.error().Message;
+            const auto after = CountScene(fx);
+            expect(after == before) << name << " changed the scene or a store: entities " << before.Entities << " -> " << after.Entities << ", materials " << before.Materials << " -> " << after.Materials;
+        }
+    };
 
     const auto edit_root = tmp_root / "edits";
     fs::create_directories(edit_root);
 
-    // Mark the embedded variant's image dirty; saved bytes must pixel-equal the GPU readback.
+    // A dirty embedded image saves bytes that pixel-equal the GPU readback.
     if (const fs::path box_embedded = SamplePath("external/glTF-Sample-Assets/Models/BoxTextured/glTF-Embedded/BoxTextured.gltf"); fs::exists(box_embedded)) {
-        test("dirty_image_re_encodes_pixel_equal") = [&] {
+        boost::ut::test("dirty_image_re_encodes_pixel_equal") = [&] {
             std::vector<std::byte> original_pixels;
             uint32_t width = 0, height = 0;
-            const auto reloaded = RoundtripComponent<gltf::SourceAssets>(box_embedded, edit_root / "BoxTextured-dirty.gltf", [&](SceneFixture &fx, state::Entity) {
+            const auto reloaded = RoundtripEdited(box_embedded, edit_root / "BoxTextured-dirty.gltf", [&](SceneFixture &fx) {
                 const auto &image = fx.R.get<const gltf::SourceAssets>(state::Document).Images.front();
                 expect(!image.Bytes.empty()) << "embedded image lost its bytes";
                 expect(image.SourcePath.empty()) << "embedded image was copied to a file";
@@ -1282,10 +1131,10 @@ int main(int argc, const char **argv) {
                 height = tex->Image.Extent.Height;
                 fx.R.edit<gltf::SourceAssets>(state::Document).Images.front().IsDirty = true;
             });
-            if (!reloaded.Value || original_pixels.empty()) return;
-            const auto &images = reloaded.Value->Images;
+            if (!reloaded || original_pixels.empty()) return;
+            const auto &images = reloaded->R.get<const gltf::SourceAssets>(state::Document).Images;
             expect(images.size() == 1u);
-            // PNG re-encode is lossless, so decoded pixels must match the pre-edit GPU readback.
+            // PNG re-encode is lossless, so decoded pixels match the pre-edit GPU readback.
             const auto decoded = DecodeImageRgba8(images.front().Bytes, images.front().Name);
             expect(decoded.has_value()) << "reloaded image failed to decode";
             if (!decoded) return;
@@ -1297,15 +1146,13 @@ int main(int argc, const char **argv) {
     // An external image keeps its file reference and requires that file even after GPU upload.
     const fs::path box_external = SamplePath("external/glTF-Sample-Assets/Models/BoxTextured/glTF/BoxTextured.gltf");
     if (fs::exists(box_external)) {
-        test("missing_external_source_errors") = [&] {
+        boost::ut::test("missing_external_source_errors") = [&] {
             const auto stage_dir = edit_root / "BoxTextured external";
             const auto staged_gltf = StageSample(box_external, stage_dir);
             const auto staged_png = stage_dir / "CesiumLogoFlat.png";
             expect(fs::exists(staged_png)) << "fixture missing PNG";
             SceneFixture fx;
-            const auto loaded = gltf::LoadGltf(staged_gltf, fx.R);
-            expect(loaded.has_value()) << "load failed: " << (loaded ? "" : loaded.error().Message);
-            if (!loaded) return;
+            if (!Load(staged_gltf, fx)) return;
             const auto &images = fx.R.get<const gltf::SourceAssets>(state::Document).Images;
             expect(images.size() == 1u);
             if (images.empty()) return;
@@ -1314,16 +1161,14 @@ int main(int argc, const char **argv) {
             expect(project::ResolveAsset(fx.R, images.front().SourcePath) == staged_png);
             // OBJ imports supply a source path without an authored glTF URI.
             fx.R.edit<gltf::SourceAssets>(state::Document).Images.front().Uri.clear();
-            ProcessComponentEvents(fx.R); // mirror prod: a frame settles world transforms before save
+            ProcessComponentEvents(fx.R); // A frame settles world transforms before save, as in the app.
             const auto relocated_path = edit_root / "relocated" / "BoxTextured.gltf";
             fs::create_directories(relocated_path.parent_path());
             const auto relocated_save = gltf::SaveGltf(relocated_path, fx.R);
             expect(relocated_save.has_value()) << "relocated export failed: " << (relocated_save ? "" : relocated_save.error());
             if (!relocated_save) return;
             SceneFixture relocated;
-            const auto relocated_load = gltf::LoadGltf(relocated_path, relocated.R);
-            expect(relocated_load.has_value()) << "relocated import failed: " << (relocated_load ? "" : relocated_load.error().Message);
-            if (!relocated_load) return;
+            if (!Load(relocated_path, relocated)) return;
             const auto &relocated_images = relocated.R.get<const gltf::SourceAssets>(state::Document).Images;
             expect(relocated_images.size() == 1u);
             if (!relocated_images.empty()) expect(project::ResolveAsset(relocated.R, relocated_images.front().SourcePath) == staged_png) << "relocated URI references another file";
@@ -1336,295 +1181,6 @@ int main(int argc, const char **argv) {
             if (!saved) expect(saved.error().contains(staged_png.string())) << saved.error();
         };
     }
-
-    // Require KHR_audio_rigid_bodies modal data and schema shape to survive export and re-import.
-    if (const fs::path box = SamplePath("external/glTF-Sample-Assets/Models/Box/glTF/Box.gltf"); fs::exists(box)) {
-        test("audio_modal_round_trip") = [&] {
-            ModalModes modes{
-                {
-                    .Freqs = {110.f, 275.5f, 431.2f},
-                    .T60s = {1.5f, 0.8f, 0.32f},
-                    .Shapes = {
-                        {{0.1f, 0.2f, -0.3f}, {0.02f, -0.11f, 0.4f}, {-0.05f, 0.06f, 0.07f}},
-                        {{-0.2f, 0.15f, 0.25f}, {0.3f, 0.1f, -0.2f}, {0.01f, -0.02f, 0.03f}},
-                        {{0.05f, -0.3f, 0.12f}, {-0.4f, 0.22f, 0.07f}, {0.08f, 0.09f, -0.01f}},
-                    },
-                    .Positions = {{0.f, 0.f, 0.f}, {0.4f, -0.2f, 0.1f}, {-0.1f, 0.5f, 0.3f}},
-                },
-                {},
-                {0, 1, 2},
-            };
-            const auto out_path = edit_root / "audio_modal.gltf";
-            const auto reloaded = RoundtripComponent<ModalModes>(box, out_path, [&](SceneFixture &fx, state::Entity node) {
-                fx.R.emplace<ModalModes>(node, modes);
-                fx.R.emplace<ModalGain>(node, ModalGain{0.6f});
-                fx.R.emplace_or_replace<AcousticMaterial>(node, materials::acoustic::Ceramic);
-            });
-            if (!reloaded.Value) return;
-
-            {
-                simdjson::dom::parser p;
-                simdjson::dom::element doc;
-                expect(p.load(out_path.string()).get(doc) == simdjson::SUCCESS) << "emitted json failed to parse";
-
-                bool lists_extension = false;
-                for (auto e : doc["extensionsUsed"]) {
-                    if (std::string_view{e} == "KHR_audio_rigid_bodies") lists_extension = true;
-                }
-                expect(lists_extension) << "KHR_audio_rigid_bodies missing from extensionsUsed";
-
-                const auto model0 = OnlyAudioEntry(doc, "modalModels");
-                expect(model0.has_value()) << "expected one modal model";
-                expect(OnlyAudioEntry(doc, "acousticMaterials").has_value()) << "expected one acoustic material";
-                if (!model0) return;
-                expect(AccessorShapeIs(doc, *model0, "frequencies", "SCALAR", 3)) << "frequencies accessor shape";
-                expect(AccessorShapeIs(doc, *model0, "decayRates", "SCALAR", 3)) << "decayRates accessor shape";
-                expect(AccessorShapeIs(doc, *model0, "positions", "VEC3", 3)) << "positions accessor shape";
-                expect(AccessorShapeIs(doc, *model0, "shapes", "VEC3", 9)) << "shapes accessor shape (mode-major M*P)";
-                expect(AccessorShapeIs(doc, *model0, "indices", "SCALAR", 3)) << "indices accessor shape";
-
-                const auto instanced = NodeAudioIndex(doc, "modalModel");
-                expect(instanced.has_value()) << "no node instances the modal model";
-                if (instanced) expect(*instanced == 0u) << "node model index";
-            }
-
-            auto &r = reloaded.Scene->R;
-            const auto rnode = reloaded.Node;
-            expect(ModesEq(*reloaded.Value, modes)) << "modal model diverged";
-            const auto *rgain = r.try_get<const ModalGain>(rnode);
-            expect(rgain != nullptr && NumberEq(rgain->Value, 0.6f)) << "gain diverged";
-            expect(r.all_of<Instance>(rnode)) << "modal node lost its mesh instance";
-            const auto *rmat = r.try_get<const AcousticMaterial>(rnode);
-            expect(rmat != nullptr && AcousticMaterialsEq(*rmat, materials::acoustic::Ceramic)) << "acoustic material not restored on the node";
-            // Import maps sample points to mesh vertices and marks the entity modal, so it is a playable sound object.
-            expect(reloaded.Value->Vertices.size() == modes.Positions.size()) << "sample points not mapped to mesh vertices";
-            expect(r.all_of<SoundVerticesModel>(rnode) && r.get<const SoundVerticesModel>(rnode) == SoundVerticesModel::Modal) << "imported model not set up as a modal sound object";
-        };
-    }
-
-    // Require exact import of a hand-authored meshless KHR_audio_rigid_bodies node.
-    if (const fs::path fixture = SamplePath("tests/fixtures/KHR_audio_rigid_bodies.gltf"); fs::exists(fixture)) {
-        test("audio_modal_decode_fixture") = [&] {
-            SceneFixture fx;
-            const auto load = gltf::LoadGltf(fixture, fx.R);
-            expect(load.has_value()) << "fixture load failed";
-            if (!load) return;
-
-            const auto node = NodeWith<ModalModes>(fx.R);
-            expect(node != state::Null) << "fixture produced no modal model";
-            if (node == state::Null) return;
-
-            const auto &m = fx.R.get<const ModalModes>(node);
-            expect(m.Freqs.size() == 1u && NumberEq(m.Freqs[0], 220.0)) << "frequency";
-            constexpr double ExpectedT60 = 6.907755278982137 / 2.0; // ln(1000) / decayRate(2.0)
-            expect(m.T60s.size() == 1u && NumberEq(m.T60s[0], ExpectedT60)) << "T60 from decay rate";
-            expect(m.Positions.size() == 1u && VecEq(m.Positions[0], vec3{1.5f, -0.5f, 0.25f})) << "position";
-            expect(m.Shapes.size() == 1u && m.Shapes[0].size() == 1u && VecEq(m.Shapes[0][0], vec3{0.3f, 0.4f, -0.6f})) << "shape";
-
-            const auto *gain = fx.R.try_get<const ModalGain>(node);
-            expect(gain != nullptr && NumberEq(gain->Value, 0.75)) << "gain";
-
-            const auto floor_node = NodeWith<ContactSurface>(fx.R);
-            expect(floor_node != state::Null) << "fixture produced no contact surface";
-            if (floor_node == state::Null) return;
-            const auto &cs = fx.R.get<const ContactSurface>(floor_node);
-            expect(cs.Name == "TestFinish") << "surface name";
-            expect(NumberEq(cs.Roughness, 3e-6) && NumberEq(cs.CorrelationLength, 7e-5) && NumberEq(cs.SpectralSlope, -1.25)) << "surface parameters";
-            expect(cs.NormalTexture.has_value()) << "surface normal texture";
-            if (cs.NormalTexture) {
-                expect(cs.NormalTexture->Texture == 0u && cs.NormalTexture->TexCoord == 0u && NumberEq(cs.NormalTexture->Scale, 0.8)) << "normal texture info";
-            }
-            const auto *floor_material = fx.R.try_get<const AcousticMaterial>(floor_node);
-            expect(floor_material != nullptr && floor_material->Name == "TestMat") << "surface material";
-        };
-    }
-
-    // KHR_audio_rigid_bodies acoustic surfaces round-trip on their own, with a real texture reference.
-    // A body may supply only its finish, which is the floor-and-table case sustained contact needs.
-    if (const fs::path box_textured = SamplePath("external/glTF-Sample-Assets/Models/BoxTextured/glTF/BoxTextured.gltf"); fs::exists(box_textured)) {
-        test("audio_surface_round_trip") = [&] {
-            // Stage the asset so its external PNG sits beside the file this test writes back out.
-            const auto stage_dir = edit_root / "audio-surface";
-            const auto staged_gltf = StageSample(box_textured, stage_dir);
-            const ContactSurface surface{
-                .Name = "Tiled floor",
-                .Roughness = 8e-6f,
-                .CorrelationLength = 8e-5f,
-                .SpectralSlope = -1.15f,
-                .ShortWavelength = 4e-6f,
-                .Waviness = 3e-5f,
-                .WavinessLength = 6e-3f,
-                .Profile = {0.f, 1e-6f, -1e-6f, 0.5e-6f},
-                .SampleSpacing = 5e-6f,
-                .NormalTexture = SurfaceNormalTexture{.Texture = 0, .TexCoord = 0, .Scale = 0.8f},
-            };
-            const auto out_path = stage_dir / "audio_surface.gltf";
-            const auto reloaded = RoundtripComponent<ContactSurface>(staged_gltf, out_path, [&](SceneFixture &fx, state::Entity node) {
-                fx.R.emplace_or_replace<ContactSurface>(node, surface);
-#ifdef SURFACE_AUDIO
-                // A texel spans a real distance along the surface, set by the mesh's own UV parameterization.
-                const auto mesh_entity = fx.R.get<const Instance>(node).Entity;
-                UpdateSurfaceRelief(fx.R, node, mesh_entity, true);
-                const auto *relief = fx.R.try_get<const SurfaceRelief>(node);
-                expect(relief != nullptr) << "no mesoscale relief derived from the normal map";
-                if (relief) {
-                    expect(relief->Track->Spacing > 1e-3f && relief->Track->Spacing < 1e-2f) << "texel size";
-                }
-                if (relief) {
-                    const auto spacing = relief->Track->Spacing, rms = relief->Track->Rms;
-                    for (auto e : fx.R.view<const Instance>()) {
-                        if (fx.R.get<const Instance>(e).Entity == mesh_entity) fx.R.patch<Transform>(e, [](Transform &t) { t.S = vec3{3.f}; });
-                    }
-                    ProcessComponentEvents(fx.R);
-                    UpdateSurfaceRelief(fx.R, node, mesh_entity, true);
-                    const auto *rescaled = fx.R.try_get<const SurfaceRelief>(node);
-                    expect(rescaled != nullptr) << "relief lost when the node was resized";
-                    if (rescaled) {
-                        expect(NumberEq(rescaled->Track->Spacing, spacing)) << "node scale leaked into the track spacing";
-                        expect(NumberEq(rescaled->Track->Rms, rms)) << "node scale leaked into the track height";
-                    }
-                }
-#endif
-            });
-            if (!reloaded.Value) return;
-            {
-                simdjson::dom::parser p;
-                simdjson::dom::element doc;
-                expect(p.load(out_path.string()).get(doc) == simdjson::SUCCESS) << "emitted json failed to parse";
-
-                const auto surface0 = OnlyAudioEntry(doc, "acousticSurfaces");
-                expect(surface0.has_value()) << "expected one acoustic surface";
-                if (!surface0) return;
-                expect(AccessorShapeIs(doc, *surface0, "profile", "SCALAR", 4)) << "profile accessor shape";
-                uint64_t texture_index = ~0ull;
-                expect((*surface0)["normalTexture"]["index"].get_uint64().get(texture_index) == simdjson::SUCCESS && texture_index == 0u) << "normal texture index";
-                const auto instanced = NodeAudioIndex(doc, "acousticSurface");
-                expect(instanced.has_value()) << "no node instances the acoustic surface";
-                if (instanced) expect(*instanced == 0u) << "node surface index";
-            }
-            expect(SurfacesEq(*reloaded.Value, surface)) << "contact surface diverged";
-        };
-    }
-
-#ifdef SURFACE_AUDIO
-    if (const fs::path normal_tangent = SamplePath("external/glTF-Sample-Assets/Models/NormalTangentTest/glTF/NormalTangentTest.gltf"); fs::exists(normal_tangent)) {
-        test("audio_surface_inherits_material_normal_map") = [&] {
-            const auto stage_dir = edit_root / "audio-surface-inherit";
-            const auto staged_gltf = StageSample(normal_tangent, stage_dir);
-
-            SceneFixture fx;
-            const auto load = gltf::LoadGltf(staged_gltf, fx.R);
-            expect(load.has_value()) << "NormalTangentTest load failed: " << (load ? "" : load.error().Message);
-            if (!load) return;
-
-            const auto node = FirstMeshNode(fx.R);
-            expect(node != state::Null) << "no mesh instance node in NormalTangentTest";
-            if (node == state::Null) return;
-            const auto mesh_entity = fx.R.get<const Instance>(node).Entity;
-
-            // The material's normal map is texture 2, which resolves to its own source image.
-            const auto inherited = gltf::MeshMaterialNormalMap(fx.R, mesh_entity);
-            expect(inherited.has_value()) << "material normal map not resolved";
-            const auto expected_image = gltf::TextureImageIndex(fx.R, 2);
-            expect(expected_image.has_value()) << "material normal texture has no source image";
-            if (inherited && expected_image) expect(inherited->Image == *expected_image) << "wrong material normal map";
-
-            // The surface names no map of its own, so the relief comes from the material's.
-            fx.R.emplace_or_replace<ContactSurface>(node, ContactSurface{.Name = "Inherited"});
-            UpdateSurfaceRelief(fx.R, node, mesh_entity, true);
-            const auto *relief = fx.R.try_get<const SurfaceRelief>(node);
-            expect(relief != nullptr) << "no relief derived from the material's normal map";
-            // These are the relief's own properties, so they are asserted here, against a real tangent-space normal map.
-            if (relief) {
-                expect(relief->Track->Spacing > 0.f) << "texel size";
-                expect(relief->Track->Rms > 0.f) << "relief has no height";
-                expect(relief->Track->Heights.size() == relief->Track->Sum.size() - 1) << "relief track integral";
-            }
-
-            const auto out_path = stage_dir / "audio_surface_inherit.gltf";
-            const auto save = gltf::SaveGltf(out_path, fx.R);
-            expect(save.has_value()) << "save failed: " << (save ? "" : save.error());
-            if (!save) return;
-
-            simdjson::dom::parser p;
-            simdjson::dom::element doc;
-            expect(p.load(out_path.string()).get(doc) == simdjson::SUCCESS) << "emitted json failed to parse";
-            const auto surface0 = OnlyAudioEntry(doc, "acousticSurfaces");
-            expect(surface0.has_value()) << "expected one acoustic surface";
-            if (surface0) expect((*surface0)["normalTexture"].error() != simdjson::SUCCESS) << "an inherited normal texture was written back out";
-        };
-    }
-#endif
-
-    // Custom attributes import per vertex where the weld agrees and per corner where it does not, and export back as `_NAME` attributes.
-    // Integers export as floats, since glTF vertex attributes have no 32-bit integers.
-    "custom_attribute_round_trip"_test = [&] {
-        const auto dir = tmp_root / "custom";
-        fs::create_directories(dir);
-        const auto source = dir / "Custom.gltf";
-        WriteCustomAttributeGltf(source);
-        SceneFixture fx;
-        RoundTripJson(fx, source, dir / "Custom-out.gltf", "custom", [](state::Registry &r, bool imported) { CheckCustomAttributes(r, imported); });
-        // The attributes restore byte for byte through a saved project.
-        const auto before = fx.SaveTo(dir / "Custom.project");
-        SceneFixture restored;
-        const auto after = restored.LoadFrom(dir / "Custom.project");
-        expect(after == before);
-        CheckCustomAttributes(restored.R, true);
-    };
-
-    // Every scene saves with its name, extras and roots, and the default scene saves as the default.
-    "multi_scene_round_trip"_test = [&] {
-        const auto dir = tmp_root / "scenes";
-        fs::create_directories(dir);
-        const auto source = dir / "Scenes.gltf";
-        std::ofstream{source} << R"({
-  "asset": {"version": "2.0"},
-  "scene": 1,
-  "scenes": [{"name": "Day", "nodes": [0, 1], "extras": {"hour": 12}}, {"name": "Night", "nodes": [1], "extras": {"hour": 0}}],
-  "nodes": [{"name": "Sun"}, {"name": "Ground"}]
-})";
-        const auto check = [](const state::Registry &r) {
-            const auto scene_named = [&](std::string_view name) {
-                for (const auto e : r.view<const Scene>()) {
-                    if (r.get<const Name>(e).Value == name) return e;
-                }
-                return state::Null;
-            };
-            const auto node_named = [&](std::string_view name) {
-                for (const auto e : r.view<const Name>()) {
-                    if (r.get<const Name>(e).Value == name) return e;
-                }
-                return state::Null;
-            };
-            const auto day = scene_named("Day"), night = scene_named("Night");
-            const auto sun = node_named("Sun"), ground = node_named("Ground");
-            expect(r.view<const Scene>().size() == 2u);
-            expect(day != state::Null && night != state::Null && sun != state::Null && ground != state::Null);
-            expect(FrameScene(r) == night);
-            expect(InScene(r, sun, day) && !InScene(r, sun, night));
-            expect(InScene(r, ground, day) && InScene(r, ground, night));
-        };
-        SceneFixture fx;
-        RoundTripJson(fx, source, dir / "Scenes-out.gltf", "scenes", [&](state::Registry &r, bool) { check(r); });
-    };
-
-    // A load that fails validation leaves the scene and every store as they were.
-    "failed_import_leaves_scene_untouched"_test = [&] {
-        SceneFixture fx;
-        const auto before = CountScene(fx);
-        const std::pair<bool, std::string_view> cases[]{{false, "armature root node"}, {true, "JOINTS_0 without WEIGHTS_0"}};
-        for (const auto &[drop_weights, expected_error] : cases) {
-            const auto path = tmp_root / std::format("broken_{}.gltf", drop_weights ? "mesh" : "skin");
-            std::ofstream{path} << BrokenSkinnedTriangleGltf(drop_weights);
-            const auto load = gltf::LoadGltf(path, fx.R);
-            expect(!load.has_value()) << "broken document loaded";
-            if (!load) expect(!load.error().UnsupportedExtensions && load.error().Message.contains(expected_error)) << "unexpected error: " << load.error().Message;
-            const auto after = CountScene(fx);
-            expect(after == before) << "failed load changed the scene or a store: entities " << before.Entities << " -> " << after.Entities << ", materials " << before.Materials << " -> " << after.Materials;
-            std::println(stderr, "  failed load '{}': entities {} -> {}, mesh handles {} -> {}, textures {} -> {}, materials {} -> {}, vertex bytes {} -> {}", path.filename().string(), before.Entities, after.Entities, before.MeshHandles, after.MeshHandles, before.Textures, after.Textures, before.Materials, after.Materials, before.VertexBytes, after.VertexBytes);
-        }
-    };
 
     return RunSuites();
 }

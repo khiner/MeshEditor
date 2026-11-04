@@ -1,6 +1,4 @@
-#ifndef GRIDLINES_MSL
-#define GRIDLINES_MSL
-
+#pragma once
 #include "OverlayFade.metal"
 #include "Varyings.metal"
 
@@ -29,7 +27,6 @@ inline float GridLineIntensity(float3 pos, float scale, float2 camera_xz, float2
     const float2 coord = pos.xz * scale - round(camera_xz * scale);
     const float2 d = world_d * scale;
     const float2 grid = abs(fract(coord - 0.5f) - 0.5f) / d;
-    // Fade subpixel lines to prevent moire.
     const float moire_fade = 1.0f - smoothstep(0.2f, 1.0f, max(d.x, d.y));
     return (1.0f - min(min(grid.x, grid.y), 1.0f)) * moire_fade;
 }
@@ -49,7 +46,6 @@ fragment OverlayTargets GridLinesFragment(
 ) {
     const Scene scene{bindless, view, theme, workspace};
     constant DerivedThemeColors &derived = scene.Theme.Derived;
-    // Intersect this pixel with y = 0 directly.
     // Interpolating infinite triangle coordinates perturbs derivatives at triangle boundaries and across redraws.
     const float2 ndc = in.Position.xy / float2(view.ViewportSize) * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f);
     const float4x4 vp = scene.ViewProj();
@@ -96,5 +92,3 @@ fragment OverlayTargets GridLinesFragment(
     color.a *= OverlayBehindFade(scene, in.Position);
     return {color};
 }
-
-#endif

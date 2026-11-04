@@ -7,80 +7,54 @@
 #include "mesh/Flatten.h"
 #include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
+#include "mesh/Neighborhood.h"
 #include "mesh/SnapSymmetry.h"
 #include "metal/Dispatch.h"
 #include "numeric/QuaternionMath.h"
 #include "render/ElementWorkOps.h"
-#include <unordered_set>
 
 namespace {
-bool Finite(vec3 value) { return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z); }
 bool ValidPlane(quat orientation, vec3 center, float roll) {
     const float norm = orientation.x * orientation.x + orientation.y * orientation.y + orientation.z * orientation.z + orientation.w * orientation.w;
     return norm > 0.f && std::isfinite(norm) && Finite(center) && std::isfinite(roll);
 }
-struct TargetHandles {
-    TargetHandles(const MeshStore &meshes, std::span<const PositionOperationTarget> targets) {
-        std::unordered_set<uint32_t> ids;
-        for (const auto &target : targets) {
-            if (!ids.insert(target.StoreId).second) throw std::invalid_argument("Position operations require distinct meshes.");
-            ValidateGeometrySelection(meshes, target.StoreId, *Selected.emplace_back(meshes, target.StoreId, target.Selection));
-            ValidateGeometrySelection(meshes, target.StoreId, *Excluded.emplace_back(meshes, target.StoreId, target.Excluded));
-        }
-    }
-
-    std::vector<SelectedHandles> Selected, Excluded;
-};
 } // namespace
 
-// Only selected face ranges and attribute pages participate; vertex fans are irrelevant.
-std::vector<FaceAttributeOperationChange> EncodeFaceAttributeOperation(MeshStore &meshes, MeshPipelines &pipelines, mtl::ComputeChain &chain, std::span<const PositionOperationTarget> targets, bool colors, uint32_t uv_set, uint32_t operation) {
+std::optional<FaceAttributeOperationChange> EncodeFaceAttributeOperation(MeshStore &meshes, MeshPipelines &pipelines, mtl::ComputeChain &chain, const PositionOperationTarget &target, bool colors, uint32_t uv_set, uint32_t operation) {
     if (uv_set >= MeshStore::MaxUvSets || operation > 2u) return {};
-    const TargetHandles handles{meshes, targets};
+    const auto id = target.StoreId;
+    const SelectedHandles selection{meshes, id, target.Selection};
     const auto &a = meshes.Arenas();
-    std::vector<FaceAttributeEditPushConstants> jobs;
-    std::vector<FaceAttributeOperationChange> changes;
-    uint64_t corners = 0u, face_count = 0u;
-    for (uint32_t target_index = 0u; target_index < targets.size(); ++target_index) {
-        const auto &target = targets[target_index];
-        const auto id = target.StoreId;
-        const Mesh mesh{meshes, id};
-        const auto &record = meshes.Get(id);
-        if (!(record.CornerAttributes & (colors ? MeshAttributeBit_Color0 : MeshAttributeBit_TexCoord0 << uv_set))) continue;
-        const auto tangents = colors ? Range{} : record.CornerTangents;
-        const auto &faces = handles.Selected[target_index]->Faces;
-        uint32_t incidence = 0u;
-        for (const auto f : faces) {
-            const auto range = a.FaceRanges.Get({a.FaceTriangles.Address(record.FaceData, ElementHandle{f}).Value(), 1u})[0];
-            const Range corners{range.x, range.y - range.x};
-            if (colors) a.CornerColors.Capture(record.CornerColors, corners);
-            else a.CornerUvs[uv_set].Capture(record.CornerUvs[uv_set], corners);
-            if (tangents.Count) a.CornerTangents.Capture(tangents, corners);
-            incidence += corners.Count;
-        }
-        if (faces.empty()) continue;
-        const auto &seed = changes.emplace_back(FaceAttributeOperationChange{target_index, {.Work = SeedElementWorkHandles(chain.Scratch, a.FaceTriangles.HandleBound(record.FaceData), faces), .Count = uint32_t(faces.size()), .Incidence = incidence}}).Faces;
-        jobs.push_back({
-            .Connectivity = meshes.GetConnectivityRef(id),
-            .Faces = seed.Work,
-            .Attribute = colors ? a.CornerColors.Ref(record.CornerColors) : a.CornerUvs[uv_set].Ref(record.CornerUvs[uv_set]),
-            .Tangents = a.CornerTangents.Ref(tangents),
-            .FaceCount = mesh.FaceCount(),
-            .Count = seed.Count,
-            .Operation = operation,
-        });
-        corners += incidence;
-        face_count += seed.Count;
+    const auto &record = meshes.Get(id);
+    if (!(record.CornerAttributes & (colors ? MeshAttributeBit_Color0 : MeshAttributeBit_TexCoord0 << uv_set))) return {};
+    const auto tangents = colors ? Range{} : record.CornerTangents;
+    const auto &faces = selection->Faces;
+    uint32_t incidence = 0u;
+    for (const auto f : faces) {
+        const auto range = a.FaceRanges.Get({a.FaceTriangles.Address(record.FaceData, ElementHandle{f}).Value(), 1u})[0];
+        const Range corners{range.x, range.y - range.x};
+        if (colors) a.CornerColors.Capture(record.CornerColors, corners);
+        else a.CornerUvs[uv_set].Capture(record.CornerUvs[uv_set], corners);
+        if (tangents.Count) a.CornerTangents.Capture(tangents, corners);
+        incidence += corners.Count;
     }
-    if (jobs.empty()) return {};
-    const auto &pipeline = pipelines[colors ? MeshPass::EditFaceColors : MeshPass::EditFaceUvs];
-    chain.Concurrent([&] { for (const auto &pc : jobs) chain.Threads(pipeline, pc, pc.Count); });
-    profile::RecordCounter("AttributeEditFaces", face_count);
-    profile::RecordCounter("AttributeEditCorners", corners);
-    return changes;
+    if (faces.empty()) return {};
+    const FaceAttributeOperationChange change{{.Work = SeedElementWorkHandles(chain.Scratch, a.FaceTriangles.HandleBound(record.FaceData), faces), .Count = uint32_t(faces.size()), .Incidence = incidence}};
+    const FaceAttributeEditPushConstants pc{
+        .Connectivity = meshes.GetConnectivityRef(id),
+        .Faces = change.Faces.Work,
+        .Attribute = colors ? a.CornerColors.Ref(record.CornerColors) : a.CornerUvs[uv_set].Ref(record.CornerUvs[uv_set]),
+        .Tangents = a.CornerTangents.Ref(tangents),
+        .Count = change.Faces.Count,
+        .Operation = operation,
+    };
+    chain.Threads(pipelines[colors ? MeshPass::EditFaceColors : MeshPass::EditFaceUvs], pc, pc.Count);
+    profile::RecordCounter("AttributeEditFaces", pc.Count);
+    profile::RecordCounter("AttributeEditCorners", incidence);
+    return change;
 }
 
-std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes, MeshPipelines &pipelines, mtl::ComputeChain &chain, std::span<const PositionOperationTarget> targets, PositionEditOp operation, float factor, uint32_t repeat, const PositionOperationOptions &options) {
+std::optional<PositionOperationChange> EncodePositionOperations(MeshStore &meshes, MeshPipelines &pipelines, mtl::ComputeChain &chain, const PositionOperationTarget &target, PositionEditOp operation, float factor, uint32_t repeat, const PositionOperationOptions &options) {
     const auto &[axes, requested_flags, direction, gradient, center, warp, bend, randomize, slide, edge_slide, symmetry, curve, circle, transform, attribute, factor_attribute, sphere_radius] = options;
     uint32_t flags = requested_flags;
     if (!repeat || axes > 7u || uint32_t(operation) > uint32_t(PositionEditOp::Attribute)) return {};
@@ -93,21 +67,19 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
     if (bend && (!ValidPlane(bend->Orientation, bend->Center, bend->OffsetAngle) || !std::isfinite(bend->Radius) || bend->Radius == 0.f)) return {};
     if (randomize && (!std::isfinite(randomize->Uniform) || !std::isfinite(randomize->Normal))) return {};
     for (const auto &parameters : {slide, edge_slide}) {
-        if (parameters && (!(Length(parameters->Direction) > 0.f) || !std::isfinite(Length(parameters->Direction)))) return {};
+        if (!parameters) continue;
+        if (!(Length(parameters->Direction) > 0.f) || !std::isfinite(Length(parameters->Direction))) return {};
+        flags = (flags & ~(PositionEditSlideEven | PositionEditSlideFlipped)) |
+            (parameters->Even ? PositionEditSlideEven : 0u) | (parameters->Flipped ? PositionEditSlideFlipped : 0u);
     }
     if (circle && (!std::isfinite(circle->Radius) || !std::isfinite(circle->Angle))) return {};
     if (symmetry && (!std::has_single_bit(axes) || !std::isfinite(symmetry->Threshold) || symmetry->Threshold <= 0.f)) return {};
     if (transform && (!Finite(transform->Delta.P) || !Finite(transform->Delta.S) || !Finite(transform->Pivot) || !ValidPlane(transform->Delta.R, {}, 0.f))) return {};
-    const TargetHandles handles{meshes, targets};
+    const auto id = target.StoreId;
+    const SelectedHandles selection{meshes, id, target.Selection}, excluded{meshes, id, target.Excluded};
     if (warp) flags = (flags & ~PositionEditWarpAutoRange) | (warp->AutoRange ? PositionEditWarpAutoRange : 0u);
-    for (const auto &parameters : {slide, edge_slide}) {
-        if (parameters) {
-            flags = (flags & ~(PositionEditSlideEven | PositionEditSlideFlipped)) |
-                (parameters->Even ? PositionEditSlideEven : 0u) | (parameters->Flipped ? PositionEditSlideFlipped : 0u);
-        }
-    }
     const bool zero_moves = symmetry || warp || (slide && slide->Even && slide->Flipped) || (edge_slide && edge_slide->Even);
-    if (targets.empty() || !axes || (!zero_moves && factor == 0.f) || !std::isfinite(factor)) return {};
+    if (!axes || (!zero_moves && factor == 0.f) || !std::isfinite(factor)) return {};
     const bool planar = operation == PositionEditOp::Planar;
     const bool ordered_chains = curve || circle;
     const bool flatten = operation == PositionEditOp::Copy && !ordered_chains;
@@ -125,16 +97,8 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
     if (!zero_moves && factor == 0.f) return {};
     vec3 plane_x{}, plane_y{}, plane_center{};
     float bend_pivot = 0.f;
-    if (transformed) {
-        for (const auto &target : targets) {
-            if (!Finite(target.World.P) || !Finite(target.World.S) || !ValidPlane(target.World.R, {}, 0.f)) return {};
-        }
-    }
-    if (transform) {
-        for (const auto &target : targets) {
-            if (target.World.S.x == 0.f || target.World.S.y == 0.f || target.World.S.z == 0.f) return {};
-        }
-    }
+    if (transformed && (!Finite(target.World.P) || !Finite(target.World.S) || !ValidPlane(target.World.R, {}, 0.f))) return {};
+    if (transform && (target.World.S.x == 0.f || target.World.S.y == 0.f || target.World.S.z == 0.f)) return {};
     if (warp || bend) {
         const auto rotation = Normalize(warp ? warp->Orientation : bend->Orientation);
         const auto right = rotation * vec3{1, 0, 0}, up = rotation * vec3{0, 1, 0};
@@ -151,14 +115,10 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
             if (!std::isfinite(bend_pivot)) return {};
         }
     }
-    uint64_t selected_count = 0u;
-    uint32_t reduction_blocks = 0u;
+    const bool statistics = (sphere && !sphere_radius) || (warp && warp->AutoRange);
+    const uint64_t selected_count = selection->Vertices.size();
+    const uint32_t reduction_blocks = statistics ? TileCount(selected_count, TileElements) : 0u;
     if (!planar) {
-        for (const auto &selection : handles.Selected) {
-            const auto count = selection->Vertices.size();
-            selected_count += count;
-            if ((sphere && !sphere_radius) || (warp && warp->AutoRange)) reduction_blocks += (count + 255u) / 256u;
-        }
         // Symmetry can also move an unselected partner for each selected vertex.
         const uint32_t vertex_words = edge_slide || symmetry ? 10u : 4u;
         const uint32_t parameter_words = transform ? sizeof(TransformPositionParameters) / sizeof(uint32_t) : attribute ? sizeof(NamedAttributeRef) / sizeof(uint32_t) :
@@ -167,264 +127,189 @@ std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &meshes,
             slide                                                                                                       ? 8u :
             edge_slide                                                                                                  ? 1u :
                                                                                                                           0u;
-        chain.Scratch.ReserveAdditional(vertex_words * selected_count + 4ull * reduction_blocks + 1u + uint64_t(parameter_words) * targets.size());
+        chain.Scratch.ReserveAdditional(vertex_words * selected_count + 4ull * reduction_blocks + 1u + parameter_words);
     }
-    const bool statistics = (sphere && !sphere_radius) || (warp && warp->AutoRange);
     const auto partials = chain.Scratch.Allocate(2u * reduction_blocks);
-    uint32_t partial_offset = partials.Offset;
-    std::vector<VertexPositionEditPushConstants> jobs;
-    struct PositionBatch {
-        uint32_t Index;
-        std::vector<Range> Batches;
+    const Mesh mesh{meshes, id};
+    const auto face_bound = meshes.Arenas().FaceTriangles.HandleBound(meshes.Get(id).FaceData);
+    VertexPositionEditPushConstants pc{
+        .Connectivity = meshes.GetConnectivityRef(id),
+        .VertexSlot = meshes.Slots().Vertices,
+        .Axes = axes,
+        .Factor = factor,
+        .FaceNormalSlot = meshes.Arenas().BaseFaceNormals.Buffer.Slot,
+        .VertexNormalSlot = meshes.Arenas().BaseVertexNormals.Buffer.Slot,
+        .Flags = flags,
+        .Operation = operation,
+        .FactorAttribute = factor_attribute,
     };
-    std::vector<PositionBatch> batches;
-    std::vector<PositionOperationChange> changes;
-    for (uint32_t target_index = 0u; target_index < targets.size(); ++target_index) {
-        const auto &target = targets[target_index];
-        const auto &selection = *handles.Selected[target_index];
-        const auto &excluded = *handles.Excluded[target_index];
-        const auto id = target.StoreId;
-        const Mesh mesh{meshes, id};
-        VertexPositionEditPushConstants pc{
-            .Connectivity = meshes.GetConnectivityRef(id),
-            .VertexSlot = meshes.Slots().Vertices,
-            .CornerSlot = meshes.Arenas().FaceCorners.Buffer.Slot,
-            .FaceCount = mesh.FaceCount(),
-            .Axes = axes,
-            .Factor = factor,
-            .FaceNormalSlot = meshes.Arenas().BaseFaceNormals.Buffer.Slot,
-            .VertexNormalSlot = meshes.Arenas().BaseVertexNormals.Buffer.Slot,
-            .Flags = flags,
-            .Operation = operation,
-            .FactorAttribute = factor_attribute,
-        };
-        if (!planar && operation == PositionEditOp::ShrinkFatten) {
-            pc.Faces = SeedElementWorkHandles(chain.Scratch, meshes.Arenas().FaceTriangles.HandleBound(meshes.Get(id).FaceData), selection.Faces);
-        }
-        PositionBatch batch{.Index = uint32_t(jobs.size())};
-        const auto world = transformed ? target.World : Transform{};
-        const auto inverse = Conjugate(world.R);
-        const auto local_direction = [&](vec3 direction) {
-            auto local = inverse * direction;
-            for (uint32_t axis = 0u; axis < 3u; ++axis) local[axis] = world.S[axis] != 0.f ? local[axis] / world.S[axis] : 0.f;
-            return local;
-        };
-        if (flatten_direction) {
-            pc.Direction = local_direction(direction);
-            const float length = Length(pc.Direction);
-            if (!(length > 0.f) || !std::isfinite(length)) continue;
-            pc.Direction /= length;
-        }
-        if (centered) {
-            pc.Center = local_direction(center - world.P);
-            pc.Direction = local_direction(direction);
-            pc.Gradient = (inverse * gradient) * world.S;
-        }
-        if (warp || bend) {
-            const PositionPlane plane{(inverse * plane_x) * world.S, (inverse * plane_y) * world.S, local_direction(plane_x), local_direction(plane_y), {Dot(world.P - plane_center, plane_x), Dot(world.P - plane_center, plane_y)}};
-            if (warp) pc.Parameters = chain.Upload(BytesOf(WarpParameters{plane, std::min(warp->Min, warp->Max), std::max(warp->Min, warp->Max)}));
-            else pc.Parameters = chain.Upload(BytesOf(BendParameters{plane, bend->Radius, bend_pivot}));
-        }
-        if (transform) {
-            auto frame = target.World;
-            auto delta = transform->Delta;
-            frame.R = Normalize(frame.R);
-            delta.R = Normalize(delta.R);
-            pc.Parameters = chain.Upload(BytesOf(TransformPositionParameters{frame, delta, transform->Pivot}));
-        }
-        if (attribute) pc.Parameters = chain.Upload(BytesOf(*attribute));
-        if (randomize) pc.Parameters = chain.Upload(BytesOf(RandomizeParameters{std::clamp(randomize->Uniform, 0.f, 1.f), std::clamp(randomize->Normal, 0.f, 1.f), randomize->Seed}));
-        if (slide || edge_slide) {
-            const auto &selected = selection.Vertices;
-            uint32_t reference = selected.empty() ? InvalidOffset : selected.front();
-            if (std::ranges::binary_search(selected, target.Reference)) reference = target.Reference;
-            if (edge_slide) {
-                const auto directions = PlanEdgeSlide(mesh, selection, inverse * Normalize(edge_slide->Direction), world.S, reference);
-                if (directions.empty()) continue;
-                pc.Parameters = chain.Upload(BytesOf(directions));
-                if (edge_slide->Even) {
-                    uint32_t rank = 0u, reference_rank = 0u;
-                    for (const auto v : selected) {
-                        if (v == reference) reference_rank = rank;
-                        ++rank;
-                    }
-                    const auto &ref = directions[reference_rank];
-                    pc.ReductionResult = chain.Upload(BytesOf(Length(ref.Positive - ref.Negative)));
-                }
-            } else {
-                const VertexSlideParameters parameters{inverse * Normalize(slide->Direction), world.S, reference};
-                pc.Parameters = chain.Upload(BytesOf(parameters));
-                if (slide->Even) pc.ReductionResult = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(1u).Offset};
+    if (!planar && operation == PositionEditOp::ShrinkFatten) pc.Faces = SeedElementWorkHandles(chain.Scratch, face_bound, selection->Faces);
+    std::vector<Range> batches;
+    const auto world = transformed ? target.World : Transform{};
+    const auto inverse = Conjugate(world.R);
+    const auto local_direction = [&](vec3 direction) {
+        auto local = inverse * direction;
+        for (uint32_t axis = 0u; axis < 3u; ++axis) local[axis] = world.S[axis] != 0.f ? local[axis] / world.S[axis] : 0.f;
+        return local;
+    };
+    if (flatten_direction) {
+        pc.Direction = local_direction(direction);
+        const float length = Length(pc.Direction);
+        if (!(length > 0.f) || !std::isfinite(length)) return {};
+        pc.Direction /= length;
+    }
+    if (centered) {
+        pc.Center = local_direction(center - world.P);
+        pc.Direction = local_direction(direction);
+        pc.Gradient = (inverse * gradient) * world.S;
+    }
+    if (warp || bend) {
+        const PositionPlane plane{(inverse * plane_x) * world.S, (inverse * plane_y) * world.S, local_direction(plane_x), local_direction(plane_y), {Dot(world.P - plane_center, plane_x), Dot(world.P - plane_center, plane_y)}};
+        if (warp) pc.Parameters = chain.Upload(BytesOf(WarpParameters{plane, std::min(warp->Min, warp->Max), std::max(warp->Min, warp->Max)}));
+        else pc.Parameters = chain.Upload(BytesOf(BendParameters{plane, bend->Radius, bend_pivot}));
+    }
+    if (transform) {
+        auto frame = target.World;
+        auto delta = transform->Delta;
+        frame.R = Normalize(frame.R);
+        delta.R = Normalize(delta.R);
+        pc.Parameters = chain.Upload(BytesOf(TransformPositionParameters{frame, delta, transform->Pivot, transform->Mirror}));
+    }
+    if (attribute) pc.Parameters = chain.Upload(BytesOf(*attribute));
+    if (randomize) pc.Parameters = chain.Upload(BytesOf(RandomizeParameters{std::clamp(randomize->Uniform, 0.f, 1.f), std::clamp(randomize->Normal, 0.f, 1.f), randomize->Seed}));
+    if (slide || edge_slide) {
+        const auto &selected = selection->Vertices;
+        uint32_t reference = selected.empty() ? InvalidOffset : selected.front();
+        if (std::ranges::binary_search(selected, target.Reference)) reference = target.Reference;
+        if (edge_slide) {
+            const auto directions = PlanEdgeSlide(meshes, pipelines, mesh, *selection, inverse * Normalize(edge_slide->Direction), world.S, reference);
+            if (directions.empty()) return {};
+            pc.Parameters = chain.Upload(BytesOf(directions));
+            if (edge_slide->Even) {
+                const auto &ref = directions[std::ranges::lower_bound(selected, reference) - selected.begin()];
+                pc.ReductionResult = chain.Upload(BytesOf(Length(ref.Positive - ref.Negative)));
             }
-        }
-        std::vector<uint32_t> vertices;
-        if (flatten) {
-            auto plan = PlanFlatten(mesh, selection);
-            if (plan.Vertices.empty()) continue;
-            chain.Scratch.ReserveAdditional(plan.Words.size() + plan.Groups.size() + 4ull * plan.Vertices.size());
-            // Flatten's parameters contain packed groups; Planes indexes their offsets.
-            pc.Parameters = chain.Upload(BytesOf(plan.Words));
-            pc.Planes = chain.Upload(BytesOf(plan.Groups));
-            pc.PlaneCount = uint32_t(plan.Groups.size());
-            batch.Batches = std::move(plan.Batches);
-            vertices = std::move(plan.Vertices);
-        } else if (planar) {
-            std::vector<uint32_t> faces;
-            for (const auto f : selection.Faces) {
-                if (mesh.GetValence(he::FH{f}) > 3u) faces.push_back(f);
-            }
-            if (faces.empty()) continue;
-            // The existing face seed gathers only connectivity handles on the host.
-            // Its vertex list also gives history the exact pages to capture.
-            ClosureSeed seed{.Work = SeedElementWorkHandles(chain.Scratch, meshes.Arenas().FaceTriangles.HandleBound(meshes.Get(id).FaceData), faces), .Count = uint32_t(faces.size())};
-            for (const auto f : faces) {
-                for (const auto v : mesh.fv_range(he::FH{f})) seed.Vertices.push_back(*v);
-            }
-            SortUnique(seed.Vertices);
-            pc.Faces = seed.Work;
-            pc.PlaneCount = seed.Count;
-            pc.Planes = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(4u * seed.Count).Offset};
-            vertices = std::move(seed.Vertices);
-        } else if (edge_chains || ordered_chains) {
-            auto plan = circle ? PlanCircularize(mesh, selection, excluded) : curve ? PlanCurveBetweenSelected(mesh, selection, excluded, curve->Extend) :
-                                                                                      PlanSelectedEdgeChains(mesh, selection, relax);
-            if (plan.Outputs.empty()) continue;
-            const uint32_t stride = circle ? 0u : curve ? 7u :
-                relax                                   ? 10u :
-                                                          6u;
-            const uint32_t extra = circle ? 0u : curve ? 2u :
-                                                         1u;
-            chain.Scratch.ReserveAdditional(uint64_t(stride + 1u) * plan.Inputs.size() + (sizeof(EdgeChain) / sizeof(uint32_t) + extra) * plan.Chains.size() + 4ull * plan.Outputs.size() + plan.Phases.size());
-            const auto inputs = chain.Scratch.Allocate(std::span<const uint32_t>{plan.Inputs});
-            const auto phases = chain.Scratch.Allocate(std::span<const uint32_t>{plan.Phases});
-            const auto work = chain.Scratch.Allocate(stride * uint32_t(plan.Inputs.size()) + extra * uint32_t(plan.Chains.size()));
-            uint32_t work_offset = work.Offset;
-            for (auto &descriptor : plan.Chains) {
-                descriptor.WorkOffset = work_offset;
-                work_offset += stride * descriptor.Count + extra;
-                descriptor.InputOffset += inputs.Offset;
-                if (relax || curve) descriptor.PhaseOffset += phases.Offset;
-            }
-            pc.Parameters = chain.Upload(BytesOf(plan.Chains));
-            pc.ChainCount = uint32_t(plan.Chains.size());
-            if (ordered_chains) batch.Batches = std::move(plan.Batches);
-            if (circle) pc.Direction = {circle->Radius, circle->Angle, 0.f};
-            vertices = std::move(plan.Outputs);
-        } else if (symmetry) {
-            const auto plan = PlanSymmetrySnap(meshes, mesh, selection, std::countr_zero(axes), symmetry->Threshold, symmetry->Center);
-            if (plan.empty()) continue;
-            std::vector<uint32_t> partners;
-            for (const auto [v, partner] : plan) {
-                vertices.push_back(v);
-                partners.push_back(partner);
-            }
-            pc.Parameters = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(std::span<const uint32_t>{partners}).Offset};
         } else {
-            vertices = selection.Vertices;
-        }
-        if (vertices.empty()) continue;
-        pc.Handles = chain.Upload(BytesOf(vertices));
-        pc.Count = uint32_t(vertices.size());
-        // Fitting jobs keep their own output order; only history capture needs sorted handles.
-        if (edge_chains || ordered_chains) std::ranges::sort(vertices);
-        std::vector<Range> runs;
-        ForEachIndexRun(vertices, [&](size_t first, size_t count) { runs.push_back({vertices[first], uint32_t(count)}); });
-        if (statistics) {
-            pc.ReductionBlocks = {chain.Scratch.Buffer.Slot, partial_offset};
-            partial_offset += 2u * ((pc.Count + 255u) / 256u);
-        }
-        pc.Positions = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(3u * pc.Count).Offset};
-        const auto &arena = meshes.Arenas().Vertices;
-        const auto set = meshes.Get(id).Vertices;
-        for (const auto run : runs) arena.ForEachAddressRun(set, ElementHandle{run.Offset}, run.Count, [&](Range addresses) { arena.Buffer.CaptureWrite(uint64_t(addresses.Offset) * sizeof(Vertex), uint64_t(addresses.Count) * sizeof(Vertex)); });
-        changes.push_back({target_index, std::move(vertices), std::move(runs)});
-        jobs.push_back(pc);
-        if (!batch.Batches.empty()) batches.push_back(std::move(batch));
-    }
-    if (jobs.empty()) return {};
-    uint64_t vertex_count = 0u, plane_count = 0u;
-    for (const auto &pc : jobs) {
-        vertex_count += pc.Count;
-        plane_count += pc.PlaneCount;
-    }
-    profile::RecordCounter("PositionEditVertices", vertex_count);
-    profile::RecordCounter("PositionEditPlanes", plane_count);
-    uint64_t curve_chain_count = 0u, curve_batch_count = 0u;
-    if (ordered_chains) {
-        for (const auto &job : batches) {
-            curve_chain_count += jobs[job.Index].ChainCount;
-            curve_batch_count += job.Batches.size();
+            const VertexSlideParameters parameters{inverse * Normalize(slide->Direction), world.S, reference};
+            pc.Parameters = chain.Upload(BytesOf(parameters));
+            if (slide->Even) pc.ReductionResult = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(1u).Offset};
         }
     }
-    profile::RecordCounter("CurveEditChains", curve_chain_count);
-    profile::RecordCounter("CurveEditBatches", curve_batch_count);
+    std::vector<uint32_t> vertices;
+    if (flatten) {
+        auto plan = PlanFlatten(meshes, pipelines, mesh, *selection);
+        if (plan.Vertices.empty()) return {};
+        chain.Scratch.ReserveAdditional(plan.Words.size() + plan.Groups.size() + 4ull * plan.Vertices.size());
+        // Parameters hold Flatten's packed groups, and Planes holds their offsets.
+        pc.Parameters = chain.Upload(BytesOf(plan.Words));
+        pc.Planes = chain.Upload(BytesOf(plan.Groups));
+        pc.PlaneCount = uint32_t(plan.Groups.size());
+        batches = std::move(plan.Batches);
+        vertices = std::move(plan.Vertices);
+    } else if (planar) {
+        const auto corners = FaceCorners(meshes, pipelines, id, selection->Faces);
+        std::vector<uint32_t> faces, face_vertices;
+        for (uint32_t i = 0u; i < selection->Faces.size(); ++i) {
+            if (corners.Of(i).size() <= 3u) continue;
+            faces.push_back(selection->Faces[i]);
+            for (const auto &corner : corners.Of(i)) face_vertices.push_back(corner.Vertex);
+        }
+        if (faces.empty()) return {};
+        SortUnique(face_vertices);
+        pc.Faces = SeedElementWorkHandles(chain.Scratch, face_bound, faces);
+        pc.PlaneCount = uint32_t(faces.size());
+        pc.Planes = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(4u * pc.PlaneCount).Offset};
+        vertices = std::move(face_vertices);
+    } else if (edge_chains || ordered_chains) {
+        auto plan = circle ? PlanCircularize(meshes, pipelines, mesh, *selection, *excluded) : curve ? PlanCurveBetweenSelected(meshes, pipelines, mesh, *selection, *excluded, curve->Extend) :
+                                                                                                       PlanSelectedEdgeChains(meshes, pipelines, mesh, *selection, relax);
+        if (plan.Outputs.empty()) return {};
+        const uint32_t stride = circle ? 0u : curve ? 7u :
+            relax                                   ? 10u :
+                                                      6u;
+        const uint32_t extra = circle ? 0u : curve ? 2u :
+                                                     1u;
+        chain.Scratch.ReserveAdditional(uint64_t(stride + 1u) * plan.Inputs.size() + (sizeof(EdgeChain) / sizeof(uint32_t) + extra) * plan.Chains.size() + 4ull * plan.Outputs.size() + plan.Phases.size());
+        const auto inputs = chain.Scratch.Allocate(plan.Inputs);
+        const auto phases = chain.Scratch.Allocate(plan.Phases);
+        const auto work = chain.Scratch.Allocate(stride * uint32_t(plan.Inputs.size()) + extra * uint32_t(plan.Chains.size()));
+        uint32_t work_offset = work.Offset;
+        for (auto &descriptor : plan.Chains) {
+            descriptor.WorkOffset = work_offset;
+            work_offset += stride * descriptor.Count + extra;
+            descriptor.InputOffset += inputs.Offset;
+            if (relax || curve) descriptor.PhaseOffset += phases.Offset;
+        }
+        pc.Parameters = chain.Upload(BytesOf(plan.Chains));
+        pc.ChainCount = uint32_t(plan.Chains.size());
+        if (ordered_chains) batches = std::move(plan.Batches);
+        if (circle) pc.Direction = {circle->Radius, circle->Angle, 0.f};
+        vertices = std::move(plan.Outputs);
+    } else if (symmetry) {
+        const auto plan = PlanSymmetrySnap(meshes, pipelines, mesh, *selection, std::countr_zero(axes), symmetry->Threshold, symmetry->Center);
+        if (plan.empty()) return {};
+        std::vector<uint32_t> partners;
+        for (const auto [v, partner] : plan) {
+            vertices.push_back(v);
+            partners.push_back(partner);
+        }
+        pc.Parameters = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(partners).Offset};
+    } else {
+        vertices = selection->Vertices;
+    }
+    if (vertices.empty()) return {};
+    pc.Handles = chain.Upload(BytesOf(vertices));
+    pc.Count = uint32_t(vertices.size());
+    // Only history capture needs sorted handles, and fitting jobs keep their own output order.
+    if (edge_chains || ordered_chains) std::ranges::sort(vertices);
+    std::vector<Range> runs;
+    ForEachIndexRun(vertices, [&](size_t first, size_t count) { runs.push_back({vertices[first], uint32_t(count)}); });
+    if (statistics) pc.ReductionBlocks = {chain.Scratch.Buffer.Slot, partials.Offset};
+    pc.Positions = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(3u * pc.Count).Offset};
+    const auto &arena = meshes.Arenas().Vertices;
+    const auto set = meshes.Get(id).Vertices;
+    for (const auto run : runs) arena.ForEachAddressRun(set, ElementHandle{run.Offset}, run.Count, [&](Range addresses) { arena.Buffer.CaptureWrite(uint64_t(addresses.Offset) * sizeof(Vertex), uint64_t(addresses.Count) * sizeof(Vertex)); });
+    PositionOperationChange change{std::move(vertices), std::move(runs)};
+    profile::RecordCounter("PositionEditVertices", pc.Count);
+    profile::RecordCounter("PositionEditPlanes", pc.PlaneCount);
+    profile::RecordCounter("CurveEditChains", ordered_chains && !batches.empty() ? pc.ChainCount : 0u);
+    profile::RecordCounter("CurveEditBatches", ordered_chains ? batches.size() : 0u);
     if (statistics) {
-        chain.Concurrent([&] {
-            for (const auto &pc : jobs) chain.Groups(pipelines[MeshPass::PositionStatisticsGather], pc, (pc.Count + 255u) / 256u);
-        });
+        chain.Groups(pipelines[MeshPass::PositionStatisticsGather], pc, TileCount(pc.Count, TileElements));
         const auto reduce = [&](SlotOffset input, uint32_t count) {
-            // Sphere needs a final normalization even for one partial; bounds already contain their result when a mesh fits in one group.
+            // Sphere normalizes even one partial, and other bounds already hold their result when a mesh fits in one group.
             if (sphere || count > 1u) {
                 do {
-                    const uint32_t next = (count + 255u) / 256u;
+                    const uint32_t next = TileCount(count, TileElements);
                     const SlotOffset output{chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(2u * next).Offset};
-                    const PositionReducePushConstants pc{.Input = input, .Output = output, .Count = count, .Scale = sphere && next == 1u ? 1.f / float(selected_count) : 1.f, .Bounds = !sphere};
-                    chain.Groups(pipelines[MeshPass::PositionStatisticsReduce], pc, next);
+                    const PositionReducePushConstants reduction{.Input = input, .Output = output, .Count = count, .Scale = sphere && next == 1u ? 1.f / float(selected_count) : 1.f, .Bounds = !sphere};
+                    chain.Groups(pipelines[MeshPass::PositionStatisticsReduce], reduction, next);
                     input = output;
                     count = next;
                 } while (count > 1u);
             }
             return input;
         };
-        if (sphere) {
-            const auto result = reduce({chain.Scratch.Buffer.Slot, partials.Offset}, reduction_blocks);
-            for (auto &pc : jobs) pc.ReductionResult = result;
-        } else {
-            for (auto &pc : jobs) pc.ReductionResult = reduce(pc.ReductionBlocks, (pc.Count + 255u) / 256u);
-        }
+        pc.ReductionResult = reduce(pc.ReductionBlocks, reduction_blocks);
         profile::RecordCounter(sphere ? "PositionRadiusBlocks" : "PositionWarpBoundsBlocks", reduction_blocks);
     }
-    if (sphere && sphere_radius) {
-        const auto radius = chain.Upload(BytesOf(*sphere_radius));
-        for (auto &pc : jobs) pc.ReductionResult = radius;
-    }
-    if (planar) {
-        chain.Concurrent([&] {
-            for (const auto &pc : jobs) chain.Threads(pipelines[MeshPass::PlanarFacePlanes], pc, pc.PlaneCount);
-        });
-    }
-    if (slide && slide->Even) {
-        chain.Concurrent([&] {
-            for (const auto &pc : jobs) chain.Threads(pipelines[MeshPass::VertexSlideReference], pc, 1u);
-        });
-    }
+    if (sphere && sphere_radius) pc.ReductionResult = chain.Upload(BytesOf(*sphere_radius));
+    if (planar) chain.Threads(pipelines[MeshPass::PlanarFacePlanes], pc, pc.PlaneCount);
+    if (slide && slide->Even) chain.Threads(pipelines[MeshPass::VertexSlideReference], pc, 1u);
     for (uint32_t step = 0u; step < repeat; ++step) {
-        chain.Concurrent([&] {
-            for (const auto &pc : jobs) chain.Threads(pipelines[gather], pc, edge_chains ? pc.ChainCount : pc.Count);
-        });
-        uint32_t depths = 0u;
-        for (const auto &job : batches) depths = std::max(depths, uint32_t(job.Batches.size()));
-        for (uint32_t depth = 0u; depth < depths; ++depth) {
-            chain.Concurrent([&] {
-                for (const auto &job : batches) {
-                    if (depth < job.Batches.size()) {
-                        const auto batch = job.Batches[depth];
-                        auto pc = jobs[job.Index];
-                        if (flatten) {
-                            pc.Planes.Offset += batch.Offset;
-                            chain.Groups(pipelines[MeshPass::FlattenGroups], pc, batch.Count);
-                        } else {
-                            pc.Parameters.Offset += batch.Offset * uint32_t(sizeof(EdgeChain) / sizeof(uint32_t));
-                            pc.ChainCount = batch.Count;
-                            chain.Threads(pipelines[circle ? MeshPass::Circularize : MeshPass::CurveBetweenSelected], pc, pc.ChainCount);
-                        }
-                    }
-                }
-            });
+        chain.Threads(pipelines[gather], pc, edge_chains ? pc.ChainCount : pc.Count);
+        for (const auto batch : batches) {
+            auto batch_pc = pc;
+            if (flatten) {
+                batch_pc.Planes.Offset += batch.Offset;
+                chain.Groups(pipelines[MeshPass::FlattenGroups], batch_pc, batch.Count);
+            } else {
+                batch_pc.Parameters.Offset += batch.Offset * uint32_t(sizeof(EdgeChain) / sizeof(uint32_t));
+                batch_pc.ChainCount = batch.Count;
+                chain.Threads(pipelines[circle ? MeshPass::Circularize : MeshPass::CurveBetweenSelected], batch_pc, batch_pc.ChainCount);
+            }
         }
-        chain.Concurrent([&] {
-            for (const auto &pc : jobs) chain.Threads(pipelines[MeshPass::WriteEditedPositions], pc, pc.Count);
-        });
+        chain.Threads(pipelines[MeshPass::WriteEditedPositions], pc, pc.Count);
     }
-    return changes;
+    return change;
 }

@@ -1,4 +1,5 @@
 #pragma once
+#include "gpu/Collider.h"
 #include "gpu/ConnectivityRef.h"
 #include "gpu/ElementWork.h"
 #include "gpu/MeshTopologyOp.h"
@@ -11,17 +12,17 @@ struct BooleanJob {
     GpuArray<ElementWork, 2> VertexWork DEFAULT(), FaceWork DEFAULT();
     // Per mesh: its vertices, faces and derived triangles.
     GpuArray<uint32_t, 2> Vertices DEFAULT(), Faces DEFAULT(), Triangles DEFAULT();
-    uint32_t VertexSlot DEFAULT(InvalidSlot), CornerSlot DEFAULT(InvalidSlot), TriangleSlot DEFAULT(InvalidSlot);
-    uint32_t FaceTriangleStartSlot DEFAULT(InvalidSlot), VertexNormalSlot DEFAULT(InvalidSlot);
-    ConnectivityRef Connectivity DEFAULT(); // Source connectivity for both meshes
+    uint32_t VertexSlot DEFAULT(InvalidSlot), TriangleSlot DEFAULT(InvalidSlot);
+    uint32_t FaceTriangleStartSlot DEFAULT(InvalidSlot), VertexNormalSlot DEFAULT(InvalidSlot), FaceNormalSlot DEFAULT(InvalidSlot);
+    ConnectivityRef Connectivity DEFAULT();
     // The transform taking the second mesh's positions into the first's space.
     mat3 Rotation DEFAULT();
     vec3 Translation DEFAULT();
     uint32_t Intersections DEFAULT(), FirstIntersections DEFAULT();
     // The totals of the count scan's polygon halfedges, partial edge entries and new edge entries.
     uint32_t PolygonHalfedges DEFAULT(), PartialEntries DEFAULT(), GroupEntries DEFAULT();
-    // Per vertex: position and perturbation normal, in P's space.
-    uint32_t Positions DEFAULT(), Normals DEFAULT();
+    // Per vertex: position and the displacement that decides its ties, in P's space.
+    uint32_t Positions DEFAULT(), Displacements DEFAULT();
     // Per mesh: the ordered bits of its positions' minimum then maximum on each axis.
     uint32_t Bounds DEFAULT();
     // Per face then a terminator: its first triangle.
@@ -30,9 +31,7 @@ struct BooleanJob {
     uint32_t TriangleVertices DEFAULT(), TriangleCorners DEFAULT(), TriangleFaces DEFAULT(), TriangleNormals DEFAULT(), PolygonTriangleCounts DEFAULT();
     // Per halfedge: its pair, and the canonical halfedge of its side when the side is a face edge.
     uint32_t Pairs DEFAULT(), EdgeSources DEFAULT();
-    // Per mesh: Morton keys, sort order and its temporaries, then the radix tree's node boxes, parents, children and refit counters.
-    GpuArray<uint32_t, 2> Keys DEFAULT(), Order DEFAULT(), Temporary DEFAULT(), Histogram DEFAULT(), Totals DEFAULT();
-    GpuArray<uint32_t, 2> NodeBoxes DEFAULT(), NodeParents DEFAULT(), Children DEFAULT(), Counters DEFAULT();
+    GpuArray<ColliderRuns, 2> Colliders DEFAULT(); // Per mesh, over its triangles
     // Per halfedge then a terminator: its first intersection, and per intersection: halfedge, triangle, signed crossing, position.
     uint32_t IntersectionFirst DEFAULT(), IntersectionRecords DEFAULT();
     // Per vertex: its component label and winding number, then two indirect dispatches and the changed word of the label rounds.
@@ -48,15 +47,9 @@ struct BooleanJob {
     uint32_t Cursors DEFAULT(), Polygons DEFAULT();
     // Edge position entries, four words each, of partial and new edges.
     uint32_t PartialEdges DEFAULT(), NewEdges DEFAULT();
-    // Two slots per polygon halfedge for its face's loops and bridged holes: halfedge references, links and projected points.
-    uint32_t LoopRefs DEFAULT(), LoopNext DEFAULT(), LoopPrevious DEFAULT(), LoopPoints DEFAULT(), LoopLinks DEFAULT();
+    // Per polygon halfedge: four words of loop links, seven of ear-clipping links and six floats of ear-clipping values.
+    // The ear-clipping runs hold two nodes per halfedge for joined holes.
+    uint32_t LoopLinks DEFAULT(), LoopNodes DEFAULT(), LoopValues DEFAULT();
     // Two triangles per polygon halfedge, three corner references each, then the total triangle count.
     uint32_t PolygonTriangles DEFAULT(), TriangleTotal DEFAULT();
-};
-
-// The boolean's scratch storage and job, a pass parameter, and the values a scan pass reads.
-struct BooleanPushConstants {
-    SlotOffset Job DEFAULT();
-    uint32_t Parameter DEFAULT(); // A radix shift
-    uint32_t ScanValues DEFAULT(), ScanCount DEFAULT(), ScanBlocks DEFAULT();
 };

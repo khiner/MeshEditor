@@ -8,8 +8,6 @@
 struct MeshStore;
 struct MeshPipelines;
 
-// Selections and traversal exclusions are canonical handles or masks, which operations read on the host.
-// World, Center, Direction and reference frames are supplied by the caller.
 struct PositionOperationTarget {
     uint32_t StoreId;
     SelectionSource Selection, Excluded;
@@ -27,9 +25,10 @@ struct PositionBend {
     vec3 Center{};
     float OffsetAngle{}, Radius{1.f};
 };
+// A unit Mirror reflects across the plane through Pivot with that normal before Delta, and a zero Mirror reflects nothing.
 struct PositionTransform {
     Transform Delta{};
-    vec3 Pivot{};
+    vec3 Pivot{}, Mirror{};
 };
 struct PositionRandomize {
     float Uniform{}, Normal{};
@@ -62,20 +61,17 @@ struct PositionOperationOptions {
     std::optional<PositionTransform> Transform;
     std::optional<NamedAttributeRef> Attribute; // A vec3 vertex attribute the positions take, or add with PositionEditAttributeOffset
     NamedAttributeRef Factor{}; // A float vertex attribute holding the factor per vertex of a smooth, shrink/fatten or randomize, or none to read the factor
-    std::optional<float> SphereRadius{}; // The mean distance a sphere blend scales toward, or none for the mean distance of every target's selected vertices
+    std::optional<float> SphereRadius{}; // The mean distance a sphere blend scales toward, or none for the mean distance of the selected vertices
 };
 struct PositionOperationChange {
-    uint32_t TargetIndex;
     std::vector<uint32_t> Vertices;
     std::vector<Range> Ranges;
 };
-// Encodes canonical writes and captures their pages.
 // The caller submits the chain and refreshes canonical derived geometry before subsequent operations.
-std::vector<PositionOperationChange> EncodePositionOperations(MeshStore &, MeshPipelines &, mtl::ComputeChain &, std::span<const PositionOperationTarget>, PositionEditOp, float factor, uint32_t repeat = 1u, const PositionOperationOptions & = {});
+std::optional<PositionOperationChange> EncodePositionOperations(MeshStore &, MeshPipelines &, mtl::ComputeChain &, const PositionOperationTarget &, PositionEditOp, float factor, uint32_t repeat = 1u, const PositionOperationOptions & = {});
 struct FaceAttributeOperationChange {
-    uint32_t TargetIndex;
     ClosureSeed Faces;
 };
-// Submitting completes canonical UV/color permutation and UV tangent invalidation.
+// Submitting the chain completes the canonical UV or color permutation and the UV tangent invalidation.
 // Returned face work belongs to the caller's chain and needs no canonical refresh.
-std::vector<FaceAttributeOperationChange> EncodeFaceAttributeOperation(MeshStore &, MeshPipelines &, mtl::ComputeChain &, std::span<const PositionOperationTarget>, bool colors, uint32_t uv_set, uint32_t operation);
+std::optional<FaceAttributeOperationChange> EncodeFaceAttributeOperation(MeshStore &, MeshPipelines &, mtl::ComputeChain &, const PositionOperationTarget &, bool colors, uint32_t uv_set, uint32_t operation);

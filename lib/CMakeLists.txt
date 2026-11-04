@@ -51,3 +51,10 @@ set(FASTGLTF_ENABLE_KHR_AUDIO_RIGID_BODIES ON CACHE BOOL "" FORCE)
 set(FASTGLTF_ENABLE_INSTALL OFF CACHE BOOL "" FORCE) # We provide our own simdjson target.
 add_subdirectory(fastgltf)
 target_compile_options(fastgltf PRIVATE -w)
+
+# The test oracle for solid operations. Only the geometry test links it.
+set(MANIFOLD_TEST OFF CACHE BOOL "" FORCE)
+set(MANIFOLD_CBIND OFF CACHE BOOL "" FORCE)
+set(MANIFOLD_DOWNLOADS OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+add_subdirectory(manifold EXCLUDE_FROM_ALL)

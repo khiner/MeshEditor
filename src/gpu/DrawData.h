@@ -3,7 +3,6 @@
 
 #include "gpu/EditSelectionStorage.h"
 
-// Mesh and instance state.
 // Stored references are record-relative handles, which the connectivity's tables resolve, and do not depend on primitive ranges.
 struct DrawData {
     uint32_t VertexSlot DEFAULT(InvalidSlot);
@@ -17,20 +16,15 @@ struct DrawData {
     SlotOffset CornerTangent DEFAULT();
     SlotOffset CornerColor DEFAULT();
     GpuArray<SlotOffset, 4> CornerUvs DEFAULT();
-    // Base face normals mirror face-arena indexing.
     ConnectivityRef Connectivity DEFAULT();
-    uint32_t HalfedgeCount DEFAULT();
     uint32_t FaceCount DEFAULT();
-    uint32_t VertexCountOrHeadImageSlot DEFAULT();
     EditSelectionStorage Selection DEFAULT();
-    uint32_t PrimaryEditInstanceIndex DEFAULT(InvalidOffset);
     uint32_t BoneDeformOffset DEFAULT(InvalidOffset);
     uint32_t ArmatureDeformOffset DEFAULT(InvalidOffset);
     uint32_t MorphDeformOffset DEFAULT(InvalidOffset);
     uint32_t MorphWeightsOffset DEFAULT(InvalidOffset);
     uint32_t MorphTargetCount DEFAULT();
     // Authored morph normals combine base normals with weighted authored deltas.
-    // Edit-mode draws derive normals because edit mode creates no deform slots.
     uint32_t MorphShadingAuthored DEFAULT();
     // Current-pose values keyed by vertex, sector root and face arena addresses.
     uint32_t PositionNamespace DEFAULT(InvalidOffset);

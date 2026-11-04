@@ -1,6 +1,5 @@
 #pragma once
 
-#include "Range.h"
 #include "gpu/SpatialFaceQueryPushConstants.h"
 
 struct MeshTopologyTask;
@@ -25,5 +24,4 @@ struct SpatialFaceWork {
 
 private:
     SpatialFaceQueryPushConstants Pc{};
-    Range State{}; // Reserved word and topology error flag.
 };

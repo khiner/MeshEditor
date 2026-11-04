@@ -9,6 +9,9 @@
 #include "SortUnique.h"
 #include "TransformMath.h"
 #include "mesh/Mesh.h"
+#include "mesh/MeshPipelines.h"
+#include "mesh/MeshStore.h"
+#include "mesh/Neighborhood.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
 #include "viewport/ViewportEvents.h"
@@ -46,7 +49,6 @@ struct BodyInput {
     std::vector<state::Entity> Colliders;
     bool operator==(const BodyInput &) const = default;
 };
-// A collider leaf in its owner's rigid frame, with its surface and collision filter.
 struct ColliderInput {
     ColliderShape Shape;
     Transform Local{};
@@ -102,7 +104,6 @@ struct PhysicsState {
     uint64_t NextContactId{1}, ContactStep{0}, Substep{0};
     bool Clearing = false;
 
-    // The next playback advance restarts the simulation from its authored state.
     void Invalidate() { Baked.reset(); }
 };
 // Removes all bodies, constraints, and contacts while preserving initialization.
@@ -136,7 +137,6 @@ void UpdateMasks(PhysicsState &s, const state::Registry &r) {
     s.Scenes = r.view<const Scene>() | std::views::take(MaxScenes) | std::ranges::to<std::vector>();
 }
 
-// The bits of the scenes the entity's root is in.
 uint64_t SceneWord(const PhysicsState &s, const state::Registry &r, state::Entity e) {
     const auto *membership = RootMembership(r, e);
     if (!membership) return 0;
@@ -148,7 +148,7 @@ uint64_t SceneWord(const PhysicsState &s, const state::Registry &r, state::Entit
 }
 
 Transform ComposeAuthored(const Transform &parent, Transform result) {
-    // Preserve exact scale under rigid edits instead of remeasuring quaternion matrix columns.
+    // A uniform parent scale multiplies exactly, without remeasuring quaternion matrix columns.
     if (parent.S.x == parent.S.y && parent.S.y == parent.S.z) {
         result.P *= parent.S;
         result.S *= parent.S;
@@ -160,7 +160,6 @@ Transform ComposeAuthored(const Transform &parent, Transform result) {
     return result;
 }
 
-// The node's authored world transform, composed from the local transforms of its ancestors.
 Transform AuthoredWorld(const state::Registry &r, state::Entity e) {
     const auto *local = r.try_get<const Transform>(e);
     if (!local) return {};
@@ -168,8 +167,6 @@ Transform AuthoredWorld(const state::Registry &r, state::Entity e) {
     return parent != state::Null ? ComposeAuthored(AuthoredWorld(r, parent), *local) : *local;
 }
 
-// The body an entity forms, with a leaf per collider, or none for an entity that forms no body.
-// A motion holder forms one, as does a collider that is a sensor or has no motion owner.
 std::optional<BodyInput> ReadBody(const PhysicsState &s, const state::Registry &r, state::Entity entity, std::vector<ColliderInput> &leaves) {
     leaves.clear();
     if (!r.valid(entity)) return {};
@@ -182,7 +179,6 @@ std::optional<BodyInput> ReadBody(const PhysicsState &s, const state::Registry &
         if (const auto *velocity = r.try_get<const PhysicsVelocity>(entity)) body.Velocity = *velocity;
     }
     if (r.all_of<ColliderShape>(entity)) body.Colliders.push_back(entity);
-    // A solid motion body's compound contains the solid colliders below it, down to the next motion body.
     if (motion && !sensor) {
         const auto gather = [&](this const auto &self, state::Entity node) -> void {
             for (const auto child : Children{&r, node}) {
@@ -213,8 +209,6 @@ std::optional<BodyInput> ReadBody(const PhysicsState &s, const state::Registry &
     return body;
 }
 
-// Resolve authored joint inputs against the bodies containing its two nodes.
-// Keep dangling joint definitions inactive.
 JointInput ReadJoint(const PhysicsState &s, const state::Registry &r, state::Entity entity, const PhysicsJoint &joint) {
     const auto owner = [&](state::Entity node) { return FindAncestorIf(r, node, [&](auto ancestor) { return s.Bodies.contains(ancestor); }); };
     JointInput input{
@@ -294,8 +288,6 @@ rbp::WorldLimits Limits(const state::Registry &r) {
     const uint32_t colliders = uint32_t(r.view<const ColliderShape>().size());
     const uint32_t motions = uint32_t(r.view<const PhysicsMotion>().size());
     const auto joints = uint32_t(r.view<const PhysicsJoint>().size());
-    // Hulls take vertex and face runs, and triangle meshes take vertex, triangle and BVH runs.
-    // Spheres, capsules and cylinders cook as hulls under a taper or a nonuniform scale.
     uint64_t hulls = 0, vertices = 1, triangles = 1;
     for (const auto [e, collider] : r.view<const ColliderShape>().each()) {
         if (std::holds_alternative<physics::TriangleMesh>(collider.Shape)) {
@@ -337,8 +329,15 @@ physics::RbpBody CookBody(PhysicsState &s, const state::Registry &r, const BodyI
             const auto &desc = leaf.Shape;
             auto local = PoseOf(leaf.Local);
             local.Position += rbp::Rotate(local.Orientation, ToRbp(desc.LocalOffset * leaf.Local.S));
-            const auto mesh = IsMeshBackedShape(desc.Shape) ? TryGetMesh(r, desc.MeshEntity) : std::nullopt;
-            const auto shape = physics::BuildRbpShape(world, desc.Shape, mesh ? &*mesh : nullptr, leaf.Local.S, local);
+            std::vector<vec3> positions;
+            std::vector<uint32_t> triangles;
+            if (const auto mesh = IsMeshBackedShape(desc.Shape) ? TryGetMesh(r, desc.MeshEntity) : std::nullopt) {
+                const auto &meshes = r.Resources.get<const MeshStore>();
+                const auto &pipelines = GetMeshPipelines(r);
+                positions = OrdinalPositions(meshes, pipelines, mesh->GetStoreId());
+                if (std::holds_alternative<physics::TriangleMesh>(desc.Shape)) triangles = OrdinalTriangles(meshes, pipelines, mesh->GetStoreId());
+            }
+            const auto shape = physics::BuildRbpShape(world, desc.Shape, positions, triangles, leaf.Local.S, local);
             shapes.push_back(shape);
             ApplyCollider(world.Shapes[shape], input.Colliders[i], leaf);
         }
@@ -368,7 +367,6 @@ void BuildBody(PhysicsState &s, state::Registry &r, state::Entity entity, BodyIn
     s.Bodies.emplace(entity, BodyRecord{body, std::move(input), std::move(leaves)});
 }
 
-// Builds every body of the scene, motion bodies first, each group in entity order.
 void BuildBodies(PhysicsState &s, state::Registry &r) {
     std::vector<ColliderInput> leaves;
     const auto build = [&](state::Entity entity) {
@@ -495,7 +493,6 @@ const std::vector<state::Entity> &SampleOrder(PhysicsState &s, const state::Regi
 void Restart(PhysicsState &s, state::Registry &r) {
     const profile::CpuScope scope{"PhysicsReset"};
     ClearContacts(s, r);
-    // Sampling writes the world transforms of posed bodies and their descendants, so each posed subtree returns to its authored pose.
     RecomputeWorldTransforms(r, SampleOrder(s, r), {}, {});
     for (const auto &[entity, record] : s.Bodies) {
         const auto &body = record.Cooked;
@@ -668,7 +665,6 @@ void UpdateSettings(state::Registry &r, float fps) {
     s.Invalidate();
 }
 
-// A filter uses each system once, whether as a member or as a collision target.
 void CountDefinitionUses(state::Registry &r) {
     auto &counts = r.Resources.get<PhysicsDefinitionUses>().Counts;
     counts.clear();
@@ -701,7 +697,6 @@ void ProcessChanges(state::Registry &r) {
     r.Resources.get<PhysicsChanges>().Scenes.clear();
     if (inputs.empty() && moved.empty() && geometry.empty() && !definitions && !scenes && s.Destroyed.empty()) return;
     const auto destroyed = std::exchange(s.Destroyed, {});
-    // Without motion or colliders, the scene forms no body.
     if (r.view<const PhysicsMotion>().empty() && r.view<const ColliderShape>().empty()) {
         if (s.World) Reset(s, r);
         return;
@@ -712,7 +707,6 @@ void ProcessChanges(state::Registry &r) {
     }
     if (definitions || scenes) UpdateMasks(s, r);
 
-    // The bodies a change reaches: each body and collider at or under a changed node, with each collider's former and current owner.
     // `reached` contains every node the walk visits and every destroyed input, which the joints below read.
     std::vector<state::Entity> candidates, reached;
     const auto touch = [&](state::Entity e) {
@@ -738,7 +732,6 @@ void ProcessChanges(state::Registry &r) {
     if (definitions) {
         for (const auto e : r.view<const ColliderMaterial>()) touch(e);
     }
-    // A scene joining or leaving renumbers the scene bits of every body.
     if (scenes) {
         for (const auto e : s.Bodies | std::views::keys) touch(e);
     }
@@ -774,7 +767,6 @@ void ProcessChanges(state::Registry &r) {
     // Motion bodies join first, each group in entity order, as a full build adds them.
     std::ranges::stable_partition(added, [](const Pending &p) { return p.Input.Motion.has_value(); });
 
-    // Entities whose world transforms physics stops writing.
     std::vector<state::Entity> released;
     if (!removed.empty()) {
         std::vector<rbp::Index> bodies, shapes;
@@ -814,7 +806,6 @@ void ProcessChanges(state::Registry &r) {
             }
             const auto mass = s.World->Masses[body.Body];
             if (recook || simd::any(old_pose.Position != body.InitialPose.Position) || simd::any(old_pose.Orientation != body.InitialPose.Orientation) || old_mass.InvMass != mass.InvMass || simd::any(old_mass.InvInertiaLocal != mass.InvInertiaLocal)) reframed.insert(body.Body);
-            // A body changing between static and moving takes or gives up its pose cache.
             if (input.Motion && !record.Input.Motion) r.emplace<BodyPoseCache>(e, BodyPoseCache{{physics::RbpNodePose(body.InitialPose, body.Frame)}});
             else if (!input.Motion && record.Input.Motion && r.remove<BodyPoseCache>(e)) released.push_back(e);
             ReleaseLeaves(s, e, record.Input.Colliders);
@@ -829,7 +820,6 @@ void ProcessChanges(state::Registry &r) {
         return;
     }
 
-    // A body joining or leaving the world changes the owner of every node under it.
     const auto reach_subtree = [&](this const auto &self, state::Entity e) -> void {
         reached.push_back(e);
         for (const auto child : Children{&r, e}) self(child);
@@ -840,8 +830,6 @@ void ProcessChanges(state::Registry &r) {
     for (const auto &pending : added) reach_subtree(pending.Entity);
     SortUnique(reached);
 
-    // Refresh joints after endpoint, definition, or body changes.
-    // Rebuild joints attached to reframed bodies.
     const auto reaches = [&](state::Entity e) { return std::ranges::binary_search(reached, e); };
     const auto left = [&](state::Entity e) { return std::ranges::binary_search(removed, e); };
     std::vector<state::Entity> reread, reframed_joints;
@@ -888,7 +876,6 @@ void ProcessChanges(state::Registry &r) {
         if (!handle) continue;
         const auto it = s.Joints.find(entity);
         const bool active = it != s.Joints.end() && IsActiveJoint(it->second);
-        // Removing a body retires its world joints, which then rebuild on restart.
         if (active && s.World->Joints[handle->ConstraintIndex].Active) continue;
         r.remove<PhysicsConstraintHandle>(entity);
         if (active) s.JointUpdates.insert(entity);
@@ -917,7 +904,6 @@ bool AdvancePlayback(state::Registry &r, int from_frame, int to_frame, int range
     s.CacheStartFrame = range_start_frame;
     s.CacheEndFrame = range_end_frame;
     if (s.Bodies.empty()) return false;
-    // An edit restarts the simulation at once, and the bake waits for the next frame change, showing the cached start until then.
     const bool restarted = !s.Baked;
     if (restarted) Restart(s, r);
     if (from_frame == to_frame && !restarted) return false;
@@ -936,7 +922,6 @@ void BakeThrough(state::Registry &r, int through_frame, float fps) {
     if (!s.Baked) Restart(s, r);
     const uint32_t target = std::min(uint32_t(std::max(through_frame, int(s.CacheStartFrame))), s.CacheEndFrame);
     if (*s.Baked >= target) return;
-    // Prediction records future contacts without publishing them to the audio timeline.
     auto impacts = std::move(r.Resources.get<PhysicsContactImpacts>());
     auto sustained = std::move(r.Resources.get<PhysicsSustainedContacts>());
     while (*s.Baked < target) BakeFrame(r, s, *s.Baked + 1, fps);
@@ -959,13 +944,11 @@ void SamplePosesAtFrame(state::Registry &r, float frame) {
         const auto position = Mix(a.P, b.P, t);
         const auto rotation = Slerp(a.R, b.R, t);
         const auto &world = *WorldTransformOf(r, entity);
-        // A body already at its sampled pose has a consistent subtree.
         const auto scale = s.Bodies.at(entity).Input.Node.S;
         if (world.P == position && world.R == rotation && world.S == scale) continue;
         SetWorldTransform(r, entity, {position, rotation, scale});
         moved_children.append_range(Children{&r, entity});
     }
-    // The moved bodies' subtrees recompose in one pass, leaving every posed body to its own sample.
     // The posed bodies in entity index order, as `owned` requires.
     RecomputeWorldTransforms(r, moved_children, r.view<const BodyPoseCache>() | std::ranges::to<std::vector>(), {});
 }

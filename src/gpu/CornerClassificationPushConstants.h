@@ -3,14 +3,12 @@
 #include "gpu/ConnectivityRef.h"
 #include "gpu/ElementWork.h"
 
-// One mesh's classification over its vertex tiles.
 // Sparse vertex work tiles its compact order, and a job without work tiles the arena blocks of its live vertices.
 struct CornerClassificationJob {
     ConnectivityRef Connectivity DEFAULT();
     ElementWork Vertices DEFAULT();
     uint32_t VertexCount DEFAULT();
-    uint32_t FaceCount DEFAULT();
-    SlotOffset CornerSectors DEFAULT(); // Optional sector roots
+    SlotOffset CornerSectors DEFAULT();
     ElementWork DirtyBlocks DEFAULT(), NeededBlocks DEFAULT();
     uint32_t State DEFAULT(); // Batch scratch words: incoming count, then face/edge flags
 };

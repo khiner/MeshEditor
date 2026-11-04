@@ -17,7 +17,7 @@ rbp::Shape BoxShape(rbp::float3 half, rbp::Pose local = rbp::IdentityPose) {
     return {.HalfExtents = half, .Kind = rbp::ShapeBox, .Local = local};
 }
 
-// Reconstruct the tensor in node axes independently of the principal-axis ordering.
+// The inertia tensor in node axes, independent of the principal-axis order.
 std::array<double, 9> Tensor(const rbp::World &world, const RbpBody &body) {
     const auto inv = world.Masses[body.Body].InvInertiaLocal;
     const auto q = body.Frame.Orientation;
@@ -41,7 +41,6 @@ struct Box {
     rbp::Pose Local;
     double Volume() const { return 8.0 * Half.x * Half.y * Half.z; }
 };
-// The volume-weighted center of the boxes.
 rbp::float3 Centroid(std::span<const Box> boxes) {
     rbp::float3 sum{};
     double volume = 0;
@@ -51,7 +50,7 @@ rbp::float3 Centroid(std::span<const Box> boxes) {
     }
     return sum / float(volume);
 }
-// The inertia tensor of the boxes about `center` in node axes, with `mass` shared by volume, each box's own tensor turned by its pose and shifted by the parallel axis theorem.
+// The inertia tensor of the boxes about `center` in node axes, with `mass` shared by volume and each box's tensor posed and shifted by the parallel axis theorem.
 std::array<double, 9> ExpectedTensor(std::span<const Box> boxes, double mass, rbp::float3 center) {
     double volume = 0;
     for (const auto &box : boxes) volume += box.Volume();
@@ -74,25 +73,24 @@ std::array<double, 9> ExpectedTensor(std::span<const Box> boxes, double mass, rb
 }
 
 const suite Bodies = [] {
-    // Cylinders and planes keep their analytic geometry through signed and uneven scale, and only an elliptic or tapered cylinder becomes a hull.
     "shapes keep analytic geometry through scale"_test = [] {
         rbp::mtl::Context context;
         rbp::World world{context};
         const physics::Cylinder cylinder{.Height = 1.4f, .RadiusTop = 0.5f, .RadiusBottom = 0.5f};
         const auto local = rbp::At({1, 2, 3}, rbp::QuatFromRotationVector({0.2f, 0.3f, 0.1f}));
-        const auto shape = BuildRbpShape(world, cylinder, nullptr, vec3{-2, -3, 2}, local);
+        const auto shape = BuildRbpShape(world, cylinder, {}, {}, vec3{-2, -3, 2}, local);
         expect(world.Shapes[shape].Kind == rbp::ShapeCylinder);
         expect(Near(world.Shapes[shape].HalfExtents, rbp::float3{1, 2.1f, 0}));
         expect(Near(world.Shapes[shape].Local.Position, local.Position));
         expect(simd::all(world.Shapes[shape].Local.Orientation == local.Orientation));
         expect(world.Shapes[shape].VertexCount == 0_u);
-        expect(world.Shapes[BuildRbpShape(world, cylinder, nullptr, vec3{2, 3, 1}, rbp::IdentityPose)].Kind == rbp::ShapeHull);
+        expect(world.Shapes[BuildRbpShape(world, cylinder, {}, {}, vec3{2, 3, 1}, rbp::IdentityPose)].Kind == rbp::ShapeHull);
         auto tapered = cylinder;
         tapered.RadiusTop = 0.25f;
-        expect(world.Shapes[BuildRbpShape(world, tapered, nullptr, vec3{1, 1, 1}, rbp::IdentityPose)].Kind == rbp::ShapeHull);
+        expect(world.Shapes[BuildRbpShape(world, tapered, {}, {}, vec3{1, 1, 1}, rbp::IdentityPose)].Kind == rbp::ShapeHull);
         for (const auto plane : {physics::Plane{.SizeX = 0.3f, .DoubleSided = true}, physics::Plane{.SizeZ = 0.2f, .DoubleSided = true}, physics::Plane{.SizeX = 0.3f, .SizeZ = 0.2f, .DoubleSided = true}}) {
             const auto placed = rbp::At({1, 1, 2}, rbp::QuatFromRotationVector({0, 0.35f, 0}));
-            const auto floor = BuildRbpShape(world, plane, nullptr, vec3{-2, -1, 3}, placed);
+            const auto floor = BuildRbpShape(world, plane, {}, {}, vec3{-2, -1, 3}, placed);
             expect(world.Shapes[floor].Kind == rbp::ShapePlane);
             expect(Near(world.Shapes[floor].HalfExtents, rbp::float3{plane.SizeX.value_or(0), 0, 1.5f * plane.SizeZ.value_or(0)}));
             expect(Near(world.Shapes[floor].Normal, rbp::float3{0, -1, 0}));
@@ -100,7 +98,6 @@ const suite Bodies = [] {
         }
     };
 
-    // Every body takes its mass, center and inertia from its colliders, shared by volume, or from the motion that authors them, and places each collider's corners where the node places them.
     "bodies take their mass properties from their colliders or their authored motion"_test = [] {
         rbp::mtl::Context context;
         std::mt19937 rng{11};

@@ -1,10 +1,7 @@
-#ifndef COMMITPOSEDGEOMETRY_MSL
-#define COMMITPOSEDGEOMETRY_MSL
-
+#pragma once
 #include "gpu/CommitPosedGeometryPushConstants.h"
 #include "ElementWorkShared.metal"
 #include "ConnectivityRead.metal"
-#include "TransformUtils.metal"
 
 kernel void FinalizeElementWorkKernel(
     uint tid [[thread_index_in_threadgroup]], uint group [[threadgroup_position_in_grid]],
@@ -43,7 +40,7 @@ kernel void CommitPosedGeometryKernel(
     } else if (pc.Phase == 1u) {
         const uint i = WorkElement(bindless, pc.Candidates, invocation);
         if (i == InvalidOffset) return;
-        const ConnectivityView conn{bindless, pc.Entry.Connectivity, pc.Entry.FaceCount};
+        const ConnectivityView conn{bindless, pc.Entry.Connectivity};
         const auto fan=conn.Fan(i);
         const uint address = conn.VertexAddress(i);
         MarkWork(bindless, pc.BoundsTiles, address / 256u);
@@ -57,14 +54,11 @@ kernel void CommitPosedGeometryKernel(
         const uint f = WorkElement(bindless, pc.Faces, invocation);
         if (f == InvalidOffset) return;
         device const uint *triangles = BindlessBuffer(uint, bindless.ObjectIdBuffer, pc.FaceTriangleStartSlot);
-        const ConnectivityView conn{bindless, pc.Entry.Connectivity, pc.Entry.FaceCount};
+        const ConnectivityView conn{bindless, pc.Entry.Connectivity};
         const uint2 loop = conn.FaceHalfedges(f);
         const uint first = triangles[conn.FaceAddress(f)], end = first + loop.y - loop.x - 2u;
-        device const uint *corners = BindlessBuffer(uint, bindless.IndexBuffer, pc.Entry.CornersSlot);
         device const uint *meshlets = SetTable(bindless, pc.MeshletSets, pc.MeshletSet);
         for (uint t = first; t < end; ++t) MarkOwnedMeshlet(bindless,pc,meshlets,0u,t);
-        for (uint h = loop.x; h < loop.y; ++h) MarkWork(bindless, pc.Normals, corners[conn.HalfedgeAddress(h)]);
+        for (uint h = loop.x; h < loop.y; ++h) MarkWork(bindless, pc.Normals, conn.VertexOf(h));
     }
 }
-
-#endif

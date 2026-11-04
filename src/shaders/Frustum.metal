@@ -1,6 +1,4 @@
-#ifndef FRUSTUM_MSL
-#define FRUSTUM_MSL
-
+#pragma once
 #include "gpu/Types.h"
 
 inline float4 vp_row(float4x4 m, uint i) {
@@ -34,5 +32,3 @@ inline bool sphere_in_frustum(float4x4 view_proj, float3 center, float radius) {
     }
     return true;
 }
-
-#endif

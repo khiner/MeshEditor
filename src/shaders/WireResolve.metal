@@ -1,7 +1,5 @@
-#ifndef WIRERESOLVE_MSL
-#define WIRERESOLVE_MSL
-
-// Composite base, incidental, selected, and active coverage in that display order.
+#pragma once
+// Composites base, incidental, selected, and active coverage in that display order.
 #include "SceneUBO.metal"
 #include "Varyings.metal"
 #include "gpu/WireCoverage.h"
@@ -44,5 +42,3 @@ fragment float4 WireResolveFragment(
     }
     return color;
 }
-
-#endif

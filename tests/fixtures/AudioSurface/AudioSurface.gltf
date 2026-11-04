@@ -1,0 +1,164 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "COLLADA2GLTF"
+  },
+  "extensionsUsed": ["KHR_audio_rigid_bodies"],
+  "accessors": [
+    {
+      "count": 24,
+      "type": "VEC3",
+      "componentType": 5126,
+      "bufferView": 0,
+      "max": [0.5, 0.5, 0.5],
+      "min": [-0.5, -0.5, -0.5]
+    },
+    {
+      "count": 24,
+      "type": "VEC3",
+      "componentType": 5126,
+      "bufferView": 1
+    },
+    {
+      "count": 24,
+      "type": "VEC2",
+      "componentType": 5126,
+      "bufferView": 2
+    },
+    {
+      "count": 36,
+      "type": "SCALAR",
+      "componentType": 5125,
+      "bufferView": 3
+    },
+    {
+      "count": 4,
+      "type": "SCALAR",
+      "componentType": 5126,
+      "bufferView": 4
+    }
+  ],
+  "buffers": [
+    {
+      "uri": "AudioSurface.bin",
+      "byteLength": 928,
+      "name": "AudioSurface"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteLength": 288,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteLength": 288,
+      "byteOffset": 288,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteLength": 192,
+      "byteOffset": 576,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteLength": 144,
+      "byteOffset": 768,
+      "target": 34963
+    },
+    {
+      "buffer": 0,
+      "byteLength": 16,
+      "byteOffset": 912
+    }
+  ],
+  "images": [
+    {
+      "uri": "../../../external/glTF-Sample-Assets/Models/BoxTextured/glTF/CesiumLogoFlat.png"
+    }
+  ],
+  "materials": [
+    {
+      "pbrMetallicRoughness": {
+        "baseColorTexture": {
+          "index": 0
+        },
+        "metallicFactor": 0.0
+      },
+      "extensions": {},
+      "name": "Texture"
+    }
+  ],
+  "meshes": [
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1,
+            "TEXCOORD_0": 2
+          },
+          "indices": 3,
+          "material": 0
+        }
+      ],
+      "name": "Mesh"
+    }
+  ],
+  "nodes": [
+    {
+      "children": [1],
+      "matrix": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    },
+    {
+      "mesh": 0,
+      "extensions": {
+        "KHR_audio_rigid_bodies": {
+          "acousticSurface": 0
+        }
+      }
+    }
+  ],
+  "samplers": [
+    {
+      "magFilter": 9729,
+      "minFilter": 9986
+    }
+  ],
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [0]
+    }
+  ],
+  "textures": [
+    {
+      "sampler": 0,
+      "source": 0
+    }
+  ],
+  "extensions": {
+    "KHR_audio_rigid_bodies": {
+      "acousticSurfaces": [
+        {
+          "roughness": 7.999999979801942e-06,
+          "correlationLength": 7.999999797903001e-05,
+          "waviness": 2.9999999242136255e-05,
+          "wavinessLength": 0.006000000052154064,
+          "spectralSlope": -1.149999976158142,
+          "shortWavelength": 3.999999989900971e-06,
+          "profile": 4,
+          "sampleSpacing": 4.999999873689376e-06,
+          "normalTexture": {
+            "index": 0,
+            "scale": 0.800000011920929
+          },
+          "name": "Tiled floor"
+        }
+      ]
+    }
+  }
+}

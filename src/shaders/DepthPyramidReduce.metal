@@ -1,6 +1,4 @@
-#ifndef DEPTHPYRAMIDREDUCE_MSL
-#define DEPTHPYRAMIDREDUCE_MSL
-
+#pragma once
 #include "Bindless.metal"
 #include "gpu/DepthPyramidReducePushConstants.h"
 
@@ -64,5 +62,3 @@ kernel void DepthPyramidReduceKernel(
         }
     }
 }
-
-#endif

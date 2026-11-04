@@ -1,6 +1,4 @@
-#ifndef OBJECTORIGIN_MSL
-#define OBJECTORIGIN_MSL
-
+#pragma once
 #include "Bindless.metal"
 #include "gpu/ObjectOriginPushConstants.h"
 
@@ -13,7 +11,6 @@ struct ObjectOriginVaryings {
 constant float2 OriginCorners[4] = {float2(-1, -1), float2(1, -1), float2(-1, 1), float2(1, 1)};
 
 // A screen-aligned quad around each visible selected or active object's origin, and a point outside the clip volume for every other slot.
-// Bones and joints draw their own selection, so they take no dot.
 vertex ObjectOriginVaryings ObjectOriginVertex(
     uint vertex_id [[vertex_id]],
     uint slot [[instance_id]],
@@ -27,12 +24,10 @@ vertex ObjectOriginVaryings ObjectOriginVertex(
     const ObjectOriginVaryings culled{float4(2.0f, 2.0f, 2.0f, 1.0f), float2(0.0f), float3(0.0f)};
     const uint state = uint(scene.InstanceStates(view.InstanceStateSlot)[slot]);
     if ((state & (STATE_SELECTED | STATE_ACTIVE)) == 0u || (state & STATE_HIDDEN) != 0u) return culled;
-    // An instance without a mesh record, like an empty's, draws its dot.
     const uint mesh = scene.InstanceRecords(view.InstanceRecordSlot)[slot].Mesh;
     if (mesh != InvalidOffset && (scene.MeshRecords(view.MeshRecordSlot)[mesh].Display.Flags & uint(MeshletInstanceFlag::OverlayOnly)) != 0u) return culled;
     const float4 clip = scene.ViewProj() * float4(float3(scene.Models(pc.TransformSlot)[slot].P), 1.0f);
     if (clip.w <= 0.0f) return culled;
-    // One pixel past the rim leaves room for its antialiased edge.
     const float2 offset = OriginCorners[vertex_id] * (pc.RadiusPx + 1.0f);
     constant ViewportThemeColors &colors = scene.Theme.Colors;
     return {
@@ -52,5 +47,3 @@ fragment float4 ObjectOriginFragment(
     const float fill = saturate(pc.RadiusPx - pc.OutlinePx + 0.5f - distance);
     return float4(in.Color * fill * coverage, coverage);
 }
-
-#endif

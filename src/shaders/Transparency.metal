@@ -1,10 +1,8 @@
-#ifndef TRANSPARENCY_MSL
-#define TRANSPARENCY_MSL
-
+#pragma once
 #include "Varyings.metal"
 
-// Keep the nearest four surfaces in raster-depth order.
-// Deeper layers retain their coverage and mean radiance in a weighted tail rather than disappearing at capacity.
+// The nearest four surfaces stay in raster-depth order.
+// Deeper layers keep their coverage and mean radiance in a weighted tail.
 constant uint TransparencyLayers = 4u;
 struct TransparencyValues {
     half4 Colors [[raster_order_group(0)]] [TransparencyLayers];
@@ -68,5 +66,3 @@ fragment half4 TransparencyResolveFragment(
     }
     return half4(color);
 }
-
-#endif

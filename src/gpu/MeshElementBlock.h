@@ -12,7 +12,7 @@ GPU_CONSTANT uint32_t MeshElementBlockWords = MeshElementBlockSize / 32u;
 // Render domains (clusters, cluster groups, LOD nodes, LOD members and primitives) contain few members per record, in small blocks.
 GPU_CONSTANT uint32_t RenderBlockSize = 8u;
 
-// One block of a domain's arena: its live mask and its owner set, whose table names it at entry Local.
+// One block of a domain's arena: its live mask and its owner set, whose table lists it at entry Local.
 // A record-relative handle is Local times the domain's block size plus the slot, and a block's live mask uses one bit per slot.
 struct MeshElementBlock {
     uint32_t Owner DEFAULT(InvalidOffset);
@@ -23,26 +23,25 @@ struct MeshElementBlock {
 static_assert(RenderBlockSize <= 32u, "A render block's live mask is one word");
 
 #ifdef __METAL_VERSION__
+inline bool SlotLive(device const MeshElementBlock &block, uint slot) { return (block.Live[slot / 32u] >> (slot % 32u)) & 1u; }
+inline bool SlotLive(thread const MeshElementBlock &block, uint slot) { return (block.Live[slot / 32u] >> (slot % 32u)) & 1u; }
 // The arena address of a record-relative handle of a domain with `BlockSize`-slot blocks, through `table`, the first entry of its record's table run.
 template<uint BlockSize, typename Table> inline uint Resolve(Table table, uint handle) {
     return table[handle / BlockSize] * BlockSize + handle % BlockSize;
 }
 #else
-// A record-relative element handle, its local block times the block size plus its slot, meaningful only with its record's table.
 struct ElementHandle {
     uint32_t Value{InvalidOffset};
     auto operator<=>(const ElementHandle &) const = default;
 };
 // An element's slot in its domain's arena, the identity that travels without its record.
-// Arena address resolved from a handle through a block table.
-// A default address names no element.
+// A default address refers to no element.
 class ElementAddress {
 public:
     ElementAddress() = default;
     template<uint32_t BlockSize> static ElementAddress InBlock(uint32_t block, uint32_t slot) { return ElementAddress{block * BlockSize + slot}; }
     static ElementAddress Stored(uint32_t value) { return ElementAddress{value}; }
     uint32_t Value() const { return Raw; }
-    // The address `offset` slots on, within a run of consecutive slots.
     ElementAddress operator+(uint32_t offset) const { return ElementAddress{Raw + offset}; }
     auto operator<=>(const ElementAddress &) const = default;
 

@@ -1,6 +1,4 @@
-#ifndef MESHLET_RESOLVE_MSL
-#define MESHLET_RESOLVE_MSL
-
+#pragma once
 #include "gpu/MeshletDrawPushConstants.h"
 #include "gpu/MeshletRouteState.h"
 #include "MeshletShared.metal"
@@ -53,10 +51,10 @@ struct MeshletFaceValues {
     uint ObjectId, ElementId;
 };
 
-// Returns true for clusters with independent triangles and no source-triangle or source-face identity.
+// True for a coarse LOD cluster, whose triangles carry no source-triangle or source-face identity.
 inline bool MeshletCoarse(MeshletRecord meshlet) { return meshlet.RefinedGroup != InvalidOffset; }
 
-// Finest element visibility is independent of cluster ownership and geometry.
+// Hides finest-level elements through their edit visibility masks, and never hides coarse clusters.
 inline bool MeshletElementHidden(const thread Scene &scene,const thread MeshletWork &work,
     constant MeshletDrawPushConstants &pc,uint element) {
     if (scene.View.InteractionMode!=InteractionMode::Edit || MeshletCoarse(work.Meshlet)) return false;
@@ -66,7 +64,6 @@ inline bool MeshletElementHidden(const thread Scene &scene,const thread MeshletW
     return EditElementHidden(scene,work.Draw,topology==uint(MeshPrimitiveTopology::Line) ? Element::Edge : Element::Vertex,handle);
 }
 
-// Returns corner handles from the cluster vertex list or the source triangle handle.
 inline uint3 MeshletCornerIds(
     device const BindlessSet &bindless, MeshletPayloads payloads,
     MeshletRecord meshlet, DrawData draw, uint triangle, uint local_triangle
@@ -105,7 +102,6 @@ inline MeshletTriangleCorners ResolveMeshletCorners(
     return {.CornerIds = corner_ids, .VertexIds = vertex_ids, .CoarseNormal = MeshletCoarse(meshlet) ? MeshletCoarseNormal(scene, draw, vertex_ids) : float3(0.0f)};
 }
 
-// Returns coarse face values with primitive material and no source-face selection state.
 inline MeshletFaceValues MeshletCoarseFace(
     const thread Scene &scene, PrimitiveRecord primitive, InstanceRecord instance, DrawData draw, Transform world
 ) {
@@ -149,5 +145,3 @@ inline MeshletFaceValues MeshletFace(
         scene.FacePickId(draw, face_id),
     };
 }
-
-#endif

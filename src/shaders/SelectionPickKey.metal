@@ -1,6 +1,4 @@
-#ifndef SELECTIONPICKKEY_MSL
-#define SELECTIONPICKKEY_MSL
-
+#pragma once
 #include "Bindless.metal"
 #include "gpu/ElementSelectQuery.h"
 
@@ -28,5 +26,3 @@ inline void WriteElementPick(
     if (packed != atomic_load_explicit(key, memory_order_relaxed)) return;
     atomic_fetch_min_explicit(BindlessBufferMutable(atomic_uint, bindless.Buffer, q.IdSlot), id, memory_order_relaxed);
 }
-
-#endif

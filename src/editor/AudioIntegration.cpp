@@ -12,6 +12,8 @@
 #include "audio/RealImpact.h"
 #include "editor/AudioExcitation.h"
 #include "editor/AudioJobs.h"
+#include "mesh/MeshPipelines.h"
+#include "mesh/Neighborhood.h"
 #include "physics/PhysicsContact.h"
 #include "project/Project.h"
 #include "scene/Entity.h"
@@ -80,7 +82,6 @@ float ModalOutGain(const state::Registry &r, state::Entity e, float scale) {
     return ModalControls(r).ModalLevel * (gain ? gain->Value : 1.f) * std::pow(scale, -2.f);
 }
 
-// Rewrite one slot's output level from the object's current gain and size, leaving the resonator coefficients untouched.
 void SetModalOutGain(const state::Registry &r, ModalBank &b, uint32_t slot, state::Entity e) {
     const auto &modes = r.get<const ModalModes>(HierarchySource(r, e));
     std::atomic_ref{b.OutGain[slot]}.store(ModalOutGain(r, e, UniformScaleRatio(r, e, modes)), std::memory_order_relaxed);
@@ -91,8 +92,7 @@ float WorldMeanScale(const state::Registry &r, state::Entity e) {
     return world ? MeanScale(world->S) : 1.f;
 }
 
-// Returns displaced air volume in cubic metres for recoil-filter corner calculation.
-// World scale converts node-local mesh volume, and mass divided by density supplies volume for open meshes.
+// The displaced air volume in m^3 for the recoil-filter corner.
 double DisplacedVolume(const state::Registry &r, state::Entity e, double mass, const AcousticMaterialProperties *props) {
     const auto *inst = r.try_get<const Instance>(e);
     const auto *owner = inst ? TryRecordOf(r, inst->Entity) : nullptr;
@@ -105,13 +105,10 @@ double DisplacedVolume(const state::Registry &r, state::Entity e, double mass, c
     return props && props->Density > 0 && mass > 0 ? mass / props->Density : 0.0;
 }
 
-// Returns the equivalent-sphere radius used by the recoil filters.
 double VolumeEquivalentRadius(double volume) { return std::cbrt(3.0 * volume / (4.0 * std::numbers::pi)); }
 
-// Recompute an object's resonator coefficients and output gain.
-// Frequencies scale with the fundamental target and inversely with object size.
 // Uniform scaling gives d' = alpha/2 + (d - alpha/2)/scale^2 and T60 = ln(1000)/d'.
-// (T60 == 0 is the undamped sentinel and stays 0, muting the mode.)
+// A T60 of 0 is the undamped sentinel and stays 0, muting the mode.
 void RetuneModalObject(const state::Registry &r, ModalBank &b, uint32_t slot, state::Entity e) {
     const auto &modes = r.get<const ModalModes>(HierarchySource(r, e));
     const auto mode_count = modes.Freqs.size();
@@ -130,8 +127,6 @@ void RetuneModalObject(const state::Registry &r, ModalBank &b, uint32_t slot, st
     const bool sized = motion && IsAuthoritativeDynamicBody(*motion);
     const double mass = dynamics ? dynamics->Mass * (sized ? 1.0 : double(scale) * double(scale) * double(scale)) : 0.0;
     b.RigidInvMass[slot] = mass > 0 ? float(1.0 / mass) : 0.f;
-    // The displaced volume behind the body's sustained acceleration noise.
-    // Only dynamic rigid bodies transfer recoil to the air model.
     const auto *mat = r.try_get<const AcousticMaterial>(e);
     const double volume = DisplacedVolume(r, e, mass, mat ? &mat->Properties : nullptr);
     const auto recoil = sized && mass > 0 ? RecoilObjectFilter(VolumeEquivalentRadius(volume), volume, b.SampleRate) : RecoilFilter{};
@@ -159,7 +154,6 @@ void RetuneModalObject(const state::Registry &r, ModalBank &b, uint32_t slot, st
     b.RetunedWorldScale[slot] = WorldMeanScale(r, e);
 }
 
-// Builds a replacement bank from every modal sound object and installs it atomically for the audio thread.
 void RebuildModalBank(state::Registry &r) {
     auto &m = r.Resources.get<ModalAudio>();
 
@@ -195,21 +189,19 @@ void SetModel(state::Registry &r, state::Entity e, SoundVerticesModel model) {
 }
 
 namespace {
-// Mean curvature (1/m) of the solid sphere with this mass and density. 0 for an immovable body.
+// The mean curvature in 1/m of the solid sphere with this mass and density.
+// Zero for an immovable body.
 double SphereEquivalentCurvature(double density, double inv_mass) { return std::cbrt(4.0 * std::numbers::pi / 3.0 * density * inv_mass); }
 
-// A strike from a physics collision.
 // Its presence marks `force` as the true contact impulse, not a nominal level.
 struct PhysicsStrike {
     vec3 Direction; // node-local contact direction
     vec3 Point; // world-space contact point, which the struck body's curvature is read at
     state::Entity GeometryEntity;
     state::Entity SurfaceEntity;
-    Impactor Impactor; // striking body's impactor
+    Impactor Impactor;
     float NominalArea; // area the two faces share, m^2, zero where the touch is a point or an edge
     float CombinedRoughness; // the pair's rms asperity heights in quadrature, m
-    // Sample point nearest the manifold's load-weighted centre.
-    // Compute collision duration from the body's response at the manifold resultant center.
     uint32_t ResultantIndex;
 };
 
@@ -225,7 +217,6 @@ void TriggerModalStrike(state::Registry &r, state::Entity e, uint32_t excitable_
 
     const auto *cd = r.try_get<const ContactDynamics>(e);
     const auto *mat = r.try_get<const AcousticMaterial>(e);
-    // A short default contact with no click applies when the material or contact dynamics are missing.
     double tau = 1e-4; // seconds
     float click_amp = 0;
     ClickFilter click{};
@@ -240,16 +231,10 @@ void TriggerModalStrike(state::Registry &r, state::Entity e, uint32_t excitable_
         }
         const vec3 strike_point = physics ? physics->Point : TransformPoint(*WorldTransformOf(r, e), modes.Positions[excitable_index]);
         const double curvature = SurfaceCurvature(r, physics ? physics->GeometryEntity : e, strike_point).value_or(0.0);
-        // The elastic constants belong to the surface that was struck, as they do for a contact that persists.
-        // Use the target node surface for external mallet impacts.
         const auto &elastic = MaterialOf(r, physics ? physics->SurfaceEntity : e, e);
-        // Use rounded-tip point-contact geometry at the target position.
         const float scale_ratio = UniformScaleRatio(r, e, modes);
-        // A mallet's tip is polished, so a manual strike reads the struck surface's finish alone.
         const double roughness = physics ? physics->CombinedRoughness : SurfaceRoughnessOf(r, e);
         tau = EstimateContactTime(*cd, physics ? physics->ResultantIndex : excitable_index, dir, contact_speed, elastic, curvature, physics ? physics->NominalArea : 0.f, imp, scale_ratio, roughness);
-        // The click is the recoil radiator driven by this strike's force pulse, with the body's inertia in the loop (see RecoilClickFilter).
-        // Use the sample-surface disc radius when displaced volume is zero.
         const double volume = DisplacedVolume(r, e, cd->Mass, &mat->Properties);
         const double radius = volume > 0 ? VolumeEquivalentRadius(volume) : double(bank.RadiantRadius[*slot] * scale_ratio);
         click = RecoilClickFilter(radius, volume, cd->Mass, bank.SampleRate);
@@ -298,10 +283,7 @@ void CancelModalSolves(state::Registry &r, state::Entity e) {
     }
 }
 
-// The material properties a model's modes derive at, folding the spec's one-mass rule into the density.
-// A dynamic rigid body's authored mass is the body's one mass, so the modes derive at the density that makes the solve's mass meet it.
-// Scaling stiffness with mass preserves specific stiffness E/rho and modal frequencies.
-// Compare masses at the baked model size recorded by the solve.
+// Masses compare at the baked model size the solve recorded.
 AcousticMaterialProperties EffectiveModalMaterial(AcousticMaterialProperties props, const ModalEigenSummary &summary, double solve_mass, const PhysicsMotion *motion) {
     if (!motion || !IsAuthoritativeDynamicBody(*motion) || solve_mass <= 0 || summary.SolvedMaterial.Density <= 0 || props.Density <= 0) return props;
     const double rho_eff = summary.SolvedMaterial.Density * double(motion->Mass.value_or(DefaultMass)) / solve_mass;
@@ -316,7 +298,6 @@ AcousticMaterialProperties EffectiveModalMaterial(const state::Registry &r, stat
     return EffectiveModalMaterial(mat ? mat->Properties : summary.SolvedMaterial, summary, mp ? mp->Mass : 0.0, r.try_get<const PhysicsMotion>(e));
 }
 
-// Re-derives modes with modal::RescaleModes while preserving a fundamental frequency pinned at solve time.
 // Returns empty when the material edit changes Poisson ratio.
 std::optional<ModalModes> RescaledModes(const ModalEigenSummary &summary, const ModalModes &modes, const AcousticMaterialProperties &props, const ModalSolveSettings &settings) {
     std::optional<float> fundamental;
@@ -326,8 +307,6 @@ std::optional<ModalModes> RescaledModes(const ModalEigenSummary &summary, const 
     return modal::RescaleModes(summary, modes, props, config);
 }
 
-// Re-derive the entity's modal model for its effective material, from the current acoustic material and the body's one mass.
-// Poisson-ratio changes require a new solve.
 void RescaleModalObject(state::Registry &r, state::Entity e) {
     const auto &modes = r.get<const ModalModes>(HierarchySource(r, e));
     const auto &summary = r.get<const ModalEigenSummary>(HierarchySource(r, e));
@@ -367,7 +346,6 @@ size_t HashModalConfig(const fastfem::SolverConfig &config) {
     return seed;
 }
 
-// Returns existing excitation vertices when copying or unique evenly spaced mesh vertices otherwise.
 std::vector<uint32_t> DesiredSolveVertices(const state::Registry &r, state::Entity e, const ModalSolveSettings &settings, uint32_t num_vertices) {
     if (settings.CopySoundVertices && r.all_of<SoundVertices>(e)) {
         const auto vertices = r.Resources.get<const MeshStore>().Arenas().SoundVertices.Get(r.get<const SoundVertices>(e).Vertices);
@@ -377,8 +355,6 @@ std::vector<uint32_t> DesiredSolveVertices(const state::Registry &r, state::Enti
     return iota_view{0u, ex_count} | transform([&](uint32_t i) { return i * num_vertices / ex_count; }) | to<std::vector<uint32_t>>();
 }
 
-// One triangle per distinct triple of sample points, dropping any triple that repeats a point.
-// Preserve the first observed winding for consistent surface orientation.
 std::vector<uint32_t> UniqueSampleTriangles(std::span<const std::array<uint32_t, 3>> triangles) {
     struct Candidate {
         std::array<uint32_t, 3> Key, Winding;
@@ -401,14 +377,10 @@ std::vector<uint32_t> UniqueSampleTriangles(std::span<const std::array<uint32_t,
     return out;
 }
 
-// Returns mesh triangles collapsed onto nearest excitation vertices by edge distance.
-// A mesh triangle contributes when its corners map to three distinct excitation vertices.
 // Empty when the excitation vertices are too few or too clustered to span the surface.
 std::vector<uint32_t> SampleSurfaceTriangles(std::span<const uint32_t> triangle_indices, uint32_t vertex_count, std::span<const uint32_t> excitation_vertices) {
     if (excitation_vertices.size() < 3 || triangle_indices.size() < 3) return {};
 
-    // Store triangle-edge vertex adjacency in compressed rows.
-    // Each triangle corner is adjacent to the other two.
     std::vector<uint32_t> row_start(vertex_count + 1, 0);
     for (const auto v : triangle_indices) row_start[v + 1] += 2;
     for (uint32_t v = 0; v < vertex_count; ++v) row_start[v + 1] += row_start[v];
@@ -444,7 +416,6 @@ std::vector<uint32_t> SampleSurfaceTriangles(std::span<const uint32_t> triangle_
     std::vector<std::array<uint32_t, 3>> collapsed;
     for (size_t i = 0; i + 2 < triangle_indices.size(); i += 3) {
         const std::array winding{label[triangle_indices[i]], label[triangle_indices[i + 1]], label[triangle_indices[i + 2]]};
-        // Skip shell components without an excitation vertex.
         if (std::ranges::contains(winding, Unlabelled)) continue;
         collapsed.push_back(winding);
     }
@@ -452,7 +423,6 @@ std::vector<uint32_t> SampleSurfaceTriangles(std::span<const uint32_t> triangle_
 }
 
 // The excitation vertices a solve's sample points came from, one per sample point, in sample point order.
-// Vertices whose positions reached the same tet point share a sample point, and the first of them supplies it.
 std::vector<uint32_t> CompactExcitationVertices(std::span<const uint32_t> vertices, std::span<const uint32_t> sample_point_of) {
     std::vector<uint32_t> out;
     out.reserve(sample_point_of.empty() ? 0 : sample_point_of.back() + 1);
@@ -478,9 +448,11 @@ SolveInputs BuildSolveInputs(const state::Registry &r, state::Entity e, state::E
     const auto &mesh = GetMesh(r, mesh_entity);
     const uint32_t num_vertices = mesh.VertexCount();
     const vec3 node_scale = WorldTransformOf(r, e)->S;
-    std::vector<vec3> positions(num_vertices);
-    for (uint32_t i = 0; i < num_vertices; ++i) positions[i] = mesh.GetPosition(mesh.VertexAt(i)) * node_scale;
-    auto triangle_indices = mesh.CreateTriangleIndices();
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    const auto &pipelines = GetMeshPipelines(r);
+    auto positions = OrdinalPositions(meshes, pipelines, mesh.GetStoreId());
+    for (auto &position : positions) position = position * node_scale;
+    auto triangle_indices = OrdinalTriangles(meshes, pipelines, mesh.GetStoreId());
     const auto operator_hash = HashOperatorInputs(positions, triangle_indices, settings);
     return {
         std::move(positions), std::move(triangle_indices), DesiredSolveVertices(r, e, settings, num_vertices), settings.Solve,
@@ -497,7 +469,7 @@ bool ModalModelStale(const state::Registry &r, state::Entity e, const SolveInput
     return material.Properties.PoissonRatio != summary->SolvedMaterial.PoissonRatio;
 }
 
-// Launch an async solve unless one is already running or the baked model matches the inputs.
+// Launches an async solve unless one is already running or the baked model matches the inputs.
 void LaunchModalSolve(state::Registry &r, state::Entity e, const ModalSolveSettings &settings, const AcousticMaterial &material) {
     if (!r.valid(e) || IsSolving(r, e)) return;
     const auto *inst = r.try_get<const Instance>(e);
@@ -518,7 +490,7 @@ void LaunchModalSolve(state::Registry &r, state::Entity e, const ModalSolveSetti
     fastfem::ModeBasis warm_basis;
     if (const auto &warm = r.Resources.get<const ModalWarmStart>(); inputs.Discretization == fastfem::Discretization::Tet10 && warm.Basis && warm.OperatorHash == inputs.OperatorHash) warm_basis = warm.Basis;
     auto work = [inputs = std::move(inputs), material_props = material.Properties, excite_positions = std::move(excite_positions), warm_basis = std::move(warm_basis)](fastfem::SolveMonitor &monitor) mutable -> ModalGenerationResult {
-        // Capture sample-surface triangulation before simplification.
+        // The sample-surface triangulation reads the mesh before simplification.
         auto sample_triangles = SampleSurfaceTriangles(inputs.TriangleIndices, uint32_t(inputs.Positions.size()), inputs.Vertices);
         auto result = modal::SolveSurfaceModes(
             inputs.Positions, inputs.TriangleIndices, material_props, excite_positions, inputs.NodeScale,
@@ -529,7 +501,6 @@ void LaunchModalSolve(state::Registry &r, state::Entity e, const ModalSolveSetti
             std::println(stderr, "Modal solve failed: {}.", result.error());
             return {};
         }
-        // Remap vertices and the sample surface to deduplicated tet sample points.
         result->Modes.Vertices = CompactExcitationVertices(inputs.Vertices, result->SamplePointOfExcitation);
         result->Modes.Indices = RelabelSampleTriangles(sample_triangles, result->SamplePointOfExcitation);
         result->Modes.BakedScale = inputs.NodeScale;
@@ -541,7 +512,7 @@ void LaunchModalSolve(state::Registry &r, state::Entity e, const ModalSolveSetti
         monitor.Stage.store(fastfem::SolveStage::Complete, std::memory_order_relaxed);
         return {ModalModelData{std::move(result->Modes), result->Mass, std::move(result->Tetrahedra), std::move(result->Summary)}, {inputs.OperatorHash, std::move(result->Basis)}};
     };
-    // Intentional registry-ctx write outside Apply: transient background-job bookkeeping.
+    // Direct write outside Apply for transient background-job bookkeeping.
     r.Resources.get<ModalSolveJobs>().Jobs.push_back(std::make_shared<ModalSolveJob>(e, r.Epoch, Job<ModalGenerationResult, fastfem::SolveMonitor>{GetName(r, e), std::move(work)}));
 }
 
@@ -552,7 +523,7 @@ void CancelModalSolves(state::Registry &r) {
 }
 
 void RegisterAudioComponentHandlers(state::Registry &r) {
-    // Create audio context slots once because ProcessAudio reads the registry context concurrently.
+    // The audio resources are created once here because ProcessAudio reads them concurrently.
     r.Resources.emplace<AudioSamples>();
     r.Resources.emplace<ModalWarmStart>();
     r.Resources.emplace<ModalSolveJobs>();
@@ -572,7 +543,6 @@ void RegisterAudioComponentHandlers(state::Registry &r) {
         .on<VertexSamples>(On::Create | On::Update | On::Destroy)
         .on<::ModalModes>(On::Create | On::Update | On::Destroy)
         .on<SoundVerticesModel>(On::Create | On::Update | On::Destroy);
-    // Refresh body-dependent sound tags after body or hierarchy changes.
     changes.ContactReportingDerivation.bind(r).on<PhysicsBodyHandle>(On::Create | On::Destroy).on<SceneParent>(On::Create | On::Update | On::Destroy);
     changes.ContactDynamicsDerivation.bind(r)
         .on<HierarchyMember>(On::Create | On::Destroy)
@@ -588,7 +558,6 @@ void RegisterAudioComponentHandlers(state::Registry &r) {
 void ReconcileOutputDevice(state::Registry &r, AudioDeviceResource &res) {
     if (!ReconcileAudioDevice(res, r.Resources.get<AudioDeviceInfo>(), r.Resources.get<const AudioOutputConfig>())) return;
     ApplyAudioMix(res, r.get<const AudioOutputMix>(state::Document));
-    // A reopened device publishes a new scheduling group, which the render threads have to be re-placed into.
     r.Resources.get<ModalAudio>().RenderPool.SetWorkgroup(res.RenderWorkgroup);
 }
 
@@ -604,7 +573,7 @@ void ApplyCompletedModalSolves(state::Registry &r, EventPass pass) {
             continue;
         }
         if (!job.Work.Cancelled() && job.Epoch == r.Epoch) {
-            // Intentional registry-ctx write outside Apply: the warm-start slot is a derived memo, not scene input.
+            // Direct write outside Apply, since the warm-start slot is a derived memo.
             if (result->WarmStart.Basis) r.Resources.get<ModalWarmStart>() = std::move(result->WarmStart);
             if (!result->Model) std::println(stderr, "Modal model computation failed.");
             else if (r.valid(job.Entity) && r.all_of<ModalSolveSettings>(job.Entity)) {
@@ -649,8 +618,7 @@ void ApplyCompletedModalSolves(state::Registry &r, EventPass pass) {
         if (changes.SoundVerticesDerivation.contains(source)) changes.SoundVerticesDerivation.emplace(entity);
         if (changes.ContactDynamicsDerivation.contains(source)) changes.ContactDynamicsDerivation.emplace(entity);
     }
-    // Rebuild SoundVertices from VertexSamples/ModalModes, selected by SoundVerticesModel.
-    // Runs before any handler that reads SoundVertices.
+    // SoundVertices rebuild from VertexSamples or ModalModes as SoundVerticesModel selects, before any handler reads them.
     for (const auto e : changes.SoundVerticesDerivation) {
         const auto *model = r.try_get<const SoundVerticesModel>(e);
         std::vector<uint32_t> new_vertices;
@@ -683,17 +651,13 @@ void ApplyCompletedModalSolves(state::Registry &r, EventPass pass) {
             if (!FindSoundVertexIndex(vertices, active->Handle)) r.emplace_or_replace<MeshActiveElement>(mesh_entity, vertices.front());
         }
     }
-    // A body reports contacts when anything under it can sound.
-    // Stop traversal at nested rigid bodies so each node maps to one body.
-    // Only the bodies owning a node whose sounding, body, or hierarchy changed rederive.
-    // Intentional registry write outside Apply: derived from the sound models under each body.
+    // Direct write outside Apply, derived from the sound models under each body.
     {
         const auto owning_body = [&r](state::Entity e) { return FindAncestorIf(r, e, [&r](state::Entity node) { return r.all_of<PhysicsBodyHandle>(node); }); };
         std::vector<state::Entity> bodies;
         const auto add_owners = [&](state::Entity e) {
             if (!r.valid(e)) return;
             if (const auto body = owning_body(e); body != state::Null) bodies.push_back(body);
-            // Update enclosing-body membership when a body is added or removed from a subtree.
             if (r.all_of<PhysicsBodyHandle>(e)) {
                 if (const auto outer = owning_body(ParentOrNull(r, e)); outer != state::Null) bodies.push_back(outer);
             }
@@ -713,10 +677,8 @@ void ApplyCompletedModalSolves(state::Registry &r, EventPass pass) {
             else r.remove<ReportContacts>(body);
         }
     }
-    // Refresh contact dynamics before the strike loop below reads them.
+    // Contact dynamics refresh before the strike loop below reads them.
     for (const auto e : changes.ContactDynamicsDerivation) UpdateContactDynamics(r, e);
-    // A created or replaced VertexForce is a strike.
-    // Contact pulses are one-shot.
     for (const auto e : changes.VertexForce) {
         if (!r.all_of<SoundVerticesModel>(e)) continue;
         const auto *vf = r.try_get<::VertexForce>(e);
@@ -736,8 +698,6 @@ void ApplyCompletedModalSolves(state::Registry &r, EventPass pass) {
         if ((!r.all_of<ModalModes>(HierarchySource(r, e)) || !r.all_of<SoundVertices, Recording>(e))) continue;
         if (r.get<const Recording>(e).Frame == 0) TriggerModalStrike(r, e, GetActiveVertexIndex(r, e), 1.f, 1.f);
     }
-    // The device follows the output configuration, and a reopen can change the negotiated sample rate.
-    // Apply mix changes through level and on/off controls.
     bool device_rate_changed = false;
     if (auto *res = r.Resources.find<AudioDeviceResource>()) {
         const auto &info = r.Resources.get<const AudioDeviceInfo>();
@@ -761,8 +721,6 @@ void ApplyCompletedModalSolves(state::Registry &r, EventPass pass) {
             }
             if (!r.all_of<AcousticMaterial>(e)) r.emplace<AcousticMaterial>(e, materials::acoustic::All.front());
         }
-        // Retune and reshape same-layout model replacements in place.
-        // Rebuild the bank for structural layout changes.
         auto &m = r.Resources.get<ModalAudio>();
         bool rebuild = false;
         for (const auto e : modal_tracker) {
@@ -777,7 +735,6 @@ void ApplyCompletedModalSolves(state::Registry &r, EventPass pass) {
         if (rebuild) {
             RebuildModalBank(r);
         } else if (device_rate_changed) {
-            // A rate change keeps the layout but rebakes every coefficient.
             LiveBank(m).SampleRate = float(DeviceSampleRate(r));
             for (uint32_t slot = 0; slot < uint32_t(LiveBank(m).Entities.size()); ++slot) RetuneModalObject(r, LiveBank(m), slot, LiveBank(m).Entities[slot]);
         }
@@ -817,7 +774,7 @@ void UpdateModalPlacement(state::Registry &r) {
             if (WorldMeanScale(r, e) != bank.RetunedWorldScale[slot]) RetuneModalObject(r, bank, slot, e);
         }
     }
-    // Publish camera-derived object attenuation because the audio thread cannot access the registry.
+    // Camera-derived object attenuation publishes here because the audio thread cannot read the registry.
     const auto *device = r.Resources.find<AudioDeviceResource>();
     if (!device) return;
     const auto listener = ListenerPosition(r);
@@ -826,30 +783,23 @@ void UpdateModalPlacement(state::Registry &r) {
 
 void UpdateAudioContacts(state::Registry &r) {
     if (!r.Resources.find<ModalAudio>()) return;
-    // Displayed-frame collisions strike the objects they hit, once per contact point.
     if (auto *contacts = r.Resources.find<PhysicsContactImpacts>(); contacts && !contacts->Events.empty()) {
         const auto &controls = ModalControls(r);
         const auto shown = ShownScenes(r);
         for (const auto &c : contacts->Events) {
             if (c.Speed < controls.MinContactSpeed) continue;
-            // A collision sounds when a shown scene holds both bodies.
             if (!std::ranges::any_of(shown, [&](auto scene) { return InScene(r, c.Entity, scene) && InScene(r, c.Other, scene); })) continue;
             const auto own = ResolveContactNodes(r, c.ColliderEntity, c.Entity);
             if (!IsModalSounding(r, own.Model)) continue;
             const auto &modes = r.get<const ModalModes>(HierarchySource(r, own.Model));
             if (modes.Positions.empty()) continue;
-            // Bring the world-space contact into the node-local frame the modes are defined in.
             const auto &wt = *WorldTransformOf(r, own.Model);
             const vec3 local_point = InverseTransformPoint(wt, c.Point);
             const vec3 local_dir = InverseTransformDir(wt, c.Direction);
             const auto sample_point = NearestSamplePoint(modes.Positions, local_point);
-            // Apply the audibility floor to modal excitation rather than impact momentum.
             if (PeakModalDrive(modes, sample_point, UnitOrZero(local_dir) * c.Impulse) < controls.MinContactExcitation) continue;
             const auto other = ResolveContactNodes(r, c.OtherColliderEntity, c.Other);
-            // The other body is the impactor: its stiffness, mass, and curvature shape the contact time.
-            // Derive impactor material and curvature from the contacted surface.
             const auto &other_props = MaterialOf(r, other.Surface, other.Model);
-            // A body with no mesh is treated as a solid sphere of its mass.
             const auto other_curvature = SurfaceCurvature(r, other.Geometry, c.Point);
             const Impactor impactor{
                 .Material = other_props,
@@ -863,7 +813,7 @@ void UpdateAudioContacts(state::Registry &r) {
         }
         contacts->Events.clear();
     }
-    // Recompute edited surfaces before publishing persistent contacts for this step.
+    // Edited surfaces recompute before this step's persistent contacts publish.
     SurfaceUpdateContacts(r);
 }
 
@@ -893,7 +843,6 @@ void ApplyModalModel(state::Registry &r, state::Entity e, const fs::path &path) 
         return;
     }
     const auto mesh_entity = r.get<const Instance>(e).Entity;
-    // Apply the current node material with density inferred from the solved body mass.
     const auto *mat = r.try_get<const AcousticMaterial>(e);
     if (const auto props = EffectiveModalMaterial(mat ? mat->Properties : data->Summary.SolvedMaterial, data->Summary, data->Mass.Mass, r.try_get<const PhysicsMotion>(e));
         props != data->Summary.SolvedMaterial) {

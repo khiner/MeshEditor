@@ -4,39 +4,82 @@
 #include "procedure/InlineSelection.h"
 #include "procedure/Network.h"
 
+#include "TypeList.h"
 #include "action/Mesh.h"
-#include "action/Updatable.h"
 #include "gpu/AttributeNode.h"
+#include "gpu/Transform.h"
+#include "mesh/AttributeFields.h"
 #include "mesh/MeshTopology.h"
+#include "mesh/Minkowski.h"
 #include "mesh/NamedAttribute.h"
+#include "mesh/PrimitiveType.h"
 #include "procedure/ProcedureSchema.h"
 #include "project/store/Hash.h"
 
-// Each procedure node is an entity with one parameter component and input/output links.
 namespace procedure {
-struct Source {}; // Emit the mesh's source geometry.
-struct Join {}; // Append the second input's geometry to the first.
+struct Source {};
+struct Join {};
 
-// Combine the inputs and emit the result in Mesh 1's space.
-// Space's world transform places Mesh 1, and the world transform of the object Mesh 2's geometry came from places Mesh 2.
-// Mesh 2 geometry in this procedure's mesh space stays in place relative to Mesh 1.
+// Combine two closed meshes or two regions on one plane into Mesh 1's space, which Space's world transform places.
+// The world transform of the object Mesh 2 came from places Mesh 2, and Mesh 2 from this procedure's mesh stays in place relative to Mesh 1.
 struct Boolean {
     BooleanOperation Operation{BooleanOperation::Difference};
     state::Entity Space{state::Null};
 };
 
-using Generators = TypeList<primitive::Plane, primitive::Circle, primitive::Cube, primitive::IcoSphere, primitive::UVSphere, primitive::QuadSphere, primitive::Torus, primitive::Cylinder, primitive::Cone>;
+// Both inputs are closed surfaces in this procedure's mesh space, or regions on parallel planes with Mesh 2's through the origin.
+struct Minkowski {
+    MinkowskiOperation Operation{MinkowskiOperation::Sum};
+};
+
+// Emit the surface where the Value field, positive inside, crosses Level, marched over the box from Min to Max.
+// Value evaluates on a body-centered lattice spaced at most EdgeLength apart, and the surface closes at the box.
+struct LevelSet {
+    vec3 Min{-1, -1, -1}, Max{1, 1, 1};
+    float EdgeLength{.1f};
+    float Level{};
+};
+
+using Generators = TypeList<primitive::Plane, primitive::Circle, primitive::Cube, primitive::IcoSphere, primitive::UVSphere, primitive::QuadSphere, primitive::Torus, primitive::Cylinder>;
 template<typename K>
 concept Generator = InTypeList<K, Generators>;
 
-// Attribute nodes evaluate on the geometry their reader receives, in the domain of their first attribute input.
-struct Position {}; // Emit vertex positions.
+struct Position {};
 
 struct Normal {
     AttributeDomain Domain{AttributeDomain::Vertex};
 };
 
-// Emit each element's index in its domain, counting live elements only.
+struct Curvature {
+    CurvatureKind Kind{CurvatureKind::Mean};
+};
+
+// Select the edges with fewer than two faces, the vertices on them, or the faces touching them.
+struct Boundary {
+    AttributeDomain Domain{AttributeDomain::Edge};
+};
+// Select the vertices on a side of the plane through Point with normal Normal, or on it within Tolerance, or the edges or faces whose vertices all are.
+struct PlaneSide {
+    vec3 Point{}, Normal{0, 0, 1};
+    PlaneSideKind Side{PlaneSideKind::On};
+    float Tolerance{PlaneSideTolerance};
+    AttributeDomain Domain{AttributeDomain::Vertex};
+};
+// Select the connected components holding the selected elements.
+struct Linked {};
+// Grow the selection by Steps rings of adjacent elements, or shrink it by as many.
+enum class AdjacentMode : uint8_t { More,
+                                    Less };
+struct Adjacent {
+    AdjacentMode Mode{AdjacentMode::More};
+    uint32_t Steps{1};
+};
+struct EdgeLoop {};
+struct EdgeRing {};
+
+struct SelectionAttribute {};
+
+// Count live elements only.
 struct Index {
     AttributeDomain Domain{AttributeDomain::Vertex};
 };
@@ -46,8 +89,6 @@ struct NamedAttribute {
     AttributeName Name{};
 };
 
-// Apply a vector operation to A and B.
-// An unlinked B or Scale input uses its constant.
 struct VectorMath {
     VectorMathOp Operation{VectorMathOp::Add};
     vec3 B{};
@@ -85,7 +126,6 @@ struct StoreSelection {
     AttributeName Name{};
 };
 
-// Broadcast constant values received by attribute sockets.
 struct FloatValue {
     float Value{};
 };
@@ -102,24 +142,20 @@ struct RotationValue {
     quat Value{1, 0, 0, 0};
 };
 
-// Set the selected vertices' positions from a vec3 attribute, or offset them by it.
 struct SetPosition {
     bool Offset{true};
 };
 
-// Move the selected vertices by Delta around Pivot, in the space Frame maps positions into.
+// Move the selected vertices, all by default, by Delta around Pivot, in the space Frame maps positions into.
+// A nonzero Mirror first reflects them across the plane through Pivot with that normal.
 struct TransformElements {
     Transform Delta{};
     vec3 Pivot{};
     Transform Frame{};
-};
-
-struct TransformGeometry {
-    Transform Delta{};
+    vec3 Mirror{};
 };
 
 // These position operators apply in the space Frame maps mesh-local positions into.
-// A viewport operator sets Frame to the world transform of its mesh's primary instance.
 
 // Blend the selected vertices toward Radius from Center, or toward their mean distance from Center for a zero radius.
 struct ToSphere {
@@ -128,7 +164,6 @@ struct ToSphere {
     float Radius{0.f};
     Transform Frame{};
 };
-// Move the selected vertices toward Center by Distance, or away from it for a negative distance.
 struct PushPull {
     float Distance{0.1f};
     vec3 Center{};
@@ -140,18 +175,33 @@ struct Shear {
     vec3 Center{}, Direction{1, 0, 0}, Normal{0, 0, 1};
     Transform Frame{};
 };
-struct Spin {
-    uint32_t Steps{9};
-    float Angle{std::numbers::pi_v<float> / 2};
+// Extrude the selection Steps times, each step rotating Angle over Steps about Axis through Center and moving the displacement over Steps.
+// The displacement is Offset Scale along the region's normal or each element's normal, or Offset times Offset Scale.
+struct Extrude {
+    action::mesh::ExtrudeMode Mode{};
+    vec3 Offset{};
+    float OffsetScale{};
+    bool AlongNormals{true};
+    uint32_t Steps{1};
+    float Angle{};
     vec3 Axis{0, 0, 1}, Center{};
-    float Offset{};
 };
 struct Bisect {
     vec3 Point{}, Normal{1, 0, 0};
     bool ClearInner{}, ClearOuter{};
 };
-// Warp around Center in Orientation.
-// Compute automatic bounds from the selected vertices after OffsetAngle.
+struct SubdivisionSurface {
+    uint32_t Levels{1};
+};
+// Refine the closed mesh with Cuts new vertices per edge onto smooth patches through its shading normals, creased where faces shade flat or edges are sharp.
+struct SmoothSurface {
+    uint32_t Cuts{2};
+};
+// Emit the outline of the mesh seen along Normal as a region on the plane through Point, one face per loop, in place of the mesh.
+struct Project {
+    vec3 Point{}, Normal{0, 0, 1};
+};
+// AutoRange computes Min and Max from the selected vertices after OffsetAngle.
 struct Warp {
     float Angle{2 * std::numbers::pi_v<float>}, OffsetAngle{0.f};
     vec3 Center{};
@@ -170,18 +220,20 @@ struct Bend {
     Transform Frame{};
 };
 // Slide each selected vertex along its incident edge nearest Direction.
-// Even uses the edge length of the active selected vertex, or else the first selected vertex.
+// Even uses the edge length of the selected Reference vertex, or else the first selected vertex.
 struct VertexSlide {
     float Factor{0.5f};
     vec3 Direction{1, 0, 0};
+    uint32_t Reference{InvalidOffset};
     bool Even{false}, Flipped{false}, Clamp{true};
     Transform Frame{};
 };
-// Slide selected edge chains along adjacent faces toward the side Direction selects.
-// Even uses the active selected vertex, or else the first selected vertex.
+// Slide selected edge chains along adjacent faces toward the side Direction selects at the reference vertex.
+// The reference vertex is the selected Reference, or else the first selected vertex, and Even uses its rail length.
 struct EdgeSlide {
     float Factor{0.5f};
     vec3 Direction{1, 0, 0};
+    uint32_t Reference{InvalidOffset};
     bool Even{false}, Flipped{false}, Clamp{true};
     Transform Frame{};
 };
@@ -210,31 +262,29 @@ struct Knife {
     Transform Frame{};
 };
 
-// Shade every face smooth and clear every sharp mark, or shade every face flat.
-struct ShadeSmooth {
-    bool Smooth{true};
-};
-// Shade every face smooth and mark sharp each edge whose faces' normals differ by more than Angle.
-struct ShadeSmoothByAngle {
+// How every face shades: flat, smooth with no sharp marks, or smooth with each edge marked sharp whose faces' normals differ by more than Angle.
+enum class ShadeMode : uint8_t { Flat,
+                                 Smooth,
+                                 ByAngle };
+struct Shade {
+    ShadeMode Mode{ShadeMode::Smooth};
     float Angle{std::numbers::pi_v<float> / 6.f};
 };
 
 // Instances use face-less point records with per-point rotation and scale attributes.
 inline constexpr std::string_view InstanceRotation = ".instance.rotation", InstanceScale = ".instance.scale";
 
-struct MeshToPoints {}; // Emit the input's vertices as points.
+struct MeshToPoints {};
 
-// Place an instance of the second input at each point of the first, with Rotation and Scale per point.
 struct InstanceOnPoints {
     state::Entity Prototype{state::Null};
     vec3 Scale{1, 1, 1};
     quat Rotation{1, 0, 0, 0};
 };
 
-struct RealizeInstances {}; // Emit a copy of the instance geometry per instance, moved by its transform.
+struct RealizeInstances {};
 
-// Borrow the object mesh in local space.
-// Emit nothing for a missing mesh or this procedure mesh.
+// Emit the object's mesh in its local space, or nothing for a missing mesh or this procedure's own mesh.
 struct ObjectInfo {
     state::Entity Object{state::Null};
 };
@@ -248,28 +298,24 @@ struct Subnet {};
 
 // A node's kind is its parameter component's index in this list.
 using NodeKinds = TypeList<
-    Source, Join, Boolean,
-    primitive::Plane, primitive::Circle, primitive::Cube, primitive::IcoSphere, primitive::UVSphere, primitive::QuadSphere, primitive::Torus, primitive::Cylinder, primitive::Cone,
-    action::mesh::Delete, action::mesh::Merge, action::mesh::Extrude, action::mesh::Duplicate, action::mesh::Split, action::mesh::Dissolve,
-    action::mesh::Subdivide, action::mesh::Triangulate, action::mesh::TrisToQuads, action::mesh::Poke, action::mesh::FlipNormals, action::mesh::EdgeSplit,
+    Source, Join, Boolean, Minkowski,
+    primitive::Plane, primitive::Circle, primitive::Cube, primitive::IcoSphere, primitive::UVSphere, primitive::QuadSphere, primitive::Torus, primitive::Cylinder, LevelSet,
+    action::mesh::Delete, action::mesh::Merge, Extrude, action::mesh::Duplicate, action::mesh::Split, action::mesh::Dissolve,
+    action::mesh::Subdivide, SubdivisionSurface, SmoothSurface, action::mesh::SplitFaces, action::mesh::TrisToQuads, action::mesh::Poke, action::mesh::FlipNormals, action::mesh::EdgeSplit,
     action::mesh::Inset, action::mesh::Solidify, action::mesh::Wireframe, action::mesh::Bevel, action::mesh::SmoothVertices, action::mesh::ShrinkFatten,
     action::mesh::Randomize, action::mesh::SpaceEvenly, action::mesh::RelaxEdgeLoops, action::mesh::CurveBetweenSelected, action::mesh::Circularize,
     action::mesh::MakePlanarFaces, Flatten, ToSphere, PushPull, Shear, Warp, Bend, VertexSlide, EdgeSlide, action::mesh::SnapSymmetry,
-    Spin, action::mesh::ExtrudeRepeat, Bisect, action::mesh::Symmetrize, action::mesh::FillHoles,
-    action::mesh::ConvexHull, action::mesh::Decimate, action::mesh::RecalculateNormals, action::mesh::Rip, action::mesh::SplitNonplanarFaces,
-    action::mesh::SplitConcaveFaces, action::mesh::ConnectVertices, action::mesh::Fill, action::mesh::BridgeEdgeLoops, action::mesh::GridFill,
-    action::mesh::EdgeRotate, action::mesh::BeautifyFaces, action::mesh::Unsubdivide, action::mesh::LoopCut, Knife, action::mesh::RotateUVs,
-    action::mesh::ReverseUVs, action::mesh::RotateColors, action::mesh::ReverseColors, MarkSharp, ShadeSmooth, ShadeSmoothByAngle, TransformElements,
-    Position, Normal, Index, NamedAttribute, VectorMath, FloatMath, Compare, BooleanMath, StoreNamedAttribute, StoreSelection, SetPosition,
+    Bisect, Project,
+    action::mesh::ConvexHull, action::mesh::Simplify, action::mesh::RecalculateNormals, action::mesh::ConnectVertices, action::mesh::Fill, action::mesh::BridgeEdgeLoops, action::mesh::GridFill,
+    action::mesh::EdgeRotate, action::mesh::BeautifyFaces, action::mesh::Unsubdivide, Knife, action::mesh::CycleCornerAttribute, MarkSharp, Shade, TransformElements,
+    Position, Normal, Curvature, Boundary, PlaneSide, Linked, Adjacent, EdgeLoop, EdgeRing, SelectionAttribute, Index, NamedAttribute, VectorMath, FloatMath, Compare, BooleanMath, StoreNamedAttribute, StoreSelection, SetPosition,
     MeshToPoints, InstanceOnPoints, RealizeInstances, ObjectInfo,
-    FloatValue, IntegerValue, BooleanValue, VectorValue, TransformGeometry, RotationValue, Subnet>;
+    FloatValue, IntegerValue, BooleanValue, VectorValue, RotationValue, Subnet>;
 using ValueKinds = TypeList<FloatValue, IntegerValue, BooleanValue, VectorValue, RotationValue>;
 template<typename K>
 concept ValueKind = InTypeList<K, ValueKinds>;
 
-// Attribute sockets accept per-element data or broadcast constants.
 // Selection sockets accept booleans and default to inline selection.
-// Instances sockets reference points and their instance geometry.
 enum class SocketType : uint8_t { Geometry,
                                   Selection,
                                   Attribute,
@@ -294,7 +340,7 @@ struct Socket {
     const char *Name{}; // The editor label, or the type's name when null
     uint8_t Field{NoField};
     uint8_t Member{NoField};
-    constexpr bool Carries(uint8_t field, uint8_t member = NoField) const { return Field == field && Member == member; }
+    constexpr bool Carries(uint8_t field, uint8_t member) const { return Field == field && Member == member; }
 };
 
 namespace detail {
@@ -303,13 +349,16 @@ using enum SocketDirection;
 
 inline constexpr uint8_t Bool{TypeBit(AttributeType::Bool)}, Float{TypeBit(AttributeType::Float)}, Vec3{TypeBit(AttributeType::Vec3)};
 
-// Append parameter sockets after fixed inputs.
-// Sources and generators have no inputs.
 inline constexpr Socket SourceSockets[]{{Geometry, Out}};
 inline constexpr Socket JoinSockets[]{{Geometry, In}, {Geometry, In}, {Geometry, Out}};
 inline constexpr Socket BooleanSockets[]{{Geometry, In, 0u, true, "Mesh 1"}, {Geometry, In, 0u, true, "Mesh 2"}, {Geometry, Out}};
 inline constexpr Socket OperatorSockets[]{{Geometry, In}, {Selection, In, Bool}, {Geometry, Out}};
 inline constexpr Socket PositionSockets[]{{Attribute, Out, Vec3}};
+inline constexpr Socket LevelSetSockets[]{{Attribute, In, Float, false, "Value"}, {Geometry, Out}};
+inline constexpr Socket CurvatureSockets[]{{Attribute, Out, Float}};
+inline constexpr Socket SelectionOutputSockets[]{{Attribute, Out, Bool}};
+inline constexpr Socket SelectionFieldSockets[]{{Attribute, In, Bool, false, "Selection"}, {Attribute, Out, Bool}};
+inline constexpr Socket SelectionInputSockets[]{{Selection, In, Bool}, {Attribute, Out, Bool}};
 inline constexpr Socket IndexSockets[]{{Attribute, Out, TypeBit(AttributeType::Int)}};
 inline constexpr Socket NamedAttributeSockets[]{{Attribute, Out, AnyType}};
 inline constexpr Socket VectorMathSockets[]{{Attribute, In, Vec3, false, "A"}, {Attribute, Out, Vec3 | Float, false, "Result"}};
@@ -320,11 +369,9 @@ inline constexpr Socket StoreSockets[]{{Geometry, In}, {Attribute, In, AnyType, 
 inline constexpr Socket SetPositionSockets[]{{Geometry, In}, {Attribute, In, Vec3, false, "Position"}, {Selection, In, Bool}, {Geometry, Out}};
 inline constexpr Socket PointsSockets[]{{Geometry, In}, {Geometry, Out, 0u, false, "Points"}};
 inline constexpr Socket WholeSockets[]{{Geometry, In}, {Geometry, Out}};
-// Instancing edits the points and reads the instance geometry.
 inline constexpr Socket InstanceSockets[]{{Geometry, In, 0u, false, "Points"}, {Geometry, In, 0u, true, "Instance"}, {Instances, Out}};
 inline constexpr Socket RealizeSockets[]{{Instances, In, 0u, true}, {Geometry, Out}};
 
-// Return the supported socket attribute types, or zero.
 template<typename F> constexpr uint8_t TypesOf() {
     if constexpr (std::same_as<F, float>) return Float;
     else if constexpr (std::same_as<F, uint32_t>) return TypeBit(AttributeType::Int);
@@ -353,8 +400,13 @@ template<typename K> constexpr std::span<const Socket> FixedSockets() {
     if constexpr (std::same_as<K, Subnet>) return std::span<const Socket>{};
     else if constexpr (std::same_as<K, Source> || std::same_as<K, ObjectInfo> || Generator<K>) return SourceSockets;
     else if constexpr (std::same_as<K, Join>) return JoinSockets;
-    else if constexpr (std::same_as<K, Boolean>) return BooleanSockets;
+    else if constexpr (std::same_as<K, Boolean> || std::same_as<K, Minkowski>) return BooleanSockets;
     else if constexpr (std::same_as<K, Position> || std::same_as<K, Normal>) return PositionSockets;
+    else if constexpr (std::same_as<K, Curvature>) return CurvatureSockets;
+    else if constexpr (std::same_as<K, Boundary> || std::same_as<K, PlaneSide>) return SelectionOutputSockets;
+    else if constexpr (std::same_as<K, Linked> || std::same_as<K, Adjacent> || std::same_as<K, EdgeLoop> || std::same_as<K, EdgeRing>) return SelectionFieldSockets;
+    else if constexpr (std::same_as<K, SelectionAttribute>) return SelectionInputSockets;
+    else if constexpr (std::same_as<K, LevelSet>) return LevelSetSockets;
     else if constexpr (std::same_as<K, Index>) return IndexSockets;
     else if constexpr (std::same_as<K, NamedAttribute>) return NamedAttributeSockets;
     else if constexpr (std::same_as<K, VectorMath>) return VectorMathSockets;
@@ -364,7 +416,7 @@ template<typename K> constexpr std::span<const Socket> FixedSockets() {
     else if constexpr (std::same_as<K, StoreNamedAttribute>) return StoreSockets;
     else if constexpr (std::same_as<K, SetPosition>) return SetPositionSockets;
     else if constexpr (std::same_as<K, MeshToPoints>) return PointsSockets;
-    else if constexpr (std::same_as<K, TransformGeometry> || std::same_as<K, Knife> || std::same_as<K, ShadeSmooth> || std::same_as<K, ShadeSmoothByAngle>) return WholeSockets;
+    else if constexpr (std::same_as<K, Knife> || std::same_as<K, Shade> || std::same_as<K, Project> || std::same_as<K, SubdivisionSurface> || std::same_as<K, SmoothSurface>) return WholeSockets;
     else if constexpr (std::same_as<K, InstanceOnPoints>) return InstanceSockets;
     else if constexpr (std::same_as<K, RealizeInstances>) return RealizeSockets;
     else if constexpr (ValueKind<K>) return ValueSockets<K>;
@@ -373,9 +425,9 @@ template<typename K> constexpr std::span<const Socket> FixedSockets() {
 
 // Use attribute sockets for per-element parameters and value sockets for other scalar and vec3 fields.
 template<typename K> inline constexpr field::Table<K, uint8_t> PerElement{};
-template<> inline constexpr field::Table<action::mesh::Extrude, uint8_t> PerElement<action::mesh::Extrude>{
-    {&action::mesh::Extrude::Offset, Vec3},
-    {&action::mesh::Extrude::OffsetScale, Float},
+template<> inline constexpr field::Table<Extrude, uint8_t> PerElement<Extrude>{
+    {&Extrude::Offset, Vec3},
+    {&Extrude::OffsetScale, Float},
 };
 template<> inline constexpr field::Table<action::mesh::Bevel, uint8_t> PerElement<action::mesh::Bevel>{{&action::mesh::Bevel::Width, Float}};
 template<> inline constexpr field::Table<action::mesh::Poke, uint8_t> PerElement<action::mesh::Poke>{{&action::mesh::Poke::Offset, Float}};
@@ -400,8 +452,6 @@ template<> inline constexpr field::Table<FloatMath, uint8_t> PerElement<FloatMat
 template<> inline constexpr field::Table<Compare, uint8_t> PerElement<Compare>{{&Compare::B, Float | Vec3}};
 template<> inline constexpr field::Table<BooleanMath, uint8_t> PerElement<BooleanMath>{{&BooleanMath::B, Bool}};
 
-// Order sockets as fixed inputs, parameter inputs, then fixed outputs.
-// Value nodes expose their parameter as an output.
 template<typename K> inline constexpr auto KindSocketTable = [] {
     constexpr auto fixed = FixedSockets<K>();
     std::array<Socket, fixed.size() + MaxParameterFields> all{};
@@ -483,8 +533,8 @@ void AssignSocketParameter(auto &parameters, Socket socket, const AttributeValue
     VisitSocketParameter(parameters, socket, [&](auto &value) { std::memcpy(&value, words.data(), sizeof(value)); });
 }
 
-// Evaluate attribute nodes on each consumer geometry input.
-constexpr bool IsAttributeKind(uint16_t kind) { return !KindSockets(kind).empty() && KindSockets(kind).front().Type == SocketType::Attribute; }
+// An attribute node's first output is an attribute, and the node evaluates on each consumer's geometry input.
+constexpr bool IsAttributeKind(uint16_t kind) { return SocketCount[kind] > InputCount[kind] && KindSockets(kind)[InputCount[kind]].Type == SocketType::Attribute; }
 
 constexpr std::pair<uint16_t, uint16_t> ParameterRange(uint16_t kind) {
     return {uint16_t(std::ranges::count(KindSockets(kind).first(InputCount[kind]), NoField, &Socket::Field)), InputCount[kind]};
@@ -495,6 +545,14 @@ template<typename K> inline constexpr uint16_t KindOf = []<typename... Ks>(TypeL
     ((found = std::same_as<K, Ks> ? index : found, ++index), ...);
     return found;
 }(NodeKinds{});
+// The input socket carrying the parameter field M of its node kind, or the member of M the nested pointer selects.
+template<auto M, auto... Nested> inline constexpr uint16_t ParameterSocket = [] {
+    constexpr uint8_t member = [] { if constexpr (sizeof...(Nested) == 0u) return NoField; else return uint8_t(field::IndexOf<Nested...[0]>); }();
+    constexpr auto sockets = KindSockets(KindOf<field::Owner<M>>);
+    constexpr auto socket = uint16_t(std::ranges::find_if(sockets, [](Socket s) { return s.Carries(uint8_t(field::IndexOf<M>), member); }) - sockets.begin());
+    static_assert(socket < sockets.size(), "The field is not a parameter socket of its node kind");
+    return socket;
+}();
 
 struct HandleSpec {
     uint16_t Kind;
@@ -503,11 +561,11 @@ struct HandleSpec {
     bool Reads(Socket socket) const { return socket.Field < 64 && (Fields & (uint64_t{1} << socket.Field)); }
 };
 template<auto... Members> inline constexpr uint64_t HandleFields = ((uint64_t{1} << field::IndexOf<Members>) | ...);
-// Indexed by HandleParameter, shared by action validation and the viewport-handle menu.
+// Indexed by HandleParameter.
 inline constexpr std::array HandleSpecs{
     HandleSpec{KindOf<TransformElements>, "Transform", HandleFields<&TransformElements::Delta>},
-    HandleSpec{KindOf<action::mesh::Extrude>, "Offset", HandleFields<&action::mesh::Extrude::Offset, &action::mesh::Extrude::OffsetScale, &action::mesh::Extrude::AlongNormals>},
-    HandleSpec{KindOf<action::mesh::Extrude>, "Offset Scale", HandleFields<&action::mesh::Extrude::OffsetScale>},
+    HandleSpec{KindOf<Extrude>, "Offset", HandleFields<&Extrude::Offset, &Extrude::OffsetScale, &Extrude::AlongNormals>},
+    HandleSpec{KindOf<Extrude>, "Offset Scale", HandleFields<&Extrude::OffsetScale>},
     HandleSpec{KindOf<action::mesh::Bevel>, "Width", HandleFields<&action::mesh::Bevel::Width>},
     HandleSpec{KindOf<action::mesh::Inset>, "Thickness", HandleFields<&action::mesh::Inset::Thickness>},
     HandleSpec{KindOf<action::mesh::Inset>, "Depth", HandleFields<&action::mesh::Inset::Depth>},
@@ -537,7 +595,7 @@ void ForEachKind(auto &&f) {
 
 inline constexpr uint32_t NoNode = UINT32_MAX;
 
-// Persistent on a node entity: the mesh entity whose procedure holds the node, the node after it in authoring order or null for the last, and its kind.
+// Next is the node after this one in authoring order, or null for the last.
 struct ProcedureNode {
     state::Entity Procedure{state::Null};
     state::Entity Next{state::Null};
@@ -587,7 +645,6 @@ std::optional<uint16_t> SubnetBypassInput(const state::Registry &, state::Entity
 std::optional<PortValue> ParameterDefault(const state::Registry &, state::Entity node, uint16_t socket);
 void SetParameterDefault(state::Registry &, state::Entity node, uint16_t socket, PortValue);
 
-// Persistent on a node entity: the link of each input socket, in socket order.
 struct NodeInputs {
     std::vector<SocketLink> Links;
 };
@@ -601,7 +658,6 @@ constexpr std::optional<uint16_t> ResultSocket(uint16_t kind) {
     return {};
 }
 
-// Persistent on the mesh entity: the authoring list and the node whose result is displayed.
 struct GeometryProcedure {
     state::Entity First{state::Null}, Last{state::Null};
     state::Entity DisplayNode{state::Null};
@@ -630,7 +686,6 @@ struct PlanLink {
     std::optional<PortValue> Constant;
     bool operator==(const PlanLink &) const = default;
 };
-// Derived on the mesh entity: the procedure's nodes and links by node index, and its evaluation order.
 struct CookPlan {
     uint64_t Revision{};
     std::vector<Socket> ViewSockets;
@@ -645,7 +700,6 @@ struct CookPlan {
     std::vector<uint32_t> Consumers; // The inputs reading each socket slot
     std::vector<bool> Demanded; // Resolved ancestors of the displayed result
 };
-// The plan of the procedure as its node components stand.
 std::vector<state::Entity> NodesOf(const state::Registry &, const GeometryProcedure &);
 CookPlan Plan(const state::Registry &, const GeometryProcedure &, bool bypass = false, const SocketEdit * = nullptr);
 CookPlan Compile(const state::Registry &, const GeometryProcedure &);
@@ -667,11 +721,10 @@ state::Entity ActiveNodeOf(const state::Registry &, state::Entity mesh_entity);
 void IndexNodes(CookPlan &);
 uint32_t IndexOf(const CookPlan &, state::Entity);
 uint32_t ActiveIndex(const state::Registry &, const CookPlan &);
-// The entity of the plan's node at the index, or null for NoNode.
 inline state::Entity EntityOf(const CookPlan &plan, uint32_t node) { return node == NoNode ? state::Null : plan.Nodes[node].Entity; }
 
-// Enumerate (source, reader) edges twice to order nodes without retaining a second edge list.
-// Nodes in a cycle and their dependents are omitted; ready nodes retain input order.
+// Orders nodes after their sources, calling edges(visit) twice to visit each (source, reader) edge.
+// Nodes in a cycle and their dependents are omitted, and ready nodes keep input order.
 std::vector<uint32_t> DependencyOrder(uint32_t count, auto &&edges) {
     std::vector<uint32_t> pending(count), first(count + 1u);
     edges([&](uint32_t source, uint32_t reader) { ++pending[reader]; ++first[source + 1u]; });
@@ -689,7 +742,6 @@ std::vector<uint32_t> DependencyOrder(uint32_t count, auto &&edges) {
     return order;
 }
 
-// Mark upstream nodes accepted by follows.
 std::vector<bool> Upstream(std::span<const uint32_t> first, auto inputs, uint32_t node, auto &&follows) {
     std::vector<bool> marked(first.empty() ? 0u : first.size() - 1u);
     if (node == NoNode) return marked;
@@ -710,7 +762,7 @@ inline std::vector<bool> Upstream(const CookPlan &plan, uint32_t node, auto &&fo
     return authored ? Upstream(plan.InputFirst, std::span{plan.Wires}, node, follows) : Upstream(plan.InputFirst, std::span{plan.Inputs}, node, follows);
 }
 
-// Return the first geometry socket in the requested direction for link insertion, or none.
+// The first geometry socket in the direction, or none.
 inline std::optional<uint16_t> MainSocket(uint16_t kind, SocketDirection direction) {
     const auto sockets = KindSockets(kind);
     for (uint16_t s = 0u; s < uint16_t(sockets.size()); ++s) {
@@ -730,14 +782,11 @@ inline bool Inserts(const CookPlan &plan, uint32_t node, uint32_t to_node, uint1
     return !Upstream(plan, node, all, true)[to_node] && !Upstream(plan, link.FromNode, all, true)[node];
 }
 
-// Persist published instance entities grouped by parent object.
 struct ProcedureInstances {
     std::vector<state::Entity> Entities;
 };
 
-// Persist the mesh entity owning geometry generated for procedure instances.
-// The entity has no object, transform, or name.
-// Destroy it when the procedure stops instancing its geometry or is removed.
+// The mesh entity has no object, transform or name, and is destroyed when the procedure stops instancing its geometry or is removed.
 struct ProcedureOwnedMesh {
     state::Entity MeshEntity;
 };
@@ -749,20 +798,20 @@ inline constexpr uint32_t AppendGap{12u}; // The cells an appended node sits rig
 // The kind's name with spaces between its words.
 template<typename K> constexpr auto Title{field::detail::Spaced<field::fixed_string<state::LeafName<K>().size() + 1>{state::LeafName<K>()}>()};
 
-struct PublishSelection {}; // Persistent on a node a viewport operator added, which selects its output like the operator does.
+struct PublishSelection {}; // Persistent on a node a viewport operator or macro added, which selects its output as the operator does.
 
-// Creates a procedure node of the kind with default parameters at the grid cell.
 state::Entity CreateNode(state::Registry &, uint16_t kind, uvec2 position);
 // Sets the mesh entity's procedure to the root node of the kind alone, displayed, active and selected.
 void RootProcedure(state::Registry &, state::Entity mesh_entity, state::Entity root, uint16_t kind);
 
 // Faulted nodes pass through their input, as do unchanged nodes and nodes without geometry.
 enum class NodeFault : uint8_t {
-    Selection, // The selection does not fit the operation
-    Parameter, // A parameter is invalid
+    Selection,
+    Parameter,
     Attribute, // An attribute input is missing or has the wrong type or domain
-    NotClosed, // A boolean input is not a closed surface
-    Empty, // A boolean produced no geometry
+    NotClosed,
+    NotCoplanar, // A region input's face edges leave the first region's plane
+    Empty,
     NoMesh, // An Object Info node refers to no mesh it can read, or an Instance input is unlinked
 };
 
@@ -778,9 +827,9 @@ struct SourceState {
     uint32_t StoreId{InvalidOffset};
     bool operator==(const SourceState &) const = default;
 };
-// Persistent on a node of the chained display path its mesh's record was last cooked through: the path node whose result it ran on, or null for the path's root, and the mesh storage state, identified by its hash, after this node ran on that result, in which record StoreId holds this node's result.
-// The path's last node holds a pending state, zero: the record holds that node's result as it stands.
-// A change to a later path node restores the record to the result of the last unchanged node before it and runs the nodes after that one.
+// Persistent on each node of the chained display path its mesh's record was last cooked through.
+// Input is the path node whose result this node ran on, or null for the root.
+// The path's last node holds a pending zero state, and the record holds that node's result as it stands.
 struct NodeResult {
     state::Entity Input{state::Null};
     store::Hash128 State{};
@@ -808,7 +857,8 @@ struct OperationHandle {
     state::Entity Node{state::Null}, Object{state::Null};
     HandleParameter Parameter{};
 };
-// Persistent on a Boolean node the last cook evaluated: the object whose transform placed Mesh 2, or null for Mesh 2 in this procedure's mesh space, and the transform from Mesh 2's space into Mesh 1's that the node's result was cooked with.
+// Persistent on a Boolean node the last cook evaluated, with the transform from Mesh 2's space into Mesh 1's that its result was cooked with.
+// Operand is the object whose transform placed Mesh 2, or null for Mesh 2 in this procedure's mesh space.
 // A procedure whose placing objects only moved cooks when this transform changed.
 struct BooleanPlacement {
     state::Entity Operand{state::Null};
@@ -819,10 +869,30 @@ struct StagedNode {}; // Derived on a node a preview step appended, which the st
 } // namespace procedure
 
 template<> inline constexpr field::SpecTable<procedure::Boolean> Specs<procedure::Boolean>{
-    {&procedure::Boolean::Operation, {.Help = "Set operation on the two closed input meshes. Difference subtracts the second mesh from the first."}},
+    {&procedure::Boolean::Operation, {.Help = "Set operation on the two inputs, closed meshes or regions on one plane. Difference subtracts the second from the first."}},
     {&procedure::Boolean::Space, {.Help = "Object whose world transform places Mesh 1 and whose local space the result is in, or none to leave Mesh 1 in place. The object Mesh 2's geometry came from places Mesh 2."}},
 };
+template<> inline constexpr field::SpecTable<procedure::Minkowski> Specs<procedure::Minkowski>{{&procedure::Minkowski::Operation, {.Help = "Sum sweeps Mesh 1 by Mesh 2, and Difference erodes Mesh 1 by it. Two regions sweep in Mesh 1's plane, with Mesh 2's plane through the origin."}}};
 template<> inline constexpr field::SpecTable<procedure::Normal> Specs<procedure::Normal>{{&procedure::Normal::Domain, {.Help = "Element domain of the emitted normals: vertices or faces"}}};
+template<> inline constexpr field::SpecTable<procedure::LevelSet> Specs<procedure::LevelSet>{
+    {&procedure::LevelSet::Min, {.Speed = 0.01f, .Help = "Lower corner of the box the surface is marched over, in local space"}},
+    {&procedure::LevelSet::Max, {.Speed = 0.01f, .Help = "Upper corner of the box, in local space"}},
+    {&procedure::LevelSet::EdgeLength, {.Min = 1e-4f, .Speed = 0.001f, .Help = "Largest spacing of the lattice the Value field is read on, which bounds the triangles' edge lengths"}},
+    {&procedure::LevelSet::Level, {.Speed = 0.01f, .Help = "Value the surface is extracted at, with larger values inside"}},
+};
+template<> inline constexpr field::SpecTable<procedure::Boundary> Specs<procedure::Boundary>{{&procedure::Boundary::Domain, {.Help = "Domain of the selection: boundary edges, the vertices on them, or the faces touching them"}}};
+template<> inline constexpr field::SpecTable<procedure::PlaneSide> Specs<procedure::PlaneSide>{
+    {&procedure::PlaneSide::Point, {.Speed = 0.01f, .Help = "Point on the plane, in local space"}},
+    {&procedure::PlaneSide::Normal, {.Speed = 0.01f, .Help = "Normal of the plane toward its positive side, in local space. A zero normal faults the node."}},
+    {&procedure::PlaneSide::Side, {.Help = "Select the vertices in front of the plane, behind it, or on it"}},
+    {&procedure::PlaneSide::Tolerance, {.Min = 0.f, .Speed = 1e-5f, .Help = "Distance from the plane within which a vertex lies on it, relative to the larger of one and the vertex's distance from the origin"}},
+    {&procedure::PlaneSide::Domain, {.Help = "Domain of the selection: the vertices, or the edges or faces whose vertices are all selected"}},
+};
+template<> inline constexpr field::SpecTable<procedure::Adjacent> Specs<procedure::Adjacent>{
+    {&procedure::Adjacent::Mode, {.Help = "Grow the selection by adjacent elements, or shrink it by the elements next to unselected ones"}},
+    {&procedure::Adjacent::Steps, {.Min = 1, .Max = 64, .Help = "Rings of adjacent elements to add or remove"}},
+};
+template<> inline constexpr field::SpecTable<procedure::Curvature> Specs<procedure::Curvature>{{&procedure::Curvature::Kind, {.Help = "Gaussian curvature from each vertex's angle defect, or mean curvature from the dihedral angles of its edges"}}};
 template<> inline constexpr field::SpecTable<procedure::Index> Specs<procedure::Index>{{&procedure::Index::Domain, {.Help = "Element domain of the emitted indices"}}};
 template<> inline constexpr field::SpecTable<procedure::NamedAttribute> Specs<procedure::NamedAttribute>{
     {&procedure::NamedAttribute::Type, {.Help = "Value type of the attribute to read"}},
@@ -859,11 +929,11 @@ template<> inline constexpr field::SpecTable<procedure::VectorValue> Specs<proce
 template<> inline constexpr field::SpecTable<procedure::RotationValue> Specs<procedure::RotationValue>{{&procedure::RotationValue::Value, {.Help = "Rotation the node outputs"}}};
 template<> inline constexpr field::SpecTable<procedure::SetPosition> Specs<procedure::SetPosition>{{&procedure::SetPosition::Offset, {.Help = "Offset each selected vertex by the Position input instead of replacing its position"}}};
 template<> inline constexpr field::SpecTable<procedure::TransformElements> Specs<procedure::TransformElements>{
-    {&procedure::TransformElements::Delta, {.Help = "Translation, rotation, and scale applied to the selected vertices around Pivot"}},
+    {&procedure::TransformElements::Delta, {.Help = "Translation, rotation, and scale applied to the selected vertices, all by default, around Pivot"}},
     {&procedure::TransformElements::Pivot, {.Help = "Center of rotation and scale in Frame space, in local units"}},
     {&procedure::TransformElements::Frame, {.Help = "Transform from mesh-local positions into the space Delta applies in"}},
+    {&procedure::TransformElements::Mirror, {.Speed = 0.01f, .Help = "Normal of the plane through Pivot the selected vertices reflect across before Delta, in Frame space. A zero normal reflects nothing."}},
 };
-template<> inline constexpr field::SpecTable<procedure::TransformGeometry> Specs<procedure::TransformGeometry>{{&procedure::TransformGeometry::Delta, {.Help = "Translation, rotation, and scale applied to the whole geometry about the mesh origin"}}};
 template<> inline constexpr field::SpecTable<procedure::ToSphere> Specs<procedure::ToSphere>{
     {&procedure::ToSphere::Factor, {.Min = 0, .Max = 1, .Speed = 0.01f}},
     {&procedure::ToSphere::Center, {.Speed = 0.01f, .Help = "Sphere center in Frame space"}},
@@ -897,10 +967,12 @@ template<> inline constexpr field::SpecTable<procedure::Bend> Specs<procedure::B
 };
 template<> inline constexpr field::SpecTable<procedure::VertexSlide> Specs<procedure::VertexSlide>{
     {&procedure::VertexSlide::Direction, {.Speed = 0.01f, .Help = "Direction in Frame space that chooses each vertex's edge"}},
+    {&procedure::VertexSlide::Reference, {.Help = "Vertex the even slide measures from, or the first selected vertex"}},
     {&procedure::VertexSlide::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
 };
 template<> inline constexpr field::SpecTable<procedure::EdgeSlide> Specs<procedure::EdgeSlide>{
     {&procedure::EdgeSlide::Direction, {.Speed = 0.01f, .Help = "Direction in Frame space that chooses the positive side"}},
+    {&procedure::EdgeSlide::Reference, {.Help = "Handle of the vertex where Direction chooses the positive side, or the maximum for the first selected vertex"}},
     {&procedure::EdgeSlide::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
 };
 template<> inline constexpr field::SpecTable<procedure::Flatten> Specs<procedure::Flatten>{
@@ -916,8 +988,10 @@ template<> inline constexpr field::SpecTable<procedure::Knife> Specs<procedure::
     {&procedure::Knife::ViewProjection, {.Help = "Transform from Frame space into the view's clip space"}},
     {&procedure::Knife::Frame, {.Help = "Transform from mesh-local positions into the space ViewProjection projects"}},
 };
-template<> inline constexpr field::SpecTable<procedure::ShadeSmooth> Specs<procedure::ShadeSmooth>{{&procedure::ShadeSmooth::Smooth, {.Help = "Shade smooth and clear sharp marks, or shade flat"}}};
-template<> inline constexpr field::SpecTable<procedure::ShadeSmoothByAngle> Specs<procedure::ShadeSmoothByAngle>{{&procedure::ShadeSmoothByAngle::Angle, {.Min = 0, .Max = std::numbers::pi, .Unit = FieldUnit::Radians, .Help = "Largest angle between adjacent face normals that shades smooth"}}};
+template<> inline constexpr field::SpecTable<procedure::Shade> Specs<procedure::Shade>{
+    {&procedure::Shade::Mode, {.Help = "Shade every face flat, smooth with no sharp marks, or smooth with sharp marks where faces meet above Angle"}},
+    {&procedure::Shade::Angle, {.Min = 0, .Max = std::numbers::pi, .Unit = FieldUnit::Radians, .Help = "Largest angle between adjacent face normals that shades smooth"}},
+};
 template<> inline constexpr field::SpecTable<procedure::InstanceOnPoints> Specs<procedure::InstanceOnPoints>{
     {&procedure::InstanceOnPoints::Prototype, {.Help = "Object hierarchy placed at each point. When empty, use the Instance geometry input."}},
     {&procedure::InstanceOnPoints::Scale, {.Help = "Scale of each instance while the Scale input is unlinked"}},
@@ -925,12 +999,21 @@ template<> inline constexpr field::SpecTable<procedure::InstanceOnPoints> Specs<
 };
 template<> inline constexpr field::SpecTable<procedure::ObjectInfo> Specs<procedure::ObjectInfo>{{&procedure::ObjectInfo::Object, {.Help = "Object whose mesh the node emits. The object this procedure edits is not allowed."}}};
 
-template<> inline constexpr field::SpecTable<procedure::Spin> Specs<procedure::Spin>{
-    {&procedure::Spin::Steps, field::SpecOf<&action::mesh::Spin::Steps>},
-    {&procedure::Spin::Angle, field::SpecOf<&action::mesh::Spin::Angle>},
-    {&procedure::Spin::Axis, field::SpecOf<&action::mesh::Spin::Axis>},
-    {&procedure::Spin::Center, field::SpecOf<&action::mesh::Spin::Center>},
-    {&procedure::Spin::Offset, field::SpecOf<&action::mesh::Spin::Offset>},
+template<> inline constexpr field::SpecTable<procedure::Extrude> Specs<procedure::Extrude>{
+    {&procedure::Extrude::Mode, field::SpecOf<&action::mesh::Extrude::Mode>},
+    {&procedure::Extrude::Offset, field::SpecOf<&action::mesh::Extrude::Offset>},
+    {&procedure::Extrude::OffsetScale, field::SpecOf<&action::mesh::Extrude::OffsetScale>},
+    {&procedure::Extrude::AlongNormals, field::SpecOf<&action::mesh::Extrude::AlongNormals>},
+    {&procedure::Extrude::Steps, field::SpecOf<&action::mesh::Revolve::Steps>},
+    {&procedure::Extrude::Angle, field::SpecOf<&action::mesh::Revolve::Angle>},
+    {&procedure::Extrude::Axis, field::SpecOf<&action::mesh::Revolve::Axis>},
+    {&procedure::Extrude::Center, field::SpecOf<&action::mesh::Revolve::Center>},
+};
+template<> inline constexpr field::SpecTable<procedure::SubdivisionSurface> Specs<procedure::SubdivisionSurface>{{&procedure::SubdivisionSurface::Levels, {.Min = 1, .Max = 6, .Help = "Number of subdivisions, each quadrupling the face count"}}};
+template<> inline constexpr field::SpecTable<procedure::SmoothSurface> Specs<procedure::SmoothSurface>{{&procedure::SmoothSurface::Cuts, {.Min = 1, .Max = 16, .Help = "Number of new vertices along each edge"}}};
+template<> inline constexpr field::SpecTable<procedure::Project> Specs<procedure::Project>{
+    {&procedure::Project::Point, {.Speed = 0.01f, .Help = "Point on the plane the outline lies on, in local space"}},
+    {&procedure::Project::Normal, {.Speed = 0.01f, .Help = "Direction the mesh is seen along, and the plane's normal, in local space"}},
 };
 template<> inline constexpr field::SpecTable<procedure::Bisect> Specs<procedure::Bisect>{
     {&procedure::Bisect::Point, field::SpecOf<&action::mesh::Bisect::Point>},

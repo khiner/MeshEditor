@@ -1,13 +1,13 @@
 #pragma once
 
 #include "gpu/ElementWork.h"
+#include "mesh/ScratchChunks.h"
 #include "metal/BufferArena.h"
 
 inline Range WorkStorageRange(ElementWork work) { return {work.Storage.Offset, WorkHeaderWords + work.Capacity * (WorkBlockWords + 2u)}; }
 inline uint64_t WorkArgsOffset(ElementWork work, bool groups = false) { return uint64_t(work.Storage.Offset + (groups ? 5u : 2u)) * sizeof(uint32_t); }
-inline uint32_t WorkDomainBlocks(uint32_t count) { return uint32_t((uint64_t(count) + 255u) / 256u); }
 inline uint32_t WorkCapacity(uint32_t count, uint64_t blocks) {
-    return uint32_t(std::bit_ceil(std::max(uint64_t{16}, 2u * std::min(uint64_t(WorkDomainBlocks(count)), blocks))));
+    return uint32_t(std::bit_ceil(std::max(uint64_t{16}, 2u * std::min(uint64_t(TileCount(count, TileElements)), blocks))));
 }
 // The storage words AllocateElementWork takes for `count` elements in at most `blocks` blocks.
 inline uint32_t ElementWorkWords(uint32_t count, uint64_t blocks) { return WorkHeaderWords + WorkCapacity(count, blocks) * (WorkBlockWords + 2u); }
@@ -117,8 +117,25 @@ inline ElementWork SeedElementWorkHandles(BufferArena<uint32_t> &arena, uint32_t
     return work;
 }
 
-// Restored address ranges remain metadata.
-// No vertex values are copied.
+// Seeds work over the handles below the words' bound from bit words by handle, eight words to a block.
+inline ElementWork SeedElementWorkWords(BufferArena<uint32_t> &arena, std::span<const uint32_t> words) {
+    uint64_t blocks = 0u;
+    for (size_t w = 0u; w < words.size(); w += 8u) blocks += std::ranges::any_of(words.subspan(w, std::min<size_t>(8u, words.size() - w)), [](uint32_t word) { return word != 0u; });
+    auto work = AllocateElementWork(arena, uint32_t(words.size() * 32u), blocks);
+    const auto data = arena.GetMutable(WorkStorageRange(work));
+    for (uint32_t w = 0u; w < words.size(); ++w) MarkElementWorkWord(data, work, w, words[w]);
+    FinishElementWork(data, work.Capacity);
+    return work;
+}
+inline std::vector<uint32_t> SetBitHandles(std::span<const uint32_t> words) {
+    std::vector<uint32_t> handles;
+    for (uint32_t w = 0u; w < words.size(); ++w) {
+        for (auto bits = words[w]; bits; bits &= bits - 1u) handles.push_back(w * 32u + uint32_t(std::countr_zero(bits)));
+    }
+    return handles;
+}
+
+// Seeds work from restored address ranges as metadata and copies no vertex values.
 inline void SeedElementWorkRanges(BufferArena<uint32_t> &arena, ElementWork &work, std::span<const Range> ranges, uint32_t origin, bool accumulate) {
     if (!accumulate) ClearElementWork(arena, work);
     uint64_t bound = WorkBlockCount(arena, work);

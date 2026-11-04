@@ -1,10 +1,5 @@
-#ifndef BONE_UTILS_MSL
-#define BONE_UTILS_MSL
-
+#pragma once
 #include "Bindless.metal"
-
-template<typename SetT>
-inline uint load_bone_instance_state(const thread SceneT<SetT> &scene, DrawData draw) { return scene.InstanceState(draw); }
 
 template<typename SetT>
 inline float3 bone_wire_color(const thread SceneT<SetT> &scene, uint instance_state) {
@@ -30,7 +25,6 @@ inline float3 bone_wire_color(const thread SceneT<SetT> &scene, uint instance_st
     return float3(colors.Wire);
 }
 
-// Joint sphere wire color: Vertex/VertexSelected in Edit mode, bone wire color otherwise.
 template<typename SetT>
 inline float3 bone_joint_wire_color(const thread SceneT<SetT> &scene, uint instance_state) {
     if (scene.View.InteractionMode == InteractionMode::Edit) {
@@ -60,5 +54,3 @@ inline BoneBillboard bone_sphere_billboard(const thread SceneT<SetT> &scene, Tra
     const float3 world_pos = center + (right * vert_pos.x + up * vert_pos.y) * radius / 0.05f;
     return {world_pos, center, radius};
 }
-
-#endif

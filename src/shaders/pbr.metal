@@ -1,6 +1,4 @@
-#ifndef PBR_MSL
-#define PBR_MSL
-
+#pragma once
 // Adapted from KhronosGroup/glTF-Sample-Renderer.
 #include "tonemapping.metal"
 #include "punctual.metal"
@@ -20,7 +18,6 @@ constant bool EnableIridescence [[function_constant(uint(PbrConstant::EnableIrid
 constant bool TransmissionPrepass [[function_constant(uint(PbrConstant::TransmissionPrepass))]];
 constant bool NonTriangleTopology [[function_constant(uint(PbrConstant::NonTriangleTopology))]];
 
-// Enable* constants permit compile-time feature removal and default to the full feature set.
 // TransmissionPrepass omits transmission materials and exposure to prevent attachment self-sampling.
 
 struct NormalInfo {
@@ -33,14 +30,12 @@ struct NormalInfo {
 
 inline float clampedDot(float3 x, float3 y) { return clamp(dot(x, y), 0.0f, 1.0f); }
 
-// KHR_materials_volume: Beer's law.
 // An attenuation distance of zero or less means no attenuation.
 inline float3 applyVolumeAttenuation(float3 radiance, float dist, float3 attenuation_color, float attenuation_distance) {
     if (attenuation_distance <= 0.0f) return radiance;
     return pow(attenuation_color, float3(dist / attenuation_distance)) * radiance;
 }
 
-// KHR_materials_transmission: direct-light BTDF.
 // No Fresnel term, transmission D*V only, per the glTF Sample Renderer.
 inline float3 getPunctualRadianceTransmission(float3 n, float3 v, float3 l, float alpha_roughness, float3 baseColor, float ior) {
     const float tr = applyIorToRoughness(alpha_roughness, ior);
@@ -49,13 +44,12 @@ inline float3 getPunctualRadianceTransmission(float3 n, float3 v, float3 l, floa
     return baseColor * D_GGX(clampedDot(n, h), tr) * V_GGX(clampedDot(n, l_mirror), clampedDot(n, v), tr);
 }
 
-// KHR_materials_volume: refraction ray inside the volume, scaled by world-space thickness.
 // The caller subtracts this from point_to_light so the BTDF sees the light direction at the exit point.
 inline float3 getVolumeTransmissionRay(float3 n, float3 v, float world_thickness, float ior) {
     return normalize(refract(-v, normalize(n), 1.0f / ior)) * world_thickness;
 }
 
-// Rotate the tangent frame by KHR_texture_transform UV rotation to align sampled normal-map components.
+// Rotates the tangent frame by the KHR_texture_transform UV rotation to align sampled normal-map components.
 inline float3x3 GetNormalMapTBN(float3 t, float3 b, float3 n, float uv_rotation) {
     const float c = cos(uv_rotation);
     const float s = sin(uv_rotation);
@@ -99,7 +93,6 @@ struct PbrContext {
             const float3 pos_dy = dfdy(In.WorldPosition);
             float2 uv_dx = dfdx(uv);
             float2 uv_dy = dfdy(uv);
-            // Rescale the UV Jacobian to preserve valid gradients at every screen scale.
             const float uv_scale = max(max(abs(uv_dx.x), abs(uv_dx.y)), max(abs(uv_dy.x), abs(uv_dy.y)));
             if (uv_scale > 0.0f) {
                 uv_dx /= uv_scale;
@@ -114,7 +107,6 @@ struct PbrContext {
                 const float handedness = dot(cross(ng, t), derivative_b) < 0.0f ? -1.0f : 1.0f;
                 b = cross(ng, t) * handedness;
             } else {
-                // A singular UV frame uses an axis that stays independent of the normal.
                 const float3 axis = abs(ng.x) < abs(ng.y) ? float3(1.0f, 0.0f, 0.0f) : float3(0.0f, 1.0f, 0.0f);
                 t = normalize(cross(axis, ng));
                 b = cross(ng, t);
@@ -141,10 +133,9 @@ inline float4 ShadePbr(
     MeshVaryings in, uint topology, float2 point_coord, const thread Scene &scene,
     constant SceneViewUBO &view, const thread PbrContext &ctx
 ) {
-    // Continue discarded lanes so neighboring texture-gradient calculations remain valid at masked edges.
+    // Discarded lanes continue so neighboring texture-gradient calculations remain valid at masked edges.
     if (topology == uint(uint(MeshPrimitiveTopology::Point)) && length(point_coord - float2(0.5f)) > 0.5f) discard_fragment();
 
-    // Replace selected line and point shading with the selection color at the original coverage.
     if (topology != uint(uint(MeshPrimitiveTopology::Triangle)) && in.Color.a > 0.0f && view.DebugChannel == DebugChannel::None) {
         return float4(in.Color.rgb, 1.0f);
     }
@@ -158,14 +149,12 @@ inline float4 ShadePbr(
     base_color *= in.VertexColor;
     if (material.AlphaMode == MaterialAlphaMode::Opaque) base_color.a = 1.0f;
 
-    // A point or line vertex without a NORMAL has no surface orientation, so per the glTF spec it renders unlit.
     const bool no_normal = topology != uint(uint(MeshPrimitiveTopology::Triangle)) && dot(world_normal, world_normal) < 1e-12f;
     if (no_normal || (material.Unlit != 0u && view.DebugChannel == DebugChannel::None)) {
         if (material.AlphaMode == MaterialAlphaMode::Mask) {
             if (base_color.a < material.AlphaCutoff) discard_fragment();
             base_color.a = 1.0f;
         }
-        // Preserve emissive output for vertices without normals.
         float3 unlit = base_color.rgb;
         if (no_normal) {
             float3 emissive = float3(material.EmissiveFactor) * material.EmissiveStrength;
@@ -201,7 +190,6 @@ inline float4 ShadePbr(
     }
     const bool has_sheen = EnableSheen && any(sheen_color > float3(0.0f));
 
-    // KHR_materials_specular scales dielectric F0 and F90; defaults produce F0 = 0.04.
     float specular_weight = material.Specular.Factor;
     if (material.Specular.Texture.Slot != InvalidSlot) specular_weight *= ctx.SampleTexture(material.Specular.Texture).a;
     const float f0_ior_t = (material.Ior - 1.0f) / (material.Ior + 1.0f);
@@ -216,7 +204,7 @@ inline float4 ShadePbr(
         transmission_factor = material.Transmission.Factor;
         if (material.Transmission.Texture.Slot != InvalidSlot) transmission_factor *= ctx.SampleTexture(material.Transmission.Texture).r;
     }
-    // Omit transmission fragments from their source framebuffer to preserve opaque geometry behind them.
+    // The transmission prepass drops transmissive fragments so it captures the opaque geometry behind them.
     if (TransmissionPrepass && transmission_factor > 0.0f) discard_fragment();
     float diffuse_transmission_factor = 0.0f;
     float3 diffuse_transmission_color = float3(0.0f);
@@ -226,7 +214,7 @@ inline float4 ShadePbr(
         diffuse_transmission_color = float3(material.DiffuseTransmission.ColorFactor);
         if (material.DiffuseTransmission.ColorTexture.Slot != InvalidSlot) diffuse_transmission_color *= ctx.SampleTexture(material.DiffuseTransmission.ColorTexture).rgb;
     }
-    // Convert KHR_materials_volume thickness from model to world space for Beer's law.
+    // KHR_materials_volume thickness converts from model to world space for Beer's law.
     float world_thickness = material.Volume.ThicknessFactor * in.WorldScale;
     if (material.Volume.ThicknessTexture.Slot != InvalidSlot) world_thickness *= ctx.SampleTexture(material.Volume.ThicknessTexture).g;
     const float3 attenuation_color = float3(material.Volume.AttenuationColor);
@@ -244,7 +232,6 @@ inline float4 ShadePbr(
         if (material.Clearcoat.RoughnessTexture.Slot != InvalidSlot) cc_perceptual_roughness *= ctx.SampleTexture(material.Clearcoat.RoughnessTexture).g;
         cc_perceptual_roughness = clamp(cc_perceptual_roughness, 0.0f, 1.0f);
         cc_alpha_roughness = cc_perceptual_roughness * cc_perceptual_roughness;
-        // Use the base tangent frame for the clearcoat normal map.
         if (material.Clearcoat.NormalTexture.Slot != InvalidSlot) {
             float3 cc_ntex = ctx.SampleTexture(material.Clearcoat.NormalTexture).rgb * 2.0f - float3(1.0f);
             cc_ntex *= float3(material.Clearcoat.NormalScale, material.Clearcoat.NormalScale, 1.0f);
@@ -269,7 +256,7 @@ inline float4 ShadePbr(
             anisotropy_strength *= anisotropySample.z;
         }
         anisotropy_strength = clamp(anisotropy_strength, 0.0f, 1.0f);
-        // Use the geometric normal for anisotropic_b to match the reference implementation.
+        // anisotropic_b uses the geometric normal to match the reference implementation.
         anisotropic_t = normalize(float3x3(normal_info.t, normal_info.b, normal_info.n) * float3(anisotropy_dir, 0.0f));
         anisotropic_b = cross(normal_info.ng, anisotropic_t);
     }
@@ -288,7 +275,7 @@ inline float4 ShadePbr(
             const float t = ctx.SampleTexture(material.Iridescence.ThicknessTexture).g;
             iridescence_thickness = mix(material.Iridescence.ThicknessMinimum, material.Iridescence.ThicknessMaximum, t);
         }
-        // Evaluate iridescence Fresnel once at NdotV to match the reference implementation.
+        // Iridescence Fresnel evaluates once at NdotV to match the reference implementation.
         iridescence_fresnel_dielectric = evalIridescence(1.0f, material.Iridescence.Ior, NdotV, iridescence_thickness, f0_dielectric);
         iridescence_fresnel_metallic = evalIridescence(1.0f, material.Iridescence.Ior, NdotV, iridescence_thickness, base_color.rgb);
         if (iridescence_thickness == 0.0f) iridescence_factor = 0.0f;
@@ -354,7 +341,7 @@ inline float4 ShadePbr(
             if (has_clearcoat) {
                 const float NdotL_cc = clampedDot(n_cc, L);
                 const float NdotH_cc = clampedDot(n_cc, H);
-                // This intentionally uses microfacet half-angle Fresnel instead of glTF-Sample-Viewer's constant view-angle approximation.
+                // Clearcoat Fresnel uses the microfacet half-angle instead of glTF-Sample-Viewer's constant view-angle approximation.
                 const float3 F_cc = F_Schlick(float3(f0_ior), float3(1.0f), abs(VdotH));
                 const float3 l_clearcoat = light_intensity * NdotL_cc * F_cc * BRDF_specularGGX(cc_alpha_roughness, NdotL_cc, NdotV_cc, NdotH_cc);
                 l_color = l_color * (1.0f - clearcoat_factor * F_cc) + clearcoat_factor * l_clearcoat;
@@ -408,7 +395,7 @@ inline float4 ShadePbr(
     }
     float3 cc_fresnel_ibl = float3(0.0f);
     if (has_clearcoat) {
-        // This intentionally uses split-sum BRDF LUT Fresnel with multi-scattering compensation instead of glTF-Sample-Viewer's Schlick term.
+        // Clearcoat IBL Fresnel uses the split-sum BRDF LUT with multi-scattering compensation instead of glTF-Sample-Viewer's Schlick term.
         cc_fresnel_ibl = getIBLGGXFresnel(scene, n_cc, v, cc_perceptual_roughness, float3(f0_ior), 1.0f);
         const float3 f_clearcoat_ibl = cc_fresnel_ibl * getIBLRadianceGGX(scene, n_cc, v, cc_perceptual_roughness);
         indirect_color = indirect_color * (1.0f - clearcoat_factor * cc_fresnel_ibl) + clearcoat_factor * f_clearcoat_ibl;
@@ -425,7 +412,6 @@ inline float4 ShadePbr(
         base_color.a = 1.0f;
     }
 
-    // Debug channels bypass exposure and face overlays; the composite preserves their values.
     if (view.DebugChannel != DebugChannel::None) {
         float3 dbg = float3(0.0f);
         switch (view.DebugChannel) {
@@ -457,8 +443,8 @@ inline float4 ShadePbr(
             } break;
             case DebugChannel::DiffuseTransmissionFactor: dbg = linearTosRGB(float3(diffuse_transmission_factor)); break;
             case DebugChannel::DiffuseTransmissionColor: dbg = linearTosRGB(diffuse_transmission_color); break;
-            // Normalize iridescence thickness to the reference implementation's 1200 nm range.
             case DebugChannel::IridescenceFactor: dbg = float3(iridescence_factor); break;
+            // Iridescence thickness normalizes to the reference implementation's 1200 nm range.
             case DebugChannel::IridescenceThickness: dbg = float3(iridescence_thickness / 1200.0f); break;
             case DebugChannel::AnisotropyStrength: dbg = float3(anisotropy_strength); break;
             case DebugChannel::AnisotropyDirection: dbg = float3((anisotropy_dir + 1.0f) * 0.5f, 0.0f); break;
@@ -519,5 +505,3 @@ fragment float4 PbrVisibilityFragment(
         decoded.PointCoord, scene, view, ctx
     );
 }
-
-#endif

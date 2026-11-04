@@ -212,7 +212,7 @@ struct ElementArena {
             result.Handles = {.First = handles.front(), .Count = count};
         } else {
             if (list->Buffer.Slot == InvalidSlot) throw std::invalid_argument("A handle list requires a bound buffer.");
-            result.Handles = {.Handles = {list->Buffer.Slot, list->Allocate(std::span<const uint32_t>{handles}).Offset}, .Count = count};
+            result.Handles = {.Handles = {list->Buffer.Slot, list->Allocate(handles).Offset}, .Count = count};
         }
         return result;
     }
@@ -273,7 +273,6 @@ struct ElementArena {
             if (range.Offset < end) std::ranges::fill(std::span{Indexed}.subspan(range.Offset, end - range.Offset), std::pair{InvalidOffset, 0u});
             Blocks.Release(range);
         });
-        std::ranges::sort(tables, {}, &Range::Offset);
         CoalesceRanges(tables);
         Table.Release(std::move(tables));
         ForEachIndexRun(owners, [&](size_t first, size_t count) {

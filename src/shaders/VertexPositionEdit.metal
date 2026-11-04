@@ -5,7 +5,6 @@
 
 inline uint EditVertexAddress(device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, uint v) { return HandleAddress<MeshElementBlockSize>(b, pc.Connectivity.Tables.Vertices, v); }
 inline float3 EditPosition(device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, uint v) { return float3(BindlessBuffer(Vertex, b.VertexBuffer, pc.VertexSlot)[EditVertexAddress(b, pc, v)].Position); }
-inline uint EditCornerVertex(device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, uint h) { return BindlessBuffer(uint, b.IndexBuffer, pc.CornerSlot)[HandleAddress<MeshElementBlockSize>(b, pc.Connectivity.Tables.Halfedges, h)]; }
 inline float3 EditFaceNormal(device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, uint f) { return float3(BindlessBuffer(packed_float3, b.Buffer, pc.FaceNormalSlot)[HandleAddress<MeshElementBlockSize>(b, pc.Connectivity.Tables.Faces, f)]); }
 inline float3 EditVertexNormal(device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, uint v) { return float3(BindlessBuffer(packed_float3, b.Buffer, pc.VertexNormalSlot)[EditVertexAddress(b, pc, v)]); }
 inline float EditFactor(device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, uint v) {
@@ -30,14 +29,12 @@ inline float3 SnapSymmetryPosition(uint i,uint v,float3 before,device const Bind
 }
 
 inline float3 SmoothPosition(uint v,float3 before,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
-    // Blender's bmo_smooth_vert_exec: average each incident edge's other endpoint, including unselected neighbors, before any selected vertex is written.
-    const ConnectivityView topology{b, pc.Connectivity, pc.FaceCount};
+    // Follows Blender's bmo_smooth_vert_exec, averaging every incident edge's other endpoint, unselected neighbors included, as read before any write.
+    const ConnectivityView topology{b, pc.Connectivity};
     float3 sum = 0.f;
     uint count = 0u;
     topology.ForEachIncidentEdge(v, [&](uint edge) {
-        const uint h = topology.EdgeHalfedge(edge);
-        const uint first = EditCornerVertex(b, pc, h), second = EditCornerVertex(b, pc, topology.Previous(h));
-        sum += EditPosition(b, pc, first == v ? second : first);
+        sum += EditPosition(b, pc, topology.OtherEnd(topology.EdgeHalfedge(edge), v));
         ++count;
     });
     float3 position = count ? before + EditFactor(b, pc, v) * (sum / float(count) - before) : before;
@@ -47,17 +44,15 @@ inline float3 SmoothPosition(uint v,float3 before,device const BindlessSet &b,co
 }
 
 inline float3 ShrinkFattenPosition(uint v,float3 before,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
-    // Match Blender's VertsToTransData and BM_vert_calc_shell_factor_ex.
-    // Face mode uses selected face normals; even thickness uses selected faces when present.
-    const ConnectivityView topology{b, pc.Connectivity, pc.FaceCount};
+    // Follows Blender's VertsToTransData and BM_vert_calc_shell_factor_ex.
+    const ConnectivityView topology{b, pc.Connectivity};
     float3 normal = EditVertexNormal(b, pc, v);
-    // Blender's bm_vert_calc_normals uses the radial direction when the full fan has no normal.
     if (all(normal == float3(0.f))) normal = NormalizeOrZero(before);
     const auto angle = [&](uint h, uint face) {
         const uint2 loop = topology.FaceHalfedges(face);
         const uint prev = h == loop.x ? loop.y - 1u : h - 1u, next = h + 1u == loop.y ? loop.x : h + 1u;
-        const float3 a = NormalizeOrZero(EditPosition(b, pc, EditCornerVertex(b, pc, prev)) - before);
-        const float3 z = NormalizeOrZero(EditPosition(b, pc, EditCornerVertex(b, pc, next)) - before);
+        const float3 a = NormalizeOrZero(EditPosition(b, pc, topology.VertexOf(prev)) - before);
+        const float3 z = NormalizeOrZero(EditPosition(b, pc, topology.VertexOf(next)) - before);
         return acos(clamp(dot(a, z), -1.f, 1.f));
     };
     const auto is_selected = [&](uint face) { return WorkRank(b, pc.Faces, face) != InvalidOffset; };
@@ -101,9 +96,9 @@ kernel void PlanarFacePlanes(
     if (i >= pc.PlaneCount) return;
     const ElementWorkDomain faces{bindless, pc.Faces};
     const uint face = faces.Handle(i);
-    const ConnectivityView topology{bindless, pc.Connectivity, pc.FaceCount};
+    const ConnectivityView topology{bindless, pc.Connectivity};
     const auto range = topology.FaceHalfedges(face);
-    const auto position = [&](uint h) { return EditPosition(bindless, pc, EditCornerVertex(bindless, pc, h)); };
+    const auto position = [&](uint h) { return EditPosition(bindless, pc, topology.VertexOf(h)); };
     float3 center = 0.f;
     float total = 0.f;
     for (uint h = range.x; h < range.y; ++h) {
@@ -120,7 +115,7 @@ kernel void PlanarFacePlanes(
 }
 
 inline float3 PlanarPosition(uint v,float3 before,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
-    const ConnectivityView topology{b, pc.Connectivity, pc.FaceCount};
+    const ConnectivityView topology{b, pc.Connectivity};
     const ElementWorkDomain faces{b, pc.Faces};
     const auto planes = reinterpret_cast<device const packed_float4 *>(BindlessBuffer(uint, b.Buffer, pc.Planes.Slot) + pc.Planes.Offset);
     float3 target = 0.f;
@@ -137,7 +132,6 @@ inline float3 PlanarPosition(uint v,float3 before,device const BindlessSet &b,co
     return position;
 }
 
-// Radius and bounds share a fixed reduction tree; only the combine operation differs.
 inline float2 PositionStatistics(float2 value,uint lane,bool bounds,threadgroup float2 *partials) {
     const float2 total=bounds ? float2(simd_min(value.x),simd_max(value.y)) : float2(simd_sum(value.x),0.f);
     if ((lane&31u)==0u) partials[lane/32u]=total;
@@ -181,7 +175,6 @@ kernel void PositionStatisticsReduce(
 }
 
 inline float3 ToSpherePosition(float3 before,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
-    // Blender's To Sphere averages local distances to the shared pivot across all edited meshes.
     const float3 delta = before - float3(pc.Center);
     const float radius = length(delta), mean = BindlessBuffer(float, b.Buffer, pc.ReductionResult.Slot)[pc.ReductionResult.Offset];
     return float3(pc.Center) + NormalizeOrZero(delta) * mix(radius, mean, pc.Factor);
@@ -198,7 +191,6 @@ inline float3 ShearPosition(float3 before,device const BindlessSet &b,constant V
 }
 
 inline float3 WarpPosition(float3 before,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
-    // Blender's object_warp_transverts, with tangent continuation outside the range.
     device const WarpParameters &warp=*reinterpret_cast<device const WarpParameters *>(BindlessBuffer(uint,b.Buffer,pc.Parameters.Slot)+pc.Parameters.Offset);
     float lo=warp.Minimum,hi=warp.Maximum;
     if (pc.Flags&PositionEditWarpAutoRange) {
@@ -218,7 +210,6 @@ inline float3 WarpPosition(float3 before,device const BindlessSet &b,constant Ve
 }
 
 inline float3 BendPosition(float3 before,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
-    // Blender's transdata_elem_bend, evaluated in its bend plane.
     // The half-angle identity avoids subtracting nearly equal cosines around a distant pivot.
     device const BendParameters &bend=*reinterpret_cast<device const BendParameters *>(BindlessBuffer(uint,b.Buffer,pc.Parameters.Slot)+pc.Parameters.Offset);
     const float x=dot(before,float3(bend.Plane.X))+bend.Plane.Offset.x;
@@ -233,16 +224,9 @@ inline float3 BendPosition(float3 before,device const BindlessSet &b,constant Ve
     return position;
 }
 
-inline uint PositionRandomHash(uint value) {
-    value^=value>>16u; value*=0x7feb352du;
-    value^=value>>15u; value*=0x846ca68bu;
-    return value^(value>>16u);
-}
-
-// Independent integer streams permit one thread per selected handle.
 // The 24-bit conversion stays in [0,1), including after float rounding.
 inline float PositionRandom(uint handle,uint seed,uint stream) {
-    return float(PositionRandomHash(handle^PositionRandomHash(seed+stream))>>8u)*(1.f/16777216.f);
+    return float(HashMix(handle^HashMix(seed+stream))>>8u)*(1.f/16777216.f);
 }
 
 inline float3 RandomizePosition(uint v,float3 before,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
@@ -258,7 +242,6 @@ inline float3 RandomizePosition(uint v,float3 before,device const BindlessSet &b
         const float cosine=dot(direction,normal);
         if (cosine<0.f) normal=-normal;
         const float alignment=clamp(abs(cosine),0.f,1.f);
-        // Blender's nearest-hemisphere spherical interpolation, with the same near-parallel linear branch and zero-normal behavior.
         float a=1.f-settings.Normal,c=settings.Normal;
         if (alignment<.9999f) {
             const float omega=acos(alignment),denominator=sin(omega);
@@ -272,13 +255,12 @@ inline float3 RandomizePosition(uint v,float3 before,device const BindlessSet &b
 inline float3 VertexSlideDelta(uint v,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
     device const VertexSlideParameters &settings=*reinterpret_cast<device const VertexSlideParameters *>(BindlessBuffer(uint,b.Buffer,pc.Parameters.Slot)+pc.Parameters.Offset);
     const float3 before=EditPosition(b,pc,v);
-    const ConnectivityView topology{b,pc.Connectivity,pc.FaceCount};
+    const ConnectivityView topology{b,pc.Connectivity};
     float best=-INFINITY;
     uint best_edge=InvalidOffset;
     float3 result=0.f;
     topology.ForEachIncidentEdge(v,[&](uint edge) {
-        const uint h=topology.EdgeHalfedge(edge),a=EditCornerVertex(b,pc,h),z=EditCornerVertex(b,pc,topology.Previous(h));
-        const float3 delta=EditPosition(b,pc,a==v ? z : a)-before;
+        const float3 delta=EditPosition(b,pc,topology.OtherEnd(topology.EdgeHalfedge(edge),v))-before;
         const float score=dot(float3(settings.Direction),NormalizeOrZero(delta*float3(settings.Scale)));
         if (score>best || (score==best && edge<best_edge)) {
             best=score; best_edge=edge; result=delta;
@@ -333,7 +315,7 @@ inline float3 EdgeSlidePosition(uint i,float3 before,device const BindlessSet &b
 
 inline float3 TransformPosition(float3 before, device const BindlessSet &b, constant VertexPositionEditPushConstants &pc) {
     const auto parameters = reinterpret_cast<device const TransformPositionParameters *>(BindlessBuffer(uint, b.Buffer, pc.Parameters.Slot) + pc.Parameters.Offset);
-    float3 position = mix(before, apply_geometry_edit_transform(before, parameters->Frame, float3(parameters->Pivot), parameters->Delta), pc.Factor);
+    float3 position = mix(before, apply_geometry_edit_transform(before, parameters->Frame, float3(parameters->Pivot), float3(parameters->Mirror), parameters->Delta), pc.Factor);
     for (uint axis = 0u; axis < 3u; ++axis)
         if (!(pc.Axes & (1u << axis))) position[axis] = before[axis];
     return position;
@@ -348,8 +330,6 @@ inline float3 AttributePosition(uint v, float3 before, device const BindlessSet 
     return position;
 }
 
-// All per-vertex transforms share the same canonical read and scratch write.
-// Operation is uniform across the dispatch; only its own transform is evaluated.
 kernel void PositionVerticesGather(
     uint i [[thread_position_in_grid]],
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],

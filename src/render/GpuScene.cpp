@@ -8,14 +8,12 @@ MeshRecord BuildMeshRecord(const GpuBuffers &buffers, const MeshStore &meshes, u
     const auto &record = meshes.Get(store_id);
     const auto &arenas = meshes.Arenas();
     const auto &render = meshes.Render();
-    const auto vertex_count = arenas.Vertices.Count(record.Vertices);
     if (record.ExtrasFaces.Count) {
         return {
             .VertexSlot = arenas.Vertices.Buffer.Slot,
             .IndexSlotOffset = {render.ExtrasFaces.Buffer.Slot, record.ExtrasFaces.Offset},
             .ModelSlot = buffers.Instances.TransformBuffer.Slot,
             .Connectivity = {.Tables = meshes.GetElementTables(store_id)},
-            .VertexCountOrHeadImageSlot = vertex_count,
         };
     }
     return {
@@ -25,9 +23,7 @@ MeshRecord BuildMeshRecord(const GpuBuffers &buffers, const MeshStore &meshes, u
         .TriangleSlot = arenas.FaceTriangles.Count(record.FaceData) ? arenas.Triangles.Buffer.Slot : InvalidSlot,
         .CornerClassMode = meshes.GetCornerClassMode(store_id),
         .Connectivity = meshes.GetConnectivityRef(store_id),
-        .HalfedgeCount = arenas.FaceCorners.Count(record.FaceCorners),
         .FaceCount = arenas.FaceTriangles.Count(record.FaceData),
-        .VertexCountOrHeadImageSlot = vertex_count,
         .MorphShadingAuthored = record.MorphShadingAuthored ? 1u : 0u,
         .PrimitiveMaterialOffset = OffsetOrInvalid(record.PrimitiveMaterials),
         .Layers = meshes.Layers(store_id),

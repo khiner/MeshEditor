@@ -6,7 +6,6 @@
 
 struct EditSharpnessPushConstants {
     ElementWork VertexSelection DEFAULT();
-    uint32_t CornersSlot DEFAULT(InvalidSlot);
     uint32_t FaceSharpnessSlot DEFAULT(InvalidSlot);
     uint32_t EdgeSharpnessSlot DEFAULT(InvalidSlot);
     uint32_t FaceNormalsSlot DEFAULT(InvalidSlot);

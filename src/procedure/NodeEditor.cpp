@@ -1,4 +1,5 @@
 #include "procedure/NodeEditor.h"
+#include "procedure/Macros.h"
 #include "scene/HierarchyInstance.h"
 
 #include "action/View.h"
@@ -7,7 +8,6 @@
 #include "procedure/NodeView.h"
 #include "procedure/Procedure.h"
 #include "render/Instance.h"
-#include "scene/SceneControlsUi.h"
 #include "ui/ChoiceCombo.h"
 #include "ui/FieldEdit.h"
 #include "ui/InterfaceUi.h"
@@ -25,7 +25,7 @@ using numeric::vec2;
 
 namespace {
 constexpr float LinkReach{4.f}; // A link takes the mouse within this many pixels of its wire.
-constexpr float WireStraightening{3.5f}; // A link's handles straighten as the link nears horizontal, as in Blender.
+constexpr float WireStraightening{3.5f};
 constexpr float MinZoom{.25f}, MaxZoom{3.f};
 constexpr float TrackpadPoints{10.f}; // The platform reports a trackpad's scroll at a tenth of its points.
 constexpr float ZoomStep{1.1f}, TrackpadStepPoints{100.f}; // A zoom step is one mouse wheel notch, or 100 points of trackpad scroll.
@@ -40,12 +40,12 @@ enum class KindGroup : uint8_t { Sources,
 constexpr const char *GroupNames[]{"Sources", "Operators", "Combine", "Attributes", "Values", "Generators", "Instances"};
 using C = NodeThemeColors;
 constexpr vec4 C::*GroupColors[]{&C::SourcesTitle, &C::OperatorsTitle, &C::CombineTitle, &C::AttributesTitle, &C::ValuesTitle, &C::GeneratorsTitle, &C::InstancesTitle};
-using AttributeKinds = TypeList<Position, Normal, Index, NamedAttribute, VectorMath, FloatMath, Compare, BooleanMath, StoreNamedAttribute, StoreSelection, SetPosition>;
+using AttributeKinds = TypeList<Position, Normal, Curvature, Boundary, PlaneSide, Linked, Adjacent, EdgeLoop, EdgeRing, Index, NamedAttribute, VectorMath, FloatMath, Compare, BooleanMath, StoreNamedAttribute, StoreSelection, SelectionAttribute, SetPosition>;
 using InstanceKinds = TypeList<MeshToPoints, InstanceOnPoints, RealizeInstances>;
 template<typename K> constexpr KindGroup GroupOf() {
     if constexpr (std::same_as<K, Source> || std::same_as<K, ObjectInfo>) return KindGroup::Sources;
-    else if constexpr (std::same_as<K, Join> || std::same_as<K, Boolean>) return KindGroup::Combine;
-    else if constexpr (Generator<K>) return KindGroup::Generators;
+    else if constexpr (std::same_as<K, Join> || std::same_as<K, Boolean> || std::same_as<K, Minkowski>) return KindGroup::Combine;
+    else if constexpr (Generator<K> || std::same_as<K, LevelSet>) return KindGroup::Generators;
     else if constexpr (InTypeList<K, AttributeKinds>) return KindGroup::Attributes;
     else if constexpr (ValueKind<K>) return KindGroup::Values;
     else if constexpr (InTypeList<K, InstanceKinds>) return KindGroup::Instances;
@@ -57,24 +57,25 @@ constexpr auto KindTitles{[]<typename... Ks>(TypeList<Ks...>) { return std::arra
 template<typename K> constexpr const char *Help{};
 template<> constexpr const char *Help<Source>{"Emits the mesh's source geometry"};
 template<> constexpr const char *Help<Join>{"Appends the second input's geometry to the first"};
-template<> constexpr const char *Help<Boolean>{"Combines two closed meshes by union, difference, or intersection"};
-template<> constexpr const char *Help<primitive::Plane>{"Generates a rectangle in the XZ plane, facing +Y"};
+template<> constexpr const char *Help<LevelSet>{"Marches the surface where a field crosses a level over a box"};
+template<> constexpr const char *Help<Boolean>{"Combines two closed meshes, or two regions on one plane, by union, difference, or intersection"};
+template<> constexpr const char *Help<Minkowski>{"Sweeps one closed mesh or region by another, dilating or eroding it"};
+template<> constexpr const char *Help<primitive::Plane>{"Generates a grid of quads in the XZ plane, facing +Y"};
 template<> constexpr const char *Help<primitive::Circle>{"Generates a circle in the XZ plane, facing +Y"};
 template<> constexpr const char *Help<primitive::Cube>{"Generates a box centered on the origin"};
 template<> constexpr const char *Help<primitive::IcoSphere>{"Generates a sphere by subdividing an icosahedron"};
 template<> constexpr const char *Help<primitive::UVSphere>{"Generates a sphere of slices around the Y axis and stacks along it"};
 template<> constexpr const char *Help<primitive::QuadSphere>{"Generates a sphere of quads by mapping a subdivided cube onto it"};
 template<> constexpr const char *Help<primitive::Torus>{"Generates a torus around the Y axis"};
-template<> constexpr const char *Help<primitive::Cylinder>{"Generates a cylinder along the Y axis, centered on the origin"};
-template<> constexpr const char *Help<primitive::Cone>{"Generates a cone or frustum along the Y axis, centered on the origin"};
+template<> constexpr const char *Help<primitive::Cylinder>{"Generates a cylinder, frustum or cone along the Y axis, centered on the origin"};
 template<> constexpr const char *Help<action::mesh::Delete>{"Deletes the selected vertices, edges, or faces"};
 template<> constexpr const char *Help<action::mesh::Merge>{"Merges the selected vertices into one, or merges nearby pairs"};
-template<> constexpr const char *Help<action::mesh::Extrude>{"Extrudes the selected elements in place, joined to the geometry they came from"};
+template<> constexpr const char *Help<Extrude>{"Extrudes the selected elements in steps, rotating about an axis and moving by the offset, joined to the geometry they came from"};
 template<> constexpr const char *Help<action::mesh::Duplicate>{"Duplicates the selected faces in place onto copied vertices"};
 template<> constexpr const char *Help<action::mesh::Split>{"Disconnects the selected faces from the unselected geometry around them"};
 template<> constexpr const char *Help<action::mesh::Dissolve>{"Removes the selected elements and joins the faces around them"};
 template<> constexpr const char *Help<action::mesh::Subdivide>{"Cuts the selected edges and splits their faces into smaller faces"};
-template<> constexpr const char *Help<action::mesh::Triangulate>{"Splits the selected faces into triangles"};
+template<> constexpr const char *Help<action::mesh::SplitFaces>{"Splits the selected faces until each part is a triangle, is convex, or is planar within Angle"};
 template<> constexpr const char *Help<action::mesh::TrisToQuads>{"Joins pairs of selected triangles into quads"};
 template<> constexpr const char *Help<action::mesh::Poke>{"Fans each selected face around a new center vertex"};
 template<> constexpr const char *Help<action::mesh::FlipNormals>{"Reverses the winding and normals of the selected faces"};
@@ -100,36 +101,35 @@ template<> constexpr const char *Help<Bend>{"Bends the selected vertices from Ce
 template<> constexpr const char *Help<VertexSlide>{"Slides each selected vertex along its incident edge nearest Direction"};
 template<> constexpr const char *Help<EdgeSlide>{"Slides the selected edge chains along their adjacent faces"};
 template<> constexpr const char *Help<action::mesh::SnapSymmetry>{"Snaps the selected vertices to their mirrored partners across an axis plane"};
-template<> constexpr const char *Help<Spin>{"Extrudes the selection in steps around an axis"};
-template<> constexpr const char *Help<action::mesh::ExtrudeRepeat>{"Extrudes the selection repeatedly along an offset"};
-template<> constexpr const char *Help<Bisect>{"Cuts the mesh along a plane and deletes the faces on the cleared sides"};
-template<> constexpr const char *Help<action::mesh::Symmetrize>{"Mirrors one side of the mesh onto the other across an axis plane through the mesh origin"};
-template<> constexpr const char *Help<action::mesh::FillHoles>{"Fills boundary loops with faces"};
-template<> constexpr const char *Help<action::mesh::ConvexHull>{"Builds the convex hull of the selected vertices"};
-template<> constexpr const char *Help<action::mesh::Decimate>{"Reduces the selected region's triangle count by collapsing edges"};
-template<> constexpr const char *Help<action::mesh::RecalculateNormals>{"Makes the selected faces' normals point consistently outside or inside"};
-template<> constexpr const char *Help<action::mesh::Rip>{"Splits the faces along the selected edges"};
-template<> constexpr const char *Help<action::mesh::SplitNonplanarFaces>{"Splits the selected faces that bend more than Angle along their diagonals"};
-template<> constexpr const char *Help<action::mesh::SplitConcaveFaces>{"Splits the selected concave faces into convex faces"};
+template<> constexpr const char *Help<Project>{"Leaves the outline of the mesh seen along a direction, as a region on a plane"};
+template<> constexpr const char *Help<Bisect>{"Cuts the mesh along a plane and deletes the vertices beyond it on the cleared sides"};
+template<> constexpr const char *Help<action::mesh::ConvexHull>{"Replaces the selection with the convex hull of the selected vertices"};
+template<> constexpr const char *Help<action::mesh::Simplify>{"Collapses edges within a tolerance, then toward a triangle ratio"};
+template<> constexpr const char *Help<action::mesh::RecalculateNormals>{"Makes the selected faces' normals point outside each closed surface they belong to"};
 template<> constexpr const char *Help<action::mesh::ConnectVertices>{"Splits faces along chords between their consecutive selected vertices"};
-template<> constexpr const char *Help<action::mesh::Fill>{"Creates an edge from two selected vertices, fills the selected loops, or forms a face from the selected points"};
+template<> constexpr const char *Help<action::mesh::Fill>{"Creates an edge from two selected vertices, fills the selected loops of at most Sides edges, or forms a face from the selected points"};
 template<> constexpr const char *Help<action::mesh::BridgeEdgeLoops>{"Bridges two selected edge loops or chains with a strip of faces"};
 template<> constexpr const char *Help<action::mesh::GridFill>{"Fills one selected closed loop with a grid of quads"};
 template<> constexpr const char *Help<action::mesh::EdgeRotate>{"Rotates each selected edge between its two faces"};
 template<> constexpr const char *Help<action::mesh::BeautifyFaces>{"Rearranges the selected triangles into more evenly shaped ones"};
+template<> constexpr const char *Help<SmoothSurface>{"Refines a closed mesh onto smooth patches through its shading normals, so flat-shaded faces and sharp edges stay creased"};
+template<> constexpr const char *Help<SubdivisionSurface>{"Smooths the whole mesh by Catmull-Clark subdivision"};
 template<> constexpr const char *Help<action::mesh::Unsubdivide>{"Reverses subdivision by removing alternate selected vertices of regular regions"};
-template<> constexpr const char *Help<action::mesh::LoopCut>{"Cuts the edge ring through the active selected edge, or the first selected edge"};
 template<> constexpr const char *Help<Knife>{"Cuts every edge whose projection in a view crosses a screen segment"};
-template<> constexpr const char *Help<action::mesh::RotateUVs>{"Rotates the UVs of the selected faces around their corners"};
-template<> constexpr const char *Help<action::mesh::ReverseUVs>{"Reverses the order of the UVs around the selected faces"};
-template<> constexpr const char *Help<action::mesh::RotateColors>{"Rotates the colors of the selected faces around their corners"};
-template<> constexpr const char *Help<action::mesh::ReverseColors>{"Reverses the order of the colors around the selected faces"};
+template<> constexpr const char *Help<action::mesh::CycleCornerAttribute>{"Shifts or reverses the UVs or colors around the corners of the selected faces"};
 template<> constexpr const char *Help<MarkSharp>{"Marks the selected edges sharp or smooth, or shades the selected faces flat or smooth"};
-template<> constexpr const char *Help<ShadeSmooth>{"Shades every face smooth and clears every sharp mark, or shades every face flat"};
-template<> constexpr const char *Help<ShadeSmoothByAngle>{"Shades every face smooth and marks the edges sharp where adjacent faces meet at more than Angle"};
-template<> constexpr const char *Help<TransformElements>{"Moves, rotates, and scales the selected vertices around a pivot"};
+template<> constexpr const char *Help<Shade>{"Shades every face flat, smooth, or smooth with sharp edges where adjacent faces meet at more than Angle"};
+template<> constexpr const char *Help<TransformElements>{"Moves, rotates, and scales the selected vertices, all by default, around a pivot, after reflecting them across a mirror plane through it"};
 template<> constexpr const char *Help<Position>{"Emits each vertex's position"};
 template<> constexpr const char *Help<Normal>{"Emits each vertex's or face's normal"};
+template<> constexpr const char *Help<Curvature>{"Emits each vertex's Gaussian or mean curvature"};
+template<> constexpr const char *Help<Boundary>{"Selects the mesh boundary in a domain"};
+template<> constexpr const char *Help<PlaneSide>{"Selects the elements in front of a plane, behind it, or on it"};
+template<> constexpr const char *Help<Linked>{"Selects the connected components holding the selection"};
+template<> constexpr const char *Help<Adjacent>{"Grows or shrinks the selection by rings of adjacent elements"};
+template<> constexpr const char *Help<EdgeLoop>{"Selects the edge loops through the selected edges"};
+template<> constexpr const char *Help<EdgeRing>{"Selects the edge rings through the selected edges"};
+template<> constexpr const char *Help<SelectionAttribute>{"Emits the selection as a Boolean attribute in its domain"};
 template<> constexpr const char *Help<Index>{"Emits each element's index in its domain, counting live elements only"};
 template<> constexpr const char *Help<NamedAttribute>{"Emits the values of the attribute with the given name and type"};
 template<> constexpr const char *Help<VectorMath>{"Applies a vector operation to A and B per element"};
@@ -147,7 +147,6 @@ template<> constexpr const char *Help<FloatValue>{"Emits a constant float"};
 template<> constexpr const char *Help<IntegerValue>{"Emits a constant unsigned integer"};
 template<> constexpr const char *Help<BooleanValue>{"Emits a constant boolean"};
 template<> constexpr const char *Help<VectorValue>{"Emits a constant vector"};
-template<> constexpr const char *Help<TransformGeometry>{"Moves, rotates, and scales the whole geometry about the mesh origin"};
 template<> constexpr const char *Help<RotationValue>{"Emits a constant rotation"};
 template<> constexpr const char *Help<Subnet>{"Contains a network with named inputs and outputs"};
 constexpr auto KindHelp{[]<typename... Ks>(TypeList<Ks...>) { return std::array{Help<Ks>...}; }(NodeKinds{})};
@@ -214,8 +213,6 @@ constexpr auto SocketHelps{[]<typename... Ks>(TypeList<Ks...>) {
 
 ImVec2 Im(vec2 v) { return {v.x, v.y}; }
 using ui::U32;
-// Draw per-element value sockets as diamonds and uniform sockets as circles.
-// Use the hover color for the outline while hovered.
 void DrawSocket(ImDrawList &draw, const NodeTheme &theme, ImVec2 at, float radius, Socket socket, vec4 color, bool hovered) {
     const auto fill = U32(color), outline = U32(hovered ? theme.Colors.Hovered : theme.Colors.Outline);
     if (socket.Type == SocketType::Attribute || socket.Type == SocketType::Selection) {
@@ -230,14 +227,12 @@ void DrawSocket(ImDrawList &draw, const NodeTheme &theme, ImVec2 at, float radiu
 
 // A node shows inputs down its left edge and outputs down its right, one per cell row under a one-cell title.
 // Its parameters sit in a tray under the fixed inputs, one chevron row when closed and one row per parameter when open.
-// The row an input socket sits on, and the rows the inputs take.
 uint32_t InputRow(uint16_t first, uint16_t socket, bool expanded) { return expanded ? socket : std::min<uint32_t>(socket, first); }
 
 // A grid cell's side in canvas points.
 float CellOf(const NodeTheme &theme) { return theme.Sizes.Cell.FollowFrameHeight ? GetFrameHeight() : theme.Sizes.Cell.Points; }
 uint32_t CellsOf(float cell, float points) { return std::max(1u, uint32_t(std::ceil(points / cell))); }
 
-// A node's cells: its top left and size, and whether it has inputs and outputs, which keep a free cell beside them for wires.
 NodeView GeometryNodeDefinitions(const state::Registry &r, const CookPlan &plan, state::Entity network) {
     NodeView view{.Network = network, .Geometry = &plan, .DisplayNode = plan.DisplayNode};
     view.Nodes.reserve(plan.Nodes.size());
@@ -267,12 +262,12 @@ std::vector<NetworkItem> ItemsOf(const NodeView &view, std::span<const uint32_t>
     return items;
 }
 
+// A node's cells: its top left and size, and whether it has inputs and outputs, which keep a free cell beside them for wires.
 struct Box {
     uint32_t X, Y;
     uint16_t W, H;
     bool In, Out;
 };
-// A node of the kind takes a title row over max(input rows, output rows), as wide as its title and its widest row of labels.
 // A socket label takes at most MaxLabelCells and draws with an ellipsis past them.
 Box BoxOf(const NodeTheme &theme, float cell, const char *title, std::span<const Socket> sockets, uint16_t inputs, std::pair<uint16_t, uint16_t> parameters, bool expanded) {
     const auto [first, end] = parameters;
@@ -292,7 +287,6 @@ bool Clear(const Box &a, const Box &b) {
     if (a.Y >= b.Y + b.H || b.Y >= a.Y + a.H) return true;
     return b.X >= a.X + a.W + uint32_t(a.Out || b.In) || a.X >= b.X + b.W + uint32_t(b.Out || a.In);
 }
-// A socket's cell column and row within a node of the kind and width.
 ImVec2 SocketCell(uint16_t inputs, uint16_t first, uint16_t socket, uint16_t width, bool expanded) {
     const bool input = socket < inputs;
     return {input ? 0.f : float(width), 1.f + float(input ? InputRow(first, socket, expanded) : socket - inputs)};
@@ -303,7 +297,7 @@ struct Graph {
     const NodeView &View;
     const NodeTheme &Theme;
     ImVec2 Origin;
-    float Step; // A cell on the screen
+    float Step; // A cell's side in screen points
     float Zoom;
     uint32_t Expanded;
     std::vector<Box> Boxes;
@@ -491,7 +485,6 @@ void Grab(NodesPanel &panel, uint32_t after) {
     panel.Moved = false;
 }
 
-// The entities of the plan's nodes at the indices.
 std::vector<state::Entity> EntitiesOf(const CookPlan &plan, std::span<const uint32_t> indices) {
     std::vector<state::Entity> entities;
     entities.reserve(indices.size());
@@ -539,14 +532,13 @@ std::vector<action::nodes::Link> MakeLinks(const state::Registry &r, state::Enti
     return links;
 }
 
-// Record the insertion input, the wire point nearest the cursor, and the cells the reader moves right to clear the node.
+// The insertion input, the wire point nearest the cursor, and the cells the reader moves right to clear the node.
 struct Insert {
     uint32_t ToNode;
     uint16_t ToSocket;
     ImVec2 At;
     uint32_t Shift;
 };
-// Return the nearest link the node inserts into.
 std::optional<Insert> InsertTarget(const Graph &graph, uint32_t node, ImVec2 mouse) {
     std::optional<Insert> insert;
     float nearest = LinkReach * LinkReach;
@@ -562,7 +554,6 @@ std::optional<Insert> InsertTarget(const Graph &graph, uint32_t node, ImVec2 mou
     return insert;
 }
 
-// Emit canvas actions and insert a dragged node when released over an insertion target.
 void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_entity, const Graph &graph, const std::vector<uint32_t> &selected, const Hit &hit, const std::optional<Insert> &insert) {
     const auto &io = GetIO();
     const auto &view = graph.View;
@@ -579,7 +570,6 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
         panel.Linking = linking;
         OpenPopup("##AddNode");
     };
-    // Snap the held nodes to the mouse's cell offset from the drag start, or to the nearest clear offset, or hold.
     const auto follow = [&](bool first) {
         const auto &held = graph.Boxes[panel.DragNode];
         const int64_t wanted_x = int64_t(panel.MoveStart.x) + std::lround((mouse.x - panel.Press.x) / graph.Step), wanted_y = int64_t(panel.MoveStart.y) + std::lround((mouse.y - panel.Press.y) / graph.Step);
@@ -595,7 +585,6 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
             action::Emit(std::move(move), action::Phase::Stage);
         }
     };
-    // Commit staged move or grab actions together with insertion, or cancel the whole operation.
     const auto end_move = [&](bool commit) {
         if (panel.Moved && commit) {
             if (insert) action::Emit(action::nodes::InsertNode{mesh_entity, nodes[panel.DragNode].Item.Entity, nodes[insert->ToNode].Item.Entity, SocketId(view, insert->ToNode, insert->ToSocket), insert->Shift}, action::Phase::Stage);
@@ -607,7 +596,6 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
     };
     if (panel.Drag == NodeDrag::Grab) {
         if (panel.DragNode == NoNode) {
-            // Cancel the grab if its action failed to create a node.
             if (nodes.size() <= panel.GrabAfter) {
                 panel.Drag = NodeDrag::None;
                 return;
@@ -635,8 +623,6 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
                 if (IsMouseDoubleClicked(ImGuiMouseButton_Left) && EnterNode(r, panel, nodes[hit.Node].Item)) {
                     return;
                 }
-                // Shift-click on the selected active node removes it from the selection.
-                // Other clicks activate the node; a click without Shift on an unselected node selects it alone.
                 const bool is_selected = Selected(r, view, hit.Node), active = hit.Node == active_node;
                 if (io.KeyShift && is_selected && active) {
                     auto remaining = selected;
@@ -665,7 +651,6 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
             } else open_add(false);
         }
     }
-    // Route editing shortcuts to the hovered node canvas.
     if (panel.Drag == NodeDrag::None && panel.Hovered) {
         constexpr auto Key{ImGuiInputFlags_RouteGlobal};
         if (Shortcut(ImGuiMod_Shift | ImGuiKey_A, Key)) {
@@ -714,13 +699,12 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
         else if (hit.Type == HitType::Parameters) DropOnNode(r, panel, view, mesh_entity, hit.Node, ParameterRange(view, hit.Node));
         else if (hit.Type == HitType::Node) DropOnNode(r, panel, view, mesh_entity, hit.Node, {0u, uint16_t(NodeSockets(view, hit.Node).size())});
         else if (NodeSockets(view, panel.DragNode)[panel.DragSocket].Direction == SocketDirection::In && IsLinked(view, panel.DragNode, panel.DragSocket)) Disconnect(r, view, mesh_entity, panel.DragNode, panel.DragSocket);
-        else if (panel.Hovered && view.Geometry) open_add(true); // Open Add on an empty-canvas wire drop.
+        else if (panel.Hovered && view.Geometry) open_add(true);
         panel.Drag = NodeDrag::None;
     }
     if (panel.Drag == NodeDrag::Box && !IsMouseDown(ImGuiMouseButton_Left)) {
         const auto press = Im(panel.Press);
         if (ImLengthSqr(mouse - press) >= io.MouseDragThreshold * io.MouseDragThreshold) {
-            // Select nodes intersecting the box, extending selection with Shift.
             const ImRect box{ImMin(press, mouse), ImMax(press, mouse)};
             std::vector<uint32_t> banded;
             for (uint32_t n = 0u; n < nodes.size(); ++n) {
@@ -754,7 +738,7 @@ int MoveHighlight(ImGuiInputTextCallbackData *data) {
 struct LinkingEntry {
     uint16_t Kind, Socket;
     const char *SocketName;
-    std::string Label; // The searched text
+    std::string Label;
 };
 std::vector<LinkingEntry> LinkingEntries(Socket held) {
     std::vector<LinkingEntry> entries;
@@ -768,7 +752,6 @@ std::vector<LinkingEntry> LinkingEntries(Socket held) {
     return entries;
 }
 constexpr int ResultRows{10};
-// Display at most ResultRows rows and scroll to the highlight when it changes.
 // row(i, highlighted) returns whether row i was clicked.
 // Returns the clicked row, or the highlighted row on Enter, and closes the popup.
 std::optional<int> DrawResults(int count, float width, int &highlight, int previous, bool enter, auto &&row) {
@@ -786,8 +769,6 @@ std::optional<int> DrawResults(int count, float width, int &highlight, int previ
     return picked;
 }
 
-// Add the selected node at the menu position and begin dragging it.
-// After dropping a wire, list compatible sockets and connect the new node once it exists.
 void DrawAddMenu(NodesPanel &panel, const NodeTheme &theme, float cell, state::Entity mesh_entity, const CookPlan &plan, bool interactive) {
     if (!BeginPopup("##AddNode")) return;
     const auto &nodes = plan.Nodes;
@@ -802,7 +783,6 @@ void DrawAddMenu(NodesPanel &panel, const NodeTheme &theme, float cell, state::E
         panel.SearchHighlight = 0;
         SetKeyboardFocusHere();
     }
-    // Use Up and Down for result selection instead of text-history navigation.
     const auto highlight = panel.SearchHighlight;
     SetNextItemWidth(GetFontSize() * 14.f);
     const bool enter = InputTextWithHint("##Search", "Search", panel.Search.data(), panel.Search.size(), ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackHistory, MoveHighlight, &panel.SearchHighlight);
@@ -825,7 +805,6 @@ void DrawAddMenu(NodesPanel &panel, const NodeTheme &theme, float cell, state::E
             return clicked;
         });
         if (picked && interactive) {
-            // Place the linking socket at the drop point.
             const auto &entry = entries[*picked];
             const auto socket = SocketCell(InputCount[entry.Kind], ParameterRange(entry.Kind).first, entry.Socket, BoxOf(theme, cell, KindTitles[entry.Kind], KindSockets(entry.Kind), InputCount[entry.Kind], ParameterRange(entry.Kind), false).W, false);
             const uvec2 at{std::max(float(panel.AddAt.x) - socket.x, 0.f), std::max(float(panel.AddAt.y) - socket.y, 0.f)};
@@ -838,6 +817,15 @@ void DrawAddMenu(NodesPanel &panel, const NodeTheme &theme, float cell, state::E
             if (!BeginMenu(GroupNames[group])) continue;
             for (uint16_t kind = 0u; kind < KindCount; ++kind) {
                 if (KindGroups[kind] == KindGroup(group) && MenuItem(KindTitles[kind])) add(kind);
+            }
+            EndMenu();
+        }
+        if (BeginMenu("Macros")) {
+            for (uint16_t macro = 0u; macro < Macros.size(); ++macro) {
+                if (MenuItem(Macros[macro].Name) && interactive) {
+                    action::Emit(action::nodes::AddMacro{mesh_entity, macro, panel.AddAt, panel.Canvas.Network == mesh_entity ? state::Null : panel.Canvas.Network});
+                    Grab(panel, uint32_t(nodes.size()));
+                }
             }
             EndMenu();
         }
@@ -925,13 +913,11 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
     auto &canvas = panel.Canvas;
     if (interactive) {
         if (panel.Hovered) {
-            // Pan with trackpad scrolling; zoom with Ctrl/Cmd scrolling, the mouse wheel, or a pinch.
             const auto wheel = std::exchange(frame.PreciseWheelDelta, vec2{0});
             const auto magnification = std::exchange(frame.Magnification, 0.f);
             const bool pan = frame.PreciseScrolling && !io.KeyCtrl && !io.KeySuper;
             if (pan) canvas.Offset = vec2{Im(canvas.Offset) + Im(wheel) * TrackpadPoints};
             const float steps = pan ? 0.f : wheel.y * (frame.PreciseScrolling ? TrackpadPoints / TrackpadStepPoints : 1.f);
-            // Preserve the canvas point under the cursor while zooming.
             if (const auto zoom = std::clamp(canvas.Zoom * std::pow(ZoomStep, steps) * (1.f + magnification), MinZoom, MaxZoom); zoom != canvas.Zoom) {
                 const auto at = (mouse - origin - Im(canvas.Offset)) / canvas.Zoom;
                 canvas.Offset = vec2{mouse - origin - at * zoom};
@@ -951,11 +937,9 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
     const auto hit = panel.Hovered ? HitTest(graph, mouse) : Hit{};
     if (panel.Drag == NodeDrag::None || panel.Drag == NodeDrag::Wire) RecordHover(r, panel, view, hit);
     const auto selected = SelectedNodes(r, view);
-    // A held node inserts into a link while it is the sole selected node.
     const bool holding = (panel.Drag == NodeDrag::Move && panel.Moved) || (panel.Drag == NodeDrag::Grab && panel.DragNode != NoNode);
     const auto insert = holding && selected == std::vector{panel.DragNode} ? InsertTarget(graph, panel.DragNode, mouse) : std::nullopt;
     if (interactive) Interact(r, panel, mesh_entity, graph, selected, hit, insert);
-    // Keep parameters expanded while hovered, wiring, or selecting a port.
     const bool wiring = panel.Drag == NodeDrag::Wire;
     const bool stays_open = graph.Expanded != NoNode && (TrayRect(graph, graph.Expanded).Contains(mouse) || (wiring && panel.DragNode == graph.Expanded) || panel.PickNode == graph.Expanded);
     if (hit.Type == HitType::Parameters) panel.Expanded = hit.Node;
@@ -967,7 +951,6 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
     const auto &colors = theme.Colors;
     draw.PushClipRect(origin, end, true);
     draw.AddRectFilled(origin, end, U32(colors.Background));
-    // A line at every cell, coarse at every CoarseGridCells cells from cell zero.
     const auto grid = U32(colors.Grid), coarse_grid = U32(colors.CoarseGrid);
     const auto coarse = int32_t(std::max<uint8_t>(theme.Sizes.CoarseGridCells, 1u));
     for (auto i = int32_t(std::floor(-canvas.Offset.x / graph.Step)); graph.Origin.x + float(i) * graph.Step < end.x; ++i) {
@@ -989,11 +972,9 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
         const auto wire = WireOf({a.Max.x, a.Min.y + graph.Step * .5f}, {b.Min.x, b.Min.y + graph.Step * .5f}, theme.Sizes.WireCurving);
         draw.AddBezierCubic(wire[0], wire[1], wire[2], wire[3], U32(colors.MixedSocket), thickness);
     }
-    // Draw node text at the zoomed font size.
     PushFont(nullptr, GetStyle().FontSizeBase * zoom);
     const auto font_size = GetFontSize();
     const float inset = (theme.Sizes.SocketRadius + theme.Sizes.LabelSpacing) * zoom, spacing = theme.Sizes.LabelSpacing * zoom, label_reach = float(theme.Sizes.MaxLabelCells) * graph.Step;
-    // Draw the label from the box's left, or against its right when `right` fits, with an ellipsis past the box.
     const auto draw_label = [&](ImVec2 min, ImVec2 max, const char *text, vec4 color, bool right) {
         if (const float width = CalcTextSize(text).x; right && width <= max.x - min.x) min.x = max.x - width;
         PushStyleColor(ImGuiCol_Text, ImVec4{color.x, color.y, color.z, color.w});
@@ -1014,8 +995,6 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
         const auto sockets = NodeSockets(view, n);
         const auto [first, end_parameter] = ParameterRange(view, n);
         const bool erring = r.all_of<NodeError>(entity);
-        // Prioritize active, selected, then error border colors; retain an inner error line on selected nodes with errors.
-        // Center borders on the node edge to align them with socket centers.
         const bool active = n == active_node, is_selected = Selected(r, view, n);
         const auto border = active ? colors.Active : is_selected ? colors.Selected :
             erring                                               ? colors.Error :
@@ -1117,8 +1096,7 @@ bool ObjectChoice(const state::Registry &r, const char *label, state::Entity &va
     return changed;
 }
 
-// Commit attribute-name changes through SetAttributeName when the field deactivates.
-// Retain text for the single active ImGui field.
+// The panel holds the text of the one active field.
 void NameField(NodesPanel &panel, state::Entity node, const char *label, const AttributeName &name, bool interactive) {
     const auto id = GetID(label);
     if (panel.NameEditId != id) panel.NameEdit = name;
@@ -1180,7 +1158,6 @@ struct ParameterEdit : ui::FieldWidgets<Prefix...> {
             Status = nullptr;
             NameField(Panel, Node, label, ui::ReadChain<Prefix..., M>(Value), Interactive);
         } else if constexpr (std::same_as<F, mat4>) {
-            // A matrix shows its rows for reading.
             Status = nullptr;
             const auto &m = ui::ReadChain<Prefix..., M>(Value);
             for (int row = 0; row < 4; ++row) {
@@ -1213,7 +1190,6 @@ state::Entity ViewportObject(const state::Registry &r, state::Entity mesh) {
     return state::Null;
 }
 
-// Use inline selection for an unlinked selection input; an absent mask selects everything.
 void DrawInlineSelection(const state::Registry &r, state::Entity mesh_entity, const CookPlan &plan, uint32_t node, bool interactive) {
     if (plan.Nodes[node].Kind == KindOf<Subnet>) return;
     const auto sockets = NodeSockets(plan, node);
@@ -1229,6 +1205,7 @@ void DrawInlineSelection(const state::Registry &r, state::Entity mesh_entity, co
     const bool every = !selection || selection->All;
     const auto counts = every ? std::array<uint32_t, 3>{} : std::array{SelectedCount(selection->Vertices), SelectedCount(selection->Edges), SelectedCount(selection->Faces)};
     if (every) TextUnformatted("All elements");
+    else if (selection->Published) TextUnformatted("Published by the input");
     else if (counts == std::array<uint32_t, 3>{}) TextUnformatted("No elements");
     else Text("%u vertices, %u edges, %u faces", counts[0], counts[1], counts[2]);
     const auto *task = r.try_get<const SelectionEditing>(state::Document);
@@ -1246,7 +1223,7 @@ void DrawInlineSelection(const state::Registry &r, state::Entity mesh_entity, co
     ui::Describe("Edit selection...", "Select input vertices, edges or faces over the displayed result. Enter commits one undo step; Esc cancels.");
     SameLine();
     BeginDisabled(every);
-    if (Button("All") && interactive) action::Emit(action::nodes::SetInlineSelection{entity, std::make_unique<InlineSelection>(InlineSelection{.Domain = selection->Domain, .Active = selection->Active, .All = true})});
+    if (Button("All") && interactive) action::Emit(action::nodes::SetInlineSelection{entity, std::make_unique<InlineSelection>(InlineSelection{.Domain = selection->Domain, .All = true})});
     EndDisabled();
     ui::Describe("All", "Set the node's selection to all elements");
 }
@@ -1336,7 +1313,6 @@ void DrawNodesPanel(state::Registry &r, NodesPanel &panel, bool interactive) {
     state::Entity mesh_entity;
     const auto *plan = NetworkPlan(r, panel, mesh_entity);
     if (interactive && panel.LinkAfter != NoNode) {
-        // Commit node creation and linking at the wire's drop position as one gesture.
         if (plan && plan->Nodes.size() > panel.LinkAfter && panel.DragNode < plan->Nodes.size()) {
             action::Emit(LinkOf(*plan, mesh_entity, panel.DragNode, panel.DragSocket, panel.LinkAfter, panel.LinkSocket), action::Phase::Stage);
         }

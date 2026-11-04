@@ -45,8 +45,6 @@ namespace {
 
 using namespace he;
 
-// Lens fields shared by the camera object editor and the view camera editor.
-// Near and far clip bound each other.
 void RenderPerspectiveFields(auto &&fields, const Perspective &perspective) {
     const float far_max = std::max(perspective.NearClip + MinNearFarDelta, MaxFarClip);
     const float near_max = perspective.HasFarClip() ? std::max(perspective.FarClip - MinNearFarDelta, MinNearClip) : far_max;
@@ -107,7 +105,7 @@ std::string AttributeFlagsString(uint32_t flags) {
         if (!s.empty()) s += '|';
         s += tag;
     };
-    add("POS"); // Always present.
+    add("POS");
     if (flags & MeshAttributeBit_Normal) add("NRM");
     if (flags & MeshAttributeBit_Tangent) add("TAN");
     if (flags & MeshAttributeBit_Color0) add("COL0");
@@ -173,7 +171,6 @@ void EntityControls(state::Registry &r, state::Entity active_entity, state::Enti
         auto name = GetName(r, active_entity);
         ui::Gesture(InputText("Name", &name), [&] { return action::object::Rename{active_entity, name}; });
         ui::ActionField("Visible", !r.all_of<Hidden>(active_entity), [&](bool visible) { return action::object::SetVisible{visible, target_for(active_entity)}; }, {.Help = "Show this object in the viewport."});
-        // The objects outside the active object's subtree can parent it.
         const auto parents = [&] {
             std::vector<state::Entity> candidates{state::Null};
             for (const auto candidate : SortedEntities(r.view<const ObjectKind>())) {
@@ -239,7 +236,6 @@ void EntityControls(state::Registry &r, state::Entity active_entity, state::Enti
     }
     Unindent();
     const bool is_bone_edit = r.get<const Interaction>(state::Document).Mode == InteractionMode::Edit && active_bone_entity != state::Null && r.all_of<BoneDisplayScale>(active_bone_entity);
-    // A non-object active entity, like a procedure node, has no transform.
     if ((is_bone_edit || r.all_of<Transform>(active_entity)) && CollapsingHeader("Transform")) {
         if (is_bone_edit) {
             const auto &wt = *WorldTransformOf(r, active_bone_entity);
@@ -278,10 +274,8 @@ void EntityControls(state::Registry &r, state::Entity active_entity, state::Enti
                 }
             }
         } else {
-            // In Pose mode, edit the active bone rather than the armature.
             const bool is_pose_bone = r.get<const Interaction>(state::Document).Mode == InteractionMode::Pose && active_bone_entity != state::Null;
             const auto transform_entity = is_pose_bone ? active_bone_entity : active_entity;
-            // A bone edits its rest-relative delta, and an animated node edits its pose.
             const bool scale_locked = r.all_of<ScaleLocked>(transform_entity);
             const auto draw = [&](auto edit) {
                 ui::DrawFields<Transform, &Transform::S>(edit);
@@ -417,7 +411,6 @@ void EntityControls(state::Registry &r, state::Entity active_entity, state::Enti
 
                 if (feature_toggle("Transmission", PbrFeature::Transmission)) {
                     ui::DrawFields<Transmission>(fields.Sub<&PBRMaterial::Transmission>());
-                    // Volume applies only with transmission.
                     ui::DrawFields<Volume>(fields.Sub<&PBRMaterial::Volume>());
                 }
                 if (feature_toggle("Diffuse transmission", PbrFeature::DiffuseTrans)) ui::DrawFields<DiffuseTransmission>(fields.Sub<&PBRMaterial::DiffuseTransmission>());
@@ -482,7 +475,6 @@ void EntityControls(state::Registry &r, state::Entity active_entity, state::Enti
     } else if (const auto *mic = r.try_get<const RealImpactMicrophone>(active_entity)) {
         if (CollapsingHeader("Audio", ImGuiTreeNodeFlags_DefaultOpen)) {
             Text("Microphone index: %u", mic->Index);
-            // Target = sound object currently bound to this mic, else first sound object with a dataset Path.
             auto target = state::Entity{state::Null};
             for (const auto &[e, active] : r.view<const RealImpactActiveMicrophone>().each()) {
                 if (active.Entity == active_entity) {
@@ -515,10 +507,6 @@ void EntityControls(state::Registry &r, state::Entity active_entity, state::Enti
     }
     physics_ui::RenderEntityProperties(r, active_entity, explicit_target);
 
-    // glTF metadata: round-trip-only source state on the active entity.
-    // TODO: surface per-material source metadata here once material editing UI exists:
-    //   - `extras` JSON via SourceAssets::ExtrasByEntity[(Category::Materials, source_index)]
-    //   - `MaterialSourceMeta::ExtensionPresence` bits (which extension blocks the source had)
     if (const auto *sa = r.try_get<const gltf::SourceAssets>(state::Document)) {
         const auto mesh_entity = active_instance ? active_instance->Entity : state::Null;
         const auto *mesh_layout = mesh_entity != state::Null ? r.try_get<const MeshSourceLayout>(mesh_entity) : nullptr;
@@ -591,7 +579,7 @@ void RenderControls(state::Registry &r) {
                     AlignTextToFramePadding();
                     TextUnformatted("Edit mode:");
                     auto type_interaction_mode = int(edit_mode);
-                    for (const auto element : Elements) {
+                    for (const auto element : SelectionElements) {
                         SameLine();
                         if (RadioButton(field::EnumLabel(element), &type_interaction_mode, int(element))) action::Emit(action::view::SetEditMode{.Mode = element});
                     }
@@ -603,8 +591,6 @@ void RenderControls(state::Registry &r) {
                     const uint32_t selected_count = active_stats ? active_stats->SelectedCount : 0u;
                     const auto sharpness = flags.ElementSharpness;
                     if (active_mesh != state::Null) Text("Editing %s: %u selected", label(edit_mode).data(), selected_count);
-                    // Apply face shading or sharp-edge updates to selected elements.
-                    // Vertex mode marks every edge incident to a selected vertex.
                     if (edit_mode != Element::None) {
                         if (sharpness != SelectionSharpness::None) {
                             const bool mixed = sharpness == SelectionSharpness::Mixed;
@@ -639,7 +625,6 @@ void RenderControls(state::Registry &r) {
                 BeginDisabled(scenes.size() == 1);
                 if (Button("Delete")) action::Emit(action::scene::Remove{acting});
                 EndDisabled();
-                // The field holds the edited name while active and the scene's name otherwise.
                 static char name[128];
                 static bool editing = false;
                 const auto &current_name = r.get<const Name>(acting).Value;
@@ -652,23 +637,10 @@ void RenderControls(state::Registry &r) {
             if (CollapsingHeader("Object tree", ImGuiTreeNodeFlags_DefaultOpen)) RenderObjectTree(r);
             SeparatorText("");
             if (CollapsingHeader("Add object")) {
-                static constexpr std::array Primitives{
-                    PrimitiveParameters{primitive::Plane{}},
-                    PrimitiveParameters{primitive::Circle{}},
-                    PrimitiveParameters{primitive::Cube{}},
-                    PrimitiveParameters{primitive::IcoSphere{}},
-                    PrimitiveParameters{primitive::UVSphere{}},
-                    PrimitiveParameters{primitive::QuadSphere{}},
-                    PrimitiveParameters{primitive::Torus{}},
-                    PrimitiveParameters{primitive::Cylinder{}},
-                    PrimitiveParameters{primitive::Cone{}},
-                };
-                for (uint32_t i = 0; i < Primitives.size(); ++i) {
+                for (uint32_t i = 0; i < primitive::Presets.size(); ++i) {
                     if (i % 4 != 0) SameLine();
-                    const auto &parameters = Primitives[i];
-                    if (Button(std::visit([]<typename K>(const K &) { return procedure::Title<K>.c_str(); }, parameters))) {
-                        action::Emit(action::object::AddMeshPrimitive{parameters, std::make_unique<MeshInstanceCreateInfo>()});
-                    }
+                    const auto &[label, parameters] = primitive::Presets[i];
+                    if (Button(label)) action::Emit(action::object::AddMeshPrimitive{parameters, std::make_unique<MeshInstanceCreateInfo>()});
                 }
                 Spacing();
                 if (Button("Empty")) action::Emit(action::object::AddEmpty{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
@@ -701,9 +673,9 @@ void RenderControls(state::Registry &r) {
                         const bool mixed_smooth = sharpness == SelectionSharpness::Mixed;
                         SameLine();
                         if (mixed_smooth) PushItemFlag(ImGuiItemFlags_MixedValue, true);
-                        if (bool set_smooth = sharpness == SelectionSharpness::Smooth; Checkbox("Smooth shading", &set_smooth)) action::Emit(action::object::SetSelectedSmoothShading{set_smooth});
+                        if (bool set_smooth = sharpness == SelectionSharpness::Smooth; Checkbox("Smooth shading", &set_smooth)) action::Emit(action::object::ShadeSelected{set_smooth ? procedure::ShadeMode::Smooth : procedure::ShadeMode::Flat});
                         if (mixed_smooth) PopItemFlag();
-                        if (Button("Smooth by angle")) action::Emit(action::object::ShadeSelectedSmoothByAngle{r.get<const ShadeSmoothAngle>(state::Document).Value});
+                        if (Button("Smooth by angle")) action::Emit(action::object::ShadeSelected{procedure::ShadeMode::ByAngle, r.get<const ShadeSmoothAngle>(state::Document).Value});
                         SameLine();
                         SetNextItemWidth(GetFontSize() * 6);
                         ui::Edit{r, state::Document}.Draw<&ShadeSmoothAngle::Value>("##SmoothByAngle");
@@ -729,7 +701,6 @@ void RenderControls(state::Registry &r) {
                         EndPopup();
                     }
                     if (BeginPopup("##UnlinkScene")) {
-                        // A selected object's root leaves a scene only when it stays in another.
                         std::vector<state::Entity> unlinkable;
                         for (const auto e : SelectedIn(r)) {
                             if (const auto &scenes = RootMembership(r, e)->Scenes; scenes.size() > 1) unlinkable.append_range(scenes);
@@ -775,7 +746,7 @@ void RenderControls(state::Registry &r) {
                     if (changed) f.Set<&ViewportDisplay::MotionBlur>(std::optional{mb});
                 }
             }
-            // Direct mutation outside Apply: not replayable document state.
+            // A direct write outside Apply, since the flag is engine state that never replays.
             if (Button("Recompile shaders")) r.Resources.get<FrameState>().RecompileShaders = true;
 
             if (!SelectedIn(r).empty()) {
@@ -787,7 +758,7 @@ void RenderControls(state::Registry &r) {
 
         if (BeginTabItem("Camera")) {
             const auto viewport = FindActiveViewport(r);
-            const auto &camera = r.get<const ViewCameraState>(viewport).Active;
+            const auto camera = ViewCameraOf(r, viewport);
             const float viewport_aspect = AspectRatio(r.get<const ViewportPanel>(viewport).Extent);
             if (Button("Reset##Camera")) action::Emit(action::view::ResetViewCamera{viewport});
             {
@@ -929,7 +900,6 @@ static void RenderObjectTree(state::Registry &r) {
     };
     const auto &outliner = r.get<const OutlinerRows>(state::Document);
     const auto &rows = outliner.Rows;
-    // Mutates `out` so begin and end batches fold into a single action.
     using Clear = action::selection::ApplyTreeSelection::ClearKind;
     const auto resolve_into = [&](action::selection::ApplyTreeSelection &out, std::span<const ImGuiSelectionRequest> requests, ImGuiSelectionUserData nav_item) {
         const auto add_target = [&](state::Entity e, bool selected) {
@@ -994,7 +964,6 @@ static void RenderObjectTree(state::Registry &r) {
 
         SetCursorPosX(row_x + float(row.Depth) * indent);
         SetNextItemSelectionUserData(ToSelectionUserData(e));
-        // ImGui keeps each row's open state, so the rows follow it and the workspace restores it.
         const bool open = TreeNodeEx(reinterpret_cast<void *>(uintptr_t(uint32_t(e))), flags, "%s", GetName(r, e).c_str());
         if (row.HasChildren && open != outliner.Open.contains(e)) toggled.push_back(e);
         SameLine();
@@ -1009,14 +978,12 @@ static void RenderObjectTree(state::Registry &r) {
 
     ImGuiListClipper clipper;
     clipper.Begin(int(rows.size()));
-    // The range source row stays submitted while scrolled out of view.
     if (const auto source = outliner.Find(FromSelectionUserData(ms_begin->RangeSrcItem))) clipper.IncludeItemByIndex(int(*source));
     while (clipper.Step()) {
         for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) render_row(rows[i]);
     }
     if (rows.empty()) TextDisabled("No objects");
 
-    // BeginMultiSelect and EndMultiSelect can produce the same selection update.
     action::selection::ApplyTreeSelection tree_selection;
     resolve_into(tree_selection, begin_requests, begin_nav_item);
     const auto *ms_end = EndMultiSelect();

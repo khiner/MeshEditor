@@ -2,8 +2,7 @@
 #include "ElementWorkShared.metal"
 #include "gpu/FaceAttributeEditPushConstants.h"
 
-// Each face exclusively owns its corners.
-// Permute in place without an attribute copy.
+// Each face exclusively owns its corners, so the permutation runs in place.
 template<typename T>
 void PermuteCorners(device T *values, SlotOffset at, uint2 range, uint operation) {
     const auto index = [&](uint h) { return at.Offset + h; };
@@ -29,7 +28,7 @@ kernel void EditFaceUvs(uint i [[thread_position_in_grid]],
     constant FaceAttributeEditPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
     if (i >= pc.Count) return;
     const uint face = ElementWorkDomain{b, pc.Faces}.Handle(i);
-    const ConnectivityView conn{b, pc.Connectivity, pc.FaceCount};
+    const ConnectivityView conn{b, pc.Connectivity};
     const auto range = conn.FaceHalfedges(face);
     PermuteCorners(BindlessBufferMutable(packed_float2, b.CornerUvBuffer, pc.Attribute.Slot), pc.Attribute, range, pc.Operation);
     // Zero tangents select the renderer's derivative frame using the material's UV set.
@@ -44,6 +43,6 @@ kernel void EditFaceColors(uint i [[thread_position_in_grid]],
     constant FaceAttributeEditPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
     if (i >= pc.Count) return;
     const uint face = ElementWorkDomain{b, pc.Faces}.Handle(i);
-    const ConnectivityView conn{b, pc.Connectivity, pc.FaceCount};
+    const ConnectivityView conn{b, pc.Connectivity};
     PermuteCorners(BindlessBufferMutable(packed_float4, b.CornerColorBuffer, pc.Attribute.Slot), pc.Attribute, conn.FaceHalfedges(face), pc.Operation);
 }

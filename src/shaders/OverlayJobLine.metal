@@ -1,6 +1,4 @@
-#ifndef OVERLAYJOBLINE_MSL
-#define OVERLAYJOBLINE_MSL
-
+#pragma once
 #include "SceneUBO.metal"
 #include "ObjectExtrasTransform.metal"
 #include "LineQuad.metal"
@@ -31,7 +29,6 @@ inline float3 CirclePoint(uint segment, uint end, uint segments, float radius, f
     return float3(radius * cos(angle), radius * sin(angle), z);
 }
 
-// Returns a diamond corner in wireframe order.
 inline float3 DiamondPoint(uint corner, float radius, float3 axis1, float3 axis2) {
     const float3 axes[4] = {axis1, axis2, -axis1, -axis2};
     return axes[corner % 4u] * radius;
@@ -111,7 +108,6 @@ inline ExtrasLineVertex ExtrasLineVertexAt(OverlayJob job, uint line, uint end, 
             float3(-half_w, -half_h, -depth), float3(half_w, -half_h, -depth),
             float3(half_w, half_h, -depth), float3(-half_w, half_h, -depth)
         };
-        // Preserve the frame when projection collapses the remaining camera geometry.
         if (line < 4u) return {frame[(line + end) % 4u], VCLASS_NONE};
         if (line < 8u) {
             const uint corner = line - 4u;
@@ -124,7 +120,6 @@ inline ExtrasLineVertex ExtrasLineVertexAt(OverlayJob job, uint line, uint end, 
         return {look_through ? frame[0] : tria[(line - 8u + end) % 3u], VCLASS_NONE};
     }
 
-    // Append the shared halo after type-specific light geometry.
     const float range = params.x, outer_radius = params.y, inner_radius = params.z;
     const bool rings_range = job.ExtrasKind != ExtrasLineKind::LightDirectional && range > 0.0f;
     const uint range_lines = rings_range ? LightRangeSegments : 0u;
@@ -247,5 +242,3 @@ inline float4 OverlayJobClipVertex(
     const uint object_id = BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[job.InstanceIndex].ObjectId;
     EmitStroke(output, thread_index, scene, clip, end, color, object_id);
 }
-
-#endif

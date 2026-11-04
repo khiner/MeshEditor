@@ -1,6 +1,4 @@
-#ifndef TRANSFORMUTILS_MSL
-#define TRANSFORMUTILS_MSL
-
+#pragma once
 #include "gpu/AABB.h"
 #include "Bindless.metal"
 
@@ -47,7 +45,7 @@ inline OrientedBounds TransformBounds(AABB bounds, Transform world) {
     };
 }
 
-// KHR_texture_transform: scale, then rotate, then offset.
+// KHR_texture_transform applies scale, then rotation, then offset.
 inline float2 ApplyUvTransform(float2 uv, float2 uv_offset, float2 uv_scale, float uv_rotation) {
     const float s = sin(uv_rotation);
     const float c = cos(uv_rotation);
@@ -58,12 +56,9 @@ inline float2 ApplyUvTransform(float2 uv, float2 uv_offset, float2 uv_scale, flo
     return (uv_transform * float3(uv, 1.0f)).xy;
 }
 
-// The screen-space UV gradient under the same scale and rotation.
 inline float2 TransformUvGradient(float2 gradient, float2 uv_scale, float uv_rotation) {
     const float s = sin(uv_rotation);
     const float c = cos(uv_rotation);
     const float2 scaled = gradient * uv_scale;
     return float2(c * scaled.x - s * scaled.y, s * scaled.x + c * scaled.y);
 }
-
-#endif

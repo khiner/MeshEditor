@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <bit>
 #include <format>
+#include <print>
 
 namespace mtl {
 namespace {
@@ -92,6 +93,7 @@ Context::Context() {
 
 Context::~Context() {
     const AutoreleaseScope pool;
+    const TeardownScope teardown{*this};
     if (MappingEvent) {
         DrainMappings();
         TrimPageCache(0u);
@@ -110,7 +112,6 @@ Context::~Context() {
 
 Command Context::Begin() const {
     const AutoreleaseScope pool;
-    // Slots whose commits completed take new recordings.
     std::erase_if(InFlightSlots, [&](uint32_t index) {
         if (!Completed(Slots[index]->Serial)) return false;
         Slots[index]->Allocator->reset();
@@ -185,7 +186,7 @@ bool Context::Completed(uint64_t serial) const { return CompletionEvent->signale
 
 Completion Context::Wait(uint64_t serial) const {
     if (serial == 0u) return {};
-    if (!CompletionEvent->waitUntilSignaledValue(serial, WaitTimeoutMs)) throw std::runtime_error("A committed Metal command did not complete.");
+    Await(*CompletionEvent.get(), serial, "A committed Metal command did not complete.");
     std::unique_lock lock{Feedbacks->Mutex};
     Feedbacks->Ready.wait(lock, [&] { return Feedbacks->Entries[serial % FeedbackRing].Serial >= serial; });
     const auto &entry = Feedbacks->Entries[serial % FeedbackRing];
@@ -193,8 +194,16 @@ Completion Context::Wait(uint64_t serial) const {
     return entry.Serial == serial ? entry.Result : Completion{};
 }
 
-void Context::WaitIdle() const {
-    if (CommitSerial) (void)Wait(CommitSerial);
+void Context::WaitIdle() const { (void)Wait(CommitSerial); }
+
+Context::TeardownScope::TeardownScope(const Context &ctx) : Ctx(ctx), Outer(std::exchange(ctx.TearingDown, true)) {}
+Context::TeardownScope::~TeardownScope() { Ctx.TearingDown = Outer; }
+
+void Context::Await(MTL::SharedEvent &event, uint64_t value, const char *failure) const {
+    if (event.waitUntilSignaledValue(value, WaitTimeoutMs)) return;
+    if (!TearingDown) throw std::runtime_error(failure);
+    std::println(stderr, "{} Teardown keeps waiting for it.", failure);
+    while (!event.waitUntilSignaledValue(value, WaitTimeoutMs)) {}
 }
 
 void Context::AddResident(MTL::Allocation *resource) const {
@@ -221,11 +230,10 @@ void Context::UpdateMappings(const std::vector<MappingCommand> &commands) const 
         Queue->updateBufferMappings(command.Destination, command.Heap, command.Operations.data(), command.Operations.size());
     }
     Queue->signalEvent(MappingEvent.get(), ++MappingSerial);
-    if (!MappingEvent->waitUntilSignaledValue(MappingSerial, WaitTimeoutMs)) throw std::runtime_error("A Metal sparse mapping update did not complete.");
+    Await(*MappingEvent.get(), MappingSerial, "A Metal sparse mapping update did not complete.");
 }
 
 void Context::UpdatePendingMappings() const {
-    // Collect each buffer's consecutive heap runs into one native update with multiple mapping operations.
     std::vector<MappingCommand> commands;
     std::unordered_map<MTL::Buffer *, size_t> last_batch;
     for (const auto &mapping : PendingMappings) {
@@ -384,7 +392,6 @@ void SetThreadgroupMemoryLength(ComputeEncoder encoder, uint32_t length, uint32_
 uint64_t Command::Upload(std::span<const std::byte> bytes) {
     auto &slot = Slot();
     const auto size = (uint64_t(bytes.size()) + UploadAlignment - 1u) / UploadAlignment * UploadAlignment;
-    // Advance to the first chunk with room, allocating one of the chunk size or the upload's own size.
     while (slot.Chunk < slot.Uploads.size() && slot.Used + size > slot.Uploads[slot.Chunk].Length()) {
         ++slot.Chunk;
         slot.Used = 0u;

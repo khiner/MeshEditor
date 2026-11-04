@@ -1,16 +1,13 @@
-#ifndef ARMATURE_DEFORM_MSL
-#define ARMATURE_DEFORM_MSL
-
+#pragma once
 // Applies armature deformation in mesh-local space and returns the input when no deform data exists.
 #include "Bindless.metal"
 
-// `deform_slot` selects current, shutter-open, or shutter-close pose matrices.
 template<typename SetT>
-inline float3 ApplyArmatureDeform(const thread SceneT<SetT> &scene, DrawData draw, float3 position, uint vertex_index, thread float3 &normal, uint deform_slot) {
+inline float3 ApplyArmatureDeform(const thread SceneT<SetT> &scene, DrawData draw, float3 position, uint vertex_index, thread float3 &normal) {
     if (draw.BoneDeformOffset == InvalidOffset) return position;
 
     const BoneDeformVertex bd=scene.BoneDeforms(draw.Skin.Slot)[draw.Skin.Offset+vertex_index];
-    device const mat4 *matrices = scene.ArmatureDeforms(deform_slot);
+    device const mat4 *matrices = scene.ArmatureDeforms(scene.View.ArmatureDeformSlot);
     const float4 weights = float4(bd.Weights);
     const uint4 joints = uint4(bd.Joints);
 
@@ -23,10 +20,3 @@ inline float3 ApplyArmatureDeform(const thread SceneT<SetT> &scene, DrawData dra
     normal = normalize(float3x3(deform[0].xyz, deform[1].xyz, deform[2].xyz) * normal);
     return (deform * float4(position, 1.0f)).xyz;
 }
-
-template<typename SetT>
-inline float3 ApplyArmatureDeform(const thread SceneT<SetT> &scene, DrawData draw, float3 position, uint vertex_index, thread float3 &normal) {
-    return ApplyArmatureDeform(scene, draw, position, vertex_index, normal, scene.View.ArmatureDeformSlot);
-}
-
-#endif

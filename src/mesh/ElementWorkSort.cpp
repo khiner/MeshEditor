@@ -6,7 +6,7 @@
 #include "mesh/TiledJobBatch.h"
 
 namespace {
-uint32_t TemporaryWords(uint32_t capacity) { return capacity + 16u * ((capacity + 255u) / 256u) + 16u; }
+uint32_t TemporaryWords(uint32_t capacity) { return capacity + 16u * TileCount(capacity, TileElements) + 16u; }
 } // namespace
 
 uint32_t SortElementWorkWords(uint32_t capacity) { return TemporaryWords(capacity) + sizeof(ElementWorkSortJob) / sizeof(uint32_t); }
@@ -30,13 +30,13 @@ void EncodeSortElementWork(state::Registry &r, mtl::ComputeChain &chain, std::sp
         capacity = std::max(capacity, domain.Capacity);
         // Work keys are one-based 256-element block numbers.
         // Higher radix digits are zero for every key in this domain and need no passes.
-        largest_key = std::max(largest_key, uint32_t((uint64_t(domain.Count) + 255u) / 256u));
+        largest_key = std::max(largest_key, TileCount(domain.Count, TileElements));
     }
     const auto at = storage.Allocate(uint32_t(jobs.size()) * sizeof(ElementWorkSortJob) / sizeof(uint32_t));
     storage.Buffer.Update(BytesOf(jobs), uint64_t(at.Offset) * sizeof(uint32_t));
     ElementWorkSortPushConstants pc{.Jobs = {storage.Buffer.Slot, at.Offset}};
     const auto &pipelines = GetMeshPipelines(r);
-    const auto domains = uint32_t(work.size()), groups = (capacity + 255u) / 256u;
+    const auto domains = uint32_t(work.size()), groups = TileCount(capacity, TileElements);
     // Each pass alternates the order and temporary arrays.
     // An even number of passes leaves the final order in its canonical array for FinishWork.
     const uint32_t passes = std::max(2u, 2u * ((std::bit_width(largest_key) + 7u) / 8u));

@@ -1,6 +1,4 @@
-#ifndef OBJECT_EXTRAS_TRANSFORM_MSL
-#define OBJECT_EXTRAS_TRANSFORM_MSL
-
+#pragma once
 #include "Bindless.metal"
 #include "brdf.metal"
 
@@ -21,7 +19,7 @@ inline float3 ObjectExtrasWorldPos(const thread SceneT<SetT> &scene, Transform w
         const float3 up = abs(to_camera.y) > 0.999f ? float3(0, 0, 1) : float3(0, 1, 0);
         const float3 right = normalize(cross(up, to_camera));
         const float3 basis_up = cross(to_camera, right);
-        // Positive ScreenPixelScale applies perspective distance; negative values give an orthographic pixel scale.
+        // A positive ScreenPixelScale scales by perspective distance, and a negative one is an orthographic pixel scale.
         float scale = 1.0f;
         if (vertex_class == VCLASS_SCREENSPACE) {
             scale = scene.View.ScreenPixelScale > 0.0f ? dist * scene.View.ScreenPixelScale : -scene.View.ScreenPixelScale;
@@ -29,7 +27,6 @@ inline float3 ObjectExtrasWorldPos(const thread SceneT<SetT> &scene, Transform w
         return object_origin + (right * vert_pos.x + basis_up * vert_pos.y) * scale;
     }
     if (vertex_class == VCLASS_SPOT_CONE) {
-        // Collapse non-silhouette spot-cone spokes to the apex, matching Blender's overlay_extra_vert.glsl.
         const float4x4 M = trs_to_mat4(world);
         const float3 world_pos = (M * float4(vert_pos, 1.0f)).xyz;
 
@@ -50,7 +47,6 @@ inline float3 ObjectExtrasWorldPos(const thread SceneT<SetT> &scene, Transform w
         return (facing0 == facing1) ? object_origin : world_pos;
     }
     if (vertex_class == VCLASS_GROUNDPOINT) {
-        // Interpolate vert_pos.y from the ground plane to the object origin while keeping the ground diamond pixel-sized.
         const float scale = scene.View.ScreenPixelScale > 0.0f
             ? length(camera_position - object_origin) * scene.View.ScreenPixelScale
             : -scene.View.ScreenPixelScale;
@@ -59,5 +55,3 @@ inline float3 ObjectExtrasWorldPos(const thread SceneT<SetT> &scene, Transform w
 
     return trs_transform_point(world, vert_pos);
 }
-
-#endif

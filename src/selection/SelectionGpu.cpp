@@ -5,8 +5,6 @@
 #include "selection/SelectionState.h"
 #include "state/Registry.h"
 
-#include <Metal/MTLCommandQueue.hpp>
-
 #include "Profile.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
@@ -61,10 +59,9 @@ namespace {
 struct SelectionRequest {
     state::Entity MeshEntity;
     EditSelectionOperation Operation;
-    std::span<const uint32_t> List{}; // Source element handles, for FillList.
+    std::span<const uint32_t> List{};
 };
 
-// Writes the source-domain words in place, then derives the other domains and the aggregates on the GPU.
 // `picked` is an arena address, and `query` merges the pending box query.
 void ApplySelection(state::Registry &, std::span<const SelectionRequest>, Element, std::optional<ElementAddress> picked = {}, bool query = false);
 std::vector<SelectionRequest> SelectionRequests(std::span<const ElementRange> ranges, EditSelectionOperation operation) {
@@ -87,7 +84,7 @@ void SubmitSelectionPasses(state::Registry &r, auto &&record) {
     const mtl::AutoreleaseScope native_scope;
     const auto &ctx = r.Resources.get<const mtl::Context>();
     auto command = ctx.Begin();
-    { // End the final pass before submission.
+    { // The final pass ends before submission.
         const struct RecordingScope {
             RecordingScope() { profile::BeginRecording(); }
             ~RecordingScope() { profile::EndRecording(); }
@@ -111,12 +108,10 @@ std::optional<PixelRect> ClampedRect(uvec2 lo, uvec2 hi, mtl::Extent2D target) {
     return PixelRect{lo, hi - lo};
 }
 
-// The pixels an inclusive box covers within the target, or empty when it covers none.
 std::optional<PixelRect> BoxRect(uvec4 box, mtl::Extent2D target) {
     return ClampedRect({box.x, box.y}, {uint32_t(std::min<uint64_t>(uint64_t{box.z} + 1u, target.Width)), uint32_t(std::min<uint64_t>(uint64_t{box.w} + 1u, target.Height))}, target);
 }
 
-// The pixels within the pick radius of `px`, or empty when none lie in the target.
 std::optional<PixelRect> RadiusRect(uvec2 px, uint32_t radius_sq, mtl::Extent2D target) {
     const auto radius = uint32_t(std::ceil(std::sqrt(float(radius_sq))));
     return ClampedRect(
@@ -157,9 +152,7 @@ std::optional<uint32_t> ReadNearestPickedElement(const GpuBuffers &buffers, uint
     return id - 1;
 }
 
-// Rasterize ids and depth for the query rectangle with every surface opaque.
-// Selection mode adds lines and points so object queries can hit them.
-// Visibility mode leaves them out so elements are occluded by surfaces only, never by wire geometry.
+// Visibility mode leaves them out so surfaces alone occlude elements.
 void RecordSelectionVisibility(
     state::Registry &r, const Viewport &viewport, mtl::PassChain &chain, const PixelRect &rect, MeshletRouteMode mode,
     bool exact_edit_geometry = false
@@ -172,8 +165,6 @@ void RecordSelectionVisibility(
     RecordMeshletVisibilityPass(chain, slots, pipelines, viewport, buffers, false, 0u, rect);
 }
 
-// A depth rectangle rasterizes selection depth for the query so the draws test against it, with exact edit geometry when `exact_depth`.
-// Picks raster twice; boxes raster once.
 void RunSelectionPass(
     state::Registry &r, const Viewport &viewport, mtl::PassChain &chain, std::optional<PixelRect> depth_rect, bool exact_depth,
     std::optional<MeshletCullConfig> meshlet_cull, bool pick, auto &&record_draws
@@ -191,7 +182,6 @@ void RunSelectionPass(
     const auto extent = screen.ScratchDepth.Extent;
     const uint32_t raster_passes = pick ? 2u : 1u;
     for (uint32_t index = 0; index < raster_passes; ++index) {
-        // Scene depth remains valid for shading and later picks; depth-free queries need no scratch contents.
         const auto depth = depth_rect ? mtl::LoadDepth(*screen.VisibilityDepth) :
                                         mtl::DepthAttachment{*screen.ScratchDepth, MTL::LoadActionDontCare, MTL::StoreActionDontCare};
         const auto pass = mtl::MakePassDescriptor({}, depth);
@@ -225,7 +215,6 @@ void RenderElementSelectionPass(
     const auto target = viewport.Targets.Screen->ScratchDepth.Extent;
     const auto query_rect = write_bitset ? BoxRect({box_min.x, box_min.y, box_max.x, box_max.y}, target) : RadiusRect(pick->Px, pick->RadiusSq, target);
     if (!query_rect) return;
-    // Vertices draw from the canonical vertex blocks of each mesh's primary edit instance.
     const auto &primaries = r.get<const EditPrimaries>(state::Document).All;
     RunSelectionPass(
         r, viewport, chain, xray_selection ? std::nullopt : query_rect, true,
@@ -238,7 +227,6 @@ void RenderElementSelectionPass(
         [&](mtl::RenderEncoder encoder, mtl::Extent2D, bool resolve_id) {
             const SelectionElementPushConstants element_pc{MakeElementQuery(sel_slots, {box_min.x, box_min.y, box_max.x, box_max.y}, write_bitset ? meshes.Arenas().Query.Ref() : SelectionQueryRef{}, pick, resolve_id)};
             if (write_bitset) encoder->setScissorRect({query_rect->Origin.x, query_rect->Origin.y, query_rect->Extent.x, query_rect->Extent.y});
-            // Edges draw once per triangle corner.
             const auto draw_edges = [&] {
                 for (uint32_t corner = 0u; corner < 3u; ++corner) {
                     DrawMeshlets(encoder, buffers, 0u, uint32_t(MeshletInstanceFlag::ElementSelection), 160u, corner);
@@ -295,7 +283,6 @@ std::optional<ElementHit> RunEditElementPick(
 }
 
 namespace {
-// The pixels a query covers, or empty when the box or radius picks nothing.
 std::optional<PixelRect> ObjectQueryRect(const ObjectSelectQuery &query, mtl::Extent2D target) {
     if (query.BoxResultSlot != InvalidSlot) return BoxRect(query.Box, target);
     if (query.BestKeySlot != InvalidSlot) return RadiusRect(query.TargetPx, query.RadiusSq, target);
@@ -326,7 +313,6 @@ void RecordVisibilityObjectSelection(
 }
 
 // `through` rasters every covered surface for an object box instead of the visible surface alone.
-// A sound instance picks among its mesh's selected vertices.
 void RenderSelectionPickPass(state::Registry &r, const Viewport &viewport, mtl::PassChain &chain, std::optional<ObjectSelectQuery> object, bool through, state::Entity sound_instance = state::Null, std::optional<ElementPickTarget> pick = {}) {
     const auto &sel_slots = r.Resources.get<const SelectionSlots>();
     auto &buffers = r.Resources.get<GpuBuffers>();
@@ -335,7 +321,6 @@ void RenderSelectionPickPass(state::Registry &r, const Viewport &viewport, mtl::
     const bool raster_all = object && (object->BestKeySlot != InvalidSlot || through);
     if (object) {
         if (raster_all) {
-            // Click cycling and X-ray boxes need every covered surface, including occluded objects.
             RecordMeshletCull(chain, r.Resources.get<const mtl::BindlessSet>(), pipelines, buffers, viewport, {.Mode = MeshletRouteMode::Selection});
         } else {
             RecordVisibilityObjectSelection(r, viewport, chain, *object);
@@ -449,7 +434,6 @@ void ReserveObjectPicking(state::Registry &r, uint32_t count) {
     slots.SetBuffer({SlotType::Buffer, selection.ObjectBoxBitset}, *buffers.ObjectBoxBitset);
 }
 
-// Sizes the object query buffers to the live entities and returns the highest object id a query may report, or zero without entities.
 uint32_t PrepareObjectQuery(state::Registry &r) {
     const uint32_t next_object_id = r.EntityCapacity() + 1;
     if (next_object_id <= 1) return 0;
@@ -458,7 +442,6 @@ uint32_t PrepareObjectQuery(state::Registry &r) {
     return max_object_id;
 }
 
-// Calls `fn(index, entity)` for each rendered entity whose bit is set, in object-id order.
 void ForEachHitObject(const state::Registry &r, std::span<const uint32_t> bits, uint32_t max_object_id, auto &&fn) {
     for (uint32_t word = 0; word < (max_object_id + 31) / 32; ++word) {
         for (auto set = bits[word]; set; set &= set - 1u) {
@@ -477,7 +460,7 @@ std::vector<state::Entity> RunObjectPick(state::Registry &r, state::Entity viewp
     const auto &sel_slots = r.Resources.get<const SelectionSlots>();
     auto &buffers = r.Resources.get<GpuBuffers>();
     const profile::CpuScope scope{"RunObjectPick"};
-    // The high byte rejects stale keys; clear on first use and whenever the 8-bit epoch wraps.
+    // The high byte rejects stale keys, and the keys clear on first use and whenever the 8-bit epoch wraps.
     if (buffers.ObjectPickEpochTag == 0) {
         std::ranges::fill(buffers.ObjectPickKeys.GetMutableSpan<uint32_t>(), std::numeric_limits<uint32_t>::max());
         buffers.ObjectPickEpochTag = 255;
@@ -552,17 +535,13 @@ std::vector<state::Entity> RunBoxSelect(state::Registry &r, state::Entity viewpo
 }
 
 namespace {
-constexpr std::array SelectionElements{Element::Vertex, Element::Edge, Element::Face};
-constexpr std::array SelectionDomains{MeshStore::ElementDomain::Vertex, MeshStore::ElementDomain::Edge, MeshStore::ElementDomain::Face};
-
 void ApplySelection(state::Registry &r, std::span<const SelectionRequest> requests, Element element, std::optional<ElementAddress> picked, bool query) {
     if (requests.empty() || element == Element::None) return;
     const profile::CpuScope scope{"ApplySelection"};
     auto &meshes = r.Resources.get<MeshStore>();
     const auto &arenas = meshes.Arenas();
-    const auto source = uint32_t(std::ranges::find(SelectionElements, element) - SelectionElements.begin());
+    const auto source = SelectionIndexOf(element);
     const std::array memberships{arenas.Vertices.Blocks.Buffer.GetSpan<MeshElementBlock>(), arenas.EdgeHalfedges.Blocks.Buffer.GetSpan<MeshElementBlock>(), arenas.FaceTriangles.Blocks.Buffer.GetSpan<MeshElementBlock>()};
-    // The query contains one canonical word per first hit, across every queried mesh.
     std::vector<std::pair<uint32_t, uint32_t>> query_words;
     if (query) {
         const auto &pending = arenas.Query;
@@ -593,17 +572,12 @@ void ApplySelection(state::Registry &r, std::span<const SelectionRequest> reques
         const auto bits = meshes.GetSelectedElements(id, element).Bits;
         const auto hidden = meshes.GetHiddenElements(id, element).Bits;
         auto &update = updates.emplace_back(MeshStore::SelectionUpdate{.StoreId = id, .Source = element});
-        // Replacement or rederivation must update every block containing a selected element in any domain.
         std::array<std::vector<uint32_t>, 3> selected;
         if (replace || rederive || operation == EditSelectionOperation::CaptureBaseline) {
             for (uint32_t d = 0u; d < 3u; ++d) {
-                // Block order does not matter here, so the visit takes the index's order.
                 const auto view = meshes.GetSelectedElements(id, SelectionElements[d]);
                 if (view.Count()) {
-                    view.Tree.Visit(view.Kind, false, [&](uint32_t block) {
-                        selected[d].push_back(block);
-                        return true;
-                    });
+                    view.Tree.Visit(view.Kind, [&](uint32_t block) { selected[d].push_back(block); });
                 }
             }
         }
@@ -652,7 +626,6 @@ void ApplySelection(state::Registry &r, std::span<const SelectionRequest> reques
                 for (uint32_t w = 0u; w < MeshElementBlockWords; ++w) words[w] = memberships[source][block].Live[w] & ~hidden[block * MeshElementBlockWords + w];
             });
         } else {
-            // Replacement dirties the old selection's blocks, so only added bits seed their neighbors.
             auto next = additions.begin();
             meshes.EditSelectionBlocks(element, blocks, [&](uint32_t block, auto &words) {
                 for (uint32_t w = 0u; w < MeshElementBlockWords; ++w) {
@@ -698,7 +671,7 @@ std::optional<ElementHit> ApplyEditElementPick(state::Registry &r, std::span<con
     if (hit && std::ranges::contains(ranges, hit->MeshEntity, &ElementRange::MeshEntity)) {
         const auto id = DrawnStoreId(r, hit->MeshEntity);
         if (id && meshes.IsLiveElement(*id, element, ElementHandle{hit->Handle})) {
-            const auto domain = SelectionDomains[std::countr_zero(uint32_t(element))];
+            const auto domain = SelectionDomains[SelectionIndexOf(element)];
             picked = meshes.HandleAddress(*id, domain, ElementHandle{hit->Handle});
         }
     }
@@ -753,7 +726,6 @@ void ConvertElementSelections(state::Registry &r, std::span<const state::Entity>
         r.remove<MeshActiveElement>(mesh_entity);
         if (mode == Element::None) continue;
         const Mesh mesh{meshes, id};
-        // A mesh with every element selected keeps its bits in every domain.
         if (std::ranges::all_of(SelectionElements, [&](Element element) { return meshes.GetSelectedElements(id, element).Count() == mesh.ElementCount(element); })) all_selected.push_back(mesh_entity);
         else if (const auto count = mesh.ElementCount(mode); count > 0) ranges.emplace_back(mesh_entity, count);
     }

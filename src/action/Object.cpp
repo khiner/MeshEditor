@@ -50,7 +50,6 @@ struct MeshCopy {
     state::Entity Copy{state::Null};
 };
 
-// A mesh instance's duplicate is an instance of its mesh's copy, which the first duplicate creates from the mesh's cloned record.
 // A procedure mesh's copy holds a copy of its procedure and draws the clone, and an owned mesh's copy is a mesh whose Source node holds the clone.
 state::Entity DuplicateOne(state::Registry &r, state::Entity e, MeshCopy *copy, std::span<const uint32_t> clones) {
     auto &meshes = r.Resources.get<MeshStore>();
@@ -72,10 +71,10 @@ state::Entity DuplicateOne(state::Registry &r, state::Entity e, MeshCopy *copy, 
         return ::AddEmpty(r, create_info);
     }
 
-    // Bone sub-entities (head/tail joints, bone instances) are not independently duplicable.
+    // Bone sub-entities, the head and tail joints and bone instances, duplicate only with their bone.
     if (r.all_of<BoneSubPartOf>(e)) return state::Null;
 
-    // Object extras (Camera, Empty, Light) have Instance but create their own wireframe mesh.
+    // Camera, Empty and Light objects have an Instance but create their own wireframe mesh.
     if (r.all_of<ObjectExtrasTag>(r.get<Instance>(e).Entity)) {
         if (const auto lens = LensOf(r, e)) return ::AddCamera(r, create_info, *lens);
         if (const auto *light = r.try_get<const PunctualLight>(e)) return ::AddLight(r, create_info, *light);
@@ -144,7 +143,6 @@ void Apply(state::Registry &r, const Action &action) {
             if (linked && r.all_of<ArmatureObject>(e) && !children && !r.all_of<HierarchyInstance>(e)) return false;
             return r.all_of<HierarchyInstance>(e) || children || (r.all_of<ObjectKind>(e) && r.get<const ObjectKind>(e).Value != ObjectType::Mesh);
         };
-        // Every duplicated mesh's drawn record clones once in one batch, with its arenas reserved once, and instances sharing a mesh share its copy.
         std::vector<uint32_t> sources, copy_of(entities.size(), InvalidOffset);
         std::vector<MeshCopy> copies_of;
         if (!linked) {
@@ -187,7 +185,6 @@ void Apply(state::Registry &r, const Action &action) {
             copies.Encode(chain, GetMeshPipelines(r));
             chain.Submit();
             meshes.RebuildSelectionIndex(clones);
-            // A clone with render records draws them at once and takes its source's pending repairs.
             for (const auto id : clones) {
                 RefreshMeshBinding(r, id);
                 const auto &record = meshes.Get(id);
@@ -209,11 +206,9 @@ void Apply(state::Registry &r, const Action &action) {
             fn
         );
     };
-    // The edit meshes with a selection in the element domain, which is the edit domain or none.
     const auto edit_selection_meshes = [&](Element element) {
         return r.get<const EditMode>(state::Document).Value == element ? mesh::SelectedEditMeshes(r) : std::vector<state::Entity>{};
     };
-    // Append a node with the parameters to each mesh.
     const auto append = [&]<typename N>(std::span<const state::Entity> mesh_entities, const N &parameters) {
         for (const auto e : mesh_entities) {
             const auto node = nodes::AppendNode(r, e, procedure::KindOf<N>);
@@ -259,8 +254,7 @@ void Apply(state::Registry &r, const Action &action) {
                     if (a.Visible) Show(r, e);
                     else Hide(r, e); });
             },
-            [&](const SetSelectedSmoothShading &a) { append(r.get<const SelectionFlags>(state::Document).Meshes, procedure::ShadeSmooth{a.Smooth}); },
-            [&](const ShadeSelectedSmoothByAngle &a) { append(r.get<const SelectionFlags>(state::Document).Meshes, procedure::ShadeSmoothByAngle{a.Angle}); },
+            [&](const ShadeSelected &a) { append(r.get<const SelectionFlags>(state::Document).Meshes, procedure::Shade{a.Mode, a.Angle}); },
             [&](const SetSelectedSharp &a) { append(edit_selection_meshes(a.Element), procedure::MarkSharp{a.Sharp}); },
             [&](ParentToActive) {
                 const auto active = FindActiveEntity(r);

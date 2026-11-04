@@ -1,6 +1,4 @@
-#ifndef BOXWIRE_MSL
-#define BOXWIRE_MSL
-
+#pragma once
 // Corner indices for the 12 box edges.
 // Corner bits select min/max per axis: x=1, y=2, z=4.
 constant uint BoxEdgeCorners[24] = {
@@ -8,5 +6,3 @@ constant uint BoxEdgeCorners[24] = {
     4u, 5u, 5u, 7u, 7u, 6u, 6u, 4u,
     0u, 4u, 1u, 5u, 2u, 6u, 3u, 7u
 };
-
-#endif

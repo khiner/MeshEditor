@@ -8,11 +8,10 @@
 
 namespace mtl {
 namespace {
-// Numbers the submits of every chain, so no two submits share a serial.
 std::atomic<uint64_t> NextSubmissionSerial{};
 } // namespace
 
-ComputeChain::ComputeChain(BufferContext &buffers, uint32_t scratch_words)
+ComputeChain::ComputeChain(BufferContext &buffers, uint64_t scratch_words)
     : Buffers(buffers), Scratch(buffers, SlotType::Buffer, BufferLifetime::Workspace),
       SubmissionSerial(NextSubmissionSerial.fetch_add(1u, std::memory_order_relaxed)) {
     Scratch.ReserveAdditional(scratch_words);
@@ -22,7 +21,6 @@ ComputeChain::ComputeChain(BufferContext &buffers, uint32_t scratch_words)
 
 ComputeChain::~ComputeChain() {
     const AutoreleaseScope pool;
-    // Recorded passes end with a submit, and only exception unwinding abandons them.
     if (Recording && !std::uncaught_exceptions()) {
         std::fputs("A compute chain was destroyed with unsubmitted passes.\n", stderr);
         std::abort();
@@ -58,7 +56,6 @@ ComputeEncoder ComputeChain::Encoder() {
     return {&*Recording, Encoding.get()};
 }
 
-// Binds the pipeline and push constants, runs `dispatch` on the encoder, and orders the passes after it.
 void ComputeChain::Record(const ComputePipeline &pipeline, const void *pc, uint32_t bytes, auto &&dispatch) {
     const auto encoder = Encoder();
     pipeline.Bind(encoder);

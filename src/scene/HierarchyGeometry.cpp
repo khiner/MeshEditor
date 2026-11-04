@@ -1,4 +1,5 @@
 #include "object/PendingSync.h"
+#include "physics/PhysicsTypes.h"
 #include "procedure/Procedure.h"
 #include "render/Instance.h"
 #include "scene/HierarchyInstance.h"

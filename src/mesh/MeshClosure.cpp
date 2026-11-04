@@ -1,5 +1,4 @@
 #include "mesh/MeshClosure.h"
-#include "SortUnique.h"
 
 #include "gpu/MeshClosurePushConstants.h"
 #include "mesh/ElementMembershipWork.h"
@@ -10,7 +9,7 @@
 #include "state/Registry.h"
 
 namespace {
-uint32_t Groups(uint64_t count) { return uint32_t((count + 255u) / 256u); }
+uint32_t ClampWords(uint64_t n) { return uint32_t(std::min<uint64_t>(n, UINT32_MAX)); }
 
 uint32_t IncidenceWord(mtl::ComputeChain &chain) {
     const auto word = chain.Scratch.Allocate(1u);
@@ -18,7 +17,11 @@ uint32_t IncidenceWord(mtl::ComputeChain &chain) {
     return word.Offset;
 }
 
-// Fan corners are the corners at a vertex, so every corner belongs to exactly one fan.
+void UniqueAscending(std::vector<uint32_t> &handles, uint32_t bound) {
+    std::vector<uint32_t> bits((bound + 31u) / 32u);
+    for (const auto handle : handles) bits[handle / 32u] |= 1u << (handle % 32u);
+    handles = SetBitHandles(bits);
+}
 struct HostIncidence {
     MeshConnectivity C;
     std::span<const uint32_t> CornerVertices; // By corner address
@@ -26,7 +29,7 @@ struct HostIncidence {
     HostIncidence(const MeshStore &meshes, uint32_t id) : C{meshes.GetConnectivity(id)}, CornerVertices{meshes.Arenas().FaceCorners.Buffer.GetSpan<uint32_t>()}, Corners{C.HalfedgeCount} {}
     uint32_t CornerVertex(he::HH h) const { return CornerVertices[C.HalfedgeAddress(*h).Value()]; }
     uint32_t Fan(uint32_t v) const { return C.HasVertexBlock(v) ? C.Incoming(he::VH{v}).y : 0u; }
-    // Adds both endpoints of an edge, whose first halfedge starts at its previous corner in a face or at its pair on a line.
+    uint32_t Clamped(uint64_t corners) const { return uint32_t(std::min<uint64_t>(corners, Corners)); }
     void AddEndpoints(uint32_t e, std::vector<uint32_t> &vertices) const {
         const auto h = C.EdgeHalfedge(e);
         if (!h) return;
@@ -51,9 +54,8 @@ struct HostIncidence {
     uint32_t Sum(std::span<const uint32_t> vertices) const {
         uint64_t sum = 0u;
         for (const auto v : vertices) sum += Fan(v);
-        return uint32_t(std::min<uint64_t>(sum, Corners));
+        return Clamped(sum);
     }
-    // Add a vertex, a face's loop vertices, or a face-owned edge's endpoints and return the seed incidence.
     uint32_t Add(Element element, uint32_t handle, std::vector<uint32_t> &vertices) const {
         const auto first = vertices.size();
         if (element == Element::Face) {
@@ -64,20 +66,18 @@ struct HostIncidence {
         else AddEndpoints(handle, vertices);
         return Sum(std::span{vertices}.subspan(first));
     }
-    // The fan corners of the distinct vertices, which it leaves ascending and unique.
     uint32_t Fans(std::vector<uint32_t> &vertices) const {
-        SortUnique(vertices);
+        UniqueAscending(vertices, uint32_t(C.VertexTable.size()) * MeshElementBlockSize);
         return Sum(vertices);
     }
 };
 
-uint32_t DomainBlocks(const MeshArenas &a, const MeshStore::Record &record, uint32_t d) {
+uint32_t DomainBlockCount(const MeshArenas &a, const MeshStore::Record &record, uint32_t d) {
     const auto blocks = [](const auto &arena, ElementSetRef set) { return set ? arena.Set(set).BlockCount : 0u; };
     return d == 0u ? blocks(a.Vertices, record.Vertices) : d == 1u ? blocks(a.FaceCorners, record.FaceCorners) :
         d == 2u                                                    ? blocks(a.FaceTriangles, record.FaceData) :
                                                                      blocks(a.EdgeHalfedges, record.EdgeData);
 }
-// The store, its arenas and the record of a mesh id.
 struct StoreRecord {
     const MeshStore &Meshes;
     const MeshArenas &Arenas;
@@ -88,16 +88,7 @@ StoreRecord RecordAt(const state::Registry &r, uint32_t id) {
     return {meshes, meshes.Arenas(), meshes.Get(id)};
 }
 
-uint32_t DomainBound(const MeshArenas &a, const MeshStore::Record &record, uint32_t d) { return DomainBlocks(a, record, d) * MeshElementBlockSize; }
-
-MeshClosurePushConstants ClosureConstants(const MeshStore &meshes, uint32_t id) {
-    const auto &a = meshes.Arenas();
-    return {
-        .Connectivity = meshes.GetConnectivityRef(id),
-        .CornerSlot = a.FaceCorners.Buffer.Slot,
-        .FaceCount = a.FaceTriangles.Count(meshes.Get(id).FaceData),
-    };
-}
+uint32_t DomainBound(const MeshArenas &a, const MeshStore::Record &record, uint32_t d) { return DomainBlockCount(a, record, d) * MeshElementBlockSize; }
 
 MeshClosure EncodeClosure(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, uint32_t domain, const ClosureSeed &input, std::array<uint32_t, 4> bounds, const ClosureSeed &retained, const ClosureSeed &wires = {}, bool retain_isolated_only = false) {
     const auto [meshes, a, record] = RecordAt(r, id);
@@ -105,11 +96,11 @@ MeshClosure EncodeClosure(state::Registry &r, mtl::ComputeChain &chain, uint32_t
     closure.Bounds = bounds;
     closure.Elements[domain] = input.Work;
     if (!input.Count && !retained.Count && !wires.Count) return closure;
-    auto pc = ClosureConstants(meshes, id);
+    MeshClosurePushConstants pc{.Connectivity = meshes.GetConnectivityRef(id)};
     std::vector<ElementWork> sorted;
     for (uint32_t d = 0u; d < 4u; ++d) {
         if (d == domain) continue;
-        closure.Elements[d] = pc.Work[d] = AllocateElementWork(chain.Scratch, DomainBound(a, record, d), std::min(bounds[d], DomainBlocks(a, record, d)));
+        closure.Elements[d] = pc.Work[d] = AllocateElementWork(chain.Scratch, DomainBound(a, record, d), std::min(bounds[d], DomainBlockCount(a, record, d)));
         sorted.push_back(pc.Work[d]);
     }
     pc.Input = input.Work;
@@ -118,13 +109,13 @@ MeshClosure EncodeClosure(state::Registry &r, mtl::ComputeChain &chain, uint32_t
     pc.Retained = retained.Work;
     pc.RetainedBound = retained.Count;
     pc.RetainIsolatedOnly = retain_isolated_only;
-    chain.Groups(GetMeshPipelines(r)[MeshPass::MeshClosureExpand], pc, std::max(Groups(input.Count), Groups(retained.Count)));
+    chain.Groups(GetMeshPipelines(r)[MeshPass::MeshClosureExpand], pc, std::max(TileCount(input.Count, TileElements), TileCount(retained.Count, TileElements)));
     if (wires.Count) {
         pc.Input = wires.Work;
         pc.InputDomain = 3u;
         pc.InputBound = wires.Count;
         pc.RetainedBound = 0u;
-        chain.Groups(GetMeshPipelines(r)[MeshPass::MeshClosureExpand], pc, Groups(wires.Count));
+        chain.Groups(GetMeshPipelines(r)[MeshPass::MeshClosureExpand], pc, TileCount(wires.Count, TileElements));
     }
     EncodeSortElementWork(r, chain, sorted);
     return closure;
@@ -133,17 +124,15 @@ MeshClosure EncodeClosure(state::Registry &r, mtl::ComputeChain &chain, uint32_t
 
 MeshClosure EncodePrimitiveClosure(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, const ClosureSeed &faces, const ClosureSeed &wires, const ClosureSeed &retained, bool retain_isolated_only) {
     const uint64_t corners = uint64_t(faces.Incidence) + 2ull * wires.Count;
-    const auto bound = [](uint64_t n) { return uint32_t(std::min<uint64_t>(n, UINT32_MAX)); };
-    auto closure = EncodeClosure(r, chain, id, 2u, faces, {bound(corners + retained.Count), bound(corners), faces.Count, bound(uint64_t(faces.Incidence) + wires.Count)}, retained, wires, retain_isolated_only);
+    auto closure = EncodeClosure(r, chain, id, 2u, faces, {ClampWords(corners + retained.Count), ClampWords(corners), faces.Count, ClampWords(uint64_t(faces.Incidence) + wires.Count)}, retained, wires, retain_isolated_only);
     const auto &meshes = r.Resources.get<const MeshStore>();
     closure.VertexFans = uint32_t(std::min<uint64_t>(uint64_t(faces.LoopFans) + wires.Incidence + retained.Incidence, meshes.Arenas().FaceCorners.Count(meshes.Get(id).FaceCorners)));
     return closure;
 }
 
 MeshClosure EncodeVertexClosure(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, const ClosureSeed &vertices) {
-    const auto bound = [](uint64_t n) { return uint32_t(std::min<uint64_t>(n, UINT32_MAX)); };
     const uint64_t fans = vertices.Incidence;
-    return EncodeClosure(r, chain, id, 0u, vertices, {vertices.Count, bound(2u * fans), bound(fans), bound(2u * fans)}, {});
+    return EncodeClosure(r, chain, id, 0u, vertices, {vertices.Count, ClampWords(2u * fans), ClampWords(fans), ClampWords(2u * fans)}, {});
 }
 
 namespace {
@@ -157,12 +146,12 @@ void MeshClosure::EncodeIncidence(state::Registry &r, mtl::ComputeChain &chain, 
     const auto [index, d] = IncidenceIndex(element);
     const auto word = IncidenceWords[index] = IncidenceWord(chain);
     if (!Bounds[d]) return;
-    auto pc = ClosureConstants(r.Resources.get<const MeshStore>(), id);
+    MeshClosurePushConstants pc{.Connectivity = r.Resources.get<const MeshStore>().GetConnectivityRef(id)};
     pc.Input = Elements[d];
     pc.InputDomain = d;
     pc.InputBound = Bounds[d];
     pc.Incidence = {chain.Scratch.Buffer.Slot, word};
-    chain.Groups(GetMeshPipelines(r)[MeshPass::MeshClosureCount], pc, Groups(Bounds[d]));
+    chain.Groups(GetMeshPipelines(r)[MeshPass::MeshClosureCount], pc, TileCount(Bounds[d], TileElements));
 }
 
 void MeshClosure::Finish(const mtl::ComputeChain &chain) {
@@ -185,13 +174,13 @@ ClosureSeed MeshClosure::Seed(Element element) const {
 ClosureSeed EncodeEdgeVertices(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, const ClosureSeed &edges) {
     const auto [meshes, a, record] = RecordAt(r, id);
     const auto count = uint32_t(std::min<uint64_t>(2ull * edges.Count, a.Vertices.Count(record.Vertices)));
-    auto pc = ClosureConstants(meshes, id);
-    pc.Work[0] = AllocateElementWork(chain.Scratch, DomainBound(a, record, 0u), std::min(count, DomainBlocks(a, record, 0u)));
+    MeshClosurePushConstants pc{.Connectivity = meshes.GetConnectivityRef(id)};
+    pc.Work[0] = AllocateElementWork(chain.Scratch, DomainBound(a, record, 0u), std::min(count, DomainBlockCount(a, record, 0u)));
     if (!edges.Count) return {pc.Work[0]};
     pc.Input = edges.Work;
     pc.InputDomain = 3u;
     pc.InputBound = edges.Count;
-    chain.Groups(GetMeshPipelines(r)[MeshPass::MeshClosureEdgeVertices], pc, Groups(edges.Count));
+    chain.Groups(GetMeshPipelines(r)[MeshPass::MeshClosureEdgeVertices], pc, TileCount(edges.Count, TileElements));
     EncodeSortElementWork(r, chain, std::span{&pc.Work[0], 1u});
     return {.Work = pc.Work[0], .Count = count, .Incidence = edges.Incidence, .Vertices = edges.Vertices, .All = edges.All};
 }
@@ -223,19 +212,20 @@ ClosureSeed ListSeed(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, 
     }
     const auto [meshes, a, record] = RecordAt(r, id);
     const HostIncidence incidence{meshes, id};
-    ClosureSeed seed;
-    uint64_t sum = 0u;
-    for (const auto handle : handles) {
-        if (!meshes.IsLiveElement(id, element, ElementHandle{handle})) throw std::invalid_argument("Topology handle list contains a foreign or retired element.");
-        sum += incidence.Add(element, handle, seed.Vertices);
-    }
     const auto d = element == Element::Vertex ? 0u : element == Element::Face ? 2u :
                                                                                 3u;
-    seed.Work = SeedElementWorkHandles(chain.Scratch, DomainBound(a, record, d), handles, DomainBlocks(a, record, d));
+    ClosureSeed seed{.Work = SeedElementWorkHandles(chain.Scratch, DomainBound(a, record, d), handles, DomainBlockCount(a, record, d))};
     seed.Count = ElementWorkCount(chain.Scratch, seed.Work);
-    seed.Incidence = uint32_t(std::min<uint64_t>(sum, incidence.Corners));
-    const auto fans = incidence.Fans(seed.Vertices);
-    if (element == Element::Face) seed.LoopFans = fans;
+    if (element == Element::Vertex) {
+        seed.Vertices.assign(handles.begin(), handles.end());
+        seed.Incidence = incidence.Fans(seed.Vertices);
+        seed.All = seed.Count == a.Vertices.Count(record.Vertices);
+        return seed;
+    }
+    uint64_t sum = 0u;
+    for (const auto handle : handles) sum += incidence.Add(element, handle, seed.Vertices);
+    seed.Incidence = incidence.Clamped(sum);
+    if (const auto fans = incidence.Fans(seed.Vertices); element == Element::Face) seed.LoopFans = fans;
     return seed;
 }
 
@@ -243,7 +233,6 @@ ClosureSeed FaceSeed(const state::Registry &r, uint32_t id, const BufferArena<ui
     const auto [meshes, a, record] = RecordAt(r, id);
     const HostIncidence incidence{meshes, id};
     ClosureSeed seed{.Work = faces, .Count = ElementWorkCount(storage, faces)};
-    // Each face references every loop corner once.
     if (seed.Count == a.FaceTriangles.Count(record.FaceData)) {
         seed.Incidence = seed.LoopFans = incidence.Corners;
         seed.All = true;
@@ -251,7 +240,7 @@ ClosureSeed FaceSeed(const state::Registry &r, uint32_t id, const BufferArena<ui
     }
     uint64_t corners = 0u;
     ForEachWorkElement(storage, faces, [&](uint32_t face) { corners += incidence.Add(Element::Face, face, seed.Vertices); });
-    seed.Incidence = uint32_t(std::min<uint64_t>(corners, incidence.Corners));
+    seed.Incidence = incidence.Clamped(corners);
     seed.LoopFans = incidence.Fans(seed.Vertices);
     return seed;
 }
@@ -267,13 +256,12 @@ ClosureSeed AroundVertices(const state::Registry &r, uint32_t id, Element elemen
     }
     std::vector<uint32_t> around;
     for (const auto v : vertices.Vertices) incidence.AddFan(element, v, around);
-    SortUnique(around);
+    UniqueAscending(around, DomainBound(a, record, element == Element::Face ? 2u : 3u));
     uint64_t corners = 0u;
     for (const auto handle : around) corners += incidence.Add(element, handle, seed.Vertices);
     seed.Count = uint32_t(around.size());
-    seed.Incidence = uint32_t(std::min<uint64_t>(corners, incidence.Corners));
-    const auto fans = incidence.Fans(seed.Vertices);
-    if (element == Element::Face) seed.LoopFans = fans;
+    seed.Incidence = incidence.Clamped(corners);
+    if (const auto fans = incidence.Fans(seed.Vertices); element == Element::Face) seed.LoopFans = fans;
     return seed;
 }
 

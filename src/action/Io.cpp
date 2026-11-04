@@ -11,6 +11,9 @@
 #include "audio/RealImpactComponents.h"
 #include "gltf/GltfScene.h"
 #include "mesh/MeshCreate.h"
+#include "mesh/MeshPipelines.h"
+#include "mesh/MeshStore.h"
+#include "mesh/Neighborhood.h"
 #include "mesh/Primitives.h"
 #include "numeric/Angles.h"
 #include "object/ObjectOps.h"
@@ -43,7 +46,6 @@ void LoadGltfFile(state::Registry &r, const std::filesystem::path &path) {
 } // namespace
 
 void Apply(state::Registry &r, const Action &action) {
-    // A document starts with one scene shown by one viewport.
     const auto add_scene = [&] {
         const auto scene = r.create();
         r.emplace<Scene>(scene);
@@ -91,20 +93,13 @@ void Apply(state::Registry &r, const Action &action) {
                 const auto [mesh_entity, instance_entity] = *imported;
 
                 // The npy file's vertex indices use the source OBJ numbering, so look up by position instead.
-                std::vector<uint32_t> vertex_indices(RealImpact::NumImpactVertices);
-                {
-                    const auto &impact_positions = source->Positions;
-                    const auto &mesh = GetMesh(r, mesh_entity);
-                    for (size_t i = 0; i < impact_positions.size(); ++i) {
-                        vertex_indices[i] = mesh.VertexOrdinal(mesh.FindNearestVertex(impact_positions[i]));
-                    }
-                }
+                const auto vertex_indices = NearestVertexOrdinals(r.Resources.get<const MeshStore>(), GetMeshPipelines(r), GetMesh(r, mesh_entity).GetStoreId(), source->Positions);
 
                 const auto &listener_points = source->Listeners;
                 const auto created = CreateMesh(r, {.Data = primitive::CreateMesh({primitive::Cylinder{0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f}}), .FlatShaded = true});
                 const auto listener_mesh_entity = AddMeshData(r, created.StoreId);
                 for (const auto &listener_point : listener_points) {
-                    static const auto rot_z = AngleAxis(std::numbers::pi_v<float> / 2.f, vec3{0, 0, 1}); // Cylinder's center is along the Y axis.
+                    static const auto rot_z = AngleAxis(std::numbers::pi_v<float> / 2.f, vec3{0, 0, 1}); // The cylinder's axis is Y.
                     const auto listener_instance_entity = ::AddMeshInstance(
                         r, listener_mesh_entity,
                         {

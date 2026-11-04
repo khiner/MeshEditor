@@ -4,19 +4,17 @@
 
 #include "Variant.h"
 #include "World.h"
-#include "mesh/Mesh.h"
 
 #include <numbers>
 
 namespace physics {
-rbp::Index BuildRbpShape(rbp::World &world, const PhysicsShape &source, const Mesh *mesh, vec3 scale, rbp::Pose local) {
+rbp::Index BuildRbpShape(rbp::World &world, const PhysicsShape &source, std::span<const vec3> positions, std::span<const uint32_t> triangles, vec3 scale, rbp::Pose local) {
     const auto stretch = Abs(scale);
     if (stretch.x <= 0 || stretch.y <= 0 || stretch.z <= 0) throw std::invalid_argument("A physics collider must have nonzero scale.");
     const auto hull = [&](std::span<rbp::float3> points) {
         for (auto &point : points) point *= ToRbp(scale);
         return world.AddHull(points, nullptr, local);
     };
-    // Support samples of the convex hull of two spheres, including each axis extremum.
     const auto round = [&](float half, float top, float bottom) {
         rbp::float3 points[64];
         uint32_t count = 0;
@@ -70,13 +68,13 @@ rbp::Index BuildRbpShape(rbp::World &world, const PhysicsShape &source, const Me
             return world.AddShape({.HalfExtents = {plane.SizeX.value_or(0) * stretch.x * 0.5f, 0, plane.SizeZ.value_or(0) * stretch.z * 0.5f}, .Normal = {0, scale.y > 0 ? 1.f : -1.f, 0}, .Kind = rbp::ShapePlane, .Local = local, .DoubleSided = plane.DoubleSided});
         },
         [&](const auto &kind) {
-            if (!mesh) throw std::runtime_error("A mesh collider has no mesh geometry.");
+            if (positions.empty()) throw std::runtime_error("A mesh collider has no mesh geometry.");
             std::vector<rbp::float3> points;
-            points.reserve(mesh->VertexCount());
-            for (const auto vertex : mesh->vertices()) points.push_back(ToRbp(mesh->GetPosition(vertex) * scale));
+            points.reserve(positions.size());
+            for (const auto &position : positions) points.push_back(ToRbp(position * scale));
             if constexpr (std::same_as<std::decay_t<decltype(kind)>, ConvexHull>) return world.AddHull(points, nullptr, local);
             else {
-                auto indices = mesh->CreateTriangleIndices();
+                std::vector<uint32_t> indices{triangles.begin(), triangles.end()};
                 if (scale.x * scale.y * scale.z < 0) {
                     for (size_t i = 0; i + 2 < indices.size(); i += 3) std::swap(indices[i + 1], indices[i + 2]);
                 }

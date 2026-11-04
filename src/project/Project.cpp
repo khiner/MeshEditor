@@ -63,7 +63,6 @@ bool ContinuesSelection(const action::Action &a) {
         Is<action::selection::ApplyBoxSelect>(a) || Is<action::selection::SelectAll>(a) || Is<action::selection::DeselectAll>(a) || Is<action::view::SetEditMode>(a);
 }
 
-// A node's recorded actions, with no bytes for a node that records none, whose state no recorded actions rebuild.
 // The output archive takes a mutable reference, since zpp aggregate reflection mis-encodes a const aggregate.
 std::vector<std::byte> Encode(std::vector<action::Action> &recorded_actions) {
     std::vector<std::byte> bytes;
@@ -160,18 +159,15 @@ void Project::TrackStores() {
     R.Resources.get<MaterialStore>().Track(History);
     History.Callbacks = {
         .Replay = [this](store::History &source, std::span<const std::byte> bytes, std::span<const uint32_t> workspaces) {
-            // A replayed step reproduces persistent state and leaves the workspace as it was, reconciled with the replayed document.
             const MeshStore::HistoryScope source_history{R.Resources.get<MeshStore>(), source};
             auto replayed = RunRecorded(source, Decode(bytes), workspaces);
             Settle(EventPass::Settle);
-            // The replayed step ends as its commit did.
             FinishSourceStates(R);
             EndMeshStates(R);
             EndCookStep(R);
             return replayed; },
         .Reset = [this](const std::filesystem::path &dir) {
             R.Resources.get<Assets>().Directory = dir;
-            // A replay from the empty state rebuilds the document and leaves the workspace as it was.
             auto workspace = Entities.Workspace.Pin();
             ClearDocument();
             (void)Entities.Workspace.Restore(workspace);
@@ -182,13 +178,12 @@ void Project::TrackStores() {
             WaitForRender(R);
             CancelModalSolves(R);
             Deferred.clear();
-            // A gesture's own restores keep its interaction, and every other restore drops it.
             if (!GestureBase) ClearInteraction();
             Entities.BeginRestore(); },
         .AfterTracks = [this] {
             const profile::CpuScope scope{"RestoreAfterTracks"};
             const auto removed = Entities.RemovedEntities();
-            // Destroy instances before their referenced mesh entities: each removed instance, and each instance placed in a removed mesh's range.
+            // Instances destroy before the mesh entities they reference, covering each removed instance and each instance placed in a removed mesh's range.
             const auto &render_instances = std::as_const(R).storage<RenderInstance>();
             const auto object_ids = R.Resources.get<const GpuBuffers>().Instances.ObjectIdBuffer.GetSpan<uint32_t>();
             for (const auto e : removed) {
@@ -252,7 +247,6 @@ bool Project::New(const std::filesystem::path &dir, bool empty) {
     if (History.Present && !Save()) return false;
     ResizeRecorded(0);
     auto left = LeaveDocument();
-    // The root records how its scene arises, so its state replays from the empty scene.
     if (empty) Record(action::MakeAction(action::io::LoadEmptyScene{}), EventPass::Settle);
     else Record(action::MakeAction(action::io::LoadDefaultScene{}), EventPass::Settle);
     const bool begun = Begin(dir);
@@ -277,7 +271,6 @@ bool Project::Open(const std::filesystem::path &dir, const std::filesystem::path
     auto &directory = R.Resources.get<Assets>().Directory;
     const auto previous = std::exchange(directory, dir);
     const auto errors = R.Resources.get<action::Errors>().Messages.size();
-    // Another project loads onto the empty document.
     std::optional<LeftDocument> left;
     if (dir != History.Dir) left = LeaveDocument();
     if (!History.Open(dir, saved ? &saved->Position : nullptr)) {
@@ -297,7 +290,6 @@ bool Project::Open(const std::filesystem::path &dir, const std::filesystem::path
     }
     ReleaseGesture();
     for (auto &node : History.Nodes) node.Editable = Editable(Decode(History.ActionsOf(node)));
-    // An actions open replays and pins every node on the path to the present node.
     History.Evict(MemoryCap);
     if (lock) DirectoryLock = std::move(lock);
     SavedPath = saved_path;
@@ -311,7 +303,6 @@ bool Project::Save() {
     if (!History.Present) return true;
     WaitForRender(R);
     FinishGesture(EventPass::Settle);
-    // Save playback progress since the last edit.
     Record(action::MakeAction(action::timeline::SetFrame{R.get<const TimelinePlayback>(state::Document).CurrentFrame}), EventPass::Settle);
     Commit("Playback position");
     return History.Save();
@@ -488,7 +479,6 @@ bool Project::Record(std::span<action::Action> actions, EventPass pass, bool sta
         GestureStart = RecordedActions.size();
     }
     const bool same_kind = staged && StageFirst && std::ranges::equal(recordable, std::span{RecordedActions}.subspan(*StageFirst), [](const auto &a, const auto &previous) { return Kind(a) == Kind(previous); });
-    // Single-action previews can patch their existing nodes; a list replays from its stage base.
     const bool single = actions.size() == 1;
     if (same_kind && (!single || action::IsPreview(actions.front()))) {
         if (!single || !action::PatchesPreview(actions.front())) (void)History.Restore(*StageBase);
@@ -560,16 +550,13 @@ uint32_t Project::Commit(std::string label, std::optional<uint32_t> replace) {
     // The step's new Source nodes take the state it ends with, which the node it commits records.
     FinishSourceStates(R);
     EndCookStep(R);
-    // A commit indexes the mesh records its actions wrote, so a later restore costs only its own change.
     R.Resources.get<MeshStore>().IndexHistory();
     const bool editable = Editable(RecordedActions);
     auto bytes = Encode(RecordedActions);
     const bool in_place = replace && History.Nodes[*replace].Children.empty();
     const auto created = uint32_t(History.Nodes.size());
     const auto node = in_place ? History.Replace(*replace, std::move(bytes), std::exchange(RecordedWorkspaces, {})) : History.Commit(std::move(label), std::move(bytes), std::exchange(RecordedWorkspaces, {}));
-    // The states the step no longer refers to persist after the step's own content, which they share.
     EndMeshStates(R);
-    // A commit matching an existing node's state keeps that node and its actions.
     if (in_place || node == created) History.Nodes[node].Editable = editable;
     Editing.reset();
     ResizeRecorded(0);
@@ -586,7 +573,6 @@ void Project::FinishGesture(EventPass pass, bool keep_selection) {
         return;
     }
     if (R.all_of<procedure::SelectionEditing>(state::Document)) Record(action::MakeAction(action::nodes::FinishSelection{}), pass);
-    // An edit keeps the node's label, and a new node names every distinct action in the gesture, in order.
     if (Editing) {
         Settle(pass);
         Commit(History.Nodes[*Editing].Label, Editing);
@@ -623,7 +609,7 @@ void Project::RestageDraft() {
         GestureStart = RecordedActions.size();
     }
     ResizeRecorded(GestureStart);
-    // Run a copy so the draft keeps its values for the next change.
+    // The run takes a copy so the draft keeps its values for the next change.
     auto recorded_actions = Decode(Encode(Draft->RecordedActions));
     const auto workspaces = History.WorkspacesOf(History.Nodes[Draft->Node]);
     if (!RunRecorded(History, recorded_actions, workspaces)) {
@@ -654,6 +640,9 @@ void Project::ClearInteraction() {
 }
 void Project::ClearDocument() {
     WaitForRender(R);
+    // An event pass commits chains without waiting for them, and the reset frees what they reference.
+    R.Resources.get<const mtl::Context>().WaitIdle();
+    R.Resources.get<GpuBuffers>().Ctx.ReclaimRetiredBuffers(true);
     Deferred.clear();
     ClearInteraction();
     R.clear<Viewport>();
@@ -665,12 +654,10 @@ void Project::ClearDocument() {
 Project::LeftDocument Project::LeaveDocument() {
     LeftDocument left{History.Pin(), Entities.Workspace.Pin()};
     ClearDocument();
-    // The left document's retained values do not return to the next document.
     for (auto type : snapshot::TypesOf(snapshot::Role::Workspace)) snapshot::SnapshotTable()[type].ClearRetained(R);
     return left;
 }
 void Project::ReturnToLeft(const LeftDocument &left) {
-    // The restore recreates every identity of the left document, and the applied workspace returns each one's values.
     ClearDocument();
     (void)History.Restore(left.Pin);
     (void)Entities.Workspace.Restore(left.Workspace);
@@ -683,7 +670,6 @@ void Project::CancelGesture() {
     ClearInteraction();
     (void)History.Restore(*GestureBase);
     ReleaseGesture();
-    // A cancelled edit returns to the node it was replacing.
     if (const auto node = std::exchange(Editing, std::nullopt)) History.Navigate(*node);
     Draft.reset();
     ++Revision;
@@ -708,7 +694,6 @@ void Project::Frame(action::Drained drained) {
     if (drained.Emitted) {
         auto [actions, phase] = std::move(*drained.Emitted);
         if (phase == action::Phase::Cancel) {
-            // A duplicate placement restarts under the new transform after its gesture is cancelled.
             std::optional<bool> duplicate;
             for (const auto &recorded_action : RecordedActions) {
                 if (Is<action::object::Duplicate>(recorded_action)) duplicate = false;
@@ -795,7 +780,6 @@ bool Project::Audit(std::string &why) {
         why = error.what();
         return false;
     }
-    // Resolve restored drawing entities by their store IDs.
     for (const auto [entity, evaluated] : R.view<const EvaluatedMesh>().each()) {
         if (MeshEntityOf(R, evaluated.StoreId) == entity) continue;
         why = "Mesh store " + std::to_string(evaluated.StoreId) + " does not map to its entity.";
@@ -813,7 +797,6 @@ void Project::AfterRestore() {
         ~ReadOnly() { R.DocumentReadOnly = false; }
     } read_only{R};
     bool sources_changed = false, manifest_changed = false, names_changed = false;
-    // Rebuild dirty roots for meshes whose handles or render records changed during restore.
     std::vector<state::Entity> restored_meshes;
     for (const auto &[type, entity, event] : Entities.TakeChanges()) {
         // The name hooks track created and destroyed names, and an overwritten name escapes them.
@@ -828,7 +811,6 @@ void Project::AfterRestore() {
     }
     if (names_changed) RebuildEntityNames(R);
     // Restored sources can contain other pixels at a manifest's slots, so every texture and the IBL decode again.
-    // A manifest restored over unchanged sources keeps each texture it still lists, and the settle pass uploads the rest.
     if (sources_changed) {
         ReleaseImportedTextures(R);
         ResetImportedEnvironment(R);

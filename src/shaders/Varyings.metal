@@ -1,12 +1,10 @@
-#ifndef VARYINGS_MSL
-#define VARYINGS_MSL
-
+#pragma once
 // Metal matches shared vertex-fragment fields by `user` name and permits fragment-stage subsets.
 #include "ScreenSpace.metal"
 
 struct MeshVaryings {
     float4 Position [[position]];
-    float PointSize [[point_size]]; // Point draws render as round sprites.
+    float PointSize [[point_size]];
     float3 WorldNormal [[user(WorldNormal)]];
     float3 FlatWorldNormal [[user(FlatWorldNormal)]] [[flat]];
     float3 WorldPosition [[user(WorldPosition)]];
@@ -33,7 +31,7 @@ struct MeshletVertexVaryings {
     float2 TexCoord3 [[user(TexCoord3)]];
     float4 VertexColor [[user(VertexColor)]];
     float4 WorldTangent [[user(WorldTangent)]];
-    // Emit flat per-face attributes on unshared corner vertices because indexed output is nondeterministic on this driver.
+    // Flat per-face attributes go on unshared corner vertices because indexed output is nondeterministic on this driver.
     float3 FlatWorldNormal [[user(FlatWorldNormal)]] [[flat]];
     uint FaceOverlayFlags [[user(FaceOverlayFlags)]] [[flat]];
     uint MaterialIndex [[user(MaterialIndex)]] [[flat]];
@@ -165,5 +163,3 @@ struct OverlayTargetsDepth {
     float4 Color [[color(0)]];
     float Depth [[depth(any)]];
 };
-
-#endif

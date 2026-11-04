@@ -17,16 +17,19 @@ void TopologyReadView::Add(state::Registry &r, uint32_t id, const MeshClosure &n
     const auto halfedges = WorkBlocks(storage, neighborhood.Elements[1], neighborhood.Counts[1], corner_table);
     const auto faces = WorkBlocks(storage, neighborhood.Elements[2], neighborhood.Counts[2], face_table);
     const auto edges = WorkBlocks(storage, neighborhood.Elements[3], neighborhood.Counts[3], edge_table);
-    // Face loops name the neighboring corners and the ring vertices that rules read around each halfedge.
-    // Wire corners belong to no loop, so the neighborhood also names its corners directly.
-    std::vector<uint32_t> corners, ring = vertices, fans, roots;
-    {
+    // Wire corners belong to no loop, so the neighborhood's own corners join them.
+    // Loop corners arrive out of block order, so their blocks collect in marks.
+    IndexMarks corner_marks, ring_marks, root_marks;
+    for (const auto block : vertices) ring_marks.Mark(block);
+    std::vector<uint32_t> fans;
+    const bool whole = neighborhood.Counts[0] == a.Vertices.Count(record.Vertices) && neighborhood.Counts[1] == a.FaceCorners.Count(record.FaceCorners);
+    if (!whole) {
         const auto ranges = a.FaceRanges.Buffer.GetSpan<uvec2>();
         const auto corner_vertices = a.FaceCorners.Buffer.GetSpan<uint32_t>();
         const auto add = [&](uint32_t h) {
             const auto address = Resolve<MeshElementBlockSize>(corner_table, ElementHandle{h}).Value();
-            AddBlock(corners, address);
-            AddBlock(ring, Resolve<MeshElementBlockSize>(vertex_table, ElementHandle{corner_vertices[address]}).Value());
+            corner_marks.Mark(address / MeshElementBlockSize);
+            ring_marks.Mark(Resolve<MeshElementBlockSize>(vertex_table, ElementHandle{corner_vertices[address]}).Value() / MeshElementBlockSize);
         };
         ForEachWorkHandle(storage, neighborhood.Elements[2], neighborhood.Counts[2], 0u, [&](uint32_t face) {
             const auto range = ranges[Resolve<MeshElementBlockSize>(face_table, ElementHandle{face}).Value()];
@@ -44,9 +47,10 @@ void TopologyReadView::Add(state::Registry &r, uint32_t id, const MeshClosure &n
     if (const auto sectors = a.CornerSectors.View(record.CornerSectors); !sectors.empty()) {
         // A sector root can be a corner outside the neighborhood.
         ForEachWorkHandle(storage, neighborhood.Elements[1], neighborhood.Counts[1], 0u, [&](uint32_t h) {
-            if (const auto root = sectors[h]; root != InvalidOffset) AddBlock(roots, Resolve<MeshElementBlockSize>(corner_table, ElementHandle{root}).Value());
+            if (const auto root = sectors[h]; root != InvalidOffset) root_marks.Mark(Resolve<MeshElementBlockSize>(corner_table, ElementHandle{root}).Value() / MeshElementBlockSize);
         });
     }
+    const auto corners = whole ? halfedges : corner_marks.Ascending(), ring = ring_marks.Ascending(), roots = root_marks.Ascending();
     const auto table = [&](const auto &arena, ElementSetRef set) {
         if (!set) return;
         const auto &header = arena.Set(set);
@@ -101,7 +105,6 @@ void TopologyReadView::Clone(state::Registry &r) {
     const profile::CpuScope scope{"TopologyReadViewClone"};
     const auto &meshes = r.Resources.get<MeshStore>();
     const auto &a = meshes.Arenas();
-    // Each binding reads its clone at the source offsets.
     std::vector<std::pair<const mtl::Buffer *, uint32_t *>> bindings{
         {&a.Vertices.Buffer, &Arenas.VertexSlot},
         {&a.FaceCorners.Buffer, &Arenas.CornerSlot},
@@ -152,6 +155,7 @@ void TopologyReadView::Clone(state::Registry &r) {
     }
     Clones = mtl::CloneFootprints(meshes.BufferContext(), footprints);
     for (size_t i = 0u; i < slots.size(); ++i) *slots[i] = Clones[i].Slot;
+    Connectivity.CornersSlot = Arenas.CornerSlot;
 }
 
 ConnectivityRef TopologyReadView::SourceConnectivity(const MeshStore &meshes, uint32_t id) const {
@@ -168,7 +172,6 @@ ConnectivityRef TopologyReadView::SourceConnectivity(const MeshStore &meshes, ui
 ElementLayers TopologyReadView::SourceLayers(const MeshStore &meshes, uint32_t id) const {
     auto layers = meshes.Layers(id);
     const auto &Layers = Arenas.Layers;
-    // Read present layers from clones at source offsets; clone every page the edit reads.
     const auto at = [](SlotOffset &ref, SlotOffset clone) { ref.Slot = ref.Slot == InvalidSlot ? InvalidSlot : clone.Slot; };
     at(layers.FacePrimitives, Layers.FacePrimitives);
     at(layers.VertexPrimitives, Layers.VertexPrimitives);

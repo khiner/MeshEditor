@@ -1,11 +1,8 @@
-#ifndef MESHTOPOLOGYWIREFRAME_MSL
-#define MESHTOPOLOGYWIREFRAME_MSL
-
+#pragma once
 #include "MeshTopologyContext.metal"
 
-// Geometry follows Blender's bmesh_wireframe.cc: two normal-offset copies per vertex, one inset per selected corner, and an outward inset at open boundaries.
-// Each source edge owns a selected-face count and its selected corner.
-// Counting all users also handles nonmanifold edges; an opposite alone cannot do that.
+// Geometry follows Blender's bmesh_wireframe.cc, with two normal-offset copies per vertex, one inset per selected corner, and an outward inset at open boundaries.
+// The wire edge scratch holds each source edge's selected-face count and one selected corner.
 inline device uint *TopoWireEdges(TopoContext ctx, MeshTopologyJob job) {
     return ctx.Scratch() + job.HalfedgeAuxOffset;
 }
@@ -26,14 +23,13 @@ inline uint TopoWireBoundaryEdges(TopoContext ctx, MeshTopologyJob job, uint v, 
 
 inline float TopoWireRelative(TopoContext ctx, MeshTopologyJob job, uint v) {
     // Blender's relative thickness averages lengths to tagged neighbors over the vertex's entire edge degree.
-    // Compute it once per affected vertex.
     if (!(job.Flags & TopologyFlagWireRelative)) return 1.f;
     float length = 0.f;
     uint count = 0u;
     const auto corners = ctx.SrcCorners(job);
     ctx.Src(job).ForEachIncidentEdge(ctx.SrcVertexDomain(job).Handle(v), [&](uint edge) {
         const uint h = ctx.Src(job).EdgeHalfedge(edge);
-        const uint a = corners[h], b = corners[ctx.SrcPrev(job, h)];
+        const uint a = corners[h], b = ctx.SrcFrom(job, h);
         const uint other = a == v ? b : a;
         if (other < job.SrcVertexCount && (ctx.FlagVertices(job)[other] & TopoInRegion))
             length += distance(ctx.SrcPosition(job, v), ctx.SrcPosition(job, other));
@@ -51,7 +47,6 @@ inline void TopoWireVertices(TopoContext ctx, MeshTopologyJob job, uint v, uint 
     const float3 normal = NormalizeOrZero(float3(ctx.SrcVertexNormals(job)[v]));
     *ctx.Inward(job, first, 0u) = packed_float3(normal * (mid - radius));
     *ctx.Inward(job, first + 1u, 0u) = packed_float3(normal * (mid + radius));
-    // The face pass reuses the relative factor without revisiting this fan.
     *ctx.Inward(job, first, 1u) = packed_float3(fac, 0.f, 0.f);
     if (!(ctx.FlagVertices(job)[v] & TopoOnBoundary)) return;
     uint2 edges;
@@ -61,7 +56,7 @@ inline void TopoWireVertices(TopoContext ctx, MeshTopologyJob job, uint v, uint 
     const float3 p = ctx.SrcPosition(job, v);
     for (uint i = 0u; i < count; ++i) {
         const uint h = TopoWireEdges(ctx, job)[2u * edges[i] + 1u];
-        const uint a = corners[ctx.SrcPrev(job, h)], b = corners[h];
+        const uint a = ctx.SrcFrom(job, h), b = corners[h];
         directions[i] = NormalizeOrZero(ctx.SrcPosition(job, a == v ? b : a) - p);
         normals[i] = NormalizeOrZero(float3(ctx.SrcFaceNormals(job)[ctx.SrcFaceOf(job, h)]));
         inward += NormalizeOrZero(cross(normals[i], ctx.SrcPosition(job, b) - ctx.SrcPosition(job, a)));
@@ -103,7 +98,7 @@ inline void TopoWireFace(TopoContext ctx, MeshTopologyJob job, uint f, uint fd, 
     for (uint h = range.x; h < range.y; ++h) {
         const uint v = corners[h], d = vertices + h - range.x;
         const float3 p = ctx.SrcPosition(job, v);
-        const float3 a = NormalizeOrZero(ctx.SrcPosition(job, corners[ctx.SrcPrev(job, h)]) - p);
+        const float3 a = NormalizeOrZero(ctx.SrcPosition(job, ctx.SrcFrom(job, h)) - p);
         const float3 b = NormalizeOrZero(ctx.SrcPosition(job, corners[ctx.SrcNext(job, h)]) - p);
         float3 local_normal = cross(a, -b);
         if (dot(local_normal, face_normal) < 0.f) local_normal = -local_normal;
@@ -132,4 +127,3 @@ inline void TopoWireFace(TopoContext ctx, MeshTopologyJob job, uint f, uint fd, 
         }
     }
 }
-#endif

@@ -1,12 +1,11 @@
-#ifndef MESHLETBUILD_MSL
-#define MESHLETBUILD_MSL
-
+#pragma once
 #include "CornerRenderKey.metal"
 #include "RadixSort.metal"
 #include "ElementWorkShared.metal"
 #include "ElementMembershipRead.metal"
 #include "EnclosingSphere.metal"
 #include "ConnectivityRead.metal"
+#include "OrderedFloat.metal"
 #include "gpu/MeshletBuildJob.h"
 #include "gpu/MeshletBuildPushConstants.h"
 #include "gpu/PrimitiveRecord.h"
@@ -14,7 +13,6 @@
 
 constant uint BuildHashSlots = 2048u;
 constant uint BuildClusterThreads = MeshletBuildClusterThreads;
-constant uint BuildRecordWords = sizeof(MeshletRecord) / sizeof(uint);
 
 // Stats: ordered-float bounds[6], tiles, record bound, emitted records, emitted vertices, with the remaining words reserved for validation.
 struct MeshletBuilder {
@@ -22,13 +20,13 @@ struct MeshletBuilder {
     constant MeshletBuildPushConstants &Pc;
     MeshletBuildJob J;
     device uint *S() const { return BindlessBufferMutable(uint, B.Buffer, Pc.ScratchSlot); }
-    device atomic_uint *A() const { return reinterpret_cast<device atomic_uint *>(S()); }
+    device atomic_uint *A() const { return AtomicWord(S()); }
     device uint *Stats() const { return S() + J.StatsOffset; }
     device uint *Prim(uint p) const { return S() + J.PrimitiveScratchOffset + 8u * p; }
     device uint *Tile(uint t) const { return S() + J.TileScratchOffset + 4u * t; }
     device uint *Counts(uint t) const { return S() + J.TileCountsOffset + 4u * t; }
     device MeshletRecord *Records() const { return reinterpret_cast<device MeshletRecord *>(S() + J.RecordScratchOffset); }
-    ConnectivityView Conn() const { return {B, J.Mesh.Connectivity, J.Mesh.FaceCount}; }
+    ConnectivityView Conn() const { return {B, J.Mesh.Connectivity}; }
     uint Element(uint e) const {
         return J.Elements.Storage.Slot != InvalidSlot ? WorkGroupElement(B,J.Elements,e) : e;
     }
@@ -42,14 +40,14 @@ struct MeshletBuilder {
     }
     uint TriangleVertex(uint t, uint c) const {
         const uint corner = TriangleCorner(t,c);
-        return J.Mesh.TriangleSlot != InvalidSlot ? Conn().CornerVertex(J.Mesh.IndexSlotOffset.Slot,corner) : BindlessBuffer(uint,B.IndexBuffer,J.Mesh.IndexSlotOffset.Slot)[corner];
+        return J.Mesh.TriangleSlot != InvalidSlot ? Conn().VertexOf(corner) : BindlessBuffer(uint,B.IndexBuffer,J.Mesh.IndexSlotOffset.Slot)[corner];
     }
     uint VertexIndex(uint corner) const {
         if (J.Topology == 2u) return Element(corner);
         if (J.Topology == 0u) return TriangleVertex(Element(corner/3u),corner%3u);
         // A line element's first endpoint starts its first halfedge, and its second ends it.
         const uint h = Conn().EdgeHalfedge(Element(corner/2u));
-        return Conn().CornerVertex(J.Mesh.IndexSlotOffset.Slot,corner%2u == 0u ? Conn().Opposite(h) : h);
+        return Conn().VertexOf(corner%2u == 0u ? Conn().Opposite(h) : h);
     }
     float3 Position(uint v) const { return float3(BindlessBuffer(Vertex, B.VertexBuffer, J.Mesh.VertexSlot)[Conn().VertexAddress(v)].Position); }
     uint CornersPerElement() const { return J.Topology == 0u ? 3u : J.Topology == 1u ? 2u : 1u; }
@@ -80,8 +78,6 @@ struct MeshletBuilder {
     uint ElementAt(uint sorted) const { return S()[((J.RadixPassCount & 1u) ? J.TempOrderOffset : J.OrderOffset) + sorted]; }
 };
 
-inline uint OrderedFloat(float f) { const uint u = as_type<uint>(f); return (u & 0x80000000u) ? ~u : u ^ 0x80000000u; }
-inline float FromOrderedFloat(uint u) { return as_type<float>((u & 0x80000000u) ? u ^ 0x80000000u : ~u); }
 inline uint SpatialKeyPart(uint value, uint mask) {
     uint result = 0u;
     while (mask) {
@@ -104,8 +100,7 @@ inline uint SpatialKeyCoordinate(float value, float lo, float hi, uint mask) {
 #define BUILD_ARGS uint batch_group [[threadgroup_position_in_grid]], device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]], constant MeshletBuildPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 #define BUILD_CONTEXT const uint2 tile_entry = BindlessBuffer(uint2,bindless.Buffer,pc.TilesSlot)[pc.FirstTile+batch_group]; const MeshletBuilder b{bindless, pc, BindlessBuffer(MeshletBuildJob, bindless.Buffer, pc.JobsSlot)[tile_entry.x]}; const auto j = b.J
 
-// Full scene builds select drawable membership directly from canonical blocks.
-// Face edges and incident vertices are already represented by their higher-dimensional geometry.
+// Line and point builds skip edges and vertices that a face already draws.
 kernel void MeshletBuildElements(uint lane [[thread_index_in_threadgroup]], BUILD_ARGS) {
     BUILD_CONTEXT;
     const ElementWorkSeedJob source{.Work=j.Elements,.BlockIds=j.ElementBlockIds,.BlockCount=j.ElementBlockCount,
@@ -139,7 +134,7 @@ kernel void MeshletBuildMaterials(uint lane [[thread_index_in_threadgroup]], BUI
 kernel void MeshletBuildInit(uint lane [[thread_index_in_threadgroup]], BUILD_ARGS) {
     BUILD_CONTEXT;
     const uint i=tile_entry.y*256u+lane;
-    if (i < 16u) b.Stats()[i] = i < 3u ? OrderedFloat(INFINITY) : i < 6u ? OrderedFloat(-INFINITY) : 0u;
+    if (i < 16u) b.Stats()[i] = i < 3u ? OrderedBits(INFINITY) : i < 6u ? OrderedBits(-INFINITY) : 0u;
     if (i < j.PrimitiveCount) for (uint k = 0u; k < 8u; ++k) b.Prim(i)[k] = 0u;
 }
 
@@ -156,8 +151,8 @@ kernel void MeshletBuildBounds(uint lane [[thread_index_in_threadgroup]], uint s
     float3 minimum = lower[0], maximum = upper[0];
     for (uint g = 1u; g < 8u; ++g) { minimum = min(minimum, lower[g]); maximum = max(maximum, upper[g]); }
     for (uint k = 0u; k < 3u; ++k) {
-        atomic_fetch_min_explicit(b.A() + j.StatsOffset + k, OrderedFloat(minimum[k]), memory_order_relaxed);
-        atomic_fetch_max_explicit(b.A() + j.StatsOffset + 3u + k, OrderedFloat(maximum[k]), memory_order_relaxed);
+        atomic_fetch_min_explicit(b.A() + j.StatsOffset + k, OrderedBits(minimum[k]), memory_order_relaxed);
+        atomic_fetch_max_explicit(b.A() + j.StatsOffset + 3u + k, OrderedBits(maximum[k]), memory_order_relaxed);
     }
 }
 
@@ -165,9 +160,8 @@ kernel void MeshletBuildKeys(uint lane [[thread_index_in_threadgroup]], BUILD_AR
     BUILD_CONTEXT;
     const uint i=tile_entry.y*256u+lane;
     float3 lo, hi;
-    for (uint k = 0u; k < 3u; ++k) { lo[k] = FromOrderedFloat(b.Stats()[k]); hi[k] = FromOrderedFloat(b.Stats()[3u + k]); }
+    for (uint k = 0u; k < 3u; ++k) { lo[k] = OrderedFloat(b.Stats()[k]); hi[k] = OrderedFloat(b.Stats()[3u + k]); }
     // Longest-axis bisection gives each key bit the largest remaining object-space cell dimension.
-    // One schedule is shared by the whole tile.
     threadgroup uint masks[3];
     if (lane == 0u) {
         float spans[3]{hi.x - lo.x, hi.y - lo.y, hi.z - lo.z};
@@ -257,8 +251,7 @@ inline float3 BuildVertexPosition(MeshletBuilder b, uint source) {
 }
 
 inline void BuildClusterBarrier(uint simd_size, mem_flags flags) {
-    // A tile uses one SIMD group on Apple GPUs with 32-lane execution.
-    // Keep the full-group fence when a device divides this threadgroup differently.
+    // A tile is one SIMD group on 32-lane Apple GPUs, and any other split takes a threadgroup barrier.
     if (simd_size == BuildClusterThreads) simdgroup_barrier(flags);
     else threadgroup_barrier(flags);
 }
@@ -329,12 +322,10 @@ kernel void MeshletBuildClusters(uint lane [[thread_index_in_threadgroup]], uint
     }
     threadgroup atomic_uint table[BuildHashSlots/2u];
     // Tile-local corner and triangle indices fit in 11 and 9 bits.
-    // The hash table probes on its low 11 bits.
-    // A 16-bit fingerprint plus the full render-key comparison preserves collision handling.
+    // Hashes keep 16 bits and probe on their low 11, and equal hashes still compare full render keys.
     threadgroup ushort hashes[MeshletBuildTileElements*3u], representative[MeshletBuildTileElements*3u], candidates[MeshletBuildTileElements];
-    // Each tile triangle's sorted source and emitted element, read once so the serial greedy step touches no device state.
     threadgroup uint sources[MeshletBuildTileElements], elements[MeshletBuildTileElements];
-    // Triangle state bits: flat (1), chosen (2), candidate (4), and a physical boundary after corner c (8 << c).
+    // Triangle state bits: 1 flat, 2 chosen, 4 candidate, and 8 << c a physical boundary after corner c.
     threadgroup uchar vertex_map[MeshletBuildTileElements*3u], state[MeshletBuildTileElements];
     threadgroup uint scores[BuildClusterThreads/32u];
     threadgroup float3 centers[MeshletBuildTileElements];
@@ -391,9 +382,8 @@ kernel void MeshletBuildClusters(uint lane [[thread_index_in_threadgroup]], uint
         if (lane == 0u) { vertex_count = 0u; triangle_count = 0u; candidate_count = 0u; anchor = float3(0); }
         BuildClusterBarrier(simd_size,mem_flags::mem_threadgroup);
         for (;;) {
-            // Reuse dominates proximity in the score.
             // Every triangle with a reused corner is in candidates.
-            // Scan the tile only to seed a new meshlet or when no connected triangle fits its vertex cap.
+            // The whole tile is scanned only to seed a new meshlet or when no connected triangle fits the vertex cap.
             uint best = 0u;
             for (uint scan = 0u; scan < 2u; ++scan) {
                 const bool connected = scan == 0u && candidate_count != 0u;
@@ -496,7 +486,6 @@ kernel void MeshletBuildEmit(uint lane [[thread_index_in_threadgroup]], BUILD_AR
         record.TriangleOffset += j.TriangleOffset;
         if (j.Topology == 0u) record.LocalTriangleOffset += j.LocalTriangleOffset;
         record.Topology = j.Topology;
-        // A fragment's adopter names its traversal leaf.
         if (j.ExistingPrimitive == InvalidOffset) BindlessBufferMutable(uint,bindless.Buffer,pc.LodLeavesSlot)[j.MeshletAddress+counts[2]+m] = j.NodeHandle+record.Primitive;
         record.Primitive = j.ExistingPrimitive == InvalidOffset ? record.Primitive+j.PrimitiveHandle : j.ExistingPrimitive;
         record.GroupIndex = j.ExistingGroup;
@@ -522,5 +511,3 @@ kernel void MeshletBuildPrimitives(uint lane [[thread_index_in_threadgroup]], BU
     };
     BindlessBufferMutable(LodNode, bindless.Buffer, pc.NodesSlot)[j.NodeAddress + p] = {.Error = INFINITY, .FirstMeshlet = j.MeshletHandle + prim[6], .MeshletCount = prim[7], .Members = InvalidOffset};
 }
-
-#endif

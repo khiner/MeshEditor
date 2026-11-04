@@ -1,11 +1,8 @@
-#ifndef MESHTOPOLOGYWELD_MSL
-#define MESHTOPOLOGYWELD_MSL
-
+#pragma once
 #include "MeshTopologyContext.metal"
 
-// Each source corner enters the stack once and leaves it once.
-// A repeated target closes a simple loop; one- and two-edge loops leave no face.
-// The hash table retains old stack indices and validates them against the current stack, so popping a loop needs neither tombstones nor a table scan.
+// Planning pushes each source corner once, and a repeated target vertex pops a simple loop off the stack.
+// The hash table keeps stale stack indices and checks them against the current stack, so a pop needs no tombstones or table scan.
 struct TopoWeldLoops {
     device uint *Keys, *Indices;
     device packed_uint2 *Stack, *Corners; // Attribute corner, incoming edge corner.
@@ -37,7 +34,6 @@ inline void TopoPlanWeld(TopoContext ctx, MeshTopologyJob job, uint f) {
             const uint length=top-previous;
             if (length>=3u) {
                 plan.Starts[faces]=emitted; plan.Lengths[faces++]=length;
-                // The closing edge arrives at the first vertex of this loop.
                 plan.Corners[emitted++]=packed_uint2(plan.Stack[previous].x,h);
                 ctx.FlagHalfedges(job)[h]|=TopoSurfaceEdge;
                 for (uint k=previous+1u;k<top;++k) {
@@ -57,8 +53,7 @@ inline void TopoPlanWeld(TopoContext ctx, MeshTopologyJob job, uint f) {
     ctx.FlagFaces(job)[f]=faces;
 }
 
-// After planning, the stack/hash storage becomes immutable polygon keys and per-polygon selection/keep flags.
-// The shared edge table is reused between dispatches; no extra allocation or whole-mesh face search is needed.
+// After planning, Stack holds each polygon's lowest corner and hash, and Keys holds its changed, selected and keep flags.
 struct TopoWeldPolygon {
     TopoWeldLoops Plan;
     uint Index, Size;
@@ -75,10 +70,14 @@ inline uint TopoWeldVertex(TopoContext ctx, MeshTopologyJob job, TopoWeldPolygon
     return ctx.VertexTargets(job)[ctx.SrcCorners(job)[p.Plan.Corners[p.Plan.Starts[p.Index]+k].x]];
 }
 
+// Whether the polygon winds forward from its lowest vertex, which coincident polygons share when they wind the same way.
+inline bool TopoWeldForward(TopoContext ctx, MeshTopologyJob job, TopoWeldPolygon p) {
+    const uint n=p.Plan.Lengths[p.Index],first=p.Plan.Stack[p.Index].x;
+    return TopoWeldVertex(ctx,job,p,(first+1u)%n)<TopoWeldVertex(ctx,job,p,(first+n-1u)%n);
+}
 inline uint TopoWeldCanonicalVertex(TopoContext ctx, MeshTopologyJob job, TopoWeldPolygon p, uint k) {
     const uint n=p.Plan.Lengths[p.Index],first=p.Plan.Stack[p.Index].x;
-    const bool forward=TopoWeldVertex(ctx,job,p,(first+1u)%n)<TopoWeldVertex(ctx,job,p,(first+n-1u)%n);
-    return TopoWeldVertex(ctx,job,p,(first+(forward ? k : n-k))%n);
+    return TopoWeldVertex(ctx,job,p,(first+(TopoWeldForward(ctx,job,p) ? k : n-k))%n);
 }
 
 inline void TopoWeldKeys(TopoContext ctx, MeshTopologyJob job, uint f) {
@@ -114,7 +113,7 @@ inline bool TopoWeldEqual(TopoContext ctx, MeshTopologyJob job, TopoWeldPolygon 
 inline void TopoWeldInsert(TopoContext ctx, MeshTopologyJob job, uint f) {
     const auto plan=TopoWeldPlan(ctx,job,f);
     const uint2 range=ctx.SrcFaceRange(job,f);
-    device atomic_uint *table=ctx.Atomic(ctx.Table(job));
+    device atomic_uint *table=AtomicWord(ctx.Table(job));
     for (uint i=0u;i<ctx.FlagFaces(job)[f];++i) {
         const TopoWeldPolygon p{plan,i,range.y-range.x};
         const uint hi=ctx.SrcHalfedgeDomain(job).Index(plan.Corners[plan.Starts[i]].x);
@@ -148,12 +147,14 @@ inline void TopoWeldDeduplicate(TopoContext ctx, MeshTopologyJob job, uint f) {
             if (occupant==InvalidOffset) break;
             const auto other=TopoWeldPolygonAt(ctx,job,occupant);
             if (!TopoWeldEqual(ctx,job,p,other)) continue;
-            // Existing coincident faces are left intact.
-            // Only a face changed by this weld can be discarded in favor of its representative.
-            if (occupant!=hi && plan.Keys[i]) {
+            // Coincident faces winding opposite ways are flaps that drop in pairs when the job drops flaps.
+            if (occupant!=hi && (job.Flags & TopologyFlagDropFlaps) && TopoWeldForward(ctx,job,p)!=TopoWeldForward(ctx,job,other)) {
+                plan.Keys[2u*p.Size+i]=0u;
+                atomic_store_explicit(AtomicWord(other.Plan.Keys+2u*other.Size+other.Index),0u,memory_order_relaxed);
+            } else if (occupant!=hi && plan.Keys[i]) {
                 plan.Keys[2u*p.Size+i]=0u;
                 if (ctx.SrcSelectedFace(job,f))
-                    atomic_fetch_or_explicit(ctx.Atomic(other.Plan.Keys+other.Size+other.Index),1u,memory_order_relaxed);
+                    atomic_fetch_or_explicit(AtomicWord(other.Plan.Keys+other.Size+other.Index),1u,memory_order_relaxed);
             }
             break;
         }
@@ -190,5 +191,3 @@ inline void TopoEmitWeld(TopoContext ctx, MeshTopologyJob job, uint f, uint fd, 
         base+=count;
     }
 }
-
-#endif

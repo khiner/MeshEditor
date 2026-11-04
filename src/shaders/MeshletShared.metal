@@ -1,6 +1,4 @@
-#ifndef MESHLET_SHARED_MSL
-#define MESHLET_SHARED_MSL
-
+#pragma once
 #include "CompactPresent.metal"
 
 #include "Bindless.metal"
@@ -9,7 +7,7 @@
 #include "gpu/MeshPrimitiveTopology.h"
 #include "gpu/PrimitiveRecord.h"
 
-// Interpret cluster payload offsets relative to the record range bases.
+// Cluster payload pointers, offset by the record's range bases.
 struct MeshletPayloads {
     device const uint *TriangleIds, *VertexCorners;
     device const MeshletTriangle *LocalTriangles;
@@ -32,7 +30,7 @@ inline uint MeshletPrimitiveMaterialIndex(const thread Scene &scene, PrimitiveRe
 }
 
 
-// Resolve cluster vertices through corner handles for triangles and directly through vertex handles otherwise.
+// A cluster vertex is a corner handle for triangles and a vertex handle otherwise.
 inline uint MeshletVertexId(
     const thread Scene &scene, DrawData draw, uint topology, uint source_vertex
 ) {
@@ -40,10 +38,7 @@ inline uint MeshletVertexId(
     return scene.CornerVertex(draw, source_vertex);
 }
 
-// Returns the motion-blur model override or the draw's current world transform.
 inline Transform MeshletWorld(const thread Scene &scene, DrawData draw) {
     const uint model_slot = scene.View.ModelSlotOverride != InvalidSlot ? scene.View.ModelSlotOverride : draw.ModelSlot;
     return scene.Models(model_slot)[draw.FirstInstance];
 }
-
-#endif

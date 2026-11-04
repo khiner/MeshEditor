@@ -10,11 +10,12 @@ struct PendingObjectRemovals {
     state::DirtySet Buffers, Armatures;
     std::vector<uint32_t> StoreIds;
     std::vector<Range> InstanceRanges, DeformRanges, MorphRanges, SoundVertexRanges;
-    // Destroyed bounds runs' bounds entries, derive entries and prelude tile words.
     std::vector<Range> BoundsEntryRanges, DeriveEntryRanges, PreludeTileRanges;
     std::vector<state::Entity> Objects;
     std::vector<state::Entity> Dependents; // Entities a destroyed entity owned, destroyed after it
 };
+// A scene reset drops the queued removals, whose entities and ranges belong to the reset scene.
+void Reset(PendingObjectRemovals &, state::Registry &);
 
 // Slots of destroyed render instances and retired owners, resolved together by SyncModelsBuffers.
 struct PendingSlotRemovals {
@@ -26,3 +27,5 @@ struct PendingSlotRemovals {
     std::vector<Removal> Instances;
     std::vector<state::Entity> Retired;
 };
+// A scene reset drops the queued removals, whose owners and slots belong to the reset scene.
+void Reset(PendingSlotRemovals &, state::Registry &);

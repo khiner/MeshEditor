@@ -15,6 +15,7 @@ inline void AppendRange(std::vector<Range> &ranges, Range range) {
     if (!ranges.empty() && ranges.back().Offset + ranges.back().Count == range.Offset) ranges.back().Count += range.Count;
     else ranges.push_back(range);
 }
+// Rewrites the ranges as ascending disjoint ranges covering the same elements, merging overlapping and touching ones.
 void CoalesceRanges(std::vector<Range> &);
 
 // Copy surviving runs to their compacted positions after removing sorted indices.

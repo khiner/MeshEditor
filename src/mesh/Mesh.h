@@ -4,7 +4,6 @@
 #include "gpu/Vertex.h"
 #include "mesh/ElementView.h"
 
-#include "gpu/MeshPrimitiveTopology.h"
 #include "state/Entity.h"
 
 #include <vector>
@@ -18,8 +17,6 @@ TrianglePoint ClosestPointOnTriangle(vec3 p, vec3 a, vec3 b, vec3 c);
 
 namespace he {
 constexpr uint32_t null{std::numeric_limits<uint32_t>::max()};
-
-constexpr std::array Elements{Element::Vertex, Element::Edge, Element::Face};
 
 constexpr std::string_view label(Element element) {
     switch (element) {
@@ -52,7 +49,7 @@ using HH = Handle<tag::Halfedge>;
 using EH = Handle<tag::Edge>;
 using FH = Handle<tag::Face>;
 
-// Enumerates a record's live handles in one domain in ascending order, borrowing its table entries and the arena's block metadata.
+// A record's live handles in one domain, ascending.
 template<typename H>
 struct HandleRange {
     struct Iterator {
@@ -95,10 +92,15 @@ struct HandleRange {
 };
 } // namespace he
 
+inline std::vector<uint32_t> HandleList(const auto &range) {
+    std::vector<uint32_t> handles;
+    for (const auto h : range) handles.push_back(*h);
+    return handles;
+}
+
 static constexpr uint32_t InvalidStoreId{~0u};
 
 struct MeshStore;
-struct GeometrySelection;
 
 // A record's connectivity: each domain's table entries, which resolve its handles to arena addresses, and the arenas' values at those addresses.
 // Every argument and stored reference is a record-relative handle.
@@ -114,21 +116,19 @@ struct MeshConnectivity {
     ElementAddress HalfedgeAddress(uint32_t h) const { return Resolve<MeshElementBlockSize>(HalfedgeTable, ElementHandle{h}); }
     ElementAddress EdgeAddress(uint32_t e) const { return Resolve<MeshElementBlockSize>(EdgeTable, ElementHandle{e}); }
     ElementAddress FaceAddress(uint32_t f) const { return Resolve<MeshElementBlockSize>(FaceTable, ElementHandle{f}); }
-    // Whether the vertex handle names a block of the record.
     bool HasVertexBlock(uint32_t v) const { return v / MeshElementBlockSize < VertexTable.size() && VertexTable[v / MeshElementBlockSize] != he::null; }
 
     he::HH Outgoing(he::VH v) const { return {OutgoingValues[VertexAddress(*v).Value()]}; }
     he::HH Opposite(he::HH hh) const { return {OppositeValues[HalfedgeAddress(*hh).Value()]}; }
     he::EH Edge(he::HH hh) const { return {HalfedgeEdgeValues[HalfedgeAddress(*hh).Value()]}; }
     he::HH EdgeHalfedge(uint32_t edge) const { return {EdgeHalfedgeValues[EdgeAddress(edge).Value()]}; }
-    // Each face owns its loop range [first, end) independently of neighboring faces.
+    // A face's loop range [first, end) belongs to that face alone.
     uvec2 FaceRange(uint32_t face) const { return FaceRangeValues[FaceAddress(face).Value()]; }
     he::HH FaceHalfedge(uint32_t face) const { return {FaceRange(face).x}; }
-    uint32_t FaceEnd(uint32_t face) const { return FaceRange(face).y; }
     // The vertex's run of fan items: the first and the count.
     uvec2 Incoming(he::VH v) const { return VertexCornerValues[VertexAddress(*v).Value()]; }
 
-    // Returns the halfedge's face owner, or empty for a wire corner.
+    // The halfedge's face, or empty for a wire corner.
     he::FH FaceOf(he::HH hh) const { return {HalfedgeFaceValues[HalfedgeAddress(*hh).Value()]}; }
 
     he::HH Next(he::HH hh) const {
@@ -146,29 +146,6 @@ struct MeshConnectivity {
     }
 };
 
-struct VertexEdgeIncidence {
-    MeshConnectivity C;
-    struct Iterator {
-        using difference_type = std::ptrdiff_t;
-        using value_type = uint32_t;
-        const MeshConnectivity *C{};
-        uint32_t Item{}, Remaining{}, Side{}, Edge{he::null};
-        uint32_t operator*() const { return Edge; }
-        Iterator &operator++();
-        bool operator==(const Iterator &other) const { return Edge == other.Edge && Remaining == other.Remaining && Side == other.Side; }
-    };
-    struct Range {
-        const MeshConnectivity *C;
-        uint32_t First, Count;
-        Iterator begin() const { return ++Iterator{C, First, Count}; }
-        Iterator end() const { return {C}; }
-    };
-    Range Incident(uint32_t v) const {
-        const auto run = C.Incoming(he::VH{v});
-        return {&C, run.x, run.y};
-    }
-};
-
 // Borrows connectivity and vertex data from MeshStore.
 struct Mesh {
     using VH = he::VH;
@@ -178,9 +155,6 @@ struct Mesh {
 
     Mesh() = default;
     Mesh(const MeshStore &store, uint32_t store_id);
-    // Packed input/export view.
-    // Direct handle reads use GetToVertex.
-    std::span<const uint32_t> CornerVertices() const;
 
     uint32_t VertexCount() const { return C.VertexCount; }
     VH VertexAt(uint32_t ordinal) const;
@@ -190,54 +164,16 @@ struct Mesh {
     FH FaceAt(uint32_t ordinal) const;
     uint32_t FaceOrdinal(FH f) const;
     uint32_t FaceCount() const { return C.FaceCount; }
-    // The MeshPrimitiveTopology its live elements draw as: faces, else edges, else points.
-    uint32_t PrimitiveTopology() const {
-        return uint32_t(FaceCount() ? MeshPrimitiveTopology::Triangle : EdgeCount() ? MeshPrimitiveTopology::Line :
-                                                                                      MeshPrimitiveTopology::Point);
-    }
     uint32_t HalfEdgeCount() const { return C.HalfedgeCount; }
     bool HasClosedSurface() const { return FaceCount() && uint64_t(HalfEdgeCount()) == 2ull * EdgeCount(); }
 
-    const vec3 &GetPosition(VH) const;
-    const vec3 &GetNormal(VH) const;
-    vec3 GetNormal(FH) const;
-
+    const MeshStore &GetStore() const { return *Store; }
     uint32_t GetStoreId() const { return StoreId; }
-    void ValidateSelection(const GeometrySelection &) const;
     const MeshConnectivity &GetConnectivity() const { return C; }
     ElementView<uvec3> DerivedTriangles() const;
     TriangleVertexView TriangleVertices() const;
-    // The vertices at the mesh's vertex handles.
     HandleValues<Vertex> VertexValues() const;
     uint32_t TriangleIndexCount() const;
-
-    // Incident edges derived from the canonical incoming-corner lists.
-    VertexEdgeIncidence GetVertexEdgeIncidence() const;
-
-    HH GetHalfedge(EH eh, uint32_t i) const {
-        const auto h0 = C.EdgeHalfedge(*eh);
-        return i == 0 ? h0 : (i == 1 && h0 ? C.Opposite(h0) : HH{});
-    }
-    HH GetOppositeHalfedge(HH hh) const { return C.Opposite(hh); }
-    EH GetEdge(HH hh) const { return C.Edge(hh); }
-    FH GetFace(HH hh) const { return C.FaceOf(hh); }
-    VH GetFromVertex(HH) const;
-    VH GetToVertex(HH hh) const { return VH(Corners[C.HalfedgeAddress(*hh).Value()]); }
-
-    uint32_t GetValence(FH) const;
-
-    vec3 CalcFaceCentroid(FH) const;
-    // Discrete mean curvature (1/length) averaged over the one-ring normal curvatures.
-    // 1/R on a sphere of radius R, zero on a flat or boundary vertex.
-    // `edge_sharpness` is indexed by edge address, 1 where shading is discontinuous.
-    // A sharp edge is where the surface turns rather than curves, so it has no curvature.
-    float CalcMeanCurvature(VH, std::span<const uint8_t> edge_sharpness) const;
-    VH FindNearestVertex(vec3) const;
-
-    // Dense ordinals for CPU export/solver inputs.
-    // Canonical corner and draw arenas store handles.
-    std::vector<uint32_t> CreateTriangleIndices() const;
-    void WriteTriangleIndices(std::span<uint32_t> dest) const;
 
     he::HandleRange<VH> vertices() const { return {C.VertexTable, C.VertexBlocks}; }
     he::HandleRange<EH> edges() const { return {C.EdgeTable, C.EdgeBlocks}; }
@@ -248,88 +184,10 @@ struct Mesh {
                                                                                        0u;
     }
 
-    struct CirculatorBase {
-        const Mesh *M{};
-        HH CurrentHalfedge{}, StartHalfedge{};
-
-        CirculatorBase() = default;
-        CirculatorBase(const Mesh *m, HH current, HH start)
-            : M(m), CurrentHalfedge(current), StartHalfedge(start) {}
-
-        auto &operator++(this auto &self) {
-            self.CurrentHalfedge = self.advance();
-            if (self.CurrentHalfedge == self.StartHalfedge) self.CurrentHalfedge = HH{};
-            return self;
-        }
-
-        auto operator++(this auto &self, int) {
-            auto tmp = self;
-            ++self;
-            return tmp;
-        }
-
-        bool operator==(this auto const &self, const auto &other) { return self.CurrentHalfedge == other.CurrentHalfedge; }
-    };
-
-    struct FaceVertexIterator : CirculatorBase {
-        using difference_type = std::ptrdiff_t;
-        using value_type = VH;
-        using CirculatorBase::CirculatorBase;
-
-        VH operator*() const { return M->GetToVertex(CurrentHalfedge); }
-        HH advance() const { return M->C.Next(CurrentHalfedge); }
-    };
-    struct FaceVertexRange {
-        const Mesh *Mesh;
-        HH StartHalfedge;
-        FaceVertexIterator begin() const { return {Mesh, StartHalfedge, StartHalfedge}; }
-        FaceVertexIterator end() const { return {Mesh, HH{}, StartHalfedge}; }
-    };
-    FaceVertexRange fv_range(FH fh) const { return {this, C.FaceHalfedge(*fh)}; }
-
-    struct VertexOutgoingHalfedgeIterator : CirculatorBase {
-        using difference_type = std::ptrdiff_t;
-        using value_type = HH;
-        using CirculatorBase::CirculatorBase;
-
-        HH operator*() const { return CurrentHalfedge; }
-        HH advance() const {
-            const auto opp = M->C.Opposite(CurrentHalfedge);
-            return opp ? M->C.Next(opp) : HH{};
-        }
-    };
-    struct VertexOutgoingHalfedgeRange {
-        const Mesh *Mesh;
-        HH StartHalfedge;
-        VertexOutgoingHalfedgeIterator begin() const { return {Mesh, StartHalfedge, StartHalfedge}; }
-        VertexOutgoingHalfedgeIterator end() const { return {Mesh, HH{}, StartHalfedge}; }
-    };
-    VertexOutgoingHalfedgeRange voh_range(VH vh) const {
-        return {this, vh && C.HasVertexBlock(*vh) ? C.Outgoing(vh) : HH{}};
-    }
-
-    struct FaceHalfedgeIterator : CirculatorBase {
-        using iterator_category = std::input_iterator_tag;
-        using difference_type = std::ptrdiff_t;
-        using value_type = HH;
-        using CirculatorBase::CirculatorBase;
-
-        HH operator*() const { return CurrentHalfedge; }
-        HH advance() const { return M->C.Next(CurrentHalfedge); }
-    };
-    struct FaceHalfedgeRange {
-        const Mesh *Mesh;
-        HH StartHalfedge;
-        FaceHalfedgeIterator begin() const { return {Mesh, StartHalfedge, StartHalfedge}; }
-        FaceHalfedgeIterator end() const { return {Mesh, HH{}, StartHalfedge}; }
-    };
-    FaceHalfedgeRange fh_range(FH fh) const { return {this, C.FaceHalfedge(*fh)}; }
-
 private:
     const MeshStore *Store{};
     uint32_t StoreId{InvalidStoreId};
     MeshConnectivity C{};
-    std::span<const uint32_t> Corners{};
 };
 
 // Whether the entity is a mesh entity, which holds a geometry procedure.
@@ -337,9 +195,7 @@ bool HasMesh(const state::Registry &, state::Entity);
 // Whether an instance of the entity draws a mesh record: a cooked mesh entity's, or the record a procedure's instances place.
 bool DrawsMesh(const state::Registry &, state::Entity);
 // The store record an entity's instances draw: its evaluated procedure output, its owned record, or the vertex record of a bone or joint.
-// A mesh entity's drawn record is also the one edit mode edits, picks, selects and overlays.
 std::optional<uint32_t> DrawnStoreId(const state::Registry &, state::Entity);
-// The geometry an entity's instances draw, which edit mode edits and export, audio and physics read.
 // TryGetMesh returns empty for an entity drawing no mesh record.
 Mesh GetMesh(const state::Registry &, state::Entity);
 std::optional<Mesh> TryGetMesh(const state::Registry &, state::Entity);

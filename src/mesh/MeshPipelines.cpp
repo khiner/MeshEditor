@@ -24,8 +24,17 @@ constexpr std::array Families{
     PassFamily{MeshPass::MarkSelectionNeighbors, MeshPass::GatherSelectedElements, "SelectionUpdate.metal"},
     PassFamily{MeshPass::ConnectivityEditWork, MeshPass::ConnectivityEditWork, "ConnectivityEdit.metal"},
     PassFamily{MeshPass::SpatialFaceQueryExpand, MeshPass::SpatialFaceQueryExpand, "SpatialFaceQuery.metal"},
+    PassFamily{MeshPass::ScratchFill, MeshPass::ScratchScanOffsets, "ScratchPass.metal"},
+    PassFamily{MeshPass::ColliderSortHistogram, MeshPass::ColliderTree, "BooleanCollider.metal"},
     PassFamily{MeshPass::BooleanVertices, MeshPass::BooleanFaces, "MeshBoolean.metal"},
-    PassFamily{MeshPass::FlagShortEdges, MeshPass::FlagShortEdges, "ShortEdges.metal"},
+    PassFamily{MeshPass::FlagShortEdges, MeshPass::FindJunctions, "ShortEdges.metal"},
+    PassFamily{MeshPass::BoundaryLoopStarts, MeshPass::BoundaryLoopOutput, "BoundaryLoops.metal"},
+    PassFamily{MeshPass::SelectedChainDegrees, MeshPass::SelectedChainPointAngles, "SelectedChains.metal"},
+    PassFamily{MeshPass::NeighborhoodFaceCount, MeshPass::NeighborhoodExtent, "Neighborhood.metal"},
+    PassFamily{MeshPass::EditVisibilitySource, MeshPass::EditVisibilityVertices, "EditVisibility.metal"},
+    PassFamily{MeshPass::ElementRepairMark, MeshPass::ElementRepairMark, "ElementRepair.metal"},
+    PassFamily{MeshPass::HullGather, MeshPass::HullAssign, "ConvexHull.metal"},
+    PassFamily{MeshPass::RegionSegmentAlias, MeshPass::RegionOutput, "Region.metal"},
     PassFamily{MeshPass::TopologyIdentityInit, MeshPass::TopologyIdentityAssign, "TopologyIdentity.metal"},
     PassFamily{MeshPass::ElementWorkHistogram, MeshPass::ElementWorkFinish, "ElementWorkSort.metal"},
     PassFamily{MeshPass::TopologyCollapseKeys, MeshPass::TopologyCollapseCenters, "TopologyCollapse.metal"},
@@ -33,12 +42,16 @@ constexpr std::array Families{
     PassFamily{MeshPass::PositionVerticesGather, MeshPass::PositionVerticesGather, "VertexPositionEdit.metal"},
     PassFamily{MeshPass::SpaceEvenlyGather, MeshPass::CurveBetweenSelected, "EdgeChains.metal"},
     PassFamily{MeshPass::Circularize, MeshPass::Circularize, "Circularize.metal"},
+    PassFamily{MeshPass::BeautifyCorners, MeshPass::BeautifyFlip, "Beautify.metal"},
+    PassFamily{MeshPass::UnsubdivideEligible, MeshPass::UnsubdivideList, "Unsubdivide.metal"},
     PassFamily{MeshPass::FlattenGroups, MeshPass::FlattenGroups, "Flatten.metal"},
     PassFamily{MeshPass::PositionStatisticsGather, MeshPass::VertexSlideReference, "VertexPositionEdit.metal"},
-    PassFamily{MeshPass::RecalculateNormalFaceCenters, MeshPass::RecalculateNormalOrientation, "RecalculateNormals.metal"},
+    PassFamily{MeshPass::RecalculateNormalNeighbors, MeshPass::RecalculateNormalFlips, "RecalculateNormals.metal"},
     PassFamily{MeshPass::PlanarFacePlanes, MeshPass::WriteEditedPositions, "VertexPositionEdit.metal"},
     PassFamily{MeshPass::EditFaceUvs, MeshPass::EditFaceColors, "FaceAttributeEdit.metal"},
     PassFamily{MeshPass::AttributeRead, MeshPass::AttributeSelectionMasks, "AttributeKernel.metal"},
+    PassFamily{MeshPass::FieldBoundary, MeshPass::FieldCurvature, "AttributeField.metal", "Attribute"},
+    PassFamily{MeshPass::SimplifyVertexSetup, MeshPass::SimplifyTrim, "Simplify.metal"},
     PassFamily{MeshPass::MeshletBoundsRefit, MeshPass::MeshletBoundsRefit, "MeshletBoundsRefit.metal"},
     PassFamily{MeshPass::TopologyGatherCorners, MeshPass::TopologyEdgeAttributes, "MeshTopology.metal"},
     PassFamily{MeshPass::LodNodeRefit, MeshPass::LodNodeRefit, "LodNodeRefit.metal"},
@@ -63,7 +76,6 @@ template<size_t I> constexpr auto KernelName = [] {
     }
     return out;
 }();
-// The shader file and function of each pass, in MeshPass order.
 constexpr auto PassFunctions = []<size_t... Is>(std::index_sequence<Is...>) {
     return std::array<std::pair<const char *, const char *>, sizeof...(Is)>{std::pair{FamilyOf(MeshPass(Is)).File, KernelName<Is>.c_str()}...};
 }(std::make_index_sequence<size_t(MeshPass::Count)>{});
@@ -86,11 +98,11 @@ void MeshPipelines::PrewarmAsync() {
                     const std::scoped_lock lock{Mutex};
                     if (!Pipelines[i]) Pipelines[i].emplace(std::move(pipeline));
                 } catch (...) {
-                    // Foreground use retains the normal error path for a shader edited after the offline archive was built.
+                    // A failed pass compiles again on foreground use, which reports its error.
                 }
             }
         } catch (...) {
-            // A missing archive does not change foreground shader behavior.
+            // A missing archive leaves every pass to compile on foreground use.
         }
     });
 }
@@ -110,3 +122,4 @@ MeshPipelines &GetMeshPipelines(state::Registry &r) {
     if (auto *pipelines = r.Resources.find<MeshPipelines>()) return *pipelines;
     return r.Resources.emplace<MeshPipelines>(r.Resources.get<mtl::LibraryCache>());
 }
+const MeshPipelines &GetMeshPipelines(const state::Registry &r) { return r.Resources.get<const MeshPipelines>(); }

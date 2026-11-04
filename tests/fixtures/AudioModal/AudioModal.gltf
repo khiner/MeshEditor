@@ -1,0 +1,180 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "COLLADA2GLTF"
+  },
+  "extensionsUsed": ["KHR_audio_rigid_bodies"],
+  "accessors": [
+    {
+      "count": 24,
+      "type": "VEC3",
+      "componentType": 5126,
+      "bufferView": 0,
+      "max": [0.5, 0.5, 0.5],
+      "min": [-0.5, -0.5, -0.5]
+    },
+    {
+      "count": 24,
+      "type": "VEC3",
+      "componentType": 5126,
+      "bufferView": 1
+    },
+    {
+      "count": 36,
+      "type": "SCALAR",
+      "componentType": 5125,
+      "bufferView": 2
+    },
+    {
+      "count": 3,
+      "type": "SCALAR",
+      "componentType": 5126,
+      "bufferView": 3
+    },
+    {
+      "count": 3,
+      "type": "SCALAR",
+      "componentType": 5126,
+      "bufferView": 4
+    },
+    {
+      "count": 3,
+      "type": "VEC3",
+      "componentType": 5126,
+      "bufferView": 5
+    },
+    {
+      "count": 9,
+      "type": "VEC3",
+      "componentType": 5126,
+      "bufferView": 6
+    },
+    {
+      "count": 3,
+      "type": "SCALAR",
+      "componentType": 5125,
+      "bufferView": 7
+    }
+  ],
+  "buffers": [
+    {
+      "uri": "AudioModal.bin",
+      "byteLength": 900,
+      "name": "AudioModal"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteLength": 288,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteLength": 288,
+      "byteOffset": 288,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteLength": 144,
+      "byteOffset": 576,
+      "target": 34963
+    },
+    {
+      "buffer": 0,
+      "byteLength": 12,
+      "byteOffset": 720
+    },
+    {
+      "buffer": 0,
+      "byteLength": 12,
+      "byteOffset": 732
+    },
+    {
+      "buffer": 0,
+      "byteLength": 36,
+      "byteOffset": 744
+    },
+    {
+      "buffer": 0,
+      "byteLength": 108,
+      "byteOffset": 780
+    },
+    {
+      "buffer": 0,
+      "byteLength": 12,
+      "byteOffset": 888
+    }
+  ],
+  "materials": [
+    {
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [0.800000011920929, 0.0, 0.0, 1.0],
+        "metallicFactor": 0.0
+      },
+      "extensions": {},
+      "name": "Red"
+    }
+  ],
+  "meshes": [
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1
+          },
+          "indices": 2,
+          "material": 0
+        }
+      ],
+      "name": "Mesh"
+    }
+  ],
+  "nodes": [
+    {
+      "children": [1],
+      "matrix": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    },
+    {
+      "mesh": 0,
+      "extensions": {
+        "KHR_audio_rigid_bodies": {
+          "modalModel": 0,
+          "gain": 0.6000000238418579
+        }
+      }
+    }
+  ],
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [0]
+    }
+  ],
+  "extensions": {
+    "KHR_audio_rigid_bodies": {
+      "acousticMaterials": [
+        {
+          "density": 2700.0,
+          "youngsModulus": 71999995904.0,
+          "poissonRatio": 0.1899999976158142,
+          "alpha": 6.0,
+          "beta": 1.0000000116860974e-07,
+          "name": "Ceramic"
+        }
+      ],
+      "modalModels": [
+        {
+          "frequencies": 3,
+          "decayRates": 4,
+          "positions": 5,
+          "shapes": 6,
+          "indices": 7,
+          "material": 0
+        }
+      ]
+    }
+  }
+}

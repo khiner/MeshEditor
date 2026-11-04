@@ -51,7 +51,7 @@ struct InstanceArena {
         return {reinterpret_cast<Transform *>(mapped.data()), mapped.size() / sizeof(Transform)};
     }
 
-    // Zero the used sizes and the allocator, keeping the GPU allocations for reuse.
+    // Zeroes the used sizes and the allocator and keeps the GPU allocations for reuse.
     void Reset();
 
     mtl::Buffer TransformBuffer, ObjectIdBuffer, BoundsBuffer, RecordBuffer;
@@ -78,7 +78,6 @@ private:
 };
 
 // A cull owns only the list and indirect arguments consumed by later draws.
-// Frontier traversal and classification scratch are shared between sequential culls.
 struct MeshletCullOutput {
     explicit MeshletCullOutput(mtl::BufferContext &ctx)
         : Visible{ctx, 0, SlotType::Buffer},
@@ -94,7 +93,6 @@ struct RenderArenas;
 struct GpuBuffers {
     static constexpr uint32_t MaxSelectableObjects{1u << 20};
     // Motion-blur steps use separate dynamic view-UBO offsets in one submission.
-    // Instance zero remains active.
     static constexpr uint32_t MaxBlurSteps{64};
 
     // Metal requires aligned dynamic buffer offsets.
@@ -104,7 +102,6 @@ struct GpuBuffers {
     }
 
     GpuBuffers(const mtl::Context &ctx, mtl::BindlessSet &slots);
-    // The mesh store's render arenas, whose slots the culls and draws bind.
     const RenderArenas *Render{};
 
     mtl::BufferContext Ctx;
@@ -118,26 +115,20 @@ struct GpuBuffers {
     std::vector<state::Entity> Scenes;
 
     mtl::Buffer MeshletWorkRanges, MeshletWorkBlocks, MeshletWorkState, MeshletWorkDispatchArgs;
-    // Span-tree traversal alternates frontiers and stores each level's size, block prefixes, and indirect arguments.
     std::array<mtl::Buffer, 2> LodFrontiers;
     mtl::Buffer LodFrontierStates, LodFrontierBlockStates, LodExpandArgs;
     MeshletCullOutput SceneCull{Ctx}, EditCull{Ctx};
     mtl::Buffer MeshletClassifications, MeshletCullBlocks;
-    MeshletCullOutput SilhouetteCull{Ctx}; // Outlined surfaces the visibility image cannot resolve.
-    // Persistent procedural line jobs, deterministically compacted into one indirect submission.
+    MeshletCullOutput SilhouetteCull{Ctx};
     mtl::Buffer OverlayJobs, OverlayJobBlocks, VisibleOverlayJobs, OverlayJobDispatchArgs;
-    // Live LOD nodes and meshlets over the drawing instances, which bound each cull's traversal and work, summed over the mesh tallies.
     uint64_t LodNodeCount{0};
     uint64_t MeshletInstanceCount{0};
-    // Maximum traversal depth among resident mesh span trees, the deepest tally.
     uint32_t MeshletLodDepth{0};
     // The tallied meshes drawing meshlets of each render topology, by topology bit: triangles, lines, points.
     std::array<uint32_t, 3> TopologyMeshes{};
-    // The tallied meshes whose edit overlay draws sharp edges.
     uint32_t SharpEditMeshes{0};
     bool DrawsNonTriangles() const { return TopologyMeshes[1] != 0u || TopologyMeshes[2] != 0u; }
 
-    // Maintained totals for culls restricted to one instance flag.
     struct MeshletFlagWork {
         uint64_t Nodes{0}, Meshlets{0};
     };
@@ -147,21 +138,16 @@ struct GpuBuffers {
 
     MeshletFlagWork &FlagWork(uint32_t flag) { return MeshletFlagWorkByBit[std::countr_zero(flag)]; }
     const MeshletFlagWork &FlagWork(uint32_t flag) const { return MeshletFlagWorkByBit[std::countr_zero(flag)]; }
-    // The mesh flags whose totals count the meshlet work of the mesh's instances.
     // The settle pass totals Silhouette over the selected instances.
     static constexpr uint32_t CountedMeshletFlags = ((1u << MeshletInstanceFlagCount) - 1u) &
         ~(uint32_t(MeshletInstanceFlag::Silhouette) | uint32_t(MeshletInstanceFlag::LodPinFinest) | uint32_t(MeshletInstanceFlag::VertexNormal) |
           uint32_t(MeshletInstanceFlag::OverlayOnly) | uint32_t(MeshletInstanceFlag::SilhouetteEligible));
-    // Count visible meshlet work by record flags and topology, including enabled sharp-edge overlays.
     struct MeshFlagTally {
         uint32_t Flags{0}, Instances{0}, Nodes{0}, Meshlets{0}, Depth{0}, Topologies{0};
         bool SharpEdges{};
     };
     // Each mesh record's tally, by store id.
     std::vector<MeshFlagTally> FlagTallies;
-    // The record each entity's instances last tallied.
-    std::unordered_map<state::Entity, uint32_t> TalliedStores;
-    // Moves the mesh record's contribution to the scene and flag totals to `tally`.
     void Retally(uint32_t store_id, MeshFlagTally tally);
 
     static constexpr uint32_t MeshletDispatchChunkSize{65'535};
@@ -169,14 +155,12 @@ struct GpuBuffers {
     static constexpr uint32_t MeshletRouteCount{uint32_t(MeshletRoute::Count)};
     static constexpr uint32_t OverlayJobBlockSize{256};
 
-    // Sizes the overlay job list and its cull scratch to `count` jobs, and returns the list for writing.
     std::span<OverlayJob> ResizeOverlayJobs(uint32_t count);
 
     void EnsureMeshletVisibilityCapacity(
         MeshletCullOutput &, uint64_t visible_count, uint64_t work_node_count, uint64_t work_meshlet_count
     );
 
-    // Each shutter sample retains its evaluated geometry in UMA buffers.
     struct RenderPose {
         RenderPose(mtl::BufferContext &ctx)
             : Transforms(ctx, 0, SlotType::ModelBuffer),
@@ -187,7 +171,6 @@ struct GpuBuffers {
         // Each shown scene's lights, in GpuBuffers::Scenes order.
         std::vector<mtl::Buffer> Lights;
 
-        // Binds the pose's buffers, with the lights of the shown scene at `scene_index`.
         void ApplyTo(::SceneViewUBO &view, uint32_t scene_index) const {
             view.ModelSlotOverride = Transforms.Slot;
             view.ArmatureDeformSlot = ArmatureDeform.Slot;
@@ -196,7 +179,6 @@ struct GpuBuffers {
         }
     };
 
-    // One pose per shutter sample.
     std::vector<RenderPose> BlurPoses;
     static constexpr uint32_t SceneViewUboOffset(uint32_t instance) { return uint32_t(ViewUboStride() * instance); }
 
@@ -212,27 +194,22 @@ struct GpuBuffers {
     // One entry per run of mesh instance slots sharing a deform state, in each laid-out mesh's range.
     BufferArena<BoundsEntry> BoundsReduceEntries{Ctx, SlotType::BoundsEntryBuffer};
     VertexBoundsStore VertexBounds{Ctx};
-    // Current-pose positions keyed by canonical vertex in each pose namespace.
     PoseAttributeStore<vec3> PosedPositions{Ctx};
     // Local-space posed meshlet AABBs.
     PoseAttributeStore<AABB> PosedMeshletBounds{Ctx};
     // One entry per posed bounds entry whose normals derive, in each laid-out mesh's range.
     BufferArena<NormalDeriveEntry> NormalDeriveEntries{Ctx, SlotType::Buffer};
-    // Each laid-out mesh's prelude tile words, which only the host reads to gather the tiles of the meshes a prelude recomputes.
     BufferArena<uint32_t> PreludeTiles{Ctx, SlotType::Buffer};
     // Derived normals keyed by canonical vertex, sector record, and face, respectively.
     PoseAttributeStore<vec3> PosedVertexNormals{Ctx};
     PoseAttributeStore<vec3> PosedSectors{Ctx};
     PoseAttributeStore<vec3> PosedFaceNormals{Ctx};
-    // Weight-summed authored morph normal deltas keyed by canonical vertex, present for authored morph poses.
     PoseAttributeStore<vec3> PosedMorphNormalDeltas{Ctx};
-    // Group prelude tiles by level.
-    // Bounds tiles contain entry and node keys; derive tiles contain entry and block keys, with face blocks first.
+    // Bounds tiles hold entry and node keys, and derive tiles hold entry and block keys with face blocks first.
     mtl::Buffer SparseBoundsTiles{Ctx, 0, SlotType::Buffer}, SparseDeriveTiles{Ctx, 0, SlotType::Buffer}, SparsePosedMeshletBoundsJobs{Ctx, 0, SlotType::Buffer};
 
     // Visibility IDs index the visible list and require matching cull and raster generations for decoding.
     uint32_t MeshletVisibleGeneration{0};
-    // The cull generation the visibility image was rasterized against.
     uint32_t VisibilityGeneration{InvalidOffset};
 
     mtl::Buffer ObjectPickKeys, ObjectPickSeenBitset, ObjectBoxBitset;

@@ -6,6 +6,8 @@
 #include "SoundVertices.h"
 #include "SurfaceContact.h"
 #include "TransformMath.h"
+#include "mesh/MeshPipelines.h"
+#include "mesh/Neighborhood.h"
 #include "render/Instance.h"
 #include "render/MeshletSpatial.h"
 #include "scene/HierarchyInstance.h"
@@ -17,12 +19,11 @@ inline const ModalSoundControls &ModalControls(const state::Registry &r) {
     return view.empty() ? Defaults : r.get<const ModalSoundControls>(view.front());
 }
 
-// A body that sounds by modal synthesis.
 inline bool IsModalSounding(const state::Registry &r, state::Entity e) {
     return r.valid(e) && r.all_of<ModalModes>(HierarchySource(r, e)) && r.all_of<SoundVertices, SoundVerticesModel>(e) && r.get<SoundVerticesModel>(e) == SoundVerticesModel::Modal;
 }
 
-// Mean surface curvature (1/m) where a contact touches a node, read from that node's own mesh at `world_point`.
+// Mean surface curvature in 1/m where a contact touches a node, read from that node's own mesh at `world_point`.
 // Empty when the node has no mesh.
 inline std::optional<double> SurfaceCurvature(const state::Registry &r, state::Entity node, vec3 world_point) {
     if (!r.valid(node)) return std::nullopt;
@@ -33,13 +34,35 @@ inline std::optional<double> SurfaceCurvature(const state::Registry &r, state::E
     const auto mesh = GetMesh(r, inst->Entity);
     const auto &meshes = r.Resources.get<const MeshStore>();
     const auto hit = ClosestMeshletPoint(meshes.Render(), *owner, mesh.VertexValues(), mesh.TriangleVertices(), InverseTransformPoint(wt, world_point));
-    // Interpolate the triangle's per-vertex curvature at the contact's barycentric weights.
-    double local = 0;
+    const auto &pipelines = GetMeshPipelines(r);
+    const auto id = mesh.GetStoreId();
+    const auto edges = VertexEdges(meshes, pipelines, id, hit.Vertices);
+    std::vector<uint32_t> positioned{hit.Vertices.begin(), hit.Vertices.end()};
+    for (const auto &edge : edges.Items) positioned.push_back(edge.Other);
+    const auto positions = VertexPositions(meshes, pipelines, id, positioned);
+    const auto normals = VertexNormals(meshes, pipelines, id, hit.Vertices);
     const auto sharpness = meshes.Arenas().EdgeSharpness.Buffer.GetSpan<uint8_t>();
-    for (uint32_t i = 0; i < 3; ++i) {
-        local += double(hit.Weights[i]) * mesh.CalcMeanCurvature(Mesh::VH{hit.Vertices[i]}, sharpness);
+    double local = 0;
+    for (uint32_t i = 0, at = 3; i < 3; ++i) {
+        const vec3 xi = positions[i], ni = Normalize(normals[i]);
+        double sum = 0;
+        int count = 0;
+        bool sharp = false;
+        for (const auto &edge : edges.Of(i)) {
+            const auto address = meshes.HandleAddress(id, MeshStore::ElementDomain::Edge, ElementHandle{edge.Edge}).Value();
+            sharp |= sharpness[address] != 0;
+            if (edge.Sides >= 2u) {
+                const vec3 d = positions[at] - xi;
+                if (const double d2 = Dot(d, d); d2 >= 1e-20) {
+                    sum += -2.0 * double(Dot(d, ni)) / d2;
+                    ++count;
+                }
+            }
+            ++at;
+        }
+        local += double(hit.Weights[i]) * (sharp || !count ? 0.0 : sum / count);
     }
-    // Curvature is an inverse length, so the node's world scale converts the mesh's own units to meters.
+    // Curvature is an inverse length, so dividing by the node's world scale converts it to 1/m.
     const float scale = MeanScale(wt.S);
     return scale > 0 ? local / scale : 0.0;
 }
@@ -51,14 +74,11 @@ inline state::Entity NearestNodeWith(const state::Registry &r, state::Entity col
     return body;
 }
 
-// The nodes one side of a contact reads from.
 struct ContactNodes {
     state::Entity Model, Surface, Geometry;
 };
 inline ContactNodes ResolveContactNodes(const state::Registry &r, state::Entity collider, state::Entity body) {
     return {
-        // The model the contact excites, whose local space its position and directions are expressed in.
-        // A body has one model however many colliders it has.
         NearestNodeWith(r, collider, body, [&r](state::Entity e) { return r.all_of<ModalModes>(e); }),
         ContactSurfaceNode(r, collider, body),
         NearestNodeWith(r, collider, body, [&r](state::Entity e) {
@@ -75,27 +95,25 @@ inline const AcousticMaterialProperties &MaterialOf(const state::Registry &r, st
     return mat ? mat->Properties : materials::acoustic::Steel.Properties;
 }
 
-// Reduce a (possibly non-uniform or mirrored) world scale to a positive size ratio relative to the baked size.
+// Reduces a non-uniform or mirrored world scale to a positive size ratio relative to the baked size.
 inline float UniformScaleRatio(const state::Registry &r, state::Entity e, const ModalModes &modes) {
     const auto *world = WorldTransformOf(r, e);
     const float baked = MeanScale(modes.BakedScale);
     return world && baked > 0 ? std::clamp(MeanScale(world->S) / baked, 0.001f, 1000.f) : 1.f;
 }
 
-// Unit direction of `v`, or zero when `v` has no length.
 inline vec3 UnitOrZero(vec3 v) {
     const float len = Length(v);
     return len > 0 ? v / len : vec3{0};
 }
 
-// The sample point nearest `local_point`.
 inline uint32_t NearestSamplePoint(std::span<const vec3> positions, vec3 local_point) {
     const auto dist2 = [local_point](vec3 p) { const auto d = p - local_point; return Dot(d, d); };
     return uint32_t(std::ranges::distance(positions.begin(), std::ranges::min_element(positions, {}, dist2)));
 }
 
-// The loudest mode an impulse of `j` at sample point `p` starts ringing, phi_n . j over the object's modes.
-// Mode shapes are mass normalized, so this includes the body's mass and the strike's position where momentum alone does not.
+// The largest |phi_n . j| over the modes for an impulse `j` at sample point `p`.
+// Mode shapes are mass normalized, so the result accounts for body mass and strike position.
 inline float PeakModalDrive(const ModalModes &modes, uint32_t p, vec3 j) {
     if (p >= modes.Shapes.size()) return 0;
     float peak = 0;

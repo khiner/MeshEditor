@@ -12,7 +12,6 @@ MeshData CreateMesh(const UVSphere &);
 MeshData CreateMesh(const QuadSphere &);
 MeshData CreateMesh(const Torus &);
 MeshData CreateMesh(const Cylinder &);
-MeshData CreateMesh(const Cone &);
 MeshData CreateMesh(const PrimitiveParameters &);
 
 struct BoneOctahedronData {

@@ -1,7 +1,8 @@
 #pragma once
 #include "gpu/Types.h"
 
-// First indexes the table arena; BlockCount entries are used within Capacity.
+// First indexes the table arena.
+// BlockCount entries are used within Capacity.
 // InvalidOffset entries contain no block.
 // Flags bit 0 denotes consecutive blocks with the first Count handles live.
 struct MeshElementSet {

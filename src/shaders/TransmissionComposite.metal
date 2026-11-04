@@ -1,6 +1,4 @@
-#ifndef TRANSMISSIONCOMPOSITE_MSL
-#define TRANSMISSIONCOMPOSITE_MSL
-
+#pragma once
 #include "Bindless.metal"
 #include "Varyings.metal"
 
@@ -16,5 +14,3 @@ fragment float4 TransmissionCompositeFragment(
     const float4 prepass = scene.SampleTexLod(view.TransmissionFramebufferSamplerSlot, in.TexCoord, 0.0f);
     return float4(prepass.rgb * view.Exposure, prepass.a);
 }
-
-#endif

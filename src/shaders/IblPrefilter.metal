@@ -1,6 +1,4 @@
-#ifndef IBLPREFILTER_MSL
-#define IBLPREFILTER_MSL
-
+#pragma once
 // Environment prefilter kernels bind source and destination textures directly.
 #include "CubemapFace.metal"
 #include "gpu/CubeFacePushConstants.h"
@@ -26,7 +24,7 @@ kernel void EquirectToCubemapKernel(
     const float lon = atan2(dir.z, dir.x) / (2.0f * PI) + 0.5f;
     const float lat = asin(clamp(dir.y, -1.0f, 1.0f)) / PI + 0.5f;
 
-    // Flip V: lat 0 is the south pole, but equirect images put V=0 at the top (north).
+    // Equirect images put V=0 at the north pole, and lat 0 is the south pole.
     const float4 color = equirect_map.sample(equirect_sampler, float2(lon, 1.0f - lat), level(0.0f));
     cube_face.write(color, uint2(px), face);
 }
@@ -125,8 +123,6 @@ kernel void SpecularPrefilterKernel(
             const float HdotV = max(dot(H, V), 0.0f);
             const float D = DistributionGGX(NdotH, pc.Roughness);
             const float pdf = max(D * NdotH / max(4.0f * HdotV, 1e-4f), 1e-4f);
-            // GGX importance-sampled LOD from the sample PDF:
-            // lod = 0.5 * log2(6 * width^2 / (sampleCount * pdf))
             const float mip_level = pc.Roughness == 0.0f ? 0.0f : clamp(
                 0.5f * log2(6.0f * src_size * src_size / (float(SAMPLE_COUNT) * max(pdf, 1e-4f))),
                 0.0f, max_src_lod
@@ -138,5 +134,3 @@ kernel void SpecularPrefilterKernel(
     prefiltered = total_weight > 0.0f ? prefiltered / total_weight : float3(0.0f);
     prefilter_face.write(float4(prefiltered, 1.0f), uint2(px), face);
 }
-
-#endif

@@ -12,6 +12,7 @@ Engine::Engine(bool audio) : Audio(audio) {
 }
 
 Engine::~Engine() {
+    const mtl::Context::TeardownScope teardown{R.Resources.get<const mtl::Context>()};
     WaitForRender(R);
     if (Audio) DeinitAudioSystem(R);
     P.reset();

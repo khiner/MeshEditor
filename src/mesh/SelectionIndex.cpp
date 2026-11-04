@@ -43,7 +43,7 @@ void SelectionIndex::Update(uint32_t root, std::span<const uint32_t> blocks, uin
             id = child;
         }
     }
-    // A fixed child order makes each sum a function of current values, with no accumulated floating-point delta error across edits, undo, or redo.
+    // A fixed child order makes each sum a function of current values, so edits, undo and redo accumulate no floating-point error.
     uint32_t updated = 0u;
     for (uint32_t level = 0u; level < SelectionIndexLevels; ++level) {
         auto &ids = paths[level];
@@ -52,7 +52,7 @@ void SelectionIndex::Update(uint32_t root, std::span<const uint32_t> blocks, uin
         for (const auto id : ids) {
             auto &node = Nodes[id];
             SelectionAggregate sum{};
-            node.Active = node.Selected = node.Boundary = node.Hidden = node.Unselected = 0u;
+            node.Active = node.Selected = node.Hidden = 0u;
             for (uint32_t slot = 0u; slot < 16u; ++slot) {
                 const auto child = node.Children[slot];
                 if (child == InvalidOffset) continue;
@@ -60,8 +60,6 @@ void SelectionIndex::Update(uint32_t root, std::span<const uint32_t> blocks, uin
                 node.Active |= 1u << slot;
                 if (value.Selected) node.Selected |= 1u << slot;
                 if (value.Hidden) node.Hidden |= 1u << slot;
-                if (value.LiveCount > value.Selected + value.Hidden) node.Unselected |= 1u << slot;
-                if (value.Flags & SelectionBoundary) node.Boundary |= 1u << slot;
                 sum.PositionSum += value.PositionSum;
                 sum.Bounds.Min = Min(sum.Bounds.Min, value.Bounds.Min);
                 sum.Bounds.Max = Max(sum.Bounds.Max, value.Bounds.Max);

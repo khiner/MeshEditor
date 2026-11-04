@@ -23,62 +23,12 @@ struct Fixture {
     uint32_t TriangleCount() const { return uint32_t(CornerVertices.size() / 3u); }
 };
 
-void AppendSphere(Fixture &fixture, uint32_t rings, uint32_t segments, vec3 origin, float radius) {
-    const uint32_t base_vertex = uint32_t(fixture.Positions.size());
-    for (uint32_t r = 0; r <= rings; ++r) {
-        const float theta = std::numbers::pi_v<float> * float(r) / float(rings);
-        for (uint32_t s = 0; s <= segments; ++s) {
-            const float phi = 2.f * std::numbers::pi_v<float> * float(s) / float(segments);
-            const vec3 normal{std::sin(theta) * std::cos(phi), std::cos(theta), std::sin(theta) * std::sin(phi)};
-            fixture.Positions.push_back(origin + radius * normal);
-            fixture.VertexNormals.push_back(normal);
-        }
+void Close(Fixture &fixture) {
+    for (uint32_t face = 0; face < fixture.TriangleCount(); ++face) {
+        fixture.Triangles.push_back({face * 3u, face * 3u + 1u, face * 3u + 2u});
+        fixture.HalfedgeFaces.insert(fixture.HalfedgeFaces.end(), 3u, face);
     }
-    const auto vertex = [&](uint32_t r, uint32_t s) { return base_vertex + r * (segments + 1u) + s; };
-    const auto uv = [&](uint32_t r, uint32_t s) { return vec2{float(s) / float(segments), float(r) / float(rings)}; };
-    const auto triangle = [&](uint32_t ra, uint32_t sa, uint32_t rb, uint32_t sb, uint32_t rc, uint32_t sc) {
-        fixture.CornerVertices.insert(fixture.CornerVertices.end(), {vertex(ra, sa), vertex(rb, sb), vertex(rc, sc)});
-        fixture.CornerUvs.insert(fixture.CornerUvs.end(), {uv(ra, sa), uv(rb, sb), uv(rc, sc)});
-    };
-    for (uint32_t r = 0; r < rings; ++r) {
-        for (uint32_t s = 0; s < segments; ++s) {
-            if (r + 1u != rings) triangle(r, s, r + 1u, s + 1u, r + 1u, s);
-            if (r != 0u) triangle(r, s, r, s + 1u, r + 1u, s + 1u);
-        }
-    }
-}
-
-void AppendSeamGrid(Fixture &fixture, uint32_t cells) {
-    const uint32_t base_vertex = uint32_t(fixture.Positions.size());
-    const uint32_t seam = cells / 2u;
-    const uint32_t columns = cells + 2u;
-    const auto column_x = [&](uint32_t column) { return column <= seam ? column : column - 1u; };
-    for (uint32_t y = 0; y <= cells; ++y) {
-        for (uint32_t column = 0; column <= columns - 1u; ++column) {
-            fixture.Positions.push_back(vec3{float(column_x(column)) / float(cells), 0.f, float(y) / float(cells)});
-            fixture.VertexNormals.push_back({0, 1, 0});
-        }
-    }
-    const auto vertex = [&](uint32_t x, uint32_t y) { return base_vertex + y * columns + x; };
-    const auto uv = [&](uint32_t x, uint32_t y) {
-        return vec2{float(column_x(x)) / float(cells) + (x > seam ? 1.f : 0.f), float(y) / float(cells)};
-    };
-    const auto triangle = [&](uint32_t xa, uint32_t ya, uint32_t xb, uint32_t yb, uint32_t xc, uint32_t yc) {
-        fixture.CornerVertices.insert(fixture.CornerVertices.end(), {vertex(xa, ya), vertex(xb, yb), vertex(xc, yc)});
-        fixture.CornerUvs.insert(fixture.CornerUvs.end(), {uv(xa, ya), uv(xb, yb), uv(xc, yc)});
-    };
-    for (uint32_t y = 0; y < cells; ++y) {
-        for (uint32_t x = 0; x < cells; ++x) {
-            const uint32_t left = x < seam ? x : x + 1u;
-            const uint32_t right = left + 1u;
-            triangle(left, y, right, y, right, y + 1u);
-            triangle(left, y, right, y + 1u, left, y + 1u);
-        }
-    }
-}
-
-void AppendLevel0Clusters(Fixture &fixture, uint32_t first_triangle, uint32_t triangle_count) {
-    const auto indices = std::span{fixture.CornerVertices}.subspan(size_t(first_triangle) * 3u, size_t(triangle_count) * 3u);
+    const auto &indices = fixture.CornerVertices;
     const auto bound = meshopt_buildMeshletsBound(indices.size(), ClusterLodMaxVertices, ClusterLodMaxTriangles);
     std::vector<meshopt_Meshlet> built(bound);
     std::vector<uint32_t> local_vertices(bound * ClusterLodMaxVertices);
@@ -96,10 +46,7 @@ void AppendLevel0Clusters(Fixture &fixture, uint32_t first_triangle, uint32_t tr
 
     for (const auto &meshlet : built) {
         const uint32_t first_vertex = uint32_t(fixture.ClusterVertices.size());
-        for (uint32_t v = 0; v < meshlet.vertex_count; ++v) {
-            const uint32_t vertex = local_vertices[meshlet.vertex_offset + v];
-            fixture.ClusterVertices.push_back(first_triangle * 3u + representative[vertex]);
-        }
+        for (uint32_t v = 0; v < meshlet.vertex_count; ++v) fixture.ClusterVertices.push_back(representative[local_vertices[meshlet.vertex_offset + v]]);
         const uint32_t first_local_triangle = uint32_t(fixture.ClusterLocalTriangles.size());
         for (uint32_t t = 0; t < meshlet.triangle_count; ++t) {
             const auto *local = &local_triangles[meshlet.triangle_offset + t * 3u];
@@ -119,36 +66,69 @@ void AppendLevel0Clusters(Fixture &fixture, uint32_t first_triangle, uint32_t tr
             .ConeCullSafe = true,
         });
     }
-}
-
-void CloseTrianglePrimitive(Fixture &fixture, uint32_t first_triangle) {
-    while (fixture.Triangles.size() < fixture.TriangleCount()) {
-        const auto face = uint32_t(fixture.Triangles.size());
-        fixture.Triangles.push_back({face * 3u, face * 3u + 1u, face * 3u + 2u});
-        fixture.HalfedgeFaces.insert(fixture.HalfedgeFaces.end(), 3u, face);
-    }
-    const uint32_t triangle_count = fixture.TriangleCount() - first_triangle;
-    const uint32_t first_cluster = uint32_t(fixture.Clusters.size());
-    AppendLevel0Clusters(fixture, first_triangle, triangle_count);
     fixture.Primitives.push_back(ClusterLodPrimitive{
-        .FirstTriangle = first_triangle,
-        .TriangleCount = triangle_count,
-        .FirstCluster = first_cluster,
-        .ClusterCount = uint32_t(fixture.Clusters.size()) - first_cluster,
+        .FirstTriangle = 0u,
+        .TriangleCount = fixture.TriangleCount(),
+        .FirstCluster = 0u,
+        .ClusterCount = uint32_t(fixture.Clusters.size()),
     });
 }
 
-Fixture SphereFixture(uint32_t rings, uint32_t segments) {
+Fixture Sphere(uint32_t rings, uint32_t segments) {
     Fixture fixture;
-    AppendSphere(fixture, rings, segments, vec3{0}, 1.f);
-    CloseTrianglePrimitive(fixture, 0u);
+    for (uint32_t r = 0; r <= rings; ++r) {
+        const float theta = std::numbers::pi_v<float> * float(r) / float(rings);
+        for (uint32_t s = 0; s <= segments; ++s) {
+            const float phi = 2.f * std::numbers::pi_v<float> * float(s) / float(segments);
+            const vec3 normal{std::sin(theta) * std::cos(phi), std::cos(theta), std::sin(theta) * std::sin(phi)};
+            fixture.Positions.push_back(normal);
+            fixture.VertexNormals.push_back(normal);
+        }
+    }
+    const auto vertex = [&](uint32_t r, uint32_t s) { return r * (segments + 1u) + s; };
+    const auto uv = [&](uint32_t r, uint32_t s) { return vec2{float(s) / float(segments), float(r) / float(rings)}; };
+    const auto triangle = [&](uint32_t ra, uint32_t sa, uint32_t rb, uint32_t sb, uint32_t rc, uint32_t sc) {
+        fixture.CornerVertices.insert(fixture.CornerVertices.end(), {vertex(ra, sa), vertex(rb, sb), vertex(rc, sc)});
+        fixture.CornerUvs.insert(fixture.CornerUvs.end(), {uv(ra, sa), uv(rb, sb), uv(rc, sc)});
+    };
+    for (uint32_t r = 0; r < rings; ++r) {
+        for (uint32_t s = 0; s < segments; ++s) {
+            if (r + 1u != rings) triangle(r, s, r + 1u, s + 1u, r + 1u, s);
+            if (r != 0u) triangle(r, s, r, s + 1u, r + 1u, s + 1u);
+        }
+    }
+    Close(fixture);
     return fixture;
 }
 
-Fixture SeamGridFixture(uint32_t cells) {
+Fixture SeamGrid(uint32_t cells) {
     Fixture fixture;
-    AppendSeamGrid(fixture, cells);
-    CloseTrianglePrimitive(fixture, 0u);
+    const uint32_t seam = cells / 2u;
+    const uint32_t columns = cells + 2u;
+    const auto column_x = [&](uint32_t column) { return column <= seam ? column : column - 1u; };
+    for (uint32_t y = 0; y <= cells; ++y) {
+        for (uint32_t column = 0; column <= columns - 1u; ++column) {
+            fixture.Positions.push_back(vec3{float(column_x(column)) / float(cells), 0.f, float(y) / float(cells)});
+            fixture.VertexNormals.push_back({0, 1, 0});
+        }
+    }
+    const auto vertex = [&](uint32_t x, uint32_t y) { return y * columns + x; };
+    const auto uv = [&](uint32_t x, uint32_t y) {
+        return vec2{float(column_x(x)) / float(cells) + (x > seam ? 1.f : 0.f), float(y) / float(cells)};
+    };
+    const auto triangle = [&](uint32_t xa, uint32_t ya, uint32_t xb, uint32_t yb, uint32_t xc, uint32_t yc) {
+        fixture.CornerVertices.insert(fixture.CornerVertices.end(), {vertex(xa, ya), vertex(xb, yb), vertex(xc, yc)});
+        fixture.CornerUvs.insert(fixture.CornerUvs.end(), {uv(xa, ya), uv(xb, yb), uv(xc, yc)});
+    };
+    for (uint32_t y = 0; y < cells; ++y) {
+        for (uint32_t x = 0; x < cells; ++x) {
+            const uint32_t left = x < seam ? x : x + 1u;
+            const uint32_t right = left + 1u;
+            triangle(left, y, right, y, right, y + 1u);
+            triangle(left, y, right, y + 1u, left, y + 1u);
+        }
+    }
+    Close(fixture);
     return fixture;
 }
 
@@ -169,7 +149,7 @@ ClusterLodMesh MeshOf(const Fixture &fixture) {
     };
 }
 
-// Compare every published field without depending on struct padding.
+// Flattens every published field into words, independent of struct padding.
 std::vector<uint32_t> LodWords(const ClusterLodBuild &build) {
     std::vector<uint32_t> words;
     const auto put = [&](auto... values) { (words.push_back(std::bit_cast<uint32_t>(values)), ...); };
@@ -192,69 +172,60 @@ std::vector<uint32_t> LodWords(const ClusterLodBuild &build) {
 } // namespace
 
 const boost::ut::suite ClusterLod = [] {
-    "serial and parallel LOD builds preserve identical geometry bounds and errors"_test = [] {
-        for (const bool seam : {false, true}) {
-            const auto fixture = seam ? SeamGridFixture(48u) : SphereFixture(48u, 96u);
-            const auto mesh = MeshOf(fixture);
-            const auto reference = BuildClusterLod(mesh, true);
-            expect(reference.LevelCount > 2u);
-            for (uint32_t repeat = 0u; repeat < 3u; ++repeat) expect(LodWords(BuildClusterLod(mesh)) == LodWords(reference));
-        }
+    struct LodCase {
+        std::string_view Name;
+        Fixture Shape;
+        // The shape has a UV seam at x = 0.5.
+        bool Seam;
     };
-    "LOD repair handles members joining across levels deterministically"_test = [] {
-        const auto fixture = SeamGridFixture(48u);
-        auto mesh = MeshOf(fixture);
-        std::vector<uvec3> triangles;
-        std::vector<uint32_t> levels;
-        for (uint32_t i = 0u; i < fixture.Clusters.size(); ++i) {
-            const auto &c = fixture.Clusters[i];
-            levels.push_back((i % 3u) * 2u);
-            for (uint32_t t = 0u; t < c.TriangleCount; ++t) {
-                uvec3 triangle;
-                for (uint32_t k = 0u; k < 3u; ++k) triangle[k] = fixture.ClusterVertices[c.FirstVertex + fixture.ClusterLocalTriangles[c.FirstLocalTriangle + t][k]];
-                triangles.push_back(triangle);
+    for (const auto &c : {LodCase{"sphere", Sphere(48u, 96u), false}, LodCase{"seam grid", SeamGrid(48u), true}}) {
+        boost::ut::test(std::string{c.Name}) = [&] {
+            const auto &fixture = c.Shape;
+            auto mesh = MeshOf(fixture);
+            const auto build = BuildClusterLod(mesh, true);
+            for (uint32_t repeat = 0u; repeat < 3u; ++repeat) expect(LodWords(BuildClusterLod(mesh)) == LodWords(build));
+            expect(build.LevelCount > 2u);
+            expect(build.Level0Count() == fixture.Clusters.size());
+            expect(fatal(build.PrimitiveRanges.size() == 1u));
+            const auto &finest = build.Nodes.at(build.PrimitiveRanges.front().FinestNode);
+            expect(finest.FirstMeshlet == 0u);
+            expect(finest.MeshletCount == fixture.Clusters.size());
+            if (c.Seam) {
+                expect(fatal(!build.Groups.empty()));
+                const auto terminal = uint32_t(build.Groups.size() - 1u);
+                std::set<float> left, right;
+                for (const auto &cluster : build.Clusters) {
+                    if (cluster.GroupIndex != terminal) continue;
+                    for (const auto corner : std::span{build.VertexCorners}.subspan(cluster.VertexOffset, cluster.VertexCount)) {
+                        const auto position = fixture.Positions[fixture.CornerVertices[corner]];
+                        if (position.x != 0.5f) continue;
+                        (fixture.CornerUvs[corner].x < 1.f ? left : right).insert(position.z);
+                    }
+                }
+                expect(!left.empty());
+                expect(left == right);
             }
-        }
-        const auto refs = TriangleRefs(triangles);
-        mesh.CornerVertices = {refs, fixture.CornerVertices};
-        mesh.Weld.TriangleFaces.Corners = refs;
-        mesh.Weld.CornerUvs[0].Corners = refs;
-        const auto scale = meshopt_simplifyScale(&fixture.Positions.front().x, fixture.Positions.size(), sizeof(vec3));
-        const auto reference = RebuildClusterLod(mesh, levels, scale);
-        expect(reference.LevelCount >= 5u);
-        expect(reference.Level0Count() == levels.size());
-        for (const auto group : reference.Level0Groups) expect(group < reference.Groups.size());
-        for (uint32_t repeat = 0u; repeat < 3u; ++repeat) expect(LodWords(RebuildClusterLod(mesh, levels, scale)) == LodWords(reference));
-    };
-    "simplification retains an original-geometry cut"_test = [] {
-        const auto fixture = SphereFixture(32u, 64u);
-        const auto build = BuildClusterLod(MeshOf(fixture));
-        expect(!build.Clusters.empty());
-        expect(build.LevelCount > 1u);
-        expect(build.Level0Count() == fixture.Clusters.size());
-        expect(build.PrimitiveRanges.size() == 1u);
-        if (build.PrimitiveRanges.empty()) return;
-        const auto &finest = build.Nodes.at(build.PrimitiveRanges.front().FinestNode);
-        expect(finest.FirstMeshlet == 0u);
-        expect(finest.MeshletCount == fixture.Clusters.size());
-    };
-
-    "coarse geometry retains both sides of a UV seam"_test = [] {
-        const auto fixture = SeamGridFixture(32u);
-        const auto build = BuildClusterLod(MeshOf(fixture));
-        expect(!build.Groups.empty());
-        if (build.Groups.empty()) return;
-        const auto terminal = uint32_t(build.Groups.size() - 1u);
-        std::set<float> left, right;
-        for (const auto &cluster : build.Clusters) {
-            if (cluster.GroupIndex != terminal) continue;
-            for (const auto corner : std::span{build.VertexCorners}.subspan(cluster.VertexOffset, cluster.VertexCount)) {
-                const auto position = fixture.Positions[fixture.CornerVertices[corner]];
-                if (position.x != 0.5f) continue;
-                (fixture.CornerUvs[corner].x < 1.f ? left : right).insert(position.z);
+            std::vector<uvec3> triangles;
+            std::vector<uint32_t> levels;
+            for (uint32_t i = 0u; i < fixture.Clusters.size(); ++i) {
+                const auto &cluster = fixture.Clusters[i];
+                levels.push_back((i % 3u) * 2u);
+                for (uint32_t t = 0u; t < cluster.TriangleCount; ++t) {
+                    uvec3 triangle;
+                    for (uint32_t k = 0u; k < 3u; ++k) triangle[k] = fixture.ClusterVertices[cluster.FirstVertex + fixture.ClusterLocalTriangles[cluster.FirstLocalTriangle + t][k]];
+                    triangles.push_back(triangle);
+                }
             }
-        }
-        expect(!left.empty());
-        expect(left == right);
-    };
+            const auto refs = TriangleRefs(triangles);
+            mesh.CornerVertices = {refs, fixture.CornerVertices};
+            mesh.Weld.TriangleFaces.Corners = refs;
+            mesh.Weld.CornerUvs[0].Corners = refs;
+            const auto scale = meshopt_simplifyScale(&fixture.Positions.front().x, fixture.Positions.size(), sizeof(vec3));
+            const auto rebuilt = RebuildClusterLod(mesh, levels, scale);
+            for (uint32_t repeat = 0u; repeat < 3u; ++repeat) expect(LodWords(RebuildClusterLod(mesh, levels, scale)) == LodWords(rebuilt));
+            expect(rebuilt.LevelCount >= 5u) << "levels" << rebuilt.LevelCount;
+            expect(rebuilt.Level0Count() == levels.size());
+            for (const auto group : rebuilt.Level0Groups) expect(group < rebuilt.Groups.size());
+        };
+    }
 };

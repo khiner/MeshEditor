@@ -104,7 +104,16 @@ mesheditor_library(MeshEditorMesh HOT
     src/mesh/EdgeChains.cpp
     src/mesh/Flatten.cpp
     src/mesh/Unsubdivide.cpp
-    src/mesh/Decimate.cpp
+    src/mesh/Partition.cpp
+    src/mesh/Simplify.cpp
+    src/mesh/AttributeFields.cpp
+    src/mesh/ConvexHull.cpp
+    src/mesh/BoundaryLoops.cpp
+    src/mesh/SelectedChains.cpp
+    src/mesh/Neighborhood.cpp
+    src/mesh/Minkowski.cpp
+    src/mesh/Region.cpp
+    src/mesh/LevelSet.cpp
     src/mesh/SnapSymmetry.cpp
     src/mesh/EditVisibility.cpp
     src/mesh/ConnectivityEditWork.cpp
@@ -115,6 +124,7 @@ mesheditor_library(MeshEditorMesh HOT
     src/mesh/TopologyOutputHandles.cpp
     src/mesh/ElementWorkSort.cpp
     src/mesh/MeshPipelines.cpp
+    src/mesh/ScratchPasses.cpp
     src/mesh/MeshStore.cpp
     src/mesh/MeshStores.cpp
     src/mesh/MeshTopology.cpp
@@ -247,6 +257,7 @@ mesheditor_library(MeshEditorEditor COLD
     src/procedure/Cook.cpp
     src/procedure/Plan.cpp
     src/procedure/Subnetwork.cpp
+    src/procedure/Macros.cpp
     src/procedure/Network.cpp
     src/procedure/SceneReferences.cpp
     src/scene/HierarchyInstance.cpp

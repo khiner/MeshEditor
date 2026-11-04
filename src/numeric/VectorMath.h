@@ -8,6 +8,8 @@ template<detail::FloatingVector V> constexpr V Mix(V a, V b, typename V::value_t
 template<detail::FloatingVector V> constexpr V Clamp(V x, V lo, V hi) { return Min(Max(x, lo), hi); }
 template<detail::FloatingVector V> constexpr V Clamp(V x, typename V::value_type lo, typename V::value_type hi) { return Clamp(x, V{lo}, V{hi}); }
 template<detail::FloatingVector V> inline typename V::value_type Distance(V a, V b) { return Length(a - b); }
+constexpr bool Finite(vec2 v) { return __builtin_isfinite(v.x) && __builtin_isfinite(v.y); }
+constexpr bool Finite(vec3 v) { return __builtin_isfinite(v.x) && __builtin_isfinite(v.y) && __builtin_isfinite(v.z); }
 constexpr float Sign(float x) { return (x > 0.f) - (x < 0.f); }
 constexpr float Mix(float a, float b, float t) { return a * (1.f - t) + b * t; }
 constexpr float Clamp(float x, float lo, float hi) { return Min(Max(x, lo), hi); }

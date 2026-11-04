@@ -1,12 +1,9 @@
-#ifndef MOTIONBLURRESOLVE_MSL
-#define MOTIONBLURRESOLVE_MSL
-
+#pragma once
 #include "Bindless.metal"
 #include "Varyings.metal"
 #include "gpu/MotionBlurResolvePushConstants.h"
 
-// Average the summed steps.
-// Color and coverage are both premultiplied, so both scale together.
+// Averages the summed steps, scaling premultiplied color and coverage together.
 fragment float4 MotionBlurResolveFragment(
     QuadVaryings in [[stage_in]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -18,5 +15,3 @@ fragment float4 MotionBlurResolveFragment(
     const Scene scene{bindless, view, theme, workspace};
     return scene.SampleTex(pc.AccumSamplerSlot, in.TexCoord) * pc.InvSteps;
 }
-
-#endif

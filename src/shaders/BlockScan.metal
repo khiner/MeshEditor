@@ -1,7 +1,4 @@
-#ifndef BLOCKSCAN_MSL
-#define BLOCKSCAN_MSL
-
-// Computes an exclusive prefix sum over a uint range.
+#pragma once
 // Every kernel using these declares ScanSimdGroups + 1 threadgroup words for the scratch.
 
 #include "gpu/Types.h"
@@ -78,8 +75,7 @@ inline uint ScanBlockStart(
     return blocks[block] + rank;
 }
 
-// Writes exclusive offsets in place or to a separate rank array.
-// Each thread loads its own inputs before the group scan, then replaces only that run.
+// Each thread loads its inputs before the group scan and overwrites only its own run, so `offsets` may alias `values`.
 inline void ScanBlockOffsets(
     device const uint *values, uint count, uint block, device const uint *blocks, device uint *offsets,
     uint lane, uint simd_lane, uint simd_group, threadgroup uint *sums
@@ -94,5 +90,3 @@ inline void ScanBlockOffsets(
         start += local[k];
     }
 }
-
-#endif

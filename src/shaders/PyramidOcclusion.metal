@@ -1,6 +1,4 @@
-#ifndef PYRAMIDOCCLUSION_MSL
-#define PYRAMIDOCCLUSION_MSL
-
+#pragma once
 #include "Bindless.metal"
 #include "ScreenSpace.metal"
 
@@ -52,5 +50,3 @@ inline bool BoxPastPyramid(
     }
     return nearest ? max_depth <= occluder : min_depth > occluder;
 }
-
-#endif

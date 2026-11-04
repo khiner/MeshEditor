@@ -1,6 +1,4 @@
-#ifndef BINDLESS_MSL
-#define BINDLESS_MSL
-
+#pragma once
 #include "TRSUtils.metal"
 #include "gpu/BindlessBindings.h"
 #include "gpu/BoneDeformVertex.h"
@@ -8,6 +6,7 @@
 #include "gpu/NormalSector.h"
 #include "gpu/PoseAttributeNode.h"
 #include "gpu/DrawData.h"
+#include "gpu/Hash.h"
 #include "gpu/InstanceRecord.h"
 #include "gpu/MeshRecord.h"
 #include "gpu/MeshElementBlock.h"
@@ -27,6 +26,69 @@ constant uint STATE_ACTIVE = 1u << 1;
 // A hidden instance keeps its slot, and every draw, pick and overlay pass skips it.
 constant uint STATE_HIDDEN = 1u << 2;
 
+inline device atomic_uint *AtomicWord(device uint *word) { return reinterpret_cast<device atomic_uint *>(word); }
+inline bool MaskBit(device const uint *words, uint i) { return (words[i / 32u] >> (i % 32u)) & 1u; }
+// Sets or clears bit i atomically, since neighboring bits share its word.
+inline void WriteMaskBit(device uint *words, uint i, bool value) {
+    device atomic_uint *word = AtomicWord(words + i / 32u);
+    const uint mask = 1u << (i % 32u);
+    if (value) atomic_fetch_or_explicit(word, mask, memory_order_relaxed);
+    else atomic_fetch_and_explicit(word, ~mask, memory_order_relaxed);
+}
+// The first of `count` indices where `before` fails, for a `before` holding on a prefix of them, or `count` when it holds on all.
+template<typename Before> inline uint PartitionPoint(uint count, Before before) {
+    uint low = 0u, high = count;
+    while (low < high) {
+        const uint mid = (low + high) / 2u;
+        if (before(mid)) low = mid + 1u;
+        else high = mid;
+    }
+    return low;
+}
+// An open-addressed key table over a power of two of slots, a free slot holding InvalidOffset in its first word.
+struct KeyTable {
+    device uint *Slots;
+    uint Mask;
+    device uint *Slot(uint s) const { return Slots + KeyTableWords * s; }
+    // Claims the first free slot along the probe from `start` for the key, writing the key's second word after the claim.
+    device uint *Claim(uint2 key, uint start) const {
+        for (uint s = start & Mask;; s = (s + 1u) & Mask) {
+            device uint *slot = Slot(s);
+            uint expected = InvalidOffset;
+            if (atomic_compare_exchange_weak_explicit(AtomicWord(slot), &expected, key.x, memory_order_relaxed, memory_order_relaxed)) {
+                slot[1] = key.y;
+                return slot;
+            }
+        }
+    }
+    // The first slot along the probe from `start` holding the key, or null at a free slot, once every claim has written its key.
+    device uint *Find(uint2 key, uint start) const {
+        for (uint s = start & Mask;; s = (s + 1u) & Mask) {
+            device uint *slot = Slot(s);
+            if (slot[0] == InvalidOffset) return nullptr;
+            if (slot[0] == key.x && slot[1] == key.y) return slot;
+        }
+    }
+};
+
+// A job's scratch storage, whose runs sit at word offsets and whose first word is the chain's error word.
+struct JobRuns {
+    device uint *Words;
+    template<typename T> device T *Run(uint offset) const { return reinterpret_cast<device T *>(Words + offset); }
+    // Marks the chain's error word, which fails its submit.
+    void Fail() const { atomic_store_explicit(AtomicWord(Words), 1u, memory_order_relaxed); }
+};
+template<typename Record> struct JobContext {
+    device const BindlessSet &B;
+    constant JobPushConstants &Pc;
+    JobRuns Storage;
+    JobContext(device const BindlessSet &b, constant JobPushConstants &pc) : B(b), Pc(pc), Storage{BindlessBufferMutable(uint, b.Buffer, pc.Job.Slot)} {}
+    Record Job() const { return *reinterpret_cast<device const Record *>(Storage.Words + Pc.Job.Offset); }
+    template<typename T> device T *Run(uint offset) const { return Storage.Run<T>(offset); }
+    void Fail() const { Storage.Fail(); }
+    operator JobRuns() const { return Storage; }
+};
+
 // The arena address of a record-relative handle of a domain with `BlockSize`-slot blocks, through the record's table run.
 template<uint BlockSize, typename SetT> inline uint HandleAddress(device const SetT &b, SlotOffset table, uint handle) {
     return Resolve<BlockSize>(BindlessBuffer(uint, b.Buffer, table.Slot) + table.Offset, handle);
@@ -35,7 +97,6 @@ template<uint BlockSize, typename SetT> inline uint HandleAddress(device const S
 template<typename SetT> inline device const uint *SetTable(device const SetT &b, SetArenaSlots arena, uint set) {
     return set == InvalidOffset ? nullptr : BindlessBuffer(uint, b.Buffer, arena.Table) + BindlessBuffer(MeshElementSet, b.Buffer, arena.Sets)[set].First;
 }
-// Resolve record-relative element handles through the domain table before accessing arena values.
 template<typename T> struct ElementValues {
     device T *Values;
     device const uint *Table;
@@ -49,17 +110,6 @@ template<typename T> inline ElementValues<T> WriteElements(device const Bindless
     return {BindlessBufferMutable(T, b.Buffer, values_slot), BindlessBuffer(uint, b.Buffer, table.Slot) + table.Offset};
 }
 
-// Select a live element by its ordinal within one element block, as the block's key times the block size plus its slot.
-inline uint SelectLiveElement(device const uint *live, uint block, uint rank) {
-    for (uint word = 0u; word < MeshElementBlockWords; ++word) {
-        uint bits = live[word];
-        const uint count = popcount(bits);
-        if (rank >= count) { rank -= count; continue; }
-        while (rank) { bits &= bits - 1u; --rank; }
-        return block * MeshElementBlockSize + word * 32u + ctz(bits);
-    }
-    return InvalidOffset;
-}
 
 // The value index of a morph target's delta at a vertex handle, where each vertex block's targets are consecutive blocks of the record's range.
 inline uint MorphTargetIndex(SlotOffset morph, uint handle, uint target, uint targets) {
@@ -68,28 +118,24 @@ inline uint MorphTargetIndex(SlotOffset morph, uint handle, uint target, uint ta
 inline uint4 ReadNamedAttribute(device const BindlessSet &b, NamedAttributeRef attribute, AttributeType type, uint handle) {
     const uint index = attribute.Offset + handle;
     device const uint *words = BindlessBuffer(uint, b.Buffer, attribute.ValuesSlot);
-    if (type == AttributeType::Bool) return uint4((words[index >> 5u] >> (index & 31u)) & 1u, 0u, 0u, 0u);
+    if (type == AttributeType::Bool) return uint4(MaskBit(words, index) ? 1u : 0u, 0u, 0u, 0u);
     const uint n = AttributeComponents(type);
     uint4 value = uint4(0u);
     for (uint c = 0u; c < n; ++c) value[c] = words[index * n + c];
     return value;
 }
-// Bools share mask words with neighboring elements, so their bits write atomically.
 inline void WriteNamedAttribute(device const BindlessSet &b, NamedAttributeRef attribute, AttributeType type, uint handle, uint4 value) {
     const uint index = attribute.Offset + handle;
     device uint *words = BindlessBufferMutable(uint, b.Buffer, attribute.ValuesSlot);
     if (type == AttributeType::Bool) {
-        device atomic_uint *word = reinterpret_cast<device atomic_uint *>(words) + (index >> 5u);
-        const uint mask = 1u << (index & 31u);
-        if (value.x != 0u) atomic_fetch_or_explicit(word, mask, memory_order_relaxed);
-        else atomic_fetch_and_explicit(word, ~mask, memory_order_relaxed);
+        WriteMaskBit(words, index, value.x != 0u);
         return;
     }
     const uint n = AttributeComponents(type);
     for (uint c = 0u; c < n; ++c) words[index * n + c] = value[c];
 }
 
-// Each pose maps arena addresses into shared typed value blocks.
+// The index of the posed value at arena address `record` in the pose's two-level radix tree at `root`, or InvalidOffset when the pose has none.
 inline uint PoseAttributeIndex(device const BindlessSet &b, uint nodes_slot, uint root, uint record) {
     if (root == InvalidOffset) return InvalidOffset;
     device const PoseAttributeNode *nodes = BindlessBuffer(PoseAttributeNode,b.Buffer,nodes_slot);
@@ -126,10 +172,9 @@ inline uint InstanceFlags(uint mesh_flags, uint primary_edit_instance, uint inst
     return (primary ? mesh_flags : mesh_flags & ~primary_only) | (silhouette ? uint(MeshletInstanceFlag::Silhouette) : 0u);
 }
 
-// Use InvalidSlot for absent selection; zero is a valid buffer slot.
+// Absent selection uses InvalidSlot because zero is a valid buffer slot.
 constant EditSelectionStorage NoEditSelection{{InvalidSlot, 0u}, {InvalidSlot, 0u}, {InvalidSlot, 0u}, {InvalidSlot, 0u}, InvalidSlot, InvalidSlot, InvalidSlot};
 
-// Compose mesh and instance state, whose stored references resolve through the mesh's tables.
 // The mesh's primary edit instance draws its element selection, and every instance does when it has none.
 inline DrawData ComposeDraw(MeshRecord mesh, InstanceRecord instance, uint instance_slot, uint topology = 0u) {
     const MeshDisplay display = mesh.Display;
@@ -149,11 +194,8 @@ inline DrawData ComposeDraw(MeshRecord mesh, InstanceRecord instance, uint insta
         .CornerColor = faces ? layers.CornerColor : layers.VertexColor,
         .CornerUvs = faces ? layers.CornerUvs : GpuArray<SlotOffset, 4>{absent, absent, absent, absent},
         .Connectivity = mesh.Connectivity,
-        .HalfedgeCount = mesh.HalfedgeCount,
         .FaceCount = mesh.FaceCount,
-        .VertexCountOrHeadImageSlot = mesh.VertexCountOrHeadImageSlot,
         .Selection = selection ? display.Selection : NoEditSelection,
-        .PrimaryEditInstanceIndex = display.PrimaryEditInstanceIndex,
         .BoneDeformOffset = display.BoneDeformOffset,
         .ArmatureDeformOffset = instance.ArmatureDeformOffset,
         .MorphDeformOffset = display.MorphDeformOffset,
@@ -176,7 +218,6 @@ inline DrawData ComposeDraw(MeshRecord mesh, InstanceRecord instance, uint insta
 
 // Provides resources outside an entry point's explicit parameters because MSL has no global resource bindings.
 // The table uses device address space because it exceeds constant-space limits and contains device addresses.
-// Image-writing shaders instantiate the same layout with a writable image type.
 template<typename SetT>
 struct SceneT {
     device const SetT &B;
@@ -202,7 +243,6 @@ struct SceneT {
     device const LightRecord *Lights(uint slot) const { return BindlessBuffer(LightRecord, B.LightBuffer, slot); }
     device const PBRMaterial *Materials(uint slot) const { return BindlessBuffer(PBRMaterial, B.MaterialBuffer, slot); }
     device const uint *PrimitiveMaterials(uint slot) const { return BindlessBuffer(uint, B.PrimitiveMaterialBuffer, slot); }
-    // Arena addresses of the draw's record-relative handles.
     uint VertexAddress(DrawData draw, uint v) const { return HandleAddress<MeshElementBlockSize>(B, draw.Connectivity.Tables.Vertices, v); }
     uint CornerAddress(DrawData draw, uint h) const { return HandleAddress<MeshElementBlockSize>(B, draw.Connectivity.Tables.Halfedges, h); }
     uint EdgeAddress(DrawData draw, uint e) const { return HandleAddress<MeshElementBlockSize>(B, draw.Connectivity.Tables.Edges, e); }
@@ -225,12 +265,6 @@ struct SceneT {
     float4 CornerColor(SlotOffset at, uint h) const { return float4(BindlessBuffer(packed_float4, B.CornerColorBuffer, at.Slot)[at.Offset + h]); }
     float2 CornerUv(SlotOffset at, uint h) const { return float2(BindlessBuffer(packed_float2, B.CornerUvBuffer, at.Slot)[at.Offset + h]); }
 
-    device const packed_float3 *BaseVertexNormals(uint slot) const { return BindlessBuffer(packed_float3, B.Buffer, slot); }
-    device const packed_float3 *BaseFaceNormals(uint slot) const { return BindlessBuffer(packed_float3, B.Buffer, slot); }
-    // Current-pose vertex positions in mesh-local space, and the normals derived from them.
-    device const packed_float3 *PosedPositions(uint slot) const { return BindlessBuffer(packed_float3, B.Buffer, slot); }
-    device const packed_float3 *PosedVertexNormals(uint slot) const { return BindlessBuffer(packed_float3, B.Buffer, slot); }
-    device const packed_float3 *PosedFaceNormals(uint slot) const { return BindlessBuffer(packed_float3, B.Buffer, slot); }
     // Weight-summed authored morph normal deltas, indexed like the posed positions.
     device const packed_float3 *PosedMorphNormalDeltas(uint slot) const { return BindlessBuffer(packed_float3, B.Buffer, slot); }
 
@@ -257,28 +291,26 @@ struct SceneT {
     // Mesh-local position at a vertex's arena address: the pose pre-pass's current-pose position when the draw has one.
     float3 LocalPositionAt(DrawData draw, uint address) const {
         const uint posed = PoseAttributeIndex(B, View.PosedPositionNodesSlot, draw.PositionNamespace, address);
-        return posed != InvalidOffset ? float3(PosedPositions(View.PosedPositionSlot)[posed]) :
+        return posed != InvalidOffset ? float3(BindlessBuffer(packed_float3, B.Buffer, View.PosedPositionSlot)[posed]) :
             float3(Vertices(draw.VertexSlot)[address].Position);
     }
     float3 GetLocalPosition(DrawData draw, uint v) const { return LocalPositionAt(draw, VertexAddress(draw, v)); }
 
-    // Normal of a vertex handle: the posed normal when the draw has one, else the base normal.
     float3 GetVertexNormal(DrawData draw, uint v) const {
         const uint address = VertexAddress(draw, v);
         const uint posed = PoseAttributeIndex(B, View.PosedVertexNormalNodesSlot, draw.VertexNormalNamespace, address);
-        return posed != InvalidOffset ? float3(PosedVertexNormals(View.PosedVertexNormalSlot)[posed]) :
-            float3(BaseVertexNormals(View.BaseVertexNormalSlot)[address]);
+        return posed != InvalidOffset ? float3(BindlessBuffer(packed_float3, B.Buffer, View.PosedVertexNormalSlot)[posed]) :
+            float3(BindlessBuffer(packed_float3, B.Buffer, View.BaseVertexNormalSlot)[address]);
     }
 
-    // Normal of a face handle, with a sparse pose override when present.
     float3 GetFaceNormal(DrawData draw, uint face) const {
         const uint address = FaceAddress(draw, face);
         const uint posed = PoseAttributeIndex(B, View.PosedFaceNormalNodesSlot, draw.FaceNormalNamespace, address);
-        return posed != InvalidOffset ? float3(PosedFaceNormals(View.PosedFaceNormalSlot)[posed]) :
-            float3(BaseFaceNormals(View.BaseFaceNormalSlot)[address]);
+        return posed != InvalidOffset ? float3(BindlessBuffer(packed_float3, B.Buffer, View.PosedFaceNormalSlot)[posed]) :
+            float3(BindlessBuffer(packed_float3, B.Buffer, View.BaseFaceNormalSlot)[address]);
     }
 
-    // Picking names an element by its arena address plus one, which no other record's element shares, and zero is its no-hit value.
+    // A pick id is an element's arena address plus one, unique across records, and zero means no hit.
     uint FacePickId(DrawData draw, uint face) const { return face == InvalidOffset ? 0u : FaceAddress(draw, face) + 1u; }
     uint ElementPickId(DrawData draw, bool lines, uint element) const { return (lines ? EdgeAddress(draw, element) : VertexAddress(draw, element)) + 1u; }
 
@@ -300,5 +332,3 @@ inline float3 NormalizeOrZero(float3 n) {
     const float len = length(n);
     return len > 0.0f ? n / len : float3(0.0f);
 }
-
-#endif

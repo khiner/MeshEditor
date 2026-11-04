@@ -15,7 +15,6 @@ struct Reveal {
     bool Select{true};
 };
 // Match delete topology op values.
-// Loose removes selected edges without faces and selected isolated vertices.
 enum class DeleteMode : uint32_t { Vertices,
                                    Edges,
                                    Faces,
@@ -26,15 +25,12 @@ struct Delete {
     DeleteMode Mode{DeleteMode::Vertices};
 };
 
-// Merge selected vertices at their center, first vertex, or last vertex.
-// Collapse merges each connected run at its center; ByDistance merges pairs within Distance.
 using MergeMode = GeometryMergeMode;
 struct Merge {
     MergeMode Mode{MergeMode::Center};
     float Distance{0.0001f};
 };
 
-// Extrudes the selection and latches a translate for the drag that follows.
 enum class ExtrudeMode : uint8_t { Region,
                                    Edges,
                                    FacesIndividual,
@@ -45,7 +41,6 @@ struct Extrude {
     float OffsetScale{};
     bool AlongNormals{true};
 };
-// Duplicates the selected faces onto copied vertices and latches a translate for the drag that follows.
 struct Duplicate {};
 struct Split {};
 using SeparateMode = GeometrySeparateMode;
@@ -54,8 +49,6 @@ struct Separate {
     SeparateMode Mode{SeparateMode::Selected};
 };
 
-// Dissolve selected topology into faces.
-// Limited uses Angle; Degenerate uses Distance.
 enum class DissolveMode : uint8_t { Vertices,
                                     Edges,
                                     Faces,
@@ -74,48 +67,49 @@ struct Dissolve {
 
 struct Subdivide {
     uint32_t Cuts{1};
+    float MaxLength{};
+    bool NewLoopsOnly{};
 };
 
-struct Triangulate {};
-enum class BeautifyMethod : uint8_t { Area,
-                                      Angle };
+enum class SplitTarget : uint8_t { Triangle,
+                                   Convex,
+                                   Planar };
+struct SplitFaces {
+    SplitTarget Target{SplitTarget::Triangle};
+    float Angle{0.0872665f};
+};
 struct Unsubdivide {
     uint32_t Iterations{2};
 };
-// Reduce selected edges toward Ratio of the region triangle count.
-// Preserve material boundaries, attribute discontinuities, and sharp edges; skip unsafe collapses.
-struct Decimate {
-    float Ratio{0.5f};
+// Collapse every selected edge whose surviving vertex stays within Tolerance of each face plane it touches, keeping a subset of the vertices.
+// Then raise the tolerance until the region's triangle count falls to Ratio of it.
+struct Simplify {
+    float Tolerance{};
+    float Ratio{1.f};
 };
-struct BeautifyFaces {
-    BeautifyMethod Method{BeautifyMethod::Area};
-};
+struct BeautifyFaces {};
 struct TrisToQuads {};
-// Fans each selected face around a center vertex lifted by Offset along the face normal.
 struct Poke {
     float Offset{0.f};
 };
 struct FlipNormals {};
-struct RecalculateNormals {
-    bool Inside{false};
+struct RecalculateNormals {};
+struct EdgeSplit {
+    bool SelectCopies{};
 };
-struct EdgeSplit {};
-// Insets the selected region, or each face on its own, by Thickness and lifts it by Depth.
 struct Inset {
     float Thickness{0.1f};
     float Depth{0.f};
     bool Individual{false};
     bool Even{true};
 };
-// Creates an edge from two vertices, fills selected loops, or forms a face from selected points.
-struct Fill {};
-// Cuts the edge ring through the active edge Cuts times.
-struct LoopCut {
-    uint32_t Cuts{1};
+// Creates an edge from two vertices, fills selected loops of at most Sides edges or every loop when Sides is zero, or forms a face from selected points.
+struct Fill {
+    uint32_t Sides{};
 };
 
-// Extrudes the selection Steps times, each step rotating Angle about Axis through Center and sliding Offset along Axis.
-struct Spin {
+// Appends an Extrude node of Steps steps, each rotating Angle over Steps about Axis through Center and sliding Offset over Steps along Axis.
+struct Revolve {
     uint32_t Steps{9};
     float Angle{std::numbers::pi_v<float> / 2};
     vec3 Axis{0.f, 0.f, 1.f};
@@ -123,11 +117,6 @@ struct Spin {
     float Offset{0.f};
     bool ViewSpace{false};
 };
-struct ExtrudeRepeat {
-    uint32_t Steps{1};
-    vec3 Offset{0.f, 0.f, 1.f};
-};
-// Cuts the mesh along the plane through Point with normal Normal and deletes the faces on the cleared sides.
 struct Bisect {
     vec3 Point{};
     vec3 Normal{1.f, 0.f, 0.f};
@@ -135,22 +124,17 @@ struct Bisect {
     bool ClearOuter{false};
     bool ViewSpace{false};
 };
-// Mirrors the mesh's positive side of Axis onto its negative side across the mesh origin and welds the vertices on the plane.
-enum class SymmetrizeAxis : uint8_t { X,
-                                      Y,
-                                      Z };
-struct Symmetrize {
-    SymmetrizeAxis Axis{SymmetrizeAxis::X};
-    bool Negative{false};
-};
+// The local axis normal to a mirror plane through the mesh origin.
+enum class SnapSymmetryAxis : uint8_t { X,
+                                        Y,
+                                        Z };
 // Match reflected mesh-local positions within Threshold.
-// Factor blends both sides; Negative selects the negative side at factor zero.
+// Negative selects the negative side at factor zero.
 struct SnapSymmetry {
-    SymmetrizeAxis Axis{SymmetrizeAxis::X};
+    SnapSymmetryAxis Axis{SnapSymmetryAxis::X};
     float Threshold{0.05f}, Factor{0.5f};
     bool Negative{false}, Center{true};
 };
-// Thickens the selected faces by Thickness toward their back with a rim along the region boundary.
 struct Solidify {
     float Thickness{0.1f};
 };
@@ -166,26 +150,19 @@ struct Knife {
     vec2 Start, End;
 };
 
-// Bridges two selected open chains or closed loops of boundary or loose edges with a strip of faces.
 struct BridgeEdgeLoops {};
 // Fills one closed loop of selected boundary or loose edges with a grid of quads, Span edges along its first side.
 struct GridFill {
     uint32_t Span{0};
 };
-// Fills every boundary loop of at most Sides edges.
-struct FillHoles {
-    uint32_t Sides{4};
-};
+// Replaces the selection with the convex hull of the selected vertices, keeping the selected edges and vertices that unselected geometry uses.
 struct ConvexHull {};
 struct EdgeRotate {};
-// Splits the faces along the selected edges and latches a translate for the split side.
-struct Rip {};
 struct Bevel {
     float Width{0.1f};
     uint32_t Segments{1};
     bool Vertices{false};
 };
-// Moves selected vertices toward the mean of their edge neighbors, once per iteration.
 struct SmoothVertices {
     float Factor{0.5f};
     uint32_t Repeat{1};
@@ -193,13 +170,11 @@ struct SmoothVertices {
 };
 enum class EdgeLoopInterpolation : uint8_t { Cubic,
                                              Linear };
-// Redistributes selected edge chains by arc length, keeping open endpoints and junctions fixed.
 struct SpaceEvenly {
     EdgeLoopInterpolation Interpolation{EdgeLoopInterpolation::Cubic};
     float Factor{1.f};
     bool X{true}, Y{true}, Z{true};
 };
-// Smooths alternating vertices along selected chains, retaining open endpoints and junctions.
 struct RelaxEdgeLoops {
     EdgeLoopInterpolation Interpolation{EdgeLoopInterpolation::Cubic};
     uint32_t Iterations{1};
@@ -207,8 +182,7 @@ struct RelaxEdgeLoops {
 };
 enum class CircleFit : uint8_t { LeastSquares,
                                  Contract };
-// Fit selected boundaries and wire chains to planar circles.
-// Radius zero fits the source radius; Angle rotates around the fitted normal.
+// Radius zero fits the source radius.
 struct Circularize {
     CircleFit Method{CircleFit::LeastSquares};
     float Factor{1.f}, Radius{0.f}, Angle{0.f};
@@ -225,7 +199,6 @@ struct CurveBetweenSelected {
     float Factor{1.f};
     bool Extend{false}, Regular{true}, X{true}, Y{true}, Z{true};
 };
-// Offsets selected vertices along their normals, using selected face normals in face mode.
 struct ShrinkFatten {
     float Distance{0.1f};
     bool Even{false};
@@ -234,11 +207,10 @@ struct ShrinkFatten {
 struct ToSphere {
     float Factor{1.f};
 };
-// Moves selected vertices toward the shared selection center by Distance (negative moves outward).
 struct PushPull {
     float Distance{0.1f};
 };
-// Axis specifies the shear-plane normal; AxisOrtho specifies displacement.
+// Axis is the shear plane's normal and AxisOrtho the displacement direction.
 // Local uses the active object orientation around the shared selection center.
 enum class ShearAxis : uint8_t { X,
                                  Y,
@@ -248,8 +220,7 @@ struct Shear {
     ShearAxis Axis{ShearAxis::Z}, AxisOrtho{ShearAxis::X};
     bool Local{false};
 };
-// Warp around Center in the viewport orientation.
-// Compute automatic bounds from each edited mesh's selected vertices after OffsetAngle.
+// AutoRange computes Min and Max from each edited mesh's selected vertices after OffsetAngle.
 struct Warp {
     float Angle{2 * std::numbers::pi_v<float>}, OffsetAngle{0.f};
     vec3 Center{};
@@ -268,24 +239,23 @@ struct Randomize {
     float Amount{0.1f}, Uniform{0.f}, Normal{0.f};
     uint32_t Seed{0u};
 };
-// Preserve corner UVs and colors in both slide operations.
+// Both append a node whose Reference vertex is the mesh's active vertex in Vertex mode.
 // Choose the incident edge nearest Direction in world space.
-// Even uses the active selected vertex edge length, or the first selected vertex.
+// Even uses the edge length of the Reference vertex, or else of the first selected vertex.
 struct VertexSlide {
     float Factor{0.5f};
     vec3 Direction{1, 0, 0};
     bool Even{false}, Flipped{false}, Clamp{true};
     bool ViewSpace{false};
 };
-// Slide selected edge chains along adjacent faces.
-// Direction selects the world-space positive side; Even uses the active or first selected vertex.
+// Direction selects the world-space positive side at the Reference vertex, or else at the first selected vertex.
+// Even uses the rail length at that vertex.
 struct EdgeSlide {
     float Factor{0.5f};
     vec3 Direction{1, 0, 0};
     bool Even{false}, Flipped{false}, Clamp{true};
     bool ViewSpace{false};
 };
-// Flattens selected polygons toward their original planes, averaging at shared vertices.
 struct MakePlanarFaces {
     float Factor{1.f};
     uint32_t Repeat{1};
@@ -294,37 +264,35 @@ enum class FlattenMethod : uint8_t { LeastSquares,
                                      FaceNormals,
                                      View };
 // Flatten face regions and remaining edge components independently.
-// X/Y/Z constrain local coordinates.
 struct Flatten {
     FlattenMethod Method{FlattenMethod::LeastSquares};
     float Factor{1.f};
     bool X{true}, Y{true}, Z{true};
 };
-// Splits warped selected polygons along legal diagonals above the normal angle limit.
-struct SplitNonplanarFaces {
-    float Angle{0.0872665f};
-};
-struct SplitConcaveFaces {};
-struct RotateUVs {
-    uint32_t UVSet{0};
-    bool CounterClockwise{false};
-};
-struct ReverseUVs {
+enum class CornerAttribute : uint8_t { UVs,
+                                       Colors };
+enum class CornerCycle : uint8_t { Forward,
+                                   Backward,
+                                   Reverse };
+struct CycleCornerAttribute {
+    CornerAttribute Attribute{CornerAttribute::UVs};
+    CornerCycle Cycle{CornerCycle::Forward};
     uint32_t UVSet{0};
 };
-struct RotateColors {
-    bool CounterClockwise{false};
-};
-struct ReverseColors {};
-// Combine two selected objects into the active mesh in its local space.
-// Preserve the other object.
+// Combine two selected objects into the active mesh in its local space, preserving the other object.
 struct Boolean {
     BooleanOperation Operation{BooleanOperation::Difference};
 };
 
 using Action = std::variant<
-    Delete, Merge, Extrude, Duplicate, Split, Separate, Dissolve, Subdivide, Triangulate, TrisToQuads, Poke, FlipNormals, EdgeSplit, Inset, Fill, LoopCut,
-    Spin, ExtrudeRepeat, Bisect, Symmetrize, Solidify, ConnectVertices, Knife, BridgeEdgeLoops, GridFill, FillHoles, ConvexHull, EdgeRotate, Rip, Bevel, SmoothVertices, SpaceEvenly, RelaxEdgeLoops, CurveBetweenSelected, Circularize, MakePlanarFaces, Flatten, Wireframe, SplitNonplanarFaces, SplitConcaveFaces, RotateUVs, ReverseUVs, RotateColors, ReverseColors, ShrinkFatten, ToSphere, PushPull, RecalculateNormals, BeautifyFaces, Shear, Warp, Bend, Randomize, VertexSlide, EdgeSlide, Unsubdivide, SnapSymmetry, Hide, Reveal, Decimate, Boolean>;
+    Delete, Merge, Extrude, Duplicate, Split, Separate, Dissolve, Subdivide, SplitFaces, TrisToQuads, Poke, FlipNormals, EdgeSplit, Inset, Fill,
+    Revolve, Bisect, Solidify, ConnectVertices, Knife, BridgeEdgeLoops, GridFill, ConvexHull, EdgeRotate, Bevel, SmoothVertices, SpaceEvenly, RelaxEdgeLoops, CurveBetweenSelected, Circularize, MakePlanarFaces, Flatten, Wireframe, CycleCornerAttribute, ShrinkFatten, ToSphere, PushPull, RecalculateNormals, BeautifyFaces, Shear, Warp, Bend, Randomize, VertexSlide, EdgeSlide, Unsubdivide, SnapSymmetry, Hide, Reveal, Simplify, Boolean>;
+// Placement-drag operators latch a translate for the drag that follows and manage their own previews.
+constexpr bool Places(const auto &a) {
+    using A = std::decay_t<decltype(a)>;
+    if constexpr (std::same_as<A, EdgeSplit>) return a.SelectCopies;
+    else return std::same_as<A, Extrude> || std::same_as<A, Duplicate>;
+}
 
 void Apply(state::Registry &, const Action &);
 // Whether a later step of a stage of the action edits the nodes its first step appended, since only the action sets their parameters.
@@ -354,7 +322,12 @@ template<> inline constexpr field::SpecTable<action::mesh::Dissolve> Specs<actio
     {&action::mesh::Dissolve::DelimitSharpEdges, {.Help = "In Limited, keep edges marked sharp"}},
     {&action::mesh::Dissolve::DelimitUVs, {.Help = "In Limited, keep edges where the UV coordinates on either side differ"}},
 };
-template<> inline constexpr field::SpecTable<action::mesh::Subdivide> Specs<action::mesh::Subdivide>{{&action::mesh::Subdivide::Cuts, {.Min = 1, .Help = "Number of cuts in each selected edge"}}};
+template<> inline constexpr field::SpecTable<action::mesh::Subdivide> Specs<action::mesh::Subdivide>{
+    {&action::mesh::Subdivide::Cuts, {.Min = 1, .Help = "Number of cuts in each selected edge"}},
+    {&action::mesh::Subdivide::MaxLength, {.Min = 0, .Speed = 0.01f, .Help = "Longest piece a selected edge is cut into, in place of the cut count when positive"}},
+    {&action::mesh::Subdivide::NewLoopsOnly, {.Help = "Select only the new loops across the cut edges"}},
+};
+template<> inline constexpr field::SpecTable<action::mesh::Fill> Specs<action::mesh::Fill>{{&action::mesh::Fill::Sides, {.Min = 0, .Help = "Largest number of edges in a loop to fill. Zero fills every loop."}}};
 template<> inline constexpr field::SpecTable<action::mesh::SpaceEvenly> Specs<action::mesh::SpaceEvenly>{{&action::mesh::SpaceEvenly::Factor, {.Min = 0, .Max = 1}}};
 template<> inline constexpr field::SpecTable<action::mesh::Flatten> Specs<action::mesh::Flatten>{{&action::mesh::Flatten::Factor, {.Min = 0, .Max = 1}}};
 template<> inline constexpr field::SpecTable<action::mesh::RelaxEdgeLoops> Specs<action::mesh::RelaxEdgeLoops>{{&action::mesh::RelaxEdgeLoops::Iterations, {.Min = 1, .Max = 1000}}};
@@ -363,35 +336,27 @@ template<> inline constexpr field::SpecTable<action::mesh::SnapSymmetry> Specs<a
     {&action::mesh::SnapSymmetry::Factor, {.Min = 0, .Max = 1}},
 };
 template<> inline constexpr field::SpecTable<action::mesh::Unsubdivide> Specs<action::mesh::Unsubdivide>{{&action::mesh::Unsubdivide::Iterations, {.Min = 1, .Max = 1000}}};
-template<> inline constexpr field::SpecTable<action::mesh::Decimate> Specs<action::mesh::Decimate>{{&action::mesh::Decimate::Ratio, {.Min = 0, .Max = 1, .Help = "Fraction of the selected region's triangles to keep"}}};
+template<> inline constexpr field::SpecTable<action::mesh::Simplify> Specs<action::mesh::Simplify>{{&action::mesh::Simplify::Tolerance, {.Min = 0, .Help = "Largest distance a collapsed vertex may move from each of its face planes"}}, {&action::mesh::Simplify::Ratio, {.Min = 0, .Max = 1, .Help = "Fraction of the selected region's triangles to keep after the tolerance pass"}}};
 template<> inline constexpr field::SpecTable<action::mesh::Poke> Specs<action::mesh::Poke>{{&action::mesh::Poke::Offset, {.Min = -100, .Max = 100, .Speed = 0.01f, .Help = "Distance each center vertex moves along its face normal, in local units"}}};
+template<> inline constexpr field::SpecTable<action::mesh::EdgeSplit> Specs<action::mesh::EdgeSplit>{{&action::mesh::EdgeSplit::SelectCopies, {.Help = "Select only the first copy at each split vertex, the side a rip moves"}}};
 template<> inline constexpr field::SpecTable<action::mesh::Inset> Specs<action::mesh::Inset>{
     {&action::mesh::Inset::Thickness, {.Min = 0, .Max = 100, .Speed = 0.01f, .Help = "Inset width from the face boundary, in local units"}},
     {&action::mesh::Inset::Depth, {.Min = -100, .Max = 100, .Speed = 0.01f, .Help = "Distance the inset faces move along their normals, in local units"}},
     {&action::mesh::Inset::Individual, {.Help = "Inset each selected face individually instead of the selection as one region"}},
     {&action::mesh::Inset::Even, {.Help = "Keep the inset width even across corners"}},
 };
-template<> inline constexpr field::SpecTable<action::mesh::LoopCut> Specs<action::mesh::LoopCut>{{&action::mesh::LoopCut::Cuts, {.Min = 1}}};
-template<> inline constexpr field::SpecTable<action::mesh::Spin> Specs<action::mesh::Spin>{
-    {&action::mesh::Spin::Steps, {.Min = 1, .Help = "Number of extrusion steps"}},
-    {&action::mesh::Spin::Angle, {.Min = -2 * std::numbers::pi_v<float>, .Max = 2 * std::numbers::pi_v<float>, .Unit = FieldUnit::Radians, .Help = "Total rotation about Axis across all steps"}},
-    {&action::mesh::Spin::Axis, {.Speed = 0.01f, .Help = "Rotation axis direction in local space"}},
-    {&action::mesh::Spin::Center, {.Speed = 0.01f, .Help = "Point the axis passes through, in local units"}},
-    {&action::mesh::Spin::Offset, {.Min = -100, .Max = 100, .Speed = 0.01f, .Help = "Total distance along Axis across all steps, in local units"}},
-};
-template<> inline constexpr field::SpecTable<action::mesh::ExtrudeRepeat> Specs<action::mesh::ExtrudeRepeat>{
-    {&action::mesh::ExtrudeRepeat::Steps, {.Min = 1, .Help = "Number of extrusions"}},
-    {&action::mesh::ExtrudeRepeat::Offset, {.Speed = 0.01f, .Help = "Translation per step, in local units"}},
+template<> inline constexpr field::SpecTable<action::mesh::Revolve> Specs<action::mesh::Revolve>{
+    {&action::mesh::Revolve::Steps, {.Min = 1, .Help = "Number of extrusion steps, which divide the rotation and the displacement evenly. More than one step, or a rotation, needs Region mode and unlinked Offset inputs."}},
+    {&action::mesh::Revolve::Angle, {.Min = -2 * std::numbers::pi_v<float>, .Max = 2 * std::numbers::pi_v<float>, .Unit = FieldUnit::Radians, .Help = "Total rotation about Axis across all steps"}},
+    {&action::mesh::Revolve::Axis, {.Speed = 0.01f, .Help = "Rotation axis direction in local space"}},
+    {&action::mesh::Revolve::Center, {.Speed = 0.01f, .Help = "Point the axis passes through, in local units"}},
+    {&action::mesh::Revolve::Offset, {.Min = -100, .Max = 100, .Speed = 0.01f, .Help = "Total distance along Axis across all steps, in local units"}},
 };
 template<> inline constexpr field::SpecTable<action::mesh::Bisect> Specs<action::mesh::Bisect>{
     {&action::mesh::Bisect::Point, {.Speed = 0.01f, .Help = "Point on the cutting plane, in local units"}},
     {&action::mesh::Bisect::Normal, {.Speed = 0.01f, .Help = "Cutting plane normal in local space. A zero normal faults the node."}},
-    {&action::mesh::Bisect::ClearInner, {.Help = "Delete faces behind the plane, opposite its normal"}},
-    {&action::mesh::Bisect::ClearOuter, {.Help = "Delete faces in front of the plane, along its normal"}},
-};
-template<> inline constexpr field::SpecTable<action::mesh::Symmetrize> Specs<action::mesh::Symmetrize>{
-    {&action::mesh::Symmetrize::Axis, {.Help = "Local axis normal to the mirror plane through the mesh origin"}},
-    {&action::mesh::Symmetrize::Negative, {.Help = "Mirror the negative side onto the positive instead of the reverse"}},
+    {&action::mesh::Bisect::ClearInner, {.Help = "Delete the vertices behind the plane, opposite its normal, with their edges and faces"}},
+    {&action::mesh::Bisect::ClearOuter, {.Help = "Delete the vertices in front of the plane, along its normal, with their edges and faces"}},
 };
 template<> inline constexpr field::SpecTable<action::mesh::Solidify> Specs<action::mesh::Solidify>{{&action::mesh::Solidify::Thickness, {.Min = -100, .Max = 100, .Speed = 0.01f, .Help = "Shell thickness behind the faces, in local units. A negative thickness extends in front of them."}}};
 template<> inline constexpr field::SpecTable<action::mesh::Wireframe> Specs<action::mesh::Wireframe>{
@@ -403,7 +368,6 @@ template<> inline constexpr field::SpecTable<action::mesh::Wireframe> Specs<acti
     {&action::mesh::Wireframe::Relative, {.Help = "Scale each strut's width with the size of its face"}},
 };
 template<> inline constexpr field::SpecTable<action::mesh::GridFill> Specs<action::mesh::GridFill>{{&action::mesh::GridFill::Span, {.Min = 0}}};
-template<> inline constexpr field::SpecTable<action::mesh::FillHoles> Specs<action::mesh::FillHoles>{{&action::mesh::FillHoles::Sides, {.Min = 0, .Help = "Largest number of edges in a boundary loop to fill. Zero fills every hole."}}};
 template<> inline constexpr field::SpecTable<action::mesh::Bevel> Specs<action::mesh::Bevel>{
     {&action::mesh::Bevel::Width, {.Min = 0, .Max = 100, .Speed = 0.01f, .Help = "Bevel offset from each beveled element along its adjacent faces, in local units"}},
     {&action::mesh::Bevel::Segments, {.Min = 1, .Help = "Number of faces across each bevel"}},
@@ -421,8 +385,11 @@ template<> inline constexpr field::SpecTable<action::mesh::MakePlanarFaces> Spec
     {&action::mesh::MakePlanarFaces::Repeat, {.Min = 1, .Max = 10000}},
 };
 template<> inline constexpr field::SpecTable<action::mesh::ToSphere> Specs<action::mesh::ToSphere>{{&action::mesh::ToSphere::Factor, {.Min = 0, .Max = 1, .Speed = 0.01f}}};
-template<> inline constexpr field::SpecTable<action::mesh::RotateUVs> Specs<action::mesh::RotateUVs>{{&action::mesh::RotateUVs::UVSet, {.Min = 0, .Max = 3}}};
-template<> inline constexpr field::SpecTable<action::mesh::ReverseUVs> Specs<action::mesh::ReverseUVs>{{&action::mesh::ReverseUVs::UVSet, {.Min = 0, .Max = 3}}};
+template<> inline constexpr field::SpecTable<action::mesh::CycleCornerAttribute> Specs<action::mesh::CycleCornerAttribute>{
+    {&action::mesh::CycleCornerAttribute::Attribute, {.Help = "The corner attribute to permute"}},
+    {&action::mesh::CycleCornerAttribute::Cycle, {.Help = "Shift each value one corner forward or backward, or reverse the order"}},
+    {&action::mesh::CycleCornerAttribute::UVSet, {.Min = 0, .Max = 3, .Help = "The UV set to permute"}},
+};
 template<> inline constexpr field::SpecTable<action::mesh::Shear> Specs<action::mesh::Shear>{{&action::mesh::Shear::Angle, {.Min = -2 * std::numbers::pi_v<float>, .Max = 2 * std::numbers::pi_v<float>, .Unit = FieldUnit::Radians}}};
 template<> inline constexpr field::SpecTable<action::mesh::Warp> Specs<action::mesh::Warp>{
     {&action::mesh::Warp::Angle, {.Unit = FieldUnit::Radians}},
@@ -442,8 +409,10 @@ template<> inline constexpr field::SpecTable<action::mesh::ShrinkFatten> Specs<a
     {&action::mesh::ShrinkFatten::Distance, {.Help = "Distance each vertex moves along its normal, in local units. A negative distance shrinks."}},
     {&action::mesh::ShrinkFatten::Even, {.Help = "Keep the surface thickness even across sharp corners"}},
 };
-template<> inline constexpr field::SpecTable<action::mesh::RecalculateNormals> Specs<action::mesh::RecalculateNormals>{{&action::mesh::RecalculateNormals::Inside, {.Help = "Point normals inside the mesh instead of outside"}}};
-template<> inline constexpr field::SpecTable<action::mesh::SplitNonplanarFaces> Specs<action::mesh::SplitNonplanarFaces>{{&action::mesh::SplitNonplanarFaces::Angle, {.Min = 0, .Max = std::numbers::pi_v<float>, .Unit = FieldUnit::Radians}}};
+template<> inline constexpr field::SpecTable<action::mesh::SplitFaces> Specs<action::mesh::SplitFaces>{
+    {&action::mesh::SplitFaces::Target, {.Help = "Split until each part is a triangle, is convex, or is planar within Angle"}},
+    {&action::mesh::SplitFaces::Angle, {.Min = 0, .Max = std::numbers::pi_v<float>, .Unit = FieldUnit::Radians}},
+};
 
 template<> inline constexpr field::SpecTable<action::mesh::CurveBetweenSelected> Specs<action::mesh::CurveBetweenSelected>{{&action::mesh::CurveBetweenSelected::Factor, {.Min = 0, .Max = 1}}};
 

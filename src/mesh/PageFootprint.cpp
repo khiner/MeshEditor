@@ -28,26 +28,22 @@ void PageFootprint::Add(const mtl::Buffer &buffer, std::span<const uint32_t> blo
     if (blocks.empty()) return;
     const auto found = std::ranges::find(Entries, &buffer, &Entry::Buffer);
     auto &entry = found == Entries.end() ? Entries.emplace_back(&buffer) : *found;
-    auto &pages = entry.Pages;
     for (const auto block : blocks) {
         const auto first = uint64_t(block) * block_bytes;
-        for (auto page = uint32_t(first / mtl::HistoryPageBytes); page <= (first + block_bytes - 1u) / mtl::HistoryPageBytes; ++page) {
-            if (pages.empty() || pages.back() != page) pages.push_back(page);
-        }
+        for (auto page = uint32_t(first / mtl::HistoryPageBytes); page <= (first + block_bytes - 1u) / mtl::HistoryPageBytes; ++page) entry.Marks.Mark(page);
     }
 }
 
-std::span<const uint32_t> PageFootprint::Sort(Entry &entry) {
-    std::ranges::sort(entry.Pages);
-    entry.Pages.erase(std::ranges::unique(entry.Pages).begin(), entry.Pages.end());
+std::span<const uint32_t> PageFootprint::Collect(Entry &entry) {
+    entry.Pages = entry.Marks.Ascending();
     return entry.Pages;
 }
 
 std::span<const uint32_t> PageFootprint::Pages(const mtl::Buffer &buffer) {
     const auto found = std::ranges::find(Entries, &buffer, &Entry::Buffer);
-    return found == Entries.end() ? std::span<const uint32_t>{} : Sort(*found);
+    return found == Entries.end() ? std::span<const uint32_t>{} : Collect(*found);
 }
 
 void PageFootprint::CaptureWrites() {
-    for (auto &entry : Entries) entry.Buffer->CaptureWritePages(Sort(entry));
+    for (auto &entry : Entries) entry.Buffer->CaptureWritePages(Collect(entry));
 }

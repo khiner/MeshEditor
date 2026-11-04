@@ -15,7 +15,7 @@
         }
     ],
     "meshes": [
-        { "primitives": [ { "attributes": { "POSITION": 4 } } ] }
+        { "primitives": [ { "attributes": { "POSITION": 0 } } ] }
     ],
     "images": [
         { "name": "FloorNormal", "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNoaPgPAAODAgAApfuJAAAAAElFTkSuQmCC" }
@@ -35,11 +35,11 @@
         { "buffer": 0, "byteOffset": 32, "byteLength": 36 }
     ],
     "accessors": [
+        { "bufferView": 4, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 0] },
         { "bufferView": 0, "componentType": 5126, "count": 1, "type": "SCALAR" },
         { "bufferView": 1, "componentType": 5126, "count": 1, "type": "SCALAR" },
         { "bufferView": 2, "componentType": 5126, "count": 1, "type": "VEC3" },
-        { "bufferView": 3, "componentType": 5126, "count": 1, "type": "VEC3" },
-        { "bufferView": 4, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 0] }
+        { "bufferView": 3, "componentType": 5126, "count": 1, "type": "VEC3" }
     ],
     "extensions": {
         "KHR_audio_rigid_bodies": {
@@ -52,12 +52,15 @@
                     "roughness": 3e-6,
                     "correlationLength": 7e-5,
                     "spectralSlope": -1.25,
-                    "normalTexture": { "index": 0, "texCoord": 0, "scale": 0.8 },
+                    "shortWavelength": 3.125e-6,
+                    "waviness": 2e-6,
+                    "wavinessLength": 2e-3,
+                    "normalTexture": { "index": 0, "scale": 0.8 },
                     "material": 0
                 }
             ],
             "modalModels": [
-                { "name": "Bell", "frequencies": 0, "decayRates": 1, "positions": 2, "shapes": 3, "material": 0 }
+                { "name": "Bell", "frequencies": 1, "decayRates": 2, "positions": 3, "shapes": 4, "material": 0 }
             ]
         }
     }

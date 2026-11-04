@@ -1,6 +1,4 @@
-#ifndef MESHLET_EDIT_GEOMETRY_MSL
-#define MESHLET_EDIT_GEOMETRY_MSL
-
+#pragma once
 #include "MeshletNonTriangle.metal"
 
 struct MeshletEditEdgeGeometry {
@@ -12,7 +10,7 @@ inline uint MeshletEditEdge(device const BindlessSet &bindless, const thread Mes
     if (work.Draw.TriangleSlot == InvalidSlot) return InvalidOffset;
     const uint triangle = work.Payloads.TriangleIds[work.Meshlet.TriangleOffset + local_triangle];
     const uint3 corners = uint3(BindlessBuffer(packed_uint3, bindless.Buffer, work.Draw.TriangleSlot)[HandleAddress<MeshElementBlockSize>(bindless, work.Draw.Connectivity.Tables.Triangles, triangle)]);
-    const ConnectivityView conn{bindless, work.Draw.Connectivity, work.Draw.FaceCount};
+    const ConnectivityView conn{bindless, work.Draw.Connectivity};
     const uint next = corners[(edge_corner + 1u) % 3u];
     return conn.Next(corners[edge_corner]) == next && conn.EdgeFirst(next) ? conn.Edge(next) : InvalidOffset;
 }
@@ -63,5 +61,3 @@ inline bool ResolveMeshletEditEdgeCandidate(
     geometry = ResolveMeshletEditEdge(scene, work, element, edge_corner, edge);
     return true;
 }
-
-#endif

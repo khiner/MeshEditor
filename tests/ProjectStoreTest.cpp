@@ -9,6 +9,7 @@
 #include <map>
 #include <print>
 #include <random>
+#include <ranges>
 
 using boost::ut::expect;
 
@@ -26,7 +27,6 @@ struct MapOwner {
     uint64_t Length() const { return Len; }
     bool Present(uint64_t s) const { return Values.contains(s); }
     std::span<const std::byte> Read(uint64_t s) const { return Values.at(s); }
-    std::span<const std::byte> Encode(const Blob &value) const { return value.View(); }
 
     void Write(uint64_t s) {
         if (Trie.Uncaptured(s)) Trie.Capture(s, Present(s) ? std::optional{CopyBlob(Read(s))} : std::nullopt);
@@ -84,7 +84,7 @@ std::vector<std::byte> RandomBytes(std::mt19937 &rng, size_t n) {
     return b;
 }
 
-// Reconstruct from live bytes to check cached hashes independently.
+// The manifest root rebuilt from the live bytes, independent of the cached hashes.
 Hash128 RebuiltManifest(auto &owner) {
     std::map<uint64_t, Hash128> hashes;
     for (uint64_t s = 0, n = owner.Trie.SlotsFor(owner.Length()); s < n; ++s) {
@@ -108,6 +108,15 @@ Hash128 LiveManifest(auto &owner) {
 Version Pin(auto &owner) {
     owner.Settle();
     return owner.Trie.Pin(owner.Length());
+}
+// Whether the live manifest matches one rebuilt from the live bytes and the trie holds its invariants over the pinned versions.
+bool Consistent(auto &owner, const auto &pinned, int step) {
+    expect(LiveManifest(owner) == RebuiltManifest(owner));
+    std::string why;
+    if (owner.Trie.Check(why, pinned | std::views::keys | std::ranges::to<std::vector>())) return true;
+    std::println("invariant broken at step {}: {}", step, why);
+    expect(false);
+    return false;
 }
 
 void TestRecordPagesAcrossResize() {
@@ -149,7 +158,7 @@ void TestPoolTrieAgainstModel() {
     for (int step = 0; step < 400; ++step) {
         const int op = rng() % 10;
         if (op < 6) {
-            // Concentrate writes to exercise shared leaves.
+            // Most writes land in the first 200 slots, which pinned versions share.
             const int n = 1 + rng() % 4;
             for (int i = 0; i < n; ++i) {
                 const uint64_t slot = (rng() % 3 == 0) ? rng() % 4096 : rng() % 200;
@@ -168,15 +177,7 @@ void TestPoolTrieAgainstModel() {
             trie.Release(pinned[i].first);
             pinned.erase(pinned.begin() + i);
         }
-        expect(LiveManifest(live) == RebuiltManifest(live));
-        std::string why;
-        std::vector<Version> versions;
-        for (auto &[v, _] : pinned) versions.push_back(v);
-        if (!trie.Check(why, versions)) {
-            std::println("invariant broken at step {}: {}", step, why);
-            expect(false);
-            return;
-        }
+        if (!Consistent(live, pinned, step)) return;
         for (auto &[v, model] : pinned) expect(live.Materialize(v) == model);
     }
     for (auto &[v, model] : pinned) {
@@ -237,7 +238,7 @@ void TestCaptureEpoch() {
 
 void TestBufferAgainstModel() {
     std::mt19937 rng{11};
-    Pages buf{64, 3}; // Use small pages to test edits across page boundaries.
+    Pages buf{64, 3}; // Small pages put edits across page boundaries.
     std::vector<std::pair<Version, std::vector<std::byte>>> pinned;
     auto image = [&] { return std::vector<std::byte>(buf.Data(), buf.Data() + buf.Length()); };
     buf.Resize(1000);
@@ -267,15 +268,7 @@ void TestBufferAgainstModel() {
             buf.Trie.Release(pinned[i].first);
             pinned.erase(pinned.begin() + i);
         }
-        expect(LiveManifest(buf) == RebuiltManifest(buf));
-        std::string why;
-        std::vector<Version> versions;
-        for (auto &[v, _] : pinned) versions.push_back(v);
-        if (!buf.Trie.Check(why, versions)) {
-            std::println("buffer invariant broken at step {}: {}", step, why);
-            expect(false);
-            return;
-        }
+        if (!Consistent(buf, pinned, step)) return;
     }
     for (auto &[v, img] : pinned) {
         expect(buf.Restore(v));
@@ -285,7 +278,7 @@ void TestBufferAgainstModel() {
     expect(buf.Trie.Stats().OwnedBytes == 0);
 }
 
-// Use a seed as the recorded action to reproduce buffer and record writes.
+// An application whose recorded action is a seed that reproduces its buffer and record writes.
 struct ToyApp {
     using Values = std::vector<std::vector<std::byte>>;
     Pages Buf{64, 3};
@@ -295,8 +288,7 @@ struct ToyApp {
 
     int Replays{};
 
-    // Saves and closes the history, then opens it again from the directory.
-    void Reopen(const TestDir &dir) {
+    void Reopen(const std::filesystem::path &dir) {
         expect(H.Save());
         expect(H.Close());
         expect(H.Open(dir));
@@ -313,7 +305,6 @@ struct ToyApp {
         };
         Buf.Resize(512);
     }
-    // Replace the buffer with `length` zero bytes and clear the pool.
     void Reset(uint64_t length) {
         Buf.Resize(0);
         Buf.Resize(length);
@@ -329,7 +320,7 @@ struct ToyApp {
         uint32_t seed;
         std::memcpy(&seed, action.data(), 4);
         if (seed & 0x80000000u) {
-            // Alternate constant fills to test inverse edits.
+            // A constant fill can return the buffer to an earlier state, which exercises inverse edits.
             Buf.Resize(std::max<uint64_t>(64, Buf.Length()));
             for (auto &b : Buf.Mutable(0, 64)) b = std::byte(seed & 0xff);
             return;
@@ -356,7 +347,13 @@ struct ToyApp {
     }
 };
 
-// Compare each node against full copies after cached restoration, cold restoration, reopening, and replay.
+void ExpectAudit(History &h) {
+    std::string why;
+    expect(h.Audit(why)) << why;
+}
+
+// Each node matches its full copy after cached restoration, cold restoration, reopening and replay.
+// A commit adds a node exactly when no node adjacent to the present holds its state.
 void TestHistoryAgainstModel() {
     const TestDir dir{"projectstore_model"};
     ToyApp app;
@@ -366,8 +363,19 @@ void TestHistoryAgainstModel() {
     for (uint32_t seed = 1; seed <= 80; ++seed) {
         if (seed % 7 == 0) app.H.Navigate(rng() % app.H.Nodes.size());
         expect(app.State() == expected.at(*app.H.Present));
-        app.Step(seed);
-        expected.emplace(*app.H.Present, app.State());
+        const auto adjacent = [&] {
+            const auto &present = app.H.Nodes[*app.H.Present];
+            auto nodes = present.Children;
+            nodes.push_back(*app.H.Present);
+            if (present.Parent) nodes.push_back(*present.Parent);
+            return nodes;
+        }();
+        const auto count = app.H.Nodes.size();
+        app.Step(rng() % 3 == 0 ? 0x80000000u | (rng() % 3u) : seed);
+        const auto state = app.State();
+        const bool held = std::ranges::any_of(adjacent, [&](uint32_t node) { return expected.at(node) == state; });
+        expect((app.H.Nodes.size() == count + 1u) == !held) << seed;
+        expected.emplace(*app.H.Present, state);
         expect(app.State() == expected.at(*app.H.Present));
         const auto &roots = app.H.Nodes[*app.H.Present].Roots;
         expect(roots[0] == RebuiltManifest(app.Buf));
@@ -385,7 +393,7 @@ void TestHistoryAgainstModel() {
                 app.H.Navigate(0);
                 app.H.Evict(0);
                 expect(app.H.Stats().HotNodes == 1);
-                // Cold deltas must compare against actual live bytes, including uncommitted writes.
+                // Cold deltas compare against the live bytes, including this uncommitted write.
                 app.Apply(ToyApp::Encode(1000));
             }
             const auto replays = app.Replays;
@@ -395,15 +403,13 @@ void TestHistoryAgainstModel() {
             expect(app.State() == state);
             expect(app.H.ValidateReplay().empty());
             expect(app.State() == state);
-            std::string why;
-            expect(app.H.Audit(why));
+            ExpectAudit(app.H);
             expect(app.H.TakeIntegrityError().empty());
         }
     }
     app.Apply(ToyApp::Encode(999));
     app.H.Revert();
     expect(app.State() == expected.at(*app.H.Present));
-    // Verify that the independent audit detects an uncaptured write.
     app.Buf.Resize(64);
     app.Buf.Settle();
     app.Buf.Storage[0] ^= std::byte{1};
@@ -413,6 +419,7 @@ void TestHistoryAgainstModel() {
     expect(app.H.Audit(why));
 }
 
+// A commit whose state an adjacent cold node holds moves to that node without replaying, before and after reopening.
 void TestCommitIdentity() {
     const TestDir dir{"projectstore_identity"};
     ToyApp app;
@@ -422,17 +429,7 @@ void TestCommitIdentity() {
     const auto a = *app.H.Present;
     app.Step(Fill2);
     const auto b = *app.H.Present;
-    expect(a != b);
     const auto count = app.H.Nodes.size();
-    app.Step(Fill2);
-    expect(app.H.Present == b);
-    expect(app.H.Nodes.size() == count);
-    app.Step(Fill1);
-    expect(app.H.Present == a);
-    expect(app.H.Nodes.size() == count);
-    app.Step(Fill2);
-    expect(app.H.Present == b);
-    expect(app.H.Nodes.size() == count);
     app.H.Navigate(a);
     app.H.Evict(0);
     expect(!app.H.Nodes[b].Hot);
@@ -450,9 +447,7 @@ void TestCommitIdentity() {
     expect(app.Replays == replays_before);
     app.H.Navigate(b);
     app.H.Navigate(a);
-    std::string why;
-    expect(app.H.Audit(why));
-    if (!why.empty()) std::println("  {}", why);
+    ExpectAudit(app.H);
     app.H.Close();
 }
 
@@ -493,56 +488,16 @@ void TestReplace() {
     app.H.Navigate(a);
     app.H.Navigate(b);
     expect(app.State() == replaced);
-    std::string why;
-    expect(app.H.Audit(why));
-    if (!why.empty()) std::println("  {}", why);
+    ExpectAudit(app.H);
 }
 
-void TestColdLoadFailure() {
-    const TestDir dir{"projectstore_cold_failure"};
-    Pages a{64}, b{64};
-    History h;
-    h.Track(a, "a", 0);
-    h.Track(b, "b", 0);
-    a.Resize(64);
-    b.Resize(64);
-    expect(h.Begin(dir));
-    a.Mutable(0, 1)[0] = std::byte{11};
-    b.Mutable(0, 1)[0] = std::byte{22};
-    h.Commit("both", {});
-    expect(h.Save());
-    h.Navigate(0);
-    h.Evict(0);
-    const auto before = h.MaterializeLive();
-    // Corrupt the second track's leaf and verify that loading changes neither track.
-    const auto write_leaf = [&](char value) {
-        std::fstream out{dir.Path / "leaves.log", std::ios::binary | std::ios::in | std::ios::out};
-        out.seekp(2 * (sizeof(Hash128) + sizeof(uint32_t)) + 64);
-        out.write(&value, 1);
-    };
-    write_leaf(42);
-    h.Navigate(1);
-    expect(h.Present == 0);
-    expect(h.MaterializeLive() == before);
-    expect(!h.TakeIntegrityError().empty());
-    std::string why;
-    expect(h.Audit(why));
-    write_leaf(22);
-    h.Navigate(1);
-    expect(h.Present == 1);
-    expect(a.Data()[0] == std::byte{11});
-    expect(b.Data()[0] == std::byte{22});
-    expect(h.Audit(why));
-}
-
-void TestLogOpenFailure() {
-    const TestDir unwritable{"projectstore_log_open_failure"}, current{"projectstore_current"}, failed_write{"projectstore_failed_root"};
+// A Begin that fails to open its logs or to write the new root leaves the open history in place.
+void TestFailedBegin() {
+    const TestDir current{"projectstore_current"}, unwritable{"projectstore_unwritable"}, failed_write{"projectstore_failed_root"};
     std::filesystem::create_directories(unwritable.Path / "leaves.log");
     Pages buffer;
     History h;
     h.Track(buffer, "buffer", 0);
-    expect(!h.Begin(unwritable));
-    expect(!h.TakeIntegrityError().empty());
     buffer.Resize(4096);
     buffer.Mutable(0, 1)[0] = std::byte{11};
     expect(h.Begin(current));
@@ -550,8 +505,7 @@ void TestLogOpenFailure() {
     expect(!h.Begin(unwritable));
     expect(h.Present == 0 && h.MaterializeLive() == before);
     expect(!h.TakeIntegrityError().empty());
-
-    // Fail after the new streams open, while the candidate root is being written.
+    // The streams open and the candidate root fails to write.
     rlimit original{};
     expect(getrlimit(RLIMIT_FSIZE, &original) == 0);
     const auto handler = std::signal(SIGXFSZ, SIG_IGN);
@@ -569,68 +523,111 @@ void TestLogOpenFailure() {
     expect(h.Present == 0 && h.MaterializeLive() == before);
 }
 
-// Truncate records used only by the final committed step.
-void TestTornTailRecovery() {
-    const TestDir dir{"projectstore_torn"};
+void AppendGarbage(const std::filesystem::path &log) { std::ofstream{log, std::ios::binary | std::ios::app}.write("garbage!garbage!", 16); }
+void DropLastByte(const std::filesystem::path &log) { std::filesystem::resize_file(log, std::filesystem::file_size(log) - 1); }
+void FlipLastByte(const std::filesystem::path &log) {
+    std::fstream file{log, std::ios::binary | std::ios::in | std::ios::out};
+    file.seekg(-1, std::ios::end);
+    const auto value = char(file.get() ^ 1);
+    file.seekp(-1, std::ios::end);
+    file.put(value);
+}
+void ReplaceWithDirectory(const std::filesystem::path &log) {
+    std::filesystem::remove(log);
+    std::filesystem::create_directory(log);
+}
+
+// A damage to one log of a saved history, and the count of trailing nodes it destroys.
+// A cold damage applies after Open to the records a cold load reads, and applying it again repairs them.
+// A damage that keeps Open from reading the history leaves the open history in place.
+struct Damage {
+    std::string_view Log;
+    void (*Apply)(const std::filesystem::path &);
+    uint32_t Lost{};
+    bool Cold{false}, Opens{true};
+};
+
+// Every node a damage leaves intact navigates to its recorded state, and repeating the last step restores its state across a reopen.
+void TestDamagedStores() {
+    constexpr std::array<Damage, 8> Damages{{
+        {"leaves.log", AppendGarbage},
+        {"nodes.log", AppendGarbage},
+        {"tree.log", AppendGarbage},
+        {"leaves.log", DropLastByte, 1u},
+        {"nodes.log", DropLastByte, 1u},
+        // The last record is the saved navigation, so every node survives.
+        {"tree.log", DropLastByte},
+        // The last node's leaf fails to load while the pool track it shares with its parent loads, and neither track changes.
+        {"leaves.log", FlipLastByte, 0u, true},
+        {"leaves.log", ReplaceWithDirectory, 0u, false, false},
+    }};
+    constexpr uint32_t UniqueStep = 0x80000000u | 42;
+    const TestDir root{"projectstore_damage"};
+    const auto saved = root.Path / "saved";
     std::map<uint32_t, std::pair<std::vector<std::byte>, ToyApp::Values>> expected;
-    std::optional<uint32_t> last_node;
+    uint32_t parent{}, last{};
     {
         ToyApp app;
-        app.H.Begin(dir);
+        expect(app.H.Begin(saved));
         expected[0] = app.State();
         for (uint32_t s = 1; s <= 8; ++s) {
             app.Step(s);
             expected[*app.H.Present] = app.State();
         }
-        // Use unique data to make the final leaf record exclusive to this node.
-        app.Step(0x80000000u | 42);
-        last_node = app.H.Present;
-        expected[*last_node] = app.State();
-        app.H.Save();
-        app.H.Close();
+        parent = *app.H.Present;
+        // Unique data makes the final leaf and manifest records exclusive to the last node.
+        app.Step(UniqueStep);
+        last = *app.H.Present;
+        expected[last] = app.State();
+        // Saving at the root leaves the last node cold after Open.
+        app.H.Navigate(0);
+        expect(app.H.Save());
+        expect(app.H.Close());
     }
-    const auto leaves_path = dir.Path / "leaves.log", nodes_path = dir.Path / "nodes.log", tree_path = dir.Path / "tree.log";
-    // Discard appended garbage while preserving the tree.
-    for (const auto &p : {leaves_path, nodes_path, tree_path}) {
-        std::ofstream out{p, std::ios::binary | std::ios::app};
-        out.write("garbage!garbage!", 16);
-    }
-    {
-        ToyApp app;
-        expect(app.H.Open(dir));
-        expect(app.H.Nodes.size() == expected.size());
-        for (const auto &[node, state] : expected) {
-            app.H.Navigate(node);
-            expect(app.State() == state);
+    ToyApp app;
+    for (uint32_t i = 0; i < Damages.size(); ++i) {
+        const auto &damage = Damages[i];
+        const auto dir = root.Path / std::to_string(i);
+        std::filesystem::copy(saved, dir, std::filesystem::copy_options::recursive);
+        if (!damage.Cold) damage.Apply(dir / damage.Log);
+        const auto present = app.H.Present;
+        const auto state = app.State();
+        if (!damage.Opens) {
+            expect(!app.H.Open(dir)) << "damage" << i;
+            expect(app.H.Present == present && app.State() == state) << "damage" << i;
+            expect(!app.H.TakeIntegrityError().empty()) << "damage" << i;
+            continue;
         }
-        expect(app.H.TakeIntegrityError().empty());
-        app.H.Save();
-        app.H.Close();
-    }
-    // Discard the incomplete leaf record and its node while preserving earlier nodes.
-    std::filesystem::resize_file(leaves_path, std::filesystem::file_size(leaves_path) - 1);
-    {
-        ToyApp app;
-        expect(app.H.Open(dir));
-        expect(app.H.Nodes.size() == expected.size() - 1);
-        const auto lost = expected.at(*last_node);
-        expected.erase(*last_node);
-        for (const auto &[node, state] : expected) {
+        expect(boost::ut::fatal(app.H.Open(dir))) << "damage" << i;
+        expect(app.H.Nodes.size() == expected.size() - damage.Lost) << "damage" << i << "nodes" << app.H.Nodes.size();
+        expect(app.H.TakeIntegrityError().empty()) << "damage" << i;
+        if (damage.Cold) damage.Apply(dir / damage.Log);
+        for (const auto &[node, node_state] : expected | std::views::reverse) {
+            if (node >= app.H.Nodes.size()) continue;
+            const auto from = app.H.Present;
+            const auto from_state = app.State();
             app.H.Navigate(node);
-            expect(app.State() == state);
+            if (damage.Cold && node == last) {
+                expect(app.H.Present == from && app.State() == from_state) << "damage" << i;
+                expect(!app.H.TakeIntegrityError().empty()) << "damage" << i;
+            } else {
+                expect(app.H.Present == node && app.State() == node_state) << "damage" << i << "node" << node;
+            }
         }
-        expect(app.H.TakeIntegrityError().empty());
-        // Rewrite missing leaves when repeating the discarded step.
-        app.Step(0x80000000u | 42);
+        std::string why;
+        expect(app.H.Audit(why)) << "damage" << i << why;
+        if (damage.Cold) damage.Apply(dir / damage.Log);
+        // Repeating the last step rewrites the records the damage lost.
+        app.H.Navigate(parent);
+        app.Step(UniqueStep);
+        expect(app.H.Present == last && app.H.Nodes.size() == expected.size()) << "damage" << i;
         app.H.Navigate(0);
         app.H.Evict(0);
-        app.H.Navigate(*last_node);
-        expect(app.H.Present == last_node);
-        expect(app.State() == lost);
-        expect(app.H.TakeIntegrityError().empty());
+        app.H.Navigate(last);
+        expect(app.H.Present == last && app.State() == expected.at(last)) << "damage" << i;
         app.Reopen(dir);
-        expect(app.H.Present == last_node);
-        expect(app.State() == lost);
+        expect(app.H.Present == last && app.State() == expected.at(last)) << "damage" << i;
+        expect(app.H.TakeIntegrityError().empty()) << "damage" << i;
     }
 }
 
@@ -671,8 +668,7 @@ const boost::ut::suite ProjectStore = [] {
     boost::ut::test("history against a model") = TestHistoryAgainstModel;
     boost::ut::test("commit identity") = TestCommitIdentity;
     boost::ut::test("replace") = TestReplace;
-    boost::ut::test("cold load failure") = TestColdLoadFailure;
-    boost::ut::test("log open failure") = TestLogOpenFailure;
-    boost::ut::test("torn tail recovery") = TestTornTailRecovery;
+    boost::ut::test("failed begin") = TestFailedBegin;
+    boost::ut::test("damaged stores keep every node whose records survive") = TestDamagedStores;
     boost::ut::test("clear history") = TestClearHistory;
 };

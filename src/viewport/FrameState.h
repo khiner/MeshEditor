@@ -8,15 +8,22 @@
 
 using numeric::vec2;
 
-// A mesh operator sized by the mouse's distance from the selection's screen center, staged again on every change.
+// A mesh operator driven by the mouse, staged again on every change.
+// A loop slide's factor is the mouse's travel from StartPx along RailPx in units of its length.
 struct MeshOperatorDrag {
     enum class Op : uint8_t { Inset,
                               BevelEdges,
                               BevelVertices,
-                              Knife };
+                              Knife,
+                              LoopSlide };
     Op Value{Op::Inset};
     vec2 StartPx{}, CenterPx{};
     float WorldPerPx{1.f};
+    vec2 RailPx{}; // The picked edge's half from its center to its positive end in logical pixels
+    vec3 Positive{}; // The picked edge's mesh-local direction toward its positive end
+    vec3 Center{}; // The picked edge's mesh-local midpoint, where the cut inserts the new loop's reference vertex
+    state::Entity MeshEntity{state::Null};
+    uint32_t Reference{InvalidOffset}; // The new loop's vertex at Center, found once the cut has cooked
     uint32_t Segments{1};
     bool Individual{false};
     float WheelAccum{0.f};
@@ -53,13 +60,12 @@ struct FrameState {
     vec2 DisplayFramebufferScale{1, 1};
     vec2 AccumulatedWrapMouseDelta{0, 0};
     vec2 PreciseWheelDelta{0, 0};
-    bool PreciseScrolling{false}; // The wheel delta is a trackpad's scroll
+    bool PreciseScrolling{false};
     float Magnification{0}; // The trackpad pinch's summed magnification
     std::optional<BoxSelectDrag> BoxDrag;
     std::optional<MeshOperatorDrag> MeshDrag;
     bool OverlayControlsHovered{false};
     bool Scrubbing{false};
     bool Capturing{false};
-    // Recompile every shader on the next event pass.
     bool RecompileShaders{false};
 };

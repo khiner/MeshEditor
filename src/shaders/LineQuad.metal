@@ -1,6 +1,4 @@
-#ifndef LINE_QUAD_MSL
-#define LINE_QUAD_MSL
-
+#pragma once
 #include "Bindless.metal"
 #include "Varyings.metal"
 
@@ -40,7 +38,6 @@ inline float4 line_quad_position(const thread SceneT<SetT> &scene, float4 clip0,
     return pos;
 }
 
-// Analytic capsule coverage uses screen-space coordinates, including the end caps.
 inline EdgeQuadVaryings StrokeQuadCorner(
     const thread Scene &scene, float4 a, float4 b, float4 color, float4 outer, float half_width, uint corner
 ) {
@@ -70,5 +67,3 @@ inline void EmitStroke(
     }
     for (uint i = 0u; i < 6u; ++i) output.set_index(index * 6u + i, index * 4u + LineQuadCornerLut[i]);
 }
-
-#endif

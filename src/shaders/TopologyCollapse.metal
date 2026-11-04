@@ -1,4 +1,44 @@
-#include "TopologyCollapseShared.metal"
+#include "MeshTopologyContext.metal"
+#include "RadixSort.metal"
+
+struct CollapseSum { packed_float3 Delta; uint Count; };
+
+inline uint CollapseLevelCount(uint count, uint level) {
+    for (uint l = 0u; l < level; ++l) {
+        if (count <= 256u) return 0u;
+        count = count / 256u + uint(count % 256u != 0u);
+    }
+    return count;
+}
+inline uint CollapseLevelOffset(uint count, uint level) {
+    uint offset = 0u;
+    for (uint l = 0u; l < level; ++l) {
+        offset += count;
+        count = count / 256u + uint(count % 256u != 0u);
+    }
+    return offset;
+}
+inline RadixSortView CollapseSort(TopoContext ctx, MeshTopologyJob job, uint shift = 0u) {
+    device uint *base = ctx.Scratch() + job.CollapseOffset;
+    const uint n = job.CollapseCount, blocks = n / 256u + uint(n % 256u != 0u);
+    return {base, base + n, base + 2u * n, base + 3u * n, base + 3u * n + 16u * blocks,
+            n, blocks, 1u, 0u, shift, ((shift / 4u) & 1u) != 0u};
+}
+inline device CollapseSum *CollapseSums(TopoContext ctx, MeshTopologyJob job, uint level) {
+    const auto sort = CollapseSort(ctx, job);
+    return reinterpret_cast<device CollapseSum *>(sort.Totals + 16u) + CollapseLevelOffset(job.CollapseCount, level);
+}
+inline uint CollapseVertex(TopoContext ctx, MeshTopologyJob job, uint rank) {
+    return job.CollapseVertices.Slot == InvalidSlot ? rank :
+        ctx.SrcVertexDomain(job).Index(BindlessBuffer(uint, ctx.B.Buffer, job.CollapseVertices.Slot)[job.CollapseVertices.Offset + rank]);
+}
+inline uint CollapseKey(RadixSortView sort, uint i, uint level) {
+    const ulong end = min((ulong(i) + 1u) << (8u * level), ulong(sort.Count));
+    return sort.Keys[sort.Order[uint(end - 1u)]];
+}
+inline CollapseSum AddCollapseSum(CollapseSum a, CollapseSum b) {
+    return {packed_float3(float3(a.Delta) + float3(b.Delta)), a.Count + b.Count};
+}
 
 #define COLLAPSE_ARGS device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]], constant MeshTopologyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 #define COLLAPSE_CONTEXT const TopoContext ctx{bindless, pc}; const uint2 tile = ctx.Tile(group); const MeshTopologyJob job = ctx.Jobs()[tile.x]
@@ -29,9 +69,7 @@ kernel void TopologyCollapseScatter(uint lane [[thread_index_in_threadgroup]], u
     RadixScatter(CollapseSort(ctx, job, pc.PassParameter), lane, tile.y, sl, sg, groups);
 }
 
-// A fixed tree scans each tile.
-// Only tile tails advance to the next level.
-// Sorted component keys let the same reduction handle isolated vertices, disconnected components, and components crossing any number of tiles.
+// A fixed tree scans each tile segmented by component key, and only tile tails advance to the next level.
 kernel void TopologyCollapseReduce(uint lane [[thread_index_in_threadgroup]], uint group [[threadgroup_position_in_grid]], COLLAPSE_ARGS) {
     COLLAPSE_CONTEXT;
     const uint level = pc.PassParameter, count = CollapseLevelCount(job.CollapseCount, level);
@@ -64,8 +102,7 @@ kernel void TopologyCollapseReduce(uint lane [[thread_index_in_threadgroup]], ui
     if (i < count) CollapseSums(ctx, job, level)[i] = sum;
 }
 
-// Parent prefixes already contain preceding tiles.
-// Only a tile's leading component can continue across its boundary.
+// Adds the parent level's prefix to each later tile's leading component, the only component that continues across a tile boundary.
 kernel void TopologyCollapseCarry(uint lane [[thread_index_in_threadgroup]], uint group [[threadgroup_position_in_grid]], COLLAPSE_ARGS) {
     COLLAPSE_CONTEXT;
     const uint level = pc.PassParameter, count = CollapseLevelCount(job.CollapseCount, level);
@@ -78,7 +115,6 @@ kernel void TopologyCollapseCarry(uint lane [[thread_index_in_threadgroup]], uin
 }
 
 // A component's final sorted item owns its destination position.
-// Publishing through the count scan avoids a center lookup or a second position write.
 kernel void TopologyCollapseCenters(uint lane [[thread_index_in_threadgroup]], uint group [[threadgroup_position_in_grid]], COLLAPSE_ARGS) {
     COLLAPSE_CONTEXT;
     const uint i = tile.y * 256u + lane;

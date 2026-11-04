@@ -1,10 +1,6 @@
-#ifndef MESHTOPOLOGYLINES_MSL
-#define MESHTOPOLOGYLINES_MSL
-
-// Edits explicit wires and the loose edges left by collapsed faces.
+#pragma once
 // Each output line is two adjacent output corners, the first at the line's end and the second at its start, as a line source writes them.
-// A cut line emits its cut vertices and the pieces between them.
-// Any other line emits the one line it leaves: itself, its merged ends, or a dissolve chain's join, and a joining operator keeps one line per pair of ends.
+// A joining operator keeps one line per pair of ends.
 #include "MeshTopologySubdivide.metal"
 
 struct TopoLine {
@@ -21,8 +17,7 @@ inline bool TopoLineJoins(MeshTopologyJob job) { return TopologyJoinsLines(job.O
 inline uint2 TopoLineKey(TopoLine line) { return uint2(min(line.From, line.To), max(line.From, line.To)); }
 inline uint TopoLineHash(uint2 key) { return TopoCellHash(int3(int(key.x), int(key.y), 0)); }
 
-// Record the preceding kept corner once per dissolved boundary.
-// A two-corner boundary leaves one loose edge; longer boundaries continue to own face edges.
+// Records each kept corner's preceding kept corner around a dissolved boundary.
 inline void TopoDissolveBoundary(TopoContext ctx, MeshTopologyJob job, uint f) {
     const bool own=TopoDissolveOwnLoop(ctx,job,f);
     if (!own && ctx.FaceLabels(job)[f]!=f) return;
@@ -63,8 +58,8 @@ inline TopoLineEnd TopoLineChainEnd(TopoContext ctx, MeshTopologyJob job, uint v
     return {InvalidOffset, InvalidOffset};
 }
 
-// Only unchanged edges outside the core need a fan query.
-// Inside the core, the shared key table prefers surviving face edges over coincident wires.
+// Whether a line outside the edit core already joins a and b.
+// Inside the core the key table prefers surviving face edges over coincident wires.
 inline bool TopoOuterLine(TopoContext ctx, MeshTopologyJob job, uint a, uint b) {
     const auto src=ctx.Src(job);
     for (const auto item:src.Fan(ctx.SrcVertexDomain(job).Handle(a))) {
@@ -78,7 +73,6 @@ inline bool TopoOuterLine(TopoContext ctx, MeshTopologyJob job, uint a, uint b) 
     return false;
 }
 
-// The one line a source line leaves, by its representative corner.
 // A dissolve chain joins its kept ends at its lower end line, unless a line outside the core already joins them.
 inline TopoLine TopoLineOutput(TopoContext ctx, MeshTopologyJob job, uint h) {
     const auto corners = ctx.SrcCorners(job);
@@ -120,11 +114,11 @@ inline bool TopoLineSurface(TopoContext ctx, MeshTopologyJob job, uint h) {
     return (TopologyIsMerge(job.Op) || (TopologyIsDissolve(job.Op) && TopoLineJoins(job))) && (ctx.FlagHalfedges(job)[h]&TopoSurfaceEdge)!=0u;
 }
 
-// Reuse an existing edge before a chain or weld would create another at its endpoints.
+// Key table priority, lowest first: a surviving face edge, then the line's own unchanged edge, then a new chain or weld line.
 inline uint TopoLinePriority(TopoContext ctx, MeshTopologyJob job, uint h, TopoLine line) {
     if (TopoLineSurface(ctx,job,h)) return 0u;
     const auto corners=ctx.SrcCorners(job);
-    return all(TopoLineKey(line)==uint2(min(corners[h],corners[ctx.SrcPrev(job,h)]),max(corners[h],corners[ctx.SrcPrev(job,h)]))) ? 1u : 2u;
+    return all(TopoLineKey(line)==uint2(min(corners[h],ctx.SrcFrom(job, h)),max(corners[h],ctx.SrcFrom(job, h)))) ? 1u : 2u;
 }
 
 // The key table chooses a surviving face corner, or the lowest loose-edge representative.
@@ -151,7 +145,6 @@ inline uint TopoLineCorners(TopoContext ctx, MeshTopologyJob job, uint h) {
     return line.Kept && TopoLineFirst(ctx, job, line, ctx.SrcHalfedgeDomain(job).Index(h)) ? 2u : 0u;
 }
 
-// Emit a line from output vertex `from` to `to` with corner attributes from the respective source endpoints.
 inline void TopoEmitLine(TopoContext ctx, MeshTopologyJob job, uint d, uint from, uint to, uint from_corner, uint to_corner, uint edge_source, bool selected) {
     ctx.DstHalfedgeFaces(job)[d]=ctx.DstHalfedgeFaces(job)[d+1u]=InvalidOffset;
     const auto opposites=ctx.DstOpposites(job);
@@ -161,7 +154,7 @@ inline void TopoEmitLine(TopoContext ctx, MeshTopologyJob job, uint d, uint from
 }
 
 inline void TopoScatterLine(TopoContext ctx, MeshTopologyJob job, uint h, uint entry) {
-    if (ctx.Counts(job, TopoCountWireCorners)[entry + 1u] == ctx.Counts(job, TopoCountWireCorners)[entry]) return;
+    if (ctx.Span(job, TopoCountWireCorners, entry) == 0u) return;
     const uint base = ctx.WireCornerOffset(job, entry);
     device const uint *vertex_offsets = ctx.Counts(job, TopoCountVertices);
     const auto corners = ctx.SrcCorners(job);
@@ -171,7 +164,7 @@ inline void TopoScatterLine(TopoContext ctx, MeshTopologyJob job, uint h, uint e
     if (TopologyCopiesSelection(job.Op)) {
         const bool own = ctx.Src(job).HalfedgeFace(h) == InvalidOffset && (job.Op != MeshTopologyOp::SplitGeometry || !selected);
         if (own) TopoEmitLine(ctx, job, base, vertex_offsets[from], vertex_offsets[to], pair, h, h, false);
-        if (ctx.Counts(job, TopoCountWireCorners)[entry + 1u] - ctx.Counts(job, TopoCountWireCorners)[entry] > 2u * uint(own))
+        if (ctx.Span(job, TopoCountWireCorners, entry) > 2u * uint(own))
             TopoEmitLine(ctx, job, base + 2u * uint(own), vertex_offsets[from] + TopoVertexCopies(ctx, job, from),
                 vertex_offsets[to] + TopoVertexCopies(ctx, job, to), pair, h, h, true);
         return;
@@ -193,5 +186,3 @@ inline void TopoScatterLine(TopoContext ctx, MeshTopologyJob job, uint h, uint e
     const TopoLine line = TopoLineOutput(ctx, job, h);
     TopoEmitLine(ctx, job, base, vertex_offsets[line.From], vertex_offsets[line.To], pair, h, h, selected && !TopologyExtrudesSides(job.Op));
 }
-
-#endif

@@ -1,6 +1,4 @@
-#ifndef MOTIONBLURGATHER_MSL
-#define MOTIONBLURGATHER_MSL
-
+#pragma once
 #include "Bindless.metal"
 #include "Varyings.metal"
 #include "MotionBlurShared.metal"
@@ -8,11 +6,10 @@
 
 constant int GatherSampleCount = 8;
 
-// Color and weight split by whether a sample sits in front of or behind the center pixel.
 struct Accumulator {
     float4 Fg;
     float4 Bg;
-    float3 Weight; // Components represent background, foreground, and direction weights.
+    float3 Weight; // Background, foreground, and direction weights
 };
 
 struct GatherContext {
@@ -30,7 +27,6 @@ struct GatherContext {
         return velocity * float2(S.TexSize(Pc.VelocitySamplerSlot, 0)).xyxy * float2(1.0f, -1.0f).xxyy;
     }
 
-    // Add one pixel to produce a continuous ramp at each streak endpoint.
     float2 SpreadCompare(float center_len, float sample_len, float offset_len) const {
         return clamp(float2(center_len, sample_len) - offset_len + 1.0f, 0.0f, 1.0f);
     }
@@ -40,7 +36,6 @@ struct GatherContext {
         return clamp(0.5f + depth_scale * (sample_depth - center_depth), 0.0f, 1.0f);
     }
 
-    // Accept samples moving in the current gather direction and include subpixel motion in both directions.
     float DirCompare(float2 offset, float2 sample_motion, float sample_len) const {
         if (sample_len < 0.5f) return 1.0f;
         return dot(offset, sample_motion) > 0.0f ? 1.0f : 0.0f;
@@ -68,7 +63,7 @@ struct GatherContext {
     void GatherBlur(float2 screen_uv, float2 center_motion, float center_depth, float2 max_motion, float ofs, bool next, thread Accumulator &accum) const {
         const float center_len = length(center_motion);
         float max_len = length(max_motion);
-        // Include the center tile to prevent jitter from selecting a lower-motion tile.
+        // The center motion bounds the tile motion from below, since jitter can select a lower-motion tile.
         if (max_len < center_len) {
             max_len = center_len;
             max_motion = center_motion;
@@ -81,7 +76,6 @@ struct GatherContext {
             GatherSample(screen_uv, center_depth, center_len, max_motion * t, max_len * t, next, accum);
         }
         if (center_len < 0.5f) return;
-        // Sample center motion to preserve detail across foreground-background discontinuities.
         t = ofs * inc;
         for (int i = 0; i < GatherSampleCount; ++i, t += inc) {
             GatherSample(screen_uv, center_depth, center_len, center_motion * t, center_len * t, next, accum);
@@ -119,7 +113,6 @@ fragment float4 MotionBlurGatherFragment(
         InterleavedGradientNoise(float2(texel), 1, pc.NoiseOffset)
     );
 
-    // Jitter tile lookup by at most one quarter tile to suppress tile-edge banding.
     rand.x = rand.x * 2.0f - 1.0f;
     const int2 tile_extent = int2(tiles.get_width(), tiles.get_height());
     int2 tile = (texel + int2(int(rand.x * float(MotionBlurTileSize) * 0.25f))) / MotionBlurTileSize;
@@ -132,7 +125,6 @@ fragment float4 MotionBlurGatherFragment(
         tiles.read(uint2(tile_next)).zw
     );
 
-    // With no contributing motion, preserve the source exactly and skip reconstruction.
     if (max(length(center_motion.xy), length(max_motion.xy)) < 0.5f &&
         max(length(center_motion.zw), length(max_motion.zw)) < 0.5f) return center_color;
 
@@ -147,14 +139,10 @@ fragment float4 MotionBlurGatherFragment(
     if (accum.Weight.x < 1.0f && no_motion) w = 1.0f;
     accum.Bg += center_color * w;
     accum.Weight.x += w;
-    // Prefer reconstructed background when foreground samples have insufficient weight.
     center_color = accum.Bg / accum.Weight.x;
 
     accum.Fg += accum.Bg;
     accum.Weight.y += accum.Weight.x;
-    // Fill the rejected-sample weight with background color to preserve brightness.
     const float blend_fac = clamp(1.0f - accum.Weight.y / accum.Weight.z, 0.0f, 1.0f);
     return (accum.Fg / accum.Weight.z) + center_color * blend_fac;
 }
-
-#endif

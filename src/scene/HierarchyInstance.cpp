@@ -22,6 +22,7 @@
 #include "mesh/Primitives.h"
 #include "object/ObjectOps.h"
 #include "object/PendingSync.h"
+#include "physics/PhysicsTypes.h"
 #include "procedure/Procedure.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
@@ -75,18 +76,23 @@ void CopyHelperGeometry(state::Registry &r, const Member &member) {
     }
 }
 
-void Publish(state::Registry &r, state::Entity root, std::span<const HierarchyChanges::Change> changes) {
+std::vector<state::Entity> Publish(state::Registry &r, state::Entity root, std::span<const HierarchyChanges::Change> changes) {
     const auto source = r.get<const HierarchyInstance>(root).Source;
     const auto closure = HierarchyClosure(r, source);
     auto members = r.get<const HierarchyInstance>(root).Members;
     const auto removed = ReconcileHierarchyMembers(r, members, closure, source, root);
-    const bool structure = members != r.get<const HierarchyInstance>(root).Members || std::ranges::any_of(changes, [&](const auto &c) {
+    const bool reshaped = members != r.get<const HierarchyInstance>(root).Members;
+    const bool structure = reshaped || std::ranges::any_of(changes, [&](const auto &c) {
                                return c.Type == state::Slot<SceneParent> && std::ranges::binary_search(closure, c.Entity);
                            });
-    if (r.get<const HierarchyInstance>(root).Members != members) r.patch<HierarchyInstance>(root, [&](auto &instance) { instance.Members = members; });
+    if (reshaped) r.patch<HierarchyInstance>(root, [&](auto &instance) { instance.Members = members; });
+    auto moved = removed;
     for (const auto &member : members) {
         const bool fresh = !r.all_of<HierarchyMember>(member.Entity);
-        if (fresh) r.emplace<HierarchyMember>(member.Entity, root, member.Source);
+        if (fresh) {
+            r.emplace<HierarchyMember>(member.Entity, root, member.Source);
+            moved.push_back(member.Entity);
+        }
         [&]<typename... Ts>(TypeList<Ts...>) {
             ([&] {
                 if (member.Entity == root && (std::same_as<Ts, Transform> || std::same_as<Ts, Name> || std::same_as<Ts, Visibility> || std::same_as<Ts, SubElementOf>)) return;
@@ -124,6 +130,7 @@ void Publish(state::Registry &r, state::Entity root, std::span<const HierarchyCh
     }
     Destroy(r, removed);
     PublishHierarchyGeometry(r, root, changes);
+    return moved;
 }
 } // namespace
 
@@ -206,16 +213,15 @@ void PublishHierarchyInstances(state::Registry &r) {
                    });
         };
         if (!std::ranges::any_of(values, affected)) continue;
-        const auto before = instance.Members;
-        Publish(r, root, values);
-        // Published members may themselves belong to another hierarchy's definition.
+        const auto moved = Publish(r, root, values);
         const auto count = values.size();
         size_t change = 0;
-        for (const auto &m : r.get<const HierarchyInstance>(root).Members) {
+        const auto &after = r.get<const HierarchyInstance>(root).Members;
+        for (const auto &m : after) {
             while (change < count && values[change].Entity < m.Source) ++change;
             for (; change < count && values[change].Entity == m.Source; ++change) values.push_back({m.Entity, values[change].Type});
-            if (!std::ranges::binary_search(before, m.Source, {}, &Member::Source)) values.push_back({m.Entity, state::Slot<SceneParent>});
         }
+        for (const auto e : moved) values.push_back({e, state::Slot<SceneParent>});
         SortUnique(values);
     }
     changes.Publishing = false;
@@ -319,6 +325,11 @@ void MakeHierarchyIndependent(state::Registry &r, state::Entity root) {
         if (r.all_of<BoneAttachment>(member.Entity)) r.patch<BoneAttachment>(member.Entity, [&](auto &v) { v.ArmatureEntity = MapHierarchyMember(resources, v.ArmatureEntity); });
         if (r.all_of<ColliderShape>(member.Entity)) r.patch<ColliderShape>(member.Entity, [&](auto &v) { v.MeshEntity = MapHierarchyMember(resources, v.MeshEntity); });
         r.remove<HierarchyMember>(member.Entity);
+        if (const auto *name = r.try_get<const Name>(member.Entity); name && member.Entity != root) {
+            const std::string stem{NameStem(name->Value)};
+            r.remove<Name>(member.Entity);
+            EmplaceUniqueName(r, member.Entity, stem);
+        }
     }
     for (const auto &[_, copied] : resources) {
         const auto *procedure = r.try_get<const procedure::GeometryProcedure>(copied);

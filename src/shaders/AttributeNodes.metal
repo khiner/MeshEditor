@@ -1,7 +1,4 @@
-#ifndef ATTRIBUTE_NODES_MSL
-#define ATTRIBUTE_NODES_MSL
-
-// Each attribute node's value at one element from that element's input values and the node's parameters.
+#pragma once
 // Values travel as the words of their components, and a bool is the low bit of its first word.
 #include "gpu/AttributeNode.h"
 
@@ -10,7 +7,6 @@ inline uint4 WordsOf(float3 value) { return uint4(as_type<uint3>(value), 0u); }
 inline uint4 WordsOf(float value) { return uint4(as_type<uint>(value), 0u, 0u, 0u); }
 inline uint4 WordsOf(bool value) { return uint4(uint(value), 0u, 0u, 0u); }
 
-// Scale multiplies A by the float B, and Dot, Length and Distance return a float.
 inline uint4 VectorMathNode(uint4 a_words, uint4 b_words, VectorMathOp op) {
     const float3 a = VectorOf(a_words), b = VectorOf(b_words);
     switch (op) {
@@ -27,8 +23,6 @@ inline uint4 VectorMathNode(uint4 a_words, uint4 b_words, VectorMathOp op) {
     return a_words;
 }
 
-// Abs, Sqrt, Sin and Cos read only A.
-// A zero divisor gives zero, and a negative base takes only an integer power.
 inline uint4 FloatMathNode(uint4 a_words, uint4 b_words, FloatMathOp op) {
     const float a = as_type<float>(a_words.x), b = as_type<float>(b_words.x);
     switch (op) {
@@ -58,7 +52,6 @@ inline uint4 CompareNode(uint4 a_words, AttributeType a_type, uint4 b_words, Att
     return WordsOf(false);
 }
 
-// Not reads only A.
 inline uint4 BooleanMathNode(uint4 a_words, uint4 b_words, BooleanMathOp op) {
     const bool a = a_words.x & 1u, b = b_words.x & 1u;
     switch (op) {
@@ -69,5 +62,3 @@ inline uint4 BooleanMathNode(uint4 a_words, uint4 b_words, BooleanMathOp op) {
     }
     return WordsOf(false);
 }
-
-#endif

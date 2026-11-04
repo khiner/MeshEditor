@@ -8,6 +8,11 @@
 using AttributeName = std::array<char, 64>;
 // The bits of a value's components, zero beyond them.
 using AttributeValue = std::array<uint32_t, 4>;
+AttributeValue Words(auto value) {
+    AttributeValue words{};
+    std::memcpy(words.data(), &value, sizeof(value));
+    return words;
+}
 
 template<typename T>
 concept AttributeScalar = std::same_as<T, float> || std::same_as<T, vec2> || std::same_as<T, vec3> || std::same_as<T, vec4> || std::same_as<T, int32_t> || std::same_as<T, bool>;
@@ -19,7 +24,6 @@ constexpr AttributeType AttributeTypeOf = std::same_as<T, float> ? AttributeType
     std::same_as<T, int32_t>                                     ? AttributeType::Int :
                                                                    AttributeType::Bool;
 constexpr std::array AttributeTypes{AttributeType::Float, AttributeType::Vec2, AttributeType::Vec3, AttributeType::Vec4, AttributeType::Int, AttributeType::Bool};
-// Calls `fn` with the value type of `type` as its template argument.
 decltype(auto) WithAttributeScalar(AttributeType type, auto &&fn) {
     switch (type) {
         case AttributeType::Float: return fn.template operator()<float>();
@@ -31,11 +35,9 @@ decltype(auto) WithAttributeScalar(AttributeType type, auto &&fn) {
     }
     std::unreachable();
 }
-// One value per element of a canonical element block, where a bool block is the selection mask layout.
 template<AttributeScalar T> using AttributeBlock = std::conditional_t<std::same_as<T, bool>, SelectionBlock, std::array<T, MeshElementBlockSize>>;
 
 // A record's named attribute, whose id is its slot in the store's attribute table.
-// A free slot has no record.
 struct NamedAttribute {
     uint32_t Record{InvalidOffset};
     AttributeDomain Domain{};
@@ -46,7 +48,6 @@ struct NamedAttribute {
     std::string_view NameView() const { return {Name.data(), strnlen(Name.data(), Name.size())}; }
 };
 
-// An attribute's values at its record's handles in its domain, a block per local block.
 template<AttributeScalar T>
 struct NamedAttributeView {
     std::span<const AttributeBlock<T>> Values;

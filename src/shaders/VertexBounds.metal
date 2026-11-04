@@ -1,5 +1,4 @@
-#ifndef VERTEXBOUNDS_MSL
-#define VERTEXBOUNDS_MSL
+#pragma once
 #include "ElementWorkShared.metal"
 #include "gpu/VertexBounds.h"
 #include "gpu/BoundsReducePushConstants.h"
@@ -22,11 +21,10 @@ inline uint VertexBoundsIndex(device const BindlessSet &b, constant BoundsReduce
 }
 inline bool BoundsVertexLive(device const BindlessSet &b, BoundsEntry entry, uint block, uint lane) {
     const MeshElementBlock membership=BindlessBuffer(MeshElementBlock,b.Buffer,entry.VertexBlocksSlot)[block];
-    return membership.Owner == entry.VertexOwner && (membership.Live[lane/32u] & (1u << (lane%32u))) != 0u;
+    return membership.Owner == entry.VertexOwner && SlotLive(membership, lane);
 }
 inline uint2 VertexBoundsTile(device const BindlessSet &b, constant BoundsReducePushConstants &pc, uint group) {
     return pc.Work.Storage.Slot == InvalidSlot ?
         uint2(BindlessBuffer(packed_uint2,b.Buffer,pc.TileMapSlot)[pc.FirstTile+group]) :
         uint2(pc.EntryIndex,WorkGroupElement(b,pc.Work,group));
 }
-#endif

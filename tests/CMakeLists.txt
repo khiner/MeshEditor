@@ -51,7 +51,7 @@ target_compile_definitions(MeshEditorProjectTest PRIVATE
     MESHEDITOR_BUILD_DIR="${CMAKE_BINARY_DIR}" MESHEDITOR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 rbp_copy_shaders(MeshEditorProjectTest)
 
-mesheditor_test(MeshEditorGeometryTest GeometryOperationsTest.cpp MeshEditorEditor meshoptimizer)
-target_sources(MeshEditorGeometryTest PRIVATE ClusterLodTest.cpp ElementArenaTest.cpp MetalBufferTest.cpp)
+mesheditor_test(MeshEditorGeometryTest GeometryOperationsTest.cpp MeshEditorEditor meshoptimizer manifold)
+target_sources(MeshEditorGeometryTest PRIVATE ClusterLodTest.cpp ManifoldOracleTest.cpp MetalBufferTest.cpp)
 target_compile_definitions(MeshEditorGeometryTest PRIVATE MESHEDITOR_BUILD_DIR="${CMAKE_BINARY_DIR}")
 rbp_copy_shaders(MeshEditorGeometryTest)

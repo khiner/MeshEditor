@@ -1,133 +1,133 @@
 #include "ConnectivityRead.metal"
+#include "OrderedFloat.metal"
 #include "gpu/RecalculateNormalsPushConstants.h"
+
+constant uint NormalVolumeFraction = 36u; // Fixed-point bits below the cube of a component's bounds diagonal
 
 struct NormalRecalcContext {
     device const BindlessSet &B;
     constant RecalculateNormalsPushConstants &Pc;
-    device const packed_uint2 *Faces() const { return reinterpret_cast<device const packed_uint2 *>(BindlessBuffer(uint,B.Buffer,Pc.Faces.Slot)+Pc.Faces.Offset); }
-    device const packed_uint4 *Groups() const { return reinterpret_cast<device const packed_uint4 *>(BindlessBuffer(uint,B.Buffer,Pc.Groups.Slot)+Pc.Groups.Offset); }
-    uint2 Tile(uint tile) const { return uint2(reinterpret_cast<device const packed_uint2 *>(BindlessBuffer(uint,B.Buffer,Pc.Tiles.Slot)+Pc.Tiles.Offset)[tile]); }
-    device packed_float4 *PartialCenters() const { return reinterpret_cast<device packed_float4 *>(BindlessBufferMutable(uint,B.Buffer,Pc.PartialCenters.Slot)+Pc.PartialCenters.Offset); }
-    device packed_float3 *Centers() const { return reinterpret_cast<device packed_float3 *>(BindlessBufferMutable(uint,B.Buffer,Pc.Centers.Slot)+Pc.Centers.Offset); }
-    device NormalOrientationCandidate *Candidates() const { return reinterpret_cast<device NormalOrientationCandidate *>(BindlessBufferMutable(uint,B.Buffer,Pc.Candidates.Slot)+Pc.Candidates.Offset); }
-    ConnectivityView Topology() const { return {B,Pc.Connectivity,Pc.FaceCount}; }
-    float3 Position(uint h) const {
-        const auto topology=Topology();
-        return float3(BindlessBuffer(Vertex,B.VertexBuffer,Pc.VertexSlot)[topology.VertexAddress(BindlessBuffer(uint,B.IndexBuffer,Pc.CornerSlot)[topology.HalfedgeAddress(h)])].Position);
-    }
+    ConnectivityView View;
+    NormalRecalcContext(device const BindlessSet &b, constant RecalculateNormalsPushConstants &pc) : B(b), Pc(pc), View{b, pc.Connectivity} {}
+    device uint *Run(uint offset) const { return BindlessBufferMutable(uint, B.Buffer, Pc.ScratchSlot) + offset; }
+    uint Face(uint i) const { return BlockHandle(i, B, Pc.Blocks); }
+    uint Halfedge(uint i) const { return BlockHandle(i, B, Pc.HalfedgeBlocks); }
+    float3 Position(uint h) const { return float3(BindlessBuffer(Vertex, B.VertexBuffer, Pc.VertexSlot)[View.VertexAddress(View.VertexOf(h))].Position); }
+    uint Root(uint face) const { return Run(Pc.Labels)[face] >> 1u; }
+    uint Parity(uint face) const { return Run(Pc.Labels)[face] & 1u; }
+    device uint *Component(uint root) const { return Run(Pc.Components) + NormalComponentWords * root; }
 };
 
-inline float4 NormalCenterSum(float4 value,uint lane,threadgroup float4 *sums) {
-    sums[lane]=value;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    for (uint stride=128u;stride;stride>>=1u) {
-        if (lane<stride) sums[lane]+=sums[lane+stride];
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+inline void AtomicAdd64(device atomic_uint *low, device atomic_uint *high, long value) {
+    const uint low_part = uint(value), high_part = uint(ulong(value) >> 32u);
+    const uint before = atomic_fetch_add_explicit(low, low_part, memory_order_relaxed);
+    const uint carry = before + low_part < before ? 1u : 0u;
+    atomic_fetch_add_explicit(high, high_part + carry, memory_order_relaxed);
+}
+inline long Read64(device const uint *words) { return long((ulong(words[1]) << 32u) | ulong(words[0])); }
+
+// Each halfedge records the face across its edge when exactly two faces share the edge, with the parity set where that face runs the same way.
+kernel void RecalculateNormalNeighbors(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant RecalculateNormalsPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+    const NormalRecalcContext ctx{b, pc};
+    const uint h = ctx.Halfedge(i);
+    if (h == InvalidOffset) return;
+    const uint face = ctx.View.HalfedgeFace(h);
+    uint neighbor = InvalidOffset;
+    if (face != InvalidOffset && ctx.View.FaceSides(ctx.View.From(h), ctx.View.VertexOf(h)) == 2u) {
+        const uint other = ctx.View.OtherSide(h, face);
+        if (other != InvalidOffset) neighbor = ctx.View.HalfedgeFace(other) << 1u | (ctx.View.VertexOf(other) == ctx.View.VertexOf(h) ? 1u : 0u);
     }
-    return sums[0];
+    ctx.Run(pc.Neighbors)[h] = neighbor;
 }
 
-kernel void RecalculateNormalFaceCenters(uint lane [[thread_index_in_threadgroup]],uint tile [[threadgroup_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],constant RecalculateNormalsPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
-    const NormalRecalcContext ctx{b,pc};
-    const uint2 item=ctx.Tile(tile);
-    const uint4 group=uint4(ctx.Groups()[item.x]);
-    float4 value=0.f;
-    if (item.y+lane<group.x+group.y) {
-        const uint face=ctx.Faces()[item.y+lane].x;
-        const uint2 loop=ctx.Topology().FaceHalfedges(face);
-        float3 center=0.f,area_normal=0.f;
-        float weight=0.f;
-        const float3 origin=ctx.Position(loop.x);
-        for (uint h=loop.x;h<loop.y;++h) {
-            const float3 p=ctx.Position(h),prev=ctx.Position(h==loop.x ? loop.y-1u : h-1u),next=ctx.Position(h+1u==loop.y ? loop.x : h+1u);
-            const float w=distance(prev,p)+distance(p,next);
-            center+=w*p; weight+=w;
-            area_normal+=cross(p-origin,next-origin);
+kernel void RecalculateNormalLabelInit(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant RecalculateNormalsPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+    const NormalRecalcContext ctx{b, pc};
+    const uint face = ctx.Face(i);
+    if (face == InvalidOffset) return;
+    ctx.Run(pc.Labels)[face] = face << 1u;
+}
+// Each label falls to the least of its own, its label's and its neighbors', carrying the parity along the path taken, until a round changes nothing.
+kernel void RecalculateNormalLink(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant RecalculateNormalsPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+    const NormalRecalcContext ctx{b, pc};
+    const uint face = ctx.Face(i);
+    if (face == InvalidOffset) return;
+    device uint *labels = ctx.Run(pc.Labels);
+    const uint current = labels[face];
+    const uint through = labels[current >> 1u];
+    uint least = min(current, through ^ (current & 1u));
+    const uint2 range = ctx.View.FaceHalfedges(face);
+    for (uint h = range.x; h < range.y; ++h) {
+        const uint neighbor = ctx.Run(pc.Neighbors)[h];
+        if (neighbor == InvalidOffset) continue;
+        const uint label = labels[neighbor >> 1u];
+        least = min(least, label ^ (neighbor & 1u));
+    }
+    if (least >> 1u < current >> 1u) {
+        labels[face] = least;
+        ctx.Run(pc.Changed)[0] = 1u;
+    }
+}
+kernel void RecalculateNormalMarkSeeds(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant RecalculateNormalsPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+    if (i >= pc.SelectionCount) return;
+    const NormalRecalcContext ctx{b, pc};
+    ctx.Component(ctx.Root(ctx.Run(pc.Selection)[i]))[NormalComponentMarked] = 1u;
+}
+kernel void RecalculateNormalBounds(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant RecalculateNormalsPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+    const NormalRecalcContext ctx{b, pc};
+    const uint face = ctx.Face(i);
+    if (face == InvalidOffset) return;
+    device uint *component = ctx.Component(ctx.Root(face));
+    if (!component[NormalComponentMarked]) return;
+    const uint2 loop = ctx.View.FaceHalfedges(face);
+    float3 least = ctx.Position(loop.x), greatest = least;
+    for (uint h = loop.x + 1u; h < loop.y; ++h) {
+        const float3 p = ctx.Position(h);
+        least = min(least, p);
+        greatest = max(greatest, p);
+    }
+    for (uint axis = 0u; axis < 3u; ++axis) {
+        atomic_fetch_max_explicit(AtomicWord(component + NormalComponentLeast + axis), ~OrderedBits(least[axis]), memory_order_relaxed);
+        atomic_fetch_max_explicit(AtomicWord(component + NormalComponentGreatest + axis), OrderedBits(greatest[axis]), memory_order_relaxed);
+    }
+}
+// Each face of a marked component adds six times the signed volume of its fan triangles with the bounds center, wound as the component's lowest face.
+// The sum is fixed point in units of the bounds diagonal cubed, so it is exact in any order.
+kernel void RecalculateNormalVolumes(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant RecalculateNormalsPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+    const NormalRecalcContext ctx{b, pc};
+    const uint face = ctx.Face(i);
+    if (face == InvalidOffset) return;
+    device uint *component = ctx.Component(ctx.Root(face));
+    if (!component[NormalComponentMarked]) return;
+    float3 least, greatest;
+    for (uint axis = 0u; axis < 3u; ++axis) {
+        least[axis] = OrderedFloat(~component[NormalComponentLeast + axis]);
+        greatest[axis] = OrderedFloat(component[NormalComponentGreatest + axis]);
+    }
+    const float3 center = (least + greatest) * .5f;
+    const float diagonal = max(distance(least, greatest), FLT_MIN);
+    const uint2 loop = ctx.View.FaceHalfedges(face);
+    const float3 first = (ctx.Position(loop.x) - center) / diagonal;
+    float3 previous = (ctx.Position(loop.x + 1u) - center) / diagonal;
+    float volume = 0.f;
+    for (uint h = loop.x + 2u; h < loop.y; ++h) {
+        const float3 p = (ctx.Position(h) - center) / diagonal;
+        volume += dot(first, cross(previous, p));
+        previous = p;
+    }
+    const long units = long(rint(volume * float(1ul << NormalVolumeFraction)));
+    AtomicAdd64(AtomicWord(component + NormalComponentVolume), AtomicWord(component + NormalComponentVolume + 1u), ctx.Parity(face) ? -units : units);
+    for (uint h = loop.x; h < loop.y; ++h) {
+        if (ctx.Run(pc.Neighbors)[h] == InvalidOffset) {
+            atomic_store_explicit(AtomicWord(component + NormalComponentOpen), 1u, memory_order_relaxed);
+            break;
         }
-        if (weight>0.f) center/=weight;
-        const float area=length(area_normal)*.5f;
-        value=float4(center*area,area);
     }
-    threadgroup float4 sums[256];
-    const float4 sum=NormalCenterSum(value,lane,sums);
-    if (!lane) ctx.PartialCenters()[tile]=packed_float4(sum);
 }
-
-kernel void RecalculateNormalCenters(uint lane [[thread_index_in_threadgroup]],uint component [[threadgroup_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],constant RecalculateNormalsPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
-    const NormalRecalcContext ctx{b,pc};
-    const uint4 group=uint4(ctx.Groups()[component]);
-    float4 value=0.f;
-    for (uint i=lane;i<group.w;i+=256u) value+=float4(ctx.PartialCenters()[group.z+i]);
-    threadgroup float4 sums[256];
-    const float4 sum=NormalCenterSum(value,lane,sums);
-    // Match recalc_face_normals_find_index's area-weighted center, including its face-count factor.
-    if (!lane) ctx.Centers()[component]=packed_float3(sum.w>0.f ? sum.xyz/(sum.w*float(group.y)) : float3(0.f));
-}
-
-inline NormalOrientationCandidate NormalCandidateEmpty() { return {packed_float3(FLT_EPSILON,-FLT_MAX,-FLT_MAX),InvalidOffset,0u}; }
-inline bool NormalCandidateBetter(NormalOrientationCandidate a,NormalOrientationCandidate b) {
-    if (a.Score.x!=b.Score.x) return a.Score.x>b.Score.x;
-    if (a.Score.y!=b.Score.y) return a.Score.y>b.Score.y;
-    if (a.Score.z!=b.Score.z) return a.Score.z>b.Score.z;
-    return a.Rank<b.Rank;
-}
-inline NormalOrientationCandidate NormalCandidateReduce(NormalOrientationCandidate value,uint lane,threadgroup NormalOrientationCandidate *values) {
-    values[lane]=value;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    for (uint stride=128u;stride;stride>>=1u) {
-        if (lane<stride && NormalCandidateBetter(values[lane+stride],values[lane])) values[lane]=values[lane+stride];
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
-    return values[0];
-}
-
-kernel void RecalculateNormalCandidates(uint lane [[thread_index_in_threadgroup]],uint tile [[threadgroup_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],constant RecalculateNormalsPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
-    const NormalRecalcContext ctx{b,pc};
-    const uint2 item=ctx.Tile(tile);
-    const uint4 group=uint4(ctx.Groups()[item.x]);
-    auto best=NormalCandidateEmpty();
-    if (item.y+lane<group.x+group.y) {
-        const uint2 face=uint2(ctx.Faces()[item.y+lane]);
-        const uint2 loop=ctx.Topology().FaceHalfedges(face.x);
-        const float3 center=float3(ctx.Centers()[item.x]);
-        const float3 normal=float3(BindlessBuffer(packed_float3,b.Buffer,pc.NormalSlot)[ctx.Topology().FaceAddress(face.x)]);
-        for (uint h=loop.x;h<loop.y;++h) {
-            const float3 p=ctx.Position(h),delta=p-center;
-            const float dist=dot(delta,delta);
-            if (dist<FLT_EPSILON) continue;
-            float3 next=ctx.Position(h+1u==loop.y ? loop.x : h+1u)-p,prev=ctx.Position(h==loop.x ? loop.y-1u : h-1u)-p;
-            const float a=length(next),z=length(prev);
-            if (a<=FLT_EPSILON || z<=FLT_EPSILON) continue;
-            next/=a; prev/=z;
-            float3 loop_normal=cross(next,prev);
-            const float n=length(loop_normal);
-            if (n<=FLT_EPSILON) continue;
-            loop_normal/=n;
-            if (dot(loop_normal,normal)<0.f) loop_normal=-loop_normal;
-            const float3 direction=delta*rsqrt(dist);
-            const float alignment=dot(direction,loop_normal);
-            const NormalOrientationCandidate candidate{packed_float3(dist,max(dot(direction,next),dot(direction,prev)),abs(alignment)),h,uint(alignment<0.f)^face.y};
-            if (NormalCandidateBetter(candidate,best)) best=candidate;
-        }
-    }
-    threadgroup NormalOrientationCandidate values[256];
-    const auto result=NormalCandidateReduce(best,lane,values);
-    if (!lane) ctx.Candidates()[tile]=result;
-}
-
-kernel void RecalculateNormalOrientation(uint lane [[thread_index_in_threadgroup]],uint component [[threadgroup_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],constant RecalculateNormalsPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
-    const NormalRecalcContext ctx{b,pc};
-    const uint4 group=uint4(ctx.Groups()[component]);
-    auto best=NormalCandidateEmpty();
-    for (uint i=lane;i<group.w;i+=256u) {
-        const auto candidate=ctx.Candidates()[group.z+i];
-        if (NormalCandidateBetter(candidate,best)) best=candidate;
-    }
-    threadgroup NormalOrientationCandidate values[256];
-    const auto result=NormalCandidateReduce(best,lane,values);
-    if (!lane) BindlessBufferMutable(uint,b.Buffer,pc.Orientations.Slot)[pc.Orientations.Offset+component]=result.Flip;
+// Each selected face of a closed component flips where its parity disagrees with the sign of the component's volume, and a face of an open component stays.
+kernel void RecalculateNormalFlips(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant RecalculateNormalsPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+    if (i >= pc.SelectionCount) return;
+    const NormalRecalcContext ctx{b, pc};
+    const uint face = ctx.Run(pc.Selection)[i];
+    device const uint *component = ctx.Component(ctx.Root(face));
+    ctx.Run(pc.Flips)[i] = component[NormalComponentOpen] ? 0u : ctx.Parity(face) ^ uint(Read64(component + NormalComponentVolume) < 0);
 }

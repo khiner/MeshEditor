@@ -37,7 +37,6 @@ struct InterfaceTheme;
 struct TimelineTheme;
 
 namespace action {
-// The components Update can address, visited at apply time and checked at each emit site.
 using UpdatableComponents = TypeList<
     Transform, PosedLocal, BoneDelta, TransformGizmoState, OrbitToActive, ShadeSmoothAngle,
     ViewportDisplay, AnisotropicFilter, ViewportTheme, InterfaceTheme, TimelineTheme, TimelineNavigation, MaterialPreviewLighting, RenderedLighting,
@@ -45,20 +44,19 @@ using UpdatableComponents = TypeList<
     Animations,
     PhysicsSimulationSettings, PhysicsMaterial, PhysicsMotion, PhysicsVelocity, ColliderPolicy, CollisionFilter, PhysicsJoint, ColliderMaterial, TriggerNodes,
     ModalGain, ModalTuning, ModalSoundControls, Striker, SurfaceSoundControls, AudioOutputMix,
-    // Geometry procedure node layouts and parameters.
     procedure::NodeLayout, procedure::NodeTheme,
-    mesh::Delete, mesh::Merge, mesh::Extrude, mesh::Duplicate, mesh::Split, mesh::Dissolve, mesh::Subdivide, mesh::Triangulate, mesh::TrisToQuads,
-    mesh::Poke, mesh::FlipNormals, mesh::EdgeSplit, mesh::Inset, mesh::Solidify, mesh::Wireframe, mesh::Bevel, mesh::SmoothVertices, mesh::ShrinkFatten,
-    mesh::Randomize, procedure::Spin, mesh::ExtrudeRepeat, procedure::Bisect, mesh::Symmetrize, mesh::FillHoles, mesh::ConvexHull, mesh::Decimate, mesh::RecalculateNormals,
-    mesh::Rip, mesh::SpaceEvenly, mesh::RelaxEdgeLoops, mesh::CurveBetweenSelected, mesh::Circularize, mesh::MakePlanarFaces, mesh::SnapSymmetry,
-    mesh::SplitNonplanarFaces, mesh::SplitConcaveFaces, mesh::ConnectVertices, mesh::Fill, mesh::BridgeEdgeLoops, mesh::GridFill, mesh::EdgeRotate, mesh::BeautifyFaces, mesh::Unsubdivide, mesh::LoopCut,
-    mesh::RotateUVs, mesh::ReverseUVs, mesh::RotateColors, mesh::ReverseColors, procedure::MarkSharp, procedure::Knife, procedure::ShadeSmooth, procedure::ShadeSmoothByAngle,
+    mesh::Delete, mesh::Merge, procedure::Extrude, mesh::Dissolve, mesh::Subdivide, procedure::SubdivisionSurface, procedure::SmoothSurface, mesh::SplitFaces,
+    mesh::Poke, mesh::EdgeSplit, mesh::Inset, mesh::Solidify, mesh::Wireframe, mesh::Bevel, mesh::SmoothVertices, mesh::ShrinkFatten,
+    mesh::Randomize, procedure::Bisect, procedure::Project, mesh::Simplify,
+    mesh::SpaceEvenly, mesh::RelaxEdgeLoops, mesh::CurveBetweenSelected, mesh::Circularize, mesh::MakePlanarFaces, mesh::SnapSymmetry,
+    mesh::Fill, mesh::GridFill, mesh::Unsubdivide,
+    mesh::CycleCornerAttribute, procedure::MarkSharp, procedure::Knife, procedure::Shade,
     procedure::ToSphere, procedure::PushPull, procedure::Shear, procedure::Warp, procedure::Bend, procedure::VertexSlide, procedure::EdgeSlide, procedure::Flatten,
-    procedure::TransformElements, procedure::Boolean,
-    procedure::Position, procedure::Normal, procedure::Index, procedure::NamedAttribute, procedure::VectorMath, procedure::FloatMath, procedure::Compare,
+    procedure::TransformElements, procedure::Boolean, procedure::Minkowski, procedure::LevelSet,
+    procedure::Normal, procedure::Curvature, procedure::Boundary, procedure::PlaneSide, procedure::Adjacent, procedure::Index, procedure::NamedAttribute, procedure::VectorMath, procedure::FloatMath, procedure::Compare,
     procedure::BooleanMath, procedure::StoreNamedAttribute, procedure::StoreSelection, procedure::SetPosition, procedure::InstanceOnPoints, procedure::ObjectInfo,
-    procedure::FloatValue, procedure::IntegerValue, procedure::BooleanValue, procedure::VectorValue, procedure::RotationValue, procedure::TransformGeometry,
-    primitive::Plane, primitive::Circle, primitive::Cube, primitive::IcoSphere, primitive::UVSphere, primitive::QuadSphere, primitive::Torus, primitive::Cylinder, primitive::Cone>;
+    procedure::FloatValue, procedure::IntegerValue, procedure::BooleanValue, procedure::VectorValue, procedure::RotationValue,
+    primitive::Plane, primitive::Circle, primitive::Cube, primitive::IcoSphere, primitive::UVSphere, primitive::QuadSphere, primitive::Torus, primitive::Cylinder>;
 
 template<typename C>
 concept Updatable = InTypeList<C, UpdatableComponents>;

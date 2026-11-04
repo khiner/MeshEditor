@@ -1,6 +1,8 @@
 #pragma once
 #include "mesh/MeshTopology.h"
 struct Mesh;
-// Plans one alternating reduction from selected connectivity.
-// Geometry and attributes stay in canonical UMA and transfer through the shared GPU edit.
-std::optional<MeshTopologyTask> UnsubdivideTask(const Mesh &, const GeometrySelection &);
+namespace state {
+struct Registry;
+}
+// Plans one alternating reduction of the selected vertices as a topology task, or none when nothing reduces.
+std::optional<MeshTopologyTask> UnsubdivideTask(state::Registry &, const Mesh &, const GeometrySelection &);

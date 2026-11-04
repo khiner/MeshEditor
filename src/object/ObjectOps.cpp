@@ -21,7 +21,6 @@
 #include "viewport/ViewportEvents.h"
 
 namespace {
-// Unlink each affected sibling list once, including surviving children of deleted parents.
 void ClearRelationships(state::Registry &r, std::span<const state::Entity> entities) {
     std::vector<state::Entity> detached;
     const auto add = [&](state::Entity e) {
@@ -95,6 +94,9 @@ void Destroy(state::Registry &r, std::span<const state::Entity> entities) {
     r.destroy(destroyed);
 }
 
+void Reset(PendingObjectRemovals &pending, state::Registry &) { pending = {}; }
+void Reset(PendingSlotRemovals &pending, state::Registry &) { pending = {}; }
+
 void ProcessObjectRemovals(state::Registry &r) {
     auto *pending = r.Resources.find<PendingObjectRemovals>();
     if (!pending) return;
@@ -131,8 +133,6 @@ void ProcessObjectRemovals(state::Registry &r) {
     meshes.ReleaseSoundVertices(std::move(pending->SoundVertexRanges));
     r.Resources.erase<PendingObjectRemovals>();
 
-    // Release imported textures and reset the material when the final instance is removed.
-    // Clear the persistent texture manifest at the same time.
     if (removed_objects && r.view<Instance>().empty()) {
         ResetImportedTexturesAndMaterials(r);
         r.remove<MaterializedTextures>(state::Document);
@@ -154,7 +154,6 @@ std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(s
         for (auto &material : result->Primitives.MaterialIndices) material = (*imported)[material];
     }
 
-    // `deduplicate` merges vertices identical in every vertex-domain channel, keeping per-corner UVs and normals.
     auto created = CreateMesh(r, {.Data = std::move(result->Mesh), .Attrs = std::move(result->Attrs), .Primitives = std::move(result->Primitives), .Weld = deduplicate});
     const auto entities = ::AddMesh(r, created.StoreId, info);
     if (!created.AuthoredCornerNormals.empty()) r.emplace<AuthoredCornerNormals>(entities.first, std::move(created.AuthoredCornerNormals));

@@ -1,6 +1,4 @@
-#ifndef MOTIONBLURTILESDILATE_MSL
-#define MOTIONBLURTILESDILATE_MSL
-
+#pragma once
 #include "MotionBlurShared.metal"
 
 // A tile's own bounding circle plus the line's, both of radius sqrt(1/2), sum to sqrt(2).
@@ -28,7 +26,6 @@ kernel void MotionBlurTilesDilateKernel(
     const uint payload_prev = MotionTilePack(max_motion.xy, uint2(src_tile));
     const uint payload_next = MotionTilePack(max_motion.zw, uint2(src_tile));
 
-    // Conservatively mark every tile intersected by either motion half for both gather directions.
     for (int half_i = 0; half_i < 2; ++half_i) {
         const float2 motion = half_i == 0 ? max_motion.xy : max_motion.zw;
         const int2 far_tile = src_tile + int2(sign(motion) * ceil(abs(motion) / float(MotionBlurTileSize)));
@@ -49,5 +46,3 @@ kernel void MotionBlurTilesDilateKernel(
         }
     }
 }
-
-#endif

@@ -7,6 +7,7 @@ struct PosedLayout;
 struct MeshEditWork;
 struct MeshVertexOverlays;
 struct BoundsRun;
+struct TalliedRecord;
 struct MeshletPositionsDirty;
 struct ClusterLodDirty;
 struct ClusterLodDemand;
@@ -32,7 +33,7 @@ struct EnvironmentStore;
 struct MaterializedTextures;
 struct ViewportRenderResources;
 
-using RenderSchema = state::Schema<state::RenderBase, state::RenderCount, GpuBuffers, PosedLayout, MeshEditWork, MeshVertexOverlays, BoundsRun, MeshletPositionsDirty, ClusterLodDirty, ClusterLodDemand, MeshDisplayDirty, MeshLayoutDirty, MeshBoundsDirty, GpuSceneState, Instance, Hidden, Visibility, PunctualLight, ImageLight, MaterialStore, MeshMaterialAssignment, MeshMaterialSlotSelection, MaterialVariants, PbrMeshFeatures, Pipelines, RenderChanges, ActiveSamplerAnisotropy, TextureStore, EnvironmentStore, MaterializedTextures, ViewportRenderResources>;
+using RenderSchema = state::Schema<state::RenderBase, state::RenderCount, GpuBuffers, PosedLayout, MeshEditWork, MeshVertexOverlays, BoundsRun, TalliedRecord, MeshletPositionsDirty, ClusterLodDirty, ClusterLodDemand, MeshDisplayDirty, MeshLayoutDirty, MeshBoundsDirty, GpuSceneState, Instance, Hidden, Visibility, PunctualLight, ImageLight, MaterialStore, MeshMaterialAssignment, MeshMaterialSlotSelection, MaterialVariants, PbrMeshFeatures, Pipelines, RenderChanges, ActiveSamplerAnisotropy, TextureStore, EnvironmentStore, MaterializedTextures, ViewportRenderResources>;
 template<typename T>
     requires RenderSchema::Has<T>
 inline constexpr state::TypeId state::Slot<T> = RenderSchema::Of<T>();

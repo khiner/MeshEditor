@@ -1,6 +1,4 @@
-#ifndef VERTEXWELD_MSL
-#define VERTEXWELD_MSL
-
+#pragma once
 // Welds vertices identical in every vertex-domain channel and numbers them by first source occurrence.
 #include "Bindless.metal"
 #include "BlockScan.metal"
@@ -24,7 +22,7 @@ struct WeldContext {
     device uint *Scratch() const { return Storage() + Pc.ScratchOffset; }
     device uint *PositionWords(VertexWeldJob job) const { return BindlessBufferMutable(uint, B.VertexBuffer, job.Positions.Slot) + job.Positions.Offset * WeldPositionWords; }
     device uint *Corners(VertexWeldJob job) const { return BindlessBufferMutable(uint, B.IndexBuffer, job.Corners.Slot) + job.Corners.Offset; }
-    device atomic_uint *AtomicScratch() const { return reinterpret_cast<device atomic_uint *>(Scratch()); }
+    device atomic_uint *AtomicScratch() const { return AtomicWord(Scratch()); }
     device uint *DeformWords(VertexWeldJob job) const { return BindlessBufferMutable(uint, B.BoneDeformBuffer, job.Skin.Slot); }
     device uint *MorphWords(VertexWeldJob job) const { return BindlessBufferMutable(uint, B.MorphTargetBuffer, job.Morph.Slot); }
 
@@ -112,7 +110,7 @@ inline void WeldMoveWords(device uint *record, thread uint &w, device uint *chan
     w += count;
 }
 
-// Copy welded vertex channels using `stride` for host tangent scratch addresses.
+// Moves a vertex's channels between its record and the channel buffers, with `stride` addressing host tangent scratch.
 inline void WeldMoveRecord(thread const WeldKeys &k, device uint *record, uint vertex_index, uint stride, bool to_channels) {
     uint w = 0u;
     WeldMoveWords(record, w, k.Positions, vertex_index * WeldPositionWords, WeldPositionWords, to_channels);
@@ -177,7 +175,6 @@ kernel void VertexWeldMarkReps(
     const uint i = tile.y * ScanTileSize + lane;
     if (i >= (job.KeepLooseVertices ? job.Count : job.CornerCount)) return;
     device uint *scratch = ctx.Scratch();
-    // Importers may retain only referenced vertices; both modes use the same channel compaction.
     const uint v = job.KeepLooseVertices ? i : ctx.Corners(job)[i];
     const uint representative = scratch[job.TableOffset + scratch[job.SlotOffset + v]];
     atomic_store_explicit(ctx.AtomicScratch() + job.FlagsOffset + representative, 1u, memory_order_relaxed);
@@ -273,7 +270,6 @@ kernel void VertexWeldWriteBack(
     if (welded == job.Count) return;
     const uint n = tile.y * ScanTileSize + lane;
     if (n >= welded) return;
-    // Write canonical channels and repack host tangent deltas with welded-count stride.
     const WeldKeys keys = MakeWeldKeys(ctx, job);
     WeldMoveRecord(keys, ctx.Scratch() + job.CompactOffset + n * job.RecordWords, n, welded, true);
 }
@@ -292,5 +288,3 @@ kernel void VertexWeldRemapCorners(
     device uint *corners = ctx.Corners(job);
     corners[c] = ctx.Scratch()[job.RemapOffset + corners[c]];
 }
-
-#endif

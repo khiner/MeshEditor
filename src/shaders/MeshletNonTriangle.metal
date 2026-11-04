@@ -1,6 +1,4 @@
-#ifndef MESHLET_NON_TRIANGLE_MSL
-#define MESHLET_NON_TRIANGLE_MSL
-
+#pragma once
 #include "LineQuad.metal"
 #include "MeshletResolve.metal"
 #include "SceneUBO.metal"
@@ -35,5 +33,3 @@ inline float4 NonTrianglePosition(
         scene, first ? clip : other_clip, first ? other_clip : clip, corner, scene.Theme.EdgeWidth + 0.5f
     );
 }
-
-#endif

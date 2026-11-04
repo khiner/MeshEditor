@@ -1,6 +1,4 @@
-#ifndef SELECTIONFRAGMENT_MSL
-#define SELECTIONFRAGMENT_MSL
-
+#pragma once
 #include "SelectionObjectQuery.metal"
 #include "EdgeQuad.metal"
 #include "gpu/ObjectSelectionPushConstants.h"
@@ -24,5 +22,3 @@ fragment void SelectionStrokeFragment(
     ShadeEdgeQuad(in, Scene{bindless, view, theme, workspace}, false);
     WriteObjectSelect(bindless, pc.Query, uint2(in.Position.xy), in.Position.z, in.ObjectId);
 }
-
-#endif

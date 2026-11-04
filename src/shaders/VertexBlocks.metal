@@ -1,6 +1,4 @@
-#ifndef VERTEXBLOCKS_MSL
-#define VERTEXBLOCKS_MSL
-
+#pragma once
 #include "Frustum.metal"
 #include "MeshletShared.metal"
 #include "PyramidOcclusion.metal"
@@ -16,14 +14,13 @@ constant uint VertexBlockSimdGroups = VertexBlockLanes / 32u;
 struct VertexBlockLane {
     InstanceRecord Instance;
     DrawData Draw;
-    uint ActiveVertex; // The mesh's active vertex in Excite mode.
+    uint ActiveVertex;
     // The lane's live vertex handle, InvalidOffset for a dead slot or a culled block.
     uint VertexId;
 };
 
 // Whether the block's live positions, placed by the instance, can reach the view.
 // A block without known bounds, or any instance during an object transform, stays visible.
-// The occlusion test grows the block's footprint by `margin` pixels and pulls its depth by `depth_pull` in clip space, as the drawn primitives are.
 inline bool VertexBlockVisible(
     const thread Scene &scene, constant VertexBlockPushConstants &pc, uint block, Transform world, float margin, float depth_pull
 ) {
@@ -45,7 +42,6 @@ inline bool VertexBlockVisible(
 }
 
 // The threadgroup's quarter of its block, with each lane gated by the block's live mask and the block's visibility.
-// The first lane of each SIMD group tests the block's visibility for the group.
 inline VertexBlockLane ResolveVertexBlockLane(
     const thread Scene &scene, constant VertexBlockPushConstants &pc, uint group, uint lane, float margin = 0.0f, float depth_pull = 0.0f
 ) {
@@ -59,9 +55,7 @@ inline VertexBlockLane ResolveVertexBlockLane(
     const uint slot = (group % VertexBlockGroups) * VertexBlockLanes + lane;
     const MeshElementBlock members = BindlessBuffer(MeshElementBlock, scene.B.Buffer, pc.MembershipSlot)[block];
     const uint handle = members.Local * MeshElementBlockSize + slot;
-    const bool present = visible != 0u && (members.Live[slot / 32u] & (1u << (slot % 32u))) != 0u &&
+    const bool present = visible != 0u && SlotLive(members, slot) &&
         !EditElementHidden(scene,draw,Element::Vertex,handle);
     return {instance, draw, mesh.Display.ActiveVertex, present ? handle : InvalidOffset};
 }
-
-#endif

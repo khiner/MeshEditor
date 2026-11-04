@@ -49,7 +49,7 @@ SourceWork WorkOf(const MeshletBuildSource &source) {
                                                                         1u,
         .MaterialBound = material_bound,
         // A fragment's triangles name only its bound primitive, whose key the host seeds.
-        .MaterialBlocks = source.Owner ? 1u : std::min(uint64_t(WorkDomainBlocks(material_bound)), uint64_t(source.ElementCount)),
+        .MaterialBlocks = source.Owner ? 1u : std::min(uint64_t(TileCount(material_bound, TileElements)), uint64_t(source.ElementCount)),
     };
 }
 

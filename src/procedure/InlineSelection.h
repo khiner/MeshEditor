@@ -5,18 +5,16 @@
 #include <bit>
 
 namespace procedure {
-// A local block of a record's handles in one domain and the mask of its selected slots.
 struct SelectedBlock {
     uint32_t Local;
     SelectionBlock Mask;
 };
-// One element domain's selected handles of a node's input record, as ascending handles or as the ascending local blocks holding a selected handle with their masks, whichever is smaller.
+// One domain's selected handles of a node's input record, as ascending handles or as ascending local blocks with their masks, whichever is smaller.
 struct DomainSelection {
     std::vector<uint32_t> Handles;
     std::vector<SelectedBlock> Blocks;
 };
 
-// The number of selected slots in the blocks' masks.
 inline uint32_t SelectedCount(std::span<const SelectedBlock> blocks) {
     uint32_t count = 0u;
     for (const auto &[local, words] : blocks) {
@@ -51,7 +49,7 @@ inline DomainSelection CompactSelection(std::vector<SelectedBlock> blocks) {
     }
     return selection;
 }
-// The selection of ascending handles.
+// Requires ascending handles.
 inline DomainSelection SelectionOf(std::span<const uint32_t> handles) {
     std::vector<SelectedBlock> blocks;
     ForEachHandleBlock(handles, [&](uint32_t local, const SelectionBlock &mask) { blocks.push_back({local, mask}); });
@@ -63,15 +61,14 @@ void ForEachSelectedBlock(const DomainSelection &selection, auto &&visit) {
     ForEachHandleBlock(selection.Handles, visit);
 }
 
-// The selected handles of a node's input record, the edit domain they were captured in, and the active element's handle.
+// The selected handles of a node's input record and the edit domain they were captured in.
 // All selects every element of the input record, as does a node without an inline selection.
+// Published selects the elements the input record holds selected, as an upstream node with PublishSelection leaves them.
 struct InlineSelection {
     DomainSelection Vertices, Edges, Faces;
     Element Domain{Element::Vertex};
-    uint32_t Active{InvalidOffset};
-    bool All{};
+    bool All{}, Published{};
 };
-// The inline selection of the handles, captured in the edit domain.
 inline InlineSelection SelectionOf(const GeometrySelection &handles, Element domain) {
     return {.Vertices = SelectionOf(handles.Vertices), .Edges = SelectionOf(handles.Edges), .Faces = SelectionOf(handles.Faces), .Domain = domain};
 }

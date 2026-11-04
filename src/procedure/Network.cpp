@@ -4,6 +4,7 @@
 #include "action/Nodes.h"
 #include "animation/Clips.h"
 #include "armature/ArmatureComponents.h"
+#include "physics/PhysicsTypes.h"
 #include "procedure/Procedure.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"

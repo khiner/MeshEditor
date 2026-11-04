@@ -7,7 +7,13 @@
 #include "audio/SoundVertices.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gizmo/TransformGizmo.h"
+#include "mesh/Mesh.h"
+#include "mesh/MeshPipelines.h"
+#include "mesh/MeshStore.h"
+#include "mesh/Neighborhood.h"
+#include "mesh/SelectedChains.h"
 #include "numeric/MatrixMath.h"
+#include "procedure/Macros.h"
 #include "procedure/Procedure.h"
 #include "project/Project.h"
 #include "render/Instance.h"
@@ -45,7 +51,6 @@ namespace {
 constexpr vec2 ToVec2(ImVec2 v) { return std::bit_cast<vec2>(v); }
 constexpr float WheelOrbitRadPerUnit{0.05f}, WheelZoomStep{1.04f};
 
-// Return viewport-relative box fractions, or none for drags below the threshold or entirely outside the viewport.
 std::optional<std::pair<vec2, vec2>> ComputeBoxSelect(vec2 start, vec2 end, vec2 window_pos, uvec2 logical_extent) {
     static constexpr float DragThresholdSq{2 * 2};
     if (Distance2(start, end) <= DragThresholdSq) return {};
@@ -58,7 +63,7 @@ std::optional<std::pair<vec2, vec2>> ComputeBoxSelect(vec2 start, vec2 end, vec2
 
 void WrapMousePos(const ImRect &wrap_rect, vec2 &accumulated_wrap_mouse_delta) {
     const auto &g = *GImGui;
-    // After wrapping, require 2 non-boundary frames before re-wrapping (guards against failed OS cursor warps).
+    // After a wrap, re-wrapping waits for 2 non-boundary frames to guard against failed OS cursor warps.
     static uint32_t wrap_guard[2]{};
     ImVec2 mouse_delta{0, 0};
     for (uint32_t axis = 0; axis < 2; ++axis) {
@@ -89,11 +94,9 @@ bool IsSingleClicked(ImGuiMouseButton button) {
     return IsMouseReleased(button) && !IsMouseDragPastThreshold(button);
 }
 
-// During look-through, the first navigation input exits look-through instead.
-void EmitViewNav(const state::Registry &r, state::Entity viewport, auto &&nav) {
+void EmitViewNav(const state::Registry &r, auto &&nav) {
     if (r.Resources.get<const FrameState>().BoxDrag) return;
-    if (r.get<const ViewCameraState>(viewport).LookThrough != state::Null) action::Emit(action::view::ExitLookThroughCamera{viewport});
-    else action::Emit(std::forward<decltype(nav)>(nav));
+    action::Emit(std::forward<decltype(nav)>(nav));
 }
 
 // A world point's screen position in logical pixels.
@@ -107,7 +110,6 @@ vec2 ToViewFraction(const state::Registry &r, vec2 screen_px) {
     const auto local = screen_px - ToVec2(GetCursorScreenPos());
     return Clamp(vec2{local.x / float(std::max(logical.x, 1u)), local.y / float(std::max(logical.y, 1u))}, vec2{0}, vec2{1});
 }
-// A screen position in pixels of the render target.
 vec2 ToRenderPx(const state::Registry &r, vec2 screen_px) {
     const auto viewport = FindActiveViewport(r);
     const auto logical = r.get<const ViewportPanel>(viewport).Extent;
@@ -118,13 +120,56 @@ vec2 ToRenderPx(const state::Registry &r, vec2 screen_px) {
 
 void BeginMeshDrag(state::Registry &r, FrameState &frame, MeshOperatorDrag::Op op) {
     const rect viewport_rect{ToVec2(GetWindowPos()), ToVec2(GetContentRegionAvail())};
-    const auto &camera = r.get<const ViewCameraState>(FindActiveViewport(r)).Active;
+    const auto camera = ViewCameraOf(r, FindActiveViewport(r));
     const auto vp = camera.Projection(viewport_rect.size.x / viewport_rect.size.y) * camera.View();
     const auto center = EditSelectionCenter(r);
     const auto center_px = ScreenPx(vp, viewport_rect, center);
     // World units per logical pixel at the center, measured along camera right.
     const float pixels = Length(ScreenPx(vp, viewport_rect, center + camera.Basis()[0]) - center_px);
     frame.MeshDrag = MeshOperatorDrag{.Value = op, .StartPx = ToVec2(GetMousePos()), .CenterPx = center_px, .WorldPerPx = pixels > 0.f ? 1.f / pixels : 0.f};
+}
+
+action::nodes::AppendMacro LoopSlide(float factor, vec3 positive, uint32_t reference) {
+    return {procedure::LoopCutAndSlideMacro, {Words(1u), Words(factor), Words(positive), Words(reference)}};
+}
+// The drawn mesh's selected vertex at the picked edge's midpoint, which the cut inserted, or InvalidOffset before the cut cooks.
+uint32_t CutVertex(const state::Registry &r, const MeshOperatorDrag &drag) {
+    const auto mesh = GetMesh(r, drag.MeshEntity);
+    const auto vertices = mesh.VertexValues();
+    // The cut places the vertex at the midpoint within rounding, and no vertex of the uncut mesh lies there.
+    float nearest = 1e-6f * Dot(drag.Positive, drag.Positive);
+    uint32_t found = InvalidOffset;
+    r.Resources.get<const MeshStore>().GetSelectedElements(mesh.GetStoreId(), Element::Vertex).ForEach([&](uint32_t vertex) {
+        const auto offset = vertices[vertex].Position - drag.Center;
+        if (const float distance = Dot(offset, offset); distance <= nearest) {
+            nearest = distance;
+            found = vertex;
+        }
+    });
+    return found;
+}
+void BeginLoopSlide(state::Registry &r, FrameState &frame, ElementHit hit) {
+    const auto &primaries = r.get<const EditPrimaries>(state::Document).All;
+    const auto primary = primaries.find(hit.MeshEntity);
+    if (primary == primaries.end()) return;
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    const auto &pipelines = GetMeshPipelines(r);
+    const auto id = GetMesh(r, hit.MeshEntity).GetStoreId();
+    const std::array edge{hit.Handle};
+    const auto ends = SelectedEdgeFacts(meshes, pipelines, id, edge, {}).front();
+    const auto ends_at = VertexPositions(meshes, pipelines, id, std::array{ends.From, ends.To});
+    const auto from = ends_at[0], to = ends_at[1];
+    const rect viewport_rect{ToVec2(GetWindowPos()), ToVec2(GetContentRegionAvail())};
+    const auto camera = ViewCameraOf(r, FindActiveViewport(r));
+    const auto vp = camera.Projection(viewport_rect.size.x / viewport_rect.size.y) * camera.View();
+    const auto &world = *WorldTransformOf(r, primary->second);
+    const auto rail = .5f * (ScreenPx(vp, viewport_rect, TransformPoint(world, to)) - ScreenPx(vp, viewport_rect, TransformPoint(world, from)));
+    std::vector<action::Action> actions;
+    if (r.get<const EditMode>(state::Document).Value != Element::Edge) actions.push_back(action::MakeAction(action::view::SetEditMode{.Mode = Element::Edge}));
+    actions.push_back(action::MakeAction(action::selection::ApplyEditElementClick{false, hit}));
+    actions.push_back(action::MakeAction(LoopSlide(0.f, to - from, InvalidOffset)));
+    action::Emit(std::move(actions), action::Phase::Stage);
+    frame.MeshDrag = MeshOperatorDrag{.Value = MeshOperatorDrag::Op::LoopSlide, .StartPx = ToVec2(GetMousePos()), .RailPx = rail, .Positive = to - from, .Center = .5f * (from + to), .MeshEntity = hit.MeshEntity, .Staged = 0.f};
 }
 
 void UpdateMeshDrag(state::Registry &r, FrameState &frame) {
@@ -142,7 +187,12 @@ void UpdateMeshDrag(state::Registry &r, FrameState &frame) {
         changed = true;
     }
     if (IsKeyPressed(ImGuiKey_Escape, false) || IsMouseClicked(ImGuiMouseButton_Right)) {
-        if (drag.Staged) action::Cancel();
+        if (drag.Value == Op::LoopSlide) {
+            action::Emit(LoopSlide(0.f, drag.Positive, drag.Reference), action::Phase::Stage);
+            action::Commit();
+        } else if (drag.Staged) {
+            action::Cancel();
+        }
         frame.MeshDrag.reset();
         return;
     }
@@ -153,7 +203,6 @@ void UpdateMeshDrag(state::Registry &r, FrameState &frame) {
         return;
     }
     if (knife) {
-        // The knife restages on every mouse move, keyed by the segment's length.
         const auto end = ToRenderPx(r, mouse), start = ToRenderPx(r, drag.StartPx);
         const float length = Length(end - start);
         if (length <= 0.f || drag.Staged == length) return;
@@ -161,11 +210,20 @@ void UpdateMeshDrag(state::Registry &r, FrameState &frame) {
         drag.Staged = length;
         return;
     }
-    // An inset closes toward the center and reopens past it, and a bevel widens away from the center.
+    if (drag.Value == Op::LoopSlide) {
+        // The slide orients each new loop's sides at the cut's vertex on the picked edge, so it waits for the cut to cook.
+        if (drag.Reference == InvalidOffset) drag.Reference = CutVertex(r, drag);
+        if (drag.Reference == InvalidOffset) return;
+        const float length = Dot(drag.RailPx, drag.RailPx);
+        const float factor = length > 0.f ? std::clamp(Dot(mouse - drag.StartPx, drag.RailPx) / length, -1.f, 1.f) : 0.f;
+        if (drag.Staged == factor) return;
+        action::Emit(LoopSlide(factor, drag.Positive, drag.Reference), action::Phase::Stage);
+        drag.Staged = factor;
+        return;
+    }
     const float travel = Length(mouse - drag.CenterPx) - Length(drag.StartPx - drag.CenterPx);
     const float value = std::max((drag.Value == Op::Inset ? -travel : travel) * drag.WorldPerPx, 0.f);
     if ((value <= 0.f && !drag.Staged) || (drag.Staged == value && !changed)) return;
-    // Each step previews the operator from the stage base.
     if (drag.Value == Op::Inset) {
         action::Emit(action::mesh::Inset{.Thickness = value, .Depth = 0.f, .Individual = drag.Individual, .Even = true}, action::Phase::Stage);
     } else {
@@ -220,7 +278,7 @@ void DrawMeshOperatorMenus(state::Registry &r) {
         op("Bevel Vertices", Bevel{.Vertices = true});
         op("New Edge/Face from Vertices", Fill{});
         op("Connect Vertex Path", ConnectVertices{});
-        op("Rip Vertices", Rip{}, action::Phase::Stage);
+        op("Rip Vertices", EdgeSplit{.SelectCopies = true}, action::Phase::Stage);
         Separator();
         submenu("Merge Vertices", merge_items);
         submenu("Separate", separate_items);
@@ -236,14 +294,15 @@ void DrawMeshOperatorMenus(state::Registry &r) {
         op("Extrude Edges", Extrude{ExtrudeMode::Edges}, action::Phase::Stage);
         op("Bevel Edges", Bevel{});
         op("Bridge Edge Loops", BridgeEdgeLoops{});
-        op("Loop Cut", LoopCut{});
+        op("Loop Cut", action::nodes::AppendMacro{procedure::LoopCutMacro});
+        op("Loop Cut and Slide", action::nodes::AppendMacro{procedure::LoopCutAndSlideMacro});
         op("Subdivide", Subdivide{});
         op("Un-Subdivide", Unsubdivide{});
-        op("Decimate Geometry", Decimate{});
+        op("Simplify", Simplify{});
         Separator();
         op("Rotate Edge", EdgeRotate{});
         op("Edge Split", EdgeSplit{});
-        op("Rip", Rip{}, action::Phase::Stage);
+        op("Rip", EdgeSplit{.SelectCopies = true}, action::Phase::Stage);
         op("Dissolve Edges", Dissolve{DissolveMode::Edges});
     };
     const auto face_items = [&] {
@@ -255,26 +314,25 @@ void DrawMeshOperatorMenus(state::Registry &r) {
         op("To Circle", Circularize{});
         op("Flatten", Flatten{});
         op("Shrink/Fatten", ShrinkFatten{});
-        op("Split Non-Planar Faces", SplitNonplanarFaces{});
-        op("Split Concave Faces", SplitConcaveFaces{});
-        op("Triangulate Faces", Triangulate{});
+        op("Split Non-Planar Faces", SplitFaces{SplitTarget::Planar});
+        op("Split Concave Faces", SplitFaces{SplitTarget::Convex});
+        op("Triangulate Faces", SplitFaces{});
         op("Beautify Faces", BeautifyFaces{});
         op("Tris to Quads", TrisToQuads{});
         op("Solidify Faces", Solidify{});
         op("Wireframe", Wireframe{});
         Separator();
-        op("Rotate UVs", RotateUVs{});
-        op("Reverse UVs", ReverseUVs{});
-        op("Rotate Colors", RotateColors{});
-        op("Reverse Colors", ReverseColors{});
+        op("Rotate UVs", CycleCornerAttribute{});
+        op("Reverse UVs", CycleCornerAttribute{.Cycle = CornerCycle::Reverse});
+        op("Rotate Colors", CycleCornerAttribute{.Attribute = CornerAttribute::Colors});
+        op("Reverse Colors", CycleCornerAttribute{.Attribute = CornerAttribute::Colors, .Cycle = CornerCycle::Reverse});
         Separator();
         op("Fill", Fill{});
         op("Grid Fill", GridFill{});
-        op("Fill Holes", FillHoles{});
+        op("Fill Holes", action::nodes::AppendMacro{procedure::FillHolesMacro});
         Separator();
         op("Flip Normals", FlipNormals{});
         op("Recalculate Outside", RecalculateNormals{});
-        op("Recalculate Inside", RecalculateNormals{true});
         op("Dissolve Faces", Dissolve{DissolveMode::Faces});
     };
     const auto cleanup_items = [&] {
@@ -282,10 +340,9 @@ void DrawMeshOperatorMenus(state::Registry &r) {
         op("Degenerate Dissolve", Dissolve{DissolveMode::Degenerate});
         op("Limited Dissolve", Dissolve{DissolveMode::Limited});
         op("Merge by Distance", Merge{MergeMode::ByDistance});
-        op("Fill Holes", FillHoles{});
+        op("Fill Holes", action::nodes::AppendMacro{procedure::FillHolesMacro});
     };
     const auto mesh_items = [&] {
-        // The bisect plane and spin axis follow the view through the selection center.
         const auto center = EditSelectionCenter(r);
         op("Duplicate", action::mesh::Duplicate{}, action::Phase::Stage);
         op("Extrude Region", Extrude{}, action::Phase::Stage);
@@ -293,14 +350,13 @@ void DrawMeshOperatorMenus(state::Registry &r) {
         submenu("Separate", separate_items);
         Separator();
         op("Bisect", Bisect{.Point = center, .ViewSpace = true});
-        op("Symmetrize", Symmetrize{});
+        op("Symmetrize", action::nodes::AppendMacro{procedure::SymmetrizeMacro});
         op("Snap to Symmetry", SnapSymmetry{});
         Separator();
         op("Hide Selected", action::mesh::Hide{});
         op("Hide Unselected", action::mesh::Hide{true});
         op("Reveal", action::mesh::Reveal{});
-        op("Spin", Spin{.Center = center, .ViewSpace = true});
-        op("Extrude Repeat", ExtrudeRepeat{});
+        op("Revolve", Revolve{.Center = center, .ViewSpace = true});
         op("Convex Hull", ConvexHull{});
         Separator();
         submenu("Vertex", vertex_items);
@@ -359,7 +415,7 @@ bool DrawOperationHandle(state::Registry &r, FrameState &frame, const ViewCamera
             auto value = r.get<const C>(node).*Member;
             ui::Gesture(DragFloat(label, &value, .01f), [&] { return action::UpdateOf<Member>(node, value); });
         };
-        if (handle->Parameter == H::ExtrudeScale) scalar.operator()<&action::mesh::Extrude::OffsetScale>("Offset Scale");
+        if (handle->Parameter == H::ExtrudeScale) scalar.operator()<&procedure::Extrude::OffsetScale>("Offset Scale");
         if (handle->Parameter == H::BevelWidth) scalar.operator()<&action::mesh::Bevel::Width>("Width");
         if (handle->Parameter == H::InsetThickness) scalar.operator()<&action::mesh::Inset::Thickness>("Thickness");
         if (handle->Parameter == H::InsetDepth) scalar.operator()<&action::mesh::Inset::Depth>("Depth");
@@ -375,7 +431,7 @@ bool DrawOperationHandle(state::Registry &r, FrameState &frame, const ViewCamera
             const auto after = p.Pivot + p.Delta.P + p.Delta.R * ((before - p.Pivot) * p.Delta.S);
             center = TransformPoint(world, InverseTransformPoint(p.Frame, after));
         } else {
-            const auto &p = r.get<const action::mesh::Extrude>(node);
+            const auto &p = r.get<const procedure::Extrude>(node);
             value.P = (p.AlongNormals ? support.Normal : p.Offset) * p.OffsetScale;
             center = TransformPoint(world, support.Center + value.P);
         }
@@ -428,8 +484,6 @@ TransformGizmo::Type EffectiveGizmoType(const state::Registry &r) {
 } // namespace
 
 void Interact(state::Registry &r, FrameState &frame) {
-    // Any open popup (e.g. Viewport shading dropdown) blocks viewport mouse/keyboard input.
-    // Without this, wheel/click events still patch the camera while the popup overlays the viewport_rect.
     if (IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
         frame.PreciseWheelDelta = {0, 0};
         frame.Magnification = 0.f;
@@ -454,15 +508,12 @@ void Interact(state::Registry &r, FrameState &frame) {
     const auto interaction_mode = r.get<const Interaction>(state::Document).Mode;
     const auto active_entity = FindActiveEntity(r);
     const auto &flags = r.get<const SelectionFlags>(state::Document);
-    // Route shortcuts globally while preserving ImGui ownership for active widgets, navigation, and text input.
     constexpr auto VKey = ImGuiInputFlags_RouteGlobal;
-    // The hovered node canvas takes the editing shortcuts instead.
     const bool nodes_hovered = r.Resources.get<const PanelsState>().Nodes.Hovered;
     const auto key = [&](ImGuiKeyChord chord, ImGuiInputFlags route = VKey) { return !nodes_hovered && Shortcut(chord, route); };
     const auto ctrl_key = [&](ImGuiKeyChord chord, ImGuiInputFlags route = VKey) { return !nodes_hovered && CtrlShortcut(chord, route); };
     const bool selection_task = r.all_of<procedure::SelectionEditing>(state::Document);
     const auto finish_key = [&](ImGuiKey key) { return frame.BoxDrag ? IsKeyPressed(key, false) : Shortcut(key, VKey); };
-    // G, R and S start or switch to a translate, rotate or scale of the selection.
     const auto latch_transform = [&] {
         using TransformGizmo::TransformType;
         if (key(ImGuiKey_G) && flags.Transformable) action::Emit(action::view::LatchTransform{TransformType::Translate}, action::Phase::Cancel);
@@ -490,7 +541,6 @@ void Interact(state::Registry &r, FrameState &frame) {
     if (selection_task) {
         if (key(ImGuiMod_Alt | ImGuiKey_Z)) action::Emit(action::view::ToggleXRay{viewport});
     } else if (r.get<const GizmoInteraction>(state::Document).IsUsing()) {
-        // During an active transform, only allow transform switching shortcuts.
         latch_transform();
     } else {
         if (interaction_mode != InteractionMode::Edit) {
@@ -511,7 +561,7 @@ void Interact(state::Registry &r, FrameState &frame) {
         } else if (key(ImGuiMod_Alt | ImGuiKey_Z)) {
             action::Emit(action::view::ToggleXRay{viewport});
         }
-        // Tab uses default RouteFocused (not VKey/RouteGlobal) so widget tabbing in panels keeps working.
+        // Tab uses the default RouteFocused route so widget tabbing in panels keeps working.
         const bool tab_no_mods = key(ImGuiKey_Tab, ImGuiInputFlags_None);
         const bool tab_ctrl = ctrl_key(ImGuiMod_Ctrl | ImGuiKey_Tab, ImGuiInputFlags_None);
         if (tab_no_mods || tab_ctrl) {
@@ -531,7 +581,6 @@ void Interact(state::Registry &r, FrameState &frame) {
             using Op = MeshOperatorDrag::Op;
             using mesh::DissolveMode;
             const auto element = r.get<const EditMode>(state::Document).Value;
-            // Placement drags join the gesture, so an extrude, duplicate, or rip and its move commit as one node.
             if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_X)) {
                 action::Emit(mesh::Dissolve{element == Element::Face ? DissolveMode::Faces : element == Element::Edge ? DissolveMode::Edges :
                                                                                                                         DissolveMode::Vertices});
@@ -554,13 +603,13 @@ void Interact(state::Registry &r, FrameState &frame) {
             } else if (key(ImGuiKey_M)) {
                 OpenPopup("##MeshMerge");
             } else if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_T)) {
-                action::Emit(mesh::Triangulate{});
+                action::Emit(mesh::SplitFaces{});
             } else if (key(ImGuiMod_Alt | ImGuiKey_J)) {
                 action::Emit(mesh::TrisToQuads{});
             } else if (key(ImGuiKey_F)) {
                 action::Emit(mesh::Fill{});
             } else if (key(ImGuiKey_V)) {
-                action::Emit(mesh::Rip{}, action::Phase::Stage);
+                action::Emit(mesh::EdgeSplit{.SelectCopies = true}, action::Phase::Stage);
             } else if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_V)) {
                 OpenPopup("##MeshVertex");
             } else if (ctrl_key(ImGuiMod_Ctrl | ImGuiKey_E)) {
@@ -618,23 +667,22 @@ void Interact(state::Registry &r, FrameState &frame) {
 
     const bool active_transform = r.get<const GizmoInteraction>(state::Document).IsUsing();
     if (active_transform) {
-        // TransformGizmo overrides this mouse cursor during some actions, so this is a default.
         SetMouseCursor(ImGuiMouseCursor_ResizeAll);
         WrapMousePos(GetCurrentWindowRead()->InnerClipRect, frame.AccumulatedWrapMouseDelta);
     } else {
         frame.AccumulatedWrapMouseDelta = {0, 0};
     }
-    if (active_transform) return; // Only transform gizmo should consume viewport mouse input while active.
+    if (active_transform) return;
 
     if (!IsWindowHovered() && !frame.BoxDrag) return;
 
     const auto &io = GetIO();
     if (const vec2 wheel = std::exchange(frame.PreciseWheelDelta, vec2{0}); wheel != vec2{0, 0}) {
-        if (io.KeyCtrl || io.KeySuper) EmitViewNav(r, viewport, action::view::ZoomViewCamera{.Viewport = viewport, .Factor = std::pow(WheelZoomStep, -wheel.y)});
-        else EmitViewNav(r, viewport, action::view::OrbitViewCamera{.Viewport = viewport, .DeltaRad = wheel * WheelOrbitRadPerUnit});
+        if (io.KeyCtrl || io.KeySuper) EmitViewNav(r, action::view::ZoomViewCamera{.Viewport = viewport, .Factor = std::pow(WheelZoomStep, -wheel.y)});
+        else EmitViewNav(r, action::view::OrbitViewCamera{.Viewport = viewport, .DeltaRad = wheel * WheelOrbitRadPerUnit});
     }
     if (const float magnification = std::exchange(frame.Magnification, 0.f); magnification != 0.f) {
-        EmitViewNav(r, viewport, action::view::ZoomViewCamera{.Viewport = viewport, .Factor = 1.f / (1.f + magnification)});
+        EmitViewNav(r, action::view::ZoomViewCamera{.Viewport = viewport, .Factor = 1.f / (1.f + magnification)});
     }
     if (OrientationGizmo::IsActive() || frame.OverlayControlsHovered) return;
 
@@ -650,11 +698,9 @@ void Interact(state::Registry &r, FrameState &frame) {
             frame.BoxDrag = BoxSelectDrag{ToVec2(GetMousePos()), ToVec2(GetMousePos()), IsKeyDown(ImGuiMod_Shift), {}};
         } else if (IsMouseDown(ImGuiMouseButton_Left) && frame.BoxDrag) {
             frame.BoxDrag->End = ToVec2(GetMousePos());
-            // A box or view the drag already resolved selects nothing new.
             if (const auto box = ComputeBoxSelect(frame.BoxDrag->Start, frame.BoxDrag->End, ToVec2(GetCursorScreenPos()), logical_extent);
                 box && frame.BoxDrag->Emitted != std::pair{*box, selection_view}) {
                 frame.BoxDrag->Emitted = {*box, selection_view};
-                // The hit set (object/bone instances or edit-mode elements) is resolved later.
                 action::Emit(action::selection::ApplyBoxSelect{.Box = *box, .Additive = frame.BoxDrag->Additive}, action::Phase::Stage);
             }
         } else if (!IsMouseDown(ImGuiMouseButton_Left) && frame.BoxDrag) {
@@ -687,11 +733,7 @@ void Interact(state::Registry &r, FrameState &frame) {
         return;
     }
     if (interaction_mode == InteractionMode::Edit && !active_is_armature && !selection_task && ctrl_key(ImGuiMod_Ctrl | ImGuiKey_R)) {
-        std::vector<action::Action> actions;
-        if (edit_mode != Element::Edge) actions.push_back(action::MakeAction(action::view::SetEditMode{.Mode = Element::Edge}));
-        actions.push_back(action::MakeAction(action::selection::ApplyEditElementClick{false, RunEditElementPick(r, viewport, Element::Edge, pick_px)}));
-        actions.push_back(action::MakeAction(action::mesh::LoopCut{}));
-        action::Emit(std::move(actions));
+        if (const auto hit = RunEditElementPick(r, viewport, Element::Edge, pick_px)) BeginLoopSlide(r, frame, *hit);
         return;
     }
     if (interaction_mode == InteractionMode::Edit && !active_is_armature && !selection_task && IsMouseClicked(ImGuiMouseButton_Right)) OpenPopup("##MeshContext");
@@ -717,21 +759,19 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
     const float rounding = interface_theme.IconButtonRounding;
     const auto tool_button_size = std::bit_cast<ImVec2>(interface_theme.ToolButtonSize), header_button_size = std::bit_cast<ImVec2>(interface_theme.HeaderButtonSize);
     const float overlay_corner_gap = GetTextLineHeightWithSpacing() / 2.f;
-    // Preserve the guard through release because IsSingleClicked fires on release.
-    // Only the active viewport's controls take input, so they alone set the guard.
+    // The guard holds through release because IsSingleClicked fires on release.
     if (active && !IsMouseDown(ImGuiMouseButton_Left)) frame.OverlayControlsHovered = false;
     const bool any_popup_open = IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
 
-    // Overlay buttons keep the cursor where the viewport content left it, and take no input during a transform.
     const auto saved_cursor = GetCursorScreenPos();
     PushItemFlag(ImGuiItemFlags_Disabled, active_transform);
-    { // Transform mode pill buttons (top-left overlay)
+    {
         using enum TransformGizmo::Type;
         using Tool = action::view::SetActiveTool::Tool;
         const auto &flags = r.get<const SelectionFlags>(state::Document);
         const auto transform_type = EffectiveGizmoType(r);
         const auto gesture = r.get<const BoxSelectState>(state::Document).Gesture;
-        static constexpr float gap{4}; // Gap between select buttons and transform buttons
+        static constexpr float gap{4};
 
         SetCursorScreenPos(std::bit_cast<ImVec2>(viewport_rect.pos) + GetWindowContentRegionMin() + ImVec2{overlay_corner_gap, overlay_corner_gap});
         ui::BeginIconButtonGroup(ImGuiAxis_Y, tool_button_size, 2, rounding);
@@ -757,7 +797,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
     const auto buttons_gap = 6.f;
     const auto shading_start = std::bit_cast<ImVec2>(viewport_rect.pos + vec2{GetWindowContentRegionMax().x - shading_group_width, GetWindowContentRegionMin().y}) + ImVec2{-overlay_corner_gap, overlay_corner_gap};
 
-    { // Viewport shading button group + dropdown (top-right overlay)
+    {
         const auto shading_button = [&](const char *id, const SvgResource *icon, ViewportShadingMode mode) {
             if (ui::IconButton(id, icon, settings.ViewportShading == mode)) action::Emit(action::view::SetViewportShading{.Viewport = viewport, .Mode = mode});
         };
@@ -771,7 +811,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
         ui::DropdownArrow();
         ui::EndIconButtonGroup();
         if (IsItemHovered()) frame.OverlayControlsHovered = true;
-        { // Dropdown popup
+        {
             SetNextWindowPos(shading_start + ImVec2{shading_group_width, header_button_size.y + 2.f}, ImGuiCond_Always, {1.f, 0.f});
             PushStyleVar(ImGuiStyleVar_WindowPadding, {8, 8});
             if (BeginPopup("##ShadingDropdown")) {
@@ -826,8 +866,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
                         lights.UseSpecular = use_specular ? 1 : 0;
                         changed = true;
                     }
-                    // Light colors are stored in linear space.
-                    // Display/edit as sRGB.
+                    // Light colors are stored in linear space and edit as sRGB.
                     static const auto linear_color_edit = [](const char *label, vec3 &linear) -> bool {
                         if (auto srgb = Pow(linear, vec3{1.f / 2.2f}); ColorEdit3(label, &srgb[0])) {
                             linear = Pow(srgb, vec3{2.2f});
@@ -866,7 +905,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
                         const char *Label;
                     };
                     struct DebugChannelGroup {
-                        const char *Label; // null = no header (used for the leading "None" entry)
+                        const char *Label; // Null for no header, as on the leading None entry
                         std::initializer_list<DebugChannelEntry> Entries;
                     };
                     static const DebugChannelGroup groups[]{
@@ -948,7 +987,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
         }
     }
 
-    { // X-ray toggle, left of the shading group as in Blender
+    {
         const bool applies = WorkbenchShading(settings.ViewportShading) || r.get<const Interaction>(state::Document).Mode == InteractionMode::Edit;
         SetCursorScreenPos(shading_start - ImVec2{buttons_gap + header_button_size.x, 0.f});
         ui::BeginIconButtonGroup(ImGuiAxis_X, header_button_size, 1, rounding);
@@ -959,7 +998,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
         if (IsItemHovered()) frame.OverlayControlsHovered = true;
     }
 
-    { // Viewport overlays toggle + dropdown
+    {
         const float overlay_group_width = header_button_size.x + ui::IconButtonSeam + shading_arrow_w;
         const auto group_start = shading_start - ImVec2{2.f * buttons_gap + header_button_size.x + overlay_group_width, 0.f};
         SetCursorScreenPos(group_start);
@@ -969,7 +1008,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
         ui::DropdownArrow();
         ui::EndIconButtonGroup();
         if (IsItemHovered()) frame.OverlayControlsHovered = true;
-        { // Dropdown popup
+        {
             SetNextWindowPos(group_start + ImVec2{0.f, header_button_size.y + 2.f});
             PushStyleVar(ImGuiStyleVar_WindowPadding, {8, 8});
             if (BeginPopup("##OverlayDropdown")) {
@@ -998,8 +1037,8 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
         TextUnformatted("Input geometry | 1 Vertices  2 Edges  3 Faces");
         SetCursorScreenPos(saved_cursor);
     }
-    const auto &camera = r.get<const ViewCameraState>(viewport).Active;
-    { // Orientation gizmo
+    const auto camera = ViewCameraOf(r, viewport);
+    {
         const auto pos = viewport_rect.pos + vec2{GetWindowContentRegionMax().x - OrientationGizmoSize, GetWindowContentRegionMin().y} + vec2{-overlay_corner_gap, overlay_corner_gap * 2 + header_button_size.y};
         const auto axes = colors::MakeAxes(r.get<const ViewportTheme>(state::Document).AxisColors);
         if (active) {
@@ -1009,8 +1048,8 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
             if (interaction) {
                 std::visit(
                     overloaded{
-                        [&](OrientationGizmo::RotateBy rot) { EmitViewNav(r, viewport, action::view::OrbitViewCamera{viewport, rot.Delta}); },
-                        [&](OrientationGizmo::AlignTo a) { EmitViewNav(r, viewport, action::view::SetViewCameraTargetDirection{viewport, a.Direction}); },
+                        [&](OrientationGizmo::RotateBy rot) { EmitViewNav(r, action::view::OrbitViewCamera{viewport, rot.Delta}); },
+                        [&](OrientationGizmo::AlignTo a) { EmitViewNav(r, action::view::SetViewCameraTargetDirection{viewport, a.Direction}); },
                     },
                     *interaction
                 );
@@ -1019,16 +1058,13 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
             OrientationGizmo::Render(OrientationGizmo::LayoutOf(pos, OrientationGizmoSize, camera), axes);
         }
     }
-    // The transform gizmo's input and the mesh operator menus belong to the gesture in the active viewport.
     if (!active) return;
     const auto mode_scope = ScopeOf(r);
 
     r.edit<GizmoInteraction>(state::Document).RenderTransform.reset();
-    if (!task && !DrawOperationHandle(r, frame, camera, viewport_rect) && r.get<const SelectionFlags>(state::Document).HasTransformTarget) { // Transform gizmo
-        // Transform root selections around their average position using the active entity's rotation and scale.
+    if (!task && !DrawOperationHandle(r, frame, camera, viewport_rect) && r.get<const SelectionFlags>(state::Document).HasTransformTarget) {
         const auto gizmo_active_entity = mode_scope.Bone ? FindActiveBone(r) : FindActiveEntity(r);
         const auto active_scale = gizmo_active_entity == state::Null ? vec3{1} : WorldTransformOf(r, gizmo_active_entity)->S;
-        // The edit-mode pivot is the drag's start pivot moved by the pending delta.
         const auto *start_pivot = r.try_get<const StartPivot>(state::Document);
         auto pivot = start_pivot ? *start_pivot : TransformPivot(r);
         if (mode_scope.MeshEdit) {
@@ -1050,17 +1086,13 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
             start_screen ? std::optional{start_screen->Value} : std::nullopt
         );
         if (gizmo.Cancelled) {
-            // Escape discards the whole gesture, including an operator whose placement this drag was.
             gizmo.Cancelled = false;
             action::Cancel();
         } else if (interact_result) {
             const auto &td = interact_result->Delta;
             if (mode_scope.MeshEdit) {
-                // Each update emits the delta, which a transform node on each transformable mesh applies.
                 action::Emit(action::view::TransformElements{td}, action::Phase::Stage);
             } else {
-                // Store the gizmo pivot and delta for object and bone transforms.
-                // Apply recomputes each entity transform.
                 action::Emit(action::view::TransformSelection{td}, action::Phase::Stage);
             }
         } else if (was_using || !start_transform_view.empty()) {
@@ -1081,9 +1113,9 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
 
 void DrawOverlay(state::Registry &r, FrameState &frame, state::Entity viewport, bool active) {
     const rect viewport_rect{ToVec2(GetWindowPos()), ToVec2(GetContentRegionAvail())};
-    const auto &camera = r.get<const ViewCameraState>(viewport).Active;
+    const auto camera = ViewCameraOf(r, viewport);
 
-    { // The transform gizmo, highlighted and with its guides in the active viewport whose mouse it follows.
+    {
         const auto axes = colors::MakeAxes(r.get<const ViewportTheme>(state::Document).AxisColors);
         const auto &gizmo = r.get<const GizmoInteraction>(state::Document);
         const auto type = EffectiveGizmoType(r);
@@ -1096,9 +1128,8 @@ void DrawOverlay(state::Registry &r, FrameState &frame, state::Entity viewport, 
             TransformGizmo::Render(idle, type, camera, viewport_rect, axes);
         }
     }
-    if (active) { // The guides of the gesture in progress
-        // Inset and bevel size by the mouse's distance from the selection center, so they show the same guide as scale and rotate.
-        if (frame.MeshDrag && frame.MeshDrag->Value != MeshOperatorDrag::Op::Knife) DrawDashedGuide(*GetWindowDrawList(), std::bit_cast<ImVec2>(frame.MeshDrag->CenterPx), GetMousePos());
+    if (active) {
+        if (frame.MeshDrag && frame.MeshDrag->Value != MeshOperatorDrag::Op::Knife && frame.MeshDrag->Value != MeshOperatorDrag::Op::LoopSlide) DrawDashedGuide(*GetWindowDrawList(), std::bit_cast<ImVec2>(frame.MeshDrag->CenterPx), GetMousePos());
 
         if (frame.BoxDrag) {
             auto &dl = *GetWindowDrawList();
@@ -1114,22 +1145,19 @@ void DrawOverlay(state::Registry &r, FrameState &frame, state::Entity viewport, 
         }
     }
 
-    // Match the centered frame to the captured look-through region.
     if (const auto look_through_entity = LookThroughCamera(r, viewport); look_through_entity != state::Null && !camera.IsAnimating()) {
-        if (const auto cd = LensOf(r, look_through_entity)) {
-            const float cam_aspect = AspectRatio(*cd);
-            const auto frame_size = vec2{viewport_rect.size.y * cam_aspect, viewport_rect.size.y} * LookThroughFrameRatio(cam_aspect, viewport_rect.size.x / viewport_rect.size.y);
-            const vec2 vp_center = viewport_rect.pos + viewport_rect.size * 0.5f;
-            const vec2 fmin = vp_center - frame_size * 0.5f, fmax = vp_center + frame_size * 0.5f;
-            const auto vmin = viewport_rect.pos, vmax = viewport_rect.pos + viewport_rect.size;
+        const float cam_aspect = AspectRatio(*LensOf(r, look_through_entity));
+        const auto frame_size = vec2{viewport_rect.size.y * cam_aspect, viewport_rect.size.y} * LookThroughFrameRatio(cam_aspect, viewport_rect.size.x / viewport_rect.size.y);
+        const vec2 vp_center = viewport_rect.pos + viewport_rect.size * 0.5f;
+        const vec2 fmin = vp_center - frame_size * 0.5f, fmax = vp_center + frame_size * 0.5f;
+        const auto vmin = viewport_rect.pos, vmax = viewport_rect.pos + viewport_rect.size;
 
-            auto &dl = *GetWindowDrawList();
-            static constexpr auto dim = IM_COL32(0, 0, 0, 100);
-            const auto iv = [](vec2 v) { return std::bit_cast<ImVec2>(v); };
-            dl.AddRectFilled(iv(vmin), iv({vmax.x, fmin.y}), dim);
-            dl.AddRectFilled(iv({vmin.x, fmax.y}), iv(vmax), dim);
-            dl.AddRectFilled(iv({vmin.x, fmin.y}), iv({fmin.x, fmax.y}), dim);
-            dl.AddRectFilled(iv({fmax.x, fmin.y}), iv({vmax.x, fmax.y}), dim);
-        }
+        auto &dl = *GetWindowDrawList();
+        static constexpr auto dim = IM_COL32(0, 0, 0, 100);
+        const auto iv = [](vec2 v) { return std::bit_cast<ImVec2>(v); };
+        dl.AddRectFilled(iv(vmin), iv({vmax.x, fmin.y}), dim);
+        dl.AddRectFilled(iv({vmin.x, fmax.y}), iv(vmax), dim);
+        dl.AddRectFilled(iv({vmin.x, fmin.y}), iv({fmin.x, fmax.y}), dim);
+        dl.AddRectFilled(iv({fmax.x, fmin.y}), iv({vmax.x, fmax.y}), dim);
     }
 }

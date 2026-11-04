@@ -1,6 +1,7 @@
 #include "mesh/SpatialFaceWork.h"
 
 #include "Profile.h"
+#include "gpu/PlaneSide.h"
 #include "mesh/ElementMembershipWork.h"
 #include "mesh/ElementWorkSort.h"
 #include "mesh/MeshClosure.h"
@@ -11,10 +12,7 @@
 #include "state/Registry.h"
 
 namespace {
-void CheckSpatialState(const mtl::ComputeChain &chain, Range state) {
-    if (chain.Scratch.Get({state.Offset + 1u, 1u})[0]) throw std::runtime_error("Spatial face query found invalid topology.");
-}
-// Conservative AABB predicates; the GPU retains the exact face/edge test.
+// A conservative test of whether the bounds can meet the plane or the screen-space knife line.
 bool Overlaps(const MeshTopologyTask &task, const AABB &bounds) {
     for (uint32_t axis = 0u; axis < 3u; ++axis) {
         if (!(bounds.Min[axis] <= bounds.Max[axis])) throw std::logic_error("Canonical face bounds are missing.");
@@ -25,8 +23,9 @@ bool Overlaps(const MeshTopologyTask &task, const AABB &bounds) {
         const auto distance = Dot(task.PlaneNormal, center) - task.PlaneOffset;
         float radius = 0.f;
         for (uint32_t axis = 0u; axis < 3u; ++axis) radius += std::abs(task.PlaneNormal[axis]) * extent[axis];
-        const float margin = 1e-5f * (1.f + Length(extent));
-        return task.Flags & TopologyFlagPlaneSide ? distance < radius + margin : std::abs(distance) <= radius + margin;
+        // The margin covers rounding and the plane side tolerance at the farthest point of the bounds.
+        const float margin = 1e-5f * (1.f + Length(extent)) + PlaneSideTolerance * std::max(1.f, Length(center) + Length(extent));
+        return std::abs(distance) <= radius + margin;
     }
     vec2 low{std::numeric_limits<float>::max()}, high{-std::numeric_limits<float>::max()};
     for (uint32_t corner = 0u; corner < 8u; ++corner) {
@@ -61,10 +60,7 @@ SpatialFaceWork::SpatialFaceWork(state::Registry &r, mtl::ComputeChain &chain, c
     const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &record = meshes.Get(task.SourceId);
     const auto &a = meshes.Arenas();
-    const uint32_t mode = task.Flags & TopologyFlagScreenCuts ? 2u :
-        task.Flags & TopologyFlagPlaneSide                    ? 1u :
-                                                                0u;
-    if (mode == 0u && !(task.Flags & TopologyFlagPlaneCuts)) throw std::invalid_argument("Spatial face query requires a plane or screen predicate.");
+    const uint32_t mode = task.Flags & TopologyFlagScreenCuts ? 1u : 0u;
     ElementWork candidates;
     if (!(task.Flags & TopologyFlagSelectAll)) {
         const auto selected = ListSeed(r, chain, task.SourceId, Element::Face, SelectedHandles{meshes, task.SourceId, task.Selection}->Faces);
@@ -84,10 +80,7 @@ SpatialFaceWork::SpatialFaceWork(state::Registry &r, mtl::ComputeChain &chain, c
     profile::RecordCounter("SpatialFaceCandidateNodes", VisitedNodes);
     profile::RecordCounter("SpatialFaceCandidateBlocks", CandidateBlocks);
     profile::RecordCounter("SpatialFaceCandidates", CandidateCount);
-    auto &storage = chain.Scratch;
-    State = storage.Allocate(2u);
-    std::ranges::fill(storage.GetMutable(State), 0u);
-    Faces = AllocateElementWork(storage, a.FaceTriangles.HandleBound(record.FaceData), std::min(CandidateCount, record.FaceData ? a.FaceTriangles.Set(record.FaceData).BlockCount : 0u));
+    Faces = AllocateElementWork(chain.Scratch, a.FaceTriangles.HandleBound(record.FaceData), std::min(CandidateCount, record.FaceData ? a.FaceTriangles.Set(record.FaceData).BlockCount : 0u));
     Pc = {
         .Candidates = candidates,
         .Faces = Faces,
@@ -96,11 +89,6 @@ SpatialFaceWork::SpatialFaceWork(state::Registry &r, mtl::ComputeChain &chain, c
         .FaceRangeSlot = a.FaceRanges.Buffer.Slot,
         .CornerSlot = a.FaceCorners.Buffer.Slot,
         .VertexSlot = a.Vertices.Buffer.Slot,
-        .FaceBound = a.FaceTriangles.HandleBound(record.FaceData),
-        .CornerBound = a.FaceCorners.HandleBound(record.FaceCorners),
-        .VertexBound = a.Vertices.HandleBound(record.Vertices),
-        .ResultSlot = storage.Buffer.Slot,
-        .ResultOffset = State.Offset,
         .Mode = mode,
         .PlaneNormal = task.PlaneNormal,
         .PlaneOffset = task.PlaneOffset,
@@ -113,10 +101,9 @@ SpatialFaceWork::SpatialFaceWork(state::Registry &r, mtl::ComputeChain &chain, c
 
 void SpatialFaceWork::RecordFaces(state::Registry &r, mtl::ComputeChain &chain) {
     if (!CandidateCount) return;
-    chain.Groups(GetMeshPipelines(r)[MeshPass::SpatialFaceQueryExpand], Pc, (CandidateCount + 255u) / 256u);
+    chain.Groups(GetMeshPipelines(r)[MeshPass::SpatialFaceQueryExpand], Pc, TileCount(CandidateCount, TileElements));
     EncodeSortElementWork(r, chain, std::span{&Faces, 1u});
     chain.AfterSubmit([this, &chain] {
-        CheckSpatialState(chain, State);
         Count = ElementWorkCount(chain.Scratch, Faces);
     });
 }

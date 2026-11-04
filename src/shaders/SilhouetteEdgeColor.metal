@@ -1,6 +1,4 @@
-#ifndef SILHOUETTEEDGECOLOR_MSL
-#define SILHOUETTEEDGECOLOR_MSL
-
+#pragma once
 #include "Bindless.metal"
 #include "Varyings.metal"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
@@ -18,7 +16,6 @@ inline SilhouetteEdgeHit SilhouetteEdge(texture2d<float> silhouette, int2 texel,
     constexpr sampler pixels(coord::pixel, address::clamp_to_edge, filter::nearest);
     const float2 center = silhouette.read(uint2(texel)).xy;
     SilhouetteEdgeHit nearest{1.0f, 0.0f, texel};
-    // Gather four IDs at once; only boundary pixels need their depths.
     const int2 offsets[4] = {int2(0, 1), int2(1, 1), int2(1, 0), int2(0, 0)};
     for (int y = -width; y <= width && (center.y == 0.0f || nearest.ObjectId == 0.0f); y += 2) {
         for (int x = -width; x <= width && (center.y == 0.0f || nearest.ObjectId == 0.0f); x += 2) {
@@ -50,7 +47,7 @@ fragment OverlayTargetsDepth SilhouetteEdgeColorFragment(
     const int2 texel = int2(in.Position.xy);
     const SilhouetteEdgeHit edge = SilhouetteEdge(bindless.Sampler[pc.SilhouetteSamplerIndex].Texture, texel, int(theme.SilhouetteEdgeWidth));
     const uint object_id = uint(edge.ObjectId);
-    // Initialize working depth for subsequent overlays without changing visibility depth.
+    // The output depth seeds the working depth for later overlays and leaves visibility depth unchanged.
     const float scene_depth = pc.SceneDepthSamplerIndex == InvalidSlot ? 1.0f : scene.FetchTex(pc.SceneDepthSamplerIndex, texel, 0).r;
     const float depth = min(scene_depth, edge.Depth);
     if (object_id == 0u) return {float4(0.0f), depth};
@@ -59,10 +56,9 @@ fragment OverlayTargetsDepth SilhouetteEdgeColorFragment(
     const bool is_active = pc.ActiveObjectId == 0xFFFFFFFFu || (pc.ActiveObjectId != 0u && object_id == pc.ActiveObjectId);
     constant ViewportThemeColors &colors = scene.Theme.Colors;
     const float3 color = pc.Manipulating != 0u ? float3(colors.Transform) : is_active ? float3(colors.ObjectActive) : float3(colors.ObjectSelected);
-    // The outlined surface is occluded where the scene depth at its own pixel is nearer, with three depth ulps of tolerance against its own rasterization.
+    // The outlined surface is occluded where the scene depth at its own pixel is nearer.
+    // Three depth ulps of tolerance absorb its own rasterization.
     const float surface_depth = pc.SceneDepthSamplerIndex == InvalidSlot ? 1.0f : scene.FetchTex(pc.SceneDepthSamplerIndex, edge.Texel, 0).r;
     const float alpha = edge.Depth > surface_depth + 3.0f / 8388608.0f ? OccludedOutlineAlpha : 1.0f;
     return {float4(color * alpha, alpha), depth};
 }
-
-#endif

@@ -16,7 +16,6 @@ void Write(const fs::path &path, std::string_view bytes) {
     out.write(bytes.data(), std::streamsize(bytes.size()));
 }
 
-// Every regular file under `dir`, keyed by its relative path.
 std::map<std::string, std::vector<std::byte>> Snapshot(const fs::path &dir) {
     std::map<std::string, std::vector<std::byte>> files;
     for (const auto &e : fs::recursive_directory_iterator{dir}) {
@@ -32,7 +31,7 @@ const boost::ut::suite Archives = [] {
         const auto src = root / "src", archive = root / "out.project", dst = root / "dst";
 
         Write(src / "a.txt", "hello");
-        Write(src / "nested/deep/b.bin", std::string{'\0', '\x01', '\x7f', '\0', 'z', '\0'}); // embedded nulls
+        Write(src / "nested/deep/b.bin", std::string{'\0', '\x01', '\x7f', '\0', 'z', '\0'});
         Write(src / "empty", "");
         Write(src / "big", std::string(3'000'000, 'x')); // spans multiple stream chunks
 
@@ -46,17 +45,12 @@ const boost::ut::suite Archives = [] {
         expect(bool(File::WriteAtomic(archive, std::span{complete}.first(complete.size() - 1))));
         expect(!Decompress(archive, root / "truncated"));
         expect(!Compress(src, src / "recursive.project"));
+        expect(!Compress(root / "missing", root / "missing.project"));
         try {
             File::WriteAtomic(root / "interrupted.project", [](auto &) -> bool { throw 1; });
         } catch (...) {}
         for (const auto &entry : fs::directory_iterator{root}) expect(!entry.path().filename().string().contains(".tmp."));
 
         fs::remove_all(root);
-    };
-
-    "compress fails on a missing directory"_test = [] {
-        const auto missing = fs::temp_directory_path() / "MeshEditor-compress-missing";
-        fs::remove_all(missing);
-        expect(!Compress(missing, missing / "out.project"));
     };
 };

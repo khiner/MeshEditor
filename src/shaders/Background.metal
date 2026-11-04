@@ -1,6 +1,4 @@
-#ifndef BACKGROUND_MSL
-#define BACKGROUND_MSL
-
+#pragma once
 #include "gpu/BackgroundConstant.h"
 #include "Varyings.metal"
 #include "SceneUBO.metal"
@@ -32,5 +30,3 @@ fragment float4 BackgroundFragment(
     const float3 linear_color = scene.SampleCubeLod(view.Ibl.SpecularEnvSamplerSlot, env_dir, lod).rgb * view.EnvIntensity;
     return float4(TransmissionPrepass ? linear_color : linear_color * view.Exposure, view.WorldOpacity);
 }
-
-#endif

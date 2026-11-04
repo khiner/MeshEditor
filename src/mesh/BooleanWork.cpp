@@ -7,13 +7,9 @@
 #include "mesh/MeshStore.h"
 #include "mesh/MeshTopology.h"
 #include "mesh/ScratchChunks.h"
+#include "mesh/ScratchPasses.h"
 #include "metal/Dispatch.h"
 #include "state/Registry.h"
-
-namespace {
-// Label rounds the first component submit encodes, doubling on each submit until a round changes nothing.
-constexpr uint32_t LabelRounds{16};
-} // namespace
 
 BooleanWork::BooleanWork(state::Registry &r, mtl::ComputeChain &chain, const MeshTopologyTask &task, const MeshClosure &first, const MeshClosure &second) {
     const profile::CpuScope scope{"BooleanWork"};
@@ -31,10 +27,10 @@ BooleanWork::BooleanWork(state::Registry &r, mtl::ComputeChain &chain, const Mes
         .Faces = {first.Counts[2], second.Counts[2]},
         .Triangles = triangles,
         .VertexSlot = a.Vertices.Buffer.Slot,
-        .CornerSlot = a.FaceCorners.Buffer.Slot,
         .TriangleSlot = a.Triangles.Buffer.Slot,
         .FaceTriangleStartSlot = a.FaceTriangles.Buffer.Slot,
         .VertexNormalSlot = a.BaseVertexNormals.Buffer.Slot,
+        .FaceNormalSlot = a.BaseFaceNormals.Buffer.Slot,
         .Connectivity = meshes.GetConnectivityRef(task.SourceId),
         .Rotation = task.CopyRotation,
         .Translation = task.CopyTranslation,
@@ -42,33 +38,18 @@ BooleanWork::BooleanWork(state::Registry &r, mtl::ComputeChain &chain, const Mes
     Vertices = job.Vertices[0] + job.Vertices[1];
     Triangles = triangles[0] + triangles[1];
     const uint32_t faces = job.Faces[0] + job.Faces[1], halfedges = 3u * Triangles;
-    const auto take = [&](uint64_t words) {
-        if (words > UINT32_MAX) throw std::length_error("Boolean scratch exceeds the GPU's 32-bit address space.");
-        return scratch.Allocate(uint32_t(words)).Offset;
-    };
+    const auto take = [&](uint64_t words) { return TakeScratch(chain, words).Offset; };
     const auto record = take(sizeof(BooleanJob) / sizeof(uint32_t));
     Job = {scratch.Buffer.Slot, record};
     const auto upload = [&] { scratch.Buffer.Update(std::as_bytes(std::span{&job, 1u}), uint64_t(record) * sizeof(uint32_t)); };
-    const BooleanPushConstants pc{.Job = Job};
-    // Scans the values in place, leaving their sum in the terminator that ends them.
-    const auto scan = [&](uint32_t values, uint32_t count) {
-        const auto blocks = TileCount(count, BlockElements);
-        auto scan_pc = pc;
-        scan_pc.ScanValues = values;
-        scan_pc.ScanCount = count;
-        scan_pc.ScanBlocks = take(blocks);
-        chain.Groups(pipelines[MeshPass::BooleanScanSum], scan_pc, blocks);
-        chain.Groups(pipelines[MeshPass::BooleanScanPrefix], scan_pc, 1u);
-        chain.Groups(pipelines[MeshPass::BooleanScanOffsets], scan_pc, blocks);
-    };
+    const JobPushConstants pc{.Job = Job};
 
     {
         const profile::CpuScope stage{"BooleanIntersect"};
-        // The stage's runs are planned together with the later stages' sizes at no crossings, so the scratch grows once for a typical boolean.
         scratch.PlanAdditional(uint32_t(std::min<uint64_t>(2ull * Vertices + 67ull * Triangles + 1u, UINT32_MAX)));
         const auto allocate = [&](auto &&alloc) {
             job.Positions = alloc(3ull * Vertices);
-            job.Normals = alloc(3ull * Vertices);
+            job.Displacements = alloc(3ull * Vertices);
             job.Bounds = alloc(12u);
             job.FaceTriangleFirst = alloc(uint64_t(faces) + 1u);
             job.TriangleVertices = alloc(3ull * Triangles);
@@ -78,18 +59,7 @@ BooleanWork::BooleanWork(state::Registry &r, mtl::ComputeChain &chain, const Mes
             job.PolygonTriangleCounts = alloc(Triangles);
             job.Pairs = alloc(halfedges);
             job.EdgeSources = alloc(halfedges);
-            for (uint32_t side = 0u; side < 2u; ++side) {
-                const uint64_t leaves = triangles[side], blocks = TileCount(triangles[side], TileElements);
-                job.Keys[side] = alloc(leaves);
-                job.Order[side] = alloc(leaves);
-                job.Temporary[side] = alloc(leaves);
-                job.Histogram[side] = alloc(16u * blocks);
-                job.Totals[side] = alloc(16u);
-                job.NodeBoxes[side] = alloc(6u * (2u * leaves - 1u));
-                job.NodeParents[side] = alloc(2u * leaves - 1u);
-                job.Children[side] = alloc(2u * (leaves - 1u));
-                job.Counters[side] = alloc(leaves - 1u);
-            }
+            for (uint32_t side = 0u; side < 2u; ++side) job.Colliders[side] = AllocateCollider(alloc, triangles[side]);
             job.IntersectionFirst = alloc(uint64_t(halfedges) + 1u);
             job.Labels = alloc(Vertices);
             job.Windings = alloc(Vertices);
@@ -107,21 +77,15 @@ BooleanWork::BooleanWork(state::Registry &r, mtl::ComputeChain &chain, const Mes
         upload();
         chain.Threads(pipelines[MeshPass::BooleanVertices], pc, Vertices);
         chain.Threads(pipelines[MeshPass::BooleanFaceCounts], pc, faces + 1u);
-        scan(job.FaceTriangleFirst, faces + 1u);
+        ScanScratch(chain, pipelines, job.FaceTriangleFirst, faces + 1u);
         chain.Threads(pipelines[MeshPass::BooleanTriangles], pc, faces);
         chain.Threads(pipelines[MeshPass::BooleanPairs], pc, halfedges);
         chain.Threads(pipelines[MeshPass::BooleanMorton], pc, Triangles);
         const auto leaf_groups = TileCount(std::max(triangles[0], triangles[1]), TileElements);
-        auto sort_pc = pc;
-        for (sort_pc.Parameter = 0u; sort_pc.Parameter < 32u; sort_pc.Parameter += 4u) {
-            chain.Groups(pipelines[MeshPass::BooleanSortHistogram], sort_pc, leaf_groups, 256u, 2u);
-            chain.Groups(pipelines[MeshPass::BooleanSortPrefix], sort_pc, 16u, 256u, 2u);
-            chain.Groups(pipelines[MeshPass::BooleanSortScatter], sort_pc, leaf_groups, 256u, 2u);
-        }
-        chain.Groups(pipelines[MeshPass::BooleanTree], pc, leaf_groups, 256u, 2u);
+        RecordColliderBuild(chain, pipelines, {scratch.Buffer.Slot, record + uint32_t(offsetof(BooleanJob, Colliders) / sizeof(uint32_t))}, leaf_groups, 2u);
         chain.Groups(pipelines[MeshPass::BooleanRefit], pc, leaf_groups, 256u, 2u);
         chain.Threads(pipelines[MeshPass::BooleanIntersectCount], pc, halfedges + 1u);
-        scan(job.IntersectionFirst, halfedges + 1u);
+        ScanScratch(chain, pipelines, job.IntersectionFirst, halfedges + 1u);
         chain.Submit();
         const auto intersection_first = scratch.Get({job.IntersectionFirst, halfedges + 1u});
         Intersections = job.Intersections = intersection_first[halfedges];
@@ -129,7 +93,6 @@ BooleanWork::BooleanWork(state::Registry &r, mtl::ComputeChain &chain, const Mes
         profile::RecordCounter("BooleanIntersections", Intersections);
     }
     {
-        // Components of each record's unbroken edges converge through label rounds, each submit doubling the rounds until one changes nothing.
         const profile::CpuScope stage{"BooleanComponents"};
         job.IntersectionRecords = take(6ull * Intersections);
         job.Inclusion = take(uint64_t(Vertices) + Intersections);
@@ -160,7 +123,7 @@ BooleanWork::BooleanWork(state::Registry &r, mtl::ComputeChain &chain, const Mes
         chain.Threads(pipelines[MeshPass::BooleanInclusion], pc, Vertices + Intersections);
         chain.Threads(pipelines[MeshPass::BooleanCounts], pc, uint32_t(count_entries + 1u));
         chain.Threads(pipelines[MeshPass::BooleanIntersectionSides], pc, Intersections);
-        scan(job.Counts, uint32_t(count_entries + 1u));
+        ScanScratch(chain, pipelines, job.Counts, uint32_t(count_entries + 1u));
         chain.Submit();
         const auto counts = scratch.Get({job.Counts, uint32_t(count_entries + 1u)});
         job.PolygonHalfedges = counts[Triangles];
@@ -171,17 +134,14 @@ BooleanWork::BooleanWork(state::Registry &r, mtl::ComputeChain &chain, const Mes
     {
         const profile::CpuScope stage{"BooleanPolygons"};
         const uint64_t polygon_halfedges = job.PolygonHalfedges;
-        // The stage's runs are planned together, so the scratch grows once.
         const auto allocate = [&](auto &&alloc) {
             job.OutputEntries = alloc(OutputVertices);
             job.Polygons = alloc(3u * polygon_halfedges);
             job.PartialEdges = alloc(4ull * job.PartialEntries);
             job.NewEdges = alloc(4ull * job.GroupEntries);
-            job.LoopRefs = alloc(2u * polygon_halfedges);
-            job.LoopNext = alloc(2u * polygon_halfedges);
-            job.LoopPrevious = alloc(2u * polygon_halfedges);
-            job.LoopPoints = alloc(4u * polygon_halfedges);
-            job.LoopLinks = alloc(2u * polygon_halfedges);
+            job.LoopLinks = alloc(4u * polygon_halfedges);
+            job.LoopNodes = alloc(7u * polygon_halfedges);
+            job.LoopValues = alloc(6u * polygon_halfedges);
             job.PolygonTriangles = alloc(6u * polygon_halfedges);
             job.TriangleTotal = alloc(1u);
         };

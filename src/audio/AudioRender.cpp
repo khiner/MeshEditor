@@ -23,8 +23,7 @@ const std::vector<float> &GetSampleFrames(const state::Registry &r, const fs::pa
     const auto it = samples.find(path);
     return it != samples.end() ? it->second : EmptyFrames;
 }
-// Returns the active SoundVertices index derived from the mesh entity's MeshActiveElement.
-// Returns zero when no active element is set.
+// The SoundVertices index of the mesh's active element, or zero when no element is active.
 uint32_t GetActiveVertexIndex(const state::Registry &r, state::Entity instance_entity) {
     const auto &excitable = r.get<const SoundVertices>(instance_entity);
     const auto mesh_entity = r.get<const Instance>(instance_entity).Entity;
@@ -35,7 +34,6 @@ uint32_t GetActiveVertexIndex(const state::Registry &r, state::Entity instance_e
     return 0;
 }
 
-// Returns the sample-store path assigned to the instance's active mesh vertex, if any.
 std::optional<fs::path> ActiveSamplePath(const state::Registry &r, state::Entity instance_entity) {
     const auto *samples = r.try_get<const VertexSamples>(HierarchySource(r, instance_entity));
     if (!samples) return std::nullopt;
@@ -49,10 +47,9 @@ std::optional<fs::path> ActiveSamplePath(const state::Registry &r, state::Entity
 std::optional<vec3> ListenerPosition(const state::Registry &r) {
     const auto viewport = FindActiveViewport(r);
     if (viewport == state::Null) return std::nullopt;
-    return r.get<const ViewCameraState>(viewport).Active.Position();
+    return ViewCameraOf(r, viewport).Position();
 }
 
-// Updates listener attenuation using inverse distance beyond ListenerDistance and a constant level within it.
 void UpdateListenerGains(const state::Registry &r, ModalBank &b, vec3 listener_pos) {
     b.GainListener = listener_pos;
     for (uint32_t slot = 0; slot < uint32_t(b.Entities.size()); ++slot) {
@@ -93,7 +90,6 @@ void DrainAudioCapture(state::Registry &r, std::vector<float> &out) {
     if (!capture || capture->Ring.empty()) return;
     const auto written = capture->Written.load(std::memory_order_acquire);
     auto read = capture->Read.load(std::memory_order_relaxed);
-    // Resume from the oldest retained frame after an overwrite.
     const auto capacity = uint64_t(capture->Ring.size());
     if (written - read > capacity) read = written - capacity;
     for (auto pos = size_t(read % capacity); read < written; ++read) {
@@ -103,11 +99,9 @@ void DrainAudioCapture(state::Registry &r, std::vector<float> &out) {
     capture->Read.store(read, std::memory_order_relaxed);
 }
 
-// The pressure a full-scale device sample represents, Pa: the monitor level, 120 dB SPL, the threshold of pain.
-// Maps the monitor pressure ceiling to full scale.
+// The pressure in Pa that a full-scale device sample represents, 120 dB SPL.
 constexpr float FullScalePressure{20.f};
 
-// Uses instant attack and 100 ms release while preserving relative levels below the peak envelope.
 void MonitorFrames(state::Registry &r, std::span<float> frames, MonitorLimiter &limiter) {
     const float release = std::exp(-1.f / (0.1f * float(DeviceSampleRate(r))));
     auto envelope = limiter.Envelope;
@@ -123,8 +117,7 @@ void ProcessAudio(state::Registry &r, float *output, uint32_t frame_count, bool 
     std::fill_n(output, frame_count, 0.f);
     auto &m = r.Resources.get<ModalAudio>();
     // The mix is pressure at the view camera.
-    // The device path runs this on the audio thread, which cannot read the registry, so its gains are written by the frame handler.
-    // Offline rendering uses its viewport camera on the main thread.
+    // The audio thread cannot read the registry, so the frame handler writes the device path's listener gains.
     if (!monitor) {
         if (const auto listener = ListenerPosition(r)) UpdateListenerGains(r, LiveBank(m), *listener);
     }
@@ -161,6 +154,6 @@ void ProcessAudio(state::Registry &r, float *output, uint32_t frame_count, bool 
         capture->Written.store(written, std::memory_order_release);
     }
 
-    // The monitor stage, after the capture tap: device units at the monitor level.
+    // Monitoring runs after the capture tap, so the capture holds pressure.
     if (monitor) MonitorFrames(r, {output, frame_count}, r.Resources.get<MonitorLimiter>());
 }

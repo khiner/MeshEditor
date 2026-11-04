@@ -1,5 +1,4 @@
 #include "ElementWorkShared.metal"
-#include "TransformUtils.metal"
 #include "gpu/PolygonTriangulation.h"
 #include "gpu/RetessellateFacesPushConstants.h"
 
@@ -36,27 +35,8 @@ kernel void RetessellateFaces(
         return vec3(float3(vertices[v].Position));
     };
     const ElementValues<packed_uint3> triangles{BindlessBufferMutable(packed_uint3,b.Buffer,pc.TriangleSlot),BindlessBuffer(uint,b.Buffer,pc.Tables.Triangles.Slot)+pc.Tables.Triangles.Offset};
-    if (n==4u) {
-        // A quad keeps its diagonal until the split folds or collapses a triangle, and then takes the other diagonal when that split holds.
-        vec2 p[4];
-        ProjectPolygon(4u,position,p);
-        const uint3 kept=uint3(triangles[first])-loop.x;
-        // The first triangle leaves out an even corner exactly when the quad splits along corners 1 and 3.
-        const bool split_13=((kept.x+kept.y+kept.z)&1u)==0u;
-        const bool valid_13=QuadSplitValid(PolygonCross2(p[1],p[2],p[3]),PolygonCross2(p[1],p[3],p[0]));
-        const bool valid_02=QuadSplitValid(PolygonCross2(p[0],p[1],p[2]),PolygonCross2(p[0],p[2],p[3]));
-        if (split_13 ? valid_13 || !valid_02 : valid_02 || !valid_13) return;
-        const uint3 split[2]={split_13 ? uint3(0u,1u,2u) : uint3(1u,2u,3u),split_13 ? uint3(0u,2u,3u) : uint3(1u,3u,0u)};
-        for (uint t=0u;t<2u;++t) {
-            triangles[first+t]=packed_uint3(split[t]+loop.x);
-            MarkWork(b,pc.ChangedTriangles,first+t);
-        }
-        return;
-    }
-    device uint *scratch=BindlessBufferMutable(uint,b.Buffer,pc.Scratch.Slot)+pc.Scratch.Offset+4u*entry.y;
-    device uint *next=scratch,*previous=scratch+n;
-    device vec2 *points=reinterpret_cast<device vec2 *>(scratch+2u*n);
-    TriangulatePolygon(n,position,points,next,previous,[&](uvec3 local,uint t) {
+    device uint *scratch=BindlessBufferMutable(uint,b.Buffer,pc.Scratch.Slot)+pc.Scratch.Offset+6u*entry.y;
+    TriangulateWithScratch(n,position,scratch,reinterpret_cast<device float *>(scratch+3u*n),[&](uvec3 local,uint t) {
         const uint3 triangle=uint3(local)+loop.x;
         if (all(uint3(triangles[first+t])==triangle)) return;
         triangles[first+t]=packed_uint3(triangle);

@@ -1,6 +1,4 @@
-#ifndef EDGEQUAD_MSL
-#define EDGEQUAD_MSL
-
+#pragma once
 #include "gpu/EditOverlayConstant.h"
 #include "OverlayFade.metal"
 #include "Varyings.metal"
@@ -26,7 +24,6 @@ inline OverlayTargets ShadeEdgeQuad(EdgeQuadVaryings in, const thread Scene &sce
         color.a *= 1.0f - mix_w;
     }
     color.a *= OverlayBehindFade(scene, in.Position);
-    // Edge quads apply antialiasing before the composite pass.
     if (color.a <= 0.0f) discard_fragment();
     return {float4(color.rgb * color.a, color.a)};
 }
@@ -41,5 +38,3 @@ fragment OverlayTargets EdgeQuadFragment(
     const Scene scene{bindless, view, theme, workspace};
     return ShadeEdgeQuad(in, scene, IncludeOuter);
 }
-
-#endif

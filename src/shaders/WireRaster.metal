@@ -1,7 +1,6 @@
-#ifndef WIRERASTER_MSL
-#define WIRERASTER_MSL
-
-// Each byte contains one coverage class; integer maxima make crossing wires deterministic.
+#pragma once
+// Each byte contains one coverage class.
+// Integer maxima make crossing wires deterministic.
 #include "gpu/WireCoverage.h"
 #include "MeshletEditGeometry.metal"
 #include "gpu/WireRasterPushConstants.h"
@@ -26,7 +25,6 @@ inline uint WireClassOf(const thread Scene &scene, DrawData draw, uint edit_sele
         uint(WireCoverage::Incidental);
 }
 
-// Union coverage within each class; higher-priority classes composite afterward.
 inline void WireAccumulate(device atomic_uint *words, uint2 extent, int2 pixel, uint wire_class, float coverage) {
     if (pixel.x < 0 || pixel.y < 0 || uint(pixel.x) >= extent.x || uint(pixel.y) >= extent.y) return;
     device atomic_uint *word = &words[uint(pixel.y) * extent.x + uint(pixel.x)];
@@ -39,8 +37,7 @@ inline void WireAccumulate(device atomic_uint *words, uint2 extent, int2 pixel, 
     }
 }
 
-// Clip to Metal's six clip planes before dividing by w.
-// The width guard retains offscreen strokes.
+// Clips to Metal's six clip planes before the divide by w, with a width guard that keeps offscreen strokes.
 inline bool WireClip(thread float4 &a, thread float4 &b, float2 guard) {
     const float4 p = a, q = b;
     const float pa[6] = {p.z, p.w - p.z, p.w * guard.x + p.x, p.w * guard.x - p.x, p.w * guard.y + p.y, p.w * guard.y - p.y};
@@ -76,7 +73,6 @@ kernel void WireRasterKernel(
 
     float4 clip0 = geometry.Clip0;
     float4 clip1 = geometry.Clip1;
-    // Match the hardware wire path's face depth bias.
     clip0.z -= NdcOffsetFactor(scene);
     clip1.z -= NdcOffsetFactor(scene);
     const float half_width = max(theme.EdgeWidth, 1.0f) * 0.5f;
@@ -89,7 +85,6 @@ kernel void WireRasterKernel(
     const float2 p0 = ndc_to_uv(clip0.xy / clip0.w) * viewport;
     const float2 p1 = ndc_to_uv(clip1.xy / clip1.w) * viewport;
 
-    // Select the coverage class from the nearer endpoint's halfedge state.
     const uint edit_selection_color = topology == uint(MeshPrimitiveTopology::Line) ||
         scene.View.InteractionMode == InteractionMode::Edit ? 1u : 0u;
     const uint class0 = WireClassOf(
@@ -115,7 +110,6 @@ kernel void WireRasterKernel(
         for (int offset = -spread; offset <= spread; ++offset) {
             const int2 pixel = x_major ? int2(center.x, center.y + offset) : int2(center.x + offset, center.y);
             const float2 sample_point = float2(pixel) + 0.5f;
-            // Use segment distance to limit endpoint coverage.
             const float along = clamp(dot(sample_point - p0, direction), 0.0f, length_px);
             const float2 closest = p0 + direction * along;
             const float distance = length(sample_point - closest);
@@ -132,5 +126,3 @@ kernel void WireRasterKernel(
         }
     }
 }
-
-#endif

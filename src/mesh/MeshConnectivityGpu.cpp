@@ -10,7 +10,6 @@
 #include "state/Registry.h"
 
 // Probing stays short at a load factor below three quarters.
-// Layout arithmetic rejects an oversized job before any 32-bit offset or bit ceiling can wrap.
 uint32_t LayoutConnectivityScratch(MeshConnectivityJob &job, uint32_t first_word) {
     const uint64_t table_size = std::bit_ceil(uint64_t(job.HalfedgeCount) + job.HalfedgeCount / 2u + 1u);
     const auto words = uint32_t((uint64_t(job.HalfedgeCount) + 31u) / 32u);
@@ -68,7 +67,6 @@ void BuildConnectivityNow(state::Registry &r, std::span<const uint32_t> store_id
     const profile::CpuScope scope{"ConnectivityGpu"};
     auto &meshes = r.Resources.get<MeshStore>();
     const auto &arenas = meshes.Arenas();
-    // Submit each chunk separately to bound scratch memory.
     const auto split = ChunkByScratch(uint32_t(store_ids.size()), ScratchWordBudget, [&](uint32_t i) { return ScratchWords(meshes, store_ids[i]); });
     for (const auto range : split.Chunks) {
         const auto chunk = store_ids.subspan(range.Offset, range.Count);
@@ -84,7 +82,6 @@ void BuildConnectivityNow(state::Registry &r, std::span<const uint32_t> store_id
             const auto blocks = RunBlocks(arenas.Vertices.Entries(record.Vertices), 0u, arenas.Vertices.Count(record.Vertices));
             vertex_blocks.insert(vertex_blocks.end(), blocks.begin(), blocks.end());
             AddConnectivityJob(batch, MeshConnectivityJob{
-                                          .CornersSlot = arenas.FaceCorners.Buffer.Slot,
                                           .Connectivity = meshes.GetConnectivityRef(id),
                                           .EdgeHandles = {.First = 0u},
                                           .VertexCount = arenas.Vertices.Count(record.Vertices),

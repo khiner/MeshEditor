@@ -5,6 +5,7 @@
 #include "gpu/NormalSector.h"
 #include "mesh/CornerNormalOffset.h"
 #include "mesh/ElementAttributeView.h"
+#include "mesh/Mesh.h"
 
 // Borrows current base shading sources, indexed by arena address, and the record's layers, indexed by its handles, and resolves the record's polygon corners.
 struct CornerNormalView {

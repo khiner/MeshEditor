@@ -1,8 +1,5 @@
-#ifndef WORKSPACELIGHTING_MSL
-#define WORKSPACELIGHTING_MSL
-
-// Blender-matching solid viewport lighting.
-// Ported from workbench_world_light.bsl.hh.
+#pragma once
+// Blender's solid viewport lighting, ported from workbench_world_light.bsl.hh.
 #include "tonemapping.metal"
 #include "Transparency.metal"
 #include "VisibilityDecode.metal"
@@ -72,7 +69,6 @@ inline float3 get_world_lighting(const thread Scene &scene, float3 base_color, f
     const float4 diff_light = wrapped_lighting(diff_NL, wrap);
     for (int i = 0; i < 4; i++) diffuse_light += diff_light[i] * float3(lights.Lights[i].DiffuseColor);
 
-    // Reduce diffuse by specular energy.
     const float spec_energy = dot(specular_color, float3(0.33333f));
     diffuse_light *= diffuse_color * (1.0f - spec_energy);
 
@@ -81,7 +77,7 @@ inline float3 get_world_lighting(const thread Scene &scene, float3 base_color, f
 
 inline float4 ShadeWorkspace(MeshVaryings in, const thread Scene &scene, constant SceneViewUBO &view) {
     const float3x3 view_rotation = view.ViewRotation.Unpack();
-    // Use view-space directions to match Blender's camera-relative lighting default.
+    // View-space directions match Blender's camera-relative lighting default.
     float3 N = normalize(view_rotation * ShadingWorldNormal(in));
     const float3 view_dir = float3(view.CameraPosition) - in.WorldPosition;
     N = faceforward(N, -(view_rotation * view_dir), N);
@@ -91,7 +87,6 @@ inline float4 ShadeWorkspace(MeshVaryings in, const thread Scene &scene, constan
     float3 color = get_world_lighting(scene, in.Color.rgb, sqrt(0.4f), 0.0f, N, I);
     const uint overlay_flags = in.FaceOverlayFlags & 3u;
     if (overlay_flags != 0u) {
-        // Convert sRGB theme colors to linear space before blending.
         constant ViewportThemeColors &colors = scene.Theme.Colors;
         const bool is_edit_face = view.InteractionMode == InteractionMode::Edit && view.EditElement == Element::Face;
         const float4 selected = is_edit_face ? float4(colors.FaceSelected) : float4(colors.FaceSelectedIncidental);
@@ -103,7 +98,6 @@ inline float4 ShadeWorkspace(MeshVaryings in, const thread Scene &scene, constan
     return float4(color, in.Color.a);
 }
 
-// Solid triangle shading needs only positions, normals, and face overlay state, which resolve directly per visibility sample.
 inline MeshVaryings DecodeWorkspaceTriangle(
     const thread Scene &scene, const thread ResolvedVisibility &resolved,
     float2 pixel
@@ -187,5 +181,3 @@ fragment TransparencyStore WorkspaceTransparentFragment(
     shaded.a *= view.XRayAlpha;
     return StoreTransparency(values, shaded, in.Position.z);
 }
-
-#endif

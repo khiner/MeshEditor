@@ -4,6 +4,8 @@
 #include "mesh/MeshStore.h"
 #include "mesh/NormalDeriveGpu.h"
 
+struct MeshPipelines;
+
 // `Weld` merges vertices identical in every vertex-domain channel, which a source authored per corner needs.
 struct MeshSource {
     MeshData Data;
@@ -12,21 +14,19 @@ struct MeshSource {
     std::optional<ArmatureDeformData> Deform{};
     std::optional<MorphTargetData> Morph{};
     bool Weld{false};
-    bool KeepLooseVertices{true}; // When welding, retain vertices not referenced by faces or wires.
+    bool KeepLooseVertices{true}; // With Weld, keeps vertices no face or wire references
     bool FlatShaded{false};
 };
 
-// MorphTangentDeltas returns the target-major tangent deltas the arena doesn't store, compacted to the welded vertex set.
-// AuthoredCornerNormals returns authored normals in polygon-corner order for EncodeAuthoredCornerNormals once its base normals derive.
+// MorphTangentDeltas holds the target-major tangent deltas the arena does not store, compacted to the welded vertices.
+// AuthoredCornerNormals holds authored normals in polygon corner order.
 struct CreatedMesh {
     uint32_t StoreId;
     std::vector<vec3> MorphTangentDeltas{};
     std::vector<vec3> AuthoredCornerNormals{};
 };
 
-// Process arena phases in source order for deterministic layout.
-// Recover authored normals as face sharpness, edge sharpness, or custom corner normals.
-// Derive classification, base normals, and selection in the later new-mesh shading pass.
+// Creates the records in source order and recovers authored normals as face sharpness, edge sharpness or custom corner normals.
 std::vector<CreatedMesh> CreateMeshes(state::Registry &, std::span<MeshSource>);
 CreatedMesh CreateMesh(state::Registry &, MeshSource);
 
@@ -43,10 +43,11 @@ std::optional<NewMeshShading> EncodeNewMeshShading(state::Registry &, mtl::Compu
 void DeriveNewMeshShading(state::Registry &, mtl::ComputeChain &, NewMeshShading &);
 // Derives the shading of the records awaiting it on a chain of its own, which submits for the classification plan and once at the end.
 void ShadeNewMeshes(state::Registry &);
+uint32_t CreateShadedMesh(state::Registry &, MeshSource);
 
-// Encode the authored corner normals as offsets from the derived corner normals where they deviate, filling the custom corner-normal layer.
+// Writes each authored corner normal that deviates from the derived one as an offset in the custom corner-normal layer.
 // Requires derived base normals and an empty custom layer.
-void EncodeAuthoredCornerNormals(MeshStore &, const Mesh &, std::span<const vec3> authored);
+void EncodeAuthoredCornerNormals(MeshStore &, const MeshPipelines &, const Mesh &, std::span<const vec3> authored);
 
 // Preserves authored shading when targets include normal deltas or any listed full-weight pose materially changes the derived corner normals.
 // Requires derived base normals.

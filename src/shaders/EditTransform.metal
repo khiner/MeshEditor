@@ -1,6 +1,4 @@
-#ifndef EDIT_TRANSFORM_MSL
-#define EDIT_TRANSFORM_MSL
-
+#pragma once
 #include "TRSUtils.metal"
 
 inline float3 apply_edit_transform(float3 world_pos, float3 pivot, Transform delta) {
@@ -10,9 +8,8 @@ inline float3 apply_edit_transform(float3 world_pos, float3 pivot, Transform del
     return pivot + offset + float3(delta.P);
 }
 
-// Canonical, committed and preview positions use exactly the same frame math.
-inline float3 apply_geometry_edit_transform(float3 local, Transform frame, float3 pivot, Transform delta) {
-    return trs_inverse_transform_point(frame, apply_edit_transform(trs_transform_point(frame, local), pivot, delta));
+// The unit `mirror` reflects across the plane through the pivot with that normal before the delta, and a zero one reflects nothing.
+inline float3 apply_geometry_edit_transform(float3 local, Transform frame, float3 pivot, float3 mirror, Transform delta) {
+    const float3 p = trs_transform_point(frame, local);
+    return trs_inverse_transform_point(frame, apply_edit_transform(p - 2.f * dot(p - pivot, mirror) * mirror, pivot, delta));
 }
-
-#endif

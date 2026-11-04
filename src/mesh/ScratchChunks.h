@@ -1,24 +1,23 @@
 #pragma once
+#include "Range.h"
+#include <vector>
 
 // Elements one threadgroup covers outside the scan passes, matching the shaders' ScanTileSize.
 constexpr uint32_t TileElements{256};
 // Elements one scan block covers, four per thread, matching the shaders' ScanBlockElements.
 constexpr uint32_t BlockElements{1024};
 
-// The scratch words one submit of a chunked batch stays under.
 constexpr uint32_t ScratchWordBudget{96u << 20};
 
-constexpr uint32_t TileCount(uint32_t count, uint32_t per_tile) { return count / per_tile + (count % per_tile != 0); }
+constexpr uint32_t TileCount(uint64_t count, uint32_t per_tile) { return uint32_t(count / per_tile + (count % per_tile != 0)); }
 
-// Runs of a work list, each sized so one submit's scratch stays under the budget.
 // An item wider than the budget takes a chunk to itself.
 struct ScratchChunks {
     std::vector<Range> Chunks;
-    uint32_t WidestWords{}; // Scratch words the widest chunk takes
+    uint32_t WidestWords{};
 };
 
 // Split `count` items into budgeted chunks, `words_of(i)` giving item i's scratch demand.
-// The widest count sizes the scratch every chunk writes over.
 ScratchChunks ChunkByScratch(uint32_t count, uint32_t budget_words, auto &&words_of) {
     ScratchChunks split;
     uint32_t first = 0, words = 0;

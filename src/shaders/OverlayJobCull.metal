@@ -1,6 +1,4 @@
-#ifndef OVERLAYJOBCULL_MSL
-#define OVERLAYJOBCULL_MSL
-
+#pragma once
 #include "Bindless.metal"
 #include "CompactPresent.metal"
 #include "gpu/MeshDispatchArgs.h"
@@ -80,5 +78,3 @@ kernel void OverlayJobEmit(
     const uint block_offset = BindlessBuffer(uint, bindless.Buffer, pc.BlockStateSlot)[block];
     BindlessBufferMutable(uint, bindless.Buffer, pc.VisibleSlot)[block_offset + compact.x] = i;
 }
-
-#endif

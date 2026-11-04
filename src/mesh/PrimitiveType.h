@@ -2,28 +2,27 @@
 
 #include "Field.h"
 #include "mesh/MeshSchema.h"
+#include "numeric/uvec2.h"
 #include "numeric/vec2.h"
 #include "numeric/vec3.h"
 
 #include <variant>
 
 namespace primitive {
-using numeric::vec2, numeric::vec3;
+using numeric::uvec2, numeric::vec2, numeric::vec3;
 
-// Bounds for the editable size fields of every primitive (radii, extents, height).
 constexpr float MinSize = 0.01f, MaxSize = 100.f;
 
-// How a rim closes: left open, one face, or triangles around a center vertex.
 enum class FillType : uint8_t { None,
                                 Face,
                                 Fan };
-// The mapping from the cube onto the sphere, by equal angles between vertices or by equal face areas.
 enum class QuadSphereMethod : uint8_t { EvenArea,
                                         EvenAngle };
 
-// Finite plane in the XZ plane (normal +Y), centered at origin.
+// A grid of quads in the XZ plane facing +Y, centered at the origin.
 struct Plane {
     vec2 HalfExtents{1, 1};
+    uvec2 Subdivisions{1, 1};
 };
 struct Circle {
     float Radius{1};
@@ -50,28 +49,41 @@ struct Torus {
     float MajorRadius{1}, MinorRadius{0.5};
     uint32_t MajorSegments{32}, MinorSegments{16};
 };
+// A top radius of its own makes a frustum, and zero a cone.
 struct Cylinder {
     float Radius{1}, Height{2};
-    uint32_t Slices{32};
-    FillType Cap{FillType::Face};
-};
-struct Cone {
-    float Radius{1}, Height{2}, TopRadius{0};
+    std::optional<float> TopRadius{};
     uint32_t Slices{32};
     FillType Cap{FillType::Face};
 };
 } // namespace primitive
 
-// The parameters of one primitive generator.
-using PrimitiveParameters = std::variant<primitive::Plane, primitive::Circle, primitive::Cube, primitive::IcoSphere, primitive::UVSphere, primitive::QuadSphere, primitive::Torus, primitive::Cylinder, primitive::Cone>;
+using PrimitiveParameters = std::variant<primitive::Plane, primitive::Circle, primitive::Cube, primitive::IcoSphere, primitive::UVSphere, primitive::QuadSphere, primitive::Torus, primitive::Cylinder>;
 
 namespace primitive {
+struct Preset {
+    const char *Label;
+    PrimitiveParameters Parameters;
+};
+inline const std::array<Preset, 9> Presets{{
+    {"Plane", Plane{}},
+    {"Circle", Circle{}},
+    {"Cube", Cube{}},
+    {"UV Sphere", UVSphere{}},
+    {"Ico Sphere", IcoSphere{}},
+    {"Quad Sphere", QuadSphere{}},
+    {"Torus", Torus{}},
+    {"Cylinder", Cylinder{}},
+    {"Cone", Cylinder{.TopRadius = 0.f}},
+}};
+
 constexpr FieldSpec SizeSpec(const char *help) { return {.Min = MinSize, .Max = MaxSize, .Speed = 0.01f, .Unit = FieldUnit::Meters, .Widget = FieldWidget::Drag, .Help = help}; }
 constexpr FieldSpec HalfExtentsSpec(const char *help) { return {.Min = MinSize / 2, .Max = MaxSize / 2, .Speed = 0.01f, .Unit = FieldUnit::Meters, .Widget = FieldWidget::Drag, .Label = "Half extents", .Help = help}; }
 } // namespace primitive
 
 template<> inline constexpr field::SpecTable<primitive::Plane> Specs<primitive::Plane>{
     {&primitive::Plane::HalfExtents, primitive::HalfExtentsSpec("Distance from the center to each edge along X and Z.")},
+    {&primitive::Plane::Subdivisions, {.Min = 1, .Max = 256, .Help = "Number of faces along X and Z"}},
 };
 template<> inline constexpr field::SpecTable<primitive::Circle> Specs<primitive::Circle>{
     {&primitive::Circle::Radius, primitive::SizeSpec("Distance from the center to the rim.")},
@@ -102,15 +114,9 @@ template<> inline constexpr field::SpecTable<primitive::Torus> Specs<primitive::
     {&primitive::Torus::MinorSegments, {.Min = 3, .Max = 256, .Help = "Number of segments around the tube"}},
 };
 template<> inline constexpr field::SpecTable<primitive::Cylinder> Specs<primitive::Cylinder>{
-    {&primitive::Cylinder::Radius, primitive::SizeSpec("Radius of the caps.")},
-    {&primitive::Cylinder::Height, primitive::SizeSpec("Distance between the caps.")},
+    {&primitive::Cylinder::Radius, primitive::SizeSpec("Radius of the base.")},
+    {&primitive::Cylinder::Height, primitive::SizeSpec("Distance from the base to the top.")},
+    {&primitive::Cylinder::TopRadius, {.Min = 0, .Max = primitive::MaxSize, .Initial = 0, .Speed = 0.01f, .Unit = FieldUnit::Meters, .Widget = FieldWidget::Drag, .Help = "Radius of the top when it differs from the base, with zero for a tip"}},
     {&primitive::Cylinder::Slices, {.Min = 3, .Max = 128, .Help = "Number of segments around the side"}},
     {&primitive::Cylinder::Cap, {.Help = "Leave the ends open, close each with one face, or fan triangles around a center vertex"}},
-};
-template<> inline constexpr field::SpecTable<primitive::Cone> Specs<primitive::Cone>{
-    {&primitive::Cone::Radius, primitive::SizeSpec("Radius of the base.")},
-    {&primitive::Cone::Height, primitive::SizeSpec("Distance from the base to the top.")},
-    {&primitive::Cone::TopRadius, {.Min = 0, .Max = primitive::MaxSize, .Speed = 0.01f, .Unit = FieldUnit::Meters, .Widget = FieldWidget::Drag, .Help = "Radius of the top, or zero for a tip."}},
-    {&primitive::Cone::Slices, {.Min = 3, .Max = 128, .Help = "Number of segments around the side"}},
-    {&primitive::Cone::Cap, {.Help = "Leave the ends open, close each with one face, or fan triangles around a center vertex"}},
 };

@@ -1,6 +1,4 @@
-#ifndef MORPH_DEFORM_MSL
-#define MORPH_DEFORM_MSL
-
+#pragma once
 #include "Bindless.metal"
 
 // `weights_slot` selects current, shutter-open, or shutter-close pose weights.
@@ -16,7 +14,6 @@ inline void ApplyMorphDeform(const thread SceneT<SetT> &scene, DrawData draw, th
     }
 }
 
-// Applies position deformation and accumulates weighted authored normal deltas with one fetch per target vertex.
 template<typename SetT>
 inline void ApplyMorphDeform(const thread SceneT<SetT> &scene, DrawData draw, thread float3 &position, thread float3 &normal_delta, uint vertex_index) {
     if (draw.MorphDeformOffset == InvalidOffset) return;
@@ -30,5 +27,3 @@ inline void ApplyMorphDeform(const thread SceneT<SetT> &scene, DrawData draw, th
         if (authored) normal_delta += weight * float3(target.NormalDelta);
     }
 }
-
-#endif

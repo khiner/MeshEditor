@@ -59,7 +59,6 @@ template<typename T> struct Resident {
     const Context *Ctx{};
 };
 
-// A shared buffer resident for its lifetime.
 struct ResidentBuffer : Resident<MTL::Buffer> {
     ResidentBuffer() = default;
     ResidentBuffer(const Context &, uint64_t bytes);
@@ -73,13 +72,14 @@ struct ResidentBuffer : Resident<MTL::Buffer> {
 // What Metal reported once a committed command completed.
 struct Completion {
     double GpuStartTime{}, GpuEndTime{};
-    std::string Error; // Empty when the command ran without a GPU error.
+    std::string Error; // Empty when the command ran without a GPU error
 };
 
 // One queue runs every command and every sparse mapping update.
-// Each commit signals a serial on the queue after its command, and the queue signals serials in commit order, so a completed serial implies every earlier commit completed.
-// Queue-wide residency includes sparse GPU buffers and the physical heaps behind them.
-// A page mapping update or a residency set commit runs after every committed command completes, and a mapping update completes before the call that published it returns.
+// Each commit signals a serial on the queue after its command, and the queue signals serials in commit order.
+// A completed serial therefore implies every earlier commit completed.
+// A page mapping update or a residency set commit runs after every committed command completes.
+// A mapping update completes before the call that published it returns.
 // A retired address unmaps in the next mapping update, and the update after that releases it, so a command that declared it has completed first.
 // A retired address's pages return to the pool when its unmap has run, so no page is mapped in two addresses at once.
 struct Context {
@@ -90,23 +90,32 @@ struct Context {
     Context(Context &&) = delete;
     Context &operator=(Context &&) = delete;
 
-    // Begins recording a command whose encoders bind the command's argument table.
     Command Begin() const;
     // Commits residency, then the command, and returns the serial the queue signals once the command completes.
     uint64_t Commit(Command &&) const;
-    // Commits the command and returns once it completes, with Metal's feedback.
     Completion Run(Command &&) const;
     // The serial of the latest commit, which completes after every earlier one.
     uint64_t LatestSerial() const { return CommitSerial; }
     bool Completed(uint64_t serial) const;
     // Returns once the queue completes the serial, with Metal's feedback for the commit it identifies.
     Completion Wait(uint64_t serial) const;
+    void WaitIdle() const;
+    // A command or mapping wait past its timeout throws.
+    // Within a teardown scope it reports the stall and keeps waiting, since teardown releases the resources the GPU work uses.
+    struct TeardownScope {
+        explicit TeardownScope(const Context &);
+        ~TeardownScope();
+        TeardownScope(const TeardownScope &) = delete;
+        TeardownScope &operator=(const TeardownScope &) = delete;
+
+        const Context &Ctx;
+        bool Outer;
+    };
 
     void AddResident(MTL::Allocation *) const;
     void RemoveResident(MTL::Allocation *) const;
     // Commits residency changes, and with pending maps runs one mapping update with them and every pending unmap.
     void CommitResidency() const;
-    // Runs every pending map and unmap.
     void DrainMappings() const;
     // Frame boundary: runs the pending unmaps once the pages they hold exceed keep_bytes, and runs them all before it releases the empty slabs beyond keep_bytes.
     void TrimPageCache(uint64_t keep_bytes = 32u << 20) const;
@@ -137,20 +146,18 @@ private:
         uint32_t Chunk{};
         uint64_t Used{};
         uint64_t Serial{};
-        // Queue operations the commit surrounds the command with.
         std::vector<std::pair<NS::SharedPtr<MTL::Event>, uint64_t>> Waits, Signals;
         NS::SharedPtr<MTL::Drawable> Presented;
     };
-    // Runs the mapping commands and returns once they complete.
     void UpdateMappings(const std::vector<MappingCommand> &) const;
     // Runs one mapping update with every pending map and unmap, then returns the retired pages to the pool and holds the retired addresses until the next update.
     void UpdatePendingMappings() const;
-    // Returns once every committed command completes.
-    void WaitIdle() const;
+    // Returns once the event reaches the value, throwing `failure` past the timeout outside a teardown scope.
+    void Await(MTL::SharedEvent &, uint64_t value, const char *failure) const;
+    mutable bool TearingDown{false};
     mutable std::shared_ptr<PhysicalPagePool> PagePool;
     mutable bool ResidencyDirty{false};
     mutable std::vector<NS::SharedPtr<MTL::Allocation>> PendingResidentRemovals;
-    // Mapping completion and command completion are signaled on separate timelines.
     NS::SharedPtr<MTL::SharedEvent> MappingEvent, CompletionEvent;
     struct Mapping {
         NS::SharedPtr<MTL::Buffer> Destination;

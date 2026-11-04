@@ -1,8 +1,5 @@
+#pragma once
 // Adapted from KhronosGroup/glTF-Sample-Renderer (ibl.glsl)
-
-#ifndef IBL_MSL
-#define IBL_MSL
-
 #include "Bindless.metal"
 #include "ScreenSpace.metal"
 
@@ -56,7 +53,6 @@ inline float albedoSheenScalingLUT(const thread SceneT<SetT> &scene, float NdotV
     return scene.SampleTex(scene.View.Ibl.SheenELutSamplerSlot, clamp(float2(NdotV, sheen_roughness), float2(0.0f), float2(1.0f))).r;
 }
 
-// KHR_materials_anisotropy bends the reflection vector toward the anisotropic lobe before environment sampling.
 template<typename SetT>
 inline float3 getIBLRadianceAnisotropy(const thread SceneT<SetT> &scene, float3 n, float3 v, float roughness, float anisotropy, float3 anisotropy_dir) {
     const float3 anisotropic_tangent = cross(anisotropy_dir, v);
@@ -90,7 +86,6 @@ inline float3 sampleIblRefraction(const thread SceneT<SetT> &scene, float3 refra
     return getSpecularSample(scene, refracted_dir, lod).rgb;
 }
 
-// Samples either the opaque-scene framebuffer or prefiltered environment along the refracted direction.
 // Positive KHR_materials_dispersion splits the IOR into per-channel samples.
 template<typename SetT>
 inline float3 getVolumeRefraction(const thread SceneT<SetT> &scene, float3 n, float3 v, float3 world_pos, float world_thickness, float perceptual_roughness, float ior, float dispersion, bool real) {
@@ -122,4 +117,3 @@ inline float3 getIBLRadianceCharlie(const thread SceneT<SetT> &scene, float3 n, 
     return getSheenSample(scene, reflection, lod).rgb * sheen_color * brdf;
 }
 
-#endif

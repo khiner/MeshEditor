@@ -5,6 +5,8 @@
 #include "audio/ContactScene.h"
 #include "audio/Fft.h"
 #include "gltf/SourceTexture.h"
+#include "mesh/MeshPipelines.h"
+#include "mesh/Neighborhood.h"
 #include "physics/PhysicsContact.h"
 #include "physics/PhysicsTypes.h"
 #include "render/MaterialComponents.h"
@@ -24,13 +26,10 @@ const struct Gates {
     .ContactTilt = std::getenv("CONTACT_TILT") != nullptr,
 };
 
-// A pool key quantized to quarter octaves, so one entry serves every contact whose value wobbles within the bucket.
-// Maps nonpositive frequencies to octave key zero.
 double QuarterOctave(double x) { return x > 0 ? std::exp2(std::round(std::log2(x) * 4) / 4) : 0.0; }
 
 constexpr float ReliefLeakLength{1e-2f};
 
-// Bilinear tangent-space normal at a texel position, wrapping at the edges.
 vec3 SampleNormal(const DecodedImage &image, float x, float y) {
     const auto wrap = [](int v, int n) { return ((v % n) + n) % n; };
     const int w = int(image.Width), h = int(image.Height);
@@ -47,20 +46,20 @@ vec3 SampleNormal(const DecodedImage &image, float x, float y) {
     return Mix(top, bottom, fy);
 }
 
-// Surface length per unit UV distance: the square root of the mesh area over its area in `uv_set`.
-float UvLengthScale(const MeshStore &meshes, const Mesh &mesh, uint32_t uv_set) {
-    if (uv_set >= MeshStore::MaxUvSets || !(meshes.Get(mesh.GetStoreId()).CornerAttributes & (MeshAttributeBit_TexCoord0 << uv_set))) return 0.f;
-    const auto uvs = meshes.Arenas().CornerUvs[uv_set].View(meshes.Get(mesh.GetStoreId()).CornerUvs[uv_set]);
-    const auto &connectivity = mesh.GetConnectivity();
+float UvLengthScale(const MeshStore &meshes, const MeshPipelines &pipelines, const Mesh &mesh, uint32_t uv_set) {
+    const auto id = mesh.GetStoreId();
+    if (uv_set >= MeshStore::MaxUvSets || !(meshes.Get(id).CornerAttributes & (MeshAttributeBit_TexCoord0 << uv_set))) return 0.f;
+    const auto uvs = meshes.Arenas().CornerUvs[uv_set].View(meshes.Get(id).CornerUvs[uv_set]);
+    const auto [faces, corners, positions] = ReadFaceLoops(meshes, pipelines, mesh);
     double area = 0.0, uv_area = 0.0;
-    for (const auto face : mesh.faces()) {
-        const auto first = *connectivity.FaceHalfedge(*face), end = connectivity.FaceEnd(*face);
-        const auto p0 = mesh.GetPosition(mesh.GetToVertex({first}));
-        const auto a = uvs.GetOr(first);
-        for (uint32_t h = first + 1u; h + 1u < end; ++h) {
-            const auto p1 = mesh.GetPosition(mesh.GetToVertex({h})), p2 = mesh.GetPosition(mesh.GetToVertex({h + 1u}));
+    for (uint32_t f = 0u; f < faces.size(); ++f) {
+        const auto loop = corners.Of(f);
+        const auto p0 = positions[loop[0].Vertex];
+        const auto a = uvs.GetOr(loop[0].Halfedge);
+        for (uint32_t k = 1u; k + 1u < loop.size(); ++k) {
+            const auto p1 = positions[loop[k].Vertex], p2 = positions[loop[k + 1u].Vertex];
             area += 0.5 * double(Length(Cross(p1 - p0, p2 - p0)));
-            const auto b = uvs.GetOr(h), c = uvs.GetOr(h + 1u);
+            const auto b = uvs.GetOr(loop[k].Halfedge), c = uvs.GetOr(loop[k + 1u].Halfedge);
             uv_area += 0.5 * std::abs(double((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)));
         }
     }
@@ -69,7 +68,6 @@ float UvLengthScale(const MeshStore &meshes, const Mesh &mesh, uint32_t uv_set) 
 } // namespace
 
 void UpdateSurfaceRelief(state::Registry &r, state::Entity node_entity, state::Entity mesh_entity, bool geometry_changed) {
-    // A surface names its own map only to override the one the mesh's material already supplies.
     const auto *surface = r.try_get<const ContactSurface>(node_entity);
     const auto normal_map = [&]() -> std::optional<gltf::NormalMapRef> {
         if (!surface || !surface->NormalTexture) return gltf::MeshMaterialNormalMap(r, mesh_entity);
@@ -82,15 +80,13 @@ void UpdateSurfaceRelief(state::Registry &r, state::Entity node_entity, state::E
         r.remove<SurfaceRelief>(node_entity);
         return;
     }
-    // Reuse the current relief when neither its map nor the mesh geometry changed.
     const auto source_key = HashParams(0xff51afd7ed558ccdull, normal_map->Image, normal_map->TexCoord, normal_map->Scale);
     const auto *existing = r.try_get<const SurfaceRelief>(node_entity);
     if (!geometry_changed && existing && existing->SourceKey == source_key) return;
 
     // Lengths stay mesh-local, so one track serves every node instancing it, each sizing it by its own world scale.
     const auto mesh = TryGetMesh(r, mesh_entity);
-    const float length_per_uv = mesh ? UvLengthScale(r.Resources.get<const MeshStore>(), *mesh, normal_map->TexCoord) : 0.f;
-    // The track is fixed by the map, its texel size, and its scale, so a mesh edit that left the parameterization alone keeps it.
+    const float length_per_uv = mesh ? UvLengthScale(r.Resources.get<const MeshStore>(), GetMeshPipelines(r), *mesh, normal_map->TexCoord) : 0.f;
     const auto key = HashParams(0x2545f4914f6cdd1dull, normal_map->Image, length_per_uv, normal_map->Scale);
     if (existing && existing->Key == key) return;
     const auto image = length_per_uv > 0 ? gltf::DecodeImageRgba8(r, normal_map->Image) : std::nullopt;
@@ -99,9 +95,7 @@ void UpdateSurfaceRelief(state::Registry &r, state::Entity node_entity, state::E
         return;
     }
 
-    // Walk a straight path across the map, one texel of surface per sample.
     // The direction is irrational in texel space, so the path covers the map rather than repeating a row.
-    // TODO: Sample along the contact path using the closest triangle's UV gradient.
     constexpr float Slope = std::numbers::phi_v<float> - 1; // 1/phi, the least well approximated by a ratio of texel counts
     const float dir_x = 1.f / std::sqrt(1 + Slope * Slope), dir_y = Slope * dir_x;
     const vec2 step_uv{dir_x / float(image->Width), dir_y / float(image->Height)};
@@ -127,11 +121,9 @@ void UpdateSurfaceRelief(state::Registry &r, state::Entity node_entity, state::E
 }
 
 namespace {
-// Sample spacing of the track synthesized from a surface's roughness parameters, m.
-// Uses the surface's shortest wavelength as the track sampling interval.
+// Sample spacing in m of the track synthesized from a surface's roughness parameters, which is the surface's shortest wavelength.
 float SynthesizedFinishSpacing(const ContactSurface &s) { return FinishTrackSpacing(s.ShortWavelength); }
 
-// Hash the complete measured profile when constructing its microscale finish key.
 uint64_t FinishTrackKey(const ContactSurface &s) {
     if (s.HasMeasuredProfile()) {
         auto key = HashParams(0x9e3779b97f4a7c15ull, s.SampleSpacing, s.Profile.size());
@@ -145,7 +137,6 @@ uint64_t ContactVoiceId(const SustainedContact &c, uint32_t side) { return c.Id 
 
 const std::shared_ptr<const RoughnessTrack> &PooledTrack(const SurfaceAudioState &s, int32_t index) { return s.SurfaceTracks[uint32_t(index)].Owned; }
 
-// Each element keeps the tallest crest across the workers' gathers.
 void MergeCrests(std::vector<float> &into, std::span<const float> part) {
     if (part.empty()) return;
     if (into.empty()) into.assign(part.size(), -std::numeric_limits<float>::max());
@@ -191,19 +182,16 @@ SamplePointBlend ShapeBlendAt(const ModalModes &modes, vec3 local_point) {
     return best;
 }
 
-// Each body contributes two surface tracks shared by all voices reading that body.
 struct SideTracks {
     ContactTrack Finish, Relief;
 };
 
-// A body with no acoustic surface contributes the default finish, so a contact is always fully specified.
 SideTracks ResolveSideTracks(const state::Registry &r, ModalAudio &m, const SustainedContactSide &side, state::Entity node, float sample_rate) {
     auto &surface = Surface(m);
     static constexpr ContactSurface DefaultSurface{};
     static const uint64_t default_key = FinishTrackKey(DefaultSurface);
     const auto *authored = r.try_get<const ContactSurface>(node);
     const auto *relief = r.try_get<const SurfaceRelief>(node);
-    // An edit whose derived key is not yet computed is hashed here instead.
     const auto *memo = r.try_get<const SurfaceFinishKey>(node);
     const uint64_t finish_key = authored ? (memo ? memo->Value : FinishTrackKey(*authored)) : default_key;
     const auto *node_transform = WorldTransformOf(r, node);
@@ -224,7 +212,6 @@ SideTracks ResolveSideTracks(const state::Registry &r, ModalAudio &m, const Sust
             .Spacing = spacing,
         };
     };
-    // Microscale finish uses a measured profile or a track synthesized from the surface roughness parameters.
     const auto &s = authored ? *authored : DefaultSurface;
     if (const bool measured = s.HasMeasuredProfile(); measured || s.Roughness > 0) {
         const auto index = AdoptSurfaceTrack(surface, finish_key, [&] {
@@ -232,14 +219,12 @@ SideTracks ResolveSideTracks(const state::Registry &r, ModalAudio &m, const Sust
                 measured ? MakeProfileTrack(s.Profile, s.SampleSpacing) : SynthesizeRoughness(s.CorrelationLength, s.SpectralSlope, s.ShortWavelength, SynthesizedFinishSpacing(s), TrackSamples)
             );
         });
-        // Scale unit-height synthesized tracks by roughness while preserving measured-profile height.
+        // Unit-height synthesized tracks scale by roughness, and measured profiles keep their height.
         if (index >= 0) out.Finish = make_track(index, measured ? PooledTrack(surface, index)->Rms : s.Roughness, 1.f);
     }
 
-    // Mesoscale relief samples this body's normal map along its own contact path.
     if (relief && node_scale > 0) {
         const auto index = AdoptSurfaceTrack(surface, relief->Key, [&] { return relief->Track; });
-        // One track serves every node instancing the mesh, each sizing it by its own scale.
         if (index >= 0) out.Relief = make_track(index, relief->Track->Rms * node_scale, node_scale);
     }
     return out;
@@ -253,8 +238,8 @@ struct FinishSpec {
     uint32_t Side{0};
 };
 
-// Uses slot side*2 for finish and side*2+1 for mesoscale relief.
-// A zero sigma is absent.
+// Slot side*2 holds the finish and slot side*2+1 the mesoscale relief.
+// A zero sigma marks an absent slot.
 using FinishSpecs = std::array<FinishSpec, 4>;
 
 SubCutoffRoughness CompositeSubCutoff(const FinishSpecs &specs, float spacing) {
@@ -263,7 +248,6 @@ SubCutoffRoughness CompositeSubCutoff(const FinishSpecs &specs, float spacing) {
     double read_width = 0;
     for (uint32_t i = 0; i < specs.size(); i += 2) {
         const auto &spec = specs[i];
-        // Split the resolved and synthesized bands at the finish sampling limit.
         const double cutoff = std::max(double(spec.Cutoff), 2 * double(spacing));
         const auto band = UnresolvedBand(spec.Sigma, spec.Correlation, cutoff, spec.Slope);
         if (band.Amplitude <= 0) continue;
@@ -271,7 +255,6 @@ SubCutoffRoughness CompositeSubCutoff(const FinishSpecs &specs, float spacing) {
         read_width = read_width > 0 ? std::min(read_width, band.MaxWidth) : band.MaxWidth;
     }
     // Two finishes bear inside one contact, so their bands add in variance there.
-    // Select the exponent weighted by each band's contribution at the evaluated width.
     double variance = 0, weighted = 0;
     for (uint32_t i = 0; i < band_count; ++i) {
         const auto [amplitude, hurst] = bands[i];
@@ -284,12 +267,9 @@ SubCutoffRoughness CompositeSubCutoff(const FinishSpecs &specs, float spacing) {
     return {.Amplitude = std::sqrt(variance) / std::pow(read_width, hurst), .Hurst = hurst, .MaxWidth = read_width};
 }
 
-// One Hertz contact, whose elastic constants belong to the pair rather than to either body.
-// Resolved once, so both voices agree on the force between them.
 struct ResolvedContact {
     // The contact in this body's own frame, the frame its mode shapes are defined in.
     struct Side {
-        // Subsequent values use the frame of this side's model node.
         // Null when the side has nothing to excite.
         state::Entity ModelEntity{state::Null};
         SamplePointBlend Blend{};
@@ -300,43 +280,40 @@ struct ResolvedContact {
         double Stiffness{0};
         float SpotStiffness{0};
         float StaticPenetration{0};
-        // This side's force scale on the pair's shared element springs, from the stiffness cap.
         float SpringScale{1};
         std::array<SamplePointBlend, MaxSpringBins> SpringBinBlend{};
-        int32_t SweepIndex{-1}; // Moving-load sweep pool slot; negative disables it.
+        int32_t SweepIndex{-1}; // Moving-load sweep pool slot, negative when disabled.
         float NoiseRms{0}; // Root of the footprint's slip-turnover force variance at the anchor, N, before the side's spring scale.
         float NoiseStiffness{0}; // The footprint's bearing stiffness at the same anchor, N/m after the side's scale.
-        // Store sweep half-extent in metres and inverse pitch inertia in kg^-1 m^-2.
+        // Sweep half-extent in m and inverse pitch inertia in kg^-1 m^-2.
         // Zero inertia leaves the face flat.
         float SpringHalfExtent{0};
         float InverseAngularInertia{0};
     };
     std::array<Side, 2> Sides;
-    std::array<SideTracks, 2> Tracks; // Each body's finish and relief, adopted once for the pair.
-    ContactTrack Turnover{}; // The pair's asperity site population under the quadratised exchange.
-    double Stiffness{0}; // k, N/m^(3/2). Zero for a contact bearing on a bed of asperities.
+    std::array<SideTracks, 2> Tracks;
+    ContactTrack Turnover{};
+    double Stiffness{0}; // k in N/m^(3/2), zero for a contact bearing on a bed of asperities.
     float StaticPenetration{0};
     float ConformalLength{0}; // u0 = h_rms/Alpha, m. Positive for a contact two faces fix the area of.
     float DampingFactor{0}; // Hunt-Crossley dissipation per unit approach speed, dimensionless.
-    uint32_t SpotCount{0}; // Asperity cells along the track; positive selects the bed.
+    uint32_t SpotCount{0}; // Asperity cells along the track, and a positive count selects the bed.
     float SpotWeight{0};
     float SpotStiffness{0}; // k of one asperity, N/m^(3/2).
     float CellSpread{0}; // Spread of asperity heights about their cell's local mean, m.
     float SurfaceCompliance{1}; // Share of a surface excursion the bed takes, the bulk having taken the rest.
     float ShearStiffness{0}; // N/m, the patch shear spring the frictional force acts through.
     float FlankStiffness{0}; // N/m, the oblique-flank micro-slip spring the normal channel acts through.
-    // The same junction discretised over the bearing population's spread of breakaway strengths.
     // Zero bins run the single element.
     uint32_t FlankBins{0};
     std::array<FlankJunctionBin, MaxFlankBins> FlankBin{};
     float RelaxScale{0}; // N/m^2, the relaxation channel's coefficient, from the contact's second force derivative.
-    // The element/spring container (CONTACT_SPRINGS), shared by the pair.
     // Negative leaves the bed path.
     int32_t SpringIndex{-1};
     float SpringRate{0}; // Elements the contact advances per output sample.
     float SlipRate{0}; // Elements the slower surface falls behind the array per output sample.
     uint32_t SlowSide{0}; // Which surface that is.
-    uint32_t SpringBins{0}; // Distributed-excitation bins across the footprint; zero disables the channel.
+    uint32_t SpringBins{0}; // Distributed-excitation bins across the footprint, zero disabling the channel.
     // The turnover shot process's geometry, all m.
     float JunctionSpacing{0};
     float JunctionTransit{0};
@@ -362,17 +339,14 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
     for (uint32_t i = 0; i < c.Sides.size(); ++i) {
         auto &side = out.Sides[i];
         curvature[i] = SurfaceCurvature(r, nodes[i].Geometry, c.Point).value_or(0.0);
-        // Reject sides with inconsistent shape and position counts or missing bodies.
         const auto *modes = r.valid(nodes[i].Model) ? r.try_get<const ModalModes>(HierarchySource(r, nodes[i].Model)) : nullptr;
         const auto *transform = modes ? WorldTransformOf(r, nodes[i].Model) : nullptr;
         if (!transform || modes->Positions.empty() || modes->Shapes.size() != modes->Positions.size()) continue;
 
         // Physics reports the contact in world space oriented toward the second body.
-        // Transform subsequent values into the model node's frame used by the mode shapes.
         side.ModelEntity = nodes[i].Model;
         const auto &wt = *transform;
         const vec3 local_point = InverseTransformPoint(wt, c.Point);
-        // The first body is pressed and dragged the other way.
         const float toward = i == 0 ? -1.f : 1.f;
         side.Normal = InverseTransformDir(wt, toward * c.Normal);
         vec3 slip_world = UnitOrZero(c.Slip);
@@ -387,13 +361,11 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
         }
         side.Blend = ShapeBlendAt(*modes, local_point);
     }
-    // 1/E* and kappa1 + kappa2 are both sums over the two bodies, so the stiffness and patch belong to the contact.
     const double inv_modulus = InvEffectiveModulus(MaterialOf(r, nodes[0].Surface, nodes[0].Model), MaterialOf(r, nodes[1].Surface, nodes[1].Model));
     out.DampingFactor = 1.5f * std::max(1.f - c.Restitution, 0.f) * controls.ContactDamping;
     const float sample_rate = LiveBank(m).SampleRate;
     for (uint32_t i = 0; i < c.Sides.size(); ++i) out.Tracks[i] = ResolveSideTracks(r, m, c.Sides[i], nodes[i].Surface, sample_rate);
 
-    // The surface gradient a track presents, per unit length along the surface, from its height scale and spacing.
     const auto slope_rms = [&surface](const ContactTrack &t) {
         if (t.Index < 0 || t.Spacing <= 0) return 0.f;
         return t.Sigma * PooledTrack(surface, t.Index)->SlopeRms / t.Spacing;
@@ -403,14 +375,12 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
     const auto *surface_b = r.try_get<const ContactSurface>(nodes[1].Surface);
     const auto &sa = surface_a ? *surface_a : DefaultSurface;
     const auto &sb = surface_b ? *surface_b : DefaultSurface;
-    // Whichever surface is rougher dominates the composite spectrum, so its slope sets the Hurst exponent.
     const double hurst = HurstExponent(sa.Roughness >= sb.Roughness ? sa.SpectralSlope : sb.SpectralSlope);
     const double roughness = std::sqrt(double(sa.Roughness) * sa.Roughness + double(sb.Roughness) * sb.Roughness);
     const auto coeffs = PerssonSeparationCoefficients(hurst, RoughnessBandRatio);
     out.ConformalLength = coeffs.Alpha > 0 ? float(roughness / coeffs.Alpha) : 0.f;
     out.ShearStiffness = roughness > 0 ? float(MindlinShearRatio * c.NormalForce / (0.4 * roughness)) : 0.f;
     const double combined = CombinedCurvature(curvature.front(), curvature.back());
-    // Use the smooth Hertz spring for zero-roughness surfaces.
     out.Stiffness = ContactStiffness(inv_modulus, combined);
     out.StaticPenetration = float(StaticPenetration(c.NormalForce, out.Stiffness));
     const double hertz_radius = ContactPatchRadius(c.NormalForce, inv_modulus, combined);
@@ -445,7 +415,6 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
 
     double bed_total_spots = 0, bed_height_rms = 0;
     if (out.ConformalLength > 0) {
-        // The spectral moments of the gap, which both surfaces contribute to independently.
         const auto track_of = [&surface](const ContactTrack &t) { return PooledTrack(surface, t.Index).get(); };
         const auto usable = [](const ContactTrack &t) { return t.Index >= 0 && t.Spacing > 0; };
         double m2 = 0, m4 = 0;
@@ -555,7 +524,6 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
                 double sigma2 = 0;
                 for (uint32_t i = 0; i < specs.size(); ++i) {
                     if (specs[i].Sigma <= 0) continue;
-                    // Element width follows the finishes alone, waviness being smooth across elements.
                     if (i % 2 == 0) min_correlation = std::min(min_correlation, specs[i].Correlation);
                     sigma2 += double(specs[i].Sigma) * specs[i].Sigma;
                 }
@@ -608,7 +576,6 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
                     uint32_t drawn_count = 0;
                     for (const auto &spec : specs) {
                         if (spec.Sigma <= 0) continue;
-                        // Build measured bands independently because each contains a fixed realization.
                         auto *const same = spec.Profile ? drawn.begin() + drawn_count : std::ranges::find_if(drawn.begin(), drawn.begin() + drawn_count, [&spec](const FinishSpec &d) {
                             return !d.Profile && (!Gate.SlidingRegistration || d.Side == spec.Side) &&
                                 d.Correlation == spec.Correlation && d.Slope == spec.Slope && d.Cutoff == spec.Cutoff;
@@ -676,16 +643,13 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
                         const uint32_t workers = std::min<uint32_t>(
                             {strip_realizations, std::max(1u, std::thread::hardware_concurrency() - 1), std::max(1u, affordable)}
                         );
-                        // Permit one over-budget worker because ribbon construction requires at least one worker.
                         if (affordable < strip_realizations) {
                             std::println(
                                 stderr, "SPRINGBUDGET workers={} of {} realizations, {:.2f} GiB each over a {:.2f} GiB budget, field {}x{}",
                                 workers, strip_realizations, double(worker_bytes) / double(1ull << 30), double(WorkerBudget) / double(1ull << 30), columns, rows
                             );
                         }
-                        // Divide available threads between realization generation and transforms.
                         SetTransformThreads(std::max(1u, std::max(1u, std::thread::hardware_concurrency() - 1) / workers));
-                        // Scale a single synthesized band in place without allocating a sum buffer.
                         uint32_t active = 0, only = 0;
                         for (uint32_t i = 0; i < drawn_count; ++i) {
                             if (drawn[i].Sigma > 0) {
@@ -700,7 +664,7 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
                         }
                         std::vector<ElementSummits> gathered(workers);
                         std::vector<std::vector<float>> crest_gather(workers);
-                        // Gather each side's crests before composing fields, then merge them in worker order.
+                        // Each side's crests gather before the fields compose, and merge in worker order.
                         std::vector<std::array<std::vector<float>, 2>> side_crests(workers);
                         const auto run_gather = [&](bool crests_only) {
                             const auto gather = [&, crests_only](uint32_t w, std::span<const float> field) {
@@ -713,12 +677,11 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
                             for (uint32_t w = 0; w < workers; ++w) {
                                 pool.emplace_back([&, w] {
                                     std::vector<float> heights(direct ? 0 : size_t(columns) * rows, 0.f);
-                                    // Retain the second field until its crests are gathered, then compose it into the first.
                                     std::vector<float> apart(Gate.SlidingRegistration ? size_t(columns) * rows : 0, 0.f);
                                     for (uint32_t rep = next++; rep < strip_realizations; rep = next++) {
                                         if (direct) {
                                             auto patch = SynthesizeRoughnessPatch(drawn[only].Correlation, drawn[only].Slope, drawn[only].Cutoff, spacing, columns, rows, rep);
-                                            // Use one zero-initialized addition per sample to preserve signed zeros.
+                                            // One addition to zero per sample matches the summed path's signed zeros.
                                             for (float &h : patch.Heights) h = 0.f + drawn[only].Sigma * h;
                                             gather(w, patch.Heights);
                                             continue;
@@ -770,15 +733,13 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
                                 {bands.data(), band_count}, spacing, columns, rows, gap, curv_bucket, element_columns,
                                 strip_realizations, inv_modulus, sub_cutoff, engagement_max, SpringKnots, std::move(crests)
                             );
-                            // Use the realized build when a degenerate population has no crest anchor.
-                            // Report fallback because the two builds use different bearing statistics.
                             if (built->Springs.Count() == 0) {
                                 std::println(stderr, "SPRINGENSEMBLE found no crest population, realized build instead, field {}x{}", columns, rows);
                                 run_gather(false);
                             }
                         }
                         if (built->Springs.Count() == 0) {
-                            // Merge in worker order for deterministic populations across strip assignments.
+                            // Merging in worker order keeps populations deterministic across strip assignments.
                             ElementSummits summits;
                             for (const auto &part : gathered) MergeElementSummits(summits, part);
                             built->Springs = BuildElementSprings(summits, sub_cutoff, engagement_max, SpringKnots);
@@ -801,8 +762,6 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
                     auto set = std::make_shared<ContactSpringSet>();
                     set->SideCrestDev = strips->SideCrests;
                     set->Springs = strips->Springs;
-                    // Each side's own long bands at each element of the spanned array.
-                    // A merged pair keeps them all on the first side, as the draws themselves are merged there.
                     std::array<std::vector<float>, 2> lift{std::vector<float>(span_count, 0.f), std::vector<float>(span_count, 0.f)};
                     for (uint32_t e = 0; e < span_count; ++e) {
                         const double along = (double(e) + 0.5) * element_width;
@@ -821,7 +780,6 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
                     for (uint32_t e = 0; e < span_count; ++e) composite[e] = lift[0][e] + lift[1][e];
                     span_crests(set->Springs.Crest, composite);
                     for (uint32_t side = 0; side < set->SideCrestDev.size(); ++side) span_crests(set->SideCrestDev[side], lift[side]);
-                    // The footprint reads skip on the spanned crests.
                     RefreshCrestBlocks(set->Springs);
                     set->StripWidth = float(strip_realizations) * float(rows) * spacing;
                     set->SubCutoff = sub_cutoff;
@@ -878,15 +836,12 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
                     const auto &set = *surface.ContactSprings[uint32_t(index)].Owned;
                     out.SpringRate = set.Springs.Width > 0 ? step / set.Springs.Width : 0.f;
                     out.FootprintLength = float(footprint_length);
-                    // Sweep at the faster surface rate and offset the slower surface by the relative displacement.
                     const float slow_step = std::min(out.Tracks.front().Finish.Step, out.Tracks.back().Finish.Step);
                     out.SlowSide = out.Tracks.front().Finish.Step <= out.Tracks.back().Finish.Step ? 0u : 1u;
                     out.SlipRate = set.Springs.Width <= 0 ? 0.f : (step - slow_step) / set.Springs.Width;
                 }
             }
         }
-        // Generate one deterministic white turnover track per contact at the asperity spacing.
-        // The cells read its samples as surface-fixed site heights through the clamped law.
         if (bed.SpotCount > 0 && peak_density > 0 && out.SpringIndex < 0) {
             const float spacing_t = float(1.0 / peak_density);
             const uint64_t key = HashParams(0x7a52b0c4d1e6f398ull, spacing_t, c.Id);
@@ -931,7 +886,6 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
             if (side.ModelEntity == state::Null) continue;
             const auto slot = FindModalObject(bank, side.ModelEntity);
             if (!slot) continue;
-            // Derive contact-point effective mass from the coupled modal and rigid one-sample response.
             const auto o = *slot;
             const auto k0 = bank.ModeOffset[o], stride = bank.ModeCount[o], count = bank.TunedModeCount[o];
             const auto shape0 = bank.ShapeOffset[o];
@@ -970,12 +924,10 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
         const float anchor = out.Sides.front().StaticPenetration;
         const uint32_t stride = std::max(set.Springs.Count() / 512, 1u);
         const auto [moments, sampled] = SpringFlankSum(set, anchor, stride);
-        // Scale whole-contact moments by the ribbon strip count.
+        // Whole-contact moments scale by the ribbon strip count.
         // The width they divide into does not, being their ratio over the same sampled elements.
         const double modulus = sampled > 0 ? strips * moments.Modulus / sampled : 0;
         const double bearing_stiffness = sampled > 0 ? strips * moments.Stiffness / sampled : 0;
-        // The share of an excursion the interface takes, the bulk beneath it having taken the rest.
-        // Add equal-force stiffnesses in series using the element-stack stiffness computed above.
         if (bearing_stiffness > 0 && bound_area > 0 && inv_modulus > 0) {
             const double bulk = 2 * std::sqrt(bound_area / std::numbers::pi) / inv_modulus;
             out.SurfaceCompliance = float(bulk / (bulk + bearing_stiffness));
@@ -987,7 +939,6 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
         };
         out.RelaxScale = Gate.RelaxDamping ? float(0.5 * MindlinShearRatio * std::max((stiffness_at(anchor + probe) - stiffness_at(anchor - probe)) / (2 * double(probe)), 0.0)) : 0.f;
         const double flank_width = SpringBearingWidth(moments);
-        // The gradient a track presents when a patch that wide averages it, per unit length.
         const auto slope_at_width = [&surface, flank_width](const ContactTrack &t) {
             if (t.Index < 0 || t.Spacing <= 0) return 0.f;
             const auto &track = *PooledTrack(surface, t.Index);
@@ -1046,7 +997,6 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
                 const auto *transform = WorldTransformOf(r, side.ModelEntity);
                 const auto slot = FindModalObject(bank, side.ModelEntity);
                 if (!modes || !transform || !slot) continue;
-                // The anchor engagement quantized to quarter octaves, so load wobble reuses a table.
                 const double pen_bucket = QuarterOctave(double(side.StaticPenetration));
                 if (!(pen_bucket > 0)) continue;
                 const double scale_bucket = QuarterOctave(double(side.SpringScale));
@@ -1060,7 +1010,6 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
                     const auto o = *slot;
                     const auto mode_count = bank.TunedModeCount[o];
                     const auto stride = bank.ModeCount[o], shape0 = bank.ShapeOffset[o];
-                    // The mode shapes' normal projections at element pitch across the footprint.
                     const auto window = 2 * set.Reach + 1;
                     std::vector<float> phi(size_t(window) * mode_count);
                     for (uint32_t w = 0; w < window; ++w) {
@@ -1071,7 +1020,6 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
                             phi[size_t(w) * mode_count + k] = Dot(BlendedShape(bank, b0, b1, b2, bl.Weights, k), side.Normal);
                         }
                     }
-                    // Use anchored element forces to compute row conformity projections.
                     std::vector<float> field(count);
                     const auto anchored = AnchoredElementSums(set, pen_bucket, scale_bucket, field);
                     auto table = std::make_shared<SweepTableSet>();
@@ -1082,7 +1030,6 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
                     table->NoiseStiffness = float(anchored.Stiffness * double(window) / double(count));
                     table->Table.assign(size_t(mode_count) * count, 0.f);
                     SweepModeDrives(field, phi, mode_count, set.Reach, table->Table);
-                    // Each row zero-mean over position, so the channel is fluctuation alone.
                     for (uint32_t k = 0; k < mode_count; ++k) {
                         auto *row = &table->Table[size_t(k) * count];
                         double mean = 0;
@@ -1115,7 +1062,6 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
                         table->NoiseStiffness = float(anchored.Stiffness * window / count);
                         return table;
                     });
-                    // The variance is copied out here and the render never reads the table, so the side's SweepIndex stays unset.
                     // The rowless table is built at unit scale, so the side applies its own.
                     ReadTurnoverNoise(side, surface, index, side.SpringScale);
                 }
@@ -1125,7 +1071,6 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
     return out;
 }
 
-// The voice one side of a resolved contact renders, empty when the body has no bank slot or no sample points to excite.
 std::optional<VoiceSet::Voice> BuildContactVoice(ModalAudio &m, const SustainedContact &c, const ResolvedContact &resolved, uint32_t side) {
     const auto &own_resolved = resolved.Sides[side];
     if (own_resolved.ModelEntity == state::Null) return {};
@@ -1172,7 +1117,7 @@ std::optional<VoiceSet::Voice> BuildContactVoice(ModalAudio &m, const SustainedC
             .JunctionSpacing = resolved.JunctionSpacing,
             .JunctionTransit = resolved.JunctionTransit,
             .FootprintLength = resolved.FootprintLength,
-            // Slots 0 and 1 store microscale finish; slots 2 and 3 store mesoscale relief.
+            // Slots 0 and 1 hold microscale finish, and slots 2 and 3 hold mesoscale relief.
             // Both voices list them in the same order, so the two read one surface at one position.
             .Tracks = {
                 resolved.Tracks[0].Finish,
@@ -1196,7 +1141,6 @@ float SurfaceRoughnessOf(const state::Registry &r, state::Entity node) {
     return (surface ? *surface : DefaultSurface).Roughness;
 }
 
-// A compound body's rubber foot and steel shell are separate collider nodes, so a contact on one takes that node's surface.
 state::Entity ContactSurfaceNode(const state::Registry &r, state::Entity collider, state::Entity body) {
     return NearestNodeWith(r, collider, body, [&r](state::Entity e) { return r.all_of<ContactSurface>(e); });
 }
@@ -1206,11 +1150,7 @@ void SurfaceSetupDocument(state::Registry &r) { r.emplace_or_replace<SurfaceSoun
 void RegisterSurfaceContactHandlers(state::Registry &r) {
     auto &changes = r.Resources.emplace<SurfaceChanges>();
     changes.Edit.bind(r).on<ContactSurface>(On::Create | On::Update | On::Destroy);
-    // A surface with no normal map of its own inherits its material's, so a material reassignment changes the relief too.
-    // A material assignment names a mesh where a surface names a node, so the two are tracked apart.
     changes.Material.bind(r).on<MeshMaterialAssignment>(On::Create | On::Update);
-    // The relief's texel size is measured from the mesh, so an edit to the mesh restates it.
-    // Tracked separately from the surface edits above so the derivation can tell which of the two it is answering.
     changes.Geometry.bind(r).on<MeshGeometryDirty>(On::Create).on<MeshPositionsChanged>(On::Create);
     changes.SoundControls.bind(r).on<SurfaceSoundControls>(On::Create | On::Update);
 }
@@ -1227,22 +1167,19 @@ void SurfaceUpdateContacts(state::Registry &r) {
         surface.MuteGeometricDrive.store(controls.MuteGeometricDrive, std::memory_order_relaxed);
         surface.MuteFrictionDrive.store(controls.MuteFrictionDrive, std::memory_order_relaxed);
     }
-    // Re-derive the mesoscale relief of any edited surface, so a sustained contact reads it without decoding a texture.
-    // Refresh every node using an edited surface or mesh because relief coordinates belong to the mesh.
-    // The finish key follows the surface alone.
     const auto &surface_edits = changes.Edit, &material_edits = changes.Material, &mesh_edits = changes.Geometry;
     if (!surface_edits.empty() || !material_edits.empty() || !mesh_edits.empty()) {
         for (const auto node : r.view<const Instance>()) {
             const auto mesh_e = r.get<const Instance>(node).Entity;
             const bool geometry_changed = mesh_edits.contains(mesh_e);
             if (!geometry_changed && !surface_edits.contains(node) && !material_edits.contains(mesh_e)) continue;
-            // Intentional registry write outside Apply: derived from the node's surface and its mesh's coordinates.
+            // Direct write outside Apply, derived from the node's surface and its mesh's coordinates.
             UpdateSurfaceRelief(r, node, mesh_e, geometry_changed);
         }
     }
     for (const auto node : surface_edits) {
         if (!r.valid(node)) continue;
-        // Intentional registry write outside Apply: a memo derived from the surface.
+        // Direct write outside Apply of a memo derived from the surface.
         if (const auto *s = r.try_get<const ContactSurface>(node)) r.emplace_or_replace<SurfaceFinishKey>(node, FinishTrackKey(*s));
         else r.remove<SurfaceFinishKey>(node);
     }
@@ -1264,15 +1201,12 @@ void SurfaceUpdateContacts(state::Registry &r) {
             ResolveContactNodes(r, c.Sides.front().ColliderEntity, c.Sides.front().Entity),
             ResolveContactNodes(r, c.Sides.back().ColliderEntity, c.Sides.back().Entity),
         };
-        // Resolving searches both bodies' sample points and adopts both surfaces' tracks, so a silent pair stops here.
         const std::array<bool, 2> sounding{IsModalSounding(r, nodes[0].Model), IsModalSounding(r, nodes[1].Model)};
         if (!sounding.front() && !sounding.back()) continue;
-        // A full set can take neither side, so a contact past the cap is refused before it is resolved.
         if (set.Voices.size() >= max_voices) {
             surface.VoicesRefused += sounding.front() + sounding.back();
             continue;
         }
-        // Both voices render one contact, so its elastic constants and both bodies' surfaces resolve once here.
         const auto resolved = ResolveContact(r, m, c, nodes, controls);
         for (uint32_t side = 0; side < c.Sides.size(); ++side) {
             if (!sounding[side]) continue;

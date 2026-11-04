@@ -1,6 +1,4 @@
-#ifndef POSED_MESHLET_BOUNDS_MSL
-#define POSED_MESHLET_BOUNDS_MSL
-
+#pragma once
 #include "gpu/AABB.h"
 #include "BoundsShared.metal"
 #include "MeshletShared.metal"
@@ -36,8 +34,7 @@ kernel void PosedMeshletBoundsKernel(
     const DrawData draw = ComposeDraw(mesh, instance, instance_id);
     float3 lo = AabbEmptyMin;
     float3 hi = AabbEmptyMax;
-    // One 32-lane SIMD group owns a meshlet.
-    // Each lane folds up to two vertices.
+    // One 32-lane SIMD group reduces a meshlet, and each lane folds up to two vertices.
     for (uint v = tid; v < meshlet.VertexCount; v += 32u) {
         const uint source_vertex = BindlessBuffer(uint, bindless.Buffer, pc.MeshletVertexSlot)[mesh.Display.Payloads.VertexCorners + meshlet.VertexOffset + v];
         const uint topology = meshlet.Topology;
@@ -54,5 +51,3 @@ kernel void PosedMeshletBoundsKernel(
         };
     }
 }
-
-#endif

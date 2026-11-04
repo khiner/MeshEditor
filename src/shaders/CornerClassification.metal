@@ -2,7 +2,7 @@
 #include "ElementWorkShared.metal"
 #include "gpu/CornerClassificationPushConstants.h"
 
-// A lane's job and the vertex it classifies, InvalidOffset when the lane names none.
+// A lane's job and the vertex it classifies, InvalidOffset when the lane has none.
 struct CornerClassificationContext {
     device const BindlessSet &B;
     constant CornerClassificationPushConstants &Pc;
@@ -47,9 +47,9 @@ inline CornerClassificationContext ClassificationLane(device const BindlessSet &
         v = i < job.VertexCount ? WorkGroupElement(b,job.Vertices,i) : InvalidOffset;
     } else {
         const MeshElementBlock block = BindlessBuffer(MeshElementBlock,b.Buffer,pc.VertexBlocksSlot)[tile.y];
-        v = block.Live[lane/32u] & (1u<<(lane%32u)) ? block.Local*256u+lane : InvalidOffset;
+        v = SlotLive(block, lane) ? block.Local*MeshElementBlockSize+lane : InvalidOffset;
     }
-    return {b,pc,job,{b,job.Connectivity,job.FaceCount},v};
+    return {b,pc,job,{b,job.Connectivity},v};
 }
 
 kernel void CornerClassificationCount(
@@ -92,8 +92,8 @@ kernel void CornerClassificationWrite(
     const auto fan = ctx.Conn.Incoming(ctx.Vertex);
     for (uint n = 0u; n < fan.y; ++n) ctx.Write(ctx.Conn.FanCorner(fan.x+n),InvalidOffset);
     if (!(ctx.Flags(fan)&5u)) return;
-    // A single vertex owns these writes.
-    // Incoming lists are sorted, so the first unlabelled smooth corner is its component's canonical minimum.
+    // This vertex's lane is the only writer of its corners.
+    // Incoming lists are sorted, so the first unlabelled smooth corner is its sector's lowest corner.
     for (uint n = 0u; n < fan.y; ++n) {
         const uint h = ctx.Conn.FanCorner(fan.x+n);
         if (ctx.Conn.HalfedgeFace(h)!=InvalidOffset && !ctx.Flat(h) && ctx.Root(h) == InvalidOffset) ctx.Sector(h,fan.y);

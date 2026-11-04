@@ -1,6 +1,4 @@
-#ifndef MESHLET_EDIT_OVERLAY_MSL
-#define MESHLET_EDIT_OVERLAY_MSL
-
+#pragma once
 #include "ElementOverlay.metal"
 #include "MeshletEditGeometry.metal"
 #include "gpu/MeshletLimit.h"
@@ -177,5 +175,3 @@ using MeshletSelectFaceOutput = metal::mesh<FaceIdFragmentVaryings, void, uint(M
         output.set_index(output_index, output_index);
     }
 }
-
-#endif

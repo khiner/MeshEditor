@@ -5,6 +5,6 @@ struct MeshStore;
 struct SymmetrySnapVertex {
     uint32_t Vertex, Partner;
 };
-// Disjoint nearest mirror pairs, in canonical handle order.
-// Includes unselected counterparts; the bounds hierarchy and positions are read directly from UMA.
-std::vector<SymmetrySnapVertex> PlanSymmetrySnap(const MeshStore &, const Mesh &, const GeometrySelection &, uint32_t axis, float threshold, bool center);
+struct MeshPipelines;
+// Disjoint nearest mirror pairs within the threshold, in canonical handle order, including unselected counterparts.
+std::vector<SymmetrySnapVertex> PlanSymmetrySnap(const MeshStore &, const MeshPipelines &, const Mesh &, const GeometrySelection &, uint32_t axis, float threshold, bool center);

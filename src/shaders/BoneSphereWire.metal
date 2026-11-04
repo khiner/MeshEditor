@@ -1,6 +1,4 @@
-#ifndef BONESPHEREWIRE_MSL
-#define BONESPHEREWIRE_MSL
-
+#pragma once
 #include "BoneUtils.metal"
 #include "MeshletResolve.metal"
 #include "LineQuad.metal"
@@ -14,7 +12,6 @@ inline float4 BoneSphereWirePosition(const thread Scene &scene, DrawData draw, u
     const float4x4 view_proj = scene.ViewProj();
     float4 clip_pos = view_proj * float4(bb.world_pos, 1.0f);
 
-    // Offset away from the center to avoid overlap with the solid shape (matches Blender).
     const float4 center_clip = view_proj * float4(bb.center, 1.0f);
     const float2 viewport_size = float2(scene.View.ViewportSize);
     const float2 ofs_dir = normalize(clip_pos.xy / clip_pos.w - center_clip.xy / center_clip.w);
@@ -48,8 +45,6 @@ using BoneSphereWireMeshOutput = metal::mesh<EdgeQuadVaryings, void, 128u, 64u, 
     draw.IndexSlotOffset = work.Primitive.AuxIndices;
     const auto a = BoneSphereWirePosition(scene, draw, thread_index * 2u);
     const auto b = BoneSphereWirePosition(scene, draw, thread_index * 2u + 1u);
-    const float4 color = float4(bone_joint_wire_color(scene, load_bone_instance_state(scene, draw)), 1.0f);
+    const float4 color = float4(bone_joint_wire_color(scene, scene.InstanceState(draw)), 1.0f);
     EmitStroke(output, thread_index, scene, a, b, color);
 }
-
-#endif

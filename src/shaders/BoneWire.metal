@@ -1,6 +1,4 @@
-#ifndef BONEWIRE_MSL
-#define BONEWIRE_MSL
-
+#pragma once
 // Port of Blender's overlay_armature_shape_outline_vert.glsl.
 // Each edge loads 4 adjacency indices: [adj_left, edge_v0, edge_v1, adj_right].
 #include "BoneUtils.metal"
@@ -60,12 +58,10 @@ inline BoneLineVertex BoneWireMeshVertexAt(const thread Scene &scene, DrawData d
     const float fac0 = dot(view_vec, n0);
     const float fac3 = dot(view_vec, n3);
 
-    // Treat a face perpendicular to the view as an outline boundary.
     if (abs(fac0) > 1e-5f && abs(fac3) > 1e-5f) {
         if (sign(fac0) == sign(fac3)) return DiscardedEdge();
     }
 
-    // Omit concave edges from the outline.
     const bool inverted = dot(cross(M[0].xyz, M[1].xyz), M[2].xyz) < 0.0f;
     const float3 n0_check = inverted ? -n0 : n0;
     if (dot(n0_check, v13) > 0.0001f) return DiscardedEdge();
@@ -74,10 +70,10 @@ inline BoneLineVertex BoneWireMeshVertexAt(const thread Scene &scene, DrawData d
     const float3 world_pos = (M * float4(vert_in_edge == 0u ? p1 : p2, 1.0f)).xyz;
     float4 clip_pos = scene.ViewProj() * float4(world_pos, 1.0f);
 
-    // Apply Blender's depth bias to prevent z-fighting with the fill.
+    // Blender's depth bias keeps the wire in front of the fill.
     clip_pos.z -= 1e-4f;
 
-    return {.Position = clip_pos, .Color = float4(bone_wire_color(scene, load_bone_instance_state(scene, draw)), 1.0f)};
+    return {.Position = clip_pos, .Color = float4(bone_wire_color(scene, scene.InstanceState(draw)), 1.0f)};
 }
 
 using BoneWireMeshOutput = metal::mesh<EdgeQuadVaryings, void, 48u, 24u, metal::topology::triangle>;
@@ -107,5 +103,3 @@ using BoneWireMeshOutput = metal::mesh<EdgeQuadVaryings, void, 48u, 24u, metal::
     const auto b = BoneWireMeshVertexAt(scene, draw, thread_index * 2u + 1u);
     EmitStroke(output, thread_index, scene, a.Position, b.Position, a.Color);
 }
-
-#endif

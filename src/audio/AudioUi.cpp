@@ -214,7 +214,6 @@ void DrawModalModelSettings(
     if (reuse) EndDisabled();
 }
 
-// Returns the active vertex in Excite mode or selected vertices in Edit mode.
 std::vector<uint32_t> GetSampleOpVertices(const state::Registry &r, state::Entity sound_entity) {
     if (!r.valid(sound_entity)) return {};
     const auto *inst = r.try_get<const Instance>(sound_entity);
@@ -236,8 +235,6 @@ std::vector<uint32_t> GetSampleOpVertices(const state::Registry &r, state::Entit
     return vertices;
 }
 
-// Circular pad editing a position in the unit disk (center = zero).
-// Drag to set, right-click recenters.
 bool ImpulseJoystick(vec2 &pos) {
     constexpr float radius{32.f};
     const auto p0 = GetCursorScreenPos();
@@ -270,7 +267,6 @@ void DrawObjectAudioControls(state::Registry &r, state::Entity e, state::Entity 
     const auto &material = r.all_of<AcousticMaterial>(e) ? r.get<const AcousticMaterial>(e) : materials::acoustic::All.front();
     if (DrawModalModelActions(r, e, mesh_entity, settings, material)) return;
 
-    // Sample ops (Add/Replace/Remove) are only available in Edit / Excite mode.
     const auto mode = r.get<const Interaction>(state::Document).Mode;
     const bool sample_ops_available = mode == InteractionMode::Edit || mode == InteractionMode::Excite;
     const auto op_vertices = sample_ops_available ? GetSampleOpVertices(r, e) : std::vector<uint32_t>{};
@@ -284,7 +280,7 @@ void DrawObjectAudioControls(state::Registry &r, state::Entity e, state::Entity 
     auto model = has_model ? r.get<SoundVerticesModel>(e) : SoundVerticesModel::Samples;
     const auto *recording = r.try_get<const Recording>(e);
     const uint32_t active_vi = excitable ? GetActiveVertexIndex(r, e) : 0;
-    const auto sample_rate = DeviceSampleRate(r); // for the spectrum plots below
+    const auto sample_rate = DeviceSampleRate(r);
 
     if (samples && modal_modes) {
         PushID("SelectAudioModel");
@@ -380,7 +376,7 @@ void DrawObjectAudioControls(state::Registry &r, state::Entity e, state::Entity 
         if (const auto hovered = PlotModeData(modes.T60s, "Mode T60s", "", "T60 decay time (s)", hovered_mode_index)) new_hovered_index = hovered;
         const auto active_gains = [&]() -> std::vector<float> {
             if (active_vi >= modes.Shapes.size()) return {};
-            const auto j = TiltAlongNormal(VertexNormal(GetMesh(r, mesh_entity), r.Resources.get<const MeshStore>().Arenas().SoundVertices.Get(excitable->Vertices)[active_vi]), r.get<const Striker>(state::Document).Tilt);
+            const auto j = ExciteDirection(r, e, r.Resources.get<const MeshStore>().Arenas().SoundVertices.Get(excitable->Vertices)[active_vi]);
             return modes.Shapes[active_vi] | transform([&](const vec3 &s) { return std::abs(Dot(s, j)); }) | to<std::vector<float>>();
         }();
         if (!active_gains.empty()) {
@@ -508,8 +504,6 @@ void DrawModalJobsOverlay(state::Registry &r) {
     const auto anchor = GetWindowPos() + ImVec2{Pad, GetWindowSize().y - Pad};
     SetNextWindowPos(anchor, ImGuiCond_Always, {0.f, 1.f});
     SetNextWindowBgAlpha(0.85f);
-    // The viewport panel zeroes its window padding, so restore normal padding for the overlay.
-    // Vertical padding matches the item spacing, so each row sits evenly between the panel edges and its bar.
     PushStyleVar(ImGuiStyleVar_WindowPadding, {10.f, 6.f});
     PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
     PushStyleVar(ImGuiStyleVar_ItemSpacing, {GetStyle().ItemSpacing.x, 6.f});
@@ -518,7 +512,6 @@ void DrawModalJobsOverlay(state::Registry &r) {
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
         ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoMove;
     if (Begin("Modal solve jobs", nullptr, OverlayFlags)) {
-        // Keep the overlay above the focused viewport panel.
         BringWindowToDisplayFront(GetCurrentWindow());
         for (const auto &job : jobs) {
             const auto &monitor = *job->Work.Monitor;

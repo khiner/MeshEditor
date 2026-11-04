@@ -2,21 +2,19 @@
 
 #include "gpu/SlotOffset.h"
 
-// Stores one primitive's meshlet range and LOD roots.
-// The instance record names the mesh record they share.
+// One primitive's meshlet range and LOD roots.
 struct PrimitiveRecord {
     // Optional kind-specific indices for bone adjacency and ring geometry.
     SlotOffset AuxIndices DEFAULT();
     uint32_t PrimitiveIndex DEFAULT();
-    uint32_t Topology DEFAULT(); // Triangle, line or point; one material can have all three.
-    // The mesh's primitive-material offset, kept here so the cull resolves a material without the mesh record.
+    uint32_t Topology DEFAULT(); // Triangle, line or point, and one material can have all three
     uint32_t PrimitiveMaterialOffset DEFAULT(InvalidOffset);
     // Construction slice of the owner's triangle id range.
     uint32_t TriangleOffset DEFAULT(), TriangleCount DEFAULT();
     uint32_t MeshletCount DEFAULT();
     // Pinned instances enumerate the finest node's canonical membership.
     uint32_t Level0Count DEFAULT();
-    // Identifies the full-run span root and the leaf covering the original-geometry prefix.
+    // The full-run span root and the leaf covering the original-geometry prefix.
     uint32_t LodRootNode DEFAULT(InvalidOffset);
     uint32_t LodFinestNode DEFAULT(InvalidOffset);
     // The whole-primitive simplification scale that every rebuild of one of its LOD groups reuses.

@@ -25,7 +25,7 @@ void RegisterScene(Tables &tables) {
         TypeList<>{},
         TypeList<
             RenderInstance, WorldTransform, ModelsBuffer, LastEvaluatedFrame, PlaybackFrame,
-            PosedLayout, MeshEditWork, MeshVertexOverlays, BoundsRun,
+            PosedLayout, MeshEditWork, MeshVertexOverlays, BoundsRun, TalliedRecord,
             MeshletPositionsDirty, ClusterLodDirty, ClusterLodDemand, MeshDisplayDirty, MeshLayoutDirty, MeshBoundsDirty>{}
     );
 }

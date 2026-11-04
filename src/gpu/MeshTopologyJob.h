@@ -2,12 +2,13 @@
 #include "gpu/ConnectivityRef.h"
 #include "gpu/Element.h"
 #include "gpu/ElementWork.h"
-#include "gpu/MeshAttributeBit.h"
 #include "gpu/MeshTopologyOp.h"
 #include "gpu/NamedAttributeRef.h"
-// One topology operator run: the source mesh, the output ranges, and the scratch layout.
+
+GPU_CONSTANT uint32_t TopologyCountQuantities = 5u;
+
 // The output fields are filled after the count scan, once the host has allocated the output at its exact counts.
-// Arena offsets index the arenas the push constants name by slot.
+// Arena offsets index the arenas the push constants identify by slot.
 struct MeshTopologyJob {
     MeshTopologyOp Op DEFAULT();
     uint32_t Flags DEFAULT();
@@ -17,10 +18,8 @@ struct MeshTopologyJob {
     // Float attributes of the source holding each parameter per element of the domain the operator reads it in, or none to read the parameter.
     NamedAttributeRef Param0Attribute DEFAULT();
     NamedAttributeRef Param1Attribute DEFAULT();
-    // The source vertex a merge keeps and its output position.
     uint32_t TargetVertex DEFAULT(InvalidOffset);
     vec3 TargetPosition DEFAULT();
-    // The transform applied to copies, as three columns and a translation.
     mat3 CopyRotation DEFAULT();
     vec3 CopyTranslation DEFAULT();
     // A plane as its unit normal and offset, positive on the normal's side.
@@ -31,13 +30,13 @@ struct MeshTopologyJob {
     vec2 Extent DEFAULT();
     vec2 KnifeStart DEFAULT();
     vec2 KnifeEnd DEFAULT();
-    // Source mesh.
+    // A level set's lattice as grid points per axis, whose source vertices are the lattice points in order, grid points before body centers.
+    GpuArray<uint32_t, 3> LatticeSize DEFAULT();
     ConnectivityRef SrcConnectivity DEFAULT();
     uint32_t SrcVertexCount DEFAULT();
     uint32_t SrcHalfedgeCount DEFAULT();
     uint32_t SrcFaceCount DEFAULT();
     uint32_t SrcEdgeCount DEFAULT();
-    // Compact work indices resolve to the source's handles without staging geometry.
     ElementWork SrcVertexWork DEFAULT(), SrcHalfedgeWork DEFAULT(), SrcFaceWork DEFAULT(), SrcEdgeWork DEFAULT();
     // Boolean second-source elements follow first-source elements in each compact domain.
     GpuArray<uint32_t, 4> Src2Counts DEFAULT();
@@ -46,10 +45,11 @@ struct MeshTopologyJob {
     // CornerAttributes and VertexAttributes are the output's.
     uint32_t SourceLayers DEFAULT();
     SlotOffset Boolean DEFAULT(); // A boolean's BooleanJob record
+    SlotOffset Simplify DEFAULT(); // A simplify's SimplifyJob record, whose elected edges a Decimate collapses
     Element SelectionElement DEFAULT();
     ElementWork VertexSelection DEFAULT(), EdgeSelection DEFAULT(), FaceSelection DEFAULT();
-    uint32_t SelectionOffset DEFAULT(); // Explicit selection classified once over the compact source domains
-    ElementWork PrimitiveWork DEFAULT(); // Fresh output remaps source primitive IDs to its compact palette.
+    uint32_t SelectionOffset DEFAULT();
+    ElementWork PrimitiveWork DEFAULT();
     uint32_t HasSkin DEFAULT();
     uint32_t HasVertexPrimitives DEFAULT(); // Bit 0: source, bit 1: destination
     uint32_t CornerAttributes DEFAULT();
@@ -59,29 +59,26 @@ struct MeshTopologyJob {
     uint32_t MorphTargetCount DEFAULT();
     uint32_t CollapseCount DEFAULT();
     SlotOffset CollapseVertices DEFAULT(); // The selected vertex handles a collapse ranks, or none when it collapses every source vertex
-    // Output mesh.
     uint32_t DstCornerOffset DEFAULT();
     ConnectivityRef DstConnectivity DEFAULT();
     uint32_t DstVertexCount DEFAULT();
     uint32_t DstHalfedgeCount DEFAULT();
     uint32_t DstFaceCount DEFAULT();
-    // Compact-index -> handle maps.
-    // Corners and triangles are emitted into independently reserved handle runs.
+    // Handles per compact index.
     SlotOffset DstVertexHandles DEFAULT(), DstFaceHandles DEFAULT();
     // Output selection mask words by arena address, or none.
     SlotOffset DstVertexBits DEFAULT();
     SlotOffset DstEdgeBits DEFAULT();
     SlotOffset DstFaceBits DEFAULT();
     uint32_t DstTriangleOffset DEFAULT();
-    uint32_t DstEdgeSharpnessOffset DEFAULT();
     // Scratch layout, in words.
     uint32_t StateOffset DEFAULT(); // Two words: whether an extruded region borders unselected faces, then whether a label pass changed a value this round
     uint32_t FlagVertexOffset DEFAULT(); // Per source vertex: tagged, kept, region, and copy bits
     uint32_t VertexTargetOffset DEFAULT(); // Per source vertex: the source vertex its corners map to
     uint32_t FlagHalfedgeOffset DEFAULT(); // Per source halfedge
     uint32_t FlagFaceOffset DEFAULT(); // Per source face: 1 when the face survives
-    // Four count arrays over source vertices, halfedges, faces, the appended list and a terminator:
-    // vertices, faces, face corners, wire corners.
+    // TopologyCountQuantities count arrays over source vertices, halfedges, faces, the appended list and a terminator.
+    // The arrays count vertices, faces, face corners, wire corners and provenance pairs, in that order.
     // Face corners precede wire corners in the output allocation.
     uint32_t CountsOffset DEFAULT();
     uint32_t CountEntries DEFAULT();
@@ -97,9 +94,12 @@ struct MeshTopologyJob {
     // Iterating operators: per source face, its label, its region's boundary halfedge count and lowest boundary halfedge, and its walked loop length.
     // Then per source vertex, its edge count and its dissolved edge count.
     uint32_t LabelOffset DEFAULT();
-    // Per source halfedge: an edge split's sector representative, or per source edge, a listed cut's parameter as float bits or InvalidOffset.
+    // Per source halfedge: an edge split's sector representative, or a triangulated face's ear links and values, six words per halfedge.
+    // Per source edge: a subdivide's listed cut count or junction vertex, a screen cut's parameter as float bits, or InvalidOffset.
     uint32_t HalfedgeAuxOffset DEFAULT();
-    uint32_t WireEdgeMapOffset DEFAULT(); // Per source edge: surface, emitted wire pair, or retired; may alias finished edge classification
+    // Per source edge: surface, emitted wire pair, or retired.
+    // It may alias finished edge classification.
+    uint32_t WireEdgeMapOffset DEFAULT();
     // Per affected face: expanded subdivision loop, chords, and face-walk work.
     uint32_t FaceLoopOffset DEFAULT();
     // Hash table for grid-cell merge candidates, then representative corners of joined output lines.
@@ -110,11 +110,13 @@ struct MeshTopologyJob {
     // Per output vertex: two inward vectors, or one displacement and a zero, that the gather adds to its position.
     uint32_t VertexInwardOffset DEFAULT();
     // Retained neighborhood corners whose authored normals need rebasing after their derived frames change.
-    // SrcHalfedgeWork excludes replaced loops.
     ElementWork RetainedNormalCorners DEFAULT();
     uint32_t RetainedNormalCornerCount DEFAULT();
     // Optional emitted-triangle ordinal -> original triangle, for local render ownership.
     SlotOffset DstTriangleSources DEFAULT();
+    // Pairs of a source element and its weight's bits, which the output vertices and corners whose maps hold a provenance run blend, sized by the count scan.
+    SlotOffset Provenance DEFAULT();
+    uint32_t TangentOffset DEFAULT(); // Bezier: per source halfedge its tangent's four floats, then per source halfedge whether it is fixed
     // The words of the named attributes the gathers carry, as TopologyAttribute records ordered by domain.
     // AttributeEnds contains the end of each AttributeDomain's run, which starts at the previous domain's end.
     SlotOffset Attributes DEFAULT();

@@ -1,10 +1,7 @@
-#ifndef MESHTOPOLOGYCONCAVE_MSL
-#define MESHTOPOLOGYCONCAVE_MSL
-
+#pragma once
 #include "MeshTopologyFaceSplit.metal"
 
-// Temporary triangulation of one selected polygon.
-// Internal edge identities survive rotations; the indexed heap updates only the five changed costs.
+// Internal edge identities survive rotations, and the indexed heap updates only the five changed costs.
 struct ConcaveFace {
     FaceSplitPolygons Plan;
     device uint *Opposite, *Edge, *Representative, *Concave, *Heap, *HeapPosition;
@@ -87,7 +84,7 @@ struct ConcaveFace {
         for (uint i = 0u; i < 4u; ++i) if (edges[i] != InvalidOffset) Set(edges[i], Beauty(edges[i], true), true);
     }
     uint Root(uint face) {
-        // Reuse Length for parents until final loop counting.
+        // Length holds union-find parents until the final loop count.
         while (Plan.Length[face] != face) {
             Plan.Length[face] = Plan.Length[Plan.Length[face]];
             face = Plan.Length[face];
@@ -98,10 +95,9 @@ struct ConcaveFace {
         const uint h = Representative[edge], g = Opposite[h];
         const uint a = Root(h / 3u), b = Root(g / 3u);
         if (a == b) return false;
-        // Only the turns at the two endpoints change when the diagonal goes.
         const float3 pa = Plan.Point(h), pb = Plan.Point(g);
-        if (dot(cross(pa - Plan.Point(Plan.Prev[h]), Plan.Point(Plan.Next[Plan.Next[g]]) - pa), Normal) <= 1.1920929e-7f ||
-            dot(cross(pb - Plan.Point(Plan.Prev[g]), Plan.Point(Plan.Next[Plan.Next[h]]) - pb), Normal) <= 1.1920929e-7f) return false;
+        if (dot(cross(pa - Plan.Point(Plan.Prev[h]), Plan.Point(Plan.Next[Plan.Next[g]]) - pa), Normal) <= FLT_EPSILON ||
+            dot(cross(pb - Plan.Point(Plan.Prev[g]), Plan.Point(Plan.Next[Plan.Next[h]]) - pb), Normal) <= FLT_EPSILON) return false;
         Plan.Next[Plan.Prev[h]] = Plan.Next[g]; Plan.Prev[Plan.Next[g]] = Plan.Prev[h];
         Plan.Next[Plan.Prev[g]] = Plan.Next[h]; Plan.Prev[Plan.Next[h]] = Plan.Prev[g];
         Plan.Length[b] = a;
@@ -177,4 +173,3 @@ inline uint3 TopoConcaveCount(TopoContext ctx, MeshTopologyJob job, uint f) {
     ctx.FlagFaces(job)[f] = faces;
     return uint3(0u, faces, corners);
 }
-#endif

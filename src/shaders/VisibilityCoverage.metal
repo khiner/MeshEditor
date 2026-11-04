@@ -1,6 +1,4 @@
-#ifndef VISIBILITY_COVERAGE_MSL
-#define VISIBILITY_COVERAGE_MSL
-
+#pragma once
 #include "VisibilityDecode.metal"
 
 inline float4 VisibilitySampleTexture(
@@ -15,7 +13,6 @@ inline float4 VisibilitySampleTexture(
     );
 }
 
-// Shared raster coverage for visibility and all-depth object picking.
 inline uint CoveredMeshletObject(
     const thread Scene &scene, VisibilityShadingPushConstants pc, uint primitive_id,
     float2 pixel, bool front_facing, bool transmission
@@ -64,5 +61,3 @@ inline uint CoveredMeshletObject(
     }
     return resolved.Instance.ObjectId;
 }
-
-#endif

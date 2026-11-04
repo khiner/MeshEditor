@@ -1,10 +1,6 @@
+#pragma once
 // Adapted from KhronosGroup/glTF-Sample-Renderer (iridescence.glsl)
-// Implements thin-film interference (Belcour 2017).
 // https://belcour.github.io/blog/research/2017/05/01/brdf-thin-film.html
-
-#ifndef IRIDESCENCE_BRDF_MSL
-#define IRIDESCENCE_BRDF_MSL
-
 #include "brdf.metal"
 
 inline float sq(float x) { return x * x; }
@@ -38,10 +34,8 @@ inline float3 evalSensitivity(float opd, float3 shift) {
 
 // Evaluates two-interface thin-film Fresnel reflectance with thickness in nanometers.
 inline float3 evalIridescence(float outsideIOR, float eta2, float cos_theta_1, float thinFilmThickness, float3 baseF0) {
-    // Approach the outside IOR continuously as thickness approaches zero.
     float iridescence_ior = mix(outsideIOR, eta2, smoothstep(0.0, 0.03, thinFilmThickness));
 
-    // Total internal reflection produces unit reflectance.
     float cos_theta_2_sq = 1.0 - sq(outsideIOR / iridescence_ior) * (1.0 - sq(cos_theta_1));
     if (cos_theta_2_sq < 0.0) return float3(1.0);
     float cos_theta_2 = sqrt(cos_theta_2_sq);
@@ -78,4 +72,3 @@ inline float3 evalIridescence(float outsideIOR, float eta2, float cos_theta_1, f
     return max(I, float3(0.0));
 }
 
-#endif

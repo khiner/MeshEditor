@@ -19,7 +19,10 @@
 #include "gltf/AnimationPointers.h"
 #include "image/ImageEncode.h"
 #include "mesh/MeshComponents.h"
+#include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
+#include "mesh/Neighborhood.h"
+#include "mesh/SelectedChains.h"
 #include "procedure/Procedure.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
@@ -35,7 +38,6 @@
 namespace gltf {
 using namespace detail;
 namespace {
-// The source extras, and the source index of each emitted scene.
 struct ExportExtras {
     const ExtrasMap &Source;
     std::span<const std::optional<uint32_t>> SceneSources;
@@ -52,8 +54,6 @@ std::optional<std::string> EmitExtras(size_t idx, fastgltf::Category cat, void *
     return std::nullopt;
 }
 
-// Encode tightly-packed RGBA8 pixels to the container for `mime`, dispatching to the generic encoders.
-// KTX2 and DDS aren't supported and return an error.
 std::expected<std::vector<std::byte>, std::string>
 EncodeImageRgba8ForMime(MimeType mime, std::span<const std::byte> rgba8, uint32_t width, uint32_t height, int jpeg_quality, std::string_view name) {
     using enum MimeType;
@@ -70,7 +70,6 @@ EncodeImageRgba8ForMime(MimeType mime, std::span<const std::byte> rgba8, uint32_
     return std::unexpected{std::format("Unhandled mime type for image '{}'.", name)};
 }
 
-// fastgltf::optional<T> doesn't implicit-convert from std::optional<U>.
 template<typename T, typename U>
 fastgltf::optional<T> ToFgOpt(const std::optional<U> &o) { return o ? fastgltf::optional<T>{T(*o)} : fastgltf::optional<T>{}; }
 template<typename T, typename U, typename Fn>
@@ -83,7 +82,6 @@ fastgltf::optional<fastgltf::AccessorBoundsArray> MakeBounds(std::initializer_li
     return arr;
 }
 
-// Append bytes, pad to 4-byte alignment, return starting offset.
 uint32_t AppendAligned(std::vector<std::byte> &buffer, const std::byte *data, uint32_t size) {
     const uint32_t offset = buffer.size();
     buffer.insert(buffer.end(), data, data + size);
@@ -96,19 +94,6 @@ uint32_t AppendAligned(std::vector<std::byte> &buffer, std::span<const T> data) 
     return AppendAligned(buffer, reinterpret_cast<const std::byte *>(data.data()), data.size() * sizeof(T));
 }
 
-// Copies one field from each strided element into a four-byte-aligned binary blob without an intermediate vector.
-// Returns the starting byte offset.
-template<typename T, typename V>
-uint32_t AppendField(std::vector<std::byte> &buffer, std::span<const V> data, T V::*field) {
-    const uint32_t offset = buffer.size();
-    buffer.resize(offset + data.size() * sizeof(T));
-    auto *out = reinterpret_cast<T *>(buffer.data() + offset);
-    for (size_t i = 0; i < data.size(); ++i) out[i] = data[i].*field;
-    while (buffer.size() % 4 != 0) buffer.emplace_back(std::byte{0});
-    return offset;
-}
-
-// Emits KHR_texture_transform when the UV transform is non-default or the source declared the extension, and sets `used` on emission.
 fastgltf::boxed_optional<fastgltf::TextureTransform> MakeTextureTransform(const ::TextureInfo &ti, const TextureTransformMeta *meta, bool &used) {
     const bool has_transform = ti.UvOffset.x != 0.f || ti.UvOffset.y != 0.f ||
         ti.UvScale.x != 1.f || ti.UvScale.y != 1.f ||
@@ -124,7 +109,6 @@ fastgltf::boxed_optional<fastgltf::TextureTransform> MakeTextureTransform(const 
     }};
 }
 
-// With meta, the parent texCoord and the extension's override are emitted separately.
 fastgltf::TextureInfo ToFgTextureInfo(const ::TextureInfo &ti, const TextureTransformMeta *meta, bool &transform_used) {
     return {.textureIndex = ti.Slot, .texCoordIndex = meta ? meta->SourceBaseTexCoord : ti.TexCoord, .transform = MakeTextureTransform(ti, meta, transform_used)};
 }
@@ -132,7 +116,6 @@ fastgltf::optional<fastgltf::TextureInfo> ToFgTexInfo(const ::TextureInfo &ti, c
     if (ti.Slot == InvalidSlot) return {};
     return ToFgTextureInfo(ti, meta, transform_used);
 }
-// A normal or occlusion texture info, which extend the texture info with a scale or strength.
 template<typename Info> fastgltf::optional<Info> ToFgScaledTexInfo(const ::TextureInfo &ti, float factor, const TextureTransformMeta *meta, bool &transform_used) {
     if (ti.Slot == InvalidSlot) return {};
     return Info{ToFgTextureInfo(ti, meta, transform_used), factor};
@@ -178,7 +161,6 @@ fastgltf::Camera ConvertCameraToFg(const CameraLens &cam, std::string_view name)
     return {.camera = std::move(camera), .name = std::string{name}};
 }
 
-// Write channel rest values into record for export.
 void OverlayRest(const state::Registry &r, state::Entity e, state::TypeKey component, uint16_t index, std::span<std::byte> record) {
     const auto *clips = animation::ClipsOf(r, e);
     if (!clips) return;
@@ -204,7 +186,6 @@ fastgltf::Light ConvertLightToFg(const PunctualLight &pl, std::string_view name)
     };
 }
 
-// The record's attributes glTF carries as `_NAME` vertex attributes: its vertex and corner attributes whose names start with an underscore.
 std::vector<uint32_t> ExportedAttributes(const MeshStore &meshes, uint32_t id, bool corners) {
     std::vector<uint32_t> attributes;
     meshes.ForEachNamedAttribute(id, [&](uint32_t attribute, const NamedAttribute &entry) {
@@ -212,7 +193,6 @@ std::vector<uint32_t> ExportedAttributes(const MeshStore &meshes, uint32_t id, b
     });
     return attributes;
 }
-// Represent components as floats, including integer and boolean attributes.
 std::array<float, 4> AttributeFloats(const MeshStore &meshes, uint32_t attribute, uint32_t handle) {
     return WithAttributeScalar(meshes.GetAttribute(attribute).Type, [&]<AttributeScalar T>() {
         const T value = meshes.AttributeView<T>(attribute)[handle];
@@ -228,9 +208,9 @@ std::array<float, 4> AttributeFloats(const MeshStore &meshes, uint32_t attribute
 std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, const state::Registry &r, SaveOptions options) {
     const profile::CpuScope scope{"SaveGltf"};
     const auto &meshes = r.Resources.get<const MeshStore>();
+    const auto &pipelines = GetMeshPipelines(r);
     const auto &buffers = r.Resources.get<const GpuBuffers>();
 
-    // Entities of `view` in the source order `index_of` reads, with runtime-added ones after the source range in view order.
     const auto ordered_by_source = [&](const auto &view, auto &&index_of) {
         auto ordered = std::ranges::to<std::vector<state::Entity>>(view);
         std::ranges::stable_sort(ordered, {}, [&](state::Entity e) { return index_of(e).value_or(std::numeric_limits<uint32_t>::max()); });
@@ -241,9 +221,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         return index ? std::optional{index->Value} : std::nullopt;
     };
 
-    // Read source metadata and texture, image, and sampler arrays from gltf::SourceAssets.
-    // Encoded images, sampler details, and asset metadata cannot be reconstructed from registry or GPU state.
-    // Emit cameras and lights from entity components and materials from PBRMaterial plus MaterialSourceMeta.
     const auto *src_assets = r.try_get<const gltf::SourceAssets>(state::Document);
     static const gltf::SourceAssets EmptySourceAssets{};
     const auto &sa = src_assets ? *src_assets : EmptySourceAssets;
@@ -251,8 +228,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     const auto material_count = buffers.Materials.Count<PBRMaterial>();
     const auto &material_metas = src_assets ? src_assets->MaterialMetas : std::vector<MaterialSourceMeta>{};
 
-    // Preserve source mesh ordering through the source layout.
-    // Append runtime-created meshes after the source range.
     std::unordered_map<state::Entity, uint32_t> mesh_entity_to_index;
     uint32_t mesh_count = 0;
     for (const auto [e, _, layout] : r.view<const EvaluatedMesh, const MeshSourceLayout>().each()) {
@@ -288,8 +263,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         std::ranges::sort(group.Points);
     }
 
-    // Cameras and lights emit one resource per component-bearing entity in source order.
-    // Khronos samples do not share source cameras or lights across nodes.
     const auto node_of = [&](auto member) {
         return [&, member](state::Entity e) { const auto *node = r.try_get<const GltfNode>(e); return node ? node->*member : std::nullopt; };
     };
@@ -302,17 +275,13 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     for (uint32_t i = 0; i < camera_entities_ordered.size(); ++i) camera_entity_to_index[camera_entities_ordered[i]] = i;
     for (uint32_t i = 0; i < light_entities_ordered.size(); ++i) light_entity_to_index[light_entities_ordered[i]] = i;
 
-    // Emit compacted source nodes, runtime roots, then offset-collider children.
-    // Restore imported parent links; children of deleted source parents become roots.
     struct ExportNode {
         // The entity whose transform, name, physics, and audio represent the node: the lowest entity id among those sharing its source index.
         state::Entity Entity{state::Null};
-        // Object entities sharing the node in ascending entity id order, for EXT_mesh_gpu_instancing.
         std::vector<state::Entity> Instances;
         std::optional<uint32_t> Parent;
         // Dense child indices in source sibling order, offset-collider children last.
         std::vector<uint32_t> Children;
-        // Set on the owner of a synthetic offset-collider child and on that child.
         std::optional<uint32_t> OffsetChild;
         state::Entity OffsetOwner{state::Null};
         bool Hidden{};
@@ -368,7 +337,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 }
             }
         }
-        // A collider with a local offset emits its geometry on a synthetic child node carrying the offset.
         for (uint32_t ni = 0, count = uint32_t(nodes.size()); ni < count; ++ni) {
             const auto *cs = r.try_get<const ColliderShape>(nodes[ni].Entity);
             if (!cs || cs->LocalOffset == vec3{0}) continue;
@@ -386,15 +354,10 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
     }
 
-    // Scenes to emit, in source order.
-    // The acting scene is the default.
     const auto scenes_ordered = OrderedScenes(r);
     const auto acting_scene = FrameScene(r);
-    // The scenes with an image light, each emitting its own EXT_lights_image_based light over the source IBL images.
     const auto image_light_scenes = sa.ImageBasedLight ? scenes_ordered | std::views::filter([&](state::Entity e) { return r.all_of<ImageLight>(e); }) | std::ranges::to<std::vector>() : std::vector<state::Entity>{};
 
-    // Returns live nodes without a live source parent whose scene graph root is in the scene.
-    // Sorts roots because glTF scene-node order is nonsemantic.
     const auto compute_roots = [&](state::Entity scene) {
         std::vector<size_t> roots;
         for (uint32_t ni = 0; ni < nodes.size(); ++ni) {
@@ -405,8 +368,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         return roots;
     };
 
-    // KHR_node_visibility: a node is hidden iff it is not a shown Instance and every child is hidden too.
-    // A post-order walk from the roots fills Hidden so parents can check children without recursion or multi-pass.
     {
         const auto dfs = [&](this const auto &self, uint32_t ni) -> bool {
             auto &node = nodes[ni];
@@ -422,7 +383,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
     }
 
-    // Construct the asset before allocator-bound collision filters.
+    // The asset is constructed before the allocator-bound collision filters.
     fastgltf::Asset asset;
 
     std::unordered_map<state::Entity, uint32_t> physics_material_to_index, physics_jointdef_to_index, collision_filter_to_index;
@@ -494,7 +455,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
     }
 
-    // Empty strings are omitted by fastgltf's writer.
     asset.assetInfo = fastgltf::AssetInfo{
         .gltfVersion = "2.0",
         .minVersion = sa.MinVersion,
@@ -531,24 +491,18 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         return AddAccessor(bv, data.size(), type, component);
     };
 
-    // The least and greatest coordinates of the points, or none without points.
     const auto bounds_of = [](auto &&points) {
         std::optional<std::pair<vec3, vec3>> bounds;
         for (const vec3 p : points) bounds = bounds ? std::pair{Min(bounds->first, p), Max(bounds->second, p)} : std::pair{p, p};
         return bounds;
     };
-    // A VEC3 float accessor over the `vcount` points appended at `off`, carrying their bounds when given.
-    const auto AddVec3At = [&](uint32_t off, uint32_t vcount, fastgltf::BufferTarget target, const std::optional<std::pair<vec3, vec3>> &bounds) {
-        const uint32_t bv = AddBufferView(off, vcount * sizeof(vec3), {}, target);
+    const auto AddVec3Accessor = [&](std::span<const vec3> data, bool with_bounds, fastgltf::BufferTarget target) {
+        const uint32_t vcount = data.size();
+        const uint32_t bv = AddBufferView(AppendAligned<vec3>(bin, data), vcount * sizeof(vec3), {}, target);
+        const auto bounds = with_bounds ? bounds_of(data) : std::nullopt;
         if (!bounds) return AddAccessor(bv, vcount, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float);
         const auto &[lo, hi] = *bounds;
         return AddAccessor(bv, vcount, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float, MakeBounds({lo.x, lo.y, lo.z}), MakeBounds({hi.x, hi.y, hi.z}));
-    };
-    const auto AddVec3Accessor = [&](std::span<const vec3> data, bool with_bounds, fastgltf::BufferTarget target) {
-        return AddVec3At(AppendAligned<vec3>(bin, data), data.size(), target, with_bounds ? bounds_of(data) : std::nullopt);
-    };
-    const auto AddPositionFieldAccessor = [&]<typename V>(std::span<const V> data, vec3 V::*field, fastgltf::BufferTarget target) {
-        return AddVec3At(AppendField<vec3>(bin, data, field), data.size(), target, bounds_of(data | std::views::transform([&](const V &v) { return v.*field; })));
     };
 
     const auto EmitCustom = [&](std::vector<fastgltf::Attribute> &out, uint32_t attribute, const auto &items, auto &&value) {
@@ -565,7 +519,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         out.emplace_back(fastgltf::Attribute{std::string{entry.NameView()}, AddAccessor(bv, floats.size() / components, Types[components - 1u], fastgltf::ComponentType::Float)});
     };
 
-    // Emit COLOR_0 from gathered per-corner values, preserving source component count.
     const auto EmitColor0Values = [&](std::vector<fastgltf::Attribute> &out, std::span<const vec4> colors, uint8_t component_count) {
         if (component_count == 3) {
             const uint32_t vcount = colors.size();
@@ -592,8 +545,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         });
     }
 
-    // Each image emits in its source form: an external URI, a data URI, or a buffer view.
-    // A dirty image re-encodes from its GPU texture first.
     asset.images.reserve(sa.Images.size());
     std::unordered_map<uint32_t, const TextureEntry *> texture_for_image;
     for (const auto &tex : r.Resources.get<const TextureStore>().Textures) {
@@ -633,10 +584,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             owned = std::move(re->first);
             mime = re->second;
             bytes = owned;
-            // The re-encoded bytes no longer match the external file, so they embed.
             if (form == Source::External) form = Source::Embedded;
         } else if (img.IsDirty) {
-            // KTX2 and DDS lack an encoder, so their source bytes stand.
             std::println(stderr, "Warning: image '{}' is dirty but {} re-encoding isn't supported; emitting original bytes.", img.Name, img.MimeType == gltf::MimeType::KTX2 ? "KTX2" : "DDS");
         }
         if (form == Source::External) {
@@ -655,7 +604,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 .name = img.Name,
             });
         } else {
-            // An image without bytes keeps its required bufferView slot with one padding byte.
             const uint32_t bv = bytes.empty() ? AddBufferView(AppendAligned(bin, reinterpret_cast<const std::byte *>("\0"), 1), 1) : AddBufferView(AppendAligned(bin, bytes.data(), bytes.size()), bytes.size());
             asset.images.emplace_back(fastgltf::Image{
                 .data = fastgltf::sources::BufferView{.bufferViewIndex = bv, .mimeType = FromMimeType(mime)},
@@ -720,9 +668,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         asset.materials.emplace_back(std::move(out));
     }
 
-    // Animations: one glTF animation per scene animation with channels, in scene order.
-    // Node transforms and morph weights emit classic channels.
-    // Other fields emit KHR_animation_pointer channels.
     bool uses_animation_pointer = false;
     {
         const auto *animations = r.try_get<const Animations>(state::Document);
@@ -757,7 +702,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             target.samplerIndex = anim.samplers.size() - 1;
             anim.channels.emplace_back(std::move(target));
         };
-        // A pointer channel names its target by export index.
         const auto pointer_channel = [](const gltf::PointerRow &row, size_t index, size_t element = 0) {
             return fastgltf::AnimationChannel{.samplerIndex = 0, .path = fastgltf::AnimationPath::Pointer, .pointer = std::vformat(row.Template, std::make_format_args(index, element))};
         };
@@ -775,7 +719,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                         case gltf::PointerSpace::Node: {
                             std::optional<uint32_t> node;
                             if (source.Target.Component == state::Key<BoneDelta>()) {
-                                // Convert the delta channel to the joint node's absolute transform.
                                 const auto arm_obj = FindArmatureObject(r, entity);
                                 const auto *arm = arm_obj != state::Null ? r.try_get<const Armature>(r.get<const ArmatureObject>(arm_obj).Entity) : nullptr;
                                 const auto index = r.get<const BoneIndex>(entity).Index;
@@ -787,8 +730,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                                 node = it->second;
                             }
                             if (!node) break;
-                            // Transforms and whole weights are classic channels.
-                            // Visibility and one weight of a multi-weight mesh are pointer channels.
                             const bool weights = source.Target.Component == state::Key<MorphWeightRange>();
                             if (source.Target.Component == state::Key<Visibility>()) target = pointer_channel(*row, *node);
                             else if (weights && source.Target.Count == 1 && r.get<const MorphWeightRange>(entity).Weights.Count > 1) target = pointer_channel(*row, *node, source.Target.Offset / sizeof(float));
@@ -819,37 +760,31 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
     asset.meshes.reserve(mesh_groups.size());
     const auto &arenas = meshes.Arenas();
-    const auto emit_non_triangle_attrs = [&](std::vector<fastgltf::Attribute> &out, uint32_t store_id) {
+    const auto emit_non_triangle_attrs = [&](std::vector<fastgltf::Attribute> &out, const Mesh &mesh) {
+        const auto store_id = mesh.GetStoreId();
         const auto &record = meshes.Get(store_id);
         if (record.HasAuthoredNormals) {
-            const Mesh mesh{meshes, store_id};
-            std::vector<vec3> normals;
-            normals.reserve(mesh.VertexCount());
-            for (const auto vertex : mesh.vertices()) normals.push_back(mesh.GetNormal(vertex));
+            const auto normals = VertexNormals(meshes, pipelines, store_id, HandleList(mesh.vertices()));
             out.emplace_back(fastgltf::Attribute{"NORMAL", AddDataAccessor(std::span<const vec3>{normals}, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer)});
         }
         if (record.VertexAttributes & MeshAttributeBit_Color0) {
             const auto source = arenas.VertexColors.View(record.VertexColors);
             std::vector<vec4> colors;
             colors.reserve(arenas.Vertices.Count(record.Vertices));
-            const Mesh mesh{meshes, store_id};
             for (const auto v : mesh.vertices()) colors.push_back(source[*v]);
             out.emplace_back(fastgltf::Attribute{"COLOR_0", AddDataAccessor(std::span<const vec4>{colors}, fastgltf::AccessorType::Vec4, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer)});
         }
         for (const auto attribute : ExportedAttributes(meshes, store_id, false)) {
-            EmitCustom(out, attribute, Mesh{meshes, store_id}.vertices(), [&](Mesh::VH v) { return AttributeFloats(meshes, attribute, *v); });
+            EmitCustom(out, attribute, mesh.vertices(), [&](Mesh::VH v) { return AttributeFloats(meshes, attribute, *v); });
         }
     };
     for (const auto &group : mesh_groups) {
         fastgltf::small_vector<fastgltf::Primitive, 1> primitives;
         std::vector<fastgltf::num> default_weights;
-        // Non-triangle primitives omit targets, materials, and mappings.
         const auto push_prim = [&](fastgltf::PrimitiveType type, auto &&attrs, const fastgltf::optional<size_t> &indices = {}) {
             primitives.emplace_back(fastgltf::Primitive{.attributes = std::forward<decltype(attrs)>(attrs), .type = type, .indicesAccessor = indices});
         };
 
-        // Each fan corner pairs its mesh vertex index with its index into the corner-domain arenas.
-        // Every distinct corner tuple over the emitted channels becomes one export vertex, so vertices split exactly where corner attributes diverge.
         for (const auto entity : group.Triangles) {
             const auto &mesh = GetMesh(r, entity);
             const auto store_id = mesh.GetStoreId();
@@ -868,7 +803,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             const std::array corner_uv_sets{CornerAttributeView<vec2>{arenas.CornerUvs[0].View(record.CornerUvs[0]), triangle_corners}, CornerAttributeView<vec2>{arenas.CornerUvs[1].View(record.CornerUvs[1]), triangle_corners}, CornerAttributeView<vec2>{arenas.CornerUvs[2].View(record.CornerUvs[2]), triangle_corners}, CornerAttributeView<vec2>{arenas.CornerUvs[3].View(record.CornerUvs[3]), triangle_corners}};
             const auto *layout_ptr = r.try_get<const MeshSourceLayout>(entity);
             const MeshSourceLayout synthesized_layout = layout_ptr ? MeshSourceLayout{} : [&] {
-                // Triangle-mesh normals are always derivable, so runtime meshes always emit them.
                 uint32_t flags = MeshAttributeBit_Normal;
                 if (!corner_tangents.empty()) flags |= MeshAttributeBit_Tangent;
                 if (!corner_colors.empty()) flags |= MeshAttributeBit_Color0;
@@ -884,7 +818,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 uint32_t Vertex, Corner;
             };
             const auto custom = ExportedAttributes(meshes, store_id, true);
-            // A custom attribute's value at an export vertex, by its vertex or by its corner.
             const auto custom_value = [&](uint32_t attribute, const CornerRef &ref) {
                 return AttributeFloats(meshes, attribute, meshes.GetAttribute(attribute).Domain == AttributeDomain::Vertex ? vertex_handles[ref.Vertex] : triangle_corners[ref.Corner]);
             };
@@ -904,23 +837,22 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 if (dense_triangles) return handle;
                 const uint32_t block = handle / MeshElementBlockSize, offset = handle % MeshElementBlockSize;
                 const auto &bits = arenas.Triangles.Blocks.Get({triangle_table[block], 1u})[0].Live;
-                uint32_t ordinal = triangle_block_first.at(block);
-                if (ordinal == InvalidOffset || !(bits[offset / 32u] & (1u << (offset % 32u)))) throw std::out_of_range("Face triangle is outside its mesh.");
+                uint32_t ordinal = triangle_block_first[block];
                 for (uint32_t w = 0u; w < offset / 32u; ++w) ordinal += std::popcount(bits[w]);
                 return ordinal + std::popcount(bits[offset / 32u] & ((1u << (offset % 32u)) - 1u));
             };
             std::vector<std::vector<CornerRef>> corners_per_prim(prim_count);
-            for (const auto fh : mesh.faces()) {
-                const auto face = mesh.GetConnectivity().FaceAddress(*fh).Value();
-                const uint32_t p = arenas.FacePrimitives.Get(record.FacePrimitives, *fh);
-                if (p < prim_count) {
+            const auto faces = HandleList(mesh.faces());
+            const auto face_corners = FaceCorners(meshes, pipelines, store_id, faces);
+            const auto face_primitives = FacePrimitives(meshes, pipelines, store_id, faces);
+            const auto corner_vertices = OrdinalTriangles(meshes, pipelines, store_id);
+            for (uint32_t f = 0u; f < faces.size(); ++f) {
+                const auto face = meshes.HandleAddress(store_id, MeshStore::ElementDomain::Face, ElementHandle{faces[f]}).Value();
+                const auto first = triangle_ordinal(arenas.FaceTriangles.Get({face, 1u})[0]) * 3u;
+                const auto count = (uint32_t(face_corners.Of(f).size()) - 2u) * 3u;
+                if (const uint32_t p = face_primitives[f]; p < prim_count) {
                     auto &out = corners_per_prim[p];
-                    const auto first = triangle_ordinal(arenas.FaceTriangles.Get({face, 1u})[0]) * 3u;
-                    const auto count = (mesh.GetValence(fh) - 2u) * 3u;
-                    for (uint32_t k = 0; k < count; ++k) {
-                        const auto h = Mesh::HH{triangle_corners[first + k]};
-                        out.emplace_back(mesh.VertexOrdinal(mesh.GetToVertex(h)), first + k);
-                    }
+                    for (uint32_t k = 0; k < count; ++k) out.emplace_back(corner_vertices[first + k], first + k);
                 }
             }
 
@@ -935,7 +867,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             }
             const bool has_tangent_deltas = !layout.MorphTangentDeltas.empty();
 
-            // Emit channels present in at least one primitive.
             uint32_t any_flags = 0;
             for (const auto f : layout.AttributeFlags) any_flags |= f;
             const bool have_flags = layout.AttributeFlags.size() == prim_count;
@@ -953,8 +884,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                     emit_uv[set] = (any_flags & (MeshAttributeBit_TexCoord0 << set)) && (flags & (MeshAttributeBit_TexCoord0 << set)) && !corner_uv_sets[set].empty();
                 }
 
-                // Indexed primitives merge identical corner tuples into unique export vertices in first-seen order.
-                // Non-indexed sources emit the corner stream directly.
                 const bool emit_indices = prim_idx < layout.HasSourceIndices.size() ? layout.HasSourceIndices[prim_idx] != 0 : true;
                 std::vector<CornerRef> export_refs;
                 std::vector<uint32_t> indices;
@@ -1102,43 +1031,35 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             }
         }
 
-        const auto vertex_data = [&](const Mesh &mesh) {
-            std::vector<Vertex> out;
-            out.reserve(mesh.VertexCount());
-            const auto all = meshes.Arenas().Vertices.Buffer.GetSpan<Vertex>();
-            for (const auto vertex : mesh.vertices()) out.push_back(all[mesh.GetConnectivity().VertexAddress(*vertex).Value()]);
-            return out;
-        };
         for (const auto entity : group.Lines) {
             const auto &mesh = GetMesh(r, entity);
-            const auto vertices = vertex_data(mesh);
-            if (!vertices.empty() && mesh.EdgeCount() > 0) {
+            const auto positions = OrdinalPositions(meshes, pipelines, mesh.GetStoreId());
+            if (!positions.empty() && mesh.EdgeCount() > 0) {
+                const auto edges = HandleList(mesh.edges());
                 std::vector<uint32_t> idx;
-                idx.reserve(mesh.EdgeCount() * 2);
-                for (const auto eh : mesh.edges()) {
-                    const auto h0 = mesh.GetHalfedge(eh, 0);
-                    idx.emplace_back(mesh.VertexOrdinal(mesh.GetFromVertex(h0)));
-                    idx.emplace_back(mesh.VertexOrdinal(mesh.GetToVertex(h0)));
+                idx.reserve(edges.size() * 2);
+                for (const auto &edge : SelectedEdgeFacts(meshes, pipelines, mesh.GetStoreId(), edges, {})) {
+                    idx.emplace_back(mesh.VertexOrdinal(Mesh::VH{edge.From}));
+                    idx.emplace_back(mesh.VertexOrdinal(Mesh::VH{edge.To}));
                 }
                 std::vector<fastgltf::Attribute> attrs;
-                attrs.emplace_back(fastgltf::Attribute{"POSITION", AddPositionFieldAccessor.template operator()<Vertex>(std::span<const Vertex>{vertices}, &Vertex::Position, fastgltf::BufferTarget::ArrayBuffer)});
-                emit_non_triangle_attrs(attrs, mesh.GetStoreId());
+                attrs.emplace_back(fastgltf::Attribute{"POSITION", AddVec3Accessor(positions, true, fastgltf::BufferTarget::ArrayBuffer)});
+                emit_non_triangle_attrs(attrs, mesh);
                 push_prim(fastgltf::PrimitiveType::Lines, std::move(attrs), AddDataAccessor(std::span<const uint32_t>(idx), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::UnsignedInt, fastgltf::BufferTarget::ElementArrayBuffer));
             }
         }
 
         for (const auto entity : group.Points) {
             const auto &mesh = GetMesh(r, entity);
-            const auto vertices = vertex_data(mesh);
-            if (!vertices.empty()) {
+            const auto positions = OrdinalPositions(meshes, pipelines, mesh.GetStoreId());
+            if (!positions.empty()) {
                 std::vector<fastgltf::Attribute> attrs;
-                attrs.emplace_back(fastgltf::Attribute{"POSITION", AddPositionFieldAccessor.template operator()<Vertex>(std::span<const Vertex>{vertices}, &Vertex::Position, fastgltf::BufferTarget::ArrayBuffer)});
-                emit_non_triangle_attrs(attrs, mesh.GetStoreId());
+                attrs.emplace_back(fastgltf::Attribute{"POSITION", AddVec3Accessor(positions, true, fastgltf::BufferTarget::ArrayBuffer)});
+                emit_non_triangle_attrs(attrs, mesh);
                 push_prim(fastgltf::PrimitiveType::Points, std::move(attrs));
             }
         }
 
-        // glTF requires >= 1 primitive per mesh; emit a single degenerate point.
         if (primitives.empty()) {
             const vec3 stub{0.f, 0.f, 0.f};
             const uint32_t pos_acc = AddVec3Accessor(std::span<const vec3>(&stub, 1), true, fastgltf::BufferTarget::ArrayBuffer);
@@ -1150,7 +1071,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         asset.meshes.emplace_back(fastgltf::Mesh{.primitives = std::move(primitives), .weights = std::move(default_weights), .name = group.Name});
     }
 
-    // Each armature placement binds its own joint nodes while sharing rest and inverse-bind definitions.
     std::map<std::pair<state::Entity, uint32_t>, uint32_t> skin_remap;
     {
         struct SkinBinding {
@@ -1195,7 +1115,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
     }
 
-    // Cameras / lights: emit in the order gathered above.
     asset.cameras.reserve(camera_entities_ordered.size());
     for (const auto entity : camera_entities_ordered) {
         const auto *node = r.try_get<const GltfNode>(entity);
@@ -1257,8 +1176,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         return idx;
     };
     using TriggerVariant = std::variant<fastgltf::GeometryTrigger, fastgltf::NodeTrigger>;
-    // Populates `rb.collider` or `rb.trigger` from the owner's ColliderShape + (Trigger|Collider)Material.
-    // Shared between the owner-no-offset path and the synthetic-offset-child path.
     const auto populate_collider_extension = [&](state::Entity owner, fastgltf::PhysicsRigidBody &rb) {
         const auto *cs = r.try_get<const ColliderShape>(owner);
         if (!cs) return;
@@ -1298,7 +1215,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     };
 
     // A bone Transform contains the live pose, while its joint node TRS contains the rest pose.
-    // Read bone rest transforms from Armature and other authored transforms from Transform.
     std::unordered_map<state::Entity, Transform> bone_rest;
     for (const auto [ao_entity, ao] : r.view<const ArmatureObject>().each()) {
         const auto &arm = r.get<const Armature>(ao.Entity);
@@ -1307,7 +1223,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
     }
 
-    // Use bone rest poses and authored object transforms for frame-independent export.
     std::unordered_map<state::Entity, mat4> rest_world;
     const auto rest_world_of = [&](this const auto &self, state::Entity e) -> mat4 {
         if (const auto it = rest_world.find(e); it != rest_world.end()) return it->second;
@@ -1319,14 +1234,11 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         return world;
     };
 
-    // Emit nodes directly from registry components while retaining gaps in the source node indices.
     asset.nodes.reserve(nodes.size());
     bool uses_gpu_instancing = false;
     bool uses_physics_rigid_bodies = false;
-    // KHR_audio_rigid_bodies acoustic materials and surfaces, deduped by value across node instances.
     std::vector<AcousticMaterial> audio_rigid_body_materials;
     std::vector<ContactSurface> audio_rigid_body_surfaces;
-    // Returns a deduplicated resource index and preserves emitted order in `mirror`.
     const auto dedupe = [](auto &mirror, const auto *value, auto &&emit) -> fastgltf::optional<size_t> {
         if (!value) return {};
         const auto it = std::ranges::find(mirror, *value);
@@ -1374,10 +1286,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
         const auto &world_transform = *WorldTransformOf(r, entity);
 
-        // The source parent restores non-joint ancestors removed from the runtime bone hierarchy.
-        // Derive local transforms from rest-world transforms when source and runtime parents differ.
         const Transform local_transform = [&] {
-            if (r.all_of<ArmatureModifier>(entity)) return Transform{}; // Skinned mesh node transform is spec-ignored.
+            if (r.all_of<ArmatureModifier>(entity)) return Transform{};
             if (export_node.Parent) {
                 const auto src_parent = nodes[*export_node.Parent].Entity;
                 if (src_parent != state::Null && ParentOrNull(r, entity) != src_parent) {
@@ -1388,10 +1298,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             return r.get<const Transform>(entity);
         }();
 
-        // EXT_mesh_gpu_instancing.
-        // Per-instance TRS = node.WorldTransform^-1 * instance.WorldTransform.
-        // Emit only channels that aren't uniformly default.
-        // spec requires >=1 attribute so fall back to TRANSLATION when everything's default.
+        // EXT_mesh_gpu_instancing per-instance TRS is node.WorldTransform^-1 * instance.WorldTransform.
         std::vector<Transform> instance_worlds;
         instance_worlds.reserve(export_node.Instances.size());
         for (const auto instance : export_node.Instances) instance_worlds.emplace_back(*WorldTransformOf(r, instance));
@@ -1434,7 +1341,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const auto *tn = r.try_get<const TriggerNodes>(entity);
         const auto *pj = r.try_get<const PhysicsJoint>(entity);
         const bool is_trigger = r.all_of<TriggerTag>(entity);
-        // An offset collider emits its geometry on the synthetic child, so the owner node carries none.
         const bool cs_on_owner = cs && !export_node.OffsetChild;
         fastgltf::optional<size_t> collider_mesh_idx;
         if (cs_on_owner && cs->MeshEntity != state::Null) {
@@ -1450,7 +1356,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 fastgltf::Motion fg_motion{.isKinematic = motion->IsKinematic};
                 if (motion->Mass) fg_motion.mass = fastgltf::optional<fastgltf::num>{*motion->Mass};
                 if (motion->CenterOfMass) fg_motion.centerOfMass = std::bit_cast<fastgltf::math::fvec3>(*motion->CenterOfMass);
-                // The orientation is written with the diagonal it applies to.
                 if (motion->InertiaDiagonal) {
                     fg_motion.inertialDiagonal = fastgltf::optional<fastgltf::math::fvec3>{std::bit_cast<fastgltf::math::fvec3>(*motion->InertiaDiagonal)};
                     fg_motion.inertialOrientation = fastgltf::optional<fastgltf::math::fvec4>{std::bit_cast<fastgltf::math::fvec4>(motion->InertiaOrientation)};
@@ -1482,7 +1387,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             }
         }
 
-        // Preserve matrix-form sources and emit TRS-form sources from LocalTransform.
         const auto source_matrix = gltf_node ? gltf_node->Matrix : std::nullopt;
         const auto fg_transform = [&]() -> std::variant<fastgltf::TRS, fastgltf::math::fmat4x4> {
             if (source_matrix) return std::bit_cast<fastgltf::math::fmat4x4>(*source_matrix);
@@ -1498,7 +1402,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const bool has_modal_model = modes && !modes->Freqs.empty();
         const auto *contact_surface = r.try_get<const ContactSurface>(entity);
         const bool has_acoustic_surface = contact_surface != nullptr;
-        // The derivation material lives on the node, and both the model and the surface reference it.
         const auto *acoustic_material = has_modal_model || has_acoustic_surface ? r.try_get<const AcousticMaterial>(entity) : nullptr;
         const auto acoustic_material_index = dedupe(audio_rigid_body_materials, acoustic_material, [&] {
             const auto &p = acoustic_material->Properties;
@@ -1538,7 +1441,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (has_modal_model) {
             const uint32_t n_modes = modes->Freqs.size(), n_points = modes->Positions.size();
 
-            // decayRates d = ln(1000)/T60 (T60 == 0 is the undamped sentinel, d = 0).
+            // decayRates d = ln(1000)/T60, with d = 0 for the undamped sentinel T60 == 0.
             std::vector<float> decay_rates(n_modes);
             for (uint32_t m = 0; m < n_modes; ++m) decay_rates[m] = modes->T60s[m] > 0 ? float(Ln1000 / modes->T60s[m]) : 0.f;
 
@@ -1558,7 +1461,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 .name = node_name,
             };
             if (const auto *mp = r.try_get<const MassProperties>(entity)) {
-                // Scales stored mass and inertia from solved density to the mesh's current material density.
                 const double rho_ratio = ModalDensityRatio(r, entity);
                 const auto &q = mp->InertiaOrientation;
                 const vec3 inertia = mp->InertiaDiagonal * float(rho_ratio);
@@ -1578,12 +1480,9 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             };
             asset.modalModels.emplace_back(std::move(model));
         } else if (acoustic_surface_index.has_value()) {
-            // A body that only supplies its finish to contacts against it, such as a floor.
             audio_rigid_body = fastgltf::AudioRigidBody{.acousticSurface = acoustic_surface_index};
         }
 
-        // A node with a Visibility flag exports that flag at rest.
-        // Other nodes derive it from their hidden state.
         bool visible = !export_node.Hidden || (export_node.Parent && nodes[*export_node.Parent].Hidden);
         if (const auto owner = export_node.Instances.empty() ? state::Null : export_node.Instances.front(); owner != state::Null) {
             if (const auto *visibility = r.try_get<const Visibility>(owner)) {
@@ -1607,7 +1506,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         });
     }
 
-    // Each light rests at its scene's unanimated image light.
     if (const auto &src_ibl = sa.ImageBasedLight) {
         fastgltf::ImageBasedLight source_ibl{.specularImageSize = src_ibl->SpecularImageSize, .name = src_ibl->Name};
         source_ibl.specularImages.reserve(src_ibl->SpecularImageIndicesByMip.size());
@@ -1633,7 +1531,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
     }
 
-    // Emit every scene, including empty ones (valid glTF).
     std::optional<size_t> acting_emitted;
     for (const auto se : scenes_ordered) {
         if (se == acting_scene) acting_emitted = asset.scenes.size();
@@ -1673,7 +1570,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         asset.extensionsUsed.emplace_back("EXT_texture_webp");
     }
 
-    // Finalize buffer. sources::Vector owns our binary blob; FileExporter writes it as a sibling .bin.
     asset.buffers.emplace_back(fastgltf::Buffer{
         .byteLength = bin.size(),
         .data = fastgltf::sources::Vector{.bytes = std::move(bin), .mimeType = fastgltf::MimeType::None},

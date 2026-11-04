@@ -1,12 +1,10 @@
-#ifndef MOTION_BLUR_SHARED_MSL
-#define MOTION_BLUR_SHARED_MSL
-
+#pragma once
 // Ported from Blender EEVEE's eevee_motion_blur.bsl.hh and Guertin, McGuire, and Nowrouzezahrai's feature-aware motion-blur filter.
 
 #include <metal_stdlib>
 using namespace metal;
 
-// Keep UV motion within half-float range for extreme projections.
+// Packing keeps UV motion within half-float range for extreme projections.
 inline float4 PackVelocity(float4 motion) { return motion * 0.01f; }
 inline float4 UnpackVelocity(float4 motion) { return motion * 100.0f; }
 
@@ -15,7 +13,7 @@ constant int MotionBlurTileSize = 32;
 constant uint MotionPrev = 0u;
 constant uint MotionNext = 1u;
 
-// Pack source-tile coordinates below motion length so atomic max selects the fastest contributor.
+// Source-tile coordinates pack below motion length so atomic max selects the fastest contributor.
 // Bits 31..18 store clamped pixel length, bits 17..9 store tile X, and bits 8..0 store tile Y.
 // Nine coordinate bits cover 512 tiles or 16,384 pixels per dimension.
 inline uint MotionTilePack(float2 motion, uint2 tile) {
@@ -41,5 +39,3 @@ inline float LineUnitSquareIntersectDistSafe(float2 line_origin, float2 line_dir
         select(float2(1.0f), float2(-1.0f), line_direction < float2(0.0f));
     return LineUnitSquareIntersectDist(line_origin, safe_dir);
 }
-
-#endif

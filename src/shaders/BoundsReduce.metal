@@ -1,7 +1,5 @@
-#ifndef BOUNDSREDUCE_MSL
-#define BOUNDSREDUCE_MSL
-
-// Write one partial AABB per tile of 256 vertex IDs for the bounds-combine pass.
+#pragma once
+// Writes one partial AABB per tile of 256 vertex IDs.
 #include "gpu/AABB.h"
 #include "BoundsShared.metal"
 #include "VertexBounds.metal"
@@ -30,7 +28,6 @@ kernel void BoundsReduceKernel(
         lo = pos;
         hi = pos;
     }
-    // Min > Max represents an empty tile and is neutral under the combine pass's min/max operations.
     FoldSharedAabb(shared_min, shared_max, BoundsFoldLanes, tid, lo, hi);
     if (tid == 0u) {
         const uint destination=VertexBoundsIndex(bindless,pc,entry,0u,tile.y);
@@ -40,4 +37,3 @@ kernel void BoundsReduceKernel(
         MarkWork(bindless,pc.NextWork,tile.y/256u);
     }
 }
-#endif

@@ -2,23 +2,19 @@
 #include "gpu/ConnectivityRef.h"
 #include "gpu/ElementHandleRange.h"
 #include "gpu/ElementWork.h"
-// Defines a connectivity rebuild's work and scratch layout.
 // Work ordinals index scratch.
-// Every persistent reference is a record-relative handle.
 // The caller reserves enough edge handles, then publishes the resulting count.
 struct MeshConnectivityJob {
-    uint32_t CornersSlot DEFAULT(InvalidSlot);
     ConnectivityRef Connectivity DEFAULT();
     // Sparse work contains handles, and an implicit range is the first handles of its domain.
     ElementWork Vertices DEFAULT(), Halfedges DEFAULT(), Faces DEFAULT();
-    ElementHandleRange EdgeHandles DEFAULT(); // New-edge ordinal -> handle, from a run or a list.
+    ElementHandleRange EdgeHandles DEFAULT(); // Handle per new-edge ordinal, from a run or a list
     // The old affected edges read source clones when current data is overwritten.
     // Matching face endpoint pairs or explicit wire pairs keep their handles.
     ConnectivityRef SourceConnectivity DEFAULT();
-    uint32_t SourceCornerSlot DEFAULT(InvalidSlot);
     ElementWork SourceEdges DEFAULT();
-    ElementWork ConvertedEdges DEFAULT(); // Explicit changes between surface and loose-edge ownership.
-    // Index by converted-edge ordinal: wire pair first halfedge + 1, zero for surface, or InvalidOffset for retired.
+    ElementWork ConvertedEdges DEFAULT(); // Explicit changes between surface and loose-edge ownership
+    // Per converted-edge ordinal: the wire pair's first halfedge + 1, zero for surface, or InvalidOffset for retired.
     // Absent means all become surfaces.
     SlotOffset ConvertedWirePairs DEFAULT();
     uint32_t SourceEdgeCount DEFAULT();
@@ -29,7 +25,7 @@ struct MeshConnectivityJob {
     uint32_t FaceStarts DEFAULT();
     uint32_t WordCount DEFAULT();
     uint32_t SourceWordCount DEFAULT();
-    uint32_t ScanWordCount DEFAULT(); // New-edge words + terminator + retired-edge words + terminator.
+    uint32_t ScanWordCount DEFAULT(); // New-edge words + terminator + retired-edge words + terminator
     // Open-addressed table keyed by endpoint pair, each slot holding the lowest halfedge of its undirected edge.
     uint32_t TableOffset DEFAULT();
     uint32_t TableMask DEFAULT();
@@ -44,9 +40,9 @@ struct MeshConnectivityJob {
     // Ranks have an additional zero-count terminator after each of those two domains.
     uint32_t BitsOffset DEFAULT();
     uint32_t RanksOffset DEFAULT();
-    uint32_t RetainedEdgesOffset DEFAULT(InvalidOffset); // Per compact destination representative, an old edge or InvalidOffset.
-    uint32_t RetiredEdgesOffset DEFAULT(); // Dense retirement handles, in source-work order.
+    uint32_t RetainedEdgesOffset DEFAULT(InvalidOffset); // Per compact destination representative: an old edge or InvalidOffset
+    uint32_t RetiredEdgesOffset DEFAULT(); // Dense retirement handles, in source-work order
     // Two counts: newly required edges and retired source edges.
     uint32_t StateOffset DEFAULT();
-    ElementWork RetiredEdgeWork DEFAULT(); // Optional retirement set, emitted with the dense scratch list.
+    ElementWork RetiredEdgeWork DEFAULT(); // Optional retirement set, emitted with the dense scratch list
 };

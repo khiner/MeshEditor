@@ -53,9 +53,6 @@ struct SceneViewUBO {
     // Weighted authored morph-normal deltas keyed by canonical vertex.
     uint32_t PosedMorphNormalDeltaSlot DEFAULT();
     uint32_t PosedMorphNormalNodesSlot DEFAULT();
-    // GPU-reduced local-space instance bounds for emission-side frustum culling.
-    uint32_t InstanceBoundsSlot DEFAULT(InvalidSlot);
-    // Motion-blur steps use captured model transforms while preserving step-independent draw data.
     uint32_t ModelSlotOverride DEFAULT(InvalidSlot);
     uint32_t MaterialSlot DEFAULT();
     uint32_t PrimitiveMaterialSlot DEFAULT();
@@ -63,13 +60,11 @@ struct SceneViewUBO {
     uint32_t InstanceRecordSlot DEFAULT();
     uint32_t InstanceStateSlot DEFAULT(InvalidSlot);
     uint32_t BoneXRay DEFAULT();
-    // Opacity of every surface in the X-ray solid draw.
     float XRayAlpha DEFAULT(1);
     // Scales overlay coverage behind the scene surface while overlays draw through it.
     // Zero leaves occlusion to the depth test.
     float OverlayBehindOpacity DEFAULT();
     uint32_t SceneDepthSamplerSlot DEFAULT(InvalidSlot);
-    // Apply wire and point selection colors only when overlays are visible.
     uint32_t ShowOverlays DEFAULT();
     uint32_t ShowExtras DEFAULT();
     uint32_t ShowBoundingBoxes DEFAULT();

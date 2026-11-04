@@ -2,10 +2,10 @@
 
 #include "gpu/ElementTables.h"
 
-// A record's independently addressed topology streams and its element domains' table runs.
 // Each stream contains its domain's values at arena addresses, and every stored reference is a record-relative handle.
 struct ConnectivityRef {
     ElementTables Tables DEFAULT();
+    uint32_t CornersSlot DEFAULT(InvalidSlot); // Each corner's vertex handle, in the index buffers
     uint32_t OutgoingSlot DEFAULT(InvalidSlot);
     uint32_t OppositesSlot DEFAULT(InvalidSlot);
     uint32_t HalfedgeEdgesSlot DEFAULT(InvalidSlot);

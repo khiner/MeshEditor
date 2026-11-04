@@ -48,7 +48,7 @@ enum class PositionEditOp : uint32_t {
 struct VertexPositionEditPushConstants {
     ConnectivityRef Connectivity;
     SlotOffset Handles, Positions;
-    uint32_t VertexSlot, CornerSlot, FaceCount, Count, Axes;
+    uint32_t VertexSlot, Count, Axes;
     float Factor;
     ElementWork Faces DEFAULT();
     SlotOffset Planes;
@@ -102,5 +102,5 @@ struct PositionReducePushConstants {
 
 struct TransformPositionParameters {
     Transform Frame, Delta;
-    vec3 Pivot;
+    vec3 Pivot, Mirror;
 };

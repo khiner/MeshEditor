@@ -1,6 +1,4 @@
-#ifndef BOUNDS_SHARED_MSL
-#define BOUNDS_SHARED_MSL
-
+#pragma once
 // Reduces lane AABBs into shared_min[0] and shared_max[0].
 // Min > Max represents an empty result.
 #include <metal_stdlib>
@@ -17,7 +15,6 @@ inline void FoldSharedAabb(
     uint lanes, uint tid, float3 lo, float3 hi
 ) {
     // Apple GPU SIMD groups have 32 lanes.
-    // Only their partials need shared memory.
     lo = simd_min(lo);
     hi = simd_max(hi);
     if ((tid & 31u) == 0u) {
@@ -35,8 +32,6 @@ inline void FoldSharedAabb(
             shared_max[0] = hi;
         }
     }
-    // BoundsCombine consumes the result from every lane.
+    // Every lane reads the result after this barrier.
     threadgroup_barrier(mem_flags::mem_threadgroup);
 }
-
-#endif

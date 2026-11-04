@@ -1,7 +1,4 @@
-#ifndef BONESPHERE_MSL
-#define BONESPHERE_MSL
-
-// Renders bone joints by ray tracing a sphere through a camera-facing disc.
+#pragma once
 #include "BoneUtils.metal"
 #include "MeshletResolve.metal"
 #include "Varyings.metal"
@@ -16,7 +13,7 @@ inline BoneSphereVaryings BoneSphereMeshVertexAt(
 
     const bool is_object_mode = scene.View.InteractionMode == InteractionMode::Object;
     const float3 bone_solid = float3(scene.Theme.Colors.BoneSolid);
-    const float3 hint_color = is_object_mode ? bone_solid : bone_joint_wire_color(scene, load_bone_instance_state(scene, draw));
+    const float3 hint_color = is_object_mode ? bone_solid : bone_joint_wire_color(scene, scene.InstanceState(draw));
 
     const float3 cam_pos = float3(scene.View.CameraPosition);
     const float3x3 VR = scene.View.ViewRotation.Unpack();
@@ -88,10 +85,7 @@ fragment OverlayTargetsDepth BoneSphereFragment(
     const float fac = clamp(dot(normal, light) * 0.8f + 0.2f, 0.0f, 1.0f);
     const float3 color = mix(in.StateColor.rgb, in.BoneColor.rgb, fac * fac);
 
-    // Project the view-space intersection to preserve sphere depth.
     const float3 world_hit = transpose(view.ViewRotation.Unpack()) * hit_view + float3(view.CameraPosition);
     const float4 clip = scene.ViewProj() * float4(world_hit, 1.0f);
     return {.Color = float4(color, view.BoneXRay != 0u ? 0.4f : 1.0f), .Depth = clip.z / clip.w};
 }
-
-#endif

@@ -5,13 +5,11 @@
 #include "Profile.h"
 #include "gpu/MeshAttributeBit.h"
 #include "gpu/MeshletGeometryEncoding.h"
+#include "mesh/EdgeKey.h"
 
 #include "meshoptimizer.h"
 
 #include <atomic>
-#include <exception>
-#include <format>
-#include <mutex>
 
 namespace {
 constexpr size_t PartitionSize{ClusterLodPartitionSize};
@@ -21,7 +19,6 @@ constexpr float ClusterConeWeight{0.5f};
 constexpr float ClusterSplitFactor{2.f};
 constexpr float ShadingAttributeScale{16.f};
 constexpr float SpanNodeSlack{1.f + 1e-5f};
-// Use nested parallelism only when one weld can occupy the machine independently.
 constexpr uint32_t ParallelPositionRemapVertices{256u * 1024u};
 
 uint32_t PositionHash(const std::array<float, 3> &position) {
@@ -91,7 +88,6 @@ struct Bounds {
 Bounds MergeBounds(std::span<const Bounds> bounds) {
     const auto merged = meshopt_computeSphereBounds(&bounds.front().Center.x, bounds.size(), sizeof(Bounds), &bounds.front().Radius, sizeof(Bounds));
     Bounds result{.Center = std::bit_cast<vec3>(merged.center), .Radius = merged.radius};
-    // Merged bounds stay conservative with respect to the member errors.
     for (const auto &member : bounds) result.Error = std::max(result.Error, member.Error);
     return result;
 }
@@ -106,7 +102,7 @@ Bounds MergeSpanBounds(std::span<const Bounds> members) {
         result.Radius = std::max(result.Radius, std::sqrt(dx * dx + dy * dy + dz * dz) + member.Radius);
         result.Error = std::max(result.Error, member.Error);
     }
-    // Add rounding slack so a node cannot prune a record that exceeds the projected-error budget.
+    // Rounding slack keeps a node from pruning a record that exceeds the projected-error budget.
     result.Radius *= SpanNodeSlack;
     result.Error *= SpanNodeSlack;
     return result;
@@ -115,7 +111,6 @@ Bounds MergeSpanBounds(std::span<const Bounds> members) {
 uint32_t SourceVertexIndex(const ClusterLodMesh &mesh, uint32_t vertex) { return mesh.VertexTable.empty() ? vertex : Resolve<MeshElementBlockSize>(mesh.VertexTable, ElementHandle{vertex}).Value(); }
 const float *SourcePosition(const ClusterLodMesh &mesh, uint32_t vertex) { return mesh.Positions + (mesh.PositionStride / sizeof(float)) * SourceVertexIndex(mesh, vertex); }
 
-// The whole-primitive render-vertex weld, which is the domain every simplification runs in.
 struct PrimitiveWeld {
     std::vector<uint32_t> CornerVertices; // weld vertex per primitive corner
     std::vector<uint32_t> Representative; // primitive-local source corner per weld vertex
@@ -139,7 +134,6 @@ struct PrimitiveWeld {
     uint32_t VertexCount() const { return uint32_t(Representative.size()); }
 };
 
-// Uses the shared render-equivalence key for both source and coarse cluster vertices.
 void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive, PrimitiveWeld &weld, bool serial) {
     const uint32_t first_index = primitive.FirstTriangle * 3u;
     const uint32_t corner_count = primitive.TriangleCount * 3u;
@@ -204,7 +198,7 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
                 });
             };
             // The earliest corner of each source vertex determines the serial weld's render-vertex order.
-            // Store source handles directly in the final corner array while finding these minima concurrently.
+            // The final corner array holds source handles while the minima are found concurrently.
             for_each_triangle_block([&](uint32_t, uint32_t first, uint32_t last) {
                 for (uint32_t triangle = first; triangle < last; ++triangle) {
                     const auto vertices = primitive_indices.TriangleAt(triangle);
@@ -278,7 +272,6 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
     } else {
         weld.Representative.reserve(corner_count);
         weld.Positions.reserve(corner_count);
-        // Use only the vertex word for source-vertex keys.
         std::vector<uint8_t> flat_face_triangles(source_vertex_only ? 0u : primitive.TriangleCount);
         for (uint32_t triangle = 0; triangle < flat_face_triangles.size(); ++triangle) {
             flat_face_triangles[triangle] = key.FlatFaceTriangle(triangle);
@@ -314,7 +307,6 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
     for (uint32_t v = 0; v < weld_count; ++v) {
         const uint32_t handle = key.Handle(weld.Representative[v]);
         float *attribute = &weld.Attributes[size_t(v) * weld.AttributeCount]; // NOLINT(misc-const-correctness)
-        // Flat-face curvature uses the shared vertex normal at geometric error scale.
         const auto normal = key.FlatFaceTriangle(weld.Representative[v] / 3u) ?
             mesh.Normals.VertexNormals[SourceVertexIndex(mesh, mesh.CornerVertices[first_index + weld.Representative[v]])] / ShadingAttributeScale :
             mesh.Normals[handle];
@@ -346,7 +338,6 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
         assert(attribute == &weld.Attributes[size_t(v + 1u) * weld.AttributeCount]);
     }
 
-    // Cluster connectivity and consistent boundary locking both run over positions alone.
     weld.Remap.assign(weld_count, 0u);
     if (serial || weld_count < ParallelPositionRemapVertices) {
         meshopt_generatePositionRemap(weld.Remap.data(), weld.Positions.front().data(), weld_count, sizeof(weld.Positions.front()));
@@ -354,10 +345,8 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
         GeneratePositionRemap(weld.Remap, weld.Positions);
     }
 
-    // The primitive extent scales every shading attribute consistently across group rebuilds.
     weld.Scale = meshopt_simplifyScale(weld.Positions.front().data(), weld_count, sizeof(weld.Positions.front()));
 
-    // Preserve vertices at attribute discontinuities throughout simplification.
     weld.Locks.assign(weld_count, 0u);
     weld.SeamLocks.assign(weld_count, 0u);
     weld.Owners.resize(weld_count);
@@ -434,12 +423,10 @@ struct GroupEdges {
     }
 };
 
-// Lock every weld vertex shared by two groups to preserve their boundary during simplification.
 std::vector<std::vector<uint64_t>> LockBoundary(PrimitiveWeld &weld, std::span<const WorkCluster> clusters, std::span<const std::vector<uint32_t>> groups, bool serial) {
     constexpr uint8_t LockBit{uint8_t(meshopt_SimplifyVertex_Lock)};
     constexpr auto Relaxed{std::memory_order_relaxed};
     const bool parallel = !serial && groups.size() > 1u;
-    // Parallel passes split the groups into at most 64 contiguous runs.
     const auto for_each_group = [&](auto &&function) {
         const auto chunks = parallel ? uint32_t(std::min<size_t>(groups.size(), 64u)) : 1u;
         const auto run = [&](uint32_t chunk) {
@@ -454,8 +441,7 @@ std::vector<std::vector<uint64_t>> LockBoundary(PrimitiveWeld &weld, std::span<c
             for (const auto vertex : clusters[member].Vertices) function(vertex);
         }
     };
-    // Only this level's vertices participate.
-    // Other levels may reference most of the repair pool, so resetting that whole pool here repeats unrelated work.
+    // Only this level's vertices reset, since other levels can reference most of the repair pool.
     const auto lock_of = [&](uint32_t vertex) { return std::atomic_ref<uint8_t>{weld.Locks[vertex]}; };
     const auto owner_of = [&](uint32_t vertex) { return std::atomic_ref<uint32_t>{weld.Owners[vertex]}; };
     uint64_t level_vertices = 0u;
@@ -472,9 +458,7 @@ std::vector<std::vector<uint64_t>> LockBoundary(PrimitiveWeld &weld, std::span<c
         });
     }
 
-    // Material boundaries and terminal-group boundaries lie outside the pending groups.
-    // Keep their open edges fixed because shared-vertex locks omit those neighbors.
-    // An edge is open when its undirected key occurs once in the group.
+    // Their open edges stay locked because shared-vertex locks omit those neighbors.
     std::vector<std::vector<uint64_t>> artificial_edges(groups.size());
     const auto lock_group_edges = [&](GroupEdges &edges, size_t group_index) {
         const auto &group = groups[group_index];
@@ -487,7 +471,7 @@ std::vector<std::vector<uint64_t>> LockBoundary(PrimitiveWeld &weld, std::span<c
             for (uint32_t c = 0u; c < cluster.LocalTriangles.size(); ++c) {
                 const uint32_t a = weld.Remap[cluster.Vertices[cluster.LocalTriangles[c]]];
                 const uint32_t d = weld.Remap[cluster.Vertices[cluster.LocalTriangles[c / 3u * 3u + (c + 1u) % 3u]]];
-                edges.Add(uint64_t(std::min(a, d)) << 32u | std::max(a, d), cluster.PhysicalBoundaries[c] != 0u, false, a > d);
+                edges.Add(EdgeKey(a, d), cluster.PhysicalBoundaries[c] != 0u, false, a > d);
             }
         }
         for (const auto slot : edges.Occupied) {
@@ -495,7 +479,7 @@ std::vector<std::vector<uint64_t>> LockBoundary(PrimitiveWeld &weld, std::span<c
             if (entry.Count == 1u && !entry.Physical) {
                 const auto a = uint32_t(entry.Key >> 32u), d = uint32_t(entry.Key);
                 // A unique undirected edge has one directed input occurrence.
-                // Self-edges have a matching reverse and were never artificial.
+                // Self-edges have a matching reverse and are never artificial.
                 if (a != d) artificial.push_back(entry.Reversed ? (uint64_t(d) << 32u | a) : entry.Key);
                 lock_of(a).fetch_or(LockBit, Relaxed);
                 lock_of(d).fetch_or(LockBit, Relaxed);
@@ -503,7 +487,6 @@ std::vector<std::vector<uint64_t>> LockBoundary(PrimitiveWeld &weld, std::span<c
         }
         std::ranges::sort(artificial);
     };
-    // Reuse the bounded edge table across chunks and levels on each worker.
     thread_local GroupEdges edges;
     for_each_group([&](size_t group) {
         for_each_vertex(group, [&](uint32_t vertex) {
@@ -548,7 +531,6 @@ std::vector<std::vector<uint32_t>> PartitionClusters(const PrimitiveWeld &weld, 
     return groups;
 }
 
-// Halves a group's triangle count while keeping its locked boundary and render seams.
 // Returns error in mesh units without an edge-length limit.
 std::vector<uint32_t> SimplifyGroup(const PrimitiveWeld &weld, std::span<const uint32_t> indices, size_t target_count, float *error) {
     if (target_count > indices.size()) return indices | std::ranges::to<std::vector>();
@@ -588,7 +570,6 @@ std::vector<WorkCluster> Clusterize(const PrimitiveWeld &weld, std::span<const u
     return clusters;
 }
 
-// One group's own output, merged into the build in group order.
 struct GroupScratch {
     std::vector<ClusterLodCluster> Clusters;
     std::vector<uint32_t> VertexCorners;
@@ -627,16 +608,12 @@ void EmitCluster(auto &&sink, const PrimitiveWeld &weld, const WorkCluster &clus
     }
 }
 
-// Preserve physical-boundary provenance in the CPU reference builder too.
 // Shared partition edges keep both endpoints locked, so every newly created open edge follows a physical boundary.
-// Unchanged partition edges retain their identity in the geometric position domain, independently of shading wedges.
 void ClassifyOutputBoundaries(const PrimitiveWeld &weld, std::span<const uint64_t> artificial, std::vector<WorkCluster> &output) {
     const auto edge = [&](const WorkCluster &cluster, uint32_t c) {
         return std::pair{weld.Remap[cluster.Vertices[cluster.LocalTriangles[c]]], weld.Remap[cluster.Vertices[cluster.LocalTriangles[c / 3u * 3u + (c + 1u) % 3u]]]};
     };
     const auto key = [](uint32_t a, uint32_t d) { return (uint64_t(a) << 32u) | d; };
-    // LockBoundary already identified the input's open nonphysical edges.
-    // Only output edges need a table to find newly exposed boundaries.
     thread_local GroupEdges edges;
     size_t output_count = 0u;
     for (const auto &cluster : output) output_count += cluster.LocalTriangles.size();
@@ -658,8 +635,7 @@ void ClassifyOutputBoundaries(const PrimitiveWeld &weld, std::span<const uint64_
     }
 }
 
-// Each output vertex names the corner of its weld vertex's first member occurrence.
-// This confines a coarse cluster to corners that its finest descendants name.
+// A coarse cluster therefore holds only corners its finest descendants hold.
 void AssignMemberCorners(std::span<const WorkCluster> clusters, std::span<const uint32_t> members, std::vector<WorkCluster> &output) {
     thread_local FlatKeyMap first_corners;
     size_t member_vertices = 0;
@@ -689,13 +665,13 @@ void RunGroup(GroupScratch &scratch, const PrimitiveWeld &weld, std::span<const 
         member_bounds[i] = cluster.Sphere;
         for (const auto local : cluster.LocalTriangles) merged.push_back(cluster.Vertices[local]);
     }
-    // Reuse merged member bounds to preserve monotonic containment across levels.
+    // Merged member bounds keep containment monotonic across levels.
     scratch.Sphere = MergeBounds(member_bounds);
 
     const auto triangle_count = merged.size() / 3u;
     const size_t target_size = size_t(float(triangle_count) * SimplifyRatio) * 3u;
     float error = 0.f;
-    // Preserve single-triangle groups to keep every coarser level complete.
+    // Single-triangle groups stay unsimplified so every coarser level is complete.
     const auto simplified = target_size == 0 ? merged : SimplifyGroup(weld, merged, target_size, &error);
     scratch.Stuck = float(simplified.size()) > float(merged.size()) * SimplifyThreshold;
 
@@ -716,7 +692,6 @@ void RunGroup(GroupScratch &scratch, const PrimitiveWeld &weld, std::span<const 
     scratch.NewClusters = Clusterize(weld, simplified);
     ClassifyOutputBoundaries(weld, artificial, scratch.NewClusters);
     AssignMemberCorners(clusters, members, scratch.NewClusters);
-    // Inherit group bounds and error to preserve conservative tests at the next level.
     for (auto &cluster : scratch.NewClusters) {
         cluster.Sphere = scratch.Sphere;
         cluster.Refined = group;
@@ -724,10 +699,7 @@ void RunGroup(GroupScratch &scratch, const PrimitiveWeld &weld, std::span<const 
     }
 }
 
-// Runs the DAG's level loop over one primitive's pending clusters and merges each level's groups in partition order.
 // joining[l] lists the existing clusters that enter the pending pool at level l.
-// A single remaining cluster forms a terminal group, and the loop ends once no later level has clusters to join.
-// Returns the number of levels.
 uint32_t BuildLevels(ClusterLodBuild &build, PrimitiveWeld &weld, std::vector<WorkCluster> &clusters, std::vector<uint32_t> &pending, std::span<const std::vector<uint32_t>> joining, uint32_t primitive, bool serial) {
     const auto terminal = [&] {
         const auto &cluster = clusters[pending.front()];
@@ -830,7 +802,6 @@ uint32_t BuildLevels(ClusterLodBuild &build, PrimitiveWeld &weld, std::vector<Wo
     return depth;
 }
 
-// Emits both record and group bounds so each span node remains conservative for frustum and error tests.
 void CollectSpanRecords(
     const ClusterLodBuild &build, const ClusterLodMesh &mesh, uint32_t primitive, std::vector<Bounds> &records
 ) {
@@ -851,7 +822,6 @@ void CollectSpanRecords(
     }
 }
 
-// Builds a span tree whose surviving record runs retain ascending order after bounds and error pruning.
 void BuildSpanTree(
     ClusterLodBuild &build, const ClusterLodMesh &mesh, uint32_t primitive, uint32_t first_record,
     std::vector<Bounds> &records, std::vector<uint32_t> &row, std::vector<uint32_t> &next
@@ -864,7 +834,6 @@ void BuildSpanTree(
         range.FinestNode = ClusterLodInvalid;
         return;
     }
-    // A pinned instance draws the original-geometry prefix whole, which one never-pruned leaf covers.
     range.FinestNode = uint32_t(build.Nodes.size());
     build.Nodes.push_back(LodNode{
         .Error = std::numeric_limits<float>::infinity(),
@@ -919,7 +888,6 @@ void BuildSpanTree(
     build.NodeDepth = std::max(build.NodeDepth, depth);
 }
 
-// Builds each primitive's span tree over its own run of records, which follow primitive order.
 void BuildSpanTrees(ClusterLodBuild &build, const ClusterLodMesh &mesh) {
     std::vector<Bounds> records;
     std::vector<uint32_t> row, next;
@@ -975,7 +943,6 @@ ClusterLodBuild BuildClusterLod(const ClusterLodMesh &mesh, bool serial) {
             for (uint32_t c = 0; c < source.TriangleCount * 3u; ++c) {
                 const auto &triangle = mesh.SourceLocalTriangles[source.FirstLocalTriangle + c / 3u];
                 const uint8_t local = triangle[c % 3u] & uint8_t(MeshletGeometryEncoding::LocalIndexMask);
-                if (local >= source.VertexCount) throw std::runtime_error(std::format("LOD input has invalid local vertex: primitive {}, cluster {}, corner {}, byte {}, local {}, vertex count {}, first vertex {}, first local triangle {}, triangle count {}.", primitive, i, c, uint32_t(triangle[c % 3u]), uint32_t(local), source.VertexCount, source.FirstVertex, source.FirstLocalTriangle, source.TriangleCount));
                 cluster.LocalTriangles[c] = local;
                 cluster.PhysicalBoundaries[c] = (triangle[c % 3u] & uint8_t(MeshletGeometryEncoding::PhysicalBoundaryBit)) != 0u;
                 flat_vertices[local] = (triangle[0] & uint8_t(MeshletGeometryEncoding::FlatTriangleBit)) != 0u;
@@ -988,9 +955,7 @@ ClusterLodBuild BuildClusterLod(const ClusterLodMesh &mesh, bool serial) {
                 } else {
                     std::array<uint32_t, MaxWeldKeyWords> words;
                     key.WriteHandle(corner, vertex, flat_vertices[v], words);
-                    const auto *found = weld.Keys.Find(words.data());
-                    if (!found) throw std::runtime_error(std::format("LOD cluster key is absent from source: primitive {}, cluster {}, local vertex {}, corner {}, vertex {}, flat {}, class {}, identity {}, mode {}, words {}, input corners {}.", primitive, i, v, corner, vertex, uint32_t(flat_vertices[v]), words[1], words[2], mesh.Weld.CornerClassMode, key.WordCount(), range.TriangleCount * 3u));
-                    cluster.Vertices[v] = *found;
+                    cluster.Vertices[v] = *weld.Keys.Find(words.data());
                 }
             }
             cluster.Sphere = Bounds{.Center = source.Center, .Radius = source.Radius};
@@ -1001,18 +966,10 @@ ClusterLodBuild BuildClusterLod(const ClusterLodMesh &mesh, bool serial) {
             for (uint32_t i = 0u; i < range.ClusterCount; ++i) initialize_cluster(i);
         } else {
             constexpr uint32_t ClustersPerBlock{2048u};
-            std::mutex failure_mutex;
-            std::exception_ptr failure;
             ParallelFor((range.ClusterCount + ClustersPerBlock - 1u) / ClustersPerBlock, [&](uint32_t block) {
-                try {
-                    const uint32_t last = std::min((block + 1u) * ClustersPerBlock, range.ClusterCount);
-                    for (uint32_t i = block * ClustersPerBlock; i < last; ++i) initialize_cluster(i);
-                } catch (...) {
-                    const std::scoped_lock lock{failure_mutex};
-                    if (!failure) failure = std::current_exception();
-                }
+                const uint32_t last = std::min((block + 1u) * ClustersPerBlock, range.ClusterCount);
+                for (uint32_t i = block * ClustersPerBlock; i < last; ++i) initialize_cluster(i);
             });
-            if (failure) std::rethrow_exception(failure);
         }
         const uint32_t depth = BuildLevels(build, weld, clusters, pending, {}, primitive, serial);
 
@@ -1035,8 +992,6 @@ ClusterLodBuild RebuildClusterLod(const ClusterLodMesh &mesh, std::span<const ui
         BuildWeld(mesh, mesh.Primitives.front(), weld, false);
     }
     weld.Scale = scale;
-    // Each cluster's local vertices are the distinct weld vertices of its corners, in first-use order.
-    // Each local vertex names the corner of its first use, and an open-addressed table finds it by weld vertex.
     std::vector<WorkCluster> clusters(mesh.Clusters.size());
     std::vector<uint32_t> first_corners(clusters.size() + 1u);
     for (uint32_t i = 0; i < clusters.size(); ++i) first_corners[i + 1u] = first_corners[i] + mesh.Clusters[i].TriangleCount * 3u;
@@ -1065,7 +1020,6 @@ ClusterLodBuild RebuildClusterLod(const ClusterLodMesh &mesh, std::span<const ui
                 cluster.PhysicalBoundaries[c] = (mesh.SourceLocalTriangles[source.FirstLocalTriangle + c / 3u][c % 3u] & uint8_t(MeshletGeometryEncoding::PhysicalBoundaryBit)) != 0u;
             }
             cluster.Sphere = {.Center = source.Center, .Radius = source.Radius, .Error = source.Error};
-            // Inputs are existing records, so the loop emits none of them.
             cluster.Level0Id = i;
             cluster.ConeSafe = source.ConeCullSafe;
         }

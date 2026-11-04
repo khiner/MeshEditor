@@ -1,11 +1,8 @@
-#ifndef POSEPREPASS_MSL
-#define POSEPREPASS_MSL
-
+#pragma once
 // Writes posed positions at vertex arena addresses and reduces their vertex-block bounds.
 #include "MorphDeform.metal"
 #include "ArmatureDeform.metal"
 #include "TransformUtils.metal"
-#include "EditSelection.metal"
 #include "BoundsShared.metal"
 #include "VertexBounds.metal"
 
@@ -49,4 +46,3 @@ kernel void PosePrepassKernel(
         BindlessBufferMutable(AABB,bindless.Buffer,pc.ValuesSlot)[destination]={packed_float3(shared_min[0]),packed_float3(shared_max[0])};
     }
 }
-#endif

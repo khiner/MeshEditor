@@ -1,6 +1,4 @@
-#ifndef TRSUTILS_MSL
-#define TRSUTILS_MSL
-
+#pragma once
 #include "gpu/Transform.h"
 
 inline float3 quat_rotate(float4 q, float3 v) {
@@ -43,4 +41,5 @@ inline float3 trs_transform_normal(Transform t, float3 normal) {
     return quat_rotate(float4(t.R), normal / float3(t.S));
 }
 
-#endif
+// The cofactor matrix of m, which carries normals through m.
+inline float3x3 NormalTransform(float3x3 m) { return float3x3(cross(m[1], m[2]), cross(m[2], m[0]), cross(m[0], m[1])); }

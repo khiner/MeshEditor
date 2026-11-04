@@ -30,7 +30,7 @@ struct MeshletBuildJob {
     uint32_t TileCountsOffset DEFAULT();
     uint32_t RecordScratchOffset DEFAULT();
     uint32_t VertexScratchOffset DEFAULT();
-    // The pool positions the job's payload runs fill, and their offsets in the payload ranges its records name them by.
+    // The pool positions the job's payload runs fill, and their offsets within the payload ranges its records index.
     uint32_t TriangleAddress DEFAULT(), TriangleOffset DEFAULT();
     uint32_t LocalTriangleAddress DEFAULT(), LocalTriangleOffset DEFAULT();
     uint32_t VertexAddress DEFAULT(), VertexOffset DEFAULT();
@@ -38,8 +38,8 @@ struct MeshletBuildJob {
     uint32_t MeshletAddress DEFAULT(), MeshletHandle DEFAULT();
     uint32_t PrimitiveAddress DEFAULT(), PrimitiveHandle DEFAULT();
     uint32_t NodeAddress DEFAULT(), NodeHandle DEFAULT();
-    uint32_t PrimitiveRoutes DEFAULT(); // The destination's first route, indexed by source material * 3 + topology.
-    // Canonical membership to gather; absent when Elements is supplied by a local edit.
+    uint32_t PrimitiveRoutes DEFAULT(); // The destination's first route, indexed by source material * 3 + topology
+    // Canonical membership to gather, absent when a local edit supplies Elements.
     SlotOffset ElementBlockIds DEFAULT();
     uint32_t ElementBlockCount DEFAULT(), ElementBlocksSlot DEFAULT(InvalidSlot), ElementOwner DEFAULT(InvalidOffset);
     ElementWork Elements DEFAULT(), Materials DEFAULT();

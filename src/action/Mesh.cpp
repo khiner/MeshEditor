@@ -5,6 +5,9 @@
 
 #include "TransformMath.h"
 #include "mesh/EditVisibility.h"
+#include "mesh/MeshPipelines.h"
+#include "mesh/Neighborhood.h"
+#include "mesh/SelectedChains.h"
 #include "metal/Dispatch.h"
 #include "object/ObjectOps.h"
 #include "procedure/Cook.h"
@@ -32,7 +35,7 @@ void SeparateSelected(state::Registry &r, const ::selection::PrimaryEditInstance
     for (const auto &[entity, instance] : primaries) {
         if (!HasMesh(r, entity)) continue;
         const auto id = *DrawnStoreId(r, entity);
-        auto planned = SeparateGeometryTasks(meshes, Mesh{meshes, id}, EditorGeometrySelection(meshes, id), mode);
+        auto planned = SeparateGeometryTasks(r, Mesh{meshes, id}, EditorGeometrySelection(meshes, id), mode);
         if (planned.empty()) continue;
         removals.emplace_back(entity, std::move(planned.back()));
         planned.pop_back();
@@ -58,20 +61,17 @@ void SeparateSelected(state::Registry &r, const ::selection::PrimaryEditInstance
     for (const auto &[entity, removal] : removals) {
         const auto id = *DrawnStoreId(r, entity);
         auto removed = std::get<GeometrySelection>(removal.Selection);
-        // A record without faces separates its selected vertices, and keeps a separated vertex an unselected edge still reaches.
-        // Its Delete node removes the wires between separated vertices, then the separated vertices they leave without edges.
         const bool wires = removal.Op == MeshTopologyOp::DeleteEdges;
         if (wires) {
-            const Mesh mesh{meshes, id};
-            for (const auto edge : mesh.edges()) {
-                const auto h = mesh.GetHalfedge(edge, 0u);
-                if (std::ranges::binary_search(removed.Vertices, *mesh.GetFromVertex(h)) && std::ranges::binary_search(removed.Vertices, *mesh.GetToVertex(h))) removed.Edges.push_back(*edge);
+            const auto edges = HandleList(Mesh{meshes, id}.edges());
+            const auto facts = SelectedEdgeFacts(meshes, GetMeshPipelines(r), id, edges, {});
+            for (uint32_t i = 0u; i < edges.size(); ++i) {
+                if (std::ranges::binary_search(removed.Vertices, facts[i].From) && std::ranges::binary_search(removed.Vertices, facts[i].To)) removed.Edges.push_back(edges[i]);
             }
         }
         const auto node = action::nodes::AppendNode(r, entity, KindOf<action::mesh::Delete>);
         if (node == state::Null) return;
         r.replace<action::mesh::Delete>(node, wires ? action::mesh::DeleteMode::Loose : action::mesh::DeleteMode(uint32_t(removal.Op)));
-        // The separated elements of the drawn record.
         action::nodes::Apply(r, action::nodes::SetInlineSelection{node, std::make_unique<InlineSelection>(SelectionOf(removed, removal.SelectionElement))});
         r.remove<MeshActiveElement>(entity);
     }
@@ -86,8 +86,6 @@ void SeparateSelected(state::Registry &r, const ::selection::PrimaryEditInstance
 // The cells an Object Info node sits left of and below the Boolean node it feeds.
 constexpr uvec2 InfoOffset{6u, 5u};
 
-// Require exactly two selected mesh objects.
-// Append a Boolean node to the active mesh that reads the other object through an Object Info node and keeps the result in the active object's space.
 void CombineSelected(state::Registry &r, const action::mesh::Boolean &boolean) {
     const auto active = FindActiveEntity(r);
     std::vector<state::Entity> others;
@@ -130,7 +128,8 @@ std::optional<Transform> PrimaryFrame(const state::Registry &r, state::Entity me
 template<typename A>
     requires(procedure::KindOf<A> < procedure::KindCount)
 std::optional<A> NodeOf(const state::Registry &, state::Entity, const A &a) { return a; }
-// A sphere blend across several meshes takes the mean distance of all their selected vertices from the center in each mesh's local space, and one mesh's node measures its own.
+// A sphere blend across several meshes takes the mean distance of all their selected vertices from the center, each in its mesh's local space.
+// A single mesh's node measures its own.
 std::optional<procedure::ToSphere> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::ToSphere &a) {
     const auto center = EditSelectionCenter(r);
     const auto &primaries = r.get<const EditPrimaries>(state::Document).Transformable;
@@ -146,8 +145,8 @@ std::optional<procedure::ToSphere> NodeOf(const state::Registry &r, state::Entit
             const auto &world = *WorldTransformOf(r, primaries.at(e));
             auto local = Rotate(Conjugate(world.R), center - world.P);
             for (uint32_t axis = 0u; axis < 3u; ++axis) local[axis] = world.S[axis] != 0.f ? local[axis] / world.S[axis] : 0.f;
-            for (const auto v : EditorGeometrySelection(meshes, id).Vertices) {
-                distance += Length(mesh.GetPosition(he::VH{v}) - local);
+            for (const auto &position : VertexPositions(meshes, GetMeshPipelines(r), id, EditorGeometrySelection(meshes, id).Vertices)) {
+                distance += Length(position - local);
                 ++count;
             }
         }
@@ -158,24 +157,13 @@ std::optional<procedure::ToSphere> NodeOf(const state::Registry &r, state::Entit
 std::optional<procedure::PushPull> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::PushPull &a) {
     return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::PushPull{a.Distance, EditSelectionCenter(r), frame}; });
 }
-// Whether the mesh's drawn record has the corner color layer, or the UV set, that a face attribute edit permutes.
 bool HasCornerLayer(const state::Registry &r, state::Entity mesh_entity, bool colors, uint32_t uv_set) {
     if (!colors && uv_set >= MeshStore::MaxUvSets) return false;
     return r.Resources.get<const MeshStore>().Get(*DrawnStoreId(r, mesh_entity)).CornerAttributes & (colors ? MeshAttributeBit_Color0 : MeshAttributeBit_TexCoord0 << uv_set);
 }
-std::optional<action::mesh::RotateUVs> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::RotateUVs &a) {
-    return HasCornerLayer(r, mesh_entity, false, a.UVSet) ? std::optional{a} : std::nullopt;
+std::optional<action::mesh::CycleCornerAttribute> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::CycleCornerAttribute &a) {
+    return HasCornerLayer(r, mesh_entity, a.Attribute == action::mesh::CornerAttribute::Colors, a.UVSet) ? std::optional{a} : std::nullopt;
 }
-std::optional<action::mesh::ReverseUVs> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::ReverseUVs &a) {
-    return HasCornerLayer(r, mesh_entity, false, a.UVSet) ? std::optional{a} : std::nullopt;
-}
-std::optional<action::mesh::RotateColors> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::RotateColors &a) {
-    return HasCornerLayer(r, mesh_entity, true, 0u) ? std::optional{a} : std::nullopt;
-}
-std::optional<action::mesh::ReverseColors> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::ReverseColors &a) {
-    return HasCornerLayer(r, mesh_entity, true, 0u) ? std::optional{a} : std::nullopt;
-}
-// Resolve the shear axes in world space, from the active object's orientation for a local shear.
 std::optional<procedure::Shear> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::Shear &a) {
     const auto axis = uint32_t(a.Axis), ortho = uint32_t(a.AxisOrtho);
     if (axis > 2u || ortho > 2u || axis == ortho) return {};
@@ -190,7 +178,7 @@ std::optional<procedure::Shear> NodeOf(const state::Registry &r, state::Entity m
     }
     return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::Shear{a.Angle, EditSelectionCenter(r), direction, normal, frame}; });
 }
-const ViewCamera &ActionCamera(const state::Registry &r) { return r.get<const ViewCameraState>(FindActiveViewport(r)).Active; }
+ViewCamera ActionCamera(const state::Registry &r) { return ViewCameraOf(r, FindActiveViewport(r)); }
 std::optional<procedure::Warp> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::Warp &a) {
     return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::Warp{a.Angle, a.OffsetAngle, a.Center, a.AutoRange, a.Min, a.Max, ActionCamera(r).Orientation, frame}; });
 }
@@ -200,25 +188,27 @@ std::optional<procedure::Bend> NodeOf(const state::Registry &r, state::Entity me
 vec3 ActionDirection(const state::Registry &r, vec3 value, bool view_space) {
     return view_space ? ActionCamera(r).Orientation * value : value;
 }
-std::optional<procedure::Spin> NodeOf(const state::Registry &r, state::Entity, const action::mesh::Spin &a) {
-    return procedure::Spin{a.Steps, a.Angle, ActionDirection(r, a.Axis, a.ViewSpace), a.Center, a.Offset};
+std::optional<procedure::Extrude> NodeOf(const state::Registry &, state::Entity, const action::mesh::Extrude &a) {
+    return procedure::Extrude{.Mode = a.Mode, .Offset = a.Offset, .OffsetScale = a.OffsetScale, .AlongNormals = a.AlongNormals};
+}
+std::optional<procedure::Extrude> NodeOf(const state::Registry &r, state::Entity, const action::mesh::Revolve &a) {
+    const auto axis = ActionDirection(r, a.Axis, a.ViewSpace);
+    return procedure::Extrude{.Offset = axis, .OffsetScale = a.Offset, .AlongNormals = false, .Steps = a.Steps, .Angle = a.Angle, .Axis = axis, .Center = a.Center};
 }
 std::optional<procedure::Bisect> NodeOf(const state::Registry &r, state::Entity, const action::mesh::Bisect &a) {
     return procedure::Bisect{a.Point, ActionDirection(r, a.Normal, a.ViewSpace), a.ClearInner, a.ClearOuter};
 }
 std::optional<procedure::VertexSlide> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::VertexSlide &a) {
-    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::VertexSlide{a.Factor, ActionDirection(r, a.Direction, a.ViewSpace), a.Even, a.Flipped, a.Clamp, frame}; });
+    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::VertexSlide{.Factor = a.Factor, .Direction = ActionDirection(r, a.Direction, a.ViewSpace), .Even = a.Even, .Flipped = a.Flipped, .Clamp = a.Clamp, .Frame = frame}; });
 }
 std::optional<procedure::EdgeSlide> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::EdgeSlide &a) {
-    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::EdgeSlide{a.Factor, ActionDirection(r, a.Direction, a.ViewSpace), a.Even, a.Flipped, a.Clamp, frame}; });
+    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::EdgeSlide{.Factor = a.Factor, .Direction = ActionDirection(r, a.Direction, a.ViewSpace), .Even = a.Even, .Flipped = a.Flipped, .Clamp = a.Clamp, .Frame = frame}; });
 }
-// Only the View method reads the frame.
 std::optional<procedure::Flatten> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::Flatten &a) {
     const auto frame = PrimaryFrame(r, mesh_entity);
     if (!frame && a.Method == action::mesh::FlattenMethod::View) return {};
     return procedure::Flatten{a.Method, a.Factor, a.Method == action::mesh::FlattenMethod::View ? ActionCamera(r).Forward() : vec3{0, 0, 1}, a.X, a.Y, a.Z, frame.value_or(Transform{})};
 }
-// Resolve the view's projection and the world transform of the mesh's primary instance, which the knife projects the mesh with.
 std::optional<procedure::Knife> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::Knife &a) {
     const auto &primaries = r.get<const EditPrimaries>(state::Document).All;
     const auto primary = primaries.find(mesh_entity);
@@ -253,8 +243,6 @@ std::vector<state::Entity> SelectedEditMeshes(const state::Registry &r) {
 }
 
 void Apply(state::Registry &r, const Action &action) {
-    // Append an operator's node to each selected edit mesh.
-    // A boolean appends its own nodes, Hide and Reveal act on the drawn geometry, and Separate moves geometry into new meshes.
     const auto visibility = [&](EditVisibilityOperation operation) {
         std::vector<uint32_t> ids;
         for (const auto &[entity, instance] : r.get<const EditPrimaries>(state::Document).All) {
@@ -277,20 +265,19 @@ void Apply(state::Registry &r, const Action &action) {
                     auto parameters = NodeOf(r, e, a);
                     if (!parameters) continue;
                     using N = decltype(parameters)::value_type;
-                    // A later step of a stage replaces the parameters of the node its first step appended, which only the action sets.
-                    if constexpr (std::same_as<N, A>) {
-                        if (const auto staged = nodes::StagedResultNode(r, e, procedure::KindOf<N>); staged != state::Null) {
-                            r.replace<N>(staged, std::move(*parameters));
-                            continue;
-                        }
-                    }
-                    const auto node = nodes::AppendNode(r, e, procedure::KindOf<N>);
+                    // A later step of a stage replaces the parameters of the node its first step appended.
+                    // A preview step that restores its stage base finds none.
+                    const auto staged = nodes::StagedResultNode(r, e, procedure::KindOf<N>);
+                    const auto node = staged != state::Null ? staged : nodes::AppendNode(r, e, procedure::KindOf<N>);
                     if (node == state::Null) break;
+                    // The node keeps the reference vertex it captured.
+                    if constexpr (requires { &N::Reference; }) parameters->Reference = r.get<const N>(node).Reference;
                     r.replace<N>(node, std::move(*parameters));
+                    if (staged != state::Null) continue;
                     r.emplace<procedure::StagedNode>(node);
                     r.remove<MeshActiveElement>(e);
                 }
-                if constexpr (std::same_as<A, Extrude> || std::same_as<A, Duplicate> || std::same_as<A, Rip>) r.emplace_or_replace<StartScreenTransform>(state::Document, TransformGizmo::TransformType::Translate);
+                if (Places(a)) r.emplace_or_replace<StartScreenTransform>(state::Document, TransformGizmo::TransformType::Translate);
             } else if constexpr (std::same_as<A, Boolean>) {
                 CombineSelected(r, a);
             } else if constexpr (std::same_as<A, Hide>) {

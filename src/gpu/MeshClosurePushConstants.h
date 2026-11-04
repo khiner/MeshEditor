@@ -7,11 +7,10 @@
 // Vertex input (domain 0) marks its fans, face input (domain 2) marks its loops, and edge input (domain 3) marks its endpoints.
 struct MeshClosurePushConstants {
     ConnectivityRef Connectivity DEFAULT();
-    GpuArray<ElementWork, 4> Work DEFAULT(); // Vertices, halfedges, faces, edges.
+    GpuArray<ElementWork, 4> Work DEFAULT(); // Vertices, halfedges, faces, edges
     ElementWork Input DEFAULT(), Retained DEFAULT();
-    uint32_t CornerSlot DEFAULT(InvalidSlot), FaceCount DEFAULT();
     uint32_t InputDomain DEFAULT(), InputBound DEFAULT(), RetainedBound DEFAULT();
-    uint32_t RetainIsolatedOnly DEFAULT(); // Filter retained vertex seeds to vertices without incident edges.
+    uint32_t RetainIsolatedOnly DEFAULT(); // Retains only vertex seeds without incident edges
     SlotOffset Incidence DEFAULT(); // The word counting the input's fan corners, loop corners, or endpoint fan corners
 };
 

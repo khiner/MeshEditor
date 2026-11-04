@@ -30,15 +30,22 @@ const StartPivot &StartPivotOf(state::Registry &r) {
     return r.emplace<StartPivot>(state::Document, TransformPivot(r));
 }
 
-// Patches the viewport's view value, when the viewport holds one.
 template<typename C> void PatchView(state::Registry &r, state::Entity viewport, auto &&fn) {
     if (r.all_of<C>(viewport)) r.patch<C>(viewport, fn);
 }
-// Patches the viewport's active view camera and stops its transition.
-void PatchCameraStopped(state::Registry &r, state::Entity viewport, auto &&fn) {
-    PatchView<ViewCameraState>(r, viewport, [&](ViewCameraState &s) {
+// Patches the viewport's active view camera, first leaving look-through from the shown view so the edit continues from the camera's pose.
+void PatchCamera(state::Registry &r, state::Entity viewport, auto &&fn) {
+    if (!r.all_of<ViewCameraState>(viewport)) return;
+    const auto shown = ViewCameraOf(r, viewport);
+    r.patch<ViewCameraState>(viewport, [&](ViewCameraState &s) {
+        LeaveLookThrough(s, shown);
         fn(s.Active);
-        s.Active.StopMoving();
+    });
+}
+void PatchCameraStopped(state::Registry &r, state::Entity viewport, auto &&fn) {
+    PatchCamera(r, viewport, [&](ViewCamera &c) {
+        fn(c);
+        c.StopMoving();
     });
 }
 } // namespace
@@ -79,8 +86,8 @@ void Apply(state::Registry &r, const Action &action) {
             [&](const SetViewportScene &a) {
                 if (r.all_of<Scene>(a.Scene) && r.all_of<ViewportScene>(a.Viewport)) r.replace<ViewportScene>(a.Viewport, a.Scene);
             },
-            [&](const OrbitViewCamera &a) { PatchView<ViewCameraState>(r, a.Viewport, [&](ViewCameraState &s) { s.Active.RotateBy(a.DeltaRad); }); },
-            [&](const ZoomViewCamera &a) { PatchView<ViewCameraState>(r, a.Viewport, [&](ViewCameraState &s) { s.Active.ZoomBy(a.Factor); }); },
+            [&](const OrbitViewCamera &a) { PatchCamera(r, a.Viewport, [&](ViewCamera &c) { c.RotateBy(a.DeltaRad); }); },
+            [&](const ZoomViewCamera &a) { PatchCamera(r, a.Viewport, [&](ViewCamera &c) { c.ZoomBy(a.Factor); }); },
             [&](const SetStudioEnvironment &a) { PatchView<StudioEnvironment>(r, a.Viewport, [&](StudioEnvironment &s) { s.Name = a.Name; }); },
             [&](AddViewport) {
                 const auto viewport = r.create();
@@ -103,7 +110,7 @@ void Apply(state::Registry &r, const Action &action) {
             [&](const SetWorkspaceLights &a) { PatchView<WorkspaceLights>(r, a.Viewport, [&](WorkspaceLights &l) { l = *a.Value; }); },
             [&](const SetViewCameraTarget &a) { PatchCameraStopped(r, a.Viewport, [&](ViewCamera &c) { c.Target = a.Target; }); },
             [&](const SetViewCameraLens &a) { PatchCameraStopped(r, a.Viewport, [&](ViewCamera &c) { c.Data = a.Data; }); },
-            [&](const SetViewCameraTargetDirection &a) { PatchView<ViewCameraState>(r, a.Viewport, [&](ViewCameraState &s) { s.Active.SetTargetDirection(a.Direction); }); },
+            [&](const SetViewCameraTargetDirection &a) { PatchCamera(r, a.Viewport, [&](ViewCamera &c) { c.SetTargetDirection(a.Direction); }); },
             [&](const TransformSelection &a) {
                 const bool bone_edit_mode = IsBoneEditMode(r);
                 const auto &root_selected = r.get<const TransformRoots>(state::Document).Roots;
@@ -118,7 +125,7 @@ void Apply(state::Registry &r, const Action &action) {
                     Transform local{.P = Conjugate(pd.R) * ((world.P - pd.P) / pd.S), .R = Conjugate(pd.R) * world.R, .S = r.all_of<ScaleLocked>(e) ? ComposedLocal(r, e)->S : world.S / pd.S};
                     locals.emplace_back(e, local);
                 };
-                // On the first drag frame StartTransform isn't snapshotted yet, so the current world transform is the start.
+                // Until the first drag frame records StartTransform, the current world transform is the start.
                 const auto get_start = [&](state::Entity e) -> std::pair<Transform, Transform> {
                     if (const auto *st = r.try_get<const StartTransform>(e)) return {st->T, st->ParentDelta};
                     return {*WorldTransformOf(r, e), ToTransform(GetParentDelta(r, e))};
@@ -133,9 +140,8 @@ void Apply(state::Registry &r, const Action &action) {
                 for (const auto e : root_selected) {
                     const auto [ts_e, start_pd] = get_start(e);
 
-                    // Head/tail-only bone transform: stretch/rotate bone instead of moving it rigidly.
                     if (bone_edit_mode) {
-                        // Use current parent WT for world→local (parent may have been moved earlier in this loop).
+                        // The parent's current world transform maps to local, since this loop may already have moved the parent.
                         const auto pd = ToTransform(GetParentDelta(r, e));
                         const auto sbl = get_start_bone_length(e);
                         const auto *parts = r.try_get<BoneSelection>(e);
@@ -169,7 +175,7 @@ void Apply(state::Registry &r, const Action &action) {
                     make_local(e, pending.ApplyTo(ts_e, frozen), start_pd);
                 }
 
-                // Snapshot starts before patching so later patches don't perturb the snapshot, then apply.
+                // Every start transform is recorded before any patch, so no patch perturbs a later start.
                 for (const auto &[e, _] : locals) {
                     if (!r.all_of<StartTransform>(e)) r.emplace<StartTransform>(e, *WorldTransformOf(r, e), ToTransform(GetParentDelta(r, e)));
                 }
@@ -187,16 +193,16 @@ void Apply(state::Registry &r, const Action &action) {
                         r.emplace<StartTransform>(instance_entity, *WorldTransformOf(r, instance_entity), ToTransform(GetParentDelta(r, instance_entity)));
                     }
                 }
-                // An update appends a transform node to each transformable mesh, or moves the delta of the node an earlier update of its stage appended, and an identity delta appends none.
+                // An identity delta appends none.
                 const auto &pivot = StartPivotOf(r);
                 const auto &primaries = r.get<const EditPrimaries>(state::Document).Transformable;
                 if (a.Delta != Transform{}) {
                     for (const auto mesh_entity : mesh::SelectedEditMeshes(r)) {
                         const auto primary = primaries.find(mesh_entity);
                         if (primary == primaries.end()) continue;
-                        if (const auto staged = nodes::StagedResultNode(r, mesh_entity, procedure::KindOf<mesh::Extrude>); staged != state::Null && a.Delta.R == quat{1.f, 0.f, 0.f, 0.f} && a.Delta.S == vec3{1.f}) {
+                        if (const auto staged = nodes::StagedResultNode(r, mesh_entity, procedure::KindOf<procedure::Extrude>); staged != state::Null && a.Delta.R == quat{1.f, 0.f, 0.f, 0.f} && a.Delta.S == vec3{1.f}) {
                             const auto frame = *WorldTransformOf(r, primary->second);
-                            r.patch<mesh::Extrude>(staged, [&](auto &p) {
+                            r.patch<procedure::Extrude>(staged, [&](auto &p) {
                                 p.Offset = (Conjugate(frame.R) * a.Delta.P) / frame.S;
                                 p.OffsetScale = 1.f;
                                 p.AlongNormals = false;
@@ -230,8 +236,7 @@ void Apply(state::Registry &r, const Action &action) {
                 }
             },
             [&](const LatchTransform &a) {
-                // Mid-drag switch is a cancel-restart: revert any in-progress drag to its start state.
-                // StartTransform / StartBoneLength components stay so the next drag (under the new latched type) reuses them.
+                // StartTransform and StartBoneLength stay for the next drag under the new latched type.
                 r.remove<PendingTransform>(state::Document);
                 for (const auto [e, st] : r.view<const StartTransform>().each()) {
                     const auto &pd = st.ParentDelta;

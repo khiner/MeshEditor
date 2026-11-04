@@ -1,6 +1,4 @@
-#ifndef VISIBILITY_DECODE_MSL
-#define VISIBILITY_DECODE_MSL
-
+#pragma once
 #include "gpu/VisibilityShadingPushConstants.h"
 #include "MeshletNonTriangle.metal"
 #include "VertexTransform.metal"
@@ -365,5 +363,3 @@ inline DecodedVisibility DecodeVisibility(
         visibility.read(uint2(pixel)).r, pixel, bindless, view, theme, workspace, pc
     );
 }
-
-#endif

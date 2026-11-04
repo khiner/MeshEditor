@@ -6,6 +6,7 @@
 #include "gpu/LightRecord.h"
 #include "mesh/MeshChanges.h"
 #include "mesh/MeshComponents.h"
+#include "mesh/MeshStores.h"
 #include "object/PendingSync.h"
 #include "render/ClusterLodRepair.h"
 #include "render/GpuBufferOps.h"
@@ -33,7 +34,6 @@ uint8_t InstanceStateBits(const state::Registry &r, state::Entity e) {
 }
 
 namespace {
-// The base state as the scene's states hold it, hidden when the instance is outside the scene.
 uint8_t SceneState(const state::Registry &r, state::Entity e, state::Entity scene, uint8_t base) {
     return uint8_t(base | (InScene(r, e, scene) ? 0u : InstanceStateHidden));
 }
@@ -55,18 +55,16 @@ void RetallyMesh(state::Registry &r, state::Entity mesh_entity) {
     auto &buffers = r.Resources.get<GpuBuffers>();
     const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &render = meshes.Render();
-    // An entity drawing another record than the one it tallied clears that record's tally, which a live Source record keeps otherwise.
-    if (const auto tallied = buffers.TalliedStores.find(mesh_entity); tallied != buffers.TalliedStores.end() && tallied->second != id) {
-        buffers.Retally(tallied->second, {});
-        buffers.TalliedStores.erase(tallied);
+    if (const auto *tallied = r.try_get<const TalliedRecord>(mesh_entity); tallied && tallied->StoreId != id) {
+        if (MeshEntityOf(r, tallied->StoreId) == state::Null) buffers.Retally(tallied->StoreId, {});
+        r.remove<TalliedRecord>(mesh_entity);
     }
     const auto *mb = id ? meshes.TryGet(*id) : nullptr;
     if (!mb) return;
-    buffers.TalliedStores[mesh_entity] = *id;
+    r.emplace_or_replace<TalliedRecord>(mesh_entity, *id);
     const auto *models = r.try_get<const ModelsBuffer>(mesh_entity);
     const Range range = models ? Range{models->InstanceRange.Offset, models->InstanceCount} : Range{};
     const auto scene_states = buffers.Instances.States | std::views::transform([&](const mtl::Buffer &states) { return states.GetSpan<uint8_t>(range); }) | std::ranges::to<std::vector>();
-    // An instance counts when some shown scene draws it.
     const auto drawn = [&](uint32_t i) { return std::ranges::any_of(scene_states, [i](std::span<const uint8_t> states) { return (states[i] & InstanceStateHidden) == 0u; }); };
     const auto flags = mb->RenderTopologies != 0u ? render.MeshRecords.Get({*id, 1u})[0].Display.Flags : 0u;
     buffers.Retally(*id, {
@@ -171,7 +169,6 @@ void BuildMeshlets(state::Registry &r, mtl::ComputeChain &chain, std::span<const
         if (mesh.EdgeCount()) sources.push_back({.Destination = &mb, .Topology = 1u, .ElementCount = mesh.EdgeCount()});
         sources.push_back({.Destination = &mb, .Topology = 2u, .ElementCount = mesh.VertexCount()});
     }
-    // Procedural bone geometry shares bounds, culling, routing, and indirect dispatch with standard meshlets.
     std::vector<state::Entity> bones;
     for (const auto entity : bone_entities) {
         auto &mb = EditRecordOf(r, entity);
@@ -194,7 +191,6 @@ bool BuildDemandedClusterLods(state::Registry &r, mtl::ComputeChain &chain) {
     if (r.DocumentReadOnly || r.view<const ClusterLodDemand>().empty()) return false;
     auto &meshes = r.Resources.get<MeshStore>();
     auto &render = meshes.Render();
-    // A mesh leaves the demand set once it has a hierarchy or its meshlets take none.
     // Arena offsets follow commit order, which is the demand set's entity order.
     std::vector<state::Entity> demanded;
     for (const auto entity : r.view<const ClusterLodDemand>() | std::ranges::to<std::vector>()) {
@@ -218,7 +214,6 @@ bool BuildDemandedClusterLods(state::Registry &r, mtl::ComputeChain &chain) {
         const auto entity = demanded[i];
         const auto &mb = RecordOf(r, entity);
         const auto mesh = GetMesh(r, entity);
-        // After an edit, the build covers exactly the triangles the live finest clusters contain, per primitive in walk order.
         if (mb.MeshletRevision > 1u || mb.RenderTopologies != 1u) {
             auto &triangles = live_triangles[i];
             auto &primitive_counts = live_primitive_counts[i];
@@ -241,7 +236,6 @@ bool BuildDemandedClusterLods(state::Registry &r, mtl::ComputeChain &chain) {
     }
     std::vector<ClusterLodBuild> lods(count);
     ParallelFor(count, [&](uint32_t i) { lods[i] = BuildMeshletClusterLod(meshes, RecordOf(r, demanded[i]), inputs[i], live_primitive_counts[i]); });
-    // Finest IDs remain stable, so their canonical owner entries do too.
     std::vector<MeshStore::Record *> owners;
     owners.reserve(count);
     for (const auto entity : demanded) owners.push_back(&EditRecordOf(r, entity));
@@ -254,7 +248,6 @@ bool SyncShownScenes(state::Registry &r) {
     auto &buffers = r.Resources.get<GpuBuffers>();
     auto shown = ShownScenes(r);
     if (shown == buffers.Scenes) return false;
-    // A scene that stays shown keeps its buffers, and the buffers of scenes no longer shown release with their slots.
     std::vector<mtl::Buffer> states, lights;
     states.reserve(shown.size());
     lights.reserve(shown.size());
@@ -290,7 +283,6 @@ bool DeriveRenderInstances(state::Registry &r, bool rescope) {
     const auto &buffers = r.Resources.get<GpuBuffers>();
     const auto scene_states = buffers.Instances.States | std::views::transform([](const mtl::Buffer &states) { return states.GetMutableSpan<uint8_t>(); }) | std::ranges::to<std::vector>();
     std::vector<state::Entity> retallied;
-    // A placed instance takes its hidden bit in each shown scene's states in place, keeping its slot and record.
     const auto write_hidden = [&](state::Entity e, const RenderInstance &render) {
         if (render.BufferIndex == UINT32_MAX) return;
         bool changed = false;
@@ -323,7 +315,6 @@ bool DeriveRenderInstances(state::Registry &r, bool rescope) {
 }
 
 namespace {
-// Drawing-order index for a placed slot; order entries by descending object ID.
 uint32_t SlotPosition(std::span<const uint32_t> list, std::span<const uint32_t> object_ids, uint32_t slot) {
     return uint32_t(std::ranges::lower_bound(list, object_ids[slot], std::ranges::greater{}, [&](uint32_t s) { return object_ids[s]; }) - list.begin());
 }
@@ -332,7 +323,6 @@ void RebaseRenderInstances(state::Registry &r, std::span<const uint32_t> object_
     for (uint32_t slot = slots.Offset; slot < slots.Offset + slots.Count; ++slot) r.edit<RenderInstance>(r.EntityAt(ObjectIndex(object_ids[slot]))).BufferIndex = slot;
 }
 
-// Merges the inserted slots into the drawing-order list by descending object ID.
 void MergeInsertedSlots(GpuBuffers &buffers, std::vector<uint32_t> inserted) {
     auto &list = buffers.GpuInstanceSlots;
     const auto object_ids = buffers.Instances.ObjectIdBuffer.GetSpan<uint32_t>();
@@ -349,13 +339,12 @@ SyncResult SyncModelsBuffers(state::Registry &r) {
     auto &buffers = r.Resources.get<GpuBuffers>();
     auto &meshes = r.Resources.get<MeshStore>();
     auto &scene = r.Resources.get<GpuSceneState>();
-    // Remove released records from flag totals before building new records.
+    // Released records leave the flag totals before new records build.
     for (const auto id : meshes.TakeReleased()) buffers.Retally(id, {});
     std::vector<state::Entity> new_mesh_entities, new_extras_entities;
     std::vector<uint8_t> listed;
     for (auto e : r.Resources.get<const MeshChanges>().NewBufferEntity) {
         if (!r.valid(e)) continue;
-        // A record keeps its render data across handle changes that leave it intact.
         const auto id = DrawnStoreId(r, e);
         if (!id || meshes.Get(*id).RenderTopologies != 0u) continue;
         if (*id >= listed.size()) listed.resize(*id + 1u);
@@ -366,7 +355,6 @@ SyncResult SyncModelsBuffers(state::Registry &r) {
 
     const auto relayout = [&](state::Entity buffer_entity) { r.emplace_or_replace<MeshLayoutDirty>(buffer_entity); };
 
-    // Remove destroyed instance slots and compact each surviving owner buffer once.
     bool slots_changed = false;
     if (auto *pending = r.Resources.find<PendingSlotRemovals>()) {
         auto &removals = pending->Instances;
@@ -383,7 +371,6 @@ SyncResult SyncModelsBuffers(state::Registry &r) {
             return !r.valid(removal.Owner) || std::ranges::binary_search(retired, removal.Owner) || !r.all_of<ModelsBuffer>(removal.Owner);
         });
         auto by_owner = removals | std::views::chunk_by([](const auto &a, const auto &b) { return a.Owner == b.Owner; }); // NOLINT(misc-const-correctness)
-        // A survivor past an owner's first erased slot moves down by the slots erased before it.
         // Every entry is found before any buffer compacts, while each slot still contains its ID.
         struct SlotMove {
             uint32_t Position, Slot;
@@ -429,7 +416,6 @@ SyncResult SyncModelsBuffers(state::Registry &r) {
         retired.clear();
     }
 
-    // New instances by buffer, in entity order within each buffer.
     std::vector<std::pair<state::Entity, state::Entity>> placements;
     for (auto entity : r.Resources.get<const RenderChanges>().InstanceCreated) {
         if (!r.valid(entity)) continue;
@@ -437,7 +423,6 @@ SyncResult SyncModelsBuffers(state::Registry &r) {
     }
     std::ranges::sort(placements);
     auto groups = placements | std::views::chunk_by([](const auto &a, const auto &b) { return a.first == b.first; }); // NOLINT(misc-const-correctness)
-    // Each buffer without a range or without room takes a new range, every one carved from a single allocation in buffer order.
     const auto new_capacity = [&](state::Entity buffer_entity, uint32_t n) {
         const auto *models = r.try_get<const ModelsBuffer>(buffer_entity);
         if (!models) return n;
@@ -452,7 +437,7 @@ SyncResult SyncModelsBuffers(state::Registry &r) {
         block.Offset += count;
         return range;
     };
-    // Return inserted instances so the settle pass writes their transform slots before submission.
+    // The settle pass writes the returned instances' transform slots before submission.
     std::vector<state::Entity> newly_inserted;
     newly_inserted.reserve(placements.size());
     std::vector<uint32_t> object_ids, inserted_slots;
@@ -462,7 +447,6 @@ SyncResult SyncModelsBuffers(state::Registry &r) {
         const auto buffer_entity = group.front().first;
         const auto n = uint32_t(std::ranges::size(group));
         const auto grown = new_capacity(buffer_entity, n);
-        // Defer ModelsBuffer creation until its initial capacity is known.
         if (!r.all_of<ModelsBuffer>(buffer_entity)) r.emplace<ModelsBuffer>(buffer_entity, ModelsBuffer{carve(grown), 0});
         auto &mb = r.edit<ModelsBuffer>(buffer_entity);
         const auto new_total = mb.InstanceCount + n;
@@ -470,7 +454,6 @@ SyncResult SyncModelsBuffers(state::Registry &r) {
             const auto old_range = mb.InstanceRange;
             mb.InstanceRange = carve(grown);
             buffers.Instances.CopyInstances(old_range.Offset, mb.InstanceRange.Offset, mb.InstanceCount);
-            // The moved slots keep their drawing-order entries, found by the IDs both ranges contain.
             const auto ids = buffers.Instances.ObjectIdBuffer.GetSpan<uint32_t>();
             const auto list = buffers.GpuInstanceSlots.GetMutableSpan<uint32_t>();
             for (uint32_t i = 0u; i < mb.InstanceCount; ++i) list[SlotPosition(list, ids, old_range.Offset + i)] = mb.InstanceRange.Offset + i;
@@ -503,7 +486,6 @@ SyncResult SyncModelsBuffers(state::Registry &r) {
             buffers.Instances.States[i].Update(BytesOf(states), uint64_t(base_index) * sizeof(uint8_t));
         }
         buffers.Instances.RecordBuffer.Update(BytesOf(instance_records), uint64_t(base_index) * sizeof(InstanceRecord));
-        // Bounds reduction populates mesh instances; extras retain empty bounds and bypass culling.
         std::ranges::fill(buffers.Instances.GetMutableBounds({base_index, n}), AABB{});
         mb.InstanceCount = new_total;
         for (const auto &[_, instance_entity] : group) newly_inserted.push_back(instance_entity);
@@ -533,7 +515,7 @@ bool SyncViewportRenderResources(state::Registry &r, state::Entity viewport_enti
         return true;
     }
 
-    // Wait for the live consumer (ImGui) to finish sampling the old resources before recreating them.
+    // The ImGui consumer finishes sampling the old resources before they are recreated.
     (void)ctx.Wait(r.Resources.get<const ViewportConsumerFence>().Value);
     targets.SetExtent(ctx, render_extent, slots);
     targets.EnsureTransmissionResources(ctx, render_extent, want_transmission);

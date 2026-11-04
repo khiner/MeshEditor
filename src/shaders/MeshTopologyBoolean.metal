@@ -1,16 +1,9 @@
-#ifndef MESHTOPOLOGYBOOLEAN_MSL
-#define MESHTOPOLOGYBOOLEAN_MSL
-
-// A boolean's output counts and emission from the runs its intersection passes computed.
+#pragma once
 // Count entries are its vertices, then its intersections, then its triangles, so the vertex scan matches the polygons' output vertices.
 #include "MeshBooleanShared.metal"
 #include "MeshTopologyContext.metal"
 
-struct TopoBooleanRuns {
-    device uint *Storage;
-    template<typename T> device T *Run(uint offset) const { return reinterpret_cast<device T *>(Storage + offset); }
-};
-inline TopoBooleanRuns TopoBooleanStorage(TopoContext ctx, MeshTopologyJob job) { return {BindlessBufferMutable(uint, ctx.B.Buffer, job.Boolean.Slot)}; }
+inline JobRuns TopoBooleanStorage(TopoContext ctx, MeshTopologyJob job) { return {BindlessBufferMutable(uint, ctx.B.Buffer, job.Boolean.Slot)}; }
 
 // The weights of p over a triangle's corners: exact near a corner, without the far corner near an edge, and by areas inside.
 inline float3 TopoBarycentric(float3 p, float3 a, float3 b, float3 c) {
@@ -42,7 +35,6 @@ inline float3 TopoBarycentric(float3 p, float3 a, float3 b, float3 c) {
     return uvw;
 }
 
-// Count output copies per vertex and intersection and output triangles per input triangle polygon.
 kernel void TopologyBooleanCount(
     uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -53,7 +45,7 @@ kernel void TopologyBooleanCount(
     const MeshTopologyJob job = ctx.Jobs()[tile.x];
     const uint e = tile.y * ScanTileSize + lane;
     if (e >= job.CountEntries) return;
-    const TopoBooleanRuns runs = TopoBooleanStorage(ctx, job);
+    const JobRuns runs = TopoBooleanStorage(ctx, job);
     const BooleanJob boolean = *runs.Run<BooleanJob>(job.Boolean.Offset);
     const uint entries = BoolVertexCount(boolean) + boolean.Intersections, triangles = BoolTriangleCount(boolean);
     if (e < entries) ctx.WriteCounts(job, e, uint3(BoolCount(runs, boolean, e), 0u, 0u));
@@ -75,7 +67,7 @@ kernel void TopologyBooleanScatter(
     const uint2 tile = ctx.Tile(group_id);
     const MeshTopologyJob job = ctx.Jobs()[tile.x];
     const uint e = tile.y * ScanTileSize + lane;
-    const TopoBooleanRuns runs = TopoBooleanStorage(ctx, job);
+    const JobRuns runs = TopoBooleanStorage(ctx, job);
     const BooleanJob boolean = *runs.Run<BooleanJob>(job.Boolean.Offset);
     const uint vertices = BoolVertexCount(boolean), entries = vertices + boolean.Intersections;
     if (e >= entries + BoolTriangleCount(boolean)) return;
@@ -114,9 +106,9 @@ kernel void TopologyBooleanScatter(
     for (uint i = 0u; i < triangles; ++i, ++fd, base += 3u) {
         for (uint k = 0u; k < 3u; ++k) {
             const uint ref = refs[3u * i + k], arriving = refs[3u * i + (k + 2u) % 3u];
-            const uint output_vertex = uint3(polygon[ref & 0x7fffffffu]).x, entry = output_entries[output_vertex];
+            const uint output_vertex = uint3(polygon[ref & ~BoolRealOut]).x, entry = output_entries[output_vertex];
             // The side arriving at a corner keeps its source edge when it is a polygon halfedge along one.
-            const uint source = (arriving & 0x80000000u) ? uint3(polygon[arriving & 0x7fffffffu]).z : InvalidOffset;
+            const uint source = (arriving & BoolRealOut) ? uint3(polygon[arriving & ~BoolRealOut]).z : InvalidOffset;
             const float3 w = entry == source_vertices.x ? float3(1.f, 0.f, 0.f) : entry == source_vertices.y ? float3(0.f, 1.f, 0.f) :
                 entry == source_vertices.z ? float3(0.f, 0.f, 1.f) : TopoBarycentric(BoolEntryPosition(runs, boolean, entry), corner_a, corner_b, corner_c);
             ctx.WriteCorner4(job, base + k, output_vertex, uint4(corners.x, corners.y, corners.z, corners.z), w.x + w.y > 0.f ? w.y / (w.x + w.y) : 0.f, w.z, source, false);
@@ -124,5 +116,3 @@ kernel void TopologyBooleanScatter(
         TopoEmitFace(ctx, job, fd, base, 3u, face, false);
     }
 }
-
-#endif

@@ -1,78 +1,49 @@
 #include "mesh/RecalculateNormals.h"
 #include "Profile.h"
 #include "gpu/RecalculateNormalsPushConstants.h"
-#include "mesh/MeshEdgeUsers.h"
-#include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
-#include "metal/Dispatch.h"
+#include "mesh/ScratchPasses.h"
 
-std::vector<std::vector<uint32_t>> RecalculateFaceFlips(MeshStore &meshes, const MeshPipelines &pipelines, std::span<const uint32_t> ids, std::span<const GeometrySelection> selections, bool inside) {
-    if (ids.empty()) return {};
-    if (ids.size() != selections.size()) throw std::invalid_argument("Normal selections must match mesh inputs.");
-    mtl::ComputeChain chain{meshes.BufferContext()};
-    struct Job {
-        RecalculateNormalsPushConstants Pc;
-        std::vector<uvec2> Faces, Selected; // (handle, parity), (face rank, group)
-        uint32_t Groups{}, Tiles{};
+std::vector<uint32_t> RecalculateFaceFlips(const MeshStore &meshes, const MeshPipelines &pipelines, uint32_t id, const GeometrySelection &selection) {
+    if (selection.Faces.empty()) return {};
+    const profile::CpuScope scope{"RecalculateFaceFlips"};
+    const auto &a = meshes.Arenas();
+    const auto &record = meshes.Get(id);
+    const uint32_t faces = a.FaceTriangles.HandleBound(record.FaceData), halfedges = a.FaceCorners.HandleBound(record.FaceCorners);
+    // The planner's scratch is sized once: the neighbor, label and component runs, then the selection and its flips.
+    const uint64_t scratch_words = uint64_t(halfedges) + uint64_t(1u + NormalComponentWords) * faces + 2ull * selection.Faces.size() + 16u;
+    mtl::ComputeChain chain{meshes.BufferContext(), scratch_words};
+    auto &scratch = chain.Scratch;
+    const RecalculateNormalsPushConstants pc{
+        .Connectivity = meshes.GetConnectivityRef(id),
+        .Blocks = BlocksOf(meshes, id, MeshStore::ElementDomain::Face),
+        .HalfedgeBlocks = BlocksOf(meshes, id, MeshStore::ElementDomain::Halfedge),
+        .VertexSlot = a.Vertices.Buffer.Slot,
+        .ScratchSlot = scratch.Buffer.Slot,
+        .Neighbors = TakeScratch(chain, halfedges).Offset,
+        .Labels = TakeScratch(chain, faces).Offset,
+        .Components = TakeScratch(chain, uint64_t(NormalComponentWords) * faces).Offset,
+        .Changed = TakeScratch(chain, 1u).Offset,
+        .Selection = scratch.Allocate(selection.Faces).Offset,
+        .SelectionCount = uint32_t(selection.Faces.size()),
+        .Flips = TakeScratch(chain, selection.Faces.size()).Offset,
     };
-    std::vector<Job> jobs;
-    uint64_t source_faces = 0u, source_corners = 0u;
-    for (size_t input = 0u; input < ids.size(); ++input) {
-        const auto id = ids[input];
-        const Mesh mesh{meshes, id};
-        mesh.ValidateSelection(selections[input]);
-        Job job;
-        std::vector<uvec4> groups;
-        std::vector<uvec2> tiles;
-        std::unordered_set<uint32_t> visited;
-        MeshEdgeUsers edges{mesh};
-        const auto &selection = selections[input].Faces;
-        std::ranges::for_each(selection, [&](uint32_t start) {
-            if (!visited.insert(start).second) return;
-            const auto first = uint32_t(job.Faces.size()), group = uint32_t(groups.size());
-            job.Faces.emplace_back(start, 0u);
-            for (uint32_t at = first; at < job.Faces.size(); ++at) {
-                const auto entry = job.Faces[at];
-                if (std::ranges::binary_search(selection, entry.x)) job.Selected.emplace_back(at, group);
-                for (const auto h : mesh.fh_range(he::FH{entry.x})) {
-                    ++source_corners;
-                    const auto users = edges.Get(h);
-                    if (users.Count != 2u) continue;
-                    const he::HH other{users.First == *h ? users.Second : users.First};
-                    const auto face = *mesh.GetFace(other);
-                    if (!visited.insert(face).second) continue;
-                    const uint32_t parity = entry.y ^ uint32_t(mesh.GetToVertex(h) == mesh.GetToVertex(other));
-                    job.Faces.emplace_back(face, parity);
-                }
-            }
-            const uint32_t count = uint32_t(job.Faces.size()) - first, tile = uint32_t(tiles.size());
-            for (uint32_t i = 0u; i < count; i += 256u) tiles.emplace_back(group, first + i);
-            groups.emplace_back(first, count, tile, uint32_t(tiles.size()) - tile);
-        });
-        source_faces += job.Faces.size();
-        const auto allocate = [&](uint32_t words) { return SlotOffset{chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(words).Offset}; };
-        job.Groups = uint32_t(groups.size());
-        job.Tiles = uint32_t(tiles.size());
-        job.Pc = {.Connectivity = meshes.GetConnectivityRef(id), .Faces = chain.Upload(BytesOf(job.Faces)), .Groups = chain.Upload(BytesOf(groups)), .Tiles = chain.Upload(BytesOf(tiles)), .PartialCenters = allocate(4u * job.Tiles), .Centers = allocate(3u * job.Groups), .Candidates = allocate(5u * job.Tiles), .Orientations = allocate(job.Groups), .VertexSlot = meshes.Slots().Vertices, .CornerSlot = meshes.Arenas().FaceCorners.Buffer.Slot, .NormalSlot = meshes.Arenas().BaseFaceNormals.Buffer.Slot, .FaceCount = mesh.FaceCount()};
-        jobs.push_back(std::move(job));
-    }
-    if (!source_faces) return std::vector<std::vector<uint32_t>>(ids.size());
-    for (const auto pass : {MeshPass::RecalculateNormalFaceCenters, MeshPass::RecalculateNormalCenters, MeshPass::RecalculateNormalCandidates, MeshPass::RecalculateNormalOrientation}) {
-        chain.Concurrent([&] {
-            for (const auto &job : jobs) chain.Groups(pipelines[pass], job.Pc, pass == MeshPass::RecalculateNormalFaceCenters || pass == MeshPass::RecalculateNormalCandidates ? job.Tiles : job.Groups);
-        });
-    }
+    const uint32_t face_threads = pc.Blocks.Count * MeshElementBlockSize, halfedge_threads = pc.HalfedgeBlocks.Count * MeshElementBlockSize;
+    chain.Concurrent([&] {
+        FillScratch(chain, pipelines, pc.Components, NormalComponentWords * faces, 0u);
+        chain.Threads(pipelines[MeshPass::RecalculateNormalNeighbors], pc, halfedge_threads);
+        chain.Threads(pipelines[MeshPass::RecalculateNormalLabelInit], pc, face_threads);
+    });
+    profile::RecordCounter("NormalOrientationRounds", RunUntilUnchanged(chain, pipelines[MeshPass::RecalculateNormalLink], pc, face_threads, pc.Changed));
+    chain.Threads(pipelines[MeshPass::RecalculateNormalMarkSeeds], pc, pc.SelectionCount);
+    chain.Threads(pipelines[MeshPass::RecalculateNormalBounds], pc, face_threads);
+    chain.Threads(pipelines[MeshPass::RecalculateNormalVolumes], pc, face_threads);
+    chain.Threads(pipelines[MeshPass::RecalculateNormalFlips], pc, pc.SelectionCount);
     chain.Submit();
-    std::vector<std::vector<uint32_t>> result;
-    for (const auto &job : jobs) {
-        auto &faces = result.emplace_back();
-        const auto orientations = chain.Scratch.Get({job.Pc.Orientations.Offset, job.Groups});
-        for (const auto selected : job.Selected) {
-            const auto face = job.Faces[selected.x];
-            if (face.y ^ orientations[selected.y] ^ uint32_t(inside)) faces.push_back(face.x);
-        }
+    const auto flips = scratch.Get({pc.Flips, pc.SelectionCount});
+    std::vector<uint32_t> result;
+    for (uint32_t i = 0u; i < selection.Faces.size(); ++i) {
+        if (flips[i]) result.push_back(selection.Faces[i]);
     }
-    profile::RecordCounter("NormalOrientationFaces", source_faces);
-    profile::RecordCounter("NormalOrientationCorners", source_corners);
     return result;
 }

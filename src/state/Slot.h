@@ -19,7 +19,7 @@ constexpr std::string_view LeafName(std::string_view name) {
 }
 template<typename T> consteval std::string_view LeafName() { return LeafName(TypeName<T>()); }
 
-// The type's name with every anonymous namespace removed, so a private type names like a public one.
+// The type's name with every anonymous namespace removed, so a private type's name has the form of a public one's.
 template<typename T> inline constexpr auto CanonicalChars = [] {
     constexpr std::string_view anonymous = "(anonymous namespace)::", name = TypeName<T>();
     std::array<char, name.size()> chars{};
@@ -33,28 +33,28 @@ template<typename T> inline constexpr auto CanonicalChars = [] {
 template<typename T> consteval std::string_view CanonicalName() { return {CanonicalChars<T>.first.data(), CanonicalChars<T>.second}; }
 
 // Each domain owns a dense slot range and lists its types in its <Domain>Schema.h header.
-inline constexpr TypeId ActionCount = 50; // action
-inline constexpr TypeId AnimationCount = 4; // animation
-inline constexpr TypeId ArmatureCount = 15; // armature
-inline constexpr TypeId AudioCount = 32; // audio
-inline constexpr TypeId AudioSurfaceCount = 2; // audio/surface
-inline constexpr TypeId EditorCount = 2; // editor
-inline constexpr TypeId GizmoCount = 1; // gizmo
-inline constexpr TypeId GltfCount = 5; // gltf
-inline constexpr TypeId GpuCount = 3; // gpu
-inline constexpr TypeId MeshCount = 21; // mesh
-inline constexpr TypeId MetalCount = 3; // metal
-inline constexpr TypeId ObjectCount = 2; // object
-inline constexpr TypeId PhysicsCount = 24; // physics
-inline constexpr TypeId ProcedureCount = 68; // procedure
-inline constexpr TypeId ProjectCount = 2; // project
-inline constexpr TypeId RenderCount = 29; // render
-inline constexpr TypeId SceneCount = 23; // scene and the root camera and path types
-inline constexpr TypeId SelectionCount = 13; // selection
-inline constexpr TypeId SnapshotCount = 1; // snapshot
-inline constexpr TypeId TimelineCount = 7; // timeline
-inline constexpr TypeId UiCount = 1; // ui
-inline constexpr TypeId ViewportCount = 33; // viewport and the root event, panel and main types
+inline constexpr TypeId ActionCount = 40;
+inline constexpr TypeId AnimationCount = 4;
+inline constexpr TypeId ArmatureCount = 15;
+inline constexpr TypeId AudioCount = 32;
+inline constexpr TypeId AudioSurfaceCount = 2;
+inline constexpr TypeId EditorCount = 2;
+inline constexpr TypeId GizmoCount = 1;
+inline constexpr TypeId GltfCount = 5;
+inline constexpr TypeId GpuCount = 3;
+inline constexpr TypeId MeshCount = 20;
+inline constexpr TypeId MetalCount = 3;
+inline constexpr TypeId ObjectCount = 2;
+inline constexpr TypeId PhysicsCount = 24;
+inline constexpr TypeId ProcedureCount = 79;
+inline constexpr TypeId ProjectCount = 2;
+inline constexpr TypeId RenderCount = 30;
+inline constexpr TypeId SceneCount = 23; // Scene domain and the root camera and path types
+inline constexpr TypeId SelectionCount = 13;
+inline constexpr TypeId SnapshotCount = 1;
+inline constexpr TypeId TimelineCount = 7;
+inline constexpr TypeId UiCount = 1;
+inline constexpr TypeId ViewportCount = 33; // Viewport domain and the root event, panel and main types
 
 inline constexpr TypeId ActionBase = 0;
 inline constexpr TypeId AnimationBase = ActionBase + ActionCount;
@@ -80,7 +80,6 @@ inline constexpr TypeId UiBase = TimelineBase + TimelineCount;
 inline constexpr TypeId ViewportBase = UiBase + UiCount;
 inline constexpr TypeId SchemaSize = ViewportBase + ViewportCount;
 
-// A domain's component and resource types in slot order.
 template<TypeId Base, TypeId Count, typename... Ts> struct Schema {
     static_assert(sizeof...(Ts) == Count, "update the domain's count");
     template<typename T> static constexpr bool Has = (... || std::is_same_v<T, Ts>);

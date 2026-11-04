@@ -2,13 +2,10 @@
 
 #include "Profile.h"
 #include "mesh/MeshPipelines.h"
+#include "mesh/ScratchChunks.h"
 #include "metal/Dispatch.h"
 
 namespace {
-constexpr std::array Elements{Element::Vertex, Element::Edge, Element::Face};
-constexpr std::array Domains{MeshStore::ElementDomain::Vertex, MeshStore::ElementDomain::Edge, MeshStore::ElementDomain::Face};
-
-// Upper bound on the neighbor marks, read from connectivity metadata only.
 // A vertex fan visits at most one face and two edges per incoming corner.
 uint64_t MarkBound(const MeshStore &meshes, const MeshStore::SelectionUpdate &update) {
     const auto &a = meshes.Arenas();
@@ -32,6 +29,12 @@ uint64_t MarkBound(const MeshStore &meshes, const MeshStore::SelectionUpdate &up
     }
     return bound;
 }
+std::array<std::span<const MeshElementBlock>, 3> SelectionMembers(const MeshArenas &a) {
+    return {a.Vertices.Blocks.Buffer.GetSpan<MeshElementBlock>(), a.EdgeHalfedges.Blocks.Buffer.GetSpan<MeshElementBlock>(), a.FaceTriangles.Blocks.Buffer.GetSpan<MeshElementBlock>()};
+}
+std::array<std::span<const SelectionAggregate>, 3> SelectionLeaves(const MeshArenas &a) {
+    return {a.VertexAggregates.Buffer.GetSpan<SelectionAggregate>(), a.EdgeAggregates.Buffer.GetSpan<SelectionAggregate>(), a.FaceAggregates.Buffer.GetSpan<SelectionAggregate>()};
+}
 } // namespace
 
 void MeshStore::UpdateSelection(state::Registry &r, mtl::ComputeChain &chain, std::span<const SelectionUpdate> updates) {
@@ -39,7 +42,9 @@ void MeshStore::UpdateSelection(state::Registry &r, mtl::ComputeChain &chain, st
     const profile::CpuScope scope{"UpdateSelection"};
     const auto &pipelines = GetMeshPipelines(r);
     std::vector<SelectionMeshUpdate> meshes;
+    std::vector<uint32_t> ids;
     meshes.reserve(updates.size());
+    ids.reserve(updates.size());
     uint64_t seed_count = 0u, entry_bound = 0u;
     for (const auto &update : updates) {
         const auto &record = Records.at(update.StoreId);
@@ -47,9 +52,9 @@ void MeshStore::UpdateSelection(state::Registry &r, mtl::ComputeChain &chain, st
             .Connectivity = GetConnectivityRef(update.StoreId),
             .Owners = {record.Vertices.Index, record.EdgeData.Index, record.FaceData.Index},
             .FaceCount = Buffers.FaceTriangles.Count(record.FaceData),
-            .Source = update.Source == Element::None ? InvalidOffset : uint32_t(std::ranges::find(Elements, update.Source) - Elements.begin()),
-            .Root = 3u * update.StoreId,
+            .Source = update.Source == Element::None ? InvalidOffset : SelectionIndexOf(update.Source),
         });
+        ids.emplace_back(update.StoreId);
         seed_count += update.Seeds.size();
         const uint64_t owned = (record.Vertices ? Buffers.Vertices.Set(record.Vertices).BlockCount : 0u) +
             uint64_t(record.EdgeData ? Buffers.EdgeHalfedges.Set(record.EdgeData).BlockCount : 0u) +
@@ -87,7 +92,7 @@ void MeshStore::UpdateSelection(state::Registry &r, mtl::ComputeChain &chain, st
             for (uint32_t d = 0u; d < 3u; ++d) {
                 for (const auto block : update.Blocks[d]) {
                     const auto key = ((d << 30u) | block) + 1u;
-                    auto slot = SelectionDirtyHash(key, uint32_t(dirty_words - 1u));
+                    auto slot = HashMix(key) & uint32_t(dirty_words - 1u);
                     while (dirty[slot] && dirty[slot] != key) slot = (slot + 1u) & uint32_t(dirty_words - 1u);
                     if (dirty[slot] == key) continue;
                     dirty[slot] = key;
@@ -99,7 +104,6 @@ void MeshStore::UpdateSelection(state::Registry &r, mtl::ComputeChain &chain, st
         std::ranges::copy(std::array{count, 1u, 1u}, list.begin());
     }
     const SelectionUpdatePushConstants pc{
-        .CornersSlot = Buffers.FaceCorners.Buffer.Slot,
         .VerticesSlot = Buffers.Vertices.Buffer.Slot,
         .EdgeSharpnessSlot = Buffers.EdgeSharpness.Buffer.Slot,
         .FaceSharpnessSlot = Buffers.FaceSharpness.Buffer.Slot,
@@ -118,17 +122,16 @@ void MeshStore::UpdateSelection(state::Registry &r, mtl::ComputeChain &chain, st
     };
     {
         const profile::CpuScope mark_scope{"SelectionMark"};
-        chain.Groups(pipelines[MeshPass::MarkSelectionNeighbors], pc, uint32_t((seed_count * 32u + 255u) / 256u));
+        chain.Groups(pipelines[MeshPass::MarkSelectionNeighbors], pc, TileCount(seed_count * 32u, TileElements));
     }
     const profile::CpuScope update_scope{"SelectionUpdateBlocks"};
     chain.Indirect(pipelines[MeshPass::UpdateSelectionBlocks], pc, *work, uint64_t(list_range.Offset) * sizeof(uint32_t));
-    chain.AfterSubmit([this, work, list_range, staged_range, meshes = std::move(meshes)] {
+    chain.AfterSubmit([this, work, list_range, staged_range, meshes = std::move(meshes), ids = std::move(ids)] {
         const profile::CpuScope scope{"SelectionIndexUpdate"};
         const auto list = work->GetSpan<uint32_t>(list_range);
         profile::RecordCounter("SelectionUpdatedBlocks", list[0]);
-        const std::array members{Buffers.Vertices.Blocks.Buffer.GetSpan<MeshElementBlock>(), Buffers.EdgeHalfedges.Blocks.Buffer.GetSpan<MeshElementBlock>(), Buffers.FaceTriangles.Blocks.Buffer.GetSpan<MeshElementBlock>()};
+        const auto members = SelectionMembers(Buffers);
         std::vector<std::array<std::vector<uint32_t>, 3>> blocks(meshes.size());
-        // The (block, list entry) pairs of each domain whose words the GPU derived, which are the derived entries of blocks their mesh owns.
         std::array<std::vector<std::pair<uint32_t, uint32_t>>, 3> derived;
         for (uint32_t i = 0u; i < list[0]; ++i) {
             const auto entry = list[3u + 2u * i], d = entry >> 30u, block = entry & ((1u << 30u) - 1u);
@@ -143,15 +146,15 @@ void MeshStore::UpdateSelection(state::Registry &r, mtl::ComputeChain &chain, st
                 std::ranges::sort(derived[d]);
                 const auto derived_blocks = derived[d] | std::views::keys | std::ranges::to<std::vector>();
                 auto next = derived[d].begin();
-                EditSelectionBlocks(Elements[d], derived_blocks, [&](uint32_t, auto &words) {
+                EditSelectionBlocks(SelectionElements[d], derived_blocks, [&](uint32_t, auto &words) {
                     std::ranges::copy(staged.subspan((next++)->second * MeshElementBlockWords, MeshElementBlockWords), words.begin());
                 });
             }
         }
-        const std::array leaves{Buffers.VertexAggregates.Buffer.GetSpan<SelectionAggregate>(), Buffers.EdgeAggregates.Buffer.GetSpan<SelectionAggregate>(), Buffers.FaceAggregates.Buffer.GetSpan<SelectionAggregate>()};
+        const auto leaves = SelectionLeaves(Buffers);
         for (uint32_t i = 0u; i < meshes.size(); ++i) {
             for (uint32_t d = 0u; d < 3u; ++d) {
-                Buffers.SelectionTree.Update(meshes[i].Root + d, blocks[i][d], meshes[i].Owners[d], members[d], leaves[d]);
+                Buffers.SelectionTree.Update(3u * ids[i] + d, blocks[i][d], meshes[i].Owners[d], members[d], leaves[d]);
             }
         }
     });
@@ -159,7 +162,7 @@ void MeshStore::UpdateSelection(state::Registry &r, mtl::ComputeChain &chain, st
 
 void MeshStore::DeriveSelectionMasks(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, const GeometryMasks &masks, Element source) const {
     const auto &record = Records.at(id);
-    const auto source_index = uint32_t(std::ranges::find(Elements, source) - Elements.begin());
+    const auto source_index = SelectionIndexOf(source);
     const SelectionMeshUpdate mesh{
         .Connectivity = GetConnectivityRef(id),
         .Owners = {record.Vertices.Index, record.EdgeData.Index, record.FaceData.Index},
@@ -169,7 +172,7 @@ void MeshStore::DeriveSelectionMasks(state::Registry &r, mtl::ComputeChain &chai
     std::vector<uint32_t> list{0u, 1u, 1u};
     for (uint32_t d = 0u; d < 3u; ++d) {
         if (d != source_index) {
-            for (const auto block : GetBlockList(id, Domains[d]).Blocks) list.insert(list.end(), {(d << 30u) | block, 0u});
+            for (const auto block : GetBlockList(id, SelectionDomains[d]).Blocks) list.insert(list.end(), {(d << 30u) | block, 0u});
         }
     }
     const auto count = uint32_t(list.size() - 3u) / 2u;
@@ -178,7 +181,6 @@ void MeshStore::DeriveSelectionMasks(state::Registry &r, mtl::ComputeChain &chai
     const auto updates = chain.Upload(std::as_bytes(std::span{&mesh, 1u}));
     const auto entries = chain.Upload(std::as_bytes(std::span{list}));
     const SelectionUpdatePushConstants pc{
-        .CornersSlot = Buffers.FaceCorners.Buffer.Slot,
         .VerticesSlot = Buffers.Vertices.Buffer.Slot,
         .EdgeSharpnessSlot = Buffers.EdgeSharpness.Buffer.Slot,
         .FaceSharpnessSlot = Buffers.FaceSharpness.Buffer.Slot,
@@ -198,12 +200,12 @@ void MeshStore::ReconcileSelection(state::Registry &r, mtl::ComputeChain &chain,
     for (const auto &change : changes) {
         const auto id = change.StoreId;
         if (id >= Records.size() || !Records[id].Alive || !Records[id].SelectionSummary.Count) {
-            for (uint32_t d = 0u; d < 3u; ++d) Buffers.SelectionTree.Release(3u * id + d);
+            ReleaseMesh(Buffers.SelectionTree, id);
             continue;
         }
         auto &update = updates.emplace_back(SelectionUpdate{.StoreId = id});
         std::ranges::copy(std::span{change.Blocks}.first(3u), update.Blocks.begin());
-        // Position writes reach incident face bounds; edge sharpness and halfedge links reach neighboring flags.
+        // Position writes reach incident face bounds, and edge sharpness and halfedge links reach neighboring flags.
         for (const auto d : {0u, 1u, SelectionHalfedgeDomain}) {
             for (const auto block : change.Blocks[d]) {
                 for (uint32_t w = 0u; w < MeshElementBlockWords; ++w) update.Seeds.push_back({d, block * MeshElementBlockWords + w, ~0u});
@@ -214,13 +216,13 @@ void MeshStore::ReconcileSelection(state::Registry &r, mtl::ComputeChain &chain,
 }
 
 void MeshStore::RebuildSelectionIndex(std::span<const uint32_t> ids) {
-    const std::array members{Buffers.Vertices.Blocks.Buffer.GetSpan<MeshElementBlock>(), Buffers.EdgeHalfedges.Blocks.Buffer.GetSpan<MeshElementBlock>(), Buffers.FaceTriangles.Blocks.Buffer.GetSpan<MeshElementBlock>()};
-    const std::array leaves{Buffers.VertexAggregates.Buffer.GetSpan<SelectionAggregate>(), Buffers.EdgeAggregates.Buffer.GetSpan<SelectionAggregate>(), Buffers.FaceAggregates.Buffer.GetSpan<SelectionAggregate>()};
+    const auto members = SelectionMembers(Buffers);
+    const auto leaves = SelectionLeaves(Buffers);
     for (const auto id : ids) {
         for (uint32_t d = 0u; d < 3u; ++d) {
-            const auto owner = DomainSet(Records.at(id), Domains[d]).Index;
+            const auto owner = DomainSet(Records.at(id), SelectionDomains[d]).Index;
             Buffers.SelectionTree.Release(3u * id + d);
-            Buffers.SelectionTree.Update(3u * id + d, GetBlockList(id, Domains[d]).Blocks, owner, members[d], leaves[d]);
+            Buffers.SelectionTree.Update(3u * id + d, GetBlockList(id, SelectionDomains[d]).Blocks, owner, members[d], leaves[d]);
         }
     }
 }
@@ -234,12 +236,12 @@ Range MeshStore::GatherSelectedElements(state::Registry &r, mtl::ComputeChain &c
     });
     const auto handles = output.Allocate(count);
     if (!count) return handles;
-    const auto range = chain.Scratch.Allocate(std::span<const uint32_t>{blocks});
+    const auto range = chain.Scratch.Allocate(blocks);
     const SelectionGatherPushConstants pc{
         .Blocks = {chain.Scratch.Buffer.Slot, range.Offset},
         .Output = {output.Buffer.Slot, handles.Offset},
         .MaskSlot = GetSelectionSlot(element),
-        .BlocksSlot = WithDomain(Buffers, Domains[std::ranges::find(Elements, element) - Elements.begin()], [](const auto &arena) { return arena.Blocks.Buffer.Slot; }),
+        .BlocksSlot = WithDomain(Buffers, SelectionDomains[SelectionIndexOf(element)], [](const auto &arena) { return arena.Blocks.Buffer.Slot; }),
         .Count = uint32_t(blocks.size() / 2u),
     };
     chain.Groups(GetMeshPipelines(r)[MeshPass::GatherSelectedElements], pc, pc.Count);

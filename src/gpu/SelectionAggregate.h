@@ -2,13 +2,11 @@
 
 #include "gpu/AABB.h"
 
-// Aggregate flag bits.
 // Selected bits cover selected edges and faces, and the edges incident to selected vertices.
 GPU_CONSTANT uint32_t SelectionSelectedSharp = 1u;
 GPU_CONSTANT uint32_t SelectionSelectedSmooth = 2u;
 GPU_CONSTANT uint32_t SelectionLiveSharp = 4u;
 GPU_CONSTANT uint32_t SelectionLiveSmooth = 8u;
-GPU_CONSTANT uint32_t SelectionBoundary = 16u; // Edge block includes an edge without an opposite halfedge.
 
 // One canonical 256-element block of a selectable domain.
 // Vertex blocks sum selected positions.

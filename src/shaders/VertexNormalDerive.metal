@@ -1,6 +1,4 @@
-#ifndef VERTEXNORMALDERIVE_MSL
-#define VERTEXNORMALDERIVE_MSL
-
+#pragma once
 // Derives face, smooth-vertex, and normal-sector shading normals in deterministic corner order.
 // Fan items use Blender's corner-angle weighting of unit face normals.
 #include "gpu/NormalDeriveEntry.h"
@@ -24,51 +22,40 @@ struct DeriveContext {
         return position;
     }
 
-    uint CornerVertex(NormalDeriveEntry entry, uint h) const {
-        return BindlessBuffer(uint, B.IndexBuffer, entry.CornersSlot)[HandleAddress<MeshElementBlockSize>(B, entry.Connectivity.Tables.Halfedges, h)];
-    }
-    float3 CornerPosition(NormalDeriveEntry entry, uint h) const { return Position(entry, CornerVertex(entry, h)); }
+    float3 CornerPosition(NormalDeriveEntry entry, thread const ConnectivityView &conn, uint h) const { return Position(entry, conn.VertexOf(h)); }
 
     // Returns the corner-angle-weighted face normal, or zero for a degenerate face or corner.
-    float3 FanContributionKnownOwner(NormalDeriveEntry entry, uint h, float3 position, uint face) const {
+    float3 FanContribution(NormalDeriveEntry entry, thread const ConnectivityView &conn, uint h, float3 position, uint face) const {
         if (face==InvalidOffset) return float3(0);
-        const ConnectivityView conn{B, entry.Connectivity, entry.FaceCount};
         const uint address = conn.FaceAddress(face);
         const uint posed = PoseAttributeIndex(B, Pc.FaceNormalNodesSlot, entry.FaceNormalNamespace, address);
         const float3 fn = posed != InvalidOffset ? float3(FaceNormals()[posed]) :
             float3(BindlessBuffer(packed_float3, B.Buffer, Pc.BaseFaceNormalSlot)[address]);
         if (all(fn == float3(0))) return float3(0);
         const uint2 loop = conn.FaceHalfedges(face);
-        const float3 e_prev = CornerPosition(entry, h == loop.x ? loop.y-1u : h-1u) - position;
-        const float3 e_next = CornerPosition(entry, h+1u < loop.y ? h+1u : loop.x) - position;
+        const float3 e_prev = CornerPosition(entry, conn, h == loop.x ? loop.y-1u : h-1u) - position;
+        const float3 e_next = CornerPosition(entry, conn, h+1u < loop.y ? h+1u : loop.x) - position;
         const float d = length(e_prev) * length(e_next);
         if (d == 0.0f) return float3(0);
         return fn * acos(clamp(dot(e_prev, e_next) / d, -1.0f, 1.0f));
     }
 
-    float3 FanContribution(NormalDeriveEntry entry, uint h, float3 position) const {
-        return FanContributionKnownOwner(entry,h,position,ConnectivityView{B,entry.Connectivity,entry.FaceCount}.HalfedgeFace(h));
-    }
-
-    float3 GatherSectorNormal(NormalDeriveEntry entry, uint root, float3 position) const {
-        const ConnectivityView conn{B, entry.Connectivity, entry.FaceCount};
-        const uint limit = conn.Incoming(CornerVertex(entry, root)).y;
+    float3 GatherSectorNormal(NormalDeriveEntry entry, thread const ConnectivityView &conn, uint root, float3 position) const {
+        const uint limit = conn.Incoming(conn.VertexOf(root)).y;
         const NormalSectorTraversal sectors{conn,
             BindlessBuffer(uchar, B.Buffer, Pc.FaceSharpnessSlot), BindlessBuffer(uchar, B.Buffer, Pc.EdgeSharpnessSlot)};
-        float3 n = FanContribution(entry, root, position);
-        sectors.VisitOthers(root,limit,[&](uint h) { n += FanContribution(entry,h,position); });
+        float3 n = FanContribution(entry, conn, root, position, conn.HalfedgeFace(root));
+        sectors.VisitOthers(root,limit,[&](uint h) { n += FanContribution(entry,conn,h,position,conn.HalfedgeFace(h)); });
         return NormalizeOrZero(n);
     }
 
-    // Use one normalized vector-area normal for every triangle of a non-planar face.
-    float3 FaceNormal(NormalDeriveEntry entry, uint f) const {
-        const ConnectivityView conn{B, entry.Connectivity, entry.FaceCount};
+    float3 FaceNormal(NormalDeriveEntry entry, thread const ConnectivityView &conn, uint f) const {
         const uint2 range = conn.FaceHalfedges(f);
-        const float3 origin = CornerPosition(entry, range.x);
+        const float3 origin = CornerPosition(entry, conn, range.x);
         float3 n = float3(0);
-        float3 previous = CornerPosition(entry, range.x + 1u) - origin;
+        float3 previous = CornerPosition(entry, conn, range.x + 1u) - origin;
         for (uint h = range.x + 2u; h < range.y; ++h) {
-            const float3 next = CornerPosition(entry, h) - origin;
+            const float3 next = CornerPosition(entry, conn, h) - origin;
             n += cross(previous, next);
             previous = next;
         }
@@ -77,7 +64,7 @@ struct DeriveContext {
 };
 
 // The handle a lane derives and its arena address, from the dispatch's work, the entry's work, or a tile of one of its blocks.
-// InvalidOffset handles name no element.
+// Both are InvalidOffset when the lane has no element.
 inline uint2 DeriveElement(const DeriveContext ctx, NormalDeriveEntry entry, bool sparse, uint2 tile, uint group_id, uint ordinal, bool faces) {
     device const BindlessSet &b = ctx.B;
     const SlotOffset table = faces ? entry.Connectivity.Tables.Faces : entry.Connectivity.Tables.Vertices;
@@ -90,7 +77,7 @@ inline uint2 DeriveElement(const DeriveContext ctx, NormalDeriveEntry entry, boo
             handle = i < (faces ? entry.FaceWorkCount : entry.VertexWorkCount) ? WorkGroupElement(b, work, i) : InvalidOffset;
         } else {
             const MeshElementBlock block = BindlessBuffer(MeshElementBlock, b.Buffer, faces ? entry.FaceBlocksSlot : entry.VertexBlocksSlot)[tile.y];
-            if ((block.Live[ordinal / 32u] & (1u << (ordinal % 32u))) == 0u) return uint2(InvalidOffset);
+            if (!SlotLive(block, ordinal)) return uint2(InvalidOffset);
             return uint2(block.Local * MeshElementBlockSize + ordinal, tile.y * MeshElementBlockSize + ordinal);
         }
     }
@@ -107,13 +94,13 @@ kernel void VertexNormalDeriveKernel(
     const bool sparse = pc.Work.Storage.Slot != InvalidSlot;
     const uint2 tile = sparse ? uint2(pc.EntryIndex, 0u) : uint2(BindlessBuffer(packed_uint2, bindless.Buffer, pc.TileMapSlot)[pc.FirstTile + group_id]);
     const NormalDeriveEntry entry = BindlessBuffer(NormalDeriveEntry, bindless.Buffer, pc.EntriesSlot)[tile.x];
+    const ConnectivityView conn{bindless, entry.Connectivity};
     if (pc.Phase == 0u) {
         const uint2 face = DeriveElement(ctx, entry, sparse, tile, group_id, local_id, true);
         if (face.x == InvalidOffset) return;
-        ctx.FaceNormals()[entry.FaceNormalNamespace == InvalidOffset ? face.y : PoseAttributeIndex(bindless, pc.FaceNormalNodesSlot, entry.FaceNormalNamespace, face.y)] = packed_float3(ctx.FaceNormal(entry, face.x));
+        ctx.FaceNormals()[entry.FaceNormalNamespace == InvalidOffset ? face.y : PoseAttributeIndex(bindless, pc.FaceNormalNodesSlot, entry.FaceNormalNamespace, face.y)] = packed_float3(ctx.FaceNormal(entry, conn, face.x));
         return;
     }
-    const ConnectivityView conn{bindless, entry.Connectivity, entry.FaceCount};
     const uint pair_lane = local_id & 1u;
     for (uint segment = 0u; segment < 2u; ++segment) {
         const uint ordinal = segment * 128u + local_id / 2u;
@@ -129,9 +116,9 @@ kernel void VertexNormalDeriveKernel(
             if (index < fan.y) {
                 const uint2 item = conn.FanItem(fan.x + index);
                 const uint h = item.x;
-                contribution = ctx.FanContributionKnownOwner(entry,h,position,item.y);
+                contribution = ctx.FanContribution(entry,conn,h,position,item.y);
                 if (item.y!=InvalidOffset && CornerSectorRoot(bindless, entry.CornerSectors, h) == h) {
-                    const packed_float3 sector = packed_float3(ctx.GatherSectorNormal(entry,h,position));
+                    const packed_float3 sector = packed_float3(ctx.GatherSectorNormal(entry,conn,h,position));
                     if (entry.SectorNamespace != InvalidOffset) {
                         BindlessBufferMutable(packed_float3, bindless.Buffer, pc.PosedSectorValuesSlot)[PoseAttributeIndex(bindless, pc.PosedSectorNodesSlot, entry.SectorNamespace, conn.HalfedgeAddress(h))] = sector;
                     } else BindlessBufferMutable(NormalSector, bindless.Buffer, entry.NormalSectors.Slot)[entry.NormalSectors.Offset + h].Normal = sector;
@@ -145,5 +132,3 @@ kernel void VertexNormalDeriveKernel(
         }
     }
 }
-
-#endif

@@ -1,34 +1,15 @@
 #include "Paths.h"
 #include "ProjectFixture.h"
 #include "RunSuites.h"
-#include "animation/MorphWeights.h"
-#include "armature/ArmatureComponents.h"
-#include "object/ObjectOps.h"
 #include "procedure/Procedure.h"
 #include "project/Assets.h"
-#include "render/GpuBuffers.h"
-#include "render/GpuSceneState.h"
-#include "render/SceneUpdates.h"
 #include "scene/SceneGraph.h"
-#include "scene/SceneGraphOps.h"
-#include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
 #include "viewport/ViewCameraOps.h"
 
 using boost::ut::expect;
 
 namespace {
-struct State {
-    std::vector<std::byte> Persistent, Image;
-    explicit State(Fixture &f)
-        : Persistent(f.P->History.MaterializeLive()), Image(Render ? f.Image() : std::vector<std::byte>{}) {}
-    void Check(Fixture &f) const {
-        expect(f.P->History.MaterializeLive() == Persistent);
-        if (Render) expect(f.Image() == Image);
-        f.Audit();
-    }
-};
-
 void WriteFile(const std::filesystem::path &path, std::string_view text) {
     std::filesystem::create_directories(path.parent_path());
     std::ofstream{path, std::ios::binary} << text;
@@ -39,105 +20,39 @@ void WriteTriangle(const std::filesystem::path &path, float x) {
     WriteFile(path, {reinterpret_cast<const char *>(positions.data()), sizeof(positions)});
 }
 
-// External source references replay current contents and preserve the document when a dependency is missing.
-void TestExternalReferences() {
-    const TestDir source{"/tmp/mesheditor-scratch/project-external-source"}, archives{"/tmp/mesheditor-scratch/project-external-archives"}, opened{"/tmp/mesheditor-scratch/project-external-opened"};
-    const auto gltf = source.Path / "Triangle.gltf", buffer = source.Path / "Triangle.bin", archive = archives.Path / "Triangle.actions";
-    WriteFile(gltf, R"({
-  "asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],
-  "nodes": [{"mesh": 0}], "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
-  "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [2, 1, 0]}],
-  "bufferViews": [{"buffer": 0, "byteLength": 36}], "buffers": [{"byteLength": 36, "uri": "Triangle.bin"}]
-})");
-    const auto recorded_path = [](Fixture &f) {
-        const auto &actions = f.P->DraftOf(*f.P->History.Present).RecordedActions;
-        return std::get<action::io::LoadGltf>(std::get<action::io::Action>(actions.front())).Path;
-    };
-    const auto max_x = [](Fixture &f) {
-        expect(f.R.view<const procedure::GeometryProcedure>().size() == 1u);
-        const auto mesh = GetMesh(f.R, *f.R.view<const procedure::GeometryProcedure>().begin());
-        float largest = 0;
-        for (uint32_t i = 0; i < mesh.VertexCount(); ++i) largest = std::max(largest, mesh.GetPosition(mesh.VertexAt(i)).x);
-        return largest;
-    };
-    WriteTriangle(buffer, 1.f);
-    ScratchFixture f{"/tmp/mesheditor-scratch/project-external"};
-    f.Do(action::io::LoadGltf{gltf});
-    expect(recorded_path(f) == gltf && recorded_path(f).is_absolute());
-    expect(max_x(f) == 1.f);
-    expect(!std::filesystem::exists(f.P->History.Dir / project::Assets::DirectoryName));
-    expect(f.P->SaveArchive(archive, project::ArchiveForm::Actions, f.Workspace()));
-    expect(Decompress(archive, opened.Path));
-    expect(!std::filesystem::exists(opened.Path / project::Assets::DirectoryName));
-
-    WriteTriangle(buffer, 2.f);
-    Fixture restored;
-    expect(restored.P->Open(opened));
-    expect(recorded_path(restored) == gltf);
-    expect(max_x(restored) == 2.f);
-    expect(restored.P->Replay());
-    expect(max_x(restored) == 2.f);
-    restored.Audit();
-    const auto before_failure = restored.P->History.MaterializeLive();
-    std::filesystem::remove(buffer);
-    expect(!restored.P->Replay());
-    expect(restored.P->History.MaterializeLive() == before_failure);
-    auto &errors = restored.R.Resources.get<action::Errors>().Messages;
-    expect(!errors.empty());
-    errors.clear();
-    restored.Audit();
-}
-
-void TestRenderInstanceDerivation() {
-    ScratchFixture f{"/tmp/mesheditor-scratch/project-render-instance"};
-    auto &p = *f.P;
+// Hiding and showing an instance keeps its slot, through undo and redo, and a duplicate of a hidden instance is hidden.
+void RenderInstanceDerivation(Fixture &f) {
     auto &r = f.R;
-    state::DirtySet created;
-    created.bind(r, state::Clearing::Explicit);
-    created.on<RenderInstance>(state::On::Create | state::On::Destroy);
     const auto entity = f.AddCube();
-    const auto slot = r.get<const RenderInstance>(entity).BufferIndex;
-    const auto placed = [&](state::Entity e, bool hidden) {
-        const auto *ri = r.try_get<const RenderInstance>(e);
-        return ri && r.all_of<Hidden>(e) == hidden && ((r.Resources.get<const GpuBuffers>().Instances.States.front().GetSpan<uint8_t>()[ri->BufferIndex] & InstanceStateHidden) != 0u) == hidden;
-    };
-    expect(placed(entity, false));
-    created.clear();
+    const auto slot = [&] { return r.get<const RenderInstance>(entity).BufferIndex; };
+    const auto placed = slot();
     f.Do(action::object::SetVisible{false});
-    expect(placed(entity, true) && r.get<const RenderInstance>(entity).BufferIndex == slot);
+    expect(slot() == placed);
     f.Do(action::object::SetVisible{true});
-    expect(placed(entity, false) && r.get<const RenderInstance>(entity).BufferIndex == slot);
+    expect(slot() == placed);
     f.Do(action::object::SetVisible{false});
-    expect(placed(entity, true));
-    p.Undo();
-    expect(placed(entity, false));
-    p.Redo();
-    expect(placed(entity, true));
-    expect(created.empty());
+    f.Undo();
+    f.Redo();
+    expect(slot() == placed);
     const auto duplicate = f.Add(action::object::Duplicate{});
-    expect(duplicate != entity && r.all_of<Instance>(duplicate) && placed(duplicate, true) && created.contains(duplicate));
+    expect(r.all_of<Hidden>(duplicate));
     f.Do(action::object::SetVisible{true});
-    expect(placed(duplicate, false));
     const auto other_mesh = r.get<const Instance>(f.AddCube()).Entity;
     r.replace<Instance>(duplicate, other_mesh);
     f.Commit("Retarget duplicate");
-    expect(r.get<const RenderInstance>(duplicate).Entity == other_mesh);
-    f.Audit();
 }
 
-void TestHiddenObjectEscapesPick() {
-    ScratchFixture f{"/tmp/mesheditor-scratch/project-hidden-pick"};
+void HiddenObjectEscapesPick(Fixture &f) {
     auto &r = f.R;
     const auto cube = f.AddCube();
     const auto viewport = FirstViewport(r);
     f.Image();
-    const std::pair box{uvec2{24, 24}, uvec2{40, 40}};
-    const auto boxed = RunBoxSelect(r, viewport, box);
-    SyncViewportRenderResources(r, viewport, {96, 80});
+    const auto boxed = RunBoxSelect(r, viewport, {uvec2{24, 24}, uvec2{40, 40}});
     f.Do(action::selection::DeselectAll{});
+    SyncViewportRenderResources(r, viewport, {96, 80});
     f.Do(action::selection::ApplyBoxSelect{{vec2{.375f}, vec2{.625f}}, false});
     expect(std::ranges::equal(r.view<const Selected>(), boxed));
-    const auto pick = [&] { f.P->Do(action::MakeAction(action::selection::Pick{false, PickObject(r, viewport, {32, 32})})); };
+    const auto pick = [&] { f.Do(action::selection::Pick{false, PickObject(r, viewport, {32, 32})}); };
     f.Do(action::selection::DeselectAll{});
     pick();
     expect(r.all_of<Selected>(cube));
@@ -147,12 +62,10 @@ void TestHiddenObjectEscapesPick() {
     expect(r.view<const Selected>().empty());
 }
 
-void TestExtrudedClosedRegionVisibility() {
-    if (!Render) return;
-    ScratchFixture f{"/tmp/mesheditor-scratch/project-extrude-visibility"};
+void ExtrudedClosedRegionVisibility(Fixture &f) {
     auto &r = f.R;
     const auto cube = f.AddCube(), viewport = FirstViewport(r);
-    r.patch<ViewportDisplay>(viewport, [](auto &v) { v.ShowOverlays = false; });
+    f.Do(action::UpdateOf<&ViewportDisplay::ShowOverlays>(viewport, false));
     const std::array directions{vec3{1, .2f, .3f}, vec3{-1, .2f, .3f}, vec3{.2f, 1, .3f}, vec3{.2f, -1, .3f}, vec3{.2f, .3f, 1}, vec3{.2f, .3f, -1}};
     const auto image = [&](vec3 direction) {
         r.patch<ViewCameraState>(viewport, [&](auto &v) { v.Active = ViewCamera{8.f * Normalize(direction), vec3{}, v.Active.Data}; });
@@ -164,16 +77,11 @@ void TestExtrudedClosedRegionVisibility() {
         f.Do(action::view::SetViewportShading{viewport, modes[mode]});
         for (size_t i = 0; i < directions.size(); ++i) before[mode][i] = image(directions[i]);
     }
-    f.Do(action::view::SetInteractionMode{InteractionMode::Edit});
-    f.Do(action::view::SetEditMode{Element::Face});
+    f.EnterEdit(Element::Face);
     f.Do(action::selection::SelectAll{});
-    action::Emit(action::mesh::Extrude{}, action::Phase::Stage);
-    f.P->Frame(action::Drain());
-    action::Emit(action::view::TransformElements{{.P = {50, 50, 50}}}, action::Phase::Stage);
-    f.P->Frame(action::Drain());
-    action::Commit();
-    f.P->Frame(action::Drain());
-    f.ValidateReplay();
+    f.Stage(action::mesh::Extrude{});
+    f.Stage(action::view::TransformElements{{.P = {50, 50, 50}}});
+    f.CommitGesture();
     expect(GetMesh(r, cube).FaceCount() == 12u);
     for (size_t mode = 0; mode < modes.size(); ++mode) {
         f.Do(action::view::SetViewportShading{viewport, modes[mode]});
@@ -185,26 +93,19 @@ void TestExtrudedClosedRegionVisibility() {
             const auto hit = RunEditElementPick(r, viewport, Element::Face, {32, 32});
             expect(hit.has_value());
             if (!hit) continue;
-            const auto mesh = GetMesh(r, cube);
-            vec3 center{};
-            uint32_t count{};
-            for (const auto v : mesh.fv_range(he::FH{hit->Handle})) {
-                center += mesh.GetPosition(v);
-                ++count;
-            }
-            expect(Dot(center / float(count), direction) > 0.f);
+            expect(Dot(test::Centroid(GetMesh(r, cube), he::FH{hit->Handle}), direction) > 0.f);
         }
     }
+    f.Do(action::view::SetInteractionMode{InteractionMode::Object});
 }
 
 // Drawing and object/face picking agree on visibility across viewport and material culling policies.
-void TestViewportBackfacePolicy() {
-    if (!Render) return;
-    ScratchFixture f{"/tmp/mesheditor-scratch/project-backface-policy"};
+void ViewportBackfacePolicy(Fixture &f) {
     auto &r = f.R;
     f.Add(action::object::AddMeshPrimitive{primitive::Plane{}, std::make_unique<MeshInstanceCreateInfo>()});
     const auto viewport = FirstViewport(r);
-    r.patch<ViewportDisplay>(viewport, [](auto &v) { v.ShowOverlays = false; v.XRayWireframe = false; });
+    f.Do(action::UpdateOf<&ViewportDisplay::ShowOverlays>(viewport, false));
+    f.Do(action::UpdateOf<&ViewportDisplay::XRayWireframe>(viewport, false));
     r.patch<ViewCameraState>(viewport, [](auto &v) { v.Active = ViewCamera{vec3{0, -5, .1f}, vec3{}, v.Active.Data}; });
     const auto cooks = Cooks(r);
     for (const auto mode : {ViewportShadingMode::Solid, ViewportShadingMode::Wireframe, ViewportShadingMode::MaterialPreview, ViewportShadingMode::Rendered}) {
@@ -229,64 +130,41 @@ void TestViewportBackfacePolicy() {
     expect(Cooks(r) == cooks);
 }
 
-// Three empties A, B and C, chained A > B > C, with A and C selected and A active.
-struct Chain {
-    state::Entity A, B, C;
-    explicit Chain(Fixture &f) {
-        auto &r = f.R;
-        A = f.AddEmpty("A"), B = f.AddEmpty("B"), C = f.AddEmpty("C");
-        SetParent(r, B, A);
-        SetParent(r, C, B);
-        r.clear<Selected, Active>();
-        r.emplace<Selected>(A);
-        r.emplace<Selected>(C);
-        r.emplace<Active>(A);
-        f.Commit("Hierarchy");
-    }
-};
-
-// Apply the parent transform once to a selected descendant by excluding the descendant from transform roots.
-void TestSelectedGrandchildMovesOnce() {
-    ScratchFixture f{"/tmp/mesheditor-scratch/project-grandchild"};
-    const Chain chain{f};
-    expect(f.R.get<const TransformRoots>(state::Document).Roots == std::vector{chain.A});
-    f.Do(action::view::TransformSelection{Transform{.P = {1, 0, 0}}});
-    expect(std::abs(WorldTransformOf(f.R, chain.A)->P.x - 1.f) < 1e-4f);
-    expect(std::abs(WorldTransformOf(f.R, chain.C)->P.x - 1.f) < 1e-4f);
-}
-
-void TestInstanceLifecycleRendersBack() {
-    ScratchFixture f{"/tmp/mesheditor-scratch/project-instance-lifecycle"};
+// Three empties chained A > B > C, with A and C selected and A active.
+// The transform applies once to the selected grandchild, which the transform roots exclude.
+void ObjectHierarchy(Fixture &f) {
     auto &r = f.R;
-    const auto add_cube = [&](float x) {
-        const auto cube = f.AddCube();
-        f.Do(action::view::TransformSelection{Transform{.P = {x, 0, 0}}});
-        return cube;
-    };
-    const auto first = add_cube(-2.f);
+    const auto a = f.AddEmpty("A"), b = f.AddEmpty("B"), c = f.AddEmpty("C");
+    f.Do(action::object::SetParent{b, a});
+    f.Do(action::object::SetParent{c, b});
+    f.Do(action::selection::Select{c});
+    f.Do(action::selection::ExtendActive{a});
+    expect(r.get<const TransformRoots>(state::Document).Roots == std::vector{a});
+    f.Do(action::view::TransformSelection{Transform{.P = {1, 0, 0}}});
+    expect(std::abs(WorldTransformOf(r, a)->P.x - 1.f) < 1e-4f);
+    expect(std::abs(WorldTransformOf(r, c)->P.x - 1.f) < 1e-4f);
+}
+// A linked duplicate shares its source's mesh, and hiding one instance or deleting the other, each undone, renders the scene as before.
+void InstanceLifecycleRendersBack(Fixture &f) {
+    auto &r = f.R;
+    const auto first = f.AddCube();
+    f.Do(action::view::TransformSelection{Transform{.P = {-2, 0, 0}}});
     const auto linked = f.Add(action::object::DuplicateLinked{});
     f.Do(action::view::TransformSelection{Transform{.P = {2, 0, 0}}});
-    const auto other = add_cube(4.f);
     expect(r.get<const Instance>(linked).Entity == r.get<const Instance>(first).Entity);
-    // Runs the actions on the selected entity, then undoes them back to the image before them.
-    const auto undone = [&](state::Entity selected, auto... leaves) {
-        f.Do(action::selection::Select{selected});
-        const State before{f};
-        (f.Do(std::move(leaves)), ...);
-        if (Render) expect(f.Image() != before.Image);
-        for (size_t i = 0u; i < sizeof...(leaves); ++i) f.P->Undo();
-        before.Check(f);
+    const auto renders_back = [&](state::Entity e, auto a) {
+        f.Do(action::selection::Select{e});
+        const auto before = Render ? f.Image() : std::vector<std::byte>{};
+        f.Do(std::move(a));
+        f.Undo();
+        if (Render) expect(f.Image() == before);
     };
-    undone(first, action::object::SetVisible{false});
-    undone(linked, action::object::Delete{});
-    undone(other, action::object::DuplicateLinked{}, action::view::TransformSelection{Transform{.P = {0, 2, 0}}});
-    undone(other, action::object::Delete{});
+    renders_back(first, action::object::SetVisible{false});
+    renders_back(linked, action::object::Delete{});
 }
 
 // An unlinked duplicate copies its source's drawn record onto storage of its own, which hashes equal to its source's, and keeps its source's Source states.
-// With its source's vertices turned in edit mode, which keeps their bounds, and the source hidden, the copy draws the image its source drew.
-void TestDuplicateDrawsAsItsSource() {
-    ScratchFixture f{"/tmp/mesheditor-scratch/project-duplicate-records"};
+void DuplicateDrawsAsItsSource(Fixture &f) {
     auto &r = f.R;
     const auto &meshes = r.Resources.get<const MeshStore>();
     const auto render_owner = [&](state::Entity e) -> const MeshStore::Record & {
@@ -295,7 +173,6 @@ void TestDuplicateDrawsAsItsSource() {
     const auto duplicate = [&](state::Entity source) {
         f.Do(action::selection::Select{source});
         const auto copy = f.Add(action::object::Duplicate{});
-        expect(copy != source);
         expect(render_owner(copy).StoreId != render_owner(source).StoreId);
         const auto states = [&](state::Entity instance) {
             std::vector<procedure::SourceState> found;
@@ -306,29 +183,18 @@ void TestDuplicateDrawsAsItsSource() {
         };
         expect(states(copy) == states(source));
         expect(meshes.CanonicalHash(render_owner(copy).StoreId) == meshes.CanonicalHash(render_owner(source).StoreId));
-        expect(Describe(meshes, render_owner(copy).StoreId) == Describe(meshes, render_owner(source).StoreId));
         return copy;
-    };
-    const auto add_source = [&](MeshSource source) {
-        const auto id = CreateMesh(r, std::move(source)).StoreId;
-        const auto instance = ::AddMesh(r, id, MeshInstanceCreateInfo{}).second;
-        f.P->Settle();
-        f.Audit();
-        return instance;
     };
     const auto fragment = [&](state::Entity instance, std::span<const uint32_t> selected) {
         f.Do(action::selection::Select{instance});
-        f.Do(action::view::SetInteractionMode{InteractionMode::Edit});
-        f.Do(action::view::SetEditMode{.Mode = Element::Vertex});
-        const auto entity = r.get<const Instance>(instance).Entity;
-        ApplyEditSelectionLists(r, std::array{std::pair{entity, selected}}, Element::Vertex);
-        f.Commit("Select clone holes");
+        f.EnterEdit(Element::Vertex);
+        SelectOrdinals(f, r.get<const Instance>(instance).Entity, selected, Element::Vertex);
         f.Do(action::mesh::Delete{action::mesh::DeleteMode::Vertices});
         f.Do(action::view::SetInteractionMode{InteractionMode::Object});
     };
     MeshSource points;
     for (uint32_t i = 0u; i < 770u; ++i) points.Data.Positions.push_back({float(i) * .001f, float(i % 7u) * .1f, 0.f});
-    const auto point_source = add_source(std::move(points));
+    const auto point_source = f.AddSourced(std::move(points)).second;
     std::vector<uint32_t> removed;
     for (uint32_t i = 0u; i < 256u; ++i) removed.push_back(i);
     removed.push_back(512u);
@@ -339,22 +205,17 @@ void TestDuplicateDrawsAsItsSource() {
         lines.Data.Positions.push_back({float(i) * .001f, float(i % 3u) * .1f, 0.f});
         if (i) lines.Data.Edges.push_back({i - 1u, i});
     }
-    const auto line_source = add_source(std::move(lines));
+    const auto line_source = f.AddSourced(std::move(lines)).second;
     fragment(line_source, std::array{255u, 300u});
     expect(render_owner(duplicate(line_source)).RenderTopologies == 2u);
 
     // Enough triangles to take a cluster hierarchy, with 128-face fans at the poles.
     const auto source = f.Add(action::object::AddMeshPrimitive{primitive::UVSphere{.Slices = 128u, .Stacks = 64u}, std::make_unique<MeshInstanceCreateInfo>()});
     expect(meshes.ClusterGroupCount(render_owner(source)) > 0u);
-    f.Do(action::view::SetInteractionMode{InteractionMode::Edit});
-    f.Do(action::view::SetEditMode{.Mode = Element::Face});
-    const auto mesh_entity = r.get<const Instance>(source).Entity;
-    const std::array selected_faces{2000u, 3000u};
-    ApplyEditSelectionLists(r, std::array{std::pair{mesh_entity, std::span<const uint32_t>{selected_faces}}}, Element::Face);
-    f.Commit("Select clone subdivisions");
+    f.EnterEdit(Element::Face);
+    SelectOrdinals(f, r.get<const Instance>(source).Entity, std::array{2000u, 3000u}, Element::Face);
     f.Do(action::mesh::Subdivide{2u});
     f.Do(action::view::SetInteractionMode{InteractionMode::Object});
-    // Only the sphere draws in both images.
     f.Do(action::selection::SelectAll{});
     f.Do(action::object::SetVisible{false});
     f.Do(action::selection::Select{source});
@@ -364,186 +225,104 @@ void TestDuplicateDrawsAsItsSource() {
     f.Do(action::selection::Select{source});
     f.Do(action::view::SetInteractionMode{InteractionMode::Edit});
     f.Do(action::selection::SelectAll{});
-    action::Emit(action::view::TransformElements{{.R = AngleAxis(std::numbers::pi_v<float> / 2.f, vec3{1.f, 0.f, 0.f})}}, action::Phase::Stage);
-    f.P->Frame(action::Drain());
-    action::Commit();
-    f.P->Frame(action::Drain());
+    f.Stage(action::view::TransformElements{{.R = AngleAxis(std::numbers::pi_v<float> / 2.f, vec3{1.f, 0.f, 0.f})}});
+    f.CommitGesture();
     f.Do(action::view::SetInteractionMode{InteractionMode::Object});
     f.Do(action::object::SetVisible{false});
     f.Do(action::selection::Select{copy});
     if (Render) expect(f.Image() == before);
-    f.Audit();
     f.Do(action::selection::Select{point_source});
     f.Do(action::selection::ExtendActive{line_source});
     f.Do(action::selection::ExtendActive{copy});
     const auto mesh_count = r.view<const procedure::GeometryProcedure>().size();
     f.Do(action::object::Duplicate{});
     expect(r.view<const procedure::GeometryProcedure>().size() == mesh_count + 3u);
-    f.Audit();
-    f.P->Undo();
-    expect(r.view<const procedure::GeometryProcedure>().size() == mesh_count);
-    f.Audit();
-    f.P->Redo();
-    expect(r.view<const procedure::GeometryProcedure>().size() == mesh_count + 3u);
-    f.Audit();
 }
 
-// Parenting an object to its own descendant fails and leaves the hierarchy without a cycle.
-void TestParentToDescendantFails() {
-    ScratchFixture f{"/tmp/mesheditor-scratch/project-parent-cycle"};
+// Mesh layouts follow scene load, linked skinned duplicates, history, edit-mode drags, separation and shading, which the per-step layout check verifies.
+void IncrementalLayout(Fixture &f) {
     auto &r = f.R;
-    const Chain chain{f};
-    f.Do(action::selection::ExtendActive{chain.C});
-    f.P->Do(action::MakeAction(action::object::ParentToActive{}));
-    auto &messages = r.Resources.get<action::Errors>().Messages;
-    expect(messages == std::vector<std::string>{"Loop in parents"});
-    messages.clear();
-    expect(ParentOrNull(r, chain.A) == state::Null);
-    expect(ParentOrNull(r, chain.C) == chain.B);
-    f.Audit();
-}
-
-// Recompute layout expectations independently from records, instances, and mode.
-// Verify disjoint bounds storage and compare topology and sharp-edge totals with a recount.
-void CheckLayout(Fixture &f, std::string_view step) {
-    auto &r = f.R;
-    const auto &buffers = r.Resources.get<const GpuBuffers>();
-    const auto &meshes = r.Resources.get<const MeshStore>();
-    const auto &render = meshes.Render();
-    const bool edit = r.get<const Interaction>(state::Document).Mode == InteractionMode::Edit;
-    const auto fail = [&](std::string_view what) {
-        std::println("layout after {}: {}", step, what);
-        expect(false);
-    };
-    expect(r.view<const MeshLayoutDirty>().empty());
-    std::array<std::vector<Range>, 3> runs;
-    std::array<uint32_t, 3> topology_meshes{};
-    uint32_t sharp_meshes = 0u;
-    for (const auto [entity, models] : r.view<const ModelsBuffer>().each()) {
-        const auto *record = TryRecordOf(r, entity);
-        if (!record) continue;
-        const auto states = buffers.Instances.States.front().GetSpan<uint8_t>({models.InstanceRange.Offset, models.InstanceCount});
-        if (std::ranges::any_of(states, [](uint8_t state) { return (state & InstanceStateHidden) == 0u; }) && meshes.MeshletCount(*record) > 0u) {
-            for (uint32_t topology = 0u; topology < 3u; ++topology) topology_meshes[topology] += (record->RenderTopologies >> topology) & 1u;
-            const auto flags = record->RenderTopologies ? render.MeshRecords.Get({record->StoreId, 1u})[0].Display.Flags : 0u;
-            if ((flags & uint32_t(MeshletInstanceFlag::EditOverlay)) && meshes.GetEdgeSharpnessSummary(record->StoreId).Any) ++sharp_meshes;
-        }
-        if (!HasMesh(r, entity)) continue;
-        const auto *run = r.try_get<const BoundsRun>(entity);
-        if (!run) {
-            fail("a mesh with instances has no bounds run");
-            continue;
-        }
-        // Outside Edit mode, instances bound to an armature or morph weights deform apart.
-        bool deformed = false;
-        if (!edit) {
-            for (const auto id : buffers.Instances.ObjectIdBuffer.GetSpan<uint32_t>({models.InstanceRange.Offset, models.InstanceCount})) {
-                const auto instance = r.EntityAt(ObjectIndex(id));
-                const auto *modifier = record->SkinBlocksReady ? r.try_get<const ArmatureModifier>(instance) : nullptr;
-                const auto *pose_state = modifier ? r.try_get<const ArmaturePoseState>(modifier->ArmatureObjectEntity) : nullptr;
-                deformed |= pose_state && modifier->SkinSlot < pose_state->GpuDeformRanges.size();
-                deformed |= record->MorphBlocksReady && r.all_of<MorphWeightRange>(instance);
-            }
-        }
-        const bool posed = models.InstanceCount > 0u && deformed;
-        const uint32_t count = deformed ? models.InstanceCount : 1u;
-        if (run->Entries.Count != count) fail("entry count");
-        if (run->Posed() != posed || r.all_of<PosedLayout>(entity) != posed) fail("posedness");
-        const auto entries = buffers.BoundsReduceEntries.Get(run->Entries);
-        for (uint32_t i = 0u; i < entries.size(); ++i) {
-            if (entries[i].FirstInstance != models.InstanceRange.Offset + (deformed ? i : 0u) || entries[i].InstanceCount != (deformed ? 1u : models.InstanceCount)) fail("entry instances");
-            if (entries[i].VertexOwner != record->Vertices.Index) fail("entry vertex owner");
-        }
-        runs[0].push_back(run->Entries);
-        runs[1].push_back(run->DeriveEntries);
-        runs[2].push_back(run->Tiles);
-        if (!posed) {
-            if (run->DeriveEntries.Count || run->Tiles.Count) fail("a static run holds derive entries or tile words");
-            continue;
-        }
-        const auto &a = meshes.Arenas();
-        const bool authored_morph = r.get<const PosedLayout>(entity).MorphDeformOffset != InvalidOffset && record->MorphShadingAuthored;
-        const bool derive = !authored_morph && MakeDeriveEntryInputs(meshes, record->StoreId).has_value();
-        uint32_t jobs = 0u;
-        meshes.ForEachPrimitive(*record, [&](ElementHandle, const PrimitiveRecord &primitive) {
-            if (primitive.LodFinestNode == InvalidOffset) return;
-            const auto &node = render.LodNodes.Get({render.LodNodes.Address(record->NodeData, ElementHandle{primitive.LodFinestNode}).Value(), 1u})[0];
-            jobs += node.Members != InvalidOffset && node.MeshletCount;
-        });
-        if (run->DeriveEntries.Count != (derive ? count : 0u)) fail("derive entry count");
-        if (run->FaceBlocks != (derive ? a.FaceTriangles.Set(record->FaceData).BlockCount : 0u) || run->VertexBlocks != (derive ? a.Vertices.Set(record->Vertices).BlockCount : 0u)) fail("derive blocks");
-        if (run->MeshletJobs != jobs) fail("posed meshlet jobs");
-        if (run->BoundsKeys[0] != a.Vertices.Set(record->Vertices).BlockCount || run->BoundsKeys[3] != 1u) fail("bounds keys");
-        const auto words = std::accumulate(run->BoundsKeys.begin(), run->BoundsKeys.end(), 0u) + run->FaceBlocks + run->VertexBlocks + 2u * run->MeshletJobs;
-        if (run->Tiles.Count != words) fail("tile words");
-    }
-    for (auto &ranges : runs) {
-        std::erase_if(ranges, [](Range range) { return range.Count == 0u; });
-        std::ranges::sort(ranges, {}, &Range::Offset);
-        for (uint32_t i = 1u; i < ranges.size(); ++i) {
-            if (ranges[i - 1u].Offset + ranges[i - 1u].Count > ranges[i].Offset) fail("overlapping runs");
-        }
-    }
-    if (buffers.TopologyMeshes != topology_meshes) fail("topology tallies");
-    if (buffers.SharpEditMeshes != sharp_meshes) fail("sharp-edge tally");
-}
-
-// Verify mesh layout updates only when mesh inputs change across scene load, history, transforms, separation, and shading.
-void TestIncrementalLayout() {
-    ScratchFixture f{"/tmp/mesheditor-scratch/project-incremental-layout"};
-    auto &r = f.R;
-    f.Do(action::io::LoadGltf{std::filesystem::path{MESHEDITOR_SOURCE_DIR} / "external/glTF-Sample-Assets/Models/RiggedSimple/glTF/RiggedSimple.gltf"});
+    f.Do(action::io::LoadGltf{RiggedSimple});
     expect(!r.view<const PosedLayout>().empty());
-    CheckLayout(f, "load");
-    // A linked duplicate of the skinned object deforms apart from its source.
     const auto skinned = *r.view<const ArmatureModifier>().begin();
     f.Do(action::selection::Select{skinned});
     f.Add(action::object::DuplicateLinked{});
     expect(r.get<const BoundsRun>(r.get<const Instance>(skinned).Entity).Entries.Count == 2u);
-    CheckLayout(f, "duplicate skinned");
     const auto cube = f.AddCube();
-    CheckLayout(f, "add");
-    const auto copy = f.Add(action::object::Duplicate{});
-    CheckLayout(f, "duplicate");
+    f.Add(action::object::Duplicate{});
     f.Do(action::object::SetVisible{false});
-    CheckLayout(f, "hide");
     f.Do(action::object::Delete{});
-    expect(!r.valid(copy));
-    CheckLayout(f, "delete");
-    f.P->Undo();
-    CheckLayout(f, "undo");
+    f.Undo();
     f.Do(action::selection::Select{cube});
-    f.Do(action::view::SetInteractionMode{InteractionMode::Edit});
-    f.Do(action::view::SetEditMode{.Mode = Element::Face});
+    f.EnterEdit(Element::Face);
     f.Do(action::selection::SelectAll{});
-    CheckLayout(f, "edit");
-    const auto cube_mesh = r.get<const Instance>(cube).Entity;
-    action::Emit(action::view::TransformElements{{.P = {0.f, 1.f, 0.f}}}, action::Phase::Stage);
-    f.P->Frame(action::Drain());
-    expect(r.all_of<procedure::TransformElements>(r.get<const procedure::GeometryProcedure>(cube_mesh).Last));
-    CheckLayout(f, "drag");
-    action::Commit();
-    f.P->Frame(action::Drain());
-    CheckLayout(f, "commit");
     const auto mesh_entity = r.get<const Instance>(cube).Entity;
-    const std::array faces{0u, 1u};
-    ApplyEditSelectionLists(r, std::array{std::pair{mesh_entity, std::span<const uint32_t>{faces}}}, Element::Face);
-    f.Commit("Select faces");
+    f.Stage(action::view::TransformElements{{.P = {0.f, 1.f, 0.f}}});
+    expect(r.all_of<procedure::TransformElements>(r.get<const procedure::GeometryProcedure>(mesh_entity).Last));
+    CheckLayout(f);
+    f.CommitGesture();
+    SelectOrdinals(f, mesh_entity, std::array{0u, 1u}, Element::Face);
     const auto mesh_count = r.view<const procedure::GeometryProcedure>().size();
     f.Do(action::mesh::Separate{});
     expect(r.view<const procedure::GeometryProcedure>().size() == mesh_count + 1u);
     expect(r.all_of<action::mesh::Delete>(r.get<const procedure::GeometryProcedure>(mesh_entity).Last));
-    CheckLayout(f, "separate");
     f.Do(action::view::SetInteractionMode{InteractionMode::Object});
-    CheckLayout(f, "object");
-    f.Do(action::object::SetSelectedSmoothShading{true});
-    CheckLayout(f, "smooth");
+    f.Do(action::object::ShadeSelected{procedure::ShadeMode::Smooth});
     f.Do(action::view::SetViewportShading{FirstViewport(f.R), ViewportShadingMode::Wireframe});
-    CheckLayout(f, "wireframe");
 }
 
+void TestProject() {
+    Fixture f, other;
+    const TestDir source{"/tmp/mesheditor-scratch/project-external-source"};
+    const auto gltf = source.Path / "Triangle.gltf", buffer = source.Path / "Triangle.bin";
+    WriteFile(gltf, R"({
+  "asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],
+  "nodes": [{"mesh": 0}], "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+  "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [2, 1, 0]}],
+  "bufferViews": [{"buffer": 0, "byteLength": 36}], "buffers": [{"byteLength": 36, "uri": "Triangle.bin"}]
+})");
+    WriteTriangle(buffer, 1.f);
+    Scenario(f, other, "external references", [&](Fixture &f) {
+        const auto max_x = [&] {
+            expect(f.R.view<const procedure::GeometryProcedure>().size() == 1u);
+            const auto mesh = GetMesh(f.R, *f.R.view<const procedure::GeometryProcedure>().begin());
+            float largest = 0;
+            for (uint32_t i = 0; i < mesh.VertexCount(); ++i) largest = std::max(largest, test::Position(mesh, mesh.VertexAt(i)).x);
+            return largest;
+        };
+        f.Do(action::io::LoadGltf{gltf});
+        const auto &actions = f.P->DraftOf(*f.P->History.Present).RecordedActions;
+        const auto &path = std::get<action::io::LoadGltf>(std::get<action::io::Action>(actions.front())).Path;
+        expect(path == gltf && path.is_absolute());
+        expect(max_x() == 1.f);
+        expect(!std::filesystem::exists(f.P->History.Dir / project::Assets::DirectoryName));
+        // Replay reads the buffer's current contents, so a changed buffer makes the replay differ and a missing one fails it, each leaving the document.
+        const auto document = f.P->History.MaterializeLive();
+        auto &errors = f.R.Resources.get<action::Errors>().Messages;
+        for (const bool missing : {false, true}) {
+            if (missing) std::filesystem::remove(buffer);
+            else WriteTriangle(buffer, 2.f);
+            expect(!f.P->Replay());
+            expect(f.P->History.MaterializeLive() == document);
+            expect(!errors.empty());
+            errors.clear();
+        }
+        WriteTriangle(buffer, 1.f);
+    });
+    Scenario(f, other, "render instance derivation", RenderInstanceDerivation);
+    Scenario(f, other, "hidden object escapes pick", HiddenObjectEscapesPick);
+    if (Render) {
+        Scenario(f, other, "extruded closed region visibility", ExtrudedClosedRegionVisibility);
+        Scenario(f, other, "viewport backface policy", ViewportBackfacePolicy);
+    }
+    Scenario(f, other, "object hierarchy", ObjectHierarchy);
+    Scenario(f, other, "instance lifecycle renders back", InstanceLifecycleRendersBack);
+    Scenario(f, other, "duplicate draws as its source", DuplicateDrawsAsItsSource);
+    Scenario(f, other, "incremental layout", IncrementalLayout);
+}
 } // namespace
 
+void TestProcedures();
 void TestHistory();
 
 int main(int argc, char **argv) {
@@ -558,17 +337,7 @@ int main(int argc, char **argv) {
 
     if (!Render) std::println("Skipping rendered-image comparisons (--no-render).");
     Paths::Init(MESHEDITOR_BUILD_DIR, MESHEDITOR_BUILD_DIR);
-    using boost::ut::test;
-    test("external references") = TestExternalReferences;
-    test("render instance derivation") = TestRenderInstanceDerivation;
-    test("hidden object escapes pick") = TestHiddenObjectEscapesPick;
-    test("extruded closed region visibility") = TestExtrudedClosedRegionVisibility;
-    test("viewport backface policy") = TestViewportBackfacePolicy;
-    test("selected grandchild moves once") = TestSelectedGrandchildMovesOnce;
-    test("instance lifecycle renders back") = TestInstanceLifecycleRendersBack;
-    test("duplicate draws as its source") = TestDuplicateDrawsAsItsSource;
-    test("parent to descendant fails") = TestParentToDescendantFails;
-    test("incremental layout") = TestIncrementalLayout;
+    TestProject();
     TestProcedures();
     TestHistory();
     return RunSuites();

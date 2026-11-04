@@ -1,6 +1,4 @@
-#ifndef BOUNDSCOMBINE_MSL
-#define BOUNDSCOMBINE_MSL
-
+#pragma once
 #include "BoundsShared.metal"
 #include "gpu/SelectionAggregate.h"
 #include "VertexBounds.metal"
@@ -21,8 +19,6 @@ kernel void BoundsCombineKernel(
     if (tile.y == InvalidOffset) return;
     const BoundsEntry entry=scene.BoundsEntries(pc.BoundsEntrySlot)[tile.x];
     if (entry.BoundsNamespace==InvalidOffset) {
-        // Static geometry already owns exact bounds in its vertex selection root.
-        // Publishing an instance requires no vertex enumeration or copy.
         AABB box{packed_float3(AabbEmptyMin),packed_float3(AabbEmptyMax)};
         if (entry.VertexRoot.Slot!=InvalidSlot) {
             const SelectionAggregate aggregate=BindlessBuffer(SelectionAggregate,bindless.Buffer,entry.VertexRoot.Slot)[entry.VertexRoot.Offset];
@@ -50,4 +46,3 @@ kernel void BoundsCombineKernel(
             BindlessBufferMutable(AABB,bindless.Buffer,pc.BoundsSlot)[entry.FirstInstance+k]=box;
     }
 }
-#endif

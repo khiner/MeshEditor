@@ -64,3 +64,6 @@
 [submodule "lib/simdutf"]
 	path = lib/simdutf
 	url = git@github.com:simdutf/simdutf.git
+[submodule "lib/manifold"]
+	path = lib/manifold
+	url = git@github.com:elalish/manifold.git

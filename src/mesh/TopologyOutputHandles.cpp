@@ -21,7 +21,7 @@ TopologyOutputHandles::TopologyOutputHandles(state::Registry &r, mtl::ComputeCha
     pc.Topology.StorageSlot = scratch.Slot;
     pc.Topology.ScratchOffset = scratch.Offset;
     pc.Topology.Source = source;
-    for (uint32_t d = 0u; d < 2u; ++d) pc.NewElements[d] = New[d] = AllocateElementWork(chain.Scratch, output[d], WorkDomainBlocks(output[d]));
+    for (uint32_t d = 0u; d < 2u; ++d) pc.NewElements[d] = New[d] = AllocateElementWork(chain.Scratch, output[d], TileCount(output[d], TileElements));
     if (preserve) {
         const auto &meshes = r.Resources.get<MeshStore>();
         const auto &a = meshes.Arenas();
@@ -32,12 +32,11 @@ TopologyOutputHandles::TopologyOutputHandles(state::Registry &r, mtl::ComputeCha
         pc.ReplacedElements[1] = Replaced[1] = AllocateElementWork(chain.Scratch, a.Triangles.HandleBound(record.TriangleData), job.SrcHalfedgeCount);
     }
     const auto &pipelines = GetMeshPipelines(r);
-    const auto groups = [](uint64_t count) { return uint32_t((count + 255u) / 256u); };
-    const auto output_groups = groups(std::ranges::max(output));
+    const auto output_groups = TileCount(std::ranges::max(output), TileElements);
     chain.Groups(pipelines[MeshPass::TopologyIdentityInit], pc, output_groups);
     if (preserve) {
-        chain.Groups(pipelines[MeshPass::TopologyIdentityRetain], pc, groups(std::max(job.SrcVertexCount, job.SrcFaceCount)));
-        chain.Groups(pipelines[MeshPass::TopologyIdentityReplaced], pc, groups(job.SrcHalfedgeCount));
+        chain.Groups(pipelines[MeshPass::TopologyIdentityRetain], pc, TileCount(std::max(job.SrcVertexCount, job.SrcFaceCount), TileElements));
+        chain.Groups(pipelines[MeshPass::TopologyIdentityReplaced], pc, TileCount(job.SrcHalfedgeCount, TileElements));
     }
     chain.Groups(pipelines[MeshPass::TopologyIdentityNew], pc, output_groups, 256u, 2u);
     const std::array work{New[0], New[1], Retired[0], Retired[1], Replaced[0], Replaced[1]};
@@ -57,5 +56,5 @@ void TopologyOutputHandles::Assign(state::Registry &r, mtl::ComputeChain &chain,
     }
     const auto slot = chain.Scratch.Buffer.Slot;
     const TopologyIdentityPushConstants pc{.Outputs = {SlotOffset{slot, Vertices.Offset}, SlotOffset{slot, Faces.Offset}}, .NewElements = {New[0], New[1]}, .Error = {slot, 0u}, .Inserted = {inserted[0], inserted[1]}};
-    chain.Groups(GetMeshPipelines(r)[MeshPass::TopologyIdentityAssign], pc, (std::max(NewCounts[0], NewCounts[1]) + 255u) / 256u, 256u, 2u);
+    chain.Groups(GetMeshPipelines(r)[MeshPass::TopologyIdentityAssign], pc, TileCount(std::max(NewCounts[0], NewCounts[1]), TileElements), 256u, 2u);
 }

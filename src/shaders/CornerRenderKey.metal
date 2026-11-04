@@ -1,11 +1,9 @@
-#ifndef CORNERRENDERKEY_MSL
-#define CORNERRENDERKEY_MSL
+#pragma once
 #include "CornerNormalOffset.metal"
 #include "gpu/CornerClass.h"
 #include "gpu/CornerClassMode.h"
 
-// Shared render-vertex equivalence for finest construction and local LOD simplification.
-// Callers supply corner handles of the mesh, including corners retained from different source faces in a coarse triangle.
+// Render-vertex equivalence between corner handles of one mesh.
 struct CornerRenderKey {
     device const BindlessSet &B;
     MeshRecord Mesh;
@@ -76,4 +74,3 @@ struct CornerRenderKey {
         return true;
     }
 };
-#endif

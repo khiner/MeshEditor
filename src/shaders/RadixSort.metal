@@ -1,6 +1,4 @@
-#ifndef RADIXSORT_MSL
-#define RADIXSORT_MSL
-
+#pragma once
 #include "BlockScan.metal"
 
 // Stable four-bit passes over 256-item tiles.
@@ -55,4 +53,12 @@ inline void RadixScatter(RadixSortView sort, uint lane, uint group, uint sl, uin
     (sort.Odd ? sort.Order : sort.Temporary)[base + rank] = source;
 }
 
-#endif
+// Sorts `count` values in place, stably, by `before(a, c)`, which holds when a orders before c.
+template<typename T, typename Before> inline void InsertionSort(device T *values, uint count, Before before) {
+    for (uint i = 1u; i < count; ++i) {
+        const T value = values[i];
+        uint j = i;
+        for (; j > 0u && before(value, values[j - 1u]); --j) values[j] = values[j - 1u];
+        values[j] = value;
+    }
+}

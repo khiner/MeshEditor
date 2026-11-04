@@ -17,16 +17,23 @@ namespace action::mesh {
 enum class DeleteMode : uint32_t;
 enum class ExtrudeMode : uint8_t;
 enum class DissolveMode : uint8_t;
-enum class SymmetrizeAxis : uint8_t;
+enum class SnapSymmetryAxis : uint8_t;
 enum class EdgeLoopInterpolation : uint8_t;
 enum class CircleFit : uint8_t;
 enum class CurveElevation : uint8_t;
 enum class FlattenMethod : uint8_t;
-enum class BeautifyMethod : uint8_t;
+enum class SplitTarget : uint8_t;
+enum class CornerAttribute : uint8_t;
+enum class CornerCycle : uint8_t;
 } // namespace action::mesh
 namespace procedure {
 enum class VectorComponent : uint8_t;
+enum class ShadeMode : uint8_t;
+enum class AdjacentMode : uint8_t;
 } // namespace procedure
+enum class CurvatureKind : uint8_t;
+enum class PlaneSideKind : uint32_t;
+enum class MinkowskiOperation : uint8_t;
 namespace primitive {
 enum class FillType : uint8_t;
 enum class QuadSphereMethod : uint8_t;
@@ -38,14 +45,13 @@ struct OnSelected {};
 struct OnSelectedDelta {}; // Offsets each selected target by the active target's change since the drag start.
 using Target = std::variant<OnActive, OnSelected, OnSelectedDelta, state::Entity>;
 
-// A field's value at the start of a SelectedDelta drag, so each step (and replay) computes start + delta.
+// A field's value at the start of a SelectedDelta drag, from which each step and its replay compute start + delta.
 struct DragFieldStart {
     state::TypeId Comp;
     uint16_t Offset, Size;
-    std::array<std::byte, 16> Bytes; // fits the widest Update field (vec4)
+    std::array<std::byte, 16> Bytes; // Fits the widest Update field, a vec4
 };
 
-// Numeric fields support SelectedDelta drags and carry scalar bounds.
 template<typename F>
 concept ScalarField = std::floating_point<F> || (std::integral<F> && !std::same_as<F, bool>);
 template<typename F>
@@ -123,12 +129,12 @@ using Core = std::variant<
     Update<CollideMode>, Update<PhysicsCombineMode>,
     Update<TransformGizmo::Type>, Update<TransformGizmo::Mode>,
     Update<DebugChannel>, Update<AnisotropicFilterLevel>, Update<std::optional<MotionBlur>>,
-    Update<mesh::DeleteMode>, Update<GeometryMergeMode>, Update<mesh::ExtrudeMode>, Update<mesh::DissolveMode>, Update<mesh::SymmetrizeAxis>,
-    Update<mesh::EdgeLoopInterpolation>, Update<mesh::CircleFit>, Update<mesh::CurveElevation>, Update<mesh::FlattenMethod>, Update<mesh::BeautifyMethod>,
-    Update<AttributeType>, Update<AttributeDomain>, Update<VectorMathOp>, Update<FloatMathOp>, Update<CompareOp>, Update<BooleanMathOp>, Update<BooleanOperation>, Update<procedure::VectorComponent>, Update<primitive::FillType>, Update<primitive::QuadSphereMethod>,
+    Update<mesh::DeleteMode>, Update<GeometryMergeMode>, Update<mesh::ExtrudeMode>, Update<mesh::DissolveMode>, Update<mesh::SnapSymmetryAxis>,
+    Update<mesh::EdgeLoopInterpolation>, Update<mesh::CircleFit>, Update<mesh::CurveElevation>, Update<mesh::FlattenMethod>, Update<mesh::SplitTarget>, Update<mesh::CornerAttribute>, Update<mesh::CornerCycle>,
+    Update<AttributeType>, Update<AttributeDomain>, Update<VectorMathOp>, Update<FloatMathOp>, Update<CompareOp>, Update<BooleanMathOp>, Update<BooleanOperation>, Update<procedure::VectorComponent>, Update<procedure::ShadeMode>, Update<procedure::AdjacentMode>, Update<CurvatureKind>, Update<PlaneSideKind>, Update<MinkowskiOperation>, Update<primitive::FillType>, Update<primitive::QuadSphereMethod>,
     DestroyEntity>;
 
-// Read an existing editable field as its typed Update action; invalid component/field addresses return nothing.
+// Reads an editable field as its typed Update action, or nothing for an invalid component or field address.
 std::optional<Core> ReadUpdate(const state::Registry &, state::Entity, state::TypeKey, uint16_t offset);
 void Apply(state::Registry &, const Core &);
 // An Update records unless it targets a workspace component.

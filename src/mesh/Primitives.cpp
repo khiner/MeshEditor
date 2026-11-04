@@ -7,14 +7,23 @@ using std::views::transform, std::ranges::iota_view, std::ranges::to;
 
 namespace primitive {
 MeshData CreateMesh(const Plane &p) {
-    const auto x = p.HalfExtents.x, z = p.HalfExtents.y;
-    return {
-        {{-x, 0, z}, {x, 0, z}, {x, 0, -z}, {-x, 0, -z}},
-        {{0, 1, 2, 3}}
-    };
+    const auto [half, n] = p;
+    std::vector<vec3> vertices;
+    vertices.reserve((n.x + 1) * (n.y + 1));
+    for (uint32_t j = 0; j <= n.y; ++j) {
+        for (uint32_t i = 0; i <= n.x; ++i) vertices.emplace_back(half.x * (2.f * i / n.x - 1.f), 0, half.y * (1.f - 2.f * j / n.y));
+    }
+    std::vector<std::vector<uint32_t>> faces;
+    faces.reserve(n.x * n.y);
+    for (uint32_t j = 0; j < n.y; ++j) {
+        for (uint32_t i = 0; i < n.x; ++i) {
+            const uint32_t v = j * (n.x + 1) + i;
+            faces.push_back({v, v + 1, v + n.x + 2, v + n.x + 1});
+        }
+    }
+    return {std::move(vertices), faces};
 }
 
-// Close the loop `ring` lists, in its orientation, with one face or with triangles around a new vertex at `center`.
 void Close(MeshData &data, FillType fill, std::vector<uint32_t> ring, vec3 center) {
     if (fill == FillType::Face) data.AddFace(ring);
     if (fill == FillType::Fan) {
@@ -210,13 +219,8 @@ MeshData CreateMesh(const Torus &p) {
 }
 
 MeshData CreateMesh(const Cylinder &p) {
-    const auto [radius, height, slices, cap] = p;
-    return CreateMesh(Cone{radius, height, radius, slices, cap});
-}
-
-MeshData CreateMesh(const Cone &p) {
-    const auto [radius, height, top_radius, slices, cap] = p;
-    // The base ring, then the top ring or the tip.
+    const auto [radius, height, top, slices, cap] = p;
+    const float top_radius = top.value_or(radius);
     const bool tip = top_radius <= 0.f;
     MeshData data;
     const auto ring = [&](float r, float y) {
@@ -226,15 +230,15 @@ MeshData CreateMesh(const Cone &p) {
     if (tip) data.Positions.emplace_back(0, height / 2, 0);
     else ring(top_radius, height / 2);
 
-    const uint32_t top = slices;
+    const uint32_t ring_top = slices;
     Close(data, cap, iota_view{0u, slices} | to<std::vector>(), {0, -height / 2, 0});
     for (uint32_t i = 0; i < slices; ++i) {
         const uint32_t j = (i + 1) % slices;
-        if (tip) data.AddFace(std::array{i, top, j});
-        else data.AddFace(std::array{i, top + i, top + j, j});
+        if (tip) data.AddFace(std::array{i, ring_top, j});
+        else data.AddFace(std::array{i, ring_top + i, ring_top + j, j});
     }
     // The top loop runs in reverse to face outward.
-    if (!tip) Close(data, cap, iota_view{0u, slices} | transform([top](uint32_t i) { return top + i; }) | std::views::reverse | to<std::vector>(), {0, height / 2, 0});
+    if (!tip) Close(data, cap, iota_view{0u, slices} | transform([ring_top](uint32_t i) { return ring_top + i; }) | std::views::reverse | to<std::vector>(), {0, height / 2, 0});
     return data;
 }
 

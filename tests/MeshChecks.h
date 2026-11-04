@@ -1,6 +1,6 @@
 #pragma once
 
-#include "TestMeshOrdinals.h"
+#include "MeshWalk.h"
 #include "mesh/MeshStore.h"
 
 #include <boost/ut.hpp>
@@ -14,7 +14,7 @@ inline std::string Describe(std::span<const vec3> points) {
     for (const auto p : points) text += std::format("({:g} {:g} {:g}) ", p.x, p.y, p.z);
     return text;
 }
-// The selection roots, hidden sets, bounds and boundary edges of a record agree with a recount over its live elements.
+// The selection roots, hidden sets and bounds of a record agree with a recount over its live elements.
 inline void ExpectSelectionIndex(const MeshStore &meshes, uint32_t id) {
     if (!meshes.Get(id).SelectionSummary.Count) return;
     const Mesh mesh{meshes, id};
@@ -27,6 +27,8 @@ inline void ExpectSelectionIndex(const MeshStore &meshes, uint32_t id) {
         std::vector<uint32_t> expected, actual;
         uint32_t live_count = 0u;
         vec3 sum{};
+        // The summed lengths bound the rounding of a sum whose terms cancel.
+        float magnitude = 0.f;
         AABB bounds;
         WithDomain(meshes.Arenas(), domains[d], [&](const auto &arena) {
             const auto set = DomainSet(meshes.Get(id), domains[d]);
@@ -40,13 +42,16 @@ inline void ExpectSelectionIndex(const MeshStore &meshes, uint32_t id) {
                     boost::ut::expect(!selected);
                 }
                 if (d == 0u) {
-                    const auto p = mesh.GetPosition(he::VH{v});
+                    const auto p = test::Position(mesh, he::VH{v});
                     bounds.Min = Min(bounds.Min, p);
                     bounds.Max = Max(bounds.Max, p);
-                    if (selected) sum += p;
+                    if (selected) {
+                        sum += p;
+                        magnitude += Length(p);
+                    }
                 } else if (d == 2u) {
-                    for (const auto vertex : mesh.fv_range(he::FH{v})) {
-                        const auto p = mesh.GetPosition(vertex);
+                    for (const auto vertex : test::FaceVertices(mesh, he::FH{v})) {
+                        const auto p = test::Position(mesh, vertex);
                         bounds.Min = Min(bounds.Min, p);
                         bounds.Max = Max(bounds.Max, p);
                     }
@@ -57,8 +62,6 @@ inline void ExpectSelectionIndex(const MeshStore &meshes, uint32_t id) {
         selection.ForEach([&](uint32_t v) { actual.push_back(v); });
         boost::ut::expect(actual == expected);
         boost::ut::expect(selection.Count() == expected.size());
-        boost::ut::expect(selection.First() == (expected.empty() ? std::optional<uint32_t>{} : expected.front()));
-        boost::ut::expect(selection.Last() == (expected.empty() ? std::optional<uint32_t>{} : expected.back()));
         const auto &root = meshes.GetSelectionRoot(id, elements[d]);
         boost::ut::expect(root.LiveCount == live_count);
         std::ranges::sort(expected_hidden);
@@ -66,39 +69,26 @@ inline void ExpectSelectionIndex(const MeshStore &meshes, uint32_t id) {
         boost::ut::expect(actual_hidden == expected_hidden);
         boost::ut::expect(root.Hidden == expected_hidden.size());
         boost::ut::expect(hidden.Count() == expected_hidden.size());
-        boost::ut::expect(Length(root.PositionSum - sum) < 0.0001f * (1.f + Length(sum)));
+        boost::ut::expect(Length(root.PositionSum - sum) < 0.0001f * (1.f + magnitude));
         boost::ut::expect(root.Bounds == bounds) << "domain" << d << "root" << Describe(std::array{root.Bounds.Min, root.Bounds.Max}) << "elements" << Describe(std::array{bounds.Min, bounds.Max});
     }
-    std::vector<uint32_t> expected_boundary, actual_boundary;
-    for (const auto e : mesh.edges())
-        if (!mesh.GetOppositeHalfedge(mesh.GetHalfedge(e, 0u))) expected_boundary.push_back(*e);
-    std::ranges::sort(expected_boundary);
-    meshes.GetBoundaryEdges(id).ForEach([&](uint32_t e) { actual_boundary.push_back(e); });
-    boost::ut::expect(expected_boundary == actual_boundary);
-}
-
-inline std::array<uint32_t, 3> RenderedPrimitiveCounts(const MeshStore &meshes, uint32_t id) {
-    std::array<uint32_t, 3> counts{};
-    const auto set = meshes.Get(id).MeshletData;
-    meshes.Render().Meshlets.ForEach(set, [&](ElementHandle, ElementAddress address) {
-        const auto &cluster = meshes.Render().Meshlets.Get({address.Value(), 1u})[0];
-        counts[cluster.Topology] += cluster.TriangleCount;
-    });
-    return counts;
 }
 
 // The rendered wires and points match the mesh's loose edges and isolated vertices, and so do the triangles of a record without coarser cluster levels.
 inline void ExpectRenderedGeometry(const MeshStore &meshes, const Mesh &mesh) {
     std::array<uint32_t, 3> expected{mesh.TriangleIndexCount() / 3u, 0u, 0u};
-    for (const auto edge : mesh.edges()) expected[1] += !mesh.GetConnectivity().FaceOf(mesh.GetHalfedge(edge, 0u));
+    for (const auto edge : mesh.edges()) expected[1] += !mesh.GetConnectivity().FaceOf(test::Halfedge(mesh, edge));
     for (const auto vertex : mesh.vertices()) expected[2] += mesh.GetConnectivity().Incoming(vertex).y == 0u;
-    auto actual = RenderedPrimitiveCounts(meshes, mesh.GetStoreId());
+    std::array<uint32_t, 3> actual{};
+    meshes.Render().Meshlets.ForEach(meshes.Get(mesh.GetStoreId()).MeshletData, [&](ElementHandle, ElementAddress address) {
+        const auto &cluster = meshes.Render().Meshlets.Get({address.Value(), 1u})[0];
+        actual[cluster.Topology] += cluster.TriangleCount;
+    });
     if (meshes.ClusterGroupCount(meshes.Get(mesh.GetStoreId())) > 0u) actual[0] = expected[0];
     boost::ut::expect(actual == expected) << "rendered" << actual[0] << actual[1] << actual[2] << "elements" << expected[0] << expected[1] << expected[2];
 }
 
 // The face's first `count` render triangles, whose corners are halfedge handles.
-// Face triangles hold triangle handles, which a copied record places at other arena addresses.
 inline std::vector<uvec3> RenderTriangles(const MeshStore &meshes, const Mesh &mesh, he::FH face, uint32_t count) {
     const auto &a = meshes.Arenas();
     const auto first = a.FaceTriangles.Get({test::Address(mesh, face), 1u})[0];
@@ -106,7 +96,7 @@ inline std::vector<uvec3> RenderTriangles(const MeshStore &meshes, const Mesh &m
     a.Triangles.ForEachAddressRun(meshes.Get(mesh.GetStoreId()).TriangleData, ElementHandle{first}, count, [&](Range run) { triangles.append_range(a.Triangles.Get(run)); });
     return triangles;
 }
-// Whether the planar loop neither revisits a vertex nor crosses itself, since no tessellation covers a pinched or twisted polygon once.
+// Whether the planar loop neither revisits a vertex nor crosses itself.
 inline bool Simple(std::span<const vec3> points, vec3 normal, float extent) {
     const auto n = points.size();
     for (size_t i = 0u; i < n; ++i)
@@ -123,18 +113,15 @@ inline bool Simple(std::span<const vec3> points, vec3 normal, float extent) {
         }
     return true;
 }
-// Validate the render triangles independently of the triangulation algorithm.
 // Every triangle corner is a corner of the face and the triangles' directed edges cancel against the face loop.
 // A planar simple face's triangles also wind with the face and cover its area exactly once.
 inline void ExpectPolygonTessellation(const MeshStore &meshes, const Mesh &mesh) {
-    const auto position = [&](he::VH vertex) { return mesh.GetPosition(vertex); };
     for (const auto face : mesh.faces()) {
         std::vector<vec3> points;
-        for (const auto vertex : mesh.fv_range(face)) points.push_back(position(vertex));
+        for (const auto vertex : test::FaceVertices(mesh, face)) points.push_back(test::Position(mesh, vertex));
         const auto origin = points.front();
         vec3 area{};
         for (uint32_t i = 1u; i + 1u < points.size(); ++i) area += Cross(points[i] - origin, points[i + 1u] - origin);
-        // A collapsed polygon has no area to tessellate.
         const auto length = Length(area);
         if (!(length > 0.f)) continue;
         const auto normal = area / length;
@@ -148,7 +135,7 @@ inline void ExpectPolygonTessellation(const MeshStore &meshes, const Mesh &mesh)
         std::map<std::pair<uint32_t, uint32_t>, int> boundary;
         const auto edge = [&](uint32_t a, uint32_t b, int weight) { boundary[std::minmax(a, b)] += a < b ? weight : -weight; };
         std::set<uint32_t> corners;
-        for (const auto h : mesh.fh_range(face)) {
+        for (const auto h : test::FaceHalfedges(mesh, face)) {
             corners.insert(*h);
             edge(*mesh.GetConnectivity().Previous(h), *h, -1);
         }
@@ -157,14 +144,12 @@ inline void ExpectPolygonTessellation(const MeshStore &meshes, const Mesh &mesh)
                 boost::ut::expect(corners.contains(triangle[k]));
                 edge(triangle[k], triangle[(k + 1u) % 3u], 1);
             }
-            const auto a = position(mesh.GetToVertex(he::HH{triangle.x}));
-            const auto b = position(mesh.GetToVertex(he::HH{triangle.y}));
-            const auto c = position(mesh.GetToVertex(he::HH{triangle.z}));
+            const auto [a, b, c] = test::TrianglePositions(mesh, triangle);
             const auto signed_area = Dot(Cross(b - a, c - a), normal);
-            if (planar) boost::ut::expect(signed_area >= -length * 1e-5f) << "triangle winds outside polygon" << Describe(points) << "triangle" << Describe(std::array{a, b, c}) << "area" << signed_area;
+            if (planar && signed_area < -length * 1e-5f) boost::ut::expect(false) << "triangle winds outside polygon" << Describe(points) << "triangle" << Describe(std::array{a, b, c}) << "area" << signed_area;
             triangle_area += std::abs(signed_area);
         }
-        if (planar) boost::ut::expect(std::abs(triangle_area - length) < length * 1e-4) << "render triangles overlap or leave a gap" << Describe(points) << "triangles" << triangle_area << "polygon" << length;
+        if (planar && !(std::abs(triangle_area - length) < length * 1e-4)) boost::ut::expect(false) << "render triangles overlap or leave a gap" << Describe(points) << "triangles" << triangle_area << "polygon" << length;
         for (const auto &[ends, count] : boundary) boost::ut::expect(count == 0) << "triangle edge differs from polygon boundary" << ends.first << ends.second;
     }
 }

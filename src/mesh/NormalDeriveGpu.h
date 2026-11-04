@@ -12,7 +12,7 @@ struct ComputeChain;
 
 // Captures the base normal pages the work of record `id`'s entry writes.
 // These are its vertex and face normals and the sector normals around its vertices.
-void CaptureNormalWrites(state::Registry &, uint32_t id, const NormalDeriveEntry &, const BufferArena<uint32_t> &vertex_work, const BufferArena<uint32_t> &face_work);
+void CaptureNormalWrites(state::Registry &, uint32_t id, const NormalDeriveEntry &, const BufferArena<uint32_t> &work);
 
 // The record's geometry and connectivity.
 // Callers choose base or posed destinations.
@@ -41,5 +41,5 @@ struct LocalNormalWork {
     uint32_t FaceCount;
 };
 // Records base normals after local changes to the meshes, in one derive.
-// Every change's vertices and faces are finished handle membership in `work`.
-void EncodeDeriveMeshNormals(state::Registry &, mtl::ComputeChain &, const BufferArena<uint32_t> &work, std::span<const LocalNormalWork>);
+// Every change's vertices and faces are finished handle membership in the chain's scratch.
+void EncodeDeriveMeshNormals(state::Registry &, mtl::ComputeChain &, std::span<const LocalNormalWork>);

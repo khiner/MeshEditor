@@ -1,6 +1,4 @@
-#ifndef VERTEXPOINT_MSL
-#define VERTEXPOINT_MSL
-
+#pragma once
 #include "OverlayFade.metal"
 #include "Varyings.metal"
 
@@ -16,5 +14,3 @@ fragment float4 VertexPointFragment(
     const Scene scene{bindless, view, theme, workspace};
     return float4(in.Color.rgb, in.Color.a * OverlayBehindFade(scene, in.Position));
 }
-
-#endif

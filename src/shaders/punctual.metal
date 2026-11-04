@@ -1,13 +1,10 @@
-// Adapted from KhronosGroup/glTF-Sample-Renderer (punctual.glsl)
-
-#ifndef PUNCTUAL_MSL
-#define PUNCTUAL_MSL
-
+#pragma once
+// Adapted from KhronosGroup/glTF-Sample-Renderer punctual.glsl.
 #include "Bindless.metal"
 
 constant float LIGHT_EPSILON = 1e-4f;
 
-// Avoid NaN and infinity for zero-length vectors and zero distance.
+// Returns `fallback` for a near-zero vector, avoiding NaN and infinity.
 inline float3 safeNormalize(float3 v, float3 fallback) {
     const float len = length(v);
     return len > LIGHT_EPSILON ? (v / len) : fallback;
@@ -65,4 +62,3 @@ inline float3 getLightIntensity(
     return range_attenuation * spot_attenuation * light.Intensity * float3(light.Color);
 }
 
-#endif

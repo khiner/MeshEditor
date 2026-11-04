@@ -109,7 +109,6 @@ void Reset(GpuBuffers &b, state::Registry &) {
     b.MeshletLodDepth = 0;
     b.MeshletFlagWorkByBit = {};
     b.FlagTallies.clear();
-    b.TalliedStores.clear();
     b.TopologyMeshes = {};
     b.SharpEditMeshes = 0;
     b.OverlayJobs.UsedSize = 0;
@@ -167,7 +166,6 @@ void GpuBuffers::EnsureMeshletVisibilityCapacity(
     // Classification also covers the visible entries a silhouette cull filters.
     const auto block_count = (visible_count + MeshletCullBlockSize - 1u) / MeshletCullBlockSize;
     // A traversal level contains each drawing instance's live nodes at most once, and the final level emits at most one work range per entry.
-    // The seed level's block states cover every instance slot.
     const auto frontier_count = std::max<uint64_t>(work_node_count, instance_count);
     const auto frontier_block_count = (frontier_count + MeshletCullBlockSize - 1u) / MeshletCullBlockSize;
     MeshletWorkRanges.SetCount<MeshletWorkRange>(work_node_count);

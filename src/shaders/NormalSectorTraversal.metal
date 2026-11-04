@@ -1,10 +1,8 @@
-#ifndef NORMAL_SECTOR_TRAVERSAL_MSL
-#define NORMAL_SECTOR_TRAVERSAL_MSL
-
+#pragma once
 #include "ConnectivityRead.metal"
 
 // Classification and normal derivation must traverse exactly the same smooth component, in the same order.
-// The caller handles the root before this walk.
+// VisitOthers skips the root, which the caller handles.
 struct NormalSectorTraversal {
     ConnectivityView Conn;
     device const uchar *FaceSharpness;
@@ -43,5 +41,3 @@ struct NormalSectorTraversal {
         }
     }
 };
-
-#endif

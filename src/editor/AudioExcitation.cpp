@@ -1,16 +1,15 @@
-#include "numeric/VectorMath.h"
 
-#include "audio/ContactModel.h"
 #include "editor/AudioExcitation.h"
+#include "audio/ContactModel.h"
+#include "mesh/MeshPipelines.h"
+#include "mesh/MeshStore.h"
+#include "mesh/Neighborhood.h"
 #include "render/Instance.h"
 #include "state/Registry.h"
 
 #include <numbers>
 
-// Unit surface normal at a mesh vertex.
-vec3 VertexNormal(const Mesh &mesh, uint32_t vertex) { return Normalize(mesh.GetNormal(mesh.VertexAt(vertex))); }
-
-// Tilts a unit normal using a joystick position in the unit disk.
+namespace {
 vec3 TiltAlongNormal(vec3 n, vec2 joy) {
     const float r = Length(joy);
     if (r < 1e-6f) return n;
@@ -23,8 +22,11 @@ vec3 TiltAlongNormal(vec3 n, vec2 joy) {
     const float theta = std::min(r, 1.f) * std::numbers::pi_v<float> / 2;
     return std::cos(theta) * n + std::sin(theta) * (joy.x * t + joy.y * bt) / r;
 }
+} // namespace
 
 vec3 ExciteDirection(const state::Registry &r, state::Entity e, uint32_t vertex) {
-    const auto n = VertexNormal(GetMesh(r, r.get<const Instance>(e).Entity), vertex);
+    const auto mesh = GetMesh(r, r.get<const Instance>(e).Entity);
+    const std::array handle{*mesh.VertexAt(vertex)};
+    const auto n = Normalize(VertexNormals(r.Resources.get<const MeshStore>(), GetMeshPipelines(r), mesh.GetStoreId(), handle).front());
     return TiltAlongNormal(n, r.get<const Striker>(state::Document).Tilt);
 }

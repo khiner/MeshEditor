@@ -1,6 +1,4 @@
-#ifndef BONESOLID_MSL
-#define BONESOLID_MSL
-
+#pragma once
 #include "BoneUtils.metal"
 #include "MeshletResolve.metal"
 #include "Varyings.metal"
@@ -17,7 +15,7 @@ inline BoneSolidVaryings BoneSolidMeshVertexAt(const thread Scene &scene, DrawDa
 
     const bool is_object_mode = scene.View.InteractionMode == InteractionMode::Object;
     const float3 bone_color = float3(scene.Theme.Colors.BoneSolid);
-    const float3 hint_color = is_object_mode ? bone_color : bone_wire_color(scene, load_bone_instance_state(scene, draw));
+    const float3 hint_color = is_object_mode ? bone_color : bone_wire_color(scene, scene.InstanceState(draw));
     const float3 state_color = hint_color * hint_color * 0.1f; // Matches Blender's bone_hint_color_shade.
 
     const float3 light = normalize(float3(0.1f, 0.1f, 0.8f));
@@ -69,5 +67,3 @@ fragment OverlayTargetsDepth BoneSolidFragment(
 
     return {.Color = in.Color, .Depth = in.Position.z};
 }
-
-#endif

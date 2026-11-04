@@ -1,7 +1,6 @@
 #include "viewport/Viewport.h"
 
 #include "render/ViewportSubmission.h"
-#include <Metal/MTLCommandQueue.hpp>
 
 #include "Panel.h"
 #include "Paths.h"
@@ -129,14 +128,12 @@ template<typename C> void EmplaceAbsent(state::Registry &r, state::Entity e) {
     if (!r.all_of<C>(e)) r.emplace<C>(e, ViewDefault<C>());
 }
 
-// A viewport entity holds its workspace values and its live render state.
 void EmplaceViewport(state::Registry &r, state::Entity viewport) {
     snapshot::ReturnRetained(r, viewport);
     [&]<typename... Cs>(TypeList<Cs...>) { (EmplaceAbsent<Cs>(r, viewport), ...); }(ViewValues{});
     r.emplace<Viewport>(viewport, r.Resources.get<GpuBuffers>().Ctx, r.Resources.get<mtl::BindlessSet>());
 }
 
-// An entity that stops being a viewport loses its workspace values and its live render state.
 void RemoveViewport(state::Registry &r, state::Entity viewport) {
     [&]<typename... Cs>(TypeList<Cs...>) { r.remove<Cs..., Viewport>(viewport); }(ViewValues{});
 }
@@ -189,7 +186,7 @@ void TakePendingViewSetup(state::Registry &r, state::Entity viewport) {
 }
 
 RenderView CurrentRenderView(const state::Registry &r, state::Entity viewport) {
-    return {r.get<const ViewCameraState>(viewport).Active, RenderExtentPx(r, viewport), r.get<const ViewportDisplay>(viewport)};
+    return {ViewCameraOf(r, viewport), RenderExtentPx(r, viewport), r.get<const ViewportDisplay>(viewport)};
 }
 
 void ReconcileWorkspace(state::Registry &r) {
@@ -207,8 +204,6 @@ void ReconcileWorkspace(state::Registry &r) {
     }
 }
 namespace {
-// The targets follow the view's extent and the lighting, and a scene or view that differs from the rendered one requests a frame.
-// Returns the view the viewport's frame renders.
 RenderView StepViewport(state::Registry &r, state::Entity viewport) {
     const auto view = CurrentRenderView(r, viewport);
     const bool targets_changed = SyncViewportRenderResources(r, viewport, uvec2{view.Extent.x, view.Extent.y});
@@ -226,13 +221,11 @@ void PrepareSelectionViewport(state::Registry &r, state::Entity viewport) {
     }
 }
 namespace {
-// Records and submits the viewport's frame at the view.
 void SubmitFrame(state::Registry &r, state::Entity viewport, const RenderView &view) {
     WriteViewUniforms(r, viewport, view);
     RecordAndSubmitFrame(r, viewport);
 }
 
-// Motion blur applies in MaterialPreview/Rendered while playing, scrubbing, or capturing.
 bool MotionBlurActive(const state::Registry &r, state::Entity viewport) {
     const auto &display = r.get<const ViewportDisplay>(viewport);
     if (display.ViewportShading != ViewportShadingMode::MaterialPreview && display.ViewportShading != ViewportShadingMode::Rendered) return false;
@@ -243,7 +236,6 @@ bool MotionBlurActive(const state::Registry &r, state::Entity viewport) {
 
 constexpr bool BlurredPhase(RenderPhase phase) { return phase == RenderPhase::BlurFast || phase == RenderPhase::BlurAccumulate; }
 
-// The shutter samples a blurred frame evaluates.
 struct BlurSchedule {
     bool Fast;
     uint32_t Count;
@@ -257,7 +249,6 @@ BlurSchedule ScheduleOf(const state::Registry &r, state::Entity viewport) {
     const bool fast = mb.Method == MotionBlurMethod::Fast;
     const auto &range = r.get<const TimelineRange>(state::Document);
     const int current_frame = r.get<const TimelinePlayback>(state::Document).CurrentFrame;
-    // Match Blender's centered shutter and clamp it to the timeline.
     const float half = mb.Shutter * 0.5f;
     return {
         .Fast = fast,
@@ -267,7 +258,6 @@ BlurSchedule ScheduleOf(const state::Registry &r, state::Entity viewport) {
     };
 }
 
-// Renders each viewport sharing the schedule from its shutter samples, evaluating each sample once, with sharp overlays, and restores the current frame afterward.
 void RenderMotionBlurredFrames(state::Registry &r, BlurSchedule schedule, std::span<const state::Entity> group) {
     const mtl::AutoreleaseScope native_scope;
     const auto &ctx = r.Resources.get<const mtl::Context>();
@@ -291,7 +281,6 @@ void RenderMotionBlurredFrames(state::Registry &r, BlurSchedule schedule, std::s
         slots.SetSampler({SlotType::Sampler, live.Samplers.Velocity}, velocity.Texture, velocity.Sampler);
     }
 
-    // Evaluate animation, physics, and each animated look-through camera at `pf` into mapped pose buffers.
     const auto evaluate_at = [&](float pf, EventPass pass) {
         {
             const profile::CpuScope scope{"SamplePoses"};
@@ -310,7 +299,6 @@ void RenderMotionBlurredFrames(state::Registry &r, BlurSchedule schedule, std::s
     for (uint32_t i = 0; i < count; ++i) {
         const float time = fast ? (i == 0 ? lo : hi) : lo + (hi - lo) * (float(i) + 0.5f) / float(count);
         evaluate_at(time, EventPass::Sample);
-        // Consecutive samples identical in every viewport need one render, including static scenes and clamped shutters.
         if (!fast && !sample_weights.empty()) {
             const auto &previous = buffers.BlurPoses[sample_weights.size() - 1];
             const auto previous_offset = GpuBuffers::SceneViewUboOffset(sample_weights.size());
@@ -356,7 +344,6 @@ void RenderMotionBlurredFrames(state::Registry &r, BlurSchedule schedule, std::s
 
 void SubmitViewports(state::Registry &r) {
     const profile::CpuScope scope{"SubmitViewports"};
-    // Each displayed viewport with the view its frame renders.
     std::vector<std::pair<state::Entity, RenderView>> displayed;
     for (const auto viewport : r.view<const Viewport>()) {
         if (Displayed(r, viewport)) displayed.emplace_back(viewport, StepViewport(r, viewport));
@@ -367,15 +354,12 @@ void SubmitViewports(state::Registry &r) {
         auto &live = r.edit<Viewport>(viewport);
         if (!ViewportImageReady(live)) continue;
         if (MotionBlurActive(r, viewport)) {
-            // A blurred frame costs several scene evaluations, so it renders only when something changed.
             if (live.RenderRequested) blurring.push_back(viewport);
         } else if (BlurredPhase(live.RecordedPhase)) {
-            // Blur ended (playback stopped, or the playhead was released), so a sharp frame replaces the blurred one.
             live.RenderRequested = true;
         }
     }
     if (!blurring.empty()) {
-        // The shutter samples request every viewport's frame, and the evaluation they restore leaves the other viewports' requests as they were.
         std::vector<std::tuple<state::Entity, bool, bool>> requests;
         for (const auto [viewport, live] : r.view<const Viewport>().each()) requests.emplace_back(viewport, live.RenderRequested, live.OcclusionStale);
         for (auto remaining = blurring; !remaining.empty();) {
@@ -431,7 +415,6 @@ void InitEngine(state::Registry &r) {
     // These engine resources outlive documents.
     r.Resources.emplace<ViewportConsumerFence>();
     const auto &sel_slots = r.Resources.emplace<SelectionSlots>(slots);
-    // Object picking grows on demand and refreshes its bindings; element picking uses fixed buffers.
     slots.SetBuffer({SlotType::Buffer, sel_slots.ObjectPickKey}, *buffers.ObjectPickKeys);
     slots.SetBuffer({SlotType::Buffer, sel_slots.ElementPickKey}, *buffers.ElementPickKey);
     slots.SetBuffer({SlotType::Buffer, sel_slots.ElementPickId}, *buffers.ElementPickId);
@@ -448,9 +431,8 @@ void InitEngine(state::Registry &r) {
     environments.BrdfLutSlot = QueueLutTexture(textures, slots, images_dir / "lut_ggx.png", "DefaultGGXBRDFLUT");
     environments.SheenELutSlot = QueueLutTexture(textures, slots, images_dir / "lut_sheen_E.png", "DefaultSheenELUT");
     environments.CharlieLutSlot = QueueLutTexture(textures, slots, images_dir / "lut_charlie.png", "DefaultCharlieLUT");
-    // Blender's default world background color (linear RGB), a flat ambient-only IBL when no scene world is provided.
+    // Blender's default world background color in linear RGB, as a flat ambient-only IBL for scenes without a world.
     environments.EmptySceneWorld = BuildFlatColorEnvironment(ctx, slots, vec3{0.05f}, "EmptySceneWorld");
-    // SceneWorld uses this default until reactive EXT_lights_image_based loading replaces it.
     environments.SceneWorld = {.Ibl = MakeIblSamplers(environments.EmptySceneWorld, environments), .Name = environments.EmptySceneWorld.Name};
 
     std::error_code ec;
@@ -462,16 +444,13 @@ void InitEngine(state::Registry &r) {
     std::ranges::sort(environments.Hdris, {}, &HdriEntry::Name);
 }
 
-// Gives the document each component's default value, in declaration order.
 void SetupDocument(state::Registry &r) {
     const auto defaults = [&]<typename... Cs>(TypeList<Cs...>) { (r.emplace_or_replace<Cs>(state::Document), ...); };
     defaults(TypeList<ActiveViewport, Interaction, EditMode>{});
     r.emplace_or_replace<ViewportTheme>(state::Document, Defaults::ViewportTheme);
     defaults(TypeList<procedure::NodeTheme, InterfaceTheme, TimelineTheme, EnabledInteractionModes, TransformGizmoState, AnisotropicFilter>{});
     physics::ApplySimulationSettings(r, r.emplace_or_replace<PhysicsSimulationSettings>(state::Document));
-    defaults(TypeList<AudioOutputMix, Striker, ModalSoundControls, PlaybackFrame, LastEvaluatedFrame, TimelineView, TimelineRange, TimelinePlayback, TimelineNavigation, Animations, ShadeSmoothAngle, BoxSelectState, GizmoInteraction,
-                      // The empty scene's selection aggregates, which the settle pass keeps current.
-                      TransformRoots, EditPrimaries, SelectionFlags, SelectedKeyframes, OutlinerRows>{});
+    defaults(TypeList<AudioOutputMix, Striker, ModalSoundControls, PlaybackFrame, LastEvaluatedFrame, TimelineView, TimelineRange, TimelinePlayback, TimelineNavigation, Animations, ShadeSmoothAngle, BoxSelectState, GizmoInteraction, TransformRoots, EditPrimaries, SelectionFlags, SelectedKeyframes, OutlinerRows>{});
     SurfaceSetupDocument(r);
 }
 
@@ -481,10 +460,10 @@ void AddDefaultSceneContent(state::Registry &r) {
     // Match Blender's startup scene in its Z-up, negative-Y-forward frame.
     constexpr vec3 LightLoc{4.07625, 1.00545, 5.90386}, CameraLoc{7.358891, -6.925791, 4.958309}, CameraEulerXYZ{1.109319, 0, 0.815801};
     constexpr float Lens{50}, SensorX{36}, RenderW{16}, RenderH{9};
-    // Blender Z-up -> MeshEditor Y-up is a -90° rotation about +X: (x, y, z) -> (x, z, -y)
+    // Blender Z-up to MeshEditor Y-up is a -90° rotation about +X, mapping (x, y, z) to (x, z, -y).
     const auto to_y_up_pos = [](vec3 v) { return vec3{v.x, v.z, -v.y}; };
     const quat to_y_up_rot = AngleAxis(-std::numbers::pi_v<float> / 2.f, vec3{1, 0, 0});
-    // Matches Blender glTF exporter (cameras.py / yvof_blender_to_gltf): horizontal fit since render aspect > sensor aspect
+    // Matches the Blender glTF exporter's yvof_blender_to_gltf, which fits horizontally since the render aspect exceeds the sensor aspect.
     const float hfov = 2 * std::atan(SensorX / (2 * Lens));
     const float yfov = 2 * std::atan(std::tan(hfov * 0.5) * RenderH / RenderW);
 

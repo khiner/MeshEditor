@@ -64,3 +64,5 @@ static_assert(sizeof(mat4) == 64 && alignof(mat4) == 4);
 
 GPU_CONSTANT uint32_t InvalidSlot = ~0u;
 GPU_CONSTANT uint32_t InvalidOffset = ~0u;
+// A polygon's epsilon and a boolean's tie tolerance are this fraction of the largest coordinate magnitude.
+GPU_CONSTANT float RelativePrecision = 1.f / 65536.f;

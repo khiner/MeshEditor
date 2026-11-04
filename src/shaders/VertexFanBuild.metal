@@ -54,7 +54,7 @@ kernel void VertexFanKeys(device const BindlessSet &b [[buffer(BufferIndex_Bindl
     const uint at = ctx.Vertices(job).Index(v);
     if (job.Fresh) ctx.Scratch()[job.Keys+i]=at;
     else { ctx.Scratch()[job.Keys+2u*i]=h; ctx.Scratch()[job.Keys+2u*i+1u]=at; }
-    if (at != InvalidOffset) atomic_fetch_add_explicit(reinterpret_cast<device atomic_uint *>(ctx.Scratch()+ctx.CountWord(job,at)),1u,memory_order_relaxed);
+    if (at != InvalidOffset) atomic_fetch_add_explicit(AtomicWord(ctx.Scratch()+ctx.CountWord(job,at)),1u,memory_order_relaxed);
 }
 // Each vertex tile's corner count, then the exclusive prefix of the tiles, whose last word is the job's total.
 kernel void VertexFanTileScan(device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],

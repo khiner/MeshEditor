@@ -16,21 +16,19 @@ inline uint4 ReadAttributeInput(device const BindlessSet &b, AttributeInput inpu
 template<typename Evaluate>
 inline void RunAttributeNode(uint i, device const BindlessSet &b, constant AttributeNodePushConstants &pc, Evaluate evaluate) {
     const uint k = i / MeshElementBlockSize, lane = i % MeshElementBlockSize;
-    if (k >= pc.BlockCount) return;
-    device const uint *blocks = BindlessBuffer(uint, b.Buffer, pc.Blocks.Slot) + pc.Blocks.Offset;
+    if (k >= pc.Blocks.Count) return;
+    device const uint *blocks = BindlessBuffer(uint, b.Buffer, pc.Blocks.Blocks.Slot) + pc.Blocks.Blocks.Offset;
     const uint block = blocks[k];
-    device const MeshElementBlock &membership = BindlessBuffer(MeshElementBlock, b.Buffer, pc.MembershipSlot)[block];
+    device const MeshElementBlock &membership = BindlessBuffer(MeshElementBlock, b.Buffer, pc.Blocks.MembershipSlot)[block];
     const uint word = lane / 32u, bit = 1u << (lane % 32u);
     if (!(membership.Live[word] & bit)) return;
-    uint ordinal = (k ? blocks[pc.BlockCount + k - 1u] : 0u) + popcount(membership.Live[word] & (bit - 1u));
+    uint ordinal = (k ? blocks[pc.Blocks.Count + k - 1u] : 0u) + popcount(membership.Live[word] & (bit - 1u));
     for (uint w = 0u; w < word; ++w) ordinal += popcount(membership.Live[w]);
     const uint address = block * MeshElementBlockSize + lane, handle = membership.Local * MeshElementBlockSize + lane;
     const uint4 value = evaluate(ReadAttributeInput(b, pc.A, address, handle, ordinal), ReadAttributeInput(b, pc.B, address, handle, ordinal));
     WriteNamedAttribute(b, pc.Output, pc.OutputType, handle, value);
 }
 
-// One entry point per node function.
-// AttributeRead writes input A unchanged, for the nodes that read each element's position, normal or rank.
 kernel void AttributeRead(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant AttributeNodePushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
     RunAttributeNode(i, b, pc, [&](uint4 a, uint4) { return a; });
 }

@@ -1,6 +1,4 @@
-#ifndef NORMALINDICATOR_MSL
-#define NORMALINDICATOR_MSL
-
+#pragma once
 #include "gpu/MeshletLimit.h"
 #include "MeshletResolve.metal"
 #include "SceneUBO.metal"
@@ -13,7 +11,7 @@ constant uint NormalIndicatorSimdGroups = NormalIndicatorThreads / 32u;
 using NormalIndicatorOutput = metal::mesh<EdgeQuadVaryings, void, NormalIndicatorThreads * 4u, NormalIndicatorThreads * 2u, metal::topology::triangle>;
 
 inline float MeanIncidentEdgeLength(const thread Scene &scene, DrawData draw, uint vertex_id, float3 position) {
-    const ConnectivityView conn{scene.B, draw.Connectivity, draw.FaceCount};
+    const ConnectivityView conn{scene.B, draw.Connectivity};
     float total = 0.0f;
     uint count = 0u;
     const auto add = [&](uint corner) {
@@ -21,7 +19,6 @@ inline float MeanIncidentEdgeLength(const thread Scene &scene, DrawData draw, ui
         ++count;
     };
     // Each fan corner ends at the vertex, so its incoming edge starts at its opposite's corner, or at its previous corner on a boundary.
-    // A boundary edge leaving the vertex ends at the next corner.
     for (const auto item : conn.Fan(vertex_id)) {
         const uint h = item.x;
         if (conn.IncomingEdge(h) != InvalidOffset) {
@@ -33,16 +30,14 @@ inline float MeanIncidentEdgeLength(const thread Scene &scene, DrawData draw, ui
     return count ? total / float(count) : 0.0f;
 }
 
-// Returns a vertex's local-space indicator segment scaled to its incident edges.
 inline void VertexNormalSegment(const thread Scene &scene, DrawData draw, uint vertex_id, thread float3 &start, thread float3 &end) {
     start = scene.GetLocalPosition(draw, vertex_id);
     const float3 normal = scene.GetVertexNormal(draw, vertex_id);
     end = start + NormalIndicatorLengthScale * MeanIncidentEdgeLength(scene, draw, vertex_id, start) * normal;
 }
 
-// Returns a face's local-space indicator segment scaled to its area.
 inline void FaceNormalSegment(const thread Scene &scene, DrawData draw, uint element, thread float3 &start, thread float3 &end) {
-    const ConnectivityView conn{scene.B, draw.Connectivity, draw.FaceCount};
+    const ConnectivityView conn{scene.B, draw.Connectivity};
     const uint2 loop = conn.FaceHalfedges(element);
     float3 sum = float3(0);
     for (uint h = loop.x; h < loop.y; ++h) sum += scene.GetLocalPosition(draw, scene.CornerVertex(draw, h));
@@ -84,7 +79,7 @@ inline void EmitNormalIndicator(
     EmitStroke(output, compact.x, scene, clip[0], clip[1], color);
 }
 
-// Emit each face from the finest cluster containing its first triangle.
+// Emits each face from the finest cluster containing its first triangle.
 [[mesh]] void FaceNormalIndicatorMesh(
     NormalIndicatorOutput output,
     uint thread_index [[thread_index_in_threadgroup]],
@@ -125,11 +120,8 @@ inline void EmitNormalIndicator(
 ) {
     threadgroup uint simd_counts[NormalIndicatorSimdGroups];
     const Scene scene{bindless, view, theme, workspace};
-    // Offset the stroke by its half width and apply the same camera depth bias as EmitNormalIndicator.
     const VertexBlockLane work = ResolveVertexBlockLane(
         scene, pc, threadgroup_position.x, thread_index, scene.Theme.EdgeWidth + 0.5f, NdcOffsetFactor(scene)
     );
     EmitNormalIndicator(output, thread_index, lane, simd_counts, scene, work.Draw, work.VertexId, false);
 }
-
-#endif
