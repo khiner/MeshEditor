@@ -20,8 +20,9 @@ namespace procedure {
 struct Source {};
 struct Join {};
 
-// Combine two closed meshes or two regions on one plane into Mesh 1's space, which Space's world transform places.
-// The world transform of the object Mesh 2 came from places Mesh 2, and Mesh 2 from this procedure's mesh stays in place relative to Mesh 1.
+// Combine Mesh 1 with each Mesh 2, in link order, into Mesh 1's space, which Space's world transform places.
+// The inputs are closed meshes or regions on one plane.
+// The world transform of the object a Mesh 2 came from places it, and a Mesh 2 from this procedure's mesh stays in place relative to Mesh 1.
 struct Boolean {
     BooleanOperation Operation{BooleanOperation::Difference};
     state::Entity Space{state::Null};
@@ -95,9 +96,12 @@ struct VectorMath {
     float Scale{1.f};
 };
 
+// Apply Operation per element to A, B and C, of which an operation uses only the operands it needs.
+// Clamp limits the result to [0, 1].
 struct FloatMath {
     FloatMathOp Operation{FloatMathOp::Add};
-    float B{};
+    float B{}, C{};
+    bool Clamp{};
 };
 
 enum class VectorComponent : uint8_t { X,
@@ -311,6 +315,8 @@ using NodeKinds = TypeList<
     Position, Normal, Curvature, Boundary, PlaneSide, Linked, Adjacent, EdgeLoop, EdgeRing, SelectionAttribute, Index, NamedAttribute, VectorMath, FloatMath, Compare, BooleanMath, StoreNamedAttribute, StoreSelection, SetPosition,
     MeshToPoints, InstanceOnPoints, RealizeInstances, ObjectInfo,
     FloatValue, IntegerValue, BooleanValue, VectorValue, RotationValue, Subnet>;
+template<typename K>
+concept Operated = requires { requires std::is_enum_v<decltype(K::Operation)>; };
 using ValueKinds = TypeList<FloatValue, IntegerValue, BooleanValue, VectorValue, RotationValue>;
 template<typename K>
 concept ValueKind = InTypeList<K, ValueKinds>;
@@ -340,6 +346,7 @@ struct Socket {
     const char *Name{}; // The editor label, or the type's name when null
     uint8_t Field{NoField};
     uint8_t Member{NoField};
+    bool Multi{}; // The input accepts any number of links, kept in order
     constexpr bool Carries(uint8_t field, uint8_t member) const { return Field == field && Member == member; }
 };
 
@@ -349,9 +356,15 @@ using enum SocketDirection;
 
 inline constexpr uint8_t Bool{TypeBit(AttributeType::Bool)}, Float{TypeBit(AttributeType::Float)}, Vec3{TypeBit(AttributeType::Vec3)};
 
+constexpr Socket Many(Socket socket) {
+    socket.Multi = true;
+    return socket;
+}
+
 inline constexpr Socket SourceSockets[]{{Geometry, Out}};
-inline constexpr Socket JoinSockets[]{{Geometry, In}, {Geometry, In}, {Geometry, Out}};
-inline constexpr Socket BooleanSockets[]{{Geometry, In, 0u, true, "Mesh 1"}, {Geometry, In, 0u, true, "Mesh 2"}, {Geometry, Out}};
+inline constexpr Socket JoinSockets[]{Many({Geometry, In}), {Geometry, Out}};
+inline constexpr Socket BooleanSockets[]{{Geometry, In, 0u, true, "Mesh 1"}, Many({Geometry, In, 0u, true, "Mesh 2"}), {Geometry, Out}};
+inline constexpr Socket MinkowskiSockets[]{{Geometry, In, 0u, true, "Mesh 1"}, {Geometry, In, 0u, true, "Mesh 2"}, {Geometry, Out}};
 inline constexpr Socket OperatorSockets[]{{Geometry, In}, {Selection, In, Bool}, {Geometry, Out}};
 inline constexpr Socket PositionSockets[]{{Attribute, Out, Vec3}};
 inline constexpr Socket LevelSetSockets[]{{Attribute, In, Float, false, "Value"}, {Geometry, Out}};
@@ -400,7 +413,8 @@ template<typename K> constexpr std::span<const Socket> FixedSockets() {
     if constexpr (std::same_as<K, Subnet>) return std::span<const Socket>{};
     else if constexpr (std::same_as<K, Source> || std::same_as<K, ObjectInfo> || Generator<K>) return SourceSockets;
     else if constexpr (std::same_as<K, Join>) return JoinSockets;
-    else if constexpr (std::same_as<K, Boolean> || std::same_as<K, Minkowski>) return BooleanSockets;
+    else if constexpr (std::same_as<K, Boolean>) return BooleanSockets;
+    else if constexpr (std::same_as<K, Minkowski>) return MinkowskiSockets;
     else if constexpr (std::same_as<K, Position> || std::same_as<K, Normal>) return PositionSockets;
     else if constexpr (std::same_as<K, Curvature>) return CurvatureSockets;
     else if constexpr (std::same_as<K, Boundary> || std::same_as<K, PlaneSide>) return SelectionOutputSockets;
@@ -448,7 +462,10 @@ template<> inline constexpr field::Table<VectorMath, uint8_t> PerElement<VectorM
     {&VectorMath::B, Vec3},
     {&VectorMath::Scale, Float},
 };
-template<> inline constexpr field::Table<FloatMath, uint8_t> PerElement<FloatMath>{{&FloatMath::B, Float}};
+template<> inline constexpr field::Table<FloatMath, uint8_t> PerElement<FloatMath>{
+    {&FloatMath::B, Float},
+    {&FloatMath::C, Float},
+};
 template<> inline constexpr field::Table<Compare, uint8_t> PerElement<Compare>{{&Compare::B, Float | Vec3}};
 template<> inline constexpr field::Table<BooleanMath, uint8_t> PerElement<BooleanMath>{{&BooleanMath::B, Bool}};
 
@@ -497,6 +514,20 @@ inline constexpr auto InputCount = detail::PerKind(NodeKinds{}, []<typename K> {
 inline constexpr uint16_t KindCount = uint16_t(SocketCount.size());
 inline constexpr size_t MaxInputs = std::ranges::max(InputCount);
 
+// Each kind's multi-input socket, or NoSocket.
+inline constexpr uint16_t NoSocket = UINT16_MAX;
+inline constexpr auto MultiInput = detail::PerKind(NodeKinds{}, []<typename K> {
+    constexpr auto sockets = detail::SocketsOf<K>();
+    static_assert(std::ranges::count(sockets, true, &Socket::Multi) <= 1, "A node kind has at most one multi-input socket");
+    const auto found = std::ranges::find(sockets, true, &Socket::Multi);
+    return found == sockets.end() ? NoSocket : uint16_t(found - sockets.begin());
+});
+// A node has one input slot per input socket, then one slot per extra link of its multi-input socket, in order.
+// The first link of a multi-input socket is in the socket's own slot.
+constexpr uint16_t SlotSocket(uint16_t kind, uint16_t slot) { return slot < InputCount[kind] ? slot : MultiInput[kind]; }
+constexpr uint16_t SlotOf(uint16_t kind, uint16_t socket, uint16_t index) { return index == 0u ? socket : uint16_t(InputCount[kind] + index - 1u); }
+constexpr uint16_t NextMultiSlot(uint16_t kind, uint16_t slot) { return slot < InputCount[kind] ? InputCount[kind] : uint16_t(slot + 1u); }
+
 // Each kind's sockets start at SocketFirst[kind] in Sockets, inputs first.
 inline constexpr auto SocketFirst = [] {
     std::array<uint16_t, KindCount + 1u> first{};
@@ -538,6 +569,15 @@ constexpr bool IsAttributeKind(uint16_t kind) { return SocketCount[kind] > Input
 
 constexpr std::pair<uint16_t, uint16_t> ParameterRange(uint16_t kind) {
     return {uint16_t(std::ranges::count(KindSockets(kind).first(InputCount[kind]), NoField, &Socket::Field)), InputCount[kind]};
+}
+
+// Whether the editor puts the input socket in the node's tray.
+// Value parameters go in the tray when the kind has more than one.
+// Attribute parameters, and a kind's only value parameter, get their own rows.
+constexpr bool InTray(uint16_t kind, uint16_t socket) {
+    const auto sockets = KindSockets(kind).first(InputCount[kind]);
+    const auto setting = [](Socket s) { return s.Field != NoField && s.Type == SocketType::Value; };
+    return setting(sockets[socket]) && std::ranges::count_if(sockets, setting) > 1;
 }
 
 template<typename K> inline constexpr uint16_t KindOf = []<typename... Ks>(TypeList<Ks...>) {
@@ -638,16 +678,26 @@ struct ResolvedSocket {
 state::Entity ContainerOf(const state::Registry &, state::Entity node);
 const SubnetPort *PortOf(const state::Registry &, state::Entity subnet, uint16_t port);
 Socket SocketOf(const state::Registry &, state::Entity node, uint16_t socket);
-SocketLink InputOf(const state::Registry &, state::Entity node, uint16_t socket);
-void SetInput(state::Registry &, state::Entity node, uint16_t socket, SocketLink);
+// The link in a node's input slot, or a subnet port's source.
+SocketLink InputOf(const state::Registry &, state::Entity node, uint16_t slot);
+// Sets the link in a slot.
+// A null link in a multi-input socket's slot removes that link from the socket's list.
+void SetInput(state::Registry &, state::Entity node, uint16_t slot, SocketLink);
+// Inserts the link at `index` among the links of the node's multi-input socket, or at the end.
+// If the socket already has the source, that link moves to `index`.
+void InsertInput(state::Registry &, state::Entity node, SocketLink, uint16_t index);
+std::vector<SocketLink> InputLinks(const state::Registry &, state::Entity node, uint16_t socket);
 ResolvedSocket ResolveSocket(const state::Registry &, SocketLink, bool bypass = false, const SocketEdit * = nullptr);
 std::optional<uint16_t> SubnetBypassInput(const state::Registry &, state::Entity, uint16_t output);
 std::optional<PortValue> ParameterDefault(const state::Registry &, state::Entity node, uint16_t socket);
 void SetParameterDefault(state::Registry &, state::Entity node, uint16_t socket, PortValue);
 
+// One link per input slot.
+// The links of a multi-input socket are distinct, and none is null unless the socket has no links.
 struct NodeInputs {
     std::vector<SocketLink> Links;
 };
+std::vector<SocketLink> NormalizedInputs(uint16_t kind, std::vector<SocketLink>);
 
 // The output socket carrying a node's geometry or instances, which the mesh draws when the node is displayed, or none.
 constexpr std::optional<uint16_t> ResultSocket(uint16_t kind) {
@@ -771,12 +821,15 @@ inline std::optional<uint16_t> MainSocket(uint16_t kind, SocketDirection directi
     return {};
 }
 
-// Permit insertion when the main sockets match both link endpoints and the resulting links are acyclic.
-inline bool Inserts(const CookPlan &plan, uint32_t node, uint32_t to_node, uint16_t to_socket) {
-    const auto link = plan.Wires[plan.InputFirst[to_node] + to_socket];
+// Whether the node can be inserted into the link in `to_slot`.
+// Its main input and output must be unlinked and compatible with the link's two ends, and the result must have no cycle.
+inline bool Inserts(const CookPlan &plan, uint32_t node, uint32_t to_node, uint16_t to_slot) {
+    const auto link = plan.Wires[plan.InputFirst[to_node] + to_slot];
     const auto kind = plan.Nodes[node].Kind;
     const auto input = MainSocket(kind, SocketDirection::In), output = MainSocket(kind, SocketDirection::Out);
     if (link.FromNode == NoNode || link.FromNode == node || to_node == node || !input || !output) return false;
+    if (plan.Wires[plan.InputFirst[node] + *input].FromNode != NoNode || std::ranges::contains(plan.Wires, NodeLink{node, *output})) return false;
+    const auto to_socket = plan.Nodes[to_node].Kind == KindOf<Subnet> ? to_slot : SlotSocket(plan.Nodes[to_node].Kind, to_slot);
     if (!Links(NodeSockets(plan, node)[*output], NodeSockets(plan, to_node)[to_socket]) || !Links(NodeSockets(plan, link.FromNode)[link.FromSocket], NodeSockets(plan, node)[*input])) return false;
     const auto all = [](uint32_t) { return true; };
     return !Upstream(plan, node, all, true)[to_node] && !Upstream(plan, link.FromNode, all, true)[node];
@@ -857,20 +910,24 @@ struct OperationHandle {
     state::Entity Node{state::Null}, Object{state::Null};
     HandleParameter Parameter{};
 };
-// Persistent on a Boolean node the last cook evaluated, with the transform from Mesh 2's space into Mesh 1's that its result was cooked with.
-// Operand is the object whose transform placed Mesh 2, or null for Mesh 2 in this procedure's mesh space.
+// Persistent on a Boolean node the last cook evaluated, with the transform from each Mesh 2's space into Mesh 1's that its result was cooked with.
+// Operand is the object whose transform placed that Mesh 2, or null for a Mesh 2 in this procedure's mesh space.
 // A procedure whose placing objects only moved cooks when this transform changed.
-struct BooleanPlacement {
+struct OperandPlacement {
     state::Entity Operand{state::Null};
     mat4 ToFirst{1.f};
+    bool operator==(const OperandPlacement &) const = default;
+};
+struct BooleanPlacement {
+    std::vector<OperandPlacement> Operands; // One per Mesh 2 link, in link order
     bool operator==(const BooleanPlacement &) const = default;
 };
 struct StagedNode {}; // Derived on a node a preview step appended, which the stage's later steps edit.
 } // namespace procedure
 
 template<> inline constexpr field::SpecTable<procedure::Boolean> Specs<procedure::Boolean>{
-    {&procedure::Boolean::Operation, {.Help = "Set operation on the two inputs, closed meshes or regions on one plane. Difference subtracts the second from the first."}},
-    {&procedure::Boolean::Space, {.Help = "Object whose world transform places Mesh 1 and whose local space the result is in, or none to leave Mesh 1 in place. The object Mesh 2's geometry came from places Mesh 2."}},
+    {&procedure::Boolean::Operation, {.Help = "Set operation applied to Mesh 1 and each Mesh 2 in turn. Difference subtracts every Mesh 2 from Mesh 1."}},
+    {&procedure::Boolean::Space, {.Help = "Object whose world transform places Mesh 1 and whose local space the result is in, or none to leave Mesh 1 in place. Each Mesh 2 is placed by the object its geometry came from."}},
 };
 template<> inline constexpr field::SpecTable<procedure::Minkowski> Specs<procedure::Minkowski>{{&procedure::Minkowski::Operation, {.Help = "Sum sweeps Mesh 1 by Mesh 2, and Difference erodes Mesh 1 by it. Two regions sweep in Mesh 1's plane, with Mesh 2's plane through the origin."}}};
 template<> inline constexpr field::SpecTable<procedure::Normal> Specs<procedure::Normal>{{&procedure::Normal::Domain, {.Help = "Element domain of the emitted normals: vertices or faces"}}};
@@ -904,8 +961,10 @@ template<> inline constexpr field::SpecTable<procedure::VectorMath> Specs<proced
     {&procedure::VectorMath::Scale, {.Help = "Factor for the Scale operation while the Scale input is unlinked"}},
 };
 template<> inline constexpr field::SpecTable<procedure::FloatMath> Specs<procedure::FloatMath>{
-    {&procedure::FloatMath::Operation, {.Help = "Operation on A and B. Unary operations such as Abs, Sqrt, Sin, and Cos ignore B, and Sin and Cos take radians."}},
-    {&procedure::FloatMath::B, {.Help = "Second operand while the B input is unlinked"}},
+    {&procedure::FloatMath::Operation, {.Help = "Operation to apply. Each operation uses one to three operands. Trigonometric operations take radians."}},
+    {&procedure::FloatMath::B, {.Help = "Second operand, used while its socket is unlinked"}},
+    {&procedure::FloatMath::C, {.Help = "Third operand, used while its socket is unlinked"}},
+    {&procedure::FloatMath::Clamp, {.Help = "Clamp the result to the range 0 to 1"}},
 };
 template<> inline constexpr field::SpecTable<procedure::Compare> Specs<procedure::Compare>{
     {&procedure::Compare::Operation, {.Help = "Comparison of A against B"}},

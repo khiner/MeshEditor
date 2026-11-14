@@ -38,12 +38,14 @@ bool ObjectReferencesAcyclic(const state::Registry &r, std::span<const state::En
 }
 
 // Order nodes after their dependencies, preserving authoring order among ready nodes.
+// An edit whose slot is one past a node's last slot adds a slot.
 CookPlan Plan(const state::Registry &r, const GeometryProcedure &procedure, bool bypass, const SocketEdit *edit) {
     CookPlan plan{.InputFirst = {0u}, .SocketFirst = {0u}};
     for (auto node = procedure.First; node != state::Null;) {
         const auto &record = r.get<const ProcedureNode>(node);
         plan.Nodes.push_back({node, record.Kind});
-        plan.InputFirst.push_back(plan.InputFirst.back() + InputCount[record.Kind]);
+        const auto slots = uint32_t(r.get<const NodeInputs>(node).Links.size());
+        plan.InputFirst.push_back(plan.InputFirst.back() + slots + uint32_t(edit && edit->Node == node && edit->Socket == slots && !r.all_of<Subnet>(node)));
         plan.SocketFirst.push_back(plan.SocketFirst.back() + SocketCount[record.Kind]);
         node = record.Next;
     }
@@ -52,7 +54,8 @@ CookPlan Plan(const state::Registry &r, const GeometryProcedure &procedure, bool
     plan.Inputs.reserve(plan.InputFirst.back());
     for (const auto &node : plan.Nodes) {
         const auto &inputs = r.get<const NodeInputs>(node.Entity).Links;
-        for (uint16_t i = 0; i < inputs.size(); ++i) {
+        const bool added = edit && edit->Node == node.Entity && edit->Socket == inputs.size() && node.Kind != KindOf<Subnet>;
+        for (uint16_t i = 0; i < inputs.size() + added; ++i) {
             const auto link = edit && edit->Node == node.Entity && edit->Socket == i ? edit->Source : inputs[i];
             const auto resolved = ResolveSocket(r, link, bypass, edit);
             plan.Inputs.push_back({IndexOf(plan, resolved.Source.FromNode), resolved.Source.FromSocket, resolved.Constant});

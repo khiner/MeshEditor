@@ -885,6 +885,7 @@ void RecordedOperators(ProcedureFixture &f, Fixture &other) {
         // A generated Mesh 2 is in this procedure's mesh space, so it stays in place relative to Mesh 1 wherever Space moves: a bar through the cube cuts a 1 x 1 x 2 tunnel.
         const auto bar = f.Append(mesh, KindOf<primitive::Cube>);
         f.Do(UpdateOf<&primitive::Cube::HalfExtents>(bar, vec3{.5f, .5f, 2.f}));
+        f.Do(action::nodes::Unlink{mesh, boolean, 1u});
         f.Do(Link{mesh, bar, f.Out(bar), boolean, 1u});
         expect(!r.any_of<NodeError>(boolean) && std::abs(OutputVolume(f, mesh) - 6.0) < 1e-4);
         const auto cooks = Cooks(r);

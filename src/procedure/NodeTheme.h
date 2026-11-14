@@ -22,7 +22,6 @@ struct NodeThemeColors {
     vec4 Outline{Rgba8(0, 0, 0)};
     vec4 Hovered{Rgba8(255, 255, 255)};
     vec4 WireHighlight{Rgba8(255, 255, 255)};
-    vec4 InsertMarker{Rgba8(255, 255, 255, 80)};
     vec4 BoxSelect{Rgba8(100, 140, 220, 40)};
     vec4 BoxSelectBorder{Rgba8(100, 140, 220, 160)};
     vec4 Dimmed{Rgba8(74, 74, 78)}; // A socket a held wire cannot link with
@@ -34,6 +33,7 @@ struct NodeThemeColors {
     vec4 OperatorsTitle{Rgba8(40, 100, 90)};
     vec4 CombineTitle{Rgba8(40, 90, 110)};
     vec4 AttributesTitle{Rgba8(80, 60, 130)};
+    vec4 MathTitle{Rgba8(53, 96, 131)};
     vec4 ValuesTitle{Rgba8(90, 90, 90)};
     vec4 GeneratorsTitle{Rgba8(50, 110, 60)};
     vec4 InstancesTitle{Rgba8(40, 80, 140)};

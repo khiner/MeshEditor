@@ -14,18 +14,54 @@ enum class VectorMathOp : uint32_t {
     Normalize,
     Distance,
 };
+// The operations of Blender's Math node, in its menu order.
 enum class FloatMathOp : uint32_t {
+    // Functions
     Add,
     Subtract,
     Multiply,
     Divide,
-    Min,
-    Max,
-    Abs,
+    MultiplyAdd,
     Power,
-    Sqrt,
-    Sin,
-    Cos,
+    Logarithm,
+    SquareRoot,
+    InverseSquareRoot,
+    Absolute,
+    Exponent,
+    // Comparison
+    Minimum,
+    Maximum,
+    LessThan,
+    GreaterThan,
+    Sign,
+    Compare,
+    SmoothMinimum,
+    SmoothMaximum,
+    // Rounding
+    Round,
+    Floor,
+    Ceil,
+    Truncate,
+    Fraction,
+    TruncatedModulo,
+    FlooredModulo,
+    Wrap,
+    Snap,
+    PingPong,
+    // Trigonometric
+    Sine,
+    Cosine,
+    Tangent,
+    Arcsine,
+    Arccosine,
+    Arctangent,
+    Arctan2,
+    HyperbolicSine,
+    HyperbolicCosine,
+    HyperbolicTangent,
+    // Conversion
+    ToRadians,
+    ToDegrees,
 };
 enum class CompareOp : uint32_t {
     Less,
@@ -57,11 +93,12 @@ struct AttributeInput {
 // One attribute node evaluated at every live element of a record's domain, one thread per element slot of its blocks.
 struct AttributeNodePushConstants {
     DomainBlocks Blocks;
-    AttributeInput A, B;
+    AttributeInput A, B, C;
     NamedAttributeRef Output;
     AttributeType OutputType;
     uint32_t Operation, Component;
     float Epsilon;
+    uint32_t Clamp; // Nonzero clamps a float math result to [0, 1]
 };
 
 // Copies a bool attribute's words at each element block of its record to the block's mask block, and zero to the mask blocks of other blocks.

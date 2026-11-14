@@ -25,24 +25,24 @@ inline void RunAttributeNode(uint i, device const BindlessSet &b, constant Attri
     uint ordinal = (k ? blocks[pc.Blocks.Count + k - 1u] : 0u) + popcount(membership.Live[word] & (bit - 1u));
     for (uint w = 0u; w < word; ++w) ordinal += popcount(membership.Live[w]);
     const uint address = block * MeshElementBlockSize + lane, handle = membership.Local * MeshElementBlockSize + lane;
-    const uint4 value = evaluate(ReadAttributeInput(b, pc.A, address, handle, ordinal), ReadAttributeInput(b, pc.B, address, handle, ordinal));
+    const uint4 value = evaluate(ReadAttributeInput(b, pc.A, address, handle, ordinal), ReadAttributeInput(b, pc.B, address, handle, ordinal), ReadAttributeInput(b, pc.C, address, handle, ordinal));
     WriteNamedAttribute(b, pc.Output, pc.OutputType, handle, value);
 }
 
 kernel void AttributeRead(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant AttributeNodePushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
-    RunAttributeNode(i, b, pc, [&](uint4 a, uint4) { return a; });
+    RunAttributeNode(i, b, pc, [&](uint4 a, uint4, uint4) { return a; });
 }
 kernel void AttributeVectorMath(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant AttributeNodePushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
-    RunAttributeNode(i, b, pc, [&](uint4 a, uint4 v) { return VectorMathNode(a, v, VectorMathOp(pc.Operation)); });
+    RunAttributeNode(i, b, pc, [&](uint4 a, uint4 v, uint4) { return VectorMathNode(a, v, VectorMathOp(pc.Operation)); });
 }
 kernel void AttributeFloatMath(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant AttributeNodePushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
-    RunAttributeNode(i, b, pc, [&](uint4 a, uint4 v) { return FloatMathNode(a, v, FloatMathOp(pc.Operation)); });
+    RunAttributeNode(i, b, pc, [&](uint4 a, uint4 v, uint4 w) { return FloatMathNode(a, v, w, FloatMathOp(pc.Operation), pc.Clamp != 0u); });
 }
 kernel void AttributeCompare(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant AttributeNodePushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
-    RunAttributeNode(i, b, pc, [&](uint4 a, uint4 v) { return CompareNode(a, pc.A.Type, v, pc.B.Type, pc.Component, CompareOp(pc.Operation), pc.Epsilon); });
+    RunAttributeNode(i, b, pc, [&](uint4 a, uint4 v, uint4) { return CompareNode(a, pc.A.Type, v, pc.B.Type, pc.Component, CompareOp(pc.Operation), pc.Epsilon); });
 }
 kernel void AttributeBooleanMath(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant AttributeNodePushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
-    RunAttributeNode(i, b, pc, [&](uint4 a, uint4 v) { return BooleanMathNode(a, v, BooleanMathOp(pc.Operation)); });
+    RunAttributeNode(i, b, pc, [&](uint4 a, uint4 v, uint4) { return BooleanMathNode(a, v, BooleanMathOp(pc.Operation)); });
 }
 
 kernel void AttributeSelectionMasks(

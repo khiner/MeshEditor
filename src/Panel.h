@@ -94,9 +94,11 @@ struct NodesPanel : Panel {
     uint32_t GrabAfter{}; // Start dragging the new active node after the count exceeds this value
     uint32_t LinkAfter{UINT32_MAX}; // The node count a linking add waits to grow past before it links the new node, or none
     std::vector<action::nodes::Link> PendingLinks; // The links a Make Link press stages one per frame, committing with the last
-    uint32_t Expanded{UINT32_MAX}; // The node whose parameters tray is open, with a row per parameter socket, or none
-    uint32_t PickNode{UINT32_MAX}; // The node whose sockets in PickRange the port picker offers the wire held at DragNode's DragSocket, or none
-    std::pair<uint16_t, uint16_t> PickRange{}; // The first socket the picker offers, through its end
+    uint32_t Expanded{UINT32_MAX}; // The node whose tray is open, or none
+    uint32_t PickNode{UINT32_MAX}; // The node whose sockets the port picker lists for the held wire, or none
+    uint32_t DetachNode{UINT32_MAX}; // The node whose input link the wire drag picked up, or none
+    uint16_t DetachSlot{}; // The input slot of DetachNode that the picked-up link is in
+    bool PickTray{false}; // The port picker lists only the node's tray sockets
     uint16_t DragSocket{}; // Socket index for the active wire gesture
     uint16_t LinkSocket{}; // The socket of the node a linking add appends that its wire links to
     bool Moved{false}; // A move passed the drag threshold and staged its first step

@@ -47,17 +47,57 @@ SocketLink DisplayLink(const state::Registry &r, const GeometryProcedure &proced
     const auto socket = procedure.DisplayPort ? procedure.DisplayPort : ResultSocket(r, procedure.DisplayNode);
     return socket ? SocketLink{procedure.DisplayNode, *socket} : SocketLink{};
 }
-void SetInput(state::Registry &r, state::Entity node, uint16_t socket, SocketLink source) {
+namespace {
+// The non-null links of the kind's multi-input socket, in order and without duplicates.
+std::vector<SocketLink> MultiLinks(uint16_t kind, std::span<const SocketLink> links) {
+    std::vector<SocketLink> listed;
+    for (uint16_t slot = MultiInput[kind]; slot < links.size(); slot = NextMultiSlot(kind, slot)) {
+        if (links[slot].FromNode != state::Null && !std::ranges::contains(listed, links[slot])) listed.push_back(links[slot]);
+    }
+    return listed;
+}
+void SetMultiLinks(uint16_t kind, std::vector<SocketLink> &links, std::span<const SocketLink> listed) {
+    links.resize(InputCount[kind] + std::max<size_t>(listed.size(), 1u) - 1u);
+    links[MultiInput[kind]] = listed.empty() ? SocketLink{} : listed.front();
+    std::ranges::copy(listed | std::views::drop(1), links.begin() + InputCount[kind]);
+}
+} // namespace
+std::vector<SocketLink> NormalizedInputs(uint16_t kind, std::vector<SocketLink> links) {
+    if (MultiInput[kind] != NoSocket) SetMultiLinks(kind, links, MultiLinks(kind, links));
+    return links;
+}
+void SetInput(state::Registry &r, state::Entity node, uint16_t slot, SocketLink source) {
     if (r.all_of<Subnet>(node)) {
         r.patch<SubnetInterface>(node, [&](auto &interface) {
             for (auto &port : interface.Ports)
-                if (port.Id == socket) port.Source() = source;
+                if (port.Id == slot) port.Source() = source;
         });
-    } else r.patch<NodeInputs>(node, [&](auto &inputs) { inputs.Links[socket] = source; });
+    } else {
+        const auto kind = r.get<const ProcedureNode>(node).Kind;
+        r.patch<NodeInputs>(node, [&](auto &inputs) {
+            inputs.Links[slot] = source;
+            inputs.Links = NormalizedInputs(kind, std::move(inputs.Links));
+        });
+    }
 }
-SocketLink InputOf(const state::Registry &r, state::Entity node, uint16_t socket) {
-    if (const auto *port = PortOf(r, node, socket)) return port->Source();
-    return r.get<const NodeInputs>(node).Links[socket];
+void InsertInput(state::Registry &r, state::Entity node, SocketLink source, uint16_t index) {
+    const auto kind = r.get<const ProcedureNode>(node).Kind;
+    r.patch<NodeInputs>(node, [&](auto &inputs) {
+        auto listed = MultiLinks(kind, inputs.Links);
+        std::erase(listed, source);
+        listed.insert(listed.begin() + std::min<size_t>(index, listed.size()), source);
+        SetMultiLinks(kind, inputs.Links, listed);
+    });
+}
+std::vector<SocketLink> InputLinks(const state::Registry &r, state::Entity node, uint16_t socket) {
+    const auto *port = PortOf(r, node, socket);
+    if (!port && socket == MultiInput[r.get<const ProcedureNode>(node).Kind]) return MultiLinks(r.get<const ProcedureNode>(node).Kind, r.get<const NodeInputs>(node).Links);
+    const auto link = port ? port->Source() : r.get<const NodeInputs>(node).Links[socket];
+    return link.FromNode == state::Null ? std::vector<SocketLink>{} : std::vector{link};
+}
+SocketLink InputOf(const state::Registry &r, state::Entity node, uint16_t slot) {
+    if (const auto *port = PortOf(r, node, slot)) return port->Source();
+    return r.get<const NodeInputs>(node).Links[slot];
 }
 ResolvedSocket ResolveSocket(const state::Registry &r, SocketLink link, bool bypass, const SocketEdit *edit) {
     std::vector<SocketLink> visited;
@@ -164,8 +204,8 @@ void RewriteReferences(state::Registry &r, state::Entity owner, state::Entity su
         } else {
             auto inputs = r.get<const NodeInputs>(node);
             bool changed = false;
-            for (uint16_t s = 0; s < inputs.Links.size(); ++s) changed |= rewrite(inputs.Links[s], s);
-            if (changed) r.replace<NodeInputs>(node, std::move(inputs));
+            for (uint16_t s = 0; s < inputs.Links.size(); ++s) changed |= rewrite(inputs.Links[s], SlotSocket(record.Kind, s));
+            if (changed) r.replace<NodeInputs>(node, NodeInputs{NormalizedInputs(record.Kind, std::move(inputs.Links))});
         }
     }
 }
@@ -180,7 +220,9 @@ void Apply(state::Registry &r, const ExposeSocket &a) {
     const auto name = a.Name.empty() ? std::string{descriptor.Name ? descriptor.Name : descriptor.Direction == SocketDirection::In ? "Input" :
                                                                                                                                      "Output"} :
                                        a.Name;
-    if (descriptor.Direction == SocketDirection::In) {
+    if (descriptor.Direction == SocketDirection::In && descriptor.Multi) {
+        InsertInput(r, a.Node, {a.Subnet, AddPort(r, a.Subnet, descriptor, name, {})}, UINT16_MAX);
+    } else if (descriptor.Direction == SocketDirection::In) {
         const auto source = InputOf(r, a.Node, a.Socket);
         const auto value = ParameterDefault(r, a.Node, a.Socket).value_or(PortValue{});
         const auto port = AddPort(r, a.Subnet, descriptor, name, source, value);
@@ -217,8 +259,8 @@ void Apply(state::Registry &r, const GroupNodes &a) {
             if (link.FromNode == state::Null || link.FromNode == subnet) return;
             const bool source_inside = Inside(r, link.FromNode, subnet);
             if (internal && !source_inside) {
-                const auto descriptor = SocketOf(r, node, socket);
-                const auto port = AddPort(r, subnet, {descriptor.Type, SocketDirection::In, descriptor.Types}, descriptor.Name ? descriptor.Name : "Input", link, ParameterDefault(r, node, socket).value_or(PortValue{}));
+                const auto descriptor = SocketOf(r, node, r.all_of<Subnet>(node) ? socket : SlotSocket(r.get<const ProcedureNode>(node).Kind, socket));
+                const auto port = AddPort(r, subnet, {descriptor.Type, SocketDirection::In, descriptor.Types}, descriptor.Name ? descriptor.Name : "Input", link, descriptor.Field == NoField ? PortValue{} : ParameterDefault(r, node, socket).value_or(PortValue{}));
                 SetInput(r, node, socket, {subnet, port});
             } else if (!internal && source_inside) {
                 const auto descriptor = SocketOf(r, link.FromNode, link.FromSocket);

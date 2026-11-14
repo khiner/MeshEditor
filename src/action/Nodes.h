@@ -10,11 +10,13 @@ using numeric::uvec2;
 
 // Append a default node at the grid cell with unlinked inputs and make it the active, sole selected node.
 // A Source node holds an empty record.
+// Operation, when set, is the starting value of the kind's Operation parameter.
 struct AddNode {
     state::Entity MeshEntity;
     uint16_t Kind;
     uvec2 Position;
     state::Entity Parent{state::Null};
+    std::optional<uint32_t> Operation{};
 };
 // Append a named subnet built from procedure::Macros at the grid cell and make it the active, sole selected node.
 struct AddMacro {
@@ -30,17 +32,22 @@ struct AppendMacro {
     std::vector<std::array<uint32_t, 4>> Values{};
 };
 // Links an output socket into an input socket that procedure::Links admits, replacing the input's link.
+// A multi-input socket keeps its links and inserts the new link at Index, or at the end.
+// If it already has the source, that link moves to Index.
 struct Link {
     state::Entity MeshEntity;
     state::Entity FromNode;
     uint16_t FromSocket;
     state::Entity ToNode;
     uint16_t ToSocket;
+    uint16_t Index{UINT16_MAX};
 };
+// Removes the link at Index among the input socket's links.
 struct Unlink {
     state::Entity MeshEntity;
     state::Entity ToNode;
     uint16_t ToSocket;
+    uint16_t Index{};
 };
 // Displays the node's result, or no result when Node is null.
 struct SetDisplay {
@@ -182,7 +189,8 @@ struct DeleteNodes {
     std::vector<state::Entity> Nodes;
 };
 
-// Insert the node between the input and its source using the first geometry sockets, preserving an existing link on the node's input.
+// Insert the node between the input socket's link at Index and that link's source.
+// The node's first geometry input and output must be unlinked.
 // Move the consumer and its descendants right by Shift cells.
 struct InsertNode {
     state::Entity MeshEntity;
@@ -190,6 +198,7 @@ struct InsertNode {
     state::Entity ToNode;
     uint16_t ToSocket;
     uint32_t Shift;
+    uint16_t Index{};
 };
 
 using Action = std::variant<AddNode, AddMacro, AppendMacro, Link, Unlink, SetDisplay, SetBypass, EditSelection, FinishSelection, SetOperationHandle, SetExtrudeOffset, MoveNodes, SelectItems, GroupItems, UngroupItems, MoveItems, RenameNetwork, ExposePort, AssignReference, GroupNodes, UngroupNodes, ExposeSocket, SetPortValue, RenamePort, RemovePort, MovePort, SetAttributeName, SetInlineSelection, CollapseProcedure, DuplicateNodes, DeleteNodes, InsertNode>;

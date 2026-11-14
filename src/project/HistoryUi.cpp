@@ -1,5 +1,6 @@
 #include "project/HistoryUi.h"
 
+#include "procedure/Procedure.h"
 #include "project/Project.h"
 #include "ui/CtrlShortcut.h"
 #include "ui/FieldEdit.h"

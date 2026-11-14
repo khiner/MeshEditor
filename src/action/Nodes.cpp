@@ -101,7 +101,7 @@ std::vector<SocketLink> CopyInputs(const state::Registry &r, state::Entity node,
         const auto copy = copies(link.FromNode);
         link = copy == state::Null ? SocketLink{} : SocketLink{copy, link.FromSocket};
     }
-    return links;
+    return NormalizedInputs(r.get<const ProcedureNode>(node).Kind, std::move(links));
 }
 std::vector<state::Entity> WithDescendants(const state::Registry &r, const GeometryProcedure &procedure, std::span<const state::Entity> roots) {
     std::vector<state::Entity> nodes;
@@ -165,7 +165,7 @@ void AddToProcedure(state::Registry &r, state::Entity mesh_entity, NodeRecord no
 std::vector<bool> Downstream(const CookPlan &plan, uint32_t node) {
     std::vector<bool> marked(plan.Nodes.size());
     for (const auto n : plan.Order) {
-        marked[n] = std::ranges::any_of(plan.Inputs.begin() + plan.InputFirst[n], plan.Inputs.begin() + plan.InputFirst[n + 1u], [&](PlanLink link) { return link.FromNode != NoNode && (link.FromNode == node || marked[link.FromNode]); });
+        marked[n] = std::ranges::any_of(plan.Inputs.begin() + plan.InputFirst[n], plan.Inputs.begin() + plan.InputFirst[n + 1u], [&](const PlanLink &link) { return link.FromNode != NoNode && (link.FromNode == node || marked[link.FromNode]); });
     }
     return marked;
 }
@@ -254,7 +254,15 @@ void Apply(state::Registry &r, const Action &action) {
                 if (!procedure_of(a.MeshEntity)) return;
                 if (a.Kind >= KindCount) return Fail(r, "Unknown node kind");
                 if (a.Parent != state::Null && (!IsNodeOf(r, a.MeshEntity, a.Parent) || !r.all_of<Subnet>(a.Parent))) return Fail(r, "The parent network does not exist");
+                bool operable = !a.Operation;
+                VisitKind(a.Kind, [&]<typename K> {
+                    if constexpr (Operated<K>) operable |= a.Operation && std::ranges::contains(field::EnumValues<decltype(K::Operation)>, decltype(K::Operation)(*a.Operation));
+                });
+                if (!operable) return Fail(r, "Operation is not one of the node kind's operations");
                 const auto node = CreateNode(r, a.Kind, a.Position);
+                if (a.Operation) VisitKind(a.Kind, [&]<typename K> {
+                    if constexpr (Operated<K>) r.patch<K>(node, [&](K &p) { p.Operation = decltype(K::Operation)(*a.Operation); });
+                });
                 if (a.Parent != state::Null) r.emplace<NodeContainer>(node, a.Parent);
                 if (a.Kind == KindOf<Subnet>) {
                     r.emplace<SubnetInterface>(node);
@@ -274,22 +282,32 @@ void Apply(state::Registry &r, const Action &action) {
                 if (r.all_of<Subnet>(a.FromNode) && (ContainerOf(r, a.ToNode) == a.FromNode || a.FromNode == a.ToNode)) from.Direction = from.Direction == SocketDirection::In ? SocketDirection::Out : SocketDirection::In;
                 if (r.all_of<Subnet>(a.ToNode) && (ContainerOf(r, a.FromNode) == a.ToNode || a.FromNode == a.ToNode)) to.Direction = to.Direction == SocketDirection::In ? SocketDirection::Out : SocketDirection::In;
                 if (from.Direction != SocketDirection::Out || to.Direction != SocketDirection::In || !Links(from, to)) return Fail(r, "Link compatible output and input sockets");
-                const SocketEdit edit{a.ToNode, a.ToSocket, {a.FromNode, a.FromSocket}};
+                // A multi-input socket that already has this source moves that link to Index.
+                // Otherwise, a multi-input socket that has links gets the new link in a new slot.
+                const auto links = InputLinks(r, a.ToNode, a.ToSocket);
+                const SocketLink source{a.FromNode, a.FromSocket};
+                if (to.Multi && std::ranges::contains(links, source)) return InsertInput(r, a.ToNode, source, a.Index);
+                const SocketEdit edit{a.ToNode, to.Multi && !links.empty() ? uint16_t(r.get<const NodeInputs>(a.ToNode).Links.size()) : a.ToSocket, source};
                 const auto plan = Plan(r, r.get<const GeometryProcedure>(a.MeshEntity), false, &edit);
                 if (plan.Order.size() != plan.Nodes.size()) return Fail(r, "A link cannot close a cycle");
                 const auto display = ExtendedDisplay(r, r.get<const GeometryProcedure>(a.MeshEntity), plan, edit);
-                SetInput(r, a.ToNode, a.ToSocket, edit.Source);
+                if (to.Multi) InsertInput(r, a.ToNode, edit.Source, a.Index);
+                else SetInput(r, a.ToNode, a.ToSocket, edit.Source);
                 if (display.FromNode != state::Null) Apply(r, Action{SetDisplay{a.MeshEntity, display.FromNode, display.FromSocket}});
             },
             [&](const Unlink &a) {
                 const auto *procedure = procedure_of(a.MeshEntity);
                 if (!procedure) return;
                 if (!IsNodeOf(r, a.MeshEntity, a.ToNode) || (r.all_of<Subnet>(a.ToNode) ? !PortOf(r, a.ToNode, a.ToSocket) : a.ToSocket >= InputCount[kind_of(a.ToNode)])) return Fail(r, "An unlink refers to a missing input");
-                const auto source = InputOf(r, a.ToNode, a.ToSocket);
-                auto display = OnDisplayPath(r, DisplayLink(r, *procedure), a.ToNode, a.ToSocket) ? source : SocketLink{};
+                const auto links = InputLinks(r, a.ToNode, a.ToSocket).size();
+                if (a.Index > 0u && a.Index >= links) return Fail(r, "Link index is out of range for the input");
+                const auto slot = r.all_of<Subnet>(a.ToNode) ? a.ToSocket : SlotOf(kind_of(a.ToNode), a.ToSocket, a.Index);
+                const auto source = InputOf(r, a.ToNode, slot);
+                // Move the display to the source only when this is the socket's last link.
+                auto display = links == 1u && OnDisplayPath(r, DisplayLink(r, *procedure), a.ToNode, a.ToSocket) ? source : SocketLink{};
                 while (display.FromNode != state::Null && SocketOf(r, display.FromNode, display.FromSocket).Direction == SocketDirection::In)
                     display = InputOf(r, display.FromNode, display.FromSocket);
-                SetInput(r, a.ToNode, a.ToSocket, {});
+                SetInput(r, a.ToNode, slot, {});
                 if (display.FromNode != state::Null) Apply(r, Action{SetDisplay{a.MeshEntity, display.FromNode, display.FromSocket}});
             },
             [&](const SetDisplay &a) {
@@ -501,7 +519,7 @@ void Apply(state::Registry &r, const Action &action) {
                     uint32_t sources = 0;
                     const auto &inputs = r.get<const NodeInputs>(link.FromNode).Links;
                     for (uint16_t i = 0; i < inputs.size(); ++i) {
-                        const auto read = sockets[i].Type == sockets[link.FromSocket].Type ? self(inputs[i]) : SocketLink{};
+                        const auto read = sockets[SlotSocket(kind, i)].Type == sockets[link.FromSocket].Type ? self(inputs[i]) : SocketLink{};
                         if (read.FromNode == state::Null) continue;
                         source = read;
                         ++sources;
@@ -510,17 +528,24 @@ void Apply(state::Registry &r, const Action &action) {
                 };
                 for (const auto node : nodes) {
                     if (is_removed(node)) continue;
-                    const auto reconnect = [&](uint16_t socket, SocketLink link) {
-                        if (!is_removed(link.FromNode)) return;
+                    const auto reconnected = [&](uint16_t socket, SocketLink link) {
                         const auto source = through(link);
-                        SetInput(r, node, socket, source.FromNode != state::Null && Links(SocketOf(r, source.FromNode, source.FromSocket), SocketOf(r, node, socket)) ? source : SocketLink{});
+                        return source.FromNode != state::Null && Links(SocketOf(r, source.FromNode, source.FromSocket), SocketOf(r, node, socket)) ? source : SocketLink{};
                     };
                     if (const auto *interface = r.try_get<const SubnetInterface>(node)) {
                         const auto ports = interface->Ports;
-                        for (const auto &port : ports) reconnect(port.Id, port.Source());
+                        for (const auto &port : ports) {
+                            if (is_removed(port.Source().FromNode)) SetInput(r, node, port.Id, reconnected(port.Id, port.Source()));
+                        }
                     } else {
-                        const auto inputs = r.get<const NodeInputs>(node).Links;
-                        for (uint16_t i = 0; i < inputs.size(); ++i) reconnect(i, inputs[i]);
+                        auto inputs = r.get<const NodeInputs>(node).Links;
+                        bool changed = false;
+                        for (uint16_t i = 0; i < inputs.size(); ++i) {
+                            if (!is_removed(inputs[i].FromNode)) continue;
+                            inputs[i] = reconnected(SlotSocket(kind_of(node), i), inputs[i]);
+                            changed = true;
+                        }
+                        if (changed) r.replace<NodeInputs>(node, NodeInputs{NormalizedInputs(kind_of(node), std::move(inputs))});
                     }
                 }
                 auto first = state::Null, last = state::Null;
@@ -555,9 +580,15 @@ void Apply(state::Registry &r, const Action &action) {
                 const auto plan = ProjectNetwork(r, a.MeshEntity, ContainerOf(r, a.Node));
                 const auto node = IndexOf(plan, a.Node), to_node = IndexOf(plan, a.ToNode);
                 if (node == NoNode || to_node == NoNode) return Fail(r, "Insert within one network");
+                // Find the link's slot in the plan.
+                // A subnet's slots are its input ports in plan order, and any other node's slots are those of its NodeInputs.
                 uint16_t socket = 0;
-                while (socket < InputsOf(plan, to_node) && SocketId(plan, to_node, socket) != a.ToSocket) ++socket;
-                if (socket == InputsOf(plan, to_node) || !Inserts(plan, node, to_node, socket)) return Fail(r, "A node inserts on a link through geometry sockets that link with its ends, without closing a cycle");
+                if (r.all_of<Subnet>(a.ToNode)) {
+                    while (socket < InputsOf(plan, to_node) && SocketId(plan, to_node, socket) != a.ToSocket) ++socket;
+                } else {
+                    socket = a.ToSocket < InputCount[kind_of(a.ToNode)] && (a.Index == 0u || a.ToSocket == MultiInput[kind_of(a.ToNode)]) ? SlotOf(kind_of(a.ToNode), a.ToSocket, a.Index) : InputsOf(plan, to_node);
+                }
+                if (socket >= InputsOf(plan, to_node) || !Inserts(plan, node, to_node, socket)) return Fail(r, "Insert needs a node with unlinked geometry sockets that are compatible with the link, and must not create a cycle");
                 if (a.Shift) {
                     auto moved = Downstream(plan, to_node);
                     moved[to_node] = true;
@@ -568,8 +599,8 @@ void Apply(state::Registry &r, const Action &action) {
                 const auto kind = plan.Nodes[node].Kind;
                 const auto input = *MainSocket(kind, SocketDirection::In);
                 const auto link = plan.Wires[plan.InputFirst[to_node] + socket];
-                if (r.get<const NodeInputs>(a.Node).Links[input].FromNode == state::Null) SetInput(r, a.Node, input, {plan.Nodes[link.FromNode].Entity, SocketId(plan, link.FromNode, link.FromSocket)});
-                SetInput(r, a.ToNode, a.ToSocket, {a.Node, *MainSocket(kind, SocketDirection::Out)});
+                SetInput(r, a.Node, input, {plan.Nodes[link.FromNode].Entity, SocketId(plan, link.FromNode, link.FromSocket)});
+                SetInput(r, a.ToNode, r.all_of<Subnet>(a.ToNode) ? a.ToSocket : socket, {a.Node, *MainSocket(kind, SocketDirection::Out)});
             },
             [&](const auto &a) { Apply(r, a); },
         },

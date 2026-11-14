@@ -1,6 +1,6 @@
 #pragma once
 // Values travel as the words of their components, and a bool is the low bit of its first word.
-#include "gpu/AttributeNode.h"
+#include "gpu/FloatMath.h"
 
 inline float3 VectorOf(uint4 value) { return as_type<float3>(value.xyz); }
 inline uint4 WordsOf(float3 value) { return uint4(as_type<uint3>(value), 0u); }
@@ -23,22 +23,8 @@ inline uint4 VectorMathNode(uint4 a_words, uint4 b_words, VectorMathOp op) {
     return a_words;
 }
 
-inline uint4 FloatMathNode(uint4 a_words, uint4 b_words, FloatMathOp op) {
-    const float a = as_type<float>(a_words.x), b = as_type<float>(b_words.x);
-    switch (op) {
-        case FloatMathOp::Add: return WordsOf(a + b);
-        case FloatMathOp::Subtract: return WordsOf(a - b);
-        case FloatMathOp::Multiply: return WordsOf(a * b);
-        case FloatMathOp::Divide: return WordsOf(b != 0.f ? a / b : 0.f);
-        case FloatMathOp::Min: return WordsOf(min(a, b));
-        case FloatMathOp::Max: return WordsOf(max(a, b));
-        case FloatMathOp::Abs: return WordsOf(abs(a));
-        case FloatMathOp::Power: return WordsOf(a >= 0.f ? powr(a, b) : b == floor(b) ? powr(-a, b) * (fmod(b, 2.f) != 0.f ? -1.f : 1.f) : 0.f);
-        case FloatMathOp::Sqrt: return WordsOf(sqrt(max(a, 0.f)));
-        case FloatMathOp::Sin: return WordsOf(sin(a));
-        case FloatMathOp::Cos: return WordsOf(cos(a));
-    }
-    return a_words;
+inline uint4 FloatMathNode(uint4 a, uint4 b, uint4 c, FloatMathOp op, bool clamped) {
+    return WordsOf(EvaluateFloatMath(op, as_type<float>(a.x), as_type<float>(b.x), as_type<float>(c.x), clamped));
 }
 
 inline uint4 CompareNode(uint4 a_words, AttributeType a_type, uint4 b_words, AttributeType b_type, uint component, CompareOp op, float epsilon) {

@@ -35,7 +35,7 @@ void HullOfObjects(state::Registry &r, state::Entity mesh_entity, state::Entity 
     const auto hull = Inner(r, mesh_entity, subnet, KindOf<action::mesh::ConvexHull>, {2u * AppendGap, 2u});
     Wire(r, mesh_entity, join, hull, 0u);
     Expose(r, subnet, join, 0u, "Mesh 1");
-    Expose(r, subnet, join, 1u, "Mesh 2");
+    Expose(r, subnet, join, 0u, "Mesh 2");
     Expose(r, subnet, hull, Out(r, hull), "Hull");
 }
 // A subdivide cutting the edge rings through the selected edges Cuts times and selecting the new loops, with the subnet's Mesh, Edges and Cuts ports.
@@ -131,7 +131,7 @@ void Symmetrize(state::Registry &r, state::Entity mesh_entity, state::Entity sub
     Wire(r, mesh_entity, bisect, join, 0u);
     Wire(r, mesh_entity, bisect, mirror, 0u);
     Wire(r, mesh_entity, mirror, flip, 0u);
-    Wire(r, mesh_entity, flip, join, 1u);
+    Wire(r, mesh_entity, flip, join, 0u);
     Wire(r, mesh_entity, join, weld, 0u);
     Expose(r, subnet, bisect, 0u, "Mesh");
     action::nodes::Apply(r, Action{Link{mesh_entity, subnet, Expose(r, subnet, bisect, ParameterSocket<&Bisect::Point>, "Point"), mirror, ParameterSocket<&TransformElements::Pivot>}});

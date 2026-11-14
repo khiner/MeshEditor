@@ -5,6 +5,7 @@
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/ModalModes.h"
+#include "gpu/FloatMath.h"
 #include "mesh/Unsubdivide.h"
 #include "procedure/Macros.h"
 #include "procedure/NodeEditor.h"
@@ -690,7 +691,7 @@ Graph ObjectInfo(ProcedureFixture &f) {
     f.Do(UpdateOf<&procedure::ObjectInfo::Object>(info, f.Object(mesh)));
     const auto join = f.Append(mesh, KindOf<Join>);
     f.Do(Link{mesh, f.Node(mesh, 0u), 0u, join, 0u});
-    f.Do(Link{mesh, info, 0u, join, 1u});
+    f.Do(Link{mesh, info, 0u, join, 0u});
     f.Do(SetDisplay{mesh, join});
     expect(r.all_of<NodeError>(info) && !r.any_of<NodeError>(join));
     expect(f.Shaped(mesh) == plane);
@@ -849,6 +850,13 @@ void ParameterSockets(ProcedureFixture &f) {
     }
     const auto position = f.Append(mesh, KindOf<Position>);
     const auto dot = f.Append(mesh, KindOf<VectorMath>);
+    // AddNode with an operation sets it on the new node, and fails for a kind without that operation.
+    f.Do(AddNode{mesh, KindOf<FloatMath>, {}, state::Null, uint32_t(FloatMathOp::Multiply)});
+    const auto multiply = r.get<const GeometryProcedure>(mesh).Last;
+    expect(r.get<const FloatMath>(multiply).Operation == FloatMathOp::Multiply);
+    f.Do(DeleteNodes{mesh, {multiply}});
+    f.Fails(AddNode{mesh, KindOf<FloatMath>, {}, state::Null, uint32_t(field::EnumCount<FloatMathOp>)});
+    f.Fails(AddNode{mesh, KindOf<Position>, {}, state::Null, 0u});
     const auto add = f.Append(mesh, KindOf<FloatMath>);
     f.Do(UpdateOf<&VectorMath::Operation>(dot, VectorMathOp::Dot));
     f.Do(UpdateOf<&VectorMath::B>(dot, vec3{.05f, .05f, .05f}));
@@ -915,6 +923,42 @@ void ParameterSockets(ProcedureFixture &f) {
         f.Route(mesh, {f.Node(mesh, 0u), transform});
         expect(Near(f.Shaped(mesh).Vertices, SourcePoints(f, mesh, [&](uint32_t, vec3 p) { return delta.R * (delta.S * p) + delta.P; })));
         f.Do(DeleteNodes{mesh, {transform, vector, rotation}});
+    }
+}
+
+// For every float math operation, clamped and not, the cooked attribute at each vertex matches EvaluateFloatMath run on the host.
+// The first operand varies in sign and size across the vertices.
+void FloatMathOperations(ProcedureFixture &f) {
+    const auto &meshes = f.Store();
+    const auto mesh = f.AddMesh(primitive::Cube{});
+    const auto position = f.Append(mesh, KindOf<Position>);
+    const auto dot = f.Append(mesh, KindOf<VectorMath>);
+    const auto math = f.Append(mesh, KindOf<FloatMath>);
+    const auto store_operand = f.Append(mesh, KindOf<StoreNamedAttribute>);
+    const auto store_result = f.Append(mesh, KindOf<StoreNamedAttribute>);
+    constexpr float B{.75f}, C{.25f};
+    f.Do(UpdateOf<&VectorMath::Operation>(dot, VectorMathOp::Dot));
+    f.Do(UpdateOf<&VectorMath::B>(dot, vec3{1.f, .7f, -.4f}));
+    f.Do(UpdateOf<&FloatMath::B>(math, B));
+    f.Do(UpdateOf<&FloatMath::C>(math, C));
+    f.Do(action::nodes::SetAttributeName{store_operand, "operand"});
+    f.Do(action::nodes::SetAttributeName{store_result, "result"});
+    f.Do(Link{mesh, position, 0u, dot, 0u});
+    f.Do(Link{mesh, dot, f.Out(dot), math, 0u});
+    f.Do(Link{mesh, dot, f.Out(dot), store_operand, 1u});
+    f.Do(Link{mesh, math, f.Out(math), store_result, 1u});
+    f.Route(mesh, {f.Node(mesh, 0u), store_operand, store_result});
+    for (const bool clamp : {false, true}) {
+        f.Do(UpdateOf<&FloatMath::Clamp>(math, clamp));
+        for (const auto op : field::EnumValues<FloatMathOp>) {
+            f.Do(UpdateOf<&FloatMath::Operation>(math, op));
+            const auto id = f.Output(mesh);
+            const auto operands = meshes.AttributeView<float>(meshes.FindAttribute(id, "operand")), results = meshes.AttributeView<float>(meshes.FindAttribute(id, "result"));
+            for (const auto v : Mesh{meshes, id}.vertices()) {
+                const float expected = EvaluateFloatMath(op, operands[*v], B, C, clamp);
+                expect(std::abs(results[*v] - expected) <= 1e-4f * std::max(1.f, std::abs(expected))) << field::EnumLabel(op) << operands[*v] << results[*v] << expected;
+            }
+        }
     }
 }
 
@@ -1002,9 +1046,14 @@ void DisplayedNode(ProcedureFixture &f) {
     const auto box = f.Append(mesh, KindOf<primitive::Cube>);
     const auto join = f.Append(mesh, KindOf<Join>);
     f.Do(Link{mesh, f.Node(mesh, 0u), 0u, join, 0u});
-    f.Do(Link{mesh, box, f.Out(box), join, 1u});
+    f.Do(Link{mesh, box, f.Out(box), join, 0u});
     f.Do(SetDisplay{mesh, join});
     expect(f.Shaped(mesh) != source);
+    // Linking a source the Join already has moves that link to Index, or to the end by default.
+    f.Do(Link{mesh, box, f.Out(box), join, 0u, 0u});
+    expect(r.get<const NodeInputs>(join).Links == std::vector{SocketLink{box, f.Out(box)}, SocketLink{f.Node(mesh, 0u), 0u}});
+    f.Do(Link{mesh, box, f.Out(box), join, 0u});
+    expect(r.get<const NodeInputs>(join).Links == std::vector{SocketLink{f.Node(mesh, 0u), 0u}, SocketLink{box, f.Out(box)}});
     f.Do(DeleteNodes{mesh, {join}});
     expect(r.get<const GeometryProcedure>(mesh).DisplayNode == f.Node(mesh, 0u) && f.Shaped(mesh) == source);
 
@@ -1052,8 +1101,8 @@ void DisplayedNode(ProcedureFixture &f) {
         f.Do(Link{owner, bevel, f.Out(bevel), branch, 0u});
         f.Do(Link{owner, root, f.Out(root), input, socket});
         expect(r.get<const GeometryProcedure>(owner).DisplayNode == bevel);
-        f.Do(Link{owner, tail, f.Out(tail), branch, 1u});
-        f.Do(action::nodes::Unlink{owner, branch, 1u});
+        f.Do(Link{owner, tail, f.Out(tail), branch, 0u});
+        f.Do(action::nodes::Unlink{owner, branch, 0u, 1u});
         expect(r.get<const GeometryProcedure>(owner).DisplayNode == bevel);
     }
 }
@@ -1529,7 +1578,7 @@ void LinkedSkinPoses(ProcedureFixture &f) {
 }
 
 using action::mesh::DeleteMode;
-const std::array<GraphData, 23> DataGraphs{{
+const std::array<GraphData, 25> DataGraphs{{
     {"ExtrudeSubdivide", {primitive::Plane{}, {{KindOf<procedure::Extrude>}, {KindOf<action::mesh::Subdivide>, {Set<&action::mesh::Subdivide::Cuts>(2u)}}}, {{0, 1, 0}, {1, 2, 0}}, 2}, nullptr, [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(f.Node(mesh, 2u), 3u)); }},
     {"ScalePositions", {primitive::Cube{}, {{KindOf<Position>}, {KindOf<VectorMath>, {Set<&VectorMath::Operation>(VectorMathOp::Scale), Set<&VectorMath::Scale>(2.f)}}, {KindOf<SetPosition>, {Set<&SetPosition::Offset>(false)}}}, {{1, 2, 0}, {2, 3, 1}, {0, 3, 0}}, 3}, [](ProcedureFixture &f, const BuiltGraph &g) { expect(Near(f.Shaped(g.Mesh).Vertices, SourcePoints(f, g.Mesh, [](uint32_t, vec3 p) { return 2.f * p; }))); }, [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&VectorMath::Scale>(f.Node(mesh, 2u), 3.f)); }},
     {"CompareSelectsExtrusion", {primitive::Cube{}, {{KindOf<Position>}, {KindOf<Compare>, {Set<&Compare::Component>(VectorComponent::Z)}}, {KindOf<procedure::Extrude>}}, {{1, 2, 0}, {2, 3, 1}, {0, 3, 0}}, 3}, ExpectUpperExtruded, [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&Compare::Component>(f.Node(mesh, 2u), VectorComponent::X)); }},
@@ -1548,7 +1597,7 @@ const std::array<GraphData, 23> DataGraphs{{
     {"DomainMismatch", {primitive::Cube{}, {{KindOf<Position>}, {KindOf<Normal>, {Set<&Normal::Domain>(AttributeDomain::Face)}}, {KindOf<VectorMath>}, {KindOf<SetPosition>}}, {{1, 3, 0}, {2, 3, 1}, {3, 4, 1}, {0, 4, 0}}, 4}, [](ProcedureFixture &f, const BuiltGraph &g) {
          expect(f.R.any_of<NodeError>(g.Nodes[3]));
          expect(Near(f.Shaped(g.Mesh).Vertices, SourcePoints(f, g.Mesh, [](uint32_t, vec3 p) { return 2.f * p; }))); }, [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&Normal::Domain>(f.Node(mesh, 2u), AttributeDomain::Vertex)); }},
-    {"JoinGenerated", {primitive::Cube{}, {{KindOf<primitive::Cube>, {Set<&primitive::Cube::HalfExtents>(vec3{2.f, .5f, 1.f})}}, {KindOf<Join>}}, {{0, 2, 0}, {1, 2, 1}}, 2, AddWeights}, ExpectJoinedDefaults, [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&primitive::Cube::HalfExtents>(f.Node(mesh, 1u), vec3{.5f, .5f, .5f})); }},
+    {"JoinGenerated", {primitive::Cube{}, {{KindOf<primitive::Cube>, {Set<&primitive::Cube::HalfExtents>(vec3{2.f, .5f, 1.f})}}, {KindOf<Join>}}, {{0, 2, 0}, {1, 2, 0}}, 2, AddWeights}, ExpectJoinedDefaults, [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&primitive::Cube::HalfExtents>(f.Node(mesh, 1u), vec3{.5f, .5f, .5f})); }},
     {"BooleanIntersection", {primitive::Cube{}, {{KindOf<primitive::Cube>, {Set<&primitive::Cube::HalfExtents>(vec3{2.f, .25f, .75f})}}, {KindOf<procedure::Boolean>, {Set<&procedure::Boolean::Operation>(BooleanOperation::Intersection)}}}, {{0, 2, 0}, {1, 2, 1}}, 2}, [](ProcedureFixture &f, const BuiltGraph &g) { expect(std::abs(OutputVolume(f, g.Mesh) - 1.5) < 1e-4); }, [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&procedure::Boolean::Operation>(f.Node(mesh, 2u), BooleanOperation::Union)); }},
     {"BoundaryFillsHole", {primitive::Cube{}, {{KindOf<Position>}, {KindOf<Compare>, {Set<&Compare::Component>(VectorComponent::Z), Set<&Compare::B>(.9f)}}, {KindOf<action::mesh::Delete>, {Set<&action::mesh::Delete::Mode>(DeleteMode::Faces)}}, {KindOf<Boundary>}, {KindOf<action::mesh::Fill>}}, {{1, 2, 0}, {2, 3, 1}, {4, 5, 1}, {0, 3, 0}, {3, 5, 0}}, 5}, [](ProcedureFixture &f, const BuiltGraph &g) {
          const Mesh output{f.Store(), f.Output(g.Mesh)};
@@ -1559,7 +1608,7 @@ const std::array<GraphData, 23> DataGraphs{{
          f.Do(UpdateOf<&action::mesh::Delete::Mode>(f.Node(mesh, 3u), DeleteMode::Vertices));
          ExpectFaces(f, mesh, 1u);
      }},
-    {"LinkedDeletesComponent", {primitive::Cube{}, {{KindOf<primitive::Cube>, {Set<&primitive::Cube::HalfExtents>(vec3{.5f, .5f, .5f})}}, {KindOf<Join>}, {KindOf<Position>}, {KindOf<Compare>, {Set<&Compare::Component>(VectorComponent::Z), Set<&Compare::B>(.9f)}}, {KindOf<Linked>}, {KindOf<action::mesh::Delete>}}, {{0, 2, 0}, {1, 2, 1}, {2, 6, 0}, {3, 4, 0}, {4, 5, 0}, {5, 6, 1}}, 6}, [](ProcedureFixture &f, const BuiltGraph &g) {
+    {"LinkedDeletesComponent", {primitive::Cube{}, {{KindOf<primitive::Cube>, {Set<&primitive::Cube::HalfExtents>(vec3{.5f, .5f, .5f})}}, {KindOf<Join>}, {KindOf<Position>}, {KindOf<Compare>, {Set<&Compare::Component>(VectorComponent::Z), Set<&Compare::B>(.9f)}}, {KindOf<Linked>}, {KindOf<action::mesh::Delete>}}, {{0, 2, 0}, {1, 2, 0}, {2, 6, 0}, {3, 4, 0}, {4, 5, 0}, {5, 6, 1}}, 6}, [](ProcedureFixture &f, const BuiltGraph &g) {
          const Mesh output{f.Store(), f.Output(g.Mesh)};
          expect(output.VertexCount() == 8u && output.FaceCount() == 6u) << "vertices" << output.VertexCount() << "faces" << output.FaceCount();
          expect(std::abs(test::EnclosedVolume(output).value_or(-1.0) - 1.0) < 1e-4); },
@@ -1597,9 +1646,21 @@ const std::array<GraphData, 23> DataGraphs{{
          f.Do(UpdateOf<&primitive::Cube::HalfExtents>(f.Node(mesh, 1u), vec3{1.f, .5f, .25f}));
          expect(std::abs(OutputVolume(f, mesh) - 4.0 * 3.0 * 2.5) < 1e-3) << "grown sum volume" << OutputVolume(f, mesh); }},
     {"SourceInstances", {primitive::Plane{}, {{KindOf<MeshToPoints>}, {KindOf<InstanceOnPoints>}}, {{0, 1, 0}, {1, 2, 0}, {0, 2, 1}}, 2}, ExpectSourceInstances, UnlinkInstance},
+    // A Join takes every link into its one input socket, in order, and Unlink removes the link at its index.
+    {"JoinLinks", {primitive::Cube{}, {{KindOf<primitive::Cube>}, {KindOf<primitive::Cube>}, {KindOf<Join>}}, {{0, 3, 0}, {1, 3, 0}, {2, 3, 0}}, 3}, [](ProcedureFixture &f, const BuiltGraph &g) { ExpectFaces(f, g.Mesh, 18u); }, [](ProcedureFixture &f, state::Entity mesh) {
+         const auto join = f.Node(mesh, 3u);
+         const auto links = f.R.get<const NodeInputs>(join).Links;
+         f.Do(action::nodes::Unlink{mesh, join, 0u, 1u});
+         expect(f.R.get<const NodeInputs>(join).Links == std::vector{links[0], links[2]});
+         ExpectFaces(f, mesh, 12u); }},
+    // A Boolean subtracts every Mesh 2 from Mesh 1.
+    // Two crossing 1 x 1 bars through the cube remove 2 + 2 - 1 of its volume of 8.
+    {"BooleanCutters", {primitive::Cube{}, {{KindOf<primitive::Cube>, {Set<&primitive::Cube::HalfExtents>(vec3{.5f, .5f, 2.f})}}, {KindOf<primitive::Cube>, {Set<&primitive::Cube::HalfExtents>(vec3{2.f, .5f, .5f})}}, {KindOf<procedure::Boolean>}}, {{0, 3, 0}, {1, 3, 1}, {2, 3, 1}}, 3}, [](ProcedureFixture &f, const BuiltGraph &g) { expect(std::abs(OutputVolume(f, g.Mesh) - 5.0) < 1e-3) << OutputVolume(f, g.Mesh); }, [](ProcedureFixture &f, state::Entity mesh) {
+         f.Do(action::nodes::Unlink{mesh, f.Node(mesh, 3u), 1u, 0u});
+         expect(std::abs(OutputVolume(f, mesh) - 6.0) < 1e-3) << OutputVolume(f, mesh); }},
     // The source clone takes lower blocks than the generated cube and the Join appends them after the cube's, so the joined block table is not in ascending order.
     // A Compare linked into a Delete still selects the cube's upper vertices in its higher block.
-    {"JoinedSelection", {primitive::Cube{}, {{KindOf<primitive::Cube>, {Set<&primitive::Cube::HalfExtents>(vec3{1.f, 2.f, 1.f})}}, {KindOf<Join>}, {KindOf<Position>}, {KindOf<Compare>, {Set<&Compare::Component>(VectorComponent::Y), Set<&Compare::B>(1.5f)}}, {KindOf<action::mesh::Delete>}}, {{1, 2, 0}, {0, 2, 1}, {3, 4, 0}, {4, 5, 1}, {2, 5, 0}}, 5}, ExpectJoinedSelection, [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&Compare::B>(f.Node(mesh, 4u), .5f)); }},
+    {"JoinedSelection", {primitive::Cube{}, {{KindOf<primitive::Cube>, {Set<&primitive::Cube::HalfExtents>(vec3{1.f, 2.f, 1.f})}}, {KindOf<Join>}, {KindOf<Position>}, {KindOf<Compare>, {Set<&Compare::Component>(VectorComponent::Y), Set<&Compare::B>(1.5f)}}, {KindOf<action::mesh::Delete>}}, {{1, 2, 0}, {0, 2, 0}, {3, 4, 0}, {4, 5, 1}, {2, 5, 0}}, 5}, ExpectJoinedSelection, [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&Compare::B>(f.Node(mesh, 4u), .5f)); }},
     // A plane past the torus's outer equator holds one equator edge, whose edge loop is the 32-edge equator, and Delete removes the 64 faces beside it.
     // Tilting the plane toward the tube holds one edge across the equator instead, whose loop is the 16-edge tube ring with 32 faces beside it.
     {"EdgeLoopDeletesRing", {primitive::Torus{}, {{KindOf<PlaneSide>, {Set<&PlaneSide::Point>(vec3{0.f, 0.f, 1.48f}), Set<&PlaneSide::Normal>(vec3{.0985f, 0.f, 1.f}), Set<&PlaneSide::Side>(PlaneSideKind::Positive), Set<&PlaneSide::Domain>(AttributeDomain::Edge)}}, {KindOf<procedure::EdgeLoop>}, {KindOf<action::mesh::Delete>, {Set<&action::mesh::Delete::Mode>(DeleteMode::Edges)}}}, {{1, 2, 0}, {2, 3, 1}, {0, 3, 0}}, 3}, [](ProcedureFixture &f, const BuiltGraph &g) { ExpectFaces(f, g.Mesh, 32u * 16u - 64u); }, [](ProcedureFixture &f, state::Entity mesh) {
@@ -1657,6 +1718,7 @@ void TestProcedures() {
     Scenario(f, other, "SceneNetworks", SceneNetworks);
     Scenario(f, other, "CanvasEquivalence", CanvasEquivalence);
     Scenario(f, other, "ParameterSockets", ParameterSockets);
+    Scenario(f, other, "FloatMathOperations", FloatMathOperations);
     Scenario(f, other, "SourceStates", SourceStates);
     Scenario(f, other, "DisplayedNode", DisplayedNode);
     Scenario(f, other, "ViewportSelection", ViewportSelection);

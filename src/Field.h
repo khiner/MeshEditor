@@ -1,5 +1,6 @@
 #pragma once
 
+#include "state/Entity.h"
 #include "state/Slot.h"
 
 #include <algorithm>
@@ -223,7 +224,17 @@ template<auto M> auto &Get(auto &obj) {
     }
 }
 
-template<typename E> inline constexpr size_t EnumCount = detail::CountEnumerators<E>();
+// Enums defined with no enumerators, such as Entity, are exempt from the check in EnumCount.
+template<typename E> inline constexpr bool Enumerated = true;
+template<> inline constexpr bool Enumerated<state::Entity> = false;
+template<> inline constexpr bool Enumerated<state::TypeKey> = false;
+// Fails to compile when E's definition is not visible.
+// A forward-declared enum would produce empty tables, and the linker keeps only one copy of each table.
+template<typename E> inline constexpr size_t EnumCount = [] {
+    constexpr auto count = detail::CountEnumerators<E>();
+    static_assert(count > 0 || !Enumerated<E>, "Include the enum's definition before reflecting its enumerators.");
+    return count;
+}();
 template<typename E, size_t I> inline constexpr auto EnumeratorLabel = detail::Spaced<fixed_string<detail::EnumeratorName<E(I)>().size() + 1>{detail::EnumeratorName<E(I)>()}>();
 template<typename E> inline constexpr auto EnumValues = []<size_t... Is>(std::index_sequence<Is...>) {
     std::array<E, EnumCount<E>> out{};

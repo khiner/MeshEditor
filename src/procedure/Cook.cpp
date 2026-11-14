@@ -1033,9 +1033,16 @@ std::optional<AttributeJob> Prepare(const MeshStore &meshes, const VectorMath &p
     return AttributeJob{*domain, scalar ? AttributeType::Float : AttributeType::Vec3, MeshPass::AttributeVectorMath, {.A = InputOf(meshes, in.A, ConstantInput(AttributeType::Vec3, vec3{})), .B = InputOf(meshes, b, constant), .Operation = uint32_t(p.Operation)}};
 }
 std::optional<AttributeJob> Prepare(const MeshStore &meshes, const FloatMath &p, const Operands &in) {
-    const auto domain = OperandDomain(meshes, KindOf<FloatMath>, {{&in.A, 0u}, {&in.B, 1u}});
+    const auto domain = OperandDomain(meshes, KindOf<FloatMath>, {{&in.A, 0u}, {&in.B, 1u}, {&in.C, 2u}});
     if (!domain) return {};
-    return AttributeJob{*domain, AttributeType::Float, MeshPass::AttributeFloatMath, {.A = InputOf(meshes, in.A, ConstantInput(AttributeType::Float, 0.f)), .B = InputOf(meshes, in.B, ConstantInput(AttributeType::Float, p.B)), .Operation = uint32_t(p.Operation)}};
+    const auto pc = AttributeNodePushConstants{
+        .A = InputOf(meshes, in.A, ConstantInput(AttributeType::Float, 0.f)),
+        .B = InputOf(meshes, in.B, ConstantInput(AttributeType::Float, p.B)),
+        .C = InputOf(meshes, in.C, ConstantInput(AttributeType::Float, p.C)),
+        .Operation = uint32_t(p.Operation),
+        .Clamp = uint32_t(p.Clamp),
+    };
+    return AttributeJob{*domain, AttributeType::Float, MeshPass::AttributeFloatMath, pc};
 }
 std::optional<AttributeJob> Prepare(const MeshStore &meshes, const Compare &p, const Operands &in) {
     const auto domain = OperandDomain(meshes, KindOf<Compare>, {{&in.A, 0u}, {&in.B, 1u}});
@@ -1523,7 +1530,7 @@ bool Chained(const CookPlan &plan, std::span<const uint32_t> path) {
     for (uint32_t i = 0u; i < path.size(); ++i) position[path[i]] = i;
     for (uint32_t node = 0u; node < plan.Nodes.size(); ++node) {
         if (!plan.Demanded[node]) continue;
-        for (uint32_t input = 0u; input < InputCount[plan.Nodes[node].Kind]; ++input) {
+        for (uint32_t input = 0u; input < InputsOf(plan, node); ++input) {
             const auto from = plan.Inputs[plan.InputFirst[node] + input].FromNode;
             if (from == NoNode) continue;
             bool field = IsAttributeKind(plan.Nodes[from].Kind);
@@ -1757,13 +1764,17 @@ uint32_t Evaluate(state::Registry &r, state::Entity mesh_entity, const CookPlan 
     };
     // Clone borrowed records before editing and owned records before additional readers.
     // Preserve the result-path record by cloning its producer instead.
+    // A slot past the node's input sockets is an extra link of its multi-input socket.
+    // It has no entry in `values`, so its value is held in a local.
     const auto take = [&](uint32_t node, uint32_t input) -> SocketValue {
-        auto &taken = values[plan.SocketFirst[node] + input];
+        const auto kind = plan.Nodes[node].Kind;
+        SocketValue further;
+        auto &taken = input < InputCount[kind] ? values[plan.SocketFirst[node] + input] : further;
         if (plan.Inputs[plan.InputFirst[node] + input].FromNode == NoNode) return taken;
         const auto slot = slot_of(node, input);
         taken = values[slot];
         const bool last = --remaining[slot] == 0u;
-        if (taken.Record == InvalidOffset || (taken.Borrowed() ? KindSockets(plan.Nodes[node].Kind)[input].Reads : last)) return taken;
+        if (taken.Record == InvalidOffset || (taken.Borrowed() ? KindSockets(kind)[SlotSocket(kind, uint16_t(input))].Reads : last)) return taken;
         const auto clone = created.emplace_back(CloneRecord(r, taken.Record));
         if (taken.Borrowed() || !on_path[node] || input) {
             taken.MeshEntity = state::Null;
@@ -1845,38 +1856,64 @@ uint32_t Evaluate(state::Registry &r, state::Entity mesh_entity, const CookPlan 
         }
         values[first + InputCount[kind]].Object = in.Object;
         if (kind == KindOf<Join>) {
-            const auto second = take(node, 1u);
-            if (input != InvalidOffset && second.Record != InvalidOffset) {
-                meshes.Join(r, input, second.Record);
-                consume(second);
+            auto joined = in;
+            for (uint16_t slot = InputCount[kind]; slot < InputsOf(plan, node); ++slot) {
+                const auto next = take(node, slot);
+                if (next.Record == InvalidOffset) continue;
+                if (joined.Record == InvalidOffset) {
+                    joined = next;
+                    continue;
+                }
+                meshes.Join(r, joined.Record, next.Record);
+                consume(next);
             }
-            values[first + 2u] = input != InvalidOffset ? in : second;
+            values[first + InputCount[kind]] = joined;
             continue;
         }
         if (kind == KindOf<Boolean>) {
-            const auto second = take(node, 1u);
             const auto p = Parameters<Boolean>(r, plan, values, node);
-            // The map into Mesh 1's space must keep Mesh 2 unmirrored.
-            const auto to_first = ToFirst(r, p.Space, second.Object);
-            const BooleanPlacement placement{second.Object, to_first};
-            if (const auto *held = r.try_get<const BooleanPlacement>(entity); publish && (!held || *held != placement)) r.emplace_or_replace<BooleanPlacement>(entity, placement);
-            const auto rotation = ToMat3(to_first);
-            const bool linked = input != InvalidOffset && second.Record != InvalidOffset, oriented = Determinant(rotation) > 0.f;
-            std::optional<uint32_t> combined;
-            auto fault = oriented ? NodeFault::Empty : NodeFault::Parameter;
-            if (linked && oriented) {
-                const Mesh first_mesh{meshes, input}, second_mesh{meshes, second.Record};
+            const auto fill = p.Operation == BooleanOperation::Union ? RegionFill::Union : p.Operation == BooleanOperation::Difference ? RegionFill::Difference :
+                                                                                                                                         RegionFill::Intersection;
+            BooleanPlacement placement;
+            // Apply each Mesh 2 to the result of the ones before it.
+            auto current = input;
+            bool linked = false;
+            std::optional<NodeFault> fault;
+            for (auto slot = MultiInput[kind]; slot < InputsOf(plan, node); slot = NextMultiSlot(kind, slot)) {
+                const auto second = take(node, slot);
+                // The map into Mesh 1's space must keep Mesh 2 unmirrored.
+                const auto to_first = ToFirst(r, p.Space, second.Object);
+                placement.Operands.push_back({second.Object, to_first});
+                if (fault || input == InvalidOffset || second.Record == InvalidOffset) continue;
+                linked = true;
+                const auto rotation = ToMat3(to_first);
+                if (Determinant(rotation) <= 0.f) {
+                    fault = NodeFault::Parameter;
+                    continue;
+                }
+                std::optional<uint32_t> combined;
+                const Mesh first_mesh{meshes, current}, second_mesh{meshes, second.Record};
                 if (const auto task = BooleanTask(first_mesh, second_mesh, p.Operation, rotation, vec3(to_first[3]))) combined = ExecuteGeometryBoolean(r, *task);
                 else if (first_mesh.FaceCount() && second_mesh.FaceCount()) {
                     const auto plane = *FacePlane(r, first_mesh);
-                    const auto fill = p.Operation == BooleanOperation::Union ? RegionFill::Union : p.Operation == BooleanOperation::Difference ? RegionFill::Difference :
-                                                                                                                                                 RegionFill::Intersection;
-                    const auto loops = RegionLoops(r, plane, std::array{RegionOperand{.Record = input}, RegionOperand{.Record = second.Record, .Rotation = rotation, .Translation = vec3(to_first[3])}}, fill);
+                    const auto loops = RegionLoops(r, plane, std::array{RegionOperand{.Record = current}, RegionOperand{.Record = second.Record, .Rotation = rotation, .Translation = vec3(to_first[3])}}, fill);
                     if (!loops) fault = NodeFault::NotCoplanar;
                     else if (!loops->empty()) combined = CreateShadedMesh(r, {.Data = RegionData(plane, *loops)});
                 } else fault = NodeFault::NotClosed;
+                if (!combined) {
+                    if (!fault) fault = NodeFault::Empty;
+                    continue;
+                }
+                created.push_back(*combined);
+                current = *combined;
             }
-            emit(combined, linked, fault);
+            if (const auto *held = r.try_get<const BooleanPlacement>(entity); publish && (!held || *held != placement)) r.emplace_or_replace<BooleanPlacement>(entity, placement);
+            auto &output = values[first + InputCount[kind]];
+            if (linked && !fault) output.Record = current;
+            else {
+                if (linked) fail(*fault);
+                output = in;
+            }
             continue;
         }
         if (kind == KindOf<Minkowski>) {
@@ -2230,7 +2267,8 @@ void SettleProcedures(state::Registry &r, bool cook) {
     SortUnique(moved);
     for (const auto [node, placement] : std::as_const(r).view<const BooleanPlacement>().each()) {
         const auto procedure = procedure_of(node);
-        if (std::ranges::binary_search(moved, procedure) && ToFirst(r, r.get<const procedure::Boolean>(node).Space, placement.Operand) != placement.ToFirst) cooked.push_back(procedure);
+        const auto space = r.get<const procedure::Boolean>(node).Space;
+        if (std::ranges::binary_search(moved, procedure) && std::ranges::any_of(placement.Operands, [&](const auto &operand) { return ToFirst(r, space, operand.Operand) != operand.ToFirst; })) cooked.push_back(procedure);
     }
     SortUnique(cooked);
     std::vector<state::Entity> queue = cooked;
