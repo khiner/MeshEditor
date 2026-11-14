@@ -126,4 +126,4 @@ if(MESHEDITOR_APP)
     set_target_properties(MeshEditor PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 endif()
 
-add_subdirectory(tests)
+add_subdirectory(tests EXCLUDE_FROM_ALL)

@@ -379,7 +379,7 @@ $ ./script/Build --test
 $ ./build/tests/MeshEditorTests
 ```
 
-`cmake --build build` builds the rest of the tests:
+`cmake --build build --target tests/all` builds every test target:
 
 | Target | Covers |
 |-|-|
