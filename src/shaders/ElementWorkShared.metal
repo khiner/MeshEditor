@@ -54,7 +54,8 @@ inline uint SelectLiveElement(device const uint *live, uint block, uint rank) {
     return InvalidOffset;
 }
 // The live element at compact ordinal `ordinal` of the work.
-inline uint WorkGroupElement(device const BindlessSet &bindless, ElementWork work, uint ordinal) {
+// noinline keeps the topology kernels fast to compile.
+__attribute__((noinline)) uint WorkGroupElement(device const BindlessSet &bindless, ElementWork work, uint ordinal) {
     if (work.Storage.Slot == InvalidSlot) return ordinal < work.Count ? ordinal : InvalidOffset;
     device const uint *data = BindlessBuffer(uint, bindless.Buffer, work.Storage.Slot) + work.Storage.Offset;
     if (ordinal >= data[5]) return InvalidOffset;
@@ -68,7 +69,8 @@ inline uint WorkGroupElement(device const BindlessSet &bindless, ElementWork wor
 }
 
 // The compact ordinal of `element`, the inverse of WorkGroupElement.
-inline uint WorkRank(device const BindlessSet &bindless, ElementWork work, uint element) {
+// noinline keeps the topology kernels fast to compile.
+__attribute__((noinline)) uint WorkRank(device const BindlessSet &bindless, ElementWork work, uint element) {
     if (element >= work.Count) return InvalidOffset;
     if (work.Storage.Slot == InvalidSlot) return element;
     device const uint *data = BindlessBuffer(uint, bindless.Buffer, work.Storage.Slot) + work.Storage.Offset;

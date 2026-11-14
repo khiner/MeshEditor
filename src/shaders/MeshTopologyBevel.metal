@@ -1,5 +1,6 @@
 #pragma once
 // Bevels selected edges or vertices by Param0 or per-element widths, with Steps profile segments.
+// noinline on the functions below keeps the topology kernels fast to compile.
 #include "MeshTopologyFaces.metal"
 
 
@@ -30,7 +31,7 @@ inline float TopoBevelSlide(float3 v, float3 along, float3 beveled, float width)
 }
 
 // The point on unbeveled edge `rep` at its end `v`, from the corners on either side, or false when neither side contributes.
-inline bool TopoBevelEdgePoint(TopoContext ctx, MeshTopologyJob job, uint rep, bool at_to, thread float3 &point) {
+__attribute__((noinline)) bool TopoBevelEdgePoint(TopoContext ctx, MeshTopologyJob job, uint rep, bool at_to, thread float3 &point) {
     const auto corners = ctx.SrcCorners(job);
     const uint opposite = ctx.SrcOpposite(job, rep);
     const uint v = at_to ? corners[rep] : ctx.SrcFrom(job, rep);
@@ -80,7 +81,7 @@ struct BevelHalfedgeOutputs {
     uint ProfileIndex(bool at_to, uint j, uint segments) const { return CornerIndex() + (Corner ? 1u : 0u) + (at_to ? segments - 1u : 0u) + j; }
 };
 
-inline BevelHalfedgeOutputs TopoBevelOutputs(TopoContext ctx, MeshTopologyJob job, uint h) {
+__attribute__((noinline)) BevelHalfedgeOutputs TopoBevelOutputs(TopoContext ctx, MeshTopologyJob job, uint h) {
     BevelHalfedgeOutputs o{false, false, false, 0u};
     const bool rep = ctx.SrcEdgeFirst(job, h);
     const bool beveled = TopoEdgeBeveled(ctx, job, h);
@@ -149,7 +150,7 @@ struct BevelCornerPoints {
     uint2 Vertex[2];
 };
 
-inline BevelCornerPoints TopoBevelCornerPoints(TopoContext ctx, MeshTopologyJob job, uint h) {
+__attribute__((noinline)) BevelCornerPoints TopoBevelCornerPoints(TopoContext ctx, MeshTopologyJob job, uint h) {
     BevelCornerPoints result{0u, {uint2(InvalidOffset), uint2(InvalidOffset)}};
     const uint v = ctx.SrcCorners(job)[h];
     if (!TopoVertexBeveled(ctx, job, v)) {
@@ -171,7 +172,7 @@ inline BevelCornerPoints TopoBevelCornerPoints(TopoContext ctx, MeshTopologyJob 
 }
 
 // The position of the side point of a beveled edge in its own halfedge's face at end `at_to`.
-inline float3 TopoBevelSidePosition(TopoContext ctx, MeshTopologyJob job, uint edge_halfedge, bool at_to) {
+__attribute__((noinline)) float3 TopoBevelSidePosition(TopoContext ctx, MeshTopologyJob job, uint edge_halfedge, bool at_to) {
     const uint corner = at_to ? edge_halfedge : ctx.SrcPrev(job, edge_halfedge);
     const bool2 both = TopoCornerBeveled(ctx, job, corner);
     if (both.x && both.y) return TopoBevelCornerPoint(ctx, job, corner);

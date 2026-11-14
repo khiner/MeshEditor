@@ -153,7 +153,8 @@ inline void TopoEmitLine(TopoContext ctx, MeshTopologyJob job, uint d, uint from
     ctx.WriteCorner(job, d + 1u, from, from_corner, from_corner, 0.f, edge_source, selected);
 }
 
-inline void TopoScatterLine(TopoContext ctx, MeshTopologyJob job, uint h, uint entry) {
+// noinline keeps the topology kernels fast to compile.
+__attribute__((noinline)) void TopoScatterLine(TopoContext ctx, MeshTopologyJob job, uint h, uint entry) {
     if (ctx.Span(job, TopoCountWireCorners, entry) == 0u) return;
     const uint base = ctx.WireCornerOffset(job, entry);
     device const uint *vertex_offsets = ctx.Counts(job, TopoCountVertices);
