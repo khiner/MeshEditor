@@ -1,6 +1,7 @@
 #pragma once
 
 #include "action/Core.h"
+#include "action/Emit.h"
 
 namespace action::physics {
 // Entity operations apply to their Target, defaulting to the active entity.
@@ -84,3 +85,6 @@ using Action = std::variant<
 
 void Apply(state::Registry &, const Action &);
 } // namespace action::physics
+namespace action {
+void Append(Destination, physics::Action);
+}

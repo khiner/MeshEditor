@@ -1,5 +1,6 @@
 #pragma once
 
+#include "action/Emit.h"
 #include "state/Entity.h"
 
 #include <filesystem>
@@ -27,3 +28,6 @@ using Action = std::variant<LoadDefaultScene, Load, LoadGltf, SaveGltf, LoadReal
 // Handlers run GPU work synchronously; failures are reported through the registry's action::Errors sink.
 void Apply(state::Registry &, const Action &);
 } // namespace action::io
+namespace action {
+void Append(Destination, io::Action);
+}

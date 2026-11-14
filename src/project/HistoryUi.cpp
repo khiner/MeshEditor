@@ -1,7 +1,7 @@
 #include "project/HistoryUi.h"
 
 #include "procedure/Procedure.h"
-#include "project/Project.h"
+#include "project/Recording.h"
 #include "ui/CtrlShortcut.h"
 #include "ui/FieldEdit.h"
 
@@ -193,7 +193,7 @@ template<typename L> void DrawLeaf(const state::Registry &r, L &leaf, bool &chan
 // A change re-runs the node's actions with the edited values on its parent.
 // A release commits them in the node's place.
 void DrawNodeEditor(Project &session, uint32_t node, bool interactive) {
-    auto &draft = session.DraftOf(node);
+    auto &draft = DraftOf(session, node);
     size_t leaves = 0;
     for (const auto &recorded_action : draft.RecordedActions) {
         leaves += action::VisitLeaf(recorded_action, []<typename L>(const L &) { return !std::is_empty_v<L>; });

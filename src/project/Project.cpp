@@ -1,4 +1,4 @@
-#include "project/Project.h"
+#include "project/Recording.h"
 
 #include "Compress.h"
 #include "PathSerialize.h"
@@ -102,6 +102,132 @@ std::expected<std::vector<std::string>, std::string> ReferencedAssets(const stor
     }
     return std::vector<std::string>{found.begin(), found.end()};
 }
+
+void Tick(Project &session, const action::Action &a, EventPass pass = EventPass::Frame) {
+    std::visit([&](const auto &domain) { Apply(session.R, domain); }, a);
+    session.Settle(pass);
+}
+std::expected<void, std::string> RunRecorded(Project &session, store::History &source, std::span<const action::Action> actions, std::span<const uint32_t> workspaces) {
+    if (actions.size() != workspaces.size()) return std::unexpected{"Action workspace count mismatch"};
+    auto &frame = session.R.Resources.get<FrameState>();
+    const auto saved = frame;
+    auto live = session.Entities.Workspace.Pin();
+    const auto errors = session.R.Resources.get<action::Errors>().Messages.size();
+    for (size_t i = 0; i < actions.size(); ++i) {
+        if (auto restored = source.RestoreWorkspace(workspaces[i]); !restored) {
+            action::Fail(session.R, restored.error());
+            break;
+        }
+        ReconcileWorkspace(session.R);
+        const auto inputs = session.R.get<const ActionInputs>(state::Document);
+        frame.DisplayFramebufferScale = inputs.FramebufferScale;
+        if (session.R.get<const TimelinePlayback>(state::Document).CurrentFrame != inputs.CurrentFrame) {
+            session.R.patch<TimelinePlayback>(state::Document, [&](auto &p) { p.CurrentFrame = inputs.CurrentFrame; });
+            session.R.edit<PlaybackFrame>(state::Document).Value = float(inputs.CurrentFrame);
+            session.Settle(EventPass::Settle);
+        }
+        session.R.edit<PlaybackFrame>(state::Document).Value = inputs.PlaybackFrame;
+        if (frame.Scene != inputs.Scene) {
+            frame.Scene = inputs.Scene;
+            session.Settle(EventPass::Settle);
+        }
+        frame.DeltaTime = inputs.DeltaTime;
+        frame.FixedFrameStep = inputs.FixedFrameStep;
+        Tick(session, actions[i], inputs.Pass);
+        if (session.R.Resources.get<action::Errors>().Messages.size() != errors) break;
+    }
+    session.EndGesture(EventPass::Settle);
+    if (!session.Entities.Workspace.Restore(live)) action::Fail(session.R, "Live workspace restore mismatch");
+    session.Entities.Workspace.Trie.Release(live);
+    ReconcileWorkspace(session.R);
+    frame = saved;
+    const auto &messages = session.R.Resources.get<action::Errors>().Messages;
+    if (messages.size() != errors) return std::unexpected{messages[errors]};
+    return {};
+}
+// Captures the workspace before each recorded action, then applies it.
+bool Record(Project &session, std::span<action::Action> actions, EventPass pass, bool staged = false) {
+    auto recordable = actions | std::views::filter([](const auto &a) { return action::IsRecordable(a); });
+    if (staged && !session.GestureBase && !recordable.empty()) {
+        session.GestureBase = session.History.Pin();
+        session.GestureStart = session.Recorded->Actions.size();
+    }
+    const bool same_kind = staged && session.StageFirst && std::ranges::equal(recordable, std::span{session.Recorded->Actions}.subspan(*session.StageFirst), [](const auto &a, const auto &previous) { return Kind(a) == Kind(previous); });
+    const bool single = actions.size() == 1;
+    if (same_kind && (!single || action::IsPreview(actions.front()))) {
+        if (!single || !action::PatchesPreview(actions.front())) (void)session.History.Restore(*session.StageBase);
+    } else if (staged && !recordable.empty()) {
+        if (session.StageBase) session.History.Release(*session.StageBase);
+        session.StageBase = session.History.Pin();
+    }
+    auto before = single ? std::optional<store::Snapshot>{} : session.History.Pin();
+    const auto first = same_kind ? *session.StageFirst : session.Recorded->Actions.size();
+    const auto errors = session.R.Resources.get<action::Errors>().Messages.size();
+    bool recorded = false;
+    for (auto &a : actions) {
+        if (auto *path = SourcePath(a); path && !path->native().starts_with("asset:/")) {
+            std::error_code ec;
+            const auto absolute = std::filesystem::absolute(*path, ec);
+            if (ec) action::Fail(session.R, "Cannot resolve '" + path->string() + "': " + ec.message());
+            else *path = session.R.Resources.get<Assets>().Reference(absolute);
+        }
+        const bool keep = action::IsRecordable(a);
+        auto &frame = session.R.Resources.get<FrameState>();
+        frame.Scene = ActingScene(session.R);
+        const ActionInputs inputs{frame.Scene, frame.DeltaTime, session.R.get<const PlaybackFrame>(state::Document).Value, session.R.get<const TimelinePlayback>(state::Document).CurrentFrame, frame.FixedFrameStep, pass, frame.DisplayFramebufferScale};
+        if (session.R.all_of<ActionInputs>(state::Document)) session.R.replace_if_changed(state::Document, inputs);
+        else session.R.emplace<ActionInputs>(state::Document, inputs);
+        const auto workspace = keep ? std::optional{session.History.CaptureWorkspace()} : std::nullopt;
+        if (session.R.Resources.get<action::Errors>().Messages.size() == errors) Tick(session, a, pass);
+        pass = EventPass::Settle;
+        if (session.R.Resources.get<action::Errors>().Messages.size() != errors) {
+            if (workspace) session.History.ReleaseWorkspace(*workspace);
+            if (staged) session.CancelGesture();
+            else if (before) {
+                (void)session.History.Restore(*before);
+                session.ResizeRecorded(first);
+            }
+            recorded = false;
+            break;
+        }
+        if (!keep) continue;
+        if (!recorded) {
+            session.ResizeRecorded(first);
+            if (staged) session.StageFirst = first;
+        }
+        session.Recorded->Actions.push_back(std::move(a));
+        session.RecordedWorkspaces.push_back(*workspace);
+        ++session.Revision;
+        recorded = true;
+    }
+    if (before) session.History.Release(*before);
+    return recorded;
+}
+bool Record(Project &session, action::Action a, EventPass pass, bool staged = false) { return Record(session, std::span{&a, 1}, pass, staged); }
+// Applies the actions and commits them as one history step, after finishing any open gesture.
+// `keys` also keys the animated properties the step changed, as a user's commit does.
+// Returns the committed node, or the present node when nothing was recorded or a selection edit stays open.
+std::optional<uint32_t> Step(Project &session, std::span<action::Action> actions, EventPass pass, std::string label, bool keys) {
+    auto &r = session.R;
+    if (r.all_of<procedure::SelectionEditing>(state::Document) && std::ranges::any_of(actions, [](const auto &a) { return !ContinuesSelection(a); })) session.FinishGesture(EventPass::Settle);
+    session.FinishGesture(EventPass::Settle, true);
+    if (label.empty()) label = Label(actions.back());
+    const bool recorded = Record(session, actions, pass, Is<action::nodes::EditSelection>(actions.front()));
+    if (!recorded || r.all_of<procedure::SelectionEditing>(state::Document)) return session.History.Present;
+    if (keys) session.RecordKeys();
+    const auto committed = session.Commit(std::move(label));
+    session.ReleaseGesture();
+    return committed;
+}
+// Applies the posted steps and returns whether there were any.
+bool ApplyPosted(Project &session, EventPass pass) {
+    auto steps = action::DrainSteps();
+    for (auto &a : steps) {
+        Step(session, std::span{&a, 1}, pass, {}, false);
+        pass = EventPass::Settle;
+    }
+    return !steps.empty();
+}
 } // namespace
 
 std::string Label(const action::Action &a) {
@@ -140,7 +266,7 @@ std::expected<void, std::string> WriteActionsArchive(const store::History &histo
 
 Project &Session(state::Registry &r) { return *r.Resources.get<Project *>(); }
 
-Project::Project(state::Registry &r) : Entities(r, History, snapshot::SnapshotTable()), R(r) {
+Project::Project(state::Registry &r) : Entities(r, History, snapshot::SnapshotTable()), Recorded(std::make_unique<Recording>()), R(r) {
     R.Resources.emplace<Project *>(this);
     R.Resources.emplace<Assets>();
 }
@@ -160,7 +286,7 @@ void Project::TrackStores() {
     History.Callbacks = {
         .Replay = [this](store::History &source, std::span<const std::byte> bytes, std::span<const uint32_t> workspaces) {
             const MeshStore::HistoryScope source_history{R.Resources.get<MeshStore>(), source};
-            auto replayed = RunRecorded(source, Decode(bytes), workspaces);
+            auto replayed = RunRecorded(*this, source, Decode(bytes), workspaces);
             Settle(EventPass::Settle);
             FinishSourceStates(R);
             EndMeshStates(R);
@@ -177,7 +303,7 @@ void Project::TrackStores() {
         .BeforeRestore = [this] {
             WaitForRender(R);
             CancelModalSolves(R);
-            Deferred.clear();
+            (void)action::DrainSteps();
             if (!GestureBase) ClearInteraction();
             Entities.BeginRestore(); },
         .AfterTracks = [this] {
@@ -221,8 +347,8 @@ bool Project::Begin(const std::filesystem::path &dir) {
     Settle(EventPass::Settle);
     FinishSourceStates(R);
     EndCookStep(R);
-    const bool editable = Editable(RecordedActions);
-    const bool begun = History.Begin(dir, Encode(RecordedActions), std::exchange(RecordedWorkspaces, {}));
+    const bool editable = Editable(Recorded->Actions);
+    const bool begun = History.Begin(dir, Encode(Recorded->Actions), std::exchange(RecordedWorkspaces, {}));
     ResizeRecorded(0);
     if (begun) {
         EndMeshStates(R);
@@ -247,8 +373,8 @@ bool Project::New(const std::filesystem::path &dir, bool empty) {
     if (History.Present && !Save()) return false;
     ResizeRecorded(0);
     auto left = LeaveDocument();
-    if (empty) Record(action::MakeAction(action::io::LoadEmptyScene{}), EventPass::Settle);
-    else Record(action::MakeAction(action::io::LoadDefaultScene{}), EventPass::Settle);
+    if (empty) Record(*this, action::MakeAction(action::io::LoadEmptyScene{}), EventPass::Settle);
+    else Record(*this, action::MakeAction(action::io::LoadDefaultScene{}), EventPass::Settle);
     const bool begun = Begin(dir);
     if (!begun) ReturnToLeft(left);
     History.Release(left.Pin);
@@ -295,7 +421,7 @@ bool Project::Open(const std::filesystem::path &dir, const std::filesystem::path
     SavedPath = saved_path;
     RestoredWorkspace = saved ? std::move(saved->Workspace) : std::vector<std::byte>{};
     ResizeRecorded(0);
-    Deferred.clear();
+    (void)action::DrainSteps();
     ++Revision;
     return true;
 }
@@ -303,7 +429,7 @@ bool Project::Save() {
     if (!History.Present) return true;
     WaitForRender(R);
     FinishGesture(EventPass::Settle);
-    Record(action::MakeAction(action::timeline::SetFrame{R.get<const TimelinePlayback>(state::Document).CurrentFrame}), EventPass::Settle);
+    Record(*this, action::MakeAction(action::timeline::SetFrame{R.get<const TimelinePlayback>(state::Document).CurrentFrame}), EventPass::Settle);
     Commit("Playback position");
     return History.Save();
 }
@@ -418,141 +544,42 @@ bool Project::Close() {
     return closed;
 }
 
-void Project::Tick(const action::Action &a, EventPass pass) {
-    std::visit([&](const auto &domain) { Apply(R, domain); }, a);
-    Settle(pass);
+std::optional<uint32_t> Do(Project &session, action::Action a, std::string label) {
+    WaitForRender(session.R);
+    return Step(session, std::span{&a, 1}, EventPass::Frame, std::move(label), true);
+}
+EditDraft &DraftOf(Project &session, uint32_t node) {
+    if (!session.Recorded->Draft || session.Recorded->Draft->Node != node || session.Recorded->Draft->Revision != session.History.Revision) session.Recorded->Draft = EditDraft{node, session.History.Revision, Decode(session.History.ActionsOf(session.History.Nodes[node]))};
+    return *session.Recorded->Draft;
+}
+void Project::ApplySteps() {
+    WaitForRender(R);
+    ApplyPosted(*this, EventPass::Frame);
 }
 void Project::ResizeRecorded(size_t count) {
     while (RecordedWorkspaces.size() > count) {
         History.ReleaseWorkspace(RecordedWorkspaces.back());
         RecordedWorkspaces.pop_back();
     }
-    RecordedActions.resize(count);
-}
-std::expected<void, std::string> Project::RunRecorded(store::History &source, std::span<const action::Action> actions, std::span<const uint32_t> workspaces) {
-    if (actions.size() != workspaces.size()) return std::unexpected{"Action workspace count mismatch"};
-    auto &frame = R.Resources.get<FrameState>();
-    const auto saved = frame;
-    auto live = Entities.Workspace.Pin();
-    const auto errors = R.Resources.get<action::Errors>().Messages.size();
-    for (size_t i = 0; i < actions.size(); ++i) {
-        if (auto restored = source.RestoreWorkspace(workspaces[i]); !restored) {
-            action::Fail(R, restored.error());
-            break;
-        }
-        ReconcileWorkspace(R);
-        const auto inputs = R.get<const ActionInputs>(state::Document);
-        frame.DisplayFramebufferScale = inputs.FramebufferScale;
-        if (R.get<const TimelinePlayback>(state::Document).CurrentFrame != inputs.CurrentFrame) {
-            R.patch<TimelinePlayback>(state::Document, [&](auto &p) { p.CurrentFrame = inputs.CurrentFrame; });
-            R.edit<PlaybackFrame>(state::Document).Value = float(inputs.CurrentFrame);
-            Settle(EventPass::Settle);
-        }
-        R.edit<PlaybackFrame>(state::Document).Value = inputs.PlaybackFrame;
-        if (frame.Scene != inputs.Scene) {
-            frame.Scene = inputs.Scene;
-            Settle(EventPass::Settle);
-        }
-        frame.DeltaTime = inputs.DeltaTime;
-        frame.FixedFrameStep = inputs.FixedFrameStep;
-        Tick(actions[i], inputs.Pass);
-        if (R.Resources.get<action::Errors>().Messages.size() != errors) break;
-    }
-    EndGesture(EventPass::Settle);
-    if (!Entities.Workspace.Restore(live)) action::Fail(R, "Live workspace restore mismatch");
-    Entities.Workspace.Trie.Release(live);
-    ReconcileWorkspace(R);
-    frame = saved;
-    const auto &messages = R.Resources.get<action::Errors>().Messages;
-    if (messages.size() != errors) return std::unexpected{messages[errors]};
-    return {};
+    Recorded->Actions.resize(count);
 }
 void Project::Settle(EventPass pass) {
     ProcessComponentEvents(R, pass);
     History.SettleHashes();
 }
-bool Project::Record(action::Action a, EventPass pass, bool staged) { return Record(std::span{&a, 1}, pass, staged); }
-bool Project::Record(std::span<action::Action> actions, EventPass pass, bool staged) {
-    auto recordable = actions | std::views::filter([](const auto &a) { return action::IsRecordable(a); });
-    if (staged && !GestureBase && !recordable.empty()) {
-        GestureBase = History.Pin();
-        GestureStart = RecordedActions.size();
-    }
-    const bool same_kind = staged && StageFirst && std::ranges::equal(recordable, std::span{RecordedActions}.subspan(*StageFirst), [](const auto &a, const auto &previous) { return Kind(a) == Kind(previous); });
-    const bool single = actions.size() == 1;
-    if (same_kind && (!single || action::IsPreview(actions.front()))) {
-        if (!single || !action::PatchesPreview(actions.front())) (void)History.Restore(*StageBase);
-    } else if (staged && !recordable.empty()) {
-        if (StageBase) History.Release(*StageBase);
-        StageBase = History.Pin();
-    }
-    auto before = single ? std::optional<store::Snapshot>{} : History.Pin();
-    const auto first = same_kind ? *StageFirst : RecordedActions.size();
-    const auto errors = R.Resources.get<action::Errors>().Messages.size();
-    bool recorded = false;
-    for (auto &a : actions) {
-        if (auto *path = SourcePath(a); path && !path->native().starts_with("asset:/")) {
-            std::error_code ec;
-            const auto absolute = std::filesystem::absolute(*path, ec);
-            if (ec) action::Fail(R, "Cannot resolve '" + path->string() + "': " + ec.message());
-            else *path = R.Resources.get<Assets>().Reference(absolute);
-        }
-        const bool keep = action::IsRecordable(a);
-        auto &frame = R.Resources.get<FrameState>();
-        frame.Scene = ActingScene(R);
-        const ActionInputs inputs{frame.Scene, frame.DeltaTime, R.get<const PlaybackFrame>(state::Document).Value, R.get<const TimelinePlayback>(state::Document).CurrentFrame, frame.FixedFrameStep, pass, frame.DisplayFramebufferScale};
-        if (R.all_of<ActionInputs>(state::Document)) R.replace_if_changed(state::Document, inputs);
-        else R.emplace<ActionInputs>(state::Document, inputs);
-        const auto workspace = keep ? std::optional{History.CaptureWorkspace()} : std::nullopt;
-        if (R.Resources.get<action::Errors>().Messages.size() == errors) Tick(a, pass);
-        pass = EventPass::Settle;
-        if (R.Resources.get<action::Errors>().Messages.size() != errors) {
-            if (workspace) History.ReleaseWorkspace(*workspace);
-            if (staged) CancelGesture();
-            else if (before) {
-                (void)History.Restore(*before);
-                ResizeRecorded(first);
-            }
-            recorded = false;
-            break;
-        }
-        if (!keep) continue;
-        if (!recorded) {
-            ResizeRecorded(first);
-            if (staged) StageFirst = first;
-        }
-        RecordedActions.push_back(std::move(a));
-        RecordedWorkspaces.push_back(*workspace);
-        ++Revision;
-        recorded = true;
-    }
-    if (before) History.Release(*before);
-    return recorded;
-}
-std::optional<uint32_t> Project::Do(action::Action a, std::string label) {
-    WaitForRender(R);
-    if (label.empty()) label = Label(a);
-    FinishGesture(EventPass::Settle, ContinuesSelection(a));
-    const bool begins_selection = Is<action::nodes::EditSelection>(a);
-    if (!Record(std::move(a), EventPass::Frame, begins_selection) || R.all_of<procedure::SelectionEditing>(state::Document)) return History.Present;
-    RecordKeys();
-    const auto committed = Commit(std::move(label));
-    ReleaseGesture();
-    return committed;
-}
 void Project::RecordKeys() {
     if (!R.get<const Animations>(state::Document).Record) return;
     const auto seconds = animation::FrameSeconds(R, R.get<const TimelinePlayback>(state::Document).CurrentFrame);
-    if (animation::AnyChanged(R, seconds)) Record(action::MakeAction(action::animation::RecordChanged{}), EventPass::Settle);
+    if (animation::AnyChanged(R, seconds)) Record(*this, action::MakeAction(action::animation::RecordChanged{}), EventPass::Settle);
 }
 uint32_t Project::Commit(std::string label, std::optional<uint32_t> replace) {
-    if (!RecordedActions.empty() && Is<action::nodes::EditSelection>(RecordedActions.front())) label = "Edit selection";
+    if (!Recorded->Actions.empty() && Is<action::nodes::EditSelection>(Recorded->Actions.front())) label = "Edit selection";
     // The step's new Source nodes take the state it ends with, which the node it commits records.
     FinishSourceStates(R);
     EndCookStep(R);
     R.Resources.get<MeshStore>().IndexHistory();
-    const bool editable = Editable(RecordedActions);
-    auto bytes = Encode(RecordedActions);
+    const bool editable = Editable(Recorded->Actions);
+    auto bytes = Encode(Recorded->Actions);
     const bool in_place = replace && History.Nodes[*replace].Children.empty();
     const auto created = uint32_t(History.Nodes.size());
     const auto node = in_place ? History.Replace(*replace, std::move(bytes), std::exchange(RecordedWorkspaces, {})) : History.Commit(std::move(label), std::move(bytes), std::exchange(RecordedWorkspaces, {}));
@@ -572,14 +599,14 @@ void Project::FinishGesture(EventPass pass, bool keep_selection) {
         StageFirst.reset();
         return;
     }
-    if (R.all_of<procedure::SelectionEditing>(state::Document)) Record(action::MakeAction(action::nodes::FinishSelection{}), pass);
+    if (R.all_of<procedure::SelectionEditing>(state::Document)) Record(*this, action::MakeAction(action::nodes::FinishSelection{}), pass);
     if (Editing) {
         Settle(pass);
         Commit(History.Nodes[*Editing].Label, Editing);
     } else {
         std::vector<std::string> names;
-        for (size_t i = GestureStart; i < RecordedActions.size(); ++i) {
-            if (auto name = Label(RecordedActions[i]); !std::ranges::contains(names, name)) names.push_back(std::move(name));
+        for (size_t i = GestureStart; i < Recorded->Actions.size(); ++i) {
+            if (auto name = Label(Recorded->Actions[i]); !std::ranges::contains(names, name)) names.push_back(std::move(name));
         }
         std::string label;
         for (const auto &name : names) label += (label.empty() ? "" : ", ") + name;
@@ -595,28 +622,24 @@ void Project::EndGesture(EventPass pass) {
     R.remove<StartScreenTransform>(state::Document);
     Settle(pass);
 }
-Project::EditDraft &Project::DraftOf(uint32_t node) {
-    if (!Draft || Draft->Node != node || Draft->Revision != History.Revision) Draft = EditDraft{node, History.Revision, Decode(History.ActionsOf(History.Nodes[node]))};
-    return *Draft;
-}
 void Project::RestageDraft() {
-    if (!Draft) return;
-    if (Editing != Draft->Node && !EditNode(Draft->Node)) return;
+    if (!Recorded->Draft) return;
+    if (Editing != Recorded->Draft->Node && !EditNode(Recorded->Draft->Node)) return;
     if (GestureBase) {
         if (!History.Restore(*GestureBase)) return;
     } else {
         GestureBase = History.Pin();
-        GestureStart = RecordedActions.size();
+        GestureStart = Recorded->Actions.size();
     }
     ResizeRecorded(GestureStart);
     // The run takes a copy so the draft keeps its values for the next change.
-    auto recorded_actions = Decode(Encode(Draft->RecordedActions));
-    const auto workspaces = History.WorkspacesOf(History.Nodes[Draft->Node]);
-    if (!RunRecorded(History, recorded_actions, workspaces)) {
+    auto recorded_actions = Decode(Encode(Recorded->Draft->RecordedActions));
+    const auto workspaces = History.WorkspacesOf(History.Nodes[Recorded->Draft->Node]);
+    if (!RunRecorded(*this, History, recorded_actions, workspaces)) {
         CancelGesture();
         return;
     }
-    for (auto &recorded_action : recorded_actions) RecordedActions.push_back(std::move(recorded_action));
+    for (auto &recorded_action : recorded_actions) Recorded->Actions.push_back(std::move(recorded_action));
     for (auto id : workspaces) {
         History.RetainWorkspace(id);
         RecordedWorkspaces.push_back(id);
@@ -643,7 +666,7 @@ void Project::ClearDocument() {
     // An event pass commits chains without waiting for them, and the reset frees what they reference.
     R.Resources.get<const mtl::Context>().WaitIdle();
     R.Resources.get<GpuBuffers>().Ctx.ReclaimRetiredBuffers(true);
-    Deferred.clear();
+    (void)action::DrainSteps();
     ClearInteraction();
     R.clear<Viewport>();
     R.Reset();
@@ -671,10 +694,11 @@ void Project::CancelGesture() {
     (void)History.Restore(*GestureBase);
     ReleaseGesture();
     if (const auto node = std::exchange(Editing, std::nullopt)) History.Navigate(*node);
-    Draft.reset();
+    Recorded->Draft.reset();
     ++Revision;
 }
-void Project::Frame(action::Drained drained) {
+void Project::Frame() {
+    auto drained = action::Drain();
     WaitForRender(R);
     R.Resources.get<FrameState>().Scene = ActingScene(R);
     if (const auto node = std::exchange(Navigation, {})) {
@@ -695,30 +719,25 @@ void Project::Frame(action::Drained drained) {
         auto [actions, phase] = std::move(*drained.Emitted);
         if (phase == action::Phase::Cancel) {
             std::optional<bool> duplicate;
-            for (const auto &recorded_action : RecordedActions) {
+            for (const auto &recorded_action : Recorded->Actions) {
                 if (Is<action::object::Duplicate>(recorded_action)) duplicate = false;
                 if (Is<action::object::DuplicateLinked>(recorded_action)) duplicate = true;
             }
             CancelGesture();
             if (duplicate) {
-                Record(*duplicate ? action::MakeAction(action::object::DuplicateLinked{}) : action::MakeAction(action::object::Duplicate{}), EventPass::Settle, true);
+                Record(*this, *duplicate ? action::MakeAction(action::object::DuplicateLinked{}) : action::MakeAction(action::object::Duplicate{}), EventPass::Settle, true);
             }
             for (const auto &a : actions) {
-                Tick(a, pass);
+                Tick(*this, a, pass);
                 pass = EventPass::Settle;
             }
+        } else if (phase == action::Phase::Record) {
+            Step(*this, actions, pass, {}, true);
         } else {
             if (R.all_of<procedure::SelectionEditing>(state::Document) && std::ranges::any_of(actions, [](const auto &a) { return !ContinuesSelection(a); })) {
                 FinishGesture(EventPass::Settle);
             }
-            if (phase == action::Phase::Record) FinishGesture(EventPass::Settle, true);
-            const auto label = Label(actions.back());
-            const bool recordable = Record(actions, pass, phase == action::Phase::Stage || Is<action::nodes::EditSelection>(actions.front()));
-            if (phase == action::Phase::Record && recordable && !R.all_of<procedure::SelectionEditing>(state::Document)) {
-                RecordKeys();
-                Commit(label);
-                ReleaseGesture();
-            }
+            Record(*this, actions, pass, true);
         }
         pass = EventPass::Settle;
     }
@@ -726,14 +745,7 @@ void Project::Frame(action::Drained drained) {
         FinishGesture(pass, true);
         pass = EventPass::Settle;
     }
-    if (!HasStaged()) {
-        auto deferred = std::exchange(Deferred, {});
-        for (auto &a : deferred) {
-            const auto label = Label(a);
-            if (Record(std::move(a), pass)) Commit(label);
-            pass = EventPass::Settle;
-        }
-    }
+    if (!HasStaged() && ApplyPosted(*this, pass)) pass = EventPass::Settle;
     if (pass == EventPass::Frame) Settle();
 }
 void Project::Navigate(uint32_t node) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "action/ActionSchema.h"
+#include "action/Emit.h"
 #include "gizmo/TransformGizmoTypes.h"
 #include "physics/PhysicsTypes.h"
 #include "viewport/ViewportDisplay.h"
@@ -133,6 +134,7 @@ using Core = std::variant<
     Update<mesh::EdgeLoopInterpolation>, Update<mesh::CircleFit>, Update<mesh::CurveElevation>, Update<mesh::FlattenMethod>, Update<mesh::SplitTarget>, Update<mesh::CornerAttribute>, Update<mesh::CornerCycle>,
     Update<AttributeType>, Update<AttributeDomain>, Update<VectorMathOp>, Update<FloatMathOp>, Update<CompareOp>, Update<BooleanMathOp>, Update<BooleanOperation>, Update<procedure::VectorComponent>, Update<procedure::ShadeMode>, Update<procedure::AdjacentMode>, Update<CurvatureKind>, Update<PlaneSideKind>, Update<MinkowskiOperation>, Update<primitive::FillType>, Update<primitive::QuadSphereMethod>,
     DestroyEntity>;
+void Append(Destination, Core);
 
 // Reads an editable field as its typed Update action, or nothing for an invalid component or field address.
 std::optional<Core> ReadUpdate(const state::Registry &, state::Entity, state::TypeKey, uint16_t offset);

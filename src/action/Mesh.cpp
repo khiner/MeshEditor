@@ -1,9 +1,12 @@
 #include "action/Mesh.h"
+#include "ProcessEvents.h"
 #include "action/Errors.h"
+#include "action/Nodes.h"
 #include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
 
 #include "TransformMath.h"
+#include "gizmo/GizmoInteraction.h"
 #include "mesh/EditVisibility.h"
 #include "mesh/MeshPipelines.h"
 #include "mesh/Neighborhood.h"
@@ -12,7 +15,6 @@
 #include "object/ObjectOps.h"
 #include "procedure/Cook.h"
 #include "procedure/Procedure.h"
-#include "project/Project.h"
 #include "render/GpuSceneState.h"
 #include "render/Instance.h"
 #include "render/MeshletBuildGpu.h"
@@ -21,6 +23,7 @@
 #include "selection/SelectionState.h"
 #include "state/Registry.h"
 #include "viewport/InteractionComponents.h"
+#include "viewport/ViewportInteractionState.h"
 
 #include <format>
 

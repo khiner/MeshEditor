@@ -2,6 +2,7 @@
 
 #include "Field.h"
 #include "action/ActionSchema.h"
+#include "action/Emit.h"
 #include "mesh/TopologyOperations.h"
 #include "numeric/vec2.h"
 #include "state/Entity.h"
@@ -300,6 +301,9 @@ bool Patches(const Action &);
 // The edit-mode meshes with a selection in the viewport's edit element domain, which the operators edit.
 std::vector<state::Entity> SelectedEditMeshes(const state::Registry &);
 } // namespace action::mesh
+namespace action {
+void Append(Destination, mesh::Action);
+}
 
 template<> inline constexpr field::SpecTable<action::mesh::Delete> Specs<action::mesh::Delete>{{&action::mesh::Delete::Mode, {.Help = "Elements to delete, including the faces of deleted vertices or edges. Loose deletes only selected wire edges and isolated vertices."}}};
 template<> inline constexpr field::SpecTable<action::mesh::Merge> Specs<action::mesh::Merge>{

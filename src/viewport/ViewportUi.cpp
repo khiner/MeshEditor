@@ -4,6 +4,16 @@
 #include "Panel.h"
 #include "Profile.h"
 #include "TransformMath.h"
+#include "action/Animation.h"
+#include "action/Audio.h"
+#include "action/Bone.h"
+#include "action/Core.h"
+#include "action/Mesh.h"
+#include "action/Nodes.h"
+#include "action/Object.h"
+#include "action/Selection.h"
+#include "action/Timeline.h"
+#include "action/View.h"
 #include "audio/SoundVertices.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gizmo/TransformGizmo.h"
@@ -38,6 +48,7 @@
 #include "viewport/Viewport.h"
 #include "viewport/ViewportComponents.h"
 #include "viewport/ViewportIcons.h"
+#include "viewport/ViewportInteractionState.h"
 #include "viewport/ViewportOps.h"
 #include <imgui_internal.h>
 
@@ -164,11 +175,11 @@ void BeginLoopSlide(state::Registry &r, FrameState &frame, ElementHit hit) {
     const auto vp = camera.Projection(viewport_rect.size.x / viewport_rect.size.y) * camera.View();
     const auto &world = *WorldTransformOf(r, primary->second);
     const auto rail = .5f * (ScreenPx(vp, viewport_rect, TransformPoint(world, to)) - ScreenPx(vp, viewport_rect, TransformPoint(world, from)));
-    std::vector<action::Action> actions;
-    if (r.get<const EditMode>(state::Document).Value != Element::Edge) actions.push_back(action::MakeAction(action::view::SetEditMode{.Mode = Element::Edge}));
-    actions.push_back(action::MakeAction(action::selection::ApplyEditElementClick{false, hit}));
-    actions.push_back(action::MakeAction(LoopSlide(0.f, to - from, InvalidOffset)));
-    action::Emit(std::move(actions), action::Phase::Stage);
+    if (action::Begin(action::Phase::Stage)) {
+        if (r.get<const EditMode>(state::Document).Value != Element::Edge) action::AddToGesture(action::view::SetEditMode{.Mode = Element::Edge});
+        action::AddToGesture(action::selection::ApplyEditElementClick{false, hit});
+        action::AddToGesture(LoopSlide(0.f, to - from, InvalidOffset));
+    }
     frame.MeshDrag = MeshOperatorDrag{.Value = MeshOperatorDrag::Op::LoopSlide, .StartPx = ToVec2(GetMousePos()), .RailPx = rail, .Positive = to - from, .Center = .5f * (from + to), .MeshEntity = hit.MeshEntity, .Staged = 0.f};
 }
 

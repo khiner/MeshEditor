@@ -1,5 +1,6 @@
 #pragma once
 
+#include "action/Emit.h"
 #include "gpu/Transform.h"
 #include "procedure/InlineSelection.h"
 #include "procedure/Network.h"
@@ -220,3 +221,6 @@ state::Entity StagedResultNode(const state::Registry &, state::Entity mesh_entit
 // Visits the displayed node of each edit-mode mesh with a selection in the edit element domain.
 void ForEachResultNode(const state::Registry &, const std::function<void(state::Entity node)> &);
 } // namespace action::nodes
+namespace action {
+void Append(Destination, nodes::Action);
+}

@@ -1,5 +1,12 @@
 #pragma once
 
+// The variant over every domain's actions.
+// A file that emits or posts actions includes the domain headers of those actions and action/Emit.h.
+// CMake defines MESHEDITOR_FULL_ACTION for the sources that record, apply, serialize or edit any action, and for the tests.
+#ifndef MESHEDITOR_FULL_ACTION
+#error "Include the action's domain header, not action/Action.h. See the comment above this check."
+#endif
+
 #include "Variant.h"
 #include "action/Animation.h"
 #include "action/Audio.h"
@@ -37,12 +44,6 @@ template<typename L> Action MakeAction(L &&leaf) {
     return Action{std::in_place_index<D>, std::variant_alternative_t<D, Action>{std::in_place_type<Leaf>, std::forward<L>(leaf)}};
 }
 
-auto MapDomains(auto f) {
-    return [&]<size_t... Ds>(std::index_sequence<Ds...>) {
-        return std::tuple{f.template operator()<std::variant_alternative_t<Ds, Action>>()...};
-    }(std::make_index_sequence<std::variant_size_v<Action>>{});
-}
-
 // Exclude actions with external side effects from replay.
 template<typename T> inline constexpr bool Recordable = true;
 template<> inline constexpr bool Recordable<io::SaveGltf> = false;
@@ -57,6 +58,7 @@ template<> inline constexpr bool Recordable<view::RemoveViewport> = true;
 template<> inline constexpr bool Recordable<timeline::EnterPresentation> = false;
 template<> inline constexpr bool Recordable<audio::SetOutputDevice> = false;
 
+// Emit the actions as the frame's gesture.
 void Emit(Action, Phase = Phase::Record);
 void Emit(std::vector<Action>, Phase = Phase::Record);
 

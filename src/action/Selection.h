@@ -1,5 +1,6 @@
 #pragma once
 
+#include "action/Emit.h"
 #include "selection/Selection.h"
 #include "state/Entity.h"
 
@@ -67,3 +68,6 @@ using Action = std::variant<
 
 void Apply(state::Registry &, const Action &);
 } // namespace action::selection
+namespace action {
+void Append(Destination, selection::Action);
+}

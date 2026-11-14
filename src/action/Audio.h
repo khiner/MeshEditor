@@ -1,6 +1,7 @@
 #pragma once
 
 #include "action/Core.h"
+#include "action/Emit.h"
 #include "audio/AudioTypes.h"
 #include "audio/ContactModel.h"
 #include "audio/ContactSurface.h"
@@ -92,3 +93,6 @@ using Action = std::variant<
 
 void Apply(state::Registry &, const Action &);
 } // namespace action::audio
+namespace action {
+void Append(Destination, audio::Action);
+}

@@ -3,6 +3,7 @@
 #include "TestPaths.h"
 #include "action/Build.h"
 #include "editor/Engine.h"
+#include "project/Recording.h"
 #include "mesh/MeshStore.h"
 #include "procedure/Procedure.h"
 #include "scene/Entity.h"
@@ -59,9 +60,9 @@ bool BenchScene(uint32_t slices, bool render) {
     return RunBench("mesheditor-project-scene-bench", [&](state::Registry &r, project::Project &p) {
         r.replace<ViewportPanel>(FirstViewport(r), ViewportPanel{.Extent = {128, 128}});
         p.Settle();
-        p.Do(action::MakeAction(action::object::AddMeshPrimitive{primitive::UVSphere{.Slices = slices, .Stacks = slices / 2}, std::make_unique<MeshInstanceCreateInfo>()}));
-        p.Do(action::MakeAction(action::view::SetInteractionMode{InteractionMode::Edit}));
-        p.Do(action::MakeAction(action::selection::SelectAll{}));
+        project::Do(p, action::MakeAction(action::object::AddMeshPrimitive{primitive::UVSphere{.Slices = slices, .Stacks = slices / 2}, std::make_unique<MeshInstanceCreateInfo>()}));
+        project::Do(p, action::MakeAction(action::view::SetInteractionMode{InteractionMode::Edit}));
+        project::Do(p, action::MakeAction(action::selection::SelectAll{}));
         const auto finish_frame = [&] {
             if (render) {
                 SubmitViewports(r);
@@ -77,9 +78,9 @@ bool BenchScene(uint32_t slices, bool render) {
         for (int i = 0; i < 30; ++i) {
             edits.push_back(Ms([&] {
                 action::Emit(action::view::TransformElements{{.P = {0.001f, 0.f, 0.f}}}, action::Phase::Stage);
-                p.Frame(action::Drain());
+                p.Frame();
                 action::Commit();
-                p.Frame(action::Drain());
+                p.Frame();
                 finish_frame();
             }));
             nodes.push_back(*p.History.Present);
@@ -102,9 +103,9 @@ bool BenchScene(uint32_t slices, bool render) {
 bool BenchProcedureHistory(uint32_t node_count) {
     return RunBench("mesheditor-project-procedure-bench", [&](state::Registry &r, project::Project &p) {
         p.Settle();
-        p.Do(action::MakeAction(action::object::AddMeshPrimitive{primitive::Cube{}, std::make_unique<MeshInstanceCreateInfo>()}));
+        project::Do(p, action::MakeAction(action::object::AddMeshPrimitive{primitive::Cube{}, std::make_unique<MeshInstanceCreateInfo>()}));
         const auto mesh_entity = GetActiveMeshEntity(r);
-        const auto add = [&] { p.Do(action::MakeAction(action::nodes::AddNode{mesh_entity, procedure::KindOf<procedure::FloatValue>, {}})); };
+        const auto add = [&] { project::Do(p, action::MakeAction(action::nodes::AddNode{mesh_entity, procedure::KindOf<procedure::FloatValue>, {}})); };
         for (uint32_t n = 1u; n < node_count; ++n) add();
         const auto owned = [&] { return p.History.Stats().OwnedBytes; };
         std::vector<double> appends, changes;
@@ -116,7 +117,7 @@ bool BenchProcedureHistory(uint32_t node_count) {
         const auto node = r.get<const procedure::GeometryProcedure>(mesh_entity).Last;
         for (int i = 0; i < 30; ++i) {
             const auto before = owned();
-            p.Do(action::MakeAction(action::UpdateOf<&procedure::FloatValue::Value>(node, float(i + 1))));
+            project::Do(p, action::MakeAction(action::UpdateOf<&procedure::FloatValue::Value>(node, float(i + 1))));
             changes.push_back(double(owned() - before));
         }
         std::println("{}-node procedure: {:.0f} owned history bytes per node append, {:.0f} per parameter change (medians)", node_count, Median(appends), Median(changes));

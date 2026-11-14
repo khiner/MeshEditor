@@ -1,5 +1,6 @@
 #pragma once
 
+#include "action/Emit.h"
 #include "timeline/Timeline.h"
 
 namespace action::timeline {
@@ -45,3 +46,6 @@ using Action = std::variant<TogglePlay, CancelPlay, SetFrame, SetStartFrame, Set
 
 void Apply(state::Registry &, const Action &);
 } // namespace action::timeline
+namespace action {
+void Append(Destination, timeline::Action);
+}

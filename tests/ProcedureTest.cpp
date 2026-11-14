@@ -1131,7 +1131,7 @@ void ViewportSelection(ProcedureFixture &f) {
                 const auto element = r.get<const EditMode>(state::Document).Value;
                 const auto edit = [&](auto a) {
                     action::Emit(std::move(a));
-                    f.P->Frame(action::Drain());
+                    f.P->Frame();
                     f.Audit();
                     expect(f.P->HasStaged() && f.P->History.Present == present);
                     expect(r.get<const GeometryProcedure>(mesh).DisplayNode == display);
@@ -1164,7 +1164,7 @@ void ViewportSelection(ProcedureFixture &f) {
                 expect(SelectedCount(r.get<const InlineSelection>(node).Faces) == 6u);
                 if (cancel) {
                     action::Cancel();
-                    f.P->Frame(action::Drain());
+                    f.P->Frame();
                     expect(f.P->History.Present == present && f.Shaped(mesh) == before);
                 } else {
                     f.Do(action::nodes::FinishSelection{});
@@ -1325,7 +1325,7 @@ void CanvasEquivalence(ProcedureFixture &f) {
     f.AddEmpty("Other");
     const auto picked = f.Do(action::selection::Pick{false, ObjectHit{{object}}});
     const auto hit = [&]() -> std::optional<SelectionHit> & {
-        return std::get<action::selection::Pick>(std::get<action::selection::Action>(f.P->DraftOf(picked).RecordedActions.front())).Hit;
+        return std::get<action::selection::Pick>(std::get<action::selection::Action>(project::DraftOf(*f.P, picked).RecordedActions.front())).Hit;
     };
     HistoryPanel history{{"History"}};
     const auto history_frame = [&](ImGuiID activate = 0) {
@@ -1335,7 +1335,7 @@ void CanvasEquivalence(ProcedureFixture &f) {
         ImGui::SetNextWindowSize({900, 900});
         project::DrawHistoryPanel(*f.P, history, true);
         ImGui::Render();
-        f.P->Frame(action::Drain());
+        f.P->Frame();
         f.Audit();
     };
     history_frame();

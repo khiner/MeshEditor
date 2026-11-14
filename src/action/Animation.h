@@ -1,6 +1,7 @@
 #pragma once
 
 #include "action/Core.h"
+#include "action/Emit.h"
 #include "animation/AnimationData.h"
 
 namespace action::animation {
@@ -35,3 +36,6 @@ using Action = std::variant<InsertKey, DeleteKey, RecordChanged, AddAnimation, R
 
 void Apply(state::Registry &, const Action &);
 } // namespace action::animation
+namespace action {
+void Append(Destination, animation::Action);
+}

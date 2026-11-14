@@ -1,5 +1,6 @@
 #pragma once
 
+#include "action/Emit.h"
 #include "gpu/Element.h"
 #include "gpu/PBRMaterial.h"
 
@@ -121,3 +122,6 @@ using Action = std::variant<
 
 void Apply(state::Registry &, const Action &);
 } // namespace action::object
+namespace action {
+void Append(Destination, object::Action);
+}

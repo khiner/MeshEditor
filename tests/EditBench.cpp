@@ -4,6 +4,7 @@
 #include "TestPaths.h"
 #include "action/Errors.h"
 #include "editor/Engine.h"
+#include "project/Recording.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
 #include "mesh/MeshPipelines.h"
@@ -229,7 +230,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         const auto place = [&](MeshSource source) {
             const auto [entity, instance] = AddMesh(r, CreateMesh(r, std::move(source)).StoreId, MeshInstanceCreateInfo{});
             p.Settle();
-            p.Do(action::MakeAction(action::selection::Select{instance}));
+            project::Do(p, action::MakeAction(action::selection::Select{instance}));
         };
         if (scene.empty() && single_edit == SingleEdit::BeautifyFaces) {
             MeshSource source;
@@ -284,9 +285,9 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             auto &uvs = source.Attrs.TexCoords0.emplace();
             for (const auto position : source.Data.Positions) uvs.push_back({position.x, position.y});
             place(std::move(source));
-        } else if (scene.empty()) p.Do(action::MakeAction(action::object::AddMeshPrimitive{primitive::UVSphere{.Slices = slices, .Stacks = slices / 2}, std::make_unique<MeshInstanceCreateInfo>()}));
+        } else if (scene.empty()) project::Do(p, action::MakeAction(action::object::AddMeshPrimitive{primitive::UVSphere{.Slices = slices, .Stacks = slices / 2}, std::make_unique<MeshInstanceCreateInfo>()}));
         else {
-            p.Do(action::MakeAction(action::io::LoadGltf{scene}));
+            project::Do(p, action::MakeAction(action::io::LoadGltf{scene}));
             state::Entity largest = state::Null;
             uint32_t count = 0u;
             for (const auto [object, instance] : r.view<const Instance>().each()) {
@@ -298,17 +299,17 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 }
             }
             if (largest == state::Null) return std::unexpected{"scene contains no face mesh"};
-            p.Do(action::MakeAction(action::selection::Select{largest}));
+            project::Do(p, action::MakeAction(action::selection::Select{largest}));
         }
         std::println(stderr, "Scene prepared in {:.3f} s; entering Edit mode...", std::chrono::duration<double>(std::chrono::steady_clock::now() - load_begin).count());
         profile::ClearStats();
         profile::Enabled = true;
-        const auto enter_ms = Milliseconds([&] { p.Do(action::MakeAction(action::view::SetInteractionMode{InteractionMode::Edit})); });
+        const auto enter_ms = Milliseconds([&] { project::Do(p, action::MakeAction(action::view::SetInteractionMode{InteractionMode::Edit})); });
         profile::ReportCpuPhase("Edit mode entry");
         profile::Report();
         profile::ClearStats();
         std::println(stderr, "Entered Edit mode in {:.3f} ms; switching to face selection...", enter_ms);
-        const auto mode_ms = Milliseconds([&] { p.Do(action::MakeAction(action::view::SetEditMode{.Mode = Element::Face})); });
+        const auto mode_ms = Milliseconds([&] { project::Do(p, action::MakeAction(action::view::SetEditMode{.Mode = Element::Face})); });
         profile::ReportCpuPhase("Face selection mode");
         profile::Enabled = false;
         std::println(stderr, "Face selection mode prepared in {:.3f} ms.", mode_ms);
@@ -381,7 +382,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         select(alternate);
         const auto select_ms = Milliseconds([&] { select(selected); });
         if (meshes.GetSelectionSummary(drawn()).SelectedCount != selected.size()) return std::unexpected{"expected selected faces after sparse selection"};
-        if (filling) p.Do(action::MakeAction(action::mesh::Delete{action::mesh::DeleteMode::OnlyFaces}));
+        if (filling) project::Do(p, action::MakeAction(action::mesh::Delete{action::mesh::DeleteMode::OnlyFaces}));
         if (filling) {
             const auto current = GetMesh(r, entity);
             const auto boundary = [&](uint32_t edge) { return !test::Opposite(current, test::Halfedge(current, he::EH{edge})); };
@@ -394,7 +395,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             const auto element = position ? Element::Vertex : edit.Domain;
             const bool use_vertex = element == Element::Vertex;
             const auto edge_ordinal = [&](const Mesh &mesh, he::EH e) { return meshes.LiveElementOrdinal(mesh.GetStoreId(), MeshStore::ElementDomain::Edge, ElementHandle{*e}); };
-            p.Do(action::MakeAction(action::view::SetEditMode{.Mode = element}));
+            project::Do(p, action::MakeAction(action::view::SetEditMode{.Mode = element}));
             const auto current = GetMesh(r, entity);
             std::vector<uint32_t> selected_elements;
             if (single_edit == SingleEdit::Bridge && scene.empty()) {
@@ -427,7 +428,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             }
             select(selected_elements, element);
             if (single_edit == SingleEdit::DeleteLoose) {
-                p.Do(action::MakeAction(action::mesh::Extrude{action::mesh::ExtrudeMode::Vertices}));
+                project::Do(p, action::MakeAction(action::mesh::Extrude{action::mesh::ExtrudeMode::Vertices}));
                 std::optional<uint32_t> copy;
                 meshes.GetSelectedElements(drawn(), Element::Vertex).ForEach([&](uint32_t v) { if (!copy) copy = v; });
                 if (!copy) return std::unexpected{"loose-delete setup did not extrude a vertex"};
@@ -453,25 +454,25 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 for (const auto v : test::FaceVertices(original, face)) points[i++] = test::Position(original, v);
                 offset = (points[1] + points[3]) * 0.375f + points[2] * 0.25f - points[0];
             }
-            p.Do(action::MakeAction(action::view::SetEditMode{.Mode = Element::Vertex}));
+            project::Do(p, action::MakeAction(action::view::SetEditMode{.Mode = Element::Vertex}));
             const std::array corner{original.VertexOrdinal(test::ToVertex(original, selected_face_halfedge))};
             select(corner, Element::Vertex);
             action::Emit(action::view::TransformElements{{.P = offset}}, action::Phase::Stage);
-            p.Frame(action::Drain());
+            p.Frame();
             action::Commit();
-            p.Frame(action::Drain());
-            p.Do(action::MakeAction(action::view::SetEditMode{.Mode = Element::Face}));
+            p.Frame();
+            project::Do(p, action::MakeAction(action::view::SetEditMode{.Mode = Element::Face}));
             select(selected);
         }
         if (single_edit == SingleEdit::SnapSymmetry) {
             action::Emit(action::view::TransformElements{{.P = {.0001f, 0.f, 0.f}}}, action::Phase::Stage);
-            p.Frame(action::Drain());
+            p.Frame();
             action::Commit();
-            p.Frame(action::Drain());
+            p.Frame();
         }
-        if (single_edit == SingleEdit::RecalculateNormals) p.Do(action::MakeAction(action::mesh::FlipNormals{}));
+        if (single_edit == SingleEdit::RecalculateNormals) project::Do(p, action::MakeAction(action::mesh::FlipNormals{}));
         if (select_all) {
-            p.Do(action::MakeAction(action::selection::SelectAll{}));
+            project::Do(p, action::MakeAction(action::selection::SelectAll{}));
             p.Settle();
         }
         const auto selected_count = meshes.GetSelectionSummary(drawn()).SelectedCount;
@@ -546,7 +547,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 profile::ClearStats();
             }
             const auto elapsed = Milliseconds([&] {
-                p.Do(action::MakeAction(action::mesh::Bisect{.Point = normal * offset, .Normal = normal}));
+                project::Do(p, action::MakeAction(action::mesh::Bisect{.Point = normal * offset, .Normal = normal}));
             });
             const auto after = GetMesh(r, entity);
             row("spatial_cut", elapsed, after.FaceCount() - faces);
@@ -574,7 +575,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
         }
         if (single_edit == SingleEdit::SeparateSelected) {
             const auto entity_count = r.view<const EvaluatedMesh>().size();
-            const auto elapsed = Milliseconds([&] { p.Do(action::MakeAction(action::mesh::Separate{})); });
+            const auto elapsed = Milliseconds([&] { project::Do(p, action::MakeAction(action::mesh::Separate{})); });
             if (r.view<const EvaluatedMesh>().size() != entity_count + 1u) return std::unexpected{"separate did not create one mesh object"};
             if (GetMesh(r, entity).FaceCount() != faces - selected_count) return std::unexpected{"separate did not remove selected source faces"};
             uint32_t output = InvalidStoreId;
@@ -586,12 +587,12 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             return {};
         }
         if (single_edit == SingleEdit::DuplicateObject) {
-            p.Do(action::MakeAction(action::mesh::Subdivide{2u}));
-            p.Do(action::MakeAction(action::view::SetInteractionMode{InteractionMode::Object}));
+            project::Do(p, action::MakeAction(action::mesh::Subdivide{2u}));
+            project::Do(p, action::MakeAction(action::view::SetInteractionMode{InteractionMode::Object}));
             const auto source = GetMesh(r, entity);
             const auto before = r.view<const EvaluatedMesh>().size();
             profile::ClearStats();
-            const auto elapsed = Milliseconds([&] { p.Do(action::MakeAction(action::object::Duplicate{})); });
+            const auto elapsed = Milliseconds([&] { project::Do(p, action::MakeAction(action::object::Duplicate{})); });
             if (r.view<const EvaluatedMesh>().size() != before + 1u) return std::unexpected{"object duplicate did not create one mesh"};
             const auto clone = GetMesh(r, GetActiveMeshEntity(r));
             if (clone.GetStoreId() == source.GetStoreId() || clone.VertexCount() != source.VertexCount() || clone.FaceCount() != source.FaceCount())
@@ -622,14 +623,14 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 return Length(test::Position(original, test::ToVertex(original, selected_face_halfedge)) - test::Position(original, test::FromVertex(original, selected_face_halfedge))) + 1e-4f;
             };
             const auto toggle_sharp = [&] {
-                p.Do(action::MakeAction(action::object::SetSelectedSharp{.Element = Element::Face, .Sharp = !bool(meshes.Arenas().FaceSharpness.Get({test::Address(original, face), 1u})[0])}));
+                project::Do(p, action::MakeAction(action::object::SetSelectedSharp{.Element = Element::Face, .Sharp = !bool(meshes.Arenas().FaceSharpness.Get({test::Address(original, face), 1u})[0])}));
             };
             const auto edit_ms = Milliseconds([&] {
-                if (join) p.Do(Edit(action::mesh::TrisToQuads{}));
-                else if (single_edit == SingleEdit::MergeDistance) p.Do(Edit(action::mesh::Merge{.Mode = action::mesh::MergeMode::ByDistance, .Distance = pair_distance()}));
-                else if (single_edit == SingleEdit::DissolveDegenerate) p.Do(Edit(action::mesh::Dissolve{.Mode = action::mesh::DissolveMode::Degenerate, .Distance = pair_distance()}));
+                if (join) project::Do(p, Edit(action::mesh::TrisToQuads{}));
+                else if (single_edit == SingleEdit::MergeDistance) project::Do(p, Edit(action::mesh::Merge{.Mode = action::mesh::MergeMode::ByDistance, .Distance = pair_distance()}));
+                else if (single_edit == SingleEdit::DissolveDegenerate) project::Do(p, Edit(action::mesh::Dissolve{.Mode = action::mesh::DissolveMode::Degenerate, .Distance = pair_distance()}));
                 else if (single_edit == SingleEdit::SharpFace) toggle_sharp();
-                else p.Do(edit.Make());
+                else project::Do(p, edit.Make());
             });
             const auto edited = *p.History.Present;
             const auto edited_counts = counts();
@@ -752,7 +753,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 const auto elapsed = Milliseconds([&] {
                     if (position) action::Emit(action::view::TransformElements{{.P = {0.0001f * float(i + 1), 0.f, 0.f}}}, action::Phase::Stage);
                     else action::Emit(action::mesh::Inset{.Thickness = 0.0001f * float(i + 1), .Individual = select_all}, action::Phase::Stage);
-                    p.Frame(action::Drain());
+                    p.Frame();
                 });
                 const auto mesh = GetMesh(r, entity);
                 if (mesh.FaceCount() != faces + (position ? 0u : inset_added) || mesh.VertexCount() != vertices + (position ? 0u : inset_added)) return std::unexpected{"edit counts changed unexpectedly"};
@@ -791,7 +792,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
                 }
             }
             if (!warm_preview_ms.empty()) row("warm_preview_p95", P95(warm_preview_ms), selected_count);
-            edit_phase.second = Milliseconds([&] { action::Commit(); p.Frame(action::Drain()); });
+            edit_phase.second = Milliseconds([&] { action::Commit(); p.Frame(); });
         }
         const auto edited = *p.History.Present;
         if (staged && edited == base) return std::unexpected{"edit was not committed"};
@@ -806,7 +807,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             const auto replay_error = p.History.ValidateReplay();
             if (!replay_error.empty()) return std::unexpected{replay_error};
         }
-        const auto exit_ms = Milliseconds([&] { p.Do(action::MakeAction(action::view::SetInteractionMode{InteractionMode::Object})); });
+        const auto exit_ms = Milliseconds([&] { project::Do(p, action::MakeAction(action::view::SetInteractionMode{InteractionMode::Object})); });
         if (staged && !r.view<const MeshEditWork>().empty()) return std::unexpected{"Edit mode exit retained geometry work"};
         if (meshes.HasDirtyGroups(meshes.Get(drawn()))) return std::unexpected{"edit mode exit left stale LOD groups"};
         if (position && meshes.HasDirtyPositions(meshes.Get(drawn()))) return std::unexpected{"position edit exit retained coarse dirt"};
@@ -815,7 +816,7 @@ Result Bench(uint32_t slices, const std::filesystem::path &scene, uint32_t updat
             if (auto result = Capture(r, "MESHEDITOR_EDIT_BENCH_CAPTURE_EXIT"); !result) return result;
             if (std::getenv("MESHEDITOR_EDIT_BENCH_CAPTURE_FINE")) {
                 r.patch<ViewportDisplay>(FirstViewport(r), [](ViewportDisplay &display) { display.LodErrorPixels = 0.f; });
-                p.Frame(action::Drain());
+                p.Frame();
                 SubmitViewports(r);
                 WaitForRender(r);
                 if (auto result = Capture(r, "MESHEDITOR_EDIT_BENCH_CAPTURE_FINE"); !result) return result;

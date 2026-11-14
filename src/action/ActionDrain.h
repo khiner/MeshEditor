@@ -9,6 +9,8 @@ struct Drained {
     bool CommitRequested, CancelRequested;
 };
 
-// Returns and resets the frame's buffered actions and requests.
+// Returns and resets the frame's buffered gesture and requests.
 Drained Drain();
+// Returns and empties the queue of posted steps.
+std::vector<Action> DrainSteps();
 } // namespace action

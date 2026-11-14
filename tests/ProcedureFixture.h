@@ -11,7 +11,7 @@
 // A project fixture for procedure scenarios, with node authoring, viewport clicks and kernel references on clones of a mesh's source.
 struct ProcedureFixture : Fixture {
     void Fails(auto a) {
-        P->Do(action::MakeAction(std::move(a)));
+        project::Do(*P, action::MakeAction(std::move(a)));
         boost::ut::expect(!R.Resources.get<action::Errors>().Messages.empty());
         R.Resources.get<action::Errors>().Messages.clear();
     }

@@ -2,14 +2,12 @@
 
 #include "File.h"
 #include "ProcessEvents.h"
-#include "action/ActionDrain.h"
 #include "project/EntityStore.h"
 #include "project/ProjectSchema.h"
 #include "project/store/History.h"
 
 namespace project {
-// An action's name, and for a field write the component and field it names.
-std::string Label(const action::Action &);
+struct Recording;
 
 // A project archive contains the working directory; an actions archive contains actions, their workspace pages, and their assets.
 // Both archive forms save one final workspace snapshot.
@@ -36,9 +34,10 @@ struct Project {
     bool ClearHistory();
     bool Close();
 
-    std::optional<uint32_t> Do(action::Action, std::string label = {});
-    void Frame(action::Drained);
-    void Enqueue(action::Action a) { Deferred.push_back(std::move(a)); }
+    // Applies the frame's emitted gesture and requests, then the posted steps when no gesture is open.
+    void Frame();
+    // Applies the posted steps now, each as its own history step, after finishing any open gesture.
+    void ApplySteps();
     bool HasStaged() const { return GestureBase.has_value(); }
     void CancelGesture();
     void Settle(EventPass = EventPass::Frame);
@@ -57,9 +56,8 @@ struct Project {
     uint64_t MemoryCap{64ull << 20};
     uint64_t Revision{};
 
-    std::vector<action::Action> RecordedActions;
+    std::unique_ptr<Recording> Recorded; // The recorded actions and the edit draft, defined in project/Recording.h
     std::vector<uint32_t> RecordedWorkspaces;
-    std::vector<action::Action> Deferred;
     std::optional<size_t> StageFirst;
     std::optional<store::Snapshot> GestureBase;
     std::optional<store::Snapshot> StageBase; // The state before the current stage's first step, which each of its previews reapplies from
@@ -67,24 +65,11 @@ struct Project {
     std::optional<uint32_t> Navigation;
     std::optional<uint32_t> Editing; // The node the open gesture replaces on commit
 
-    struct EditDraft {
-        uint32_t Node;
-        uint64_t Revision; // The history revision the actions were decoded at.
-        std::vector<action::Action> RecordedActions;
-    };
-    std::optional<EditDraft> Draft;
     bool RestageRequested{false};
-    // The draft of `node`, decoded anew when the node or the history changed.
-    EditDraft &DraftOf(uint32_t node);
     // Re-runs the draft on its node's parent at frame end.
     // The commit that follows replaces a leaf node and forks a node with children.
     void RequestRestage() { RestageRequested = true; }
 
-    void Tick(const action::Action &, EventPass = EventPass::Frame);
-    // Captures the workspace before each recorded action, then applies it.
-    bool Record(action::Action, EventPass, bool staged = false);
-    bool Record(std::span<action::Action>, EventPass, bool staged);
-    std::expected<void, std::string> RunRecorded(store::History &, std::span<const action::Action>, std::span<const uint32_t>);
     void ResizeRecorded(size_t);
     // Records the actions as a new node, replacing `replace` when it has no children and adding a sibling otherwise.
     uint32_t Commit(std::string label, std::optional<uint32_t> replace = {});

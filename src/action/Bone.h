@@ -1,5 +1,6 @@
 #pragma once
 
+#include "action/Emit.h"
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
 
@@ -61,3 +62,6 @@ using Action = std::variant<
 
 void Apply(state::Registry &, const Action &);
 } // namespace action::bone
+namespace action {
+void Append(Destination, bone::Action);
+}

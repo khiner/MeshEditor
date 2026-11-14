@@ -291,7 +291,7 @@ void TestProject() {
             return largest;
         };
         f.Do(action::io::LoadGltf{gltf});
-        const auto &actions = f.P->DraftOf(*f.P->History.Present).RecordedActions;
+        const auto &actions = project::DraftOf(*f.P, *f.P->History.Present).RecordedActions;
         const auto &path = std::get<action::io::LoadGltf>(std::get<action::io::Action>(actions.front())).Path;
         expect(path == gltf && path.is_absolute());
         expect(max_x() == 1.f);

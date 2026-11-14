@@ -321,6 +321,8 @@ target_link_libraries(MeshEditorEditor PUBLIC MeshEditorProjectStore mesheditor_
 target_link_libraries(MeshEditorPlatform PUBLIC MeshEditorMetal PRIVATE "-framework AppKit" "-framework UniformTypeIdentifiers" "-framework GameController")
 target_link_libraries(MeshEditorUi PUBLIC MeshEditorEditor MeshEditorPlatform mesheditor_implot PRIVATE lunasvg)
 target_include_directories(MeshEditorUi SYSTEM PUBLIC lib/imspinner)
+# Only these sources include action/Action.h, the variant over every domain's actions.
+set_source_files_properties(src/action/Action.cpp src/action/LogSerialize.cpp src/project/Project.cpp src/project/HistoryUi.cpp PROPERTIES COMPILE_DEFINITIONS MESHEDITOR_FULL_ACTION)
 set_source_files_properties(src/FileDialog.mm src/MacPlatform.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 set_property(SOURCE src/project/Sessions.cpp APPEND PROPERTY COMPILE_DEFINITIONS RESTORE_SESSION_RETAIN=${RESTORE_SESSION_RETAIN})
 

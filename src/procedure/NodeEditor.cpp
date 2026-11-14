@@ -2,7 +2,6 @@
 #include "procedure/Macros.h"
 #include "scene/HierarchyInstance.h"
 
-#include "action/Action.h"
 #include "action/View.h"
 #include "mesh/Mesh.h"
 #include "procedure/NodeTheme.h"
@@ -665,19 +664,18 @@ void Connect(const state::Registry &r, NodesPanel &panel, const NodeView &view, 
     panel.DetachNode = NoNode;
     const bool returns = detached && node == left_node && socket == SlotSocket(view, left_node, left_slot);
     if (returns && !NodeSockets(view, node)[socket].Multi) return;
-    std::vector<action::Action> actions;
+    if (!action::Begin(action::Phase::Record)) return;
     if (view.Geometry) {
-        actions.push_back(action::MakeAction(LinkOf(*view.Geometry, owner, panel.DragNode, panel.DragSocket, node, socket, index)));
-        if (detached && !returns) actions.push_back(action::MakeAction(UnlinkOf(view, owner, left_node, left_slot)));
+        action::AddToGesture(LinkOf(*view.Geometry, owner, panel.DragNode, panel.DragSocket, node, socket, index));
+        if (detached && !returns) action::AddToGesture(UnlinkOf(view, owner, left_node, left_slot));
     } else {
         const auto &a = BindingOf(view, panel.DragNode, panel.DragSocket), &b = BindingOf(view, node, socket);
         const auto *input = std::get_if<SceneReference>(&a);
-        actions.push_back(action::MakeAction(input ? action::nodes::AssignReference{*input, std::get<NetworkItem>(b)} : action::nodes::AssignReference{std::get<SceneReference>(b), std::get<NetworkItem>(a)}));
+        action::AddToGesture(input ? action::nodes::AssignReference{*input, std::get<NetworkItem>(b)} : action::nodes::AssignReference{std::get<SceneReference>(b), std::get<NetworkItem>(a)});
         if (const auto *left = detached && !returns ? std::get_if<SceneReference>(&BindingOf(view, left_node, left_slot)) : nullptr; left && ReferenceAccepts(r, *left, {})) {
-            actions.push_back(action::MakeAction(action::nodes::AssignReference{*left, {}}));
+            action::AddToGesture(action::nodes::AssignReference{*left, {}});
         }
     }
-    action::Emit(std::move(actions));
 }
 void Disconnect(const state::Registry &r, const NodeView &view, state::Entity owner, uint32_t node, uint16_t slot) {
     if (view.Geometry) action::Emit(UnlinkOf(view, owner, node, slot));

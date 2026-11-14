@@ -131,7 +131,7 @@ void RandomHistoryWalk(HistoryFixture &f, uint32_t seed, uint32_t steps) {
     // A request known to be a loop is rejected.
     const auto parent_to_active = [&](bool loop) {
         const auto before = parents();
-        f.P->Do(action::MakeAction(action::object::ParentToActive{}));
+        project::Do(*f.P, action::MakeAction(action::object::ParentToActive{}));
         auto &messages = r.Resources.get<action::Errors>().Messages;
         if (messages.empty()) {
             expect(!loop) << at() << "a parent loop was accepted";
@@ -310,7 +310,7 @@ void TestHistory() {
                 ignored.push_back(action::MakeAction(action::view::SetEditMode{Element::Vertex}));
                 ignored.push_back(action::MakeAction(action::object::Delete{}));
                 action::Emit(std::move(ignored));
-                f.P->Frame(action::Drain());
+                f.P->Frame();
                 f.Audit();
             };
             emit(1);
@@ -321,14 +321,14 @@ void TestHistory() {
                 expect(GetMesh(f.R, cube).VertexCount() == 16u);
                 expect(f.P->History.Nodes.size() == nodes);
                 action::Cancel();
-                f.P->Frame(action::Drain());
+                f.P->Frame();
                 expect(f.P->History.MaterializeLive() == before);
                 emit(1);
                 action::Commit();
-                f.P->Frame(action::Drain());
+                f.P->Frame();
             }
             expect(f.P->History.Nodes.size() == nodes + 1);
-            expect(f.P->DraftOf(*f.P->History.Present).RecordedActions.size() == 3u);
+            expect(project::DraftOf(*f.P, *f.P->History.Present).RecordedActions.size() == 3u);
             f.Step(true);
             f.Undo();
             expect(f.P->History.MaterializeLive() == before);
@@ -345,7 +345,7 @@ void TestHistory() {
         failed.push_back(action::MakeAction(action::mesh::Boolean{}));
         failed.push_back(action::MakeAction(action::object::Delete{}));
         action::Emit(std::move(failed));
-        f.P->Frame(action::Drain());
+        f.P->Frame();
         auto &errors = f.R.Resources.get<action::Errors>().Messages;
         expect(errors.size() == 1u);
         errors.clear();
@@ -355,15 +355,15 @@ void TestHistory() {
         actions.push_back(action::MakeAction(action::UpdateOf<&Transform::P>(cube, vec3{1, 0, 0})));
         actions.push_back(action::MakeAction(action::UpdateOf<&Transform::P>(cube, vec3{2, 0, 0})));
         action::Emit(std::move(actions));
-        f.P->Enqueue(action::MakeAction(action::UpdateOf<&Transform::P>(cube, vec3{3, 0, 0})));
-        f.P->Frame(action::Drain());
+        action::Post(action::UpdateOf<&Transform::P>(cube, vec3{3, 0, 0}));
+        f.P->Frame();
         expect(f.R.get<const Transform>(cube).P == vec3{3, 0, 0});
         expect(f.P->History.Nodes.size() == nodes + 2);
         f.Audit();
         f.Step(true);
         f.Undo();
         expect(f.R.get<const Transform>(cube).P == vec3{2, 0, 0});
-        expect(f.P->DraftOf(*f.P->History.Present).RecordedActions.size() == 2u);
+        expect(project::DraftOf(*f.P, *f.P->History.Present).RecordedActions.size() == 2u);
         f.Redo();
     });
     for (const bool orthographic : {false, true}) {
@@ -392,11 +392,11 @@ void TestHistory() {
             const auto box_node = *f.P->History.Present;
             const auto target = f.Camera(viewport).Active.Target;
             f.MoveCamera(viewport, {100, 50, 25});
-            auto &draft = f.P->DraftOf(box_node);
+            auto &draft = project::DraftOf(*f.P, box_node);
             auto &box = std::get<action::selection::ApplyBoxSelect>(std::get<action::selection::Action>(draft.RecordedActions.front()));
             box.Box = {vec2{0}, vec2{1}};
             f.P->RequestRestage();
-            f.P->Frame(action::Drain());
+            f.P->Frame();
             expect(r.all_of<Selected>(cube));
             expect(f.Camera(viewport).Active.Target == vec3{100, 50, 25});
             f.P->CancelGesture();

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "action/Core.h"
+#include "action/Emit.h"
 
 #include <string>
 #include <variant>
@@ -33,3 +34,6 @@ using Action = std::variant<Add, Remove, Rename, LinkSelected, UnlinkSelected>;
 
 void Apply(state::Registry &, const Action &);
 } // namespace action::scene
+namespace action {
+void Append(Destination, scene::Action);
+}

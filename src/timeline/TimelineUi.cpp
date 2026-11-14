@@ -1,4 +1,8 @@
 #include "timeline/TimelineUi.h"
+#include "action/Animation.h"
+#include "action/Core.h"
+#include "action/Timeline.h"
+#include "action/View.h"
 #include "viewport/ViewportIcons.h"
 
 #include "timeline/TimelineTheme.h"
@@ -40,12 +44,13 @@ std::optional<action::timeline::Action> HandleTimelineShortcuts(const TimelinePl
     return {};
 }
 
-std::optional<action::Action> RenderTimeline(const TimelineRange &range, const TimelinePlayback &playback, const TimelineView &view, state::Registry &r, const Animations &animations, std::span<const float> keyframes, const TimelineIcons &icons, const InterfaceTheme &interface_theme, const TimelineTheme &theme, bool &scrubbing) {
+void RenderTimeline(const TimelineRange &range, const TimelinePlayback &playback, const TimelineView &view, state::Registry &r, const Animations &animations, std::span<const float> keyframes, const TimelineIcons &icons, const InterfaceTheme &interface_theme, const TimelineTheme &theme, bool &scrubbing, bool interactive) {
     const float rounding = interface_theme.IconButtonRounding;
     const auto &colors = theme.Colors;
     const float ruler_h = theme.Sizes.RulerHeight;
-    std::optional<action::Action> result;
-    const auto emit = [&](auto leaf) { result = action::MakeAction(std::move(leaf)); };
+    const auto emit = [&](auto leaf) {
+        if (interactive) action::Emit(std::move(leaf));
+    };
     scrubbing = false;
 
     const float w = GetContentRegionAvail().x;
@@ -128,13 +133,13 @@ std::optional<action::Action> RenderTimeline(const TimelineRange &range, const T
     SetNextItemWidth(range_width);
     int start = range.StartFrame, end = range.EndFrame;
     ui::Gesture(DragIntRange2("##range", &start, &end, 1.f, 0, 0, "Start %d", "End %d"), [&] {
-        return start != range.StartFrame ? action::MakeAction(action::timeline::SetStartFrame{start}) : action::MakeAction(action::timeline::SetEndFrame{end});
+        return start != range.StartFrame ? action::timeline::Action{action::timeline::SetStartFrame{start}} : action::timeline::Action{action::timeline::SetEndFrame{end}};
     });
     SetCursorScreenPos({bar_origin.x, bar_origin.y + h});
     Dummy({0, 0});
 
     const auto area = GetContentRegionAvail();
-    if (area.x <= 0 || area.y <= 0) return result;
+    if (area.x <= 0 || area.y <= 0) return;
 
     const auto p0 = GetCursorScreenPos(), p1 = p0 + area;
     InvisibleButton("##timeline", area);
@@ -218,8 +223,6 @@ std::optional<action::Action> RenderTimeline(const TimelineRange &range, const T
             emit(action::timeline::SetView{view.PixelsPerFrame, view.ViewCenterFrame - io.MouseWheelH * 20.0f / view.PixelsPerFrame});
         }
     }
-
-    return result;
 }
 
 void DrawTimelineStyle(state::Registry &r) {

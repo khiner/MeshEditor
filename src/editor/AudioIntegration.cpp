@@ -1,7 +1,9 @@
 #include "editor/AudioIntegration.h"
+#include "ProcessEvents.h"
 #include "project/Assets.h"
 
 #include "SortUnique.h"
+#include "action/Audio.h"
 #include "action/Errors.h"
 #include "audio/AudioDevice.h"
 #include "audio/AudioOutputConfig.h"
@@ -15,7 +17,7 @@
 #include "mesh/MeshPipelines.h"
 #include "mesh/Neighborhood.h"
 #include "physics/PhysicsContact.h"
-#include "project/Project.h"
+#include "physics/PhysicsTypes.h"
 #include "scene/Entity.h"
 #include "scene/SceneChanges.h"
 #include "viewport/Viewport.h"
@@ -578,7 +580,7 @@ void ApplyCompletedModalSolves(state::Registry &r, EventPass pass) {
             if (!result->Model) std::println(stderr, "Modal model computation failed.");
             else if (r.valid(job.Entity) && r.all_of<ModalSolveSettings>(job.Entity)) {
                 auto path = SaveModalModelFile(r.Resources.get<project::Assets>(), *result->Model);
-                if (path) r.Resources.get<project::Project *>()->Enqueue(action::MakeAction(action::audio::ApplyModalModel{job.Entity, std::move(*path)}));
+                if (path) action::Post(action::audio::ApplyModalModel{job.Entity, std::move(*path)});
                 else action::Fail(r, path.error());
             }
         }

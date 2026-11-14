@@ -5,19 +5,41 @@
 using namespace action;
 
 namespace {
+// The frame's gesture, which is open while it has no actions.
 std::optional<std::pair<std::vector<Action>, Phase>> Emitted;
+std::vector<Action> Steps;
 bool CommitRequested = false, CancelRequested = false;
+
+void Push(Destination destination, Action a) {
+    if (destination == Destination::Step) Steps.push_back(std::move(a));
+    else if (Emitted) Emitted->first.push_back(std::move(a));
+}
 } // namespace
 
 namespace action {
-template<typename ActionType> void Emit(ActionType a, Phase phase) { Emit(MakeAction(std::move(a)), phase); }
+bool Begin(Phase phase) {
+    if (Emitted && !Emitted->first.empty()) return false;
+    Emitted.emplace(std::vector<Action>{}, phase);
+    return true;
+}
+void Append(Destination d, Core a) { Push(d, std::move(a)); }
+void Append(Destination d, selection::Action a) { Push(d, std::move(a)); }
+void Append(Destination d, object::Action a) { Push(d, std::move(a)); }
+void Append(Destination d, view::Action a) { Push(d, std::move(a)); }
+void Append(Destination d, physics::Action a) { Push(d, std::move(a)); }
+void Append(Destination d, audio::Action a) { Push(d, std::move(a)); }
+void Append(Destination d, bone::Action a) { Push(d, std::move(a)); }
+void Append(Destination d, timeline::Action a) { Push(d, std::move(a)); }
+void Append(Destination d, io::Action a) { Push(d, std::move(a)); }
+void Append(Destination d, animation::Action a) { Push(d, std::move(a)); }
+void Append(Destination d, mesh::Action a) { Push(d, std::move(a)); }
+void Append(Destination d, nodes::Action a) { Push(d, std::move(a)); }
+void Append(Destination d, scene::Action a) { Push(d, std::move(a)); }
 void Emit(Action a, Phase phase) {
-    std::vector<Action> actions;
-    actions.push_back(std::move(a));
-    Emit(std::move(actions), phase);
+    if (Begin(phase)) Push(Destination::Gesture, std::move(a));
 }
 void Emit(std::vector<Action> actions, Phase phase) {
-    if (!Emitted && !actions.empty()) Emitted.emplace(std::move(actions), phase);
+    if (!actions.empty() && Begin(phase)) Emitted->first = std::move(actions);
 }
 void Commit() { CommitRequested = true; }
 void Cancel() { CancelRequested = true; }
@@ -28,19 +50,9 @@ void Fail(state::Registry &r, std::string message, bool unsupported_extensions) 
 }
 
 Drained Drain() {
-    return {std::exchange(Emitted, {}), std::exchange(CommitRequested, false), std::exchange(CancelRequested, false)};
+    auto emitted = std::exchange(Emitted, {});
+    if (emitted && emitted->first.empty()) emitted.reset();
+    return {std::move(emitted), std::exchange(CommitRequested, false), std::exchange(CancelRequested, false)};
 }
+std::vector<Action> DrainSteps() { return std::exchange(Steps, {}); }
 } // namespace action
-
-namespace {
-using EmitPtr = void (*)();
-template<typename DV> constexpr auto DomainEmits() {
-    return []<size_t... I>(std::index_sequence<I...>) {
-        const auto inst = [](auto fn) { return reinterpret_cast<EmitPtr>(fn); };
-        return std::array<EmitPtr, sizeof...(I)>{
-            inst(static_cast<void (*)(std::variant_alternative_t<I, DV>, Phase)>(&Emit))...,
-        };
-    }(std::make_index_sequence<std::variant_size_v<DV>>{});
-}
-const auto _ = MapDomains([]<typename DV>() { return DomainEmits<DV>(); });
-} // namespace

@@ -1,4 +1,11 @@
 #include "metal/AutoreleaseScope.h"
+#include "action/Animation.h"
+#include "action/Core.h"
+#include "action/Io.h"
+#include "action/Object.h"
+#include "action/Selection.h"
+#include "action/Timeline.h"
+#include "action/View.h"
 #include "viewport/ViewportSchema.h"
 
 #include "Compress.h"
@@ -273,7 +280,8 @@ using project::Session;
 
 // Applies the action, whose settle takes a view setup it asks for before the next one reads or overrides the view.
 void Perform(state::Registry &r, auto action) {
-    Session(r).Do(action::MakeAction(std::move(action)));
+    action::Post(std::move(action));
+    Session(r).ApplySteps();
 }
 
 // Finish GPU work and stop playback before modifying scene structure.
@@ -463,8 +471,6 @@ void RenderDebugPanel(state::Registry &r, const mtl::Context &ctx, CA::MetalLaye
             if (BeginTabItem("Engine")) {
                 SeparatorText("Buffer memory");
                 TextUnformatted(DebugBufferHeapUsage(r).c_str());
-                SeparatorText("Action");
-                Text("sizeof(Action): %zu bytes", sizeof(action::Action));
                 EndTabItem();
             }
             if (BeginTabItem("Audio")) {
@@ -600,14 +606,12 @@ EditorPanelsFrame BeginEditorPanels(
             Unindent(6);
             PopStyleVar();
             const auto &keyframes = r.get<const SelectedKeyframes>(state::Document).Frames;
-            if (auto action = RenderTimeline(
-                    r.get<const TimelineRange>(state::Document), r.get<const TimelinePlayback>(state::Document),
-                    r.get<const TimelineView>(state::Document), r, r.get<const Animations>(state::Document),
-                    keyframes, r.Resources.get<const ViewportIcons>().Timeline, r.get<const InterfaceTheme>(state::Document), r.get<const TimelineTheme>(state::Document), scrubbing
-                );
-                interactive && action) {
-                action::Emit(std::move(*action));
-            }
+            RenderTimeline(
+                r.get<const TimelineRange>(state::Document), r.get<const TimelinePlayback>(state::Document),
+                r.get<const TimelineView>(state::Document), r, r.get<const Animations>(state::Document),
+                keyframes, r.Resources.get<const ViewportIcons>().Timeline, r.get<const InterfaceTheme>(state::Document), r.get<const TimelineTheme>(state::Document), scrubbing, interactive
+            );
+
         }
         End();
         PopStyleVar();
@@ -1383,20 +1387,19 @@ struct BenchmarkDriver {
                 break;
             case CaptureRequest::BenchmarkAction::Transform: {
                 const float offset = Frame % 2 == 0 ? 0.05f : 0.f;
-                std::vector<action::Action> actions;
-                for (const auto &[entity, base] : Transforms) actions.push_back(action::MakeAction(action::UpdateOf<&Transform::P>(entity, base.P + vec3{0, offset, 0})));
-                action::Emit(std::move(actions));
+                if (action::Begin(action::Phase::Record)) {
+                    for (const auto &[entity, base] : Transforms) action::AddToGesture(action::UpdateOf<&Transform::P>(entity, base.P + vec3{0, offset, 0}));
+                }
                 break;
             }
             case CaptureRequest::BenchmarkAction::Visibility: {
-                std::vector<action::Action> actions;
+                if (!action::Begin(action::Phase::Record)) break;
                 if (Frame == 0 && !Transforms.empty()) {
                     std::vector<state::Entity> entities;
                     for (const auto &[entity, _] : Transforms) entities.push_back(entity);
-                    actions.push_back(action::MakeAction(action::selection::ApplyTreeSelection{.Entities = entities, .SelectCount = uint32_t(entities.size()), .NavToActive = entities.front(), .Clear = action::selection::ApplyTreeSelection::ClearKind::All}));
+                    action::AddToGesture(action::selection::ApplyTreeSelection{.Entities = entities, .SelectCount = uint32_t(entities.size()), .NavToActive = entities.front(), .Clear = action::selection::ApplyTreeSelection::ClearKind::All});
                 }
-                actions.push_back(action::MakeAction(action::object::SetVisible{Frame % 2 != 0}));
-                action::Emit(std::move(actions));
+                action::AddToGesture(action::object::SetVisible{Frame % 2 != 0});
                 break;
             }
             case CaptureRequest::BenchmarkAction::BoxSelectOrbit:
@@ -1769,7 +1772,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
             }
         }
         // Actions can add and remove viewports, which ends every viewport reference taken above.
-        Session(r).Frame(action::Drain());
+        Session(r).Frame();
         ReportActionErrors(r);
         if (!frame_state.BoxDrag) {
             for (const auto [viewport, camera] : r.view<const ViewCameraState>().each()) {
@@ -1920,7 +1923,7 @@ SceneStatus RunHeadlessScene(state::Registry &r, const char *initial_file, bool 
             const profile::CpuScope scope{"Frame"};
             if (bench_frames > 0 && settled) benchmark.Apply(r, viewport, RenderExtentPx(r, viewport));
             driver.EmitFrameActions(r, viewport, settled, extent);
-            Session(r).Frame(action::Drain());
+            Session(r).Frame();
             ReportActionErrors(r);
             // Continue event processing while audio-only capture suppresses GPU rendering after initial framing.
             if (!driver.AudioOnly() || !driver.RecordingStarted) SubmitViewports(r);

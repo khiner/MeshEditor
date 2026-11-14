@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CameraTypes.h"
+#include "action/Emit.h"
 #include "gizmo/TransformGizmoTypes.h"
 #include "gpu/Element.h"
 #include "gpu/WorkspaceLights.h"
@@ -128,3 +129,6 @@ using Action = std::variant<
 
 void Apply(state::Registry &, const Action &);
 } // namespace action::view
+namespace action {
+void Append(Destination, view::Action);
+}

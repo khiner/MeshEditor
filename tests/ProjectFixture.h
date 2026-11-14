@@ -9,6 +9,7 @@
 #include "animation/MorphWeights.h"
 #include "armature/ArmatureComponents.h"
 #include "editor/Engine.h"
+#include "project/Recording.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
 #include "object/ObjectOps.h"
@@ -90,7 +91,7 @@ struct Fixture : Engine {
         boost::ut::expect(why.empty());
     }
     uint32_t Do(auto a) {
-        const auto node = P->Do(action::MakeAction(std::move(a)));
+        const auto node = project::Do(*P, action::MakeAction(std::move(a)));
         Audit();
         if (Step) Step(true);
         return node.value();
@@ -104,12 +105,12 @@ struct Fixture : Engine {
     }
     void Stage(auto a) {
         action::Emit(std::move(a), action::Phase::Stage);
-        P->Frame(action::Drain());
+        P->Frame();
         boost::ut::expect(R.Resources.get<action::Errors>().Messages.empty());
     }
     void CommitGesture() {
         action::Commit();
-        P->Frame(action::Drain());
+        P->Frame();
         boost::ut::expect(!P->HasStaged());
         Audit();
         if (Step) Step(true);
