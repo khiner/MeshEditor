@@ -239,7 +239,6 @@ mesheditor_library(MeshEditorEditor COLD
     src/action/Core.cpp
     src/action/Io.cpp
     src/project/Sessions.cpp
-    src/action/LogSerialize.cpp
     src/action/Mesh.cpp
     src/action/Nodes.cpp
     src/action/Object.cpp
@@ -322,7 +321,7 @@ target_link_libraries(MeshEditorPlatform PUBLIC MeshEditorMetal PRIVATE "-framew
 target_link_libraries(MeshEditorUi PUBLIC MeshEditorEditor MeshEditorPlatform mesheditor_implot PRIVATE lunasvg)
 target_include_directories(MeshEditorUi SYSTEM PUBLIC lib/imspinner)
 # Only these sources include action/Action.h, the variant over every domain's actions.
-set_source_files_properties(src/action/Action.cpp src/action/LogSerialize.cpp src/project/Project.cpp src/project/HistoryUi.cpp PROPERTIES COMPILE_DEFINITIONS MESHEDITOR_FULL_ACTION)
+set_source_files_properties(src/action/Action.cpp src/project/Project.cpp src/project/HistoryUi.cpp PROPERTIES COMPILE_DEFINITIONS MESHEDITOR_FULL_ACTION)
 set_source_files_properties(src/FileDialog.mm src/MacPlatform.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 set_property(SOURCE src/project/Sessions.cpp APPEND PROPERTY COMPILE_DEFINITIONS RESTORE_SESSION_RETAIN=${RESTORE_SESSION_RETAIN})
 

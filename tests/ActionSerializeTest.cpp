@@ -1,5 +1,6 @@
 #include "Path.h"
-#include "action/LogSerialize.h"
+#include "PathSerialize.h"
+#include "action/Action.h"
 #include "animation/MorphWeights.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
@@ -9,6 +10,7 @@
 #include "gltf/GltfScene.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/TetBuffers.h"
+#include "numeric/Serialize.h"
 #include "procedure/NodeTheme.h"
 #include "procedure/Procedure.h"
 #include "render/Instance.h"
@@ -32,7 +34,6 @@
 #include <zpp_bits.h>
 
 #include <filesystem>
-#include <sstream>
 
 using namespace action;
 
@@ -159,52 +160,24 @@ void Fill(Action &a) {
     std::visit([&](auto &domain) { std::visit([&](auto &leaf) { filler.Fill(leaf); }, domain); }, a);
 }
 
-std::stringstream MakeStream() { return std::stringstream{std::ios::in | std::ios::out | std::ios::binary}; }
-
 template<state::TypeId Base, state::TypeId Count, class... Ts> void ForEachType(state::Schema<Base, Count, Ts...>, auto &&fn) { (fn.template operator()<Ts>(), ...); }
 } // namespace
 
 const boost::ut::suite ActionSerialize = [] {
     using namespace boost::ut;
 
-    "every action round-trips through the log with every member filled"_test = [] {
+    "every action round-trips through its encoding with every member filled"_test = [] {
         for (auto &a : AllDefaultActions()) {
             Fill(a);
-            auto out = MakeStream();
-            SerializeAction(a, out);
-            const auto encoded = out.str();
-            std::vector<Action> decoded;
-            StreamActions(out, [&](Action &&d) { decoded.emplace_back(std::move(d)); });
-            expect(decoded.size() == 1u) << IndexOf(a).first << IndexOf(a).second;
-            if (decoded.size() != 1u) continue;
-            auto again = MakeStream();
-            SerializeAction(decoded[0], again);
-            expect(again.str() == encoded) << IndexOf(a).first << IndexOf(a).second;
+            std::vector<std::byte> encoded, again;
+            zpp::bits::out{encoded}(a).or_throw();
+            Action decoded;
+            const bool read = !zpp::bits::failure(zpp::bits::in{encoded}(decoded));
+            expect(read) << IndexOf(a).first << IndexOf(a).second;
+            if (!read) continue;
+            zpp::bits::out{again}(decoded).or_throw();
+            expect(bool(again == encoded)) << IndexOf(a).first << IndexOf(a).second;
         }
-    };
-
-    "a stream reads back in order up to a limit and stops at a truncated record"_test = [] {
-        auto out = MakeStream();
-        std::vector<std::pair<size_t, size_t>> written;
-        size_t last_record = 0;
-        for (auto &a : AllDefaultActions()) {
-            Fill(a);
-            last_record = out.str().size();
-            SerializeAction(a, out);
-            written.emplace_back(IndexOf(a));
-        }
-        const auto all = out.str();
-        const auto read = [&](std::string bytes, uint64_t limit = std::numeric_limits<uint64_t>::max()) {
-            auto in = MakeStream();
-            in << bytes;
-            std::vector<std::pair<size_t, size_t>> indices;
-            StreamActions(in, [&](Action &&d) { indices.emplace_back(IndexOf(d)); }, limit);
-            return indices;
-        };
-        expect(read(all, 0).empty());
-        expect(bool(read(all, 1) == std::vector{written.front()}));
-        expect(bool(read(all) == written));
-        for (size_t length = last_record; length < all.size(); ++length) expect(read(all.substr(0, length)).size() == written.size() - 1u) << length;
     };
 
     // Each record also appends after a prefix within reserved capacity, leaving the prefix and capacity as they were.
