@@ -23,6 +23,8 @@
 #include "viewport/FrameState.h"
 #include "viewport/Viewport.h"
 
+#include <zpp_bits.h>
+
 namespace project {
 namespace {
 struct SavedState {

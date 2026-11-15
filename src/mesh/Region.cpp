@@ -7,6 +7,8 @@
 #include "mesh/ScratchPasses.h"
 #include "state/Registry.h"
 
+#include <numeric>
+
 RegionPlane PlaneAt(vec3 point, vec3 normal) {
     const auto n = Normalize(normal);
     const vec3 axis = std::abs(n.x) < std::abs(n.y) ? (std::abs(n.x) < std::abs(n.z) ? vec3{1.f, 0.f, 0.f} : vec3{0.f, 0.f, 1.f}) : (std::abs(n.y) < std::abs(n.z) ? vec3{0.f, 1.f, 0.f} : vec3{0.f, 0.f, 1.f});

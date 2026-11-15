@@ -2,7 +2,6 @@
 
 #include "SlottedRange.h"
 #include "metal/Buffer.h"
-#include "project/store/History.h"
 
 template<typename T>
 struct BufferArena {
@@ -14,11 +13,7 @@ struct BufferArena {
         TrackAllocator(history, name);
     }
     // Runtime binding records restore allocation identity and rebuild their small descriptor from canonical addresses.
-    void TrackAllocator(store::History &history, const std::string &name) {
-        Tracked = std::make_unique<store::Records>(&Allocator, AllocatorCodec, RangeAllocator::HistoryLevels);
-        Allocator.History = Tracked.get();
-        history.Track(*Tracked, name + ".alloc", 0);
-    }
+    void TrackAllocator(store::History &history, const std::string &name) { Tracked = TrackRecords(Allocator, history, name + ".alloc"); }
 
     void ReserveAdditional(uint64_t count) {
         if (count == 0) return;
@@ -128,6 +123,6 @@ private:
     void WriteRange(uint32_t offset, std::span<const T> values) { Buffer.Update(BytesOf(values), offset * sizeof(T)); }
 
     RangeAllocator Allocator;
-    std::unique_ptr<store::Records> Tracked;
+    RangeAllocator::TrackedRecords Tracked{nullptr, nullptr};
     uint32_t Planned{0};
 };

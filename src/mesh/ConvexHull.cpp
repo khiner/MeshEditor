@@ -6,6 +6,8 @@
 #include "mesh/ScratchPasses.h"
 #include "metal/Dispatch.h"
 
+#include <algorithm>
+
 std::vector<std::vector<std::vector<uint32_t>>> ConvexHulls(state::Registry &r, mtl::ComputeChain &chain, uint32_t positions, std::span<const uint32_t> first_point) {
     const profile::CpuScope scope{"ConvexHulls"};
     const auto sets = uint32_t(first_point.size() - 1u), points = first_point.back();

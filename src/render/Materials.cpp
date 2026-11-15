@@ -1,4 +1,6 @@
 #include "mesh/MeshStore.h"
+#include "project/store/History.h"
+#include "project/store/Records.h"
 #include "render/MaterialComponents.h"
 #include "state/Registry.h"
 

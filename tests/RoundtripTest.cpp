@@ -25,6 +25,7 @@
 #include "snapshot/Workspace.h"
 
 #include "numeric/FastGltf.h"
+#include <numeric>
 #include <print>
 #include <simdjson.h>
 

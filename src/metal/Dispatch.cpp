@@ -5,6 +5,7 @@
 #include "metal/Shader.h"
 
 #include <atomic>
+#include <exception>
 
 namespace mtl {
 namespace {

@@ -7,7 +7,9 @@
 
 #include "Profile.h"
 #include "SortUnique.h"
+#include "project/store/History.h"
 #include "project/store/Pages.h"
+#include "project/store/Records.h"
 
 #include <map>
 

@@ -38,6 +38,7 @@
 
 #include "numeric/FastGltf.h"
 #include <fastgltf/core.hpp>
+#include <numeric>
 
 namespace gltf {
 using namespace detail;

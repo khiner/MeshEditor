@@ -4,6 +4,8 @@
 #include "mesh/ScratchChunks.h"
 #include "metal/BufferArena.h"
 
+#include <algorithm>
+
 inline Range WorkStorageRange(ElementWork work) { return {work.Storage.Offset, WorkHeaderWords + work.Capacity * (WorkBlockWords + 2u)}; }
 inline uint64_t WorkArgsOffset(ElementWork work, bool groups = false) { return uint64_t(work.Storage.Offset + (groups ? 5u : 2u)) * sizeof(uint32_t); }
 inline uint32_t WorkCapacity(uint32_t count, uint64_t blocks) {

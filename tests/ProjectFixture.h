@@ -26,6 +26,8 @@
 #include "viewport/Viewport.h"
 #include "viewport/ViewportComponents.h"
 
+#include <numeric>
+
 // Compares rendered images, which --no-render skips.
 inline bool Render{true};
 

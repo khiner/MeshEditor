@@ -5,6 +5,7 @@
 #include "render/ClusterLod.h"
 #include "state/Registry.h"
 #include <map>
+#include <numeric>
 
 namespace {
 constexpr uint32_t MaxLeafRecords{2u * ClusterLodSpanLeafRecords}, MaxNodeChildren{2u * ClusterLodSpanNodeWidth};

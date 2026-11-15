@@ -6,6 +6,7 @@
 #include "gpu/MeshElementSet.h"
 #include "metal/BufferArena.h"
 
+#include <algorithm>
 #include <set>
 
 struct ElementSetRef {

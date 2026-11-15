@@ -5,6 +5,8 @@
 #include "mesh/MeshStore.h"
 #include "state/Registry.h"
 
+#include <numeric>
+
 void TopologyReadView::Add(state::Registry &r, uint32_t id, const MeshClosure &neighborhood, const BufferArena<uint32_t> &storage) {
     const profile::CpuScope scope{"TopologyReadView"};
     if (!neighborhood.Counts[0]) return;

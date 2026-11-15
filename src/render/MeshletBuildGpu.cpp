@@ -14,6 +14,7 @@
 #include "state/Registry.h"
 
 #include <format>
+#include <numeric>
 
 namespace {
 constexpr uint32_t TileSize = 256, RecordWords = sizeof(MeshletRecord) / sizeof(uint32_t);

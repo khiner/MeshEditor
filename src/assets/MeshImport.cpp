@@ -1,5 +1,6 @@
 #include "assets/MeshImport.h"
 #include <format>
+#include <fstream>
 #include <tiny_obj_loader.h>
 #include <tinyply.h>
 

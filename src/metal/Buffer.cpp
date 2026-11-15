@@ -8,6 +8,7 @@
 #include "project/store/History.h"
 #include "project/store/Pages.h"
 
+#include <algorithm>
 #include <format>
 
 namespace mtl {

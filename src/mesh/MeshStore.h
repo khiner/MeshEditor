@@ -24,7 +24,9 @@
 #include "mesh/SelectionQuery.h"
 #include "mesh/SelectionView.h"
 #include "mesh/VertexFanStore.h"
+#include "project/store/LiveTrie.h"
 
+#include <expected>
 #include <mutex>
 
 namespace mtl {

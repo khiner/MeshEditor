@@ -11,6 +11,8 @@
 
 #include "state/Registry.h"
 
+#include <numeric>
+
 namespace {
 // An authored corner normal within 0.05 degrees of the derived one counts as derivable and is dropped.
 constexpr float AuthoredMatchDot{0.99999962f};
