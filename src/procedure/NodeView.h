@@ -23,7 +23,6 @@ struct NodeView {
     std::vector<Socket> Sockets;
     std::vector<std::string> Labels;
     std::vector<PortBinding> Bindings;
-    std::vector<std::pair<uint32_t, uint32_t>> Relationships;
 };
 inline auto WiresOf(const NodeView &view) { return std::span{view.Geometry ? view.Geometry->Wires : view.Wires}; }
 inline auto InputsFirst(const NodeView &view) { return std::span{view.Geometry ? view.Geometry->InputFirst : view.InputFirst}; }
@@ -50,9 +49,10 @@ inline bool InTray(const NodeView &view, uint32_t node, uint16_t socket) { retur
 inline uint16_t SocketId(const NodeView &view, uint32_t node, uint16_t socket) { return SocketId(*view.Geometry, node, socket); }
 inline const PortBinding &BindingOf(const NodeView &view, uint32_t node, uint16_t socket) { return view.Bindings[view.SocketFirst[node] + socket]; }
 NodeView SceneNodeDefinitions(const state::Registry &, state::Entity network);
+// The kind of item, such as "Mesh" or "Physics material".
+const char *ItemLabel(const state::Registry &, NetworkItem);
 void DrawSceneAddMenu(const state::Registry &, state::Entity network);
 void DrawSceneNodeMenu(const state::Registry &, NodesPanel &, NetworkItem);
-std::string ReferenceDescription(const state::Registry &, const PortBinding &);
-void DrawReferenceMenu(const state::Registry &, state::Entity network, SceneReference);
+void DrawReferenceMenu(const state::Registry &, NodesPanel &, SceneReference);
 bool EnterNode(const state::Registry &, NodesPanel &, NetworkItem);
 } // namespace procedure

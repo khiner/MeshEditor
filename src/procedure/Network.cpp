@@ -2,7 +2,6 @@
 #include "SortUnique.h"
 #include "action/Errors.h"
 #include "action/Nodes.h"
-#include "animation/Clips.h"
 #include "armature/ArmatureComponents.h"
 #include "physics/PhysicsTypes.h"
 #include "procedure/Procedure.h"
@@ -18,25 +17,37 @@ state::Entity NetworkRoot(const state::Registry &r, state::Entity network) {
     while (const auto *subnet = r.try_get<const NetworkSubnet>(network)) network = subnet->Parent;
     return network;
 }
+uint32_t ItemCount(const state::Registry &r, ItemKind kind) {
+    if (kind == ItemKind::Material) return uint32_t(r.Resources.get<const MaterialStore>().Names.size());
+    const auto *textures = r.try_get<const MaterializedTextures>(state::Document);
+    return textures ? uint32_t(textures->Items.size()) : 0u;
+}
 namespace {
+// The kinds of entity the document page shows: the scenes and the items their objects share.
+using DocumentKinds = TypeList<Scene, HierarchyDefinition, PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef>;
+// Whether the document or the scene holds the item.
+bool IsLeaf(const state::Registry &r, state::Entity root, NetworkItem item) {
+    const auto e = item.Entity;
+    if (root == state::Document) {
+        if (item.Kind != ItemKind::Entity) return item.Index < ItemCount(r, item.Kind);
+        return r.valid(e) && []<typename... Ks>(const state::Registry &r, state::Entity e, TypeList<Ks...>) { return r.any_of<Ks...>(e); }(r, e, DocumentKinds{});
+    }
+    if (item.Kind != ItemKind::Entity || !r.valid(e) || !r.all_of<ObjectKind>(e)) return false;
+    if (!InScene(r, e, root) || r.any_of<SubElementOf, BoneSubPartOf, BoneJoint>(e)) return false;
+    if (const auto *member = r.try_get<const HierarchyMember>(e); member && member->Root != e) return false;
+    // An instance a procedure generates shows on its parent object's page.
+    const auto parent = ParentOrNull(r, e);
+    const auto *object = parent == state::Null ? nullptr : r.try_get<const Instance>(parent);
+    const auto *generated = object ? r.try_get<const ProcedureInstances>(object->Entity) : nullptr;
+    return !generated || !std::ranges::contains(generated->Entities, e);
+}
 std::vector<NetworkItem> CanonicalItems(const state::Registry &r, state::Entity network) {
     std::vector<NetworkItem> items;
     if (network == state::Document) {
-        items.push_back({state::Document});
         const auto append = [&]<typename T>() { for (const auto e : r.view<const T>()) items.push_back({e}); };
-        append.template operator()<Scene>();
-        append.template operator()<HierarchyDefinition>();
-        for (const auto e : r.view<const GeometryProcedure>())
-            if (!r.all_of<HierarchyGeometry>(e)) items.push_back({e});
-        append.template operator()<Armature>();
-        append.template operator()<PhysicsMaterial>();
-        append.template operator()<CollisionSystem>();
-        append.template operator()<CollisionFilter>();
-        append.template operator()<PhysicsJointDef>();
-        for (uint32_t i = 0; i < r.get<const Animations>(state::Document).Names.size(); ++i) items.push_back({state::Document, i, ItemKind::Animation});
-        for (uint32_t i = 0; i < r.Resources.get<const MaterialStore>().Names.size(); ++i) items.push_back({state::Document, i, ItemKind::Material});
-        if (const auto *textures = r.try_get<const MaterializedTextures>(state::Document)) {
-            for (uint32_t i = 0; i < textures->Items.size(); ++i) items.push_back({state::Document, i, ItemKind::Texture});
+        [&]<typename... Ks>(TypeList<Ks...>) { (append.template operator()<Ks>(), ...); }(DocumentKinds{});
+        for (const auto kind : {ItemKind::Material, ItemKind::Texture}) {
+            for (uint32_t i = 0; i < ItemCount(r, kind); ++i) items.push_back({state::Document, i, kind});
         }
     } else if (const auto *object = r.try_get<const Instance>(network); object && r.all_of<ProcedureInstances>(object->Entity)) {
         for (const auto e : r.get<const ProcedureInstances>(object->Entity).Entities)
@@ -48,14 +59,8 @@ std::vector<NetworkItem> CanonicalItems(const state::Registry &r, state::Entity 
     } else if (const auto *armature = r.try_get<const ArmatureObject>(network)) {
         for (const auto e : armature->BoneEntities) items.push_back({e});
     } else if (r.all_of<Scene>(network)) {
-        std::vector<state::Entity> generated;
-        for (const auto [_, instances] : r.view<const ProcedureInstances>().each()) generated.append_range(instances.Entities);
-        SortUnique(generated);
         for (const auto e : r.view<const ObjectKind>()) {
-            if (!InScene(r, e, network) || r.any_of<SubElementOf, BoneSubPartOf, BoneJoint>(e)) continue;
-            if (std::ranges::binary_search(generated, e)) continue;
-            if (const auto *member = r.try_get<const HierarchyMember>(e); member && member->Root != e) continue;
-            items.push_back({e});
+            if (IsLeaf(r, network, {e})) items.push_back({e});
         }
     }
     SortUnique(items);
@@ -93,6 +98,22 @@ std::vector<NetworkItem> NetworkItems(const state::Registry &r, state::Entity ne
     std::erase_if(items, [&](auto item) { return std::ranges::binary_search(contained, item); });
     SortUnique(items);
     return items;
+}
+bool ShowsItem(const state::Registry &r, state::Entity network, NetworkItem item) {
+    const auto e = item.Entity;
+    if (const auto owner = r.all_of<Subnet>(network) ? r.get<const ProcedureNode>(network).Procedure : network; r.all_of<GeometryProcedure>(owner)) {
+        return item.Kind == ItemKind::Entity && r.valid(e) && r.all_of<ProcedureNode>(e) && (e == network ? owner != network : NetworkOf(r, e) == network);
+    }
+    const auto root = NetworkRoot(r, network);
+    // The document and a scene hold too many items to list for one check, so they answer per item.
+    if (root != state::Document && !r.all_of<Scene>(root)) return std::ranges::binary_search(NetworkItems(r, network), item);
+    if (item.Kind == ItemKind::Entity && r.valid(e) && r.all_of<NetworkSubnet>(e)) return r.get<const NetworkSubnet>(e).Parent == network;
+    if (!IsLeaf(r, root, item)) return false;
+    if (network != root) return std::ranges::binary_search(r.get<const NetworkSubnet>(network).Members, item);
+    for (const auto [subnet, members] : r.view<const NetworkSubnet>().each()) {
+        if (NetworkRoot(r, subnet) == root && std::ranges::binary_search(members.Members, item)) return false;
+    }
+    return true;
 }
 NetworkItem NetworkRepresentative(const state::Registry &r, state::Entity network, NetworkItem item) {
     const auto root = NetworkRoot(r, network);
@@ -174,7 +195,7 @@ void Apply(state::Registry &r, const GroupItems &a) {
     EraseItems(r, a.Network, items);
     InsertItems(r, entity, items);
     InsertItems(r, a.Network, std::array{NetworkItem{entity}});
-    ExposeNetworkReferences(r, entity);
+    DropUnreachablePorts(r, NetworkRoot(r, a.Network));
     r.emplace_or_replace<NetworkActive>(a.Network, NetworkItem{entity}, std::vector<NetworkItem>{{entity}});
 }
 void Apply(state::Registry &r, const UngroupItems &a) {
@@ -200,10 +221,7 @@ void Apply(state::Registry &r, const MoveItems &a) {
     }
     EraseItems(r, a.Network, items);
     InsertItems(r, a.Destination, items);
-    ReconcileNetworkPorts(r);
-    for (const auto subnet : SortedEntities(r.view<const NetworkSubnet>())) {
-        if (NetworkRoot(r, subnet) == NetworkRoot(r, a.Destination)) ExposeNetworkReferences(r, subnet);
-    }
+    DropUnreachablePorts(r, NetworkRoot(r, a.Destination));
     r.emplace_or_replace<NetworkActive>(a.Destination, items.empty() ? NetworkItem{} : items.back(), items);
     r.emplace_or_replace<NetworkActive>(a.Network);
 }

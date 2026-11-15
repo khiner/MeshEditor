@@ -184,6 +184,10 @@ std::optional<Core> ReadUpdate(const state::Registry &r, state::Entity entity, s
     return entry ? entry->ReadUpdate(r, entity, offset) : std::nullopt;
 }
 
+void TrackFieldRemovals(state::DirtySet &set) {
+    for (const auto &entry : Entries) set.Track(entry.Type, state::Event::Destroy);
+}
+
 state::Entity ActiveUpdateTarget(const state::Registry &r, state::TypeKey key) {
     const auto *entry = EntryOf(key);
     return entry ? entry->Active(r) : state::Null;

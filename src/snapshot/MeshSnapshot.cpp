@@ -23,7 +23,7 @@ void RegisterMesh(Tables &tables) {
             procedure::NodeKinds{}
         ),
         TypeList<>{},
-        TypeList<MeshGeometryDirty, MeshPositionsChanged, AuthoredCornerNormals, procedure::CookPlan, procedure::StagedNode>{}
+        TypeList<MeshGeometryDirty, MeshPositionsChanged, AuthoredCornerNormals, procedure::CookPlan, procedure::StagedNode, procedure::NetworkNode>{}
     );
 }
 } // namespace snapshot::detail

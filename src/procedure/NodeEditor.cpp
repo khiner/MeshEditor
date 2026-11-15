@@ -1,4 +1,5 @@
 #include "procedure/NodeEditor.h"
+#include "SortUnique.h"
 #include "procedure/Macros.h"
 #include "scene/Entity.h"
 #include "scene/HierarchyInstance.h"
@@ -300,12 +301,17 @@ NodeView GeometryNodeDefinitions(const state::Registry &r, const CookPlan &plan,
     }
     return view;
 }
+// The view's node for the item, or none.
+// A scene page's nodes are in item order.
+uint32_t NodeOf(const NodeView &view, NetworkItem item) {
+    if (view.Geometry) return item.Kind == ItemKind::Entity ? IndexOf(*view.Geometry, item.Entity) : NoNode;
+    const auto at = std::ranges::lower_bound(view.Nodes, item, {}, &EditorNode::Item);
+    return at != view.Nodes.end() && at->Item == item ? uint32_t(at - view.Nodes.begin()) : NoNode;
+}
 uint32_t ActiveIndex(const state::Registry &r, const NodeView &view) {
     if (view.Geometry) return ActiveIndex(r, *view.Geometry);
     const auto *selection = r.try_get<const NetworkActive>(view.Network);
-    const auto active = selection ? selection->Item : NetworkItem{FindActiveEntity(r)};
-    const auto at = std::ranges::find(view.Nodes, active, &EditorNode::Item);
-    return at == view.Nodes.end() ? NoNode : uint32_t(at - view.Nodes.begin());
+    return NodeOf(view, selection ? selection->Item : NetworkItem{FindActiveEntity(r)});
 }
 bool Selected(const state::Registry &r, const NodeView &view, uint32_t node) {
     const auto owner = view.Geometry ? r.get<const ProcedureNode>(view.Nodes[node].Item.Entity).Procedure : view.Network;
@@ -397,34 +403,69 @@ bool Clear(const Box &a, const Box &b) {
     if (a.Y >= b.Y + b.H || b.Y >= a.Y + a.H) return true;
     return b.X >= a.X + a.W + uint32_t(a.Out || b.In) || a.X >= b.X + b.W + uint32_t(b.Out || a.In);
 }
-// Whether every box of the group, moved by the offset, stays on the canvas, keeps a free cell left of its inputs, and is clear of every placed box.
-bool Fits(std::span<const Box> boxes, const std::vector<bool> &placed, std::span<const uint32_t> group, int64_t dx, int64_t dy) {
+// Finds the entries whose rows meet a range of rows, by buckets of RowBucket rows.
+// An entry that spans LongBuckets buckets or more is in Long, which every search reports.
+constexpr uint32_t RowBucket{8u}, LongBuckets{32u};
+struct RowIndex {
+    struct Entry {
+        uint32_t Id, Top;
+    };
+    std::unordered_map<uint32_t, std::vector<Entry>> Buckets;
+    std::vector<uint32_t> Long;
+};
+void AddRows(RowIndex &index, uint32_t id, uint32_t top, uint32_t bottom) {
+    const auto first = top / RowBucket, last = bottom / RowBucket;
+    if (last - first >= LongBuckets) return void(index.Long.push_back(id));
+    for (auto bucket = first; bucket <= last; ++bucket) index.Buckets[bucket].push_back({id, top});
+}
+void RemoveRows(RowIndex &index, uint32_t id, uint32_t top, uint32_t bottom) {
+    const auto first = top / RowBucket, last = bottom / RowBucket;
+    if (last - first >= LongBuckets) return void(std::erase(index.Long, id));
+    for (auto bucket = first; bucket <= last; ++bucket) std::erase_if(index.Buckets[bucket], [&](auto entry) { return entry.Id == id; });
+}
+// Calls `f(id)` once for each entry whose rows may meet the rows from top to bottom.
+void ForEachIn(const RowIndex &index, uint32_t top, uint32_t bottom, auto &&f) {
+    const auto first = top / RowBucket, last = bottom / RowBucket;
+    for (auto bucket = first; bucket <= last; ++bucket) {
+        const auto at = index.Buckets.find(bucket);
+        if (at == index.Buckets.end()) continue;
+        for (const auto entry : at->second) {
+            if (std::max(entry.Top / RowBucket, first) == bucket) f(entry.Id);
+        }
+    }
+    for (const auto id : index.Long) f(id);
+}
+void AddRows(RowIndex &index, uint32_t node, const Box &box) { AddRows(index, node, box.Y, box.Y + box.H - 1u); }
+void RemoveRows(RowIndex &index, uint32_t node, const Box &box) { RemoveRows(index, node, box.Y, box.Y + box.H - 1u); }
+
+// Whether every box of the group, moved by the offset, stays on the canvas, keeps a free cell left of its inputs, and is clear of every indexed box that counts.
+bool Fits(std::span<const Box> boxes, const RowIndex &index, std::span<const uint32_t> group, int64_t dx, int64_t dy, auto &&counts) {
     for (const auto m : group) {
         auto box = boxes[m];
         const int64_t x = int64_t(box.X) + dx, y = int64_t(box.Y) + dy;
         if (x < int64_t(box.In) || y < 0) return false;
         box.X = uint32_t(x);
         box.Y = uint32_t(y);
-        for (uint32_t n = 0u; n < boxes.size(); ++n) {
-            if (placed[n] && !Clear(box, boxes[n])) return false;
-        }
+        bool clear = true;
+        ForEachIn(index, box.Y, box.Y + box.H - 1u, [&](uint32_t n) { clear = clear && (!counts(n) || Clear(box, boxes[n])); });
+        if (!clear) return false;
     }
     return true;
 }
 constexpr int64_t PlaceReach{64}; // The number of rings of cells Place searches around the wanted offset.
 // The offset nearest the wanted one where the group fits, searching outward one ring of cells at a time.
-// If nothing fits within PlaceReach, the group goes to the right of every placed box.
-std::pair<int64_t, int64_t> Place(std::span<const Box> boxes, const std::vector<bool> &placed, std::span<const uint32_t> group, int64_t dx, int64_t dy) {
+// If nothing fits within PlaceReach, the group goes to the right of every box that counts.
+std::pair<int64_t, int64_t> Place(std::span<const Box> boxes, const RowIndex &index, std::span<const uint32_t> group, int64_t dx, int64_t dy, auto &&counts) {
     for (int64_t ring = 0; ring <= PlaceReach; ++ring) {
         for (int64_t i = -ring; i <= ring; ++i) {
             for (int64_t j = -ring; j <= ring; ++j) {
-                if ((std::abs(i) == ring || std::abs(j) == ring) && Fits(boxes, placed, group, dx + i, dy + j)) return {dx + i, dy + j};
+                if ((std::abs(i) == ring || std::abs(j) == ring) && Fits(boxes, index, group, dx + i, dy + j, counts)) return {dx + i, dy + j};
             }
         }
     }
     int64_t right = 0, left = INT64_MAX, top = INT64_MAX;
     for (uint32_t n = 0u; n < boxes.size(); ++n) {
-        if (placed[n]) right = std::max(right, int64_t(boxes[n].X) + boxes[n].W);
+        if (counts(n)) right = std::max(right, int64_t(boxes[n].X) + boxes[n].W);
     }
     for (const auto m : group) {
         left = std::min(left, int64_t(boxes[m].X));
@@ -432,7 +473,7 @@ std::pair<int64_t, int64_t> Place(std::span<const Box> boxes, const std::vector<
     }
     return {right + 2 - left, std::max(dy, -top)};
 }
-// Lays out every box from the view's links and relationships alone.
+// Lays out every box from the view's links alone.
 // Connected nodes form an island, and the islands stack top to bottom in node order.
 // An island's columns follow its connections left to right: each node sits one column left of its leftmost reader, then each node with inputs sits one column right of its rightmost input.
 // A column stacks its nodes in the order a walk reaches them, from the island's last node back through each node's inputs in slot order.
@@ -456,7 +497,6 @@ void AutoLayout(const NodeView &view, std::span<Box> boxes) {
     for (uint32_t n = 0u, first = 0u; n < count; first += SlotsOf(view, n), ++n) {
         for (uint16_t slot = 0u; slot < SlotsOf(view, n); ++slot) connect(WiresOf(view)[first + slot].FromNode, n);
     }
-    for (const auto [from, to] : view.Relationships) connect(from, to);
     // Finish each node after its readers.
     // A link into a node that is still open closes a cycle, and the columns skip it.
     constexpr uint32_t Open{NoNode - 1u};
@@ -508,26 +548,156 @@ void AutoLayout(const NodeView &view, std::span<Box> boxes) {
         top = bottom;
     }
 }
-// Moves each box the user placed to its cell, then each box, those first, to the nearest cell where it fits among the boxes before it.
+} // namespace
+
+// The displayed page, kept between frames.
+// Its content is the view, each node's rows and box, and the automatic layout, rebuilt when the view or the node theme changes.
+// Its arrangement is the layout with the network's placed cells applied and the row indexes, rebuilt when the content or a placed cell changes.
+struct NodePage {
+    NodeView View;
+    uint64_t Revision{UINT64_MAX}; // The network revision a scene page's view was built at
+    std::vector<InputRows> Rows;
+    struct Measured {
+        NetworkItem Item;
+        uint64_t Text;
+        Box Size;
+    };
+    std::vector<Measured> Sizes; // Each node's text and the box measured for it, in item order
+    NodeThemeSizes Theme;
+    float Cell{}, Font{};
+    uint64_t Content{}; // The texts and wires the automatic layout was computed for
+    std::vector<Box> Auto; // Each node's box at its automatic cell
+    std::vector<uint32_t> OutFirst, Out; // The wire slots that leave each node
+    uint64_t Cells{UINT64_MAX}; // The cells revision the boxes were arranged at
+    std::vector<Box> Boxes; // Each node's box where the editor shows it
+    std::vector<uint32_t> Moved, MovedWires; // The nodes away from their automatic cells and the wire slots that touch them, in order
+    RowIndex Nodes, Wires; // The boxes, and the wires as their automatic cells place them, by row
+};
+
+namespace {
+uint64_t Mix(uint64_t hash, uint64_t value) { return hash ^ (value + 0x9e3779b97f4a7c15ull + (hash << 6u) + (hash >> 2u)); }
+uint64_t Mix(uint64_t hash, std::string_view text) { return Mix(hash, std::hash<std::string_view>{}(text)); }
+
+// Brings the page's rows, boxes and automatic layout up to date with its view and the theme.
+// A node whose text is unchanged keeps its box, and unchanged texts and wires keep the layout.
+// Returns whether the layout changed.
+bool Measure(const state::Registry &r, NodePage &page, const NodeTheme &theme, float cell, bool restyled) {
+    const auto &view = page.View;
+    const auto count = uint32_t(view.Nodes.size());
+    page.Theme = theme.Sizes;
+    page.Cell = cell;
+    page.Font = GetFontSize();
+    page.Rows.clear();
+    std::vector<NodePage::Measured> sizes;
+    std::vector<Box> boxes;
+    uint64_t content = count;
+    for (uint32_t n = 0u; n < count; ++n) {
+        const auto &rows = page.Rows.emplace_back(RowsOf(InputsOf(view, n), [&](uint16_t s) { return InTray(view, n, s); }, [&](uint16_t s) { return Shows(r, view, n, s); }));
+        const auto sockets = NodeSockets(view, n);
+        auto text = Mix(0u, view.Nodes[n].Title);
+        for (uint16_t s = 0u; s < sockets.size(); ++s) {
+            text = Mix(text, LabelOf(r, view, n, s));
+            if (s < rows.Closed.size()) text = Mix(text, uint64_t(rows.Closed[s]) << 16u | rows.Open[s]);
+        }
+        const auto item = view.Nodes[n].Item;
+        const auto measured = std::ranges::lower_bound(page.Sizes, item, {}, &NodePage::Measured::Item);
+        const bool kept = !restyled && measured != page.Sizes.end() && measured->Item == item && measured->Text == text;
+        boxes.push_back(kept ? measured->Size : BoxOf(theme, cell, view.Nodes[n].Title.c_str(), sockets, rows, [&](uint16_t s) { return LabelOf(r, view, n, s); }));
+        sizes.push_back({item, text, boxes.back()});
+        content = Mix(content, text);
+    }
+    const auto wires = WiresOf(view);
+    for (const auto link : wires) content = Mix(content, uint64_t(link.FromNode) << 16u | link.FromSocket);
+    std::ranges::sort(sizes, {}, &NodePage::Measured::Item);
+    page.Sizes = std::move(sizes);
+    if (!restyled && content == page.Content && page.Auto.size() == count) return false;
+    page.Content = content;
+    AutoLayout(view, boxes);
+    page.Auto = std::move(boxes);
+    page.OutFirst.assign(count + 1u, 0u);
+    for (const auto link : wires) {
+        if (link.FromNode != NoNode) ++page.OutFirst[link.FromNode + 1u];
+    }
+    for (uint32_t n = 0u; n < count; ++n) page.OutFirst[n + 1u] += page.OutFirst[n];
+    page.Out.resize(page.OutFirst.back());
+    auto next = page.OutFirst;
+    for (uint32_t slot = 0u; slot < wires.size(); ++slot) {
+        if (wires[slot].FromNode != NoNode) page.Out[next[wires[slot].FromNode]++] = slot;
+    }
+    return true;
+}
+
+// Arranges the page's boxes: each at its automatic cell, then each placed one at its cell.
+// A placed box takes the cell nearest its own that is clear of the placed boxes before it, and an automatic box a placed one crowds moves to the nearest clear cell.
 // Every node position the editor uses comes from here, so nodes never overlap and always keep their wire cells.
-// The automatic layout is already clear, so a page without placed cells stays as it is.
-void Arrange(const state::Registry &r, const NodeView &view, std::vector<Box> &boxes) {
-    if (!r.all_of<NetworkLayout>(view.Network)) return;
-    std::vector<bool> placed(boxes.size());
-    for (const bool user_placed : {true, false}) {
-        for (uint32_t n = 0u; n < boxes.size(); ++n) {
-            const auto cell = NetworkPosition(r, view.Network, view.Nodes[n].Item);
-            if (cell.has_value() != user_placed) continue;
-            if (cell) {
-                boxes[n].X = cell->x;
-                boxes[n].Y = cell->y;
+// Without a new layout, only the boxes away from their automatic cells are arranged again.
+void Arrange(const state::Registry &r, NodePage &page, bool relaid) {
+    const auto &view = page.View;
+    const auto count = uint32_t(view.Nodes.size());
+    const auto wires = WiresOf(view);
+    auto &boxes = page.Boxes;
+    if (relaid) {
+        boxes = page.Auto;
+        page.Nodes = {};
+        page.Wires = {};
+        for (uint32_t n = 0u; n < count; ++n) AddRows(page.Nodes, n, boxes[n]);
+        for (uint32_t n = 0u, slot = 0u; n < count; ++n) {
+            for (; slot < InputsFirst(view)[n + 1u]; ++slot) {
+                if (wires[slot].FromNode == NoNode) continue;
+                const auto &from = boxes[wires[slot].FromNode];
+                AddRows(page.Wires, slot, std::min(boxes[n].Y, from.Y), std::max(boxes[n].Y + boxes[n].H, from.Y + from.H));
             }
-            const auto [dx, dy] = Place(boxes, placed, std::array{n}, 0, 0);
-            boxes[n].X = uint32_t(int64_t(boxes[n].X) + dx);
-            boxes[n].Y = uint32_t(int64_t(boxes[n].Y) + dy);
-            placed[n] = true;
+        }
+    } else {
+        for (const auto n : page.Moved) {
+            RemoveRows(page.Nodes, n, boxes[n]);
+            boxes[n] = page.Auto[n];
+            AddRows(page.Nodes, n, boxes[n]);
         }
     }
+    page.Moved.clear();
+    if (const auto *layout = r.try_get<const NetworkLayout>(view.Network)) {
+        std::vector<uint32_t> placed;
+        for (const auto &cell : layout->Cells) {
+            const auto n = NodeOf(view, cell.Item);
+            if (n == NoNode) continue;
+            RemoveRows(page.Nodes, n, boxes[n]);
+            boxes[n].X = cell.Position.x;
+            boxes[n].Y = cell.Position.y;
+            placed.push_back(n);
+        }
+        std::ranges::sort(placed);
+        const auto is_placed = [&](uint32_t n) { return std::ranges::binary_search(placed, n); };
+        const auto settle = [&](uint32_t n, auto &&counts) {
+            const auto [dx, dy] = Place(boxes, page.Nodes, std::array{n}, 0, 0, counts);
+            boxes[n].X = uint32_t(int64_t(boxes[n].X) + dx);
+            boxes[n].Y = uint32_t(int64_t(boxes[n].Y) + dy);
+            AddRows(page.Nodes, n, boxes[n]);
+        };
+        for (const auto n : placed) settle(n, is_placed);
+        std::vector<uint32_t> crowded;
+        for (const auto n : placed) {
+            ForEachIn(page.Nodes, boxes[n].Y, boxes[n].Y + boxes[n].H - 1u, [&](uint32_t other) {
+                if (!is_placed(other) && !Clear(boxes[n], boxes[other])) crowded.push_back(other);
+            });
+        }
+        SortUnique(crowded);
+        for (const auto n : crowded) {
+            RemoveRows(page.Nodes, n, boxes[n]);
+            settle(n, [](uint32_t) { return true; });
+        }
+        page.Moved = std::move(placed);
+        page.Moved.append_range(crowded);
+        std::ranges::sort(page.Moved);
+    }
+    page.MovedWires.clear();
+    for (const auto n : page.Moved) {
+        for (auto slot = InputsFirst(view)[n]; slot < InputsFirst(view)[n + 1u]; ++slot) {
+            if (wires[slot].FromNode != NoNode) page.MovedWires.push_back(slot);
+        }
+        page.MovedWires.append_range(std::span{page.Out}.subspan(page.OutFirst[n], page.OutFirst[n + 1u] - page.OutFirst[n]));
+    }
+    SortUnique(page.MovedWires);
 }
 
 // The screen layout of the network, with cell c at Origin + c * Step.
@@ -538,26 +708,16 @@ struct Graph {
     float Step; // A cell's side in screen points
     float Zoom;
     uint32_t Expanded;
-    std::vector<Box> Boxes;
-    std::vector<InputRows> Rows;
+    NodePage &Page;
+    std::span<Box> Boxes;
+    std::span<const InputRows> Rows;
+    std::vector<uint32_t> Shown, ShownWires; // The nodes and wire slots whose rows meet the canvas, in order
     uint32_t DetachNode{NoNode}; // The node whose input link in DetachSlot a wire drag has picked up
     uint16_t DetachSlot{};
     uint32_t DropNode{NoNode}; // The node whose multi-input socket DropSocket leaves a gap at DropIndex for the held wire
     uint16_t DropSocket{}, DropIndex{};
 };
-Graph GraphOf(const state::Registry &r, const NodeView &view, const NodeTheme &theme, ImVec2 origin, float cell, float zoom, uint32_t expanded) {
-    Graph graph{view, theme, origin, cell * zoom, zoom, NoNode, {}, {}};
-    graph.Boxes.reserve(view.Nodes.size());
-    graph.Rows.reserve(view.Nodes.size());
-    for (uint32_t n = 0u; n < view.Nodes.size(); ++n) {
-        graph.Rows.push_back(RowsOf(InputsOf(view, n), [&](uint16_t s) { return InTray(view, n, s); }, [&](uint16_t s) { return Shows(r, view, n, s); }));
-        graph.Boxes.push_back(BoxOf(theme, cell, view.Nodes[n].Title.c_str(), NodeSockets(view, n), graph.Rows.back(), [&](uint16_t s) { return LabelOf(r, view, n, s); }));
-    }
-    AutoLayout(view, graph.Boxes);
-    Arrange(r, view, graph.Boxes);
-    if (expanded < view.Nodes.size() && graph.Rows[expanded].Tray > 0u) graph.Expanded = expanded;
-    return graph;
-}
+uint32_t RowAt(const Graph &graph, float y) { return uint32_t(std::max(0.f, std::floor((y - graph.Origin.y) / graph.Step))); }
 // The expanded node's rectangle is taller, to fit its open tray.
 ImRect RectOf(const Graph &graph, uint32_t node) {
     const auto &box = graph.Boxes[node];
@@ -641,12 +801,13 @@ bool Crosses(const Wire &w, const ImRect &rect) {
 // Calls `f(wire, link, node, slot)` for each drawn link.
 void ForEachWire(const Graph &graph, auto &&f) {
     const auto &view = graph.View;
-    for (uint32_t n = 0u, first = 0u; n < view.Nodes.size(); first += SlotsOf(view, n), ++n) {
-        for (uint16_t slot = 0u; slot < SlotsOf(view, n); ++slot) {
-            const auto link = WiresOf(view)[first + slot];
-            if (link.FromNode == NoNode || (n == graph.DetachNode && slot == graph.DetachSlot)) continue;
-            f(WireOf(SocketAt(graph, link.FromNode, link.FromSocket), SlotAt(graph, n, slot), graph.Theme.Sizes.WireCurving), link, n, slot);
-        }
+    const auto first = InputsFirst(view);
+    for (const auto shown : graph.ShownWires) {
+        const auto n = uint32_t(std::ranges::upper_bound(first, shown) - first.begin()) - 1u;
+        const auto slot = uint16_t(shown - first[n]);
+        const auto link = WiresOf(view)[shown];
+        if (n == graph.DetachNode && slot == graph.DetachSlot) continue;
+        f(WireOf(SocketAt(graph, link.FromNode, link.FromSocket), SlotAt(graph, n, slot), graph.Theme.Sizes.WireCurving), link, n, slot);
     }
 }
 
@@ -693,10 +854,10 @@ Hit HitTest(const Graph &graph, ImVec2 mouse) {
         if (const auto hit = sockets(graph.Expanded)) return *hit;
         if (RectOf(graph, graph.Expanded).Contains(mouse)) return {HitType::Node, graph.Expanded, 0u};
     }
-    for (auto n = uint32_t(graph.Boxes.size()); n-- > 0u;) {
+    for (const auto n : graph.Shown | std::views::reverse) {
         if (const auto hit = sockets(n)) return *hit;
     }
-    for (auto n = uint32_t(graph.Boxes.size()); n-- > 0u;) {
+    for (const auto n : graph.Shown | std::views::reverse) {
         if (RectOf(graph, n).Contains(mouse)) return {HitType::Node, n, 0u};
     }
     return {};
@@ -748,12 +909,13 @@ void Connect(const state::Registry &r, NodesPanel &panel, const NodeView &view, 
         action::AddToGesture(LinkOf(*view.Geometry, owner, panel.DragNode, panel.DragSocket, node, socket, index));
         if (detached && !returns) action::AddToGesture(UnlinkOf(view, owner, left_node, left_slot));
     } else {
-        const auto &a = BindingOf(view, panel.DragNode, panel.DragSocket), &b = BindingOf(view, node, socket);
-        const auto *input = std::get_if<SceneReference>(&a);
-        action::AddToGesture(input ? action::nodes::AssignReference{*input, std::get<NetworkItem>(b)} : action::nodes::AssignReference{std::get<SceneReference>(b), std::get<NetworkItem>(a)});
+        // The reference the wire left clears first, so a list entry dropped back on its own list is added again.
         if (const auto *left = detached && !returns ? std::get_if<SceneReference>(&BindingOf(view, left_node, left_slot)) : nullptr; left && ReferenceAccepts(r, *left, {})) {
             action::AddToGesture(action::nodes::AssignReference{*left, {}});
         }
+        const auto &a = BindingOf(view, panel.DragNode, panel.DragSocket), &b = BindingOf(view, node, socket);
+        const auto *input = std::get_if<SceneReference>(&a);
+        action::AddToGesture(input ? action::nodes::AssignReference{*input, std::get<NetworkItem>(b)} : action::nodes::AssignReference{std::get<SceneReference>(b), std::get<NetworkItem>(a)});
     }
 }
 void Disconnect(const state::Registry &r, const NodeView &view, state::Entity owner, uint32_t node, uint16_t slot) {
@@ -791,9 +953,14 @@ std::vector<state::Entity> EntitiesOf(const CookPlan &plan, std::span<const uint
 }
 std::vector<uint32_t> SelectedNodes(const state::Registry &r, const NodeView &view) {
     std::vector<uint32_t> selected;
-    for (uint32_t n = 0u; n < view.Nodes.size(); ++n) {
-        if (Selected(r, view, n)) selected.push_back(n);
+    if (view.Nodes.empty()) return selected;
+    const auto owner = view.Geometry ? r.get<const ProcedureNode>(view.Nodes.front().Item.Entity).Procedure : view.Network;
+    if (const auto *selection = r.try_get<const NetworkActive>(owner)) {
+        for (const auto item : selection->Selection) {
+            if (const auto n = NodeOf(view, item); n != NoNode) selected.push_back(n);
+        }
     }
+    std::ranges::sort(selected);
     return selected;
 }
 
@@ -879,15 +1046,15 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
     const auto follow = [&](bool first) {
         const auto &held = graph.Boxes[panel.DragNode];
         const int64_t wanted_x = int64_t(panel.MoveStart.x) + std::lround((mouse.x - panel.Press.x) / graph.Step), wanted_y = int64_t(panel.MoveStart.y) + std::lround((mouse.y - panel.Press.y) / graph.Step);
-        std::vector<bool> others(nodes.size(), true);
-        for (const auto n : selected) others[n] = false;
-        const auto [dx, dy] = Place(graph.Boxes, others, selected, wanted_x - int64_t(held.X), wanted_y - int64_t(held.Y));
+        const auto [dx, dy] = Place(graph.Boxes, graph.Page.Nodes, selected, wanted_x - int64_t(held.X), wanted_y - int64_t(held.Y), [&](uint32_t n) { return !std::ranges::binary_search(selected, n); });
         if (first || dx != 0 || dy != 0) {
             action::nodes::MoveNodes move{EditorNetwork(r, panel), {}};
             for (const auto n : selected) {
                 auto &box = graph.Boxes[n];
+                RemoveRows(graph.Page.Nodes, n, box);
                 box.X = uint32_t(int64_t(box.X) + dx);
                 box.Y = uint32_t(int64_t(box.Y) + dy);
+                AddRows(graph.Page.Nodes, n, box);
                 move.Positions.push_back({nodes[n].Item, {box.X, box.Y}});
             }
             action::Emit(std::move(move), action::Phase::Stage);
@@ -1038,9 +1205,11 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
         if (ImLengthSqr(mouse - press) >= io.MouseDragThreshold * io.MouseDragThreshold) {
             const ImRect box{ImMin(press, mouse), ImMax(press, mouse)};
             std::vector<uint32_t> banded;
-            for (uint32_t n = 0u; n < nodes.size(); ++n) {
-                if (box.Overlaps(RectOf(graph, n)) || (io.KeyShift && std::ranges::binary_search(selected, n))) banded.push_back(n);
-            }
+            ForEachIn(graph.Page.Nodes, RowAt(graph, box.Min.y), RowAt(graph, box.Max.y), [&](uint32_t n) {
+                if (box.Overlaps(RectOf(graph, n))) banded.push_back(n);
+            });
+            if (io.KeyShift) banded.append_range(selected);
+            SortUnique(banded);
             if (banded != selected) select(banded, NoNode);
         } else if (!io.KeyShift && !selected.empty()) {
             select({}, NoNode);
@@ -1225,20 +1394,21 @@ void RecordHover(const state::Registry &r, const NodesPanel &panel, const NodeVi
     const auto &node = view.Nodes[hit.Node];
     const auto entity = node.Item.Entity;
     const auto kind = node.Kind;
+    const auto *type = view.Geometry ? node.Type : ItemLabel(r, node.Item);
     if (hit.Type == HitType::Node) {
         const auto *error = r.try_get<const NodeError>(entity);
-        ui::Hovered = {.Label = view.Geometry ? OperationTitle(r, entity, kind) : node.Type, .Path = node.Type, .Type = node.Type, .Help = view.Geometry ? KindHelp[kind] : nullptr, .Status = error ? FaultTexts[uint8_t(error->Fault)] : nullptr};
+        ui::Hovered = {.Label = view.Geometry ? OperationTitle(r, entity, kind) : type, .Path = type, .Type = type, .Help = view.Geometry ? KindHelp[kind] : nullptr, .Status = error ? FaultTexts[uint8_t(error->Fault)] : nullptr};
     } else if (hit.Type == HitType::Parameters) {
-        ui::Hovered = {.Label = "Parameters", .Path = node.Type, .Help = "Hover to show the sockets of the node's value parameters. Drop a wire here to link it to one of them."};
+        ui::Hovered = {.Label = "Parameters", .Path = type, .Help = "Hover to show the sockets of the node's value parameters. Drop a wire here to link it to one of them."};
     } else {
         const auto socket = NodeSockets(view, hit.Node)[hit.Socket];
-        if (!view.Geometry) SetTooltip("%s: %s", LabelOf(socket), ReferenceDescription(r, BindingOf(view, hit.Node, hit.Socket)).c_str());
+        if (!view.Geometry && *LabelOf(socket)) SetTooltip("%s", LabelOf(socket));
         const bool held = panel.DragNode == hit.Node && panel.DragSocket == hit.Socket;
         const bool dimmed = panel.Drag == NodeDrag::Wire && !held && !Accepts(r, view, panel.DragNode, panel.DragSocket, hit.Node, hit.Socket);
         const bool linked = socket.Direction == SocketDirection::In && IsLinked(view, hit.Node, hit.Socket);
         ui::Hovered = {
             .Label = view.Geometry ? LabelOf(r, view, hit.Node, hit.Socket) : "Reference",
-            .Path = node.Type,
+            .Path = type,
             .Type = SocketTypeText(socket),
             // A linked input's parameter value is unused, so its help says how to move the link.
             .Help = !view.Geometry ? "Reference to a document item" : socket.Multi ? "Accepts any number of links. They apply in order from top to bottom. Drag a link along the socket to reorder it." :
@@ -1251,8 +1421,10 @@ void RecordHover(const state::Registry &r, const NodesPanel &panel, const NodeVi
     }
 }
 
-void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, const NodeTheme &theme, state::Entity mesh_entity, const NodeView &view, bool interactive) {
+// `rebuilt` is whether the page's view was built this frame.
+void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, const NodeTheme &theme, state::Entity mesh_entity, NodePage &page, bool rebuilt, bool interactive) {
     const auto &io = GetIO();
+    const auto &view = page.View;
     const auto &nodes = view.Nodes;
     if ((panel.Drag == NodeDrag::Move || panel.Drag == NodeDrag::Wire || (panel.Drag == NodeDrag::Grab && panel.DragNode != NoNode)) && panel.DragNode >= nodes.size()) panel.Drag = NodeDrag::None;
     if (panel.DetachNode != NoNode && (panel.DetachNode >= nodes.size() || panel.DetachSlot >= SlotsOf(view, panel.DetachNode))) {
@@ -1290,7 +1462,24 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
     canvas.Offset = {std::min(canvas.Offset.x, 0.f), std::min(canvas.Offset.y, 0.f)};
     const float cell = CellOf(theme);
     const float margin = CanvasMargin * cell * canvas.Zoom;
-    auto graph = GraphOf(r, view, theme, origin + Im(canvas.Offset) + ImVec2{margin, margin}, cell, canvas.Zoom, panel.Expanded);
+    const bool restyled = page.Theme != theme.Sizes || page.Cell != cell || page.Font != GetFontSize();
+    const bool relaid = (rebuilt || restyled) && Measure(r, page, theme, cell, restyled);
+    if (const auto cells = r.Resources.get<const NetworkChanges>().CellsRevision; relaid || page.Cells != cells) {
+        Arrange(r, page, relaid);
+        page.Cells = cells;
+    }
+    Graph graph{view, theme, origin + Im(canvas.Offset) + ImVec2{margin, margin}, cell * canvas.Zoom, canvas.Zoom, NoNode, page, page.Boxes, page.Rows};
+    if (panel.Expanded < nodes.size() && page.Rows[panel.Expanded].Tray > 0u) graph.Expanded = panel.Expanded;
+    // The frame draws and tests the nodes and wires whose rows meet the canvas, and the expanded node.
+    const auto top = RowAt(graph, origin.y), bottom = RowAt(graph, end.y);
+    ForEachIn(page.Nodes, top, bottom, [&](uint32_t n) { graph.Shown.push_back(n); });
+    if (graph.Expanded != NoNode) graph.Shown.push_back(graph.Expanded);
+    SortUnique(graph.Shown);
+    ForEachIn(page.Wires, top, bottom, [&](uint32_t slot) {
+        if (!std::ranges::binary_search(page.MovedWires, slot)) graph.ShownWires.push_back(slot);
+    });
+    graph.ShownWires.append_range(page.MovedWires);
+    std::ranges::sort(graph.ShownWires);
     const bool wiring = panel.Drag == NodeDrag::Wire;
     if (wiring || panel.PickNode != NoNode) {
         graph.DetachNode = panel.DetachNode;
@@ -1344,11 +1533,6 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
         const auto color = lit ? colors.WireHighlight : SocketColor(colors, NodeSockets(view, link.FromNode)[link.FromSocket]);
         draw.AddBezierCubic(wire[0], wire[1], wire[2], wire[3], U32(color), lit ? thickness * 1.5f : thickness);
     });
-    for (const auto [from, to] : view.Relationships) {
-        const auto a = RectOf(graph, from), b = RectOf(graph, to);
-        const auto wire = WireOf({a.Max.x, a.Min.y + graph.Step * .5f}, {b.Min.x, b.Min.y + graph.Step * .5f}, theme.Sizes.WireCurving);
-        draw.AddBezierCubic(wire[0], wire[1], wire[2], wire[3], U32(colors.MixedSocket), thickness);
-    }
     PushFont(nullptr, GetStyle().FontSizeBase * zoom);
     const auto font_size = GetFontSize();
     const float inset = (theme.Sizes.SocketRadius + theme.Sizes.LabelSpacing) * zoom, spacing = theme.Sizes.LabelSpacing * zoom, label_reach = float(theme.Sizes.MaxLabelCells) * graph.Step;
@@ -1418,7 +1602,7 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
             draw_label({at.x + inset, at.y - font_size * .5f}, {max.x - spacing, at.y + font_size * .5f}, label.c_str(), color, false);
         }
     };
-    for (uint32_t n = 0u; n < nodes.size(); ++n) {
+    for (const auto n : graph.Shown) {
         if (n != graph.Expanded) draw_node(n);
     }
     if (graph.Expanded != NoNode) draw_node(graph.Expanded);
@@ -1447,7 +1631,7 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
             if (panel.ContextNode < nodes.size()) {
                 if (panel.ContextSocket == UINT16_MAX) DrawSceneNodeMenu(r, panel, nodes[panel.ContextNode].Item);
                 else if (panel.ContextSocket < NodeSockets(view, panel.ContextNode).size()) {
-                    if (const auto *reference = std::get_if<SceneReference>(&BindingOf(view, panel.ContextNode, panel.ContextSocket))) DrawReferenceMenu(r, view.Network, *reference);
+                    if (const auto *reference = std::get_if<SceneReference>(&BindingOf(view, panel.ContextNode, panel.ContextSocket))) DrawReferenceMenu(r, panel, *reference);
                 }
             }
             EndPopup();
@@ -1701,7 +1885,9 @@ const CookPlan *NetworkPlan(const state::Registry &r, NodesPanel &panel, state::
 void DrawNodesPanel(state::Registry &r, NodesPanel &panel, bool interactive) {
     if (panel.Epoch != r.Epoch) {
         panel.Epoch = r.Epoch;
+        panel.UsersRevision = UINT64_MAX;
         panel.NetworkView.reset();
+        panel.Page.reset();
         panel.Drag = NodeDrag::None;
         panel.PendingLinks.clear();
         panel.LinkAfter = NoNode;
@@ -1732,9 +1918,17 @@ void DrawNodesPanel(state::Registry &r, NodesPanel &panel, bool interactive) {
         PushStyleVar(ImGuiStyleVar_WindowPadding, {0.f, 0.f});
         BeginChild("Canvas", {0.f, 0.f}, ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoMove);
         PopStyleVar();
+        // A geometry page's view follows parameters as well as its plan, so it is built every frame.
+        // A scene page's view is built when the network revision advances.
         const auto *current = NetworkPlan(r, panel, mesh_entity);
-        const auto view = current ? GeometryNodeDefinitions(r, *current, network) : SceneNodeDefinitions(r, network);
-        DrawCanvas(r, r.Resources.get<FrameState>(), panel, r.get<const NodeTheme>(state::Document), mesh_entity, view, interactive);
+        if (!panel.Page) panel.Page = std::make_shared<NodePage>();
+        auto &page = *panel.Page;
+        const auto revision = r.Resources.get<const NetworkChanges>().Revision;
+        const bool rebuilt = current || page.View.Geometry || page.View.Network != network || page.Revision != revision;
+        if (current) page.View = GeometryNodeDefinitions(r, *current, network);
+        else if (rebuilt) page.View = SceneNodeDefinitions(r, network);
+        page.Revision = revision;
+        DrawCanvas(r, r.Resources.get<FrameState>(), panel, r.get<const NodeTheme>(state::Document), mesh_entity, page, rebuilt, interactive);
         EndChild();
     }
     End();

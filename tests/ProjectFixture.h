@@ -14,6 +14,7 @@
 #include "mesh/NormalDeriveGpu.h"
 #include "object/ObjectOps.h"
 #include "procedure/Cook.h"
+#include "procedure/NodeView.h"
 #include "project/Recording.h"
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
@@ -401,6 +402,25 @@ inline void CheckHistory(Fixture &f, Fixture &other, const std::map<uint32_t, Li
     }
 }
 
+// Every page of the document, its scenes and their subnets as text: each node's item and title, its socket labels, and the socket each input is wired from.
+inline std::string NetworkPages(const state::Registry &r) {
+    std::vector<state::Entity> networks{state::Document};
+    networks.append_range(SortedEntities(r.view<const Scene>()));
+    networks.append_range(SortedEntities(r.view<const procedure::NetworkSubnet>()));
+    std::string text;
+    for (const auto network : networks) {
+        const auto view = procedure::SceneNodeDefinitions(r, network);
+        text += std::format("page {}\n", state::Integral(network));
+        for (uint32_t n = 0; n < view.Nodes.size(); ++n) {
+            const auto item = view.Nodes[n].Item;
+            text += std::format("{} {} {} {}\n", state::Integral(item.Entity), item.Index, uint8_t(item.Kind), view.Nodes[n].Title);
+            for (auto s = view.SocketFirst[n]; s < view.SocketFirst[n + 1]; ++s) text += std::format(" {}\n", view.Labels[s]);
+            for (auto i = view.InputFirst[n]; i < view.InputFirst[n + 1]; ++i) text += std::format(" < {} {}\n", view.Wires[i].FromNode, view.Wires[i].FromSocket);
+        }
+    }
+    return text;
+}
+
 // Runs `script` on a new project in `f`, recording each node it reaches after the check a fixture runs at each step, then checks the history it built through `other`.
 template<typename F> void Scenario(F &f, Fixture &other, std::string name, auto &&script) {
     boost::ut::test(name) = [&] {
@@ -409,8 +429,17 @@ template<typename F> void Scenario(F &f, Fixture &other, std::string name, auto 
         std::map<uint32_t, Live> nodes;
         std::set<uint32_t> direct;
         uint32_t last = 0;
+        std::string pages;
+        uint64_t revision = 0;
         f.Step = [&](bool replays) {
             if constexpr (requires { f.CheckStep(); }) f.CheckStep();
+            // Each item's stored node is the one its entity derives, and a page that changed advanced the revision.
+            boost::ut::expect(procedure::NodesSettled(f.R)) << name << "stores a stale node";
+            const auto revised = f.R.Resources.template get<const procedure::NetworkChanges>().Revision;
+            auto shown = NetworkPages(f.R);
+            boost::ut::expect(shown == pages || revised != revision) << name << "changed a page at one revision";
+            pages = std::move(shown);
+            revision = revised;
             last = f.P->History.Present.value();
             nodes.insert_or_assign(last, Live{f});
             // A direct commit leaves the store in a state no action reproduces, so the nodes after it do not replay either.

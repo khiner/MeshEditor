@@ -1,9 +1,7 @@
 #include "SortUnique.h"
-#include "action/Animation.h"
 #include "action/Dispatch.h"
 #include "action/Physics.h"
 #include "action/Scene.h"
-#include "armature/Armature.h"
 #include "audio/AudioTypes.h"
 #include "audio/AudioUi.h"
 #include "gltf/SourceAssets.h"
@@ -79,40 +77,14 @@ void DrawNetworkNavigation(const state::Registry &r, NodesPanel &panel) {
     }
 }
 
-namespace {
-std::string ItemName(const state::Registry &r, NetworkItem item) {
-    if (item.Kind == ItemKind::Animation) {
-        const auto &names = r.get<const Animations>(state::Document).Names;
-        return item.Index < names.size() ? names[item.Index] : "Animation";
-    }
-    if (item.Kind == ItemKind::Material) {
-        const auto &names = r.Resources.get<const MaterialStore>().Names;
-        return item.Index < names.size() && !names[item.Index].empty() ? names[item.Index] : std::format("Material {}", item.Index);
-    }
-    if (item.Kind == ItemKind::Texture) {
-        const auto *textures = r.try_get<const MaterializedTextures>(state::Document);
-        return textures && item.Index < textures->Items.size() && !textures->Items[item.Index].Params.Name.empty() ? textures->Items[item.Index].Params.Name : std::format("Texture {}", item.Index);
-    }
-    const auto entity = item.Entity;
-    if (entity == state::Document) return "Document";
-    if (const auto *m = r.try_get<const PhysicsMaterial>(entity)) return m->Name;
-    if (const auto *f = r.try_get<const CollisionFilter>(entity)) return f->Name;
-    if (const auto *c = r.try_get<const CollisionSystem>(entity)) return c->Name;
-    if (const auto *j = r.try_get<const PhysicsJointDef>(entity)) return j->Name;
-    return GetName(r, entity);
-}
 const char *ItemLabel(const state::Registry &r, NetworkItem item) {
-    if (item.Kind == ItemKind::Animation) return "Animation";
     if (item.Kind == ItemKind::Material) return "Material";
     if (item.Kind == ItemKind::Texture) return "Texture";
     const auto entity = item.Entity;
-    if (entity == state::Document) return "Settings";
     if (r.all_of<NetworkSubnet>(entity)) return "Subnet";
     if (r.all_of<Scene>(entity)) return "Scene";
     if (r.all_of<HierarchyInstance>(entity)) return "Hierarchy instance";
     if (r.all_of<HierarchyDefinition>(entity)) return "Hierarchy definition";
-    if (r.all_of<GeometryProcedure>(entity)) return "Geometry";
-    if (r.all_of<Armature>(entity)) return "Armature definition";
     if (r.all_of<PhysicsMaterial>(entity)) return "Physics material";
     if (r.all_of<CollisionFilter>(entity)) return "Collision filter";
     if (r.all_of<CollisionSystem>(entity)) return "Collision system";
@@ -124,10 +96,10 @@ const char *ItemLabel(const state::Registry &r, NetworkItem item) {
     }
     return "Object";
 }
-} // namespace
 
 namespace {
-void Reveal(state::Registry &r, NodesPanel &panel, NetworkItem target) {
+void Reveal(const state::Registry &r, NodesPanel &panel, NetworkItem target) {
+    if (target.Kind == ItemKind::Entity && r.all_of<GeometryProcedure>(target.Entity)) return EnterNetwork(panel, target.Entity);
     auto network = state::Document;
     auto object = state::Null;
     if (target.Kind == ItemKind::Entity && r.all_of<BoneIndex>(target.Entity)) {
@@ -178,8 +150,6 @@ void DrawSubnetParameters(state::Registry &r, NodesPanel &panel, state::Entity s
         auto name = port.Name;
         ui::Gesture(InputText("Port name", &name) && interactive, [&] { return action::nodes::RenamePort{subnet, port.Id, name}; });
         const auto *field = std::get_if<PromotedField>(&port.Binding);
-        const auto *reference = std::get_if<SceneReference>(&port.Binding);
-        const auto *item = std::get_if<NetworkItem>(&port.Binding);
         if (field) {
             auto update = action::ReadUpdate(r, field->Entity, field->Component, field->Offset);
             if (update) {
@@ -194,10 +164,6 @@ void DrawSubnetParameters(state::Registry &r, NodesPanel &panel, state::Entity s
                 },
                            *update);
             } else TextDisabled("%s (missing field)", port.Name.c_str());
-        } else if (port.Type == SocketType::Reference) {
-            const auto value = reference ? ReferenceValue(r, *reference) : item ? *item :
-                                                                                  NetworkItem{};
-            if (value != NetworkItem{} && Button(ItemName(r, value).c_str()) && interactive) Reveal(r, panel, value);
         } else if (port.Direction == SocketDirection::In && (port.Type == SocketType::Value || port.Type == SocketType::Attribute)) {
             BeginDisabled(port.Source().FromNode != state::Null);
             auto words = port.Default.Words;
@@ -211,7 +177,7 @@ void DrawSubnetParameters(state::Registry &r, NodesPanel &panel, state::Entity s
             EndDisabled();
             if (port.Source().FromNode != state::Null) TextDisabled("Connected");
         }
-        if (r.all_of<NetworkSubnet>(parent) && Button("Expose on parent") && interactive) action::Emit(action::nodes::ExposePort{parent, port.Binding, std::make_unique<std::string>(port.Name)});
+        if (field && r.all_of<NetworkSubnet>(parent) && Button("Expose on parent") && interactive) action::Emit(action::nodes::ExposePort{parent, *field, std::make_unique<std::string>(port.Name)});
         auto &prior = previous[uint8_t(port.Direction)];
         if (prior) {
             if (Button("Move up") && interactive) action::Emit(action::nodes::MovePort{subnet, port.Id, *prior});
@@ -227,36 +193,52 @@ void DrawSubnetParameters(state::Registry &r, NodesPanel &panel, state::Entity s
     }
 }
 
-void DrawNetworkParameters(state::Registry &r, NodesPanel &panel) {
-    const auto *active = r.try_get<const NetworkActive>(EditorNetwork(r, panel));
-    const auto item = active ? active->Item : NetworkItem{};
-    if (item.Kind == ItemKind::Animation) {
-        const auto &animations = r.get<const Animations>(state::Document);
-        if (item.Index >= animations.Names.size()) return;
-        auto name = animations.Names[item.Index];
-        ui::Gesture(InputText("Name", &name), [&] { return action::animation::RenameAnimation{item.Index, name}; });
-        if (item.Index == animations.Active) TextUnformatted("Active animation");
-        else if (Button("Activate animation")) action::Emit(action::animation::SelectAnimation{item.Index});
-        if (auto *panels = r.Resources.find<PanelsState>(); panels && Button("Open timeline")) panels->Timeline.Visible = true;
-        SeparatorText("Targets");
-        for (const auto entity : SortedEntities(r.view<const AnimationClips>())) {
-            const auto *clip = r.get<const AnimationClips>(entity).Find(item.Index);
-            if (!clip) continue;
-            PushID(int(state::Integral(entity)));
-            if (entity != state::Document && Button(GetName(r, entity).c_str())) Reveal(r, panel, {entity});
-            for (size_t i = 0; i < clip->Channels.size(); ++i) {
-                const auto &channel = clip->Channels[i];
-                PushID(int(i));
-                Text("%s (%zu keys)", animation::FieldLabel(channel.Target).c_str(), channel.Times.size());
-                if (channel.Target.Component == state::Key<MaterialStore>() && Button("Inspect material")) Reveal(r, panel, {state::Document, channel.Target.Index, ItemKind::Material});
-                PopID();
-            }
+void DrawAnimationTargets(const state::Registry &r, NodesPanel &panel, uint32_t animation) {
+    for (const auto entity : SortedEntities(r.view<const AnimationClips>())) {
+        const auto *clip = r.get<const AnimationClips>(entity).Find(animation);
+        if (!clip) continue;
+        PushID(int(state::Integral(entity)));
+        if (entity != state::Document && Button(GetName(r, entity).c_str())) Reveal(r, panel, {entity});
+        for (size_t i = 0; i < clip->Channels.size(); ++i) {
+            const auto &channel = clip->Channels[i];
+            PushID(int(i));
+            Text("%s (%zu keys)", animation::FieldLabel(channel.Target).c_str(), channel.Times.size());
+            if (channel.Target.Component == state::Key<MaterialStore>() && Button("Inspect material")) Reveal(r, panel, {state::Document, channel.Target.Index, ItemKind::Material});
             PopID();
         }
-    } else if (item.Kind == ItemKind::Material) {
+        PopID();
+    }
+}
+
+namespace {
+// Lists the references that hold the item, each as a button that reveals its owner.
+void DrawUsers(const state::Registry &r, NodesPanel &panel, NetworkItem item) {
+    if (panel.UsersOf != item || panel.UsersRevision != r.Resources.get<const NetworkChanges>().Revision) {
+        panel.UsersOf = item;
+        panel.UsersRevision = r.Resources.get<const NetworkChanges>().Revision;
+        panel.Users = ReferencesTo(r, item);
+    }
+    SeparatorText("Used by");
+    if (panel.Users.empty()) TextDisabled("Nothing");
+    for (uint32_t i = 0; i < panel.Users.size(); ++i) {
+        PushID(int(i));
+        if (Button(ItemName(r, panel.Users[i].Owner).c_str())) Reveal(r, panel, panel.Users[i].Owner);
+        SameLine();
+        TextUnformatted(ReferenceLabel(r, panel.Users[i]).c_str());
+        PopID();
+    }
+}
+} // namespace
+
+void DrawNetworkParameters(state::Registry &r, NodesPanel &panel) {
+    const auto network = EditorNetwork(r, panel);
+    const auto *active = r.try_get<const NetworkActive>(network);
+    const auto item = active ? active->Item : NetworkItem{};
+    if (item.Kind == ItemKind::Material) {
         if (item.Index >= r.Resources.get<const MaterialStore>().Names.size()) return;
         SeparatorText(ItemName(r, item).c_str());
         ui::DrawFields<PBRMaterial>(ui::MaterialEdit{r, item.Index});
+        DrawUsers(r, panel, item);
     } else if (item.Kind == ItemKind::Texture) {
         const auto *textures = r.try_get<const MaterializedTextures>(state::Document);
         if (!textures || item.Index >= textures->Items.size()) return;
@@ -270,9 +252,10 @@ void DrawNetworkParameters(state::Registry &r, NodesPanel &panel) {
             else TextUnformatted("Embedded image");
         }
         Text("Color space: %s", texture.Params.ColorSpace == TextureColorSpace::Srgb ? "sRGB" : "Linear");
+        DrawUsers(r, panel, item);
     } else {
-        const auto entity = r.valid(item.Entity) ? item.Entity : FindActiveEntity(r);
-        if (entity == state::Document) {
+        // The document page shows the document's settings while nothing on it is selected.
+        if (item == NetworkItem{} && NetworkRoot(r, network) == state::Document) {
             ui::Edit fields{r, state::Document};
             if (CollapsingHeader("Physics", ImGuiTreeNodeFlags_DefaultOpen)) ui::DrawFields<PhysicsSimulationSettings>(fields);
             if (r.all_of<ImageLight>(state::Document) && CollapsingHeader("Environment")) ui::DrawFields<ImageLight>(fields);
@@ -301,6 +284,7 @@ void DrawNetworkParameters(state::Registry &r, NodesPanel &panel) {
             }
             return;
         }
+        const auto entity = r.valid(item.Entity) ? item.Entity : FindActiveEntity(r);
         if (r.all_of<NetworkSubnet>(entity)) {
             DrawSubnetParameters(r, panel, entity, true);
             return;
@@ -315,101 +299,91 @@ void DrawNetworkParameters(state::Registry &r, NodesPanel &panel) {
         if (const auto *object = r.try_get<const Instance>(entity); object && r.all_of<ProcedureInstances>(object->Entity)) {
             if (Button("Inspect generated instances")) EnterNetwork(panel, entity);
         }
-        if (physics_ui::RenderResourceProperties(r, entity)) return;
-        if (r.all_of<GeometryProcedure>(entity)) {
-            SeparatorText(GetName(r, entity).c_str());
-            if (Button("Enter geometry")) EnterNetwork(panel, entity);
-        } else if (const auto *definition = r.try_get<const Armature>(entity)) {
-            SeparatorText("Armature definition");
-            Text("%zu bones", definition->Bones.size());
-            for (const auto &bone : definition->Bones) TextUnformatted(bone.Name.c_str());
-            for (const auto object : SortedEntities(r.view<const ArmatureObject>())) {
-                if (r.get<const ArmatureObject>(object).Entity != entity) continue;
-                PushID(int(state::Integral(object)));
-                if (Button(GetName(r, object).c_str())) EnterNetwork(panel, object, object);
-                PopID();
-            }
-        } else if (r.all_of<Scene>(entity)) {
+        if (physics_ui::RenderResourceProperties(r, entity)) return DrawUsers(r, panel, {entity});
+        if (r.all_of<Scene>(entity)) {
             auto name = SceneLabel(r, entity);
             ui::Gesture(InputText("Name", &name), [&] { return action::scene::Rename{entity, name}; });
             if (Button("Enter scene")) EnterNetwork(panel, entity);
-        } else RenderEntityControls(r, entity, r.all_of<BoneIndex>(entity) ? entity : state::Null);
+        } else {
+            RenderEntityControls(r, entity, r.all_of<BoneIndex>(entity) ? entity : state::Null);
+            if (r.all_of<HierarchyDefinition>(entity)) DrawUsers(r, panel, {entity});
+        }
     }
 }
 NodeView SceneNodeDefinitions(const state::Registry &r, state::Entity network) {
     NodeView view{.Network = network, .InputFirst = {0}, .SocketFirst = {0}};
     const auto items = NetworkItems(r, network);
-    const auto port = [&](std::string label, PortBinding binding) {
+    const auto drawers = DrawersOf(r);
+    const auto count = uint32_t(items.size());
+    const auto is_subnet = [&](NetworkItem item) { return item.Kind == ItemKind::Entity && r.all_of<NetworkSubnet>(item.Entity); };
+    // Each leaf the page shows, as its own node or folded into the node of the subnet that holds it.
+    std::vector<std::pair<NetworkItem, uint32_t>> leaves;
+    for (uint32_t n = 0; n < count; ++n) {
+        if (!is_subnet(items[n])) leaves.emplace_back(items[n], n);
+    }
+    for (const auto [subnet, folded] : r.view<const NetworkSubnet>().each()) {
+        auto child = subnet;
+        while (child != state::Null && r.get<const NetworkSubnet>(child).Parent != network) {
+            const auto parent = r.get<const NetworkSubnet>(child).Parent;
+            child = r.all_of<NetworkSubnet>(parent) ? parent : state::Null;
+        }
+        const auto at = std::ranges::lower_bound(items, NetworkItem{child});
+        if (child == state::Null || at == items.end() || *at != NetworkItem{child}) continue;
+        for (const auto member : folded.Members) {
+            if (!is_subnet(member)) leaves.emplace_back(member, uint32_t(at - items.begin()));
+        }
+    }
+    std::ranges::sort(leaves);
+    const auto node_of = [&](NetworkItem item) {
+        const auto at = std::ranges::lower_bound(leaves, item, {}, &decltype(leaves)::value_type::first);
+        return at != leaves.end() && at->first == item ? at->second : NoNode;
+    };
+    // A leaf node shows each of its references.
+    // A subnet node shows a reference of an item it holds only when the other end is another node of this page, as an input for the item's reference or an output for the item.
+    struct Input {
+        SceneReference Reference;
+        NetworkItem Value;
+        uint32_t From;
+    };
+    std::vector<std::vector<Input>> inputs(count);
+    std::vector<std::vector<NetworkItem>> outputs(count);
+    std::vector<ItemReference> shown;
+    for (const auto [leaf, node] : leaves) {
+        ShownReferences(r, leaf, drawers, shown);
+        for (const auto &[kind, index, value] : shown) {
+            const SceneReference reference{leaf, kind, index};
+            const auto source = value == NetworkItem{} ? NoNode : node_of(value);
+            const auto from = source == node ? NoNode : source;
+            if (items[node] != leaf && from == NoNode) continue;
+            if (from != NoNode && items[from] != value && !std::ranges::contains(outputs[from], value)) outputs[from].push_back(value);
+            inputs[node].push_back({reference, value, from});
+        }
+    }
+    const auto socket = [&](std::string label, SocketDirection direction, PortBinding binding) {
         view.Labels.push_back(std::move(label));
-        const auto direction = std::holds_alternative<SceneReference>(binding) ? SocketDirection::In : SocketDirection::Out;
         view.Sockets.push_back({SocketType::Reference, direction});
         view.Bindings.push_back(std::move(binding));
     };
-    for (const auto item : items) {
-        EditorNode node{.Item = item, .Title = ItemName(r, item), .Type = ItemLabel(r, item)};
-        uint16_t inputs{};
-        if (item.Kind == ItemKind::Entity && r.all_of<NetworkSubnet>(item.Entity)) {
-            const auto &ports = r.get<const SubnetInterface>(item.Entity).Ports;
-            for (const auto &p : ports)
-                if (std::holds_alternative<SceneReference>(p.Binding)) port(p.Name, p.Binding);
-            inputs = uint16_t(view.Sockets.size() - view.SocketFirst.back());
-            for (const auto &p : ports)
-                if (std::holds_alternative<NetworkItem>(p.Binding)) port(p.Name, p.Binding);
-        } else {
-            for (const auto reference : SceneReferences(r, item)) port(ReferenceLabel(reference), reference);
-            inputs = uint16_t(view.Sockets.size() - view.SocketFirst.back());
-            port("Reference", item);
+    for (uint32_t n = 0; n < count; ++n) {
+        const auto *stored = items[n].Kind == ItemKind::Entity ? r.try_get<const NetworkNode>(items[n].Entity) : nullptr;
+        view.Nodes.push_back({.Item = items[n], .Title = stored ? stored->Title : ItemName(r, items[n])});
+        for (const auto &input : inputs[n]) {
+            auto label = ReferenceLabel(r, input.Reference);
+            if (input.Reference.Owner != items[n]) label = ItemName(r, input.Reference.Owner) + ": " + label;
+            // A reference to an item on another page reads as the item's name.
+            if (input.From == NoNode && input.Value != NetworkItem{}) label += ": " + ItemName(r, input.Value);
+            socket(std::move(label), SocketDirection::In, input.Reference);
+            // A wire leaves a leaf's one output, or the output of a subnet that stands for the value.
+            if (input.From == NoNode) view.Wires.push_back({});
+            else view.Wires.push_back({input.From, uint16_t(inputs[input.From].size() + (std::ranges::find(outputs[input.From], input.Value) - outputs[input.From].begin()))});
         }
-        view.InputFirst.push_back(view.InputFirst.back() + inputs);
-        view.Nodes.push_back(std::move(node));
+        view.InputFirst.push_back(view.InputFirst.back() + uint32_t(inputs[n].size()));
+        // A leaf's one output stands for the item and has no label.
+        if (!is_subnet(items[n])) socket({}, SocketDirection::Out, items[n]);
+        for (const auto item : outputs[n]) socket(ItemName(r, item), SocketDirection::Out, item);
         view.SocketFirst.push_back(uint32_t(view.Sockets.size()));
     }
     for (size_t s = 0; s < view.Sockets.size(); ++s) view.Sockets[s].Name = view.Labels[s].c_str();
-    view.Wires.resize(view.InputFirst.back());
-    const auto index_of = [&](NetworkItem item) -> uint32_t {
-        item = NetworkRepresentative(r, network, item);
-        const auto at = std::ranges::lower_bound(items, item);
-        return at != items.end() && *at == item ? uint32_t(at - items.begin()) : NoNode;
-    };
-    const auto relationship = [&](NetworkItem from, NetworkItem to) {
-        const auto a = index_of(from), b = index_of(to);
-        if (a == NoNode || b == NoNode || a == b) return;
-        const auto inputs = std::span{view.Wires}.subspan(view.InputFirst[b], InputsOf(view, b));
-        if (!std::ranges::any_of(inputs, [&](const auto &link) { return link.FromNode == a; })) view.Relationships.emplace_back(a, b);
-    };
-    for (uint32_t n = 0; n < items.size(); ++n) {
-        for (uint16_t s = 0; s < InputsOf(view, n); ++s) {
-            const auto source = ReferenceValue(r, std::get<SceneReference>(BindingOf(view, n, s)));
-            const auto from = index_of(source);
-            if (from == NoNode || from == n) continue;
-            for (uint16_t o = InputsOf(view, from); o < NodeSockets(view, from).size(); ++o) {
-                if (std::get<NetworkItem>(BindingOf(view, from, o)) != source) continue;
-                view.Wires[view.InputFirst[n] + s] = {from, o};
-                break;
-            }
-            if (view.Wires[view.InputFirst[n] + s].FromNode == NoNode) relationship(source, items[n]);
-        }
-    }
-    if (NetworkRoot(r, network) == state::Document) {
-        for (const auto item : NetworkLeaves(r, network)) {
-            for (const auto reference : SceneReferences(r, item)) {
-                if (reference.Kind == ReferenceKind::Material || reference.Kind == ReferenceKind::Texture) relationship(ReferenceValue(r, reference), item);
-            }
-            if (item.Kind != ItemKind::Entity) continue;
-            if (const auto *filter = r.try_get<const CollisionFilter>(item.Entity)) {
-                for (const auto system : filter->Systems) relationship({system}, item);
-                for (const auto system : filter->CollideSystems) relationship({system}, item);
-            }
-            if (r.all_of<Scene>(item.Entity)) {
-                for (const auto object : r.view<const ObjectKind>()) {
-                    if (!InScene(r, object, item.Entity)) continue;
-                    if (const auto *instance = r.try_get<const Instance>(object); instance && r.all_of<GeometryProcedure>(instance->Entity)) relationship({instance->Entity}, item);
-                    if (const auto *armature = r.try_get<const ArmatureObject>(object)) relationship({armature->Entity}, item);
-                }
-            }
-        }
-    }
-    SortUnique(view.Relationships);
     return view;
 }
 
@@ -419,7 +393,6 @@ void DrawSceneAddMenu(const state::Registry &r, state::Entity network) {
     if (network != state::Document && !r.all_of<Scene>(root)) return;
     if (root == state::Document) {
         if (MenuItem("Scene")) action::Emit(action::scene::Add{"Scene"});
-        if (MenuItem("Animation")) action::Emit(action::animation::AddAnimation{"Animation"});
         if (MenuItem("Physics material")) action::Emit(action::physics::AddPhysicsMaterial{});
         if (MenuItem("Collision system")) action::Emit(action::physics::AddCollisionSystem{});
         if (MenuItem("Collision filter")) action::Emit(action::physics::AddCollisionFilter{});
@@ -449,18 +422,12 @@ bool EnterNode(const state::Registry &r, NodesPanel &panel, NetworkItem item) {
 
 void DrawSceneNodeMenu(const state::Registry &r, NodesPanel &panel, NetworkItem item) {
     const auto network = EditorNetwork(r, panel), entity = item.Entity;
-    const auto container = r.all_of<NetworkSubnet>(network) ? network : state::Null;
     const auto *inspected = r.try_get<const NetworkActive>(network);
     if (item.Kind == ItemKind::Entity && r.all_of<NetworkSubnet>(entity)) {
         if (MenuItem("Enter subnet")) EnterNetwork(panel, entity);
         const bool can_move = inspected && !inspected->Selection.empty() && !std::ranges::contains(inspected->Selection, item);
         if (MenuItem("Move selected into subnet", nullptr, false, can_move)) action::Emit(action::nodes::MoveItems{network, entity, inspected->Selection});
         if (MenuItem("Ungroup")) action::Emit(action::nodes::UngroupItems{entity});
-    } else if (container != state::Null) {
-        if (MenuItem("Expose reference output")) action::Emit(action::nodes::ExposePort{container, item});
-        for (const auto reference : SceneReferences(r, item)) {
-            if (MenuItem(("Expose " + ReferenceLabel(reference)).c_str())) action::Emit(action::nodes::ExposePort{container, reference});
-        }
     }
     if (item.Kind == ItemKind::Entity && r.all_of<ObjectKind>(entity)) {
         if (MenuItem("Instance hierarchy")) action::Emit(action::object::InstantiateHierarchy{entity});
@@ -478,27 +445,18 @@ void DrawSceneNodeMenu(const state::Registry &r, NodesPanel &panel, NetworkItem 
     }
 }
 
-std::string ReferenceDescription(const state::Registry &r, const PortBinding &binding) {
-    const auto *reference = std::get_if<SceneReference>(&binding);
-    const auto item = reference ? ReferenceValue(r, *reference) : std::get<NetworkItem>(binding);
-    return item == NetworkItem{} ? "Unassigned" : ItemName(r, item);
-}
-
-void DrawReferenceMenu(const state::Registry &r, state::Entity network, SceneReference reference) {
-    const auto container = r.all_of<NetworkSubnet>(network) ? network : state::Null;
+void DrawReferenceMenu(const state::Registry &r, NodesPanel &panel, SceneReference reference) {
+    const auto value = ReferenceValue(r, reference);
     if (BeginMenu("Assign")) {
-        for (const auto candidate : ReferenceCandidates(r, reference)) {
-            PushID(int(candidate.Kind));
-            PushID(int(state::Integral(candidate.Entity)));
-            PushID(int(candidate.Index));
-            if (MenuItem(ItemName(r, candidate).c_str())) action::Emit(action::nodes::AssignReference{reference, candidate});
-            PopID();
-            PopID();
+        const auto candidates = ReferenceCandidates(r, reference);
+        for (uint32_t i = 0; i < candidates.size(); ++i) {
+            PushID(int(i));
+            if (MenuItem(ItemName(r, candidates[i]).c_str())) action::Emit(action::nodes::AssignReference{reference, candidates[i]});
             PopID();
         }
         EndMenu();
     }
-    if (MenuItem("Disconnect", nullptr, false, ReferenceAccepts(r, reference, {}))) action::Emit(action::nodes::AssignReference{reference, {}});
-    if (container != state::Null && MenuItem("Expose on subnet")) action::Emit(action::nodes::ExposePort{container, reference});
+    if (MenuItem("Clear", nullptr, false, value != NetworkItem{})) action::Emit(action::nodes::AssignReference{reference, {}});
+    if (value != NetworkItem{} && MenuItem(("Go to " + ItemName(r, value)).c_str())) Reveal(r, panel, value);
 }
 } // namespace procedure

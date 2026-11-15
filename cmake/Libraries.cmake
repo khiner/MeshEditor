@@ -270,7 +270,8 @@ mesheditor_library(MeshEditorEditor COLD
     src/viewport/ViewportOps.cpp
 )
 # The settle pass and the object drag loop over every selected entity each frame, and a plan reads every node of its procedure.
-set_property(SOURCE src/ProcessEvents.cpp src/action/View.cpp src/procedure/Plan.cpp APPEND PROPERTY COMPILE_OPTIONS -O2)
+# The network files derive a node per item and list a scene's items.
+set_property(SOURCE src/ProcessEvents.cpp src/action/View.cpp src/procedure/Plan.cpp src/procedure/Network.cpp src/procedure/SceneReferences.cpp APPEND PROPERTY COMPILE_OPTIONS -O2)
 
 mesheditor_library(MeshEditorUi COLD
     src/project/HistoryUi.cpp
@@ -291,6 +292,9 @@ mesheditor_library(MeshEditorUi COLD
     src/viewport/ViewportPresent.cpp
     src/viewport/ViewportUi.cpp
 )
+
+# The page build and its layout read every item of a page when the page changes.
+set_property(SOURCE src/procedure/SceneNodes.cpp src/procedure/NodeEditor.cpp APPEND PROPERTY COMPILE_OPTIONS -O2)
 
 mesheditor_library(MeshEditorPlatform COLD
     src/FileDialog.mm

@@ -78,9 +78,11 @@ enum class NodeDrag : uint8_t { None,
                                 Box };
 namespace procedure {
 struct CookPlan;
-}
+struct NodePage;
+} // namespace procedure
 struct NodesPanel : Panel {
     std::shared_ptr<procedure::CookPlan> NetworkView;
+    std::shared_ptr<procedure::NodePage> Page; // The displayed page with its layout, kept between frames
     state::Entity ViewedNetwork{state::Null};
     NodeCanvas Canvas{};
     uint64_t Epoch{};
@@ -106,6 +108,9 @@ struct NodesPanel : Panel {
     bool Linking{false}; // The Add menu lists the sockets that link with the socket a dropped wire held, and links its node through the picked one
     std::array<char, 64> Search{}; // The Add menu's search text
     int SearchHighlight{}; // The search result Enter adds
+    procedure::NetworkItem UsersOf{}; // The item whose users the Parameters panel lists
+    uint64_t UsersRevision{UINT64_MAX}; // The network revision Users was read at
+    std::vector<procedure::SceneReference> Users; // The references that hold UsersOf
     std::array<char, 64> NameEdit{}; // The attribute name the active name field edits
     uint32_t NameEditId{}; // The name field editing NameEdit, or zero
 };

@@ -125,6 +125,8 @@ using Action = std::variant<
     SetLightType, SetSpotCone, SetProjection>;
 
 void Apply(state::Registry &, const Action &);
+// A new geometry holding a copy of the geometry's procedure and drawn record.
+state::Entity CopyGeometry(state::Registry &, state::Entity geometry);
 } // namespace action::object
 namespace action {
 void Append(Destination, object::Action);

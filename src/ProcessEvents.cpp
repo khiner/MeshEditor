@@ -1,4 +1,5 @@
 #include "ProcessEvents.h"
+#include "action/Core.h"
 #include "action/Errors.h"
 #include "action/Nodes.h"
 #include "mesh/MeshComponents.h"
@@ -165,10 +166,8 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
 
     std::unordered_set<state::Entity> bone_state_dirty;
 
-    if (pass != EventPass::Restore) {
-        PublishHierarchyInstances(r);
-        procedure::ReconcileNetworkPorts(r);
-    } else Reset(r.Resources.get<HierarchyChanges>(), r);
+    if (pass != EventPass::Restore) PublishHierarchyInstances(r);
+    else Reset(r.Resources.get<HierarchyChanges>(), r);
     ProcessObjectRemovals(r);
 
     SettleProcedures(r, pass == EventPass::Frame || pass == EventPass::Settle);
@@ -687,6 +686,8 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
             }
         }
     }
+    // A geometry whose material slots changed shows them on its node.
+    for (const auto mesh_entity : material_meshes) r.Resources.get<procedure::NetworkChanges>().Nodes.emplace(mesh_entity);
     const bool every_mesh = (AnyChanged(render_changes.Materials) || displays_changed) && RefreshMaterialLodAttributes(r);
     if (every_mesh) {
         material_meshes.clear();
@@ -1147,6 +1148,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     }
     for (const auto viewport : viewport_changes.View) RequestFrame(r, viewport);
     RecordWorldTransformChanges(r);
+    procedure::SettleNetworks(r, pass == EventPass::Restore);
     r.ClearChanges();
     r.clear<MeshGeometryDirty, MeshPositionsChanged, MeshMaterialAssignment, MeshDisplayDirty>();
     FinishCookPass(r);
@@ -1216,4 +1218,21 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
         .on<AnimationClips>(On::Create | On::Update | On::Destroy)
         .on<Animations>(On::Update);
     animation.KeyframeSources.bind(r).on<TimelineRange>(On::Create | On::Update).on<MeshMaterialSlotSelection>(On::Create | On::Update | On::Destroy);
+    // Nodes binds the components an item's title and references are derived from, Pages those that decide which items a page shows,
+    // and Fields the destruction of each component a value port can address.
+    auto &network = r.Resources.emplace<procedure::NetworkChanges>();
+    const auto bind = [&]<typename... Cs>(state::DirtySet &set, TypeList<Cs...>) {
+        set.bind(r, state::Clearing::Explicit);
+        (set.on<Cs>(On::Create | On::Update | On::Destroy), ...);
+    };
+    bind(
+        network.Nodes,
+        TypeList<
+            ObjectKind, BoneIndex, Scene, HierarchyDefinition, PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef, procedure::NetworkSubnet, procedure::GeometryProcedure,
+            Name, SceneParent, Instance, HierarchyInstance, ArmatureModifier, BoneConstraints, ColliderShape, ColliderMaterial, PhysicsJoint, TriggerNodes,
+            EvaluatedMesh, MeshHandle>{}
+    );
+    bind(network.Pages, TypeList<SceneMembership, HierarchyMember, ArmatureObject, MaterializedTextures, procedure::NetworkSubnet, procedure::ProcedureInstances, procedure::ProcedureNode>{});
+    bind(network.Cells, TypeList<procedure::NetworkLayout>{});
+    action::TrackFieldRemovals(network.Fields.bind(r, state::Clearing::Explicit));
 }

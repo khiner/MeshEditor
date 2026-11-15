@@ -94,6 +94,25 @@ state::Entity DuplicateOne(state::Registry &r, state::Entity e, MeshCopy *copy, 
     return instance;
 }
 
+// Copies the clones' store records and render records together, in one submit after their entities exist.
+void FinishClones(state::Registry &r, CloneCopies &copies, std::span<const uint32_t> clones) {
+    if (clones.empty()) return;
+    auto &meshes = r.Resources.get<MeshStore>();
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    copies.Encode(chain, GetMeshPipelines(r));
+    chain.Submit();
+    meshes.RebuildSelectionIndex(clones);
+    for (const auto id : clones) {
+        RefreshMeshBinding(r, id);
+        const auto &record = meshes.Get(id);
+        const auto entity = MeshEntityOf(r, id);
+        if (entity == state::Null || record.RenderTopologies == 0u) continue;
+        if (meshes.HasDirtyPositions(record)) r.emplace_or_replace<MeshletPositionsDirty>(entity);
+        if (meshes.HasDirtyGroups(record)) r.emplace_or_replace<ClusterLodDirty>(entity);
+        if (!meshes.ClusterGroupCount(record)) r.emplace_or_replace<ClusterLodDemand>(entity);
+    }
+}
+
 state::Entity DuplicateLinkedOne(state::Registry &r, state::Entity e) {
     auto &meshes = r.Resources.get<MeshStore>();
     if (r.all_of<BoneSubPartOf>(e)) return state::Null;
@@ -124,6 +143,18 @@ state::Entity DuplicateLinkedOne(state::Registry &r, state::Entity e) {
 } // namespace
 
 namespace action::object {
+state::Entity CopyGeometry(state::Registry &r, state::Entity geometry) {
+    auto &meshes = r.Resources.get<MeshStore>();
+    const auto id = DrawnStoreId(r, geometry);
+    if (!id) return geometry;
+    meshes.PlanClone(Mesh{meshes, *id});
+    meshes.CommitReserves();
+    CloneCopies copies;
+    const auto clones = meshes.CloneMeshes(copies, std::vector{*id}, true);
+    const auto copy = HasMesh(r, geometry) ? nodes::CopyProcedure(r, geometry, clones.front()) : ::AddMeshData(r, clones.front());
+    FinishClones(r, copies, clones);
+    return copy;
+}
 void Apply(state::Registry &r, const Action &action) {
     auto &meshes = r.Resources.get<MeshStore>();
     auto begin_translate = [&] { r.emplace_or_replace<StartScreenTransform>(state::Document, TransformGizmo::TransformType::Translate); };
@@ -164,7 +195,6 @@ void Apply(state::Registry &r, const Action &action) {
             }
             meshes.CommitReserves();
         }
-        // The clones' store records and render records copy together, in one submit after their entities exist.
         CloneCopies copies;
         const auto clones = meshes.CloneMeshes(copies, sources, true);
         for (uint32_t i = 0u; i < entities.size(); ++i) {
@@ -181,21 +211,7 @@ void Apply(state::Registry &r, const Action &action) {
             }
             r.remove<Selected>(src);
         }
-        if (!clones.empty()) {
-            mtl::ComputeChain chain{meshes.BufferContext()};
-            copies.Encode(chain, GetMeshPipelines(r));
-            chain.Submit();
-            meshes.RebuildSelectionIndex(clones);
-            for (const auto id : clones) {
-                RefreshMeshBinding(r, id);
-                const auto &record = meshes.Get(id);
-                const auto entity = MeshEntityOf(r, id);
-                if (entity == state::Null || record.RenderTopologies == 0u) continue;
-                if (meshes.HasDirtyPositions(record)) r.emplace_or_replace<MeshletPositionsDirty>(entity);
-                if (meshes.HasDirtyGroups(record)) r.emplace_or_replace<ClusterLodDirty>(entity);
-                if (!meshes.ClusterGroupCount(record)) r.emplace_or_replace<ClusterLodDemand>(entity);
-            }
-        }
+        FinishClones(r, copies, clones);
         begin_translate();
     };
     // Mesh-data components live on the object's mesh entity.
@@ -312,6 +328,8 @@ void Apply(state::Registry &r, const Action &action) {
                 if (a.Index >= materials.Count<PBRMaterial>()) return;
                 materials.Update(std::as_bytes(std::span{&a.Value, 1}), uint64_t(a.Index) * sizeof(PBRMaterial) + a.Offset);
                 r.Resources.get<RenderChanges>().Materials.emplace(state::Document);
+                // A texture slot is an unsigned field, and the document page shows it as a reference.
+                if constexpr (std::same_as<T, uint32_t>) r.Resources.get<procedure::NetworkChanges>().Pages.emplace(state::Document);
             },
             [&](const SetMaterialSlotSelection &a) {
                 for_each_mesh_target(a.Target, [&](state::Entity e) { r.emplace_or_replace<MeshMaterialSlotSelection>(e, a.PrimitiveIndex); });

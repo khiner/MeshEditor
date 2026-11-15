@@ -9,6 +9,7 @@
 #include "mesh/Unsubdivide.h"
 #include "procedure/Macros.h"
 #include "procedure/NodeEditor.h"
+#include "procedure/NodeView.h"
 #include "project/HistoryUi.h"
 #include "scene/HierarchyInstance.h"
 #include "scene/SceneGraph.h"
@@ -1321,6 +1322,58 @@ void DeleteTipRestores(ProcedureFixture &f) {
     expect(f.Output(mesh) == record && f.SourceOf(mesh) == source);
 }
 
+// A geometry reference holds an object that draws the same geometry, every reference clears, and page data follows the items on its page.
+void ReferenceEditing(ProcedureFixture &f) {
+    using namespace action::nodes;
+    auto &r = f.R;
+    const auto scene = FrameScene(r);
+    const auto [low, high] = std::minmax({f.AddCube(), f.AddCube()});
+    const auto geometry_of = [&](state::Entity object) { return r.get<const Instance>(object).Entity; };
+    const SceneReference shared{{high}, ReferenceKind::Geometry};
+    const auto own = geometry_of(high);
+    f.Do(AssignReference{shared, {low}});
+    expect(geometry_of(high) == geometry_of(low) && !r.valid(own));
+    expect(ReferenceValue(r, shared) == NetworkItem{low} && ReferenceValue(r, {{low}, ReferenceKind::Geometry}) == NetworkItem{});
+    // The node an input of the scene page's node is wired from, by the input's label.
+    const auto wired_from = [&](state::Entity node, std::string_view input) -> std::optional<state::Entity> {
+        const auto view = SceneNodeDefinitions(r, scene);
+        const auto n = uint32_t(std::ranges::find(view.Nodes, NetworkItem{node}, &EditorNode::Item) - view.Nodes.begin());
+        for (uint16_t s = 0; s < InputsOf(view, n); ++s) {
+            if (NodeSockets(view, n)[s].Name != input) continue;
+            const auto from = view.Wires[view.InputFirst[n] + s].FromNode;
+            return from == NoNode ? state::Null : view.Nodes[from].Item.Entity;
+        }
+        return {};
+    };
+    // The page wires the sharing object from the other, and reads a material on the document page by name.
+    expect(wired_from(high, "Geometry") == low && wired_from(high, "Material slot 0: Default") == state::Null);
+    // The subnet holding the sharing object has one port, for the reference that crosses its boundary.
+    f.Do(GroupItems{scene, {{high}}});
+    const auto group = r.get<const NetworkActive>(scene).Item.Entity;
+    expect(wired_from(group, GetName(r, high) + ": Geometry") == low);
+    f.Do(AssignReference{shared, {}});
+    expect(geometry_of(high) != geometry_of(low) && f.Shaped(geometry_of(high)) == f.Shaped(geometry_of(low)));
+    expect(!wired_from(group, GetName(r, high) + ": Geometry"));
+    f.Do(MoveNodes{scene, {{{low}, {3u, 3u}}}});
+    f.Do(SelectItems{scene, {low}, {{low}}});
+    f.Do(action::object::Delete{});
+    expect(!r.valid(low) && !r.all_of<NetworkLayout>(scene));
+
+    f.Do(action::physics::AddCollisionSystem{});
+    f.Do(action::physics::AddCollisionFilter{});
+    const auto system = SortedEntities(r.view<const CollisionSystem>()).back(), filter = SortedEntities(r.view<const CollisionFilter>()).back();
+    const SceneReference member{{filter}, ReferenceKind::FilterSystem};
+    f.Do(AssignReference{member, {system}});
+    expect(r.get<const CollisionFilter>(filter).Systems == std::vector{system} && ReferencesTo(r, {system}) == std::vector{member});
+    // The filter shows its entry and the slot that adds one, and a material shows its texture slots.
+    const auto labels = SceneNodeDefinitions(r, state::Document).Labels;
+    for (const auto *label : {"Member system 0", "Add member system", "Base color texture"}) expect(std::ranges::contains(labels, label)) << label;
+    expect(!std::ranges::contains(labels, "Add collide system"));
+    f.Do(AssignReference{member, {}});
+    expect(r.get<const CollisionFilter>(filter).Systems.empty());
+    expect(std::ranges::none_of(NetworkItems(r, state::Document), [&](NetworkItem item) { return item.Kind == ItemKind::Entity && (item.Entity == state::Document || r.any_of<GeometryProcedure, Armature>(item.Entity)); }));
+}
+
 // Grouping changes presentation only, and nested interfaces edit the same underlying fields.
 void SceneNetworks(ProcedureFixture &f) {
     using namespace action::nodes;
@@ -1396,6 +1449,21 @@ void CanvasEquivalence(ProcedureFixture &f) {
         f.Undo();
         f.Redo();
         expect(frame() == drawn);
+        // The page kept between frames draws what a page built from nothing draws, with a placed cell and with a subnet.
+        if (network == FrameScene(f.R)) {
+            const auto item = NetworkItems(f.R, network).front();
+            const auto same_as_fresh = [&](auto edit) {
+                f.Do(std::move(edit));
+                const auto kept = frame();
+                panel.Page.reset();
+                expect(frame() == kept && kept != drawn);
+            };
+            same_as_fresh(action::nodes::MoveNodes{network, {{item, {9u, 7u}}}});
+            same_as_fresh(action::nodes::GroupItems{network, {item}});
+            f.Undo();
+            f.Undo();
+            expect(frame() == drawn);
+        }
         if (network == state::Document) {
             for (const auto item : NetworkItems(f.R, network)) {
                 f.Do(SelectItems{network, item, {item}});
@@ -1799,6 +1867,7 @@ void TestProcedures() {
     TestOperators(f, other);
     Hierarchies(f, other);
     Scenario(f, other, "SceneNetworks", SceneNetworks);
+    Scenario(f, other, "ReferenceEditing", ReferenceEditing);
     Scenario(f, other, "CanvasEquivalence", CanvasEquivalence);
     Scenario(f, other, "ParameterSockets", ParameterSockets);
     Scenario(f, other, "FloatMathOperations", FloatMathOperations);

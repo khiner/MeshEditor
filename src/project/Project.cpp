@@ -390,7 +390,10 @@ void Project::AfterRestore() {
     if (sources_changed || manifest_changed) R.Resources.get<RenderChanges>().MaterializedTextures.emplace(state::Document);
     ReconcileRestoredMeshes(R, std::move(restored_meshes));
     auto &buffers = R.Resources.get<GpuBuffers>();
-    if (!buffers.Materials.History()->Trie.TakeChanged().empty()) R.Resources.get<RenderChanges>().Materials.emplace(state::Document);
+    if (!buffers.Materials.History()->Trie.TakeChanged().empty()) {
+        R.Resources.get<RenderChanges>().Materials.emplace(state::Document);
+        R.Resources.get<procedure::NetworkChanges>().Pages.emplace(state::Document);
+    }
     if (!buffers.MorphWeightBuffer.Buffer.History()->Trie.TakeChanged().empty()) R.Resources.get<RenderChanges>().MorphWeights.emplace(state::Document);
     Settle(EventPass::Restore);
 }

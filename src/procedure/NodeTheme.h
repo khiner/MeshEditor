@@ -53,6 +53,7 @@ struct NodeThemeColors {
 struct CellSize {
     bool FollowFrameHeight{true};
     float Points{21};
+    bool operator==(const CellSize &) const = default;
 };
 
 struct NodeThemeSizes {
@@ -64,6 +65,7 @@ struct NodeThemeSizes {
     float WireWidth{2};
     float WireCurving{.4f};
     float BorderWidth{1}, HighlightBorderWidth{2}, OutlineWidth{1};
+    bool operator==(const NodeThemeSizes &) const = default;
 };
 
 struct NodeTheme {

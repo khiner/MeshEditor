@@ -3,6 +3,7 @@
 #include "action/Core.h"
 #include "action/Timeline.h"
 #include "action/View.h"
+#include "procedure/NodeEditor.h"
 #include "viewport/ViewportIcons.h"
 
 #include "timeline/TimelineTheme.h"
@@ -102,6 +103,10 @@ void RenderTimeline(const TimelineRange &range, const TimelinePlayback &playback
                 SetNextItemWidth(GetFontSize() * 10);
                 InputText("##animation_name", name, sizeof name);
                 if (IsItemDeactivatedAfterEdit()) emit(action::animation::RenameAnimation{animations.Active, name});
+                if (auto *panels = r.Resources.find<PanelsState>()) {
+                    SeparatorText("Targets");
+                    procedure::DrawAnimationTargets(r, panels->Nodes, animations.Active);
+                }
             }
             EndPopup();
         }

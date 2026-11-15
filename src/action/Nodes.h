@@ -102,11 +102,14 @@ struct SelectItems {
     procedure::NetworkItem Active;
     std::vector<procedure::NetworkItem> Items;
 };
+// Adds a named value port to the scene subnet for a field of an item inside it.
 struct ExposePort {
     state::Entity Subnet;
-    procedure::PortBinding Binding;
+    procedure::PromotedField Field;
     std::unique_ptr<std::string> Name;
 };
+// Sets the reference to the source, or clears it for no source.
+// procedure::ReferenceAccepts says what each kind takes and what clearing it means.
 struct AssignReference {
     procedure::SceneReference Reference;
     procedure::NetworkItem Source;

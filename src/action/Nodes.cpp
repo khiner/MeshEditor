@@ -2,15 +2,12 @@
 #include "action/Dispatch.h"
 #include "action/Errors.h"
 #include "action/Selection.h"
-#include "animation/AnimationData.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "procedure/Cook.h"
 #include "procedure/Macros.h"
 #include "procedure/Procedure.h"
 #include "render/Instance.h"
-#include "render/MaterialComponents.h"
-#include "render/Textures.h"
 #include "scene/Entity.h"
 #include "selection/SelectionComponents.h"
 #include "state/EntityReferences.h"
@@ -113,17 +110,6 @@ std::vector<state::Entity> WithDescendants(const state::Registry &r, const Geome
         }
     }
     return nodes;
-}
-
-bool ValidItem(const state::Registry &r, NetworkItem item) {
-    if (item.Kind == ItemKind::Entity) return r.valid(item.Entity);
-    if (item.Kind == ItemKind::Material) return item.Index < r.Resources.get<const MaterialStore>().Names.size();
-    if (item.Kind == ItemKind::Animation) return item.Index < r.get<const Animations>(state::Document).Names.size();
-    if (item.Kind == ItemKind::Texture) {
-        const auto *textures = r.try_get<const MaterializedTextures>(state::Document);
-        return textures && item.Index < textures->Items.size();
-    }
-    return false;
 }
 
 bool IsNodeOf(const state::Registry &r, state::Entity mesh_entity, state::Entity node) {
@@ -360,14 +346,7 @@ void Apply(state::Registry &r, const Action &action) {
             },
             [&](const MoveNodes &a) {
                 if (!r.valid(a.Network)) return Fail(r, "The network does not exist");
-                const bool geometry = r.any_of<GeometryProcedure, Subnet>(a.Network);
-                const auto items = geometry ? std::vector<NetworkItem>{} : NetworkItems(r, a.Network);
-                for (const auto &p : a.Positions) {
-                    if (!ValidItem(r, p.Node)) return Fail(r, "A layout refers to a missing item");
-                    // A subnet's page shows its nodes and the subnet itself, as its boundary node.
-                    const bool node = geometry && p.Node.Kind == ItemKind::Entity && r.all_of<ProcedureNode>(p.Node.Entity);
-                    if (geometry ? !node || (p.Node.Entity != a.Network && NetworkOf(r, p.Node.Entity) != a.Network) : !std::ranges::binary_search(items, p.Node)) return Fail(r, "A layout item is outside this network");
-                }
+                if (!std::ranges::all_of(a.Positions, [&](const auto &p) { return ShowsItem(r, a.Network, p.Node); })) return Fail(r, "A layout item is outside this network");
                 for (const auto &p : a.Positions) SetNetworkPosition(r, a.Network, p.Node, p.Position);
             },
             [&](const AutoLayout &a) {
@@ -481,7 +460,6 @@ void Apply(state::Registry &r, const Action &action) {
                 const auto source = CreateNode(r, KindOf<Source>);
                 r.emplace<SourceState>(source, store::Hash128{}, record);
                 RootProcedure(r, a.MeshEntity, source, KindOf<Source>);
-                r.remove<NetworkLayout>(a.MeshEntity);
                 r.replace<EvaluatedMesh>(a.MeshEntity, record, source);
                 r.destroy(nodes);
             },
@@ -573,9 +551,6 @@ void Apply(state::Registry &r, const Action &action) {
                 auto selected = SelectedNodes(r, a.MeshEntity);
                 std::erase_if(selected, is_removed);
                 Select(r, a.MeshEntity, selected, active);
-                for (const auto node : removed_entities) {
-                    if (const auto network = NetworkOf(r, node); !is_removed(network)) ClearNetworkPosition(r, network, {node});
-                }
                 r.destroy(removed_entities);
             },
             [&](const InsertNode &a) {
