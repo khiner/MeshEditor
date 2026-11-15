@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <format>
+#include <objc/message.h>
 
 namespace mtl {
 LibraryCache::LibraryCache(LibraryCache &&) noexcept = default;
@@ -130,6 +131,24 @@ NS::SharedPtr<MTL4::FunctionDescriptor> MakeFunctionDescriptor(LibraryCache &cac
     specialized->setConstantValues(values.get());
     return specialized;
 }
+
+// Metal builds a serializer's capture in a directory under the user cache and never removes it.
+// The first captured pipeline creates the directory, and a private method of the capture's binary archive reports its path.
+// The result is empty unless the reported path has the shape of a capture directory.
+std::filesystem::path CaptureDirectory(MTL4::PipelineDataSetSerializer *serializer) {
+    const auto send = [](void *object, const char *name, auto... args) -> void * {
+        auto *const selector = sel_registerName(name);
+        if (!object || !class_respondsToSelector(object_getClass(id(object)), selector)) return nullptr;
+        return reinterpret_cast<void *(*)(void *, SEL, decltype(args)...)>(objc_msgSend)(object, selector, args...);
+    };
+    NS::Error *error = nullptr;
+    auto *const reported = send(send(serializer, "destinationBinaryArchive"), "getArchiveIDWithError:", &error);
+    const auto *const text = static_cast<const char *>(send(reported, "UTF8String"));
+    if (!text) return {};
+    const auto path = std::filesystem::path{text}.lexically_normal();
+    const bool capture = path.filename().string().starts_with("gpuarchiver-") && path.parent_path().filename() == "com.apple.gpuarchiver";
+    return capture ? path : std::filesystem::path{};
+}
 } // namespace
 
 LibraryCache::LibraryCache(const Context &ctx, std::filesystem::path shaders_dir, std::filesystem::path pipeline_archive, std::filesystem::path builtin_archive, bool prune_archive_chunks, bool archive_only)
@@ -190,7 +209,6 @@ bool LibraryCache::FlushArchive() {
     if (ArchivePath.empty() || !Serializer || !PipelineCreated) return true;
     std::error_code ec;
     std::filesystem::create_directories(ArchivePath.parent_path(), ec);
-    if (ec) return false;
     auto destination = ArchivePath;
     if (std::filesystem::exists(destination, ec)) {
         const auto stamp = std::chrono::system_clock::now().time_since_epoch().count();
@@ -200,12 +218,15 @@ bool LibraryCache::FlushArchive() {
     auto tmp = destination;
     tmp += std::format(".tmp.{}", getpid());
     NS::Error *error = nullptr;
+    // Serialization reads the capture directory and moves the serializer to a new one for later pipelines.
+    const auto capture_directory = CaptureDirectory(Serializer.get());
     const bool serialized = Serializer->serializeAsArchiveAndFlushToURL(NS::URL::fileURLWithPath(Str(tmp.string()).get()), &error);
+    std::filesystem::remove_all(capture_directory, ec);
+    PipelineCreated = false;
     if (serialized) std::filesystem::rename(tmp, destination, ec);
     const bool saved = serialized && !ec;
     std::filesystem::remove(tmp, ec);
     if (!saved) return false;
-    PipelineCreated = false;
     if (PruneArchiveChunks) PrunePipelineArchives(ArchivePath);
     return true;
 }
