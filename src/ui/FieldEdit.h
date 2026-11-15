@@ -7,14 +7,16 @@
 // ValueEdit{value} edits the supplied value in place.
 // DrawFields<C>(editor) draws every field of C through an editor from its Specs table.
 
+#include "Variant.h"
 #include "action/Build.h"
-#include "action/Dispatch.h"
 #include "action/Emit.h"
 #include "animation/Clips.h"
 #include "animation/Fields.h"
 #include "animation/Keying.h"
 #include "numeric/Angles.h"
+#include "procedure/Network.h"
 #include "scene/RotationUi.h"
+#include "state/Registry.h"
 
 #include <imgui.h>
 
@@ -374,7 +376,8 @@ struct Edit : FieldWidgets<Prefix...> {
     Edit<Prefix..., More...> Sub() const { return {R, E}; }
 
     template<typename C> state::Entity ReadFrom() const {
-        return E ? *E : action::UpdateTraits<C>::Active(R);
+        static_assert(action::Updatable<C>);
+        return E ? *E : action::ActiveUpdateTarget(R, state::Key<C>());
     }
     // The target an edit records: the gesture's target for an active-entity editor, otherwise the entity.
     action::Target Recorded(action::Target gesture) const {

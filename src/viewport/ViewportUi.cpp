@@ -30,6 +30,7 @@
 #include "render/TextureRefs.h"
 #include "scene/CameraLens.h"
 #include "scene/Defaults.h"
+#include "scene/Entity.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"

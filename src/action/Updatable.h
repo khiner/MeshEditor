@@ -60,11 +60,4 @@ using UpdatableComponents = TypeList<
 
 template<typename C>
 concept Updatable = InTypeList<C, UpdatableComponents>;
-
-// Invokes `f.template operator()<C>()` for the updatable component with `key`, or nothing for a key outside the list.
-void ForUpdatable(state::TypeKey key, auto &&f) {
-    [&]<typename... Cs>(TypeList<Cs...>) {
-        (void)((state::Key<Cs>() == key && (f.template operator()<Cs>(), true)) || ...);
-    }(UpdatableComponents{});
-}
 } // namespace action

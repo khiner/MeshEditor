@@ -16,6 +16,8 @@
 #include "imspinner.h"
 #include "mesh/MeshStore.h"
 #include "render/Instance.h"
+#include "scene/Entity.h"
+#include "scene/HierarchyInstance.h"
 #include "selection/SelectionComponents.h"
 #include "ui/ChoiceCombo.h"
 #include "ui/FieldEdit.h"

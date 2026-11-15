@@ -1,5 +1,6 @@
 #include "project/HistoryUi.h"
 
+#include "action/Dispatch.h"
 #include "procedure/Procedure.h"
 #include "project/Recording.h"
 #include "ui/CtrlShortcut.h"

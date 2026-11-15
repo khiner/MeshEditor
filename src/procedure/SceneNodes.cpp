@@ -1,5 +1,6 @@
 #include "SortUnique.h"
 #include "action/Animation.h"
+#include "action/Dispatch.h"
 #include "action/Physics.h"
 #include "action/Scene.h"
 #include "armature/Armature.h"

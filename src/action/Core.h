@@ -138,6 +138,8 @@ void Append(Destination, Core);
 
 // Reads an editable field as its typed Update action, or nothing for an invalid component or field address.
 std::optional<Core> ReadUpdate(const state::Registry &, state::Entity, state::TypeKey, uint16_t offset);
+// The entity an Update of the component addresses for the active target, or null when there is none.
+state::Entity ActiveUpdateTarget(const state::Registry &, state::TypeKey component);
 void Apply(state::Registry &, const Core &);
 // An Update records unless it targets a workspace component.
 bool IsRecordable(const Core &);

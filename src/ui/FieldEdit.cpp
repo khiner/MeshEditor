@@ -1,6 +1,7 @@
 #include "ui/FieldEdit.h"
 #include "Panel.h"
 #include "action/Animation.h"
+#include "action/Dispatch.h"
 #include "timeline/Timeline.h"
 #include <imgui_internal.h>
 

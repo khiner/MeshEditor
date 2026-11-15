@@ -2,6 +2,7 @@
 #include "PhysicsUi.h"
 #include "PhysicsSystem.h"
 #include "action/Physics.h"
+#include "scene/Entity.h"
 #include "timeline/Timeline.h"
 #include "ui/ChoiceCombo.h"
 #include "ui/FieldEdit.h"

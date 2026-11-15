@@ -1,6 +1,8 @@
 #include "procedure/NodeEditor.h"
 #include "procedure/Macros.h"
+#include "scene/Entity.h"
 #include "scene/HierarchyInstance.h"
+#include "scene/SceneGraph.h"
 
 #include "action/View.h"
 #include "mesh/Mesh.h"
