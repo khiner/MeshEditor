@@ -454,10 +454,7 @@ void LoopSlide(ProcedureFixture &f, vec3 edge, vec3 positive, std::initializer_l
     };
     const auto hit = f.Pick(TransformPoint(ActiveWorld(f), edge), Element::Edge);
     expect(fatal(hit.has_value()));
-    std::vector<action::Action> cut;
-    cut.push_back(action::MakeAction(action::selection::ApplyEditElementClick{false, hit}));
-    cut.push_back(action::MakeAction(action::nodes::AppendMacro{procedure::LoopCutAndSlideMacro, values(0.f, InvalidOffset)}));
-    f.Stage(std::move(cut));
+    f.Stage(action::selection::ApplyEditElementClick{false, hit}, action::nodes::AppendMacro{procedure::LoopCutAndSlideMacro, values(0.f, InvalidOffset)});
     const Mesh mesh{f.Store(), f.Output(f.R.get<const Instance>(FindActiveEntity(f.R)).Entity)};
     const auto vertices = mesh.VertexValues();
     uint32_t reference = InvalidOffset;

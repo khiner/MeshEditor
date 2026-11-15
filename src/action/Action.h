@@ -2,7 +2,7 @@
 
 // The variant over every domain's actions.
 // A file that emits or posts actions includes the domain headers of those actions and action/Emit.h.
-// CMake defines MESHEDITOR_FULL_ACTION for the sources that record, apply, serialize or edit any action, and for the tests.
+// CMake defines MESHEDITOR_FULL_ACTION for project/Recording.cpp, which receives, applies, records and encodes any action, for project/HistoryUi.cpp, which edits any recorded action, and for the tests.
 #ifndef MESHEDITOR_FULL_ACTION
 #error "Include the action's domain header, not action/Action.h. See the comment above this check."
 #endif
@@ -11,7 +11,6 @@
 #include "action/Animation.h"
 #include "action/Audio.h"
 #include "action/Bone.h"
-#include "action/Emit.h"
 #include "action/Io.h"
 #include "action/Mesh.h"
 #include "action/Nodes.h"
@@ -57,10 +56,6 @@ template<> inline constexpr bool Recordable<view::SetViewportScene> = true;
 template<> inline constexpr bool Recordable<view::RemoveViewport> = true;
 template<> inline constexpr bool Recordable<timeline::EnterPresentation> = false;
 template<> inline constexpr bool Recordable<audio::SetOutputDevice> = false;
-
-// Emit the actions as the frame's gesture.
-void Emit(Action, Phase = Phase::Record);
-void Emit(std::vector<Action>, Phase = Phase::Record);
 
 template<typename A, typename F> decltype(auto) VisitLeaf(A &&a, F &&fn) {
     return std::visit([&](auto &&domain) { return std::visit(fn, domain); }, std::forward<A>(a));

@@ -16,6 +16,7 @@ enum class Destination {
 };
 // Each domain's action header declares `void Append(Destination, Action)` for its domain variant.
 // A leaf action converts to its domain variant, so Append takes leaves too.
+// project/Recording.cpp holds the gesture and the queue, and defines Begin, Append, Commit and Cancel.
 
 // Opens the frame's gesture and returns whether it did.
 // Project::Frame accepts one gesture per frame, so a frame's later gestures are dropped.

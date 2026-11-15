@@ -7,7 +7,18 @@
 #include "project/store/History.h"
 
 namespace project {
+struct Project;
+// The recorded actions and the edit draft, which only Recording.cpp can complete because they hold the full action type.
 struct Recording;
+std::unique_ptr<Recording, void (*)(Recording *)> NewRecording();
+
+// These take actions in the encoded form that history nodes store.
+// Applies the encoded actions with their recorded workspaces restored from `source`.
+std::expected<void, std::string> RunEncoded(Project &, store::History &source, std::span<const std::byte> actions, std::span<const uint32_t> workspaces);
+// Whether any of the encoded actions has a value to edit.
+bool EditableEncoded(std::span<const std::byte> actions);
+// Empties the queue of posted steps.
+void DiscardPostedSteps();
 
 // A project archive contains the working directory; an actions archive contains actions, their workspace pages, and their assets.
 // Both archive forms save one final workspace snapshot.
@@ -56,7 +67,7 @@ struct Project {
     uint64_t MemoryCap{64ull << 20};
     uint64_t Revision{};
 
-    std::unique_ptr<Recording> Recorded; // The recorded actions and the edit draft, defined in project/Recording.h
+    std::unique_ptr<Recording, void (*)(Recording *)> Recorded;
     std::vector<uint32_t> RecordedWorkspaces;
     std::optional<size_t> StageFirst;
     std::optional<store::Snapshot> GestureBase;

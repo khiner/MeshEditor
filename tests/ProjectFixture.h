@@ -103,8 +103,9 @@ struct Fixture : Engine {
         Audit();
         if (Step) Step(false);
     }
-    void Stage(auto a) {
-        action::Emit(std::move(a), action::Phase::Stage);
+    // Stages the actions, in order, as one frame's gesture.
+    void Stage(auto... actions) {
+        action::Emit(action::Phase::Stage, std::move(actions)...);
         P->Frame();
         boost::ut::expect(R.Resources.get<action::Errors>().Messages.empty());
     }

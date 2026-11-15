@@ -1,19 +1,15 @@
 #pragma once
 
-#include "action/ActionDrain.h"
+#include "action/Action.h"
 #include "project/Project.h"
 
-// The parts of a project that hold or take the full action type.
+// The parts of a project that take or return the full action type.
 namespace project {
 // The actions of a history node, decoded for editing.
 struct EditDraft {
     uint32_t Node;
     uint64_t Revision; // The history revision the actions were decoded at.
     std::vector<action::Action> RecordedActions;
-};
-struct Recording {
-    std::vector<action::Action> Actions; // The actions the open gesture has recorded
-    std::optional<EditDraft> Draft;
 };
 
 // An action's name, and for a field write the component and field it names.
