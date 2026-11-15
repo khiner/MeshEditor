@@ -676,6 +676,8 @@ struct ResolvedSocket {
     bool Cycle{};
 };
 state::Entity ContainerOf(const state::Registry &, state::Entity node);
+// The network whose page shows the node: its subnet, or else its procedure's mesh entity.
+state::Entity NetworkOf(const state::Registry &, state::Entity node);
 const SubnetPort *PortOf(const state::Registry &, state::Entity subnet, uint16_t port);
 Socket SocketOf(const state::Registry &, state::Entity node, uint16_t socket);
 // The link in a node's input slot, or a subnet port's source.
@@ -844,16 +846,12 @@ struct ProcedureOwnedMesh {
     state::Entity MeshEntity;
 };
 
-struct NodeLayout {
-    uvec2 Position; // The top left grid cell
-};
-inline constexpr uint32_t AppendGap{12u}; // The cells an appended node sits right of the displayed node.
 // The kind's name with spaces between its words.
 template<typename K> constexpr auto Title{field::detail::Spaced<field::fixed_string<state::LeafName<K>().size() + 1>{state::LeafName<K>()}>()};
 
 struct PublishSelection {}; // Persistent on a node a viewport operator or macro added, which selects its output as the operator does.
 
-state::Entity CreateNode(state::Registry &, uint16_t kind, uvec2 position);
+state::Entity CreateNode(state::Registry &, uint16_t kind);
 // Sets the mesh entity's procedure to the root node of the kind alone, displayed, active and selected.
 void RootProcedure(state::Registry &, state::Entity mesh_entity, state::Entity root, uint16_t kind);
 

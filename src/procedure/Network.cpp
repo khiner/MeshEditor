@@ -120,6 +120,11 @@ void SetNetworkPosition(state::Registry &r, state::Entity network, NetworkItem i
         else layout.Cells.insert(at, {item, position});
     });
 }
+void ClearNetworkPosition(state::Registry &r, state::Entity network, NetworkItem item) {
+    if (!NetworkPosition(r, network, item)) return;
+    if (r.get<const NetworkLayout>(network).Cells.size() == 1u) r.remove<NetworkLayout>(network);
+    else r.patch<NetworkLayout>(network, [&](auto &layout) { layout.Cells.erase(std::ranges::lower_bound(layout.Cells, item, {}, &NetworkCell::Item)); });
+}
 void PlaceInNetwork(state::Registry &r, state::Entity network, state::Entity object) {
     if (!r.all_of<NetworkSubnet>(network) || !InScene(r, object, NetworkRoot(r, network))) return;
     r.patch<NetworkSubnet>(network, [&](auto &subnet) {
@@ -145,14 +150,10 @@ bool ValidNetwork(const state::Registry &r, state::Entity network) {
     const auto *object = r.try_get<const Instance>(root);
     return root == state::Document || r.any_of<Scene, ArmatureObject, HierarchyInstance, HierarchyDefinition>(root) || (object && r.all_of<ProcedureInstances>(object->Entity));
 }
-uvec2 Position(const state::Registry &r, state::Entity network, NetworkItem item, std::span<const NetworkItem> items) {
-    if (const auto position = NetworkPosition(r, network, item)) return *position;
-    const auto index = uint32_t(std::ranges::lower_bound(items, item) - items.begin());
-    return {index % 4u * 10u + 1u, index / 4u * 5u + 1u};
-}
+// An item that leaves a network's page leaves its cell there.
 void EraseItems(state::Registry &r, state::Entity network, std::span<const NetworkItem> items) {
     if (r.all_of<NetworkSubnet>(network)) r.patch<NetworkSubnet>(network, [&](auto &subnet) { std::erase_if(subnet.Members, [&](auto item) { return std::ranges::contains(items, item); }); });
-    if (r.all_of<NetworkLayout>(network)) r.patch<NetworkLayout>(network, [&](auto &layout) { std::erase_if(layout.Cells, [&](auto cell) { return std::ranges::contains(items, cell.Item); }); });
+    for (const auto item : items) ClearNetworkPosition(r, network, item);
 }
 void InsertItems(state::Registry &r, state::Entity network, std::span<const NetworkItem> items) {
     if (r.all_of<NetworkSubnet>(network)) r.patch<NetworkSubnet>(network, [&](auto &subnet) { subnet.Members.append_range(items); SortUnique(subnet.Members); });
@@ -166,23 +167,13 @@ void Apply(state::Registry &r, const GroupItems &a) {
     SortUnique(items);
     const auto visible = NetworkItems(r, a.Network);
     if (items.empty() || !ValidNetwork(r, a.Network) || !std::ranges::includes(visible, items)) return Fail(r, "Grouping requires items in one network");
-    std::vector<NetworkCell> cells;
-    uvec2 origin{UINT32_MAX, UINT32_MAX};
-    for (const auto item : items) {
-        const auto position = Position(r, a.Network, item, visible);
-        origin = {std::min(origin.x, position.x), std::min(origin.y, position.y)};
-        cells.push_back({item, position});
-    }
     const auto entity = r.create();
     r.emplace<NetworkSubnet>(entity, a.Network, items);
     r.emplace<SubnetInterface>(entity);
     EmplaceUniqueName(r, entity, "Subnet");
-    for (auto &cell : cells) cell.Position = {cell.Position.x - origin.x + 1u, cell.Position.y - origin.y + 1u};
-    r.emplace<NetworkLayout>(entity, std::move(cells));
     EraseItems(r, a.Network, items);
     InsertItems(r, entity, items);
     InsertItems(r, a.Network, std::array{NetworkItem{entity}});
-    SetNetworkPosition(r, a.Network, {entity}, origin);
     ExposeNetworkReferences(r, entity);
     r.emplace_or_replace<NetworkActive>(a.Network, NetworkItem{entity}, std::vector<NetworkItem>{{entity}});
 }
@@ -191,11 +182,6 @@ void Apply(state::Registry &r, const UngroupItems &a) {
     if (!group) return Fail(r, "The subnet does not exist");
     const auto parent = group->Parent;
     const auto items = NetworkItems(r, a.Subnet);
-    const auto origin = Position(r, parent, {a.Subnet}, NetworkItems(r, parent));
-    for (const auto item : items) {
-        const auto cell = Position(r, a.Subnet, item, items);
-        SetNetworkPosition(r, parent, item, {origin.x + cell.x - std::min(cell.x, 1u), origin.y + cell.y - std::min(cell.y, 1u)});
-    }
     EraseItems(r, parent, std::array{NetworkItem{a.Subnet}});
     InsertItems(r, parent, items);
     r.emplace_or_replace<NetworkActive>(parent, items.empty() ? NetworkItem{} : items.back(), items);
@@ -212,7 +198,6 @@ void Apply(state::Registry &r, const MoveItems &a) {
         const auto *subnet = r.try_get<const NetworkSubnet>(parent);
         parent = subnet ? subnet->Parent : state::Null;
     }
-    for (const auto item : items) SetNetworkPosition(r, a.Destination, item, Position(r, a.Network, item, visible));
     EraseItems(r, a.Network, items);
     InsertItems(r, a.Destination, items);
     ReconcileNetworkPorts(r);

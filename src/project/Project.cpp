@@ -373,7 +373,7 @@ void Project::AfterRestore() {
             for (const auto [object, armature] : R.view<const ArmatureObject>().each())
                 if (armature.Entity == entity) R.remove<ArmaturePoseState>(object);
         } else if (type == state::Type<ArmatureObject>()) R.remove<ArmaturePoseState>(entity);
-        if ((type == state::Type<MeshHandle>() || type == state::Type<EvaluatedMesh>()) && DrawsMesh(R, entity) && !R.all_of<procedure::NodeLayout>(entity)) restored_meshes.push_back(entity);
+        if ((type == state::Type<MeshHandle>() || type == state::Type<EvaluatedMesh>()) && DrawsMesh(R, entity) && !R.all_of<procedure::ProcedureNode>(entity)) restored_meshes.push_back(entity);
         sources_changed |= type == state::Type<gltf::SourceAssets>();
         manifest_changed |= type == state::Type<MaterializedTextures>();
     }

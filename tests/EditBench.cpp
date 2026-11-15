@@ -407,7 +407,7 @@ Result BenchChain(Session &s) {
     for (const auto kind : s.Config.Edit->Kinds) {
         const auto display = r.get<const procedure::GeometryProcedure>(s.Entity).DisplayNode;
         const auto result = *procedure::ResultSocket(r, display);
-        project::Do(p, action::MakeAction(action::nodes::AddNode{s.Entity, kind, {}}));
+        project::Do(p, action::MakeAction(action::nodes::AddNode{s.Entity, kind}));
         nodes.push_back(r.get<const procedure::GeometryProcedure>(s.Entity).Last);
         project::Do(p, action::MakeAction(action::nodes::Link{s.Entity, display, result, nodes.back(), 0u}));
         project::Do(p, action::MakeAction(action::nodes::SetDisplay{s.Entity, nodes.back()}));

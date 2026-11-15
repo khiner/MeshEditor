@@ -68,7 +68,7 @@ state::Entity AddMeshInstance(state::Registry &r, state::Entity mesh_entity, con
 
 state::Entity AddMeshData(state::Registry &r, uint32_t store_id) {
     using namespace procedure;
-    const auto source = CreateNode(r, KindOf<Source>, {0u, 0u});
+    const auto source = CreateNode(r, KindOf<Source>);
     r.emplace<SourceState>(source, store::Hash128{}, store_id);
     const auto mesh_entity = r.create();
     RootProcedure(r, mesh_entity, source, KindOf<Source>);
@@ -85,7 +85,7 @@ std::pair<state::Entity, state::Entity> AddMeshPrimitive(state::Registry &r, con
     using namespace procedure;
     return std::visit(
         [&]<typename K>(const K &shape) {
-            const auto node = CreateNode(r, KindOf<K>, {0u, 0u});
+            const auto node = CreateNode(r, KindOf<K>);
             r.replace<K>(node, shape);
             const auto mesh_entity = r.create();
             RootProcedure(r, mesh_entity, node, KindOf<K>);

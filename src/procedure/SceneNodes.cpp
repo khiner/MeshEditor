@@ -346,7 +346,7 @@ NodeView SceneNodeDefinitions(const state::Registry &r, state::Entity network) {
         view.Bindings.push_back(std::move(binding));
     };
     for (const auto item : items) {
-        EditorNode node{.Item = item, .Title = ItemName(r, item), .Type = ItemLabel(r, item), .Position = NetworkPosition(r, network, item)};
+        EditorNode node{.Item = item, .Title = ItemName(r, item), .Type = ItemLabel(r, item)};
         uint16_t inputs{};
         if (item.Kind == ItemKind::Entity && r.all_of<NetworkSubnet>(item.Entity)) {
             const auto &ports = r.get<const SubnetInterface>(item.Entity).Ports;

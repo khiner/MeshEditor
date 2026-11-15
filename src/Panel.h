@@ -87,7 +87,7 @@ struct NodesPanel : Panel {
     NodeDrag Drag{NodeDrag::None};
     numeric::vec2 Press{}; // The drag's start on the screen
     numeric::uvec2 MoveStart{}; // The held node's cell when a move started
-    numeric::uvec2 AddAt{}; // The cell the Add menu adds a node at
+    numeric::uvec2 AddAt{}; // The cell the Add menu opened at, where the grab of its new node starts
     uint32_t ContextNode{UINT32_MAX};
     uint16_t ContextSocket{UINT16_MAX};
     uint32_t DragNode{UINT32_MAX}; // Node index for the active move, grab, or wire gesture

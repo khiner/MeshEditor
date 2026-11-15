@@ -45,7 +45,7 @@ using UpdatableComponents = TypeList<
     Animations,
     PhysicsSimulationSettings, PhysicsMaterial, PhysicsMotion, PhysicsVelocity, ColliderPolicy, CollisionFilter, PhysicsJoint, ColliderMaterial, TriggerNodes,
     ModalGain, ModalTuning, ModalSoundControls, Striker, SurfaceSoundControls, AudioOutputMix,
-    procedure::NodeLayout, procedure::NodeTheme,
+    procedure::NodeTheme,
     mesh::Delete, mesh::Merge, procedure::Extrude, mesh::Dissolve, mesh::Subdivide, procedure::SubdivisionSurface, procedure::SmoothSurface, mesh::SplitFaces,
     mesh::Poke, mesh::EdgeSplit, mesh::Inset, mesh::Solidify, mesh::Wireframe, mesh::Bevel, mesh::SmoothVertices, mesh::ShrinkFatten,
     mesh::Randomize, procedure::Bisect, procedure::Project, mesh::Simplify,

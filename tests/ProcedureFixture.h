@@ -37,7 +37,7 @@ struct ProcedureFixture : Fixture {
     }
     // Adds an unlinked node without changing the displayed stage.
     state::Entity Append(state::Entity mesh_entity, uint16_t kind) {
-        Do(action::nodes::AddNode{mesh_entity, kind, {}});
+        Do(action::nodes::AddNode{mesh_entity, kind});
         return R.get<const procedure::GeometryProcedure>(mesh_entity).Last;
     }
     // Links each node's first output into the next node's first input and displays the last node.

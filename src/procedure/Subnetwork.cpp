@@ -11,6 +11,10 @@ state::Entity ContainerOf(const state::Registry &r, state::Entity node) {
     const auto *parent = r.try_get<const NodeContainer>(node);
     return parent ? parent->Parent : state::Null;
 }
+state::Entity NetworkOf(const state::Registry &r, state::Entity node) {
+    const auto container = ContainerOf(r, node);
+    return container != state::Null ? container : r.get<const ProcedureNode>(node).Procedure;
+}
 const SubnetPort *PortOf(const state::Registry &r, state::Entity subnet, uint16_t port) {
     const auto *interface = r.try_get<const SubnetInterface>(subnet);
     if (!interface) return nullptr;
@@ -241,16 +245,11 @@ void Apply(state::Registry &r, const GroupNodes &a) {
         const auto *record = r.try_get<const ProcedureNode>(node);
         if (!record || record->Procedure != a.MeshEntity || ContainerOf(r, node) != parent) return Fail(r, "Group nodes in the same network");
     }
-    uvec2 position = r.get<const NodeLayout>(selected.front()).Position;
-    for (const auto node : selected) {
-        const auto p = r.get<const NodeLayout>(node).Position;
-        position = {std::min(position.x, p.x), std::min(position.y, p.y)};
-    }
-    Apply(r, Action{AddNode{a.MeshEntity, KindOf<Subnet>, position, parent}});
+    Apply(r, Action{AddNode{a.MeshEntity, KindOf<Subnet>, parent}});
     const auto subnet = r.get<const GeometryProcedure>(a.MeshEntity).Last;
     for (const auto node : selected) {
+        ClearNetworkPosition(r, NetworkOf(r, node), {node});
         r.emplace_or_replace<NodeContainer>(node, subnet);
-        r.patch<NodeLayout>(node, [&](auto &layout) { layout.Position = layout.Position - position + uvec2{AppendGap, 2u}; });
     }
     const auto nodes = NodesOf(r, r.get<const GeometryProcedure>(a.MeshEntity));
     for (const auto node : nodes) {
@@ -301,10 +300,6 @@ void Apply(state::Registry &r, const UngroupNodes &a) {
     RewriteReferences(r, owner, a.Subnet, {}, true);
     for (const auto node : SortedEntities(r.view<const NodeContainer>())) {
         if (ContainerOf(r, node) != a.Subnet) continue;
-        const auto position = r.get<const NodeLayout>(a.Subnet).Position;
-        r.patch<NodeLayout>(node, [&](auto &layout) {
-            layout.Position = {uint32_t(std::max(int64_t(position.x) + layout.Position.x - AppendGap, int64_t{0})), uint32_t(std::max(int64_t(position.y) + layout.Position.y - 2, int64_t{0}))};
-        });
         if (parent == state::Null) r.remove<NodeContainer>(node);
         else r.replace<NodeContainer>(node, parent);
     }

@@ -9,21 +9,19 @@
 namespace action::nodes {
 using numeric::uvec2;
 
-// Append a default node at the grid cell with unlinked inputs and make it the active, sole selected node.
+// Append a default node with unlinked inputs and make it the active, sole selected node.
 // A Source node holds an empty record.
 // Operation, when set, is the starting value of the kind's Operation parameter.
 struct AddNode {
     state::Entity MeshEntity;
     uint16_t Kind;
-    uvec2 Position;
     state::Entity Parent{state::Null};
     std::optional<uint32_t> Operation{};
 };
-// Append a named subnet built from procedure::Macros at the grid cell and make it the active, sole selected node.
+// Append a named subnet built from procedure::Macros and make it the active, sole selected node.
 struct AddMacro {
     state::Entity MeshEntity;
     uint16_t Macro;
-    uvec2 Position;
     state::Entity Parent{state::Null};
 };
 // Append a macro's subnet reading the displayed node's result, display it, capture the drawn selection into its selection port, and set its value ports in order.
@@ -139,9 +137,14 @@ struct NodePosition {
     procedure::NetworkItem Node;
     uvec2 Position;
 };
+// Places each node at its grid cell on the network's page.
 struct MoveNodes {
     state::Entity Network;
     std::vector<NodePosition> Positions;
+};
+// Removes every placed cell of the network's page, which leaves each node where the editor lays it out from the page's connections.
+struct AutoLayout {
+    state::Entity Network;
 };
 struct SetBypass {
     state::Entity Node;
@@ -174,7 +177,7 @@ struct SetInlineSelection {
 struct CollapseProcedure {
     state::Entity MeshEntity;
 };
-// Appends a copy of each distinct node, in list order, at its cell, keeping the links among the copied nodes, and selects the copies.
+// Appends a copy of each distinct node, in list order, keeping the links among the copied nodes, and selects the copies.
 // A Source node's copy holds a copy of its record.
 // The copy of the active node is active, or else the last copy.
 struct DuplicateNodes {
@@ -192,7 +195,7 @@ struct DeleteNodes {
 
 // Insert the node between the input socket's link at Index and that link's source.
 // The node's first geometry input and output must be unlinked.
-// Move the consumer and its descendants right by Shift cells.
+// Move the placed cells of the consumer and its descendants right by Shift cells.
 struct InsertNode {
     state::Entity MeshEntity;
     state::Entity Node;
@@ -202,7 +205,7 @@ struct InsertNode {
     uint16_t Index{};
 };
 
-using Action = std::variant<AddNode, AddMacro, AppendMacro, Link, Unlink, SetDisplay, SetBypass, EditSelection, FinishSelection, SetOperationHandle, SetExtrudeOffset, MoveNodes, SelectItems, GroupItems, UngroupItems, MoveItems, RenameNetwork, ExposePort, AssignReference, GroupNodes, UngroupNodes, ExposeSocket, SetPortValue, RenamePort, RemovePort, MovePort, SetAttributeName, SetInlineSelection, CollapseProcedure, DuplicateNodes, DeleteNodes, InsertNode>;
+using Action = std::variant<AddNode, AddMacro, AppendMacro, Link, Unlink, SetDisplay, SetBypass, EditSelection, FinishSelection, SetOperationHandle, SetExtrudeOffset, MoveNodes, AutoLayout, SelectItems, GroupItems, UngroupItems, MoveItems, RenameNetwork, ExposePort, AssignReference, GroupNodes, UngroupNodes, ExposeSocket, SetPortValue, RenamePort, RemovePort, MovePort, SetAttributeName, SetInlineSelection, CollapseProcedure, DuplicateNodes, DeleteNodes, InsertNode>;
 
 void Apply(state::Registry &, const Action &);
 
@@ -213,7 +216,6 @@ state::Entity CopyProcedure(state::Registry &, state::Entity from, uint32_t draw
 // The mesh entity whose procedure the editor edits: the active object's mesh, or the active mesh entity.
 state::Entity EditedMesh(const state::Registry &);
 // Append a default node reading the displayed node's result, display it, and capture the drawn selection into a node with a selection input.
-// The nodes reading the displayed node move right to make room.
 // Publish the resulting selection and return the node entity, or null on failure.
 state::Entity AppendNode(state::Registry &, state::Entity mesh_entity, uint16_t kind);
 // The mesh's displayed node when a preview step of the current stage appended it with the kind, or null.

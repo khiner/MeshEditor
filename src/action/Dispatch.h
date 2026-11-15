@@ -118,13 +118,6 @@ struct UpdateTraits<PosedLocal> : ComponentUpdateTraits<PosedLocal> {
     }
 };
 
-// A node layout edit addresses the edited procedure's active node and fans out to its selected nodes.
-template<>
-struct UpdateTraits<procedure::NodeLayout> : ComponentUpdateTraits<procedure::NodeLayout> {
-    static state::Entity Active(const state::Registry &);
-    static void ForEachSelected(state::Registry &, const std::function<void(state::Entity)> &);
-};
-
 // Cache each target's initial field value for the duration of a drag.
 template<typename Field>
 Field FieldGestureStart(state::Registry &r, state::Entity e, state::TypeId comp, uint16_t offset, auto &&read) {

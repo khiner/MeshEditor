@@ -86,9 +86,6 @@ void SeparateSelected(state::Registry &r, const ::selection::PrimaryEditInstance
     chain.Submit();
 }
 
-// The cells an Object Info node sits left of and below the Boolean node it feeds.
-constexpr uvec2 InfoOffset{6u, 5u};
-
 void CombineSelected(state::Registry &r, const action::mesh::Boolean &boolean) {
     const auto active = FindActiveEntity(r);
     std::vector<state::Entity> others;
@@ -110,8 +107,7 @@ void CombineSelected(state::Registry &r, const action::mesh::Boolean &boolean) {
     const auto boolean_entity = nodes::AppendNode(r, first, procedure::KindOf<procedure::Boolean>);
     if (boolean_entity == state::Null) return;
     r.replace<procedure::Boolean>(boolean_entity, boolean.Operation, active);
-    const auto position = r.get<const procedure::NodeLayout>(boolean_entity).Position;
-    nodes::Apply(r, nodes::AddNode{first, procedure::KindOf<procedure::ObjectInfo>, {position.x - std::min(position.x, InfoOffset.x), position.y + InfoOffset.y}, procedure::ContainerOf(r, boolean_entity)});
+    nodes::Apply(r, nodes::AddNode{first, procedure::KindOf<procedure::ObjectInfo>, procedure::ContainerOf(r, boolean_entity)});
     const auto info = r.get<const procedure::GeometryProcedure>(first).Last;
     r.replace<procedure::ObjectInfo>(info, others.front());
     nodes::Apply(r, nodes::Link{first, info, 0u, boolean_entity, 1u});

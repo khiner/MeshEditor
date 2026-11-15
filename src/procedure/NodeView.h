@@ -11,7 +11,6 @@ struct EditorNode {
     std::string Title;
     const char *Type{};
     uint16_t Kind{KindCount};
-    std::optional<numeric::uvec2> Position;
 };
 struct NodeView {
     state::Entity Network;

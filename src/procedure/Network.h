@@ -46,7 +46,8 @@ struct NetworkCell {
     NetworkItem Item;
     numeric::uvec2 Position;
 };
-// Persistent presentation on the network owner; resources keep their existing store identities.
+// The cells the user placed items at on the network's page, sorted by item.
+// The editor lays out every other item from the page's connections.
 struct NetworkLayout {
     std::vector<NetworkCell> Cells;
 };
@@ -96,8 +97,10 @@ std::vector<NetworkItem> NetworkLeaves(const state::Registry &, state::Entity ne
 std::vector<NetworkItem> NetworkItems(const state::Registry &, state::Entity network);
 // The immediate child representing an item, or the item itself if it is outside this network.
 NetworkItem NetworkRepresentative(const state::Registry &, state::Entity network, NetworkItem item);
+// The cell the user placed the item at on the network's page, or none.
 std::optional<numeric::uvec2> NetworkPosition(const state::Registry &, state::Entity network, NetworkItem);
 void SetNetworkPosition(state::Registry &, state::Entity network, NetworkItem, numeric::uvec2);
+void ClearNetworkPosition(state::Registry &, state::Entity network, NetworkItem);
 void PlaceInNetwork(state::Registry &, state::Entity network, state::Entity object);
 void RemoveNetworkSubnets(state::Registry &, state::Entity root);
 } // namespace procedure

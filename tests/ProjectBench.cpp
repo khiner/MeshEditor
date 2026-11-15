@@ -51,7 +51,7 @@ bool BenchProcedureHistory(uint32_t node_count) {
         p.Settle();
         project::Do(p, action::MakeAction(action::object::AddMeshPrimitive{primitive::Cube{}, std::make_unique<MeshInstanceCreateInfo>()}));
         const auto mesh_entity = GetActiveMeshEntity(r);
-        const auto add = [&] { project::Do(p, action::MakeAction(action::nodes::AddNode{mesh_entity, procedure::KindOf<procedure::FloatValue>, {}})); };
+        const auto add = [&] { project::Do(p, action::MakeAction(action::nodes::AddNode{mesh_entity, procedure::KindOf<procedure::FloatValue>})); };
         for (uint32_t n = 1u; n < node_count; ++n) add();
         const auto owned = [&] { return p.History.Stats().OwnedBytes; };
         std::vector<double> appends, changes;

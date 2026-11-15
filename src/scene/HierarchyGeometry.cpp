@@ -51,7 +51,6 @@ void Sync(state::Registry &r, state::Entity mesh, std::span<const Member> member
         copy.template operator()<InlineSelection>();
         copy.template operator()<SourceState>();
         copy.template operator()<NodeBypassed>();
-        if (fresh) r.emplace<NodeLayout>(node.Entity, r.get<const NodeLayout>(node.Source));
         if (!structural) continue;
         r.emplace_or_replace<ProcedureNode>(node.Entity, mesh, map(r.get<const ProcedureNode>(node.Source).Next), kind);
         copy.template operator()<NodeInputs>(true);

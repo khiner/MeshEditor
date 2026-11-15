@@ -2224,10 +2224,9 @@ uint32_t SelectionInput(state::Registry &r, state::Entity node) {
     return input.FromNode == state::Null ? InvalidOffset : EvaluateTarget(r, input.FromNode, input.FromSocket, RunMode::Transient);
 }
 
-state::Entity CreateNode(state::Registry &r, uint16_t kind, uvec2 position) {
+state::Entity CreateNode(state::Registry &r, uint16_t kind) {
     const auto entity = r.create();
     VisitKind(kind, [&]<typename K> { r.emplace<K>(entity); });
-    r.emplace<NodeLayout>(entity, position);
     return entity;
 }
 
@@ -2245,7 +2244,7 @@ void RegisterProcedureHandlers(state::Registry &r) {
     auto &changes = r.Resources.emplace<ProcedureChanges>();
     changes.Graph.bind(r).on<InstanceOnPoints>(On::Update).on<GeometryProcedure>(On::Create | On::Update).on<ProcedureNode>(On::Create | On::Update).on<NodeInputs>(On::Update).on<NodeBypassed>(On::Create | On::Destroy).on<SubnetInterface>(On::Create | On::Update | On::Destroy).on<NodeContainer>(On::Create | On::Update | On::Destroy);
     changes.HandleInputs.bind(r).on<InlineSelection>(On::Create | On::Update | On::Destroy);
-    changes.Created.bind(r).on<NodeLayout>(On::Create);
+    changes.Created.bind(r).on<ProcedureNode>(On::Create);
     changes.Objects.bind(r, state::Clearing::Explicit).on<Instance>(On::Create | On::Update | On::Destroy);
     changes.References.bind(r, state::Clearing::Explicit)
         .on<ObjectInfo>(On::Create | On::Update | On::Destroy)

@@ -336,7 +336,7 @@ std::pair<state::Entity, std::vector<uint16_t>> CubeAndBarInto(ProcedureFixture 
     const auto source = f.Node(mesh, 0u);
     const auto box = f.Append(mesh, KindOf<primitive::Cube>);
     f.Do(UpdateOf<&primitive::Cube::HalfExtents>(box, vec3{2.f, .5f, .5f}));
-    f.Do(action::nodes::AddMacro{mesh, macro, {}});
+    f.Do(action::nodes::AddMacro{mesh, macro});
     const auto node = ActiveNodeOf(f.R, mesh);
     const auto ports = PortIds(f.R, node);
     f.Do(Link{mesh, source, f.Out(source), node, ports[0]});
@@ -606,7 +606,7 @@ Graph HeatSubdivide(ProcedureFixture &f) {
 Graph CrossSectionOfCone(ProcedureFixture &f) {
     const auto mesh = f.AddMesh(primitive::Cylinder{.TopRadius = 0.f, .Slices = 32});
     const auto source = f.Node(mesh, 0u);
-    f.Do(action::nodes::AddMacro{mesh, procedure::CrossSectionMacro, {}});
+    f.Do(action::nodes::AddMacro{mesh, procedure::CrossSectionMacro});
     const auto section = procedure::ActiveNodeOf(f.R, mesh);
     const auto ports = PortIds(f.R, section);
     expect(fatal(ports.size() == 4u));
@@ -769,18 +769,20 @@ Graph NodeEditing(ProcedureFixture &f) {
     const auto cooks = Cooks(r);
     const auto shown = r.get<const GeometryProcedure>(mesh).DisplayNode;
     f.Do(SelectItems{mesh, {subdivide}, {{subdivide}, {triangulate}}});
-    f.Do(UpdateOf<&NodeLayout::Position>(subdivide, uvec2{12u, 4u}));
+    f.Do(action::nodes::MoveNodes{mesh, {{{subdivide}, {12u, 4u}}, {{triangulate}, {20u, 4u}}}});
     expect(Cooks(r) == cooks);
     expect(r.get<const GeometryProcedure>(mesh).DisplayNode == shown && f.Shaped(mesh) == source);
     f.Do(DuplicateNodes{mesh, {subdivide, triangulate}});
     const auto &procedure = r.get<const CookPlan>(mesh);
     expect(procedure.Nodes.size() == 6u && r.get<const action::mesh::Subdivide>(procedure.Nodes[4].Entity).Cuts == 3u);
+    expect(!NetworkPosition(r, mesh, {procedure.Nodes[4].Entity}));
     expect(f.Shaped(mesh) == source);
     f.Route(mesh, {f.Node(mesh, 0u), triangulate});
     f.Fails(InsertNode{mesh, position, triangulate, 0u, 0u});
     f.Do(SelectItems{mesh, {subdivide}, {{subdivide}}});
     f.Stage(InsertNode{mesh, subdivide, triangulate, 0u, 40u});
     f.CommitGesture();
+    expect(NetworkPosition(r, mesh, {subdivide}) == uvec2{12u, 4u} && NetworkPosition(r, mesh, {triangulate}) == uvec2{60u, 4u});
     const auto refined = f.Shaped(mesh);
     f.Do(action::nodes::SetBypass{subdivide, true});
     expect(f.Shaped(mesh) != refined);
@@ -788,10 +790,13 @@ Graph NodeEditing(ProcedureFixture &f) {
     f.Do(action::nodes::SetBypass{subdivide, false});
     expect(f.Shaped(mesh) == refined);
     f.Do(DeleteNodes{mesh, {subdivide}});
+    expect(!NetworkPosition(r, mesh, {subdivide}) && NetworkPosition(r, mesh, {triangulate}));
     f.Undo();
     f.Do(DeleteNodes{mesh, {subdivide, triangulate}});
     expect(f.Shaped(mesh) == source && r.get<const CookPlan>(mesh).DisplayNode == 0u);
     f.Undo();
+    f.Do(action::nodes::AutoLayout{mesh});
+    expect(!r.all_of<NetworkLayout>(mesh));
     return {mesh};
 }
 
@@ -851,12 +856,12 @@ void ParameterSockets(ProcedureFixture &f) {
     const auto position = f.Append(mesh, KindOf<Position>);
     const auto dot = f.Append(mesh, KindOf<VectorMath>);
     // AddNode with an operation sets it on the new node, and fails for a kind without that operation.
-    f.Do(AddNode{mesh, KindOf<FloatMath>, {}, state::Null, uint32_t(FloatMathOp::Multiply)});
+    f.Do(AddNode{mesh, KindOf<FloatMath>, state::Null, uint32_t(FloatMathOp::Multiply)});
     const auto multiply = r.get<const GeometryProcedure>(mesh).Last;
     expect(r.get<const FloatMath>(multiply).Operation == FloatMathOp::Multiply);
     f.Do(DeleteNodes{mesh, {multiply}});
-    f.Fails(AddNode{mesh, KindOf<FloatMath>, {}, state::Null, uint32_t(field::EnumCount<FloatMathOp>)});
-    f.Fails(AddNode{mesh, KindOf<Position>, {}, state::Null, 0u});
+    f.Fails(AddNode{mesh, KindOf<FloatMath>, state::Null, uint32_t(field::EnumCount<FloatMathOp>)});
+    f.Fails(AddNode{mesh, KindOf<Position>, state::Null, 0u});
     const auto add = f.Append(mesh, KindOf<FloatMath>);
     f.Do(UpdateOf<&VectorMath::Operation>(dot, VectorMathOp::Dot));
     f.Do(UpdateOf<&VectorMath::B>(dot, vec3{.05f, .05f, .05f}));
@@ -1015,7 +1020,6 @@ void DisplayedNode(ProcedureFixture &f) {
         expect(procedure.Nodes.size() == 3u && procedure.DisplayNode == 2u && ActiveIndex(r, procedure) == 2u);
         expect(procedure.Nodes[procedure.Inputs[procedure.InputFirst[2u]].FromNode].Entity == extrude);
     }
-    const auto extrude_x = r.get<const NodeLayout>(extrude).Position.x;
     f.Do(SetDisplay{mesh, f.Node(mesh, 0u)});
     expect(f.Shaped(mesh) == source);
     f.Do(SelectItems{mesh, {extrude}, {{extrude}}});
@@ -1028,7 +1032,6 @@ void DisplayedNode(ProcedureFixture &f) {
         const auto &procedure = r.get<const CookPlan>(mesh);
         expect(procedure.Nodes.size() == 4u && procedure.DisplayNode == 3u && ActiveIndex(r, procedure) == 3u);
         expect(procedure.Inputs[procedure.InputFirst[3u]].FromNode == 0u && procedure.Inputs[procedure.InputFirst[1u]].FromNode == 0u);
-        expect(r.get<const NodeLayout>(extrude).Position.x == extrude_x + AppendGap);
     }
     f.Do(action::view::SetInteractionMode{InteractionMode::Object});
     f.Do(SelectItems{mesh, {extrude}, {{extrude}}});
@@ -1096,7 +1099,7 @@ void DisplayedNode(ProcedureFixture &f) {
             expect(r.get<const GeometryProcedure>(owner).DisplayNode == root && f.Shaped(owner) == cube);
             f.Do(action::nodes::SetBypass{input, false});
         }
-        f.Do(AddNode{owner, KindOf<Join>, {}, ContainerOf(r, bevel)});
+        f.Do(AddNode{owner, KindOf<Join>, ContainerOf(r, bevel)});
         const auto branch = r.get<const GeometryProcedure>(owner).Last;
         f.Do(Link{owner, bevel, f.Out(bevel), branch, 0u});
         f.Do(Link{owner, root, f.Out(root), input, socket});

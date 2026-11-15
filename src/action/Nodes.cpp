@@ -90,7 +90,7 @@ NodeCopies CopyNodes(state::Registry &r, std::span<const state::Entity> original
         };
         VisitKind(r.get<const ProcedureNode>(node).Kind, copy_component);
         [&]<typename... T>(TypeList<T...>) { (copy_component.template operator()<T>(), ...); }(
-            TypeList<SourceState, NodeContainer, SubnetInterface, NetworkLayout, Name, NodeLayout, InlineSelection, NodeBypassed, PublishSelection>{}
+            TypeList<SourceState, NodeContainer, SubnetInterface, NetworkLayout, Name, InlineSelection, NodeBypassed, PublishSelection>{}
         );
     }
     return copies;
@@ -259,7 +259,7 @@ void Apply(state::Registry &r, const Action &action) {
                     if constexpr (Operated<K>) operable |= a.Operation && std::ranges::contains(field::EnumValues<decltype(K::Operation)>, decltype(K::Operation)(*a.Operation));
                 });
                 if (!operable) return Fail(r, "Operation is not one of the node kind's operations");
-                const auto node = CreateNode(r, a.Kind, a.Position);
+                const auto node = CreateNode(r, a.Kind);
                 if (a.Operation) VisitKind(a.Kind, [&]<typename K> {
                     if constexpr (Operated<K>) r.patch<K>(node, [&](K &p) { p.Operation = decltype(K::Operation)(*a.Operation); });
                 });
@@ -364,14 +364,15 @@ void Apply(state::Registry &r, const Action &action) {
                 const auto items = geometry ? std::vector<NetworkItem>{} : NetworkItems(r, a.Network);
                 for (const auto &p : a.Positions) {
                     if (!ValidItem(r, p.Node)) return Fail(r, "A layout refers to a missing item");
-                    if (!geometry && !std::ranges::binary_search(items, p.Node)) return Fail(r, "A layout item is outside this network");
-                    if (p.Node.Kind != ItemKind::Entity) continue;
-                    if (const auto *node = r.try_get<const ProcedureNode>(p.Node.Entity); node && node->Procedure != a.Network && (!r.all_of<Subnet>(a.Network) || r.get<const ProcedureNode>(a.Network).Procedure != node->Procedure)) return Fail(r, "A layout refers to another procedure");
+                    // A subnet's page shows its nodes and the subnet itself, as its boundary node.
+                    const bool node = geometry && p.Node.Kind == ItemKind::Entity && r.all_of<ProcedureNode>(p.Node.Entity);
+                    if (geometry ? !node || (p.Node.Entity != a.Network && NetworkOf(r, p.Node.Entity) != a.Network) : !std::ranges::binary_search(items, p.Node)) return Fail(r, "A layout item is outside this network");
                 }
-                for (const auto &p : a.Positions) {
-                    if (p.Node.Kind == ItemKind::Entity && r.all_of<ProcedureNode>(p.Node.Entity) && p.Node.Entity != a.Network) r.patch<NodeLayout>(p.Node.Entity, [&](auto &layout) { layout.Position = p.Position; });
-                    else SetNetworkPosition(r, a.Network, p.Node, p.Position);
-                }
+                for (const auto &p : a.Positions) SetNetworkPosition(r, a.Network, p.Node, p.Position);
+            },
+            [&](const AutoLayout &a) {
+                if (!r.valid(a.Network)) return Fail(r, "The network does not exist");
+                r.remove<NetworkLayout>(a.Network);
             },
             [&](const SetExtrudeOffset &a) {
                 if (!r.all_of<procedure::Extrude>(a.Node)) return Fail(r, "The operation is not an extrusion");
@@ -477,9 +478,10 @@ void Apply(state::Registry &r, const Action &action) {
                 if (r.all_of<ProcedureInstances>(a.MeshEntity)) r.replace<ProcedureInstances>(a.MeshEntity);
                 if (r.all_of<ProcedureOwnedMesh>(a.MeshEntity)) r.replace<ProcedureOwnedMesh>(a.MeshEntity, state::Null);
                 r.remove<ProcedureInstances, ProcedureOwnedMesh>(a.MeshEntity);
-                const auto source = CreateNode(r, KindOf<Source>, {0u, 0u});
+                const auto source = CreateNode(r, KindOf<Source>);
                 r.emplace<SourceState>(source, store::Hash128{}, record);
                 RootProcedure(r, a.MeshEntity, source, KindOf<Source>);
+                r.remove<NetworkLayout>(a.MeshEntity);
                 r.replace<EvaluatedMesh>(a.MeshEntity, record, source);
                 r.destroy(nodes);
             },
@@ -571,6 +573,9 @@ void Apply(state::Registry &r, const Action &action) {
                 auto selected = SelectedNodes(r, a.MeshEntity);
                 std::erase_if(selected, is_removed);
                 Select(r, a.MeshEntity, selected, active);
+                for (const auto node : removed_entities) {
+                    if (const auto network = NetworkOf(r, node); !is_removed(network)) ClearNetworkPosition(r, network, {node});
+                }
                 r.destroy(removed_entities);
             },
             [&](const InsertNode &a) {
@@ -592,8 +597,10 @@ void Apply(state::Registry &r, const Action &action) {
                 if (a.Shift) {
                     auto moved = Downstream(plan, to_node);
                     moved[to_node] = true;
+                    const auto network = NetworkOf(r, a.Node);
                     for (uint32_t n = 0u; n < moved.size(); ++n) {
-                        if (moved[n]) r.patch<NodeLayout>(plan.Nodes[n].Entity, [&](NodeLayout &layout) { layout.Position.x += a.Shift; });
+                        const NetworkItem item{plan.Nodes[n].Entity};
+                        if (const auto cell = moved[n] ? NetworkPosition(r, network, item) : std::nullopt) SetNetworkPosition(r, network, item, {cell->x + a.Shift, cell->y});
                     }
                 }
                 const auto kind = plan.Nodes[node].Kind;
@@ -633,6 +640,12 @@ state::Entity CopyProcedure(state::Registry &r, state::Entity from, uint32_t dra
         if (const auto *placement = r.try_get<const BooleanPlacement>(node)) r.emplace<BooleanPlacement>(copy, *placement);
     }
     r.emplace<GeometryProcedure>(to, copies(procedure.First), copies(procedure.Last), copies(procedure.DisplayNode), procedure.DisplayPort);
+    if (const auto *layout = r.try_get<const NetworkLayout>(from)) {
+        auto copied = *layout;
+        for (auto &cell : copied.Cells) cell.Item.Entity = copies(cell.Item.Entity);
+        std::ranges::sort(copied.Cells, {}, &NetworkCell::Item);
+        r.emplace<NetworkLayout>(to, std::move(copied));
+    }
     auto selected = SelectedNodes(r, from);
     for (auto &node : selected) node = copies(node);
     Select(r, to, selected, copies(ActiveNodeOf(r, from)));
@@ -650,7 +663,7 @@ void Apply(state::Registry &r, const AddMacro &a) {
     if (!r.all_of<GeometryProcedure>(a.MeshEntity)) return Fail(r, "Add a macro to a geometry network");
     if (a.Macro >= Macros.size()) return Fail(r, "Unknown macro");
     const auto before = r.get<const GeometryProcedure>(a.MeshEntity).Last;
-    Apply(r, Action{AddNode{a.MeshEntity, KindOf<Subnet>, a.Position, a.Parent}});
+    Apply(r, Action{AddNode{a.MeshEntity, KindOf<Subnet>, a.Parent}});
     const auto subnet = r.get<const GeometryProcedure>(a.MeshEntity).Last;
     if (subnet == before) return;
     Macros[a.Macro].Define(r, a.MeshEntity, subnet);
@@ -659,28 +672,12 @@ void Apply(state::Registry &r, const AddMacro &a) {
 }
 
 namespace {
-// The displayed node's geometry result socket and the cell for a node appended after it, or none without a geometry result.
-struct Appending {
-    state::Entity Display;
-    uint16_t Result;
-    uvec2 Position;
-    state::Entity Parent;
-};
-std::optional<Appending> MakeRoom(state::Registry &r, state::Entity mesh_entity) {
-    const auto &procedure = r.get<const GeometryProcedure>(mesh_entity);
-    const auto display = procedure.DisplayNode;
-    const auto result = procedure.DisplayPort ? procedure.DisplayPort : ResultSocket(r, display);
-    if (!result || !Links(SocketOf(r, display, *result), Socket{SocketType::Geometry, SocketDirection::In})) {
-        Fail(r, "The displayed node has no geometry result to append to");
-        return {};
-    }
-    const auto displayed = r.get<const NodeLayout>(display).Position;
-    const auto plan = Plan(r, procedure);
-    const auto moved = Downstream(plan, plan.ResultNode);
-    for (uint32_t n = 0u; n < moved.size(); ++n) {
-        if (moved[n] && ContainerOf(r, plan.Nodes[n].Entity) == ContainerOf(r, display)) r.patch<NodeLayout>(plan.Nodes[n].Entity, [](NodeLayout &layout) { layout.Position.x += AppendGap; });
-    }
-    return Appending{display, *result, {displayed.x + AppendGap, displayed.y}, ContainerOf(r, display)};
+// The displayed geometry result, or a null link after failing without one.
+SocketLink DisplayedGeometry(state::Registry &r, state::Entity mesh_entity) {
+    const auto link = DisplayLink(r, r.get<const GeometryProcedure>(mesh_entity));
+    if (link.FromNode != state::Null && Links(SocketOf(r, link.FromNode, link.FromSocket), Socket{SocketType::Geometry, SocketDirection::In})) return link;
+    Fail(r, "The displayed node has no geometry result to append to");
+    return {};
 }
 state::Entity InnerNode(const state::Registry &r, state::Entity mesh_entity, state::Entity subnet, uint16_t port) {
     for (const auto node : NodesOf(r, r.get<const GeometryProcedure>(mesh_entity))) {
@@ -705,15 +702,15 @@ void Apply(state::Registry &r, const AppendMacro &a) {
             set_values(staged);
             continue;
         }
-        const auto room = MakeRoom(r, mesh_entity);
-        if (!room) return;
-        Apply(r, Action{AddMacro{mesh_entity, a.Macro, room->Position, room->Parent}});
+        const auto displayed = DisplayedGeometry(r, mesh_entity);
+        if (displayed.FromNode == state::Null) return;
+        Apply(r, Action{AddMacro{mesh_entity, a.Macro, ContainerOf(r, displayed.FromNode)}});
         const auto subnet = ActiveNodeOf(r, mesh_entity);
         if (subnet == state::Null || !r.all_of<Subnet>(subnet)) return;
         const auto ports = r.get<const SubnetInterface>(subnet).Ports;
         const auto first_port = [&](auto &&matches) { return std::ranges::find_if(ports, matches); };
         if (const auto p = first_port([](const auto &port) { return port.Direction == SocketDirection::In && port.Type == SocketType::Geometry; }); p != ports.end()) {
-            Apply(r, Action{Link{mesh_entity, room->Display, room->Result, subnet, p->Id}});
+            Apply(r, Action{Link{mesh_entity, displayed.FromNode, displayed.FromSocket, subnet, p->Id}});
         }
         if (const auto p = first_port([](const auto &port) { return port.Direction == SocketDirection::In && port.Type == SocketType::Selection; }); p != ports.end()) {
             if (const auto inner = InnerNode(r, mesh_entity, subnet, p->Id); inner != state::Null) CaptureSelection(r, inner, mesh_entity);
@@ -729,12 +726,12 @@ void Apply(state::Registry &r, const AppendMacro &a) {
 }
 
 state::Entity AppendNode(state::Registry &r, state::Entity mesh_entity, uint16_t kind) {
-    const auto room = MakeRoom(r, mesh_entity);
-    if (!room) return state::Null;
-    Apply(r, Action{AddNode{mesh_entity, kind, room->Position, room->Parent}});
+    const auto displayed = DisplayedGeometry(r, mesh_entity);
+    if (displayed.FromNode == state::Null) return state::Null;
+    Apply(r, Action{AddNode{mesh_entity, kind, ContainerOf(r, displayed.FromNode)}});
     const auto entity = r.get<const GeometryProcedure>(mesh_entity).Last;
     if (std::ranges::contains(KindSockets(kind), SocketType::Selection, &Socket::Type)) CaptureSelection(r, entity, mesh_entity);
-    Apply(r, Link{mesh_entity, room->Display, room->Result, entity, 0u});
+    Apply(r, Link{mesh_entity, displayed.FromNode, displayed.FromSocket, entity, 0u});
     Apply(r, SetDisplay{mesh_entity, entity});
     r.emplace<PublishSelection>(entity);
     return entity;
@@ -752,14 +749,3 @@ void ForEachResultNode(const state::Registry &r, const std::function<void(state:
     }
 }
 } // namespace action::nodes
-
-namespace action {
-state::Entity UpdateTraits<procedure::NodeLayout>::Active(const state::Registry &r) {
-    return procedure::ActiveNodeOf(r, nodes::EditedMesh(r));
-}
-void UpdateTraits<procedure::NodeLayout>::ForEachSelected(state::Registry &r, const std::function<void(state::Entity)> &fn) {
-    const auto mesh_entity = nodes::EditedMesh(r);
-    if (!r.all_of<procedure::GeometryProcedure>(mesh_entity)) return;
-    for (const auto node : nodes::SelectedNodes(r, mesh_entity)) fn(node);
-}
-} // namespace action
