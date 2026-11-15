@@ -76,7 +76,6 @@ std::optional<PositionOperationChange> EncodePositionOperations(MeshStore &meshe
     if (symmetry && (!std::has_single_bit(axes) || !std::isfinite(symmetry->Threshold) || symmetry->Threshold <= 0.f)) return {};
     if (transform && (!Finite(transform->Delta.P) || !Finite(transform->Delta.S) || !Finite(transform->Pivot) || !ValidPlane(transform->Delta.R, {}, 0.f))) return {};
     const auto id = target.StoreId;
-    const SelectedHandles selection{meshes, id, target.Selection}, excluded{meshes, id, target.Excluded};
     if (warp) flags = (flags & ~PositionEditWarpAutoRange) | (warp->AutoRange ? PositionEditWarpAutoRange : 0u);
     const bool zero_moves = symmetry || warp || (slide && slide->Even && slide->Flipped) || (edge_slide && edge_slide->Even);
     if (!axes || (!zero_moves && factor == 0.f) || !std::isfinite(factor)) return {};
@@ -90,6 +89,12 @@ std::optional<PositionOperationChange> EncodePositionOperations(MeshStore &meshe
     const auto gather = edge_chains ? (relax ? MeshPass::RelaxEdgeLoopsGather : MeshPass::SpaceEvenlyGather) : MeshPass::PositionVerticesGather;
     const bool centered = sphere || operation == PositionEditOp::PushPull || operation == PositionEditOp::Shear;
     const bool transformed = centered || warp || bend || slide || edge_slide || flatten_direction || transform;
+    // An operation that plans nothing on the host moves every vertex from a handle list a pass writes on the GPU.
+    const bool listed = !target.Every || slide || edge_slide || symmetry || planar || edge_chains || operation == PositionEditOp::Copy;
+    const SelectionSource every{target.Every && listed ? AllHandles(Mesh{meshes, id}) : GeometrySelection{}};
+    const SelectedHandles selection{meshes, id, target.Every ? every : target.Selection}, excluded{meshes, id, target.Excluded};
+    const auto &vertex_arena = meshes.Arenas().Vertices;
+    const auto vertex_set = meshes.Get(id).Vertices;
     if (slide && !(flags & PositionEditSlideUnclamped)) factor = std::clamp(factor, 0.f, 1.f);
     else if (edge_slide && !(flags & PositionEditSlideUnclamped)) factor = std::clamp(factor, -1.f, 1.f);
     else if (transform || attribute || sphere || symmetry || flatten || ordered_chains || operation == PositionEditOp::SpaceEvenly) factor = std::clamp(factor, 0.f, 1.f);
@@ -116,7 +121,7 @@ std::optional<PositionOperationChange> EncodePositionOperations(MeshStore &meshe
         }
     }
     const bool statistics = (sphere && !sphere_radius) || (warp && warp->AutoRange);
-    const uint64_t selected_count = selection->Vertices.size();
+    const uint64_t selected_count = listed ? selection->Vertices.size() : vertex_arena.Count(vertex_set);
     const uint32_t reduction_blocks = statistics ? TileCount(selected_count, TileElements) : 0u;
     if (!planar) {
         // Symmetry can also move an unselected partner for each selected vertex.
@@ -143,7 +148,7 @@ std::optional<PositionOperationChange> EncodePositionOperations(MeshStore &meshe
         .Operation = operation,
         .FactorAttribute = factor_attribute,
     };
-    if (!planar && operation == PositionEditOp::ShrinkFatten) pc.Faces = SeedElementWorkHandles(chain.Scratch, face_bound, selection->Faces);
+    if (!planar && operation == PositionEditOp::ShrinkFatten) pc.Faces = listed ? SeedElementWorkHandles(chain.Scratch, face_bound, selection->Faces) : ElementWork{.Count = face_bound};
     std::vector<Range> batches;
     const auto world = transformed ? target.World : Transform{};
     const auto inverse = Conjugate(world.R);
@@ -254,22 +259,27 @@ std::optional<PositionOperationChange> EncodePositionOperations(MeshStore &meshe
             partners.push_back(partner);
         }
         pc.Parameters = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(partners).Offset};
-    } else {
+    } else if (listed) {
         vertices = selection->Vertices;
     }
-    if (vertices.empty()) return {};
-    pc.Handles = chain.Upload(BytesOf(vertices));
-    pc.Count = uint32_t(vertices.size());
-    // Only history capture needs sorted handles, and fitting jobs keep their own output order.
-    if (edge_chains || ordered_chains) std::ranges::sort(vertices);
+    pc.Count = uint32_t(listed ? vertices.size() : selected_count);
+    if (!pc.Count) return {};
     std::vector<Range> runs;
-    ForEachIndexRun(vertices, [&](size_t first, size_t count) { runs.push_back({vertices[first], uint32_t(count)}); });
+    if (listed) {
+        pc.Handles = chain.Upload(BytesOf(vertices));
+        // Only history capture needs sorted handles, and fitting jobs keep their own output order.
+        if (edge_chains || ordered_chains) std::ranges::sort(vertices);
+        ForEachIndexRun(vertices, [&](size_t first, size_t count) { runs.push_back({vertices[first], uint32_t(count)}); });
+    } else {
+        pc.Blocks = BlocksOf(meshes, id, MeshStore::ElementDomain::Vertex);
+        pc.Handles = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(pc.Count).Offset};
+        chain.Threads(pipelines[MeshPass::ListEditedVertices], pc, pc.Blocks.Count * MeshElementBlockSize);
+        runs = meshes.LiveVertexRanges(id, std::array{Range{0u, vertex_arena.HandleBound(vertex_set)}});
+    }
     if (statistics) pc.ReductionBlocks = {chain.Scratch.Buffer.Slot, partials.Offset};
     pc.Positions = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(3u * pc.Count).Offset};
-    const auto &arena = meshes.Arenas().Vertices;
-    const auto set = meshes.Get(id).Vertices;
-    for (const auto run : runs) arena.ForEachAddressRun(set, ElementHandle{run.Offset}, run.Count, [&](Range addresses) { arena.Buffer.CaptureWrite(uint64_t(addresses.Offset) * sizeof(Vertex), uint64_t(addresses.Count) * sizeof(Vertex)); });
-    PositionOperationChange change{std::move(vertices), std::move(runs)};
+    for (const auto run : runs) vertex_arena.ForEachAddressRun(vertex_set, ElementHandle{run.Offset}, run.Count, [&](Range addresses) { vertex_arena.Buffer.CaptureWrite(uint64_t(addresses.Offset) * sizeof(Vertex), uint64_t(addresses.Count) * sizeof(Vertex)); });
+    PositionOperationChange change{std::move(vertices), std::move(runs), !listed};
     profile::RecordCounter("PositionEditVertices", pc.Count);
     profile::RecordCounter("PositionEditPlanes", pc.PlaneCount);
     profile::RecordCounter("CurveEditChains", ordered_chains && !batches.empty() ? pc.ChainCount : 0u);

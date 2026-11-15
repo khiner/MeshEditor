@@ -1,7 +1,5 @@
 #include "mesh/NormalDeriveGpu.h"
 
-#include "mesh/ElementMembershipWork.h"
-#include "mesh/ElementWorkSort.h"
 #include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
 #include "mesh/PageFootprint.h"
@@ -110,41 +108,24 @@ void EncodeDeriveMeshNormals(state::Registry &r, mtl::ComputeChain &chain, std::
     EncodeDeriveBaseEntries(r, chain, ids, entries);
 }
 
-AllNormalsWork EncodeAllNormalsMembership(state::Registry &r, mtl::ComputeChain &chain, std::span<const uint32_t> ids) {
+void EncodeDeriveRecordNormals(state::Registry &r, mtl::ComputeChain &chain, std::span<const uint32_t> store_ids) {
     const auto &meshes = r.Resources.get<const MeshStore>();
-    AllNormalsWork normals;
-    std::vector<ElementWorkSeedJob> seeds;
-    for (const auto id : ids) {
-        const auto &record = meshes.Get(id);
-        if (meshes.Arenas().FaceTriangles.Count(record.FaceData) == 0) continue;
-        normals.Ids.push_back(id);
-        seeds.push_back(PrepareElementMembershipWork(chain.Scratch, meshes.Arenas().Vertices, record.Vertices));
-        seeds.push_back(PrepareElementMembershipWork(chain.Scratch, meshes.Arenas().FaceTriangles, record.FaceData));
-        normals.Work.push_back(seeds[seeds.size() - 2u].Work);
-        normals.Work.push_back(seeds.back().Work);
-    }
-    if (normals.Ids.empty()) return normals;
-    EncodeElementMembershipWork(r, chain, seeds);
-    EncodeSortElementWork(r, chain, normals.Work);
-    return normals;
-}
-
-// Each entry is built here rather than with its membership work, since corner classification covers the sector records it references in between.
-void EncodeDeriveAllNormals(state::Registry &r, mtl::ComputeChain &chain, const AllNormalsWork &normals) {
-    const auto &meshes = r.Resources.get<const MeshStore>();
+    const auto &a = meshes.Arenas();
+    const auto blocks = [](std::span<const uint32_t> entries) { return entries | std::views::filter([](uint32_t block) { return block != InvalidOffset; }) | std::ranges::to<std::vector>(); };
+    std::vector<uint32_t> ids;
     std::vector<NormalDeriveEntry> entries;
-    entries.reserve(normals.Ids.size());
-    for (uint32_t i = 0u; i < normals.Ids.size(); ++i) {
-        auto entry = *MakeDeriveEntryInputs(meshes, normals.Ids[i]);
-        const auto v = normals.Work[2u * i], f = normals.Work[2u * i + 1u];
-        CheckElementWork(chain.Scratch, v);
-        CheckElementWork(chain.Scratch, f);
-        entry.VerticesWork = v;
-        entry.FacesWork = f;
-        const auto &record = meshes.Get(normals.Ids[i]);
-        entry.VertexWorkCount = meshes.Arenas().Vertices.Count(record.Vertices);
-        entry.FaceWorkCount = meshes.Arenas().FaceTriangles.Count(record.FaceData);
-        entries.push_back(entry);
+    PageFootprint pages;
+    for (const auto id : store_ids) {
+        // An entry without work derives over its record's element blocks.
+        const auto entry = MakeDeriveEntryInputs(meshes, id);
+        if (!entry) continue;
+        ids.push_back(id);
+        entries.push_back(*entry);
+        const auto &record = meshes.Get(id);
+        pages.Add(a.BaseVertexNormals.Buffer, blocks(a.Vertices.Entries(record.Vertices)), BlockBytes<vec3>);
+        pages.Add(a.BaseFaceNormals.Buffer, blocks(a.FaceTriangles.Entries(record.FaceData)), BlockBytes<vec3>);
+        pages.Layer(a.NormalSectors.Values, record.NormalSectors, a.FaceCorners.Blocks.Buffer.GetSpan<MeshElementBlock>(), blocks(a.FaceCorners.Entries(record.FaceCorners)));
     }
-    EncodeDeriveBaseEntries(r, chain, normals.Ids, entries);
+    pages.CaptureWrites();
+    EncodeDeriveBaseEntries(r, chain, ids, entries);
 }

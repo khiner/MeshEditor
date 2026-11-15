@@ -141,6 +141,7 @@ std::expected<void, std::string> RunRecorded(Project &session, store::History &s
         }
         frame.DeltaTime = inputs.DeltaTime;
         frame.FixedFrameStep = inputs.FixedFrameStep;
+        frame.GestureOpen = inputs.Staged;
         Tick(session, actions[i], inputs.Pass);
         if (session.R.Resources.get<action::Errors>().Messages.size() != errors) break;
     }
@@ -182,10 +183,11 @@ bool Record(Project &session, std::span<action::Action> actions, EventPass pass,
         const bool keep = action::IsRecordable(a);
         auto &frame = session.R.Resources.get<FrameState>();
         frame.Scene = ActingScene(session.R);
-        const ActionInputs inputs{frame.Scene, frame.DeltaTime, session.R.get<const PlaybackFrame>(state::Document).Value, session.R.get<const TimelinePlayback>(state::Document).CurrentFrame, frame.FixedFrameStep, pass, frame.DisplayFramebufferScale};
+        const ActionInputs inputs{frame.Scene, frame.DeltaTime, session.R.get<const PlaybackFrame>(state::Document).Value, session.R.get<const TimelinePlayback>(state::Document).CurrentFrame, frame.FixedFrameStep, pass, frame.DisplayFramebufferScale, staged};
         if (session.R.all_of<ActionInputs>(state::Document)) session.R.replace_if_changed(state::Document, inputs);
         else session.R.emplace<ActionInputs>(state::Document, inputs);
         const auto workspace = keep ? std::optional{session.History.CaptureWorkspace()} : std::nullopt;
+        frame.GestureOpen |= staged;
         if (session.R.Resources.get<action::Errors>().Messages.size() == errors) Tick(session, a, pass);
         pass = EventPass::Settle;
         if (session.R.Resources.get<action::Errors>().Messages.size() != errors) {
@@ -390,6 +392,7 @@ void Project::FinishGesture(EventPass pass, bool keep_selection) {
     }
     if (R.all_of<procedure::SelectionEditing>(state::Document)) Record(*this, action::MakeAction(action::nodes::FinishSelection{}), pass);
     if (Editing) {
+        R.Resources.get<FrameState>().GestureOpen = false;
         Settle(pass);
         Commit(History.Nodes[*Editing].Label, Editing);
     } else {
@@ -409,6 +412,7 @@ void Project::FinishGesture(EventPass pass, bool keep_selection) {
 void Project::EndGesture(EventPass pass) {
     R.clear<StartTransform, StartBoneLength, StartPivot, action::DragFieldStart, AdditiveBoxSelectBaseline>();
     R.remove<StartScreenTransform>(state::Document);
+    R.Resources.get<FrameState>().GestureOpen = false;
     Settle(pass);
 }
 void Project::RestageDraft() {
@@ -436,6 +440,7 @@ void Project::RestageDraft() {
     ++Revision;
 }
 void Project::ReleaseGesture() {
+    R.Resources.get<FrameState>().GestureOpen = false;
     EndCookStep(R);
     if (GestureBase) History.Release(*GestureBase);
     if (StageBase) History.Release(*StageBase);

@@ -324,6 +324,17 @@ void AccumulateTriangleEdits(state::Registry &r, AccumulatedTriangleEdits &edits
     for (auto t = first; t < end; ++t) edits.Emitted[t / 32u] |= 1u << (t % 32u);
 }
 
+void AccumulateChangedTriangles(state::Registry &r, AccumulatedTriangleEdits &edits, uint32_t store_id, const BufferArena<uint32_t> &storage, ElementWork triangles) {
+    if (triangles.Storage.Slot == InvalidSlot) return;
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    const auto owners = meshes.Render().ElementMeshlets[0].View(meshes.Get(store_id).ElementMeshlets[0]);
+    // A triangle the edits emitted takes its owner from the repair.
+    ForEachWorkElement(storage, triangles, [&](uint32_t triangle) {
+        if (triangle / 32u < edits.Emitted.size() && (edits.Emitted[triangle / 32u] >> (triangle % 32u) & 1u)) return;
+        edits.ClusterCount += edits.Clusters.Mark(owners[triangle]);
+    });
+}
+
 void RepairTopologyRender(state::Registry &r, mtl::ComputeChain &chain, state::Entity entity, const AccumulatedTriangleEdits &edits) {
     const auto clusters = edits.Clusters.Ascending(), emitted = SetBitHandles(edits.Emitted);
     const auto added = HandleRuns(emitted);

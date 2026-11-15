@@ -34,6 +34,7 @@
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
 #include "mesh/MeshStores.h"
+#include "mesh/NormalDeriveGpu.h"
 #include "metal/MetalCpp.h"
 #include "metal/Mipmaps.h"
 #include "metal/RenderTarget.h"

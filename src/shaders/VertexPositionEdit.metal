@@ -360,6 +360,24 @@ kernel void PositionVerticesGather(
     output[i]=packed_float3(position);
 }
 
+// Writes the record's live vertex handles ascending into Handles, one thread per slot of its vertex blocks.
+kernel void ListEditedVertices(
+    uint i [[thread_position_in_grid]],
+    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
+    constant VertexPositionEditPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+) {
+    const uint v = BlockHandle(i, b, pc.Blocks);
+    if (v == InvalidOffset) return;
+    const uint k = i / MeshElementBlockSize, lane = i % MeshElementBlockSize;
+    // The blocks precede their inclusive live prefix.
+    device const uint *blocks = BindlessBuffer(uint, b.Buffer, pc.Blocks.Blocks.Slot) + pc.Blocks.Blocks.Offset;
+    device const MeshElementBlock &membership = BindlessBuffer(MeshElementBlock, b.Buffer, pc.Blocks.MembershipSlot)[blocks[k]];
+    uint rank = k ? blocks[pc.Blocks.Count + k - 1u] : 0u;
+    for (uint word = 0u; word < lane / 32u; ++word) rank += popcount(membership.Live[word]);
+    rank += popcount(membership.Live[lane / 32u] & ((1u << (lane % 32u)) - 1u));
+    BindlessBufferMutable(uint, b.Buffer, pc.Handles.Slot)[pc.Handles.Offset + rank] = v;
+}
+
 kernel void WriteEditedPositions(
     uint i [[thread_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],

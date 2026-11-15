@@ -13,6 +13,8 @@ struct PositionOperationTarget {
     SelectionSource Selection, Excluded;
     Transform World{};
     uint32_t Reference{InvalidOffset};
+    // Every element of the record is selected, and Selection is unread.
+    bool Every{};
 };
 struct PositionWarp {
     quat Orientation{1, 0, 0, 0};
@@ -63,9 +65,11 @@ struct PositionOperationOptions {
     NamedAttributeRef Factor{}; // A float vertex attribute holding the factor per vertex of a smooth, shrink/fatten or randomize, or none to read the factor
     std::optional<float> SphereRadius{}; // The mean distance a sphere blend scales toward, or none for the mean distance of the selected vertices
 };
+// The vertices a position operation moves.
 struct PositionOperationChange {
-    std::vector<uint32_t> Vertices;
-    std::vector<Range> Ranges;
+    std::vector<uint32_t> Vertices; // Their ascending handles, or none when Every lists them on the GPU
+    std::vector<Range> Ranges; // Their handle runs
+    bool Every{}; // Every live vertex of the record
 };
 // The caller submits the chain and refreshes canonical derived geometry before subsequent operations.
 std::optional<PositionOperationChange> EncodePositionOperations(MeshStore &, MeshPipelines &, mtl::ComputeChain &, const PositionOperationTarget &, PositionEditOp, float factor, uint32_t repeat = 1u, const PositionOperationOptions & = {});

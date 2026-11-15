@@ -21,16 +21,9 @@ std::optional<NormalDeriveEntry> MakeDeriveEntryInputs(const MeshStore &, uint32
 // Records the same two-phase kernel as frame and sparse edit derivation, with each entry from the record of `ids` at its index.
 // Only job metadata is uploaded, and geometry and normal values stay in their GPU arenas.
 void EncodeDeriveNormals(state::Registry &, mtl::ComputeChain &, std::span<const uint32_t> ids, std::span<const NormalDeriveEntry>, NormalDerivePushConstants);
-// The meshes with faces among those whose every base normal derives, each with its vertex then its face membership work in the chain's scratch.
-struct AllNormalsWork {
-    std::vector<uint32_t> Ids;
-    std::vector<ElementWork> Work;
-};
-// Records the gather and sort of the membership of every vertex and face of the meshes with faces.
-AllNormalsWork EncodeAllNormalsMembership(state::Registry &, mtl::ComputeChain &, std::span<const uint32_t> store_ids);
-// Records the base normals of every vertex and face of the meshes, once the chain submitted their membership gather.
+// Records the base normals of every vertex and face of the meshes with faces, which the derive reads from their element blocks.
 // The derive reads each record's corner classification as it stands when this records.
-void EncodeDeriveAllNormals(state::Registry &, mtl::ComputeChain &, const AllNormalsWork &);
+void EncodeDeriveRecordNormals(state::Registry &, mtl::ComputeChain &, std::span<const uint32_t> store_ids);
 // One mesh's local normal change.
 // Faces cover the changed face normals, and vertices cover every affected normal fan.
 struct LocalNormalWork {

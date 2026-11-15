@@ -44,6 +44,7 @@ struct ActionInputs {
     bool FixedFrameStep{};
     EventPass Pass{EventPass::Frame};
     vec2 FramebufferScale{1, 1};
+    bool Staged{}; // The action applied as a step of an open gesture
     bool operator==(const ActionInputs &) const = default;
 };
 
@@ -57,6 +58,9 @@ struct FrameState {
     state::Entity Scene{state::Null};
     float DeltaTime{0};
     bool FixedFrameStep{false};
+    // A gesture is open, set by each staged action and replayed from it.
+    // The settle that ends the gesture runs with it cleared.
+    bool GestureOpen{false};
     vec2 DisplayFramebufferScale{1, 1};
     vec2 AccumulatedWrapMouseDelta{0, 0};
     vec2 PreciseWheelDelta{0, 0};

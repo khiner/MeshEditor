@@ -1775,6 +1775,28 @@ bool MeshStore::IsLiveElement(uint32_t id, Element element, ElementHandle handle
     const auto domain = SelectionDomain(element);
     return WithDomain(Buffers, domain, [&](const auto &arena) { return arena.Contains(DomainSet(Records.at(id), domain), handle); });
 }
+
+std::vector<Range> MeshStore::LiveVertexRanges(uint32_t id, std::span<const Range> ranges) const {
+    const auto entries = Buffers.Vertices.Entries(Records.at(id).Vertices);
+    const auto blocks = Buffers.Vertices.Blocks.Buffer.GetSpan<MeshElementBlock>();
+    std::vector<Range> live;
+    for (const auto range : ranges) {
+        const auto end = std::min(uint64_t(range.Offset) + range.Count, uint64_t(entries.size()) * MeshElementBlockSize);
+        // Each step covers the handles of one live word from h to the range's end.
+        for (uint64_t h = range.Offset; h < end; h = (h / 32u + 1u) * 32u) {
+            const auto entry = entries[h / MeshElementBlockSize];
+            const auto count = uint32_t(std::min(end - h, 32u - h % 32u));
+            auto bits = entry == InvalidOffset ? 0u : blocks[entry].Live[h % MeshElementBlockSize / 32u] >> (h % 32u) & uint32_t((uint64_t{1} << count) - 1u);
+            for (auto first = uint32_t(h); bits;) {
+                const auto dead = uint32_t(std::countr_zero(bits)), run = uint32_t(std::countr_one(bits >> dead));
+                AppendRange(live, {first + dead, run});
+                first += dead + run;
+                bits = dead + run < 32u ? bits >> (dead + run) : 0u;
+            }
+        }
+    }
+    return live;
+}
 std::optional<ElementHandle> MeshStore::LiveHandleAt(uint32_t id, Element element, ElementAddress address) const {
     const auto domain = SelectionDomain(element);
     return WithDomain(Buffers, domain, [&](const auto &arena) -> std::optional<ElementHandle> {

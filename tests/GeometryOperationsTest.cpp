@@ -3,6 +3,7 @@
 #include "RunSuites.h"
 #include "TopologyCases.h"
 #include "mesh/MeshClone.h"
+#include "mesh/Neighborhood.h"
 #include "mesh/Primitives.h"
 #include "mesh/SharpnessOperations.h"
 #include "mesh/Simplify.h"
@@ -405,6 +406,50 @@ void RegisterGeometryOperationsTests() {
         meshes.ReleaseAttribute(*again);
         expect(meshes.FindAttribute(id, "again") == InvalidOffset);
         expect(meshes.FindAttribute(id, "weight") == *weight);
+    };
+    "a position operation over every element matches the operation over every listed handle"_test = [] {
+        GeometryFixture f;
+        struct PositionCase {
+            std::string_view Name;
+            PositionEditOp Op;
+            float Factor;
+            PositionOperationOptions Options;
+        };
+        const std::array<PositionCase, 4> positions{{
+            {"Smooth", PositionEditOp::Smooth, .5f, {}},
+            {"PushPull", PositionEditOp::PushPull, .25f, {.Center = {0.f, 0.f, 2.f}}},
+            {"ShrinkFatten", PositionEditOp::ShrinkFatten, .1f, {.Flags = PositionEditSelectedFaceNormals}},
+            {"Warp", PositionEditOp::Warp, 1.f, {.Warp = PositionWarp{}}},
+        }};
+        // Deleted vertices leave unused handles between the live ones of several blocks.
+        const auto create = [&] {
+            const auto id = f.Create(primitive::CreateMesh(primitive::UVSphere{.Slices = 40, .Stacks = 20}));
+            f.Run({.SourceId = id, .Op = MeshTopologyOp::DeleteVertices, .Selection = GeometrySelection{.Vertices = {5u, 6u, 300u, 301u, 302u, 700u}}});
+            return id;
+        };
+        const auto normals = [&](uint32_t id) {
+            const auto handles = AllHandles(f.Get(id));
+            const auto &pipelines = GetMeshPipelines(f.Scene);
+            std::vector<std::array<int64_t, 3>> keys;
+            for (const auto normal : VertexNormals(f.Store(), pipelines, id, handles.Vertices)) keys.push_back(Key(normal));
+            for (const auto normal : FaceNormals(f.Store(), pipelines, id, handles.Faces)) keys.push_back(Key(normal));
+            return keys;
+        };
+        for (const auto &c : positions) {
+            boost::ut::test(std::string{c.Name}) = [&] {
+                const auto listed_id = create(), every_id = create();
+                const PositionOperationTarget listed{.StoreId = listed_id, .Selection = AllHandles(f.Get(listed_id))};
+                const PositionOperationTarget every{.StoreId = every_id, .Every = true};
+                const auto before = Points(f.Get(listed_id));
+                const auto listed_change = ExecuteGeometryPositions(f.Scene, listed, c.Op, c.Factor, 1u, c.Options);
+                const auto every_change = ExecuteGeometryPositions(f.Scene, every, c.Op, c.Factor, 1u, c.Options);
+                f.Audit();
+                expect(listed_change.has_value() && every_change.has_value());
+                expect(!std::ranges::equal(Points(f.Get(listed_id)), before));
+                expect(std::ranges::equal(Points(f.Get(listed_id)), Points(f.Get(every_id))));
+                expect(std::ranges::equal(normals(listed_id), normals(every_id)));
+            };
+        }
     };
     "position and sharpness operations read mask selections like handle lists"_test = [] {
         GeometryFixture f;

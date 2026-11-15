@@ -251,6 +251,7 @@ enum class MeshPass : uint16_t {
     RecalculateNormalFlips,
     PlanarFacePlanes,
     WriteEditedPositions,
+    ListEditedVertices,
     EditFaceUvs,
     EditFaceColors,
     AttributeRead,

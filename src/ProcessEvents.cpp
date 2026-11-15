@@ -131,6 +131,7 @@ void RequestRender(state::Registry &r, bool disoccludes) {
 
 void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     const bool rendering = pass == EventPass::Sample || pass == EventPass::Render;
+    const bool gesture_open = r.Resources.get<const FrameState>().GestureOpen;
     const auto &ctx = r.Resources.get<const mtl::Context>();
     auto &slots = r.Resources.get<mtl::BindlessSet>();
     auto &buffers = r.Resources.get<GpuBuffers>();
@@ -706,13 +707,17 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
             StageDirtyPositionMeshlets(r, chain, edited);
             // Staged refits complete before their traversal nodes and memberships repair.
             construct();
-            const auto repaired = r.view<const ClusterLodDirty>() | to<std::vector>();
-            RepairDirtyClusterGroups(r, chain, repaired);
-            edited.insert(edited.end(), repaired.begin(), repaired.end());
+            // The settle that ends a gesture repairs the coarse groups it left dirty, which draw as their finer clusters until then.
+            if (!gesture_open) {
+                const auto repaired = r.view<const ClusterLodDirty>() | to<std::vector>();
+                RepairDirtyClusterGroups(r, chain, repaired);
+                edited.insert(edited.end(), repaired.begin(), repaired.end());
+            }
         }
         SortUnique(edited);
         RepointMeshInstances(r, edited);
-        r.clear<MeshletPositionsDirty, ClusterLodDirty>();
+        r.clear<MeshletPositionsDirty>();
+        if (!gesture_open) r.clear<ClusterLodDirty>();
         for (const auto e : r.view<const MeshEditWork>() | to<std::vector>()) ReleaseMeshEditWork(r, e);
         request();
     }
@@ -1079,7 +1084,8 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         }
     }
     // Demanded LODs build after meshlet publication and keep edit-mode pins.
-    if (BuildDemandedClusterLods(r, chain)) request();
+    // The settle that ends a gesture builds the ones it demanded.
+    if (!gesture_open && BuildDemandedClusterLods(r, chain)) request();
     if (!render_changes.PbrMeshFeatures.empty()) {
         scene_state.MeshPbrFeatures = 0u;
         for (const auto [_, feat] : r.view<const PbrMeshFeatures>().each()) scene_state.MeshPbrFeatures |= feat.Mask;

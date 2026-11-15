@@ -576,6 +576,8 @@ struct MeshStore {
     // Gathers selected handles in ascending order into a new output range and returns it.
     Range GatherSelectedElements(state::Registry &, mtl::ComputeChain &, uint32_t id, Element, BufferArena<uint32_t> &output) const;
     bool IsLiveElement(uint32_t id, Element, ElementHandle) const;
+    // The runs of live vertex handles within ascending disjoint handle ranges.
+    std::vector<Range> LiveVertexRanges(uint32_t id, std::span<const Range>) const;
     uint32_t GetSelectionSlot(Element) const;
     EditSelectionStorage GetEditSelectionStorage(uint32_t id) const;
     const EditSelectionSummary &GetSelectionSummary(uint32_t id) const;

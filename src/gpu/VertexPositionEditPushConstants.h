@@ -61,6 +61,7 @@ struct VertexPositionEditPushConstants {
     uint32_t ChainCount DEFAULT();
     PositionEditOp Operation DEFAULT(PositionEditOp::Copy);
     NamedAttributeRef FactorAttribute DEFAULT(); // A float vertex attribute holding the factor per vertex, or none to read Factor
+    DomainBlocks Blocks DEFAULT(); // The record's vertex blocks, for the pass that lists every live vertex into Handles
 };
 
 struct EdgeChain {

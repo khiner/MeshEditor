@@ -2,7 +2,6 @@
 
 #include "mesh/CornerClassBatch.h"
 #include "mesh/MeshStore.h"
-#include "mesh/NormalDeriveGpu.h"
 
 struct MeshPipelines;
 
@@ -34,9 +33,8 @@ CreatedMesh CreateMesh(state::Registry &, MeshSource);
 struct NewMeshShading {
     std::vector<uint32_t> Ids;
     CornerClassBatch Classes;
-    AllNormalsWork Normals;
 };
-// Takes the records awaiting shading and records their corner classification counts and their normal membership gather, when any await it.
+// Takes the records awaiting shading and records their corner classification counts, when any await it.
 std::optional<NewMeshShading> EncodeNewMeshShading(state::Registry &, mtl::ComputeChain &);
 // Once the chain submitted the counts, records the records' classification writes, base normal derive and selection state.
 // The selection summaries publish with the chain's next submit.

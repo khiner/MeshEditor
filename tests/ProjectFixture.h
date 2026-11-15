@@ -11,6 +11,7 @@
 #include "editor/Engine.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
+#include "mesh/NormalDeriveGpu.h"
 #include "object/ObjectOps.h"
 #include "procedure/Cook.h"
 #include "project/Recording.h"

@@ -7,6 +7,7 @@
 #include "mesh/MeshConnectivityGpu.h"
 #include "mesh/MeshPipelines.h"
 #include "mesh/Neighborhood.h"
+#include "mesh/NormalDeriveGpu.h"
 #include "mesh/VertexWeldGpu.h"
 
 #include "state/Registry.h"
@@ -269,14 +270,13 @@ std::optional<NewMeshShading> EncodeNewMeshShading(state::Registry &r, mtl::Comp
     requests.reserve(ids.size());
     for (const auto id : ids) requests.push_back({.StoreId = id});
     auto classes = meshes.EncodeCornerClassification(r, chain, requests);
-    auto normals = EncodeAllNormalsMembership(r, chain, ids);
-    return NewMeshShading{std::move(ids), std::move(classes), std::move(normals)};
+    return NewMeshShading{std::move(ids), std::move(classes)};
 }
 
 void DeriveNewMeshShading(state::Registry &r, mtl::ComputeChain &chain, NewMeshShading &shading) {
     auto &meshes = r.Resources.get<MeshStore>();
     meshes.PlanCornerClassification(r, chain, shading.Classes);
-    EncodeDeriveAllNormals(r, chain, shading.Normals);
+    EncodeDeriveRecordNormals(r, chain, shading.Ids);
     meshes.EnsureSelectionState(r, chain, shading.Ids);
 }
 

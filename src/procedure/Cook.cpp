@@ -32,6 +32,7 @@
 #include "render/Instance.h"
 #include "render/MeshTopologyRepair.h"
 #include "render/MeshletBuildGpu.h"
+#include "render/SceneUpdates.h"
 #include "scene/SceneChanges.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
@@ -65,17 +66,15 @@ void FinishPendingSourceStates(state::Registry &r, uint32_t record) {
     }
 }
 
+struct DrawnEdits;
 // Optional domain masks, where absent masks select every element.
 struct Masks {
     std::optional<GeometryMasks> In;
     Element Domain{Element::Vertex};
     // Copies the emitted selection into the output record.
     bool Publish{};
-    // The mesh entity drawing the input record with current render records, which a node edits in place and repairs, setting Repaired.
-    state::Entity Drawn{state::Null};
-    bool *Repaired{};
-    // The change a restore made to the drawn record, whose vertex ranges and blocks the next drawn position edit refreshes with its own.
-    MeshStore::Change *Refresh{};
+    // The edits of the input record a mesh entity draws, which a node edits in place, or null for a record without current render records.
+    DrawnEdits *Drawn{};
 };
 
 struct Operand {
@@ -212,18 +211,24 @@ void RepairDrawnElements(state::Registry &r, mtl::ComputeChain &chain, state::En
     RefreshElementSelectionSummaries(r, std::array{mesh_entity});
 }
 
+// Constructs and publishes the task's edit on the chain, and fills `sources` with the vertices an extrusion emitted.
+std::vector<MeshTopologyEdit> PublishTopology(state::Registry &r, mtl::ComputeChain &chain, const MeshTopologyTask &task, std::vector<ExtrusionSource> *sources) {
+    auto edits = MeshTopologyEdit::Construct(r, chain, std::span{&task, 1u});
+    if (sources) *sources = edits.front().ExtrusionSources(r);
+    MeshTopologyEdit::PublishAll(r, edits);
+    if (const auto &edit = edits.front(); sources && edit.Output) {
+        const auto handles = chain.Scratch.Get(edit.Output->Vertices);
+        for (auto &source : *sources) source.Output = handles[source.Output];
+    }
+    return edits;
+}
+
 void EditTopology(state::Registry &r, state::Entity mesh_entity, const MeshTopologyTask &task, std::vector<ExtrusionSource> *sources = nullptr) {
     auto &meshes = r.Resources.get<MeshStore>();
     if (mesh_entity != state::Null) ReleaseMeshEditWork(r, mesh_entity);
     mtl::ComputeChain chain{meshes.BufferContext(), TopologyScratchWords};
-    auto edits = MeshTopologyEdit::Construct(r, chain, std::span{&task, 1u});
-    if (sources) *sources = edits.front().ExtrusionSources(r);
-    MeshTopologyEdit::PublishAll(r, edits);
+    auto edits = PublishTopology(r, chain, task, sources);
     auto &edit = edits.front();
-    if (sources && edit.Output) {
-        const auto handles = chain.Scratch.Get(edit.Output->Vertices);
-        for (auto &source : *sources) source.Output = handles[source.Output];
-    }
     if (!edit.Output || mesh_entity == state::Null) {
         if (mesh_entity == state::Null) MeshTopologyEdit::FinishAll(r, std::array{&edit});
         chain.Submit();
@@ -246,18 +251,42 @@ struct AccumulatedTopologyEdits {
     EditedBlocks Blocks;
     // Bit words by handle of the vertices, edges and halfedges standing for their edges that the edits may start or stop drawing as points and lines.
     std::array<std::vector<uint32_t>, 3> Marked;
+    // An edit changed the record.
+    bool Edited{};
 };
+
+// The in-place edits of the record a mesh entity draws since its render records were current.
+struct DrawnEdits {
+    state::Entity Entity{state::Null};
+    AccumulatedTopologyEdits Topology;
+    // Handle ranges of the vertices the edits moved.
+    std::vector<Range> Moved;
+    // The change a restore made to the record, whose positions refresh with the moved vertices.
+    MeshStore::Change Restored;
+    // The running node is the last before the render records repair.
+    bool Last{};
+    // The running node repaired or gathered its edits.
+    bool Recorded{};
+    // Unsubmitted passes of position edits over every element, which each recorded without reading GPU state.
+    std::unique_ptr<mtl::ComputeChain> Chain;
+    // The triangles those edits retessellated, as work in the chain's scratch.
+    std::vector<ElementWork> Retessellated;
+};
+// A node's edit repairs the render records itself when it is the last before their repair and no earlier edit is gathered.
+bool RepairsOwnEdit(const DrawnEdits &drawn) { return drawn.Last && !drawn.Chain && !drawn.Topology.Edited; }
 
 bool RetiresAll(const MeshStore &meshes, uint32_t store_id, const AccumulatedTopologyEdits &accumulated) {
     return accumulated.Triangles.ClusterCount == meshes.Get(store_id).Level0Count;
 }
 
-void EditTopologyAccumulated(state::Registry &r, const MeshTopologyTask &task, AccumulatedTopologyEdits &accumulated) {
+// The mesh entity's position edit work refers to the topology before the edit.
+void EditTopologyAccumulated(state::Registry &r, state::Entity mesh_entity, const MeshTopologyTask &task, AccumulatedTopologyEdits &accumulated, std::vector<ExtrusionSource> *sources = nullptr) {
     auto &meshes = r.Resources.get<MeshStore>();
+    ReleaseMeshEditWork(r, mesh_entity);
     mtl::ComputeChain chain{meshes.BufferContext(), TopologyScratchWords};
-    auto edits = MeshTopologyEdit::Construct(r, chain, std::span{&task, 1u});
-    MeshTopologyEdit::PublishAll(r, edits);
+    auto edits = PublishTopology(r, chain, task, sources);
     auto &edit = edits.front();
+    accumulated.Edited |= bool(edit.Output);
     if (edit.Output && !RetiresAll(meshes, edit.StoreId, accumulated)) {
         AccumulateTriangleEdits(r, accumulated.Triangles, edit);
         AppendEditedBlocks(accumulated.Blocks, meshes, edit);
@@ -277,7 +306,6 @@ void EditTopologyAccumulated(state::Registry &r, const MeshTopologyTask &task, A
 
 void RepairAccumulated(state::Registry &r, state::Entity mesh_entity, uint32_t store_id, AccumulatedTopologyEdits accumulated) {
     auto &meshes = r.Resources.get<MeshStore>();
-    ReleaseMeshEditWork(r, mesh_entity);
     mtl::ComputeChain chain{meshes.BufferContext(), TopologyScratchWords};
     const auto &triangles = accumulated.Triangles;
     if ((meshes.Get(store_id).RenderTopologies & 1u) != 0u || std::ranges::any_of(triangles.Emitted, [](uint32_t word) { return word != 0u; })) {
@@ -312,31 +340,82 @@ void PublishRestored(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, 
     restored = {};
 }
 
-// The vertex ranges of the masks' Refresh, which the edit then clears, join the edited ranges, and its blocks refresh their aggregates with them.
+// Submits the unsubmitted position passes and gathers the triangles they retessellated.
+// Every step that reads GPU state or submits another chain follows it.
+void SubmitDrawn(state::Registry &r, uint32_t record, DrawnEdits &drawn) {
+    if (!drawn.Chain) return;
+    drawn.Chain->Submit();
+    for (const auto work : std::exchange(drawn.Retessellated, {})) {
+        if (work.Storage.Slot == InvalidSlot || !ElementWorkCount(drawn.Chain->Scratch, work)) continue;
+        AccumulateChangedTriangles(r, drawn.Topology.Triangles, record, drawn.Chain->Scratch, work);
+        drawn.Topology.Edited = true;
+    }
+    drawn.Chain.reset();
+}
+
+// Refreshes the live vertices among `ranges`, the gathered moves and the restore on the chain, and submits it.
+// `retessellate` covers the faces of `ranges`, which the gathered moves already retessellated.
+void RefreshDrawnPositions(state::Registry &r, mtl::ComputeChain &chain, uint32_t record, DrawnEdits &drawn, std::vector<Range> ranges = {}, bool retessellate = false) {
+    ranges.append_range(std::exchange(drawn.Moved, {}));
+    const bool moved = !ranges.empty();
+    ranges.append_range(drawn.Restored.VertexRanges);
+    const bool ranged = !ranges.empty();
+    CoalesceRanges(ranges);
+    ranges = r.Resources.get<const MeshStore>().LiveVertexRanges(record, ranges);
+    // A restore's blocks refresh without ranges.
+    auto repair = !ranged || !ranges.empty() ? RefreshEditedPositions(r, chain, std::array{MeshVertexChanges{drawn.Entity, ranges}}, retessellate) : std::function<void()>{};
+    // The publication refits the record's meshlets before the repair of changed triangles replaces any of them.
+    if (moved && !ranges.empty()) PublishEditedPositions(r, chain, std::array{drawn.Entity});
+    PublishRestored(r, chain, record, drawn.Restored);
+    if (repair) chain.AfterSubmit(std::move(repair));
+    chain.Submit();
+}
+
+// Refreshes the gathered moves and the restore where either is pending.
+void RefreshDrawn(state::Registry &r, uint32_t record, DrawnEdits &drawn) {
+    if (drawn.Moved.empty() && drawn.Restored.VertexRanges.empty() && std::ranges::all_of(drawn.Restored.Blocks, [](const auto &blocks) { return blocks.empty(); })) return;
+    mtl::ComputeChain chain{r.Resources.get<MeshStore>().BufferContext()};
+    RefreshDrawnPositions(r, chain, record, drawn);
+}
+
+// Repairs the render records for the gathered edits and returns whether they are current.
+// Edits that retire every finest cluster leave them for a new build, which needs only the restore's positions.
+bool RepairDrawn(state::Registry &r, uint32_t record, DrawnEdits &drawn) {
+    SubmitDrawn(r, record, drawn);
+    if (drawn.Topology.Edited) {
+        if (RetiresAll(r.Resources.get<const MeshStore>(), record, drawn.Topology)) {
+            drawn = {.Entity = drawn.Entity, .Restored = std::move(drawn.Restored)};
+            return false;
+        }
+        RepairAccumulated(r, drawn.Entity, record, std::exchange(drawn.Topology, {}));
+    }
+    RefreshDrawn(r, record, drawn);
+    return true;
+}
+
+// A drawn edit that repairs the render records itself refreshes the gathered moves and the restore with its own vertices.
+// Any other gathers its moved vertices and the triangles their retessellation changed.
 void EditPositions(state::Registry &r, const Masks &masks, const PositionOperationTarget &target, PositionEditOp op, float factor, uint32_t repeat, const PositionOperationOptions &options) {
-    if (masks.Drawn == state::Null) {
+    if (!masks.Drawn) {
         ExecuteGeometryPositions(r, target, op, factor, repeat, options);
         return;
     }
-    *masks.Repaired = true;
+    auto &drawn = *masks.Drawn;
     auto &meshes = r.Resources.get<MeshStore>();
-    mtl::ComputeChain chain{meshes.BufferContext()};
-    const auto edited = EncodePositionOperations(meshes, GetMeshPipelines(r), chain, target, op, factor, repeat, options);
-    if (!edited) {
-        chain.Submit();
+    drawn.Recorded = true;
+    if (RepairsOwnEdit(drawn)) {
+        mtl::ComputeChain chain{meshes.BufferContext()};
+        if (const auto edited = EncodePositionOperations(meshes, GetMeshPipelines(r), chain, target, op, factor, repeat, options)) RefreshDrawnPositions(r, chain, target.StoreId, drawn, edited->Ranges, true);
+        else chain.Submit();
         return;
     }
-    auto ranges = edited->Ranges;
-    if (masks.Refresh) {
-        ranges.append_range(masks.Refresh->VertexRanges);
-        CoalesceRanges(ranges);
+    if (!drawn.Chain) drawn.Chain = std::make_unique<mtl::ComputeChain>(meshes.BufferContext());
+    if (const auto edited = EncodePositionOperations(meshes, GetMeshPipelines(r), *drawn.Chain, target, op, factor, repeat, options)) {
+        drawn.Retessellated.push_back(EncodePositionRefresh(r, *drawn.Chain, target.StoreId, *edited));
+        drawn.Moved.append_range(edited->Ranges);
     }
-    // The publication refits the record's meshlets before the repair of changed triangles replaces any of them.
-    auto repair = RefreshEditedPositions(r, chain, std::array{MeshVertexChanges{masks.Drawn, ranges}});
-    PublishEditedPositions(r, chain, std::array{masks.Drawn});
-    if (masks.Refresh) PublishRestored(r, chain, target.StoreId, *masks.Refresh);
-    if (repair) chain.AfterSubmit(std::move(repair));
-    chain.Submit();
+    // Only an edit over every element records without reading GPU state, so the passes of the next one join it.
+    if (!target.Every) SubmitDrawn(r, target.StoreId, drawn);
 }
 
 GeometrySelection Handles(const MeshStore &meshes, uint32_t id, const Masks &masks) { return masks.In ? ReadMasks(meshes, id, *masks.In) : AllHandles(Mesh{meshes, id}); }
@@ -354,6 +433,18 @@ MeshTopologyTask Task(uint32_t id, MeshTopologyOp op, const TopologyInput &input
     else task.Flags |= TopologyFlagSelectAll;
     return task;
 }
+// Triangles whose shading changed repair the drawn record's render records when theirs is the only edit before the repair, and join the gathered edits otherwise.
+void RepairDrawnTriangles(state::Registry &r, mtl::ComputeChain &chain, DrawnEdits &drawn, uint32_t id, const FaceTriangles &triangles) {
+    if (RepairsOwnEdit(drawn)) return RepairFaceRender(r, chain, std::array{std::pair{drawn.Entity, triangles}});
+    if (!triangles.Count) return;
+    AccumulateChangedTriangles(r, drawn.Topology.Triangles, id, chain.Scratch, triangles.Triangles);
+    drawn.Topology.Edited = true;
+}
+// The edit repairs the drawn record's render records when it is the only edit before their repair, and joins the gathered edits otherwise.
+void EditDrawnTopology(state::Registry &r, DrawnEdits &drawn, const MeshTopologyTask &task, std::vector<ExtrusionSource> *sources = nullptr) {
+    if (RepairsOwnEdit(drawn)) EditTopology(r, drawn.Entity, task, sources);
+    else EditTopologyAccumulated(r, drawn.Entity, task, drawn.Topology, sources);
+}
 void PublishInput(state::Registry &r, uint32_t id, const Masks &masks) {
     if (!masks.Publish || !masks.In) return;
     auto &meshes = r.Resources.get<MeshStore>();
@@ -366,9 +457,9 @@ Outcome ExecuteStages(state::Registry &r, std::span<MeshTopologyTask> tasks, con
     if (masks.Publish) {
         for (auto &task : tasks) PublishStoreSelection(r.Resources.get<const MeshStore>(), task);
     }
-    if (masks.Drawn != state::Null && std::ranges::none_of(tasks, [](const auto &task) { return TopologyCreatesRecord(task.Op); })) {
-        *masks.Repaired = true;
-        for (const auto &task : tasks) EditTopology(r, masks.Drawn, task);
+    if (masks.Drawn && std::ranges::none_of(tasks, [](const auto &task) { return TopologyCreatesRecord(task.Op); })) {
+        masks.Drawn->Recorded = true;
+        for (const auto &task : tasks) EditDrawnTopology(r, *masks.Drawn, task);
         return tasks.front().SourceId;
     }
     const auto results = ExecuteGeometryTopologyStages(r, tasks);
@@ -397,8 +488,7 @@ void DeleteEvery(state::Registry &r, uint32_t id, DeleteMode mode) {
 }
 // A slide measures from the `reference` vertex, or else from the first selected vertex.
 Outcome Reposition(state::Registry &r, uint32_t id, const Masks &masks, PositionEditOp op, float factor, uint32_t repeat, const PositionOperationOptions &options = {}, const Transform &world = {}, uint32_t reference = InvalidOffset) {
-    auto &meshes = r.Resources.get<MeshStore>();
-    const PositionOperationTarget target{.StoreId = id, .Selection = SourceOf(meshes, id, masks), .World = world, .Reference = reference};
+    const PositionOperationTarget target{.StoreId = id, .Selection = masks.In ? SelectionSource{*masks.In} : SelectionSource{}, .World = world, .Reference = reference, .Every = !masks.In};
     EditPositions(r, masks, target, op, factor, repeat, options);
     return id;
 }
@@ -409,8 +499,8 @@ Outcome EditFaceAttributes(state::Registry &r, uint32_t id, const Masks &masks, 
     const PositionOperationTarget target{.StoreId = id, .Selection = SourceOf(meshes, id, masks)};
     mtl::ComputeChain chain{meshes.BufferContext()};
     const auto change = EncodeFaceAttributeOperation(meshes, GetMeshPipelines(r), chain, target, colors, uv_set, operation);
-    if (masks.Drawn != state::Null) *masks.Repaired = true;
-    if (masks.Drawn == state::Null || !change) {
+    if (masks.Drawn) masks.Drawn->Recorded = true;
+    if (!masks.Drawn || !change) {
         chain.Submit();
         return id;
     }
@@ -420,10 +510,10 @@ Outcome EditFaceAttributes(state::Registry &r, uint32_t id, const Masks &masks, 
     const auto bound = std::min(faces.Incidence, a.Triangles.Set(record.TriangleData).BlockCount);
     const auto handles = a.Triangles.HandleBound(record.TriangleData);
     chain.Scratch.ReserveAdditional(1u + ElementWorkWords(handles, bound) + SortElementWorkWords(WorkCapacity(handles, bound)));
-    std::vector<std::pair<state::Entity, FaceTriangles>> repairs{{masks.Drawn, EncodeFaceTriangles(r, chain, id, faces)}};
+    auto triangles = EncodeFaceTriangles(r, chain, id, faces);
     chain.Submit();
-    repairs.front().second.Finish(chain);
-    RepairFaceRender(r, chain, repairs);
+    triangles.Finish(chain);
+    RepairDrawnTriangles(r, chain, *masks.Drawn, id, triangles);
     chain.Submit();
     return id;
 }
@@ -489,7 +579,8 @@ vec3 NormalizedSum(std::span<const vec3> vectors) {
     for (const auto &v : vectors) sum += v;
     return Length(sum) > 0.f ? Normalize(sum) : sum;
 }
-Outcome RunExtrude(state::Registry &r, state::Entity node, const Extrude &p, uint32_t id, const Masks &m, const NodeSelection &resolved, const LinkedAttributes &linked, TopologyReuse reuse, std::vector<uint32_t> &temporaries, bool retain) {
+// `keep` keeps the extruded topology's mesh storage state, which a later run with `reuse` restores.
+Outcome RunExtrude(state::Registry &r, state::Entity node, const Extrude &p, uint32_t id, const Masks &m, const NodeSelection &resolved, const LinkedAttributes &linked, TopologyReuse reuse, std::vector<uint32_t> &temporaries, bool retain, bool keep) {
     auto &meshes = r.Resources.get<MeshStore>();
     const auto domain = p.Mode == ExtrudeMode::FacesIndividual ? AttributeDomain::Face : AttributeDomain::Vertex;
     const auto offset = ElementParameter(meshes, linked.Of<&Extrude::Offset>(), domain, AttributeType::Vec3);
@@ -532,8 +623,8 @@ Outcome RunExtrude(state::Registry &r, state::Entity node, const Extrude &p, uin
     if (!restored && stage->State != store::Hash128{}) {
         WaitForRender(r);
         if (const auto change = meshes.RestoreRecord(stage->State, id)) {
-            const auto refreshed = ReconcileRestoredRecord(r, *change, m.Drawn);
-            if (m.Refresh) *m.Refresh = refreshed;
+            auto refreshed = ReconcileRestoredRecord(r, *change, m.Drawn ? m.Drawn->Entity : state::Null);
+            if (m.Drawn) m.Drawn->Restored = std::move(refreshed);
             restored = true;
         }
     }
@@ -542,13 +633,15 @@ Outcome RunExtrude(state::Registry &r, state::Entity node, const Extrude &p, uin
         stage = &computed;
         auto task = *PlanTopology(r, p, id, InputOf(m));
         if (m.Publish) PublishStoreSelection(meshes, task);
-        EditTopology(r, m.Drawn, task, &computed.Vertices);
-        if (retain) computed.State = meshes.KeepState();
+        // A kept state holds current render records, so the edit that precedes it repairs them.
+        if (!m.Drawn || keep) EditTopology(r, m.Drawn ? m.Drawn->Entity : state::Null, task, &computed.Vertices);
+        else EditDrawnTopology(r, *m.Drawn, task, &computed.Vertices);
+        if (keep) computed.State = meshes.KeepState();
     }
     GeometrySelection selected;
     for (const auto &vertex : stage->Vertices) selected.Vertices.push_back(vertex.Output);
     SortUnique(selected.Vertices);
-    if (m.Drawn != state::Null) *m.Repaired = true;
+    if (m.Drawn) m.Drawn->Recorded = true;
     if (!selected.Vertices.empty() && (p.OffsetScale != 0.f || *scale != InvalidOffset)) {
         const PositionOperationTarget target{.StoreId = id, .Selection = std::move(selected)};
         const bool common = offsets.empty() && (!p.AlongNormals || p.Mode == ExtrudeMode::Region);
@@ -780,20 +873,18 @@ Outcome Run(state::Registry &r, const ConvexHull &p, uint32_t id, const Masks &m
 Outcome Run(state::Registry &r, const Simplify &p, uint32_t id, const Masks &m) {
     const auto &meshes = r.Resources.get<const MeshStore>();
     const auto selection = Handles(meshes, id, m);
-    if (m.Drawn == state::Null) {
+    if (!m.Drawn) {
         if (!SimplifyGeometry(r, id, selection, p.Tolerance, p.Ratio, [&](const MeshTopologyTask &task) { Execute(r, task, m); })) return std::unexpected(NodeFault::Selection);
         return id;
     }
-    AccumulatedTopologyEdits accumulated;
+    // The rounds join the gathered edits, which one repair covers.
+    auto &drawn = *m.Drawn;
     const auto round = [&](MeshTopologyTask task) {
         if (m.Publish) PublishStoreSelection(meshes, task);
-        EditTopologyAccumulated(r, task, accumulated);
+        EditTopologyAccumulated(r, drawn.Entity, task, drawn.Topology);
     };
     if (!SimplifyGeometry(r, id, selection, p.Tolerance, p.Ratio, round)) return std::unexpected(NodeFault::Selection);
-    if (!RetiresAll(meshes, id, accumulated)) {
-        *m.Repaired = true;
-        RepairAccumulated(r, m.Drawn, id, std::move(accumulated));
-    }
+    drawn.Recorded = true;
     return id;
 }
 Outcome Run(state::Registry &r, RecalculateNormals, uint32_t id, const Masks &m) {
@@ -848,10 +939,10 @@ Outcome EditSharpness(state::Registry &r, uint32_t id, const Masks &masks, Selec
     const SharpnessOperationTarget target{id, std::move(selection)};
     mtl::ComputeChain chain{meshes.BufferContext()};
     const auto change = ExecuteGeometrySharpness(r, chain, target, operation, value, angle);
-    if (masks.Drawn != state::Null) *masks.Repaired = true;
-    if (masks.Drawn != state::Null && change) {
+    if (masks.Drawn) masks.Drawn->Recorded = true;
+    if (masks.Drawn && change) {
         r.Resources.get<GpuSceneState>().EditSelectionDirty = true;
-        RepairFaceRender(r, chain, std::array{std::pair{masks.Drawn, change->Triangles}});
+        RepairDrawnTriangles(r, chain, *masks.Drawn, id, change->Triangles);
     }
     chain.Submit();
     return id;
@@ -1268,9 +1359,20 @@ enum class RunMode { Publish,
                      Transient,
                      Handle };
 
-Outcome RunNode(state::Registry &r, const CookPlan &plan, std::vector<SocketValue> &values, uint32_t node, uint32_t id, std::optional<BufferArena<SelectionBlock>> &arena, RunMode mode, state::Entity drawn = state::Null, bool *repaired = nullptr, MeshStore::Change *refresh = nullptr, TopologyReuse reuse_topology = TopologyReuse::None) {
+// The kinds whose edit over every element of a mesh records without reading GPU state.
+constexpr std::array UnreadPositionKinds{KindOf<SmoothVertices>, KindOf<ShrinkFatten>, KindOf<Randomize>, KindOf<ToSphere>, KindOf<PushPull>, KindOf<Shear>, KindOf<Warp>, KindOf<Bend>};
+// Whether the node selects every element and links no input, so its run reads no GPU state before its position edit joins the unsubmitted passes.
+bool JoinsUnsubmitted(const state::Registry &r, const CookPlan &plan, uint32_t node) {
+    const auto [entity, kind] = plan.Nodes[node];
+    const auto inputs = std::span{plan.Inputs}.subspan(plan.InputFirst[node] + 1u, InputsOf(plan, node) - 1u);
+    return std::ranges::contains(UnreadPositionKinds, kind) && !r.all_of<InlineSelection>(entity) && std::ranges::all_of(inputs, [](const auto &input) { return input.FromNode == NoNode && !input.Constant; });
+}
+
+// `keep_extrusion` keeps the state an Extrude node's topology leaves.
+Outcome RunNode(state::Registry &r, const CookPlan &plan, std::vector<SocketValue> &values, uint32_t node, uint32_t id, std::optional<BufferArena<SelectionBlock>> &arena, RunMode mode, DrawnEdits *drawn = nullptr, TopologyReuse reuse_topology = TopologyReuse::None, bool keep_extrusion = false) {
     auto &meshes = r.Resources.get<MeshStore>();
     const auto [entity, kind] = plan.Nodes[node];
+    if (drawn && !JoinsUnsubmitted(r, plan, node)) SubmitDrawn(r, id, *drawn);
     auto evaluation = EvaluateInputs(r, plan, values, node, id, arena);
     const auto release = [&] {
         for (const auto attribute : evaluation.Temporaries) meshes.ReleaseAttribute(attribute);
@@ -1281,7 +1383,7 @@ Outcome RunNode(state::Registry &r, const CookPlan &plan, std::vector<SocketValu
         return std::unexpected(NodeFault::Attribute);
     }
     const auto linked = LinkedParameters(plan, values, node);
-    const Masks masks{.In = evaluation.In, .Domain = evaluation.Selection.Domain, .Publish = r.all_of<PublishSelection>(entity), .Drawn = drawn, .Repaired = repaired, .Refresh = refresh};
+    const Masks masks{.In = evaluation.In, .Domain = evaluation.Selection.Domain, .Publish = r.all_of<PublishSelection>(entity), .Drawn = drawn};
     if (mode != RunMode::Transient && std::ranges::any_of(HandleSpecs, [&](const auto &spec) { return spec.Kind == kind; })) {
         if (reuse_topology == TopologyReuse::None || !r.all_of<NodeHandle>(entity)) {
             const auto selected = Handles(meshes, id, masks);
@@ -1304,7 +1406,7 @@ Outcome RunNode(state::Registry &r, const CookPlan &plan, std::vector<SocketValu
         if constexpr (std::same_as<K, Extrude>) {
             const auto &input = plan.Inputs[plan.InputFirst[node] + ParameterSocket<&Extrude::Offset>];
             if (input.FromNode != NoNode || input.Constant) p.AlongNormals = false;
-            edited = Stepped(p) ? RunExtrudeSteps(r, p, id, masks, linked) : RunExtrude(r, entity, p, id, masks, evaluation.Selection, linked, evaluation.Selection.Field ? TopologyReuse::None : reuse_topology, evaluation.Temporaries, mode == RunMode::Publish);
+            edited = Stepped(p) ? RunExtrudeSteps(r, p, id, masks, linked) : RunExtrude(r, entity, p, id, masks, evaluation.Selection, linked, evaluation.Selection.Field ? TopologyReuse::None : reuse_topology, evaluation.Temporaries, mode == RunMode::Publish, keep_extrusion && !evaluation.Selection.Field);
         } else if constexpr (std::same_as<K, StoreNamedAttribute>) {
             edited = Store(meshes, p, id, OperandOf(plan, values, node, 1u), evaluation.Temporaries);
         } else if constexpr (std::same_as<K, StoreSelection>) {
@@ -1548,60 +1650,78 @@ struct PathRun {
     uint32_t Record;
     bool Rendered, Faulted;
 };
-// The record holds the output of the node before `first`.
-// That node and each node that runs keep the mesh storage state their result leaves as their NodeResult, and the path's last node keeps a pending one.
-// The nodes from the first faulted one hold none, so the next cook runs them again.
-// The positions of `restored`, a restore's change to the record, refresh with the first drawn position edit or after the path.
-PathRun RunPath(state::Registry &r, state::Entity mesh_entity, const CookPlan &plan, std::span<const uint32_t> path, size_t first, uint32_t record, bool rendered, std::optional<BufferArena<SelectionBlock>> &arena, MeshStore::Change &restored, TopologyReuse reuse_topology) {
+// The record holds the output of the node before `first`, which keeps the mesh storage state as its NodeResult.
+// The node before `resume`, the first node the cook found changed, keeps the state its result leaves, so the next cook of that change restarts there.
+// Every other node that runs holds a pending result, and the nodes from the first faulted one hold none, so the next cook runs them again.
+// The render records repair once for the nodes before each kept state and once for the rest, with the positions of `restored`, a restore's change to the record.
+PathRun RunPath(state::Registry &r, state::Entity mesh_entity, const CookPlan &plan, std::span<const uint32_t> path, size_t first, size_t resume, uint32_t record, bool rendered, std::optional<BufferArena<SelectionBlock>> &arena, MeshStore::Change restored, TopologyReuse reuse_topology) {
     auto &meshes = r.Resources.get<MeshStore>();
     if (first < path.size()) FinishPendingSourceStates(r, record);
-    const auto keep_result = [&](size_t i) {
-        const bool last = i + 1u == path.size();
+    const auto hold = [&](size_t i, bool keep) {
         const auto entity = plan.Nodes[path[i]].Entity;
-        const NodeResult result{i ? plan.Nodes[path[i - 1u]].Entity : state::Null, last ? store::Hash128{} : meshes.KeepState(), record};
+        const NodeResult result{i ? plan.Nodes[path[i - 1u]].Entity : state::Null, keep ? meshes.KeepState() : store::Hash128{}, record};
         if (const auto *held = r.try_get<const NodeResult>(entity); !held || *held != result) r.emplace_or_replace<NodeResult>(entity, result);
-        if (auto &pass = r.Resources.get<CookPass>(); !last && pass.Mesh == mesh_entity && !std::ranges::contains(pass.Exact, result.State)) pass.Exact.push_back(result.State);
+        if (auto &pass = r.Resources.get<CookPass>(); keep && pass.Mesh == mesh_entity && !std::ranges::contains(pass.Exact, result.State)) pass.Exact.push_back(result.State);
     };
-    if (reuse_topology != TopologyReuse::Restored) keep_result(first - 1u);
+    // A path with no node to run was restored to the state its last node keeps.
+    if (first < path.size() && reuse_topology != TopologyReuse::Restored) hold(first - 1u, true);
     std::vector<SocketValue> values(plan.SocketFirst.back());
     for (uint32_t n = 0; n < plan.Nodes.size(); ++n) {
         VisitKind(plan.Nodes[n].Kind, [&]<typename K> {
             if constexpr (ValueKind<K>) values[plan.SocketFirst[n]] = {.Type = SocketType::Value, .Value = Words(r.get<const K>(plan.Nodes[n].Entity).Value)};
         });
     }
+    DrawnEdits drawn{.Entity = mesh_entity, .Restored = std::move(restored)};
     bool faulted = false;
-    const auto refresh_restored = [&] {
-        if (restored.VertexRanges.empty() && std::ranges::all_of(restored.Blocks, [](const auto &blocks) { return blocks.empty(); })) return;
-        mtl::ComputeChain chain{meshes.BufferContext()};
-        RefreshEditedPositions(r, chain, std::array{MeshVertexChanges{mesh_entity, restored.VertexRanges}}, false);
-        PublishRestored(r, chain, record, restored);
-        chain.Submit();
-    };
     for (auto i = first; i < path.size(); ++i) {
         const auto node = path[i];
         const auto [entity, kind] = plan.Nodes[node];
         r.remove<NodeError>(entity);
+        const bool keeps = i + 1u == resume && i + 1u < path.size();
         // A chained Join, Boolean or Minkowski has no second input and passes its first through.
         if (kind != KindOf<Join> && kind != KindOf<Boolean> && kind != KindOf<Minkowski>) {
-            bool repaired = false;
-            if (!rendered) refresh_restored();
-            const auto edited = RunNode(r, plan, values, node, record, arena, RunMode::Publish, rendered ? mesh_entity : state::Null, &repaired, &restored, i == first ? reuse_topology : TopologyReuse::None);
+            // A record without current render records refreshes a restore's positions before each node reads them.
+            if (!rendered) RefreshDrawn(r, record, drawn);
+            drawn.Last = keeps || i + 1u == path.size();
+            drawn.Recorded = false;
+            const auto edited = RunNode(r, plan, values, node, record, arena, RunMode::Publish, rendered ? &drawn : nullptr, i == first ? reuse_topology : TopologyReuse::None, i == first);
             if (!edited) {
                 r.emplace<NodeError>(entity, edited.error());
                 faulted = true;
             } else if (*edited != record) {
-                restored = {};
+                drawn = {.Entity = mesh_entity};
                 ReleaseReplaced(r, record);
                 record = *edited;
                 rendered = false;
-            } else if (rendered && !repaired) {
+            } else if (rendered && !drawn.Recorded) {
+                drawn = {.Entity = mesh_entity, .Restored = std::move(drawn.Restored)};
                 rendered = false;
             }
+            // Position edit work refers to render records an unrepaired edit left stale.
+            if (!rendered) ReleaseMeshEditWork(r, mesh_entity);
         }
-        if (faulted) r.remove<NodeResult, NodeExtrusion, NodeHandle>(entity);
-        else keep_result(i);
+        if (faulted) {
+            r.remove<NodeResult, NodeExtrusion, NodeHandle>(entity);
+            continue;
+        }
+        if (keeps) {
+            rendered = rendered && RepairDrawn(r, record, drawn);
+            // A kept state holds current render records, which a record the mesh draws builds anew when its edits left them stale.
+            if (!rendered && DrawnStoreId(r, mesh_entity) == record) {
+                RefreshDrawn(r, record, drawn);
+                mtl::ComputeChain chain{meshes.BufferContext()};
+                BuildMeshlets(r, chain, std::array{mesh_entity}, {});
+                chain.Submit();
+                rendered = true;
+            }
+        }
+        hold(i, keeps && rendered);
     }
-    refresh_restored();
+    rendered = rendered && RepairDrawn(r, record, drawn);
+    if (!rendered) {
+        ReleaseMeshEditWork(r, mesh_entity);
+        RefreshDrawn(r, record, drawn);
+    }
     return {record, rendered, faulted};
 }
 
@@ -1629,12 +1749,15 @@ void PublishCooked(state::Registry &r, state::Entity mesh_entity, uint32_t recor
         if (meshes.HasDirtyPositions(cooked)) r.emplace_or_replace<MeshletPositionsDirty>(mesh_entity);
         if (meshes.HasDirtyGroups(cooked)) r.emplace_or_replace<ClusterLodDirty>(mesh_entity);
         if (!meshes.ClusterGroupCount(cooked)) r.emplace_or_replace<ClusterLodDemand>(mesh_entity);
+    } else {
+        // A new build replaces the render records an earlier node of the cook marked for repair.
+        r.remove<MeshletPositionsDirty, ClusterLodDirty>(mesh_entity);
     }
     r.emplace_or_replace<MeshGeometryDirty>(mesh_entity, topology ? EditSelectionAfter::Derive : EditSelectionAfter::Keep, ready);
 }
 
-// The held nodes are the root and each following node whose result was kept on the result of the node before it.
-// The record starts as it stands when it holds the last held node's output, else restored to that node's result state, else as a new record of the root.
+// The held nodes are the root and each following node that holds a result on the result of the node before it.
+// The cook restarts after the last held node whose output the record holds, whose state is kept, or, for a held Extrude's topology, whose extrusion state is kept, and from a new record of the root otherwise.
 // The whole mesh storage restores while only this mesh's cooks wrote it since the state was kept, and the record alone restores otherwise.
 // A copied procedure's nodes keep the results their originals hold, and the components they were created with leave them unchanged.
 void CookChain(state::Registry &r, state::Entity mesh_entity, const CookPlan &plan, std::span<const uint32_t> path, std::optional<BufferArena<SelectionBlock>> &arena, const state::DirtySet &changed, const state::DirtySet &created) {
@@ -1656,17 +1779,22 @@ void CookChain(state::Registry &r, state::Entity mesh_entity, const CookPlan &pl
         }
         ++held;
     }
+    // The first node the cook found changed, or the path's end.
+    const auto resume = held;
     auto record = prior;
     auto replaced = prior;
     bool rendered = prior != InvalidOffset && meshes.Get(prior).RenderTopologies != 0u;
     MeshStore::Change restored{};
-    const bool continued = prior != InvalidOffset && held && live->Tip == entity_at(held - 1u);
-    auto reuse_topology = continued ? TopologyReuse::Input : TopologyReuse::None;
-    if (!continued) {
-        const auto *result = held ? r.try_get<const NodeResult>(entity_at(held - 1u)) : nullptr;
+    // Whether the record holds the output of the last of `count` held nodes.
+    const auto holds = [&](size_t count) { return prior != InvalidOffset && count && live->Tip == entity_at(count - 1u); };
+    auto reuse_topology = TopologyReuse::None;
+    if (holds(held)) {
+        if (held == path.size()) return;
+        reuse_topology = TopologyReuse::Input;
+    } else {
         bool restored_record = false;
         store::Hash128 topology_state{};
-        if (result && held < path.size() && plan.Nodes[path[held]].Kind == KindOf<Extrude> && result->StoreId == prior) {
+        if (const auto *result = held ? r.try_get<const NodeResult>(entity_at(held - 1u)) : nullptr; result && held < path.size() && plan.Nodes[path[held]].Kind == KindOf<Extrude> && result->StoreId == prior) {
             const auto node = path[held];
             const auto entity = entity_at(held);
             const auto *cached = r.try_get<const NodeResult>(entity);
@@ -1685,25 +1813,30 @@ void CookChain(state::Registry &r, state::Entity mesh_entity, const CookPlan &pl
                 reuse_topology = TopologyReuse::Restored;
             }
         }
-        if (!restored_record && result && result->StoreId == prior && result->State != store::Hash128{}) {
-            WaitForRender(r);
-            if (std::ranges::contains(r.Resources.get<const CookPass>().Exact, result->State) && meshes.RestoreKeptState(result->State)) {
-                restored = ReconcileRestoredStore(r, mesh_entity);
-                restored_record = true;
-            } else if (const auto change = meshes.RestoreRecord(result->State, prior)) {
-                restored = ReconcileRestoredRecord(r, *change, mesh_entity);
-                restored_record = true;
+        while (!restored_record && held && !holds(held)) {
+            if (const auto *result = r.try_get<const NodeResult>(entity_at(held - 1u)); result && result->StoreId == prior && result->State != store::Hash128{}) {
+                WaitForRender(r);
+                if (std::ranges::contains(r.Resources.get<const CookPass>().Exact, result->State) && meshes.RestoreKeptState(result->State)) {
+                    restored = ReconcileRestoredStore(r, mesh_entity);
+                    restored_record = true;
+                } else if (const auto change = meshes.RestoreRecord(result->State, prior)) {
+                    restored = ReconcileRestoredRecord(r, *change, mesh_entity);
+                    restored_record = true;
+                }
             }
+            if (!restored_record) --held;
         }
         if (restored_record) {
             if (reuse_topology != TopologyReuse::Restored) reuse_topology = TopologyReuse::Input;
             replaced = InvalidOffset;
             rendered = meshes.Get(record).RenderTopologies != 0u;
+        } else if (held) {
+            reuse_topology = TopologyReuse::Input;
         } else {
             const auto root = MaterializeRoot(r, plan.Nodes[path.front()]);
             if (!root) {
                 r.emplace_or_replace<NodeError>(entity_at(0u), NodeFault::NoMesh);
-                for (const auto node : path.subspan(held)) r.remove<NodeResult, NodeExtrusion, NodeHandle>(plan.Nodes[node].Entity);
+                for (const auto node : path.subspan(resume)) r.remove<NodeResult, NodeExtrusion, NodeHandle>(plan.Nodes[node].Entity);
                 return;
             }
             record = *root;
@@ -1712,11 +1845,9 @@ void CookChain(state::Registry &r, state::Entity mesh_entity, const CookPlan &pl
             rendered = false;
             held = 1u;
         }
-    } else if (held == path.size()) {
-        return;
     }
     const auto topology = TopologyRevisions(meshes, record);
-    const auto run = RunPath(r, mesh_entity, plan, path, held, record, rendered, arena, restored, reuse_topology);
+    const auto run = RunPath(r, mesh_entity, plan, path, held, resume, record, rendered, arena, std::move(restored), reuse_topology);
     if (replaced != InvalidOffset && replaced != record && meshes.TryGet(replaced)) ReleaseReplaced(r, replaced);
     OwnMesh(r, mesh_entity, InvalidOffset);
     PublishInstances(r, mesh_entity, state::Null, {});
@@ -2039,7 +2170,9 @@ std::vector<store::Hash128> ReferencedStates(const state::Registry &r) {
     for (const auto [entity, result] : r.view<const NodeResult>().each()) {
         if (result.State != store::Hash128{}) states.push_back(result.State);
     }
-    for (const auto [_, extrusion] : r.view<const NodeExtrusion>().each()) states.push_back(extrusion.State);
+    for (const auto [_, extrusion] : r.view<const NodeExtrusion>().each()) {
+        if (extrusion.State != store::Hash128{}) states.push_back(extrusion.State);
+    }
     std::ranges::sort(states, {}, [](const store::Hash128 &state) { return std::pair{state.A, state.B}; });
     states.erase(std::ranges::unique(states).begin(), states.end());
     return states;

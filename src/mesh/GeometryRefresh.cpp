@@ -35,7 +35,7 @@ std::vector<ElementWork> EncodeRetessellation(state::Registry &r, mtl::ComputeCh
         job.Pc.FaceTrianglesSlot = a.FaceTriangles.Buffer.Slot;
         job.Pc.TriangleSlot = a.Triangles.Buffer.Slot;
         std::vector<Range> triangle_ranges;
-        ForEachWorkElement(*input.Work, input.Faces, [&](uint32_t face) {
+        const auto add = [&](uint32_t face) {
             const auto address = Resolve<MeshElementBlockSize>(face_table, ElementHandle{face}).Value();
             const auto loop = a.FaceRanges.Get({address, 1u})[0];
             const uint32_t n = loop.y - loop.x;
@@ -48,7 +48,9 @@ std::vector<ElementWork> EncodeRetessellation(state::Registry &r, mtl::ComputeCh
             // Polygons beyond quads triangulate in scratch, and quads triangulate in thread memory.
             if (n > 4u) job.Corners += n;
             job.TriangleBlocks += (uint64_t(first % MeshElementBlockSize) + n - 2u + MeshElementBlockSize - 1u) / MeshElementBlockSize;
-        });
+        };
+        if (input.Work) ForEachWorkElement(*input.Work, input.Faces, add);
+        else a.FaceTriangles.ForEach(record.FaceData, [&](ElementHandle face, ElementAddress) { add(face.Value); });
         if (job.Faces.empty()) continue;
         a.Triangles.Buffer.CaptureWriteRanges(triangle_ranges, sizeof(uvec3));
         job.Pc.Count = uint32_t(job.Faces.size());
@@ -79,14 +81,21 @@ std::vector<ElementWork> EncodeRetessellation(state::Registry &r, mtl::ComputeCh
     return results;
 }
 
-std::optional<PositionOperationChange> ExecuteGeometryPositions(state::Registry &r, const PositionOperationTarget &target, PositionEditOp operation, float factor, uint32_t repeat, const PositionOperationOptions &options) {
+ElementWork EncodePositionRefresh(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, const PositionOperationChange &change) {
     auto &meshes = r.Resources.get<MeshStore>();
-    mtl::ComputeChain chain{meshes.BufferContext()};
-    auto change = EncodePositionOperations(meshes, GetMeshPipelines(r), chain, target, operation, factor, repeat, options);
-    chain.Submit();
-    if (!change) return {};
-    const auto id = target.StoreId;
-    const auto vertices = ListSeed(r, chain, id, Element::Vertex, change->Vertices);
+    if (change.Every) {
+        using Domain = MeshStore::ElementDomain;
+        MeshStore::SelectionUpdate bounds{.StoreId = id};
+        bounds.Blocks[0].assign_range(meshes.GetBlockList(id, Domain::Vertex).Blocks);
+        bounds.Blocks[2].assign_range(meshes.GetBlockList(id, Domain::Face).Blocks);
+        // Work without storage covers every vertex handle.
+        const MeshRetessellation tessellation{.StoreId = id, .Parameters = {.ChangedVertices = {.Count = meshes.Arenas().Vertices.HandleBound(meshes.Get(id).Vertices)}}};
+        const auto retessellated = EncodeRetessellation(r, chain, std::span{&tessellation, 1u}).front();
+        EncodeDeriveRecordNormals(r, chain, std::span{&id, 1u});
+        meshes.UpdateSelection(r, chain, std::array{bounds});
+        return retessellated;
+    }
+    const auto vertices = ListSeed(r, chain, id, Element::Vertex, change.Vertices);
     const auto incident = EncodeVertexClosure(r, chain, id, vertices);
     const auto faces = AroundVertices(r, id, Element::Face, incident.Elements[2], vertices);
     auto neighborhood = EncodePrimitiveClosure(r, chain, id, faces, {}, vertices);
@@ -96,9 +105,17 @@ std::optional<PositionOperationChange> ExecuteGeometryPositions(state::Registry 
     chain.Submit();
     neighborhood.Finish(chain);
     bounds.Blocks[2] = meshes.ArenaBlocks(id, MeshStore::ElementDomain::Face, chain.Scratch, neighborhood.Elements[2]);
-    EncodeRetessellation(r, chain, std::span{&tessellation, 1u});
+    const auto retessellated = EncodeRetessellation(r, chain, std::span{&tessellation, 1u}).front();
     EncodeDeriveMeshNormals(r, chain, std::array{LocalNormalWork{id, neighborhood.Elements[0], neighborhood.Counts[0], neighborhood.Elements[2], neighborhood.Counts[2]}});
     meshes.UpdateSelection(r, chain, std::array{bounds});
+    return retessellated;
+}
+
+std::optional<PositionOperationChange> ExecuteGeometryPositions(state::Registry &r, const PositionOperationTarget &target, PositionEditOp operation, float factor, uint32_t repeat, const PositionOperationOptions &options) {
+    auto &meshes = r.Resources.get<MeshStore>();
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    auto change = EncodePositionOperations(meshes, GetMeshPipelines(r), chain, target, operation, factor, repeat, options);
+    if (change) EncodePositionRefresh(r, chain, target.StoreId, *change);
     chain.Submit();
     return change;
 }

@@ -123,6 +123,47 @@ bool BenchProcedureHistory(uint32_t node_count) {
         std::println("{}-node procedure: {:.0f} owned history bytes per node append, {:.0f} per parameter change (medians)", node_count, Median(appends), Median(changes));
     });
 }
+// The time of a gesture step that changes a parameter of the first node or of the last node of a chain of the kinds over a UV sphere, and of the gesture's commit.
+// Each kind is SmoothVertices, ShrinkFatten or Poke.
+bool BenchChainCook(std::string_view name, uint32_t slices, std::span<const uint16_t> kinds) {
+    return RunBench("mesheditor-project-chain-bench", [&](state::Registry &r, project::Project &p) {
+        using namespace action::mesh;
+        p.Settle();
+        project::Do(p, action::MakeAction(action::object::AddMeshPrimitive{primitive::UVSphere{.Slices = slices, .Stacks = slices / 2}, std::make_unique<MeshInstanceCreateInfo>()}));
+        const auto mesh_entity = GetActiveMeshEntity(r);
+        std::vector<state::Entity> nodes;
+        for (const auto kind : kinds) {
+            const auto display = r.get<const procedure::GeometryProcedure>(mesh_entity).DisplayNode;
+            const auto result = *procedure::ResultSocket(r, display);
+            project::Do(p, action::MakeAction(action::nodes::AddNode{mesh_entity, kind, {}}));
+            nodes.push_back(r.get<const procedure::GeometryProcedure>(mesh_entity).Last);
+            project::Do(p, action::MakeAction(action::nodes::Link{mesh_entity, display, result, nodes.back(), 0u}));
+            project::Do(p, action::MakeAction(action::nodes::SetDisplay{mesh_entity, nodes.back()}));
+        }
+        const auto stage = [&](state::Entity node, float value) {
+            const auto kind = r.get<const procedure::ProcedureNode>(node).Kind;
+            if (kind == procedure::KindOf<SmoothVertices>) action::Emit(action::UpdateOf<&SmoothVertices::Factor>(node, value), action::Phase::Stage);
+            else if (kind == procedure::KindOf<ShrinkFatten>) action::Emit(action::UpdateOf<&ShrinkFatten::Distance>(node, value), action::Phase::Stage);
+            else action::Emit(action::UpdateOf<&Poke::Offset>(node, value), action::Phase::Stage);
+            p.Frame();
+        };
+        // The medians of a gesture's steps and of its commit, over three gestures.
+        const auto drag = [&](state::Entity node) {
+            std::vector<double> steps, commits;
+            for (int gesture = 0; gesture < 3; ++gesture) {
+                for (int i = 0; i < 3; ++i) stage(node, .01f * float(gesture + i + 1));
+                for (int i = 0; i < 8; ++i) steps.push_back(Ms([&] { stage(node, .05f + .01f * float(gesture + i)); }));
+                commits.push_back(Ms([&] {
+                    action::Commit();
+                    p.Frame();
+                }));
+            }
+            return std::pair{Median(steps), Median(commits)};
+        };
+        const auto last = drag(nodes.back()), first = drag(nodes.front());
+        std::println("{} chain of {} nodes, {} faces: step on the first node {:.3f} ms and commit {:.3f} ms, step on the last node {:.3f} ms and commit {:.3f} ms (medians)", name, kinds.size(), GetMesh(r, mesh_entity).FaceCount(), first.first, first.second, last.first, last.second);
+    });
+}
 } // namespace
 
 int main() {
@@ -170,6 +211,15 @@ int main() {
     }
     for (const uint32_t node_count : {20u, 200u}) {
         if (!BenchProcedureHistory(node_count)) return 1;
+    }
+    {
+        using procedure::KindOf;
+        const auto smooth = KindOf<action::mesh::SmoothVertices>, fatten = KindOf<action::mesh::ShrinkFatten>, poke = KindOf<action::mesh::Poke>;
+        const std::array positions{smooth, fatten, smooth, fatten, smooth, fatten, smooth, fatten};
+        const std::array topology{poke, poke, poke};
+        const std::array mixed{smooth, poke, fatten, smooth, poke, fatten};
+        if (!BenchChainCook("position", 40u, positions) || !BenchChainCook("topology", 16u, topology) || !BenchChainCook("mixed", 16u, mixed)) return 1;
+        if (!BenchChainCook("position", 700u, positions) || !BenchChainCook("topology", 128u, topology)) return 1;
     }
     for (const bool render : {false, true}) {
         if (!BenchScene(64, render) || !BenchScene(256, render)) return 1;

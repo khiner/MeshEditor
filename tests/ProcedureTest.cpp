@@ -1222,6 +1222,86 @@ void NodeResultRecook(ProcedureFixture &f) {
     f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(subdivide, 2u));
 }
 
+// A cook restarts at the node before the first changed one, which keeps the mesh storage state from the first cook of that change, and every node after it holds a pending result.
+// Each cook and each displayed node leaves the output a new mesh holds after cooking the same nodes one at a time.
+// `regional` selects part of the mesh in each node, so the nodes' render repairs gather into one that keeps the other clusters.
+void ChainRecook(ProcedureFixture &f, bool regional) {
+    using namespace action::mesh;
+    const auto &r = f.R;
+    struct Chain {
+        state::Entity Mesh;
+        std::array<state::Entity, 6> Nodes; // Smooth, Poke, ShrinkFatten, Shade, Inset, CycleCornerAttribute
+    };
+    // Each of the first `count` nodes is linked after its parameters are set, so it cooks alone on the output of the node before it.
+    const auto build = [&](float factor, float offset, float thickness, uint32_t count = 6u) {
+        Chain chain{.Mesh = f.AddGenerated(primitive::UVSphere{.Slices = 32, .Stacks = 16})};
+        auto tip = f.Node(chain.Mesh, 0u);
+        const std::array<std::pair<uint16_t, std::function<void(state::Entity)>>, 6> kinds{{
+            {KindOf<SmoothVertices>, [&](state::Entity node) { f.Do(UpdateOf<&SmoothVertices::Factor>(node, factor)); }},
+            {KindOf<Poke>, [&](state::Entity node) { f.Do(UpdateOf<&Poke::Offset>(node, offset)); }},
+            {KindOf<ShrinkFatten>, [](state::Entity) {}},
+            {KindOf<procedure::Shade>, [&](state::Entity node) { f.Do(UpdateOf<&procedure::Shade::Mode>(node, ShadeMode::Flat)); }},
+            {KindOf<Inset>, [&](state::Entity node) { f.Do(UpdateOf<&Inset::Thickness>(node, thickness)); }},
+            {KindOf<CycleCornerAttribute>, [](state::Entity) {}},
+        }};
+        for (uint32_t i = 0u; i < count; ++i) {
+            const auto node = chain.Nodes[i] = f.Append(chain.Mesh, kinds[i].first);
+            if (regional && kinds[i].first != KindOf<procedure::Shade>) {
+                const Mesh output{f.Store(), f.Output(chain.Mesh)};
+                f.Do(SetInlineSelection{node, std::make_unique<InlineSelection>(SelectionOf(SelectionWhere(output, [&](he::VH v) { return output.VertexOrdinal(v) < 60u; }), Element::Face))});
+            }
+            kinds[i].second(node);
+            f.Route(chain.Mesh, {tip, node});
+            tip = node;
+        }
+        return chain;
+    };
+    const auto chain = build(.3f, .05f, .02f);
+    const auto &[smooth, poke, fatten, shade, inset, cycle] = chain.Nodes;
+    const auto kept = [&](state::Entity node) { return r.get<const NodeResult>(node).State != store::Hash128{}; };
+    const auto same = [&](const Chain &reference) { return f.Shaped(chain.Mesh) == f.Shaped(reference.Mesh); };
+    expect(kept(inset) && !kept(cycle));
+
+    f.Do(UpdateOf<&SmoothVertices::Factor>(smooth, .6f));
+    expect(kept(f.Node(chain.Mesh, 0u)) && std::ranges::none_of(chain.Nodes, kept));
+    expect(same(build(.6f, .05f, .02f)));
+
+    f.Do(UpdateOf<&Inset::Thickness>(inset, .04f));
+    expect(kept(shade) && !kept(fatten) && !kept(inset));
+    f.Do(UpdateOf<&Inset::Thickness>(inset, .03f));
+    expect(kept(shade));
+    expect(same(build(.6f, .05f, .03f)));
+
+    f.Do(UpdateOf<&Poke::Offset>(poke, .1f));
+    expect(kept(smooth) && !kept(shade));
+    expect(same(build(.6f, .1f, .03f)));
+
+    // Displaying a node with a pending result cooks the nodes after the last kept state.
+    for (const auto count : {3u, 1u, 6u}) {
+        f.Do(SetDisplay{chain.Mesh, chain.Nodes[count - 1u]});
+        expect(same(build(.6f, .1f, .03f, count)));
+    }
+}
+
+// A gesture's steps leave the coarse cluster groups they invalidate dirty, and its commit repairs them.
+void GestureLodRepair(ProcedureFixture &f) {
+    using namespace action::mesh;
+    const auto mesh = f.AddGenerated(primitive::UVSphere{.Slices = 96, .Stacks = 48});
+    const auto smooth = f.Append(mesh, KindOf<SmoothVertices>);
+    f.Route(mesh, {f.Node(mesh, 0u), smooth});
+    const auto &meshes = f.Store();
+    const auto dirty = [&] { return meshes.HasDirtyGroups(meshes.Get(f.Output(mesh))); };
+    const auto groups = [&] { return meshes.ClusterGroupCount(meshes.Get(f.Output(mesh))); };
+    const auto built = groups();
+    expect(built > 0u && !dirty());
+    for (const float factor : {.2f, .35f, .5f}) {
+        f.Stage(UpdateOf<&SmoothVertices::Factor>(smooth, factor));
+        expect(dirty());
+    }
+    f.CommitGesture();
+    expect(!dirty() && groups() == built);
+}
+
 // Deleting the displayed tip node restores the record in place to its input node's result with one cook, which leaves the Source node's state untouched.
 void DeleteTipRestores(ProcedureFixture &f) {
     const auto mesh = f.AddMesh(primitive::Cube{});
@@ -1724,6 +1804,9 @@ void TestProcedures() {
     Scenario(f, other, "ViewportSelection", ViewportSelection);
     Scenario(f, other, "ColdRecook", ColdRecook);
     Scenario(f, other, "NodeResultRecook", NodeResultRecook);
+    Scenario(f, other, "GestureLodRepair", GestureLodRepair);
+    Scenario(f, other, "ChainRecook", [](ProcedureFixture &f) { ChainRecook(f, false); });
+    Scenario(f, other, "ChainRecookRegional", [](ProcedureFixture &f) { ChainRecook(f, true); });
     Scenario(f, other, "ExtrudeDisplacement", ExtrudeDisplacement);
     Scenario(f, other, "DeleteTipRestores", DeleteTipRestores);
     Scenario(f, other, "HiddenSharedGeometry", HiddenSharedGeometry);

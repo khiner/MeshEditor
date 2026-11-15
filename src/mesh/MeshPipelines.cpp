@@ -47,7 +47,7 @@ constexpr std::array Families{
     PassFamily{MeshPass::FlattenGroups, MeshPass::FlattenGroups, "Flatten.metal"},
     PassFamily{MeshPass::PositionStatisticsGather, MeshPass::VertexSlideReference, "VertexPositionEdit.metal"},
     PassFamily{MeshPass::RecalculateNormalNeighbors, MeshPass::RecalculateNormalFlips, "RecalculateNormals.metal"},
-    PassFamily{MeshPass::PlanarFacePlanes, MeshPass::WriteEditedPositions, "VertexPositionEdit.metal"},
+    PassFamily{MeshPass::PlanarFacePlanes, MeshPass::ListEditedVertices, "VertexPositionEdit.metal"},
     PassFamily{MeshPass::EditFaceUvs, MeshPass::EditFaceColors, "FaceAttributeEdit.metal"},
     PassFamily{MeshPass::AttributeRead, MeshPass::AttributeSelectionMasks, "AttributeKernel.metal"},
     PassFamily{MeshPass::FieldBoundary, MeshPass::FieldCurvature, "AttributeField.metal", "Attribute"},
