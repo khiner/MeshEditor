@@ -183,10 +183,13 @@ void DrawSubnetParameters(state::Registry &r, NodesPanel &panel, state::Entity s
         if (field) {
             auto update = action::ReadUpdate(r, field->Entity, field->Component, field->Offset);
             if (update) {
-                const auto &spec = action::UpdatedField(field->Component, field->Offset).Field.Spec;
+                const auto &range = action::UpdatedField(field->Component, field->Offset).Field;
                 std::visit([&]<typename A>(A &value) {
                     if constexpr (action::IsUpdate<A>) {
-                        if constexpr (ui::DrawableField<decltype(value.Value)>) ui::Gesture(ui::DrawField(port.Name.c_str(), value.Value, spec) && interactive, [&] { return value; });
+                        if constexpr (std::unsigned_integral<decltype(value.Value)>) {
+                            if (!range.Labels.empty()) return ui::Gesture(ui::DrawChoice(port.Name.c_str(), value.Value, range.Values, range.Labels) && interactive, [&] { return value; });
+                        }
+                        if constexpr (ui::DrawableField<decltype(value.Value)>) ui::Gesture(ui::DrawField(port.Name.c_str(), value.Value, range.Spec) && interactive, [&] { return value; });
                     }
                 },
                            *update);

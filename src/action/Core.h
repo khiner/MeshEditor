@@ -2,43 +2,9 @@
 
 #include "action/ActionSchema.h"
 #include "action/Emit.h"
-#include "gizmo/TransformGizmoTypes.h"
-#include "physics/PhysicsTypes.h"
 #include "viewport/ViewportDisplay.h"
 
-enum class AttributeType : uint32_t;
-enum class AttributeDomain : uint32_t;
-enum class VectorMathOp : uint32_t;
-enum class FloatMathOp : uint32_t;
-enum class CompareOp : uint32_t;
-enum class BooleanMathOp : uint32_t;
-enum class BooleanOperation : uint32_t;
-enum class GeometryMergeMode : uint8_t;
-namespace action::mesh {
-enum class DeleteMode : uint32_t;
-enum class ExtrudeMode : uint8_t;
-enum class DissolveMode : uint8_t;
-enum class SnapSymmetryAxis : uint8_t;
-enum class EdgeLoopInterpolation : uint8_t;
-enum class CircleFit : uint8_t;
-enum class CurveElevation : uint8_t;
-enum class FlattenMethod : uint8_t;
-enum class SplitTarget : uint8_t;
-enum class CornerAttribute : uint8_t;
-enum class CornerCycle : uint8_t;
-} // namespace action::mesh
-namespace procedure {
-enum class VectorComponent : uint8_t;
-enum class ShadeMode : uint8_t;
-enum class AdjacentMode : uint8_t;
-} // namespace procedure
-enum class CurvatureKind : uint8_t;
-enum class PlaneSideKind : uint32_t;
-enum class MinkowskiOperation : uint8_t;
-namespace primitive {
-enum class FillType : uint8_t;
-enum class QuadSphereMethod : uint8_t;
-} // namespace primitive
+#include <variant>
 
 namespace action {
 struct OnActive {};
@@ -124,15 +90,23 @@ template<auto... Ms> using first_class = field::Owner<first_v<Ms...>>;
 template<auto... Ms> using last_field = field::Type<last_v<Ms...>>;
 } // namespace detail
 
+// An enumerated field updates as the unsigned integer of its size, and its component and offset identify the enum.
+template<typename F>
+concept EnumeratedField = std::is_enum_v<F> && field::Enumerated<F>;
+template<typename F> struct UpdateValueOf {
+    using Type = F;
+};
+template<EnumeratedField F> struct UpdateValueOf<F> {
+    static_assert(sizeof(F) == 1 || sizeof(F) == 4, "An enumerated field in an Update must be one or four bytes");
+    using Type = std::conditional_t<sizeof(F) == 1, uint8_t, uint32_t>;
+};
+template<typename F> using UpdateValue = UpdateValueOf<F>::Type;
+template<typename F> constexpr UpdateValue<F> ToUpdateValue(F v) { return UpdateValue<F>(v); }
+
 using Core = std::variant<
     Update<bool>, Update<uint8_t>, Update<uint32_t>, Update<float>, Update<double>,
-    Update<vec2>, Update<uvec2>, Update<vec3>, Update<vec4>, Update<quat>, Update<state::Entity>, Update<std::optional<uint32_t>>, Update<std::optional<float>>, Update<std::optional<vec3>>,
-    Update<CollideMode>, Update<PhysicsCombineMode>,
-    Update<TransformGizmo::Type>, Update<TransformGizmo::Mode>,
-    Update<DebugChannel>, Update<AnisotropicFilterLevel>, Update<std::optional<MotionBlur>>,
-    Update<mesh::DeleteMode>, Update<GeometryMergeMode>, Update<mesh::ExtrudeMode>, Update<mesh::DissolveMode>, Update<mesh::SnapSymmetryAxis>,
-    Update<mesh::EdgeLoopInterpolation>, Update<mesh::CircleFit>, Update<mesh::CurveElevation>, Update<mesh::FlattenMethod>, Update<mesh::SplitTarget>, Update<mesh::CornerAttribute>, Update<mesh::CornerCycle>,
-    Update<AttributeType>, Update<AttributeDomain>, Update<VectorMathOp>, Update<FloatMathOp>, Update<CompareOp>, Update<BooleanMathOp>, Update<BooleanOperation>, Update<procedure::VectorComponent>, Update<procedure::ShadeMode>, Update<procedure::AdjacentMode>, Update<CurvatureKind>, Update<PlaneSideKind>, Update<MinkowskiOperation>, Update<primitive::FillType>, Update<primitive::QuadSphereMethod>,
+    Update<vec2>, Update<uvec2>, Update<vec3>, Update<vec4>, Update<quat>, Update<state::Entity>,
+    Update<std::optional<uint32_t>>, Update<std::optional<float>>, Update<std::optional<vec3>>, Update<std::optional<MotionBlur>>,
     DestroyEntity>;
 void Append(Destination, Core);
 

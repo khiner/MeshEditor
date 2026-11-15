@@ -11,6 +11,7 @@
 #include "mesh/MeshCreate.h"
 #include "mesh/MeshStores.h"
 #include "object/ObjectOps.h"
+#include "physics/PhysicsTypes.h"
 #include "procedure/Procedure.h"
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"

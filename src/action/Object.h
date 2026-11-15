@@ -13,6 +13,10 @@
 
 #include <filesystem>
 
+namespace procedure {
+enum class ShadeMode : uint8_t;
+} // namespace procedure
+
 namespace action::object {
 struct SetLightType {
     PunctualLightType Type;

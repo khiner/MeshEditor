@@ -228,6 +228,15 @@ inline bool RotationWidget(const char *label, quat &rotation) {
     return changed;
 }
 
+// Draws a combo over an enumerated field's labels for a value held as its unsigned integer.
+template<std::unsigned_integral V>
+bool DrawChoice(const char *label, V &v, std::span<const uint32_t> values, std::span<const char *const> labels) {
+    auto i = int(std::ranges::find(values, uint32_t(v)) - values.begin());
+    if (!ImGui::Combo(label, &i, labels.data(), int(labels.size()))) return false;
+    v = V(values[size_t(i)]);
+    return true;
+}
+
 // An enum without enumerators edits as its underlying integer, a radian field in degrees, and an optional field behind a presence checkbox.
 template<typename F>
 bool DrawField(const char *label, F &v, const FieldSpec &spec) {

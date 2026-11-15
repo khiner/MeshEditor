@@ -1,6 +1,7 @@
 #include "action/Core.h"
 #include "action/Errors.h"
 #include "action/Nodes.h"
+#include "numeric/VectorMath.h"
 #include "procedure/Procedure.h"
 #include "scene/Entity.h"
 #include "state/Registry.h"

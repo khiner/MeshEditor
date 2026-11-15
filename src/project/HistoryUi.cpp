@@ -173,7 +173,11 @@ template<typename T> void DrawFields(const state::Registry &r, T &value, bool &c
 template<typename L> void DrawLeaf(const state::Registry &r, L &leaf, bool &changed, bool &finished) {
     if constexpr (action::IsUpdate<L>) {
         Text("Target: %s", TargetName(r, leaf.Target).c_str());
-        DrawValue(r, "Value", leaf.Value, action::UpdatedField(leaf.ComponentType, leaf.Offset).Field.Spec, changed, finished);
+        const auto &field = action::UpdatedField(leaf.ComponentType, leaf.Offset).Field;
+        if constexpr (std::unsigned_integral<decltype(leaf.Value)>) {
+            if (!field.Labels.empty()) return ui::NoteGesture(ui::DrawChoice("Value", leaf.Value, field.Values, field.Labels), changed, finished);
+        }
+        DrawValue(r, "Value", leaf.Value, field.Spec, changed, finished);
     } else if constexpr (action::object::IsUpdateMaterial<L>) {
         Text("Material %u", leaf.Index);
         DrawValue(r, "Value", leaf.Value, action::FieldAt<PBRMaterial>(leaf.Offset).Spec, changed, finished);

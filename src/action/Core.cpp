@@ -7,6 +7,7 @@
 #include "audio/ContactSurface.h"
 #include "audio/ModalModes.h"
 #include "gpu/ViewportTheme.h"
+#include "physics/PhysicsTypes.h"
 #include "procedure/NodeTheme.h"
 #include "procedure/Procedure.h"
 #include "render/Instance.h"
@@ -49,8 +50,8 @@ std::optional<Core> ReadComponentUpdate(const state::Registry &r, state::Entity 
     const auto visit = [&](this const auto &self, const auto &value) -> void {
         using V = std::remove_cvref_t<decltype(value)>;
         const auto at = reinterpret_cast<const std::byte *>(&value) - reinterpret_cast<const std::byte *>(component);
-        if constexpr (std::constructible_from<Core, Update<V>>) {
-            if (at == offset) result = Update<V>{entity, state::Key<C>(), offset, value};
+        if constexpr (std::constructible_from<Core, Update<UpdateValue<V>>>) {
+            if (at == offset) result = Update<UpdateValue<V>>{entity, state::Key<C>(), offset, ToUpdateValue(value)};
         } else if constexpr (field::Walkable<V>) {
             field::ForEach(value, [&](const auto &member, auto) { self(member); });
         }
@@ -96,7 +97,8 @@ template<typename C> constexpr UpdateEntry EntryFor() {
         .Write = &Traits::Write,
         .Bounds = &Traits::Bounds,
         .ReadUpdate = &ReadComponentUpdate<C>,
-        .AcceptsReference = std::same_as<C, procedure::ObjectInfo> ? &AcceptsObjectReference : std::same_as<C, procedure::InstanceOnPoints> ? &AcceptsPrototype : nullptr,
+        .AcceptsReference = std::same_as<C, procedure::ObjectInfo> ? &AcceptsObjectReference : std::same_as<C, procedure::InstanceOnPoints> ? &AcceptsPrototype :
+                                                                                                                                              nullptr,
     };
 }
 constexpr auto Entries = []<typename... Cs>(TypeList<Cs...>) { return std::array{EntryFor<Cs>()...}; }(UpdatableComponents{});

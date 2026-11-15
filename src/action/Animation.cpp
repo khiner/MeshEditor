@@ -7,6 +7,8 @@
 #include "timeline/Timeline.h"
 #include "viewport/InteractionComponents.h"
 
+#include <cmath>
+
 namespace action::animation {
 namespace {
 using ::animation::KeyTarget;

@@ -1,4 +1,3 @@
-#include "metal/AutoreleaseScope.h"
 #include "action/Animation.h"
 #include "action/Core.h"
 #include "action/Io.h"
@@ -6,6 +5,7 @@
 #include "action/Selection.h"
 #include "action/Timeline.h"
 #include "action/View.h"
+#include "metal/AutoreleaseScope.h"
 #include "viewport/ViewportSchema.h"
 
 #include "Compress.h"
@@ -33,6 +33,7 @@
 #include "metal/PassChain.h"
 #include "metal/RenderTarget.h"
 #include "metal/Shader.h"
+#include "physics/PhysicsTypes.h"
 #include "procedure/NodeEditor.h"
 #include "project/HistoryUi.h"
 #include "project/Sessions.h"
@@ -611,7 +612,6 @@ EditorPanelsFrame BeginEditorPanels(
                 r.get<const TimelineView>(state::Document), r, r.get<const Animations>(state::Document),
                 keyframes, r.Resources.get<const ViewportIcons>().Timeline, r.get<const InterfaceTheme>(state::Document), r.get<const TimelineTheme>(state::Document), scrubbing, interactive
             );
-
         }
         End();
         PopStyleVar();

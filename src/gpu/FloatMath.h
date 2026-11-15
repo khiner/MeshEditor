@@ -30,7 +30,9 @@ inline float EvaluateFloatMath(FloatMathOp op, float a, float b, float c, bool c
         case FloatMathOp::Multiply: value = a * b; break;
         case FloatMathOp::Divide: value = b != 0.f ? a / b : 0.f; break;
         case FloatMathOp::MultiplyAdd: value = a * b + c; break;
-        case FloatMathOp::Power: value = a >= 0.f ? pow(a, b) : b == floor(b) ? pow(-a, b) * (fmod(b, 2.f) != 0.f ? -1.f : 1.f) : 0.f; break;
+        case FloatMathOp::Power: value = a >= 0.f ? pow(a, b) : b == floor(b) ? pow(-a, b) * (fmod(b, 2.f) != 0.f ? -1.f : 1.f) :
+                                                                                0.f;
+            break;
         case FloatMathOp::Logarithm: value = a > 0.f && b > 0.f && log(b) != 0.f ? log(a) / log(b) : 0.f; break;
         case FloatMathOp::SquareRoot: value = sqrt(max(a, 0.f)); break;
         case FloatMathOp::InverseSquareRoot: value = a > 0.f ? 1.f / sqrt(a) : 0.f; break;
@@ -40,7 +42,9 @@ inline float EvaluateFloatMath(FloatMathOp op, float a, float b, float c, bool c
         case FloatMathOp::Maximum: value = max(a, b); break;
         case FloatMathOp::LessThan: value = float(a < b); break;
         case FloatMathOp::GreaterThan: value = float(a > b); break;
-        case FloatMathOp::Sign: value = a > 0.f ? 1.f : a < 0.f ? -1.f : 0.f; break;
+        case FloatMathOp::Sign: value = a > 0.f ? 1.f : a < 0.f ? -1.f :
+                                                                  0.f;
+            break;
         case FloatMathOp::Compare: value = float(a == b || abs(a - b) <= max(c, FLT_EPSILON)); break;
         case FloatMathOp::SmoothMinimum: value = SmoothMinimum(a, b, c); break;
         case FloatMathOp::SmoothMaximum: value = -SmoothMinimum(-a, -b, c); break;

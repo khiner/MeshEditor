@@ -2,6 +2,7 @@
 
 #include "action/Core.h"
 #include "action/Emit.h"
+#include "physics/PhysicsTypes.h"
 
 namespace action::physics {
 // Entity operations apply to their Target, defaulting to the active entity.

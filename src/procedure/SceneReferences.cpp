@@ -4,6 +4,7 @@
 #include "action/Errors.h"
 #include "action/Object.h"
 #include "armature/BoneConstraint.h"
+#include "physics/PhysicsTypes.h"
 #include "procedure/Procedure.h"
 #include "render/GpuBufferOps.h"
 #include "render/Instance.h"

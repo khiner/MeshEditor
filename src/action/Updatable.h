@@ -2,6 +2,7 @@
 
 #include "TypeList.h"
 #include "action/Core.h"
+#include "gpu/Transform.h"
 #include "mesh/PrimitiveType.h"
 #include "procedure/ProcedureSchema.h"
 

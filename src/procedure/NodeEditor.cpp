@@ -1462,7 +1462,7 @@ struct ParameterEdit : ui::FieldWidgets<Prefix...> {
         Status = reads_link ? "Linked" : nullptr;
         BeginDisabled(reads_link);
         const bool changed = ui::detail::RunField(R, Node, ChannelTarget{}, Read<Ms...>(), widget, /*selection=*/false, delta_capable && action::DeltaField<F>, [&](action::Target, const F &v) {
-            action::Emit(action::Update<F>{Node, state::Key<K>(), action::detail::FieldOffset<Prefix..., Ms...>(), v}, action::Phase::Stage);
+            action::Emit(action::Update<action::UpdateValue<F>>{Node, state::Key<K>(), action::detail::FieldOffset<Prefix..., Ms...>(), action::ToUpdateValue(v)}, action::Phase::Stage);
         });
         EndDisabled();
         return changed;

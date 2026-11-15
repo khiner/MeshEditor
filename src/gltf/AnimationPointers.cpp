@@ -4,6 +4,7 @@
 #include "animation/Fields.h"
 #include "armature/ArmatureComponents.h"
 #include "gltf/MaterialTable.h"
+#include "numeric/QuaternionMath.h"
 #include "render/Instance.h"
 #include "render/LightComponents.h"
 #include "render/MaterialTextureSchema.h"

@@ -13,18 +13,32 @@ struct FieldRange {
     uint16_t Offset, Size;
     std::string Path;
     FieldSpec Spec;
+    // An enumerated field's values and their labels in declaration order, and empty for any other field.
+    std::span<const uint32_t> Values{};
+    std::span<const char *const> Labels{};
 };
+// An enumerated type's values as unsigned integers, in declaration order.
+template<typename E> inline constexpr auto EnumIntegers = [] {
+    std::array<uint32_t, field::EnumCount<E>> out{};
+    for (size_t i = 0; i < out.size(); ++i) out[i] = uint32_t(field::EnumValues<E>[i]);
+    return out;
+}();
 template<typename T> void CollectFields(T &value, uint16_t base, const std::string &prefix, const FieldSpec &enclosing, std::vector<FieldRange> &out) {
     field::ForEach(value, [&]<size_t I>(auto &member, std::integral_constant<size_t, I>) {
         using F = std::remove_cvref_t<decltype(member)>;
         const auto offset = uint16_t(base + (reinterpret_cast<const std::byte *>(&member) - reinterpret_cast<const std::byte *>(&value)));
         const auto path = prefix + std::string{field::Name<T, I>};
         FieldSpec spec = Spec<T, I>;
-        if (!spec.Bounded()) {
+        if (!spec.Bounded() && !EnumeratedField<F>) {
             spec.Min = enclosing.Min;
             spec.Max = enclosing.Max;
         }
-        out.push_back({offset, uint16_t(sizeof(F)), path, spec});
+        FieldRange range{offset, uint16_t(sizeof(F)), path, spec};
+        if constexpr (EnumeratedField<F>) {
+            range.Values = EnumIntegers<F>;
+            range.Labels = field::EnumLabels<F>;
+        }
+        out.push_back(std::move(range));
         if constexpr (field::Walkable<F>) CollectFields(member, offset, path + ".", spec, out);
     });
 }

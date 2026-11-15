@@ -5,6 +5,8 @@
 #include "animation/Fields.h"
 #include "timeline/Timeline.h"
 
+#include <cmath>
+
 namespace animation {
 namespace {
 // Keys closer than this in seconds replace each other.
