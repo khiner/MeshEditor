@@ -389,7 +389,8 @@ $ ./build/tests/MeshEditorTests
 | `MeshEditorStoreTest` | Sparse native tables, entity generations, mutation capture and dirty sets against a model, version and history models, persistence failures, `.project` archives |
 | `MeshEditorAudioTest` | Hertz and punch contact laws over a grid, inertia decomposition, modal superposition, thread and rate independence, wav round trips, FastFEM surface solves |
 | `MeshEditorPhysicsTest` | Rigid body mass properties against analytic tensors over random colliders, shape scaling, failure and replacement |
-| `MeshEditorProjectBench` | Sparse buffer edits and complete mesh-edit frames |
+| `MeshEditorProjectBench` | What the history costs per edit, in time and bytes |
+| `MeshEditorEditBench` | How long a mesh edit takes end to end |
 
 Every test executable takes a test name pattern as its first argument, and `MeshEditorProjectTest` also takes `--no-render`.
 
