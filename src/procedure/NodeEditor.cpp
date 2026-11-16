@@ -403,40 +403,53 @@ bool Clear(const Box &a, const Box &b) {
     if (a.Y >= b.Y + b.H || b.Y >= a.Y + a.H) return true;
     return b.X >= a.X + a.W + uint32_t(a.Out || b.In) || a.X >= b.X + b.W + uint32_t(b.Out || a.In);
 }
-// Finds the entries whose rows meet a range of rows, by buckets of RowBucket rows.
-// An entry that spans LongBuckets buckets or more is in Long, which every search reports.
-constexpr uint32_t RowBucket{8u}, LongBuckets{32u};
+// Finds the spans of rows that meet a range of rows.
+// Level l has cells of RowCell << l rows.
+// A span is filed once, by its first row, in the lowest level whose cells are at least as long as the span, so it starts in a cell it meets or in the cell before.
+constexpr uint32_t RowCell{8u};
 struct RowIndex {
-    struct Entry {
-        uint32_t Id, Top;
+    // A filed span has its first row at or above its last, and links to the other spans of its cell.
+    struct Span {
+        uint32_t Top{1u}, Bottom{0u}, Next{NoNode}, Prev{NoNode};
     };
-    std::unordered_map<uint32_t, std::vector<Entry>> Buckets;
-    std::vector<uint32_t> Long;
+    std::vector<Span> Spans; // By id
+    std::unordered_map<uint64_t, uint32_t> First; // The first span of each cell that holds one, by CellOf
+    uint32_t Levels{};
 };
-void AddRows(RowIndex &index, uint32_t id, uint32_t top, uint32_t bottom) {
-    const auto first = top / RowBucket, last = bottom / RowBucket;
-    if (last - first >= LongBuckets) return void(index.Long.push_back(id));
-    for (auto bucket = first; bucket <= last; ++bucket) index.Buckets[bucket].push_back({id, top});
+uint32_t LevelOf(uint32_t top, uint32_t bottom) { return uint32_t(std::bit_width((bottom - top) / RowCell)); }
+uint64_t CellOf(uint32_t level, uint32_t row) { return uint64_t(level) << 32u | row / (uint64_t(RowCell) << level); }
+void RemoveRows(RowIndex &index, uint32_t id) {
+    if (id >= index.Spans.size() || index.Spans[id].Top > index.Spans[id].Bottom) return;
+    const auto span = std::exchange(index.Spans[id], {});
+    if (span.Next != NoNode) index.Spans[span.Next].Prev = span.Prev;
+    if (span.Prev != NoNode) index.Spans[span.Prev].Next = span.Next;
+    else if (span.Next != NoNode) index.First[CellOf(LevelOf(span.Top, span.Bottom), span.Top)] = span.Next;
+    else index.First.erase(CellOf(LevelOf(span.Top, span.Bottom), span.Top));
 }
-void RemoveRows(RowIndex &index, uint32_t id, uint32_t top, uint32_t bottom) {
-    const auto first = top / RowBucket, last = bottom / RowBucket;
-    if (last - first >= LongBuckets) return void(std::erase(index.Long, id));
-    for (auto bucket = first; bucket <= last; ++bucket) std::erase_if(index.Buckets[bucket], [&](auto entry) { return entry.Id == id; });
+// Files the id under the rows from top to bottom, in place of the rows it was filed under.
+void SetRows(RowIndex &index, uint32_t id, uint32_t top, uint32_t bottom) {
+    RemoveRows(index, id);
+    const auto level = LevelOf(top, bottom);
+    index.Levels = std::max(index.Levels, level + 1u);
+    if (index.Spans.size() <= id) index.Spans.resize(id + 1u);
+    const auto [first, empty] = index.First.try_emplace(CellOf(level, top), id);
+    const auto next = empty ? NoNode : std::exchange(first->second, id);
+    if (next != NoNode) index.Spans[next].Prev = id;
+    index.Spans[id] = {top, bottom, next, NoNode};
 }
-// Calls `f(id)` once for each entry whose rows may meet the rows from top to bottom.
+void SetRows(RowIndex &index, uint32_t node, const Box &box) { SetRows(index, node, box.Y, box.Y + box.H - 1u); }
+// Calls `f(id)` once for each span that meets the rows from top to bottom.
 void ForEachIn(const RowIndex &index, uint32_t top, uint32_t bottom, auto &&f) {
-    const auto first = top / RowBucket, last = bottom / RowBucket;
-    for (auto bucket = first; bucket <= last; ++bucket) {
-        const auto at = index.Buckets.find(bucket);
-        if (at == index.Buckets.end()) continue;
-        for (const auto entry : at->second) {
-            if (std::max(entry.Top / RowBucket, first) == bucket) f(entry.Id);
+    for (uint32_t level = 0u; level < index.Levels; ++level) {
+        const auto first = CellOf(level, top), last = CellOf(level, bottom);
+        for (auto cell = first - uint64_t(uint32_t(first) > 0u); cell <= last; ++cell) {
+            const auto at = index.First.find(cell);
+            for (auto id = at == index.First.end() ? NoNode : at->second; id != NoNode; id = index.Spans[id].Next) {
+                if (index.Spans[id].Top <= bottom && index.Spans[id].Bottom >= top) f(id);
+            }
         }
     }
-    for (const auto id : index.Long) f(id);
 }
-void AddRows(RowIndex &index, uint32_t node, const Box &box) { AddRows(index, node, box.Y, box.Y + box.H - 1u); }
-void RemoveRows(RowIndex &index, uint32_t node, const Box &box) { RemoveRows(index, node, box.Y, box.Y + box.H - 1u); }
 
 // Whether every box of the group, moved by the offset, stays on the canvas, keeps a free cell left of its inputs, and is clear of every indexed box that counts.
 bool Fits(std::span<const Box> boxes, const RowIndex &index, std::span<const uint32_t> group, int64_t dx, int64_t dy, auto &&counts) {
@@ -571,8 +584,8 @@ struct NodePage {
     std::vector<uint32_t> OutFirst, Out; // The wire slots that leave each node
     uint64_t Cells{UINT64_MAX}; // The cells revision the boxes were arranged at
     std::vector<Box> Boxes; // Each node's box where the editor shows it
-    std::vector<uint32_t> Moved, MovedWires; // The nodes away from their automatic cells and the wire slots that touch them, in order
-    RowIndex Nodes, Wires; // The boxes, and the wires as their automatic cells place them, by row
+    std::vector<uint32_t> Moved; // The nodes away from their automatic cells, in order
+    RowIndex Nodes, Wires; // The boxes and the wires, by the rows they span
 };
 
 namespace {
@@ -628,6 +641,22 @@ bool Measure(const state::Registry &r, NodePage &page, const NodeTheme &theme, f
     return true;
 }
 
+// The node whose input the wire slot is.
+uint32_t ReaderOf(const NodeView &view, uint32_t slot) { return uint32_t(std::ranges::upper_bound(InputsFirst(view), slot) - InputsFirst(view).begin()) - 1u; }
+// Files the wire in the reader's slot under the rows the boxes of its two nodes span.
+void FileWire(NodePage &page, uint32_t slot, uint32_t reader) {
+    const auto &to = page.Boxes[reader], &from = page.Boxes[WiresOf(page.View)[slot].FromNode];
+    SetRows(page.Wires, slot, std::min(to.Y, from.Y), std::max(to.Y + to.H, from.Y + from.H) - 1u);
+}
+// Files each wire that touches the node.
+void FileWires(NodePage &page, uint32_t n) {
+    const auto &view = page.View;
+    for (auto slot = InputsFirst(view)[n]; slot < InputsFirst(view)[n + 1u]; ++slot) {
+        if (WiresOf(view)[slot].FromNode != NoNode) FileWire(page, slot, n);
+    }
+    for (const auto slot : std::span{page.Out}.subspan(page.OutFirst[n], page.OutFirst[n + 1u] - page.OutFirst[n])) FileWire(page, slot, ReaderOf(view, slot));
+}
+
 // Arranges the page's boxes: each at its automatic cell, then each placed one at its cell.
 // A placed box takes the cell nearest its own that is clear of the placed boxes before it, and an automatic box a placed one crowds moves to the nearest clear cell.
 // Every node position the editor uses comes from here, so nodes never overlap and always keep their wire cells.
@@ -637,23 +666,17 @@ void Arrange(const state::Registry &r, NodePage &page, bool relaid) {
     const auto count = uint32_t(view.Nodes.size());
     const auto wires = WiresOf(view);
     auto &boxes = page.Boxes;
+    // The nodes that were away from their automatic cells before this pass.
+    auto changed = std::move(page.Moved);
     if (relaid) {
         boxes = page.Auto;
         page.Nodes = {};
         page.Wires = {};
-        for (uint32_t n = 0u; n < count; ++n) AddRows(page.Nodes, n, boxes[n]);
-        for (uint32_t n = 0u, slot = 0u; n < count; ++n) {
-            for (; slot < InputsFirst(view)[n + 1u]; ++slot) {
-                if (wires[slot].FromNode == NoNode) continue;
-                const auto &from = boxes[wires[slot].FromNode];
-                AddRows(page.Wires, slot, std::min(boxes[n].Y, from.Y), std::max(boxes[n].Y + boxes[n].H, from.Y + from.H));
-            }
-        }
+        for (uint32_t n = 0u; n < count; ++n) SetRows(page.Nodes, n, boxes[n]);
     } else {
-        for (const auto n : page.Moved) {
-            RemoveRows(page.Nodes, n, boxes[n]);
+        for (const auto n : changed) {
             boxes[n] = page.Auto[n];
-            AddRows(page.Nodes, n, boxes[n]);
+            SetRows(page.Nodes, n, boxes[n]);
         }
     }
     page.Moved.clear();
@@ -662,7 +685,7 @@ void Arrange(const state::Registry &r, NodePage &page, bool relaid) {
         for (const auto &cell : layout->Cells) {
             const auto n = NodeOf(view, cell.Item);
             if (n == NoNode) continue;
-            RemoveRows(page.Nodes, n, boxes[n]);
+            RemoveRows(page.Nodes, n);
             boxes[n].X = cell.Position.x;
             boxes[n].Y = cell.Position.y;
             placed.push_back(n);
@@ -673,7 +696,7 @@ void Arrange(const state::Registry &r, NodePage &page, bool relaid) {
             const auto [dx, dy] = Place(boxes, page.Nodes, std::array{n}, 0, 0, counts);
             boxes[n].X = uint32_t(int64_t(boxes[n].X) + dx);
             boxes[n].Y = uint32_t(int64_t(boxes[n].Y) + dy);
-            AddRows(page.Nodes, n, boxes[n]);
+            SetRows(page.Nodes, n, boxes[n]);
         };
         for (const auto n : placed) settle(n, is_placed);
         std::vector<uint32_t> crowded;
@@ -684,21 +707,24 @@ void Arrange(const state::Registry &r, NodePage &page, bool relaid) {
         }
         SortUnique(crowded);
         for (const auto n : crowded) {
-            RemoveRows(page.Nodes, n, boxes[n]);
+            RemoveRows(page.Nodes, n);
             settle(n, [](uint32_t) { return true; });
         }
         page.Moved = std::move(placed);
         page.Moved.append_range(crowded);
         std::ranges::sort(page.Moved);
     }
-    page.MovedWires.clear();
-    for (const auto n : page.Moved) {
-        for (auto slot = InputsFirst(view)[n]; slot < InputsFirst(view)[n + 1u]; ++slot) {
-            if (wires[slot].FromNode != NoNode) page.MovedWires.push_back(slot);
+    if (relaid) {
+        for (uint32_t n = 0u, slot = 0u; n < count; ++n) {
+            for (; slot < InputsFirst(view)[n + 1u]; ++slot) {
+                if (wires[slot].FromNode != NoNode) FileWire(page, slot, n);
+            }
         }
-        page.MovedWires.append_range(std::span{page.Out}.subspan(page.OutFirst[n], page.OutFirst[n + 1u] - page.OutFirst[n]));
+    } else {
+        changed.append_range(page.Moved);
+        SortUnique(changed);
+        for (const auto n : changed) FileWires(page, n);
     }
-    SortUnique(page.MovedWires);
 }
 
 // The screen layout of the network, with cell c at Origin + c * Step.
@@ -802,10 +828,9 @@ bool Crosses(const Wire &w, const ImRect &rect) {
 // Calls `f(wire, link, node, slot)` for each drawn link.
 void ForEachWire(const Graph &graph, auto &&f) {
     const auto &view = graph.View;
-    const auto first = InputsFirst(view);
     for (const auto shown : graph.ShownWires) {
-        const auto n = uint32_t(std::ranges::upper_bound(first, shown) - first.begin()) - 1u;
-        const auto slot = uint16_t(shown - first[n]);
+        const auto n = ReaderOf(view, shown);
+        const auto slot = uint16_t(shown - InputsFirst(view)[n]);
         const auto link = WiresOf(view)[shown];
         if (n == graph.DetachNode && slot == graph.DetachSlot) continue;
         f(WireOf(SocketAt(graph, link.FromNode, link.FromSocket), SlotAt(graph, n, slot), graph.Theme.Sizes.WireCurving), link, n, slot);
@@ -1052,12 +1077,12 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
             action::nodes::MoveNodes move{EditorNetwork(r, panel), {}};
             for (const auto n : selected) {
                 auto &box = graph.Boxes[n];
-                RemoveRows(graph.Page.Nodes, n, box);
                 box.X = uint32_t(int64_t(box.X) + dx);
                 box.Y = uint32_t(int64_t(box.Y) + dy);
-                AddRows(graph.Page.Nodes, n, box);
+                SetRows(graph.Page.Nodes, n, box);
                 move.Positions.push_back({nodes[n].Item, {box.X, box.Y}});
             }
+            for (const auto n : selected) FileWires(graph.Page, n);
             action::Emit(std::move(move), action::Phase::Stage);
         }
     };
@@ -1476,11 +1501,14 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
     ForEachIn(page.Nodes, top, bottom, [&](uint32_t n) { graph.Shown.push_back(n); });
     if (graph.Expanded != NoNode) graph.Shown.push_back(graph.Expanded);
     SortUnique(graph.Shown);
-    ForEachIn(page.Wires, top, bottom, [&](uint32_t slot) {
-        if (!std::ranges::binary_search(page.MovedWires, slot)) graph.ShownWires.push_back(slot);
-    });
-    graph.ShownWires.append_range(page.MovedWires);
-    std::ranges::sort(graph.ShownWires);
+    ForEachIn(page.Wires, top, bottom, [&](uint32_t slot) { graph.ShownWires.push_back(slot); });
+    // The expanded node's open tray reaches below its box, so the wires into it show with it.
+    if (graph.Expanded != NoNode) {
+        for (auto slot = InputsFirst(view)[graph.Expanded]; slot < InputsFirst(view)[graph.Expanded + 1u]; ++slot) {
+            if (WiresOf(view)[slot].FromNode != NoNode) graph.ShownWires.push_back(slot);
+        }
+    }
+    SortUnique(graph.ShownWires);
     const bool wiring = panel.Drag == NodeDrag::Wire;
     if (wiring || panel.PickNode != NoNode) {
         graph.DetachNode = panel.DetachNode;
