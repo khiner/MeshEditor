@@ -273,8 +273,17 @@ constexpr std::array<const char *, 3> OperandLabels(FloatMathOp op) {
         default: return {"Value", nullptr, nullptr};
     }
 }
+// The labels Blender's Vector Math and Boolean Math nodes give their operands.
+constexpr std::array<const char *, 3> OperandLabels(VectorMathOp op) {
+    using enum VectorMathOp;
+    const bool second = op != Scale && op != Length && op != Normalize;
+    return {"Vector", second ? "Vector" : nullptr, op == Scale ? "Scale" : nullptr};
+}
+constexpr std::array<const char *, 3> OperandLabels(BooleanMathOp op) { return {"Boolean", op == BooleanMathOp::Not ? nullptr : "Boolean", nullptr}; }
 constexpr uint16_t OperandCount{3};
 static_assert(ParameterSocket<&FloatMath::B> == 1u && ParameterSocket<&FloatMath::C> == 2u, "A float math node's operands are its first sockets.");
+static_assert(ParameterSocket<&VectorMath::B> == 1u && ParameterSocket<&VectorMath::Scale> == 2u, "A vector math node's operands are its first sockets.");
+static_assert(ParameterSocket<&BooleanMath::B> == 1u, "A boolean math node's operands are its first sockets.");
 constexpr const char *OperationHeading(FloatMathOp op) {
     using enum FloatMathOp;
     return op == Add ? "Functions" : op == Minimum ? "Comparison" :
@@ -288,8 +297,26 @@ constexpr const char *OperationHeading(FloatMathOp op) {
 float CellOf(const NodeTheme &theme) { return theme.Sizes.Cell.FollowFrameHeight ? GetFrameHeight() : theme.Sizes.Cell.Points; }
 uint32_t CellsOf(float cell, float points) { return std::max(1u, uint32_t(std::ceil(points / cell))); }
 
+// A node with an operation is titled by it: a math node by the operation alone, and any other by its kind and the operation.
 const char *OperationTitle(const state::Registry &r, state::Entity node, uint16_t kind) {
-    return kind == KindOf<FloatMath> ? field::EnumLabel(r.get<const FloatMath>(node).Operation) : KindTitles[kind];
+    const char *title = KindTitles[kind];
+    VisitKind(kind, [&]<typename K> {
+        if constexpr (requires { &K::Operation; }) {
+            using Operation = decltype(K::Operation);
+            const auto operation = size_t(std::ranges::find(field::EnumValues<Operation>, r.get<const K>(node).Operation) - field::EnumValues<Operation>.begin());
+            if constexpr (InTypeList<K, MathKinds>) {
+                title = field::EnumLabels<Operation>[operation];
+            } else {
+                static const auto titles = [] {
+                    std::vector<std::string> titles;
+                    for (const auto *label : field::EnumLabels<Operation>) titles.push_back(std::string{Title<K>.c_str()} + " " + label);
+                    return titles;
+                }();
+                title = titles[operation].c_str();
+            }
+        }
+    });
+    return title;
 }
 NodeView GeometryNodeDefinitions(const state::Registry &r, const CookPlan &plan, state::Entity network) {
     NodeView view{.Network = network, .Geometry = &plan, .DisplayNode = plan.DisplayNode};
@@ -336,19 +363,22 @@ std::vector<Socket> LinkedParameters(const CookPlan &plan, uint32_t node) {
     return linked;
 }
 
-const FloatMath *MathOf(const state::Registry &r, const NodeView &view, uint32_t node) {
-    return view.Geometry && view.Nodes[node].Kind == KindOf<FloatMath> ? &r.get<const FloatMath>(view.Nodes[node].Item.Entity) : nullptr;
+// The labels the node's operation gives its first sockets, with null for an operand the operation does not use, or nothing for a node whose kind has no OperandLabels.
+std::optional<std::array<const char *, 3>> OperandsOf(const state::Registry &r, const NodeView &view, uint32_t node) {
+    std::optional<std::array<const char *, 3>> operands;
+    if (view.Geometry) VisitKind(view.Nodes[node].Kind, [&]<typename K> {
+        if constexpr (requires(K k) { OperandLabels(k.Operation); }) operands = OperandLabels(r.get<const K>(view.Nodes[node].Item.Entity).Operation);
+    });
+    return operands;
 }
 const char *LabelOf(const state::Registry &r, const NodeView &view, uint32_t node, uint16_t socket) {
-    if (const auto *math = MathOf(r, view, node); math && socket < OperandCount) {
-        if (const auto *label = OperandLabels(math->Operation)[socket]) return label;
-    }
+    if (const auto operands = OperandsOf(r, view, node); operands && socket < OperandCount && (*operands)[socket]) return (*operands)[socket];
     return LabelOf(NodeSockets(view, node)[socket]);
 }
-// A float math node hides the operands its operation does not use, unless they are linked.
+// A node hides the operands its operation does not use, unless they are linked.
 bool Shows(const state::Registry &r, const NodeView &view, uint32_t node, uint16_t socket) {
-    const auto *math = MathOf(r, view, node);
-    return !math || socket >= OperandCount || OperandLabels(math->Operation)[socket] || IsLinked(view, node, socket);
+    const auto operands = OperandsOf(r, view, node);
+    return !operands || socket >= OperandCount || (*operands)[socket] || IsLinked(view, node, socket);
 }
 
 // The row of each input socket below the node's title, with the tray closed and with it open.

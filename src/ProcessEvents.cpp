@@ -1230,8 +1230,12 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
         TypeList<
             ObjectKind, BoneIndex, Scene, HierarchyDefinition, PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef, procedure::NetworkSubnet, procedure::GeometryProcedure,
             Name, SceneParent, Instance, HierarchyInstance, ArmatureModifier, BoneConstraints, ColliderShape, ColliderMaterial, PhysicsJoint, TriggerNodes,
-            EvaluatedMesh, MeshHandle, procedure::FloatMath>{}
+            EvaluatedMesh, MeshHandle>{}
     );
+    // A node kind with an operation is titled and labeled by it.
+    procedure::ForEachKind([&]<typename K> {
+        if constexpr (requires { &K::Operation; }) network.Nodes.on<K>(On::Update);
+    });
     bind(network.Pages, TypeList<SceneMembership, HierarchyMember, ArmatureObject, MaterializedTextures, procedure::NetworkSubnet, procedure::ProcedureInstances, procedure::ProcedureNode>{});
     bind(network.Cells, TypeList<procedure::NetworkLayout>{});
     action::TrackFieldRemovals(network.Fields.bind(r, state::Clearing::Explicit));

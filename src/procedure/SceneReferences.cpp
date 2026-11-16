@@ -459,7 +459,7 @@ void SettleNetworks(state::Registry &r, bool restoring) {
         if (!r.valid(e)) {
             dead.push_back(e);
         } else if (!HasNode(r, e)) {
-            // A geometry page shows a procedure node's name, and titles and labels a float math node by its operation.
+            // A geometry page shows a procedure node's name, and titles and labels a node by its operation.
             changed |= r.remove<NetworkNode>(e) > 0u || r.all_of<ProcedureNode>(e);
         } else if (auto node = DeriveNode(r, e); !r.all_of<NetworkNode>(e) || r.get<const NetworkNode>(e) != node) {
             r.emplace_or_replace<NetworkNode>(e, std::move(node));
