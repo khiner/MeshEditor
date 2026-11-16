@@ -21,6 +21,9 @@ surface_audio="${SURFACE_AUDIO:-OFF}"
 # VALIDATE_ACTIONS=1 enables replay and snapshot validation; unset or 0 disables it.
 validate_actions=OFF
 [ "${VALIDATE_ACTIONS:-0}" = "1" ] && validate_actions=ON
+# PROFILE=1 includes the profiler.
+profile=OFF
+[ "${PROFILE:-0}" = "1" ] && profile=ON
 
 echo "Building $target in $build_type mode..."
 BuildDir="${ProjectRootDir}/build"
@@ -28,7 +31,8 @@ BuildDir="${ProjectRootDir}/build"
 if [ ! -f "${BuildDir}/build.ninja" ] ||
     ! grep -qx "CMAKE_BUILD_TYPE:STRING=${build_type}" "${BuildDir}/CMakeCache.txt" ||
     ! grep -qx "MESHEDITOR_SURFACE_AUDIO:BOOL=${surface_audio}" "${BuildDir}/CMakeCache.txt" ||
-    ! grep -qx "MESHEDITOR_VALIDATE_ACTIONS:BOOL=${validate_actions}" "${BuildDir}/CMakeCache.txt"; then
-    cmake -G Ninja -S "${ProjectRootDir}" -B "${BuildDir}" -DCMAKE_BUILD_TYPE="$build_type" -DMESHEDITOR_SURFACE_AUDIO="$surface_audio" -DMESHEDITOR_VALIDATE_ACTIONS="${validate_actions}"
+    ! grep -qx "MESHEDITOR_VALIDATE_ACTIONS:BOOL=${validate_actions}" "${BuildDir}/CMakeCache.txt" ||
+    ! grep -qx "MESHEDITOR_PROFILE:BOOL=${profile}" "${BuildDir}/CMakeCache.txt"; then
+    cmake -G Ninja -S "${ProjectRootDir}" -B "${BuildDir}" -DCMAKE_BUILD_TYPE="$build_type" -DMESHEDITOR_SURFACE_AUDIO="$surface_audio" -DMESHEDITOR_VALIDATE_ACTIONS="${validate_actions}" -DMESHEDITOR_PROFILE="${profile}"
 fi
 cmake --build "${BuildDir}" --config "$build_type" --target "$target"

@@ -8,6 +8,7 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import platform
 import shlex
@@ -277,7 +278,7 @@ def run(args: argparse.Namespace) -> None:
         raise SystemExit("--motion-blur must be fast or a sample count from 1 to 64")
     exe = args.exe.resolve()
     if not args.no_build:
-        subprocess.run((str(ROOT / "script" / "Build"), "--release"), cwd=ROOT, check=True)
+        subprocess.run((str(ROOT / "script" / "Build"), "--release"), cwd=ROOT, env={**os.environ, "PROFILE": "1"}, check=True)
     if not exe.is_file():
         raise SystemExit(f"No executable at {exe}")
 

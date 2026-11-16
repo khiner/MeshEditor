@@ -230,7 +230,7 @@ View setup, applied after the scene loads:
 * `--edit vertex|edge|face` enters edit mode on the selected meshes, and `--select-all` selects all objects, or all elements in edit mode.
 * `--lod-error pixels` sets the screen-space error budget of the cluster LOD cut.
 
-Profiling, used by `script/Bench`:
+Profiling, used by `script/Bench`, in a build with `PROFILE=1`:
 
 * `--profile` prints the profile report on exit, and `--profile-json path` writes it to a file.
 * `--bench-action steady|orbit|transform|visibility|box-select|box-select-orbit|pick-cycle` runs the named interaction every frame.
@@ -409,6 +409,13 @@ Unset `VALIDATE_ACTIONS` or set it to `0` to disable validation on the next buil
 
 ```sh
 $ VALIDATE_ACTIONS=1 script/Build
+```
+
+`PROFILE=1` includes the profiler, which `--profile` turns on for a run.
+`script/Bench` builds with it.
+
+```sh
+$ PROFILE=1 script/Build
 ```
 
 FastFEM owns the analytical, tetrahedralization, real-mesh, and performance corpora documented in [`lib/FastFEM/README.md`](lib/FastFEM/README.md).

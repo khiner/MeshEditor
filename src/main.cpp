@@ -579,26 +579,41 @@ struct EditorPanelsFrame {
     std::vector<OpenPanel> Viewports; // In entity index order.
 };
 
+void DrawPanel(const char *name, auto &&draw) {
+    const profile::CpuScope scope{name};
+    draw();
+}
+constexpr const char *ViewportPanels{"Viewports"}; // The scope every viewport panel is timed under
+
 EditorPanelsFrame BeginEditorPanels(
     state::Registry &r, const mtl::Context &ctx, CA::MetalLayer *layer,
     PanelsState &panels, const ImGuiIO &io, ImGuiID dockspace_id, bool interactive
 ) {
-    RenderDebugPanel(r, ctx, layer, panels, io);
-    if (project::DrawHistoryPanel(Session(r), panels.History, interactive) && SaveWorkspace(r)) Session(r).ClearHistory();
-    DrawStylePanel(r, panels.Style);
-    if (panels.ImGuiDemo.Visible) ShowDemoWindow(&panels.ImGuiDemo.Visible);
-    if (panels.ImSpinnerDemo.Visible) {
+    DrawPanel(panels.Debug.Name, [&] { RenderDebugPanel(r, ctx, layer, panels, io); });
+    DrawPanel(panels.History.Name, [&] {
+        if (project::DrawHistoryPanel(Session(r), panels.History, interactive) && SaveWorkspace(r)) Session(r).ClearHistory();
+    });
+    DrawPanel(panels.Style.Name, [&] { DrawStylePanel(r, panels.Style); });
+    DrawPanel(panels.ImGuiDemo.Name, [&] {
+        if (panels.ImGuiDemo.Visible) ShowDemoWindow(&panels.ImGuiDemo.Visible);
+    });
+    DrawPanel(panels.ImSpinnerDemo.Name, [&] {
+        if (!panels.ImSpinnerDemo.Visible) return;
         if (Begin(panels.ImSpinnerDemo.Name, &panels.ImSpinnerDemo.Visible)) ImSpinner::demoSpinners();
         End();
-    }
-    if (panels.ImPlotDemo.Visible) ImPlot::ShowDemoWindow(&panels.ImPlotDemo.Visible);
-    if (panels.SceneControls.Visible) {
+    });
+    DrawPanel(panels.ImPlotDemo.Name, [&] {
+        if (panels.ImPlotDemo.Visible) ImPlot::ShowDemoWindow(&panels.ImPlotDemo.Visible);
+    });
+    DrawPanel(panels.SceneControls.Name, [&] {
+        if (!panels.SceneControls.Visible) return;
         if (Begin(panels.SceneControls.Name, &panels.SceneControls.Visible)) RenderControls(r);
         End();
-    }
+    });
 
     bool scrubbing = false;
-    if (panels.Timeline.Visible) {
+    DrawPanel(panels.Timeline.Name, [&] {
+        if (!panels.Timeline.Visible) return;
         PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
         if (Begin(panels.Timeline.Name, &panels.Timeline.Visible, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
             PushStyleVar(ImGuiStyleVar_FramePadding, {6, 4});
@@ -615,9 +630,9 @@ EditorPanelsFrame BeginEditorPanels(
         }
         End();
         PopStyleVar();
-    }
-    procedure::DrawNodesPanel(r, panels.Nodes, interactive);
-    procedure::DrawParametersPanel(r, panels.Nodes, panels.Parameters, interactive);
+    });
+    DrawPanel(panels.Nodes.Name, [&] { procedure::DrawNodesPanel(r, panels.Nodes, interactive); });
+    DrawPanel(panels.Parameters.Name, [&] { procedure::DrawParametersPanel(r, panels.Nodes, panels.Parameters, interactive); });
     if (interactive) r.Resources.get<FrameState>().Scrubbing = scrubbing;
 
     if (interactive) FollowHoveredViewport(r);
@@ -626,10 +641,10 @@ EditorPanelsFrame BeginEditorPanels(
     const auto active = FindActiveViewport(r);
     const bool closable = viewports.size() > 1;
     EditorPanelsFrame frame;
-    for (const auto viewport : viewports) {
+    for (const auto viewport : viewports) DrawPanel(ViewportPanels, [&] {
         // A panel in an unselected dock tab draws nothing, so its viewport does no work this frame.
         r.edit<Viewport>(viewport).Shown = false;
-        if (!r.get<const ViewportPanel>(viewport).Open) continue;
+        if (!r.get<const ViewportPanel>(viewport).Open) return;
         const auto name = ViewportPanelName(r, viewport);
         // A panel ImGui has never seen opens as a tab beside the active viewport's panel, or in the central dock node before that panel exists.
         if (const auto id = ImHashStr(name.c_str()); !FindWindowByID(id) && !FindWindowSettingsByID(id)) {
@@ -654,20 +669,20 @@ EditorPanelsFrame BeginEditorPanels(
         End();
         PopStyleVar();
         if (!open) action::Emit(action::view::RemoveViewport{viewport});
-    }
+    });
     return frame;
 }
 
 // Inserts each open viewport panel's image beneath the overlay its panel drew, after the frame's renders are submitted.
 void DisplayViewportPanels(state::Registry &r, const EditorPanelsFrame &frame) {
     const auto active = FindActiveViewport(r);
-    for (const auto &panel : frame.Viewports) {
-        if (!r.all_of<Viewport>(panel.Entity)) continue;
+    for (const auto &panel : frame.Viewports) DrawPanel(ViewportPanels, [&] {
+        if (!r.all_of<Viewport>(panel.Entity)) return;
         Begin(ViewportPanelName(r, panel.Entity).c_str());
         DisplayViewport(r, panel.Entity, panel.Entity == active);
         GetWindowDrawList()->ChannelsMerge();
         End();
-    }
+    });
 }
 
 #ifdef DEBUG_BUILD
@@ -909,7 +924,7 @@ EditorPanelsFrame BeginEditorFrame(state::Registry &r, const mtl::Context &ctx, 
 
 void EndEditorFrame(state::Registry &r, PanelsState &panels, const EditorPanelsFrame &frame) {
     DisplayViewportPanels(r, frame);
-    DrawInfoPanel(r, panels.Info);
+    DrawPanel(panels.Info.Name, [&] { DrawInfoPanel(r, panels.Info); });
     Render();
     workspace::ApplyPending(panels);
 }
@@ -1325,8 +1340,8 @@ Benchmarking:
   --frames N                  Render N frames and exit
   --bench-action ACTION       steady | orbit | transform | visibility | box-select | box-select-orbit | pick-cycle
   --bench-action-count N      Objects the transform and visibility actions touch (default 64)
-  --profile                   Print the profile report on exit
-  --profile-json PATH         Write the profile report to PATH
+  --profile                   Print the profile report on exit, in a build with PROFILE=1
+  --profile-json PATH         Write the profile report to PATH, in a build with PROFILE=1
 
 Other:
   --help, -h                  Show this message)"
@@ -2127,11 +2142,17 @@ std::expected<LaunchOptions, int> ParseLaunchOptions(std::span<const std::string
                 mode == "solid"                   ? ViewportShadingMode::Solid :
                 mode == "preview"                 ? ViewportShadingMode::MaterialPreview :
                                                     ViewportShadingMode::Rendered;
+#ifdef PROFILE_BUILD
         } else if (a == "--profile") {
-            profile::Enabled = true;
+            profile::Enable(true);
         } else if (a == "--profile-json" && std::next(it) != args.end()) {
-            profile::Enabled = true;
+            profile::Enable(true);
             profile::JsonPath = *++it;
+#else
+        } else if (a == "--profile" || a == "--profile-json") {
+            std::println(stderr, "'{}' needs a build with PROFILE=1.", a);
+            return std::unexpected(1);
+#endif
         } else if (a.starts_with('-')) {
             std::println(stderr, "Unknown option '{}'. Run with --help for the option list.", a);
             return std::unexpected(1);

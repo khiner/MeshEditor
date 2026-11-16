@@ -2,7 +2,6 @@
 
 #include "Camera.h"
 #include "Panel.h"
-#include "Profile.h"
 #include "TransformMath.h"
 #include "action/Animation.h"
 #include "action/Audio.h"
@@ -762,7 +761,6 @@ void Interact(state::Registry &r, FrameState &frame) {
 }
 
 void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewport, bool active) {
-    const profile::CpuScope scope{"ViewportOverlayUi"};
     const auto &icons = r.Resources.get<const ViewportIcons>();
     const rect viewport_rect{ToVec2(GetWindowPos()), ToVec2(GetContentRegionAvail())};
     const bool active_transform = r.get<const GizmoInteraction>(state::Document).IsUsing();

@@ -4,9 +4,12 @@
 
 #include <filesystem>
 
+// Profiling is compiled in when the build defines PROFILE_BUILD.
 namespace profile {
+#ifdef PROFILE_BUILD
 inline bool Enabled{false};
 inline std::filesystem::path JsonPath{};
+inline void Enable(bool on) { Enabled = on; }
 
 void Init(const mtl::Context &);
 void Deinit();
@@ -31,4 +34,23 @@ struct CpuScope {
     CpuScope(std::string_view name) { BeginCpu(name); }
     ~CpuScope() { EndCpu(); }
 };
+#else
+inline constexpr bool Enabled{false};
+
+inline void Enable(bool) {}
+inline void Init(const mtl::Context &) {}
+inline void Deinit() {}
+inline void BeginRecording() {}
+inline mtl::PassTimer *RecordingTimer() { return nullptr; }
+inline void EndRecording() {}
+inline void RecordCounter(std::string_view, double) {}
+inline void Resolve(const mtl::Completion &) {}
+inline void ClearStats() {}
+inline void ReportCpuPhase(std::string_view) {}
+inline void Report() {}
+
+struct CpuScope {
+    CpuScope(std::string_view) {}
+};
+#endif
 } // namespace profile

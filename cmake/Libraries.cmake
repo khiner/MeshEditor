@@ -8,7 +8,8 @@ target_include_directories(mesheditor_headers SYSTEM INTERFACE
 target_compile_definitions(mesheditor_headers INTERFACE
     $<$<CONFIG:Debug>:DEBUG_BUILD>
     $<$<CONFIG:Release>:RELEASE_BUILD>
-    $<$<BOOL:${MESHEDITOR_SURFACE_AUDIO}>:SURFACE_AUDIO>)
+    $<$<BOOL:${MESHEDITOR_SURFACE_AUDIO}>:SURFACE_AUDIO>
+    $<$<BOOL:${MESHEDITOR_PROFILE}>:PROFILE_BUILD>)
 
 add_library(mesheditor_serialization INTERFACE)
 target_include_directories(mesheditor_serialization SYSTEM INTERFACE "${CMAKE_SOURCE_DIR}/lib/zpp_bits")
@@ -69,7 +70,6 @@ target_compile_definitions(mesheditor_implot PRIVATE "IMPLOT_CUSTOM_NUMERIC_TYPE
 target_link_libraries(mesheditor_implot PUBLIC mesheditor_imgui)
 
 mesheditor_library(MeshEditorMetal HOT
-    src/Profile.cpp
     src/metal/Bindless.cpp
     src/metal/Buffer.cpp
     src/metal/Dispatch.cpp
@@ -300,6 +300,10 @@ mesheditor_library(MeshEditorPlatform COLD
     src/FileDialog.mm
     src/MacPlatform.mm
 )
+
+if(MESHEDITOR_PROFILE)
+    target_sources(MeshEditorMetal PRIVATE src/Profile.cpp)
+endif()
 
 if(MESHEDITOR_SURFACE_AUDIO)
     target_sources(MeshEditorAudio PRIVATE src/audio/surface/SurfaceModel.cpp)

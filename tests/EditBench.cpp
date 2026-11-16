@@ -251,7 +251,7 @@ void Baseline(Session &s) {
     s.Source = Counts(s);
     if (!s.Table) ReportLibraries(s.R.Resources.get<const mtl::LibraryCache>(), "baseline");
     profile::ClearStats();
-    profile::Enabled = !s.Table && !std::getenv("MESHEDITOR_EDIT_BENCH_UNPROFILED");
+    profile::Enable(!s.Table && !std::getenv("MESHEDITOR_EDIT_BENCH_UNPROFILED"));
 }
 // Fails for an edit that left the history node or the mesh storage state it started from.
 Result Changed(const Session &s) {
@@ -444,7 +444,7 @@ Result BenchEdit(Session &s) {
         single_edit == SingleEdit::MergeCollapse || single_edit == SingleEdit::DissolveDegenerate;
     if (select_all && (join || filling || merging)) return std::unexpected{"join, fill and merge benchmarks count a paired or filled selection"};
     profile::ClearStats();
-    profile::Enabled = verbose;
+    profile::Enable(verbose);
     const auto enter_ms = Milliseconds([&] { project::Do(p, action::MakeAction(action::view::SetInteractionMode{InteractionMode::Edit})); });
     if (verbose) {
         profile::ReportCpuPhase("Edit mode entry");
@@ -454,7 +454,7 @@ Result BenchEdit(Session &s) {
     Note(s, "Entered Edit mode in {:.3f} ms; switching to face selection...", enter_ms);
     const auto mode_ms = Milliseconds([&] { project::Do(p, action::MakeAction(action::view::SetEditMode{.Mode = Element::Face})); });
     if (verbose) profile::ReportCpuPhase("Face selection mode");
-    profile::Enabled = false;
+    profile::Enable(false);
     Note(s, "Face selection mode prepared in {:.3f} ms.", mode_ms);
     const auto entity = s.Entity = GetActiveMeshEntity(r);
     auto &meshes = r.Resources.get<MeshStore>();
@@ -513,7 +513,7 @@ Result BenchEdit(Session &s) {
     const std::array<uint32_t, 1> alternate{(selected[0] + (pair_faces ? 17u : 1u)) % faces};
     Note(s, "Selecting {} face(s) from {} vertices / {} faces...", selected.size(), vertices, faces);
     profile::ClearStats();
-    profile::Enabled = verbose;
+    profile::Enable(verbose);
     const auto select = [&](std::span<const uint32_t> ordinals, Element element = Element::Face) {
         ApplyEditSelectionLists(r, std::array{std::pair{entity, ordinals}}, element);
         p.Settle();
@@ -523,7 +523,7 @@ Result BenchEdit(Session &s) {
         profile::ReportCpuPhase("Initial selection replacement");
         profile::Report();
     }
-    profile::Enabled = false;
+    profile::Enable(false);
     if (meshes.GetSelectionSummary(drawn()).SelectedCount != selected.size()) return std::unexpected{"expected selected faces"};
     select(alternate);
     const auto select_ms = Milliseconds([&] { select(selected); });
@@ -799,9 +799,12 @@ Result Bench(const Run &run, Report *table) {
     Session s{r, p, run, table};
     const auto body = [&]() -> Result {
         if (!table) {
-            profile::Enabled = true;
+#ifndef PROFILE_BUILD
+            std::println("Build with PROFILE=1 for profile tables.");
+#endif
+            profile::Enable(true);
             profile::Init(r.Resources.get<const mtl::Context>());
-            profile::Enabled = false;
+            profile::Enable(false);
         }
         if (!p.New(dir, true)) return std::unexpected{"project creation failed"};
         r.replace<ViewportPanel>(FirstViewport(r), ViewportPanel{.Extent = {run.Width, run.Height}});
@@ -825,7 +828,7 @@ Result Bench(const Run &run, Report *table) {
         }
         profile::Deinit();
     }
-    profile::Enabled = false;
+    profile::Enable(false);
     if (!result) return result;
     if (table) table->Faces = s.Faces;
     std::string why;

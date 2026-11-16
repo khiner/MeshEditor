@@ -1,7 +1,6 @@
 #include "scene/SceneControlsUi.h"
 #include "Camera.h"
 #include "Path.h"
-#include "Profile.h"
 #include "SortUnique.h"
 #include "TransformMath.h"
 #include "action/Audio.h"
@@ -551,7 +550,6 @@ void RenderEntityControls(state::Registry &r, state::Entity entity, state::Entit
 }
 
 void RenderControls(state::Registry &r) {
-    const profile::CpuScope scope{"SceneControlsUi"};
     if (BeginTabBar("Scene controls")) {
         if (BeginTabItem("Object")) {
             {
