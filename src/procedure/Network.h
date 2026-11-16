@@ -123,7 +123,7 @@ void ShownReferences(const state::Registry &, NetworkItem, const GeometryDrawers
 bool NodesSettled(const state::Registry &);
 // Nodes lists the entities whose node may differ, Pages those whose change alters which items a page shows, Cells the networks whose placed cells changed,
 // and Fields the entities that lost a component a value port can address.
-// Revision advances in a pass where a node, a page's items or a material buffer changed, and CellsRevision where a placed cell changed.
+// Revision advances in a pass where a node, a procedure node's name or float math parameters, a page's items or a material buffer changed, and CellsRevision where a placed cell changed.
 struct NetworkChanges {
     state::DirtySet Nodes, Pages, Cells, Fields;
     uint64_t Revision{}, CellsRevision{};

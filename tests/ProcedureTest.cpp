@@ -1413,6 +1413,7 @@ void CanvasEquivalence(ProcedureFixture &f) {
     f.Route(mesh, {f.Node(mesh, 0), node});
     f.Do(action::nodes::GroupNodes{mesh, {node}});
     const auto subnet = f.R.get<const GeometryProcedure>(mesh).Last;
+    const auto math = f.Append(mesh, KindOf<FloatMath>);
     f.Do(action::physics::AddJointDef{});
     f.Do(action::animation::AddAnimation{"Animation"});
     auto *context = ImGui::CreateContext();
@@ -1439,6 +1440,13 @@ void CanvasEquivalence(ProcedureFixture &f) {
         expect(!drawn.empty());
         return drawn;
     };
+    // The page kept between frames draws what a page built from nothing draws, and differs from the page before the edit.
+    const auto same_as_fresh = [&](auto edit, const std::vector<std::byte> &before) {
+        f.Do(std::move(edit));
+        const auto kept = frame();
+        panel.Page.reset();
+        expect(frame() == kept && kept != before);
+    };
     const auto cooks = Cooks(f.R);
     for (const auto network : {FrameScene(f.R), state::Document, mesh, subnet}) {
         EnterNetwork(panel, network);
@@ -1449,17 +1457,10 @@ void CanvasEquivalence(ProcedureFixture &f) {
         f.Undo();
         f.Redo();
         expect(frame() == drawn);
-        // The page kept between frames draws what a page built from nothing draws, with a placed cell and with a subnet.
         if (network == FrameScene(f.R)) {
             const auto item = NetworkItems(f.R, network).front();
-            const auto same_as_fresh = [&](auto edit) {
-                f.Do(std::move(edit));
-                const auto kept = frame();
-                panel.Page.reset();
-                expect(frame() == kept && kept != drawn);
-            };
-            same_as_fresh(action::nodes::MoveNodes{network, {{item, {9u, 7u}}}});
-            same_as_fresh(action::nodes::GroupItems{network, {item}});
+            same_as_fresh(action::nodes::MoveNodes{network, {{item, {9u, 7u}}}}, drawn);
+            same_as_fresh(action::nodes::GroupItems{network, {item}}, drawn);
             f.Undo();
             f.Undo();
             expect(frame() == drawn);
@@ -1472,6 +1473,15 @@ void CanvasEquivalence(ProcedureFixture &f) {
         }
     }
     expect(Cooks(f.R) == cooks);
+    // A geometry page follows a float math node's operation and a subnet's name.
+    EnterNetwork(panel, mesh);
+    frame();
+    const auto drawn = frame();
+    same_as_fresh(UpdateOf<&FloatMath::Operation>(math, FloatMathOp::MultiplyAdd), drawn);
+    same_as_fresh(action::nodes::RenameNetwork{subnet, "Renamed"}, drawn);
+    f.Undo();
+    f.Undo();
+    expect(frame() == drawn);
     const auto object = f.AddEmpty("Object choice");
     f.AddEmpty("Other");
     const auto picked = f.Do(action::selection::Pick{false, ObjectHit{{object}}});

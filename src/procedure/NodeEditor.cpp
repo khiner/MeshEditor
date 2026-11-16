@@ -555,7 +555,8 @@ void AutoLayout(const NodeView &view, std::span<Box> boxes) {
 // Its arrangement is the layout with the network's placed cells applied and the row indexes, rebuilt when the content or a placed cell changes.
 struct NodePage {
     NodeView View;
-    uint64_t Revision{UINT64_MAX}; // The network revision a scene page's view was built at
+    std::shared_ptr<const CookPlan> Plan; // The plan a geometry page's view borrows
+    uint64_t Revision{UINT64_MAX}; // The network revision the view was built at
     std::vector<InputRows> Rows;
     struct Measured {
         NetworkItem Item;
@@ -1918,15 +1919,14 @@ void DrawNodesPanel(state::Registry &r, NodesPanel &panel, bool interactive) {
         PushStyleVar(ImGuiStyleVar_WindowPadding, {0.f, 0.f});
         BeginChild("Canvas", {0.f, 0.f}, ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoMove);
         PopStyleVar();
-        // A geometry page's view follows parameters as well as its plan, so it is built every frame.
-        // A scene page's view is built when the network revision advances.
-        const auto *current = NetworkPlan(r, panel, mesh_entity);
+        // The view is built when the network revision advances, and a geometry page's view when its plan is projected again.
+        const auto current = NetworkPlan(r, panel, mesh_entity) ? std::shared_ptr<const CookPlan>{panel.NetworkView} : nullptr;
         if (!panel.Page) panel.Page = std::make_shared<NodePage>();
         auto &page = *panel.Page;
         const auto revision = r.Resources.get<const NetworkChanges>().Revision;
-        const bool rebuilt = current || page.View.Geometry || page.View.Network != network || page.Revision != revision;
-        if (current) page.View = GeometryNodeDefinitions(r, *current, network);
-        else if (rebuilt) page.View = SceneNodeDefinitions(r, network);
+        const bool rebuilt = page.Plan != current || page.View.Network != network || page.Revision != revision;
+        if (rebuilt) page.View = current ? GeometryNodeDefinitions(r, *current, network) : SceneNodeDefinitions(r, network);
+        page.Plan = current;
         page.Revision = revision;
         DrawCanvas(r, r.Resources.get<FrameState>(), panel, r.get<const NodeTheme>(state::Document), mesh_entity, page, rebuilt, interactive);
         EndChild();

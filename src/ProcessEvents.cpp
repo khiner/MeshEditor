@@ -1218,7 +1218,7 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
         .on<AnimationClips>(On::Create | On::Update | On::Destroy)
         .on<Animations>(On::Update);
     animation.KeyframeSources.bind(r).on<TimelineRange>(On::Create | On::Update).on<MeshMaterialSlotSelection>(On::Create | On::Update | On::Destroy);
-    // Nodes binds the components an item's title and references are derived from, Pages those that decide which items a page shows,
+    // Nodes binds the components an item's title and references are derived from and a procedure node's title and labels follow, Pages those that decide which items a page shows,
     // and Fields the destruction of each component a value port can address.
     auto &network = r.Resources.emplace<procedure::NetworkChanges>();
     const auto bind = [&]<typename... Cs>(state::DirtySet &set, TypeList<Cs...>) {
@@ -1230,7 +1230,7 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
         TypeList<
             ObjectKind, BoneIndex, Scene, HierarchyDefinition, PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef, procedure::NetworkSubnet, procedure::GeometryProcedure,
             Name, SceneParent, Instance, HierarchyInstance, ArmatureModifier, BoneConstraints, ColliderShape, ColliderMaterial, PhysicsJoint, TriggerNodes,
-            EvaluatedMesh, MeshHandle>{}
+            EvaluatedMesh, MeshHandle, procedure::FloatMath>{}
     );
     bind(network.Pages, TypeList<SceneMembership, HierarchyMember, ArmatureObject, MaterializedTextures, procedure::NetworkSubnet, procedure::ProcedureInstances, procedure::ProcedureNode>{});
     bind(network.Cells, TypeList<procedure::NetworkLayout>{});
