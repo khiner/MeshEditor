@@ -796,6 +796,8 @@ Graph NodeEditing(ProcedureFixture &f) {
     f.Do(DeleteNodes{mesh, {subdivide, triangulate}});
     expect(f.Shaped(mesh) == source && r.get<const CookPlan>(mesh).DisplayNode == 0u);
     f.Undo();
+    f.Do(action::nodes::UnplaceNode{mesh, {subdivide}});
+    expect(!NetworkPosition(r, mesh, {subdivide}) && NetworkPosition(r, mesh, {triangulate}));
     f.Do(action::nodes::AutoLayout{mesh});
     expect(!r.all_of<NetworkLayout>(mesh));
     return {mesh};

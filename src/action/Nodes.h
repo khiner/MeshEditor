@@ -149,6 +149,11 @@ struct MoveNodes {
 struct AutoLayout {
     state::Entity Network;
 };
+// Removes the node's placed cell from the network's page.
+struct UnplaceNode {
+    state::Entity Network;
+    procedure::NetworkItem Node;
+};
 struct SetBypass {
     state::Entity Node;
     bool Enabled;
@@ -208,7 +213,7 @@ struct InsertNode {
     uint16_t Index{};
 };
 
-using Action = std::variant<AddNode, AddMacro, AppendMacro, Link, Unlink, SetDisplay, SetBypass, EditSelection, FinishSelection, SetOperationHandle, SetExtrudeOffset, MoveNodes, AutoLayout, SelectItems, GroupItems, UngroupItems, MoveItems, RenameNetwork, ExposePort, AssignReference, GroupNodes, UngroupNodes, ExposeSocket, SetPortValue, RenamePort, RemovePort, MovePort, SetAttributeName, SetInlineSelection, CollapseProcedure, DuplicateNodes, DeleteNodes, InsertNode>;
+using Action = std::variant<AddNode, AddMacro, AppendMacro, Link, Unlink, SetDisplay, SetBypass, EditSelection, FinishSelection, SetOperationHandle, SetExtrudeOffset, MoveNodes, AutoLayout, UnplaceNode, SelectItems, GroupItems, UngroupItems, MoveItems, RenameNetwork, ExposePort, AssignReference, GroupNodes, UngroupNodes, ExposeSocket, SetPortValue, RenamePort, RemovePort, MovePort, SetAttributeName, SetInlineSelection, CollapseProcedure, DuplicateNodes, DeleteNodes, InsertNode>;
 
 void Apply(state::Registry &, const Action &);
 

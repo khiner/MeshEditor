@@ -61,7 +61,7 @@ struct NodeThemeSizes {
     uint8_t CoarseGridCells{8};
     uint8_t MaxLabelCells{10};
     float TitlePadding{6}, LabelSpacing{4}, ParameterIndent{6};
-    float SocketRadius{5}, Rounding{4};
+    float SocketRadius{5}, Rounding{4}, Margin{2};
     float WireWidth{2};
     float WireCurving{.4f};
     float BorderWidth{1}, HighlightBorderWidth{2}, OutlineWidth{1};
@@ -86,6 +86,7 @@ template<> inline constexpr field::SpecTable<procedure::NodeThemeSizes> Specs<pr
     {&procedure::NodeThemeSizes::ParameterIndent, {.Min = 0, .Max = 24, .Unit = FieldUnit::Points, .Help = "Extra indent of parameter socket labels"}},
     {&procedure::NodeThemeSizes::SocketRadius, {.Min = 2, .Max = 12, .Unit = FieldUnit::Points, .Help = "Socket radius"}},
     {&procedure::NodeThemeSizes::Rounding, {.Min = 0, .Max = 12, .Unit = FieldUnit::Points, .Help = "Node corner radius"}},
+    {&procedure::NodeThemeSizes::Margin, {.Min = 0, .Max = 8, .Unit = FieldUnit::Points, .Help = "Space between a node and the edges of its cells, which separates nodes that touch"}},
     {&procedure::NodeThemeSizes::WireWidth, {.Min = .5, .Max = 8, .Unit = FieldUnit::Points, .Help = "Link wire width"}},
     {&procedure::NodeThemeSizes::WireCurving, {.Min = 0, .Max = 1, .Help = "Wire curve handle length as a fraction of the link's horizontal span"}},
     {&procedure::NodeThemeSizes::BorderWidth, {.Min = .5, .Max = 4, .Unit = FieldUnit::Points, .Help = "Node border width"}},

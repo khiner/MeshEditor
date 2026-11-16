@@ -236,7 +236,8 @@ void DrawSocket(ImDrawList &draw, const NodeTheme &theme, ImVec2 at, float radiu
     draw.AddCircle(at, radius, outline, 0, theme.Sizes.OutlineWidth);
 }
 
-// A node shows inputs down its left edge and outputs down its right, one per cell row under a one-cell title.
+// A node shows inputs down its left column and outputs down its right, one per cell row under a one-cell title.
+// Each socket is at the center of its own port cell, and the labels are in the columns between the two port columns.
 // Tray sockets share one row, marked by a chevron, while the tray is closed.
 // Each tray socket has its own row while the tray is open.
 constexpr uint16_t NoRow{UINT16_MAX};
@@ -403,7 +404,7 @@ InputRows RowsOf(uint16_t inputs, auto &&in_tray, auto &&shows) {
     return rows;
 }
 
-// A node's cells: its top left and size, and whether it has inputs and outputs, which keep a free cell beside them for wires.
+// A node's cells: its top left and size, and whether its left column holds input ports and its right column output ports.
 struct Box {
     uint32_t X, Y;
     uint16_t W, H;
@@ -418,21 +419,18 @@ Box BoxOf(const NodeTheme &theme, float cell, const char *title, std::span<const
     const uint32_t outputs = uint32_t(sockets.size()) - inputs;
     const auto label_cells = [&](uint16_t s) {
         const float indent = s < inputs && rows.Open[s] >= rows.Shown ? theme.Sizes.ParameterIndent : 0.f;
-        return std::min(CellsOf(cell, theme.Sizes.SocketRadius + theme.Sizes.LabelSpacing * 2.f + indent + CalcTextSize(label(s)).x), uint32_t(theme.Sizes.MaxLabelCells));
+        return std::min(CellsOf(cell, theme.Sizes.Margin + theme.Sizes.LabelSpacing * 2.f + indent + CalcTextSize(label(s)).x), uint32_t(theme.Sizes.MaxLabelCells));
     };
     std::vector<uint32_t> left(std::max<uint32_t>(rows.OpenCount(), outputs));
     for (uint16_t s = 0u; s < inputs; ++s) {
         if (rows.Open[s] != NoRow) left[rows.Open[s]] = label_cells(s);
     }
-    uint32_t width = CellsOf(cell, CalcTextSize(title).x + theme.Sizes.TitlePadding * 2.f);
-    for (uint32_t row = 0u; row < left.size(); ++row) width = std::max(width, left[row] + (row < outputs ? label_cells(uint16_t(inputs + row)) : 0u));
-    return {0, 0, uint16_t(width), uint16_t(1u + std::max({uint32_t(rows.ClosedCount()), outputs, 1u})), rows.ClosedCount() > 0u, outputs > 0u};
+    const bool in = rows.ClosedCount() > 0u, out = outputs > 0u;
+    uint32_t width = CellsOf(cell, CalcTextSize(title).x + (theme.Sizes.Margin + theme.Sizes.TitlePadding) * 2.f);
+    for (uint32_t row = 0u; row < left.size(); ++row) width = std::max(width, uint32_t(in) + left[row] + (row < outputs ? label_cells(uint16_t(inputs + row)) : 0u) + uint32_t(out));
+    return {0, 0, uint16_t(width), uint16_t(1u + std::max({uint32_t(rows.ClosedCount()), outputs, 1u})), in, out};
 }
-// Whether the boxes leave a free cell beside every socket column between them: right of a when a has outputs or b inputs, and the reverse.
-bool Clear(const Box &a, const Box &b) {
-    if (a.Y >= b.Y + b.H || b.Y >= a.Y + a.H) return true;
-    return b.X >= a.X + a.W + uint32_t(a.Out || b.In) || a.X >= b.X + b.W + uint32_t(b.Out || a.In);
-}
+bool Overlap(const Box &a, const Box &b) { return a.X < b.X + b.W && b.X < a.X + a.W && a.Y < b.Y + b.H && b.Y < a.Y + a.H; }
 // Finds the spans of rows that meet a range of rows.
 // Level l has cells of RowCell << l rows.
 // A span is filed once, by its first row, in the lowest level whose cells are at least as long as the span, so it starts in a cell it meets or in the cell before.
@@ -481,16 +479,16 @@ void ForEachIn(const RowIndex &index, uint32_t top, uint32_t bottom, auto &&f) {
     }
 }
 
-// Whether every box of the group, moved by the offset, stays on the canvas, keeps a free cell left of its inputs, and is clear of every indexed box that counts.
+// Whether every box of the group, moved by the offset, stays on the canvas and overlaps no indexed box that counts.
 bool Fits(std::span<const Box> boxes, const RowIndex &index, std::span<const uint32_t> group, int64_t dx, int64_t dy, auto &&counts) {
     for (const auto m : group) {
         auto box = boxes[m];
         const int64_t x = int64_t(box.X) + dx, y = int64_t(box.Y) + dy;
-        if (x < int64_t(box.In) || y < 0) return false;
+        if (x < 0 || y < 0) return false;
         box.X = uint32_t(x);
         box.Y = uint32_t(y);
         bool clear = true;
-        ForEachIn(index, box.Y, box.Y + box.H - 1u, [&](uint32_t n) { clear = clear && (!counts(n) || Clear(box, boxes[n])); });
+        ForEachIn(index, box.Y, box.Y + box.H - 1u, [&](uint32_t n) { clear = clear && (!counts(n) || !Overlap(box, boxes[n])); });
         if (!clear) return false;
     }
     return true;
@@ -514,13 +512,13 @@ std::pair<int64_t, int64_t> Place(std::span<const Box> boxes, const RowIndex &in
         left = std::min(left, int64_t(boxes[m].X));
         top = std::min(top, int64_t(boxes[m].Y));
     }
-    return {right + 2 - left, std::max(dy, -top)};
+    return {right - left, std::max(dy, -top)};
 }
 // Lays out every box from the view's links alone.
 // Connected nodes form an island, and the islands stack top to bottom in node order.
 // An island's columns follow its connections left to right: each node sits one column left of its leftmost reader, then each node with inputs sits one column right of its rightmost input.
 // A column stacks its nodes in the order a walk reaches them, from the island's last node back through each node's inputs in slot order.
-// One free cell separates adjacent columns, the nodes of a column, and the islands.
+// Adjacent columns and the nodes of a column touch, and one free row separates the islands.
 void AutoLayout(const NodeView &view, std::span<Box> boxes) {
     const auto count = uint32_t(boxes.size());
     std::vector<std::vector<uint32_t>> inputs(count), readers(count);
@@ -574,21 +572,21 @@ void AutoLayout(const NodeView &view, std::span<Box> boxes) {
     std::vector<uint32_t> sorted(count);
     std::ranges::iota(sorted, 0u);
     std::ranges::sort(sorted, {}, [&](uint32_t n) { return std::tuple{island_of(n), column[n], walked[n]}; });
-    uint32_t top = 1u;
+    uint32_t top = 0u;
     for (const auto nodes : sorted | std::views::chunk_by([&](uint32_t a, uint32_t b) { return island_of(a) == island_of(b); })) {
-        uint32_t left = 1u, bottom = top;
+        uint32_t left = 0u, bottom = top;
         for (const auto stacked : nodes | std::views::chunk_by([&](uint32_t a, uint32_t b) { return column[a] == column[b]; })) {
             uint32_t width = 0u, y = top;
             for (const auto n : stacked) {
                 boxes[n].X = left;
                 boxes[n].Y = y;
-                y += boxes[n].H + 1u;
+                y += boxes[n].H;
                 width = std::max(width, uint32_t(boxes[n].W));
             }
-            left += width + 1u;
+            left += width;
             bottom = std::max(bottom, y);
         }
-        top = bottom;
+        top = bottom + 1u;
     }
 }
 } // namespace
@@ -688,8 +686,8 @@ void FileWires(NodePage &page, uint32_t n) {
 }
 
 // Arranges the page's boxes: each at its automatic cell, then each placed one at its cell.
-// A placed box takes the cell nearest its own that is clear of the placed boxes before it, and an automatic box a placed one crowds moves to the nearest clear cell.
-// Every node position the editor uses comes from here, so nodes never overlap and always keep their wire cells.
+// A placed box takes the cell nearest its own where it overlaps no placed box before it, and an automatic box a placed one overlaps moves to the nearest free cell.
+// Every node position the editor uses comes from here, so nodes never overlap.
 // Without a new layout, only the boxes away from their automatic cells are arranged again.
 void Arrange(const state::Registry &r, NodePage &page, bool relaid) {
     const auto &view = page.View;
@@ -732,7 +730,7 @@ void Arrange(const state::Registry &r, NodePage &page, bool relaid) {
         std::vector<uint32_t> crowded;
         for (const auto n : placed) {
             ForEachIn(page.Nodes, boxes[n].Y, boxes[n].Y + boxes[n].H - 1u, [&](uint32_t other) {
-                if (!is_placed(other) && !Clear(boxes[n], boxes[other])) crowded.push_back(other);
+                if (!is_placed(other) && Overlap(boxes[n], boxes[other])) crowded.push_back(other);
             });
         }
         SortUnique(crowded);
@@ -775,16 +773,20 @@ struct Graph {
     uint16_t DropSocket{}, DropIndex{};
 };
 uint32_t RowAt(const Graph &graph, float y) { return uint32_t(std::max(0.f, std::floor((y - graph.Origin.y) / graph.Step))); }
-// The expanded node's rectangle is taller, to fit its open tray.
+// The node's rows, which for the expanded node fit its open tray.
+uint32_t HeightOf(const Graph &graph, uint32_t node) {
+    const uint32_t outputs = uint32_t(NodeSockets(graph.View, node).size()) - InputsOf(graph.View, node);
+    return node == graph.Expanded ? 1u + std::max({uint32_t(graph.Rows[node].OpenCount()), outputs, 1u}) : graph.Boxes[node].H;
+}
+// The node's rectangle, which the theme's margin separates from the edges of its cells.
 ImRect RectOf(const Graph &graph, uint32_t node) {
     const auto &box = graph.Boxes[node];
-    const uint32_t outputs = uint32_t(NodeSockets(graph.View, node).size()) - InputsOf(graph.View, node);
-    const uint32_t height = node == graph.Expanded ? 1u + std::max({uint32_t(graph.Rows[node].OpenCount()), outputs, 1u}) : box.H;
-    return {graph.Origin + ImVec2{float(box.X), float(box.Y)} * graph.Step, graph.Origin + ImVec2{float(box.X + box.W), float(box.Y + height)} * graph.Step};
+    const float margin = graph.Theme.Sizes.Margin * graph.Zoom;
+    return {graph.Origin + ImVec2{float(box.X), float(box.Y)} * graph.Step + ImVec2{margin, margin}, graph.Origin + ImVec2{float(box.X + box.W), float(box.Y + HeightOf(graph, node))} * graph.Step - ImVec2{margin, margin}};
 }
 ImVec2 RowAt(const Graph &graph, uint32_t node, bool input, uint32_t row) {
     const auto &box = graph.Boxes[node];
-    return graph.Origin + ImVec2{float(box.X + (input ? 0u : box.W)), float(box.Y) + 1.5f + float(row)} * graph.Step;
+    return graph.Origin + ImVec2{float(box.X) + (input ? .5f : float(box.W) - .5f), float(box.Y) + 1.5f + float(row)} * graph.Step;
 }
 // The sockets of a closed tray are all at the tray's chevron.
 ImVec2 SocketAt(const Graph &graph, uint32_t node, uint16_t socket) {
@@ -950,6 +952,15 @@ action::nodes::Link LinkOf(const CookPlan &plan, state::Entity mesh_entity, uint
 action::nodes::Unlink UnlinkOf(const NodeView &view, state::Entity owner, uint32_t node, uint16_t slot) {
     return {owner, view.Nodes[node].Item.Entity, SocketId(view, node, SlotSocket(view, node, slot)), SlotIndex(view, node, slot)};
 }
+action::nodes::InsertNode InsertOf(const NodeView &view, state::Entity owner, uint32_t node, uint32_t to_node, uint16_t to_slot, uint32_t shift = 0u) {
+    return {owner, view.Nodes[node].Item.Entity, view.Nodes[to_node].Item.Entity, SocketId(view, to_node, SlotSocket(view, to_node, to_slot)), shift, SlotIndex(view, to_node, to_slot)};
+}
+// The assignment that links a scene page's reference socket with an item socket, given in either order.
+action::nodes::AssignReference AssignOf(const NodeView &view, uint32_t a_node, uint16_t a_socket, uint32_t b_node, uint16_t b_socket) {
+    const auto &a = BindingOf(view, a_node, a_socket), &b = BindingOf(view, b_node, b_socket);
+    const auto *input = std::get_if<SceneReference>(&a);
+    return input ? action::nodes::AssignReference{*input, std::get<NetworkItem>(b)} : action::nodes::AssignReference{std::get<SceneReference>(b), std::get<NetworkItem>(a)};
+}
 // Links the held wire to the socket, at `index` among a multi-input socket's links.
 // A wire picked up from an input is unlinked from that input in the same undo step.
 // Dropping it back on that input changes nothing, or reorders it on a multi-input socket.
@@ -969,9 +980,7 @@ void Connect(const state::Registry &r, NodesPanel &panel, const NodeView &view, 
         if (const auto *left = detached && !returns ? std::get_if<SceneReference>(&BindingOf(view, left_node, left_slot)) : nullptr; left && ReferenceAccepts(r, *left, {})) {
             action::AddToGesture(action::nodes::AssignReference{*left, {}});
         }
-        const auto &a = BindingOf(view, panel.DragNode, panel.DragSocket), &b = BindingOf(view, node, socket);
-        const auto *input = std::get_if<SceneReference>(&a);
-        action::AddToGesture(input ? action::nodes::AssignReference{*input, std::get<NetworkItem>(b)} : action::nodes::AssignReference{std::get<SceneReference>(b), std::get<NetworkItem>(a)});
+        action::AddToGesture(AssignOf(view, panel.DragNode, panel.DragSocket, node, socket));
     }
 }
 void Disconnect(const state::Registry &r, const NodeView &view, state::Entity owner, uint32_t node, uint16_t slot) {
@@ -1075,13 +1084,108 @@ std::optional<Insert> InsertTarget(const Graph &graph, uint32_t node) {
         if (distance >= nearest) return;
         nearest = distance;
         const auto &box = graph.Boxes[node], &reader = graph.Boxes[to_node];
-        const uint32_t clear = box.X + box.W + 1u;
+        const uint32_t clear = box.X + box.W;
         insert = Insert{to_node, slot, clear > reader.X ? clear - reader.X : 0u};
     });
     return insert;
 }
 
-void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_entity, Graph &graph, const std::vector<uint32_t> &selected, const Hit &hit, const std::optional<Insert> &insert) {
+// The links a held node makes when it is dropped with the mouse over another node's port column.
+struct Dock {
+    uint32_t Node{NoNode}; // The node whose port column is under the mouse
+    std::vector<std::pair<uint16_t, uint16_t>> Links; // Each socket of Node with the held node's socket it links with
+};
+// On the port cell of a socket the held node can link with, the dock links that socket.
+// Anywhere else on the column, it links each output with the first input that is unlinked, or whose link the held node can be inserted into.
+Dock DockOf(const state::Registry &r, const Graph &graph, uint32_t held, ImVec2 mouse) {
+    const auto &view = graph.View;
+    const auto cell = (mouse - graph.Origin) / graph.Step;
+    if (cell.x < 0.f || cell.y < 0.f) return {};
+    const auto x = uint32_t(cell.x), y = uint32_t(cell.y);
+    // Whether the cell is in the node's input column, in its output column, or in neither.
+    const auto column = [&](uint32_t n) -> std::optional<bool> {
+        const auto &box = graph.Boxes[n];
+        if (n == held || y < box.Y || y >= box.Y + HeightOf(graph, n)) return {};
+        if (box.In && x == box.X) return true;
+        if (box.Out && x + 1u == box.X + box.W) return false;
+        return {};
+    };
+    // The expanded node's open tray covers the nodes under it.
+    Dock dock;
+    for (const auto n : graph.Shown) {
+        if (column(n) && (dock.Node == NoNode || n == graph.Expanded)) dock.Node = n;
+    }
+    const auto node = dock.Node;
+    if (node == NoNode) return dock;
+    const bool input = *column(node);
+    // The links run from the outputs of `from` to the inputs of `to`.
+    const auto from = input ? held : node, to = input ? node : held;
+    if (view.Geometry && Upstream(InputsFirst(view), WiresOf(view), from, [](uint32_t) { return true; })[to]) return dock;
+    const auto inputs = InputsOf(view, node);
+    std::optional<uint16_t> under; // The socket whose port cell is under the mouse
+    for (uint16_t s = input ? 0u : inputs; s < (input ? inputs : uint16_t(NodeSockets(view, node).size())); ++s) {
+        const bool in_closed_tray = input && node != graph.Expanded && InTray(view, node, s);
+        if (!in_closed_tray && RowAt(graph, SocketAt(graph, node, s).y) == y) under = s;
+    }
+    const auto takes = [&](uint16_t i) {
+        return graph.Rows[to].Closed[i] != NoRow && (LinksInto(view, to, i) == 0u || NodeSockets(view, to)[i].Multi || (input && view.Geometry && Inserts(*view.Geometry, held, node, i)));
+    };
+    // Pairs each output with the first input that takes it, or with `only`, that socket of the node alone, where a linked input also counts.
+    const auto pair_up = [&](std::optional<uint16_t> only) {
+        std::vector<bool> paired(InputsOf(view, to));
+        for (auto o = InputsOf(view, from); o < uint16_t(NodeSockets(view, from).size()); ++o) {
+            for (uint16_t i = 0u; i < paired.size(); ++i) {
+                if (only && (input ? i : o) != *only) continue;
+                if (paired[i] || !(takes(i) || (only && input)) || !Accepts(r, view, from, o, to, i)) continue;
+                paired[i] = true;
+                dock.Links.push_back(input ? std::pair{i, o} : std::pair{o, i});
+                break;
+            }
+        }
+    };
+    if (under) pair_up(under);
+    if (dock.Links.empty()) pair_up({});
+    return dock;
+}
+// Links the held node as the dock pairs its sockets, in place of the staged move.
+// The held node loses its placed cell, so the page lays it out from its connections.
+// It is inserted into each link that takes it at the node's socket: the link into an input that is not a multi-input, or every link from an output.
+void DropOnPorts(const Graph &graph, state::Entity owner, uint32_t held, const Dock &dock) {
+    const auto &view = graph.View;
+    action::Cancel();
+    if (!action::Begin(action::Phase::Record)) return;
+    action::AddToGesture(action::nodes::UnplaceNode{view.Network, view.Nodes[held].Item});
+    for (const auto [socket, held_socket] : dock.Links) {
+        if (!view.Geometry) {
+            action::AddToGesture(AssignOf(view, held, held_socket, dock.Node, socket));
+            continue;
+        }
+        const auto &plan = *view.Geometry;
+        // The first insert links both of the held node's main sockets, and each later one moves the reader's link to its main output.
+        bool inserted = false;
+        const auto insert = [&](uint32_t reader, uint16_t slot) {
+            if (!Inserts(plan, held, reader, slot)) return;
+            if (!std::exchange(inserted, true)) return action::AddToGesture(InsertOf(view, owner, held, reader, slot));
+            const auto to = SlotSocket(view, reader, slot);
+            action::AddToGesture(LinkOf(plan, owner, held, *MainSocket(view.Nodes[held].Kind, SocketDirection::Out), reader, to, SlotIndex(view, reader, slot)));
+            // A multi-input socket gets the new link before the one it replaces.
+            if (!NodeSockets(view, reader)[to].Multi) return;
+            auto unlink = UnlinkOf(view, owner, reader, slot);
+            ++unlink.Index;
+            action::AddToGesture(unlink);
+        };
+        if (socket >= InputsOf(view, dock.Node)) {
+            for (const auto slot : std::span{graph.Page.Out}.subspan(graph.Page.OutFirst[dock.Node], graph.Page.OutFirst[dock.Node + 1u] - graph.Page.OutFirst[dock.Node])) {
+                if (const auto reader = ReaderOf(view, slot); WiresOf(view)[slot].FromSocket == socket) insert(reader, uint16_t(slot - InputsFirst(view)[reader]));
+            }
+        } else if (!NodeSockets(view, dock.Node)[socket].Multi) {
+            insert(dock.Node, socket);
+        }
+        if (!inserted) action::AddToGesture(LinkOf(plan, owner, held, held_socket, dock.Node, socket));
+    }
+}
+
+void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_entity, Graph &graph, const std::vector<uint32_t> &selected, const Hit &hit, const std::optional<Insert> &insert, const Dock &dock) {
     const auto &io = GetIO();
     const auto &view = graph.View;
     const auto &nodes = view.Nodes;
@@ -1117,11 +1221,10 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
         }
     };
     const auto end_move = [&](bool commit) {
-        if (panel.Moved && commit) {
-            if (insert) {
-                const auto socket = SlotSocket(view, insert->ToNode, insert->ToSlot);
-                action::Emit(action::nodes::InsertNode{mesh_entity, nodes[panel.DragNode].Item.Entity, nodes[insert->ToNode].Item.Entity, SocketId(view, insert->ToNode, socket), insert->Shift, SlotIndex(view, insert->ToNode, insert->ToSlot)}, action::Phase::Stage);
-            }
+        if (panel.Moved && commit && !dock.Links.empty()) {
+            DropOnPorts(graph, mesh_entity, panel.DragNode, dock);
+        } else if (panel.Moved && commit) {
+            if (insert) action::Emit(InsertOf(view, mesh_entity, panel.DragNode, insert->ToNode, insert->ToSlot, insert->Shift), action::Phase::Stage);
             action::Commit();
         } else if (panel.Moved) {
             action::Cancel();
@@ -1558,8 +1661,11 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
     if (panel.Drag == NodeDrag::None || wiring) RecordHover(r, panel, view, hit);
     const auto selected = SelectedNodes(r, view);
     const bool holding = (panel.Drag == NodeDrag::Move && panel.Moved) || (panel.Drag == NodeDrag::Grab && panel.DragNode != NoNode);
-    const auto insert = holding && selected == std::vector{panel.DragNode} ? InsertTarget(graph, panel.DragNode) : std::nullopt;
-    if (interactive) Interact(r, panel, mesh_entity, graph, selected, hit, insert);
+    // A held node dropped over a port column links with that node, and one dropped anywhere else is inserted into a link that crosses it.
+    const bool holds_one = holding && selected == std::vector{panel.DragNode};
+    const auto dock = holds_one && panel.Hovered ? DockOf(r, graph, panel.DragNode, mouse) : Dock{};
+    const auto insert = holds_one && dock.Links.empty() ? InsertTarget(graph, panel.DragNode) : std::nullopt;
+    if (interactive) Interact(r, panel, mesh_entity, graph, selected, hit, insert, dock);
     const bool stays_open = graph.Expanded != NoNode && (TrayRect(graph, graph.Expanded).Contains(mouse) || (wiring && panel.DragNode == graph.Expanded) || panel.PickNode == graph.Expanded);
     if (hit.Type == HitType::Parameters) panel.Expanded = hit.Node;
     else if (!stays_open) panel.Expanded = NoNode;
@@ -1583,18 +1689,9 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
         if (y >= origin.y) draw.AddLine({grid_min.x, y}, {end.x, y}, i % coarse == 0 ? coarse_grid : grid);
     }
     const float thickness = std::max(theme.Sizes.WireWidth * zoom, 1.f);
-    // Highlight a wire when a dragged node would be inserted into it, when a drag from the hovered input would pick it up, or when it starts at the hovered output.
-    const bool over_input = idle && hit.Type == HitType::Socket && hit.Socket < InputsOf(view, hit.Node);
-    const bool over_output = idle && hit.Type == HitType::Socket && !over_input;
-    const auto hovered_slot = over_input ? SlotOf(view, hit.Node, hit.Socket, hit.Index) : uint16_t{};
-    ForEachWire(graph, [&](const Wire &wire, NodeLink link, uint32_t node, uint16_t slot) {
-        const bool lit = (target && target->ToNode == node && target->ToSlot == slot) || (over_input && hit.Node == node && hovered_slot == slot) || (over_output && link == NodeLink{hit.Node, hit.Socket});
-        const auto color = lit ? colors.WireHighlight : SocketColor(colors, NodeSockets(view, link.FromNode)[link.FromSocket]);
-        draw.AddBezierCubic(wire[0], wire[1], wire[2], wire[3], U32(color), lit ? thickness * 1.5f : thickness);
-    });
     PushFont(nullptr, GetStyle().FontSizeBase * zoom);
     const auto font_size = GetFontSize();
-    const float inset = (theme.Sizes.SocketRadius + theme.Sizes.LabelSpacing) * zoom, spacing = theme.Sizes.LabelSpacing * zoom, label_reach = float(theme.Sizes.MaxLabelCells) * graph.Step;
+    const float spacing = theme.Sizes.LabelSpacing * zoom, label_reach = float(theme.Sizes.MaxLabelCells) * graph.Step;
     const auto draw_label = [&](ImVec2 min, ImVec2 max, const char *text, vec4 color, bool right) {
         if (const float width = CalcTextSize(text).x; right && width <= max.x - min.x) min.x = max.x - width;
         PushStyleColor(ImGuiCol_Text, ImVec4{color.x, color.y, color.z, color.w});
@@ -1607,16 +1704,21 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
         const auto entity = node.Item.Entity;
         const auto kind = node.Kind;
         const auto [min, max] = RectOf(graph, n);
+        // The labels span the columns between the port columns.
+        const float labels_min = min.x + (graph.Boxes[n].In ? graph.Step : 0.f), labels_max = max.x - (graph.Boxes[n].Out ? graph.Step : 0.f);
         const auto &rows = graph.Rows[n];
         const bool expanded = n == graph.Expanded;
         const float rounding = theme.Sizes.Rounding * zoom, pad = theme.Sizes.TitlePadding * zoom;
         draw.AddRectFilled(min, max, U32(expanded ? vec4{colors.Node.x, colors.Node.y, colors.Node.z, 1.f} : colors.Node), rounding);
-        draw.AddRectFilled(min, {max.x, min.y + graph.Step}, U32(n == view.DisplayNode ? colors.DisplayedTitle : colors.*GroupColors[view.Geometry ? uint8_t(KindGroups[kind]) : uint8_t(KindGroup::Sources)]), rounding, ImDrawFlags_RoundTop);
-        draw_label({min.x + pad, min.y + (graph.Step - font_size) * .5f}, {max.x - pad, min.y + (graph.Step + font_size) * .5f}, node.Title.c_str(), colors.Title, false);
+        // The title ends where the node's first cell row does.
+        const float title_end = min.y + graph.Step - theme.Sizes.Margin * zoom;
+        draw.AddRectFilled(min, {max.x, title_end}, U32(n == view.DisplayNode ? colors.DisplayedTitle : colors.*GroupColors[view.Geometry ? uint8_t(KindGroups[kind]) : uint8_t(KindGroup::Sources)]), rounding, ImDrawFlags_RoundTop);
+        draw_label({min.x + pad, (min.y + title_end - font_size) * .5f}, {max.x - pad, (min.y + title_end + font_size) * .5f}, node.Title.c_str(), colors.Title, false);
         const auto sockets = NodeSockets(view, n);
         const auto inputs = InputsOf(view, n);
         const bool erring = r.all_of<NodeError>(entity);
-        const bool active = n == active_node, is_selected = Selected(r, view, n);
+        // The active node shows its outline only while it is selected.
+        const bool is_selected = Selected(r, view, n), active = is_selected && n == active_node;
         const auto border = active ? colors.Active : is_selected ? colors.Selected :
             erring                                               ? colors.Error :
                                                                    colors.Border;
@@ -1638,8 +1740,8 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
             const auto color = dimmed ? colors.DimmedLabel : parameter ? colors.ParameterLabel :
                                                                          colors.Label;
             const float top = at.y - font_size * .5f, bottom = at.y + font_size * .5f;
-            if (s < inputs) draw_label({at.x + inset + (parameter ? theme.Sizes.ParameterIndent * zoom : 0.f), top}, {std::min(at.x + label_reach, max.x) - spacing, bottom}, LabelOf(r, view, n, s), color, false);
-            else draw_label({std::max(at.x - label_reach, min.x) + spacing, top}, {at.x - inset, bottom}, LabelOf(r, view, n, s), color, true);
+            if (s < inputs) draw_label({labels_min + spacing + (parameter ? theme.Sizes.ParameterIndent * zoom : 0.f), top}, {std::min(labels_min + label_reach, labels_max) - spacing, bottom}, LabelOf(r, view, n, s), color, false);
+            else draw_label({std::max(labels_max - label_reach, labels_min) + spacing, top}, {labels_max - spacing, bottom}, LabelOf(r, view, n, s), color, true);
         }
         if (rows.Tray > 0u && !expanded) {
             const auto at = TrayAt(graph, n);
@@ -1658,7 +1760,7 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
             draw.AddTriangleFilled(a, c, b, U32(color));
             draw.AddTriangle(a, c, b, U32(colors.Outline), theme.Sizes.OutlineWidth);
             if (!linked) label = "Parameters";
-            draw_label({at.x + inset, at.y - font_size * .5f}, {max.x - spacing, at.y + font_size * .5f}, label.c_str(), color, false);
+            draw_label({labels_min + spacing, at.y - font_size * .5f}, {labels_max - spacing, at.y + font_size * .5f}, label.c_str(), color, false);
         }
     };
     for (const auto n : graph.Shown) {
@@ -1666,6 +1768,23 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
     }
     if (graph.Expanded != NoNode) draw_node(graph.Expanded);
     PopFont();
+    // The ports are inside the nodes, so the wires draw over them.
+    // Highlight a wire when a dragged node would be inserted into it, when a drag from the hovered input would pick it up, or when it starts at the hovered output.
+    const bool over_input = idle && hit.Type == HitType::Socket && hit.Socket < InputsOf(view, hit.Node);
+    const bool over_output = idle && hit.Type == HitType::Socket && !over_input;
+    const auto hovered_slot = over_input ? SlotOf(view, hit.Node, hit.Socket, hit.Index) : uint16_t{};
+    ForEachWire(graph, [&](const Wire &wire, NodeLink link, uint32_t node, uint16_t slot) {
+        const bool lit = (target && target->ToNode == node && target->ToSlot == slot) || (over_input && hit.Node == node && hovered_slot == slot) || (over_output && link == NodeLink{hit.Node, hit.Socket});
+        const auto color = lit ? colors.WireHighlight : SocketColor(colors, NodeSockets(view, link.FromNode)[link.FromSocket]);
+        draw.AddBezierCubic(wire[0], wire[1], wire[2], wire[3], U32(color), lit ? thickness * 1.5f : thickness);
+    });
+    // The port cells a held node would link at.
+    for (const auto &link : dock.Links) {
+        if (panel.Drag == NodeDrag::None) break;
+        const ImVec2 at = SocketAt(graph, dock.Node, link.first), half{graph.Step * .5f, graph.Step * .5f};
+        draw.AddRectFilled(at - half, at + half, U32(colors.BoxSelect));
+        draw.AddRect(at - half, at + half, U32(colors.BoxSelectBorder));
+    }
     if (wiring) {
         const auto socket = SocketAt(graph, panel.DragNode, panel.DragSocket);
         const auto held = NodeSockets(view, panel.DragNode)[panel.DragSocket];

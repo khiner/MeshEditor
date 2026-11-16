@@ -353,6 +353,10 @@ void Apply(state::Registry &r, const Action &action) {
                 if (!r.valid(a.Network)) return Fail(r, "The network does not exist");
                 r.remove<NetworkLayout>(a.Network);
             },
+            [&](const UnplaceNode &a) {
+                if (!r.valid(a.Network)) return Fail(r, "The network does not exist");
+                ClearNetworkPosition(r, a.Network, a.Node);
+            },
             [&](const SetExtrudeOffset &a) {
                 if (!r.all_of<procedure::Extrude>(a.Node)) return Fail(r, "The operation is not an extrusion");
                 if (!HandleWritable(r, a.Node, HandleParameter::ExtrudeOffset)) return Fail(r, "Disconnect the extrusion offset inputs before editing the offset handle");
