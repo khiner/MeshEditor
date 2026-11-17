@@ -109,9 +109,10 @@ void ImGuiRenderer::Render(ImDrawData *draw_data, RenderEncoder encoder) {
             if (const auto texture = cmd.GetTexID(); texture != ImTextureID_Invalid) command.SetTexture(reinterpret_cast<MTL::Texture *>(texture), ImageBinding);
             command.SetAddress(vertices + uint64_t(cmd.VtxOffset) * sizeof(ImDrawVert), VertexBinding);
             const auto index_offset = uint64_t(cmd.IdxOffset) * sizeof(ImDrawIdx);
+            // Metal bounds a draw's index reads from its address rounded down to four bytes, so the length runs from there.
             encoder->drawIndexedPrimitives(
                 MTL::PrimitiveTypeTriangle, cmd.ElemCount, sizeof(ImDrawIdx) == 2 ? MTL::IndexTypeUInt16 : MTL::IndexTypeUInt32,
-                indices + index_offset, index_bytes - index_offset
+                indices + index_offset, index_bytes - (index_offset & ~uint64_t{3})
             );
         }
     }
