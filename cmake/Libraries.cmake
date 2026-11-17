@@ -15,26 +15,19 @@ add_library(mesheditor_serialization INTERFACE)
 target_include_directories(mesheditor_serialization SYSTEM INTERFACE "${CMAKE_SOURCE_DIR}/lib/zpp_bits")
 target_compile_definitions(mesheditor_serialization INTERFACE ZPP_BITS_AUTODETECT_MEMBERS_MODE=1)
 
-function(mesheditor_compile_policy target policy)
-    if(policy STREQUAL "HOT")
-        set(debug_optimization -O2)
-    else()
-        set(debug_optimization -O0)
-    endif()
+function(mesheditor_compile_policy target)
     target_compile_options(${target} PRIVATE
-        -Wall -Wextra -Wno-missing-field-initializers -Wno-missing-designated-field-initializers -Wno-elaborated-enum-base -fno-rtti
-        "$<$<CONFIG:Debug>:${debug_optimization}>"
-        "$<$<NOT:$<CONFIG:Debug>>:-O2>")
+        -Wall -Wextra -Wno-missing-field-initializers -Wno-missing-designated-field-initializers -Wno-elaborated-enum-base -fno-rtti -O2)
     set_target_properties(${target} PROPERTIES CXX_STANDARD 26 OBJCXX_STANDARD 26)
     target_link_libraries(${target} PUBLIC mesheditor_headers)
 endfunction()
 
-function(mesheditor_library target policy)
+function(mesheditor_library target)
     add_library(${target} STATIC ${ARGN})
-    mesheditor_compile_policy(${target} ${policy})
+    mesheditor_compile_policy(${target})
 endfunction()
 
-mesheditor_library(MeshEditorProjectStore HOT
+mesheditor_library(MeshEditorProjectStore
     src/RangeAllocator.cpp
     src/state/Registry.cpp
     src/project/EntityStore.cpp
@@ -46,11 +39,11 @@ mesheditor_library(MeshEditorProjectStore HOT
     src/project/store/History.cpp)
 target_link_libraries(MeshEditorProjectStore PUBLIC mesheditor_serialization)
 
-mesheditor_library(mesheditor_support HOT src/File.cpp src/Paths.cpp src/Compress.cpp src/project/Assets.cpp)
+mesheditor_library(mesheditor_support src/File.cpp src/Paths.cpp src/Compress.cpp src/project/Assets.cpp)
 target_include_directories(mesheditor_support SYSTEM PRIVATE lib/basis_universal/zstd)
 target_link_libraries(mesheditor_support PRIVATE basisu_transcoder)
 
-mesheditor_library(mesheditor_image_codecs HOT src/image/ImageDecode.cpp src/image/ImageEncode.cpp)
+mesheditor_library(mesheditor_image_codecs src/image/ImageDecode.cpp src/image/ImageEncode.cpp)
 target_include_directories(mesheditor_image_codecs SYSTEM PRIVATE lib/lunasvg/plutovg/source)
 target_link_libraries(mesheditor_image_codecs PRIVATE mesheditor_support webp)
 
@@ -69,7 +62,7 @@ target_compile_options(mesheditor_implot PRIVATE -O2 -w)
 target_compile_definitions(mesheditor_implot PRIVATE "IMPLOT_CUSTOM_NUMERIC_TYPES=(ImS8)(ImS32)(ImU32)(float)(double)")
 target_link_libraries(mesheditor_implot PUBLIC mesheditor_imgui)
 
-mesheditor_library(MeshEditorMetal HOT
+mesheditor_library(MeshEditorMetal
     src/metal/Bindless.cpp
     src/metal/Buffer.cpp
     src/metal/Dispatch.cpp
@@ -87,7 +80,7 @@ mesheditor_library(MeshEditorMetal HOT
     src/metal/PhysicalPages.cpp
 )
 
-mesheditor_library(MeshEditorMesh HOT
+mesheditor_library(MeshEditorMesh
     src/mesh/Mesh.cpp
     src/mesh/MeshClone.cpp
     src/mesh/MeshCreate.cpp
@@ -139,7 +132,7 @@ mesheditor_library(MeshEditorMesh HOT
     src/mesh/VertexWeldGpu.cpp
 )
 
-mesheditor_library(MeshEditorScene HOT
+mesheditor_library(MeshEditorScene
     src/TransformMath.cpp
     src/animation/Clips.cpp
     src/armature/Armature.cpp
@@ -155,7 +148,7 @@ mesheditor_library(MeshEditorScene HOT
     src/viewport/ViewCameraOps.cpp
 )
 
-mesheditor_library(MeshEditorRender HOT
+mesheditor_library(MeshEditorRender
     src/animation/Evaluate.cpp
     src/animation/Fields.cpp
     src/render/ClusterLod.cpp
@@ -182,7 +175,7 @@ mesheditor_library(MeshEditorRender HOT
     src/viewport/ViewportRenderGpu.cpp
 )
 
-mesheditor_library(MeshEditorPhysics HOT
+mesheditor_library(MeshEditorPhysics
     src/physics/ColliderUpdate.cpp
     src/physics/PhysicsStores.cpp
     src/physics/PhysicsSystem.cpp
@@ -193,7 +186,7 @@ mesheditor_library(MeshEditorPhysics HOT
 # The same LLVM vector-growth miscompile worked around by RBP affects collider cooking.
 set_source_files_properties(src/physics/PhysicsSystem.cpp src/physics/RbpShape.cpp PROPERTIES COMPILE_OPTIONS -O1)
 
-mesheditor_library(MeshEditorAudio HOT
+mesheditor_library(MeshEditorAudio
     src/audio/AudioDevice.cpp
     src/audio/AudioFile.cpp
     src/audio/AudioOutputConfig.cpp
@@ -208,7 +201,7 @@ mesheditor_library(MeshEditorAudio HOT
     src/audio/ModalSolve.cpp
 )
 
-mesheditor_library(MeshEditorAssets HOT
+mesheditor_library(MeshEditorAssets
     src/assets/MaterialImport.cpp
     src/assets/MeshImport.cpp
     src/audio/RealImpact.cpp
@@ -218,18 +211,7 @@ mesheditor_library(MeshEditorAssets HOT
     src/gltf/SourceTexture.cpp
 )
 
-# History copy, move and encoding callbacks run over component pages.
-set(native_snapshots
-    src/snapshot/ArmatureSnapshot.cpp
-    src/snapshot/AssetsSnapshot.cpp
-    src/snapshot/AudioSnapshot.cpp
-    src/snapshot/MeshSnapshot.cpp
-    src/snapshot/PhysicsSnapshot.cpp
-    src/snapshot/SceneComponentsSnapshot.cpp
-    src/snapshot/ViewportSnapshot.cpp)
-set_property(SOURCE ${native_snapshots} APPEND PROPERTY COMPILE_OPTIONS -O2)
-
-mesheditor_library(MeshEditorEditor COLD
+mesheditor_library(MeshEditorEditor
     src/project/Project.cpp
     src/project/Recording.cpp
     src/ProcessEvents.cpp
@@ -262,18 +244,21 @@ mesheditor_library(MeshEditorEditor COLD
     src/procedure/SceneReferences.cpp
     src/scene/HierarchyInstance.cpp
     src/scene/HierarchyGeometry.cpp
-    ${native_snapshots}
+    src/snapshot/ArmatureSnapshot.cpp
+    src/snapshot/AssetsSnapshot.cpp
+    src/snapshot/AudioSnapshot.cpp
+    src/snapshot/MeshSnapshot.cpp
+    src/snapshot/PhysicsSnapshot.cpp
+    src/snapshot/SceneComponentsSnapshot.cpp
+    src/snapshot/ViewportSnapshot.cpp
     src/snapshot/SnapshotRoles.cpp
     src/snapshot/Workspace.cpp
     src/VideoRecorder.cpp
     src/viewport/Viewport.cpp
     src/viewport/ViewportOps.cpp
 )
-# The settle pass and the object drag loop over every selected entity each frame, and a plan reads every node of its procedure.
-# The network files derive a node per item and list a scene's items.
-set_property(SOURCE src/ProcessEvents.cpp src/action/View.cpp src/procedure/Plan.cpp src/procedure/Network.cpp src/procedure/SceneReferences.cpp APPEND PROPERTY COMPILE_OPTIONS -O2)
 
-mesheditor_library(MeshEditorUi COLD
+mesheditor_library(MeshEditorUi
     src/project/HistoryUi.cpp
     src/WorkspaceState.cpp
     src/timeline/TimelineUi.cpp
@@ -293,10 +278,8 @@ mesheditor_library(MeshEditorUi COLD
     src/viewport/ViewportUi.cpp
 )
 
-# The page build and its layout read every item of a page when the page changes.
-set_property(SOURCE src/procedure/SceneNodes.cpp src/procedure/NodeEditor.cpp APPEND PROPERTY COMPILE_OPTIONS -O2)
 
-mesheditor_library(MeshEditorPlatform COLD
+mesheditor_library(MeshEditorPlatform
     src/FileDialog.mm
     src/MacPlatform.mm
 )
@@ -334,6 +317,3 @@ set_source_files_properties(src/project/Recording.cpp src/project/HistoryUi.cpp 
 set_source_files_properties(src/FileDialog.mm src/MacPlatform.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 set_property(SOURCE src/project/Sessions.cpp APPEND PROPERTY COMPILE_DEFINITIONS RESTORE_SESSION_RETAIN=${RESTORE_SESSION_RETAIN})
 
-# Contact processing and modal input preparation run numerical loops inside the editor integration.
-set_property(SOURCE src/editor/AudioIntegration.cpp src/audio/surface/SurfaceAudio.cpp
-    APPEND PROPERTY COMPILE_OPTIONS -O2)

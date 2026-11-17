@@ -1,7 +1,7 @@
 # Test executables link the production libraries rather than recompiling their sources.
 function(mesheditor_test target source)
     add_executable(${target} ${source})
-    mesheditor_compile_policy(${target} HOT)
+    mesheditor_compile_policy(${target})
     target_link_libraries(${target} PRIVATE Boost::ut ${ARGN})
     target_compile_definitions(${target} PRIVATE MESHEDITOR_FULL_ACTION)
     target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

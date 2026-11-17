@@ -97,7 +97,7 @@ endif()
 include(cmake/Libraries.cmake)
 
 add_executable(MeshEditorPipelineArchive tools/PipelineArchive.cpp)
-mesheditor_compile_policy(MeshEditorPipelineArchive COLD)
+mesheditor_compile_policy(MeshEditorPipelineArchive)
 target_link_libraries(MeshEditorPipelineArchive PRIVATE MeshEditorRender)
 set(PIPELINE_ARCHIVE "${CMAKE_BINARY_DIR}/cache/Pipelines.mtl4a")
 set(PIPELINE_ARCHIVE_STAMP "${CMAKE_BINARY_DIR}/cache/Pipelines.stamp")
@@ -118,7 +118,7 @@ if(MESHEDITOR_APP)
     target_link_libraries(MeshEditor PRIVATE MeshEditorUi)
     add_dependencies(MeshEditor MeshEditorPrecompilePipelines)
     rbp_copy_shaders(MeshEditor)
-    mesheditor_compile_policy(MeshEditor COLD)
+    mesheditor_compile_policy(MeshEditor)
     target_compile_definitions(MeshEditor PRIVATE
         GLTF_SAMPLE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/external/glTF-Sample-Assets"
         GLTF_PHYSICS_DIR="${CMAKE_SOURCE_DIR}/external/glTF_Physics"
