@@ -579,6 +579,31 @@ HdriRefs GetHdriRefs(state::Registry &r, std::string_view selected) {
     return refs;
 }
 
+state::Entity TextureAt(const state::Registry &r, uint32_t sampler_slot) {
+    for (const auto [e, texture] : r.view<const MaterializedTexture>().each()) {
+        if (texture.SamplerSlot == sampler_slot) return e;
+    }
+    return state::Null;
+}
+state::Entity AddTexture(state::Registry &r, uint32_t source_image, uint32_t source_texture, TextureParams params) {
+    const auto slot = AllocateSamplerSlot(r.Resources.get<mtl::BindlessSet>());
+    r.Resources.get<TextureStore>().PendingUploads.emplace_back(PendingTextureUpload{.SamplerSlot = slot, .Source = PendingTextureUpload::GltfImageRef{source_image}, .Params = params});
+    const auto e = r.create();
+    r.emplace<MaterializedTexture>(e, slot, source_image, source_texture, std::move(params));
+    return e;
+}
+
+void ReleaseTexture(state::Registry &r, uint32_t sampler_slot) {
+    auto &slots = r.Resources.get<mtl::BindlessSet>();
+    auto &textures = r.Resources.get<TextureStore>();
+    if (const auto entry = std::ranges::find(textures.Textures, sampler_slot, &TextureEntry::SamplerSlot); entry != textures.Textures.end()) {
+        ReleaseTextureSlots(slots, std::span{&*entry, 1u});
+        textures.Textures.erase(entry);
+    } else if (std::erase_if(textures.PendingUploads, [&](const auto &upload) { return upload.SamplerSlot == sampler_slot; })) {
+        slots.Release({SlotType::Sampler, sampler_slot});
+    }
+}
+
 void ReleaseUnlistedTextures(state::Registry &r, std::span<const MaterializedTexture> manifest) {
     auto &slots = r.Resources.get<mtl::BindlessSet>();
     auto &textures = r.Resources.get<TextureStore>();
@@ -613,13 +638,4 @@ void Reset(EnvironmentStore &env, state::Registry &r) {
     }
     env.ClearRequested = false;
     ResetImportedEnvironment(r);
-}
-
-void ResetImportedTexturesAndMaterials(state::Registry &r) {
-    ReleaseImportedTextures(r);
-    auto &buffers = r.Resources.get<GpuBuffers>();
-    if (buffers.Materials.Count<PBRMaterial>() > 1) buffers.Materials.SetCount<PBRMaterial>(1u);
-    // The next material change compares against no prior attributes, since later imports reuse the released indices.
-    if (auto *scene = r.Resources.find<GpuSceneState>()) scene->RequiredMaterialAttributes.clear();
-    Reset(r.Resources.get<MaterialStore>(), r);
 }

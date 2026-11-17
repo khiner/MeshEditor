@@ -125,12 +125,14 @@ void EmplaceObject(state::Registry &r, state::Entity e, ObjectType type, state::
     if (!r.all_of<SceneParent>(e)) r.emplace<SceneMembership>(e, std::vector{scene == state::Null ? FrameScene(r) : scene});
 }
 
-state::Entity FindActiveEntity(const state::Registry &registry, state::Entity scene) {
+state::Entity FindActiveNode(const state::Registry &registry) {
     const auto all_active = registry.view<Active>();
     assert(all_active.size() <= 1);
-    if (all_active.empty()) return state::Null;
-    const auto active = *all_active.begin();
-    return InScene(registry, active, scene) ? active : state::Null;
+    return all_active.empty() ? state::Null : *all_active.begin();
+}
+state::Entity FindActiveEntity(const state::Registry &registry, state::Entity scene) {
+    const auto active = FindActiveNode(registry);
+    return active != state::Null && InScene(registry, active, scene) ? active : state::Null;
 }
 state::Entity FindActiveEntity(const state::Registry &registry) { return FindActiveEntity(registry, FrameScene(registry)); }
 

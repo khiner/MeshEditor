@@ -37,15 +37,12 @@ void RegisterRenderStoreHandlers(state::Registry &r) {
 }
 mtl::BufferContext &InitRenderStores(state::Registry &r) {
     auto &buffers = r.Resources.emplace<GpuBuffers>(r.Resources.get<const mtl::Context>(), r.Resources.get<mtl::BindlessSet>());
-    r.Resources.emplace<MaterialStore>();
     return buffers.Ctx;
 }
 void InitDefaultMaterial(state::Registry &r) {
     auto &buffers = r.Resources.get<GpuBuffers>();
     auto &textures = r.Resources.get<TextureStore>();
-    auto &materials = r.Resources.get<MaterialStore>();
     buffers.Materials.Append(PBRMaterial{.BaseColorTexture = {.Slot = textures.WhiteTextureSlot}, .MetallicFactor = 0.f, .DoubleSided = 1u});
-    materials.AppendNames({"Default"});
 
     constexpr std::array<std::byte, 4> WhitePixels{std::byte{0xff}, std::byte{0xff}, std::byte{0xff}, std::byte{0xff}};
     textures.PendingUploads.emplace_back(PendingTextureUpload{
@@ -71,6 +68,5 @@ void DeinitTextureStores(state::Registry &r) {
 }
 void DeinitRenderStores(state::Registry &r) {
     r.Resources.erase<GpuBuffers>();
-    r.Resources.erase<MaterialStore>();
 }
 void DeinitRenderStoreContext(state::Registry &r) { r.Resources.erase<mtl::BindlessSet>(); }

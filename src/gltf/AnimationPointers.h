@@ -19,7 +19,7 @@ enum class PointerSpace : uint8_t {
 struct PointerRow {
     std::string Template; // The pointer with "{}" in place of the index.
     PointerSpace Space;
-    ChannelTarget Target; // Index 0. A weights target has Count 0 until bound to a mesh instance, and Count 1 for one weight.
+    ChannelTarget Target; // A weights target has Count 0 until bound to a mesh instance, and Count 1 for one weight.
 };
 const std::vector<PointerRow> &PointerRows();
 

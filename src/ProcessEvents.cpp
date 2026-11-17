@@ -197,11 +197,11 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     }
 
     if (!render_changes.MaterializedTextures.empty()) {
-        if (const auto *manifest = r.try_get<const MaterializedTextures>(state::Document)) {
-            for (const auto &t : manifest->Items) {
-                if (!slots.Reserve(SlotType::Sampler, t.SamplerSlot)) continue;
-                textures.PendingUploads.emplace_back(PendingTextureUpload{.SamplerSlot = t.SamplerSlot, .Source = PendingTextureUpload::GltfImageRef{t.SourceImageIndex}, .Params = t.Params});
-            }
+        for (const auto [_, t] : r.view<const MaterializedTexture>().each()) {
+            // A renamed texture node renames its GPU texture.
+            if (const auto entry = std::ranges::find(textures.Textures, t.SamplerSlot, &TextureEntry::SamplerSlot); entry != textures.Textures.end()) entry->Params.Name = t.Params.Name;
+            if (!slots.Reserve(SlotType::Sampler, t.SamplerSlot)) continue;
+            textures.PendingUploads.emplace_back(PendingTextureUpload{.SamplerSlot = t.SamplerSlot, .Source = PendingTextureUpload::GltfImageRef{t.SourceImageIndex}, .Params = t.Params});
         }
     }
     if (!textures.PendingUploads.empty()) {
@@ -663,14 +663,14 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     }
     std::vector<state::Entity> material_meshes;
     if (const auto &tracker = mesh_changes.Material; !tracker.empty()) {
+        // A mesh is tracked for its pending assignment, or for slots a deleted material left.
         for (auto mesh_entity : tracker) {
-            const auto *assignment = r.try_get<const MeshMaterialAssignment>(mesh_entity);
-            if (!assignment || !r.all_of<EvaluatedMesh>(mesh_entity)) continue;
-            const auto material_count = buffers.Materials.Count<PBRMaterial>();
-            if (material_count == 0u) continue;
-            const auto primitive_materials = meshes.EditPrimitiveMaterials(*DrawnStoreId(r, mesh_entity));
-            if (assignment->PrimitiveIndex >= primitive_materials.size()) continue;
-            primitive_materials[assignment->PrimitiveIndex] = std::min(assignment->MaterialIndex, material_count - 1u);
+            if (!r.valid(mesh_entity) || !r.all_of<EvaluatedMesh>(mesh_entity)) continue;
+            if (const auto *assignment = r.try_get<const MeshMaterialAssignment>(mesh_entity)) {
+                const auto stored = meshes.Arenas().PrimitiveMaterials.Get(meshes.Get(*DrawnStoreId(r, mesh_entity)).PrimitiveMaterials);
+                const auto material = MaterialIndexOf(r, assignment->Material);
+                if (assignment->PrimitiveIndex < stored.size() && stored[assignment->PrimitiveIndex] != material) meshes.EditPrimitiveMaterials(*DrawnStoreId(r, mesh_entity))[assignment->PrimitiveIndex] = material;
+            }
             material_meshes.emplace_back(mesh_entity);
         }
     }
@@ -682,7 +682,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
             const auto primitive_materials = meshes.EditPrimitiveMaterials(*DrawnStoreId(r, e));
             for (size_t i = 0; i < std::min(layout.DefaultMaterials.size(), primitive_materials.size()); ++i) {
                 const auto &mapping = layout.VariantMappings[i];
-                primitive_materials[i] = active && *active < mapping.size() && mapping[*active] ? *mapping[*active] : layout.DefaultMaterials[i];
+                primitive_materials[i] = MaterialIndexOf(r, active && *active < mapping.size() && mapping[*active] ? *mapping[*active] : layout.DefaultMaterials[i]);
             }
         }
     }
@@ -1182,7 +1182,7 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
     render.Materials.bind(r);
     render.PbrMeshFeatures.bind(r).on<PbrMeshFeatures>(On::Create | On::Update | On::Destroy);
     render.ActiveMaterialVariant.bind(r).on<MaterialVariants>(On::Create | On::Update);
-    render.MaterializedTextures.bind(r).on<MaterializedTextures>(On::Create | On::Update);
+    render.MaterializedTextures.bind(r).on<MaterializedTexture>(On::Create | On::Update);
     render.SceneWorld.bind(r).on<gltf::SourceAssets>(On::Create | On::Update);
     render.PunctualLight.bind(r).on<PunctualLight>(On::Create | On::Update).on<RenderInstance>(On::Create).on<Hidden>(On::Destroy);
     render.MorphWeights.bind(r);
@@ -1236,7 +1236,7 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
     procedure::ForEachKind([&]<typename K> {
         if constexpr (requires { &K::Operation; }) network.Nodes.on<K>(On::Update);
     });
-    bind(network.Pages, TypeList<SceneMembership, HierarchyMember, ArmatureObject, MaterializedTextures, procedure::NetworkSubnet, procedure::ProcedureInstances, procedure::ProcedureNode>{});
+    bind(network.Pages, TypeList<SceneMembership, HierarchyMember, ArmatureObject, Material, MaterializedTexture, procedure::NetworkSubnet, procedure::ProcedureInstances, procedure::ProcedureNode>{});
     bind(network.Cells, TypeList<procedure::NetworkLayout>{});
     action::TrackFieldRemovals(network.Fields.bind(r, state::Clearing::Explicit));
 }

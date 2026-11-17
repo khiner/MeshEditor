@@ -40,10 +40,6 @@ struct AddPhysicsMaterial {};
 struct AddCollisionSystem {};
 struct AddCollisionFilter {};
 struct AddJointDef {};
-struct RenameResource {
-    state::Entity Entity;
-    std::string Name;
-};
 
 // `Add` appends a missing node or removes all occurrences.
 struct ToggleFilterEntity {
@@ -79,7 +75,6 @@ struct DeleteJointVecItem {
 using Action = std::variant<
     SetMotionType, SetColliderShape, AddTrigger, RemoveTriggerNodes, SetTrigger,
     AddPhysicsMaterial, AddCollisionSystem, AddCollisionFilter, AddJointDef,
-    RenameResource,
     ToggleFilterEntity,
     SetJointVecItem<PhysicsJointLimit>, AddJointVecItem<PhysicsJointLimit>, DeleteJointVecItem<PhysicsJointLimit>,
     SetJointVecItem<PhysicsJointDrive>, AddJointVecItem<PhysicsJointDrive>, DeleteJointVecItem<PhysicsJointDrive>>;

@@ -62,11 +62,6 @@ struct ClearParent {
 struct SetParent {
     state::Entity Entity, Parent;
 };
-struct Rename {
-    state::Entity Entity;
-    std::string Name;
-};
-
 struct AddEmpty {
     std::unique_ptr<ObjectCreateInfo> Info;
 };
@@ -95,10 +90,10 @@ struct SetPbrMeshFeaturesMask {
     uint32_t Mask;
     Target Target{OnActive{}};
 };
-// Writes `Value` to the field at byte `Offset` of material `Index` in the material buffer.
+// Writes `Value` to the field at byte `Offset` of the material's record in the material buffer.
 template<typename T>
 struct UpdateMaterial {
-    uint32_t Index;
+    state::Entity Material;
     uint16_t Offset;
     T Value;
 };
@@ -109,18 +104,32 @@ struct SetMaterialSlotSelection {
     uint32_t PrimitiveIndex;
     Target Target{OnActive{}};
 };
-// Targets the mesh entity.
+// Targets the mesh entity, where no material leaves the slot with the default record.
 struct SetMaterialAssignment {
-    uint32_t PrimitiveIndex, MaterialIndex;
+    uint32_t PrimitiveIndex;
+    state::Entity Material;
     Target Target{OnActive{}};
+};
+
+// Adds a material and makes it the active node.
+// With a primitive, the material is assigned to that slot of the target mesh, and the selection stays as it is.
+struct AddMaterial {
+    std::optional<uint32_t> PrimitiveIndex{};
+    Target Target{OnActive{}};
+};
+// Adds a texture that loads the image file as color or as linear data, and makes it the active node.
+struct AddTexture {
+    std::filesystem::path Path;
+    bool Color{true};
 };
 
 using Action = std::variant<
     Delete, Duplicate, DuplicateLinked, InstantiateHierarchy, MakeIndependent, ToggleHidden, SetVisible, ShadeSelected,
     SetSelectedSharp,
-    ParentToActive, ClearParent, SetParent, Rename,
+    ParentToActive, ClearParent, SetParent,
     AddEmpty, AddArmature, AddCamera, AddLight, AddMeshPrimitive, ImportMesh,
     SetPbrMeshFeaturesMask, SetMaterialSlotSelection, SetMaterialAssignment,
+    AddMaterial, AddTexture,
     UpdateMaterial<float>, UpdateMaterial<vec2>, UpdateMaterial<vec3>, UpdateMaterial<vec4>, UpdateMaterial<uint32_t>, UpdateMaterial<MaterialAlphaMode>,
     SetLightType, SetSpotCone, SetProjection>;
 

@@ -107,13 +107,15 @@ void ViewportBackfacePolicy(Fixture &f) {
     f.Do(action::UpdateOf<&ViewportDisplay::ShowOverlays>(viewport, false));
     f.Do(action::UpdateOf<&ViewportDisplay::XRayWireframe>(viewport, false));
     r.patch<ViewCameraState>(viewport, [](auto &v) { v.Active = ViewCamera{vec3{0, -5, .1f}, vec3{}, v.Active.Data}; });
+    f.Do(action::object::AddMaterial{0u});
+    const auto material = SortedEntities(r.view<const Material>()).back();
     const auto cooks = Cooks(r);
     for (const auto mode : {ViewportShadingMode::Solid, ViewportShadingMode::Wireframe, ViewportShadingMode::MaterialPreview, ViewportShadingMode::Rendered}) {
         f.Do(action::view::SetViewportShading{viewport, mode});
         for (const bool cull : {false, true}) {
             f.Do(action::UpdateOf<&ViewportDisplay::BackfaceCulling>(viewport, cull));
             for (const auto double_sided : {0u, 1u}) {
-                f.Do(action::object::UpdateMaterial<uint32_t>{0, offsetof(PBRMaterial, DoubleSided), double_sided});
+                f.Do(action::object::UpdateMaterial<uint32_t>{material, offsetof(PBRMaterial, DoubleSided), double_sided});
                 f.Do(action::view::SetInteractionMode{InteractionMode::Object});
                 f.Do(action::object::SetVisible{false});
                 const auto empty = f.Image();

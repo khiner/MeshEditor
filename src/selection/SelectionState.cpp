@@ -173,7 +173,10 @@ void ComputeKeyframes(const state::Registry &r, std::span<const state::Entity> s
     // Material keys show for the material slot the active mesh displays.
     if (const auto active = FindActiveEntity(r); active != state::Null) {
         const auto *instance = r.try_get<const Instance>(active);
-        if (const auto material = instance ? DisplayedMaterial(r, instance->Entity) : std::nullopt) append(state::Document, [&](const AnimationChannel &channel) { return channel.Target.Component == state::Key<MaterialStore>() && channel.Target.Index == *material; });
+        if (const auto material = instance ? DisplayedMaterial(r, instance->Entity) : std::nullopt; material && *material != state::Null) append(*material, all);
+    } else if (const auto node = FindActiveNode(r); node != state::Null && r.all_of<Material>(node)) {
+        // An active material node shows its own keys.
+        append(node, all);
     }
     SortUnique(frames);
 }

@@ -101,12 +101,10 @@ void ProcessObjectRemovals(state::Registry &r) {
     auto *pending = r.Resources.find<PendingObjectRemovals>();
     if (!pending) return;
     const profile::CpuScope scope{"ProcessObjectRemovals"};
-    bool removed_objects = false;
     while (!pending->Objects.empty() || !pending->Buffers.empty() || !pending->Armatures.empty() || !pending->Dependents.empty()) {
         auto objects = std::exchange(pending->Objects, {});
         Destroy(r, objects);
         auto &geometry = pending->Buffers, &armatures = pending->Armatures;
-        removed_objects |= !geometry.empty() || !armatures.empty();
         for (const auto [_, instance] : r.view<const Instance>().each()) geometry.remove(instance.Entity);
         for (const auto [_, collider] : r.view<const ColliderShape>().each()) geometry.remove(collider.MeshEntity);
         for (const auto [_, arm] : r.view<const ArmatureObject>().each()) armatures.remove(arm.Entity);
@@ -132,11 +130,6 @@ void ProcessObjectRemovals(state::Registry &r) {
     buffers.PreludeTiles.Release(std::move(pending->PreludeTileRanges));
     meshes.ReleaseSoundVertices(std::move(pending->SoundVertexRanges));
     r.Resources.erase<PendingObjectRemovals>();
-
-    if (removed_objects && r.view<Instance>().empty()) {
-        ResetImportedTexturesAndMaterials(r);
-        r.remove<MaterializedTextures>(state::Document);
-    }
 }
 
 void ClearMeshes(state::Registry &r) {

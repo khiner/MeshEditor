@@ -79,6 +79,9 @@ void Apply(state::Registry &r, const Action &action) {
                 }
 
                 ClearMeshes(r);
+                // The dataset replaces the document's materials and textures along with its objects.
+                r.destroy(SortedEntities(r.view<const Material>()));
+                r.destroy(SortedEntities(r.view<const MaterializedTexture>()));
                 const auto imported = ImportMesh(
                     r,
                     source->Mesh,

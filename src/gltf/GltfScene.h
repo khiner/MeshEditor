@@ -52,9 +52,9 @@ struct MeshSourceLayout {
     std::vector<uint32_t> AttributeFlags;
     std::vector<uint8_t> HasSourceIndices;
     // Materials used without a matching active variant override.
-    std::vector<uint32_t> DefaultMaterials;
+    std::vector<state::Entity> DefaultMaterials;
     // Primitive-major optional material overrides indexed by variant.
-    std::vector<std::vector<std::optional<uint32_t>>> VariantMappings;
+    std::vector<std::vector<std::optional<state::Entity>>> VariantMappings;
     uint8_t Colors0ComponentCount{};
     // Target-major tangent deltas omitted from MorphTargetVertex.
     std::vector<vec3> MorphTangentDeltas;

@@ -28,22 +28,17 @@ enum class HandleParameter : uint8_t { Transform,
                                        BevelWidth,
                                        InsetThickness,
                                        InsetDepth };
-enum class ItemKind : uint8_t { Entity,
-                                Material,
-                                Texture };
-struct NetworkItem {
-    state::Entity Entity{state::Null};
-    uint32_t Index{};
-    ItemKind Kind{ItemKind::Entity};
-    auto operator<=>(const NetworkItem &) const = default;
-};
+// A network item is the entity its node stands for: an object, bone, scene, material, texture, physics resource, subnet, or the document.
+
+// A geometry procedure's active node and its selected nodes, sorted, on the procedure's mesh entity.
+// A scene or document network's nodes are selected through the Selected and Active tags of their entities.
 struct NetworkActive {
-    NetworkItem Item;
-    std::vector<NetworkItem> Selection;
-    bool Contains(NetworkItem item) const { return std::ranges::binary_search(Selection, item); }
+    state::Entity Item{state::Null};
+    std::vector<state::Entity> Selection;
+    bool Contains(state::Entity node) const { return std::ranges::binary_search(Selection, node); }
 };
 struct NetworkCell {
-    NetworkItem Item;
+    state::Entity Item;
     numeric::uvec2 Position;
 };
 // The cells the user placed items at on the network's page, sorted by item.
@@ -76,37 +71,35 @@ enum class ReferenceKind : uint8_t {
     FilterCollideSystem
 };
 struct SceneReference {
-    NetworkItem Owner;
+    state::Entity Owner{state::Null};
     ReferenceKind Kind{};
     uint32_t Index{};
     auto operator<=>(const SceneReference &) const = default;
 };
-using PortBinding = std::variant<SocketLink, PromotedField, SceneReference, NetworkItem>;
-// The number of materials or textures the document holds.
-uint32_t ItemCount(const state::Registry &, ItemKind);
+using PortBinding = std::variant<SocketLink, PromotedField, SceneReference, state::Entity>;
 // The first object, in entity order, that draws each geometry, sorted by geometry.
 using GeometryDrawers = std::vector<std::pair<state::Entity, state::Entity>>;
 GeometryDrawers DrawersOf(const state::Registry &);
 // The item the reference holds, or none.
 // A geometry reference holds the first other object that draws the same geometry.
 // A list reference has one reference per entry and one more, past the last entry, that adds an entry.
-NetworkItem ReferenceValue(const state::Registry &, SceneReference);
+state::Entity ReferenceValue(const state::Registry &, SceneReference);
 std::string ReferenceLabel(const state::Registry &, SceneReference);
 // Every reference accepts no item, which clears it.
 // A cleared geometry reference gives the object its own copy, a cleared collider geometry uses the object's own geometry, a cleared material slot holds the default material,
 // a cleared instance source makes the instance an independent copy, and a cleared list entry is removed.
 // Any other cleared reference is empty.
-bool ReferenceAccepts(const state::Registry &, SceneReference, NetworkItem);
-std::vector<NetworkItem> ReferenceCandidates(const state::Registry &, SceneReference);
+bool ReferenceAccepts(const state::Registry &, SceneReference, state::Entity);
+std::vector<state::Entity> ReferenceCandidates(const state::Registry &, SceneReference);
 // The references that hold the item.
-std::vector<SceneReference> ReferencesTo(const state::Registry &, NetworkItem);
-std::string ItemName(const state::Registry &, NetworkItem);
+std::vector<SceneReference> ReferencesTo(const state::Registry &, state::Entity);
+std::string ItemName(const state::Registry &, state::Entity);
 
 // A reference and the item it holds.
 struct ItemReference {
     ReferenceKind Kind{};
     uint32_t Index{};
-    NetworkItem Value;
+    state::Entity Value{state::Null};
     bool operator==(const ItemReference &) const = default;
 };
 // Derived on each item entity: what the item's node shows from its own entity.
@@ -118,7 +111,7 @@ struct NetworkNode {
     bool operator==(const NetworkNode &) const = default;
 };
 // Fills `shown` with the references the item's node shows: an entity's stored references, then the material slots of the geometry it draws, or a material's texture slots.
-void ShownReferences(const state::Registry &, NetworkItem, const GeometryDrawers &, std::vector<ItemReference> &shown);
+void ShownReferences(const state::Registry &, state::Entity, const GeometryDrawers &, std::vector<ItemReference> &shown);
 // Whether each entity that has a node stores the node its components derive, and no other entity stores one.
 bool NodesSettled(const state::Registry &);
 // Nodes lists the entities whose node may differ, Pages those whose change alters which items a page shows, Cells the networks whose placed cells changed,
@@ -127,7 +120,6 @@ bool NodesSettled(const state::Registry &);
 struct NetworkChanges {
     state::DirtySet Nodes, Pages, Cells, Fields;
     uint64_t Revision{}, CellsRevision{};
-    uint32_t Materials{}; // The material count the last pass saw
 };
 // Stores each changed entity's node, advances the revisions, and drops the cells, subnet members and value ports of entities and fields that no longer exist.
 void SettleNetworks(state::Registry &, bool restoring);
@@ -136,19 +128,19 @@ void DropUnreachablePorts(state::Registry &, state::Entity root);
 // Containment belongs to a network occurrence, independently of scene membership and transform parenting.
 struct NetworkSubnet {
     state::Entity Parent{state::Null};
-    std::vector<NetworkItem> Members;
+    std::vector<state::Entity> Members;
 };
 state::Entity NetworkRoot(const state::Registry &, state::Entity network);
-std::vector<NetworkItem> NetworkLeaves(const state::Registry &, state::Entity network);
-std::vector<NetworkItem> NetworkItems(const state::Registry &, state::Entity network);
+std::vector<state::Entity> NetworkLeaves(const state::Registry &, state::Entity network);
+std::vector<state::Entity> NetworkItems(const state::Registry &, state::Entity network);
 // Whether the network's page shows the item: one of NetworkItems, or in a geometry network one of its nodes or, in a subnet, the subnet itself.
-bool ShowsItem(const state::Registry &, state::Entity network, NetworkItem);
+bool ShowsItem(const state::Registry &, state::Entity network, state::Entity);
 // The immediate child representing an item, or the item itself if it is outside this network.
-NetworkItem NetworkRepresentative(const state::Registry &, state::Entity network, NetworkItem item);
+state::Entity NetworkRepresentative(const state::Registry &, state::Entity network, state::Entity item);
 // The cell the user placed the item at on the network's page, or none.
-std::optional<numeric::uvec2> NetworkPosition(const state::Registry &, state::Entity network, NetworkItem);
-void SetNetworkPosition(state::Registry &, state::Entity network, NetworkItem, numeric::uvec2);
-void ClearNetworkPosition(state::Registry &, state::Entity network, NetworkItem);
+std::optional<numeric::uvec2> NetworkPosition(const state::Registry &, state::Entity network, state::Entity);
+void SetNetworkPosition(state::Registry &, state::Entity network, state::Entity, numeric::uvec2);
+void ClearNetworkPosition(state::Registry &, state::Entity network, state::Entity);
 void PlaceInNetwork(state::Registry &, state::Entity network, state::Entity object);
 void RemoveNetworkSubnets(state::Registry &, state::Entity root);
 } // namespace procedure

@@ -600,6 +600,9 @@ std::expected<fastgltf::Asset, LoadError> ParseAsset(const std::filesystem::path
 struct SourceMesh {
     std::optional<MeshSource> Triangles, Lines, Points;
     MeshSourceLayout Layout;
+    // Each primitive's source material, and its source material per variant, which ImportMeshes turns into the layout's material entities.
+    std::vector<uint32_t> Materials;
+    std::vector<std::vector<std::optional<uint32_t>>> Variants;
     bool HasParts() const { return Triangles || Lines || Points; }
 };
 
@@ -611,12 +614,12 @@ std::expected<SourceMesh, std::string> ReadSourceMesh(const fastgltf::Asset &ass
     MeshSourceLayout layout{
         .AttributeFlags = std::vector<uint32_t>(primitive_count, 0u),
         .HasSourceIndices = std::vector<uint8_t>(primitive_count, 0u),
-        .DefaultMaterials = std::vector<uint32_t>(primitive_count, material_count - 1u),
-        .VariantMappings = std::vector<std::vector<std::optional<uint32_t>>>(primitive_count),
         .Index = source_mesh_index,
         .Kind = MeshKind::Triangles,
         .Name = std::string{source_mesh.name},
     };
+    std::vector<uint32_t> materials(primitive_count, material_count - 1u);
+    std::vector<std::vector<std::optional<uint32_t>>> variants(primitive_count);
     // Morph deltas are written target-major, so the triangle vertex total is fixed before the first primitive appends.
     uint32_t triangle_vertex_count = 0;
     for (const auto &primitive : source_mesh.primitives) {
@@ -631,9 +634,9 @@ std::expected<SourceMesh, std::string> ReadSourceMesh(const fastgltf::Asset &ass
     std::vector<uint32_t> face_primitives, line_primitives, point_primitives;
     for (uint32_t primitive_index = 0; primitive_index < primitive_count; ++primitive_index) {
         const auto &primitive = source_mesh.primitives[primitive_index];
-        if (const auto material_index = ToIndex(primitive.materialIndex, material_count)) layout.DefaultMaterials[primitive_index] = *material_index;
+        if (const auto material_index = ToIndex(primitive.materialIndex, material_count)) materials[primitive_index] = *material_index;
         layout.HasSourceIndices[primitive_index] = primitive.indicesAccessor.has_value() ? 1u : 0u;
-        auto &mappings = layout.VariantMappings[primitive_index];
+        auto &mappings = variants[primitive_index];
         mappings.reserve(primitive.mappings.size());
         for (const auto &m : primitive.mappings) mappings.emplace_back(m.has_value() ? ToIndex(*m, material_count) : std::nullopt);
 
@@ -659,7 +662,7 @@ std::expected<SourceMesh, std::string> ReadSourceMesh(const fastgltf::Asset &ass
     }
 
     const auto make_source = [&](::MeshData &data, ::MeshVertexAttributes &attrs, std::vector<uint32_t> &element_primitives) {
-        return MeshSource{.Data = std::move(data), .Attrs = std::move(attrs), .Primitives = {std::move(element_primitives), layout.DefaultMaterials, layout.AttributeFlags}};
+        return MeshSource{.Data = std::move(data), .Attrs = std::move(attrs), .Primitives = {std::move(element_primitives), materials, layout.AttributeFlags}};
     };
     SourceMesh out;
     if (!triangles.Positions.empty() && triangles.FaceCount() > 0) {
@@ -674,6 +677,8 @@ std::expected<SourceMesh, std::string> ReadSourceMesh(const fastgltf::Asset &ass
     if (!lines.Positions.empty()) out.Lines = make_source(lines, line_attrs, line_primitives);
     if (!points.Positions.empty()) out.Points = make_source(points, point_attrs, point_primitives);
     out.Layout = std::move(layout);
+    out.Materials = std::move(materials);
+    out.Variants = std::move(variants);
     return out;
 }
 
@@ -1315,15 +1320,13 @@ PhysicsResources ImportPhysicsResources(state::Registry &r, const fastgltf::Asse
 }
 
 struct ImportedMaterials {
-    // GPU material index per source material, the trailing entry being the implicit default.
+    // GPU material index and material entity per source material, the trailing entry being the implicit default.
     std::vector<uint32_t> IndexByGltfMaterial;
-    std::vector<MaterializedTexture> Textures;
+    std::vector<state::Entity> EntityByGltfMaterial;
 };
 
-ImportedMaterials ImportMaterials(state::Registry &r, const fastgltf::Asset &asset, const SourceAssets &sa, std::span<const PBRMaterial> source_materials) {
-    auto &slots = r.Resources.get<mtl::BindlessSet>();
+ImportedMaterials ImportMaterials(state::Registry &r, const fastgltf::Asset &asset, const SourceAssets &sa, std::span<const PBRMaterial> source_materials, std::span<const MaterialSourceMeta> metas) {
     auto &buffers = r.Resources.get<GpuBuffers>();
-    auto &textures = r.Resources.get<TextureStore>();
     ImportedMaterials out;
 
     std::unordered_map<uint64_t, uint32_t> texture_slot_cache;
@@ -1367,27 +1370,23 @@ ImportedMaterials ImportMaterials(state::Registry &r, const fastgltf::Asset &ass
             return {.MinFilter = MTL::SamplerMinMagFilterLinear, .MagFilter = mag_filter, .MipmapMode = MTL::SamplerMipFilterLinear, .UsesMipmaps = true};
         };
 
-        const auto sampler_slot = AllocateSamplerSlot(slots);
-        const PendingTextureUpload upload{
-            .SamplerSlot = sampler_slot,
-            .Source = PendingTextureUpload::GltfImageRef{*image_index},
-            .Params = {
+        const auto texture = AddTexture(
+            r, *image_index, texture_index,
+            {
                 .ColorSpace = color_space,
                 .WrapS = src_sampler ? ToSamplerAddressMode(src_sampler->WrapS) : MTL::SamplerAddressModeRepeat,
                 .WrapT = src_sampler ? ToSamplerAddressMode(src_sampler->WrapT) : MTL::SamplerAddressModeRepeat,
                 .Sampler = ToSamplerConfig(src_sampler),
                 .Name = std::format("{} ({})", src_texture.Name.empty() ? std::format("Texture{}", texture_index) : src_texture.Name, color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear"),
-            },
-        };
-        out.Textures.emplace_back(MaterializedTexture{.SamplerSlot = sampler_slot, .SourceImageIndex = *image_index, .Params = upload.Params});
-        textures.PendingUploads.emplace_back(upload);
+            }
+        );
+        const auto sampler_slot = r.get<const MaterializedTexture>(texture).SamplerSlot;
         texture_slot_cache.emplace(cache_key, sampler_slot);
         return sampler_slot;
     };
 
     out.IndexByGltfMaterial.reserve(source_materials.size());
-    std::vector<std::string> material_names;
-    material_names.reserve(source_materials.size());
+    out.EntityByGltfMaterial.reserve(source_materials.size());
     buffers.Materials.Reserve((buffers.Materials.Count<PBRMaterial>() + source_materials.size()) * sizeof(PBRMaterial));
     for (uint32_t material_index = 0; material_index < source_materials.size(); ++material_index) {
         const auto src_name = material_index < asset.materials.size() ? std::string_view(asset.materials[material_index].name) : std::string_view{"DefaultMaterial"};
@@ -1402,10 +1401,11 @@ ImportedMaterials ImportMaterials(state::Registry &r, const fastgltf::Asset &ass
             }
             tex.Slot = resolve_texture_slot(tex.Slot, slot.ColorSpace);
         }
-        out.IndexByGltfMaterial.emplace_back(buffers.Materials.Append(gpu_material));
-        material_names.emplace_back(material_name);
+        const auto entity = AddMaterial(r, gpu_material, material_name);
+        r.emplace<MaterialSourceMeta>(entity, metas[material_index]);
+        out.EntityByGltfMaterial.emplace_back(entity);
+        out.IndexByGltfMaterial.emplace_back(r.get<const Material>(entity).Index);
     }
-    r.Resources.get<MaterialStore>().AppendNames(std::move(material_names));
     return out;
 }
 
@@ -1427,8 +1427,9 @@ PbrFeatureMask PbrFeaturesOf(std::span<const PBRMaterial> materials, std::span<c
 // Triangle, line, and point mesh entities per source mesh, indexed by MeshKind.
 using MeshEntities = std::vector<std::array<state::Entity, 3>>;
 
-MeshEntities ImportMeshes(state::Registry &r, std::span<SourceMesh> source_meshes, std::span<const uint32_t> material_index_by_gltf_material) {
-    const auto remap = [&](uint32_t i) { return i < material_index_by_gltf_material.size() ? material_index_by_gltf_material[i] : material_index_by_gltf_material.back(); };
+MeshEntities ImportMeshes(state::Registry &r, std::span<SourceMesh> source_meshes, const ImportedMaterials &imported) {
+    // A source material past the list is the trailing implicit default.
+    const auto source = [&](uint32_t i) { return std::min(size_t(i), imported.IndexByGltfMaterial.size() - 1u); };
     struct Part {
         uint32_t Mesh;
         MeshKind Kind;
@@ -1436,22 +1437,28 @@ MeshEntities ImportMeshes(state::Registry &r, std::span<SourceMesh> source_meshe
     std::vector<Part> parts;
     std::vector<MeshSource> sources;
     std::vector<MeshSourceLayout> layouts;
+    // Each part's material record per primitive, which its mesh's primitive materials start as.
+    std::vector<std::vector<uint32_t>> part_materials;
     for (uint32_t mi = 0; mi < source_meshes.size(); ++mi) {
         auto &source_mesh = source_meshes[mi];
         auto &layout = source_mesh.Layout;
-        for (auto &material : layout.DefaultMaterials) material = remap(material);
-        // KHR_materials_variants mappings then index the same buffer, so applying a variant writes entries straight into it.
-        for (auto &mappings : layout.VariantMappings) {
-            for (auto &m : mappings) {
-                if (m) *m = remap(*m);
-            }
+        std::vector<uint32_t> records;
+        for (const auto material : source_mesh.Materials) {
+            records.push_back(imported.IndexByGltfMaterial[source(material)]);
+            layout.DefaultMaterials.push_back(imported.EntityByGltfMaterial[source(material)]);
+        }
+        // Applying a KHR_materials_variants variant writes each mapped material's record into the mesh's primitive materials.
+        for (const auto &mappings : source_mesh.Variants) {
+            auto &mapped = layout.VariantMappings.emplace_back();
+            for (const auto &m : mappings) mapped.emplace_back(m ? std::optional{imported.EntityByGltfMaterial[source(*m)]} : std::nullopt);
         }
         // The last part takes the shared layout by move after earlier parts copy it.
         const auto last_kind = source_mesh.Points ? MeshKind::Points : source_mesh.Lines ? MeshKind::Lines :
                                                                                            MeshKind::Triangles;
         const auto add_part = [&](std::optional<MeshSource> &source, MeshKind kind) {
             if (!source) return;
-            source->Primitives.MaterialIndices = layout.DefaultMaterials;
+            source->Primitives.MaterialIndices = records;
+            part_materials.push_back(records);
             auto part_layout = kind == last_kind ? std::move(layout) : layout;
             part_layout.Colors0ComponentCount = source->Attrs.Colors0ComponentCount;
             part_layout.Kind = kind;
@@ -1471,7 +1478,7 @@ MeshEntities ImportMeshes(state::Registry &r, std::span<SourceMesh> source_meshe
         auto &layout = layouts[part];
         // Welding compacts the tangent deltas, so they come from the created mesh.
         layout.MorphTangentDeltas = std::move(created[part].MorphTangentDeltas);
-        const auto features = parts[part].Kind == MeshKind::Triangles ? PbrFeaturesOf(materials, layout.DefaultMaterials) : PbrFeatureMask{0};
+        const auto features = parts[part].Kind == MeshKind::Triangles ? PbrFeaturesOf(materials, part_materials[part]) : PbrFeatureMask{0};
         const auto e = AddMeshData(r, created[part].StoreId);
         if (!created[part].AuthoredCornerNormals.empty()) r.emplace<AuthoredCornerNormals>(e, std::move(created[part].AuthoredCornerNormals));
         const bool mapped = std::ranges::any_of(layout.VariantMappings, [](const auto &mapping) { return std::ranges::any_of(mapping, [](const auto &m) { return m.has_value(); }); });
@@ -2018,7 +2025,7 @@ void ApplySourceVisibility(state::Registry &r, const fastgltf::Asset &asset, con
     for (const auto &[node_index, e] : bones) hide(node_index, e);
 }
 
-bool ImportAnimations(state::Registry &r, const fastgltf::Asset &asset, const ImportedObjects &objects, std::span<const state::Entity> armature_objects, std::span<const uint32_t> material_index_by_source, std::span<const state::Entity> scene_entities) {
+bool ImportAnimations(state::Registry &r, const fastgltf::Asset &asset, const ImportedObjects &objects, std::span<const state::Entity> armature_objects, std::span<const state::Entity> material_by_source, std::span<const state::Entity> scene_entities) {
     struct BoneTarget {
         state::Entity Entity;
         Transform Rest;
@@ -2105,11 +2112,7 @@ bool ImportAnimations(state::Registry &r, const fastgltf::Asset &asset, const Im
                 break;
             }
             case gltf::PointerSpace::Material:
-                if (index < material_index_by_source.size()) {
-                    auto target = row->Target;
-                    target.Index = uint16_t(material_index_by_source[index]);
-                    targets.emplace_back(state::Document, target);
-                }
+                if (index < material_by_source.size()) targets.emplace_back(material_by_source[index], row->Target);
                 break;
             case gltf::PointerSpace::ImageLight:
                 for (uint32_t si = 0; si < asset.scenes.size(); ++si) {
@@ -2221,7 +2224,6 @@ std::expected<LoadResult, LoadError> LoadGltf(const std::filesystem::path &sourc
     auto source_assets = ReadSourceAssets(r, asset, stored_path, std::move(extras), scene_index);
     if (!source_assets) return std::unexpected{LoadError{.Message = std::move(source_assets.error())}};
     auto source_materials = ReadMaterials(asset);
-    source_assets->MaterialMetas = std::move(source_materials.Metas);
 
     std::vector<std::expected<SourceMesh, std::string>> read_meshes(asset.meshes.size());
     ParallelFor(uint32_t(read_meshes.size()), [&](uint32_t mesh_index) { read_meshes[mesh_index] = ReadSourceMesh(asset, mesh_index); });
@@ -2259,8 +2261,8 @@ std::expected<LoadResult, LoadError> LoadGltf(const std::filesystem::path &sourc
     } else {
         r.remove<::MaterialVariants>(state::Document);
     }
-    auto materials = ImportMaterials(r, asset, *source_assets, source_materials.Materials);
-    const auto mesh_entities = ImportMeshes(r, source_meshes, materials.IndexByGltfMaterial);
+    auto materials = ImportMaterials(r, asset, *source_assets, source_materials.Materials, source_materials.Metas);
+    const auto mesh_entities = ImportMeshes(r, source_meshes, materials);
     const auto objects = ImportObjects(r, asset, plan, mesh_entities, scene_index);
     ImportNodePhysics(r, asset, objects, mesh_entities, physics);
     ImportAudio(r, asset, objects);
@@ -2281,7 +2283,7 @@ std::expected<LoadResult, LoadError> LoadGltf(const std::filesystem::path &sourc
             r.emplace_or_replace<ImageLight>(scene_entities[i], ImageLight{Normalize(std::bit_cast<quat>(src_ibl.rotation)), std::max(0.f, src_ibl.intensity)});
         }
     }
-    const bool imported_animation = ImportAnimations(r, asset, objects, armatures.Objects, materials.IndexByGltfMaterial, scene_entities);
+    const bool imported_animation = ImportAnimations(r, asset, objects, armatures.Objects, materials.EntityByGltfMaterial, scene_entities);
 
     auto &environments = r.Resources.get<EnvironmentStore>();
     if (const auto &source_ibl = source_assets->ImageBasedLight) {
@@ -2303,10 +2305,6 @@ std::expected<LoadResult, LoadError> LoadGltf(const std::filesystem::path &sourc
             if (InScene(r, e, acting)) selected.emplace_back(std::numeric_limits<uint32_t>::max(), e);
         }
         SelectObjects(r, std::move(selected));
-    }
-    if (!materials.Textures.empty()) {
-        auto &manifest = r.get_or_emplace<MaterializedTextures>(state::Document);
-        manifest.Items.insert(manifest.Items.end(), std::make_move_iterator(materials.Textures.begin()), std::make_move_iterator(materials.Textures.end()));
     }
     r.emplace_or_replace<SourceAssets>(state::Document, std::move(*source_assets));
 

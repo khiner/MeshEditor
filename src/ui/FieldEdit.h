@@ -67,9 +67,9 @@ std::optional<action::Target> FieldGesture(bool changed, bool selection, bool de
 
 // The channel target of the field Ms... walks to, or a zero-count target for a field channels cannot animate.
 template<auto... Ms>
-ChannelTarget Channel(uint16_t index = 0) {
+ChannelTarget Channel() {
     if constexpr (animation::KeyableField<action::detail::last_field<Ms...>>) {
-        if (const auto target = animation::Target<Ms...>(index); animation::IsChannelStore(target.Component)) return target;
+        if (const auto target = animation::Target<Ms...>(); animation::IsChannelStore(target.Component)) return target;
     }
     return {};
 }

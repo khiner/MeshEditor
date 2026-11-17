@@ -96,6 +96,8 @@ inline bool ContainsInIndexOrder(std::span<const state::Entity> entities, state:
 std::string IdString(state::Entity);
 std::string GetName(const state::Registry &, state::Entity); // Returns name if present, otherwise hex ID.
 
+// The active node of any kind: an object in any scene, or a document item such as a material or the document itself.
+state::Entity FindActiveNode(const state::Registry &);
 // The active entity when it is in the scene, else state::Null.
 state::Entity FindActiveEntity(const state::Registry &, state::Entity scene);
 // The active entity when it is in the frame's scene, else state::Null.

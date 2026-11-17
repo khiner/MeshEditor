@@ -6,7 +6,9 @@
 #include "timeline/Timeline.h"
 #include "ui/ChoiceCombo.h"
 #include "ui/FieldEdit.h"
+#include "ui/GoTo.h"
 #include "ui/ItemList.h"
+#include "viewport/ViewportIcons.h"
 
 #include <format>
 
@@ -67,6 +69,8 @@ void TargetCombo(state::Registry &r, const char *label, state::Entity current, c
         return target ? DisplayName(target->Name, "{:x}", uint32_t(e)) : std::string{"None"};
     };
     ui::ChoiceCombo(label, current, choices, name, pick);
+    const auto *icons = r.Resources.find<ViewportIcons>();
+    ui::GoToButton(icons ? icons->GoTo.get() : nullptr, label, current != state::Null && r.valid(current) ? current : state::Null);
 }
 
 std::string SystemDisplayName(const state::Registry &r, state::Entity e) {
@@ -131,24 +135,6 @@ void DrawMatrixCell(ImDrawList *dl, ImVec2 p_min, ImVec2 p_max, bool a_to_b, boo
     const ImVec2 TR{p_max.x, p_min.y}, BL{p_min.x, p_max.y};
     if (a_to_b) dl->AddTriangleFilled(TL, TR, BL, fill); // row→col
     if (b_to_a) dl->AddTriangleFilled(TR, BR, BL, fill); // col→row
-}
-
-// List of named entities with use count, name edit, Delete/Add buttons, and per-entry body.
-// Both the list and node inspector use RenderResourceProperties for editing.
-template<typename T>
-void DrawNamedEntityList(state::Registry &r, const char *id, const char *add_label, auto add) {
-    PushID(id);
-    std::vector<state::Entity> entities;
-    for (const auto e : r.view<T>()) entities.push_back(e);
-    const auto &uses = r.Resources.get<const PhysicsDefinitionUses>();
-    const auto deleted = ui::ItemList(
-        entities.size(),
-        [&](uint32_t i) { return std::format("{} ({})", DisplayName(r.get<const T>(entities[i]).Name, "{:x}", uint32_t(entities[i])), uses.Count(entities[i])); },
-        [&](uint32_t i) { physics_ui::RenderResourceProperties(r, entities[i]); }
-    );
-    if (deleted) action::Emit(action::DestroyEntity{entities[*deleted]});
-    if (Button(add_label)) action::Emit(add);
-    PopID();
 }
 
 // Returns the edited shape iff the user changed something.
@@ -238,95 +224,63 @@ void RenderJointDefinition(state::Entity jd_entity, const PhysicsJointDef &jd) {
 } // namespace
 
 bool physics_ui::RenderResourceProperties(state::Registry &r, state::Entity entity) {
-    const auto rename = [&](const auto &value) {
-        char name[256];
-        snprintf(name, sizeof name, "%s", value.Name.c_str());
-        if (InputText("Name", name, sizeof name)) action::Emit(action::physics::RenameResource{entity, name});
-    };
-    if (const auto *m = r.try_get<const PhysicsMaterial>(entity)) {
-        rename(*m);
-        ui::DrawFields<PhysicsMaterial, &PhysicsMaterial::Name>(ui::Edit{r, entity});
-    } else if (const auto *system = r.try_get<const CollisionSystem>(entity)) {
-        rename(*system);
-    } else if (const auto *filter = r.try_get<const CollisionFilter>(entity)) {
-        rename(*filter);
-        RenderCollisionFilterBody(r, entity);
-    } else if (const auto *joint = r.try_get<const PhysicsJointDef>(entity)) {
-        rename(*joint);
-        RenderJointDefinition(entity, *joint);
-    } else return false;
+    if (r.all_of<PhysicsMaterial>(entity)) ui::DrawFields<PhysicsMaterial, &PhysicsMaterial::Name>(ui::Edit{r, entity});
+    else if (r.all_of<CollisionFilter>(entity)) RenderCollisionFilterBody(r, entity);
+    else if (const auto *joint = r.try_get<const PhysicsJointDef>(entity)) RenderJointDefinition(entity, *joint);
+    else return r.all_of<CollisionSystem>(entity);
     return true;
 }
 
-void physics_ui::RenderTab(state::Registry &r) {
-    SeparatorText("Simulation");
+void physics_ui::RenderSimulation(state::Registry &r) {
     Text("Bodies: %u", physics::BodyCount(r));
     ui::DrawFields<PhysicsSimulationSettings>(ui::Edit{r, state::Document});
 
-    if (CollapsingHeader("Physics Materials")) {
-        DrawNamedEntityList<PhysicsMaterial>(r, "PhysMaterials", "Add material", action::physics::AddPhysicsMaterial{});
-    }
+    std::vector<state::Entity> filter_entities;
+    for (auto e : r.view<CollisionFilter>()) filter_entities.emplace_back(e);
+    if (filter_entities.size() >= 2) {
+        Spacing();
+        SeparatorText("Collision Matrix");
 
-    if (CollapsingHeader("Collision Systems")) {
-        DrawNamedEntityList<CollisionSystem>(r, "CollisionSystems", "Add system", action::physics::AddCollisionSystem{});
-    }
+        const auto n = filter_entities.size();
+        const auto filter_label = [&](size_t i) {
+            const auto fe = filter_entities[i];
+            return DisplayName(r.get<const CollisionFilter>(fe).Name, "{:x}", uint32_t(fe));
+        };
 
-    if (CollapsingHeader("Collision Filters")) {
-        DrawNamedEntityList<CollisionFilter>(r, "CollisionFilters", "Add filter", action::physics::AddCollisionFilter{});
-        PushID("CollisionFilters");
+        if (BeginTable("##CollisionMatrix", int(n) + 1, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) {
+            TableSetupColumn("", ImGuiTableColumnFlags_NoHeaderLabel);
+            for (size_t i = 0; i < n; ++i) TableSetupColumn(filter_label(i).c_str(), ImGuiTableColumnFlags_AngledHeader);
+            TableAngledHeadersRow();
 
-        std::vector<state::Entity> filter_entities;
-        for (auto e : r.view<CollisionFilter>()) filter_entities.emplace_back(e);
-        if (filter_entities.size() >= 2) {
-            Spacing();
-            SeparatorText("Collision Matrix");
-
-            const auto n = filter_entities.size();
-            const auto filter_label = [&](size_t i) {
-                const auto fe = filter_entities[i];
-                return DisplayName(r.get<const CollisionFilter>(fe).Name, "{:x}", uint32_t(fe));
-            };
-
-            if (BeginTable("##CollisionMatrix", int(n) + 1, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) {
-                TableSetupColumn("", ImGuiTableColumnFlags_NoHeaderLabel);
-                for (size_t i = 0; i < n; ++i) TableSetupColumn(filter_label(i).c_str(), ImGuiTableColumnFlags_AngledHeader);
-                TableAngledHeadersRow();
-
-                const float cell_sz = GetFrameHeight();
-                for (size_t row = 0; row < n; ++row) {
-                    TableNextRow();
-                    TableSetColumnIndex(0);
-                    TextUnformatted(filter_label(row).c_str());
-                    for (size_t col = 0; col < n; ++col) {
-                        TableSetColumnIndex(int(col) + 1);
-                        PushID(int(row * n + col));
-                        const auto a = filter_entities[row], b = filter_entities[col];
-                        const bool ab = physics::DoesFilterAllow(r, a, b);
-                        const bool ba = physics::DoesFilterAllow(r, b, a);
-                        const ImVec2 p = GetCursorScreenPos();
-                        DrawMatrixCell(GetWindowDrawList(), p, {p.x + cell_sz, p.y + cell_sz}, ab, ba);
-                        Dummy({cell_sz, cell_sz});
-                        if (IsItemHovered()) {
-                            const auto rn = filter_label(row), cn = filter_label(col);
-                            BeginTooltip();
-                            Text("%s \xe2\x86\x92 %s: %s", rn.c_str(), cn.c_str(), ab ? "allows" : "vetoes");
-                            Text("%s \xe2\x86\x92 %s: %s", cn.c_str(), rn.c_str(), ba ? "allows" : "vetoes");
-                            Separator();
-                            const bool both = ab && ba;
-                            TextColored(both ? ImVec4{0.4f, 0.9f, 0.4f, 1} : ImVec4{0.9f, 0.4f, 0.4f, 1}, "Effective: %s", both ? "collides" : (ab != ba ? "blocked (one side vetoes)" : "blocked"));
-                            EndTooltip();
-                        }
-                        PopID();
+            const float cell_sz = GetFrameHeight();
+            for (size_t row = 0; row < n; ++row) {
+                TableNextRow();
+                TableSetColumnIndex(0);
+                TextUnformatted(filter_label(row).c_str());
+                for (size_t col = 0; col < n; ++col) {
+                    TableSetColumnIndex(int(col) + 1);
+                    PushID(int(row * n + col));
+                    const auto a = filter_entities[row], b = filter_entities[col];
+                    const bool ab = physics::DoesFilterAllow(r, a, b);
+                    const bool ba = physics::DoesFilterAllow(r, b, a);
+                    const ImVec2 p = GetCursorScreenPos();
+                    DrawMatrixCell(GetWindowDrawList(), p, {p.x + cell_sz, p.y + cell_sz}, ab, ba);
+                    Dummy({cell_sz, cell_sz});
+                    if (IsItemHovered()) {
+                        const auto rn = filter_label(row), cn = filter_label(col);
+                        BeginTooltip();
+                        Text("%s \xe2\x86\x92 %s: %s", rn.c_str(), cn.c_str(), ab ? "allows" : "vetoes");
+                        Text("%s \xe2\x86\x92 %s: %s", cn.c_str(), rn.c_str(), ba ? "allows" : "vetoes");
+                        Separator();
+                        const bool both = ab && ba;
+                        TextColored(both ? ImVec4{0.4f, 0.9f, 0.4f, 1} : ImVec4{0.9f, 0.4f, 0.4f, 1}, "Effective: %s", both ? "collides" : (ab != ba ? "blocked (one side vetoes)" : "blocked"));
+                        EndTooltip();
                     }
+                    PopID();
                 }
-                EndTable();
             }
+            EndTable();
         }
-        PopID();
-    }
-
-    if (CollapsingHeader("Joint Definitions")) {
-        DrawNamedEntityList<PhysicsJointDef>(r, "JointDefs", "Add joint definition", action::physics::AddJointDef{});
     }
 }
 

@@ -13,6 +13,13 @@
 #include "viewport/Viewport.h"
 
 namespace action::selection {
+ApplyTreeSelection SelectNodes(const state::Registry &r, std::vector<state::Entity> nodes, state::Entity active) {
+    using Clear = ApplyTreeSelection::ClearKind;
+    const bool bones = !nodes.empty() && std::ranges::all_of(nodes, [&](auto e) { return r.all_of<BoneIndex>(e); });
+    const auto count = uint32_t(nodes.size());
+    return {.Entities = std::move(nodes), .SelectCount = count, .NavToActive = active, .Clear = bones ? Clear::BonesOnly : Clear::All};
+}
+
 void Apply(state::Registry &r, const Action &action) {
     auto merge_bone_sel = [&](state::Entity e, const std::optional<BoneSel> &part, bool additive) {
         const auto sel = part ? BoneSelection::From(*part) : BoneSelection{};
@@ -21,10 +28,10 @@ void Apply(state::Registry &r, const Action &action) {
     };
     // Click selection ends an active box-select drag.
     auto end_box_select_interaction = [&] { r.remove<AdditiveBoxSelectBaseline>(state::Document); };
-    // Object selection names scene-graph objects, which the gizmo and pivot read through their transforms.
+    // The selection tags any node: a scene object, which the gizmo and pivot read through its transform, or a document item.
     const auto object = [&](state::Entity e) {
-        if (e == state::Null || r.all_of<Transform>(e)) return true;
-        Fail(r, "Only an object can be selected");
+        if (e == state::Null || r.valid(e)) return true;
+        Fail(r, "The item to select does not exist");
         return false;
     };
 

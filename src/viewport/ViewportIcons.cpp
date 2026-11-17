@@ -26,6 +26,7 @@ void LoadViewportIcons(state::Registry &r) {
             },
             .Overlay = LoadSvg(ctx, dir / "overlay.svg"),
             .XRay = LoadSvg(ctx, dir / "xray.svg"),
+            .GoTo = LoadSvg(ctx, dir / "go_to.svg"),
             .Timeline = {
                 .Play = LoadSvg(ctx, dir / "play.svg"),
                 .PlayReverse = LoadSvg(ctx, dir / "play_reverse.svg"),

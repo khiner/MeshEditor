@@ -54,12 +54,8 @@ std::optional<NormalMapRef> MeshMaterialNormalMap(const state::Registry &r, stat
     if (pbr.NormalTexture.Slot == InvalidSlot) return {};
 
     // Resolve the uploaded source image through the sampler slot.
-    for (auto [_, manifest] : r.view<const MaterializedTextures>().each()) {
-        for (const auto &t : manifest.Items) {
-            if (t.SamplerSlot != pbr.NormalTexture.Slot) continue;
-            return NormalMapRef{.Image = t.SourceImageIndex, .TexCoord = pbr.NormalTexture.TexCoord, .Scale = pbr.NormalScale};
-        }
-    }
-    return {};
+    const auto texture = TextureAt(r, pbr.NormalTexture.Slot);
+    if (texture == state::Null) return {};
+    return NormalMapRef{.Image = r.get<const MaterializedTexture>(texture).SourceImageIndex, .TexCoord = pbr.NormalTexture.TexCoord, .Scale = pbr.NormalScale};
 }
 } // namespace gltf

@@ -3,6 +3,7 @@
 #include "action/Dispatch.h"
 #include "procedure/Procedure.h"
 #include "project/Recording.h"
+#include "render/MaterialComponents.h"
 #include "ui/CtrlShortcut.h"
 #include "ui/FieldEdit.h"
 
@@ -51,9 +52,10 @@ template<typename T> void DrawValue(const state::Registry &r, const char *label,
             if constexpr (state::IsEntityRef<T>) return v.Value;
             else return v;
         }();
-        const auto *current = entity == state::Null ? nullptr : r.try_get<const Name>(entity);
+        // A material, texture or physics resource has no Name component, so the preview reads the item's name.
+        const auto current = entity == state::Null || !r.valid(entity) ? std::string{"None"} : procedure::ItemName(r, entity);
         bool edited = false;
-        if (BeginCombo(label, current ? current->Value.c_str() : "None")) {
+        if (BeginCombo(label, current.c_str())) {
             if (Selectable("None", entity == state::Null)) {
                 entity = state::Null;
                 edited = true;
@@ -179,7 +181,7 @@ template<typename L> void DrawLeaf(const state::Registry &r, L &leaf, bool &chan
         }
         DrawValue(r, "Value", leaf.Value, field.Spec, changed, finished);
     } else if constexpr (action::object::IsUpdateMaterial<L>) {
-        Text("Material %u", leaf.Index);
+        Text("Material: %s", r.valid(leaf.Material) && r.all_of<Material>(leaf.Material) ? r.get<const Material>(leaf.Material).Name.c_str() : "Deleted");
         DrawValue(r, "Value", leaf.Value, action::FieldAt<PBRMaterial>(leaf.Offset).Spec, changed, finished);
     } else if constexpr (action::IsPatchFields<L>) {
         Text("Target: %s", TargetName(r, leaf.Entity == state::Null ? action::Target{action::OnActive{}} : action::Target{leaf.Entity}).c_str());

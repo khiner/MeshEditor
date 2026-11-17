@@ -161,12 +161,12 @@ fastgltf::Camera ConvertCameraToFg(const CameraLens &cam, std::string_view name)
     return {.camera = std::move(camera), .name = std::string{name}};
 }
 
-void OverlayRest(const state::Registry &r, state::Entity e, state::TypeKey component, uint16_t index, std::span<std::byte> record) {
+void OverlayRest(const state::Registry &r, state::Entity e, state::TypeKey component, std::span<std::byte> record) {
     const auto *clips = animation::ClipsOf(r, e);
     if (!clips) return;
     for (const auto &clip : clips->Clips) {
         for (const auto &channel : clip.Channels) {
-            if (channel.Target.Component == component && channel.Target.Index == index) std::memcpy(record.data() + channel.Target.Offset, channel.Rest.data(), channel.Rest.size() * sizeof(float));
+            if (channel.Target.Component == component) std::memcpy(record.data() + channel.Target.Offset, channel.Rest.data(), channel.Rest.size() * sizeof(float));
         }
     }
 }
@@ -224,9 +224,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     const auto *src_assets = r.try_get<const gltf::SourceAssets>(state::Document);
     static const gltf::SourceAssets EmptySourceAssets{};
     const auto &sa = src_assets ? *src_assets : EmptySourceAssets;
-    const auto &names = r.Resources.get<const MaterialStore>().Names;
     const auto material_count = buffers.Materials.Count<PBRMaterial>();
-    const auto &material_metas = src_assets ? src_assets->MaterialMetas : std::vector<MaterialSourceMeta>{};
+    const auto material_entities = MaterialsByIndex(r);
 
     std::unordered_map<state::Entity, uint32_t> mesh_entity_to_index;
     uint32_t mesh_count = 0;
@@ -629,16 +628,18 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     bool uses_texture_transform = false;
     static const MaterialSourceMeta DefaultMeta{};
     for (uint32_t i = 1; i < material_count; ++i) {
-        const auto source_idx = i - 1;
+        const auto entity = material_entities[i];
+        if (entity == state::Null) continue;
         auto pbr = buffers.Materials.GetSpan<PBRMaterial>()[i];
-        OverlayRest(r, state::Document, state::Key<MaterialStore>(), uint16_t(i), std::as_writable_bytes(std::span{&pbr, 1}));
-        const auto &meta = source_idx < material_metas.size() ? material_metas[source_idx] : DefaultMeta;
+        OverlayRest(r, entity, state::Key<Material>(), std::as_writable_bytes(std::span{&pbr, 1}));
+        const auto *source_meta = r.try_get<const MaterialSourceMeta>(entity);
+        const auto &meta = source_meta ? *source_meta : DefaultMeta;
         if (meta.ImplicitDefault) continue;
         material_indices[i] = asset.materials.size();
         const auto bits = meta.ExtensionPresence;
         for (uint32_t s = 0; s < MTS_Count; ++s) MaterialTextureSlots[s].Get(pbr).Slot = meta.TextureSlots[s];
 
-        const std::string name = (!meta.NameWasEmpty && i < names.size()) ? names[i] : std::string{};
+        const std::string name = meta.NameWasEmpty ? std::string{} : r.get<const Material>(entity).Name;
         fastgltf::Material out{
             .pbrData = {
                 .baseColorFactor = std::bit_cast<fastgltf::math::nvec4>(pbr.BaseColorFactor),
@@ -737,7 +738,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                             break;
                         }
                         case gltf::PointerSpace::Material:
-                            if (source.Target.Index < material_indices.size() && material_indices[source.Target.Index]) target = pointer_channel(*row, *material_indices[source.Target.Index]);
+                            if (const auto *material = r.try_get<const Material>(entity); material && material_indices[material->Index]) target = pointer_channel(*row, *material_indices[material->Index]);
                             break;
                         case gltf::PointerSpace::Camera:
                             if (const auto it = camera_entity_to_index.find(entity); it != camera_entity_to_index.end()) target = pointer_channel(*row, it->second);
@@ -1010,7 +1011,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 std::vector<fastgltf::optional<size_t>> mappings;
                 if (prim_idx < layout.VariantMappings.size()) {
                     for (const auto &m : layout.VariantMappings[prim_idx]) {
-                        mappings.emplace_back(m && *m < material_indices.size() ? material_indices[*m] : fastgltf::optional<size_t>{});
+                        mappings.emplace_back(m ? material_indices[MaterialIndexOf(r, *m)] : fastgltf::optional<size_t>{});
                     }
                 }
 
@@ -1119,14 +1120,14 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     for (const auto entity : camera_entities_ordered) {
         const auto *node = r.try_get<const GltfNode>(entity);
         auto lens = *LensOf(r, entity);
-        std::visit([&](auto &l) { OverlayRest(r, entity, state::Key<std::remove_reference_t<decltype(l)>>(), 0, std::as_writable_bytes(std::span{&l, 1})); }, lens);
+        std::visit([&](auto &l) { OverlayRest(r, entity, state::Key<std::remove_reference_t<decltype(l)>>(), std::as_writable_bytes(std::span{&l, 1})); }, lens);
         asset.cameras.emplace_back(ConvertCameraToFg(lens, node ? node->CameraName : std::string_view{}));
     }
     asset.lights.reserve(light_entities_ordered.size());
     for (const auto entity : light_entities_ordered) {
         const auto *node = r.try_get<const GltfNode>(entity);
         auto pl = r.get<const PunctualLight>(entity);
-        OverlayRest(r, entity, state::Key<PunctualLight>(), 0, std::as_writable_bytes(std::span{&pl, 1}));
+        OverlayRest(r, entity, state::Key<PunctualLight>(), std::as_writable_bytes(std::span{&pl, 1}));
         asset.lights.emplace_back(ConvertLightToFg(pl, node ? node->LightName : std::string_view{}));
     }
 
@@ -1487,7 +1488,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (const auto owner = export_node.Instances.empty() ? state::Null : export_node.Instances.front(); owner != state::Null) {
             if (const auto *visibility = r.try_get<const Visibility>(owner)) {
                 auto flag = *visibility;
-                OverlayRest(r, owner, state::Key<Visibility>(), 0, std::as_writable_bytes(std::span{&flag, 1}));
+                OverlayRest(r, owner, state::Key<Visibility>(), std::as_writable_bytes(std::span{&flag, 1}));
                 visible = flag.Visible != 0;
             }
         }
@@ -1524,7 +1525,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
         for (const auto se : image_light_scenes) {
             auto light = r.get<const ImageLight>(se);
-            OverlayRest(r, se, state::Key<ImageLight>(), 0, std::as_writable_bytes(std::span{&light, 1}));
+            OverlayRest(r, se, state::Key<ImageLight>(), std::as_writable_bytes(std::span{&light, 1}));
             auto &ibl = asset.imageBasedLights.emplace_back(source_ibl);
             ibl.intensity = light.Intensity;
             ibl.rotation = fastgltf::math::fquat(light.Rotation.x, light.Rotation.y, light.Rotation.z, light.Rotation.w);

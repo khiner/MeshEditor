@@ -40,7 +40,6 @@ std::expected<std::vector<uint32_t>, std::string> ImportObjPlyMaterials(state::R
     auto &buffers = r.Resources.get<GpuBuffers>();
     auto &textures = r.Resources.get<TextureStore>();
     auto &sources = r.get_or_emplace<gltf::SourceAssets>(state::Document);
-    auto &manifest = r.get_or_emplace<MaterializedTextures>(state::Document);
     const auto sampler_index = uint32_t(sources.Samplers.size());
     sources.Samplers.emplace_back(gltf::Sampler{.MagFilter = gltf::Filter::Nearest, .MinFilter = gltf::Filter::Nearest, .WrapS = gltf::Wrap::Repeat, .WrapT = gltf::Wrap::Repeat});
 
@@ -82,40 +81,34 @@ std::expected<std::vector<uint32_t>, std::string> ImportObjPlyMaterials(state::R
         texture.SourceImageIndex = image_index;
         source_texture_indices.emplace(sampler_slot, uint32_t(sources.Textures.size()));
         sources.Textures.emplace_back(gltf::Texture{.SamplerIndex = sampler_index, .ImageIndex = image_index, .Name = texture.Params.Name});
-        manifest.Items.emplace_back(MaterializedTexture{.SamplerSlot = sampler_slot, .SourceImageIndex = image_index, .Params = texture.Params});
+        r.emplace<MaterializedTexture>(r.create(), MaterializedTexture{.SamplerSlot = sampler_slot, .SourceImageIndex = image_index, .SourceTextureIndex = uint32_t(sources.Textures.size() - 1u), .Params = texture.Params});
         textures.Textures.emplace_back(std::move(texture));
         texture_slot_cache.emplace(cache_key, sampler_slot);
         return sampler_slot;
     };
 
     std::vector<uint32_t> scene_material_indices(materials.size(), 0u);
-    std::vector<std::string> names;
-    names.reserve(materials.size());
     buffers.Materials.Reserve((buffers.Materials.Count<PBRMaterial>() + materials.size()) * sizeof(PBRMaterial));
     for (uint32_t material_index = 0; material_index < materials.size(); ++material_index) {
         const auto &source = materials[material_index];
         const auto material_name = source.Name.empty() ? std::format("Material{}", material_index) : source.Name;
         const auto base_color_texture = resolve_texture_slot(source.BaseColorTexturePath, TextureColorSpace::Srgb);
         const auto normal_texture = resolve_texture_slot(source.NormalTexturePath, TextureColorSpace::Linear);
-        scene_material_indices[material_index] = buffers.Materials.Append(PBRMaterial{
+        const auto entity = AddMaterial(r, PBRMaterial{
             .BaseColorFactor = source.BaseColorFactor,
             .BaseColorTexture = {.Slot = base_color_texture != InvalidSlot ? base_color_texture : textures.WhiteTextureSlot},
             .MetallicFactor = std::clamp(source.MetallicFactor, 0.f, 1.f),
             .RoughnessFactor = std::clamp(source.RoughnessFactor, 0.f, 1.f),
             .NormalTexture = {.Slot = normal_texture},
             .AlphaMode = (source.BaseColorFactor.w < 1.f || source.HasAlphaTexture) ? MaterialAlphaMode::Blend : MaterialAlphaMode::Opaque,
-        });
-        sources.MaterialMetas.resize(buffers.Materials.Count<PBRMaterial>() - 1);
-        auto &meta = sources.MaterialMetas.back();
-        meta = {};
+        }, material_name);
+        scene_material_indices[material_index] = r.get<const Material>(entity).Index;
+        gltf::MaterialSourceMeta meta;
         if (base_color_texture != InvalidSlot) meta.TextureSlots[MTS_BaseColor] = source_texture_indices.at(base_color_texture);
         if (normal_texture != InvalidSlot) meta.TextureSlots[MTS_Normal] = source_texture_indices.at(normal_texture);
-        names.emplace_back(material_name);
+        r.emplace<gltf::MaterialSourceMeta>(entity, std::move(meta));
     }
     SubmitTextureUploadBatch(obj_batch);
-
-    auto &material_store = r.Resources.get<MaterialStore>();
-    material_store.AppendNames(std::move(names));
 
     return scene_material_indices;
 }

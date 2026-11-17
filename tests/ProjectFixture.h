@@ -413,7 +413,7 @@ inline std::string NetworkPages(const state::Registry &r) {
         text += std::format("page {}\n", state::Integral(network));
         for (uint32_t n = 0; n < view.Nodes.size(); ++n) {
             const auto item = view.Nodes[n].Item;
-            text += std::format("{} {} {} {}\n", state::Integral(item.Entity), item.Index, uint8_t(item.Kind), view.Nodes[n].Title);
+            text += std::format("{} {}\n", state::Integral(item), view.Nodes[n].Title);
             for (auto s = view.SocketFirst[n]; s < view.SocketFirst[n + 1]; ++s) text += std::format(" {}\n", view.Labels[s]);
             for (auto i = view.InputFirst[n]; i < view.InputFirst[n + 1]; ++i) text += std::format(" < {} {}\n", view.Wires[i].FromNode, view.Wires[i].FromSocket);
         }

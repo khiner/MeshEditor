@@ -7,7 +7,7 @@
 
 #include <span>
 
-struct MaterialStore;
+struct Material;
 
 namespace state {
 struct Registry;
@@ -26,27 +26,27 @@ template<KeyableField F> constexpr uint16_t FieldCount() {
 }
 template<KeyableField F> constexpr ValueKind FieldKind() { return std::same_as<F, quat> ? ValueKind::Quaternion : ValueKind::Float; }
 
-// The store a component's channels write: Transform channels write the node's pose, and PBRMaterial channels write the material buffer.
+// The store a component's channels write: Transform channels write the node's pose, and PBRMaterial channels write the material entity's record in the material buffer.
 template<typename C> consteval state::TypeKey StoreOf() {
     if constexpr (std::same_as<C, Transform>) return state::Key<PosedLocal>();
-    else if constexpr (std::same_as<C, PBRMaterial>) return state::Key<MaterialStore>();
+    else if constexpr (std::same_as<C, PBRMaterial>) return state::Key<Material>();
     else return state::Key<C>();
 }
 
-// The target of the field Ms... walks to, on the material `index` for material fields.
+// The target of the field Ms... walks to.
 template<auto... Ms>
     requires KeyableField<action::detail::last_field<Ms...>>
-ChannelTarget Target(uint16_t index = 0) {
+ChannelTarget Target() {
     using F = action::detail::last_field<Ms...>;
-    return {StoreOf<action::detail::first_class<Ms...>>(), action::detail::FieldOffset<Ms...>(), index, FieldCount<F>(), FieldKind<F>()};
+    return {StoreOf<action::detail::first_class<Ms...>>(), action::detail::FieldOffset<Ms...>(), FieldCount<F>(), FieldKind<F>()};
 }
 
 // Byte offset of a texture slot's TextureInfo within PBRMaterial.
 uint16_t TextureSlotOffset(uint8_t texture);
-// A texture transform field of material `index`'s texture slot.
+// A texture transform field of a material's texture slot.
 template<KeyableField F>
-ChannelTarget TextureTarget(uint8_t texture, F TextureInfo::*field, uint16_t index) {
-    return {state::Key<MaterialStore>(), uint16_t(TextureSlotOffset(texture) + action::detail::MemPtrOffset(field)), index, FieldCount<F>(), FieldKind<F>()};
+ChannelTarget TextureTarget(uint8_t texture, F TextureInfo::*field) {
+    return {state::Key<Material>(), uint16_t(TextureSlotOffset(texture) + action::detail::MemPtrOffset(field)), FieldCount<F>(), FieldKind<F>()};
 }
 
 // The entity's morph weights, or a zero-count target for an entity without them.

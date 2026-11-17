@@ -14,7 +14,7 @@ void FieldPromotionMenu(const state::Registry &r, const procedure::PromotedField
     ImGui::PushID(int(field.Component));
     ImGui::PushID(int(field.Offset));
     if (ImGui::BeginPopupContextItem("FieldPromotion")) {
-        const bool member = std::ranges::contains(procedure::NetworkItems(r, network), procedure::NetworkItem{field.Entity});
+        const bool member = std::ranges::contains(procedure::NetworkItems(r, network), field.Entity);
         if (ImGui::MenuItem("Expose on subnet", nullptr, false, member)) action::Emit(action::nodes::ExposePort{network, field, std::make_unique<std::string>(action::UpdatedField(field.Component, field.Offset).Field.Path)});
         ImGui::EndPopup();
     }
@@ -46,7 +46,7 @@ KeyTint::~KeyTint() {
 
 void KeyDecorator(const state::Registry &r, state::Entity entity, const ChannelTarget &target, const animation::ChannelState &d) {
     ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
-    ImGui::PushID(int(uint32_t(target.Component) ^ (uint32_t(target.Offset) << 16) ^ target.Index));
+    ImGui::PushID(int(uint32_t(target.Component) ^ (uint32_t(target.Offset) << 16)));
     const float h = ImGui::GetFrameHeight();
     const bool clicked = ImGui::InvisibleButton("##key", {h * 0.7f, h});
     const auto center = (ImGui::GetItemRectMin() + ImGui::GetItemRectMax()) * 0.5f;

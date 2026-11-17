@@ -427,15 +427,15 @@ void RevertSavedProject(state::Registry &r) {
 void BuildDefaultDockLayout(const PanelsState &panels, ImGuiID dockspace_id) {
     auto controls_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.3f, nullptr, &dockspace_id);
     auto extra_node_id = DockBuilderSplitNode(controls_node_id, ImGuiDir_Down, 0.4f, nullptr, &controls_node_id);
+    const auto properties_node_id = DockBuilderSplitNode(controls_node_id, ImGuiDir_Down, 0.6f, nullptr, &controls_node_id);
     const auto info_node_id = DockBuilderSplitNode(extra_node_id, ImGuiDir_Down, 0.25f, nullptr, &extra_node_id);
     auto nodes_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Down, 0.3f, nullptr, &dockspace_id);
     const auto timeline_node_id = DockBuilderSplitNode(nodes_node_id, ImGuiDir_Down, 0.35f, nullptr, &nodes_node_id);
-    const auto parameters_node_id = DockBuilderSplitNode(nodes_node_id, ImGuiDir_Right, 0.25f, nullptr, &nodes_node_id);
     for (const Panel *panel : std::array<const Panel *, 6>{&panels.History, &panels.Style, &panels.Debug, &panels.ImGuiDemo, &panels.ImSpinnerDemo, &panels.ImPlotDemo}) DockBuilderDockWindow(panel->Name, extra_node_id);
     DockBuilderDockWindow(panels.SceneControls.Name, controls_node_id);
     DockBuilderDockWindow(panels.Timeline.Name, timeline_node_id);
     DockBuilderDockWindow(panels.Nodes.Name, nodes_node_id);
-    DockBuilderDockWindow(panels.Parameters.Name, parameters_node_id);
+    DockBuilderDockWindow(panels.Properties.Name, properties_node_id);
     DockBuilderDockWindow(panels.Info.Name, info_node_id);
     DockBuilderGetNode(extra_node_id)->SelectedTabId = ImHashStr(panels.History.Name);
 }
@@ -632,7 +632,7 @@ EditorPanelsFrame BeginEditorPanels(
         PopStyleVar();
     });
     DrawPanel(panels.Nodes.Name, [&] { procedure::DrawNodesPanel(r, panels.Nodes, interactive); });
-    DrawPanel(panels.Parameters.Name, [&] { procedure::DrawParametersPanel(r, panels.Nodes, panels.Parameters, interactive); });
+    DrawPanel(panels.Properties.Name, [&] { procedure::DrawPropertiesPanel(r, panels.Nodes, panels.Properties, interactive); });
     if (interactive) r.Resources.get<FrameState>().Scrubbing = scrubbing;
 
     if (interactive) FollowHoveredViewport(r);

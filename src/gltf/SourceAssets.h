@@ -55,7 +55,7 @@ struct TextureTransformMeta {
     std::optional<uint32_t> SourceTexCoordOverride{};
 };
 
-// Retains per-material source data unavailable from buffers.Materials.
+// Source data of an imported material that its record in the material buffer does not hold, on the material entity.
 struct MaterialSourceMeta {
     std::array<TextureTransformMeta, 5> BaseSlotMeta{}; // BaseColor..Emissive
     std::array<uint32_t, MTS_Count> TextureSlots = [] { std::array<uint32_t, MTS_Count> a; a.fill(InvalidSlot); return a; }();
@@ -104,7 +104,6 @@ struct SourceAssets {
     std::string AssetExtras, AssetExtensions; // Minified JSON.
     std::vector<std::string> ExtensionsRequired;
     std::map<uint64_t, std::string> ExtrasByEntity; // Ordered for deterministic snapshots.
-    std::vector<MaterialSourceMeta> MaterialMetas;
     std::vector<Texture> Textures;
     std::vector<Image> Images;
     std::vector<Sampler> Samplers;

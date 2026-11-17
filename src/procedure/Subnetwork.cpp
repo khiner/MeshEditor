@@ -248,7 +248,7 @@ void Apply(state::Registry &r, const GroupNodes &a) {
     Apply(r, Action{AddNode{a.MeshEntity, KindOf<Subnet>, parent}});
     const auto subnet = r.get<const GeometryProcedure>(a.MeshEntity).Last;
     for (const auto node : selected) {
-        ClearNetworkPosition(r, NetworkOf(r, node), {node});
+        ClearNetworkPosition(r, NetworkOf(r, node), node);
         r.emplace_or_replace<NodeContainer>(node, subnet);
     }
     const auto nodes = NodesOf(r, r.get<const GeometryProcedure>(a.MeshEntity));

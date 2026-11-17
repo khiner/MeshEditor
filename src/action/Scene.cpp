@@ -55,11 +55,6 @@ void Apply(state::Registry &r, const Action &action) {
                 procedure::RemoveNetworkSubnets(r, a.Scene);
                 r.destroy(a.Scene);
             },
-            [&](const Rename &a) {
-                if (!r.all_of<Scene>(a.Scene)) return;
-                r.remove<Name>(a.Scene);
-                EmplaceUniqueName(r, a.Scene, a.Name);
-            },
             [&](const LinkSelected &a) {
                 if (!r.all_of<Scene>(a.Scene)) return;
                 for (const auto root : TargetRoots(r, a.Target)) {

@@ -2234,7 +2234,7 @@ void RootProcedure(state::Registry &r, state::Entity mesh_entity, state::Entity 
     r.emplace<ProcedureNode>(root, mesh_entity, state::Null, kind);
     r.emplace<NodeInputs>(root, std::vector<SocketLink>(InputCount[kind]));
     r.emplace_or_replace<GeometryProcedure>(mesh_entity, root, root, root);
-    r.emplace_or_replace<NetworkActive>(mesh_entity, NetworkItem{root}, std::vector<NetworkItem>{{root}});
+    r.emplace_or_replace<NetworkActive>(mesh_entity, root, std::vector{root});
 }
 } // namespace procedure
 

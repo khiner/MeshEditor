@@ -835,9 +835,7 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
                     const auto &lighting = r.get<const T>(viewport).Value;
                     if (Button("Reset")) action::Emit(action::view::ResetPbrLighting{.Viewport = viewport, .Rendered = std::same_as<T, RenderedLighting>});
                     ui::DrawFields<PBRViewportLighting>(ui::Edit{r, viewport}.template Sub<&T::Value>());
-                    if (lighting.UseSceneWorld) {
-                        if (const auto scene = FrameScene(r); r.all_of<ImageLight>(scene)) ui::Edit{r, scene}.Draw<&ImageLight::Intensity>();
-                    } else {
+                    if (!lighting.UseSceneWorld) {
                         const auto hdris = GetHdriRefs(r, r.get<const StudioEnvironment>(viewport).Name);
                         ui::ChoiceCombo("Environment", hdris.Names[hdris.ActiveIndex], hdris.Names, std::identity{}, [&](const std::string &name) { action::Emit(action::view::SetStudioEnvironment{viewport, name}); });
                     }

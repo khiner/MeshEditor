@@ -111,7 +111,7 @@ void CombineSelected(state::Registry &r, const action::mesh::Boolean &boolean) {
     const auto info = r.get<const procedure::GeometryProcedure>(first).Last;
     r.replace<procedure::ObjectInfo>(info, others.front());
     nodes::Apply(r, nodes::Link{first, info, 0u, boolean_entity, 1u});
-    nodes::Apply(r, nodes::SelectItems{first, {boolean_entity}, {{boolean_entity}}});
+    nodes::Apply(r, nodes::SelectItems{first, boolean_entity, {boolean_entity}});
 }
 
 // The world transform of the mesh's transformable primary instance, which transformed position operators edit the mesh in.

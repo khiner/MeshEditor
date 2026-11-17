@@ -10,5 +10,4 @@ struct PhysicsChanges {
     state::DirtySet Scenes; // A scene was created or destroyed, kept until physics::ProcessChanges reads it.
     state::DirtySet Geometry, BodyMesh, ColliderPolicy;
     state::DirtySet Colliders; // A collider shape was created, changed or destroyed.
-    state::DirtySet DefinitionUses; // A reference to a physics material, collision system, collision filter, or joint definition changed.
 };

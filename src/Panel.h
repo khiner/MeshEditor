@@ -31,7 +31,7 @@ struct PanelVisibility {
     bool Timeline{true};
     bool Style{true};
     bool Info{true};
-    bool Parameters{true};
+    bool Properties{true};
     bool ImGuiDemo{false}, ImSpinnerDemo{false}, ImPlotDemo{false};
     bool Debug{false};
     bool History{true};
@@ -108,7 +108,8 @@ struct NodesPanel : Panel {
     bool Linking{false}; // The Add menu lists the sockets that link with the socket a dropped wire held, and links its node through the picked one
     std::array<char, 64> Search{}; // The Add menu's search text
     int SearchHighlight{}; // The search result Enter adds
-    procedure::NetworkItem UsersOf{}; // The item whose users the Parameters panel lists
+    std::optional<state::Entity> Followed; // The active node the editor last saw, or none before its first frame
+    state::Entity UsersOf{state::Null}; // The item whose users the Properties panel lists
     uint64_t UsersRevision{UINT64_MAX}; // The network revision Users was read at
     std::vector<procedure::SceneReference> Users; // The references that hold UsersOf
     std::array<char, 64> NameEdit{}; // The attribute name the active name field edits
@@ -121,7 +122,7 @@ struct PanelsState {
         Timeline{"Timeline", &PanelVisibility::Timeline},
         Style{"Style", &PanelVisibility::Style},
         Info{"Info", &PanelVisibility::Info},
-        Parameters{"Parameters", &PanelVisibility::Parameters},
+        Properties{"Properties", &PanelVisibility::Properties},
         ImGuiDemo{"Dear ImGui Demo", &PanelVisibility::ImGuiDemo, false},
         ImSpinnerDemo{"ImSpinner Demo", &PanelVisibility::ImSpinnerDemo, false},
         ImPlotDemo{"ImPlot Demo", &PanelVisibility::ImPlotDemo, false},
@@ -138,7 +139,7 @@ struct PanelsState {
 // Every panel in the order the Panels menu lists them.
 template<typename Panels> auto AllPanels(Panels &panels) {
     using P = std::conditional_t<std::is_const_v<Panels>, const Panel *, Panel *>;
-    return std::to_array<P>({&panels.History, &panels.Nodes, &panels.Parameters, &panels.Info, &panels.Style, &panels.Debug, &panels.ImGuiDemo, &panels.ImSpinnerDemo, &panels.ImPlotDemo, &panels.SceneControls, &panels.Timeline});
+    return std::to_array<P>({&panels.History, &panels.Nodes, &panels.Info, &panels.Style, &panels.Debug, &panels.ImGuiDemo, &panels.ImSpinnerDemo, &panels.ImPlotDemo, &panels.SceneControls, &panels.Properties, &panels.Timeline});
 }
 
 inline PanelVisibility GetPanelVisibility(const PanelsState &panels) {

@@ -1,11 +1,14 @@
 #include "action/Object.h"
 #include "Camera.h"
+#include "File.h"
 #include "Profile.h"
 #include "SortUnique.h"
 #include "action/Dispatch.h"
 #include "action/Errors.h"
+#include "animation/Fields.h"
 #include "animation/MorphWeights.h"
 #include "armature/Armature.h"
+#include "gltf/SourceAssets.h"
 #include "mesh/MeshClone.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
@@ -13,12 +16,15 @@
 #include "object/ObjectOps.h"
 #include "physics/PhysicsTypes.h"
 #include "procedure/Procedure.h"
+#include "project/Assets.h"
+#include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
 #include "render/MeshletBuildGpu.h"
 #include "render/RenderChanges.h"
+#include "render/Textures.h"
 #include "scene/CameraLens.h"
 #include "scene/Defaults.h"
 #include "scene/SceneGraphOps.h"
@@ -298,12 +304,6 @@ void Apply(state::Registry &r, const Action &action) {
                 if (HierarchyParentCycle(r, entity, parent)) return Fail(r, "Loop in parents");
                 SetParentKeepWorld(r, std::array{entity}, parent, r.view<const BodyPoseCache>() | std::ranges::to<std::vector>());
             },
-            [&](const Rename &a) {
-                if (!r.all_of<ObjectKind>(a.Entity) || r.any_of<SubElementOf, BoneIndex>(a.Entity)) return action::Fail(r, "Renaming requires a scene object");
-                const auto entity = HierarchyEditTarget(r, a.Entity, true);
-                r.remove<Name>(entity);
-                EmplaceUniqueName(r, entity, a.Name);
-            },
             [&](const AddEmpty &a) { ::AddEmpty(r, *a.Info); if (a.Info->BeginTranslate) begin_translate(); },
             [&](const AddArmature &a) {
                 const auto entity = CreateArmatureObject(r, meshes, state::Null, a.Info->Name, a.Info->Transform, a.Info->Select, a.Info->Scene);
@@ -324,18 +324,53 @@ void Apply(state::Registry &r, const Action &action) {
                 });
             },
             [&]<typename T>(const UpdateMaterial<T> &a) {
-                auto &materials = r.Resources.get<GpuBuffers>().Materials;
-                if (a.Index >= materials.Count<PBRMaterial>()) return;
-                materials.Update(std::as_bytes(std::span{&a.Value, 1}), uint64_t(a.Index) * sizeof(PBRMaterial) + a.Offset);
-                r.Resources.get<RenderChanges>().Materials.emplace(state::Document);
-                // A texture slot is an unsigned field, and the document page shows it as a reference.
-                if constexpr (std::same_as<T, uint32_t>) r.Resources.get<procedure::NetworkChanges>().Pages.emplace(state::Document);
+                const auto *material = r.valid(a.Material) ? r.try_get<const Material>(a.Material) : nullptr;
+                if (!material) return Fail(r, "The material does not exist");
+                r.Resources.get<GpuBuffers>().Materials.Update(std::as_bytes(std::span{&a.Value, 1}), uint64_t(material->Index) * sizeof(PBRMaterial) + a.Offset);
+                r.Resources.get<RenderChanges>().Materials.emplace(a.Material);
+                if constexpr (std::same_as<T, uint32_t>) {
+                    // A texture slot is an unsigned field, and the document page shows it as a reference.
+                    r.Resources.get<procedure::NetworkChanges>().Pages.emplace(state::Document);
+                    // The export writes each texture slot's source texture, which the material's import record holds.
+                    for (uint8_t slot = 0; slot < MTS_Count; ++slot) {
+                        if (animation::TextureSlotOffset(slot) + offsetof(TextureInfo, Slot) != a.Offset) continue;
+                        const auto texture = TextureAt(r, a.Value);
+                        r.get_or_emplace<gltf::MaterialSourceMeta>(a.Material);
+                        r.patch<gltf::MaterialSourceMeta>(a.Material, [&](auto &meta) { meta.TextureSlots[slot] = texture == state::Null ? InvalidSlot : r.get<const MaterializedTexture>(texture).SourceTextureIndex; });
+                    }
+                }
+            },
+            [&](const AddMaterial &a) {
+                // A new material starts as a copy of the default record.
+                const auto entity = ::AddMaterial(r, PBRMaterial{GetMaterials(r)[0]}, std::format("Material {}", r.view<const Material>().size() + 1u));
+                r.Resources.get<RenderChanges>().Materials.emplace(entity);
+                if (!a.PrimitiveIndex) return ::Select(r, entity);
+                for_each_mesh_target(a.Target, [&](state::Entity e) { r.emplace_or_replace<MeshMaterialAssignment>(e, *a.PrimitiveIndex, entity); });
+            },
+            [&](const AddTexture &a) {
+                if (const auto bytes = File::Read(project::ResolveAsset(r, a.Path)); !bytes) return Fail(r, std::format("Cannot read image '{}': {}", a.Path.string(), bytes.error()));
+                const auto extension = a.Path.extension().string();
+                const auto &sources = r.get_or_emplace<gltf::SourceAssets>(state::Document);
+                const auto image = uint32_t(sources.Images.size()), texture = uint32_t(sources.Textures.size());
+                const TextureParams params{
+                    .ColorSpace = a.Color ? TextureColorSpace::Srgb : TextureColorSpace::Linear,
+                    .WrapS = MTL::SamplerAddressModeRepeat,
+                    .WrapT = MTL::SamplerAddressModeRepeat,
+                    // A source texture without a sampler filters linearly across mip levels.
+                    .Sampler = {.MinFilter = MTL::SamplerMinMagFilterLinear, .MagFilter = MTL::SamplerMinMagFilterLinear, .MipmapMode = MTL::SamplerMipFilterLinear, .UsesMipmaps = true},
+                    .Name = a.Path.filename().string(),
+                };
+                r.patch<gltf::SourceAssets>(state::Document, [&](gltf::SourceAssets &sources) {
+                    sources.Images.emplace_back(gltf::Image{.MimeType = extension == ".png" ? gltf::MimeType::PNG : extension == ".webp" ? gltf::MimeType::WEBP : extension == ".ktx2" ? gltf::MimeType::KTX2 : gltf::MimeType::JPEG, .Source = gltf::Image::SourceKind::External, .Name = params.Name, .SourcePath = project::AssetReference(r, a.Path).string()});
+                    sources.Textures.emplace_back(gltf::Texture{.ImageIndex = image, .Name = params.Name});
+                });
+                ::Select(r, ::AddTexture(r, image, texture, params));
             },
             [&](const SetMaterialSlotSelection &a) {
                 for_each_mesh_target(a.Target, [&](state::Entity e) { r.emplace_or_replace<MeshMaterialSlotSelection>(e, a.PrimitiveIndex); });
             },
             [&](const SetMaterialAssignment &a) {
-                for_each_mesh_target(a.Target, [&](state::Entity e) { r.emplace_or_replace<MeshMaterialAssignment>(e, a.PrimitiveIndex, a.MaterialIndex); });
+                for_each_mesh_target(a.Target, [&](state::Entity e) { r.emplace_or_replace<MeshMaterialAssignment>(e, a.PrimitiveIndex, a.Material); });
             },
             [&](const SetProjection &a) {
                 ForEachTarget(

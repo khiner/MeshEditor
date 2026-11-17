@@ -5,7 +5,10 @@
 #include "scene/HierarchyInstance.h"
 #include "scene/SceneGraph.h"
 
+#include "action/Bone.h"
+#include "action/Selection.h"
 #include "action/View.h"
+#include "armature/ArmatureComponents.h"
 #include "mesh/Mesh.h"
 #include "procedure/NodeTheme.h"
 #include "procedure/NodeView.h"
@@ -325,29 +328,32 @@ NodeView GeometryNodeDefinitions(const state::Registry &r, const CookPlan &plan,
     for (uint32_t n = 0; n < plan.Nodes.size(); ++n) {
         const auto [entity, kind] = plan.Nodes[n];
         auto title = kind == KindOf<Subnet> ? GetName(r, entity) : std::string{OperationTitle(r, entity, kind)};
-        view.Nodes.push_back({{entity}, std::move(title), KindTitles[kind], kind});
+        view.Nodes.push_back({entity, std::move(title), KindTitles[kind], kind});
     }
     return view;
 }
 // The view's node for the item, or none.
 // A scene page's nodes are in item order.
-uint32_t NodeOf(const NodeView &view, NetworkItem item) {
-    if (view.Geometry) return item.Kind == ItemKind::Entity ? IndexOf(*view.Geometry, item.Entity) : NoNode;
+uint32_t NodeOf(const NodeView &view, state::Entity item) {
+    if (view.Geometry) return IndexOf(*view.Geometry, item);
     const auto at = std::ranges::lower_bound(view.Nodes, item, {}, &EditorNode::Item);
     return at != view.Nodes.end() && at->Item == item ? uint32_t(at - view.Nodes.begin()) : NoNode;
 }
 uint32_t ActiveIndex(const state::Registry &r, const NodeView &view) {
     if (view.Geometry) return ActiveIndex(r, *view.Geometry);
-    const auto *selection = r.try_get<const NetworkActive>(view.Network);
-    return NodeOf(view, selection ? selection->Item : NetworkItem{FindActiveEntity(r)});
+    // A bone page shows the active bone, and every other page the active node.
+    if (const auto bone = NodeOf(view, FindActiveBone(r)); bone != NoNode) return bone;
+    return NodeOf(view, FindActiveNode(r));
 }
+// A geometry node is selected in its procedure's selection, and any other node by its entity's selection tag.
 bool Selected(const state::Registry &r, const NodeView &view, uint32_t node) {
-    const auto owner = view.Geometry ? r.get<const ProcedureNode>(view.Nodes[node].Item.Entity).Procedure : view.Network;
-    const auto *selection = r.try_get<const NetworkActive>(owner);
-    return selection && selection->Contains(view.Nodes[node].Item);
+    const auto entity = view.Nodes[node].Item;
+    if (!view.Geometry) return r.any_of<::Selected, BoneSelection>(entity);
+    const auto *selection = r.try_get<const NetworkActive>(r.get<const ProcedureNode>(entity).Procedure);
+    return selection && selection->Contains(entity);
 }
-std::vector<NetworkItem> ItemsOf(const NodeView &view, std::span<const uint32_t> indices) {
-    std::vector<NetworkItem> items;
+std::vector<state::Entity> ItemsOf(const NodeView &view, std::span<const uint32_t> indices) {
+    std::vector<state::Entity> items;
     items.reserve(indices.size());
     for (const auto n : indices) items.push_back(view.Nodes[n].Item);
     return items;
@@ -368,7 +374,7 @@ std::vector<Socket> LinkedParameters(const CookPlan &plan, uint32_t node) {
 std::optional<std::array<const char *, 3>> OperandsOf(const state::Registry &r, const NodeView &view, uint32_t node) {
     std::optional<std::array<const char *, 3>> operands;
     if (view.Geometry) VisitKind(view.Nodes[node].Kind, [&]<typename K> {
-        if constexpr (requires(K k) { OperandLabels(k.Operation); }) operands = OperandLabels(r.get<const K>(view.Nodes[node].Item.Entity).Operation);
+        if constexpr (requires(K k) { OperandLabels(k.Operation); }) operands = OperandLabels(r.get<const K>(view.Nodes[node].Item).Operation);
     });
     return operands;
 }
@@ -600,7 +606,7 @@ struct NodePage {
     uint64_t Revision{UINT64_MAX}; // The network revision the view was built at
     std::vector<InputRows> Rows;
     struct Measured {
-        NetworkItem Item;
+        state::Entity Item;
         uint64_t Text;
         Box Size;
     };
@@ -930,7 +936,7 @@ bool Accepts(const state::Registry &r, const NodeView &view, uint32_t held_node,
     if (view.Geometry) return (node != held_node || view.Nodes[node].Kind == KindOf<Subnet>) && Joins(NodeSockets(view, held_node)[held_socket], NodeSockets(view, node)[socket]);
     const auto &a = BindingOf(view, held_node, held_socket), &b = BindingOf(view, node, socket);
     const auto *input = std::get_if<SceneReference>(&a);
-    return input ? ReferenceAccepts(r, *input, std::get<NetworkItem>(b)) : ReferenceAccepts(r, std::get<SceneReference>(b), std::get<NetworkItem>(a));
+    return input ? ReferenceAccepts(r, *input, std::get<state::Entity>(b)) : ReferenceAccepts(r, std::get<SceneReference>(b), std::get<state::Entity>(a));
 }
 // The node's visible sockets that the held wire can link with.
 // With `tray`, only its tray sockets.
@@ -950,16 +956,16 @@ action::nodes::Link LinkOf(const CookPlan &plan, state::Entity mesh_entity, uint
     return from_held ? action::nodes::Link{mesh_entity, held, SocketId(plan, held_node, held_socket), other, SocketId(plan, node, socket), index} : action::nodes::Link{mesh_entity, other, SocketId(plan, node, socket), held, SocketId(plan, held_node, held_socket)};
 }
 action::nodes::Unlink UnlinkOf(const NodeView &view, state::Entity owner, uint32_t node, uint16_t slot) {
-    return {owner, view.Nodes[node].Item.Entity, SocketId(view, node, SlotSocket(view, node, slot)), SlotIndex(view, node, slot)};
+    return {owner, view.Nodes[node].Item, SocketId(view, node, SlotSocket(view, node, slot)), SlotIndex(view, node, slot)};
 }
 action::nodes::InsertNode InsertOf(const NodeView &view, state::Entity owner, uint32_t node, uint32_t to_node, uint16_t to_slot, uint32_t shift = 0u) {
-    return {owner, view.Nodes[node].Item.Entity, view.Nodes[to_node].Item.Entity, SocketId(view, to_node, SlotSocket(view, to_node, to_slot)), shift, SlotIndex(view, to_node, to_slot)};
+    return {owner, view.Nodes[node].Item, view.Nodes[to_node].Item, SocketId(view, to_node, SlotSocket(view, to_node, to_slot)), shift, SlotIndex(view, to_node, to_slot)};
 }
 // The assignment that links a scene page's reference socket with an item socket, given in either order.
 action::nodes::AssignReference AssignOf(const NodeView &view, uint32_t a_node, uint16_t a_socket, uint32_t b_node, uint16_t b_socket) {
     const auto &a = BindingOf(view, a_node, a_socket), &b = BindingOf(view, b_node, b_socket);
     const auto *input = std::get_if<SceneReference>(&a);
-    return input ? action::nodes::AssignReference{*input, std::get<NetworkItem>(b)} : action::nodes::AssignReference{std::get<SceneReference>(b), std::get<NetworkItem>(a)};
+    return input ? action::nodes::AssignReference{*input, std::get<state::Entity>(b)} : action::nodes::AssignReference{std::get<SceneReference>(b), std::get<state::Entity>(a)};
 }
 // Links the held wire to the socket, at `index` among a multi-input socket's links.
 // A wire picked up from an input is unlinked from that input in the same undo step.
@@ -977,15 +983,15 @@ void Connect(const state::Registry &r, NodesPanel &panel, const NodeView &view, 
         if (detached && !returns) action::AddToGesture(UnlinkOf(view, owner, left_node, left_slot));
     } else {
         // The reference the wire left clears first, so a list entry dropped back on its own list is added again.
-        if (const auto *left = detached && !returns ? std::get_if<SceneReference>(&BindingOf(view, left_node, left_slot)) : nullptr; left && ReferenceAccepts(r, *left, {})) {
-            action::AddToGesture(action::nodes::AssignReference{*left, {}});
+        if (const auto *left = detached && !returns ? std::get_if<SceneReference>(&BindingOf(view, left_node, left_slot)) : nullptr; left && ReferenceAccepts(r, *left, state::Null)) {
+            action::AddToGesture(action::nodes::AssignReference{*left, state::Null});
         }
         action::AddToGesture(AssignOf(view, panel.DragNode, panel.DragSocket, node, socket));
     }
 }
 void Disconnect(const state::Registry &r, const NodeView &view, state::Entity owner, uint32_t node, uint16_t slot) {
     if (view.Geometry) action::Emit(UnlinkOf(view, owner, node, slot));
-    else if (const auto *reference = std::get_if<SceneReference>(&BindingOf(view, node, slot)); reference && ReferenceAccepts(r, *reference, {})) action::Emit(action::nodes::AssignReference{*reference, {}});
+    else if (const auto *reference = std::get_if<SceneReference>(&BindingOf(view, node, slot)); reference && ReferenceAccepts(r, *reference, state::Null)) action::Emit(action::nodes::AssignReference{*reference, state::Null});
 }
 // Drops the held wire on a node.
 // With one socket that can take it, links to that socket, and with several, opens the port picker.
@@ -1010,17 +1016,20 @@ void Grab(NodesPanel &panel, uint32_t after, uvec2 start) {
     panel.Moved = false;
 }
 
-std::vector<state::Entity> EntitiesOf(const CookPlan &plan, std::span<const uint32_t> indices) {
-    std::vector<state::Entity> entities;
-    entities.reserve(indices.size());
-    for (const auto n : indices) entities.push_back(plan.Nodes[n].Entity);
-    return entities;
-}
 std::vector<uint32_t> SelectedNodes(const state::Registry &r, const NodeView &view) {
     std::vector<uint32_t> selected;
     if (view.Nodes.empty()) return selected;
-    const auto owner = view.Geometry ? r.get<const ProcedureNode>(view.Nodes.front().Item.Entity).Procedure : view.Network;
-    if (const auto *selection = r.try_get<const NetworkActive>(owner)) {
+    if (!view.Geometry) {
+        // The selected entities are few beside a page's nodes, so each one looks its node up.
+        const auto add = [&](state::Entity e) {
+            if (const auto n = NodeOf(view, e); n != NoNode) selected.push_back(n);
+        };
+        for (const auto e : r.view<const ::Selected>()) add(e);
+        for (const auto e : r.view<const BoneSelection>()) add(e);
+        std::ranges::sort(selected);
+        return selected;
+    }
+    if (const auto *selection = r.try_get<const NetworkActive>(r.get<const ProcedureNode>(view.Nodes.front().Item).Procedure)) {
         for (const auto item : selection->Selection) {
             if (const auto n = NodeOf(view, item); n != NoNode) selected.push_back(n);
         }
@@ -1047,7 +1056,7 @@ std::vector<action::nodes::Link> MakeLinks(const Graph &graph, state::Entity mes
                 const auto current = wires[input_first[to] + input];
                 if ((current.FromNode != NoNode) != linked) continue;
                 for (uint16_t output = InputsOf(view, from); output < from_sockets.size(); ++output) {
-                    if (Links(from_sockets[output], to_sockets[input]) && (current.FromNode != from || current.FromSocket != output)) return action::nodes::Link{mesh_entity, view.Nodes[from].Item.Entity, output, view.Nodes[to].Item.Entity, input};
+                    if (Links(from_sockets[output], to_sockets[input]) && (current.FromNode != from || current.FromSocket != output)) return action::nodes::Link{mesh_entity, view.Nodes[from].Item, output, view.Nodes[to].Item, input};
                 }
             }
             return {};
@@ -1192,8 +1201,11 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
     const auto active_node = ActiveIndex(r, view);
     const auto mouse = io.MousePos;
     const bool mouse_moved = io.MouseDelta.x != 0.f || io.MouseDelta.y != 0.f;
+    // A scene or document page selects its nodes' entities, and no active node keeps the active one.
     const auto select = [&](const std::vector<uint32_t> &selection, uint32_t active) {
-        action::Emit(action::nodes::SelectItems{view.Network, active == NoNode ? NetworkItem{} : nodes[active].Item, ItemsOf(view, selection)});
+        const auto active_item = active == NoNode ? state::Null : nodes[active].Item;
+        if (view.Geometry) action::Emit(action::nodes::SelectItems{view.Network, active_item, ItemsOf(view, selection)});
+        else action::Emit(action::selection::SelectNodes(r, ItemsOf(view, selection), active_item));
     };
     const auto open_add = [&](bool linking) {
         const auto cell = (mouse - graph.Origin) / graph.Step;
@@ -1303,19 +1315,24 @@ void Interact(const state::Registry &r, NodesPanel &panel, state::Entity mesh_en
         if (Shortcut(ImGuiMod_Shift | ImGuiKey_A, Key)) {
             open_add(false);
         } else if (Shortcut(ImGuiKey_X, Key) || Shortcut(ImGuiKey_Delete, Key) || Shortcut(ImGuiKey_Backspace, Key)) {
-            if (view.Geometry && !selected.empty()) action::Emit(action::nodes::DeleteNodes{mesh_entity, EntitiesOf(*view.Geometry, selected)});
+            const auto items = ItemsOf(view, selected);
+            if (items.empty()) {
+            } else if (view.Geometry) action::Emit(action::nodes::DeleteNodes{mesh_entity, items});
+            else if (!r.all_of<BoneIndex>(items.front())) action::Emit(action::nodes::DeleteItems{items});
+            // Bones are deleted the way the viewport deletes them, in the armature's Edit mode.
+            else if (IsBoneEditMode(r)) action::Emit(action::bone::DeleteSelected{});
         } else if (const bool replace = Shortcut(ImGuiMod_Shift | ImGuiKey_J, Key); replace || Shortcut(ImGuiKey_J, Key)) {
             if (view.Geometry) panel.PendingLinks = MakeLinks(graph, mesh_entity, selected, replace);
         } else if (Shortcut(ImGuiMod_Shift | ImGuiKey_D, Key)) {
             if (view.Geometry && !selected.empty()) {
                 // The grab starts the copies from the cell of the node whose copy becomes active.
                 const auto &held = graph.Boxes[std::ranges::binary_search(selected, active_node) ? active_node : selected.back()];
-                action::Emit(action::nodes::DuplicateNodes{mesh_entity, EntitiesOf(*view.Geometry, selected)});
+                action::Emit(action::nodes::DuplicateNodes{mesh_entity, ItemsOf(view, selected)});
                 Grab(panel, uint32_t(nodes.size()), {held.X, held.Y});
             }
         } else if (Shortcut(ImGuiMod_Ctrl | ImGuiKey_G, Key)) {
             if (view.Geometry) {
-                auto grouped = EntitiesOf(*view.Geometry, selected);
+                auto grouped = ItemsOf(view, selected);
                 std::erase(grouped, panel.Canvas.Network);
                 if (!grouped.empty()) action::Emit(action::nodes::GroupNodes{mesh_entity, std::move(grouped)});
             } else if (!selected.empty()) action::Emit(action::nodes::GroupItems{view.Network, ItemsOf(view, selected)});
@@ -1551,7 +1568,7 @@ void DrawPortPicker(const state::Registry &r, NodesPanel &panel, state::Entity m
 void RecordHover(const state::Registry &r, const NodesPanel &panel, const NodeView &view, const Hit &hit) {
     if (hit.Type == HitType::None) return;
     const auto &node = view.Nodes[hit.Node];
-    const auto entity = node.Item.Entity;
+    const auto entity = node.Item;
     const auto kind = node.Kind;
     const auto *type = view.Geometry ? node.Type : ItemLabel(r, node.Item);
     if (hit.Type == HitType::Node) {
@@ -1701,7 +1718,7 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
     const auto active_node = ActiveIndex(r, view);
     const auto draw_node = [&](uint32_t n) {
         const auto &node = nodes[n];
-        const auto entity = node.Item.Entity;
+        const auto entity = node.Item;
         const auto kind = node.Kind;
         const auto [min, max] = RectOf(graph, n);
         // The labels span the columns between the port columns.
@@ -2002,7 +2019,7 @@ void DrawParameters(state::Registry &r, NodesPanel &panel, state::Entity mesh_en
         if (ResultSocket(r, active)) SameLine();
         ui::ActionField("Bypass", r.all_of<NodeBypassed>(active), [&](bool bypassed) { return action::nodes::SetBypass{active, bypassed}; }, {.Help = "Pass the compatible input through without applying this node."}, interactive);
     }
-    if (kind == KindOf<Subnet>) DrawSubnetParameters(r, panel, active, interactive);
+    if (kind == KindOf<Subnet>) DrawSubnetParameters(r, active, interactive);
     const auto parent = ContainerOf(r, active);
     if (parent != state::Null && BeginMenu("Expose socket")) {
         const auto sockets = NodeSockets(plan, node);
@@ -2070,6 +2087,7 @@ void DrawNodesPanel(state::Registry &r, NodesPanel &panel, bool interactive) {
         panel.PendingLinks.clear();
         panel.LinkAfter = NoNode;
     }
+    FollowActiveNode(r, panel);
     state::Entity mesh_entity;
     const auto *plan = NetworkPlan(r, panel, mesh_entity);
     if (interactive && panel.LinkAfter != NoNode) {
@@ -2111,15 +2129,9 @@ void DrawNodesPanel(state::Registry &r, NodesPanel &panel, bool interactive) {
     End();
 }
 
-void DrawParametersPanel(state::Registry &r, NodesPanel &nodes, Panel &panel, bool interactive) {
-    if (!panel.Visible) return;
-    if (Begin(panel.Name, &panel.Visible)) {
-        state::Entity mesh_entity;
-        const auto *plan = NetworkPlan(r, nodes, mesh_entity);
-        if (!plan) DrawNetworkParameters(r, nodes);
-        else DrawParameters(r, nodes, mesh_entity, *plan, interactive);
-    }
-    End();
+void DrawNodeParameters(state::Registry &r, NodesPanel &panel, bool interactive) {
+    state::Entity mesh_entity;
+    if (const auto *plan = NetworkPlan(r, panel, mesh_entity)) DrawParameters(r, panel, mesh_entity, *plan, interactive);
 }
 void DrawEditor(auto &e, std::type_identity<CellSize>) {
     BeginDisabled(e.template Read<&CellSize::FollowFrameHeight>());

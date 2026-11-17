@@ -35,22 +35,20 @@ std::span<const uint32_t> MaterialSlots(const state::Registry &r, state::Entity 
 }
 // The list a list reference indexes, or null for any other reference.
 const std::vector<state::Entity> *ReferenceList(const state::Registry &r, SceneReference reference) {
-    const auto e = reference.Owner.Entity;
+    const auto e = reference.Owner;
     if (reference.Kind == ReferenceKind::TriggerMember) return &r.get<const TriggerNodes>(e).Nodes;
     if (reference.Kind == ReferenceKind::FilterSystem) return &r.get<const ::CollisionFilter>(e).Systems;
     if (reference.Kind == ReferenceKind::FilterCollideSystem) return &r.get<const ::CollisionFilter>(e).CollideSystems;
     return nullptr;
 }
-void ForEachReference(const state::Registry &r, NetworkItem owner, auto &&visit) {
-    const auto add = [&](ReferenceKind kind, uint32_t index = 0u) { visit(SceneReference{owner, kind, index}); };
+void ForEachReference(const state::Registry &r, state::Entity e, auto &&visit) {
+    const auto add = [&](ReferenceKind kind, uint32_t index = 0u) { visit(SceneReference{e, kind, index}); };
     const auto add_list = [&](ReferenceKind kind, size_t entries) {
         for (uint32_t i = 0u; i <= entries; ++i) add(kind, i);
     };
-    const auto e = owner.Entity;
-    if (owner.Kind == ItemKind::Material) {
-        const auto materials = GetMaterials(r);
-        if (owner.Index >= materials.size()) return;
-        const auto &material = materials[owner.Index];
+    if (!r.valid(e)) return;
+    if (const auto *record = r.try_get<const ::Material>(e)) {
+        const auto &material = GetMaterials(r)[record->Index];
         const auto fields = [&](this const auto &self, const auto &value) -> void {
             using T = std::remove_cvref_t<decltype(value)>;
             if constexpr (std::same_as<T, TextureInfo>) add(ReferenceKind::Texture, uint32_t(reinterpret_cast<const std::byte *>(&value.Slot) - reinterpret_cast<const std::byte *>(&material)));
@@ -59,7 +57,6 @@ void ForEachReference(const state::Registry &r, NetworkItem owner, auto &&visit)
         fields(material);
         return;
     }
-    if (owner.Kind != ItemKind::Entity || !r.valid(e)) return;
     if (r.all_of<ObjectKind>(e) && !r.any_of<BoneIndex, SubElementOf>(e)) add(ReferenceKind::Parent);
     const auto geometry = DrawnGeometry(r, e);
     if (geometry != state::Null) add(ReferenceKind::Geometry);
@@ -107,29 +104,20 @@ decltype(auto) ReferenceTarget(ReferenceKind kind, auto &&visit) {
         case Constraint:
         case JointBody:
         case TriggerMember: return visit.template operator()<Transform>();
-        case Material:
-        case Texture: std::unreachable();
+        case Material: return visit.template operator()<::Material>();
+        case Texture: return visit.template operator()<MaterializedTexture>();
     }
     std::unreachable();
 }
 
-// The kind of item the reference holds.
-ItemKind TargetKind(ReferenceKind kind) {
-    if (kind == ReferenceKind::Material) return ItemKind::Material;
-    return kind == ReferenceKind::Texture ? ItemKind::Texture : ItemKind::Entity;
-}
-
-bool Accepts(const state::Registry &r, SceneReference reference, NetworkItem source) {
+bool Accepts(const state::Registry &r, SceneReference reference, state::Entity e) {
     using enum ReferenceKind;
-    if (source == NetworkItem{}) return true;
-    if (source.Kind != TargetKind(reference.Kind)) return false;
-    if (source.Kind != ItemKind::Entity) return source.Index < ItemCount(r, source.Kind);
-    const auto e = source.Entity;
-    if (!ReferenceTarget(reference.Kind, [&]<typename T> { return r.all_of<T>(e); })) return false;
-    if (reference.Kind == InstanceSource) return !HierarchyParentCycle(r, e, reference.Owner.Entity);
+    if (e == state::Null) return true;
+    if (!r.valid(e) || !ReferenceTarget(reference.Kind, [&]<typename T> { return r.all_of<T>(e); })) return false;
+    if (reference.Kind == InstanceSource) return !HierarchyParentCycle(r, e, reference.Owner);
     if (reference.Kind == Parent) return !r.any_of<BoneIndex, SubElementOf>(e);
-    if (reference.Kind == Skin) return r.get<const ArmatureObject>(e).Entity == r.get<const ArmatureModifier>(reference.Owner.Entity).ArmatureEntity;
-    if (reference.Kind == Geometry) return e != reference.Owner.Entity && DrawnGeometry(r, e) != state::Null;
+    if (reference.Kind == Skin) return r.get<const ArmatureObject>(e).Entity == r.get<const ArmatureModifier>(reference.Owner).ArmatureEntity;
+    if (reference.Kind == Geometry) return e != reference.Owner && DrawnGeometry(r, e) != state::Null;
     if (reference.Kind == ColliderMesh) return DrawnGeometry(r, e) != state::Null;
     return true;
 }
@@ -141,34 +129,28 @@ bool HasReference(const state::Registry &r, SceneReference reference) {
 }
 // The value of a reference its owner has, as the owner's components and buffers hold it.
 // A geometry or collider geometry reference holds the geometry.
-NetworkItem StoredValue(const state::Registry &r, SceneReference reference) {
-    const auto e = reference.Owner.Entity;
+state::Entity StoredValue(const state::Registry &r, SceneReference reference) {
+    const auto e = reference.Owner;
     const auto index = reference.Index;
-    if (const auto *list = ReferenceList(r, reference)) return index < list->size() ? NetworkItem{(*list)[index]} : NetworkItem{};
+    if (const auto *list = ReferenceList(r, reference)) return index < list->size() ? (*list)[index] : state::Null;
     using enum ReferenceKind;
     switch (reference.Kind) {
-        case InstanceSource: return {r.get<const HierarchyInstance>(e).Source};
-        case Parent: return {ParentOrNull(r, e)};
-        case Geometry: return {DrawnGeometry(r, e)};
-        case Skin: return {r.get<const ArmatureModifier>(e).ArmatureObjectEntity};
-        case Constraint: return {r.get<const BoneConstraints>(e).Stack[index].TargetEntity};
-        case ColliderMesh: return {r.get<const ColliderShape>(e).MeshEntity};
-        case PhysicsMaterial: return {r.get<const ::ColliderMaterial>(e).PhysicsMaterialEntity};
-        case CollisionFilter: return {r.get<const ::ColliderMaterial>(e).CollisionFilterEntity};
-        case JointBody: return {r.get<const PhysicsJoint>(e).ConnectedNode};
-        case JointDefinition: return {r.get<const PhysicsJoint>(e).JointDefEntity};
-        case TriggerFilter: return {r.get<const TriggerNodes>(e).CollisionFilterEntity};
-        case Material: return {state::Document, MaterialSlots(r, DrawnGeometry(r, e))[index], ItemKind::Material};
+        case InstanceSource: return r.get<const HierarchyInstance>(e).Source;
+        case Parent: return ParentOrNull(r, e);
+        case Geometry: return DrawnGeometry(r, e);
+        case Skin: return r.get<const ArmatureModifier>(e).ArmatureObjectEntity;
+        case Constraint: return r.get<const BoneConstraints>(e).Stack[index].TargetEntity;
+        case ColliderMesh: return r.get<const ColliderShape>(e).MeshEntity;
+        case PhysicsMaterial: return r.get<const ::ColliderMaterial>(e).PhysicsMaterialEntity;
+        case CollisionFilter: return r.get<const ::ColliderMaterial>(e).CollisionFilterEntity;
+        case JointBody: return r.get<const PhysicsJoint>(e).ConnectedNode;
+        case JointDefinition: return r.get<const PhysicsJoint>(e).JointDefEntity;
+        case TriggerFilter: return r.get<const TriggerNodes>(e).CollisionFilterEntity;
+        case Material: return MaterialAt(r, MaterialSlots(r, DrawnGeometry(r, e))[index]);
         case Texture: {
             uint32_t slot;
-            const auto materials = GetMaterials(r);
-            std::memcpy(&slot, reinterpret_cast<const std::byte *>(&materials[reference.Owner.Index]) + index, sizeof(slot));
-            if (const auto *textures = r.try_get<const MaterializedTextures>(state::Document)) {
-                for (uint32_t i = 0; i < textures->Items.size(); ++i) {
-                    if (textures->Items[i].SamplerSlot == slot) return {state::Document, i, ItemKind::Texture};
-                }
-            }
-            return {};
+            std::memcpy(&slot, reinterpret_cast<const std::byte *>(&GetMaterials(r)[r.get<const ::Material>(e).Index]) + index, sizeof(slot));
+            return TextureAt(r, slot);
         }
         case TriggerMember:
         case FilterSystem:
@@ -177,21 +159,21 @@ NetworkItem StoredValue(const state::Registry &r, SceneReference reference) {
     std::unreachable();
 }
 // The item a stored value shows as: the object that stands for a geometry, or the value itself.
-NetworkItem Resolved(const state::Registry &r, SceneReference reference, NetworkItem stored, const GeometryDrawers &drawers) {
-    const auto e = reference.Owner.Entity, geometry = stored.Entity;
+state::Entity Resolved(const state::Registry &r, SceneReference reference, state::Entity stored, const GeometryDrawers &drawers) {
+    const auto e = reference.Owner, geometry = stored;
     if (reference.Kind == ReferenceKind::Geometry) {
         const auto first = FirstDrawer(drawers, geometry);
-        return first == e ? NetworkItem{} : NetworkItem{first};
+        return first == e ? state::Null : first;
     }
     if (reference.Kind == ReferenceKind::ColliderMesh) {
-        if (geometry == state::Null || geometry == DrawnGeometry(r, e)) return {};
+        if (geometry == state::Null || geometry == DrawnGeometry(r, e)) return state::Null;
         const auto first = FirstDrawer(drawers, geometry);
-        return {first != state::Null ? first : geometry};
+        return first != state::Null ? first : geometry;
     }
     return stored;
 }
 // Appends the owner's references with their stored values, except an object's material slots, which its geometry's node holds.
-void StoredReferences(const state::Registry &r, NetworkItem owner, std::vector<ItemReference> &stored) {
+void StoredReferences(const state::Registry &r, state::Entity owner, std::vector<ItemReference> &stored) {
     ForEachReference(r, owner, [&](auto reference) {
         if (reference.Kind != ReferenceKind::Material) stored.push_back({reference.Kind, reference.Index, StoredValue(r, reference)});
     });
@@ -201,12 +183,10 @@ using ItemKinds = TypeList<ObjectKind, BoneIndex, Scene, HierarchyDefinition, ::
 bool HasNode(const state::Registry &r, state::Entity e) {
     return []<typename... Ks>(const state::Registry &r, state::Entity e, TypeList<Ks...>) { return r.any_of<Ks...>(e); }(r, e, ItemKinds{});
 }
-bool CanExpose(const state::Registry &r, std::span<const NetworkItem> members, const SubnetPort &port) {
-    const NetworkItem item{std::get<PromotedField>(port.Binding).Entity};
-    if (std::ranges::contains(members, item)) return true;
+bool CanExpose(const state::Registry &r, std::span<const state::Entity> members, const SubnetPort &port) {
+    if (std::ranges::contains(members, std::get<PromotedField>(port.Binding).Entity)) return true;
     for (const auto member : members) {
-        if (member.Kind != ItemKind::Entity) continue;
-        if (const auto *ports = r.try_get<const SubnetInterface>(member.Entity)) {
+        if (const auto *ports = r.try_get<const SubnetInterface>(member)) {
             if (std::ranges::any_of(ports->Ports, [&](const auto &inner) { return port.Binding == inner.Binding; })) return true;
         }
     }
@@ -237,22 +217,16 @@ GeometryDrawers DrawersOf(const state::Registry &r) {
     return drawers;
 }
 
-NetworkItem ReferenceValue(const state::Registry &r, SceneReference reference) {
-    if (!HasReference(r, reference)) return {};
+state::Entity ReferenceValue(const state::Registry &r, SceneReference reference) {
+    if (!HasReference(r, reference)) return state::Null;
     const bool draws = reference.Kind == ReferenceKind::Geometry || reference.Kind == ReferenceKind::ColliderMesh;
     return Resolved(r, reference, StoredValue(r, reference), draws ? DrawersOf(r) : GeometryDrawers{});
 }
 
-std::string ItemName(const state::Registry &r, NetworkItem item) {
-    if (item.Kind == ItemKind::Material) {
-        const auto &names = r.Resources.get<const MaterialStore>().Names;
-        return item.Index < names.size() && !names[item.Index].empty() ? names[item.Index] : std::format("Material {}", item.Index);
-    }
-    if (item.Kind == ItemKind::Texture) {
-        const auto *textures = r.try_get<const MaterializedTextures>(state::Document);
-        return textures && item.Index < textures->Items.size() && !textures->Items[item.Index].Params.Name.empty() ? textures->Items[item.Index].Params.Name : std::format("Texture {}", item.Index);
-    }
-    const auto entity = item.Entity;
+std::string ItemName(const state::Registry &r, state::Entity entity) {
+    if (entity == state::Document) return "Document";
+    if (const auto *material = r.try_get<const ::Material>(entity)) return material->Name.empty() ? "Material" : material->Name;
+    if (const auto *texture = r.try_get<const MaterializedTexture>(entity)) return texture->Params.Name.empty() ? "Texture" : texture->Params.Name;
     // A geometry is named only as a collider's value, when no object draws it.
     if (r.all_of<GeometryProcedure>(entity)) return "Separate mesh";
     if (const auto *m = r.try_get<const ::PhysicsMaterial>(entity)) return m->Name;
@@ -264,22 +238,25 @@ std::string ItemName(const state::Registry &r, NetworkItem item) {
 
 namespace {
 NetworkNode DeriveNode(const state::Registry &r, state::Entity e) {
-    NetworkNode node{.Title = ItemName(r, {e})};
-    StoredReferences(r, {e}, node.References);
+    NetworkNode node{.Title = ItemName(r, e)};
+    StoredReferences(r, e, node.References);
     const auto slots = MaterialSlots(r, r.all_of<GeometryProcedure>(e) ? e : state::Null);
-    for (uint32_t i = 0; i < slots.size(); ++i) node.References.push_back({ReferenceKind::Material, i, {state::Document, slots[i], ItemKind::Material}});
+    const auto materials = slots.empty() ? std::vector<state::Entity>{} : MaterialsByIndex(r);
+    for (uint32_t i = 0; i < slots.size(); ++i) node.References.push_back({ReferenceKind::Material, i, slots[i] < materials.size() ? materials[slots[i]] : state::Null});
     return node;
 }
 } // namespace
 
-void ShownReferences(const state::Registry &r, NetworkItem item, const GeometryDrawers &drawers, std::vector<ItemReference> &shown) {
+void ShownReferences(const state::Registry &r, state::Entity item, const GeometryDrawers &drawers, std::vector<ItemReference> &shown) {
     shown.clear();
-    if (item.Kind == ItemKind::Material) {
+    if (!r.valid(item)) return;
+    // A material's texture slots are read from its record, which no stored node holds.
+    if (r.all_of<::Material>(item)) {
         StoredReferences(r, item, shown);
-    } else if (const auto *node = item.Kind == ItemKind::Entity && r.valid(item.Entity) ? r.try_get<const NetworkNode>(item.Entity) : nullptr) {
+    } else if (const auto *node = r.try_get<const NetworkNode>(item)) {
         shown = node->References;
         for (const auto &reference : node->References) {
-            const auto *geometry = reference.Kind == ReferenceKind::Geometry ? r.try_get<const NetworkNode>(reference.Value.Entity) : nullptr;
+            const auto *geometry = reference.Kind == ReferenceKind::Geometry ? r.try_get<const NetworkNode>(reference.Value) : nullptr;
             if (geometry) shown.append_range(geometry->References);
         }
     }
@@ -299,7 +276,7 @@ std::string ReferenceLabel(const state::Registry &r, SceneReference reference) {
     if (reference.Kind == Texture) return TextureLabel(reference.Index);
     constexpr std::array labels{"Parent", "Geometry", "Skin armature", "Constraint target", "Collider geometry", "Physics material", "Collision filter", "Joint body", "Joint definition", "Trigger filter", "Trigger member", "Material slot", "Texture", "Instance source", "Member system", "Collide system"};
     std::string label{labels[uint8_t(reference.Kind)]};
-    if (reference.Kind == FilterCollideSystem && r.get<const ::CollisionFilter>(reference.Owner.Entity).Mode == CollideMode::Blocklist) label = "Blocked system";
+    if (reference.Kind == FilterCollideSystem && r.get<const ::CollisionFilter>(reference.Owner).Mode == CollideMode::Blocklist) label = "Blocked system";
     if (const auto *list = ReferenceList(r, reference)) {
         if (reference.Index < list->size()) return label + " " + std::to_string(reference.Index);
         label.front() = char(std::tolower(static_cast<unsigned char>(label.front())));
@@ -309,37 +286,35 @@ std::string ReferenceLabel(const state::Registry &r, SceneReference reference) {
     return label;
 }
 
-bool ReferenceAccepts(const state::Registry &r, SceneReference reference, NetworkItem source) {
+bool ReferenceAccepts(const state::Registry &r, SceneReference reference, state::Entity source) {
     return HasReference(r, reference) && Accepts(r, reference, source);
 }
 
-std::vector<NetworkItem> ReferenceCandidates(const state::Registry &r, SceneReference reference) {
-    std::vector<NetworkItem> candidates;
+std::vector<state::Entity> ReferenceCandidates(const state::Registry &r, SceneReference reference) {
+    std::vector<state::Entity> candidates;
     if (!HasReference(r, reference)) return candidates;
-    if (const auto kind = TargetKind(reference.Kind); kind != ItemKind::Entity) {
-        for (uint32_t i = 0; i < ItemCount(r, kind); ++i) candidates.push_back({state::Document, i, kind});
-    } else ReferenceTarget(reference.Kind, [&]<typename T> {
+    ReferenceTarget(reference.Kind, [&]<typename T> {
         for (const auto e : r.view<const T>())
-            if (Accepts(r, reference, {e})) candidates.push_back({e});
+            if (Accepts(r, reference, e)) candidates.push_back(e);
     });
     std::ranges::sort(candidates);
     return candidates;
 }
 
-std::vector<SceneReference> ReferencesTo(const state::Registry &r, NetworkItem item) {
+std::vector<SceneReference> ReferencesTo(const state::Registry &r, state::Entity item) {
     std::vector<SceneReference> users;
     std::vector<ItemReference> shown;
     const auto drawers = DrawersOf(r);
-    const auto visit = [&](NetworkItem owner) {
+    const auto visit = [&](state::Entity owner) {
         ShownReferences(r, owner, drawers, shown);
         for (const auto &reference : shown) {
             if (reference.Value == item) users.push_back({owner, reference.Kind, reference.Index});
         }
     };
-    for (uint32_t i = 0; i < ItemCount(r, ItemKind::Material); ++i) visit({state::Document, i, ItemKind::Material});
+    for (const auto e : r.view<const ::Material>()) visit(e);
     // A geometry's node holds the material slots that each object drawing it shows.
     for (const auto e : r.view<const NetworkNode>()) {
-        if (!r.all_of<GeometryProcedure>(e)) visit({e});
+        if (!r.all_of<GeometryProcedure>(e)) visit(e);
     }
     std::ranges::sort(users);
     return users;
@@ -350,7 +325,7 @@ namespace action::nodes {
 using namespace procedure;
 void Apply(state::Registry &r, const AssignReference &a) {
     if (!ReferenceAccepts(r, a.Reference, a.Source)) return Fail(r, "The source does not match this scene input");
-    const auto [e, source] = HierarchyReferenceTarget(r, a.Reference.Owner.Entity, a.Source.Entity, a.Reference.Kind == ReferenceKind::Parent || a.Reference.Kind == ReferenceKind::InstanceSource);
+    const auto [e, source] = HierarchyReferenceTarget(r, a.Reference.Owner, a.Source, a.Reference.Kind == ReferenceKind::Parent || a.Reference.Kind == ReferenceKind::InstanceSource);
     const auto index = a.Reference.Index;
     // A geometry the object stops using is removed once no object or collider uses it.
     const auto release = [&](state::Entity geometry) { r.Resources.emplace<PendingObjectRemovals>().Buffers.emplace(geometry); };
@@ -406,12 +381,10 @@ void Apply(state::Registry &r, const AssignReference &a) {
             if (source != state::Null) physics::Apply(r, Toggle{e, which, source, true});
             break;
         }
-        // No source is material 0, the default material.
-        case Material: object::Apply(r, object::SetMaterialAssignment{index, a.Source.Index, DrawnGeometry(r, e)}); break;
+        case Material: object::Apply(r, object::SetMaterialAssignment{index, source, DrawnGeometry(r, e)}); break;
         case Texture: {
-            const auto *textures = r.try_get<const MaterializedTextures>(state::Document);
-            const auto slot = source == state::Null ? InvalidSlot : textures->Items[a.Source.Index].SamplerSlot;
-            object::Apply(r, object::UpdateMaterial<uint32_t>{a.Reference.Owner.Index, uint16_t(index), slot});
+            const auto slot = source == state::Null ? InvalidSlot : r.get<const MaterializedTexture>(source).SamplerSlot;
+            object::Apply(r, object::UpdateMaterial<uint32_t>{e, uint16_t(index), slot});
             break;
         }
     }
@@ -451,9 +424,7 @@ void DropUnreachablePorts(state::Registry &r, state::Entity root) {
 
 void SettleNetworks(state::Registry &r, bool restoring) {
     auto &changes = r.Resources.get<NetworkChanges>();
-    // The document page shows one item per material.
-    const auto materials = ItemCount(r, ItemKind::Material);
-    bool changed = !changes.Pages.empty() || std::exchange(changes.Materials, materials) != materials;
+    bool changed = !changes.Pages.empty();
     std::vector<state::Entity> dead;
     for (const auto e : changes.Nodes) {
         if (!r.valid(e)) {
@@ -477,7 +448,7 @@ void SettleNetworks(state::Registry &r, bool restoring) {
     // A pass that destroyed no entity and no component a port can address leaves them as they are.
     if (restoring || (dead.empty() && !fields)) return;
     SortUnique(dead);
-    const auto is_dead = [&](NetworkItem item) { return item.Kind == ItemKind::Entity && std::ranges::binary_search(dead, item.Entity); };
+    const auto is_dead = [&](state::Entity item) { return std::ranges::binary_search(dead, item); };
     for (const auto network : SortedEntities(r.view<const NetworkLayout>())) {
         const auto &cells = r.get<const NetworkLayout>(network).Cells;
         if (std::ranges::none_of(cells, is_dead, &NetworkCell::Item)) continue;

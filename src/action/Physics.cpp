@@ -72,10 +72,6 @@ void Apply(state::Registry &r, const Action &action) {
             [&](AddCollisionSystem) { AddNamed<CollisionSystem>(r, "System"); },
             [&](AddCollisionFilter) { AddNamed<CollisionFilter>(r, "Filter"); },
             [&](AddJointDef) { AddNamed<PhysicsJointDef>(r, "Joint"); },
-            [&](const RenameResource &a) {
-                const auto rename = [&]<typename T>() { if (r.all_of<T>(a.Entity)) r.patch<T>(a.Entity, [&](auto &v) { v.Name = a.Name; }); };
-                [&]<typename... T>(TypeList<T...>) { (rename.template operator()<T>(), ...); }(TypeList<PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef>{});
-            },
             [&](const ToggleFilterEntity &a) {
                 r.patch<CollisionFilter>(a.FilterEntity, [&](CollisionFilter &f) {
                     auto &vec = a.Which == ToggleFilterEntity::List::Systems ? f.Systems : f.CollideSystems;

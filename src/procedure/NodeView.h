@@ -7,7 +7,7 @@ struct NodesPanel;
 namespace procedure {
 // Transient node definitions consumed by the editor. Geometry sockets borrow the projected cook plan.
 struct EditorNode {
-    NetworkItem Item;
+    state::Entity Item;
     std::string Title;
     const char *Type{};
     uint16_t Kind{KindCount};
@@ -50,9 +50,9 @@ inline uint16_t SocketId(const NodeView &view, uint32_t node, uint16_t socket) {
 inline const PortBinding &BindingOf(const NodeView &view, uint32_t node, uint16_t socket) { return view.Bindings[view.SocketFirst[node] + socket]; }
 NodeView SceneNodeDefinitions(const state::Registry &, state::Entity network);
 // The kind of item, such as "Mesh" or "Physics material".
-const char *ItemLabel(const state::Registry &, NetworkItem);
+const char *ItemLabel(const state::Registry &, state::Entity);
 void DrawSceneAddMenu(const state::Registry &, state::Entity network);
-void DrawSceneNodeMenu(const state::Registry &, NodesPanel &, NetworkItem);
+void DrawSceneNodeMenu(const state::Registry &, NodesPanel &, state::Entity);
 void DrawReferenceMenu(const state::Registry &, NodesPanel &, SceneReference);
-bool EnterNode(const state::Registry &, NodesPanel &, NetworkItem);
+bool EnterNode(const state::Registry &, NodesPanel &, state::Entity);
 } // namespace procedure

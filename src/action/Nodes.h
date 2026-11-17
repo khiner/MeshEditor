@@ -97,10 +97,12 @@ void Apply(state::Registry &, const RenamePort &);
 void Apply(state::Registry &, const RemovePort &);
 void Apply(state::Registry &, const MovePort &);
 
+// Selects nodes of a geometry procedure, through the procedure or one of its subnets.
+// No active node keeps the procedure's active node.
 struct SelectItems {
     state::Entity Network;
-    procedure::NetworkItem Active;
-    std::vector<procedure::NetworkItem> Items;
+    state::Entity Active;
+    std::vector<state::Entity> Items;
 };
 // Adds a named value port to the scene subnet for a field of an item inside it.
 struct ExposePort {
@@ -112,13 +114,13 @@ struct ExposePort {
 // procedure::ReferenceAccepts says what each kind takes and what clearing it means.
 struct AssignReference {
     procedure::SceneReference Reference;
-    procedure::NetworkItem Source;
+    state::Entity Source;
 };
 void Apply(state::Registry &, const ExposePort &);
 void Apply(state::Registry &, const AssignReference &);
 struct GroupItems {
     state::Entity Network;
-    std::vector<procedure::NetworkItem> Items;
+    std::vector<state::Entity> Items;
 };
 struct UngroupItems {
     state::Entity Subnet;
@@ -126,18 +128,26 @@ struct UngroupItems {
 struct MoveItems {
     state::Entity Network;
     state::Entity Destination;
-    std::vector<procedure::NetworkItem> Items;
+    std::vector<state::Entity> Items;
 };
-struct RenameNetwork {
-    state::Entity Network;
+// Renames an object, scene, subnet, material, texture, or physics resource.
+struct RenameItem {
+    state::Entity Item;
     std::string Name;
 };
+// Deletes the items of a scene or document page, and the items inside each subnet among them.
+// A deleted material leaves its slots with the default material, and a deleted texture leaves the material fields that held it empty.
+// The document, a bone, and a hierarchy definition stay.
+struct DeleteItems {
+    std::vector<state::Entity> Items;
+};
+void Apply(state::Registry &, const DeleteItems &);
 void Apply(state::Registry &, const GroupItems &);
 void Apply(state::Registry &, const UngroupItems &);
 void Apply(state::Registry &, const MoveItems &);
-void Apply(state::Registry &, const RenameNetwork &);
+void Apply(state::Registry &, const RenameItem &);
 struct NodePosition {
-    procedure::NetworkItem Node;
+    state::Entity Node;
     uvec2 Position;
 };
 // Places each node at its grid cell on the network's page.
@@ -152,7 +162,7 @@ struct AutoLayout {
 // Removes the node's placed cell from the network's page.
 struct UnplaceNode {
     state::Entity Network;
-    procedure::NetworkItem Node;
+    state::Entity Node;
 };
 struct SetBypass {
     state::Entity Node;
@@ -213,7 +223,7 @@ struct InsertNode {
     uint16_t Index{};
 };
 
-using Action = std::variant<AddNode, AddMacro, AppendMacro, Link, Unlink, SetDisplay, SetBypass, EditSelection, FinishSelection, SetOperationHandle, SetExtrudeOffset, MoveNodes, AutoLayout, UnplaceNode, SelectItems, GroupItems, UngroupItems, MoveItems, RenameNetwork, ExposePort, AssignReference, GroupNodes, UngroupNodes, ExposeSocket, SetPortValue, RenamePort, RemovePort, MovePort, SetAttributeName, SetInlineSelection, CollapseProcedure, DuplicateNodes, DeleteNodes, InsertNode>;
+using Action = std::variant<AddNode, AddMacro, AppendMacro, Link, Unlink, SetDisplay, SetBypass, EditSelection, FinishSelection, SetOperationHandle, SetExtrudeOffset, MoveNodes, AutoLayout, UnplaceNode, SelectItems, DeleteItems, GroupItems, UngroupItems, MoveItems, RenameItem, ExposePort, AssignReference, GroupNodes, UngroupNodes, ExposeSocket, SetPortValue, RenamePort, RemovePort, MovePort, SetAttributeName, SetInlineSelection, CollapseProcedure, DuplicateNodes, DeleteNodes, InsertNode>;
 
 void Apply(state::Registry &, const Action &);
 

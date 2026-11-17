@@ -129,7 +129,7 @@ CookPlan Compile(const state::Registry &r, const GeometryProcedure &procedure) {
 
 state::Entity ActiveNodeOf(const state::Registry &r, state::Entity mesh_entity) {
     const auto *active = r.try_get<const NetworkActive>(mesh_entity);
-    return active && active->Item.Kind == ItemKind::Entity ? active->Item.Entity : state::Null;
+    return active ? active->Item : state::Null;
 }
 
 uint32_t ActiveIndex(const state::Registry &r, const CookPlan &plan) {

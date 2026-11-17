@@ -19,7 +19,7 @@ using animation::TextureTarget;
 
 template<animation::KeyableField F>
 ChannelTarget MaterialTarget(std::ptrdiff_t offset) {
-    return {animation::StoreOf<PBRMaterial>(), uint16_t(offset), 0, animation::FieldCount<F>(), animation::FieldKind<F>()};
+    return {animation::StoreOf<PBRMaterial>(), uint16_t(offset), animation::FieldCount<F>(), animation::FieldKind<F>()};
 }
 template<typename O, typename T, typename OF, typename TF>
 void MaterialRow(std::vector<PointerRow> &rows, const std::string &prefix, std::ptrdiff_t offset, const detail::MaterialField<O, T, OF, TF> &field) {
@@ -40,9 +40,9 @@ std::vector<PointerRow> BuildRows() {
         {"/nodes/{}/translation", Node, Target<&Transform::P>()},
         {"/nodes/{}/rotation", Node, Target<&Transform::R>()},
         {"/nodes/{}/scale", Node, Target<&Transform::S>()},
-        {"/nodes/{}/weights", Node, {state::Key<MorphWeightRange>(), 0, 0, 0, ValueKind::Float}},
-        {"/nodes/{}/weights/{}", Node, {state::Key<MorphWeightRange>(), 0, 0, 1, ValueKind::Float}},
-        {"/nodes/{}/extensions/KHR_node_visibility/visible", Node, {state::Key<Visibility>(), offsetof(Visibility, Visible), 0, 1, ValueKind::Bool}},
+        {"/nodes/{}/weights", Node, {state::Key<MorphWeightRange>(), 0, 0, ValueKind::Float}},
+        {"/nodes/{}/weights/{}", Node, {state::Key<MorphWeightRange>(), 0, 1, ValueKind::Float}},
+        {"/nodes/{}/extensions/KHR_node_visibility/visible", Node, {state::Key<Visibility>(), offsetof(Visibility, Visible), 1, ValueKind::Bool}},
         {"/materials/{}/pbrMetallicRoughness/baseColorFactor", Material, Target<&PBRMaterial::BaseColorFactor>()},
         {"/materials/{}/pbrMetallicRoughness/metallicFactor", Material, Target<&PBRMaterial::MetallicFactor>()},
         {"/materials/{}/pbrMetallicRoughness/roughnessFactor", Material, Target<&PBRMaterial::RoughnessFactor>()},
@@ -76,9 +76,9 @@ std::vector<PointerRow> BuildRows() {
     });
     for (uint8_t slot = 0; slot < MTS_Count; ++slot) {
         const auto prefix = std::format("/materials/{{}}/{}/extensions/KHR_texture_transform/", MaterialTextureSlots[slot].Pointer);
-        rows.emplace_back(prefix + "offset", Material, TextureTarget(slot, &TextureInfo::UvOffset, 0));
-        rows.emplace_back(prefix + "scale", Material, TextureTarget(slot, &TextureInfo::UvScale, 0));
-        rows.emplace_back(prefix + "rotation", Material, TextureTarget(slot, &TextureInfo::UvRotation, 0));
+        rows.emplace_back(prefix + "offset", Material, TextureTarget(slot, &TextureInfo::UvOffset));
+        rows.emplace_back(prefix + "scale", Material, TextureTarget(slot, &TextureInfo::UvScale));
+        rows.emplace_back(prefix + "rotation", Material, TextureTarget(slot, &TextureInfo::UvRotation));
     }
     return rows;
 }

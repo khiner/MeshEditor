@@ -5,17 +5,6 @@
 
 struct PhysicsSimulationSettings;
 
-// The references to each physics material, collision system, collision filter, and joint definition.
-struct PhysicsDefinitionUses {
-    std::unordered_map<state::Entity, uint32_t> Counts;
-
-    uint32_t Count(state::Entity definition) const {
-        const auto it = Counts.find(definition);
-        return it != Counts.end() ? it->second : 0u;
-    }
-};
-inline void Reset(PhysicsDefinitionUses &uses, state::Registry &) { uses.Counts.clear(); }
-
 namespace physics {
 void Init(state::Registry &);
 void Deinit(state::Registry &);

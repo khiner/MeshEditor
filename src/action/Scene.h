@@ -15,10 +15,6 @@ struct Add {
 struct Remove {
     state::Entity Scene;
 };
-struct Rename {
-    state::Entity Scene;
-    std::string Name;
-};
 // Adds the scene to the scenes of each selected node's root.
 struct LinkSelected {
     state::Entity Scene;
@@ -30,7 +26,7 @@ struct UnlinkSelected {
     Target Target{OnSelected{}};
 };
 
-using Action = std::variant<Add, Remove, Rename, LinkSelected, UnlinkSelected>;
+using Action = std::variant<Add, Remove, LinkSelected, UnlinkSelected>;
 
 void Apply(state::Registry &, const Action &);
 } // namespace action::scene

@@ -69,7 +69,6 @@ void Project::TrackStores() {
 
     R.Resources.get<GpuBuffers>().Materials.Track(History, "material.values");
     R.Resources.get<GpuBuffers>().MorphWeightBuffer.Track(History, "morph.weights");
-    R.Resources.get<MaterialStore>().Track(History);
     History.Callbacks = {
         .Replay = [this](store::History &source, std::span<const std::byte> bytes, std::span<const uint32_t> workspaces) {
             const MeshStore::HistoryScope source_history{R.Resources.get<MeshStore>(), source};
@@ -375,7 +374,7 @@ void Project::AfterRestore() {
         } else if (type == state::Type<ArmatureObject>()) R.remove<ArmaturePoseState>(entity);
         if ((type == state::Type<MeshHandle>() || type == state::Type<EvaluatedMesh>()) && DrawsMesh(R, entity) && !R.all_of<procedure::ProcedureNode>(entity)) restored_meshes.push_back(entity);
         sources_changed |= type == state::Type<gltf::SourceAssets>();
-        manifest_changed |= type == state::Type<MaterializedTextures>();
+        manifest_changed |= type == state::Type<MaterializedTexture>();
     }
     if (names_changed) RebuildEntityNames(R);
     // Restored sources can contain other pixels at a manifest's slots, so every texture and the IBL decode again.
@@ -384,8 +383,9 @@ void Project::AfterRestore() {
         ResetImportedEnvironment(R);
         R.Resources.get<RenderChanges>().SceneWorld.emplace(state::Document);
     } else if (manifest_changed) {
-        const auto *manifest = R.try_get<const MaterializedTextures>(state::Document);
-        ReleaseUnlistedTextures(R, manifest ? std::span{manifest->Items} : std::span<const MaterializedTexture>{});
+        std::vector<MaterializedTexture> listed;
+        for (const auto [_, texture] : R.view<const MaterializedTexture>().each()) listed.push_back(texture);
+        ReleaseUnlistedTextures(R, listed);
     }
     if (sources_changed || manifest_changed) R.Resources.get<RenderChanges>().MaterializedTextures.emplace(state::Document);
     ReconcileRestoredMeshes(R, std::move(restored_meshes));

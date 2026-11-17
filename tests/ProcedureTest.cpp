@@ -6,7 +6,10 @@
 #include "armature/ArmatureComponents.h"
 #include "audio/ModalModes.h"
 #include "gpu/FloatMath.h"
+#include "gltf/SourceAssets.h"
 #include "mesh/Unsubdivide.h"
+#include "render/GpuBufferOps.h"
+#include "render/MaterialComponents.h"
 #include "procedure/Macros.h"
 #include "procedure/NodeEditor.h"
 #include "procedure/NodeView.h"
@@ -769,21 +772,21 @@ Graph NodeEditing(ProcedureFixture &f) {
     f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(subdivide, 3u));
     const auto cooks = Cooks(r);
     const auto shown = r.get<const GeometryProcedure>(mesh).DisplayNode;
-    f.Do(SelectItems{mesh, {subdivide}, {{subdivide}, {triangulate}}});
-    f.Do(action::nodes::MoveNodes{mesh, {{{subdivide}, {12u, 4u}}, {{triangulate}, {20u, 4u}}}});
+    f.Do(SelectItems{mesh, subdivide, {subdivide, triangulate}});
+    f.Do(action::nodes::MoveNodes{mesh, {{subdivide, {12u, 4u}}, {triangulate, {20u, 4u}}}});
     expect(Cooks(r) == cooks);
     expect(r.get<const GeometryProcedure>(mesh).DisplayNode == shown && f.Shaped(mesh) == source);
     f.Do(DuplicateNodes{mesh, {subdivide, triangulate}});
     const auto &procedure = r.get<const CookPlan>(mesh);
     expect(procedure.Nodes.size() == 6u && r.get<const action::mesh::Subdivide>(procedure.Nodes[4].Entity).Cuts == 3u);
-    expect(!NetworkPosition(r, mesh, {procedure.Nodes[4].Entity}));
+    expect(!NetworkPosition(r, mesh, procedure.Nodes[4].Entity));
     expect(f.Shaped(mesh) == source);
     f.Route(mesh, {f.Node(mesh, 0u), triangulate});
     f.Fails(InsertNode{mesh, position, triangulate, 0u, 0u});
-    f.Do(SelectItems{mesh, {subdivide}, {{subdivide}}});
+    f.Do(SelectItems{mesh, subdivide, {subdivide}});
     f.Stage(InsertNode{mesh, subdivide, triangulate, 0u, 40u});
     f.CommitGesture();
-    expect(NetworkPosition(r, mesh, {subdivide}) == uvec2{12u, 4u} && NetworkPosition(r, mesh, {triangulate}) == uvec2{60u, 4u});
+    expect(NetworkPosition(r, mesh, subdivide) == uvec2{12u, 4u} && NetworkPosition(r, mesh, triangulate) == uvec2{60u, 4u});
     const auto refined = f.Shaped(mesh);
     f.Do(action::nodes::SetBypass{subdivide, true});
     expect(f.Shaped(mesh) != refined);
@@ -791,13 +794,13 @@ Graph NodeEditing(ProcedureFixture &f) {
     f.Do(action::nodes::SetBypass{subdivide, false});
     expect(f.Shaped(mesh) == refined);
     f.Do(DeleteNodes{mesh, {subdivide}});
-    expect(!NetworkPosition(r, mesh, {subdivide}) && NetworkPosition(r, mesh, {triangulate}));
+    expect(!NetworkPosition(r, mesh, subdivide) && NetworkPosition(r, mesh, triangulate));
     f.Undo();
     f.Do(DeleteNodes{mesh, {subdivide, triangulate}});
     expect(f.Shaped(mesh) == source && r.get<const CookPlan>(mesh).DisplayNode == 0u);
     f.Undo();
-    f.Do(action::nodes::UnplaceNode{mesh, {subdivide}});
-    expect(!NetworkPosition(r, mesh, {subdivide}) && NetworkPosition(r, mesh, {triangulate}));
+    f.Do(action::nodes::UnplaceNode{mesh, subdivide});
+    expect(!NetworkPosition(r, mesh, subdivide) && NetworkPosition(r, mesh, triangulate));
     f.Do(action::nodes::AutoLayout{mesh});
     expect(!r.all_of<NetworkLayout>(mesh));
     return {mesh};
@@ -1025,7 +1028,7 @@ void DisplayedNode(ProcedureFixture &f) {
     }
     f.Do(SetDisplay{mesh, f.Node(mesh, 0u)});
     expect(f.Shaped(mesh) == source);
-    f.Do(SelectItems{mesh, {extrude}, {{extrude}}});
+    f.Do(SelectItems{mesh, extrude, {extrude}});
     f.Do(SetDisplay{mesh, extrude});
     expect(r.get<const GeometryProcedure>(mesh).DisplayNode == extrude && f.Shaped(mesh) != source);
     f.Do(SetDisplay{mesh, f.Node(mesh, 0u)});
@@ -1037,7 +1040,7 @@ void DisplayedNode(ProcedureFixture &f) {
         expect(procedure.Inputs[procedure.InputFirst[3u]].FromNode == 0u && procedure.Inputs[procedure.InputFirst[1u]].FromNode == 0u);
     }
     f.Do(action::view::SetInteractionMode{InteractionMode::Object});
-    f.Do(SelectItems{mesh, {extrude}, {{extrude}}});
+    f.Do(SelectItems{mesh, extrude, {extrude}});
     f.Do(DeleteNodes{mesh, {extrude}});
     {
         const auto &procedure = r.get<const CookPlan>(mesh);
@@ -1331,49 +1334,101 @@ void ReferenceEditing(ProcedureFixture &f) {
     const auto scene = FrameScene(r);
     const auto [low, high] = std::minmax({f.AddCube(), f.AddCube()});
     const auto geometry_of = [&](state::Entity object) { return r.get<const Instance>(object).Entity; };
-    const SceneReference shared{{high}, ReferenceKind::Geometry};
+    const SceneReference shared{high, ReferenceKind::Geometry};
     const auto own = geometry_of(high);
-    f.Do(AssignReference{shared, {low}});
+    f.Do(AssignReference{shared, low});
     expect(geometry_of(high) == geometry_of(low) && !r.valid(own));
-    expect(ReferenceValue(r, shared) == NetworkItem{low} && ReferenceValue(r, {{low}, ReferenceKind::Geometry}) == NetworkItem{});
+    expect(ReferenceValue(r, shared) == low && ReferenceValue(r, {low, ReferenceKind::Geometry}) == state::Null);
     // The node an input of the scene page's node is wired from, by the input's label.
     const auto wired_from = [&](state::Entity node, std::string_view input) -> std::optional<state::Entity> {
         const auto view = SceneNodeDefinitions(r, scene);
-        const auto n = uint32_t(std::ranges::find(view.Nodes, NetworkItem{node}, &EditorNode::Item) - view.Nodes.begin());
+        const auto n = uint32_t(std::ranges::find(view.Nodes, node, &EditorNode::Item) - view.Nodes.begin());
         for (uint16_t s = 0; s < InputsOf(view, n); ++s) {
             if (NodeSockets(view, n)[s].Name != input) continue;
             const auto from = view.Wires[view.InputFirst[n] + s].FromNode;
-            return from == NoNode ? state::Null : view.Nodes[from].Item.Entity;
+            return from == NoNode ? state::Null : view.Nodes[from].Item;
         }
         return {};
     };
-    // The page wires the sharing object from the other, and reads a material on the document page by name.
-    expect(wired_from(high, "Geometry") == low && wired_from(high, "Material slot 0: Default") == state::Null);
+    // The page wires the sharing object from the other, and a slot without a material has an unwired input.
+    expect(wired_from(high, "Geometry") == low && wired_from(high, "Material slot 0") == state::Null);
     // The subnet holding the sharing object has one port, for the reference that crosses its boundary.
-    f.Do(GroupItems{scene, {{high}}});
-    const auto group = r.get<const NetworkActive>(scene).Item.Entity;
+    f.Do(GroupItems{scene, {high}});
+    const auto group = FindActiveNode(r);
     expect(wired_from(group, GetName(r, high) + ": Geometry") == low);
-    f.Do(AssignReference{shared, {}});
+    f.Do(AssignReference{shared, state::Null});
     expect(geometry_of(high) != geometry_of(low) && f.Shaped(geometry_of(high)) == f.Shaped(geometry_of(low)));
     expect(!wired_from(group, GetName(r, high) + ": Geometry"));
-    f.Do(MoveNodes{scene, {{{low}, {3u, 3u}}}});
-    f.Do(SelectItems{scene, {low}, {{low}}});
+    f.Do(MoveNodes{scene, {{low, {3u, 3u}}}});
+    f.Do(action::selection::Select{low});
     f.Do(action::object::Delete{});
     expect(!r.valid(low) && !r.all_of<NetworkLayout>(scene));
 
     f.Do(action::physics::AddCollisionSystem{});
     f.Do(action::physics::AddCollisionFilter{});
     const auto system = SortedEntities(r.view<const CollisionSystem>()).back(), filter = SortedEntities(r.view<const CollisionFilter>()).back();
-    const SceneReference member{{filter}, ReferenceKind::FilterSystem};
-    f.Do(AssignReference{member, {system}});
-    expect(r.get<const CollisionFilter>(filter).Systems == std::vector{system} && ReferencesTo(r, {system}) == std::vector{member});
+    const SceneReference member{filter, ReferenceKind::FilterSystem};
+    f.Do(AssignReference{member, system});
+    expect(r.get<const CollisionFilter>(filter).Systems == std::vector{system} && ReferencesTo(r, system) == std::vector{member});
     // The filter shows its entry and the slot that adds one, and a material shows its texture slots.
+    f.Do(action::object::AddMaterial{});
     const auto labels = SceneNodeDefinitions(r, state::Document).Labels;
     for (const auto *label : {"Member system 0", "Add member system", "Base color texture"}) expect(std::ranges::contains(labels, label)) << label;
     expect(!std::ranges::contains(labels, "Add collide system"));
-    f.Do(AssignReference{member, {}});
+    f.Do(AssignReference{member, state::Null});
     expect(r.get<const CollisionFilter>(filter).Systems.empty());
-    expect(std::ranges::none_of(NetworkItems(r, state::Document), [&](NetworkItem item) { return item.Kind == ItemKind::Entity && (item.Entity == state::Document || r.any_of<GeometryProcedure, Armature>(item.Entity)); }));
+    expect(std::ranges::none_of(NetworkItems(r, state::Document), [&](state::Entity item) { return r.any_of<GeometryProcedure, Armature>(item); }));
+}
+
+// A material is a document node: an add makes one, the selection tags address it, and a delete leaves its slots with the default record.
+void DocumentItems(ProcedureFixture &f) {
+    using namespace action::nodes;
+    auto &r = f.R;
+    const auto cube = f.AddCube();
+    const auto geometry = r.get<const Instance>(cube).Entity;
+    const auto slot = [&] {
+        const auto &meshes = r.Resources.get<const MeshStore>();
+        return meshes.Arenas().PrimitiveMaterials.Get(meshes.Get(*DrawnStoreId(r, geometry)).PrimitiveMaterials)[0];
+    };
+    const SceneReference reference{cube, ReferenceKind::Material, 0u};
+    f.Do(action::object::AddMaterial{0u, geometry});
+    const auto material = SortedEntities(r.view<const Material>()).back();
+    const auto index = r.get<const Material>(material).Index;
+    expect(index == 1u && slot() == index && ReferenceValue(r, reference) == material && FindActiveNode(r) == cube);
+    // The active node is a document item, which no scene holds.
+    f.Do(action::selection::Select{material});
+    expect(FindActiveNode(r) == material && FindActiveEntity(r) == state::Null && !r.all_of<Selected>(cube));
+    f.Do(RenameItem{material, "Paint"});
+    expect(ItemName(r, material) == "Paint");
+    f.Do(DeleteItems{{material}});
+    expect(!r.valid(material) && slot() == 0u && ReferenceValue(r, reference) == state::Null);
+    // The next material takes the freed record and becomes the active node.
+    f.Do(action::object::AddMaterial{});
+    expect(r.get<const Material>(FindActiveNode(r)).Index == index);
+    // The document is a node that stays.
+    f.Do(DeleteItems{{state::Document}});
+    expect(std::ranges::contains(NetworkItems(r, state::Document), state::Document));
+
+    // A texture is a node too: a delete empties the material slots that held it and drops its source texture and image, which an export then leaves out.
+    f.Do(action::io::LoadGltf{std::filesystem::path{MESHEDITOR_SOURCE_DIR} / "external/glTF-Sample-Assets/Models/BoxTextured/glTF/BoxTextured.gltf"});
+    const auto textures = SortedEntities(r.view<const MaterializedTexture>());
+    expect(fatal(textures.size() == 1u));
+    const auto slot_of = r.get<const MaterializedTexture>(textures.front()).SamplerSlot;
+    const auto holds = [&](state::Entity e) { return GetMaterials(r)[r.get<const Material>(e).Index].BaseColorTexture.Slot == slot_of; };
+    expect(std::ranges::any_of(r.view<const Material>(), holds) && !ReferencesTo(r, textures.front()).empty());
+    f.Do(DeleteItems{textures});
+    const auto &sources = r.get<const gltf::SourceAssets>(state::Document);
+    expect(!r.valid(textures.front()) && std::ranges::none_of(r.view<const Material>(), holds) && sources.Textures.empty() && sources.Images.empty());
+
+    // An added texture becomes the active node, and a material slot that takes it records its source texture for export.
+    f.Do(action::object::AddTexture{std::filesystem::path{MESHEDITOR_SOURCE_DIR} / "external/glTF-Sample-Assets/Models/BoxTextured/glTF/CesiumLogoFlat.png"});
+    const auto added = FindActiveNode(r);
+    expect(fatal(r.all_of<MaterializedTexture>(added)));
+    const auto textured = SortedEntities(r.view<const Material>()).back();
+    const auto base_color = uint32_t(offsetof(PBRMaterial, BaseColorTexture) + offsetof(TextureInfo, Slot));
+    f.Do(AssignReference{{textured, ReferenceKind::Texture, base_color}, added});
+    expect(ReferenceValue(r, {textured, ReferenceKind::Texture, base_color}) == added);
+    expect(r.get<const gltf::MaterialSourceMeta>(textured).TextureSlots[MTS_BaseColor] == r.get<const MaterializedTexture>(added).SourceTextureIndex);
 }
 
 // Grouping changes presentation only, and nested interfaces edit the same underlying fields.
@@ -1381,7 +1436,7 @@ void SceneNetworks(ProcedureFixture &f) {
     using namespace action::nodes;
     const auto cube = f.AddCube();
     const auto light = f.Add(action::object::AddLight{std::make_unique<ObjectCreateInfo>()});
-    f.Do(AssignReference{{{light}, ReferenceKind::Parent}, {cube}});
+    f.Do(AssignReference{{light, ReferenceKind::Parent}, cube});
     f.Do(action::animation::AddAnimation{"Animation"});
     for (const auto network : {FrameScene(f.R), state::Document}) {
         const auto items = NetworkItems(f.R, network);
@@ -1391,10 +1446,10 @@ void SceneNetworks(ProcedureFixture &f) {
         auto members = items;
         for (int depth = 0; depth < 2; ++depth) {
             f.Do(GroupItems{network, members});
-            const auto group = f.R.get<const NetworkActive>(network).Item.Entity;
+            const auto group = FindActiveNode(f.R);
             groups.push_back(group);
-            members = {{group}};
-            f.Do(MoveNodes{network, {{{group}, {uint32_t(depth + 2), 3u}}}});
+            members = {group};
+            f.Do(MoveNodes{network, {{group, {uint32_t(depth + 2), 3u}}}});
             expect(NetworkLeaves(f.R, group) == items);
             if (network != state::Document) {
                 f.Do(ExposePort{group, PromotedField{light, state::Key<PunctualLight>(), action::detail::FieldOffset<&PunctualLight::Intensity>()}, std::make_unique<std::string>("Intensity")});
@@ -1424,7 +1479,7 @@ void CanvasEquivalence(ProcedureFixture &f) {
     io.DisplaySize = {1400, 900};
     io.Fonts->Build();
     NodesPanel panel{{"Nodes"}};
-    Panel parameters{"Parameters"};
+    Panel properties{"Properties"};
     const auto frame = [&](bool interactive = false) {
         ImGui::NewFrame();
         ImGui::SetNextWindowPos({0, 0});
@@ -1432,7 +1487,7 @@ void CanvasEquivalence(ProcedureFixture &f) {
         DrawNodesPanel(f.R, panel, interactive);
         ImGui::SetNextWindowPos({950, 0});
         ImGui::SetNextWindowSize({450, 850});
-        DrawParametersPanel(f.R, panel, parameters, interactive);
+        DrawPropertiesPanel(f.R, panel, properties, interactive);
         ImGui::Render();
         std::vector<std::byte> drawn;
         for (const auto *list : ImGui::GetDrawData()->CmdLists) {
@@ -1469,7 +1524,7 @@ void CanvasEquivalence(ProcedureFixture &f) {
         }
         if (network == state::Document) {
             for (const auto item : NetworkItems(f.R, network)) {
-                f.Do(SelectItems{network, item, {item}});
+                f.Do(action::selection::Select{item});
                 frame();
             }
         }
@@ -1480,7 +1535,7 @@ void CanvasEquivalence(ProcedureFixture &f) {
     frame();
     const auto drawn = frame();
     same_as_fresh(UpdateOf<&FloatMath::Operation>(math, FloatMathOp::MultiplyAdd), drawn);
-    same_as_fresh(action::nodes::RenameNetwork{subnet, "Renamed"}, drawn);
+    same_as_fresh(action::nodes::RenameItem{subnet, "Renamed"}, drawn);
     f.Undo();
     f.Undo();
     expect(frame() == drawn);
@@ -1880,6 +1935,7 @@ void TestProcedures() {
     Hierarchies(f, other);
     Scenario(f, other, "SceneNetworks", SceneNetworks);
     Scenario(f, other, "ReferenceEditing", ReferenceEditing);
+    Scenario(f, other, "DocumentItems", DocumentItems);
     Scenario(f, other, "CanvasEquivalence", CanvasEquivalence);
     Scenario(f, other, "ParameterSockets", ParameterSockets);
     Scenario(f, other, "FloatMathOperations", FloatMathOperations);

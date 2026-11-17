@@ -1,7 +1,6 @@
 #include "action/Nodes.h"
 #include "action/Dispatch.h"
 #include "action/Errors.h"
-#include "action/Selection.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "procedure/Cook.h"
@@ -125,13 +124,12 @@ bool ListsNodes(const state::Registry &r, state::Entity mesh_entity, std::span<c
 std::vector<state::Entity> SelectedNodes(const state::Registry &r, state::Entity mesh_entity) {
     std::vector<state::Entity> selected;
     if (const auto *active = r.try_get<const NetworkActive>(mesh_entity))
-        for (const auto item : active->Selection)
-            if (item.Kind == ItemKind::Entity && IsNodeOf(r, mesh_entity, item.Entity)) selected.push_back(item.Entity);
+        for (const auto node : active->Selection)
+            if (IsNodeOf(r, mesh_entity, node)) selected.push_back(node);
     return selected;
 }
 void Select(state::Registry &r, state::Entity mesh, std::span<const state::Entity> nodes, state::Entity active) {
-    NetworkActive selection{NetworkItem{active}};
-    for (const auto node : nodes) selection.Selection.push_back({node});
+    NetworkActive selection{active, {nodes.begin(), nodes.end()}};
     std::ranges::sort(selection.Selection);
     r.emplace_or_replace<NetworkActive>(mesh, std::move(selection));
 }
@@ -315,34 +313,11 @@ void Apply(state::Registry &r, const Action &action) {
                 auto items = a.Items;
                 std::ranges::sort(items);
                 if (std::ranges::adjacent_find(items) != items.end()) return Fail(r, "The selection must list distinct items");
-                if (r.any_of<GeometryProcedure, Subnet>(a.Network)) {
-                    const auto owner = r.all_of<Subnet>(a.Network) ? r.get<const ProcedureNode>(a.Network).Procedure : a.Network;
-                    const auto valid = [&](NetworkItem item) { return item.Kind == ItemKind::Entity && IsNodeOf(r, owner, item.Entity); };
-                    if (!std::ranges::all_of(items, valid) || (a.Active != NetworkItem{} && !valid(a.Active))) return Fail(r, "Select nodes of the procedure");
-                    r.emplace_or_replace<NetworkActive>(owner, a.Active != NetworkItem{} ? a.Active : NetworkItem{ActiveNodeOf(r, owner)}, std::move(items));
-                    return;
-                }
-                if (!std::ranges::includes(NetworkItems(r, a.Network), items)) return Fail(r, "The selection contains items outside this network");
-                if (a.Active != NetworkItem{} && !std::ranges::binary_search(items, a.Active)) return Fail(r, "The active item must be selected");
-                auto active = a.Active;
-                if (active == NetworkItem{}) {
-                    const auto *previous = r.try_get<const NetworkActive>(a.Network);
-                    active = previous && std::ranges::binary_search(items, previous->Item) ? previous->Item : items.empty() ? NetworkItem{} :
-                                                                                                                              items.front();
-                }
-                selection::ApplyTreeSelection selection;
-                if (const auto *previous = r.try_get<const NetworkActive>(a.Network)) {
-                    for (const auto item : previous->Selection) {
-                        if (!std::ranges::binary_search(items, item) && item.Kind == ItemKind::Entity && r.any_of<ObjectKind, BoneIndex>(item.Entity)) selection.Add(item.Entity, false);
-                    }
-                }
-                for (const auto item : items) {
-                    if (item.Kind == ItemKind::Entity && r.any_of<ObjectKind, BoneIndex>(item.Entity)) selection.Add(item.Entity, true);
-                }
-                if (!selection.ToSelect().empty()) selection.Clear = std::ranges::all_of(selection.ToSelect(), [&](auto e) { return r.all_of<BoneIndex>(e); }) ? selection::ApplyTreeSelection::ClearKind::BonesOnly : selection::ApplyTreeSelection::ClearKind::All;
-                if (active.Kind == ItemKind::Entity && r.any_of<ObjectKind, BoneIndex>(active.Entity)) selection.NavToActive = active.Entity;
-                selection::Apply(r, selection);
-                r.emplace_or_replace<NetworkActive>(a.Network, active, std::move(items));
+                if (!r.any_of<GeometryProcedure, Subnet>(a.Network)) return Fail(r, "Select nodes of a geometry procedure");
+                const auto owner = r.all_of<Subnet>(a.Network) ? r.get<const ProcedureNode>(a.Network).Procedure : a.Network;
+                const auto valid = [&](state::Entity node) { return IsNodeOf(r, owner, node); };
+                if (!std::ranges::all_of(items, valid) || (a.Active != state::Null && !valid(a.Active))) return Fail(r, "Select nodes of the procedure");
+                r.emplace_or_replace<NetworkActive>(owner, a.Active != state::Null ? a.Active : ActiveNodeOf(r, owner), std::move(items));
             },
             [&](const MoveNodes &a) {
                 if (!r.valid(a.Network)) return Fail(r, "The network does not exist");
@@ -578,7 +553,7 @@ void Apply(state::Registry &r, const Action &action) {
                     moved[to_node] = true;
                     const auto network = NetworkOf(r, a.Node);
                     for (uint32_t n = 0u; n < moved.size(); ++n) {
-                        const NetworkItem item{plan.Nodes[n].Entity};
+                        const auto item = plan.Nodes[n].Entity;
                         if (const auto cell = moved[n] ? NetworkPosition(r, network, item) : std::nullopt) SetNetworkPosition(r, network, item, {cell->x + a.Shift, cell->y});
                     }
                 }
@@ -621,7 +596,7 @@ state::Entity CopyProcedure(state::Registry &r, state::Entity from, uint32_t dra
     r.emplace<GeometryProcedure>(to, copies(procedure.First), copies(procedure.Last), copies(procedure.DisplayNode), procedure.DisplayPort);
     if (const auto *layout = r.try_get<const NetworkLayout>(from)) {
         auto copied = *layout;
-        for (auto &cell : copied.Cells) cell.Item.Entity = copies(cell.Item.Entity);
+        for (auto &cell : copied.Cells) cell.Item = copies(cell.Item);
         std::ranges::sort(copied.Cells, {}, &NetworkCell::Item);
         r.emplace<NetworkLayout>(to, std::move(copied));
     }
@@ -646,7 +621,7 @@ void Apply(state::Registry &r, const AddMacro &a) {
     const auto subnet = r.get<const GeometryProcedure>(a.MeshEntity).Last;
     if (subnet == before) return;
     Macros[a.Macro].Define(r, a.MeshEntity, subnet);
-    Apply(r, Action{RenameNetwork{subnet, Macros[a.Macro].Name}});
+    Apply(r, Action{RenameItem{subnet, Macros[a.Macro].Name}});
     Select(r, a.MeshEntity, std::array{subnet}, subnet);
 }
 

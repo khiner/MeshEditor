@@ -664,32 +664,11 @@ void UpdateSettings(state::Registry &r, float fps) {
     s.CacheFps = fps;
     s.Invalidate();
 }
-
-void CountDefinitionUses(state::Registry &r) {
-    auto &counts = r.Resources.get<PhysicsDefinitionUses>().Counts;
-    counts.clear();
-    const auto use = [&](state::Entity definition) {
-        if (definition != state::Null) ++counts[definition];
-    };
-    for (const auto [_, material] : r.view<const ColliderMaterial>().each()) {
-        use(material.PhysicsMaterialEntity);
-        use(material.CollisionFilterEntity);
-    }
-    for (const auto [_, trigger] : r.view<const TriggerNodes>().each()) use(trigger.CollisionFilterEntity);
-    for (const auto [_, filter] : r.view<const CollisionFilter>().each()) {
-        for (const auto system : filter.Systems) use(system);
-        for (const auto system : filter.CollideSystems) {
-            if (!std::ranges::contains(filter.Systems, system)) use(system);
-        }
-    }
-    for (const auto [_, joint] : r.view<const PhysicsJoint>().each()) use(joint.JointDefEntity);
-}
 } // namespace
 
 namespace physics {
 void ProcessChanges(state::Registry &r) {
     const auto &changes = r.Resources.get<const PhysicsChanges>();
-    if (!changes.DefinitionUses.empty()) CountDefinitionUses(r);
     auto &s = r.Resources.get<PhysicsState>();
     const auto &inputs = changes.Input, &moved = changes.Transform, &geometry = changes.Geometry;
     const bool definitions = AnyChanged(changes.MaterialDef, changes.CollisionSystemDef, changes.CollisionFilterDef);
@@ -955,7 +934,6 @@ void SamplePosesAtFrame(state::Registry &r, float frame) {
 
 void Init(state::Registry &r) {
     auto &s = r.Resources.emplace<PhysicsState>();
-    r.Resources.emplace<PhysicsDefinitionUses>();
     s.Context.emplace();
     r.Resources.emplace<PhysicsContactImpacts>();
     r.Resources.emplace<PhysicsSustainedContacts>();
@@ -985,14 +963,8 @@ void Init(state::Registry &r) {
     changes.CollisionFilterDef.bind(r).on<CollisionFilter>(On::Create | On::Update | On::Destroy);
     changes.Scenes.bind(r, state::Clearing::Explicit).on<Scene>(On::Create | On::Destroy);
     changes.BodyMesh.bind(r).on<PhysicsBodyHandle>(On::Create | On::Destroy).on<ColliderShape>(On::Create | On::Update | On::Destroy);
-    changes.DefinitionUses.bind(r)
-        .on<ColliderMaterial>(On::Create | On::Update | On::Destroy)
-        .on<TriggerNodes>(On::Create | On::Update | On::Destroy)
-        .on<CollisionFilter>(On::Create | On::Update | On::Destroy)
-        .on<PhysicsJoint>(On::Create | On::Update | On::Destroy);
 }
 void Deinit(state::Registry &r) {
-    r.Resources.erase<PhysicsDefinitionUses>();
     r.Resources.erase<PhysicsState>();
 }
 } // namespace physics

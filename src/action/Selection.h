@@ -61,6 +61,9 @@ struct ApplyTreeSelection {
     }
 };
 
+// The selection that replaces the current one with the nodes, bones through their bone tags, and makes `active` the active one, or keeps the active one for null.
+ApplyTreeSelection SelectNodes(const state::Registry &, std::vector<state::Entity> nodes, state::Entity active);
+
 using Action = std::variant<
     Select, ToggleSelected, SelectBone, ExtendActive, ExtendBoneActive,
     DeselectAll, SelectAll,

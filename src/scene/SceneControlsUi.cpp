@@ -5,6 +5,7 @@
 #include "TransformMath.h"
 #include "action/Audio.h"
 #include "action/Bone.h"
+#include "action/Object.h"
 #include "action/Scene.h"
 #include "action/Selection.h"
 #include "action/View.h"
@@ -16,25 +17,27 @@
 #include "gltf/GltfScene.h"
 #include "physics/PhysicsUi.h"
 #include "procedure/Procedure.h"
+#include "render/GpuBufferOps.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
 #include "render/PbrFeature.h"
 #include "scene/CameraLens.h"
 #include "scene/Entity.h"
-#include "scene/HierarchyInstance.h"
 #include "scene/SceneGraph.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
 #include "ui/ChoiceCombo.h"
+#include "ui/GoTo.h"
 #include "ui/ItemList.h"
-#include "ui/MaterialEdit.h"
 #include "viewport/FrameState.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/RenderExtent.h"
 #include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportComponents.h"
+#include "viewport/ViewportIcons.h"
 #include "viewport/ViewportOps.h"
+#include <format>
 #include <imgui_internal.h>
 #include <imgui_stdlib.h>
 
@@ -150,29 +153,20 @@ std::string SceneLabel(const state::Registry &r, state::Entity scene) {
     return NamedOr(r.get<const Name>(scene).Value, "Scene ", index ? index->Value : 0u);
 }
 
-void EntityControls(state::Registry &r, state::Entity active_entity, state::Entity active_bone_entity, bool explicit_target) {
+void RenderEntityControls(state::Registry &r, state::Entity active_entity) {
+    // An object in the viewport's scene is edited as the active entity, or with Alt held as the selection, and shows the active bone.
+    const bool explicit_target = FindActiveEntity(r) != active_entity;
+    const auto active_bone_entity = explicit_target ? state::Null : FindActiveBone(r);
     const auto fields_for = [&](state::Entity e) {
         return ui::Edit{r, explicit_target ? std::optional{e} : std::nullopt};
     };
     const auto target_for = [&](state::Entity e) {
         return explicit_target ? action::Target{e} : ui::TargetFromAlt();
     };
-    const auto bone_target = explicit_target ? active_bone_entity : state::Null;
     const auto &meshes = r.Resources.get<MeshStore>();
-    if (active_entity == state::Null) {
-        TextUnformatted("Active object: None");
-        return;
-    }
 
     PushID("EntityControls");
-    if (const auto *member = r.try_get<const HierarchyMember>(active_entity)) {
-        TextWrapped("Shared definition: %s", GetName(r, member->Source).c_str());
-        if (Button("Make hierarchy independent")) action::Emit(action::object::MakeIndependent{member->Root});
-    }
-    Text("Active entity: %s", GetName(r, active_entity).c_str());
     if (r.all_of<ObjectKind>(active_entity) && !r.any_of<SubElementOf, BoneIndex>(active_entity)) {
-        auto name = GetName(r, active_entity);
-        ui::Gesture(InputText("Name", &name), [&] { return action::object::Rename{active_entity, name}; });
         ui::ActionField("Visible", !r.all_of<Hidden>(active_entity), [&](bool visible) { return action::object::SetVisible{visible, target_for(active_entity)}; }, {.Help = "Show this object in the viewport."});
         const auto parents = [&] {
             std::vector<state::Entity> candidates{state::Null};
@@ -272,7 +266,6 @@ void EntityControls(state::Registry &r, state::Entity active_entity, state::Enti
                         .LocalP = Conjugate(pd.R) * ((head - pd.P) / pd.S),
                         .LocalR = Conjugate(pd.R) * new_rot,
                         .DisplayScale = new_length,
-                        .BoneEntity = bone_target,
                     });
                 }
             }
@@ -340,51 +333,45 @@ void EntityControls(state::Registry &r, state::Entity active_entity, state::Enti
                     return e == state::Null ? std::string{"None"} : name && !name->Value.empty() ? name->Value :
                                                                                                    IdString(e);
                 };
-                ui::ChoiceCombo("Target", c.TargetEntity, targets, target_name, [&](state::Entity te) { action::Emit(action::bone::SetConstraintTarget{i, te, bone_target}); });
+                ui::ChoiceCombo("Target", c.TargetEntity, targets, target_name, [&](state::Entity te) { action::Emit(action::bone::SetConstraintTarget{i, te}); });
                 if (std::holds_alternative<ChildOfData>(c.Data)) {
                     if (Button("Set Inverse") && c.TargetEntity != state::Null && r.valid(c.TargetEntity)) {
-                        action::Emit(action::bone::BakeConstraintChildOfInverse{i, bone_target});
+                        action::Emit(action::bone::BakeConstraintChildOfInverse{i});
                     }
                     SameLine();
                     if (Button("Clear Inverse")) {
-                        action::Emit(action::bone::ClearConstraintChildOfInverse{i, bone_target});
+                        action::Emit(action::bone::ClearConstraintChildOfInverse{i});
                     }
                 }
                 if (float influence = c.Influence; SliderFloat("Influence", &influence, 0.f, 1.f)) {
-                    action::Emit(action::bone::SetConstraintInfluence{i, influence, bone_target});
+                    action::Emit(action::bone::SetConstraintInfluence{i, influence});
                 }
             }
         );
-        if (deleted) action::Emit(action::bone::DeleteConstraint{*deleted, bone_target});
-        if (Button("Add Copy Transforms")) action::Emit(action::bone::AddConstraint{action::bone::BoneConstraintKind::CopyTransforms, bone_target});
+        if (deleted) action::Emit(action::bone::DeleteConstraint{*deleted});
+        if (Button("Add Copy Transforms")) action::Emit(action::bone::AddConstraint{action::bone::BoneConstraintKind::CopyTransforms});
         SameLine();
-        if (Button("Add Child Of")) action::Emit(action::bone::AddConstraint{action::bone::BoneConstraintKind::ChildOf, bone_target});
+        if (Button("Add Child Of")) action::Emit(action::bone::AddConstraint{action::bone::BoneConstraintKind::ChildOf});
         PopID();
     }
     if (is_mesh_instance) {
         const auto active_mesh_entity = active_instance->Entity;
         if (CollapsingHeader("Material")) {
             const auto &active_mesh = GetMesh(r, active_mesh_entity);
-            auto &material_store = r.Resources.get<MaterialStore>();
             const std::span<const uint32_t> primitive_materials = meshes.Arenas().PrimitiveMaterials.Get(meshes.Get(active_mesh.GetStoreId()).PrimitiveMaterials);
-            const auto materials = GetMaterials(r);
-            const auto material_count = uint32_t(materials.size());
-            const auto material_name = [&](uint32_t index) {
-                if (index < material_store.Names.size() && !material_store.Names[index].empty()) return std::string{material_store.Names[index]};
-                return std::format("Material{}", index);
-            };
+            // Each material's entity by record index, where record 0 is the default that a slot without a material draws.
+            const auto materials = MaterialsByIndex(r);
+            const auto at = [&](uint32_t index) { return index < materials.size() ? materials[index] : state::Null; };
+            const auto name = [&](state::Entity e) { return e == state::Null ? std::string{"None"} : r.get<const Material>(e).Name; };
             if (primitive_materials.empty()) {
                 TextUnformatted("No material slots on this mesh.");
-            } else if (material_count == 0) {
-                TextUnformatted("No materials.");
             } else {
                 const auto *existing_slot = r.try_get<const MeshMaterialSlotSelection>(active_mesh_entity);
                 uint32_t slot_primitive = std::min(existing_slot ? existing_slot->PrimitiveIndex : 0u, uint32_t(primitive_materials.size() - 1));
 
                 BeginChild("MaterialSlots", ImVec2(0, 110), true);
                 for (uint32_t primitive_index = 0; primitive_index < primitive_materials.size(); ++primitive_index) {
-                    const uint32_t material_index = std::min(primitive_materials[primitive_index], material_count - 1);
-                    if (const auto label = std::format("Slot {:L}: {}", primitive_index, material_name(material_index));
+                    if (const auto label = std::format("Slot {:L}: {}", primitive_index, name(at(primitive_materials[primitive_index])));
                         Selectable(label.c_str(), slot_primitive == primitive_index) && slot_primitive != primitive_index) {
                         action::Emit(action::object::SetMaterialSlotSelection{primitive_index, target_for(active_mesh_entity)});
                         slot_primitive = primitive_index;
@@ -392,14 +379,18 @@ void EntityControls(state::Registry &r, state::Entity active_entity, state::Enti
                 }
                 EndChild();
 
-                uint32_t material_index = std::min(DisplayedMaterial(r, active_mesh_entity).value_or(primitive_materials[slot_primitive]), material_count - 1);
-                ui::ChoiceCombo("Assigned material", material_index, std::views::iota(0u, material_count), material_name, [&](uint32_t i) {
-                    action::Emit(action::object::SetMaterialAssignment{slot_primitive, i, target_for(active_mesh_entity)});
-                    material_index = i;
+                const auto material = DisplayedMaterial(r, active_mesh_entity).value_or(at(primitive_materials[slot_primitive]));
+                std::vector<state::Entity> choices{state::Null};
+                for (const auto e : materials | std::views::drop(1)) {
+                    if (e != state::Null) choices.push_back(e);
+                }
+                ui::ChoiceCombo("Assigned material", material, choices, name, [&](state::Entity e) {
+                    action::Emit(action::object::SetMaterialAssignment{slot_primitive, e, target_for(active_mesh_entity)});
                 });
-
-                ui::MaterialEdit fields{r, material_index};
-                ui::DrawFields<PBRMaterial, &PBRMaterial::Sheen, &PBRMaterial::Specular, &PBRMaterial::Transmission, &PBRMaterial::DiffuseTransmission, &PBRMaterial::Volume, &PBRMaterial::Clearcoat, &PBRMaterial::Anisotropy, &PBRMaterial::Iridescence>(fields);
+                const auto *icons = r.Resources.find<ViewportIcons>();
+                ui::GoToButton(icons ? icons->GoTo.get() : nullptr, "Material", material);
+                if (Button("New material")) action::Emit(action::object::AddMaterial{slot_primitive, target_for(active_mesh_entity)});
+                ui::Describe("New material", "Add a material and assign it to this slot.");
 
                 const auto pbr_features_mask = r.all_of<PbrMeshFeatures>(active_mesh_entity) ? r.get<const PbrMeshFeatures>(active_mesh_entity).Mask : 0u;
                 const auto feature_toggle = [&](const char *label, PbrFeature feature) {
@@ -408,19 +399,13 @@ void EntityControls(state::Registry &r, state::Entity active_entity, state::Enti
                         const auto mask = enabled ? pbr_features_mask | uint32_t(feature) : pbr_features_mask & ~uint32_t(feature);
                         action::Emit(action::object::SetPbrMeshFeaturesMask{mask, target_for(active_mesh_entity)});
                     }
-                    if (enabled) SeparatorText(label);
-                    return enabled;
                 };
-
-                if (feature_toggle("Transmission", PbrFeature::Transmission)) {
-                    ui::DrawFields<Transmission>(fields.Sub<&PBRMaterial::Transmission>());
-                    ui::DrawFields<Volume>(fields.Sub<&PBRMaterial::Volume>());
-                }
-                if (feature_toggle("Diffuse transmission", PbrFeature::DiffuseTrans)) ui::DrawFields<DiffuseTransmission>(fields.Sub<&PBRMaterial::DiffuseTransmission>());
-                if (feature_toggle("Clearcoat", PbrFeature::Clearcoat)) ui::DrawFields<Clearcoat>(fields.Sub<&PBRMaterial::Clearcoat>());
-                if (feature_toggle("Anisotropy", PbrFeature::Anisotropy)) ui::DrawFields<Anisotropy>(fields.Sub<&PBRMaterial::Anisotropy>());
-                if (feature_toggle("Sheen", PbrFeature::Sheen)) ui::DrawFields<Sheen>(fields.Sub<&PBRMaterial::Sheen>());
-                if (feature_toggle("Iridescence", PbrFeature::Iridescence)) ui::DrawFields<Iridescence>(fields.Sub<&PBRMaterial::Iridescence>());
+                feature_toggle("Transmission", PbrFeature::Transmission);
+                feature_toggle("Diffuse transmission", PbrFeature::DiffuseTrans);
+                feature_toggle("Clearcoat", PbrFeature::Clearcoat);
+                feature_toggle("Anisotropy", PbrFeature::Anisotropy);
+                feature_toggle("Sheen", PbrFeature::Sheen);
+                feature_toggle("Iridescence", PbrFeature::Iridescence);
             }
         }
     }
@@ -545,96 +530,136 @@ void EntityControls(state::Registry &r, state::Entity active_entity, state::Enti
     PopID();
 }
 
-void RenderEntityControls(state::Registry &r, state::Entity entity, state::Entity bone) {
-    EntityControls(r, entity, bone, true);
+void RenderInteractionControls(state::Registry &r) {
+    const auto interaction_mode = r.get<const Interaction>(state::Document).Mode;
+    const auto edit_mode = r.get<const EditMode>(state::Document).Value;
+    PushID("InteractionMode");
+    AlignTextToFramePadding();
+    TextUnformatted("Interaction mode:");
+    auto interaction_mode_value = int(interaction_mode);
+    bool interaction_mode_changed = false;
+    const auto active_entity = FindActiveEntity(r);
+    const auto *selection_task = r.try_get<const procedure::SelectionEditing>(state::Document);
+    const bool active_is_armature = !selection_task && FindArmatureObject(r, active_entity) != state::Null;
+    const auto &flags = r.get<const SelectionFlags>(state::Document);
+    const bool edit_allowed = flags.AllMeshes || active_is_armature;
+    const bool pose_allowed = active_is_armature;
+    for (const auto mode : r.get<const EnabledInteractionModes>(state::Document).Value) {
+        if (mode == InteractionMode::Edit && !edit_allowed) continue;
+        if (mode != InteractionMode::Pose || pose_allowed) {
+            SameLine();
+            interaction_mode_changed |= RadioButton(field::EnumLabel(mode), &interaction_mode_value, int(mode));
+        }
+    }
+    if (interaction_mode_changed) action::Emit(action::view::SetInteractionMode{.Mode = InteractionMode(interaction_mode_value)});
+    if (interaction_mode == InteractionMode::Edit || interaction_mode == InteractionMode::Excite) {
+        ui::Edit{r, FindActiveViewport(r)}.Draw<&OrbitToActive::Value>("Orbit to active");
+    }
+    if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
+        AlignTextToFramePadding();
+        TextUnformatted("Edit mode:");
+        auto type_interaction_mode = int(edit_mode);
+        for (const auto element : SelectionElements) {
+            SameLine();
+            if (RadioButton(field::EnumLabel(element), &type_interaction_mode, int(element))) action::Emit(action::view::SetEditMode{.Mode = element});
+        }
+        const auto *active_instance = active_entity != state::Null ? r.try_get<const Instance>(active_entity) : nullptr;
+        const auto active_mesh = selection_task ? selection_task->Mesh : active_instance && HasMesh(r, active_instance->Entity) ? active_instance->Entity :
+                                                                                                                                  state::Null;
+        const auto *active_stats = active_mesh != state::Null ? GetElementSelectionSummary(r, active_mesh, edit_mode) : nullptr;
+        const uint32_t selected_count = active_stats ? active_stats->SelectedCount : 0u;
+        const auto sharpness = flags.ElementSharpness;
+        if (active_mesh != state::Null) Text("Editing %s: %u selected", label(edit_mode).data(), selected_count);
+        if (edit_mode != Element::None) {
+            if (sharpness != SelectionSharpness::None) {
+                const bool mixed = sharpness == SelectionSharpness::Mixed;
+                if (mixed) PushItemFlag(ImGuiItemFlags_MixedValue, true);
+                if (edit_mode == Element::Face) {
+                    if (bool set_smooth = sharpness == SelectionSharpness::Smooth; Checkbox("Smooth faces", &set_smooth)) action::Emit(action::object::SetSelectedSharp{Element::Face, !set_smooth});
+                } else if (bool set_sharp = sharpness == SelectionSharpness::Sharp; Checkbox(edit_mode == Element::Edge ? "Sharp edges" : "Sharp vertices", &set_sharp)) {
+                    action::Emit(action::object::SetSelectedSharp{edit_mode == Element::Edge ? Element::Edge : Element::Vertex, set_sharp});
+                }
+                if (mixed) PopItemFlag();
+            }
+        }
+    }
+    PopID();
+}
+
+void RenderSelectionActions(state::Registry &r) {
+    if (SelectedIn(r).empty()) return;
+    SeparatorText("Selection actions");
+    const auto &flags = r.get<const SelectionFlags>(state::Document);
+    if (flags.AnyVisible || flags.AnyHidden) {
+        const bool mixed_visible = flags.AnyVisible && flags.AnyHidden;
+        if (mixed_visible) PushItemFlag(ImGuiItemFlags_MixedValue, true);
+        if (bool set_visible = flags.AnyVisible && !flags.AnyHidden; Checkbox("Visible", &set_visible)) action::Emit(action::object::SetVisible{set_visible});
+        if (mixed_visible) PopItemFlag();
+
+        if (const auto sharpness = flags.FaceSharpness; sharpness != SelectionSharpness::None) {
+            const bool mixed_smooth = sharpness == SelectionSharpness::Mixed;
+            SameLine();
+            if (mixed_smooth) PushItemFlag(ImGuiItemFlags_MixedValue, true);
+            if (bool set_smooth = sharpness == SelectionSharpness::Smooth; Checkbox("Smooth shading", &set_smooth)) action::Emit(action::object::ShadeSelected{set_smooth ? procedure::ShadeMode::Smooth : procedure::ShadeMode::Flat});
+            if (mixed_smooth) PopItemFlag();
+            if (Button("Smooth by angle")) action::Emit(action::object::ShadeSelected{procedure::ShadeMode::ByAngle, r.get<const ShadeSmoothAngle>(state::Document).Value});
+            SameLine();
+            SetNextItemWidth(GetFontSize() * 6);
+            ui::Edit{r, state::Document}.Draw<&ShadeSmoothAngle::Value>("##SmoothByAngle");
+        }
+    }
+    if (CanDuplicate(r) && Button("Duplicate")) Duplicate(r);
+    if (CanDuplicateLinked(r)) {
+        SameLine();
+        if (Button("Duplicate linked")) action::Emit(action::object::DuplicateLinked{}, action::Phase::Stage);
+    }
+    if (CanDelete(r) && Button("Delete")) Delete(r);
+    {
+        const auto acting = FrameScene(r);
+        BeginDisabled(r.view<const Scene>().size() == 1);
+        if (Button("Link to scene")) OpenPopup("##LinkScene");
+        EndDisabled();
+        SameLine();
+        if (Button("Unlink from scene")) OpenPopup("##UnlinkScene");
+        if (BeginPopup("##LinkScene")) {
+            for (const auto e : gltf::OrderedScenes(r)) {
+                if (e != acting && MenuItem(SceneLabel(r, e).c_str())) action::Emit(action::scene::LinkSelected{e});
+            }
+            EndPopup();
+        }
+        if (BeginPopup("##UnlinkScene")) {
+            std::vector<state::Entity> unlinkable;
+            for (const auto e : SelectedIn(r)) {
+                if (const auto &scenes = RootMembership(r, e)->Scenes; scenes.size() > 1) unlinkable.append_range(scenes);
+            }
+            SortUnique(unlinkable);
+            if (unlinkable.empty()) TextDisabled("Every selected object is in one scene");
+            for (const auto e : gltf::OrderedScenes(r)) {
+                if (std::ranges::binary_search(unlinkable, e) && MenuItem(SceneLabel(r, e).c_str())) action::Emit(action::scene::UnlinkSelected{e});
+            }
+            EndPopup();
+        }
+    }
+    if (r.get<const Interaction>(state::Document).Mode == InteractionMode::Pose && !r.view<const BoneSelection>().empty()) {
+        AlignTextToFramePadding();
+        TextUnformatted("Clear transform:");
+        SameLine();
+        if (Button("All")) action::Emit(action::bone::ClearSelectedTransforms{.Position = true, .Rotation = true, .Scale = true});
+        SameLine();
+        if (Button("Position")) action::Emit(action::bone::ClearSelectedTransforms{.Position = true});
+        SameLine();
+        if (Button("Rotation")) action::Emit(action::bone::ClearSelectedTransforms{.Rotation = true});
+        SameLine();
+        if (Button("Scale")) action::Emit(action::bone::ClearSelectedTransforms{.Scale = true});
+    }
 }
 
 void RenderControls(state::Registry &r) {
     if (BeginTabBar("Scene controls")) {
-        if (BeginTabItem("Object")) {
-            {
-                const auto interaction_mode = r.get<const Interaction>(state::Document).Mode;
-                const auto edit_mode = r.get<const EditMode>(state::Document).Value;
-                PushID("InteractionMode");
-                AlignTextToFramePadding();
-                TextUnformatted("Interaction mode:");
-                auto interaction_mode_value = int(interaction_mode);
-                bool interaction_mode_changed = false;
-                const auto active_entity_rc = FindActiveEntity(r);
-                const auto *selection_task = r.try_get<const procedure::SelectionEditing>(state::Document);
-                const bool active_is_armature_rc = !selection_task && FindArmatureObject(r, active_entity_rc) != state::Null;
-                const auto &flags = r.get<const SelectionFlags>(state::Document);
-                const bool edit_allowed = flags.AllMeshes || active_is_armature_rc;
-                const bool pose_allowed = active_is_armature_rc;
-                for (const auto mode : r.get<const EnabledInteractionModes>(state::Document).Value) {
-                    if (mode == InteractionMode::Edit && !edit_allowed) continue;
-                    if (mode != InteractionMode::Pose || pose_allowed) {
-                        SameLine();
-                        interaction_mode_changed |= RadioButton(field::EnumLabel(mode), &interaction_mode_value, int(mode));
-                    }
-                }
-                if (interaction_mode_changed) action::Emit(action::view::SetInteractionMode{.Mode = InteractionMode(interaction_mode_value)});
-                if (interaction_mode == InteractionMode::Edit || interaction_mode == InteractionMode::Excite) {
-                    ui::Edit{r, FindActiveViewport(r)}.Draw<&OrbitToActive::Value>("Orbit to active");
-                }
-                if (interaction_mode == InteractionMode::Edit && !active_is_armature_rc) {
-                    AlignTextToFramePadding();
-                    TextUnformatted("Edit mode:");
-                    auto type_interaction_mode = int(edit_mode);
-                    for (const auto element : SelectionElements) {
-                        SameLine();
-                        if (RadioButton(field::EnumLabel(element), &type_interaction_mode, int(element))) action::Emit(action::view::SetEditMode{.Mode = element});
-                    }
-                    const auto active_entity = FindActiveEntity(r);
-                    const auto *active_instance = active_entity != state::Null ? r.try_get<const Instance>(active_entity) : nullptr;
-                    const auto active_mesh = selection_task ? selection_task->Mesh : active_instance && HasMesh(r, active_instance->Entity) ? active_instance->Entity :
-                                                                                                                                              state::Null;
-                    const auto *active_stats = active_mesh != state::Null ? GetElementSelectionSummary(r, active_mesh, edit_mode) : nullptr;
-                    const uint32_t selected_count = active_stats ? active_stats->SelectedCount : 0u;
-                    const auto sharpness = flags.ElementSharpness;
-                    if (active_mesh != state::Null) Text("Editing %s: %u selected", label(edit_mode).data(), selected_count);
-                    if (edit_mode != Element::None) {
-                        if (sharpness != SelectionSharpness::None) {
-                            const bool mixed = sharpness == SelectionSharpness::Mixed;
-                            if (mixed) PushItemFlag(ImGuiItemFlags_MixedValue, true);
-                            if (edit_mode == Element::Face) {
-                                if (bool set_smooth = sharpness == SelectionSharpness::Smooth; Checkbox("Smooth faces", &set_smooth)) action::Emit(action::object::SetSelectedSharp{Element::Face, !set_smooth});
-                            } else if (bool set_sharp = sharpness == SelectionSharpness::Sharp; Checkbox(edit_mode == Element::Edge ? "Sharp edges" : "Sharp vertices", &set_sharp)) {
-                                action::Emit(action::object::SetSelectedSharp{edit_mode == Element::Edge ? Element::Edge : Element::Vertex, set_sharp});
-                            }
-                            if (mixed) PopItemFlag();
-                        }
-                    }
-                }
-                PopID();
-            }
-            {
-                const auto acting = FrameScene(r);
-                PushID("SceneRow");
-                const auto scenes = gltf::OrderedScenes(r);
+        if (BeginTabItem("Scene")) {
+            if (const auto scenes = gltf::OrderedScenes(r); scenes.size() > 1) {
                 const auto viewport = FindActiveViewport(r);
-                if (scenes.size() > 1) {
-                    const auto &style = GetStyle();
-                    const float buttons_width = CalcTextSize("New").x + CalcTextSize("Delete").x + style.FramePadding.x * 4.f + style.ItemSpacing.x * 2.f;
-                    SetNextItemWidth(GetContentRegionAvail().x - buttons_width - CalcTextSize("Scene").x - style.ItemInnerSpacing.x);
-                    ui::ChoiceCombo("Scene", acting, scenes, [&](state::Entity e) { return SceneLabel(r, e); }, [viewport](state::Entity e) { action::Emit(action::view::SetViewportScene{viewport, e}); });
-                    SameLine();
-                }
-                BeginDisabled(scenes.size() >= MaxScenes);
-                if (Button("New")) action::Emit(action::scene::Add{"Scene"});
-                EndDisabled();
-                SameLine();
-                BeginDisabled(scenes.size() == 1);
-                if (Button("Delete")) action::Emit(action::scene::Remove{acting});
-                EndDisabled();
-                static char name[128];
-                static bool editing = false;
-                const auto &current_name = r.get<const Name>(acting).Value;
-                if (!editing) std::snprintf(name, sizeof name, "%s", current_name.c_str());
-                InputText("Name", name, sizeof name);
-                editing = IsItemActive();
-                if (IsItemDeactivatedAfterEdit() && current_name != name) action::Emit(action::scene::Rename{acting, name});
-                PopID();
+                ui::ChoiceCombo("Scene", FrameScene(r), scenes, [&](state::Entity e) { return SceneLabel(r, e); }, [viewport](state::Entity e) { action::Emit(action::view::SetViewportScene{viewport, e}); });
             }
             if (CollapsingHeader("Object tree", ImGuiTreeNodeFlags_DefaultOpen)) RenderObjectTree(r);
             SeparatorText("");
@@ -653,82 +678,6 @@ void RenderControls(state::Registry &r) {
                 SameLine();
                 if (Button("Light")) action::Emit(action::object::AddLight{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
             }
-            if (const auto *mv = r.try_get<MaterialVariants>(state::Document); mv && !mv->Names.empty() && CollapsingHeader("Material variants")) {
-                std::vector<std::optional<uint32_t>> variants{std::nullopt};
-                for (uint32_t i = 0; i < mv->Names.size(); ++i) variants.emplace_back(i);
-                ui::ChoiceCombo(
-                    "Active variant", mv->Active, variants,
-                    [&](std::optional<uint32_t> v) { return v ? NamedOr(mv->Names[*v], "Variant ", *v) : std::string{"Default"}; },
-                    [&](std::optional<uint32_t> v) { action::Emit(action::UpdateOf<&MaterialVariants::Active>(state::Document, v)); }
-                );
-            }
-            if (!SelectedIn(r).empty()) {
-                SeparatorText("Selection actions");
-                const auto &flags = r.get<const SelectionFlags>(state::Document);
-                if (flags.AnyVisible || flags.AnyHidden) {
-                    const bool mixed_visible = flags.AnyVisible && flags.AnyHidden;
-                    if (mixed_visible) PushItemFlag(ImGuiItemFlags_MixedValue, true);
-                    if (bool set_visible = flags.AnyVisible && !flags.AnyHidden; Checkbox("Visible", &set_visible)) action::Emit(action::object::SetVisible{set_visible});
-                    if (mixed_visible) PopItemFlag();
-
-                    if (const auto sharpness = flags.FaceSharpness; sharpness != SelectionSharpness::None) {
-                        const bool mixed_smooth = sharpness == SelectionSharpness::Mixed;
-                        SameLine();
-                        if (mixed_smooth) PushItemFlag(ImGuiItemFlags_MixedValue, true);
-                        if (bool set_smooth = sharpness == SelectionSharpness::Smooth; Checkbox("Smooth shading", &set_smooth)) action::Emit(action::object::ShadeSelected{set_smooth ? procedure::ShadeMode::Smooth : procedure::ShadeMode::Flat});
-                        if (mixed_smooth) PopItemFlag();
-                        if (Button("Smooth by angle")) action::Emit(action::object::ShadeSelected{procedure::ShadeMode::ByAngle, r.get<const ShadeSmoothAngle>(state::Document).Value});
-                        SameLine();
-                        SetNextItemWidth(GetFontSize() * 6);
-                        ui::Edit{r, state::Document}.Draw<&ShadeSmoothAngle::Value>("##SmoothByAngle");
-                    }
-                }
-                if (CanDuplicate(r) && Button("Duplicate")) Duplicate(r);
-                if (CanDuplicateLinked(r)) {
-                    SameLine();
-                    if (Button("Duplicate linked")) action::Emit(action::object::DuplicateLinked{}, action::Phase::Stage);
-                }
-                if (CanDelete(r) && Button("Delete")) Delete(r);
-                {
-                    const auto acting = FrameScene(r);
-                    BeginDisabled(r.view<const Scene>().size() == 1);
-                    if (Button("Link to scene")) OpenPopup("##LinkScene");
-                    EndDisabled();
-                    SameLine();
-                    if (Button("Unlink from scene")) OpenPopup("##UnlinkScene");
-                    if (BeginPopup("##LinkScene")) {
-                        for (const auto e : gltf::OrderedScenes(r)) {
-                            if (e != acting && MenuItem(SceneLabel(r, e).c_str())) action::Emit(action::scene::LinkSelected{e});
-                        }
-                        EndPopup();
-                    }
-                    if (BeginPopup("##UnlinkScene")) {
-                        std::vector<state::Entity> unlinkable;
-                        for (const auto e : SelectedIn(r)) {
-                            if (const auto &scenes = RootMembership(r, e)->Scenes; scenes.size() > 1) unlinkable.append_range(scenes);
-                        }
-                        SortUnique(unlinkable);
-                        if (unlinkable.empty()) TextDisabled("Every selected object is in one scene");
-                        for (const auto e : gltf::OrderedScenes(r)) {
-                            if (std::ranges::binary_search(unlinkable, e) && MenuItem(SceneLabel(r, e).c_str())) action::Emit(action::scene::UnlinkSelected{e});
-                        }
-                        EndPopup();
-                    }
-                }
-                if (r.get<const Interaction>(state::Document).Mode == InteractionMode::Pose && !r.view<const BoneSelection>().empty()) {
-                    AlignTextToFramePadding();
-                    TextUnformatted("Clear transform:");
-                    SameLine();
-                    if (Button("All")) action::Emit(action::bone::ClearSelectedTransforms{.Position = true, .Rotation = true, .Scale = true});
-                    SameLine();
-                    if (Button("Position")) action::Emit(action::bone::ClearSelectedTransforms{.Position = true});
-                    SameLine();
-                    if (Button("Rotation")) action::Emit(action::bone::ClearSelectedTransforms{.Rotation = true});
-                    SameLine();
-                    if (Button("Scale")) action::Emit(action::bone::ClearSelectedTransforms{.Scale = true});
-                }
-            }
-            EntityControls(r, FindActiveEntity(r), FindActiveBone(r), false);
             EndTabItem();
         }
 
@@ -736,7 +685,6 @@ void RenderControls(state::Registry &r) {
             const auto viewport = FindActiveViewport(r);
             ui::Edit f{r, viewport};
             const auto &settings = r.get<const ViewportDisplay>(viewport);
-            ui::Edit{r, state::Document}.Draw<&AnisotropicFilter::Value>();
             if (CollapsingHeader("Motion blur")) {
                 if (bool enabled = settings.MotionBlur.has_value(); Checkbox("Enabled", &enabled)) {
                     f.Set<&ViewportDisplay::MotionBlur>(enabled ? std::optional{MotionBlur{}} : std::optional<MotionBlur>{});
@@ -774,109 +722,113 @@ void RenderControls(state::Registry &r) {
             EndTabItem();
         }
 
-        if (BeginTabItem("Physics")) {
-            physics_ui::RenderTab(r);
-            EndTabItem();
-        }
-
         if (BeginTabItem("Audio")) {
-            if (CollapsingHeader("Device", ImGuiTreeNodeFlags_DefaultOpen)) DrawAudioDeviceControls(r);
-            DrawGlobalSynthControls(r);
+            DrawAudioDeviceControls(r);
             EndTabItem();
-        }
-
-        if (const auto *sa = r.try_get<const gltf::SourceAssets>(state::Document)) {
-            const bool has_asset = !sa->Generator.empty() || !sa->Copyright.empty() || !sa->MinVersion.empty() || !sa->AssetExtras.empty() || !sa->AssetExtensions.empty();
-            const bool has_content = has_asset || !sa->ExtensionsRequired.empty() || !sa->Images.empty() || !sa->Textures.empty() || !sa->Samplers.empty();
-            if (has_content && BeginTabItem("glTF metadata")) {
-                if (has_asset && CollapsingHeader("Asset", ImGuiTreeNodeFlags_DefaultOpen)) {
-                    if (!sa->Generator.empty()) Text("Generator: %s", sa->Generator.c_str());
-                    if (!sa->Copyright.empty()) Text("Copyright: %s", sa->Copyright.c_str());
-                    if (!sa->MinVersion.empty()) Text("Min version: %s", sa->MinVersion.c_str());
-                    if (!sa->AssetExtras.empty()) RenderJsonBlock("asset.extras", sa->AssetExtras);
-                    if (!sa->AssetExtensions.empty()) RenderJsonBlock("asset.extensions", sa->AssetExtensions);
-                }
-                if (!sa->ExtensionsRequired.empty() && CollapsingHeader("Extensions required", ImGuiTreeNodeFlags_DefaultOpen)) {
-                    for (const auto &e : sa->ExtensionsRequired) BulletText("%s", e.c_str());
-                }
-                if (!sa->Images.empty() && CollapsingHeader("Image registry")) {
-                    MetaTable("Images", {"#", "Name", "Mime", "Source", "Bytes"}, sa->Images.size(), [&](size_t i) {
-                        const auto &img = sa->Images[i];
-                        TableNextColumn();
-                        Text("%zu", i);
-                        TableNextColumn();
-                        TextUnformatted(img.Name.c_str());
-                        TableNextColumn();
-                        TextUnformatted(img.MimeType == gltf::MimeType::None ? "—" : gltf::MimeTypeString(img.MimeType).data());
-                        TableNextColumn();
-                        if (img.Source == gltf::Image::SourceKind::DataUri) TextUnformatted("data URI");
-                        else if (!img.SourcePath.empty()) TextUnformatted(img.SourcePath.c_str());
-                        else TextUnformatted("embedded");
-                        TableNextColumn();
-                        if (img.Bytes.empty()) TextUnformatted(img.SourcePath.empty() ? "—" : "external");
-                        else Text("%zu", img.Bytes.size());
-                        if (img.IsDirty) {
-                            SameLine();
-                            TextUnformatted("(dirty)");
-                        }
-                    });
-                }
-                if (!sa->Textures.empty() && CollapsingHeader("Texture registry")) {
-                    const auto idx_or_dash = [](const std::optional<uint32_t> &i) {
-                        return i ? std::format("{}", *i) : std::string{"—"};
-                    };
-                    MetaTable("Textures", {"#", "Name", "Sampler", "Image (default/WebP/Basisu/DDS)"}, sa->Textures.size(), [&](size_t i) {
-                        const auto &t = sa->Textures[i];
-                        TableNextColumn();
-                        Text("%zu", i);
-                        TableNextColumn();
-                        TextUnformatted(t.Name.c_str());
-                        TableNextColumn();
-                        TextUnformatted(idx_or_dash(t.SamplerIndex).c_str());
-                        TableNextColumn();
-                        Text("%s / %s / %s / %s", idx_or_dash(t.ImageIndex).c_str(), idx_or_dash(t.WebpImageIndex).c_str(), idx_or_dash(t.BasisuImageIndex).c_str(), idx_or_dash(t.DdsImageIndex).c_str());
-                    });
-                }
-                if (!sa->Samplers.empty() && CollapsingHeader("Sampler registry")) {
-                    const auto filter_name = [](gltf::Filter f) -> std::string_view {
-                        using F = gltf::Filter;
-                        switch (f) {
-                            case F::Nearest: return "Nearest";
-                            case F::Linear: return "Linear";
-                            case F::NearestMipMapNearest: return "Nearest/Nearest";
-                            case F::LinearMipMapNearest: return "Linear/Nearest";
-                            case F::NearestMipMapLinear: return "Nearest/Linear";
-                            case F::LinearMipMapLinear: return "Linear/Linear";
-                        }
-                        return "?";
-                    };
-                    const auto wrap_name = [](gltf::Wrap w) -> std::string_view {
-                        using W = gltf::Wrap;
-                        switch (w) {
-                            case W::ClampToEdge: return "Clamp";
-                            case W::MirroredRepeat: return "Mirror";
-                            case W::Repeat: return "Repeat";
-                        }
-                        return "?";
-                    };
-                    MetaTable("Samplers", {"#", "Name", "Mag", "Min", "Wrap S/T"}, sa->Samplers.size(), [&](size_t i) {
-                        const auto &s = sa->Samplers[i];
-                        TableNextColumn();
-                        Text("%zu", i);
-                        TableNextColumn();
-                        TextUnformatted(s.Name.c_str());
-                        TableNextColumn();
-                        TextUnformatted(s.MagFilter ? filter_name(*s.MagFilter).data() : "—");
-                        TableNextColumn();
-                        TextUnformatted(s.MinFilter ? filter_name(*s.MinFilter).data() : "—");
-                        TableNextColumn();
-                        Text("%s / %s", wrap_name(s.WrapS).data(), wrap_name(s.WrapT).data());
-                    });
-                }
-                EndTabItem();
-            }
         }
         EndTabBar();
+    }
+}
+
+void RenderDocumentControls(state::Registry &r) {
+    if (CollapsingHeader("Simulation", ImGuiTreeNodeFlags_DefaultOpen)) physics_ui::RenderSimulation(r);
+    DrawGlobalSynthControls(r);
+    if (CollapsingHeader("Render")) ui::Edit{r, state::Document}.Draw<&AnisotropicFilter::Value>();
+    if (const auto *mv = r.try_get<MaterialVariants>(state::Document); mv && !mv->Names.empty() && CollapsingHeader("Material variants")) {
+        std::vector<std::optional<uint32_t>> variants{std::nullopt};
+        for (uint32_t i = 0; i < mv->Names.size(); ++i) variants.emplace_back(i);
+        ui::ChoiceCombo(
+            "Active variant", mv->Active, variants,
+            [&](std::optional<uint32_t> v) { return v ? NamedOr(mv->Names[*v], "Variant ", *v) : std::string{"Default"}; },
+            [&](std::optional<uint32_t> v) { action::Emit(action::UpdateOf<&MaterialVariants::Active>(state::Document, v)); }
+        );
+    }
+    if (const auto *sa = r.try_get<const gltf::SourceAssets>(state::Document)) {
+        const bool has_asset = !sa->Generator.empty() || !sa->Copyright.empty() || !sa->MinVersion.empty() || !sa->AssetExtras.empty() || !sa->AssetExtensions.empty();
+        if (has_asset && CollapsingHeader("Asset", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (!sa->Generator.empty()) Text("Generator: %s", sa->Generator.c_str());
+            if (!sa->Copyright.empty()) Text("Copyright: %s", sa->Copyright.c_str());
+            if (!sa->MinVersion.empty()) Text("Min version: %s", sa->MinVersion.c_str());
+            if (!sa->AssetExtras.empty()) RenderJsonBlock("asset.extras", sa->AssetExtras);
+            if (!sa->AssetExtensions.empty()) RenderJsonBlock("asset.extensions", sa->AssetExtensions);
+        }
+        if (!sa->ExtensionsRequired.empty() && CollapsingHeader("Extensions required", ImGuiTreeNodeFlags_DefaultOpen)) {
+            for (const auto &e : sa->ExtensionsRequired) BulletText("%s", e.c_str());
+        }
+        if (!sa->Images.empty() && CollapsingHeader("Image registry")) {
+            MetaTable("Images", {"#", "Name", "Mime", "Source", "Bytes"}, sa->Images.size(), [&](size_t i) {
+                const auto &img = sa->Images[i];
+                TableNextColumn();
+                Text("%zu", i);
+                TableNextColumn();
+                TextUnformatted(img.Name.c_str());
+                TableNextColumn();
+                TextUnformatted(img.MimeType == gltf::MimeType::None ? "—" : gltf::MimeTypeString(img.MimeType).data());
+                TableNextColumn();
+                if (img.Source == gltf::Image::SourceKind::DataUri) TextUnformatted("data URI");
+                else if (!img.SourcePath.empty()) TextUnformatted(img.SourcePath.c_str());
+                else TextUnformatted("embedded");
+                TableNextColumn();
+                if (img.Bytes.empty()) TextUnformatted(img.SourcePath.empty() ? "—" : "external");
+                else Text("%zu", img.Bytes.size());
+                if (img.IsDirty) {
+                    SameLine();
+                    TextUnformatted("(dirty)");
+                }
+            });
+        }
+        if (!sa->Textures.empty() && CollapsingHeader("Texture registry")) {
+            const auto idx_or_dash = [](const std::optional<uint32_t> &i) {
+                return i ? std::format("{}", *i) : std::string{"—"};
+            };
+            MetaTable("Textures", {"#", "Name", "Sampler", "Image (default/WebP/Basisu/DDS)"}, sa->Textures.size(), [&](size_t i) {
+                const auto &t = sa->Textures[i];
+                TableNextColumn();
+                Text("%zu", i);
+                TableNextColumn();
+                TextUnformatted(t.Name.c_str());
+                TableNextColumn();
+                TextUnformatted(idx_or_dash(t.SamplerIndex).c_str());
+                TableNextColumn();
+                Text("%s / %s / %s / %s", idx_or_dash(t.ImageIndex).c_str(), idx_or_dash(t.WebpImageIndex).c_str(), idx_or_dash(t.BasisuImageIndex).c_str(), idx_or_dash(t.DdsImageIndex).c_str());
+            });
+        }
+        if (!sa->Samplers.empty() && CollapsingHeader("Sampler registry")) {
+            const auto filter_name = [](gltf::Filter f) -> std::string_view {
+                using F = gltf::Filter;
+                switch (f) {
+                    case F::Nearest: return "Nearest";
+                    case F::Linear: return "Linear";
+                    case F::NearestMipMapNearest: return "Nearest/Nearest";
+                    case F::LinearMipMapNearest: return "Linear/Nearest";
+                    case F::NearestMipMapLinear: return "Nearest/Linear";
+                    case F::LinearMipMapLinear: return "Linear/Linear";
+                }
+                return "?";
+            };
+            const auto wrap_name = [](gltf::Wrap w) -> std::string_view {
+                using W = gltf::Wrap;
+                switch (w) {
+                    case W::ClampToEdge: return "Clamp";
+                    case W::MirroredRepeat: return "Mirror";
+                    case W::Repeat: return "Repeat";
+                }
+                return "?";
+            };
+            MetaTable("Samplers", {"#", "Name", "Mag", "Min", "Wrap S/T"}, sa->Samplers.size(), [&](size_t i) {
+                const auto &s = sa->Samplers[i];
+                TableNextColumn();
+                Text("%zu", i);
+                TableNextColumn();
+                TextUnformatted(s.Name.c_str());
+                TableNextColumn();
+                TextUnformatted(s.MagFilter ? filter_name(*s.MagFilter).data() : "—");
+                TableNextColumn();
+                TextUnformatted(s.MinFilter ? filter_name(*s.MinFilter).data() : "—");
+                TableNextColumn();
+                Text("%s / %s", wrap_name(s.WrapS).data(), wrap_name(s.WrapT).data());
+            });
+        }
     }
 }
 

@@ -22,13 +22,11 @@ enum class AnimationInterpolation : uint8_t {
 };
 
 // Address Count floats at byte Offset in the store selected by Component.
-// Stores are the clip entity's component, material buffer, or morph weights.
-// Index selects the material in the material buffer.
+// Stores are the clip entity's component, its material's record in the material buffer, or its morph weights.
 // Values use the field's native units and layout.
 struct ChannelTarget {
     state::TypeKey Component;
     uint16_t Offset{0};
-    uint16_t Index{0};
     uint16_t Count{0};
     ValueKind Kind{ValueKind::Float};
 

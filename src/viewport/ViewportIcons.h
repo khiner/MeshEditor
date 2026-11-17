@@ -18,7 +18,7 @@ struct TimelineIcons {
 struct ViewportIcons {
     ViewportIconsTransform Transform;
     ViewportIconsShading Shading;
-    std::unique_ptr<SvgResource> Overlay, XRay;
+    std::unique_ptr<SvgResource> Overlay, XRay, GoTo;
     TimelineIcons Timeline;
 };
 
