@@ -79,36 +79,14 @@ namespace {
 using SteadyClock = std::chrono::steady_clock;
 double ElapsedMs(SteadyClock::time_point begin) { return std::chrono::duration<double, std::milli>(SteadyClock::now() - begin).count(); }
 
-// The layer's drawable textures, resident while the layer keeps its size.
-struct DrawableResidency {
-    const mtl::Context &Ctx;
-    std::vector<NS::SharedPtr<MTL::Texture>> Textures;
-    CGSize Size{};
-
-    ~DrawableResidency() {
-        for (const auto &texture : Textures) Ctx.RemoveResident(texture.get());
-    }
-    void Add(CA::MetalLayer *layer, MTL::Texture *texture) {
-        if (const auto size = layer->drawableSize(); size.width != Size.width || size.height != Size.height) {
-            for (const auto &resident : Textures) Ctx.RemoveResident(resident.get());
-            Textures.clear();
-            Size = size;
-        }
-        if (std::ranges::any_of(Textures, [&](const auto &resident) { return resident.get() == texture; })) return;
-        Ctx.AddResident(texture);
-        Textures.push_back(NS::RetainPtr(texture));
-    }
-};
-
 // Skip a frame when every drawable is in flight.
 // Returns the serial of the presented frame, or zero.
-uint64_t RenderAndPresentFrame(const mtl::Context &ctx, mtl::ImGuiRenderer &ui, DrawableResidency &drawables, CA::MetalLayer *layer, ImDrawData *draw_data) {
+uint64_t RenderAndPresentFrame(const mtl::Context &ctx, mtl::ImGuiRenderer &ui, CA::MetalLayer *layer, ImDrawData *draw_data) {
     const mtl::AutoreleaseScope native_scope;
     const profile::CpuScope scope{"ImGuiRenderSubmit"};
     auto *drawable = layer->nextDrawable();
     if (!drawable) return 0u;
 
-    drawables.Add(layer, drawable->texture());
     const std::array colors{mtl::ClearColor(drawable->texture(), {0.45, 0.55, 0.60, 1.0})};
     const auto pass = mtl::MakePassDescriptor(colors);
     auto command = ctx.Begin();
@@ -1680,6 +1658,8 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
     auto *const layer = window.Layer();
     layer->setDevice(ctx.Device.get());
     layer->setPixelFormat(mtl::Format::Color);
+    // The layer's own residency set keeps its drawables resident, so the app holds no drawable past its frame.
+    ctx.Queue->addResidencySet(layer->residencySet());
     // Disable present pacing for fixed-step rendering and throughput benchmarks.
     layer->setDisplaySyncEnabled(capture.RenderBasename.empty() && capture.BenchFrames == 0);
 
@@ -1700,7 +1680,6 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
     ui::MacBackend mac_backend{window};
     std::optional<mtl::ImGuiRenderer> ui;
     ui.emplace(r.Resources.get<mtl::LibraryCache>(), mtl::Format::Color);
-    DrawableResidency drawables{ctx};
 
     InitFonts();
 
@@ -1834,7 +1813,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
 
             uint64_t presented_frame{};
             if (present_frame) {
-                if (const auto frame = RenderAndPresentFrame(ctx, *ui, drawables, layer, draw_data)) {
+                if (const auto frame = RenderAndPresentFrame(ctx, *ui, layer, draw_data)) {
                     // ImGui makes newly bound dock nodes visible on the following frame.
                     if (startup_frames_remaining > 0 && --startup_frames_remaining == 0) {
                         (void)ctx.Wait(frame);
