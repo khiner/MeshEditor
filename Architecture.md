@@ -1,6 +1,6 @@
 # Architecture & engineering policies
 
-- Target Apple Silicon on macOS 26 or later.
+- Target Apple Silicon on macOS 27 or later.
     - Use host-visible unified-memory buffers for direct CPU/GPU writes.
     - Store each GPU-readable live value exactly once, in its UMA buffer.
       Capture changed pages before in-place CPU or GPU writes.
