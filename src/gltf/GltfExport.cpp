@@ -171,8 +171,8 @@ void OverlayRest(const state::Registry &r, state::Entity e, state::TypeKey compo
     }
 }
 
-fastgltf::Light ConvertLightToFg(const PunctualLight &pl, std::string_view name) {
-    const auto type = pl.Type == PunctualLightType::Point ? fastgltf::LightType::Point : pl.Type == PunctualLightType::Spot ? fastgltf::LightType::Spot :
+fastgltf::Light ConvertLightToFg(const SceneLight &pl, std::string_view name) {
+    const auto type = pl.Type == LightType::Point ? fastgltf::LightType::Point : pl.Type == LightType::Spot ? fastgltf::LightType::Spot :
                                                                                                                               fastgltf::LightType::Directional;
     const bool is_spot = type == fastgltf::LightType::Spot;
     return {
@@ -269,7 +269,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     for (const auto e : r.view<const Perspective>()) camera_entities.emplace_back(e);
     for (const auto e : r.view<const Orthographic>()) camera_entities.emplace_back(e);
     const auto camera_entities_ordered = ordered_by_source(camera_entities, node_of(&GltfNode::Camera));
-    const auto light_entities_ordered = ordered_by_source(r.view<const PunctualLight>(), node_of(&GltfNode::Light));
+    const auto light_entities_ordered = ordered_by_source(r.view<const SceneLight>(), node_of(&GltfNode::Light));
     std::unordered_map<state::Entity, uint32_t> camera_entity_to_index, light_entity_to_index;
     for (uint32_t i = 0; i < camera_entities_ordered.size(); ++i) camera_entity_to_index[camera_entities_ordered[i]] = i;
     for (uint32_t i = 0; i < light_entities_ordered.size(); ++i) light_entity_to_index[light_entities_ordered[i]] = i;
@@ -1126,8 +1126,9 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     asset.lights.reserve(light_entities_ordered.size());
     for (const auto entity : light_entities_ordered) {
         const auto *node = r.try_get<const GltfNode>(entity);
-        auto pl = r.get<const PunctualLight>(entity);
-        OverlayRest(r, entity, state::Key<PunctualLight>(), std::as_writable_bytes(std::span{&pl, 1}));
+        auto pl = r.get<const SceneLight>(entity);
+        OverlayRest(r, entity, state::Key<SceneLight>(), std::as_writable_bytes(std::span{&pl, 1}));
+        if (IsAreaLight(pl.Type)) return std::unexpected("glTF KHR_lights_punctual cannot represent area lights. Save the native project to preserve them.");
         asset.lights.emplace_back(ConvertLightToFg(pl, node ? node->LightName : std::string_view{}));
     }
 

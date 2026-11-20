@@ -1,0 +1,879 @@
+{
+  "date": "2026-11-18",
+  "hardware": "Apple M5 Max, 32-core GPU, 36 GiB",
+  "os": "macOS 27.2.1 (26B131)",
+  "meshEditor": {
+    "executableSha256": "fa4a1ce4f14a0105b66ac44df8acff77b9f1d9447ed83612c3a3ec64a6936c21",
+    "buildType": "Debug, -O2",
+    "actionValidation": false,
+    "metalLibrariesSha256": "dd0c3a673ad78da82aea2b367934f925a534613030f34b911f68b93587e05aeb",
+    "metalLibraryCount": 181,
+    "libraryDigestFormat": "sha256 over sorted lines of hex sha256, two spaces, filename, and LF",
+    "physicsRevision": "e04787d7cc116663d8195b89fd8b6e3050e45369"
+  },
+  "eevee": {
+    "version": "5.4.0 Alpha",
+    "revision": "222853b0d7e49dda6c1ce56640b2f70867efa69b",
+    "executableSha256": "00c6a15da0f9c8f1f8ac49936ba71b3386ddb7b015d05eecc76f45fd9c1d98b0",
+    "viewportPatchSha256": "d801925102483bab0e88e9b4bb79ba15f124a9b6e5f66a66d0e1c92d97fd23b8",
+    "method": "SCREEN",
+    "defaultFastGI": true,
+    "defaultRoughnessThreshold": 0.5
+  },
+  "viewport": [
+    2560,
+    1600
+  ],
+  "warmupFrames": 64,
+  "measuredFramesPerTrial": 120,
+  "imageFrame": 32,
+  "units": "milliseconds",
+  "statistic": "p95, higher order statistic",
+  "indirectSamples": 1,
+  "cases": {
+    "opaque": {
+      "label": "Opaque studio",
+      "motion": "orbit",
+      "indirectGrid": "half",
+      "shadowRays": 1,
+      "cameraSequenceSha256": "dcfd0fe9f210b30cd550cdadb435012c8d2052296a0d43c94a8a300eeae69e2d",
+      "imagePerRenderer": [
+        2560,
+        1600
+      ],
+      "p95": {
+        "meshEditor": [
+          5.047459,
+          5.037334,
+          5.079292
+        ],
+        "meshEditorWithOverlays": [
+          5.668917,
+          5.693709,
+          5.673667
+        ],
+        "eevee": [
+          9.575666,
+          9.485458,
+          9.859333
+        ]
+      },
+      "nativeMaximumFrameMs": {
+        "native": [
+          5.09025,
+          5.089208,
+          5.15375
+        ],
+        "editor": [
+          5.762208,
+          5.812375,
+          5.767917
+        ]
+      },
+      "meshEditorIndirectLighting": "Environment",
+      "eeveeIndirectLighting": {
+        "method": "SCREEN",
+        "fastGI": true,
+        "effectiveRoughnessThreshold": 0.5,
+        "fastGIDistance": 0.0
+      }
+    },
+    "fast-gi": {
+      "label": "Studio \u00b7 Fast GI",
+      "motion": "orbit",
+      "indirectGrid": "half",
+      "shadowRays": 1,
+      "cameraSequenceSha256": "dcfd0fe9f210b30cd550cdadb435012c8d2052296a0d43c94a8a300eeae69e2d",
+      "imagePerRenderer": [
+        2560,
+        1600
+      ],
+      "p95": {
+        "meshEditor": [
+          7.146042,
+          7.184791,
+          7.17825
+        ],
+        "meshEditorWithOverlays": [
+          7.814,
+          7.797791,
+          7.735625
+        ],
+        "eevee": [
+          9.540084,
+          9.608458,
+          9.612708
+        ]
+      },
+      "nativeMaximumFrameMs": {
+        "native": [
+          7.268375,
+          7.282041,
+          7.318041
+        ],
+        "editor": [
+          7.978667,
+          7.881709,
+          7.850583
+        ]
+      },
+      "meshEditorIndirectLighting": "Fast GI",
+      "eeveeIndirectLighting": {
+        "method": "SCREEN",
+        "fastGI": true,
+        "effectiveRoughnessThreshold": 0.5,
+        "fastGIDistance": 10.0
+      }
+    },
+    "diffuse-gi": {
+      "label": "Studio \u00b7 traced diffuse bounce",
+      "motion": "orbit",
+      "indirectGrid": "half",
+      "shadowRays": 1,
+      "cameraSequenceSha256": "dcfd0fe9f210b30cd550cdadb435012c8d2052296a0d43c94a8a300eeae69e2d",
+      "imagePerRenderer": [
+        2560,
+        1600
+      ],
+      "p95": {
+        "meshEditor": [
+          13.128041,
+          12.349333,
+          12.740583,
+          12.411667,
+          12.495167,
+          15.974709
+        ],
+        "meshEditorWithOverlays": [
+          13.307208,
+          13.016209,
+          13.298916,
+          13.555459,
+          17.485167,
+          19.704668
+        ],
+        "eevee": [
+          10.483292,
+          10.654042,
+          10.720708
+        ]
+      },
+      "nativeMaximumFrameMs": {
+        "native": [
+          13.782833,
+          12.555375,
+          12.937167,
+          12.598959,
+          13.063459,
+          17.621124
+        ],
+        "editor": [
+          13.541167,
+          13.465542,
+          13.67,
+          14.251625,
+          18.816168,
+          23.4515
+        ]
+      },
+      "meshEditorIndirectLighting": "Ray Traced",
+      "eeveeIndirectLighting": {
+        "method": "SCREEN",
+        "fastGI": false,
+        "effectiveRoughnessThreshold": 1.0
+      }
+    },
+    "vase": {
+      "label": "Flower vases \u00b7 blend and transmission",
+      "motion": "orbit",
+      "indirectGrid": "half",
+      "shadowRays": 1,
+      "cameraSequenceSha256": "3976c5cc2764f77ea1e5eaf4d3bb7517c81bbf0339758c786886983e97fb1261",
+      "imagePerRenderer": [
+        2560,
+        1600
+      ],
+      "p95": {
+        "meshEditor": [
+          3.924833,
+          3.931083,
+          4.093542
+        ],
+        "meshEditorWithOverlays": [
+          4.740583,
+          4.639459,
+          5.519958
+        ],
+        "eevee": [
+          10.197042,
+          10.49175,
+          10.296583
+        ]
+      },
+      "nativeMaximumFrameMs": {
+        "native": [
+          3.97,
+          4.050584,
+          4.322542
+        ],
+        "editor": [
+          4.987917,
+          4.893291,
+          5.573542
+        ]
+      }
+    },
+    "glass": {
+      "label": "Glass spheres \u00b7 four shadow rays",
+      "motion": "orbit",
+      "indirectGrid": "half",
+      "shadowRays": 4,
+      "cameraSequenceSha256": "601209ef78779297352ce202da17c1c1dc568c92fcce4e5cfc81eb59eb5c09a5",
+      "imagePerRenderer": [
+        2560,
+        1600
+      ],
+      "p95": {
+        "meshEditor": [
+          12.476916,
+          12.4435,
+          12.495417
+        ],
+        "meshEditorWithOverlays": [
+          13.069416,
+          13.113,
+          13.012208
+        ],
+        "eevee": [
+          17.441708,
+          17.363708,
+          17.332
+        ]
+      },
+      "nativeMaximumFrameMs": {
+        "native": [
+          12.541542,
+          12.528333,
+          12.531459
+        ],
+        "editor": [
+          13.2185,
+          13.602,
+          13.185791
+        ]
+      }
+    },
+    "mixed": {
+      "label": "Blended and tinted glass \u00b7 four shadow rays",
+      "motion": "orbit",
+      "indirectGrid": "half",
+      "shadowRays": 4,
+      "cameraSequenceSha256": "601209ef78779297352ce202da17c1c1dc568c92fcce4e5cfc81eb59eb5c09a5",
+      "imagePerRenderer": [
+        2560,
+        1600
+      ],
+      "p95": {
+        "meshEditor": [
+          13.701,
+          13.753958,
+          14.417083
+        ],
+        "meshEditorWithOverlays": [
+          15.252041,
+          15.1995,
+          15.008375
+        ],
+        "eevee": [
+          19.572708,
+          19.15575,
+          19.111542
+        ]
+      },
+      "nativeMaximumFrameMs": {
+        "native": [
+          14.135333,
+          14.079625,
+          14.658625
+        ],
+        "editor": [
+          15.920166,
+          15.870917,
+          15.331292
+        ]
+      }
+    },
+    "inside": {
+      "label": "Camera inside single-sided glass",
+      "motion": "orbit",
+      "indirectGrid": "quarter",
+      "shadowRays": 1,
+      "cameraSequenceSha256": "9cbd37904687bd7c5ea1daa3963a3122f1d73808fb496133cd8b41d7c841dfa3",
+      "imagePerRenderer": [
+        2560,
+        1600
+      ],
+      "p95": {
+        "meshEditor": [
+          14.215375,
+          14.22575,
+          14.35875
+        ],
+        "meshEditorWithOverlays": [
+          15.001833,
+          14.874666,
+          14.955041
+        ],
+        "eevee": [
+          31.664625,
+          24.001041,
+          31.001458
+        ]
+      },
+      "nativeMaximumFrameMs": {
+        "native": [
+          14.300125,
+          14.35925,
+          14.499375
+        ],
+        "editor": [
+          15.287208,
+          14.953625,
+          15.081666
+        ]
+      }
+    },
+    "behind-glass": {
+      "label": "Moving object behind glass",
+      "motion": "animation",
+      "indirectGrid": "half",
+      "shadowRays": 1,
+      "cameraSequenceSha256": "8527b5bc2005aef7853b0cd547093508bb3452b3a7a24df28a98197e9e86f040",
+      "imagePerRenderer": [
+        2304,
+        1440
+      ],
+      "p95": {
+        "meshEditor": [
+          5.718541,
+          5.555917,
+          5.53775
+        ],
+        "meshEditorWithOverlays": [
+          6.253459,
+          6.290792,
+          6.143084
+        ],
+        "eevee": [
+          8.579334,
+          8.661417,
+          8.696375
+        ]
+      },
+      "nativeMaximumFrameMs": {
+        "native": [
+          5.847209,
+          5.648042,
+          5.595083
+        ],
+        "editor": [
+          6.378583,
+          6.441,
+          6.468
+        ]
+      }
+    },
+    "alpha": {
+      "label": "Overlapping textured alpha layers",
+      "motion": "orbit",
+      "indirectGrid": "half",
+      "shadowRays": 1,
+      "cameraSequenceSha256": "047520adc9c221832e1249ab5652070cd9e4cc941a2dca9b90ef814230a33e47",
+      "imagePerRenderer": [
+        2560,
+        1600
+      ],
+      "p95": {
+        "meshEditor": [
+          1.931125,
+          1.8905,
+          1.831208
+        ],
+        "meshEditorWithOverlays": [
+          2.482916,
+          2.517625,
+          2.534583
+        ],
+        "eevee": [
+          6.106,
+          5.871875,
+          5.876
+        ]
+      },
+      "nativeMaximumFrameMs": {
+        "native": [
+          2.169792,
+          2.060667,
+          1.886375
+        ],
+        "editor": [
+          2.52125,
+          2.677167,
+          2.718791
+        ]
+      }
+    },
+    "foliage": {
+      "label": "Diffuse transmission \u00b7 foliage",
+      "motion": "orbit",
+      "indirectGrid": "half",
+      "shadowRays": 1,
+      "cameraSequenceSha256": "9def3598190ec963f246b51b3ceae613c9538994b22aa5abf2ddb92028102f9d",
+      "imagePerRenderer": [
+        2560,
+        1600
+      ],
+      "p95": {
+        "meshEditor": [
+          2.544333,
+          2.530667,
+          2.531292
+        ],
+        "meshEditorWithOverlays": [
+          3.124333,
+          3.124292,
+          3.167042
+        ],
+        "eevee": [
+          6.625209,
+          6.652292,
+          6.816167
+        ]
+      },
+      "nativeMaximumFrameMs": {
+        "native": [
+          2.954333,
+          2.935167,
+          3.1455
+        ],
+        "editor": [
+          3.524042,
+          3.643,
+          3.492292
+        ]
+      }
+    },
+    "blocker": {
+      "label": "Moving blocker \u00b7 one area light",
+      "motion": "animation",
+      "indirectGrid": "half",
+      "shadowRays": 1,
+      "cameraSequenceSha256": "030ebcf43c91ff528452a26c1618bf38807f68e14322be99cdf62c1639d27120",
+      "imagePerRenderer": [
+        2304,
+        1294
+      ],
+      "p95": {
+        "meshEditor": [
+          3.503917,
+          3.602417,
+          3.531959
+        ],
+        "meshEditorWithOverlays": [
+          4.088625,
+          4.315542,
+          4.186041
+        ],
+        "eevee": [
+          7.763958,
+          7.903542,
+          7.76425
+        ]
+      },
+      "nativeMaximumFrameMs": {
+        "native": [
+          3.646375,
+          3.744833,
+          3.611916
+        ],
+        "editor": [
+          4.166041,
+          4.391917,
+          4.26725
+        ]
+      }
+    },
+    "emitter": {
+      "label": "Moving emitter \u00b7 one area light",
+      "motion": "animation",
+      "indirectGrid": "half",
+      "shadowRays": 1,
+      "cameraSequenceSha256": "030ebcf43c91ff528452a26c1618bf38807f68e14322be99cdf62c1639d27120",
+      "imagePerRenderer": [
+        2304,
+        1294
+      ],
+      "p95": {
+        "meshEditor": [
+          3.379333,
+          3.382167,
+          3.42575
+        ],
+        "meshEditorWithOverlays": [
+          3.981541,
+          3.961875,
+          3.962709
+        ],
+        "eevee": [
+          8.318917,
+          8.143958,
+          8.229166
+        ]
+      },
+      "nativeMaximumFrameMs": {
+        "native": [
+          3.410458,
+          3.475209,
+          3.504416
+        ],
+        "editor": [
+          4.025292,
+          3.9815,
+          4.007917
+        ]
+      }
+    },
+    "lights-64": {
+      "label": "64 overlapping area lights",
+      "motion": "orbit",
+      "indirectGrid": "half",
+      "shadowRays": 1,
+      "cameraSequenceSha256": "446ff99d8e7b67ad0ae3d39c2e39b14e18b131eb97f94f3a4c8edfa7d9cd6c66",
+      "imagePerRenderer": [
+        2560,
+        1600
+      ],
+      "p95": {
+        "meshEditor": [
+          16.499666,
+          16.086042,
+          16.1015
+        ],
+        "meshEditorWithOverlays": [
+          16.202749,
+          16.216125,
+          16.254625
+        ],
+        "eevee": [
+          32.252,
+          33.714625,
+          33.784667
+        ]
+      },
+      "nativeMaximumFrameMs": {
+        "native": [
+          16.638334,
+          16.29571,
+          16.229
+        ],
+        "editor": [
+          16.426916,
+          16.419708,
+          16.368542
+        ]
+      }
+    },
+    "flight-helmet": {
+      "label": "Flight Helmet \u00b7 face selection",
+      "motion": "orbit",
+      "indirectGrid": "half",
+      "shadowRays": 1,
+      "cameraSequenceSha256": "c2245441615299304e60342792072d060e949e563fa84e019a9a4173904c6ea1",
+      "imagePerRenderer": [
+        2560,
+        1600
+      ],
+      "p95": {
+        "meshEditor": [
+          3.445166,
+          3.375125,
+          3.364584
+        ],
+        "meshEditorWithOverlays": [
+          3.874959,
+          3.854959,
+          3.857875
+        ],
+        "eevee": [
+          8.024833,
+          7.860459,
+          7.9605
+        ]
+      },
+      "nativeMaximumFrameMs": {
+        "native": [
+          3.49225,
+          3.463584,
+          3.392417
+        ],
+        "editor": [
+          3.908666,
+          3.864917,
+          3.911875
+        ]
+      }
+    },
+    "sponza": {
+      "label": "Sponza exterior \u00b7 face selection",
+      "motion": "orbit",
+      "indirectGrid": "half",
+      "shadowRays": 1,
+      "cameraSequenceSha256": "e2453656fd44836f542bffb369aa8db14f4ebb5efaafed3b979579cb2c58650a",
+      "imagePerRenderer": [
+        2560,
+        1600
+      ],
+      "p95": {
+        "meshEditor": [
+          3.351541,
+          3.35925,
+          3.459666
+        ],
+        "meshEditorWithOverlays": [
+          3.670958,
+          3.781958,
+          3.705875
+        ],
+        "eevee": [
+          6.880084,
+          7.002125,
+          6.910167
+        ]
+      },
+      "nativeMaximumFrameMs": {
+        "native": [
+          3.563792,
+          3.378458,
+          3.611917
+        ],
+        "editor": [
+          3.704459,
+          3.841458,
+          3.764875
+        ]
+      }
+    },
+    "atrium": {
+      "label": "Sponza atrium \u00b7 camera dolly, Fast GI",
+      "motion": "animation",
+      "indirectGrid": "half",
+      "shadowRays": 1,
+      "cameraSequenceSha256": "f8ffa51a67a6ed97b51614c01e485eb7a22c74298afd74a93471e4930c8cb17f",
+      "imagePerRenderer": [
+        2304,
+        1294
+      ],
+      "p95": {
+        "meshEditor": [
+          13.991834,
+          13.821459,
+          13.77575
+        ],
+        "meshEditorWithOverlays": [
+          14.462792,
+          14.414542,
+          14.42375
+        ],
+        "eevee": [
+          14.10075,
+          14.146625,
+          14.320167
+        ]
+      },
+      "nativeMaximumFrameMs": {
+        "native": [
+          14.11925,
+          14.124209,
+          14.091334
+        ],
+        "editor": [
+          14.7315,
+          14.74375,
+          14.731625
+        ]
+      }
+    },
+    "skins-64": {
+      "label": "64 animated armatures",
+      "motion": "animation",
+      "indirectGrid": "quarter",
+      "shadowRays": 1,
+      "cameraSequenceSha256": "b4f65b51e024d3dff4aaae563c957da17e7bb8e5054ffb53877fc52895d66cf6",
+      "imagePerRenderer": [
+        2304,
+        1294
+      ],
+      "p95": {
+        "meshEditor": [
+          7.796167,
+          7.891875,
+          7.761834
+        ],
+        "meshEditorWithOverlays": [
+          8.730667,
+          8.905167,
+          8.687583
+        ],
+        "eevee": [
+          91.596875,
+          91.158,
+          87.388625
+        ]
+      },
+      "nativeMaximumFrameMs": {
+        "native": [
+          8.460125,
+          8.163833,
+          8.049125
+        ],
+        "editor": [
+          9.072875,
+          9.864375,
+          9.098
+        ]
+      }
+    },
+    "reflective-skins-64": {
+      "label": "Same armatures \u00b7 reflective floor",
+      "motion": "animation",
+      "indirectGrid": "quarter",
+      "shadowRays": 1,
+      "cameraSequenceSha256": "b4f65b51e024d3dff4aaae563c957da17e7bb8e5054ffb53877fc52895d66cf6",
+      "imagePerRenderer": [
+        2304,
+        1294
+      ],
+      "p95": {
+        "meshEditor": [
+          13.003792,
+          12.874542,
+          12.980041
+        ],
+        "meshEditorWithOverlays": [
+          13.862542,
+          13.811083,
+          13.833417
+        ],
+        "eevee": [
+          92.076875,
+          93.544917,
+          100.62575
+        ]
+      },
+      "nativeMaximumFrameMs": {
+        "native": [
+          13.139,
+          13.156667,
+          13.269417
+        ],
+        "editor": [
+          14.100125,
+          14.724042,
+          14.102083
+        ]
+      }
+    }
+  },
+  "meshEditorCoverageBuild": {
+    "executableSha256": "289f6f5ecc89411a36d3431151c948a2cb9900df1a8067b5bb4e2f90dcf0f072",
+    "metalLibrariesSha256": "f9ca0d1ff2640c5af2cb93a4cac3dfdfaa022b0a96e40a365b716a7619082990",
+    "cases": [
+      "alpha",
+      "vase",
+      "mixed",
+      "behind-glass"
+    ],
+    "pairedNoOverlay": {
+      "alpha": {
+        "beforeP95": [
+          8.149875,
+          8.264416,
+          8.135875
+        ],
+        "afterP95": [
+          1.931125,
+          1.8905,
+          1.831208
+        ],
+        "initialAfterP95": [
+          1.931291,
+          1.86275,
+          1.827084
+        ],
+        "initialAfterMaximumMs": [
+          2.041375,
+          1.943375,
+          1.85025
+        ]
+      },
+      "mixed": {
+        "beforeP95": [
+          15.43425,
+          15.352792,
+          16.080168
+        ],
+        "afterP95": [
+          13.701,
+          13.753958,
+          14.417083
+        ],
+        "initialAfterP95": [
+          27.197208,
+          23.040668,
+          24.959875
+        ],
+        "initialAfterMaximumMs": [
+          29.113876,
+          23.733168,
+          27.834833
+        ]
+      }
+    },
+    "pairedBaselineExecutableSha256": "1ced9faf74fb24b0fc573c24bd7035bb8daadef1e56927a98515c9436d5b2306"
+  },
+  "meshEditorDiffuseBuild": {
+    "cases": [
+      "diffuse-gi"
+    ],
+    "executableSha256": "a4e86eaacd0b2fbe1b179688be2705201dbd938517e5935f50f6bd13e2271af3",
+    "metalLibrariesSha256": "a6a4dc1bff49fdcc121afbb75548fdaf752eeb7c42f12e24cad18150251a607e",
+    "pairedBaselineExecutableSha256": "289f6f5ecc89411a36d3431151c948a2cb9900df1a8067b5bb4e2f90dcf0f072",
+    "pairedBaselineMetalLibrariesSha256": "f9ca0d1ff2640c5af2cb93a4cac3dfdfaa022b0a96e40a365b716a7619082990",
+    "pairedBaselineP95": {
+      "meshEditor": [
+        12.976333,
+        13.073541,
+        13.009083,
+        12.722625,
+        12.816875,
+        19.074083
+      ],
+      "meshEditorWithOverlays": [
+        13.8015,
+        13.254958,
+        13.61325,
+        13.553334,
+        13.546167,
+        25.501249
+      ]
+    },
+    "meanActiveTiles": {
+      "reflectionOnly": 14864.025391,
+      "diffuseOnly": 23344.257812,
+      "both": 218.350006,
+      "neither": 0
+    },
+    "trialOrder": "Two serial batches of three paired trials in chronological order for each mode. The second batch repeats the retained implementation after rebuilding.",
+    "tileProbeFrames": 120
+  }
+}

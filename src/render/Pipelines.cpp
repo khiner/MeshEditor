@@ -2,23 +2,12 @@
 #include "gpu/BackgroundConstant.h"
 #include "gpu/EditOverlayConstant.h"
 #include "gpu/MeshVertexConstant.h"
-#include "gpu/PbrConstant.h"
 #include "state/Registry.h"
 
 using mtl::AdditiveBlend, mtl::Blend, mtl::NoBlend, mtl::NoWrite, mtl::PremultipliedBlend;
 using mtl::BlendState, mtl::DepthState, mtl::FunctionConstant, mtl::FunctionRef, mtl::PassFormats, mtl::RenderPipeline;
 
 namespace {
-constexpr std::array PbrSpecFeatures{
-    std::pair{PbrConstant::EnablePunctual, PbrFeature::Punctual},
-    std::pair{PbrConstant::EnableTransmission, PbrFeature::Transmission},
-    std::pair{PbrConstant::EnableDiffuseTrans, PbrFeature::DiffuseTrans},
-    std::pair{PbrConstant::EnableClearcoat, PbrFeature::Clearcoat},
-    std::pair{PbrConstant::EnableSheen, PbrFeature::Sheen},
-    std::pair{PbrConstant::EnableAnisotropy, PbrFeature::Anisotropy},
-    std::pair{PbrConstant::EnableIridescence, PbrFeature::Iridescence},
-};
-
 constexpr DepthState DepthTestWrite{};
 constexpr DepthState DepthOff{.Test = false, .Write = false};
 constexpr DepthState DepthTestLessEqual{.Compare = MTL::CompareFunctionLessEqual};
@@ -51,13 +40,11 @@ RenderPipeline CreateMeshPipeline(
     return mtl::MakeMeshPipeline(libraries, std::move(mesh), std::move(fragment), formats, blends, depth);
 }
 
-FunctionRef PbrFragment(PbrFeatureMask mask, bool prepass, const char *fragment, bool non_triangle_topology) {
-    std::vector<FunctionConstant> constants;
-    constants.reserve(PbrSpecFeatures.size() + 2);
-    for (const auto &[constant, feature] : PbrSpecFeatures) constants.push_back(BoolConstant(constant, HasFeature(mask, feature)));
-    constants.push_back(BoolConstant(PbrConstant::TransmissionPrepass, prepass));
-    constants.push_back(BoolConstant(PbrConstant::NonTriangleTopology, non_triangle_topology));
-    return {"pbr.metal", fragment, std::move(constants)};
+FunctionRef PbrFunction(const char *name, PbrFeatureMask mask, const char *library = "pbr.metal") {
+    FunctionRef function{library, name};
+    for (uint32_t index = 0; index < uint32_t(PbrFeature::BoundedAreaShadows); ++index)
+        function.Constants.push_back(BoolConstant(index, HasFeature(mask, PbrFeature(index))));
+    return function;
 }
 
 PassFormats SceneFormats() { return {{Format::HdrColor}, Format::Depth}; }
@@ -94,23 +81,44 @@ RenderPipeline MeshletElementRaster(mtl::LibraryCache &libraries, FunctionRef me
 
 PbrCompiler::PbrCompiler(mtl::LibraryCache &libraries, PassFormats scene) : Libraries(libraries), SceneFormats(std::move(scene)) {}
 
-const PbrVariant &PbrCompiler::Variant(PbrFeatureMask mask, bool non_triangle_topology) {
-    const auto it = std::ranges::find_if(Variants, [&](const PbrVariant &v) { return v.Mask == mask && v.NonTriangleTopology == non_triangle_topology; });
+const PbrVariant &PbrCompiler::Variant(PbrFeatureMask mask) {
+    const auto it = std::ranges::find(Variants, mask, &PbrVariant::Mask);
     if (it != Variants.end()) return *it;
-    const auto visibility = [&](bool prepass) {
-        return mtl::MakeRenderPipeline(Libraries, FunctionRef{"TexQuad.metal", "TexQuadVertex"}, PbrFragment(mask, prepass, "PbrVisibilityFragment", non_triangle_topology), SceneFormats, std::vector<BlendState>{Blend}, DepthOff);
+    const auto raster = mask & ~(FeatureBit(PbrFeature::TraceDiffuse) | PbrFeature::TraceReflections);
+    const auto visibility = [&](PbrFeatureMask features) {
+        return mtl::MakeRenderPipeline(Libraries, FunctionRef{"TexQuad.metal", "TexQuadVertex"}, PbrFunction("PbrVisibilityFragment", features), SceneFormats, std::vector<BlendState>{Blend}, DepthOff);
     };
-    return Variants.emplace_back(PbrVariant{
+    const bool transmission = HasFeature(mask, PbrFeature::Transmission);
+    PbrVariant variant{
         .Mask = mask,
-        .NonTriangleTopology = non_triangle_topology,
-        .Transparent = mtl::MakeMeshPipeline(Libraries, MeshletVertex(non_triangle_topology), PbrFragment(mask, false, "PbrTransparentFragment", non_triangle_topology), SceneFormats, std::vector<BlendState>{NoWrite}, DepthTestNoWriteLessEqual),
-        .Visibility = visibility(false),
-        .Prepass = ::HasFeature(mask, PbrFeature::Transmission) ? std::optional{visibility(true)} : std::nullopt,
-    });
+        .Transparent = mtl::MakeMeshPipeline(Libraries, MeshletVertex(HasFeature(mask, PbrFeature::NonTriangleTopology)), PbrFunction("PbrTransparentFragment", raster), SceneFormats, std::vector<BlendState>{NoWrite}, DepthTestNoWriteLessEqual),
+        .Visibility = visibility(raster),
+        .Prepass = transmission ? std::optional{visibility(raster | PbrFeature::TransmissionPrepass)} : std::nullopt,
+    };
+    if (HasFeature(mask, PbrFeature::RayTracing)) {
+        const auto triangles = mask & ~FeatureBit(PbrFeature::NonTriangleTopology);
+        const auto kernel = [&](const char *name, PbrFeatureMask features, const char *library = "RayLighting.metal") {
+            return mtl::ComputePipeline{Libraries, PbrFunction(name, features, library)};
+        };
+        variant.RayDirect = kernel("PbrRayDirect", mask, HasFeature(mask, PbrFeature::BoundedAreaShadows) ? "RayDirectBounded.metal" : "RayLighting.metal");
+        if (HasFeature(mask, PbrFeature::AreaLights) && !HasFeature(mask, PbrFeature::MultipleShadowSamples) && !transmission && !HasFeature(mask, PbrFeature::AlphaBlend)) {
+            variant.RayDirectFiltered = kernel("PbrRayDirect", mask, "RayDirectFiltered.metal");
+        }
+        if (transmission) {
+            variant.PreparePrimary = kernel("PbrRayDirect", mask | PbrFeature::PreparePrimary);
+            variant.GlassWeights = kernel("PbrRayGlassWeights", triangles);
+            if (HasFeature(mask, PbrFeature::OpaqueReceiver)) {
+                variant.ShadeOpaque = kernel("PbrRayShade", triangles);
+                variant.OpaqueLayer = kernel("PbrOpaqueLayer", mask);
+            }
+        }
+        if ((transmission && HasFeature(mask, PbrFeature::AlphaBlend)) || (mask & ExtendedPbrMaterials)) variant.Special = kernel("PbrRaySpecial", triangles);
+        variant.Generate = kernel("PbrRayGenerate", triangles);
+        variant.Shade = kernel("PbrRayShade", triangles & ~FeatureBit(PbrFeature::OpaqueReceiver));
+        variant.Reconstruct = kernel("RayReconstruct", triangles);
+    }
+    return Variants.emplace_back(std::move(variant));
 }
-
-void PbrVariant::BindMeshlets(mtl::RenderEncoder encoder) const { Transparent.Bind(encoder); }
-void PbrVariant::BindVisibility(mtl::RenderEncoder encoder, bool prepass) const { (prepass ? *Prepass : Visibility).Bind(encoder); }
 
 MainPipeline::MainPipeline(mtl::LibraryCache &libraries)
     : Background{CreateBackgroundPipeline(libraries, SceneFormats(), {Blend}, false)},
@@ -122,6 +130,28 @@ MainPipeline::MainPipeline(mtl::LibraryCache &libraries)
       ViewportComposite{CreateQuadPipeline(libraries, {{Format::Color}, MTL::PixelFormatInvalid}, "ViewportComposite.metal", "ViewportCompositeFragment", NoBlend)},
       MotionBlurAccumulate{CreateQuadPipeline(libraries, {{MTL::PixelFormatRGBA32Float}, MTL::PixelFormatInvalid}, "MotionBlurAccumulate.metal", "MotionBlurAccumulateFragment", AdditiveBlend)},
       MotionBlurGather{CreateQuadPipeline(libraries, {{Format::HdrColor}, MTL::PixelFormatInvalid}, "MotionBlurGather.metal", "MotionBlurGatherFragment", NoBlend)},
+      FastGiDepth{libraries, {"FastGI.metal", "FastGiDepth"}},
+      FastGiDepthReduce{libraries, {"FastGI.metal", "FastGiDepthReduce"}},
+      FastGiSetup{libraries, {"FastGI.metal", "FastGiSetup"}},
+      FastGiReduce{libraries, {"FastGI.metal", "FastGiReduce"}},
+      FastGiScan{libraries, {"FastGI.metal", "FastGiScan"}},
+      FastGiDenoise{libraries, {"FastGI.metal", "FastGiDenoise"}},
+      FastGiResolve{libraries, {"FastGI.metal", "FastGiResolve"}},
+      RayCameraMedia{libraries, {"RayCameraMedia.metal", "RayCameraMedia"}},
+      RayDeformation{libraries, {"RayDeformation.metal", "RayDeformation"}},
+      RayTemporal{libraries, {"RayTemporal.metal", "RayTemporal"}},
+      LightCull{libraries, {"LightCulling.metal", "LightCull"}},
+      LightPrepare{libraries, {"LightCulling.metal", "LightPrepare"}},
+      RayShadowBounds{libraries, {"RayShadowBounds.metal", "PrepareRayShadowBounds"}},
+      RayBilateral{libraries, {"RayTemporal.metal", "RayBilateral"}},
+      RayAccumulate{libraries, {"RayTemporal.metal", "RayAccumulate"}},
+      RayFilmReproject{libraries, {"RayTemporal.metal", "RayFilmReproject", {BoolConstant(0u, false)}}},
+      RayFilmReprojectLayer{libraries, {"RayTemporal.metal", "RayFilmReproject", {BoolConstant(0u, true)}}},
+      RayEnvironmentRows{libraries, {"RayEnvironment.metal", "RayEnvironmentRowsKernel"}},
+      RayEnvironmentMarginal{libraries, {"RayEnvironment.metal", "RayEnvironmentMarginalKernel"}},
+      RayClassify{libraries, {"RayClassify.metal", "RayClassify"}},
+      RayDispatch{libraries, {"RayClassify.metal", "RayDispatch"}},
+      RayReset{libraries, {"RayClassify.metal", "RayReset"}},
       MotionBlurTilesFlatten{libraries, {"MotionBlurTilesFlatten.metal", "MotionBlurTilesFlattenKernel"}},
       MotionBlurTilesDilate{libraries, {"MotionBlurTilesDilate.metal", "MotionBlurTilesDilateKernel"}},
       WorkspaceVisibility{mtl::MakeRenderPipeline(libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"WorkspaceLighting.metal", "WorkspaceVisibilityFragment"}, SceneFormats(), {Blend}, DepthOff)},
@@ -130,6 +160,8 @@ MainPipeline::MainPipeline(mtl::LibraryCache &libraries)
       TransparencyResolve{CreateQuadPipeline(libraries, SceneFormats(), "Transparency.metal", "TransparencyResolveFragment", NoBlend)},
       MeshletVisibilityOpaque{CreateMeshPipeline(libraries, FunctionRef{"MeshletVisibility.metal", "MeshletVisibilityOpaqueFragment"}, {{Format::Uint}, Format::Depth}, {NoBlend}, DepthTestWrite, MeshletVisibilityVertex())},
       MeshletVisibilityCoverage{CreateMeshPipeline(libraries, FunctionRef{"MeshletVisibility.metal", "MeshletVisibilityPrimitiveFragment"}, {{Format::Uint}, Format::Depth}, {NoBlend}, DepthTestWrite, MeshletVisibilityVertex())},
+      MeshletVisibilityLayer{CreateMeshPipeline(libraries, FunctionRef{"MeshletVisibility.metal", "MeshletVisibilityLayerFragment", {BoolConstant(0u, false)}}, {{Format::Uint}, Format::Depth}, {NoBlend}, DepthTestWrite, MeshletVisibilityVertex())},
+      MeshletVisibilityMotion{CreateMeshPipeline(libraries, FunctionRef{"MeshletVisibility.metal", "MeshletVisibilityLayerFragment", {BoolConstant(0u, true)}}, {{Format::Uint}, Format::Depth}, {NoBlend}, DepthTestWrite, MeshletVisibilityVertex())},
       MeshletEditEdges{StrokePipeline(libraries, {"MeshletEditOverlay.metal", "MeshletEditEdgeMesh"}, true)},
       MeshletEditSmoothEdges{StrokePipeline(libraries, {"MeshletEditOverlay.metal", "MeshletEditEdgeMesh"})},
       VertexBlockPoints{CreateMeshPipeline(libraries, FunctionRef{"VertexPoint.metal", "VertexPointFragment"}, OverlayFormats(), {Blend}, DepthTestNoWriteLessEqual, {"VertexBlockOverlay.metal", "VertexBlockPointMesh"})},

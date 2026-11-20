@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <print>
+#include <string_view>
 
 namespace fs = std::filesystem;
 
@@ -15,6 +16,28 @@ struct Failure {
 };
 } // namespace
 int main(int argc, char **argv) {
+    if (argc >= 2 && std::string_view{argv[1]} == "--check-offline") {
+        if (argc < 4) {
+            std::println(stderr, "Usage: {} --check-offline SHADER_DIRECTORY SOURCE...", argv[0]);
+            return 1;
+        }
+        const fs::path root = argv[2];
+        try {
+            for (int i = 3; i < argc; ++i) {
+                const fs::path source = argv[i];
+                auto binary = root / source;
+                binary.replace_extension(".metallib");
+                if (!msl::Load(root, source).CanLoadBinary(root, binary)) {
+                    std::println(stderr, "MeshEditor would recompile {} from source", (root / source).string());
+                    return 1;
+                }
+            }
+        } catch (const std::exception &error) {
+            std::println(stderr, "{}", error.what());
+            return 1;
+        }
+        return 0;
+    }
     auto *pool = NS::AutoreleasePool::alloc()->init();
     auto *device = MTL::CreateSystemDefaultDevice();
     if (!device) {
@@ -28,13 +51,11 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    const std::vector<std::string> requested{argv + 1, argv + argc};
-    std::vector<fs::path> sources;
-    for (const auto &entry : fs::directory_iterator{shaders_dir}) {
-        const auto name = entry.path().filename();
-        if (name.extension() != ".metal") continue;
-        if (!requested.empty() && !std::ranges::contains(requested, name.string())) continue;
-        sources.emplace_back(name);
+    std::vector<fs::path> sources{argv + 1, argv + argc};
+    if (sources.empty()) {
+        for (const auto &entry : fs::directory_iterator{shaders_dir}) {
+            if (entry.path().extension() == ".metal") sources.push_back(entry.path().filename());
+        }
     }
     std::ranges::sort(sources);
 
@@ -58,7 +79,7 @@ int main(int argc, char **argv) {
             continue;
         }
         NS::Error *error = nullptr;
-        auto *library = device->newLibrary(NS::String::string(text.c_str(), NS::UTF8StringEncoding), static_cast<MTL::CompileOptions *>(nullptr), &error);
+        auto *library = device->newLibrary(NS::String::string(text.c_str(), NS::UTF8StringEncoding), msl::CompileOptions().get(), &error);
         if (!library) {
             failures.emplace_back(name.string(), error ? error->localizedDescription()->utf8String() : "unknown compile failure");
             continue;

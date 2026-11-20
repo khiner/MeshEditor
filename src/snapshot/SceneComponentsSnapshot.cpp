@@ -19,9 +19,9 @@ void RegisterScene(Tables &tables) {
     Classify(
         tables,
         TypeList<
-            HierarchyGeometry, HierarchyInstance, HierarchyMember, HierarchyDefinition, Transform, PunctualLight, Name, Selected, Active, ObjectKind, Scene, SceneMembership, SubElementOf,
+            HierarchyGeometry, HierarchyInstance, HierarchyMember, HierarchyDefinition, Transform, SceneLight, Name, Selected, Active, ObjectKind, Scene, SceneMembership, SubElementOf,
             ScaleLocked, Instance, Hidden, SceneParent, SceneChildren, ObjectExtrasTag, Path, Perspective, Orthographic, TimelineRange,
-            TimelinePlayback, TimelineNavigation, TimelineView, TimelineTheme, AnimationClips, Animations, MorphWeightRange, ImageLight, Visibility>{},
+            TimelinePlayback, TimelineNavigation, TimelineView, TimelineTheme, AnimationClips, Animations, MorphWeightRange, ImageLight, Visibility, UnkeyedPose>{},
         TypeList<>{},
         TypeList<
             RenderInstance, WorldTransform, ModelsBuffer, LastEvaluatedFrame, PlaybackFrame,

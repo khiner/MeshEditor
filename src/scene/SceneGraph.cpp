@@ -151,9 +151,19 @@ void CommitEditedLocal(state::Registry &r, state::Entity e, const Transform &edi
         if (r.all_of<Transform>(e)) r.replace<Transform>(e, edited);
         return;
     }
+    const auto previous = r.get<const PosedLocal>(e).Value;
     r.patch<PosedLocal>(e, [&](PosedLocal &posed) { posed.Value = edited; });
     if (!r.all_of<Transform>(e)) return;
     const auto posed = animation::PosedTransformComponents(r, e);
+    uint32_t changed = 0;
+    if (previous.P != edited.P) changed |= animation::TranslationBit;
+    if (previous.R != edited.R) changed |= animation::RotationBit;
+    if (previous.S != edited.S) changed |= animation::ScaleBit;
+    changed &= posed;
+    if (changed) {
+        if (const auto *pending = r.try_get<const UnkeyedPose>(e)) changed |= pending->Components;
+        r.emplace_or_replace<UnkeyedPose>(e, UnkeyedPose{edited, changed});
+    }
     r.patch<Transform>(e, [&](Transform &t) {
         if (!(posed & animation::TranslationBit)) t.P = edited.P;
         if (!(posed & animation::RotationBit)) t.R = edited.R;

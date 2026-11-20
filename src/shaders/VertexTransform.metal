@@ -138,6 +138,6 @@ inline MeshVaryings TransformVertex(
             scene.CornerColor(draw.CornerColor, attribute_handle) :
             float4(1.0f),
         .WorldTangent = world_tangent,
-        .WorldScale = face_attributes ? (world_scale.x + world_scale.y + world_scale.z) / 3.0f : 0.0f,
+        .WorldScale = face_attributes ? (abs(world_scale.x) + abs(world_scale.y) + abs(world_scale.z)) / 3.0f : 0.0f,
     };
 }

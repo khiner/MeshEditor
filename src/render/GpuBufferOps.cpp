@@ -3,7 +3,9 @@
 #include "gpu/MeshletClassification.h"
 #include "render/GpuBuffers.h"
 
+#include "Paths.h"
 #include "state/Registry.h"
+#include <fstream>
 
 std::span<const PBRMaterial> GetMaterials(const state::Registry &r) {
     return r.Resources.get<const GpuBuffers>().Materials.GetSpan<PBRMaterial>();
@@ -87,6 +89,18 @@ GpuBuffers::GpuBuffers(const mtl::Context &ctx, mtl::BindlessSet &slots)
       ObjectBoxBitset{Ctx, sizeof(uint32_t)},
       ElementPickKey{Ctx, sizeof(uint32_t)},
       ElementPickId{Ctx, sizeof(uint32_t)} {
+    constexpr size_t size = 19u * 64u * 64u * 4u * sizeof(float);
+    std::vector<float> values(size / sizeof(float));
+    std::ifstream input(Paths::Res() / "eevee/utility.bin", std::ios::binary);
+    if (!input.read(reinterpret_cast<char *>(values.data()), size) || input.peek() != std::char_traits<char>::eof()) {
+        throw std::runtime_error("Invalid EEVEE utility table");
+    }
+    EeveeLut = mtl::CreateTexture2DArray(ctx, MTL::PixelFormatRGBA16Float, {64, 64}, 19, MTL::TextureUsageShaderRead);
+    std::array<_Float16, 64 * 64 * 4> layer;
+    for (uint32_t z = 0; z < 19; ++z) {
+        for (size_t i = 0; i < layer.size(); ++i) layer[i] = _Float16(values[z * layer.size() + i]);
+        mtl::Upload(EeveeLut, 0, std::as_bytes(std::span{layer}), 64 * 4 * sizeof(_Float16), z);
+    }
 }
 
 void Reset(GpuBuffers &b, state::Registry &) {
@@ -178,7 +192,27 @@ void GpuBuffers::EnsureMeshletVisibilityCapacity(
     output.DispatchArgs.SetCount<MeshDispatchArgs>(MeshletRouteCount * output.ChunkCount);
 }
 
-void GpuBuffers::CaptureRenderPose(RenderPose &dst) const {
+const GpuBuffers::RenderPose *GpuBuffers::RenderPoseFor(const SceneViewUBO &view) const {
+    if (view.ModelSlotOverride == InvalidSlot) return nullptr;
+    const auto pose = std::ranges::find_if(BlurPoses, [&](const auto &p) { return p.Transforms.Slot == view.ModelSlotOverride; });
+    if (pose == BlurPoses.end()) throw std::runtime_error("Missing captured render pose");
+    return &*pose;
+}
+
+std::span<const PBRMaterial> GpuBuffers::MaterialsFor(const SceneViewUBO &view) const {
+    const auto *pose = RenderPoseFor(view);
+    return (pose ? *pose->Materials : Materials).GetSpan<PBRMaterial>();
+}
+
+std::span<const LightRecord> GpuBuffers::LightsFor(const SceneViewUBO &view) const {
+    const auto *pose = RenderPoseFor(view);
+    const auto &lights = pose ? pose->Lights : Lights;
+    const auto buffer = std::ranges::find_if(lights, [&](const auto &b) { return b.Slot == view.LightSlot; });
+    if (buffer == lights.end()) throw std::runtime_error("Missing scene light buffer");
+    return buffer->GetSpan<LightRecord>();
+}
+
+void GpuBuffers::CaptureRenderPose(RenderPose &dst, const RenderPose *previous) const {
     static constexpr auto copy_whole = [](const mtl::Buffer &src, mtl::Buffer &dst) {
         dst.Reserve(src.UsedSize);
         dst.Update(src.Contents().subspan(0, src.UsedSize));
@@ -187,6 +221,15 @@ void GpuBuffers::CaptureRenderPose(RenderPose &dst) const {
     copy_whole(Instances.TransformBuffer, dst.Transforms);
     copy_whole(ArmatureDeformBuffer.Buffer, dst.ArmatureDeform);
     copy_whole(MorphWeightBuffer.Buffer, dst.MorphWeights);
+    const auto material_bytes = Materials.GetSpan<std::byte>();
+    const auto matches = [&](const auto &snapshot) {
+        return snapshot && std::ranges::equal(snapshot->template GetSpan<std::byte>(), material_bytes);
+    };
+    if (previous && matches(previous->Materials)) dst.Materials = previous->Materials;
+    else if (!matches(dst.Materials)) {
+        if (!dst.Materials || dst.Materials.use_count() != 1) dst.Materials = std::make_shared<mtl::Buffer>(dst.Transforms.Ctx, 0, SlotType::MaterialBuffer);
+        copy_whole(Materials, *dst.Materials);
+    }
     dst.Lights.erase(dst.Lights.begin() + std::min(dst.Lights.size(), Lights.size()), dst.Lights.end());
     while (dst.Lights.size() < Lights.size()) dst.Lights.emplace_back(dst.Transforms.Ctx, 0, SlotType::LightBuffer);
     for (size_t i = 0; i < Lights.size(); ++i) copy_whole(Lights[i], dst.Lights[i]);

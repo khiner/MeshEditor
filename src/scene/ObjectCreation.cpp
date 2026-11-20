@@ -168,9 +168,9 @@ void CreateBoneInstances(state::Registry &r, MeshStore &meshes, state::Entity ar
     arm_obj.JointEntity = joint_entity;
 }
 
-state::Entity AddLight(state::Registry &r, const ObjectCreateInfo &info, std::optional<PunctualLight> props) {
+state::Entity AddLight(state::Registry &r, const ObjectCreateInfo &info, std::optional<SceneLight> props) {
     const auto entity = CreateExtrasObject(r, ObjectType::Light, info, "Light");
-    // PunctualLight is the canonical per-light data, the GPU Lights buffer is registered from it later.
-    r.emplace<PunctualLight>(entity, props.value_or(Defaults::MakePunctualLight(PunctualLightType::Point)));
+    // SceneLight is the canonical per-light data, the GPU Lights buffer is registered from it later.
+    r.emplace<SceneLight>(entity, props.value_or(Defaults::MakeLight(LightType::Point)));
     return entity;
 }

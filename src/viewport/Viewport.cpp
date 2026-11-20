@@ -231,6 +231,7 @@ bool MotionBlurActive(const state::Registry &r, state::Entity viewport) {
     if (display.ViewportShading != ViewportShadingMode::MaterialPreview && display.ViewportShading != ViewportShadingMode::Rendered) return false;
     const auto &frame_state = r.Resources.get<const FrameState>();
     if (!display.MotionBlur && !frame_state.Capturing) return false;
+    if (EffectiveMotionBlur(display).Shutter <= 0.f) return false;
     return r.get<const TimelinePlayback>(state::Document).Playing || frame_state.Scrubbing || frame_state.Capturing;
 }
 
@@ -312,6 +313,7 @@ void RenderMotionBlurredFrames(state::Registry &r, BlurSchedule schedule, std::s
                 same_buffer(previous.Transforms, buffers.Instances.TransformBuffer) &&
                 same_buffer(previous.ArmatureDeform, buffers.ArmatureDeformBuffer.Buffer) &&
                 same_buffer(previous.MorphWeights, buffers.MorphWeightBuffer.Buffer) &&
+                same_buffer(*previous.Materials, buffers.Materials) &&
                 std::ranges::equal(previous.Lights, buffers.Lights, same_buffer)) {
                 ++sample_weights.back();
                 continue;
@@ -320,7 +322,7 @@ void RenderMotionBlurredFrames(state::Registry &r, BlurSchedule schedule, std::s
         const uint32_t instance = uint32_t(sample_weights.size()) + 1u;
         if (buffers.BlurPoses.size() < instance) buffers.BlurPoses.emplace_back(buffers.Ctx);
         auto &pose = buffers.BlurPoses[instance - 1u];
-        buffers.CaptureRenderPose(pose);
+        buffers.CaptureRenderPose(pose, instance > 1u ? &buffers.BlurPoses[instance - 2u] : nullptr);
         for (const auto viewport : group) {
             auto view = SceneViewOf(r, viewport, CurrentRenderView(r, viewport));
             pose.ApplyTo(view, ShownSceneIndex(r, SceneOf(r, viewport)));
@@ -329,6 +331,7 @@ void RenderMotionBlurredFrames(state::Registry &r, BlurSchedule schedule, std::s
         sample_weights.push_back(1u);
     }
     evaluate_at(float(current_frame), EventPass::Render);
+    buffers.BlurPoses.erase(buffers.BlurPoses.begin() + sample_weights.size(), buffers.BlurPoses.end());
     r.edit<PlaybackFrame>(state::Document).Value = settled_pf;
     ReserveFrameScratch(r);
     for (const auto viewport : group) {
@@ -382,10 +385,16 @@ void SubmitViewports(state::Registry &r) {
     std::vector<std::pair<state::Entity, RenderView>> sharp;
     for (const auto &[viewport, view] : displayed) {
         const auto &live = r.get<const Viewport>(viewport);
-        if (live.RenderRequested && ViewportImageReady(live) && !MotionBlurActive(r, viewport)) sharp.emplace_back(viewport, view);
+        const bool accumulating = view.Display.RayTracing.Enabled && view.Display.RayTracing.Denoise && live.RayTracingStatus.empty() && live.Targets.RayTracing && live.Targets.RayTracing->Frames > 0 && live.Targets.RayTracing->Frames < std::clamp<uint32_t>(view.Display.RayTracing.RefinementFrames, 1, 4096);
+        if ((live.RenderRequested || accumulating) && ViewportImageReady(live) && !MotionBlurActive(r, viewport)) sharp.emplace_back(viewport, view);
     }
     ReserveFrameScratch(r);
     for (const auto &[viewport, view] : sharp) SubmitFrame(r, viewport, view);
+}
+
+bool RayTracingActive(const Viewport &viewport) {
+    const auto uniforms = viewport.SceneViewUBO.GetSpan<SceneViewUBO>();
+    return !uniforms.empty() && uniforms.front().RayActive != 0u;
 }
 
 void InitEngine(state::Registry &r) {

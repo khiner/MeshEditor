@@ -1,0 +1,649 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "MeshEditor camera-inside-volume fixture; shared RayTracingGlass geometry"
+  },
+  "extensionsUsed": [
+    "KHR_materials_transmission",
+    "KHR_materials_ior",
+    "KHR_materials_volume",
+    "KHR_materials_unlit",
+    "KHR_lights_punctual"
+  ],
+  "extensions": {
+    "KHR_lights_punctual": {
+      "lights": [
+        {
+          "type": "point",
+          "intensity": 80
+        }
+      ]
+    }
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "Clear solid glass",
+      "mesh": 0,
+      "translation": [
+        -2.2,
+        1,
+        0
+      ]
+    },
+    {
+      "name": "Absorbing solid glass",
+      "mesh": 1,
+      "translation": [
+        0,
+        1,
+        0
+      ]
+    },
+    {
+      "name": "Rough solid glass",
+      "mesh": 2,
+      "translation": [
+        2.2,
+        1,
+        0
+      ]
+    },
+    {
+      "mesh": 3
+    },
+    {
+      "mesh": 4
+    },
+    {
+      "mesh": 5
+    },
+    {
+      "name": "Camera",
+      "camera": 0,
+      "translation": [
+        0.3,
+        1,
+        0.2
+      ],
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ]
+    },
+    {
+      "translation": [
+        -3,
+        5,
+        4
+      ],
+      "extensions": {
+        "KHR_lights_punctual": {
+          "light": 0
+        }
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1
+          },
+          "indices": 2,
+          "material": 0
+        }
+      ]
+    },
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 3,
+            "NORMAL": 4
+          },
+          "indices": 5,
+          "material": 1
+        }
+      ]
+    },
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 6,
+            "NORMAL": 7
+          },
+          "indices": 8,
+          "material": 2
+        }
+      ]
+    },
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 9,
+            "NORMAL": 10
+          },
+          "indices": 11,
+          "material": 3
+        }
+      ]
+    },
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 12,
+            "NORMAL": 13
+          },
+          "indices": 14,
+          "material": 4
+        }
+      ]
+    },
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 15,
+            "NORMAL": 16
+          },
+          "indices": 17,
+          "material": 5
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "name": "Clear glass",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "metallicFactor": 0,
+        "roughnessFactor": 0
+      },
+      "extensions": {
+        "KHR_materials_transmission": {
+          "transmissionFactor": 1
+        },
+        "KHR_materials_ior": {
+          "ior": 1.5
+        },
+        "KHR_materials_volume": {
+          "thicknessFactor": 1,
+          "attenuationColor": [
+            1,
+            1,
+            1
+          ],
+          "attenuationDistance": 1
+        }
+      }
+    },
+    {
+      "name": "Green absorption",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "metallicFactor": 0,
+        "roughnessFactor": 0
+      },
+      "extensions": {
+        "KHR_materials_transmission": {
+          "transmissionFactor": 1
+        },
+        "KHR_materials_ior": {
+          "ior": 1.5
+        },
+        "KHR_materials_volume": {
+          "thicknessFactor": 1,
+          "attenuationColor": [
+            0.15,
+            0.85,
+            0.3
+          ],
+          "attenuationDistance": 1
+        }
+      }
+    },
+    {
+      "name": "Frosted glass",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "metallicFactor": 0,
+        "roughnessFactor": 0.18
+      },
+      "extensions": {
+        "KHR_materials_transmission": {
+          "transmissionFactor": 1
+        },
+        "KHR_materials_ior": {
+          "ior": 1.5
+        },
+        "KHR_materials_volume": {
+          "thicknessFactor": 1,
+          "attenuationColor": [
+            1,
+            1,
+            1
+          ],
+          "attenuationDistance": 1
+        }
+      }
+    },
+    {
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.8,
+          0.2,
+          0.06,
+          1
+        ],
+        "metallicFactor": 0
+      },
+      "extensions": {
+        "KHR_materials_unlit": {}
+      }
+    },
+    {
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.08,
+          0.35,
+          0.8,
+          1
+        ],
+        "metallicFactor": 0
+      },
+      "extensions": {
+        "KHR_materials_unlit": {}
+      }
+    },
+    {
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.55,
+          0.55,
+          0.55,
+          1
+        ],
+        "metallicFactor": 0,
+        "roughnessFactor": 0.65
+      }
+    }
+  ],
+  "cameras": [
+    {
+      "name": "Camera",
+      "type": "perspective",
+      "perspective": {
+        "yfov": 0.72,
+        "aspectRatio": 1.6,
+        "znear": 0.01,
+        "zfar": 100
+      }
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 4753,
+      "type": "VEC3",
+      "min": [
+        -1.0,
+        -1.0,
+        -1.0
+      ],
+      "max": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 4753,
+      "type": "VEC3",
+      "min": [
+        -1.0,
+        -1.0,
+        -1.0
+      ],
+      "max": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5125,
+      "count": 27072,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 3,
+      "componentType": 5126,
+      "count": 4753,
+      "type": "VEC3",
+      "min": [
+        -1.0,
+        -1.0,
+        -1.0
+      ],
+      "max": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "bufferView": 4,
+      "componentType": 5126,
+      "count": 4753,
+      "type": "VEC3",
+      "min": [
+        -1.0,
+        -1.0,
+        -1.0
+      ],
+      "max": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "bufferView": 5,
+      "componentType": 5125,
+      "count": 27072,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 6,
+      "componentType": 5126,
+      "count": 4753,
+      "type": "VEC3",
+      "min": [
+        -1.0,
+        -1.0,
+        -1.0
+      ],
+      "max": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "bufferView": 7,
+      "componentType": 5126,
+      "count": 4753,
+      "type": "VEC3",
+      "min": [
+        -1.0,
+        -1.0,
+        -1.0
+      ],
+      "max": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "bufferView": 8,
+      "componentType": 5125,
+      "count": 27072,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 9,
+      "componentType": 5126,
+      "count": 400,
+      "type": "VEC3",
+      "min": [
+        -6.0,
+        -1.0,
+        -2
+      ],
+      "max": [
+        6.0,
+        4.999999999999999,
+        -2
+      ]
+    },
+    {
+      "bufferView": 10,
+      "componentType": 5126,
+      "count": 400,
+      "type": "VEC3",
+      "min": [
+        0,
+        0,
+        1
+      ],
+      "max": [
+        0,
+        0,
+        1
+      ]
+    },
+    {
+      "bufferView": 11,
+      "componentType": 5125,
+      "count": 600,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 12,
+      "componentType": 5126,
+      "count": 400,
+      "type": "VEC3",
+      "min": [
+        -6.0,
+        -1.0,
+        -2
+      ],
+      "max": [
+        6.0,
+        4.999999999999999,
+        -2
+      ]
+    },
+    {
+      "bufferView": 13,
+      "componentType": 5126,
+      "count": 400,
+      "type": "VEC3",
+      "min": [
+        0,
+        0,
+        1
+      ],
+      "max": [
+        0,
+        0,
+        1
+      ]
+    },
+    {
+      "bufferView": 14,
+      "componentType": 5125,
+      "count": 600,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 15,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC3",
+      "min": [
+        -7,
+        0,
+        -5
+      ],
+      "max": [
+        7,
+        0,
+        4
+      ]
+    },
+    {
+      "bufferView": 16,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC3",
+      "min": [
+        0,
+        1,
+        0
+      ],
+      "max": [
+        0,
+        1,
+        0
+      ]
+    },
+    {
+      "bufferView": 17,
+      "componentType": 5125,
+      "count": 6,
+      "type": "SCALAR"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 57036
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 57036,
+      "byteLength": 57036
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 114072,
+      "byteLength": 108288
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 222360,
+      "byteLength": 57036
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 279396,
+      "byteLength": 57036
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 336432,
+      "byteLength": 108288
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 444720,
+      "byteLength": 57036
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 501756,
+      "byteLength": 57036
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 558792,
+      "byteLength": 108288
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 667080,
+      "byteLength": 4800
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 671880,
+      "byteLength": 4800
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 676680,
+      "byteLength": 2400
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 679080,
+      "byteLength": 4800
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 683880,
+      "byteLength": 4800
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 688680,
+      "byteLength": 2400
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 691080,
+      "byteLength": 48
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 691128,
+      "byteLength": 48
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 691176,
+      "byteLength": 24
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 691200,
+      "uri": "../RayTracingGlass/RayTracingGlass.bin"
+    }
+  ]
+}

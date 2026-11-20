@@ -37,6 +37,11 @@ void Evaluate(state::Registry &r, float seconds, bool persistent) {
         ForEachHierarchyPlacement(r, entity, [&](state::Entity e, state::Entity source) {
             *pose = ToTransform(ToMatrix(r.get<const Transform>(e)) * Inverse(ToMatrix(r.get<const Transform>(source))) * ToMatrix(*pose));
         });
+        if (const auto *edited = r.try_get<const UnkeyedPose>(entity)) {
+            if (edited->Components & TranslationBit) pose->P = edited->Value.P;
+            if (edited->Components & RotationBit) pose->R = edited->Value.R;
+            if (edited->Components & ScaleBit) pose->S = edited->Value.S;
+        }
         if (const auto *posed = r.try_get<const PosedLocal>(entity)) {
             if (posed->Value != *pose) r.replace<PosedLocal>(entity, *pose);
         } else {

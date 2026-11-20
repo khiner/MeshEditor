@@ -189,6 +189,8 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
 
     const bool recompiled = std::exchange(r.Resources.get<FrameState>().RecompileShaders, false);
     if (recompiled) {
+        for (const auto [_, viewport] : r.view<Viewport>().each())
+            if (viewport.Targets.RayTracing) viewport.Targets.RayTracing->Frames = 0;
         r.Resources.get<mtl::LibraryCache>().Clear();
         r.Resources.erase<Pipelines>();
         r.Resources.erase<MeshPipelines>();
@@ -377,6 +379,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         const float frame_seconds = float(std::max(0, playback.CurrentFrame - 1)) / range.Fps;
         const float eval_seconds = pass == EventPass::Sample ? std::max(0.f, pf - 1.f) / range.Fps : frame_seconds;
 
+        if (anim_advanced) r.clear<UnkeyedPose>();
         if (anim_advanced || rendering || restore_poses) animation::Evaluate(r, eval_seconds, pass != EventPass::Restore);
         if (anim_advanced) request();
     }
@@ -493,10 +496,10 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     }
 
     if (scenes_changed || sync.SlotsChanged ||
-        AnyChanged(render_changes.PunctualLight, render_changes.InstanceVisibility, render_changes.InstanceDestroyed, scene_changes.Hierarchy, scene_changes.Membership)) {
-        const auto light_entities = SortedEntities(r.view<const PunctualLight, const Instance, const RenderInstance>());
+        AnyChanged(render_changes.SceneLight, render_changes.InstanceVisibility, render_changes.InstanceDestroyed, scene_changes.Hierarchy, scene_changes.Membership)) {
+        const auto light_entities = SortedEntities(r.view<const SceneLight, const Instance, const RenderInstance>());
         const auto same_shape = [](const LightRecord &a, const LightRecord &b) {
-            return a.Type == b.Type && a.Range == b.Range && a.InnerConeCos == b.InnerConeCos && a.OuterConeCos == b.OuterConeCos;
+            return a.Type == b.Type && a.Size == b.Size && a.Range == b.Range && a.InnerConeCos == b.InnerConeCos && a.OuterConeCos == b.OuterConeCos;
         };
         std::vector<LightRecord> records;
         for (uint32_t i = 0u; i < buffers.Scenes.size(); ++i) {
@@ -504,7 +507,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
             for (const auto entity : light_entities) {
                 const auto slot = r.get<const RenderInstance>(entity).BufferIndex;
                 if (slot == UINT32_MAX || HiddenIn(r, entity, buffers.Scenes[i])) continue;
-                const auto &light = r.get<const PunctualLight>(entity);
+                const auto &light = r.get<const SceneLight>(entity);
                 records.push_back({
                     .TransformSlotOffset = {buffers.Instances.TransformBuffer.Slot, slot},
                     .Range = light.Range,
@@ -513,6 +516,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
                     .InnerConeCos = std::cos(light.InnerConeAngle),
                     .OuterConeCos = std::cos(light.OuterConeAngle),
                     .Type = light.Type,
+                    .Size = light.Size,
                 });
             }
             auto &lights = buffers.Lights[i];
@@ -906,7 +910,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
             const bool has_any_constraint = std::ranges::any_of(arm_obj_comp.BoneEntities, [&](auto e) { return r.all_of<BoneConstraints>(e); });
             const mat4 armature_world_inv = has_any_constraint ? Inverse(ToMatrix(*WorldTransformOf(r, arm_obj_entity))) : I4;
 
-            bool need_sync = has_any_constraint || created;
+            bool need_sync = created;
             bool rest_pose_edited = false;
             for (uint32_t i = 0; i < arm_obj_comp.BoneEntities.size(); ++i) {
                 const auto b = arm_obj_comp.BoneEntities[i];
@@ -924,7 +928,6 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
                         local = posed();
                         should_patch = true;
                     }
-                    need_sync = true;
                 } else if (is_edit_mode) {
                     if (mode_changed) {
                         local = {rest.P, rest.R, rest.S};
@@ -983,8 +986,10 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
                     }
                 }
 
-                if (should_patch) r.patch<PosedLocal>(b, [&](auto &posed) { posed.Value.P = local.P; posed.Value.R = local.R; });
-                pose_state->BonePoseWorld[i] = parent_pose_world * ToMatrix(local);
+                if (should_patch && (!rendering || local.P != bt.P || local.R != bt.R)) r.patch<PosedLocal>(b, [&](auto &posed) { posed.Value.P = local.P; posed.Value.R = local.R; });
+                const mat4 world = parent_pose_world * ToMatrix(local);
+                need_sync |= pose_state->BonePoseWorld[i] != world;
+                pose_state->BonePoseWorld[i] = world;
             }
             if (rest_pose_edited) {
                 auto &edited = r.edit<Armature>(arm_obj_comp.Entity);
@@ -1124,6 +1129,9 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         request();
     }
     if (scene_state.EditSelectionDirty) {
+        // Face selection is shaded before stationary film accumulation.
+        for (auto [_, viewport] : r.view<Viewport>().each())
+            if (viewport.Targets.RayTracing) viewport.Targets.RayTracing->Frames = 0;
         for (auto [_, work] : r.view<MeshEditWork>().each()) work.CandidateReady = false;
         scene_state.EditPreludePending = is_edit_mode;
         scene_state.EditSelectionDirty = false;
@@ -1184,7 +1192,7 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
     render.ActiveMaterialVariant.bind(r).on<MaterialVariants>(On::Create | On::Update);
     render.MaterializedTextures.bind(r).on<MaterializedTexture>(On::Create | On::Update);
     render.SceneWorld.bind(r).on<gltf::SourceAssets>(On::Create | On::Update);
-    render.PunctualLight.bind(r).on<PunctualLight>(On::Create | On::Update).on<RenderInstance>(On::Create).on<Hidden>(On::Destroy);
+    render.SceneLight.bind(r).on<SceneLight>(On::Create | On::Update).on<RenderInstance>(On::Create).on<Hidden>(On::Destroy);
     render.MorphWeights.bind(r);
     render.SceneLighting.bind(r).on<ImageLight>(On::Create | On::Update);
     render.CameraLens.bind(r).on<Perspective>(On::Create | On::Update).on<Orthographic>(On::Create | On::Update);
@@ -1207,6 +1215,7 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
     scene.TransformDirty.bind(r)
         .on<Transform>(On::Create | On::Update)
         .on<PosedLocal>(On::Create | On::Update | On::Destroy)
+        .on<UnkeyedPose>(On::Create | On::Update | On::Destroy)
         .on<SceneParent>(On::Create | On::Update | On::Destroy);
     auto &armature = r.Resources.emplace<ArmatureChanges>();
     armature.BonePose.bind(r).on<BoneDelta>(On::Update);

@@ -161,7 +161,7 @@ fragment float4 WorkspaceVisibilityFragment(
         return ShadeWorkspace(DecodeWorkspaceTriangle(scene, resolved, quad.Position.xy), scene, view);
     }
     const ResolvedVisibility complete = ResolveVisibilityElement(resolved, bindless, view, theme, workspace, pc);
-    const DecodedVisibility decoded = DecodeVisibilityResolved(scene, complete, quad.Position.xy, false);
+    const DecodedSurface decoded = DecodeVisibilityResolved(scene, complete, quad.Position.xy, false);
     return ShadeWorkspace(decoded.V, scene, view);
 }
 

@@ -17,7 +17,7 @@ constant uint ColliderArcSegments = ColliderCircleSegments / 2u;
 constant uint ColliderCapLines = ColliderCircleSegments + 4u * ColliderArcSegments;
 using OverlayJobLineOutput = metal::mesh<EdgeQuadVaryings, void, OverlayJobGroupLines * 4u, OverlayJobGroupLines * 2u, metal::topology::triangle>;
 
-inline bool IsColliderKind(ExtrasLineKind kind) { return kind >= ExtrasLineKind::ColliderBox; }
+inline bool IsColliderKind(ExtrasLineKind kind) { return kind >= ExtrasLineKind::ColliderBox && kind <= ExtrasLineKind::ColliderCapsule; }
 
 struct ExtrasLineVertex {
     float3 Position;
@@ -126,6 +126,17 @@ inline ExtrasLineVertex ExtrasLineVertexAt(OverlayJob job, uint line, uint end, 
     if (line < range_lines) return {CirclePoint(line, end, LightRangeSegments, range, 0.0f), VCLASS_BILLBOARD};
 
     uint local = line - range_lines;
+    if (job.ExtrasKind == ExtrasLineKind::LightRectangle || job.ExtrasKind == ExtrasLineKind::LightEllipse) {
+        const bool rectangle = job.ExtrasKind == ExtrasLineKind::LightRectangle;
+        const uint outline = rectangle ? 4u : SpotConeSegments;
+        if (local < outline) {
+            if (!rectangle) return {CirclePoint(local, end, outline, 1.0f, 0.0f) * float3(params.yz, 1), VCLASS_NONE};
+            const float2 corners[4] = {float2(-1, -1), float2(1, -1), float2(1, 1), float2(-1, 1)};
+            return {float3(corners[(local + end) % 4u] * params.yz, 0), VCLASS_NONE};
+        }
+        if (local == outline) return {float3(0, 0, -0.5f * float(end)), VCLASS_NONE};
+        local -= outline + 1u;
+    }
     if (job.ExtrasKind == ExtrasLineKind::LightDirectional) {
         const uint ray_count = 8u;
         if (local < ray_count * 2u) {

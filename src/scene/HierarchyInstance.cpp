@@ -31,7 +31,7 @@
 #include "scene/SceneGraphOps.h"
 
 namespace {
-using Values = TypeList<Transform, Name, Path, ObjectKind, Instance, Visibility, ScaleLocked, Perspective, Orthographic, PunctualLight, ArmatureObject, BoneJoint, BoneSubPartOf, BoneJointEntities, SubElementOf, ArmatureModifier, BoneIndex, BoneDisplayScale, BoneAttachment, BoneDelta, BoneConstraints, PhysicsMotion, PhysicsVelocity, ColliderShape, ColliderMaterial, ColliderPolicy, TriggerTag, TriggerNodes, PhysicsJoint, Striker, ModalSoundControls, ContactSurface, SurfaceSoundControls, AcousticMaterial, SoundVerticesModel, ModalGain, ModalTuning, ModalSolveSettings, MassProperties, RealImpactMicrophone, RealImpactActiveMicrophone>;
+using Values = TypeList<Transform, Name, Path, ObjectKind, Instance, Visibility, ScaleLocked, Perspective, Orthographic, SceneLight, ArmatureObject, BoneJoint, BoneSubPartOf, BoneJointEntities, SubElementOf, ArmatureModifier, BoneIndex, BoneDisplayScale, BoneAttachment, BoneDelta, BoneConstraints, PhysicsMotion, PhysicsVelocity, ColliderShape, ColliderMaterial, ColliderPolicy, TriggerTag, TriggerNodes, PhysicsJoint, Striker, ModalSoundControls, ContactSurface, SurfaceSoundControls, AcousticMaterial, SoundVerticesModel, ModalGain, ModalTuning, ModalSolveSettings, MassProperties, RealImpactMicrophone, RealImpactActiveMicrophone>;
 using Definitions = TypeList<AnimationClips, VertexSamples, ModalModes, ModalEigenSummary, RealImpactVertices>;
 
 using Member = HierarchyInstance::Member;

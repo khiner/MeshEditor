@@ -2,6 +2,7 @@
 
 #include "gpu/BoundsEntry.h"
 #include "gpu/InstanceRecord.h"
+#include "gpu/LightRecord.h"
 #include "gpu/LodFrontierBlockState.h"
 #include "gpu/LodFrontierEntry.h"
 #include "gpu/LodFrontierState.h"
@@ -18,6 +19,7 @@
 #include "gpu/Transform.h"
 #include "gpu/ViewportTheme.h"
 #include "gpu/VisibleMeshlet.h"
+#include "metal/Image.h"
 #include "render/PoseAttributeStore.h"
 #include "render/RenderSchema.h"
 #include "render/VertexBoundsStore.h"
@@ -105,6 +107,7 @@ struct GpuBuffers {
     const RenderArenas *Render{};
 
     mtl::BufferContext Ctx;
+    mtl::Texture EeveeLut;
 
     // Every instance slot in drawing order, by descending object ID, so coplanar ties resolve the same way across loads.
     mtl::Buffer GpuInstanceSlots;
@@ -168,6 +171,7 @@ struct GpuBuffers {
               MorphWeights(ctx, 0, SlotType::MorphWeightBuffer) {}
 
         mtl::Buffer Transforms, ArmatureDeform, MorphWeights;
+        std::shared_ptr<mtl::Buffer> Materials;
         // Each shown scene's lights, in GpuBuffers::Scenes order.
         std::vector<mtl::Buffer> Lights;
 
@@ -176,16 +180,23 @@ struct GpuBuffers {
             view.ArmatureDeformSlot = ArmatureDeform.Slot;
             view.MorphWeightsSlot = MorphWeights.Slot;
             view.LightSlot = Lights[scene_index].Slot;
+            view.MaterialSlot = Materials->Slot;
         }
     };
 
     std::vector<RenderPose> BlurPoses;
     static constexpr uint32_t SceneViewUboOffset(uint32_t instance) { return uint32_t(ViewUboStride() * instance); }
+    // Each canonical view has separate jittered and opaque-layer uniforms.
+    static constexpr uint32_t RayViewUboOffset(uint32_t instance) { return SceneViewUboOffset(MaxBlurSteps + 1u + 2u * instance); }
+    static constexpr uint32_t RayViewUboBytes() { return SceneViewUboOffset(3u * (MaxBlurSteps + 1u)); }
 
     // Requires the scene evaluated at the capture time.
-    void CaptureRenderPose(RenderPose &dst) const;
+    void CaptureRenderPose(RenderPose &dst, const RenderPose *previous = nullptr) const;
+    const RenderPose *RenderPoseFor(const ::SceneViewUBO &) const;
+    std::span<const PBRMaterial> MaterialsFor(const ::SceneViewUBO &) const;
+    std::span<const LightRecord> LightsFor(const ::SceneViewUBO &) const;
 
-    // Each shown scene's punctual lights, in Scenes order.
+    // Each shown scene's lights, in Scenes order.
     std::vector<mtl::Buffer> Lights;
     mtl::Buffer Materials;
 

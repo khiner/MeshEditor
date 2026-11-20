@@ -1,4 +1,5 @@
 #include "viewport/ViewportRenderGpu.h"
+#include "gpu/FastGiPushConstants.h"
 #include "procedure/Procedure.h"
 
 #include "Camera.h"
@@ -10,6 +11,7 @@
 #include "audio/SoundVertices.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gpu/BoundsReducePushConstants.h"
+#include "gpu/AreaShadowBounds.h"
 #include "gpu/CommitPosedGeometryPushConstants.h"
 #include "gpu/DepthPyramidReducePushConstants.h"
 #include "gpu/LightRecord.h"
@@ -23,6 +25,10 @@
 #include "gpu/OverlayJobCullPushConstants.h"
 #include "gpu/OverlayJobDrawPushConstants.h"
 #include "gpu/PosedMeshletBoundsPushConstants.h"
+#include "gpu/RayLightingPushConstants.h"
+#include "gpu/LightCulling.h"
+#include "gpu/RayReconstructPushConstants.h"
+#include "gpu/RayTracingRecord.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/VertexBlockPushConstants.h"
 #include "gpu/ViewportCompositePushConstants.h"
@@ -41,14 +47,17 @@
 #include "numeric/MatrixMath.h"
 #include "object/PendingSync.h"
 #include "physics/PhysicsTypes.h"
+#include "project/store/Hash.h"
 #include "render/ClusterLod.h"
 #include "render/Encoding.h"
 #include "render/GpuSceneState.h"
 #include "render/Instance.h"
+#include "render/MaterialComponents.h"
 #include "render/MeshTopologyRepair.h"
 #include "render/MeshletBoundsRefit.h"
 #include "render/MeshletBuildGpu.h"
 #include "render/Pipelines.h"
+#include "render/RayFilm.h"
 #include "render/SceneUpdates.h"
 #include "render/Textures.h"
 #include "scene/CameraLens.h"
@@ -107,13 +116,17 @@ ExtrasLine ExtrasGizmoParams(const state::Registry &r, state::Entity object, Obj
 
     if (type != ObjectType::Light) return {};
 
-    const auto &light = r.get<const PunctualLight>(object);
+    const auto &light = r.get<const SceneLight>(object);
     const uint32_t range_lines = light.Range > 0.f ? RangeSegments : 0;
-    if (light.Type == PunctualLightType::Point) {
+    if (light.Type == LightType::Point) {
         return {ExtrasLineKind::LightPoint, vec4{light.Range, 0, 0, 0}, range_lines + HaloLines};
     }
-    if (light.Type == PunctualLightType::Directional) {
+    if (light.Type == LightType::Directional) {
         return {ExtrasLineKind::LightDirectional, vec4{light.Range, 0, 0, 0}, 8 * 2 + HaloLines};
+    }
+    if (IsAreaLight(light.Type)) {
+        const bool rectangle = light.Type == LightType::Rectangle;
+        return {rectangle ? ExtrasLineKind::LightRectangle : ExtrasLineKind::LightEllipse, vec4{light.Range, light.Size.x * .5f, light.Size.y * .5f, 0}, range_lines + (rectangle ? 4u : SpotSegments) + 1u + HaloLines};
     }
     constexpr float SpotDepth{2.f};
     const float outer_angle = std::min(light.OuterConeAngle, Radians(89.f));
@@ -171,6 +184,21 @@ void BuildOverlayJobs(const state::Registry &r, GpuBuffers &buffers, bool boundi
 }
 
 void RecordSceneCounters(const GpuBuffers &buffers, const Viewport &viewport) {
+    if (!profile::Enabled) return;
+    if (viewport.Targets.Screen) {
+        const auto extent = viewport.Targets.Screen->SceneColorImage.Extent;
+        profile::RecordCounter("RenderWidth", extent.Width);
+        profile::RecordCounter("RenderHeight", extent.Height);
+    }
+    if (viewport.Targets.RayTracing) {
+        const auto &rt = *viewport.Targets.RayTracing;
+        const auto pixels = *reinterpret_cast<const uint32_t *>(rt.Work.Contents().data());
+        profile::RecordCounter("RayActivePixels", pixels);
+        profile::RecordCounter("RayQueueBytes", rt.RayQueue.Length());
+        const auto extent = rt.Radiance.Extent;
+        profile::RecordCounter("RayQueueUsedBytes", uint64_t(pixels) * (rt.RayQueue.Length() / (uint64_t(extent.Width) * extent.Height)));
+        profile::RecordCounter("RayWorkBytes", rt.Work.Length());
+    }
     profile::RecordCounter("InstanceSlots", buffers.Instances.TransformBuffer.Count<Transform>());
     profile::RecordCounter("MeshletRecords", buffers.Render->Meshlets.Buffer.Count<MeshletRecord>());
     profile::RecordCounter("MeshletInstances", buffers.MeshletInstanceCount);
@@ -641,7 +669,7 @@ void RecordMotionBlurPostFx(state::Registry &r, const Viewport &viewport, mtl::P
 
     const std::array colors{mtl::DiscardColor(*blur.OutputImage)};
     const auto pass = mtl::MakePassDescriptor(colors);
-    const auto render = encode::BeginScenePass(chain, pass.get(), "BlurGather", {{MTL::StageDispatch | MTL::StageFragment, MTL::StageFragment}}, extent, slots, buffers, viewport, ubo_offset);
+    const auto render = encode::BeginScenePass(chain, pass.get(), "BlurGather", {{MTL::StageDispatch | MTL::StageFragment | MTL::StageBlit, MTL::StageFragment}}, extent, slots, buffers, viewport, ubo_offset);
     main.MotionBlurGather.Bind(render);
     render.Cmd->SetBuffer(*blur.TileIndirection, 0, 5);
     render.Cmd->SetTexture(*blur.TileImage, 0);
@@ -953,6 +981,50 @@ constexpr uint32_t LodPinFlagsOf(const ViewportDisplay &settings) {
     return flags;
 }
 
+// Consecutive texture arguments in the ray kernels' Metal signatures.
+void BindTextures(mtl::Command &command, uint32_t first, std::initializer_list<MTL::Texture *> textures) {
+    for (const auto *texture : textures) command.SetTexture(texture, first++);
+}
+
+void RecordFastGi(mtl::PassChain &chain, const MainPipeline &main, const RenderTargets::RayTracingResourcesT &rt, const RenderTargets::ScreenT &screen,
+    const RenderTargets::RayTracingResourcesT::HistoryT &previous, const RenderTargets::RayTracingResourcesT::HistoryT &next, const FastGiPushConstants &pc) {
+    const auto &gi = *rt.FastGI;
+    // Each Fast GI kernel uses consecutive texture slots beginning at zero.
+    const auto dispatch = [](mtl::ComputeEncoder encoder, const mtl::ComputePipeline &pipeline, mtl::Extent2D extent, std::initializer_list<MTL::Texture *> textures) {
+        pipeline.Bind(encoder);
+        BindTextures(*encoder.Cmd, 0, textures);
+        encoder->dispatchThreads({extent.Width, extent.Height, 1}, ThreadgroupSize::Tile8);
+    };
+    const auto depth = chain.BeginCompute("FastGiDepth", MTL::StageDispatch | MTL::StageFragment);
+    dispatch(depth, main.FastGiDepth, gi.Depth.Extent, {*screen.VisibilityDepth, *gi.DepthMips[0]});
+    for (uint32_t mip = 1; mip < gi.Depth.MipLevels; ++mip) {
+        mtl::ComputeBarrier(depth);
+        dispatch(depth, main.FastGiDepthReduce, gi.DepthMips[mip].Extent, {*gi.DepthMips[mip - 1], *gi.DepthMips[mip]});
+    }
+
+    const auto setup = chain.BeginCompute("FastGiSetup", MTL::StageDispatch);
+    setup.Cmd->SetBytes(pc, 1);
+    dispatch(setup, main.FastGiSetup, gi.Radiance.Extent, {
+        *rt.Guide, *screen.SceneColorImage, *next.Geometry, *rt.Feedback,
+        *previous.Geometry, *previous.Normal, *previous.MaterialValidity, *rt.TransmissionWeight,
+        *rt.ReflectionWeight, *gi.RadianceMips[0], *gi.NormalMips[0], *rt.ClosureNormal,
+    });
+    for (uint32_t mip = 1; mip < gi.Radiance.MipLevels; ++mip) {
+        mtl::ComputeBarrier(setup);
+        dispatch(setup, main.FastGiReduce, gi.RadianceMips[mip].Extent,
+            {*gi.RadianceMips[mip - 1], *gi.NormalMips[mip - 1], *gi.RadianceMips[mip], *gi.NormalMips[mip]});
+    }
+
+    dispatch(chain.BeginCompute("FastGiScan", MTL::StageDispatch), main.FastGiScan, gi.SH.Extent,
+        {*gi.Depth, *gi.Radiance, *gi.Normal, *rt.Guide, *gi.SH});
+    dispatch(chain.BeginCompute("FastGiDenoise", MTL::StageDispatch), main.FastGiDenoise, gi.FilteredSH.Extent,
+        {*gi.SH, *gi.FilteredSH, *gi.NormalMips[0], *gi.DepthMips[0]});
+    dispatch(chain.BeginCompute("FastGiResolve", MTL::StageDispatch), main.FastGiResolve, rt.Guide.Extent, {
+        *gi.FilteredSH, *gi.NormalMips[0], *gi.DepthMips[0], *rt.Guide,
+        *rt.TransmissionWeight, *rt.ReflectionWeight, *rt.ClosureNormal, *screen.SceneColorImage,
+    });
+}
+
 void RecordPhase(state::Registry &r, state::Entity viewport_entity, mtl::PassChain &chain, const PreludeSource &prelude, RenderPhase phase, uint32_t ubo_offset, uint32_t sample_weight = 1u) {
     const profile::CpuScope scope{"RecordRenderCommandBuffer"};
     const bool draw_scene = phase != RenderPhase::BlurResolve;
@@ -980,9 +1052,56 @@ void RecordPhase(state::Registry &r, state::Entity viewport_entity, mtl::PassCha
     const bool show_overlays = settings.ShowOverlays;
     auto &scene_state = r.Resources.get<GpuSceneState>();
     const auto &lighting = ActivePbrLighting(r, viewport_entity, settings);
-    const auto pbr_features = scene_state.MeshPbrFeatures | (lighting.UseSceneLights ? uint32_t(PbrFeature::Punctual) : 0u);
-    const auto *pbr = show_rendered ? &pipelines.Main.Compiler.Variant(pbr_features, buffers.DrawsNonTriangles()) : nullptr;
-    const bool real_transmission = RealTransmission(r, viewport_entity, settings, scene_state.MeshPbrFeatures);
+    auto pbr_features = scene_state.MeshPbrFeatures & MeshMaterialFeatures;
+    if (lighting.UseSceneLights) pbr_features |= PbrFeature::SceneLights;
+    const auto view_at = [&](uint32_t offset) -> SceneViewUBO & { return *reinterpret_cast<SceneViewUBO *>(viewport.SceneViewUBO.Contents().data() + offset); };
+    auto &canonical = view_at(ubo_offset);
+    RayTracingMaterials usage;
+    bool ray_tracing = show_rendered && settings.RayTracing.Enabled && settings.DebugChannel == DebugChannel::None;
+    viewport.RayTracingStatus.clear();
+    if (!settings.RayTracing.Enabled) {
+        viewport.Rays.reset();
+        targets.RayTracing.reset();
+    }
+    if (ray_tracing) {
+        const auto &ctx = r.Resources.get<mtl::Context>();
+        if (!ctx.Device->supportsFamily(MTL::GPUFamilyApple10) || !ctx.Device->supportsRaytracing()) viewport.RayTracingStatus = "Ray tracing requires an M5 or newer GPU.";
+        else {
+            const bool classify = !is_edit_mode && !canonical.IsTransforming && canonical.RayShadowSamples > 1u && lighting.UseSceneLights && canonical.LightCount;
+            usage = RayTracingMaterialUsage(meshes, buffers, canonical, classify);
+            // Edit-mode hidden faces require per-hit rejection.
+            if (!is_edit_mode && !HasFeature(pbr_features, PbrFeature::Transmission) && (usage.OpaqueSingleSided || usage.OpaqueDoubleSided)) {
+                pbr_features |= PbrFeature::OpaqueShadows;
+                if (usage.OpaqueSingleSided) pbr_features |= PbrFeature::CullShadowBackfaces;
+            }
+        }
+        ray_tracing = viewport.RayTracingStatus.empty();
+    }
+    const bool ray_blended = usage.Coverage || usage.BlendedTransmission;
+    const bool ray_glass = HasFeature(pbr_features, PbrFeature::Transmission);
+    const bool traced_diffuse = settings.RayTracing.Diffuse == DiffuseLighting::RayTraced;
+    const uint32_t canonical_ubo_offset = ubo_offset;
+    const uint32_t canonical_view_index = uint32_t(canonical_ubo_offset / GpuBuffers::ViewUboStride());
+    if (ray_tracing && draw_scene && phase != RenderPhase::Prepare) {
+        canonical.RayActive = true;
+        ubo_offset = GpuBuffers::RayViewUboOffset(canonical_view_index);
+        std::memcpy(&view_at(ubo_offset), &canonical, sizeof(SceneViewUBO));
+    }
+    auto &ray_view = view_at(ubo_offset);
+    ray_view.LightTileSlot = InvalidSlot;
+    ray_view.RayAreaLightSlot = InvalidSlot;
+    if (ray_tracing && lighting.UseSceneLights && ray_view.LightCount >= 32u &&
+        std::ranges::any_of(buffers.LightsFor(ray_view), [](const auto &light) { return light.Type != LightType::Directional && light.Range > 0.f && std::isfinite(light.Range); }))
+        pbr_features |= PbrFeature::TiledLights;
+    if (lighting.UseSceneLights && ray_view.LightCount && std::ranges::any_of(buffers.LightsFor(ray_view), [](const auto &light) { return IsAreaLight(light.Type); }))
+        pbr_features |= PbrFeature::AreaLights;
+    if (ray_tracing && HasFeature(pbr_features, PbrFeature::AreaLights) && ray_view.RayShadowSamples > 1u)
+        pbr_features |= PbrFeature::MultipleShadowSamples;
+    if (HasFeature(pbr_features, PbrFeature::MultipleShadowSamples) && (ray_blended || ray_glass) && !usage.ComplexCasterSlots.empty())
+        pbr_features |= PbrFeature::BoundedAreaShadows;
+    const auto materials = buffers.MaterialsFor(ray_view);
+    ray_view.RayActive = ray_tracing;
+    const bool real_transmission = !ray_tracing && RealTransmission(r, viewport_entity, settings, scene_state.MeshPbrFeatures);
     const auto &samplers = viewport.Samplers;
     if (std::exchange(scene_state.OverlayJobsDirty, false)) BuildOverlayJobs(r, buffers, scene_state.Displays.BoundingBoxes);
     const bool render_silhouette = show_overlays && settings.Overlays.OutlineSelected && !is_excite_mode &&
@@ -1000,10 +1119,37 @@ void RecordPhase(state::Registry &r, state::Entity viewport_entity, mtl::PassCha
         const auto compute = chain.BeginCompute("Prelude", MTL::StageVertex | MTL::StageFragment | MTL::StageDispatch);
         encode::BindScene(compute, slots, buffers, viewport, ubo_offset);
         RecordPrelude(compute, pipelines, GetMeshPipelines(r), buffers, meshes, prelude);
-        for (const auto [_, other] : r.view<Viewport>().each()) other.OcclusionStale = true;
+        for (const auto [_, other] : r.view<Viewport>().each()) {
+            other.OcclusionStale = true;
+            if (other.Rays) other.Rays->InvalidatePositions();
+        }
     }
-    if (is_edit_mode && std::exchange(scene_state.EditPreludePending, false)) RecordSparseEditPrelude(r, viewport, chain);
+    if (is_edit_mode && std::exchange(scene_state.EditPreludePending, false)) {
+        RecordSparseEditPrelude(r, viewport, chain);
+        for (const auto [_, other] : r.view<Viewport>().each())
+            if (other.Rays) other.Rays->InvalidatePositions(true);
+    }
     if (phase == RenderPhase::Prepare) return;
+    uint64_t hit_instances{};
+    if (ray_tracing && draw_scene) {
+        if (!viewport.Rays) viewport.Rays = std::make_unique<RayTracingScene>(chain.Cmd.Ctx);
+        hit_instances = viewport.Rays->Build(chain, meshes, buffers, ray_view, r, pipelines.Main);
+        ray_tracing = hit_instances != 0;
+        ray_view.RayInstanceCount = viewport.Rays->InstanceCount();
+    }
+    ray_view.RayActive = ray_tracing;
+    if (!ray_tracing && targets.RayTracing) targets.RayTracing->Frames = 0;
+    if (buffers.DrawsNonTriangles()) pbr_features |= PbrFeature::NonTriangleTopology;
+    if (ray_tracing) {
+        pbr_features |= PbrFeature::RayTracing;
+        if (usage.Opaque) pbr_features |= PbrFeature::OpaqueReceiver;
+        if (ray_blended) pbr_features |= PbrFeature::AlphaBlend;
+        if (traced_diffuse) pbr_features |= PbrFeature::TraceDiffuse;
+        if (settings.RayTracing.Reflections) pbr_features |= PbrFeature::TraceReflections;
+    }
+    const auto *pbr = show_rendered ? &pipelines.Main.Compiler.Variant(pbr_features) : nullptr;
+    // Previous completed medium state schedules the cache; current GPU state still gates every lookup.
+    const bool opaque_layer = pbr && pbr->OpaqueLayer && viewport.Rays->PreviousCameraInsideMedium();
     mtl::RenderEncoder encoder;
     const auto draw_quad = [&] { encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4)); };
     const auto decode_visibility = [&] {
@@ -1014,6 +1160,119 @@ void RecordPhase(state::Registry &r, state::Entity viewport_entity, mtl::PassCha
 
     const auto &main = pipelines.Main;
     const auto main_extent = targets.Screen->SceneColorImage.Extent;
+    const mat4 camera_view_proj = ray_view.ViewProj;
+    const auto step = uint32_t(settings.RayTracing.Resolution);
+    const bool denoise = settings.RayTracing.Denoise;
+    const uint32_t samples = denoise ? ray_view.RaySamples : 1u;
+    const bool quincunx_glass = ray_glass && denoise && step >= 4u;
+    const uint32_t ray_lobes = RayLightingLobeCount(ray_glass, traced_diffuse);
+    const bool trace_surface = ray_tracing && draw_scene && meshlet_fill;
+    bool history_valid = false, object_motion = false, scene_changed = false;
+    vec2 film_jitter{};
+    if (trace_surface) {
+        auto &rt = targets.EnsureRayTracingResources(chain.Cmd.Ctx, step, ray_lobes, ray_glass);
+        auto signature_view = ray_view;
+        signature_view.ViewProj = mat4{1};
+        signature_view.ViewRotation = mat3{1};
+        signature_view.CameraPosition = {};
+        signature_view.RayFrame = 0;
+        signature_view.IsTransforming = 0;
+        signature_view.PendingPivot = {};
+        signature_view.PendingTranslation = {};
+        signature_view.PendingRotation = quat{1, 0, 0, 0};
+        signature_view.PendingScale = vec3{1};
+        std::vector<std::byte> shading;
+        const auto append = [&](const auto &value) { shading.append_range(BytesOf(value)); };
+        append(signature_view);
+        append(materials);
+        append(buffers.ViewportThemeUBO.GetSpan<std::byte>());
+        append(viewport.WorkspaceLightsUBO.GetSpan<std::byte>());
+        for (const auto &states : buffers.Instances.States) append(states.GetSpan<std::byte>());
+        for (const auto &texture : r.Resources.get<const TextureStore>().Textures) {
+            append(std::array{(*texture.Image)->gpuResourceID()._impl, texture.Sampler->gpuResourceID()._impl});
+        }
+        append(meshes.Arenas().PrimitiveMaterials.Buffer.GetSpan<std::byte>());
+        append(denoise);
+        append(traced_diffuse);
+        if (ray_view.RayFastGI) append(settings.RayTracing.FastGiResolution);
+        const auto shading_hash = store::HashBytes(shading);
+        shading.clear();
+        const auto light_transforms = buffers.Instances.TransformBuffer.GetSpan<Transform>();
+        for (const auto &lights : buffers.Lights) {
+            append(lights.GetSpan<std::byte>());
+            for (const auto &light : lights.GetSpan<LightRecord>())
+                append(light_transforms[light.TransformSlotOffset.Offset]);
+        }
+        const auto light_hash = store::HashBytes(shading);
+        object_motion = rt.SceneRevision != viewport.Rays->Revision();
+        scene_changed = object_motion || rt.PreviousCameraProj != camera_view_proj || rt.LightHash != light_hash;
+        if (!denoise || IsBlurAccumulate(phase) || rt.ShadingHash != shading_hash || rt.GeometryRevision != viewport.Rays->GeometryRevision()) rt.Frames = rt.SampleIndex = rt.JitterIndex = 0;
+        history_valid = rt.Frames > 0;
+        if (scene_changed) rt.Frames = 0;
+        if (rt.Frames == 0) rt.FilmWeight = 0.f;
+        ray_view.RayFrame = 0;
+        if (denoise) {
+            ray_view.RayFrame = rt.SampleIndex + (IsBlurAccumulate(phase) ? (canonical_view_index - 1u) * samples : 0u);
+            rt.SampleIndex += samples;
+            film_jitter = RayFilmJitter(IsBlurAccumulate(phase) ? canonical_view_index - 1u : rt.JitterIndex++);
+            for (uint32_t column = 0; column < 4; ++column) {
+                ray_view.ViewProj[column].x += 2.f * film_jitter.x / float(main_extent.Width) * camera_view_proj[column].w;
+                ray_view.ViewProj[column].y -= 2.f * film_jitter.y / float(main_extent.Height) * camera_view_proj[column].w;
+            }
+        }
+        rt.ShadingHash = shading_hash;
+        rt.LightHash = light_hash;
+        rt.SceneRevision = viewport.Rays->Revision();
+        rt.GeometryRevision = viewport.Rays->GeometryRevision();
+    }
+
+    const bool film_layer = trace_surface && history_valid && scene_changed && usage.BlendedTransmission;
+    // Both workspace buffers must fit every shutter pose before the first GPU consumer is encoded.
+    const auto max_pose_lights = [&] {
+        uint32_t max_lights = ray_view.LightCount;
+        for (const auto &lights : buffers.Lights) max_lights = std::max(max_lights, lights.Count<LightRecord>());
+        for (const auto &pose : buffers.BlurPoses)
+            for (const auto &lights : pose.Lights) max_lights = std::max(max_lights, lights.Count<LightRecord>());
+        return max_lights;
+    };
+    const auto reserve_lighting = [&](std::unique_ptr<mtl::Buffer> &buffer, uint64_t bytes) {
+        if (!buffer) buffer = std::make_unique<mtl::Buffer>(buffers.Ctx, bytes, SlotType::Buffer, mtl::BufferLifetime::Workspace);
+        else buffer->Reserve(bytes);
+        return buffer->Slot;
+    };
+    if (trace_surface && HasFeature(pbr_features, PbrFeature::AreaLights)) {
+        auto &prepared = targets.RayTracing->PreparedAreaLights;
+        const uint64_t bytes = uint64_t(max_pose_lights()) * sizeof(PreparedAreaLight) + sizeof(AreaShadowBounds);
+        ray_view.RayAreaLightSlot = reserve_lighting(prepared, bytes);
+        const auto prepare = chain.BeginCompute("LightPrepare", MTL::StageAll);
+        encode::BindCompute(prepare, main.LightPrepare, slots, buffers, viewport, ubo_offset);
+        prepare.Cmd->SetBuffer(**prepared, 0, 1);
+        prepare->dispatchThreads({ray_view.LightCount, 1, 1}, {32, 1, 1});
+        if (HasFeature(pbr_features, PbrFeature::BoundedAreaShadows)) {
+            const auto *pose = buffers.RenderPoseFor(ray_view);
+            const auto &models = pose ? pose->Transforms : buffers.Instances.TransformBuffer;
+            const AreaShadowBoundsParams params{uint32_t(usage.ComplexCasterSlots.size()), buffers.Instances.BoundsBuffer.Slot, models.Slot, uint32_t(usage.CullOpaqueBackfaces)};
+            profile::RecordCounter("AreaShadowBoundedInstances", usage.ComplexCasterSlots.size());
+            main.RayShadowBounds.Bind(prepare);
+            prepare.Cmd->SetBuffer(**prepared, uint64_t(ray_view.LightCount) * sizeof(PreparedAreaLight), 1);
+            prepare.Cmd->SetBytes(params, 2);
+            prepare.Cmd->SetBytes(std::as_bytes(std::span{usage.ComplexCasterSlots}), 3);
+            prepare->dispatchThreadgroups({1, 1, 1}, {32, 1, 1});
+        }
+        profile::RecordCounter("PreparedAreaLightBytes", bytes);
+    }
+    if (trace_surface && HasFeature(pbr_features, PbrFeature::TiledLights)) {
+        auto &words = targets.RayTracing->LightTiles;
+        const uint64_t tiles = uint64_t((main_extent.Width + LightTileSize - 1u) / LightTileSize) * ((main_extent.Height + LightTileSize - 1u) / LightTileSize);
+        const uint64_t bytes = tiles * ((max_pose_lights() + 31u) / 32u) * sizeof(uint32_t);
+        ray_view.LightTileSlot = reserve_lighting(words, bytes);
+        ray_view.LightTileViewport = ray_view.ViewportSize;
+        const auto cull = chain.BeginCompute("LightCull", MTL::StageAll);
+        encode::BindCompute(cull, main.LightCull, slots, buffers, viewport, ubo_offset);
+        cull.Cmd->SetBuffer(**words, 0, 1);
+        cull->dispatchThreadgroups({tiles * ((ray_view.LightCount + 31u) / 32u), 1, 1}, {32, 1, 1});
+        profile::RecordCounter("LightTileBytes", bytes);
+    }
     const bool has_silhouette = render_silhouette && meshlet_fill;
     const bool need_visibility = meshlet_fill && (show_fill || has_silhouette || overlay_scene_depth);
     const auto wire_flag = uint32_t(WireFlagOf(settings));
@@ -1029,21 +1288,17 @@ void RecordPhase(state::Registry &r, state::Entity viewport_entity, mtl::PassCha
         (need_visibility || wire_meshlets || bone_meshlets > 0u || normal_meshlets > 0u ||
          element_overlay_meshlets > 0u);
     const bool xray_fill = xray && show_fill && meshlet_fill;
-    const bool transparent = xray_fill || (show_rendered && (real_transmission || std::ranges::any_of(buffers.Materials.GetSpan<PBRMaterial>(), [](const auto &m) { return m.AlphaMode == MaterialAlphaMode::Blend; })));
-    const auto view_bytes = viewport.SceneViewUBO.Contents().subspan(ubo_offset, sizeof(SceneViewUBO));
-    const auto &current_view_proj = reinterpret_cast<const SceneViewUBO *>(view_bytes.data())->ViewProj;
+    const bool transparent = xray_fill || (!ray_tracing && show_rendered && (real_transmission || std::ranges::any_of(buffers.Materials.GetSpan<PBRMaterial>(), [](const auto &m) { return m.AlphaMode == MaterialAlphaMode::Blend; })));
+    const auto &current_view_proj = ray_view.ViewProj;
     const bool disocclusion_possible = viewport.OcclusionStale ||
         std::memcmp(&current_view_proj, &targets.Screen->DepthPyramidViewProj, sizeof(mat4)) != 0; // NOLINT(bugprone-suspicious-memory-comparison)
     // Cached occlusion is valid only for the pose that produced it.
     // Reordering opaque surfaces across temporal phases changes the winner of equal-depth raster ties.
-    if (cull_scene_meshlets) {
-        const uint32_t pyramid = show_fill && !xray && phase == RenderPhase::Full && targets.Screen->DepthPyramidValid && !disocclusion_possible ?
-            samplers.DepthPyramid :
-            InvalidSlot;
+    const auto record_cull = [&](uint32_t pyramid) {
         RecordMeshletCull(
             chain, slots, pipelines, buffers, viewport,
             {
-                .Mode = show_rendered ? (real_transmission ? MeshletRouteMode::Transmission : MeshletRouteMode::Material) : MeshletRouteMode::Visibility,
+                .Mode = !show_rendered ? MeshletRouteMode::Visibility : real_transmission ? MeshletRouteMode::Transmission : MeshletRouteMode::Material,
                 .RequiredInstanceFlags = show_fill || overlay_scene_depth || wire_meshlets || bone_meshlets > 0u ||
                         normal_meshlets > 0u || element_overlay_meshlets > 0u ?
                     0u :
@@ -1053,6 +1308,10 @@ void RecordPhase(state::Registry &r, state::Entity viewport_entity, mtl::PassCha
                 .PyramidSamplerSlot = pyramid,
             }
         );
+    };
+    if (cull_scene_meshlets) {
+        const uint32_t pyramid = !opaque_layer && !film_layer && show_fill && !xray && phase == RenderPhase::Full && targets.Screen->DepthPyramidValid && !disocclusion_possible ? samplers.DepthPyramid : InvalidSlot;
+        record_cull(pyramid);
     }
     // Overlay depth needs a cleared visibility depth even without meshlets.
     if (need_visibility || overlay_scene_depth || phase == RenderPhase::BlurFast) {
@@ -1076,27 +1335,37 @@ void RecordPhase(state::Registry &r, state::Entity viewport_entity, mtl::PassCha
         main.PrepassBackground.Bind(encoder);
         draw_quad();
         if (meshlet_fill && show_fill) {
-            pbr->BindVisibility(encoder, true);
+            pbr->Prepass->Bind(encoder);
             decode_visibility();
         }
 
         if (targets.Transmission->Image.MipLevels > 1) mtl::RecordMipmaps(chain.BeginCompute("TransmissionMips", MTL::StageFragment), pipelines.MipDownsample, targets.Transmission->Mips);
     }
 
+    const auto configure_transparency = [&](auto &pass) {
+        pass->setImageblockSampleLength(std::max(main.TransparencyInit.ImageblockSampleLength(), main.TransparencyResolve.ImageblockSampleLength()));
+        pass->setTileWidth(16);
+        pass->setTileHeight(16);
+    };
+    const auto draw_transparency = [&] {
+        main.TransparencyInit.Bind(encoder);
+        draw_quad();
+        pbr->Transparent.Bind(encoder);
+        if (real_transmission) DrawMeshlets(encoder, buffers, uint32_t(MeshletRoute::Transmission));
+        DrawMeshlets(encoder, buffers, uint32_t(MeshletRoute::Blend));
+        main.TransparencyResolve.Bind(encoder);
+        draw_quad();
+    };
     {
         const std::array colors{
             mtl::ClearColor(*targets.Screen->SceneColorImage),
         };
         const auto depth = show_fill && meshlet_fill && !xray ? mtl::LoadDepth(*targets.Screen->VisibilityDepth) : mtl::ClearDepth(*targets.Screen->ScratchDepth);
         const auto pass = mtl::MakePassDescriptor(colors, depth);
-        if (transparent) {
-            pass->setImageblockSampleLength(std::max(main.TransparencyInit.ImageblockSampleLength(), main.TransparencyResolve.ImageblockSampleLength()));
-            pass->setTileWidth(16);
-            pass->setTileHeight(16);
-        }
+        if (transparent) configure_transparency(pass);
         encoder = encode::BeginScenePass(
             chain, pass.get(), draw_scene ? "ScenePass" : "SceneDepthPass",
-            {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh | MTL::StageFragment}, {MTL::StageFragment | MTL::StageBlit, MTL::StageFragment}},
+            {{MTL::StageAccelerationStructure, MTL::StageFragment}, {MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh | MTL::StageFragment}, {MTL::StageFragment | MTL::StageBlit, MTL::StageFragment}},
             main_extent, slots, buffers, viewport, ubo_offset
         );
 
@@ -1116,19 +1385,11 @@ void RecordPhase(state::Registry &r, state::Entity viewport_entity, mtl::PassCha
 
         if (show_fill) {
             if (meshlet_fill && draw_scene && show_rendered) {
-                if (!composite_transmission) {
-                    pbr->BindVisibility(encoder);
+                if (!composite_transmission && !ray_tracing) {
+                    pbr->Visibility.Bind(encoder);
                     decode_visibility();
                 }
-                if (transparent) {
-                    main.TransparencyInit.Bind(encoder);
-                    draw_quad();
-                    pbr->BindMeshlets(encoder);
-                    if (real_transmission) DrawMeshlets(encoder, buffers, uint32_t(MeshletRoute::Transmission));
-                    DrawMeshlets(encoder, buffers, uint32_t(MeshletRoute::Blend));
-                    main.TransparencyResolve.Bind(encoder);
-                    draw_quad();
-                }
+                if (transparent) draw_transparency();
             } else if (xray_fill && draw_scene) {
                 main.TransparencyInit.Bind(encoder);
                 draw_quad();
@@ -1146,12 +1407,275 @@ void RecordPhase(state::Registry &r, state::Entity viewport_entity, mtl::PassCha
         }
     }
 
+    if (trace_surface) {
+        auto &rt = *targets.RayTracing;
+        const auto visibility_pc = encode::VisibilityDecodePc(buffers);
+        const auto clip_to_world = Inverse(current_view_proj);
+        const auto copy_image = [&](MTL::Stages after, const mtl::Texture &source, const mtl::Texture &destination) {
+            chain.BeginBlit(after)->copyFromTexture(*source, 0, 0, MTL::Origin(0, 0, 0), MTL::Size(main_extent.Width, main_extent.Height, 1), *destination, 0, 0, MTL::Origin(0, 0, 0));
+        };
+        const auto media = chain.BeginCompute("RayCameraMedia", MTL::StageAccelerationStructure | MTL::StageDispatch);
+        encode::BindScene(media, slots, buffers, viewport, ubo_offset);
+        main.RayCameraMedia.Bind(media);
+        viewport.Rays->Bind(chain.Cmd, hit_instances);
+        media->dispatchThreads({1, 1, 1}, {1, 1, 1});
+        if (!usage.BlendedTransmission) rt.FilmLayer.reset();
+        const auto draw_visibility_layer = [&](const RenderTargets::RayTracingResourcesT::VisibilityLayer &layer, const mtl::RenderPipeline &pipeline, std::string_view name, uint32_t offset) {
+            const std::array colors{mtl::ClearColor(*layer.Visibility, MTL::ClearColor{double(UINT32_MAX), 0, 0, 0})};
+            const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*layer.Depth));
+            const auto visible = encode::BeginScenePass(chain, pass.get(), name, {{MTL::StageDispatch, MTL::StageMesh}}, layer.Visibility.Extent, slots, buffers, viewport, offset);
+            pipeline.Bind(visible);
+            for (const auto [route, cull] : VisibilityRoutes) {
+                SetCullMode(visible, cull);
+                DrawMeshletList(visible, buffers, uint32_t(route), 0u, false, true);
+            }
+        };
+        if (film_layer) {
+            if (!rt.FilmLayer) rt.FilmLayer = std::make_unique<RenderTargets::RayTracingResourcesT::VisibilityLayer>(chain.Cmd.Ctx, main_extent);
+            draw_visibility_layer(*rt.FilmLayer, main.MeshletVisibilityMotion, "RayFilmVisibility", ubo_offset);
+        }
+        const auto bind_opaque_layer = [&] {
+            const auto &layer = *rt.OpaqueLayer;
+            chain.Cmd.SetTexture(*layer.Radiance, 3);
+            BindTextures(chain.Cmd, 9, {*layer.Geometry, *layer.Normal, *layer.Identity});
+        };
+        if (opaque_layer) {
+            const auto layer_extent = main_extent.Blocks(std::max(step, 4u));
+            if (!rt.OpaqueLayer) rt.OpaqueLayer = std::make_unique<RenderTargets::RayTracingResourcesT::OpaqueLayerT>(chain.Cmd.Ctx, layer_extent);
+            const auto &layer = *rt.OpaqueLayer;
+            const auto extent = layer.Visibility.Extent;
+            const uint32_t layer_offset = ubo_offset + GpuBuffers::ViewUboStride();
+            auto &layer_view = view_at(layer_offset);
+            layer_view = ray_view;
+            layer_view.ViewportSize = {float(extent.Width), float(extent.Height)};
+            draw_visibility_layer(layer, main.MeshletVisibilityLayer, "RayOpaqueVisibility", layer_offset);
+            const auto shade = chain.BeginCompute("RayOpaqueLighting", MTL::StageFragment | MTL::StageAccelerationStructure);
+            encode::BindScene(shade, slots, buffers, viewport, layer_offset);
+            pbr->OpaqueLayer->Bind(shade);
+            viewport.Rays->Bind(chain.Cmd, hit_instances);
+            BindTextures(chain.Cmd, 0, {*layer.Visibility, *targets.Screen->VisibilityImage});
+            chain.Cmd.SetTexture(*layer.Depth, 20);
+            bind_opaque_layer();
+            const RayLightingPushConstants layer_pc{visibility_pc, clip_to_world};
+            shade.Cmd->SetBytes(layer_pc, BufferIndex_PushConstants);
+            shade->dispatchThreads({extent.Width, extent.Height, 1}, ThreadgroupSize::Tile8);
+        }
+        if (samples > 1u) {
+            if (!rt.SampleBase) rt.SampleBase = mtl::CreateTexture2D(chain.Cmd.Ctx, mtl::Format::HdrColor, main_extent, MTL::TextureUsageShaderRead);
+            copy_image(MTL::StageDispatch | MTL::StageFragment, targets.Screen->SceneColorImage, rt.SampleBase);
+        }
+        const bool glass_direct = (HasFeature(pbr_features, PbrFeature::SceneLights) && ray_view.UseSceneLightsRender && ray_view.LightCount) ||
+            std::ranges::any_of(materials, [](const auto &m) {
+                                      return !m.Unlit && m.Transmission.Factor > 0.f && (m.Transmission.Factor < 1.f || m.Transmission.Texture.Slot != InvalidSlot || m.MetallicFactor > 0.f || (m.EmissiveStrength > 0.f && (m.EmissiveFactor.x > 0.f || m.EmissiveFactor.y > 0.f || m.EmissiveFactor.z > 0.f)));
+                                  });
+        const uint32_t lobes = ray_lobes + uint32_t(ray_glass && glass_direct);
+        const auto tiles = RayTileOffset(main_extent.Width, main_extent.Height);
+        const auto diffuse_tiles = !ray_glass && ray_lobes == 2u ? RayTileEnd(main_extent.Width, main_extent.Height) : 0u;
+        for (uint32_t sample = 0; sample < samples; ++sample) {
+            if (sample) {
+                copy_image(MTL::StageDispatch | MTL::StageBlit, rt.SampleBase, targets.Screen->SceneColorImage);
+            }
+            // Later samples reuse geometry produced at this frame's jittered projection.
+            const mat4 previous_view_proj = sample ? current_view_proj : rt.PreviousViewProj;
+            const auto &previous = rt.History[rt.HistoryIndex];
+            const auto &next = rt.History[rt.HistoryIndex ^ 1u];
+            const auto trace = chain.BeginCompute("RayDirect", MTL::StageAccelerationStructure | MTL::StageFragment | MTL::StageDispatch | MTL::StageBlit);
+            encode::BindScene(trace, slots, buffers, viewport, ubo_offset);
+            viewport.Rays->Bind(chain.Cmd, hit_instances);
+            trace.Cmd->SetBuffer(*rt.Work, 0, 9);
+            BindTextures(chain.Cmd, 0, {*targets.Screen->VisibilityImage, *targets.Screen->SceneColorImage, *rt.Radiance, *rt.Guide, *next.MaterialValidity});
+            BindTextures(chain.Cmd, 10, {*rt.ReflectionWeight, *rt.TransmissionWeight});
+            BindTextures(chain.Cmd, 16, {*rt.ClosureNormal, *next.Geometry, *next.Normal});
+            BindTextures(chain.Cmd, 20, {*targets.Screen->VisibilityDepth, *(rt.GlassShape ? rt.GlassShape : rt.ClosureNormal)});
+            const RayLightingPushConstants ray_pc{visibility_pc, clip_to_world, sample, uint32_t(denoise), previous_view_proj, uint32_t(denoise && (sample || history_valid)), uint32_t(sample == 0 && object_motion), Inverse(previous_view_proj), 0u, uint32_t(opaque_layer), uint32_t(quincunx_glass), diffuse_tiles};
+            trace.Cmd->SetBytes(ray_pc, BufferIndex_PushConstants);
+            if (pbr->PreparePrimary) {
+                main.RayReset.Bind(trace);
+                trace->dispatchThreads({1, 1, 1}, {1, 1, 1});
+                mtl::ComputeBarrier(trace);
+                pbr->PreparePrimary->Bind(trace);
+                trace->dispatchThreads({main_extent.Width, main_extent.Height, 1}, ThreadgroupSize::Tile8);
+                mtl::ComputeBarrier(trace);
+                main.RayDispatch.Bind(trace);
+                trace->dispatchThreads({1, 1, 1}, {1, 1, 1});
+                mtl::ComputeBarrier(trace);
+                pbr->RayDirect->Bind(trace);
+                trace->dispatchThreadgroups(rt.Work.Address() + sizeof(uint32_t), {64, 1, 1});
+                mtl::ComputeBarrier(trace);
+                main.RayReset.Bind(trace);
+                trace->dispatchThreads({1, 1, 1}, {1, 1, 1});
+            } else {
+                const bool filter_shadows = pbr->RayDirectFiltered && history_valid && scene_changed;
+                (filter_shadows ? pbr->RayDirectFiltered : pbr->RayDirect)->Bind(trace);
+                trace->dispatchThreads({main_extent.Width, main_extent.Height, 1}, ThreadgroupSize::Tile8);
+            }
+            if (ray_glass) {
+                const auto weights = chain.BeginCompute("RayGlassWeights", MTL::StageDispatch);
+                pbr->GlassWeights->Bind(weights);
+                weights->dispatchThreads({main_extent.Width, main_extent.Height, 1}, ThreadgroupSize::Tile8);
+            }
+            const auto classify = chain.BeginCompute("RayClassify", MTL::StageDispatch);
+            main.RayClassify.Bind(classify);
+            classify.Cmd->SetTexture(*rt.Guide, 1);
+            classify.Cmd->SetTexture(*targets.Screen->VisibilityDepth, 3);
+            classify.Cmd->SetBuffer(*rt.Work, 0, 9);
+            BindTextures(chain.Cmd, 4, {*next.Radiance, *next.Moments, *next.Transmission, *next.TransmissionMoments});
+            classify->dispatchThreads({main_extent.Width, main_extent.Height, 1}, ThreadgroupSize::Tile8);
+            mtl::ComputeBarrier(classify);
+            main.RayDispatch.Bind(classify);
+            classify->dispatchThreads({1, 1, 1}, {1, 1, 1});
+            const auto indirect = chain.BeginCompute(pbr->Special ? "RaySpecial" : "RayGenerate", MTL::StageDispatch);
+            if (opaque_layer) bind_opaque_layer();
+            BindTextures(chain.Cmd, 4, {*rt.HitGuide, *rt.RayData, *rt.Incident, *rt.Transmission, *rt.TransmissionHit});
+            BindTextures(chain.Cmd, 12, {*rt.TransmissionRayData, *rt.TransmissionIncident, *rt.GlassDirect});
+            BindTextures(chain.Cmd, 16, {*rt.Feedback, *previous.Geometry, *previous.Normal, *previous.MaterialValidity});
+            if (pbr->Special) {
+                pbr->Special->Bind(indirect);
+                indirect->dispatchThreadgroups(rt.Work.Address() + sizeof(uint32_t), {64, 1, 1});
+            }
+            indirect.Cmd->SetBuffer(*rt.RayQueue, 0, 11);
+            const uint32_t staged_samples = denoise ? 1u : ray_view.RaySamples;
+            for (uint32_t staged_sample = 0; staged_sample < staged_samples; ++staged_sample) {
+                auto staged_pc = ray_pc;
+                staged_pc.StagedSample = staged_sample;
+                const auto generate = staged_sample == 0u && !pbr->Special ? indirect : chain.BeginCompute("RayGenerate", MTL::StageDispatch);
+                generate.Cmd->SetBytes(staged_pc, BufferIndex_PushConstants);
+                pbr->Generate->Bind(generate);
+                generate->dispatchThreadgroups(rt.Work.Address() + sizeof(uint32_t), {64, 1, 1});
+                const auto shade = chain.BeginCompute("RayShade", MTL::StageDispatch);
+                (opaque_layer ? pbr->ShadeOpaque : pbr->Shade)->Bind(shade);
+                shade->dispatchThreadgroups(rt.Work.Address() + sizeof(uint32_t), {64, ray_lobes, 1});
+            }
+            if (sample == 0 && history_valid && object_motion && viewport.Rays->HasDeformationHistory()) {
+                // The tracing queue is dead until the next sample starts generating rays.
+                const auto deformation = chain.BeginCompute("RayDeformation", MTL::StageDispatch);
+                main.RayDeformation.Bind(deformation);
+                deformation.Cmd->SetBytes(visibility_pc, 1);
+                viewport.Rays->BindPreviousPositions(chain.Cmd);
+                deformation->dispatchThreads({main_extent.Width, main_extent.Height, 1}, ThreadgroupSize::Tile8);
+            }
+            rt.HistoryIndex ^= 1u;
+            for (uint32_t lobe = 0; lobe < lobes; ++lobe) {
+                const auto &radiance = lobe ? rt.Transmission : rt.Radiance;
+                const auto &filtered = lobe ? next.Transmission : next.Radiance;
+                const auto &moments = lobe ? next.TransmissionMoments : next.Moments;
+                const RayReconstructPushConstants reconstruction{
+                    .ClipToWorld = clip_to_world,
+                    .Denoise = uint32_t(denoise && lobe < 2u),
+                    .Step = step,
+                    .Frame = ray_view.RayFrame + sample,
+                    .HistoryValid = ray_pc.HistoryValid,
+                    .Moving = uint32_t(sample == 0),
+                    .PreviousViewProj = previous_view_proj,
+                    .Visibility = visibility_pc,
+                    .Lobe = lobe,
+                    .ApplyMotion = ray_pc.ApplyMotion,
+                    .PreviousClipToWorld = ray_pc.PreviousClipToWorld,
+                    .FastGI = ray_view.RayFastGI,
+                    .Reflections = ray_view.RayReflections,
+                    .MaxRoughness = ray_view.RayMaxRoughness,
+                    .QuincunxGlass = uint32_t(quincunx_glass),
+                    .SplitTiles = uint32_t(diffuse_tiles != 0u),
+                };
+                const auto compute = chain.BeginCompute("RayReconstruct", MTL::StageDispatch);
+                const bool diffuse_list = lobe == 1u && diffuse_tiles != 0u;
+                const auto dispatch = rt.Work.Address() + (diffuse_list ? diffuse_tiles : 5u) * sizeof(uint32_t);
+                compute.Cmd->SetBuffer(*rt.Work, (diffuse_list ? diffuse_tiles + 3u : tiles) * sizeof(uint32_t), 9);
+                pbr->Reconstruct->Bind(compute);
+                BindTextures(chain.Cmd, 0, {*(lobe == 2u ? rt.GlassDirect : radiance), *rt.Guide, *targets.Screen->VisibilityDepth, *rt.Spatial});
+                BindTextures(chain.Cmd, 4, {*(lobe ? rt.TransmissionHit : rt.HitGuide), *(lobe ? rt.TransmissionRayData : rt.RayData), *(lobe ? rt.TransmissionIncident : rt.Incident)});
+                BindTextures(chain.Cmd, 7, {*rt.Radiance, *rt.SpatialInfo, *targets.Screen->VisibilityImage,
+                    *(lobe ? rt.TransmissionWeight : rt.ReflectionWeight), *rt.ClosureNormal, *(rt.GlassShape ? rt.GlassShape : rt.ClosureNormal)});
+                compute.Cmd->SetBytes(reconstruction, 1);
+                compute->dispatchThreadgroups(dispatch, ThreadgroupSize::Tile8);
+                if (lobe < 2u) {
+                    const auto temporal = chain.BeginCompute("RayTemporal", MTL::StageDispatch);
+                    main.RayTemporal.Bind(temporal);
+                    chain.Cmd.SetTexture(*rt.Spatial, 0);
+                    BindTextures(chain.Cmd, 3, {*rt.SpatialInfo, *(lobe ? previous.Transmission : previous.Radiance), *previous.MaterialValidity,
+                        *(lobe ? previous.TransmissionMoments : previous.Moments), *filtered});
+                    chain.Cmd.SetTexture(*moments, 9);
+                    BindTextures(chain.Cmd, 11, {*next.Geometry, *previous.Geometry, *previous.Normal});
+                    temporal->dispatchThreadgroups(dispatch, ThreadgroupSize::Tile8);
+                }
+                {
+                    const auto bilateral = chain.BeginCompute("RayBilateral", MTL::StageDispatch);
+                    main.RayBilateral.Bind(bilateral);
+                    bilateral.Cmd->SetTexture(*(lobe == 2u ? rt.Spatial : filtered), 0);
+                    bilateral.Cmd->SetTexture(*moments, 6);
+                    bilateral.Cmd->SetTexture(*targets.Screen->SceneColorImage, 3);
+                    bilateral->dispatchThreadgroups(dispatch, ThreadgroupSize::Tile8);
+                }
+            }
+            if (ray_view.RayFastGI) {
+                const auto gi_step = uint32_t(settings.RayTracing.FastGiResolution);
+                const auto gi_extent = main_extent.Blocks(gi_step);
+                if (!rt.FastGI || rt.FastGI->Radiance.Extent != gi_extent)
+                    rt.FastGI = std::make_unique<RenderTargets::RayTracingResourcesT::FastGiT>(chain.Cmd.Ctx, main_extent, gi_step);
+                const mat4 world_to_view = viewport.FrameView.Camera.View();
+                const mat4 projection = current_view_proj * Inverse(world_to_view);
+                const float radius = Length(vec2{2.f / (projection[0].x * main_extent.Width), 2.f / (projection[1].y * main_extent.Height)});
+                const FastGiPushConstants gi_pc{clip_to_world, previous_view_proj, ray_pc.PreviousClipToWorld, projection, Inverse(projection), world_to_view, gi_step, ray_view.RayFrame + sample, ray_pc.HistoryValid, ray_pc.ApplyMotion, radius};
+                RecordFastGi(chain, main, rt, *targets.Screen, previous, next, gi_pc);
+            } else rt.FastGI.reset();
+            if (denoise) copy_image(MTL::StageDispatch, targets.Screen->SceneColorImage, rt.Feedback);
+            // Secondary hits reuse the unobscured background above. Composite the camera layers
+            // at the same jittered pose and depth as the background before filtering the film.
+            if (usage.Coverage) {
+                const std::array colors{mtl::LoadColor(*targets.Screen->SceneColorImage)};
+                const auto pass = mtl::MakePassDescriptor(colors, mtl::LoadDepth(*targets.Screen->VisibilityDepth));
+                configure_transparency(pass);
+                encoder = encode::BeginScenePass(chain, pass.get(), "RayTransparency", {{MTL::StageDispatch | MTL::StageBlit | MTL::StageFragment | MTL::StageAccelerationStructure, MTL::StageMesh | MTL::StageFragment}}, main_extent, slots, buffers, viewport, ubo_offset);
+                viewport.Rays->Bind(chain.Cmd, hit_instances);
+                draw_transparency();
+            }
+            if (denoise) {
+                const auto accumulate = chain.BeginCompute("RayAccumulate", MTL::StageDispatch | MTL::StageBlit | MTL::StageFragment);
+                const bool reproject_film = sample == 0 && history_valid && scene_changed;
+                (reproject_film ? (film_layer ? main.RayFilmReprojectLayer : main.RayFilmReproject) : main.RayAccumulate).Bind(accumulate);
+                BindTextures(chain.Cmd, 0, {*targets.Screen->SceneColorImage, *previous.Film, *rt.Spatial, *next.Film});
+                const auto film = RayFilmFilter(film_jitter, rt.FilmWeight);
+                if (reproject_film) {
+                    if (film_layer) {
+                        encode::BindScene(accumulate, slots, buffers, viewport, ubo_offset);
+                        BindTextures(chain.Cmd, 11, {*rt.FilmLayer->Visibility, *rt.FilmLayer->Depth});
+                        if (viewport.Rays->HasDeformationHistory()) viewport.Rays->BindPreviousPositions(chain.Cmd);
+                        else accumulate.Cmd->SetBuffer(*rt.RayQueue, 0, 12);
+                    }
+                    accumulate.Cmd->SetBytes(RayFilmReprojectPushConstants{film, camera_view_proj, rt.PreviousCameraProj, rt.PreviousViewProj, clip_to_world, Inverse(rt.PreviousViewProj), uint32_t(object_motion), visibility_pc, uint32_t(viewport.Rays->HasDeformationHistory()), uint32_t(ray_glass || ray_blended)}, 1);
+                    BindTextures(chain.Cmd, 4, {*next.Geometry, *previous.Geometry, *next.Normal, *previous.Normal,
+                        *targets.Screen->VisibilityDepth, *next.MaterialValidity, *previous.MaterialValidity});
+                    accumulate.Cmd->SetTexture(*rt.Guide, 13);
+                } else accumulate.Cmd->SetBytes(film, 1);
+                rt.FilmWeight += film.Weight;
+                accumulate->dispatchThreads({main_extent.Width, main_extent.Height, 1}, ThreadgroupSize::Tile8);
+                copy_image(MTL::StageDispatch, rt.Spatial, targets.Screen->SceneColorImage);
+            }
+        }
+        rt.PreviousViewProj = current_view_proj;
+        rt.PreviousCameraProj = camera_view_proj;
+        if (denoise) rt.Frames += samples;
+    }
+
+    if (ray_tracing && draw_scene) viewport.Rays->CapturePositions(chain, buffers);
+
+    if (ubo_offset != canonical_ubo_offset) {
+        ubo_offset = canonical_ubo_offset;
+        if (film_jitter != vec2{}) {
+            if (cull_scene_meshlets) record_cull(InvalidSlot);
+            if (need_visibility || overlay_scene_depth) RecordMeshletVisibilityPass(chain, slots, pipelines, viewport, buffers, real_transmission, ubo_offset, {});
+            if (has_silhouette) RecordSilhouetteDepthPass(chain, slots, pipelines, viewport, buffers, ubo_offset);
+            targets.Screen->DepthPyramidValid = false;
+        }
+    }
+
     if (!draw_overlays) {
+        if (ray_tracing && targets.RayTracing) targets.RayTracing->Frames = 0;
         const std::array colors{
             phase == RenderPhase::BlurAccumulateFirst ? mtl::ClearColor(*targets.MotionBlur->OutputImage) : mtl::LoadColor(*targets.MotionBlur->OutputImage)
         };
         const auto pass = mtl::MakePassDescriptor(colors);
-        encoder = encode::BeginScenePass(chain, pass.get(), "BlurAccumulate", {{MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, viewport, ubo_offset);
+        encoder = encode::BeginScenePass(chain, pass.get(), "BlurAccumulate", {{MTL::StageFragment | MTL::StageDispatch | MTL::StageBlit, MTL::StageFragment}}, main_extent, slots, buffers, viewport, ubo_offset);
         main.MotionBlurAccumulate.Bind(encoder);
         const MotionBlurAccumulatePushConstants accum_pc{.SceneSamplerSlot = samplers.SceneColor, .Weight = float(sample_weight)};
         encode::SetPushConstants(encoder, accum_pc);
@@ -1369,13 +1893,13 @@ void RecordPhase(state::Registry &r, state::Entity viewport_entity, mtl::PassCha
 
     if (phase == RenderPhase::BlurFast) {
         // Refraction and overlays have finished reading opaque visibility.
-        if (real_transmission && meshlet_fill) {
+        if ((real_transmission || (ray_tracing && usage.Coverage)) && meshlet_fill) {
             const std::array colors{mtl::LoadColor(*targets.Screen->VisibilityImage)};
             const auto pass = mtl::MakePassDescriptor(colors, mtl::LoadDepth(*targets.Screen->VisibilityDepth));
             const auto visibility = encode::BeginScenePass(chain, pass.get(), "BlurTransmissionVisibility", {{MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, viewport, ubo_offset);
             main.MeshletVisibilityCoverage.Bind(visibility);
             SetCullMode(visibility, MTL::CullModeNone);
-            DrawMeshletList(visibility, buffers, uint32_t(MeshletRoute::Transmission), 0u, false, true);
+            DrawMeshletList(visibility, buffers, uint32_t(real_transmission ? MeshletRoute::Transmission : MeshletRoute::Blend), 0u, false, true);
         }
         RecordMotionBlurPostFx(r, viewport, chain, ubo_offset);
     }
@@ -1383,7 +1907,7 @@ void RecordPhase(state::Registry &r, state::Entity viewport_entity, mtl::PassCha
     {
         const std::array colors{mtl::ClearColor(*targets.Screen->FinalColorImage, {0, 0, 0, 1})};
         const auto pass = mtl::MakePassDescriptor(colors);
-        encoder = encode::BeginScenePass(chain, pass.get(), "Composite", {{MTL::StageFragment, MTL::StageFragment}}, targets.Screen->FinalColorImage.Extent, slots, buffers, viewport, ubo_offset);
+        encoder = encode::BeginScenePass(chain, pass.get(), "Composite", {{MTL::StageFragment | MTL::StageDispatch | MTL::StageBlit, MTL::StageFragment}}, targets.Screen->FinalColorImage.Extent, slots, buffers, viewport, ubo_offset);
         main.ViewportComposite.Bind(encoder);
         const uint32_t view_transform = settings.DebugChannel != DebugChannel::None ? 2u : show_rendered ? 1u :
                                                                                                            0u;
@@ -1656,6 +2180,8 @@ void ReserveFrameScratch(state::Registry &r) {
     bool transmission = false;
     for (const auto [viewport, live] : r.view<const Viewport>().each()) {
         if (!ViewportImageReady(live)) continue;
+        if (r.get<const ViewportDisplay>(viewport).RayTracing.Enabled)
+            r.edit<Viewport>(viewport).SceneViewUBO.SetUsedSize(GpuBuffers::RayViewUboBytes());
         const auto extent = live.Targets.Screen->SceneColorImage.Extent;
         coverage = std::max<uint64_t>(coverage, uint64_t(extent.Width) * extent.Height);
         transmission |= RealTransmission(r, viewport, r.get<const ViewportDisplay>(viewport), scene_state.MeshPbrFeatures);
@@ -1697,6 +2223,14 @@ SceneViewUBO SceneViewOf(state::Registry &r, state::Entity viewport_entity, cons
     const auto &mesh_slots = meshes.Slots();
     const auto scene_index = ShownSceneIndex(r, scene);
     SceneViewUBO view{
+        .RayMaxRoughness = settings.RayTracing.MaxRoughness,
+        .RaySamples = std::clamp(uint32_t(settings.RayTracing.Samples), 1u, 64u),
+        .RayStep = uint32_t(settings.RayTracing.Resolution),
+        .RayFastGI = uint32_t(settings.RayTracing.Diffuse == DiffuseLighting::FastGI),
+        .RayGiDistance = settings.RayTracing.FastGiDistance,
+        .RayGiThickness = settings.RayTracing.FastGiThickness,
+        .RayReflections = settings.RayTracing.Reflections,
+        .RayTransmissionShadows = settings.RayTracing.TransmissionShadows,
         .LightCount = buffers.Lights[scene_index].Count<LightRecord>(),
         .LightSlot = buffers.Lights[scene_index].Slot,
         .UseSceneLightsRender = use_scene_lights ? 1u : 0u,
@@ -1716,7 +2250,7 @@ SceneViewUBO SceneViewOf(state::Registry &r, state::Entity viewport_entity, cons
         .PendingTranslation = pending ? pending->Delta.P : vec3{},
         .PendingRotation = pending ? pending->Delta.R : quat{1, 0, 0, 0},
         .PendingScale = pending ? pending->Delta.S : vec3{1},
-        .LodErrorPixels = settings.LodErrorPixels,
+        .LodErrorPixels = settings.RayTracing.Enabled && is_pbr_mode ? 0.f : settings.LodErrorPixels,
         .EdgeSharpnessSlot = mesh_slots.EdgeSharpness,
         .FaceSharpnessSlot = mesh_slots.FaceSharpness,
         .BaseVertexNormalSlot = mesh_slots.BaseVertexNormal,
@@ -1753,6 +2287,7 @@ SceneViewUBO SceneViewOf(state::Registry &r, state::Entity viewport_entity, cons
         .DebugChannel = is_pbr_mode ? settings.DebugChannel : DebugChannel::None,
         .LookThroughObjectId = look_through != state::Null ? ObjectId(look_through) : 0u,
         .LodPinFlags = LodPinFlagsOf(settings),
+        .RayShadowSamples = std::clamp(uint32_t(settings.RayTracing.ShadowSamples), 1u, 64u),
     };
     render_view.ApplyTo(view);
     return view;

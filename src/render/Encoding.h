@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gpu/VisibilityShadingPushConstants.h"
 #include "metal/PassChain.h"
 #include "metal/Shader.h"
 #include "render/GpuBuffers.h"
@@ -43,6 +44,7 @@ template<typename E> void BindScene(mtl::Encoder<E> encoder, const mtl::Bindless
     command.SetBuffer(*viewport.SceneViewUBO, view_offset, BufferIndex_SceneView);
     command.SetBuffer(*buffers.ViewportThemeUBO, 0, BufferIndex_ViewportTheme);
     command.SetBuffer(*viewport.WorkspaceLightsUBO, 0, BufferIndex_WorkspaceLights);
+    command.SetTexture(*buffers.EeveeLut, 15);
 }
 
 // Binds the bindless table alone, for document passes that read no view.

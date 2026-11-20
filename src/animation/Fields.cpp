@@ -12,7 +12,7 @@
 
 namespace animation {
 namespace {
-using ChannelComponents = TypeList<PosedLocal, BoneDelta, Perspective, Orthographic, PunctualLight, ImageLight, Visibility>;
+using ChannelComponents = TypeList<PosedLocal, BoneDelta, Perspective, Orthographic, SceneLight, ImageLight, Visibility>;
 
 bool ForChannelComponent(state::TypeKey key, auto &&f) {
     return [&]<typename... Cs>(TypeList<Cs...>) {

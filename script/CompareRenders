@@ -169,7 +169,10 @@ def audio_hash(path: Path) -> str | None:
 
 
 def frame_reader(path: Path, indices: list[int]) -> subprocess.Popen:
-    select = "+".join(f"eq(n\\,{index})" for index in indices)
+    if indices == list(range(indices[0], indices[-1] + 1)):
+        select = f"between(n\\,{indices[0]}\\,{indices[-1]})"
+    else:
+        select = "+".join(f"eq(n\\,{index})" for index in indices)
     return subprocess.Popen(
         (FFMPEG, "-nostdin", "-loglevel", "error", "-i", str(path),
          "-vf", f"select={select}", "-fps_mode", "passthrough", "-vframes", str(len(indices)),

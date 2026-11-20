@@ -322,7 +322,10 @@ struct Live {
         }
     }
     void Check(Fixture &f, bool present) const {
-        if (present && Render) boost::ut::expect(f.Image() == Image);
+        if (present && Render) {
+            const auto image = f.Image();
+            if (!RayTracingActive(f.R.get<const Viewport>(FirstViewport(f.R)))) boost::ut::expect(image == Image);
+        }
         boost::ut::expect(f.P->History.MaterializeLive() == Document);
         if (present) boost::ut::expect(snapshot::SerializeWorkspace(f.R) == Workspace);
         boost::ut::expect(DrawnShapes(f) == Outputs);

@@ -8,6 +8,10 @@ inline bool CullBackfaces(constant SceneViewUBO &view, uint double_sided) {
         (view.BackfaceCulling == BackfaceCullingMode::Material && double_sided == 0u);
 }
 
+inline uint VisibilityDoubleSided(constant SceneViewUBO &view, PBRMaterial material) {
+    return material.DoubleSided || (view.RayActive && !material.Unlit && material.Transmission.Factor > 0.0f && material.Volume.ThicknessFactor > 0.0f);
+}
+
 inline int BackfaceCullFacing(constant SceneViewUBO &view, uint double_sided, float3 scale) {
     if (!CullBackfaces(view, double_sided)) return 0;
     return scale.x * scale.y * scale.z < 0.0f ? -1 : 1;

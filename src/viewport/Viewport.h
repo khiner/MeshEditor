@@ -1,6 +1,7 @@
 #pragma once
 
 #include "metal/Buffer.h"
+#include "render/RayTracingScene.h"
 #include "render/RenderTargets.h"
 #include "viewport/RenderView.h"
 #include "viewport/VideoRecording.h"
@@ -16,6 +17,8 @@ struct Viewport {
     std::optional<VideoRecording> Recording{};
 
     RenderTargets Targets;
+    std::unique_ptr<RayTracingScene> Rays;
+    std::string RayTracingStatus;
     RenderSamplerSlots Samplers; // The bindless slots the render passes read Targets through.
     // The live view at instance zero and one aligned instance per motion-blur step.
     mtl::Buffer SceneViewUBO;
@@ -88,6 +91,7 @@ void WaitForRender(state::Registry &);
 void PresentViewport(state::Registry &, state::Entity viewport);
 
 bool ViewportImageReady(const Viewport &);
+bool RayTracingActive(const Viewport &);
 
 // Starts H.264 recording through an `ffmpeg` subprocess.
 // A look-through camera records only the framed region inside the dimmed overlay.

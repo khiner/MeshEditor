@@ -25,7 +25,7 @@ void Apply(state::Registry &r, const Action &action) {
         const auto *source_assets = r.try_get<const gltf::SourceAssets>(state::Document);
         const bool explicit_ibl = source_assets && source_assets->ImageBasedLight.has_value();
         const auto scene = FrameScene(r);
-        const bool scene_lights = std::ranges::any_of(r.view<const PunctualLight>(), [&](state::Entity e) { return InScene(r, e, scene); });
+        const bool scene_lights = std::ranges::any_of(r.view<const SceneLight>(), [&](state::Entity e) { return InScene(r, e, scene); });
         const auto lighting = explicit_ibl ? PresentationLighting::SceneImageLight :
             scene_lights                   ? PresentationLighting::SceneLights :
                                              PresentationLighting::MaterialPreview;

@@ -121,7 +121,8 @@ void Armature::RecomputeInverseBindMatrices() {
     for (uint32_t s = 0; s < Skins.size() && s < JointOrderToBoneIndex.size(); ++s) {
         auto &ibms = Skins[s].InverseBindMatrices;
         const auto &joint_map = JointOrderToBoneIndex[s];
-        for (uint32_t j = 0; j < joint_map.size() && j < ibms.size(); ++j) {
+        ibms.resize(joint_map.size(), I4);
+        for (uint32_t j = 0; j < joint_map.size(); ++j) {
             const auto bone_index = joint_map[j];
             if (bone_index != InvalidBoneIndex && bone_index < Bones.size()) {
                 ibms[j] = Bones[bone_index].InvRestWorld;

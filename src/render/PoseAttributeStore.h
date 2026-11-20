@@ -9,14 +9,24 @@
 template<typename T>
 class PoseAttributeStore : public AttributeArena<PoseAttributeNode, T, 256u, PoseAttributeRadixBits, 2u> {
     using Arena = AttributeArena<PoseAttributeNode, T, 256u, PoseAttributeRadixBits, 2u>;
-    using Arena::Attach;
-    using Arena::Detach;
-    using Arena::Release;
+    uint32_t Attach(uint32_t &root, uint32_t block) {
+        ++MappingVersion;
+        return Arena::Attach(root, block);
+    }
+    void Detach(uint32_t &root, uint32_t block) {
+        ++MappingVersion;
+        Arena::Detach(root, block);
+    }
+    void Release(uint32_t &root) {
+        if (root != InvalidOffset) ++MappingVersion;
+        Arena::Release(root);
+    }
 
 public:
     explicit PoseAttributeStore(mtl::BufferContext &ctx) : Arena(ctx) {}
     using Arena::Nodes;
     using Arena::Values;
+    uint64_t MappingRevision() const { return MappingVersion; }
     struct Prepared {
         std::span<const uint32_t> Roots;
         bool Changed;
@@ -72,6 +82,7 @@ public:
         return {Nodes.Buffer.template GetSpan<PoseAttributeNode>(), Values.Buffer.template GetSpan<T>(), root};
     }
     void Reset() {
+        ++MappingVersion;
         ByStore.clear();
         Groups.clear();
         Nodes.Reset();
@@ -118,6 +129,7 @@ public:
     };
 
 private:
+    uint64_t MappingVersion{};
     struct Group {
         uint32_t Store{InvalidOffset};
         uint32_t Domain{};

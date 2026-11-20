@@ -24,11 +24,12 @@ PassChain::~PassChain() { ClosePass(); }
 
 void PassChain::ClosePass() {
     if (!Open) return;
-    if (OpenSlot) {
+    if (OpenSlot && !OpenAcceleration) {
         if (OpenRender) OpenRender->writeTimestamp(MTL4::TimestampGranularityPrecise, MTL::RenderStageFragment, Timer->Heap(), *OpenSlot * 2 + 1);
         else static_cast<MTL4::ComputeCommandEncoder *>(Open)->writeTimestamp(MTL4::TimestampGranularityPrecise, Timer->Heap(), *OpenSlot * 2 + 1);
     }
     Open->endEncoding();
+    if (OpenSlot && OpenAcceleration) (*Cmd)->writeTimestampIntoHeap(Timer->Heap(), *OpenSlot * 2 + 1);
     Open = nullptr;
     OpenRender = nullptr;
     OpenSlot.reset();
@@ -43,12 +44,14 @@ void PassChain::OpenPass(MTL4::CommandEncoder *encoder, MTL::Stages own, std::in
         encoder->barrierAfterQueueStages(MTL::StageAll, own, MTL4::VisibilityOptionDevice);
     }
     Open = encoder;
+    OpenAcceleration = own == MTL::StageAccelerationStructure;
     Encoded = true;
 }
 
 RenderEncoder PassChain::BeginRender(const MTL4::RenderPassDescriptor *pass, std::string_view name, std::initializer_list<Barrier> barriers) {
     ClosePass();
     auto encoder = Cmd.BeginRender(pass);
+    encoder->setLabel(Str(name).get());
     // Use counter-clockwise front faces for imported and generated geometry.
     encoder->setFrontFacingWinding(MTL::WindingCounterClockwise);
     const auto start = Encoded ? StartStage(barriers) : MTL::RenderStageVertex;
@@ -65,14 +68,30 @@ RenderEncoder PassChain::BeginRender(const MTL4::RenderPassDescriptor *pass, std
 
 ComputeEncoder PassChain::BeginCompute(std::string_view name, MTL::Stages after) {
     ClosePass();
-    auto encoder = Cmd.BeginCompute();
-    OpenPass(encoder.Pass, ComputeStages, {{after, MTL::StageDispatch}});
     if (Timer) {
         if (const auto slot = Timer->Claim(name)) {
             OpenSlot = slot;
-            encoder->writeTimestamp(MTL4::TimestampGranularityPrecise, Timer->Heap(), *slot * 2);
+            // Encoder start timestamps under-report long dispatches on M5; sample before opening the encoder.
+            (*Cmd)->writeTimestampIntoHeap(Timer->Heap(), *slot * 2);
         }
     }
+    auto encoder = Cmd.BeginCompute();
+    encoder->setLabel(Str(name).get());
+    OpenPass(encoder.Pass, ComputeStages, {{after, MTL::StageDispatch}});
+    return encoder;
+}
+
+ComputeEncoder PassChain::BeginAccelerationStructure(MTL::Stages after) {
+    ClosePass();
+    if (Timer) {
+        if (const auto slot = Timer->Claim("AccelerationStructure")) {
+            OpenSlot = slot;
+            (*Cmd)->writeTimestampIntoHeap(Timer->Heap(), *slot * 2);
+        }
+    }
+    auto encoder = Cmd.BeginCompute();
+    encoder->setLabel(Str("AccelerationStructure").get());
+    OpenPass(encoder.Pass, MTL::StageAccelerationStructure, {{after, MTL::StageAccelerationStructure}});
     return encoder;
 }
 

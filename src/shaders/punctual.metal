@@ -36,7 +36,7 @@ inline float3 getLightEmissionDirection(Transform wt) {
 }
 
 inline float3 getPointToLight(LightRecord light, Transform wt, float3 world_position, float3 emission_direction) {
-    if (light.Type == PunctualLightType::Directional) return -emission_direction;
+    if (light.Type == LightType::Directional) return -emission_direction;
     return float3(wt.P) - world_position;
 }
 
@@ -45,7 +45,8 @@ inline float3 getLightIntensity(
     const thread SceneT<SetT> &scene, LightRecord light, float3 worldPosition,
     thread float3 &L, thread float3 &point_to_light
 ) {
-    const Transform wt = scene.Models(light.TransformSlotOffset.Slot)[light.TransformSlotOffset.Offset];
+    const uint model_slot = scene.View.ModelSlotOverride != InvalidSlot ? scene.View.ModelSlotOverride : light.TransformSlotOffset.Slot;
+    const Transform wt = scene.Models(model_slot)[light.TransformSlotOffset.Offset];
     const float3 emission_direction = getLightEmissionDirection(wt);
     point_to_light = getPointToLight(light, wt, worldPosition, emission_direction);
 
@@ -53,10 +54,10 @@ inline float3 getLightIntensity(
 
     float range_attenuation = 1.0f;
     float spot_attenuation = 1.0f;
-    if (light.Type != PunctualLightType::Directional) {
+    if (light.Type != LightType::Directional) {
         range_attenuation = getRangeAttenuation(light.Range, length(point_to_light));
     }
-    if (light.Type == PunctualLightType::Spot) {
+    if (light.Type == LightType::Spot) {
         spot_attenuation = getSpotAttenuation(point_to_light, emission_direction, light.OuterConeCos, light.InnerConeCos);
     }
     return range_attenuation * spot_attenuation * light.Intensity * float3(light.Color);

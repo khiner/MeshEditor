@@ -20,7 +20,7 @@
 #include "render/GpuBufferOps.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
-#include "render/PbrFeature.h"
+#include "gpu/PbrFeature.h"
 #include "scene/CameraLens.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
@@ -396,7 +396,7 @@ void RenderEntityControls(state::Registry &r, state::Entity active_entity) {
                 const auto feature_toggle = [&](const char *label, PbrFeature feature) {
                     bool enabled = HasFeature(pbr_features_mask, feature);
                     if (Checkbox(label, &enabled)) {
-                        const auto mask = enabled ? pbr_features_mask | uint32_t(feature) : pbr_features_mask & ~uint32_t(feature);
+                        const auto mask = enabled ? pbr_features_mask | FeatureBit(feature) : pbr_features_mask & ~FeatureBit(feature);
                         action::Emit(action::object::SetPbrMeshFeaturesMask{mask, target_for(active_mesh_entity)});
                     }
                 };
@@ -421,30 +421,31 @@ void RenderEntityControls(state::Registry &r, state::Entity active_entity) {
             }
         }
     }
-    if (r.all_of<PunctualLight>(active_entity) &&
+    if (r.all_of<SceneLight>(active_entity) &&
         CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen)) {
-        const auto &light = r.get<const PunctualLight>(active_entity);
+        const auto &light = r.get<const SceneLight>(active_entity);
         auto fields = fields_for(active_entity);
-        const char *const type_names[]{"Directional", "Point", "Spot"};
+        const char *const type_names[]{"Directional", "Point", "Spot", "Rectangle", "Ellipse"};
         if (auto type_i = int(light.Type); Combo("Type", &type_i, type_names, IM_ARRAYSIZE(type_names))) {
-            action::Emit(action::object::SetLightType{PunctualLightType(type_i), target_for(active_entity)});
+            action::Emit(action::object::SetLightType{LightType(type_i), target_for(active_entity)});
         }
-        fields.Draw<&PunctualLight::Color>();
-        fields.Draw<&PunctualLight::Intensity>();
-        if (light.Type == PunctualLightType::Point || light.Type == PunctualLightType::Spot) {
+        fields.Draw<&SceneLight::Color>();
+        fields.Draw<&SceneLight::Intensity>(IsAreaLight(light.Type) ? "Flux (lm)" : "Intensity");
+        if (IsAreaLight(light.Type)) fields.Draw<&SceneLight::Size>("Size");
+        if (light.Type != LightType::Directional) {
             bool infinite_range = light.Range <= 0.f;
-            if (Checkbox("Infinite range", &infinite_range)) fields.Set<&PunctualLight::Range>(infinite_range ? 0.f : 100.f);
-            if (!infinite_range) fields.Draw<&PunctualLight::Range>();
+            if (Checkbox("Infinite range", &infinite_range)) fields.Set<&SceneLight::Range>(infinite_range ? 0.f : 100.f);
+            if (!infinite_range) fields.Draw<&SceneLight::Range>();
         }
-        if (light.Type == PunctualLightType::Spot) {
+        if (light.Type == LightType::Spot) {
             constexpr float MaxCone = std::numbers::pi_v<float> / 2.f;
             float outer = std::clamp(light.OuterConeAngle, 0.f, MaxCone);
             const float inner = std::clamp(light.InnerConeAngle, 0.f, outer);
             float blend = outer > 1e-4f ? std::clamp(1.f - inner / outer, 0.f, 1.f) : 0.f;
             const bool size_changed = SliderAngle("Size", &outer, 0.f, 90.f, "%.1f deg");
-            ui::KeyDecorator(r, active_entity, animation::Target<&PunctualLight::OuterConeAngle>());
+            ui::KeyDecorator(r, active_entity, animation::Target<&SceneLight::OuterConeAngle>());
             const bool blend_changed = SliderFloat("Blend", &blend, 0.f, 1.f, "%.2f");
-            ui::KeyDecorator(r, active_entity, animation::Target<&PunctualLight::InnerConeAngle>());
+            ui::KeyDecorator(r, active_entity, animation::Target<&SceneLight::InnerConeAngle>());
             ui::Gesture(size_changed || blend_changed, [&] {
                 return action::object::SetSpotCone{std::clamp(outer, 0.f, MaxCone), std::clamp(blend, 0.f, 1.f), target_for(active_entity)};
             });

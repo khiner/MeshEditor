@@ -45,6 +45,10 @@ Texture CreateTexture2D(const Context &ctx, MTL::PixelFormat format, Extent2D ex
     return Create(ctx, MTL::TextureType2D, format, extent, usage, mip_levels, storage.value_or(StorageFor(usage)));
 }
 
+Texture CreateTexture2DArray(const Context &ctx, MTL::PixelFormat format, Extent2D extent, uint32_t layers, MTL::TextureUsage usage) {
+    return Create(ctx, MTL::TextureType2DArray, format, extent, usage, 1, StorageFor(usage), layers);
+}
+
 Texture CreateTextureCube(const Context &ctx, MTL::PixelFormat format, uint32_t size, MTL::TextureUsage usage, uint32_t mip_levels) {
     return Create(ctx, MTL::TextureTypeCube, format, {size, size}, usage, mip_levels, StorageFor(usage));
 }

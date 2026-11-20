@@ -235,7 +235,7 @@ inline RoutedMeshlet ClassifyMeshlet(
     if (mode != MeshletRouteMode::Single) material = scene.Materials(scene.View.MaterialSlot)[MeshletPrimitiveMaterialIndex(scene, primitive)];
     const bool edit_overlay = (instance.Flags & uint(MeshletInstanceFlag::EditOverlay)) != 0u;
     const bool overlay_only = (instance.Flags & uint(MeshletInstanceFlag::OverlayOnly)) != 0u;
-    const bool cull_backfaces = CullBackfaces(scene.View, material.DoubleSided);
+    const bool cull_backfaces = CullBackfaces(scene.View, VisibilityDoubleSided(scene.View, material));
     const bool cone_visible = mode == MeshletRouteMode::Single || !cull_backfaces ||
         MeshletConeVisible(scene, meshlet, world, instance.Deformed);
     const bool occluded = !overlay_only && can_occlude && pc.PyramidSamplerSlot != InvalidSlot &&
@@ -253,7 +253,7 @@ inline RoutedMeshlet ClassifyMeshlet(
         const MeshletRoute opaque_route = triangle_topology ? OpaqueVisibilityRoute(cull_backfaces, world) : MeshletRoute::Coverage;
         if (mode == MeshletRouteMode::Visibility || mode == MeshletRouteMode::Selection) {
             result.Routes = RouteBit(alpha_mask ? MeshletRoute::Coverage : opaque_route);
-        } else if (material.AlphaMode == MaterialAlphaMode::Blend) {
+        } else if (material.AlphaMode == MaterialAlphaMode::Blend && !(scene.View.RayActive && (!triangle_topology || (!material.Unlit && material.Transmission.Factor > 0.0f)))) {
             result.Routes = RouteBit(MeshletRoute::Blend);
         } else if (mode == MeshletRouteMode::Material) {
             result.Routes = RouteBit(alpha_mask ? MeshletRoute::Coverage : opaque_route);

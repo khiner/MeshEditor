@@ -15,7 +15,7 @@ namespace {
 // Upload storage grows in chunks, and a larger upload gets a chunk of its own.
 constexpr uint64_t UploadChunkBytes{1u << 20};
 constexpr uint64_t UploadAlignment{16u};
-constexpr uint32_t ArgumentBufferBindings{8u}, ArgumentTextureBindings{4u}, ArgumentSamplerBindings{1u};
+constexpr uint32_t ArgumentBufferBindings{13u}, ArgumentTextureBindings{22u}, ArgumentSamplerBindings{1u};
 constexpr uint64_t WaitTimeoutMs{30000u};
 
 NS::SharedPtr<MTL::Buffer> NewSharedBuffer(const Context &ctx, uint64_t bytes) {
@@ -46,6 +46,7 @@ template<typename T> Resident<T>::~Resident() {
 }
 template struct Resident<MTL::Buffer>;
 template struct Resident<MTL::Texture>;
+template struct Resident<MTL::AccelerationStructure>;
 
 ResidentBuffer::ResidentBuffer(const Context &ctx, uint64_t bytes) : Resident(ctx, NewSharedBuffer(ctx, bytes)) {}
 uint64_t ResidentBuffer::Address() const { return Handle->gpuAddress(); }
@@ -413,6 +414,7 @@ void Command::SetAddress(uint64_t address, uint32_t index) {
 }
 void Command::SetBuffer(const MTL::Buffer *buffer, uint64_t offset, uint32_t index) { SetAddress(buffer->gpuAddress() + offset, index); }
 void Command::SetTexture(const MTL::Texture *texture, uint32_t index) {
+    assert(index < ArgumentTextureBindings);
     Arguments()->setTexture(texture->gpuResourceID(), index);
     FragmentArguments()->setTexture(texture->gpuResourceID(), index);
 }

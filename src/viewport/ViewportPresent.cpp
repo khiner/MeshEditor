@@ -49,6 +49,12 @@ void DisplayViewport(state::Registry &r, state::Entity viewport, bool active) {
 
     dl.ChannelsSetCurrent(1);
     DrawOverlay(r, r.Resources.get<FrameState>(), viewport, active);
+    const auto &status = r.get<const Viewport>(viewport).RayTracingStatus;
+    if (!status.empty()) {
+        const auto p = ImGui::GetCursorScreenPos();
+        const auto extent = r.get<const ViewportPanel>(viewport).Extent;
+        dl.AddText(p + ImVec2{8, float(extent.y) - ImGui::GetTextLineHeight() - 8}, IM_COL32(255, 190, 90, 255), status.c_str());
+    }
 }
 
 // Intentionally mutates the viewport's recording outside Apply (not replayed).

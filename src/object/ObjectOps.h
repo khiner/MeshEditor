@@ -34,7 +34,7 @@ state::Entity CreateExtrasObject(state::Registry &, ObjectType, const ObjectCrea
 
 state::Entity AddEmpty(state::Registry &, const ObjectCreateInfo &);
 state::Entity AddCamera(state::Registry &, const ObjectCreateInfo &, std::optional<CameraLens> = {});
-state::Entity AddLight(state::Registry &, const ObjectCreateInfo &, std::optional<PunctualLight> = {});
+state::Entity AddLight(state::Registry &, const ObjectCreateInfo &, std::optional<SceneLight> = {});
 
 std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(state::Registry &, const std::filesystem::path &, const MeshInstanceCreateInfo &, bool deduplicate = false);
 

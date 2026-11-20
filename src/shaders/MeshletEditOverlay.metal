@@ -84,7 +84,7 @@ using MeshletSelectFaceOutput = metal::mesh<FaceIdFragmentVaryings, void, uint(M
         output.set_vertex(vertex_base + corner, EditEdgeQuadCorner(scene, edge, corner));
     }
     for (uint i = 0u; i < 6u; ++i) {
-        output.set_index(compact.x * 6u + i, vertex_base + LineQuadCornerLut[i]);
+        output.set_index(compact.x * 6u + i, vertex_base + line_quad_corner(i));
     }
 }
 

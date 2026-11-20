@@ -1,13 +1,21 @@
 #include "Paths.h"
 #include "ProjectFixture.h"
 #include "RunSuites.h"
+#include "animation/Fields.h"
+#include "animation/Clips.h"
 #include "procedure/Procedure.h"
 #include "project/Assets.h"
+#include "render/MaterialComponents.h"
 #include "scene/SceneGraph.h"
 #include "selection/SelectionState.h"
+#include "viewport/FrameState.h"
 #include "viewport/ViewCameraOps.h"
 
 using boost::ut::expect;
+
+void TestRayTracing(Fixture &);
+// Writes the native documents of script/BenchmarkRayTracing to `dir`.
+void WriteRayTracingBenchmarks(const std::filesystem::path &dir);
 
 namespace {
 void WriteFile(const std::filesystem::path &path, std::string_view text) {
@@ -18,6 +26,85 @@ void WriteFile(const std::filesystem::path &path, std::string_view text) {
 void WriteTriangle(const std::filesystem::path &path, float x) {
     const std::array<vec3, 3> positions{vec3{0, 0, 0}, vec3{x, 0, 0}, vec3{0, 1, 0}};
     WriteFile(path, {reinterpret_cast<const char *>(positions.data()), sizeof(positions)});
+}
+
+void UnkeyedPoseAuthoring(Fixture &f) {
+    auto &r = f.R;
+    const auto cube = f.AddCube();
+    const auto viewport = FirstViewport(r);
+    f.Do(action::view::SetViewportShading{viewport, ViewportShadingMode::MaterialPreview});
+    f.Do(action::animation::AddAnimation{"Translation"});
+    f.Do(action::timeline::SetFrame{1});
+    f.Do(action::animation::InsertKey{{cube, animation::Target<&Transform::P>()}});
+    f.Do(action::timeline::SetFrame{25});
+    f.Do(action::UpdateOf<&PosedLocal::Value, &Transform::P>(cube, vec3{2, 0, 0}));
+    expect(WorldTransformOf(r, cube)->P == vec3{2, 0, 0});
+    expect(r.get<const Transform>(cube).P == vec3{});
+    expect(r.get<const UnkeyedPose>(cube).Components == animation::TranslationBit);
+    const auto edited_image = f.Image();
+    for (const auto method : {MotionBlurMethod::Fast, MotionBlurMethod::FullSampling}) {
+        f.Do(action::UpdateOf<&ViewportDisplay::MotionBlur>(viewport, std::optional{MotionBlur{.Shutter = 2.f, .Steps = 4, .Method = method}}));
+        const auto document = f.P->History.MaterializeLive();
+        r.Resources.get<FrameState>().Capturing = true;
+        RequestFrame(r, viewport);
+        f.Image();
+        r.Resources.get<FrameState>().Capturing = false;
+        expect(r.get<const Viewport>(viewport).RecordedPhase == (method == MotionBlurMethod::Fast ? RenderPhase::BlurFast : RenderPhase::BlurAccumulate));
+        expect(f.P->History.MaterializeLive() == document);
+        expect(WorldTransformOf(r, cube)->P == vec3{2, 0, 0});
+        expect(r.all_of<UnkeyedPose>(cube));
+    }
+    f.Do(action::UpdateOf<&ViewportDisplay::MotionBlur>(viewport, std::optional<MotionBlur>{}));
+    f.Do(action::timeline::SetFrame{13});
+    expect(WorldTransformOf(r, cube)->P == vec3{});
+    expect(!r.all_of<UnkeyedPose>(cube));
+    f.Undo();
+    expect(WorldTransformOf(r, cube)->P == vec3{2, 0, 0});
+    expect(f.Image() == edited_image);
+    f.Do(action::UpdateOf<&PosedLocal::Value, &Transform::S>(cube, vec3{1.5f}));
+    expect(r.get<const Transform>(cube).S == vec3{1.5f});
+    expect(WorldTransformOf(r, cube)->P == vec3{2, 0, 0});
+    f.Do(action::animation::InsertKey{{cube, animation::Target<&Transform::P>()}});
+    f.Do(action::timeline::SetFrame{13});
+    expect(std::abs(WorldTransformOf(r, cube)->P.x - 1.f) < 1e-5f);
+    expect(!r.all_of<UnkeyedPose>(cube));
+    f.Do(action::UpdateOf<&Animations::Record>(state::Document, true));
+    f.Do(action::UpdateOf<&PosedLocal::Value, &Transform::P>(cube, vec3{1.25f, 0, 0}));
+    expect(WorldTransformOf(r, cube)->P == vec3{1.25f, 0, 0});
+    f.Do(action::animation::AddAnimation{"Other"});
+    expect(WorldTransformOf(r, cube)->P == vec3{});
+    f.Undo();
+    expect(WorldTransformOf(r, cube)->P == vec3{1.25f, 0, 0});
+
+    f.Do(action::UpdateOf<&Animations::Record>(state::Document, false));
+    f.Do(action::timeline::SetFrame{1});
+    f.Do(action::UpdateOf<&PosedLocal::Value, &Transform::S>(cube, vec3{1.f}));
+    f.Do(action::animation::InsertKey{{cube, animation::Target<&Transform::S>()}});
+    f.Do(action::timeline::SetFrame{25});
+    f.Do(action::UpdateOf<&PosedLocal::Value, &Transform::S>(cube, vec3{3.f}));
+    f.Do(action::animation::InsertKey{{cube, animation::Target<&Transform::S>()}});
+    f.Do(action::timeline::SetFrame{13});
+    f.Do(action::UpdateOf<&PosedLocal::Value, &Transform::P>(cube, vec3{1.5f, 0, 0}));
+    const auto document = f.P->History.MaterializeLive();
+    for (const float frame : {6.5f, 19.5f}) {
+        r.edit<PlaybackFrame>(state::Document).Value = frame;
+        ProcessComponentEvents(r, EventPass::Sample);
+        expect(WorldTransformOf(r, cube)->P == vec3{1.5f, 0, 0});
+        expect(std::abs(WorldTransformOf(r, cube)->S.x - (1.f + (frame - 1.f) / 12.f)) < 1e-5f);
+        expect(r.get<const UnkeyedPose>(cube).Components == animation::TranslationBit);
+        expect(f.P->History.MaterializeLive() == document);
+    }
+    ProcessComponentEvents(r, EventPass::Render);
+    expect(std::abs(WorldTransformOf(r, cube)->S.x - 2.f) < 1e-5f);
+    f.Do(action::UpdateOf<&PosedLocal::Value, &Transform::S>(cube, vec3{2.5f}));
+    expect(r.get<const UnkeyedPose>(cube).Components == (animation::TranslationBit | animation::ScaleBit));
+    const auto combined_image = f.Image();
+    f.Do(action::object::Delete{});
+    expect(!r.valid(cube));
+    f.Undo();
+    expect(WorldTransformOf(r, cube)->P == vec3{1.5f, 0, 0});
+    expect(WorldTransformOf(r, cube)->S == vec3{2.5f});
+    expect(f.Image() == combined_image);
 }
 
 // Hiding and showing an instance keeps its slot, through undo and redo, and a duplicate of a hidden instance is hidden.
@@ -132,8 +219,6 @@ void ViewportBackfacePolicy(Fixture &f) {
     expect(Cooks(r) == cooks);
 }
 
-// Three empties chained A > B > C, with A and C selected and A active.
-// The transform applies once to the selected grandchild, which the transform roots exclude.
 void ObjectHierarchy(Fixture &f) {
     auto &r = f.R;
     const auto a = f.AddEmpty("A"), b = f.AddEmpty("B"), c = f.AddEmpty("C");
@@ -314,8 +399,10 @@ void TestProject() {
     Scenario(f, other, "render instance derivation", RenderInstanceDerivation);
     Scenario(f, other, "hidden object escapes pick", HiddenObjectEscapesPick);
     if (Render) {
+        Scenario(f, other, "unkeyed animated pose", UnkeyedPoseAuthoring);
         Scenario(f, other, "extruded closed region visibility", ExtrudedClosedRegionVisibility);
         Scenario(f, other, "viewport backface policy", ViewportBackfacePolicy);
+        TestRayTracing(f);
     }
     Scenario(f, other, "object hierarchy", ObjectHierarchy);
     Scenario(f, other, "instance lifecycle renders back", InstanceLifecycleRendersBack);
@@ -329,16 +416,22 @@ void TestHistory();
 
 int main(int argc, char **argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::filesystem::path benchmarks;
     for (int i = 1; i < argc; ++i) {
         if (std::string_view{argv[i]} == "--no-render") Render = false;
+        else if (std::string_view{argv[i]} == "--ray-tracing-benchmarks" && i + 1 < argc) benchmarks = argv[++i];
         else if (argv[i][0] == '-') {
-            std::println(stderr, "Usage: {} [--no-render] [test name filter]", argv[0]);
+            std::println(stderr, "Usage: {} [--no-render] [--ray-tracing-benchmarks <directory>] [test name filter]", argv[0]);
             return 1;
         } else boost::ut::cfg<boost::ut::override> = {.filter = argv[i]};
     }
 
     if (!Render) std::println("Skipping rendered-image comparisons (--no-render).");
     Paths::Init(MESHEDITOR_BUILD_DIR, MESHEDITOR_BUILD_DIR);
+    if (!benchmarks.empty()) {
+        WriteRayTracingBenchmarks(benchmarks);
+        return RunSuites();
+    }
     TestProject();
     TestProcedures();
     TestHistory();

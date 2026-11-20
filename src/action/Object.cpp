@@ -84,7 +84,7 @@ state::Entity DuplicateOne(state::Registry &r, state::Entity e, MeshCopy *copy, 
     // Camera, Empty and Light objects have an Instance but create their own wireframe mesh.
     if (r.all_of<ObjectExtrasTag>(r.get<Instance>(e).Entity)) {
         if (const auto lens = LensOf(r, e)) return ::AddCamera(r, create_info, *lens);
-        if (const auto *light = r.try_get<const PunctualLight>(e)) return ::AddLight(r, create_info, *light);
+        if (const auto *light = r.try_get<const SceneLight>(e)) return ::AddLight(r, create_info, *light);
         return ::AddEmpty(r, create_info);
     }
 
@@ -389,18 +389,19 @@ void Apply(state::Registry &r, const Action &action) {
                 );
             },
             [&](const SetLightType &a) {
-                ForEachComponentTarget<PunctualLight>(r, a.Target, [&](auto e) {
-                    r.patch<PunctualLight>(e, [&](auto &light) {
-                        auto next = Defaults::MakePunctualLight(a.Type);
+                ForEachComponentTarget<SceneLight>(r, a.Target, [&](auto e) {
+                    r.patch<SceneLight>(e, [&](auto &light) {
+                        auto next = Defaults::MakeLight(a.Type);
                         next.Color = light.Color;
                         next.Intensity = light.Intensity;
+                        next.Size = light.Size;
                         light = next;
                     });
                 });
             },
             [&](const SetSpotCone &a) {
-                ForEachComponentTarget<PunctualLight>(r, a.Target, [&](auto e) {
-                    r.patch<PunctualLight>(e, [&](auto &light) {
+                ForEachComponentTarget<SceneLight>(r, a.Target, [&](auto e) {
+                    r.patch<SceneLight>(e, [&](auto &light) {
                         light.OuterConeAngle = a.OuterAngle;
                         light.InnerConeAngle = a.OuterAngle * (1.f - a.Blend);
                     });

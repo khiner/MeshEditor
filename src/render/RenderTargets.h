@@ -1,9 +1,11 @@
 #pragma once
 
 #include "metal/Bindless.h"
+#include "metal/Buffer.h"
 #include "metal/Image.h"
 #include "metal/Mipmaps.h"
 #include "render/RenderSchema.h"
+#include "project/store/Hash.h"
 
 struct SampledTexture {
     MTL::Texture *Texture{nullptr};
@@ -70,10 +72,49 @@ struct RenderTargets {
         mtl::ResidentBuffer TileIndirection;
     };
 
+    struct RayTracingResourcesT {
+        RayTracingResourcesT(const mtl::Context &, mtl::Extent2D, uint32_t step, uint32_t lobes, bool glass);
+        mtl::Texture Radiance, Guide, HitGuide, Spatial, SpatialInfo, RayData, Incident;
+        // Glass shape stores the octahedral normal, roughness and thickness in FP32.
+        mtl::Texture ClosureNormal, GlassShape;
+        struct FastGiT {
+            FastGiT(const mtl::Context &, mtl::Extent2D, uint32_t);
+            mtl::Texture Depth, Radiance, Normal, SH, FilteredSH;
+            std::vector<mtl::Texture> DepthMips, RadianceMips, NormalMips;
+        };
+        std::unique_ptr<FastGiT> FastGI;
+        struct VisibilityLayer {
+            VisibilityLayer(const mtl::Context &, mtl::Extent2D);
+            mtl::Texture Visibility, Depth;
+        };
+        struct OpaqueLayerT : VisibilityLayer {
+            OpaqueLayerT(const mtl::Context &, mtl::Extent2D);
+            mtl::Texture Radiance, Geometry, Normal, Identity;
+        };
+        std::unique_ptr<OpaqueLayerT> OpaqueLayer;
+        std::unique_ptr<VisibilityLayer> FilmLayer;
+        std::unique_ptr<mtl::Buffer> LightTiles, PreparedAreaLights;
+        // The second closure stores transmission on glass and diffuse on opaque surfaces.
+        mtl::Texture Transmission, TransmissionHit, SampleBase, Feedback;
+        mtl::Texture ReflectionWeight, TransmissionWeight, TransmissionRayData, TransmissionIncident, GlassDirect;
+        struct HistoryT {
+            mtl::Texture Radiance, MaterialValidity, Moments, Transmission, TransmissionMoments, Geometry, Normal, Film;
+        };
+        std::array<HistoryT, 2> History;
+        uint32_t Frames{}, SampleIndex{}, JitterIndex{}, HistoryIndex{};
+        uint64_t SceneRevision{}, GeometryRevision{};
+        mat4 PreviousViewProj{1}, PreviousCameraProj{1};
+        float FilmWeight{};
+        store::Hash128 ShadingHash{}, LightHash{};
+        mtl::ResidentBuffer Work, RayQueue;
+    };
+    std::unique_ptr<RayTracingResourcesT> RayTracing;
+
     void SetExtent(const mtl::Context &, mtl::Extent2D, mtl::BindlessSet &);
     // Returns whether the allocation changed.
     bool EnsureTransmissionResources(const mtl::Context &, mtl::Extent2D, bool wanted);
     bool EnsureMotionBlurResources(const mtl::Context &, bool fast);
+    RayTracingResourcesT &EnsureRayTracingResources(const mtl::Context &, uint32_t step, uint32_t lobes, bool glass);
 
     // Null lazy targets fall back to scene color to keep bindings valid.
     SampledTexture Nearest(const mtl::Texture *) const;

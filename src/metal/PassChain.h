@@ -27,6 +27,8 @@ struct PassChain {
     // The pass is untimed, since a compute encoder's timestamps wait for dispatches only.
     ComputeEncoder BeginBlit(MTL::Stages after = {});
 
+    ComputeEncoder BeginAccelerationStructure(MTL::Stages after);
+
     Command &Cmd;
 
 private:
@@ -37,6 +39,6 @@ private:
     MTL4::CommandEncoder *Open{nullptr};
     MTL4::RenderCommandEncoder *OpenRender{nullptr};
     std::optional<uint32_t> OpenSlot;
-    bool Encoded{false};
+    bool Encoded{false}, OpenAcceleration{false};
 };
 } // namespace mtl

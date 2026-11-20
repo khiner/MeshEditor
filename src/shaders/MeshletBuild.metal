@@ -328,7 +328,8 @@ kernel void MeshletBuildClusters(uint lane [[thread_index_in_threadgroup]], uint
     // Triangle state bits: 1 flat, 2 chosen, 4 candidate, and 8 << c a physical boundary after corner c.
     threadgroup uchar vertex_map[MeshletBuildTileElements*3u], state[MeshletBuildTileElements];
     threadgroup uint scores[BuildClusterThreads/32u];
-    threadgroup float3 centers[MeshletBuildTileElements];
+    // Radix keys are dead after tile construction; retain centers in that device workspace.
+    device packed_float3 *centers = reinterpret_cast<device packed_float3 *>(b.S() + j.KeysOffset) + first;
     threadgroup float3 bound_positions[64];
     threadgroup uint chosen, vertex_count, triangle_count, total_vertices, total_triangles, record_count, candidate_count;
     threadgroup float3 anchor;
@@ -344,7 +345,7 @@ kernel void MeshletBuildClusters(uint lane [[thread_index_in_threadgroup]], uint
         state[i] = flags;
         centers[i] = b.Center(t);
     }
-    BuildClusterBarrier(simd_size,mem_flags::mem_threadgroup);
+    BuildClusterBarrier(simd_size,mem_flags::mem_threadgroup | mem_flags::mem_device);
     const auto corner_at = [&](uint c) { return sources[c / 3u] * 3u + c % 3u; };
     for (uint c = lane; c < corners; c += BuildClusterThreads) hashes[c] = ushort(b.Hash(corner_at(c), (state[c / 3u] & 1u) != 0u));
     BuildClusterBarrier(simd_size,mem_flags::mem_threadgroup);
@@ -372,7 +373,7 @@ kernel void MeshletBuildClusters(uint lane [[thread_index_in_threadgroup]], uint
     BuildClusterBarrier(simd_size,mem_flags::mem_threadgroup);
     if (lane == 0u) {
         float3 lower = float3(INFINITY), upper = float3(-INFINITY);
-        for (uint i = 0u; i < count; ++i) { lower = min(lower, centers[i]); upper = max(upper, centers[i]); }
+        for (uint i = 0u; i < count; ++i) { lower = min(lower, float3(centers[i])); upper = max(upper, float3(centers[i])); }
         scale = 1.f / max(dot(upper - lower, upper - lower), 1e-20f);
     }
     BuildClusterBarrier(simd_size,mem_flags::mem_threadgroup);
@@ -398,7 +399,7 @@ kernel void MeshletBuildClusters(uint lane [[thread_index_in_threadgroup]], uint
                     const uint added = uint(a == 0xffu) + uint(c == 0xffu && r.y != r.x) + uint(d == 0xffu && r.z != r.x && r.z != r.y);
                     if (vertex_count + added <= 64u) {
                         const uint reuse = uint(a != 0xffu) + uint(c != 0xffu) + uint(d != 0xffu);
-                        const uint near = triangle_count == 0u ? 0u : uint((1.f - clamp(dot(centers[i] - anchor / float(triangle_count), centers[i] - anchor / float(triangle_count)) * scale, 0.f, 1.f)) * 1048575.f);
+                        const uint near = triangle_count == 0u ? 0u : uint((1.f - clamp(dot(float3(centers[i]) - anchor / float(triangle_count), float3(centers[i]) - anchor / float(triangle_count)) * scale, 0.f, 1.f)) * 1048575.f);
                         score = max(score, ((reuse + 1u) << 29u) | (near << 9u) | (511u - i));
                     }
                 }
@@ -429,7 +430,7 @@ kernel void MeshletBuildClusters(uint lane [[thread_index_in_threadgroup]], uint
                         }
                         local[(total_triangles + triangle_count) * 3u + c] = uchar(v | (c == 0u && (state[chosen] & 1u) ? 0x80u : 0u) | ((state[chosen] & (8u << c)) ? 0x40u : 0u));
                     }
-                    anchor += centers[chosen];
+                    anchor += float3(centers[chosen]);
                     ++triangle_count;
                 }
             }

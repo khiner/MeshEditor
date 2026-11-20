@@ -101,7 +101,7 @@ constexpr Exception SubtreeExceptions[]{
     {"animations[*].channels", "channels are re-emitted in scene entity order, so their positions and sampler indices differ from the source"},
     {"animations[*].samplers", "samplers follow the re-emitted channel order"},
 
-    {"extensions.KHR_lights_punctual.lights", "per-node PunctualLight components aren't deduped on save"},
+    {"extensions.KHR_lights_punctual.lights", "per-node SceneLight components aren't deduped on save"},
 };
 
 constexpr Exception ExactExceptions[]{

@@ -29,7 +29,7 @@
       Navigation and reset advance a separate epoch used to reject stale worker results.
 - Use ordered containers in Persistent components.
 - `Project::AfterRestore()` reconciles Derived state and must not mutate Persistent state.
-- After any committed action, a cold restore and a replay of the history, each with the live workspace applied, reproduce the live application exactly, including the composed UI pixels.
+- After any committed action, a cold restore and a replay of the history, each with the live workspace applied, reproduce document and workspace state exactly. Rasterized viewport and composed UI pixels also reproduce exactly. Ray-traced viewport pixels, and composed application images containing those viewports, are excluded from exact pixel replay checks: temporal rendering history is Derived state and may reset on restoration. Validate ray-traced image quality, convergence, history rejection, and performance separately.
 - MeshEditor-owned files and records use one unversioned current format.
   Keep no schema revision fields, schema compatibility checks, legacy readers, migrations, or old-format tests.
   Imported formats follow their external specifications.

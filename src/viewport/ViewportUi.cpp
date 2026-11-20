@@ -855,6 +855,19 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
                     PopStyleVar();
                 }
 
+                if (!WorkbenchShading(current_mode)) {
+                    SeparatorText("Ray tracing");
+                    auto ray_edit = ui::Edit{r, viewport}.Sub<&ViewportDisplay::RayTracing>();
+                    ui::DrawFields<RayTracingSettings, &RayTracingSettings::FastGiDistance, &RayTracingSettings::FastGiThickness, &RayTracingSettings::FastGiResolution, &RayTracingSettings::RefinementFrames>(ray_edit);
+                    if (settings.RayTracing.Denoise) ray_edit.Draw<&RayTracingSettings::RefinementFrames>();
+                    if (settings.RayTracing.Diffuse == DiffuseLighting::FastGI) {
+                        ray_edit.Draw<&RayTracingSettings::FastGiResolution>();
+                        ray_edit.Draw<&RayTracingSettings::FastGiDistance>();
+                        ray_edit.Draw<&RayTracingSettings::FastGiThickness>();
+                    }
+                    const auto &status = r.get<const Viewport>(viewport).RayTracingStatus;
+                    if (!status.empty()) TextWrapped("%s Raster rendering is active.", status.c_str());
+                }
                 if (current_mode == ViewportShadingMode::MaterialPreview) {
                     SeparatorText("Material Preview lighting");
                     render_pbr_controls.template operator()<MaterialPreviewLighting>("MatPreviewLighting");

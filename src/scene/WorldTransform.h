@@ -24,3 +24,10 @@ void SetWorldTransform(state::Registry &, state::Entity, const Transform &);
 struct PosedLocal {
     Transform Value;
 };
+
+// Manually edited animated components, retained until animation advances or channels change.
+// Persistent; PosedLocal remains the evaluated local transform.
+struct UnkeyedPose {
+    Transform Value;
+    uint32_t Components{};
+};

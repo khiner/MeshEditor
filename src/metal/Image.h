@@ -21,6 +21,8 @@ inline constexpr auto Uint = MTL::PixelFormatR32Uint;
 struct Extent2D {
     uint32_t Width, Height;
     bool operator==(const Extent2D &) const = default;
+    // Number of blocks needed to cover the image with square blocks of this size.
+    constexpr Extent2D Blocks(uint32_t size) const { return {(Width + size - 1u) / size, (Height + size - 1u) / size}; }
 };
 
 // A texture resident on the queue for its lifetime.
@@ -39,6 +41,7 @@ struct Texture {
 
 // `storage` disambiguates CPU-visible textures from private attachments with the same usage.
 Texture CreateTexture2D(const Context &, MTL::PixelFormat, Extent2D, MTL::TextureUsage, uint32_t mip_levels = 1, std::optional<MTL::StorageMode> storage = {});
+Texture CreateTexture2DArray(const Context &, MTL::PixelFormat, Extent2D, uint32_t layers, MTL::TextureUsage);
 Texture CreateTextureCube(const Context &, MTL::PixelFormat, uint32_t size, MTL::TextureUsage, uint32_t mip_levels = 1);
 // A view of one mip as the given type with `layers` slices, resident alongside the texture.
 Texture MipView(const Texture &, uint32_t mip, MTL::TextureType, uint32_t layers);

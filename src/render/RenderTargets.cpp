@@ -1,8 +1,13 @@
 #include "render/RenderTargets.h"
+#include "gpu/RayTracingRecord.h"
 
 namespace Format = mtl::Format;
 
 namespace {
+uint64_t RayQueueBytes(mtl::Extent2D extent, uint32_t lobes) {
+    return uint64_t(extent.Width) * extent.Height * lobes * sizeof(RayLightingSample);
+}
+
 RenderTargets::ScreenT::Pyramid MakePyramid(const mtl::Context &ctx, mtl::Extent2D extent, mtl::BindlessSet &slots) {
     const mtl::Extent2D padded{std::bit_ceil((extent.Width + 1) / 2), std::bit_ceil((extent.Height + 1) / 2)};
     auto image = mtl::CreateTexture2D(ctx, Format::Float, padded, MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite, mtl::MipLevelCount(padded.Width, padded.Height));
@@ -23,7 +28,7 @@ RenderTargets::ScreenT::ScreenT(const mtl::Context &ctx, mtl::Extent2D extent, m
       ScratchDepth{mtl::CreateTexture2D(ctx, Format::Depth, extent, MTL::TextureUsageRenderTarget)},
       VisibilityImage{mtl::CreateTexture2D(ctx, Format::Uint, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
       SilhouetteImage{mtl::CreateTexture2D(ctx, Format::Float2, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
-      SceneColorImage{mtl::CreateTexture2D(ctx, Format::HdrColor, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
+      SceneColorImage{mtl::CreateTexture2D(ctx, Format::HdrColor, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite)},
       OverlayColorImage{mtl::CreateTexture2D(ctx, Format::Color, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
       FinalColorImage{mtl::CreateTexture2D(ctx, Format::Color, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
       DepthPyramid{MakePyramid(ctx, extent, slots)},
@@ -46,7 +51,7 @@ RenderTargets::TransmissionResourcesT::TransmissionResourcesT(const mtl::Context
 RenderTargets::MotionBlurResourcesT::MotionBlurResourcesT(const mtl::Context &ctx, mtl::Extent2D extent, bool fast)
     : OutputImage{mtl::CreateTexture2D(ctx, fast ? Format::HdrColor : MTL::PixelFormatRGBA32Float, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)} {
     if (!fast) return;
-    const mtl::Extent2D tiles{(extent.Width + 31u) / 32u, (extent.Height + 31u) / 32u};
+    const auto tiles = extent.Blocks(32u);
     VelocityImage = mtl::CreateTexture2D(ctx, Format::HdrColor, extent, MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite);
     TileImage = mtl::CreateTexture2D(ctx, Format::HdrColor, tiles, MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite);
     TileIndirection = mtl::ResidentBuffer{ctx, 2u * tiles.Width * tiles.Height * sizeof(uint32_t)};
@@ -56,6 +61,7 @@ void RenderTargets::SetExtent(const mtl::Context &ctx, mtl::Extent2D extent, mtl
     Screen = std::make_unique<ScreenT>(ctx, extent, slots);
     Transmission.reset();
     MotionBlur.reset();
+    RayTracing.reset();
 }
 
 bool RenderTargets::EnsureTransmissionResources(const mtl::Context &ctx, mtl::Extent2D extent, bool wanted) {
@@ -78,6 +84,13 @@ bool RenderTargets::EnsureMotionBlurResources(const mtl::Context &ctx, bool fast
     return true;
 }
 
+RenderTargets::RayTracingResourcesT &RenderTargets::EnsureRayTracingResources(const mtl::Context &ctx, uint32_t step, uint32_t lobes, bool glass) {
+    const auto extent = Screen->SceneColorImage.Extent; // SetExtent releases RayTracing when this changes.
+    if (!RayTracing || RayTracing->RayData.Extent != extent.Blocks(step) || RayTracing->RayQueue.Length() != RayQueueBytes(extent, lobes) || bool(RayTracing->GlassShape) != glass)
+        RayTracing = std::make_unique<RayTracingResourcesT>(ctx, extent, step, lobes, glass);
+    return *RayTracing;
+}
+
 SampledTexture RenderTargets::Nearest(const mtl::Texture *image) const {
     if (!Screen) return {};
     return {image ? **image : *Screen->SceneColorImage, Screen->NearestSampler.get()};
@@ -92,4 +105,78 @@ SampledTexture RenderTargets::TransmissionSampler() const {
     if (!Screen) return {};
     if (!Transmission) return SceneColorSampler();
     return {*Transmission->Image, Transmission->Sampler.get()};
+}
+
+RenderTargets::RayTracingResourcesT::RayTracingResourcesT(const mtl::Context &ctx, mtl::Extent2D extent, uint32_t step, uint32_t lobes, bool glass)
+    : Work{ctx, (RayTileEnd(extent.Width, extent.Height) + (lobes > 1u && !glass ? 3u + RayTileCount(extent.Width, extent.Height) : 0u)) * sizeof(uint32_t)},
+      RayQueue{ctx, RayQueueBytes(extent, lobes)} {
+    constexpr auto usage = MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite;
+    // Inactive closures retain a single texel so their argument bindings stay valid.
+    const auto texture = [&](MTL::PixelFormat format, bool active = true) {
+        return mtl::CreateTexture2D(ctx, format, active ? extent : mtl::Extent2D{1, 1}, usage, 1, MTL::StorageModePrivate);
+    };
+    const auto samples = extent.Blocks(step);
+    const auto ray_samples = [&](bool active = true) {
+        return mtl::CreateTexture2D(ctx, MTL::PixelFormatRGBA32Float, active ? samples : mtl::Extent2D{1, 1}, usage);
+    };
+    Radiance = texture(MTL::PixelFormatRGBA32Float);
+    Guide = texture(MTL::PixelFormatRGBA32Float);
+    HitGuide = texture(MTL::PixelFormatRGBA32Float);
+    ClosureNormal = texture(MTL::PixelFormatRG16Float);
+    Spatial = texture(MTL::PixelFormatRGBA16Float);
+    SpatialInfo = texture(MTL::PixelFormatRG32Float);
+    RayData = ray_samples();
+    Incident = ray_samples();
+    if (glass) GlassShape = mtl::CreateTexture2D(ctx, MTL::PixelFormatRGBA32Float, extent, usage);
+    GlassDirect = texture(MTL::PixelFormatRGBA16Float, glass);
+    ReflectionWeight = texture(MTL::PixelFormatRGBA16Float);
+    TransmissionWeight = texture(MTL::PixelFormatRGBA16Float);
+    TransmissionRayData = ray_samples(lobes > 1u);
+    TransmissionIncident = ray_samples(lobes > 1u);
+    Transmission = texture(MTL::PixelFormatRGBA32Float, lobes > 1u);
+    TransmissionHit = texture(MTL::PixelFormatRGBA32Float, lobes > 1u);
+    Feedback = texture(MTL::PixelFormatRGBA16Float);
+    for (auto &history : History) {
+        history.Film = texture(MTL::PixelFormatRGBA32Float);
+        history.Geometry = texture(MTL::PixelFormatRG32Float);
+        history.Normal = texture(MTL::PixelFormatRG16Float);
+        history.Radiance = texture(MTL::PixelFormatRGBA16Float);
+        history.MaterialValidity = texture(MTL::PixelFormatR32Uint);
+        history.Moments = texture(MTL::PixelFormatR16Float);
+        history.Transmission = texture(MTL::PixelFormatRGBA16Float, lobes > 1u);
+        history.TransmissionMoments = texture(MTL::PixelFormatR16Float, lobes > 1u);
+    }
+}
+
+RenderTargets::RayTracingResourcesT::FastGiT::FastGiT(const mtl::Context &ctx, mtl::Extent2D extent, uint32_t step) {
+    const auto usage = MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite;
+    const auto samples = extent.Blocks(step);
+    Depth = mtl::CreateTexture2D(ctx, MTL::PixelFormatR32Float, extent, usage, mtl::MipLevelCount(extent.Width, extent.Height));
+    const auto mips = std::min(4u, mtl::MipLevelCount(samples.Width, samples.Height));
+    Radiance = mtl::CreateTexture2D(ctx, MTL::PixelFormatRGBA16Float, samples, usage, mips);
+    Normal = mtl::CreateTexture2D(ctx, MTL::PixelFormatRGBA16Float, samples, usage, mips);
+    for (uint32_t i = 0; i < Depth.MipLevels; ++i) DepthMips.push_back(mtl::CreateMipView(Depth, i));
+    for (uint32_t i = 0; i < mips; ++i) {
+        RadianceMips.push_back(mtl::CreateMipView(Radiance, i));
+        NormalMips.push_back(mtl::CreateMipView(Normal, i));
+    }
+    SH = mtl::CreateTexture2DArray(ctx, MTL::PixelFormatRGBA16Float, samples, 4, usage);
+    FilteredSH = mtl::CreateTexture2DArray(ctx, MTL::PixelFormatRGBA16Float, samples, 4, usage);
+}
+
+RenderTargets::RayTracingResourcesT::VisibilityLayer::VisibilityLayer(const mtl::Context &ctx, mtl::Extent2D extent) {
+    const auto usage = MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead;
+    Visibility = mtl::CreateTexture2D(ctx, Format::Uint, extent, usage);
+    Depth = mtl::CreateTexture2D(ctx, Format::Depth, extent, usage);
+}
+
+RenderTargets::RayTracingResourcesT::OpaqueLayerT::OpaqueLayerT(const mtl::Context &ctx, mtl::Extent2D extent)
+    : VisibilityLayer(ctx, extent) {
+    const auto texture = [&](MTL::PixelFormat format) {
+        return mtl::CreateTexture2D(ctx, format, extent, MTL::TextureUsageShaderWrite | MTL::TextureUsageShaderRead);
+    };
+    Radiance = texture(MTL::PixelFormatRGBA16Float);
+    Geometry = texture(MTL::PixelFormatRG32Float);
+    Normal = texture(MTL::PixelFormatRG16Float);
+    Identity = texture(MTL::PixelFormatRG32Uint);
 }

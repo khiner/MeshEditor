@@ -620,8 +620,6 @@ void ReleaseUnlistedTextures(state::Registry &r, std::span<const MaterializedTex
 
 void ReleaseImportedTextures(state::Registry &r) {
     ReleaseUnlistedTextures(r, {});
-    auto &textures = r.Resources.get<TextureStore>();
-    textures.WhiteTextureSlot = textures.Textures.empty() ? InvalidSlot : textures.Textures.front().SamplerSlot;
 }
 
 void Reset(TextureStore &textures, state::Registry &r) {

@@ -26,7 +26,7 @@ struct PhysicsMotion;
 struct PhysicsSimulationSettings;
 struct PhysicsVelocity;
 struct PosedLocal;
-struct PunctualLight;
+struct SceneLight;
 struct ShadeSmoothAngle;
 struct Striker;
 struct SurfaceSoundControls;
@@ -41,7 +41,7 @@ namespace action {
 using UpdatableComponents = TypeList<
     Transform, PosedLocal, BoneDelta, TransformGizmoState, OrbitToActive, ShadeSmoothAngle,
     ViewportDisplay, AnisotropicFilter, ViewportTheme, InterfaceTheme, TimelineTheme, TimelineNavigation, MaterialPreviewLighting, RenderedLighting,
-    PunctualLight, ImageLight, Perspective, Orthographic, MaterialVariants,
+    SceneLight, ImageLight, Perspective, Orthographic, MaterialVariants,
     Animations,
     PhysicsSimulationSettings, PhysicsMaterial, PhysicsMotion, PhysicsVelocity, ColliderPolicy, CollisionFilter, PhysicsJoint, ColliderMaterial, TriggerNodes,
     ModalGain, ModalTuning, ModalSoundControls, Striker, SurfaceSoundControls, AudioOutputMix,

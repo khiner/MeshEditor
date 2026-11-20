@@ -9,7 +9,7 @@ struct RenderChanges {
     state::DirtySet InstanceDestroyed; // A live entity lost its render instance.
     state::DirtySet Materials; // Material values changed in the UMA material buffer.
     state::DirtySet PbrMeshFeatures; // A mesh's PBR features changed.
-    state::DirtySet ActiveMaterialVariant, MaterializedTextures, SceneWorld, PunctualLight;
+    state::DirtySet ActiveMaterialVariant, MaterializedTextures, SceneWorld, SceneLight;
     state::DirtySet MorphWeights; // Morph weights changed in the UMA weight buffer.
     state::DirtySet SceneLighting; // An image light changed.
     state::DirtySet CameraLens; // A camera object's lens changed.

@@ -12,4 +12,6 @@ enum class ExtrasLineKind : uint32_t {
     ColliderSphere = 6,
     ColliderCylinder = 7,
     ColliderCapsule = 8,
+    LightRectangle = 9,
+    LightEllipse = 10,
 };

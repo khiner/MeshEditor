@@ -33,7 +33,7 @@ fragment TransparencyStore TestFragment(TestVaryings in [[stage_in]], Transparen
 }
 )";
     NS::Error *error = nullptr;
-    auto library = NS::TransferPtr(device->newLibrary(NS::String::string(source.c_str(), NS::UTF8StringEncoding), nullptr, &error));
+    auto library = NS::TransferPtr(device->newLibrary(NS::String::string(source.c_str(), NS::UTF8StringEncoding), msl::CompileOptions().get(), &error));
     if (!library) throw std::runtime_error(error->localizedDescription()->utf8String());
     const auto compiler_descriptor = NS::TransferPtr(MTL4::CompilerDescriptor::alloc()->init());
     auto compiler = NS::TransferPtr(device->newCompiler(compiler_descriptor.get(), &error));

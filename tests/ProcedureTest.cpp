@@ -1452,9 +1452,9 @@ void SceneNetworks(ProcedureFixture &f) {
             f.Do(MoveNodes{network, {{group, {uint32_t(depth + 2), 3u}}}});
             expect(NetworkLeaves(f.R, group) == items);
             if (network != state::Document) {
-                f.Do(ExposePort{group, PromotedField{light, state::Key<PunctualLight>(), action::detail::FieldOffset<&PunctualLight::Intensity>()}, std::make_unique<std::string>("Intensity")});
+                f.Do(ExposePort{group, PromotedField{light, state::Key<SceneLight>(), action::detail::FieldOffset<&SceneLight::Intensity>()}, std::make_unique<std::string>("Intensity")});
                 f.Do(SetPortValue{group, f.R.get<const SubnetInterface>(group).Ports.back().Id, {std::bit_cast<uint32_t>(17.f + depth)}});
-                expect(f.R.get<const PunctualLight>(light).Intensity == 17.f + depth);
+                expect(f.R.get<const SceneLight>(light).Intensity == 17.f + depth);
             }
         }
         for (const auto group : groups | std::views::reverse) f.Do(UngroupItems{group});
@@ -1582,7 +1582,7 @@ state::Entity AnimatedAssembly(ProcedureFixture &f) {
     for (const auto child : {operand, f.Object(result), light}) f.Do(action::object::SetParent{child, root});
     f.R.patch<Animations>(state::Document, [](auto &a) { a.Names = {"Animation"}; a.Active = 0; });
     f.R.emplace<AnimationClips>(root, std::vector<AnimationClip>{{0, {{animation::Target<&Transform::P>(), AnimationInterpolation::Linear, {0, 1}, {0, 0, 0, 2, 0, 0}, {0, 0, 0}}}}});
-    f.R.emplace<AnimationClips>(light, std::vector<AnimationClip>{{0, {{animation::Target<&PunctualLight::Intensity>(), AnimationInterpolation::Linear, {0, 1}, {2, 8}, {2}}}}});
+    f.R.emplace<AnimationClips>(light, std::vector<AnimationClip>{{0, {{animation::Target<&SceneLight::Intensity>(), AnimationInterpolation::Linear, {0, 1}, {2, 8}, {2}}}}});
     f.Commit("Animate assembly");
     return root;
 }
@@ -1730,12 +1730,12 @@ void ProceduralHierarchies(ProcedureFixture &f) {
         expect(ParentOrNull(r, root) == producer);
         expect(r.get<const HierarchyInstance>(root).Members.size() == 2u);
     }
-    f.Do(UpdateOf<&PunctualLight::Intensity>(light, 23.f));
+    f.Do(UpdateOf<&SceneLight::Intensity>(light, 23.f));
     expect(r.get<const ProcedureInstances>(mesh).Entities == roots);
     for (const auto root : roots) {
         const auto &members = r.get<const HierarchyInstance>(root).Members;
         const auto copied = std::ranges::find(members, light, &HierarchyInstance::Member::Source)->Entity;
-        expect(r.get<const PunctualLight>(copied).Intensity == 23.f);
+        expect(r.get<const SceneLight>(copied).Intensity == 23.f);
     }
     f.Fails(UpdateOf<&InstanceOnPoints::Prototype>(instances, producer));
     const auto realize = f.Append(mesh, KindOf<RealizeInstances>);

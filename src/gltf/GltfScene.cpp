@@ -27,7 +27,7 @@
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
-#include "render/PbrFeature.h"
+#include "gpu/PbrFeature.h"
 #include "scene/CameraLens.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
@@ -813,8 +813,9 @@ std::expected<std::vector<uint32_t>, std::string> BuildParentBeforeChildJointOrd
 }
 
 std::vector<mat4> LoadInverseBindMatrices(const fastgltf::Asset &asset, const fastgltf::Skin &skin, uint32_t joint_count) {
+    if (!skin.inverseBindMatrices) return {}; // glTF uses identity for every joint when omitted.
     std::vector<mat4> inverse_bind_matrices(joint_count, I4);
-    if (!skin.inverseBindMatrices || *skin.inverseBindMatrices >= asset.accessors.size()) return inverse_bind_matrices;
+    if (*skin.inverseBindMatrices >= asset.accessors.size()) return inverse_bind_matrices;
 
     const auto &accessor = asset.accessors[*skin.inverseBindMatrices];
     if (accessor.type != fastgltf::AccessorType::Mat4 || accessor.count == 0) return inverse_bind_matrices;
@@ -885,26 +886,26 @@ CameraLens ConvertCamera(const fastgltf::Camera &cam) {
     );
 }
 
-PunctualLight ConvertLight(const fastgltf::Light &light) {
-    PunctualLight pl{
+SceneLight ConvertLight(const fastgltf::Light &light) {
+    SceneLight pl{
         .Range = 0.f,
         .Color = ToVec3(light.color),
         .Intensity = light.intensity,
         .InnerConeAngle = 0.f,
         .OuterConeAngle = 0.f,
-        .Type = PunctualLightType::Point,
+        .Type = LightType::Point,
     };
     switch (light.type) {
         case fastgltf::LightType::Directional:
-            pl.Type = PunctualLightType::Directional;
+            pl.Type = LightType::Directional;
             break;
         case fastgltf::LightType::Point:
-            pl.Type = PunctualLightType::Point;
+            pl.Type = LightType::Point;
             pl.Range = light.range ? *light.range : 0.f;
             break;
         case fastgltf::LightType::Spot: {
             const auto outer = light.outerConeAngle ? *light.outerConeAngle : std::numbers::pi_v<float> / 4.f;
-            pl.Type = PunctualLightType::Spot;
+            pl.Type = LightType::Spot;
             pl.Range = light.range ? *light.range : 0.f;
             pl.InnerConeAngle = std::clamp(light.innerConeAngle ? *light.innerConeAngle : 0.f, 0.f, outer);
             pl.OuterConeAngle = outer;

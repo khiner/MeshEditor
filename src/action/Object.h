@@ -19,7 +19,7 @@ enum class ShadeMode : uint8_t;
 
 namespace action::object {
 struct SetLightType {
-    PunctualLightType Type;
+    LightType Type;
     Target Target{OnActive{}};
 };
 struct SetSpotCone {
@@ -130,7 +130,7 @@ using Action = std::variant<
     AddEmpty, AddArmature, AddCamera, AddLight, AddMeshPrimitive, ImportMesh,
     SetPbrMeshFeaturesMask, SetMaterialSlotSelection, SetMaterialAssignment,
     AddMaterial, AddTexture,
-    UpdateMaterial<float>, UpdateMaterial<vec2>, UpdateMaterial<vec3>, UpdateMaterial<vec4>, UpdateMaterial<uint32_t>, UpdateMaterial<MaterialAlphaMode>,
+    UpdateMaterial<float>, UpdateMaterial<vec2>, UpdateMaterial<vec3>, UpdateMaterial<vec4>, UpdateMaterial<uint32_t>, UpdateMaterial<MaterialAlphaMode>, UpdateMaterial<ThicknessShape>,
     SetLightType, SetSpotCone, SetProjection>;
 
 void Apply(state::Registry &, const Action &);

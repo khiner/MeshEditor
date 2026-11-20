@@ -1,0 +1,86 @@
+diff --git a/source/blender/draw/intern/draw_context.cc b/source/blender/draw/intern/draw_context.cc
+index bd1076548b2..21f6a22ec27 100644
+--- a/source/blender/draw/intern/draw_context.cc
++++ b/source/blender/draw/intern/draw_context.cc
+@@ -1960,11 +1960,8 @@ void DRW_draw_render_loop_offscreen(Depsgraph *depsgraph,
+   /* Just here to avoid an assert but shouldn't be required in practice. */
+   GPU_framebuffer_restore();
+
+-  /* TODO(fclem): We might want to differentiate between render preview and offscreen render in the
+-   * future. The later can do progressive rendering. */
+-  BLI_assert(is_xr_surface == !is_image_render);
+-  UNUSED_VARS_NDEBUG(is_image_render);
+-  DRWContext::Mode mode = is_xr_surface ? DRWContext::VIEWPORT_XR : DRWContext::VIEWPORT_RENDER;
++  DRWContext::Mode mode = is_xr_surface ? DRWContext::VIEWPORT_XR :
++                          is_image_render ? DRWContext::VIEWPORT_RENDER : DRWContext::VIEWPORT;
+
+   DRWContext draw_ctx(mode, depsgraph, render_viewport, context, region, v3d);
+   draw_ctx.acquire_data();
+diff --git a/source/blender/python/gpu/gpu_py_offscreen.cc b/source/blender/python/gpu/gpu_py_offscreen.cc
+index 399edf6ecdc..7afaeb2b703 100644
+--- a/source/blender/python/gpu/gpu_py_offscreen.cc
++++ b/source/blender/python/gpu/gpu_py_offscreen.cc
+@@ -380,7 +380,7 @@ PyDoc_STRVAR(
+     /* Wrap. */
+     pygpu_offscreen_draw_view3d_doc,
+     ".. method:: draw_view3d(scene, view_layer, view3d, region, view_matrix, projection_matrix, "
+-    "*, do_color_management=False, draw_background=True)\n"
++    "*, do_color_management=False, draw_background=True, is_image_render=True)\n"
+     "\n"
+     "   Draw the 3d viewport in the offscreen object.\n"
+     "\n"
+@@ -399,7 +399,9 @@ PyDoc_STRVAR(
+     "   :param do_color_management: Color manage the output.\n"
+     "   :type do_color_management: bool\n"
+     "   :param draw_background: Draw background.\n"
+-    "   :type draw_background: bool\n");
++    "   :type draw_background: bool\n"
++    "   :param is_image_render: Use image-render sampling instead of interactive temporal rendering.\n"
++    "   :type is_image_render: bool\n");
+ static PyObject *pygpu_offscreen_draw_view3d(BPyGPUOffScreen *self, PyObject *args, PyObject *kwds)
+ {
+   MatrixObject *py_mat_view, *py_mat_projection;
+@@ -413,6 +415,7 @@ static PyObject *pygpu_offscreen_draw_view3d(BPyGPUOffScreen *self, PyObject *ar
+
+   bool do_color_management = false;
+   bool draw_background = true;
++  bool is_image_render = true;
+
+   BPY_GPU_OFFSCREEN_CHECK_OBJ(self);
+
+@@ -425,6 +428,7 @@ static PyObject *pygpu_offscreen_draw_view3d(BPyGPUOffScreen *self, PyObject *ar
+       "projection_matrix",
+       "do_color_management",
+       "draw_background",
++      "is_image_render",
+       nullptr,
+   };
+   static _PyArg_Parser _parser = {
+@@ -437,6 +441,7 @@ static PyObject *pygpu_offscreen_draw_view3d(BPyGPUOffScreen *self, PyObject *ar
+       "|$" /* Optional, keyword only arguments. */
+       "O&" /* `do_color_management` */
+       "O&" /* `draw_background` */
++      "O&" /* `is_image_render` */
+       ":draw_view3d",
+       _keywords,
+       nullptr,
+@@ -455,7 +460,9 @@ static PyObject *pygpu_offscreen_draw_view3d(BPyGPUOffScreen *self, PyObject *ar
+                                         PyC_ParseBool,
+                                         &do_color_management,
+                                         PyC_ParseBool,
+-                                        &draw_background) ||
++                                        &draw_background,
++                                        PyC_ParseBool,
++                                        &is_image_render) ||
+       (!(scene = static_cast<Scene *>(PyC_RNA_AsPointer(py_scene, "Scene"))) ||
+        !(view_layer = static_cast<ViewLayer *>(PyC_RNA_AsPointer(py_view_layer, "ViewLayer"))) ||
+        !(v3d = static_cast<View3D *>(PyC_RNA_AsPointer(py_view3d, "SpaceView3D"))) ||
+@@ -499,7 +506,7 @@ static PyObject *pygpu_offscreen_draw_view3d(BPyGPUOffScreen *self, PyObject *ar
+                            GPU_offscreen_height(self->ofs),
+                            reinterpret_cast<const float (*)[4]>(py_mat_view->matrix),
+                            reinterpret_cast<const float (*)[4]>(py_mat_projection->matrix),
+-                           true,
++                           is_image_render,
+                            draw_background,
+                            "",
+                            do_color_management,

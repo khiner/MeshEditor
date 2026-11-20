@@ -4,6 +4,7 @@
 #include "metal/MetalCpp.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <format>
 #include <objc/message.h>
 
@@ -156,6 +157,12 @@ LibraryCache::LibraryCache(const Context &ctx, std::filesystem::path shaders_dir
       BuiltinArchivePath(std::move(builtin_archive)),
       PruneArchiveChunks(prune_archive_chunks), ReadArchiveOnly(archive_only) {
     const AutoreleaseScope pool;
+    // Shader validation requires live instrumentation and cannot use binary pipeline archives.
+    if (const auto *validation = std::getenv("MTL_SHADER_VALIDATION"); validation && std::atoi(validation) != 0) {
+        ArchivePath.clear();
+        BuiltinArchivePath.clear();
+        ReadArchiveOnly = false;
+    }
     const auto compiler_descriptor = NS::TransferPtr(MTL4::CompilerDescriptor::alloc()->init());
     NS::SharedPtr<MTL4::PipelineDataSetSerializer> serializer;
     if (!ArchivePath.empty() && !ReadArchiveOnly) {
@@ -265,22 +272,12 @@ MTL::Library *LibraryCache::Get(const std::filesystem::path &relative_path, cons
     const auto source = msl::Load(ShadersDir, relative_path, defines);
     auto binary = ShadersDir / relative_path;
     binary.replace_extension(".metallib");
-    std::error_code ec;
-    const auto binary_time = std::filesystem::last_write_time(binary, ec);
-    bool fresh = !ec && defines.empty();
-    for (const auto &file : source.Files) {
-        std::error_code source_error;
-        const auto source_time = std::filesystem::last_write_time(ShadersDir / file, source_error);
-        if (source_error || source_time > binary_time) {
-            fresh = false;
-            break;
-        }
-    }
+    const bool fresh = defines.empty() && source.CanLoadBinary(ShadersDir, binary);
     if (ReadArchiveOnly && !fresh) throw std::runtime_error(std::format("Offline shader library is stale or missing: '{}'", relative_path.string()));
     NS::Error *error = nullptr;
     auto library = fresh ?
         NS::TransferPtr(Ctx.Device->newLibrary(Str(binary.string()).get(), &error)) :
-        NS::TransferPtr(Ctx.Device->newLibrary(Str(source.Text).get(), static_cast<MTL::CompileOptions *>(nullptr), &error));
+        NS::TransferPtr(Ctx.Device->newLibrary(Str(source.Text).get(), msl::CompileOptions().get(), &error));
     if (!library) {
         throw std::runtime_error(std::format("Failed to load shader '{}' from {}:\n{}", relative_path.string(), fresh ? binary.string() : "source", error ? error->localizedDescription()->utf8String() : "unknown"));
     }
@@ -288,6 +285,7 @@ MTL::Library *LibraryCache::Get(const std::filesystem::path &relative_path, cons
     else ++SourceLibraries;
     decltype(entry.Deps) deps;
     deps.reserve(source.Files.size());
+    std::error_code ec;
     for (const auto &file : source.Files) deps.emplace_back(file, std::filesystem::last_write_time(ShadersDir / file, ec));
     entry = Entry{std::move(library), std::move(deps)};
     return entry.Library.get();
@@ -302,6 +300,7 @@ RenderPipeline MakeRenderPipeline(
 ) {
     const AutoreleaseScope pool;
     const auto descriptor = NS::TransferPtr(Descriptor::alloc()->init());
+    descriptor->setLabel(Str(fragment ? std::format("{}/{}", primary.Name, fragment->Name) : std::string{primary.Name}).get());
     const auto primary_function = MakeFunctionDescriptor(cache, primary);
     set_primary(descriptor.get(), primary_function.get());
     NS::SharedPtr<MTL4::FunctionDescriptor> fragment_function;

@@ -1,0 +1,14 @@
+{
+  "source": "https://projects.blender.org/blender/blender/src/commit/222853b0d7e49dda6c1ce56640b2f70867efa69b/source/blender/draw/engines/eevee/eevee_lut.cc",
+  "revision": "222853b0d7e49dda6c1ce56640b2f70867efa69b",
+  "license": "GPL-2.0-or-later",
+  "copyright": "Blender Authors",
+  "source_sha256": "77d024aa0aec51d4a6b226fe1b27dd4f117757807e78eab472d56e3706afb2be",
+  "packed_sha256": "5f582ee2310f5cfc9ccc75e7d37f32f15060394be7f6a73bb0702c9a22861c61",
+  "ltc_source_sha256": "70b980fda58621b3a452e241c795dc6bf176152200ca90a8f973ae652ff23c56",
+  "ltc_adaptations": [
+    "Metal texture/address-space syntax and utility layer layout",
+    "Use squared cross product instead of 1-dot^2 in the edge denominator to avoid FP32 cancellation"
+  ],
+  "layout": "Little endian float4[19][64][64]: blue_noise; brdf_ggx RGB and ltc_disk_integral A; bsdf_ggx RGB and btdf_ggx A (16 layers); ltc_mat_ggx"
+}

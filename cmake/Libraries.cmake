@@ -164,6 +164,7 @@ mesheditor_library(MeshEditorRender
     src/render/MeshletBuildGpu.cpp
     src/render/MeshletSpatial.cpp
     src/render/MeshletBoundsRefit.cpp
+    src/render/RayTracingScene.cpp
     src/render/Pipelines.cpp
     src/render/RenderStores.cpp
     src/render/RenderTargets.cpp

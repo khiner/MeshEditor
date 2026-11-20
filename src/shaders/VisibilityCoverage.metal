@@ -15,7 +15,7 @@ inline float4 VisibilitySampleTexture(
 
 inline uint CoveredMeshletObject(
     const thread Scene &scene, VisibilityShadingPushConstants pc, uint primitive_id,
-    float2 pixel, bool front_facing, bool transmission
+    float2 pixel, bool front_facing, bool transmission, bool opaque_layer = false, bool motion_layer = false
 ) {
     device const BindlessSet &bindless = scene.B;
     constant SceneViewUBO &view = scene.View;
@@ -23,7 +23,8 @@ inline uint CoveredMeshletObject(
     const uint topology = MeshletPrimitiveTopology(resolved.Meshlet);
     const uint material_index = MeshletPrimitiveMaterialIndex(scene, resolved.Primitive);
     device const PBRMaterial &material = scene.Materials(view.MaterialSlot)[material_index];
-    const bool cull_backfaces = CullBackfaces(view, material.DoubleSided);
+    if (opaque_layer && ((material.AlphaMode != MaterialAlphaMode::Opaque && !(motion_layer && material.AlphaMode == MaterialAlphaMode::Mask)) || (!material.Unlit && material.Transmission.Factor > 0.0f))) discard_fragment();
+    const bool cull_backfaces = CullBackfaces(view, VisibilityDoubleSided(view, material));
     if (topology == uint(MeshPrimitiveTopology::Triangle)) {
         const float3 scale = float3(MeshletWorld(scene, resolved.Draw).S);
         const bool authored_front_facing = scale.x * scale.y * scale.z < 0.0f ? !front_facing : front_facing;

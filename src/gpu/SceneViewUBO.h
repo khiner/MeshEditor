@@ -12,6 +12,17 @@ struct SceneViewUBO {
     vec3 CameraPosition DEFAULT();
     float CameraNear DEFAULT();
     float CameraFar DEFAULT();
+    float RayMaxRoughness DEFAULT(0.5f);
+    uint32_t RaySamples DEFAULT(1u);
+    uint32_t RayStep DEFAULT(2u);
+    uint32_t RayFrame DEFAULT();
+    uint32_t RayFastGI DEFAULT();
+    float RayGiDistance DEFAULT(10);
+    float RayGiThickness DEFAULT(.1f);
+    uint32_t RayReflections DEFAULT();
+    uint32_t RayActive DEFAULT();
+    uint32_t RayInstanceCount DEFAULT();
+    uint32_t RayTransmissionShadows DEFAULT();
     uint32_t LightCount DEFAULT();
     uint32_t LightSlot DEFAULT();
     uint32_t UseSceneLightsRender DEFAULT();
@@ -78,4 +89,8 @@ struct SceneViewUBO {
     uint32_t LookThroughObjectId DEFAULT();
     // The instance flags that pin an instance to original source geometry in this view.
     uint32_t LodPinFlags DEFAULT();
+    uint32_t LightTileSlot DEFAULT(InvalidSlot);
+    vec2 LightTileViewport DEFAULT();
+    uint32_t RayShadowSamples DEFAULT(1u);
+    uint32_t RayAreaLightSlot DEFAULT(InvalidSlot);
 };

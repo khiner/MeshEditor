@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""Pack Blender's checked-in EEVEE tables without recomputing or fitting them."""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import re
+import struct
+import subprocess
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('blender', type=Path)
+parser.add_argument('--verify', action='store_true', help='Check packed data and copied equations without writing files')
+args = parser.parse_args()
+revision = '222853b0d7e49dda6c1ce56640b2f70867efa69b'
+eevee = 'source/blender/draw/engines/eevee/'
+
+def pinned(path):
+    return subprocess.check_output(['git', '-C', str(args.blender), 'show', revision + ':' + path])
+
+source = pinned(eevee + 'eevee_lut.cc')
+text = source.decode()
+def table(name, count):
+    body = text.split('const float ' + name + '[', 1)[1].split('= {', 1)[1].split('};', 1)[0]
+    values = [float(x.rstrip('f')) for x in re.findall(r'[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?f?', body)]
+    assert len(values) == count, (name, len(values), count)
+    return values
+blue = table('blue_noise', 4096 * 4)
+brdf = table('brdf_ggx', 4096 * 3)
+bsdf = table('bsdf_ggx', 16 * 4096 * 3)
+btdf = table('btdf_ggx', 16 * 4096)
+disk = table('ltc_disk_integral', 4096)
+values = blue[:]
+for i in range(4096):
+    values.extend(brdf[3*i:3*i+3] + [disk[i]])
+for i in range(16*4096):
+    values.extend(bsdf[3*i:3*i+3] + [btdf[i]])
+values.extend(table('ltc_mat_ggx', 4096 * 4))
+output = Path(__file__).resolve().parents[1] / 'res/eevee'
+output.mkdir(exist_ok=True)
+data = struct.pack('<' + 'f' * len(values), *values)
+if args.verify:
+    assert (output / 'utility.bin').read_bytes() == data, 'Packed EEVEE tables differ from upstream'
+else:
+    (output / 'utility.bin').write_bytes(data)
+ltc_bytes = pinned(eevee + 'shaders/eevee_ltc_lib.bsl.hh')
+provenance = {
+    'source': 'https://projects.blender.org/blender/blender/src/commit/' + revision + '/source/blender/draw/engines/eevee/eevee_lut.cc',
+    'revision': revision, 'license': 'GPL-2.0-or-later', 'copyright': 'Blender Authors',
+    'source_sha256': hashlib.sha256(source).hexdigest(),
+    'packed_sha256': hashlib.sha256(data).hexdigest(),
+    'ltc_source_sha256': hashlib.sha256(ltc_bytes).hexdigest(),
+    'ltc_adaptations': ['Metal texture/address-space syntax and utility layer layout',
+                        'Use squared cross product instead of 1-dot^2 in the edge denominator to avoid FP32 cancellation'],
+    'layout': 'Little endian float4[19][64][64]: blue_noise; brdf_ggx RGB and ltc_disk_integral A; bsdf_ggx RGB and btdf_ggx A (16 layers); ltc_mat_ggx'
+}
+if args.verify:
+    assert json.loads((output / 'provenance.json').read_text()) == provenance, 'EEVEE provenance metadata differs'
+else:
+    (output / 'provenance.json').write_text(json.dumps(provenance, indent=2) + '\n')
+
+upstream = pinned(eevee + 'shaders/eevee_bxdf_microfacet.bsl.hh').decode()
+production = (output.parents[1] / 'src/shaders/EeveeMicrofacet.h').read_text()
+functions = ['bxdf_ggx_D', 'bxdf_ggx_smith_G1', 'bxdf_ggx_sample_reflection', 'bxdf_ggx_sample_vndf',
+             'bxdf_ggx_sample_refraction', 'bxdf_ggx_eval_reflection', 'bxdf_ggx_eval_refraction',
+             'bxdf_ggx_perceived_roughness_transmission', 'bxdf_ggx_dominant_direction_transmission']
+for name in functions:
+    match = re.search(r'^(?:float3|float|BsdfSample|BsdfEval) ' + name + r'\(', upstream, re.M)
+    assert match, name
+    start = upstream.index('{', match.start())
+    depth, end = 1, start + 1
+    while depth:
+        depth += (upstream[end] == '{') - (upstream[end] == '}')
+        end += 1
+    body = upstream[match.start():end].replace('float &G_V', 'thread float &G_V').replace('M_PI ', 'M_PI_F ')
+    # Blender carries one disabled early return in the reflection evaluator.
+    active = re.sub(r'  if \(NV <= 0\.0f\) \{\n#if 0[^\n]*\n.*?^#endif\n  \}\n', '', body, flags=re.M | re.S)
+    assert active in production, 'Production equation changed: ' + name
+print('Verified packed tables and nine copied microfacet functions at ' + revision)
+
+# Verify the LTC integration equations after only syntax/resource-layout adaptation.
+ltc = ltc_bytes.decode().split('namespace detail {', 1)[1].split('/**\n * Perform LTC evaluation', 1)[0]
+ltc = 'namespace detail {' + ltc
+ltc = ltc.replace('sampler2DArray util_tx', 'texture2d_array<float> util_tx').replace('LightVector lv', 'float3 light_direction').replace('lv.L', 'light_direction')
+ltc = ltc.replace('texture(util_tx, float3(uv, UTIL_DISK_INTEGRAL_LAYER))[UTIL_DISK_INTEGRAL_COMP]', 'util_tx.sample(linear_sampler, uv, 1u, level(0)).w')
+ltc = ltc.replace('UTIL_TEX_UV_SCALE', '(63.0f / 64.0f)').replace('UTIL_TEX_UV_BIAS', '(0.5f / 64.0f)')
+ltc = ltc.replace('M_1_PI', '(1.0f / M_PI_F)').replace('M_PI', 'M_PI_F').replace('M_PI_F_F', 'M_PI_F').replace('inversesqrt(', 'rsqrt(')
+ltc = ltc.replace('atan(sqrt_discr, -D_a)', 'atan2(sqrt_discr, -D_a)').replace('atan(D * sqrt_discr, -D_d)', 'atan2(D * sqrt_discr, -D_d)')
+# Both ports use the tabulated integral selected by the pinned source.
+ltc = re.sub(r'^#if 1\n(.*?)^#else\n.*?^#endif\n', r'\1', ltc, flags=re.M | re.S)
+ltc = ltc.replace('float theta_sintheta = (x > 0.0f) ? v : 0.5f * rsqrt(max(1.0f - x * x, 1e-7f)) - v;', '''// For unit vectors, |cross|^2 == 1 - dot^2; the former avoids cancellation
+  // for nearly antipodal corners at a large emitter's boundary.
+  const float3 edge = cross(v1, v2);
+  float theta_sintheta = (x > 0.0f) ? v : 0.5f * rsqrt(max(dot(edge, edge), 1e-7f)) - v;''').replace('return cross(v1, v2) * theta_sintheta;', 'return edge * theta_sintheta;')
+assert ltc in (output.parents[1] / 'src/shaders/EeveeLtc.h').read_text(), 'LTC integration equations changed'
+print('Verified LTC rectangle, ellipse, cubic solver, edge integral and horizon attenuation equations')
+
+frame_source = pinned('source/blender/gpu/shaders/common/gpu_shader_math_matrix_construct.bsl.hh').decode()
+frame = frame_source[frame_source.index('float3x3 from_up_axis'):].split('/** \\} */', 1)[0]
+assert frame in (output.parents[1] / 'src/shaders/EeveeLtc.h').read_text(), 'LTC incident frame equations changed'

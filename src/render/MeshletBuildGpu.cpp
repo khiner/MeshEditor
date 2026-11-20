@@ -62,7 +62,8 @@ void LayoutJob(Layout &layout, MeshletBuildJob &job) {
     job.TileBound = uint32_t(tile_bound);
     job.RadixPassCount = 8u + (std::bit_width(p ? p - 1u : 0u) + 3u) / 4u;
     job.StatsOffset = layout.Take(16);
-    job.KeysOffset = layout.Take(uint64_t(n) * 2u);
+    // Sorting keys become packed triangle centers after tile construction.
+    job.KeysOffset = layout.Take(uint64_t(n) * 3u);
     job.OrderOffset = layout.Take(n);
     job.TempOrderOffset = layout.Take(n);
     job.HistogramOffset = layout.Take(uint64_t(job.BlockCount) * 16u);

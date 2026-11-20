@@ -28,6 +28,7 @@
 #include "gltf/GltfScene.h"
 #include "image/ImageEncode.h"
 #include "mesh/MeshComponents.h"
+#include "mesh/MeshStore.h"
 #include "metal/ImGuiRenderer.h"
 #include "metal/MetalCpp.h"
 #include "metal/PassChain.h"
@@ -66,8 +67,10 @@
 #include "implot.h"
 #include "imspinner_demo.h"
 
+#include <charconv>
 #include <csignal>
 #include <future>
+#include <iomanip>
 #include <print>
 #include <set>
 
@@ -1097,6 +1100,10 @@ void CompareValidationImages(state::Registry &r, ValidationSession &session, std
     const std::array<const mtl::Texture *, 2> expected{&session.Live, &r.get<const Viewport>(FirstViewport(r)).Targets.Screen->FinalColorImage};
     const std::array<const mtl::Texture *, 2> restored{&session.Restored.App, &restored_viewport};
     const std::array names{std::format("{}-app", restore), std::format("{}-viewport", restore)};
+    const bool traced_app = std::ranges::any_of(r.view<const Viewport>(), [&](state::Entity e) {
+        return Displayed(r, e) && RayTracingActive(r.get<const Viewport>(e));
+    });
+    const std::array compare{!traced_app, !RayTracingActive(r.get<const Viewport>(FirstViewport(r)))};
     for (uint32_t i = 0; i < restored.size(); ++i) {
         if (restored[i]->Extent != expected[i]->Extent) {
             const auto actual = restored[i]->Extent, extent = expected[i]->Extent;
@@ -1114,6 +1121,7 @@ void CompareValidationImages(state::Registry &r, ValidationSession &session, std
         const auto encoder = chain.BeginCompute("ValidationCompare");
         session.Compare.Bind(encoder);
         for (uint32_t i = 0; i < restored.size(); ++i) {
+            if (!compare[i]) continue;
             command.SetTexture(**expected[i], 0);
             command.SetTexture(**restored[i], 1);
             command.SetBuffer(*session.Differences, i * sizeof(uint32_t), 0);
@@ -1137,7 +1145,7 @@ void CompareValidationImages(state::Registry &r, ValidationSession &session, std
     }
 }
 
-// Compare Persistent state, viewport pixels, and composed UI pixels after action replay and cold restoration.
+// State replay remains exact; images containing ray-traced viewports can have different temporal history.
 void ValidateRoundTrip(
     state::Registry &r, CA::MetalLayer *layer,
     ImDrawData *draw_data, std::unique_ptr<ValidationSession> &session, mtl::ImGuiRenderer &ui, uint64_t presented_frame = 0u
@@ -1295,10 +1303,23 @@ Scene:
   --empty                     Start with an empty scene
   --camera NAME               Frame the named camera
   --shading MODE              wireframe | solid | preview | rendered
+  --ray-tracing N             Enable hardware ray tracing with 1-64 indirect samples
+  --ray-shadow-samples N      Rays per area light, 1-64 (default 1)
+  --ray-roughness N           Reflection roughness cutoff (default .5; 1 traces all)
+  --ray-resolution MODE       full | half (default) | quarter indirect ray grid
+  --ray-gi-resolution MODE    full | half (default) | quarter Fast GI grid
+  --ray-refinement-frames N   Stationary refinement budget, 1–4096 (default 64)
+  --ray-diffuse               Trace one diffuse bounce
+  --ray-fast-gi               Use EEVEE screen-space diffuse and rough lighting
+  --ray-gi-distance N         Fast GI search radius in scene units (default 10)
+  --ray-gi-thickness N        Fast GI minimum thickness (default .1)
+  --ray-raw                   Disable noise filtering (grid reconstruction remains)
+  --ray-opaque-shadows        Block glass in shadow rays instead of straight-ray transmission
   --edit ELEMENT              Enter edit mode on vertex | edge | face
   --select-all                Select all objects or edited elements
   --xray                      Turn on X-ray for the capture's shading mode
   --overlays                  Draw the editor overlays
+  --no-overlays               Hide editor overlays, including during benchmarks
   --lod-error PIXELS          Screen-space error budget for the cluster LOD cut
   --display LIST              Comma-separated: vertex-normals, face-normals, bounds, tet-wireframe
 
@@ -1310,15 +1331,20 @@ Capture:
   --render-queue DIR          Claim jobs from a render spool until it empties (headless)
   --fps N                     Capture frame rate (default 60)
   --timeline-end SECONDS      Stop the captured timeline at SECONDS
-  --motion-blur fast|SAMPLES  Fast velocity blur (default), or 1-64 full shutter samples
+  --motion-blur off|fast|N    Disable blur, use Fast (default), or 1-64 shutter samples
   --play [SECONDS]            Play the timeline, optionally for SECONDS
 
 Benchmarking:
   --headless                  Run without a window
   --frames N                  Render N frames and exit
-  --bench-action ACTION       steady | orbit | transform | visibility | box-select | box-select-orbit | pick-cycle
+  --bench-warmup N            Render N stationary frames before the headless benchmark
+  --bench-settle N            Render N stationary frames after the headless benchmark
+  --bench-recovery FILE       Log elapsed ms from the last moving frame with normal viewport refinement
+                              With --screenshot, save numbered images of every recovery frame
+  --bench-action ACTION       steady | orbit | transform | drag | animation | material | visibility | box-select | box-select-orbit | pick-cycle
   --bench-action-count N      Objects the transform and visibility actions touch (default 64)
   --profile                   Print the profile report on exit, in a build with PROFILE=1
+  --bench-cameras PATH        Export headless benchmark camera matrices as JSON lines
   --profile-json PATH         Write the profile report to PATH, in a build with PROFILE=1
 
 Other:
@@ -1329,6 +1355,9 @@ struct CaptureRequest {
     enum class BenchmarkAction { Steady,
                                  Orbit,
                                  Transform,
+                                 Drag,
+                                 Animation,
+                                 Material,
                                  Visibility,
                                  BoxSelect,
                                  BoxSelectOrbit,
@@ -1338,71 +1367,106 @@ struct CaptureRequest {
     float PlayDuration{0};
     int Fps{60};
     bool RecordAudio{false}; // Mux master audio; disabled for the video-only render corpus.
-    fs::path RecordPath{}, ScreenshotPath{};
+    fs::path RecordPath{}, ScreenshotPath{}, BenchCameras{}, BenchRecovery{};
     fs::path RenderBasename{};
     std::optional<MotionBlur> Blur{};
     float TimelineEnd{0}; // Seconds. Positive: set the timeline's end frame, so a long play runs without looping.
-    int BenchFrames{0};
+    int BenchFrames{0}, BenchSettle{0}, BenchWarmup{0};
     BenchmarkAction BenchAction{BenchmarkAction::Steady};
     uint32_t BenchActionCount{64};
     std::string CameraName{};
     std::optional<ViewportShadingMode> Shading{};
-    bool Overlays{false}; // Keep overlays on through a capture, which presentation otherwise turns off.
+    std::optional<bool> Overlays{}; // Explicit override; otherwise preserve the capture or editor default.
     std::optional<Element> EditMode{}; // Engaged: select mesh objects and enter this element edit mode.
     bool XRay{false};
     bool SelectAll{false};
+    RayTracingSettings Rays;
     float LodErrorPixels{-1.f}; // Cluster LOD error override in pixels; negative uses the viewport setting.
     SelectionOverlays Selection{};
 };
 
 struct BenchmarkDriver {
-    CaptureRequest::BenchmarkAction Action;
-    std::vector<std::pair<state::Entity, Transform>> Transforms;
-    uint32_t Frame{};
+    using BenchAction = CaptureRequest::BenchmarkAction;
+    BenchAction Action;
+    std::vector<std::pair<state::Entity, vec3>> Positions;
+    action::selection::ApplyTreeSelection Selection;
+    uint32_t Frame{}, TotalFrames{};
+    state::Entity MaterialEntity{state::Null};
 
-    BenchmarkDriver(state::Registry &r, const CaptureRequest &capture) : Action(capture.BenchAction) {
-        if (Action != CaptureRequest::BenchmarkAction::Transform && Action != CaptureRequest::BenchmarkAction::Visibility) return;
+    BenchmarkDriver(state::Registry &r, const CaptureRequest &capture) : Action(capture.BenchAction), TotalFrames(uint32_t(capture.BenchFrames)) {
+        if (Action != BenchAction::Transform && Action != BenchAction::Visibility && Action != BenchAction::Drag && Action != BenchAction::Material) return;
         std::vector<state::Entity> entities;
         for (const auto [entity, kind] : r.view<const ObjectKind>(state::Exclude<SubElementOf>).each()) {
             if (kind.Value == ObjectType::Mesh && r.all_of<Instance, Transform>(entity) && !r.all_of<Hidden>(entity)) entities.emplace_back(entity);
         }
         std::ranges::sort(entities);
         entities.resize(std::min<size_t>(entities.size(), capture.BenchActionCount));
-        Transforms.reserve(entities.size());
-        for (const auto entity : entities) Transforms.emplace_back(entity, r.get<const Transform>(entity));
+        if (Action == BenchAction::Transform) {
+            for (const auto entity : entities) Positions.emplace_back(entity, r.get<const Transform>(entity).P);
+        } else if (Action == BenchAction::Material) {
+            const auto &meshes = r.Resources.get<const MeshStore>();
+            for (const auto entity : entities) {
+                const auto mesh = GetMesh(r, r.get<const Instance>(entity).Entity);
+                const auto materials = meshes.Arenas().PrimitiveMaterials.Get(meshes.Get(mesh.GetStoreId()).PrimitiveMaterials);
+                if (!materials.empty() && (MaterialEntity = MaterialAt(r, materials.front())) != state::Null) {
+                    std::println("Benchmark material: {} (slot {})", r.get<const Material>(MaterialEntity).Name, materials.front());
+                    return;
+                }
+            }
+            std::println(stderr, "Material benchmark requires an assigned mesh material");
+            std::exit(1);
+        } else if (!entities.empty()) {
+            Selection.NavToActive = entities.front();
+            Selection.SelectCount = uint32_t(entities.size());
+            Selection.Clear = action::selection::ApplyTreeSelection::ClearKind::All;
+            Selection.Entities = std::move(entities);
+        }
     }
 
     void Apply(state::Registry &r, state::Entity viewport, uvec2 extent) {
         switch (Action) {
-            case CaptureRequest::BenchmarkAction::Steady: break;
-            case CaptureRequest::BenchmarkAction::Orbit:
+            case BenchAction::Steady: break;
+            case BenchAction::Orbit:
                 action::Emit(action::view::OrbitViewCamera{viewport, {0.01f, 0.f}});
                 break;
-            case CaptureRequest::BenchmarkAction::Transform: {
+            case BenchAction::Transform: {
                 const float offset = Frame % 2 == 0 ? 0.05f : 0.f;
                 if (action::Begin(action::Phase::Record)) {
-                    for (const auto &[entity, base] : Transforms) action::AddToGesture(action::UpdateOf<&Transform::P>(entity, base.P + vec3{0, offset, 0}));
+                    for (const auto &[entity, base] : Positions) action::AddToGesture(action::UpdateOf<&Transform::P>(entity, base + vec3{0, offset, 0}));
                 }
                 break;
             }
-            case CaptureRequest::BenchmarkAction::Visibility: {
-                if (!action::Begin(action::Phase::Record)) break;
-                if (Frame == 0 && !Transforms.empty()) {
-                    std::vector<state::Entity> entities;
-                    for (const auto &[entity, _] : Transforms) entities.push_back(entity);
-                    action::AddToGesture(action::selection::ApplyTreeSelection{.Entities = entities, .SelectCount = uint32_t(entities.size()), .NavToActive = entities.front(), .Clear = action::selection::ApplyTreeSelection::ClearKind::All});
+            case BenchAction::Drag: {
+                if (Frame == 0) {
+                    if (Selection.SelectCount) action::Emit(std::move(Selection));
+                } else {
+                    action::Emit(action::view::TransformSelection{Transform{.P = {0, .25f * std::sin(float(Frame) * .05f), 0}}}, action::Phase::Stage);
+                    if (Frame + 1u == TotalFrames) action::Commit();
                 }
+                break;
+            }
+            case BenchAction::Animation: {
+                const auto &range = r.get<const TimelineRange>(state::Document);
+                action::Emit(action::timeline::SetFrame{range.StartFrame + int(Frame + 1u) % std::max(1, range.EndFrame - range.StartFrame + 1)});
+                break;
+            }
+            case BenchAction::Material:
+                action::Emit(action::object::UpdateMaterial<float>{MaterialEntity, offsetof(PBRMaterial, RoughnessFactor), .05f + .35f * (.5f + .5f * std::sin(float(Frame) * .08f))});
+                break;
+            case BenchAction::Visibility: {
+                if (!action::Begin(action::Phase::Record)) break;
+                if (Frame == 0 && Selection.SelectCount) action::AddToGesture(std::move(Selection));
                 action::AddToGesture(action::object::SetVisible{Frame % 2 != 0});
                 break;
             }
-            case CaptureRequest::BenchmarkAction::BoxSelectOrbit:
+            case BenchAction::BoxSelectOrbit:
                 if (Frame % 2 != 0) {
                     // Keep both benchmark viewpoints on the scene throughout long runs.
                     action::Emit(action::view::OrbitViewCamera{viewport, {Frame % 4 == 1 ? 0.6f : -0.6f, 0.f}});
                     break;
                 }
                 [[fallthrough]];
-            case CaptureRequest::BenchmarkAction::BoxSelect: {
+            case BenchAction::BoxSelect: {
                 if (extent == uvec2{}) break;
                 // The box alternates between two insets from the viewport edge so every frame changes the selection.
                 const float inset = Frame % 2 == 0 ? 4.f : 8.f;
@@ -1413,12 +1477,13 @@ struct BenchmarkDriver {
                 });
                 break;
             }
-            case CaptureRequest::BenchmarkAction::PickCycle: {
+            case BenchAction::PickCycle: {
                 const auto center = SelectionPixel(r.get<const Viewport>(viewport).FrameView.Extent, {.5f, .5f});
                 action::Emit(action::selection::Pick{false, PickObject(r, viewport, center, Frame != 0)});
                 break;
             }
         }
+        RequestFrame(r, viewport);
         ++Frame;
     }
 };
@@ -1627,12 +1692,22 @@ CaptureDriver BeginCaptureSession(state::Registry &r, const CaptureRequest &capt
     if (driver.Presenting() && capture.BenchFrames == 0) Perform(r, action::timeline::EnterPresentation{});
     // Apply the explicit overlay override after enabling presentation mode.
     const auto viewport = FirstViewport(r);
-    if (capture.Overlays) Perform(r, action::UpdateOf<&ViewportDisplay::ShowOverlays>(viewport, true));
+    if (capture.Rays.Enabled) {
+        using Ray = RayTracingSettings;
+        const auto apply = [&]<auto... fields>() {
+            (Perform(r, action::UpdateOf<&ViewportDisplay::RayTracing, fields>(viewport, capture.Rays.*fields)), ...);
+        };
+        // Headless flags override these fields and preserve the loaded viewport's reflection setting.
+        apply.operator()<&Ray::Enabled, &Ray::Samples, &Ray::ShadowSamples, &Ray::Resolution, &Ray::FastGiResolution,
+                         &Ray::RefinementFrames, &Ray::MaxRoughness, &Ray::Diffuse, &Ray::FastGiDistance,
+                         &Ray::FastGiThickness, &Ray::Denoise, &Ray::TransmissionShadows>();
+    }
+    if (capture.Overlays) Perform(r, action::UpdateOf<&ViewportDisplay::ShowOverlays>(viewport, *capture.Overlays));
     if (capture.LodErrorPixels >= 0.f) {
         Perform(r, action::UpdateOf<&ViewportDisplay::LodErrorPixels>(viewport, capture.LodErrorPixels));
     }
     r.Resources.get<FrameState>().FixedFrameStep = driver.FixedStep;
-    // Enable motion blur for video recording and preserve the current setting for still or audio-only captures.
+    // Recording supplies capture state; the viewport decides whether motion blur is compatible with its renderer.
     r.Resources.get<FrameState>().Capturing = driver.RecordingMode() && !driver.AudioOnly();
     if (capture.Blur) {
         Perform(r, action::UpdateOf<&ViewportDisplay::MotionBlur>(viewport, capture.Blur));
@@ -1695,6 +1770,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
     SampleTreesFuture = std::async(std::launch::async, BuildSampleTrees);
 
     auto driver = BeginCaptureSession(r, capture, initial_file, empty, /*fixed_step=*/false);
+    BenchmarkDriver benchmark{r, capture};
 
 #ifdef DEBUG_BUILD
     std::unique_ptr<ValidationSession> validation_session;
@@ -1752,7 +1828,7 @@ void run(const char *initial_file, bool empty, const CaptureRequest &capture) {
         const auto new_logical_extent = first_panel != editor_frame.Viewports.end() ? first_panel->Extent : uvec2{};
         const bool viewport_settled = new_logical_extent != uvec2{} && new_logical_extent == r.get<const ViewportPanel>(first_viewport).Extent;
         if (capture.BenchFrames > 0 && viewport_settled) {
-            if (capture.BenchAction == CaptureRequest::BenchmarkAction::Orbit) action::Emit(action::view::OrbitViewCamera{first_viewport, {0.01f, 0.f}});
+            benchmark.Apply(r, first_viewport, RenderExtentPx(r, first_viewport));
             if (++bench_ticks >= capture.BenchFrames) done = true;
         }
         // Give interaction gestures priority in the frame buffer.
@@ -1884,8 +1960,21 @@ SceneStatus RunHeadlessScene(state::Registry &r, const char *initial_file, bool 
     if (capture.Selection.TetWireframe) Perform(r, action::UpdateOf<&ViewportDisplay::Selection, &SelectionOverlays::TetWireframe>(viewport, true));
 
     frame_state.DeltaTime = driver.RenderDt;
-    int bench_frames = capture.BenchFrames;
+    int bench_frames = capture.BenchFrames + capture.BenchSettle;
+    int warmup_frames = capture.BenchWarmup;
     BenchmarkDriver benchmark{r, capture};
+    std::ofstream camera_log;
+    if (!capture.BenchCameras.empty()) {
+        camera_log.open(capture.BenchCameras);
+        if (!camera_log) throw std::runtime_error("Cannot open benchmark camera export");
+        camera_log << std::setprecision(9);
+    }
+    std::ofstream recovery;
+    std::chrono::steady_clock::time_point recovery_start;
+    if (!capture.BenchRecovery.empty()) {
+        recovery.open(capture.BenchRecovery);
+        if (!recovery) throw std::runtime_error("Cannot open benchmark recovery log");
+    }
     bool profile_cleared{false};
     bool submitted{false};
     bool done{false};
@@ -1901,7 +1990,7 @@ SceneStatus RunHeadlessScene(state::Registry &r, const char *initial_file, bool 
         const auto extent = r.get<const ViewportPanel>(viewport).Extent;
         // Require this scene's first submit because queue workers preserve ready images across scenes.
         const bool settled = submitted && ViewportImageReady(r.get<const Viewport>(viewport));
-        if (settled && !profile_cleared) {
+        if (settled && !warmup_frames && !profile_cleared) {
             if (profile::Enabled) {
                 const auto ms_since_start = [scene_start](auto point) { return std::chrono::duration<float, std::milli>(point - scene_start).count(); };
                 std::println(
@@ -1915,7 +2004,7 @@ SceneStatus RunHeadlessScene(state::Registry &r, const char *initial_file, bool 
         }
         {
             const profile::CpuScope scope{"Frame"};
-            if (bench_frames > 0 && settled) benchmark.Apply(r, viewport, RenderExtentPx(r, viewport));
+            if (!warmup_frames && bench_frames > capture.BenchSettle && settled) benchmark.Apply(r, viewport, RenderExtentPx(r, viewport));
             driver.EmitFrameActions(r, viewport, settled, extent);
             Session(r).Frame();
             ReportActionErrors(r);
@@ -1924,6 +2013,10 @@ SceneStatus RunHeadlessScene(state::Registry &r, const char *initial_file, bool 
             WaitForRender(r);
             if (!submitted) first_frame_at = std::chrono::steady_clock::now();
             submitted = true;
+        }
+        if (settled && warmup_frames > 0) {
+            --warmup_frames;
+            continue;
         }
 #ifdef VALIDATE_ACTIONS
         const auto revision = std::pair{Session(r).Revision, RestoreGeneration};
@@ -1943,14 +2036,43 @@ SceneStatus RunHeadlessScene(state::Registry &r, const char *initial_file, bool 
         }
 #endif
         if (bench_frames > 0) {
+            if (settled && recovery.is_open() && bench_frames <= capture.BenchSettle + 1) {
+                const int index = capture.BenchSettle + 1 - bench_frames;
+                const auto now = std::chrono::steady_clock::now();
+                if (index == 0) recovery_start = now;
+                recovery << std::chrono::duration<double, std::milli>(now - recovery_start).count() << '\n';
+                if (driver.ScreenshotMode()) {
+                    const auto &path = driver.ScreenshotPath;
+                    const auto numbered = std::format("{}-{:03}{}", path.stem().string(), index, path.extension().string());
+                    if (auto saved = SaveScreenshot(r, viewport, path.parent_path() / numbered); !saved) throw std::runtime_error(saved.error());
+                }
+            }
+            if (settled && camera_log.is_open()) {
+                const auto &camera = r.get<const Viewport>(viewport).FrameView.Camera;
+                const auto size = RenderExtentPx(r, viewport);
+                camera_log << "{\"width\":" << size.x << ",\"height\":" << size.y;
+                const auto matrix = [&](const char *name, const mat4 &m) {
+                    camera_log << ",\"" << name << "\":[";
+                    for (uint32_t row = 0; row < 4; ++row) {
+                        camera_log << (row ? ",[" : "[");
+                        for (uint32_t col = 0; col < 4; ++col) camera_log << (col ? "," : "") << m[col][row];
+                        camera_log << "]";
+                    }
+                    camera_log << "]";
+                };
+                matrix("cameraToWorld", Inverse(camera.View()));
+                matrix("projection", camera.Projection(AspectRatio(size)));
+                camera_log << "}\n";
+            }
+            if (driver.RecordingMode() && driver.CaptureFrame(r, viewport, driver.Framed(settled))) done = true;
             // Render every ready benchmark tick and stop after the requested count.
             if (settled && --bench_frames == 0) {
-                if (driver.ScreenshotMode()) {
+                if (driver.ScreenshotMode() && !recovery.is_open()) {
                     ReportScreenshot(r, viewport, driver.ScreenshotPath);
                 }
                 done = true;
             }
-            RequestRender(r, /*disoccludes=*/false);
+            if (!recovery.is_open() || bench_frames > capture.BenchSettle) RequestRender(r, /*disoccludes=*/false);
         } else {
             if (driver.CaptureFrame(r, viewport, driver.Framed(settled))) done = true;
             // End an idle headless run after one completed frame.
@@ -2057,6 +2179,8 @@ std::expected<LaunchOptions, int> ParseLaunchOptions(std::span<const std::string
             empty = true;
         } else if (a == "--headless") {
             headless = true;
+        } else if (a == "--no-overlays") {
+            capture.Overlays = false;
         } else if (a == "--overlays") {
             capture.Overlays = true;
         } else if (a == "--edit" && std::next(it) != args.end()) {
@@ -2095,14 +2219,23 @@ std::expected<LaunchOptions, int> ParseLaunchOptions(std::span<const std::string
             capture.TimelineEnd = std::atof((++it)->c_str());
         } else if (a == "--motion-blur" && std::next(it) != args.end()) {
             const std::string_view method = *++it;
-            capture.Blur = method == "fast" ? MotionBlur{} : MotionBlur{.Steps = uint8_t(std::clamp(std::atoi(method.data()), 1, 64)), .Method = MotionBlurMethod::FullSampling};
+            capture.Blur = method == "off" ? MotionBlur{.Shutter = 0.f} : method == "fast" ? MotionBlur{} : MotionBlur{.Steps = uint8_t(std::clamp(std::atoi(method.data()), 1, 64)), .Method = MotionBlurMethod::FullSampling};
         } else if (a == "--frames" && std::next(it) != args.end()) {
             capture.BenchFrames = std::atoi((++it)->c_str());
+        } else if (a == "--bench-warmup" && std::next(it) != args.end()) {
+            capture.BenchWarmup = std::clamp(std::atoi((++it)->c_str()), 0, 4096);
+        } else if (a == "--bench-recovery" && std::next(it) != args.end()) {
+            capture.BenchRecovery = *++it;
+        } else if (a == "--bench-settle" && std::next(it) != args.end()) {
+            capture.BenchSettle = std::clamp(std::atoi((++it)->c_str()), 0, 4096);
         } else if (a == "--bench-action" && std::next(it) != args.end()) {
             const std::string_view action{*++it};
             if (action == "steady") capture.BenchAction = CaptureRequest::BenchmarkAction::Steady;
             else if (action == "orbit") capture.BenchAction = CaptureRequest::BenchmarkAction::Orbit;
             else if (action == "transform") capture.BenchAction = CaptureRequest::BenchmarkAction::Transform;
+            else if (action == "drag") capture.BenchAction = CaptureRequest::BenchmarkAction::Drag;
+            else if (action == "animation") capture.BenchAction = CaptureRequest::BenchmarkAction::Animation;
+            else if (action == "material") capture.BenchAction = CaptureRequest::BenchmarkAction::Material;
             else if (action == "visibility") capture.BenchAction = CaptureRequest::BenchmarkAction::Visibility;
             else if (action == "box-select") capture.BenchAction = CaptureRequest::BenchmarkAction::BoxSelect;
             else if (action == "box-select-orbit") capture.BenchAction = CaptureRequest::BenchmarkAction::BoxSelectOrbit;
@@ -2121,6 +2254,53 @@ std::expected<LaunchOptions, int> ParseLaunchOptions(std::span<const std::string
                 mode == "solid"                   ? ViewportShadingMode::Solid :
                 mode == "preview"                 ? ViewportShadingMode::MaterialPreview :
                                                     ViewportShadingMode::Rendered;
+        } else if (a == "--ray-tracing" && std::next(it) != args.end()) {
+            capture.Rays.Enabled = true;
+            capture.Rays.Samples = uint8_t(std::clamp(std::atoi((++it)->c_str()), 1, 64));
+        } else if (a == "--ray-shadow-samples" && std::next(it) != args.end()) {
+            capture.Rays.ShadowSamples = uint8_t(std::clamp(std::atoi((++it)->c_str()), 1, 64));
+        } else if ((a == "--ray-resolution" || a == "--ray-gi-resolution") && std::next(it) != args.end()) {
+            const auto &mode = *++it;
+            auto &resolution = a == "--ray-resolution" ? capture.Rays.Resolution : capture.Rays.FastGiResolution;
+            if (mode == "full") resolution = RayTracingResolution::Full;
+            else if (mode == "half") resolution = RayTracingResolution::Half;
+            else if (mode == "quarter") resolution = RayTracingResolution::Quarter;
+            else {
+                std::println(stderr, "Invalid ray resolution: {}", mode);
+                return std::unexpected(1);
+            }
+        } else if (a == "--ray-refinement-frames" && std::next(it) != args.end()) {
+            const auto &value = *++it;
+            unsigned frames{};
+            const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), frames);
+            if (error != std::errc{} || end != value.data() + value.size() || frames < 1u || frames > 4096u) {
+                std::println(stderr, "Ray refinement frames must be an integer between 1 and 4096: {}", value);
+                return std::unexpected(1);
+            }
+            capture.Rays.RefinementFrames = frames;
+        } else if (a == "--ray-roughness" && std::next(it) != args.end()) {
+            const auto &value = *++it;
+            float roughness{};
+            const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), roughness);
+            if (error != std::errc{} || end != value.data() + value.size() || !std::isfinite(roughness) || roughness < 0.f || roughness > 1.f) {
+                std::println(stderr, "Ray roughness must be a finite number between zero and one: {}", value);
+                return std::unexpected(1);
+            }
+            capture.Rays.MaxRoughness = roughness;
+        } else if (a == "--ray-fast-gi") {
+            if (capture.Rays.Diffuse != DiffuseLighting::RayTraced) capture.Rays.Diffuse = DiffuseLighting::FastGI;
+        } else if (a == "--ray-gi-distance" && std::next(it) != args.end()) {
+            capture.Rays.FastGiDistance = std::clamp(std::stof(*++it), .01f, 1000.f);
+        } else if (a == "--ray-gi-thickness" && std::next(it) != args.end()) {
+            capture.Rays.FastGiThickness = std::clamp(std::stof(*++it), 0.f, 10.f);
+        } else if (a == "--ray-diffuse") {
+            capture.Rays.Diffuse = DiffuseLighting::RayTraced;
+        } else if (a == "--ray-opaque-shadows") {
+            capture.Rays.TransmissionShadows = false;
+        } else if (a == "--ray-raw") {
+            capture.Rays.Denoise = false;
+        } else if (a == "--bench-cameras" && std::next(it) != args.end()) {
+            capture.BenchCameras = *++it;
 #ifdef PROFILE_BUILD
         } else if (a == "--profile") {
             profile::Enable(true);
@@ -2138,6 +2318,18 @@ std::expected<LaunchOptions, int> ParseLaunchOptions(std::span<const std::string
         } else if (initial_file.empty()) {
             initial_file = *it;
         }
+    }
+    if (capture.BenchSettle && (!headless || capture.BenchFrames <= 0 || capture.BenchFrames > INT_MAX - capture.BenchSettle)) {
+        std::println(stderr, "--bench-settle requires --headless and a positive --frames count within the integer limit");
+        return std::unexpected(1);
+    }
+    if (!capture.BenchRecovery.empty() && (!capture.BenchSettle || !capture.RecordPath.empty() || capture.Play)) {
+        std::println(stderr, "--bench-recovery requires --bench-settle and no playback or recording");
+        return std::unexpected(1);
+    }
+    if (capture.BenchWarmup && (!headless || capture.BenchFrames <= 0 || capture.Play || !capture.RecordPath.empty())) {
+        std::println(stderr, "--bench-warmup requires --headless, a positive --frames count, and no --play or recording");
+        return std::unexpected(1);
     }
     if (capture.Fps <= 0) capture.Fps = 60;
     if (capture.RecordPath.extension() == ".wav") capture.RecordAudio = true;

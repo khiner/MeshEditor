@@ -4,3 +4,6 @@ render/**/*.png     filter=lfs diff=lfs merge=lfs -text
 render/**/*.jpg     filter=lfs diff=lfs merge=lfs -text
 render/**/*.mp4     filter=lfs diff=lfs merge=lfs -text
 render/**/*.actions filter=lfs diff=lfs merge=lfs -text
+
+# Full-resolution ray-tracing comparison plates.
+docs/ray-tracing/*.webp filter=lfs diff=lfs merge=lfs -text

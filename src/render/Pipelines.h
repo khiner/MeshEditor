@@ -3,22 +3,19 @@
 #include "gpu/Element.h"
 #include "metal/Command.h"
 #include "metal/Shader.h"
-#include "render/PbrFeature.h"
+#include "gpu/PbrFeature.h"
 
 #include "render/RenderSchema.h"
 #include "state/Entity.h"
 
 namespace Format = mtl::Format;
 
-// The PBR pipelines specialized to one feature mask and to whether drawn meshes have line or point meshlets.
+// The PBR pipelines specialized to one viewport feature mask.
 struct PbrVariant {
     PbrFeatureMask Mask;
-    bool NonTriangleTopology;
+    std::optional<mtl::ComputePipeline> RayDirect, RayDirectFiltered, PreparePrimary, GlassWeights, Special, Generate, Shade, ShadeOpaque, OpaqueLayer, Reconstruct;
     mtl::RenderPipeline Transparent, Visibility;
     std::optional<mtl::RenderPipeline> Prepass; // Present with the transmission feature.
-
-    void BindMeshlets(mtl::RenderEncoder) const;
-    void BindVisibility(mtl::RenderEncoder, bool prepass = false) const;
 };
 
 // Specializes PBR pipelines to the features each viewport shades with and to the output attachments.
@@ -26,8 +23,8 @@ struct PbrVariant {
 struct PbrCompiler {
     PbrCompiler(mtl::LibraryCache &, mtl::PassFormats scene);
 
-    // The variant for the mask and topology, compiled on first use.
-    const PbrVariant &Variant(PbrFeatureMask, bool non_triangle_topology);
+    // The variant for the mask, compiled on first use.
+    const PbrVariant &Variant(PbrFeatureMask);
 
 private:
     mtl::LibraryCache &Libraries;
@@ -43,10 +40,12 @@ struct MainPipeline {
     mtl::RenderPipeline PrepassBackground;
     mtl::RenderPipeline ViewportComposite;
     mtl::RenderPipeline MotionBlurAccumulate, MotionBlurGather;
+    mtl::ComputePipeline FastGiDepth, FastGiDepthReduce, FastGiSetup, FastGiReduce, FastGiScan, FastGiDenoise, FastGiResolve;
+    mtl::ComputePipeline RayCameraMedia, RayDeformation, RayTemporal, LightCull, LightPrepare, RayShadowBounds, RayBilateral, RayAccumulate, RayFilmReproject, RayFilmReprojectLayer, RayEnvironmentRows, RayEnvironmentMarginal, RayClassify, RayDispatch, RayReset;
     mtl::ComputePipeline MotionBlurTilesFlatten, MotionBlurTilesDilate;
     mtl::RenderPipeline WorkspaceVisibility, WorkspaceTransparent;
     mtl::RenderPipeline TransparencyInit, TransparencyResolve;
-    mtl::RenderPipeline MeshletVisibilityOpaque, MeshletVisibilityCoverage;
+    mtl::RenderPipeline MeshletVisibilityOpaque, MeshletVisibilityCoverage, MeshletVisibilityLayer, MeshletVisibilityMotion;
     mtl::RenderPipeline MeshletEditEdges, MeshletEditSmoothEdges;
     mtl::RenderPipeline VertexBlockPoints;
     mtl::RenderPipeline FaceNormalMesh, VertexNormalMesh, OverlayJobLines;

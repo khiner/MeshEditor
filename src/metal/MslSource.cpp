@@ -1,10 +1,19 @@
 #include "metal/MslSource.h"
+#include "metal/MetalCpp.h"
 
 #include <algorithm>
 #include <format>
 #include <fstream>
 
 namespace msl {
+NS::SharedPtr<MTL::CompileOptions> CompileOptions() {
+    auto options = NS::TransferPtr(MTL::CompileOptions::alloc()->init());
+    options->setLanguageVersion(MTL::LanguageVersion3_2);
+    options->setMathMode(MTL::MathModeRelaxed);
+    options->setMathFloatingPointFunctions(MTL::MathFloatingPointFunctionsFast);
+    return options;
+}
+
 namespace {
 std::string ReadFile(const std::filesystem::path &path) {
     const std::ifstream in{path, std::ios::binary};
@@ -88,6 +97,17 @@ void Append(Source &out, const std::filesystem::path &root, const std::filesyste
     }
 }
 } // namespace
+
+bool Source::CanLoadBinary(const std::filesystem::path &root, const std::filesystem::path &binary) const {
+    std::error_code error;
+    const auto compiled = std::filesystem::last_write_time(binary, error);
+    if (error) return false;
+    for (const auto &file : Files) {
+        const auto modified = std::filesystem::last_write_time(root / file, error);
+        if (error || modified > compiled) return false;
+    }
+    return true;
+}
 
 Source Load(const std::filesystem::path &root, const std::filesystem::path &relative_path, const std::vector<std::string> &defines) {
     Source out;

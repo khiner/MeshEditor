@@ -73,6 +73,12 @@ Real-time mesh viewer and editor that converts meshes to rigid-body audio models
 * Shader hot reloading: edit and recompile MSL at runtime from the UI
 * Matching C++/MSL structs and function-constant indices generated from YAML
 
+### Real-time ray tracing
+
+Enable **Ray tracing** in the Material Preview or Rendered viewport. Rasterization finds the visible surfaces and composites ordinary alpha layers in depth order. Metal hardware rays see those same layers in reflections, through glass, and in soft shadows, including geometry outside the view. Ray resolution and area-light shadow samples control the cost during motion. Diffuse lighting can use a fast screen-space approximation or a traced bounce, and denoising refines the image when the view settles.
+
+See the [MeshEditor and Blender EEVEE comparison](docs/RayTracing.md) for frame timings during motion, glass refinement after the camera stops, and matching images.
+
 ## Physical audio modeling
 
 MeshEditor generates physical audio models from meshes using linear modal analysis and synthesis.
@@ -393,6 +399,8 @@ $ ./build/tests/MeshEditorTests
 | `MeshEditorEditBench` | How long a mesh edit takes end to end |
 
 Every test executable takes a test name pattern as its first argument, and `MeshEditorProjectTest` also takes `--no-render`.
+
+Run both ray-tracing viewport tests with `build/tests/MeshEditorProjectTest 'ray tracing*'`. They render the studio, vase, area-lit glass, and animated skin headlessly. Image mismatches write the current frame and an amplified difference to `build/ray-tracing-failures/`. The fixed-input test checks the linear HDR frames before tone mapping. For four-ray glass timing, run `script/BenchmarkRayTracing OUTPUT --stage native --cases glass`.
 
 `SURFACE_AUDIO=1` builds the surface-contact audio model (`src/audio/surface/`) and its tests, benchmarks, and scores under `tests/surface/`.
 See [src/audio/SurfaceContact.h](src/audio/SurfaceContact.h) for its entry points from the core modal code.

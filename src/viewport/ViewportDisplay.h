@@ -77,6 +77,45 @@ template<> inline constexpr field::SpecTable<SelectionOverlays> Specs<SelectionO
     {&SelectionOverlays::TetWireframe, {.Help = "Edges of the tetrahedral mesh of each selected object that has one"}},
 };
 
+enum class RayTracingResolution : uint8_t { Full = 1,
+                                            Half = 2,
+                                            Quarter = 4 };
+
+enum class DiffuseLighting : uint8_t { Environment,
+                                       FastGI,
+                                       RayTraced };
+
+struct RayTracingSettings {
+    bool Enabled{false};
+    bool Reflections{true};
+    DiffuseLighting Diffuse{DiffuseLighting::Environment};
+    float FastGiDistance{10.f}, FastGiThickness{.1f};
+    RayTracingResolution FastGiResolution{RayTracingResolution::Half};
+    uint32_t RefinementFrames{64};
+    uint8_t Samples{1};
+    uint8_t ShadowSamples{1};
+    float MaxRoughness{0.5f};
+    RayTracingResolution Resolution{RayTracingResolution::Half};
+    bool Denoise{true};
+    bool TransmissionShadows{true};
+    bool operator==(const RayTracingSettings &) const = default;
+};
+template<> inline constexpr field::SpecTable<RayTracingSettings> Specs<RayTracingSettings>{
+    {&RayTracingSettings::MaxRoughness, {.Min = 0, .Max = 1, .Label = "Reflection roughness", .Help = "Fade rough reflections into environment lighting. One traces every roughness; lower values save rays."}},
+    {&RayTracingSettings::Resolution, {.Help = "Indirect and glass ray grid. Higher resolution preserves finer refracted detail. Direct lighting, polished opaque reflections, and geometry boundaries retain full resolution."}},
+    {&RayTracingSettings::Enabled, {.Label = "Ray tracing", .Help = "Hardware ray traced shadows, surface lighting, and glass refraction"}},
+    {&RayTracingSettings::Reflections, {.Help = "Trace opaque surface reflections, including objects outside the view. Glass always traces reflection and transmission."}},
+    {&RayTracingSettings::Diffuse, {.Label = "Indirect lighting", .Help = "Environment lighting, fast screen-space diffuse and rough lighting, or a hardware-traced diffuse bounce. Fast GI cannot see offscreen or hidden surfaces."}},
+    {&RayTracingSettings::FastGiResolution, {.Label = "Fast GI resolution", .Help = "Screen-space indirect lighting grid, independent of the glass and reflection ray grid"}},
+    {&RayTracingSettings::RefinementFrames, {.Min = 1, .Max = 4096, .Label = "Refinement frames", .Help = "Frames accumulated before a stationary viewport stops rendering. More frames improve convergence without increasing the samples per frame."}},
+    {&RayTracingSettings::FastGiDistance, {.Min = .01f, .Max = 1000.f, .Label = "Fast GI distance", .Help = "Screen-space search radius in scene units"}},
+    {&RayTracingSettings::FastGiThickness, {.Min = 0.f, .Max = 10.f, .Label = "Fast GI thickness", .Help = "Minimum screen-space occluder thickness in scene units"}},
+    {&RayTracingSettings::Denoise, {.Help = "Spatial reconstruction, temporal accumulation, and variance-guided filtering. Disable to inspect raw samples."}},
+    {&RayTracingSettings::TransmissionShadows, {.Label = "Transmitted shadows", .Help = "Approximate glass attenuation along straight shadow rays. Does not bend light or focus caustics."}},
+    {&RayTracingSettings::Samples, {.Min = 1, .Max = 64, .Help = "Indirect and glass samples per pixel. Higher values reduce noise at greater render cost."}},
+    {&RayTracingSettings::ShadowSamples, {.Min = 1, .Max = 64, .Label = "Shadow samples", .Help = "Rays per area light for each surface sample. More rays reduce soft-shadow noise without repeating reflection and glass reconstruction."}},
+};
+
 // Changes require command-buffer recording.
 struct ViewportDisplay {
     ViewportShadingMode ViewportShading{ViewportShadingMode::Solid};
@@ -89,6 +128,7 @@ struct ViewportDisplay {
     float LodErrorPixels{1.f};
     DebugChannel DebugChannel{DebugChannel::None};
     std::optional<MotionBlur> MotionBlur;
+    RayTracingSettings RayTracing;
     bool XRaySolid{false}, XRayWireframe{true};
     float XRayAlpha{0.5f}, XRayAlphaWireframe{0.f};
     bool BackfaceCulling{false};
@@ -103,6 +143,7 @@ template<> inline constexpr field::SpecTable<ViewportDisplay> Specs<ViewportDisp
     {&ViewportDisplay::LodErrorPixels, {.Unit = FieldUnit::Pixels, .Label = "LOD error", .Help = "Largest screen-space level-of-detail error. Zero renders the original geometry."}},
     {&ViewportDisplay::DebugChannel, {.Help = "Material or geometry channel shown in place of the shaded color"}},
     {&ViewportDisplay::MotionBlur, {.Help = "Blur of moving objects across the shutter interval. Absent disables it."}},
+    {&ViewportDisplay::RayTracing, {.Label = "Ray tracing"}},
     {&ViewportDisplay::XRaySolid, {.Label = "X-ray solid", .Help = "See through surfaces in Solid shading"}},
     {&ViewportDisplay::XRayWireframe, {.Label = "X-ray wireframe", .Help = "See through surfaces in Wireframe shading"}},
     {&ViewportDisplay::XRayAlpha, {.Min = 0, .Max = 1, .Label = "X-ray opacity", .Help = "Surface opacity with X-ray in Solid shading"}},

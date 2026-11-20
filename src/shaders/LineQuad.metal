@@ -3,9 +3,10 @@
 #include "Varyings.metal"
 
 // Triangles {0, 1, 2} and {1, 3, 2} connect positive and negative perpendicular offsets at both endpoints.
-constant uint LineQuadCornerLut[6] = {0u, 1u, 2u, 1u, 3u, 2u};
-
-inline uint line_quad_corner(uint vertex_index) { return LineQuadCornerLut[vertex_index % 6u]; }
+inline uint line_quad_corner(uint vertex_index) {
+    const uint index = vertex_index % 6u;
+    return index < 3u ? index : index == 3u ? 1u : index == 4u ? 3u : 2u;
+}
 inline uint line_quad_endpoint(uint corner) { return corner >> 1u; }
 inline float line_quad_side(uint corner) { return (corner & 1u) == 0u ? 1.0f : -1.0f; }
 
@@ -65,5 +66,5 @@ inline void EmitStroke(
         out.ObjectId = object_id;
         output.set_vertex(index * 4u + corner, out);
     }
-    for (uint i = 0u; i < 6u; ++i) output.set_index(index * 6u + i, index * 4u + LineQuadCornerLut[i]);
+    for (uint i = 0u; i < 6u; ++i) output.set_index(index * 6u + i, index * 4u + line_quad_corner(i));
 }

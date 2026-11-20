@@ -17,13 +17,13 @@ struct Defaults {
     static Perspective PerspectiveCamera;
 
     static constexpr float SpotOuterAngle{Pi / 4}, SpotBlend{0.15}, LightIntensity{100};
-    static PunctualLight MakePunctualLight(PunctualLightType type) {
+    static SceneLight MakeLight(LightType type) {
         return {
             .Range = 0.f, // infinite
             .Color = {1.f, 1.f, 1.f},
             .Intensity = LightIntensity,
-            .InnerConeAngle = type == PunctualLightType::Spot ? SpotOuterAngle * (1.f - SpotBlend) : 0.f,
-            .OuterConeAngle = type == PunctualLightType::Spot ? SpotOuterAngle : 0.f,
+            .InnerConeAngle = type == LightType::Spot ? SpotOuterAngle * (1.f - SpotBlend) : 0.f,
+            .OuterConeAngle = type == LightType::Spot ? SpotOuterAngle : 0.f,
             .Type = type,
         };
     }

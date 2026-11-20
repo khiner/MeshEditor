@@ -3,12 +3,12 @@
 #include "MeshletResolve.metal"
 #include "SceneUBO.metal"
 
-constant float2 PointQuadCorners[4] = {
-    float2(-1.0f, 1.0f), float2(-1.0f, -1.0f), float2(1.0f, 1.0f), float2(1.0f, -1.0f)
-};
+inline float2 PointQuadCorner(uint corner) {
+    return float2((corner & 2u) != 0u ? 1.0f : -1.0f, (corner & 1u) != 0u ? -1.0f : 1.0f);
+}
 
 inline float4 PointQuadPosition(const thread Scene &scene, float4 clip, uint corner) {
-    clip.xy += PointQuadCorners[corner] * (PointSize * 0.5f) / float2(scene.View.ViewportSize) * 2.0f * clip.w;
+    clip.xy += PointQuadCorner(corner) * (PointSize * 0.5f) / float2(scene.View.ViewportSize) * 2.0f * clip.w;
     return clip;
 }
 

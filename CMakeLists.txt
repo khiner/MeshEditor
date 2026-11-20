@@ -62,8 +62,13 @@ foreach(src IN LISTS SHADER_SOURCE_FILES)
         get_filename_component(stem "${src}" NAME_WE)
         set(air "${CMAKE_BINARY_DIR}/shader-libraries/${stem}.air")
         set(library "${CMAKE_BINARY_DIR}/shaders/${stem}.metallib")
+        set(metal_flags)
+        # Ray intervals, volume attenuation and temporal history depend on Inf/NaN semantics.
+        if(stem MATCHES "^(pbr|Ray.*|FastGI|LightCulling.*)$")
+            list(APPEND metal_flags -fmetal-math-mode=relaxed)
+        endif()
         add_custom_command(OUTPUT "${air}"
-            COMMAND xcrun metal -w -c -std=metal3.2
+            COMMAND xcrun metal -w -c -std=metal3.2 ${metal_flags}
                 -I "${CMAKE_SOURCE_DIR}/src/shaders" -I "${CMAKE_SOURCE_DIR}/src"
                 -MMD -MF "${air}.d" "${src}" -o "${air}"
             DEPENDS "${src}"
@@ -102,7 +107,7 @@ target_link_libraries(MeshEditorPipelineArchive PRIVATE MeshEditorRender)
 set(PIPELINE_ARCHIVE "${CMAKE_BINARY_DIR}/cache/Pipelines.mtl4a")
 set(PIPELINE_ARCHIVE_STAMP "${CMAKE_BINARY_DIR}/cache/Pipelines.stamp")
 file(GLOB_RECURSE PIPELINE_SHADER_FILES CONFIGURE_DEPENDS
-    "${CMAKE_SOURCE_DIR}/src/shaders/*.metal" "${CMAKE_SOURCE_DIR}/src/gpu/*.h")
+    "${CMAKE_SOURCE_DIR}/src/shaders/*.metal" "${CMAKE_SOURCE_DIR}/src/shaders/*.h" "${CMAKE_SOURCE_DIR}/src/gpu/*.h")
 add_custom_command(OUTPUT "${PIPELINE_ARCHIVE_STAMP}"
     BYPRODUCTS "${PIPELINE_ARCHIVE}"
     COMMAND MeshEditorPipelineArchive "${CMAKE_BINARY_DIR}/shaders" "${PIPELINE_ARCHIVE}" "${PIPELINE_ARCHIVE_STAMP}"

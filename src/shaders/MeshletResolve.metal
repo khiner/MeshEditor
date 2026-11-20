@@ -110,7 +110,7 @@ inline MeshletFaceValues MeshletCoarseFace(
         float3(0.0f),
         0u,
         MeshletPrimitiveMaterialIndex(scene, primitive),
-        (scale.x + scale.y + scale.z) / 3.0f,
+        (abs(scale.x) + abs(scale.y) + abs(scale.z)) / 3.0f,
         instance.ObjectId,
         0u,
     };
@@ -140,7 +140,7 @@ inline MeshletFaceValues MeshletFace(
         ((element_state & STATE_SELECTED) != 0u ? 1u : 0u) |
             ((element_state & STATE_ACTIVE) != 0u ? 2u : 0u) | (flat_face ? 4u : 0u),
         material_index,
-        (scale.x + scale.y + scale.z) / 3.0f,
+        (abs(scale.x) + abs(scale.y) + abs(scale.z)) / 3.0f,
         instance.ObjectId,
         scene.FacePickId(draw, face_id),
     };

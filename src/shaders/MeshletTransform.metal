@@ -56,7 +56,7 @@ inline uint MeshletVisibilityId(uint visible_index, uint triangle) {
         out.WorldScale = face.WorldScale;
         out.ObjectId = face.ObjectId;
         out.ElementId = face.ElementId;
-        out.Facing = BackfaceCullFacing(view, scene.Materials(view.MaterialSlot)[face.MaterialIndex].DoubleSided, float3(world.S));
+        out.Facing = BackfaceCullFacing(view, VisibilityDoubleSided(view, scene.Materials(view.MaterialSlot)[face.MaterialIndex]), float3(world.S));
         out.Topology = topology;
         out.PointCoord = float2(0.0f);
     } else {
@@ -70,12 +70,12 @@ inline uint MeshletVisibilityId(uint visible_index, uint triangle) {
         out.FaceOverlayFlags = 0u;
         out.MaterialIndex = MeshletPrimitiveMaterialIndex(scene, work.Primitive);
         const float3 scale = float3(MeshletWorld(scene, work.Draw).S);
-        out.WorldScale = (scale.x + scale.y + scale.z) / 3.0f;
+        out.WorldScale = (abs(scale.x) + abs(scale.y) + abs(scale.z)) / 3.0f;
         out.ObjectId = work.Instance.ObjectId;
         out.ElementId = scene.ElementPickId(work.Draw, topology == uint(MeshPrimitiveTopology::Line), element);
         out.Facing = 0;
         out.Topology = topology;
-        out.PointCoord = PointQuadCorners[corner] * 0.5f + 0.5f;
+        out.PointCoord = PointQuadCorner(corner) * 0.5f + 0.5f;
         // Alpha zero marks an unselected instance for fill recoloring during shading.
         out.Color = scene.View.InteractionMode == InteractionMode::Object && scene.View.ShowOverlays != 0u ?
             scene.ObjectSelectionColor(scene.InstanceState(work.Draw), float4(0.0f)) : float4(0.0f);
@@ -120,7 +120,7 @@ inline uint MeshletVisibilityId(uint visible_index, uint triangle) {
             uint index = 0u;
             if (!hidden) {
                 if (triangles_topology) index = work.Payloads.LocalTriangles[work.Meshlet.LocalTriangleOffset + thread_index][corner] & uint(MeshletGeometryEncoding::LocalIndexMask);
-                else index = element * 4u + LineQuadCornerLut[(thread_index & 1u) * 3u + corner];
+                else index = element * 4u + line_quad_corner((thread_index & 1u) * 3u + corner);
             }
             output.set_index(thread_index * 3u + corner, index);
         }

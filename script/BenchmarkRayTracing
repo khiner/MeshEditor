@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""Measure MeshEditor and the patched interactive EEVEE viewport serially."""
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import time
+
+ROOT = Path(__file__).resolve().parents[1]
+FIX = ROOT / "tests/fixtures/ray-tracing"
+EXAMPLES = ROOT / "res/examples"
+AREA = ROOT / "tests/fixtures/RayTracingArea.gltf"
+
+
+def example(suffix):
+    name = "RayTracing" + suffix
+    return EXAMPLES / name / (name + ".gltf")
+
+
+# Label, Blender source, native document, motion, lighting, indirect grid, area shadow rays.
+# A native document is built from the source by MeshEditorProjectTest --ray-tracing-benchmarks.
+CASES = [
+    ("opaque", example(""), False, "orbit", "preview", "half", 1),
+    ("fast-gi", example(""), False, "orbit", "preview", "half", 1),
+    ("diffuse-gi", example(""), False, "orbit", "preview", "half", 1),
+    ("vase", example("Vase"), False, "orbit", "preview", "half", 1),
+    ("inside", example("Inside"), False, "orbit", "preview", "quarter", 1),
+    ("alpha", example("Transparency"), False, "orbit", "preview", "half", 1),
+    ("glass", example("Glass"), True, "orbit", "rendered", "half", 4),
+    ("mixed", example("Glass"), True, "orbit", "rendered", "half", 4),
+    ("lights-64", AREA, True, "orbit", "rendered", "half", 1),
+    ("blocker", AREA, True, "animation", "rendered", "half", 1),
+    ("emitter", AREA, True, "animation", "rendered", "half", 1),
+    ("behind-glass", FIX / "behind-glass.gltf", False, "animation", "preview", "half", 1),
+    ("flight-helmet", FIX / "flight-helmet.gltf", False, "orbit", "preview", "half", 1),
+    ("atrium", FIX / "atrium.gltf", False, "animation", "preview", "half", 1),
+    ("sponza", FIX / "sponza.gltf", False, "orbit", "preview", "half", 1),
+    ("foliage", FIX / "DiffuseTransmissionPlant.gltf", False, "orbit", "preview", "half", 1),
+    ("reflective-skins-64", FIX / "reflective-skins-64.gltf", False, "animation", "rendered", "quarter", 1),
+    ("skins-64", FIX / "brainstem-64.gltf", False, "animation", "rendered", "quarter", 1),
+]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("output", type=Path)
+parser.add_argument("--app", type=Path, default=ROOT / "build/MeshEditor")
+parser.add_argument("--blender", type=Path, help="Blender with the offscreen viewport patch")
+parser.add_argument("--stage", choices=["native", "eevee", "all"], default="all")
+parser.add_argument("--cases", nargs="+", choices=[c[0] for c in CASES])
+parser.add_argument(
+    "--images-only", action="store_true", help="Reuse the timed camera sequence for the comparison plates"
+)
+parser.add_argument("--recovery", action="store_true", help="Measure mixed glass as a 32-frame orbit stops")
+args = parser.parse_args()
+if args.recovery and (args.cases or args.images_only):
+    parser.error("--recovery selects its own scene and runs separate timing and image passes")
+root = args.output.resolve()
+root.mkdir(exist_ok=True, parents=True)
+app = args.app.resolve()
+documents = root / "documents"
+selected = [case for case in CASES if (case[0] == "mixed" if args.recovery else not args.cases or case[0] in args.cases)]
+env = {k: v for k, v in os.environ.items() if not k.startswith("MTL_")}
+
+
+def digest(path):
+    with path.open("rb") as f:
+        return hashlib.file_digest(f, "sha256").hexdigest()
+
+
+def competing(exclude=None):
+    lines = subprocess.check_output(["ps", "-Ao", "pid=,comm="], text=True).splitlines()
+    for line in lines:
+        pid, command = line.split(maxsplit=1)
+        program = Path(command).name
+        if int(pid) != exclude and (
+            program.startswith(("MeshEditor", "clang++"))
+            or program in {"Blender", "ninja", "metal", "metallib"}
+        ):
+            return True
+    return False
+
+
+def launch(command, log, timed):
+    if timed:
+        while competing():
+            time.sleep(1)
+    busy = []
+    with log.open("w") as stream, subprocess.Popen(
+        command, cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT, env=env
+    ) as child:
+        previous = time.monotonic()
+        while child.poll() is None:
+            if timed and competing(child.pid):
+                # Include the adjacent polls in case the competing process started or stopped between them.
+                busy.append((previous, time.monotonic() + 0.4))
+            previous = time.monotonic()
+            time.sleep(0.4)
+        if child.returncode:
+            raise RuntimeError(f"{command[0].name} exited {child.returncode}. See {log}")
+    return busy
+
+
+def run(command, log, timed=False):
+    while launch(command, log, timed):
+        print(f"Retrying {log.parent.name}/{log.name} after concurrent GPU work or compilation", flush=True)
+
+
+def measure_eevee(command, out):
+    if args.images_only:
+        run([*command, "--images-only"], out / "eevee-image.log")
+        return
+    accepted = []
+    attempt = 0
+    while len(accepted) < 3:
+        flags = [f"--trials={3 - len(accepted)}"]
+        if attempt:
+            flags.append("--skip-image")
+        busy = launch([*command, *flags], out / f"eevee-{attempt}.log", timed=True)
+        batch = json.loads((out / "eevee-trials.json").read_text())
+        for trial in batch["trials"]:
+            if not any(start <= trial["end"] and end >= trial["start"] for start, end in busy):
+                accepted.append(trial["p95"])
+        if len(accepted) < 3:
+            print(
+                f"{out.name}: {len(accepted)}/3 uncontended EEVEE trials, retrying the remainder", flush=True
+            )
+        attempt += 1
+    result = {"version": batch["version"], "revision": batch["revision"], "p95": accepted}
+    (out / "eevee.json").write_text(json.dumps(result, indent=2) + "\n")
+
+
+def p95(path, case):
+    profile = json.loads(path.read_text())
+    direct = next((row for row in profile["gpuMs"] if row["path"] == "Submit/RayDirect"), None)
+    assert direct and direct["samples"] == 120 and direct["mean"] > 0, f"Ray tracing inactive in {path}"
+    if case == "alpha":
+        coverage = next(row for row in profile["gpuMs"] if row["path"] == "Submit/RayTransparency")
+        counters = {row["name"]: row["max"] for row in profile["counters"]}
+        assert coverage["samples"] == 120 and coverage["mean"] > 0
+        assert counters["VisibleBlendMeshlets"] == 2 and counters["RayTriangles"] == 6
+        assert counters["RayActivePixels"] == 0, "Unlit camera coverage entered the indirect ray queue"
+    frame = next(x for x in profile["cpuMs"] if x["path"] == "Frame")
+    assert frame["samples"] == 120
+    return frame["p95"]
+
+
+def measure_recovery(common, out, executable_hash):
+    hold = [*common, "--no-overlays", "--frames", "32", "--bench-settle", "72"]
+    for trial in range(3):
+        timed = [*hold, "--bench-recovery", out / f"mesh-{trial}.ms", "--bench-cameras", out / f"recovery-{trial}.jsonl"]
+        run(timed, out / f"mesh-{trial}.log", timed=True)
+        image = [*hold, "--bench-recovery", out / "capture.ms", "--bench-cameras", out / f"image-{trial}.jsonl"]
+        run([*image, "--screenshot", out / f"mesh-{trial}.png"], out / f"recovery-image-{trial}.log")
+    reference = (out / "recovery-0.jsonl").read_bytes().splitlines()
+    assert len(reference) == 104 and len(set(reference[:32])) == 32 and len(set(reference[31:])) == 1
+    for trial in range(3):
+        for prefix in ["recovery", "image"]:
+            assert (out / f"{prefix}-{trial}.jsonl").read_bytes().splitlines() == reference
+    (out / "recovery-build.txt").write_text(executable_hash)
+
+
+def measure_motion(common, out, case, executable_hash):
+    reference = out / "native-0.jsonl"
+    if not args.images_only:
+        records = {}
+        for mode, flag in [("native", "--no-overlays"), ("editor", "--overlays")]:
+            scores = []
+            for trial in range(3):
+                stem = out / f"{mode}-{trial}"
+                poses = stem.with_suffix(".jsonl")
+                profile = stem.with_suffix(".json")
+                capture = [*common, flag, "--frames", "120", "--screenshot", stem.with_suffix(".png")]
+                run([*capture, "--bench-cameras", poses, "--profile-json", profile], stem.with_suffix(".log"), timed=True)
+                sequence = poses.read_bytes()
+                assert len(sequence.splitlines()) == 120 and sequence == reference.read_bytes()
+                scores.append(p95(profile, case))
+            records[mode] = scores
+        (out / "native.json").write_text(json.dumps(dict(executable=executable_hash, **records), indent=2) + "\n")
+
+    poses = out / "image.jsonl"
+    capture = [*common, "--no-overlays", "--frames", "32", "--screenshot", out / "mesh.png"]
+    run([*capture, "--bench-cameras", poses], out / "image.log")
+    assert poses.read_bytes().splitlines() == reference.read_bytes().splitlines()[:32]
+
+
+if args.stage != "eevee":
+    shaders = app.parent / "shaders"
+    sources = sorted(path.name for path in shaders.glob("*.metal"))
+    subprocess.run([app.parent / "MeshEditorMslCompileTest", "--check-offline", shaders, *sources], check=True)
+    before = digest(app)
+    if any(case[2] for case in selected):
+        run([app.parent / "tests/MeshEditorProjectTest", "--ray-tracing-benchmarks", documents], root / "documents.log")
+
+for name, source, document, motion, shading, grid, shadows in selected:
+    out = root / ("mixed-recovery" if args.recovery else name)
+    out.mkdir(exist_ok=True)
+    print(name, flush=True)
+    if args.stage != "eevee":
+        common = [
+            app,
+            documents / f"{name}.actions" if document else source,
+            "--headless",
+            "--shading",
+            shading,
+            "--camera",
+            "QA Camera" if name == "foliage" else "Camera",
+            "--ray-tracing",
+            "1",
+            "--bench-warmup",
+            "64",
+            "--ray-shadow-samples",
+            str(shadows),
+            "--ray-resolution",
+            grid,
+            "--bench-action",
+            motion,
+        ]
+        if name in ("flight-helmet", "sponza"):
+            common.extend(["--edit", "face", "--select-all"])
+        if name in ("fast-gi", "atrium"):
+            common.append("--ray-fast-gi")
+        if name == "diffuse-gi":
+            common.append("--ray-diffuse")
+        if name in ("blocker", "emitter"):
+            common.extend(["--timeline-end", "2"])
+        if args.recovery:
+            measure_recovery(common, out, before)
+        else:
+            measure_motion(common, out, name, before)
+        assert digest(app) == before
+    if args.stage != "native":
+        if not args.blender:
+            parser.error("--blender is required for EEVEE")
+        command = [
+            args.blender.resolve(),
+            "--background",
+            "--factory-startup",
+            "--python-exit-code",
+            "1",
+            "--python",
+            ROOT / "script/raytracing/eevee.py",
+            "--",
+            name,
+            source,
+            out,
+            grid,
+            str(shadows),
+        ]
+        if args.recovery:
+            for trial in range(3):
+                flags = ["--recovery", "--trials=1", f"--recovery-trial={trial}"]
+                run([*command, *flags, "--skip-image"], out / f"eevee-recovery-{trial}.log", timed=True)
+                run([*command, *flags, "--images-only"], out / f"eevee-image-{trial}.log")
+            from raytracing.recovery import summarize
+
+            summarize(out, source)
+        else:
+            measure_eevee(command, out)
