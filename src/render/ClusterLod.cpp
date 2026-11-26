@@ -3,7 +3,6 @@
 #include "FlatKeyMap.h"
 #include "Parallel.h"
 #include "Profile.h"
-#include "gpu/MeshAttributeBit.h"
 #include "gpu/MeshletGeometryEncoding.h"
 #include "mesh/EdgeKey.h"
 
@@ -138,7 +137,7 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
     const uint32_t first_index = primitive.FirstTriangle * 3u;
     const uint32_t corner_count = primitive.TriangleCount * 3u;
     const auto primitive_indices = mesh.CornerVertices.subspan(first_index, corner_count);
-    const CornerWeldKey key{mesh.Weld, first_index};
+    const CornerWeldKey key{mesh.Weld, first_index, primitive.Attributes};
 
     weld.Source = mesh.CornerVertices;
     weld.FirstCorner = first_index;
@@ -296,13 +295,8 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
     }
 
     const uint32_t weld_count = weld.VertexCount();
-    std::array<bool, MaxWeldUvSets> active_uvs{};
-    for (uint32_t uv = 0; uv < MaxWeldUvSets; ++uv) {
-        active_uvs[uv] = (primitive.Attributes & (MeshAttributeBit_TexCoord0 << uv)) && !mesh.Weld.CornerUvs[uv].empty();
-    }
-    const bool active_tangents = (primitive.Attributes & MeshAttributeBit_Tangent) && !mesh.Weld.CornerTangents.empty();
-    weld.AttributeCount = 3u + 2u * uint32_t(std::ranges::count(active_uvs, true)) +
-        (active_tangents ? 4u : 0u) + (mesh.Weld.CornerColors.empty() ? 0u : 4u);
+    weld.AttributeCount = 3u + 2u * uint32_t(std::ranges::count(key.Uvs, true)) +
+        (key.Tangents ? 4u : 0u) + (mesh.Weld.CornerColors.empty() ? 0u : 4u);
     weld.Attributes.resize(size_t(weld_count) * weld.AttributeCount);
     for (uint32_t v = 0; v < weld_count; ++v) {
         const uint32_t handle = key.Handle(weld.Representative[v]);
@@ -314,12 +308,12 @@ void BuildWeld(const ClusterLodMesh &mesh, const ClusterLodPrimitive &primitive,
         *attribute++ = normal.y;
         *attribute++ = normal.z;
         for (uint32_t set = 0; set < MaxWeldUvSets; ++set) {
-            if (!active_uvs[set]) continue;
+            if (!key.Uvs[set]) continue;
             const auto uv = mesh.Weld.CornerUvs[set].Attribute[handle];
             *attribute++ = uv.x;
             *attribute++ = uv.y;
         }
-        if (active_tangents) {
+        if (key.Tangents) {
             const auto tangent = mesh.Weld.CornerTangents.Attribute[handle];
             const vec3 vector{tangent.x, tangent.y, tangent.z};
             const auto direction = Dot(vector, vector) > 1e-8f ? Normalize(vector) : vec3{};
@@ -929,7 +923,7 @@ ClusterLodBuild BuildClusterLod(const ClusterLodMesh &mesh, bool serial) {
         primitive_range.SimplifyScale = weld.Scale;
         clusters.assign(range.ClusterCount, WorkCluster{});
         pending.resize(range.ClusterCount);
-        const CornerWeldKey key{mesh.Weld, range.FirstTriangle * 3u};
+        const CornerWeldKey key{mesh.Weld, range.FirstTriangle * 3u, range.Attributes};
         const auto initialize_cluster = [&](uint32_t i) {
             pending[i] = i;
             const auto &source = mesh.Clusters[range.FirstCluster + i];

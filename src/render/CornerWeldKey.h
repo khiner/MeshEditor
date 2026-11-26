@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gpu/CornerClass.h"
+#include "gpu/MeshAttributeBit.h"
 
 // Texture coordinate sets a corner carries, matching MeshStore::MaxUvSets.
 constexpr uint32_t MaxWeldUvSets{4};
@@ -23,13 +24,17 @@ struct CornerWeldSource {
 
 // Draw-corner input resolves once to canonical handles.
 // Meshlets use handles directly.
+// `attributes` holds the MeshAttributeBit channels a primitive's coarse levels preserve, and the key covers its texture coordinate sets and tangents among them.
 struct CornerWeldKey {
-    CornerWeldKey(const CornerWeldSource &source, uint32_t first_corner)
-        : Source(source), FirstCorner(first_corner),
-          Words(
-              3u + (source.CustomNormals.empty() ? 0u : 1u) + 2u * uint32_t(std::ranges::count_if(source.CornerUvs, [](const auto &uvs) { return !uvs.empty(); })) +
-              (source.CornerTangents.empty() ? 0u : 4u) + (source.CornerColors.empty() ? 0u : 4u)
-          ) {}
+    CornerWeldKey(const CornerWeldSource &source, uint32_t first_corner, uint32_t attributes)
+        : Uvs{Keyed(source, attributes, 0u), Keyed(source, attributes, 1u), Keyed(source, attributes, 2u), Keyed(source, attributes, 3u)},
+          Tangents((attributes & MeshAttributeBit_Tangent) && !source.CornerTangents.empty()),
+          Source(source), FirstCorner(first_corner),
+          Words(3u + (source.CustomNormals.empty() ? 0u : 1u) + 2u * uint32_t(std::ranges::count(Uvs, true)) + (Tangents ? 4u : 0u) + (source.CornerColors.empty() ? 0u : 4u)) {}
+
+    // The texture coordinate sets and the tangents the key covers.
+    const std::array<bool, MaxWeldUvSets> Uvs;
+    const bool Tangents;
 
     uint32_t WordCount() const { return Words; }
 
@@ -79,13 +84,13 @@ struct CornerWeldKey {
         words[1] = corner_class;
         uint32_t word = 3;
         if (!Source.CustomNormals.empty()) words[word++] = Source.CustomNormals.Attribute.GetOr(handle).Offset.x >= 0.f ? handle : InvalidOffset;
-        for (const auto &uvs : Source.CornerUvs) {
-            if (uvs.empty()) continue;
-            const vec2 uv = uvs.Attribute[handle];
+        for (uint32_t set = 0; set < MaxWeldUvSets; ++set) {
+            if (!Uvs[set]) continue;
+            const vec2 uv = Source.CornerUvs[set].Attribute[handle];
             words[word++] = FloatBits(uv.x);
             words[word++] = FloatBits(uv.y);
         }
-        if (!Source.CornerTangents.empty()) {
+        if (Tangents) {
             const vec4 tangent = Source.CornerTangents.Attribute[handle];
             words[word++] = FloatBits(tangent.x);
             words[word++] = FloatBits(tangent.y);
@@ -104,6 +109,10 @@ struct CornerWeldKey {
 
 private:
     static uint32_t FloatBits(float value) { return std::bit_cast<uint32_t>(value); }
+
+    static bool Keyed(const CornerWeldSource &source, uint32_t attributes, uint32_t set) {
+        return (attributes & (uint32_t(MeshAttributeBit_TexCoord0) << set)) && !source.CornerUvs[set].empty();
+    }
 
     uint32_t ClassWord(uint32_t corner) const { return ClassHandle(Handle(corner)); }
 
