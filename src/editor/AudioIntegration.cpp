@@ -452,9 +452,9 @@ SolveInputs BuildSolveInputs(const state::Registry &r, state::Entity e, state::E
     const vec3 node_scale = WorldTransformOf(r, e)->S;
     const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &pipelines = GetMeshPipelines(r);
-    auto positions = OrdinalPositions(meshes, pipelines, mesh.GetStoreId());
+    auto positions = OrdinalPositions(meshes, pipelines, std::array{mesh.GetStoreId()}).front();
     for (auto &position : positions) position = position * node_scale;
-    auto triangle_indices = OrdinalTriangles(meshes, pipelines, mesh.GetStoreId());
+    auto triangle_indices = OrdinalTriangles(meshes, pipelines, std::array{mesh.GetStoreId()}).front();
     const auto operator_hash = HashOperatorInputs(positions, triangle_indices, settings);
     return {
         std::move(positions), std::move(triangle_indices), DesiredSolveVertices(r, e, settings, num_vertices), settings.Solve,
@@ -522,6 +522,13 @@ bool HasPendingModalSolves(const state::Registry &r) { return !r.Resources.get<c
 
 void CancelModalSolves(state::Registry &r) {
     if (auto *jobs = r.Resources.find<ModalSolveJobs>()) Reset(*jobs, r);
+}
+void KeepModalSolves(state::Registry &r, uint64_t epoch) {
+    if (auto *jobs = r.Resources.find<ModalSolveJobs>()) {
+        for (auto &job : jobs->Jobs) {
+            if (job->Epoch == epoch) job->Epoch = r.Epoch;
+        }
+    }
 }
 
 void RegisterAudioComponentHandlers(state::Registry &r) {

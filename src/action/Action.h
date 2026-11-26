@@ -46,6 +46,7 @@ template<typename L> Action MakeAction(L &&leaf) {
 // Exclude actions with external side effects from replay.
 template<typename T> inline constexpr bool Recordable = true;
 template<> inline constexpr bool Recordable<io::SaveGltf> = false;
+template<> inline constexpr bool Recordable<io::SaveMaterialX> = false;
 template<> inline constexpr bool Recordable<view::LatchTransform> = false;
 // An action naming a viewport changes its view values, which belong to the workspace.
 template<typename T>

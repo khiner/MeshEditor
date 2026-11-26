@@ -80,16 +80,20 @@ void SelectionIndex::Update(uint32_t root, std::span<const uint32_t> blocks, uin
     profile::RecordCounter("SelectionIndexNodes", updated);
 }
 
-void SelectionIndex::Release(uint32_t root) {
-    if (root >= Roots.size() || Roots[root] == InvalidOffset) return;
-    const auto release = [&](auto &&self, uint32_t id, uint32_t level) -> void {
-        for (const auto child : Nodes[id].Children) {
-            if (child == InvalidOffset) continue;
-            if (level) self(self, child, level - 1u);
-            else if (Owner(root % 3u, child) == root) Owners[root % 3u].erase(child);
-        }
-        Aggregates.Release({id, 1u});
-    };
-    release(release, Roots[root], SelectionIndexLevels - 1u);
-    Roots[root] = InvalidOffset;
+void SelectionIndex::Release(std::span<const uint32_t> roots) {
+    std::vector<Range> nodes;
+    for (const auto root : roots) {
+        if (root >= Roots.size() || Roots[root] == InvalidOffset) continue;
+        const auto release = [&](auto &&self, uint32_t id, uint32_t level) -> void {
+            for (const auto child : Nodes[id].Children) {
+                if (child == InvalidOffset) continue;
+                if (level) self(self, child, level - 1u);
+                else if (Owner(root % 3u, child) == root) Owners[root % 3u].erase(child);
+            }
+            nodes.push_back({id, 1u});
+        };
+        release(release, Roots[root], SelectionIndexLevels - 1u);
+        Roots[root] = InvalidOffset;
+    }
+    Aggregates.Release(std::move(nodes));
 }

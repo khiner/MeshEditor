@@ -22,7 +22,6 @@
 #include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Neighborhood.h"
-#include "mesh/SelectedChains.h"
 #include "procedure/Procedure.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
@@ -203,7 +202,138 @@ std::array<float, 4> AttributeFloats(const MeshStore &meshes, uint32_t attribute
     });
 }
 
+// An 8-bit channel of a value in [0, 1], encoded with the sRGB transfer function for a color texture.
+uint8_t ChannelByte(float value, bool srgb) {
+    const float v = std::clamp(value, 0.f, 1.f);
+    const float encoded = !srgb ? v : v <= 0.0031308f ? 12.92f * v : 1.055f * std::pow(v, 1.f / 2.4f) - 0.055f;
+    return uint8_t(std::lround(encoded * 255.f));
+}
+
+// How a computed input's values map to its texture's channels: as they are, divided by their largest value when it exceeds one, divided by their largest value, as a normal mapped from [-1, 1], or as the direction at an angle mapped from [-1, 1].
+enum class BakedMap { Unit, Bounded, Range, Normal, Direction };
+// Where a computed input packs into a material's glTF textures: the slot and its first channel, the map of its values, and the extension that holds the texture.
+// `Factors` sets the factors the texture scales, from the values' largest value and the divisor of their channels.
+struct BakedTarget {
+    uint32_t Slot, Channel;
+    BakedMap Map;
+    uint16_t Extension;
+    void (*Factors)(PBRMaterial &, float largest, float divisor);
+};
+BakedTarget BakedTargetOf(PbrInput input) {
+    using Meta = MaterialSourceMeta;
+    switch (input) {
+        case PbrInput::BaseColor:
+            return {MTS_BaseColor, 0u, BakedMap::Unit, 0u, [](PBRMaterial &m, float, float) { m.BaseColorFactor = vec4{1, 1, 1, m.BaseColorFactor.w}; }};
+        case PbrInput::Metallic:
+            return {MTS_MetallicRoughness, 2u, BakedMap::Unit, 0u, [](PBRMaterial &m, float, float) { m.MetallicFactor = 1; }};
+        case PbrInput::Roughness:
+            return {MTS_MetallicRoughness, 1u, BakedMap::Unit, 0u, [](PBRMaterial &m, float, float) { m.RoughnessFactor = 1; }};
+        case PbrInput::Normal:
+            return {MTS_Normal, 0u, BakedMap::Normal, 0u, [](PBRMaterial &m, float, float) { m.NormalScale = 1; }};
+        case PbrInput::Occlusion:
+            return {MTS_Occlusion, 0u, BakedMap::Unit, 0u, [](PBRMaterial &m, float, float) { m.OcclusionStrength = 1; }};
+        case PbrInput::Specular:
+            return {MTS_Specular, 3u, BakedMap::Unit, Meta::ExtSpecular, [](PBRMaterial &m, float, float) { m.Specular.Factor = 1; }};
+        case PbrInput::SpecularColor:
+            return {MTS_SpecularColor, 0u, BakedMap::Bounded, Meta::ExtSpecular, [](PBRMaterial &m, float, float divisor) { m.Specular.ColorFactor = vec3{divisor}; }};
+        case PbrInput::Iridescence:
+            return {MTS_Iridescence, 0u, BakedMap::Unit, Meta::ExtIridescence, [](PBRMaterial &m, float, float) { m.Iridescence.Factor = 1; }};
+        case PbrInput::IridescenceThickness:
+            return {MTS_IridescenceThickness, 1u, BakedMap::Range, Meta::ExtIridescence, [](PBRMaterial &m, float largest, float) {
+                        m.Iridescence.ThicknessMinimum = 0;
+                        m.Iridescence.ThicknessMaximum = largest;
+                    }};
+        case PbrInput::SheenColor:
+            return {MTS_SheenColor, 0u, BakedMap::Unit, Meta::ExtSheen, [](PBRMaterial &m, float, float) { m.Sheen.ColorFactor = vec3{1}; }};
+        case PbrInput::SheenRoughness:
+            return {MTS_SheenRoughness, 3u, BakedMap::Unit, Meta::ExtSheen, [](PBRMaterial &m, float, float) { m.Sheen.RoughnessFactor = 1; }};
+        case PbrInput::Clearcoat:
+            return {MTS_Clearcoat, 0u, BakedMap::Unit, Meta::ExtClearcoat, [](PBRMaterial &m, float, float) { m.Clearcoat.Factor = 1; }};
+        case PbrInput::ClearcoatRoughness:
+            return {MTS_ClearcoatRoughness, 1u, BakedMap::Unit, Meta::ExtClearcoat, [](PBRMaterial &m, float, float) { m.Clearcoat.RoughnessFactor = 1; }};
+        case PbrInput::ClearcoatNormal:
+            return {MTS_ClearcoatNormal, 0u, BakedMap::Normal, Meta::ExtClearcoat, [](PBRMaterial &m, float, float) { m.Clearcoat.NormalScale = 1; }};
+        case PbrInput::Emissive:
+            return {MTS_Emissive, 0u, BakedMap::Bounded, 0u, [](PBRMaterial &m, float, float divisor) {
+                        m.EmissiveFactor = vec3{1};
+                        m.EmissiveStrength *= divisor;
+                    }};
+        case PbrInput::Thickness:
+            return {MTS_VolumeThickness, 1u, BakedMap::Range, Meta::ExtVolume, [](PBRMaterial &m, float largest, float) { m.Volume.ThicknessFactor = largest; }};
+        case PbrInput::AnisotropyStrength:
+            return {MTS_Anisotropy, 2u, BakedMap::Unit, Meta::ExtAnisotropy, [](PBRMaterial &m, float, float) { m.Anisotropy.Strength = 1; }};
+        // The texture holds the rotation of the direction in place of the factor's.
+        case PbrInput::AnisotropyRotation:
+            return {MTS_Anisotropy, 0u, BakedMap::Direction, Meta::ExtAnisotropy, [](PBRMaterial &m, float, float) { m.Anisotropy.Rotation = 0; }};
+        case PbrInput::Count: std::unreachable();
+    }
+}
+
+// A glTF texture's image and the baked inputs it holds, in the order the material lists them.
+struct PackedImage {
+    std::vector<uint8_t> Rgba;
+    uint32_t Width, Height;
+    std::vector<const BakedInput *> Inputs;
+};
+// Packs the baked inputs into the material's glTF textures by MaterialTextureSlot, setting the factors and extensions the textures scale.
+// A computed input replaces its factor and texture, and an input sharing its texture keeps its factor with the texture's channel at one.
+// A value the glTF factor bounds to [0, 1] scales by its largest value when that exceeds one, and a thickness maps from zero to its largest value.
+std::vector<std::pair<uint32_t, PackedImage>> PackBaked(const BakedMaterial &baked, PBRMaterial &pbr, MaterialSourceMeta &meta) {
+    std::vector<std::pair<uint32_t, PackedImage>> images;
+    const auto computes = [&](PbrInput input) { return std::ranges::contains(baked.Inputs, input, [](const auto &baked_input) { return baked_input->Input; }); };
+    for (const auto &held : baked.Inputs) {
+        const auto &input = *held;
+        const auto target = BakedTargetOf(input.Input);
+        auto it = std::ranges::find(images, target.Slot, &std::pair<uint32_t, PackedImage>::first);
+        if (it == images.end()) it = images.insert(images.end(), {target.Slot, PackedImage{std::vector<uint8_t>(size_t(input.Width) * input.Height * 4u, 255u), input.Width, input.Height, {}}});
+        it->second.Inputs.push_back(&input);
+        auto &rgba = it->second.Rgba;
+        const bool srgb = MaterialTextureSlots[target.Slot].ColorSpace == TextureColorSpace::Srgb;
+        const float largest = std::ranges::max(input.Texels);
+        const float divisor = target.Map == BakedMap::Bounded ? std::max(largest, 1.f) : target.Map == BakedMap::Range && largest > 0.f ? largest : 1.f;
+        for (size_t t = 0; t < size_t(input.Width) * input.Height; ++t) {
+            const auto *value = input.Texels.data() + t * input.Components;
+            auto *texel = rgba.data() + t * 4u + target.Channel;
+            if (target.Map == BakedMap::Normal) {
+                const auto n = numeric::Normalize(vec3{value[0], value[1], value[2]});
+                for (uint32_t c = 0; c < 3u; ++c) texel[c] = ChannelByte(n[c] * .5f + .5f, srgb);
+            } else if (target.Map == BakedMap::Direction) {
+                texel[0] = ChannelByte(std::cos(value[0]) * .5f + .5f, srgb);
+                texel[1] = ChannelByte(std::sin(value[0]) * .5f + .5f, srgb);
+            } else {
+                for (uint32_t c = 0; c < input.Components; ++c) texel[c] = ChannelByte(value[c] / divisor, srgb);
+            }
+        }
+        target.Factors(pbr, largest, divisor);
+        meta.ExtensionPresence |= target.Extension;
+    }
+    // An anisotropy texture whose rotation no input computes holds the unrotated direction.
+    if (computes(PbrInput::AnisotropyStrength) && !computes(PbrInput::AnisotropyRotation)) {
+        auto &rgba = std::ranges::find(images, uint32_t(MTS_Anisotropy), &std::pair<uint32_t, PackedImage>::first)->second.Rgba;
+        for (size_t t = 0; t < rgba.size(); t += 4u) rgba[t + 1u] = ChannelByte(.5f, false);
+    }
+    // Each extension whose values differ from its defaults is written.
+    ForEachMaterialExtension([&](const auto &extension) {
+        const std::remove_cvref_t<decltype(pbr.*extension.Ours)> defaults{};
+        if (std::memcmp(&(pbr.*extension.Ours), &defaults, sizeof(defaults)) != 0) meta.ExtensionPresence |= extension.Bit;
+    });
+    return images;
+}
 } // namespace
+
+std::optional<std::string> BakeConflict(const state::Registry &r, state::Entity material, std::span<const PbrInput> computed) {
+    const auto &record = r.get<const Material>(material);
+    const auto *meta = r.try_get<const MaterialSourceMeta>(material);
+    const auto computes = [&](PbrInput input) { return std::ranges::contains(computed, input); };
+    const auto textured = [&](uint32_t slot) { return meta && meta->TextureSlots[slot] != InvalidSlot; };
+    // A shared texture's other input keeps its value only without a texture of its own.
+    const auto shares = [&](uint32_t slot, PbrInput a, PbrInput b) { return computes(a) != computes(b) && textured(slot); };
+    if (shares(MTS_MetallicRoughness, PbrInput::Metallic, PbrInput::Roughness)) return std::format("Material '{}' computes one of metallic and roughness and holds a texture for the other", record.Name);
+    if (shares(MTS_Anisotropy, PbrInput::AnisotropyStrength, PbrInput::AnisotropyRotation)) return std::format("Material '{}' computes one of anisotropy strength and rotation and holds a texture for the other", record.Name);
+    const auto alpha_mode = r.Resources.get<const GpuBuffers>().Materials.GetSpan<PBRMaterial>()[record.Index].AlphaMode;
+    if (computes(PbrInput::BaseColor) && alpha_mode != MaterialAlphaMode::Opaque && textured(MTS_BaseColor)) return std::format("Material '{}' computes its base color and holds a base color texture for its alpha", record.Name);
+    return {};
+}
 
 std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, const state::Registry &r, SaveOptions options) {
     const profile::CpuScope scope{"SaveGltf"};
@@ -546,9 +676,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
     asset.images.reserve(sa.Images.size());
     std::unordered_map<uint32_t, const TextureEntry *> texture_for_image;
-    for (const auto &tex : r.Resources.get<const TextureStore>().Textures) {
-        if (tex.SourceImageIndex != UINT32_MAX) texture_for_image.emplace(tex.SourceImageIndex, &tex);
-    }
+    for (const auto &tex : r.Resources.get<const TextureStore>().Textures) texture_for_image.emplace(tex.SourceImageIndex, &tex);
     const auto reencode_from_gpu = [&](uint32_t img_idx, gltf::MimeType target, std::string_view name)
         -> std::expected<std::pair<std::vector<std::byte>, gltf::MimeType>, std::string> {
         const auto it = texture_for_image.find(img_idx);
@@ -627,19 +755,9 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     asset.materials.reserve(material_count);
     bool uses_texture_transform = false;
     static const MaterialSourceMeta DefaultMeta{};
-    for (uint32_t i = 1; i < material_count; ++i) {
-        const auto entity = material_entities[i];
-        if (entity == state::Null) continue;
-        auto pbr = buffers.Materials.GetSpan<PBRMaterial>()[i];
-        OverlayRest(r, entity, state::Key<Material>(), std::as_writable_bytes(std::span{&pbr, 1}));
-        const auto *source_meta = r.try_get<const MaterialSourceMeta>(entity);
-        const auto &meta = source_meta ? *source_meta : DefaultMeta;
-        if (meta.ImplicitDefault) continue;
-        material_indices[i] = asset.materials.size();
+    const auto material_of = [&](PBRMaterial pbr, const MaterialSourceMeta &meta, std::string name) {
         const auto bits = meta.ExtensionPresence;
         for (uint32_t s = 0; s < MTS_Count; ++s) MaterialTextureSlots[s].Get(pbr).Slot = meta.TextureSlots[s];
-
-        const std::string name = meta.NameWasEmpty ? std::string{} : r.get<const Material>(entity).Name;
         fastgltf::Material out{
             .pbrData = {
                 .baseColorFactor = std::bit_cast<fastgltf::math::nvec4>(pbr.BaseColorFactor),
@@ -656,7 +774,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             .doubleSided = pbr.DoubleSided != 0u,
             .unlit = pbr.Unlit != 0u,
             .alphaCutoff = pbr.AlphaCutoff,
-            .name = name,
+            .name = std::move(name),
         };
         for (const auto &scalar : MaterialScalarExtensions) {
             if (bits & scalar.Bit || pbr.*scalar.Ours != scalar.Default) out.*scalar.Theirs = fastgltf::optional<fastgltf::num>{pbr.*scalar.Ours};
@@ -666,7 +784,78 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             auto &theirs = (out.*extension.Theirs).emplace();
             ForEachMaterialField(extension, [&](const auto &field) { WriteField(theirs, pbr.*extension.Ours, field, uses_texture_transform); });
         });
-        asset.materials.emplace_back(std::move(out));
+        return out;
+    };
+    // The material record at the index as its source holds it, with its animated values at rest.
+    const auto rest_record = [&](uint32_t i) {
+        auto pbr = buffers.Materials.GetSpan<PBRMaterial>()[i];
+        OverlayRest(r, material_entities[i], state::Key<Material>(), std::as_writable_bytes(std::span{&pbr, 1}));
+        return pbr;
+    };
+    const auto meta_of = [&](state::Entity entity) -> const MaterialSourceMeta & {
+        const auto *source_meta = r.try_get<const MaterialSourceMeta>(entity);
+        return source_meta ? *source_meta : DefaultMeta;
+    };
+    // A baked material exports its original where a primitive draws it without a bake or a variant maps a primitive to it.
+    const auto &arenas = meshes.Arenas();
+    std::vector<bool> exported(material_count, true);
+    for (const auto &baked : options.Baked) exported[r.get<const Material>(baked.Material).Index] = false;
+    for (const auto &group : mesh_groups) {
+        for (const auto entity : group.Triangles) {
+            const auto baked = [&](uint32_t index) { return std::ranges::any_of(options.Baked, [&](const BakedMaterial &b) { return b.Mesh == entity && r.get<const Material>(b.Material).Index == index; }); };
+            for (const auto index : arenas.PrimitiveMaterials.Get(meshes.Get(GetMesh(r, entity).GetStoreId()).PrimitiveMaterials)) {
+                if (index < material_count && !baked(index)) exported[index] = true;
+            }
+            if (const auto *layout = r.try_get<const MeshSourceLayout>(entity)) {
+                for (const auto &mappings : layout->VariantMappings) {
+                    for (const auto &m : mappings) {
+                        if (m) exported[MaterialIndexOf(r, *m)] = true;
+                    }
+                }
+            }
+        }
+    }
+    for (uint32_t i = 1; i < material_count; ++i) {
+        const auto entity = material_entities[i];
+        if (entity == state::Null) continue;
+        const auto &meta = meta_of(entity);
+        if (meta.ImplicitDefault || !exported[i]) continue;
+        material_indices[i] = asset.materials.size();
+        asset.materials.emplace_back(material_of(rest_record(i), meta, meta.NameWasEmpty ? std::string{} : r.get<const Material>(entity).Name));
+    }
+    // A mesh's primitives drawing a baked material export a copy of it whose textures hold the baked inputs, by mesh entity and material index.
+    // The copies of the same inputs are one material, and the textures of the same inputs one texture.
+    std::map<std::pair<state::Entity, uint32_t>, size_t> baked_indices;
+    std::map<std::vector<const BakedInput *>, size_t> baked_materials;
+    std::map<std::vector<const BakedInput *>, uint32_t> baked_textures;
+    for (const auto &baked : options.Baked) {
+        const auto index = r.get<const Material>(baked.Material).Index;
+        const auto inputs = baked.Inputs | std::views::transform([](const auto &input) { return input.get(); }) | std::ranges::to<std::vector>();
+        const auto [exported, added] = baked_materials.try_emplace(inputs, asset.materials.size());
+        baked_indices[{baked.Mesh, index}] = exported->second;
+        if (!added) continue;
+        auto pbr = rest_record(index);
+        auto meta = meta_of(baked.Material);
+        const auto &name = r.get<const Material>(baked.Material).Name;
+        // A material or texture whose inputs depend on no mesh is named for the bake, and another for its mesh.
+        const auto suffix_of = [&](std::span<const BakedInput *const> of) {
+            return std::ranges::all_of(of, [](const BakedInput *input) { return input->Mesh == state::Null; }) ? std::string{"baked"} : GetName(r, baked.Mesh);
+        };
+        for (const auto &[slot, image] : PackBaked(baked, pbr, meta)) {
+            const auto [texture, packed] = baked_textures.try_emplace(image.Inputs, uint32_t(asset.textures.size()));
+            if (packed) {
+                const auto image_name = std::format("{}_{}_{}", name, suffix_of(image.Inputs), MaterialTextureSlots[slot].Label);
+                auto png = EncodeImagePngRgba8(std::as_bytes(std::span{image.Rgba}), image.Width, image.Height, image_name);
+                if (!png) return std::unexpected{std::move(png.error())};
+                const uint32_t bv = AddBufferView(AppendAligned(bin, png->data(), png->size()), png->size());
+                asset.images.emplace_back(fastgltf::Image{.data = fastgltf::sources::BufferView{.bufferViewIndex = bv, .mimeType = fastgltf::MimeType::PNG}, .name = image_name});
+                asset.textures.emplace_back(fastgltf::Texture{.imageIndex = asset.images.size() - 1u, .name = image_name});
+            }
+            meta.TextureSlots[slot] = texture->second;
+            MaterialTextureSlots[slot].Get(pbr) = {};
+            if (slot < meta.BaseSlotMeta.size()) meta.BaseSlotMeta[slot] = {};
+        }
+        asset.materials.emplace_back(material_of(pbr, meta, std::format("{}_{}", name, suffix_of(inputs))));
     }
 
     bool uses_animation_pointer = false;
@@ -760,13 +949,48 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     }
 
     asset.meshes.reserve(mesh_groups.size());
-    const auto &arenas = meshes.Arenas();
-    const auto emit_non_triangle_attrs = [&](std::vector<fastgltf::Attribute> &out, const Mesh &mesh) {
+
+    // Every exported mesh's GPU reads, gathered before emission in submits that do not grow with the mesh count.
+    // A triangle mesh reads its faces' valences and primitives and its triangles, and a line or point mesh its positions, edge ends and authored normals.
+    std::unordered_map<state::Entity, uint32_t> read_of;
+    std::vector<uint32_t> triangle_ids, loose_ids;
+    std::vector<std::vector<uint32_t>> triangle_faces, loose_edges, loose_vertices;
+    for (const auto &group : mesh_groups) {
+        for (const auto entity : group.Triangles) {
+            read_of.emplace(entity, uint32_t(triangle_ids.size()));
+            const auto mesh = GetMesh(r, entity);
+            triangle_ids.push_back(mesh.GetStoreId());
+            triangle_faces.push_back(HandleList(mesh.faces()));
+        }
+        for (const auto *entities : {&group.Lines, &group.Points}) {
+            for (const auto entity : *entities) {
+                read_of.emplace(entity, uint32_t(loose_ids.size()));
+                const auto mesh = GetMesh(r, entity);
+                loose_ids.push_back(mesh.GetStoreId());
+                loose_edges.push_back(HandleList(mesh.edges()));
+                loose_vertices.push_back(meshes.Get(mesh.GetStoreId()).HasAuthoredNormals ? HandleList(mesh.vertices()) : std::vector<uint32_t>{});
+            }
+        }
+    }
+    const auto records_of = [](std::span<const uint32_t> ids, std::span<const std::vector<uint32_t>> elements) {
+        std::vector<RecordElements> records;
+        records.reserve(ids.size());
+        for (uint32_t i = 0u; i < ids.size(); ++i) records.push_back({ids[i], elements[i]});
+        return records;
+    };
+    const auto face_records = records_of(triangle_ids, triangle_faces);
+    const auto face_valences = FaceValences(meshes, pipelines, face_records);
+    const auto face_primitives = FacePrimitives(meshes, pipelines, face_records);
+    const auto triangle_vertices = OrdinalTriangles(meshes, pipelines, triangle_ids);
+    const auto loose_positions = OrdinalPositions(meshes, pipelines, loose_ids);
+    const auto loose_ends = EdgeEndpoints(meshes, pipelines, records_of(loose_ids, loose_edges));
+    const auto loose_normals = VertexNormals(meshes, pipelines, records_of(loose_ids, loose_vertices));
+
+    const auto emit_non_triangle_attrs = [&](std::vector<fastgltf::Attribute> &out, const Mesh &mesh, std::span<const vec3> normals) {
         const auto store_id = mesh.GetStoreId();
         const auto &record = meshes.Get(store_id);
         if (record.HasAuthoredNormals) {
-            const auto normals = VertexNormals(meshes, pipelines, store_id, HandleList(mesh.vertices()));
-            out.emplace_back(fastgltf::Attribute{"NORMAL", AddDataAccessor(std::span<const vec3>{normals}, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer)});
+            out.emplace_back(fastgltf::Attribute{"NORMAL", AddDataAccessor(normals, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer)});
         }
         if (record.VertexAttributes & MeshAttributeBit_Color0) {
             const auto source = arenas.VertexColors.View(record.VertexColors);
@@ -843,15 +1067,14 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 return ordinal + std::popcount(bits[offset / 32u] & ((1u << (offset % 32u)) - 1u));
             };
             std::vector<std::vector<CornerRef>> corners_per_prim(prim_count);
-            const auto faces = HandleList(mesh.faces());
-            const auto face_corners = FaceCorners(meshes, pipelines, store_id, faces);
-            const auto face_primitives = FacePrimitives(meshes, pipelines, store_id, faces);
-            const auto corner_vertices = OrdinalTriangles(meshes, pipelines, store_id);
+            const auto read = read_of.at(entity);
+            const auto &faces = triangle_faces[read];
+            const auto &corner_vertices = triangle_vertices[read];
             for (uint32_t f = 0u; f < faces.size(); ++f) {
                 const auto face = meshes.HandleAddress(store_id, MeshStore::ElementDomain::Face, ElementHandle{faces[f]}).Value();
                 const auto first = triangle_ordinal(arenas.FaceTriangles.Get({face, 1u})[0]) * 3u;
-                const auto count = (uint32_t(face_corners.Of(f).size()) - 2u) * 3u;
-                if (const uint32_t p = face_primitives[f]; p < prim_count) {
+                const auto count = (face_valences[read][f] - 2u) * 3u;
+                if (const uint32_t p = face_primitives[read][f]; p < prim_count) {
                     auto &out = corners_per_prim[p];
                     for (uint32_t k = 0; k < count; ++k) out.emplace_back(corner_vertices[first + k], first + k);
                 }
@@ -1006,6 +1229,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 if (prim_idx < primitive_materials.size()) {
                     const auto reg_idx = primitive_materials[prim_idx];
                     if (reg_idx < material_indices.size()) material_index = material_indices[reg_idx];
+                    if (const auto baked = baked_indices.find({entity, reg_idx}); baked != baked_indices.end()) material_index = baked->second;
                 }
 
                 std::vector<fastgltf::optional<size_t>> mappings;
@@ -1034,29 +1258,30 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
         for (const auto entity : group.Lines) {
             const auto &mesh = GetMesh(r, entity);
-            const auto positions = OrdinalPositions(meshes, pipelines, mesh.GetStoreId());
+            const auto read = read_of.at(entity);
+            const auto &positions = loose_positions[read];
             if (!positions.empty() && mesh.EdgeCount() > 0) {
-                const auto edges = HandleList(mesh.edges());
                 std::vector<uint32_t> idx;
-                idx.reserve(edges.size() * 2);
-                for (const auto &edge : SelectedEdgeFacts(meshes, pipelines, mesh.GetStoreId(), edges, {})) {
+                idx.reserve(loose_ends[read].size() * 2);
+                for (const auto &edge : loose_ends[read]) {
                     idx.emplace_back(mesh.VertexOrdinal(Mesh::VH{edge.From}));
                     idx.emplace_back(mesh.VertexOrdinal(Mesh::VH{edge.To}));
                 }
                 std::vector<fastgltf::Attribute> attrs;
                 attrs.emplace_back(fastgltf::Attribute{"POSITION", AddVec3Accessor(positions, true, fastgltf::BufferTarget::ArrayBuffer)});
-                emit_non_triangle_attrs(attrs, mesh);
+                emit_non_triangle_attrs(attrs, mesh, loose_normals[read]);
                 push_prim(fastgltf::PrimitiveType::Lines, std::move(attrs), AddDataAccessor(std::span<const uint32_t>(idx), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::UnsignedInt, fastgltf::BufferTarget::ElementArrayBuffer));
             }
         }
 
         for (const auto entity : group.Points) {
             const auto &mesh = GetMesh(r, entity);
-            const auto positions = OrdinalPositions(meshes, pipelines, mesh.GetStoreId());
+            const auto read = read_of.at(entity);
+            const auto &positions = loose_positions[read];
             if (!positions.empty()) {
                 std::vector<fastgltf::Attribute> attrs;
                 attrs.emplace_back(fastgltf::Attribute{"POSITION", AddVec3Accessor(positions, true, fastgltf::BufferTarget::ArrayBuffer)});
-                emit_non_triangle_attrs(attrs, mesh);
+                emit_non_triangle_attrs(attrs, mesh, loose_normals[read]);
                 push_prim(fastgltf::PrimitiveType::Points, std::move(attrs));
             }
         }

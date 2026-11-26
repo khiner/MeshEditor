@@ -141,12 +141,13 @@ struct GpuBuffers {
 
     MeshletFlagWork &FlagWork(uint32_t flag) { return MeshletFlagWorkByBit[std::countr_zero(flag)]; }
     const MeshletFlagWork &FlagWork(uint32_t flag) const { return MeshletFlagWorkByBit[std::countr_zero(flag)]; }
-    // The settle pass totals Silhouette over the selected instances.
+    // A tally counts Silhouette over its outlined instances and every other counted flag over its drawn instances.
     static constexpr uint32_t CountedMeshletFlags = ((1u << MeshletInstanceFlagCount) - 1u) &
         ~(uint32_t(MeshletInstanceFlag::Silhouette) | uint32_t(MeshletInstanceFlag::LodPinFinest) | uint32_t(MeshletInstanceFlag::VertexNormal) |
           uint32_t(MeshletInstanceFlag::OverlayOnly) | uint32_t(MeshletInstanceFlag::SilhouetteEligible));
+    // Outlined counts the mesh's instances that take the Silhouette flag.
     struct MeshFlagTally {
-        uint32_t Flags{0}, Instances{0}, Nodes{0}, Meshlets{0}, Depth{0}, Topologies{0};
+        uint32_t Flags{0}, Instances{0}, Outlined{0}, Nodes{0}, Meshlets{0}, Depth{0}, Topologies{0};
         bool SharpEdges{};
     };
     // Each mesh record's tally, by store id.
@@ -194,11 +195,15 @@ struct GpuBuffers {
     void CaptureRenderPose(RenderPose &dst, const RenderPose *previous = nullptr) const;
     const RenderPose *RenderPoseFor(const ::SceneViewUBO &) const;
     std::span<const PBRMaterial> MaterialsFor(const ::SceneViewUBO &) const;
+    // The state of each instance by slot in the scene the view shows, or none for a view of no scene.
+    std::span<const uint8_t> InstanceStatesFor(const ::SceneViewUBO &) const;
     std::span<const LightRecord> LightsFor(const ::SceneViewUBO &) const;
 
     // Each shown scene's lights, in Scenes order.
     std::vector<mtl::Buffer> Lights;
     mtl::Buffer Materials;
+    // Each geometry procedure's op values, in the block its OpValueBlock holds.
+    BufferArena<uint32_t> OpValues{Ctx, SlotType::Buffer};
 
     mtl::Buffer ViewportThemeUBO;
 
@@ -227,7 +232,6 @@ struct GpuBuffers {
     uint32_t ObjectPickEpochTag{}; // Zero clears the persistent keys before the first pick and after wraparound.
     mtl::Buffer ElementPickKey, ElementPickId;
     BufferArena<uint32_t> GeometryWork{Ctx, SlotType::Buffer};
-    mtl::Buffer GeometryNormalEntries{Ctx, 0, SlotType::Buffer};
     mtl::Buffer WireCoverageBuffer{Ctx, 0, SlotType::Buffer};
 };
 

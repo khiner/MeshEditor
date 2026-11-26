@@ -41,13 +41,10 @@ inline float3 FlattenLeastSquares(float3 diagonal,float3 off) {
 
 // Every group in a dispatch has disjoint vertices.
 // Subsequent batches observe earlier projections when face regions or remaining wire groups share a vertex.
-kernel void FlattenGroups(
-    uint lane [[thread_index_in_threadgroup]],uint group [[threadgroup_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant VertexPositionEditPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
+kernel void FlattenGroups(JOB_TABLE_ARGS(VertexPositionEditPushConstants)) {
+    JOB_TILE(pc);
     const auto words=BindlessBuffer(uint,b.Buffer,pc.Parameters.Slot)+pc.Parameters.Offset;
-    const uint offset=BindlessBuffer(uint,b.Buffer,pc.Planes.Slot)[pc.Planes.Offset+group];
+    const uint offset=BindlessBuffer(uint,b.Buffer,pc.Planes.Slot)[pc.Planes.Offset+tile];
     const uint count=words[offset],faces=words[offset+1u];
     const auto vertices=words+offset+2u;
     const auto face_offsets=vertices+count;

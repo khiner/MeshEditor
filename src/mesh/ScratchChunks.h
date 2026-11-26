@@ -7,7 +7,8 @@ constexpr uint32_t TileElements{256};
 // Elements one scan block covers, four per thread, matching the shaders' ScanBlockElements.
 constexpr uint32_t BlockElements{1024};
 
-constexpr uint32_t ScratchWordBudget{96u << 20};
+// The scratch words a batch records before it submits, a power of two so a workspace of the budget's size holds it.
+constexpr uint32_t ScratchWordBudget{64u << 20};
 
 constexpr uint32_t TileCount(uint64_t count, uint32_t per_tile) { return uint32_t(count / per_tile + (count % per_tile != 0)); }
 

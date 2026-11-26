@@ -54,9 +54,7 @@ using UpdatableComponents = TypeList<
     mesh::CycleCornerAttribute, procedure::MarkSharp, procedure::Knife, procedure::Shade,
     procedure::ToSphere, procedure::PushPull, procedure::Shear, procedure::Warp, procedure::Bend, procedure::VertexSlide, procedure::EdgeSlide, procedure::Flatten,
     procedure::TransformElements, procedure::Boolean, procedure::Minkowski, procedure::LevelSet,
-    procedure::Normal, procedure::Curvature, procedure::Boundary, procedure::PlaneSide, procedure::Adjacent, procedure::Index, procedure::NamedAttribute, procedure::VectorMath, procedure::FloatMath, procedure::Compare,
-    procedure::BooleanMath, procedure::StoreNamedAttribute, procedure::StoreSelection, procedure::SetPosition, procedure::InstanceOnPoints, procedure::ObjectInfo,
-    procedure::FloatValue, procedure::IntegerValue, procedure::BooleanValue, procedure::VectorValue, procedure::RotationValue,
+    procedure::StoreNamedAttribute, procedure::StoreSelection, procedure::Bake, procedure::SetPosition, procedure::InstanceOnPoints, procedure::ObjectInfo,
     primitive::Plane, primitive::Circle, primitive::Cube, primitive::IcoSphere, primitive::UVSphere, primitive::QuadSphere, primitive::Torus, primitive::Cylinder>;
 
 template<typename C>

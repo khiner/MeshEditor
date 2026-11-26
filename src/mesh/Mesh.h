@@ -108,6 +108,7 @@ struct MeshConnectivity {
     std::span<const uint32_t> VertexTable, HalfedgeTable, EdgeTable, FaceTable;
     std::span<const MeshElementBlock> VertexBlocks, HalfedgeBlocks, EdgeBlocks, FaceBlocks;
     uint32_t VertexCount{}, HalfedgeCount{}, EdgeCount{}, FaceCount{};
+    uint32_t UnpairedCornerCount{}; // Face corners without an opposite
     std::span<const uint32_t> OutgoingValues, OppositeValues, HalfedgeEdgeValues, HalfedgeFaceValues, EdgeHalfedgeValues;
     std::span<const uvec2> FaceRangeValues, VertexCornerValues;
     std::span<const uvec2> FanItems; // (corner, face) in fan runs, indexed by a vertex's incoming run
@@ -165,7 +166,8 @@ struct Mesh {
     uint32_t FaceOrdinal(FH f) const;
     uint32_t FaceCount() const { return C.FaceCount; }
     uint32_t HalfEdgeCount() const { return C.HalfedgeCount; }
-    bool HasClosedSurface() const { return FaceCount() && uint64_t(HalfEdgeCount()) == 2ull * EdgeCount(); }
+    // The halfedges number twice the edges and every face corner has an opposite.
+    bool HasClosedSurface() const { return FaceCount() && uint64_t(HalfEdgeCount()) == 2ull * EdgeCount() && !C.UnpairedCornerCount; }
 
     const MeshStore &GetStore() const { return *Store; }
     uint32_t GetStoreId() const { return StoreId; }

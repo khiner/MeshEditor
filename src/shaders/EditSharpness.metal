@@ -1,11 +1,11 @@
 #pragma once
 #include "ConnectivityRead.metal"
 #include "ElementWorkShared.metal"
-#include "gpu/EditSharpnessPushConstants.h"
+#include "gpu/EditSharpnessJob.h"
 
 struct EditSharpnessContext {
     device const BindlessSet &B;
-    constant EditSharpnessPushConstants &Pc;
+    constant EditSharpnessJob &Pc;
 
     ConnectivityView Connectivity() const { return {B, Pc.Connectivity}; }
     bool VertexSelected(uint vertex_id) const {
@@ -24,12 +24,9 @@ struct EditSharpnessContext {
     }
 };
 
-kernel void EditSharpnessKernel(
-    uint i [[thread_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant EditSharpnessPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const EditSharpnessContext ctx{bindless, pc};
+kernel void EditSharpnessKernel(JOB_TABLE_ARGS(EditSharpnessJob)) {
+    JOB_THREAD(pc, i);
+    const EditSharpnessContext ctx{b, pc};
     if (pc.Operation == EditSharpnessOperation::SetSelectedFaces || pc.Operation == EditSharpnessOperation::SetSelectedEdges ||
         pc.Operation == EditSharpnessOperation::SetVertexEdges) {
         if (i >= pc.SelectedCount) return;
@@ -42,16 +39,16 @@ kernel void EditSharpnessKernel(
         }
         return;
     }
-    if (i < pc.FaceCount) ctx.WriteFace(WorkGroupElement(bindless,pc.FaceWork,i),
+    if (i < pc.FaceCount) ctx.WriteFace(WorkGroupElement(b,pc.FaceWork,i),
         pc.Operation == EditSharpnessOperation::SetAllFaces ? pc.Value : 0u);
     if (i >= pc.EdgeCount || pc.Operation == EditSharpnessOperation::SetAllFaces) return;
     uint value = 0u;
-    const uint edge = WorkGroupElement(bindless,pc.EdgeWork,i);
+    const uint edge = WorkGroupElement(b,pc.EdgeWork,i);
     if (pc.Operation == EditSharpnessOperation::SmoothByAngle) {
         const auto conn = ctx.Connectivity();
         const uint2 faces = conn.EdgeFaces(edge);
         if (faces.x != InvalidOffset && faces.y != InvalidOffset) {
-            device const packed_float3 *normals = BindlessBuffer(packed_float3, bindless.Buffer, pc.FaceNormalsSlot);
+            device const packed_float3 *normals = BindlessBuffer(packed_float3, b.Buffer, pc.FaceNormalsSlot);
             value = dot(float3(normals[conn.FaceAddress(faces.x)]), float3(normals[conn.FaceAddress(faces.y)])) < pc.CosAngle ? 1u : 0u;
         }
     }

@@ -25,8 +25,8 @@ state::Entity NetworkRoot(const state::Registry &r, state::Entity network) {
     return network;
 }
 namespace {
-// The kinds of entity the document page shows beside the document itself: the scenes and the items their objects share.
-using DocumentKinds = TypeList<Scene, HierarchyDefinition, Material, MaterializedTexture, PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef>;
+// The kinds of entity the document page shows beside the document itself: the scenes, the items their objects share, and the user definitions of subnet nodes.
+using DocumentKinds = TypeList<Scene, HierarchyDefinition, Material, MaterializedTexture, PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef, SubnetDefinition>;
 // Whether the document or the scene holds the item.
 bool IsLeaf(const state::Registry &r, state::Entity root, state::Entity e) {
     if (root == state::Document) {
@@ -98,8 +98,8 @@ std::vector<state::Entity> NetworkItems(const state::Registry &r, state::Entity 
     return items;
 }
 bool ShowsItem(const state::Registry &r, state::Entity network, state::Entity item) {
-    if (const auto owner = r.all_of<Subnet>(network) ? r.get<const ProcedureNode>(network).Procedure : network; r.all_of<GeometryProcedure>(owner)) {
-        return r.valid(item) && r.all_of<ProcedureNode>(item) && (item == network ? owner != network : NetworkOf(r, item) == network);
+    if (r.all_of<NetworkNodes>(network)) {
+        return r.valid(item) && (item == network ? r.all_of<SubnetDefinition>(network) : r.all_of<ProcedureNode>(item) && NetworkOf(r, item) == network);
     }
     const auto root = NetworkRoot(r, network);
     // The document and a scene hold too many items to list for one check, so they answer per item.
@@ -123,25 +123,28 @@ state::Entity NetworkRepresentative(const state::Registry &r, state::Entity netw
     }
     return item;
 }
-std::optional<numeric::uvec2> NetworkPosition(const state::Registry &r, state::Entity network, state::Entity item) {
+namespace {
+auto CellKey(const NetworkCell &cell) { return std::pair{cell.Item, cell.Output}; }
+} // namespace
+std::optional<numeric::uvec2> NetworkPosition(const state::Registry &r, state::Entity network, state::Entity item, bool output) {
     if (const auto *layout = r.try_get<const NetworkLayout>(network)) {
-        const auto at = std::ranges::lower_bound(layout->Cells, item, {}, &NetworkCell::Item);
-        if (at != layout->Cells.end() && at->Item == item) return at->Position;
+        const auto at = std::ranges::lower_bound(layout->Cells, std::pair{item, output}, {}, CellKey);
+        if (at != layout->Cells.end() && CellKey(*at) == std::pair{item, output}) return at->Position;
     }
     return {};
 }
-void SetNetworkPosition(state::Registry &r, state::Entity network, state::Entity item, uvec2 position) {
+void SetNetworkPosition(state::Registry &r, state::Entity network, state::Entity item, uvec2 position, bool output) {
     r.get_or_emplace<NetworkLayout>(network);
     r.patch<NetworkLayout>(network, [&](auto &layout) {
-        const auto at = std::ranges::lower_bound(layout.Cells, item, {}, &NetworkCell::Item);
-        if (at != layout.Cells.end() && at->Item == item) at->Position = position;
-        else layout.Cells.insert(at, {item, position});
+        const auto at = std::ranges::lower_bound(layout.Cells, std::pair{item, output}, {}, CellKey);
+        if (at != layout.Cells.end() && CellKey(*at) == std::pair{item, output}) at->Position = position;
+        else layout.Cells.insert(at, {item, position, output});
     });
 }
-void ClearNetworkPosition(state::Registry &r, state::Entity network, state::Entity item) {
-    if (!NetworkPosition(r, network, item)) return;
+void ClearNetworkPosition(state::Registry &r, state::Entity network, state::Entity item, bool output) {
+    if (!NetworkPosition(r, network, item, output)) return;
     if (r.get<const NetworkLayout>(network).Cells.size() == 1u) r.remove<NetworkLayout>(network);
-    else r.patch<NetworkLayout>(network, [&](auto &layout) { layout.Cells.erase(std::ranges::lower_bound(layout.Cells, item, {}, &NetworkCell::Item)); });
+    else r.patch<NetworkLayout>(network, [&](auto &layout) { layout.Cells.erase(std::ranges::lower_bound(layout.Cells, std::pair{item, output}, {}, CellKey)); });
 }
 void PlaceInNetwork(state::Registry &r, state::Entity network, state::Entity object) {
     if (!r.all_of<NetworkSubnet>(network) || !InScene(r, object, NetworkRoot(r, network))) return;
@@ -229,9 +232,7 @@ void RemoveSourceTexture(state::Registry &r, uint32_t texture) {
     // The GPU textures and queued uploads identify their image by the same index.
     auto &store = r.Resources.get<TextureStore>();
     for (auto &entry : store.Textures) lower(*image, entry.SourceImageIndex);
-    for (auto &upload : store.PendingUploads) {
-        if (auto *ref = std::get_if<PendingTextureUpload::GltfImageRef>(&upload.Source)) lower(*image, ref->ImageIndex);
-    }
+    for (auto &upload : store.PendingUploads) lower(*image, upload.ImageIndex);
 }
 } // namespace
 void Apply(state::Registry &r, const DeleteItems &a) {
@@ -246,14 +247,21 @@ void Apply(state::Registry &r, const DeleteItems &a) {
     std::vector<state::Entity> objects, destroyed;
     for (const auto e : items) {
         if (e == state::Document || !r.valid(e) || r.any_of<BoneIndex, HierarchyDefinition>(e) || (pose && r.all_of<ObjectKind>(e))) continue;
-        if (r.all_of<Scene>(e)) {
+        if (r.all_of<SubnetDefinition>(e)) {
+            if (!DefinitionUsed(r, e)) Apply(r, DeleteDefinition{e});
+        } else if (r.all_of<Scene>(e)) {
             scene::Apply(r, scene::Remove{e});
         } else if (r.all_of<ObjectKind>(e)) {
             if (!r.all_of<SubElementOf>(e)) objects.push_back(HierarchyEditTarget(r, e, true));
         } else {
             if (const auto *material = r.try_get<const Material>(e)) ReleaseMaterial(r, material->Index);
+            if (r.all_of<MaterialGraph>(e)) destroyed.append_range(NodesOf(r, e));
             if (const auto *texture = r.try_get<const MaterializedTexture>(e)) {
                 for (const auto &user : ReferencesTo(r, e)) Apply(r, AssignReference{user, state::Null});
+                // An op's image input that read the texture reads none.
+                for (const auto op : SortedEntities(r.view<const Op>())) {
+                    if (std::ranges::contains(r.get<const Op>(op).Images | std::views::values, e)) r.patch<Op>(op, [&](Op &edited) { std::erase_if(edited.Images, [&](const auto &image) { return image.second == e; }); });
+                }
                 // The GPU texture goes now, so the sampler slots in use always match the document's textures.
                 ReleaseTexture(r, texture->SamplerSlot);
                 // A texture node per color space can share one source texture, which goes with the last of them.
@@ -323,8 +331,13 @@ void Apply(state::Registry &r, const RenameItem &a) {
     };
     if ([&]<typename... Ts>(TypeList<Ts...>) { return (renamed.template operator()<Ts>() || ...); }(TypeList<Material, PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef>{})) return;
     // Every other item has a unique name, and a hierarchy member takes its from the object it was made from.
+    // A subnet node takes its name from its user definition.
+    if (const auto *subnet = r.try_get<const Subnet>(e)) {
+        if (subnet->DefinitionEntity == state::Null) return Fail(r, "A built-in definition's name does not change");
+        e = subnet->DefinitionEntity;
+    }
     if (r.all_of<ObjectKind>(e) && !r.any_of<SubElementOf, BoneIndex>(e)) e = HierarchyEditTarget(r, e, true);
-    else if (!r.any_of<Scene, NetworkSubnet, Subnet>(e)) return Fail(r, "The item has no name to change");
+    else if (!r.any_of<Scene, NetworkSubnet, SubnetDefinition>(e)) return Fail(r, "The item has no name to change");
     r.remove<Name>(e);
     EmplaceUniqueName(r, e, a.Name);
 }

@@ -6,10 +6,62 @@
 #include "mesh/MeshClone.h"
 #include "mesh/Primitives.h"
 #include "numeric/MatrixMath.h"
-#include "procedure/Procedure.h"
+#include "procedure/NodeEditor.h"
+#include "procedure/OpNodes.h"
+#include <imgui.h>
+
+using Matrix33 = std::array<float, 9>;
+// A literal of an op input, of its own type.
+using OpLiteral = std::variant<float, int32_t, bool, vec2, vec3, vec4, Matrix33>;
+struct ProcedureFixture;
+
+// An ImGui context of its own, with a Nodes and a Properties panel.
+struct PanelContext {
+    ImGuiContext *Context{ImGui::CreateContext()};
+    NodesPanel Nodes{{"Nodes"}};
+    Panel Properties{"Properties"};
+    PanelContext() {
+        ImGui::SetCurrentContext(Context);
+        auto &io = ImGui::GetIO();
+        io.IniFilename = nullptr;
+        io.DisplaySize = {1400, 900};
+        io.Fonts->Build();
+    }
+    ~PanelContext() { ImGui::DestroyContext(Context); }
+};
+// The geometry the Nodes and Properties panels draw in one frame.
+inline std::vector<std::byte> DrawPanels(Fixture &f, PanelContext &panels, bool interactive = false) {
+    ImGui::SetCurrentContext(panels.Context);
+    ImGui::NewFrame();
+    ImGui::SetNextWindowPos({0, 0});
+    ImGui::SetNextWindowSize({950, 850});
+    procedure::DrawNodesPanel(f.R, panels.Nodes, interactive);
+    ImGui::SetNextWindowPos({950, 0});
+    ImGui::SetNextWindowSize({450, 850});
+    procedure::DrawPropertiesPanel(f.R, panels.Nodes, panels.Properties, interactive);
+    ImGui::Render();
+    std::vector<std::byte> drawn;
+    for (const auto *list : ImGui::GetDrawData()->CmdLists) {
+        drawn.append_range(std::as_bytes(std::span{list->VtxBuffer.Data, size_t(list->VtxBuffer.Size)}));
+        drawn.append_range(std::as_bytes(std::span{list->IdxBuffer.Data, size_t(list->IdxBuffer.Size)}));
+    }
+    boost::ut::expect(!drawn.empty());
+    return drawn;
+}
+// A write the fixture does on a node once it is added.
+using NodeUpdate = std::function<void(ProcedureFixture &, state::Entity)>;
 
 // A project fixture for procedure scenarios, with node authoring, viewport clicks and kernel references on clones of a mesh's source.
 struct ProcedureFixture : Fixture {
+    // The panels the step checks draw, whose Nodes panel keeps the page it shows across steps.
+    std::unique_ptr<PanelContext> Panels{std::make_unique<PanelContext>()};
+    // Whether the fresh-cook and canvas checks run at every step, or once at the end of a script.
+    bool EveryStep{};
+    void Begin(const std::filesystem::path &dir) {
+        Fixture::Begin(dir);
+        Panels->Nodes = NodesPanel{{"Nodes"}};
+        EveryStep = false;
+    }
     void Fails(auto a) {
         project::Do(*P, action::MakeAction(std::move(a)));
         boost::ut::expect(!R.Resources.get<action::Errors>().Messages.empty());
@@ -28,17 +80,25 @@ struct ProcedureFixture : Fixture {
     }
     // Adds a mesh of the primitive whose Source node refers to a record that `prepare` edits before the node's state is kept.
     state::Entity AddPrepared(const PrimitiveParameters &shape, auto &&prepare) {
-        const auto source = CreateMesh(R, {.Data = std::visit([](const auto &parameters) { return primitive::CreateMesh(parameters); }, shape), .FlatShaded = true}).StoreId;
+        const auto source = CreateMesh(R, primitive::CreateMesh(shape)).StoreId;
         P->Settle();
         prepare(*this, source);
         const auto mesh = ::AddMesh(R, source, MeshInstanceCreateInfo{}).first;
         Commit("Add prepared mesh");
         return mesh;
     }
-    // Adds an unlinked node without changing the displayed stage.
-    state::Entity Append(state::Entity mesh_entity, uint16_t kind) {
-        Do(action::nodes::AddNode{mesh_entity, kind});
-        return R.get<const procedure::GeometryProcedure>(mesh_entity).Last;
+    // Adds an unlinked node of the kind, or an op node evaluating the MaterialX node, to a network without changing the displayed stage, and applies the updates to it.
+    state::Entity Append(state::Entity network, std::variant<uint16_t, std::string_view> kind, const std::vector<NodeUpdate> &updates = {}) {
+        const auto spec = std::visit(overloaded{[](uint16_t k) -> action::nodes::NodeSpec { return action::nodes::KindNode{k}; }, [](std::string_view op) -> action::nodes::NodeSpec { return action::nodes::OpNode{std::string{op}}; }}, kind);
+        Do(action::nodes::AddNode{network, spec});
+        const auto node = procedure::NodesOf(R, network).back();
+        for (const auto &update : updates) update(*this, node);
+        return node;
+    }
+    // The op node's input socket of the name, or else its output socket of the name.
+    uint16_t OpSocket(state::Entity node, std::string_view name) const {
+        const auto sockets = procedure::DefinitionOf(R.get<const procedure::Op>(node).Node)->Sockets;
+        return uint16_t(std::ranges::find(sockets, name, [](const procedure::Socket &socket) { return std::string_view{socket.Name}; }) - sockets.begin());
     }
     // Links each node's first output into the next node's first input and displays the last node.
     void Route(state::Entity mesh_entity, std::initializer_list<state::Entity> nodes) {
@@ -48,7 +108,7 @@ struct ProcedureFixture : Fixture {
     // The node at the index in the procedure's authoring order.
     state::Entity Node(state::Entity mesh_entity, uint32_t node) const { return R.get<const procedure::CookPlan>(mesh_entity).Nodes[node].Entity; }
     // The node's first output socket.
-    uint16_t Out(state::Entity node) const { return procedure::InputCount[R.get<const procedure::ProcedureNode>(node).Kind]; }
+    uint16_t Out(state::Entity node) const { return procedure::InputCountOf(R, node); }
     void Render() {
         SubmitViewports(R);
         WaitForRender(R);
@@ -76,7 +136,8 @@ struct ProcedureFixture : Fixture {
     // A new record holding the Source node's geometry, with selection state.
     uint32_t CloneSource(const procedure::SourceState &source) {
         auto &meshes = Store();
-        const auto id = source.State == store::Hash128{} ? CloneRecord(R, source.StoreId) : meshes.CloneStored(source.State, source.StoreId).value();
+        MeshStore::StateReaders readers;
+        const auto id = source.State == store::Hash128{} ? CloneRecord(R, source.StoreId) : meshes.CloneStored(source.State, source.StoreId, readers).value();
         meshes.RebuildSelectionIndex(std::array{id});
         mtl::ComputeChain chain{meshes.BufferContext()};
         meshes.EnsureSelectionState(R, chain, std::array{id});
@@ -96,6 +157,11 @@ struct ProcedureFixture : Fixture {
             if (instance.Entity == mesh_entity) return e;
         return state::Null;
     }
+    // The fault the cook of the node's mesh holds for the node.
+    std::optional<procedure::NodeFault> Fault(state::Entity node) const {
+        const auto *error = procedure::CookedOf<procedure::NodeError>(R, std::array{node});
+        return error ? std::optional{error->Fault} : std::nullopt;
+    }
     // The record the mesh draws.
     uint32_t Output(state::Entity mesh_entity) const { return *DrawnStoreId(R, mesh_entity); }
     Shape Shaped(state::Entity mesh_entity) { return Describe(Store(), Output(mesh_entity)); }
@@ -104,34 +170,72 @@ struct ProcedureFixture : Fixture {
         boost::ut::expect(std::ranges::all_of(ExecuteGeometryTopologyStages(R, tasks), &GeometryTopologyResult::Changed));
     }
     void CheckStep();
+    void CheckFreshCooks();
+    void CheckCanvas();
+    // Runs the fresh-cook and canvas checks on the state a script ends with.
+    void CheckEnd() {
+        CheckFreshCooks();
+        CheckCanvas();
+    }
 };
 
-// A write the fixture does on a node once it is added.
-using NodeUpdate = std::function<void(ProcedureFixture &, state::Entity)>;
+// The action that sets the op node's input of the name to the value.
+inline action::nodes::SetOpInput OpInputOf(state::Entity node, std::string_view input, action::nodes::OpInputValue value) {
+    return {node, std::string{input}, std::make_unique<action::nodes::OpInputValue>(std::move(value))};
+}
 template<auto... Ms> NodeUpdate Set(action::detail::last_field<Ms...> value) {
     return [value](ProcedureFixture &f, state::Entity node) { f.Do(action::UpdateOf<Ms...>(node, value)); };
 }
-// The attribute name of a Named Attribute or Store node.
+// The attribute name of a Store node.
 inline NodeUpdate Named(std::string name) {
     return [name = std::move(name)](ProcedureFixture &f, state::Entity node) { f.Do(action::nodes::SetAttributeName{node, name}); };
 }
+inline void SetLiteral(ProcedureFixture &f, state::Entity node, std::string_view input, const OpLiteral &value) {
+    const auto word = [](float v) { return std::bit_cast<uint32_t>(v); };
+    const auto [type, words] = std::visit(
+        overloaded{
+            [&](float v) { return std::pair{mx::Type::Float, std::vector{word(v)}}; },
+            [](int32_t v) { return std::pair{mx::Type::Integer, std::vector{std::bit_cast<uint32_t>(v)}}; },
+            [](bool v) { return std::pair{mx::Type::Boolean, std::vector{uint32_t(v)}}; },
+            [&](vec2 v) { return std::pair{mx::Type::Vector2, std::vector{word(v.x), word(v.y)}}; },
+            [&](vec3 v) { return std::pair{mx::Type::Vector3, std::vector{word(v.x), word(v.y), word(v.z)}}; },
+            [&](vec4 v) { return std::pair{mx::Type::Vector4, std::vector{word(v.x), word(v.y), word(v.z), word(v.w)}}; },
+            [&](const Matrix33 &m) { return std::pair{mx::Type::Matrix33, m | std::views::transform(word) | std::ranges::to<std::vector>()}; },
+        },
+        value
+    );
+    f.Do(OpInputOf(node, input, action::nodes::OpLiteral{type, words}));
+}
+// A link from the first output of `from` into the op node's input of the name.
+inline NodeUpdate From(std::string_view input, state::Entity from) {
+    return [input, from](ProcedureFixture &f, state::Entity node) { f.Do(action::nodes::Link{procedure::NetworkOf(f.R, node), from, f.Out(from), node, f.OpSocket(node, input)}); };
+}
+inline NodeUpdate Literal(std::string_view input, OpLiteral value) {
+    return [input, value](ProcedureFixture &f, state::Entity node) { SetLiteral(f, node, input, value); };
+}
+// The text of an op node's string input of the name.
+inline NodeUpdate Text(std::string_view input, std::string text) {
+    return [input, text = std::move(text)](ProcedureFixture &f, state::Entity node) { f.Do(OpInputOf(node, input, text)); };
+}
 
-// A procedure graph on a mesh of a primitive, whose Source node is node 0 and whose listed nodes follow it in authoring order.
+// A procedure graph on a mesh of a primitive or a source, whose Source node is node 0 and whose listed nodes follow it in authoring order.
 struct GraphDescription {
+    // A node of a kind, or an op node of a MaterialX node.
     struct Node {
-        uint16_t Kind;
+        std::variant<uint16_t, std::string_view> Kind;
         std::vector<NodeUpdate> Updates{};
     };
-    // A link from the first output of node `From` into socket `Socket` of node `To`.
+    // A link from the first output of node `From` into socket `Socket` of node `To`, or into the op input named `Input`.
     struct Link {
         uint32_t From, To;
         uint16_t Socket;
+        std::string_view Input{};
     };
-    PrimitiveParameters Shape;
+    std::variant<PrimitiveParameters, MeshSource> Shape;
     std::vector<Node> Nodes;
     std::vector<Link> Links;
     uint32_t Display;
-    // Edits the source record before the Source node keeps its state.
+    // Edits the primitive's record before the Source node keeps its state.
     std::function<void(ProcedureFixture &, uint32_t)> Prepare{};
 };
 struct BuiltGraph {
@@ -140,13 +244,12 @@ struct BuiltGraph {
     std::vector<state::Entity> Nodes;
 };
 inline BuiltGraph Build(ProcedureFixture &f, const GraphDescription &graph) {
-    const auto mesh = graph.Prepare ? f.AddPrepared(graph.Shape, graph.Prepare) : f.AddMesh(graph.Shape);
+    const auto *primitive = std::get_if<PrimitiveParameters>(&graph.Shape);
+    const auto mesh = !primitive ? f.AddSourced(std::get<MeshSource>(graph.Shape)).first : graph.Prepare ? f.AddPrepared(*primitive, graph.Prepare) :
+                                                                                                           f.AddMesh(*primitive);
     BuiltGraph built{mesh, {f.Node(mesh, 0u)}};
-    for (const auto &[kind, updates] : graph.Nodes) {
-        built.Nodes.push_back(f.Append(mesh, kind));
-        for (const auto &update : updates) update(f, built.Nodes.back());
-    }
-    for (const auto [from, to, socket] : graph.Links) f.Do(action::nodes::Link{mesh, built.Nodes[from], f.Out(built.Nodes[from]), built.Nodes[to], socket});
+    for (const auto &[kind, updates] : graph.Nodes) built.Nodes.push_back(f.Append(mesh, kind, updates));
+    for (const auto [from, to, socket, input] : graph.Links) f.Do(action::nodes::Link{mesh, built.Nodes[from], f.Out(built.Nodes[from]), built.Nodes[to], input.empty() ? socket : f.OpSocket(built.Nodes[to], input)});
     f.Do(action::nodes::SetDisplay{mesh, built.Nodes[graph.Display]});
     return built;
 }
@@ -172,11 +275,11 @@ Kernel Reference(ProcedureFixture &f, uint32_t id, auto &&edit) {
     f.Commit("Release reference");
     return kernel;
 }
-// The kernel edit on a record holding the geometry of the mesh's Source node.
-Kernel SourceReference(ProcedureFixture &f, state::Entity mesh_entity, auto &&edit) {
-    return f.WithSource(mesh_entity, [&](uint32_t id) {
-        const GeometrySelection selected = edit(id);
-        return Kernel{Describe(f.Store(), id), Describe(f.Store(), id, selected)};
+// The shape the edit leaves on a record holding the mesh's Source geometry.
+Shape EditedSource(ProcedureFixture &f, state::Entity mesh, auto &&edit) {
+    return f.WithSource(mesh, [&](uint32_t id) {
+        edit(id);
+        return Describe(f.Store(), id);
     });
 }
 

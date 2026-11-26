@@ -21,6 +21,8 @@ struct MeshletBuildSource {
     uint32_t Primitive{InvalidOffset}, Group{InvalidOffset};
 };
 
+// Appends the canonical sources of a store record's triangles, edges and vertices.
+void AppendRecordSources(std::vector<MeshletBuildSource> &, MeshStore &, uint32_t store_id);
 // Membership and element work live in the chain's scratch, which each chunk of sources reserves once.
 // Each chunk submits the chain for its meshlet counts, and a chunk stays under the scratch budget unless one destination exceeds it alone.
 // A build without an owner also submits for its gathered counts and for its publication, which publishes a canonical source's element owners.
@@ -33,9 +35,13 @@ uint64_t MeshletBuildScratchWords(const MeshStore &, std::span<const MeshletBuil
 MeshRecord BuildMeshRecord(const GpuBuffers &, const MeshStore &, uint32_t store_id);
 // Rewrites the record's GPU mesh record from the current bindless slots.
 void RefreshMeshBinding(state::Registry &, uint32_t store_id);
-// Rebinds and refreshes the mesh whose drawn record `change` restored.
-// Returns a change to the record's positions alone, with its vertex ranges and blocks, for the caller to refresh.
-MeshStore::Change ReconcileRestoredRecord(state::Registry &, const MeshStore::Change &, state::Entity mesh_entity);
+// Rebinds and refreshes the meshes whose drawn records `changes` restored, recording their GPU updates on the chain, which the caller submits.
+// A change to the positions alone of a record that a mesh of `deferred`, sorted, draws is left to that mesh's refresh, which DeferredRestore returns.
+void ReconcileRestoredRecords(state::Registry &, mtl::ComputeChain &, std::span<const MeshStore::Change>, std::span<const state::Entity> deferred);
+// Whether the refresh of the record `mesh_entity` draws takes the positions a restore of record `store_id` changes.
+bool RefreshesRestore(const state::Registry &, uint32_t store_id, state::Entity mesh_entity);
+// The part of a restore's change that the refresh of the record `mesh_entity` draws takes, with its vertex ranges and blocks: a change to the positions alone, or the positions of a record that kept its live render records.
+MeshStore::Change DeferredRestore(const state::Registry &, const MeshStore::Change &, state::Entity mesh_entity);
 // Rebinds and refreshes the meshes a restore of the whole mesh storage changed.
 // Returns a change to the positions alone of the record `mesh_entity` draws, for the caller to refresh.
 MeshStore::Change ReconcileRestoredStore(state::Registry &, state::Entity mesh_entity);

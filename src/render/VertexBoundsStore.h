@@ -48,14 +48,15 @@ public:
         const AABB &operator[](uint32_t key) const { return Values[Index(key)]; }
     };
     ReadView View(uint32_t root) const { return {Nodes.Buffer.GetSpan<VertexBoundsMapNode>(), Values.Buffer.GetSpan<AABB>(), Members.GetSpan<uint32_t>(), root}; }
-    Prepared Prepare(state::Entity entity, uint32_t store, uint64_t revision, uint32_t count, auto &&get_blocks) {
+    Prepared Prepare(state::Entity entity, uint32_t store, uint64_t revision, uint32_t count, std::span<const uint32_t> blocks) {
         auto &group = Groups[entity];
-        if (group.Store == store && group.Revision == revision && group.Roots.size() == count) return {group.Roots, group.Keys, false, group.LayoutRevision};
+        // A restored element set takes an earlier revision again, so its blocks also decide whether the group holds it.
+        const bool held = blocks.size() == group.Keys[0].size() && std::ranges::all_of(blocks, [&](uint32_t block) { return group.Positions[0].contains(block); });
+        if (group.Store == store && group.Revision == revision && group.Roots.size() == count && held) return {group.Roots, group.Keys, false, group.LayoutRevision};
         if (group.Store != store) {
             Unregister(group.Store, entity);
             ByStore[store].insert(entity);
         }
-        const auto blocks = get_blocks();
         for (const auto block : blocks) {
             if (block >= (1u << 24u)) throw std::out_of_range("Vertex bounds block exceeds canonical address space.");
         }

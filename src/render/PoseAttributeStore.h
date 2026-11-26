@@ -32,14 +32,15 @@ public:
         bool Changed;
         uint64_t LayoutRevision;
     };
-    Prepared Prepare(state::Entity entity, uint32_t store, uint64_t revision, uint32_t count, auto &&get_blocks, uint32_t domain = 0u) {
+    Prepared Prepare(state::Entity entity, uint32_t store, uint64_t revision, uint32_t count, std::span<const uint32_t> blocks, uint32_t domain = 0u) {
         auto &group = Groups[entity];
-        if (group.Store == store && group.Domain == domain && group.Revision == revision && group.Roots.size() == count) {
+        // A restored element set takes an earlier revision again, so its blocks also decide whether the group holds it.
+        const bool held = blocks.size() == group.Blocks.size() && std::ranges::all_of(blocks, [&](uint32_t block) { return group.Blocks.contains(block); });
+        if (group.Store == store && group.Domain == domain && group.Revision == revision && group.Roots.size() == count && held) {
             return {group.Roots, false, group.LayoutRevision};
         }
-        auto blocks = get_blocks();
         std::unordered_set<uint32_t> membership(blocks.begin(), blocks.end());
-        if (group.Store != store || group.Domain != domain || group.Roots.size() != count || group.Blocks != membership) ++group.LayoutRevision;
+        if (group.Store != store || group.Domain != domain || group.Roots.size() != count || !held) ++group.LayoutRevision;
         if (group.Store != store) {
             Unregister(group.Store, entity);
             ByStore[store].insert(entity);

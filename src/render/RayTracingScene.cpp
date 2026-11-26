@@ -15,12 +15,6 @@
 #include <set>
 
 namespace {
-std::span<const uint8_t> InstanceStates(const GpuBuffers &buffers, const SceneViewUBO &view) {
-    const auto &states = buffers.Instances.States;
-    const auto it = std::ranges::find(states, view.InstanceStateSlot, &mtl::Buffer::Slot);
-    return it == states.end() ? std::span<const uint8_t>{} : it->GetSpan<uint8_t>();
-}
-
 struct Structure {
     mtl::Resident<MTL::AccelerationStructure> Handle;
     mtl::ResidentBuffer Scratch;
@@ -108,7 +102,7 @@ uint64_t RayTracingScene::Revision() const { return Data->Revision; }
 uint64_t RayTracingScene::GeometryRevision() const { return Data->GeometryRevision; }
 RayTracingMaterials RayTracingMaterialUsage(const MeshStore &meshes, const GpuBuffers &buffers, const SceneViewUBO &view, bool classify_casters) {
     RayTracingMaterials usage;
-    const auto states = InstanceStates(buffers, view);
+    const auto states = buffers.InstanceStatesFor(view);
     if (states.empty()) return {};
     const auto instances = buffers.Instances.RecordBuffer.GetSpan<InstanceRecord>();
     const auto materials = buffers.MaterialsFor(view);
@@ -203,7 +197,7 @@ uint64_t RayTracingScene::Build(mtl::PassChain &chain, const MeshStore &meshes, 
     const auto transforms = (pose ? pose->Transforms : buffers.Instances.TransformBuffer).GetSpan<Transform>();
     const auto materials = buffers.MaterialsFor(view);
     const auto meshRecords = meshes.Arenas().Render.MeshRecords.Buffer.GetSpan<MeshRecord>();
-    const auto states = InstanceStates(buffers, view);
+    const auto states = buffers.InstanceStatesFor(view);
     const auto slots = states.empty() ? std::span<const uint32_t>{} : buffers.GpuInstanceSlots.GetSpan<uint32_t>();
     std::vector<MTL::IndirectAccelerationStructureInstanceDescriptor> native;
     std::vector<RayTracingInstance> mappings;

@@ -9,9 +9,13 @@ namespace {
 constexpr uint32_t VertexBinding{0u}, ProjectionBinding{1u}, ImageBinding{0u}, SamplerBinding{0u};
 } // namespace
 
+RenderPipeline ImGuiPipeline(LibraryCache &libraries, MTL::PixelFormat target) {
+    return MakeRenderPipeline(libraries, {"ImGui.metal", "ImGuiVertex"}, FunctionRef{"ImGui.metal", "ImGuiFragment"}, PassFormats{{target}}, {Blend}, DepthState{.Test = false, .Write = false});
+}
+
 ImGuiRenderer::ImGuiRenderer(LibraryCache &libraries, MTL::PixelFormat target)
     : Ctx(libraries.Ctx),
-      Pipeline(MakeRenderPipeline(libraries, {"ImGui.metal", "ImGuiVertex"}, FunctionRef{"ImGui.metal", "ImGuiFragment"}, PassFormats{{target}}, {Blend}, DepthState{.Test = false, .Write = false})),
+      Pipeline(ImGuiPipeline(libraries, target)),
       Sampler(CreateSampler(Ctx, MTL::SamplerMinMagFilterLinear, MTL::SamplerMipFilterNotMipmapped, MTL::SamplerAddressModeClampToEdge)) {
     auto &io = ImGui::GetIO();
     io.BackendRendererName = "MeshEditor Metal 4";

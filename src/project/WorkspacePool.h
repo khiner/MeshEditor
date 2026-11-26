@@ -12,6 +12,7 @@ struct WorkspacePool {
     WorkspacePool(state::Registry &, const snapshot::SnapshotEntries &);
     void Capture(state::TypeId, std::span<const state::PageMask>);
     void Settle();
+    // One past the highest present slot once settled.
     uint64_t Length() const { return Extent; }
     std::span<const std::byte> Read(uint64_t);
     std::span<const std::byte> Encode(const store::Blob &);
@@ -27,10 +28,10 @@ struct WorkspacePool {
     std::vector<state::TypeId> Types;
     std::array<uint32_t, state::SchemaSize> Ordinals{};
     store::LiveTrie Trie{4};
-    uint64_t Extent{};
     std::vector<std::byte> Scratch;
 
 private:
+    uint64_t Extent{};
     store::Blob Copy(uint64_t);
     void Apply(store::RestorePlan &);
 };

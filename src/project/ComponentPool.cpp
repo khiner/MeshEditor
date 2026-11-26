@@ -53,6 +53,7 @@ void ComponentPool::Capture(std::span<const state::PageMask> pages) {
 void ComponentPool::Settle() {
     for (const auto index : Trie.Dirty()) Trie.Rehash(index, Present(index) ? std::optional{Read(index)} : std::nullopt);
     Trie.ClearDirty();
+    Trie.ReturnCaptured(Trie.SlotHashes.size());
 }
 
 // Values move to the entity now at their index.
@@ -102,23 +103,11 @@ void ComponentPool::Apply(store::RestorePlan &plan, bool compare) {
     }
 }
 
-bool ComponentPool::Restore(const store::Version &v) {
-    Settle();
-    auto plan = Trie.PlanRestore(v);
-    Apply(plan, true);
-    return Trie.CommitRestore(std::move(plan));
-}
-
-void ComponentPool::Load(uint64_t length, std::span<const std::pair<uint64_t, store::Hash128>> changes, const std::unordered_map<store::Hash128, std::vector<std::byte>, store::Hash128Hasher> &leaves) {
-    Settle();
-    auto plan = Trie.PlanLoad(length, changes, leaves);
-    Apply(plan, false);
-    Trie.CommitLoad(std::move(plan));
-    // Move values whose entity changed identity to the entity now at their index.
-    // Only the table's occupied slots contain values, and loaded pages already contain theirs.
+// Values whose index now holds another entity move to that entity, and a value at an index no entity holds goes.
+// A restore compares page contents alone, so an unchanged page can hold values of an index whose entity changed.
+void ComponentPool::RebindIdentities() {
     S.ForEachIdentityChangeRun([&](uint32_t first, uint32_t last) {
         for (auto page = first / state::Table::PageCount; page * state::Table::PageCount < last; ++page) {
-            if (Trie.IsDirty(page)) continue;
             for (auto bits = Storage().mask(page); bits; bits &= bits - 1u) {
                 const auto index = page * state::Table::PageCount + uint32_t(std::countr_zero(bits));
                 if (index < first || index >= last) continue;
@@ -129,5 +118,22 @@ void ComponentPool::Load(uint64_t length, std::span<const std::pair<uint64_t, st
             }
         }
     });
+}
+
+bool ComponentPool::Restore(const store::Version &v) {
+    Settle();
+    auto plan = Trie.PlanRestore(v);
+    Apply(plan, true);
+    const bool committed = Trie.CommitRestore(std::move(plan));
+    RebindIdentities();
+    return committed;
+}
+
+void ComponentPool::Load(uint64_t length, std::span<const std::pair<uint64_t, store::Hash128>> changes, const std::unordered_map<store::Hash128, std::vector<std::byte>, store::Hash128Hasher> &leaves) {
+    Settle();
+    auto plan = Trie.PlanLoad(length, changes, leaves);
+    Apply(plan, false);
+    Trie.CommitLoad(std::move(plan));
+    RebindIdentities();
 }
 } // namespace project

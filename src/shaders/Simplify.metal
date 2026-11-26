@@ -4,25 +4,45 @@
 #include "gpu/MeshAttributeBit.h"
 #include "gpu/Simplify.h"
 
+// A job table pass's job of threadgroup `group`, its record's SimplifyJob, and the job's thread `I` at `lane`.
+struct SimplifyAt {
+    device const BindlessSet &B;
+    uint I;
+    constant SimplifyPass &Pass;
+    device SimplifyJob &Job;
+    SimplifyAt(device const BindlessSet &b, constant JobTablePushConstants &table, constant SimplifyPass *jobs, uint group, uint lane)
+        : B(b), Pass(TileJobOf(jobs, b, table, group, I)), Job(*reinterpret_cast<device SimplifyJob *>(BindlessBufferMutable(uint, b.Buffer, Pass.Job.Slot) + Pass.Job.Offset)) { I = I * JobTileThreads + lane; }
+    device uint *Words(uint offset) const { return BindlessBufferMutable(uint, B.Buffer, Pass.Job.Slot) + offset; }
+    // The collapses the election pass of the parity elected.
+    device uint &Elected(uint parity) const { return Words(Job.Counts)[SimplifyElected + (parity & 1u)]; }
+    // Whether the trim runs: the election converged with collapses whose reduction exceeds the budget.
+    bool Trims() const {
+        device const uint *counts = Words(Job.Counts);
+        return Elected((Pass.Parameter & SimplifyLastParity) != 0u) == 0u && counts[0] && counts[1] > Job.Budget;
+    }
+};
+// A pass's view of its record, holding the record's references the pass reads per element.
 struct SimplifyMesh {
     device const BindlessSet &B;
-    constant SimplifyPushConstants &Pc;
+    device SimplifyJob &Job;
+    uint Slot, VertexSlot, FaceNormalSlot, QuadricRun, FlagRun;
+    SlotOffset SelectedBits;
     ConnectivityView Conn;
-    device const SimplifyJob &Job;
-    SimplifyMesh(device const BindlessSet &b, constant SimplifyPushConstants &pc) : B(b), Pc(pc), Conn(b, pc.Connectivity), Job(*reinterpret_cast<device const SimplifyJob *>(BindlessBuffer(uint, b.Buffer, pc.Job.Slot) + pc.Job.Offset)) {}
+    SimplifyMesh(const thread SimplifyAt &at)
+        : B(at.B), Job(at.Job), Slot(at.Pass.Job.Slot), VertexSlot(at.Job.Arenas.VertexSlot), FaceNormalSlot(at.Job.Arenas.BaseFaceNormalSlot), QuadricRun(at.Job.Quadrics), FlagRun(at.Job.Flags), SelectedBits(at.Job.Selected), Conn(at.B, at.Job.Connectivity) {}
 
-    device uint *Words(uint offset) const { return BindlessBufferMutable(uint, B.Buffer, Pc.Job.Slot) + offset; }
+    device uint *Words(uint offset) const { return BindlessBufferMutable(uint, B.Buffer, Slot) + offset; }
     device float *Floats(uint offset) const { return reinterpret_cast<device float *>(Words(offset)); }
-    device float *Quadric(uint v) const { return Floats(Job.Quadrics) + SimplifyQuadricWords * v; }
-    float3 Position(uint v) const { return float3(BindlessBuffer(Vertex, B.VertexBuffer, Pc.Arenas.VertexSlot)[Conn.VertexAddress(v)].Position); }
-    float3 FaceNormal(uint f) const { return float3(BindlessBuffer(packed_float3, B.Buffer, Pc.Arenas.BaseFaceNormalSlot)[Conn.FaceAddress(f)]); }
+    device float *Quadric(uint v) const { return Floats(QuadricRun) + SimplifyQuadricWords * v; }
+    float3 Position(uint v) const { return float3(BindlessBuffer(Vertex, B.VertexBuffer, VertexSlot)[Conn.VertexAddress(v)].Position); }
+    float3 FaceNormal(uint f) const { return float3(BindlessBuffer(packed_float3, B.Buffer, FaceNormalSlot)[Conn.FaceAddress(f)]); }
     // An edge's ends, lower handle first.
     uint2 Ends(uint e) const {
         const uint2 ends = Conn.EdgeEnds(e);
         return uint2(min(ends.x, ends.y), max(ends.x, ends.y));
     }
-    bool Selected(uint v) const { return MaskBit(BindlessBuffer(uint, B.Buffer, Pc.Selected.Slot) + Pc.Selected.Offset, v); }
-    uint Flags(uint v) const { return Words(Job.Flags)[v]; }
+    bool Selected(uint v) const { return MaskBit(BindlessBuffer(uint, B.Buffer, SelectedBits.Slot) + SelectedBits.Offset, v); }
+    uint Flags(uint v) const { return Words(FlagRun)[v]; }
     bool Adjacent(uint v, uint n) const { return Conn.FaceSides(v, n) != 0u; }
     template<typename Visit> void ForAffected(uint a, uint b, Visit visit) const {
         for (const auto item : Conn.Fan(a)) {
@@ -83,10 +103,11 @@ struct SimplifyMesh {
 };
 
 // A boundary vertex adds the planes through its boundary edges along their faces' normals, weighted a hundredfold.
-kernel void SimplifyVertexSetup(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant SimplifyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
-    const uint v = BlockHandle(i, b, pc.Blocks);
+kernel void SimplifyVertexSetup(JOB_TABLE_ARGS(SimplifyPass)) {
+    const SimplifyAt at{b, table, jobs, group, lane};
+    const uint v = BlockHandle(at.I, b, at.Job.Vertices);
     if (v == InvalidOffset) return;
-    const SimplifyMesh m{b, pc};
+    const SimplifyMesh m{at};
     SimplifyQuadric q = SimplifyQuadric::Zero(m.Position(v));
     uint flags = m.Selected(v) ? SimplifySelected : 0u;
     for (const auto item : m.Conn.Fan(v)) {
@@ -105,20 +126,22 @@ kernel void SimplifyVertexSetup(uint i [[thread_position_in_grid]], device const
         if (length > 0.f) q.Add(normal / length, -dot(normal / length, m.Position(ends.x)), 100.f);
     });
     q.Store(m.Quadric(v));
-    m.Words(m.Job.Flags)[v] = flags;
+    m.Words(m.FlagRun)[v] = flags;
 }
 // An edge locks its ends where it is sharp, where its faces' primitives differ, or where a corner layer differs across it at either end.
-kernel void SimplifyEdgeLocks(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant SimplifyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
-    const uint e = BlockHandle(i, b, pc.Blocks);
+kernel void SimplifyEdgeLocks(JOB_TABLE_ARGS(SimplifyPass)) {
+    const SimplifyAt at{b, table, jobs, group, lane};
+    const uint e = BlockHandle(at.I, b, at.Job.Edges);
     if (e == InvalidOffset) return;
-    const SimplifyMesh m{b, pc};
+    const SimplifyMesh m{at};
+    device const SimplifyJob &pc = at.Job;
     bool locked = BindlessBuffer(uchar, b.Buffer, pc.Arenas.EdgeSharpnessSlot)[m.Conn.EdgeAddress(e)] != 0u;
     const uint h = m.Conn.EdgeHalfedge(e), o = m.Conn.Opposite(h);
     const uint2 faces = m.Conn.EdgeFaces(e), ends = m.Ends(e);
     locked = locked || m.Conn.FaceSides(ends.x, ends.y) > 2u;
     if (faces.x != InvalidOffset && faces.y != InvalidOffset) {
-        if (pc.Arenas.Layers.FacePrimitives.Slot != InvalidSlot) {
-            device const uint *primitives = BindlessBuffer(uint, b.ElementPrimitiveBuffer, pc.Arenas.Layers.FacePrimitives.Slot) + pc.Arenas.Layers.FacePrimitives.Offset;
+        if (pc.Layers.FacePrimitives.Slot != InvalidSlot) {
+            device const uint *primitives = BindlessBuffer(uint, b.ElementPrimitiveBuffer, pc.Layers.FacePrimitives.Slot) + pc.Layers.FacePrimitives.Offset;
             locked = locked || primitives[faces.x] != primitives[faces.y];
         }
         // The corners at the arriving end are h and the one before o, and at the leaving end the one before h and o.
@@ -127,33 +150,34 @@ kernel void SimplifyEdgeLocks(uint i [[thread_position_in_grid]], device const B
             const uint c = pairs[side].x, k = pairs[side].y;
             for (uint set = 0u; set < 4u; ++set) {
                 if (!(pc.CornerAttributes & (MeshAttributeBit_TexCoord0 << set))) continue;
-                device const packed_float2 *uvs = BindlessBuffer(packed_float2, b.CornerUvBuffer, pc.Arenas.Layers.CornerUvs[set].Slot) + pc.Arenas.Layers.CornerUvs[set].Offset;
+                device const packed_float2 *uvs = BindlessBuffer(packed_float2, b.CornerUvBuffer, pc.Layers.CornerUvs[set].Slot) + pc.Layers.CornerUvs[set].Offset;
                 locked = locked || any(float2(uvs[c]) != float2(uvs[k]));
             }
             if (pc.CornerAttributes & MeshAttributeBit_Color0) {
-                device const packed_float4 *colors = BindlessBuffer(packed_float4, b.CornerColorBuffer, pc.Arenas.Layers.CornerColor.Slot) + pc.Arenas.Layers.CornerColor.Offset;
+                device const packed_float4 *colors = BindlessBuffer(packed_float4, b.CornerColorBuffer, pc.Layers.CornerColor.Slot) + pc.Layers.CornerColor.Offset;
                 locked = locked || any(float4(colors[c]) != float4(colors[k]));
             }
             if (pc.CornerAttributes & MeshAttributeBit_Tangent) {
-                device const packed_float4 *tangents = BindlessBuffer(packed_float4, b.CornerTangentBuffer, pc.Arenas.Layers.CornerTangent.Slot) + pc.Arenas.Layers.CornerTangent.Offset;
+                device const packed_float4 *tangents = BindlessBuffer(packed_float4, b.CornerTangentBuffer, pc.Layers.CornerTangent.Slot) + pc.Layers.CornerTangent.Offset;
                 locked = locked || any(float4(tangents[c]) != float4(tangents[k]));
             }
         }
     }
     if (!locked) return;
-    device atomic_uint *flags = AtomicWord(m.Words(m.Job.Flags));
+    device atomic_uint *flags = AtomicWord(m.Words(m.FlagRun));
     atomic_fetch_or_explicit(&flags[ends.x], SimplifyLocked, memory_order_relaxed);
     atomic_fetch_or_explicit(&flags[ends.y], SimplifyLocked, memory_order_relaxed);
 }
-kernel void SimplifyFaceTriangles(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant SimplifyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
-    const uint f = BlockHandle(i, b, pc.Blocks);
+kernel void SimplifyFaceTriangles(JOB_TABLE_ARGS(SimplifyPass)) {
+    const SimplifyAt at{b, table, jobs, group, lane};
+    const uint f = BlockHandle(at.I, b, at.Job.Faces);
     if (f == InvalidOffset) return;
-    const SimplifyMesh m{b, pc};
+    const SimplifyMesh m{at};
     const uint2 range = m.Conn.FaceHalfedges(f);
     bool selected = false;
     for (uint h = range.x; h < range.y; ++h) selected = selected || m.Selected(m.Conn.VertexOf(h));
     if (!selected || range.y - range.x < 3u) return;
-    atomic_fetch_add_explicit(AtomicWord(m.Words(m.Job.Counts)) + 3u, range.y - range.x - 2u, memory_order_relaxed);
+    atomic_fetch_add_explicit(AtomicWord(m.Words(m.Job.Counts)) + 2u, range.y - range.x - 2u, memory_order_relaxed);
 }
 
 // Whether collapsing `b` onto `a` at `position` keeps the faces around them simple, unflipped and distinct.
@@ -221,10 +245,11 @@ inline bool SimplifyValid(SimplifyMesh m, uint a, uint b, float3 position) {
 }
 
 // Each edge between selected unlocked ends proposes collapsing its higher end onto its lower, placed at the cheaper end, with its cost.
-kernel void SimplifyCandidates(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant SimplifyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
-    const uint e = BlockHandle(i, b, pc.Blocks);
+kernel void SimplifyCandidates(JOB_TABLE_ARGS(SimplifyPass)) {
+    const SimplifyAt at{b, table, jobs, group, lane};
+    const uint e = BlockHandle(at.I, b, at.Job.Edges);
     if (e == InvalidOffset) return;
-    const SimplifyMesh m{b, pc};
+    const SimplifyMesh m{at};
     device float *errors = m.Floats(m.Job.Errors);
     errors[e] = INFINITY;
     m.Words(m.Job.Winners)[e] = 0u;
@@ -269,22 +294,27 @@ template<typename Visit> bool SimplifyAnyNear(SimplifyMesh m, uint e, uint2 ends
     }
     return false;
 }
-inline uint SimplifyFloored(SimplifyMesh m, float cost) { return as_type<uint>(cost > m.Job.Floor ? cost : m.Job.Floor); }
+// A cost's bits once costs at most `floor` take it.
+inline uint SimplifyFloored(float cost, float floor) { return as_type<uint>(cost > floor ? cost : floor); }
 
 // Each undecided proposal at most the threshold runs when no such proposal on a face at either end has a lower priority, with ties going to the lower ends.
 // The passes alternate with SimplifyBlock until one elects nothing, electing the proposals greedily in priority order.
-kernel void SimplifyElect(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant SimplifyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
-    const uint e = BlockHandle(i, b, pc.Blocks);
+// A pass after the first exits at once after a pass that elected nothing, and counts its collapses at its parity.
+kernel void SimplifyElect(JOB_TABLE_ARGS(SimplifyPass)) {
+    const SimplifyAt at{b, table, jobs, group, lane};
+    const uint pass = at.Pass.Parameter;
+    if (pass && !at.Elected(pass - 1u)) return;
+    const uint e = BlockHandle(at.I, b, at.Job.Edges);
     if (e == InvalidOffset) return;
-    const SimplifyMesh m{b, pc};
+    const SimplifyMesh m{at};
     device const float *errors = m.Floats(m.Job.Errors);
     device uint *winners = m.Words(m.Job.Winners);
-    const float cost = errors[e];
-    if (winners[e] || !isfinite(cost) || !(cost <= m.Job.Threshold)) return;
+    const float cost = errors[e], threshold = m.Job.Threshold;
+    if (winners[e] || !isfinite(cost) || !(cost <= threshold)) return;
     const uint2 ends = m.Ends(e), priority = SimplifyPriority(cost, ends);
     const bool beaten = SimplifyAnyNear(m, e, ends, [&](uint g) {
         const float other = errors[g];
-        if (!isfinite(other) || !(other <= m.Job.Threshold)) return false;
+        if (!isfinite(other) || !(other <= threshold)) return false;
         const uint2 o = m.Ends(g), other_priority = SimplifyPriority(other, o);
         if (other_priority.x != priority.x) return other_priority.x < priority.x;
         if (other_priority.y != priority.y) return other_priority.y < priority.y;
@@ -295,33 +325,98 @@ kernel void SimplifyElect(uint i [[thread_position_in_grid]], device const Bindl
     device atomic_uint *counts = AtomicWord(m.Words(m.Job.Counts));
     atomic_fetch_add_explicit(counts, 1u, memory_order_relaxed);
     atomic_fetch_add_explicit(counts + 1u, m.Words(m.Job.Reductions)[e], memory_order_relaxed);
-    atomic_fetch_add_explicit(counts + 2u, 1u, memory_order_relaxed);
+    atomic_fetch_add_explicit(counts + SimplifyElected + (pass & 1u), 1u, memory_order_relaxed);
 }
-kernel void SimplifyBlock(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant SimplifyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
-    const uint e = BlockHandle(i, b, pc.Blocks);
+// Blocks the undecided proposals near a winner, after an Elect pass that elected any, and clears the count of the Elect pass that follows.
+kernel void SimplifyBlock(JOB_TABLE_ARGS(SimplifyPass)) {
+    const SimplifyAt at{b, table, jobs, group, lane};
+    const uint pass = at.Pass.Parameter;
+    if (at.I == 0u) at.Elected(pass) = 0u;
+    if (!at.Elected(pass - 1u)) return;
+    const uint e = BlockHandle(at.I, b, at.Job.Edges);
     if (e == InvalidOffset) return;
-    const SimplifyMesh m{b, pc};
+    const SimplifyMesh m{at};
     device float *errors = m.Floats(m.Job.Errors);
     device const uint *winners = m.Words(m.Job.Winners);
     if (winners[e] || !isfinite(errors[e])) return;
     if (SimplifyAnyNear(m, e, m.Ends(e), [&](uint g) { return winners[g] != 0u; })) errors[e] = INFINITY;
 }
-// Each proposal, or each winner, whose floored cost bits have the histogram's prefix adds its reduction to the bin of its bits outside the mask.
-kernel void SimplifyHistogram(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant SimplifyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
-    const uint e = BlockHandle(i, b, pc.Blocks);
-    if (e == InvalidOffset) return;
-    const SimplifyMesh m{b, pc};
-    const float cost = m.Floats(m.Job.Errors)[e];
-    if (!isfinite(cost) || (m.Job.HistogramWinners && !m.Words(m.Job.Winners)[e])) return;
-    const uint bits = SimplifyFloored(m, cost);
-    if ((bits & m.Job.HistogramMask) != m.Job.HistogramPrefix) return;
-    device atomic_uint *bins = AtomicWord(m.Words(m.Job.Histogram));
-    atomic_fetch_add_explicit(bins + ((bits & ~m.Job.HistogramMask) >> m.Job.HistogramShift), m.Words(m.Job.Reductions)[e], memory_order_relaxed);
+
+// The bits a histogram level's mask covers, and the lowest bit its bins hold.
+constant uint SimplifyLevelMasks[3] = {0u, 0xfff80000u, 0xffffff80u};
+constant uint SimplifyLevelShifts[3] = {19u, 7u, 0u};
+// Whether a select pass runs: a trim's runs when the trim does, and a level after the first when the select has not fallen short.
+inline bool SimplifySelects(const thread SimplifyAt &at) {
+    const uint parameter = at.Pass.Parameter;
+    if ((parameter & SimplifySelectWinners) && !at.Trims()) return false;
+    return !(parameter & 3u) || at.Job.Bits != as_type<uint>(INFINITY);
 }
-kernel void SimplifyTrim(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant SimplifyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
-    const uint e = BlockHandle(i, b, pc.Blocks);
+// Each proposal, or each winner, whose floored cost bits have the select's bits so far adds its reduction to the bin of its bits at the level.
+// A winner's cost is not floored.
+kernel void SimplifyHistogram(JOB_TABLE_ARGS(SimplifyPass)) {
+    const SimplifyAt at{b, table, jobs, group, lane};
+    if (!SimplifySelects(at)) return;
+    const uint e = BlockHandle(at.I, b, at.Job.Edges);
     if (e == InvalidOffset) return;
-    const SimplifyMesh m{b, pc};
-    device uint *winners = m.Words(m.Job.Winners);
-    if (winners[e] && SimplifyFloored(m, m.Floats(m.Job.Errors)[e]) > m.Job.Kept) winners[e] = 0u;
+    const uint level = at.Pass.Parameter & 3u;
+    const bool winners = (at.Pass.Parameter & SimplifySelectWinners) != 0u;
+    const float cost = reinterpret_cast<device const float *>(at.Words(at.Job.Errors))[e];
+    if (!isfinite(cost) || (winners && !at.Words(at.Job.Winners)[e])) return;
+    const uint bits = SimplifyFloored(cost, winners ? 0.f : at.Job.Floor), mask = SimplifyLevelMasks[level];
+    if ((bits & mask) != (level ? at.Job.Bits : 0u)) return;
+    device atomic_uint *bins = AtomicWord(at.Words(at.Job.Histogram));
+    atomic_fetch_add_explicit(bins + ((bits & ~mask) >> SimplifyLevelShifts[level]), at.Words(at.Job.Reductions)[e], memory_order_relaxed);
+}
+// One threadgroup per record selects the histogram's least bin at which the reductions below the select's bits so far reach the target, appends the bin to the bits, and clears the bins.
+// The target is the budget among the proposals and one past it among the winners, and a select whose total falls short takes infinity's bits, which its later levels keep.
+// The proposals' select sets the election's threshold to 1.5 times the crossing and clears its counts, and the winners' sets the trim's kept bits and reduction.
+kernel void SimplifySelect(JOB_TABLE_ARGS(SimplifyPass), uint simd_lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]]) {
+    const SimplifyAt at{b, table, jobs, group, lane};
+    if (!SimplifySelects(at)) return;
+    constexpr uint Per = SimplifyHistogramBins / JobTileThreads;
+    const uint level = at.Pass.Parameter & 3u;
+    const bool winners = (at.Pass.Parameter & SimplifySelectWinners) != 0u;
+    device SimplifyJob &job = at.Job;
+    device uint *bins = at.Words(job.Histogram) + lane * Per;
+    uint sum = 0u;
+    for (uint k = 0u; k < Per; ++k) sum += bins[k];
+    threadgroup uint totals[JobTileThreads / 32u];
+    const uint within = simd_prefix_exclusive_sum(sum);
+    if (simd_lane == 31u) totals[simd] = within + sum;
+    const uint bits = level ? job.Bits : 0u, below = level ? job.Below : 0u, target = winners ? job.Budget + 1u : job.Budget;
+    threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device);
+    uint start = below + within;
+    for (uint s = 0u; s < simd; ++s) start += totals[s];
+    const bool found = start < target && start + sum >= target, short_of = lane == JobTileThreads - 1u && start + sum < target;
+    if (found) {
+        uint bin = 0u, running = start;
+        for (; running + bins[bin] < target; ++bin) running += bins[bin];
+        job.Bits = bits | ((lane * Per + bin) << SimplifyLevelShifts[level]);
+        job.Below = running;
+        job.At = bins[bin];
+    } else if (short_of) {
+        job.Bits = as_type<uint>(INFINITY);
+        job.Below = start + sum;
+        job.At = 0u;
+    }
+    for (uint k = 0u; k < Per; ++k) bins[k] = 0u;
+    if (!((found && level == 2u) || short_of)) return;
+    if (winners) {
+        job.Kept = job.Below ? job.Bits - 1u : job.Bits;
+        job.Reduced = job.Below ? job.Below : job.At;
+        return;
+    }
+    job.Crossing = job.Bits;
+    job.Threshold = 1.5f * as_type<float>(job.Bits);
+    device uint *counts = at.Words(job.Counts);
+    counts[0] = counts[1] = counts[SimplifyElected] = 0u;
+}
+// The trim keeps the winners whose unfloored cost bits are at most the kept bits.
+kernel void SimplifyTrim(JOB_TABLE_ARGS(SimplifyPass)) {
+    const SimplifyAt at{b, table, jobs, group, lane};
+    if (!at.Trims()) return;
+    const uint e = BlockHandle(at.I, b, at.Job.Edges);
+    if (e == InvalidOffset) return;
+    device uint *winners = at.Words(at.Job.Winners);
+    if (winners[e] && SimplifyFloored(reinterpret_cast<device const float *>(at.Words(at.Job.Errors))[e], 0.f) > at.Job.Kept) winners[e] = 0u;
 }

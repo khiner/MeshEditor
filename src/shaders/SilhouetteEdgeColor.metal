@@ -37,10 +37,7 @@ inline SilhouetteEdgeHit SilhouetteEdge(texture2d<float> silhouette, int2 texel,
 
 fragment OverlayTargetsDepth SilhouetteEdgeColorFragment(
     QuadVaryings in [[stage_in]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    SCENE_ARGS,
     constant SilhouetteEdgeColorPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};

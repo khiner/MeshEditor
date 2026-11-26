@@ -1410,21 +1410,6 @@ ImportedMaterials ImportMaterials(state::Registry &r, const fastgltf::Asset &ass
     return out;
 }
 
-PbrFeatureMask PbrFeaturesOf(std::span<const PBRMaterial> materials, std::span<const uint32_t> material_indices) {
-    PbrFeatureMask mask{0};
-    for (const auto index : material_indices) {
-        if (index >= materials.size()) continue;
-        const auto &mat = materials[index];
-        if (mat.Transmission.Factor > 0.f || mat.Transmission.Texture.Slot != InvalidSlot) mask |= PbrFeature::Transmission;
-        if (mat.DiffuseTransmission.Factor > 0.f || mat.DiffuseTransmission.Texture.Slot != InvalidSlot) mask |= PbrFeature::DiffuseTrans;
-        if (mat.Clearcoat.Factor > 0.f || mat.Clearcoat.Texture.Slot != InvalidSlot) mask |= PbrFeature::Clearcoat;
-        if (mat.Sheen.RoughnessFactor > 0.f || mat.Sheen.ColorTexture.Slot != InvalidSlot) mask |= PbrFeature::Sheen;
-        if (mat.Anisotropy.Strength != 0.f || mat.Anisotropy.Texture.Slot != InvalidSlot) mask |= PbrFeature::Anisotropy;
-        if (mat.Iridescence.Factor > 0.f || mat.Iridescence.Texture.Slot != InvalidSlot) mask |= PbrFeature::Iridescence;
-    }
-    return mask;
-}
-
 // Triangle, line, and point mesh entities per source mesh, indexed by MeshKind.
 using MeshEntities = std::vector<std::array<state::Entity, 3>>;
 
@@ -1821,7 +1806,32 @@ void ImportAudio(state::Registry &r, const fastgltf::Asset &asset, const Importe
         surfaces.emplace_back(std::move(surface));
     }
 
+    const auto modal_model = [&](const auto &instance) -> std::optional<uint32_t> {
+        const auto i = ToIndex(instance.modalModel, models.size());
+        return i && !models[*i].Freqs.empty() ? i : std::nullopt;
+    };
+    const auto drawn_mesh = [&](state::Entity entity) {
+        const auto *instance = r.try_get<const Instance>(entity);
+        return instance && HasMesh(r, instance->Entity) ? instance->Entity : state::Null;
+    };
+    // Each modal model's sample points map to the nearest vertices of each mesh its instances draw, in one lookup.
     std::map<std::pair<uint32_t, state::Entity>, std::vector<uint32_t>> vertices_by_model_mesh;
+    {
+        std::vector<std::pair<uint32_t, state::Entity>> keys;
+        std::vector<RecordPoints> queries;
+        for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
+            const auto &source_node = asset.nodes[node_index];
+            const auto entity = objects.Of(node_index);
+            if (!source_node.audioRigidBody.has_value() || entity == state::Null) continue;
+            const auto model_index = modal_model(*source_node.audioRigidBody);
+            const auto mesh_entity = drawn_mesh(entity);
+            if (!model_index || mesh_entity == state::Null || !vertices_by_model_mesh.try_emplace({*model_index, mesh_entity}).second) continue;
+            keys.emplace_back(*model_index, mesh_entity);
+            queries.push_back({GetMesh(r, mesh_entity).GetStoreId(), models[*model_index].Positions});
+        }
+        auto vertices = NearestVertexOrdinals(r.Resources.get<const MeshStore>(), GetMeshPipelines(r), queries);
+        for (uint32_t q = 0u; q < keys.size(); ++q) vertices_by_model_mesh.at(keys[q]) = std::move(vertices[q]);
+    }
     for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
         const auto &source_node = asset.nodes[node_index];
         const auto entity = objects.Of(node_index);
@@ -1831,10 +1841,7 @@ void ImportAudio(state::Registry &r, const fastgltf::Asset &asset, const Importe
         const auto surface_index = ToIndex(instance.acousticSurface, asset.acousticSurfaces.size());
         if (surface_index) r.emplace_or_replace<ContactSurface>(entity, surfaces[*surface_index]);
 
-        const auto model_index = [&]() -> std::optional<uint32_t> {
-            const auto i = ToIndex(instance.modalModel, models.size());
-            return i && !models[*i].Freqs.empty() ? i : std::nullopt;
-        }();
+        const auto model_index = modal_model(instance);
         const auto material_index = [&]() -> std::optional<uint32_t> {
             if (model_index) {
                 if (const auto i = ToIndex(asset.modalModels[*model_index].material, acoustic_materials.size())) return i;
@@ -1847,11 +1854,7 @@ void ImportAudio(state::Registry &r, const fastgltf::Asset &asset, const Importe
         if (!model_index) continue;
         auto model = models[*model_index];
         model.BakedScale = vec3{1.f};
-        if (const auto *inst = r.try_get<const Instance>(entity); inst && HasMesh(r, inst->Entity)) {
-            const auto [it, inserted] = vertices_by_model_mesh.try_emplace({*model_index, inst->Entity});
-            if (inserted) it->second = NearestVertexOrdinals(r.Resources.get<const MeshStore>(), GetMeshPipelines(r), GetMesh(r, inst->Entity).GetStoreId(), model.Positions);
-            model.Vertices = it->second;
-        }
+        if (const auto mesh_entity = drawn_mesh(entity); mesh_entity != state::Null) model.Vertices = vertices_by_model_mesh.at({*model_index, mesh_entity});
         const bool excitable = !model.Vertices.empty();
         r.emplace<ModalModes>(entity, std::move(model));
         if (const auto &mp = asset.modalModels[*model_index].massProperties; mp.has_value()) {

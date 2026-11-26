@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check cold and warm Metal pipeline archives, concurrent capture and cleanup on exit."""
+"""Check written, read and rewritten Metal pipeline archives, concurrent writers and capture cleanup on exit."""
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -29,20 +29,27 @@ with tempfile.TemporaryDirectory() as scratch, tempfile.TemporaryDirectory(
     sentinel.write_text("foreign data")
     before = set(cache.iterdir())
 
-    def run(archive, mode="normal"):
+    def run(archive, mode):
         result = subprocess.run(
             [app, work, work / (archive + ".mtl4a"), mode], check=True, stdout=subprocess.PIPE, text=True
         )
-        return json.loads(result.stdout) if mode == "normal" else None
+        return json.loads(result.stdout) if mode != "unwind" else None
 
-    assert run("pipelines") == {"hits": 0, "compiled": 2}
-    assert run("pipelines") == {"hits": 2, "compiled": 0}
+    written, served = {"hits": 0, "compiled": 2}, {"hits": 2, "compiled": 0}
+    assert run("pipelines", "read") == written
+    assert run("pipelines", "write") == written
+    assert run("pipelines", "read") == served
+    # A rewrite takes its binaries from the archive it replaces and holds every pipeline again.
+    assert run("pipelines", "write") == written
+    assert run("pipelines", "read") == served
     run("unwind", "unwind")
+    parallel = [f"parallel-{i}" for i in range(4)]
     with ThreadPoolExecutor(max_workers=4) as pool:
-        assert all(
-            result == {"hits": 0, "compiled": 2}
-            for result in pool.map(run, (f"parallel-{i}" for i in range(4)))
-        )
+        assert all(result == written for result in pool.map(run, parallel, ["write"] * 4))
+        assert all(result == served for result in pool.map(run, parallel, ["read"] * 4))
+    # Each archive is one file, and reading or unwinding writes nothing.
+    files = sorted(path.name for path in work.iterdir() if path.suffix != ".metal")
+    assert files == sorted(name + ".mtl4a" for name in ["pipelines", *parallel]), files
     assert sentinel.read_text() == "foreign data"
     # Other applications can create directories concurrently. Only flag this fixture's pipelines.
     for directory in set(cache.iterdir()) - before:
@@ -53,4 +60,4 @@ with tempfile.TemporaryDirectory() as scratch, tempfile.TemporaryDirectory(
                 continue
             if leaked:
                 raise RuntimeError(f"Pipeline capture scratch survived teardown: {directory}")
-print("Passed cold, warm, unwind, concurrent capture and scratch ownership checks")
+print("Passed write, read, rewrite, unwind, concurrent capture and scratch ownership checks")

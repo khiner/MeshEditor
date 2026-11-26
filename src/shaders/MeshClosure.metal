@@ -1,21 +1,17 @@
 #include "ConnectivityRead.metal"
 #include "ElementWorkShared.metal"
-#include "gpu/MeshClosurePushConstants.h"
+#include "gpu/MeshClosureJob.h"
 
-inline uint ClosureInput(device const BindlessSet &b, constant MeshClosurePushConstants &pc, uint group, uint lane) {
-    const uint i = group * 256u + lane;
-    return i < pc.InputBound ? WorkGroupElement(b, pc.Input, i) : InvalidOffset;
+inline uint ClosureInput(device const BindlessSet &b, constant MeshClosureJob &job, uint i) {
+    return i < job.InputBound ? WorkGroupElement(b, job.Input, i) : InvalidOffset;
 }
 
-kernel void MeshClosureCount(
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant MeshClosurePushConstants &pc [[buffer(BufferIndex_PushConstants)]],
-    uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]], uint sl [[thread_index_in_simdgroup]]
-) {
-    const ConnectivityView conn{b, pc.Connectivity};
-    const uint element = ClosureInput(b, pc, group, lane);
+kernel void MeshClosureCount(JOB_TABLE_ARGS(MeshClosureJob), uint sl [[thread_index_in_simdgroup]]) {
+    JOB_THREAD(job, i);
+    const ConnectivityView conn{b, job.Connectivity};
+    const uint element = ClosureInput(b, job, i);
     uint count = 0u;
-    if (element != InvalidOffset && pc.InputDomain == 2u) {
+    if (element != InvalidOffset && job.InputDomain == 2u) {
         const uint2 loop = conn.FaceHalfedges(element);
         count = loop.y - loop.x;
     } else if (element != InvalidOffset) {
@@ -23,70 +19,63 @@ kernel void MeshClosureCount(
         if (h != InvalidOffset) count = conn.Incoming(conn.VertexOf(h)).y + conn.Incoming(conn.From(h)).y;
     }
     const uint total = simd_sum(count);
-    if (sl == 0u && total) atomic_fetch_add_explicit(BindlessBufferMutable(atomic_uint, b.Buffer, pc.Incidence.Slot) + pc.Incidence.Offset, total, memory_order_relaxed);
+    if (sl == 0u && total) atomic_fetch_add_explicit(BindlessBufferMutable(atomic_uint, b.Buffer, job.Incidence.Slot) + job.Incidence.Offset, total, memory_order_relaxed);
 }
 
-kernel void MeshClosureExpand(
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant MeshClosurePushConstants &pc [[buffer(BufferIndex_PushConstants)]],
-    uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]]
-) {
-    const ConnectivityView conn{b, pc.Connectivity};
-    const uint element = ClosureInput(b, pc, group, lane);
-    if (element != InvalidOffset && pc.InputDomain == 0u) {
+kernel void MeshClosureExpand(JOB_TABLE_ARGS(MeshClosureJob)) {
+    JOB_THREAD(job, i);
+    const ConnectivityView conn{b, job.Connectivity};
+    const uint element = ClosureInput(b, job, i);
+    if (element != InvalidOffset && job.InputDomain == 0u) {
         for (const auto item : conn.Fan(element)) {
             const uint h = item.x, face = conn.HalfedgeFace(h);
-            MarkWork(b, pc.Work[1], h);
-            MarkWork(b, pc.Work[2], face);
-            MarkWork(b, pc.Work[3], conn.Edge(h));
+            MarkWork(b, job.Work[1], h);
+            MarkWork(b, job.Work[2], face);
+            MarkWork(b, job.Work[3], conn.Edge(h));
             // A line corner's pair takes the place of the next corner, so a line's two corners stay together.
             const uint next = face == InvalidOffset ? conn.Previous(h) : conn.Next(h);
             if (next != InvalidOffset) {
-                MarkWork(b, pc.Work[1], next);
-                MarkWork(b, pc.Work[3], conn.Edge(next));
+                MarkWork(b, job.Work[1], next);
+                MarkWork(b, job.Work[3], conn.Edge(next));
             }
         }
-    } else if (element != InvalidOffset && pc.InputDomain == 3u) {
+    } else if (element != InvalidOffset && job.InputDomain == 3u) {
         const uint h = conn.EdgeHalfedge(element);
         if (conn.HalfedgeFace(h) != InvalidOffset) return;
         const uint pair = conn.Previous(h);
-        MarkWork(b, pc.Work[1], h);
-        MarkWork(b, pc.Work[1], pair);
-        MarkWork(b, pc.Work[0], conn.VertexOf(h));
-        MarkWork(b, pc.Work[0], conn.VertexOf(pair));
-        MarkWork(b, pc.Work[3], element);
+        MarkWork(b, job.Work[1], h);
+        MarkWork(b, job.Work[1], pair);
+        MarkWork(b, job.Work[0], conn.VertexOf(h));
+        MarkWork(b, job.Work[0], conn.VertexOf(pair));
+        MarkWork(b, job.Work[3], element);
     } else if (element != InvalidOffset) {
         const uint2 loop = conn.FaceHalfedges(element);
-        MarkWork(b, pc.Work[2], element);
+        MarkWork(b, job.Work[2], element);
         for (uint h = loop.x; h < loop.y; ++h) {
-            MarkWork(b, pc.Work[0], conn.VertexOf(h));
-            MarkWork(b, pc.Work[1], h);
-            MarkWork(b, pc.Work[3], conn.Edge(h));
+            MarkWork(b, job.Work[0], conn.VertexOf(h));
+            MarkWork(b, job.Work[1], h);
+            MarkWork(b, job.Work[3], conn.Edge(h));
         }
     }
-    const uint i = group * 256u + lane;
-    if (i < pc.RetainedBound) {
-        const uint v = WorkGroupElement(b, pc.Retained, i);
-        if (v != InvalidOffset && (!pc.RetainIsolatedOnly || !conn.Incoming(v).y)) MarkWork(b, pc.Work[0], v);
+    if (i < job.RetainedBound) {
+        const uint v = WorkGroupElement(b, job.Retained, i);
+        if (v != InvalidOffset && (!job.RetainIsolatedOnly || !conn.Incoming(v).y)) MarkWork(b, job.Work[0], v);
     }
 }
 
-kernel void MeshClosureEdgeVertices(
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant MeshClosurePushConstants &pc [[buffer(BufferIndex_PushConstants)]],
-    uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]]
-) {
-    const uint edge = ClosureInput(b, pc, group, lane);
+kernel void MeshClosureEdgeVertices(JOB_TABLE_ARGS(MeshClosureJob)) {
+    JOB_THREAD(job, i);
+    const uint edge = ClosureInput(b, job, i);
     if (edge == InvalidOffset) return;
-    const ConnectivityView conn{b, pc.Connectivity};
+    const ConnectivityView conn{b, job.Connectivity};
     const uint h = conn.EdgeHalfedge(edge);
     if (h == InvalidOffset) return;
-    MarkWork(b, pc.Work[0], conn.VertexOf(h));
-    MarkWork(b, pc.Work[0], conn.From(h));
+    MarkWork(b, job.Work[0], conn.VertexOf(h));
+    MarkWork(b, job.Work[0], conn.From(h));
 }
 
-inline void FaceTriangleError(device const BindlessSet &b, constant FaceTrianglePushConstants &pc) {
-    atomic_store_explicit(BindlessBufferMutable(atomic_uint, b.Buffer, pc.Error.Slot) + pc.Error.Offset, 1u, memory_order_relaxed);
+inline void FaceTriangleError(device const BindlessSet &b, constant FaceTriangleJob &job) {
+    atomic_store_explicit(BindlessBufferMutable(atomic_uint, b.Buffer, job.Error.Slot) + job.Error.Offset, 1u, memory_order_relaxed);
 }
 // Whether a handle below `bound` is a live element of the set `owner` through its table run.
 inline bool FaceTriangleOwned(device const BindlessSet &b, SlotOffset table, uint slot, uint owner, uint handle, uint bound) {
@@ -97,33 +86,29 @@ inline bool FaceTriangleOwned(device const BindlessSet &b, SlotOffset table, uin
     return block.Owner == owner && SlotLive(block, handle % MeshElementBlockSize);
 }
 
-kernel void MeshClosureTriangles(
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant FaceTrianglePushConstants &pc [[buffer(BufferIndex_PushConstants)]],
-    uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]]
-) {
-    if (group >= pc.FaceBound) return;
-    const uint face = WorkGroupElement(b, pc.Faces, group);
+kernel void MeshClosureTriangles(JOB_TABLE_ARGS(FaceTriangleJob)) {
+    JOB_TILE(job);
+    const uint face = WorkGroupElement(b, job.Faces, tile);
     if (face == InvalidOffset) return;
-    if (!FaceTriangleOwned(b, pc.Tables.Faces, pc.FaceBlocksSlot, pc.FaceOwner, face, pc.FaceHandles)) { FaceTriangleError(b, pc); return; }
-    const uint address = HandleAddress<MeshElementBlockSize>(b, pc.Tables.Faces, face);
-    const uint2 corners = uint2(BindlessBuffer(packed_uint2, b.Buffer, pc.FaceRangesSlot)[address]);
-    const uint first = BindlessBuffer(uint, b.ObjectIdBuffer, pc.FaceTrianglesSlot)[address];
-    if (corners.y < corners.x || corners.y - corners.x < 3u || corners.y > pc.CornerHandles ||
-        ulong(first) + corners.y - corners.x - 2u > pc.TriangleHandles) {
-        FaceTriangleError(b, pc);
+    if (!FaceTriangleOwned(b, job.Tables.Faces, job.FaceBlocksSlot, job.FaceOwner, face, job.FaceHandles)) { FaceTriangleError(b, job); return; }
+    const uint address = HandleAddress<MeshElementBlockSize>(b, job.Tables.Faces, face);
+    const uint2 corners = uint2(BindlessBuffer(packed_uint2, b.Buffer, job.FaceRangesSlot)[address]);
+    const uint first = BindlessBuffer(uint, b.ObjectIdBuffer, job.FaceTrianglesSlot)[address];
+    if (corners.y < corners.x || corners.y - corners.x < 3u || corners.y > job.CornerHandles ||
+        ulong(first) + corners.y - corners.x - 2u > job.TriangleHandles) {
+        FaceTriangleError(b, job);
         return;
     }
     const uint count = corners.y - corners.x - 2u;
-    if (lane == 0u) atomic_fetch_add_explicit(BindlessBufferMutable(atomic_uint, b.Buffer, pc.Total.Slot) + pc.Total.Offset, count, memory_order_relaxed);
+    if (lane == 0u) atomic_fetch_add_explicit(BindlessBufferMutable(atomic_uint, b.Buffer, job.Total.Slot) + job.Total.Offset, count, memory_order_relaxed);
     for (uint i = lane; i < count; i += 32u) {
         const uint t = first + i;
-        if (!FaceTriangleOwned(b, pc.Tables.Triangles, pc.TriangleBlocksSlot, pc.TriangleOwner, t, pc.TriangleHandles)) {
-            FaceTriangleError(b, pc);
+        if (!FaceTriangleOwned(b, job.Tables.Triangles, job.TriangleBlocksSlot, job.TriangleOwner, t, job.TriangleHandles)) {
+            FaceTriangleError(b, job);
             continue;
         }
-        const uint3 triangle = uint3(BindlessBuffer(packed_uint3, b.Buffer, pc.TrianglesSlot)[HandleAddress<MeshElementBlockSize>(b, pc.Tables.Triangles, t)]);
-        if (any(triangle < corners.x) || any(triangle >= corners.y)) { FaceTriangleError(b, pc); continue; }
-        MarkWork(b, pc.Triangles, t);
+        const uint3 triangle = uint3(BindlessBuffer(packed_uint3, b.Buffer, job.TrianglesSlot)[HandleAddress<MeshElementBlockSize>(b, job.Tables.Triangles, t)]);
+        if (any(triangle < corners.x) || any(triangle >= corners.y)) { FaceTriangleError(b, job); continue; }
+        MarkWork(b, job.Triangles, t);
     }
 }

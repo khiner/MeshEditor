@@ -1,13 +1,14 @@
 #include "mesh/TopologyOutputHandles.h"
 #include "Profile.h"
 
+#include "gpu/TopologyIdentityJob.h"
 #include "mesh/ElementWorkSort.h"
 #include "mesh/MeshPipelines.h"
 #include "metal/Dispatch.h"
 #include "render/ElementWorkOps.h"
 #include "state/Registry.h"
 
-TopologyOutputHandles::TopologyOutputHandles(state::Registry &r, mtl::ComputeChain &chain, uint32_t source_id, const MeshTopologyJob &job, MeshStore::TopologyCounts bounds, SlotOffset scratch, const MeshTopologyArenas &source, TopologyIdentityPolicy policy) {
+TopologyOutputHandles::TopologyOutputHandles(state::Registry &r, mtl::ComputeChain &chain, uint32_t source_id, const MeshTopologyJob &job, uint32_t job_word, MeshStore::TopologyCounts bounds, SlotOffset scratch, const MeshTopologyArenas &source, TopologyIdentityPolicy policy) {
     const profile::CpuScope scope{"TopologyOutputHandles"};
     const bool preserve = policy == TopologyIdentityPolicy::Preserve;
     if (preserve && job.SrcFaceCount && source.FaceTriangleStartSlot == InvalidSlot) {
@@ -17,28 +18,27 @@ TopologyOutputHandles::TopologyOutputHandles(state::Registry &r, mtl::ComputeCha
     Vertices = chain.Scratch.Allocate(output[0]);
     Faces = chain.Scratch.Allocate(output[1]);
     const auto slot = chain.Scratch.Buffer.Slot;
-    TopologyIdentityPushConstants pc{.Job = job, .Outputs = {SlotOffset{slot, Vertices.Offset}, SlotOffset{slot, Faces.Offset}}, .Error = {slot, 0u}};
-    pc.Topology.StorageSlot = scratch.Slot;
-    pc.Topology.ScratchOffset = scratch.Offset;
-    pc.Topology.Source = source;
-    for (uint32_t d = 0u; d < 2u; ++d) pc.NewElements[d] = New[d] = AllocateElementWork(chain.Scratch, output[d], TileCount(output[d], TileElements));
+    TopologyIdentityJob identity{.Job = job_word, .Scratch = scratch, .FaceTriangleStartSlot = source.FaceTriangleStartSlot, .ErrorSlot = slot, .Outputs = {SlotOffset{slot, Vertices.Offset}, SlotOffset{slot, Faces.Offset}}};
+    for (uint32_t d = 0u; d < 2u; ++d) identity.NewElements[d] = New[d] = AllocateElementWork(chain.Scratch, output[d], TileCount(output[d], TileElements));
     if (preserve) {
         const auto &meshes = r.Resources.get<MeshStore>();
         const auto &a = meshes.Arenas();
         const auto &record = meshes.Get(source_id);
-        pc.RetiredElements[0] = Retired[0] = AllocateElementWork(chain.Scratch, a.Vertices.HandleBound(record.Vertices), job.SrcVertexCount);
-        pc.RetiredElements[1] = Retired[1] = AllocateElementWork(chain.Scratch, a.FaceTriangles.HandleBound(record.FaceData), job.SrcFaceCount);
-        pc.ReplacedElements[0] = Replaced[0] = AllocateElementWork(chain.Scratch, a.FaceCorners.HandleBound(record.FaceCorners), job.SrcHalfedgeCount);
-        pc.ReplacedElements[1] = Replaced[1] = AllocateElementWork(chain.Scratch, a.Triangles.HandleBound(record.TriangleData), job.SrcHalfedgeCount);
+        identity.RetiredElements[0] = Retired[0] = AllocateElementWork(chain.Scratch, a.Vertices.HandleBound(record.Vertices), job.SrcVertexCount);
+        identity.RetiredElements[1] = Retired[1] = AllocateElementWork(chain.Scratch, a.FaceTriangles.HandleBound(record.FaceData), job.SrcFaceCount);
+        identity.ReplacedElements[0] = Replaced[0] = AllocateElementWork(chain.Scratch, a.FaceCorners.HandleBound(record.FaceCorners), job.SrcHalfedgeCount);
+        identity.ReplacedElements[1] = Replaced[1] = AllocateElementWork(chain.Scratch, a.Triangles.HandleBound(record.TriangleData), job.SrcHalfedgeCount);
     }
-    const auto &pipelines = GetMeshPipelines(r);
-    const auto output_groups = TileCount(std::ranges::max(output), TileElements);
-    chain.Groups(pipelines[MeshPass::TopologyIdentityInit], pc, output_groups);
+    // Each pass gathers the job with a thread per element of its widest domain, in `depth` layers.
+    const auto gather = [&](MeshPass pass, uint32_t threads, uint32_t depth) {
+        mtl::GatherPass(chain, GetMeshPipelines(r)[pass], identity, threads, TileElements, depth);
+    };
+    gather(MeshPass::TopologyIdentityInit, std::ranges::max(output), 1u);
     if (preserve) {
-        chain.Groups(pipelines[MeshPass::TopologyIdentityRetain], pc, TileCount(std::max(job.SrcVertexCount, job.SrcFaceCount), TileElements));
-        chain.Groups(pipelines[MeshPass::TopologyIdentityReplaced], pc, TileCount(job.SrcHalfedgeCount, TileElements));
+        gather(MeshPass::TopologyIdentityRetain, std::max(job.SrcVertexCount, job.SrcFaceCount), 1u);
+        gather(MeshPass::TopologyIdentityReplaced, job.SrcHalfedgeCount, 1u);
     }
-    chain.Groups(pipelines[MeshPass::TopologyIdentityNew], pc, output_groups, 256u, 2u);
+    gather(MeshPass::TopologyIdentityNew, std::ranges::max(output), 2u);
     const std::array work{New[0], New[1], Retired[0], Retired[1], Replaced[0], Replaced[1]};
     EncodeSortElementWork(r, chain, std::span{work}.first(preserve ? work.size() : 2u));
 }
@@ -55,6 +55,6 @@ void TopologyOutputHandles::Assign(state::Registry &r, mtl::ComputeChain &chain,
         if (inserted[d].Count != NewCounts[d]) throw std::invalid_argument("Topology identity allocation count differs from its plan.");
     }
     const auto slot = chain.Scratch.Buffer.Slot;
-    const TopologyIdentityPushConstants pc{.Outputs = {SlotOffset{slot, Vertices.Offset}, SlotOffset{slot, Faces.Offset}}, .NewElements = {New[0], New[1]}, .Error = {slot, 0u}, .Inserted = {inserted[0], inserted[1]}};
-    chain.Groups(GetMeshPipelines(r)[MeshPass::TopologyIdentityAssign], pc, TileCount(std::max(NewCounts[0], NewCounts[1]), TileElements), 256u, 2u);
+    const TopologyIdentityJob job{.ErrorSlot = slot, .Outputs = {SlotOffset{slot, Vertices.Offset}, SlotOffset{slot, Faces.Offset}}, .NewElements = {New[0], New[1]}, .Inserted = {inserted[0], inserted[1]}};
+    mtl::GatherPass(chain, GetMeshPipelines(r)[MeshPass::TopologyIdentityAssign], job, std::max(NewCounts[0], NewCounts[1]), TileElements, 2u);
 }

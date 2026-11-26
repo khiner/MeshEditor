@@ -39,8 +39,8 @@ inline std::optional<double> SurfaceCurvature(const state::Registry &r, state::E
     const auto edges = VertexEdges(meshes, pipelines, id, hit.Vertices);
     std::vector<uint32_t> positioned{hit.Vertices.begin(), hit.Vertices.end()};
     for (const auto &edge : edges.Items) positioned.push_back(edge.Other);
-    const auto positions = VertexPositions(meshes, pipelines, id, positioned);
-    const auto normals = VertexNormals(meshes, pipelines, id, hit.Vertices);
+    const auto positions = VertexPositions(meshes, id, positioned);
+    const auto normals = VertexNormals(meshes, id, hit.Vertices);
     const auto sharpness = meshes.Arenas().EdgeSharpness.Buffer.GetSpan<uint8_t>();
     double local = 0;
     for (uint32_t i = 0, at = 3; i < 3; ++i) {

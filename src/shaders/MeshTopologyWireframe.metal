@@ -3,16 +3,16 @@
 
 // Geometry follows Blender's bmesh_wireframe.cc, with two normal-offset copies per vertex, one inset per selected corner, and an outward inset at open boundaries.
 // The wire edge scratch holds each source edge's selected-face count and one selected corner.
-inline device uint *TopoWireEdges(TopoContext ctx, MeshTopologyJob job) {
+inline device uint *TopoWireEdges(TopoContext ctx, device const MeshTopologyJob &job) {
     return ctx.Scratch() + job.HalfedgeAuxOffset;
 }
-inline bool TopoWireBoundary(TopoContext ctx, MeshTopologyJob job, uint e) {
+inline bool TopoWireBoundary(TopoContext ctx, device const MeshTopologyJob &job, uint e) {
     return e < job.SrcEdgeCount && TopoWireEdges(ctx, job)[2u * e] == 1u;
 }
-inline uint TopoWireCopy(TopoContext ctx, MeshTopologyJob job, uint v) {
+inline uint TopoWireCopy(TopoContext ctx, device const MeshTopologyJob &job, uint v) {
     return ctx.Counts(job, TopoCountVertices)[v] + uint(TopoVertexKept(ctx, job, v));
 }
-inline uint TopoWireBoundaryEdges(TopoContext ctx, MeshTopologyJob job, uint v, thread uint2 &edges) {
+inline uint TopoWireBoundaryEdges(TopoContext ctx, device const MeshTopologyJob &job, uint v, thread uint2 &edges) {
     uint count = 0u;
     ctx.Src(job).ForEachIncidentEdge(ctx.SrcVertexDomain(job).Handle(v), [&](uint handle) {
         const uint e = ctx.SrcEdgeDomain(job).Index(handle);
@@ -21,7 +21,7 @@ inline uint TopoWireBoundaryEdges(TopoContext ctx, MeshTopologyJob job, uint v, 
     return count;
 }
 
-inline float TopoWireRelative(TopoContext ctx, MeshTopologyJob job, uint v) {
+inline float TopoWireRelative(TopoContext ctx, device const MeshTopologyJob &job, uint v) {
     // Blender's relative thickness averages lengths to tagged neighbors over the vertex's entire edge degree.
     if (!(job.Flags & TopologyFlagWireRelative)) return 1.f;
     float length = 0.f;
@@ -41,7 +41,7 @@ inline float TopoWireShell(float3 a, float3 b) {
     return rsqrt(max(0.5f * (1.f - clamp(dot(a, b), -1.f, 1.f)), 1e-8f));
 }
 
-inline void TopoWireVertices(TopoContext ctx, MeshTopologyJob job, uint v, uint first) {
+inline void TopoWireVertices(TopoContext ctx, device const MeshTopologyJob &job, uint v, uint first) {
     const float fac = TopoWireRelative(ctx, job, v);
     const float radius = TopoParam0Vertex(ctx, job, v) * 0.5f * fac, mid = radius * job.Param1;
     const float3 normal = NormalizeOrZero(float3(ctx.SrcVertexNormals(job)[v]));
@@ -74,7 +74,7 @@ inline void TopoWireVertices(TopoContext ctx, MeshTopologyJob job, uint v, uint 
     *ctx.Inward(job, first + 2u, 0u) = packed_float3(tangent * (radius * shell) + normal * mid);
 }
 
-inline uint3 TopoWireFaceCounts(TopoContext ctx, MeshTopologyJob job, uint f) {
+inline uint3 TopoWireFaceCounts(TopoContext ctx, device const MeshTopologyJob &job, uint f) {
     const uint2 range = ctx.SrcFaceRange(job, f);
     const uint n = range.y - range.x;
     if (!ctx.SrcSelectedFace(job, f)) return uint3(0u, 1u, n);
@@ -85,7 +85,7 @@ inline uint3 TopoWireFaceCounts(TopoContext ctx, MeshTopologyJob job, uint f) {
     return uint3(n, sides + uint(keep), 4u * sides + (keep ? n : 0u));
 }
 
-inline void TopoWireFace(TopoContext ctx, MeshTopologyJob job, uint f, uint fd, uint base, uint vertices) {
+inline void TopoWireFace(TopoContext ctx, device const MeshTopologyJob &job, uint f, uint fd, uint base, uint vertices) {
     const uint2 range = ctx.SrcFaceRange(job, f);
     const auto corners = ctx.SrcCorners(job);
     if (!(job.Flags & TopologyFlagWireReplace)) {

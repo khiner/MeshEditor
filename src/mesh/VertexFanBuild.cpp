@@ -10,27 +10,36 @@
 namespace {
 using FanBatch = TiledJobBatch<VertexFanBuildJob, 3>;
 
-void ReleaseFormerFans(MeshStore &meshes, const FanBatch &batch) {
+// `store_ids` holds the record of each of the batch's jobs.
+void ReleaseFormerFans(MeshStore &meshes, const FanBatch &batch, std::span<const uint32_t> store_ids) {
     const profile::CpuScope scope{"VertexFanRelease"};
     const auto scratch = batch.ScratchSpan();
-    std::vector<uvec2> released;
-    for (const auto &job : batch.Jobs) {
+    std::vector<uvec2> released, zeroed;
+    for (uint32_t k = 0u; k < batch.Jobs.size(); ++k) {
+        const auto &job = batch.Jobs[k];
         const auto used = scratch[job.TileData + TileCount(job.VertexCount, TileElements)];
         if (used > job.HalfedgeCount) throw std::logic_error("Vertex fan counts exceed supplied incidence.");
         if (used < job.HalfedgeCount) released.emplace_back(job.FirstItem + used, job.HalfedgeCount - used);
         if (job.Fresh) continue;
+        const bool created = meshes.CreatedInStep(store_ids[k]);
         // Only a vertex that owned a run before the rebuild contributes one to free.
         for (uint32_t i = 0u; i < job.VertexCount; ++i) {
             const uvec2 former{scratch[job.Metadata + 4u * i + 2u], scratch[job.Metadata + 4u * i + 3u]};
-            if (former.y) released.push_back(former);
+            if (!former.y) continue;
+            released.push_back(former);
+            if (created) zeroed.push_back(former);
         }
     }
+    std::ranges::sort(zeroed, {}, [](uvec2 run) { return run.x; });
+    std::vector<Range> runs;
+    for (const auto run : zeroed) AppendRange(runs, {run.x, run.y});
+    for (const auto run : runs) std::ranges::fill(meshes.VertexFans().Items.GetMutable(run), uvec2{});
     std::ranges::sort(released, {}, [](uvec2 run) { return run.x; });
     meshes.VertexFans().Release(released);
 }
 } // namespace
 
-void EncodeVertexFans(state::Registry &r, mtl::ComputeChain &chain, std::span<const MeshConnectivityJob> sources, std::span<const uint32_t> vertex_blocks, bool fresh) {
+void EncodeVertexFans(state::Registry &r, mtl::ComputeChain &chain, std::span<const MeshConnectivityJob> sources, std::span<const uint32_t> store_ids, std::span<const uint32_t> vertex_blocks, bool fresh) {
     const auto scratch_words = [&](const MeshConnectivityJob &source) {
         const uint64_t h = source.HalfedgeCount, v = source.VertexCount;
         return (fresh ? 1u : 4u) * v + (fresh ? 3u : 4u) * h + 16u * TileCount(h, TileElements) + 17u + TileCount(v, TileElements);
@@ -45,9 +54,12 @@ void EncodeVertexFans(state::Registry &r, mtl::ComputeChain &chain, std::span<co
     auto &meshes = r.Resources.get<MeshStore>();
     auto &fans = meshes.VertexFans();
     std::vector<Range> runs;
+    std::vector<uint32_t> job_ids;
     batch->Begin();
-    for (const auto &source : sources) {
+    for (uint32_t s = 0u; s < sources.size(); ++s) {
+        const auto &source = sources[s];
         if (!source.VertexCount) continue;
+        job_ids.push_back(store_ids[s]);
         VertexFanBuildJob job{.Vertices = source.Vertices, .Halfedges = source.Halfedges, .Tables = source.Connectivity.Tables, .CornersSlot = source.Connectivity.CornersSlot, .RootsSlot = source.Connectivity.VertexCornersSlot, .ItemsSlot = fans.Items.Buffer.Slot, .FaceOwnersSlot = source.Connectivity.HalfedgeFacesSlot, .FaceCount = source.FaceCount, .VertexCount = source.VertexCount, .HalfedgeCount = source.HalfedgeCount, .Fresh = fresh ? 1u : 0u};
         if (job.Vertices.Storage.Slot == InvalidSlot) job.Vertices.Count = job.VertexCount;
         if (job.Halfedges.Storage.Slot == InvalidSlot) job.Halfedges.Count = job.HalfedgeCount;
@@ -85,5 +97,5 @@ void EncodeVertexFans(state::Registry &r, mtl::ComputeChain &chain, std::span<co
     }
     passes.push_back({MeshPass::VertexFanEmit, 0u});
     batch->Encode(chain, GetMeshPipelines(r), VertexFanBuildPushConstants{}, passes);
-    chain.AfterSubmit([&meshes, batch] { ReleaseFormerFans(meshes, *batch); });
+    chain.AfterSubmit([&meshes, batch, job_ids = std::move(job_ids)] { ReleaseFormerFans(meshes, *batch, job_ids); });
 }

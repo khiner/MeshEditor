@@ -25,7 +25,7 @@ struct SelectionContext {
         return Pc.Hidden[domain]!=InvalidSlot && MaskBit(BindlessBuffer(uint,B.Buffer,Pc.Hidden[domain]), address);
     }
     bool SelectedAt(uint domain, uint address) const {
-        return MaskBit(BindlessBuffer(uint, B.Buffer, Pc.Masks[domain].Slot) + Pc.Masks[domain].Offset, address);
+        return MaskBit(BindlessBuffer(uint, B.Buffer, Mesh.Masks[domain].Slot) + Mesh.Masks[domain].Offset, address);
     }
     bool Selected(uint domain, uint handle) const { return handle != InvalidOffset && SelectedAt(domain, Address(domain, handle)); }
     // Both endpoints, with an invalid second endpoint for an unpaired face-less halfedge.
@@ -179,7 +179,7 @@ kernel void UpdateSelectionBlocks(
         const uint word = uint((simd_vote::vote_t)simd_ballot(selected));
         if (simd_lane == 0u) {
             if (pc.Staged != InvalidOffset) ctx.Work()[pc.Staged + group * MeshElementBlockWords + simd_group] = word;
-            else BindlessBufferMutable(uint, b.Buffer, pc.Masks[domain].Slot)[pc.Masks[domain].Offset + block * MeshElementBlockWords + simd_group] = word;
+            else BindlessBufferMutable(uint, b.Buffer, ctx.Mesh.Masks[domain].Slot)[ctx.Mesh.Masks[domain].Offset + block * MeshElementBlockWords + simd_group] = word;
         }
     }
     if (pc.Leaves[domain] == InvalidSlot) return;

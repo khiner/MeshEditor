@@ -132,7 +132,6 @@ void TopologyReadView::Clone(state::Registry &r) {
         {&a.EdgeHidden.Buffer, &Arenas.EdgeHiddenSlot},
         {&a.FaceHidden.Buffer, &Arenas.FaceHiddenSlot},
     };
-    auto &Layers = Arenas.Layers;
     const auto layer = [&](const auto &source, SlotOffset &ref) { bindings.push_back({&source.Values.Buffer, &ref.Slot}); };
     layer(a.FacePrimitives, Layers.FacePrimitives);
     layer(a.VertexPrimitives, Layers.VertexPrimitives);
@@ -173,7 +172,6 @@ ConnectivityRef TopologyReadView::SourceConnectivity(const MeshStore &meshes, ui
 
 ElementLayers TopologyReadView::SourceLayers(const MeshStore &meshes, uint32_t id) const {
     auto layers = meshes.Layers(id);
-    const auto &Layers = Arenas.Layers;
     const auto at = [](SlotOffset &ref, SlotOffset clone) { ref.Slot = ref.Slot == InvalidSlot ? InvalidSlot : clone.Slot; };
     at(layers.FacePrimitives, Layers.FacePrimitives);
     at(layers.VertexPrimitives, Layers.VertexPrimitives);

@@ -37,6 +37,7 @@ class ArgumentTable;
 namespace mtl {
 struct PhysicalPagePool;
 struct PhysicalPage;
+struct SparseBuffer;
 struct Context;
 struct Command;
 NS::SharedPtr<NS::String> Str(std::string_view);
@@ -122,9 +123,8 @@ struct Context {
     // Each reservation is a new address object, released by the mapping update after the one that unmaps it.
     NS::SharedPtr<MTL::Buffer> ReserveSparseAddresses(uint64_t bytes) const;
     // Unmaps the (first page, page count) runs of the addresses in the next mapping update, after which the pages return to the pool.
-    // The mapping update after that releases the addresses.
-    void RetireSparseAddresses(NS::SharedPtr<MTL::Buffer>, std::vector<std::pair<uint64_t, uint64_t>> mapped, std::vector<std::shared_ptr<PhysicalPage>> pages) const;
-    bool OwnsSparseAddresses(MTL::Buffer *) const;
+    // The mapping update after that releases the addresses, except a page clone's that still span the resident pages of `clone_of`, which takes them for its next clone.
+    void RetireSparseAddresses(NS::SharedPtr<MTL::Buffer>, std::vector<std::pair<uint64_t, uint64_t>> mapped, std::vector<std::shared_ptr<PhysicalPage>> pages, std::weak_ptr<SparseBuffer> clone_of = {}) const;
     PhysicalPagePool &Pages() const;
     // Arguments are physical pages.
     // CommitResidency maps them after every committed command completes.
@@ -148,6 +148,7 @@ private:
         uint64_t Serial{};
         std::vector<std::pair<NS::SharedPtr<MTL::Event>, uint64_t>> Waits, Signals;
         NS::SharedPtr<MTL::Drawable> Presented;
+        std::vector<std::shared_ptr<const void>> Kept;
     };
     void UpdateMappings(const std::vector<MappingCommand> &) const;
     // Runs one mapping update with every pending map and unmap, then returns the retired pages to the pool and holds the retired addresses until the next update.
@@ -157,7 +158,7 @@ private:
     mutable bool TearingDown{false};
     mutable std::shared_ptr<PhysicalPagePool> PagePool;
     mutable bool ResidencyDirty{false};
-    mutable std::vector<NS::SharedPtr<MTL::Allocation>> PendingResidentRemovals;
+    mutable std::unordered_map<MTL::Allocation *, NS::SharedPtr<MTL::Allocation>> PendingResidentRemovals;
     NS::SharedPtr<MTL::SharedEvent> MappingEvent, CompletionEvent;
     struct Mapping {
         NS::SharedPtr<MTL::Buffer> Destination;
@@ -169,12 +170,12 @@ private:
         NS::SharedPtr<MTL::Buffer> Addresses;
         std::vector<std::pair<uint64_t, uint64_t>> Mapped;
         std::vector<std::shared_ptr<PhysicalPage>> Pages;
+        std::weak_ptr<SparseBuffer> CloneOf;
     };
     mutable std::vector<Mapping> PendingMappings;
     mutable std::vector<Retired> PendingRetired;
     // Unmapped addresses that a command encoded before their unmap can still declare, released once every command committed since has completed.
     mutable std::vector<NS::SharedPtr<MTL::Buffer>> UnmappedAddresses;
-    mutable std::unordered_map<MTL::Buffer *, NS::SharedPtr<MTL::Buffer>> SparseAddresses;
     mutable uint64_t MappingSerial{}, CommitSerial{};
     mutable std::vector<std::unique_ptr<CommandSlot>> Slots;
     mutable std::vector<uint32_t> FreeSlots, InFlightSlots;

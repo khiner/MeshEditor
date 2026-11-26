@@ -7,7 +7,7 @@ struct Registry;
 } // namespace state
 
 // The initial build visits each owner's mesh once, and the owners build concurrently.
-// Thereafter these operations touch only changed finest meshlets and their spatial ancestors.
+// Thereafter a replace touches only changed finest meshlets and their spatial ancestors, and so does a refit of a small part of a tree, which otherwise builds the tree again.
 void BuildMeshletSpatial(state::Registry &, std::span<MeshStore::Record *const>);
 void ReplaceMeshletSpatial(state::Registry &, const MeshStore::Record &, std::span<const uint32_t> removed, std::span<const uint32_t> added);
 void RefitMeshletSpatial(state::Registry &, const MeshStore::Record &, std::span<const uint32_t> changed);

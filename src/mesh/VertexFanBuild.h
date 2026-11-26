@@ -19,4 +19,5 @@ struct Registry;
 // Record after canonical corner/face ownership is available and sparse halfedge work is sorted and finished.
 // The recording captures the runs and the roots in `vertex_blocks`, the ascending blocks of every writable vertex.
 // The chain's next submit frees the writable vertices' former runs and each run's unused tail.
-void EncodeVertexFans(state::Registry &, mtl::ComputeChain &, std::span<const MeshConnectivityJob>, std::span<const uint32_t> vertex_blocks, bool fresh = false);
+// Former runs of a record the store's current step created return to zero, and `store_ids` holds each job's record.
+void EncodeVertexFans(state::Registry &, mtl::ComputeChain &, std::span<const MeshConnectivityJob>, std::span<const uint32_t> store_ids, std::span<const uint32_t> vertex_blocks, bool fresh = false);

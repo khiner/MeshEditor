@@ -28,6 +28,18 @@ inline Mesh::FH Face(const Mesh &mesh, Mesh::HH h) { return mesh.GetConnectivity
 // The arena address of a mesh's element, which indexes its arena values.
 inline uint32_t Address(const Mesh &mesh, Mesh::EH e) { return mesh.GetConnectivity().EdgeAddress(*e).Value(); }
 inline uint32_t Address(const Mesh &mesh, Mesh::FH f) { return mesh.GetConnectivity().FaceAddress(*f).Value(); }
+// The words of the attribute's value at the handle, zero beyond its components.
+inline AttributeValue AttributeWords(const MeshStore &meshes, uint32_t attribute, uint32_t handle) {
+    return WithAttributeScalar(meshes.GetAttribute(attribute).Type, [&]<AttributeScalar T>() { return Words(meshes.AttributeView<T>(attribute)[handle]); });
+}
+// Sets the attribute's value at the handle to the value the words hold.
+inline void SetAttributeWords(MeshStore &meshes, uint32_t attribute, uint32_t handle, std::span<const uint32_t> words) {
+    WithAttributeScalar(meshes.GetAttribute(attribute).Type, [&]<AttributeScalar T>() {
+        T value{};
+        std::memcpy(&value, words.data(), std::min(sizeof(T), words.size_bytes()));
+        meshes.SetAttribute<T>(attribute, handle, std::span{&value, 1u});
+    });
+}
 inline const vec3 &Position(const Mesh &mesh, Mesh::VH v) { return mesh.GetStore().Arenas().Vertices.Get({mesh.GetConnectivity().VertexAddress(*v).Value(), 1})[0].Position; }
 inline vec3 Normal(const Mesh &mesh, Mesh::FH f) { return mesh.GetStore().Arenas().BaseFaceNormals.Get({mesh.GetConnectivity().FaceAddress(*f).Value(), 1})[0]; }
 inline vec3 EdgeCenter(const Mesh &mesh, Mesh::EH e) {

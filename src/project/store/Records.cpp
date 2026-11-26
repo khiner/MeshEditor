@@ -27,6 +27,7 @@ void Records::Write(uint64_t first, uint64_t count) {
 void Records::Settle() {
     for (const auto i : Trie.Dirty()) Trie.Rehash(i, Present(i) ? std::optional{Read(i)} : std::nullopt);
     Trie.ClearDirty();
+    Trie.ReturnCaptured(Trie.SlotHashes.size());
 }
 
 std::vector<uint32_t> Records::Changed() const {

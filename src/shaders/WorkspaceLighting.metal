@@ -146,10 +146,7 @@ inline MeshVaryings DecodeWorkspaceTriangle(
 fragment float4 WorkspaceVisibilityFragment(
     QuadVaryings quad [[stage_in]],
     texture2d<uint, access::read> visibility [[texture(0)]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    SCENE_ARGS,
     constant VisibilityShadingPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const uint id = visibility.read(uint2(quad.Position.xy)).r;
@@ -169,13 +166,10 @@ fragment TransparencyStore WorkspaceTransparentFragment(
     MeshletVertexVaryings meshlet_in [[stage_in]],
     bool front_facing [[front_facing]],
     TransparencyValues values [[imageblock_data]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
+    SCENE_ARGS
 ) {
     if (FaceCulled(meshlet_in.Facing, front_facing)) discard_fragment();
-    const MeshVaryings in = FromMeshletVertexVaryings(meshlet_in);
+    const MeshVaryings in = FromMeshletVaryings(meshlet_in);
     const Scene scene{bindless, view, theme, workspace};
     float4 shaded = ShadeWorkspace(in, scene, view);
     shaded.a *= view.XRayAlpha;

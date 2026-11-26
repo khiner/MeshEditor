@@ -1,30 +1,23 @@
 #include "mesh/BoundaryLoops.h"
 
-#include "gpu/BoundaryLoopsPushConstants.h"
-#include "mesh/MeshPipelines.h"
+#include "gpu/BoundaryLoopsJob.h"
 #include "mesh/MeshStore.h"
 #include "mesh/ScratchPasses.h"
-#include "metal/Dispatch.h"
-#include "state/Registry.h"
 
-std::vector<std::vector<std::array<uint32_t, 2>>> BoundaryLoops(state::Registry &r, uint32_t id, std::span<const uint32_t> edges, uint32_t max_sides) {
-    const auto &meshes = r.Resources.get<const MeshStore>();
+void RecordBoundaryLoops(const MeshStore &meshes, const MeshPipelines &pipelines, mtl::ComputeChain &chain, uint32_t id, std::span<const uint32_t> edges, uint32_t max_sides, std::function<void(std::vector<std::vector<std::array<uint32_t, 2>>>)> then) {
     const auto &a = meshes.Arenas();
     const auto &record = meshes.Get(id);
     const auto blocks = BlocksOf(meshes, id, MeshStore::ElementDomain::Halfedge);
-    if (!blocks.Count) return {};
-    const auto &pipelines = GetMeshPipelines(r);
-    mtl::ComputeChain chain{meshes.BufferContext()};
+    if (!blocks.Count) return then({});
     auto &scratch = chain.Scratch;
     const uint32_t halfedges = a.FaceCorners.HandleBound(record.FaceCorners), vertices = a.Vertices.HandleBound(record.Vertices);
     // The four link runs hold the links, then the doubled rank distances and successors once the labels converge, then the output pairs once the ranks do.
     const auto links = TakeScratch(chain, 4ull * halfedges).Offset;
-    BoundaryLoopsPushConstants pc{
+    auto job = BoundaryLoopsJob{
         .Connectivity = meshes.GetConnectivityRef(id),
         .Blocks = blocks,
         .HalfedgeBound = halfedges,
         .VertexBound = vertices,
-        .ScratchSlot = scratch.Buffer.Slot,
         .Edges = edges.empty() ? 0u : scratch.Allocate(edges).Offset,
         .EdgeCount = uint32_t(edges.size()),
         .MaxSides = max_sides,
@@ -40,28 +33,24 @@ std::vector<std::vector<std::array<uint32_t, 2>>> BoundaryLoops(state::Registry 
         .Successors = links,
         .Lengths = TakeScratch(chain, uint64_t(halfedges) + 1u).Offset,
         .Flags = TakeScratch(chain, uint64_t(halfedges) + 1u).Offset,
+        .Parity = TakeScratch(chain, 1u).Offset,
         .Output = links,
     };
-    const uint32_t threads = blocks.Count * MeshElementBlockSize;
-    FillScratch(chain, pipelines, pc.Candidate, halfedges, 0u);
-    FillScratch(chain, pipelines, links, 4u * halfedges, InvalidOffset);
-    FillScratch(chain, pipelines, pc.Outgoing, vertices, 0u);
-    FillScratch(chain, pipelines, pc.Outgoing + vertices, vertices, InvalidOffset);
-    chain.Threads(pipelines[MeshPass::BoundaryLoopStarts], pc, threads);
-    chain.Threads(pipelines[MeshPass::BoundaryLoopLink], pc, threads);
-    chain.Threads(pipelines[MeshPass::BoundaryLoopFallback], pc, threads);
-    chain.Threads(pipelines[MeshPass::BoundaryLoopNext], pc, threads);
-    // The closed flags take the jump half the label rounds leave stale.
-    pc.Closed = pc.Jumps + ((LoopRounds(halfedges) & 1u) ? 0u : halfedges);
-    auto round_pc = RecordLoopRanks(chain, pipelines, pc, {MeshPass::BoundaryLoopLabel, MeshPass::BoundaryLoopRankInit, MeshPass::BoundaryLoopRank, MeshPass::BoundaryLoopCount}, halfedges, threads, pc.Lengths, pc.Flags);
-    chain.Submit();
-    const uint32_t count = scratch.Get({pc.Flags + halfedges, 1u})[0];
-    if (!count) return {};
-    round_pc.Records = TakeScratch(chain, 2ull * count).Offset;
-    chain.Threads(pipelines[MeshPass::BoundaryLoopOutput], round_pc, threads);
-    chain.Submit();
-    const auto records = scratch.Get({round_pc.Records, 2u * count});
-    std::vector<std::vector<std::array<uint32_t, 2>>> loops(count);
-    for (uint32_t l = 0u; l < count; ++l) loops[l] = ReadScratch<std::array<uint32_t, 2>>(chain, pc.Output + 2u * records[2u * l], records[2u * l + 1u]);
-    return loops;
+    chain.Lane([&] {
+        FillScratch(chain, pipelines, std::to_array<ScratchFillRun>({{job.Candidate, halfedges, 0u}, {links, 4u * halfedges, InvalidOffset}, {job.Outgoing, vertices, 0u}, {job.Outgoing + vertices, vertices, InvalidOffset}}));
+        for (const auto pass : {MeshPass::BoundaryLoopStarts, MeshPass::BoundaryLoopLink, MeshPass::BoundaryLoopFallback, MeshPass::BoundaryLoopNext}) mtl::GatherPass(chain, pipelines[pass], job, job.Blocks.Count * MeshElementBlockSize);
+        GatherLoopRanks(chain, pipelines, {MeshPass::BoundaryLoopLabel, MeshPass::BoundaryLoopRankInit, MeshPass::BoundaryLoopRank, MeshPass::BoundaryLoopCount}, job, job.Blocks.Count, [](const BoundaryLoopsJob &gathered) { return LoopList{gathered.HalfedgeBound, gathered.Lengths, gathered.Flags}; });
+    });
+    chain.AfterSubmit([&pipelines, &chain, job, then = std::move(then)] mutable {
+        const uint32_t count = chain.Scratch.Get({job.Flags + job.HalfedgeBound, 1u})[0];
+        if (!count) return then({});
+        job.Records = TakeScratch(chain, 2ull * count).Offset;
+        chain.Lane([&] { mtl::GatherPass(chain, pipelines[MeshPass::BoundaryLoopOutput], job, job.Blocks.Count * MeshElementBlockSize); });
+        chain.AfterSubmit([&chain, job, count, then = std::move(then)] {
+            const auto records = chain.Scratch.Get({job.Records, 2u * count});
+            std::vector<std::vector<std::array<uint32_t, 2>>> loops(count);
+            for (uint32_t l = 0u; l < count; ++l) loops[l] = ReadScratch<std::array<uint32_t, 2>>(chain, job.Output + 2u * records[2u * l], records[2u * l + 1u]);
+            then(std::move(loops));
+        });
+    });
 }

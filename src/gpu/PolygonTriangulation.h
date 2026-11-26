@@ -48,13 +48,27 @@ struct PolygonCrossing {
     bool Valid;
 };
 
+// The corners each lane of a one-loop scan reads ahead of its tests.
+GPU_CONSTANT uint32_t PolygonScanBlock = 8u;
+
+// Corner `i` of `n`, or the last corner past the end, which a block reads and does not test.
+inline uint32_t PolygonCornerIn(uint32_t i, uint32_t n) { return i < n ? i : n - 1u; }
+
+// One lane clipping a polygon alone.
+struct PolygonLane {
+    uint32_t Lane{0u}, Count{1u};
+    float Max(float value) const { return value; }
+    uint32_t Least(float, uint32_t, uint32_t corner) const { return corner; }
+};
+
 // Triangulates a polygon's loops as manifold's EarClip does, on projected corner points the caller writes with the loops' links.
 // Corner i's point is values[2i] and values[2i + 1], its next and previous corners are links[i] and links[capacity + i], and loop l's first corner is loops[l].
 // The caller owns 4 * capacity - n words of `links`, 3 * capacity floats of `values` and 2 * loop_count words of `loops`.
 // `capacity` covers the n corners and two more per hole.
 // Each triangle is emitted counterclockwise with its corners, where a copy stands for the corner it copies, and its index.
-template<typename Links, typename Values, typename Loops, typename Emit>
-inline void TriangulateLoops(uint32_t n, uint32_t capacity, uint32_t loop_count, Links links, Values values, Loops loops, float epsilon, Emit emit) {
+// The lanes of `lanes` run the same clip and split the scans of a one-loop polygon, each lane writing every value the clip writes.
+template<typename Links, typename Values, typename Loops, typename Emit, typename Lanes = PolygonLane>
+inline void TriangulateLoops(uint32_t n, uint32_t capacity, uint32_t loop_count, Links links, Values values, Loops loops, float epsilon, Emit emit, Lanes lanes = {}) {
     const auto point = [&](uint32_t i) { return PolygonPoint{values[2u * i], values[2u * i + 1u]}; };
     // Each corner links to its live neighbors, and a clipped corner keeps the links it had when it was clipped.
     // The third run holds the clip stack of the degenerate passes and then each queued ear's insertion order, and the fourth each copy's corner.
@@ -66,6 +80,8 @@ inline void TriangulateLoops(uint32_t n, uint32_t capacity, uint32_t loop_count,
     };
     const auto corner = [&](uint32_t i) { return i < n ? i : uint32_t(links[3u * capacity + i - n]); };
     const auto clipped = [&](uint32_t i) { return prev(next(i)) != i; };
+    // One loop's live corners are all on the cycle being clipped, so its scans run over the corner array without a chain of dependent link reads.
+    const bool one_loop = loop_count == 1u;
     const auto is_short = [&](uint32_t i) {
         const PolygonPoint edge = point(next(i)) - point(i);
         return PolygonDot(edge, edge) * 4.f < epsilon * epsilon;
@@ -287,12 +303,8 @@ inline void TriangulateLoops(uint32_t n, uint32_t capacity, uint32_t loop_count,
         const PolygonPoint side = PolygonUnit(open);
         const PolygonPoint low{PolygonMin(center.x - radius, pi.x) - epsilon, PolygonMin(center.y - radius, pi.y) - epsilon};
         const PolygonPoint high{PolygonMax(center.x + radius, pi.x) + epsilon, PolygonMax(center.y + radius, pi.y) + epsilon};
-        const uint32_t ci = corner(i), cl = corner(l), cr = corner(r);
-        for (uint32_t t = next(r); t != l && t != i; t = next(t)) {
-            const uint32_t ct = corner(t);
-            if (ct == ci || ct == cl || ct == cr) continue;
-            const PolygonPoint q = point(t);
-            if (q.x < low.x || q.y < low.y || q.x > high.x || q.y > high.y) continue;
+        const auto boxed = [&](PolygonPoint q) { return !(q.x < low.x || q.y < low.y || q.x > high.x || q.y > high.y); };
+        const auto add = [&](uint32_t t, PolygonPoint q) {
             const auto signed_distance = [&](PolygonPoint unit) {
                 const float d = PolygonDet(unit, q - pi);
                 if (PolygonAbs(d) < epsilon) {
@@ -309,6 +321,25 @@ inline void TriangulateLoops(uint32_t n, uint32_t capacity, uint32_t loop_count,
                 cost = -epsilon - scale * PolygonDot(offset, offset);
             }
             total = PolygonMax(total, cost);
+        };
+        if (one_loop) {
+            // Each block's points load before any is tested, so the reads overlap.
+            for (uint32_t first = lanes.Lane; first < n; first += PolygonScanBlock * lanes.Count) {
+                PolygonPoint block[PolygonScanBlock];
+                for (uint32_t k = 0u; k < PolygonScanBlock; ++k) block[k] = point(PolygonCornerIn(first + k * lanes.Count, n));
+                for (uint32_t k = 0u; k < PolygonScanBlock && first + k * lanes.Count < n; ++k) {
+                    const uint32_t t = first + k * lanes.Count;
+                    if (t != i && t != l && t != r && boxed(block[k]) && !clipped(t)) add(t, block[k]);
+                }
+            }
+            return lanes.Max(total);
+        }
+        const uint32_t ci = corner(i), cl = corner(l), cr = corner(r);
+        for (uint32_t t = next(r); t != l && t != i; t = next(t)) {
+            const uint32_t ct = corner(t);
+            if (ct == ci || ct == cl || ct == cr) continue;
+            const PolygonPoint q = point(t);
+            if (boxed(q)) add(t, q);
         }
         return total;
     };
@@ -325,6 +356,10 @@ inline void TriangulateLoops(uint32_t n, uint32_t capacity, uint32_t loop_count,
         }
     };
     const auto triangulate = [&](uint32_t start) {
+        // A clipped corner of the one loop holds no insertion order, so the queue scan reads only live ears.
+        if (one_loop) {
+            for (uint32_t c = 0u; c < n; ++c) links[2u * capacity + c] = InvalidOffset;
+        }
         int remaining = -2;
         uint32_t i = loop(start, [&](uint32_t c) {
             process(c);
@@ -332,13 +367,36 @@ inline void TriangulateLoops(uint32_t n, uint32_t capacity, uint32_t loop_count,
         });
         if (i == capacity) return;
         while (remaining > 0) {
-            uint32_t ear = capacity, c = i;
-            do {
-                const uint32_t order = links[2u * capacity + c];
-                if (order != InvalidOffset &&
-                    (ear == capacity || values[2u * capacity + c] < values[2u * capacity + ear] || (values[2u * capacity + c] == values[2u * capacity + ear] && order < links[2u * capacity + ear]))) ear = c;
-                c = next(c);
-            } while (c != i);
+            uint32_t ear = capacity;
+            if (one_loop) {
+                float best_cost = 0.f;
+                uint32_t best_order = InvalidOffset;
+                for (uint32_t first = lanes.Lane; first < n; first += PolygonScanBlock * lanes.Count) {
+                    uint32_t orders[PolygonScanBlock];
+                    float costs[PolygonScanBlock];
+                    for (uint32_t k = 0u; k < PolygonScanBlock; ++k) {
+                        const uint32_t c = PolygonCornerIn(first + k * lanes.Count, n);
+                        orders[k] = links[2u * capacity + c];
+                        costs[k] = values[2u * capacity + c];
+                    }
+                    for (uint32_t k = 0u; k < PolygonScanBlock && first + k * lanes.Count < n; ++k) {
+                        if (orders[k] != InvalidOffset && (ear == capacity || costs[k] < best_cost || (costs[k] == best_cost && orders[k] < best_order))) {
+                            ear = first + k * lanes.Count;
+                            best_cost = costs[k];
+                            best_order = orders[k];
+                        }
+                    }
+                }
+                ear = lanes.Least(best_cost, best_order, ear);
+            } else {
+                uint32_t c = i;
+                do {
+                    const uint32_t order = links[2u * capacity + c];
+                    if (order != InvalidOffset &&
+                        (ear == capacity || values[2u * capacity + c] < values[2u * capacity + ear] || (values[2u * capacity + c] == values[2u * capacity + ear] && order < links[2u * capacity + ear]))) ear = c;
+                    c = next(c);
+                } while (c != i);
+            }
             // Without a queued ear the loop is invalid, and the corner after the last clip clips to keep the result manifold.
             if (ear != capacity) {
                 i = ear;
@@ -362,18 +420,13 @@ inline void TriangulateLoops(uint32_t n, uint32_t capacity, uint32_t loop_count,
 
 // Words of `links`, and again floats of `values`, that TriangulatePolygon uses per corner.
 GPU_CONSTANT uint32_t PolygonTriangulationWords = 3u;
+// The largest corner count a polygon triangulates with in thread memory, which needs no scratch.
+GPU_CONSTANT uint32_t PolygonThreadCorners = 8u;
 
-// Triangulates a polygon of `n` corners as manifold::Triangulate does, run on its projection onto the plane through its first corner normal to its vector area.
+// Writes the projection of a polygon's corners onto the plane through its first corner normal to its vector area to `values`, and returns its epsilon.
 // The epsilon is RelativePrecision times the corners' largest coordinate magnitude.
-// The caller owns PolygonTriangulationWords * n words of `links` and as many floats of `values`, in host memory, thread memory, or GPU scratch.
-// Each triangle is emitted counterclockwise in the loop's winding with its index.
-template<typename Position, typename Links, typename Values, typename Emit>
-inline void TriangulatePolygon(uint32_t n, Position position, Links links, Values values, Emit emit) {
-    if (n < 3u) return;
-    if (n == 3u) {
-        emit(uvec3{0u, 1u, 2u}, 0u);
-        return;
-    }
+template<typename Position, typename Values>
+inline float ProjectPolygon(uint32_t n, Position position, Values values) {
     const PolygonVector origin = PolygonVector(position(0u));
     PolygonVector area{0.f, 0.f, 0.f}, previous{0.f, 0.f, 0.f};
     float magnitude = PolygonMax(PolygonMax(PolygonAbs(origin.x), PolygonAbs(origin.y)), PolygonAbs(origin.z));
@@ -384,7 +437,6 @@ inline void TriangulatePolygon(uint32_t n, Position position, Links links, Value
         area += PolygonCross(previous, relative);
         previous = relative;
     }
-    const float epsilon = RelativePrecision * magnitude;
     // A right-handed frame about the vector area keeps the loop counterclockwise.
     const float area_length = PolygonSqrt(PolygonDot3(area, area));
     const PolygonVector normal = area_length > 0.f ? area / area_length : PolygonVector{0.f, 0.f, 1.f};
@@ -396,47 +448,191 @@ inline void TriangulatePolygon(uint32_t n, Position position, Links links, Value
         values[2u * i] = PolygonDot3(relative, u);
         values[2u * i + 1u] = PolygonDot3(relative, v);
     }
-    const auto point = [&](uint32_t i) { return PolygonPoint{values[2u * i], values[2u * i + 1u]}; };
+    return RelativePrecision * magnitude;
+}
 
-    bool convex = true;
-    const PolygonPoint first_edge = point(0u) - point(n - 1u);
-    PolygonPoint last_edge = first_edge;
-    for (uint32_t i = 0u; i < n && convex; ++i) {
-        const PolygonPoint edge = i + 1u < n ? point(i + 1u) - point(i) : first_edge;
-        const float det = PolygonDet(last_edge, edge);
-        convex = det > 0.f && !(PolygonDot(last_edge, edge) < 0.f && det < epsilon * PolygonSqrt(PolygonDot(last_edge, last_edge)));
-        last_edge = edge;
-    }
-    if (convex) {
-        uint32_t i = 0u, k = n - 1u, t = 0u;
+// Emits the triangles of a projected convex polygon, and returns whether it emitted them.
+// A corner is real when its next corner lies more than epsilon left of its previous edge's line, which makes its next edge longer than epsilon.
+// A corner is straight when it is not real, lies within epsilon of the line through its neighbors, turns by less than a right angle and its next edge is longer than epsilon.
+// A sliver is a triangle whose every corner lies within epsilon of the line through the other two.
+// A polygon of real corners takes the zigzag fan of its corners.
+// A polygon of real and straight corners takes the zigzag fan of its corners that are real both ways, whose previous corner also lies more than epsilon left of their next edge's line.
+// Every other corner lies on the edge between the two such corners around it, and that edge's corners fan from the opposite corner of its zigzag triangle.
+// When a second or third edge of that triangle holds corners, they fan from the corner of the first fan beside them.
+// So the triangles use every corner, and they tile the polygon when each turns counterclockwise.
+// The zigzag starts where its first and last triangles hold the fewest such edges, since their fans join nearby corners.
+// It emits nothing when fewer than three corners are real both ways or a triangle is clockwise or a sliver.
+// The caller owns as many words of `links` as the polygon has corners.
+template<typename Links, typename Values, typename Emit>
+inline bool TriangulateConvexPolygon(uint32_t n, Links links, Values values, float epsilon, Emit emit) {
+    const auto point = [&](uint32_t i) { return PolygonPoint{values[2u * i], values[2u * i + 1u]}; };
+    const auto next = [&](uint32_t i) { return i + 1u < n ? i + 1u : 0u; };
+    const auto prev = [&](uint32_t i) { return i ? i - 1u : n - 1u; };
+    // Calls `visit(i, real, straight, turn, edge)` with each corner in order until it returns false, and returns whether it never did.
+    // The turn is the determinant of the corner's previous and next edges.
+    const auto corners = [&](auto visit) {
+        const PolygonPoint first_edge = point(0u) - point(n - 1u);
+        PolygonPoint last_edge = first_edge;
+        for (uint32_t i = 0u; i < n; ++i) {
+            const PolygonPoint edge = i + 1u < n ? point(i + 1u) - point(i) : first_edge, chord = last_edge + edge;
+            const float turn = PolygonDet(last_edge, edge);
+            const bool real = turn > epsilon * PolygonSqrt(PolygonDot(last_edge, last_edge));
+            const bool straight = !real && turn >= -epsilon * PolygonSqrt(PolygonDot(chord, chord)) && PolygonDot(last_edge, edge) > 0.f && PolygonDot(edge, edge) > epsilon * epsilon;
+            if (!visit(i, real, straight, turn, edge)) return false;
+            last_edge = edge;
+        }
+        return true;
+    };
+    uint32_t real_count = 0u;
+    if (!corners([&](uint32_t, bool real, bool straight, float, PolygonPoint) {
+            real_count += real ? 1u : 0u;
+            return real || straight;
+        })) return false;
+    // Calls `visit(i, j, k)` with the zigzag fan of `count` corners.
+    const auto zigzag = [](uint32_t count, auto visit) {
+        uint32_t low = 0u, high = count - 1u;
         bool right = true;
-        while (i + 1u < k) {
-            const uint32_t j = right ? i + 1u : k - 1u;
-            emit(uvec3{i, j, k}, t++);
-            if (right) i = j;
-            else k = j;
+        while (low + 1u < high) {
+            const uint32_t middle = right ? low + 1u : high - 1u;
+            visit(low, middle, high);
+            if (right) low = middle;
+            else high = middle;
             right = !right;
         }
-        return;
+    };
+    if (real_count == n) {
+        uint32_t t = 0u;
+        zigzag(n, [&](uint32_t i, uint32_t j, uint32_t k) { emit(uvec3{i, j, k}, t++); });
+        return true;
     }
+    real_count = 0u;
+    corners([&](uint32_t i, bool real, bool, float turn, PolygonPoint edge) {
+        if (real && turn > epsilon * PolygonSqrt(PolygonDot(edge, edge))) links[real_count++] = i;
+        return true;
+    });
+    if (real_count < 3u) return false;
+    // The number of edges holding corners among the two at zigzag corner `r`.
+    const auto held = [&](uint32_t r) { return uint32_t(next(links[r]) != links[r + 1u < real_count ? r + 1u : 0u]); };
+    const auto held_at = [&](uint32_t r) { return held(r ? r - 1u : real_count - 1u) + held(r); };
+    uint32_t start = 0u, fewest = 5u;
+    for (uint32_t r = 0u; r < real_count && fewest; ++r) {
+        const uint32_t at_ends = held_at(r) + held_at((r + real_count / 2u) % real_count);
+        if (at_ends < fewest) start = r, fewest = at_ends;
+    }
+    // Calls `visit(a, b, c)` with each triangle in emission order.
+    const auto triangulate = [&](auto visit) {
+        zigzag(real_count, [&](uint32_t i, uint32_t j, uint32_t k) {
+            const uint32_t abc[3] = {links[(start + i) % real_count], links[(start + j) % real_count], links[(start + k) % real_count]};
+            // An edge between consecutive zigzag corners holds the corners after its first.
+            const bool holds[3] = {j == i + 1u && next(abc[0]) != abc[1], k == j + 1u && next(abc[1]) != abc[2], i == 0u && k == real_count - 1u && next(abc[2]) != abc[0]};
+            if (!holds[0] && !holds[1] && !holds[2]) {
+                visit(abc[0], abc[1], abc[2]);
+                return;
+            }
+            const uint32_t rotation = holds[0] ? 0u : 2u - uint32_t(holds[1]);
+            const uint32_t x = abc[rotation], y = abc[(rotation + 1u) % 3u], z = abc[(rotation + 2u) % 3u];
+            const uint32_t first = next(x), last = prev(y);
+            if (holds[(rotation + 2u) % 3u]) {
+                for (uint32_t s = z; s != x; s = next(s)) visit(first, s, next(s));
+            } else {
+                visit(x, first, z);
+            }
+            for (uint32_t s = first; s != last; s = next(s)) visit(s, next(s), z);
+            if (holds[(rotation + 1u) % 3u]) {
+                for (uint32_t s = y; s != z; s = next(s)) visit(last, s, next(s));
+            } else {
+                visit(last, y, z);
+            }
+        });
+    };
+    bool valid = true;
+    triangulate([&](uint32_t a, uint32_t b, uint32_t c) {
+        const PolygonPoint ab = point(b) - point(a), ac = point(c) - point(a), bc = point(c) - point(b);
+        const float area = PolygonDet(ab, ac), shortest = PolygonMin(PolygonMin(PolygonDot(ab, ab), PolygonDot(ac, ac)), PolygonDot(bc, bc));
+        valid = valid && area > 0.f && area * area > epsilon * epsilon * shortest;
+    });
+    if (!valid) return false;
+    uint32_t t = 0u;
+    triangulate([&](uint32_t a, uint32_t b, uint32_t c) { emit(uvec3{a, b, c}, t++); });
+    return true;
+}
+
+// Clips the ears of a projected polygon as manifold's EarClip does, with `lanes` running the clip together.
+template<typename Links, typename Values, typename Emit, typename Lanes = PolygonLane>
+inline void ClipPolygon(uint32_t n, Links links, Values values, float epsilon, Emit emit, Lanes lanes = {}) {
     for (uint32_t i = 0u; i < n; ++i) {
         links[i] = (i + 1u) % n;
         links[n + i] = (i + n - 1u) % n;
     }
     uint32_t loops[2] = {0u, 0u};
-    TriangulateLoops(n, n, 1u, links, values, loops, epsilon, emit);
+    TriangulateLoops(n, n, 1u, links, values, loops, epsilon, emit, lanes);
+}
+
+// Triangulates a polygon of `n` corners as manifold::Triangulate does, on its projection, except for a convex polygon with a corner within epsilon of straight.
+// The caller owns PolygonTriangulationWords * n words of `links` and as many floats of `values`, in host memory, thread memory, or GPU scratch.
+// Each triangle is emitted counterclockwise in the loop's winding with its index.
+template<typename Position, typename Links, typename Values, typename Emit>
+inline void TriangulatePolygon(uint32_t n, Position position, Links links, Values values, Emit emit) {
+    if (n < 3u) return;
+    if (n == 3u) {
+        emit(uvec3{0u, 1u, 2u}, 0u);
+        return;
+    }
+    const float epsilon = ProjectPolygon(n, position, values);
+    if (!TriangulateConvexPolygon(n, links, values, epsilon, emit)) ClipPolygon(n, links, values, epsilon, emit);
 }
 
 #ifdef __METAL_VERSION__
-// Triangulates polygons up to quads in thread memory, so their faces need no scratch, and larger polygons in the caller's device scratch.
-template<typename Position, typename Emit>
-inline void TriangulateWithScratch(uint n, Position position, device uint *links, device float *values, Emit emit) {
-    if (n <= 4u) {
-        uint local_links[PolygonTriangulationWords * 4u];
-        float local_values[PolygonTriangulationWords * 4u];
-        TriangulatePolygon(n, position, local_links, local_values, emit);
-    } else {
-        TriangulatePolygon(n, position, links, values, emit);
+// The lanes of a simdgroup clipping one polygon together, each scanning every Count-th corner.
+struct PolygonSimdgroup {
+    uint32_t Lane, Count;
+    float Max(float value) const { return simd_max(value); }
+    // The corner of the least cost, and of the least insertion order among equal costs, over the lanes' candidates.
+    uint32_t Least(float cost, uint32_t order, uint32_t corner) const {
+        for (uint32_t offset = 1u; offset < Count; offset <<= 1u) {
+            const float other_cost = simd_shuffle_xor(cost, ushort(offset));
+            const uint32_t other_order = simd_shuffle_xor(order, ushort(offset)), other_corner = simd_shuffle_xor(corner, ushort(offset));
+            if (other_order != InvalidOffset && (order == InvalidOffset || other_cost < cost || (other_cost == cost && other_order < order))) {
+                cost = other_cost;
+                order = other_order;
+                corner = other_corner;
+            }
+        }
+        return corner;
     }
+};
+
+// The scan steps each lane of a shared clip spends per corner on the clip's serial work, where one lane clipping n corners alone takes about n squared steps.
+constant uint32_t PolygonSharedCornerSteps = 12u;
+
+// Triangulates the polygon of each lane where `active` as TriangulatePolygon does.
+// `polygon(index, visit)` returns `visit(n, position, links, values, emit)` for polygon `index`, with device scratch of PolygonTriangulationWords words of `links` and as many floats of `values` per corner.
+// Polygons up to PolygonThreadCorners corners triangulate in thread memory, and larger convex ones in their scratch.
+// The whole simdgroup clips the remaining polygons one at a time when the estimated steps end sooner than each lane clipping its own, and each of its lanes writes every value the clip writes.
+// Every lane of the simdgroup calls it.
+template<typename Polygon>
+inline void TriangulatePolygons(bool active, uint index, uint lane, uint count, Polygon polygon) {
+    uint n = 0u;
+    const bool deferred = active && polygon(index, [&](uint corners, auto position, device uint *links, device float *values, auto emit) {
+        n = corners;
+        if (corners > PolygonThreadCorners) return !TriangulateConvexPolygon(corners, links, values, ProjectPolygon(corners, position, values), emit);
+        uint local_links[PolygonTriangulationWords * PolygonThreadCorners];
+        float local_values[PolygonTriangulationWords * PolygonThreadCorners];
+        TriangulatePolygon(corners, position, local_links, local_values, emit);
+        return false;
+    });
+    const auto clip = [&](uint k, auto lanes) {
+        polygon(k, [&](uint corners, auto position, device uint *links, device float *values, auto emit) {
+            ClipPolygon(corners, links, values, ProjectPolygon(corners, position, values), emit, lanes);
+            return false;
+        });
+    };
+    const float own = deferred ? float(n) * float(n) : 0.f;
+    const float shared = deferred ? own / float(count) + float(PolygonSharedCornerSteps * n) : 0.f;
+    if (simd_sum(shared) >= simd_max(own)) {
+        if (deferred) clip(index, PolygonLane{});
+        return;
+    }
+    for (auto mask = static_cast<simd_vote::vote_t>(simd_ballot(deferred)); mask; mask &= mask - 1u) clip(simd_shuffle(index, ushort(ctz(mask))), PolygonSimdgroup{lane, count});
 }
 #endif

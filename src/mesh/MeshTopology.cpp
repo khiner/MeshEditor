@@ -3,19 +3,25 @@
 #include "mesh/MeshTopologyLayout.h"
 
 #include "Profile.h"
-#include "gpu/ShortEdgesPushConstants.h"
+#include "gpu/ConnectivityEditJob.h"
+#include "gpu/ElementRepairJob.h"
+#include "gpu/LevelSetCountJob.h"
+#include "gpu/MeshClosureJob.h"
+#include "gpu/MeshTopologyPushConstants.h"
+#include "gpu/MeshletBoundsJob.h"
+#include "gpu/ShortEdgesJob.h"
 #include "gpu/TiledJobPushConstants.h"
+#include "gpu/TopologyIdentityJob.h"
 #include "mesh/BooleanWork.h"
 #include "mesh/ConnectivityBatch.h"
 #include "mesh/ConnectivityWritePages.h"
 #include "mesh/CornerClassBatch.h"
 #include "mesh/ElementMembershipWork.h"
 #include "mesh/ElementWorkSort.h"
-#include "mesh/MeshClone.h"
 #include "mesh/MeshTopologyEdit.h"
 #include "mesh/Neighborhood.h"
 #include "mesh/NormalDeriveGpu.h"
-#include "mesh/ScratchChunks.h"
+#include "mesh/ScratchPasses.h"
 #include "mesh/SpatialFaceWork.h"
 #include "mesh/TopologyReadView.h"
 #include "mesh/TopologyWritePages.h"
@@ -50,6 +56,7 @@ struct PrimitiveListReferences {
     std::vector<uint32_t> ExistingVertices;
     std::vector<uint32_t> Offsets;
     std::vector<uint32_t> EdgeCorners;
+    std::vector<uint32_t> Wires; // The edges of the corners in EdgeCorners that have no face
     uint32_t PrimitiveCount{}, FaceCount{};
 };
 
@@ -288,12 +295,9 @@ void AddJob(Batch &batch, const MeshTopologyJob &job, const MeshTopologyTask &ta
     batch.AddJob(job, tiles);
 }
 
-void EncodeTopologyCounts(state::Registry &r, mtl::ComputeChain &chain, Batch &batch, const MeshTopologyPushConstants &pc, uint32_t rounds) {
+Batch::Upload EncodeTopologyCounts(state::Registry &r, mtl::ComputeChain &chain, Batch &batch, const MeshTopologyPushConstants &pc, uint32_t rounds) {
     const profile::CpuScope scope{"EncodeTopologyCounts"};
-    if (batch.Jobs.front().Op == MeshTopologyOp::Boolean) {
-        batch.Encode(chain, GetMeshPipelines(r), pc, BooleanCountPasses);
-        return;
-    }
+    if (batch.Jobs.front().Op == MeshTopologyOp::Boolean) return batch.Encode(chain, GetMeshPipelines(r), pc, BooleanCountPasses);
     std::vector<TiledPass> passes{
         {MeshPass::TopologySelection, SrcVertices, 0u},
         {MeshPass::TopologySelection, SrcHalfedges, 1u},
@@ -311,7 +315,7 @@ void EncodeTopologyCounts(state::Registry &r, mtl::ComputeChain &chain, Batch &b
     }
     if (limited) passes.push_back({MeshPass::TopologyFinalizeVertices, SrcVertices, 1u});
     passes.insert(passes.end(), CountPasses.begin(), CountPasses.end());
-    batch.Encode(chain, GetMeshPipelines(r), pc, passes);
+    return batch.Encode(chain, GetMeshPipelines(r), pc, passes);
 }
 
 struct OutputCounts {
@@ -363,9 +367,6 @@ Range PrepareTopologyList(const MeshTopologyTask &task, const PrimitiveListRefer
     return range;
 }
 
-} // namespace
-
-namespace {
 enum TopologyRetirement : uint8_t { RetireNone,
                                     RetireVertices = 1u,
                                     RetireFaces = 2u,
@@ -479,6 +480,15 @@ std::vector<uint32_t> InsertedBlocks(ElementHandleRange handles, const mtl::Buff
 }
 } // namespace
 
+// The jobs of a construction's edits of one operator, identity policy and pass list, whose passes record together.
+struct MeshTopologyEdit::Group {
+    Batch Jobs;
+    MeshTopologyPushConstants Constants{};
+    bool Iterates{};
+    // The upload of the batch's last count passes, whose job table the identity passes read.
+    Batch::Upload Counted{};
+};
+
 // Every workspace of a prepared edit is a range of its chain's scratch.
 struct MeshTopologyEdit::Prepared {
     MeshStore::TopologyCounts Bounds;
@@ -488,16 +498,20 @@ struct MeshTopologyEdit::Prepared {
     // The batch's source clones, which an in-place edit's recorded passes read until it completes.
     std::shared_ptr<const TopologyReadView> SourceView;
     std::vector<std::pair<uint32_t, NamedAttributeRef>> SourceAttributes;
-    Batch Jobs;
-    MeshTopologyPushConstants Constants{};
+    MeshStore::TopologyCounts SourceCounts;
+    // The edit's job, which joins its group's batch at index Job.
+    MeshTopologyJob Staged;
+    std::shared_ptr<Group> Jobs;
+    uint32_t Job{};
     MeshStore::TopologyCounts Counts{};
     ElementHandleRange NewVertices{}, NewFaces{}, NewEdges{};
     uint32_t ProvenancePairs{}; // The provenance pairs the output blends, allocated at emission
-    std::optional<ConnectivityBatch> Connectivity;
+    // The connectivity batch of the publication's edits, and the edit's job there.
+    std::shared_ptr<ConnectivityBatch> Connectivity;
+    uint32_t ConnectivityJob{};
     bool Iterates{};
 
-    Prepared(BufferArena<uint32_t> &scratch, MeshStore::TopologyCounts bounds, TopologyIdentityPolicy identity, std::vector<uint32_t> materials, std::shared_ptr<const TopologyReadView> source_view, uint32_t scratch_words)
-        : Bounds{bounds}, Identity{identity}, OutputMaterials{std::move(materials)}, SourceView{std::move(source_view)}, Jobs{scratch, scratch_words} {}
+    MeshTopologyJob &JobOf() { return Jobs->Jobs.Jobs[Job]; }
 };
 
 // The closures an edit records before construction's first submit.
@@ -530,6 +544,30 @@ bool HasTopologySource(const MeshStore &meshes, const MeshTopologyTask &task) {
 
 bool SelectsSpatialFaces(const MeshTopologyTask &task) {
     return task.Op == MeshTopologyOp::Subdivide && (task.Flags & (TopologyFlagPlaneCuts | TopologyFlagScreenCuts));
+}
+
+// The tasks with each level set's output counts, which one pass over every lattice measures, or none without a level set.
+std::vector<MeshTopologyTask> MeasureLevelSets(state::Registry &r, std::span<const MeshTopologyTask> tasks) {
+    if (std::ranges::none_of(tasks, [](const MeshTopologyTask &task) { return task.Op == MeshTopologyOp::LevelSet; })) return {};
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    std::vector<LevelSetCountJob> jobs;
+    std::vector<uint32_t> tiles;
+    for (const auto &task : tasks) {
+        if (task.Op != MeshTopologyOp::LevelSet) continue;
+        const auto points = Mesh{meshes, task.SourceId}.VertexCount();
+        jobs.push_back({.Values = task.Param0Attribute, .Size = task.LatticeSize, .Level = task.Param1, .Points = points, .Counts = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(2u).Offset}});
+        tiles.push_back(TileCount(points, JobTileThreads));
+    }
+    mtl::GatherPass(chain, GetMeshPipelines(r)[MeshPass::LevelSetCount], std::span{jobs}, tiles, JobTileThreads);
+    chain.Submit();
+    std::vector<MeshTopologyTask> measured{tasks.begin(), tasks.end()};
+    for (uint32_t k = 0u; auto &task : measured) {
+        if (task.Op != MeshTopologyOp::LevelSet) continue;
+        const auto counts = chain.Scratch.Get({jobs[k++].Counts.Offset, 2u});
+        task.Outputs = uvec3{counts[0], 3u * counts[1], counts[1]};
+    }
+    return measured;
 }
 } // namespace
 
@@ -648,13 +686,7 @@ std::optional<MeshTopologyEdit::Closures> MeshTopologyEdit::RecordClosures(state
             return std::nullopt;
         }
         expand_vertices(std::move(seed), task.Op != MeshTopologyOp::AddPrimitives || face_list->FaceCount);
-        if (task.Op == MeshTopologyOp::AddPrimitives && !face_list->EdgeCorners.empty()) {
-            std::vector<uint32_t> wires;
-            for (const auto &corner : Corners(meshes, GetMeshPipelines(r), StoreId, face_list->EdgeCorners)) {
-                if (corner.Face == InvalidOffset) wires.push_back(corner.Edge);
-            }
-            edges = ListSeed(r, chain, StoreId, Element::Edge, wires);
-        }
+        if (task.Op == MeshTopologyOp::AddPrimitives && !face_list->EdgeCorners.empty()) edges = ListSeed(r, chain, StoreId, Element::Edge, face_list->Wires);
     } else if (task.Op == MeshTopologyOp::ReplaceFaces) {
         TopologyOutputBounds(task, {});
         const auto offset = 2u + task.List[0], count = task.List[offset - 1u];
@@ -669,20 +701,22 @@ std::optional<MeshTopologyEdit::Closures> MeshTopologyEdit::RecordClosures(state
         if (task.List.front() != task.List.size() - 1u) throw std::invalid_argument("Flip Normals has an invalid face list.");
         faces = ListSeed(r, chain, StoreId, Element::Face, std::span{task.List}.subspan(1u));
     } else if (task.Op == MeshTopologyOp::Boolean) {
-        // The second mesh's faces fill the source's last local face blocks.
+        // The second mesh's faces follow the first's, from the handle past the first's last face.
         const auto &a = meshes.Arenas();
         const auto &other = meshes.Get(task.SecondSourceId);
         const auto entries = a.FaceTriangles.Entries(original.FaceData);
-        const auto split = uint32_t(entries.size() - a.FaceTriangles.Entries(other.FaceData).size());
+        const auto split = a.FaceTriangles.LiveBound(original.FaceData) - a.FaceTriangles.LiveBound(other.FaceData);
         const std::array counts{a.FaceTriangles.Count(original.FaceData) - a.FaceTriangles.Count(other.FaceData), a.FaceTriangles.Count(other.FaceData)};
         const std::array corners{a.FaceCorners.Count(original.FaceCorners) - a.FaceCorners.Count(other.FaceCorners), a.FaceCorners.Count(other.FaceCorners)};
         std::array<ElementWorkSeedJob, 2> jobs;
         for (uint32_t side = 0u; side < 2u; ++side) {
             std::vector<uint32_t> blocks;
-            for (auto local = side ? split : 0u; local < (side ? uint32_t(entries.size()) : split); ++local) {
-                if (entries[local] != InvalidOffset) blocks.push_back(entries[local]);
+            for (uint32_t local = 0u; local < entries.size(); ++local) {
+                if (entries[local] != InvalidOffset && (side ? (local + 1u) * MeshElementBlockSize > split : local * MeshElementBlockSize < split)) blocks.push_back(entries[local]);
             }
             jobs[side] = PrepareBlockMembershipWork(chain.Scratch, a.FaceTriangles, original.FaceData, blocks, AllocateElementWork(chain.Scratch, a.FaceTriangles.HandleBound(original.FaceData), uint32_t(blocks.size())));
+            jobs[side].First = side ? split : 0u;
+            jobs[side].End = side ? InvalidOffset : split;
             (side ? second_faces : faces) = {.Work = jobs[side].Work, .Count = counts[side], .Incidence = corners[side], .LoopFans = corners[side]};
         }
         EncodeElementMembershipWork(r, chain, jobs);
@@ -778,8 +812,7 @@ void MeshTopologyEdit::PrepareCounts(state::Registry &r, const MeshTopologyTask 
         output_materials.assign(materials.begin(), materials.end());
         initial_job.Boolean = boolean->Job;
     }
-    const auto scratch_words = LayoutTopologyScratch(initial_job, source_counts, bounds, Batch::ArgumentWords);
-    Plan = std::make_unique<Prepared>(chain.Scratch, bounds, identity, std::move(output_materials), fresh ? nullptr : view, scratch_words);
+    Plan = std::make_unique<Prepared>(Prepared{.Bounds = bounds, .Identity = identity, .OutputMaterials = std::move(output_materials), .SourceView = fresh ? nullptr : view, .SourceCounts = source_counts});
     auto &plan = *Plan;
     plan.Core = core;
     if (!fresh) {
@@ -788,14 +821,7 @@ void MeshTopologyEdit::PrepareCounts(state::Registry &r, const MeshTopologyTask 
         SortUnique(OldCornerBlocks);
         ChangedTriangles = EncodeFaceTriangles(r, chain, StoreId, neighborhood.Seed(Element::Face));
     }
-    auto &batch = plan.Jobs;
-    {
-        const profile::CpuScope stage{"TopologyJobSetup"};
-        batch.Begin();
-        batch.AllocateScratch(scratch_words);
-        AddJob(batch, initial_job, task);
-    }
-    auto &job = batch.Jobs[0];
+    auto &job = plan.Staged = initial_job;
     job.PrimitiveWork = primitive_work;
     job.VertexSelection = selection[0];
     job.EdgeSelection = selection[1];
@@ -808,20 +834,16 @@ void MeshTopologyEdit::PrepareCounts(state::Registry &r, const MeshTopologyTask 
     }
     const auto &source_view = plan.SourceView;
     job.SrcConnectivity = fresh ? meshes.GetConnectivityRef(SourceId) : source_view->SourceConnectivity(meshes, SourceId);
+    job.SrcLayers = fresh ? meshes.Layers(SourceId) : source_view->SourceLayers(meshes, SourceId);
     plan.SourceAttributes = SourceAttributeRefs(meshes, SourceId, fresh ? nullptr : source_view.get());
-    auto &pc = plan.Constants;
-    pc = TopologyPushConstants(meshes);
-    if (list_range.Count) pc.ListSlot = chain.Scratch.Buffer.Slot;
-    if (!fresh) pc.Source = source_view->Arenas;
-    pc.Source.Layers = fresh ? meshes.Layers(SourceId) : source_view->SourceLayers(meshes, SourceId);
     plan.Iterates = TopologyIterates(task.Op) && !(TopologyIsDissolve(task.Op) && task.Op != MeshTopologyOp::DissolveLimited && !source_counts.Faces);
 }
 
 void MeshTopologyEdit::ReadCounts() {
     auto &plan = *Plan;
-    auto &job = plan.Jobs.Jobs[0];
+    auto &job = plan.JobOf();
     const bool fresh = plan.Identity == TopologyIdentityPolicy::Fresh;
-    const auto output = ReadOutputCounts(plan.Jobs, job, plan.Bounds);
+    const auto output = ReadOutputCounts(plan.Jobs->Jobs, job, plan.Bounds);
     const auto counts = output.Counts;
     plan.Counts = counts;
     plan.ProvenancePairs = output.ProvenancePairs;
@@ -845,13 +867,20 @@ void MeshTopologyEdit::ReadCounts() {
 std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Registry &r, mtl::ComputeChain &chain, std::span<const MeshTopologyTask> requested) {
     const profile::CpuScope scope{"TopologyEditConstruct"};
     std::vector<MeshTopologyTask> tasks(requested.begin(), requested.end());
-    for (auto &task : tasks) {
-        if (task.Op != MeshTopologyOp::Boolean) continue;
+    // A Boolean task edits its first source joined with its second.
+    if (std::ranges::any_of(tasks, [](const auto &task) { return task.Op == MeshTopologyOp::Boolean; })) {
         auto &meshes = r.Resources.get<MeshStore>();
-        const auto copied = CloneRecords(r, std::array{task.SourceId, task.SecondSourceId});
-        meshes.Join(r, copied[0], copied[1]);
-        meshes.Release(copied[1]);
-        task.SourceId = copied[0];
+        std::vector<std::vector<ConcatPart>> sources;
+        for (const auto &task : tasks) {
+            if (task.Op == MeshTopologyOp::Boolean) sources.push_back({{task.SourceId}, {task.SecondSourceId}});
+        }
+        mtl::ComputeChain joining{meshes.BufferContext()};
+        const auto joined = meshes.Concatenate(r, joining, sources);
+        joining.Submit();
+        auto next = joined.begin();
+        for (auto &task : tasks) {
+            if (task.Op == MeshTopologyOp::Boolean) task.SourceId = *next++;
+        }
     }
     std::vector<MeshTopologyEdit> edits;
     std::vector<std::optional<Closures>> closures;
@@ -861,28 +890,40 @@ std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Registry &r, mt
     {
         const profile::CpuScope stage{"TopologySourceState"};
         const auto &meshes = r.Resources.get<MeshStore>();
+        std::vector<RecordElements> edge_corners;
         for (uint32_t i = 0u; i < tasks.size(); ++i) {
             const auto &task = tasks[i];
             if (!HasTopologySource(meshes, task)) continue;
             if (task.Op == MeshTopologyOp::AddPrimitives) {
                 face_lists[i] = ParsePrimitiveListReferences(task);
+                if (!face_lists[i]->EdgeCorners.empty()) edge_corners.push_back({task.SourceId, face_lists[i]->EdgeCorners});
             } else if (SelectsSpatialFaces(task)) {
-                spatial[i].emplace(r, chain, task);
+                chain.Lane([&] { spatial[i].emplace(r, chain, task); });
             }
         }
         chain.Submit();
+        // The corners of every task's face list read in one submit.
+        const auto corners = edge_corners.empty() ? std::vector<std::vector<CornerFacts>>{} : Corners(meshes, GetMeshPipelines(r), edge_corners);
+        for (uint32_t i = 0u, k = 0u; i < tasks.size(); ++i) {
+            if (!face_lists[i] || face_lists[i]->EdgeCorners.empty()) continue;
+            for (const auto &corner : corners[k++]) {
+                if (corner.Face == InvalidOffset) face_lists[i]->Wires.push_back(corner.Edge);
+            }
+        }
     }
     if (std::ranges::any_of(spatial, [](const auto &work) { return work.has_value(); })) {
         for (auto &work : spatial) {
-            if (work) work->RecordFaces(r, chain);
+            if (work) chain.Lane([&] { work->RecordFaces(r, chain); });
         }
         chain.Submit();
     }
     for (uint32_t i = 0u; i < tasks.size(); ++i) {
         auto &edit = edits.emplace_back(MeshTopologyEdit{chain, tasks[i]});
         edit.OwnsSource = tasks[i].Op == MeshTopologyOp::Boolean;
-        closures.push_back(edit.RecordClosures(r, tasks[i], std::move(face_lists[i]), spatial[i] ? &*spatial[i] : nullptr));
     }
+    // Each edit's closures record in its own lane, so the closure passes of every edit record together.
+    closures.resize(tasks.size());
+    for (uint32_t i = 0u; i < tasks.size(); ++i) chain.Lane([&] { closures[i] = edits[i].RecordClosures(r, tasks[i], std::move(face_lists[i]), spatial[i] ? &*spatial[i] : nullptr); });
     chain.Submit();
     const auto view = std::make_shared<TopologyReadView>();
     for (uint32_t i = 0u; i < edits.size(); ++i) {
@@ -890,32 +931,76 @@ std::vector<MeshTopologyEdit> MeshTopologyEdit::Construct(state::Registry &r, mt
         if (closures[i] && !TopologyCreatesRecord(tasks[i].Op)) view->Add(r, edits[i].StoreId, closures[i]->Neighborhood, chain.Scratch);
     }
     view->Clone(r);
+    std::vector<uint32_t> booleans;
+    std::vector<BooleanSources> boolean_sources;
     for (uint32_t i = 0u; i < edits.size(); ++i) {
-        if (closures[i] && tasks[i].Op == MeshTopologyOp::Boolean) closures[i]->Boolean.emplace(r, chain, tasks[i], closures[i]->Core, *closures[i]->Second);
+        if (!closures[i] || tasks[i].Op != MeshTopologyOp::Boolean) continue;
+        booleans.push_back(i);
+        boolean_sources.push_back({tasks[i], closures[i]->Core, *closures[i]->Second});
+    }
+    if (!booleans.empty()) {
+        for (uint32_t k = 0u; const auto &work : RecordBooleanWork(r, chain, boolean_sources)) closures[booleans[k++]]->Boolean = work;
     }
     std::vector<MeshTopologyEdit *> counted;
     for (uint32_t i = 0u; i < edits.size(); ++i) {
-        if (closures[i]) {
-            edits[i].PrepareCounts(r, tasks[i], *closures[i], view);
-            counted.push_back(&edits[i]);
+        if (closures[i]) counted.push_back(&edits[i]);
+    }
+    for (auto *edit : counted) chain.Lane([&] { edit->PrepareCounts(r, tasks[edit - edits.data()], *closures[edit - edits.data()], view); });
+    // Edits of one operator, identity policy and pass list share a batch, each job laid out in its own range of the batch's scratch.
+    std::vector<std::shared_ptr<Group>> groups;
+    {
+        const profile::CpuScope stage{"TopologyJobSetup"};
+        const auto &meshes = r.Resources.get<MeshStore>();
+        using Key = std::tuple<bool, bool, MeshTopologyOp, const TiledPass *>;
+        const auto key_of = [](const Prepared &plan) { return Key{plan.Identity == TopologyIdentityPolicy::Fresh, plan.Iterates, plan.Staged.Op, TopologyEmissionPasses(plan.Staged).data()}; };
+        std::vector<std::pair<Key, std::vector<MeshTopologyEdit *>>> members;
+        for (auto *edit : counted) {
+            const auto key = key_of(*edit->Plan);
+            auto found = std::ranges::find(members, key, &std::pair<Key, std::vector<MeshTopologyEdit *>>::first);
+            if (found == members.end()) found = members.insert(members.end(), {key, {}});
+            found->second.push_back(edit);
+        }
+        for (const auto &[key, group_edits] : members) {
+            uint64_t words = 0u;
+            for (auto *edit : group_edits) {
+                auto &plan = *edit->Plan;
+                words += LayoutTopologyScratch(plan.Staged, plan.SourceCounts, plan.Bounds, 0u);
+            }
+            if (words + Batch::ArgumentWords > UINT32_MAX) throw std::length_error("GPU topology scratch exceeds its address space.");
+            auto &group = *groups.emplace_back(std::make_shared<Group>(Group{.Jobs = Batch{chain.Scratch, uint32_t(words)}, .Iterates = std::get<1>(key)}));
+            group.Jobs.Begin();
+            auto &pc = group.Constants = TopologyPushConstants(meshes);
+            pc.ListSlot = chain.Scratch.Buffer.Slot;
+            if (!std::get<0>(key)) pc.Source = view->Arenas;
+            for (auto *edit : group_edits) {
+                auto &plan = *edit->Plan;
+                const auto job_words = LayoutTopologyScratch(plan.Staged, plan.SourceCounts, plan.Bounds, 0u);
+                LayoutTopologyScratch(plan.Staged, plan.SourceCounts, plan.Bounds, group.Jobs.AllocateScratch(job_words));
+                plan.Jobs = groups.back();
+                plan.Job = uint32_t(group.Jobs.Jobs.size());
+                AddJob(group.Jobs, plan.Staged, tasks[edit - edits.data()]);
+            }
         }
     }
-    // The edits whose label rounds have not converged record again from their prepare passes with twice the rounds.
-    auto pending = counted;
+    // The groups whose label rounds have not converged record again from their prepare passes with twice the rounds.
+    auto pending = groups;
     for (uint32_t rounds = LabelRounds; !pending.empty(); rounds *= 2u) {
         // Indirect label passes bind the scratch storage directly, so every upload of this submit is reserved before any records.
         uint64_t upload_words = 0u;
-        for (const auto *edit : pending) upload_words += edit->Plan->Jobs.UploadWords();
+        for (const auto &group : pending) upload_words += group->Jobs.UploadWords();
         chain.Scratch.ReserveAdditional(upload_words);
-        for (auto *edit : pending) EncodeTopologyCounts(r, chain, edit->Plan->Jobs, edit->Plan->Constants, edit->Plan->Iterates ? rounds : 0u);
-        std::erase_if(pending, [](const MeshTopologyEdit *edit) { return !edit->Plan->Iterates; });
+        for (auto &group : pending) group->Counted = EncodeTopologyCounts(r, chain, group->Jobs, group->Constants, group->Iterates ? rounds : 0u);
+        std::erase_if(pending, [](const auto &group) { return !group->Iterates; });
         if (pending.empty()) break;
         chain.Submit();
-        std::erase_if(pending, [](const MeshTopologyEdit *edit) { return edit->Plan->Jobs.IndirectGroups(SrcHalfedges) == 0u; });
+        std::erase_if(pending, [](const auto &group) { return group->Jobs.IndirectGroups(SrcHalfedges) == 0u; });
     }
     for (auto *edit : counted) {
-        auto &plan = *edit->Plan;
-        edit->Output = std::make_unique<TopologyOutputHandles>(r, chain, edit->SourceId, plan.Jobs.Jobs[0], plan.Bounds, plan.Jobs.ScratchBinding(), plan.Constants.Source, plan.Identity);
+        chain.Lane([&] {
+            auto &plan = *edit->Plan;
+            const auto record = plan.Jobs->Counted.JobsOffset + plan.Job * uint32_t(sizeof(MeshTopologyJob) / sizeof(uint32_t));
+            edit->Output = std::make_unique<TopologyOutputHandles>(r, chain, edit->SourceId, plan.JobOf(), record, plan.Bounds, plan.Jobs->Jobs.ScratchBinding(), plan.Jobs->Constants.Source, plan.Identity);
+        });
     }
     // Identity planning reads the scanned counts on the GPU, so the host reads both after one submit.
     chain.Submit();
@@ -936,13 +1021,12 @@ std::vector<ExtrusionSource> MeshTopologyEdit::ExtrusionSources(state::Registry 
     const bool faces = Op == MeshTopologyOp::ExtrudeFacesIndividual;
     if (!faces && Op != MeshTopologyOp::ExtrudeRegion && Op != MeshTopologyOp::ExtrudeEdges && Op != MeshTopologyOp::ExtrudeVertices) return sources;
     const auto &meshes = r.Resources.get<const MeshStore>();
-    const auto &pipelines = GetMeshPipelines(r);
-    const auto &job = Plan->Jobs.Jobs[0];
-    const auto counts = Chain.Scratch.Get({Plan->Jobs.ScratchBinding().Offset + job.CountsOffset, job.CountEntries});
+    const auto &job = Plan->JobOf();
+    const auto counts = Chain.Scratch.Get({Plan->Jobs->Jobs.ScratchBinding().Offset + job.CountsOffset, job.CountEntries});
     const auto output = Chain.Scratch.Get(Output->Vertices);
     std::vector<uint32_t> elements;
     ForEachWorkElement(Chain.Scratch, faces ? job.SrcFaceWork : job.SrcVertexWork, [&](uint32_t element) { elements.push_back(element); });
-    const auto normals = faces ? FaceNormals(meshes, pipelines, SourceId, elements) : VertexNormals(meshes, pipelines, SourceId, elements);
+    const auto normals = faces ? FaceNormals(meshes, SourceId, elements) : VertexNormals(meshes, SourceId, elements);
     // Face entries follow the vertex and halfedge entries.
     const uint32_t first = faces ? job.SrcVertexCount + job.SrcHalfedgeCount : 0u;
     for (uint32_t i = 0u; i < elements.size(); ++i) {
@@ -979,7 +1063,7 @@ void MeshTopologyEdit::PublishAll(state::Registry &r, std::span<MeshTopologyEdit
             record.FacePrimitivesReady = counts.Faces != 0u;
             record.VertexPrimitivesReady = counts.Faces == 0u;
         }
-        auto &job = plan.Jobs.Jobs[0];
+        auto &job = plan.JobOf();
         edit->SourceTriangles = chain.Scratch.Allocate(edit->AddedTriangleCount);
         job.DstTriangleSources = {chain.Scratch.Buffer.Slot, edit->SourceTriangles.Offset};
         if (plan.ProvenancePairs) job.Provenance = {chain.Scratch.Buffer.Slot, chain.Scratch.Allocate(2u * plan.ProvenancePairs).Offset};
@@ -989,92 +1073,124 @@ void MeshTopologyEdit::PublishAll(state::Registry &r, std::span<MeshTopologyEdit
         job.DstTriangleOffset = edit->FirstTriangle = meshes.InsertElements(edit->StoreId, D::Triangle, edit->AddedTriangleCount, nullptr).First;
         // Every new edge contains an emitted halfedge, and a line contains two.
         plan.NewEdges = meshes.InsertElements(edit->StoreId, D::Edge, counts.Faces ? counts.Halfedges : counts.Halfedges / 2u, &chain.Scratch);
-        edit->Output->Assign(r, chain, {plan.NewVertices, plan.NewFaces});
+        chain.Lane([&] { edit->Output->Assign(r, chain, {plan.NewVertices, plan.NewFaces}); });
     }
     // New edges and fan items take bounds the host knows, then trim to the counts that submit reports.
-    std::vector<Batch::Upload> emissions;
-    std::vector<MeshConnectivityJob> fan_jobs;
-    std::vector<uint32_t> fan_vertex_blocks;
-    for (auto *edit : edits) {
+    std::vector<Group *> groups;
+    // The blocks each edit's emission writes, of vertices, faces and corners.
+    std::vector<std::array<std::vector<uint32_t>, 3>> written(edits.size());
+    for (uint32_t i = 0u; auto *edit : edits) {
         const profile::CpuScope stage{"TopologyEmit"};
+        auto &[vertex_blocks, face_blocks, corner_blocks] = written[i++];
         auto &plan = *edit->Plan;
+        if (!std::ranges::contains(groups, plan.Jobs.get())) groups.push_back(plan.Jobs.get());
         const bool fresh = plan.Identity == TopologyIdentityPolicy::Fresh;
-        auto &batch = plan.Jobs;
-        auto &job = batch.Jobs[0];
+        auto &job = plan.JobOf();
         const auto counts = plan.Counts;
         const auto &record = meshes.Get(edit->StoreId);
-        const auto vertex_table = a.Vertices.Entries(record.Vertices), corner_table = a.FaceCorners.Entries(record.FaceCorners);
-        const auto face_table = a.FaceTriangles.Entries(record.FaceData), edge_table = a.EdgeHalfedges.Entries(record.EdgeData);
+        const auto vertex_table = a.Vertices.Entries(record.Vertices), corner_table = a.FaceCorners.Entries(record.FaceCorners), face_table = a.FaceTriangles.Entries(record.FaceData);
         const auto inserted_vertices = InsertedBlocks(plan.NewVertices, chain.Scratch.Buffer, vertex_table), inserted_faces = InsertedBlocks(plan.NewFaces, chain.Scratch.Buffer, face_table);
-        const auto vertex_blocks = fresh ? inserted_vertices : Union(WorkBlocks(chain.Scratch, plan.Core.Elements[0], 0u, vertex_table), inserted_vertices);
-        const auto face_blocks = fresh ? inserted_faces : Union(WorkBlocks(chain.Scratch, plan.Core.Elements[2], 0u, face_table), inserted_faces);
+        vertex_blocks = fresh ? inserted_vertices : Union(WorkBlocks(chain.Scratch, plan.Core.Elements[0], 0u, vertex_table), inserted_vertices);
+        face_blocks = fresh ? inserted_faces : Union(WorkBlocks(chain.Scratch, plan.Core.Elements[2], 0u, face_table), inserted_faces);
         job.HasVertexPrimitives |= uint32_t(meshes.Get(edit->StoreId).VertexPrimitivesReady) << 1u;
         job.DstVertexHandles = {chain.Scratch.Buffer.Slot, edit->Output->Vertices.Offset};
         job.DstFaceHandles = {chain.Scratch.Buffer.Slot, edit->Output->Faces.Offset};
         job.DstConnectivity = meshes.GetConnectivityRef(edit->StoreId);
-        plan.Constants.Destination.Layers = meshes.Layers(edit->StoreId);
+        job.DstLayers = meshes.Layers(edit->StoreId);
         if (const auto &output = edit->SelectionOutput) {
             job.DstVertexBits = MaskBinding(output->Vertices);
             job.DstEdgeBits = MaskBinding(output->Edges);
             job.DstFaceBits = MaskBinding(output->Faces);
         }
-        batch.SetDomainTiles(DstVertices, std::array{TileCount(counts.Vertices, TileElements)});
-        batch.SetDomainTiles(DstHalfedges, std::array{TileCount(counts.Halfedges, TileElements)});
-        batch.SetDomainTiles(DstFaces, std::array{TileCount(counts.Faces, TileElements)});
         UploadTopologyAttributes(meshes, edit->SourceId, edit->StoreId, plan.SourceAttributes, chain.Scratch, job);
         CaptureTopologyEmitWrites(r, edit->StoreId, job, edit->AddedTriangleCount, vertex_blocks, face_blocks, edit->SelectionOutput);
         meshes.CaptureAttributeWrites(edit->StoreId, AttributeDomain::Vertex, vertex_blocks);
         meshes.CaptureAttributeWrites(edit->StoreId, AttributeDomain::Face, face_blocks);
-        const auto run_blocks = RunBlocks(corner_table, job.DstCornerOffset, counts.Halfedges);
-        meshes.CaptureAttributeWrites(edit->StoreId, AttributeDomain::Corner, run_blocks);
-        emissions.push_back(batch.Encode(chain, pipelines, plan.Constants, TopologyEmissionPasses(job)));
+        corner_blocks = RunBlocks(corner_table, job.DstCornerOffset, counts.Halfedges);
+        meshes.CaptureAttributeWrites(edit->StoreId, AttributeDomain::Corner, corner_blocks);
+    }
+    // Each group's jobs emit together, sized by their exact counts.
+    const auto tiles = [&](Group &group, uint32_t domain, auto &&count) {
+        group.Jobs.SetDomainTiles(domain, group.Jobs.Jobs | std::views::transform([&](const MeshTopologyJob &job) { return TileCount(std::invoke(count, job), TileElements); }) | std::ranges::to<std::vector>());
+    };
+    std::vector<Batch::Upload> emissions;
+    for (auto *group : groups) {
+        tiles(*group, DstVertices, &MeshTopologyJob::DstVertexCount);
+        tiles(*group, DstHalfedges, &MeshTopologyJob::DstHalfedgeCount);
+        tiles(*group, DstFaces, &MeshTopologyJob::DstFaceCount);
+        emissions.push_back(group->Jobs.Encode(chain, pipelines, group->Constants, TopologyEmissionPasses(group->Jobs.Jobs.front())));
+    }
+    std::vector<MeshConnectivityJob> connectivity_jobs(edits.size());
+    uint64_t connectivity_words = 0u;
+    for (uint32_t i = 0u; i < edits.size(); ++i) {
+        chain.Lane([&] {
+            auto *edit = edits[i];
+            auto &plan = *edit->Plan;
+            const bool fresh = plan.Identity == TopologyIdentityPolicy::Fresh;
+            const auto &job = plan.JobOf();
+            const auto counts = plan.Counts;
+            const auto &before = plan.Neighborhood;
+            const std::array emitted{ElementHandleRange{.Handles = job.DstVertexHandles, .Count = counts.Vertices}, ElementHandleRange{.First = job.DstCornerOffset, .Count = counts.Halfedges}, ElementHandleRange{.Handles = job.DstFaceHandles, .Count = counts.Faces}};
+            edit->Repair = std::make_unique<ConnectivityEditWork>(r, chain, edit->StoreId, before, std::array{plan.Core.Elements[1], plan.Core.Elements[2]}, emitted);
+            // Emission replaces the core's loops inside the neighborhood, so the repaired counts are known before the pass runs.
+            const std::array<uint32_t, 3> repaired = fresh ? std::array{counts.Vertices, counts.Halfedges, counts.Faces} : std::array{before.Counts[0] + edit->Output->NewCounts[0], before.Counts[1] - plan.Core.Counts[1] + counts.Halfedges, before.Counts[2] - plan.Core.Counts[2] + counts.Faces};
+            const auto &record = meshes.Get(edit->StoreId);
+            edit->RetiredEdges = AllocateElementWork(chain.Scratch, a.EdgeHalfedges.HandleBound(record.EdgeData), before.Counts[3]);
+            auto &connectivity = connectivity_jobs[i] = MeshConnectivityJob{
+                .Connectivity = job.DstConnectivity,
+                .Vertices = edit->Repair->Elements[0],
+                .Halfedges = edit->Repair->Elements[1],
+                .Faces = edit->Repair->Elements[2],
+                .EdgeHandles = plan.NewEdges,
+                .SourceConnectivity = job.SrcConnectivity,
+                .SourceEdges = before.Elements[3],
+                .ConvertedEdges = job.Op == MeshTopologyOp::AddPrimitives || TopologyMapsWireEdges(job.Op) ? plan.Core.Elements[3] : ElementWork{},
+                .ConvertedWirePairs = TopologyMapsWireEdges(job.Op) ? SlotOffset{chain.Scratch.Buffer.Slot, plan.Jobs->Jobs.ScratchBinding().Offset + job.WireEdgeMapOffset} : SlotOffset{},
+                .SourceEdgeCount = before.Counts[3],
+                .VertexCount = repaired[0],
+                .HalfedgeCount = repaired[1],
+                .FaceCount = repaired[2],
+                .FaceStarts = 1u,
+                .RetiredEdgeWork = edit->RetiredEdges,
+            };
+            connectivity_words += LayoutConnectivityScratch(connectivity);
+        });
+    }
+    if (connectivity_words > UINT32_MAX) throw std::length_error("GPU connectivity scratch exceeds its address space.");
+    // The edits' connectivity repairs run as one batch.
+    const auto rebuilt = std::make_shared<ConnectivityBatch>(chain.Scratch, uint32_t(connectivity_words));
+    rebuilt->Begin();
+    std::vector<uint32_t> fan_vertex_blocks;
+    for (uint32_t i = 0u; auto *edit : edits) {
+        auto &plan = *edit->Plan;
         const auto &before = plan.Neighborhood;
-        const std::array emitted{ElementHandleRange{.Handles = job.DstVertexHandles, .Count = counts.Vertices}, ElementHandleRange{.First = job.DstCornerOffset, .Count = counts.Halfedges}, ElementHandleRange{.Handles = job.DstFaceHandles, .Count = counts.Faces}};
-        edit->Repair = std::make_unique<ConnectivityEditWork>(r, chain, edit->StoreId, before, std::array{plan.Core.Elements[1], plan.Core.Elements[2]}, emitted);
-        // Emission replaces the core's loops inside the neighborhood, so the repaired counts are known before the pass runs.
-        const std::array<uint32_t, 3> repaired = fresh ? std::array{counts.Vertices, counts.Halfedges, counts.Faces} : std::array{before.Counts[0] + edit->Output->NewCounts[0], before.Counts[1] - plan.Core.Counts[1] + counts.Halfedges, before.Counts[2] - plan.Core.Counts[2] + counts.Faces};
-        edit->RetiredEdges = AllocateElementWork(chain.Scratch, a.EdgeHalfedges.HandleBound(record.EdgeData), before.Counts[3]);
-        MeshConnectivityJob connectivity{
-            .Connectivity = job.DstConnectivity,
-            .Vertices = edit->Repair->Elements[0],
-            .Halfedges = edit->Repair->Elements[1],
-            .Faces = edit->Repair->Elements[2],
-            .EdgeHandles = plan.NewEdges,
-            .SourceConnectivity = job.SrcConnectivity,
-            .SourceEdges = before.Elements[3],
-            .ConvertedEdges = job.Op == MeshTopologyOp::AddPrimitives || TopologyMapsWireEdges(job.Op) ? plan.Core.Elements[3] : ElementWork{},
-            .ConvertedWirePairs = TopologyMapsWireEdges(job.Op) ? SlotOffset{chain.Scratch.Buffer.Slot, plan.Jobs.ScratchBinding().Offset + job.WireEdgeMapOffset} : SlotOffset{},
-            .SourceEdgeCount = before.Counts[3],
-            .VertexCount = repaired[0],
-            .HalfedgeCount = repaired[1],
-            .FaceCount = repaired[2],
-            .FaceStarts = 1u,
-            .RetiredEdgeWork = edit->RetiredEdges,
-        };
-        auto &rebuilt = plan.Connectivity.emplace(chain.Scratch, LayoutConnectivityScratch(connectivity));
-        rebuilt.Begin();
-        AddConnectivityJob(rebuilt, connectivity);
+        const auto &[vertex_blocks, face_blocks, corner_blocks] = written[i];
+        const auto &record = meshes.Get(edit->StoreId);
+        const auto corner_table = a.FaceCorners.Entries(record.FaceCorners), face_table = a.FaceTriangles.Entries(record.FaceData), edge_table = a.EdgeHalfedges.Entries(record.EdgeData);
+        plan.Connectivity = rebuilt;
+        plan.ConnectivityJob = uint32_t(rebuilt->Jobs.size());
+        AddConnectivityJob(*rebuilt, connectivity_jobs[i++]);
         auto edge_blocks = Union(WorkBlocks(chain.Scratch, before.Elements[3], 0u, edge_table), InsertedBlocks(plan.NewEdges, chain.Scratch.Buffer, edge_table));
         auto repaired_face_blocks = Union(WorkBlocks(chain.Scratch, before.Elements[2], 0u, face_table), face_blocks);
-        CaptureConnectivityPrepareWrites(r, rebuilt.Jobs[0], vertex_blocks, Union(WorkBlocks(chain.Scratch, before.Elements[1], 0u, corner_table), run_blocks), repaired_face_blocks);
+        CaptureConnectivityPrepareWrites(r, rebuilt->Jobs.back(), vertex_blocks, Union(WorkBlocks(chain.Scratch, before.Elements[1], 0u, corner_table), corner_blocks), repaired_face_blocks);
         CaptureTopologyEdgeWrites(r, edge_blocks, edit->SelectionOutput);
         meshes.CaptureAttributeWrites(edit->StoreId, AttributeDomain::Edge, edge_blocks);
-        rebuilt.Encode(chain, pipelines, TiledJobPushConstants{}, ConnectivityPasses);
-        fan_jobs.push_back(rebuilt.Jobs[0]);
         fan_vertex_blocks.insert(fan_vertex_blocks.end(), vertex_blocks.begin(), vertex_blocks.end());
         edit->RepairedBlocks = {std::move(edge_blocks), std::move(repaired_face_blocks)};
     }
+    rebuilt->Encode(chain, pipelines, TiledJobPushConstants{}, ConnectivityPasses);
     SortUnique(fan_vertex_blocks);
-    EncodeVertexFans(r, chain, fan_jobs, fan_vertex_blocks);
+    EncodeVertexFans(r, chain, rebuilt->Jobs, edits | std::views::transform([](const auto *edit) { return edit->StoreId; }) | std::ranges::to<std::vector>(), fan_vertex_blocks);
+    for (uint32_t i = 0u; auto *group : groups) group->Jobs.Record(chain, pipelines, emissions[i++], group->Constants, std::array{TiledPass{MeshPass::TopologyEdgeAttributes, DstHalfedges}});
+    std::vector<ElementWork> retired;
     std::vector<MeshStore::CornerClassRequest> requests;
     requests.reserve(edits.size());
-    for (uint32_t i = 0u; auto *edit : edits) {
-        auto &plan = *edit->Plan;
-        const auto &connected = plan.Connectivity->Jobs[0];
-        plan.Jobs.Record(chain, pipelines, emissions[i++], plan.Constants, std::array{TiledPass{MeshPass::TopologyEdgeAttributes, DstHalfedges}});
-        EncodeSortElementWork(r, chain, std::span{&edit->RetiredEdges, 1u});
+    for (auto *edit : edits) {
+        const auto &connected = rebuilt->Jobs[edit->Plan->ConnectivityJob];
+        retired.push_back(edit->RetiredEdges);
         requests.push_back({edit->StoreId, edit->Repair->Elements[0], connected.VertexCount, connected.HalfedgeCount});
     }
+    EncodeSortElementWork(r, chain, retired);
     auto classes = meshes.EncodeCornerClassification(r, chain, requests);
     {
         const profile::CpuScope stage{"TopologyEmitSubmit"};
@@ -1087,31 +1203,39 @@ void MeshTopologyEdit::PublishAll(state::Registry &r, std::span<MeshTopologyEdit
     for (auto *edit : edits) {
         const profile::CpuScope stage{"TopologyNormals"};
         auto &plan = *edit->Plan;
-        const auto &connected = plan.Connectivity->Jobs[0];
+        const auto &connected = rebuilt->Jobs[plan.ConnectivityJob];
         edit->Repair->Finish(chain);
         if (edit->Repair->Counts != std::array{connected.VertexCount, connected.HalfedgeCount, connected.FaceCount}) {
             throw std::logic_error("Connectivity repair disagrees with its emitted closure.");
         }
-        meshes.TrimInsertedElements(edit->StoreId, D::Edge, plan.NewEdges, chain.Scratch, plan.Connectivity->ScratchSpan()[connected.StateOffset]);
+        const auto state = rebuilt->ScratchSpan().subspan(connected.StateOffset, 4u);
+        meshes.TrimInsertedElements(edit->StoreId, D::Edge, plan.NewEdges, chain.Scratch, state[0]);
+        // An edge's corners are its unpaired ones plus the two its first halfedge pairs unless it is open, so the unpaired corners change with the halfedges, edges and open edges.
+        meshes.WriteRecord(edit->StoreId).UnpairedCorners += connected.HalfedgeCount - plan.Neighborhood.Counts[1] - 2u * (state[0] - state[1]) + 2u * (state[2] - state[3]);
         CheckElementWork(chain.Scratch, edit->RetiredEdges);
         normals.push_back({edit->StoreId, edit->Repair->Elements[0], edit->Repair->Counts[0], edit->Repair->Elements[2], edit->Repair->Counts[2]});
     }
     meshes.PlanCornerClassification(r, chain, classes);
-    EncodeDeriveMeshNormals(r, chain, normals);
+    EncodeDeriveMeshNormals(r, chain, chain.Scratch, normals);
     for (auto *edit : edits) {
         auto &plan = *edit->Plan;
-        auto &job = plan.Jobs.Jobs[0];
+        auto &job = plan.JobOf();
         if (job.CornerAttributes & MeshAttributeBit_Normal) {
-            plan.Constants.Destination.Layers = meshes.Layers(edit->StoreId);
+            job.DstLayers = meshes.Layers(edit->StoreId);
             if (plan.Identity == TopologyIdentityPolicy::Preserve) {
                 job.RetainedNormalCorners = plan.Neighborhood.Elements[1];
                 job.RetainedNormalCornerCount = plan.Neighborhood.Counts[1];
             }
-            plan.Jobs.SetDomainTiles(DstHalfedges, std::array{TileCount(std::max(job.DstHalfedgeCount, job.RetainedNormalCornerCount), TileElements)});
             CaptureTopologyNormalWrites(r, edit->StoreId, job, chain.Scratch);
-            plan.Jobs.Encode(chain, pipelines, plan.Constants, std::array{TiledPass{MeshPass::TopologyCustomNormals, DstHalfedges}});
         }
         edit->Published = true;
+    }
+    // The jobs with corner normals rebase their authored normals, one batch per group.
+    for (auto *group : groups) {
+        const auto normal = [](const MeshTopologyJob &job) { return (job.CornerAttributes & MeshAttributeBit_Normal) != 0u; };
+        if (std::ranges::none_of(group->Jobs.Jobs, normal)) continue;
+        tiles(*group, DstHalfedges, [&](const MeshTopologyJob &job) { return normal(job) ? std::max(job.DstHalfedgeCount, job.RetainedNormalCornerCount) : 0u; });
+        group->Jobs.Encode(chain, pipelines, group->Constants, std::array{TiledPass{MeshPass::TopologyCustomNormals, DstHalfedges}});
     }
 }
 
@@ -1119,6 +1243,7 @@ void MeshTopologyEdit::FinishAll(state::Registry &r, std::span<MeshTopologyEdit 
     const profile::CpuScope scope{"FinishTopologyEdits"};
     auto &meshes = r.Resources.get<MeshStore>();
     std::vector<MeshStore::SelectionUpdate> updates;
+    std::vector<uint32_t> sources;
     for (auto *edit : edits) {
         if (edit->Finished) throw std::logic_error("Topology edit was already finished.");
         edit->Finished = true;
@@ -1126,7 +1251,7 @@ void MeshTopologyEdit::FinishAll(state::Registry &r, std::span<MeshTopologyEdit 
             edit->Chain.Submit();
             edit->Plan.reset();
         }
-        if (std::exchange(edit->OwnsSource, false)) meshes.Release(edit->SourceId);
+        if (std::exchange(edit->OwnsSource, false)) sources.push_back(edit->SourceId);
         if (!edit->Output) continue;
         auto &update = updates.emplace_back(MeshStore::SelectionUpdate{.StoreId = edit->StoreId, .Source = edit->StoreSelectionSource});
         if (edit->StoreId != edit->SourceId) {
@@ -1147,10 +1272,14 @@ void MeshTopologyEdit::FinishAll(state::Registry &r, std::span<MeshTopologyEdit 
         update.Blocks[1].insert(update.Blocks[1].end(), edit->RepairedBlocks[0].begin(), edit->RepairedBlocks[0].end());
         update.Blocks[2].insert(update.Blocks[2].end(), edit->RepairedBlocks[1].begin(), edit->RepairedBlocks[1].end());
     }
+    meshes.Release(sources);
     if (!updates.empty()) meshes.UpdateSelection(r, edits.front()->Chain, updates);
 }
 
-std::vector<GeometryTopologyResult> ExecuteGeometryTopology(state::Registry &r, std::span<const MeshTopologyTask> tasks) {
+std::vector<GeometryTopologyResult> ExecuteGeometryTopology(state::Registry &r, std::span<const MeshTopologyTask> listed, const std::function<void(mtl::ComputeChain &, std::span<MeshTopologyEdit>, uint32_t first)> &finish, const std::function<void(std::span<const MeshTopologyEdit>, uint32_t first)> &constructed) {
+    // Level sets bound their outputs by their measured counts.
+    const auto measured = MeasureLevelSets(r, listed);
+    const auto tasks = measured.empty() ? listed : std::span<const MeshTopologyTask>{measured};
     // A fresh copy emits before its source's one mutation overwrites the source's canonical values.
     std::set<uint32_t> mutated;
     for (const auto &task : tasks) {
@@ -1160,17 +1289,40 @@ std::vector<GeometryTopologyResult> ExecuteGeometryTopology(state::Registry &r, 
         if (!TopologyCreatesRecord(task.Op)) mutated.insert(task.SourceId);
     }
     const auto &meshes = r.Resources.get<MeshStore>();
-    mtl::ComputeChain chain{meshes.BufferContext(), TopologyScratchWords};
-    auto edits = MeshTopologyEdit::Construct(r, chain, tasks);
-    MeshTopologyEdit::PublishAll(r, edits);
+    // An edit records at most 11 closure jobs, 5 identity jobs, a connectivity edit job, 4 element repair jobs and 2 meshlet bounds jobs.
+    // Each job takes its record and its first tile in a job table, and each table its count.
+    constexpr auto JobWords = [](size_t bytes) { return uint32_t(bytes / sizeof(uint32_t)) + 2u; };
+    constexpr uint32_t JobTableWords{11u * JobWords(sizeof(MeshClosureJob)) + 5u * JobWords(sizeof(TopologyIdentityJob)) + JobWords(sizeof(ConnectivityEditJob)) + 4u * JobWords(sizeof(ElementRepairJob)) + 2u * JobWords(sizeof(MeshletBoundsJob))};
+    // A task's scratch words, bounded before any GPU result: its fixed tables, its job tables, its job's layout at its output bounds with corner normals, its closures per source element, its publish per output element, and a Boolean's intersection work over the triangles of both sources with its job tables.
+    const auto words = tasks | std::views::transform([&](const MeshTopologyTask &task) {
+        const Mesh first{meshes, task.SourceId};
+        const bool boolean = task.Op == MeshTopologyOp::Boolean;
+        const uint64_t vertices = uint64_t(first.VertexCount()) + (boolean ? Mesh{meshes, task.SecondSourceId}.VertexCount() : 0u);
+        const uint64_t triangles = boolean ? uint64_t(meshes.Get(task.SourceId).TriangleCount) + meshes.Get(task.SecondSourceId).TriangleCount : 0u;
+        const auto clamped = [](uint64_t count) { return uint32_t(std::min<uint64_t>(count, UINT32_MAX)); };
+        const MeshStore::TopologyCounts source = boolean ? MeshStore::TopologyCounts{clamped(vertices), clamped(3u * triangles), clamped(triangles)} : MeshStore::TopologyCounts{first.VertexCount(), first.HalfEdgeCount(), first.FaceCount()};
+        MeshTopologyJob job{.Op = task.Op, .Flags = task.Flags, .Steps = task.Steps, .Param0 = task.Param0, .CornerAttributes = MeshAttributeBit_Normal};
+        const auto bounds = TopologyOutputBounds(task, source);
+        const uint64_t layout = LayoutTopologyScratch(job, source, bounds, 0u);
+        const uint64_t elements = uint64_t(source.Vertices) + source.Halfedges + source.Faces, emitted = uint64_t(bounds.Vertices) + bounds.Halfedges + bounds.Faces;
+        return clamped((3u << 10) + JobTableWords + layout + 16u * elements + 4u * emitted + (boolean ? 2u * vertices + 67u * triangles + BooleanTableWords : 0u));
+    }) | std::ranges::to<std::vector>();
+    // The tasks run in chunks whose scratch stays within the budget, in order.
+    const auto split = ChunkByScratch(uint32_t(tasks.size()), ScratchWordBudget, [&](uint32_t i) { return words[i]; });
     std::vector<GeometryTopologyResult> results;
-    std::vector<MeshTopologyEdit *> finished;
-    for (auto &edit : edits) {
-        results.push_back({.GeometryId = edit.StoreId, .Changed = bool(edit.Output)});
-        finished.push_back(&edit);
+    results.reserve(tasks.size());
+    // The chunks run on one chain in turn, each after the scratch of the one before it is released.
+    mtl::ComputeChain chain{meshes.BufferContext(), TopologyScratchWords};
+    for (const auto chunk : split.Chunks) {
+        if (chunk.Offset) chain.ReleaseScratch();
+        auto edits = MeshTopologyEdit::Construct(r, chain, tasks.subspan(chunk.Offset, chunk.Count));
+        if (constructed) constructed(edits, chunk.Offset);
+        MeshTopologyEdit::PublishAll(r, edits);
+        for (const auto &edit : edits) results.push_back({.GeometryId = edit.StoreId, .Changed = bool(edit.Output)});
+        if (finish) finish(chain, edits, chunk.Offset);
+        else MeshTopologyEdit::FinishAll(r, edits | std::views::transform([](MeshTopologyEdit &edit) { return &edit; }) | std::ranges::to<std::vector>());
+        chain.Submit();
     }
-    MeshTopologyEdit::FinishAll(r, finished);
-    chain.Submit();
     return results;
 }
 
@@ -1182,7 +1334,7 @@ std::vector<GeometryTopologyResult> ExecuteGeometryTopologyStages(state::Registr
 }
 
 namespace {
-ShortEdgesPushConstants ShortEdgesConstants(const MeshStore &meshes, uint32_t id, float distance) {
+ShortEdgesJob ShortEdgesOf(const MeshStore &meshes, uint32_t id, float distance) {
     const auto &a = meshes.Arenas();
     return {
         .Connectivity = meshes.GetConnectivityRef(id),
@@ -1191,49 +1343,110 @@ ShortEdgesPushConstants ShortEdgesConstants(const MeshStore &meshes, uint32_t id
         .Distance = distance,
     };
 }
-bool HasShortEdge(state::Registry &r, uint32_t id, float distance) {
-    const auto &meshes = r.Resources.get<MeshStore>();
-    mtl::ComputeChain chain{meshes.BufferContext()};
-    const auto flag = chain.Scratch.Allocate(std::span<const uint32_t>{std::array{0u}});
-    auto pc = ShortEdgesConstants(meshes, id, distance);
-    pc.Flag = {chain.Scratch.Buffer.Slot, flag.Offset};
-    if (pc.Blocks.Count) chain.Threads(GetMeshPipelines(r)[MeshPass::FlagShortEdges], pc, pc.Blocks.Count * MeshElementBlockSize);
-    chain.Submit();
-    return chain.Scratch.Get({flag.Offset, 1u})[0] != 0u;
+// Records `pass` over the halfedge blocks of every job.
+void RecordShortEdges(state::Registry &r, mtl::ComputeChain &chain, MeshPass pass, std::span<const ShortEdgesJob> jobs) {
+    mtl::GatherPass(chain, GetMeshPipelines(r)[pass], jobs, [](const ShortEdgesJob &job) { return job.Blocks.Count * MeshElementBlockSize; });
 }
-// The edges with a vertex on their interior within the distance, each paired with that vertex, as a Subdivide junction list.
-std::vector<uint32_t> Junctions(state::Registry &r, uint32_t id, float distance) {
+// Whether each record has an edge shorter than its distance.
+std::vector<bool> HasShortEdges(state::Registry &r, std::span<const uint32_t> ids, std::span<const float> distances) {
     const auto &meshes = r.Resources.get<MeshStore>();
     mtl::ComputeChain chain{meshes.BufferContext()};
-    auto pc = ShortEdgesConstants(meshes, id, distance);
-    pc.Capacity = meshes.Arenas().EdgeHalfedges.Count(meshes.Get(id).EdgeData);
-    const auto list = chain.Scratch.Allocate(1u + 2u * pc.Capacity);
-    chain.Scratch.GetMutable({list.Offset, 1u})[0] = 0u;
-    pc.Junctions = {chain.Scratch.Buffer.Slot, list.Offset};
-    if (pc.Blocks.Count) chain.Threads(GetMeshPipelines(r)[MeshPass::FindJunctions], pc, pc.Blocks.Count * MeshElementBlockSize);
+    const auto flags = chain.Scratch.Allocate(uint32_t(ids.size()));
+    std::ranges::fill(chain.Scratch.GetMutable(flags), 0u);
+    std::vector<ShortEdgesJob> jobs;
+    for (uint32_t i = 0u; i < ids.size(); ++i) {
+        auto &job = jobs.emplace_back(ShortEdgesOf(meshes, ids[i], distances[i]));
+        job.Flag = {chain.Scratch.Buffer.Slot, flags.Offset + i};
+    }
+    RecordShortEdges(r, chain, MeshPass::FlagShortEdges, jobs);
     chain.Submit();
-    const auto words = chain.Scratch.Get(list);
-    const auto count = std::min(words[0], pc.Capacity);
-    std::vector<uint32_t> junctions(words.begin(), words.begin() + 1u + 2u * count);
-    junctions[0] = count;
-    return junctions;
+    return chain.Scratch.Get(flags) | std::views::transform([](uint32_t flag) { return flag != 0u; }) | std::ranges::to<std::vector>();
+}
+// Each record's edges with a vertex on their interior within its distance, each paired with that vertex, as a Subdivide junction list.
+std::vector<std::vector<uint32_t>> Junctions(state::Registry &r, std::span<const uint32_t> ids, std::span<const float> distances) {
+    const auto &meshes = r.Resources.get<MeshStore>();
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    std::vector<ShortEdgesJob> jobs;
+    jobs.reserve(ids.size());
+    for (uint32_t i = 0u; i < ids.size(); ++i) {
+        auto &job = jobs.emplace_back(ShortEdgesOf(meshes, ids[i], distances[i]));
+        job.Capacity = meshes.Arenas().EdgeHalfedges.Count(meshes.Get(ids[i]).EdgeData);
+        const auto list = chain.Scratch.Allocate(1u + 2u * job.Capacity);
+        chain.Scratch.GetMutable({list.Offset, 1u})[0] = 0u;
+        job.Junctions = {chain.Scratch.Buffer.Slot, list.Offset};
+    }
+    RecordShortEdges(r, chain, MeshPass::FindJunctions, jobs);
+    chain.Submit();
+    return jobs | std::views::transform([&](const ShortEdgesJob &job) {
+               const auto words = chain.Scratch.Get({job.Junctions.Offset, 1u + 2u * job.Capacity});
+               const auto count = std::min(words[0], job.Capacity);
+               std::vector<uint32_t> junctions(words.begin(), words.begin() + 1u + 2u * count);
+               junctions[0] = count;
+               return junctions;
+           }) |
+        std::ranges::to<std::vector>();
+}
+// The record's edges with more than two face sides, ascending.
+std::vector<uint32_t> NonmanifoldEdges(const Mesh &mesh) {
+    const auto &c = mesh.GetConnectivity();
+    std::vector<uint32_t> edges;
+    for (const auto h : he::HandleRange<he::HH>{c.HalfedgeTable, c.HalfedgeBlocks}) {
+        const auto e = c.Edge(h);
+        const auto first = c.EdgeHalfedge(*e);
+        if (h != first && h != c.Opposite(first)) edges.push_back(*e);
+    }
+    std::ranges::sort(edges);
+    edges.erase(std::ranges::unique(edges).begin(), edges.end());
+    return edges;
 }
 } // namespace
 
-std::optional<uint32_t> ExecuteGeometryBoolean(state::Registry &r, const MeshTopologyTask &task) {
-    const auto result = ExecuteGeometryTopology(r, std::span{&task, 1u}).front();
-    if (!result.Changed) return {};
-    const auto &meshes = r.Resources.get<const MeshStore>();
-    const float tolerance = RelativePrecision * VertexExtent(meshes, GetMeshPipelines(r), result.GeometryId, HandleList(Mesh{meshes, result.GeometryId}.vertices()));
-    const std::array weld{
-        MeshTopologyTask{.SourceId = result.GeometryId, .Op = MeshTopologyOp::MergeByDistance, .Param0 = tolerance, .Flags = TopologyFlagSelectAll | TopologyFlagDropFlaps},
-        MeshTopologyTask{.SourceId = result.GeometryId, .Op = MeshTopologyOp::DeleteLoose, .Flags = TopologyFlagSelectAll},
-    };
-    if (HasShortEdge(r, result.GeometryId, tolerance)) ExecuteGeometryTopologyStages(r, weld);
-    for (auto junctions = Junctions(r, result.GeometryId, tolerance); junctions[0]; junctions = Junctions(r, result.GeometryId, tolerance)) {
-        const MeshTopologyTask split{.SourceId = result.GeometryId, .Op = MeshTopologyOp::Subdivide, .Flags = TopologyFlagListJunctions | TopologyFlagSelectAll, .List = std::move(junctions)};
-        ExecuteGeometryTopology(r, std::span{&split, 1u});
-        ExecuteGeometryTopologyStages(r, weld);
+std::vector<std::optional<uint32_t>> ExecuteGeometryBooleans(state::Registry &r, std::span<const MeshTopologyTask> tasks) {
+    std::vector<std::optional<uint32_t>> outputs(tasks.size());
+    std::vector<uint32_t> ids;
+    for (uint32_t i = 0u; const auto &result : ExecuteGeometryTopology(r, tasks)) {
+        if (result.Changed) ids.push_back(*(outputs[i] = result.GeometryId));
+        ++i;
     }
-    return result.GeometryId;
+    if (ids.empty()) return outputs;
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    const auto tolerances = VertexExtents(meshes, GetMeshPipelines(r), ids) | std::views::transform([](float extent) { return RelativePrecision * extent; }) | std::ranges::to<std::vector>();
+    // Welds the records at the indices, each within its tolerance.
+    const auto weld = [&](std::span<const uint32_t> indices) {
+        std::vector<MeshTopologyTask> merges, loose;
+        for (const auto i : indices) {
+            merges.push_back({.SourceId = ids[i], .Op = MeshTopologyOp::MergeByDistance, .Param0 = tolerances[i], .Flags = TopologyFlagSelectAll | TopologyFlagDropFlaps});
+            loose.push_back({.SourceId = ids[i], .Op = MeshTopologyOp::DeleteLoose, .Flags = TopologyFlagSelectAll});
+        }
+        if (merges.empty()) return;
+        ExecuteGeometryTopology(r, merges);
+        ExecuteGeometryTopology(r, loose);
+    };
+    auto pending = std::views::iota(0u, uint32_t(ids.size())) | std::ranges::to<std::vector>();
+    const auto pending_ids = [&] { return pending | std::views::transform([&](uint32_t i) { return ids[i]; }) | std::ranges::to<std::vector>(); };
+    const auto pending_tolerances = [&] { return pending | std::views::transform([&](uint32_t i) { return tolerances[i]; }) | std::ranges::to<std::vector>(); };
+    const auto short_edges = HasShortEdges(r, ids, tolerances);
+    weld(pending | std::views::filter([&](uint32_t i) { return short_edges[i]; }) | std::ranges::to<std::vector>());
+    while (!pending.empty()) {
+        auto junctions = Junctions(r, pending_ids(), pending_tolerances());
+        std::vector<MeshTopologyTask> splits;
+        std::vector<uint32_t> split;
+        for (uint32_t k = 0u; k < pending.size(); ++k) {
+            if (!junctions[k][0]) continue;
+            splits.push_back({.SourceId = ids[pending[k]], .Op = MeshTopologyOp::Subdivide, .Flags = TopologyFlagListJunctions | TopologyFlagSelectAll, .List = std::move(junctions[k])});
+            split.push_back(pending[k]);
+        }
+        if (!splits.empty()) ExecuteGeometryTopology(r, splits);
+        weld(split);
+        pending = std::move(split);
+    }
+    // The weld joins surface sheets that touch along an edge, and an edge split there gives each sheet its own copy of the edge.
+    std::vector<MeshTopologyTask> separations;
+    for (const auto id : ids) {
+        if (const Mesh mesh{meshes, id}; !mesh.HasClosedSurface()) {
+            if (auto edges = NonmanifoldEdges(mesh); !edges.empty()) separations.push_back({.SourceId = id, .Op = MeshTopologyOp::EdgeSplit, .SelectionElement = Element::Edge, .Selection = GeometrySelection{.Edges = std::move(edges)}});
+        }
+    }
+    if (!separations.empty()) ExecuteGeometryTopology(r, separations);
+    return outputs;
 }

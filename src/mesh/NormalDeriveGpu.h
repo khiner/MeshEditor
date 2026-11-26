@@ -18,7 +18,7 @@ void CaptureNormalWrites(state::Registry &, uint32_t id, const NormalDeriveEntry
 // Callers choose base or posed destinations.
 std::optional<NormalDeriveEntry> MakeDeriveEntryInputs(const MeshStore &, uint32_t store_id);
 
-// Records the same two-phase kernel as frame and sparse edit derivation, with each entry from the record of `ids` at its index.
+// Records the same two-phase kernel as frame derivation, with each entry from the record of `ids` at its index.
 // Only job metadata is uploaded, and geometry and normal values stay in their GPU arenas.
 void EncodeDeriveNormals(state::Registry &, mtl::ComputeChain &, std::span<const uint32_t> ids, std::span<const NormalDeriveEntry>, NormalDerivePushConstants);
 // Records the base normals of every vertex and face of the meshes with faces, which the derive reads from their element blocks.
@@ -34,5 +34,5 @@ struct LocalNormalWork {
     uint32_t FaceCount;
 };
 // Records base normals after local changes to the meshes, in one derive.
-// Every change's vertices and faces are finished handle membership in the chain's scratch.
-void EncodeDeriveMeshNormals(state::Registry &, mtl::ComputeChain &, std::span<const LocalNormalWork>);
+// Every change's vertices and faces are finished handle membership in `work`.
+void EncodeDeriveMeshNormals(state::Registry &, mtl::ComputeChain &, const BufferArena<uint32_t> &work, std::span<const LocalNormalWork>);

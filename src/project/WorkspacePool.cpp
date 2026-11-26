@@ -41,6 +41,9 @@ void WorkspacePool::Settle() {
         Trie.Rehash(slot, bytes.empty() ? std::nullopt : std::optional{bytes});
     }
     Trie.ClearDirty();
+    Trie.ReturnCaptured(Trie.SlotHashes.size());
+    Extent = std::min<uint64_t>(Extent, Trie.SlotHashes.size());
+    while (Extent && Trie.SlotHashes[Extent - 1].State != store::LiveTrie::SlotState::Value) --Extent;
 }
 void WorkspacePool::Apply(store::RestorePlan &plan) {
     auto &installing = R.Resources.get<snapshot::Retention>().Installing;
@@ -48,6 +51,11 @@ void WorkspacePool::Apply(store::RestorePlan &plan) {
     for (auto &change : plan.Changes) {
         change.Old = Copy(change.Slot);
         change.WasPresent = change.Old.Data != nullptr;
+        // An erase of a page that holds no values leaves it as it is.
+        if (change.Erase && !change.WasPresent) {
+            change.Unchanged = true;
+            continue;
+        }
         Entries[Types[change.Slot % Types.size()]].ApplyWorkspacePage(R, uint32_t(change.Slot / Types.size()), change.Incoming);
         store::FreeBlob(change.Incoming);
     }

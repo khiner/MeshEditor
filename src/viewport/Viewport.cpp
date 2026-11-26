@@ -15,10 +15,12 @@
 #include "mesh/MeshCreate.h"
 #include "mesh/MeshStores.h"
 #include "object/ObjectOps.h"
+#include "ops/Evaluate.h"
 #include "physics/PhysicsStores.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
 #include "procedure/Cook.h"
+#include "procedure/MaterialGraphs.h"
 #include "procedure/NodeTheme.h"
 #include "render/GpuSceneState.h"
 #include "render/Pipelines.h"
@@ -56,18 +58,27 @@ bool Displayed(const state::Registry &r, state::Entity viewport) {
     return r.get<const ViewportPanel>(viewport).Open && r.get<const Viewport>(viewport).Shown;
 }
 
+namespace {
+// The lowest-index viewport that satisfies `accepts`, or null.
+state::Entity LowestViewport(const state::Registry &r, auto &&accepts) {
+    state::Entity lowest{state::Null};
+    for (const auto viewport : r.view<const Viewport>()) {
+        if (accepts(viewport) && (lowest == state::Null || state::Index(viewport) < state::Index(lowest))) lowest = viewport;
+    }
+    return lowest;
+}
+} // namespace
+
 state::Entity FirstViewport(const state::Registry &r) {
-    const auto viewports = r.view<const Viewport>();
-    return viewports.empty() ? state::Null : *viewports.begin();
+    return LowestViewport(r, [](state::Entity) { return true; });
 }
 
 state::Entity FindActiveViewport(const state::Registry &r) {
     const auto *active = r.try_get<const ActiveViewport>(state::Document);
     const auto *live = active ? r.try_get<const Viewport>(active->Viewport) : nullptr;
     if (live && Displayed(r, active->Viewport)) return active->Viewport;
-    const auto viewports = r.view<const Viewport>();
-    const auto displayed = std::ranges::find_if(viewports, [&](state::Entity viewport) { return Displayed(r, viewport); });
-    return displayed != viewports.end() ? *displayed : FirstViewport(r);
+    const auto displayed = LowestViewport(r, [&](state::Entity viewport) { return Displayed(r, viewport); });
+    return displayed != state::Null ? displayed : FirstViewport(r);
 }
 
 state::Entity SceneOf(const state::Registry &r, state::Entity viewport) {
@@ -401,7 +412,7 @@ void InitEngine(state::Registry &r) {
     const auto &ctx = r.Resources.get<const mtl::Context>();
     InitRenderStoreContext(r, ctx);
     auto &slots = r.Resources.get<mtl::BindlessSet>();
-    r.Resources.emplace<mtl::LibraryCache>(ctx, Paths::Shaders(), Paths::UserData() / "cache" / "Pipelines.mtl4a", Paths::Base() / "cache" / "Pipelines.mtl4a");
+    r.Resources.emplace<mtl::LibraryCache>(ctx, Paths::Shaders(), Paths::Base() / "cache" / "Pipelines.mtl4a");
     GetMeshPipelines(r).PrewarmAsync();
     physics::Init(r);
     RegisterSceneComponentHandlers(r);
@@ -410,6 +421,7 @@ void InitEngine(state::Registry &r) {
 
     RegisterMeshStoreHandlers(r);
     RegisterProcedureHandlers(r);
+    procedure::RegisterMaterialGraphHandlers(r);
     RegisterAudioStoreHandlers(r);
     RegisterPhysicsStoreHandlers(r);
     InitEntityNames(r);
@@ -435,14 +447,10 @@ void InitEngine(state::Registry &r) {
     r.Resources.emplace<PanelsState>();
 
     auto &environments = r.Resources.get<EnvironmentStore>();
-    auto &textures = r.Resources.get<TextureStore>();
     const auto images_dir = Paths::Res() / "images";
-    environments.BrdfLutSlot = QueueLutTexture(textures, slots, images_dir / "lut_ggx.png", "DefaultGGXBRDFLUT");
-    environments.SheenELutSlot = QueueLutTexture(textures, slots, images_dir / "lut_sheen_E.png", "DefaultSheenELUT");
-    environments.CharlieLutSlot = QueueLutTexture(textures, slots, images_dir / "lut_charlie.png", "DefaultCharlieLUT");
     // Blender's default world background color in linear RGB, as a flat ambient-only IBL for scenes without a world.
     environments.EmptySceneWorld = BuildFlatColorEnvironment(ctx, slots, vec3{0.05f}, "EmptySceneWorld");
-    environments.SceneWorld = {.Ibl = MakeIblSamplers(environments.EmptySceneWorld, environments), .Name = environments.EmptySceneWorld.Name};
+    environments.SceneWorld = {.Ibl = MakeIblSamplers(environments.EmptySceneWorld), .Name = environments.EmptySceneWorld.Name};
 
     std::error_code ec;
     for (const auto &entry : std::filesystem::directory_iterator{images_dir / "studiolights" / "world", ec}) {
@@ -487,6 +495,8 @@ void DeinitViewport(state::Registry &r) {
     r.Resources.erase<FrameState>();
     r.Resources.erase<GpuSceneState>();
     physics::Deinit(r);
+    r.Resources.erase<ops::Drivers>();
+    r.Resources.erase<mtl::ProgramRegistry>();
     r.Resources.erase<MeshPipelines>();
     r.Resources.erase<Pipelines>();
     if (r.valid(state::Document)) r.destroy(state::Document);

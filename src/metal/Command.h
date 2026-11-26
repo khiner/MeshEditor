@@ -76,6 +76,8 @@ struct Command {
     void SignalEvent(MTL::Event *, uint64_t value);
     // The commit waits for the display to release the drawable before the command, and presents it after.
     void Present(MTL::Drawable *);
+    // Keeps an object the command uses until the command completes.
+    void Keep(std::shared_ptr<const void>);
 
     // The state the active encoder holds, which pipeline binds and the Set functions above record only when it changes.
     struct EncoderState {

@@ -1,0 +1,527 @@
+<?xml version="1.0"?>
+<materialx version="1.39">
+  <!--
+    Graph definitions of MeshEditor's nodes in terms of standard nodes.
+  -->
+
+  <nodegraph name="NG_safedivide_float" nodedef="ND_safedivide_float">
+    <divide name="quotient" type="float">
+      <input name="in1" type="float" interfacename="in1" />
+      <input name="in2" type="float" interfacename="in2" />
+    </divide>
+    <ifequal name="guarded" type="float">
+      <input name="value1" type="float" interfacename="in2" />
+      <input name="value2" type="float" value="0.0" />
+      <input name="in1" type="float" value="0.0" />
+      <input name="in2" type="float" nodename="quotient" />
+    </ifequal>
+    <output name="out" type="float" nodename="guarded" />
+  </nodegraph>
+
+  <nodegraph name="NG_multiplyadd_float" nodedef="ND_multiplyadd_float">
+    <multiply name="product" type="float">
+      <input name="in1" type="float" interfacename="in1" />
+      <input name="in2" type="float" interfacename="in2" />
+    </multiply>
+    <add name="sum" type="float">
+      <input name="in1" type="float" nodename="product" />
+      <input name="in2" type="float" interfacename="in3" />
+    </add>
+    <output name="out" type="float" nodename="sum" />
+  </nodegraph>
+
+  <nodegraph name="NG_realpower_float" nodedef="ND_realpower_float">
+    <power name="power" type="float">
+      <input name="in1" type="float" interfacename="in1" />
+      <input name="in2" type="float" interfacename="in2" />
+    </power>
+    <absval name="magnitude" type="float">
+      <input name="in" type="float" interfacename="in1" />
+    </absval>
+    <power name="magnitude_power" type="float">
+      <input name="in1" type="float" nodename="magnitude" />
+      <input name="in2" type="float" interfacename="in2" />
+    </power>
+    <multiply name="negated_power" type="float">
+      <input name="in1" type="float" nodename="magnitude_power" />
+      <input name="in2" type="float" value="-1.0" />
+    </multiply>
+    <modulo name="parity" type="float">
+      <input name="in1" type="float" interfacename="in2" />
+      <input name="in2" type="float" value="2.0" />
+    </modulo>
+    <ifequal name="integer_power" type="float">
+      <input name="value1" type="float" nodename="parity" />
+      <input name="value2" type="float" value="0.0" />
+      <input name="in1" type="float" nodename="magnitude_power" />
+      <input name="in2" type="float" nodename="negated_power" />
+    </ifequal>
+    <floor name="exponent_floor" type="float">
+      <input name="in" type="float" interfacename="in2" />
+    </floor>
+    <ifequal name="negative_power" type="float">
+      <input name="value1" type="float" interfacename="in2" />
+      <input name="value2" type="float" nodename="exponent_floor" />
+      <input name="in1" type="float" nodename="integer_power" />
+      <input name="in2" type="float" value="0.0" />
+    </ifequal>
+    <ifgreatereq name="result" type="float">
+      <input name="value1" type="float" interfacename="in1" />
+      <input name="value2" type="float" value="0.0" />
+      <input name="in1" type="float" nodename="power" />
+      <input name="in2" type="float" nodename="negative_power" />
+    </ifgreatereq>
+    <output name="out" type="float" nodename="result" />
+  </nodegraph>
+
+  <nodegraph name="NG_logarithm_float" nodedef="ND_logarithm_float">
+    <ln name="log_value" type="float">
+      <input name="in" type="float" interfacename="in1" />
+    </ln>
+    <ln name="log_base" type="float">
+      <input name="in" type="float" interfacename="in2" />
+    </ln>
+    <divide name="quotient" type="float">
+      <input name="in1" type="float" nodename="log_value" />
+      <input name="in2" type="float" nodename="log_base" />
+    </divide>
+    <ifequal name="base_not_one" type="float">
+      <input name="value1" type="float" nodename="log_base" />
+      <input name="value2" type="float" value="0.0" />
+      <input name="in1" type="float" value="0.0" />
+      <input name="in2" type="float" nodename="quotient" />
+    </ifequal>
+    <ifgreater name="base_positive" type="float">
+      <input name="value1" type="float" interfacename="in2" />
+      <input name="value2" type="float" value="0.0" />
+      <input name="in1" type="float" nodename="base_not_one" />
+      <input name="in2" type="float" value="0.0" />
+    </ifgreater>
+    <ifgreater name="value_positive" type="float">
+      <input name="value1" type="float" interfacename="in1" />
+      <input name="value2" type="float" value="0.0" />
+      <input name="in1" type="float" nodename="base_positive" />
+      <input name="in2" type="float" value="0.0" />
+    </ifgreater>
+    <output name="out" type="float" nodename="value_positive" />
+  </nodegraph>
+
+  <nodegraph name="NG_safesqrt_float" nodedef="ND_safesqrt_float">
+    <max name="nonnegative" type="float">
+      <input name="in1" type="float" interfacename="in" />
+      <input name="in2" type="float" value="0.0" />
+    </max>
+    <sqrt name="root" type="float">
+      <input name="in" type="float" nodename="nonnegative" />
+    </sqrt>
+    <output name="out" type="float" nodename="root" />
+  </nodegraph>
+
+  <nodegraph name="NG_inversesqrt_float" nodedef="ND_inversesqrt_float">
+    <sqrt name="root" type="float">
+      <input name="in" type="float" interfacename="in" />
+    </sqrt>
+    <divide name="inverse" type="float">
+      <input name="in1" type="float" value="1.0" />
+      <input name="in2" type="float" nodename="root" />
+    </divide>
+    <ifgreater name="guarded" type="float">
+      <input name="value1" type="float" interfacename="in" />
+      <input name="value2" type="float" value="0.0" />
+      <input name="in1" type="float" nodename="inverse" />
+      <input name="in2" type="float" value="0.0" />
+    </ifgreater>
+    <output name="out" type="float" nodename="guarded" />
+  </nodegraph>
+
+  <nodegraph name="NG_roundhalfup_float" nodedef="ND_roundhalfup_float">
+    <add name="shifted" type="float">
+      <input name="in1" type="float" interfacename="in" />
+      <input name="in2" type="float" value="0.5" />
+    </add>
+    <floor name="rounded" type="float">
+      <input name="in" type="float" nodename="shifted" />
+    </floor>
+    <output name="out" type="float" nodename="rounded" />
+  </nodegraph>
+
+  <nodegraph name="NG_truncate_float" nodedef="ND_truncate_float">
+    <sign name="sign" type="float">
+      <input name="in" type="float" interfacename="in" />
+    </sign>
+    <absval name="magnitude" type="float">
+      <input name="in" type="float" interfacename="in" />
+    </absval>
+    <floor name="magnitude_floor" type="float">
+      <input name="in" type="float" nodename="magnitude" />
+    </floor>
+    <multiply name="truncated" type="float">
+      <input name="in1" type="float" nodename="sign" />
+      <input name="in2" type="float" nodename="magnitude_floor" />
+    </multiply>
+    <output name="out" type="float" nodename="truncated" />
+  </nodegraph>
+
+  <nodegraph name="NG_safemodulo_float" nodedef="ND_safemodulo_float">
+    <modulo name="remainder" type="float">
+      <input name="in1" type="float" interfacename="in1" />
+      <input name="in2" type="float" interfacename="in2" />
+    </modulo>
+    <ifequal name="guarded" type="float">
+      <input name="value1" type="float" interfacename="in2" />
+      <input name="value2" type="float" value="0.0" />
+      <input name="in1" type="float" value="0.0" />
+      <input name="in2" type="float" nodename="remainder" />
+    </ifequal>
+    <output name="out" type="float" nodename="guarded" />
+  </nodegraph>
+
+  <nodegraph name="NG_wrap_float" nodedef="ND_wrap_float">
+    <subtract name="range" type="float">
+      <input name="in1" type="float" interfacename="high" />
+      <input name="in2" type="float" interfacename="low" />
+    </subtract>
+    <subtract name="offset" type="float">
+      <input name="in1" type="float" interfacename="in" />
+      <input name="in2" type="float" interfacename="low" />
+    </subtract>
+    <divide name="cycles" type="float">
+      <input name="in1" type="float" nodename="offset" />
+      <input name="in2" type="float" nodename="range" />
+    </divide>
+    <floor name="whole_cycles" type="float">
+      <input name="in" type="float" nodename="cycles" />
+    </floor>
+    <multiply name="shift" type="float">
+      <input name="in1" type="float" nodename="range" />
+      <input name="in2" type="float" nodename="whole_cycles" />
+    </multiply>
+    <subtract name="wrapped" type="float">
+      <input name="in1" type="float" interfacename="in" />
+      <input name="in2" type="float" nodename="shift" />
+    </subtract>
+    <ifequal name="guarded" type="float">
+      <input name="value1" type="float" interfacename="high" />
+      <input name="value2" type="float" interfacename="low" />
+      <input name="in1" type="float" interfacename="low" />
+      <input name="in2" type="float" nodename="wrapped" />
+    </ifequal>
+    <output name="out" type="float" nodename="guarded" />
+  </nodegraph>
+
+  <nodegraph name="NG_snap_float" nodedef="ND_snap_float">
+    <divide name="steps" type="float">
+      <input name="in1" type="float" interfacename="in" />
+      <input name="in2" type="float" interfacename="increment" />
+    </divide>
+    <floor name="whole_steps" type="float">
+      <input name="in" type="float" nodename="steps" />
+    </floor>
+    <multiply name="snapped" type="float">
+      <input name="in1" type="float" nodename="whole_steps" />
+      <input name="in2" type="float" interfacename="increment" />
+    </multiply>
+    <ifequal name="guarded" type="float">
+      <input name="value1" type="float" interfacename="increment" />
+      <input name="value2" type="float" value="0.0" />
+      <input name="in1" type="float" value="0.0" />
+      <input name="in2" type="float" nodename="snapped" />
+    </ifequal>
+    <output name="out" type="float" nodename="guarded" />
+  </nodegraph>
+
+  <nodegraph name="NG_pingpong_float" nodedef="ND_pingpong_float">
+    <subtract name="offset" type="float">
+      <input name="in1" type="float" interfacename="in" />
+      <input name="in2" type="float" interfacename="scale" />
+    </subtract>
+    <multiply name="period" type="float">
+      <input name="in1" type="float" interfacename="scale" />
+      <input name="in2" type="float" value="2.0" />
+    </multiply>
+    <divide name="cycle" type="float">
+      <input name="in1" type="float" nodename="offset" />
+      <input name="in2" type="float" nodename="period" />
+    </divide>
+    <floor name="whole_cycles" type="float">
+      <input name="in" type="float" nodename="cycle" />
+    </floor>
+    <subtract name="phase" type="float">
+      <input name="in1" type="float" nodename="cycle" />
+      <input name="in2" type="float" nodename="whole_cycles" />
+    </subtract>
+    <multiply name="phase_scaled" type="float">
+      <input name="in1" type="float" nodename="phase" />
+      <input name="in2" type="float" interfacename="scale" />
+    </multiply>
+    <multiply name="phase_doubled" type="float">
+      <input name="in1" type="float" nodename="phase_scaled" />
+      <input name="in2" type="float" value="2.0" />
+    </multiply>
+    <subtract name="centered" type="float">
+      <input name="in1" type="float" nodename="phase_doubled" />
+      <input name="in2" type="float" interfacename="scale" />
+    </subtract>
+    <absval name="bounced" type="float">
+      <input name="in" type="float" nodename="centered" />
+    </absval>
+    <ifequal name="guarded" type="float">
+      <input name="value1" type="float" interfacename="scale" />
+      <input name="value2" type="float" value="0.0" />
+      <input name="in1" type="float" value="0.0" />
+      <input name="in2" type="float" nodename="bounced" />
+    </ifequal>
+    <output name="out" type="float" nodename="guarded" />
+  </nodegraph>
+
+  <nodegraph name="NG_smoothmin_float" nodedef="ND_smoothmin_float">
+    <min name="minimum" type="float">
+      <input name="in1" type="float" interfacename="in1" />
+      <input name="in2" type="float" interfacename="in2" />
+    </min>
+    <subtract name="difference" type="float">
+      <input name="in1" type="float" interfacename="in1" />
+      <input name="in2" type="float" interfacename="in2" />
+    </subtract>
+    <absval name="separation" type="float">
+      <input name="in" type="float" nodename="difference" />
+    </absval>
+    <subtract name="overlap" type="float">
+      <input name="in1" type="float" interfacename="distance" />
+      <input name="in2" type="float" nodename="separation" />
+    </subtract>
+    <max name="clamped_overlap" type="float">
+      <input name="in1" type="float" nodename="overlap" />
+      <input name="in2" type="float" value="0.0" />
+    </max>
+    <divide name="weight" type="float">
+      <input name="in1" type="float" nodename="clamped_overlap" />
+      <input name="in2" type="float" interfacename="distance" />
+    </divide>
+    <multiply name="weight_squared" type="float">
+      <input name="in1" type="float" nodename="weight" />
+      <input name="in2" type="float" nodename="weight" />
+    </multiply>
+    <multiply name="weight_cubed" type="float">
+      <input name="in1" type="float" nodename="weight_squared" />
+      <input name="in2" type="float" nodename="weight" />
+    </multiply>
+    <multiply name="blend" type="float">
+      <input name="in1" type="float" nodename="weight_cubed" />
+      <input name="in2" type="float" interfacename="distance" />
+    </multiply>
+    <divide name="correction" type="float">
+      <input name="in1" type="float" nodename="blend" />
+      <input name="in2" type="float" value="6.0" />
+    </divide>
+    <subtract name="smoothed" type="float">
+      <input name="in1" type="float" nodename="minimum" />
+      <input name="in2" type="float" nodename="correction" />
+    </subtract>
+    <ifequal name="guarded" type="float">
+      <input name="value1" type="float" interfacename="distance" />
+      <input name="value2" type="float" value="0.0" />
+      <input name="in1" type="float" nodename="minimum" />
+      <input name="in2" type="float" nodename="smoothed" />
+    </ifequal>
+    <output name="out" type="float" nodename="guarded" />
+  </nodegraph>
+
+  <nodegraph name="NG_smoothmax_float" nodedef="ND_smoothmax_float">
+    <multiply name="negated1" type="float">
+      <input name="in1" type="float" interfacename="in1" />
+      <input name="in2" type="float" value="-1.0" />
+    </multiply>
+    <multiply name="negated2" type="float">
+      <input name="in1" type="float" interfacename="in2" />
+      <input name="in2" type="float" value="-1.0" />
+    </multiply>
+    <smoothmin name="negated_minimum" type="float">
+      <input name="in1" type="float" nodename="negated1" />
+      <input name="in2" type="float" nodename="negated2" />
+      <input name="distance" type="float" interfacename="distance" />
+    </smoothmin>
+    <multiply name="maximum" type="float">
+      <input name="in1" type="float" nodename="negated_minimum" />
+      <input name="in2" type="float" value="-1.0" />
+    </multiply>
+    <output name="out" type="float" nodename="maximum" />
+  </nodegraph>
+
+  <nodegraph name="NG_safeasin_float" nodedef="ND_safeasin_float">
+    <clamp name="clamped" type="float">
+      <input name="in" type="float" interfacename="in" />
+      <input name="low" type="float" value="-1.0" />
+      <input name="high" type="float" value="1.0" />
+    </clamp>
+    <asin name="angle" type="float">
+      <input name="in" type="float" nodename="clamped" />
+    </asin>
+    <output name="out" type="float" nodename="angle" />
+  </nodegraph>
+
+  <nodegraph name="NG_safeacos_float" nodedef="ND_safeacos_float">
+    <clamp name="clamped" type="float">
+      <input name="in" type="float" interfacename="in" />
+      <input name="low" type="float" value="-1.0" />
+      <input name="high" type="float" value="1.0" />
+    </clamp>
+    <acos name="angle" type="float">
+      <input name="in" type="float" nodename="clamped" />
+    </acos>
+    <output name="out" type="float" nodename="angle" />
+  </nodegraph>
+
+  <nodegraph name="NG_radians_float" nodedef="ND_radians_float">
+    <multiply name="radians" type="float">
+      <input name="in1" type="float" interfacename="in" />
+      <input name="in2" type="float" value="0.0174532924" />
+    </multiply>
+    <output name="out" type="float" nodename="radians" />
+  </nodegraph>
+
+  <nodegraph name="NG_degrees_float" nodedef="ND_degrees_float">
+    <multiply name="degrees" type="float">
+      <input name="in1" type="float" interfacename="in" />
+      <input name="in2" type="float" value="57.2957764" />
+    </multiply>
+    <output name="out" type="float" nodename="degrees" />
+  </nodegraph>
+
+  <nodegraph name="NG_safenormalize_vector3" nodedef="ND_safenormalize_vector3">
+    <magnitude name="length" type="float">
+      <input name="in" type="vector3" interfacename="in" />
+    </magnitude>
+    <normalize name="unit" type="vector3">
+      <input name="in" type="vector3" interfacename="in" />
+    </normalize>
+    <ifgreater name="guarded" type="vector3">
+      <input name="value1" type="float" nodename="length" />
+      <input name="value2" type="float" value="0.0" />
+      <input name="in1" type="vector3" nodename="unit" />
+      <input name="in2" type="vector3" value="0.0, 0.0, 0.0" />
+    </ifgreater>
+    <output name="out" type="vector3" nodename="guarded" />
+  </nodegraph>
+
+  <nodegraph name="NG_compare_float" nodedef="ND_compare_float">
+    <subtract name="difference" type="float">
+      <input name="in1" type="float" interfacename="in1" />
+      <input name="in2" type="float" interfacename="in2" />
+    </subtract>
+    <absval name="separation" type="float">
+      <input name="in" type="float" nodename="difference" />
+    </absval>
+    <max name="tolerance" type="float">
+      <input name="in1" type="float" interfacename="epsilon" />
+      <input name="in2" type="float" value="1.1920929e-7" />
+    </max>
+    <ifgreatereq name="within" type="float">
+      <input name="value1" type="float" nodename="tolerance" />
+      <input name="value2" type="float" nodename="separation" />
+      <input name="in1" type="float" value="1.0" />
+      <input name="in2" type="float" value="0.0" />
+    </ifgreatereq>
+    <ifequal name="equal" type="float">
+      <input name="value1" type="float" interfacename="in1" />
+      <input name="value2" type="float" interfacename="in2" />
+      <input name="in1" type="float" value="1.0" />
+      <input name="in2" type="float" nodename="within" />
+    </ifequal>
+    <output name="out" type="float" nodename="equal" />
+  </nodegraph>
+
+  <nodegraph name="NG_nearlyequal_float" nodedef="ND_nearlyequal_float">
+    <subtract name="difference" type="float">
+      <input name="in1" type="float" interfacename="in1" />
+      <input name="in2" type="float" interfacename="in2" />
+    </subtract>
+    <absval name="separation" type="float">
+      <input name="in" type="float" nodename="difference" />
+    </absval>
+    <max name="tolerance" type="float">
+      <input name="in1" type="float" interfacename="epsilon" />
+      <input name="in2" type="float" value="0.0" />
+    </max>
+    <ifgreatereq name="within" type="boolean">
+      <input name="value1" type="float" nodename="tolerance" />
+      <input name="value2" type="float" nodename="separation" />
+    </ifgreatereq>
+    <output name="out" type="boolean" nodename="within" />
+  </nodegraph>
+  <nodegraph name="NG_planeside_boolean" nodedef="ND_planeside_boolean">
+    <position name="p" type="vector3" />
+    <safenormalize name="n" type="vector3">
+      <input name="in" type="vector3" interfacename="normal" />
+    </safenormalize>
+    <dotproduct name="height" type="float">
+      <input name="in1" type="vector3" nodename="n" />
+      <input name="in2" type="vector3" nodename="p" />
+    </dotproduct>
+    <dotproduct name="offset" type="float">
+      <input name="in1" type="vector3" nodename="n" />
+      <input name="in2" type="vector3" interfacename="point" />
+    </dotproduct>
+    <subtract name="distance" type="float">
+      <input name="in1" type="float" nodename="height" />
+      <input name="in2" type="float" nodename="offset" />
+    </subtract>
+    <magnitude name="reach" type="float">
+      <input name="in" type="vector3" nodename="p" />
+    </magnitude>
+    <max name="scale" type="float">
+      <input name="in1" type="float" nodename="reach" />
+      <input name="in2" type="float" value="1.0" />
+    </max>
+    <max name="tolerance" type="float">
+      <input name="in1" type="float" interfacename="tolerance" />
+      <input name="in2" type="float" value="0.0" />
+    </max>
+    <multiply name="bound" type="float">
+      <input name="in1" type="float" nodename="tolerance" />
+      <input name="in2" type="float" nodename="scale" />
+    </multiply>
+    <multiply name="lower" type="float">
+      <input name="in1" type="float" nodename="bound" />
+      <input name="in2" type="float" value="-1.0" />
+    </multiply>
+    <ifgreater name="ahead" type="float">
+      <input name="value1" type="float" nodename="distance" />
+      <input name="value2" type="float" nodename="bound" />
+      <input name="in1" type="float" value="1.0" />
+      <input name="in2" type="float" value="0.0" />
+    </ifgreater>
+    <ifgreater name="behind" type="float">
+      <input name="value1" type="float" nodename="lower" />
+      <input name="value2" type="float" nodename="distance" />
+      <input name="in1" type="float" value="1.0" />
+      <input name="in2" type="float" value="0.0" />
+    </ifgreater>
+    <subtract name="beside" type="float">
+      <input name="in1" type="float" value="1.0" />
+      <input name="in2" type="float" nodename="ahead" />
+    </subtract>
+    <subtract name="on" type="float">
+      <input name="in1" type="float" nodename="beside" />
+      <input name="in2" type="float" nodename="behind" />
+    </subtract>
+    <ifequal name="behind_or_on" type="float">
+      <input name="value1" type="integer" interfacename="side" />
+      <input name="value2" type="integer" value="1" />
+      <input name="in1" type="float" nodename="behind" />
+      <input name="in2" type="float" nodename="on" />
+    </ifequal>
+    <ifequal name="chosen" type="float">
+      <input name="value1" type="integer" interfacename="side" />
+      <input name="value2" type="integer" value="0" />
+      <input name="in1" type="float" nodename="ahead" />
+      <input name="in2" type="float" nodename="behind_or_on" />
+    </ifequal>
+    <ifgreater name="selected" type="boolean">
+      <input name="value1" type="float" nodename="chosen" />
+      <input name="value2" type="float" value="0.5" />
+    </ifgreater>
+    <output name="out" type="boolean" nodename="selected" />
+  </nodegraph>
+
+</materialx>

@@ -3,12 +3,12 @@
 #include "mesh/CornerClassBatch.h"
 #include "mesh/MeshStore.h"
 
-struct MeshPipelines;
-
 // `Weld` merges vertices identical in every vertex-domain channel, which a source authored per corner needs.
+// A source holds texture coordinate set 0 in `CornerTexCoords0` or in `Attrs.TexCoords0`, and wire corners take the absent value.
 struct MeshSource {
     MeshData Data;
     MeshVertexAttributes Attrs{};
+    std::vector<vec2> CornerTexCoords0{}; // Per face corner in Data's loop order
     MeshPrimitives Primitives{};
     std::optional<ArmatureDeformData> Deform{};
     std::optional<MorphTargetData> Morph{};
@@ -45,7 +45,7 @@ uint32_t CreateShadedMesh(state::Registry &, MeshSource);
 
 // Writes each authored corner normal that deviates from the derived one as an offset in the custom corner-normal layer.
 // Requires derived base normals and an empty custom layer.
-void EncodeAuthoredCornerNormals(MeshStore &, const MeshPipelines &, const Mesh &, std::span<const vec3> authored);
+void EncodeAuthoredCornerNormals(MeshStore &, const Mesh &, std::span<const vec3> authored);
 
 // Preserves authored shading when targets include normal deltas or any listed full-weight pose materially changes the derived corner normals.
 // Requires derived base normals.

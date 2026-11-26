@@ -72,7 +72,7 @@ state::Entity AddMeshData(state::Registry &r, uint32_t store_id) {
     r.emplace<SourceState>(source, store::Hash128{}, store_id);
     const auto mesh_entity = r.create();
     RootProcedure(r, mesh_entity, source, KindOf<Source>);
-    r.emplace<EvaluatedMesh>(mesh_entity, store_id, source);
+    r.emplace<EvaluatedMesh>(mesh_entity, store_id, std::vector{source});
     return mesh_entity;
 }
 
@@ -90,7 +90,7 @@ std::pair<state::Entity, state::Entity> AddMeshPrimitive(state::Registry &r, con
             const auto mesh_entity = r.create();
             RootProcedure(r, mesh_entity, node, KindOf<K>);
             auto named = info;
-            if (named.Name.empty()) named.Name = Title<K>.c_str();
+            if (named.Name.empty()) named.Name = field::TypeLabel<K>.c_str();
             return std::pair{mesh_entity, AddMeshInstance(r, mesh_entity, named)};
         },
         parameters

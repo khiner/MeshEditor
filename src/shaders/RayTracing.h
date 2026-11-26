@@ -121,7 +121,12 @@ inline bool RayOpaqueFeedback(const thread Scene &scene, const thread RayScene &
         scene.View.ViewProj.Unpack(), rt.ClipToWorld, outgoing, position, direction,
         mapping.InstanceSlot, rt.Triangles[mapping.TriangleOffset + primitive], material, light, normal);
 }
-inline DecodedSurface TraceSurface(const thread Scene &scene, const thread RayScene &rt, float3 origin, float3 direction, bool skip_transmission = false, thread float3 *cached_light = nullptr, thread bool *cache_hit = nullptr) {
+// A traced surface, and the instance, primitive and barycentric coordinates DecodeRaySurface decodes it from, which a cached surface has none of.
+struct RayHit {
+    DecodedSurface Surface;
+    uint4 Identity;
+};
+inline RayHit TraceRayHit(const thread Scene &scene, const thread RayScene &rt, float3 origin, float3 direction, bool skip_transmission = false, thread float3 *cached_light = nullptr, thread bool *cache_hit = nullptr) {
     const RayGeometry geometry = rt.Geometry();
     ray r{origin, direction, 0.0f, INFINITY};
     intersector<triangle_data, instancing> query;
@@ -152,7 +157,7 @@ inline DecodedSurface TraceSurface(const thread Scene &scene, const thread RaySc
                     cached.Valid = *cache_hit = true;
                     cached.V.MaterialIndex = material_index;
                     cached.InstanceSlot = rt.Instances[hit.instance_id].InstanceSlot;
-                    return cached;
+                    return {cached, uint4(0)};
                 }
             }
         }
@@ -161,7 +166,7 @@ inline DecodedSurface TraceSurface(const thread Scene &scene, const thread RaySc
         bool accepted = material.DoubleSided != 0u || (!material.Unlit && material.Transmission.Factor > 0.0f && material.Volume.ThicknessFactor > 0.0f) || dot(surface.GeometricNormal, direction) < 0.0f;
         if (accepted && material.AlphaMode == MaterialAlphaMode::Mask)
             accepted = RaySurfaceAlpha(scene, surface, material) >= material.AlphaCutoff;
-        if (accepted) return surface;
+        if (accepted) return {surface, uint4(hit.instance_id, hit.primitive_id, as_type<uint2>(hit.triangle_barycentric_coord))};
         r.min_distance = nextafter(hit.distance, INFINITY);
     }
     return {};
@@ -214,39 +219,6 @@ inline float RayRandom(thread uint &state) {
 inline float3x3 RayFrame(float3 n) {
     const float3 t = normalize(cross(abs(n.z) < 0.999f ? float3(0, 0, 1) : float3(1, 0, 0), n));
     return float3x3(t, cross(n, t), n);
-}
-// Heitz 2018 visible-normal sampling, JCGT 7(4), isotropic proposal.
-inline float3 SampleRayGGXNormal(float3 v, float alpha, float2 u) {
-    const float3 vh = normalize(float3(alpha * v.xy, max(v.z, 1e-6f)));
-    const float lensq = dot(vh.xy, vh.xy);
-    const float3 t1 = lensq > 0.0f ? float3(-vh.y, vh.x, 0) * rsqrt(lensq) : float3(1, 0, 0);
-    const float3 t2 = cross(vh, t1);
-    const float radius = sqrt(u.x), phi = 2.0f * M_PI_F * u.y;
-    const float x = radius * cos(phi);
-    const float s = 0.5f * (1.0f + vh.z);
-    const float y = mix(sqrt(max(0.0f, 1.0f - x * x)), radius * sin(phi), s);
-    const float3 nh = x * t1 + y * t2 + sqrt(max(0.0f, 1.0f - x * x - y * y)) * vh;
-    const float3 h = normalize(float3(alpha * nh.xy, max(nh.z, 0.0f)));
-    return h;
-}
-inline float3 SampleRayGGX(float3 v, float alpha, float2 u) {
-    return reflect(-v, SampleRayGGXNormal(v, alpha, u));
-}
-inline float RayGgxDistribution(float3 n, float3 h, float alpha) {
-    const float nh = clamp(dot(n, h), 0.0f, 1.0f);
-    const float3 perpendicular = cross(n, h);
-    const float a2 = alpha * alpha;
-    const float denominator = dot(perpendicular, perpendicular) + a2 * nh * nh;
-    return a2 / (M_PI_F * denominator * denominator);
-}
-inline float RayGgxPdf(float3 n, float3 v, float3 l, float alpha) {
-    const float nv = clamp(dot(n, v), 0.0f, 1.0f);
-    if (nv <= 0.0f) return 0.0f;
-    const float3 h = normalize(v + l);
-    if (dot(n, h) <= 0.0f || dot(v, h) <= 0.0f) return 0.0f;
-    const float a2 = alpha * alpha;
-    const float d = RayGgxDistribution(n, h, alpha);
-    return d / (2.0f * (nv + sqrt(a2 + (1.0f - a2) * nv * nv)));
 }
 
 // eta is incident IOR / transmitted IOR; the normal faces the incident medium.

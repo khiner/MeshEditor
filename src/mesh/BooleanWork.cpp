@@ -6,136 +6,172 @@
 #include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
 #include "mesh/MeshTopology.h"
-#include "mesh/ScratchChunks.h"
 #include "mesh/ScratchPasses.h"
-#include "metal/Dispatch.h"
 #include "state/Registry.h"
 
-BooleanWork::BooleanWork(state::Registry &r, mtl::ComputeChain &chain, const MeshTopologyTask &task, const MeshClosure &first, const MeshClosure &second) {
+std::vector<BooleanWork> RecordBooleanWork(state::Registry &r, mtl::ComputeChain &chain, std::span<const BooleanSources> sources) {
     const profile::CpuScope scope{"BooleanWork"};
     const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &a = meshes.Arenas();
     const auto &pipelines = GetMeshPipelines(r);
     auto &scratch = chain.Scratch;
-    // A closed surface's corners all belong to its faces, which derive two fewer triangles than corners.
-    const std::array triangles{first.Counts[1] - 2u * first.Counts[2], second.Counts[1] - 2u * second.Counts[2]};
-    BooleanJob job{
-        .Operation = BooleanOperation(uint32_t(task.Param0)),
-        .VertexWork = {first.Elements[0], second.Elements[0]},
-        .FaceWork = {first.Elements[2], second.Elements[2]},
-        .Vertices = {first.Counts[0], second.Counts[0]},
-        .Faces = {first.Counts[2], second.Counts[2]},
-        .Triangles = triangles,
-        .VertexSlot = a.Vertices.Buffer.Slot,
-        .TriangleSlot = a.Triangles.Buffer.Slot,
-        .FaceTriangleStartSlot = a.FaceTriangles.Buffer.Slot,
-        .VertexNormalSlot = a.BaseVertexNormals.Buffer.Slot,
-        .FaceNormalSlot = a.BaseFaceNormals.Buffer.Slot,
-        .Connectivity = meshes.GetConnectivityRef(task.SourceId),
-        .Rotation = task.CopyRotation,
-        .Translation = task.CopyTranslation,
-    };
-    Vertices = job.Vertices[0] + job.Vertices[1];
-    Triangles = triangles[0] + triangles[1];
-    const uint32_t faces = job.Faces[0] + job.Faces[1], halfedges = 3u * Triangles;
     const auto take = [&](uint64_t words) { return TakeScratch(chain, words).Offset; };
-    const auto record = take(sizeof(BooleanJob) / sizeof(uint32_t));
-    Job = {scratch.Buffer.Slot, record};
-    const auto upload = [&] { scratch.Buffer.Update(std::as_bytes(std::span{&job, 1u}), uint64_t(record) * sizeof(uint32_t)); };
-    const JobPushConstants pc{.Job = Job};
-
+    std::vector<BooleanWork> works;
+    std::vector<BooleanJob> jobs;
+    works.reserve(sources.size());
+    jobs.reserve(sources.size());
+    for (const auto &[task, first, second] : sources) {
+        // A closed surface's corners all belong to its faces, which derive two fewer triangles than corners.
+        const std::array triangles{first.Counts[1] - 2u * first.Counts[2], second.Counts[1] - 2u * second.Counts[2]};
+        const auto &job = jobs.emplace_back(BooleanJob{
+            .Operation = BooleanOperation(uint32_t(task.Param0)),
+            .VertexWork = {first.Elements[0], second.Elements[0]},
+            .FaceWork = {first.Elements[2], second.Elements[2]},
+            .Vertices = {first.Counts[0], second.Counts[0]},
+            .Faces = {first.Counts[2], second.Counts[2]},
+            .Triangles = triangles,
+            .VertexSlot = a.Vertices.Buffer.Slot,
+            .TriangleSlot = a.Triangles.Buffer.Slot,
+            .FaceTriangleStartSlot = a.FaceTriangles.Buffer.Slot,
+            .VertexNormalSlot = a.BaseVertexNormals.Buffer.Slot,
+            .FaceNormalSlot = a.BaseFaceNormals.Buffer.Slot,
+            .Connectivity = meshes.GetConnectivityRef(task.SourceId),
+            .Rotation = task.CopyRotation,
+            .Translation = task.CopyTranslation,
+        });
+        works.push_back({.Vertices = job.Vertices[0] + job.Vertices[1], .Triangles = triangles[0] + triangles[1]});
+    }
+    const auto upload = [&](size_t i) { scratch.Buffer.Update(std::as_bytes(std::span{&jobs[i], 1u}), uint64_t(works[i].Job.Offset) * sizeof(uint32_t)); };
+    const auto halfedges = [&](size_t i) { return 3u * works[i].Triangles; };
+    const auto faces = [&](size_t i) { return jobs[i].Faces[0] + jobs[i].Faces[1]; };
+    // Every pass runs over the jobs whose records lie in the scratch, each threadgroup finding its job through a table of first tiles.
+    std::vector<SlotOffset> records;
+    const auto tiles = [&](auto &&threads_of) { return std::views::iota(size_t{0}, works.size()) | std::views::transform([&](size_t i) { return TileCount(threads_of(i), JobTileThreads); }) | std::ranges::to<std::vector>(); };
+    const auto dispatch = [&](MeshPass pass, const mtl::JobTable &table) { chain.Jobs(pipelines[pass], table, JobTileThreads); };
+    // Records `fn(table, jobs)` with the table of the jobs that `threads_of(i)` threads of each job run over.
+    const auto with_table = [&](MeshPass pass, auto &&threads_of, auto &&fn) { mtl::GatherJobs(chain, &pipelines[pass], std::span{records}, tiles(threads_of), fn); };
+    const auto record = [&](MeshPass pass, auto &&threads_of) { mtl::GatherPass(chain, pipelines[pass], std::span{records}, tiles(threads_of), JobTileThreads); };
+    const auto scan = [&](auto &&run_of) { ScanScratch(chain, pipelines, std::views::iota(size_t{0}, works.size()) | std::views::transform(run_of) | std::ranges::to<std::vector>()); };
     {
         const profile::CpuScope stage{"BooleanIntersect"};
-        scratch.PlanAdditional(uint32_t(std::min<uint64_t>(2ull * Vertices + 67ull * Triangles + 1u, UINT32_MAX)));
-        const auto allocate = [&](auto &&alloc) {
-            job.Positions = alloc(3ull * Vertices);
-            job.Displacements = alloc(3ull * Vertices);
+        const auto allocate = [&](size_t i, auto &&alloc) {
+            auto &job = jobs[i];
+            const auto vertices = works[i].Vertices, triangles = works[i].Triangles;
+            job.Positions = alloc(3ull * vertices);
+            job.Displacements = alloc(3ull * vertices);
             job.Bounds = alloc(12u);
-            job.FaceTriangleFirst = alloc(uint64_t(faces) + 1u);
-            job.TriangleVertices = alloc(3ull * Triangles);
-            job.TriangleCorners = alloc(3ull * Triangles);
-            job.TriangleFaces = alloc(Triangles);
-            job.TriangleNormals = alloc(3ull * Triangles);
-            job.PolygonTriangleCounts = alloc(Triangles);
-            job.Pairs = alloc(halfedges);
-            job.EdgeSources = alloc(halfedges);
-            for (uint32_t side = 0u; side < 2u; ++side) job.Colliders[side] = AllocateCollider(alloc, triangles[side]);
-            job.IntersectionFirst = alloc(uint64_t(halfedges) + 1u);
-            job.Labels = alloc(Vertices);
-            job.Windings = alloc(Vertices);
-            job.LabelArguments = alloc(7u);
-            job.Cursors = alloc(Triangles);
+            job.FaceTriangleFirst = alloc(uint64_t(faces(i)) + 1u);
+            job.TriangleVertices = alloc(3ull * triangles);
+            job.TriangleCorners = alloc(3ull * triangles);
+            job.TriangleFaces = alloc(triangles);
+            job.TriangleNormals = alloc(3ull * triangles);
+            job.PolygonTriangleCounts = alloc(triangles);
+            job.Pairs = alloc(halfedges(i));
+            job.EdgeSources = alloc(halfedges(i));
+            for (uint32_t side = 0u; side < 2u; ++side) job.Colliders[side] = AllocateCollider(alloc, job.Triangles[side]);
+            job.IntersectionFirst = alloc(uint64_t(halfedges(i)) + 1u);
+            job.Labels = alloc(vertices);
+            job.Windings = alloc(vertices);
+            job.LabelState = alloc(2u);
+            job.Cursors = alloc(triangles);
         };
-        allocate([&](uint64_t words) { scratch.PlanAdditional(uint32_t(words)); return 0u; });
-        scratch.CommitPlanned();
-        allocate(take);
-        const auto bounds = scratch.GetMutable({job.Bounds, 12u});
-        for (uint32_t side = 0u; side < 2u; ++side) {
-            std::ranges::fill(bounds.subspan(6u * side, 3u), ~0u);
-            std::ranges::fill(bounds.subspan(6u * side + 3u, 3u), 0u);
+        uint64_t words = 0u;
+        for (size_t i = 0u; i < works.size(); ++i) {
+            words += std::min<uint64_t>(2ull * works[i].Vertices + 67ull * works[i].Triangles + 1u, UINT32_MAX) + sizeof(BooleanJob) / sizeof(uint32_t) + BooleanTableWords;
+            allocate(i, [&](uint64_t n) { words += n; return 0u; });
         }
-        upload();
-        chain.Threads(pipelines[MeshPass::BooleanVertices], pc, Vertices);
-        chain.Threads(pipelines[MeshPass::BooleanFaceCounts], pc, faces + 1u);
-        ScanScratch(chain, pipelines, job.FaceTriangleFirst, faces + 1u);
-        chain.Threads(pipelines[MeshPass::BooleanTriangles], pc, faces);
-        chain.Threads(pipelines[MeshPass::BooleanPairs], pc, halfedges);
-        chain.Threads(pipelines[MeshPass::BooleanMorton], pc, Triangles);
-        const auto leaf_groups = TileCount(std::max(triangles[0], triangles[1]), TileElements);
-        RecordColliderBuild(chain, pipelines, {scratch.Buffer.Slot, record + uint32_t(offsetof(BooleanJob, Colliders) / sizeof(uint32_t))}, leaf_groups, 2u);
-        chain.Groups(pipelines[MeshPass::BooleanRefit], pc, leaf_groups, 256u, 2u);
-        chain.Threads(pipelines[MeshPass::BooleanIntersectCount], pc, halfedges + 1u);
-        ScanScratch(chain, pipelines, job.IntersectionFirst, halfedges + 1u);
+        scratch.ReserveAdditional(words);
+        for (size_t i = 0u; i < works.size(); ++i) {
+            works[i].Job = {scratch.Buffer.Slot, take(sizeof(BooleanJob) / sizeof(uint32_t))};
+            allocate(i, take);
+            const auto bounds = scratch.GetMutable({jobs[i].Bounds, 12u});
+            for (uint32_t side = 0u; side < 2u; ++side) {
+                std::ranges::fill(bounds.subspan(6u * side, 3u), ~0u);
+                std::ranges::fill(bounds.subspan(6u * side + 3u, 3u), 0u);
+            }
+            upload(i);
+        }
+        records = works | std::views::transform(&BooleanWork::Job) | std::ranges::to<std::vector>();
+        record(MeshPass::BooleanVertices, [&](size_t i) { return works[i].Vertices; });
+        record(MeshPass::BooleanFaceCounts, [&](size_t i) { return faces(i) + 1u; });
+        scan([&](size_t i) { return Range{jobs[i].FaceTriangleFirst, faces(i) + 1u}; });
+        record(MeshPass::BooleanTriangles, faces);
+        record(MeshPass::BooleanPairs, halfedges);
+        record(MeshPass::BooleanMorton, [&](size_t i) { return works[i].Triangles; });
+        std::vector<ColliderBuild> colliders;
+        for (size_t i = 0u; i < works.size(); ++i) {
+            for (uint32_t side = 0u; side < 2u; ++side) colliders.push_back({works[i].Job.Offset + uint32_t((offsetof(BooleanJob, Colliders) + side * sizeof(ColliderRuns)) / sizeof(uint32_t)), jobs[i].Triangles[side]});
+        }
+        RecordColliderBuild(chain, pipelines, colliders);
+        record(MeshPass::BooleanRefit, [&](size_t i) { return works[i].Triangles; });
+        record(MeshPass::BooleanIntersectCount, [&](size_t i) { return halfedges(i) + 1u; });
+        scan([&](size_t i) { return Range{jobs[i].IntersectionFirst, halfedges(i) + 1u}; });
         chain.Submit();
-        const auto intersection_first = scratch.Get({job.IntersectionFirst, halfedges + 1u});
-        Intersections = job.Intersections = intersection_first[halfedges];
-        job.FirstIntersections = intersection_first[3u * triangles[0]];
-        profile::RecordCounter("BooleanIntersections", Intersections);
+        for (size_t i = 0u; i < works.size(); ++i) {
+            const auto intersection_first = scratch.Get({jobs[i].IntersectionFirst, halfedges(i) + 1u});
+            works[i].Intersections = jobs[i].Intersections = intersection_first[halfedges(i)];
+            jobs[i].FirstIntersections = intersection_first[3u * jobs[i].Triangles[0]];
+            profile::RecordCounter("BooleanIntersections", works[i].Intersections);
+        }
     }
     {
         const profile::CpuScope stage{"BooleanComponents"};
-        job.IntersectionRecords = take(6ull * Intersections);
-        job.Inclusion = take(uint64_t(Vertices) + Intersections);
-        upload();
-        chain.Threads(pipelines[MeshPass::BooleanIntersectEmit], pc, halfedges);
-        chain.Threads(pipelines[MeshPass::BooleanLabelInit], pc, Vertices);
-        const uint64_t arguments_bytes = uint64_t(job.LabelArguments) * sizeof(uint32_t);
-        for (uint32_t rounds = LabelRounds;; rounds *= 2u) {
-            const auto arguments = scratch.GetMutable({job.LabelArguments, 7u});
-            const std::array<uint32_t, 7> armed{TileCount(halfedges, TileElements), 1u, 1u, TileCount(Vertices, TileElements), 1u, 1u, 0u};
-            std::ranges::copy(armed, arguments.begin());
-            for (uint32_t round = 0u; round < rounds; ++round) {
-                chain.Indirect(pipelines[MeshPass::BooleanLink], pc, scratch.Buffer, arguments_bytes);
-                chain.Indirect(pipelines[MeshPass::BooleanJump], pc, scratch.Buffer, arguments_bytes + 3u * sizeof(uint32_t));
-                chain.Groups(pipelines[MeshPass::BooleanConverge], pc, 1u, 32u);
-            }
-            chain.Submit();
-            profile::RecordCounter("BooleanLabelRounds", rounds);
-            if (!scratch.Get({job.LabelArguments, 1u})[0]) break;
+        for (size_t i = 0u; i < works.size(); ++i) {
+            jobs[i].IntersectionRecords = take(6ull * works[i].Intersections);
+            jobs[i].Inclusion = take(uint64_t(works[i].Vertices) + works[i].Intersections);
+            std::ranges::fill(scratch.GetMutable({jobs[i].LabelState, 2u}), 0u);
+            upload(i);
         }
+        // Each submit runs its rounds over every job, with twice the rounds of the submit before it, until every job's labels converge.
+        with_table(MeshPass::BooleanLink, halfedges, [&](const mtl::JobTable &edges, auto) {
+            with_table(MeshPass::BooleanJump, [&](size_t i) { return works[i].Vertices; }, [&](const mtl::JobTable &vertices, auto) {
+                bool converged = false;
+                for (uint32_t rounds = LabelRounds; !converged; rounds *= 2u) {
+                    if (rounds == LabelRounds) {
+                        dispatch(MeshPass::BooleanIntersectEmit, edges);
+                        dispatch(MeshPass::BooleanLabelInit, vertices);
+                    }
+                    for (uint32_t round = 0u; round < rounds; ++round) {
+                        dispatch(MeshPass::BooleanLink, edges);
+                        dispatch(MeshPass::BooleanJump, vertices);
+                        chain.Threads(pipelines[MeshPass::BooleanConverge], edges.Constants, uint32_t(works.size()));
+                    }
+                    chain.Submit();
+                    profile::RecordCounter("BooleanLabelRounds", rounds);
+                    converged = std::ranges::all_of(jobs, [&](const BooleanJob &job) { return scratch.Get({job.LabelState, 1u})[0] != 0u; });
+                }
+            });
+        });
     }
     {
         const profile::CpuScope stage{"BooleanCounts"};
-        const uint64_t count_entries = 4ull * Triangles + 2ull * Intersections + Vertices + Intersections;
-        job.Counts = take(count_entries + 1u);
-        upload();
-        chain.Threads(pipelines[MeshPass::BooleanWinding], pc, Vertices);
-        chain.Threads(pipelines[MeshPass::BooleanInclusion], pc, Vertices + Intersections);
-        chain.Threads(pipelines[MeshPass::BooleanCounts], pc, uint32_t(count_entries + 1u));
-        chain.Threads(pipelines[MeshPass::BooleanIntersectionSides], pc, Intersections);
-        ScanScratch(chain, pipelines, job.Counts, uint32_t(count_entries + 1u));
+        const auto count_entries = [&](size_t i) { return 4ull * works[i].Triangles + 2ull * works[i].Intersections + works[i].Vertices + works[i].Intersections; };
+        for (size_t i = 0u; i < works.size(); ++i) {
+            jobs[i].Counts = take(count_entries(i) + 1u);
+            upload(i);
+        }
+        record(MeshPass::BooleanWinding, [&](size_t i) { return works[i].Vertices; });
+        record(MeshPass::BooleanInclusion, [&](size_t i) { return works[i].Vertices + works[i].Intersections; });
+        record(MeshPass::BooleanCounts, [&](size_t i) { return count_entries(i) + 1u; });
+        record(MeshPass::BooleanIntersectionSides, [&](size_t i) { return works[i].Intersections; });
+        scan([&](size_t i) { return Range{jobs[i].Counts, uint32_t(count_entries(i) + 1u)}; });
         chain.Submit();
-        const auto counts = scratch.Get({job.Counts, uint32_t(count_entries + 1u)});
-        job.PolygonHalfedges = counts[Triangles];
-        job.PartialEntries = counts[4u * Triangles] - job.PolygonHalfedges;
-        job.GroupEntries = counts[4u * Triangles + 2u * Intersections] - job.PolygonHalfedges - job.PartialEntries;
-        OutputVertices = counts[count_entries] - job.PolygonHalfedges - job.PartialEntries - job.GroupEntries;
+        for (size_t i = 0u; i < works.size(); ++i) {
+            auto &job = jobs[i];
+            const auto triangles = works[i].Triangles, intersections = works[i].Intersections;
+            const auto counts = scratch.Get({job.Counts, uint32_t(count_entries(i) + 1u)});
+            job.PolygonHalfedges = counts[triangles];
+            job.PartialEntries = counts[4u * triangles] - job.PolygonHalfedges;
+            job.GroupEntries = counts[4u * triangles + 2u * intersections] - job.PolygonHalfedges - job.PartialEntries;
+            works[i].OutputVertices = counts[count_entries(i)] - job.PolygonHalfedges - job.PartialEntries - job.GroupEntries;
+        }
     }
     {
         const profile::CpuScope stage{"BooleanPolygons"};
-        const uint64_t polygon_halfedges = job.PolygonHalfedges;
-        const auto allocate = [&](auto &&alloc) {
-            job.OutputEntries = alloc(OutputVertices);
+        const auto allocate = [&](size_t i, auto &&alloc) {
+            auto &job = jobs[i];
+            const uint64_t polygon_halfedges = job.PolygonHalfedges;
+            job.OutputEntries = alloc(works[i].OutputVertices);
             job.Polygons = alloc(3u * polygon_halfedges);
             job.PartialEdges = alloc(4ull * job.PartialEntries);
             job.NewEdges = alloc(4ull * job.GroupEntries);
@@ -145,22 +181,28 @@ BooleanWork::BooleanWork(state::Registry &r, mtl::ComputeChain &chain, const Mes
             job.PolygonTriangles = alloc(6u * polygon_halfedges);
             job.TriangleTotal = alloc(1u);
         };
-        allocate([&](uint64_t words) { scratch.PlanAdditional(uint32_t(words)); return 0u; });
-        scratch.CommitPlanned();
-        allocate(take);
-        scratch.GetMutable({job.TriangleTotal, 1u})[0] = 0u;
-        upload();
-        chain.Threads(pipelines[MeshPass::BooleanOutputs], pc, std::max(Vertices + Intersections, Triangles));
+        uint64_t words = 0u;
+        for (size_t i = 0u; i < works.size(); ++i) allocate(i, [&](uint64_t n) { words += n; return 0u; });
+        scratch.ReserveAdditional(words);
+        for (size_t i = 0u; i < works.size(); ++i) {
+            allocate(i, take);
+            scratch.GetMutable({jobs[i].TriangleTotal, 1u})[0] = 0u;
+            upload(i);
+        }
+        record(MeshPass::BooleanOutputs, [&](size_t i) { return std::max(works[i].Vertices + works[i].Intersections, works[i].Triangles); });
         // Each pass appends to the polygons through their atomic cursors.
         chain.Concurrent([&] {
-            chain.Threads(pipelines[MeshPass::BooleanWholeEdges], pc, halfedges);
-            chain.Threads(pipelines[MeshPass::BooleanPartialEdges], pc, halfedges);
-            chain.Threads(pipelines[MeshPass::BooleanNewEdges], pc, 2u * Intersections);
+            record(MeshPass::BooleanWholeEdges, halfedges);
+            record(MeshPass::BooleanPartialEdges, halfedges);
+            record(MeshPass::BooleanNewEdges, [&](size_t i) { return 2u * works[i].Intersections; });
         });
-        chain.Threads(pipelines[MeshPass::BooleanFaces], pc, Triangles);
+        record(MeshPass::BooleanFaces, [&](size_t i) { return works[i].Triangles; });
         chain.Submit();
-        OutputTriangles = scratch.Get({job.TriangleTotal, 1u})[0];
-        profile::RecordCounter("BooleanPolygonHalfedges", job.PolygonHalfedges);
-        profile::RecordCounter("BooleanOutputTriangles", OutputTriangles);
+        for (size_t i = 0u; i < works.size(); ++i) {
+            works[i].OutputTriangles = scratch.Get({jobs[i].TriangleTotal, 1u})[0];
+            profile::RecordCounter("BooleanPolygonHalfedges", jobs[i].PolygonHalfedges);
+            profile::RecordCounter("BooleanOutputTriangles", works[i].OutputTriangles);
+        }
     }
+    return works;
 }

@@ -20,27 +20,43 @@ struct MeshVaryings {
     float WorldScale [[user(WorldScale)]] [[flat]];
 };
 
-struct MeshletVertexVaryings {
-    float4 Position [[position]];
-    float3 WorldNormal [[user(WorldNormal)]];
-    float3 WorldPosition [[user(WorldPosition)]];
-    float4 Color [[user(Color)]];
-    float2 TexCoord0 [[user(TexCoord0)]];
-    float2 TexCoord1 [[user(TexCoord1)]];
-    float2 TexCoord2 [[user(TexCoord2)]];
-    float2 TexCoord3 [[user(TexCoord3)]];
-    float4 VertexColor [[user(VertexColor)]];
-    float4 WorldTangent [[user(WorldTangent)]];
-    // Flat per-face attributes go on unshared corner vertices because indexed output is nondeterministic on this driver.
-    float3 FlatWorldNormal [[user(FlatWorldNormal)]] [[flat]];
-    uint FaceOverlayFlags [[user(FaceOverlayFlags)]] [[flat]];
-    uint MaterialIndex [[user(MaterialIndex)]] [[flat]];
+// The shading members of a forward vertex.
+// Flat per-face attributes go on unshared corner vertices because indexed output is nondeterministic on this driver.
+#define MESHLET_SHADING_VARYINGS \
+    float4 Position [[position]]; \
+    float3 WorldNormal [[user(WorldNormal)]]; \
+    float3 WorldPosition [[user(WorldPosition)]]; \
+    float4 Color [[user(Color)]]; \
+    float2 TexCoord0 [[user(TexCoord0)]]; \
+    float2 TexCoord1 [[user(TexCoord1)]]; \
+    float2 TexCoord2 [[user(TexCoord2)]]; \
+    float2 TexCoord3 [[user(TexCoord3)]]; \
+    float4 VertexColor [[user(VertexColor)]]; \
+    float4 WorldTangent [[user(WorldTangent)]]; \
+    float3 FlatWorldNormal [[user(FlatWorldNormal)]] [[flat]]; \
+    uint FaceOverlayFlags [[user(FaceOverlayFlags)]] [[flat]]; \
+    uint MaterialIndex [[user(MaterialIndex)]] [[flat]]; \
     float WorldScale [[user(WorldScale)]] [[flat]];
+
+struct MeshletVertexVaryings {
+    MESHLET_SHADING_VARYINGS
     uint ObjectId [[user(ObjectId)]] [[flat]];
     uint ElementId [[user(ElementId)]] [[flat]];
     int Facing [[user(Facing)]] [[flat]];
     uint Topology [[user(Topology)]] [[flat]];
     float2 PointCoord [[user(PointCoord)]];
+};
+
+// The forward varyings of a transparent triangle of a material that computes inputs: the shading members, then the surface in its object's space and the triangle's key.
+struct MeshletPatternVaryings {
+    MESHLET_SHADING_VARYINGS
+    uint Topology [[user(Topology)]] [[flat]];
+    float2 PointCoord [[user(PointCoord)]];
+    float3 ObjectPosition [[user(ObjectPosition)]];
+    float3 ObjectNormal [[user(ObjectNormal)]];
+    // Half precision keeps the mesh output within its size limit.
+    half3 ObjectTangent [[user(ObjectTangent)]];
+    uint Key [[user(Key)]] [[flat]]; // The visibility id of the fragment's triangle, which identifies it among the frame's transparent triangles
 };
 
 inline float3 ShadingWorldNormal(const thread MeshVaryings &v) {
@@ -55,15 +71,21 @@ struct MeshletVisibilityPrimitiveVaryings {
     uint Id [[primitive_id]];
 };
 
-inline MeshletVertexVaryings ToMeshletVertexVaryings(MeshVaryings v) {
-    return {
-        v.Position, v.WorldNormal, v.WorldPosition, v.Color,
-        v.TexCoord0, v.TexCoord1, v.TexCoord2, v.TexCoord3, v.VertexColor,
-        v.WorldTangent,
-    };
+// Sets the shading members a forward vertex shares with the mesh varyings.
+template<typename V> inline void SetVertexVaryings(thread V &out, MeshVaryings v) {
+    out.Position = v.Position;
+    out.WorldNormal = v.WorldNormal;
+    out.WorldPosition = v.WorldPosition;
+    out.Color = v.Color;
+    out.TexCoord0 = v.TexCoord0;
+    out.TexCoord1 = v.TexCoord1;
+    out.TexCoord2 = v.TexCoord2;
+    out.TexCoord3 = v.TexCoord3;
+    out.VertexColor = v.VertexColor;
+    out.WorldTangent = v.WorldTangent;
 }
 
-inline MeshVaryings FromMeshletVertexVaryings(MeshletVertexVaryings v) {
+template<typename V> inline MeshVaryings FromMeshletVaryings(V v) {
     return {
         .Position = v.Position,
         .WorldNormal = v.WorldNormal,

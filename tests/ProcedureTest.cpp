@@ -1,21 +1,22 @@
-#include "MeshProperties.h"
 #include "ProcedureFixture.h"
 #include "TopologyCases.h"
 #include "animation/Fields.h"
+#include "animation/Keying.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/ModalModes.h"
-#include "gpu/FloatMath.h"
 #include "gltf/SourceAssets.h"
 #include "mesh/Unsubdivide.h"
+#include "physics/PhysicsSystem.h"
 #include "render/GpuBufferOps.h"
 #include "render/MaterialComponents.h"
-#include "procedure/Macros.h"
-#include "procedure/NodeEditor.h"
 #include "procedure/NodeView.h"
+#include "procedure/OccurrenceImages.h"
 #include "project/HistoryUi.h"
 #include "scene/HierarchyInstance.h"
 #include "scene/SceneGraph.h"
+#include "viewport/FrameState.h"
+#include "viewport/ViewportRenderGpu.h"
 #include <imgui_internal.h>
 
 using boost::ut::expect, boost::ut::fatal;
@@ -23,21 +24,20 @@ using boost::ut::expect, boost::ut::fatal;
 namespace {
 using namespace procedure;
 using action::UpdateOf;
-using action::nodes::AddNode, action::nodes::CollapseProcedure, action::nodes::DeleteNodes, action::nodes::DuplicateNodes, action::nodes::InsertNode, action::nodes::Link, action::nodes::SelectItems, action::nodes::SetAttributeName, action::nodes::SetDisplay, action::nodes::SetInlineSelection;
+using action::nodes::AddNode, action::nodes::DeleteNodes, action::nodes::DuplicateNodes, action::nodes::InsertNode, action::nodes::Link, action::nodes::SelectItems, action::nodes::SetAttributeName, action::nodes::SetDisplay, action::nodes::SetInlineSelection;
 using ::test::Op, ::test::Patchwork, ::test::Region, ::test::SelectionWhere, ::test::TopologyCases;
 
-std::vector<Corner> Points(const MeshStore &meshes, uint32_t id, auto &&transform) {
-    const Mesh mesh{meshes, id};
-    std::vector<Corner> points;
-    for (const auto v : mesh.vertices()) {
-        const auto p = transform(*v, test::Position(mesh, v));
-        points.push_back({p.x, p.y, p.z});
-    }
-    std::ranges::sort(points);
-    return points;
-}
 std::vector<Corner> SourcePoints(ProcedureFixture &f, state::Entity mesh_entity, auto &&transform) {
-    return f.WithSource(mesh_entity, [&](uint32_t id) { return Points(f.Store(), id, transform); });
+    return f.WithSource(mesh_entity, [&](uint32_t id) {
+        const Mesh mesh{f.Store(), id};
+        std::vector<Corner> points;
+        for (const auto v : mesh.vertices()) {
+            const auto p = transform(*v, test::Position(mesh, v));
+            points.push_back({p.x, p.y, p.z});
+        }
+        std::ranges::sort(points);
+        return points;
+    });
 }
 bool Near(const std::vector<Corner> &a, const std::vector<Corner> &b) {
     return a.size() == b.size() && std::ranges::equal(a, b, [](const Corner &p, const Corner &q) {
@@ -46,7 +46,7 @@ bool Near(const std::vector<Corner> &a, const std::vector<Corner> &b) {
 }
 std::vector<Corner> ShapePositions(const auto &shape) {
     std::vector<Corner> points;
-    for (const auto p : primitive::CreateMesh(shape).Positions) points.push_back({p.x, p.y, p.z});
+    for (const auto p : primitive::CreateMesh(shape).Data.Positions) points.push_back({p.x, p.y, p.z});
     std::ranges::sort(points);
     return points;
 }
@@ -90,9 +90,65 @@ GeometrySelection LiveHandles(const MeshStore &meshes, uint32_t id, const Inline
     }
     return handles;
 }
+// Whether the path, flattened into straight pieces, passes through the interior of the rectangle.
+bool Enters(std::span<const vec2> path, const CanvasGeometry::Rect &rect) {
+    constexpr float Inset{1e-3f};
+    constexpr int Pieces{32};
+    const auto im = [](vec2 p) { return ImVec2{p.x, p.y}; };
+    for (size_t i = 1u; i < path.size(); i += 3u) {
+        auto a = im(path[i - 1u]);
+        for (int k = 1; k <= Pieces; ++k) {
+            const auto b = ImBezierCubicCalc(im(path[i - 1u]), im(path[i]), im(path[i + 1u]), im(path[i + 2u]), float(k) / float(Pieces));
+            float enter = 0.f, leave = 1.f;
+            for (const auto [p, q] : {std::pair{a.x - b.x, a.x - rect.Min.x - Inset}, std::pair{b.x - a.x, rect.Max.x - Inset - a.x}, std::pair{a.y - b.y, a.y - rect.Min.y - Inset}, std::pair{b.y - a.y, rect.Max.y - Inset - a.y}}) {
+                if (p == 0.f) leave = q < 0.f ? -1.f : leave;
+                else if (p < 0.f) enter = std::max(enter, q / p);
+                else leave = std::min(leave, q / p);
+            }
+            if (enter <= leave) return true;
+            a = b;
+        }
+    }
+    return false;
+}
+bool Overlap(const CanvasGeometry::Rect &a, const CanvasGeometry::Rect &b) { return a.Min.x < b.Max.x && b.Min.x < a.Max.x && a.Min.y < b.Max.y && b.Min.y < a.Max.y; }
+
+// Each wire of a definition's page is the authored link it stands for.
+void CheckDefinitionWires(const state::Registry &a, state::Entity page) {
+    const auto view = ProjectNetwork(a, page, {});
+    for (uint32_t n = 0u; n < view.Nodes.size(); ++n) {
+        const auto entity = view.Nodes[n].Item;
+        for (uint16_t slot = 0u; slot < InputsOf(view, n); ++slot) {
+            const auto wire = view.Wires[view.InputFirst[n] + slot];
+            const auto authored = InputOf(a, entity, a.any_of<Subnet, SubnetDefinition>(entity) ? SocketId(view, n, slot) : slot);
+            expect(authored == (wire.FromNode == NoNode ? SocketLink{} : SocketLink{view.Nodes[wire.FromNode].Item, SocketId(view, wire.FromNode, wire.FromSocket)}));
+        }
+    }
+}
+// Draws the panels read-only until two frames in a row draw the same.
+// A frame sizes its windows by the content of the frame before, and a scrollbar that comes or goes changes the width content wraps at.
+std::vector<std::byte> Settled(Fixture &f, PanelContext &panels) {
+    auto drawn = DrawPanels(f, panels);
+    for (int frame = 0; frame < 4; ++frame) {
+        auto next = DrawPanels(f, panels);
+        if (next == drawn) break;
+        drawn = std::move(next);
+    }
+    return drawn;
+}
+// The texels of an image of 32-bit float channels, as their floats.
+std::vector<float> Texels(MTL::Texture *image) {
+    const auto format = image->pixelFormat();
+    const auto stride = format == MTL::PixelFormatR32Float ? 1u : format == MTL::PixelFormatRG32Float ? 2u : 4u;
+    const auto width = uint32_t(image->width()), height = uint32_t(image->height());
+    std::vector<float> texels(size_t(width) * height * stride);
+    image->getBytes(texels.data(), width * stride * sizeof(float), MTL::Region::Make2D(0, 0, width, height), 0);
+    return texels;
+}
 } // namespace
 
 // A display path of only topology tasks on one Source node draws what those tasks make of a clone of the Source, and a faulted node passes its input through.
+// With EveryStep, the fresh-cook and canvas checks follow.
 void ProcedureFixture::CheckStep() {
     auto &meshes = Store();
     bool cloned = false;
@@ -105,39 +161,131 @@ void ProcedureFixture::CheckStep() {
         for (const auto n : plan.Order) {
             if (!upstream[n]) continue;
             if (std::ranges::any_of(std::span{plan.Inputs}.subspan(plan.InputFirst[n], plan.InputFirst[n + 1] - plan.InputFirst[n]), [](const auto &input) { return input.Constant.has_value(); })) runs = false;
-            const auto [node, kind] = plan.Nodes[n];
+            const auto &[node, kind, parent, builtin] = plan.Nodes[n];
+            // A built-in definition's nodes hold their parameters in the library.
+            if (builtin) {
+                runs = false;
+                break;
+            }
             if (kind == KindOf<procedure::Extrude> && R.get<const procedure::Extrude>(node).OffsetScale != 0.f) runs = false;
             if (kind == KindOf<procedure::Source> && !source) source = R.get<const SourceState>(node);
             else if (std::ranges::contains(TopologyCases, std::optional{kind}, &::test::TopologyCase::Kind)) path.push_back(plan.Nodes[n]);
             else runs = false;
         }
-        if (!runs || !source || path.empty()) continue;
+        // A Source node holding no mesh faults, so its path has no kernel reference.
+        if (!runs || !source || path.empty() || (source->State == store::Hash128{} && !meshes.TryGet(source->StoreId))) continue;
         const auto id = CloneSource(*source);
         cloned = true;
-        for (const auto [node, kind] : path) {
-            if (R.all_of<NodeError>(node)) continue;
+        for (const auto &[node, kind, parent, builtin] : path) {
+            if (Fault(node)) continue;
             const auto *inline_selection = R.try_get<const InlineSelection>(node);
+            const auto listed = inline_selection && !inline_selection->All ? std::optional{LiveHandles(meshes, id, *inline_selection)} : std::nullopt;
             const TopologyInput input{
-                .In = inline_selection && !inline_selection->All ? std::optional<SelectionSource>{LiveHandles(meshes, id, *inline_selection)} : std::nullopt,
+                .In = listed ? std::optional<SelectionSource>{*listed} : std::nullopt,
                 .Domain = inline_selection ? inline_selection->Domain : Element::Vertex,
             };
+            // A hull and a beautify plan on the host as the cook's GPU planners do.
+            const Mesh record{meshes, id};
+            const auto selection = listed ? *listed : AllHandles(record);
             std::vector<MeshTopologyTask> tasks;
             VisitKind(kind, [&]<typename K> {
-                if constexpr (requires(const K &p) { PlanTopology(R, p, id, input); }) {
+                if constexpr (std::same_as<K, action::mesh::ConvexHull>) {
+                    tasks = ConvexHullTasks(R, record, selection);
+                } else if constexpr (std::same_as<K, action::mesh::BeautifyFaces>) {
+                    if (auto task = BeautifyFaceTask(R, record, selection)) tasks.push_back(std::move(*task));
+                } else if constexpr (requires(const K &p) { PlanTopology(R, p, id, input); }) {
                     auto planned = PlanTopology(R, R.get<const K>(node), id, input);
-                    if constexpr (std::same_as<decltype(planned), std::vector<MeshTopologyTask>>) tasks = std::move(planned);
-                    else if constexpr (std::same_as<decltype(planned), MeshTopologyTask>) tasks.push_back(std::move(planned));
+                    if constexpr (std::same_as<decltype(planned), MeshTopologyTask>) tasks.push_back(std::move(planned));
                     else if (planned) tasks.push_back(std::move(*planned));
                 }
             });
-            expect(!tasks.empty());
-            ExecuteGeometryTopologyStages(R, tasks);
+            // A plan without a task leaves the record as the cook's node leaves it.
+            if (!tasks.empty()) ExecuteGeometryTopologyStages(R, tasks);
         }
         expect(Describe(meshes, id) == Shaped(mesh));
         meshes.Release(id);
     }
     // The present node holds mesh storage as it stood before the clones.
     if (cloned) P->History.Revert();
+    if (EveryStep) CheckEnd();
+}
+
+// The page the Nodes panel keeps across steps draws what a page built from nothing draws.
+// Every page of the Nodes panel draws the same Nodes and Properties panels interactively as read-only, and drawing leaves the document unchanged.
+// A page at its automatic layout keeps its node boxes and lanes apart and draws each wire clear of the box of every node but its two, and a definition's wires are its authored links.
+void ProcedureFixture::CheckCanvas() {
+    auto &panels = *Panels;
+    const auto document = P->History.MaterializeLive();
+    const auto kept = Settled(*this, panels);
+    panels.Nodes.Page.reset();
+    expect(Settled(*this, panels) == kept) << "the kept page differs from a page built from nothing";
+    // The pages draw in a Nodes panel of their own, which leaves the kept page as it is.
+    NodesPanel pages_panel{{"Nodes"}};
+    std::swap(panels.Nodes, pages_panel);
+    std::vector<std::pair<state::Entity, std::vector<state::Entity>>> pages{{state::Document, {}}};
+    for (const auto scene : SortedEntities(R.view<const Scene>())) pages.push_back({scene, {}});
+    for (const auto network : SortedEntities(R.view<const NetworkNodes>())) {
+        pages.push_back({network, {}});
+        for (const auto node : NodesOf(R, network))
+            if (R.all_of<Subnet>(node)) pages.push_back({network, {node}});
+    }
+    for (const auto &[network, path] : pages) {
+        EnterNetwork(panels.Nodes, network, state::Null, path);
+        Settled(*this, panels);
+        const auto drawn = DrawPanels(*this, panels, true);
+        expect(DrawPanels(*this, panels) == drawn) << "interactive and read-only drawing differ";
+        const auto page = path.empty() ? network : path.back();
+        const auto definition = R.all_of<Subnet>(page) ? InstanceDefinition(R, page) : DefinitionRef{&R, R.all_of<SubnetDefinition>(page) ? page : state::Null};
+        if (definition.Entity != state::Null) CheckDefinitionWires(*definition.Registry, definition.Entity);
+        if (definition.Entity != state::Null ? definition.Registry->all_of<NetworkLayout>(definition.Entity) : R.all_of<NetworkLayout>(network)) continue;
+        const auto geometry = DrawnGeometry(R, panels.Nodes);
+        auto cells = geometry.Nodes;
+        cells.append_range(geometry.Lanes);
+        for (size_t i = 0u; i < cells.size(); ++i) {
+            for (size_t j = i + 1u; j < cells.size(); ++j) expect(!Overlap(cells[i], cells[j]));
+        }
+        for (const auto &wire : geometry.Wires) {
+            for (uint32_t n = 0u; n < geometry.Nodes.size(); ++n) {
+                if (n != wire.From && n != wire.To) expect(!Enters(wire.Path, geometry.Nodes[n]));
+            }
+        }
+    }
+    std::swap(panels.Nodes, pages_panel);
+    expect(P->History.MaterializeLive() == document) << "drawing changed the document";
+}
+
+// Each procedure mesh draws what a cook of its graph from nothing makes, and each image a Bake or filter occurrence keeps equals an evaluation of the occurrence from nothing.
+// The kept images return afterwards, so the check leaves the evaluations' state as it found it.
+void ProcedureFixture::CheckFreshCooks() {
+    auto &images = CurrentImages(R);
+    auto kept = std::exchange(images.Images, {});
+    std::vector<state::Entity> drawn;
+    for (const auto [mesh, plan] : R.view<const CookPlan>().each()) {
+        // A mesh that publishes instances draws them as objects of their own, which a cook that publishes nothing leaves out.
+        const auto *instances = R.try_get<const ProcedureInstances>(mesh);
+        if (plan.ResultNode != NoNode && DrawnStoreId(R, mesh) && (!instances || instances->Entities.empty())) drawn.push_back(mesh);
+    }
+    std::ranges::sort(drawn);
+    if (!drawn.empty()) {
+        ReadAtFrame(R, drawn, R.get<const TimelinePlayback>(state::Document).CurrentFrame, [&](std::span<const uint32_t> records) {
+            for (size_t i = 0; i < drawn.size(); ++i) {
+                const auto fresh = records[i] == InvalidOffset ? Shape{} : Describe(Store(), records[i]);
+                expect(fresh == Shaped(drawn[i])) << "mesh" << state::Index(drawn[i]) << "draws a stale cook";
+            }
+        });
+    }
+    WaitForRender(R);
+    for (const auto &[key, image] : kept) {
+        const auto fresh = OccurrenceImageOf(R, key.first, key.second);
+        expect(fresh.has_value() == (image.Views != nullptr)) << "mesh" << state::Index(key.first) << "keeps a stale image";
+        if (fresh && image.Views) expect(Texels(*image.Views->Texture) == Texels(fresh->Image)) << "mesh" << state::Index(key.first) << "keeps a stale image";
+    }
+    images.Images = std::move(kept);
+    // A frame settles and lays out what the evaluations' restores left, which an image comparison's frame does under rendering.
+    if (!::Render) {
+        P->Settle();
+        LayOutMeshes(R);
+    }
 }
 
 namespace {
@@ -160,14 +308,34 @@ void OperatorKinds(ProcedureFixture &f, Fixture &other) {
     }
     // Generator kinds follow PrimitiveParameters' alternatives.
     for (const PrimitiveParameters shape : {PrimitiveParameters{primitive::Plane{}}, PrimitiveParameters{primitive::Circle{}}, PrimitiveParameters{primitive::Cube{}}, PrimitiveParameters{primitive::IcoSphere{}}, PrimitiveParameters{primitive::UVSphere{}}, PrimitiveParameters{primitive::QuadSphere{}}, PrimitiveParameters{primitive::Torus{}}, PrimitiveParameters{primitive::Cylinder{}}}) {
-        Scenario(f, other, std::visit([]<typename K>(const K &) { return std::string{Title<K>.c_str()}; }, shape), [shape](ProcedureFixture &f) {
+        Scenario(f, other, std::visit([]<typename K>(const K &) { return std::string{field::TypeLabel<K>.c_str()}; }, shape), [shape](ProcedureFixture &f) {
             auto &meshes = f.Store();
             const auto mesh = f.AddMesh(primitive::Plane{});
             const auto source = f.SourceOf(mesh);
             const auto generator = f.Append(mesh, uint16_t(KindOf<primitive::Plane> + shape.index()));
             const auto subdivide = f.Append(mesh, KindOf<action::mesh::Subdivide>);
             f.Route(mesh, {generator, subdivide});
-            const auto generated = CreateMesh(f.R, {.Data = primitive::CreateMesh(shape), .FlatShaded = true}).StoreId;
+            // The generated mesh holds texture coordinate set 0 while a material it draws reads the set.
+            const auto texcoords = [&] { return (meshes.Get(f.Output(mesh)).CornerAttributes & MeshAttributeBit_TexCoord0) != 0u; };
+            expect(!texcoords());
+            f.Do(action::object::AddMaterial{0u, mesh});
+            const auto material = MaterialAt(f.R, meshes.Arenas().PrimitiveMaterials.Get(meshes.Get(f.Output(mesh)).PrimitiveMaterials)[0]);
+            constexpr auto strength = uint16_t(offsetof(PBRMaterial, Anisotropy) + offsetof(Anisotropy, Strength));
+            f.Do(action::object::UpdateMaterial<float>{material, strength, .5f});
+            expect(texcoords());
+            // The set lies in the unit square, and each face maps to a polygon of nonzero area.
+            const Mesh output{meshes, f.Output(mesh)};
+            const auto &record = meshes.Get(f.Output(mesh));
+            for (const auto face : output.faces()) {
+                const auto uvs = test::FaceHalfedges(output, face) | std::views::transform([&](Mesh::HH h) { return meshes.Arenas().CornerUvs[0].Get(record.CornerUvs[0], *h); }) | std::ranges::to<std::vector>();
+                float twice_area = 0.f;
+                for (size_t i = 0; i < uvs.size(); ++i) twice_area += uvs[i].x * uvs[(i + 1) % uvs.size()].y - uvs[(i + 1) % uvs.size()].x * uvs[i].y;
+                expect(std::ranges::all_of(uvs, [](vec2 uv) { return uv.x >= 0.f && uv.x <= 1.f && uv.y >= 0.f && uv.y <= 1.f; }));
+                expect(twice_area != 0.f);
+            }
+            f.Do(action::object::UpdateMaterial<float>{material, strength, 0.f});
+            expect(!texcoords());
+            const auto generated = CreateMesh(f.R, primitive::CreateMesh(shape)).StoreId;
             const auto reference = Reference(f, generated, [&](uint32_t clone) {
                                        f.Run(clone, {Op(MeshTopologyOp::Subdivide, 1.f, TopologyFlagSelectAll)});
                                        return GeometrySelection{};
@@ -187,7 +355,7 @@ void OperatorKinds(ProcedureFixture &f, Fixture &other) {
         f.Do(Link{mesh, f.Node(mesh, 0u), 0u, second, 0u});
         for (const auto read : {first, second}) {
             f.Do(SetDisplay{mesh, read});
-            expect(!f.R.any_of<NodeError>(first) && !f.R.any_of<NodeError>(second));
+            expect(!f.Fault(first) && !f.Fault(second));
             expect(f.SourceOf(mesh) == source);
         }
     });
@@ -203,107 +371,38 @@ struct GraphRow {
     std::string_view Name;
     Graph (*Build)(ProcedureFixture &);
 };
+// The link from an op output into a consumer input that calls its program at each element, the default of the read that takes its place in the stored graph, and the input's domain.
+struct CalledInput {
+    uint32_t Link;
+    OpLiteral Default;
+    AttributeDomain Domain{AttributeDomain::Vertex};
+};
 struct GraphData {
     std::string_view Name;
     GraphDescription Description;
     void (*Oracle)(ProcedureFixture &, const BuiltGraph &);
     void (*Edit)(ProcedureFixture &, state::Entity);
+    std::optional<CalledInput> Called{};
+    // The face counts of the output and of the edited copy's output.
+    std::optional<uint32_t> Faces{}, EditedFaces{};
 };
 
-// The graph's output matches its oracle, a duplicate cooks the same and edits apart, and deleting and collapsing the procedure leave its output.
+// The graph's output matches its oracle, and a duplicate of its object cooks the same and edits apart.
 void Survives(ProcedureFixture &f, Fixture &other, std::string_view name, auto &&build) {
     Scenario(f, other, std::string{name}, [&build](ProcedureFixture &f) {
         auto &r = f.R;
         const auto graph = build(f);
         const auto mesh = graph.Mesh;
         if (graph.Oracle) graph.Oracle(f);
+        if (!graph.Edit) return;
         const auto output = f.Shaped(mesh);
-        const auto display = r.get<const GeometryProcedure>(mesh);
-        f.Do(SetDisplay{mesh});
-        expect(f.Shaped(mesh) == Shape{});
-        const auto *instances = r.try_get<const ProcedureInstances>(mesh);
-        expect(!instances || instances->Entities.empty());
-        f.Do(SetDisplay{mesh, display.DisplayNode, display.DisplayPort});
-        expect(f.Shaped(mesh) == output);
-        const auto unused = f.Append(mesh, KindOf<action::mesh::Bevel>);
-        expect(r.get<const GeometryProcedure>(mesh).DisplayNode == display.DisplayNode);
-        expect(f.Shaped(mesh) == output);
-        const auto cooks = Cooks(r);
-        f.Do(UpdateOf<&action::mesh::Bevel::Width>(unused, .2f));
-        std::vector<state::Entity> groups;
-        auto member = r.get<const GeometryProcedure>(mesh).DisplayNode;
-        for (int depth = 0; depth < 2; ++depth) {
-            f.Do(action::nodes::GroupNodes{mesh, {member}});
-            member = r.get<const GeometryProcedure>(mesh).Last;
-            groups.push_back(member);
-            expect(f.Shaped(mesh) == output && Cooks(r) == cooks);
-        }
-        if (!graph.Edit) {
-            for (const auto group : groups | std::views::reverse) {
-                f.Do(action::nodes::UngroupNodes{group});
-                expect(f.Shaped(mesh) == output && Cooks(r) == cooks);
-            }
-            return;
-        }
         f.Do(action::selection::Select{f.Object(mesh)});
         f.Do(action::object::Duplicate{});
         const auto copy = r.get<const Instance>(FindActiveEntity(r)).Entity;
         expect(copy != mesh && f.Output(copy) != f.Output(mesh) && f.Shaped(copy) == output);
         graph.Edit(f, copy);
         expect(f.Shaped(copy) != output && f.Shaped(mesh) == output);
-        f.Undo();
-        f.Undo();
-        const auto procedures = r.view<const GeometryProcedure>().size();
-        f.Do(action::object::Delete{});
-        expect(!r.valid(mesh) && r.view<const GeometryProcedure>().size() + 1u == procedures);
-        f.Undo();
-        expect(f.Shaped(mesh) == output);
-        f.Do(CollapseProcedure{mesh});
-        const auto &collapsed = r.get<const CookPlan>(mesh);
-        expect(collapsed.Nodes.size() == 1u && collapsed.Nodes[0].Kind == KindOf<procedure::Source>);
-        expect(f.SourceOf(mesh).StoreId == f.Output(mesh) && f.Shaped(mesh) == output);
     });
-}
-
-void ExtrudeDisplacement(ProcedureFixture &f) {
-    using E = procedure::Extrude;
-    using M = action::mesh::ExtrudeMode;
-    for (const auto mode : {M::Region, M::Edges, M::FacesIndividual, M::Vertices}) {
-        const auto mesh = f.AddMesh(primitive::Plane{});
-        const Mesh plane{f.Store(), f.Output(mesh)};
-        const auto normal = test::Normal(plane, *plane.faces().begin());
-        const auto extrude = f.Append(mesh, KindOf<E>);
-        f.Do(UpdateOf<&E::Mode>(extrude, mode));
-        f.Route(mesh, {f.Node(mesh, 0u), extrude});
-        const auto topology = f.R.get<const NodeExtrusion>(extrude).State;
-        const auto zero = f.Shaped(mesh);
-        for (const float distance : {.25f, .75f, -.5f, 0.f}) {
-            f.Do(UpdateOf<&E::OffsetScale>(extrude, distance));
-            expect(f.R.get<const NodeExtrusion>(extrude).State == topology);
-            const Mesh result{f.Store(), f.Output(mesh)};
-            uint32_t displaced = 0u;
-            for (const auto vertex : result.vertices()) {
-                const float height = Dot(test::Position(result, vertex), normal);
-                expect(std::abs(height) < .0001f || std::abs(height - distance) < .0001f);
-                if (std::abs(height - distance) < .0001f) ++displaced;
-            }
-            expect(displaced >= 4u);
-            if (distance == 0.f) expect(f.Shaped(mesh) == zero);
-        }
-        f.Do(UpdateOf<&E::AlongNormals>(extrude, false));
-        f.Do(UpdateOf<&E::Offset>(extrude, vec3{.3f, -.2f, .7f}));
-        f.Do(UpdateOf<&E::OffsetScale>(extrude, 2.f));
-        expect(f.Shaped(mesh) != zero);
-        const auto subdivide = f.Append(mesh, KindOf<action::mesh::Subdivide>);
-        f.Route(mesh, {f.Node(mesh, 0u), extrude, subdivide});
-        const auto downstream = f.Shaped(mesh);
-        f.Do(action::nodes::SetOperationHandle{extrude, f.Object(mesh), HandleParameter::ExtrudeScale});
-        f.Do(UpdateOf<&E::OffsetScale>(extrude, 1.f));
-        f.Do(action::nodes::SetOperationHandle{});
-        expect(f.R.get<const GeometryProcedure>(mesh).DisplayNode == subdivide);
-        expect(f.Shaped(mesh) != downstream);
-        expect(f.R.get<const NodeExtrusion>(extrude).State == topology);
-    }
 }
 
 vec3 OffsetOf(uint32_t v) { return {float(v % 7u), 1.f, -float(v % 3u)}; }
@@ -331,17 +430,17 @@ void ExpectColumnsThrough(ProcedureFixture &f, state::Entity mesh, int last) {
 
 std::vector<uint16_t> PortIds(const state::Registry &r, state::Entity subnet) {
     std::vector<uint16_t> ids;
-    for (const auto &port : r.get<const procedure::SubnetInterface>(subnet).Ports) ids.push_back(port.Id);
+    for (const auto &port : InterfaceOf(r, subnet)->Ports) ids.push_back(port.Id);
     return ids;
 }
 // Feeds the cube's Source node and a generated bar through it into the macro's first two ports, displays its third, and returns the mesh and the port ids.
 std::pair<state::Entity, std::vector<uint16_t>> CubeAndBarInto(ProcedureFixture &f, MacroIndex macro) {
     const auto mesh = f.AddMesh(primitive::Cube{});
     const auto source = f.Node(mesh, 0u);
-    const auto box = f.Append(mesh, KindOf<primitive::Cube>);
-    f.Do(UpdateOf<&primitive::Cube::HalfExtents>(box, vec3{2.f, .5f, .5f}));
-    f.Do(action::nodes::AddMacro{mesh, macro});
+    const auto box = f.Append(mesh, KindOf<primitive::Cube>, {Set<&primitive::Cube::HalfExtents>(vec3{2.f, .5f, .5f})});
+    f.Do(AddNode{mesh, action::nodes::MacroNode{macro}});
     const auto node = ActiveNodeOf(f.R, mesh);
+    expect(InstanceName(f.R, node) == Macros[macro].Name);
     const auto ports = PortIds(f.R, node);
     f.Do(Link{mesh, source, f.Out(source), node, ports[0]});
     f.Do(Link{mesh, box, f.Out(box), node, ports[1]});
@@ -383,14 +482,13 @@ void MoveFirstVertex(ProcedureFixture &f, uint32_t source) {
 
 void ExpectUpperExtruded(ProcedureFixture &f, const BuiltGraph &g) {
     const auto &meshes = f.Store();
-    const auto kernel = SourceReference(f, g.Mesh, [&](uint32_t clone) {
+    const auto extruded = EditedSource(f, g.Mesh, [&](uint32_t clone) {
         const Mesh cube{meshes, clone};
         const auto upper = SelectionWhere(cube, [&](he::VH v) { return test::Position(cube, v).z > 0.f; });
         expect(upper.Faces.size() == 1u);
         f.Run(clone, {{.Op = MeshTopologyOp::ExtrudeRegion, .Selection = upper}});
-        return GeometrySelection{};
     });
-    expect(f.Shaped(g.Mesh) == kernel.Output);
+    expect(f.Shaped(g.Mesh) == extruded);
 }
 // The output vertices beyond and within the unit major radius around the Y axis.
 std::pair<uint32_t, uint32_t> OuterInner(ProcedureFixture &f, state::Entity mesh) {
@@ -458,7 +556,7 @@ void ExpectSourceInstances(ProcedureFixture &f, const BuiltGraph &g) {
     const auto &r = f.R;
     const auto plane = ShapePositions(primitive::Plane{});
     const auto &entities = r.get<const ProcedureInstances>(g.Mesh).Entities;
-    expect(!r.any_of<NodeError>(g.Nodes[2]));
+    expect(!f.Fault(g.Nodes[2]));
     expect(fatal(entities.size() == plane.size()));
     const auto instanced = r.get<const Instance>(entities.front()).Entity;
     const auto placed = r.get<const MeshHandle>(instanced).StoreId;
@@ -469,32 +567,26 @@ void ExpectSourceInstances(ProcedureFixture &f, const BuiltGraph &g) {
 void UnlinkInstance(ProcedureFixture &f, state::Entity mesh) {
     const auto instancer = f.Node(mesh, 2u);
     f.Do(action::nodes::Unlink{mesh, instancer, 1u});
-    expect(f.R.all_of<NodeError>(instancer) && f.R.get<const NodeError>(instancer).Fault == NodeFault::NoMesh);
+    expect(f.Fault(instancer) == NodeFault::NoMesh);
     const Mesh points{f.Store(), f.Output(mesh)};
     const auto *instances = f.R.try_get<const ProcedureInstances>(mesh);
     expect(points.VertexCount() == 4u && points.FaceCount() == 0u && (!instances || instances->Entities.empty()));
 }
-// The joined vertex blocks lie in descending order, and the Delete still removes every vertex at or above y = 1.5.
+// The joined vertices share one block, and the Delete still removes every vertex at or above y = 1.5.
 void ExpectJoinedSelection(ProcedureFixture &f, const BuiltGraph &g) {
     const auto &meshes = f.Store();
-    expect(!f.R.any_of<NodeError>(g.Nodes[4]) && !f.R.any_of<NodeError>(g.Nodes[5]));
+    expect(!f.Fault(g.Nodes[5]) && !f.Fault(g.Nodes[6]));
     const auto id = f.Output(g.Mesh);
-    const auto blocks = meshes.GetBlockList(id, MeshStore::ElementDomain::Vertex).Blocks;
-    expect(fatal(blocks.size() == 2u));
-    expect(blocks.back() < blocks.front());
+    expect(meshes.GetBlockList(id, MeshStore::ElementDomain::Vertex).Blocks.size() == 1u);
     const Mesh output{meshes, id};
     expect(output.VertexCount() == 12u);
     for (const auto v : output.vertices()) expect(test::Position(output, v).y < 1.5f);
 }
-void ExpectFaces(ProcedureFixture &f, state::Entity mesh, uint32_t faces) {
-    const auto count = Mesh{f.Store(), f.Output(mesh)}.FaceCount();
-    expect(count == faces) << "faces" << count;
-}
 
-// A sphere's cap above y = 0.9, with a vertex moved before its Source node's state is kept, insets through Position, Compare and Inset.
+// A sphere's cap above y = 0.9, with a vertex moved before its Source node's state is kept, insets through position, extract and if greater ops and Inset.
 Graph CapInset(ProcedureFixture &f) {
-    const auto [mesh, nodes] = Build(f, {primitive::UVSphere{.Slices = 128u, .Stacks = 64u}, {{KindOf<Position>}, {KindOf<Compare>, {Set<&Compare::Component>(VectorComponent::Y), Set<&Compare::B>(.9f)}}, {KindOf<action::mesh::Inset>}}, {{1, 2, 0}, {2, 3, 1}, {0, 3, 0}}, 3, MoveFirstVertex});
-    const auto inset = nodes[3];
+    const auto [mesh, nodes] = Build(f, {primitive::UVSphere{.Slices = 128u, .Stacks = 64u}, {{"position"}, {"extract", {Literal("index", 1)}}, {"ifgreater", {Literal("value2", .9f)}}, {KindOf<action::mesh::Inset>}}, {{1, 2, 0, "in"}, {2, 3, 0, "value1"}, {3, 4, 1}, {0, 4, 0}}, 4, MoveFirstVertex});
+    const auto inset = nodes[4];
     const auto first = f.Shaped(mesh);
     const auto set = [&](float thickness) {
         f.Do(UpdateOf<&action::mesh::Inset::Thickness>(inset, thickness));
@@ -511,36 +603,34 @@ Graph CapInset(ProcedureFixture &f) {
     return {
         mesh,
         [mesh](ProcedureFixture &f) {
-            const auto kernel = SourceReference(f, mesh, [&](uint32_t clone) {
+            const auto inset = EditedSource(f, mesh, [&](uint32_t clone) {
                 const Mesh sphere{f.Store(), clone};
                 const auto cap = SelectionWhere(sphere, [&](he::VH v) { return test::Position(sphere, v).y > .9f; });
                 f.Run(clone, {{.Op = MeshTopologyOp::InsetRegion, .Param0 = .06f, .Flags = TopologyFlagEvenOffset, .Selection = cap}});
-                return GeometrySelection{};
             });
-            expect(f.Shaped(mesh) == kernel.Output);
+            expect(f.Shaped(mesh) == inset);
         },
-        [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&action::mesh::Inset::Thickness>(f.Node(mesh, 3u), .2f)); },
+        [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&action::mesh::Inset::Thickness>(f.Node(mesh, 4u), .2f)); },
     };
 }
 
-// A Store Selection of the cube's upper face survives a later subdivision, so a Delete reading it through Named Attribute removes the four faces it became.
+// A Store Selection of the cube's upper face survives a later subdivision, so a Delete reading it through a geometric property op removes the four faces it became.
 Graph StoreSelectionDelete(ProcedureFixture &f) {
     const auto &meshes = f.Store();
     const auto mesh = f.AddMesh(primitive::Cube{});
     const auto store = f.Append(mesh, KindOf<StoreSelection>);
-    const auto named = f.Append(mesh, KindOf<procedure::NamedAttribute>);
+    const auto named = f.Append(mesh, "geompropvalue", {Literal("default", false)});
     const auto remove = f.Append(mesh, KindOf<action::mesh::Delete>);
     const auto subdivide = f.Append(mesh, KindOf<action::mesh::Subdivide>);
     f.Do(SetAttributeName{store, "upper"});
-    f.Do(SetAttributeName{named, "upper"});
-    f.Do(UpdateOf<&procedure::NamedAttribute::Type>(named, AttributeType::Bool));
+    Text("geomprop", "upper")(f, named);
     f.Do(UpdateOf<&action::mesh::Delete::Mode>(remove, action::mesh::DeleteMode::OnlyFaces));
     const Mesh cube{meshes, f.Output(mesh)};
     GeometrySelection upper;
     for (const auto face : cube.faces())
         if (test::Centroid(cube, face).y > .5f) upper.Faces.push_back(*face);
     f.Do(SetInlineSelection{store, std::make_unique<InlineSelection>(SelectionOf(upper, Element::Face))});
-    f.Do(Link{mesh, named, 0u, remove, 1u});
+    f.Do(Link{mesh, named, f.Out(named), remove, 1u});
     f.Route(mesh, {f.Node(mesh, 0u), store, remove});
     expect(Mesh{meshes, f.Output(mesh)}.FaceCount() == 5u);
     f.Do(InsertNode{mesh, subdivide, remove, 0u, 0u});
@@ -548,8 +638,8 @@ Graph StoreSelectionDelete(ProcedureFixture &f) {
         mesh,
         [mesh, named, remove](ProcedureFixture &f) {
             const auto &meshes = f.Store();
-            expect(!f.R.any_of<NodeError>(named) && !f.R.any_of<NodeError>(remove));
-            const auto kernel = SourceReference(f, mesh, [&](uint32_t clone) {
+            expect(!f.Fault(named) && !f.Fault(remove));
+            const auto deleted = EditedSource(f, mesh, [&](uint32_t clone) {
                 f.Run(clone, {Op(MeshTopologyOp::Subdivide, 1.f, TopologyFlagSelectAll)});
                 const Mesh subdivided{meshes, clone};
                 GeometrySelection upper;
@@ -557,9 +647,8 @@ Graph StoreSelectionDelete(ProcedureFixture &f) {
                     if (test::Centroid(subdivided, face).y > .99f) upper.Faces.push_back(*face);
                 expect(upper.Faces.size() == 4u);
                 f.Run(clone, {{.Op = MeshTopologyOp(uint32_t(action::mesh::DeleteMode::OnlyFaces)), .Selection = upper}});
-                return GeometrySelection{};
             });
-            expect(f.Shaped(mesh) == kernel.Output);
+            expect(f.Shaped(mesh) == deleted);
         },
         [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(f.Node(mesh, 4u), 2u)); },
     };
@@ -610,7 +699,7 @@ Graph HeatSubdivide(ProcedureFixture &f) {
 Graph CrossSectionOfCone(ProcedureFixture &f) {
     const auto mesh = f.AddMesh(primitive::Cylinder{.TopRadius = 0.f, .Slices = 32});
     const auto source = f.Node(mesh, 0u);
-    f.Do(action::nodes::AddMacro{mesh, procedure::CrossSectionMacro});
+    f.Do(AddNode{mesh, action::nodes::MacroNode{procedure::CrossSectionMacro}});
     const auto section = procedure::ActiveNodeOf(f.R, mesh);
     const auto ports = PortIds(f.R, section);
     expect(fatal(ports.size() == 4u));
@@ -688,22 +777,20 @@ Graph GeneratorEdit(ProcedureFixture &f) {
 // An Object Info node reading its own procedure's mesh errs and forwards the source.
 // One reading a mesh with a procedure of its own cooks after that procedure, so a resize there reaches the join.
 Graph ObjectInfo(ProcedureFixture &f) {
-    const auto &r = f.R;
     const auto mesh = f.AddMesh(primitive::Plane{});
     const auto plane = f.Shaped(mesh);
-    const auto info = f.Append(mesh, KindOf<procedure::ObjectInfo>);
-    f.Do(UpdateOf<&procedure::ObjectInfo::Object>(info, f.Object(mesh)));
+    const auto info = f.Append(mesh, KindOf<procedure::ObjectInfo>, {Set<&procedure::ObjectInfo::Object>(f.Object(mesh))});
     const auto join = f.Append(mesh, KindOf<Join>);
     f.Do(Link{mesh, f.Node(mesh, 0u), 0u, join, 0u});
     f.Do(Link{mesh, info, 0u, join, 0u});
     f.Do(SetDisplay{mesh, join});
-    expect(r.all_of<NodeError>(info) && !r.any_of<NodeError>(join));
+    expect(f.Fault(info) && !f.Fault(join));
     expect(f.Shaped(mesh) == plane);
     const auto cube = f.AddMesh(primitive::Cube{});
     const auto box = f.Append(cube, KindOf<primitive::Cube>);
     f.Do(SetDisplay{cube, box});
     f.Do(UpdateOf<&procedure::ObjectInfo::Object>(info, f.Object(cube)));
-    expect(!r.any_of<NodeError>(info));
+    expect(!f.Fault(info));
     f.Do(UpdateOf<&primitive::Cube::HalfExtents>(box, vec3{.5f, .25f, .5f}));
     return {mesh, [mesh](ProcedureFixture &f) {
                 auto points = ShapePositions(primitive::Plane{});
@@ -768,13 +855,11 @@ Graph NodeEditing(ProcedureFixture &f) {
     const auto source = f.Shaped(mesh);
     const auto subdivide = f.Append(mesh, KindOf<action::mesh::Subdivide>);
     const auto triangulate = f.Append(mesh, KindOf<action::mesh::SplitFaces>);
-    const auto position = f.Append(mesh, KindOf<Position>);
+    const auto position = f.Append(mesh, "position");
     f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(subdivide, 3u));
-    const auto cooks = Cooks(r);
     const auto shown = r.get<const GeometryProcedure>(mesh).DisplayNode;
     f.Do(SelectItems{mesh, subdivide, {subdivide, triangulate}});
     f.Do(action::nodes::MoveNodes{mesh, {{subdivide, {12u, 4u}}, {triangulate, {20u, 4u}}}});
-    expect(Cooks(r) == cooks);
     expect(r.get<const GeometryProcedure>(mesh).DisplayNode == shown && f.Shaped(mesh) == source);
     f.Do(DuplicateNodes{mesh, {subdivide, triangulate}});
     const auto &procedure = r.get<const CookPlan>(mesh);
@@ -783,6 +868,9 @@ Graph NodeEditing(ProcedureFixture &f) {
     expect(f.Shaped(mesh) == source);
     f.Route(mesh, {f.Node(mesh, 0u), triangulate});
     f.Fails(InsertNode{mesh, position, triangulate, 0u, 0u});
+    // A node with geometry sockets never goes into a link into an op input.
+    const auto sum = f.Append(mesh, "add", {From("in1", position)});
+    f.Fails(InsertNode{mesh, subdivide, sum, f.OpSocket(sum, "in1"), 0u});
     f.Do(SelectItems{mesh, subdivide, {subdivide}});
     f.Stage(InsertNode{mesh, subdivide, triangulate, 0u, 40u});
     f.CommitGesture();
@@ -790,7 +878,7 @@ Graph NodeEditing(ProcedureFixture &f) {
     const auto refined = f.Shaped(mesh);
     f.Do(action::nodes::SetBypass{subdivide, true});
     expect(f.Shaped(mesh) != refined);
-    expect(r.get<const CookPlan>(mesh).Wires[r.get<const CookPlan>(mesh).InputFirst[2u]].FromNode == 1u);
+    expect(InputOf(r, triangulate, 0u).FromNode == subdivide);
     f.Do(action::nodes::SetBypass{subdivide, false});
     expect(f.Shaped(mesh) == refined);
     f.Do(DeleteNodes{mesh, {subdivide}});
@@ -811,320 +899,33 @@ float WidthAt(const Mesh &mesh, he::VH v) {
     return .05f * (p.x + p.y + p.z) + .2f;
 }
 
-// Linked values override parameter constants, linked attributes set each element's parameter, and an attribute from another domain is rejected.
-void ParameterSockets(ProcedureFixture &f) {
-    auto &r = f.R;
-    auto &meshes = f.Store();
-    using action::mesh::Bevel, action::mesh::ShrinkFatten, action::mesh::Poke;
-    const auto mesh = f.AddMesh(primitive::Cube{});
-    const auto source = f.Shaped(mesh);
-    const auto output = [&] { return f.Shaped(mesh); };
-    const auto real = f.Append(mesh, KindOf<FloatValue>);
-    {
-        const auto bevel = f.Append(mesh, KindOf<Bevel>);
-        f.Route(mesh, {f.Node(mesh, 0u), bevel});
-        const auto one = output();
-        f.Do(UpdateOf<&Bevel::Segments>(bevel, 3u));
-        const auto three = output();
-        expect(three != one);
-        f.Do(UpdateOf<&Bevel::Segments>(bevel, 1u));
-        const auto integer = f.Append(mesh, KindOf<IntegerValue>);
-        f.Do(UpdateOf<&IntegerValue::Value>(integer, 3u));
-        const auto segments = ParameterSocket<&Bevel::Segments>, width = ParameterSocket<&Bevel::Width>;
-        f.Do(Link{mesh, integer, 0u, bevel, segments});
-        expect(output() == three);
-        f.Do(UpdateOf<&Bevel::Segments>(bevel, 5u));
-        expect(output() == three);
-        f.Do(UpdateOf<&IntegerValue::Value>(integer, 1u));
-        expect(output() == one);
-        f.Do(action::nodes::Unlink{mesh, bevel, segments});
-        f.Do(UpdateOf<&Bevel::Segments>(bevel, 3u));
-        expect(output() == three);
-        const auto position = f.Append(mesh, KindOf<Position>);
-        f.Fails(Link{mesh, real, 0u, bevel, segments});
-        f.Fails(Link{mesh, position, 0u, bevel, segments});
-        f.Do(UpdateOf<&FloatValue::Value>(real, .2f));
-        f.Do(Link{mesh, real, 0u, bevel, width});
-        f.Do(UpdateOf<&Bevel::Width>(bevel, .3f));
-        expect(output() == SourceReference(f, mesh, [&](uint32_t id) {
-                               f.Run(id, {Op(MeshTopologyOp::BevelEdges, .2f, TopologyFlagSelectAll, 3u)});
-                               return GeometrySelection{};
-                           }).Output);
-        f.Do(action::nodes::Unlink{mesh, bevel, width});
-        f.Do(UpdateOf<&Bevel::Width>(bevel, .1f));
-        const auto flag = f.Append(mesh, KindOf<BooleanValue>);
-        f.Do(Link{mesh, flag, 0u, bevel, 1u});
-        expect(output() == source);
-        f.Do(UpdateOf<&BooleanValue::Value>(flag, true));
-        expect(output() == three);
-        f.Do(DeleteNodes{mesh, {bevel, position}});
-    }
-    const auto position = f.Append(mesh, KindOf<Position>);
-    const auto dot = f.Append(mesh, KindOf<VectorMath>);
-    // AddNode with an operation sets it on the new node, and fails for a kind without that operation.
-    f.Do(AddNode{mesh, KindOf<FloatMath>, state::Null, uint32_t(FloatMathOp::Multiply)});
-    const auto multiply = r.get<const GeometryProcedure>(mesh).Last;
-    expect(r.get<const FloatMath>(multiply).Operation == FloatMathOp::Multiply);
-    f.Do(DeleteNodes{mesh, {multiply}});
-    f.Fails(AddNode{mesh, KindOf<FloatMath>, state::Null, uint32_t(field::EnumCount<FloatMathOp>)});
-    f.Fails(AddNode{mesh, KindOf<Position>, state::Null, 0u});
-    const auto add = f.Append(mesh, KindOf<FloatMath>);
-    f.Do(UpdateOf<&VectorMath::Operation>(dot, VectorMathOp::Dot));
-    f.Do(UpdateOf<&VectorMath::B>(dot, vec3{.05f, .05f, .05f}));
-    f.Do(UpdateOf<&FloatMath::B>(add, .2f));
-    f.Do(Link{mesh, position, 0u, dot, 0u});
-    f.Do(Link{mesh, dot, f.Out(dot), add, 0u});
-    const auto reference = [&](MeshTopologyOp op, auto &&parameter) {
-        return SourceReference(f, mesh, [&](uint32_t clone) {
-                   auto task = Op(op, 0.f, TopologyFlagSelectAll);
-                   task.Param0Attribute = parameter(clone);
-                   f.Run(clone, {task});
-                   return GeometrySelection{};
-               })
-            .Output;
-    };
-    const auto widths = [&](uint32_t clone) { return meshes.AttributeRef(AddValues<float>(meshes, clone, "parameter", WidthAt)); };
-    const auto add_operator = [&](uint16_t kind, uint16_t socket) {
-        const auto node = f.Append(mesh, kind);
-        f.Do(Link{mesh, add, f.Out(add), node, socket});
-        f.Route(mesh, {f.Node(mesh, 0u), node});
-        return node;
-    };
-    {
-        const auto bevel = add_operator(KindOf<Bevel>, ParameterSocket<&Bevel::Width>);
-        f.Do(UpdateOf<&Bevel::Vertices>(bevel, true));
-        expect(output() == reference(MeshTopologyOp::BevelVertices, widths));
-        f.Do(DeleteNodes{mesh, {bevel}});
-    }
-    {
-        const auto shrink = add_operator(KindOf<ShrinkFatten>, ParameterSocket<&ShrinkFatten::Distance>);
-        // The kernel reads the factor at each vertex from the attribute, past the constant factor's zero check.
-        const auto kernel = SourceReference(f, mesh, [&](uint32_t clone) {
-            const PositionOperationTarget target{.StoreId = clone, .Selection = AllHandles(Mesh{meshes, clone})};
-            ExecuteGeometryPositions(r, target, PositionEditOp::ShrinkFatten, 1.f, 1u, {.Factor = widths(clone)});
-            return GeometrySelection{};
-        });
-        expect(kernel.Output != source && output() == kernel.Output);
-        f.Do(DeleteNodes{mesh, {shrink}});
-    }
-    {
-        // A vertex attribute does not fit the poke's per-face offset, and a face normal's z does.
-        const auto poke = add_operator(KindOf<Poke>, ParameterSocket<&Poke::Offset>);
-        expect(output() == source);
-        const auto normal = f.Append(mesh, KindOf<Normal>);
-        f.Do(UpdateOf<&Normal::Domain>(normal, AttributeDomain::Face));
-        f.Do(UpdateOf<&VectorMath::B>(dot, vec3{0.f, 0.f, .3f}));
-        f.Do(Link{mesh, normal, 0u, dot, 0u});
-        f.Do(Link{mesh, dot, f.Out(dot), poke, ParameterSocket<&Poke::Offset>});
-        const auto offsets = [&](uint32_t clone) { return meshes.AttributeRef(AddValues<float, AttributeDomain::Face>(meshes, clone, "parameter", [](const Mesh &m, he::FH face) { return .3f * test::Normal(m, face).z; })); };
-        expect(output() == reference(MeshTopologyOp::Poke, offsets));
-        f.Do(DeleteNodes{mesh, {poke}});
-    }
-    {
-        const auto transform = f.Append(mesh, KindOf<TransformElements>);
-        const auto vector = f.Append(mesh, KindOf<VectorValue>);
-        const auto rotation = f.Append(mesh, KindOf<RotationValue>);
-        // The rotation leaves no two moved corners a GPU rounding apart in sort order.
-        const Transform delta{{1.f, 2.f, 3.f}, numeric::AngleAxis(.5f, Normalize(vec3{1.f, 2.f, 3.f})), {2.f, 1.f, .5f}};
-        f.Do(UpdateOf<&VectorValue::Value>(vector, delta.P));
-        f.Do(UpdateOf<&RotationValue::Value>(rotation, delta.R));
-        f.Do(UpdateOf<&TransformElements::Delta, &Transform::S>(transform, delta.S));
-        f.Do(Link{mesh, vector, 0u, transform, ParameterSocket<&TransformElements::Delta, &Transform::P>});
-        f.Do(Link{mesh, rotation, 0u, transform, ParameterSocket<&TransformElements::Delta, &Transform::R>});
-        f.Route(mesh, {f.Node(mesh, 0u), transform});
-        expect(Near(f.Shaped(mesh).Vertices, SourcePoints(f, mesh, [&](uint32_t, vec3 p) { return delta.R * (delta.S * p) + delta.P; })));
-        f.Do(DeleteNodes{mesh, {transform, vector, rotation}});
-    }
-}
-
-// For every float math operation, clamped and not, the cooked attribute at each vertex matches EvaluateFloatMath run on the host.
-// The first operand varies in sign and size across the vertices.
-void FloatMathOperations(ProcedureFixture &f) {
-    const auto &meshes = f.Store();
-    const auto mesh = f.AddMesh(primitive::Cube{});
-    const auto position = f.Append(mesh, KindOf<Position>);
-    const auto dot = f.Append(mesh, KindOf<VectorMath>);
-    const auto math = f.Append(mesh, KindOf<FloatMath>);
-    const auto store_operand = f.Append(mesh, KindOf<StoreNamedAttribute>);
-    const auto store_result = f.Append(mesh, KindOf<StoreNamedAttribute>);
-    constexpr float B{.75f}, C{.25f};
-    f.Do(UpdateOf<&VectorMath::Operation>(dot, VectorMathOp::Dot));
-    f.Do(UpdateOf<&VectorMath::B>(dot, vec3{1.f, .7f, -.4f}));
-    f.Do(UpdateOf<&FloatMath::B>(math, B));
-    f.Do(UpdateOf<&FloatMath::C>(math, C));
-    f.Do(action::nodes::SetAttributeName{store_operand, "operand"});
-    f.Do(action::nodes::SetAttributeName{store_result, "result"});
-    f.Do(Link{mesh, position, 0u, dot, 0u});
-    f.Do(Link{mesh, dot, f.Out(dot), math, 0u});
-    f.Do(Link{mesh, dot, f.Out(dot), store_operand, 1u});
-    f.Do(Link{mesh, math, f.Out(math), store_result, 1u});
-    f.Route(mesh, {f.Node(mesh, 0u), store_operand, store_result});
-    for (const bool clamp : {false, true}) {
-        f.Do(UpdateOf<&FloatMath::Clamp>(math, clamp));
-        for (const auto op : field::EnumValues<FloatMathOp>) {
-            f.Do(UpdateOf<&FloatMath::Operation>(math, op));
-            const auto id = f.Output(mesh);
-            const auto operands = meshes.AttributeView<float>(meshes.FindAttribute(id, "operand")), results = meshes.AttributeView<float>(meshes.FindAttribute(id, "result"));
-            for (const auto v : Mesh{meshes, id}.vertices()) {
-                const float expected = EvaluateFloatMath(op, operands[*v], B, C, clamp);
-                expect(std::abs(results[*v] - expected) <= 1e-4f * std::max(1.f, std::abs(expected))) << field::EnumLabel(op) << operands[*v] << results[*v] << expected;
-            }
-        }
-    }
-}
-
-// A chained display path edits the record its Source node refers to in place, and the Source node's state keeps the geometry a cook from the root reads.
-// Disconnecting the displayed path restores its upstream result, and collapsing captures the displayed geometry.
-void SourceStates(ProcedureFixture &f) {
-    const auto &r = f.R;
-    const auto mesh = f.AddMesh(primitive::Cube{});
-    const auto source = f.SourceOf(mesh);
-    const auto record = f.Output(mesh);
-    const auto shape = f.Shaped(mesh);
-    expect(source.StoreId == record && source.State != store::Hash128{});
-    const auto extrude = f.Append(mesh, KindOf<procedure::Extrude>);
-    f.Route(mesh, {f.Node(mesh, 0u), extrude});
-    expect(f.Output(mesh) == record && f.SourceOf(mesh) == source);
-    const auto extruded = f.Shaped(mesh);
-    expect(extruded != shape);
-    f.Do(DeleteNodes{mesh, {extrude}});
-    expect(f.Shaped(mesh) == shape && f.SourceOf(mesh) == source);
-    f.Undo();
-    expect(f.Shaped(mesh) == extruded);
-    f.Redo();
-    expect(f.Shaped(mesh) == shape);
-    const auto boolean = f.Append(mesh, KindOf<procedure::Boolean>);
-    f.Route(mesh, {f.Node(mesh, 0u), boolean});
-    expect(f.Shaped(mesh) == shape && !r.any_of<NodeError>(boolean));
-    const auto subdivide = f.Append(mesh, KindOf<action::mesh::Subdivide>);
-    f.Route(mesh, {boolean, subdivide});
-    expect(Mesh{f.Store(), f.Output(mesh)}.FaceCount() == 24u);
-    f.Do(action::nodes::Unlink{mesh, subdivide, 0u});
-    expect(r.get<const GeometryProcedure>(mesh).DisplayNode == boolean && f.Shaped(mesh) == shape);
-    f.Undo();
-    expect(Mesh{f.Store(), f.Output(mesh)}.FaceCount() == 24u);
-    f.Undo();
-    expect(f.Shaped(mesh) == shape);
-    f.Do(CollapseProcedure{mesh});
-    expect(r.get<const CookPlan>(mesh).Nodes.size() == 1u && f.SourceOf(mesh) != source);
-    expect(f.SourceOf(mesh).StoreId == f.Output(mesh) && f.Shaped(mesh) == shape);
-}
-
-// A viewport operator appends after the displayed node and displays its node, moving the displayed node's readers right.
-// Removing the active node activates the displayed node, and deleting the displayed node displays the node its chain reads, or a Join's first input reads.
-void DisplayedNode(ProcedureFixture &f) {
-    const auto &r = f.R;
-    const auto mesh = f.AddMesh(primitive::Cube{});
-    const auto source = f.Shaped(mesh);
-    const auto extrude = f.Append(mesh, KindOf<procedure::Extrude>);
-    f.Route(mesh, {f.Node(mesh, 0u), extrude});
-    f.EnterEdit(Element::Face);
-    f.Do(action::selection::SelectAll{});
-    f.Do(action::mesh::Subdivide{1u});
-    {
-        const auto &procedure = r.get<const CookPlan>(mesh);
-        expect(procedure.Nodes.size() == 3u && procedure.DisplayNode == 2u && ActiveIndex(r, procedure) == 2u);
-        expect(procedure.Nodes[procedure.Inputs[procedure.InputFirst[2u]].FromNode].Entity == extrude);
-    }
-    f.Do(SetDisplay{mesh, f.Node(mesh, 0u)});
-    expect(f.Shaped(mesh) == source);
-    f.Do(SelectItems{mesh, extrude, {extrude}});
-    f.Do(SetDisplay{mesh, extrude});
-    expect(r.get<const GeometryProcedure>(mesh).DisplayNode == extrude && f.Shaped(mesh) != source);
-    f.Do(SetDisplay{mesh, f.Node(mesh, 0u)});
-    f.Do(action::selection::SelectAll{});
-    f.Do(action::mesh::Subdivide{1u});
-    {
-        const auto &procedure = r.get<const CookPlan>(mesh);
-        expect(procedure.Nodes.size() == 4u && procedure.DisplayNode == 3u && ActiveIndex(r, procedure) == 3u);
-        expect(procedure.Inputs[procedure.InputFirst[3u]].FromNode == 0u && procedure.Inputs[procedure.InputFirst[1u]].FromNode == 0u);
-    }
-    f.Do(action::view::SetInteractionMode{InteractionMode::Object});
-    f.Do(SelectItems{mesh, extrude, {extrude}});
-    f.Do(DeleteNodes{mesh, {extrude}});
-    {
-        const auto &procedure = r.get<const CookPlan>(mesh);
-        expect(procedure.Nodes.size() == 3u && procedure.DisplayNode == 2u && ActiveIndex(r, procedure) == 2u);
-    }
-    f.Do(DeleteNodes{mesh, {f.Node(mesh, 2u)}});
-    {
-        const auto &procedure = r.get<const CookPlan>(mesh);
-        expect(procedure.Nodes.size() == 2u && procedure.DisplayNode == 0u && ActiveIndex(r, procedure) == 0u);
-    }
-    expect(f.Shaped(mesh) == source);
-    const auto box = f.Append(mesh, KindOf<primitive::Cube>);
-    const auto join = f.Append(mesh, KindOf<Join>);
-    f.Do(Link{mesh, f.Node(mesh, 0u), 0u, join, 0u});
-    f.Do(Link{mesh, box, f.Out(box), join, 0u});
-    f.Do(SetDisplay{mesh, join});
-    expect(f.Shaped(mesh) != source);
-    // Linking a source the Join already has moves that link to Index, or to the end by default.
-    f.Do(Link{mesh, box, f.Out(box), join, 0u, 0u});
-    expect(r.get<const NodeInputs>(join).Links == std::vector{SocketLink{box, f.Out(box)}, SocketLink{f.Node(mesh, 0u), 0u}});
-    f.Do(Link{mesh, box, f.Out(box), join, 0u});
-    expect(r.get<const NodeInputs>(join).Links == std::vector{SocketLink{f.Node(mesh, 0u), 0u}, SocketLink{box, f.Out(box)}});
-    f.Do(DeleteNodes{mesh, {join}});
-    expect(r.get<const GeometryProcedure>(mesh).DisplayNode == f.Node(mesh, 0u) && f.Shaped(mesh) == source);
-
-    for (const int depth : {0, 2}) {
-        const auto owner = f.AddMesh(primitive::Cube{}), root = f.Node(owner, 0u);
-        const auto cube = f.Shaped(owner);
-        const auto bevel = f.Append(owner, KindOf<action::mesh::Bevel>), tail = f.Append(owner, KindOf<TransformElements>);
-        f.Do(UpdateOf<&TransformElements::Delta, &Transform::P>(tail, vec3{1, 2, 3}));
-        f.Do(Link{owner, bevel, f.Out(bevel), tail, 0u});
-        auto input = bevel;
-        uint16_t socket = 0u;
-        for (int level = 0; level < depth; ++level) {
-            f.Do(action::nodes::GroupNodes{owner, level == 0 ? std::vector{bevel, tail} : std::vector{input}});
-            const auto group = r.get<const GeometryProcedure>(owner).Last;
-            f.Do(action::nodes::ExposeSocket{group, input, socket, "Geometry"});
-            input = group;
-            socket = r.get<const SubnetInterface>(group).Ports.back().Id;
-        }
-        const auto displayed = [&] { return ResolveSocket(r, DisplayLink(r, r.get<const GeometryProcedure>(owner))).Source.FromNode; };
-        for (const bool bypass : {false, true}) {
-            f.Do(action::nodes::SetBypass{bevel, bypass});
-            expect(r.get<const GeometryProcedure>(owner).DisplayNode == root && f.Shaped(owner) == cube);
-            f.Do(Link{owner, root, f.Out(root), input, socket});
-            expect(displayed() == tail && f.Shaped(owner) != cube);
-            const auto result = f.Shaped(owner);
-            f.Do(action::nodes::Unlink{owner, tail, 0u});
-            expect(r.get<const GeometryProcedure>(owner).DisplayNode == bevel);
-            f.Do(Link{owner, bevel, f.Out(bevel), tail, 0u});
-            expect(displayed() == tail && f.Shaped(owner) == result);
-            f.Do(action::nodes::Unlink{owner, input, socket});
-            expect(r.get<const GeometryProcedure>(owner).DisplayNode == root && f.Shaped(owner) == cube);
-        }
-        if (depth) {
-            f.Do(action::nodes::SetBypass{input, true});
-            f.Do(Link{owner, root, f.Out(root), input, socket});
-            f.Do(action::nodes::Unlink{owner, tail, 0u});
-            expect(r.get<const GeometryProcedure>(owner).DisplayNode == input && f.Shaped(owner) == cube);
-            f.Do(Link{owner, bevel, f.Out(bevel), tail, 0u});
-            f.Do(action::nodes::Unlink{owner, input, socket});
-            expect(r.get<const GeometryProcedure>(owner).DisplayNode == root && f.Shaped(owner) == cube);
-            f.Do(action::nodes::SetBypass{input, false});
-        }
-        f.Do(AddNode{owner, KindOf<Join>, ContainerOf(r, bevel)});
-        const auto branch = r.get<const GeometryProcedure>(owner).Last;
-        f.Do(Link{owner, bevel, f.Out(bevel), branch, 0u});
-        f.Do(Link{owner, root, f.Out(root), input, socket});
-        expect(r.get<const GeometryProcedure>(owner).DisplayNode == bevel);
-        f.Do(Link{owner, tail, f.Out(tail), branch, 0u});
-        f.Do(action::nodes::Unlink{owner, branch, 0u, 1u});
-        expect(r.get<const GeometryProcedure>(owner).DisplayNode == bevel);
-    }
+// The source's shape after the topology op over every element, whose first parameter reads the attribute `parameter` adds to the clone.
+Shape TopologyReference(ProcedureFixture &f, state::Entity mesh, MeshTopologyOp op, auto &&parameter) {
+    return EditedSource(f, mesh, [&](uint32_t clone) {
+        auto task = Op(op, 0.f, TopologyFlagSelectAll);
+        task.Param0Attribute = parameter(clone);
+        f.Run(clone, {task});
+    });
 }
 
 // Editing input selections keeps Display and the viewport selection independent, and commits or cancels the whole task.
 void ViewportSelection(ProcedureFixture &f) {
     auto &r = f.R;
-    for (const auto [kind, vertices] : {std::pair{KindOf<procedure::Extrude>, false}, {KindOf<action::mesh::Bevel>, false}, {KindOf<action::mesh::Bevel>, true}, {KindOf<TransformElements>, false}}) {
+    // A grouped node's selection exposed as a port is the subnet node's own selection.
+    for (const auto [kind, vertices, port] : {std::tuple{KindOf<procedure::Extrude>, false, false}, {KindOf<action::mesh::Bevel>, false, false}, {KindOf<action::mesh::Bevel>, true, false}, {KindOf<TransformElements>, false, false}, {KindOf<TransformElements>, false, true}}) {
         const auto mesh = kind == KindOf<action::mesh::Bevel> ? f.AddMesh(primitive::Cube{}) : f.AddGenerated(primitive::Cube{});
         const auto node = f.Append(mesh, kind);
         if (vertices) f.Do(UpdateOf<&action::mesh::Bevel::Vertices>(node, true));
         f.Route(mesh, {f.Node(mesh, 0u), node});
         if (kind == KindOf<TransformElements>) f.Do(action::nodes::GroupNodes{mesh, {node}});
+        const auto subnet = ActiveNodeOf(r, mesh);
+        std::optional<uint16_t> selection_port;
+        if (port) {
+            const auto definition = r.get<const Subnet>(subnet).DefinitionEntity;
+            f.Do(action::nodes::ExposeSocket{definition, node, uint16_t(std::ranges::find(KindSockets(kind), true, &Socket::Selection) - KindSockets(kind).begin()), {}});
+            selection_port = r.get<const SubnetInterface>(definition).Ports.back().Id;
+        }
+        const auto selection = [&]() -> const InlineSelection & { return port ? *InstancePortOf(r, subnet, *selection_port)->Selection : r.get<const InlineSelection>(node); };
         const auto display = r.get<const GeometryProcedure>(mesh).DisplayNode;
         for (const auto mode : {InteractionMode::Object, InteractionMode::Edit}) {
             f.Do(action::view::SetInteractionMode{mode});
@@ -1145,19 +946,19 @@ void ViewportSelection(ProcedureFixture &f) {
                     expect(f.P->HasStaged() && f.P->History.Present == present);
                     expect(r.get<const GeometryProcedure>(mesh).DisplayNode == display);
                 };
-                edit(action::nodes::EditSelection{node, f.Object(mesh)});
+                edit(port ? action::nodes::EditSelection{subnet, f.Object(mesh), {}, selection_port} : action::nodes::EditSelection{node, f.Object(mesh), r.get<const GeometryProcedure>(mesh).DisplayPath});
                 const auto input = r.get<const SelectionEditing>(state::Document).Mesh;
                 expect(GetMesh(r, input).FaceCount() == 6u);
                 edit(action::view::SetEditMode{Element::Face});
                 edit(action::selection::DeselectAll{});
-                expect(SelectedCount(r.get<const InlineSelection>(node).Faces) == 0u);
+                expect(SelectedCount(selection().Faces) == 0u);
                 f.Render();
                 const Mesh cage = GetMesh(r, input);
                 const auto hit = f.Pick(FacingFaceCenters(cage, f.View().CameraPosition).front(), Element::Face);
                 expect(fatal(hit.has_value()));
                 expect(hit->MeshEntity == input);
                 edit(action::selection::ApplyEditElementClick{false, hit});
-                expect(SelectedCount(r.get<const InlineSelection>(node).Faces) == 1u);
+                expect(SelectedCount(selection().Faces) == 1u);
                 const auto output = GetMesh(r, mesh);
                 expect(output.HasClosedSurface());
                 if (kind == KindOf<action::mesh::Bevel>) {
@@ -1170,7 +971,7 @@ void ViewportSelection(ProcedureFixture &f) {
                     }
                 }
                 edit(action::selection::SelectAll{});
-                expect(SelectedCount(r.get<const InlineSelection>(node).Faces) == 6u);
+                expect(SelectedCount(selection().Faces) == 6u);
                 if (cancel) {
                     action::Cancel();
                     f.P->Frame();
@@ -1219,77 +1020,19 @@ Graph UnsubdivideSelection(ProcedureFixture &f) {
     };
 }
 
-// A change to a node committed in an earlier step restores the record to the result of the node before it.
-void ColdRecook(ProcedureFixture &f) {
-    const auto subdivide = Build(f, {primitive::Cube{}, {{KindOf<action::mesh::Subdivide>}, {KindOf<procedure::Extrude>}}, {{0, 1, 0}, {1, 2, 0}}, 2}).Nodes[1];
-    f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(subdivide, 2u));
-}
-
-// A change to the first node after the Source restores the record to the Source node's result, with the position edit and the topology node after it run again.
-void NodeResultRecook(ProcedureFixture &f) {
-    const auto subdivide = Build(f, {primitive::Cube{}, {{KindOf<action::mesh::Subdivide>}, {KindOf<ToSphere>, {Set<&ToSphere::Factor>(.5f)}}, {KindOf<procedure::Extrude>}}, {{0, 1, 0}, {1, 2, 0}, {2, 3, 0}}, 3}).Nodes[1];
-    f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(subdivide, 2u));
-}
-
-// A cook restarts at the node before the first changed one, which keeps the mesh storage state from the first cook of that change, and every node after it holds a pending result.
-// Each cook and each displayed node leaves the output a new mesh holds after cooking the same nodes one at a time.
-// `regional` selects part of the mesh in each node, so the nodes' render repairs gather into one that keeps the other clusters.
-void ChainRecook(ProcedureFixture &f, bool regional) {
-    using namespace action::mesh;
-    const auto &r = f.R;
-    struct Chain {
-        state::Entity Mesh;
-        std::array<state::Entity, 6> Nodes; // Smooth, Poke, ShrinkFatten, Shade, Inset, CycleCornerAttribute
-    };
-    // Each of the first `count` nodes is linked after its parameters are set, so it cooks alone on the output of the node before it.
-    const auto build = [&](float factor, float offset, float thickness, uint32_t count = 6u) {
-        Chain chain{.Mesh = f.AddGenerated(primitive::UVSphere{.Slices = 32, .Stacks = 16})};
-        auto tip = f.Node(chain.Mesh, 0u);
-        const std::array<std::pair<uint16_t, std::function<void(state::Entity)>>, 6> kinds{{
-            {KindOf<SmoothVertices>, [&](state::Entity node) { f.Do(UpdateOf<&SmoothVertices::Factor>(node, factor)); }},
-            {KindOf<Poke>, [&](state::Entity node) { f.Do(UpdateOf<&Poke::Offset>(node, offset)); }},
-            {KindOf<ShrinkFatten>, [](state::Entity) {}},
-            {KindOf<procedure::Shade>, [&](state::Entity node) { f.Do(UpdateOf<&procedure::Shade::Mode>(node, ShadeMode::Flat)); }},
-            {KindOf<Inset>, [&](state::Entity node) { f.Do(UpdateOf<&Inset::Thickness>(node, thickness)); }},
-            {KindOf<CycleCornerAttribute>, [](state::Entity) {}},
-        }};
-        for (uint32_t i = 0u; i < count; ++i) {
-            const auto node = chain.Nodes[i] = f.Append(chain.Mesh, kinds[i].first);
-            if (regional && kinds[i].first != KindOf<procedure::Shade>) {
-                const Mesh output{f.Store(), f.Output(chain.Mesh)};
-                f.Do(SetInlineSelection{node, std::make_unique<InlineSelection>(SelectionOf(SelectionWhere(output, [&](he::VH v) { return output.VertexOrdinal(v) < 60u; }), Element::Face))});
-            }
-            kinds[i].second(node);
-            f.Route(chain.Mesh, {tip, node});
-            tip = node;
-        }
-        return chain;
-    };
-    const auto chain = build(.3f, .05f, .02f);
-    const auto &[smooth, poke, fatten, shade, inset, cycle] = chain.Nodes;
-    const auto kept = [&](state::Entity node) { return r.get<const NodeResult>(node).State != store::Hash128{}; };
-    const auto same = [&](const Chain &reference) { return f.Shaped(chain.Mesh) == f.Shaped(reference.Mesh); };
-    expect(kept(inset) && !kept(cycle));
-
-    f.Do(UpdateOf<&SmoothVertices::Factor>(smooth, .6f));
-    expect(kept(f.Node(chain.Mesh, 0u)) && std::ranges::none_of(chain.Nodes, kept));
-    expect(same(build(.6f, .05f, .02f)));
-
-    f.Do(UpdateOf<&Inset::Thickness>(inset, .04f));
-    expect(kept(shade) && !kept(fatten) && !kept(inset));
-    f.Do(UpdateOf<&Inset::Thickness>(inset, .03f));
-    expect(kept(shade));
-    expect(same(build(.6f, .05f, .03f)));
-
-    f.Do(UpdateOf<&Poke::Offset>(poke, .1f));
-    expect(kept(smooth) && !kept(shade));
-    expect(same(build(.6f, .1f, .03f)));
-
-    // Displaying a node with a pending result cooks the nodes after the last kept state.
-    for (const auto count : {3u, 1u, 6u}) {
-        f.Do(SetDisplay{chain.Mesh, chain.Nodes[count - 1u]});
-        expect(same(build(.6f, .1f, .03f, count)));
-    }
+// A history begun on a live document resolves every state its Source nodes and node results refer to, which the cooks after it read.
+void BeginKeepsStates(ProcedureFixture &f, const std::filesystem::path &next) {
+    const auto chained = Build(f, {primitive::Cube{}, {{KindOf<action::mesh::Subdivide>}}, {{0, 1, 0}}, 1});
+    // A procedure joining its Source node's cube with a box generator, which reads the Source node's state on each cook.
+    const auto joined = Build(f, {primitive::Cube{}, {{KindOf<primitive::Cube>}, {KindOf<Join>}}, {{0, 2, 0}, {1, 2, 0}}, 2});
+    const auto output = f.Shaped(joined.Mesh);
+    for (int i = 0; i < 9; ++i) f.AddMesh(primitive::Cube{});
+    expect(f.P->Begin(next));
+    f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(chained.Nodes[1], 2u));
+    expect(!f.Fault(chained.Nodes[0]) && Mesh{f.Store(), f.Output(chained.Mesh)}.FaceCount() == 54u);
+    f.Do(UpdateOf<&primitive::Cube::HalfExtents>(joined.Nodes[1], vec3{2.f, 1.f, 1.f}));
+    f.Do(UpdateOf<&primitive::Cube::HalfExtents>(joined.Nodes[1], vec3{1.f, 1.f, 1.f}));
+    expect(!f.Fault(joined.Nodes[0]) && f.Shaped(joined.Mesh) == output);
 }
 
 // A gesture's steps leave the coarse cluster groups they invalidate dirty, and its commit repairs them.
@@ -1311,234 +1054,8 @@ void GestureLodRepair(ProcedureFixture &f) {
     expect(!dirty() && groups() == built);
 }
 
-// Deleting the displayed tip node restores the record in place to its input node's result with one cook, which leaves the Source node's state untouched.
-void DeleteTipRestores(ProcedureFixture &f) {
-    const auto mesh = f.AddMesh(primitive::Cube{});
-    const auto root = f.Node(mesh, 0u);
-    const auto subdivide = f.Append(mesh, KindOf<action::mesh::Subdivide>);
-    const auto extrude = f.Append(mesh, KindOf<procedure::Extrude>);
-    f.Route(mesh, {root, subdivide});
-    f.Route(mesh, {subdivide, extrude});
-    const auto record = f.Output(mesh);
-    const auto source = f.SourceOf(mesh);
-    const auto cooks = Cooks(f.R);
-    f.Do(DeleteNodes{mesh, {extrude}});
-    expect(Cooks(f.R) == cooks + 1u);
-    expect(f.Output(mesh) == record && f.SourceOf(mesh) == source);
-}
-
-// A geometry reference holds an object that draws the same geometry, every reference clears, and page data follows the items on its page.
-void ReferenceEditing(ProcedureFixture &f) {
-    using namespace action::nodes;
-    auto &r = f.R;
-    const auto scene = FrameScene(r);
-    const auto [low, high] = std::minmax({f.AddCube(), f.AddCube()});
-    const auto geometry_of = [&](state::Entity object) { return r.get<const Instance>(object).Entity; };
-    const SceneReference shared{high, ReferenceKind::Geometry};
-    const auto own = geometry_of(high);
-    f.Do(AssignReference{shared, low});
-    expect(geometry_of(high) == geometry_of(low) && !r.valid(own));
-    expect(ReferenceValue(r, shared) == low && ReferenceValue(r, {low, ReferenceKind::Geometry}) == state::Null);
-    // The node an input of the scene page's node is wired from, by the input's label.
-    const auto wired_from = [&](state::Entity node, std::string_view input) -> std::optional<state::Entity> {
-        const auto view = SceneNodeDefinitions(r, scene);
-        const auto n = uint32_t(std::ranges::find(view.Nodes, node, &EditorNode::Item) - view.Nodes.begin());
-        for (uint16_t s = 0; s < InputsOf(view, n); ++s) {
-            if (NodeSockets(view, n)[s].Name != input) continue;
-            const auto from = view.Wires[view.InputFirst[n] + s].FromNode;
-            return from == NoNode ? state::Null : view.Nodes[from].Item;
-        }
-        return {};
-    };
-    // The page wires the sharing object from the other, and a slot without a material has an unwired input.
-    expect(wired_from(high, "Geometry") == low && wired_from(high, "Material slot 0") == state::Null);
-    // The subnet holding the sharing object has one port, for the reference that crosses its boundary.
-    f.Do(GroupItems{scene, {high}});
-    const auto group = FindActiveNode(r);
-    expect(wired_from(group, GetName(r, high) + ": Geometry") == low);
-    f.Do(AssignReference{shared, state::Null});
-    expect(geometry_of(high) != geometry_of(low) && f.Shaped(geometry_of(high)) == f.Shaped(geometry_of(low)));
-    expect(!wired_from(group, GetName(r, high) + ": Geometry"));
-    f.Do(MoveNodes{scene, {{low, {3u, 3u}}}});
-    f.Do(action::selection::Select{low});
-    f.Do(action::object::Delete{});
-    expect(!r.valid(low) && !r.all_of<NetworkLayout>(scene));
-
-    f.Do(action::physics::AddCollisionSystem{});
-    f.Do(action::physics::AddCollisionFilter{});
-    const auto system = SortedEntities(r.view<const CollisionSystem>()).back(), filter = SortedEntities(r.view<const CollisionFilter>()).back();
-    const SceneReference member{filter, ReferenceKind::FilterSystem};
-    f.Do(AssignReference{member, system});
-    expect(r.get<const CollisionFilter>(filter).Systems == std::vector{system} && ReferencesTo(r, system) == std::vector{member});
-    // The filter shows its entry and the slot that adds one, and a material shows its texture slots.
-    f.Do(action::object::AddMaterial{});
-    const auto labels = SceneNodeDefinitions(r, state::Document).Labels;
-    for (const auto *label : {"Member system 0", "Add member system", "Base color texture"}) expect(std::ranges::contains(labels, label)) << label;
-    expect(!std::ranges::contains(labels, "Add collide system"));
-    f.Do(AssignReference{member, state::Null});
-    expect(r.get<const CollisionFilter>(filter).Systems.empty());
-    expect(std::ranges::none_of(NetworkItems(r, state::Document), [&](state::Entity item) { return r.any_of<GeometryProcedure, Armature>(item); }));
-}
-
-// A material is a document node: an add makes one, the selection tags address it, and a delete leaves its slots with the default record.
-void DocumentItems(ProcedureFixture &f) {
-    using namespace action::nodes;
-    auto &r = f.R;
-    const auto cube = f.AddCube();
-    const auto geometry = r.get<const Instance>(cube).Entity;
-    const auto slot = [&] {
-        const auto &meshes = r.Resources.get<const MeshStore>();
-        return meshes.Arenas().PrimitiveMaterials.Get(meshes.Get(*DrawnStoreId(r, geometry)).PrimitiveMaterials)[0];
-    };
-    const SceneReference reference{cube, ReferenceKind::Material, 0u};
-    f.Do(action::object::AddMaterial{0u, geometry});
-    const auto material = SortedEntities(r.view<const Material>()).back();
-    const auto index = r.get<const Material>(material).Index;
-    expect(index == 1u && slot() == index && ReferenceValue(r, reference) == material && FindActiveNode(r) == cube);
-    // The active node is a document item, which no scene holds.
-    f.Do(action::selection::Select{material});
-    expect(FindActiveNode(r) == material && FindActiveEntity(r) == state::Null && !r.all_of<Selected>(cube));
-    f.Do(RenameItem{material, "Paint"});
-    expect(ItemName(r, material) == "Paint");
-    f.Do(DeleteItems{{material}});
-    expect(!r.valid(material) && slot() == 0u && ReferenceValue(r, reference) == state::Null);
-    // The next material takes the freed record and becomes the active node.
-    f.Do(action::object::AddMaterial{});
-    expect(r.get<const Material>(FindActiveNode(r)).Index == index);
-    // The document is a node that stays.
-    f.Do(DeleteItems{{state::Document}});
-    expect(std::ranges::contains(NetworkItems(r, state::Document), state::Document));
-
-    // A texture is a node too: a delete empties the material slots that held it and drops its source texture and image, which an export then leaves out.
-    f.Do(action::io::LoadGltf{std::filesystem::path{MESHEDITOR_SOURCE_DIR} / "external/glTF-Sample-Assets/Models/BoxTextured/glTF/BoxTextured.gltf"});
-    const auto textures = SortedEntities(r.view<const MaterializedTexture>());
-    expect(fatal(textures.size() == 1u));
-    const auto slot_of = r.get<const MaterializedTexture>(textures.front()).SamplerSlot;
-    const auto holds = [&](state::Entity e) { return GetMaterials(r)[r.get<const Material>(e).Index].BaseColorTexture.Slot == slot_of; };
-    expect(std::ranges::any_of(r.view<const Material>(), holds) && !ReferencesTo(r, textures.front()).empty());
-    f.Do(DeleteItems{textures});
-    const auto &sources = r.get<const gltf::SourceAssets>(state::Document);
-    expect(!r.valid(textures.front()) && std::ranges::none_of(r.view<const Material>(), holds) && sources.Textures.empty() && sources.Images.empty());
-
-    // An added texture becomes the active node, and a material slot that takes it records its source texture for export.
-    f.Do(action::object::AddTexture{std::filesystem::path{MESHEDITOR_SOURCE_DIR} / "external/glTF-Sample-Assets/Models/BoxTextured/glTF/CesiumLogoFlat.png"});
-    const auto added = FindActiveNode(r);
-    expect(fatal(r.all_of<MaterializedTexture>(added)));
-    const auto textured = SortedEntities(r.view<const Material>()).back();
-    const auto base_color = uint32_t(offsetof(PBRMaterial, BaseColorTexture) + offsetof(TextureInfo, Slot));
-    f.Do(AssignReference{{textured, ReferenceKind::Texture, base_color}, added});
-    expect(ReferenceValue(r, {textured, ReferenceKind::Texture, base_color}) == added);
-    expect(r.get<const gltf::MaterialSourceMeta>(textured).TextureSlots[MTS_BaseColor] == r.get<const MaterializedTexture>(added).SourceTextureIndex);
-}
-
-// Grouping changes presentation only, and nested interfaces edit the same underlying fields.
-void SceneNetworks(ProcedureFixture &f) {
-    using namespace action::nodes;
-    const auto cube = f.AddCube();
-    const auto light = f.Add(action::object::AddLight{std::make_unique<ObjectCreateInfo>()});
-    f.Do(AssignReference{{light, ReferenceKind::Parent}, cube});
-    f.Do(action::animation::AddAnimation{"Animation"});
-    for (const auto network : {FrameScene(f.R), state::Document}) {
-        const auto items = NetworkItems(f.R, network);
-        const auto shapes = Live::DrawnShapes(f);
-        const auto cooks = Cooks(f.R);
-        std::vector<state::Entity> groups;
-        auto members = items;
-        for (int depth = 0; depth < 2; ++depth) {
-            f.Do(GroupItems{network, members});
-            const auto group = FindActiveNode(f.R);
-            groups.push_back(group);
-            members = {group};
-            f.Do(MoveNodes{network, {{group, {uint32_t(depth + 2), 3u}}}});
-            expect(NetworkLeaves(f.R, group) == items);
-            if (network != state::Document) {
-                f.Do(ExposePort{group, PromotedField{light, state::Key<SceneLight>(), action::detail::FieldOffset<&SceneLight::Intensity>()}, std::make_unique<std::string>("Intensity")});
-                f.Do(SetPortValue{group, f.R.get<const SubnetInterface>(group).Ports.back().Id, {std::bit_cast<uint32_t>(17.f + depth)}});
-                expect(f.R.get<const SceneLight>(light).Intensity == 17.f + depth);
-            }
-        }
-        for (const auto group : groups | std::views::reverse) f.Do(UngroupItems{group});
-        expect(NetworkItems(f.R, network) == items && Live::DrawnShapes(f) == shapes && Cooks(f.R) == cooks);
-        expect(ParentOrNull(f.R, light) == cube);
-    }
-}
-
-// Interactive and read-only drawing produce the same UI on every page, including after history navigation, and the history panel edits a recorded action.
-void CanvasEquivalence(ProcedureFixture &f) {
-    const auto mesh = f.AddGenerated(primitive::Cube{});
-    const auto node = f.Append(mesh, KindOf<action::mesh::Subdivide>);
-    f.Route(mesh, {f.Node(mesh, 0), node});
-    f.Do(action::nodes::GroupNodes{mesh, {node}});
-    const auto subnet = f.R.get<const GeometryProcedure>(mesh).Last;
-    const auto math = f.Append(mesh, KindOf<FloatMath>);
-    f.Do(action::physics::AddJointDef{});
-    f.Do(action::animation::AddAnimation{"Animation"});
-    auto *context = ImGui::CreateContext();
-    auto &io = ImGui::GetIO();
-    io.IniFilename = nullptr;
-    io.DisplaySize = {1400, 900};
-    io.Fonts->Build();
-    NodesPanel panel{{"Nodes"}};
-    Panel properties{"Properties"};
-    const auto frame = [&](bool interactive = false) {
-        ImGui::NewFrame();
-        ImGui::SetNextWindowPos({0, 0});
-        ImGui::SetNextWindowSize({950, 850});
-        DrawNodesPanel(f.R, panel, interactive);
-        ImGui::SetNextWindowPos({950, 0});
-        ImGui::SetNextWindowSize({450, 850});
-        DrawPropertiesPanel(f.R, panel, properties, interactive);
-        ImGui::Render();
-        std::vector<std::byte> drawn;
-        for (const auto *list : ImGui::GetDrawData()->CmdLists) {
-            drawn.append_range(std::as_bytes(std::span{list->VtxBuffer.Data, size_t(list->VtxBuffer.Size)}));
-            drawn.append_range(std::as_bytes(std::span{list->IdxBuffer.Data, size_t(list->IdxBuffer.Size)}));
-        }
-        expect(!drawn.empty());
-        return drawn;
-    };
-    // The page kept between frames draws what a page built from nothing draws, and differs from the page before the edit.
-    const auto same_as_fresh = [&](auto edit, const std::vector<std::byte> &before) {
-        f.Do(std::move(edit));
-        const auto kept = frame();
-        panel.Page.reset();
-        expect(frame() == kept && kept != before);
-    };
-    const auto cooks = Cooks(f.R);
-    for (const auto network : {FrameScene(f.R), state::Document, mesh, subnet}) {
-        EnterNetwork(panel, network);
-        frame();
-        frame();
-        const auto drawn = frame(true);
-        expect(frame() == drawn);
-        f.Undo();
-        f.Redo();
-        expect(frame() == drawn);
-        if (network == FrameScene(f.R)) {
-            const auto item = NetworkItems(f.R, network).front();
-            same_as_fresh(action::nodes::MoveNodes{network, {{item, {9u, 7u}}}}, drawn);
-            same_as_fresh(action::nodes::GroupItems{network, {item}}, drawn);
-            f.Undo();
-            f.Undo();
-            expect(frame() == drawn);
-        }
-        if (network == state::Document) {
-            for (const auto item : NetworkItems(f.R, network)) {
-                f.Do(action::selection::Select{item});
-                frame();
-            }
-        }
-    }
-    expect(Cooks(f.R) == cooks);
-    // A geometry page follows a float math node's operation and a subnet's name.
-    EnterNetwork(panel, mesh);
-    frame();
-    const auto drawn = frame();
-    same_as_fresh(UpdateOf<&FloatMath::Operation>(math, FloatMathOp::MultiplyAdd), drawn);
-    same_as_fresh(action::nodes::RenameItem{subnet, "Renamed"}, drawn);
-    f.Undo();
-    f.Undo();
-    expect(frame() == drawn);
+// The history panel edits a recorded action's selection hit.
+void HistoryPanelEdit(ProcedureFixture &f) {
     const auto object = f.AddEmpty("Object choice");
     f.AddEmpty("Other");
     const auto picked = f.Do(action::selection::Pick{false, ObjectHit{{object}}});
@@ -1546,6 +1063,7 @@ void CanvasEquivalence(ProcedureFixture &f) {
         return std::get<action::selection::Pick>(std::get<action::selection::Action>(project::DraftOf(*f.P, picked).RecordedActions.front())).Hit;
     };
     HistoryPanel history{{"History"}};
+    ImGui::SetCurrentContext(f.Panels->Context);
     const auto history_frame = [&](ImGuiID activate = 0) {
         if (activate) ImGui::ActivateItemByID(activate);
         ImGui::NewFrame();
@@ -1567,7 +1085,6 @@ void CanvasEquivalence(ProcedureFixture &f) {
     expect(HitEntity(*hit()) == state::Null);
     expect(!f.R.all_of<Selected>(state::Document));
     f.Step(true);
-    ImGui::DestroyContext(context);
 }
 
 state::Entity AnimatedAssembly(ProcedureFixture &f) {
@@ -1575,8 +1092,7 @@ state::Entity AnimatedAssembly(ProcedureFixture &f) {
     const auto mesh = f.AddGenerated(primitive::Cube{});
     const auto operand = f.Object(mesh);
     const auto result = f.AddGenerated(primitive::Plane{});
-    const auto info = f.Append(result, KindOf<procedure::ObjectInfo>);
-    f.Do(UpdateOf<&procedure::ObjectInfo::Object>(info, operand));
+    const auto info = f.Append(result, KindOf<procedure::ObjectInfo>, {Set<&procedure::ObjectInfo::Object>(operand)});
     f.Do(SetDisplay{result, info});
     const auto light = f.Add(action::object::AddLight{std::make_unique<ObjectCreateInfo>()});
     for (const auto child : {operand, f.Object(result), light}) f.Do(action::object::SetParent{child, root});
@@ -1654,106 +1170,51 @@ void Hierarchies(ProcedureFixture &f, Fixture &other) {
     }
 }
 
-void ObjectDependencies(ProcedureFixture &f) {
-    const auto a = f.AddGenerated(primitive::Cube{});
-    const auto root = f.Node(a, 0u);
-    const auto b = f.AddGenerated(primitive::Plane{});
-    const auto bi = f.Append(b, KindOf<procedure::ObjectInfo>);
-    f.Do(UpdateOf<&procedure::ObjectInfo::Object>(bi, f.Object(a)));
-    f.Do(SetDisplay{b, bi});
-    const auto c = f.AddGenerated(primitive::Plane{});
-    const auto ci = f.Append(c, KindOf<procedure::ObjectInfo>);
-    f.Do(UpdateOf<&procedure::ObjectInfo::Object>(ci, f.Object(b)));
-    f.Do(SetDisplay{c, ci});
-    auto cooks = Cooks(f.R);
-    f.Do(UpdateOf<&primitive::Cube::HalfExtents>(root, vec3{2.f, .5f, 1.f}));
-    expect(Cooks(f.R) == cooks + 3u);
-    expect(f.Shaped(a) == f.Shaped(b) && f.Shaped(a) == f.Shaped(c));
-    const auto dormant = f.Append(a, KindOf<primitive::Cube>);
-    cooks = Cooks(f.R);
-    f.Do(UpdateOf<&primitive::Cube::HalfExtents>(dormant, vec3{4.f, 1.f, 2.f}));
-    expect(Cooks(f.R) == cooks);
-    const auto cycle = f.Append(a, KindOf<procedure::ObjectInfo>);
-    cooks = Cooks(f.R);
-    f.Fails(UpdateOf<&procedure::ObjectInfo::Object>(cycle, f.Object(c)));
-    expect(f.R.get<const procedure::ObjectInfo>(cycle).Object == state::Null && Cooks(f.R) == cooks);
-    f.Do(action::selection::Select{f.Object(c)});
-    f.Do(action::selection::ExtendActive{f.Object(a)});
-    const auto node_count = f.R.get<const CookPlan>(a).Nodes.size();
-    f.Fails(action::mesh::Boolean{BooleanOperation::Difference});
-    expect(f.R.get<const CookPlan>(a).Nodes.size() == node_count && Cooks(f.R) == cooks);
-    f.Do(SetDisplay{b, f.Node(b, 0u)});
-    cooks = Cooks(f.R);
-    f.Do(UpdateOf<&primitive::Cube::HalfExtents>(root, vec3{1.f, 1.f, 3.f}));
-    expect(Cooks(f.R) == cooks + 1u);
-    expect(f.Shaped(b) == f.Shaped(c));
-    f.Do(SetDisplay{b, bi});
-    expect(f.Shaped(a) == f.Shaped(b) && f.Shaped(a) == f.Shaped(c));
-    const auto object_a = f.Object(a);
-    f.Do(action::selection::Select{object_a});
-    f.Do(action::object::Delete{});
-    expect(f.R.all_of<NodeError>(bi));
-}
-
-void HiddenSharedGeometry(ProcedureFixture &f) {
-    const auto original = f.AddCube();
-    const auto mesh = f.R.get<const Instance>(original).Entity;
-    const auto shape = f.Shaped(mesh);
-    const auto hidden = f.Add(action::object::DuplicateLinked{});
-    f.Do(action::object::SetVisible{false, hidden});
-    f.Do(action::selection::Select{original});
-    f.Do(action::object::Delete{});
-    expect(f.R.valid(mesh) && f.R.get<const Instance>(hidden).Entity == mesh);
-    expect(f.Shaped(mesh) == shape);
-    f.Do(action::object::SetVisible{true, hidden});
-    expect(f.Shaped(mesh) == shape);
-    f.Do(action::selection::Select{hidden});
-    f.Do(action::object::Delete{});
-    expect(!f.R.valid(mesh));
-}
-
-void ProceduralHierarchies(ProcedureFixture &f) {
+// An object reference inside a definition reads, in a hierarchy instance's copy of a procedure, the instance's own member, as the same reference in the procedure's own network does.
+// Making the instance independent keeps its result, with its own copy of the definition.
+void ContextualDefinition(ProcedureFixture &f) {
     auto &r = f.R;
-    const auto source = f.AddEmpty("Prototype");
-    const auto light = f.Add(action::object::AddLight{std::make_unique<ObjectCreateInfo>()});
-    f.Do(action::object::SetParent{light, source});
-    const auto mesh = f.AddGenerated(primitive::Plane{});
-    const auto producer = f.Object(mesh);
-    const auto points = f.Append(mesh, KindOf<MeshToPoints>);
-    const auto instances = f.Append(mesh, KindOf<InstanceOnPoints>);
-    f.Do(UpdateOf<&InstanceOnPoints::Prototype>(instances, source));
-    f.Route(mesh, {f.Node(mesh, 0u), points, instances});
-    const auto roots = r.get<const ProcedureInstances>(mesh).Entities;
-    expect(roots.size() == 4u);
-    for (const auto root : roots) {
-        expect(r.all_of<HierarchyInstance>(root));
-        expect(ParentOrNull(r, root) == producer);
-        expect(r.get<const HierarchyInstance>(root).Members.size() == 2u);
-    }
-    f.Do(UpdateOf<&SceneLight::Intensity>(light, 23.f));
-    expect(r.get<const ProcedureInstances>(mesh).Entities == roots);
-    for (const auto root : roots) {
-        const auto &members = r.get<const HierarchyInstance>(root).Members;
-        const auto copied = std::ranges::find(members, light, &HierarchyInstance::Member::Source)->Entity;
-        expect(r.get<const SceneLight>(copied).Intensity == 23.f);
-    }
-    f.Fails(UpdateOf<&InstanceOnPoints::Prototype>(instances, producer));
-    const auto realize = f.Append(mesh, KindOf<RealizeInstances>);
-    f.Do(Link{mesh, instances, f.Out(instances), realize, 0});
-    f.Do(SetDisplay{mesh, realize});
-    expect(r.all_of<NodeError>(realize));
-    expect(r.get<const ProcedureInstances>(mesh).Entities == roots);
-    f.Do(SetDisplay{mesh, f.Node(mesh, 0u)});
-    for (const auto root : roots) expect(!r.valid(root));
-    f.Do(action::selection::Select{source});
-    f.Do(action::object::Delete{});
-    expect(r.all_of<HierarchyDefinition>(source));
-    expect(r.valid(light));
-    f.Do(SetDisplay{mesh, instances});
-    expect(r.get<const ProcedureInstances>(mesh).Entities.size() == 4u);
-    f.Do(SetDisplay{mesh, f.Node(mesh, 0u)});
-    f.Do(UpdateOf<&InstanceOnPoints::Prototype>(instances, state::Null));
-    expect(!r.valid(source) && !r.valid(light));
+    // The instance, its copy of the procedure's object and of the procedure, the Boolean occurrence there, and the instance's copy of the operand.
+    struct Instanced {
+        state::Entity Root, Object, Mesh, Operand;
+        NodePath Boolean;
+    };
+    const auto instance = [&](bool grouped) {
+        const auto root = f.AddEmpty("Assembly");
+        const auto mesh = f.AddGenerated(primitive::Cube{});
+        const auto operand = f.Object(f.AddGenerated(primitive::Cube{}));
+        f.Do(UpdateOf<&Transform::P>(operand, vec3{.5f, .25f, 0.f}));
+        const auto boolean = f.Append(mesh, KindOf<procedure::Boolean>, {Set<&procedure::Boolean::Operation>(BooleanOperation::Union)});
+        const auto info = f.Append(mesh, KindOf<procedure::ObjectInfo>, {Set<&procedure::ObjectInfo::Object>(operand)});
+        f.Do(Link{mesh, f.Node(mesh, 0u), f.Out(f.Node(mesh, 0u)), boolean, 0u});
+        f.Do(Link{mesh, info, f.Out(info), boolean, 1u});
+        f.Do(SetDisplay{mesh, boolean});
+        if (grouped) f.Do(action::nodes::GroupNodes{mesh, {boolean, info}});
+        for (const auto child : {operand, f.Object(mesh)}) f.Do(action::object::SetParent{child, root});
+        const auto copy = f.Add(action::object::InstantiateHierarchy{root});
+        f.Do(UpdateOf<&Transform::P>(copy, vec3{2.f, 0.f, 0.f}));
+        const auto &members = r.get<const HierarchyInstance>(copy).Members;
+        const auto object = MapHierarchyMember(members, f.Object(mesh));
+        const auto copied = r.get<const Instance>(object).Entity;
+        expect(fatal(r.all_of<HierarchyGeometry>(copied)));
+        const auto &plan = r.get<const CookPlan>(copied);
+        const auto n = uint32_t(std::ranges::find(plan.Nodes, KindOf<procedure::Boolean>, &NodeRecord::Kind) - plan.Nodes.begin());
+        return Instanced{copy, object, copied, MapHierarchyMember(members, operand), NodePath{std::from_range, PathOf(plan, n)}};
+    };
+    const auto inline_copy = instance(false);
+    const auto shape = f.Shaped(inline_copy.Mesh);
+    const auto copy = instance(true);
+    expect(f.Shaped(copy.Mesh) == shape);
+    expect(CookedOf<BooleanPlacement>(r, copy.Boolean)->Operands.front().Operand == copy.Operand);
+    const auto source = r.get<const Subnet>(copy.Boolean.front()).DefinitionEntity;
+    f.Do(action::object::MakeIndependent{copy.Root});
+    const auto mesh = r.get<const Instance>(copy.Object).Entity;
+    expect(f.Shaped(mesh) == shape);
+    const auto nodes = NodesOf(r, mesh);
+    const auto definition = r.get<const Subnet>(*std::ranges::find_if(nodes, [&](state::Entity node) { return r.all_of<Subnet>(node); })).DefinitionEntity;
+    const auto inner = NodesOf(r, definition);
+    const auto info = *std::ranges::find_if(inner, [&](state::Entity node) { return r.all_of<procedure::ObjectInfo>(node); });
+    expect(definition != source && r.get<const procedure::ObjectInfo>(info).Object == copy.Operand);
 }
 
 void LinkedSkinPoses(ProcedureFixture &f) {
@@ -1795,61 +1256,217 @@ void LinkedSkinPoses(ProcedureFixture &f) {
     check();
 }
 
+// The mesh's source after the position edit over every vertex, which reads the parameter attribute holding `value` at each vertex when given.
+Shape PositionEdited(ProcedureFixture &f, state::Entity mesh, PositionEditOp op, float factor, uint32_t repeat, PositionOperationOptions options, float (*value)(const Mesh &, he::VH) = nullptr) {
+    auto &meshes = f.Store();
+    return EditedSource(f, mesh, [&](uint32_t clone) {
+        if (value) options.Input = meshes.AttributeRef(AddValues<float>(meshes, clone, "parameter", value));
+        ExecuteGeometryPositions(f.R, {.StoreId = clone, .Selection = AllHandles(Mesh{meshes, clone})}, op, factor, repeat, options);
+    });
+}
+// Shrink/Fatten moves each vertex by the width the ops compute from its position.
+// The kernel reads the factor at each vertex from the attribute, past the constant factor's zero check.
+void ExpectWidthsShrunk(ProcedureFixture &f, const BuiltGraph &g) { expect(f.Shaped(g.Mesh) == PositionEdited(f, g.Mesh, PositionEditOp::ShrinkFatten, 1.f, 1u, {}, WidthAt)); }
+// Smooth moves each vertex by the factor the ops compute from its height, which a repeated smooth reads once from its input.
+void ExpectSmoothFactors(ProcedureFixture &f, const BuiltGraph &g) {
+    const auto smooth = f.R.get<const action::mesh::SmoothVertices>(g.Nodes[5]);
+    expect(Near(f.Shaped(g.Mesh).Vertices, PositionEdited(f, g.Mesh, PositionEditOp::Smooth, smooth.Factor, smooth.Repeat, {}, [](const Mesh &mesh, he::VH v) { return .25f * test::Position(mesh, v).z + .5f; }).Vertices));
+}
+// Randomize moves each vertex by the amount the ops compute from its distance to the origin.
+void ExpectRandomAmounts(ProcedureFixture &f, const BuiltGraph &g) {
+    const auto randomize = f.R.get<const action::mesh::Randomize>(g.Nodes[4]);
+    expect(Near(f.Shaped(g.Mesh).Vertices, PositionEdited(f, g.Mesh, PositionEditOp::Randomize, randomize.Amount, 1u, {.Randomize = PositionRandomize{randomize.Uniform, randomize.Normal, randomize.Seed}}, [](const Mesh &mesh, he::VH v) { return .1f * Length(test::Position(mesh, v)); }).Vertices));
+}
+// Set Position doubles the smoothed positions and raises them by one.
+void ExpectSmoothedOffsets(ProcedureFixture &f, const BuiltGraph &g) {
+    const auto offset = PositionEdited(f, g.Mesh, PositionEditOp::Smooth, .5f, 1u, {}).Vertices | std::views::transform([](const Corner &p) { return Corner{2.f * p[0], 2.f * p[1], 2.f * p[2] + 1.f}; }) | std::ranges::to<std::vector>();
+    expect(Near(f.Shaped(g.Mesh).Vertices, offset));
+}
+// Poke offsets each face of the source by `offset` at the face.
+void ExpectPokes(ProcedureFixture &f, state::Entity mesh, float (*offset)(const Mesh &, he::FH)) {
+    expect(f.Shaped(mesh) == TopologyReference(f, mesh, MeshTopologyOp::Poke, [&](uint32_t clone) { return f.Store().AttributeRef(AddValues<float, AttributeDomain::Face>(f.Store(), clone, "parameter", offset)); }));
+}
+// A face reads the mean of its vertices' positions, so each face's offset is the width at its center.
+void ExpectCenterPokes(ProcedureFixture &f, const BuiltGraph &g) {
+    expect(!f.Fault(g.Nodes[1]));
+    ExpectPokes(f, g.Mesh, [](const Mesh &m, he::FH face) {
+        vec3 sum{};
+        float count = 0.f;
+        for (const auto v : test::FaceVertices(m, face)) {
+            sum += test::Position(m, v);
+            count += 1.f;
+        }
+        const auto center = sum * (1.f / count);
+        return .05f * (center.x + center.y + center.z) + .2f;
+    });
+}
+void ExpectCuts(ProcedureFixture &f, state::Entity mesh, float cuts) {
+    expect(f.Shaped(mesh) == EditedSource(f, mesh, [&](uint32_t clone) { f.Run(clone, {Op(MeshTopologyOp::Subdivide, cuts, TopologyFlagSelectAll)}); }));
+}
+
+// Whether the shapes are equal, with their sorted vertex positions equal bit for bit.
+bool SameBits(const Shape &a, const Shape &b) {
+    const auto bits = [](const Shape &shape) { return shape.Vertices | std::views::join | std::views::transform([](float c) { return std::bit_cast<uint32_t>(c); }) | std::ranges::to<std::vector>(); };
+    return a == b && bits(a) == bits(b);
+}
 using action::mesh::DeleteMode;
-const std::array<GraphData, 25> DataGraphs{{
+constexpr auto Cuts = ParameterSocket<&action::mesh::Subdivide::Cuts>;
+// The stored output type of an op node.
+NodeUpdate OutputType(mx::Type type) {
+    return [type](ProcedureFixture &f, state::Entity node) { f.Do(action::nodes::SetOpOutputType{node, type}); };
+}
+// The node's selection applies to the domain and selects every element while unlinked.
+NodeUpdate SelectsOn(Element domain) {
+    return [domain](ProcedureFixture &f, state::Entity node) { f.Do(action::nodes::SetInlineSelection{node, std::make_unique<InlineSelection>(InlineSelection{.Domain = domain, .All = true})}); };
+}
+// Plane Side selects the positions in front of the plane through (-0.5, 0, -0.5) facing +x and +z.
+const std::vector<NodeUpdate> FrontOfDiagonal{Literal("point", vec3{-.5f, 0.f, -.5f}), Literal("normal", vec3{1.f, 0.f, 1.f}), Literal("side", 0)};
+// A Convert Domain node's source domain, target domain and mode.
+NodeUpdate Converts(std::string_view source, std::string_view target, std::string_view mode) {
+    return [source, target, mode](ProcedureFixture &f, state::Entity node) {
+        for (const auto [input, value] : {std::pair{"source", source}, std::pair{"target", target}, std::pair{"mode", mode}}) f.Do(OpInputOf(node, input, std::string{value}));
+    };
+}
+// Set Position sets each vertex to twice its position.
+const GraphDescription DoubledPositions{primitive::Cube{}, {{"position"}, {"multiply", {Literal("in2", 2.f)}}, {KindOf<SetPosition>, {Set<&SetPosition::Offset>(false)}}}, {{1, 2, 0, "in1"}, {2, 3, 1}, {0, 3, 0}}, 3};
+// Ops before, between and after two Convert Domain nodes offset the positions.
+const GraphDescription ConvertedOffsets{primitive::Cube{}, {{"position"}, {"multiply", {Literal("in2", 2.f)}}, {"convertdomain", {Converts("vertex", "face", "mean")}}, {"add", {Literal("in2", vec3{0.f, 0.f, 1.f})}}, {"convertdomain", {Converts("face", "vertex", "max")}}, {"multiply", {Literal("in2", .25f)}}, {KindOf<SetPosition>}}, {{1, 2, 0, "in1"}, {2, 3, 0, "in"}, {3, 4, 0, "in1"}, {4, 5, 0, "in"}, {5, 6, 0, "in1"}, {6, 7, 1}, {0, 7, 0}}, 7};
+// The same graph with each conversion's result written by a Store node on its domain and read back.
+const GraphDescription StoredOffsets{primitive::Cube{}, {{"position"}, {"multiply", {Literal("in2", 2.f)}}, {"convertdomain", {Converts("vertex", "face", "mean")}}, {KindOf<StoreNamedAttribute>, {Named("a"), Set<&StoreNamedAttribute::Domain>(AttributeDomain::Face)}}, {"geompropvalue", {Text("geomprop", "a"), Literal("default", vec3{})}}, {"add", {Literal("in2", vec3{0.f, 0.f, 1.f})}}, {"convertdomain", {Converts("face", "vertex", "max")}}, {KindOf<StoreNamedAttribute>, {Named("b")}}, {"geompropvalue", {Text("geomprop", "b"), Literal("default", vec3{})}}, {"multiply", {Literal("in2", .25f)}}, {KindOf<SetPosition>}}, {{1, 2, 0, "in1"}, {2, 3, 0, "in"}, {3, 4, 1}, {0, 4, 0}, {5, 6, 0, "in1"}, {6, 7, 0, "in"}, {7, 8, 1}, {4, 8, 0}, {9, 10, 0, "in1"}, {10, 11, 1}, {8, 11, 0}}, 11};
+// The rotation leaves no two moved corners a GPU rounding apart in sort order.
+const Transform ConstantDelta{{1.f, 2.f, 3.f}, numeric::AngleAxis(.5f, Normalize(vec3{1.f, 2.f, 3.f})), {2.f, 1.f, .5f}};
+// A geompropvalue op that finds no attribute of its name and type shows that it found none, and Set Position reads its default.
+void ExpectProbeDefault(ProcedureFixture &f, const BuiltGraph &g) {
+    expect(f.Fault(g.Nodes[1]) == NodeFault::NotFound && !f.Fault(g.Nodes[2]));
+    expect(Near(f.Shaped(g.Mesh).Vertices, SourcePoints(f, g.Mesh, [](uint32_t, vec3 p) { return p + vec3{0.f, 0.f, 1.f}; })));
+}
+// A program on corners reads each corner's shading normal as the viewport shades it: its face's on a flat face, its sector's beside a sharp edge, and else its vertex's.
+void ExpectCornerNormals(ProcedureFixture &f, const BuiltGraph &g) {
+    expect(!f.Fault(g.Nodes[10]));
+    const auto &meshes = f.Store();
+    const auto id = f.Output(g.Mesh);
+    expect(meshes.Get(id).Classification == uint32_t(CornerClassMode::Mixed));
+    const auto shading = meshes.GetCornerNormalView(id);
+    const auto stored = meshes.FindAttribute(id, "shading");
+    expect(fatal(stored != InvalidOffset));
+    const Mesh output{meshes, id};
+    std::set<std::array<float, 3>> normals;
+    for (const auto face : output.faces()) {
+        for (const auto corner : test::FaceHalfedges(output, face)) {
+            const auto expected = Normalize(shading[*corner]);
+            const auto words = test::AttributeWords(meshes, stored, *corner);
+            expect(Length(vec3{std::bit_cast<float>(words[0]), std::bit_cast<float>(words[1]), std::bit_cast<float>(words[2])} - expected) < 1e-5f);
+            normals.insert({std::round(expected.x * 1e3f), std::round(expected.y * 1e3f), std::round(expected.z * 1e3f)});
+        }
+    }
+    // Flat, sector and vertex normals give the corners more distinct normals than the six faces have.
+    expect(normals.size() > 6u);
+}
+// Four points on a line, each with a color of its own, which a record without faces holds on its vertices.
+MeshSource ColoredPoints() {
+    MeshSource points;
+    auto &colors = points.Attrs.Colors0.emplace();
+    points.Attrs.Colors0ComponentCount = 4u;
+    for (uint32_t i = 0u; i < 4u; ++i) {
+        points.Data.Positions.emplace_back(float(i), 0.f, 0.f);
+        colors.emplace_back(float(i) / 4.f, .25f, .5f, 1.f);
+    }
+    points.Data.Edges = {{0u, 1u}, {1u, 2u}, {2u, 3u}};
+    return points;
+}
+// A color read on the vertices of a record without faces is each vertex's own color.
+void ExpectVertexColors(ProcedureFixture &f, const BuiltGraph &g) {
+    const auto &meshes = f.Store();
+    const auto id = f.Output(g.Mesh);
+    const auto stored = meshes.FindAttribute(id, "color");
+    expect(fatal(stored != InvalidOffset));
+    const auto &a = meshes.Arenas();
+    for (const auto v : Mesh{meshes, id}.vertices()) {
+        const auto words = test::AttributeWords(meshes, stored, *v);
+        const auto expected = a.VertexColors.Get(meshes.Get(id).VertexColors, *v);
+        for (uint32_t c = 0u; c < 4u; ++c) expect(std::bit_cast<float>(words[c]) == expected[c]);
+    }
+}
+// A Bevel without a selection of its own evaluates its linked selection on edges, as a selection the Domain combo sets to edges does, which selects other elements than one on vertices.
+void ExpectNaturalEdges(ProcedureFixture &f, const BuiltGraph &g) {
+    const auto natural = f.Shaped(g.Mesh);
+    const auto shaped = [&](Element domain) {
+        SelectsOn(domain)(f, g.Nodes[2]);
+        return f.Shaped(g.Mesh);
+    };
+    expect(natural == shaped(Element::Edge) && natural != shaped(Element::Vertex));
+}
+const std::array<GraphData, 55> DataGraphs{{
     {"ExtrudeSubdivide", {primitive::Plane{}, {{KindOf<procedure::Extrude>}, {KindOf<action::mesh::Subdivide>, {Set<&action::mesh::Subdivide::Cuts>(2u)}}}, {{0, 1, 0}, {1, 2, 0}}, 2}, nullptr, [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(f.Node(mesh, 2u), 3u)); }},
-    {"ScalePositions", {primitive::Cube{}, {{KindOf<Position>}, {KindOf<VectorMath>, {Set<&VectorMath::Operation>(VectorMathOp::Scale), Set<&VectorMath::Scale>(2.f)}}, {KindOf<SetPosition>, {Set<&SetPosition::Offset>(false)}}}, {{1, 2, 0}, {2, 3, 1}, {0, 3, 0}}, 3}, [](ProcedureFixture &f, const BuiltGraph &g) { expect(Near(f.Shaped(g.Mesh).Vertices, SourcePoints(f, g.Mesh, [](uint32_t, vec3 p) { return 2.f * p; }))); }, [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&VectorMath::Scale>(f.Node(mesh, 2u), 3.f)); }},
-    {"CompareSelectsExtrusion", {primitive::Cube{}, {{KindOf<Position>}, {KindOf<Compare>, {Set<&Compare::Component>(VectorComponent::Z)}}, {KindOf<procedure::Extrude>}}, {{1, 2, 0}, {2, 3, 1}, {0, 3, 0}}, 3}, ExpectUpperExtruded, [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&Compare::Component>(f.Node(mesh, 2u), VectorComponent::X)); }},
-    {"NamedAttributeReads", {primitive::Plane{}, {{KindOf<procedure::NamedAttribute>, {Named("offset"), Set<&procedure::NamedAttribute::Type>(AttributeType::Vec3)}}, {KindOf<SetPosition>}}, {{1, 2, 1}, {0, 2, 0}}, 2, AddOffsets}, [](ProcedureFixture &f, const BuiltGraph &g) { expect(Near(f.Shaped(g.Mesh).Vertices, SourcePoints(f, g.Mesh, [](uint32_t v, vec3 p) { return p + OffsetOf(v); }))); }, [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&SetPosition::Offset>(f.Node(mesh, 2u), false)); }},
+    {"ScalePositions", DoubledPositions, [](ProcedureFixture &f, const BuiltGraph &g) { expect(Near(f.Shaped(g.Mesh).Vertices, SourcePoints(f, g.Mesh, [](uint32_t, vec3 p) { return 2.f * p; }))); }, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 2u), "in2", 3.f); }, CalledInput{1u, vec3{}}},
+    // The selection evaluates on vertices in place of Extrude's faces, so its program reads the positions where they are stored.
+    {"CompareSelectsExtrusion", {primitive::Cube{}, {{"position"}, {"extract", {Literal("index", 2)}}, {"ifgreater", {Literal("value2", 0.f)}}, {KindOf<procedure::Extrude>, {SelectsOn(Element::Vertex)}}}, {{1, 2, 0, "in"}, {2, 3, 0, "value1"}, {3, 4, 1}, {0, 4, 0}}, 4}, ExpectUpperExtruded, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 2u), "index", 0); }, CalledInput{2u, false}},
+    {"NamedAttributeReads", {primitive::Plane{}, {{"geompropvalue", {Text("geomprop", "offset"), Literal("default", vec3{})}}, {KindOf<SetPosition>}}, {{1, 2, 1}, {0, 2, 0}}, 2, AddOffsets}, [](ProcedureFixture &f, const BuiltGraph &g) { expect(Near(f.Shaped(g.Mesh).Vertices, SourcePoints(f, g.Mesh, [](uint32_t v, vec3 p) { return p + OffsetOf(v); }))); }, [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&SetPosition::Offset>(f.Node(mesh, 2u), false)); }, CalledInput{0u, vec3{}}},
     // The rings at the major radius have zero curvature and stay with either comparison.
-    {"CurvatureSelectsOuterTorus", {primitive::Torus{}, {{KindOf<Curvature>, {Set<&Curvature::Kind>(CurvatureKind::Gaussian)}}, {KindOf<Compare>, {Set<&Compare::B>(.1f)}}, {KindOf<action::mesh::Delete>}}, {{1, 2, 0}, {2, 3, 1}, {0, 3, 0}}, 3}, [](ProcedureFixture &f, const BuiltGraph &g) {
+    {"CurvatureSelectsOuterTorus", {primitive::Torus{}, {{"curvature", {Text("kind", "gaussian")}}, {"ifgreater", {Literal("value2", .1f)}}, {KindOf<action::mesh::Delete>}}, {{1, 2, 0, "value1"}, {2, 3, 1}, {0, 3, 0}}, 3}, [](ProcedureFixture &f, const BuiltGraph &g) {
          const auto [outer, inner] = OuterInner(f, g.Mesh);
          expect(outer == 0u && inner > 0u) << "outer" << outer << "inner" << inner; }, [](ProcedureFixture &f, state::Entity mesh) {
-         f.Do(UpdateOf<&Compare::Operation>(f.Node(mesh, 2u), CompareOp::Less));
+         // The curvature moves to the second operand in one gesture, so the comparison takes the curvatures below the threshold.
+         const auto curvature = f.Node(mesh, 1u), compare = f.Node(mesh, 2u);
+         const auto first = f.OpSocket(compare, "value1");
+         f.Stage(action::nodes::Unlink{mesh, compare, first}, OpInputOf(compare, "value1", action::nodes::OpLiteral{mx::Type::Float, {std::bit_cast<uint32_t>(.1f)}}), Link{mesh, curvature, f.Out(curvature), compare, f.OpSocket(compare, "value2")});
+         f.CommitGesture();
          const auto [outer, inner] = OuterInner(f, mesh);
-         expect(inner == 0u && outer > 0u) << "outer" << outer << "inner" << inner; }},
-    {"StorePromotes", {primitive::Plane{}, {{KindOf<Position>}, {KindOf<StoreNamedAttribute>, {Named("rest")}}, {KindOf<action::mesh::Subdivide>, {Set<&action::mesh::Subdivide::Cuts>(2u)}}}, {{1, 2, 1}, {0, 2, 0}, {2, 3, 0}}, 3}, [](ProcedureFixture &f, const BuiltGraph &g) { expect(RestMatches(f, g.Mesh)); }, [](ProcedureFixture &f, state::Entity mesh) {
+         expect(inner == 0u && outer > 0u) << "outer" << outer << "inner" << inner; }, CalledInput{1u, false}},
+    {"StorePromotes", {primitive::Plane{}, {{"position"}, {KindOf<StoreNamedAttribute>, {Named("rest")}}, {KindOf<action::mesh::Subdivide>, {Set<&action::mesh::Subdivide::Cuts>(2u)}}}, {{1, 2, 1}, {0, 2, 0}, {2, 3, 0}}, 3}, [](ProcedureFixture &f, const BuiltGraph &g) { expect(RestMatches(f, g.Mesh)); }, [](ProcedureFixture &f, state::Entity mesh) {
          f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(f.Node(mesh, 3u), 3u));
          expect(RestMatches(f, mesh)); }},
-    // Vector Math on a vertex and a face attribute errs and forwards A, so Set Position offsets each vertex by its position.
-    {"DomainMismatch", {primitive::Cube{}, {{KindOf<Position>}, {KindOf<Normal>, {Set<&Normal::Domain>(AttributeDomain::Face)}}, {KindOf<VectorMath>}, {KindOf<SetPosition>}}, {{1, 3, 0}, {2, 3, 1}, {3, 4, 1}, {0, 4, 0}}, 4}, [](ProcedureFixture &f, const BuiltGraph &g) {
-         expect(f.R.any_of<NodeError>(g.Nodes[3]));
-         expect(Near(f.Shaped(g.Mesh).Vertices, SourcePoints(f, g.Mesh, [](uint32_t, vec3 p) { return 2.f * p; }))); }, [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&Normal::Domain>(f.Node(mesh, 2u), AttributeDomain::Vertex)); }},
+    // An and op reads a vertex and a face field on Delete's vertices, where the face field holds at a vertex when a face around it does.
+    // The selection is the 16 boundary vertices, and deleting them leaves the middle four faces.
+    // Deleting faces reads both fields on faces, where the vertex field holds at a face when all its vertices do, which no face's do.
+    {"DomainMismatch", {primitive::Plane{.Subdivisions = {4u, 4u}}, {{"boundary", {Text("domain", "vertex")}}, {"boundary", {Text("domain", "face")}}, {"and"}, {KindOf<action::mesh::Delete>}}, {{1, 3, 0, "in1"}, {2, 3, 0, "in2"}, {3, 4, 1}, {0, 4, 0}}, 4}, [](ProcedureFixture &f, const BuiltGraph &g) { expect(!f.Fault(g.Nodes[3])); }, [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&action::mesh::Delete::Mode>(f.Node(mesh, 4u), DeleteMode::Faces)); }, {}, 4u, 16u},
     {"JoinGenerated", {primitive::Cube{}, {{KindOf<primitive::Cube>, {Set<&primitive::Cube::HalfExtents>(vec3{2.f, .5f, 1.f})}}, {KindOf<Join>}}, {{0, 2, 0}, {1, 2, 0}}, 2, AddWeights}, ExpectJoinedDefaults, [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&primitive::Cube::HalfExtents>(f.Node(mesh, 1u), vec3{.5f, .5f, .5f})); }},
     {"BooleanIntersection", {primitive::Cube{}, {{KindOf<primitive::Cube>, {Set<&primitive::Cube::HalfExtents>(vec3{2.f, .25f, .75f})}}, {KindOf<procedure::Boolean>, {Set<&procedure::Boolean::Operation>(BooleanOperation::Intersection)}}}, {{0, 2, 0}, {1, 2, 1}}, 2}, [](ProcedureFixture &f, const BuiltGraph &g) { expect(std::abs(OutputVolume(f, g.Mesh) - 1.5) < 1e-4); }, [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&procedure::Boolean::Operation>(f.Node(mesh, 2u), BooleanOperation::Union)); }},
-    {"BoundaryFillsHole", {primitive::Cube{}, {{KindOf<Position>}, {KindOf<Compare>, {Set<&Compare::Component>(VectorComponent::Z), Set<&Compare::B>(.9f)}}, {KindOf<action::mesh::Delete>, {Set<&action::mesh::Delete::Mode>(DeleteMode::Faces)}}, {KindOf<Boundary>}, {KindOf<action::mesh::Fill>}}, {{1, 2, 0}, {2, 3, 1}, {4, 5, 1}, {0, 3, 0}, {3, 5, 0}}, 5}, [](ProcedureFixture &f, const BuiltGraph &g) {
+    // Deleting the top vertices takes the sides too, and Fill declines the loop that already bounds the remaining face.
+    {"BoundaryFillsHole", {primitive::Cube{}, {{"position"}, {"extract", {Literal("index", 2)}}, {"ifgreater", {Literal("value2", .9f)}}, {KindOf<action::mesh::Delete>, {Set<&action::mesh::Delete::Mode>(DeleteMode::Faces)}}, {"boundary"}, {KindOf<action::mesh::Fill>}}, {{1, 2, 0, "in"}, {2, 3, 0, "value1"}, {3, 4, 1}, {5, 6, 1}, {0, 4, 0}, {4, 6, 0}}, 6}, [](ProcedureFixture &f, const BuiltGraph &g) {
          const Mesh output{f.Store(), f.Output(g.Mesh)};
          expect(output.FaceCount() == 6u && output.HasClosedSurface()) << "faces" << output.FaceCount();
-         expect(std::abs(test::EnclosedVolume(output).value_or(-1.0) - 8.0) < 1e-4); },
-     // Deleting the top vertices takes the sides too, and Fill declines the loop that already bounds the remaining face.
-     [](ProcedureFixture &f, state::Entity mesh) {
-         f.Do(UpdateOf<&action::mesh::Delete::Mode>(f.Node(mesh, 3u), DeleteMode::Vertices));
-         ExpectFaces(f, mesh, 1u);
-     }},
-    {"LinkedDeletesComponent", {primitive::Cube{}, {{KindOf<primitive::Cube>, {Set<&primitive::Cube::HalfExtents>(vec3{.5f, .5f, .5f})}}, {KindOf<Join>}, {KindOf<Position>}, {KindOf<Compare>, {Set<&Compare::Component>(VectorComponent::Z), Set<&Compare::B>(.9f)}}, {KindOf<Linked>}, {KindOf<action::mesh::Delete>}}, {{0, 2, 0}, {1, 2, 0}, {2, 6, 0}, {3, 4, 0}, {4, 5, 0}, {5, 6, 1}}, 6}, [](ProcedureFixture &f, const BuiltGraph &g) {
+         expect(std::abs(test::EnclosedVolume(output).value_or(-1.0) - 8.0) < 1e-4); }, [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&action::mesh::Delete::Mode>(f.Node(mesh, 4u), DeleteMode::Vertices)); }, CalledInput{2u, false}, {}, 1u},
+    // A threshold above every vertex seeds nothing, so both cubes stay.
+    {"LinkedDeletesComponent", {primitive::Cube{}, {{KindOf<primitive::Cube>, {Set<&primitive::Cube::HalfExtents>(vec3{.5f, .5f, .5f})}}, {KindOf<Join>}, {"position"}, {"extract", {Literal("index", 2)}}, {"ifgreater", {Literal("value2", .9f)}}, {"linked"}, {KindOf<action::mesh::Delete>}}, {{0, 2, 0}, {1, 2, 0}, {2, 7, 0}, {3, 4, 0, "in"}, {4, 5, 0, "value1"}, {5, 6, 0}, {6, 7, 1}}, 7}, [](ProcedureFixture &f, const BuiltGraph &g) {
          const Mesh output{f.Store(), f.Output(g.Mesh)};
          expect(output.VertexCount() == 8u && output.FaceCount() == 6u) << "vertices" << output.VertexCount() << "faces" << output.FaceCount();
-         expect(std::abs(test::EnclosedVolume(output).value_or(-1.0) - 1.0) < 1e-4); },
-     // A threshold above every vertex seeds nothing, so both cubes stay.
-     [](ProcedureFixture &f, state::Entity mesh) {
-         f.Do(UpdateOf<&Compare::B>(f.Node(mesh, 4u), 10.f));
-         ExpectFaces(f, mesh, 12u);
-     }},
+         expect(std::abs(test::EnclosedVolume(output).value_or(-1.0) - 1.0) < 1e-4); }, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 5u), "value2", 10.f); }, {}, {}, 12u},
     // Seeding Adjacent, at More by one step, with the plane's three vertex columns past x = 1.5 grows the seed by the column beside it, which Delete removes with the seed.
-    {"AdjacentDeletesRing", {primitive::Plane{.HalfExtents = {4.f, 4.f}, .Subdivisions = {8u, 8u}}, {{KindOf<Position>}, {KindOf<Compare>, {Set<&Compare::B>(1.5f)}}, {KindOf<Adjacent>}, {KindOf<action::mesh::Delete>}}, {{0, 4, 0}, {1, 2, 0}, {2, 3, 0}, {3, 4, 1}}, 4}, [](ProcedureFixture &f, const BuiltGraph &g) { ExpectColumnsThrough(f, g.Mesh, 0); },
+    {"AdjacentDeletesRing", {primitive::Plane{.HalfExtents = {4.f, 4.f}, .Subdivisions = {8u, 8u}}, {{"position"}, {"extract", {Literal("index", 0)}}, {"ifgreater", {Literal("value2", 1.5f)}}, {"adjacent"}, {KindOf<action::mesh::Delete>}}, {{0, 5, 0}, {1, 2, 0, "in"}, {2, 3, 0, "value1"}, {3, 4, 0}, {4, 5, 1}}, 5}, [](ProcedureFixture &f, const BuiltGraph &g) { ExpectColumnsThrough(f, g.Mesh, 0); },
      // Less shrinks the seed by its column beside the rest, so Delete removes the two columns past x = 2.5.
      [](ProcedureFixture &f, state::Entity mesh) {
-         f.Do(UpdateOf<&Adjacent::Mode>(f.Node(mesh, 3u), AdjacentMode::Less));
+         Text("mode", "less")(f, f.Node(mesh, 4u));
          ExpectColumnsThrough(f, mesh, 2);
      }},
+    // Plane Side holds the edge on the +x border of the row of faces at the greatest z, whose ring is the row's five edges along z, which Adjacent grows by the 13 edges touching them.
+    // Deleting the 18 edges deletes the eight faces of the two rows at the greatest z.
+    // Every ring edge touches an unselected edge, so shrinking the ring selects nothing.
+    {"EdgeRingAdjacentDeletes", {primitive::Plane{.HalfExtents = {2.f, 2.f}, .Subdivisions = {4u, 4u}}, {{"planeside", {Literal("point", vec3{2.625f, 0.f, 0.f}), Literal("normal", vec3{2.f, 0.f, 1.f}), Literal("side", 0)}}, {"edgering"}, {"adjacent", {Text("domain", "edge")}}, {KindOf<action::mesh::Delete>, {Set<&action::mesh::Delete::Mode>(DeleteMode::Edges)}}}, {{1, 2, 0}, {2, 3, 0}, {3, 4, 1}, {0, 4, 0}}, 4}, nullptr, [](ProcedureFixture &f, state::Entity mesh) { Text("mode", "less")(f, f.Node(mesh, 3u)); }, {}, 8u, 16u},
+    // The open box's rim is its boundary, and the box is the component holding it, so Delete removes the box and keeps the cube inside it.
+    // No face has only rim edges, so the face components hold nothing and Delete keeps both meshes.
+    {"BoundaryLinkedDeletes", {primitive::Cube{}, {{"position"}, {"extract", {Literal("index", 2)}}, {"ifgreater", {Literal("value2", .9f)}}, {KindOf<action::mesh::Delete>, {Set<&action::mesh::Delete::Mode>(DeleteMode::Faces)}}, {KindOf<primitive::Cube>, {Set<&primitive::Cube::HalfExtents>(vec3{.5f, .5f, .5f})}}, {KindOf<Join>}, {"boundary"}, {"linked"}, {KindOf<action::mesh::Delete>}}, {{1, 2, 0, "in"}, {2, 3, 0, "value1"}, {3, 4, 1}, {0, 4, 0}, {4, 6, 0}, {5, 6, 0}, {7, 8, 0}, {8, 9, 1}, {6, 9, 0}}, 9}, nullptr, [](ProcedureFixture &f, state::Entity mesh) { Text("domain", "face")(f, f.Node(mesh, 8u)); }, {}, 6u, 11u},
     // The primitive shades flat, which the patches would keep as creases, so a Shade node supplies the smooth normals.
     {"SmoothSurfaceIcoSphere", {primitive::IcoSphere{.Subdivisions = 1}, {{KindOf<Shade>}, {KindOf<SmoothSurface>}}, {{0, 1, 0}, {1, 2, 0}}, 2}, ExpectSmoothedTowardSphere, [](ProcedureFixture &f, state::Entity mesh) {
          const auto vertices = Mesh{f.Store(), f.Output(mesh)}.VertexCount();
          f.Do(UpdateOf<&SmoothSurface::Cuts>(f.Node(mesh, 2u), 4u));
          expect(Mesh{f.Store(), f.Output(mesh)}.VertexCount() > vertices);
      }},
+    // The cylinder's caps are polygons, which Smooth Surface triangulates before it subdivides: 12 cap triangles and 8 side quads, each into the square of one more than the cuts.
+    {"SmoothSurfacePolygons", {primitive::Cylinder{.Slices = 8u}, {{KindOf<SmoothSurface>}}, {{0, 1, 0}}, 1}, [](ProcedureFixture &f, const BuiltGraph &g) { expect(Mesh{f.Store(), f.Output(g.Mesh)}.HasClosedSurface()); }, [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&SmoothSurface::Cuts>(f.Node(mesh, 1u), 1u)); }, {}, 180u, 80u},
+    // Flipping the faces on one side of a plane leaves the corners along the seam without opposites, so Smooth Surface rejects the mesh as not closed.
+    // Flipping every face gives each corner an opposite again.
+    {"SmoothSurfaceFlippedSide", {primitive::Cylinder{.Slices = 8u}, {{"planeside", {Literal("normal", vec3{1.f, 0.f, 1.f}), Literal("side", 0)}}, {KindOf<action::mesh::FlipNormals>}, {KindOf<SmoothSurface>}}, {{1, 2, 1}, {0, 2, 0}, {2, 3, 0}}, 3}, [](ProcedureFixture &f, const BuiltGraph &g) { expect(f.Fault(g.Nodes[3]) == NodeFault::NotClosed); }, [](ProcedureFixture &f, state::Entity mesh) {
+         SetLiteral(f, f.Node(mesh, 1u), "point", vec3{-5.f, 0.f, -5.f});
+         expect(!f.Fault(f.Node(mesh, 3u))); }, {}, {}, 180u},
+    // The seam's corners without opposites make the Boolean reject the cylinder as not closed.
+    // Flipping no face leaves the closed cylinder, which the cube holds, so the intersection is the cylinder.
+    {"BooleanFlippedSide", {primitive::Cylinder{.Slices = 8u}, {{"planeside", {Literal("normal", vec3{1.f, 0.f, 1.f}), Literal("side", 0)}}, {KindOf<action::mesh::FlipNormals>}, {KindOf<primitive::Cube>, {Set<&primitive::Cube::HalfExtents>(vec3{2.f})}}, {KindOf<procedure::Boolean>, {Set<&procedure::Boolean::Operation>(BooleanOperation::Intersection)}}}, {{1, 2, 1}, {0, 2, 0}, {2, 4, 0}, {3, 4, 1}}, 4}, [](ProcedureFixture &f, const BuiltGraph &g) { expect(f.Fault(g.Nodes[4]) == NodeFault::NotClosed); }, [](ProcedureFixture &f, state::Entity mesh) {
+         SetLiteral(f, f.Node(mesh, 1u), "point", vec3{5.f, 0.f, 5.f});
+         expect(!f.Fault(f.Node(mesh, 4u)));
+         expect(std::abs(OutputVolume(f, mesh) - 4.0 * std::numbers::sqrt2) < 1e-4); }},
     // A level set of one minus the distance from the origin is a sphere, which the level shrinks.
-    {"LevelSetSphere", {primitive::Cube{}, {{KindOf<Position>}, {KindOf<VectorMath>, {Set<&VectorMath::Operation>(VectorMathOp::Length)}}, {KindOf<FloatMath>, {Set<&FloatMath::Operation>(FloatMathOp::Multiply), Set<&FloatMath::B>(-1.f)}}, {KindOf<FloatMath>, {Set<&FloatMath::B>(.6f)}}, {KindOf<LevelSet>}}, {{1, 2, 0}, {2, 3, 0}, {3, 4, 0}, {4, 5, 0}}, 5}, [](ProcedureFixture &f, const BuiltGraph &g) { ExpectSphere(f, g.Mesh, .6); }, [](ProcedureFixture &f, state::Entity mesh) {
+    {"LevelSetSphere", {primitive::Cube{}, {{"position"}, {"magnitude"}, {"multiply", {Literal("in2", -1.f)}}, {"add", {Literal("in2", .6f)}}, {KindOf<LevelSet>}}, {{1, 2, 0, "in"}, {2, 3, 0, "in1"}, {3, 4, 0, "in1"}, {4, 5, 0}}, 5}, [](ProcedureFixture &f, const BuiltGraph &g) { ExpectSphere(f, g.Mesh, .6); }, [](ProcedureFixture &f, state::Entity mesh) {
          f.Do(UpdateOf<&LevelSet::Level>(f.Node(mesh, 5u), .2f));
          ExpectSphere(f, mesh, .4); }},
     {"SubdivisionSurfaceCube", {primitive::Cube{}, {{KindOf<SubdivisionSurface>}}, {{0, 1, 0}}, 1, AddHeightHeat}, ExpectCatmullClarkCube, [](ProcedureFixture &f, state::Entity mesh) {
@@ -1861,31 +1478,29 @@ const std::array<GraphData, 25> DataGraphs{{
          f.Do(UpdateOf<&Project::Normal>(f.Node(mesh, 1u), vec3{0.f, 0.f, 1.f}));
          ExpectOneFaceOfArea(f, mesh, 4.0); }},
     {"MinkowskiBoxes", {primitive::Cube{}, {{KindOf<primitive::Cube>, {Set<&primitive::Cube::HalfExtents>(vec3{.5f, .25f, .125f})}}, {KindOf<Minkowski>}}, {{1, 2, 1}, {0, 2, 0}}, 2}, [](ProcedureFixture &f, const BuiltGraph &g) { expect(std::abs(OutputVolume(f, g.Mesh) - 3.0 * 2.5 * 2.25) < 1e-3) << "sum volume" << OutputVolume(f, g.Mesh); }, [](ProcedureFixture &f, state::Entity mesh) {
-         f.Do(UpdateOf<&primitive::Cube::HalfExtents>(f.Node(mesh, 1u), vec3{1.f, .5f, .25f}));
-         expect(std::abs(OutputVolume(f, mesh) - 4.0 * 3.0 * 2.5) < 1e-3) << "grown sum volume" << OutputVolume(f, mesh); }},
+         f.Do(UpdateOf<&Minkowski::Operation>(f.Node(mesh, 2u), MinkowskiOperation::Difference));
+         expect(std::abs(OutputVolume(f, mesh) - 1.0 * 1.5 * 1.75) < 1e-3); }},
     {"SourceInstances", {primitive::Plane{}, {{KindOf<MeshToPoints>}, {KindOf<InstanceOnPoints>}}, {{0, 1, 0}, {1, 2, 0}, {0, 2, 1}}, 2}, ExpectSourceInstances, UnlinkInstance},
     // A Join takes every link into its one input socket, in order, and Unlink removes the link at its index.
-    {"JoinLinks", {primitive::Cube{}, {{KindOf<primitive::Cube>}, {KindOf<primitive::Cube>}, {KindOf<Join>}}, {{0, 3, 0}, {1, 3, 0}, {2, 3, 0}}, 3}, [](ProcedureFixture &f, const BuiltGraph &g) { ExpectFaces(f, g.Mesh, 18u); }, [](ProcedureFixture &f, state::Entity mesh) {
+    {"JoinLinks", {primitive::Cube{}, {{KindOf<primitive::Cube>}, {KindOf<primitive::Cube>}, {KindOf<Join>}}, {{0, 3, 0}, {1, 3, 0}, {2, 3, 0}}, 3}, nullptr, [](ProcedureFixture &f, state::Entity mesh) {
          const auto join = f.Node(mesh, 3u);
          const auto links = f.R.get<const NodeInputs>(join).Links;
          f.Do(action::nodes::Unlink{mesh, join, 0u, 1u});
-         expect(f.R.get<const NodeInputs>(join).Links == std::vector{links[0], links[2]});
-         ExpectFaces(f, mesh, 12u); }},
+         expect(f.R.get<const NodeInputs>(join).Links == std::vector{links[0], links[2]}); }, {}, 18u, 12u},
     // A Boolean subtracts every Mesh 2 from Mesh 1.
     // Two crossing 1 x 1 bars through the cube remove 2 + 2 - 1 of its volume of 8.
     {"BooleanCutters", {primitive::Cube{}, {{KindOf<primitive::Cube>, {Set<&primitive::Cube::HalfExtents>(vec3{.5f, .5f, 2.f})}}, {KindOf<primitive::Cube>, {Set<&primitive::Cube::HalfExtents>(vec3{2.f, .5f, .5f})}}, {KindOf<procedure::Boolean>}}, {{0, 3, 0}, {1, 3, 1}, {2, 3, 1}}, 3}, [](ProcedureFixture &f, const BuiltGraph &g) { expect(std::abs(OutputVolume(f, g.Mesh) - 5.0) < 1e-3) << OutputVolume(f, g.Mesh); }, [](ProcedureFixture &f, state::Entity mesh) {
          f.Do(action::nodes::Unlink{mesh, f.Node(mesh, 3u), 1u, 0u});
          expect(std::abs(OutputVolume(f, mesh) - 6.0) < 1e-3) << OutputVolume(f, mesh); }},
     // The source clone takes lower blocks than the generated cube and the Join appends them after the cube's, so the joined block table is not in ascending order.
-    // A Compare linked into a Delete still selects the cube's upper vertices in its higher block.
-    {"JoinedSelection", {primitive::Cube{}, {{KindOf<primitive::Cube>, {Set<&primitive::Cube::HalfExtents>(vec3{1.f, 2.f, 1.f})}}, {KindOf<Join>}, {KindOf<Position>}, {KindOf<Compare>, {Set<&Compare::Component>(VectorComponent::Y), Set<&Compare::B>(1.5f)}}, {KindOf<action::mesh::Delete>}}, {{1, 2, 0}, {0, 2, 0}, {3, 4, 0}, {4, 5, 1}, {2, 5, 0}}, 5}, ExpectJoinedSelection, [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&Compare::B>(f.Node(mesh, 4u), .5f)); }},
+    // A comparison linked into a Delete still selects the cube's upper vertices in its higher block.
+    {"JoinedSelection", {primitive::Cube{}, {{KindOf<primitive::Cube>, {Set<&primitive::Cube::HalfExtents>(vec3{1.f, 2.f, 1.f})}}, {KindOf<Join>}, {"position"}, {"extract", {Literal("index", 1)}}, {"ifgreater", {Literal("value2", 1.5f)}}, {KindOf<action::mesh::Delete>}}, {{1, 2, 0}, {0, 2, 0}, {3, 4, 0, "in"}, {4, 5, 0, "value1"}, {5, 6, 1}, {2, 6, 0}}, 6}, ExpectJoinedSelection, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 5u), "value2", .5f); }, CalledInput{4u, false}},
+    // An edge lies in front of a plane when both its vertices do.
     // A plane past the torus's outer equator holds one equator edge, whose edge loop is the 32-edge equator, and Delete removes the 64 faces beside it.
     // Tilting the plane toward the tube holds one edge across the equator instead, whose loop is the 16-edge tube ring with 32 faces beside it.
-    {"EdgeLoopDeletesRing", {primitive::Torus{}, {{KindOf<PlaneSide>, {Set<&PlaneSide::Point>(vec3{0.f, 0.f, 1.48f}), Set<&PlaneSide::Normal>(vec3{.0985f, 0.f, 1.f}), Set<&PlaneSide::Side>(PlaneSideKind::Positive), Set<&PlaneSide::Domain>(AttributeDomain::Edge)}}, {KindOf<procedure::EdgeLoop>}, {KindOf<action::mesh::Delete>, {Set<&action::mesh::Delete::Mode>(DeleteMode::Edges)}}}, {{1, 2, 0}, {2, 3, 1}, {0, 3, 0}}, 3}, [](ProcedureFixture &f, const BuiltGraph &g) { ExpectFaces(f, g.Mesh, 32u * 16u - 64u); }, [](ProcedureFixture &f, state::Entity mesh) {
-         f.Do(UpdateOf<&PlaneSide::Normal>(f.Node(mesh, 1u), vec3{0.f, .1989f, 1.f}));
-         ExpectFaces(f, mesh, 32u * 16u - 32u); }},
-    // A face field selects in the face domain, so Mark Sharp smooths the top and +x faces.
-    {"FaceFieldMarksSharp", {primitive::Cube{}, {{KindOf<PlaneSide>, {Set<&PlaneSide::Point>(vec3{-.5f, 0.f, -.5f}), Set<&PlaneSide::Normal>(vec3{1.f, 0.f, 1.f}), Set<&PlaneSide::Side>(PlaneSideKind::Positive), Set<&PlaneSide::Domain>(AttributeDomain::Face)}}, {KindOf<MarkSharp>, {Set<&MarkSharp::Sharp>(false)}}}, {{1, 2, 1}, {0, 2, 0}}, 2}, [](ProcedureFixture &f, const BuiltGraph &g) {
+    {"EdgeLoopDeletesRing", {primitive::Torus{}, {{"planeside", {Literal("point", vec3{0.f, 0.f, 1.48f}), Literal("normal", vec3{.0985f, 0.f, 1.f}), Literal("side", 0)}}, {"convertdomain", {Converts("vertex", "edge", "all")}}, {"edgeloop"}, {KindOf<action::mesh::Delete>, {Set<&action::mesh::Delete::Mode>(DeleteMode::Edges)}}}, {{1, 2, 0, "in"}, {2, 3, 0}, {3, 4, 1}, {0, 4, 0}}, 4}, nullptr, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 1u), "normal", vec3{0.f, .1989f, 1.f}); }, {}, 32u * 16u - 64u, 32u * 16u - 32u},
+    // A selection the Domain combo sets to faces in place of Mark Sharp's edges reads the face field of the faces whose vertices all lie in front of the plane, so Mark Sharp smooths the top and +x faces.
+    {"FaceFieldMarksSharp", {primitive::Cube{}, {{"planeside", FrontOfDiagonal}, {"convertdomain", {Converts("vertex", "face", "all")}}, {KindOf<MarkSharp>, {Set<&MarkSharp::Sharp>(false), SelectsOn(Element::Face)}}}, {{1, 2, 0, "in"}, {2, 3, 1}, {0, 3, 0}}, 3}, [](ProcedureFixture &f, const BuiltGraph &g) {
          const auto &meshes = f.Store();
          const Mesh marked{meshes, f.Output(g.Mesh)};
          std::vector<vec3> smooth;
@@ -1894,16 +1509,98 @@ const std::array<GraphData, 25> DataGraphs{{
          }
          std::ranges::sort(smooth, {}, [](vec3 n) { return std::array{n.x, n.y, n.z}; });
          expect(smooth == std::vector<vec3>{{0.f, 0.f, 1.f}, {1.f, 0.f, 0.f}}); }, nullptr},
-    {"FaceFieldFills", {primitive::Cube{}, {{KindOf<PlaneSide>, {Set<&PlaneSide::Point>(vec3{-.5f, 0.f, -.5f}), Set<&PlaneSide::Normal>(vec3{1.f, 0.f, 1.f}), Set<&PlaneSide::Side>(PlaneSideKind::Positive), Set<&PlaneSide::Domain>(AttributeDomain::Face)}}, {KindOf<action::mesh::Fill>}}, {{1, 2, 1}, {0, 2, 0}}, 2}, [](ProcedureFixture &f, const BuiltGraph &g) { ExpectFaces(f, g.Mesh, 5u); }, [](ProcedureFixture &f, state::Entity mesh) { f.Do(UpdateOf<&PlaneSide::Side>(f.Node(mesh, 1u), PlaneSideKind::Negative)); }},
-    {"StoreFaceValue", {primitive::Cube{}, {{KindOf<FloatValue>, {Set<&FloatValue::Value>(2.5f)}}, {KindOf<StoreNamedAttribute>, {Set<&StoreNamedAttribute::Domain>(AttributeDomain::Face), Named("heat")}}}, {{1, 2, 1}, {0, 2, 0}}, 2}, [](ProcedureFixture &f, const BuiltGraph &g) {
+    {"FaceFieldFills", {primitive::Cube{}, {{"planeside", FrontOfDiagonal}, {"convertdomain", {Converts("vertex", "face", "all")}}, {KindOf<action::mesh::Fill>, {SelectsOn(Element::Face)}}}, {{1, 2, 0, "in"}, {2, 3, 1}, {0, 3, 0}}, 3}, nullptr, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 1u), "side", 1); }, {}, 5u},
+    {"WidthsShrinkFatten", {primitive::Cube{}, {{"position"}, {"dotproduct", {Literal("in2", vec3{.05f, .05f, .05f})}}, {"add", {Literal("in2", .2f)}}, {KindOf<action::mesh::ShrinkFatten>}}, {{1, 2, 0, "in1"}, {2, 3, 0, "in1"}, {3, 4, ParameterSocket<&action::mesh::ShrinkFatten::Distance>}, {0, 4, 0}}, 4}, ExpectWidthsShrunk, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 3u), "in2", .3f); }, CalledInput{2u, 0.f}},
+    // A position edit whose selection reads a stored-field op moves the selected vertices.
+    {"BoundaryMoves", {primitive::Plane{.Subdivisions = {4u, 4u}}, {{"boundary", {Text("domain", "vertex")}}, {"position"}, {"multiply", {Literal("in2", .5f)}}, {KindOf<SetPosition>, {Set<&SetPosition::Offset>(false)}}}, {{1, 4, 2}, {2, 3, 0, "in1"}, {3, 4, 1}, {0, 4, 0}}, 4}, [](ProcedureFixture &f, const BuiltGraph &g) { expect(f.Shaped(g.Mesh) != f.WithSource(g.Mesh, [&](uint32_t id) { return Describe(f.Store(), id); })); }, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 3u), "in2", .25f); }, CalledInput{0u, false}},
+    // A constant passed through a dot op sets the cuts from the value store, and an add of two literals evaluates them at one point.
+    {"ConstantCuts", {primitive::Plane{}, {{"constant", {Literal("value", 2)}}, {"dot"}, {KindOf<action::mesh::Subdivide>}}, {{1, 2, 0, "in"}, {2, 3, Cuts}, {0, 3, 0}}, 3}, [](ProcedureFixture &f, const BuiltGraph &g) { ExpectCuts(f, g.Mesh, 2.f); }, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 1u), "value", 3); }},
+    {"SumCuts", {primitive::Plane{}, {{"add", {Literal("in1", 1), Literal("in2", 1)}}, {KindOf<action::mesh::Subdivide>}}, {{1, 2, Cuts}, {0, 2, 0}}, 2}, [](ProcedureFixture &f, const BuiltGraph &g) { ExpectCuts(f, g.Mesh, 2.f); }, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 1u), "in2", 2); }},
+    {"StoreFaceValue", {primitive::Cube{}, {{"constant", {Literal("value", 2.5f)}}, {KindOf<StoreNamedAttribute>, {Set<&StoreNamedAttribute::Domain>(AttributeDomain::Face), Named("heat")}}}, {{1, 2, 1}, {0, 2, 0}}, 2}, [](ProcedureFixture &f, const BuiltGraph &g) {
          const auto &meshes = f.Store();
          const auto heat = meshes.FindAttribute(f.Output(g.Mesh), "heat");
          expect(fatal(heat != InvalidOffset));
          expect(meshes.GetAttribute(heat).Domain == AttributeDomain::Face && meshes.GetAttribute(heat).Type == AttributeType::Float);
          const auto values = meshes.AttributeView<float>(heat);
          for (const auto face : Mesh{meshes, f.Output(g.Mesh)}.faces()) expect(values[*face] == 2.5f); }, nullptr},
+    // The smooth before Set Position records its edit over every vertex unsubmitted, and Set Position's program reads the smoothed positions.
+    {"OffsetPositions", {primitive::Cube{}, {{KindOf<action::mesh::SmoothVertices>}, {"position"}, {"multiply", {Literal("in2", 2.f)}}, {"add", {Literal("in2", vec3{0.f, 0.f, 1.f})}}, {KindOf<SetPosition>, {Set<&SetPosition::Offset>(false)}}}, {{0, 1, 0}, {1, 5, 0}, {2, 3, 0, "in1"}, {3, 4, 0, "in1"}, {4, 5, 1}}, 5}, ExpectSmoothedOffsets, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 4u), "in2", vec3{0.f, 0.f, 2.f}); }, CalledInput{4u, vec3{}}},
+    // Shrink/Fatten reads the normals of the sheared positions before Set Position, and the three edits record unsubmitted.
+    {"ShrunkOffsetPositions", {primitive::Cube{}, {{KindOf<procedure::Shear>}, {"position"}, {"dotproduct", {Literal("in2", vec3{.05f, .05f, .05f})}}, {"add", {Literal("in2", .2f)}}, {KindOf<action::mesh::ShrinkFatten>}, {"position"}, {"multiply", {Literal("in2", 2.f)}}, {"add", {Literal("in2", vec3{0.f, 0.f, 1.f})}}, {KindOf<SetPosition>, {Set<&SetPosition::Offset>(false)}}}, {{0, 1, 0}, {1, 5, 0}, {2, 3, 0, "in1"}, {3, 4, 0, "in1"}, {4, 5, ParameterSocket<&action::mesh::ShrinkFatten::Distance>}, {5, 9, 0}, {6, 7, 0, "in1"}, {7, 8, 0, "in1"}, {8, 9, 1}}, 9}, nullptr, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 4u), "in2", .3f); }, CalledInput{4u, 0.f}},
+    // Set Position offsets the sheared positions along their normals, and Subdivide follows the two unsubmitted edits.
+    {"NormalOffsetsSubdivide", {primitive::Cube{}, {{KindOf<procedure::Shear>}, {"normal"}, {"multiply", {Literal("in2", .25f)}}, {KindOf<SetPosition>}, {KindOf<action::mesh::Subdivide>}}, {{0, 1, 0}, {1, 4, 0}, {2, 3, 0, "in1"}, {3, 4, 1}, {4, 5, 0}}, 5}, nullptr, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 3u), "in2", .5f); }, CalledInput{3u, vec3{}}},
+    // Each vertex of the cube's source rises by a tenth of its index among the live vertices, which are its handles.
+    {"IndexOffsets", {primitive::Cube{}, {{"elementindex"}, {"convert", {OutputType(mx::Type::Float)}}, {"multiply", {Literal("in1", vec3{0.f, 0.f, .1f})}}, {KindOf<SetPosition>}}, {{1, 2, 0, "in"}, {2, 3, 0, "in2"}, {3, 4, 1}, {0, 4, 0}}, 4}, [](ProcedureFixture &f, const BuiltGraph &g) { expect(Near(f.Shaped(g.Mesh).Vertices, SourcePoints(f, g.Mesh, [](uint32_t v, vec3 p) { return p + vec3{0.f, 0.f, .1f * float(v)}; }))); }, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 3u), "in1", vec3{.1f, 0.f, 0.f}); }, CalledInput{2u, vec3{}}},
+    {"SmoothFactors", {primitive::Cube{}, {{"position"}, {"extract", {Literal("index", 2)}}, {"multiply", {Literal("in2", .25f)}}, {"add", {Literal("in2", .5f)}}, {KindOf<action::mesh::SmoothVertices>}}, {{1, 2, 0, "in"}, {2, 3, 0, "in1"}, {3, 4, 0, "in1"}, {4, 5, ParameterSocket<&action::mesh::SmoothVertices::Factor>}, {0, 5, 0}}, 5}, ExpectSmoothFactors, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 4u), "in2", .25f); }, CalledInput{3u, 0.f}},
+    // A repeated smooth whose factor reads positions reads it once from its input, as a stored attribute.
+    {"RepeatedSmoothFactors", {primitive::Cube{}, {{"position"}, {"extract", {Literal("index", 2)}}, {"multiply", {Literal("in2", .25f)}}, {"add", {Literal("in2", .5f)}}, {KindOf<action::mesh::SmoothVertices>, {Set<&action::mesh::SmoothVertices::Repeat>(3u)}}}, {{1, 2, 0, "in"}, {2, 3, 0, "in1"}, {3, 4, 0, "in1"}, {4, 5, ParameterSocket<&action::mesh::SmoothVertices::Factor>}, {0, 5, 0}}, 5}, ExpectSmoothFactors, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 4u), "in2", .25f); }},
+    // Noise read at each vertex's unset position offsets the sphere's vertices, which lie off the noise lattice.
+    {"NoiseOffsets", {primitive::UVSphere{}, {{"noise3d", {OutputType(mx::Type::Vector3)}}, {KindOf<SetPosition>}}, {{1, 2, 1}, {0, 2, 0}}, 2}, [](ProcedureFixture &f, const BuiltGraph &g) { expect(f.Shaped(g.Mesh) != f.WithSource(g.Mesh, [&](uint32_t id) { return Describe(f.Store(), id); })); }, nullptr},
+    {"RandomAmounts", {primitive::Cube{}, {{"position"}, {"magnitude"}, {"multiply", {Literal("in2", .1f)}}, {KindOf<action::mesh::Randomize>}}, {{1, 2, 0, "in"}, {2, 3, 0, "in1"}, {3, 4, ParameterSocket<&action::mesh::Randomize::Amount>}, {0, 4, 0}}, 4}, ExpectRandomAmounts, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 3u), "in2", .2f); }, CalledInput{2u, 0.f}},
+    // Deleting faces reads its selection on faces, which reads a face attribute and fills its face masks, so Delete removes the faces past index 2.
+    {"FaceIndexDeletes", {primitive::Cube{}, {{"elementindex"}, {KindOf<StoreNamedAttribute>, {Set<&StoreNamedAttribute::Domain>(AttributeDomain::Face), Named("index")}}, {"geompropvalue", {Text("geomprop", "index"), Literal("default", 0)}}, {"ifgreater", {Literal("value2", 2)}}, {KindOf<action::mesh::Delete>, {Set<&action::mesh::Delete::Mode>(DeleteMode::Faces)}}}, {{1, 2, 1}, {0, 2, 0}, {3, 4, 0, "value1"}, {4, 5, 1}, {2, 5, 0}}, 5}, nullptr, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 4u), "value2", 0); }, CalledInput{3u, false, AttributeDomain::Face}, 3u},
+    // The stored-field ops' results cook bit for bit as the graph that stores each with a Store node and reads it back.
+    {"ConvertedOffsets", ConvertedOffsets, [](ProcedureFixture &f, const BuiltGraph &g) {
+         const auto stored = Build(f, StoredOffsets);
+         const auto shape = f.Shaped(g.Mesh);
+         expect(shape != f.WithSource(g.Mesh, [&](uint32_t id) { return Describe(f.Store(), id); }));
+         expect(SameBits(f.Shaped(stored.Mesh), shape)); }, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 2u), "in2", 3.f); }},
+    // A negative integer into Cuts clamps to its least value.
+    {"NegativeCuts", {primitive::Plane{}, {{"add", {Literal("in1", -3), Literal("in2", 1)}}, {KindOf<action::mesh::Subdivide>}}, {{1, 2, Cuts}, {0, 2, 0}}, 2}, [](ProcedureFixture &f, const BuiltGraph &g) { ExpectCuts(f, g.Mesh, 1.f); }, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 1u), "in2", 5); }},
+    // Bevel's vertex widths are the widths the ops compute from each vertex's position.
+    {"WidthsBevelVertices", {primitive::Cube{}, {{"position"}, {"dotproduct", {Literal("in2", vec3{.05f, .05f, .05f})}}, {"add", {Literal("in2", .2f)}}, {KindOf<action::mesh::Bevel>, {Set<&action::mesh::Bevel::Vertices>(true)}}}, {{1, 2, 0, "in1"}, {2, 3, 0, "in1"}, {3, 4, ParameterSocket<&action::mesh::Bevel::Width>}, {0, 4, 0}}, 4}, [](ProcedureFixture &f, const BuiltGraph &g) { expect(f.Shaped(g.Mesh) == TopologyReference(f, g.Mesh, MeshTopologyOp::BevelVertices, [&](uint32_t clone) { return f.Store().AttributeRef(AddValues<float>(f.Store(), clone, "parameter", WidthAt)); })); }, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 3u), "in2", .3f); }},
+    // Poke's offset evaluates on faces, so it reads each face's mean of the vertex widths.
+    {"CenterPokes", {primitive::Cube{}, {{"position"}, {"dotproduct", {Literal("in2", vec3{.05f, .05f, .05f})}}, {"add", {Literal("in2", .2f)}}, {KindOf<action::mesh::Poke>}}, {{1, 2, 0, "in1"}, {2, 3, 0, "in1"}, {3, 4, ParameterSocket<&action::mesh::Poke::Offset>}, {0, 4, 0}}, 4}, ExpectCenterPokes, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 3u), "in2", .3f); }},
+    // A face normal's z sets each face's offset.
+    {"NormalPokes", {primitive::Cube{}, {{"normal"}, {"dotproduct", {Literal("in2", vec3{0.f, 0.f, .3f})}}, {KindOf<action::mesh::Poke>}}, {{1, 2, 0, "in1"}, {2, 3, ParameterSocket<&action::mesh::Poke::Offset>}, {0, 3, 0}}, 3}, [](ProcedureFixture &f, const BuiltGraph &g) { ExpectPokes(f, g.Mesh, [](const Mesh &m, he::FH face) { return .3f * test::Normal(m, face).z; }); }, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 2u), "in2", vec3{0.f, 0.f, .5f}); }},
+    // Each face reads its own ordinal, which is its handle on the cube's source.
+    {"OrdinalPokes", {primitive::Cube{}, {{"elementindex"}, {"convert", {OutputType(mx::Type::Float)}}, {"multiply", {Literal("in1", .1f)}}, {KindOf<action::mesh::Poke>}}, {{1, 2, 0, "in"}, {2, 3, 0, "in2"}, {3, 4, ParameterSocket<&action::mesh::Poke::Offset>}, {0, 4, 0}}, 4}, [](ProcedureFixture &f, const BuiltGraph &g) { ExpectPokes(f, g.Mesh, [](const Mesh &, he::FH face) { return .1f * float(*face); }); }, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 3u), "in1", .2f); }},
+    // Two constants set the translation and the rotation of Transform Elements, beside its own scale.
+    {"ConstantTransform", {primitive::Cube{}, {{"constant", {Literal("value", ConstantDelta.P)}}, {"constant", {Literal("value", std::bit_cast<vec4>(ConstantDelta.R))}}, {KindOf<TransformElements>, {Set<&TransformElements::Delta, &Transform::S>(ConstantDelta.S)}}}, {{1, 3, ParameterSocket<&TransformElements::Delta, &Transform::P>}, {2, 3, ParameterSocket<&TransformElements::Delta, &Transform::R>}, {0, 3, 0}}, 3}, [](ProcedureFixture &f, const BuiltGraph &g) { expect(Near(f.Shaped(g.Mesh).Vertices, SourcePoints(f, g.Mesh, [](uint32_t, vec3 p) { return ConstantDelta.R * (ConstantDelta.S * p) + ConstantDelta.P; }))); }, [](ProcedureFixture &f, state::Entity mesh) { SetLiteral(f, f.Node(mesh, 1u), "value", vec3{-1.f, 0.f, 0.f}); }},
+    {"ProbeDefault", {primitive::Cube{}, {{"geompropvalue", {Text("geomprop", "probe"), Literal("default", vec3{0.f, 0.f, 1.f})}}, {KindOf<SetPosition>}}, {{1, 2, 1}, {0, 2, 0}}, 2}, ExpectProbeDefault, nullptr},
+    // Only the top face's normal and none of the vertices' normals rise past 0.7.
+    {"ConsumerDomains", {primitive::Cube{}, {{"normal"}, {"extract", {Literal("index", 2)}}, {"ifgreater", {Literal("value2", .7f)}}, {KindOf<action::mesh::Delete>, {Set<&action::mesh::Delete::Mode>(DeleteMode::Faces), SelectsOn(Element::Face)}}}, {{1, 2, 0, "in"}, {2, 3, 0, "value1"}, {3, 4, 1}, {0, 4, 0}}, 4}, nullptr, [](ProcedureFixture &f, state::Entity mesh) { SelectsOn(Element::Vertex)(f, f.Node(mesh, 4u)); }, {}, 5u, 6u},
+    // The smooth cube's top edges are sharp and its +x face flat.
+    {"CornerNormals", {primitive::Cube{}, {{KindOf<Shade>}, {"position"}, {"extract", {Literal("index", 2)}}, {"ifgreater", {Literal("value2", .5f)}}, {KindOf<MarkSharp>}, {"position"}, {"extract", {Literal("index", 0)}}, {"ifgreater", {Literal("value2", .5f)}}, {KindOf<MarkSharp>, {SelectsOn(Element::Face)}}, {"normal"}, {KindOf<StoreNamedAttribute>, {Named("shading"), Set<&StoreNamedAttribute::Domain>(AttributeDomain::Corner)}}}, {{0, 1, 0}, {1, 5, 0}, {2, 3, 0, "in"}, {3, 4, 0, "value1"}, {4, 5, 1}, {5, 9, 0}, {6, 7, 0, "in"}, {7, 8, 0, "value1"}, {8, 9, 1}, {9, 11, 0}, {10, 11, 1}}, 11}, ExpectCornerNormals, nullptr},
+    {"PointColors", {ColoredPoints(), {{"geomcolor", {OutputType(mx::Type::Color4)}}, {KindOf<StoreNamedAttribute>, {Named("color")}}}, {{1, 2, 1}, {0, 2, 0}}, 2}, ExpectVertexColors, nullptr},
+    // The positions in front of the plane x + z = 0 are two vertices, five edges and two faces of the cube.
+    {"NaturalEdges", {primitive::Cube{}, {{"planeside", {Literal("normal", vec3{1.f, 0.f, 1.f}), Literal("side", 0)}}, {KindOf<action::mesh::Bevel>}}, {{1, 2, 1}, {0, 2, 0}}, 2}, ExpectNaturalEdges, nullptr},
 }};
-constexpr std::array<GraphRow, 13> BuiltGraphs{{
+const auto BoxTextured = std::filesystem::path{MESHEDITOR_SOURCE_DIR} / "external/glTF-Sample-Assets/Models/BoxTextured/glTF/BoxTextured.gltf";
+// A Join appends the primitive tables of a textured box and its subdivided copy, and a generated cube's faces read one primitive past them.
+Graph JoinedMaterials(ProcedureFixture &f) {
+    auto &r = f.R;
+    f.Do(action::io::LoadGltf{BoxTextured});
+    const auto mesh = SortedEntities(r.view<const GeometryProcedure>()).front();
+    const auto source = f.Node(mesh, 0u);
+    const auto subdivide = f.Append(mesh, KindOf<action::mesh::Subdivide>);
+    const auto cube = f.Append(mesh, KindOf<primitive::Cube>);
+    const auto join = f.Append(mesh, KindOf<Join>);
+    f.Do(Link{mesh, source, f.Out(source), subdivide, 0u});
+    for (const auto input : {source, subdivide, cube}) f.Do(Link{mesh, input, f.Out(input), join, 0u});
+    f.Do(SetDisplay{mesh, join});
+    // The joined record's face count of each primitive, and its primitives' materials.
+    const auto joined = [](ProcedureFixture &f, state::Entity mesh) {
+        const auto &record = f.Store().Get(f.Output(mesh));
+        const auto &a = f.Store().Arenas();
+        std::map<uint32_t, uint32_t> faces;
+        for (const auto face : Mesh{f.Store(), f.Output(mesh)}.faces()) ++faces[a.FacePrimitives.Get(record.FacePrimitives, *face)];
+        return std::pair{faces, a.PrimitiveMaterials.Get(record.PrimitiveMaterials) | std::ranges::to<std::vector>()};
+    };
+    return {
+        mesh,
+        [mesh, joined](ProcedureFixture &f) {
+            const auto material = f.WithSource(mesh, [&](uint32_t id) { return f.Store().Arenas().PrimitiveMaterials.Get(f.Store().Get(id).PrimitiveMaterials)[0]; });
+            expect(material != 0u);
+            expect(joined(f, mesh) == std::pair{std::map<uint32_t, uint32_t>{{0u, 12u}, {1u, 48u}, {2u, 6u}}, std::vector{material, material, 0u}});
+        },
+        [joined](ProcedureFixture &f, state::Entity mesh) {
+            f.Do(UpdateOf<&action::mesh::Subdivide::Cuts>(f.Node(mesh, 1u), 2u));
+            expect(joined(f, mesh).first == std::map<uint32_t, uint32_t>{{0u, 12u}, {1u, 108u}, {2u, 6u}});
+        },
+    };
+}
+constexpr std::array<GraphRow, 14> BuiltGraphs{{
     {"CapInset", CapInset},
     {"StoreSelectionDelete", StoreSelectionDelete},
     {"HeatSubdivide", HeatSubdivide},
@@ -1917,7 +1614,857 @@ constexpr std::array<GraphRow, 13> BuiltGraphs{{
     {"InstancesGeneratedRealize", Instances<false, true>},
     {"NodeEditing", NodeEditing},
     {"UnsubdivideSelection", UnsubdivideSelection},
+    {"JoinedMaterials", JoinedMaterials},
 }};
+
+// The graph with the called link's op output stored on the input's domain by a Store node on the consumer's geometry and read back by a geompropvalue op.
+GraphDescription Stored(GraphDescription graph, const CalledInput &called) {
+    const auto [from, to, socket, input] = graph.Links[called.Link];
+    const auto store = uint32_t(graph.Nodes.size() + 1u), read = store + 1u;
+    graph.Nodes.push_back({KindOf<StoreNamedAttribute>, {Named("called"), Set<&StoreNamedAttribute::Domain>(called.Domain)}});
+    graph.Nodes.push_back({"geompropvalue", {Text("geomprop", "called"), Literal("default", called.Default)}});
+    auto &geometry = *std::ranges::find_if(graph.Links, [&](const auto &link) { return link.To == to && link.Socket == 0u && link.Input.empty(); });
+    const auto source = std::exchange(geometry.From, store);
+    graph.Links[called.Link] = {from, store, 1u};
+    graph.Links.push_back({source, store, 0u});
+    graph.Links.push_back({read, to, socket, input});
+    return graph;
+}
+// Cooks every node after the graph's Source node again in one cook, which gathers consecutive position edits.
+void Recook(ProcedureFixture &f, const GraphDescription &graph, const BuiltGraph &built) {
+    const auto first = built.Nodes[std::ranges::find_if(graph.Links, [](const auto &link) { return link.From == 0u && link.Socket == 0u && link.Input.empty(); })->To];
+    f.Do(action::nodes::SetBypass{first, true});
+    f.Do(action::nodes::SetBypass{first, false});
+}
+// A consumer input that calls its op program at each element cooks bit for bit as the graph with the program's output stored and read back.
+// It creates no temporary attribute, so a graph whose only temporaries could be its op outputs leaves no released attribute slot, which holds no record.
+void CalledEqualsStored(ProcedureFixture &f, const GraphData &row) {
+    const auto called = Build(f, row.Description);
+    Recook(f, row.Description, called);
+    const bool fields = std::ranges::any_of(row.Description.Nodes, [](const auto &node) { return std::holds_alternative<std::string_view>(node.Kind) && DefinitionOf(std::get<std::string_view>(node.Kind))->Stored; });
+    uint32_t released = 0u;
+    f.Store().ForEachNamedAttribute(InvalidOffset, [&](uint32_t, const auto &) { ++released; });
+    expect(fields || released == 0u);
+    const auto shape = f.Shaped(called.Mesh);
+    const auto description = Stored(row.Description, *row.Called);
+    const auto stored = Build(f, description);
+    Recook(f, description, stored);
+    expect(SameBits(f.Shaped(stored.Mesh), shape));
+}
+
+// Adds a subnet node of the subnet's definition to the other mesh, whose ports read the other mesh's Source node where the subnet's read its own mesh's, and displays its port.
+state::Entity AddInstanceOf(ProcedureFixture &f, state::Entity subnet, state::Entity other, std::optional<uint16_t> port) {
+    auto &r = f.R;
+    const auto source = f.Node(NetworkOf(r, subnet), 0u), other_source = f.Node(other, 0u);
+    f.Do(AddNode{other, action::nodes::DefinitionNode{r.get<const Subnet>(subnet).DefinitionEntity}});
+    const auto instance = ActiveNodeOf(r, other);
+    for (const auto &own : r.get<const Subnet>(subnet).Ports) {
+        if (own.Source.FromNode == source) f.Do(Link{other, other_source, f.Out(other_source), instance, own.Id});
+    }
+    f.Do(SetDisplay{other, instance, port});
+    return instance;
+}
+// The graph's nodes other than its Source node as one shared definition, whose occurrence cooks bit for bit as the nodes inline.
+// Two subnet nodes of it in a chain on one mesh cook as the graph twice inline, also after a literal edit inside the definition, and a second mesh's subnet node of it cooks as the nodes inline there.
+void SharedDefinition(ProcedureFixture &f, const GraphData &row) {
+    auto &r = f.R;
+    const auto float_literal = [&](state::Entity node) -> std::optional<uint16_t> {
+        const auto *op = r.try_get<const procedure::Op>(node);
+        if (!op) return {};
+        const auto literal = std::ranges::find(op->Literals, mx::Type::Float, &std::pair<const std::string, mx::Type>::second);
+        return literal == op->Literals.end() ? std::nullopt : std::optional{f.OpSocket(node, literal->first)};
+    };
+    // Raises the literal by a quarter and returns its prior word.
+    const auto raise = [&](state::Entity node, uint16_t input) {
+        const auto word = ParameterDefault(r, node, input)->Words[0];
+        f.Do(OpInputOf(node, SocketOf(r, node, input).Name, action::nodes::OpLiteral{mx::Type::Float, {std::bit_cast<uint32_t>(std::bit_cast<float>(word) + .25f)}}));
+        return word;
+    };
+    const auto displayed_index = row.Description.Display;
+    // The graph twice inline: copies of its nodes read the first result where the originals read the Source node.
+    const auto chain = Build(f, row.Description);
+    const auto inline_once = f.Shaped(chain.Mesh);
+    const auto displayed = chain.Nodes[displayed_index];
+    const SocketLink result{displayed, *ResultSocket(r, displayed)};
+    const bool chains = SocketOf(r, result.FromNode, result.FromSocket).Types == TypeBit(DataType::Geometry);
+    Shape inline_twice, inline_raised;
+    std::optional<size_t> literal;
+    if (chains) {
+        const std::vector originals(chain.Nodes.begin() + 1, chain.Nodes.end());
+        f.Do(DuplicateNodes{chain.Mesh, originals});
+        const auto nodes = NodesOf(r, chain.Mesh);
+        const auto copy_of = [&](size_t i) { return nodes[nodes.size() - originals.size() + i]; };
+        for (size_t i = 0; i < originals.size(); ++i) {
+            const auto links = r.get<const NodeInputs>(originals[i]).Links;
+            for (uint16_t slot = 0; slot < links.size(); ++slot) {
+                if (links[slot].FromNode == chain.Nodes[0]) f.Do(Link{chain.Mesh, result.FromNode, result.FromSocket, copy_of(i), SlotSocketOf(r, originals[i], slot)});
+            }
+        }
+        f.Do(SetDisplay{chain.Mesh, copy_of(displayed_index - 1u)});
+        inline_twice = f.Shaped(chain.Mesh);
+        for (size_t i = 0; i < originals.size() && !literal; ++i) {
+            if (const auto input = float_literal(originals[i])) {
+                literal = i;
+                raise(originals[i], *input);
+                raise(copy_of(i), *input);
+                inline_raised = f.Shaped(chain.Mesh);
+            }
+        }
+    }
+    const auto a = Build(f, row.Description);
+    const auto mesh = a.Mesh;
+    f.Do(action::nodes::GroupNodes{mesh, {a.Nodes.begin() + 1, a.Nodes.end()}});
+    expect(SameBits(f.Shaped(mesh), inline_once));
+    if (!chains) return;
+    const auto first = ActiveNodeOf(r, mesh);
+    const auto definition = r.get<const Subnet>(first).DefinitionEntity;
+    const SocketLink shown{a.Nodes[displayed_index], result.FromSocket};
+    const auto shows = [&](const SubnetPort &port) { return port.Direction == SocketDirection::Out && port.Source() == shown; };
+    if (std::ranges::none_of(r.get<const SubnetInterface>(definition).Ports, shows)) f.Do(action::nodes::ExposeSocket{definition, shown.FromNode, shown.FromSocket, {}});
+    const auto port = std::ranges::find_if(r.get<const SubnetInterface>(definition).Ports, shows)->Id;
+    // A second mesh's subnet node of the definition reads that mesh's Source node at the same ports.
+    const auto other = Build(f, {row.Description.Shape, {}, {}, 0u, row.Description.Prepare});
+    AddInstanceOf(f, first, other.Mesh, port);
+    expect(SameBits(f.Shaped(other.Mesh), inline_once));
+    // Each input port of the second subnet node reads the first's result where the first's reads the Source node.
+    f.Do(AddNode{mesh, action::nodes::DefinitionNode{definition}});
+    const auto second = ActiveNodeOf(r, mesh);
+    for (const auto &own : r.get<const Subnet>(first).Ports) {
+        if (own.Source.FromNode == a.Nodes[0]) f.Do(Link{mesh, first, port, second, own.Id});
+    }
+    f.Do(SetDisplay{mesh, second, port});
+    expect(SameBits(f.Shaped(mesh), inline_twice));
+    // A literal edit of the definition's op reaches both occurrences.
+    if (literal) {
+        const auto node = NodesOf(r, definition)[*literal];
+        raise(node, *float_literal(node));
+        expect(SameBits(f.Shaped(mesh), inline_raised));
+    }
+}
+
+// How a timed graph's scenario builds it: on one mesh, as a definition two meshes instance, or on a mesh another mesh's Join reads through an Object Info node, which a definition can hold.
+enum class TimedForm : uint8_t { Inline,
+                                 Shared,
+                                 Operand,
+                                 DefinedOperand };
+struct TimedGraph {
+    std::string_view Name;
+    GraphDescription Description;
+    TimedForm Form{TimedForm::Inline};
+};
+// Set Position moves each vertex along a direction by the time.
+const GraphDescription TimeMoves{primitive::Cube{}, {{"position"}, {"time"}, {"multiply", {Literal("in1", vec3{0.f, .5f, 1.f})}}, {"add"}, {KindOf<SetPosition>, {Set<&SetPosition::Offset>(false)}}}, {{1, 4, 0, "in1"}, {2, 3, 0, "in2"}, {3, 4, 0, "in2"}, {4, 5, 1}, {0, 5, 0}}, 5};
+// Set Position sets each vertex to the mean, over the faces around it, of the time-moved positions' face means.
+const GraphDescription TimeConverts{primitive::Cube{}, {{"position"}, {"time"}, {"multiply", {Literal("in1", vec3{0.f, .5f, 1.f})}}, {"add"}, {"convertdomain", {Converts("vertex", "face", "mean")}}, {"convertdomain", {Converts("face", "vertex", "mean")}}, {KindOf<SetPosition>, {Set<&SetPosition::Offset>(false)}}}, {{1, 4, 0, "in1"}, {2, 3, 0, "in2"}, {3, 4, 0, "in2"}, {4, 5, 0, "in"}, {5, 6, 0, "in"}, {6, 7, 1}, {0, 7, 0}}, 7};
+const std::array<TimedGraph, 11> TimedGraphs{{
+    {"TimeSetsPositions", TimeMoves},
+    // A Join with one input passes Set Position's edit through, which repairs the render records itself.
+    {"TimeSetsPositionsJoined", {primitive::Cube{}, {{"position"}, {"time"}, {"multiply", {Literal("in1", vec3{0.f, .5f, 1.f})}}, {"add"}, {KindOf<SetPosition>, {Set<&SetPosition::Offset>(false)}}, {KindOf<Join>}}, {{1, 4, 0, "in1"}, {2, 3, 0, "in2"}, {3, 4, 0, "in2"}, {4, 5, 1}, {0, 5, 0}, {5, 6, 0}}, 6}},
+    // The vertices right of a threshold that rises with the frame are deleted.
+    {"FrameSelects", {primitive::Plane{.Subdivisions = {4u, 4u}}, {{"position"}, {"extract", {Literal("index", 0)}}, {"frame"}, {"multiply", {Literal("in2", .25f)}}, {"subtract", {Literal("in2", 1.f)}}, {"ifgreater"}, {KindOf<action::mesh::Delete>}}, {{1, 2, 0, "in"}, {2, 6, 0, "value1"}, {3, 4, 0, "in1"}, {4, 5, 0, "in1"}, {5, 6, 0, "value2"}, {6, 7, 1}, {0, 7, 0}}, 7}},
+    {"TimePokesFaces", {primitive::Cube{}, {{"normal"}, {"extract", {Literal("index", 0)}}, {"time"}, {"multiply"}, {KindOf<action::mesh::Poke>}}, {{1, 2, 0, "in"}, {2, 4, 0, "in1"}, {3, 4, 0, "in2"}, {4, 5, ParameterSocket<&action::mesh::Poke::Offset>}, {0, 5, 0}}, 5}},
+    {"TimeMidChain", {primitive::UVSphere{.Slices = 16, .Stacks = 8}, {{KindOf<action::mesh::SmoothVertices>}, {KindOf<action::mesh::Subdivide>}, {KindOf<ToSphere>, {Set<&ToSphere::Factor>(.5f)}}, {"position"}, {"time"}, {"multiply", {Literal("in1", vec3{0.f, 0.f, .5f})}}, {"add"}, {KindOf<SetPosition>, {Set<&SetPosition::Offset>(false)}}, {KindOf<action::mesh::Subdivide>}, {KindOf<Shade>, {Set<&Shade::Mode>(ShadeMode::Flat)}}}, {{0, 1, 0}, {1, 2, 0}, {2, 3, 0}, {3, 8, 0}, {4, 7, 0, "in1"}, {5, 6, 0, "in2"}, {6, 7, 0, "in2"}, {7, 8, 1}, {8, 9, 0}, {9, 10, 0}}, 10}},
+    {"TimeSharedDefinition", TimeMoves, TimedForm::Shared},
+    {"TimeOperand", TimeMoves, TimedForm::Operand},
+    {"TimeDefinedOperand", TimeMoves, TimedForm::DefinedOperand},
+    {"TimeConvertsDomains", TimeConverts},
+    {"TimeConvertsDomainsShared", TimeConverts, TimedForm::Shared},
+    {"Untimed", DoubledPositions},
+}};
+// Builds the graph in the form, and returns the meshes whose output the graph decides and the built nodes, starting with the first mesh's Source node.
+std::pair<std::vector<state::Entity>, std::vector<state::Entity>> BuildTimed(ProcedureFixture &f, const GraphDescription &graph, TimedForm form) {
+    auto &r = f.R;
+    const auto built = Build(f, graph);
+    if (form == TimedForm::Operand || form == TimedForm::DefinedOperand) {
+        const auto object = f.Object(built.Mesh);
+        const auto reader = Build(f, {primitive::Cube{}, {{KindOf<procedure::ObjectInfo>, {Set<&procedure::ObjectInfo::Object>(object)}}, {KindOf<Join>}}, {{0, 2, 0}, {1, 2, 0}}, 2});
+        if (form == TimedForm::DefinedOperand) f.Do(action::nodes::GroupNodes{reader.Mesh, {reader.Nodes[1], reader.Nodes[2]}});
+        return {{built.Mesh, reader.Mesh}, built.Nodes};
+    }
+    if (form == TimedForm::Inline) return {{built.Mesh}, built.Nodes};
+    f.Do(action::nodes::GroupNodes{built.Mesh, {built.Nodes.begin() + 1, built.Nodes.end()}});
+    const auto other = Build(f, {graph.Shape, {}, {}, 0u}).Mesh;
+    AddInstanceOf(f, ActiveNodeOf(r, built.Mesh), other, r.get<const GeometryProcedure>(built.Mesh).DisplayPort);
+    return {{built.Mesh, other}, built.Nodes};
+}
+
+// The cook at each frame equals the cook of the graph with its frame and time ops replaced by constants of the frame and its time, at every frame a user reaches.
+// Playing adds the two history nodes of its start and its stop at any length, and its frames after the second add no history or trie storage.
+void Timed(ProcedureFixture &f, const TimedGraph &row) {
+    using action::timeline::OffsetFrame, action::timeline::SetFrame, action::timeline::TogglePlay;
+    auto &r = f.R;
+    constexpr std::array Frames{1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+    auto constant = row.Description;
+    std::vector<std::pair<uint32_t, bool>> replaced; // Built node index, and whether it reads the time
+    for (uint32_t i = 0; i < constant.Nodes.size(); ++i) {
+        const auto *op = std::get_if<std::string_view>(&constant.Nodes[i].Kind);
+        if (!op || (*op != "frame" && *op != "time")) continue;
+        replaced.emplace_back(i + 1u, *op == "time");
+        constant.Nodes[i] = {"constant", {Literal("value", 0.f)}};
+    }
+    // The outputs at each frame, from the graph with constants.
+    std::map<int, std::vector<Shape>> expected;
+    {
+        const auto [meshes, nodes] = BuildTimed(f, constant, row.Form);
+        for (const auto frame : Frames) {
+            for (const auto [node, time] : replaced) SetLiteral(f, nodes[node], "value", time ? animation::FrameSeconds(r, frame) : float(frame));
+            for (const auto mesh : meshes) expected[frame].push_back(f.Shaped(mesh));
+        }
+    }
+    const auto [meshes, nodes] = BuildTimed(f, row.Description, row.Form);
+    const auto frame_now = [&] { return r.get<const TimelinePlayback>(state::Document).CurrentFrame; };
+    const auto expect_outputs = [&] {
+        const auto &outputs = expected.at(frame_now());
+        for (size_t i = 0; i < meshes.size(); ++i) expect(SameBits(f.Shaped(meshes[i]), outputs[i]));
+    };
+    expect_outputs();
+    f.Do(SetFrame{4});
+    expect_outputs();
+    f.Do(OffsetFrame{1});
+    expect_outputs();
+    f.Do(OffsetFrame{-2});
+    expect_outputs();
+    // Undo and redo restore each frame's outputs.
+    f.Undo();
+    expect(frame_now() == 5);
+    expect_outputs();
+    f.Redo();
+    expect(frame_now() == 3);
+    expect_outputs();
+    // Plays `ticks` frames from the current one, then stops, and returns the history nodes it added.
+    // The history's owned bytes and the trie node bytes stay at or below the most either of the first two frames leaves, since a frame owns no copy of a page it leaves unchanged.
+    auto &frame_state = r.Resources.get<FrameState>();
+    const auto play = [&](uint32_t ticks) {
+        const auto before = f.P->History.Nodes.size();
+        f.Do(TogglePlay{frame_now()});
+        frame_state.FixedFrameStep = true;
+        std::pair<uint64_t, uint64_t> held{};
+        for (uint32_t tick = 0; tick < ticks; ++tick) {
+            f.P->Frame();
+            expect_outputs();
+            const std::pair sizes{f.P->History.Stats().OwnedBytes, store::SharedNodeBytes()};
+            if (tick > 1u) expect(sizes.first <= held.first && sizes.second <= held.second);
+            else held = {std::max(held.first, sizes.first), std::max(held.second, sizes.second)};
+        }
+        frame_state.FixedFrameStep = false;
+        f.Do(TogglePlay{frame_now()});
+        expect_outputs();
+        return f.P->History.Nodes.size() - before;
+    };
+    play(3u);
+    expect(frame_now() == 6);
+    expect(play(1u) == 2u);
+    expect(play(4u) == 2u);
+    expect(frame_now() == 11);
+    // A frame change while the mesh shows another node leaves no state of the earlier frame for the node shown again.
+    if (row.Form == TimedForm::Inline) {
+        const auto display = nodes[row.Description.Display];
+        f.Do(action::nodes::SetBypass{display, true});
+        f.Do(action::nodes::SetBypass{display, false});
+        f.Do(SetDisplay{meshes[0], nodes[0]});
+        f.Do(OffsetFrame{1});
+        f.Do(SetDisplay{meshes[0], display});
+        expect_outputs();
+    }
+}
+
+// A static hull collider fit to a graph's cooked mesh, under a falling cube, bakes the same reached by playing frame by frame as reached by one jump, and a jump back reads the baked frames.
+// Playing bakes one more frame each tick and keeps the frames baked before it.
+// A collider whose mesh reads the time bakes each frame with that frame's geometry.
+void TimeCollider(ProcedureFixture &f, const GraphDescription &graph) {
+    using action::timeline::SetFrame, action::timeline::TogglePlay;
+    auto &r = f.R;
+    const auto mesh = Build(f, graph).Mesh;
+    f.Do(action::physics::SetMotionType{action::physics::SetMotionType::Type::Static, f.Object(mesh)});
+    expect(std::holds_alternative<physics::ConvexHull>(r.get<const ColliderShape>(f.Object(mesh)).Shape));
+    const auto body = f.AddCube();
+    f.Do(UpdateOf<&Transform::P>(body, vec3{0.f, 3.5f, 0.f}));
+    f.Do(action::physics::SetMotionType{action::physics::SetMotionType::Type::Dynamic});
+    const auto timed = !r.view<const TimeReads>().empty();
+    const auto poses = [&] { return r.get<const BodyPoseCache>(body).Frames; };
+    const auto same = [](const std::vector<CachedPose> &a, const std::vector<CachedPose> &b) {
+        return std::ranges::equal(a, b, [](const CachedPose &p, const CachedPose &q) { return p.P == q.P && p.R == q.R; });
+    };
+    constexpr int Last{24};
+    f.Do(SetFrame{Last});
+    expect(physics::BakedThrough(r) == uint32_t(Last));
+    const auto jumped = poses();
+    // The rising collider lifts the cube after it lands.
+    if (timed) expect(jumped.back().P.y > std::ranges::min(jumped | std::views::transform([](const CachedPose &p) { return p.P.y; })));
+    f.Do(SetFrame{1});
+    physics::InvalidateCache(r);
+    f.Do(TogglePlay{1});
+    auto &frame_state = r.Resources.get<FrameState>();
+    frame_state.FixedFrameStep = true;
+    for (int frame = 2; frame <= Last; ++frame) {
+        const auto before = poses();
+        f.P->Frame();
+        expect(physics::BakedThrough(r) == uint32_t(frame));
+        auto after = poses();
+        after.resize(before.size());
+        expect(same(after, before));
+    }
+    frame_state.FixedFrameStep = false;
+    f.Do(TogglePlay{Last});
+    expect(same(poses(), jumped));
+    f.Do(SetFrame{5});
+    expect(physics::BakedThrough(r) == uint32_t(Last));
+}
+
+constexpr std::array<std::pair<std::string_view, AttributeDomain>, 4> DomainNames{{{"vertex", AttributeDomain::Vertex}, {"edge", AttributeDomain::Edge}, {"face", AttributeDomain::Face}, {"corner", AttributeDomain::Corner}}};
+// Each field type Convert Domain takes, with the modes it admits.
+struct ConvertedType {
+    mx::Type Type;
+    std::vector<std::pair<std::string_view, DomainReduction>> Modes;
+};
+// The modes of a numeric type.
+const std::vector<std::pair<std::string_view, DomainReduction>> Arithmetic{{"mean", DomainReduction::Mean}, {"min", DomainReduction::Min}, {"max", DomainReduction::Max}};
+const std::array<ConvertedType, 8> ConvertedTypes{{
+    {mx::Type::Boolean, {{"any", DomainReduction::Any}, {"all", DomainReduction::All}}},
+    {mx::Type::Integer, Arithmetic},
+    {mx::Type::Float, Arithmetic},
+    {mx::Type::Vector2, Arithmetic},
+    {mx::Type::Vector3, Arithmetic},
+    {mx::Type::Vector4, Arithmetic},
+    {mx::Type::Color3, Arithmetic},
+    {mx::Type::Color4, Arithmetic},
+}};
+// The live elements of the domain, by ascending handle, where corners are the corners of faces.
+std::vector<uint32_t> Elements(const Mesh &mesh, AttributeDomain domain) {
+    std::vector<uint32_t> handles;
+    if (domain == AttributeDomain::Vertex) {
+        for (const auto v : mesh.vertices()) handles.push_back(*v);
+    } else if (domain == AttributeDomain::Edge) {
+        for (const auto e : mesh.edges()) handles.push_back(*e);
+    } else {
+        for (const auto face : mesh.faces()) {
+            if (domain == AttributeDomain::Face) handles.push_back(*face);
+            else
+                for (const auto h : test::FaceHalfedges(mesh, face)) handles.push_back(*h);
+        }
+    }
+    std::ranges::sort(handles);
+    return handles;
+}
+// The elements of domain `from` related to element t of domain `to`, by the adjacency each conversion reduces over.
+std::vector<uint32_t> Related(const Mesh &mesh, AttributeDomain from, AttributeDomain to, uint32_t t) {
+    using D = AttributeDomain;
+    const auto &c = mesh.GetConnectivity();
+    if (from == to) return {t};
+    std::vector<uint32_t> related;
+    if (to == D::Vertex) {
+        if (from == D::Edge) {
+            for (const auto e : mesh.edges()) {
+                const auto [a, b] = test::EdgeVertices(mesh, e);
+                if (*a == t || *b == t) related.push_back(*e);
+            }
+            return related;
+        }
+        for (const auto face : mesh.faces()) {
+            for (const auto h : test::FaceHalfedges(mesh, face))
+                if (*test::ToVertex(mesh, h) == t) related.push_back(from == D::Face ? *face : *h);
+        }
+    } else if (to == D::Edge) {
+        const auto first = test::Halfedge(mesh, Mesh::EH{t});
+        if (from == D::Vertex) {
+            const auto [a, b] = test::EdgeVertices(mesh, Mesh::EH{t});
+            return {*a, *b};
+        }
+        for (const auto h : {first, test::Opposite(mesh, first)}) {
+            if (!h || !test::Face(mesh, h)) continue;
+            if (from == D::Face) related.push_back(*test::Face(mesh, h));
+            else related.insert(related.end(), {*c.Previous(h), *h});
+        }
+    } else if (to == D::Face) {
+        for (const auto h : test::FaceHalfedges(mesh, Mesh::FH{t})) related.push_back(from == D::Vertex ? *test::ToVertex(mesh, h) : from == D::Edge ? *c.Edge(h) : *h);
+    } else if (from == D::Vertex) {
+        related.push_back(*test::ToVertex(mesh, Mesh::HH{t}));
+    } else if (const auto face = test::Face(mesh, Mesh::HH{t})) {
+        if (from == D::Face) related.push_back(*face);
+        else related.insert(related.end(), {*c.Edge(Mesh::HH{t}), *c.Edge(c.Next(Mesh::HH{t}))});
+    }
+    return related;
+}
+// The input value of a Convert Domain test at element `handle` of the domain with index `domain`, whose floats are integers so that sums are exact in any order.
+AttributeValue InputValue(AttributeType type, uint32_t domain, uint32_t handle) {
+    if (type == AttributeType::Bool) return {uint32_t((handle * 7u + domain * 3u + 1u) % 5u < 2u), 0u, 0u, 0u};
+    if (type == AttributeType::Int) return {std::bit_cast<uint32_t>(int32_t((handle * 13u + domain * 7u + 5u) % 17u) - 8), 0u, 0u, 0u};
+    AttributeValue words{};
+    for (uint32_t c = 0u; c < AttributeComponents(type); ++c) words[c] = std::bit_cast<uint32_t>(float(int32_t((handle * 11u + c * 5u + domain * 3u + 3u) % 19u) - 9));
+    return words;
+}
+// The reduction of the values, and zero for none.
+AttributeValue Reduce(AttributeType type, DomainReduction reduction, std::span<const AttributeValue> values) {
+    if (values.empty()) return {};
+    if (type == AttributeType::Bool) {
+        bool reduced = values.front()[0] != 0u;
+        for (const auto &value : values) reduced = reduction == DomainReduction::All ? reduced && value[0] != 0u : reduced || value[0] != 0u;
+        return {uint32_t(reduced), 0u, 0u, 0u};
+    }
+    if (type == AttributeType::Int) {
+        const auto integer = [](const AttributeValue &value) { return std::bit_cast<int32_t>(value[0]); };
+        if (reduction != DomainReduction::Mean) {
+            const auto [least, greatest] = std::ranges::minmax(values | std::views::transform(integer));
+            return {std::bit_cast<uint32_t>(reduction == DomainReduction::Min ? least : greatest), 0u, 0u, 0u};
+        }
+        int64_t sum = 0;
+        for (const auto &value : values) sum += integer(value);
+        const auto count = int64_t(values.size()), quotient = sum / count, remainder = sum % count;
+        return {std::bit_cast<uint32_t>(int32_t(2 * std::abs(remainder) >= count ? quotient + (sum < 0 ? -1 : 1) : quotient)), 0u, 0u, 0u};
+    }
+    AttributeValue reduced{};
+    for (uint32_t c = 0u; c < AttributeComponents(type); ++c) {
+        float value = std::bit_cast<float>(values.front()[c]);
+        for (const auto &next : values | std::views::drop(1)) {
+            const auto component = std::bit_cast<float>(next[c]);
+            value = reduction == DomainReduction::Mean ? value + component : reduction == DomainReduction::Min ? std::min(value, component) : std::max(value, component);
+        }
+        reduced[c] = std::bit_cast<uint32_t>(reduction == DomainReduction::Mean ? value * (1.f / float(values.size())) : value);
+    }
+    return reduced;
+}
+// The attribute's words at each live element of its domain.
+std::vector<AttributeValue> StoredWords(ProcedureFixture &f, state::Entity mesh, std::string_view name) {
+    const auto &meshes = f.Store();
+    const auto id = f.Output(mesh);
+    const auto attribute = meshes.FindAttribute(id, name);
+    if (attribute == InvalidOffset) return {};
+    return Elements(Mesh{meshes, id}, meshes.GetAttribute(attribute).Domain) | std::views::transform([&](uint32_t handle) { return test::AttributeWords(meshes, attribute, handle); }) | std::ranges::to<std::vector>();
+}
+// The named attribute of the mesh's output is on the domain and holds `expected(output, element)` at each live element of the domain.
+void ExpectStored(ProcedureFixture &f, state::Entity mesh, std::string_view name, AttributeDomain domain, auto &&expected) {
+    const auto &meshes = f.Store();
+    const auto id = f.Output(mesh);
+    const auto attribute = meshes.FindAttribute(id, name);
+    expect(fatal(attribute != InvalidOffset)) << name;
+    expect(meshes.GetAttribute(attribute).Domain == domain) << name;
+    const Mesh output{meshes, id};
+    for (const auto element : Elements(output, domain)) expect(test::AttributeWords(meshes, attribute, element) == expected(output, element)) << name << element;
+}
+// Applies the actions, in order, as one frame's gesture.
+void Gesture(ProcedureFixture &f, auto &&add) {
+    action::Begin(action::Phase::Record);
+    add();
+    f.P->Frame();
+    f.Audit();
+}
+
+// For each mode, pair of domains and type Convert Domain admits, its output at each element equals the reduction of the input at the related elements, on meshes with boundary edges, irregular valence, triangles, quads and n-gons.
+void DomainConversions(ProcedureFixture &f) {
+    const std::array<PrimitiveParameters, 5> shapes{primitive::Plane{.Subdivisions = {3u, 2u}}, primitive::Circle{.Segments = 5}, primitive::IcoSphere{.Subdivisions = 1}, primitive::Cylinder{.Slices = 5}, primitive::UVSphere{.Slices = 6, .Stacks = 4}};
+    for (const auto &shape : shapes) {
+        for (const auto &[type, modes] : ConvertedTypes) {
+            const auto storage = *ops::StorageOf(type);
+            const auto mesh = f.AddPrepared(shape, [&](ProcedureFixture &f, uint32_t source) {
+                auto &meshes = f.Store();
+                for (uint32_t d = 0u; d < DomainNames.size(); ++d) {
+                    const auto &[name, domain] = DomainNames[d];
+                    const auto attribute = meshes.AddAttribute(source, domain, storage, std::format("in.{}", name)).value();
+                    for (const auto handle : Elements(Mesh{meshes, source}, domain)) test::SetAttributeWords(meshes, attribute, handle, InputValue(storage, d, handle));
+                }
+            });
+            struct Conversion {
+                uint32_t Source, Target;
+                std::string_view Mode;
+                DomainReduction Reduction;
+                std::string Name;
+            };
+            std::vector<Conversion> conversions;
+            for (uint32_t from = 0u; from < DomainNames.size(); ++from) {
+                for (uint32_t to = 0u; to < DomainNames.size(); ++to) {
+                    for (const auto &[mode, reduction] : modes) conversions.push_back({from, to, mode, reduction, std::format("out.{}.{}.{}", from, to, mode)});
+                }
+            }
+            // One read per source domain, then a Convert Domain node and a Store node for each conversion.
+            Gesture(f, [&] {
+                for (uint32_t d = 0u; d < DomainNames.size(); ++d) action::AddToGesture(AddNode{mesh, action::nodes::OpNode{"geompropvalue"}});
+                for (size_t i = 0u; i < conversions.size(); ++i) {
+                    action::AddToGesture(AddNode{mesh, action::nodes::OpNode{"convertdomain"}});
+                    action::AddToGesture(AddNode{mesh, action::nodes::KindNode{KindOf<StoreNamedAttribute>}});
+                }
+            });
+            const auto nodes = NodesOf(f.R, mesh);
+            const auto read = [&](uint32_t d) { return nodes[1u + d]; };
+            const auto convert = [&](size_t i) { return nodes[1u + DomainNames.size() + 2u * i]; };
+            const auto store = [&](size_t i) { return nodes[2u + DomainNames.size() + 2u * i]; };
+            Gesture(f, [&] {
+                for (uint32_t d = 0u; d < DomainNames.size(); ++d) {
+                    action::AddToGesture(OpInputOf(read(d), "geomprop", std::format("in.{}", DomainNames[d].first)));
+                    action::AddToGesture(OpInputOf(read(d), "default", action::nodes::OpLiteral{type, std::vector<uint32_t>(mx::Words(type))}));
+                }
+                auto geometry = SocketLink{f.Node(mesh, 0u), f.Out(f.Node(mesh, 0u))};
+                for (size_t i = 0u; i < conversions.size(); ++i) {
+                    const auto &[from, to, mode, reduction, name] = conversions[i];
+                    for (const auto [input, value] : {std::pair{"source", DomainNames[from].first}, std::pair{"target", DomainNames[to].first}, std::pair{"mode", mode}}) action::AddToGesture(OpInputOf(convert(i), input, std::string{value}));
+                    action::AddToGesture(Link{mesh, read(from), f.Out(read(from)), convert(i), f.OpSocket(convert(i), "in")});
+                    action::AddToGesture(SetAttributeName{store(i), name});
+                    action::AddToGesture(UpdateOf<&StoreNamedAttribute::Domain>(store(i), DomainNames[to].second));
+                    action::AddToGesture(Link{mesh, geometry.FromNode, geometry.FromSocket, store(i), 0u});
+                    action::AddToGesture(Link{mesh, convert(i), f.Out(convert(i)), store(i), 1u});
+                    geometry = {store(i), f.Out(store(i))};
+                }
+                action::AddToGesture(SetDisplay{mesh, geometry.FromNode});
+            });
+            const auto &meshes = f.Store();
+            for (const auto &[from, to, mode, reduction, name] : conversions) {
+                ExpectStored(f, mesh, name, DomainNames[to].second, [&](const Mesh &output, uint32_t t) {
+                    return Reduce(storage, reduction, Related(output, DomainNames[from].second, DomainNames[to].second, t) | std::views::transform([&](uint32_t s) { return InputValue(storage, from, s); }) | std::ranges::to<std::vector>());
+                });
+                expect(meshes.GetAttribute(meshes.FindAttribute(f.Output(mesh), name)).Type == storage);
+            }
+        }
+    }
+}
+
+// A graph whose consumer reads a field of another domain through link `Link`, which converts from `Source` to `Target` with `Mode`, and the attribute its Store node writes, if any.
+struct ConvertedLink {
+    std::string_view Name;
+    GraphDescription Description;
+    uint32_t Link;
+    std::string_view Source, Target, Mode;
+    std::string_view Stored{};
+};
+// The graph with a Convert Domain node in the link from its source.
+GraphDescription Explicit(GraphDescription graph, const ConvertedLink &row) {
+    const auto convert = uint32_t(graph.Nodes.size() + 1u);
+    graph.Nodes.push_back({"convertdomain", {Converts(row.Source, row.Target, row.Mode)}});
+    const auto from = std::exchange(graph.Links[row.Link].From, convert);
+    graph.Links.push_back({from, convert, 0u, "in"});
+    return graph;
+}
+// Plane Side selects the positions above z = 0.5.
+const std::vector<NodeUpdate> TopHalf{Literal("point", vec3{0.f, 0.f, .5f}), Literal("side", 0)};
+const std::array<ConvertedLink, 8> ConvertedLinks{{
+    // A face selection reads the mean of each face's vertex positions.
+    {"SelectionReadsFacePositions", {primitive::Cube{}, {{"position"}, {"extract", {Literal("index", 2)}}, {"ifgreater", {Literal("value2", 0.f)}}, {KindOf<action::mesh::Delete>, {Set<&action::mesh::Delete::Mode>(DeleteMode::Faces)}}}, {{1, 2, 0, "in"}, {2, 3, 0, "value1"}, {3, 4, 1}, {0, 4, 0}}, 4}, 0u, "vertex", "face", "mean"},
+    // A vertex selection holds where any face around the vertex is selected, and a face selection where all its vertices are.
+    {"SelectionReadsFaceField", {primitive::Cube{}, {{"planeside", TopHalf}, {"convertdomain", {Converts("vertex", "face", "all")}}, {KindOf<action::mesh::Delete>}}, {{1, 2, 0, "in"}, {2, 3, 1}, {0, 3, 0}}, 3}, 1u, "face", "vertex", "any"},
+    {"SelectionReadsVertexField", {primitive::Cube{}, {{"planeside", TopHalf}, {KindOf<StoreNamedAttribute>, {Named("top")}}, {"geompropvalue", {Text("geomprop", "top"), Literal("default", false)}}, {KindOf<action::mesh::Delete>, {Set<&action::mesh::Delete::Mode>(DeleteMode::Faces)}}}, {{1, 2, 1}, {0, 2, 0}, {3, 4, 1}, {2, 4, 0}}, 4}, 2u, "vertex", "face", "all"},
+    // Poke's per-face offset reads the mean of each face's vertex heights.
+    {"PokeReadsVertexHeat", {primitive::Cube{}, {{"geompropvalue", {Text("geomprop", "heat"), Literal("default", 0.f)}}, {KindOf<action::mesh::Poke>}}, {{1, 2, ParameterSocket<&action::mesh::Poke::Offset>}, {0, 2, 0}}, 2, AddHeightHeat}, 0u, "vertex", "face", "mean"},
+    // Set Position reads the mean of the stored normals of the faces around each vertex.
+    {"PositionsReadFaceNormals", {primitive::Cube{}, {{"normal"}, {KindOf<StoreNamedAttribute>, {Named("facing"), Set<&StoreNamedAttribute::Domain>(AttributeDomain::Face)}}, {"geompropvalue", {Text("geomprop", "facing"), Literal("default", vec3{})}}, {KindOf<SetPosition>}}, {{1, 2, 1}, {0, 2, 0}, {3, 4, 1}, {2, 4, 0}}, 4}, 2u, "face", "vertex", "mean"},
+    {"EdgesStoreVertexHeat", {primitive::Cube{}, {{"geompropvalue", {Text("geomprop", "heat"), Literal("default", 0.f)}}, {KindOf<StoreNamedAttribute>, {Named("edge heat"), Set<&StoreNamedAttribute::Domain>(AttributeDomain::Edge)}}}, {{1, 2, 1}, {0, 2, 0}}, 2, AddHeightHeat}, 0u, "vertex", "edge", "mean", "edge heat"},
+    // A corner reads its vertex's position and its face's attribute through the point.
+    {"CornersStorePositions", {primitive::Cube{}, {{"position"}, {KindOf<StoreNamedAttribute>, {Named("corner position"), Set<&StoreNamedAttribute::Domain>(AttributeDomain::Corner)}}}, {{1, 2, 1}, {0, 2, 0}}, 2}, 0u, "vertex", "corner", "mean", "corner position"},
+    {"CornersStoreFaceIndex", {primitive::Cube{}, {{"elementindex"}, {KindOf<StoreNamedAttribute>, {Named("index"), Set<&StoreNamedAttribute::Domain>(AttributeDomain::Face)}}, {"geompropvalue", {Text("geomprop", "index"), Literal("default", 0)}}, {KindOf<StoreNamedAttribute>, {Named("corner index"), Set<&StoreNamedAttribute::Domain>(AttributeDomain::Corner)}}}, {{1, 2, 1}, {0, 2, 0}, {3, 4, 1}, {2, 4, 0}}, 4}, 2u, "face", "corner", "max", "corner index"},
+}};
+// A consumer that reads a field of another domain cooks bit for bit as the graph with an explicit Convert Domain node of the default mode in its link.
+void AutomaticEqualsExplicit(ProcedureFixture &f, const ConvertedLink &row) {
+    const auto automatic = Build(f, row.Description);
+    const auto shape = f.Shaped(automatic.Mesh);
+    const auto converted = Build(f, Explicit(row.Description, row));
+    expect(!f.Fault(converted.Nodes.back()));
+    expect(SameBits(f.Shaped(converted.Mesh), shape));
+    if (row.Stored.empty()) return;
+    const auto stored = StoredWords(f, automatic.Mesh, row.Stored);
+    expect(!stored.empty() && StoredWords(f, converted.Mesh, row.Stored) == stored);
+}
+
+// Each element's rank among the live elements of its domain, by handle.
+std::map<uint32_t, uint32_t> Ordinals(const Mesh &mesh, AttributeDomain domain) {
+    std::map<uint32_t, uint32_t> ordinals;
+    for (const auto handle : Elements(mesh, domain)) ordinals.emplace(handle, uint32_t(ordinals.size()));
+    return ordinals;
+}
+
+// A grid of `count` quads along each side whose vertex (x, z) holds the texture coordinates `uv(x, z)` and the position `position(x, z)`.
+MeshSource UvGrid(uint32_t count, auto &&uv, auto &&position) {
+    MeshSource source;
+    auto &uvs = source.Attrs.TexCoords0.emplace();
+    for (uint32_t z = 0u; z <= count; ++z) {
+        for (uint32_t x = 0u; x <= count; ++x) {
+            uvs.push_back(uv(x, z));
+            source.Data.Positions.push_back(position(x, z));
+        }
+    }
+    for (uint32_t z = 0u; z < count; ++z) {
+        for (uint32_t x = 0u; x < count; ++x) {
+            const auto v = z * (count + 1u) + x;
+            source.Data.AddFace(std::array{v, v + count + 1u, v + count + 2u, v + 1u});
+        }
+    }
+    return source;
+}
+// The unit square of texture coordinates as a grid of quads whose positions are their texture coordinates.
+MeshSource UvSquare(uint32_t quads) {
+    const auto uv = [quads](uint32_t x, uint32_t z) { return vec2{float(x) / float(quads), float(z) / float(quads)}; };
+    return UvGrid(quads, uv, [&](uint32_t x, uint32_t z) { return vec3{uv(x, z).x, 0.f, uv(x, z).y}; });
+}
+// A grid whose vertices hold two texture coordinate sets and a color, which its corners store, with values whose means are exact.
+MeshSource UvColorGrid() {
+    auto source = UvGrid(2u, [](uint32_t x, uint32_t z) { return vec2{float(x) / 2.f, float(z) / 2.f}; }, [](uint32_t x, uint32_t z) { return vec3{float(x) - 1.f, 0.f, float(z) - 1.f}; });
+    auto &second = source.Attrs.TexCoords1.emplace();
+    auto &colors = source.Attrs.Colors0.emplace();
+    source.Attrs.Colors0ComponentCount = 4u;
+    for (uint32_t z = 0u; z < 3u; ++z) {
+        for (uint32_t x = 0u; x < 3u; ++x) {
+            second.emplace_back(float(x), 2.f * float(z));
+            colors.emplace_back(float(x) / 4.f, float(z) / 4.f, .5f, 1.f);
+        }
+    }
+    return source;
+}
+// A field the last of `Nodes` computes on the shape, which a Store node writes under the row's name on the domain, and its value at each element of the stored mesh.
+struct StoredFieldRow {
+    std::string Name;
+    std::variant<PrimitiveParameters, MeshSource> Shape;
+    std::vector<GraphDescription::Node> Nodes;
+    std::vector<GraphDescription::Link> Links;
+    AttributeDomain Domain;
+    std::function<AttributeValue(const Mesh &, uint32_t element)> Expected;
+};
+std::vector<StoredFieldRow> StoredFieldRows() {
+    using D = AttributeDomain;
+    std::vector<StoredFieldRow> rows;
+    // Element Index gives each element its ordinal in its own domain.
+    for (const auto &[name, domain] : DomainNames) {
+        rows.push_back({std::format("index {}", name), primitive::Cylinder{.Slices = 5}, {{"elementindex"}}, {}, domain, [domain](const Mesh &m, uint32_t element) { return AttributeValue{Ordinals(m, domain).at(element)}; }});
+    }
+    // Convert Domain's input evaluates on its source domain, so each vertex takes the greatest ordinal of the faces around it.
+    rows.push_back({"around", primitive::Cylinder{.Slices = 5}, {{"elementindex"}, {"convertdomain", {Converts("face", "vertex", "max")}}}, {{1, 2, 0, "in"}}, D::Vertex, [](const Mesh &m, uint32_t vertex) {
+                        const auto faces = Ordinals(m, D::Face);
+                        return AttributeValue{std::ranges::max(Related(m, D::Face, D::Vertex, vertex) | std::views::transform([&](uint32_t face) { return faces.at(face); }))};
+                    }});
+    // Plane Side reads the position on its consumer's domain: each vertex's, each edge's midpoint and each face's center.
+    constexpr vec3 Normal{1.f, 1.f, 0.f};
+    for (const auto &[name, domain] : DomainNames) {
+        if (domain == D::Corner) continue;
+        for (int32_t side = 0; side < 3; ++side) {
+            rows.push_back({std::format("side {} {}", side, name), primitive::Cube{}, {{"planeside", {Literal("normal", Normal), Literal("side", side)}}}, {}, domain, [domain, side, n = Normalize(Normal)](const Mesh &m, uint32_t element) {
+                                const auto vertices = Related(m, D::Vertex, domain, element);
+                                vec3 center{};
+                                for (const auto v : vertices) center += test::Position(m, Mesh::VH{v});
+                                center /= float(vertices.size());
+                                const auto distance = Dot(n, center), bound = 1e-4f * std::max(1.f, Length(center));
+                                const auto held = distance > bound ? 0 : distance < -bound ? 1 : 2;
+                                return AttributeValue{uint32_t(held == side)};
+                            }});
+        }
+    }
+    // A source the consumer's domain lacks evaluates on the domain that stores it and is read as the mean of its values there.
+    // The second texture coordinates read with a computed set index or nested in a test node, a ramp's unset input reads the first, and a color reads the corners that hold it, read or nested, each against the mean of the corners' values.
+    // The texture coordinates of a set at a corner, with V up as the driver reads them.
+    const auto texcoord = [](const Mesh &m, uint32_t set, uint32_t corner) {
+        const auto uv = m.GetStore().Arenas().CornerUvs[set].Get(m.GetStore().Get(m.GetStoreId()).CornerUvs[set], corner);
+        return vec2{uv.x, 1.f - uv.y};
+    };
+    const auto second = [texcoord](const Mesh &m, uint32_t corner) {
+        const auto uv = texcoord(m, 1u, corner);
+        return vec4{uv.x, uv.y, 0.f, 0.f};
+    };
+    const auto ramp = [texcoord](const Mesh &m, uint32_t corner) { return vec4{std::clamp(texcoord(m, 0u, corner).x, 0.f, 1.f), 0.f, 0.f, 0.f}; };
+    const auto color = [](const Mesh &m, uint32_t corner) { return m.GetStore().Arenas().CornerColors.Get(m.GetStore().Get(m.GetStoreId()).CornerColors, corner); };
+    // Rows of the read on each domain, whose field holds the first `components` of the mean of the value at the corners of each element.
+    const auto reads = [&](std::string_view name, std::vector<GraphDescription::Node> nodes, std::vector<GraphDescription::Link> links, std::initializer_list<D> domains, uint32_t components, std::function<vec4(const Mesh &, uint32_t)> value) {
+        for (const auto domain : domains) {
+            const auto domain_name = std::ranges::find(DomainNames, domain, &std::pair<std::string_view, D>::second)->first;
+            rows.push_back({std::format("{} {}", name, domain_name), UvColorGrid(), nodes, links, domain, [domain, components, value](const Mesh &m, uint32_t element) {
+                                const auto corners = Related(m, D::Corner, domain, element);
+                                vec4 mean{};
+                                for (const auto corner : corners) mean += value(m, corner);
+                                mean /= float(corners.size());
+                                AttributeValue words{};
+                                for (uint32_t c = 0u; c < components; ++c) words[c] = std::bit_cast<uint32_t>(mean[c]);
+                                return words;
+                            }});
+        }
+    };
+    reads("second", {{"add", {Literal("in1", 0), Literal("in2", 1)}}, {"texcoord", {OutputType(mx::Type::Vector2)}}}, {{1, 2, 0, "index"}}, {D::Vertex, D::Face}, 2u, second);
+    reads("nested second", {{"testsecondtexcoord"}}, {}, {D::Vertex, D::Face}, 2u, second);
+    reads("ramp", {{"ramplr", {Literal("valuer", 1.f)}}}, {}, {D::Vertex, D::Face}, 1u, ramp);
+    reads("color", {{"geomcolor", {OutputType(mx::Type::Color4)}}}, {}, {D::Vertex, D::Face, D::Edge}, 4u, color);
+    reads("nested color", {{"testcolor"}}, {}, {D::Vertex, D::Face}, 4u, color);
+    return rows;
+}
+// Each row's field holds its value at each element of its domain, and no node of its graph faults.
+void StoredFields(ProcedureFixture &f) {
+    for (const auto &row : StoredFieldRows()) {
+        auto nodes = row.Nodes;
+        auto links = row.Links;
+        const auto store = uint32_t(nodes.size() + 1u);
+        nodes.push_back({KindOf<StoreNamedAttribute>, {Named(row.Name), Set<&StoreNamedAttribute::Domain>(row.Domain)}});
+        links.push_back({store - 1u, store, 1u});
+        links.push_back({0u, store, 0u});
+        const auto g = Build(f, {row.Shape, std::move(nodes), std::move(links), store});
+        expect(std::ranges::none_of(g.Nodes, [&](state::Entity node) { return f.Fault(node).has_value(); })) << row.Name;
+        ExpectStored(f, g.Mesh, row.Name, row.Domain, row.Expected);
+    }
+}
+
+// The texels of the image the occurrence of a Bake node or a filter holds, as their floats.
+std::vector<float> BakedTexels(ProcedureFixture &f, state::Entity node) {
+    const auto image = OccurrenceImageOf(f.R, NetworkOf(f.R, node), std::array{node});
+    expect(fatal(image.has_value()));
+    return Texels(image->Image);
+}
+// The texels of a Width by Height image of Stride floats per texel blurred by a kernel `size` wide in texture coordinates along each axis in turn, each texel the weighted mean of the texels around it, clamped to the image.
+// A box kernel weighs a texel by its overlap with the box, and a Gaussian one by a Gaussian whose deviation is a sixth of the kernel's width.
+std::vector<float> Blurred(std::span<const float> texels, uint32_t width, uint32_t height, uint32_t stride, float size, bool gaussian) {
+    // A pass of a kernel `extent` texels wide, where `at(t, k)` is the texel k texels from texel t along the pass's axis, clamped to the image.
+    const auto pass = [&](std::span<const float> in, float extent, auto &&at) {
+        std::vector<float> out(in.size());
+        const auto radius = int(std::ceil(gaussian ? .5f * extent : .5f * extent + .5f));
+        const auto deviation = double(extent) / 6.0;
+        for (uint32_t t = 0u; t < width * height; ++t) {
+            for (uint32_t c = 0u; c < stride; ++c) {
+                double sum = 0.0, total = 0.0;
+                for (int k = -radius; k <= radius; ++k) {
+                    const double weight = gaussian ? std::exp(-double(k * k) / (2.0 * deviation * deviation)) : std::max(0.f, std::min(float(k) + .5f, .5f * extent) - std::max(float(k) - .5f, -.5f * extent));
+                    sum += weight * in[at(t, k) * stride + c];
+                    total += weight;
+                }
+                out[t * stride + c] = float(sum / total);
+            }
+        }
+        return out;
+    };
+    const auto rows = pass(texels, size * float(width), [&](uint32_t t, int k) { return t / width * width + uint32_t(std::clamp(int(t % width) + k, 0, int(width) - 1)); });
+    return pass(rows, size * float(height), [&](uint32_t t, int k) { return uint32_t(std::clamp(int(t / width) + k, 0, int(height) - 1)) * width + t % width; });
+}
+// Bakes each value without a margin on a Width by Height grid over the mesh's layout, and returns the Bake nodes.
+// A Set Position reads every image, which demands the bakes.
+std::vector<state::Entity> BakeEach(ProcedureFixture &f, state::Entity mesh, std::span<const state::Entity> values, uint32_t width, uint32_t height) {
+    const auto root = f.Node(mesh, 0u);
+    std::vector<state::Entity> bakes;
+    std::optional<state::Entity> offset;
+    for (const auto value : values) {
+        const auto bake = bakes.emplace_back(f.Append(mesh, KindOf<Bake>, {Set<&Bake::Width>(width), Set<&Bake::Height>(height), Set<&Bake::Margin>(0u)}));
+        f.Do(Link{mesh, root, f.Out(root), bake, 0u});
+        f.Do(Link{mesh, value, f.Out(value), bake, 1u});
+        const auto read = f.Append(mesh, "image", {From("file", bake), Literal("default", vec3{})});
+        offset = offset ? f.Append(mesh, "add", {From("in1", *offset), From("in2", read)}) : read;
+    }
+    const auto set = f.Append(mesh, KindOf<SetPosition>);
+    f.Do(Link{mesh, *offset, f.Out(*offset), set, 1u});
+    f.Route(mesh, {root, set});
+    return bakes;
+}
+// The texture coordinates of the unit square's mesh as an op, and an op separating them into their components.
+std::pair<state::Entity, state::Entity> UvComponents(ProcedureFixture &f) {
+    const auto mesh = f.AddSourced(UvSquare(4)).first;
+    const auto uv = f.Append(mesh, "texcoord", {OutputType(mx::Type::Vector2)});
+    return {uv, f.Append(mesh, "separate2", {From("in", uv)})};
+}
+// One where the coordinate along the axis exceeds the threshold, and else zero.
+state::Entity Step(ProcedureFixture &f, state::Entity components, std::string_view axis, float threshold) {
+    const auto mesh = NetworkOf(f.R, components);
+    const auto step = f.Append(mesh, "ifgreater", {Literal("value2", threshold), Literal("in1", 1.f), Literal("in2", 0.f)});
+    f.Do(Link{mesh, components, f.OpSocket(components, axis), step, f.OpSocket(step, "value1")});
+    return step;
+}
+state::Entity Blur(ProcedureFixture &f, state::Entity input, float size, std::string filter) {
+    return f.Append(NetworkOf(f.R, input), "blur", {From("in", input), Literal("size", size), Text("filtertype", std::move(filter))});
+}
+state::Entity HeightNormal(ProcedureFixture &f, state::Entity height, float scale) { return f.Append(NetworkOf(f.R, height), "heighttonormal", {From("in", height), Literal("scale", scale)}); }
+constexpr uint32_t BakeWidth{37}, BakeHeight{29};
+// A bake of the field, an image read of it, or another image.
+state::Entity BakeOf(ProcedureFixture &f, state::Entity value) { return BakeEach(f, NetworkOf(f.R, value), std::array{value}, BakeWidth, BakeHeight).front(); }
+
+// What an image row checks of the node its graph builds: a bake of the field read back at its texel centers holds the field, a blur holds one host blur of its input's texels, and a derivative holds the normal of the forward differences of its height's texels.
+enum class ImageProperty : uint8_t { Readback,
+                                     Blur,
+                                     Derivative };
+struct ImageRow {
+    std::string_view Name;
+    ImageProperty Property;
+    state::Entity (*Build)(ProcedureFixture &);
+    float Parameter{}; // A blur's size, or a derivative's scale
+    bool Gaussian{};
+};
+const std::array<ImageRow, 13> ImageRows{{
+    {"NoiseReadback", ImageProperty::Readback, [](ProcedureFixture &f) { const auto [uv, xy] = UvComponents(f); return f.Append(NetworkOf(f.R, uv), "noise2d", {From("texcoord", uv), OutputType(mx::Type::Float), Literal("amplitude", 4.f)}); }},
+    {"PositionReadback", ImageProperty::Readback, [](ProcedureFixture &f) { return f.Append(f.AddSourced(UvSquare(4)).first, "position"); }},
+    {"NormalReadback", ImageProperty::Readback, [](ProcedureFixture &f) { return f.Append(f.AddSourced(UvSquare(4)).first, "normal"); }},
+    {"BoxStep", ImageProperty::Blur, [](ProcedureFixture &f) { return Blur(f, Step(f, UvComponents(f).second, "outx", .625f), .25f, "box"); }, .25f},
+    {"GaussianStep", ImageProperty::Blur, [](ProcedureFixture &f) { return Blur(f, Step(f, UvComponents(f).second, "outy", .3125f), .25f, "gaussian"); }, .25f, true},
+    {"BlurredBlur", ImageProperty::Blur, [](ProcedureFixture &f) { return Blur(f, Blur(f, Step(f, UvComponents(f).second, "outx", .625f), .25f, "box"), .25f, "box"); }, .25f},
+    {"ImageBox", ImageProperty::Blur, [](ProcedureFixture &f) { return Blur(f, BakeOf(f, Step(f, UvComponents(f).second, "outx", .625f)), .2f, "box"); }, .2f},
+    {"ImageGaussian", ImageProperty::Blur, [](ProcedureFixture &f) { return Blur(f, BakeOf(f, Step(f, UvComponents(f).second, "outy", .3125f)), .15f, "gaussian"); }, .15f, true},
+    {"TextureBox", ImageProperty::Blur, [](ProcedureFixture &f) {
+         f.Do(action::io::LoadGltf{BoxTextured});
+         const auto blur = f.Append(SortedEntities(f.R.view<const GeometryProcedure>()).front(), "blur", {Literal("size", .02f)});
+         f.Do(OpInputOf(blur, "in", SortedEntities(f.R.view<const MaterializedTexture>()).front()));
+         return blur; }, .02f},
+    {"LinearNormal", ImageProperty::Derivative, [](ProcedureFixture &f) { const auto uv = UvComponents(f).first; return HeightNormal(f, f.Append(NetworkOf(f.R, uv), "dotproduct", {From("in1", uv), Literal("in2", vec2{.8f, -.5f})}), 4.f); }, 4.f},
+    {"SquareNormal", ImageProperty::Derivative, [](ProcedureFixture &f) {
+         const auto xy = UvComponents(f).second;
+         const auto mesh = NetworkOf(f.R, xy);
+         const auto square = f.Append(mesh, "multiply");
+         for (const auto *input : {"in1", "in2"}) f.Do(Link{mesh, xy, f.OpSocket(xy, "outx"), square, f.OpSocket(square, input)});
+         return HeightNormal(f, square, 4.f); }, 4.f},
+    {"WaveNormal", ImageProperty::Derivative, [](ProcedureFixture &f) {
+         const auto xy = UvComponents(f).second;
+         const auto mesh = NetworkOf(f.R, xy);
+         const auto phase = f.Append(mesh, "multiply", {Literal("in2", 2.f * std::numbers::pi_v<float>)});
+         f.Do(Link{mesh, xy, f.OpSocket(xy, "outy"), phase, f.OpSocket(phase, "in1")});
+         return HeightNormal(f, f.Append(mesh, "multiply", {From("in1", f.Append(mesh, "sin", {From("in", phase)})), Literal("in2", .2f)}), 1.f); }, 1.f},
+    {"ImageHeightNormal", ImageProperty::Derivative, [](ProcedureFixture &f) {
+         const auto step = Step(f, UvComponents(f).second, "outx", .5f);
+         const auto mesh = NetworkOf(f.R, step);
+         return HeightNormal(f, f.Append(mesh, "image", {From("file", BakeOf(f, Blur(f, step, .25f, "box"))), Literal("default", 0.f), Text("uaddressmode", "clamp"), Text("vaddressmode", "clamp")}), 4.f); }, 4.f},
+}};
+// The sRGB-encoded bytes of the document texture, decoded to linear floats.
+std::vector<float> DecodedTexture(ProcedureFixture &f, state::Entity texture) {
+    const auto &picture = *std::ranges::find(f.R.Resources.get<const TextureStore>().Textures, f.R.get<const MaterializedTexture>(texture).SamplerSlot, &TextureEntry::SamplerSlot);
+    return ReadbackTextureRgba8(f.R.Resources.get<const mtl::Context>(), picture).value() | std::views::transform([](std::byte b) {
+               const auto c = float(b) / 255.f;
+               return c <= .04045f ? c / 12.92f : std::pow((c + .055f) / 1.055f, 2.4f);
+           }) |
+        std::ranges::to<std::vector>();
+}
+bool Near(std::span<const float> a, std::span<const float> b, float tolerance) {
+    return a.size() == b.size() && std::ranges::equal(a, b, [&](float x, float y) { return std::abs(x - y) <= tolerance; });
+}
+void CheckImage(ProcedureFixture &f, const ImageRow &row) {
+    const auto node = row.Build(f);
+    const auto mesh = NetworkOf(f.R, node);
+    expect(!f.Fault(node));
+    switch (row.Property) {
+        case ImageProperty::Readback: {
+            const auto bake = BakeOf(f, node);
+            const auto texels = BakedTexels(f, bake);
+            // The read takes the type of the bake's values.
+            const auto read = f.Append(mesh, "image", {From("file", bake), texels.size() == BakeWidth * BakeHeight ? Literal("default", 0.f) : Literal("default", vec3{}), Text("filtertype", "closest")});
+            expect(texels == BakedTexels(f, BakeOf(f, read)) && size_t(std::ranges::count(texels, 0.f)) < texels.size());
+            break;
+        }
+        case ImageProperty::Blur: {
+            const auto image = OccurrenceImageOf(f.R, mesh, std::array{node});
+            expect(fatal(image.has_value()));
+            const auto blurred = Texels(image->Image);
+            const auto width = image->Width, height = image->Height, stride = uint32_t(blurred.size()) / (width * height);
+            // The input's texels: a texture's, an image's, or a field's on the blur's grid.
+            const auto &op = f.R.get<const procedure::Op>(node);
+            const auto input = InputOf(f.R, node, f.OpSocket(node, "in")).FromNode;
+            const auto texels = op.Images.contains("in") ? DecodedTexture(f, op.Images.find("in")->second) :
+                f.R.get<const ProcedureNode>(input).Kind == KindOf<Bake> || (f.R.all_of<procedure::Op>(input) && f.R.get<const procedure::Op>(input).Node == "blur") ? BakedTexels(f, input) :
+                                                                                                                                                                   BakedTexels(f, BakeEach(f, mesh, std::array{input}, width, height).front());
+            expect(Near(blurred, Blurred(texels, width, height, stride, row.Parameter, row.Gaussian), 2e-3f));
+            break;
+        }
+        case ImageProperty::Derivative: {
+            constexpr uint32_t Width{64}, Height{48};
+            const auto height_node = InputOf(f.R, node, f.OpSocket(node, "in")).FromNode;
+            const auto bakes = BakeEach(f, mesh, std::array{node, height_node}, Width, Height);
+            const auto normals = BakedTexels(f, bakes[0]), heights = BakedTexels(f, bakes[1]);
+            const auto stride = uint32_t(normals.size()) / (Width * Height), height_stride = uint32_t(heights.size()) / (Width * Height);
+            // Each texel differs toward the next texel right and down, short of the last column and row, and V runs up.
+            uint32_t held = 0u, checked = 0u;
+            for (uint32_t t = 0u; t < Width * Height; ++t) {
+                if (t % Width == Width - 1u || t / Width == Height - 1u) continue;
+                const auto h = [&](uint32_t at) { return heights[at * height_stride]; };
+                const auto gu = (h(t + 1u) - h(t)) * float(Width), gv = (h(t) - h(t + Width)) * float(Height);
+                const auto n = Normalize(vec3{-row.Parameter / 16.f * gu, -row.Parameter / 16.f * gv, 1.f}) * .5f + .5f;
+                ++checked;
+                held += std::abs(normals[t * stride] - n.x) < 1e-4f && std::abs(normals[t * stride + 1u] - n.y) < 1e-4f && std::abs(normals[t * stride + 2u] - n.z) < 1e-4f;
+            }
+            expect(held == checked) << held << checked;
+            break;
+        }
+    }
+}
+
 } // namespace
 
 void TestProcedures() {
@@ -1927,30 +2474,40 @@ void TestProcedures() {
     for (const auto &row : DataGraphs) {
         Survives(f, other, row.Name, [&row](ProcedureFixture &f) {
             const auto built = Build(f, row.Description);
-            return Graph{built.Mesh, [&row, built](ProcedureFixture &f) { if (row.Oracle) row.Oracle(f, built); }, row.Edit};
+            const auto faces = [](ProcedureFixture &f, state::Entity mesh, std::optional<uint32_t> expected) {
+                if (!expected) return;
+                const auto count = Mesh{f.Store(), f.Output(mesh)}.FaceCount();
+                expect(count == *expected) << "faces" << count;
+            };
+            Graph graph{built.Mesh, [&row, built, faces](ProcedureFixture &f) { if (row.Oracle) row.Oracle(f, built); faces(f, built.Mesh, row.Faces); }};
+            if (row.Edit) graph.Edit = [&row, faces](ProcedureFixture &f, state::Entity mesh) { row.Edit(f, mesh); faces(f, mesh, row.EditedFaces); };
+            return graph;
         });
+        if (row.Called) Scenario(f, other, std::format("{}Called", row.Name), [&row](ProcedureFixture &f) { CalledEqualsStored(f, row); });
+        Scenario(f, other, std::format("{}Shared", row.Name), [&row](ProcedureFixture &f) { SharedDefinition(f, row); });
     }
+    boost::ut::test("DomainConversions") = [&f] {
+        const TestDir dir{"/tmp/mesheditor-scratch/DomainConversions"};
+        f.Begin(dir.Path);
+        DomainConversions(f);
+    };
+    for (const auto &row : ConvertedLinks) Scenario(f, other, std::string{row.Name}, [&row](ProcedureFixture &f) { AutomaticEqualsExplicit(f, row); });
+    Scenario(f, other, "StoredFields", StoredFields);
+    for (const auto &row : ImageRows) Scenario(f, other, std::string{row.Name}, [&row](ProcedureFixture &f) { CheckImage(f, row); });
+    for (const auto &row : TimedGraphs) Scenario(f, other, std::string{row.Name}, [&row](ProcedureFixture &f) { Timed(f, row); });
+    Scenario(f, other, "TimeCollider", [](ProcedureFixture &f) { TimeCollider(f, TimeMoves); });
+    Scenario(f, other, "UntimedCollider", [](ProcedureFixture &f) { TimeCollider(f, DoubledPositions); });
     for (const auto &row : BuiltGraphs) Survives(f, other, row.Name, row.Build);
     TestOperators(f, other);
     Hierarchies(f, other);
-    Scenario(f, other, "SceneNetworks", SceneNetworks);
-    Scenario(f, other, "ReferenceEditing", ReferenceEditing);
-    Scenario(f, other, "DocumentItems", DocumentItems);
-    Scenario(f, other, "CanvasEquivalence", CanvasEquivalence);
-    Scenario(f, other, "ParameterSockets", ParameterSockets);
-    Scenario(f, other, "FloatMathOperations", FloatMathOperations);
-    Scenario(f, other, "SourceStates", SourceStates);
-    Scenario(f, other, "DisplayedNode", DisplayedNode);
+    Scenario(f, other, "HistoryPanelEdit", HistoryPanelEdit);
     Scenario(f, other, "ViewportSelection", ViewportSelection);
-    Scenario(f, other, "ColdRecook", ColdRecook);
-    Scenario(f, other, "NodeResultRecook", NodeResultRecook);
+    boost::ut::test("BeginKeepsStates") = [&f] {
+        const TestDir dir{"/tmp/mesheditor-scratch/BeginKeepsStates"}, next{"/tmp/mesheditor-scratch/BeginKeepsStates-next"};
+        f.Begin(dir.Path);
+        BeginKeepsStates(f, next.Path);
+    };
     Scenario(f, other, "GestureLodRepair", GestureLodRepair);
-    Scenario(f, other, "ChainRecook", [](ProcedureFixture &f) { ChainRecook(f, false); });
-    Scenario(f, other, "ChainRecookRegional", [](ProcedureFixture &f) { ChainRecook(f, true); });
-    Scenario(f, other, "ExtrudeDisplacement", ExtrudeDisplacement);
-    Scenario(f, other, "DeleteTipRestores", DeleteTipRestores);
-    Scenario(f, other, "HiddenSharedGeometry", HiddenSharedGeometry);
-    Scenario(f, other, "ProceduralHierarchies", ProceduralHierarchies);
     Scenario(f, other, "LinkedSkinPoses", LinkedSkinPoses);
-    Scenario(f, other, "ObjectDependencies", ObjectDependencies);
+    Scenario(f, other, "ContextualDefinition", ContextualDefinition);
 }

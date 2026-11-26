@@ -30,10 +30,7 @@ inline OverlayTargets ShadeEdgeQuad(EdgeQuadVaryings in, const thread Scene &sce
 
 fragment OverlayTargets EdgeQuadFragment(
     EdgeQuadVaryings in [[stage_in]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
+    SCENE_ARGS
 ) {
     const Scene scene{bindless, view, theme, workspace};
     return ShadeEdgeQuad(in, scene, IncludeOuter);

@@ -63,24 +63,19 @@ struct DeriveContext {
     }
 };
 
-// The handle a lane derives and its arena address, from the dispatch's work, the entry's work, or a tile of one of its blocks.
+// The handle a lane derives and its arena address, from the entry's work or a tile of one of its blocks.
 // Both are InvalidOffset when the lane has no element.
-inline uint2 DeriveElement(const DeriveContext ctx, NormalDeriveEntry entry, bool sparse, uint2 tile, uint group_id, uint ordinal, bool faces) {
+inline uint2 DeriveElement(const DeriveContext ctx, NormalDeriveEntry entry, uint2 tile, uint ordinal, bool faces) {
     device const BindlessSet &b = ctx.B;
-    const SlotOffset table = faces ? entry.Connectivity.Tables.Faces : entry.Connectivity.Tables.Vertices;
-    uint handle;
-    if (sparse) handle = WorkElement(b, ctx.Pc.Work, group_id * 256u + ordinal);
-    else {
-        const ElementWork work = faces ? entry.FacesWork : entry.VerticesWork;
-        if (work.Storage.Slot != InvalidSlot) {
-            const uint i = tile.y * 256u + ordinal;
-            handle = i < (faces ? entry.FaceWorkCount : entry.VertexWorkCount) ? WorkGroupElement(b, work, i) : InvalidOffset;
-        } else {
-            const MeshElementBlock block = BindlessBuffer(MeshElementBlock, b.Buffer, faces ? entry.FaceBlocksSlot : entry.VertexBlocksSlot)[tile.y];
-            if (!SlotLive(block, ordinal)) return uint2(InvalidOffset);
-            return uint2(block.Local * MeshElementBlockSize + ordinal, tile.y * MeshElementBlockSize + ordinal);
-        }
+    const ElementWork work = faces ? entry.FacesWork : entry.VerticesWork;
+    if (work.Storage.Slot == InvalidSlot) {
+        const MeshElementBlock block = BindlessBuffer(MeshElementBlock, b.Buffer, faces ? entry.FaceBlocksSlot : entry.VertexBlocksSlot)[tile.y];
+        if (!SlotLive(block, ordinal)) return uint2(InvalidOffset);
+        return uint2(block.Local * MeshElementBlockSize + ordinal, tile.y * MeshElementBlockSize + ordinal);
     }
+    const uint i = tile.y * 256u + ordinal;
+    const uint handle = i < (faces ? entry.FaceWorkCount : entry.VertexWorkCount) ? WorkGroupElement(b, work, i) : InvalidOffset;
+    const SlotOffset table = faces ? entry.Connectivity.Tables.Faces : entry.Connectivity.Tables.Vertices;
     return handle == InvalidOffset ? uint2(InvalidOffset) : uint2(handle, HandleAddress<MeshElementBlockSize>(b, table, handle));
 }
 
@@ -91,12 +86,11 @@ kernel void VertexNormalDeriveKernel(
     constant NormalDerivePushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const DeriveContext ctx{bindless, pc};
-    const bool sparse = pc.Work.Storage.Slot != InvalidSlot;
-    const uint2 tile = sparse ? uint2(pc.EntryIndex, 0u) : uint2(BindlessBuffer(packed_uint2, bindless.Buffer, pc.TileMapSlot)[pc.FirstTile + group_id]);
+    const uint2 tile = uint2(BindlessBuffer(packed_uint2, bindless.Buffer, pc.TileMapSlot)[pc.FirstTile + group_id]);
     const NormalDeriveEntry entry = BindlessBuffer(NormalDeriveEntry, bindless.Buffer, pc.EntriesSlot)[tile.x];
     const ConnectivityView conn{bindless, entry.Connectivity};
     if (pc.Phase == 0u) {
-        const uint2 face = DeriveElement(ctx, entry, sparse, tile, group_id, local_id, true);
+        const uint2 face = DeriveElement(ctx, entry, tile, local_id, true);
         if (face.x == InvalidOffset) return;
         ctx.FaceNormals()[entry.FaceNormalNamespace == InvalidOffset ? face.y : PoseAttributeIndex(bindless, pc.FaceNormalNodesSlot, entry.FaceNormalNamespace, face.y)] = packed_float3(ctx.FaceNormal(entry, conn, face.x));
         return;
@@ -104,7 +98,7 @@ kernel void VertexNormalDeriveKernel(
     const uint pair_lane = local_id & 1u;
     for (uint segment = 0u; segment < 2u; ++segment) {
         const uint ordinal = segment * 128u + local_id / 2u;
-        const uint2 element = DeriveElement(ctx, entry, sparse, tile, group_id, ordinal, false);
+        const uint2 element = DeriveElement(ctx, entry, tile, ordinal, false);
         const bool active = element.x != InvalidOffset;
         const uint2 fan = active ? conn.Incoming(element.x) : uint2(0);
         const float3 position = active ? ctx.Position(entry,element.x) : float3(0);

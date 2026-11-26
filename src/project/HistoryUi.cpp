@@ -1,6 +1,8 @@
 #include "project/HistoryUi.h"
 
 #include "action/Dispatch.h"
+#include "materialx/Library.h"
+#include "procedure/NodeEditor.h"
 #include "procedure/Procedure.h"
 #include "project/Recording.h"
 #include "render/MaterialComponents.h"
@@ -52,8 +54,9 @@ template<typename T> void DrawValue(const state::Registry &r, const char *label,
             if constexpr (state::IsEntityRef<T>) return v.Value;
             else return v;
         }();
-        // A material, texture or physics resource has no Name component, so the preview reads the item's name.
-        const auto current = entity == state::Null || !r.valid(entity) ? std::string{"None"} : procedure::ItemName(r, entity);
+        // A material, texture or physics resource has no Name component, so the preview reads the item's name, and a graph node's reads its title.
+        const auto current = entity == state::Null || !r.valid(entity) ? std::string{"None"} : r.all_of<procedure::ProcedureNode>(entity) ? procedure::NodeTitle(r, entity) :
+                                                                                                                                             procedure::ItemName(r, entity);
         bool edited = false;
         if (BeginCombo(label, current.c_str())) {
             if (Selectable("None", entity == state::Null)) {
@@ -167,8 +170,37 @@ template<typename T> void DrawValue(const state::Registry &r, const char *label,
     }
 }
 
+// A socket or port of `node` as a choice of the node's sockets, or false for an entity without sockets.
+bool DrawSocket(const state::Registry &r, const char *label, state::Entity node, uint16_t &socket, bool &changed, bool &finished) {
+    const auto titles = node != state::Null && r.valid(node) ? procedure::SocketTitles(r, node) : std::vector<procedure::SocketTitle>{};
+    if (titles.empty()) return false;
+    const auto current = std::ranges::find(titles, socket, &procedure::SocketTitle::Id);
+    if (BeginCombo(label, current == titles.end() ? std::format("{}", socket).c_str() : current->Label.c_str())) {
+        for (const auto &[id, title] : titles) {
+            PushID(int(id));
+            if (Selectable(title.c_str(), id == socket)) {
+                socket = id;
+                changed = finished = true;
+            }
+            PopID();
+        }
+        EndCombo();
+    }
+    return true;
+}
+
+// A socket or port field belongs to the entity field before it.
 template<typename T> void DrawFields(const state::Registry &r, T &value, bool &changed, bool &finished) {
-    field::ForEach(value, [&]<size_t I>(auto &member, std::integral_constant<size_t, I>) { DrawValue(r, field::ChainLabel<field::At<T, I>{}>.c_str(), member, Spec<T, I>, changed, finished); });
+    auto node = state::Null;
+    field::ForEach(value, [&]<size_t I>(auto &member, std::integral_constant<size_t, I>) {
+        const std::string_view label{field::ChainLabel<field::At<T, I>{}>.c_str()};
+        using M = std::remove_cvref_t<decltype(member)>;
+        if constexpr (std::same_as<M, state::Entity>) node = member;
+        if constexpr (std::same_as<M, uint16_t>) {
+            if ((label.ends_with("Socket") || label.ends_with("Port")) && DrawSocket(r, label.data(), node, member, changed, finished)) return;
+        }
+        DrawValue(r, label.data(), member, Spec<T, I>, changed, finished);
+    });
 }
 
 // The node's label names the component and field a write targets, so only its target and value draw here.

@@ -104,7 +104,7 @@ inline uint SpatialKeyCoordinate(float value, float lo, float hi, uint mask) {
 kernel void MeshletBuildElements(uint lane [[thread_index_in_threadgroup]], BUILD_ARGS) {
     BUILD_CONTEXT;
     const ElementWorkSeedJob source{.Work=j.Elements,.BlockIds=j.ElementBlockIds,.BlockCount=j.ElementBlockCount,
-        .BlocksSlot=j.ElementBlocksSlot,.Owner=j.ElementOwner,.SelectionSlot=InvalidSlot};
+        .BlocksSlot=j.ElementBlocksSlot,.Owner=j.ElementOwner,.SelectionSlot=InvalidSlot,.First=0u,.End=InvalidOffset};
     const uint element=MembershipElement(bindless,source,tile_entry.y,lane);
     if (element==InvalidOffset) return;
     if (j.Topology==1u && b.Conn().HalfedgeFace(b.Conn().EdgeHalfedge(element))!=InvalidOffset) return;

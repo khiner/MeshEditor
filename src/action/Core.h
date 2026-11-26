@@ -44,6 +44,16 @@ template<VectorField F> inline constexpr int Components<F> = int(F::ComponentCou
 // A spec's bounds as the field's limit type, with an open endpoint at the type's extreme.
 template<typename F> constexpr Limit<F> LowerBound(const FieldSpec &spec) { return spec.HasMin() ? Limit<F>(spec.Min) : std::numeric_limits<Limit<F>>::lowest(); }
 template<typename F> constexpr Limit<F> UpperBound(const FieldSpec &spec) { return spec.HasMax() ? Limit<F>(spec.Max) : std::numeric_limits<Limit<F>>::max(); }
+// The value with each component clamped to the spec's bounds.
+template<typename F> constexpr F ClampField(F v, const FieldSpec &spec) {
+    const auto lo = LowerBound<F>(spec), hi = UpperBound<F>(spec);
+    if constexpr (VectorField<F>) {
+        for (int c = 0; c < Components<F>; ++c) v[c] = std::clamp(v[c], lo, hi);
+        return v;
+    } else {
+        return std::clamp(v, lo, hi);
+    }
+}
 
 // Writes `Value` to the field at byte `Offset` of the component on each target, clamped to the field's spec.
 template<typename T>

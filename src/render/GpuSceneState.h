@@ -30,12 +30,11 @@ struct PosedLayout {
     std::vector<state::Entity> Armatures;
 };
 
-// A mesh's derived edit work and bounds parents, which survive gestures until topology, shading layout, or edit mode changes.
+// A mesh's derived edit work, which survives gestures until topology, shading layout, or edit mode changes.
 struct MeshEditWork {
     uint32_t StoreId{InvalidOffset};
-    // Work items are canonical element handles, and bounds work holds canonical vertex blocks.
-    ElementWork Candidates, Vertices, Faces, Normals, Meshlets, BoundsTiles;
-    std::array<ElementWork, 3> BoundsLevels;
+    // Work items are canonical element handles.
+    ElementWork Candidates, Vertices, Faces, Normals, Meshlets;
     std::vector<Range> RefreshRanges;
     bool CandidateReady{}, FootprintReady{}, Modified{}, PreviewActive{};
 };
@@ -94,7 +93,7 @@ struct GpuSceneState {
     std::vector<std::array<uint32_t, 2>> RequiredMaterialAttributes;
     uint32_t MeshPbrFeatures{0};
     DisplayUnion Displays{};
-    bool EditPreludePending{};
+    bool EditPositionsPending{};
     bool EditSelectionDirty{};
     bool OverlayJobsDirty{true};
 };

@@ -1,3 +1,5 @@
+// Fast math that keeps Inf and NaN semantics.
+#pragma METAL fp math_mode(relaxed)
 /* SPDX-FileCopyrightText: 2023 Blender Authors
  * SPDX-License-Identifier: GPL-2.0-or-later
  * Metal port of Blender 222853b0d7e eevee_ray_denoise.bsl.hh temporal_main and
@@ -152,10 +154,7 @@ kernel void RayBilateral(texture2d<float, access::read> radiance [[texture(0)]],
         value.rgb = from_log(sum / weight_sum);
     }
     const float4 base = color.read(pixel);
-    if (pc.FastGI && g.z >= 4.f && pc.Lobe == 0u) {
-        const float maximum = pc.MaxRoughness, rough = g.z - 4.f;
-        value.rgb *= pc.Reflections ? RayReflectionWeight(rough, maximum) : 0.f;
-    }
+    if (pc.FastGI && g.z >= 4.f && !RayGuideSharedReflection(g) && pc.Lobe == 0u) value.rgb *= RayFastGiTraced(g.z - 4.f, pc.Reflections, pc.MaxRoughness);
     if (g.w < 0.0f) {
         const float hole = clamp(value.a, 0.0f, 1.0f);
         color.write(float4(value.rgb + hole * base.rgb, 1.0f - hole + hole * base.a), pixel);

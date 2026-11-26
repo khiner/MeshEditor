@@ -53,6 +53,7 @@ struct MeshTopologyEdit {
 
 private:
     struct Closures;
+    struct Group;
     struct Prepared;
     // Publication's recorded passes use the plan's buffers until Complete.
     std::unique_ptr<Prepared> Plan;

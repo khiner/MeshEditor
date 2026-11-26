@@ -3,6 +3,7 @@
 #include "state/Registry.h"
 #include "viewport/ViewportScene.h"
 
+#include "File.h"
 #include "Profile.h"
 #include "Variant.h"
 #include "action/Errors.h"
@@ -17,6 +18,8 @@
 #include "mesh/Primitives.h"
 #include "numeric/Angles.h"
 #include "object/ObjectOps.h"
+#include "procedure/MaterialGraphs.h"
+#include "procedure/Procedure.h"
 #include "scene/Defaults.h"
 #include "timeline/Timeline.h"
 #include "viewport/Viewport.h"
@@ -66,9 +69,18 @@ void Apply(state::Registry &r, const Action &action) {
                 else Fail(r, std::format("Unsupported file format: '{}'", ext));
             },
             [&](const SaveGltf &a) {
-                if (auto save = gltf::SaveGltf(a.Path, r); !save) {
-                    Fail(r, std::format("Error saving glTF file '{}': {}", a.Path.string(), save.error()));
+                const auto bake = procedure::BakeMaterialInputs(r, a.BakeSize);
+                if (auto save = gltf::SaveGltf(a.Path, r, {.Baked = bake.Materials}); !save) {
+                    return Fail(r, std::format("Error saving glTF file '{}': {}", a.Path.string(), save.error()));
                 }
+                // The save reports each graph material it exported with the material's values.
+                for (const auto &unbaked : bake.Unbaked) Fail(r, std::format("Saved glTF file '{}': {}", a.Path.string(), unbaked));
+            },
+            [&](const SaveMaterialX &a) {
+                if (!r.valid(a.Material) || !r.all_of<procedure::MaterialGraph>(a.Material)) return Fail(r, "The material has no node graph");
+                const auto text = procedure::WriteMaterialX(r, a.Material);
+                if (!text) return Fail(r, std::format("Error saving MaterialX file '{}': {}", a.Path.string(), text.error()));
+                if (auto written = File::WriteAtomic(a.Path, std::as_bytes(std::span{*text})); !written) Fail(r, std::format("Error saving MaterialX file '{}': {}", a.Path.string(), written.error()));
             },
             [&](const LoadGltf &a) { LoadGltfFile(r, a.Path); },
             [&](const LoadRealImpact &a) {
@@ -96,10 +108,10 @@ void Apply(state::Registry &r, const Action &action) {
                 const auto [mesh_entity, instance_entity] = *imported;
 
                 // The npy file's vertex indices use the source OBJ numbering, so look up by position instead.
-                const auto vertex_indices = NearestVertexOrdinals(r.Resources.get<const MeshStore>(), GetMeshPipelines(r), GetMesh(r, mesh_entity).GetStoreId(), source->Positions);
+                const auto vertex_indices = NearestVertexOrdinals(r.Resources.get<const MeshStore>(), GetMeshPipelines(r), std::array{RecordPoints{GetMesh(r, mesh_entity).GetStoreId(), source->Positions}}).front();
 
                 const auto &listener_points = source->Listeners;
-                const auto created = CreateMesh(r, {.Data = primitive::CreateMesh({primitive::Cylinder{0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f}}), .FlatShaded = true});
+                const auto created = CreateMesh(r, primitive::CreateMesh(primitive::Cylinder{0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f}));
                 const auto listener_mesh_entity = AddMeshData(r, created.StoreId);
                 for (const auto &listener_point : listener_points) {
                     static const auto rot_z = AngleAxis(std::numbers::pi_v<float> / 2.f, vec3{0, 0, 1}); // The cylinder's axis is Y.

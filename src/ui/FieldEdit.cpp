@@ -8,8 +8,8 @@
 namespace ui {
 void FieldPromotionMenu(const state::Registry &r, const procedure::PromotedField &field) {
     const auto *panels = r.Resources.find<const PanelsState>();
-    if (!panels || !r.all_of<procedure::NetworkSubnet>(panels->Nodes.Canvas.Network)) return;
-    const auto network = panels->Nodes.Canvas.Network;
+    if (!panels || !r.all_of<procedure::NetworkSubnet>(panels->Nodes.Canvas.Root)) return;
+    const auto network = panels->Nodes.Canvas.Root;
     ImGui::PushID(int(state::Integral(field.Entity)));
     ImGui::PushID(int(field.Component));
     ImGui::PushID(int(field.Offset));

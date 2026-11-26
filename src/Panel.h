@@ -63,13 +63,18 @@ struct NetworkCanvas {
     numeric::vec2 Offset{};
     float Zoom{1};
 };
+// The page shows Root's network, or the definition's network of the last subnet node of Path.
 struct NodeCanvas {
     numeric::vec2 Offset{}; // <= 0
     float Zoom{1};
-    state::Entity Network{state::Null};
+    state::Entity Root{state::Null};
     state::Entity Object{state::Null};
+    std::vector<state::Entity> Path; // The subnet nodes from one in Root's network to the one whose definition's page shows, outermost first
+    state::Entity Inspected{state::Null}; // The node of a built-in definition's page whose parameters Properties shows read-only
     std::vector<NetworkCanvas> Locations;
 };
+// The entity whose page the canvas shows: its root network, or the last subnet node of its path.
+inline state::Entity PageNetwork(const NodeCanvas &canvas) { return canvas.Path.empty() ? canvas.Root : canvas.Path.back(); }
 enum class NodeDrag : uint8_t { None,
                                 Pan,
                                 Move,
@@ -77,13 +82,11 @@ enum class NodeDrag : uint8_t { None,
                                 Wire,
                                 Box };
 namespace procedure {
-struct CookPlan;
+struct UseCounts;
 struct NodePage;
 } // namespace procedure
 struct NodesPanel : Panel {
-    std::shared_ptr<procedure::CookPlan> NetworkView;
     std::shared_ptr<procedure::NodePage> Page; // The displayed page with its layout, kept between frames
-    state::Entity ViewedNetwork{state::Null};
     NodeCanvas Canvas{};
     uint64_t Epoch{};
     NodeDrag Drag{NodeDrag::None};
@@ -94,15 +97,14 @@ struct NodesPanel : Panel {
     uint16_t ContextSocket{UINT16_MAX};
     uint32_t DragNode{UINT32_MAX}; // Node index for the active move, grab, or wire gesture
     uint32_t GrabAfter{}; // Start dragging the new active node after the count exceeds this value
-    uint32_t LinkAfter{UINT32_MAX}; // The node count a linking add waits to grow past before it links the new node, or none
-    std::vector<action::nodes::Link> PendingLinks; // The links a Make Link press stages one per frame, committing with the last
+    std::optional<action::nodes::Link> LinkingAdd; // The link a staged linking add makes next frame, whose null end is the node it added
+    state::Entity LinkingActive{state::Null}; // The active node of LinkingAdd's network before the add, which the added node replaces
     uint32_t Expanded{UINT32_MAX}; // The node whose tray is open, or none
     uint32_t PickNode{UINT32_MAX}; // The node whose sockets the port picker lists for the held wire, or none
     uint32_t DetachNode{UINT32_MAX}; // The node whose input link the wire drag picked up, or none
     uint16_t DetachSlot{}; // The input slot of DetachNode that the picked-up link is in
     bool PickTray{false}; // The port picker lists only the node's tray sockets
     uint16_t DragSocket{}; // Socket index for the active wire gesture
-    uint16_t LinkSocket{}; // The socket of the node a linking add appends that its wire links to
     bool Moved{false}; // A move passed the drag threshold and staged its first step
     bool Hovered{false}; // The canvas is under the mouse this frame, which routes the editing shortcuts to it
     bool Linking{false}; // The Add menu lists the sockets that link with the socket a dropped wire held, and links its node through the picked one
@@ -112,8 +114,16 @@ struct NodesPanel : Panel {
     state::Entity UsersOf{state::Null}; // The item whose users the Properties panel lists
     uint64_t UsersRevision{UINT64_MAX}; // The network revision Users was read at
     std::vector<procedure::SceneReference> Users; // The references that hold UsersOf
-    std::array<char, 64> NameEdit{}; // The attribute name the active name field edits
-    uint32_t NameEditId{}; // The name field editing NameEdit, or zero
+    uint64_t UsesRevision{UINT64_MAX}; // The network revision Uses was counted at
+    std::shared_ptr<procedure::UseCounts> Uses; // The subnet nodes that use each definition
+    std::array<char, 64> NameEdit{}; // The text the active text field edits
+    uint32_t NameEditId{}; // The text field editing NameEdit, or zero
+    // The textures of an image Properties drew, kept until the UI frame that drew them completes, and the ImGui frame that last drew it.
+    struct ShownImage {
+        std::shared_ptr<const void> Hold;
+        int Frame{};
+    };
+    ShownImage NodeImage, Preview; // A node's image or output, and a material's preview
 };
 
 struct PanelsState {

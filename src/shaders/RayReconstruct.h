@@ -17,16 +17,12 @@ kernel void RayReconstruct(
     texture2d<float, access::read> closure_weight [[texture(10)]],
     texture2d<float, access::read> closure_normal [[texture(11)]],
     texture2d<float, access::read> glass_shape [[texture(12)]],
-    device const BindlessSet &bindless [[buffer(0)]],
+    texture2d<float, access::read> coat_weight [[texture(13), function_constant(TraceCoat)]],
+    texture2d<float, access::read> coat_normal [[texture(14), function_constant(TraceCoat)]],
+    texture2d<float, access::read> diffuse_transmission_weight [[texture(16), function_constant(TraceDiffuseTransmission)]],
+    texture2d<float, access::read> sheen_weight [[texture(17), function_constant(TraceSheen)]],
+    RAY_KERNEL_ARGS,
     constant RayReconstructPushConstants &pc [[buffer(1)]],
-    constant SceneViewUBO &view [[buffer(2)]],
-    constant ViewportThemeUbo &theme [[buffer(3)]],
-    constant WorkspaceLights &workspace [[buffer(4)]],
-    instance_acceleration_structure acceleration [[buffer(5)]],
-    device const RayTracingInstance *instances [[buffer(6)]],
-    device const uint *triangles [[buffer(7)]],
-    device const float *environment [[buffer(8)]],
-    texture2d_array<float> lut [[texture(15)]],
     device const uint *work [[buffer(9)]],
     uint2 group [[threadgroup_position_in_grid]], uint2 local [[thread_position_in_threadgroup]]
 ) {
@@ -62,7 +58,8 @@ kernel void RayReconstruct(
     const float3 normal = DecodeRayNormal(g.xy);
     const Scene scene{bindless, view, theme, workspace};
     const RayScene rays{acceleration, instances, triangles, environment, lut};
-    const bool ratio = pc.Denoise != 0u && roughness > (RayGuideGlass(g) ? 0.02f : 0.08f);
+    // A reflection ray that carries several lobes reconstructs by their values at every roughness.
+    const bool ratio = pc.Denoise != 0u && ((TraceExtraLobes && pc.Lobe == 0u && RayGuideSharedReflection(g)) || roughness > (RayGuideGlass(g) ? 0.02f : 0.08f));
     float3 sum(0), moment(0);
     float weight_sum = 0, closest = 1e10f;
     if (ratio) {
@@ -91,9 +88,26 @@ kernel void RayReconstruct(
         reuse.Closest = 1e10f;
         if (g.z >= 4.0f) {
             const float3 v = view.ScreenPixelScale < 0.0f ? transpose(view.ViewRotation.Unpack()) * float3(0, 0, 1) : normalize(float3(view.CameraPosition) - world);
-            for (uint i = 0; i < count; ++i) {
-                float3 direction;
-                if (reuse.Sample(i, direction)) reuse.Accumulate(reuse.Radiance, eevee_opaque::pdf(DecodeRayNormal(closure_normal.read(pixel).xy), v, RayGuideRoughness(g), pc.Lobe, direction));
+            if (TraceExtraLobes) {
+                // Each sample weighs by the sum of the ray's lobe values, and carries their color relative to the ray's weight.
+                const float3 total = closure_weight.read(pixel).rgb;
+                const DeferredRay ray = DeferredLobes(view, pc.Lobe, pixel, g, v, closure_weight, closure_normal, coat_weight, coat_normal, diffuse_transmission_weight, sheen_weight);
+                constexpr float3 Average(1.0f / 3.0f);
+                float3 carried(0);
+                for (uint k = 0u; k < ray.Count; ++k) carried += ray.Weights[k];
+                const float3 scale = select(float3(0), dot(carried, Average) / total, total > 0.0f);
+                for (uint i = 0; i < count; ++i) {
+                    float3 direction;
+                    if (!reuse.Sample(i, direction)) continue;
+                    const float3 value = ray.Value(v, direction);
+                    const float luminance = dot(value, Average);
+                    if (luminance > 0.0f) reuse.Accumulate(reuse.Radiance * value / luminance * scale, luminance);
+                }
+            } else {
+                for (uint i = 0; i < count; ++i) {
+                    float3 direction;
+                    if (reuse.Sample(i, direction)) reuse.Accumulate(reuse.Radiance, DeferredSharedPdf({DecodeRayNormal(closure_normal.read(pixel).xy), RayGuideRoughness(g), pc.Lobe ? DeferredKind::Diffuse : DeferredKind::Ggx, 0}, v, direction));
+                }
             }
         } else if (RayGuideGlass(g)) {
             // EEVEE reconstruction reads prepared closure data instead of evaluating the material again.
@@ -112,10 +126,9 @@ kernel void RayReconstruct(
         } else {
             const auto decoded = DecodeVisibility(float2(pixel) + 0.5f, visibility, bindless, view, theme, workspace, pc.Visibility);
             PbrContext ctx{scene, decoded.V};
-            ctx.SetSurface(decoded);
+            ctx.SetSurface(decoded, PixelPatternWord(view, decoded.Topology, pixel));
             ctx.RayTracing = true;
-            ctx.Reuse = &reuse;
-            ShadePbr<PbrMode::Reuse>(decoded.V, uint(MeshPrimitiveTopology::Triangle), decoded.PointCoord, scene, view, ctx, &rays);
+            ShadeReuse(scene, ctx, rays, reuse);
         }
         sum = reuse.Sum;
         moment = reuse.Moment;

@@ -4,7 +4,6 @@
 #include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
 #include "mesh/ScratchPasses.h"
-#include "metal/Dispatch.h"
 #include "state/Registry.h"
 
 bool EditVisibility(state::Registry &r, std::span<const uint32_t> ids, Element element, EditVisibilityOperation operation) {
@@ -33,14 +32,16 @@ bool EditVisibility(state::Registry &r, std::span<const uint32_t> ids, Element e
         pc.ScratchSlot = scratch.Buffer.Slot;
         pc.Source = source;
         pc.Unselected = operation == EditVisibilityOperation::HideUnselected ? 1u : 0u;
+        std::array<ScratchFillRun, 3> changes;
         for (uint32_t d = 0u; d < 3u; ++d) {
             pc.Blocks[d] = BlocksOf(meshes, id, SelectionDomains[d]);
             pc.HiddenSlot[d] = meshes.GetHiddenSlot(SelectionElements[d]);
             pc.SelectionSlot[d] = meshes.GetSelectionSlot(SelectionElements[d]);
             job.Words[d] = std::max(pc.Blocks[d].Count * MeshElementBlockWords, 1u);
             pc.Changes[d] = scratch.Allocate(job.Words[d]).Offset;
-            FillScratch(chain, pipelines, pc.Changes[d], job.Words[d], 0u);
+            changes[d] = {pc.Changes[d], job.Words[d], 0u};
         }
+        FillScratch(chain, pipelines, changes);
         const auto threads = [&](uint32_t d) { return pc.Blocks[d].Count * MeshElementBlockSize; };
         if (reveal) {
             for (uint32_t d = 0u; d < 3u; ++d) {

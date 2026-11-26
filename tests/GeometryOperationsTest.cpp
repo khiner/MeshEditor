@@ -284,7 +284,7 @@ void RegisterManifoldOracleTests();
 void RegisterGeometryOperationsTests() {
     "simplify toward a ratio keeps that fraction of the triangles"_test = [] {
         GeometryFixture f;
-        const auto id = f.Create(primitive::CreateMesh(primitive::IcoSphere{.Subdivisions = 2}));
+        const auto id = f.Create(primitive::CreateMesh(primitive::IcoSphere{.Subdivisions = 2}).Data);
         const auto triangles = [&] {
             uint32_t count = 0u;
             for (const auto face : f.Get(id).faces()) count += test::Valence(f.Get(id), face) - 2u;
@@ -361,8 +361,8 @@ void RegisterGeometryOperationsTests() {
         // A convex hull's new faces take a source face's primitive while their named attributes take the defaults, so the hull does not follow the channels.
         for (const auto &c : TopologyCases)
             if (c.Task.Op != MeshTopologyOp::AddPrimitives) carry(c.Name, Patchwork(), [&](uint32_t id) { return PlanCase(c, f.Scene, f.Get(id)); });
-        carry("Boolean", primitive::CreateMesh(primitive::Cube{}), [&](uint32_t id) {
-            auto box = primitive::CreateMesh(primitive::Cube{});
+        carry("Boolean", primitive::CreateMesh(primitive::Cube{}).Data, [&](uint32_t id) {
+            auto box = primitive::CreateMesh(primitive::Cube{}).Data;
             for (auto &p : box.Positions) p += vec3{1.f};
             const auto second = f.Create(std::move(box));
             return BooleanTask(f.Get(id), f.Get(second), BooleanOperation::Union, mat3{1.f}, vec3{0.f});
@@ -407,6 +407,68 @@ void RegisterGeometryOperationsTests() {
         expect(meshes.FindAttribute(id, "again") == InvalidOffset);
         expect(meshes.FindAttribute(id, "weight") == *weight);
     };
+    "a concatenation gives every copy its part's morph targets, skin and placed positions"_test = [] {
+        GeometryFixture f;
+        auto &meshes = f.Store();
+        const auto &a = meshes.Arenas();
+        // Two morph targets and a skin whose values identify the shape, the target and the vertex.
+        const auto deformed = [&](MeshData data, uint32_t shape) {
+            const auto count = uint32_t(data.Positions.size());
+            MeshSource source{.Data = std::move(data)};
+            ArmatureDeformData deform;
+            MorphTargetData morph{.TargetCount = 2u, .DefaultWeights = {0.f, 0.f}};
+            for (uint32_t t = 0u; t < 2u; ++t) {
+                for (uint32_t i = 0u; i < count; ++i) {
+                    morph.PositionDeltas.push_back({float(shape), float(t), float(i)});
+                    morph.NormalDeltas.push_back({float(i), -float(shape), float(t) + .5f});
+                }
+            }
+            for (uint32_t i = 0u; i < count; ++i) {
+                deform.Joints.push_back({shape, i, i % 7u, 1u});
+                deform.Weights.push_back({.5f, .25f, .125f, .125f});
+            }
+            source.Deform = std::move(deform);
+            source.Morph = std::move(morph);
+            return f.Create(std::move(source));
+        };
+        // 762 vertices over three blocks, and 101 vertices whose third copy crosses a block boundary.
+        const auto large = deformed(primitive::CreateMesh(primitive::UVSphere{.Slices = 40, .Stacks = 20}).Data, 1u);
+        const auto small = deformed(primitive::CreateMesh(primitive::UVSphere{.Slices = 11, .Stacks = 10}).Data, 2u);
+        // Power-of-two scales keep each placed position exact.
+        const std::array<Transform, 3> transforms{{{.P = {3.f, 0.f, 0.f}, .S = {2.f, .5f, 1.f}}, {.P = {0.f, -1.f, .25f}}, {.P = {-2.f, 4.f, 1.f}, .S = {4.f, 4.f, .25f}}}};
+        mtl::ComputeChain chain{meshes.BufferContext()};
+        const std::vector<ConcatPart> parts{{large}, {small, 3u, chain.Upload(std::as_bytes(std::span{transforms}))}, {large, 2u}};
+        const auto id = meshes.Concatenate(f.Scene, chain, std::span{&parts, 1u}).front();
+        chain.Submit();
+        f.Audit();
+        const auto &record = meshes.Get(id);
+        expect(fatal(record.MorphTargetCount == 2u));
+        const auto position = [&](uint32_t store, uint32_t handle) { return a.Vertices.Get({meshes.HandleAddress(store, MeshStore::ElementDomain::Vertex, ElementHandle{handle}).Value(), 1u})[0].Position; };
+        uint32_t first = 0u, total = 0u;
+        for (const auto &part : parts) {
+            const auto &source = meshes.Get(part.StoreId);
+            const auto bound = a.Vertices.LiveBound(source.Vertices);
+            for (uint32_t c = 0u; c < part.Copies; ++c) {
+                a.Vertices.ForEach(source.Vertices, [&](ElementHandle handle, ElementAddress) {
+                    const auto h = handle.Value, copy = first + c * bound + h;
+                    expect(fatal(a.Vertices.Contains(record.Vertices, ElementHandle{copy})));
+                    const auto p = position(part.StoreId, h);
+                    const auto &t = transforms[c];
+                    expect(position(id, copy) == (part.Transforms.Slot == InvalidSlot ? p : t.P + t.S * p)) << "copy" << c << "of" << part.StoreId << "vertex" << h;
+                    for (uint32_t e = 0u; e < 2u; ++e) {
+                        const auto morph = a.Morph.Get(record.Morph, copy, e, 2u), from = a.Morph.Get(source.Morph, h, e, 2u);
+                        expect(morph.PositionDelta == from.PositionDelta && morph.NormalDelta == from.NormalDelta) << "copy" << c << "of" << part.StoreId << "vertex" << h << "target" << e;
+                    }
+                    const auto skin = a.Skin.Get(record.Skin, copy), from = a.Skin.Get(source.Skin, h);
+                    expect(skin.Joints == from.Joints && skin.Weights == from.Weights);
+                    ++total;
+                });
+            }
+            first += bound * part.Copies;
+        }
+        expect(a.Vertices.Count(record.Vertices) == total);
+        expect(total == 762u * 3u + 101u * 3u);
+    };
     "a position operation over every element matches the operation over every listed handle"_test = [] {
         GeometryFixture f;
         struct PositionCase {
@@ -423,16 +485,15 @@ void RegisterGeometryOperationsTests() {
         }};
         // Deleted vertices leave unused handles between the live ones of several blocks.
         const auto create = [&] {
-            const auto id = f.Create(primitive::CreateMesh(primitive::UVSphere{.Slices = 40, .Stacks = 20}));
+            const auto id = f.Create(primitive::CreateMesh(primitive::UVSphere{.Slices = 40, .Stacks = 20}).Data);
             f.Run({.SourceId = id, .Op = MeshTopologyOp::DeleteVertices, .Selection = GeometrySelection{.Vertices = {5u, 6u, 300u, 301u, 302u, 700u}}});
             return id;
         };
         const auto normals = [&](uint32_t id) {
             const auto handles = AllHandles(f.Get(id));
-            const auto &pipelines = GetMeshPipelines(f.Scene);
             std::vector<std::array<int64_t, 3>> keys;
-            for (const auto normal : VertexNormals(f.Store(), pipelines, id, handles.Vertices)) keys.push_back(Key(normal));
-            for (const auto normal : FaceNormals(f.Store(), pipelines, id, handles.Faces)) keys.push_back(Key(normal));
+            for (const auto normal : VertexNormals(f.Store(), id, handles.Vertices)) keys.push_back(Key(normal));
+            for (const auto normal : FaceNormals(f.Store(), id, handles.Faces)) keys.push_back(Key(normal));
             return keys;
         };
         for (const auto &c : positions) {
@@ -578,6 +639,55 @@ void RegisterGeometryOperationsTests() {
                 expect(ExecuteGeometrySharpness(f.Scene, chain, unselected, c.Op, true, .1f).has_value() == (c.Op < EditSharpnessOperation::SetSelectedFaces));
             };
         }
+    };
+    "a selection over vertex blocks in descending arena order derives and deletes the right elements"_test = [] {
+        GeometryFixture f;
+        MaskWriter masks{f.Buffers};
+        auto &meshes = f.Store();
+        // The released sphere leaves free blocks below the second's, and the vertices a Poke inserts take them.
+        const auto released = f.Create(primitive::CreateMesh(primitive::UVSphere{.Slices = 64, .Stacks = 32}).Data);
+        const auto id = f.Create(primitive::CreateMesh(primitive::UVSphere{.Slices = 40, .Stacks = 20}).Data);
+        meshes.Release(released);
+        f.Audit();
+        expect(fatal(f.Run({.SourceId = id, .Op = MeshTopologyOp::Poke, .Param0 = .1f, .Flags = TopologyFlagSelectAll}).Changed));
+        const auto entries = meshes.Arenas().Vertices.Entries(meshes.Get(id).Vertices);
+        expect(fatal(entries.size() > 3u));
+        expect(fatal(entries[3] < entries[2] && entries.back() < entries.front()));
+        const auto mesh = f.Get(id);
+        GeometrySelection above;
+        for (const auto v : mesh.vertices())
+            if (test::Position(mesh, v).y > .5f) above.Vertices.push_back(*v);
+        std::ranges::sort(above.Vertices);
+        const auto selected = [&](he::VH v) { return std::ranges::binary_search(above.Vertices, *v); };
+        expect(std::ranges::any_of(above.Vertices, [](uint32_t v) { return v < 3u * MeshElementBlockSize; }) && above.Vertices.back() >= 3u * MeshElementBlockSize);
+        const auto written = masks.Write(meshes, id, above);
+        {
+            mtl::ComputeChain chain{meshes.BufferContext()};
+            meshes.DeriveSelectionMasks(f.Scene, chain, id, written, Element::Vertex);
+            chain.Submit();
+        }
+        GeometrySelection derived;
+        for (const auto edge : mesh.edges()) {
+            const auto [from, to] = test::EdgeVertices(mesh, edge);
+            if (selected(from) && selected(to)) derived.Edges.push_back(*edge);
+        }
+        for (const auto face : mesh.faces())
+            if (std::ranges::all_of(test::FaceVertices(mesh, face), selected)) derived.Faces.push_back(*face);
+        std::ranges::sort(derived.Edges);
+        std::ranges::sort(derived.Faces);
+        expect(fatal(!derived.Edges.empty() && !derived.Faces.empty()));
+        expect(std::ranges::equal(ReadMasks(meshes, id, Element::Vertex, written.Vertices), above.Vertices));
+        expect(std::ranges::equal(ReadMasks(meshes, id, Element::Edge, written.Edges), derived.Edges));
+        expect(std::ranges::equal(ReadMasks(meshes, id, Element::Face, written.Faces), derived.Faces));
+        decltype(Points(mesh)) kept;
+        for (const auto v : mesh.vertices())
+            if (!selected(v)) kept.push_back(Key(test::Position(mesh, v)));
+        const auto result = f.Run({.SourceId = id, .Op = MeshTopologyOp::DeleteVertices, .Selection = written});
+        expect(result.Changed);
+        auto survivors = Points(f.Get(result.GeometryId));
+        std::ranges::sort(kept);
+        std::ranges::sort(survivors);
+        expect(std::ranges::equal(survivors, kept));
     };
     "mixed sources weld wire endpoints onto a surface and keep their corner attributes"_test = [] {
         GeometryFixture f;

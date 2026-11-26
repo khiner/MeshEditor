@@ -1,0 +1,273 @@
+<?xml version="1.0"?>
+<materialx version="1.39">
+  <!--
+    Declarations of MeshEditor's nodes, and of standard nodes on images.
+    Each one has no standard declaration with the same semantics.
+  -->
+
+  <nodedef name="ND_safedivide_float" node="safedivide" nodegroup="math" doc="Divide in1 by in2, or zero when in2 is zero.">
+    <input name="in1" type="float" value="0.0" />
+    <input name="in2" type="float" value="1.0" />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_multiplyadd_float" node="multiplyadd" nodegroup="math" doc="Multiply in1 by in2 and add in3.">
+    <input name="in1" type="float" value="0.0" />
+    <input name="in2" type="float" value="1.0" />
+    <input name="in3" type="float" value="0.0" />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_realpower_float" node="realpower" nodegroup="math" doc="Raise in1 to the power in2, or zero when in1 is negative and in2 is not an integer.">
+    <input name="in1" type="float" value="0.0" />
+    <input name="in2" type="float" value="1.0" />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_logarithm_float" node="logarithm" nodegroup="math" doc="The logarithm of in1 in base in2, or zero unless both are positive and in2 is not one.">
+    <input name="in1" type="float" value="1.0" />
+    <input name="in2" type="float" value="2.718282" />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_safesqrt_float" node="safesqrt" nodegroup="math" doc="The square root of in, or zero when in is negative.">
+    <input name="in" type="float" value="0.0" />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_inversesqrt_float" node="inversesqrt" nodegroup="math" doc="One over the square root of in, or zero unless in is positive.">
+    <input name="in" type="float" value="1.0" />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_roundhalfup_float" node="roundhalfup" nodegroup="math" doc="Round in to the nearest integer, and halves up.">
+    <input name="in" type="float" value="0.0" />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_truncate_float" node="truncate" nodegroup="math" doc="Round in toward zero to an integer.">
+    <input name="in" type="float" value="0.0" />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_safemodulo_float" node="safemodulo" nodegroup="math" doc="The remainder of in1 divided by in2 with the sign of in2, or zero when in2 is zero.">
+    <input name="in1" type="float" value="0.0" />
+    <input name="in2" type="float" value="1.0" />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_truncatedmodulo_float" node="truncatedmodulo" nodegroup="math" doc="The remainder of in1 divided by in2 with the sign of in1, or zero when in2 is zero.">
+    <input name="in1" type="float" value="0.0" />
+    <input name="in2" type="float" value="1.0" />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_wrap_float" node="wrap" nodegroup="math" doc="Wrap in into the range from low to high, or low when the range is empty.">
+    <input name="in" type="float" value="0.0" />
+    <input name="low" type="float" value="0.0" />
+    <input name="high" type="float" value="1.0" />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_snap_float" node="snap" nodegroup="math" doc="Round in down to a multiple of increment, or zero when increment is zero.">
+    <input name="in" type="float" value="0.0" />
+    <input name="increment" type="float" value="1.0" />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_pingpong_float" node="pingpong" nodegroup="math" doc="Move in back and forth between zero and scale, or zero when scale is zero.">
+    <input name="in" type="float" value="0.0" />
+    <input name="scale" type="float" value="1.0" />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_smoothmin_float" node="smoothmin" nodegroup="math" doc="The minimum of in1 and in2, blended where they differ by less than distance.">
+    <input name="in1" type="float" value="0.0" />
+    <input name="in2" type="float" value="0.0" />
+    <input name="distance" type="float" value="0.0" />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_smoothmax_float" node="smoothmax" nodegroup="math" doc="The maximum of in1 and in2, blended where they differ by less than distance.">
+    <input name="in1" type="float" value="0.0" />
+    <input name="in2" type="float" value="0.0" />
+    <input name="distance" type="float" value="0.0" />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_safeasin_float" node="safeasin" nodegroup="math" doc="The arcsine of in clamped to the range from -1 to 1.">
+    <input name="in" type="float" value="0.0" />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_safeacos_float" node="safeacos" nodegroup="math" doc="The arccosine of in clamped to the range from -1 to 1.">
+    <input name="in" type="float" value="0.0" />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_sinh_float" node="sinh" nodegroup="math" doc="The hyperbolic sine of in.">
+    <input name="in" type="float" value="0.0" />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_cosh_float" node="cosh" nodegroup="math" doc="The hyperbolic cosine of in.">
+    <input name="in" type="float" value="0.0" />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_tanh_float" node="tanh" nodegroup="math" doc="The hyperbolic tangent of in.">
+    <input name="in" type="float" value="0.0" />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_radians_float" node="radians" nodegroup="math" doc="Convert in from degrees to radians.">
+    <input name="in" type="float" value="0.0" />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_degrees_float" node="degrees" nodegroup="math" doc="Convert in from radians to degrees.">
+    <input name="in" type="float" value="0.0" />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_safenormalize_vector3" node="safenormalize" nodegroup="math" doc="Scale in to unit length, or zero when in has zero length.">
+    <input name="in" type="vector3" value="0.0, 0.0, 0.0" />
+    <output name="out" type="vector3" />
+  </nodedef>
+
+  <nodedef name="ND_compare_float" node="compare" nodegroup="conditional" doc="One when in1 and in2 differ by at most epsilon or the float machine epsilon, and zero otherwise.">
+    <input name="in1" type="float" value="0.0" />
+    <input name="in2" type="float" value="0.0" />
+    <input name="epsilon" type="float" value="0.0" />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_nearlyequal_float" node="nearlyequal" nodegroup="conditional" doc="Whether in1 and in2 differ by at most epsilon.">
+    <input name="in1" type="float" value="0.0" />
+    <input name="in2" type="float" value="0.0" />
+    <input name="epsilon" type="float" value="0.00001" />
+    <output name="out" type="boolean" />
+  </nodedef>
+
+  <nodedef name="ND_convertdomain_boolean" node="convertdomain" nodegroup="geometric" doc="Read the field in, stored on the source domain, at each element of the target domain by reducing the values of the source elements related to it. An element with no related element takes zero.">
+    <input name="in" type="boolean" value="false" />
+    <input name="source" type="string" value="vertex" enum="vertex,edge,face,corner" uiname="Source Domain" uniform="true" doc="Domain the input field is stored on." />
+    <input name="target" type="string" value="face" enum="vertex,edge,face,corner" uiname="Target Domain" uniform="true" doc="Domain the output field is stored on." />
+    <input name="mode" type="string" value="any" enum="any,all" uniform="true" doc="Any is true where a related element is true, and All where every related element is." />
+    <output name="out" type="boolean" />
+  </nodedef>
+
+  <nodedef name="ND_convertdomain_integer" node="convertdomain" nodegroup="geometric" doc="Read the field in, stored on the source domain, at each element of the target domain by reducing the values of the source elements related to it. An element with no related element takes zero.">
+    <input name="in" type="integer" value="0" />
+    <input name="source" type="string" value="vertex" enum="vertex,edge,face,corner" uiname="Source Domain" uniform="true" doc="Domain the input field is stored on." />
+    <input name="target" type="string" value="face" enum="vertex,edge,face,corner" uiname="Target Domain" uniform="true" doc="Domain the output field is stored on." />
+    <input name="mode" type="string" value="mean" enum="mean,min,max" uniform="true" doc="The mean of the related elements' values rounded to the nearest integer, or their least or greatest value." />
+    <output name="out" type="integer" />
+  </nodedef>
+
+  <nodedef name="ND_convertdomain_float" node="convertdomain" nodegroup="geometric" doc="Read the field in, stored on the source domain, at each element of the target domain by reducing the values of the source elements related to it. An element with no related element takes zero.">
+    <input name="in" type="float" value="0.0" />
+    <input name="source" type="string" value="vertex" enum="vertex,edge,face,corner" uiname="Source Domain" uniform="true" doc="Domain the input field is stored on." />
+    <input name="target" type="string" value="face" enum="vertex,edge,face,corner" uiname="Target Domain" uniform="true" doc="Domain the output field is stored on." />
+    <input name="mode" type="string" value="mean" enum="mean,min,max" uniform="true" doc="The mean, least or greatest of the related elements' values." />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_convertdomain_vector2" node="convertdomain" nodegroup="geometric" doc="Read the field in, stored on the source domain, at each element of the target domain by reducing the values of the source elements related to it. An element with no related element takes zero.">
+    <input name="in" type="vector2" value="0.0, 0.0" />
+    <input name="source" type="string" value="vertex" enum="vertex,edge,face,corner" uiname="Source Domain" uniform="true" doc="Domain the input field is stored on." />
+    <input name="target" type="string" value="face" enum="vertex,edge,face,corner" uiname="Target Domain" uniform="true" doc="Domain the output field is stored on." />
+    <input name="mode" type="string" value="mean" enum="mean,min,max" uniform="true" doc="The mean, least or greatest of the related elements' values, componentwise." />
+    <output name="out" type="vector2" />
+  </nodedef>
+
+  <nodedef name="ND_convertdomain_vector3" node="convertdomain" nodegroup="geometric" doc="Read the field in, stored on the source domain, at each element of the target domain by reducing the values of the source elements related to it. An element with no related element takes zero.">
+    <input name="in" type="vector3" value="0.0, 0.0, 0.0" />
+    <input name="source" type="string" value="vertex" enum="vertex,edge,face,corner" uiname="Source Domain" uniform="true" doc="Domain the input field is stored on." />
+    <input name="target" type="string" value="face" enum="vertex,edge,face,corner" uiname="Target Domain" uniform="true" doc="Domain the output field is stored on." />
+    <input name="mode" type="string" value="mean" enum="mean,min,max" uniform="true" doc="The mean, least or greatest of the related elements' values, componentwise." />
+    <output name="out" type="vector3" />
+  </nodedef>
+
+  <nodedef name="ND_convertdomain_vector4" node="convertdomain" nodegroup="geometric" doc="Read the field in, stored on the source domain, at each element of the target domain by reducing the values of the source elements related to it. An element with no related element takes zero.">
+    <input name="in" type="vector4" value="0.0, 0.0, 0.0, 0.0" />
+    <input name="source" type="string" value="vertex" enum="vertex,edge,face,corner" uiname="Source Domain" uniform="true" doc="Domain the input field is stored on." />
+    <input name="target" type="string" value="face" enum="vertex,edge,face,corner" uiname="Target Domain" uniform="true" doc="Domain the output field is stored on." />
+    <input name="mode" type="string" value="mean" enum="mean,min,max" uniform="true" doc="The mean, least or greatest of the related elements' values, componentwise." />
+    <output name="out" type="vector4" />
+  </nodedef>
+
+  <nodedef name="ND_convertdomain_color3" node="convertdomain" nodegroup="geometric" doc="Read the field in, stored on the source domain, at each element of the target domain by reducing the values of the source elements related to it. An element with no related element takes zero.">
+    <input name="in" type="color3" value="0.0, 0.0, 0.0" />
+    <input name="source" type="string" value="vertex" enum="vertex,edge,face,corner" uiname="Source Domain" uniform="true" doc="Domain the input field is stored on." />
+    <input name="target" type="string" value="face" enum="vertex,edge,face,corner" uiname="Target Domain" uniform="true" doc="Domain the output field is stored on." />
+    <input name="mode" type="string" value="mean" enum="mean,min,max" uniform="true" doc="The mean, least or greatest of the related elements' values, componentwise." />
+    <output name="out" type="color3" />
+  </nodedef>
+
+  <nodedef name="ND_convertdomain_color4" node="convertdomain" nodegroup="geometric" doc="Read the field in, stored on the source domain, at each element of the target domain by reducing the values of the source elements related to it. An element with no related element takes zero.">
+    <input name="in" type="color4" value="0.0, 0.0, 0.0, 0.0" />
+    <input name="source" type="string" value="vertex" enum="vertex,edge,face,corner" uiname="Source Domain" uniform="true" doc="Domain the input field is stored on." />
+    <input name="target" type="string" value="face" enum="vertex,edge,face,corner" uiname="Target Domain" uniform="true" doc="Domain the output field is stored on." />
+    <input name="mode" type="string" value="mean" enum="mean,min,max" uniform="true" doc="The mean, least or greatest of the related elements' values, componentwise." />
+    <output name="out" type="color4" />
+  </nodedef>
+
+  <nodedef name="ND_curvature_float" node="curvature" nodegroup="geometric" doc="Each vertex's curvature over the triangles around it: Gaussian, its angle defect, or mean, its edges' dihedral angles weighted by length, each over a third of the triangles' area. Open edges contribute zero.">
+    <input name="kind" type="string" value="mean" enum="gaussian,mean" uniform="true" doc="Gaussian curvature from each vertex's angle defect, or mean curvature from the dihedral angles of its edges." />
+    <output name="out" type="float" />
+  </nodedef>
+
+  <nodedef name="ND_boundary_boolean" node="boundary" nodegroup="geometric" doc="The edges with fewer than two faces, the vertices on them, or the faces touching them.">
+    <input name="domain" type="string" value="edge" enum="vertex,edge,face" uniform="true" doc="Domain of the selection: boundary edges, the vertices on them, or the faces touching them." />
+    <output name="out" type="boolean" />
+  </nodedef>
+
+  <nodedef name="ND_planeside_boolean" node="planeside" nodegroup="geometric" doc="Whether the position lies in front of the plane through point with the normal, behind it, or on it within the tolerance times the larger of one and its distance from the origin.">
+    <input name="point" type="vector3" value="0.0, 0.0, 0.0" doc="Point on the plane, in local space." />
+    <input name="normal" type="vector3" value="0.0, 0.0, 1.0" doc="Normal of the plane toward its positive side, in local space." />
+    <input name="side" type="integer" value="2" enum="positive,negative,on" enumvalues="0,1,2" uniform="true" doc="Select in front of the plane, behind it, or on it." />
+    <input name="tolerance" type="float" value="0.0001" uimin="0.0" doc="Distance from the plane within which a position lies on it, relative to the larger of one and its distance from the origin." />
+    <output name="out" type="boolean" />
+  </nodedef>
+
+  <nodedef name="ND_linked_boolean" node="linked" nodegroup="geometric" doc="The connected components of the domain that hold an element the input selects.">
+    <input name="in" type="boolean" value="false" />
+    <input name="domain" type="string" value="vertex" enum="vertex,edge,face" uniform="true" doc="Domain of the components: vertices across edges, edges at shared vertices, or faces across shared edges." />
+    <output name="out" type="boolean" />
+  </nodedef>
+
+  <nodedef name="ND_adjacent_boolean" node="adjacent" nodegroup="geometric" doc="The elements the input selects, grown by steps rings of adjacent elements or shrunk by as many.">
+    <input name="in" type="boolean" value="false" />
+    <input name="domain" type="string" value="vertex" enum="vertex,edge,face" uniform="true" doc="Domain of the rings: vertices across edges, edges at shared vertices, or faces across shared edges." />
+    <input name="mode" type="string" value="more" enum="more,less" uniform="true" doc="Grow the selection by adjacent elements, or shrink it by the elements next to unselected ones." />
+    <input name="steps" type="integer" value="1" uimin="1" uimax="64" uniform="true" doc="Rings of adjacent elements to add or remove." />
+    <output name="out" type="boolean" />
+  </nodedef>
+
+  <nodedef name="ND_edgeloop_boolean" node="edgeloop" nodegroup="geometric" doc="The edge loops through the edges the input selects, continuing at each vertex with four edges to the edge sharing no face with the one arrived on.">
+    <input name="in" type="boolean" value="false" />
+    <output name="out" type="boolean" />
+  </nodedef>
+
+  <nodedef name="ND_edgering_boolean" node="edgering" nodegroup="geometric" doc="The edge rings through the edges the input selects, continuing across each quad to the edge opposite the one arrived on.">
+    <input name="in" type="boolean" value="false" />
+    <output name="out" type="boolean" />
+  </nodedef>
+
+  <nodedef name="ND_selection_boolean" node="selection" nodegroup="geometric" doc="The node's selection as a field on the domain it was captured in, or the linked input read on that domain.">
+    <input name="in" type="boolean" value="false" />
+    <output name="out" type="boolean" />
+  </nodedef>
+
+  <nodedef name="ND_blur_filename" node="blur" nodegroup="convolution2d" doc="Blur the image or the field of texture coordinates with a kernel size wide in texture coordinates: a box, or a Gaussian whose deviation is a sixth of size. The blur reads its input on a grid of 32 texels across the kernel and at most the image's texels, and an image repeats its edge texels past its edges. A size of zero gives the input, and the node takes sizes up to 32.">
+    <input name="in" type="filename" value="" />
+    <input name="size" type="float" value="0.0" />
+    <input name="filtertype" type="string" value="box" enum="box,gaussian" uniform="true" />
+    <output name="out" type="filename" />
+  </nodedef>
+
+  <nodedef name="ND_elementindex_integer" node="elementindex" nodegroup="geometric" doc="The element's position among the live elements of its domain, counting from zero.">
+    <output name="out" type="integer" default="0" />
+  </nodedef>
+</materialx>

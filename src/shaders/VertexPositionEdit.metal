@@ -1,5 +1,6 @@
 #include "ConnectivityRead.metal"
 #include "ElementWorkShared.metal"
+#include "OpCall.metal"
 #include "gpu/VertexPositionEditPushConstants.h"
 #include "EditTransform.metal"
 
@@ -7,8 +8,10 @@ inline uint EditVertexAddress(device const BindlessSet &b, constant VertexPositi
 inline float3 EditPosition(device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, uint v) { return float3(BindlessBuffer(Vertex, b.VertexBuffer, pc.VertexSlot)[EditVertexAddress(b, pc, v)].Position); }
 inline float3 EditFaceNormal(device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, uint f) { return float3(BindlessBuffer(packed_float3, b.Buffer, pc.FaceNormalSlot)[HandleAddress<MeshElementBlockSize>(b, pc.Connectivity.Tables.Faces, f)]); }
 inline float3 EditVertexNormal(device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, uint v) { return float3(BindlessBuffer(packed_float3, b.Buffer, pc.VertexNormalSlot)[EditVertexAddress(b, pc, v)]); }
-inline float EditFactor(device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, uint v) {
-    return pc.FactorAttribute.ValuesSlot == InvalidSlot ? pc.Factor : as_type<float>(ReadNamedAttribute(b, pc.FactorAttribute, AttributeType::Float, v).x);
+// The per-vertex input from the Input attribute, or the factor where the edit has none.
+inline float4 EditInput(device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, uint v) {
+    if (pc.Input.ValuesSlot == InvalidSlot) return float4(pc.Factor);
+    return as_type<float4>(ReadNamedAttribute(b, pc.Input, pc.Operation == PositionEditOp::Attribute ? AttributeType::Vec3 : AttributeType::Float, v));
 }
 
 inline float3 SnapSymmetryPosition(uint i,uint v,float3 before,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
@@ -28,7 +31,7 @@ inline float3 SnapSymmetryPosition(uint i,uint v,float3 before,device const Bind
     return position;
 }
 
-inline float3 SmoothPosition(uint v,float3 before,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
+inline float3 SmoothPosition(uint v,float3 before,float factor,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
     // Follows Blender's bmo_smooth_vert_exec, averaging every incident edge's other endpoint, unselected neighbors included, as read before any write.
     const ConnectivityView topology{b, pc.Connectivity};
     float3 sum = 0.f;
@@ -37,13 +40,13 @@ inline float3 SmoothPosition(uint v,float3 before,device const BindlessSet &b,co
         sum += EditPosition(b, pc, topology.OtherEnd(topology.EdgeHalfedge(edge), v));
         ++count;
     });
-    float3 position = count ? before + EditFactor(b, pc, v) * (sum / float(count) - before) : before;
+    float3 position = count ? before + factor * (sum / float(count) - before) : before;
     for (uint axis = 0u; axis < 3u; ++axis)
         if (!(pc.Axes & (1u << axis))) position[axis] = before[axis];
     return position;
 }
 
-inline float3 ShrinkFattenPosition(uint v,float3 before,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
+inline float3 ShrinkFattenPosition(uint v,float3 before,float factor,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
     // Follows Blender's VertsToTransData and BM_vert_calc_shell_factor_ex.
     const ConnectivityView topology{b, pc.Connectivity};
     float3 normal = EditVertexNormal(b, pc, v);
@@ -84,21 +87,18 @@ inline float3 ShrinkFattenPosition(uint v,float3 before,device const BindlessSet
         const uint at = count_selected ? 1u : 0u;
         if (weight[at] > 0.f) shell = sum[at] / weight[at];
     }
-    return before + normal * (EditFactor(b, pc, v) * shell);
+    return before + normal * (factor * shell);
 }
 
-kernel void PlanarFacePlanes(
-    uint i [[thread_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant VertexPositionEditPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
+kernel void PlanarFacePlanes(JOB_TABLE_ARGS(VertexPositionEditPushConstants)) {
+    JOB_THREAD(pc, i);
     // Blender's bmo_planar_faces_exec keeps these original planes for every iteration.
     if (i >= pc.PlaneCount) return;
-    const ElementWorkDomain faces{bindless, pc.Faces};
+    const ElementWorkDomain faces{b, pc.Faces};
     const uint face = faces.Handle(i);
-    const ConnectivityView topology{bindless, pc.Connectivity};
+    const ConnectivityView topology{b, pc.Connectivity};
     const auto range = topology.FaceHalfedges(face);
-    const auto position = [&](uint h) { return EditPosition(bindless, pc, topology.VertexOf(h)); };
+    const auto position = [&](uint h) { return EditPosition(b, pc, topology.VertexOf(h)); };
     float3 center = 0.f;
     float total = 0.f;
     for (uint h = range.x; h < range.y; ++h) {
@@ -109,8 +109,8 @@ kernel void PlanarFacePlanes(
         total += weight;
     }
     if (total > 0.f) center /= total;
-    const float3 normal = EditFaceNormal(bindless, pc, face);
-    auto planes = reinterpret_cast<device packed_float4 *>(BindlessBufferMutable(uint, bindless.Buffer, pc.Planes.Slot) + pc.Planes.Offset);
+    const float3 normal = EditFaceNormal(b, pc, face);
+    auto planes = reinterpret_cast<device packed_float4 *>(BindlessBufferMutable(uint, b.Buffer, pc.Planes.Slot) + pc.Planes.Offset);
     planes[i] = packed_float4(float4(normal, -dot(normal, center)));
 }
 
@@ -142,11 +142,9 @@ inline float2 PositionStatistics(float2 value,uint lane,bool bounds,threadgroup 
     return result;
 }
 
-kernel void PositionStatisticsGather(
-    uint i [[thread_position_in_grid]],uint lane [[thread_index_in_threadgroup]],uint group [[threadgroup_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant VertexPositionEditPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
+// Each tile of a job reduces its vertices' statistics into the job's partial of that tile.
+kernel void PositionStatisticsGather(JOB_TABLE_ARGS(VertexPositionEditPushConstants)) {
+    JOB_THREAD(pc, i);
     const bool bounds=pc.Operation==PositionEditOp::Warp;
     float2 value=bounds ? float2(INFINITY,-INFINITY) : float2(0.f);
     if (i<pc.Count) {
@@ -159,19 +157,17 @@ kernel void PositionStatisticsGather(
     }
     threadgroup float2 partials[8];
     const float2 total=PositionStatistics(value,lane,bounds,partials);
-    if (lane==0u) reinterpret_cast<device packed_float2 *>(BindlessBufferMutable(float,b.Buffer,pc.ReductionBlocks.Slot)+pc.ReductionBlocks.Offset)[group]=packed_float2(total);
+    if (lane==0u) reinterpret_cast<device packed_float2 *>(BindlessBufferMutable(float,b.Buffer,pc.ReductionBlocks.Slot)+pc.ReductionBlocks.Offset)[tile]=packed_float2(total);
 }
 
-kernel void PositionStatisticsReduce(
-    uint i [[thread_position_in_grid]],uint lane [[thread_index_in_threadgroup]],uint group [[threadgroup_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant PositionReducePushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
+// Each tile of a job reduces its run of partials into the job's output partial of that tile.
+kernel void PositionStatisticsReduce(JOB_TABLE_ARGS(PositionReducePushConstants)) {
+    JOB_THREAD(pc, i);
     const auto input=reinterpret_cast<device const packed_float2 *>(BindlessBuffer(float,b.Buffer,pc.Input.Slot)+pc.Input.Offset);
     const float2 value=i<pc.Count ? float2(input[i]) : pc.Bounds ? float2(INFINITY,-INFINITY) : float2(0.f);
     threadgroup float2 partials[8];
     const float2 total=PositionStatistics(value,lane,pc.Bounds!=0u,partials)*pc.Scale;
-    if (lane==0u) reinterpret_cast<device packed_float2 *>(BindlessBufferMutable(float,b.Buffer,pc.Output.Slot)+pc.Output.Offset)[group]=packed_float2(total);
+    if (lane==0u) reinterpret_cast<device packed_float2 *>(BindlessBufferMutable(float,b.Buffer,pc.Output.Slot)+pc.Output.Offset)[tile]=packed_float2(total);
 }
 
 inline float3 ToSpherePosition(float3 before,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
@@ -229,7 +225,7 @@ inline float PositionRandom(uint handle,uint seed,uint stream) {
     return float(HashMix(handle^HashMix(seed+stream))>>8u)*(1.f/16777216.f);
 }
 
-inline float3 RandomizePosition(uint v,float3 before,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
+inline float3 RandomizePosition(uint v,float3 before,float factor,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
     device const RandomizeParameters &settings=*reinterpret_cast<device const RandomizeParameters *>(BindlessBuffer(uint,b.Buffer,pc.Parameters.Slot)+pc.Parameters.Offset);
     const float magnitude=mix(PositionRandom(v,settings.Seed,0x9e3779b9u),1.f,settings.Uniform);
     const float z=2.f*PositionRandom(v,settings.Seed,0x243f6a88u)-1.f;
@@ -249,7 +245,7 @@ inline float3 RandomizePosition(uint v,float3 before,device const BindlessSet &b
         }
         direction=a*direction+c*normal;
     }
-    return before+direction*(EditFactor(b,pc,v)*magnitude);
+    return before+direction*(factor*magnitude);
 }
 
 inline float3 VertexSlideDelta(uint v,device const BindlessSet &b,constant VertexPositionEditPushConstants &pc) {
@@ -321,37 +317,34 @@ inline float3 TransformPosition(float3 before, device const BindlessSet &b, cons
     return position;
 }
 
-inline float3 AttributePosition(uint v, float3 before, device const BindlessSet &b, constant VertexPositionEditPushConstants &pc) {
-    const auto attribute = *reinterpret_cast<device const NamedAttributeRef *>(BindlessBuffer(uint, b.Buffer, pc.Parameters.Slot) + pc.Parameters.Offset);
-    const float3 value = as_type<float3>(ReadNamedAttribute(b, attribute, AttributeType::Vec3, v).xyz);
+inline float3 AttributePosition(float3 before, float3 value, constant VertexPositionEditPushConstants &pc) {
     float3 position = mix(before, pc.Flags & PositionEditAttributeOffset ? before + value : value, pc.Factor);
     for (uint axis = 0u; axis < 3u; ++axis)
         if (!(pc.Axes & (1u << axis))) position[axis] = before[axis];
     return position;
 }
 
-kernel void PositionVerticesGather(
-    uint i [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant VertexPositionEditPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
+// Gathers the moved position of each listed vertex, where `input(v)` is the per-vertex input of vertex v.
+template<typename Input> inline void GatherPosition(uint i, device const BindlessSet &b, constant VertexPositionEditPushConstants &pc, Input input) {
     if (i>=pc.Count) return;
     const uint v=BindlessBuffer(uint,b.Buffer,pc.Handles.Slot)[pc.Handles.Offset+i];
     const float3 before=EditPosition(b,pc,v);
+    const bool reads_input=pc.Operation==PositionEditOp::Attribute || pc.Operation==PositionEditOp::Smooth || pc.Operation==PositionEditOp::ShrinkFatten || pc.Operation==PositionEditOp::Randomize;
+    const float4 value=reads_input ? input(v) : float4(0.f);
     float3 position=before;
     switch (pc.Operation) {
         case PositionEditOp::Transform: position=TransformPosition(before,b,pc); break;
-        case PositionEditOp::Attribute: position=AttributePosition(v,before,b,pc); break;
+        case PositionEditOp::Attribute: position=AttributePosition(before,value.xyz,pc); break;
         case PositionEditOp::SnapSymmetry: position=SnapSymmetryPosition(i,v,before,b,pc); break;
-        case PositionEditOp::Smooth: position=SmoothPosition(v,before,b,pc); break;
-        case PositionEditOp::ShrinkFatten: position=ShrinkFattenPosition(v,before,b,pc); break;
+        case PositionEditOp::Smooth: position=SmoothPosition(v,before,value.x,b,pc); break;
+        case PositionEditOp::ShrinkFatten: position=ShrinkFattenPosition(v,before,value.x,b,pc); break;
         case PositionEditOp::Planar: position=PlanarPosition(v,before,b,pc); break;
         case PositionEditOp::ToSphere: position=ToSpherePosition(before,b,pc); break;
         case PositionEditOp::PushPull: position=PushPullPosition(before,b,pc); break;
         case PositionEditOp::Shear: position=ShearPosition(before,b,pc); break;
         case PositionEditOp::Warp: position=WarpPosition(before,b,pc); break;
         case PositionEditOp::Bend: position=BendPosition(before,b,pc); break;
-        case PositionEditOp::Randomize: position=RandomizePosition(v,before,b,pc); break;
+        case PositionEditOp::Randomize: position=RandomizePosition(v,before,value.x,b,pc); break;
         case PositionEditOp::VertexSlide: position=VertexSlidePosition(v,before,b,pc); break;
         case PositionEditOp::EdgeSlide: position=EdgeSlidePosition(i,before,b,pc); break;
         default: break;
@@ -360,31 +353,35 @@ kernel void PositionVerticesGather(
     output[i]=packed_float3(position);
 }
 
-// Writes the record's live vertex handles ascending into Handles, one thread per slot of its vertex blocks.
-kernel void ListEditedVertices(
-    uint i [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant VertexPositionEditPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const uint v = BlockHandle(i, b, pc.Blocks);
-    if (v == InvalidOffset) return;
-    const uint k = i / MeshElementBlockSize, lane = i % MeshElementBlockSize;
-    // The blocks precede their inclusive live prefix.
-    device const uint *blocks = BindlessBuffer(uint, b.Buffer, pc.Blocks.Blocks.Slot) + pc.Blocks.Blocks.Offset;
-    device const MeshElementBlock &membership = BindlessBuffer(MeshElementBlock, b.Buffer, pc.Blocks.MembershipSlot)[blocks[k]];
-    uint rank = k ? blocks[pc.Blocks.Count + k - 1u] : 0u;
-    for (uint word = 0u; word < lane / 32u; ++word) rank += popcount(membership.Live[word]);
-    rank += popcount(membership.Live[lane / 32u] & ((1u << (lane % 32u)) - 1u));
-    BindlessBufferMutable(uint, b.Buffer, pc.Handles.Slot)[pc.Handles.Offset + rank] = v;
+kernel void PositionVerticesGather(JOB_TABLE_ARGS(VertexPositionEditPushConstants)) {
+    JOB_THREAD(job, i);
+    GatherPosition(i, b, job, [&](uint v) { return EditInput(b, job, v); });
 }
 
-kernel void WriteEditedPositions(
-    uint i [[thread_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant VertexPositionEditPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    if (i >= pc.Count) return;
-    const uint v = BindlessBuffer(uint, bindless.Buffer, pc.Handles.Slot)[pc.Handles.Offset + i];
-    const auto positions = reinterpret_cast<device const packed_float3 *>(BindlessBuffer(uint, bindless.Buffer, pc.Positions.Slot) + pc.Positions.Offset);
-    BindlessBufferMutable(Vertex, bindless.VertexBuffer, pc.VertexSlot)[EditVertexAddress(bindless, pc, v)].Position = positions[i];
+// The gather whose per-vertex input is the first output of the call's program at the vertex.
+kernel void OpPositionsDriver(JOB_TABLE_ARGS(OpPositionsJob), OpPrograms programs [[buffer(BufferIndex_Programs)]]) {
+    JOB_THREAD(job, i);
+    GatherPosition(i, b, job.Edit, [&](uint v) {
+        const uint address = EditVertexAddress(b, job.Edit, v);
+        const OpPoint p = OpPointAt(b, job.Call, {true, address, v, job.Call.Program.Needs & OpNeedsIndex ? AddressOrdinal(b, job.Call.Blocks, address) : 0u});
+        uint out[OpMaxOutputWords];
+        OpRun(programs, b, job.Call.Program, p, out);
+        return job.Edit.Operation == PositionEditOp::Attribute ? float4(as_type<float>(out[0]), as_type<float>(out[1]), as_type<float>(out[2]), 0.f) : float4(as_type<float>(out[0]));
+    });
+}
+
+// Writes the record's live vertex handles ascending into Handles, one thread per slot of its vertex blocks.
+kernel void ListEditedVertices(JOB_TABLE_ARGS(EditedVerticesJob)) {
+    JOB_TILE_THREAD(job, slot, MeshElementBlockSize);
+    const uint v = BlockHandle(slot, b, job.Blocks);
+    if (v == InvalidOffset) return;
+    BindlessBufferMutable(uint, b.Buffer, job.Handles.Slot)[job.Handles.Offset + ElementOrdinal(b, job.Blocks, tile, lane)] = v;
+}
+
+kernel void WriteEditedPositions(JOB_TABLE_ARGS(EditedVerticesJob)) {
+    JOB_TILE_THREAD(job, i, EditedVerticesTile);
+    if (i >= job.Count) return;
+    const uint v = BindlessBuffer(uint, b.Buffer, job.Handles.Slot)[job.Handles.Offset + i];
+    const auto positions = reinterpret_cast<device const packed_float3 *>(BindlessBuffer(uint, b.Buffer, job.Positions.Slot) + job.Positions.Offset);
+    BindlessBufferMutable(Vertex, b.VertexBuffer, job.VertexSlot)[HandleAddress<MeshElementBlockSize>(b, job.VertexTable, v)].Position = positions[i];
 }

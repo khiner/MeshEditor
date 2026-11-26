@@ -1,25 +1,25 @@
 #include "ConnectivityRead.metal"
-#include "gpu/BeautifyPushConstants.h"
+#include "gpu/BeautifyJob.h"
 
 constant float BeautifyNoCost = FLT_MAX;
 
 struct BeautifyContext {
     device const BindlessSet &B;
-    constant BeautifyPushConstants &Pc;
+    constant BeautifyJob &Pc;
     ConnectivityView View;
-    BeautifyContext(device const BindlessSet &b, constant BeautifyPushConstants &pc) : B(b), Pc(pc), View{b, pc.Connectivity} {}
-    device uint *Run(uint offset) const { return BindlessBufferMutable(uint, B.Buffer, Pc.ScratchSlot) + offset; }
-    device uint *Node(uint n) const { return Run(Pc.Nodes) + BeautifyNodeWords * n; }
-    device uint *Edge(uint e) const { return Run(Pc.Edges) + BeautifyEdgeWords * e; }
-    KeyTable Table() const { return {Run(Pc.Table), Pc.TableMask}; }
+    JobRuns Runs;
+    BeautifyContext(device const BindlessSet &b, constant JobTablePushConstants &table, constant BeautifyJob &pc) : B(b), Pc(pc), View{b, pc.Connectivity}, Runs(ScratchOf(b, table)) {}
+    device uint *Node(uint n) const { return Runs.Run(Pc.Nodes) + BeautifyNodeWords * n; }
+    device uint *Edge(uint e) const { return Runs.Run(Pc.Edges) + BeautifyEdgeWords * e; }
+    KeyTable Table() const { return {Runs.Run(Pc.Table), Pc.TableMask}; }
     uint Vertex(uint n) const { return Node(n)[1]; }
     float3 Position(uint n) const { return float3(BindlessBuffer(struct Vertex, B.VertexBuffer, Pc.VertexSlot)[View.VertexAddress(Vertex(n))].Position); }
     // True for a faced mesh edge that the soup did not own at the start.
     bool MeshExists(uint2 key) const {
         const uint e = View.EdgeBetween(key.x, key.y);
-        return e != InvalidOffset && View.EdgeSides(e) != 0u && Run(Pc.SoupOwned)[e] == 0u;
+        return e != InvalidOffset && View.EdgeSides(e) != 0u && Runs.Run(Pc.SoupOwned)[e] == 0u;
     }
-    bool Selected(uint e) const { return SortedContains(Run(Pc.SelectedEdges), Pc.SelectedEdgeCount, e); }
+    bool Selected(uint e) const { return SortedContains(Runs.Run(Pc.SelectedEdges), Pc.SelectedEdgeCount, e); }
     static uint Next(uint n) { return n - n % 3u + (n + 1u) % 3u; }
     static uint Prev(uint n) { return n - n % 3u + (n + 2u) % 3u; }
     static uint2 Key(uint a, uint b) { return uint2(min(a, b), max(a, b)); }
@@ -64,11 +64,12 @@ inline float BeautifyCost(float3 a, float3 b, float3 c, float3 d) {
 
 // Each corner of a selected triangle records its halfedge and vertex and claims a slot for the edge key it starts.
 // A corner of any other face writes InvalidOffset.
-kernel void BeautifyCorners(uint n [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant BeautifyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+kernel void BeautifyCorners(JOB_TABLE_ARGS(BeautifyJob)) {
+    JOB_THREAD(pc, n);
     if (n >= pc.NodeCount) return;
-    const BeautifyContext ctx{b, pc};
+    const BeautifyContext ctx{b, table, pc};
     device uint *node = ctx.Node(n);
-    const uint f = ctx.Run(pc.Faces)[n / 3u];
+    const uint f = ctx.Runs.Run(pc.Faces)[n / 3u];
     const uint2 range = ctx.View.FaceHalfedges(f);
     if (range.y - range.x != 3u) {
         node[0] = node[1] = node[2] = InvalidOffset;
@@ -82,71 +83,78 @@ kernel void BeautifyCorners(uint n [[thread_position_in_grid]], device const Bin
     ctx.Claim(ctx.Key(a, ctx.View.VertexOf(next)));
 }
 // Each corner finds its key's first slot and offers itself as its owner, the lowest corner winning.
-kernel void BeautifyOwners(uint n [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant BeautifyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+kernel void BeautifyOwners(JOB_TABLE_ARGS(BeautifyJob)) {
+    JOB_THREAD(pc, n);
     if (n >= pc.NodeCount) return;
-    const BeautifyContext ctx{b, pc};
+    const BeautifyContext ctx{b, table, pc};
     if (ctx.Node(n)[0] == InvalidOffset) return;
     atomic_fetch_min_explicit(AtomicWord(ctx.Find(ctx.KeyOf(n)) + 2u), n, memory_order_relaxed);
 }
 // Each corner joins its owner's users and marks the owner, which the scan turns into compact edge indices.
-kernel void BeautifyUsers(uint n [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant BeautifyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+kernel void BeautifyUsers(JOB_TABLE_ARGS(BeautifyJob)) {
+    JOB_THREAD(pc, n);
     if (n > pc.NodeCount) return;
-    const BeautifyContext ctx{b, pc};
-    device uint *owners = ctx.Run(pc.Owners);
+    const BeautifyContext ctx{b, table, pc};
+    device uint *owners = ctx.Runs.Run(pc.Owners);
     owners[n] = 0u;
     if (n == pc.NodeCount || ctx.Node(n)[0] == InvalidOffset) return;
     const uint owner = ctx.Find(ctx.KeyOf(n))[2];
     ctx.Node(n)[2] = owner;
-    atomic_fetch_add_explicit(AtomicWord(ctx.Run(pc.Users) + owner), 1u, memory_order_relaxed);
-    atomic_fetch_max_explicit(AtomicWord(ctx.Run(pc.Second) + owner), n, memory_order_relaxed);
+    atomic_fetch_add_explicit(AtomicWord(ctx.Runs.Run(pc.Users) + owner), 1u, memory_order_relaxed);
+    atomic_fetch_max_explicit(AtomicWord(ctx.Runs.Run(pc.Second) + owner), n, memory_order_relaxed);
     if (owner == n) owners[n] = 1u;
 }
 // An eligible edge is selected and has exactly two faces, both in the soup.
 // An edge whose faces are all in the soup marks its mesh edge as soup-owned.
-kernel void BeautifyEdges(uint n [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant BeautifyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+kernel void BeautifyEdges(JOB_TABLE_ARGS(BeautifyJob)) {
+    JOB_THREAD(pc, n);
     if (n >= pc.NodeCount) return;
-    const BeautifyContext ctx{b, pc};
-    device const uint *owners = ctx.Run(pc.Owners);
+    const BeautifyContext ctx{b, table, pc};
+    device const uint *owners = ctx.Runs.Run(pc.Owners);
     if (owners[n + 1u] == owners[n]) return;
     device uint *edge = ctx.Edge(owners[n]);
-    const uint users = ctx.Run(pc.Users)[n], source = ctx.Node(ctx.Next(n))[0], mesh_edge = ctx.View.Edge(source), sides = ctx.View.EdgeSides(mesh_edge);
+    const uint users = ctx.Runs.Run(pc.Users)[n], source = ctx.Node(ctx.Next(n))[0], mesh_edge = ctx.View.Edge(source), sides = ctx.View.EdgeSides(mesh_edge);
     edge[0] = source;
     edge[1] = sides == 2u && users == 2u && ctx.Selected(mesh_edge) ? 1u : 0u;
     edge[2] = n;
-    edge[3] = users >= 2u ? ctx.Run(pc.Second)[n] : InvalidOffset;
-    if (sides <= users) ctx.Run(pc.SoupOwned)[mesh_edge] = 1u;
+    edge[3] = users >= 2u ? ctx.Runs.Run(pc.Second)[n] : InvalidOffset;
+    if (sides <= users) ctx.Runs.Run(pc.SoupOwned)[mesh_edge] = 1u;
 }
-kernel void BeautifyNodes(uint n [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant BeautifyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+kernel void BeautifyNodes(JOB_TABLE_ARGS(BeautifyJob)) {
+    JOB_THREAD(pc, n);
     if (n >= pc.NodeCount) return;
-    const BeautifyContext ctx{b, pc};
+    const BeautifyContext ctx{b, table, pc};
     device uint *node = ctx.Node(n);
     if (node[0] == InvalidOffset) return;
-    node[2] = ctx.Run(pc.Owners)[node[2]];
+    node[2] = ctx.Runs.Run(pc.Owners)[node[2]];
 }
 
-kernel void BeautifyInsertCurrent(uint e [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant BeautifyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+kernel void BeautifyInsertCurrent(JOB_TABLE_ARGS(BeautifyJob)) {
+    JOB_THREAD(pc, e);
     if (e >= pc.EdgeCount) return;
-    const BeautifyContext ctx{b, pc};
+    const BeautifyContext ctx{b, table, pc};
     ctx.Claim(ctx.KeyOf(ctx.Edge(e)[2]));
 }
-kernel void BeautifyCost(uint e [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant BeautifyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+kernel void BeautifyCost(JOB_TABLE_ARGS(BeautifyJob)) {
+    JOB_THREAD(pc, e);
     if (e >= pc.EdgeCount) return;
-    const BeautifyContext ctx{b, pc};
+    const BeautifyContext ctx{b, table, pc};
     device uint *edge = ctx.Edge(e);
-    ctx.Run(pc.Flags)[e] = 0u;
+    ctx.Runs.Run(pc.Flags)[e] = 0u;
     if (!edge[1]) return;
     const uint h = edge[2], g = edge[3];
     if (ctx.Vertex(ctx.Prev(h)) == ctx.Vertex(ctx.Prev(g))) return;
     const float cost = BeautifyCost(ctx.Position(ctx.Prev(h)), ctx.Position(h), ctx.Position(ctx.Prev(g)), ctx.Position(ctx.Next(h)));
     edge[4] = as_type<uint>(cost);
-    if (cost < 0.f) ctx.Run(pc.Flags)[e] = BeautifyFlagCandidate;
+    if (cost < 0.f) ctx.Runs.Run(pc.Flags)[e] = BeautifyFlagCandidate;
 }
 // A candidate rotates when no candidate on its two triangles costs less, or the same with a lower index.
 // Its new diagonal must not already be an edge, and it claims the diagonal for the round.
-kernel void BeautifySelect(uint e [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant BeautifyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+kernel void BeautifySelect(JOB_TABLE_ARGS(BeautifyJob)) {
+    JOB_THREAD(pc, e);
     if (e >= pc.EdgeCount) return;
-    const BeautifyContext ctx{b, pc};
-    device const uint *flags = ctx.Run(pc.Flags);
+    const BeautifyContext ctx{b, table, pc};
+    device const uint *flags = ctx.Runs.Run(pc.Flags);
     if (flags[e] != BeautifyFlagCandidate) return;
     device const uint *edge = ctx.Edge(e);
     const float cost = as_type<float>(edge[4]);
@@ -162,21 +170,23 @@ kernel void BeautifySelect(uint e [[thread_position_in_grid]], device const Bind
     const uint2 key = ctx.Diagonal(edge);
     if (ctx.MeshExists(key) || ctx.TableExists(key)) return;
     ctx.Claim(key);
-    ctx.Run(pc.Flags)[e] = BeautifyFlagSelected;
+    ctx.Runs.Run(pc.Flags)[e] = BeautifyFlagSelected;
 }
 // Selected edges creating the same diagonal keep the lowest.
-kernel void BeautifyResolve(uint e [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant BeautifyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+kernel void BeautifyResolve(JOB_TABLE_ARGS(BeautifyJob)) {
+    JOB_THREAD(pc, e);
     if (e >= pc.EdgeCount) return;
-    const BeautifyContext ctx{b, pc};
-    if (ctx.Run(pc.Flags)[e] != BeautifyFlagSelected) return;
+    const BeautifyContext ctx{b, table, pc};
+    if (ctx.Runs.Run(pc.Flags)[e] != BeautifyFlagSelected) return;
     device const uint *edge = ctx.Edge(e);
     atomic_fetch_min_explicit(AtomicWord(ctx.Find(ctx.Diagonal(edge)) + 2u), e, memory_order_relaxed);
 }
 // Blender's BM_edge_rotate over the soup: the two triangles take the other diagonal, and each outer edge keeps its identity under its new corner.
-kernel void BeautifyFlip(uint e [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant BeautifyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+kernel void BeautifyFlip(JOB_TABLE_ARGS(BeautifyJob)) {
+    JOB_THREAD(pc, e);
     if (e >= pc.EdgeCount) return;
-    const BeautifyContext ctx{b, pc};
-    if (ctx.Run(pc.Flags)[e] != BeautifyFlagSelected) return;
+    const BeautifyContext ctx{b, table, pc};
+    if (ctx.Runs.Run(pc.Flags)[e] != BeautifyFlagSelected) return;
     device uint *edge = ctx.Edge(e);
     const uint h = edge[2], g = edge[3];
     if (ctx.Find(ctx.Diagonal(edge))[2] != e) return;
@@ -210,6 +220,6 @@ kernel void BeautifyFlip(uint e [[thread_position_in_grid]], device const Bindle
         replace(e_gd, gd, hb);
         replace(e_ga, ga, gd);
     }
-    ctx.Run(pc.Changed)[0] = 1u;
-    atomic_fetch_add_explicit(AtomicWord(ctx.Run(pc.Rotations)), 1u, memory_order_relaxed);
+    ctx.Runs.Run(pc.Changed)[0] = 1u;
+    atomic_fetch_add_explicit(AtomicWord(ctx.Runs.Run(pc.Rotations)), 1u, memory_order_relaxed);
 }

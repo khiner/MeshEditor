@@ -274,6 +274,25 @@ bool DrawField(const char *label, F &v, const FieldSpec &spec) {
         const bool changed = RotationWidget(label, v);
         ImGui::EndGroup();
         return changed;
+    } else if constexpr (std::same_as<F, mat3> || std::same_as<F, mat4>) {
+        // A matrix edits one row per line, labeled on its first.
+        constexpr int N = std::same_as<F, mat3> ? 3 : 4;
+        ImGui::PushID(label);
+        ImGui::BeginGroup();
+        bool changed = false;
+        for (int row = 0; row < N; ++row) {
+            std::array<float, N> values;
+            for (int column = 0; column < N; ++column) values[column] = v[column][row];
+            ImGui::PushID(row);
+            if (ImGui::DragScalarN(row == 0 ? label : "##row", ImGuiDataType_Float, values.data(), N, DragSpeed(spec.Speed), nullptr, nullptr, "%.3f", ImGuiSliderFlags_NoSpeedTweaks)) {
+                for (int column = 0; column < N; ++column) v[column][row] = values[column];
+                changed = true;
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndGroup();
+        ImGui::PopID();
+        return changed;
     } else if constexpr (action::ScalarField<F> || action::VectorField<F>) {
         using C = action::Limit<F>;
         if constexpr (std::integral<F>) {
@@ -296,6 +315,14 @@ bool DrawField(const char *label, F &v, const FieldSpec &spec) {
         const char *format = number_format.data();
         const bool slider = spec.Widget == FieldWidget::Slider || (spec.Widget == FieldWidget::Auto && spec.HasMin() && spec.HasMax());
         const ImGuiSliderFlags scale = spec.Scale == FieldScale::Logarithmic ? ImGuiSliderFlags_Logarithmic : ImGuiSliderFlags_None;
+        // A soft range spans the slider, and a typed value outside it is clamped to the hard range.
+        if (spec.HasSoftRange() && spec.Widget == FieldWidget::Auto && !radians) {
+            const auto soft_lo = C(spec.SoftMin), soft_hi = C(spec.SoftMax);
+            if (!ImGui::SliderScalarN(label, ImGuiDt<C>(), &v, action::Components<F>, &soft_lo, &soft_hi, format, scale)) return false;
+            auto *components = reinterpret_cast<C *>(&v);
+            for (int i = 0; i < action::Components<F>; ++i) components[i] = std::clamp(components[i], lo, hi);
+            return true;
+        }
         if constexpr (std::same_as<F, float>) {
             if (radians) {
                 lo = Degrees(lo);

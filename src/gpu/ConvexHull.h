@@ -26,6 +26,7 @@ struct HullSet {
     GpuArray<uint32_t, 3> Best DEFAULT();
     GpuArray<uint32_t, 3> Seed DEFAULT(); // The point farthest in each stage
     float Tolerance DEFAULT(); // HullTolerance times the extent
+    uint32_t Lowest DEFAULT(InvalidOffset); // The lowest face proposing an apex this round
 };
 
 // A hull face, whose plane is its unnormalized normal and offset, and whose tolerance is the normal's length times its set's.
@@ -37,7 +38,7 @@ struct HullFace {
     uint32_t Set DEFAULT();
     // The ordered height bits of the farthest point outside the face and that point, which the face proposes as an apex.
     uint32_t ApexHeight DEFAULT(), Apex DEFAULT(InvalidOffset);
-    // The proposing face whose apex's visible region holds this face, with the lowest face winning, and the region flood's worklist link.
+    // The lowest proposing face whose claimed region holds this face, and the worklist link of its set's lowest proposing face's region.
     uint32_t Claim DEFAULT(InvalidOffset), Next DEFAULT(InvalidOffset);
     uint32_t Accepted DEFAULT();
     uint32_t FirstNew DEFAULT(InvalidOffset); // The lowest new face of this face's apex's cone
@@ -45,6 +46,7 @@ struct HullFace {
 
 // Scratch word offsets of a quickhull over point sets, which the host drives in rounds.
 struct HullJob {
+    uint32_t Scratch DEFAULT(InvalidSlot); // The buffer the offsets are in
     uint32_t Sets DEFAULT(), Points DEFAULT();
     uint32_t SetRecords DEFAULT(); // Per set: HullSet
     uint32_t Positions DEFAULT(); // Per point then per set: packed_float3, the points then each set's lifted apex
@@ -54,6 +56,7 @@ struct HullJob {
     uint32_t Current DEFAULT(), Next DEFAULT(); // Per face: HullFace
     // Per current face then a terminator: the horizon edges it emits, and whether it survives, each scanned in place.
     uint32_t NewCount DEFAULT(), Survivor DEFAULT();
+    uint32_t Stage DEFAULT(); // The seed stage of the seed passes
 };
 
 // A point set of pairwise sums: its first point, and its vertex handles in each handle list.
@@ -63,7 +66,7 @@ struct HullSumSet {
 };
 
 // The positions a hull gathers from one record's listed vertices, or sums from two records' listed vertices set by set.
-struct HullPointsPushConstants {
+struct HullPointsJob {
     SlotOffset Positions DEFAULT(); // Per point: packed_float3
     uint32_t Count DEFAULT();
     uint32_t VertexSlot DEFAULT(InvalidSlot);

@@ -1,6 +1,7 @@
 #include "FileDialog.h"
 #include "SortUnique.h"
 #include "action/Dispatch.h"
+#include "action/Io.h"
 #include "action/Physics.h"
 #include "action/Scene.h"
 #include "action/Selection.h"
@@ -15,12 +16,13 @@
 #include "ui/MaterialEdit.h"
 
 #include <imgui_stdlib.h>
+#include <numeric>
 
 namespace procedure {
 using namespace ImGui;
 
 state::Entity EditorNetwork(const state::Registry &r, const NodesPanel &panel) {
-    const auto network = panel.Canvas.Network;
+    const auto network = PageNetwork(panel.Canvas);
     if (network == state::Document || r.valid(network)) return network;
     if (network != state::Null) {
         for (const auto &location : panel.Canvas.Locations | std::views::reverse) {
@@ -30,42 +32,53 @@ state::Entity EditorNetwork(const state::Registry &r, const NodesPanel &panel) {
     return FrameScene(r);
 }
 
-void EnterNetwork(NodesPanel &panel, state::Entity network, state::Entity object) {
+void EnterNetwork(NodesPanel &panel, state::Entity network, state::Entity object, std::vector<state::Entity> path) {
     auto &canvas = panel.Canvas;
-    auto at = std::ranges::find(canvas.Locations, canvas.Network, &NetworkCanvas::Network);
+    auto at = std::ranges::find(canvas.Locations, PageNetwork(canvas), &NetworkCanvas::Network);
     if (at != canvas.Locations.end()) canvas.Locations.erase(at);
-    canvas.Locations.push_back({canvas.Network, canvas.Offset, canvas.Zoom});
-    canvas.Network = network;
+    canvas.Locations.push_back({PageNetwork(canvas), canvas.Offset, canvas.Zoom});
+    canvas.Root = network;
     canvas.Object = object;
-    at = std::ranges::find(canvas.Locations, network, &NetworkCanvas::Network);
+    canvas.Path = std::move(path);
+    canvas.Inspected = state::Null;
+    at = std::ranges::find(canvas.Locations, PageNetwork(canvas), &NetworkCanvas::Network);
     canvas.Offset = at == canvas.Locations.end() ? vec2{} : at->Offset;
     canvas.Zoom = at == canvas.Locations.end() ? 1.f : at->Zoom;
     panel.Drag = NodeDrag::None;
     panel.Expanded = UINT32_MAX;
-    panel.PendingLinks.clear();
-    panel.LinkAfter = UINT32_MAX;
+    panel.LinkingAdd.reset();
 }
 
 void DrawNetworkNavigation(const state::Registry &r, NodesPanel &panel) {
     const auto network = EditorNetwork(r, panel);
-    if (Button("Document")) EnterNetwork(panel, state::Document);
-    SameLine();
-    if (Button(SceneLabel(r, FrameScene(r)).c_str())) EnterNetwork(panel, state::Null);
+    const auto &subnets = panel.Canvas.Path;
     const bool scene_subnet = r.all_of<NetworkSubnet>(network);
-    if (scene_subnet || r.any_of<GeometryProcedure, Subnet, ArmatureObject, HierarchyInstance, HierarchyDefinition>(network)) {
-        const auto owner = scene_subnet ? NetworkRoot(r, network) : r.all_of<Subnet>(network) ? r.get<const ProcedureNode>(network).Procedure :
-                                                                                                network;
-        const auto object = scene_subnet ? state::Null : panel.Canvas.Object;
-        const auto button = [&](state::Entity e, state::Entity label) {
+    // The network whose page this is, or that holds the first subnet node of the canvas path.
+    const auto root = subnets.empty() ? network : panel.Canvas.Root;
+    if (Button("Document")) EnterNetwork(panel, state::Document);
+    // A user definition and a material are document items, so a page of their network follows the document.
+    if (!r.any_of<SubnetDefinition, MaterialGraph>(root)) {
+        SameLine();
+        if (Button(SceneLabel(r, FrameScene(r)).c_str())) EnterNetwork(panel, state::Null);
+    }
+    if (scene_subnet || !subnets.empty() || r.all_of<NetworkNodes>(network) || r.any_of<ArmatureObject, HierarchyInstance, HierarchyDefinition>(network)) {
+        const auto owner = scene_subnet ? NetworkRoot(r, network) : root;
+        const auto object = scene_subnet || r.all_of<SubnetDefinition>(owner) ? state::Null : panel.Canvas.Object;
+        const auto button = [&](state::Entity e, std::string label, state::Entity entered, std::vector<state::Entity> path) {
             SameLine();
             PushID(int(state::Integral(e)));
-            if (Button(GetName(r, label).c_str())) EnterNetwork(panel, e, object);
+            if (Button(label.c_str())) EnterNetwork(panel, entered, object, std::move(path));
             PopID();
         };
-        if (!scene_subnet || (owner != state::Document && owner != FrameScene(r))) button(owner, object != state::Null ? object : owner);
-        std::vector<state::Entity> path;
-        for (auto e = network; e != owner && e != state::Null; e = scene_subnet ? r.get<const NetworkSubnet>(e).Parent : ContainerOf(r, e)) path.push_back(e);
-        for (const auto e : path | std::views::reverse) button(e, e);
+        // A material holds its name in its record.
+        if (!scene_subnet || (owner != state::Document && owner != FrameScene(r))) button(owner, r.all_of<MaterialGraph>(owner) ? ItemName(r, owner) : GetName(r, object != state::Null ? object : owner), owner, {});
+        // A subnet node's page is reached through the subnet nodes of the canvas path, from the page of the network that holds the first.
+        for (size_t i = 0; i < subnets.size(); ++i) button(subnets[i], InstanceName(r, subnets[i]), owner, {subnets.begin(), subnets.begin() + i + 1});
+        if (scene_subnet) {
+            std::vector<state::Entity> path;
+            for (auto e = network; e != owner && e != state::Null; e = r.get<const NetworkSubnet>(e).Parent) path.push_back(e);
+            for (const auto e : path | std::views::reverse) button(e, GetName(r, e), e, {});
+        }
     }
 }
 
@@ -74,6 +87,7 @@ const char *ItemLabel(const state::Registry &r, state::Entity entity) {
     if (r.all_of<Material>(entity)) return "Material";
     if (r.all_of<MaterializedTexture>(entity)) return "Texture";
     if (r.all_of<NetworkSubnet>(entity)) return "Subnet";
+    if (r.all_of<SubnetDefinition>(entity)) return "Subnet definition";
     if (r.all_of<Scene>(entity)) return "Scene";
     if (r.all_of<HierarchyInstance>(entity)) return "Hierarchy instance";
     if (r.all_of<HierarchyDefinition>(entity)) return "Hierarchy definition";
@@ -132,9 +146,9 @@ void FollowActiveNode(const state::Registry &r, NodesPanel &panel) {
     if (!followed || active == *followed || active == state::Null) return;
     const auto shown = EditorNetwork(r, panel);
     // A geometry page turns to the newly active object's geometry.
-    if (r.any_of<GeometryProcedure, Subnet>(shown)) {
+    if (!panel.Canvas.Path.empty() || r.all_of<GeometryProcedure>(shown)) {
         const auto mesh = GetMeshEntity(r, active);
-        if (mesh == (r.all_of<Subnet>(shown) ? r.get<const ProcedureNode>(shown).Procedure : shown)) {
+        if (mesh == (panel.Canvas.Path.empty() ? shown : panel.Canvas.Root)) {
             panel.Canvas.Object = active;
             return;
         }
@@ -145,61 +159,67 @@ void FollowActiveNode(const state::Registry &r, NodesPanel &panel) {
     EnterNetwork(panel, ItemNetwork(r, active));
 }
 
+namespace {
+// Draws a scene subnet's ports.
 void DrawSubnetParameters(state::Registry &r, state::Entity subnet, bool interactive) {
-    const auto *node = r.try_get<const ProcedureNode>(subnet);
-    const auto parent = node ? ContainerOf(r, subnet) : r.get<const NetworkSubnet>(subnet).Parent;
-    if (Button("Ungroup") && interactive) {
-        if (node) action::Emit(action::nodes::UngroupNodes{subnet});
-        else action::Emit(action::nodes::UngroupItems{subnet});
-    }
-    std::array<std::optional<uint16_t>, 2> previous;
+    const auto parent = r.get<const NetworkSubnet>(subnet).Parent;
+    if (Button("Ungroup") && interactive) action::Emit(action::nodes::UngroupItems{subnet});
+    std::optional<uint16_t> previous;
     for (const auto &port : r.get<const SubnetInterface>(subnet).Ports) {
         PushID(int(port.Id));
-        SeparatorText(port.Direction == SocketDirection::In ? "Input" : "Output");
+        SeparatorText("Input");
         auto name = port.Name;
         ui::Gesture(InputText("Port name", &name) && interactive, [&] { return action::nodes::RenamePort{subnet, port.Id, name}; });
-        const auto *field = std::get_if<PromotedField>(&port.Binding);
-        if (field) {
-            auto update = action::ReadUpdate(r, field->Entity, field->Component, field->Offset);
-            if (update) {
-                const auto &range = action::UpdatedField(field->Component, field->Offset).Field;
-                std::visit([&]<typename A>(A &value) {
-                    if constexpr (action::IsUpdate<A>) {
-                        if constexpr (std::unsigned_integral<decltype(value.Value)>) {
-                            if (!range.Labels.empty()) return ui::Gesture(ui::DrawChoice(port.Name.c_str(), value.Value, range.Values, range.Labels) && interactive, [&] { return value; });
-                        }
-                        if constexpr (ui::DrawableField<decltype(value.Value)>) ui::Gesture(ui::DrawField(port.Name.c_str(), value.Value, range.Spec) && interactive, [&] { return value; });
+        const auto &field = std::get<PromotedField>(port.Binding);
+        if (auto update = action::ReadUpdate(r, field.Entity, field.Component, field.Offset)) {
+            const auto &range = action::UpdatedField(field.Component, field.Offset).Field;
+            std::visit([&]<typename A>(A &value) {
+                if constexpr (action::IsUpdate<A>) {
+                    if constexpr (std::unsigned_integral<decltype(value.Value)>) {
+                        if (!range.Labels.empty()) return ui::Gesture(ui::DrawChoice(port.Name.c_str(), value.Value, range.Values, range.Labels) && interactive, [&] { return value; });
                     }
-                },
-                           *update);
-            } else TextDisabled("%s (missing field)", port.Name.c_str());
-        } else if (port.Direction == SocketDirection::In && (port.Type == SocketType::Value || port.Type == SocketType::Attribute)) {
-            BeginDisabled(port.Source().FromNode != state::Null);
-            auto words = port.Default.Words;
-            bool changed;
-            if (port.Default.Type == AttributeType::Bool) {
-                bool value = words[0] != 0;
-                changed = Checkbox("Value", &value);
-                words[0] = uint32_t(value);
-            } else changed = InputScalarN("Value", port.Default.Type == AttributeType::Int ? ImGuiDataType_U32 : ImGuiDataType_Float, words.data(), int(AttributeComponents(port.Default.Type)));
-            ui::Gesture(changed && interactive, [&] { return action::nodes::SetPortValue{subnet, port.Id, words}; });
-            EndDisabled();
-            if (port.Source().FromNode != state::Null) TextDisabled("Connected");
-        }
-        if (field && r.all_of<NetworkSubnet>(parent) && Button("Expose on parent") && interactive) action::Emit(action::nodes::ExposePort{parent, *field, std::make_unique<std::string>(port.Name)});
-        auto &prior = previous[uint8_t(port.Direction)];
-        if (prior) {
-            if (Button("Move up") && interactive) action::Emit(action::nodes::MovePort{subnet, port.Id, *prior});
+                    if constexpr (ui::DrawableField<decltype(value.Value)>) ui::Gesture(ui::DrawField(port.Name.c_str(), value.Value, range.Spec) && interactive, [&] { return value; });
+                }
+            },
+                       *update);
+        } else TextDisabled("%s (missing field)", port.Name.c_str());
+        if (r.all_of<NetworkSubnet>(parent) && Button("Expose on parent") && interactive) action::Emit(action::nodes::ExposePort{parent, field, std::make_unique<std::string>(port.Name)});
+        if (previous) {
+            if (Button("Move up") && interactive) action::Emit(action::nodes::MovePort{subnet, port.Id, *previous});
             SameLine();
         }
-        prior = port.Id;
-        if (node && port.Direction == SocketDirection::Out && (port.Type == SocketType::Geometry || port.Type == SocketType::Instances)) {
-            if (Button("Display output") && interactive) action::Emit(action::nodes::SetDisplay{node->Procedure, subnet, port.Id});
-            SameLine();
-        }
+        previous = port.Id;
         if (Button("Remove port") && interactive) action::Emit(action::nodes::RemovePort{subnet, port.Id});
         PopID();
     }
+}
+} // namespace
+
+UseCounts CountDefinitionUses(const state::Registry &r) {
+    UseCounts uses;
+    std::vector<state::Entity> users;
+    for (const auto [node, subnet] : r.view<const Subnet>().each()) {
+        if (subnet.DefinitionEntity != state::Null) uses.Used.push_back(subnet.DefinitionEntity);
+        if (r.all_of<HierarchyGeometry>(NetworkOf(r, node))) continue;
+        if (subnet.DefinitionEntity != state::Null) users.push_back(subnet.DefinitionEntity);
+        else if (const auto macro = std::ranges::find(Macros, subnet.Builtin, &Macro::Name); macro != Macros.end()) ++uses.Builtin[size_t(macro - Macros.begin())];
+    }
+    SortUnique(uses.Used);
+    std::ranges::sort(users);
+    for (const auto definition : users) {
+        if (uses.User.empty() || uses.User.back().first != definition) uses.User.emplace_back(definition, 0u);
+        ++uses.User.back().second;
+    }
+    return uses;
+}
+bool DefinitionUsed(const UseCounts &uses, state::Entity definition) { return std::ranges::binary_search(uses.Used, definition); }
+uint32_t UseCount(const UseCounts &uses, state::Entity definition, std::string_view builtin) {
+    if (definition == state::Null) {
+        const auto macro = std::ranges::find(Macros, builtin, &Macro::Name);
+        return macro == Macros.end() ? 0u : uses.Builtin[size_t(macro - Macros.begin())];
+    }
+    const auto at = std::ranges::lower_bound(uses.User, definition, {}, &std::pair<state::Entity, uint32_t>::first);
+    return at != uses.User.end() && at->first == definition ? at->second : 0u;
 }
 
 void DrawAnimationTargets(const state::Registry &r, NodesPanel &panel, uint32_t animation) {
@@ -236,14 +256,28 @@ void DrawUsers(const state::Registry &r, NodesPanel &panel, state::Entity item) 
         PopID();
     }
 }
-} // namespace
 
-namespace {
 // Draws the node's sections, which its components decide.
 void DrawNodeProperties(state::Registry &r, NodesPanel &panel, state::Entity entity) {
     if (entity == state::Document) {
         RenderDocumentControls(r);
     } else if (r.all_of<Material>(entity)) {
+        if (r.all_of<MaterialGraph>(entity)) {
+            if (Button("Open graph")) EnterNetwork(panel, entity);
+            ui::Describe("Open graph", "Show the material's node graph in the node editor.");
+            SameLine();
+            if (Button("Export MaterialX")) {
+                FileDialog::ShowSave("mtlx", r.get<const Material>(entity).Name + ".mtlx", [entity](const std::filesystem::path &path) { action::Emit(action::io::SaveMaterialX{entity, path}); });
+            }
+            ui::Describe("Export MaterialX", "Write the material and its node graph as a MaterialX document.");
+        } else {
+            if (Button("Add node graph")) {
+                action::Emit(action::nodes::AddMaterialGraph{entity});
+                EnterNetwork(panel, entity);
+            }
+            ui::Describe("Add node graph", "Compute the material's inputs with a node graph. Unlinked inputs, alpha and transmission keep the values below.");
+        }
+        DrawMaterialPreview(r, panel, entity, {});
         ui::DrawFields<PBRMaterial>(ui::MaterialEdit{r, entity});
         DrawUsers(r, panel, entity);
     } else if (const auto *texture = r.try_get<const MaterializedTexture>(entity)) {
@@ -257,6 +291,16 @@ void DrawNodeProperties(state::Registry &r, NodesPanel &panel, state::Entity ent
         DrawUsers(r, panel, entity);
     } else if (r.all_of<NetworkSubnet>(entity)) {
         DrawSubnetParameters(r, entity, true);
+    } else if (r.all_of<SubnetDefinition>(entity)) {
+        TextWrapped("%s", UsesText(UseCount(UsesOf(r, panel), entity)).c_str());
+        if (Button("Open")) EnterNetwork(panel, entity);
+        ui::Describe("Open", "Show the definition's network in the node editor.");
+        SameLine();
+        BeginDisabled(DefinitionUsed(UsesOf(r, panel), entity));
+        if (Button("Delete")) action::Emit(action::nodes::DeleteDefinition{entity});
+        EndDisabled();
+        ui::Describe("Delete", "Delete this definition and its nodes.");
+        DrawDefinitionInterface(r, {&r, entity}, true);
     } else if (physics_ui::RenderResourceProperties(r, entity)) {
         DrawUsers(r, panel, entity);
     } else if (r.all_of<Scene>(entity)) {
@@ -279,12 +323,16 @@ void DrawNodeProperties(state::Registry &r, NodesPanel &panel, state::Entity ent
 } // namespace
 
 void DrawPropertiesPanel(state::Registry &r, NodesPanel &nodes, Panel &panel, bool interactive) {
+    // Properties releases an image it drew before the last frame and has not drawn since.
+    for (auto *shown : {&nodes.NodeImage, &nodes.Preview}) {
+        if (shown->Hold && shown->Frame + 1 < GetFrameCount()) HoldShownImage(r, *shown, {});
+    }
     if (!panel.Visible) return;
     if (Begin(panel.Name, &panel.Visible)) {
         RenderInteractionControls(r);
-        DrawNodeParameters(r, nodes, interactive);
+        const auto geometry = DrawNodeParameters(r, nodes, interactive);
         RenderSelectionActions(r);
-        if (const auto active = FindActiveNode(r); active != state::Null) {
+        if (const auto active = FindActiveNode(r); active != state::Null && (geometry == state::Null || GetMeshEntity(r, active) == geometry)) {
             auto name = r.all_of<Scene>(active) ? SceneLabel(r, active) : ItemName(r, active);
             SeparatorText(name.c_str());
             PushID("Node");
@@ -346,12 +394,20 @@ NodeView SceneNodeDefinitions(const state::Registry &r, state::Entity network) {
     }
     const auto socket = [&](std::string label, SocketDirection direction, PortBinding binding) {
         view.Labels.push_back(std::move(label));
-        view.Sockets.push_back({SocketType::Reference, direction});
+        view.Sockets.push_back({TypeBit(DataType::Reference), direction});
+        view.ShownTypes.push_back(TypeBit(DataType::Reference));
         view.Bindings.push_back(std::move(binding));
     };
+    // A definition's node shows its uses.
+    const auto uses = network == state::Document ? CountDefinitionUses(r) : UseCounts{};
     for (uint32_t n = 0; n < count; ++n) {
         const auto *stored = items[n] != state::Document ? r.try_get<const NetworkNode>(items[n]) : nullptr;
-        view.Nodes.push_back({.Item = items[n], .Title = stored ? stored->Title : ItemName(r, items[n])});
+        auto title = stored ? stored->Title : ItemName(r, items[n]);
+        if (items[n] != state::Document && r.all_of<SubnetDefinition>(items[n])) {
+            const auto count = UseCount(uses, items[n]);
+            title += count == 1u ? " (1 use)" : std::format(" ({} uses)", count);
+        }
+        view.Nodes.push_back({.Item = items[n], .Title = std::move(title)});
         for (const auto &input : inputs[n]) {
             auto label = ReferenceLabel(r, input.Reference);
             if (input.Reference.Owner != items[n]) label = ItemName(r, input.Reference.Owner) + ": " + label;
@@ -368,7 +424,9 @@ NodeView SceneNodeDefinitions(const state::Registry &r, state::Entity network) {
         for (const auto item : outputs[n]) socket(ItemName(r, item), SocketDirection::Out, item);
         view.SocketFirst.push_back(uint32_t(view.Sockets.size()));
     }
-    for (size_t s = 0; s < view.Sockets.size(); ++s) view.Sockets[s].Name = view.Labels[s].c_str();
+    // The nodes are in item order.
+    view.ByItem.resize(count);
+    std::ranges::iota(view.ByItem, 0u);
     return view;
 }
 
@@ -402,8 +460,12 @@ void DrawSceneAddMenu(const state::Registry &r, state::Entity network) {
 
 bool EnterNode(const state::Registry &r, NodesPanel &panel, state::Entity item) {
     if (item == state::Document) return false;
-    if (r.any_of<Scene, GeometryProcedure, Subnet, ArmatureObject, NetworkSubnet, HierarchyInstance, HierarchyDefinition>(item)) {
-        EnterNetwork(panel, item, r.all_of<Subnet>(item) ? panel.Canvas.Object : state::Null);
+    if (r.all_of<Subnet>(item)) {
+        auto path = panel.Canvas.Path;
+        path.push_back(item);
+        EnterNetwork(panel, panel.Canvas.Path.empty() ? NetworkOf(r, item) : panel.Canvas.Root, panel.Canvas.Object, std::move(path));
+    } else if (r.all_of<NetworkNodes>(item) || r.any_of<Scene, ArmatureObject, NetworkSubnet, HierarchyInstance, HierarchyDefinition>(item)) {
+        EnterNetwork(panel, item, state::Null);
     } else if (const auto mesh = GetMeshEntity(r, item); r.all_of<GeometryProcedure>(mesh)) {
         EnterNetwork(panel, mesh, item);
     } else return false;

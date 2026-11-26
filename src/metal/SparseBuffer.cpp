@@ -40,19 +40,34 @@ SparseBuffer::SparseBuffer(const Context &ctx, uint64_t virtual_bytes) : Ctx(ctx
     }
 }
 
-SparseBuffer::SparseBuffer(const Context &ctx, uint64_t virtual_bytes, std::span<const uint32_t> indices, std::span<const PhysicalPageRef> pages)
-    : Ctx(ctx), Gpu(ctx.ReserveSparseAddresses(std::bit_ceil(virtual_bytes))), VirtualBytes(Gpu->length()),
-      Pages(pages.begin(), pages.end()), CloneIndices(indices.begin(), indices.end()) {
+namespace {
+// Addresses that span the source's resident pages, from one of its released clones when they still do.
+NS::SharedPtr<MTL::Buffer> TakeCloneAddresses(SparseBuffer &source) {
+    const auto bytes = std::bit_ceil(source.ResidentBytes);
+    while (!source.CloneAddresses.empty()) {
+        auto addresses = std::move(source.CloneAddresses.back());
+        source.CloneAddresses.pop_back();
+        if (addresses->length() == bytes) return addresses;
+        source.Ctx.RetireSparseAddresses(std::move(addresses), {}, {});
+    }
+    return source.Ctx.ReserveSparseAddresses(bytes);
+}
+} // namespace
+
+SparseBuffer::SparseBuffer(const std::shared_ptr<SparseBuffer> &source, std::span<const uint32_t> indices, std::span<const PhysicalPageRef> pages)
+    : Ctx(source->Ctx), Gpu(TakeCloneAddresses(*source)), VirtualBytes(Gpu->length()),
+      Pages(pages.begin(), pages.end()), CloneIndices(indices.begin(), indices.end()), CloneOf(source) {
     ForEachIndexRun(indices, [&](size_t first, size_t count) { MapGpu(indices[first], pages.subspan(first, count)); });
 }
 
 SparseBuffer::~SparseBuffer() {
     if (CpuAddress) mach_vm_deallocate(mach_task_self(), CpuAddress, CpuVirtualBytes);
+    for (auto &addresses : CloneAddresses) Ctx.RetireSparseAddresses(std::move(addresses), {}, {});
     if (!Gpu) return;
     std::vector<std::pair<uint64_t, uint64_t>> mapped;
     if (!CloneIndices.empty()) ForEachIndexRun(CloneIndices, [&](size_t first, size_t count) { mapped.emplace_back(CloneIndices[first], count); });
     else if (const auto count = std::min(uint64_t(Gpu->length()), ResidentBytes) / PhysicalPageBytes) mapped.emplace_back(0u, count);
-    Ctx.RetireSparseAddresses(std::move(Gpu), std::move(mapped), std::move(Pages));
+    Ctx.RetireSparseAddresses(std::move(Gpu), std::move(mapped), std::move(Pages), std::move(CloneOf));
 }
 
 void SparseBuffer::ReserveAddresses(uint64_t bytes) {

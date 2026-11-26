@@ -19,6 +19,7 @@ struct NodeThemeColors {
     vec4 Selected{Rgba8(240, 150, 40)};
     vec4 Active{Rgba8(255, 255, 255)};
     vec4 Error{Rgba8(230, 60, 50)};
+    vec4 Warning{Rgba8(230, 170, 40)}; // A node whose fault leaves its cook unchanged
     vec4 Outline{Rgba8(0, 0, 0)};
     vec4 Hovered{Rgba8(255, 255, 255)};
     vec4 WireHighlight{Rgba8(255, 255, 255)};
@@ -34,18 +35,20 @@ struct NodeThemeColors {
     vec4 CombineTitle{Rgba8(40, 90, 110)};
     vec4 AttributesTitle{Rgba8(80, 60, 130)};
     vec4 MathTitle{Rgba8(53, 96, 131)};
-    vec4 ValuesTitle{Rgba8(90, 90, 90)};
     vec4 GeneratorsTitle{Rgba8(50, 110, 60)};
     vec4 InstancesTitle{Rgba8(40, 80, 140)};
     vec4 DisplayedTitle{Rgba8(170, 80, 70)}; // The title of the displayed node
 
     vec4 GeometrySocket{Rgba8(0, 214, 163)};
     vec4 InstancesSocket{Rgba8(59, 140, 220)};
+    vec4 ImageSocket{Rgba8(99, 56, 99)};
     vec4 FloatSocket{Rgba8(222, 170, 80)};
     vec4 IntegerSocket{Rgba8(89, 140, 92)};
     vec4 BooleanSocket{Rgba8(204, 166, 214)};
     vec4 VectorSocket{Rgba8(99, 99, 199)};
-    vec4 RotationSocket{Rgba8(160, 150, 230)};
+    vec4 Vector4Socket{Rgba8(160, 150, 230)};
+    vec4 ColorSocket{Rgba8(199, 199, 41)};
+    vec4 MatrixSocket{Rgba8(200, 120, 160)};
     vec4 MixedSocket{Rgba8(150, 150, 190)};
 };
 

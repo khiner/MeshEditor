@@ -8,6 +8,7 @@
 #include "render/LodNodeEdit.h"
 #include "render/MeshletBuild.h"
 #include "render/MeshletStorage.h"
+#include "render/SceneUpdates.h"
 #include "state/Registry.h"
 
 #include <map>
@@ -106,8 +107,8 @@ void ReplaceGroupClusters(MeshStore &meshes, MeshStore::Record &owner, std::span
         for (uint32_t side = 0; side < 2u; ++side) {
             if (!runs[i].Changed[side]) continue;
             std::ranges::copy(runs[i].Ids[side], ids.begin() + next);
-            *offsets[side] = first + next;
             *counts[side] = uint32_t(runs[i].Ids[side].size());
+            *offsets[side] = *counts[side] ? first + next : 0u;
             next += *counts[side];
         }
         buffers.GroupLinks.GetMutable({addresses[i], 1u})[0] = links;
@@ -420,6 +421,8 @@ void RepairDirtyClusterGroups(state::Registry &r, mtl::ComputeChain &chain, std:
             }
             meshes.ReleasePayloadRuns(owner, RenderPayload::GroupClusters, std::move(runs));
             buffers.ClusterGroups.Erase(owner.GroupData, repair.Closure);
+            // The mesh's tally counted the retired clusters.
+            RetallyMesh(r, repair.Entity);
         }
     });
 }

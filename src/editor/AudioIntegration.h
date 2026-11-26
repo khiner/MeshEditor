@@ -22,6 +22,8 @@ void InitAudioSystem(state::Registry &);
 void DeinitAudioSystem(state::Registry &);
 bool HasPendingModalSolves(const state::Registry &);
 void CancelModalSolves(state::Registry &);
+// Moves the in-flight solves launched at the epoch to the current one, so a restore that keeps their entities applies their results.
+void KeepModalSolves(state::Registry &, uint64_t epoch);
 void RemoveAudioComponents(state::Registry &, state::Entity sound_entity);
 
 void ApplyModalModel(state::Registry &, state::Entity sound_entity, const std::filesystem::path &);

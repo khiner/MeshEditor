@@ -2,18 +2,19 @@
 #include "animation/MorphWeights.h"
 #include "armature/ArmatureComponents.h"
 #include "mesh/MeshComponents.h"
+#include "mesh/MeshStores.h"
 #include "object/PendingSync.h"
 #include "render/GpuBuffers.h"
+#include "render/GpuSceneState.h"
 #include "render/MaterialComponents.h"
 #include "render/Textures.h"
 #include "state/Registry.h"
 #include "viewport/ViewportDisplay.h"
 
 void InitRenderStoreContext(state::Registry &r, const mtl::Context &ctx) {
-    auto &slots = r.Resources.emplace<mtl::BindlessSet>(ctx);
+    r.Resources.emplace<mtl::BindlessSet>(ctx);
     r.Resources.emplace<ActiveSamplerAnisotropy>(ClampMaxAnisotropy(ToMaxAnisotropy(AnisotropicFilter{}.Value)));
-    auto &textures = r.Resources.emplace<TextureStore>();
-    textures.WhiteTextureSlot = AllocateSamplerSlot(slots);
+    r.Resources.emplace<TextureStore>();
     r.Resources.emplace<EnvironmentStore>();
 }
 
@@ -29,6 +30,11 @@ void RegisterRenderStoreHandlers(state::Registry &r) {
     r.on_destroy<MorphWeightRange, [](state::Registry &r, state::Entity e) {
         if (!r.Restoring) r.Resources.emplace<PendingObjectRemovals>().MorphRanges.push_back(r.get<const MorphWeightRange>(e).Weights);
     }>();
+    // A destroyed mesh entity's record drops its tallies unless another entity draws the record.
+    r.on_destroy<TalliedRecord, [](state::Registry &r, state::Entity e) {
+        const auto store_id = r.get<const TalliedRecord>(e).StoreId;
+        if (const auto owner = MeshEntityOf(r, store_id); owner == state::Null || owner == e) r.Resources.get<GpuBuffers>().Retally(store_id, {});
+    }>();
     r.on_destroy<RenderInstance, [](state::Registry &r, state::Entity e) {
         const auto &ri = r.get<const RenderInstance>(e);
         if (ri.BufferIndex == UINT32_MAX) return;
@@ -40,22 +46,7 @@ mtl::BufferContext &InitRenderStores(state::Registry &r) {
     return buffers.Ctx;
 }
 void InitDefaultMaterial(state::Registry &r) {
-    auto &buffers = r.Resources.get<GpuBuffers>();
-    auto &textures = r.Resources.get<TextureStore>();
-    buffers.Materials.Append(PBRMaterial{.BaseColorTexture = {.Slot = textures.WhiteTextureSlot}, .MetallicFactor = 0.f, .DoubleSided = 1u});
-
-    constexpr std::array<std::byte, 4> WhitePixels{std::byte{0xff}, std::byte{0xff}, std::byte{0xff}, std::byte{0xff}};
-    textures.PendingUploads.emplace_back(PendingTextureUpload{
-        .SamplerSlot = textures.WhiteTextureSlot,
-        .Source = PendingTextureUpload::RawPixels{.Pixels = std::vector<std::byte>(WhitePixels.begin(), WhitePixels.end()), .Width = 1, .Height = 1},
-        .Params = {
-            .ColorSpace = TextureColorSpace::Srgb,
-            .WrapS = MTL::SamplerAddressModeRepeat,
-            .WrapT = MTL::SamplerAddressModeRepeat,
-            .Sampler = SamplerConfig{},
-            .Name = "DefaultWhite",
-        },
-    });
+    r.Resources.get<GpuBuffers>().Materials.Append(PBRMaterial{.MetallicFactor = 0.f, .DoubleSided = 1u});
 }
 void DeinitTextureStores(state::Registry &r) {
     auto &slots = r.Resources.get<mtl::BindlessSet>();

@@ -53,6 +53,8 @@ struct SelectionFlags {
     bool HasTransformTarget{false}; // The gizmo has something to move.
     SelectionSharpness FaceSharpness{SelectionSharpness::None}; // Of the selected face meshes' faces.
     SelectionSharpness ElementSharpness{SelectionSharpness::None}; // Of the primaries' selected elements, in mesh Edit mode only.
+    std::vector<uint8_t> FaceFlags; // The live sharpness of each of Meshes' faces: 1 when any face is sharp, 2 when any is smooth.
+    std::array<uint32_t, 4> FaceFlagMeshes{}; // The number of Meshes with each FaceFlags value.
 };
 
 // Timeline frames holding a key on any channel of the selected objects' active clips or of the active mesh's displayed material.

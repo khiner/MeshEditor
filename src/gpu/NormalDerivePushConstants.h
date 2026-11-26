@@ -1,14 +1,12 @@
 #pragma once
 
-#include "gpu/ElementWork.h"
+#include "gpu/Types.h"
 
 // Configures two-phase normal derivation over 256-element tiles.
 // Phase 0 derives face normals.
 // Phase 1 gathers vertex and normal-sector values through FaceNormalSlot.
 // FirstTile and the buffer slots select the dispatch's tile range and posed or base storage.
 struct NormalDerivePushConstants {
-    ElementWork Work DEFAULT();
-    uint32_t EntryIndex DEFAULT();
     uint32_t EntriesSlot DEFAULT();
     uint32_t EdgeSharpnessSlot DEFAULT();
     uint32_t FaceSharpnessSlot DEFAULT();

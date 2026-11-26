@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<materialx version="1.39">
+  <!--
+    Implementations of MeshEditor's nodes whose precision a graph of standard nodes does not reach.
+  -->
+
+  <implementation name="IM_truncatedmodulo_float_genglsl" nodedef="ND_truncatedmodulo_float" target="genglsl" sourcecode="({{in2}} != 0.0) ? {{in1}} - {{in2}} * trunc({{in1}} / {{in2}}) : 0.0" />
+  <implementation name="IM_sinh_float_genglsl" nodedef="ND_sinh_float" target="genglsl" sourcecode="sinh({{in}})" />
+  <implementation name="IM_cosh_float_genglsl" nodedef="ND_cosh_float" target="genglsl" sourcecode="cosh({{in}})" />
+  <implementation name="IM_tanh_float_genglsl" nodedef="ND_tanh_float" target="genglsl" sourcecode="tanh({{in}})" />
+</materialx>

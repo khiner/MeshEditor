@@ -101,11 +101,13 @@ inline void TopoWriteMap(device uint *map, uint4 sources, float s, float t) {
 struct TopoContext {
     device const BindlessSet &B;
     constant MeshTopologyPushConstants &Pc;
+    // The batch storage's slot and the first word of its scratch.
+    SlotOffset Batch = {Pc.StorageSlot, Pc.ScratchOffset};
 
-    device uint *Storage() const { return BindlessBufferMutable(uint, B.Buffer, Pc.StorageSlot); }
+    device uint *Storage() const { return BindlessBufferMutable(uint, B.Buffer, Batch.Slot); }
     device const MeshTopologyJob *Jobs() const { return reinterpret_cast<device const MeshTopologyJob *>(Storage() + Pc.JobsOffset); }
     device const uint2 *Tiles() const { return reinterpret_cast<device const uint2 *>(Storage() + Pc.TileMapOffset); }
-    device uint *Scratch() const { return Storage() + Pc.ScratchOffset; }
+    device uint *Scratch() const { return Storage() + Batch.Offset; }
     uint2 Tile(uint group_id) const { return Tiles()[Pc.FirstTile + group_id]; }
 
     device uint *Bits(SlotOffset range) const { return BindlessBufferMutable(uint, B.Buffer, range.Slot) + range.Offset; }
@@ -118,154 +120,154 @@ struct TopoContext {
         const SlotOffset table = domain == 0u ? t.Vertices : domain == 1u ? t.Halfedges : domain == 2u ? t.Faces : domain == 3u ? t.Edges : t.Triangles;
         return BindlessBuffer(uint, B.Buffer, table.Slot) + table.Offset;
     }
-    device const uint *SrcTable(MeshTopologyJob job, uint domain) const { return Table(job.SrcConnectivity.Tables, domain); }
-    device const uint *DstTable(MeshTopologyJob job, uint domain) const { return Table(job.DstConnectivity.Tables, domain); }
-    uint SrcAddress(MeshTopologyJob job, uint domain, uint handle) const { return Resolve<MeshElementBlockSize>(SrcTable(job, domain), handle); }
-    uint DstAddress(MeshTopologyJob job, uint domain, uint handle) const { return Resolve<MeshElementBlockSize>(DstTable(job, domain), handle); }
+    device const uint *SrcTable(device const MeshTopologyJob &job, uint domain) const { return Table(job.SrcConnectivity.Tables, domain); }
+    device const uint *DstTable(device const MeshTopologyJob &job, uint domain) const { return Table(job.DstConnectivity.Tables, domain); }
+    uint SrcAddress(device const MeshTopologyJob &job, uint domain, uint handle) const { return Resolve<MeshElementBlockSize>(SrcTable(job, domain), handle); }
+    uint DstAddress(device const MeshTopologyJob &job, uint domain, uint handle) const { return Resolve<MeshElementBlockSize>(DstTable(job, domain), handle); }
 
-    TopoSourceDomain SrcVertexDomain(MeshTopologyJob job) const { return {{B, job.SrcVertexWork}, {B, job.Src2Elements[0]}, job.SrcVertexCount}; }
-    TopoSourceDomain SrcHalfedgeDomain(MeshTopologyJob job) const { return {{B, job.SrcHalfedgeWork}, {B, job.Src2Elements[1]}, job.SrcHalfedgeCount}; }
-    TopoSourceDomain SrcFaceDomain(MeshTopologyJob job) const { return {{B, job.SrcFaceWork}, {B, job.Src2Elements[2]}, job.SrcFaceCount}; }
-    TopoSourceDomain SrcEdgeDomain(MeshTopologyJob job) const { return {{B, job.SrcEdgeWork}, {B, job.Src2Elements[3]}, job.SrcEdgeCount}; }
-    bool SecondVertex(MeshTopologyJob job, uint v) const { return v - job.SrcVertexCount < job.Src2Counts[0]; }
-    bool SecondFace(MeshTopologyJob job, uint f) const { return f - job.SrcFaceCount < job.Src2Counts[2]; }
-    TopoCornerVertices SrcCorners(MeshTopologyJob job) const { return {BindlessBuffer(uint,B.IndexBuffer, Pc.Source.CornerSlot), SrcTable(job, 1u), SrcVertexDomain(job)}; }
-    TopoOutputDomain DstVertexDomain(MeshTopologyJob job) const { return {B, job.DstVertexHandles}; }
-    TopoOutputDomain DstFaceDomain(MeshTopologyJob job) const { return {B, job.DstFaceHandles}; }
-    void SelectDstVertex(MeshTopologyJob job, uint v, bool selected = true) const { Select(job.DstVertexBits, DstAddress(job, 0u, DstVertexDomain(job).Handle(v)), selected); }
-    void SelectDstFace(MeshTopologyJob job, uint f, bool selected) const { Select(job.DstFaceBits, DstAddress(job, 2u, DstFaceDomain(job).Handle(f)), selected); }
-    void SelectDstEdge(MeshTopologyJob job, uint e, bool selected) const { Select(job.DstEdgeBits, DstAddress(job, 3u, e), selected); }
-    TopoOutputRun<uint> DstCorners(MeshTopologyJob job) const { return {BindlessBufferMutable(uint, B.IndexBuffer, Pc.Destination.CornerSlot), DstTable(job, 1u), job.DstCornerOffset}; }
-    ConnectivityView Src(MeshTopologyJob job) const {
+    TopoSourceDomain SrcVertexDomain(device const MeshTopologyJob &job) const { return {{B, job.SrcVertexWork}, {B, job.Src2Elements[0]}, job.SrcVertexCount}; }
+    TopoSourceDomain SrcHalfedgeDomain(device const MeshTopologyJob &job) const { return {{B, job.SrcHalfedgeWork}, {B, job.Src2Elements[1]}, job.SrcHalfedgeCount}; }
+    TopoSourceDomain SrcFaceDomain(device const MeshTopologyJob &job) const { return {{B, job.SrcFaceWork}, {B, job.Src2Elements[2]}, job.SrcFaceCount}; }
+    TopoSourceDomain SrcEdgeDomain(device const MeshTopologyJob &job) const { return {{B, job.SrcEdgeWork}, {B, job.Src2Elements[3]}, job.SrcEdgeCount}; }
+    bool SecondVertex(device const MeshTopologyJob &job, uint v) const { return v - job.SrcVertexCount < job.Src2Counts[0]; }
+    bool SecondFace(device const MeshTopologyJob &job, uint f) const { return f - job.SrcFaceCount < job.Src2Counts[2]; }
+    TopoCornerVertices SrcCorners(device const MeshTopologyJob &job) const { return {BindlessBuffer(uint,B.IndexBuffer, Pc.Source.CornerSlot), SrcTable(job, 1u), SrcVertexDomain(job)}; }
+    TopoOutputDomain DstVertexDomain(device const MeshTopologyJob &job) const { return {B, job.DstVertexHandles}; }
+    TopoOutputDomain DstFaceDomain(device const MeshTopologyJob &job) const { return {B, job.DstFaceHandles}; }
+    void SelectDstVertex(device const MeshTopologyJob &job, uint v, bool selected = true) const { Select(job.DstVertexBits, DstAddress(job, 0u, DstVertexDomain(job).Handle(v)), selected); }
+    void SelectDstFace(device const MeshTopologyJob &job, uint f, bool selected) const { Select(job.DstFaceBits, DstAddress(job, 2u, DstFaceDomain(job).Handle(f)), selected); }
+    void SelectDstEdge(device const MeshTopologyJob &job, uint e, bool selected) const { Select(job.DstEdgeBits, DstAddress(job, 3u, e), selected); }
+    TopoOutputRun<uint> DstCorners(device const MeshTopologyJob &job) const { return {BindlessBufferMutable(uint, B.IndexBuffer, Pc.Destination.CornerSlot), DstTable(job, 1u), job.DstCornerOffset}; }
+    ConnectivityView Src(device const MeshTopologyJob &job) const {
         return {B, job.SrcConnectivity};
     }
-    ConnectivityView Dst(MeshTopologyJob job) const { return {B, job.DstConnectivity}; }
-    TopoSourceValues<Vertex> SrcVertices(MeshTopologyJob job) const { return {BindlessBuffer(Vertex,B.VertexBuffer, Pc.Source.VertexSlot), SrcTable(job, 0u), SrcVertexDomain(job)}; }
-    TopoOutputValues<Vertex> DstVertices(MeshTopologyJob job) const { return {BindlessBufferMutable(Vertex, B.VertexBuffer, Pc.Destination.VertexSlot), DstTable(job, 0u), DstVertexDomain(job)}; }
-    TopoOutputValues<uint> DstFaceTriangles(MeshTopologyJob job) const { return {BindlessBufferMutable(uint, B.ObjectIdBuffer, Pc.Destination.FaceTriangleStartSlot), DstTable(job, 2u), DstFaceDomain(job)}; }
-    TopoOutputRun<packed_uint3> DstTriangles(MeshTopologyJob job) const { return {BindlessBufferMutable(packed_uint3, B.Buffer, Pc.Destination.TriangleSlot), DstTable(job, 4u), job.DstTriangleOffset}; }
-    TopoSourceValues<uchar> SrcEdgeSharpness(MeshTopologyJob job) const { return {BindlessBuffer(uchar,B.Buffer, Pc.Source.EdgeSharpnessSlot), SrcTable(job, 3u), SrcEdgeDomain(job)}; }
-    ElementValues<uchar> DstEdgeSharpness(MeshTopologyJob job) const { return {BindlessBufferMutable(uchar, B.Buffer, Pc.Destination.EdgeSharpnessSlot), DstTable(job, 3u)}; }
-    TopoSourceValues<uchar> SrcFaceSharpness(MeshTopologyJob job) const { return {BindlessBuffer(uchar,B.Buffer, Pc.Source.FaceSharpnessSlot), SrcTable(job, 2u), SrcFaceDomain(job)}; }
-    TopoOutputValues<uchar> DstFaceSharpness(MeshTopologyJob job) const { return {BindlessBufferMutable(uchar, B.Buffer, Pc.Destination.FaceSharpnessSlot), DstTable(job, 2u), DstFaceDomain(job)}; }
-    uint SrcElementPrimitive(MeshTopologyJob job, uint f) const { return BindlessBuffer(uint, B.ElementPrimitiveBuffer, Pc.Source.Layers.FacePrimitives.Slot)[Pc.Source.Layers.FacePrimitives.Offset + SrcFaceDomain(job).Handle(f)]; }
-    void SetDstElementPrimitive(MeshTopologyJob job, uint f, uint value) const { BindlessBufferMutable(uint, B.ElementPrimitiveBuffer, Pc.Destination.Layers.FacePrimitives.Slot)[Pc.Destination.Layers.FacePrimitives.Offset + DstFaceDomain(job).Handle(f)] = value; }
-    BoneDeformVertex SrcBoneDeform(MeshTopologyJob job, uint v) const { return BindlessBuffer(BoneDeformVertex, B.BoneDeformBuffer, Pc.Source.Layers.Skin.Slot)[Pc.Source.Layers.Skin.Offset + SrcVertexDomain(job).Handle(v)]; }
-    void SetDstSkin(MeshTopologyJob job, uint v, BoneDeformVertex value) const { BindlessBufferMutable(BoneDeformVertex, B.BoneDeformBuffer, Pc.Destination.Layers.Skin.Slot)[Pc.Destination.Layers.Skin.Offset + DstVertexDomain(job).Handle(v)] = value; }
-    MorphTargetVertex SrcMorphTarget(MeshTopologyJob job, uint v, uint target) const {
-        return BindlessBuffer(MorphTargetVertex, B.MorphTargetBuffer, Pc.Source.Layers.Morph.Slot)[MorphTargetIndex(Pc.Source.Layers.Morph, SrcVertexDomain(job).Handle(v), target, job.MorphTargetCount)];
+    ConnectivityView Dst(device const MeshTopologyJob &job) const { return {B, job.DstConnectivity}; }
+    TopoSourceValues<Vertex> SrcVertices(device const MeshTopologyJob &job) const { return {BindlessBuffer(Vertex,B.VertexBuffer, Pc.Source.VertexSlot), SrcTable(job, 0u), SrcVertexDomain(job)}; }
+    TopoOutputValues<Vertex> DstVertices(device const MeshTopologyJob &job) const { return {BindlessBufferMutable(Vertex, B.VertexBuffer, Pc.Destination.VertexSlot), DstTable(job, 0u), DstVertexDomain(job)}; }
+    TopoOutputValues<uint> DstFaceTriangles(device const MeshTopologyJob &job) const { return {BindlessBufferMutable(uint, B.ObjectIdBuffer, Pc.Destination.FaceTriangleStartSlot), DstTable(job, 2u), DstFaceDomain(job)}; }
+    TopoOutputRun<packed_uint3> DstTriangles(device const MeshTopologyJob &job) const { return {BindlessBufferMutable(packed_uint3, B.Buffer, Pc.Destination.TriangleSlot), DstTable(job, 4u), job.DstTriangleOffset}; }
+    TopoSourceValues<uchar> SrcEdgeSharpness(device const MeshTopologyJob &job) const { return {BindlessBuffer(uchar,B.Buffer, Pc.Source.EdgeSharpnessSlot), SrcTable(job, 3u), SrcEdgeDomain(job)}; }
+    ElementValues<uchar> DstEdgeSharpness(device const MeshTopologyJob &job) const { return {BindlessBufferMutable(uchar, B.Buffer, Pc.Destination.EdgeSharpnessSlot), DstTable(job, 3u)}; }
+    TopoSourceValues<uchar> SrcFaceSharpness(device const MeshTopologyJob &job) const { return {BindlessBuffer(uchar,B.Buffer, Pc.Source.FaceSharpnessSlot), SrcTable(job, 2u), SrcFaceDomain(job)}; }
+    TopoOutputValues<uchar> DstFaceSharpness(device const MeshTopologyJob &job) const { return {BindlessBufferMutable(uchar, B.Buffer, Pc.Destination.FaceSharpnessSlot), DstTable(job, 2u), DstFaceDomain(job)}; }
+    uint SrcElementPrimitive(device const MeshTopologyJob &job, uint f) const { return BindlessBuffer(uint, B.ElementPrimitiveBuffer, job.SrcLayers.FacePrimitives.Slot)[job.SrcLayers.FacePrimitives.Offset + SrcFaceDomain(job).Handle(f)]; }
+    void SetDstElementPrimitive(device const MeshTopologyJob &job, uint f, uint value) const { BindlessBufferMutable(uint, B.ElementPrimitiveBuffer, job.DstLayers.FacePrimitives.Slot)[job.DstLayers.FacePrimitives.Offset + DstFaceDomain(job).Handle(f)] = value; }
+    BoneDeformVertex SrcBoneDeform(device const MeshTopologyJob &job, uint v) const { return BindlessBuffer(BoneDeformVertex, B.BoneDeformBuffer, job.SrcLayers.Skin.Slot)[job.SrcLayers.Skin.Offset + SrcVertexDomain(job).Handle(v)]; }
+    void SetDstSkin(device const MeshTopologyJob &job, uint v, BoneDeformVertex value) const { BindlessBufferMutable(BoneDeformVertex, B.BoneDeformBuffer, job.DstLayers.Skin.Slot)[job.DstLayers.Skin.Offset + DstVertexDomain(job).Handle(v)] = value; }
+    MorphTargetVertex SrcMorphTarget(device const MeshTopologyJob &job, uint v, uint target) const {
+        return BindlessBuffer(MorphTargetVertex, B.MorphTargetBuffer, job.SrcLayers.Morph.Slot)[MorphTargetIndex(job.SrcLayers.Morph, SrcVertexDomain(job).Handle(v), target, job.MorphTargetCount)];
     }
-    void SetDstMorphTarget(MeshTopologyJob job, uint v, uint target, MorphTargetVertex value) const {
-        BindlessBufferMutable(MorphTargetVertex, B.MorphTargetBuffer, Pc.Destination.Layers.Morph.Slot)[MorphTargetIndex(Pc.Destination.Layers.Morph, DstVertexDomain(job).Handle(v), target, job.MorphTargetCount)] = value;
+    void SetDstMorphTarget(device const MeshTopologyJob &job, uint v, uint target, MorphTargetVertex value) const {
+        BindlessBufferMutable(MorphTargetVertex, B.MorphTargetBuffer, job.DstLayers.Morph.Slot)[MorphTargetIndex(job.DstLayers.Morph, DstVertexDomain(job).Handle(v), target, job.MorphTargetCount)] = value;
     }
-    float4 SrcCornerTangent(MeshTopologyJob job, uint h) const { return float4(BindlessBuffer(packed_float4, B.CornerTangentBuffer, Pc.Source.Layers.CornerTangent.Slot)[Pc.Source.Layers.CornerTangent.Offset + h]); }
-    void SetDstCornerTangent(MeshTopologyJob job, uint h, float4 value) const { BindlessBufferMutable(packed_float4, B.CornerTangentBuffer, Pc.Destination.Layers.CornerTangent.Slot)[Pc.Destination.Layers.CornerTangent.Offset + job.DstCornerOffset + h] = value; }
-    float4 SrcCornerColor(MeshTopologyJob job, uint h) const { return float4(BindlessBuffer(packed_float4, B.CornerColorBuffer, Pc.Source.Layers.CornerColor.Slot)[Pc.Source.Layers.CornerColor.Offset + h]); }
-    void SetDstCornerColor(MeshTopologyJob job, uint h, float4 value) const { BindlessBufferMutable(packed_float4, B.CornerColorBuffer, Pc.Destination.Layers.CornerColor.Slot)[Pc.Destination.Layers.CornerColor.Offset + job.DstCornerOffset + h] = value; }
-    float2 SrcCornerUv(MeshTopologyJob job, uint set, uint h) const { return float2(BindlessBuffer(packed_float2, B.CornerUvBuffer, Pc.Source.Layers.CornerUvs[set].Slot)[Pc.Source.Layers.CornerUvs[set].Offset + h]); }
-    void SetDstCornerUv(MeshTopologyJob job, uint set, uint h, float2 value) const { BindlessBufferMutable(packed_float2, B.CornerUvBuffer, Pc.Destination.Layers.CornerUvs[set].Slot)[Pc.Destination.Layers.CornerUvs[set].Offset + job.DstCornerOffset + h] = value; }
-    float4 SrcVertexColor(MeshTopologyJob job, uint v) const { return float4(BindlessBuffer(packed_float4, B.CornerColorBuffer, Pc.Source.Layers.VertexColor.Slot)[Pc.Source.Layers.VertexColor.Offset + SrcVertexDomain(job).Handle(v)]); }
-    void SetDstVertexColor(MeshTopologyJob job, uint v, float4 value) const { BindlessBufferMutable(packed_float4, B.CornerColorBuffer, Pc.Destination.Layers.VertexColor.Slot)[Pc.Destination.Layers.VertexColor.Offset + DstVertexDomain(job).Handle(v)] = value; }
-    TopoSourceValues<packed_float3> SrcVertexNormals(MeshTopologyJob job) const { return {BindlessBuffer(packed_float3,B.Buffer, Pc.Source.BaseVertexNormalSlot), SrcTable(job, 0u), SrcVertexDomain(job)}; }
-    TopoSourceValues<packed_float3> SrcFaceNormals(MeshTopologyJob job) const { return {BindlessBuffer(packed_float3,B.Buffer, Pc.Source.BaseFaceNormalSlot), SrcTable(job, 2u), SrcFaceDomain(job)}; }
-    device const uint *Lists(MeshTopologyJob job) const { return BindlessBuffer(uint, B.Buffer, Pc.ListSlot) + job.ListOffset; }
-    float3 SrcPosition(MeshTopologyJob job, uint v) const { return float3(SrcVertices(job)[v].Position); }
-    uint2 SrcFan(MeshTopologyJob job, uint v) const { return Src(job).Incoming(SrcVertexDomain(job).Handle(v)); }
-    uint SrcFanCorner(MeshTopologyJob job, uint index) const { return Src(job).FanCorner(index); }
-    uint SrcAnyCornerAt(MeshTopologyJob job, uint v) const {
+    float4 SrcCornerTangent(device const MeshTopologyJob &job, uint h) const { return float4(BindlessBuffer(packed_float4, B.CornerTangentBuffer, job.SrcLayers.CornerTangent.Slot)[job.SrcLayers.CornerTangent.Offset + h]); }
+    void SetDstCornerTangent(device const MeshTopologyJob &job, uint h, float4 value) const { BindlessBufferMutable(packed_float4, B.CornerTangentBuffer, job.DstLayers.CornerTangent.Slot)[job.DstLayers.CornerTangent.Offset + job.DstCornerOffset + h] = value; }
+    float4 SrcCornerColor(device const MeshTopologyJob &job, uint h) const { return float4(BindlessBuffer(packed_float4, B.CornerColorBuffer, job.SrcLayers.CornerColor.Slot)[job.SrcLayers.CornerColor.Offset + h]); }
+    void SetDstCornerColor(device const MeshTopologyJob &job, uint h, float4 value) const { BindlessBufferMutable(packed_float4, B.CornerColorBuffer, job.DstLayers.CornerColor.Slot)[job.DstLayers.CornerColor.Offset + job.DstCornerOffset + h] = value; }
+    float2 SrcCornerUv(device const MeshTopologyJob &job, uint set, uint h) const { return float2(BindlessBuffer(packed_float2, B.CornerUvBuffer, job.SrcLayers.CornerUvs[set].Slot)[job.SrcLayers.CornerUvs[set].Offset + h]); }
+    void SetDstCornerUv(device const MeshTopologyJob &job, uint set, uint h, float2 value) const { BindlessBufferMutable(packed_float2, B.CornerUvBuffer, job.DstLayers.CornerUvs[set].Slot)[job.DstLayers.CornerUvs[set].Offset + job.DstCornerOffset + h] = value; }
+    float4 SrcVertexColor(device const MeshTopologyJob &job, uint v) const { return float4(BindlessBuffer(packed_float4, B.CornerColorBuffer, job.SrcLayers.VertexColor.Slot)[job.SrcLayers.VertexColor.Offset + SrcVertexDomain(job).Handle(v)]); }
+    void SetDstVertexColor(device const MeshTopologyJob &job, uint v, float4 value) const { BindlessBufferMutable(packed_float4, B.CornerColorBuffer, job.DstLayers.VertexColor.Slot)[job.DstLayers.VertexColor.Offset + DstVertexDomain(job).Handle(v)] = value; }
+    TopoSourceValues<packed_float3> SrcVertexNormals(device const MeshTopologyJob &job) const { return {BindlessBuffer(packed_float3,B.Buffer, Pc.Source.BaseVertexNormalSlot), SrcTable(job, 0u), SrcVertexDomain(job)}; }
+    TopoSourceValues<packed_float3> SrcFaceNormals(device const MeshTopologyJob &job) const { return {BindlessBuffer(packed_float3,B.Buffer, Pc.Source.BaseFaceNormalSlot), SrcTable(job, 2u), SrcFaceDomain(job)}; }
+    device const uint *Lists(device const MeshTopologyJob &job) const { return BindlessBuffer(uint, B.Buffer, Pc.ListSlot) + job.ListOffset; }
+    float3 SrcPosition(device const MeshTopologyJob &job, uint v) const { return float3(SrcVertices(job)[v].Position); }
+    uint2 SrcFan(device const MeshTopologyJob &job, uint v) const { return Src(job).Incoming(SrcVertexDomain(job).Handle(v)); }
+    uint SrcFanCorner(device const MeshTopologyJob &job, uint index) const { return Src(job).FanCorner(index); }
+    uint SrcAnyCornerAt(device const MeshTopologyJob &job, uint v) const {
         const uint2 fan = SrcFan(job, v);
         return fan.y ? SrcFanCorner(job,fan.x) : SrcHalfedgeDomain(job).Handle(0u);
     }
 
-    uint SrcFaceOf(MeshTopologyJob job, uint h) const { return h == InvalidOffset ? InvalidOffset : SrcFaceDomain(job).Index(Src(job).HalfedgeFace(h)); }
-    uint SrcPrev(MeshTopologyJob job, uint h) const { return Src(job).Previous(h); }
-    uint SrcFrom(MeshTopologyJob job, uint h) const { return SrcCorners(job)[SrcPrev(job, h)]; }
-    uint2 SrcFaceRange(MeshTopologyJob job, uint f) const { return Src(job).FaceHalfedges(SrcFaceDomain(job).Handle(f)); }
-    uint SrcOpposite(MeshTopologyJob job, uint h) const { return Src(job).Opposite(h); }
-    uint SrcEdge(MeshTopologyJob job, uint h) const { return SrcEdgeDomain(job).Index(Src(job).Edge(h)); }
-    uint SrcEdgeHalfedge(MeshTopologyJob job, uint e) const { return Src(job).EdgeHalfedge(SrcEdgeDomain(job).Handle(e)); }
-    bool SrcEdgeFirst(MeshTopologyJob job, uint h) const { return Src(job).EdgeFirst(h); }
+    uint SrcFaceOf(device const MeshTopologyJob &job, uint h) const { return h == InvalidOffset ? InvalidOffset : SrcFaceDomain(job).Index(Src(job).HalfedgeFace(h)); }
+    uint SrcPrev(device const MeshTopologyJob &job, uint h) const { return Src(job).Previous(h); }
+    uint SrcFrom(device const MeshTopologyJob &job, uint h) const { return SrcCorners(job)[SrcPrev(job, h)]; }
+    uint2 SrcFaceRange(device const MeshTopologyJob &job, uint f) const { return Src(job).FaceHalfedges(SrcFaceDomain(job).Handle(f)); }
+    uint SrcOpposite(device const MeshTopologyJob &job, uint h) const { return Src(job).Opposite(h); }
+    uint SrcEdge(device const MeshTopologyJob &job, uint h) const { return SrcEdgeDomain(job).Index(Src(job).Edge(h)); }
+    uint SrcEdgeHalfedge(device const MeshTopologyJob &job, uint e) const { return Src(job).EdgeHalfedge(SrcEdgeDomain(job).Handle(e)); }
+    bool SrcEdgeFirst(device const MeshTopologyJob &job, uint h) const { return Src(job).EdgeFirst(h); }
     // The job's flags may select everything, or the elements in its list in place of the source bits.
-    bool SrcSelectedVertex(MeshTopologyJob job, uint v) const {
+    bool SrcSelectedVertex(device const MeshTopologyJob &job, uint v) const {
         if (v >= job.SrcVertexCount) return false;
         if (job.Flags & TopologyFlagSelectAll) return true;
         if (job.Flags & TopologyFlagListSelects) return (FlagVertices(job)[v] & TopoListed) != 0u;
         return Scratch()[job.SelectionOffset+v]!=0u;
     }
-    bool SrcSelectedEdge(MeshTopologyJob job, uint e) const {
+    bool SrcSelectedEdge(device const MeshTopologyJob &job, uint e) const {
         if (e >= job.SrcEdgeCount) return false;
         if (job.Flags & TopologyFlagSelectAll) return true;
         return Scratch()[job.SelectionOffset+job.SrcVertexCount+e]!=0u;
     }
-    bool SrcSelectedFace(MeshTopologyJob job,uint f) const {
+    bool SrcSelectedFace(device const MeshTopologyJob &job,uint f) const {
         if (f>=job.SrcFaceCount) return false;
         return (job.Flags&TopologyFlagSelectAll) || Scratch()[job.SelectionOffset+job.SrcVertexCount+job.SrcHalfedgeCount+f]!=0u;
     }
 
-    device uint *FlagVertices(MeshTopologyJob job) const { return Scratch() + job.FlagVertexOffset; }
-    device uint *VertexTargets(MeshTopologyJob job) const { return Scratch() + job.VertexTargetOffset; }
-    device uint *State(MeshTopologyJob job) const { return Scratch() + job.StateOffset; }
-    bool DelOrig(MeshTopologyJob job) const { return job.Op == MeshTopologyOp::InsetRegion || (State(job)[0] & TopoDelOrig) != 0u; }
+    device uint *FlagVertices(device const MeshTopologyJob &job) const { return Scratch() + job.FlagVertexOffset; }
+    device uint *VertexTargets(device const MeshTopologyJob &job) const { return Scratch() + job.VertexTargetOffset; }
+    device uint *State(device const MeshTopologyJob &job) const { return Scratch() + job.StateOffset; }
+    bool DelOrig(device const MeshTopologyJob &job) const { return job.Op == MeshTopologyOp::InsetRegion || (State(job)[0] & TopoDelOrig) != 0u; }
     // The label run contains four face arrays then two vertex arrays.
-    uint LabelRun(MeshTopologyJob job, uint index) const { return job.LabelOffset + min(index, 4u) * job.SrcFaceCount + (index > 4u ? job.SrcVertexCount : 0u); }
-    device uint *FaceLabels(MeshTopologyJob job) const { return Scratch() + LabelRun(job, 0u); }
-    device uint *RegionBoundary(MeshTopologyJob job) const { return Scratch() + LabelRun(job, 1u); }
-    device uint *RegionStart(MeshTopologyJob job) const { return Scratch() + LabelRun(job, 2u); }
-    device uint *WalkLength(MeshTopologyJob job) const { return Scratch() + LabelRun(job, 3u); }
-    device uint *VertexEdgeTotal(MeshTopologyJob job) const { return Scratch() + LabelRun(job, 4u); }
-    device uint *VertexEdgeDissolved(MeshTopologyJob job) const { return Scratch() + LabelRun(job, 5u); }
-    TopoHalfedgeScratch HalfedgeAux(MeshTopologyJob job) const { return {Scratch() + job.HalfedgeAuxOffset, SrcHalfedgeDomain(job)}; }
-    device uint *EdgeParams(MeshTopologyJob job) const { return Scratch() + job.HalfedgeAuxOffset; }
-    device uint *WireEdgeMap(MeshTopologyJob job) const { return Scratch() + job.WireEdgeMapOffset; }
-    float3 TransformCopy(MeshTopologyJob job, float3 p) const { return job.CopyRotation.Unpack() * p + float3(job.CopyTranslation); }
-    float PlaneDistance(MeshTopologyJob job, float3 p) const { return dot(float3(job.PlaneNormal), p) - job.PlaneOffset; }
-    PlaneSideKind PlaneSide(MeshTopologyJob job, float3 p) const { return PlaneSideOf(PlaneDistance(job, p), p, PlaneSideTolerance); }
-    device uint *Table(MeshTopologyJob job) const { return Scratch() + job.TableOffset; }
-    device packed_float3 *Inward(MeshTopologyJob job, uint d, uint slot) const { return reinterpret_cast<device packed_float3 *>(Scratch() + job.VertexInwardOffset) + 2u * d + slot; }
-    uint SrcNext(MeshTopologyJob job, uint h) const { return Src(job).Next(h); }
-    TopoHalfedgeScratch DissolvePrevious(MeshTopologyJob job) const { return {Scratch() + job.FaceLoopOffset, SrcHalfedgeDomain(job)}; }
-    TopoHalfedgeScratch FlagHalfedges(MeshTopologyJob job) const { return {Scratch() + job.FlagHalfedgeOffset, SrcHalfedgeDomain(job)}; }
-    device uint *FlagFaces(MeshTopologyJob job) const { return Scratch() + job.FlagFaceOffset; }
-    device uint *Counts(MeshTopologyJob job, uint quantity) const { return Scratch() + job.CountsOffset + quantity * job.CountEntries; }
+    uint LabelRun(device const MeshTopologyJob &job, uint index) const { return job.LabelOffset + min(index, 4u) * job.SrcFaceCount + (index > 4u ? job.SrcVertexCount : 0u); }
+    device uint *FaceLabels(device const MeshTopologyJob &job) const { return Scratch() + LabelRun(job, 0u); }
+    device uint *RegionBoundary(device const MeshTopologyJob &job) const { return Scratch() + LabelRun(job, 1u); }
+    device uint *RegionStart(device const MeshTopologyJob &job) const { return Scratch() + LabelRun(job, 2u); }
+    device uint *WalkLength(device const MeshTopologyJob &job) const { return Scratch() + LabelRun(job, 3u); }
+    device uint *VertexEdgeTotal(device const MeshTopologyJob &job) const { return Scratch() + LabelRun(job, 4u); }
+    device uint *VertexEdgeDissolved(device const MeshTopologyJob &job) const { return Scratch() + LabelRun(job, 5u); }
+    TopoHalfedgeScratch HalfedgeAux(device const MeshTopologyJob &job) const { return {Scratch() + job.HalfedgeAuxOffset, SrcHalfedgeDomain(job)}; }
+    device uint *EdgeParams(device const MeshTopologyJob &job) const { return Scratch() + job.HalfedgeAuxOffset; }
+    device uint *WireEdgeMap(device const MeshTopologyJob &job) const { return Scratch() + job.WireEdgeMapOffset; }
+    float3 TransformCopy(device const MeshTopologyJob &job, float3 p) const { return job.CopyRotation.Unpack() * p + float3(job.CopyTranslation); }
+    float PlaneDistance(device const MeshTopologyJob &job, float3 p) const { return dot(float3(job.PlaneNormal), p) - job.PlaneOffset; }
+    PlaneSideKind PlaneSide(device const MeshTopologyJob &job, float3 p) const { return PlaneSideOf(PlaneDistance(job, p), p, PlaneSideTolerance); }
+    device uint *Table(device const MeshTopologyJob &job) const { return Scratch() + job.TableOffset; }
+    device packed_float3 *Inward(device const MeshTopologyJob &job, uint d, uint slot) const { return reinterpret_cast<device packed_float3 *>(Scratch() + job.VertexInwardOffset) + 2u * d + slot; }
+    uint SrcNext(device const MeshTopologyJob &job, uint h) const { return Src(job).Next(h); }
+    TopoHalfedgeScratch DissolvePrevious(device const MeshTopologyJob &job) const { return {Scratch() + job.FaceLoopOffset, SrcHalfedgeDomain(job)}; }
+    TopoHalfedgeScratch FlagHalfedges(device const MeshTopologyJob &job) const { return {Scratch() + job.FlagHalfedgeOffset, SrcHalfedgeDomain(job)}; }
+    device uint *FlagFaces(device const MeshTopologyJob &job) const { return Scratch() + job.FlagFaceOffset; }
+    device uint *Counts(device const MeshTopologyJob &job, uint quantity) const { return Scratch() + job.CountsOffset + quantity * job.CountEntries; }
     // Face corners and wire corners occupy separate runs of the same output allocation.
-    void WriteCounts(MeshTopologyJob job, uint entry, uint3 counts, uint wire_corners = 0u, uint provenance = 0u) const {
+    void WriteCounts(device const MeshTopologyJob &job, uint entry, uint3 counts, uint wire_corners = 0u, uint provenance = 0u) const {
         Counts(job, TopoCountVertices)[entry] = counts.x;
         Counts(job, TopoCountFaces)[entry] = counts.y;
         Counts(job, TopoCountCorners)[entry] = counts.z;
         Counts(job, TopoCountWireCorners)[entry] = wire_corners;
         Counts(job, TopoCountProvenance)[entry] = provenance;
     }
-    device packed_uint2 *Provenance(MeshTopologyJob job) const { return reinterpret_cast<device packed_uint2 *>(BindlessBufferMutable(uint, B.Buffer, job.Provenance.Slot) + job.Provenance.Offset); }
-    uint WireCornerOffset(MeshTopologyJob job, uint entry) const {
+    device packed_uint2 *Provenance(device const MeshTopologyJob &job) const { return reinterpret_cast<device packed_uint2 *>(BindlessBufferMutable(uint, B.Buffer, job.Provenance.Slot) + job.Provenance.Offset); }
+    uint WireCornerOffset(device const MeshTopologyJob &job, uint entry) const {
         return Counts(job, TopoCountCorners)[job.CountEntries - 1u] + Counts(job, TopoCountWireCorners)[entry];
     }
-    uint Span(MeshTopologyJob job, uint quantity, uint entry) const { return Counts(job, quantity)[entry + 1u] - Counts(job, quantity)[entry]; }
+    uint Span(device const MeshTopologyJob &job, uint quantity, uint entry) const { return Counts(job, quantity)[entry + 1u] - Counts(job, quantity)[entry]; }
     // The output corner one past an entry's first wire corner, which its wire edge maps to.
-    uint WireEdgeCorner(MeshTopologyJob job, uint entry) const { return job.DstCornerOffset + WireCornerOffset(job, entry) + 1u; }
+    uint WireEdgeCorner(device const MeshTopologyJob &job, uint entry) const { return job.DstCornerOffset + WireCornerOffset(job, entry) + 1u; }
     uint VertexEntry(uint v) const { return v; }
-    uint HalfedgeEntry(MeshTopologyJob job, uint h) const { return job.SrcVertexCount + SrcHalfedgeDomain(job).Index(h); }
-    uint FaceEntry(MeshTopologyJob job, uint f) const { return job.SrcVertexCount + job.SrcHalfedgeCount + f; }
-    device uint *VertexMap(MeshTopologyJob job) const { return Scratch() + job.VertexMapOffset; }
-    device uint *CornerMap(MeshTopologyJob job) const { return Scratch() + job.CornerMapOffset; }
-    device uint *FaceMap(MeshTopologyJob job) const { return Scratch() + job.FaceMapOffset; }
-    device packed_uint2 *CornerProvenance(MeshTopologyJob job) const { return reinterpret_cast<device packed_uint2 *>(Scratch() + job.CornerProvenanceOffset); }
+    uint HalfedgeEntry(device const MeshTopologyJob &job, uint h) const { return job.SrcVertexCount + SrcHalfedgeDomain(job).Index(h); }
+    uint FaceEntry(device const MeshTopologyJob &job, uint f) const { return job.SrcVertexCount + job.SrcHalfedgeCount + f; }
+    device uint *VertexMap(device const MeshTopologyJob &job) const { return Scratch() + job.VertexMapOffset; }
+    device uint *CornerMap(device const MeshTopologyJob &job) const { return Scratch() + job.CornerMapOffset; }
+    device uint *FaceMap(device const MeshTopologyJob &job) const { return Scratch() + job.FaceMapOffset; }
+    device packed_uint2 *CornerProvenance(device const MeshTopologyJob &job) const { return reinterpret_cast<device packed_uint2 *>(Scratch() + job.CornerProvenanceOffset); }
 
-    TopoOutputValues<packed_uint2> DstFaceRanges(MeshTopologyJob job) const { return {BindlessBufferMutable(packed_uint2, B.Buffer, job.DstConnectivity.FaceRangesSlot), DstTable(job, 2u), DstFaceDomain(job)}; }
-    TopoOutputRun<uint> DstHalfedgeFaces(MeshTopologyJob job) const { return {BindlessBufferMutable(uint, B.Buffer, job.DstConnectivity.HalfedgeFacesSlot), DstTable(job, 1u), job.DstCornerOffset}; }
-    TopoOutputRun<uint> DstOpposites(MeshTopologyJob job) const { return {BindlessBufferMutable(uint, B.Buffer, job.DstConnectivity.OppositesSlot), DstTable(job, 1u), job.DstCornerOffset}; }
-    uint2 DstFaceRange(MeshTopologyJob job, uint f) const { return Dst(job).FaceHalfedges(DstFaceDomain(job).Handle(f)) - job.DstCornerOffset; }
+    TopoOutputValues<packed_uint2> DstFaceRanges(device const MeshTopologyJob &job) const { return {BindlessBufferMutable(packed_uint2, B.Buffer, job.DstConnectivity.FaceRangesSlot), DstTable(job, 2u), DstFaceDomain(job)}; }
+    TopoOutputRun<uint> DstHalfedgeFaces(device const MeshTopologyJob &job) const { return {BindlessBufferMutable(uint, B.Buffer, job.DstConnectivity.HalfedgeFacesSlot), DstTable(job, 1u), job.DstCornerOffset}; }
+    TopoOutputRun<uint> DstOpposites(device const MeshTopologyJob &job) const { return {BindlessBufferMutable(uint, B.Buffer, job.DstConnectivity.OppositesSlot), DstTable(job, 1u), job.DstCornerOffset}; }
+    uint2 DstFaceRange(device const MeshTopologyJob &job, uint f) const { return Dst(job).FaceHalfedges(DstFaceDomain(job).Handle(f)) - job.DstCornerOffset; }
     // An output element interpolates four sources bilinearly: lerp(lerp(a, b, s), lerp(d, c, s), t).
-    void WriteVertexMap4(MeshTopologyJob job, uint d, uint4 sources, float s, float t) const { TopoWriteMap(VertexMap(job) + TopoVertexMapWords * d, sources, s, t); }
-    void WriteVertexMap(MeshTopologyJob job, uint d, uint a, uint b, float weight) const { WriteVertexMap4(job, d, uint4(a, b, b, a), weight, 0.f); }
-    void WriteVertexProvenance(MeshTopologyJob job, uint d, uint first, uint count, uint face) const {
+    void WriteVertexMap4(device const MeshTopologyJob &job, uint d, uint4 sources, float s, float t) const { TopoWriteMap(VertexMap(job) + TopoVertexMapWords * d, sources, s, t); }
+    void WriteVertexMap(device const MeshTopologyJob &job, uint d, uint a, uint b, float weight) const { WriteVertexMap4(job, d, uint4(a, b, b, a), weight, 0.f); }
+    void WriteVertexProvenance(device const MeshTopologyJob &job, uint d, uint first, uint count, uint face) const {
         WriteVertexMap4(job, d, uint4(TopoProvenanceMap, first, count, face), 0.f, 0.f);
     }
-    uint CornerEdgeSource(MeshTopologyJob job, uint d) const { return CornerMap(job)[TopoCornerMapWords * d + 6u]; }
-    bool CornerSelected(MeshTopologyJob job, uint d) const { return CornerMap(job)[TopoCornerMapWords * d + 7u] != 0u; }
-    void WriteCorner(MeshTopologyJob job, uint d, uint v_out, uint a, uint b, float weight, uint edge_source, bool selected) const {
+    uint CornerEdgeSource(device const MeshTopologyJob &job, uint d) const { return CornerMap(job)[TopoCornerMapWords * d + 6u]; }
+    bool CornerSelected(device const MeshTopologyJob &job, uint d) const { return CornerMap(job)[TopoCornerMapWords * d + 7u] != 0u; }
+    void WriteCorner(device const MeshTopologyJob &job, uint d, uint v_out, uint a, uint b, float weight, uint edge_source, bool selected) const {
         WriteCorner4(job, d, v_out, uint4(a, b, b, a), weight, 0.f, edge_source, selected);
     }
-    void WriteCorner4(MeshTopologyJob job, uint d, uint v_out, uint4 sources, float s, float t, uint edge_source, bool selected) const {
+    void WriteCorner4(device const MeshTopologyJob &job, uint d, uint v_out, uint4 sources, float s, float t, uint edge_source, bool selected) const {
         DstCorners(job)[d] = DstVertexDomain(job).Handle(v_out);
         if (job.CornerAttributes & MeshAttributeBit_Normal) CornerProvenance(job)[d].x = v_out;
         device uint *map = CornerMap(job) + TopoCornerMapWords * d;
@@ -274,10 +276,15 @@ struct TopoContext {
         map[7] = selected ? 1u : 0u;
     }
     // An output corner blends the provenance pairs from `first`, whose sources are source corners.
-    void WriteCornerProvenance(MeshTopologyJob job, uint d, uint v_out, uint first, uint count, uint edge_source, bool selected) const {
+    void WriteCornerProvenance(device const MeshTopologyJob &job, uint d, uint v_out, uint first, uint count, uint edge_source, bool selected) const {
         WriteCorner4(job, d, v_out, uint4(TopoProvenanceMap, first, count, 0u), 0.f, 0.f, edge_source, selected);
     }
 };
+// A topology kernel's lane and threadgroup, the bindless set and the push constants, and the context of its tile's job.
+#define TOPOLOGY_ARGS uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]], device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]], constant MeshTopologyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+#define TOPOLOGY_CONTEXT const TopoContext ctx{bindless, pc}; const uint2 tile = ctx.Tile(group_id); device const MeshTopologyJob &job = ctx.Jobs()[tile.x]
+// Declares the context of a topology kernel's job and the thread's index `index` within the job.
+#define TOPOLOGY_THREAD(index) TOPOLOGY_CONTEXT; const uint index = tile.y * ScanTileSize + lane
 
 // The source elements an output element blends with their weights: a map's four bilinear sources, or its provenance run.
 struct TopoSources {
@@ -299,7 +306,7 @@ struct TopoSources {
     }
 };
 inline float4 TopoBilinearWeights(float s, float t) { return float4((1.f - s) * (1.f - t), s * (1.f - t), s * t, (1.f - s) * t); }
-inline TopoSources TopoSourcesOf(TopoContext ctx, MeshTopologyJob job, device const uint *map) {
+inline TopoSources TopoSourcesOf(TopoContext ctx, device const MeshTopologyJob &job, device const uint *map) {
     if (map[0] == TopoProvenanceMap) {
         device const packed_uint2 *pairs = ctx.Provenance(job) + map[1];
         const uint count = map[2];
@@ -318,10 +325,10 @@ inline TopoSources TopoSourcesOf(TopoContext ctx, MeshTopologyJob job, device co
     return {4u, s != 0.f || t != 0.f, t < 0.5f ? (s < 0.5f ? 0u : 1u) : (s < 0.5f ? 3u : 2u), uint4(map[0], map[1], map[2], map[3]), TopoBilinearWeights(s, t), nullptr};
 }
 
-inline TopologyAttribute TopoAttribute(TopoContext ctx, MeshTopologyJob job, uint i) {
+inline TopologyAttribute TopoAttribute(TopoContext ctx, device const MeshTopologyJob &job, uint i) {
     return reinterpret_cast<device const TopologyAttribute *>(BindlessBuffer(uint, ctx.B.Buffer, job.Attributes.Slot) + job.Attributes.Offset)[i];
 }
-inline uint2 TopoAttributeRun(MeshTopologyJob job, AttributeDomain domain) {
+inline uint2 TopoAttributeRun(device const MeshTopologyJob &job, AttributeDomain domain) {
     const uint d = uint(domain);
     return uint2(d ? job.AttributeEnds[d - 1u] : 0u, job.AttributeEnds[d]);
 }
@@ -332,12 +339,12 @@ inline uint4 TopoReadAttribute(TopoContext ctx, TopologyAttribute attribute, uin
 inline float TopoParamAt(TopoContext ctx, NamedAttributeRef attribute, float fallback, uint handle) {
     return attribute.ValuesSlot == InvalidSlot ? fallback : as_type<float>(ReadNamedAttribute(ctx.B, attribute, AttributeType::Float, handle).x);
 }
-inline float TopoParam0Vertex(TopoContext ctx, MeshTopologyJob job, uint v) { return TopoParamAt(ctx, job.Param0Attribute, job.Param0, ctx.SrcVertexDomain(job).Handle(v)); }
-inline float TopoParam0Edge(TopoContext ctx, MeshTopologyJob job, uint e) { return TopoParamAt(ctx, job.Param0Attribute, job.Param0, ctx.SrcEdgeDomain(job).Handle(e)); }
+inline float TopoParam0Vertex(TopoContext ctx, device const MeshTopologyJob &job, uint v) { return TopoParamAt(ctx, job.Param0Attribute, job.Param0, ctx.SrcVertexDomain(job).Handle(v)); }
+inline float TopoParam0Edge(TopoContext ctx, device const MeshTopologyJob &job, uint e) { return TopoParamAt(ctx, job.Param0Attribute, job.Param0, ctx.SrcEdgeDomain(job).Handle(e)); }
 inline void TopoWriteAttribute(TopoContext ctx, TopologyAttribute attribute, uint handle, uint4 value) {
     WriteNamedAttribute(ctx.B, attribute.Destination, attribute.Type, handle, value);
 }
-inline void TopoCopyAttributes(TopoContext ctx, MeshTopologyJob job, AttributeDomain domain, uint handle, uint source) {
+inline void TopoCopyAttributes(TopoContext ctx, device const MeshTopologyJob &job, AttributeDomain domain, uint handle, uint source) {
     const uint2 run = TopoAttributeRun(job, domain);
     for (uint i = run.x; i < run.y; ++i) {
         const TopologyAttribute attribute = TopoAttribute(ctx, job, i);
@@ -351,26 +358,26 @@ inline uint4 TopoBlendAttribute(TopologyAttribute attribute, TopoSources sources
     return as_type<uint4>(sources.Blend([&](uint source) { return as_type<float4>(read(source)); }));
 }
 
-inline bool TopoTransformsCopies(MeshTopologyJob job) { return (job.Flags & TopologyFlagTransformCopies) != 0u; }
+inline bool TopoTransformsCopies(device const MeshTopologyJob &job) { return (job.Flags & TopologyFlagTransformCopies) != 0u; }
 
 // An extruded region that borders unselected faces moves onto copied vertices.
 // A region that borders nothing duplicates.
-inline bool TopoRegionMoves(TopoContext ctx, MeshTopologyJob job) { return TopologyBaseOp(job.Op) == MeshTopologyOp::ExtrudeRegion && ctx.DelOrig(job); }
-inline bool TopoRegionDuplicates(TopoContext ctx, MeshTopologyJob job) {
+inline bool TopoRegionMoves(TopoContext ctx, device const MeshTopologyJob &job) { return TopologyBaseOp(job.Op) == MeshTopologyOp::ExtrudeRegion && ctx.DelOrig(job); }
+inline bool TopoRegionDuplicates(TopoContext ctx, device const MeshTopologyJob &job) {
     return TopologyBaseOp(job.Op) == MeshTopologyOp::DuplicateGeometry || (TopologyBaseOp(job.Op) == MeshTopologyOp::ExtrudeRegion && !ctx.DelOrig(job));
 }
 
-inline uint TopoRegionEdgeFaces(TopoContext ctx, MeshTopologyJob job, uint e) { return ctx.EdgeParams(job)[2u*e]&~TopoRegionUnselected; }
-inline bool TopoRegionHasSides(TopoContext ctx, MeshTopologyJob job) { return (ctx.State(job)[0]&TopoRegionSides)!=0u; }
-inline bool TopoRegionKeepsVertex(TopoContext ctx, MeshTopologyJob job, uint v) {
+inline uint TopoRegionEdgeFaces(TopoContext ctx, device const MeshTopologyJob &job, uint e) { return ctx.EdgeParams(job)[2u*e]&~TopoRegionUnselected; }
+inline bool TopoRegionHasSides(TopoContext ctx, device const MeshTopologyJob &job) { return (ctx.State(job)[0]&TopoRegionSides)!=0u; }
+inline bool TopoRegionKeepsVertex(TopoContext ctx, device const MeshTopologyJob &job, uint v) {
     const uint flags=ctx.FlagVertices(job)[v];
     return !(flags&TopoInRegion) || !ctx.DelOrig(job) || (flags&TopoNeedsCopy);
 }
-inline uint TopoRegionLayerVertex(TopoContext ctx, MeshTopologyJob job, uint v, uint layer) {
+inline uint TopoRegionLayerVertex(TopoContext ctx, device const MeshTopologyJob &job, uint v, uint layer) {
     const bool only_top=TopoRegionHasSides(ctx,job) && !(ctx.FlagVertices(job)[v]&TopoOnBoundary);
     return ctx.Counts(job,TopoCountVertices)[v]+uint(TopoRegionKeepsVertex(ctx,job,v))+(only_top ? 0u : layer-1u);
 }
-inline bool TopoRegionConnectsVertex(TopoContext ctx, MeshTopologyJob job, uint v) {
+inline bool TopoRegionConnectsVertex(TopoContext ctx, device const MeshTopologyJob &job, uint v) {
     return (ctx.FlagVertices(job)[v]&(TopoInRegion|TopoRegionEdge))==TopoInRegion;
 }
 
@@ -378,14 +385,14 @@ inline int3 TopoMergeCell(float3 p, float distance) { return int3(floor(p / max(
 inline uint TopoCellHash(int3 cell) {
     return (uint(cell.x) * 73856093u) ^ (uint(cell.y) * 19349663u) ^ (uint(cell.z) * 83492791u);
 }
-inline bool TopoEdgeDissolved(TopoContext ctx, MeshTopologyJob job, uint h) { return (ctx.FlagHalfedges(job)[h] & TopoDissolved) != 0u; }
+inline bool TopoEdgeDissolved(TopoContext ctx, device const MeshTopologyJob &job, uint h) { return (ctx.FlagHalfedges(job)[h] & TopoDissolved) != 0u; }
 
 // A core without faces contains only whole lines, each as the two corners at its ends, since face corners come with their faces.
-inline bool TopoLineCore(MeshTopologyJob job) { return job.SrcFaceCount == 0u; }
+inline bool TopoLineCore(device const MeshTopologyJob &job) { return job.SrcFaceCount == 0u; }
 
-inline uint TopoRemainingEdges(TopoContext ctx, MeshTopologyJob job, uint v) { return ctx.VertexEdgeTotal(job)[v] - ctx.VertexEdgeDissolved(job)[v]; }
+inline uint TopoRemainingEdges(TopoContext ctx, device const MeshTopologyJob &job, uint v) { return ctx.VertexEdgeTotal(job)[v] - ctx.VertexEdgeDissolved(job)[v]; }
 // A dissolve removes a face vertex left without edges, a dissolvable vertex left with two, and under vertex dissolve a dissolvable isolated point.
-inline bool TopoVertexRemoved(TopoContext ctx, MeshTopologyJob job, uint v) {
+inline bool TopoVertexRemoved(TopoContext ctx, device const MeshTopologyJob &job, uint v) {
     if (!TopologyIsDissolve(job.Op)) return false;
     const uint flags=ctx.FlagVertices(job)[v];
     const uint remaining = TopoRemainingEdges(ctx, job, v);
@@ -394,7 +401,7 @@ inline bool TopoVertexRemoved(TopoContext ctx, MeshTopologyJob job, uint v) {
 }
 
 // The corner count of a face loop after its corners map through the vertex targets, with repeated targets and removed vertices dropped.
-inline uint TopoMappedLoopLength(TopoContext ctx, MeshTopologyJob job, uint f) {
+inline uint TopoMappedLoopLength(TopoContext ctx, device const MeshTopologyJob &job, uint f) {
     const uint2 range = ctx.SrcFaceRange(job, f);
     if (!TopologyIsMerge(job.Op) && !TopologyIsDissolve(job.Op)) return range.y - range.x;
     const auto corners = ctx.SrcCorners(job);
@@ -413,7 +420,7 @@ inline uint TopoMappedLoopLength(TopoContext ctx, MeshTopologyJob job, uint f) {
 }
 
 // The boundary halfedge after `h` around a dissolved region: the next in its face, crossing every dissolved edge it meets.
-inline uint TopoNextBoundary(TopoContext ctx, MeshTopologyJob job, uint h) {
+inline uint TopoNextBoundary(TopoContext ctx, device const MeshTopologyJob &job, uint h) {
     uint n = ctx.SrcNext(job, h);
     for (uint i = 0u; i < 4096u && TopoEdgeDissolved(ctx, job, n); ++i) n = ctx.SrcNext(job, ctx.SrcOpposite(job, n));
     return n;
@@ -421,7 +428,7 @@ inline uint TopoNextBoundary(TopoContext ctx, MeshTopologyJob job, uint h) {
 
 // Walks a region's boundary from its start halfedge and counts the corners that remain, emitting them when `base` is valid.
 // Returns zero when the walk does not close in the region's boundary count.
-inline uint TopoWalkRegion(TopoContext ctx, MeshTopologyJob job, uint root, uint fd, uint base) {
+inline uint TopoWalkRegion(TopoContext ctx, device const MeshTopologyJob &job, uint root, uint fd, uint base) {
     const uint start = ctx.RegionStart(job)[root];
     const uint boundary = ctx.RegionBoundary(job)[root];
     if (start == InvalidOffset || boundary == 0u) return 0u;
@@ -441,14 +448,14 @@ inline uint TopoWalkRegion(TopoContext ctx, MeshTopologyJob job, uint root, uint
 }
 
 // Whether a dissolve emits a source face's own loop, which happens when its region root's walk failed.
-inline bool TopoDissolveOwnLoop(TopoContext ctx, MeshTopologyJob job, uint f) {
+inline bool TopoDissolveOwnLoop(TopoContext ctx, device const MeshTopologyJob &job, uint f) {
     const uint root = ctx.FaceLabels(job)[f];
     return ctx.WalkLength(job)[root] == 0u;
 }
 
 // Whether the selection deletes h's edge directly.
 // Face deletion instead drops edges with no surviving face.
-inline bool TopoEdgeDeleted(TopoContext ctx, MeshTopologyJob job, uint h) {
+inline bool TopoEdgeDeleted(TopoContext ctx, device const MeshTopologyJob &job, uint h) {
     if (job.Op==MeshTopologyOp::DeleteVertices) {
         const auto corners=ctx.SrcCorners(job);
         return ctx.SrcSelectedVertex(job,corners[h]) || ctx.SrcSelectedVertex(job,ctx.SrcFrom(job, h));
@@ -456,7 +463,7 @@ inline bool TopoEdgeDeleted(TopoContext ctx, MeshTopologyJob job, uint h) {
     return TopologyDeletesEdges(job.Op) && ctx.SrcSelectedEdge(job,ctx.SrcEdge(job,h));
 }
 
-inline bool TopoFaceDeleted(TopoContext ctx, MeshTopologyJob job, uint f) {
+inline bool TopoFaceDeleted(TopoContext ctx, device const MeshTopologyJob &job, uint f) {
     const uint2 range = ctx.SrcFaceRange(job, f);
     switch (job.Op) {
         case MeshTopologyOp::Wireframe:
@@ -490,7 +497,7 @@ inline bool TopoFaceDeleted(TopoContext ctx, MeshTopologyJob job, uint f) {
     }
 }
 
-inline bool TopoVertexKept(TopoContext ctx, MeshTopologyJob job, uint v) {
+inline bool TopoVertexKept(TopoContext ctx, device const MeshTopologyJob &job, uint v) {
     const uint flags = ctx.FlagVertices(job)[v];
     switch (job.Op) {
         case MeshTopologyOp::ExtrudeRegion: return TopoRegionKeepsVertex(ctx,job,v);
@@ -518,7 +525,7 @@ inline bool TopoVertexKept(TopoContext ctx, MeshTopologyJob job, uint v) {
 }
 
 // How many copies a source vertex gains, placed right after its own output.
-inline uint TopoVertexCopies(TopoContext ctx, MeshTopologyJob job, uint v) {
+inline uint TopoVertexCopies(TopoContext ctx, device const MeshTopologyJob &job, uint v) {
     const uint flags = ctx.FlagVertices(job)[v];
     switch (TopologyBaseOp(job.Op)) {
         case MeshTopologyOp::ExtrudeVertices: return uint(ctx.SrcSelectedVertex(job, v));
@@ -534,13 +541,13 @@ inline uint TopoVertexCopies(TopoContext ctx, MeshTopologyJob job, uint v) {
     }
 }
 
-inline bool TopoFaceUsesCopy(TopoContext ctx, MeshTopologyJob job, bool face_selected, uint v) {
+inline bool TopoFaceUsesCopy(TopoContext ctx, device const MeshTopologyJob &job, bool face_selected, uint v) {
     if (!face_selected) return false;
     if (job.Op != MeshTopologyOp::SplitGeometry && !TopoRegionMoves(ctx, job)) return false;
     return TopoVertexCopies(ctx, job, v) != 0u;
 }
 
-inline bool TopoHalfedgeMakesSide(TopoContext ctx, MeshTopologyJob job, uint h) {
+inline bool TopoHalfedgeMakesSide(TopoContext ctx, device const MeshTopologyJob &job, uint h) {
     if (job.Op==MeshTopologyOp::ExtrudeRegion) {
         const uint e=ctx.SrcEdge(job,h);
         if (!ctx.SrcSelectedEdge(job,e) || TopoRegionEdgeFaces(ctx,job,e)>=2u) return false;
@@ -551,7 +558,7 @@ inline bool TopoHalfedgeMakesSide(TopoContext ctx, MeshTopologyJob job, uint h) 
     return job.Op == MeshTopologyOp::Solidify || TopologyBaseOp(job.Op) != MeshTopologyOp::ExtrudeRegion || ctx.DelOrig(job);
 }
 
-inline bool TopoOriginalVertexSelected(TopoContext ctx, MeshTopologyJob job, uint v) {
+inline bool TopoOriginalVertexSelected(TopoContext ctx, device const MeshTopologyJob &job, uint v) {
     const uint flags = ctx.FlagVertices(job)[v];
     switch (TopologyBaseOp(job.Op)) {
         case MeshTopologyOp::ExtrudeVertices: return false;
@@ -568,7 +575,7 @@ inline bool TopoOriginalVertexSelected(TopoContext ctx, MeshTopologyJob job, uin
     }
 }
 
-inline void TopoEmitFace(TopoContext ctx, MeshTopologyJob job, uint fd, uint base, uint count, uint source, bool selected) {
+inline void TopoEmitFace(TopoContext ctx, device const MeshTopologyJob &job, uint fd, uint base, uint count, uint source, bool selected) {
     ctx.FaceMap(job)[fd] = source;
     ctx.DstFaceRanges(job)[fd] = packed_uint2(job.DstCornerOffset + base, job.DstCornerOffset + base + count);
     for (uint h = base; h < base + count; ++h) {
@@ -582,12 +589,12 @@ inline void TopoEmitFace(TopoContext ctx, MeshTopologyJob job, uint fd, uint bas
 
 // A corner's derived normal: its face normal on a sharp face, its sector normal on a seam, and its vertex normal otherwise.
 // New corners interpolate these normals, never their polar and azimuth angles.
-inline float3 TopoDerivedCornerNormal(TopoContext ctx, constant MeshTopologyArenas &arenas, ConnectivityView conn, uint h) {
+inline float3 TopoDerivedCornerNormal(TopoContext ctx, constant MeshTopologyArenas &arenas, ElementLayers layers, ConnectivityView conn, uint h) {
     const uint face = conn.FaceAddress(conn.HalfedgeFace(h));
     if (BindlessBuffer(uchar,ctx.B.Buffer, arenas.FaceSharpnessSlot)[face] != 0u) {
         return float3(BindlessBuffer(packed_float3,ctx.B.Buffer, arenas.BaseFaceNormalSlot)[face]);
     }
-    const uint root = CornerSectorRoot(ctx.B, arenas.Layers.CornerSectors, h);
-    if (root != InvalidOffset) return float3(BindlessBuffer(NormalSector,ctx.B.Buffer, arenas.Layers.NormalSectors.Slot)[arenas.Layers.NormalSectors.Offset + root].Normal);
+    const uint root = CornerSectorRoot(ctx.B, layers.CornerSectors, h);
+    if (root != InvalidOffset) return float3(BindlessBuffer(NormalSector,ctx.B.Buffer, layers.NormalSectors.Slot)[layers.NormalSectors.Offset + root].Normal);
     return float3(BindlessBuffer(packed_float3,ctx.B.Buffer, arenas.BaseVertexNormalSlot)[conn.VertexAddress(conn.VertexOf(h))]);
 }

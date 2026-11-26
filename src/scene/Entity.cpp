@@ -22,6 +22,7 @@ struct EntityNameCounts {
     NameMap<size_t> Counts;
     // Per stem, the N of each live "{stem}_{N}" name, once per name using it.
     NameMap<std::multiset<uint64_t>> Suffixes;
+    bool Stale{}; // A name changed in place, which the counts reflect once rebuilt
 };
 void Reset(EntityNameCounts &names, state::Registry &) { names = {}; }
 
@@ -70,12 +71,10 @@ void UntrackName(state::Registry &r, state::Entity e) {
 void InitEntityNames(state::Registry &r) {
     r.Resources.emplace<EntityNameCounts>();
     r.on_construct<Name, &TrackName>();
+    r.on_update<Name, [](state::Registry &r, state::Entity) {
+        if (auto *names = r.Resources.find<EntityNameCounts>()) names->Stale = true;
+    }>();
     r.on_destroy<Name, &UntrackName>();
-}
-void RebuildEntityNames(state::Registry &r) {
-    auto &names = r.Resources.get<EntityNameCounts>();
-    Reset(names, r);
-    for (const auto &[e, name] : r.view<const Name>().each()) Track(names, name.Value);
 }
 void DeinitEntityNames(state::Registry &r) { r.Resources.erase<EntityNameCounts>(); }
 void ReserveEntityNames(state::Registry &r, size_t additional) {
@@ -83,7 +82,11 @@ void ReserveEntityNames(state::Registry &r, size_t additional) {
     counts.reserve(counts.size() + additional);
 }
 Name &EmplaceUniqueName(state::Registry &r, state::Entity e, std::string_view prefix) {
-    const auto &names = r.Resources.get<const EntityNameCounts>();
+    auto &names = r.Resources.get<EntityNameCounts>();
+    if (names.Stale) {
+        Reset(names, r);
+        for (const auto &[_, name] : r.view<const Name>().each()) Track(names, name.Value);
+    }
     if (!names.Counts.contains(prefix)) return r.emplace<Name>(e, std::string{prefix});
     const auto it = names.Suffixes.find(prefix);
     for (auto suffix = (it != names.Suffixes.end() ? *it->second.rbegin() : 0u) + 1u;; ++suffix) {

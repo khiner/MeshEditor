@@ -9,7 +9,7 @@ struct TopoWeldLoops {
     device uint *Starts, *Lengths;
 };
 
-inline TopoWeldLoops TopoWeldPlan(TopoContext ctx, MeshTopologyJob job, uint f) {
+inline TopoWeldLoops TopoWeldPlan(TopoContext ctx, device const MeshTopologyJob &job, uint f) {
     const uint2 range=ctx.SrcFaceRange(job,f);
     const uint n=range.y-range.x;
     device uint *base=ctx.Scratch()+job.FaceLoopOffset+14u*ctx.SrcHalfedgeDomain(job).Index(range.x);
@@ -17,7 +17,7 @@ inline TopoWeldLoops TopoWeldPlan(TopoContext ctx, MeshTopologyJob job, uint f) 
         reinterpret_cast<device packed_uint2 *>(base+10u*n),base+12u*n,base+13u*n};
 }
 
-inline void TopoPlanWeld(TopoContext ctx, MeshTopologyJob job, uint f) {
+inline void TopoPlanWeld(TopoContext ctx, device const MeshTopologyJob &job, uint f) {
     const uint2 range=ctx.SrcFaceRange(job,f);
     const uint n=range.y-range.x,capacity=1u<<(32u-clz(2u*n-1u));
     const auto plan=TopoWeldPlan(ctx,job,f);
@@ -59,28 +59,28 @@ struct TopoWeldPolygon {
     uint Index, Size;
 };
 
-inline TopoWeldPolygon TopoWeldPolygonAt(TopoContext ctx, MeshTopologyJob job, uint hi) {
+inline TopoWeldPolygon TopoWeldPolygonAt(TopoContext ctx, device const MeshTopologyJob &job, uint hi) {
     const uint h=ctx.SrcHalfedgeDomain(job).Handle(hi),f=ctx.SrcFaceOf(job,h);
     const auto plan=TopoWeldPlan(ctx,job,f);
     const uint2 range=ctx.SrcFaceRange(job,f);
     return {plan,plan.Indices[h-range.x],range.y-range.x};
 }
 
-inline uint TopoWeldVertex(TopoContext ctx, MeshTopologyJob job, TopoWeldPolygon p, uint k) {
+inline uint TopoWeldVertex(TopoContext ctx, device const MeshTopologyJob &job, TopoWeldPolygon p, uint k) {
     return ctx.VertexTargets(job)[ctx.SrcCorners(job)[p.Plan.Corners[p.Plan.Starts[p.Index]+k].x]];
 }
 
 // Whether the polygon winds forward from its lowest vertex, which coincident polygons share when they wind the same way.
-inline bool TopoWeldForward(TopoContext ctx, MeshTopologyJob job, TopoWeldPolygon p) {
+inline bool TopoWeldForward(TopoContext ctx, device const MeshTopologyJob &job, TopoWeldPolygon p) {
     const uint n=p.Plan.Lengths[p.Index],first=p.Plan.Stack[p.Index].x;
     return TopoWeldVertex(ctx,job,p,(first+1u)%n)<TopoWeldVertex(ctx,job,p,(first+n-1u)%n);
 }
-inline uint TopoWeldCanonicalVertex(TopoContext ctx, MeshTopologyJob job, TopoWeldPolygon p, uint k) {
+inline uint TopoWeldCanonicalVertex(TopoContext ctx, device const MeshTopologyJob &job, TopoWeldPolygon p, uint k) {
     const uint n=p.Plan.Lengths[p.Index],first=p.Plan.Stack[p.Index].x;
     return TopoWeldVertex(ctx,job,p,(first+(TopoWeldForward(ctx,job,p) ? k : n-k))%n);
 }
 
-inline void TopoWeldKeys(TopoContext ctx, MeshTopologyJob job, uint f) {
+inline void TopoWeldKeys(TopoContext ctx, device const MeshTopologyJob &job, uint f) {
     const auto plan=TopoWeldPlan(ctx,job,f);
     const uint2 range=ctx.SrcFaceRange(job,f);
     for (uint i=0u;i<ctx.FlagFaces(job)[f];++i) {
@@ -102,7 +102,7 @@ inline void TopoWeldKeys(TopoContext ctx, MeshTopologyJob job, uint f) {
     }
 }
 
-inline bool TopoWeldEqual(TopoContext ctx, MeshTopologyJob job, TopoWeldPolygon a, TopoWeldPolygon b) {
+inline bool TopoWeldEqual(TopoContext ctx, device const MeshTopologyJob &job, TopoWeldPolygon a, TopoWeldPolygon b) {
     const uint n=a.Plan.Lengths[a.Index];
     if (n!=b.Plan.Lengths[b.Index] || a.Plan.Stack[a.Index].y!=b.Plan.Stack[b.Index].y) return false;
     for (uint k=0u;k<n;++k)
@@ -110,7 +110,7 @@ inline bool TopoWeldEqual(TopoContext ctx, MeshTopologyJob job, TopoWeldPolygon 
     return true;
 }
 
-inline void TopoWeldInsert(TopoContext ctx, MeshTopologyJob job, uint f) {
+inline void TopoWeldInsert(TopoContext ctx, device const MeshTopologyJob &job, uint f) {
     const auto plan=TopoWeldPlan(ctx,job,f);
     const uint2 range=ctx.SrcFaceRange(job,f);
     device atomic_uint *table=AtomicWord(ctx.Table(job));
@@ -134,10 +134,9 @@ inline void TopoWeldInsert(TopoContext ctx, MeshTopologyJob job, uint f) {
     }
 }
 
-inline void TopoWeldDeduplicate(TopoContext ctx, MeshTopologyJob job, uint f) {
+inline void TopoWeldDeduplicate(TopoContext ctx, device const MeshTopologyJob &job, uint f) {
     const auto plan=TopoWeldPlan(ctx,job,f);
     const uint2 range=ctx.SrcFaceRange(job,f);
-    for (uint h=range.x;h<range.y;++h) ctx.FlagHalfedges(job)[h]&=~TopoSurfaceEdge;
     for (uint i=0u;i<ctx.FlagFaces(job)[f];++i) {
         const TopoWeldPolygon p{plan,i,range.y-range.x};
         const uint hi=ctx.SrcHalfedgeDomain(job).Index(plan.Corners[plan.Starts[i]].x);
@@ -158,12 +157,21 @@ inline void TopoWeldDeduplicate(TopoContext ctx, MeshTopologyJob job, uint f) {
             }
             break;
         }
-        if (plan.Keys[2u*p.Size+i]) for (uint k=0u;k<plan.Lengths[i];++k)
-            ctx.FlagHalfedges(job)[plan.Corners[plan.Starts[i]+k].y]|=TopoSurfaceEdge;
     }
 }
 
-inline uint3 TopoWeldCounts(TopoContext ctx, MeshTopologyJob job, uint f) {
+// A polygon that survives deduplication marks its edges as surface edges, in a pass after every coincident polygon has dropped.
+inline void TopoWeldSurfaceEdges(TopoContext ctx, device const MeshTopologyJob &job, uint f) {
+    const auto plan=TopoWeldPlan(ctx,job,f);
+    const uint2 range=ctx.SrcFaceRange(job,f);
+    const uint n=range.y-range.x;
+    for (uint h=range.x;h<range.y;++h) ctx.FlagHalfedges(job)[h]&=~TopoSurfaceEdge;
+    for (uint i=0u;i<ctx.FlagFaces(job)[f];++i) {
+        if (plan.Keys[2u*n+i]) for (uint k=0u;k<plan.Lengths[i];++k) ctx.FlagHalfedges(job)[plan.Corners[plan.Starts[i]+k].y]|=TopoSurfaceEdge;
+    }
+}
+
+inline uint3 TopoWeldCounts(TopoContext ctx, device const MeshTopologyJob &job, uint f) {
     const auto plan=TopoWeldPlan(ctx,job,f);
     const uint2 range=ctx.SrcFaceRange(job,f);
     uint3 counts=uint3(0u);
@@ -173,7 +181,7 @@ inline uint3 TopoWeldCounts(TopoContext ctx, MeshTopologyJob job, uint f) {
     return counts;
 }
 
-inline void TopoEmitWeld(TopoContext ctx, MeshTopologyJob job, uint f, uint fd, uint base) {
+inline void TopoEmitWeld(TopoContext ctx, device const MeshTopologyJob &job, uint f, uint fd, uint base) {
     const auto plan=TopoWeldPlan(ctx,job,f);
     const uint2 range=ctx.SrcFaceRange(job,f);
     const uint n=range.y-range.x;

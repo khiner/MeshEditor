@@ -3,7 +3,7 @@
 #include "MeshBooleanShared.metal"
 #include "MeshTopologyContext.metal"
 
-inline JobRuns TopoBooleanStorage(TopoContext ctx, MeshTopologyJob job) { return {BindlessBufferMutable(uint, ctx.B.Buffer, job.Boolean.Slot)}; }
+inline JobRuns TopoBooleanStorage(TopoContext ctx, device const MeshTopologyJob &job) { return {BindlessBufferMutable(uint, ctx.B.Buffer, job.Boolean.Slot)}; }
 
 // The weights of p over a triangle's corners: exact near a corner, without the far corner near an edge, and by areas inside.
 inline float3 TopoBarycentric(float3 p, float3 a, float3 b, float3 c) {
@@ -35,18 +35,11 @@ inline float3 TopoBarycentric(float3 p, float3 a, float3 b, float3 c) {
     return uvw;
 }
 
-kernel void TopologyBooleanCount(
-    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant MeshTopologyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const TopoContext ctx{bindless, pc};
-    const uint2 tile = ctx.Tile(group_id);
-    const MeshTopologyJob job = ctx.Jobs()[tile.x];
-    const uint e = tile.y * ScanTileSize + lane;
+kernel void TopologyBooleanCount(TOPOLOGY_ARGS) {
+    TOPOLOGY_THREAD(e);
     if (e >= job.CountEntries) return;
     const JobRuns runs = TopoBooleanStorage(ctx, job);
-    const BooleanJob boolean = *runs.Run<BooleanJob>(job.Boolean.Offset);
+    device const BooleanJob &boolean = *runs.Run<BooleanJob>(job.Boolean.Offset);
     const uint entries = BoolVertexCount(boolean) + boolean.Intersections, triangles = BoolTriangleCount(boolean);
     if (e < entries) ctx.WriteCounts(job, e, uint3(BoolCount(runs, boolean, e), 0u, 0u));
     else if (e < entries + triangles) {
@@ -58,17 +51,10 @@ kernel void TopologyBooleanCount(
 // A vertex copies its source vertex, displaced to its position in the first source's space.
 // An intersection interpolates its halfedge's ends, displaced to the crossing.
 // A triangle's polygon triangles take the source triangle's corners, weighted by each corner's position in it.
-kernel void TopologyBooleanScatter(
-    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant MeshTopologyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const TopoContext ctx{bindless, pc};
-    const uint2 tile = ctx.Tile(group_id);
-    const MeshTopologyJob job = ctx.Jobs()[tile.x];
-    const uint e = tile.y * ScanTileSize + lane;
+kernel void TopologyBooleanScatter(TOPOLOGY_ARGS) {
+    TOPOLOGY_THREAD(e);
     const JobRuns runs = TopoBooleanStorage(ctx, job);
-    const BooleanJob boolean = *runs.Run<BooleanJob>(job.Boolean.Offset);
+    device const BooleanJob &boolean = *runs.Run<BooleanJob>(job.Boolean.Offset);
     const uint vertices = BoolVertexCount(boolean), entries = vertices + boolean.Intersections;
     if (e >= entries + BoolTriangleCount(boolean)) return;
     const BoolGeometry g = Geometry(runs, boolean);

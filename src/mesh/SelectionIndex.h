@@ -57,6 +57,18 @@ struct SelectionIndex {
         walk(walk, Roots[root], SelectionIndexLevels - 1u);
         return visited;
     }
+    // Visits each block the root's tree holds.
+    void ForEachBlock(uint32_t root, auto &&visit) const {
+        if (root >= Roots.size() || Roots[root] == InvalidOffset) return;
+        const auto walk = [&](auto &&self, uint32_t id, uint32_t level) -> void {
+            for (const auto child : Nodes[id].Children) {
+                if (child == InvalidOffset) continue;
+                if (level) self(self, child, level - 1u);
+                else visit(child);
+            }
+        };
+        walk(walk, Roots[root], SelectionIndexLevels - 1u);
+    }
     const SelectionAggregate &Get(uint32_t root) const {
         static const SelectionAggregate empty{};
         return root < Roots.size() && Roots[root] != InvalidOffset ? Aggregates.Get({Roots[root], 1u})[0] : empty;
@@ -65,7 +77,7 @@ struct SelectionIndex {
         return root < Roots.size() && Roots[root] != InvalidOffset ? SlotOffset{Aggregates.Buffer.Slot, Roots[root]} : SlotOffset{};
     }
     void Update(uint32_t root, std::span<const uint32_t> blocks, uint32_t owner, std::span<const MeshElementBlock> membership, std::span<const SelectionAggregate> leaves);
-    void Release(uint32_t root);
+    void Release(std::span<const uint32_t> roots);
     uint32_t Owner(uint32_t domain, uint32_t block) const {
         const auto found = Owners[domain].find(block);
         return found == Owners[domain].end() ? InvalidOffset : found->second;
@@ -84,6 +96,10 @@ struct SelectionIndex {
     std::array<std::unordered_map<uint32_t, uint32_t>, 3> Owners;
 };
 
-inline void ReleaseMesh(SelectionIndex &index, uint32_t id) {
-    for (uint32_t d = 0u; d < 3u; ++d) index.Release(3u * id + d);
+inline void ReleaseMeshes(SelectionIndex &index, std::span<const uint32_t> ids) {
+    std::vector<uint32_t> roots;
+    for (const auto id : ids) {
+        for (uint32_t d = 0u; d < 3u; ++d) roots.push_back(3u * id + d);
+    }
+    index.Release(roots);
 }

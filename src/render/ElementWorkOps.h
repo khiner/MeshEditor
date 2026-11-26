@@ -7,9 +7,8 @@
 #include <algorithm>
 
 inline Range WorkStorageRange(ElementWork work) { return {work.Storage.Offset, WorkHeaderWords + work.Capacity * (WorkBlockWords + 2u)}; }
-inline uint64_t WorkArgsOffset(ElementWork work, bool groups = false) { return uint64_t(work.Storage.Offset + (groups ? 5u : 2u)) * sizeof(uint32_t); }
 inline uint32_t WorkCapacity(uint32_t count, uint64_t blocks) {
-    return uint32_t(std::bit_ceil(std::max(uint64_t{16}, 2u * std::min(uint64_t(TileCount(count, TileElements)), blocks))));
+    return uint32_t(std::bit_ceil(std::max(uint64_t{1}, 2u * std::min(uint64_t(TileCount(count, TileElements)), blocks))));
 }
 // The storage words AllocateElementWork takes for `count` elements in at most `blocks` blocks.
 inline uint32_t ElementWorkWords(uint32_t count, uint64_t blocks) { return WorkHeaderWords + WorkCapacity(count, blocks) * (WorkBlockWords + 2u); }

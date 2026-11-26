@@ -65,7 +65,7 @@ std::vector<uint32_t> SidesOf(const LocalMesh &local, uint32_t a, uint32_t b) {
 }
 } // namespace
 
-std::vector<EdgeSlideDirections> PlanEdgeSlide(const MeshStore &meshes, const MeshPipelines &pipelines, const Mesh &mesh, const GeometrySelection &selection, vec3 direction, vec3 scale, uint32_t reference) {
+std::vector<EdgeSlideDirections> PlanEdgeSlide(const Mesh &mesh, const LocalMesh &local, const GeometrySelection &selection, vec3 direction, vec3 scale, uint32_t reference) {
     const profile::CpuScope scope{"PlanEdgeSlide"};
     if (!mesh.FaceCount()) return {};
     struct Link {
@@ -85,7 +85,6 @@ std::vector<EdgeSlideDirections> PlanEdgeSlide(const MeshStore &meshes, const Me
         nodes.push_back({.Vertex = v});
     }
     if (nodes.empty()) return {};
-    const LocalMesh local{meshes, pipelines, mesh.GetStoreId(), selection.Vertices};
     std::unordered_map<uint32_t, std::array<uint32_t, 2>> ends;
     for (const auto v : selection.Vertices) {
         for (const auto &edge : local.Edges(v)) ends.try_emplace(edge.Edge, std::array{v, edge.Other});

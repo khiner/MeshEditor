@@ -81,7 +81,7 @@ SpatialFaceWork::SpatialFaceWork(state::Registry &r, mtl::ComputeChain &chain, c
     profile::RecordCounter("SpatialFaceCandidateBlocks", CandidateBlocks);
     profile::RecordCounter("SpatialFaceCandidates", CandidateCount);
     Faces = AllocateElementWork(chain.Scratch, a.FaceTriangles.HandleBound(record.FaceData), std::min(CandidateCount, record.FaceData ? a.FaceTriangles.Set(record.FaceData).BlockCount : 0u));
-    Pc = {
+    Job = {
         .Candidates = candidates,
         .Faces = Faces,
         .Tables = meshes.GetElementTables(task.SourceId),
@@ -101,7 +101,7 @@ SpatialFaceWork::SpatialFaceWork(state::Registry &r, mtl::ComputeChain &chain, c
 
 void SpatialFaceWork::RecordFaces(state::Registry &r, mtl::ComputeChain &chain) {
     if (!CandidateCount) return;
-    chain.Groups(GetMeshPipelines(r)[MeshPass::SpatialFaceQueryExpand], Pc, TileCount(CandidateCount, TileElements));
+    mtl::GatherPass(chain, GetMeshPipelines(r)[MeshPass::SpatialFaceQueryExpand], Job, CandidateCount);
     EncodeSortElementWork(r, chain, std::span{&Faces, 1u});
     chain.AfterSubmit([this, &chain] {
         Count = ElementWorkCount(chain.Scratch, Faces);

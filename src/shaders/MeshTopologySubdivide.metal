@@ -17,16 +17,16 @@ struct SubdivideLoop {
     uint CutStart; // The expanded index of the first cut on the first selected edge, for pattern rotation
 };
 
-inline uint TopoSubdivideCuts(MeshTopologyJob job) { return (job.Flags & TopologyFlagSingleCut) ? 1u : max(1u, uint(job.Param0)); }
-inline bool TopoJunctions(MeshTopologyJob job) { return (job.Flags & TopologyFlagListJunctions) != 0u; }
-inline uint TopoEdgeCuts(TopoContext ctx, MeshTopologyJob job, uint h) {
+inline uint TopoSubdivideCuts(device const MeshTopologyJob &job) { return (job.Flags & TopologyFlagSingleCut) ? 1u : max(1u, uint(job.Param0)); }
+inline bool TopoJunctions(device const MeshTopologyJob &job) { return (job.Flags & TopologyFlagListJunctions) != 0u; }
+inline uint TopoEdgeCuts(TopoContext ctx, device const MeshTopologyJob &job, uint h) {
     if (job.Flags & TopologyFlagListCounts) return ctx.EdgeParams(job)[ctx.SrcEdge(job, h)];
     return TopoSubdivideCuts(job);
 }
-inline bool TopoFacePoints(MeshTopologyJob job) { return (job.Flags & TopologyFlagFacePoints) != 0u; }
+inline bool TopoFacePoints(device const MeshTopologyJob &job) { return (job.Flags & TopologyFlagFacePoints) != 0u; }
 
 // Every source corner reserves one original slot and `cuts` cut slots at its halfedge's domain index, so adjacent faces never share scratch.
-inline SubdivideLoop TopoSplitLoop(TopoContext ctx, MeshTopologyJob job, uint f) {
+inline SubdivideLoop TopoSplitLoop(TopoContext ctx, device const MeshTopologyJob &job, uint f) {
     const uint2 range = ctx.SrcFaceRange(job, f);
     const uint width = TopoSubdivideCuts(job) + 1u;
     const uint total = job.SrcHalfedgeCount * width;
@@ -40,7 +40,7 @@ inline SubdivideLoop TopoSplitLoop(TopoContext ctx, MeshTopologyJob job, uint f)
         0u, InvalidOffset};
 }
 
-inline bool TopoEdgeCut(TopoContext ctx, MeshTopologyJob job, uint h) {
+inline bool TopoEdgeCut(TopoContext ctx, device const MeshTopologyJob &job, uint h) {
     const uint e = ctx.SrcEdge(job, h);
     if (job.Flags & TopologyFlagListCounts) return ctx.EdgeParams(job)[e] != 0u;
     if (job.Flags & (TopologyFlagScreenCuts | TopologyFlagListJunctions)) return ctx.EdgeParams(job)[e] != InvalidOffset;
@@ -53,7 +53,7 @@ inline bool TopoEdgeCut(TopoContext ctx, MeshTopologyJob job, uint h) {
     return ctx.SrcSelectedEdge(job, e);
 }
 
-inline float TopoCutParam(TopoContext ctx, MeshTopologyJob job, uint rep, uint i, uint cuts) {
+inline float TopoCutParam(TopoContext ctx, device const MeshTopologyJob &job, uint rep, uint i, uint cuts) {
     if (job.Flags & TopologyFlagScreenCuts) return as_type<float>(ctx.EdgeParams(job)[ctx.SrcEdge(job, rep)]);
     if (TopoJunctions(job)) {
         const auto corners = ctx.SrcCorners(job);
@@ -69,7 +69,7 @@ inline float TopoCutParam(TopoContext ctx, MeshTopologyJob job, uint rep, uint i
     return float(i + 1u) / float(cuts + 1u);
 }
 
-inline void TopoSubdivideExpand(TopoContext ctx, MeshTopologyJob job, uint f, thread SubdivideLoop &loop) {
+inline void TopoSubdivideExpand(TopoContext ctx, device const MeshTopologyJob &job, uint f, thread SubdivideLoop &loop) {
     const uint2 range = ctx.SrcFaceRange(job, f);
     const auto corners = ctx.SrcCorners(job);
     device const uint *vertex_offsets = ctx.Counts(job, TopoCountVertices);
@@ -147,7 +147,7 @@ struct SubdivideGrid {
 // Emits one output face of `count` expanded corners in `order`, with chord-arriving corners taking no source edge.
 struct SubdivideEmitter {
     TopoContext Ctx;
-    MeshTopologyJob Job;
+    device const MeshTopologyJob &Job;
     uint Source;
     bool Emit;
     uint Face, Base; // The next output face and corner
@@ -276,7 +276,7 @@ inline uint TopoLoopCornerSlot(thread const SubdivideLoop &loop, uint c) {
 }
 
 // Splits a face whose edges are all cut once into a quad per corner around a face point blending the corners equally.
-inline uint TopoSubdivideFacePoint(TopoContext ctx, MeshTopologyJob job, uint f, thread const SubdivideLoop &loop, thread SubdivideEmitter &emitter) {
+inline uint TopoSubdivideFacePoint(TopoContext ctx, device const MeshTopologyJob &job, uint f, thread const SubdivideLoop &loop, thread SubdivideEmitter &emitter) {
     const uint2 range = ctx.SrcFaceRange(job, f);
     const uint n = range.y - range.x;
     const uint face_point = ctx.Counts(job, TopoCountVertices)[ctx.FaceEntry(job, f)];
@@ -314,7 +314,7 @@ struct TopoPartition {
     uint InteriorOffset() const { return Header[0] + Header[1] + Header[2] + Header[3]; }
     float4 Weight(uint j) const { return float4(Weights[4u * j], Weights[4u * j + 1u], Weights[4u * j + 2u], Weights[4u * j + 3u]); }
 };
-inline TopoPartition TopoFindPartition(TopoContext ctx, MeshTopologyJob job, uint4 sorted) {
+inline TopoPartition TopoFindPartition(TopoContext ctx, device const MeshTopologyJob &job, uint4 sorted) {
     device const uint *list = ctx.Lists(job);
     device const uint *cursor = list + 1u + 2u * list[0];
     const uint tables = *cursor++;
@@ -327,7 +327,7 @@ inline TopoPartition TopoFindPartition(TopoContext ctx, MeshTopologyJob job, uin
 }
 
 // Fills a triangle or quad whose edges are all cut with differing counts by its partition table.
-inline uint TopoSubdividePartition(TopoContext ctx, MeshTopologyJob job, uint f, thread const SubdivideLoop &loop, thread SubdivideEmitter &emitter) {
+inline uint TopoSubdividePartition(TopoContext ctx, device const MeshTopologyJob &job, uint f, thread const SubdivideLoop &loop, thread SubdivideEmitter &emitter) {
     const uint2 range = ctx.SrcFaceRange(job, f);
     const uint n = range.y - range.x;
     uint4 divisions = uint4(0u);
@@ -389,7 +389,7 @@ inline uint TopoSubdividePartition(TopoContext ctx, MeshTopologyJob job, uint f,
 
 // Emits Catmull-Clark's vertex mask over the vertex's fan as provenance pairs and returns their count.
 template<typename Emit>
-inline uint TopoCatmullClarkVertex(TopoContext ctx, MeshTopologyJob job, uint v, Emit emit) {
+inline uint TopoCatmullClarkVertex(TopoContext ctx, device const MeshTopologyJob &job, uint v, Emit emit) {
     const uint2 fan = ctx.SrcFan(job, v);
     const auto src = ctx.Src(job);
     const auto corners = ctx.SrcCorners(job);
@@ -428,7 +428,7 @@ inline uint TopoCatmullClarkVertex(TopoContext ctx, MeshTopologyJob job, uint v,
 }
 // Emits Catmull-Clark's edge mask for an interior edge's cut over its ends and both faces' corners, and returns the pair count.
 template<typename Emit>
-inline uint TopoCatmullClarkEdge(TopoContext ctx, MeshTopologyJob job, uint h, Emit emit) {
+inline uint TopoCatmullClarkEdge(TopoContext ctx, device const MeshTopologyJob &job, uint h, Emit emit) {
     const uint opposite = ctx.Src(job).Opposite(h);
     if (opposite == InvalidOffset || ctx.Src(job).HalfedgeFace(opposite) == InvalidOffset) return 0u;
     const auto corners = ctx.SrcCorners(job);
@@ -442,13 +442,13 @@ inline uint TopoCatmullClarkEdge(TopoContext ctx, MeshTopologyJob job, uint h, E
     return pairs;
 }
 template<typename Count>
-inline uint TopoWritePairs(TopoContext ctx, MeshTopologyJob job, uint first, Count count) {
+inline uint TopoWritePairs(TopoContext ctx, device const MeshTopologyJob &job, uint first, Count count) {
     device packed_uint2 *pairs = ctx.Provenance(job);
     return count([&](uint k, uint source, float weight) { pairs[first + k] = packed_uint2(source, as_type<uint>(weight)); });
 }
 
 // Returns the interior vertices the face adds: a grid's or a partition's interior, or one face point.
-inline uint TopoSubdivideFace(TopoContext ctx, MeshTopologyJob job, uint f, thread SubdivideEmitter &emitter) {
+inline uint TopoSubdivideFace(TopoContext ctx, device const MeshTopologyJob &job, uint f, thread SubdivideEmitter &emitter) {
     SubdivideLoop loop = TopoSplitLoop(ctx, job, f);
     const uint2 range = ctx.SrcFaceRange(job, f);
     const uint n = range.y - range.x;
@@ -574,16 +574,16 @@ inline uint TopoSubdivideFace(TopoContext ctx, MeshTopologyJob job, uint f, thre
 }
 
 // Connect and edge rotation split a source or dissolved loop between consecutive selected corners by walking its boundary.
-inline uint TopoConnectNext(TopoContext ctx, MeshTopologyJob job, uint h, bool own_loop) {
+inline uint TopoConnectNext(TopoContext ctx, device const MeshTopologyJob &job, uint h, bool own_loop) {
     return own_loop ? ctx.SrcNext(job, h) : TopoNextBoundary(ctx, job, h);
 }
-inline bool TopoConnectKept(TopoContext ctx, MeshTopologyJob job, uint h) {
+inline bool TopoConnectKept(TopoContext ctx, device const MeshTopologyJob &job, uint h) {
     return !TopoVertexRemoved(ctx, job, ctx.SrcCorners(job)[h]);
 }
 struct TopoConnectMeasure {
     uint Start, FirstSelected, Length, Selected, Ears, EarCorners, FirstGap;
 };
-inline TopoConnectMeasure TopoMeasureConnect(TopoContext ctx, MeshTopologyJob job, uint f, bool own_loop) {
+inline TopoConnectMeasure TopoMeasureConnect(TopoContext ctx, device const MeshTopologyJob &job, uint f, bool own_loop) {
     const uint2 range = ctx.SrcFaceRange(job, f);
     const uint start = own_loop ? range.x : ctx.RegionStart(job)[f];
     const uint limit = own_loop ? range.y - range.x : ctx.RegionBoundary(job)[f];
@@ -622,7 +622,7 @@ inline uint2 TopoConnectOutputs(TopoConnectMeasure m) {
     return uint2(m.Ears + 1u, m.EarCorners + m.Selected);
 }
 
-inline void TopoConnectWriteCorner(TopoContext ctx, MeshTopologyJob job, uint dst, uint h, bool chord) {
+inline void TopoConnectWriteCorner(TopoContext ctx, device const MeshTopologyJob &job, uint dst, uint h, bool chord) {
     const uint v = ctx.SrcCorners(job)[h];
     const uint output = ctx.Counts(job, TopoCountVertices)[v];
     ctx.WriteCorner(job, dst, output, h, h, 0.f, chord ? InvalidOffset : h,
@@ -630,7 +630,7 @@ inline void TopoConnectWriteCorner(TopoContext ctx, MeshTopologyJob job, uint ds
             (job.Op != MeshTopologyOp::ConnectVertices || (job.Flags & TopologyFlagNewLoopsOnly) == 0u)));
 }
 
-inline uint TopoConnectWriteEar(TopoContext ctx, MeshTopologyJob job, uint f, bool own_loop,
+inline uint TopoConnectWriteEar(TopoContext ctx, device const MeshTopologyJob &job, uint f, bool own_loop,
                                uint first, uint gap, uint face, uint base) {
     uint h = first;
     uint written = 0u;
@@ -645,7 +645,7 @@ inline uint TopoConnectWriteEar(TopoContext ctx, MeshTopologyJob job, uint f, bo
     return written;
 }
 
-inline void TopoEmitConnect(TopoContext ctx, MeshTopologyJob job, uint f, bool own_loop,
+inline void TopoEmitConnect(TopoContext ctx, device const MeshTopologyJob &job, uint f, bool own_loop,
                              TopoConnectMeasure m, uint face, uint base) {
     const uint2 output = TopoConnectOutputs(m);
     if (output.x == 0u) return;

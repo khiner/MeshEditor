@@ -37,6 +37,10 @@ struct RayLightingSample {
     vec4 PositionFlags DEFAULT();
 };
 static_assert(sizeof(RayLightingSample) == 48);
+// The flag bits of PositionFlags.w, whose upper 16 bits hold the sample's light scale as a half.
+GPU_CONSTANT uint32_t RaySampleActive = 1u;
+GPU_CONSTANT uint32_t RaySampleValid = 2u;
+GPU_CONSTANT uint32_t RaySampleGlass = 4u;
 static_assert(sizeof(RayDeformedSurface) <= sizeof(RayLightingSample));
 
 inline uint32_t RayLightingLobeCount(bool transmission, bool diffuse) { return transmission || diffuse ? 2u : 1u; }

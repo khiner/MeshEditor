@@ -27,8 +27,8 @@ struct AccumulatedTriangleEdits {
 void AccumulateTriangleEdits(state::Registry &, AccumulatedTriangleEdits &, const MeshTopologyEdit &);
 // Adds the finished work's triangles, whose shading or tessellation changed while they stayed live.
 void AccumulateChangedTriangles(state::Registry &, AccumulatedTriangleEdits &, uint32_t store_id, const BufferArena<uint32_t> &storage, ElementWork triangles);
-// Publishes the accumulated edits of the entity's record in one repair of the record the last edit leaves.
-void RepairTopologyRender(state::Registry &, mtl::ComputeChain &, state::Entity, const AccumulatedTriangleEdits &);
+// Publishes the accumulated edits of each entity's record in one repair of the record the last edit leaves, every record in one build.
+void RepairTopologyRender(state::Registry &, mtl::ComputeChain &, std::span<const std::pair<state::Entity, const AccumulatedTriangleEdits *>>);
 // Batches finest-render repairs for changed shading or tessellation into one build and submission.
 void RepairFaceRender(state::Registry &, mtl::ComputeChain &, std::span<const std::pair<state::Entity, FaceTriangles>>);
 // A point or line record's affected vertices or edges, at their arena addresses before the edit erased any of them.

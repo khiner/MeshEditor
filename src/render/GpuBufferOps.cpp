@@ -10,9 +10,6 @@
 std::span<const PBRMaterial> GetMaterials(const state::Registry &r) {
     return r.Resources.get<const GpuBuffers>().Materials.GetSpan<PBRMaterial>();
 }
-TriangleVertexView GetFaceIndices(const state::Registry &, const Mesh &mesh) { return mesh.TriangleVertices(); }
-
-mtl::BufferContext &GetBufferContext(state::Registry &r) { return r.Resources.get<GpuBuffers>().Ctx; }
 
 void UpdatePosedMeshletBlocks(state::Registry &r, const MeshStore::Record &owner, std::span<const uint32_t> addresses) {
     const auto &meshlets = r.Resources.get<const MeshStore>().Render().Meshlets;
@@ -130,6 +127,7 @@ void Reset(GpuBuffers &b, state::Registry &) {
     b.VisibleOverlayJobs.UsedSize = 0;
     b.ArmatureDeformBuffer.Reset();
     b.MorphWeightBuffer.Reset();
+    b.OpValues.Reset();
     b.Instances.Reset();
     b.Ctx.ReclaimRetiredBuffers();
 }
@@ -146,6 +144,10 @@ void GpuBuffers::Retally(uint32_t store_id, MeshFlagTally tally) {
             work.Nodes = add ? work.Nodes + nodes : work.Nodes - nodes;
             work.Meshlets = add ? work.Meshlets + meshlets : work.Meshlets - meshlets;
         }
+        const uint64_t outlined_nodes = uint64_t(t.Nodes) * t.Outlined, outlined_meshlets = uint64_t(t.Meshlets) * t.Outlined;
+        auto &silhouette = FlagWork(uint32_t(MeshletInstanceFlag::Silhouette));
+        silhouette.Nodes = add ? silhouette.Nodes + outlined_nodes : silhouette.Nodes - outlined_nodes;
+        silhouette.Meshlets = add ? silhouette.Meshlets + outlined_meshlets : silhouette.Meshlets - outlined_meshlets;
         if (!t.Instances) return;
         for (uint32_t topology = 0u; topology < TopologyMeshes.size(); ++topology) {
             if (t.Topologies & (1u << topology)) TopologyMeshes[topology] = add ? TopologyMeshes[topology] + 1u : TopologyMeshes[topology] - 1u;
@@ -202,6 +204,11 @@ const GpuBuffers::RenderPose *GpuBuffers::RenderPoseFor(const SceneViewUBO &view
 std::span<const PBRMaterial> GpuBuffers::MaterialsFor(const SceneViewUBO &view) const {
     const auto *pose = RenderPoseFor(view);
     return (pose ? *pose->Materials : Materials).GetSpan<PBRMaterial>();
+}
+
+std::span<const uint8_t> GpuBuffers::InstanceStatesFor(const SceneViewUBO &view) const {
+    const auto it = std::ranges::find(Instances.States, view.InstanceStateSlot, &mtl::Buffer::Slot);
+    return it == Instances.States.end() ? std::span<const uint8_t>{} : it->GetSpan<uint8_t>();
 }
 
 std::span<const LightRecord> GpuBuffers::LightsFor(const SceneViewUBO &view) const {

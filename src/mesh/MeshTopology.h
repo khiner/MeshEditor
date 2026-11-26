@@ -3,6 +3,7 @@
 #include "gpu/MeshTopologyOp.h"
 #include "gpu/NamedAttributeRef.h"
 #include "mesh/GeometrySelection.h"
+#include <functional>
 #include <optional>
 
 struct MeshTopologyTask {
@@ -30,6 +31,8 @@ struct MeshTopologyTask {
     vec2 Extent{}, KnifeStart{}, KnifeEnd{};
     // A level set's lattice as grid points per axis, whose source vertices are the lattice points in order, grid points before body centers.
     std::array<uint32_t, 3> LatticeSize{};
+    // The output vertex, corner and face counts a count pass measured, which bound the output in place of the operator's bounds.
+    std::optional<uvec3> Outputs{};
     // A primitive list holds a header of vertex count, boundary length, span, attribute source, boundary handles and primitive count.
     // Loops of (vertex, source-edge halfedge) pairs follow, where a loop of two creates a loose edge and a longer loop creates a face.
     // An InvalidOffset halfedge creates a new edge.
@@ -71,6 +74,10 @@ void PublishStoreSelection(const MeshStore &, MeshTopologyTask &);
 namespace state {
 struct Registry;
 } // namespace state
+namespace mtl {
+struct ComputeChain;
+} // namespace mtl
+struct MeshTopologyEdit;
 struct GeometryTopologyResult {
     uint32_t GeometryId{};
     bool Changed{};
@@ -79,12 +86,14 @@ struct GeometryTopologyResult {
 // Executes the tasks on canonical geometry without viewport, objects, history or render publication.
 // Every task of a batch reads the common input geometry, so the source mutations are independent.
 // Each result holds the task's destination record and whether the task changed it, and untouched elements keep their canonical handles.
-std::vector<GeometryTopologyResult> ExecuteGeometryTopology(state::Registry &, std::span<const MeshTopologyTask>);
+// `constructed` reads the constructed edits of each chunk of tasks before their publication, given the index of the chunk's first task.
+// `finish` finishes the published edits of each chunk of tasks on its chain, given the index of the chunk's first task, and FinishAll does when it is empty.
+std::vector<GeometryTopologyResult> ExecuteGeometryTopology(state::Registry &, std::span<const MeshTopologyTask>, const std::function<void(mtl::ComputeChain &, std::span<MeshTopologyEdit>, uint32_t first)> &finish = {}, const std::function<void(std::span<const MeshTopologyEdit>, uint32_t first)> &constructed = {});
 
 // Executes dependent tasks in order, each reading the preceding task's completed geometry.
 // Returns one result per stage, no-op stages included, and later stages may retire earlier handles.
 std::vector<GeometryTopologyResult> ExecuteGeometryTopologyStages(state::Registry &, std::span<const MeshTopologyTask>);
 
-// Executes a boolean task into a new mesh, then collapses the zero-length edges that crossings at coincident points leave.
-// Returns the new mesh, or none when the task changed nothing.
-std::optional<uint32_t> ExecuteGeometryBoolean(state::Registry &, const MeshTopologyTask &);
+// Executes each boolean task into a new mesh, then collapses the zero-length edges that crossings at coincident points leave.
+// Returns each task's new mesh, or none when the task changed nothing.
+std::vector<std::optional<uint32_t>> ExecuteGeometryBooleans(state::Registry &, std::span<const MeshTopologyTask>);

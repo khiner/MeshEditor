@@ -13,15 +13,18 @@ MipChain CreateMipChain(const Texture &texture) {
     return chain;
 }
 
-void RecordMipmaps(ComputeEncoder encoder, const ComputePipeline &pipeline, const MipChain &chain) {
+void RecordMipLevel(ComputeEncoder encoder, const ComputePipeline &pipeline, const MipChain &chain, uint32_t mip) {
     const AutoreleaseScope pool;
-    if (chain.Levels.size() < 2) return;
+    const auto &destination = chain.Levels[mip];
     pipeline.Bind(encoder);
-    for (size_t mip = 1; mip < chain.Levels.size(); ++mip) {
-        const auto &destination = chain.Levels[mip];
-        encoder.Cmd->SetTexture(*chain.Levels[mip - 1], 0);
-        encoder.Cmd->SetTexture(*destination, 1);
-        encoder->dispatchThreads(MTL::Size(destination.Extent.Width, destination.Extent.Height, destination.Handle->arrayLength()), MTL::Size(8, 8, 1));
+    encoder.Cmd->SetTexture(*chain.Levels[mip - 1], 0);
+    encoder.Cmd->SetTexture(*destination, 1);
+    encoder->dispatchThreads(MTL::Size(destination.Extent.Width, destination.Extent.Height, destination.Handle->arrayLength()), MTL::Size(8, 8, 1));
+}
+
+void RecordMipmaps(ComputeEncoder encoder, const ComputePipeline &pipeline, const MipChain &chain) {
+    for (uint32_t mip = 1u; mip < chain.Levels.size(); ++mip) {
+        RecordMipLevel(encoder, pipeline, chain, mip);
         ComputeBarrier(encoder);
     }
 }

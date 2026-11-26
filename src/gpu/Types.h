@@ -15,17 +15,18 @@ using uvec4 = metal::packed_uint4;
 using quat = metal::packed_float4;
 
 // Packed columns preserve the C++ matrix buffer layout.
+// Unpack is a template, which keeps sources that unpack no matrix fast to compile.
 struct mat3 {
     vec3 Columns[3];
-    metal::float3x3 Unpack() const constant { return metal::float3x3(metal::float3(Columns[0]), metal::float3(Columns[1]), metal::float3(Columns[2])); }
-    metal::float3x3 Unpack() const device { return metal::float3x3(metal::float3(Columns[0]), metal::float3(Columns[1]), metal::float3(Columns[2])); }
-    metal::float3x3 Unpack() const thread { return metal::float3x3(metal::float3(Columns[0]), metal::float3(Columns[1]), metal::float3(Columns[2])); }
+    template<typename M = metal::float3x3> M Unpack() const constant { return M(metal::float3(Columns[0]), metal::float3(Columns[1]), metal::float3(Columns[2])); }
+    template<typename M = metal::float3x3> M Unpack() const device { return M(metal::float3(Columns[0]), metal::float3(Columns[1]), metal::float3(Columns[2])); }
+    template<typename M = metal::float3x3> M Unpack() const thread { return M(metal::float3(Columns[0]), metal::float3(Columns[1]), metal::float3(Columns[2])); }
 };
 struct mat4 {
     vec4 Columns[4];
-    metal::float4x4 Unpack() const constant { return metal::float4x4(metal::float4(Columns[0]), metal::float4(Columns[1]), metal::float4(Columns[2]), metal::float4(Columns[3])); }
-    metal::float4x4 Unpack() const device { return metal::float4x4(metal::float4(Columns[0]), metal::float4(Columns[1]), metal::float4(Columns[2]), metal::float4(Columns[3])); }
-    metal::float4x4 Unpack() const thread { return metal::float4x4(metal::float4(Columns[0]), metal::float4(Columns[1]), metal::float4(Columns[2]), metal::float4(Columns[3])); }
+    template<typename M = metal::float4x4> M Unpack() const constant { return M(metal::float4(Columns[0]), metal::float4(Columns[1]), metal::float4(Columns[2]), metal::float4(Columns[3])); }
+    template<typename M = metal::float4x4> M Unpack() const device { return M(metal::float4(Columns[0]), metal::float4(Columns[1]), metal::float4(Columns[2]), metal::float4(Columns[3])); }
+    template<typename M = metal::float4x4> M Unpack() const thread { return M(metal::float4(Columns[0]), metal::float4(Columns[1]), metal::float4(Columns[2]), metal::float4(Columns[3])); }
 };
 } // namespace numeric
 

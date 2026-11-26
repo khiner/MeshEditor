@@ -2,9 +2,12 @@
 #include <metal_stdlib>
 #include "gpu/RayReconstructPushConstants.h"
 using namespace metal;
-// z: roughness + 2 for glass, + 4 for deferred opaque. Negative means inactive.
+// z: roughness + 2 for glass, + 4 for deferred opaque, + 6 for deferred opaque whose reflection ray also carries its coat or sheen. Negative means inactive.
 inline bool RayGuideGlass(float4 guide) { return guide.z >= 2.0f && guide.z < 4.0f; }
 inline bool RayGuideDeferred(float4 guide) { return guide.z >= 2.0f; }
+inline bool RayGuideSharedReflection(float4 guide) { return guide.z >= 6.0f; }
+// The base reflection's roughness of a deferred opaque surface.
+inline float RayGuideBaseRoughness(float4 guide) { return guide.z - (RayGuideSharedReflection(guide) ? 6.0f : 4.0f); }
 inline float RayGuideRoughness(float4 guide) { return guide.z >= 4.0f ? guide.z - 4.0f : RayGuideGlass(guide) ? guide.z - 2.0f : guide.z; }
 inline bool RayGuideSmoothGlass(float4 guide) { return RayGuideGlass(guide) && RayGuideRoughness(guide) <= 0.02f; }
 inline float RayReflectionWeight(float roughness, float maximum) {
@@ -12,8 +15,10 @@ inline float RayReflectionWeight(float roughness, float maximum) {
                                                       1.0f - smoothstep(max(0.0f, maximum - 0.1f), maximum, roughness);
 }
 
+// The part of a deferred surface's base reflection that its reflection ray carries under Fast GI, which stores the whole base reflection.
+inline float RayFastGiTraced(float roughness, bool reflections, float maximum) { return reflections ? RayReflectionWeight(roughness, maximum) : 0.0f; }
 inline bool RayGuideActive(float4 guide, bool fast_gi, bool reflections, float maximum) {
-    return guide.z >= 0.f && (!fast_gi || guide.z < 4.f || (reflections && RayReflectionWeight(guide.z - 4.f, maximum) > 0.f));
+    return guide.z >= 0.f && (!fast_gi || guide.z < 4.f || (reflections && (RayGuideSharedReflection(guide) || RayReflectionWeight(guide.z - 4.f, maximum) > 0.f)));
 }
 inline bool RayLobeActive(float4 guide, constant RayReconstructPushConstants &pc) {
     return RayGuideActive(guide, pc.FastGI, pc.Reflections, pc.MaxRoughness) &&

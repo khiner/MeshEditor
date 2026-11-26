@@ -9,10 +9,7 @@ fragment uint MeshletVisibilityPrimitiveFragment(
     float4 position [[position]],
     uint primitive_id [[primitive_id]],
     bool front_facing [[front_facing]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    SCENE_ARGS,
     constant MeshletDrawPushConstants &draw_pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     // Raster-time coverage decodes IDs against the current draw's list.
@@ -33,10 +30,7 @@ fragment uint MeshletVisibilityLayerFragment(
     float4 position [[position]],
     uint primitive_id [[primitive_id]],
     bool front_facing [[front_facing]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    SCENE_ARGS,
     constant MeshletDrawPushConstants &draw_pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     // Raster-time coverage decodes IDs against the current draw's list.

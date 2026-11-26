@@ -10,28 +10,14 @@ using namespace procedure;
 using Member = HierarchyInstance::Member;
 using Change = HierarchyChanges::Change;
 // Only procedures whose object inputs differ need their own evaluated publication.
-bool Contextual(const state::Registry &r, state::Entity mesh, std::span<const Member> members) {
-    const auto *procedure = r.try_get<const GeometryProcedure>(mesh);
-    if (!procedure) return false;
-    for (auto node = procedure->First; node != state::Null; node = r.get<const ProcedureNode>(node).Next) {
-        bool contextual = false;
-        VisitKind(r.get<const ProcedureNode>(node).Kind, [&]<typename K> {
-            if constexpr (ObjectInput<K> != nullptr) {
-                const auto object = r.get<const K>(node).*ObjectInput<K>;
-                contextual = MapHierarchyMember(members, object) != object;
-            }
-        });
-        if (contextual) return true;
-    }
-    return false;
-}
+bool Contextual(const state::Registry &r, state::Entity mesh, std::span<const Member> members) { return r.all_of<GeometryProcedure>(mesh) && MapsHierarchyReference(r, mesh, members); }
 void Sync(state::Registry &r, state::Entity mesh, std::span<const Member> members, std::span<const Change> changes) {
     auto binding = r.get<const HierarchyGeometry>(mesh);
     const auto &source = r.get<const GeometryProcedure>(binding.Source);
-    const auto authored = NodesOf(r, source);
+    const auto authored = NodesOf(r, binding.Source);
     const auto removed = ReconcileHierarchyMembers(r, binding.Nodes, authored);
     const bool structural = binding.Nodes != r.get<const HierarchyGeometry>(mesh).Nodes || std::ranges::any_of(changes, [&](const auto &c) {
-                                return c.Entity == binding.Source || (std::ranges::contains(authored, c.Entity) && (c.Type == state::Slot<ProcedureNode> || c.Type == state::Slot<NodeInputs> || c.Type == state::Slot<SubnetInterface> || c.Type == state::Slot<NodeContainer>));
+                                return c.Entity == binding.Source || (std::ranges::contains(authored, c.Entity) && (c.Type == state::Slot<ProcedureNode> || c.Type == state::Slot<NodeInputs> || c.Type == state::Slot<Subnet>));
                             });
     const auto map = [&](state::Entity e) { return MapHierarchyMember(binding.Nodes, e); };
     for (const auto &node : binding.Nodes) {
@@ -54,16 +40,42 @@ void Sync(state::Registry &r, state::Entity mesh, std::span<const Member> member
         if (!structural) continue;
         r.emplace_or_replace<ProcedureNode>(node.Entity, mesh, map(r.get<const ProcedureNode>(node.Source).Next), kind);
         copy.template operator()<NodeInputs>(true);
-        copy.template operator()<NodeContainer>(true);
-        copy.template operator()<SubnetInterface>(true);
+        copy.template operator()<Subnet>(true);
     }
     if (structural) {
-        r.emplace_or_replace<GeometryProcedure>(mesh, map(source.First), map(source.Last), map(source.DisplayNode), source.DisplayPort);
+        // A display inside a subnet node keeps its path, whose first subnet node is the copy's.
+        auto path = source.DisplayPath;
+        if (!path.empty()) path.front() = map(path.front());
+        const auto &ends = r.get<const NetworkNodes>(binding.Source);
+        r.emplace_or_replace<NetworkNodes>(mesh, map(ends.First), map(ends.Last));
+        r.emplace_or_replace<GeometryProcedure>(mesh, path.empty() ? map(source.DisplayNode) : source.DisplayNode, source.DisplayPort, std::move(path));
         r.replace<HierarchyGeometry>(mesh, std::move(binding));
         r.destroy(removed);
     }
 }
 } // namespace
+
+bool MapsHierarchyReference(const state::Registry &r, state::Entity network, std::span<const Member> members) {
+    for (const auto node : NodesOf(r, network)) {
+        bool maps = false;
+        VisitKind(r.get<const ProcedureNode>(node).Kind, [&]<typename K> {
+            if constexpr (ObjectInput<K> != nullptr) {
+                const auto object = r.get<const K>(node).*ObjectInput<K>;
+                maps = MapHierarchyMember(members, object) != object;
+            } else if constexpr (std::same_as<K, Subnet>) {
+                const auto definition = r.get<const Subnet>(node).DefinitionEntity;
+                maps = definition != state::Null && MapsHierarchyReference(r, definition, members);
+            }
+        });
+        if (maps) return true;
+    }
+    return false;
+}
+
+state::Entity ContextObject(const state::Registry &r, state::Entity mesh, state::Entity object) {
+    const auto *context = r.try_get<const HierarchyGeometry>(mesh);
+    return context ? MapHierarchyMember(r.get<const HierarchyInstance>(context->Root).Members, ContextObject(r, context->Source, object)) : object;
+}
 
 void PublishHierarchyGeometry(state::Registry &r, state::Entity root, std::span<const HierarchyChanges::Change> changes) {
     using namespace procedure;
@@ -83,6 +95,7 @@ void PublishHierarchyGeometry(state::Registry &r, state::Entity root, std::span<
             mesh = r.create();
             r.emplace<HierarchyGeometry>(mesh, root, instance->Entity);
             r.emplace<GeometryProcedure>(mesh);
+            r.emplace<NetworkNodes>(mesh);
             r.emplace<NetworkActive>(mesh);
         }
         meshes.insert(std::ranges::lower_bound(meshes, instance->Entity, {}, &HierarchyInstance::Member::Source), {instance->Entity, mesh});

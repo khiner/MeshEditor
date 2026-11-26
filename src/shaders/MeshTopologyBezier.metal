@@ -112,19 +112,19 @@ struct BezierTangents {
     bool IsFixed(uint h) const { return Fixed[Slot(h)] != 0u; }
     void Fix(uint h, bool fixed) const { Fixed[Slot(h)] = fixed ? 1u : 0u; }
 };
-inline BezierTangents TopoTangents(TopoContext ctx, MeshTopologyJob job) {
+inline BezierTangents TopoTangents(TopoContext ctx, device const MeshTopologyJob &job) {
     return {reinterpret_cast<device packed_float4 *>(ctx.Scratch() + job.TangentOffset), ctx.Scratch() + job.TangentOffset + 4u * job.SrcHalfedgeCount, ctx.SrcHalfedgeDomain(job)};
 }
 // Manifold's halfedge conventions over the source: a halfedge starts at its previous corner's vertex and ends at its own.
-inline uint BezierEnd(TopoContext ctx, MeshTopologyJob job, uint h) { return ctx.SrcCorners(job)[h]; }
-inline uint BezierAround(TopoContext ctx, MeshTopologyJob job, uint h) { return ctx.SrcNext(job, ctx.SrcOpposite(job, h)); }
-inline float3 BezierFaceNormal(TopoContext ctx, MeshTopologyJob job, uint h) {
+inline uint BezierEnd(TopoContext ctx, device const MeshTopologyJob &job, uint h) { return ctx.SrcCorners(job)[h]; }
+inline uint BezierAround(TopoContext ctx, device const MeshTopologyJob &job, uint h) { return ctx.SrcNext(job, ctx.SrcOpposite(job, h)); }
+inline float3 BezierFaceNormal(TopoContext ctx, device const MeshTopologyJob &job, uint h) {
     const auto src = ctx.Src(job);
     return float3(BindlessBuffer(packed_float3, ctx.B.Buffer, ctx.Pc.Source.BaseFaceNormalSlot)[src.FaceAddress(src.HalfedgeFace(h))]);
 }
-inline float3 BezierNormalAt(TopoContext ctx, MeshTopologyJob job, uint h) { return TopoDerivedCornerNormal(ctx, ctx.Pc.Source, ctx.Src(job), ctx.SrcPrev(job, h)); }
-inline float3 BezierEdge(TopoContext ctx, MeshTopologyJob job, uint h) { return ctx.SrcPosition(job, BezierEnd(ctx, job, h)) - ctx.SrcPosition(job, ctx.SrcFrom(job, h)); }
-inline float4 BezierTangentFromNormal(TopoContext ctx, MeshTopologyJob job, float3 normal, uint h) {
+inline float3 BezierNormalAt(TopoContext ctx, device const MeshTopologyJob &job, uint h) { return TopoDerivedCornerNormal(ctx, ctx.Pc.Source, job.SrcLayers, ctx.Src(job), ctx.SrcPrev(job, h)); }
+inline float3 BezierEdge(TopoContext ctx, device const MeshTopologyJob &job, uint h) { return ctx.SrcPosition(job, BezierEnd(ctx, job, h)) - ctx.SrcPosition(job, ctx.SrcFrom(job, h)); }
+inline float4 BezierTangentFromNormal(TopoContext ctx, device const MeshTopologyJob &job, float3 normal, uint h) {
     const float3 edge = BezierEdge(ctx, job, h);
     const float3 edge_normal = BezierFaceNormal(ctx, job, h) + BezierFaceNormal(ctx, job, ctx.SrcOpposite(job, h));
     const float3 bi_tangent = dot(normal, edge_normal) < 0.f ? cross(edge_normal, edge) : cross(normal, edge);
@@ -133,15 +133,8 @@ inline float4 BezierTangentFromNormal(TopoContext ctx, MeshTopologyJob job, floa
 
 // Each vertex's halfedges take circular tangents constrained to their corner normals.
 // A tangent is fixed where two normals meet in a crease, and tangents align across a lone flat face.
-kernel void TopologyTangents(
-    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant MeshTopologyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const TopoContext ctx{bindless, pc};
-    const uint2 tile = ctx.Tile(group_id);
-    const MeshTopologyJob job = ctx.Jobs()[tile.x];
-    const uint v = tile.y * ScanTileSize + lane;
+kernel void TopologyTangents(TOPOLOGY_ARGS) {
+    TOPOLOGY_THREAD(v);
     if (v >= job.SrcVertexCount) return;
     const uint2 fan = ctx.SrcFan(job, v);
     if (!fan.y) return;
@@ -232,15 +225,8 @@ inline float BezierTurn(float3 tangent, float3 first_tangent, float3 approx_norm
 }
 
 // Each fixed halfedge spreads the tangents after it, up to the next fixed one, so their angles share the ratios of the angles between the edges.
-kernel void TopologyTangentsDistribute(
-    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant MeshTopologyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const TopoContext ctx{bindless, pc};
-    const uint2 tile = ctx.Tile(group_id);
-    const MeshTopologyJob job = ctx.Jobs()[tile.x];
-    const uint hi = tile.y * ScanTileSize + lane;
+kernel void TopologyTangentsDistribute(TOPOLOGY_ARGS) {
+    TOPOLOGY_THREAD(hi);
     const uint halfedge = ctx.SrcHalfedgeDomain(job).Handle(hi);
     if (halfedge == InvalidOffset) return;
     const BezierTangents tangents = TopoTangents(ctx, job);
@@ -313,7 +299,7 @@ kernel void TopologyTangentsDistribute(
     if (closed) tangents.Fix(halfedge, false);
 }
 
-inline float3 BezierInterpolate(TopoContext ctx, MeshTopologyJob job, uint2 range, float4 uvw) {
+inline float3 BezierInterpolate(TopoContext ctx, device const MeshTopologyJob &job, uint2 range, float4 uvw) {
     const BezierTangents tangents = TopoTangents(ctx, job);
     const uint n = range.y - range.x;
     // Manifold's halfedge i leaves corner i, which is the halfedge arriving at corner i + 1.
@@ -353,15 +339,8 @@ inline float3 BezierInterpolate(TopoContext ctx, MeshTopologyJob job, uint2 rang
     return all(isfinite(pos)) ? pos : corners[0];
 }
 
-kernel void TopologyBezierPositions(
-    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant MeshTopologyPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const TopoContext ctx{bindless, pc};
-    const uint2 tile = ctx.Tile(group_id);
-    const MeshTopologyJob job = ctx.Jobs()[tile.x];
-    const uint d = tile.y * ScanTileSize + lane;
+kernel void TopologyBezierPositions(TOPOLOGY_ARGS) {
+    TOPOLOGY_THREAD(d);
     if (d >= job.DstVertexCount) return;
     device const uint *map = ctx.VertexMap(job) + TopoVertexMapWords * d;
     if (map[0] != TopoProvenanceMap || map[3] == InvalidOffset) return;

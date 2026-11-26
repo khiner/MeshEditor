@@ -73,11 +73,13 @@ bool AcceptsPrototype(state::Registry &r, const UpdateEntry &entry, const Update
         return false;
     }
     bool cycle = false;
+    const auto uses = procedure::DefinitionUses(r);
     ForEachTarget(a.Target, [&] { return entry.Active(r); }, [&](auto &&fn) { entry.ForEachSelected(r, fn); }, [&](state::Entity node) {
         const auto *owner = r.try_get<const procedure::ProcedureNode>(node);
         if (!owner) return;
+        const auto meshes = procedure::MeshesUsing(r, uses, owner->Network);
         for (const auto [object, instance] : r.view<const Instance>().each())
-            if (instance.Entity == owner->Procedure && HierarchyParentCycle(r, a.Value, object)) cycle = true; });
+            if (std::ranges::contains(meshes, instance.Entity) && HierarchyParentCycle(r, a.Value, object)) cycle = true; });
     if (cycle) Fail(r, "The prototype would recursively instance its producer");
     return !cycle;
 }
@@ -107,13 +109,6 @@ constexpr auto Entries = []<typename... Cs>(TypeList<Cs...>) { return std::array
 const UpdateEntry *EntryOf(state::TypeKey key) {
     const auto found = std::ranges::find(Entries, key, &UpdateEntry::Key);
     return found == Entries.end() ? nullptr : &*found;
-}
-
-template<typename Field>
-Field ClampField(Field v, const FieldSpec &spec) {
-    const auto lo = LowerBound<Field>(spec), hi = UpperBound<Field>(spec);
-    if constexpr (VectorField<Field>) return Min(Max(v, lo), hi);
-    else return std::clamp(v, lo, hi);
 }
 
 // Writes the field of the component on each entity the target resolves to.

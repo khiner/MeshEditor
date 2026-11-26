@@ -8,10 +8,7 @@ using VertexBlockSelectOutput = metal::mesh<ElementIdVaryings, void, VertexBlock
 [[mesh]] void VertexBlockPointMesh(
     VertexBlockPointOutput output, uint thread_index [[thread_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]], uint3 group [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    SCENE_ARGS,
     constant VertexBlockPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     threadgroup uint simd_counts[VertexBlockSimdGroups];
@@ -39,10 +36,7 @@ using VertexBlockSelectOutput = metal::mesh<ElementIdVaryings, void, VertexBlock
 [[mesh]] void VertexBlockSelectMesh(
     VertexBlockSelectOutput output, uint thread_index [[thread_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]], uint3 group [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    SCENE_ARGS,
     constant VertexBlockPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     threadgroup uint simd_counts[VertexBlockSimdGroups];

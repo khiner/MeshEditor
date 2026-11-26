@@ -32,11 +32,13 @@ struct CornerNormalView {
         vec3 normal = flat ? FaceNormals[face] : root == InvalidOffset ? VertexNormals[Connectivity.VertexAddress(CornerVertices[address]).Value()] :
                                                                          NormalSectors[root].Normal;
         const auto offset = CustomNormals.GetOr(corner).Offset;
-        if (offset.x >= 0.f) {
-            const Mesh::HH h{corner};
-            const auto position = [&](Mesh::HH at) { return Vertices[Connectivity.VertexAddress(CornerVertices[Connectivity.HalfedgeAddress(*at).Value()]).Value()].Position; };
-            normal = DecodeNormalOffset(offset, ComputeCornerFrame(normal, position(h), position(Connectivity.Next(h)), position(Connectivity.Previous(h))));
-        }
+        if (offset.x >= 0.f) normal = DecodeNormalOffset(offset, Frame(corner, normal));
         return normal;
+    }
+    // The frame of one of the record's polygon corners about its derived normal, which its custom normal offset is relative to.
+    CornerNormalFrame Frame(uint32_t corner, vec3 normal) const {
+        const Mesh::HH h{corner};
+        const auto position = [&](Mesh::HH at) { return Vertices[Connectivity.VertexAddress(CornerVertices[Connectivity.HalfedgeAddress(*at).Value()]).Value()].Position; };
+        return ComputeCornerFrame(normal, position(h), position(Connectivity.Next(h)), position(Connectivity.Previous(h)));
     }
 };

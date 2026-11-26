@@ -86,14 +86,12 @@ struct History {
         std::function<std::expected<void, std::string>(History &, std::span<const std::byte>, std::span<const uint32_t>)> Replay{};
         // Replace live state with the empty state that baseline actions run from, resolving project files in dir.
         std::function<void(const std::filesystem::path &dir)> Reset{};
-        // Run before Save flushes the logs, so the records a reopened history reads are written.
-        std::function<void()> BeforeSave{};
         // Run before restoring any track.
         std::function<void()> BeforeRestore{};
         // Run after every track is restored and before enabling track writes.
         std::function<void()> AfterTracks{};
-        // Reconcile Derived state after AfterTracks with track writes enabled.
-        std::function<std::expected<void, std::string>()> AfterRestore{};
+        // Reconcile Derived state after AfterTracks with track writes enabled, reading stored states from the restored history.
+        std::function<std::expected<void, std::string>(History &)> AfterRestore{};
     };
 
     ~History() { Close(); }
@@ -102,8 +100,9 @@ struct History {
     void Track(Records &, std::string name, int phase);
     void Track(project::ComponentPool &, std::string name, int phase);
     // Create a history with live state as node 0, reached by `actions` from the empty state, in a directory other than the currently open project.
+    // Each listed state this history keeps stays kept in the new history, with its content carried from this history's logs.
     // Return false on failure and preserve the current tree.
-    bool Begin(const std::filesystem::path &dir, std::vector<std::byte> actions = {}, std::vector<uint32_t> workspaces = {});
+    bool Begin(const std::filesystem::path &dir, std::vector<std::byte> actions = {}, std::vector<uint32_t> workspaces = {}, std::span<const Hash128> kept = {});
     // Restore position, or the latest working position when omitted, after validating the format and target.
     // Build the history tree from the actions log when content logs are absent.
     // Replay the present node from empty state.
@@ -150,10 +149,14 @@ struct History {
     void Release(Snapshot &);
     // The listed tracks' manifest roots in the state whose StateHash over their stamps is `state`, from a node recording it or a kept state, or empty when none holds it.
     std::vector<Hash128> RootsOf(Hash128 state, std::span<const size_t> tracks) const;
-    // Record the roots of the state with hash `state` that a node holds, so it resolves after Clear drops that node.
-    void Keep(Hash128 state, std::span<const size_t> tracks);
-    // Record the roots of the state with hash `state` from the listed tracks' pinned versions of it, persisting the content no recorded state holds.
-    void Keep(Hash128 state, std::span<const size_t> tracks, std::span<const Version> versions);
+    // A state to keep with the listed tracks' pinned versions of it.
+    struct KeptVersions {
+        Hash128 State;
+        std::span<const Version> Versions;
+    };
+    // Record the roots of each state in order, so it resolves after Clear drops the nodes that record it, and return whether the history is open to record them.
+    // Each state persists the content no recorded state holds, and each node the versions share is walked once.
+    bool Keep(std::span<const KeptVersions> states, std::span<const size_t> tracks);
 
     // Record the present node, flush streams to the OS cache, and return whether all writes and flushes succeeded.
     bool Save();
@@ -222,6 +225,9 @@ struct History {
     std::vector<uint32_t> WorkspaceRefs;
     std::vector<HistoryNode> Nodes;
     std::optional<uint32_t> Present;
+    // The nodes from the root to the present by depth, each one's redo child the next.
+    std::vector<uint32_t> Lineage;
+    std::vector<uint32_t> HotNodes; // The nodes holding a snapshot
     uint64_t VisitCounter{};
     uint64_t Revision{}; // changes when nodes are added, replaced, or removed
     Hooks Callbacks;

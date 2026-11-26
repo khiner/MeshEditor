@@ -2,7 +2,7 @@
 
 #include "gpu/ConnectivityRef.h"
 #include "gpu/ElementWork.h"
-#include "gpu/NamedAttributeRef.h"
+#include "gpu/OpDriver.h"
 #include "gpu/Transform.h"
 
 enum VertexPositionEditFlags : uint32_t {
@@ -60,8 +60,24 @@ struct VertexPositionEditPushConstants {
     SlotOffset Parameters;
     uint32_t ChainCount DEFAULT();
     PositionEditOp Operation DEFAULT(PositionEditOp::Copy);
-    NamedAttributeRef FactorAttribute DEFAULT(); // A float vertex attribute holding the factor per vertex, or none to read Factor
-    DomainBlocks Blocks DEFAULT(); // The record's vertex blocks, for the pass that lists every live vertex into Handles
+    NamedAttributeRef Input DEFAULT(); // A vertex attribute of the per-vertex input, a vec3 for Attribute and a float factor otherwise, or none to read Factor
+};
+
+// One record's edited vertices: the listing pass writes every live vertex of Blocks into Handles, and the write pass stores each handle's position from Positions.
+struct EditedVerticesJob {
+    DomainBlocks Blocks DEFAULT();
+    SlotOffset Handles DEFAULT(), Positions DEFAULT();
+    SlotOffset VertexTable DEFAULT(); // The record's vertex table run
+    uint32_t Count DEFAULT();
+    uint32_t VertexSlot DEFAULT(InvalidSlot);
+};
+// Each tile of the listing pass is one vertex block of a job, and each tile of the write pass EditedVerticesTile of its handles.
+GPU_CONSTANT uint32_t EditedVerticesTile = 256u;
+
+// A gather whose per-vertex input is the first output of the call's program at each vertex, one thread per listed vertex in tiles of JobTileThreads.
+struct OpPositionsJob {
+    VertexPositionEditPushConstants Edit;
+    OpCall Call DEFAULT();
 };
 
 struct EdgeChain {

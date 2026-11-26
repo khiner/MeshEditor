@@ -105,6 +105,9 @@ struct LiveTrie {
     void ClearDirty() { DirtySlots.clear(); }
     // Rehash dirty pages from live storage.
     void SettleFlat(std::span<const std::byte> contents);
+    // Returns each captured leaf below `slots` whose settled content hash equals the hash of its capture to the present, which then aliases it.
+    // Call with current hashes.
+    void ReturnCaptured(uint64_t slots);
 
     // Require current hashes.
     Stamp CurrentStamp(uint64_t length) const;
@@ -163,6 +166,9 @@ struct LiveTrie {
     // Advances whenever the present root becomes shared, by a pin or a restore.
     // A slot captured alone in the current epoch keeps a uniquely owned path to an aliased leaf.
     uint32_t CaptureEpoch{1};
+    // The leaves captured in the current epoch, each with a reference, by slot.
+    // Settling aliases each one whose content hash the writes left unchanged to the present again.
+    std::vector<std::pair<uint64_t, Node *>> Captured;
 
     std::vector<SlotHash> SlotHashes; // grown to the highest touched slot
     std::vector<uint64_t> DirtySlots;

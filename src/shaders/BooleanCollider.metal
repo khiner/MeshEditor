@@ -42,7 +42,6 @@ inline void BoolTraverse(BoolTree tree, Overlaps overlaps, Visit visit) {
 inline bool BoxOverlaps(device const float *box, float3 low, float3 high) {
     return box[0] <= high.x && box[1] <= high.y && box[2] <= high.z && low.x <= box[3] && low.y <= box[4] && low.z <= box[5];
 }
-inline bool BoxContainsXY(device const float *box, float2 p) { return p.x >= box[0] && p.x <= box[3] && p.y >= box[1] && p.y <= box[4]; }
 
 inline uint SpreadBits3(uint v) {
     v = 0xFF0000FFu & (v * 0x00010001u);
@@ -129,57 +128,35 @@ inline RadixSortView ColliderSort(JobRuns storage, ColliderRuns runs, uint shift
     return {storage.Run<uint>(runs.Keys), storage.Run<uint>(runs.Order), storage.Run<uint>(runs.Temporary), storage.Run<uint>(runs.Histogram), storage.Run<uint>(runs.Totals),
             runs.Leaves, (runs.Leaves + 255u) / 256u, 1u, 0u, shift, (shift & 4u) != 0u};
 }
-struct ColliderContext {
-    JobRuns Storage;
-    ColliderRuns Runs;
-    ColliderContext(device const BindlessSet &b, constant JobPushConstants &pc, uint layer)
-        : Storage{BindlessBufferMutable(uint, b.Buffer, pc.Job.Slot)}, Runs(Storage.Run<ColliderRuns>(pc.Job.Offset)[layer]) {}
-};
+using ColliderContext = TableJobContext<ColliderRuns>;
 
-kernel void ColliderSortHistogram(
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
-    uint3 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]]
-) {
-    const ColliderContext ctx{b, pc, group.z};
-    const RadixSortView sort = ColliderSort(ctx.Storage, ctx.Runs, pc.Parameter);
-    if (group.x >= sort.Blocks) return;
+// One tile per scan block of a collider's leaves.
+kernel void ColliderSortHistogram(JOB_TABLE_ARGS(SlotOffset)) {
+    JOB_TILE(record);
+    const ColliderContext ctx{b, record};
     threadgroup atomic_uint counts[16];
-    RadixHistogram(sort, lane, group.x, counts);
+    RadixHistogram(ColliderSort(ctx, ctx.Job(), table.Parameter), lane, tile, counts);
 }
-kernel void ColliderSortPrefix(
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
-    uint3 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]],
-    uint sl [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]]
-) {
-    const ColliderContext ctx{b, pc, group.z};
+// One tile per digit of a collider.
+kernel void ColliderSortPrefix(JOB_TABLE_ARGS(SlotOffset), uint sl [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]]) {
+    JOB_TILE(record);
+    const ColliderContext ctx{b, record};
     threadgroup uint sums[9];
-    RadixPrefix(ColliderSort(ctx.Storage, ctx.Runs, pc.Parameter), lane, group.x, sl, sg, sums);
+    RadixPrefix(ColliderSort(ctx, ctx.Job(), table.Parameter), lane, tile, sl, sg, sums);
 }
-kernel void ColliderSortScatter(
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
-    uint3 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]],
-    uint sl [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]]
-) {
-    const ColliderContext ctx{b, pc, group.z};
-    const RadixSortView sort = ColliderSort(ctx.Storage, ctx.Runs, pc.Parameter);
-    if (group.x >= sort.Blocks) return;
+kernel void ColliderSortScatter(JOB_TABLE_ARGS(SlotOffset), uint sl [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]]) {
+    JOB_TILE(record);
+    const ColliderContext ctx{b, record};
     threadgroup uint groups[128];
-    RadixScatter(sort, lane, group.x, sl, sg, groups);
+    RadixScatter(ColliderSort(ctx, ctx.Job(), table.Parameter), lane, tile, sl, sg, groups);
 }
 // One thread per internal node.
-kernel void ColliderTree(
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
-    uint3 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]]
-) {
-    const ColliderContext ctx{b, pc, group.z};
-    const ColliderRuns runs = ctx.Runs;
-    const uint internal = group.x * 256u + lane;
+kernel void ColliderTree(JOB_TABLE_ARGS(SlotOffset)) {
+    JOB_THREAD(job_record, internal);
+    const ColliderContext ctx{b, job_record};
+    const ColliderRuns runs = ctx.Job();
     if (runs.Leaves < 2u || internal + 1u >= runs.Leaves) return;
-    const JobRuns storage = ctx.Storage;
+    const JobRuns storage = ctx;
     const BoolRadixTree tree{storage.Run<uint>(runs.Keys), storage.Run<uint>(runs.Order), int(runs.Leaves)};
     RadixTreeNode(tree, internal, storage.Run<packed_uint2>(runs.Children), storage.Run<uint>(runs.NodeParents), storage.Run<uint>(runs.Counters));
 }

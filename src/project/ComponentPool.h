@@ -39,5 +39,6 @@ private:
     state::Entity Stored(uint32_t index) const;
     store::Blob Copy(uint32_t page);
     void Apply(store::RestorePlan &, bool compare);
+    void RebindIdentities();
 };
 } // namespace project

@@ -11,7 +11,7 @@ class CompileOptions;
 }
 
 namespace msl {
-// Preserve Inf/NaN semantics used by ray traversal while retaining fast math functions.
+// Runtime compile options matching the offline shader build, with each math mode declared in its source.
 NS::SharedPtr<MTL::CompileOptions> CompileOptions();
 struct Source {
     std::string Text;

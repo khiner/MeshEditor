@@ -13,10 +13,7 @@ using MeshletSelectFaceOutput = metal::mesh<FaceIdFragmentVaryings, void, uint(M
 [[mesh]] void MeshletSelectFaceMesh(
     MeshletSelectFaceOutput output, uint thread_index [[thread_index_in_threadgroup]],
     uint3 group [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    SCENE_ARGS,
     constant MeshletDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
@@ -49,10 +46,7 @@ using MeshletSelectFaceOutput = metal::mesh<FaceIdFragmentVaryings, void, uint(M
     MeshletEditEdgeOutput output, uint thread_index [[thread_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]],
     uint3 group [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    SCENE_ARGS,
     constant MeshletDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     threadgroup uint simd_counts[MeshletEditSimdGroups];
@@ -91,10 +85,7 @@ using MeshletSelectFaceOutput = metal::mesh<FaceIdFragmentVaryings, void, uint(M
 [[mesh]] void MeshletSelectEdgeMesh(
     MeshletSelectEdgeOutput output, uint thread_index [[thread_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]], uint3 group [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    SCENE_ARGS,
     constant MeshletDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     threadgroup uint simd_counts[MeshletEditSimdGroups];
@@ -120,10 +111,7 @@ using MeshletSelectFaceOutput = metal::mesh<FaceIdFragmentVaryings, void, uint(M
 [[mesh]] void MeshletSelectEdgePointMesh(
     MeshletSelectEdgePointOutput output, uint thread_index [[thread_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]], uint3 group [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    SCENE_ARGS,
     constant MeshletDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     threadgroup uint simd_counts[MeshletEditSimdGroups];
@@ -149,10 +137,7 @@ using MeshletSelectFaceOutput = metal::mesh<FaceIdFragmentVaryings, void, uint(M
 [[mesh]] void MeshletSelectFacePointMesh(
     MeshletSelectFacePointOutput output, uint thread_index [[thread_index_in_threadgroup]],
     uint3 group [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    SCENE_ARGS,
     constant MeshletDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};

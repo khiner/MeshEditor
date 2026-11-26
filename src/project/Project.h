@@ -72,7 +72,10 @@ struct Project {
     std::optional<size_t> StageFirst;
     std::optional<store::Snapshot> GestureBase;
     std::optional<store::Snapshot> StageBase; // The state before the current stage's first step, which each of its previews reapplies from
+    std::optional<store::Snapshot> PlaybackBase; // The state the last recorded action left, while playback cooks procedures that read the frame on it
+    bool Returning{}; // A restore returns to the playback base, which leaves the inputs of modal solves, posted steps and interaction in place
     size_t GestureStart{};
+    bool Replaced{}; // A step of the open gesture replaced the recorded actions of the step before it
     std::optional<uint32_t> Navigation;
     std::optional<uint32_t> Editing; // The node the open gesture replaces on commit
 

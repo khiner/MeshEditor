@@ -2,8 +2,10 @@
 #include "mesh/ElementMembershipWork.h"
 
 #include "gpu/ElementWorkSortPushConstants.h"
-#include "gpu/TiledJobPushConstants.h"
-#include "mesh/TiledJobBatch.h"
+#include "mesh/MeshPipelines.h"
+#include "metal/Dispatch.h"
+
+#include <ranges>
 
 namespace {
 uint32_t TemporaryWords(uint32_t capacity) { return capacity + 16u * TileCount(capacity, TileElements) + 16u; }
@@ -12,29 +14,25 @@ uint32_t TemporaryWords(uint32_t capacity) { return capacity + 16u * TileCount(c
 uint32_t SortElementWorkWords(uint32_t capacity) { return TemporaryWords(capacity) + sizeof(ElementWorkSortJob) / sizeof(uint32_t); }
 
 void EncodeElementMembershipWork(state::Registry &r, mtl::ComputeChain &chain, std::span<const ElementWorkSeedJob> jobs) {
-    TiledJobBatch<ElementWorkSeedJob, 1> batch{chain.Scratch, 0u};
-    batch.Begin();
-    for (const auto &job : jobs) batch.AddJob(job, {job.BlockCount});
-    batch.Encode(chain, GetMeshPipelines(r), TiledJobPushConstants{}, std::array{TiledPass{MeshPass::ElementWorkSeed, 0}});
+    // A job takes a tile per listed block.
+    mtl::GatherPass(chain, GetMeshPipelines(r)[MeshPass::ElementWorkSeed], jobs, jobs | std::views::transform(&ElementWorkSeedJob::BlockCount) | std::ranges::to<std::vector>(), MeshElementBlockSize);
 }
 
-void EncodeSortElementWork(state::Registry &r, mtl::ComputeChain &chain, std::span<const ElementWork> work) {
-    if (work.empty()) return;
-    auto &storage = chain.Scratch;
+namespace {
+// Sorts works whose dispatches cover the largest one's tiles for each work.
+void EncodeSortChunk(state::Registry &r, mtl::ComputeChain &chain, std::span<const ElementWork> work) {
     std::vector<ElementWorkSortJob> jobs;
     uint32_t capacity = 0u;
     uint32_t largest_key = 0u;
     for (const auto domain : work) {
-        const auto temporary = storage.Allocate(TemporaryWords(domain.Capacity));
+        const auto temporary = chain.Scratch.Allocate(TemporaryWords(domain.Capacity));
         jobs.push_back({domain, temporary.Offset});
         capacity = std::max(capacity, domain.Capacity);
         // Work keys are one-based 256-element block numbers.
         // Higher radix digits are zero for every key in this domain and need no passes.
         largest_key = std::max(largest_key, TileCount(domain.Count, TileElements));
     }
-    const auto at = storage.Allocate(uint32_t(jobs.size()) * sizeof(ElementWorkSortJob) / sizeof(uint32_t));
-    storage.Buffer.Update(BytesOf(jobs), uint64_t(at.Offset) * sizeof(uint32_t));
-    ElementWorkSortPushConstants pc{.Jobs = {storage.Buffer.Slot, at.Offset}};
+    ElementWorkSortPushConstants pc{.Jobs = chain.Upload(BytesOf(jobs))};
     const auto &pipelines = GetMeshPipelines(r);
     const auto domains = uint32_t(work.size()), groups = TileCount(capacity, TileElements);
     // Each pass alternates the order and temporary arrays.
@@ -46,4 +44,28 @@ void EncodeSortElementWork(state::Registry &r, mtl::ComputeChain &chain, std::sp
         chain.Groups(pipelines[MeshPass::ElementWorkScatter], pc, groups, 256u, domains);
     }
     chain.Groups(pipelines[MeshPass::ElementWorkFinish], pc, 1u, 256u, domains);
+}
+
+// Sorts the works in chunks whose covered tiles stay within twice their own tiles, each within a grid's depth.
+void EncodeSortChunks(state::Registry &r, mtl::ComputeChain &chain, std::span<const ElementWork> work) {
+    constexpr size_t MaxDepth{65535u};
+    constexpr uint64_t SlackTiles{64u};
+    const auto tiles = [](const ElementWork &w) { return uint64_t(TileCount(w.Capacity, TileElements)); };
+    std::vector<ElementWork> sorted{work.begin(), work.end()};
+    std::ranges::stable_sort(sorted, std::greater{}, tiles);
+    for (size_t first = 0u; first < sorted.size();) {
+        const auto largest = tiles(sorted[first]);
+        auto sum = largest;
+        auto last = first + 1u;
+        for (; last < sorted.size() && last - first < MaxDepth && (last - first + 1u) * largest <= 2u * (sum + tiles(sorted[last])) + SlackTiles; ++last) sum += tiles(sorted[last]);
+        EncodeSortChunk(r, chain, std::span{sorted}.subspan(first, last - first));
+        first = last;
+    }
+}
+constexpr char SortKind{};
+} // namespace
+
+void EncodeSortElementWork(state::Registry &r, mtl::ComputeChain &chain, std::span<const ElementWork> work) {
+    const auto words = std::ranges::fold_left(work, uint64_t{}, [](uint64_t sum, const ElementWork &w) { return sum + SortElementWorkWords(w.Capacity); });
+    chain.Gather(&SortKind, std::vector(work.begin(), work.end()), words, [&r, &chain](std::vector<ElementWork> gathered) { EncodeSortChunks(r, chain, gathered); });
 }

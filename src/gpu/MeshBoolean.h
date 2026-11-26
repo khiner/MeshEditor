@@ -34,8 +34,8 @@ struct BooleanJob {
     GpuArray<ColliderRuns, 2> Colliders DEFAULT(); // Per mesh, over its triangles
     // Per halfedge then a terminator: its first intersection, and per intersection: halfedge, triangle, signed crossing, position.
     uint32_t IntersectionFirst DEFAULT(), IntersectionRecords DEFAULT();
-    // Per vertex: its component label and winding number, then two indirect dispatches and the changed word of the label rounds.
-    uint32_t Labels DEFAULT(), Windings DEFAULT(), LabelArguments DEFAULT();
+    // Per vertex: its component label and winding number, then whether the label rounds converged and whether the last round changed a label.
+    uint32_t Labels DEFAULT(), Windings DEFAULT(), LabelState DEFAULT();
     // Per vertex then per intersection: its signed output count.
     uint32_t Inclusion DEFAULT();
     // Scan counts for polygon halfedges, partial edges, intersection edges, and output vertices, followed by a terminator.

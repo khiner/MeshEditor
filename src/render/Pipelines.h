@@ -2,6 +2,7 @@
 
 #include "gpu/Element.h"
 #include "metal/Command.h"
+#include "metal/Program.h"
 #include "metal/Shader.h"
 #include "gpu/PbrFeature.h"
 
@@ -14,9 +15,17 @@ namespace Format = mtl::Format;
 struct PbrVariant {
     PbrFeatureMask Mask;
     std::optional<mtl::ComputePipeline> RayDirect, RayDirectFiltered, PreparePrimary, GlassWeights, Special, Generate, Shade, ShadeOpaque, OpaqueLayer, Reconstruct;
+    // With the patterns feature, the hit kernels that shade the samples whose first surface the hit driver evaluated.
+    std::optional<mtl::ComputePipeline> ShadeResume, ShadeOpaqueResume;
     mtl::RenderPipeline Transparent, Visibility;
     std::optional<mtl::RenderPipeline> Prepass; // Present with the transmission feature.
+    // With the patterns feature, the transparent pipeline of the patterned materials' fragments, and the pattern list pass that computes their inputs before it.
+    std::optional<mtl::RenderPipeline> TransparentPatterns;
+    mtl::RenderDriver *PatternList{};
 };
+
+// The material preview's lit pipeline for the features, writing radiance to one HDR color attachment.
+mtl::RenderPipeline MakePbrPreviewPipeline(mtl::LibraryCache &, PbrFeatureMask);
 
 // Specializes PBR pipelines to the features each viewport shades with and to the output attachments.
 // Variants stay compiled, so a frame in flight keeps the pipelines it bound.
@@ -24,7 +33,8 @@ struct PbrCompiler {
     PbrCompiler(mtl::LibraryCache &, mtl::PassFormats scene);
 
     // The variant for the mask, compiled on first use.
-    const PbrVariant &Variant(PbrFeatureMask);
+    // A mask with the patterns feature links the programs of `programs` into its pattern list pass.
+    const PbrVariant &Variant(PbrFeatureMask, mtl::ProgramRegistry *programs);
 
 private:
     mtl::LibraryCache &Libraries;
@@ -85,12 +95,11 @@ struct Pipelines {
     MainPipeline Main;
     mtl::RenderPipeline SilhouetteSeed, Silhouette;
     SelectionFragmentPipeline SelectionFragment;
-    mtl::ComputePipeline VisibilityObjectSelection, OutlineOccluderSeed, CommitPosedGeometry, FinalizeElementWork;
+    mtl::ComputePipeline VisibilityObjectSelection, OutlineOccluderSeed, GeometryEdit, FinalizeElementWork;
     // Materializes current-pose positions before bounds and normal derivation.
     mtl::ComputePipeline PosePrepass;
     mtl::ComputePipeline PosedMeshletBounds;
-    // Reduce 256-vertex tiles, then fold each entry's partial AABBs.
-    mtl::ComputePipeline BoundsReduce;
+    // Folds each entry's partial AABBs.
     mtl::ComputePipeline BoundsCombine;
     // Accumulates per-class wire coverage into the screen buffer.
     mtl::ComputePipeline WireRaster;

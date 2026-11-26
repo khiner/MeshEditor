@@ -1,6 +1,6 @@
 #pragma once
 
-#include "gpu/SpatialFaceQueryPushConstants.h"
+#include "gpu/SpatialFaceQueryJob.h"
 
 struct MeshTopologyTask;
 namespace mtl {
@@ -15,7 +15,7 @@ struct Registry;
 struct SpatialFaceWork {
     // Records candidate face membership.
     SpatialFaceWork(state::Registry &, mtl::ComputeChain &, const MeshTopologyTask &);
-    // Records the exact predicate and sorts its affected face work.
+    // Records the exact predicate and sorts its affected face work, with the works the other pending lanes record at the same step.
     void RecordFaces(state::Registry &, mtl::ComputeChain &);
 
     ElementWork Faces;
@@ -23,5 +23,5 @@ struct SpatialFaceWork {
     uint32_t CandidateCount{}, CandidateBlocks{}, VisitedNodes{};
 
 private:
-    SpatialFaceQueryPushConstants Pc{};
+    SpatialFaceQueryJob Job{};
 };

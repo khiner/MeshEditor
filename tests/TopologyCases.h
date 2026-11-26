@@ -68,7 +68,7 @@ inline bool Uncrossed(const Mesh &mesh, float x, float y_min, float y_max) {
 }
 
 // A topology operator over the region: a task taking the region selection, or the planner that makes it from the region.
-// Kind is the node kind whose cook plans the task through PlanTopology, or none for an operator without such a node.
+// Kind is the node kind whose cook plans the task, or none for an operator without such a node.
 struct TopologyCase {
     std::string_view Name;
     std::optional<uint16_t> Kind;

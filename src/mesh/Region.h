@@ -2,8 +2,12 @@
 #include "gpu/Region.h"
 #include "mesh/MeshData.h"
 #include "numeric/VectorMath.h"
+#include <functional>
 #include <optional>
 
+namespace mtl {
+struct ComputeChain;
+}
 namespace state {
 struct Registry;
 }
@@ -25,8 +29,17 @@ struct RegionOperand {
     vec3 Translation{};
     bool Silhouette{};
 };
-// The loops bounding the fill of the operands' segments projected onto the plane, each in plane coordinates with the fill on its left.
-// Returns none when a face operand's edge leaves the plane.
-std::optional<std::vector<std::vector<vec2>>> RegionLoops(state::Registry &, const RegionPlane &, std::span<const RegionOperand>, RegionFill);
+// A fill of one or two operands' segments projected onto a plane.
+struct RegionTask {
+    RegionPlane Plane;
+    std::vector<RegionOperand> Operands;
+    RegionFill Fill;
+};
+// Each task's loops bounding its fill, each in plane coordinates with the fill on its left, or none when a face operand's edge leaves the plane.
+// Every task's passes of one stage record in one submit.
+std::vector<std::optional<std::vector<std::vector<vec2>>>> RegionLoops(state::Registry &, std::span<const RegionTask>);
+// Records the projection of the record's silhouette onto the plane with the other pending lanes' projections at the same step, every fill in one RegionLoops and every result in one creation once the chain submits.
+// Calls `then` with the new record, or none when the record projects to nothing.
+void RecordProjection(state::Registry &, mtl::ComputeChain &, uint32_t record, const RegionPlane &, std::function<void(std::optional<uint32_t>)> then);
 // The loops as faces on the plane, without points within the tie tolerance of the point before them and without loops left with fewer than three.
 MeshData RegionData(const RegionPlane &, std::span<const std::vector<vec2>> loops);

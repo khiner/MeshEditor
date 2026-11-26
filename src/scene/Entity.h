@@ -14,7 +14,6 @@ struct Name {
 // Initialize/tear down the derived index of live entity names.
 void InitEntityNames(state::Registry &);
 void DeinitEntityNames(state::Registry &);
-void RebuildEntityNames(state::Registry &);
 void ReserveEntityNames(state::Registry &, size_t additional);
 
 // Choose an unused editor name and attach it to an entity.

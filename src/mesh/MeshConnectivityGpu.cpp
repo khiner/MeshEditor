@@ -3,9 +3,9 @@
 #include "Profile.h"
 #include "gpu/TiledJobPushConstants.h"
 #include "mesh/ConnectivityBatch.h"
+#include "mesh/GeometryRefresh.h"
 #include "mesh/MeshStore.h"
 #include "mesh/PageFootprint.h"
-#include "mesh/ScratchChunks.h"
 #include "mesh/VertexFanBuild.h"
 #include "state/Registry.h"
 
@@ -18,7 +18,7 @@ uint32_t LayoutConnectivityScratch(MeshConnectivityJob &job, uint32_t first_word
     const auto blocks = TileCount(scan_words, BlockElements);
     const auto retained_words = job.SourceEdgeCount ? job.HalfedgeCount : 0u;
     const auto size = table_size + 2u * uint64_t(job.HalfedgeCount) + words + source_words + 2u * scan_words + blocks +
-        retained_words + job.SourceEdgeCount + 2u;
+        retained_words + job.SourceEdgeCount + 4u;
     if (uint64_t(first_word) + size > UINT32_MAX) throw std::length_error("GPU connectivity scratch exceeds its address space.");
     job.WordCount = words;
     job.SourceWordCount = source_words;
@@ -67,7 +67,8 @@ void BuildConnectivityNow(state::Registry &r, std::span<const uint32_t> store_id
     const profile::CpuScope scope{"ConnectivityGpu"};
     auto &meshes = r.Resources.get<MeshStore>();
     const auto &arenas = meshes.Arenas();
-    const auto split = ChunkByScratch(uint32_t(store_ids.size()), ScratchWordBudget, [&](uint32_t i) { return ScratchWords(meshes, store_ids[i]); });
+    const auto plans = store_ids | std::views::transform([&](uint32_t id) { return PlanNewTriangles(meshes, id); }) | std::ranges::to<std::vector>();
+    const auto split = ChunkByScratch(uint32_t(store_ids.size()), ScratchWordBudget, [&](uint32_t i) { return uint32_t(std::min<uint64_t>(ScratchWords(meshes, store_ids[i]) + plans[i].Words, UINT32_MAX)); });
     for (const auto range : split.Chunks) {
         const auto chunk = store_ids.subspan(range.Offset, range.Count);
         uint32_t words = 0;
@@ -93,9 +94,10 @@ void BuildConnectivityNow(state::Registry &r, std::span<const uint32_t> store_id
         // Full output allocations already reserve their edge capacity.
         batch.Encode(chain, GetMeshPipelines(r), TiledJobPushConstants{}, ConnectivityPasses);
         std::ranges::sort(vertex_blocks);
-        EncodeVertexFans(r, chain, batch.Jobs, vertex_blocks, true);
+        EncodeVertexFans(r, chain, batch.Jobs, chunk, vertex_blocks, true);
+        EncodeNewTriangles(r, chain, std::span{plans}.subspan(range.Offset, range.Count));
         chain.Submit();
         const auto scratch = batch.ScratchSpan();
-        for (uint32_t i = 0; i < chunk.size(); ++i) meshes.FinishConnectivity(chunk[i], scratch[batch.Jobs[i].StateOffset]);
+        for (uint32_t i = 0; i < chunk.size(); ++i) meshes.FinishConnectivity(chunk[i], scratch[batch.Jobs[i].StateOffset], scratch[batch.Jobs[i].StateOffset + 2u]);
     }
 }

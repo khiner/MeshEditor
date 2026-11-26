@@ -7,7 +7,7 @@
 struct VertexFanStore {
     explicit VertexFanStore(mtl::BufferContext &ctx) : Items{ctx, SlotType::Buffer} {}
 
-    void Track(store::History &history, const std::string &name) { Items.Track(history, name + ".items"); }
+    void Track(store::History &history, const std::string &name) { Items.Track(history, name + ".items", mtl::HistoryPageBytes); }
     void Release(const auto &roots) {
         std::vector<Range> ranges;
         for (const auto root : roots) AppendRange(ranges, {root.x, root.y});

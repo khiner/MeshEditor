@@ -54,93 +54,83 @@ void RegisterMeshColliderHandlers(state::Registry &r) {
     }>();
 }
 
+std::optional<ColliderShape> DeriveColliderShape(const state::Registry &r, state::Entity e, std::optional<AABB> vertex_bounds) {
+    const auto *cs = r.try_get<const ColliderShape>(e);
+    const auto *policy = r.try_get<const ColliderPolicy>(e);
+    if (!cs || !policy) return {};
+    const auto mesh_entity = ColliderMesh(r, e, *cs);
+    if (!TryGetMesh(r, mesh_entity)) return {};
+
+    PhysicsShape shape = cs->Shape;
+    vec3 local_offset = policy->AutoFitDims ? vec3{0} : cs->LocalOffset;
+    bool authored_primitive = false;
+
+    if (policy->AutoFitDims && !policy->LockedKind) {
+        if (const auto prim = PrimitiveOf(r, mesh_entity)) {
+            authored_primitive = true;
+            shape = std::visit(
+                overloaded{
+                    [](const primitive::Cube &s) -> PhysicsShape { return physics::Box{s.HalfExtents * 2.f}; },
+                    [](const primitive::Plane &s) -> PhysicsShape { return physics::Plane{s.HalfExtents.x * 2.f, s.HalfExtents.y * 2.f}; },
+                    [](const primitive::IcoSphere &s) -> PhysicsShape { return physics::Sphere{s.Radius}; },
+                    [](const primitive::UVSphere &s) -> PhysicsShape { return physics::Sphere{s.Radius}; },
+                    [](const primitive::QuadSphere &s) -> PhysicsShape { return physics::Sphere{s.Radius}; },
+                    [](const primitive::Cylinder &s) -> PhysicsShape { return physics::Cylinder{s.Height, s.TopRadius.value_or(s.Radius), s.Radius}; },
+                    [](const auto &) -> PhysicsShape { return physics::ConvexHull{}; },
+                },
+                *prim
+            );
+        } else {
+            shape = physics::ConvexHull{};
+        }
+    }
+
+    if (policy->AutoFitDims && !authored_primitive && vertex_bounds) {
+        const auto &aabb = *vertex_bounds;
+        const vec3 aabb_center = (aabb.Min + aabb.Max) * 0.5f;
+        const vec3 aabb_extents = aabb.Max - aabb.Min;
+        const float sphere_radius = 0.5f * Length(aabb_extents);
+        const float xz_radius = 0.5f * Length(vec2{aabb_extents.x, aabb_extents.z});
+
+        std::visit(
+            overloaded{
+                [&](physics::Box &s) {
+                    s.Size = aabb_extents;
+                    local_offset = aabb_center;
+                },
+                [&](physics::Sphere &s) {
+                    s.Radius = sphere_radius;
+                    local_offset = aabb_center;
+                },
+                [&](physics::Cylinder &s) {
+                    s.RadiusTop = s.RadiusBottom = xz_radius;
+                    s.Height = Max(physics::MinShapeHeight, aabb_extents.y);
+                    local_offset = aabb_center;
+                },
+                [&](physics::Capsule &s) {
+                    s.RadiusTop = s.RadiusBottom = xz_radius;
+                    // The height clamps at MinShapeHeight because 2r >= aabb.y degenerates toward a sphere.
+                    s.Height = Max(physics::MinShapeHeight, aabb_extents.y - 2.f * xz_radius);
+                    local_offset = aabb_center;
+                },
+                [](auto &) {},
+            },
+            shape
+        );
+    }
+
+    const auto derived_mesh = IsMeshBackedShape(shape) ? mesh_entity : state::Null;
+    return ColliderShape{.Shape = std::move(shape), .MeshEntity = derived_mesh, .LocalOffset = local_offset};
+}
+
 void RederiveColliders(state::Registry &r, std::span<const state::Entity> entities) {
-    struct Derivation {
-        state::Entity Entity, MeshEntity;
-        PhysicsShape Shape;
-        vec3 LocalOffset;
-        uint32_t FitStoreId;
-    };
-    std::vector<Derivation> derivations;
+    const auto &meshes = r.Resources.get<const MeshStore>();
     for (const auto e : entities) {
         const auto *cs = r.try_get<const ColliderShape>(e);
-        const auto *policy = r.try_get<const ColliderPolicy>(e);
-        if (!cs || !policy) continue;
-        const auto mesh_entity = ColliderMesh(r, e, *cs);
-        const auto mesh = TryGetMesh(r, mesh_entity);
-        if (!mesh) continue;
-
-        const bool has_verts = mesh->VertexCount() != 0u;
-
-        PhysicsShape shape = cs->Shape;
-        vec3 local_offset = policy->AutoFitDims ? vec3{0} : cs->LocalOffset;
-        bool authored_primitive = false;
-
-        if (policy->AutoFitDims && !policy->LockedKind) {
-            if (const auto prim = PrimitiveOf(r, mesh_entity)) {
-                authored_primitive = true;
-                shape = std::visit(
-                    overloaded{
-                        [](const primitive::Cube &s) -> PhysicsShape { return physics::Box{s.HalfExtents * 2.f}; },
-                        [](const primitive::Plane &s) -> PhysicsShape { return physics::Plane{s.HalfExtents.x * 2.f, s.HalfExtents.y * 2.f}; },
-                        [](const primitive::IcoSphere &s) -> PhysicsShape { return physics::Sphere{s.Radius}; },
-                        [](const primitive::UVSphere &s) -> PhysicsShape { return physics::Sphere{s.Radius}; },
-                        [](const primitive::QuadSphere &s) -> PhysicsShape { return physics::Sphere{s.Radius}; },
-                        [](const primitive::Cylinder &s) -> PhysicsShape { return physics::Cylinder{s.Height, s.TopRadius.value_or(s.Radius), s.Radius}; },
-                        [](const auto &) -> PhysicsShape { return physics::ConvexHull{}; },
-                    },
-                    *prim
-                );
-            } else {
-                shape = physics::ConvexHull{};
-            }
-        }
-
-        const bool fit_dimensions = policy->AutoFitDims && !authored_primitive && has_verts &&
-            (std::holds_alternative<physics::Box>(shape) || std::holds_alternative<physics::Sphere>(shape) ||
-             std::holds_alternative<physics::Cylinder>(shape) || std::holds_alternative<physics::Capsule>(shape));
-        const auto fit_id = fit_dimensions ? mesh->GetStoreId() : InvalidOffset;
-        derivations.push_back({e, mesh_entity, std::move(shape), local_offset, fit_id});
-    }
-    const auto &meshes = r.Resources.get<const MeshStore>();
-    for (auto &[e, mesh_entity, shape, local_offset, fit_id] : derivations) {
-        if (fit_id != InvalidOffset) {
-            const auto aabb = meshes.GetSelectionRoot(fit_id, Element::Vertex).Bounds;
-            const vec3 aabb_center = (aabb.Min + aabb.Max) * 0.5f;
-            const vec3 aabb_extents = aabb.Max - aabb.Min;
-            const float sphere_radius = 0.5f * Length(aabb_extents);
-            const float xz_radius = 0.5f * Length(vec2{aabb_extents.x, aabb_extents.z});
-
-            std::visit(
-                overloaded{
-                    [&](physics::Box &s) {
-                        s.Size = aabb_extents;
-                        local_offset = aabb_center;
-                    },
-                    [&](physics::Sphere &s) {
-                        s.Radius = sphere_radius;
-                        local_offset = aabb_center;
-                    },
-                    [&](physics::Cylinder &s) {
-                        s.RadiusTop = s.RadiusBottom = xz_radius;
-                        s.Height = Max(physics::MinShapeHeight, aabb_extents.y);
-                        local_offset = aabb_center;
-                    },
-                    [&](physics::Capsule &s) {
-                        s.RadiusTop = s.RadiusBottom = xz_radius;
-                        // The height clamps at MinShapeHeight because 2r >= aabb.y degenerates toward a sphere.
-                        s.Height = Max(physics::MinShapeHeight, aabb_extents.y - 2.f * xz_radius);
-                        local_offset = aabb_center;
-                    },
-                    [](auto &) {},
-                },
-                shape
-            );
-        }
-
-        const auto derived_mesh = IsMeshBackedShape(shape) ? mesh_entity : state::Null;
-        ColliderShape derived{.Shape = std::move(shape), .MeshEntity = derived_mesh, .LocalOffset = local_offset};
-        if (r.get<const ColliderShape>(e) == derived) continue;
-        r.patch<ColliderShape>(e, [&](ColliderShape &x) { x = std::move(derived); });
+        const auto mesh = cs ? TryGetMesh(r, ColliderMesh(r, e, *cs)) : std::nullopt;
+        const auto bounds = mesh && mesh->VertexCount() != 0u ? std::optional{meshes.GetSelectionRoot(mesh->GetStoreId(), Element::Vertex).Bounds} : std::nullopt;
+        auto derived = DeriveColliderShape(r, e, bounds);
+        if (!derived || r.get<const ColliderShape>(e) == *derived) continue;
+        r.patch<ColliderShape>(e, [&](ColliderShape &x) { x = std::move(*derived); });
     }
 }

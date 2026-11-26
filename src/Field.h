@@ -57,6 +57,8 @@ enum class FieldScale : uint8_t { Linear,
                                   Logarithmic };
 struct FieldSpec {
     double Min{-std::numeric_limits<double>::infinity()}, Max{std::numeric_limits<double>::infinity()};
+    // The range a slider spans, which typed values may leave within Min and Max.
+    double SoftMin{-std::numeric_limits<double>::infinity()}, SoftMax{std::numeric_limits<double>::infinity()};
     double Initial{std::numeric_limits<double>::quiet_NaN()}; // The value an enabled optional field starts with, or NaN for the clamped type default
     float Speed{1.f};
     std::optional<uint8_t> Digits{}; // Decimals shown for a floating-point value, or the unit's default
@@ -70,6 +72,7 @@ struct FieldSpec {
     constexpr bool HasMin() const { return Min > -std::numeric_limits<double>::infinity(); }
     constexpr bool HasMax() const { return Max < std::numeric_limits<double>::infinity(); }
     constexpr bool Bounded() const { return HasMin() || HasMax(); }
+    constexpr bool HasSoftRange() const { return SoftMin > -std::numeric_limits<double>::infinity() && SoftMax < std::numeric_limits<double>::infinity(); }
 };
 
 namespace field {

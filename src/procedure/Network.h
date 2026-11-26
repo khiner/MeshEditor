@@ -37,11 +37,14 @@ struct NetworkActive {
     std::vector<state::Entity> Selection;
     bool Contains(state::Entity node) const { return std::ranges::binary_search(Selection, node); }
 };
+// Output places the output boundary of a definition's page, whose item is the definition, and every other cell places the item's one node.
 struct NetworkCell {
     state::Entity Item;
     numeric::uvec2 Position;
+    bool Output{};
 };
-// The cells the user placed items at on the network's page, sorted by item.
+// The cells the user placed items at on the network's page, sorted by item, then input boundary before output boundary.
+// A definition's page shows its interface as an input boundary and an output boundary, both standing for the definition.
 // The editor lays out every other item from the page's connections.
 struct NetworkLayout {
     std::vector<NetworkCell> Cells;
@@ -116,10 +119,11 @@ void ShownReferences(const state::Registry &, state::Entity, const GeometryDrawe
 bool NodesSettled(const state::Registry &);
 // Nodes lists the entities whose node may differ, Pages those whose change alters which items a page shows, Cells the networks whose placed cells changed,
 // and Fields the entities that lost a component a value port can address.
-// Revision advances in a pass where a node, a procedure node's name or operation, a page's items or a material buffer changed, and CellsRevision where a placed cell changed.
+// Revision advances in a pass where a node, a procedure node's name or operation, a page's items or a material buffer changed, CellsRevision where a placed cell changed,
+// and GraphRevision where the graph of a geometry procedure or a user definition changed.
 struct NetworkChanges {
     state::DirtySet Nodes, Pages, Cells, Fields;
-    uint64_t Revision{}, CellsRevision{};
+    uint64_t Revision{}, CellsRevision{}, GraphRevision{};
 };
 // Stores each changed entity's node, advances the revisions, and drops the cells, subnet members and value ports of entities and fields that no longer exist.
 void SettleNetworks(state::Registry &, bool restoring);
@@ -133,14 +137,14 @@ struct NetworkSubnet {
 state::Entity NetworkRoot(const state::Registry &, state::Entity network);
 std::vector<state::Entity> NetworkLeaves(const state::Registry &, state::Entity network);
 std::vector<state::Entity> NetworkItems(const state::Registry &, state::Entity network);
-// Whether the network's page shows the item: one of NetworkItems, or in a geometry network one of its nodes or, in a subnet, the subnet itself.
+// Whether the network's page shows the item: one of NetworkItems, or in a geometry network one of its nodes or, in a definition's network, the definition itself.
 bool ShowsItem(const state::Registry &, state::Entity network, state::Entity);
 // The immediate child representing an item, or the item itself if it is outside this network.
 state::Entity NetworkRepresentative(const state::Registry &, state::Entity network, state::Entity item);
-// The cell the user placed the item at on the network's page, or none.
-std::optional<numeric::uvec2> NetworkPosition(const state::Registry &, state::Entity network, state::Entity);
-void SetNetworkPosition(state::Registry &, state::Entity network, state::Entity, numeric::uvec2);
-void ClearNetworkPosition(state::Registry &, state::Entity network, state::Entity);
+// The cell the user placed the item at on the network's page, or the definition's output boundary at for `output`, or none.
+std::optional<numeric::uvec2> NetworkPosition(const state::Registry &, state::Entity network, state::Entity, bool output = false);
+void SetNetworkPosition(state::Registry &, state::Entity network, state::Entity, numeric::uvec2, bool output = false);
+void ClearNetworkPosition(state::Registry &, state::Entity network, state::Entity, bool output = false);
 void PlaceInNetwork(state::Registry &, state::Entity network, state::Entity object);
 void RemoveNetworkSubnets(state::Registry &, state::Entity root);
 } // namespace procedure

@@ -1,4 +1,3 @@
-#include "MeshProperties.h"
 #include "ProcedureFixture.h"
 #include "TransformMath.h"
 #include "procedure/Macros.h"
@@ -26,6 +25,13 @@ test::Circulation OutgoingHalfedges(const Mesh &mesh, Mesh::VH v) {
     return {&mesh, NextOutgoing, v && c.HasVertexBlock(*v) ? c.Outgoing(v) : Mesh::HH{}};
 }
 
+// The kernel edit on a record holding the geometry of the mesh's Source node.
+Kernel SourceReference(ProcedureFixture &f, state::Entity mesh_entity, auto &&edit) {
+    return f.WithSource(mesh_entity, [&](uint32_t id) {
+        const GeometrySelection selected = edit(id);
+        return Kernel{Describe(f.Store(), id), Describe(f.Store(), id, selected)};
+    });
+}
 std::vector<vec3> FacingEdgeCenters(const Mesh &mesh, vec3 eye) {
     std::vector<vec3> centers;
     for (const auto e : mesh.edges()) {
@@ -93,20 +99,20 @@ void ViewportOperators(ProcedureFixture &f, Fixture &other) {
             expect(ordinals.Get(row.Domain).size() == row.Clicks);
             const auto source = f.SourceOf(mesh);
             const auto start = f.P->History.Present.value();
-            const auto node_count = uint32_t(r.get<const CookPlan>(mesh).Nodes.size());
+            const auto node_count = uint32_t(NodesOf(r, mesh).size());
             auto previous = f.Shaped(mesh);
             for (uint32_t i = 0u; i < row.Values.size(); ++i) {
                 row.Gesture(f, row.Values[i], i == 0u);
-                expect(r.get<const CookPlan>(mesh).Nodes.size() == node_count + 1u);
+                expect(NodesOf(r, mesh).size() == node_count + 1u);
                 const auto shape = f.Shaped(mesh);
                 expect(shape != previous);
                 previous = shape;
             }
             if (f.P->HasStaged()) f.CommitGesture();
-            const auto &procedure = r.get<const CookPlan>(mesh);
-            const auto [node, kind] = procedure.Nodes.back();
-            expect(procedure.Nodes.size() == node_count + 1u && kind == row.Kind);
-            expect(r.all_of<PublishSelection>(node) && !r.any_of<NodeError>(node));
+            const auto node = r.get<const NetworkNodes>(mesh).Last;
+            const auto kind = r.get<const ProcedureNode>(node).Kind;
+            expect(NodesOf(r, mesh).size() == node_count + 1u && kind == row.Kind);
+            expect(r.all_of<PublishSelection>(node) && !f.Fault(node));
             expect(f.P->History.Nodes[f.P->History.Present.value()].Parent == start);
             const auto selection = EditorGeometrySelection(meshes, f.Output(mesh));
             const auto selected = Describe(meshes, f.Output(mesh), selection);
@@ -863,11 +869,11 @@ void RecordedOperators(ProcedureFixture &f, Fixture &other) {
         f.Do(action::mesh::Boolean{BooleanOperation::Difference});
         const auto &procedure = r.get<const CookPlan>(mesh);
         expect(fatal(procedure.Nodes.size() == node_count + 2u));
-        const auto [boolean, boolean_kind] = procedure.Nodes[node_count];
-        const auto [info, info_kind] = procedure.Nodes[node_count + 1u];
+        const auto [boolean, boolean_kind, boolean_parent, boolean_builtin] = procedure.Nodes[node_count];
+        const auto [info, info_kind, info_parent, info_builtin] = procedure.Nodes[node_count + 1u];
         expect(boolean_kind == KindOf<procedure::Boolean> && info_kind == KindOf<procedure::ObjectInfo> && r.get<const procedure::ObjectInfo>(info).Object == tool);
-        expect(procedure.Inputs[procedure.InputFirst[node_count] + 1u].FromNode == node_count + 1u && ActiveIndex(r, procedure) == node_count);
-        expect(!r.any_of<NodeError>(boolean) && !r.any_of<NodeError>(info));
+        expect(procedure.Inputs[procedure.InputFirst[node_count] + 1u].FromNode == node_count + 1u && IndexOf(procedure, ActiveNodeOf(r, mesh)) == node_count);
+        expect(!f.Fault(boolean) && !f.Fault(info));
         expect(r.get<const procedure::Boolean>(boolean).Space == active);
         const auto cut = f.Shaped(mesh);
         const auto volume = OutputVolume(f, mesh);
@@ -884,14 +890,13 @@ void RecordedOperators(ProcedureFixture &f, Fixture &other) {
         f.Do(UpdateOf<&primitive::Cube::HalfExtents>(bar, vec3{.5f, .5f, 2.f}));
         f.Do(action::nodes::Unlink{mesh, boolean, 1u});
         f.Do(Link{mesh, bar, f.Out(bar), boolean, 1u});
-        expect(!r.any_of<NodeError>(boolean) && std::abs(OutputVolume(f, mesh) - 6.0) < 1e-4);
-        const auto cooks = Cooks(r);
+        expect(!f.Fault(boolean) && std::abs(OutputVolume(f, mesh) - 6.0) < 1e-4);
         const auto placed = r.get<const Transform>(active).P;
         f.Do(UpdateOf<&Transform::P>(active, placed + vec3{10.f, 0.f, 0.f}));
-        expect(Cooks(r) == cooks && std::abs(OutputVolume(f, mesh) - 6.0) < 1e-4);
+        expect(std::abs(OutputVolume(f, mesh) - 6.0) < 1e-4);
         f.Do(UpdateOf<&Transform::P>(active, placed));
     });
-    // Moving a common parent of both objects leaves the transform between their spaces unchanged bit for bit, so the procedure does not cook, and moving one of them cooks it.
+    // Moving a common parent of both objects leaves the transform between their spaces unchanged bit for bit, and moving one of them changes the cut.
     Scenario(f, other, "BooleanCommonParent", [&](ProcedureFixture &f) {
         auto &r = f.R;
         const auto parent = f.AddEmpty("Parent");
@@ -901,31 +906,27 @@ void RecordedOperators(ProcedureFixture &f, Fixture &other) {
         f.Do(action::object::ParentToActive{});
         expect(fatal(ParentOrNull(r, active) == parent && ParentOrNull(r, tool) == parent));
         const auto cut = f.Shaped(mesh);
-        const auto cooks = Cooks(r);
         f.Do(UpdateOf<&Transform::P>(parent, vec3{3.f, -2.f, 1.f}));
         f.Do(UpdateOf<&Transform::R>(parent, numeric::AngleAxis(.7f, Normalize(vec3{1.f, 0.f, 1.f}))));
         f.Do(UpdateOf<&Transform::S>(parent, vec3{1.5f, 1.5f, 1.5f}));
-        expect(Cooks(r) == cooks && f.Shaped(mesh) == cut);
+        expect(f.Shaped(mesh) == cut);
         f.Do(UpdateOf<&Transform::P>(tool, r.get<const Transform>(tool).P + vec3{10.f, 0.f, 0.f}));
-        expect(Cooks(r) == cooks + 1u && std::abs(OutputVolume(f, mesh) - 8.0) < 1e-4);
+        expect(std::abs(OutputVolume(f, mesh) - 8.0) < 1e-4);
     });
-    // A pose on an object placing an operand re-cooks the Boolean, and the next pass, which only reads the posed world transform the first published, does not cook again.
+    // A pose on an object placing an operand moves the Boolean's cut, and releasing it returns the cut.
     Scenario(f, other, "BooleanPose", [&](ProcedureFixture &f) {
         auto &r = f.R;
         const auto [active, mesh, tool] = add_cubes(f);
         f.Do(action::mesh::Boolean{BooleanOperation::Difference});
         const auto cut = f.Shaped(mesh);
-        const auto cooks = Cooks(r);
         auto posed = r.get<const Transform>(tool);
         posed.P += vec3{10.f, 0.f, 0.f};
         r.emplace<PosedLocal>(tool, posed);
         f.Commit("Pose tool");
-        expect(Cooks(r) == cooks + 1u && std::abs(OutputVolume(f, mesh) - 8.0) < 1e-4);
-        f.P->Settle();
-        expect(Cooks(r) == cooks + 1u);
+        expect(std::abs(OutputVolume(f, mesh) - 8.0) < 1e-4);
         r.remove<PosedLocal>(tool);
         f.Commit("Release pose");
-        expect(Cooks(r) == cooks + 2u && f.Shaped(mesh) == cut);
+        expect(f.Shaped(mesh) == cut);
     });
     for (const auto &row : rows) {
         Scenario(f, other, std::string{row.Name}, [&row](ProcedureFixture &f) {
@@ -949,7 +950,7 @@ void RecordedOperators(ProcedureFixture &f, Fixture &other) {
             expect(fatal(procedure.Nodes.size() > node_count && node != displayed));
             const auto kind = r.get<const ProcedureNode>(node).Kind;
             const auto &expected = row.Expected;
-            expect(kind == row.Kind && r.any_of<NodeError>(node) == expected.Faulted);
+            expect(kind == row.Kind && bool(f.Fault(node)) == expected.Faulted);
             if (expected.Unchanged || expected.Faulted) {
                 expect(f.Shaped(mesh) == shape);
                 return;

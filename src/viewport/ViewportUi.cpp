@@ -168,7 +168,7 @@ void BeginLoopSlide(state::Registry &r, FrameState &frame, ElementHit hit) {
     const auto id = GetMesh(r, hit.MeshEntity).GetStoreId();
     const std::array edge{hit.Handle};
     const auto ends = SelectedEdgeFacts(meshes, pipelines, id, edge, {}).front();
-    const auto ends_at = VertexPositions(meshes, pipelines, id, std::array{ends.From, ends.To});
+    const auto ends_at = VertexPositions(meshes, id, std::array{ends.From, ends.To});
     const auto from = ends_at[0], to = ends_at[1];
     const rect viewport_rect{ToVec2(GetWindowPos()), ToVec2(GetContentRegionAvail())};
     const auto camera = ViewCameraOf(r, FindActiveViewport(r));
@@ -394,12 +394,18 @@ void DrawMeshOperatorMenus(state::Registry &r) {
     PopStyleVar();
 }
 
+procedure::NodePath OccurrenceOf(const procedure::OperationHandle &handle) {
+    auto occurrence = handle.Path;
+    occurrence.push_back(handle.Node);
+    return occurrence;
+}
 const procedure::OperationHandle *ActiveOperation(const state::Registry &r) {
     const auto *handle = r.try_get<const procedure::OperationHandle>(state::Document);
     if (!handle) return nullptr;
-    const auto *node = r.try_get<const procedure::ProcedureNode>(handle->Node);
+    const auto outer = handle->Path.empty() ? handle->Node : handle->Path.front();
+    const auto *node = r.try_get<const procedure::ProcedureNode>(outer);
     const auto *object = r.try_get<const Instance>(handle->Object);
-    return node && object && object->Entity == node->Procedure && r.all_of<procedure::NodeHandle>(handle->Node) ? handle : nullptr;
+    return node && object && object->Entity == node->Network && procedure::CookedOf<procedure::NodeHandle>(r, OccurrenceOf(*handle)) ? handle : nullptr;
 }
 
 bool DrawOperationHandle(state::Registry &r, FrameState &frame, const ViewCamera &camera, rect viewport_rect) {
@@ -410,7 +416,7 @@ bool DrawOperationHandle(state::Registry &r, FrameState &frame, const ViewCamera
         return false;
     }
     const auto node = handle->Node;
-    const auto &support = r.get<const procedure::NodeHandle>(node);
+    const auto &support = *procedure::CookedOf<procedure::NodeHandle>(r, OccurrenceOf(*handle));
     const auto world = *WorldTransformOf(r, handle->Object);
     auto center = TransformPoint(world, support.Center);
     const auto saved_cursor = GetCursorScreenPos();
@@ -1049,7 +1055,8 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
     const auto *task = r.try_get<const procedure::SelectionEditing>(state::Document);
     if (task) {
         SetCursorScreenPos(std::bit_cast<ImVec2>(viewport_rect.pos + vec2{80.f, 12.f}));
-        procedure::VisitKind(r.get<const procedure::ProcedureNode>(task->Node).Kind, []<typename K> { Text("Edit selection: %s", procedure::Title<K>.c_str()); });
+        if (task->Port) Text("Edit selection: %s", procedure::PortOf(r, task->Node, *task->Port)->Name.c_str());
+        else procedure::VisitKind(r.get<const procedure::ProcedureNode>(task->Node).Kind, []<typename K> { Text("Edit selection: %s", field::TypeLabel<K>.c_str()); });
         SameLine();
         if (Button("Done (Enter)")) action::Emit(action::nodes::FinishSelection{});
         SameLine();

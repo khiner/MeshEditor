@@ -58,13 +58,14 @@ jobs:
         run: cmake -B build -G Ninja -DMESHEDITOR_APP=OFF -DCMAKE_BUILD_TYPE=Debug
 
       - name: Build tests
-        run: cmake --build build --target MeshEditorTests MeshEditorGeometryTest MeshEditorProjectTest
+        run: cmake --build build --target MeshEditorTests MeshEditorGeometryTest MeshEditorProjectTest MeshEditorMaterialXTest
 
       - name: Run tests
         run: |
           ./build/tests/MeshEditorTests
           ./build/tests/MeshEditorGeometryTest
           ./build/tests/MeshEditorProjectTest
+          ./build/tests/MeshEditorMaterialXTest
 
   modal-corpus:
     runs-on: macos-26

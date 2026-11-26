@@ -42,7 +42,7 @@ struct MeshConnectivityJob {
     uint32_t RanksOffset DEFAULT();
     uint32_t RetainedEdgesOffset DEFAULT(InvalidOffset); // Per compact destination representative: an old edge or InvalidOffset
     uint32_t RetiredEdgesOffset DEFAULT(); // Dense retirement handles, in source-work order
-    // Two counts: newly required edges and retired source edges.
+    // Four counts: newly required edges, retired source edges, rebuilt edges whose first halfedge has no opposite, and source edges whose first halfedge had none.
     uint32_t StateOffset DEFAULT();
     ElementWork RetiredEdgeWork DEFAULT(); // Optional retirement set, emitted with the dense scratch list
 };

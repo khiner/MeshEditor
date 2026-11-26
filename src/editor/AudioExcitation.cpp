@@ -1,7 +1,6 @@
 
 #include "editor/AudioExcitation.h"
 #include "audio/ContactModel.h"
-#include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Neighborhood.h"
 #include "render/Instance.h"
@@ -27,6 +26,6 @@ vec3 TiltAlongNormal(vec3 n, vec2 joy) {
 vec3 ExciteDirection(const state::Registry &r, state::Entity e, uint32_t vertex) {
     const auto mesh = GetMesh(r, r.get<const Instance>(e).Entity);
     const std::array handle{*mesh.VertexAt(vertex)};
-    const auto n = Normalize(VertexNormals(r.Resources.get<const MeshStore>(), GetMeshPipelines(r), mesh.GetStoreId(), handle).front());
+    const auto n = Normalize(VertexNormals(r.Resources.get<const MeshStore>(), mesh.GetStoreId(), handle).front());
     return TiltAlongNormal(n, r.get<const Striker>(state::Document).Tilt);
 }

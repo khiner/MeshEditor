@@ -52,11 +52,12 @@ struct RegionJob {
     uint32_t LoopLengths DEFAULT(), LoopFlags DEFAULT();
     // Per loop: its first output point and its length, then per kept piece its oriented start point, in loop order.
     uint32_t LoopRecords DEFAULT(), Output DEFAULT();
+    uint32_t Parity DEFAULT(); // One word: the parity of the final label and rank buffers, which the loop count writes
     uint32_t Fault DEFAULT(); // One word, set when a kept piece finds no kept piece after it, which a degenerate arrangement leaves
 };
 
 // One operand's segments: its record's face loop edges, or its silhouette along the plane normal, moved into the plane's space and projected onto it.
-struct RegionSegmentsPushConstants {
+struct RegionSegmentsJob {
     ConnectivityRef Connectivity DEFAULT();
     uint32_t VertexSlot DEFAULT(InvalidSlot), FaceNormalSlot DEFAULT(InvalidSlot);
     ElementWork Faces DEFAULT();

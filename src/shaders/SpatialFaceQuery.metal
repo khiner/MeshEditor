@@ -1,9 +1,9 @@
 #include "ElementWorkShared.metal"
 #include "ScreenSpace.metal"
 #include "gpu/PlaneSide.h"
-#include "gpu/SpatialFaceQueryPushConstants.h"
+#include "gpu/SpatialFaceQueryJob.h"
 
-inline bool SpatialFaceAffected(device const BindlessSet &b, constant SpatialFaceQueryPushConstants &pc, uint face) {
+inline bool SpatialFaceAffected(device const BindlessSet &b, constant SpatialFaceQueryJob &pc, uint face) {
     device const uint *ranges = BindlessBuffer(uint, b.Buffer, pc.FaceRangeSlot);
     const ElementValues<const uint> corners{BindlessBuffer(uint, b.IndexBuffer, pc.CornerSlot), BindlessBuffer(uint, b.Buffer, pc.Tables.Halfedges.Slot) + pc.Tables.Halfedges.Offset};
     const ElementValues<const Vertex> vertices{BindlessBuffer(Vertex, b.VertexBuffer, pc.VertexSlot), BindlessBuffer(uint, b.Buffer, pc.Tables.Vertices.Slot) + pc.Tables.Vertices.Offset};
@@ -30,9 +30,8 @@ inline bool SpatialFaceAffected(device const BindlessSet &b, constant SpatialFac
 }
 
 // Each candidate face the query affects marks itself, without render ownership.
-kernel void SpatialFaceQueryExpand(device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant SpatialFaceQueryPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
-    uint index [[thread_position_in_grid]]) {
+kernel void SpatialFaceQueryExpand(JOB_TABLE_ARGS(SpatialFaceQueryJob)) {
+    JOB_THREAD(pc, index);
     if (index >= pc.CandidateCount) return;
     const uint face = WorkGroupElement(b, pc.Candidates, index);
     if (SpatialFaceAffected(b, pc, face)) MarkWork(b, pc.Faces, face);

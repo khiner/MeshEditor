@@ -23,8 +23,10 @@ struct SparseBuffer;
 // Growth invalidates borrowed CPU spans and direct GPU bindings, so finish or reserve them before encoding consumers.
 enum class BufferLifetime { Canonical,
                             Workspace };
-// Tracked buffers capture and restore history in pages of this size.
+// Tracked buffers the GPU writes capture and restore history in pages of this size, the unit of their write footprints.
 inline constexpr uint64_t HistoryPageBytes = 16u << 10;
+// Tracked buffers of small values only the host writes capture and restore history in pages of this size.
+inline constexpr uint64_t HostValuePageBytes = 512u;
 // Commit GPU consumers before retiring their owners.
 // Slots, virtual mappings, and physical pages survive together until the serial fencing their retirement completes.
 struct BufferContext {
@@ -107,7 +109,7 @@ struct Buffer {
     void CaptureWritePages(std::span<const uint32_t> pages) const;
     void CaptureWriteElements(std::span<const uint32_t> elements, uint32_t stride) const;
     void CaptureWriteRanges(std::span<const Range> ranges, uint32_t stride) const;
-    void Track(store::History &, std::string name);
+    void Track(store::History &, std::string name, uint64_t page_bytes);
     // Retires the workspaces growth replaced, once no recorded pass binds them directly.
     void RetirePreviousWorkspaces();
     store::Pages *History() const { return Tracked.get(); }

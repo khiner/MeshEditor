@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gpu/ConnectivityRef.h"
+#include "gpu/ElementLayers.h"
 #include "gpu/MeshTopologyArenas.h"
 #include "gpu/NamedAttributeRef.h"
 #include "mesh/PageFootprint.h"
@@ -25,7 +26,8 @@ struct TopologyReadView {
     // A source's element layers at its ranges in the clones, read before its insertions move any range.
     ElementLayers SourceLayers(const MeshStore &, uint32_t source_id) const;
 
-    MeshTopologyArenas Arenas; // Clone slots, with layers without a source's offsets
+    MeshTopologyArenas Arenas; // Clone slots
+    ElementLayers Layers; // Clone slots, without a source's offsets
     // The clone of each named attribute value arena, by AttributeType.
     std::array<uint32_t, AttributeTypeCount> AttributeValues;
     std::vector<mtl::Buffer> Clones;

@@ -2,8 +2,8 @@
 #include "Paths.h"
 #include "RunSuites.h"
 #include "TestPaths.h"
-#include "action/Build.h"
 #include "editor/Engine.h"
+#include "materialx/Library.h"
 #include "mesh/MeshStore.h"
 #include "procedure/Procedure.h"
 #include "project/Recording.h"
@@ -51,7 +51,7 @@ bool BenchProcedureHistory(uint32_t node_count) {
         p.Settle();
         project::Do(p, action::MakeAction(action::object::AddMeshPrimitive{primitive::Cube{}, std::make_unique<MeshInstanceCreateInfo>()}));
         const auto mesh_entity = GetActiveMeshEntity(r);
-        const auto add = [&] { project::Do(p, action::MakeAction(action::nodes::AddNode{mesh_entity, procedure::KindOf<procedure::FloatValue>})); };
+        const auto add = [&] { project::Do(p, action::MakeAction(action::nodes::AddNode{mesh_entity, action::nodes::OpNode{"constant"}})); };
         for (uint32_t n = 1u; n < node_count; ++n) add();
         const auto owned = [&] { return p.History.Stats().OwnedBytes; };
         std::vector<double> appends, changes;
@@ -60,10 +60,10 @@ bool BenchProcedureHistory(uint32_t node_count) {
             add();
             appends.push_back(double(owned() - before));
         }
-        const auto node = r.get<const procedure::GeometryProcedure>(mesh_entity).Last;
+        const auto node = r.get<const procedure::NetworkNodes>(mesh_entity).Last;
         for (int i = 0; i < 30; ++i) {
             const auto before = owned();
-            project::Do(p, action::MakeAction(action::UpdateOf<&procedure::FloatValue::Value>(node, float(i + 1))));
+            project::Do(p, action::MakeAction(action::nodes::SetOpInput{node, "value", std::make_unique<action::nodes::OpInputValue>(action::nodes::OpLiteral{mx::Type::Float, {std::bit_cast<uint32_t>(float(i + 1))}})}));
             changes.push_back(double(owned() - before));
         }
         std::println("{}-node procedure: {:.0f} owned history bytes per node append, {:.0f} per parameter change (medians)", node_count, Median(appends), Median(changes));
@@ -88,7 +88,7 @@ int main() {
             std::memcpy(initial.data() + page * 4096, &value, sizeof(value));
         }
         store::History history;
-        buffer.Track(history, "buffer");
+        buffer.Track(history, "buffer", mtl::HistoryPageBytes);
         expect(history.Begin(dir));
         expect(history.Save());
         const auto before = history.LogBytes();

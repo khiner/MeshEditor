@@ -43,11 +43,15 @@ std::pair<state::Entity, state::Entity> HierarchyReferenceTarget(const state::Re
 state::Entity HierarchySource(const state::Registry &, state::Entity);
 bool HierarchyParentCycle(const state::Registry &, state::Entity child, state::Entity parent);
 state::Entity CreateHierarchyInstance(state::Registry &, state::Entity source, const Transform &, state::Entity scene = state::Null);
-void MakeHierarchyIndependent(state::Registry &, state::Entity);
+void MakeHierarchyIndependent(state::Registry &, std::span<const state::Entity> roots);
 // Expand occurrence removal and retain any referenced definition before ordinary object removal.
 std::vector<state::Entity> PrepareHierarchyRemoval(state::Registry &, std::span<const state::Entity>);
 
 void PublishHierarchyGeometry(state::Registry &, state::Entity root, std::span<const HierarchyChanges::Change>);
+// Whether a node of the geometry network, or of a user definition it instances at any depth, refers to an object the members map.
+bool MapsHierarchyReference(const state::Registry &, state::Entity network, std::span<const HierarchyInstance::Member>);
+// The object a node's reference reads in the mesh's cook: the authored object, mapped through each hierarchy instance whose copy of a procedure the mesh is.
+state::Entity ContextObject(const state::Registry &, state::Entity mesh, state::Entity object);
 state::Entity HierarchyEditTarget(const state::Registry &, state::Entity, bool placement = false);
 void BindHierarchyInstance(state::Registry &, state::Entity root, state::Entity source);
 

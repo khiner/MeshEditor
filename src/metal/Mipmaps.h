@@ -13,6 +13,8 @@ struct MipChain {
 
 MipChain CreateMipChain(const Texture &);
 
+// Fills level `mip` with a linear downsample of the level above.
+void RecordMipLevel(ComputeEncoder, const ComputePipeline &, const MipChain &, uint32_t mip);
 // Fills each level after the first with a linear downsample of the level above, and orders the encoder's later dispatches after the last.
 // The encoder's own mip generation does not keep each level's mean on HDR content, so every mip chain fills through this.
 void RecordMipmaps(ComputeEncoder, const ComputePipeline &, const MipChain &);

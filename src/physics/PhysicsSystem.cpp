@@ -12,6 +12,7 @@
 #include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Neighborhood.h"
+#include "procedure/Cook.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
 #include "viewport/ViewportEvents.h"
@@ -319,28 +320,67 @@ auto PoolOverflows(const rbp::World &world) {
     return std::array{o.Bodies, o.Shapes, o.ShapeVertices, o.HullFaces, o.Triangles, o.BvhNodes, o.CompoundChildren};
 }
 
-physics::RbpBody CookBody(PhysicsState &s, const state::Registry &r, const BodyInput &input, std::span<const ColliderInput> leaves, std::optional<const physics::RbpBody &> previous = {}) {
+// The record a leaf's mesh-backed shape reads, and whether the shape reads its triangles.
+std::optional<std::pair<uint32_t, bool>> LeafMesh(const state::Registry &r, const ColliderInput &leaf) {
+    const auto &shape = leaf.Shape;
+    const auto mesh = IsMeshBackedShape(shape.Shape) ? TryGetMesh(r, shape.MeshEntity) : std::nullopt;
+    if (!mesh) return {};
+    return std::pair{mesh->GetStoreId(), std::holds_alternative<physics::TriangleMesh>(shape.Shape)};
+}
+
+// The ordinal positions, and the ordinal triangles a triangle mesh shape reads, of the records that leaves' mesh-backed shapes read.
+struct LeafMeshes {
+    std::map<uint32_t, std::vector<vec3>> Positions;
+    std::map<uint32_t, std::vector<uint32_t>> Triangles;
+};
+// Reads the records of the leaves of every list in one gather each for positions and triangles.
+LeafMeshes ReadLeafMeshes(const state::Registry &r, auto &&leaf_lists) {
+    std::vector<uint32_t> positioned, triangulated;
+    for (const auto &leaves : leaf_lists) {
+        for (const auto &leaf : leaves) {
+            if (const auto mesh = LeafMesh(r, leaf)) {
+                positioned.push_back(mesh->first);
+                if (mesh->second) triangulated.push_back(mesh->first);
+            }
+        }
+    }
+    SortUnique(positioned);
+    SortUnique(triangulated);
+    const auto &meshes = r.Resources.get<const MeshStore>();
+    const auto &pipelines = GetMeshPipelines(r);
+    auto positions = OrdinalPositions(meshes, pipelines, positioned);
+    auto triangles = OrdinalTriangles(meshes, pipelines, triangulated);
+    LeafMeshes read;
+    for (uint32_t i = 0; i < positioned.size(); ++i) read.Positions.emplace(positioned[i], std::move(positions[i]));
+    for (uint32_t i = 0; i < triangulated.size(); ++i) read.Triangles.emplace(triangulated[i], std::move(triangles[i]));
+    return read;
+}
+
+// Builds the leaves' shapes into `shapes`, which the caller removes, each holding its collider's material and filter.
+void BuildLeafShapes(rbp::World &world, const state::Registry &r, const LeafMeshes &meshes, const BodyInput &input, std::span<const ColliderInput> leaves, std::vector<rbp::Index> &shapes) {
+    shapes.reserve(leaves.size());
+    for (uint32_t i = 0; i < leaves.size(); ++i) {
+        const auto &leaf = leaves[i];
+        const auto &desc = leaf.Shape;
+        auto local = PoseOf(leaf.Local);
+        local.Position += rbp::Rotate(local.Orientation, ToRbp(desc.LocalOffset * leaf.Local.S));
+        std::span<const vec3> positions;
+        std::span<const uint32_t> triangles;
+        if (const auto mesh = LeafMesh(r, leaf)) {
+            positions = meshes.Positions.at(mesh->first);
+            if (mesh->second) triangles = meshes.Triangles.at(mesh->first);
+        }
+        const auto shape = physics::BuildRbpShape(world, desc.Shape, positions, triangles, leaf.Local.S, local);
+        shapes.push_back(shape);
+        ApplyCollider(world.Shapes[shape], input.Colliders[i], leaf);
+    }
+}
+
+physics::RbpBody CookBody(PhysicsState &s, const state::Registry &r, const LeafMeshes &meshes, const BodyInput &input, std::span<const ColliderInput> leaves, std::optional<const physics::RbpBody &> previous = {}) {
     auto &world = *s.World;
     std::vector<rbp::Index> shapes;
-    shapes.reserve(leaves.size());
     try {
-        for (uint32_t i = 0; i < leaves.size(); ++i) {
-            const auto &leaf = leaves[i];
-            const auto &desc = leaf.Shape;
-            auto local = PoseOf(leaf.Local);
-            local.Position += rbp::Rotate(local.Orientation, ToRbp(desc.LocalOffset * leaf.Local.S));
-            std::vector<vec3> positions;
-            std::vector<uint32_t> triangles;
-            if (const auto mesh = IsMeshBackedShape(desc.Shape) ? TryGetMesh(r, desc.MeshEntity) : std::nullopt) {
-                const auto &meshes = r.Resources.get<const MeshStore>();
-                const auto &pipelines = GetMeshPipelines(r);
-                positions = OrdinalPositions(meshes, pipelines, mesh->GetStoreId());
-                if (std::holds_alternative<physics::TriangleMesh>(desc.Shape)) triangles = OrdinalTriangles(meshes, pipelines, mesh->GetStoreId());
-            }
-            const auto shape = physics::BuildRbpShape(world, desc.Shape, positions, triangles, leaf.Local.S, local);
-            shapes.push_back(shape);
-            ApplyCollider(world.Shapes[shape], input.Colliders[i], leaf);
-        }
+        BuildLeafShapes(world, r, meshes, input, leaves, shapes);
         const auto body = physics::BuildRbpBody(world, shapes, input.Node, input.Motion, input.Velocity, input.Sensor, previous);
         world.RemoveShapes(shapes);
         return body;
@@ -350,14 +390,80 @@ physics::RbpBody CookBody(PhysicsState &s, const state::Registry &r, const BodyI
     }
 }
 
+// Gives the bodies whose colliders fit or cook from time-dependent meshes the collider geometry of the frame.
+void ShapeTimeBodies(PhysicsState &s, state::Registry &r, int frame) {
+    if (r.view<const procedure::TimeReads>().empty()) return;
+    std::vector<state::Entity> bodies, meshes;
+    for (const auto mesh : TimeDependentMeshes(r)) {
+        for (const auto collider : MeshCollidersOf(r, mesh)) {
+            if (const auto owner = s.LeafOwners.find(collider); owner != s.LeafOwners.end()) {
+                bodies.push_back(owner->second);
+                meshes.push_back(mesh);
+            }
+        }
+    }
+    if (bodies.empty()) return;
+    SortUnique(bodies);
+    SortUnique(meshes);
+    // A procedure without a result at the frame leaves its mesh without geometry.
+    std::vector<std::vector<vec3>> positions(meshes.size());
+    std::vector<std::vector<uint32_t>> triangles(meshes.size());
+    ReadAtFrame(r, meshes, frame, [&](std::span<const uint32_t> records) {
+        const auto &store = r.Resources.get<const MeshStore>();
+        const auto &pipelines = GetMeshPipelines(r);
+        const auto valid = std::views::iota(0u, uint32_t(records.size())) | std::views::filter([&](uint32_t i) { return records[i] != InvalidOffset; }) | std::ranges::to<std::vector>();
+        const auto ids = valid | std::views::transform([&](uint32_t i) { return records[i]; }) | std::ranges::to<std::vector>();
+        auto read_positions = OrdinalPositions(store, pipelines, ids);
+        auto read_triangles = OrdinalTriangles(store, pipelines, ids);
+        for (uint32_t k = 0; k < valid.size(); ++k) {
+            positions[valid[k]] = std::move(read_positions[k]);
+            triangles[valid[k]] = std::move(read_triangles[k]);
+        }
+    });
+    // Each time leaf reads its mesh's geometry at the frame under the drawn record's id.
+    LeafMeshes frame_meshes;
+    std::map<state::Entity, AABB> bounds;
+    for (uint32_t i = 0; i < meshes.size(); ++i) {
+        const auto drawn = TryGetMesh(r, meshes[i])->GetStoreId();
+        frame_meshes.Positions.emplace(drawn, positions[i]);
+        frame_meshes.Triangles.emplace(drawn, triangles[i]);
+        if (positions[i].empty()) continue;
+        AABB box{positions[i].front(), positions[i].front()};
+        for (const auto &p : positions[i]) box = {Min(box.Min, p), Max(box.Max, p)};
+        bounds.emplace(meshes[i], box);
+    }
+    auto &world = *s.World;
+    for (const auto entity : bodies) {
+        auto &record = s.Bodies.at(entity);
+        std::vector<ColliderInput> leaves;
+        auto input = ReadBody(s, r, entity, leaves);
+        if (!input || input->Colliders != record.Input.Colliders) continue;
+        for (uint32_t i = 0; i < leaves.size(); ++i) {
+            const auto *listed = r.try_get<const ColliderListedUnder>(input->Colliders[i]);
+            if (!listed || !std::ranges::binary_search(meshes, listed->MeshEntity)) continue;
+            const auto box = bounds.find(listed->MeshEntity);
+            if (auto shape = DeriveColliderShape(r, input->Colliders[i], box != bounds.end() ? std::optional{box->second} : std::nullopt)) leaves[i].Shape = std::move(*shape);
+        }
+        std::vector<rbp::Index> shapes;
+        try {
+            BuildLeafShapes(world, r, frame_meshes, *input, leaves, shapes);
+            physics::ReshapeRbpBody(world, record.Cooked, shapes);
+        } catch (...) {
+            world.RemoveShapes(shapes);
+            throw;
+        }
+        world.RemoveShapes(shapes);
+    }
+}
+
 void ReleaseLeaves(PhysicsState &s, state::Entity body, std::span<const state::Entity> colliders) {
     for (const auto collider : colliders) {
         if (const auto leaf = s.LeafOwners.find(collider); leaf != s.LeafOwners.end() && leaf->second == body) s.LeafOwners.erase(leaf);
     }
 }
 
-void BuildBody(PhysicsState &s, state::Registry &r, state::Entity entity, BodyInput input, std::vector<ColliderInput> leaves) {
-    const auto body = CookBody(s, r, input, leaves);
+void BuildBody(PhysicsState &s, state::Registry &r, const LeafMeshes &meshes, state::Entity entity, BodyInput input, std::vector<ColliderInput> leaves) {
+    const auto body = CookBody(s, r, meshes, input, leaves);
     s.World->SetBodyScope(body.Body, input.Scenes);
     for (const auto collider : input.Colliders) s.LeafOwners[collider] = entity;
     if (s.Entities.size() <= body.Body) s.Entities.resize(body.Body + 1, state::Null);
@@ -367,14 +473,26 @@ void BuildBody(PhysicsState &s, state::Registry &r, state::Entity entity, BodyIn
     s.Bodies.emplace(entity, BodyRecord{body, std::move(input), std::move(leaves)});
 }
 
+// A body as its components describe it, and whether its shapes cook again.
+struct Pending {
+    state::Entity Entity;
+    BodyInput Input;
+    std::vector<ColliderInput> Leaves;
+    bool Recook = false;
+};
+
 void BuildBodies(PhysicsState &s, state::Registry &r) {
+    std::vector<Pending> pending;
+    std::set<state::Entity> read;
     std::vector<ColliderInput> leaves;
-    const auto build = [&](state::Entity entity) {
-        if (s.Bodies.contains(entity)) return;
-        if (auto input = ReadBody(s, r, entity, leaves)) BuildBody(s, r, entity, std::move(*input), std::move(leaves));
+    const auto read_body = [&](state::Entity entity) {
+        if (!read.insert(entity).second) return;
+        if (auto input = ReadBody(s, r, entity, leaves)) pending.push_back({entity, std::move(*input), std::move(leaves)});
     };
-    for (const auto entity : SortedEntities(r.view<const PhysicsMotion>())) build(entity);
-    for (const auto entity : SortedEntities(r.view<const ColliderShape>())) build(entity);
+    for (const auto entity : SortedEntities(r.view<const PhysicsMotion>())) read_body(entity);
+    for (const auto entity : SortedEntities(r.view<const ColliderShape>())) read_body(entity);
+    const auto meshes = ReadLeafMeshes(r, pending | std::views::transform(&Pending::Leaves));
+    for (auto &[entity, input, body_leaves, _] : pending) BuildBody(s, r, meshes, entity, std::move(input), std::move(body_leaves));
 }
 
 void BuildJoint(PhysicsState &s, state::Registry &r, state::Entity entity) {
@@ -492,6 +610,7 @@ const std::vector<state::Entity> &SampleOrder(PhysicsState &s, const state::Regi
 
 void Restart(PhysicsState &s, state::Registry &r) {
     const profile::CpuScope scope{"PhysicsReset"};
+    ShapeTimeBodies(s, r, int(s.CacheStartFrame));
     ClearContacts(s, r);
     RecomputeWorldTransforms(r, SampleOrder(s, r), {}, {});
     for (const auto &[entity, record] : s.Bodies) {
@@ -644,6 +763,8 @@ void StepSimulation(PhysicsState &s, state::Registry &r, float sim_dt, uint32_t 
 }
 
 void BakeFrame(state::Registry &r, PhysicsState &s, uint32_t frame, float fps) {
+    // Frame k simulates with the collider geometry of frame k.
+    ShapeTimeBodies(s, r, int(frame));
     const auto &settings = r.get<const PhysicsSimulationSettings>(state::Document);
     const float sim_dt = (fps > 0 ? 1.f / fps : 1.f / 60) * settings.TimeScale;
     StepSimulation(s, r, sim_dt, settings.SubstepsPerFrame);
@@ -705,8 +826,16 @@ void ProcessChanges(state::Registry &r) {
     for (const auto e : moved) touch_subtree(e);
     for (const auto e : destroyed) touch(e);
     reached.append_range(destroyed);
+    // A body takes the geometry that the timeline's frame or time alone changed in its bake, frame by frame.
+    const auto &time_cooks = r.Resources.get<const TimeCooks>().Meshes;
+    const auto time_leaf = [&](state::Entity collider) {
+        const auto *listed = r.valid(collider) ? r.try_get<const ColliderListedUnder>(collider) : nullptr;
+        return listed && std::ranges::binary_search(time_cooks, listed->MeshEntity) && s.LeafOwners.contains(collider);
+    };
     for (const auto mesh_entity : geometry) {
-        for (const auto collider : MeshCollidersOf(r, mesh_entity)) touch(collider);
+        for (const auto collider : MeshCollidersOf(r, mesh_entity)) {
+            if (!time_leaf(collider)) touch(collider);
+        }
     }
     if (definitions) {
         for (const auto e : r.view<const ColliderMaterial>()) touch(e);
@@ -716,12 +845,6 @@ void ProcessChanges(state::Registry &r) {
     }
     SortUnique(candidates);
 
-    struct Pending {
-        state::Entity Entity;
-        BodyInput Input;
-        std::vector<ColliderInput> Leaves;
-        bool Recook = false;
-    };
     std::vector<state::Entity> removed;
     std::vector<Pending> changed, added;
     std::vector<ColliderInput> leaves;
@@ -739,6 +862,12 @@ void ProcessChanges(state::Registry &r) {
             continue;
         }
         const auto &record = it->second;
+        // Shapes that the time alone changed leave the body as its bake holds it.
+        if (*input == record.Input && leaves.size() == record.Leaves.size() && std::ranges::all_of(std::views::iota(0u, uint32_t(leaves.size())), [&](uint32_t i) {
+                auto leaf = leaves[i];
+                if (time_leaf(input->Colliders[i])) leaf.Shape = record.Leaves[i].Shape;
+                return leaf == record.Leaves[i];
+            })) continue;
         const bool recook = input->Colliders != record.Input.Colliders || std::ranges::any_of(leaves, mesh_edited) ||
             !std::ranges::equal(leaves, record.Leaves, [](const auto &a, const auto &b) { return a.Shape == b.Shape && a.Local == b.Local; });
         if (recook || *input != record.Input || leaves != record.Leaves) changed.push_back({e, std::move(*input), std::move(leaves), recook});
@@ -765,6 +894,13 @@ void ProcessChanges(state::Registry &r) {
         ClearContacts(s, r);
     }
 
+    std::vector<std::span<const ColliderInput>> cooked;
+    for (const auto &pending : changed) {
+        if (pending.Recook) cooked.emplace_back(pending.Leaves);
+    }
+    for (const auto &pending : added) cooked.emplace_back(pending.Leaves);
+    const auto meshes = ReadLeafMeshes(r, cooked);
+
     std::set<rbp::Index> reframed;
     const auto overflows = PoolOverflows(*s.World);
     try {
@@ -775,7 +911,7 @@ void ProcessChanges(state::Registry &r) {
             const auto old_mass = s.World->Masses[body.Body];
             if (input.Scenes != record.Input.Scenes) s.World->SetBodyScope(body.Body, input.Scenes);
             if (recook) {
-                body = CookBody(s, r, input, next_leaves, body);
+                body = CookBody(s, r, meshes, input, next_leaves, body);
             } else {
                 if (input != record.Input) physics::UpdateRbpBody(*s.World, body, input.Node, input.Motion, input.Velocity);
                 // Compound children follow the collider order, so each changed leaf updates its surface in place.
@@ -792,7 +928,7 @@ void ProcessChanges(state::Registry &r) {
             record.Input = std::move(input);
             record.Leaves = std::move(next_leaves);
         }
-        for (auto &[e, input, next_leaves, _] : added) BuildBody(s, r, e, std::move(input), std::move(next_leaves));
+        for (auto &[e, input, next_leaves, _] : added) BuildBody(s, r, meshes, e, std::move(input), std::move(next_leaves));
     } catch (...) {
         if (PoolOverflows(*s.World) == overflows) throw;
         Rebuild(r);

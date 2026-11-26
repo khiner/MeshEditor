@@ -5,6 +5,7 @@
 #include "action/Dispatch.h"
 #include "action/Errors.h"
 #include "animation/Keying.h"
+#include "editor/AudioIntegration.h"
 #include "mesh/MeshStore.h"
 #include "numeric/Serialize.h"
 #include "procedure/Cook.h"
@@ -59,6 +60,24 @@ namespace {
 auto Kind(const action::Action &a) {
     return std::pair{a.index(), std::visit([](const auto &domain) { return domain.index(); }, a)};
 }
+// Whether a staged action continues the previous step's action: the same kind, and for an update the same field of the same target.
+bool Continues(const action::Action &a, const action::Action &previous) {
+    if (Kind(a) != Kind(previous)) return false;
+    return std::visit([&](const auto &domain) {
+        using Domain = std::decay_t<decltype(domain)>;
+        return std::visit([&](const auto &action) {
+            using A = std::decay_t<decltype(action)>;
+            if constexpr (action::IsUpdate<A>) {
+                const auto &other = std::get<A>(std::get<Domain>(previous));
+                const auto *entity = std::get_if<state::Entity>(&action.Target);
+                const auto *other_entity = std::get_if<state::Entity>(&other.Target);
+                return action.Target.index() == other.Target.index() && (!entity || *entity == *other_entity) && action.ComponentType == other.ComponentType && action.Offset == other.Offset;
+            } else {
+                return true;
+            }
+        }, domain);
+    }, a);
+}
 template<typename A> bool Is(const action::Action &a) {
     const auto *domain = std::get_if<action::DomainIndex<A>>(&a);
     return domain && std::holds_alternative<A>(*domain);
@@ -111,6 +130,16 @@ std::expected<std::vector<std::string>, std::string> ReferencedAssets(const stor
     return std::vector<std::string>{found.begin(), found.end()};
 }
 
+// Moves the current frame to `frame` and settles it there, then sets the playback frame, as an action's recorded inputs set them before it applies.
+void SettleRecordedFrame(Project &session, int frame, float playback_frame) {
+    auto &r = session.R;
+    if (r.get<const TimelinePlayback>(state::Document).CurrentFrame != frame) {
+        r.patch<TimelinePlayback>(state::Document, [&](auto &p) { p.CurrentFrame = frame; });
+        r.edit<PlaybackFrame>(state::Document).Value = float(frame);
+        session.Settle(EventPass::Settle);
+    }
+    r.edit<PlaybackFrame>(state::Document).Value = playback_frame;
+}
 void Tick(Project &session, const action::Action &a, EventPass pass = EventPass::Frame) {
     std::visit([&](const auto &domain) { Apply(session.R, domain); }, a);
     session.Settle(pass);
@@ -129,12 +158,7 @@ std::expected<void, std::string> RunRecorded(Project &session, store::History &s
         ReconcileWorkspace(session.R);
         const auto inputs = session.R.get<const ActionInputs>(state::Document);
         frame.DisplayFramebufferScale = inputs.FramebufferScale;
-        if (session.R.get<const TimelinePlayback>(state::Document).CurrentFrame != inputs.CurrentFrame) {
-            session.R.patch<TimelinePlayback>(state::Document, [&](auto &p) { p.CurrentFrame = inputs.CurrentFrame; });
-            session.R.edit<PlaybackFrame>(state::Document).Value = float(inputs.CurrentFrame);
-            session.Settle(EventPass::Settle);
-        }
-        session.R.edit<PlaybackFrame>(state::Document).Value = inputs.PlaybackFrame;
+        SettleRecordedFrame(session, inputs.CurrentFrame, inputs.PlaybackFrame);
         if (frame.Scene != inputs.Scene) {
             frame.Scene = inputs.Scene;
             session.Settle(EventPass::Settle);
@@ -154,17 +178,46 @@ std::expected<void, std::string> RunRecorded(Project &session, store::History &s
     if (messages.size() != errors) return std::unexpected{messages[errors]};
     return {};
 }
+// Returns the live state to the state the last recorded action left, which playback cooked procedures on without recording, and settles the current frame on it as a replay settles an action's frame.
+// Playback changed only the cooks of the procedures, so the modal solves, the posted steps and the interaction state stay.
+void ReturnToRecorded(Project &session) {
+    auto &r = session.R;
+    auto base = *std::exchange(session.PlaybackBase, std::nullopt);
+    const auto frame = r.get<const TimelinePlayback>(state::Document).CurrentFrame;
+    const auto playback_frame = r.get<const PlaybackFrame>(state::Document).Value;
+    const auto epoch = r.Epoch;
+    session.Returning = true;
+    (void)session.History.Restore(base);
+    session.Returning = false;
+    session.History.Release(base);
+    KeepModalSolves(r, epoch);
+    SettleRecordedFrame(session, frame, playback_frame);
+}
+// Playback cooks procedures that read the frame without recording, on the state the last recorded action left, which the next recorded action returns to.
+void PinPlaybackBase(Project &session) {
+    if (!session.PlaybackBase && session.R.get<const TimelinePlayback>(state::Document).Playing && !session.R.view<const procedure::TimeReads>().empty()) session.PlaybackBase = session.History.Pin();
+}
 // Captures the workspace before each recorded action, then applies it.
 bool Record(Project &session, std::span<action::Action> actions, EventPass pass, bool staged = false) {
     auto recordable = actions | std::views::filter([](const auto &a) { return action::IsRecordable(a); });
+    // Actions the history does not record apply on the playback base as playback does.
+    if (recordable.empty()) PinPlaybackBase(session);
+    else if (session.PlaybackBase) ReturnToRecorded(session);
     if (staged && !session.GestureBase && !recordable.empty()) {
         session.GestureBase = session.History.Pin();
         session.GestureStart = session.Recorded->Actions.size();
     }
-    const bool same_kind = staged && session.StageFirst && std::ranges::equal(recordable, std::span{session.Recorded->Actions}.subspan(*session.StageFirst), [](const auto &a, const auto &previous) { return Kind(a) == Kind(previous); });
+    const bool same_kind = staged && session.StageFirst && std::ranges::equal(recordable, std::span{session.Recorded->Actions}.subspan(*session.StageFirst), Continues);
     const bool single = actions.size() == 1;
+    // A replacing step that applies again from the gesture's base reaches the state its recorded actions reach.
+    // Any other replacing step leaves a state they alone may not reach, which the commit replaces with the state they reach.
+    const bool reapplies = same_kind && (!single || (action::IsPreview(actions.front()) && !action::PatchesPreview(actions.front())));
+    const bool replaces = same_kind && !(reapplies && *session.StageFirst == session.GestureStart);
+    // The live state before the first such step is the state the recorded actions reach, so only the cooks from that step on can depend on replaced cooks.
+    if (replaces && !session.Replaced) ClearCookDependence(session.R);
+    session.Replaced |= replaces;
     if (same_kind && (!single || action::IsPreview(actions.front()))) {
-        if (!single || !action::PatchesPreview(actions.front())) (void)session.History.Restore(*session.StageBase);
+        if (reapplies) (void)session.History.Restore(*session.StageBase);
     } else if (staged && !recordable.empty()) {
         if (session.StageBase) session.History.Release(*session.StageBase);
         session.StageBase = session.History.Pin();
@@ -289,11 +342,12 @@ bool Project::Begin(const std::filesystem::path &dir) {
     FinishSourceStates(R);
     EndCookStep(R);
     const bool editable = Editable(Recorded->Actions);
-    const bool begun = History.Begin(dir, Encode(Recorded->Actions), std::exchange(RecordedWorkspaces, {}));
+    // Every state the document refers to resolves in the new history.
+    const auto states = DocumentStates(R);
+    const bool begun = History.Begin(dir, Encode(Recorded->Actions), std::exchange(RecordedWorkspaces, {}), states);
     ResizeRecorded(0);
     if (begun) {
-        EndMeshStates(R);
-        RecordMeshStates(R);
+        RecordMeshStates(R, states);
         History.Nodes.front().Editable = editable;
         DirectoryLock = std::move(lock);
         SavedPath.clear();
@@ -374,7 +428,7 @@ uint32_t Project::Commit(std::string label, std::optional<uint32_t> replace) {
     const bool in_place = replace && History.Nodes[*replace].Children.empty();
     const auto created = uint32_t(History.Nodes.size());
     const auto node = in_place ? History.Replace(*replace, std::move(bytes), std::exchange(RecordedWorkspaces, {})) : History.Commit(std::move(label), std::move(bytes), std::exchange(RecordedWorkspaces, {}));
-    EndMeshStates(R);
+    RecordMeshStates(R);
     if (in_place || node == created) History.Nodes[node].Editable = editable;
     Editing.reset();
     ResizeRecorded(0);
@@ -403,6 +457,11 @@ void Project::FinishGesture(EventPass pass, bool keep_selection) {
         std::string label;
         for (const auto &name : names) label += (label.empty() ? "" : ", ") + name;
         StageFirst.reset();
+        // A gesture whose steps replaced earlier steps, and whose cooks since then depended on the cooks before them, commits what its recorded actions reach from its base, as a replay does.
+        if (Replaced && CooksDependOnEarlierCooks(R) && History.Restore(*GestureBase)) {
+            const auto actions = Decode(Encode(Recorded->Actions));
+            (void)RunRecorded(*this, History, std::span{actions}.subspan(GestureStart), std::span{RecordedWorkspaces}.subspan(GestureStart));
+        }
         EndGesture(pass);
         RecordKeys();
         Commit(label);
@@ -441,6 +500,7 @@ void Project::RestageDraft() {
 }
 void Project::ReleaseGesture() {
     R.Resources.get<FrameState>().GestureOpen = false;
+    Replaced = false;
     EndCookStep(R);
     if (GestureBase) History.Release(*GestureBase);
     if (StageBase) History.Release(*StageBase);
@@ -508,7 +568,10 @@ void Project::Frame() {
         pass = EventPass::Settle;
     }
     if (!HasStaged() && ApplyPosted(*this, pass)) pass = EventPass::Settle;
-    if (pass == EventPass::Frame) Settle();
+    if (pass == EventPass::Frame) {
+        PinPlaybackBase(*this);
+        Settle();
+    }
 }
 bool Project::EditNode(uint32_t node) {
     const auto parent = History.Nodes[node].Parent;

@@ -1,3 +1,5 @@
+// Fast math that keeps Inf and NaN semantics.
+#pragma METAL fp math_mode(relaxed)
 #include "gpu/AreaShadowBounds.h"
 #include "TransformUtils.metal"
 

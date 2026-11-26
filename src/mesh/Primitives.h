@@ -1,18 +1,10 @@
 #pragma once
-#include "mesh/MeshAttributes.h"
-#include "mesh/MeshData.h"
+#include "mesh/MeshCreate.h"
 #include "mesh/PrimitiveType.h"
 
 namespace primitive {
-MeshData CreateMesh(const Plane &);
-MeshData CreateMesh(const Circle &);
-MeshData CreateMesh(const Cube &);
-MeshData CreateMesh(const IcoSphere &);
-MeshData CreateMesh(const UVSphere &);
-MeshData CreateMesh(const QuadSphere &);
-MeshData CreateMesh(const Torus &);
-MeshData CreateMesh(const Cylinder &);
-MeshData CreateMesh(const PrimitiveParameters &);
+// The primitive's polygons, flat shaded, with texture coordinate set 0 per face corner where `texcoords` holds.
+MeshSource CreateMesh(const PrimitiveParameters &, bool texcoords = false);
 
 struct BoneOctahedronData {
     MeshData Mesh;

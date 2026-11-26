@@ -1,5 +1,5 @@
 #pragma once
-#include "gpu/ElementLayers.h"
+#include "gpu/Types.h"
 
 // Geometry bindings for one version of canonical topology data.
 struct MeshTopologyArenas {
@@ -12,5 +12,4 @@ struct MeshTopologyArenas {
     uint32_t BaseVertexNormalSlot DEFAULT(InvalidSlot);
     uint32_t BaseFaceNormalSlot DEFAULT(InvalidSlot);
     uint32_t VertexHiddenSlot DEFAULT(InvalidSlot), EdgeHiddenSlot DEFAULT(InvalidSlot), FaceHiddenSlot DEFAULT(InvalidSlot);
-    ElementLayers Layers DEFAULT(); // The layers of the record this version belongs to
 };

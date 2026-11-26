@@ -35,11 +35,11 @@ struct ElementArena {
 
     ElementArena(mtl::BufferContext &ctx, SlotType slot_type) : Buffer(ctx, 0, slot_type), Blocks(ctx, SlotType::Buffer), Sets(ctx, SlotType::Buffer), Table(ctx, SlotType::Buffer) {}
 
-    void Track(store::History &history, const std::string &name) {
-        Blocks.Track(history, name + ".blocks");
-        Sets.Track(history, name + ".sets");
-        Table.Track(history, name + ".table");
-        Buffer.Track(history, name + ".bytes");
+    void Track(store::History &history, const std::string &name, uint64_t page_bytes) {
+        Blocks.Track(history, name + ".blocks", page_bytes);
+        Sets.Track(history, name + ".sets", page_bytes);
+        Table.Track(history, name + ".table", page_bytes);
+        Buffer.Track(history, name + ".bytes", page_bytes);
     }
     static uint32_t BlockCount(uint32_t count) { return count / BlockSize + uint32_t(count % BlockSize != 0u); }
     const MeshElementSet &Set(ElementSetRef set) const {
@@ -58,6 +58,19 @@ struct ElementArena {
     }
     // The bound of the set's handles.
     uint32_t HandleBound(ElementSetRef set) const { return set ? Set(set).BlockCount * BlockSize : 0u; }
+    // One past the set's last live handle, or zero without one.
+    uint32_t LiveBound(ElementSetRef set) const {
+        if (!set || !Set(set).Count) return 0u;
+        const auto entries = Entries(set);
+        for (auto local = uint32_t(entries.size()); local-- > 0u;) {
+            if (entries[local] == InvalidOffset) continue;
+            const auto &live = Blocks.Get({entries[local], 1u})[0].Live;
+            for (auto w = BlockWords; w-- > 0u;) {
+                if (live[w]) return local * BlockSize + w * 32u + uint32_t(std::bit_width(live[w]));
+            }
+        }
+        return 0u;
+    }
     // The set's table run in the table arena.
     SlotOffset TableRef(ElementSetRef set) const { return {Table.Buffer.Slot, set ? Set(set).First : 0u}; }
     // The set headers and table runs kernels resolve a set's index through.
@@ -283,6 +296,19 @@ struct ElementArena {
         });
     }
 
+    // A set whose blocks are fresh and consecutive in table order, with `live` holding each block's live mask words and no live handle at or past `bound`.
+    // The set is dense when its live handles are the first `bound`.
+    ElementSetRef CreateLive(std::span<const uint32_t> live, uint32_t bound) {
+        std::vector<MeshElementBlock> members(live.size() / BlockWords);
+        std::vector<uint32_t> locals(members.size());
+        uint32_t count = 0u;
+        for (uint32_t i = 0u; i < members.size(); ++i) {
+            std::ranges::copy(live.subspan(i * BlockWords, BlockWords), members[i].Live.begin());
+            count += members[i].Count = LiveCount(members[i].Live);
+            locals[i] = i;
+        }
+        return CloneMembership({.Count = count, .BlockCount = uint32_t(members.size()), .Flags = uint32_t(count == bound)}, locals, [&](uint32_t i) { return members[i]; });
+    }
     // Import/current count-scatter emission consumes a dense view of a new set.
     ElementSetRef Allocate(uint32_t count) {
         if (!count) return {};
@@ -403,35 +429,6 @@ struct ElementArena {
         allocation.Commit();
         for (const auto b : added) Index(b);
         return added;
-    }
-    // Moves every block of `donor` after the set's table entries, with each block's local index shifted by the set's block count, and retires the donor.
-    // Returns the shift, which the moved blocks' references add.
-    uint32_t Adopt(ElementSetRef &set, ElementSetRef &donor) {
-        if (!donor) return 0u;
-        if (!set) {
-            set = std::exchange(donor, {});
-            return 0u;
-        }
-        auto header = Set(set);
-        const auto from = Set(donor);
-        const auto shift = header.BlockCount;
-        const std::vector<uint32_t> moved{Entries(donor).begin(), Entries(donor).end()};
-        Append(header, {InvalidOffset, uint32_t(moved.size())});
-        std::ranges::copy(moved, Table.GetMutable({header.First + shift, uint32_t(moved.size())}).begin());
-        for (const auto b : moved) {
-            if (b == InvalidOffset) continue;
-            auto &block = Blocks.GetMutable({b, 1u})[0];
-            block.Owner = set.Index;
-            block.Local += shift;
-            Index(b);
-        }
-        header.Count += from.Count;
-        ++header.Revision;
-        header.Flags = 0u;
-        Sets.GetMutable({set.Index, 1})[0] = header;
-        Destroy(std::span{&donor, 1u}, {});
-        donor = {};
-        return shift;
     }
     void Release(ElementSetRef set) {
         if (!set) return;

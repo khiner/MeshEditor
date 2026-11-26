@@ -1,6 +1,5 @@
 #pragma once
 
-#include "gpu/ElementWork.h"
 #include "gpu/MeshElementSet.h"
 
 // A full-frame descriptor expands a pinned finest node's member run on the GPU, through the record's member and meshlet sets.
@@ -11,8 +10,6 @@ struct PosedMeshletBoundsJob {
 };
 
 struct PosedMeshletBoundsPushConstants {
-    ElementWork MeshletAddresses DEFAULT();
-    uint32_t Instance DEFAULT();
     uint32_t JobsSlot DEFAULT(), JobCount DEFAULT();
     uint32_t MeshletSlot DEFAULT();
     uint32_t MeshletVertexSlot DEFAULT();

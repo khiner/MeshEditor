@@ -15,10 +15,7 @@ vertex NdcVaryings BackgroundVertex(uint vertex_id [[vertex_id]]) {
 
 fragment float4 BackgroundFragment(
     NdcVaryings in [[stage_in]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
+    SCENE_ARGS
 ) {
     const Scene scene{bindless, view, theme, workspace};
     if (view.WorldOpacity <= 0.0f || view.Ibl.SpecularEnvSamplerSlot == InvalidSlot) discard_fragment();

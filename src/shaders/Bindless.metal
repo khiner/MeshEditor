@@ -1,5 +1,6 @@
 #pragma once
 #include "TRSUtils.metal"
+#include "TileJob.metal"
 #include "gpu/BindlessBindings.h"
 #include "gpu/BoneDeformVertex.h"
 #include "gpu/BoundsEntry.h"
@@ -20,6 +21,9 @@
 #include "gpu/Vertex.h"
 #include "gpu/ViewportTheme.h"
 #include "gpu/WorkspaceLights.h"
+
+// The bindings of a shader that reads the scene: the bindless set, the view, the theme and the workspace lights.
+#define SCENE_ARGS device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]], constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]], constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]], constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
 
 constant uint STATE_SELECTED = 1u << 0;
 constant uint STATE_ACTIVE = 1u << 1;
@@ -74,16 +78,24 @@ struct KeyTable {
 // A job's scratch storage, whose runs sit at word offsets and whose first word is the chain's error word.
 struct JobRuns {
     device uint *Words;
-    template<typename T> device T *Run(uint offset) const { return reinterpret_cast<device T *>(Words + offset); }
+    template<typename T = uint> device T *Run(uint offset) const { return reinterpret_cast<device T *>(Words + offset); }
     // Marks the chain's error word, which fails its submit.
     void Fail() const { atomic_store_explicit(AtomicWord(Words), 1u, memory_order_relaxed); }
 };
-template<typename Record> struct JobContext {
-    device const BindlessSet &B;
-    constant JobPushConstants &Pc;
+// The scratch of a job table pass, which holds its jobs.
+inline JobRuns ScratchOf(device const BindlessSet &b, constant JobTablePushConstants &table) { return {BindlessBufferMutable(uint, b.Buffer, table.Jobs.Slot)}; }
+// The job of threadgroup `group` in a job table pass, with `tile` set to the group's tile within the job.
+template<typename Job> inline constant Job &TileJobOf(constant Job *jobs, device const BindlessSet &b, constant JobTablePushConstants &pc, uint group, thread uint &tile) {
+    return jobs[TileJob(BindlessBuffer(uint, b.Buffer, pc.Tiles.Slot) + pc.Tiles.Offset, group, tile)];
+}
+// A layered pass's tile is its threadgroup's x position.
+template<typename Job> inline constant Job &TileJobOf(constant Job *jobs, device const BindlessSet &b, constant JobTablePushConstants &pc, uint3 group, thread uint &tile) { return TileJobOf(jobs, b, pc, group.x, tile); }
+// The record at a job table pass's job, which is the record's location.
+template<typename Record> struct TableJobContext {
     JobRuns Storage;
-    JobContext(device const BindlessSet &b, constant JobPushConstants &pc) : B(b), Pc(pc), Storage{BindlessBufferMutable(uint, b.Buffer, pc.Job.Slot)} {}
-    Record Job() const { return *reinterpret_cast<device const Record *>(Storage.Words + Pc.Job.Offset); }
+    uint Offset;
+    TableJobContext(device const BindlessSet &b, SlotOffset record) : Storage{BindlessBufferMutable(uint, b.Buffer, record.Slot)}, Offset(record.Offset) {}
+    device const Record &Job() const { return *reinterpret_cast<device const Record *>(Storage.Words + Offset); }
     template<typename T> device T *Run(uint offset) const { return Storage.Run<T>(offset); }
     void Fail() const { Storage.Fail(); }
     operator JobRuns() const { return Storage; }

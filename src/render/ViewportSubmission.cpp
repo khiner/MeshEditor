@@ -50,6 +50,10 @@ void WaitForRender(state::Registry &r) {
         profile::Resolve(r.Resources.get<const mtl::Context>().Wait(resources.InFlight));
     }
     resources.InFlight = 0u;
+    // A frame whose transparent fragments exceeded its fragment lists draws again with lists that hold them.
+    for (const auto viewport : r.view<Viewport>()) {
+        if (r.get<const Viewport>(viewport).Targets.Patterns && r.edit<Viewport>(viewport).Targets.FitFragmentLists()) r.edit<Viewport>(viewport).RenderRequested = true;
+    }
     r.Resources.get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
     r.Resources.get<MeshStore>().FrameCompleted();
     r.Resources.get<const mtl::Context>().TrimPageCache();

@@ -93,4 +93,13 @@ struct SceneViewUBO {
     vec2 LightTileViewport DEFAULT();
     uint32_t RayShadowSamples DEFAULT(1u);
     uint32_t RayAreaLightSlot DEFAULT(InvalidSlot);
+    // While a material in view computes inputs: the MaterialPattern of each material by record index, the pattern word buffer, its words per pixel, and the timeline frame and time the programs read.
+    // The pixels' words are rows of the view's pixel width, and the listed ray samples' words begin at the ring's first word.
+    uint32_t PatternSlot DEFAULT(InvalidSlot);
+    uint32_t PatternWordSlot DEFAULT(InvalidSlot);
+    uint32_t PatternStride DEFAULT();
+    float PatternFrame DEFAULT(), PatternTime DEFAULT();
+    uint32_t PatternWidth DEFAULT(), PatternRing DEFAULT();
+    // With patterned transparent surfaces: the first word of the pixels' fragment lists, of the listed entries' keys and links, and of their computed words, and how many entries fit.
+    uint32_t PatternFragmentHeads DEFAULT(), PatternFragmentEntries DEFAULT(), PatternFragmentWords DEFAULT(), PatternFragmentCapacity DEFAULT();
 };

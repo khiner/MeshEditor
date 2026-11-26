@@ -205,7 +205,7 @@ void ResetImportedEnvironment(state::Registry &r) {
         ReleaseCubeSamplerSlot(slots, env.ImportedSceneWorld->SpecularEnv.SamplerSlot);
         env.ImportedSceneWorld.reset();
     }
-    env.SceneWorld = {.Ibl = MakeIblSamplers(env.EmptySceneWorld, env), .Name = env.EmptySceneWorld.Name};
+    env.SceneWorld = {.Ibl = MakeIblSamplers(env.EmptySceneWorld), .Name = env.EmptySceneWorld.Name};
 }
 
 void ReleaseEnvironmentSamplerSlots(mtl::BindlessSet &slots, const EnvironmentStore &environments) {
@@ -425,7 +425,7 @@ IblSamplers StudioIbl(state::Registry &r, std::string_view name) {
     const auto it = std::ranges::find(hdris, name, &HdriEntry::Name);
     auto &hdri = it != hdris.end() ? *it : hdris.front();
     if (!hdri.Prefiltered) hdri.Prefiltered = CreateIblFromHdri(r.Resources.get<const mtl::Context>(), r.Resources.get<mtl::BindlessSet>(), GetPipelines(r), hdri.Path, hdri.Name);
-    return MakeIblSamplers(*hdri.Prefiltered, environments);
+    return MakeIblSamplers(*hdri.Prefiltered);
 }
 
 void RebuildStudioEnvironments(state::Registry &r) {
@@ -438,16 +438,11 @@ void RebuildStudioEnvironments(state::Registry &r) {
     }
 }
 
-IblSamplers MakeIblSamplers(const EnvironmentPrefiltered &pre, const EnvironmentStore &environments) {
+IblSamplers MakeIblSamplers(const EnvironmentPrefiltered &pre) {
     return {
         .DiffuseEnvSamplerSlot = pre.DiffuseEnv.SamplerSlot,
         .SpecularEnvSamplerSlot = pre.SpecularEnv.SamplerSlot,
-        .BrdfLutSamplerSlot = environments.BrdfLutSlot,
         .SpecularEnvMipCount = pre.SpecularEnv.Image.MipLevels,
-        .SheenEnvSamplerSlot = pre.SpecularEnv.SamplerSlot,
-        .SheenEnvMipCount = pre.SpecularEnv.Image.MipLevels,
-        .SheenELutSamplerSlot = environments.SheenELutSlot,
-        .CharlieLutSamplerSlot = environments.CharlieLutSlot,
     };
 }
 
@@ -474,15 +469,11 @@ std::expected<std::vector<std::byte>, std::string> ReadbackTextureRgba8(const mt
     return ReadbackImageRgba8(ctx, entry.Image, 0, 0, entry.Image.Extent);
 }
 
-std::expected<DecodedTexture, std::string> DecodeTextureSource(const state::Registry &r, PendingTextureUpload &item, const std::vector<gltf::Image> &gltf_images) {
-    if (auto *raw = std::get_if<PendingTextureUpload::RawPixels>(&item.Source)) {
-        return DecodedTexture{.Data = std::move(raw->Pixels), .Width = raw->Width, .Height = raw->Height};
+std::expected<DecodedTexture, std::string> DecodeTextureSource(const state::Registry &r, const PendingTextureUpload &item, const std::vector<gltf::Image> &gltf_images) {
+    if (item.ImageIndex >= gltf_images.size()) {
+        return std::unexpected{std::format("PendingTextureUpload '{}' references gltf image index {} (out of range; {} images).", item.Params.Name, item.ImageIndex, gltf_images.size())};
     }
-    const auto &ref = std::get<PendingTextureUpload::GltfImageRef>(item.Source);
-    if (ref.ImageIndex >= gltf_images.size()) {
-        return std::unexpected{std::format("PendingTextureUpload '{}' references gltf image index {} (out of range; {} images).", item.Params.Name, ref.ImageIndex, gltf_images.size())};
-    }
-    const auto &source = gltf_images[ref.ImageIndex];
+    const auto &source = gltf_images[item.ImageIndex];
     std::vector<std::byte> loaded;
     std::span<const std::byte> bytes = source.Bytes;
     if (bytes.empty()) {
@@ -494,7 +485,7 @@ std::expected<DecodedTexture, std::string> DecodeTextureSource(const state::Regi
     if (source.MimeType != gltf::MimeType::KTX2) {
         auto decoded = DecodeImageRgba8(bytes, source.Name);
         if (!decoded) return std::unexpected{std::move(decoded.error())};
-        return DecodedTexture{.Data = std::move(decoded->Pixels), .Width = decoded->Width, .Height = decoded->Height, .SourceImageIndex = ref.ImageIndex};
+        return DecodedTexture{.Data = std::move(decoded->Pixels), .Width = decoded->Width, .Height = decoded->Height};
     }
 
     // The transcoder's global tables initialize once, before any thread transcodes.
@@ -508,7 +499,7 @@ std::expected<DecodedTexture, std::string> DecodeTextureSource(const state::Regi
     const uint32_t width = transcoder.get_width(), height = transcoder.get_height();
     const uint32_t mip_levels = transcoder.get_levels();
 
-    DecodedTexture decoded{.Format = texture_format, .Width = width, .Height = height, .SourceImageIndex = ref.ImageIndex};
+    DecodedTexture decoded{.Format = texture_format, .Width = width, .Height = height};
     decoded.Mips.reserve(mip_levels);
     size_t offset = 0;
     const uint32_t block_bytes = basist::basis_get_bytes_per_block_or_pixel(basis_fmt);
@@ -537,29 +528,8 @@ TextureEntry MaterializeTextureEntry(const mtl::Context &ctx, TextureUploadBatch
         TexturePixels{Rgba8Pixels{decoded.Data, decoded.Width, decoded.Height}} :
         TexturePixels{Ktx2Pixels{decoded.Format, decoded.Width, decoded.Height, decoded.Data, decoded.Mips}};
     auto entry = CreateTextureEntry(ctx, batch, slots, item.SamplerSlot, pixels, item.Params, max_anisotropy);
-    entry.SourceImageIndex = decoded.SourceImageIndex;
+    entry.SourceImageIndex = item.ImageIndex;
     return entry;
-}
-
-uint32_t QueueLutTexture(TextureStore &textures, mtl::BindlessSet &slots, const std::filesystem::path &lut_path, std::string name) {
-    const auto lut_path_str = lut_path.string();
-    const auto encoded = File::Read(lut_path);
-    if (!encoded) throw std::runtime_error(std::format("Failed to read default LUT texture '{}': {}", lut_path_str, encoded.error()));
-    auto decoded = DecodeImageRgba8(*encoded, lut_path_str);
-    if (!decoded) throw std::runtime_error(std::format("Failed to decode default LUT texture '{}': {}", lut_path_str, decoded.error()));
-    const auto slot = AllocateSamplerSlot(slots);
-    textures.PendingUploads.emplace_back(PendingTextureUpload{
-        .SamplerSlot = slot,
-        .Source = PendingTextureUpload::RawPixels{std::move(decoded->Pixels), decoded->Width, decoded->Height},
-        .Params = {
-            .ColorSpace = TextureColorSpace::Linear,
-            .WrapS = MTL::SamplerAddressModeClampToEdge,
-            .WrapT = MTL::SamplerAddressModeClampToEdge,
-            .Sampler = {.MinFilter = MTL::SamplerMinMagFilterLinear, .MagFilter = MTL::SamplerMinMagFilterLinear, .MipmapMode = MTL::SamplerMipFilterLinear, .UsesMipmaps = false},
-            .Name = std::move(name),
-        },
-    });
-    return slot;
 }
 
 std::vector<TextureRef> GetTextureRefs(state::Registry &r) {
@@ -587,7 +557,7 @@ state::Entity TextureAt(const state::Registry &r, uint32_t sampler_slot) {
 }
 state::Entity AddTexture(state::Registry &r, uint32_t source_image, uint32_t source_texture, TextureParams params) {
     const auto slot = AllocateSamplerSlot(r.Resources.get<mtl::BindlessSet>());
-    r.Resources.get<TextureStore>().PendingUploads.emplace_back(PendingTextureUpload{.SamplerSlot = slot, .Source = PendingTextureUpload::GltfImageRef{source_image}, .Params = params});
+    r.Resources.get<TextureStore>().PendingUploads.emplace_back(PendingTextureUpload{.SamplerSlot = slot, .ImageIndex = source_image, .Params = params});
     const auto e = r.create();
     r.emplace<MaterializedTexture>(e, slot, source_image, source_texture, std::move(params));
     return e;
@@ -608,7 +578,7 @@ void ReleaseUnlistedTextures(state::Registry &r, std::span<const MaterializedTex
     auto &slots = r.Resources.get<mtl::BindlessSet>();
     auto &textures = r.Resources.get<TextureStore>();
     const auto unlisted = [&](const TextureEntry &t) {
-        return t.SourceImageIndex != UINT32_MAX && std::ranges::none_of(manifest, [&](const MaterializedTexture &item) {
+        return std::ranges::none_of(manifest, [&](const MaterializedTexture &item) {
                    return item.SamplerSlot == t.SamplerSlot && item.SourceImageIndex == t.SourceImageIndex && item.Params == t.Params;
                });
     };
@@ -624,7 +594,9 @@ void ReleaseImportedTextures(state::Registry &r) {
 
 void Reset(TextureStore &textures, state::Registry &r) {
     ReleaseImportedTextures(r);
-    std::erase_if(textures.PendingUploads, [](const auto &upload) { return std::holds_alternative<PendingTextureUpload::GltfImageRef>(upload.Source); });
+    auto &slots = r.Resources.get<mtl::BindlessSet>();
+    for (const auto &upload : textures.PendingUploads) slots.Release({SlotType::Sampler, upload.SamplerSlot});
+    textures.PendingUploads.clear();
 }
 
 void Reset(EnvironmentStore &env, state::Registry &r) {

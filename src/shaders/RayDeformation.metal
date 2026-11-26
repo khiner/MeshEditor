@@ -1,3 +1,5 @@
+// Fast math that keeps Inf and NaN semantics.
+#pragma METAL fp math_mode(relaxed)
 // Previous evaluated positions follow EEVEE GeometryVelocity (222853b0d7e).
 #include "RayDeformationSurface.h"
 

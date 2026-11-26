@@ -174,11 +174,12 @@ RenderRun PublishClusterLodStorage(MeshStore &meshes, MeshStore::Record &owner, 
     // One appended run and history capture cover every group's member/proxy run.
     const auto runs = meshes.AppendPayload(owner, RenderPayload::GroupClusters, uint32_t(count));
     const auto ids = buffers.GroupClusterIds.GetMutable({owner.GroupClusters.Values.Offset + runs, uint32_t(count)});
+    // An empty run sits at offset zero, inside every used range.
     for (uint32_t g = 0u, next = runs; g < links.size(); ++g) {
         auto &link = links[g];
         link.MemberOffset = next;
         next += build.Groups[g].ClusterCount;
-        link.ProxyOffset = next;
+        link.ProxyOffset = link.ProxyCount ? next : 0u;
         next += std::exchange(link.ProxyCount, 0u);
     }
     for (uint32_t c = 0u; c < build.Clusters.size(); ++c) {
@@ -264,6 +265,8 @@ void CommitClusterLods(state::Registry &r, std::span<MeshStore::Record *const> o
         auto nodes = buffers.LodNodes.GetMutable({node_run.Address.Value(), node_run.Count});
         auto parents = buffers.LodParents.GetMutable({node_run.Address.Value(), node_run.Count});
         uint32_t fine_index = 0u, first_virtual = 0u;
+        // The leaves' member lists insert together after the traversal.
+        std::vector<uint32_t> leaves, leaf_counts, leaf_members;
         for (uint32_t p = 0u; p < primitive_ids.size(); ++p) {
             auto &primitive = buffers.Primitives.GetMutable({buffers.Primitives.Address(mb.PrimitiveData, ElementHandle{primitive_ids[p]}).Value(), 1u})[0];
             const auto &range = build.PrimitiveRanges[p];
@@ -293,22 +296,25 @@ void CommitClusterLods(state::Registry &r, std::span<MeshStore::Record *const> o
                 const auto leaf = node_run.Handle.Value + id;
                 const uint32_t start = node.FirstMeshlet - first_virtual, end = start + node.MeshletCount;
                 const uint32_t fine_end = std::min(end, primitive.Level0Count);
-                std::vector<uint32_t> members;
-                if (start < fine_end) members.assign(fine_ids[p].begin() + start, fine_ids[p].begin() + fine_end);
-                for (const auto cluster : members) fine_leaves[Resolve<RenderBlockSize>(meshlets, ElementHandle{cluster}).Value()] = leaf;
+                const auto first = leaf_members.size();
+                if (start < fine_end) leaf_members.append_range(std::span{fine_ids[p]}.subspan(start, fine_end - start));
+                for (const auto cluster : std::span{leaf_members}.subspan(first)) fine_leaves[Resolve<RenderBlockSize>(meshlets, ElementHandle{cluster}).Value()] = leaf;
                 const auto coarse_start = std::max(start, primitive.Level0Count);
                 for (auto c = coarse_start; c < end; ++c) {
                     const auto offset = range.FirstCluster + c - primitive.Level0Count;
                     coarse_leaves[offset] = leaf;
-                    members.push_back(allocation.Handle.Value + offset);
+                    leaf_members.push_back(allocation.Handle.Value + offset);
                 }
                 // A leaf lists its clusters in handle order.
-                std::ranges::sort(members);
-                node.Members = buffers.ListMembers(mb.MemberData, members);
+                std::ranges::sort(leaf_members.begin() + first, leaf_members.end());
+                leaves.push_back(id);
+                leaf_counts.push_back(uint32_t(leaf_members.size() - first));
             };
             if (range.RootNode != ClusterLodInvalid) visit(visit, range.RootNode);
             first_virtual += primitive.MeshletCount;
         }
+        const auto lists = buffers.ListMembers(mb.MemberData, leaf_members, leaf_counts);
+        for (uint32_t i = 0u; i < leaves.size(); ++i) nodes[leaves[i]].Members = lists[i];
         for (uint32_t g = 0u; g < group_links.size(); ++g) assert(group_links[g].MemberCount == build.Groups[g].ClusterCount);
         mb.LodDepth = std::max(mb.LodDepth, build.NodeDepth);
     }

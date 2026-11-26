@@ -1,3 +1,5 @@
+// Fast math that keeps Inf and NaN semantics.
+#pragma METAL fp math_mode(relaxed)
 /* SPDX-FileCopyrightText: 2023 Blender Authors
  * SPDX-License-Identifier: GPL-2.0-or-later
  * Metal integration of Blender 222853b0d7e eevee_fast_gi.bsl.hh.
@@ -11,8 +13,9 @@ using namespace eevee_fast_gi;
 inline uint2 gi_pixel(uint2 p, constant FastGiPushConstants &pc, uint2 size) {
     return RayGridCenter(p, pc.Frame, pc.Step, size);
 }
-inline float gi_reflection(float roughness, constant SceneViewUBO &view) {
-    return view.RayReflections ? RayReflectionWeight(roughness, view.RayMaxRoughness) : 0.f;
+// The base reflection weight of a deferred surface, whose stored weight also holds the traced coat when its reflection ray carries one.
+inline float3 gi_base_reflection(texture2d<float, access::read> reflection, texture2d<float, access::read> coat, uint2 pixel, float4 guide) {
+    return reflection.read(pixel).rgb - (RayGuideSharedReflection(guide) ? coat.read(pixel).rgb : float3(0));
 }
 [[max_total_threads_per_threadgroup(64)]] kernel void FastGiDepth(depth2d<float, access::read> input [[texture(0)]], texture2d<float, access::write> output [[texture(1)]], uint2 p [[thread_position_in_grid]]) {
     output.write(float4(input.read(p)), p);
@@ -25,7 +28,7 @@ inline float gi_reflection(float roughness, constant SceneViewUBO &view) {
         for (uint x = q.x; x < end.x; ++x) value = min(value, input.read(uint2(x, y)).r);
     output.write(float4(value), p);
 }
-[[max_total_threads_per_threadgroup(64)]] kernel void FastGiSetup(texture2d<float, access::read> guide [[texture(0)]], texture2d<float, access::read> current [[texture(1)]], texture2d<float, access::read> geometry [[texture(2)]], texture2d<float, access::read> feedback [[texture(3)]], texture2d<float, access::read> previous_geometry [[texture(4)]], texture2d<float, access::read> previous_normal [[texture(5)]], texture2d<uint, access::read> previous_material [[texture(6)]], texture2d<float, access::read> diffuse [[texture(7)]], texture2d<float, access::read> reflection [[texture(8)]], texture2d<float, access::write> radiance [[texture(9)]], texture2d<float, access::write> normal [[texture(10)]], texture2d<float, access::read> closure_normal [[texture(11)]], device const RayMotionTransform *motion [[buffer(10)]], device const RayDeformedSurface *deformation [[buffer(11)]], constant FastGiPushConstants &pc [[buffer(1)]], device const BindlessSet &bindless [[buffer(0)]], constant SceneViewUBO &view [[buffer(2)]], constant ViewportThemeUbo &theme [[buffer(3)]], constant WorkspaceLights &workspace [[buffer(4)]], uint2 p [[thread_position_in_grid]]) {
+[[max_total_threads_per_threadgroup(64)]] kernel void FastGiSetup(texture2d<float, access::read> guide [[texture(0)]], texture2d<float, access::read> current [[texture(1)]], texture2d<float, access::read> geometry [[texture(2)]], texture2d<float, access::read> feedback [[texture(3)]], texture2d<float, access::read> previous_geometry [[texture(4)]], texture2d<float, access::read> previous_normal [[texture(5)]], texture2d<uint, access::read> previous_material [[texture(6)]], texture2d<float, access::read> diffuse [[texture(7)]], texture2d<float, access::read> reflection [[texture(8)]], texture2d<float, access::write> radiance [[texture(9)]], texture2d<float, access::write> normal [[texture(10)]], texture2d<float, access::read> closure_normal [[texture(11)]], texture2d<float, access::read> coat [[texture(12)]], device const RayMotionTransform *motion [[buffer(10)]], device const RayDeformedSurface *deformation [[buffer(11)]], constant FastGiPushConstants &pc [[buffer(1)]], device const BindlessSet &bindless [[buffer(0)]], constant SceneViewUBO &view [[buffer(2)]], constant ViewportThemeUbo &theme [[buffer(3)]], constant WorkspaceLights &workspace [[buffer(4)]], uint2 p [[thread_position_in_grid]]) {
     const uint2 size(guide.get_width(), guide.get_height()), pixel = gi_pixel(p, pc, size);
     const float4 g = guide.read(pixel), stored = RayHistoryGeometry(geometry, pixel, pc.ClipToWorld.Unpack());
     const uint tag = as_type<uint>(stored.w);
@@ -35,7 +38,7 @@ inline float gi_reflection(float roughness, constant SceneViewUBO &view) {
     const float3 vn = (pc.WorldToView.Unpack() * float4(n, 0)).xyz;
     float3 light = current.read(pixel).rgb, old;
     const Scene scene{bindless, view, theme, workspace};
-    if (g.z >= 4.f) light += getDiffuseLight(scene, n) * view.Exposure * (diffuse.read(pixel).rgb + reflection.read(pixel).rgb * (1.f - gi_reflection(g.z - 4.f, view)));
+    if (g.z >= 4.f) light += getDiffuseLight(scene, n) * view.Exposure * (diffuse.read(pixel).rgb + gi_base_reflection(reflection, coat, pixel, g) * (1.f - RayFastGiTraced(RayGuideBaseRoughness(g), view.RayReflections, view.RayMaxRoughness)));
     float3 previous_position = stored.xyz, previous_geometric = geometric;
     if (valid && pc.HistoryValid && (tag & 0x80000000u) == 0 && RayPreviousPixelSurface(motion, (tag & 0x7fffffffu) - 1, pc.ApplyMotion != 0, deformation, pixel.y * size.x + pixel.x, previous_position, previous_geometric) && RayFeedback(feedback, previous_geometry, previous_normal, previous_material, motion, pc.PreviousViewProj.Unpack(), pc.PreviousClipToWorld.Unpack(), false, previous_position, previous_geometric, (tag & 0x7fffffffu) - 1, uint(g.w), old)) light = old;
     radiance.write(float4(valid ? eevee_denoise::safe_color(light) : float3(0), 0), p);
@@ -150,7 +153,7 @@ inline float gi_weight(float3 N, float3 P, float3 n, float3 p, float scale) {
     sum.scale(float4(1.f / max(weight_sum, 1e-8f)));
     store(output, p, sum);
 }
-[[max_total_threads_per_threadgroup(64)]] kernel void FastGiResolve(texture2d_array<float, access::read> input [[texture(0)]], texture2d<float, access::read> normal [[texture(1)]], texture2d<float, access::read> depth [[texture(2)]], texture2d<float, access::read> guide [[texture(3)]], texture2d<float, access::read> diffuse [[texture(4)]], texture2d<float, access::read> reflection [[texture(5)]], texture2d<float, access::read> closure_normal [[texture(6)]], texture2d<float, access::read_write> color [[texture(7)]], constant FastGiPushConstants &pc [[buffer(1)]], device const BindlessSet &bindless [[buffer(0)]], constant SceneViewUBO &view [[buffer(2)]], constant ViewportThemeUbo &theme [[buffer(3)]], constant WorkspaceLights &workspace [[buffer(4)]], uint2 pixel [[thread_position_in_grid]]) {
+[[max_total_threads_per_threadgroup(64)]] kernel void FastGiResolve(texture2d_array<float, access::read> input [[texture(0)]], texture2d<float, access::read> normal [[texture(1)]], texture2d<float, access::read> depth [[texture(2)]], texture2d<float, access::read> guide [[texture(3)]], texture2d<float, access::read> diffuse [[texture(4)]], texture2d<float, access::read> reflection [[texture(5)]], texture2d<float, access::read> closure_normal [[texture(6)]], texture2d<float, access::read_write> color [[texture(7)]], texture2d<float, access::read> coat [[texture(8)]], constant FastGiPushConstants &pc [[buffer(1)]], device const BindlessSet &bindless [[buffer(0)]], constant SceneViewUBO &view [[buffer(2)]], constant ViewportThemeUbo &theme [[buffer(3)]], constant WorkspaceLights &workspace [[buffer(4)]], uint2 pixel [[thread_position_in_grid]]) {
     const float4 g = guide.read(pixel);
     if (g.z < 4.f) return;
     const uint2 size(guide.get_width(), guide.get_height());
@@ -178,11 +181,11 @@ inline float gi_weight(float3 N, float3 P, float3 n, float3 p, float scale) {
     const Scene scene{bindless, view, theme, workspace};
     float3 extra(0);
     for (uint lobe = 0; lobe < 2; ++lobe) {
-        const float3 direction = lobe ? dominant_reflection(shading, V, g.z - 4.f) : shading;
+        const float3 direction = lobe ? dominant_reflection(shading, V, RayGuideBaseRoughness(g)) : shading;
         float4 incoming(0, 0, 0, 3);
         if (weight_sum > 0) { incoming = sum.lambert(rotation * direction) / weight_sum; }
         const float3 light = max(incoming.rgb, 0.f) + saturate(incoming.w / 3.f) * getDiffuseLight(scene, direction) * view.Exposure;
-        extra += light * (lobe ? reflection.read(pixel).rgb * (1.f - gi_reflection(g.z - 4.f, view)) : diffuse.read(pixel).rgb);
+        extra += light * (lobe ? gi_base_reflection(reflection, coat, pixel, g) * (1.f - RayFastGiTraced(RayGuideBaseRoughness(g), view.RayReflections, view.RayMaxRoughness)) : diffuse.read(pixel).rgb);
     }
     const float4 old = color.read(pixel);
     color.write(float4(eevee_denoise::safe_color(old.rgb + extra), old.a), pixel);

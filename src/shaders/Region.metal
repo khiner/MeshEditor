@@ -14,7 +14,9 @@
 // Segment normals agreeing within this count as one direction for a vertex's move.
 constant float RegionParallelTolerance = 1e-6f;
 
-using RegionContext = JobContext<RegionJob>;
+using RegionContext = TableJobContext<RegionJob>;
+// Declares a job table kernel's context, its tile's job and the thread's index `index` within the job.
+#define REGION_THREAD(index) JOB_THREAD(job_record, index); const RegionContext ctx{b, job_record}; const RegionJob job = ctx.Job()
 
 // The plane geometry at z zero, with the first operand's vertices moving an eighth further than the second's and shifted per axis.
 struct RegionGeometry {
@@ -89,16 +91,16 @@ inline bool CrossingBefore(RegionCrossing a, RegionCrossing c, float tolerance) 
     return a.Other < c.Other;
 }
 
-inline float3 RecordPosition(device const BindlessSet &b, constant RegionSegmentsPushConstants &pc, ConnectivityView view, uint corner) {
+inline float3 RecordPosition(device const BindlessSet &b, constant RegionSegmentsJob &pc, ConnectivityView view, uint corner) {
     const float3 p = float3(BindlessBuffer(Vertex, b.VertexBuffer, pc.VertexSlot)[view.VertexAddress(view.VertexOf(corner))].Position);
     return pc.Rotation.Unpack() * p + float3(pc.Translation);
 }
-inline float2 PlaneCoordinates(constant RegionSegmentsPushConstants &pc, float3 d) { return float2(dot(d, float3(pc.U)), dot(d, float3(pc.V))); }
-inline float2 PlanePosition(device const BindlessSet &b, constant RegionSegmentsPushConstants &pc, ConnectivityView view, uint corner) {
+inline float2 PlaneCoordinates(constant RegionSegmentsJob &pc, float3 d) { return float2(dot(d, float3(pc.U)), dot(d, float3(pc.V))); }
+inline float2 PlanePosition(device const BindlessSet &b, constant RegionSegmentsJob &pc, ConnectivityView view, uint corner) {
     return PlaneCoordinates(pc, RecordPosition(b, pc, view, corner) - float3(pc.Point));
 }
 // Whether a live face's halfedge is selected, which is always unless the job takes cusps only.
-inline bool Selected(device const BindlessSet &b, constant RegionSegmentsPushConstants &pc, ConnectivityView view, uint h) {
+inline bool Selected(device const BindlessSet &b, constant RegionSegmentsJob &pc, ConnectivityView view, uint h) {
     if (!pc.Cusps) return true;
     const uint face = view.HalfedgeFace(h);
     const float3 normal = float3(pc.Normal);
@@ -109,17 +111,17 @@ inline bool Selected(device const BindlessSet &b, constant RegionSegmentsPushCon
     const uint other = view.HalfedgeFace(opposite);
     return other == InvalidOffset || dot(pc.Rotation.Unpack() * float3(normals[view.FaceAddress(other)]), normal) < 0.f;
 }
-inline device uint *Aliases(device const BindlessSet &b, constant RegionSegmentsPushConstants &pc) { return BindlessBufferMutable(uint, b.Buffer, pc.Aliases.Slot) + pc.Aliases.Offset; }
+inline device uint *Aliases(device const BindlessSet &b, constant RegionSegmentsJob &pc) { return BindlessBufferMutable(uint, b.Buffer, pc.Aliases.Slot) + pc.Aliases.Offset; }
 inline uint Resolve(device const uint *aliases, uint v) {
     for (uint n = 0u; n < 64u && aliases[v] != v; ++n) v = aliases[v];
     return v;
 }
 // A selected halfedge's segment ends, as job vertices after merging, or equal ends when it projects to a point.
-inline uint2 SegmentEnds(device const BindlessSet &b, constant RegionSegmentsPushConstants &pc, ConnectivityView view, uint h) {
+inline uint2 SegmentEnds(device const BindlessSet &b, constant RegionSegmentsJob &pc, ConnectivityView view, uint h) {
     device const uint *aliases = Aliases(b, pc);
     return uint2(Resolve(aliases, pc.VertexBase + view.From(h)), Resolve(aliases, pc.VertexBase + view.VertexOf(h)));
 }
-template<typename Visit> inline void ForEachFaceSegment(device const BindlessSet &b, constant RegionSegmentsPushConstants &pc, ConnectivityView view, uint f, Visit visit) {
+template<typename Visit> inline void ForEachFaceSegment(device const BindlessSet &b, constant RegionSegmentsJob &pc, ConnectivityView view, uint f, Visit visit) {
     const uint2 range = view.FaceHalfedges(ElementWorkDomain{b, pc.Faces}.Handle(f));
     for (uint h = range.x; h < range.y; ++h) {
         if (!Selected(b, pc, view, h)) continue;
@@ -129,11 +131,8 @@ template<typename Visit> inline void ForEachFaceSegment(device const BindlessSet
 }
 
 // Each selected halfedge projecting to a point merges its ends into the lower vertex, so the segments on either side meet at one arrangement vertex.
-kernel void RegionSegmentAlias(
-    uint f [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant RegionSegmentsPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
+kernel void RegionSegmentAlias(JOB_TABLE_ARGS(RegionSegmentsJob)) {
+    JOB_THREAD(pc, f);
     if (f >= pc.FaceCount) return;
     const ConnectivityView view{b, pc.Connectivity};
     const uint2 range = view.FaceHalfedges(ElementWorkDomain{b, pc.Faces}.Handle(f));
@@ -146,11 +145,8 @@ kernel void RegionSegmentAlias(
     }
 }
 // Each live face counts its selected halfedges with two distinct ends and writes their ends' plane positions and the operand's bounds.
-kernel void RegionSegmentCount(
-    uint f [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant RegionSegmentsPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
+kernel void RegionSegmentCount(JOB_TABLE_ARGS(RegionSegmentsJob)) {
+    JOB_THREAD(pc, f);
     if (f > pc.FaceCount) return;
     device uint *counts = BindlessBufferMutable(uint, b.Buffer, pc.Counts.Slot) + pc.Counts.Offset;
     if (f == pc.FaceCount) {
@@ -178,11 +174,8 @@ kernel void RegionSegmentCount(
     });
     counts[f] = count;
 }
-kernel void RegionSegmentEmit(
-    uint f [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant RegionSegmentsPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
+kernel void RegionSegmentEmit(JOB_TABLE_ARGS(RegionSegmentsJob)) {
+    JOB_THREAD(pc, f);
     if (f >= pc.FaceCount) return;
     device const uint *counts = BindlessBuffer(uint, b.Buffer, pc.Counts.Slot) + pc.Counts.Offset;
     if (counts[f] == counts[f + 1u]) return;
@@ -198,36 +191,21 @@ kernel void RegionSegmentEmit(
     });
 }
 
-kernel void RegionIncidentCount(
-    uint s [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const RegionContext ctx{b, pc};
-    const RegionJob job = ctx.Job();
+kernel void RegionIncidentCount(JOB_TABLE_ARGS(SlotOffset)) {
+    REGION_THREAD(s);
     if (s >= job.Segments[0] + job.Segments[1]) return;
     const RegionSegment segment = ctx.Run<RegionSegment>(job.SegmentRecords)[s];
     device atomic_uint *first = ctx.Run<atomic_uint>(job.IncidentFirst);
     atomic_fetch_add_explicit(&first[segment.Start], 1u, memory_order_relaxed);
     atomic_fetch_add_explicit(&first[segment.End], 1u, memory_order_relaxed);
 }
-kernel void RegionIncidentCursors(
-    uint v [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const RegionContext ctx{b, pc};
-    const RegionJob job = ctx.Job();
+kernel void RegionIncidentCursors(JOB_TABLE_ARGS(SlotOffset)) {
+    REGION_THREAD(v);
     if (v >= job.Vertices[0] + job.Vertices[1]) return;
     ctx.Run<uint>(job.IncidentCursor)[v] = ctx.Run<uint>(job.IncidentFirst)[v];
 }
-kernel void RegionIncidentFill(
-    uint s [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const RegionContext ctx{b, pc};
-    const RegionJob job = ctx.Job();
+kernel void RegionIncidentFill(JOB_TABLE_ARGS(SlotOffset)) {
+    REGION_THREAD(s);
     if (s >= job.Segments[0] + job.Segments[1]) return;
     const RegionSegment segment = ctx.Run<RegionSegment>(job.SegmentRecords)[s];
     device atomic_uint *cursors = ctx.Run<atomic_uint>(job.IncidentCursor);
@@ -237,13 +215,8 @@ kernel void RegionIncidentFill(
 }
 
 // Each vertex's move shifts every incident segment outward by one unit, along one segment's outward normal or the offset of two.
-kernel void RegionMoves(
-    uint v [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const RegionContext ctx{b, pc};
-    const RegionJob job = ctx.Job();
+kernel void RegionMoves(JOB_TABLE_ARGS(SlotOffset)) {
+    REGION_THREAD(v);
     if (v >= job.Vertices[0] + job.Vertices[1]) return;
     device const uint *first = ctx.Run<uint>(job.IncidentFirst), *incident = ctx.Run<uint>(job.Incident);
     device const packed_float2 *positions = ctx.Run<packed_float2>(job.Positions);
@@ -272,13 +245,8 @@ inline uint SpreadBits2(uint v) {
     v = (v | (v << 1u)) & 0x55555555u;
     return v;
 }
-kernel void RegionMorton(
-    uint s [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const RegionContext ctx{b, pc};
-    const RegionJob job = ctx.Job();
+kernel void RegionMorton(JOB_TABLE_ARGS(SlotOffset)) {
+    REGION_THREAD(s);
     if (s >= job.Segments[0] + job.Segments[1]) return;
     const RegionGeometry g = Geometry(ctx, job);
     const float2 a = g.Position(g.Segments[s].Start).xy, c = g.Position(g.Segments[s].End).xy, center = (min(a, c) + max(a, c)) * .5f;
@@ -298,13 +266,8 @@ kernel void RegionMorton(
     ctx.Run<uint>(job.Collider.Keys)[s] = code;
     ctx.Run<uint>(job.Collider.Order)[s] = s;
 }
-kernel void RegionRefit(
-    uint leaf [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const RegionContext ctx{b, pc};
-    const RegionJob job = ctx.Job();
+kernel void RegionRefit(JOB_TABLE_ARGS(SlotOffset)) {
+    REGION_THREAD(leaf);
     const ColliderRuns runs = job.Collider;
     if (leaf >= runs.Leaves) return;
     const RegionGeometry g = Geometry(ctx, job);
@@ -331,24 +294,14 @@ inline uint SegmentCrossings(RegionContext ctx, RegionJob job, RegionGeometry g,
     });
     return count;
 }
-kernel void RegionCrossingCount(
-    uint s [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const RegionContext ctx{b, pc};
-    const RegionJob job = ctx.Job();
+kernel void RegionCrossingCount(JOB_TABLE_ARGS(SlotOffset)) {
+    REGION_THREAD(s);
     const uint segments = job.Segments[0] + job.Segments[1];
     if (s > segments) return;
     ctx.Run<uint>(job.CrossingFirst)[s] = s == segments ? 0u : SegmentCrossings(ctx, job, Geometry(ctx, job), s, [](uint, uint, int, float2) {});
 }
-kernel void RegionCrossingEmit(
-    uint s [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const RegionContext ctx{b, pc};
-    const RegionJob job = ctx.Job();
+kernel void RegionCrossingEmit(JOB_TABLE_ARGS(SlotOffset)) {
+    REGION_THREAD(s);
     if (s >= job.Segments[0] + job.Segments[1]) return;
     const RegionGeometry g = Geometry(ctx, job);
     const uint first = ctx.Run<uint>(job.CrossingFirst)[s];
@@ -369,13 +322,8 @@ kernel void RegionCrossingEmit(
 }
 
 // Each vertex with segments takes its operand windings in the moved configuration from the signed crossings of the other segments above it along y.
-kernel void RegionWindings(
-    uint v [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const RegionContext ctx{b, pc};
-    const RegionJob job = ctx.Job();
+kernel void RegionWindings(JOB_TABLE_ARGS(SlotOffset)) {
+    REGION_THREAD(v);
     if (v >= job.Vertices[0] + job.Vertices[1]) return;
     device const uint *first = ctx.Run<uint>(job.IncidentFirst);
     if (first[v] == first[v + 1u]) return;
@@ -393,13 +341,8 @@ kernel void RegionWindings(
 }
 
 // Each segment walks its pieces from the winding just right of its start, corrected for the segments meeting there, through each crossing's change.
-kernel void RegionPieces(
-    uint s [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const RegionContext ctx{b, pc};
-    const RegionJob job = ctx.Job();
+kernel void RegionPieces(JOB_TABLE_ARGS(SlotOffset)) {
+    REGION_THREAD(s);
     const uint segments = job.Segments[0] + job.Segments[1];
     if (s > segments) return;
     device uint *kept = ctx.Run<uint>(job.PieceKept), *reversed = ctx.Run<uint>(job.PieceReversed);
@@ -438,13 +381,8 @@ kernel void RegionPieces(
     }
 }
 
-kernel void RegionKeptFill(
-    uint p [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const RegionContext ctx{b, pc};
-    const RegionJob job = ctx.Job();
+kernel void RegionKeptFill(JOB_TABLE_ARGS(SlotOffset)) {
+    REGION_THREAD(p);
     if (p >= job.Pieces || !PieceIsKept(ctx, job, p)) return;
     ctx.Run<uint>(job.Kept)[ctx.Run<uint>(job.PieceKept)[p]] = p;
 }
@@ -477,13 +415,8 @@ inline void Consider(RegionContext ctx, RegionJob job, RegionGeometry g, thread 
     }
 }
 // Each kept piece links to the kept piece after it, and starts its loop label at its own index and its jump at its link.
-kernel void RegionNext(
-    uint i [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const RegionContext ctx{b, pc};
-    const RegionJob job = ctx.Job();
+kernel void RegionNext(JOB_TABLE_ARGS(SlotOffset)) {
+    REGION_THREAD(i);
     if (i >= job.KeptPieces) return;
     const RegionGeometry g = Geometry(ctx, job);
     const uint p = ctx.Run<uint>(job.Kept)[i];
@@ -525,69 +458,45 @@ kernel void RegionNext(
     ctx.Run<uint>(job.Jumps)[i] = next;
 }
 
-kernel void RegionLabel(
-    uint i [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const RegionContext ctx{b, pc};
-    const RegionJob job = ctx.Job();
-    if (i < job.KeptPieces) LabelRound(ctx.Run<uint>(job.Labels), ctx.Run<uint>(job.Jumps), job.KeptPieces, pc.Parameter & 1u, i);
+kernel void RegionLabel(JOB_TABLE_ARGS(SlotOffset)) {
+    REGION_THREAD(i);
+    if (i < job.KeptPieces) LabelRound(ctx.Run<uint>(job.Labels), ctx.Run<uint>(job.Jumps), job.KeptPieces, table.Parameter & 1u, i);
 }
 // Each loop breaks before its representative, the piece labeled with its own index.
 // List ranking counts the pieces from each to the break, so the representative holds the loop's length.
-kernel void RegionRankInit(
-    uint i [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const RegionContext ctx{b, pc};
-    const RegionJob job = ctx.Job();
+kernel void RegionRankInit(JOB_TABLE_ARGS(SlotOffset)) {
+    REGION_THREAD(i);
     if (i >= job.KeptPieces) return;
-    const uint label = ctx.Run<uint>(job.Labels)[pc.Parameter * job.KeptPieces + i];
+    const uint label = ctx.Run<uint>(job.Labels)[table.Parameter * job.KeptPieces + i];
     ctx.Run<uint>(job.Distances)[i] = 1u;
     const uint next = ctx.Run<uint>(job.Next)[i];
     ctx.Run<uint>(job.Successors)[i] = next == label ? InvalidOffset : next;
 }
-kernel void RegionRank(
-    uint i [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const RegionContext ctx{b, pc};
-    const RegionJob job = ctx.Job();
-    if (i < job.KeptPieces) RankRound(ctx.Run<uint>(job.Distances), ctx.Run<uint>(job.Successors), job.KeptPieces, pc.Parameter & 1u, i);
+kernel void RegionRank(JOB_TABLE_ARGS(SlotOffset)) {
+    REGION_THREAD(i);
+    if (i < job.KeptPieces) RankRound(ctx.Run<uint>(job.Distances), ctx.Run<uint>(job.Successors), job.KeptPieces, table.Parameter & 1u, i);
 }
 // Each representative counts its loop and its length for the scans, with a zero terminator.
-// Parameter holds the final buffers' parity.
-kernel void RegionLoopCount(
-    uint i [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const RegionContext ctx{b, pc};
-    const RegionJob job = ctx.Job();
+// Parameter holds the final buffers' parity, which the terminator's thread keeps for the output.
+kernel void RegionLoopCount(JOB_TABLE_ARGS(SlotOffset)) {
+    REGION_THREAD(i);
     if (i > job.KeptPieces) return;
     device uint *lengths = ctx.Run<uint>(job.LoopLengths), *flags = ctx.Run<uint>(job.LoopFlags);
     if (i == job.KeptPieces) {
         lengths[i] = flags[i] = 0u;
+        ctx.Run<uint>(job.Parity)[0] = table.Parameter;
         return;
     }
-    const uint converged = pc.Parameter * job.KeptPieces;
+    const uint converged = table.Parameter * job.KeptPieces;
     const bool representative = ctx.Run<uint>(job.Labels)[converged + i] == i;
     lengths[i] = representative ? ctx.Run<uint>(job.Distances)[converged + i] : 0u;
     flags[i] = representative ? 1u : 0u;
 }
-kernel void RegionOutput(
-    uint i [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const RegionContext ctx{b, pc};
-    const RegionJob job = ctx.Job();
+kernel void RegionOutput(JOB_TABLE_ARGS(SlotOffset)) {
+    REGION_THREAD(i);
     if (i >= job.KeptPieces) return;
     const RegionGeometry g = Geometry(ctx, job);
-    const uint converged = pc.Parameter * job.KeptPieces;
+    const uint converged = ctx.Run<uint>(job.Parity)[0] * job.KeptPieces;
     const uint label = ctx.Run<uint>(job.Labels)[converged + i];
     device const uint *distances = ctx.Run<uint>(job.Distances) + converged;
     device const uint *lengths = ctx.Run<uint>(job.LoopLengths);

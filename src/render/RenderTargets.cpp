@@ -1,5 +1,10 @@
 #include "render/RenderTargets.h"
+#include "gpu/MaterialPattern.h"
 #include "gpu/RayTracingRecord.h"
+#include "gpu/SurfacePattern.h"
+
+#include <algorithm>
+#include <bit>
 
 namespace Format = mtl::Format;
 
@@ -62,6 +67,49 @@ void RenderTargets::SetExtent(const mtl::Context &ctx, mtl::Extent2D extent, mtl
     Transmission.reset();
     MotionBlur.reset();
     RayTracing.reset();
+    Patterns.reset();
+}
+
+RenderTargets::PatternResourcesT::PatternResourcesT(const mtl::Context &ctx, mtl::Extent2D extent, uint32_t ray_samples)
+    : Work{ctx, (uint64_t(extent.Width) * extent.Height + SurfacePatternPixels) * sizeof(uint32_t)}, RaySamples{ray_samples} {
+    if (ray_samples == 0u) return;
+    Hits.emplace(ctx, (PatternHitEntries + 2u * uint64_t(ray_samples)) * sizeof(uint32_t));
+    std::ranges::fill(Hits->Contents().first(PatternHitEntries * sizeof(uint32_t)), std::byte{});
+}
+
+RenderTargets::PatternResourcesT *RenderTargets::EnsurePatternResources(const mtl::Context &ctx, mtl::BufferContext &buffers, uint32_t stride, uint32_t ray_samples, bool fragments) {
+    if (stride == 0u) {
+        Patterns.reset();
+        return nullptr;
+    }
+    const auto extent = Screen->SceneColorImage.Extent; // SetExtent releases Patterns when this changes.
+    if (!Patterns || Patterns->RaySamples != ray_samples) {
+        auto words = Patterns ? std::move(Patterns->Words) : nullptr;
+        const auto held = Patterns ? Patterns->FragmentCapacity : 0u;
+        Patterns = std::make_unique<PatternResourcesT>(ctx, extent, ray_samples);
+        Patterns->Words = std::move(words);
+        Patterns->FragmentCapacity = held;
+    }
+    const auto pixels = extent.Width * extent.Height;
+    if (fragments && !Patterns->FragmentCapacity) Patterns->FragmentCapacity = pixels;
+    const auto capacity = fragments ? Patterns->FragmentCapacity : 0u;
+    Patterns->Ring = PatternWordsHeader + pixels * stride;
+    const auto heads = Patterns->Ring + ray_samples * stride;
+    Patterns->Fragments = {.Heads = heads, .Entries = heads + (fragments ? pixels : 0u), .Words = heads + (fragments ? pixels + 2u * capacity : 0u), .Capacity = capacity};
+    const auto bytes = (uint64_t(Patterns->Fragments.Words) + uint64_t(capacity) * stride) * sizeof(uint32_t);
+    if (!Patterns->Words) Patterns->Words = std::make_unique<mtl::Buffer>(buffers, bytes, SlotType::Buffer, mtl::BufferLifetime::Workspace);
+    else Patterns->Words->Reserve(bytes);
+    return Patterns.get();
+}
+
+bool RenderTargets::FitFragmentLists() {
+    if (!Patterns || !std::exchange(Patterns->Listed, false)) return false;
+    // The list pass counts every fragment it lists in the header's first word, including those past the lists' end.
+    const auto listed = Patterns->Words->GetSpan<uint32_t>({0u, 1u})[0];
+    auto &capacity = Patterns->FragmentCapacity;
+    Patterns->Overflowed = listed > capacity;
+    if (listed > capacity || listed < capacity / 4u) capacity = std::bit_ceil(std::max(listed, 1u));
+    return Patterns->Overflowed;
 }
 
 bool RenderTargets::EnsureTransmissionResources(const mtl::Context &ctx, mtl::Extent2D extent, bool wanted) {
@@ -84,10 +132,11 @@ bool RenderTargets::EnsureMotionBlurResources(const mtl::Context &ctx, bool fast
     return true;
 }
 
-RenderTargets::RayTracingResourcesT &RenderTargets::EnsureRayTracingResources(const mtl::Context &ctx, uint32_t step, uint32_t lobes, bool glass) {
+RenderTargets::RayTracingResourcesT &RenderTargets::EnsureRayTracingResources(const mtl::Context &ctx, uint32_t step, uint32_t lobes, bool glass, bool coat, bool diffuse_transmission, bool sheen) {
     const auto extent = Screen->SceneColorImage.Extent; // SetExtent releases RayTracing when this changes.
-    if (!RayTracing || RayTracing->RayData.Extent != extent.Blocks(step) || RayTracing->RayQueue.Length() != RayQueueBytes(extent, lobes) || bool(RayTracing->GlassShape) != glass)
-        RayTracing = std::make_unique<RayTracingResourcesT>(ctx, extent, step, lobes, glass);
+    if (!RayTracing || RayTracing->RayData.Extent != extent.Blocks(step) || RayTracing->RayQueue.Length() != RayQueueBytes(extent, lobes) || bool(RayTracing->GlassShape) != glass ||
+        bool(RayTracing->CoatWeight) != coat || bool(RayTracing->DiffuseTransmissionWeight) != diffuse_transmission || bool(RayTracing->SheenWeight) != sheen)
+        RayTracing = std::make_unique<RayTracingResourcesT>(ctx, extent, step, lobes, glass, coat, diffuse_transmission, sheen);
     return *RayTracing;
 }
 
@@ -107,7 +156,7 @@ SampledTexture RenderTargets::TransmissionSampler() const {
     return {*Transmission->Image, Transmission->Sampler.get()};
 }
 
-RenderTargets::RayTracingResourcesT::RayTracingResourcesT(const mtl::Context &ctx, mtl::Extent2D extent, uint32_t step, uint32_t lobes, bool glass)
+RenderTargets::RayTracingResourcesT::RayTracingResourcesT(const mtl::Context &ctx, mtl::Extent2D extent, uint32_t step, uint32_t lobes, bool glass, bool coat, bool diffuse_transmission, bool sheen)
     : Work{ctx, (RayTileEnd(extent.Width, extent.Height) + (lobes > 1u && !glass ? 3u + RayTileCount(extent.Width, extent.Height) : 0u)) * sizeof(uint32_t)},
       RayQueue{ctx, RayQueueBytes(extent, lobes)} {
     constexpr auto usage = MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite;
@@ -136,6 +185,12 @@ RenderTargets::RayTracingResourcesT::RayTracingResourcesT(const mtl::Context &ct
     Transmission = texture(MTL::PixelFormatRGBA32Float, lobes > 1u);
     TransmissionHit = texture(MTL::PixelFormatRGBA32Float, lobes > 1u);
     Feedback = texture(MTL::PixelFormatRGBA16Float);
+    if (coat) {
+        CoatWeight = texture(MTL::PixelFormatRGBA16Float);
+        CoatNormal = texture(MTL::PixelFormatRG16Float);
+    }
+    if (diffuse_transmission) DiffuseTransmissionWeight = texture(MTL::PixelFormatRGBA16Float);
+    if (sheen) SheenWeight = texture(MTL::PixelFormatRGBA16Float);
     for (auto &history : History) {
         history.Film = texture(MTL::PixelFormatRGBA32Float);
         history.Geometry = texture(MTL::PixelFormatRG32Float);

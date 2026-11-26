@@ -1,142 +1,159 @@
 #include "procedure/Macros.h"
 #include "action/Nodes.h"
+#include "procedure/OpNodes.h"
 #include "procedure/Procedure.h"
+#include "scene/Entity.h"
 #include "state/Registry.h"
 
 namespace procedure {
 namespace {
-using action::nodes::Action, action::nodes::AddNode, action::nodes::ExposeSocket, action::nodes::Link;
+using action::nodes::Action, action::nodes::AddNode, action::nodes::ExposeSocket, action::nodes::Link, action::nodes::SetOpInput;
 
-state::Entity Inner(state::Registry &r, state::Entity mesh_entity, state::Entity subnet, uint16_t kind) {
-    action::nodes::Apply(r, Action{AddNode{mesh_entity, kind, subnet}});
-    return r.get<const GeometryProcedure>(mesh_entity).Last;
+state::Entity Inner(state::Registry &r, state::Entity definition, uint16_t kind) {
+    action::nodes::Apply(r, Action{AddNode{definition, action::nodes::KindNode{kind}}});
+    return r.get<const NetworkNodes>(definition).Last;
 }
-uint16_t Expose(state::Registry &r, state::Entity subnet, state::Entity node, uint16_t socket, const char *name) {
-    action::nodes::Apply(r, Action{ExposeSocket{subnet, node, socket, name}});
-    return r.get<const SubnetInterface>(subnet).Ports.back().Id;
+uint16_t Expose(state::Registry &r, state::Entity definition, state::Entity node, uint16_t socket, const char *name) {
+    action::nodes::Apply(r, Action{ExposeSocket{definition, node, socket, name}});
+    return r.get<const SubnetInterface>(definition).Ports.back().Id;
 }
-uint16_t Out(const state::Registry &r, state::Entity node) { return InputCount[r.get<const ProcedureNode>(node).Kind]; }
-void Wire(state::Registry &r, state::Entity mesh_entity, state::Entity from, state::Entity to, uint16_t socket) {
-    action::nodes::Apply(r, Action{Link{mesh_entity, from, Out(r, from), to, socket}});
+// An op node of the MaterialX node, with its texts and literals set by input name.
+state::Entity InnerOp(state::Registry &r, state::Entity definition, std::string node, std::initializer_list<std::pair<std::string_view, std::string_view>> texts = {}, std::initializer_list<std::pair<std::string_view, int32_t>> integers = {}) {
+    action::nodes::Apply(r, Action{AddNode{definition, action::nodes::OpNode{std::move(node)}}});
+    const auto op = r.get<const NetworkNodes>(definition).Last;
+    for (const auto [input, text] : texts) action::nodes::Apply(r, Action{SetOpInput{op, std::string{input}, std::make_unique<action::nodes::OpInputValue>(std::string{text})}});
+    for (const auto [input, value] : integers) action::nodes::Apply(r, Action{SetOpInput{op, std::string{input}, std::make_unique<action::nodes::OpInputValue>(action::nodes::OpLiteral{mx::Type::Integer, {std::bit_cast<uint32_t>(value)}})}});
+    return op;
+}
+uint16_t Out(const state::Registry &r, state::Entity node) { return InputCountOf(r, node); }
+void Wire(state::Registry &r, state::Entity definition, state::Entity from, state::Entity to, uint16_t socket) {
+    action::nodes::Apply(r, Action{Link{definition, from, Out(r, from), to, socket}});
 }
 
-void SplitBySolid(state::Registry &r, state::Entity mesh_entity, state::Entity subnet) {
-    const auto outside = Inner(r, mesh_entity, subnet, KindOf<Boolean>);
-    const auto inside = Inner(r, mesh_entity, subnet, KindOf<Boolean>);
+void SplitBySolid(state::Registry &r, state::Entity definition) {
+    const auto outside = Inner(r, definition, KindOf<Boolean>);
+    const auto inside = Inner(r, definition, KindOf<Boolean>);
     r.replace<Boolean>(outside, Boolean{.Operation = BooleanOperation::Difference});
     r.replace<Boolean>(inside, Boolean{.Operation = BooleanOperation::Intersection});
-    action::nodes::Apply(r, Action{Link{mesh_entity, subnet, Expose(r, subnet, outside, 0u, "Solid"), inside, 0u}});
-    action::nodes::Apply(r, Action{Link{mesh_entity, subnet, Expose(r, subnet, outside, 1u, "Cutter"), inside, 1u}});
-    Expose(r, subnet, outside, Out(r, outside), "Outside");
-    Expose(r, subnet, inside, Out(r, inside), "Inside");
+    action::nodes::Apply(r, Action{Link{definition, definition, Expose(r, definition, outside, 0u, "Solid"), inside, 0u}});
+    action::nodes::Apply(r, Action{Link{definition, definition, Expose(r, definition, outside, 1u, "Cutter"), inside, 1u}});
+    Expose(r, definition, outside, Out(r, outside), "Outside");
+    Expose(r, definition, inside, Out(r, inside), "Inside");
 }
-void HullOfObjects(state::Registry &r, state::Entity mesh_entity, state::Entity subnet) {
-    const auto join = Inner(r, mesh_entity, subnet, KindOf<Join>);
-    const auto hull = Inner(r, mesh_entity, subnet, KindOf<action::mesh::ConvexHull>);
-    Wire(r, mesh_entity, join, hull, 0u);
-    Expose(r, subnet, join, 0u, "Mesh 1");
-    Expose(r, subnet, join, 0u, "Mesh 2");
-    Expose(r, subnet, hull, Out(r, hull), "Hull");
+void HullOfObjects(state::Registry &r, state::Entity definition) {
+    const auto join = Inner(r, definition, KindOf<Join>);
+    const auto hull = Inner(r, definition, KindOf<action::mesh::ConvexHull>);
+    Wire(r, definition, join, hull, 0u);
+    Expose(r, definition, join, 0u, "Mesh 1");
+    Expose(r, definition, join, 0u, "Mesh 2");
+    Expose(r, definition, hull, Out(r, hull), "Hull");
 }
-// A subdivide cutting the edge rings through the selected edges Cuts times and selecting the new loops, with the subnet's Mesh, Edges and Cuts ports.
-state::Entity CutRings(state::Registry &r, state::Entity mesh_entity, state::Entity subnet) {
-    const auto selected = Inner(r, mesh_entity, subnet, KindOf<SelectionAttribute>);
-    const auto ring = Inner(r, mesh_entity, subnet, KindOf<EdgeRing>);
-    const auto cut = Inner(r, mesh_entity, subnet, KindOf<action::mesh::Subdivide>);
+// A subdivide cutting the edge rings through the selected edges Cuts times and selecting the new loops, with the definition's Mesh, Edges and Cuts ports.
+state::Entity CutRings(state::Registry &r, state::Entity definition) {
+    const auto selected = InnerOp(r, definition, "selection");
+    const auto ring = InnerOp(r, definition, "edgering");
+    const auto cut = Inner(r, definition, KindOf<action::mesh::Subdivide>);
     r.replace<action::mesh::Subdivide>(cut, action::mesh::Subdivide{.NewLoopsOnly = true});
-    Wire(r, mesh_entity, selected, ring, 0u);
-    Wire(r, mesh_entity, ring, cut, 1u);
-    Expose(r, subnet, cut, 0u, "Mesh");
-    Expose(r, subnet, selected, 0u, "Edges");
-    Expose(r, subnet, cut, ParameterSocket<&action::mesh::Subdivide::Cuts>, "Cuts");
+    Wire(r, definition, selected, ring, 0u);
+    Wire(r, definition, ring, cut, 1u);
+    Expose(r, definition, cut, 0u, "Mesh");
+    Expose(r, definition, selected, 0u, "Edges");
+    Expose(r, definition, cut, ParameterSocket<&action::mesh::Subdivide::Cuts>, "Cuts");
     return cut;
 }
-void LoopCut(state::Registry &r, state::Entity mesh_entity, state::Entity subnet) {
-    const auto cut = CutRings(r, mesh_entity, subnet);
-    Expose(r, subnet, cut, Out(r, cut), "Mesh");
+void LoopCut(state::Registry &r, state::Entity definition) {
+    const auto cut = CutRings(r, definition);
+    Expose(r, definition, cut, Out(r, cut), "Mesh");
 }
-void LoopCutAndSlide(state::Registry &r, state::Entity mesh_entity, state::Entity subnet) {
-    const auto cut = CutRings(r, mesh_entity, subnet);
-    const auto slide = Inner(r, mesh_entity, subnet, KindOf<EdgeSlide>);
+void LoopCutAndSlide(state::Registry &r, state::Entity definition) {
+    const auto cut = CutRings(r, definition);
+    const auto slide = Inner(r, definition, KindOf<EdgeSlide>);
     r.emplace<PublishSelection>(cut);
     r.emplace<InlineSelection>(slide, InlineSelection{.Domain = Element::Edge, .Published = true});
     r.replace<EdgeSlide>(slide, EdgeSlide{.Factor = 0.f});
-    Wire(r, mesh_entity, cut, slide, 0u);
-    Expose(r, subnet, slide, ParameterSocket<&EdgeSlide::Factor>, "Factor");
-    Expose(r, subnet, slide, ParameterSocket<&EdgeSlide::Direction>, "Direction");
-    Expose(r, subnet, slide, ParameterSocket<&EdgeSlide::Reference>, "Reference");
-    Expose(r, subnet, slide, Out(r, slide), "Mesh");
+    Wire(r, definition, cut, slide, 0u);
+    Expose(r, definition, slide, ParameterSocket<&EdgeSlide::Factor>, "Factor");
+    Expose(r, definition, slide, ParameterSocket<&EdgeSlide::Direction>, "Direction");
+    Expose(r, definition, slide, ParameterSocket<&EdgeSlide::Reference>, "Reference");
+    Expose(r, definition, slide, Out(r, slide), "Mesh");
 }
-void FillHoles(state::Registry &r, state::Entity mesh_entity, state::Entity subnet) {
-    const auto boundary = Inner(r, mesh_entity, subnet, KindOf<Boundary>);
-    const auto fill = Inner(r, mesh_entity, subnet, KindOf<action::mesh::Fill>);
+void FillHoles(state::Registry &r, state::Entity definition) {
+    const auto boundary = InnerOp(r, definition, "boundary");
+    const auto fill = Inner(r, definition, KindOf<action::mesh::Fill>);
     r.replace<action::mesh::Fill>(fill, action::mesh::Fill{.Sides = 4u});
-    Wire(r, mesh_entity, boundary, fill, 1u);
-    Expose(r, subnet, fill, 0u, "Mesh");
-    Expose(r, subnet, fill, ParameterSocket<&action::mesh::Fill::Sides>, "Sides");
-    Expose(r, subnet, fill, Out(r, fill), "Mesh");
+    Wire(r, definition, boundary, fill, 1u);
+    Expose(r, definition, fill, 0u, "Mesh");
+    Expose(r, definition, fill, ParameterSocket<&action::mesh::Fill::Sides>, "Sides");
+    Expose(r, definition, fill, Out(r, fill), "Mesh");
 }
-// A bisect feeding a fill of its output's boundary edges on the plane, with the subnet's Mesh, Point and Normal ports.
+// A bisect feeding a fill of its output's boundary edges on the plane, with the definition's Mesh, Point and Normal ports.
 struct Capped {
     state::Entity Bisect, Fill;
     uint16_t Point, Normal;
 };
-Capped CappedBisect(state::Registry &r, state::Entity mesh_entity, state::Entity subnet, const Bisect &parameters) {
-    const auto bisect = Inner(r, mesh_entity, subnet, KindOf<Bisect>);
-    const auto on = Inner(r, mesh_entity, subnet, KindOf<PlaneSide>);
-    const auto boundary = Inner(r, mesh_entity, subnet, KindOf<Boundary>);
-    const auto both = Inner(r, mesh_entity, subnet, KindOf<BooleanMath>);
-    const auto fill = Inner(r, mesh_entity, subnet, KindOf<action::mesh::Fill>);
+// Links the definition's Point and Normal ports into the Plane Side op's plane.
+void LinkPlane(state::Registry &r, state::Entity definition, const Capped &capped, state::Entity side) {
+    const auto &declared = *DefinitionOf(r.get<const Op>(side).Node);
+    action::nodes::Apply(r, Action{Link{definition, definition, capped.Point, side, *InputSocket(declared, "point")}});
+    action::nodes::Apply(r, Action{Link{definition, definition, capped.Normal, side, *InputSocket(declared, "normal")}});
+}
+Capped CappedBisect(state::Registry &r, state::Entity definition, const Bisect &parameters) {
+    const auto bisect = Inner(r, definition, KindOf<Bisect>);
+    const auto on = InnerOp(r, definition, "planeside");
+    // An edge lies on the plane when both of its vertices do.
+    const auto edges = InnerOp(r, definition, "convertdomain", {{"source", "vertex"}, {"target", "edge"}, {"mode", "all"}});
+    const auto boundary = InnerOp(r, definition, "boundary");
+    const auto both = InnerOp(r, definition, "and");
+    const auto fill = Inner(r, definition, KindOf<action::mesh::Fill>);
     r.replace<Bisect>(bisect, parameters);
-    r.replace<PlaneSide>(on, PlaneSide{.Domain = AttributeDomain::Edge});
-    Wire(r, mesh_entity, bisect, fill, 0u);
-    Wire(r, mesh_entity, on, both, 0u);
-    Wire(r, mesh_entity, boundary, both, ParameterSocket<&BooleanMath::B>);
-    Wire(r, mesh_entity, both, fill, 1u);
-    Expose(r, subnet, bisect, 0u, "Mesh");
-    const Capped capped{bisect, fill, Expose(r, subnet, bisect, ParameterSocket<&Bisect::Point>, "Point"), Expose(r, subnet, bisect, ParameterSocket<&Bisect::Normal>, "Normal")};
-    action::nodes::Apply(r, Action{Link{mesh_entity, subnet, capped.Point, on, ParameterSocket<&PlaneSide::Point>}});
-    action::nodes::Apply(r, Action{Link{mesh_entity, subnet, capped.Normal, on, ParameterSocket<&PlaneSide::Normal>}});
+    Wire(r, definition, bisect, fill, 0u);
+    // The and op's inputs are its first two sockets.
+    Wire(r, definition, on, edges, 0u);
+    Wire(r, definition, edges, both, 0u);
+    Wire(r, definition, boundary, both, 1u);
+    Wire(r, definition, both, fill, 1u);
+    Expose(r, definition, bisect, 0u, "Mesh");
+    const Capped capped{bisect, fill, Expose(r, definition, bisect, ParameterSocket<&Bisect::Point>, "Point"), Expose(r, definition, bisect, ParameterSocket<&Bisect::Normal>, "Normal")};
+    LinkPlane(r, definition, capped, on);
     return capped;
 }
-void BisectFill(state::Registry &r, state::Entity mesh_entity, state::Entity subnet) {
-    const auto capped = CappedBisect(r, mesh_entity, subnet, Bisect{.ClearInner = true});
-    Expose(r, subnet, capped.Bisect, ParameterSocket<&Bisect::ClearInner>, "Clear Inner");
-    Expose(r, subnet, capped.Bisect, ParameterSocket<&Bisect::ClearOuter>, "Clear Outer");
-    Expose(r, subnet, capped.Fill, Out(r, capped.Fill), "Mesh");
+void BisectFill(state::Registry &r, state::Entity definition) {
+    const auto capped = CappedBisect(r, definition, Bisect{.ClearInner = true});
+    Expose(r, definition, capped.Bisect, ParameterSocket<&Bisect::ClearInner>, "Clear Inner");
+    Expose(r, definition, capped.Bisect, ParameterSocket<&Bisect::ClearOuter>, "Clear Outer");
+    Expose(r, definition, capped.Fill, Out(r, capped.Fill), "Mesh");
 }
 // The region where the plane crosses the mesh: the side behind it capped on the plane, then its vertices behind the plane deleted.
-void CrossSection(state::Registry &r, state::Entity mesh_entity, state::Entity subnet) {
-    const auto capped = CappedBisect(r, mesh_entity, subnet, Bisect{.Normal = {0, 0, 1}, .ClearOuter = true});
-    const auto behind = Inner(r, mesh_entity, subnet, KindOf<PlaneSide>);
-    const auto clear = Inner(r, mesh_entity, subnet, KindOf<action::mesh::Delete>);
-    r.replace<PlaneSide>(behind, PlaneSide{.Side = PlaneSideKind::Negative});
-    action::nodes::Apply(r, Action{Link{mesh_entity, subnet, capped.Point, behind, ParameterSocket<&PlaneSide::Point>}});
-    action::nodes::Apply(r, Action{Link{mesh_entity, subnet, capped.Normal, behind, ParameterSocket<&PlaneSide::Normal>}});
-    Wire(r, mesh_entity, capped.Fill, clear, 0u);
-    Wire(r, mesh_entity, behind, clear, 1u);
-    Expose(r, subnet, clear, Out(r, clear), "Section");
+void CrossSection(state::Registry &r, state::Entity definition) {
+    const auto capped = CappedBisect(r, definition, Bisect{.Normal = {0, 0, 1}, .ClearOuter = true});
+    // Side 1 is behind the plane.
+    const auto behind = InnerOp(r, definition, "planeside", {}, {{"side", 1}});
+    const auto clear = Inner(r, definition, KindOf<action::mesh::Delete>);
+    LinkPlane(r, definition, capped, behind);
+    Wire(r, definition, capped.Fill, clear, 0u);
+    Wire(r, definition, behind, clear, 1u);
+    Expose(r, definition, clear, Out(r, clear), "Section");
 }
 // The side behind the plane cleared, then joined to its reflection with reversed winding and welded where the halves meet on the plane.
-void Symmetrize(state::Registry &r, state::Entity mesh_entity, state::Entity subnet) {
-    const auto bisect = Inner(r, mesh_entity, subnet, KindOf<Bisect>);
-    const auto mirror = Inner(r, mesh_entity, subnet, KindOf<TransformElements>);
-    const auto flip = Inner(r, mesh_entity, subnet, KindOf<action::mesh::FlipNormals>);
-    const auto join = Inner(r, mesh_entity, subnet, KindOf<Join>);
-    const auto weld = Inner(r, mesh_entity, subnet, KindOf<action::mesh::Merge>);
+void Symmetrize(state::Registry &r, state::Entity definition) {
+    const auto bisect = Inner(r, definition, KindOf<Bisect>);
+    const auto mirror = Inner(r, definition, KindOf<TransformElements>);
+    const auto flip = Inner(r, definition, KindOf<action::mesh::FlipNormals>);
+    const auto join = Inner(r, definition, KindOf<Join>);
+    const auto weld = Inner(r, definition, KindOf<action::mesh::Merge>);
     r.replace<Bisect>(bisect, Bisect{.ClearInner = true});
     r.replace<TransformElements>(mirror, TransformElements{.Mirror = {1, 0, 0}});
     // The cut snaps the vertices it keeps on the plane onto it, so each meets its reflection within rounding.
     r.replace<action::mesh::Merge>(weld, action::mesh::Merge{.Mode = action::mesh::MergeMode::ByDistance, .Distance = 1e-5f});
-    Wire(r, mesh_entity, bisect, join, 0u);
-    Wire(r, mesh_entity, bisect, mirror, 0u);
-    Wire(r, mesh_entity, mirror, flip, 0u);
-    Wire(r, mesh_entity, flip, join, 0u);
-    Wire(r, mesh_entity, join, weld, 0u);
-    Expose(r, subnet, bisect, 0u, "Mesh");
-    action::nodes::Apply(r, Action{Link{mesh_entity, subnet, Expose(r, subnet, bisect, ParameterSocket<&Bisect::Point>, "Point"), mirror, ParameterSocket<&TransformElements::Pivot>}});
-    action::nodes::Apply(r, Action{Link{mesh_entity, subnet, Expose(r, subnet, bisect, ParameterSocket<&Bisect::Normal>, "Normal"), mirror, ParameterSocket<&TransformElements::Mirror>}});
-    Expose(r, subnet, weld, Out(r, weld), "Mesh");
+    Wire(r, definition, bisect, join, 0u);
+    Wire(r, definition, bisect, mirror, 0u);
+    Wire(r, definition, mirror, flip, 0u);
+    Wire(r, definition, flip, join, 0u);
+    Wire(r, definition, join, weld, 0u);
+    Expose(r, definition, bisect, 0u, "Mesh");
+    action::nodes::Apply(r, Action{Link{definition, definition, Expose(r, definition, bisect, ParameterSocket<&Bisect::Point>, "Point"), mirror, ParameterSocket<&TransformElements::Pivot>}});
+    action::nodes::Apply(r, Action{Link{definition, definition, Expose(r, definition, bisect, ParameterSocket<&Bisect::Normal>, "Normal"), mirror, ParameterSocket<&TransformElements::Mirror>}});
+    Expose(r, definition, weld, Out(r, weld), "Mesh");
 }
 } // namespace
 
@@ -150,4 +167,37 @@ const std::array<Macro, MacroCount> Macros{{
     {"Cross Section", CrossSection},
     {"Symmetrize", Symmetrize},
 }};
+
+namespace {
+struct Built {
+    std::unique_ptr<state::Registry> Registry;
+    std::array<state::Entity, MacroCount> Definitions;
+};
+// Each built-in definition is built once, in Macros order, so its node entities are the same in every session.
+const Built &Builtins() {
+    static const Built built = [] {
+        Built b{std::make_unique<state::Registry>(), {}};
+        auto &r = *b.Registry;
+        r.Resources.emplace<LibraryLiterals>();
+        for (size_t i = 0; i < Macros.size(); ++i) {
+            const auto definition = b.Definitions[i] = r.create();
+            r.emplace<SubnetDefinition>(definition);
+            r.emplace<NetworkNodes>(definition);
+            r.emplace<SubnetInterface>(definition);
+            r.emplace<Name>(definition, Macros[i].Name);
+            Macros[i].Define(r, definition);
+        }
+        // A built-in definition's page selects nothing.
+        r.clear<NetworkActive>();
+        return b;
+    }();
+    return built;
+}
+} // namespace
+
+const state::Registry &Library() { return *Builtins().Registry; }
+DefinitionRef BuiltinDefinition(std::string_view name) {
+    const auto found = std::ranges::find(Macros, name, &Macro::Name);
+    return found == Macros.end() ? DefinitionRef{} : DefinitionRef{&Library(), Builtins().Definitions[size_t(found - Macros.begin())]};
+}
 } // namespace procedure

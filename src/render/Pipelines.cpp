@@ -28,6 +28,12 @@ FunctionRef MeshletVertex(bool non_triangle_topology = false) {
         MeshVertexConstants(non_triangle_topology)
     };
 }
+// The forward vertices of a frame with patterned materials, split between the forward pipeline and the pattern pipelines.
+FunctionRef MeshletSplitVertex(const char *name, bool non_triangle_topology) {
+    auto constants = MeshVertexConstants(non_triangle_topology);
+    constants.push_back(BoolConstant(MeshVertexConstant::SplitPatterns, true));
+    return {"MeshletTransform.metal", name, std::move(constants)};
+}
 
 FunctionRef MeshletVisibilityVertex() {
     return {"MeshletTransform.metal", "MeshletVisibilityMesh", MeshVertexConstants(false)};
@@ -79,9 +85,13 @@ RenderPipeline MeshletElementRaster(mtl::LibraryCache &libraries, FunctionRef me
 }
 } // namespace
 
+mtl::RenderPipeline MakePbrPreviewPipeline(mtl::LibraryCache &libraries, PbrFeatureMask mask) {
+    return mtl::MakeRenderPipeline(libraries, FunctionRef{"TexQuad.metal", "TexQuadVertex"}, PbrFunction("PbrPreviewFragment", mask), {{Format::HdrColor}}, std::vector<BlendState>{NoBlend}, DepthOff);
+}
+
 PbrCompiler::PbrCompiler(mtl::LibraryCache &libraries, PassFormats scene) : Libraries(libraries), SceneFormats(std::move(scene)) {}
 
-const PbrVariant &PbrCompiler::Variant(PbrFeatureMask mask) {
+const PbrVariant &PbrCompiler::Variant(PbrFeatureMask mask, mtl::ProgramRegistry *programs) {
     const auto it = std::ranges::find(Variants, mask, &PbrVariant::Mask);
     if (it != Variants.end()) return *it;
     const auto raster = mask & ~(FeatureBit(PbrFeature::TraceDiffuse) | PbrFeature::TraceReflections);
@@ -89,12 +99,20 @@ const PbrVariant &PbrCompiler::Variant(PbrFeatureMask mask) {
         return mtl::MakeRenderPipeline(Libraries, FunctionRef{"TexQuad.metal", "TexQuadVertex"}, PbrFunction("PbrVisibilityFragment", features), SceneFormats, std::vector<BlendState>{Blend}, DepthOff);
     };
     const bool transmission = HasFeature(mask, PbrFeature::Transmission);
+    const bool non_triangle = HasFeature(mask, PbrFeature::NonTriangleTopology), patterns = HasFeature(mask, PbrFeature::Patterns);
     PbrVariant variant{
         .Mask = mask,
-        .Transparent = mtl::MakeMeshPipeline(Libraries, MeshletVertex(HasFeature(mask, PbrFeature::NonTriangleTopology)), PbrFunction("PbrTransparentFragment", raster), SceneFormats, std::vector<BlendState>{NoWrite}, DepthTestNoWriteLessEqual),
+        .Transparent = mtl::MakeMeshPipeline(Libraries, patterns ? MeshletSplitVertex("MeshletForwardMesh", non_triangle) : MeshletVertex(non_triangle), PbrFunction("PbrTransparentFragment", raster), SceneFormats, std::vector<BlendState>{NoWrite}, DepthTestNoWriteLessEqual),
         .Visibility = visibility(raster),
         .Prepass = transmission ? std::optional{visibility(raster | PbrFeature::TransmissionPrepass)} : std::nullopt,
     };
+    if (patterns) {
+        const auto mesh = MeshletSplitVertex("MeshletPatternMesh", non_triangle);
+        variant.TransparentPatterns = mtl::MakeMeshPipeline(Libraries, mesh, PbrFunction("PbrTransparentPatternFragment", raster), SceneFormats, std::vector<BlendState>{NoWrite}, DepthTestNoWriteLessEqual);
+        variant.PatternList = &mtl::AddDriver(*programs, [&libraries = Libraries, mesh, depth = SceneFormats.Depth](const NS::Array *functions) {
+            return mtl::MakeMeshPipeline(libraries, mesh, FunctionRef{.Path = "SurfacePattern.metal", .Name = "SurfacePatternListFragment", .BinaryLinking = true}, {{}, depth}, {}, DepthTestNoWriteLessEqual, functions);
+        });
+    }
     if (HasFeature(mask, PbrFeature::RayTracing)) {
         const auto triangles = mask & ~FeatureBit(PbrFeature::NonTriangleTopology);
         const auto kernel = [&](const char *name, PbrFeatureMask features, const char *library = "RayLighting.metal") {
@@ -109,12 +127,14 @@ const PbrVariant &PbrCompiler::Variant(PbrFeatureMask mask) {
             variant.GlassWeights = kernel("PbrRayGlassWeights", triangles);
             if (HasFeature(mask, PbrFeature::OpaqueReceiver)) {
                 variant.ShadeOpaque = kernel("PbrRayShade", triangles);
+                if (HasFeature(mask, PbrFeature::Patterns)) variant.ShadeOpaqueResume = kernel("PbrRayShade", triangles | PbrFeature::PatternResume);
                 variant.OpaqueLayer = kernel("PbrOpaqueLayer", mask);
             }
         }
-        if ((transmission && HasFeature(mask, PbrFeature::AlphaBlend)) || (mask & ExtendedPbrMaterials)) variant.Special = kernel("PbrRaySpecial", triangles);
+        if ((transmission && HasFeature(mask, PbrFeature::AlphaBlend)) || HasFeature(mask, PbrFeature::Anisotropy)) variant.Special = kernel("PbrRaySpecial", triangles);
         variant.Generate = kernel("PbrRayGenerate", triangles);
         variant.Shade = kernel("PbrRayShade", triangles & ~FeatureBit(PbrFeature::OpaqueReceiver));
+        if (HasFeature(mask, PbrFeature::Patterns)) variant.ShadeResume = kernel("PbrRayShade", (triangles & ~FeatureBit(PbrFeature::OpaqueReceiver)) | PbrFeature::PatternResume);
         variant.Reconstruct = kernel("RayReconstruct", triangles);
     }
     return Variants.emplace_back(std::move(variant));
@@ -215,11 +235,10 @@ Pipelines::Pipelines(mtl::LibraryCache &libraries)
       SelectionFragment{libraries},
       VisibilityObjectSelection{libraries, {"VisibilitySelection.metal", "VisibilityObjectSelectionKernel"}},
       OutlineOccluderSeed{libraries, {"VisibilitySelection.metal", "OutlineOccluderSeedKernel"}},
-      CommitPosedGeometry{libraries, {"CommitPosedGeometry.metal", "CommitPosedGeometryKernel"}},
-      FinalizeElementWork{libraries, {"CommitPosedGeometry.metal", "FinalizeElementWorkKernel"}},
+      GeometryEdit{libraries, {"GeometryEdit.metal", "GeometryEditKernel"}},
+      FinalizeElementWork{libraries, {"GeometryEdit.metal", "FinalizeElementWorkKernel"}},
       PosePrepass{libraries, {"PosePrepass.metal", "PosePrepassKernel"}},
       PosedMeshletBounds{libraries, {"PosedMeshletBounds.metal", "PosedMeshletBoundsKernel"}},
-      BoundsReduce{libraries, {"BoundsReduce.metal", "BoundsReduceKernel"}},
       BoundsCombine{libraries, {"BoundsCombine.metal", "BoundsCombineKernel"}},
       WireRaster{libraries, {"WireRaster.metal", "WireRasterKernel"}},
       LodFrontierCount{libraries, {"MeshletCull.metal", "LodFrontierCount"}},

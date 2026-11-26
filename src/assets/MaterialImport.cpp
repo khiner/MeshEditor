@@ -96,7 +96,7 @@ std::expected<std::vector<uint32_t>, std::string> ImportObjPlyMaterials(state::R
         const auto normal_texture = resolve_texture_slot(source.NormalTexturePath, TextureColorSpace::Linear);
         const auto entity = AddMaterial(r, PBRMaterial{
             .BaseColorFactor = source.BaseColorFactor,
-            .BaseColorTexture = {.Slot = base_color_texture != InvalidSlot ? base_color_texture : textures.WhiteTextureSlot},
+            .BaseColorTexture = {.Slot = base_color_texture},
             .MetallicFactor = std::clamp(source.MetallicFactor, 0.f, 1.f),
             .RoughnessFactor = std::clamp(source.RoughnessFactor, 0.f, 1.f),
             .NormalTexture = {.Slot = normal_texture},

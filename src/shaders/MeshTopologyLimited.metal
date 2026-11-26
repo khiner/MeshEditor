@@ -2,7 +2,7 @@
 #include "MeshTopologyContext.metal"
 
 // Whether the job's delimit flags stop a dissolve at an edge: a sharp mark, or face users that differ in material or in any UV set.
-inline bool TopoLimitedDelimiter(TopoContext ctx,MeshTopologyJob job,uint h,uint opposite) {
+inline bool TopoLimitedDelimiter(TopoContext ctx,device const MeshTopologyJob &job,uint h,uint opposite) {
     if ((job.Flags&TopologyFlagDelimitSharp) && ctx.SrcEdgeSharpness(job)[ctx.SrcEdge(job,h)]) return true;
     // Primitive indices are the mesh's material slots, including distinct slots that currently reference the same material.
     if ((job.Flags&TopologyFlagDelimitMaterial) &&
@@ -20,13 +20,13 @@ struct TopoLimitedWork {
     device packed_uint2 *Neighbors;
     device uint *Labels, *Queue;
 };
-inline TopoLimitedWork TopoLimited(TopoContext ctx,MeshTopologyJob job) {
+inline TopoLimitedWork TopoLimited(TopoContext ctx,device const MeshTopologyJob &job) {
     device uint *base=ctx.Scratch()+job.FaceLoopOffset+(job.SrcFaceCount ? job.SrcHalfedgeCount : 0u);
     return {reinterpret_cast<device packed_uint2 *>(base),base+2u*job.SrcVertexCount,base+3u*job.SrcVertexCount};
 }
 
 // Links each selected vertex left with two edges into a chain, labeled by itself.
-inline void TopoLimitedPrepare(TopoContext ctx,MeshTopologyJob job,uint v) {
+inline void TopoLimitedPrepare(TopoContext ctx,device const MeshTopologyJob &job,uint v) {
     const auto work=TopoLimited(ctx,job);
     work.Labels[v]=InvalidOffset;
     if ((job.Param0<=0.f && !(job.Flags&TopologyFlagAllBoundaries)) || !ctx.SrcSelectedVertex(job,v) ||
@@ -54,7 +54,7 @@ inline void TopoLimitedPrepare(TopoContext ctx,MeshTopologyJob job,uint v) {
     work.Labels[v]=v;
 }
 
-inline void TopoLimitedJump(TopoContext ctx,MeshTopologyJob job,uint v) {
+inline void TopoLimitedJump(TopoContext ctx,device const MeshTopologyJob &job,uint v) {
     const auto work=TopoLimited(ctx,job);
     device atomic_uint *labels=AtomicWord(work.Labels);
     const uint old=atomic_load_explicit(labels+v,memory_order_relaxed);
@@ -67,7 +67,7 @@ inline void TopoLimitedJump(TopoContext ctx,MeshTopologyJob job,uint v) {
 }
 
 // The chain root's thread dissolves the chain's vertices whose turn stays within the angle limit.
-inline void TopoLimitedSimplify(TopoContext ctx,MeshTopologyJob job,uint root) {
+inline void TopoLimitedSimplify(TopoContext ctx,device const MeshTopologyJob &job,uint root) {
     if (!(ctx.State(job)[0]&TopoLabelsConverged)) return;
     const auto work=TopoLimited(ctx,job);
     if (work.Labels[root]!=root) return;

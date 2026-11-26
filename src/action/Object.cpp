@@ -203,12 +203,14 @@ void Apply(state::Registry &r, const Action &action) {
         }
         CloneCopies copies;
         const auto clones = meshes.CloneMeshes(copies, sources, true);
+        // The copies of hierarchies become independent together.
+        std::vector<state::Entity> instances;
         for (uint32_t i = 0u; i < entities.size(); ++i) {
             const auto src = entities[i];
             const auto dup = hierarchy(src) ? CreateHierarchyInstance(r, src, *WorldTransformOf(r, src)) : linked ? DuplicateLinkedOne(r, src) :
                                                                                                                     DuplicateOne(r, src, copy_of[i] == InvalidOffset ? nullptr : &copies_of[copy_of[i]], clones);
             if (hierarchy(src)) {
-                if (!linked) MakeHierarchyIndependent(r, dup);
+                if (!linked) instances.push_back(dup);
                 r.emplace_or_replace<Selected>(dup);
             }
             if (r.all_of<Active>(src)) {
@@ -217,6 +219,7 @@ void Apply(state::Registry &r, const Action &action) {
             }
             r.remove<Selected>(src);
         }
+        if (!instances.empty()) MakeHierarchyIndependent(r, instances);
         FinishClones(r, copies, clones);
         begin_translate();
     };
@@ -262,7 +265,7 @@ void Apply(state::Registry &r, const Action &action) {
                 const auto root = CreateHierarchyInstance(r, a.Source, ComposeTransform(r, a.Source, state::Null, {}));
                 if (root != state::Null) ApplySelectBehavior(r, root, MeshInstanceCreateInfo::SelectBehavior::Exclusive);
             },
-            [&](const MakeIndependent &a) { MakeHierarchyIndependent(r, a.Root); },
+            [&](const MakeIndependent &a) { MakeHierarchyIndependent(r, std::array{a.Root}); },
             [&](ToggleHidden) {
                 for (const auto e : SelectedIn(r)) {
                     const auto target = HierarchyEditTarget(r, e, true);

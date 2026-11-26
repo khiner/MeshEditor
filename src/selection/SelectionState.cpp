@@ -83,44 +83,19 @@ SelectionSharpness Sharpness(bool any_smooth, bool any_sharp, bool mixed) {
     return any_sharp ? SelectionSharpness::Sharp : SelectionSharpness::None;
 }
 
-void ComputeFlags(const state::Registry &r, const ModeScope &scope, std::span<const state::Entity> selected, const EditPrimaries &primaries, SelectionFlags &out) {
+// The live sharpness flags of the mesh's faces.
+uint8_t FaceFlags(const state::Registry &r, state::Entity mesh_entity) {
+    const auto faces = r.Resources.get<const MeshStore>().GetSelectionRoot(*DrawnStoreId(r, mesh_entity), Element::Face).Flags;
+    return uint8_t(((faces & SelectionLiveSharp) ? 1u : 0u) | ((faces & SelectionLiveSmooth) ? 2u : 0u));
+}
+
+// A fully smooth mesh has no sharp faces, while partial sharpness is mixed.
+// Every live face marks its mesh's face root sharp or smooth, so a mesh with neither has no faces.
+SelectionSharpness FaceSharpness(const std::array<uint32_t, 4> &meshes) { return Sharpness(meshes[2] > 0u, meshes[1] + meshes[3] > 0u, meshes[3] > 0u); }
+
+// The flags that read the meshes' geometry and element selections.
+void ComputeElementFlags(const state::Registry &r, const ModeScope &scope, std::span<const state::Entity> selected, const EditPrimaries &primaries, SelectionFlags &out) {
     const auto *task = r.try_get<const procedure::SelectionEditing>(state::Document);
-    const auto &meshes = r.Resources.get<const MeshStore>();
-    out.Meshes.clear();
-    out.AllMeshes = std::ranges::none_of(selected, [&](state::Entity e) { const auto *kind = r.try_get<const ObjectKind>(e); return kind && kind->Value != ObjectType::Mesh; });
-    out.AnyVisible = out.AnyHidden = false;
-    for (const auto e : selected) {
-        const auto *instance = r.try_get<const Instance>(e);
-        if (!instance) continue;
-        if (HasMesh(r, instance->Entity)) out.Meshes.push_back(instance->Entity);
-        if (r.all_of<SubElementOf>(e)) continue;
-        if (r.all_of<Hidden>(e)) out.AnyHidden = true;
-        else out.AnyVisible = true;
-    }
-    if (task) {
-        out.Meshes = {task->Mesh};
-        out.AllMeshes = true;
-    }
-    SortUnique(out.Meshes);
-
-    const bool edit_locked = task || (scope.Mode == InteractionMode::Edit && std::ranges::any_of(r.view<const Instance, const ScaleLocked>().each(), [&](const auto &entry) { return std::ranges::binary_search(out.Meshes, std::get<1>(entry).Entity); }));
-    out.Transformable = !edit_locked;
-    out.Scalable = !edit_locked && std::ranges::none_of(selected, [&](state::Entity e) { return r.all_of<ScaleLocked>(e); });
-
-    // A fully smooth mesh has no sharp faces, while partial sharpness is mixed.
-    // Every live face marks its mesh's face root sharp or smooth, so a root with neither belongs to a mesh without faces.
-    bool any_smooth = false, any_sharp = false, any_partial = false;
-    for (const auto mesh_entity : out.Meshes) {
-        const auto faces = meshes.GetSelectionRoot(*DrawnStoreId(r, mesh_entity), Element::Face).Flags;
-        const bool sharp = faces & SelectionLiveSharp, smooth = faces & SelectionLiveSmooth;
-        if (!sharp && !smooth) continue;
-        any_smooth |= !sharp;
-        any_sharp |= sharp;
-        any_partial |= sharp && smooth;
-        if ((any_smooth && any_sharp) || any_partial) break;
-    }
-    out.FaceSharpness = Sharpness(any_smooth, any_sharp, any_partial);
-
     const auto element = r.get<const EditMode>(state::Document).Value;
     bool element_sharp = false, element_smooth = false;
     if (scope.MeshEdit) {
@@ -147,6 +122,52 @@ void ComputeFlags(const state::Registry &r, const ModeScope &scope, std::span<co
         }
         return false;
     }();
+}
+
+void ComputeFlags(const state::Registry &r, const ModeScope &scope, std::span<const state::Entity> selected, const EditPrimaries &primaries, SelectionFlags &out) {
+    const auto *task = r.try_get<const procedure::SelectionEditing>(state::Document);
+    out.Meshes.clear();
+    out.AllMeshes = std::ranges::none_of(selected, [&](state::Entity e) { const auto *kind = r.try_get<const ObjectKind>(e); return kind && kind->Value != ObjectType::Mesh; });
+    out.AnyVisible = out.AnyHidden = false;
+    for (const auto e : selected) {
+        const auto *instance = r.try_get<const Instance>(e);
+        if (!instance) continue;
+        if (HasMesh(r, instance->Entity)) out.Meshes.push_back(instance->Entity);
+        if (r.all_of<SubElementOf>(e)) continue;
+        if (r.all_of<Hidden>(e)) out.AnyHidden = true;
+        else out.AnyVisible = true;
+    }
+    if (task) {
+        out.Meshes = {task->Mesh};
+        out.AllMeshes = true;
+    }
+    SortUnique(out.Meshes);
+
+    const bool edit_locked = task || (scope.Mode == InteractionMode::Edit && std::ranges::any_of(r.view<const Instance, const ScaleLocked>().each(), [&](const auto &entry) { return std::ranges::binary_search(out.Meshes, std::get<1>(entry).Entity); }));
+    out.Transformable = !edit_locked;
+    out.Scalable = !edit_locked && std::ranges::none_of(selected, [&](state::Entity e) { return r.all_of<ScaleLocked>(e); });
+
+    out.FaceFlags.clear();
+    out.FaceFlagMeshes = {};
+    for (const auto mesh_entity : out.Meshes) {
+        out.FaceFlags.push_back(FaceFlags(r, mesh_entity));
+        ++out.FaceFlagMeshes[out.FaceFlags.back()];
+    }
+    out.FaceSharpness = FaceSharpness(out.FaceFlagMeshes);
+    ComputeElementFlags(r, scope, selected, primaries, out);
+}
+
+// Refreshes the face sharpness of a selection whose meshes' geometry changed.
+void RefreshFaceSharpness(const state::Registry &r, const state::DirtySet &geometry, SelectionFlags &out) {
+    for (const auto mesh_entity : geometry) {
+        const auto at = std::ranges::lower_bound(out.Meshes, mesh_entity);
+        if (at == out.Meshes.end() || *at != mesh_entity) continue;
+        auto &flags = out.FaceFlags[size_t(at - out.Meshes.begin())];
+        --out.FaceFlagMeshes[flags];
+        flags = FaceFlags(r, mesh_entity);
+        ++out.FaceFlagMeshes[flags];
+    }
+    out.FaceSharpness = FaceSharpness(out.FaceFlagMeshes);
 }
 
 void ComputeKeyframes(const state::Registry &r, std::span<const state::Entity> selected, SelectedKeyframes &out) {
@@ -247,7 +268,8 @@ std::vector<state::Entity> UpdateSelectionState(state::Registry &r) {
     // A scene switch or a membership change moves nodes in or out of the aggregates' scene, and a destroyed node leaves every aggregate.
     const auto scene = FrameScene(r);
     const bool rescoped = r.get<const OutlinerRows>(state::Document).Scene != scene || AnyChanged(scene_changes.Membership, scene_changes.Destroyed);
-    const bool selection = rescoped || AnyChanged(selection_changes.Selected, selection_changes.ActiveInstance, selection_changes.BoneSelection);
+    // Selection editing scopes the selection to the edited node's mesh.
+    const bool selection = rescoped || AnyChanged(selection_changes.Selected, selection_changes.ActiveInstance, selection_changes.BoneSelection, selection_changes.Editing);
     const bool interaction = AnyChanged(viewport_changes.InteractionMode);
     const bool parents = AnyChanged(scene_changes.Parent);
     const bool instances = AnyChanged(render_changes.InstanceVisibility, render_changes.InstanceCreated, render_changes.InstanceDestroyed, scene_changes.ScaleLocked);
@@ -255,16 +277,19 @@ std::vector<state::Entity> UpdateSelectionState(state::Registry &r) {
 
     const bool primaries_changed = selection || interaction || instances;
     const bool roots_changed = selection || interaction || parents;
-    const bool flags_changed = primaries_changed || AnyChanged(viewport_changes.EditMode, mesh_changes.Geometry) || r.Resources.get<const GpuSceneState>().EditSelectionDirty;
+    const bool flags_changed = primaries_changed || AnyChanged(viewport_changes.EditMode);
+    // A geometry or element selection change alone leaves the selected objects, which only mesh Edit mode's element flags then read.
+    const bool element_flags_changed = AnyChanged(mesh_changes.Geometry) || r.Resources.get<const GpuSceneState>().EditSelectionDirty;
     const bool keyframes_changed = selection || AnyChanged(animation_changes.Edited, animation_changes.KeyframeSources, mesh_changes.Material, render_changes.ActiveMaterialVariant);
     const bool ancestors_changed = selection || parents;
-    const auto selected = roots_changed || flags_changed || keyframes_changed || ancestors_changed ? SelectedIn(r) : std::vector<state::Entity>{};
+    const auto selected = roots_changed || flags_changed || keyframes_changed || ancestors_changed || (element_flags_changed && scope.MeshEdit) ? SelectedIn(r) : std::vector<state::Entity>{};
     std::vector<state::Entity> changed_primaries;
     if (primaries_changed) {
         auto &primaries = r.edit<EditPrimaries>(state::Document);
         auto next = scope.Mode == InteractionMode::Edit ? ComputeEditPrimaries(r) : EditPrimaries{};
+        // A mesh a restore destroyed has no display to change.
         for (const auto &[mesh_entity, instance_entity] : primaries.All) {
-            if (const auto found = next.All.find(mesh_entity); found == next.All.end() || found->second != instance_entity) changed_primaries.push_back(mesh_entity);
+            if (const auto found = next.All.find(mesh_entity); r.valid(mesh_entity) && (found == next.All.end() || found->second != instance_entity)) changed_primaries.push_back(mesh_entity);
         }
         for (const auto &[mesh_entity, _] : next.All) {
             if (!primaries.All.contains(mesh_entity)) changed_primaries.push_back(mesh_entity);
@@ -279,8 +304,11 @@ std::vector<state::Entity> UpdateSelectionState(state::Registry &r) {
         ComputePivot(r, scope, r.edit<TransformRoots>(state::Document));
     }
 
-    if (flags_changed) {
-        ComputeFlags(r, scope, selected, r.get<const EditPrimaries>(state::Document), r.edit<SelectionFlags>(state::Document));
+    if (flags_changed) ComputeFlags(r, scope, selected, r.get<const EditPrimaries>(state::Document), r.edit<SelectionFlags>(state::Document));
+    else if (element_flags_changed) {
+        auto &flags = r.edit<SelectionFlags>(state::Document);
+        RefreshFaceSharpness(r, mesh_changes.Geometry, flags);
+        if (scope.MeshEdit) ComputeElementFlags(r, scope, selected, r.get<const EditPrimaries>(state::Document), flags);
     }
 
     if (keyframes_changed) {

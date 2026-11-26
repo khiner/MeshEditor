@@ -26,10 +26,7 @@ using BoneSphereWireMeshOutput = metal::mesh<EdgeQuadVaryings, void, 128u, 64u, 
     BoneSphereWireMeshOutput output,
     uint thread_index [[thread_index_in_threadgroup]],
     uint3 threadgroup_position [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    SCENE_ARGS,
     constant MeshletDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};

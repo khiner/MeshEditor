@@ -2,6 +2,7 @@
 #include "metal/AutoreleaseScope.h"
 #include "metal/Command.h"
 #include "metal/PhysicalPages.h"
+#include "metal/SparseBuffer.h"
 
 #include "metal/MetalCpp.h"
 
@@ -47,6 +48,7 @@ template<typename T> Resident<T>::~Resident() {
 template struct Resident<MTL::Buffer>;
 template struct Resident<MTL::Texture>;
 template struct Resident<MTL::AccelerationStructure>;
+template struct Resident<MTL::VisibleFunctionTable>;
 
 ResidentBuffer::ResidentBuffer(const Context &ctx, uint64_t bytes) : Resident(ctx, NewSharedBuffer(ctx, bytes)) {}
 uint64_t ResidentBuffer::Address() const { return Handle->gpuAddress(); }
@@ -104,7 +106,6 @@ Context::~Context() {
     // Every commit completes before its resources release.
     WaitIdle();
     Slots.clear();
-    SparseAddresses.clear();
     PagePool.reset();
     if (Queue && Residency) Queue->removeResidencySet(Residency.get());
     AutoreleaseScope::Release(PendingMappings, PendingRetired, UnmappedAddresses, PendingResidentRemovals);
@@ -116,6 +117,7 @@ Command Context::Begin() const {
     std::erase_if(InFlightSlots, [&](uint32_t index) {
         if (!Completed(Slots[index]->Serial)) return false;
         Slots[index]->Allocator->reset();
+        Slots[index]->Kept.clear();
         FreeSlots.push_back(index);
         return true;
     });
@@ -211,7 +213,7 @@ void Context::AddResident(MTL::Allocation *resource) const {
     const AutoreleaseScope pool;
     if (!Residency || !resource) return;
     // An allocation added back before its pending removal commits stays in the set.
-    if (std::erase_if(PendingResidentRemovals, [&](const auto &pending) { return pending.get() == resource; })) return;
+    if (PendingResidentRemovals.erase(resource)) return;
     // A membership change recommits the whole set, so a resident allocation leaves it untouched.
     if (Residency->containsAllocation(resource)) return;
     Residency->addAllocation(resource);
@@ -220,7 +222,7 @@ void Context::AddResident(MTL::Allocation *resource) const {
 
 void Context::RemoveResident(MTL::Allocation *resource) const {
     if (!Residency || !resource) return;
-    PendingResidentRemovals.push_back(NS::RetainPtr(resource));
+    PendingResidentRemovals.try_emplace(resource, NS::RetainPtr(resource));
 }
 
 void Context::UpdateMappings(const std::vector<MappingCommand> &commands) const {
@@ -272,7 +274,10 @@ void Context::UpdatePendingMappings() const {
     UpdateMappings(commands);
     PendingMappings.clear();
     for (auto &retired : PendingRetired) {
-        SparseAddresses.erase(retired.Addresses.get());
+        if (const auto source = retired.CloneOf.lock(); source && retired.Addresses->length() == std::bit_ceil(source->ResidentBytes)) {
+            source->CloneAddresses.push_back(std::move(retired.Addresses));
+            continue;
+        }
         RemoveResident(retired.Addresses.get());
         UnmappedAddresses.push_back(std::move(retired.Addresses));
     }
@@ -284,7 +289,7 @@ void Context::CommitResidency() const {
     if (Residency && (ResidencyDirty || !PendingResidentRemovals.empty())) {
         // A command in flight references the set, so every commit completes before the set changes and a removed allocation releases after the commit.
         WaitIdle();
-        for (const auto &resource : PendingResidentRemovals) Residency->removeAllocation(resource.get());
+        for (const auto &[resource, held] : PendingResidentRemovals) Residency->removeAllocation(resource);
         Residency->commit();
         PendingResidentRemovals.clear();
         ResidencyDirty = false;
@@ -317,15 +322,12 @@ NS::SharedPtr<MTL::Buffer> Context::ReserveSparseAddresses(uint64_t bytes) const
     auto buffer = NS::TransferPtr(Device->newBuffer(bytes, MTL::ResourceStorageModePrivate, MTL::SparsePageSize256));
     if (!buffer) throw std::runtime_error("Failed to reserve sparse Metal addresses.");
     AddResident(buffer.get());
-    SparseAddresses.emplace(buffer.get(), buffer);
     return buffer;
 }
 
-bool Context::OwnsSparseAddresses(MTL::Buffer *buffer) const { return SparseAddresses.contains(buffer); }
-
-void Context::RetireSparseAddresses(NS::SharedPtr<MTL::Buffer> buffer, std::vector<std::pair<uint64_t, uint64_t>> mapped, std::vector<std::shared_ptr<PhysicalPage>> pages) const {
+void Context::RetireSparseAddresses(NS::SharedPtr<MTL::Buffer> buffer, std::vector<std::pair<uint64_t, uint64_t>> mapped, std::vector<std::shared_ptr<PhysicalPage>> pages, std::weak_ptr<SparseBuffer> clone_of) const {
     if (!buffer) return;
-    PendingRetired.push_back({std::move(buffer), std::move(mapped), std::move(pages)});
+    PendingRetired.push_back({std::move(buffer), std::move(mapped), std::move(pages), std::move(clone_of)});
 }
 
 PhysicalPagePool &Context::Pages() const {
@@ -352,7 +354,7 @@ Command::~Command() {
     const AutoreleaseScope pool;
     auto &slot = Slot();
     slot.Buffer->endCommandBuffer();
-    AutoreleaseScope::Release(slot.Waits, slot.Signals, slot.Presented);
+    AutoreleaseScope::Release(slot.Waits, slot.Signals, slot.Presented, slot.Kept);
     Ctx.FreeSlots.push_back(Index);
     Live = false;
 }
@@ -426,4 +428,5 @@ void Command::SetSampler(const MTL::SamplerState *sampler, uint32_t index) {
 void Command::WaitEvent(MTL::Event *event, uint64_t value) { Slot().Waits.emplace_back(NS::RetainPtr(event), value); }
 void Command::SignalEvent(MTL::Event *event, uint64_t value) { Slot().Signals.emplace_back(NS::RetainPtr(event), value); }
 void Command::Present(MTL::Drawable *drawable) { Slot().Presented = NS::RetainPtr(drawable); }
+void Command::Keep(std::shared_ptr<const void> object) { Slot().Kept.push_back(std::move(object)); }
 } // namespace mtl

@@ -44,9 +44,10 @@ std::vector<state::Entity> ReferencedHierarchies(const state::Registry &r) {
     return sources;
 }
 
+// A restore brings back hierarchies as they were published.
 template<typename T> void Changed(state::Registry &r, state::Entity e) {
     auto &changes = r.Resources.get<HierarchyChanges>();
-    if (!changes.Publishing && !r.view<const HierarchyInstance>().empty()) changes.Values.emplace_back(e, state::Slot<T>);
+    if (!r.Restoring && !changes.Publishing && !r.view<const HierarchyInstance>().empty()) changes.Values.emplace_back(e, state::Slot<T>);
 }
 
 template<typename T> void Copy(state::Registry &r, const Member &member, std::span<const Member> members) {
@@ -128,6 +129,8 @@ std::vector<state::Entity> Publish(state::Registry &r, state::Entity root, std::
             r.remove<SceneMembership>(member.Entity);
         }
     }
+    // A removed member that the source of another instance retains is no longer an occurrence of this root.
+    for (const auto e : removed) r.remove<HierarchyMember>(e);
     Destroy(r, removed);
     PublishHierarchyGeometry(r, root, changes);
     return moved;
@@ -204,12 +207,14 @@ void PublishHierarchyInstances(state::Registry &r) {
             if (change.Entity == instance.Source && (change.Type == state::Slot<Transform> || change.Type == state::Slot<Visibility> || change.Type == state::Slot<Name>)) return false;
             if (MapHierarchyMember(instance.Members, change.Entity) != change.Entity) return true;
             if (change.Type == state::Slot<SceneParent> && MapHierarchyMember(instance.Members, ParentOrNull(r, change.Entity)) != ParentOrNull(r, change.Entity)) return true;
+            // A node of a user definition changes each member mesh that instances it.
             const auto *node = r.try_get<const procedure::ProcedureNode>(change.Entity);
-            const auto mesh = node ? node->Procedure : r.all_of<procedure::GeometryProcedure>(change.Entity) ? change.Entity :
-                                                                                                               state::Null;
-            return mesh != state::Null && std::ranges::any_of(instance.Members, [&](const auto &member) {
+            const auto network = node ? node->Network : r.all_of<procedure::GeometryProcedure>(change.Entity) ? change.Entity :
+                                                                                                                  state::Null;
+            const bool definition = network != state::Null && r.all_of<procedure::SubnetDefinition>(network);
+            return network != state::Null && std::ranges::any_of(instance.Members, [&](const auto &member) {
                        const auto *placement = r.try_get<const Instance>(member.Source);
-                       return placement && placement->Entity == mesh;
+                       return placement && (placement->Entity == network || (definition && r.all_of<procedure::GeometryProcedure>(placement->Entity) && procedure::Uses(r, placement->Entity, network)));
                    });
         };
         if (!std::ranges::any_of(values, affected)) continue;
@@ -253,7 +258,7 @@ void RegisterHierarchyInstances(state::Registry &r) {
     track(Definitions{});
     track(TypeList<SceneParent, MorphWeightRange, HierarchyInstance>{});
     track(procedure::NodeKinds{});
-    track(TypeList<procedure::GeometryProcedure, procedure::ProcedureNode, procedure::NodeInputs, procedure::NodeContainer, procedure::SubnetInterface, procedure::NodeBypassed, procedure::InlineSelection, procedure::SourceState>{});
+    track(TypeList<procedure::GeometryProcedure, procedure::NetworkNodes, procedure::ProcedureNode, procedure::NodeInputs, procedure::SubnetDefinition, procedure::SubnetInterface, procedure::NodeBypassed, procedure::InlineSelection, procedure::SourceState>{});
 }
 
 std::vector<state::Entity> PrepareHierarchyRemoval(state::Registry &r, std::span<const state::Entity> entities) {
@@ -275,13 +280,15 @@ std::vector<state::Entity> PrepareHierarchyRemoval(state::Registry &r, std::span
     return removed;
 }
 
-void MakeHierarchyIndependent(state::Registry &r, state::Entity root) {
-    const auto *instance = r.try_get<const HierarchyInstance>(root);
-    if (!instance) {
-        action::Fail(r, "Choose a hierarchy instance to make independent");
-        return;
-    }
-    const auto &members = instance->Members;
+namespace {
+// The record a procedure mesh draws, or InvalidOffset for another mesh.
+uint32_t ProcedureRecord(const state::Registry &r, state::Entity mesh) {
+    const auto drawn = DrawnStoreId(r, mesh);
+    return drawn && r.all_of<procedure::GeometryProcedure>(mesh) ? *drawn : InvalidOffset;
+}
+// Gives the root's members their own copies of the resources they share with the hierarchy's source, taking each procedure's record copy from `clone` in member order.
+void MakeIndependent(state::Registry &r, state::Entity root, std::vector<uint32_t>::const_iterator &clone) {
+    const auto &members = r.get<const HierarchyInstance>(root).Members;
     std::vector<Member> resources;
     const auto copy_resource = [&](state::Entity source, auto create) {
         const auto at = std::ranges::lower_bound(resources, source, {}, &Member::Source);
@@ -304,10 +311,7 @@ void MakeHierarchyIndependent(state::Registry &r, state::Entity root) {
              ...);
         }(Definitions{});
         if (const auto *geometry = r.try_get<const Instance>(member.Entity)) {
-            const auto mesh = copy_resource(geometry->Entity, [&] {
-                const auto drawn = DrawnStoreId(r, geometry->Entity);
-                return drawn && r.all_of<procedure::GeometryProcedure>(geometry->Entity) ? action::nodes::CopyProcedure(r, geometry->Entity, CloneRecord(r, *drawn)) : geometry->Entity;
-            });
+            const auto mesh = copy_resource(geometry->Entity, [&] { return ProcedureRecord(r, geometry->Entity) != InvalidOffset ? action::nodes::CopyProcedure(r, geometry->Entity, *clone++) : geometry->Entity; });
             if (mesh != geometry->Entity) r.replace<Instance>(member.Entity, mesh);
         }
         if (const auto *arm = r.try_get<const ArmatureObject>(member.Entity)) {
@@ -331,14 +335,47 @@ void MakeHierarchyIndependent(state::Registry &r, state::Entity root) {
             EmplaceUniqueName(r, member.Entity, stem);
         }
     }
-    for (const auto &[_, copied] : resources) {
-        const auto *procedure = r.try_get<const procedure::GeometryProcedure>(copied);
-        if (!procedure) continue;
-        for (auto node = procedure->First; node != state::Null; node = r.get<const procedure::ProcedureNode>(node).Next) {
+    // Each copied procedure refers to the members, and a subnet node whose definition refers to one instances its own copy of that definition.
+    const auto map_references = [&](this const auto &self, state::Entity network) -> void {
+        for (const auto node : procedure::NodesOf(r, network)) {
             procedure::VisitKind(r.get<const procedure::ProcedureNode>(node).Kind, [&]<typename K> {
-                if constexpr (procedure::ObjectInput<K> != nullptr) r.patch<K>(node, [&](auto &p) { p.*procedure::ObjectInput<K> = MapHierarchyMember(members, p.*procedure::ObjectInput<K>); });
+                if constexpr (procedure::ObjectInput<K> != nullptr) {
+                    r.patch<K>(node, [&](auto &p) { p.*procedure::ObjectInput<K> = MapHierarchyMember(members, p.*procedure::ObjectInput<K>); });
+                } else if constexpr (std::same_as<K, procedure::Subnet>) {
+                    const auto definition = r.get<const procedure::Subnet>(node).DefinitionEntity;
+                    if (definition == state::Null || !MapsHierarchyReference(r, definition, members)) return;
+                    action::nodes::Apply(r, action::nodes::MakeUnique{node});
+                    self(r.get<const procedure::Subnet>(node).DefinitionEntity);
+                }
             });
         }
+    };
+    for (const auto &[_, copied] : resources) {
+        if (r.all_of<procedure::GeometryProcedure>(copied)) map_references(copied);
     }
     r.remove<HierarchyInstance>(root);
+}
+} // namespace
+
+void MakeHierarchyIndependent(state::Registry &r, std::span<const state::Entity> roots) {
+    if (!std::ranges::all_of(roots, [&](state::Entity root) { return r.all_of<HierarchyInstance>(root); })) {
+        action::Fail(r, "Choose a hierarchy instance to make independent");
+        return;
+    }
+    // The procedure records each root's members draw copy in one batch, once per root and procedure.
+    std::vector<uint32_t> records;
+    for (const auto root : roots) {
+        std::vector<state::Entity> copied;
+        for (const auto &member : r.get<const HierarchyInstance>(root).Members) {
+            const auto *geometry = r.try_get<const Instance>(member.Entity);
+            if (!geometry || std::ranges::contains(copied, geometry->Entity)) continue;
+            if (const auto record = ProcedureRecord(r, geometry->Entity); record != InvalidOffset) {
+                copied.push_back(geometry->Entity);
+                records.push_back(record);
+            }
+        }
+    }
+    const auto clones = CloneRecords(r, records);
+    auto clone = clones.begin();
+    for (const auto root : roots) MakeIndependent(r, root, clone);
 }

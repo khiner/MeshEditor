@@ -28,6 +28,11 @@ if(MESHEDITOR_SURFACE_AUDIO)
     mesheditor_test(MeshEditorContactSpringsScore surface/ContactSpringsScore.cpp MeshEditorAudio)
 endif()
 
+mesheditor_test(MeshEditorMaterialXTest MaterialXTest.cpp MeshEditorOps MaterialXGenMsl MaterialXFormat)
+target_sources(MeshEditorMaterialXTest PRIVATE OpsTest.cpp MaterialXOracleTest.cpp)
+target_compile_definitions(MeshEditorMaterialXTest PRIVATE
+    MESHEDITOR_BUILD_DIR="${CMAKE_BINARY_DIR}" MESHEDITOR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
 foreach(test MslCompile Transparency)
     set(target MeshEditor${test}Test)
     mesheditor_test(${target} ${test}Test.cpp MeshEditorMetal)
@@ -51,12 +56,12 @@ target_compile_definitions(MeshEditorEditBench PRIVATE MESHEDITOR_BUILD_DIR="${C
 rbp_copy_shaders(MeshEditorEditBench)
 mesheditor_test(MeshEditorProjectTest ProjectTest.cpp MeshEditorUi)
 add_dependencies(MeshEditorProjectTest MeshEditorShaderLibraries)
-target_sources(MeshEditorProjectTest PRIVATE ProcedureTest.cpp OperatorTest.cpp HistoryTest.cpp RayTracingTest.cpp)
+target_sources(MeshEditorProjectTest PRIVATE ProcedureTest.cpp OperatorTest.cpp HistoryTest.cpp RayTracingTest.cpp MaterialGraphTest.cpp)
 target_compile_definitions(MeshEditorProjectTest PRIVATE
     MESHEDITOR_BUILD_DIR="${CMAKE_BINARY_DIR}" MESHEDITOR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 rbp_copy_shaders(MeshEditorProjectTest)
 
 mesheditor_test(MeshEditorGeometryTest GeometryOperationsTest.cpp MeshEditorEditor meshoptimizer manifold)
-target_sources(MeshEditorGeometryTest PRIVATE ClusterLodTest.cpp ManifoldOracleTest.cpp MetalBufferTest.cpp)
+target_sources(MeshEditorGeometryTest PRIVATE ClusterLodTest.cpp ManifoldOracleTest.cpp MetalBufferTest.cpp ProgramTest.cpp)
 target_compile_definitions(MeshEditorGeometryTest PRIVATE MESHEDITOR_BUILD_DIR="${CMAKE_BINARY_DIR}")
 rbp_copy_shaders(MeshEditorGeometryTest)

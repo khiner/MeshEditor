@@ -164,10 +164,10 @@ void RestructureLeaves(OwnerNodes &nodes, const std::map<uint32_t, std::vector<u
     std::map<uint32_t, std::map<uint32_t, std::optional<std::vector<LodNode>>>> changes;
     for (const auto &[leaf, all] : overfull) {
         nodes.Unlist(nodes.Get(leaf));
+        const auto runs = EvenRuns(uint32_t(all.size()), ClusterLodSpanLeafRecords);
+        const auto lists = nodes.Buffers.ListMembers(nodes.Owner.MemberData, all, runs | std::views::transform(&Range::Count) | std::ranges::to<std::vector>());
         std::vector<NodeEntry> pieces;
-        for (const auto run : EvenRuns(uint32_t(all.size()), ClusterLodSpanLeafRecords)) {
-            pieces.push_back({.Value = {.MeshletCount = run.Count, .Members = nodes.Buffers.ListMembers(nodes.Owner.MemberData, std::span{all}.subspan(run.Offset, run.Count))}});
-        }
+        for (uint32_t i = 0u; i < runs.size(); ++i) pieces.push_back({.Value = {.MeshletCount = runs[i].Count, .Members = lists[i]}});
         auto &value = nodes.Edit(leaf);
         value.Members = pieces.front().Value.Members;
         value.MeshletCount = pieces.front().Value.MeshletCount;
@@ -317,7 +317,7 @@ LodNodeRefit EditLodNodes(state::Registry &r, MeshStore::Record &owner, std::spa
             auto all = nodes.Members(value, 0u, first);
             all.append_range(tail);
             nodes.Unlist(value);
-            updated.Members = buffers.ListMembers(owner.MemberData, all);
+            updated.Members = buffers.ListMembers(owner.MemberData, all, std::array{uint32_t(all.size())})[0];
         }
         updated.MeshletCount = count;
         nodes.Edit(node) = updated;

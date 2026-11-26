@@ -4,7 +4,6 @@
 #include "gpu/ConvexHull.h"
 #include "mesh/MeshPipelines.h"
 #include "mesh/ScratchPasses.h"
-#include "metal/Dispatch.h"
 
 #include <algorithm>
 
@@ -16,9 +15,7 @@ std::vector<std::vector<std::vector<uint32_t>>> ConvexHulls(state::Registry &r, 
     const auto &pipelines = GetMeshPipelines(r);
     auto &scratch = chain.Scratch;
     constexpr uint32_t FaceWords = sizeof(HullFace) / sizeof(uint32_t), SetWords = sizeof(HullSet) / sizeof(uint32_t);
-    // The passes before and after a round's submit each read their own job record.
-    const std::array records{TakeScratch(chain, sizeof(HullJob) / sizeof(uint32_t)), TakeScratch(chain, sizeof(HullJob) / sizeof(uint32_t))};
-    HullJob job{.Sets = sets, .Points = points, .SetRecords = TakeScratch(chain, uint64_t(sets) * SetWords).Offset, .Positions = positions, .PointFace = TakeScratch(chain, points).Offset, .Proposals = TakeScratch(chain, 1u).Offset};
+    HullJob job{.Scratch = scratch.Buffer.Slot, .Sets = sets, .Points = points, .SetRecords = TakeScratch(chain, uint64_t(sets) * SetWords).Offset, .Positions = positions, .PointFace = TakeScratch(chain, points).Offset, .Proposals = TakeScratch(chain, 1u).Offset};
     {
         std::vector<HullSet> set_records(sets);
         for (uint32_t s = 0u; s < sets; ++s) {
@@ -27,18 +24,15 @@ std::vector<std::vector<std::vector<uint32_t>>> ConvexHulls(state::Registry &r, 
         scratch.Buffer.Update(std::as_bytes(std::span{set_records}), uint64_t(job.SetRecords) * sizeof(uint32_t));
         std::ranges::fill(scratch.GetMutable({job.PointFace, points}), HullPointUnassigned);
     }
-    const std::array<JobPushConstants, 2> pc{JobPushConstants{.Job = {scratch.Buffer.Slot, records[0].Offset}}, JobPushConstants{.Job = {scratch.Buffer.Slot, records[1].Offset}}};
-    const auto upload = [&](uint32_t side) { scratch.Buffer.Update(std::as_bytes(std::span{&job, 1u}), uint64_t(records[side].Offset) * sizeof(uint32_t)); };
+    // Each pass takes the job as it stands when the pass records.
     const auto propose = [&] {
         scratch.GetMutable({job.Proposals, 1u})[0] = 0u;
-        upload(0u);
-        chain.Threads(pipelines[MeshPass::HullPropose], pc[0], points);
-        chain.Threads(pipelines[MeshPass::HullElect], pc[0], points);
-        chain.Threads(pipelines[MeshPass::HullClaim], pc[0], job.Faces);
-        chain.Threads(pipelines[MeshPass::HullAccept], pc[0], job.Faces);
-        chain.Threads(pipelines[MeshPass::HullHorizons], pc[0], job.Faces + 1u);
-        ScanScratch(chain, pipelines, job.NewCount, job.Faces + 1u);
-        ScanScratch(chain, pipelines, job.Survivor, job.Faces + 1u);
+        chain.Threads(pipelines[MeshPass::HullPropose], job, points);
+        chain.Threads(pipelines[MeshPass::HullElect], job, points);
+        chain.Threads(pipelines[MeshPass::HullClaim], job, job.Faces);
+        chain.Threads(pipelines[MeshPass::HullAccept], job, job.Faces);
+        chain.Threads(pipelines[MeshPass::HullHorizons], job, job.Faces + 1u);
+        ScanScratch(chain, pipelines, std::array{Range{job.NewCount, job.Faces + 1u}, Range{job.Survivor, job.Faces + 1u}});
     };
     auto faces = TakeScratch(chain, 4ull * sets * FaceWords);
     auto new_count = TakeScratch(chain, uint64_t(4u * sets) + 1u), survivor = TakeScratch(chain, uint64_t(4u * sets) + 1u);
@@ -46,14 +40,12 @@ std::vector<std::vector<std::vector<uint32_t>>> ConvexHulls(state::Registry &r, 
     job.Current = job.Next = faces.Offset;
     job.NewCount = new_count.Offset;
     job.Survivor = survivor.Offset;
-    for (uint32_t stage = 0u; stage < 3u; ++stage) {
-        auto stage_pc = pc[0];
-        stage_pc.Parameter = stage;
-        chain.Threads(pipelines[MeshPass::HullSeedMax], stage_pc, points);
-        chain.Threads(pipelines[MeshPass::HullSeedElect], stage_pc, points);
+    for (job.Stage = 0u; job.Stage < 3u; ++job.Stage) {
+        chain.Threads(pipelines[MeshPass::HullSeedMax], job, points);
+        chain.Threads(pipelines[MeshPass::HullSeedElect], job, points);
     }
-    chain.Threads(pipelines[MeshPass::HullSeedFaces], pc[0], sets);
-    chain.Threads(pipelines[MeshPass::HullAssign], pc[0], points);
+    chain.Threads(pipelines[MeshPass::HullSeedFaces], job, sets);
+    chain.Threads(pipelines[MeshPass::HullAssign], job, points);
     propose();
     std::vector<Range> retired;
     uint32_t rounds = 1u;
@@ -67,12 +59,11 @@ std::vector<std::vector<std::vector<uint32_t>>> ConvexHulls(state::Registry &r, 
         const auto next_faces = job.Survivors + job.NewFaces;
         auto next = TakeScratch(chain, uint64_t(next_faces) * FaceWords);
         job.Next = next.Offset;
-        upload(1u);
         chain.Concurrent([&] {
-            chain.Threads(pipelines[MeshPass::HullScatter], pc[1], job.Faces);
-            chain.Threads(pipelines[MeshPass::HullEmit], pc[1], job.Faces);
+            chain.Threads(pipelines[MeshPass::HullScatter], job, job.Faces);
+            chain.Threads(pipelines[MeshPass::HullEmit], job, job.Faces);
         });
-        chain.Threads(pipelines[MeshPass::HullAssign], pc[1], points);
+        chain.Threads(pipelines[MeshPass::HullAssign], job, points);
         retired = {faces, new_count, survivor};
         faces = next;
         new_count = TakeScratch(chain, uint64_t(next_faces) + 1u);

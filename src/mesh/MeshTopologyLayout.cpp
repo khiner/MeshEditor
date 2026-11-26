@@ -15,6 +15,7 @@ uint32_t Cuts(uint32_t flags, float value) {
 } // namespace
 
 MeshStore::TopologyCounts TopologyOutputBounds(const MeshTopologyTask &task, MeshStore::TopologyCounts source) {
+    if (task.Outputs) return {task.Outputs->x, task.Outputs->y, task.Outputs->z};
     const uint64_t V = source.Vertices, H = source.Halfedges, F = source.Faces;
     const auto counts = [](uint64_t v, uint64_t h, uint64_t f) {
         return MeshStore::TopologyCounts{GpuCount(v), GpuCount(h), GpuCount(f)};

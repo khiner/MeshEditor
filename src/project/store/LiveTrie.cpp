@@ -96,6 +96,8 @@ void CaptureInto(LiveTrie &trie, Node *n, uint64_t slot, std::optional<Blob> val
         n->Default = DefaultValue(trie, slot, n->Value);
         ++trie.S.OwnedSlots;
         trie.S.OwnedBytes += n->Value.OwnedBytes();
+        ++n->Refs;
+        trie.Captured.emplace_back(slot, n);
     } else {
         n->Kind = NodeKind::Absent;
     }
@@ -112,6 +114,33 @@ void MarkDirtySlot(LiveTrie &trie, uint64_t slot) {
         e.Dirty = true;
         trie.DirtySlots.push_back(slot);
     }
+}
+
+void ReleaseCaptured(LiveTrie &trie) {
+    for (const auto &[_, n] : trie.Captured) ReleaseNode(trie, n);
+    trie.Captured.clear();
+}
+
+// Returns a captured leaf whose content the present holds again to the present, which then aliases it.
+// The present's path to the slot is uniquely owned within the epoch of the capture.
+void Uncapture(LiveTrie &trie, uint64_t slot, Node *n) {
+    Node *parent = trie.Root;
+    for (uint32_t level = trie.Levels; level > 1u; --level) parent = parent->Children[(slot / SlotSpan(level - 1)) % Fanout];
+    auto &leaf = parent->Children[slot % Fanout];
+    assert(parent->Refs == 1u && leaf->Kind == NodeKind::Aliased && leaf->Refs == 1u);
+    --trie.S.OwnedSlots;
+    trie.S.OwnedBytes -= n->Value.OwnedBytes();
+    FreeBlob(n->Value);
+    n->Value = {};
+    n->Hash = {};
+    n->Default = false;
+    n->Kind = NodeKind::Aliased;
+    ++trie.S.AliasedNodes;
+    ReleaseNode(trie, leaf);
+    leaf = n;
+    ++n->Refs;
+    // The next write of the slot captures it again.
+    trie.SlotHashes[slot].Epoch = 0u;
 }
 
 // Return the writable node, capturing leaves in [first, last] with fetch(slot).
@@ -364,7 +393,10 @@ LiveTrie::LiveTrie(uint32_t levels, uint32_t page_bytes, uint32_t records_per_sl
     : Levels(levels), PageBytes(page_bytes), SlotStride(page_bytes ? page_bytes : records_per_slot), DefaultPageHash(page_bytes ? HashBytes(std::vector<std::byte>(page_bytes)) : Hash128{}),
       Root(Alloc(*this, NodeKind::Aliased)), Manifest(levels) {}
 
-LiveTrie::~LiveTrie() { ReleaseNode(*this, Root); }
+LiveTrie::~LiveTrie() {
+    ReleaseCaptured(*this);
+    ReleaseNode(*this, Root);
+}
 
 void LiveTrie::Write(uint64_t first, uint64_t count, std::span<const std::byte> contents) {
     CaptureImpl(*this, first, count, [&](uint64_t slot) -> std::optional<Blob> {
@@ -440,6 +472,17 @@ void LiveTrie::SettleFlat(std::span<const std::byte> contents) {
         RehashSlot(*this, slot, results[i].Hash, results[i].Default);
     }
     DirtySlots.clear();
+    ReturnCaptured(PageBytes ? contents.size() / PageBytes : 0u);
+}
+
+void LiveTrie::ReturnCaptured(uint64_t slots) {
+    // A capture no version holds any more needs no comparison.
+    for (const auto &[slot, n] : Captured) {
+        if (n->Refs == 1u || slot >= SlotHashes.size() || slot >= slots) continue;
+        const auto &live = SlotHashes[slot];
+        if (n->Default ? live.State == SlotState::Default : live.State == SlotState::Value && live.H == n->Hash) Uncapture(*this, slot, n);
+    }
+    ReleaseCaptured(*this);
 }
 
 Stamp LiveTrie::CurrentStamp(uint64_t length) const {
@@ -449,6 +492,7 @@ Stamp LiveTrie::CurrentStamp(uint64_t length) const {
 
 Version LiveTrie::Pin(uint64_t length) {
     const auto s = CurrentStamp(length);
+    ReleaseCaptured(*this);
     ++Root->Refs;
     ++CaptureEpoch;
     return {Root, s};
@@ -476,6 +520,7 @@ bool LiveTrie::CommitRestore(RestorePlan &&plan) {
     ++root->Refs;
     ReleaseNode(*this, Root);
     Root = root;
+    ReleaseCaptured(*this);
     ++CaptureEpoch;
     Busy = false;
     return Hash128{Lane0, Lane1} == plan.Hash;

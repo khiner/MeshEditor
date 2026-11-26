@@ -1,7 +1,7 @@
 #include "render/MeshletBoundsRefit.h"
 #include "Profile.h"
 #include "SortUnique.h"
-#include "gpu/MeshletBoundsRefitPushConstants.h"
+#include "gpu/MeshletBoundsJob.h"
 #include "mesh/MeshPipelines.h"
 #include "metal/Dispatch.h"
 #include "render/ClusterLodRepair.h"
@@ -14,7 +14,8 @@ void RefitCanonicalMeshletBounds(state::Registry &r, mtl::ComputeChain &chain, s
     if (jobs.empty()) return;
     const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &render = meshes.Render();
-    std::vector<MeshletBoundsRefitPushConstants> dispatches;
+    std::vector<MeshletBoundsJob> refits;
+    std::vector<uint32_t> tiles;
     std::vector<std::pair<uint32_t, std::vector<uint32_t>>> refitted;
     for (const auto &job : jobs) {
         if (!job.Storage || ElementWorkEmpty(*job.Storage, job.Meshlets)) continue;
@@ -23,7 +24,20 @@ void RefitCanonicalMeshletBounds(state::Registry &r, mtl::ComputeChain &chain, s
         std::vector<uint32_t> addresses;
         ForEachWorkElement(*job.Storage, job.Meshlets, [&](uint32_t address) { addresses.push_back(address); });
         render.Meshlets.Buffer.CaptureWriteElements(addresses, sizeof(MeshletRecord));
-        dispatches.push_back({.MeshletAddresses = job.Meshlets, .Count = uint32_t(addresses.size()), .MeshletSlot = render.Meshlets.Buffer.Slot, .MeshletVertexSlot = render.MeshletVertexCorners.Buffer.Slot, .LocalTrianglesSlot = render.MeshletLocalTriangles.Buffer.Slot, .CornerSlot = meshes.Arenas().FaceCorners.Buffer.Slot, .VertexSlot = meshes.Slots().Vertices, .VertexBase = job.Owner->MeshletVertices.Values.Offset, .LocalTriangleBase = job.Owner->MeshletLocalTriangles.Values.Offset, .VertexTable = meshes.Arenas().Vertices.TableRef(job.Owner->Vertices), .CornerTable = meshes.Arenas().FaceCorners.TableRef(job.Owner->FaceCorners)});
+        refits.push_back({
+            .MeshletAddresses = job.Meshlets,
+            .Count = uint32_t(addresses.size()),
+            .VertexBase = job.Owner->MeshletVertices.Values.Offset,
+            .LocalTriangleBase = job.Owner->MeshletLocalTriangles.Values.Offset,
+            .VertexTable = meshes.Arenas().Vertices.TableRef(job.Owner->Vertices),
+            .CornerTable = meshes.Arenas().FaceCorners.TableRef(job.Owner->FaceCorners),
+            .MeshletSlot = render.Meshlets.Buffer.Slot,
+            .MeshletVertexSlot = render.MeshletVertexCorners.Buffer.Slot,
+            .LocalTrianglesSlot = render.MeshletLocalTriangles.Buffer.Slot,
+            .CornerSlot = meshes.Arenas().FaceCorners.Buffer.Slot,
+            .VertexSlot = meshes.Slots().Vertices,
+        });
+        tiles.push_back((uint32_t(addresses.size()) + MeshletBoundsTile - 1u) / MeshletBoundsTile);
         if (job.Owner->SpatialRoot != InvalidOffset) {
             std::vector<uint32_t> handles;
             for (const auto address : addresses) {
@@ -33,9 +47,8 @@ void RefitCanonicalMeshletBounds(state::Registry &r, mtl::ComputeChain &chain, s
             if (!handles.empty()) refitted.emplace_back(job.Owner->StoreId, std::move(handles));
         }
     }
-    if (dispatches.empty()) return;
-    const auto &pipeline = GetMeshPipelines(r)[MeshPass::MeshletBoundsRefit];
-    chain.Concurrent([&] { for (const auto &pc:dispatches) chain.Groups(pipeline,pc,(pc.Count+31u)/32u,32u); });
+    if (refits.empty()) return;
+    mtl::GatherPass(chain, GetMeshPipelines(r)[MeshPass::MeshletBoundsRefit], std::span{refits}, tiles, MeshletBoundsTile);
     if (refitted.empty()) return;
     chain.AfterSubmit([&r, refitted = std::move(refitted)] {
         const auto &meshes = r.Resources.get<MeshStore>();

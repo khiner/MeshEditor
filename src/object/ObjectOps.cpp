@@ -14,6 +14,7 @@
 #include "physics/PhysicsTypes.h"
 #include "procedure/Network.h"
 #include "render/GpuBuffers.h"
+#include "render/GpuSceneState.h"
 #include "render/Instance.h"
 #include "render/Textures.h"
 #include "scene/SceneGraph.h"
@@ -118,6 +119,12 @@ void ProcessObjectRemovals(state::Registry &r) {
         SortUnique(removed);
         std::erase_if(removed, [&](state::Entity e) { return !r.valid(e); });
         r.destroy(removed);
+    }
+    // A destroyed pose state leaves the meshes skinned to its armature undeformed.
+    if (!pending->DeformRanges.empty()) {
+        for (const auto [_, instance, modifier] : r.view<const Instance, const ArmatureModifier>().each()) {
+            if (!r.valid(modifier.ArmatureObjectEntity) || !r.all_of<ArmaturePoseState>(modifier.ArmatureObjectEntity)) r.emplace_or_replace<MeshLayoutDirty>(instance.Entity);
+        }
     }
     auto &meshes = r.Resources.get<MeshStore>();
     auto &buffers = r.Resources.get<GpuBuffers>();

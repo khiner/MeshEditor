@@ -337,7 +337,7 @@ Result PlaceScene(Session &s) {
         place(std::move(source));
     } else if (scene.empty() && single_edit == SingleEdit::RecalculateNormals) {
         MeshSource source;
-        const auto cube = primitive::CreateMesh(primitive::Cube{});
+        const auto cube = primitive::CreateMesh(primitive::Cube{}).Data;
         const uint32_t count = std::max(1u, slices * slices / 12u);
         for (uint32_t i = 0u; i < count; ++i) {
             const uint32_t base = uint32_t(source.Data.Positions.size());
@@ -351,7 +351,7 @@ Result PlaceScene(Session &s) {
         }
         place(std::move(source));
     } else if (scene.empty() && (single_edit == SingleEdit::Bridge || single_edit == SingleEdit::GridFill || single_edit == SingleEdit::SpaceEvenly || single_edit == SingleEdit::RelaxEdgeLoops || single_edit == SingleEdit::Flatten || single_edit == SingleEdit::CurveBetweenSelected || single_edit == SingleEdit::Circularize || single_edit == SingleEdit::DissolveDelimited || single_edit == SingleEdit::RotateUVs || single_edit == SingleEdit::VertexSlide || single_edit == SingleEdit::EdgeSlide)) {
-        MeshSource source{.Data = primitive::CreateMesh(primitive::UVSphere{.Slices = slices, .Stacks = slices / 2})};
+        MeshSource source{.Data = primitive::CreateMesh(primitive::UVSphere{.Slices = slices, .Stacks = slices / 2}).Data};
         struct Strip {
             SingleEdit Edit;
             bool Closed;
@@ -407,8 +407,8 @@ Result BenchChain(Session &s) {
     for (const auto kind : s.Config.Edit->Kinds) {
         const auto display = r.get<const procedure::GeometryProcedure>(s.Entity).DisplayNode;
         const auto result = *procedure::ResultSocket(r, display);
-        project::Do(p, action::MakeAction(action::nodes::AddNode{s.Entity, kind}));
-        nodes.push_back(r.get<const procedure::GeometryProcedure>(s.Entity).Last);
+        project::Do(p, action::MakeAction(action::nodes::AddNode{s.Entity, action::nodes::KindNode{kind}}));
+        nodes.push_back(r.get<const procedure::NetworkNodes>(s.Entity).Last);
         project::Do(p, action::MakeAction(action::nodes::Link{s.Entity, display, result, nodes.back(), 0u}));
         project::Do(p, action::MakeAction(action::nodes::SetDisplay{s.Entity, nodes.back()}));
     }

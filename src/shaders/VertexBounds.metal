@@ -1,5 +1,5 @@
 #pragma once
-#include "ElementWorkShared.metal"
+#include "Bindless.metal"
 #include "gpu/VertexBounds.h"
 #include "gpu/BoundsReducePushConstants.h"
 
@@ -24,7 +24,5 @@ inline bool BoundsVertexLive(device const BindlessSet &b, BoundsEntry entry, uin
     return membership.Owner == entry.VertexOwner && SlotLive(membership, lane);
 }
 inline uint2 VertexBoundsTile(device const BindlessSet &b, constant BoundsReducePushConstants &pc, uint group) {
-    return pc.Work.Storage.Slot == InvalidSlot ?
-        uint2(BindlessBuffer(packed_uint2,b.Buffer,pc.TileMapSlot)[pc.FirstTile+group]) :
-        uint2(pc.EntryIndex,WorkGroupElement(b,pc.Work,group));
+    return uint2(BindlessBuffer(packed_uint2,b.Buffer,pc.TileMapSlot)[pc.FirstTile+group]);
 }

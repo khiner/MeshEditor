@@ -3,28 +3,19 @@
 #include "BoundsShared.metal"
 #include "MeshletShared.metal"
 #include "gpu/PosedMeshletBoundsPushConstants.h"
-#include "ElementWorkShared.metal"
 
 kernel void PosedMeshletBoundsKernel(
     uint tid [[thread_position_in_threadgroup]],
     uint group_id [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    SCENE_ARGS,
     constant PosedMeshletBoundsPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
-    uint instance_id = pc.Instance, meshlet_address;
-    if (pc.MeshletAddresses.Storage.Slot == InvalidSlot) {
-        device const PosedMeshletBoundsJob *jobs = BindlessBuffer(PosedMeshletBoundsJob,bindless.Buffer,pc.JobsSlot);
-        uint lo = 0u, hi = pc.JobCount;
-        while (lo+1u < hi) { const uint mid = (lo+hi)/2u; if (jobs[mid].FirstGroup <= group_id) lo = mid; else hi = mid; }
-        const auto job = jobs[lo];
-        instance_id = job.Instance;
-        const uint member = Resolve<RenderBlockSize>(SetTable(bindless,pc.Members,job.MemberSet),job.Members+group_id-job.FirstGroup);
-        meshlet_address = Resolve<RenderBlockSize>(SetTable(bindless,pc.Meshlets,job.MeshletSet),BindlessBuffer(uint,bindless.Buffer,pc.MemberSlot)[member]);
-    } else meshlet_address = WorkGroupElement(bindless,pc.MeshletAddresses,group_id);
+    device const PosedMeshletBoundsJob *jobs = BindlessBuffer(PosedMeshletBoundsJob,bindless.Buffer,pc.JobsSlot);
+    const auto job = jobs[PartitionPoint(pc.JobCount, [&](uint k) { return jobs[k].FirstGroup <= group_id; }) - 1u];
+    const uint instance_id = job.Instance;
+    const uint member = Resolve<RenderBlockSize>(SetTable(bindless,pc.Members,job.MemberSet),job.Members+group_id-job.FirstGroup);
+    const uint meshlet_address = Resolve<RenderBlockSize>(SetTable(bindless,pc.Meshlets,job.MeshletSet),BindlessBuffer(uint,bindless.Buffer,pc.MemberSlot)[member]);
     if (meshlet_address == InvalidOffset) return;
     const InstanceRecord instance = scene.InstanceRecords(view.InstanceRecordSlot)[instance_id];
     const MeshRecord mesh = scene.MeshRecords(view.MeshRecordSlot)[instance.Mesh];

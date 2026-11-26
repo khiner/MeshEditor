@@ -4,43 +4,31 @@
 #include "mesh/ScratchPasses.h"
 
 namespace {
-struct Chains {
-    mtl::ComputeChain Chain;
-    SelectedChainsPushConstants Pc{};
-
-    Chains(const MeshStore &meshes, uint32_t id) : Chain{meshes.BufferContext()} {
-        const auto &a = meshes.Arenas();
-        const auto &record = meshes.Get(id);
-        Pc.Connectivity = meshes.GetConnectivityRef(id);
-        Pc.VertexSlot = a.Vertices.Buffer.Slot;
-        Pc.EdgeBound = a.EdgeHalfedges.HandleBound(record.EdgeData);
-        Pc.ScratchSlot = Chain.Scratch.Buffer.Slot;
+SelectedChainsJob ChainsJob(const MeshStore &meshes, uint32_t id) {
+    return {
+        .Connectivity = meshes.GetConnectivityRef(id),
+        .VertexSlot = meshes.Arenas().Vertices.Buffer.Slot,
+        .EdgeBound = meshes.Arenas().EdgeHalfedges.HandleBound(meshes.Get(id).EdgeData),
+    };
+}
+// Takes the runs of the listed edges' facts, and returns the fill that zeroes their listed face counts.
+ScratchFillRun TakeFacts(mtl::ComputeChain &chain, SelectedChainsJob &job, std::span<const uint32_t> edges) {
+    job.Edges = chain.Scratch.Allocate(edges).Offset;
+    job.EdgeCount = uint32_t(edges.size());
+    job.Counts = TakeScratch(chain, job.EdgeBound).Offset;
+    job.EdgeInfo = TakeScratch(chain, sizeof(EdgeFacts) / sizeof(uint32_t) * edges.size()).Offset;
+    return {job.Counts, job.EdgeBound, 0u};
+}
+void Upload(mtl::ComputeChain &chain, SelectedChainsJob &job, std::span<const CornerLoop> loops) {
+    std::vector<uint32_t> records, pairs;
+    for (const auto &loop : loops) {
+        records.insert(records.end(), {uint32_t(pairs.size() / 2u), uint32_t(loop.size()), 0u});
+        for (const auto &[vertex, source] : loop) pairs.insert(pairs.end(), {vertex, source});
     }
-    void Facts(const MeshPipelines &pipelines, std::span<const uint32_t> edges, std::span<const uint32_t> faces) {
-        Pc.Edges = Chain.Scratch.Allocate(edges).Offset;
-        Pc.EdgeCount = uint32_t(edges.size());
-        Pc.Counts = TakeScratch(Chain, Pc.EdgeBound).Offset;
-        Pc.EdgeInfo = TakeScratch(Chain, sizeof(EdgeFacts) / sizeof(uint32_t) * edges.size()).Offset;
-        FillScratch(Chain, pipelines, Pc.Counts, Pc.EdgeBound, 0u);
-        if (!faces.empty()) {
-            Pc.Faces = Chain.Scratch.Allocate(faces).Offset;
-            Pc.ListedFaces = uint32_t(faces.size());
-            Chain.Threads(pipelines[MeshPass::SelectedChainFaceEdges], Pc, Pc.ListedFaces);
-        }
-        Chain.Threads(pipelines[MeshPass::SelectedChainEdgeFacts], Pc, Pc.EdgeCount);
-    }
-    std::vector<EdgeFacts> ReadFacts() const { return ReadScratch<EdgeFacts>(Chain, Pc.EdgeInfo, Pc.EdgeCount); }
-    void Upload(std::span<const CornerLoop> loops) {
-        std::vector<uint32_t> records, pairs;
-        for (const auto &loop : loops) {
-            records.insert(records.end(), {uint32_t(pairs.size() / 2u), uint32_t(loop.size()), 0u});
-            for (const auto &[vertex, source] : loop) pairs.insert(pairs.end(), {vertex, source});
-        }
-        Pc.Records = Chain.Scratch.Allocate(records).Offset;
-        Pc.Output = Chain.Scratch.Allocate(pairs).Offset;
-        Pc.ChainCount = uint32_t(loops.size());
-    }
-};
+    job.Records = chain.Scratch.Allocate(records).Offset;
+    job.Output = chain.Scratch.Allocate(pairs).Offset;
+    job.ChainCount = uint32_t(loops.size());
+}
 } // namespace
 
 std::vector<uint32_t> VerticesOf(const CornerLoop &loop) {
@@ -49,103 +37,113 @@ std::vector<uint32_t> VerticesOf(const CornerLoop &loop) {
     return vertices;
 }
 
-SelectedChains SelectedEdgeChains(const MeshStore &meshes, const MeshPipelines &pipelines, uint32_t id, std::span<const uint32_t> edges, bool boundary_only) {
-    SelectedChains result;
-    if (edges.empty()) return result;
-    Chains chains{meshes, id};
-    auto &pc = chains.Pc;
-    auto &chain = chains.Chain;
-    auto &scratch = chain.Scratch;
-    pc.Blocks = BlocksOf(meshes, id, MeshStore::ElementDomain::Edge);
-    if (!pc.Blocks.Count) return result;
-    const uint32_t oriented = 2u * pc.EdgeBound, vertices = meshes.Arenas().Vertices.HandleBound(meshes.Get(id).Vertices);
-    pc.BoundaryOnly = boundary_only ? 1u : 0u;
-    chains.Facts(pipelines, edges, {});
-    pc.Degree = TakeScratch(chain, vertices).Offset;
-    pc.Lowest = TakeScratch(chain, vertices).Offset;
-    pc.Highest = TakeScratch(chain, vertices).Offset;
-    pc.Junctions = TakeScratch(chain, 1u).Offset;
-    pc.Candidate = TakeScratch(chain, oriented).Offset;
-    pc.Next = TakeScratch(chain, oriented).Offset;
-    pc.Previous = TakeScratch(chain, oriented).Offset;
-    for (auto *run : {&pc.Jumps, &pc.PreviousJumps, &pc.KeyIndex, &pc.Tails, &pc.Heads, &pc.Distances, &pc.Successors}) *run = TakeScratch(chain, 2ull * oriented).Offset;
-    for (auto *run : {&pc.Key, &pc.Reverse}) *run = TakeScratch(chain, 4ull * oriented).Offset;
-    pc.Closed = TakeScratch(chain, oriented).Offset;
-    pc.Lengths = TakeScratch(chain, uint64_t(oriented) + 1u).Offset;
-    pc.Flags = TakeScratch(chain, uint64_t(oriented) + 1u).Offset;
-    pc.Output = TakeScratch(chain, 2ull * (uint64_t(oriented) + 2ull * edges.size())).Offset;
-    const uint32_t threads = pc.Blocks.Count * MeshElementBlockSize;
-    FillScratch(chain, pipelines, pc.Degree, vertices, 0u);
-    FillScratch(chain, pipelines, pc.Lowest, vertices, InvalidOffset);
-    FillScratch(chain, pipelines, pc.Highest, vertices, 0u);
-    FillScratch(chain, pipelines, pc.Junctions, 1u, 0u);
-    FillScratch(chain, pipelines, pc.Candidate, oriented, 0u);
-    FillScratch(chain, pipelines, pc.Previous, oriented, InvalidOffset);
-    chain.Threads(pipelines[MeshPass::SelectedChainDegrees], pc, threads);
-    chain.Threads(pipelines[MeshPass::SelectedChainLink], pc, threads);
-    chain.Threads(pipelines[MeshPass::SelectedChainHeads], pc, threads);
-    auto round_pc = RecordLoopRanks(chain, pipelines, pc, {MeshPass::SelectedChainLabel, MeshPass::SelectedChainRankInit, MeshPass::SelectedChainRank, MeshPass::SelectedChainCount}, oriented, threads, pc.Lengths, pc.Flags);
-    chain.Submit();
-    const uint32_t count = scratch.Get({pc.Flags + oriented, 1u})[0];
-    result.Junction = scratch.Get({pc.Junctions, 1u})[0] != 0u;
-    result.Edges = chains.ReadFacts();
-    if (!count) return result;
-    round_pc.Records = TakeScratch(chain, 3ull * count).Offset;
-    chain.Threads(pipelines[MeshPass::SelectedChainOutput], round_pc, threads);
-    chain.Submit();
-    const auto records = scratch.Get({round_pc.Records, 3u * count});
-    result.Chains.resize(count);
-    for (uint32_t c = 0u; c < count; ++c) {
-        const auto length = records[3u * c + 1u];
-        auto &out = result.Chains[c];
-        out.Closed = records[3u * c + 2u] != 0u;
-        out.Pairs = ReadScratch<std::array<uint32_t, 2>>(chain, pc.Output + 2u * records[3u * c], length);
-        if (!out.Closed && length > 1u && out.Pairs.back()[0] == out.Pairs.front()[0]) out.Pairs.pop_back();
-    }
-    std::ranges::sort(result.Chains, [](const SelectedChain &a, const SelectedChain &b) {
-        const auto key = [](const SelectedChain &c) { return std::tuple{c.Closed, c.Pairs[0][0], c.Pairs.size() > 1u ? c.Pairs[1][0] : 0u}; };
-        return key(a) < key(b);
+void RecordSelectedEdgeChains(const MeshStore &meshes, const MeshPipelines &pipelines, mtl::ComputeChain &chain, uint32_t id, std::span<const uint32_t> edges, bool boundary_only, std::function<void(SelectedChains)> then) {
+    if (edges.empty()) return then({});
+    auto job = ChainsJob(meshes, id);
+    job.Blocks = BlocksOf(meshes, id, MeshStore::ElementDomain::Edge);
+    if (!job.Blocks.Count) return then({});
+    const uint32_t oriented = 2u * job.EdgeBound, vertices = meshes.Arenas().Vertices.HandleBound(meshes.Get(id).Vertices);
+    job.BoundaryOnly = boundary_only ? 1u : 0u;
+    const auto counts = TakeFacts(chain, job, edges);
+    job.Degree = TakeScratch(chain, vertices).Offset;
+    job.Lowest = TakeScratch(chain, vertices).Offset;
+    job.Highest = TakeScratch(chain, vertices).Offset;
+    job.Junctions = TakeScratch(chain, 1u).Offset;
+    job.Candidate = TakeScratch(chain, oriented).Offset;
+    job.Next = TakeScratch(chain, oriented).Offset;
+    job.Previous = TakeScratch(chain, oriented).Offset;
+    for (auto *run : {&job.Jumps, &job.PreviousJumps, &job.KeyIndex, &job.Tails, &job.Heads, &job.Distances, &job.Successors}) *run = TakeScratch(chain, 2ull * oriented).Offset;
+    for (auto *run : {&job.Key, &job.Reverse}) *run = TakeScratch(chain, 4ull * oriented).Offset;
+    job.Closed = TakeScratch(chain, oriented).Offset;
+    job.Lengths = TakeScratch(chain, uint64_t(oriented) + 1u).Offset;
+    job.Flags = TakeScratch(chain, uint64_t(oriented) + 1u).Offset;
+    job.Parity = TakeScratch(chain, 1u).Offset;
+    job.Output = TakeScratch(chain, 2ull * (uint64_t(oriented) + 2ull * edges.size())).Offset;
+    const uint32_t threads = job.Blocks.Count * MeshElementBlockSize;
+    chain.Lane([&] {
+        FillScratch(chain, pipelines, std::to_array<ScratchFillRun>({counts, {job.Degree, vertices, 0u}, {job.Lowest, vertices, InvalidOffset}, {job.Highest, vertices, 0u}, {job.Junctions, 1u, 0u}, {job.Candidate, oriented, 0u}, {job.Previous, oriented, InvalidOffset}}));
+        mtl::GatherPass(chain, pipelines[MeshPass::SelectedChainEdgeFacts], job, job.EdgeCount);
+        mtl::GatherPass(chain, pipelines[MeshPass::SelectedChainDegrees], job, threads);
+        mtl::GatherPass(chain, pipelines[MeshPass::SelectedChainLink], job, threads);
+        mtl::GatherPass(chain, pipelines[MeshPass::SelectedChainHeads], job, threads);
+        GatherLoopRanks(chain, pipelines, {MeshPass::SelectedChainLabel, MeshPass::SelectedChainRankInit, MeshPass::SelectedChainRank, MeshPass::SelectedChainCount}, job, job.Blocks.Count, [](const SelectedChainsJob &gathered) { return LoopList{2u * gathered.EdgeBound, gathered.Lengths, gathered.Flags}; });
     });
-    return result;
+    chain.AfterSubmit([&pipelines, &chain, job, oriented, threads, then = std::move(then)] mutable {
+        const auto &scratch = chain.Scratch;
+        const uint32_t count = scratch.Get({job.Flags + oriented, 1u})[0];
+        SelectedChains result{.Edges = ReadScratch<EdgeFacts>(chain, job.EdgeInfo, job.EdgeCount), .Junction = scratch.Get({job.Junctions, 1u})[0] != 0u};
+        if (!count) return then(std::move(result));
+        job.Records = TakeScratch(chain, 3ull * count).Offset;
+        chain.Lane([&] { mtl::GatherPass(chain, pipelines[MeshPass::SelectedChainOutput], job, threads); });
+        chain.AfterSubmit([&chain, job, count, result = std::move(result), then = std::move(then)] mutable {
+            const auto records = chain.Scratch.Get({job.Records, 3u * count});
+            result.Chains.resize(count);
+            for (uint32_t c = 0u; c < count; ++c) {
+                const auto length = records[3u * c + 1u];
+                auto &out = result.Chains[c];
+                out.Closed = records[3u * c + 2u] != 0u;
+                out.Pairs = ReadScratch<std::array<uint32_t, 2>>(chain, job.Output + 2u * records[3u * c], length);
+                if (!out.Closed && length > 1u && out.Pairs.back()[0] == out.Pairs.front()[0]) out.Pairs.pop_back();
+            }
+            std::ranges::sort(result.Chains, [](const SelectedChain &a, const SelectedChain &b) {
+                const auto key = [](const SelectedChain &c) { return std::tuple{c.Closed, c.Pairs[0][0], c.Pairs.size() > 1u ? c.Pairs[1][0] : 0u}; };
+                return key(a) < key(b);
+            });
+            then(std::move(result));
+        });
+    });
 }
 
+void RecordSelectedEdgeFacts(const MeshStore &meshes, const MeshPipelines &pipelines, mtl::ComputeChain &chain, uint32_t id, std::span<const uint32_t> edges, std::span<const uint32_t> faces, std::function<void(std::vector<EdgeFacts>)> then) {
+    if (edges.empty()) return then({});
+    auto job = ChainsJob(meshes, id);
+    const auto facts = TakeFacts(chain, job, edges);
+    if (!faces.empty()) {
+        job.Faces = chain.Scratch.Allocate(faces).Offset;
+        job.ListedFaces = uint32_t(faces.size());
+    }
+    chain.Lane(id, [&] {
+        FillScratch(chain, pipelines, std::array{facts});
+        if (!faces.empty()) mtl::GatherPass(chain, pipelines[MeshPass::SelectedChainFaceEdges], job, job.ListedFaces);
+        mtl::GatherPass(chain, pipelines[MeshPass::SelectedChainEdgeFacts], job, job.EdgeCount);
+    });
+    chain.AfterSubmit([&chain, info = job.EdgeInfo, count = job.EdgeCount, then = std::move(then)] { then(ReadScratch<EdgeFacts>(chain, info, count)); });
+}
 std::vector<EdgeFacts> SelectedEdgeFacts(const MeshStore &meshes, const MeshPipelines &pipelines, uint32_t id, std::span<const uint32_t> edges, std::span<const uint32_t> faces) {
-    if (edges.empty()) return {};
-    Chains chains{meshes, id};
-    chains.Facts(pipelines, edges, faces);
-    chains.Chain.Submit();
-    return chains.ReadFacts();
+    return mtl::Drained<std::vector<EdgeFacts>>(meshes.BufferContext(), [&](mtl::ComputeChain &chain, auto then) { RecordSelectedEdgeFacts(meshes, pipelines, chain, id, edges, faces, std::move(then)); });
 }
 
-std::vector<ChainSummary> SummarizeLoops(const MeshStore &meshes, const MeshPipelines &pipelines, uint32_t id, std::span<const CornerLoop> loops) {
-    if (loops.empty()) return {};
-    Chains chains{meshes, id};
-    chains.Upload(loops);
+void RecordSummarizeLoops(const MeshStore &meshes, const MeshPipelines &pipelines, mtl::ComputeChain &chain, uint32_t id, std::span<const CornerLoop> loops, std::function<void(std::vector<ChainSummary>)> then) {
+    if (loops.empty()) return then({});
+    auto job = ChainsJob(meshes, id);
+    Upload(chain, job, loops);
     constexpr uint32_t Words = sizeof(ChainSummary) / sizeof(uint32_t);
-    chains.Pc.Summaries = TakeScratch(chains.Chain, uint64_t(Words) * loops.size()).Offset;
-    chains.Chain.Threads(pipelines[MeshPass::SelectedChainSummaries], chains.Pc, uint32_t(loops.size()));
-    chains.Chain.Submit();
-    return ReadScratch<ChainSummary>(chains.Chain, chains.Pc.Summaries, loops.size());
+    job.Summaries = TakeScratch(chain, uint64_t(Words) * loops.size()).Offset;
+    chain.Lane(id, [&] { mtl::GatherPass(chain, pipelines[MeshPass::SelectedChainSummaries], job, job.ChainCount); });
+    chain.AfterSubmit([&chain, summaries = job.Summaries, count = loops.size(), then = std::move(then)] { then(ReadScratch<ChainSummary>(chain, summaries, count)); });
+}
+std::vector<ChainSummary> SummarizeLoops(const MeshStore &meshes, const MeshPipelines &pipelines, uint32_t id, std::span<const CornerLoop> loops) {
+    return mtl::Drained<std::vector<ChainSummary>>(meshes.BufferContext(), [&](mtl::ComputeChain &chain, auto then) { RecordSummarizeLoops(meshes, pipelines, chain, id, loops, std::move(then)); });
 }
 
-uint32_t NearestInLoop(const MeshStore &meshes, const MeshPipelines &pipelines, uint32_t id, const CornerLoop &loop, vec3 point) {
-    Chains chains{meshes, id};
-    chains.Upload(std::span{&loop, 1u});
-    chains.Pc.Point = point;
-    chains.Pc.Nearest = TakeScratch(chains.Chain, 1u).Offset;
-    chains.Chain.Threads(pipelines[MeshPass::SelectedChainNearest], chains.Pc, 1u);
-    chains.Chain.Submit();
-    return chains.Chain.Scratch.Get({chains.Pc.Nearest, 1u})[0];
+void RecordNearestInLoop(const MeshStore &meshes, const MeshPipelines &pipelines, mtl::ComputeChain &chain, uint32_t id, const CornerLoop &loop, vec3 point, std::function<void(uint32_t)> then) {
+    auto job = ChainsJob(meshes, id);
+    Upload(chain, job, std::span{&loop, 1u});
+    job.Point = point;
+    job.Nearest = TakeScratch(chain, 1u).Offset;
+    chain.Lane(id, [&] { mtl::GatherPass(chain, pipelines[MeshPass::SelectedChainNearest], job, 1u); });
+    chain.AfterSubmit([&chain, nearest = job.Nearest, then = std::move(then)] { then(chain.Scratch.Get({nearest, 1u})[0]); });
 }
 
 std::optional<std::vector<float>> PointCloudAngles(const MeshStore &meshes, const MeshPipelines &pipelines, uint32_t id, std::span<const uint32_t> vertices) {
     if (vertices.empty()) return {};
-    Chains chains{meshes, id};
-    chains.Pc.Points = chains.Chain.Scratch.Allocate(vertices).Offset;
-    chains.Pc.PointCount = uint32_t(vertices.size());
-    chains.Pc.Angles = TakeScratch(chains.Chain, uint64_t(vertices.size()) + 1u).Offset;
-    chains.Chain.Groups(pipelines[MeshPass::SelectedChainPointAngles], chains.Pc, 1u);
-    chains.Chain.Submit();
-    if (!chains.Chain.Scratch.Get({chains.Pc.Angles + uint32_t(vertices.size()), 1u})[0]) return {};
-    return ReadScratch<float>(chains.Chain, chains.Pc.Angles, vertices.size());
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    auto job = ChainsJob(meshes, id);
+    job.Points = chain.Scratch.Allocate(vertices).Offset;
+    job.PointCount = uint32_t(vertices.size());
+    job.Angles = TakeScratch(chain, uint64_t(vertices.size()) + 1u).Offset;
+    mtl::GatherPass(chain, pipelines[MeshPass::SelectedChainPointAngles], job, 1u);
+    chain.Submit();
+    if (!chain.Scratch.Get({job.Angles + uint32_t(vertices.size()), 1u})[0]) return {};
+    return ReadScratch<float>(chain, job.Angles, vertices.size());
 }

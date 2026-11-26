@@ -6,7 +6,6 @@
 #include "viewport/Viewport.h"
 
 #include "TransformMath.h"
-#include "gizmo/GizmoInteraction.h"
 #include "mesh/EditVisibility.h"
 #include "mesh/MeshPipelines.h"
 #include "mesh/Neighborhood.h"
@@ -107,11 +106,12 @@ void CombineSelected(state::Registry &r, const action::mesh::Boolean &boolean) {
     const auto boolean_entity = nodes::AppendNode(r, first, procedure::KindOf<procedure::Boolean>);
     if (boolean_entity == state::Null) return;
     r.replace<procedure::Boolean>(boolean_entity, boolean.Operation, active);
-    nodes::Apply(r, nodes::AddNode{first, procedure::KindOf<procedure::ObjectInfo>, procedure::ContainerOf(r, boolean_entity)});
-    const auto info = r.get<const procedure::GeometryProcedure>(first).Last;
+    const auto network = procedure::NetworkOf(r, boolean_entity);
+    nodes::Apply(r, nodes::AddNode{network, nodes::KindNode{procedure::KindOf<procedure::ObjectInfo>}});
+    const auto info = procedure::ActiveNodeOf(r, network);
     r.replace<procedure::ObjectInfo>(info, others.front());
-    nodes::Apply(r, nodes::Link{first, info, 0u, boolean_entity, 1u});
-    nodes::Apply(r, nodes::SelectItems{first, boolean_entity, {boolean_entity}});
+    nodes::Apply(r, nodes::Link{network, info, 0u, boolean_entity, 1u});
+    nodes::Apply(r, nodes::SelectItems{network, boolean_entity, {boolean_entity}});
 }
 
 // The world transform of the mesh's transformable primary instance, which transformed position operators edit the mesh in.
@@ -144,7 +144,7 @@ std::optional<procedure::ToSphere> NodeOf(const state::Registry &r, state::Entit
             const auto &world = *WorldTransformOf(r, primaries.at(e));
             auto local = Rotate(Conjugate(world.R), center - world.P);
             for (uint32_t axis = 0u; axis < 3u; ++axis) local[axis] = world.S[axis] != 0.f ? local[axis] / world.S[axis] : 0.f;
-            for (const auto &position : VertexPositions(meshes, GetMeshPipelines(r), id, EditorGeometrySelection(meshes, id).Vertices)) {
+            for (const auto &position : VertexPositions(meshes, id, EditorGeometrySelection(meshes, id).Vertices)) {
                 distance += Length(position - local);
                 ++count;
             }

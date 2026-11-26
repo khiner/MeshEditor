@@ -437,10 +437,7 @@ inline void WriteLodSimdGroupSums(
 kernel void LodFrontierCount(
     uint lane [[thread_index_in_threadgroup]], uint block_id [[threadgroup_position_in_grid]],
     uint simd_lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    SCENE_ARGS,
     constant MeshletCullPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
     threadgroup uint *group_prefixes [[threadgroup(0)]]
 ) {
@@ -496,10 +493,7 @@ kernel void LodFrontierPrefix(
 kernel void LodFrontierEmit(
     uint lane [[thread_index_in_threadgroup]], uint block_id [[threadgroup_position_in_grid]],
     uint simd_lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    SCENE_ARGS,
     constant MeshletCullPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
     threadgroup uint *group_prefixes [[threadgroup(0)]]
 ) {
@@ -581,10 +575,7 @@ kernel void LodFrontierEmit(
 kernel void MeshletCullBlockCount(
     uint lane [[thread_index_in_threadgroup]], uint block_id [[threadgroup_position_in_grid]],
     uint simd_lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    SCENE_ARGS,
     constant MeshletCullPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
     threadgroup uint *group_prefixes [[threadgroup(0)]]
 ) {

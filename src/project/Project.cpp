@@ -3,6 +3,7 @@
 #include "Compress.h"
 #include "Profile.h"
 #include "action/Errors.h"
+#include "animation/MorphWeights.h"
 #include "armature/ArmatureComponents.h"
 #include "editor/AudioIntegration.h"
 #include "gizmo/GizmoInteraction.h"
@@ -14,10 +15,10 @@
 #include "project/Assets.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
-#include "render/MaterialComponents.h"
+#include "render/GpuSceneState.h"
+#include "render/Instance.h"
 #include "render/RenderChanges.h"
 #include "render/Textures.h"
-#include "scene/Entity.h"
 #include "selection/SelectionComponents.h"
 #include "state/Registry.h"
 #include "viewport/FrameState.h"
@@ -49,6 +50,12 @@ std::optional<SavedState> ReadSavedState(Project &project, const std::filesystem
     action::Fail(project.R, "Cannot read saved project position from '" + path.string() + "'.");
     return std::nullopt;
 }
+// Releases the state playback cooks on, which a restore or another document replaces.
+void ReleasePlaybackBase(Project &project) {
+    if (!project.PlaybackBase) return;
+    project.History.Release(*project.PlaybackBase);
+    project.PlaybackBase.reset();
+}
 } // namespace
 
 Project &Session(state::Registry &r) { return *r.Resources.get<Project *>(); }
@@ -67,15 +74,16 @@ void Project::TrackStores() {
     auto &meshes = R.Resources.get<MeshStore>();
     meshes.Track(History);
 
-    R.Resources.get<GpuBuffers>().Materials.Track(History, "material.values");
-    R.Resources.get<GpuBuffers>().MorphWeightBuffer.Track(History, "morph.weights");
+    R.Resources.get<GpuBuffers>().Materials.Track(History, "material.values", mtl::HostValuePageBytes);
+    R.Resources.get<GpuBuffers>().MorphWeightBuffer.Track(History, "morph.weights", mtl::HostValuePageBytes);
+    R.Resources.get<GpuBuffers>().OpValues.Track(History, "op.values", mtl::HostValuePageBytes);
     History.Callbacks = {
         .Replay = [this](store::History &source, std::span<const std::byte> bytes, std::span<const uint32_t> workspaces) {
             const MeshStore::HistoryScope source_history{R.Resources.get<MeshStore>(), source};
             auto replayed = RunEncoded(*this, source, bytes, workspaces);
             Settle(EventPass::Settle);
             FinishSourceStates(R);
-            EndMeshStates(R);
+            RecordMeshStates(R);
             EndCookStep(R);
             return replayed; },
         .Reset = [this](const std::filesystem::path &dir) {
@@ -85,12 +93,14 @@ void Project::TrackStores() {
             (void)Entities.Workspace.Restore(workspace);
             Entities.Workspace.Trie.Release(workspace);
             ReconcileWorkspace(R); },
-        .BeforeSave = [this] { RecordMeshStates(R); },
         .BeforeRestore = [this] {
             WaitForRender(R);
-            CancelModalSolves(R);
-            DiscardPostedSteps();
-            if (!GestureBase) ClearInteraction();
+            if (!Returning) {
+                CancelModalSolves(R);
+                DiscardPostedSteps();
+                if (!GestureBase) ClearInteraction();
+            }
+            ReleasePlaybackBase(*this);
             Entities.BeginRestore(); },
         .AfterTracks = [this] {
             const profile::CpuScope scope{"RestoreAfterTracks"};
@@ -110,7 +120,8 @@ void Project::TrackStores() {
             }
             R.Resources.get<MeshStore>().FinishRestore();
             Entities.FinishRestore(removed); },
-        .AfterRestore = [this]() -> std::expected<void, std::string> {
+        .AfterRestore = [this](store::History &source) -> std::expected<void, std::string> {
+            const MeshStore::HistoryScope source_history{R.Resources.get<MeshStore>(), source};
             const auto errors = R.Resources.get<action::Errors>().Messages.size();
             AfterRestore();
             const auto &messages = R.Resources.get<action::Errors>().Messages;
@@ -256,8 +267,7 @@ bool Project::ClearHistory() {
         saved = ReadSavedState(*this, SavedPath);
         if (!saved) return false;
     }
-    // The Source nodes and node results refer to states of the nodes Clear drops.
-    RecordMeshStates(R);
+    ReleasePlaybackBase(*this);
     if (!History.Clear(saved ? &saved->Position : nullptr)) return false;
     ResizeRecorded(0);
     ++Revision;
@@ -265,8 +275,8 @@ bool Project::ClearHistory() {
 }
 bool Project::Close() {
     ReleaseGesture();
+    ReleasePlaybackBase(*this);
     ResizeRecorded(0);
-    RecordMeshStates(R);
     const bool closed = History.Close();
     DirectoryLock = {};
     SavedPath.clear();
@@ -299,6 +309,7 @@ void Project::ClearDocument() {
     SetupDocument(R);
 }
 Project::LeftDocument Project::LeaveDocument() {
+    ReleasePlaybackBase(*this);
     LeftDocument left{History.Pin(), Entities.Workspace.Pin()};
     ClearDocument();
     for (auto type : snapshot::TypesOf(snapshot::Role::Workspace)) snapshot::SnapshotTable()[type].ClearRetained(R);
@@ -363,20 +374,20 @@ void Project::AfterRestore() {
         explicit ReadOnly(state::Registry &r) : R(r) { R.DocumentReadOnly = true; }
         ~ReadOnly() { R.DocumentReadOnly = false; }
     } read_only{R};
-    bool sources_changed = false, manifest_changed = false, names_changed = false;
-    std::vector<state::Entity> restored_meshes;
+    bool sources_changed = false, manifest_changed = false;
+    std::vector<state::Entity> restored_meshes, deformed;
     for (const auto &[type, entity, event] : Entities.TakeChanges()) {
-        // The name hooks track created and destroyed names, and an overwritten name escapes them.
-        names_changed |= type == state::Type<Name>() && event == state::Event::Update;
+        if (type == state::Type<MorphWeightRange>() || type == state::Type<Instance>()) deformed.push_back(entity);
         if (type == state::Type<Armature>()) {
             for (const auto [object, armature] : R.view<const ArmatureObject>().each())
                 if (armature.Entity == entity) R.remove<ArmaturePoseState>(object);
         } else if (type == state::Type<ArmatureObject>()) R.remove<ArmaturePoseState>(entity);
-        if ((type == state::Type<MeshHandle>() || type == state::Type<EvaluatedMesh>()) && DrawsMesh(R, entity) && !R.all_of<procedure::ProcedureNode>(entity)) restored_meshes.push_back(entity);
+        const bool drawn_record = type == state::Type<MeshHandle>() || type == state::Type<EvaluatedMesh>() || type == state::Type<VertexStoreId>();
+        // A mesh that still draws reconciles a changed vertex store through its storage changes.
+        if (drawn_record && R.valid(entity) && !R.all_of<procedure::ProcedureNode>(entity) && (type != state::Type<VertexStoreId>() || !DrawsMesh(R, entity))) restored_meshes.push_back(entity);
         sources_changed |= type == state::Type<gltf::SourceAssets>();
         manifest_changed |= type == state::Type<MaterializedTexture>();
     }
-    if (names_changed) RebuildEntityNames(R);
     // Restored sources can contain other pixels at a manifest's slots, so every texture and the IBL decode again.
     if (sources_changed) {
         ReleaseImportedTextures(R);
@@ -388,11 +399,20 @@ void Project::AfterRestore() {
         ReleaseUnlistedTextures(R, listed);
     }
     if (sources_changed || manifest_changed) R.Resources.get<RenderChanges>().MaterializedTextures.emplace(state::Document);
-    ReconcileRestoredMeshes(R, std::move(restored_meshes));
     auto &buffers = R.Resources.get<GpuBuffers>();
-    if (!buffers.Materials.History()->Trie.TakeChanged().empty()) {
+    const bool materials_changed = !buffers.Materials.History()->Trie.TakeChanged().empty();
+    if (materials_changed) {
         R.Resources.get<RenderChanges>().Materials.emplace(state::Document);
         R.Resources.get<procedure::NetworkChanges>().Pages.emplace(state::Document);
+    }
+    // A geometry's node holds its record's material slots and the materials they index, so it derives again when the restore replaced either.
+    const auto restored = ReconcileRestoredMeshes(R, std::move(restored_meshes));
+    for (const auto mesh : R.view<const procedure::GeometryProcedure>()) {
+        if (materials_changed || std::ranges::binary_search(restored, mesh)) R.Resources.get<procedure::NetworkChanges>().Nodes.emplace(mesh);
+    }
+    // An instance whose placement or morph weights the restore changed deforms its mesh again.
+    for (const auto e : deformed) {
+        if (const auto *instance = R.valid(e) ? R.try_get<const Instance>(e) : nullptr) R.emplace_or_replace<MeshLayoutDirty>(instance->Entity);
     }
     if (!buffers.MorphWeightBuffer.Buffer.History()->Trie.TakeChanged().empty()) R.Resources.get<RenderChanges>().MorphWeights.emplace(state::Document);
     Settle(EventPass::Restore);

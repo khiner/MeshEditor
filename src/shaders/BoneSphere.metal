@@ -39,10 +39,7 @@ using BoneSphereMeshOutput = metal::mesh<BoneSphereVaryings, void, uint(OverlayD
     BoneSphereMeshOutput output,
     uint thread_index [[thread_index_in_threadgroup]],
     uint3 threadgroup_position [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    SCENE_ARGS,
     constant MeshletDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
@@ -63,10 +60,7 @@ using BoneSphereMeshOutput = metal::mesh<BoneSphereVaryings, void, uint(OverlayD
 
 fragment OverlayTargetsDepth BoneSphereFragment(
     BoneSphereVaryings in [[stage_in]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
+    SCENE_ARGS
 ) {
     const Scene scene{bindless, view, theme, workspace};
     const float3 ray_dir = normalize(in.ViewPos);

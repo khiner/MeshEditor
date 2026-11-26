@@ -321,9 +321,9 @@ void Buffer::SetUsedSize(uint64_t size) {
     UsedSize = size;
 }
 
-void Buffer::Track(store::History &history, std::string name) {
+void Buffer::Track(store::History &history, std::string name, uint64_t page_bytes) {
     if (Lifetime == BufferLifetime::Workspace) throw std::logic_error("A compute workspace cannot own document history.");
-    Tracked = std::make_unique<store::Pages>(uint32_t(HistoryPageBytes), 5, this, [](void *backing, uint64_t bytes) {
+    Tracked = std::make_unique<store::Pages>(uint32_t(page_bytes), 5, this, [](void *backing, uint64_t bytes) {
         auto &buffer = *static_cast<Buffer *>(backing);
         buffer.Reserve(bytes);
         return buffer.Contents(); }, UsedSize);
@@ -366,7 +366,7 @@ std::vector<Buffer> CloneFootprints(BufferContext &ctx, std::span<const BufferFo
             std::memcpy(copies[first + p]->Contents().data() + offset, bytes + uint64_t(pages[i]) * HistoryPageBytes, HistoryPageBytes);
         }
         auto &clone = clones.emplace_back(ctx, 0u, source->Slot == InvalidSlot ? SlotType::Buffer : source->Type);
-        clone.Storage = std::make_shared<SparseBuffer>(ctx.Ctx, source->Storage->ResidentBytes, physical[f], std::span{copies}.subspan(first, physical[f].size()));
+        clone.Storage = std::make_shared<SparseBuffer>(source->Storage, physical[f], std::span{copies}.subspan(first, physical[f].size()));
         clone.UpdateSlot();
         first += physical[f].size();
     }

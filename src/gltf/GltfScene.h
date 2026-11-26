@@ -13,10 +13,14 @@
 
 #include "gltf/GltfSchema.h"
 #include "gltf/SourceAssets.h"
+#include "gpu/MaterialPattern.h"
 #include "state/Entity.h"
 
 #include <expected>
 #include <filesystem>
+#include <memory>
+#include <optional>
+#include <span>
 
 namespace fastgltf {
 class Asset;
@@ -77,8 +81,28 @@ struct LoadResult {
     bool ImportedAnimation{false};
 };
 
+// An input a material's node graph computes, evaluated at each texel of a Width by Height grid: over the first texture coordinates of Mesh, or with a null Mesh over the unit square of texture coordinates, where the input's values depend on no mesh.
+// Texels holds Components floats per texel, row by row from the top, in the material's units.
+struct BakedInput {
+    PbrInput Input;
+    state::Entity Mesh;
+    uint32_t Width, Height, Components;
+    std::vector<float> Texels;
+};
+// The inputs a material's graph computes for a mesh that draws it and has texture coordinates.
+// The meshes that draw a material share its inputs that depend on no mesh, and no input shares its texture with an input that holds a texture of its own, as BakeConflict tells.
+struct BakedMaterial {
+    state::Entity Material, Mesh;
+    std::vector<std::shared_ptr<const BakedInput>> Inputs;
+};
+// Why the inputs a material's graph computes cannot pack into its glTF textures, or none: an input that shares a texture with a computed input holds a texture of its own.
+std::optional<std::string> BakeConflict(const state::Registry &, state::Entity material, std::span<const PbrInput> computed);
+
 struct SaveOptions {
     uint8_t LossyImageQuality{75}; // Range 1-100; ignored for PNG.
+    // Each mesh's primitives drawing a material listed here for it export a material whose textures hold the baked inputs.
+    // Meshes whose baked inputs are the same share one such material, and materials share the texture of the same inputs.
+    std::span<const BakedMaterial> Baked{};
 };
 
 // Parses and validates the whole document before creating any entity or touching any store, so a failed load leaves the scene unchanged.

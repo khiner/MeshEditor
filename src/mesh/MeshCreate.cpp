@@ -5,7 +5,6 @@
 #include "Profile.h"
 #include "SortUnique.h"
 #include "mesh/MeshConnectivityGpu.h"
-#include "mesh/MeshPipelines.h"
 #include "mesh/Neighborhood.h"
 #include "mesh/NormalDeriveGpu.h"
 #include "mesh/VertexWeldGpu.h"
@@ -32,7 +31,7 @@ struct PreparedMesh {
     std::vector<vec3> MorphTangentDeltas;
 };
 
-PreparedMesh PrepareMeshSources(MeshData &data, MeshVertexAttributes &attrs, MeshPrimitives &primitives) {
+PreparedMesh PrepareMeshSources(MeshData &data, MeshVertexAttributes &attrs, std::vector<vec2> &corner_uvs, MeshPrimitives &primitives) {
     const uint32_t face_count = data.FaceCount();
 
     auto &indices = primitives.ElementPrimitiveIndices;
@@ -42,20 +41,24 @@ PreparedMesh PrepareMeshSources(MeshData &data, MeshVertexAttributes &attrs, Mes
         std::ranges::stable_sort(perm, [&](uint32_t a, uint32_t b) { return indices[a] < indices[b]; });
         const bool spelled_offsets = !data.FaceOffsets.empty();
         std::vector<uint32_t> sorted_offsets, sorted_corners, sorted_indices;
+        std::vector<vec2> sorted_uvs;
         if (spelled_offsets) {
             sorted_offsets.reserve(face_count + 1u);
             sorted_offsets.push_back(0u);
         }
         sorted_corners.reserve(data.FaceCorners.size());
+        sorted_uvs.reserve(corner_uvs.size());
         sorted_indices.reserve(face_count);
         for (const auto source : perm) {
             const auto face = data.Face(source);
+            if (!corner_uvs.empty()) sorted_uvs.append_range(std::span{corner_uvs}.subspan(data.FaceStart(source), face.size()));
             sorted_corners.insert(sorted_corners.end(), face.begin(), face.end());
             if (spelled_offsets) sorted_offsets.push_back(uint32_t(sorted_corners.size()));
             sorted_indices.push_back(indices[source]);
         }
         data.FaceOffsets = std::move(sorted_offsets);
         data.FaceCorners = std::move(sorted_corners);
+        corner_uvs = std::move(sorted_uvs);
         indices = std::move(sorted_indices);
     }
 
@@ -77,6 +80,10 @@ PreparedMesh PrepareMeshSources(MeshData &data, MeshVertexAttributes &attrs, Mes
         gather_corners(attrs.Tangents, prepared.Layers.Tangents);
         gather_corners(attrs.Colors0, prepared.Layers.Colors);
         gather_corners(attrs.TexCoords0, prepared.Layers.Uvs[0]);
+        if (!corner_uvs.empty()) {
+            prepared.Layers.Uvs[0] = std::move(corner_uvs);
+            prepared.Layers.Uvs[0].resize(data.HalfedgeCount());
+        }
         gather_corners(attrs.TexCoords1, prepared.Layers.Uvs[1]);
         gather_corners(attrs.TexCoords2, prepared.Layers.Uvs[2]);
         gather_corners(attrs.TexCoords3, prepared.Layers.Uvs[3]);
@@ -133,10 +140,9 @@ void CreateCustomAttributes(MeshStore &meshes, uint32_t id, std::span<const Cust
     }
 }
 
-void InitializeSharpness(MeshStore &meshes, const MeshPipelines &pipelines, const Mesh &mesh, const MeshData &data, const MeshPrimitives &primitives, bool flat_shaded, std::span<const vec3> authored) {
-    const auto id = mesh.GetStoreId();
+void InitializeSharpness(MeshStore &meshes, const Mesh &mesh, const MeshPrimitives &primitives, bool flat_shaded) {
     if (mesh.FaceCount() == 0) return;
-    const auto sharp_faces = meshes.EditFaceSharpness(id);
+    const auto sharp_faces = meshes.EditFaceSharpness(mesh.GetStoreId());
     if (flat_shaded) {
         std::ranges::fill(sharp_faces, uint8_t{1});
     } else if (!primitives.AttributeFlags.empty()) {
@@ -145,10 +151,13 @@ void InitializeSharpness(MeshStore &meshes, const MeshPipelines &pipelines, cons
             if (pi < primitives.AttributeFlags.size() && !(primitives.AttributeFlags[pi] & MeshAttributeBit_Normal)) sharp_faces[fi] = 1;
         }
     }
-    if (authored.empty()) return;
+}
 
-    // The weld rewrote the positions and corners, so the face loops read them from the GPU.
-    const auto [faces, corners, positions] = ReadFaceLoops(meshes, pipelines, mesh);
+// Marks sharp the faces whose authored normals all match their face normal and the edges across which the authored normals differ.
+void SharpenAuthored(MeshStore &meshes, const Mesh &mesh, const MeshData &data, std::span<const vec3> authored, const FaceLoops &loops) {
+    const auto id = mesh.GetStoreId();
+    const auto sharp_faces = meshes.EditFaceSharpness(id);
+    const auto &[faces, corners, positions] = loops;
     const auto authored_at = [&](uint32_t fi, uint32_t k) { return authored[data.FaceStart(fi) + k]; };
     for (uint32_t fi = 0; fi < faces.size(); ++fi) {
         const auto face = corners.Of(fi);
@@ -205,7 +214,7 @@ void InitializeSharpness(MeshStore &meshes, const MeshPipelines &pipelines, cons
 std::vector<CreatedMesh> CreateMeshes(state::Registry &r, std::span<MeshSource> sources) {
     auto &meshes = r.Resources.get<MeshStore>();
     for (const auto &source : sources) {
-        meshes.PlanCreate(source.Data, source.Primitives, source.Deform.has_value(), source.Morph ? source.Morph->TargetCount : 0u, source.Attrs);
+        meshes.PlanCreate(source.Data, source.Primitives, source.Deform.has_value(), source.Morph ? source.Morph->TargetCount : 0u, source.Attrs, !source.CornerTexCoords0.empty());
     }
     meshes.CommitReserves();
 
@@ -213,7 +222,7 @@ std::vector<CreatedMesh> CreateMeshes(state::Registry &r, std::span<MeshSource> 
     {
         const profile::CpuScope scope{"PrepareMeshes"};
         ParallelFor(uint32_t(sources.size()), [&](uint32_t i) {
-            prepared[i] = PrepareMeshSources(sources[i].Data, sources[i].Attrs, sources[i].Primitives);
+            prepared[i] = PrepareMeshSources(sources[i].Data, sources[i].Attrs, sources[i].CornerTexCoords0, sources[i].Primitives);
         });
     }
     // Host copies release before the in-place GPU weld.
@@ -243,18 +252,29 @@ std::vector<CreatedMesh> CreateMeshes(state::Registry &r, std::span<MeshSource> 
     }
     BuildConnectivityNow(r, ids);
 
-    std::vector<CreatedMesh> created;
-    created.reserve(sources.size());
+    std::vector<uint32_t> authored_ids, authored_sources;
     for (uint32_t i = 0; i < sources.size(); ++i) {
         auto &source = sources[i];
-        auto &authored = prepared[i].AuthoredCornerNormals;
-        meshes.CreateMesh(ids[i], source.Data, source.Attrs, source.Primitives, prepared[i].Layers, !authored.empty());
+        const bool authored = !prepared[i].AuthoredCornerNormals.empty();
+        meshes.CreateMesh(ids[i], source.Data, source.Attrs, source.Primitives, prepared[i].Layers, authored);
         const bool faces = source.Data.FaceCount() > 0u;
         CreateCustomAttributes(meshes, ids[i], faces ? prepared[i].CustomCorners : source.Attrs.Custom, faces);
         const Mesh mesh{meshes, ids[i]};
-        InitializeSharpness(meshes, GetMeshPipelines(r), mesh, source.Data, source.Primitives, source.FlatShaded, authored);
-        created.emplace_back(ids[i], std::move(prepared[i].MorphTangentDeltas), std::move(authored));
+        InitializeSharpness(meshes, mesh, source.Primitives, source.FlatShaded);
+        if (authored && mesh.FaceCount() > 0) {
+            authored_ids.push_back(ids[i]);
+            authored_sources.push_back(i);
+        }
     }
+    // The weld rewrote the positions and corners, so the face loops come from the records.
+    VisitFaceLoops(meshes, GetMeshPipelines(r), authored_ids, [&](uint32_t k, FaceLoops &&loops) {
+        const auto i = authored_sources[k];
+        SharpenAuthored(meshes, Mesh{meshes, ids[i]}, sources[i].Data, prepared[i].AuthoredCornerNormals, loops);
+    });
+
+    std::vector<CreatedMesh> created;
+    created.reserve(sources.size());
+    for (uint32_t i = 0; i < sources.size(); ++i) created.emplace_back(ids[i], std::move(prepared[i].MorphTangentDeltas), std::move(prepared[i].AuthoredCornerNormals));
     return created;
 }
 
@@ -295,23 +315,20 @@ uint32_t CreateShadedMesh(state::Registry &r, MeshSource source) {
     return id;
 }
 
-void EncodeAuthoredCornerNormals(MeshStore &meshes, const MeshPipelines &pipelines, const Mesh &mesh, std::span<const vec3> authored) {
+void EncodeAuthoredCornerNormals(MeshStore &meshes, const Mesh &mesh, std::span<const vec3> authored) {
     const auto id = mesh.GetStoreId();
     const auto &record = meshes.Get(id);
     if (authored.empty() || record.TriangleCount == 0) return;
     // Authored normals stay in polygon corner order, independent of tessellation.
     const auto derived = meshes.GetCornerNormalView(id);
-    const auto [faces, corners, positions] = ReadFaceLoops(meshes, pipelines, mesh);
     std::vector<CustomNormal> offsets(mesh.HalfEdgeCount());
     bool any = false;
-    for (uint32_t fi = 0; fi < faces.size(); ++fi) {
-        const auto face = corners.Of(fi);
-        for (uint32_t k = 0; k < face.size(); ++k) {
-            const uint32_t h = face[k].Halfedge;
+    for (const auto face : mesh.faces()) {
+        const auto range = derived.Connectivity.FaceRange(*face);
+        for (uint32_t h = range.x; h < range.y; ++h) {
             const auto authored_normal = authored[h], normal = derived[h];
             if (NormalsMatch(authored_normal, normal).value_or(true)) continue;
-            const auto frame = ComputeCornerFrame(normal, positions[face[k].Vertex], positions[face[(k + 1u) % face.size()].Vertex], positions[face[(k + face.size() - 1u) % face.size()].Vertex]);
-            offsets[h].Offset = EncodeNormalOffset(authored_normal / Length(authored_normal), frame);
+            offsets[h].Offset = EncodeNormalOffset(authored_normal / Length(authored_normal), derived.Frame(h, normal));
             any = true;
         }
     }

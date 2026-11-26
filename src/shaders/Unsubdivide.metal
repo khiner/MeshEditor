@@ -1,5 +1,5 @@
 #include "ConnectivityRead.metal"
-#include "gpu/UnsubdividePushConstants.h"
+#include "gpu/UnsubdivideJob.h"
 
 // A multiset hash with vertex `v` added, holding the count, the sum and the xor of the vertices' mixes.
 inline uint3 UnsubdivideHashed(uint3 hash, uint v) {
@@ -9,14 +9,14 @@ inline uint3 UnsubdivideHashed(uint3 hash, uint v) {
 
 struct UnsubdivideContext {
     device const BindlessSet &B;
-    constant UnsubdividePushConstants &Pc;
+    constant UnsubdivideJob &Pc;
     ConnectivityView View;
-    UnsubdivideContext(device const BindlessSet &b, constant UnsubdividePushConstants &pc) : B(b), Pc(pc), View{b, pc.Connectivity} {}
-    device uint *Run(uint offset) const { return BindlessBufferMutable(uint, B.Buffer, Pc.ScratchSlot) + offset; }
-    uint Selected(uint i) const { return Run(Pc.Selection)[i]; }
-    uint State(uint v) const { return Run(Pc.State)[v]; }
+    JobRuns Runs;
+    UnsubdivideContext(device const BindlessSet &b, constant JobTablePushConstants &table, constant UnsubdivideJob &pc) : B(b), Pc(pc), View{b, pc.Connectivity}, Runs(ScratchOf(b, table)) {}
+    uint Selected(uint i) const { return Runs.Run(Pc.Selection)[i]; }
+    uint State(uint v) const { return Runs.Run(Pc.State)[v]; }
     bool IsRemoved(uint v) const { return State(v) == UnsubdivideStateRemoved; }
-    device uint *Polygon(uint i) const { return Run(Pc.Polygons) + UnsubdividePolygonWords * i; }
+    device uint *Polygon(uint i) const { return Runs.Run(Pc.Polygons) + UnsubdividePolygonWords * i; }
     uint Owner(uint v) const {
         uint owner = InvalidOffset;
         for (const auto item : View.Fan(v)) owner = min(owner, item.y);
@@ -49,7 +49,7 @@ struct UnsubdivideContext {
         const uint key = HashMix(hash.y ^ HashMix(hash.x)) ^ hash.z;
         return uint2(key == InvalidOffset ? 0u : key, HashMix(hash.z + 0x9e3779b9u) ^ hash.y);
     }
-    KeyTable Table() const { return {Run(Pc.Table), Pc.TableMask}; }
+    KeyTable Table() const { return {Runs.Run(Pc.Table), Pc.TableMask}; }
     // Claims the first free slot along the key's probe for the polygon at `id`, writing the check word and the id after the claim.
     void Claim(uint3 hash, uint id) const {
         const uint2 key = Key(hash);
@@ -60,7 +60,7 @@ struct UnsubdivideContext {
         const uint2 key = Key(hash);
         return Table().Find(key, HashMix(key.x))[2] != id;
     }
-    device const uint *PolygonOf(uint v) const { return Polygon(LowerBound(Run(Pc.Selection), Pc.SelectionCount, v)); }
+    device const uint *PolygonOf(uint v) const { return Polygon(LowerBound(Runs.Run(Pc.Selection), Pc.SelectionCount, v)); }
     // Calls visit(hash, offset, polygon) for each polygon of a touched face's record in list order.
     // The residual comes first when three corners survive, then the fans the face owns in ascending vertex order.
     // Each offset lies within the record after the face and count words.
@@ -84,7 +84,7 @@ struct UnsubdivideContext {
             uint next = InvalidOffset;
             for (uint h = range.x; h < range.y; ++h) {
                 const uint v = View.VertexOf(h);
-                if (!IsRemoved(v) || Run(Pc.Chain)[v] || Owner(v) != f) continue;
+                if (!IsRemoved(v) || Runs.Run(Pc.Chain)[v] || Owner(v) != f) continue;
                 if ((written == InvalidOffset || v > written) && v < next) next = v;
             }
             if (next == InvalidOffset) return;
@@ -97,11 +97,12 @@ struct UnsubdivideContext {
 };
 
 // A selected vertex is eligible with at most four edges, none a loop, every edge with one or two faces, and a fan of at most four corners.
-kernel void UnsubdivideEligible(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant UnsubdividePushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+kernel void UnsubdivideEligible(JOB_TABLE_ARGS(UnsubdivideJob)) {
+    JOB_THREAD(pc, i);
     if (i >= pc.SelectionCount) return;
-    const UnsubdivideContext ctx{b, pc};
+    const UnsubdivideContext ctx{b, table, pc};
     const uint v = ctx.Selected(i);
-    ctx.Run(pc.Eligible)[i] = 0u;
+    ctx.Runs.Run(pc.Eligible)[i] = 0u;
     const uint fan = ctx.View.Incoming(v).y;
     if (fan > 4u) return;
     uint degree = 0u, boundary = 0u, manifold = 0u;
@@ -131,17 +132,18 @@ kernel void UnsubdivideEligible(uint i [[thread_position_in_grid]], device const
             }
         }
     }
-    ctx.Run(pc.Eligible)[i] = 1u | (chain ? 2u : 0u);
+    ctx.Runs.Run(pc.Eligible)[i] = 1u | (chain ? 2u : 0u);
 }
 
 // Each vertex of the removal wave plans the polygon its fan collapses to, chaining the far edges of its faces into a loop or a path closed across a boundary.
-kernel void UnsubdividePolygon(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant UnsubdividePushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+kernel void UnsubdividePolygon(JOB_TABLE_ARGS(UnsubdivideJob)) {
+    JOB_THREAD(pc, i);
     if (i >= pc.SelectionCount) return;
-    const UnsubdivideContext ctx{b, pc};
-    const uint v = ctx.Selected(i), eligible = ctx.Run(pc.Eligible)[i];
-    device uint *state = ctx.Run(pc.State) + v;
-    ctx.Run(pc.Chain)[v] = (eligible & 2u) ? 1u : 0u;
-    if (!(eligible & 1u) || ctx.Run(pc.Tags)[i] == 0u) return;
+    const UnsubdivideContext ctx{b, table, pc};
+    const uint v = ctx.Selected(i), eligible = ctx.Runs.Run(pc.Eligible)[i];
+    device uint *state = ctx.Runs.Run(pc.State) + v;
+    ctx.Runs.Run(pc.Chain)[v] = (eligible & 2u) ? 1u : 0u;
+    if (!(eligible & 1u) || ctx.Runs.Run(pc.Tags)[i] == 0u) return;
     if (!pc.FaceCount || (eligible & 2u)) {
         *state = UnsubdivideStateCandidate;
         return;
@@ -236,9 +238,10 @@ kernel void UnsubdividePolygon(uint i [[thread_position_in_grid]], device const 
 }
 
 // A candidate decides once every lower candidate among its neighbors has decided.
-kernel void UnsubdivideDecide(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant UnsubdividePushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+kernel void UnsubdivideDecide(JOB_TABLE_ARGS(UnsubdivideJob)) {
+    JOB_THREAD(pc, i);
     if (i >= pc.SelectionCount) return;
-    const UnsubdivideContext ctx{b, pc};
+    const UnsubdivideContext ctx{b, table, pc};
     const uint v = ctx.Selected(i);
     if (ctx.State(v) != UnsubdivideStateCandidate) return;
     bool waiting = false, blocked = false;
@@ -250,59 +253,64 @@ kernel void UnsubdivideDecide(uint i [[thread_position_in_grid]], device const B
         blocked = blocked || state == UnsubdivideStateRemoved;
     });
     if (waiting && !blocked) return;
-    ctx.Run(pc.State)[v] = blocked ? UnsubdivideStateNone : UnsubdivideStateRemoved;
-    ctx.Run(pc.Changed)[0] = 1u;
+    ctx.Runs.Run(pc.State)[v] = blocked ? UnsubdivideStateNone : UnsubdivideStateRemoved;
+    ctx.Runs.Run(pc.Changed)[0] = 1u;
 }
 
-kernel void UnsubdivideCount(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant UnsubdividePushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+kernel void UnsubdivideCount(JOB_TABLE_ARGS(UnsubdivideJob)) {
+    JOB_THREAD(pc, i);
     if (i > pc.SelectionCount) return;
-    const UnsubdivideContext ctx{b, pc};
+    const UnsubdivideContext ctx{b, table, pc};
     if (i == pc.SelectionCount) {
-        ctx.Run(pc.Removed)[i] = 0u;
+        ctx.Runs.Run(pc.Removed)[i] = 0u;
         return;
     }
     const uint v = ctx.Selected(i);
     const bool removed = ctx.IsRemoved(v);
-    ctx.Run(pc.Removed)[i] = removed ? 1u : 0u;
+    ctx.Runs.Run(pc.Removed)[i] = removed ? 1u : 0u;
     if (!removed || !pc.FaceCount) return;
     for (const auto item : ctx.View.Fan(v)) {
-        if (item.y != InvalidOffset) atomic_fetch_or_explicit(AtomicWord(ctx.Run(pc.FaceWords) + item.y), 1u, memory_order_relaxed);
+        if (item.y != InvalidOffset) atomic_fetch_or_explicit(AtomicWord(ctx.Runs.Run(pc.FaceWords) + item.y), 1u, memory_order_relaxed);
     }
 }
 // Each touched face sizes its record, which holds the face, its polygon count, then each polygon's corner count and corner and edge pairs.
-kernel void UnsubdivideFaceWords(uint f [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant UnsubdividePushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+kernel void UnsubdivideFaceWords(JOB_TABLE_ARGS(UnsubdivideJob)) {
+    JOB_THREAD(pc, f);
     if (f >= pc.FaceBound) return;
-    const UnsubdivideContext ctx{b, pc};
-    device uint *words = ctx.Run(pc.FaceWords) + f;
+    const UnsubdivideContext ctx{b, table, pc};
+    device uint *words = ctx.Runs.Run(pc.FaceWords) + f;
     if (!*words) return;
-    ctx.Run(pc.FaceFlags)[f] = 1u;
+    ctx.Runs.Run(pc.FaceFlags)[f] = 1u;
     uint length = 2u;
     ctx.ForEachPolygon(f, [&](uint3 hash, uint offset, device const uint *) { length = offset + 1u + 2u * hash.x; });
     *words = length;
 }
-kernel void UnsubdivideInsert(uint f [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant UnsubdividePushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+kernel void UnsubdivideInsert(JOB_TABLE_ARGS(UnsubdivideJob)) {
+    JOB_THREAD(pc, f);
     if (f >= pc.FaceBound) return;
-    const UnsubdivideContext ctx{b, pc};
-    device const uint *words = ctx.Run(pc.FaceWords);
+    const UnsubdivideContext ctx{b, table, pc};
+    device const uint *words = ctx.Runs.Run(pc.FaceWords);
     if (words[f + 1u] == words[f]) return;
     ctx.ForEachPolygon(f, [&](uint3 hash, uint offset, device const uint *) { ctx.Claim(hash, words[f] + offset); });
 }
-kernel void UnsubdivideVerify(uint f [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant UnsubdividePushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
+kernel void UnsubdivideVerify(JOB_TABLE_ARGS(UnsubdivideJob)) {
+    JOB_THREAD(pc, f);
     if (f >= pc.FaceBound) return;
-    const UnsubdivideContext ctx{b, pc};
-    device const uint *words = ctx.Run(pc.FaceWords);
+    const UnsubdivideContext ctx{b, table, pc};
+    device const uint *words = ctx.Runs.Run(pc.FaceWords);
     if (words[f + 1u] == words[f]) return;
     ctx.ForEachPolygon(f, [&](uint3 hash, uint offset, device const uint *) {
-        if (ctx.Duplicated(hash, words[f] + offset)) ctx.Run(pc.Duplicate)[0] = 1u;
+        if (ctx.Duplicated(hash, words[f] + offset)) ctx.Runs.Run(pc.Duplicate)[0] = 1u;
     });
 }
 
 // The list holds the removed count and vertices, the touched face count and each face's record offset, then the records.
 // Parameter holds the touched face count.
-kernel void UnsubdivideList(uint i [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant UnsubdividePushConstants &pc [[buffer(BufferIndex_PushConstants)]]) {
-    const UnsubdivideContext ctx{b, pc};
-    device uint *list = ctx.Run(pc.List);
-    device const uint *removed = ctx.Run(pc.Removed), *face_words = ctx.Run(pc.FaceWords);
+kernel void UnsubdivideList(JOB_TABLE_ARGS(UnsubdivideJob)) {
+    JOB_THREAD(pc, i);
+    const UnsubdivideContext ctx{b, table, pc};
+    device uint *list = ctx.Runs.Run(pc.List);
+    device const uint *removed = ctx.Runs.Run(pc.Removed), *face_words = ctx.Runs.Run(pc.FaceWords);
     const uint removed_count = removed[pc.SelectionCount], faces = pc.Parameter;
     if (i < pc.SelectionCount) {
         if (removed[i + 1u] != removed[i]) list[1u + removed[i]] = ctx.Selected(i);
@@ -315,7 +323,7 @@ kernel void UnsubdivideList(uint i [[thread_position_in_grid]], device const Bin
     const uint f = i;
     if (f >= pc.FaceBound || face_words[f + 1u] == face_words[f]) return;
     const uint records = 2u + removed_count + faces;
-    list[2u + removed_count + ctx.Run(pc.FaceFlags)[f]] = records + face_words[f];
+    list[2u + removed_count + ctx.Runs.Run(pc.FaceFlags)[f]] = records + face_words[f];
     device uint *record = list + records + face_words[f];
     record[0] = f;
     uint polygons = 0u;

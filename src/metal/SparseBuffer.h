@@ -17,9 +17,9 @@ namespace mtl {
 inline constexpr uint64_t FirstGpuAddressBytes = 1ull << 30;
 struct SparseBuffer {
     SparseBuffer(const Context &, uint64_t virtual_bytes);
-    // A read-only clone maps each page at its increasing logical index and has no CPU view.
+    // A read-only clone of `source` spans its resident pages, maps each page at its increasing logical index and has no CPU view.
     // Its other pages stay unmapped.
-    SparseBuffer(const Context &, uint64_t virtual_bytes, std::span<const uint32_t> indices, std::span<const PhysicalPageRef> pages);
+    SparseBuffer(const std::shared_ptr<SparseBuffer> &source, std::span<const uint32_t> indices, std::span<const PhysicalPageRef> pages);
     ~SparseBuffer();
     SparseBuffer(const SparseBuffer &) = delete;
     SparseBuffer &operator=(const SparseBuffer &) = delete;
@@ -31,10 +31,13 @@ struct SparseBuffer {
     const Context &Ctx;
     NS::SharedPtr<MTL::Buffer> Gpu;
     uint64_t VirtualBytes{}, CpuAddress{}, ResidentBytes{}, CpuVirtualBytes{};
+    // The unmapped addresses of this buffer's released clones, which its next clones take.
+    std::vector<NS::SharedPtr<MTL::Buffer>> CloneAddresses;
 
 private:
     std::vector<PhysicalPageRef> Pages;
     std::vector<uint32_t> CloneIndices; // The logical page of each clone page
+    std::weak_ptr<SparseBuffer> CloneOf;
     void ReserveAddresses(uint64_t bytes);
     void MapCpu(uint64_t first, std::span<const PhysicalPageRef>);
     void MapGpu(uint64_t first, std::span<const PhysicalPageRef>);

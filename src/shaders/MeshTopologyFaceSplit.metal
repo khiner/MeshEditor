@@ -61,7 +61,7 @@ struct FaceSplitPolygons {
     }
 };
 
-inline FaceSplitPolygons TopoFaceSplitPolygons(TopoContext ctx, MeshTopologyJob job, uint f) {
+inline FaceSplitPolygons TopoFaceSplitPolygons(TopoContext ctx, device const MeshTopologyJob &job, uint f) {
     const uint2 range = ctx.SrcFaceRange(job, f);
     const uint n = range.y - range.x;
     device uint *base = ctx.Scratch() + job.FaceLoopOffset + (job.Op == MeshTopologyOp::SplitConcaveFaces ? 29u : 14u) * ctx.SrcHalfedgeDomain(job).Index(range.x);
@@ -69,7 +69,7 @@ inline FaceSplitPolygons TopoFaceSplitPolygons(TopoContext ctx, MeshTopologyJob 
         reinterpret_cast<device packed_float3 *>(base + 11u * n)};
 }
 
-inline FaceSplitPolygons TopoInitFaceSplit(TopoContext ctx, MeshTopologyJob job, uint f) {
+inline FaceSplitPolygons TopoInitFaceSplit(TopoContext ctx, device const MeshTopologyJob &job, uint f) {
     const uint2 range = ctx.SrcFaceRange(job, f);
     const uint n = range.y - range.x;
     const auto plan = TopoFaceSplitPolygons(ctx, job, f);
@@ -86,7 +86,7 @@ inline FaceSplitPolygons TopoInitFaceSplit(TopoContext ctx, MeshTopologyJob job,
     return plan;
 }
 
-inline uint3 TopoNonplanarCount(TopoContext ctx, MeshTopologyJob job, uint f) {
+inline uint3 TopoNonplanarCount(TopoContext ctx, device const MeshTopologyJob &job, uint f) {
     // Blender's connect_verts_nonplanar rule: minimize the sum of absolute plane height changes on both loops, then compare their normals to the angle limit.
     const uint2 range = ctx.SrcFaceRange(job, f);
     const uint n = range.y - range.x;
@@ -135,7 +135,7 @@ inline uint3 TopoNonplanarCount(TopoContext ctx, MeshTopologyJob job, uint f) {
     return uint3(0u, faces, nodes);
 }
 
-inline void TopoFaceSplitEmit(TopoContext ctx, MeshTopologyJob job, uint f, uint fd, uint base) {
+inline void TopoFaceSplitEmit(TopoContext ctx, device const MeshTopologyJob &job, uint f, uint fd, uint base) {
     const auto plan = TopoFaceSplitPolygons(ctx, job, f);
     const uint2 range = ctx.SrcFaceRange(job, f);
     const auto corners = ctx.SrcCorners(job);

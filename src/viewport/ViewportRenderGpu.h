@@ -106,7 +106,8 @@ void RecordRenderCommandBuffer(state::Registry &, state::Entity viewport, mtl::C
 void RecordBlurStepsCommandBuffer(state::Registry &, state::Entity viewport, mtl::Command &, std::span<const uint32_t> sample_weights);
 
 // Rebinds and refreshes the meshes whose storage a restore changed, and repoints the instances of `restored_meshes`, whose drawn records it replaced.
-void ReconcileRestoredMeshes(state::Registry &, std::vector<state::Entity> restored_meshes);
+// Returns the meshes whose records or storage the restore changed, in order.
+std::vector<state::Entity> ReconcileRestoredMeshes(state::Registry &, std::vector<state::Entity> restored_meshes);
 
 // Resolves whether the listed mesh entities retain authored shading normals under morphing.
 // The CPU resolves targets with authored normal deltas.

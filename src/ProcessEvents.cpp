@@ -16,6 +16,7 @@
 #include "TransformMath.h"
 #include "animation/AnimationChanges.h"
 #include "animation/Evaluate.h"
+#include "animation/Keying.h"
 #include "animation/MorphWeights.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureChanges.h"
@@ -32,6 +33,7 @@
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
 #include "procedure/Cook.h"
+#include "procedure/MaterialGraphs.h"
 #include "procedure/Procedure.h"
 #include "render/ClusterLodRepair.h"
 #include "render/GpuBuffers.h"
@@ -88,7 +90,7 @@ vec3 ComputeElementWorldPosition(const state::Registry &r, state::Entity instanc
         for (const auto &corner : FaceCorners(meshes, pipelines, id, face).Items) vertices.push_back(corner.Vertex);
     }
     vec3 center{};
-    for (const auto &position : VertexPositions(meshes, pipelines, id, vertices)) center += position;
+    for (const auto &position : VertexPositions(meshes, id, vertices)) center += position;
     return TransformPoint(*WorldTransformOf(r, instance_entity), vertices.empty() ? center : center / float(vertices.size()));
 }
 
@@ -107,20 +109,6 @@ void SetEditMode(state::Registry &r, Element mode) {
     for (const auto mesh_entity : editing) action::nodes::CaptureActiveSelection(r, mesh_entity);
 }
 
-void UpdateSilhouetteWork(state::Registry &r) {
-    const auto &primaries = r.get<const EditPrimaries>(state::Document).All;
-    auto &buffers = r.Resources.get<GpuBuffers>();
-    const auto &meshes = r.Resources.get<const MeshStore>();
-    GpuBuffers::MeshletFlagWork work{};
-    for (const auto [entity, instance, render_instance] : r.view<const Selected, const Instance, const RenderInstance>(state::Exclude<Hidden>).each()) {
-        if (render_instance.BufferIndex == UINT32_MAX || !IsSilhouetteEligible(r, instance.Entity)) continue;
-        if (const auto primary = primaries.find(instance.Entity); primary != primaries.end() && primary->second == entity) continue;
-        const auto &mb = RecordOf(r, instance.Entity);
-        work.Nodes += meshes.LodNodeCount(mb);
-        work.Meshlets += meshes.MeshletCount(mb);
-    }
-    buffers.FlagWork(uint32_t(MeshletInstanceFlag::Silhouette)) = work;
-}
 } // namespace
 
 void RequestRender(state::Registry &r, bool disoccludes) {
@@ -132,7 +120,8 @@ void RequestRender(state::Registry &r, bool disoccludes) {
 
 void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     const bool rendering = pass == EventPass::Sample || pass == EventPass::Render;
-    const bool gesture_open = r.Resources.get<const FrameState>().GestureOpen;
+    // A gesture or playback leaves the coarse level-of-detail work its edits invalidate to the settle that follows it.
+    const bool deferred = r.Resources.get<const FrameState>().GestureOpen || r.get<const TimelinePlayback>(state::Document).Playing;
     const auto &ctx = r.Resources.get<const mtl::Context>();
     auto &slots = r.Resources.get<mtl::BindlessSet>();
     auto &buffers = r.Resources.get<GpuBuffers>();
@@ -170,40 +159,25 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     else Reset(r.Resources.get<HierarchyChanges>(), r);
     ProcessObjectRemovals(r);
 
-    SettleProcedures(r, pass == EventPass::Frame || pass == EventPass::Settle);
-    if (pass != EventPass::Restore) CollectHierarchyDefinitions(r);
-    ProcessObjectRemovals(r);
-    if (pass == EventPass::Restore) r.Resources.get<FrameState>().Scene = ActingScene(r);
-    // The active viewport takes an action's view setup before the records derive from its display.
-    if (const auto viewport = FindActiveViewport(r); viewport != state::Null) TakePendingViewSetup(r, viewport);
-    else r.remove<PendingViewSetup>(state::Document);
-    auto &scene_state = r.Resources.get<GpuSceneState>();
-    const auto displays = VisibleDisplays(r);
-    const bool displays_changed = std::exchange(scene_state.Displays, displays) != displays;
-    // A newly shown scene's states take each bone's state from the bone pass below.
-    const bool scenes_changed = SyncShownScenes(r);
-    if (scenes_changed) {
-        for (const auto arm : r.view<const ArmatureObject>()) bone_state_dirty.insert(arm);
-        request();
+    // Playback advances the current frame before the procedures cook and the poses evaluate at it.
+    if (const auto &playback = r.get<const TimelinePlayback>(state::Document); playback.Playing && pass == EventPass::Frame && playback.CurrentFrame == r.get<const LastEvaluatedFrame>(state::Document).Value) {
+        const auto &range = r.get<const TimelineRange>(state::Document);
+        const auto &frame_state = r.Resources.get<const FrameState>();
+        auto &pf = r.edit<PlaybackFrame>(state::Document).Value;
+        const float step = frame_state.FixedFrameStep ? 1.f : frame_state.DeltaTime * range.Fps;
+        pf += playback.Reverse ? -step : step;
+        if (pf > float(range.EndFrame)) pf = float(range.StartFrame);
+        else if (pf < float(range.StartFrame)) pf = float(range.EndFrame);
+        const auto new_frame = int(std::floor(pf));
+        if (new_frame != playback.CurrentFrame) r.patch<TimelinePlayback>(state::Document, [&](auto &p) { p.CurrentFrame = new_frame; });
     }
-
-    const bool recompiled = std::exchange(r.Resources.get<FrameState>().RecompileShaders, false);
-    if (recompiled) {
-        for (const auto [_, viewport] : r.view<Viewport>().each())
-            if (viewport.Targets.RayTracing) viewport.Targets.RayTracing->Frames = 0;
-        r.Resources.get<mtl::LibraryCache>().Clear();
-        r.Resources.erase<Pipelines>();
-        r.Resources.erase<MeshPipelines>();
-        RebuildStudioEnvironments(r);
-        request();
-    }
-
+    // Textures materialize before the procedures cook, which sample them.
     if (!render_changes.MaterializedTextures.empty()) {
         for (const auto [_, t] : r.view<const MaterializedTexture>().each()) {
             // A renamed texture node renames its GPU texture.
             if (const auto entry = std::ranges::find(textures.Textures, t.SamplerSlot, &TextureEntry::SamplerSlot); entry != textures.Textures.end()) entry->Params.Name = t.Params.Name;
             if (!slots.Reserve(SlotType::Sampler, t.SamplerSlot)) continue;
-            textures.PendingUploads.emplace_back(PendingTextureUpload{.SamplerSlot = t.SamplerSlot, .Source = PendingTextureUpload::GltfImageRef{t.SourceImageIndex}, .Params = t.Params});
+            textures.PendingUploads.emplace_back(PendingTextureUpload{.SamplerSlot = t.SamplerSlot, .ImageIndex = t.SourceImageIndex, .Params = t.Params});
         }
     }
     if (!textures.PendingUploads.empty()) {
@@ -226,6 +200,60 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         SubmitTextureUploadBatch(batch);
         textures.PendingUploads.clear();
     }
+    // Pending assignments and the active variant's materials write to the drawn records before the procedures cook, which read the materials each mesh draws.
+    for (const auto mesh_entity : mesh_changes.Material) {
+        const auto *assignment = r.valid(mesh_entity) && r.all_of<EvaluatedMesh>(mesh_entity) ? r.try_get<const MeshMaterialAssignment>(mesh_entity) : nullptr;
+        if (!assignment) continue;
+        const auto stored = meshes.Arenas().PrimitiveMaterials.Get(meshes.Get(*DrawnStoreId(r, mesh_entity)).PrimitiveMaterials);
+        const auto material = MaterialIndexOf(r, assignment->Material);
+        if (assignment->PrimitiveIndex < stored.size() && stored[assignment->PrimitiveIndex] != material) meshes.EditPrimitiveMaterials(*DrawnStoreId(r, mesh_entity))[assignment->PrimitiveIndex] = material;
+    }
+    if (!render_changes.ActiveMaterialVariant.empty()) {
+        const auto *mv = r.try_get<const MaterialVariants>(state::Document);
+        const auto active = mv ? mv->Active : std::nullopt;
+        for (const auto [e, layout] : r.view<const HasVariantMappings, const MeshSourceLayout>().each()) {
+            const auto primitive_materials = meshes.EditPrimitiveMaterials(*DrawnStoreId(r, e));
+            for (size_t i = 0; i < std::min(layout.DefaultMaterials.size(), primitive_materials.size()); ++i) {
+                const auto &mapping = layout.VariantMappings[i];
+                primitive_materials[i] = MaterialIndexOf(r, active && *active < mapping.size() && mapping[*active] ? *mapping[*active] : layout.DefaultMaterials[i]);
+            }
+        }
+    }
+    // The material graphs settle before the procedures cook, which read the attributes each material samples, and again after, for the attribute tables of the cooked records.
+    const auto settle_procedures = [&] {
+        procedure::SettleMaterialGraphs(r);
+        SettleProcedures(r, pass);
+        procedure::SettleMaterialGraphs(r);
+        if (pass != EventPass::Restore) CollectHierarchyDefinitions(r);
+        ProcessObjectRemovals(r);
+    };
+    settle_procedures();
+    if (pass == EventPass::Restore) r.Resources.get<FrameState>().Scene = ActingScene(r);
+    // The active viewport takes an action's view setup before the records derive from its display.
+    if (const auto viewport = FindActiveViewport(r); viewport != state::Null) TakePendingViewSetup(r, viewport);
+    else r.remove<PendingViewSetup>(state::Document);
+    auto &scene_state = r.Resources.get<GpuSceneState>();
+    const auto displays = VisibleDisplays(r);
+    const bool displays_changed = std::exchange(scene_state.Displays, displays) != displays;
+    // A newly shown scene's states take each bone's state from the bone pass below.
+    const bool scenes_changed = SyncShownScenes(r);
+    if (scenes_changed) {
+        for (const auto arm : r.view<const ArmatureObject>()) bone_state_dirty.insert(arm);
+        request();
+    }
+
+    const bool recompiled = std::exchange(r.Resources.get<FrameState>().RecompileShaders, false);
+    if (recompiled) {
+        for (const auto [_, viewport] : r.view<Viewport>().each())
+            if (viewport.Targets.RayTracing) viewport.Targets.RayTracing->Frames = 0;
+        r.Resources.get<mtl::LibraryCache>().Clear();
+        r.Resources.erase<Pipelines>();
+        r.Resources.erase<MeshPipelines>();
+        procedure::ResetPrograms(r);
+        RebuildStudioEnvironments(r);
+        request();
+    }
+
     if (!render_changes.SceneWorld.empty()) {
         const auto *src = r.try_get<const gltf::SourceAssets>(state::Document);
         if (src && src->ImageBasedLight && !environments.ImportedSceneWorld && !environments.PendingImport) {
@@ -246,7 +274,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
                     ReleaseCubeSamplerSlot(slots, env.ImportedSceneWorld->SpecularEnv.SamplerSlot);
                 }
                 env.ImportedSceneWorld = std::move(*pre);
-                env.SceneWorld = {.Ibl = MakeIblSamplers(*env.ImportedSceneWorld, env), .Name = env.ImportedSceneWorld->Name};
+                env.SceneWorld = {.Ibl = MakeIblSamplers(*env.ImportedSceneWorld), .Name = env.ImportedSceneWorld->Name};
             } else {
                 action::Fail(r, std::format("Cannot load EXT_lights_image_based '{}': {}", pending_env->Source.Name, pre.error()));
                 ReleaseCubeSamplerSlot(slots, pending_env->DiffuseCubeSlot);
@@ -255,6 +283,8 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         }
         pending_env.reset();
     }
+    // A selection edit captures the elements an edit mode change or a box select leaves selected into its node.
+    const bool captures = r.all_of<procedure::SelectionEditing>(state::Document) && r.any_of<PendingSetEditMode, PendingBoxSelect>(state::Document);
     // Process pending handlers before consuming the reactive trackers they update.
     if (const auto *pending = r.try_get<const PendingSetEditMode>(state::Document)) {
         const auto mode = pending->Mode;
@@ -344,6 +374,8 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
             }
         }
     }
+    // The procedures cook the captured selection in the same pass.
+    if (captures) settle_procedures();
     // Animation evaluates before render state syncs.
     bool anim_advanced;
     int evaluated_from;
@@ -351,23 +383,13 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         const auto &range = r.get<const TimelineRange>(state::Document);
         const auto &playback = r.get<const TimelinePlayback>(state::Document);
         auto &pf = r.edit<PlaybackFrame>(state::Document).Value;
-        auto &frame_state = r.Resources.get<FrameState>();
         anim_advanced = [&] {
             if (pass == EventPass::Restore) {
                 pf = float(playback.CurrentFrame);
                 return false;
             }
             if (rendering) return false;
-            if (playback.Playing && pass == EventPass::Frame && playback.CurrentFrame == r.get<const LastEvaluatedFrame>(state::Document).Value) {
-                const float step = frame_state.FixedFrameStep ? 1.f : frame_state.DeltaTime * range.Fps;
-                pf += playback.Reverse ? -step : step;
-                if (pf > float(range.EndFrame)) pf = float(range.StartFrame);
-                else if (pf < float(range.StartFrame)) pf = float(range.EndFrame);
-                const auto new_frame = int(std::floor(pf));
-                if (new_frame != playback.CurrentFrame) r.patch<TimelinePlayback>(state::Document, [&](auto &p) { p.CurrentFrame = new_frame; });
-            } else if (!playback.Playing) {
-                pf = float(playback.CurrentFrame);
-            }
+            if (!playback.Playing) pf = float(playback.CurrentFrame);
             return playback.CurrentFrame != r.edit<LastEvaluatedFrame>(state::Document).Value || !animation_changes.Edited.empty();
         }();
 
@@ -376,7 +398,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
             (playback.CurrentFrame != evaluated_from || AnyChanged(animation_changes.Edited, scene_changes.TransformDirty));
         if (anim_advanced || pass == EventPass::Restore) r.edit<LastEvaluatedFrame>(state::Document).Value = playback.CurrentFrame;
         // Display frames are 1-based, and motion-blur samples keep their fractional frame.
-        const float frame_seconds = float(std::max(0, playback.CurrentFrame - 1)) / range.Fps;
+        const float frame_seconds = animation::FrameSeconds(r, playback.CurrentFrame);
         const float eval_seconds = pass == EventPass::Sample ? std::max(0.f, pf - 1.f) / range.Fps : frame_seconds;
 
         if (anim_advanced) r.clear<UnkeyedPose>();
@@ -389,7 +411,10 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     auto sync = SyncModelsBuffers(r);
     if (sync.SlotsChanged) {
         request();
-        for (const auto &[mesh_entity, _] : r.get<const EditPrimaries>(state::Document).All) r.emplace_or_replace<MeshDisplayDirty>(mesh_entity);
+        // The primaries derive later in the pass, so a restore can leave a mesh here that it destroyed.
+        for (const auto &[mesh_entity, _] : r.get<const EditPrimaries>(state::Document).All) {
+            if (r.valid(mesh_entity)) r.emplace_or_replace<MeshDisplayDirty>(mesh_entity);
+        }
     }
     if (!sync.NewlyInserted.empty()) {
         const auto records = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>();
@@ -585,7 +610,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         const auto &selected_tracker = selection_changes.Selected;
         const auto &active_tracker = selection_changes.ActiveInstance;
         const auto mode = r.get<const Interaction>(state::Document).Mode;
-        if ((!selected_tracker.empty() || !active_tracker.empty()) && mode == InteractionMode::Edit) scene_state.EditPreludePending = true;
+        if ((!selected_tracker.empty() || !active_tracker.empty()) && mode == InteractionMode::Edit) scene_state.EditPositionsPending = true;
         if (const auto element = r.get<const EditMode>(state::Document).Value; mode == InteractionMode::Edit && element != Element::None && !selected_tracker.empty()) {
             std::vector<state::Entity> converting;
             for (const auto e : selected_tracker) {
@@ -666,29 +691,12 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         request();
     }
     std::vector<state::Entity> material_meshes;
-    if (const auto &tracker = mesh_changes.Material; !tracker.empty()) {
-        // A mesh is tracked for its pending assignment, or for slots a deleted material left.
-        for (auto mesh_entity : tracker) {
-            if (!r.valid(mesh_entity) || !r.all_of<EvaluatedMesh>(mesh_entity)) continue;
-            if (const auto *assignment = r.try_get<const MeshMaterialAssignment>(mesh_entity)) {
-                const auto stored = meshes.Arenas().PrimitiveMaterials.Get(meshes.Get(*DrawnStoreId(r, mesh_entity)).PrimitiveMaterials);
-                const auto material = MaterialIndexOf(r, assignment->Material);
-                if (assignment->PrimitiveIndex < stored.size() && stored[assignment->PrimitiveIndex] != material) meshes.EditPrimitiveMaterials(*DrawnStoreId(r, mesh_entity))[assignment->PrimitiveIndex] = material;
-            }
-            material_meshes.emplace_back(mesh_entity);
-        }
+    // A mesh is tracked for its pending assignment, or for slots a deleted material left.
+    for (const auto mesh_entity : mesh_changes.Material) {
+        if (r.valid(mesh_entity) && r.all_of<EvaluatedMesh>(mesh_entity)) material_meshes.push_back(mesh_entity);
     }
     if (!render_changes.ActiveMaterialVariant.empty()) {
-        const auto *mv = r.try_get<const MaterialVariants>(state::Document);
-        const auto active = mv ? mv->Active : std::nullopt;
-        for (const auto [e, layout] : r.view<const HasVariantMappings, const MeshSourceLayout>().each()) {
-            material_meshes.push_back(e);
-            const auto primitive_materials = meshes.EditPrimitiveMaterials(*DrawnStoreId(r, e));
-            for (size_t i = 0; i < std::min(layout.DefaultMaterials.size(), primitive_materials.size()); ++i) {
-                const auto &mapping = layout.VariantMappings[i];
-                primitive_materials[i] = MaterialIndexOf(r, active && *active < mapping.size() && mapping[*active] ? *mapping[*active] : layout.DefaultMaterials[i]);
-            }
-        }
+        for (const auto e : r.view<const HasVariantMappings, const MeshSourceLayout>()) material_meshes.push_back(e);
     }
     // A geometry whose material slots changed shows them on its node.
     for (const auto mesh_entity : material_meshes) r.Resources.get<procedure::NetworkChanges>().Nodes.emplace(mesh_entity);
@@ -706,14 +714,15 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         for (const auto e : material_meshes) r.emplace_or_replace<MeshDisplayDirty>(e);
         request();
     }
-    if (!is_edit_mode && (!r.view<const MeshEditWork>().empty() || !r.view<const MeshletPositionsDirty>().empty() || !r.view<const ClusterLodDirty>().empty())) {
+    // A gesture or playback keeps the position edit work its next frame reuses.
+    if (!is_edit_mode && (!r.view<const MeshletPositionsDirty>().empty() || (!deferred && (!r.view<const MeshEditWork>().empty() || !r.view<const ClusterLodDirty>().empty())))) {
         auto edited = r.view<const MeshletPositionsDirty>() | to<std::vector>();
         if (!edited.empty() || !r.view<const ClusterLodDirty>().empty()) {
             StageDirtyPositionMeshlets(r, chain, edited);
             // Staged refits complete before their traversal nodes and memberships repair.
             construct();
             // The settle that ends a gesture repairs the coarse groups it left dirty, which draw as their finer clusters until then.
-            if (!gesture_open) {
+            if (!deferred) {
                 const auto repaired = r.view<const ClusterLodDirty>() | to<std::vector>();
                 RepairDirtyClusterGroups(r, chain, repaired);
                 edited.insert(edited.end(), repaired.begin(), repaired.end());
@@ -722,8 +731,10 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         SortUnique(edited);
         RepointMeshInstances(r, edited);
         r.clear<MeshletPositionsDirty>();
-        if (!gesture_open) r.clear<ClusterLodDirty>();
-        for (const auto e : r.view<const MeshEditWork>() | to<std::vector>()) ReleaseMeshEditWork(r, e);
+        if (!deferred) r.clear<ClusterLodDirty>();
+        if (!deferred) {
+            for (const auto e : r.view<const MeshEditWork>() | to<std::vector>()) ReleaseMeshEditWork(r, e);
+        }
         request();
     }
     if (AnyChanged(mesh_changes.TetMesh, physics_changes.BodyMesh)) {
@@ -746,17 +757,23 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         const auto resets = [&](state::Entity mesh_entity) {
             return r.get<const MeshGeometryDirty>(mesh_entity).Selection != EditSelectionAfter::Keep && r.all_of<MeshElementSelection>(mesh_entity) && edit_mode != Element::None;
         };
+        std::vector<state::Entity> empty;
         for (auto mesh_entity : edited) {
             if (!resets(mesh_entity)) continue;
 
             const auto selection_after = r.get<const MeshGeometryDirty>(mesh_entity).Selection;
             const auto mesh = GetMesh(r, mesh_entity);
             const uint32_t count = mesh.ElementCount(edit_mode);
-            if (count == 0) continue;
+            if (count == 0) {
+                empty.push_back(mesh_entity);
+                continue;
+            }
 
             auto &ranges = selection_after == EditSelectionAfter::Reset ? reset_ranges : carried_ranges;
             ranges.emplace_back(mesh_entity, count);
         }
+        // A mesh without elements of the edit domain holds its empty selection in that domain.
+        RefreshElementSelectionSummaries(r, empty, edit_mode);
         if (!reset_ranges.empty() || !carried_ranges.empty()) select();
         if (!reset_ranges.empty()) ApplyEditSelectionCommand(r, reset_ranges, edit_mode, EditSelectionOperation::Clear);
         if (!carried_ranges.empty()) ApplyEditSelectionCommand(r, carried_ranges, edit_mode, EditSelectionOperation::Derive);
@@ -1077,21 +1094,20 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     }
     // The selection aggregates read this pass's world transforms.
     select();
-    {
-        const bool normals = displays.VertexNormals || displays.FaceNormals;
-        const auto selected_before = normals ? r.get<const SelectionFlags>(state::Document).Meshes : std::vector<state::Entity>{};
-        for (const auto mesh_entity : UpdateSelectionState(r)) r.emplace_or_replace<MeshDisplayDirty>(mesh_entity);
-        if (normals) {
-            std::vector<state::Entity> changed;
-            std::ranges::set_symmetric_difference(selected_before, r.get<const SelectionFlags>(state::Document).Meshes, std::back_inserter(changed));
-            for (const auto mesh_entity : changed) {
-                if (r.valid(mesh_entity)) r.emplace_or_replace<MeshDisplayDirty>(mesh_entity);
-            }
+    const bool normals = displays.VertexNormals || displays.FaceNormals;
+    const auto selected_before = normals ? r.get<const SelectionFlags>(state::Document).Meshes : std::vector<state::Entity>{};
+    const auto changed_primaries = UpdateSelectionState(r);
+    for (const auto mesh_entity : changed_primaries) r.emplace_or_replace<MeshDisplayDirty>(mesh_entity);
+    if (normals) {
+        std::vector<state::Entity> changed;
+        std::ranges::set_symmetric_difference(selected_before, r.get<const SelectionFlags>(state::Document).Meshes, std::back_inserter(changed));
+        for (const auto mesh_entity : changed) {
+            if (r.valid(mesh_entity)) r.emplace_or_replace<MeshDisplayDirty>(mesh_entity);
         }
     }
     // Demanded LODs build after meshlet publication and keep edit-mode pins.
-    // The settle that ends a gesture builds the ones it demanded.
-    if (!gesture_open && BuildDemandedClusterLods(r, chain)) request();
+    // The settle that ends a gesture or playback builds the ones it demanded.
+    if (!deferred && BuildDemandedClusterLods(r, chain)) request();
     if (!render_changes.PbrMeshFeatures.empty()) {
         scene_state.MeshPbrFeatures = 0u;
         for (const auto [_, feat] : r.view<const PbrMeshFeatures>().each()) scene_state.MeshPbrFeatures |= feat.Mask;
@@ -1099,7 +1115,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     }
 
     end();
-    if (is_edit_mode && AnyChanged(viewport_changes.TransformPending, viewport_changes.TransformEnd)) scene_state.EditPreludePending = true;
+    if (is_edit_mode && AnyChanged(viewport_changes.TransformPending, viewport_changes.TransformEnd)) scene_state.EditPositionsPending = true;
 
     if (AnyChanged(render_changes.SceneLighting, viewport_changes.EditMode, viewport_changes.TransformPending, viewport_changes.TransformEnd)) request();
 
@@ -1133,7 +1149,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         for (auto [_, viewport] : r.view<Viewport>().each())
             if (viewport.Targets.RayTracing) viewport.Targets.RayTracing->Frames = 0;
         for (auto [_, work] : r.view<MeshEditWork>().each()) work.CandidateReady = false;
-        scene_state.EditPreludePending = is_edit_mode;
+        scene_state.EditPositionsPending = is_edit_mode;
         scene_state.EditSelectionDirty = false;
         request();
     }
@@ -1146,9 +1162,18 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         RefreshMeshDisplays(r);
         request();
     }
-    if (displays_refreshed || mode_changed ||
-        AnyChanged(selection_changes.Selected, selection_changes.ActiveInstance, render_changes.InstanceVisibility, render_changes.InstanceDestroyed, mesh_changes.Geometry)) {
-        UpdateSilhouetteWork(r);
+    // A mesh's outlined instances follow its primary edit instance and its instances' selection and visibility.
+    if (!changed_primaries.empty() || AnyChanged(selection_changes.Selected, selection_changes.ActiveInstance, render_changes.InstanceVisibility)) {
+        auto retallied = changed_primaries;
+        for (const auto *instances : {&selection_changes.Selected, &selection_changes.ActiveInstance, &render_changes.InstanceVisibility}) {
+            for (const auto e : *instances) {
+                if (const auto *instance = r.valid(e) ? r.try_get<const Instance>(e) : nullptr) retallied.push_back(instance->Entity);
+            }
+        }
+        SortUnique(retallied);
+        for (const auto mesh_entity : retallied) {
+            if (r.valid(mesh_entity) && r.all_of<ModelsBuffer>(mesh_entity)) RetallyMesh(r, mesh_entity);
+        }
     }
     if (!rendering) {
         UpdateModalPlacement(r);
@@ -1174,6 +1199,7 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
     selection.ActiveInstance.bind(r).on<Active>(On::Create | On::Destroy);
     selection.BoneSelection.bind(r).on<BoneSelection>(On::Create | On::Update | On::Destroy).on<BoneActive>(On::Create | On::Destroy);
     selection.MeshActiveElement.bind(r).on<MeshActiveElement>(On::Create | On::Update);
+    selection.Editing.bind(r).on<procedure::SelectionEditing>(On::Create | On::Destroy);
     auto &mesh = r.Resources.emplace<MeshChanges>();
     mesh.Geometry.bind(r).on<MeshGeometryDirty>(On::Create).on<MeshPositionsChanged>(On::Create);
     mesh.Material.bind(r).on<MeshMaterialAssignment>(On::Create | On::Update);
@@ -1227,7 +1253,7 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
         .on<AnimationClips>(On::Create | On::Update | On::Destroy)
         .on<Animations>(On::Update);
     animation.KeyframeSources.bind(r).on<TimelineRange>(On::Create | On::Update).on<MeshMaterialSlotSelection>(On::Create | On::Update | On::Destroy);
-    // Nodes binds the components an item's title and references are derived from and a procedure node's title and labels follow, Pages those that decide which items a page shows,
+    // Nodes binds the components an item's title and references are derived from and a procedure node's title and labels follow, Pages those that decide which items a page shows and how many subnet nodes use each definition,
     // and Fields the destruction of each component a value port can address.
     auto &network = r.Resources.emplace<procedure::NetworkChanges>();
     const auto bind = [&]<typename... Cs>(state::DirtySet &set, TypeList<Cs...>) {
@@ -1245,7 +1271,7 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
     procedure::ForEachKind([&]<typename K> {
         if constexpr (requires { &K::Operation; }) network.Nodes.on<K>(On::Update);
     });
-    bind(network.Pages, TypeList<SceneMembership, HierarchyMember, ArmatureObject, Material, MaterializedTexture, procedure::NetworkSubnet, procedure::ProcedureInstances, procedure::ProcedureNode>{});
+    bind(network.Pages, TypeList<SceneMembership, HierarchyMember, ArmatureObject, Material, MaterializedTexture, procedure::NetworkSubnet, procedure::ProcedureInstances, procedure::ProcedureNode, procedure::SubnetDefinition>{});
     bind(network.Cells, TypeList<procedure::NetworkLayout>{});
     action::TrackFieldRemovals(network.Fields.bind(r, state::Clearing::Explicit));
 }

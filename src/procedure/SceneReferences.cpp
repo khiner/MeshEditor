@@ -14,7 +14,6 @@
 #include "render/MaterialComponents.h"
 #include "render/Textures.h"
 
-#include <format>
 
 namespace procedure {
 namespace {
@@ -332,7 +331,7 @@ void Apply(state::Registry &r, const AssignReference &a) {
     using enum ReferenceKind;
     switch (a.Reference.Kind) {
         case InstanceSource:
-            if (source == state::Null) MakeHierarchyIndependent(r, e);
+            if (source == state::Null) MakeHierarchyIndependent(r, std::array{e});
             else BindHierarchyInstance(r, e, source);
             return;
         case Parent:
@@ -391,7 +390,7 @@ void Apply(state::Registry &r, const AssignReference &a) {
 }
 
 void Apply(state::Registry &r, const ExposePort &a) {
-    SubnetPort port{.Name = a.Name ? *a.Name : std::string{}, .Type = SocketType::Value, .Binding = a.Field};
+    SubnetPort port{.Name = a.Name ? *a.Name : std::string{}, .Binding = a.Field};
     const bool valid = !port.Name.empty() && action::ReadUpdate(r, a.Field.Entity, a.Field.Component, a.Field.Offset);
     if (!valid || !r.all_of<NetworkSubnet>(a.Subnet) || !CanExpose(r, NetworkItems(r, a.Subnet), port)) return Fail(r, "Expose a field of an item inside the subnet, through each enclosing subnet");
     const auto &interface = r.get<const SubnetInterface>(a.Subnet);
@@ -430,8 +429,8 @@ void SettleNetworks(state::Registry &r, bool restoring) {
         if (!r.valid(e)) {
             dead.push_back(e);
         } else if (!HasNode(r, e)) {
-            // A geometry page shows a procedure node's name, and titles and labels a node by its operation.
-            changed |= r.remove<NetworkNode>(e) > 0u || r.all_of<ProcedureNode>(e);
+            // A geometry page titles a subnet node by its definition's name, and titles and labels a node by its operation.
+            changed |= r.remove<NetworkNode>(e) > 0u || r.any_of<ProcedureNode, SubnetDefinition>(e);
         } else if (auto node = DeriveNode(r, e); !r.all_of<NetworkNode>(e) || r.get<const NetworkNode>(e) != node) {
             r.emplace_or_replace<NetworkNode>(e, std::move(node));
             changed = true;

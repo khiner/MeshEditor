@@ -2,6 +2,7 @@
 
 #include "MeshWalk.h"
 #include "mesh/MeshStore.h"
+#include "numeric/dvec3.h"
 
 #include <boost/ut.hpp>
 
@@ -131,6 +132,11 @@ inline void ExpectPolygonTessellation(const MeshStore &meshes, const Mesh &mesh)
             height = std::max(height, std::abs(Dot(p - origin, normal)));
         }
         const bool planar = height <= 1e-5f * extent && Simple(points, normal, extent);
+        // Areas sum in double, since float rounding of a sliver's cross products exceeds the tolerance of its own area.
+        const numeric::dvec3 double_normal{normal};
+        const auto signed_area = [&](vec3 a, vec3 b, vec3 c) { return Dot(Cross(numeric::dvec3{b} - numeric::dvec3{a}, numeric::dvec3{c} - numeric::dvec3{a}), double_normal); };
+        double polygon_area = 0.0;
+        for (uint32_t i = 1u; i + 1u < points.size(); ++i) polygon_area += signed_area(origin, points[i], points[i + 1u]);
         double triangle_area = 0.0;
         std::map<std::pair<uint32_t, uint32_t>, int> boundary;
         const auto edge = [&](uint32_t a, uint32_t b, int weight) { boundary[std::minmax(a, b)] += a < b ? weight : -weight; };
@@ -145,11 +151,11 @@ inline void ExpectPolygonTessellation(const MeshStore &meshes, const Mesh &mesh)
                 edge(triangle[k], triangle[(k + 1u) % 3u], 1);
             }
             const auto [a, b, c] = test::TrianglePositions(mesh, triangle);
-            const auto signed_area = Dot(Cross(b - a, c - a), normal);
-            if (planar && signed_area < -length * 1e-5f) boost::ut::expect(false) << "triangle winds outside polygon" << Describe(points) << "triangle" << Describe(std::array{a, b, c}) << "area" << signed_area;
-            triangle_area += std::abs(signed_area);
+            const auto area = signed_area(a, b, c);
+            if (planar && area < -polygon_area * 1e-5) boost::ut::expect(false) << "triangle winds outside polygon" << Describe(points) << "triangle" << Describe(std::array{a, b, c}) << "area" << area;
+            triangle_area += std::abs(area);
         }
-        if (planar && !(std::abs(triangle_area - length) < length * 1e-4)) boost::ut::expect(false) << "render triangles overlap or leave a gap" << Describe(points) << "triangles" << triangle_area << "polygon" << length;
+        if (planar && !(std::abs(triangle_area - polygon_area) <= polygon_area * 1e-4)) boost::ut::expect(false) << "render triangles overlap or leave a gap" << Describe(points) << "triangles" << triangle_area << "polygon" << polygon_area;
         for (const auto &[ends, count] : boundary) boost::ut::expect(count == 0) << "triangle edge differs from polygon boundary" << ends.first << ends.second;
     }
 }

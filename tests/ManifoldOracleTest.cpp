@@ -169,7 +169,7 @@ struct Random {
     }
 };
 MeshData Placed(const PrimitiveParameters &shape, const Transform &t) {
-    auto data = primitive::CreateMesh(shape);
+    auto data = primitive::CreateMesh(shape).Data;
     for (auto &p : data.Positions) p = t.P + t.R * (t.S * p);
     return data;
 }
@@ -228,17 +228,31 @@ std::pair<MeshData, manifold::SimplePolygon> RegularPolygon(uint32_t sides, vec2
     data.AddFace(face);
     return std::pair{std::move(data), std::move(reference)};
 }
+// The task `record(chain, then)` plans once its reads complete.
+std::optional<MeshTopologyTask> Planned(GeometryFixture &f, auto &&record) {
+    mtl::ComputeChain chain{f.Store().BufferContext()};
+    std::optional<MeshTopologyTask> planned;
+    record(chain, [&planned](std::optional<MeshTopologyTask> task) { planned = std::move(task); });
+    chain.Drain();
+    return planned;
+}
+// Deletes the vertices on the cleared side of the plane.
+uint32_t Cleared(GeometryFixture &f, uint32_t id, vec3 point, vec3 normal, PlaneSideKind cleared) {
+    const auto clear = Planned(f, [&](mtl::ComputeChain &chain, auto then) { RecordPlaneSideDeleteTask(f.Scene, chain, f.Get(id), point, normal, cleared, PlaneSideTolerance, std::move(then)); });
+    return clear ? f.Run(*clear).GeometryId : id;
+}
 // Bisect's run: the plane cut, then the vertices on the cleared side deleted.
 uint32_t Bisected(GeometryFixture &f, uint32_t id, vec3 point, vec3 normal, PlaneSideKind cleared) {
-    id = f.Run(PlaneCutTask(f.Get(id), point, normal)).GeometryId;
-    if (const auto clear = PlaneSideDeleteTask(f.Scene, f.Get(id), point, normal, cleared, PlaneSideTolerance)) id = f.Run(*clear).GeometryId;
-    return id;
+    return Cleared(f, f.Run(PlaneCutTask(f.Get(id), point, normal)).GeometryId, point, normal, cleared);
 }
 // The macros' cap: Fill over the boundary edges whose vertices lie on the plane, with the vertices a linked edge selection derives.
 uint32_t Capped(GeometryFixture &f, uint32_t id, vec3 point, vec3 normal) {
     auto &meshes = f.Store();
     const auto on = PlaneSideField(f.Scene, id, AttributeDomain::Edge, point, normal, PlaneSideKind::On, PlaneSideTolerance, "on").value();
-    const auto boundary = BoundaryField(f.Scene, id, AttributeDomain::Edge, "boundary").value();
+    const auto boundary = meshes.AddAttribute(id, AttributeDomain::Edge, AttributeType::Bool, "boundary").value();
+    mtl::ComputeChain chain{meshes.BufferContext()};
+    RecordBoundary(meshes, GetMeshPipelines(f.Scene), chain, boundary);
+    chain.Submit();
     const auto mesh = f.Get(id);
     GeometrySelection selection;
     for (const auto e : mesh.edges()) {
@@ -251,7 +265,7 @@ uint32_t Capped(GeometryFixture &f, uint32_t id, vec3 point, vec3 normal) {
     std::ranges::sort(selection.Edges);
     std::ranges::sort(selection.Vertices);
     selection.Vertices.erase(std::ranges::unique(selection.Vertices).begin(), selection.Vertices.end());
-    const auto fill = FillTask(f.Scene, mesh, selection, 0u);
+    const auto fill = Planned(f, [&](mtl::ComputeChain &chain, auto then) { RecordFillTask(f.Scene, chain, mesh, selection, 0u, std::move(then)); });
     return fill ? f.Run(*fill).GeometryId : id;
 }
 
@@ -267,10 +281,11 @@ void Append(MeshData &data, const MeshData &other) {
 }
 std::optional<uint32_t> RunBoolean(GeometryFixture &f, uint32_t first, uint32_t second, BooleanOperation operation) {
     const auto task = BooleanTask(f.Get(first), f.Get(second), operation, mat3{1.f}, vec3{0.f});
-    const auto id = task ? ExecuteGeometryBoolean(f.Scene, *task) : std::nullopt;
+    const auto id = task ? ExecuteGeometryBooleans(f.Scene, std::span{&*task, 1u}).front() : std::nullopt;
     f.Audit();
     return id;
 }
+std::optional<uint32_t> Minkowski(GeometryFixture &f, uint32_t a, uint32_t b, MinkowskiOperation operation) { return MinkowskiRecords(f.Scene, std::array{MinkowskiTask{a, b, operation}}).front(); }
 
 std::array<double, 2> AreasHolding(const Mesh &mesh, uint32_t attribute, float value) {
     std::array<double, 2> areas{};
@@ -384,7 +399,7 @@ const std::array<SolidRow, 12> SolidRows{{
          return Placed(primitive::IcoSphere{.Subdivisions = 1}, placement); }, [](GeometryFixture &f, Random &rng, uint32_t id) {
          const auto cuts = 1u + rng.Below(3);
          const auto reference = ToManifold(f.Get(id)).CalculateNormals(0, 180.0).SmoothByNormals(0).Refine(int(cuts) + 1);
-         ExecuteGeometryTopologyStages(f.Scene, SmoothSurfaceTasks(f.Scene, f.Get(id), cuts));
+         ExecuteGeometryTopologyStages(f.Scene, SmoothSurfaceTasks(f.Get(id), cuts));
          f.Audit();
          return std::pair{std::optional{id}, reference}; }, Match::Same},
     {"transform", RandomSolid, [](GeometryFixture &f, Random &rng, uint32_t id) {
@@ -408,7 +423,7 @@ const std::array<SolidRow, 12> SolidRows{{
          brush.P = {};
          brush.S *= .3f;
          const auto b = f.Create(Placed(rng.Shape(true), brush));
-         return std::pair{MinkowskiRecord(f.Scene, f.Get(a), f.Get(b), MinkowskiOperation::Sum), ToManifold(f.Get(a)).MinkowskiSum(ToManifold(f.Get(b)))}; }, Match::Subset},
+         return std::pair{Minkowski(f, a, b, MinkowskiOperation::Sum), ToManifold(f.Get(a)).MinkowskiSum(ToManifold(f.Get(b)))}; }, Match::Subset},
     // Every triangle of the solid with its own three vertices welds back into the solid.
     {"merge by distance", RandomSolid, [](GeometryFixture &f, Random &, uint32_t whole_id) {
          const auto whole = f.Get(whole_id);
@@ -435,7 +450,7 @@ const std::array<SolidRow, 12> SolidRows{{
     // A lone face extrudes into a closed prism with its original as the far cap, which is manifold's extrusion.
     // The circle lies in the XZ plane, and the disc is its polygon in the XY plane, counterclockwise.
     {"extrusion", [](Random &rng) {
-         const auto circle = primitive::CreateMesh(primitive::Circle{.Segments = 5u + rng.Below(8), .Fill = primitive::FillType::Face});
+         const auto circle = primitive::CreateMesh(primitive::Circle{.Segments = 5u + rng.Below(8), .Fill = primitive::FillType::Face}).Data;
          MeshData data;
          for (const auto p : circle.Positions) data.Positions.emplace_back(p.x, p.z, 0.f);
          if (SignedArea(data.Positions) < 0.0) std::ranges::reverse(data.Positions);
@@ -480,13 +495,13 @@ template<RegionFill Fill, manifold::OpType ReferenceOperation> std::pair<std::op
     const auto [a, b] = RandomPolygonPair(rng);
     const auto a_id = f.Create(a.first), b_id = f.Create(b.first);
     const manifold::CrossSection section_a{a.second}, section_b{b.second};
-    return {RegionLoops(f.Scene, PlaneAt({}, {0.f, 0.f, 1.f}), std::array{RegionOperand{a_id}, RegionOperand{b_id}}, Fill), section_a.Boolean(section_b, ReferenceOperation).ToPolygons()};
+    return {RegionLoops(f.Scene, std::array{RegionTask{PlaneAt({}, {0.f, 0.f, 1.f}), {RegionOperand{a_id}, RegionOperand{b_id}}, Fill}}).front(), section_a.Boolean(section_b, ReferenceOperation).ToPolygons()};
 }
 // A convex erosion is the intersection of the region's translates against each brush vertex, which a brush off the origin shifts.
 std::pair<std::optional<std::vector<std::vector<vec2>>>, manifold::Polygons> Eroded(GeometryFixture &f, Random &rng, const std::pair<MeshData, manifold::SimplePolygon> &brush) {
     const auto [c_data, c_polygon] = RegularPolygon(5u + rng.Below(4u), {rng.Uniform(-.3f, .3f), rng.Uniform(-.3f, .3f)}, rng.Uniform(.8f, 1.2f), rng.Uniform(0.f, 6.28f));
     const auto c = f.Create(c_data), brush_id = f.Create(brush.first);
-    const auto difference = MinkowskiRecord(f.Scene, f.Get(c), f.Get(brush_id), MinkowskiOperation::Difference);
+    const auto difference = Minkowski(f, c, brush_id, MinkowskiOperation::Difference);
     std::vector<manifold::CrossSection> translates;
     for (const auto v : brush.second) translates.emplace_back(manifold::CrossSection{c_polygon}.Translate(-v));
     return {difference ? std::optional{PlanarLoops(f.Get(*difference))} : std::nullopt, manifold::CrossSection::BatchBoolean(translates, manifold::OpType::Intersect).ToPolygons()};
@@ -499,8 +514,7 @@ const std::array<PolygonRow, 10> PolygonRows{{
          const auto polygons = ToManifold(f.Get(id)).Slice(placement.P.z);
          const vec3 point{0.f, 0.f, placement.P.z}, normal{0.f, 0.f, 1.f};
          // Cross Section's run: the side in front cleared, the cut capped, then the vertices behind the plane deleted.
-         auto section_id = Capped(f, Bisected(f, id, point, normal, PlaneSideKind::Positive), point, normal);
-         if (const auto clear = PlaneSideDeleteTask(f.Scene, f.Get(section_id), point, normal, PlaneSideKind::Negative, PlaneSideTolerance)) section_id = f.Run(*clear).GeometryId;
+         const auto section_id = Cleared(f, Capped(f, Bisected(f, id, point, normal, PlaneSideKind::Positive), point, normal), point, normal, PlaneSideKind::Negative);
          return std::pair{std::optional{PlanarLoops(f.Get(section_id))}, polygons};
      },
      true},
@@ -513,13 +527,13 @@ const std::array<PolygonRow, 10> PolygonRows{{
          MeshData joined = a.first;
          Append(joined, b.first);
          const auto both = f.Create(std::move(joined));
-         return std::pair{RegionLoops(f.Scene, PlaneAt({}, {0.f, 0.f, 1.f}), std::array{RegionOperand{both}}, RegionFill::Positive), manifold::CrossSection{manifold::Polygons{a.second, b.second}}.ToPolygons()};
+         return std::pair{RegionLoops(f.Scene, std::array{RegionTask{PlaneAt({}, {0.f, 0.f, 1.f}), {RegionOperand{both}}, RegionFill::Positive}}).front(), manifold::CrossSection{manifold::Polygons{a.second, b.second}}.ToPolygons()};
      },
      false},
     // The silhouette along z is the loops of halfedges whose face faces +z and whose opposite face does not, filled where they wind positive, which is manifold's projection.
     {"projection", [](GeometryFixture &f, Random &rng) {
          const auto id = f.Create(Placed(rng.Shape(true), rng.Placement()));
-         return std::pair{RegionLoops(f.Scene, PlaneAt({}, {0.f, 0.f, 1.f}), std::array{RegionOperand{.Record = id, .Silhouette = true}}, RegionFill::Positive), manifold::CrossSection{ToManifold(f.Get(id)).Project()}.ToPolygons()};
+         return std::pair{RegionLoops(f.Scene, std::array{RegionTask{PlaneAt({}, {0.f, 0.f, 1.f}), {RegionOperand{.Record = id, .Silhouette = true}}, RegionFill::Positive}}).front(), manifold::CrossSection{ToManifold(f.Get(id)).Project()}.ToPolygons()};
      },
      false},
     {"region hull", [](GeometryFixture &f, Random &rng) {
@@ -544,7 +558,7 @@ const std::array<PolygonRow, 10> PolygonRows{{
          const auto [a_data, a_polygon] = RegularPolygon(6u + 2u * rng.Below(4u), {rng.Uniform(-.3f, .3f), rng.Uniform(-.3f, .3f)}, rng.Uniform(.8f, 1.2f), rng.Uniform(0.f, 6.28f), true);
          const auto [b_data, b_polygon] = RegularPolygon(4u + 2u * rng.Below(3u), {}, rng.Uniform(.1f, .25f), rng.Uniform(0.f, 6.28f));
          const auto a = f.Create(a_data), b = f.Create(b_data);
-         const auto sum = MinkowskiRecord(f.Scene, f.Get(a), f.Get(b), MinkowskiOperation::Sum);
+         const auto sum = Minkowski(f, a, b, MinkowskiOperation::Sum);
          const auto prism = manifold::Manifold::Extrude({a_polygon}, 1.0).MinkowskiSum(manifold::Manifold::Extrude({b_polygon}, 1.0));
          return std::pair{sum ? std::optional{PlanarLoops(f.Get(*sum))} : std::nullopt, manifold::CrossSection{prism.Slice(1.0)}.ToPolygons()};
      },
@@ -553,6 +567,80 @@ const std::array<PolygonRow, 10> PolygonRows{{
     {"region difference", [](GeometryFixture &f, Random &rng) { return Eroded(f, rng, RegularPolygon(4u + 2u * rng.Below(3u), {}, rng.Uniform(.1f, .25f), rng.Uniform(0.f, 6.28f))); }, false},
     {"region difference off origin", [](GeometryFixture &f, Random &rng) { return Eroded(f, rng, RegularPolygon(4u + 2u * rng.Below(3u), {rng.Uniform(.1f, .2f), rng.Uniform(-.2f, -.1f)}, rng.Uniform(.1f, .2f), rng.Uniform(0.f, 6.28f))); }, false},
 }};
+
+// A tetrahedron of the cylinder primitive's orientation whose base is pushed in to a point on its axis below its vertex average.
+MeshData Dented(const Transform &t) {
+    MeshData data;
+    for (uint32_t i = 0u; i < 3u; ++i) data.Positions.emplace_back(__cospi(2.f * float(i) / 3.f), 0.f, __sinpi(2.f * float(i) / 3.f));
+    data.Positions.insert(data.Positions.end(), {vec3{0.f, 1.f, 0.f}, vec3{0.f, .15f, 0.f}});
+    for (uint32_t i = 0u; i < 3u; ++i) {
+        data.AddFace(std::array{i, 3u, (i + 1u) % 3u});
+        data.AddFace(std::array{i, (i + 1u) % 3u, 4u});
+    }
+    for (auto &p : data.Positions) p = t.P + t.R * (t.S * p);
+    return data;
+}
+// One vertex of each connected component of the solid's surface.
+std::vector<manifold::vec3> ComponentPoints(const manifold::Manifold &solid) {
+    const auto gl = solid.GetMeshGL64();
+    std::vector<uint64_t> parent(gl.NumVert());
+    std::iota(parent.begin(), parent.end(), 0u);
+    const auto root = [&](uint64_t v) {
+        while (parent[v] != v) v = parent[v] = parent[parent[v]];
+        return v;
+    };
+    for (size_t t = 0; t < gl.NumTri(); ++t) {
+        for (uint32_t k = 1; k < 3; ++k) parent[root(gl.triVerts[3 * t + k])] = root(gl.triVerts[3 * t]);
+    }
+    std::vector<manifold::vec3> points;
+    for (uint64_t v = 0; v < parent.size(); ++v) {
+        if (root(v) == v) points.emplace_back(gl.vertProperties[v * gl.numProp], gl.vertProperties[v * gl.numProp + 1], gl.vertProperties[v * gl.numProp + 2]);
+    }
+    return points;
+}
+// Manifold's sum unites its sweep with its first operand in place.
+// That is the sum of a non-convex x and a y whose surface is one component around the origin, once it unites y moved to a point of each surface component of x.
+// So each piece of y sums moved to hold its vertex average, which one surface component of the piece must hold, and unites moved to one vertex of each surface component of x.
+manifold::Manifold ReferenceSum(const manifold::Manifold &x, const manifold::Manifold &y) {
+    manifold::Manifold sum;
+    for (const auto &piece : y.Decompose()) {
+        const auto gl = piece.GetMeshGL64();
+        manifold::vec3 center{0.0};
+        for (size_t v = 0; v < gl.NumVert(); ++v) center += manifold::vec3{gl.vertProperties[v * gl.numProp], gl.vertProperties[v * gl.numProp + 1], gl.vertProperties[v * gl.numProp + 2]} / double(gl.NumVert());
+        sum += x.MinkowskiSum(piece.Translate(-center)).Translate(center);
+        for (const auto p : ComponentPoints(x)) sum += piece.Translate(p);
+    }
+    return sum;
+}
+// A Minkowski result of fixed operands.
+// A sum's reference is the reference sum, and an erosion's is the complement, inside a box the brush stays within, of the reference sum of the source's complement with the reflected brush.
+struct MinkowskiRow {
+    std::string_view Name;
+    MeshData First, Second;
+    MinkowskiOperation Operation;
+};
+std::vector<MinkowskiRow> MinkowskiRows() {
+    Random rng{std::mt19937{1u}};
+    const auto tetrahedron = [](float radius, float height) { return primitive::Cylinder{.Radius = radius, .Height = height, .TopRadius = 0.f, .Slices = 3}; };
+    // The two tetrahedra's vertex average lies in neither of them, and the hulls of the sweep meet in coplanar faces within the tie tolerance.
+    auto pair = primitive::CreateMesh(tetrahedron(.1f, .2f)).Data;
+    Append(pair, Placed(tetrahedron(.1f, .2f), {.P = {0.f, 0.f, .3f}}));
+    // With the second tetrahedron along x, two of the hulls also share an edge where coplanar faces of each meet from opposite sides.
+    auto pair_along_x = primitive::CreateMesh(tetrahedron(.1f, .2f)).Data;
+    Append(pair_along_x, Placed(tetrahedron(.1f, .2f), {.P = {.3f, 0.f, 0.f}}));
+    // The cavity is a small reversed tetrahedron at the source's insphere center, which the brush's interior can hold.
+    auto cavity = Placed(tetrahedron(.05f, .1f), {.P = {0.f, -.96f, 0.f}, .R = rng.Rotation()});
+    for (uint32_t face = 0u; face < cavity.FaceCount(); ++face) std::reverse(cavity.FaceCorners.begin() + cavity.FaceStart(face), cavity.FaceCorners.begin() + cavity.FaceStart(face) + cavity.FaceSize(face));
+    auto hollow = primitive::CreateMesh(tetrahedron(3.f, 4.f)).Data;
+    Append(hollow, cavity);
+    std::vector<MinkowskiRow> rows;
+    rows.push_back({"tetrahedron difference by two tetrahedra", primitive::CreateMesh(primitive::Cylinder{.TopRadius = 0.f, .Slices = 3}).Data, std::move(pair), MinkowskiOperation::Difference});
+    rows.push_back({"tetrahedron difference by two tetrahedra along x", primitive::CreateMesh(primitive::Cylinder{.TopRadius = 0.f, .Slices = 3}).Data, std::move(pair_along_x), MinkowskiOperation::Difference});
+    rows.push_back({"sum by a convex brush off the origin", Dented({.R = rng.Rotation()}), Placed(tetrahedron(.3f, .4f), {.P = {1.5f, .2f, .1f}, .R = rng.Rotation()}), MinkowskiOperation::Sum});
+    rows.push_back({"sum of a small solid and a fat one around the origin", Dented({.P = {1.5f, 0.f, 0.f}, .R = rng.Rotation(), .S = vec3{.15f}}), Dented({.P = {0.f, -1.f, 0.f}, .S = vec3{2.f}}), MinkowskiOperation::Sum});
+    rows.push_back({"difference of a solid with a cavity by a brush that can hold it", std::move(hollow), Dented({.P = {.2f, .1f, -.1f}, .R = rng.Rotation(), .S = vec3{.6f}}), MinkowskiOperation::Difference});
+    return rows;
+}
 } // namespace
 
 void RegisterManifoldOracleTests() {
@@ -583,10 +671,12 @@ void RegisterManifoldOracleTests() {
     // A boolean with an open input plans nothing.
     "booleans of coincident solids match manifold"_test = [] {
         GeometryFixture f;
-        const std::array<std::pair<std::string_view, MeshData>, 7> seconds{{
+        const std::array<std::pair<std::string_view, MeshData>, 8> seconds{{
             {"overlapping", Placed(primitive::Cube{}, {.P = vec3{1.f}})},
             {"sphere", Placed(primitive::UVSphere{.Radius = .75f}, {.P = {1.f, 0.f, 0.f}})},
             {"flush", Placed(primitive::Cube{}, {.P = {2.f, 0.f, 0.f}})},
+            // The cubes share an edge, where coplanar faces of each meet from opposite sides.
+            {"edge", Placed(primitive::Cube{}, {.P = {2.f, 2.f, 0.f}})},
             {"offset", Placed(primitive::Cube{}, {.P = {2.f, .5f, .5f}})},
             {"disjoint", Placed(primitive::Cube{}, {.P = {5.f, 0.f, 0.f}})},
             {"nested", Placed(primitive::Cube{}, {.S = vec3{.5f}})},
@@ -595,19 +685,19 @@ void RegisterManifoldOracleTests() {
         for (const auto &[name, second] : seconds) {
             for (const auto [operation, reference_operation, operation_name] : {std::tuple{BooleanOperation::Union, manifold::OpType::Add, "union"}, std::tuple{BooleanOperation::Difference, manifold::OpType::Subtract, "difference"}, std::tuple{BooleanOperation::Intersection, manifold::OpType::Intersect, "intersection"}}) {
                 const auto label = std::format("{} {}", name, operation_name);
-                const auto [id, reference] = MatchBoolean(f, f.Create(primitive::CreateMesh(primitive::Cube{})), f.Create(second), operation, reference_operation, label);
+                const auto [id, reference] = MatchBoolean(f, f.Create(primitive::CreateMesh(primitive::Cube{}).Data), f.Create(second), operation, reference_operation, label);
                 expect(id.has_value()) << label;
                 if (id) ExpectSameBoolean(f.Get(*id), reference, label);
             }
         }
-        const auto cube = f.Create(primitive::CreateMesh(primitive::Cube{})), quad = f.Create(UnitQuad());
+        const auto cube = f.Create(primitive::CreateMesh(primitive::Cube{}).Data), quad = f.Create(UnitQuad());
         expect(!BooleanTask(f.Get(cube), f.Get(quad), BooleanOperation::Union, mat3{1.f}, vec3{0.f}).has_value());
         expect(!BooleanTask(f.Get(quad), f.Get(cube), BooleanOperation::Intersection, mat3{1.f}, vec3{0.f}).has_value());
     };
     // The hulls of two adjacent triangles swept by a cube share the swept edge's faces exactly, which only the moved-vertex ties resolve.
     "unions of adjacent sweep hulls match manifold"_test = [] {
         GeometryFixture f;
-        const auto brush = primitive::CreateMesh(primitive::Cube{});
+        const auto brush = primitive::CreateMesh(primitive::Cube{}).Data;
         std::vector<vec3> b_points;
         for (const auto p : brush.Positions) b_points.push_back(p * .15f);
         const auto hull_record = [&](std::span<const vec3> tri) {
@@ -634,7 +724,7 @@ void RegisterManifoldOracleTests() {
             }
             return f.Create(std::move(data));
         };
-        const auto torus = f.Get(f.Create(primitive::CreateMesh(primitive::Torus{.MajorSegments = 8, .MinorSegments = 4})));
+        const auto torus = f.Get(f.Create(primitive::CreateMesh(primitive::Torus{.MajorSegments = 8, .MinorSegments = 4}).Data));
         std::vector<std::array<vec3, 3>> tris;
         for (const auto c : torus.DerivedTriangles()) tris.push_back(test::TrianglePositions(torus, c));
         for (uint32_t i = 0; i + 1 < 12; i += 2) {
@@ -788,7 +878,7 @@ void RegisterManifoldOracleTests() {
             const auto slices = 5u + rng.Below(8), steps = 6u + rng.Below(12);
             const auto offset = rng.Uniform(1.5f, 3.f);
             // The circle lies in the XZ plane, which is the half plane manifold revolves around Z.
-            auto data = primitive::CreateMesh(primitive::Circle{.Segments = slices, .Fill = primitive::FillType::Face});
+            auto data = primitive::CreateMesh(primitive::Circle{.Segments = slices, .Fill = primitive::FillType::Face}).Data;
             for (auto &p : data.Positions) p.x += offset;
             const auto id = f.Create(std::move(data));
             const auto disc = f.Get(id);
@@ -855,7 +945,7 @@ void RegisterManifoldOracleTests() {
             Random rng{std::mt19937{seed}};
             const auto torus = f.Create(Placed(primitive::Torus{.MajorSegments = 8, .MinorSegments = 4}, rng.Placement()));
             const auto cube = f.Create(Placed(primitive::Cube{}, {.P = {}, .R = rng.Rotation(), .S = vec3{.15f}}));
-            const auto sum = MinkowskiRecord(f.Scene, f.Get(torus), f.Get(cube), MinkowskiOperation::Sum);
+            const auto sum = Minkowski(f, torus, cube, MinkowskiOperation::Sum);
             expect(sum.has_value()) << Label("torus sum", seed);
             if (sum) ExpectSameMeasures(ShapeOf(f.Get(*sum)), ShapeOf(ToManifold(f.Get(torus)).MinkowskiSum(ToManifold(f.Get(cube)))), Label("torus sum", seed));
             const auto block = f.Create(Placed(primitive::Cube{}, rng.Placement()));
@@ -863,7 +953,7 @@ void RegisterManifoldOracleTests() {
             const auto offset_cube = f.Create(Placed(primitive::Cube{}, {.P = {.2f, .1f, -.15f}, .R = rng.Rotation(), .S = vec3{.15f}}));
             const auto block_solid = ToManifold(f.Get(block));
             for (const auto [brush, label] : {std::pair{cube, "block difference"}, std::pair{offset_cube, "block difference off origin"}}) {
-                const auto difference = MinkowskiRecord(f.Scene, f.Get(block), f.Get(brush), MinkowskiOperation::Difference);
+                const auto difference = Minkowski(f, block, brush, MinkowskiOperation::Difference);
                 expect(difference.has_value()) << Label(label, seed);
                 const auto brush_mesh = f.Get(brush);
                 std::vector<manifold::Manifold> translates;
@@ -874,6 +964,18 @@ void RegisterManifoldOracleTests() {
                 const auto erosion = manifold::Manifold::BatchBoolean(translates, manifold::OpType::Intersect);
                 if (difference) ExpectSameMeasures(ShapeOf(f.Get(*difference)), ShapeOf(erosion), Label(label, seed));
             }
+        }
+    };
+    "minkowski results of fixed operands match manifold in measure"_test = [] {
+        GeometryFixture f;
+        for (const auto &row : MinkowskiRows()) {
+            const auto first = f.Create(row.First), second = f.Create(row.Second);
+            const auto result = Minkowski(f, first, second, row.Operation);
+            expect(result.has_value()) << row.Name;
+            if (!result) continue;
+            const auto a = ToManifold(f.Get(first)), b = ToManifold(f.Get(second));
+            const auto reference = row.Operation == MinkowskiOperation::Sum ? ReferenceSum(a, b) : manifold::Manifold::Cube({8.0, 8.0, 8.0}, true) - ReferenceSum(manifold::Manifold::Cube({10.0, 10.0, 10.0}, true) - a, b.Scale({-1.0, -1.0, -1.0}));
+            ExpectSameMeasures(ShapeOf(f.Get(*result)), ShapeOf(reference), row.Name);
         }
     };
     "curvature matches manifold"_test = [] {
@@ -888,7 +990,12 @@ void RegisterManifoldOracleTests() {
             for (size_t v = 0; v < gl.NumVert(); ++v) points.emplace_back(gl.vertProperties[v * gl.numProp], gl.vertProperties[v * gl.numProp + 1], gl.vertProperties[v * gl.numProp + 2]);
             for (const auto kind : {CurvatureKind::Gaussian, CurvatureKind::Mean}) {
                 const auto label = Label(kind == CurvatureKind::Mean ? "mean curvature" : "gaussian curvature", seed);
-                const auto actual = f.Store().AttributeView<float>(CurvatureField(f.Scene, id, kind, label).value());
+                auto &meshes = f.Store();
+                const auto curvature = meshes.AddAttribute(id, AttributeDomain::Vertex, AttributeType::Float, label).value();
+                mtl::ComputeChain chain{meshes.BufferContext()};
+                RecordCurvature(meshes, GetMeshPipelines(f.Scene), chain, curvature, kind);
+                chain.Submit();
+                const auto actual = meshes.AttributeView<float>(curvature);
                 const auto column = kind == CurvatureKind::Mean ? 4u : 3u;
                 double scale = 1.0;
                 for (size_t v = 0; v < gl.NumVert(); ++v) scale = std::max(scale, std::abs(gl.vertProperties[v * gl.numProp + column]));

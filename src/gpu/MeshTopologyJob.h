@@ -1,6 +1,7 @@
 #pragma once
 #include "gpu/ConnectivityRef.h"
 #include "gpu/Element.h"
+#include "gpu/ElementLayers.h"
 #include "gpu/ElementWork.h"
 #include "gpu/MeshTopologyOp.h"
 #include "gpu/NamedAttributeRef.h"
@@ -44,6 +45,7 @@ struct MeshTopologyJob {
     // The source's corner layers, with its vertex layers above bit 16.
     // CornerAttributes and VertexAttributes are the output's.
     uint32_t SourceLayers DEFAULT();
+    ElementLayers SrcLayers DEFAULT(), DstLayers DEFAULT(); // The source record's and the output record's element layers
     SlotOffset Boolean DEFAULT(); // A boolean's BooleanJob record
     SlotOffset Simplify DEFAULT(); // A simplify's SimplifyJob record, whose elected edges a Decimate collapses
     Element SelectionElement DEFAULT();

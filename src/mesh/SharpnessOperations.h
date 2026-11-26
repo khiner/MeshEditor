@@ -2,6 +2,7 @@
 #include "gpu/EditSharpnessOperation.h"
 #include "mesh/GeometrySelection.h"
 #include "mesh/MeshClosure.h"
+#include <functional>
 #include <optional>
 
 struct SharpnessOperationTarget {
@@ -16,3 +17,5 @@ struct SharpnessOperationChange {
 // Completes canonical sharpness, corner classification and normals.
 // Triangle work remains in chain.Scratch for a caller's render publication.
 std::optional<SharpnessOperationChange> ExecuteGeometrySharpness(state::Registry &, mtl::ComputeChain &, const SharpnessOperationTarget &, EditSharpnessOperation, bool value = false, float angle = 0.f);
+// Records the edit as ExecuteGeometrySharpness does, each part once the chain completes the part before it, and calls `then` with the change once the chain completes the edit.
+void RecordSharpness(state::Registry &, mtl::ComputeChain &, const SharpnessOperationTarget &, EditSharpnessOperation, bool value, float angle, std::function<void(std::optional<SharpnessOperationChange>)> then);

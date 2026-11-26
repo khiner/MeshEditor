@@ -127,6 +127,21 @@ void UpdateRbpBody(rbp::World &world, RbpBody &body, const Transform &node, std:
     StoreInitialState(world, body, desc);
 }
 
+void ReshapeRbpBody(rbp::World &world, RbpBody &body, std::span<const rbp::Index> colliders) {
+    rbp::Pose cooked = rbp::IdentityPose;
+    const auto shape = colliders.empty() ? rbp::NoIndex : world.AddCompound(colliders, &cooked);
+    if (!colliders.empty() && shape == rbp::NoIndex) throw std::runtime_error("RBP could not allocate the body's colliders.");
+    const auto mass = world.Masses[body.Body];
+    if (!world.SetBodyShape(body.Body, shape, 1, rbp::AuthoredMass{0, {0, 0, 0}}) || !world.SetBodyMass(body.Body, mass)) {
+        if (shape != rbp::NoIndex) world.RemoveShape(shape);
+        throw std::runtime_error("RBP could not replace the body's colliders.");
+    }
+    if (body.Shape != rbp::NoIndex) world.RemoveShape(body.Shape);
+    body.Shape = shape;
+    body.CookedFrame = cooked;
+    if (shape != rbp::NoIndex) world.Shapes[shape].Local = rbp::ComposePose(Inverse(body.Frame), cooked);
+}
+
 CachedPose RbpNodePose(rbp::Pose body_pose, rbp::Pose frame) {
     const auto pose = rbp::ComposePose(body_pose, Inverse(frame));
     return {FromRbp(pose.Position), FromRbp(pose.Orientation)};

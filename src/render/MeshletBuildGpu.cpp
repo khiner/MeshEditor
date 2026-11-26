@@ -5,6 +5,7 @@
 #include "gpu/MeshletBuildPushConstants.h"
 #include "mesh/ElementMembershipWork.h"
 #include "mesh/ElementWorkSort.h"
+#include "mesh/Mesh.h"
 #include "mesh/MeshPipelines.h"
 #include "mesh/ScratchChunks.h"
 #include "metal/Dispatch.h"
@@ -14,7 +15,6 @@
 #include "state/Registry.h"
 
 #include <format>
-#include <numeric>
 
 namespace {
 constexpr uint32_t TileSize = 256, RecordWords = sizeof(MeshletRecord) / sizeof(uint32_t);
@@ -307,8 +307,9 @@ void BuildChunk(state::Registry &r, mtl::ComputeChain &chain, std::span<MeshletB
         Range Triangles, LocalTriangles, Vertices;
     };
     std::vector<PayloadRuns> payload_runs(destinations.size());
-    // Capture payload destinations after all appends, since growth can relocate ranges.
-    const auto place_payloads = [&] {
+    // Capture each payload's destinations after its appends, since growth can relocate its ranges.
+    // The triangle payloads append before construction and the vertex corners after it, and each pool grows on its own.
+    const auto place_payloads = [&](bool triangles) {
         for (uint32_t d = 0u; d < destinations.size(); ++d) {
             const auto &owner = payload_owner(destinations[d]);
             for (uint32_t i = destinations[d].Offset; i < destinations[d].Offset + destinations[d].Count; ++i) {
@@ -317,8 +318,14 @@ void BuildChunk(state::Registry &r, mtl::ComputeChain &chain, std::span<MeshletB
                 jobs[i].VertexAddress = owner.MeshletVertices.Values.Offset + jobs[i].VertexOffset;
             }
             const auto &runs = payload_runs[d];
-            for (const auto [payload, run] : {std::pair{RenderPayload::TriangleIds, runs.Triangles}, std::pair{RenderPayload::LocalTriangles, runs.LocalTriangles}, std::pair{RenderPayload::VertexCorners, runs.Vertices}}) {
+            const auto capture = [&](RenderPayload payload, Range run) {
                 WithPayload(render, owner, payload, [&](const auto &pool, const PayloadRange &range) { pool.CaptureWrite({range.Values.Offset + run.Offset, run.Count}); });
+            };
+            if (triangles) {
+                capture(RenderPayload::TriangleIds, runs.Triangles);
+                capture(RenderPayload::LocalTriangles, runs.LocalTriangles);
+            } else {
+                capture(RenderPayload::VertexCorners, runs.Vertices);
             }
         }
     };
@@ -346,7 +353,7 @@ void BuildChunk(state::Registry &r, mtl::ComputeChain &chain, std::span<MeshletB
             if (job.Topology == 0u) triangle += job.ElementCount;
         }
     }
-    place_payloads();
+    place_payloads(true);
     tiles.clear();
     domain(InputDomain, [](const auto &job) { return job.BlockCount; });
     domain(InitDomain, [](const auto &job) { return Tiles(std::max(16u, job.PrimitiveCount)); });
@@ -464,7 +471,7 @@ void BuildChunk(state::Registry &r, mtl::ComputeChain &chain, std::span<MeshletB
         capture(render.MeshletLodLeaves.Buffer, sizeof(uint32_t), meshlet_run);
         capture(render.LodParents.Buffer, sizeof(uint32_t), node_run);
     }
-    place_payloads();
+    place_payloads(false);
     job_buffer.Update(BytesOf(jobs));
     {
         const profile::CpuScope phase{"MeshletPublish"};
@@ -496,14 +503,20 @@ void BuildChunk(state::Registry &r, mtl::ComputeChain &chain, std::span<MeshletB
         if (source.Owner) continue;
         auto &mb = *source.Destination;
         const auto nodes = node_runs[d];
+        const auto values = render.LodNodes.Get({nodes.Address.Value(), nodes.Count});
+        std::vector<uint32_t> leaves, counts, members;
         for (uint32_t n = 0u; n < nodes.Count; ++n) {
-            auto node = render.LodNodes.Get({(nodes.Address + n).Value(), 1u})[0];
+            const auto &node = values[n];
             if (node.ChildCount || !node.MeshletCount) continue;
             if (node.Members != InvalidOffset) throw std::logic_error("LOD leaf already owns meshlet membership.");
-            std::vector<uint32_t> members(node.MeshletCount);
-            std::ranges::iota(members, node.FirstMeshlet);
-            node.Members = render.ListMembers(mb.MemberData, members);
-            render.LodNodes.GetMutable({(nodes.Address + n).Value(), 1u})[0] = node;
+            leaves.push_back(n);
+            counts.push_back(node.MeshletCount);
+            for (uint32_t m = 0u; m < node.MeshletCount; ++m) members.push_back(node.FirstMeshlet + m);
+        }
+        const auto lists = render.ListMembers(mb.MemberData, members, counts);
+        if (!leaves.empty()) {
+            const auto written = render.LodNodes.GetMutable({nodes.Address.Value(), nodes.Count});
+            for (uint32_t i = 0u; i < leaves.size(); ++i) written[leaves[i]].Members = lists[i];
         }
         if (!mb.ExtrasFaces.Count && (mb.RenderTopologies & 1u)) spatial.push_back(&mb);
     }
@@ -511,6 +524,14 @@ void BuildChunk(state::Registry &r, mtl::ComputeChain &chain, std::span<MeshletB
     buffers.Ctx.ReclaimRetiredBuffers();
 }
 } // namespace
+
+void AppendRecordSources(std::vector<MeshletBuildSource> &sources, MeshStore &meshes, uint32_t store_id) {
+    const Mesh mesh{meshes, store_id};
+    auto &mb = meshes.WriteRecord(store_id);
+    if (mesh.FaceCount()) sources.push_back({.Destination = &mb, .Topology = 0u, .ElementCount = mesh.TriangleIndexCount() / 3u});
+    if (mesh.EdgeCount()) sources.push_back({.Destination = &mb, .Topology = 1u, .ElementCount = mesh.EdgeCount()});
+    sources.push_back({.Destination = &mb, .Topology = 2u, .ElementCount = mesh.VertexCount()});
+}
 
 void BuildGpuMeshlets(state::Registry &r, mtl::ComputeChain &chain, std::span<MeshletBuildSource> sources) {
     if (sources.empty()) return;

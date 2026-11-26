@@ -202,6 +202,71 @@ struct Tree {
 
 } // namespace
 
+namespace {
+// The owner's finest triangle meshlets, which its tree holds.
+std::vector<uint32_t> FinestMeshlets(const RenderArenas &gpu, const MeshStore::Record &owner) {
+    std::vector<uint32_t> ids;
+    ids.reserve(owner.Level0Count);
+    gpu.Meshlets.ForEach(owner.MeshletData, [&](ElementHandle id, ElementAddress address) {
+        const auto record = gpu.Meshlets.Get({address.Value(), 1u})[0];
+        if (record.RefinedGroup == InvalidOffset && record.Topology == 0u) ids.push_back(id.Value);
+    });
+    return ids;
+}
+void CaptureSpatialBlocks(const RenderArenas &gpu, std::span<const uint32_t> entries) {
+    for (const auto block : entries) {
+        if (block != InvalidOffset) gpu.MeshletSpatialNodes.Buffer.CaptureWrite(uint64_t(block) * RenderBlockSize * sizeof(Node), uint64_t(RenderBlockSize) * sizeof(Node));
+    }
+}
+// Writes the tree of the finest meshlets `ids` into the owner's blocks of `all`, and returns its root.
+uint32_t BuildTree(const RenderArenas &gpu, const MeshStore::Record &owner, const VolumeSource &source, std::vector<uint32_t> &ids, Node *all) {
+    const auto entries = gpu.Meshlets.Entries(owner.MeshletData);
+    for (const auto block : entries) {
+        if (block != InvalidOffset) std::fill_n(all + uint64_t(block) * RenderBlockSize, RenderBlockSize, Node{});
+    }
+    const auto read = [&](uint32_t id) -> Node & { return all[Resolve<RenderBlockSize>(entries, ElementHandle{id}).Value()]; };
+    ParallelFor(uint32_t(ids.size()), [&](uint32_t i) {
+        const auto address = Resolve<RenderBlockSize>(entries, ElementHandle{ids[i]});
+        const auto record = gpu.Meshlets.Get({address.Value(), 1u})[0];
+        const auto volume = VolumeBits(MeshletVolume(gpu, source, address));
+        read(ids[i]) = {.Box = Bounds(record), .Key = KeyWords(Key(record.Center)), .Meshlet = ids[i], .LocalVolume = volume, .SubtreeVolume = volume};
+    });
+    std::ranges::sort(ids, [&](uint32_t a, uint32_t b) { return Before(Key(read(a)), a, Key(read(b)), b); });
+    std::vector<uint32_t> stack;
+    stack.reserve(ids.size());
+    for (const auto id : ids) {
+        uint32_t last = InvalidOffset;
+        while (!stack.empty() && Higher(id, stack.back())) {
+            last = stack.back();
+            stack.pop_back();
+        }
+        if (!stack.empty()) {
+            read(stack.back()).Right = id;
+            read(id).Parent = stack.back();
+        }
+        if (last != InvalidOffset) {
+            read(id).Left = last;
+            read(last).Parent = id;
+        }
+        stack.push_back(id);
+    }
+    std::vector<uint32_t> order{stack.front()}, postorder;
+    postorder.reserve(ids.size());
+    while (!order.empty()) {
+        const auto id = order.back();
+        order.pop_back();
+        postorder.push_back(id);
+        const auto &node = read(id);
+        if (node.Left != InvalidOffset) order.push_back(node.Left);
+        if (node.Right != InvalidOffset) order.push_back(node.Right);
+    }
+    for (const auto handle : std::views::reverse(postorder)) {
+        Refit(read(handle), Bounds(gpu.Meshlets.Get({Resolve<RenderBlockSize>(entries, ElementHandle{handle}).Value(), 1u})[0]), read);
+    }
+    return stack.front();
+}
+} // namespace
+
 void BuildMeshletSpatial(state::Registry &r, std::span<MeshStore::Record *const> owners) {
     auto &gpu = r.Resources.get<MeshStore>().Render();
     std::vector<std::vector<uint32_t>> finest(owners.size());
@@ -209,69 +274,13 @@ void BuildMeshletSpatial(state::Registry &r, std::span<MeshStore::Record *const>
         const auto &owner = *owners[i];
         if (owner.SpatialRoot != InvalidOffset) throw std::logic_error("Spatial tree already exists.");
         if (owner.ExtrasFaces.Count || !owner.MeshletData) continue;
-        auto &ids = finest[i];
-        ids.reserve(owner.Level0Count);
-        const auto entries = gpu.Meshlets.Entries(owner.MeshletData);
-        gpu.Meshlets.ForEach(owner.MeshletData, [&](ElementHandle id, ElementAddress address) {
-            const auto record = gpu.Meshlets.Get({address.Value(), 1u})[0];
-            if (record.RefinedGroup == InvalidOffset && record.Topology == 0u) ids.push_back(id.Value);
-        });
-        if (ids.empty()) continue;
-        for (const auto block : entries) {
-            if (block != InvalidOffset) gpu.MeshletSpatialNodes.Buffer.CaptureWrite(uint64_t(block) * RenderBlockSize * sizeof(Node), uint64_t(RenderBlockSize) * sizeof(Node));
-        }
+        finest[i] = FinestMeshlets(gpu, owner);
+        if (!finest[i].empty()) CaptureSpatialBlocks(gpu, gpu.Meshlets.Entries(owner.MeshletData));
     }
     // Each owner writes only its own blocks, so the trees build concurrently after the serial history capture.
     auto *all = reinterpret_cast<Node *>(gpu.MeshletSpatialNodes.Buffer.Contents().data());
     ParallelFor(uint32_t(owners.size()), [&](uint32_t i) {
-        auto &ids = finest[i];
-        if (ids.empty()) return;
-        auto &owner = *owners[i];
-        const auto source = Source(r, owner);
-        const auto entries = gpu.Meshlets.Entries(owner.MeshletData);
-        for (const auto block : entries) {
-            if (block != InvalidOffset) std::fill_n(all + uint64_t(block) * RenderBlockSize, RenderBlockSize, Node{});
-        }
-        const auto read = [&](uint32_t id) -> Node & { return all[Resolve<RenderBlockSize>(entries, ElementHandle{id}).Value()]; };
-        for (const auto id : ids) {
-            const auto address = Resolve<RenderBlockSize>(entries, ElementHandle{id});
-            const auto record = gpu.Meshlets.Get({address.Value(), 1u})[0];
-            const auto volume = VolumeBits(MeshletVolume(gpu, source, address));
-            read(id) = {.Box = Bounds(record), .Key = KeyWords(Key(record.Center)), .Meshlet = id, .LocalVolume = volume, .SubtreeVolume = volume};
-        }
-        std::ranges::sort(ids, [&](uint32_t a, uint32_t b) { return Before(Key(read(a)), a, Key(read(b)), b); });
-        std::vector<uint32_t> stack;
-        stack.reserve(ids.size());
-        for (const auto id : ids) {
-            uint32_t last = InvalidOffset;
-            while (!stack.empty() && Higher(id, stack.back())) {
-                last = stack.back();
-                stack.pop_back();
-            }
-            if (!stack.empty()) {
-                read(stack.back()).Right = id;
-                read(id).Parent = stack.back();
-            }
-            if (last != InvalidOffset) {
-                read(id).Left = last;
-                read(last).Parent = id;
-            }
-            stack.push_back(id);
-        }
-        owner.SpatialRoot = stack.front();
-        std::vector<uint32_t> order{owner.SpatialRoot}, postorder;
-        postorder.reserve(ids.size());
-        while (!order.empty()) {
-            const auto id = order.back();
-            order.pop_back();
-            postorder.push_back(id);
-            const auto &node = read(id);
-            if (node.Left != InvalidOffset) order.push_back(node.Left);
-            if (node.Right != InvalidOffset) order.push_back(node.Right);
-        }
-        for (const auto handle : std::views::reverse(postorder)) {
-            Refit(read(handle), Bounds(gpu.Meshlets.Get({Resolve<RenderBlockSize>(entries, ElementHandle{handle}).Value(), 1u})[0]), read);
-        }
+        if (!finest[i].empty()) owners[i]->SpatialRoot = BuildTree(gpu, *owners[i], Source(r, *owners[i]), finest[i], all);
     });
 }
 
@@ -295,6 +304,16 @@ void ReplaceMeshletSpatial(state::Registry &r, const MeshStore::Record &owner, s
 }
 
 void RefitMeshletSpatial(state::Registry &r, const MeshStore::Record &owner, std::span<const uint32_t> changed) {
+    // Moving an eighth of the finest meshlets one at a time costs more than building the tree again, which a treap's unique shape makes the same tree.
+    if (changed.size() * 8u >= owner.Level0Count) {
+        auto &meshes = r.Resources.get<MeshStore>();
+        auto &gpu = meshes.Render();
+        auto ids = FinestMeshlets(gpu, owner);
+        CaptureSpatialBlocks(gpu, gpu.Meshlets.Entries(owner.MeshletData));
+        const auto root = BuildTree(gpu, owner, Source(r, owner), ids, reinterpret_cast<Node *>(gpu.MeshletSpatialNodes.Buffer.Contents().data()));
+        if (root != owner.SpatialRoot) meshes.WriteRecord(owner.StoreId).SpatialRoot = root;
+        return;
+    }
     EditTree(r, owner, [&](Tree &tree) {
         for (const auto id : changed) {
             tree.Remove(id);

@@ -12,10 +12,7 @@ constant float4 GridVerts[9] = {
 
 vertex GridVaryings GridLinesVertex(
     uint vertex_id [[vertex_id]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
+    SCENE_ARGS
 ) {
     const Scene scene{bindless, view, theme, workspace};
     const float4 plane_pos = GridVerts[vertex_id];
@@ -39,10 +36,7 @@ inline float4 BlendGrids(float4 a, float4 b) {
 
 fragment OverlayTargets GridLinesFragment(
     GridVaryings in [[stage_in]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
+    SCENE_ARGS
 ) {
     const Scene scene{bindless, view, theme, workspace};
     constant DerivedThemeColors &derived = scene.Theme.Derived;

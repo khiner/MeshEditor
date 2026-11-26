@@ -15,9 +15,9 @@
 #include "render/Instance.h"
 #include "render/LodNodeEdit.h"
 #include "render/MaterialLodAttributes.h"
+#include "render/MaterialPatterns.h"
 #include "render/MeshletBuild.h"
 #include "render/MeshletBuildGpu.h"
-#include "render/Pipelines.h"
 #include "render/RenderChanges.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
@@ -66,10 +66,24 @@ void RetallyMesh(state::Registry &r, state::Entity mesh_entity) {
     const Range range = models ? Range{models->InstanceRange.Offset, models->InstanceCount} : Range{};
     const auto scene_states = buffers.Instances.States | std::views::transform([&](const mtl::Buffer &states) { return states.GetSpan<uint8_t>(range); }) | std::ranges::to<std::vector>();
     const auto drawn = [&](uint32_t i) { return std::ranges::any_of(scene_states, [i](std::span<const uint8_t> states) { return (states[i] & InstanceStateHidden) == 0u; }); };
+    // A drawn selected instance of an eligible mesh takes the Silhouette flag, except the mesh's primary edit instance.
+    const auto outlined = [&] {
+        const auto takes = [&](uint32_t i) { return std::ranges::any_of(scene_states, [i](std::span<const uint8_t> states) { return (states[i] & (ElementStateSelected | InstanceStateHidden)) == ElementStateSelected; }); };
+        const auto selected = uint32_t(std::ranges::count_if(std::views::iota(0u, range.Count), takes));
+        if (!selected || !IsSilhouetteEligible(r, mesh_entity)) return 0u;
+        const auto &primaries = r.get<const EditPrimaries>(state::Document).All;
+        const auto primary = primaries.find(mesh_entity);
+        // A restore reconciles meshes before the restored primary instance takes its render instance.
+        const auto *primary_instance = primary == primaries.end() ? nullptr : r.try_get<const RenderInstance>(primary->second);
+        if (!primary_instance) return selected;
+        const auto slot = primary_instance->BufferIndex;
+        return slot - range.Offset < range.Count && takes(slot - range.Offset) ? selected - 1u : selected;
+    };
     const auto flags = mb->RenderTopologies != 0u ? render.MeshRecords.Get({*id, 1u})[0].Display.Flags : 0u;
     buffers.Retally(*id, {
                              .Flags = flags,
                              .Instances = uint32_t(std::ranges::count_if(std::views::iota(0u, range.Count), drawn)),
+                             .Outlined = outlined(),
                              .Nodes = meshes.LodNodeCount(*mb),
                              .Meshlets = meshes.MeshletCount(*mb),
                              .Depth = mb->LodDepth,
@@ -88,24 +102,29 @@ void RepointMeshInstances(state::Registry &r, std::span<const state::Entity> mes
         const auto first = models->InstanceRange.Offset;
         const auto ids = buffers.Instances.ObjectIdBuffer.GetSpan<uint32_t>({first, models->InstanceCount});
         const auto records = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>({first, models->InstanceCount});
-        const auto &mesh_buffers = RecordOf(r, mesh_entity);
+        const auto *mesh_buffers = TryRecordOf(r, mesh_entity);
+        const auto mesh = mesh_buffers && mesh_buffers->RenderTopologies != 0u ? mesh_buffers->StoreId : InvalidOffset;
         for (uint32_t i = 0u; i < ids.size(); ++i) {
             if (!ids[i]) continue;
             const auto instance_entity = r.EntityAt(ObjectIndex(ids[i]));
             if (instance_entity == state::Null) continue;
             const auto *ri = r.try_get<const RenderInstance>(instance_entity);
             if (!ri || ri->Entity != mesh_entity || ri->BufferIndex != first + i) continue;
-            records[i].Mesh = mesh_buffers.RenderTopologies != 0u ? mesh_buffers.StoreId : InvalidOffset;
+            records[i].Mesh = mesh;
         }
         RetallyMesh(r, mesh_entity);
     }
 }
 
+uint32_t MaterialAttributes(const state::Registry &r, uint32_t material, uint32_t debug_channels, bool authored_tangents) {
+    const auto patterns = PatternRecords(r.Resources.get<const MaterialPatterns>());
+    return MaterialLodAttributes(GetMaterials(r)[material], debug_channels, authored_tangents) | (material < patterns.size() ? PatternLodAttributes(patterns[material], authored_tangents) : 0u);
+}
+
 bool RefreshMaterialLodAttributes(state::Registry &r) {
-    const auto materials = GetMaterials(r);
     const auto debug = r.Resources.get<const GpuSceneState>().Displays.DebugChannels;
-    std::vector<std::array<uint32_t, 2>> required(materials.size());
-    for (size_t i = 0; i < materials.size(); ++i) required[i] = {MaterialLodAttributes(materials[i], debug, false), MaterialLodAttributes(materials[i], debug, true)};
+    std::vector<std::array<uint32_t, 2>> required(GetMaterials(r).size());
+    for (uint32_t i = 0; i < required.size(); ++i) required[i] = {MaterialAttributes(r, i, debug, false), MaterialAttributes(r, i, debug, true)};
     auto &cached = r.Resources.get<GpuSceneState>().RequiredMaterialAttributes;
     if (required == cached) return false;
     cached = std::move(required);
@@ -115,7 +134,6 @@ bool RefreshMaterialLodAttributes(state::Registry &r) {
 void RefreshClusterLodAttributes(state::Registry &r, mtl::ComputeChain &chain, std::span<const state::Entity> mesh_entities) {
     auto &meshes = r.Resources.get<MeshStore>();
     auto &render = meshes.Render();
-    const auto materials = GetMaterials(r);
     const auto debug = r.Resources.get<const GpuSceneState>().Displays.DebugChannels;
     std::vector<ClusterGroupSeeds> seeds;
     std::vector<uint32_t> changed;
@@ -130,7 +148,7 @@ void RefreshClusterLodAttributes(state::Registry &r, mtl::ComputeChain &chain, s
         meshes.ForEachPrimitive(*owner, [&](ElementHandle id, const PrimitiveRecord &primitive) {
             if (primitive.Topology != 0u) return;
             const uint32_t material = primitive.PrimitiveIndex < assignments.size() ? assignments[primitive.PrimitiveIndex] : 0u;
-            const uint32_t required = MaterialLodAttributes(materials[material], debug, authored_tangents);
+            const uint32_t required = MaterialAttributes(r, material, debug, authored_tangents);
             if (required == primitive.LodAttributes) return;
             if (coarse) changed.push_back(id.Value);
             render.Primitives.GetMutable({render.Primitives.Address(owner->PrimitiveData, id).Value(), 1u})[0].LodAttributes = required;
@@ -162,13 +180,7 @@ void BuildMeshlets(state::Registry &r, mtl::ComputeChain &chain, std::span<const
     auto &meshes = r.Resources.get<MeshStore>();
     std::vector<MeshletBuildSource> sources;
     sources.reserve(mesh_entities.size() * 3u + bone_entities.size());
-    for (const auto entity : mesh_entities) {
-        const auto mesh = GetMesh(r, entity);
-        auto &mb = meshes.WriteRecord(mesh.GetStoreId());
-        if (mesh.FaceCount()) sources.push_back({.Destination = &mb, .Topology = 0u, .ElementCount = mesh.TriangleIndexCount() / 3u});
-        if (mesh.EdgeCount()) sources.push_back({.Destination = &mb, .Topology = 1u, .ElementCount = mesh.EdgeCount()});
-        sources.push_back({.Destination = &mb, .Topology = 2u, .ElementCount = mesh.VertexCount()});
-    }
+    for (const auto entity : mesh_entities) AppendRecordSources(sources, meshes, *DrawnStoreId(r, entity));
     std::vector<state::Entity> bones;
     for (const auto entity : bone_entities) {
         auto &mb = EditRecordOf(r, entity);

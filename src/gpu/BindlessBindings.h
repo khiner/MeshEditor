@@ -75,6 +75,8 @@ GPU_CONSTANT uint32_t BufferIndex_PushConstants = 1;
 GPU_CONSTANT uint32_t BufferIndex_SceneView = 2;
 GPU_CONSTANT uint32_t BufferIndex_ViewportTheme = 3;
 GPU_CONSTANT uint32_t BufferIndex_WorkspaceLights = 4;
+// A driver's program table.
+GPU_CONSTANT uint32_t BufferIndex_Programs = 5;
 
 #ifdef __METAL_VERSION__
 struct BindlessSampler2D {

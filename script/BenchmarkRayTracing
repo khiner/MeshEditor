@@ -69,6 +69,7 @@ def digest(path):
 
 
 def competing(exclude=None):
+    """The name of a running process that would disturb a timed run, or None."""
     lines = subprocess.check_output(["ps", "-Ao", "pid=,comm="], text=True).splitlines()
     for line in lines:
         pid, command = line.split(maxsplit=1)
@@ -77,13 +78,17 @@ def competing(exclude=None):
             program.startswith(("MeshEditor", "clang++"))
             or program in {"Blender", "ninja", "metal", "metallib"}
         ):
-            return True
-    return False
+            return program
+    return None
 
 
 def launch(command, log, timed):
     if timed:
-        while competing():
+        # A build ends on its own within the wait. An application left open does not.
+        deadline = time.monotonic() + 120
+        while program := competing():
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"{program} is still running. Close it before a timed run.")
             time.sleep(1)
     busy = []
     with log.open("w") as stream, subprocess.Popen(

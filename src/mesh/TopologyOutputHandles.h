@@ -1,6 +1,7 @@
 #pragma once
 
-#include "gpu/TopologyIdentityPushConstants.h"
+#include "gpu/MeshTopologyArenas.h"
+#include "gpu/MeshTopologyJob.h"
 #include "mesh/MeshStore.h"
 
 namespace mtl {
@@ -10,6 +11,7 @@ struct ComputeChain;
 // Plan output identities from the operator's scanned counts, recorded after its count passes.
 // Geometry stays in the arenas.
 // Maps and allocation counts are the only produced data, ranges of the chain's scratch read once the chain submits.
+// The job's record lies at word `job_word` of the batch storage, which holds the scanned counts.
 // Source handles must remain reserved while the edit's source clones are in use.
 // The source core contains complete replaced faces.
 // Triangle starts and the job's source connectivity must refer to the same source clones.
@@ -18,7 +20,7 @@ enum class TopologyIdentityPolicy { Preserve,
 
 struct TopologyOutputHandles {
     // Use batch scratch containing scanned counts and source_id matching the source work handles.
-    TopologyOutputHandles(state::Registry &, mtl::ComputeChain &, uint32_t source_id, const MeshTopologyJob &, MeshStore::TopologyCounts bounds, SlotOffset scratch, const MeshTopologyArenas &source, TopologyIdentityPolicy = TopologyIdentityPolicy::Preserve);
+    TopologyOutputHandles(state::Registry &, mtl::ComputeChain &, uint32_t source_id, const MeshTopologyJob &, uint32_t job_word, MeshStore::TopologyCounts bounds, SlotOffset scratch, const MeshTopologyArenas &source, TopologyIdentityPolicy = TopologyIdentityPolicy::Preserve);
     void Finish(const mtl::ComputeChain &);
     // Records the writes of newly inserted vertex and face handles, each a run or a list, into the output maps in compact new-element order.
     void Assign(state::Registry &, mtl::ComputeChain &, std::array<ElementHandleRange, 2> inserted) const;

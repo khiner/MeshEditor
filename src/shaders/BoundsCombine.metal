@@ -8,10 +8,7 @@ kernel void BoundsCombineKernel(
     uint group_id [[threadgroup_position_in_grid]],
     threadgroup float3 *shared_min [[threadgroup(0)]],
     threadgroup float3 *shared_max [[threadgroup(1)]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    SCENE_ARGS,
     constant BoundsReducePushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
@@ -39,7 +36,6 @@ kernel void BoundsCombineKernel(
     if (tid == 0u) {
         const uint destination=VertexBoundsIndex(bindless,pc,entry,pc.Level,tile.y);
         if (destination != InvalidOffset) BindlessBufferMutable(AABB,bindless.Buffer,pc.ValuesSlot)[destination]=box;
-        MarkWork(bindless,pc.NextWork,tile.y/256u);
     }
     if (pc.Level == VertexBoundsLevels-1u) {
         for (uint k=tid; k<entry.InstanceCount; k+=256u)

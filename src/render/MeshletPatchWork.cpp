@@ -25,6 +25,8 @@ std::vector<uint32_t> ChangedClusters(state::Registry &r, const MeshStore::Recor
     const auto vertex_corners = render.MeshletVertexCorners.Get(owner.MeshletVertices.Values);
     ForEachWorkElement(storage, changed, [&](uint32_t triangle) {
         const auto cluster = owners[triangle];
+        // A triangle no cluster draws changes no cluster.
+        if (cluster == InvalidOffset) return;
         const auto &record = records[Resolve<RenderBlockSize>(meshlet_entries, ElementHandle{cluster}).Value()];
         const auto corners = vertex_corners.subspan(record.VertexOffset, record.VertexCount);
         if (!stable_keys || Contains(storage, removed, triangle) ||
@@ -93,7 +95,7 @@ MeshletPatch PlanMeshletPatch(state::Registry &r, MeshStore::Record &owner, cons
     return patch;
 }
 
-std::vector<uint32_t> AdoptMeshletFragments(state::Registry &r, mtl::ComputeChain &chain, MeshStore::Record &owner, uint32_t topology, std::span<MeshStore::Record> fragments, std::span<const MeshletPatchAdoptJob> jobs, std::span<const uint32_t> blocks) {
+std::vector<uint32_t> AdoptMeshletFragments(state::Registry &r, MeshStore::Record &owner, uint32_t topology, std::span<MeshStore::Record> fragments, std::span<const MeshletPatchAdoptJob> jobs, std::span<const uint32_t> blocks, std::vector<MeshletOwnersJob> &owner_jobs) {
     const profile::CpuScope scope{"MeshletAdoptFragments"};
     auto &meshes = r.Resources.get<MeshStore>();
     auto &render = meshes.Render();
@@ -124,9 +126,7 @@ std::vector<uint32_t> AdoptMeshletFragments(state::Registry &r, mtl::ComputeChai
     std::ranges::sort(addresses);
     // The owner now owns every new payload, so exception cleanup finds no provisional range to release.
     for (auto &fragment : fragments) fragment = {};
-    std::vector<MeshletOwnersJob> owner_jobs;
     PrepareMeshletOwners(r, owner, topology, ranges, blocks, owner_jobs);
-    RecordMeshletOwners(r, chain, owner_jobs);
     UpdatePosedMeshletBlocks(r, owner, addresses);
     return added;
 }

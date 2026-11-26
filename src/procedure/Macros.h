@@ -9,10 +9,10 @@ struct Registry;
 }
 
 namespace procedure {
-// A built-in subnet: its name, and the nodes, links and ports Define builds inside a new empty subnet of the mesh entity's procedure.
+// A built-in definition: its name, and the nodes, links and ports Define builds in an empty definition of the library registry.
 struct Macro {
     const char *Name;
-    void (*Define)(state::Registry &, state::Entity mesh_entity, state::Entity subnet);
+    void (*Define)(state::Registry &, state::Entity definition);
 };
 // Indices into Macros.
 enum MacroIndex : uint16_t { SplitBySolidMacro,

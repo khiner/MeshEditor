@@ -32,6 +32,8 @@
 
 // Compares rendered images, which --no-render skips.
 inline bool Render{true};
+// The first and last seed of the random history walks.
+inline std::array<uint32_t, 2> WalkSeeds{12u, 12u};
 
 inline const auto RiggedSimple = std::filesystem::path{MESHEDITOR_SOURCE_DIR} / "external/glTF-Sample-Assets/Models/RiggedSimple/glTF/RiggedSimple.gltf";
 
@@ -157,6 +159,11 @@ struct Fixture : Engine {
         P->Settle();
         SubmitViewports(R);
         WaitForRender(R);
+        // A frame whose transparent fragments exceeded its fragment lists draws again with lists that hold them.
+        for (const auto &patterns = R.get<const Viewport>(FirstViewport(R)).Targets.Patterns; patterns && patterns->Overflowed;) {
+            SubmitViewports(R);
+            WaitForRender(R);
+        }
         const auto &image = R.get<const Viewport>(FirstViewport(R)).Targets.Screen->FinalColorImage;
         return ReadbackImageRgba8(R.Resources.get<const mtl::Context>(), image, 0, 0, image.Extent);
     }
@@ -226,6 +233,12 @@ inline void CheckLayout(Fixture &f) {
             continue;
         }
         const auto &a = meshes.Arenas();
+        // A set's block table can hold released blocks' slots, which hold no block.
+        const auto blocks_of = [](const auto &arena, ElementSetRef set) {
+            uint32_t blocks = 0u;
+            arena.ForEachBlock(set, [&](uint32_t, const auto &) { ++blocks; });
+            return blocks;
+        };
         const bool authored_morph = r.get<const PosedLayout>(entity).MorphDeformOffset != InvalidOffset && record->MorphShadingAuthored;
         const bool derive = !authored_morph && MakeDeriveEntryInputs(meshes, record->StoreId).has_value();
         uint32_t jobs = 0u;
@@ -234,10 +247,11 @@ inline void CheckLayout(Fixture &f) {
             const auto &node = render.LodNodes.Get({render.LodNodes.Address(record->NodeData, ElementHandle{primitive.LodFinestNode}).Value(), 1u})[0];
             jobs += node.Members != InvalidOffset && node.MeshletCount;
         });
+        const auto vertex_blocks = blocks_of(a.Vertices, record->Vertices);
         if (run->DeriveEntries.Count != (derive ? count : 0u)) fail("derive entry count");
-        if (run->FaceBlocks != (derive ? a.FaceTriangles.Set(record->FaceData).BlockCount : 0u) || run->VertexBlocks != (derive ? a.Vertices.Set(record->Vertices).BlockCount : 0u)) fail("derive blocks");
+        if (run->FaceBlocks != (derive ? blocks_of(a.FaceTriangles, record->FaceData) : 0u) || run->VertexBlocks != (derive ? vertex_blocks : 0u)) fail("derive blocks");
         if (run->MeshletJobs != jobs) fail("posed meshlet jobs");
-        if (run->BoundsKeys[0] != a.Vertices.Set(record->Vertices).BlockCount || run->BoundsKeys[3] != 1u) fail("bounds keys");
+        if (run->BoundsKeys[0] != vertex_blocks || run->BoundsKeys[3] != 1u) fail("bounds keys");
         const auto words = std::accumulate(run->BoundsKeys.begin(), run->BoundsKeys.end(), 0u) + run->FaceBlocks + run->VertexBlocks + 2u * run->MeshletJobs;
         if (run->Tiles.Count != words) fail("tile words");
     }
@@ -450,6 +464,9 @@ template<typename F> void Scenario(F &f, Fixture &other, std::string name, auto 
         };
         script(f);
         f.Step = {};
+        if constexpr (requires { f.CheckEnd(); }) {
+            if (!f.EveryStep) f.CheckEnd();
+        }
         // A script may end on a node it did not record, such as a reference's release, which the checks leave for the last node it did.
         f.P->Navigate(last);
         CheckHistory(f, other, nodes, direct, dir);

@@ -11,16 +11,15 @@ struct ObjectOriginVaryings {
 constant float2 OriginCorners[4] = {float2(-1, -1), float2(1, -1), float2(-1, 1), float2(1, 1)};
 
 // A screen-aligned quad around each visible selected or active object's origin, and a point outside the clip volume for every other slot.
+// The dots draw in the instances' drawing order, so overlapping dots cover each other the same way for any slot layout.
 vertex ObjectOriginVaryings ObjectOriginVertex(
     uint vertex_id [[vertex_id]],
-    uint slot [[instance_id]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    uint order [[instance_id]],
+    SCENE_ARGS,
     constant ObjectOriginPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
+    const uint slot = BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[order];
     const ObjectOriginVaryings culled{float4(2.0f, 2.0f, 2.0f, 1.0f), float2(0.0f), float3(0.0f)};
     const uint state = uint(scene.InstanceStates(view.InstanceStateSlot)[slot]);
     if ((state & (STATE_SELECTED | STATE_ACTIVE)) == 0u || (state & STATE_HIDDEN) != 0u) return culled;

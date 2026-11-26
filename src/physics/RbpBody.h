@@ -45,6 +45,9 @@ RbpBody BuildRbpBody(rbp::World &, std::span<const rbp::Index> colliders, const 
 // Restore initial states and reset dynamics before advancing.
 void UpdateRbpBody(rbp::World &, RbpBody &, const Transform &, std::optional<const PhysicsMotion &>, std::optional<const PhysicsVelocity &>);
 
+// Replace the body's colliders with copies of these during a simulation, keeping its pose, velocity, mass and mass frame.
+void ReshapeRbpBody(rbp::World &, RbpBody &, std::span<const rbp::Index> colliders);
+
 CachedPose RbpNodePose(rbp::Pose body_pose, rbp::Pose frame);
 
 } // namespace physics

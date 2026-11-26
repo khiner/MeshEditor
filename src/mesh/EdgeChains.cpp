@@ -81,22 +81,23 @@ void AppendRelaxPhases(EdgeChainPlan &plan, EdgeChain &chain) {
 }
 } // namespace
 
-EdgeChainPlan PlanSelectedEdgeChains(const MeshStore &meshes, const MeshPipelines &pipelines, const Mesh &mesh, const GeometrySelection &selection, bool relax) {
-    EdgeChainPlan plan;
-    for (const auto &[pairs, closed] : SelectedEdgeChains(meshes, pipelines, mesh.GetStoreId(), selection.Edges, false).Chains) {
-        if (pairs.size() < 3u) continue;
-        const auto chain = VerticesOf(pairs);
-        plan.Chains.push_back({uint32_t(plan.Inputs.size()), uint32_t(plan.Outputs.size()), uint32_t(chain.size()), uint32_t(closed)});
-        if (relax) AppendRelaxPhases(plan, plan.Chains.back());
-        plan.Inputs.insert(plan.Inputs.end(), chain.begin(), chain.end());
-        plan.Outputs.insert(plan.Outputs.end(), chain.begin() + (closed ? 0u : 1u), chain.end() - (closed ? 0u : 1u));
-    }
-    return plan;
+void RecordPlanSelectedEdgeChains(const MeshStore &meshes, const MeshPipelines &pipelines, mtl::ComputeChain &chain, uint32_t id, const GeometrySelection &selection, bool relax, std::function<void(EdgeChainPlan)> then) {
+    RecordSelectedEdgeChains(meshes, pipelines, chain, id, selection.Edges, false, [relax, then = std::move(then)](SelectedChains selected) {
+        EdgeChainPlan plan;
+        for (const auto &[pairs, closed] : selected.Chains) {
+            if (pairs.size() < 3u) continue;
+            const auto vertices = VerticesOf(pairs);
+            plan.Chains.push_back({uint32_t(plan.Inputs.size()), uint32_t(plan.Outputs.size()), uint32_t(vertices.size()), uint32_t(closed)});
+            if (relax) AppendRelaxPhases(plan, plan.Chains.back());
+            plan.Inputs.insert(plan.Inputs.end(), vertices.begin(), vertices.end());
+            plan.Outputs.insert(plan.Outputs.end(), vertices.begin() + (closed ? 0u : 1u), vertices.end() - (closed ? 0u : 1u));
+        }
+        then(std::move(plan));
+    });
 }
 
-EdgeChainPlan PlanCurveBetweenSelected(const MeshStore &meshes, const MeshPipelines &pipelines, const Mesh &mesh, const GeometrySelection &selection, const GeometrySelection &excluded, bool extend) {
+EdgeChainPlan PlanCurveBetweenSelected(const LocalMesh &local, const GeometrySelection &selection, const GeometrySelection &excluded, bool extend) {
     const auto is_selected = [&](uint32_t v) { return std::ranges::binary_search(selection.Vertices, v); };
-    const LocalMesh local{meshes, pipelines, mesh.GetStoreId(), HandleList(mesh.vertices())};
     struct Node {
         std::vector<uint32_t> Edges;
         std::unordered_set<uint64_t> QuadPairs;
@@ -241,34 +242,49 @@ EdgeChainPlan PlanCurveBetweenSelected(const MeshStore &meshes, const MeshPipeli
     return plan;
 }
 
-EdgeChainPlan PlanCircularize(const MeshStore &meshes, const MeshPipelines &pipelines, const Mesh &mesh, const GeometrySelection &selection, const GeometrySelection &excluded) {
+void RecordPlanCircularize(const MeshStore &meshes, const MeshPipelines &pipelines, mtl::ComputeChain &chain, uint32_t id, const GeometrySelection &selection, const GeometrySelection &excluded, std::function<void(EdgeChainPlan)> then) {
     std::vector<uint32_t> faces;
     for (const auto f : selection.Faces) {
         if (!std::ranges::binary_search(excluded.Faces, f)) faces.push_back(f);
     }
-    const auto facts = SelectedEdgeFacts(meshes, pipelines, mesh.GetStoreId(), selection.Edges, faces);
-    std::array<std::vector<uint32_t>, 2> graphs;
-    std::unordered_set<uint32_t> surface_vertices;
-    for (uint32_t i = 0u; i < facts.size(); ++i) {
-        const auto e = selection.Edges[i];
-        const auto &[a, b, source, face, selected_faces] = facts[i];
-        const bool wire = face == InvalidOffset;
-        if (!wire) {
-            surface_vertices.insert(a);
-            surface_vertices.insert(b);
+    RecordSelectedEdgeFacts(meshes, pipelines, chain, id, selection.Edges, faces, [&meshes, &pipelines, &chain, id, edges = selection.Edges, excluded_edges = excluded.Edges, then = std::move(then)](std::vector<EdgeFacts> facts) mutable {
+        std::array<std::vector<uint32_t>, 2> graphs;
+        std::unordered_set<uint32_t> surface_vertices;
+        for (uint32_t i = 0u; i < facts.size(); ++i) {
+            const auto e = edges[i];
+            const auto &[a, b, source, face, selected_faces] = facts[i];
+            const bool wire = face == InvalidOffset;
+            if (!wire) {
+                surface_vertices.insert(a);
+                surface_vertices.insert(b);
+            }
+            if (std::ranges::binary_search(excluded_edges, e) || a == b || selected_faces > 1u) continue;
+            graphs[wire].push_back(e);
         }
-        if (std::ranges::binary_search(excluded.Edges, e) || a == b || selected_faces > 1u) continue;
-        graphs[wire].push_back(e);
-    }
-    EdgeChainPlan plan;
-    for (uint32_t wire = 0u; wire < 2u; ++wire) {
-        for (const auto &[pairs, closed] : SelectedEdgeChains(meshes, pipelines, mesh.GetStoreId(), graphs[wire], false).Chains) {
-            if (pairs.size() < 3u) continue;
-            if (wire && std::ranges::any_of(pairs, [&](const auto &pair) { return surface_vertices.contains(pair[0]); })) continue;
-            plan.Chains.push_back({.InputOffset = uint32_t(plan.Inputs.size()), .Count = uint32_t(pairs.size()), .Closed = uint32_t(closed)});
-            for (const auto &[vertex, source] : pairs) plan.Inputs.push_back(vertex);
+        // The surface chains and then the wire chains, once both completed.
+        struct Joined {
+            std::array<SelectedChains, 2> Chains;
+            uint32_t Remaining{2u};
+            std::unordered_set<uint32_t> SurfaceVertices;
+            std::function<void(EdgeChainPlan)> Then;
+        };
+        auto joined = std::make_shared<Joined>(Joined{.SurfaceVertices = std::move(surface_vertices), .Then = std::move(then)});
+        for (uint32_t wire = 0u; wire < 2u; ++wire) {
+            RecordSelectedEdgeChains(meshes, pipelines, chain, id, graphs[wire], false, [joined, wire](SelectedChains chains) {
+                joined->Chains[wire] = std::move(chains);
+                if (--joined->Remaining) return;
+                EdgeChainPlan plan;
+                for (uint32_t w = 0u; w < 2u; ++w) {
+                    for (const auto &[pairs, closed] : joined->Chains[w].Chains) {
+                        if (pairs.size() < 3u) continue;
+                        if (w && std::ranges::any_of(pairs, [&](const auto &pair) { return joined->SurfaceVertices.contains(pair[0]); })) continue;
+                        plan.Chains.push_back({.InputOffset = uint32_t(plan.Inputs.size()), .Count = uint32_t(pairs.size()), .Closed = uint32_t(closed)});
+                        for (const auto &[vertex, source] : pairs) plan.Inputs.push_back(vertex);
+                    }
+                }
+                ScheduleEdgeChains(plan, true);
+                joined->Then(std::move(plan));
+            });
         }
-    }
-    ScheduleEdgeChains(plan, true);
-    return plan;
+    });
 }

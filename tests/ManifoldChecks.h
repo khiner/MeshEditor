@@ -5,6 +5,7 @@
 #include "mesh/MeshData.h"
 
 #include <manifold/polygon.h>
+#include <numbers>
 #include <numeric>
 
 // Agreement of a mesh record with manifold on the same input, for test targets that link manifold.
@@ -71,6 +72,15 @@ inline std::vector<MeshData> TriangulationPolygons() {
         tilted({{0.f, 0.f}, {3.f, 0.f}, {3.f, 1.f}, {1.7f, 1.2f}, {2.6f, 2.1f}, {2.9f, 3.2f}, {.4f, 3.f}, {1.2f, 1.6f}}),
         face({{0.f, 0.f, 0.f}, {1.f, 0.f, .3f}, {1.1f, 1.f, 0.f}, {0.f, .9f, .4f}}),
         face({{0.f, 0.f, 0.f}, {2.f, .5f, .2f}, {0.f, 1.f, .5f}, {.6f, .5f, -.3f}}),
+        // A concave star with enough corners that a simdgroup clips it together.
+        tilted([] {
+            std::vector<vec2> loop;
+            for (uint32_t i = 0; i < 40u; ++i) {
+                const float angle = 2.f * std::numbers::pi_v<float> * float(i) / 40.f, radius = (i % 2u ? .5f : 1.f) + .1f * std::sin(1.7f * float(i));
+                loop.emplace_back(radius * std::cos(angle), radius * std::sin(angle));
+            }
+            return loop;
+        }()),
     };
 }
 } // namespace test

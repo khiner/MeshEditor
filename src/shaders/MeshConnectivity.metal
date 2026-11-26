@@ -57,6 +57,11 @@ struct ConnContext {
 
     uint2 Tile(uint group_id) const { return Tiles()[Pc.FirstTile + group_id]; }
 };
+// A connectivity kernel's lane and threadgroup, the bindless set and the push constants, and the context of its tile's job.
+#define CONNECTIVITY_ARGS uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]], device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]], constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+#define CONNECTIVITY_CONTEXT const ConnContext ctx{bindless, pc}; const uint2 tile = ctx.Tile(group_id); const MeshConnectivityJob job = ctx.Jobs()[tile.x]
+// Declares the context of a connectivity kernel's job and the thread's index `index` within the job.
+#define CONNECTIVITY_THREAD(index) CONNECTIVITY_CONTEXT; const uint index = tile.y * ScanTileSize + lane
 
 inline uint2 ConnEndpoints(ConnContext ctx, MeshConnectivityJob job, ElementValues<const uint> corners, uint h) { return uint2(corners[ctx.Prev(job, h)], corners[h]); }
 
@@ -80,15 +85,8 @@ inline uint ConnEdgeHash(uint3 key) {
 }
 
 // A job without face starts takes implicit triangle ranges.
-kernel void MeshConnectivityFaces(
-    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const ConnContext ctx{bindless, pc};
-    const uint2 tile = ctx.Tile(group_id);
-    const MeshConnectivityJob job = ctx.Jobs()[tile.x];
-    const uint i = tile.y * ScanTileSize + lane;
+kernel void MeshConnectivityFaces(CONNECTIVITY_ARGS) {
+    CONNECTIVITY_THREAD(i);
     if (i >= job.FaceCount) return;
     const uint f = ctx.Faces(job).Handle(i);
     device packed_uint2 &range = ctx.Ranges(job)[f];
@@ -97,15 +95,8 @@ kernel void MeshConnectivityFaces(
         if (ctx.Halfedges(job).Index(h) != InvalidOffset) ctx.Owners(job)[h] = f;
 }
 
-kernel void MeshConnectivityInit(
-    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const ConnContext ctx{bindless, pc};
-    const uint2 tile = ctx.Tile(group_id);
-    const MeshConnectivityJob job = ctx.Jobs()[tile.x];
-    const uint i = tile.y * ScanTileSize + lane;
+kernel void MeshConnectivityInit(CONNECTIVITY_ARGS) {
+    CONNECTIVITY_THREAD(i);
     if (i <= job.TableMask) ctx.Scratch()[job.TableOffset + i] = ConnEmptySlot;
     if (i < job.VertexCount) {
         const uint v = ctx.Vertices(job).Handle(i);
@@ -118,18 +109,12 @@ kernel void MeshConnectivityInit(
     if (i == 0u) {
         ctx.Scratch()[job.PopcountOffset + job.WordCount] = 0u;
         ctx.Scratch()[job.PopcountOffset + job.ScanWordCount - 1u] = 0u;
+        ctx.Scratch()[job.StateOffset + 2u] = ctx.Scratch()[job.StateOffset + 3u] = 0u;
     }
 }
 
-kernel void MeshConnectivityInsert(
-    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const ConnContext ctx{bindless, pc};
-    const uint2 tile = ctx.Tile(group_id);
-    const MeshConnectivityJob job = ctx.Jobs()[tile.x];
-    const uint i = tile.y * ScanTileSize + lane;
+kernel void MeshConnectivityInsert(CONNECTIVITY_ARGS) {
+    CONNECTIVITY_THREAD(i);
     if (i >= job.HalfedgeCount) return;
     const uint h = ctx.Halfedges(job).Handle(i);
     const auto corners = ctx.Corners(job);
@@ -155,23 +140,20 @@ kernel void MeshConnectivityInsert(
 
 // Each source edge finds its new representative halfedge by key and offers its handle for retention.
 // The source connectivity may read page clones while the destination corners and owners are live.
-kernel void MeshConnectivityMatchEdges(
-    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const ConnContext ctx{bindless, pc};
-    const uint2 tile = ctx.Tile(group_id);
-    const MeshConnectivityJob job = ctx.Jobs()[tile.x];
-    const uint i = tile.y * ScanTileSize + lane;
+// The fourth state word counts the source edges whose first halfedge has no opposite.
+kernel void MeshConnectivityMatchEdges(CONNECTIVITY_ARGS, uint simd_lane [[thread_index_in_simdgroup]]) {
+    CONNECTIVITY_THREAD(i);
     uint match=InvalidOffset;
+    bool open = false;
     if (i < job.SourceEdgeCount) {
         const uint e = ctx.SourceEdges(job).Handle(i);
         const ConnectivityView source{bindless, job.SourceConnectivity};
         const uint h = source.EdgeHalfedge(e);
         const uint f = source.HalfedgeFace(h);
+        const uint opposite = source.Opposite(h);
+        open = opposite == InvalidOffset;
         uint previous;
-        if (f == InvalidOffset) previous = source.Opposite(h);
+        if (f == InvalidOffset) previous = opposite;
         else {
             const uint2 loop = source.FaceHalfedges(f);
             previous = h == loop.x ? loop.y - 1u : h - 1u;
@@ -193,19 +175,13 @@ kernel void MeshConnectivityMatchEdges(
         // The retired-edge run holds each source edge's match until MeshConnectivityRetiredEdges overwrites it.
         ctx.Scratch()[job.RetiredEdgesOffset+i]=match;
     }
+    const uint opens = popcount(uint((simd_vote::vote_t)simd_ballot(open)));
+    if (simd_lane == 0u && opens) atomic_fetch_add_explicit(ctx.AtomicScratch() + job.StateOffset + 3u, opens, memory_order_relaxed);
 }
 
 // Several source edges can match one new edge, and each one other than the lowest retires, as does an edge without a match.
-kernel void MeshConnectivityClassifyEdges(
-    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    uint simd_lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const ConnContext ctx{bindless,pc};
-    const uint2 tile=ctx.Tile(group_id);
-    const MeshConnectivityJob job=ctx.Jobs()[tile.x];
-    const uint i=tile.y*ScanTileSize+lane;
+kernel void MeshConnectivityClassifyEdges(CONNECTIVITY_ARGS, uint simd_lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]]) {
+    CONNECTIVITY_THREAD(i);
     bool retired=false;
     if (i<job.SourceEdgeCount) {
         const uint match=ctx.Scratch()[job.RetiredEdgesOffset+i];
@@ -219,15 +195,8 @@ kernel void MeshConnectivityClassifyEdges(
     }
 }
 
-kernel void MeshConnectivityResolve(
-    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const ConnContext ctx{bindless, pc};
-    const uint2 tile = ctx.Tile(group_id);
-    const MeshConnectivityJob job = ctx.Jobs()[tile.x];
-    const uint i = tile.y * ScanTileSize + lane;
+kernel void MeshConnectivityResolve(CONNECTIVITY_ARGS) {
+    CONNECTIVITY_THREAD(i);
     if (i >= job.HalfedgeCount) return;
     const uint h = ctx.Halfedges(job).Handle(i);
     device uint *rep = ctx.Rep(job);
@@ -241,18 +210,10 @@ kernel void MeshConnectivityResolve(
     }
 }
 
-kernel void MeshConnectivityLink(
-    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    uint simd_lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const ConnContext ctx{bindless, pc};
-    const uint2 tile = ctx.Tile(group_id);
-    const MeshConnectivityJob job = ctx.Jobs()[tile.x];
-    const uint i = tile.y * ScanTileSize + lane;
+kernel void MeshConnectivityLink(CONNECTIVITY_ARGS, uint simd_lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]]) {
+    CONNECTIVITY_THREAD(i);
     device uint *scratch = ctx.Scratch();
-    bool first = false;
+    bool first = false, open = false;
     if (i < job.HalfedgeCount) {
         const uint h = ctx.Halfedges(job).Handle(i);
         const uint representative = ctx.Rep(job)[i];
@@ -260,6 +221,7 @@ kernel void MeshConnectivityLink(
         const uint opposite = h == representative ? partner : (h == partner ? representative : ConnNullHalfedge);
         ctx.Opposites(job)[h] = opposite;
         first = representative == h && ctx.RetainedEdge(job, i) == InvalidOffset;
+        open = representative == h && opposite == ConnNullHalfedge;
     }
     // Every lane votes, so the ballot is the mark word of this simdgroup's 32 consecutive halfedges.
     const uint bits = uint((simd_vote::vote_t)simd_ballot(first));
@@ -268,46 +230,27 @@ kernel void MeshConnectivityLink(
         ctx.EdgeFirstBits(job)[word] = bits;
         scratch[job.PopcountOffset + word] = popcount(bits);
     }
+    // The third state word counts the rebuilt edges whose first halfedge has no opposite.
+    const uint opens = popcount(uint((simd_vote::vote_t)simd_ballot(open)));
+    if (simd_lane == 0u && opens) atomic_fetch_add_explicit(ctx.AtomicScratch() + job.StateOffset + 2u, opens, memory_order_relaxed);
 }
 
-kernel void MeshConnectivityWordBlockSum(
-    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    uint simd_lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
-    threadgroup uint *sums [[threadgroup(0)]]
-) {
-    const ConnContext ctx{bindless, pc};
-    const uint2 tile = ctx.Tile(group_id);
-    const MeshConnectivityJob job = ctx.Jobs()[tile.x];
+kernel void MeshConnectivityWordBlockSum(CONNECTIVITY_ARGS, uint simd_lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]], threadgroup uint *sums [[threadgroup(0)]]) {
+    CONNECTIVITY_CONTEXT;
     ScanBlockSum(
         ctx.Scratch() + job.PopcountOffset, job.ScanWordCount, tile.y, ctx.Scratch() + job.WordBlockOffset,
         lane, simd_lane, simd_group, sums
     );
 }
 
-kernel void MeshConnectivityWordBlockPrefix(
-    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    uint simd_lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
-    threadgroup uint *sums [[threadgroup(0)]]
-) {
+kernel void MeshConnectivityWordBlockPrefix(CONNECTIVITY_ARGS, uint simd_lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]], threadgroup uint *sums [[threadgroup(0)]]) {
     const ConnContext ctx{bindless, pc};
     const MeshConnectivityJob job = ctx.Jobs()[group_id];
     ScanBlockPrefix(ctx.Scratch() + job.WordBlockOffset, job.WordBlockCount, lane, simd_lane, simd_group, sums);
 }
 
-kernel void MeshConnectivityRanks(
-    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    uint simd_lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
-    threadgroup uint *sums [[threadgroup(0)]]
-) {
-    const ConnContext ctx{bindless, pc};
-    const uint2 tile = ctx.Tile(group_id);
-    const MeshConnectivityJob job = ctx.Jobs()[tile.x];
+kernel void MeshConnectivityRanks(CONNECTIVITY_ARGS, uint simd_lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]], threadgroup uint *sums [[threadgroup(0)]]) {
+    CONNECTIVITY_CONTEXT;
     ScanBlockOffsets(
         ctx.Scratch() + job.PopcountOffset, job.ScanWordCount, tile.y, ctx.Scratch() + job.WordBlockOffset, ctx.EdgeFirstRanks(job),
         lane, simd_lane, simd_group, sums
@@ -315,11 +258,7 @@ kernel void MeshConnectivityRanks(
 }
 
 // The rank pass has written both terminal prefixes, whichever threadgroups scanned their words.
-kernel void MeshConnectivityCounts(
-    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
+kernel void MeshConnectivityCounts(CONNECTIVITY_ARGS) {
     if (lane != 0u) return;
     const ConnContext ctx{bindless, pc};
     const MeshConnectivityJob job = ctx.Jobs()[group_id];
@@ -328,15 +267,8 @@ kernel void MeshConnectivityCounts(
     ctx.Scratch()[job.StateOffset + 1u] = ctx.EdgeFirstRanks(job)[job.ScanWordCount - 1u] - added;
 }
 
-kernel void MeshConnectivityRetiredEdges(
-    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const ConnContext ctx{bindless, pc};
-    const uint2 tile = ctx.Tile(group_id);
-    const MeshConnectivityJob job = ctx.Jobs()[tile.x];
-    const uint i = tile.y * ScanTileSize + lane;
+kernel void MeshConnectivityRetiredEdges(CONNECTIVITY_ARGS) {
+    CONNECTIVITY_THREAD(i);
     if (i >= job.SourceEdgeCount) return;
     const uint word = i >> 5u, bit = i & 31u;
     const uint bits = ctx.Scratch()[job.BitsOffset + job.WordCount + word];
@@ -347,15 +279,8 @@ kernel void MeshConnectivityRetiredEdges(
     if (job.RetiredEdgeWork.Storage.Slot != InvalidSlot) MarkWork(bindless,job.RetiredEdgeWork,ctx.SourceEdges(job).Handle(i));
 }
 
-kernel void MeshConnectivityEdgeTables(
-    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant TiledJobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const ConnContext ctx{bindless, pc};
-    const uint2 tile = ctx.Tile(group_id);
-    const MeshConnectivityJob job = ctx.Jobs()[tile.x];
-    const uint i = tile.y * ScanTileSize + lane;
+kernel void MeshConnectivityEdgeTables(CONNECTIVITY_ARGS) {
+    CONNECTIVITY_THREAD(i);
     if (i >= job.HalfedgeCount) return;
     const uint h = ctx.Halfedges(job).Handle(i);
     const uint representative = ctx.Rep(job)[i];

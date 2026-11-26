@@ -58,10 +58,7 @@ fragment float2 MeshletSilhouetteFragment(
     float4 position [[position]],
     uint primitive_id [[primitive_id]],
     bool front_facing [[front_facing]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    SCENE_ARGS,
     constant VisibilityShadingPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const uint object_id = CoveredMeshletObject(Scene{bindless, view, theme, workspace}, pc, primitive_id, position.xy, front_facing, false);
@@ -73,10 +70,7 @@ kernel void VisibilityObjectSelectionKernel(
     uint2 gid [[thread_position_in_grid]],
     texture2d<uint, access::read> visibility [[texture(0)]],
     texture2d<float, access::read> depth [[texture(1)]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    SCENE_ARGS,
     constant VisibilitySelectionPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     if (any(gid >= pc.Extent)) return;
@@ -93,10 +87,7 @@ fragment void MeshletObjectPickFragment(
     float4 position [[position]],
     uint primitive_id [[primitive_id]],
     bool front_facing [[front_facing]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    SCENE_ARGS,
     constant VisibilitySelectionPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const uint object_id = CoveredMeshletObject(

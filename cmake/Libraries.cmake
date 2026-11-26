@@ -43,6 +43,14 @@ mesheditor_library(mesheditor_support src/File.cpp src/Paths.cpp src/Compress.cp
 target_include_directories(mesheditor_support SYSTEM PRIVATE lib/basis_universal/zstd)
 target_link_libraries(mesheditor_support PRIVATE basisu_transcoder)
 
+mesheditor_library(MeshEditorMaterialX
+    src/materialx/Flatten.cpp
+    src/materialx/Library.cpp
+    src/materialx/MetalSource.cpp
+    src/materialx/Xml.cpp
+)
+target_link_libraries(MeshEditorMaterialX PRIVATE mesheditor_support)
+
 mesheditor_library(mesheditor_image_codecs src/image/ImageDecode.cpp src/image/ImageEncode.cpp)
 target_include_directories(mesheditor_image_codecs SYSTEM PRIVATE lib/lunasvg/plutovg/source)
 target_link_libraries(mesheditor_image_codecs PRIVATE mesheditor_support webp)
@@ -74,6 +82,7 @@ mesheditor_library(MeshEditorMetal
     src/metal/MslSource.cpp
     src/metal/PassChain.cpp
     src/metal/PassTimer.cpp
+    src/metal/Program.cpp
     src/metal/RenderTarget.cpp
     src/metal/Shader.cpp
     src/metal/SparseBuffer.cpp
@@ -132,6 +141,8 @@ mesheditor_library(MeshEditorMesh
     src/mesh/VertexWeldGpu.cpp
 )
 
+mesheditor_library(MeshEditorOps src/ops/Compile.cpp src/ops/Evaluate.cpp)
+
 mesheditor_library(MeshEditorScene
     src/TransformMath.cpp
     src/animation/Clips.cpp
@@ -154,6 +165,8 @@ mesheditor_library(MeshEditorRender
     src/render/ClusterLod.cpp
     src/render/ClusterLodRepair.cpp
     src/render/GpuBufferOps.cpp
+    src/render/MaterialPatterns.cpp
+    src/render/MaterialPreview.cpp
     src/render/Materials.cpp
     src/render/GpuScene.cpp
     src/render/MeshletPatchWork.cpp
@@ -241,7 +254,9 @@ mesheditor_library(MeshEditorEditor
     src/procedure/Plan.cpp
     src/procedure/Subnetwork.cpp
     src/procedure/Macros.cpp
+    src/procedure/MaterialGraphs.cpp
     src/procedure/Network.cpp
+    src/procedure/OpNodes.cpp
     src/procedure/SceneReferences.cpp
     src/scene/HierarchyInstance.cpp
     src/scene/HierarchyGeometry.cpp
@@ -301,6 +316,7 @@ endif()
 target_include_directories(MeshEditorMetal SYSTEM PUBLIC lib/metal-cpp)
 target_link_libraries(MeshEditorMetal PUBLIC MeshEditorProjectStore mesheditor_support mesheditor_imgui PRIVATE "-framework Metal" "-framework Foundation" "-framework QuartzCore")
 target_link_libraries(MeshEditorMesh PUBLIC MeshEditorMetal PRIVATE meshoptimizer mesheditor_serialization)
+target_link_libraries(MeshEditorOps PUBLIC MeshEditorMesh MeshEditorMaterialX)
 target_link_libraries(MeshEditorScene PUBLIC MeshEditorMesh)
 target_link_libraries(MeshEditorRender PUBLIC MeshEditorScene PRIVATE meshoptimizer mesheditor_image_codecs basisu_transcoder)
 target_link_libraries(MeshEditorPhysics PUBLIC MeshEditorScene PRIVATE rbp)
@@ -309,7 +325,7 @@ target_link_libraries(MeshEditorAudio PUBLIC MeshEditorScene PRIVATE mesheditor_
 target_link_libraries(MeshEditorAssets PUBLIC MeshEditorRender PRIVATE meshoptimizer MeshEditorAudio fastgltf::fastgltf simdjson::simdjson tinyobjloader tinyply mesheditor_image_codecs)
 target_include_directories(MeshEditorAssets SYSTEM PRIVATE lib/tinyobjloader lib/tinyply/source)
 target_include_directories(MeshEditorEditor SYSTEM PUBLIC lib/readerwriterqueue)
-target_link_libraries(MeshEditorEditor PUBLIC MeshEditorProjectStore mesheditor_serialization MeshEditorAssets MeshEditorPhysics MeshEditorAudio)
+target_link_libraries(MeshEditorEditor PUBLIC MeshEditorProjectStore mesheditor_serialization MeshEditorAssets MeshEditorPhysics MeshEditorAudio MeshEditorOps)
 target_link_libraries(MeshEditorPlatform PUBLIC MeshEditorMetal PRIVATE "-framework AppKit" "-framework UniformTypeIdentifiers" "-framework GameController")
 target_link_libraries(MeshEditorUi PUBLIC MeshEditorEditor MeshEditorPlatform mesheditor_implot PRIVATE lunasvg)
 target_include_directories(MeshEditorUi SYSTEM PUBLIC lib/imspinner)

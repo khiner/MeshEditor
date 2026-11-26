@@ -3,6 +3,7 @@
 #include "render/RenderSchema.h"
 #include "state/Entity.h"
 
+#include <span>
 #include <string>
 #include <vector>
 
@@ -46,3 +47,5 @@ struct MaterialVariants {
 struct PbrMeshFeatures {
     uint32_t Mask{0};
 };
+// The PbrFeature bits of the lobes the values and textures of the material records at the indices make live.
+uint32_t PbrFeaturesOf(std::span<const PBRMaterial> materials, std::span<const uint32_t> material_indices);

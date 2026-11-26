@@ -11,10 +11,7 @@ kernel void PosePrepassKernel(
     uint group_id [[threadgroup_position_in_grid]],
     threadgroup float3 *shared_min [[threadgroup(0)]],
     threadgroup float3 *shared_max [[threadgroup(1)]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportThemeUbo &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    SCENE_ARGS,
     constant BoundsReducePushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};

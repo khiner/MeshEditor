@@ -12,7 +12,9 @@
 constant float BoolPlaneTolerance = 1e-6f;
 constant uint BoolNoCollision = 0xffffffffu;
 
-using BooleanContext = JobContext<BooleanJob>;
+using BooleanContext = TableJobContext<BooleanJob>;
+// Declares a job table kernel's context, its tile's job and the thread's index `index` within the job.
+#define BOOLEAN_THREAD(index) JOB_THREAD(job_record, index); const BooleanContext ctx{b, job_record}; device const BooleanJob &job = ctx.Job()
 
 // Whether a P edge and a Q edge cross in the xy projection, with the crossing's (x, y) and each edge's z there.
 struct BoolCross {
@@ -154,13 +156,8 @@ inline BoolHit Kernel12(BoolGeometry g, bool forward, uint a1, uint b2) {
 }
 
 // Transforms vertex positions and normals into P's space and expands each record's bounds.
-kernel void BooleanVertices(
-    uint v [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const BooleanContext ctx{b, pc};
-    const BooleanJob job = ctx.Job();
+kernel void BooleanVertices(JOB_TABLE_ARGS(SlotOffset)) {
+    BOOLEAN_THREAD(v);
     if (v >= BoolVertexCount(job)) return;
     const uint side = v < job.Vertices[0] ? 0u : 1u;
     const uint handle = ElementWorkDomain{b, job.VertexWork[side]}.Handle(side ? v - job.Vertices[0] : v);
@@ -211,13 +208,8 @@ kernel void BooleanVertices(
     }
 }
 
-kernel void BooleanFaceCounts(
-    uint f [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const BooleanContext ctx{b, pc};
-    const BooleanJob job = ctx.Job();
+kernel void BooleanFaceCounts(JOB_TABLE_ARGS(SlotOffset)) {
+    BOOLEAN_THREAD(f);
     const uint faces = BoolFaceCount(job);
     if (f > faces) return;
     device uint *first = ctx.Run<uint>(job.FaceTriangleFirst);
@@ -231,13 +223,8 @@ kernel void BooleanFaceCounts(
     first[f] = range.y - range.x - 2u;
 }
 
-kernel void BooleanTriangles(
-    uint f [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const BooleanContext ctx{b, pc};
-    const BooleanJob job = ctx.Job();
+kernel void BooleanTriangles(JOB_TABLE_ARGS(SlotOffset)) {
+    BOOLEAN_THREAD(f);
     if (f >= BoolFaceCount(job)) return;
     const uint side = f < job.Faces[0] ? 0u : 1u;
     const uint handle = ElementWorkDomain{b, job.FaceWork[side]}.Handle(side ? f - job.Faces[0] : f);
@@ -264,7 +251,7 @@ kernel void BooleanTriangles(
     }
 }
 
-inline uint BoolFindSide(BooleanContext ctx, BooleanJob job, uint f, uint from, uint to) {
+inline uint BoolFindSide(BooleanContext ctx, device const BooleanJob &job, uint f, uint from, uint to) {
     const uint first = ctx.Run<uint>(job.FaceTriangleFirst)[f], end = ctx.Run<uint>(job.FaceTriangleFirst)[f + 1u];
     device const packed_uint3 *corners = ctx.Run<packed_uint3>(job.TriangleCorners);
     for (uint t = first; t < end; ++t) {
@@ -276,13 +263,8 @@ inline uint BoolFindSide(BooleanContext ctx, BooleanJob job, uint f, uint from, 
 }
 
 // Pairs each triangle side with the side running back along it: across its face edge, or across its face's diagonal.
-kernel void BooleanPairs(
-    uint h [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const BooleanContext ctx{b, pc};
-    const BooleanJob job = ctx.Job();
+kernel void BooleanPairs(JOB_TABLE_ARGS(SlotOffset)) {
+    BOOLEAN_THREAD(h);
     if (h >= 3u * BoolTriangleCount(job)) return;
     const uint t = h / 3u, i = h % 3u;
     const uint3 corners = uint3(ctx.Run<packed_uint3>(job.TriangleCorners)[t]);
@@ -310,13 +292,8 @@ inline void BoolTriangleBox(BoolGeometry g, uint t, thread float3 &low, thread f
     high = max(max(a, c), d);
 }
 
-kernel void BooleanMorton(
-    uint t [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const BooleanContext ctx{b, pc};
-    const BooleanJob job = ctx.Job();
+kernel void BooleanMorton(JOB_TABLE_ARGS(SlotOffset)) {
+    BOOLEAN_THREAD(t);
     if (t >= BoolTriangleCount(job)) return;
     const uint side = t < job.Triangles[0] ? 0u : 1u;
     const uint local = side ? t - job.Triangles[0] : t;
@@ -335,16 +312,12 @@ kernel void BooleanMorton(
     ctx.Run<uint>(job.Colliders[side].Order)[local] = local;
 }
 
-kernel void BooleanRefit(
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]],
-    uint3 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]]
-) {
-    const BooleanContext ctx{b, pc};
-    const BooleanJob job = ctx.Job();
-    const uint side = group.z, leaf = group.x * 256u + lane;
+// One thread per leaf of both colliders, P's leaves first.
+kernel void BooleanRefit(JOB_TABLE_ARGS(SlotOffset)) {
+    BOOLEAN_THREAD(i);
+    if (i >= BoolTriangleCount(job)) return;
+    const uint side = i < job.Triangles[0] ? 0u : 1u, leaf = side ? i - job.Triangles[0] : i;
     const ColliderRuns runs = job.Colliders[side];
-    if (leaf >= runs.Leaves) return;
     const BoolGeometry g = Geometry(ctx, job);
     const uint t = ctx.Run<uint>(runs.Order)[leaf] + (side ? job.Triangles[0] : 0u);
     float3 box_low, box_high;
@@ -353,11 +326,12 @@ kernel void BooleanRefit(
 }
 
 template<typename Visit>
-inline uint BoolEdgeHits(BooleanContext ctx, BooleanJob job, BoolGeometry g, uint h, Visit visit) {
+inline uint BoolEdgeHits(BooleanContext ctx, device const BooleanJob &job, BoolGeometry g, uint h, Visit visit) {
     if (!g.Forward(h)) return 0u;
     const bool p_edge = h < 3u * job.Triangles[0];
     const float3 a = g.Position(g.Start(h)), c = g.Position(g.End(h));
-    const float3 low = min(a, c), high = max(a, c);
+    // The box widens by the tie tolerance, since the predicates tie values within it.
+    const float3 low = min(a, c) - g.Tol, high = max(a, c) + g.Tol;
     uint count = 0u;
     BoolTraverse(TreeOf(ctx, job.Colliders[p_edge ? 1u : 0u], p_edge ? job.Triangles[0] : 0u), [&](device const float *box) { return BoxOverlaps(box, low, high); }, [&](uint t) {
         const BoolHit hit = Kernel12(g, p_edge, h, t);
@@ -368,26 +342,16 @@ inline uint BoolEdgeHits(BooleanContext ctx, BooleanJob job, BoolGeometry g, uin
     return count;
 }
 
-kernel void BooleanIntersectCount(
-    uint h [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const BooleanContext ctx{b, pc};
-    const BooleanJob job = ctx.Job();
+kernel void BooleanIntersectCount(JOB_TABLE_ARGS(SlotOffset)) {
+    BOOLEAN_THREAD(h);
     const uint halfedges = 3u * BoolTriangleCount(job);
     if (h > halfedges) return;
     device uint *first = ctx.Run<uint>(job.IntersectionFirst);
     first[h] = h == halfedges ? 0u : BoolEdgeHits(ctx, job, Geometry(ctx, job), h, [](uint, uint, BoolHit) {});
 }
 
-kernel void BooleanIntersectEmit(
-    uint h [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const BooleanContext ctx{b, pc};
-    const BooleanJob job = ctx.Job();
+kernel void BooleanIntersectEmit(JOB_TABLE_ARGS(SlotOffset)) {
+    BOOLEAN_THREAD(h);
     if (h >= 3u * BoolTriangleCount(job)) return;
     const uint first = ctx.Run<uint>(job.IntersectionFirst)[h];
     device uint *records = ctx.Run<uint>(job.IntersectionRecords);
@@ -403,29 +367,20 @@ kernel void BooleanIntersectEmit(
 }
 
 // Whether a halfedge crosses the other record, which disconnects its edge component.
-inline bool BoolBroken(BooleanContext ctx, BooleanJob job, uint h) {
+inline bool BoolBroken(BooleanContext ctx, device const BooleanJob &job, uint h) {
     device const uint *first = ctx.Run<uint>(job.IntersectionFirst);
     return first[h + 1u] != first[h];
 }
 
-kernel void BooleanLabelInit(
-    uint v [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const BooleanContext ctx{b, pc};
-    const BooleanJob job = ctx.Job();
+kernel void BooleanLabelInit(JOB_TABLE_ARGS(SlotOffset)) {
+    BOOLEAN_THREAD(v);
     if (v < BoolVertexCount(job)) ctx.Run<uint>(job.Labels)[v] = v;
 }
 
-kernel void BooleanLink(
-    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const BooleanContext ctx{b, pc};
-    const BooleanJob job = ctx.Job();
-    const uint h = group_id * 256u + lane;
+kernel void BooleanLink(JOB_TABLE_ARGS(SlotOffset)) {
+    BOOLEAN_THREAD(h);
+    device uint *state = ctx.Run<uint>(job.LabelState);
+    if (state[0]) return;
     if (h >= 3u * BoolTriangleCount(job)) return;
     const BoolGeometry g = Geometry(ctx, job);
     if (!g.Forward(h) || BoolBroken(ctx, job, h)) return;
@@ -435,53 +390,45 @@ kernel void BooleanLink(
     const uint targets[4] = {a, c, la, lc};
     bool changed = false;
     for (uint i = 0u; i < 4u; ++i) changed = atomic_fetch_min_explicit(&atomic_labels[targets[i]], m, memory_order_relaxed) > m || changed;
-    if (changed) ctx.Run<uint>(job.LabelArguments)[6] = 1u;
+    if (changed) state[1] = 1u;
 }
 
-kernel void BooleanJump(
-    uint lane [[thread_index_in_threadgroup]], uint group_id [[threadgroup_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const BooleanContext ctx{b, pc};
-    const BooleanJob job = ctx.Job();
-    const uint v = group_id * 256u + lane;
+kernel void BooleanJump(JOB_TABLE_ARGS(SlotOffset)) {
+    BOOLEAN_THREAD(v);
+    device uint *state = ctx.Run<uint>(job.LabelState);
+    if (state[0]) return;
     if (v >= BoolVertexCount(job)) return;
     device uint *labels = ctx.Run<uint>(job.Labels);
     const uint label = labels[v], root = labels[label];
     if (root == label) return;
     labels[v] = root;
-    ctx.Run<uint>(job.LabelArguments)[6] = 1u;
+    state[1] = 1u;
 }
 
-// Zeroes the label rounds' indirect dispatch arguments once a round changes nothing.
+// Marks each job's labels converged once a round changes none of them, one thread per job.
 kernel void BooleanConverge(
-    uint lane [[thread_index_in_threadgroup]],
+    uint j [[thread_position_in_grid]],
     device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+    constant JobTablePushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
-    if (lane != 0u) return;
-    const BooleanContext ctx{b, pc};
-    device uint *arguments = ctx.Run<uint>(ctx.Job().LabelArguments);
-    if (arguments[6] == 0u)
-        for (uint w = 0u; w < 6u; ++w) arguments[w] = 0u;
-    arguments[6] = 0u;
+    if (j >= BindlessBuffer(uint, b.Buffer, pc.Tiles.Slot)[pc.Tiles.Offset]) return;
+    const SlotOffset record = reinterpret_cast<device const SlotOffset *>(BindlessBuffer(uint, b.Buffer, pc.Jobs.Slot) + pc.Jobs.Offset)[j];
+    const JobRuns storage{BindlessBufferMutable(uint, b.Buffer, record.Slot)};
+    device uint *state = storage.Run<uint>(storage.Run<const BooleanJob>(record.Offset)->LabelState);
+    if (state[1] == 0u) state[0] = 1u;
+    state[1] = 0u;
 }
 
 // Each component root's winding number in the other record: the signed crossings of the other's triangles above it along z.
-kernel void BooleanWinding(
-    uint v [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const BooleanContext ctx{b, pc};
-    const BooleanJob job = ctx.Job();
+kernel void BooleanWinding(JOB_TABLE_ARGS(SlotOffset)) {
+    BOOLEAN_THREAD(v);
     if (v >= BoolVertexCount(job) || ctx.Run<uint>(job.Labels)[v] != v) return;
     const bool forward = v < job.Vertices[0];
     const BoolGeometry g = Geometry(ctx, job);
     const float2 point = g.Position(v).xy;
+    const float3 low = float3(point - g.Tol, -INFINITY), high = float3(point + g.Tol, INFINITY);
     int winding = 0;
-    BoolTraverse(TreeOf(ctx, job.Colliders[forward ? 1u : 0u], forward ? job.Triangles[0] : 0u), [&](device const float *box) { return BoxContainsXY(box, point); }, [&](uint t) {
+    BoolTraverse(TreeOf(ctx, job.Colliders[forward ? 1u : 0u], forward ? job.Triangles[0] : 0u), [&](device const float *box) { return BoxOverlaps(box, low, high); }, [&](uint t) {
         BoolFaceEdge edges[3];
         LoadFaceEdges(g, t, edges);
         const BoolPierce pierce = Kernel02(g, forward, v, edges);
@@ -490,13 +437,8 @@ kernel void BooleanWinding(
     ctx.Run<int>(job.Windings)[v] = forward ? winding : -winding;
 }
 
-kernel void BooleanInclusion(
-    uint e [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const BooleanContext ctx{b, pc};
-    const BooleanJob job = ctx.Job();
+kernel void BooleanInclusion(JOB_TABLE_ARGS(SlotOffset)) {
+    BOOLEAN_THREAD(e);
     const uint vertices = BoolVertexCount(job);
     if (e >= vertices + job.Intersections) return;
     const int c1 = job.Operation == BooleanOperation::Intersection ? 0 : 1, c2 = job.Operation == BooleanOperation::Union ? 1 : 0;
@@ -512,7 +454,7 @@ kernel void BooleanInclusion(
 // Visits each member of the new edge group of P triangle p and Q triangle q: an intersection of an edge of one with the other, and its side.
 // Side zero is the member's own halfedge's triangle, and side one its pair's.
 template<typename Visit>
-inline void BoolGroupMembers(BooleanContext ctx, BooleanJob job, BoolGeometry g, uint p, uint q, Visit visit) {
+inline void BoolGroupMembers(BooleanContext ctx, device const BooleanJob &job, BoolGeometry g, uint p, uint q, Visit visit) {
     device const uint *first = ctx.Run<uint>(job.IntersectionFirst);
     for (uint pass = 0u; pass < 2u; ++pass) {
         const uint face = pass ? q : p, other = pass ? p : q;
@@ -523,20 +465,15 @@ inline void BoolGroupMembers(BooleanContext ctx, BooleanJob job, BoolGeometry g,
         }
     }
 }
-inline uint2 BoolGroupOf(BooleanContext ctx, BooleanJob job, BoolGeometry g, uint member) {
+inline uint2 BoolGroupOf(BooleanContext ctx, device const BooleanJob &job, BoolGeometry g, uint member) {
     const uint k = member / 2u, h = BoolRecordHalfedge(ctx, job, k);
     const uint face = member % 2u ? g.Pair(h) / 3u : h / 3u, t = BoolRecordTriangle(ctx, job, k);
     return k < job.FirstIntersections ? uint2(face, t) : uint2(t, face);
 }
 
 // A group's owner is its lowest intersection side.
-kernel void BooleanCounts(
-    uint i [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const BooleanContext ctx{b, pc};
-    const BooleanJob job = ctx.Job();
+kernel void BooleanCounts(JOB_TABLE_ARGS(SlotOffset)) {
+    BOOLEAN_THREAD(i);
     const uint vertices = BoolVertexCount(job), triangles = BoolTriangleCount(job), sides = 2u * job.Intersections, entries = vertices + job.Intersections;
     const uint total = 4u * triangles + sides + entries;
     if (i > total) return;
@@ -555,9 +492,9 @@ kernel void BooleanCounts(
         counts[i] = count;
     } else if (i < 4u * triangles + sides) {
         const uint member = i - 4u * triangles;
-        const uint2 group = BoolGroupOf(ctx, job, g, member);
+        const uint2 edge_group = BoolGroupOf(ctx, job, g, member);
         uint owner = InvalidOffset, count = 0u;
-        BoolGroupMembers(ctx, job, g, group.x, group.y, [&](uint k, uint side) {
+        BoolGroupMembers(ctx, job, g, edge_group.x, edge_group.y, [&](uint k, uint side) {
             owner = min(owner, 2u * k + side);
             count += BoolCount(ctx, job, vertices + k);
         });
@@ -566,13 +503,8 @@ kernel void BooleanCounts(
     else counts[i] = 0u;
 }
 
-kernel void BooleanIntersectionSides(
-    uint k [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const BooleanContext ctx{b, pc};
-    const BooleanJob job = ctx.Job();
+kernel void BooleanIntersectionSides(JOB_TABLE_ARGS(SlotOffset)) {
+    BOOLEAN_THREAD(k);
     if (k >= job.Intersections) return;
     const BoolGeometry g = Geometry(ctx, job);
     const uint count = BoolCount(ctx, job, BoolVertexCount(job) + k), h = BoolRecordHalfedge(ctx, job, k);
@@ -581,13 +513,8 @@ kernel void BooleanIntersectionSides(
     for (uint i = 0u; i < 3u; ++i) atomic_fetch_add_explicit(&counts[triangles[i]], count, memory_order_relaxed);
 }
 
-kernel void BooleanOutputs(
-    uint i [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const BooleanContext ctx{b, pc};
-    const BooleanJob job = ctx.Job();
+kernel void BooleanOutputs(JOB_TABLE_ARGS(SlotOffset)) {
+    BOOLEAN_THREAD(i);
     if (i < BoolVertexCount(job) + job.Intersections) {
         const uint first = BoolOutputFirst(ctx, job, i), count = BoolCount(ctx, job, i);
         for (uint j = 0u; j < count; ++j) ctx.Run<uint>(job.OutputEntries)[first + j] = i;
@@ -596,7 +523,7 @@ kernel void BooleanOutputs(
 }
 
 // Appends a polygon halfedge to triangle t, and fails the chain when t's polygon is full.
-inline void BoolAppend(BooleanContext ctx, BooleanJob job, uint t, uint start, uint end, uint source) {
+inline void BoolAppend(BooleanContext ctx, device const BooleanJob &job, uint t, uint start, uint end, uint source) {
     const uint slot = atomic_fetch_add_explicit(ctx.Run<atomic_uint>(job.Cursors) + t, 1u, memory_order_relaxed);
     if (slot >= BoolPolygonFirst(ctx, job, t + 1u)) {
         ctx.Fail();
@@ -607,20 +534,15 @@ inline void BoolAppend(BooleanContext ctx, BooleanJob job, uint t, uint start, u
     polygon[1] = end;
     polygon[2] = source;
 }
-inline void BoolAppendEdge(BooleanContext ctx, BooleanJob job, uint h, uint pair, uint from, uint to) {
+inline void BoolAppendEdge(BooleanContext ctx, device const BooleanJob &job, uint h, uint pair, uint from, uint to) {
     device const uint *sources = ctx.Run<uint>(job.EdgeSources);
     BoolAppend(ctx, job, h / 3u, from, to, sources[h]);
     BoolAppend(ctx, job, pair / 3u, to, from, sources[pair]);
 }
 
 // Each unbroken forward edge's copies join both its triangles' polygons, reversed where its start's inclusion is negative.
-kernel void BooleanWholeEdges(
-    uint h [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const BooleanContext ctx{b, pc};
-    const BooleanJob job = ctx.Job();
+kernel void BooleanWholeEdges(JOB_TABLE_ARGS(SlotOffset)) {
+    BOOLEAN_THREAD(h);
     if (h >= 3u * BoolTriangleCount(job)) return;
     const BoolGeometry g = Geometry(ctx, job);
     if (!g.Forward(h) || BoolBroken(ctx, job, h)) return;
@@ -657,13 +579,8 @@ inline void BoolPairUp(BooleanContext ctx, device BoolEdgePos *entries, uint cou
 }
 
 // Each broken forward edge keeps the stretches between its crossings and kept ends, ordered along it, in both its triangles' polygons.
-kernel void BooleanPartialEdges(
-    uint h [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const BooleanContext ctx{b, pc};
-    const BooleanJob job = ctx.Job();
+kernel void BooleanPartialEdges(JOB_TABLE_ARGS(SlotOffset)) {
+    BOOLEAN_THREAD(h);
     if (h >= 3u * BoolTriangleCount(job)) return;
     const BoolGeometry g = Geometry(ctx, job);
     if (!g.Forward(h) || !BoolBroken(ctx, job, h)) return;
@@ -685,24 +602,19 @@ kernel void BooleanPartialEdges(
 }
 
 // Each new edge group's owner pairs its crossings along the group's longest extent, with opposite segment directions in P and Q.
-kernel void BooleanNewEdges(
-    uint member [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const BooleanContext ctx{b, pc};
-    const BooleanJob job = ctx.Job();
+kernel void BooleanNewEdges(JOB_TABLE_ARGS(SlotOffset)) {
+    BOOLEAN_THREAD(member);
     if (member >= 2u * job.Intersections) return;
     const BoolGeometry g = Geometry(ctx, job);
-    const uint2 group = BoolGroupOf(ctx, job, g, member);
+    const uint2 edge_group = BoolGroupOf(ctx, job, g, member);
     uint owner = InvalidOffset;
-    BoolGroupMembers(ctx, job, g, group.x, group.y, [&](uint k, uint side) { owner = min(owner, 2u * k + side); });
+    BoolGroupMembers(ctx, job, g, edge_group.x, edge_group.y, [&](uint k, uint side) { owner = min(owner, 2u * k + side); });
     if (owner != member) return;
     device BoolEdgePos *entries = ctx.Run<BoolEdgePos>(job.NewEdges) + BoolGroupFirst(ctx, job, member);
     const uint vertices = BoolVertexCount(job);
     float3 low = float3(INFINITY), high = float3(-INFINITY);
     uint count = 0u;
-    BoolGroupMembers(ctx, job, g, group.x, group.y, [&](uint k, uint side) {
+    BoolGroupMembers(ctx, job, g, edge_group.x, edge_group.y, [&](uint k, uint side) {
         const int inclusion = ctx.Run<int>(job.Inclusion)[vertices + k];
         // A P crossing starts its segment for nonnegative inclusion, and a Q crossing for negative inclusion.
         const bool direction = inclusion < 0, first_record = k < job.FirstIntersections;
@@ -716,8 +628,8 @@ kernel void BooleanNewEdges(
     const uint axis = size.x > size.y && size.x > size.z ? 0u : size.y > size.z ? 1u : 2u;
     for (uint i = 0u; i < count; ++i) entries[i].Position = BoolRecordPosition(ctx, job, entries[i].Collision)[axis];
     BoolPairUp(ctx, entries, count, [&](uint from, uint to) {
-        BoolAppend(ctx, job, group.x, from, to, InvalidOffset);
-        BoolAppend(ctx, job, group.y, to, from, InvalidOffset);
+        BoolAppend(ctx, job, edge_group.x, from, to, InvalidOffset);
+        BoolAppend(ctx, job, edge_group.y, to, from, InvalidOffset);
     });
 }
 
@@ -731,13 +643,8 @@ inline float2 BoolProject(float3 normal, float3 p) {
 
 // A triangle emits itself, and a quad the counterclockwise pair of triangles across its shorter diagonal.
 // Any other polygon ear-clips with its holes joined.
-kernel void BooleanFaces(
-    uint t [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const BooleanContext ctx{b, pc};
-    const BooleanJob job = ctx.Job();
+kernel void BooleanFaces(JOB_TABLE_ARGS(SlotOffset)) {
+    BOOLEAN_THREAD(t);
     if (t >= BoolTriangleCount(job)) return;
     device uint *triangle_counts = ctx.Run<uint>(job.PolygonTriangleCounts);
     triangle_counts[t] = 0u;

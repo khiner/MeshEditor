@@ -4,9 +4,9 @@
 #include "OrderedFloat.metal"
 #include "gpu/MeshBoolean.h"
 
-inline uint BoolVertexCount(BooleanJob job) { return job.Vertices[0] + job.Vertices[1]; }
-inline uint BoolFaceCount(BooleanJob job) { return job.Faces[0] + job.Faces[1]; }
-inline uint BoolTriangleCount(BooleanJob job) { return job.Triangles[0] + job.Triangles[1]; }
+inline uint BoolVertexCount(device const BooleanJob &job) { return job.Vertices[0] + job.Vertices[1]; }
+inline uint BoolFaceCount(device const BooleanJob &job) { return job.Faces[0] + job.Faces[1]; }
+inline uint BoolTriangleCount(device const BooleanJob &job) { return job.Triangles[0] + job.Triangles[1]; }
 
 constant uint BoolRealOut = 0x80000000u; // A polygon triangle corner whose side to the next corner is its halfedge
 
@@ -33,7 +33,7 @@ struct BoolGeometry {
     uint Pair(uint h) const { return Pairs[h]; }
     bool Forward(uint h) const { return Start(h) < End(h); }
 };
-inline BoolGeometry Geometry(JobRuns ctx, BooleanJob job) {
+inline BoolGeometry Geometry(JobRuns ctx, device const BooleanJob &job) {
     device const uint *bounds = ctx.Run<uint>(job.Bounds);
     float scale = INFINITY;
     for (uint side = 0u; side < 2u; ++side) {
@@ -47,24 +47,24 @@ inline BoolGeometry Geometry(JobRuns ctx, BooleanJob job) {
         job.Vertices[0], tol, job.Operation == BooleanOperation::Union ? 1.125f : -1.125f};
 }
 
-inline uint BoolRecordHalfedge(JobRuns ctx, BooleanJob job, uint k) { return ctx.Run<uint>(job.IntersectionRecords)[6u * k]; }
-inline uint BoolRecordTriangle(JobRuns ctx, BooleanJob job, uint k) { return ctx.Run<uint>(job.IntersectionRecords)[6u * k + 1u]; }
-inline int BoolRecordCrossing(JobRuns ctx, BooleanJob job, uint k) { return as_type<int>(ctx.Run<uint>(job.IntersectionRecords)[6u * k + 2u]); }
-inline float3 BoolRecordPosition(JobRuns ctx, BooleanJob job, uint k) {
+inline uint BoolRecordHalfedge(JobRuns ctx, device const BooleanJob &job, uint k) { return ctx.Run<uint>(job.IntersectionRecords)[6u * k]; }
+inline uint BoolRecordTriangle(JobRuns ctx, device const BooleanJob &job, uint k) { return ctx.Run<uint>(job.IntersectionRecords)[6u * k + 1u]; }
+inline int BoolRecordCrossing(JobRuns ctx, device const BooleanJob &job, uint k) { return as_type<int>(ctx.Run<uint>(job.IntersectionRecords)[6u * k + 2u]); }
+inline float3 BoolRecordPosition(JobRuns ctx, device const BooleanJob &job, uint k) {
     device const uint *record = ctx.Run<uint>(job.IntersectionRecords) + 6u * k;
     return float3(as_type<float>(record[3]), as_type<float>(record[4]), as_type<float>(record[5]));
 }
 
-inline uint BoolCount(JobRuns ctx, BooleanJob job, uint e) { return uint(abs(ctx.Run<int>(job.Inclusion)[e])); }
+inline uint BoolCount(JobRuns ctx, device const BooleanJob &job, uint e) { return uint(abs(ctx.Run<int>(job.Inclusion)[e])); }
 
-inline uint BoolPolygonFirst(JobRuns ctx, BooleanJob job, uint t) { return ctx.Run<uint>(job.Counts)[t]; }
-inline uint BoolPartialFirst(JobRuns ctx, BooleanJob job, uint h) { return ctx.Run<uint>(job.Counts)[BoolTriangleCount(job) + h] - job.PolygonHalfedges; }
-inline uint BoolGroupFirst(JobRuns ctx, BooleanJob job, uint member) { return ctx.Run<uint>(job.Counts)[4u * BoolTriangleCount(job) + member] - job.PolygonHalfedges - job.PartialEntries; }
-inline uint BoolOutputFirst(JobRuns ctx, BooleanJob job, uint e) {
+inline uint BoolPolygonFirst(JobRuns ctx, device const BooleanJob &job, uint t) { return ctx.Run<uint>(job.Counts)[t]; }
+inline uint BoolPartialFirst(JobRuns ctx, device const BooleanJob &job, uint h) { return ctx.Run<uint>(job.Counts)[BoolTriangleCount(job) + h] - job.PolygonHalfedges; }
+inline uint BoolGroupFirst(JobRuns ctx, device const BooleanJob &job, uint member) { return ctx.Run<uint>(job.Counts)[4u * BoolTriangleCount(job) + member] - job.PolygonHalfedges - job.PartialEntries; }
+inline uint BoolOutputFirst(JobRuns ctx, device const BooleanJob &job, uint e) {
     return ctx.Run<uint>(job.Counts)[4u * BoolTriangleCount(job) + 2u * job.Intersections + e] - job.PolygonHalfedges - job.PartialEntries - job.GroupEntries;
 }
-inline float3 BoolEntryPosition(JobRuns ctx, BooleanJob job, uint e) {
+inline float3 BoolEntryPosition(JobRuns ctx, device const BooleanJob &job, uint e) {
     const uint vertices = BoolVertexCount(job);
     return e < vertices ? float3(ctx.Run<packed_float3>(job.Positions)[e]) : BoolRecordPosition(ctx, job, e - vertices);
 }
-inline float3 BoolOutputPosition(JobRuns ctx, BooleanJob job, uint d) { return BoolEntryPosition(ctx, job, ctx.Run<uint>(job.OutputEntries)[d]); }
+inline float3 BoolOutputPosition(JobRuns ctx, device const BooleanJob &job, uint d) { return BoolEntryPosition(ctx, job, ctx.Run<uint>(job.OutputEntries)[d]); }

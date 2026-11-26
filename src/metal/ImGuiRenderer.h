@@ -7,6 +7,8 @@
 #include <imgui.h>
 
 namespace mtl {
+RenderPipeline ImGuiPipeline(LibraryCache &, MTL::PixelFormat target);
+
 // Draws the current ImGui context's draw data into a render pass whose color target has the renderer's pixel format.
 // Owns the textures the context's atlas requests, which draw data references as MTL::Texture pointers.
 struct ImGuiRenderer {

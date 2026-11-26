@@ -1542,7 +1542,7 @@ struct CaptureDriver {
           RecordPath(capture.RecordPath), ScreenshotPath(capture.ScreenshotPath), RenderBasename(capture.RenderBasename) {
         if (RenderMode()) {
             const auto with = [&](const char *ext) { return fs::path{capture.RenderBasename.string() + ext}; };
-            const bool dynamic = !r.view<const PhysicsMotion>().empty() || !r.view<const AnimationClips>().empty();
+            const bool dynamic = !r.view<const PhysicsMotion>().empty() || !r.view<const AnimationClips>().empty() || !r.view<const procedure::TimeReads>().empty();
             if (dynamic) RecordPath = with(".mp4");
             else ScreenshotPath = with(".webp");
         }

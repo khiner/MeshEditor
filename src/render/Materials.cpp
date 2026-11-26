@@ -1,7 +1,23 @@
+#include "gpu/PbrFeature.h"
 #include "mesh/MeshStore.h"
 #include "render/GpuBuffers.h"
 #include "render/MaterialComponents.h"
 #include "state/Registry.h"
+
+uint32_t PbrFeaturesOf(std::span<const PBRMaterial> materials, std::span<const uint32_t> material_indices) {
+    PbrFeatureMask mask{0};
+    for (const auto index : material_indices) {
+        if (index >= materials.size()) continue;
+        const auto &mat = materials[index];
+        if (mat.Transmission.Factor > 0.f || mat.Transmission.Texture.Slot != InvalidSlot) mask |= PbrFeature::Transmission;
+        if (mat.DiffuseTransmission.Factor > 0.f || mat.DiffuseTransmission.Texture.Slot != InvalidSlot) mask |= PbrFeature::DiffuseTrans;
+        if (mat.Clearcoat.Factor > 0.f || mat.Clearcoat.Texture.Slot != InvalidSlot) mask |= PbrFeature::Clearcoat;
+        if (mat.Sheen.RoughnessFactor > 0.f || mat.Sheen.ColorTexture.Slot != InvalidSlot) mask |= PbrFeature::Sheen;
+        if (mat.Anisotropy.Strength != 0.f || mat.Anisotropy.Texture.Slot != InvalidSlot) mask |= PbrFeature::Anisotropy;
+        if (mat.Iridescence.Factor > 0.f || mat.Iridescence.Texture.Slot != InvalidSlot) mask |= PbrFeature::Iridescence;
+    }
+    return mask;
+}
 
 std::vector<state::Entity> MaterialsByIndex(const state::Registry &r) {
     std::vector<state::Entity> entities(r.Resources.get<const GpuBuffers>().Materials.Count<PBRMaterial>(), state::Null);

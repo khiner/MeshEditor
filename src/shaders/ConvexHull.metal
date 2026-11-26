@@ -8,7 +8,10 @@
 #include "OrderedFloat.metal"
 #include "gpu/ConvexHull.h"
 
-using HullContext = JobContext<HullJob>;
+// A hull kernel's thread `index`, the bindless set and the job.
+#define HULL_ARGS(index) uint index [[thread_position_in_grid]], device const BindlessSet &b [[buffer(BufferIndex_Bindless)]], constant HullJob &job [[buffer(BufferIndex_PushConstants)]]
+// Declares a hull kernel's scratch runs.
+#define HULL_CONTEXT const JobRuns ctx{BindlessBufferMutable(uint, b.Buffer, job.Scratch)}
 
 // The set holding point p among sets ordered by first point.
 template<typename Sets> inline uint SetContaining(Sets sets, uint count, uint p) {
@@ -25,7 +28,7 @@ struct HullPoints {
     uint SetOf(uint p) const { return SetContaining(Sets, SetCount, p); }
 };
 inline bool Growing(uint status) { return status == HullSetOpen || status == HullSetPlanar; }
-inline HullPoints Points(HullContext ctx, HullJob job) { return {ctx.Run<HullSet>(job.SetRecords), ctx.Run<packed_float3>(job.Positions), ctx.Run<uint>(job.PointFace), job.Sets}; }
+inline HullPoints Points(JobRuns ctx, HullJob job) { return {ctx.Run<HullSet>(job.SetRecords), ctx.Run<packed_float3>(job.Positions), ctx.Run<uint>(job.PointFace), job.Sets}; }
 
 inline float Height(HullFace face, float3 p) {
     const float4 plane = float4(face.Plane);
@@ -53,29 +56,23 @@ inline HullFace MakeFace(HullPoints points, uint3 v, uint set, float tolerance) 
     ClearRound(face);
     return face;
 }
-inline float3 VertexPosition(device const BindlessSet &b, constant HullPointsPushConstants &pc, ConnectivityRef at, uint handle) {
+inline float3 VertexPosition(device const BindlessSet &b, constant HullPointsJob &pc, ConnectivityRef at, uint handle) {
     return float3(BindlessBuffer(Vertex, b.VertexBuffer, pc.VertexSlot)[ConnectivityView{b, at}.VertexAddress(handle)].Position);
 }
-inline device packed_float3 *HullPositions(device const BindlessSet &b, constant HullPointsPushConstants &pc) {
+inline device packed_float3 *HullPositions(device const BindlessSet &b, constant HullPointsJob &pc) {
     return reinterpret_cast<device packed_float3 *>(BindlessBufferMutable(uint, b.Buffer, pc.Positions.Slot) + pc.Positions.Offset);
 }
 
-kernel void HullGather(
-    uint i [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant HullPointsPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
+kernel void HullGather(JOB_TABLE_ARGS(HullPointsJob)) {
+    JOB_THREAD(pc, i);
     if (i >= pc.Count) return;
     const uint handle = BindlessBuffer(uint, b.Buffer, pc.FirstHandles.Slot)[pc.FirstHandles.Offset + i];
     HullPositions(b, pc)[i] = packed_float3(VertexPosition(b, pc, pc.First, handle));
 }
 
 // Each set's pairwise sums of its first record's listed vertices with its second record's, in the first's space.
-kernel void HullSums(
-    uint p [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant HullPointsPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
+kernel void HullSums(JOB_TABLE_ARGS(HullPointsJob)) {
+    JOB_THREAD(pc, p);
     if (p >= pc.Count) return;
     device const HullSumSet *sets = reinterpret_cast<device const HullSumSet *>(BindlessBuffer(uint, b.Buffer, pc.Sets.Slot) + pc.Sets.Offset);
     const HullSumSet set = sets[SetContaining(sets, pc.SetCount, p)];
@@ -94,47 +91,32 @@ inline float SeedDistance(HullPoints points, HullSet set, uint stage, float3 p) 
     return abs(dot(cross(ab, points.Position(set.Seed[1]) - a), p - a));
 }
 
-kernel void HullSeedMax(
-    uint p [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const HullContext ctx{b, pc};
-    const HullJob job = ctx.Job();
+kernel void HullSeedMax(HULL_ARGS(p)) {
+    HULL_CONTEXT;
     if (p >= job.Points) return;
     const HullPoints points = Points(ctx, job);
     const uint s = points.SetOf(p);
     const HullSet set = points.Sets[s];
     if (set.Status != HullSetOpen) return;
-    atomic_fetch_max_explicit(AtomicWord(&points.Sets[s].Best[pc.Parameter]), OrderedBits(SeedDistance(points, set, pc.Parameter, points.Position(p))), memory_order_relaxed);
+    atomic_fetch_max_explicit(AtomicWord(&points.Sets[s].Best[job.Stage]), OrderedBits(SeedDistance(points, set, job.Stage, points.Position(p))), memory_order_relaxed);
 }
 
 // The lowest point at each set's farthest distance becomes the stage's seed.
-kernel void HullSeedElect(
-    uint p [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const HullContext ctx{b, pc};
-    const HullJob job = ctx.Job();
+kernel void HullSeedElect(HULL_ARGS(p)) {
+    HULL_CONTEXT;
     if (p >= job.Points) return;
     const HullPoints points = Points(ctx, job);
     const uint s = points.SetOf(p);
     const HullSet set = points.Sets[s];
-    if (set.Status != HullSetOpen || OrderedBits(SeedDistance(points, set, pc.Parameter, points.Position(p))) != set.Best[pc.Parameter]) return;
-    atomic_fetch_min_explicit(AtomicWord(&points.Sets[s].Seed[pc.Parameter]), p, memory_order_relaxed);
+    if (set.Status != HullSetOpen || OrderedBits(SeedDistance(points, set, job.Stage, points.Position(p))) != set.Best[job.Stage]) return;
+    atomic_fetch_min_explicit(AtomicWord(&points.Sets[s].Seed[job.Stage]), p, memory_order_relaxed);
 }
 
 // A set whose points lie within the flat tolerance of the seed plane is planar.
 // A planar set lifts an apex over its first point by its extent as the fourth seed, or is flat when its seeds lie on a line.
 // A set without a hull writes degenerate faces its first round compacts away.
-kernel void HullSeedFaces(
-    uint s [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const HullContext ctx{b, pc};
-    const HullJob job = ctx.Job();
+kernel void HullSeedFaces(HULL_ARGS(s)) {
+    HULL_CONTEXT;
     if (s >= job.Sets) return;
     const HullPoints points = Points(ctx, job);
     const HullSet set = points.Sets[s];
@@ -182,13 +164,8 @@ kernel void HullSeedFaces(
     }
 }
 
-kernel void HullPropose(
-    uint p [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const HullContext ctx{b, pc};
-    const HullJob job = ctx.Job();
+kernel void HullPropose(HULL_ARGS(p)) {
+    HULL_CONTEXT;
     if (p >= job.Points) return;
     const HullPoints points = Points(ctx, job);
     const uint f = points.Faces[p];
@@ -197,14 +174,9 @@ kernel void HullPropose(
     atomic_fetch_max_explicit(AtomicWord(&faces[f].ApexHeight), OrderedBits(Height(faces[f], points.Position(p))), memory_order_relaxed);
 }
 
-// The lowest point at its face's farthest height becomes the face's apex.
-kernel void HullElect(
-    uint p [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const HullContext ctx{b, pc};
-    const HullJob job = ctx.Job();
+// The lowest point at its face's farthest height becomes the face's apex, and each set records its lowest proposing face.
+kernel void HullElect(HULL_ARGS(p)) {
+    HULL_CONTEXT;
     if (p >= job.Points) return;
     const HullPoints points = Points(ctx, job);
     const uint f = points.Faces[p];
@@ -212,63 +184,80 @@ kernel void HullElect(
     device HullFace *faces = ctx.Run<HullFace>(job.Current);
     if (OrderedBits(Height(faces[f], points.Position(p))) != faces[f].ApexHeight) return;
     atomic_fetch_min_explicit(AtomicWord(&faces[f].Apex), p, memory_order_relaxed);
+    atomic_fetch_min_explicit(AtomicWord(&points.Sets[faces[f].Set].Lowest), f, memory_order_relaxed);
 }
 
-// Each proposing face floods the faces its apex sees, claiming each for the lowest proposing face to reach it and stopping at faces a lower one holds.
-// A face's worklist links through its claimed faces.
-// A lower claim that takes one of them sends the walk into the taker's worklist, where every claim fails and the walk ends.
-kernel void HullClaim(
-    uint f [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const HullContext ctx{b, pc};
-    const HullJob job = ctx.Job();
+// The most faces a proposing face other than its set's lowest claims.
+constant uint HullClaimCapacity = 64u;
+
+inline bool Holds(thread const uint *faces, uint count, uint f) {
+    for (uint i = 0u; i < count; ++i) {
+        if (faces[i] == f) return true;
+    }
+    return false;
+}
+
+// Each proposing face claims the region of faces its apex sees connected to it, and each face keeps its lowest claim.
+// The lowest proposing face of each set holds every face it claims, so it links its worklist through them and claims its whole region.
+// Every other proposing face claims its region in breadth-first order, and stops unaccepted at the face of a lower proposal or past the capacity.
+// Each claimed region, and so each face's lowest claim, follows from the round's faces and apexes alone.
+kernel void HullClaim(HULL_ARGS(f)) {
+    HULL_CONTEXT;
     if (f >= job.Faces) return;
     device HullFace *faces = ctx.Run<HullFace>(job.Current);
     const uint apex = faces[f].Apex;
     if (apex == InvalidOffset) return;
     atomic_fetch_add_explicit(AtomicWord(ctx.Run<uint>(job.Proposals)), 1u, memory_order_relaxed);
-    faces[f].Accepted = 1u;
-    const float3 p = Points(ctx, job).Position(apex);
-    if (atomic_fetch_min_explicit(AtomicWord(&faces[f].Claim), f, memory_order_relaxed) < f) return;
-    atomic_store_explicit(AtomicWord(&faces[f].Next), InvalidOffset, memory_order_relaxed);
-    uint head = f;
-    for (uint iterations = 0u; head != InvalidOffset && iterations <= job.Faces; ++iterations) {
-        const uint g = head;
-        head = atomic_load_explicit(AtomicWord(&faces[g].Next), memory_order_relaxed);
-        const uint3 across = uint3(faces[g].Across);
-        for (uint i = 0u; i < 3u; ++i) {
-            const uint h = across[i];
-            if (atomic_load_explicit(AtomicWord(&faces[h].Claim), memory_order_relaxed) == f || !Sees(faces[h], p)) continue;
-            if (atomic_fetch_min_explicit(AtomicWord(&faces[h].Claim), f, memory_order_relaxed) <= f) continue;
-            atomic_store_explicit(AtomicWord(&faces[h].Next), head, memory_order_relaxed);
-            head = h;
+    const HullPoints points = Points(ctx, job);
+    const float3 p = points.Position(apex);
+    atomic_fetch_min_explicit(AtomicWord(&faces[f].Claim), f, memory_order_relaxed);
+    device uint &lowest = points.Sets[faces[f].Set].Lowest;
+    if (lowest == f) {
+        lowest = InvalidOffset;
+        faces[f].Accepted = 1u;
+        uint head = f;
+        for (uint iterations = 0u; head != InvalidOffset && iterations <= job.Faces; ++iterations) {
+            const uint g = head;
+            head = atomic_load_explicit(AtomicWord(&faces[g].Next), memory_order_relaxed);
+            const uint3 across = uint3(faces[g].Across);
+            for (uint i = 0u; i < 3u; ++i) {
+                const uint h = across[i];
+                if (!Sees(faces[h], p) || atomic_fetch_min_explicit(AtomicWord(&faces[h].Claim), f, memory_order_relaxed) == f) continue;
+                atomic_store_explicit(AtomicWord(&faces[h].Next), head, memory_order_relaxed);
+                head = h;
+            }
+        }
+        return;
+    }
+    uint region[HullClaimCapacity];
+    region[0] = f;
+    uint count = 1u;
+    for (uint i = 0u; i < count; ++i) {
+        const uint3 across = uint3(faces[region[i]].Across);
+        for (uint e = 0u; e < 3u; ++e) {
+            const uint h = across[e];
+            if (!Sees(faces[h], p) || Holds(region, count, h)) continue;
+            if ((h < f && faces[h].Apex != InvalidOffset) || count == HullClaimCapacity) return;
+            region[count++] = h;
+            atomic_fetch_min_explicit(AtomicWord(&faces[h].Claim), f, memory_order_relaxed);
         }
     }
+    faces[f].Accepted = 1u;
 }
 
-// An apex is accepted when it holds its own face, no face it holds neighbors a lower claim, and every face its apex sees next to its claims is its own.
+// An apex is accepted when it claimed its whole region, holds its own face, and no face it holds neighbors a lower claim.
 // Accepted regions are then exact and share no edge, so their cones match sequential insertions.
-kernel void HullAccept(
-    uint g [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const HullContext ctx{b, pc};
-    const HullJob job = ctx.Job();
+kernel void HullAccept(HULL_ARGS(g)) {
+    HULL_CONTEXT;
     if (g >= job.Faces) return;
     device HullFace *faces = ctx.Run<HullFace>(job.Current);
     const HullFace face = faces[g];
     if (face.Apex != InvalidOffset && face.Claim != g) faces[g].Accepted = 0u;
     const uint k = face.Claim;
     if (k == InvalidOffset) return;
-    const float3 p = Points(ctx, job).Position(faces[k].Apex);
     const uint3 across = uint3(face.Across);
     for (uint i = 0u; i < 3u; ++i) {
-        const HullFace neighbor = faces[across[i]];
-        if (neighbor.Claim == k) continue;
-        if ((neighbor.Claim != InvalidOffset && neighbor.Claim < k) || Sees(neighbor, p)) {
+        if (faces[across[i]].Claim < k) {
             faces[k].Accepted = 0u;
             return;
         }
@@ -293,13 +282,8 @@ inline uint Exits(device const HullFace *faces, uint k, uint v, uint c, uint m, 
 
 // Each face held by an accepted apex dies and emits a new face per horizon edge, and every other face of an open set survives.
 // A horizon that leaves one of its vertices twice is not one simple loop, and its set is abandoned.
-kernel void HullHorizons(
-    uint g [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const HullContext ctx{b, pc};
-    const HullJob job = ctx.Job();
+kernel void HullHorizons(HULL_ARGS(g)) {
+    HULL_CONTEXT;
     if (g > job.Faces) return;
     device uint *new_count = ctx.Run<uint>(job.NewCount), *survivor = ctx.Run<uint>(job.Survivor);
     if (g == job.Faces) {
@@ -346,13 +330,8 @@ inline uint Fan(device const HullFace *faces, device const uint *new_first, uint
 }
 
 // Each surviving face moves to its compact next index, with a neighbor that dies replaced by the new face over their shared edge, and its round state cleared.
-kernel void HullScatter(
-    uint f [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const HullContext ctx{b, pc};
-    const HullJob job = ctx.Job();
+kernel void HullScatter(HULL_ARGS(f)) {
+    HULL_CONTEXT;
     if (f >= job.Faces) return;
     device const uint *survivor = ctx.Run<uint>(job.Survivor), *new_first = ctx.Run<uint>(job.NewCount);
     if (survivor[f] == survivor[f + 1u]) return;
@@ -373,13 +352,8 @@ kernel void HullScatter(
 }
 
 // Each dying face emits a new face from each of its horizon edges to its apex, linked to the survivor across the edge and to the cone faces on either side.
-kernel void HullEmit(
-    uint g [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const HullContext ctx{b, pc};
-    const HullJob job = ctx.Job();
+kernel void HullEmit(HULL_ARGS(g)) {
+    HULL_CONTEXT;
     if (g >= job.Faces) return;
     device const uint *survivor = ctx.Run<uint>(job.Survivor), *new_first = ctx.Run<uint>(job.NewCount);
     if (new_first[g] == new_first[g + 1u]) return;
@@ -405,13 +379,8 @@ kernel void HullEmit(
 // A point of a flat or abandoned set is inside, and a point on a surviving face moves with it to its compact index.
 // A point whose face died joins the first cone face of its apex that it lies outside of, or is inside.
 // In the first round every point joins the first seed face it lies outside of.
-kernel void HullAssign(
-    uint p [[thread_position_in_grid]],
-    device const BindlessSet &b [[buffer(BufferIndex_Bindless)]],
-    constant JobPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const HullContext ctx{b, pc};
-    const HullJob job = ctx.Job();
+kernel void HullAssign(HULL_ARGS(p)) {
+    HULL_CONTEXT;
     if (p >= job.Points) return;
     const HullPoints points = Points(ctx, job);
     const uint f = points.Faces[p];

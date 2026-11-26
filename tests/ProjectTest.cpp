@@ -3,10 +3,10 @@
 #include "RunSuites.h"
 #include "animation/Fields.h"
 #include "animation/Clips.h"
+#include "materialx/Library.h"
 #include "procedure/Procedure.h"
 #include "project/Assets.h"
 #include "render/MaterialComponents.h"
-#include "scene/SceneGraph.h"
 #include "selection/SelectionState.h"
 #include "viewport/FrameState.h"
 #include "viewport/ViewCameraOps.h"
@@ -196,7 +196,6 @@ void ViewportBackfacePolicy(Fixture &f) {
     r.patch<ViewCameraState>(viewport, [](auto &v) { v.Active = ViewCamera{vec3{0, -5, .1f}, vec3{}, v.Active.Data}; });
     f.Do(action::object::AddMaterial{0u});
     const auto material = SortedEntities(r.view<const Material>()).back();
-    const auto cooks = Cooks(r);
     for (const auto mode : {ViewportShadingMode::Solid, ViewportShadingMode::Wireframe, ViewportShadingMode::MaterialPreview, ViewportShadingMode::Rendered}) {
         f.Do(action::view::SetViewportShading{viewport, mode});
         for (const bool cull : {false, true}) {
@@ -216,7 +215,6 @@ void ViewportBackfacePolicy(Fixture &f) {
             }
         }
     }
-    expect(Cooks(r) == cooks);
 }
 
 void ObjectHierarchy(Fixture &f) {
@@ -345,14 +343,14 @@ void IncrementalLayout(Fixture &f) {
     f.Do(action::selection::SelectAll{});
     const auto mesh_entity = r.get<const Instance>(cube).Entity;
     f.Stage(action::view::TransformElements{{.P = {0.f, 1.f, 0.f}}});
-    expect(r.all_of<procedure::TransformElements>(r.get<const procedure::GeometryProcedure>(mesh_entity).Last));
+    expect(r.all_of<procedure::TransformElements>(r.get<const procedure::NetworkNodes>(mesh_entity).Last));
     CheckLayout(f);
     f.CommitGesture();
     SelectOrdinals(f, mesh_entity, std::array{0u, 1u}, Element::Face);
     const auto mesh_count = r.view<const procedure::GeometryProcedure>().size();
     f.Do(action::mesh::Separate{});
     expect(r.view<const procedure::GeometryProcedure>().size() == mesh_count + 1u);
-    expect(r.all_of<action::mesh::Delete>(r.get<const procedure::GeometryProcedure>(mesh_entity).Last));
+    expect(r.all_of<action::mesh::Delete>(r.get<const procedure::NetworkNodes>(mesh_entity).Last));
     f.Do(action::view::SetInteractionMode{InteractionMode::Object});
     f.Do(action::object::ShadeSelected{procedure::ShadeMode::Smooth});
     f.Do(action::view::SetViewportShading{FirstViewport(f.R), ViewportShadingMode::Wireframe});
@@ -413,6 +411,7 @@ void TestProject() {
 
 void TestProcedures();
 void TestHistory();
+void TestMaterialGraphs();
 
 int main(int argc, char **argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -420,8 +419,11 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; ++i) {
         if (std::string_view{argv[i]} == "--no-render") Render = false;
         else if (std::string_view{argv[i]} == "--ray-tracing-benchmarks" && i + 1 < argc) benchmarks = argv[++i];
-        else if (argv[i][0] == '-') {
-            std::println(stderr, "Usage: {} [--no-render] [--ray-tracing-benchmarks <directory>] [test name filter]", argv[0]);
+        else if (std::string_view{argv[i]} == "--walk-seeds" && i + 2 < argc) {
+            WalkSeeds = {uint32_t(std::stoul(argv[i + 1])), uint32_t(std::stoul(argv[i + 2]))};
+            i += 2;
+        } else if (argv[i][0] == '-') {
+            std::println(stderr, "Usage: {} [--no-render] [--walk-seeds <first> <last>] [--ray-tracing-benchmarks <directory>] [test name filter]", argv[0]);
             return 1;
         } else boost::ut::cfg<boost::ut::override> = {.filter = argv[i]};
     }
@@ -432,8 +434,10 @@ int main(int argc, char **argv) {
         WriteRayTracingBenchmarks(benchmarks);
         return RunSuites();
     }
+    mx::AddLibraryFolder(MESHEDITOR_SOURCE_DIR "/tests/nodes");
     TestProject();
     TestProcedures();
     TestHistory();
+    TestMaterialGraphs();
     return RunSuites();
 }

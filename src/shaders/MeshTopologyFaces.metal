@@ -14,18 +14,22 @@ inline void TopoPlaneFrame(float3 n, thread float3 &u, thread float3 &v) {
 
 inline float TopoCross2(float2 a, float2 b, float2 c) { return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x); }
 
-template<typename Emit>
-inline void TopoTriangulateFace(TopoContext ctx, MeshTopologyJob job, uint f, Emit emit) {
-    const uint2 range = ctx.SrcFaceRange(job, f);
+// Triangulates source face f where `active`, with the simdgroup's lanes, and writes face k's triangles with `emit_of(k)`.
+// Every lane of the simdgroup calls it.
+template<typename EmitOf>
+inline void TopoTriangulateFaces(TopoContext ctx, device const MeshTopologyJob &job, bool active, uint f, uint lane, uint count, EmitOf emit_of) {
     const auto corners = ctx.SrcCorners(job);
-    const uint first = ctx.SrcHalfedgeDomain(job).Index(range.x);
     device uint *scratch = ctx.Scratch() + job.HalfedgeAuxOffset;
-    TriangulateWithScratch(range.y - range.x, [&](uint k) { return ctx.SrcPosition(job, corners[range.x + k]); },
-        scratch + 3u * first, reinterpret_cast<device float *>(scratch + 3u * job.SrcHalfedgeCount) + 3u * first, emit);
+    TriangulatePolygons(active, f, lane, count, [&](uint k, auto visit) {
+        const uint2 range = ctx.SrcFaceRange(job, k);
+        const uint first = ctx.SrcHalfedgeDomain(job).Index(range.x);
+        return visit(range.y - range.x, [&](uint i) { return ctx.SrcPosition(job, corners[range.x + i]); },
+            scratch + 3u * first, reinterpret_cast<device float *>(scratch + 3u * job.SrcHalfedgeCount) + 3u * first, emit_of(k));
+    });
 }
 
 // The join cost of the quad a triangle would form with its neighbor across halfedge `h`, or a negative value when the pair does not join.
-inline float TopoJoinCost(TopoContext ctx, MeshTopologyJob job, uint h) {
+inline float TopoJoinCost(TopoContext ctx, device const MeshTopologyJob &job, uint h) {
     // Follows Blender's error: normal difference across both diagonals plus each corner's deviation from a right angle.
     const uint opposite = ctx.SrcOpposite(job, h);
     if (opposite == InvalidOffset) return -1.f;
@@ -53,7 +57,7 @@ inline float TopoJoinCost(TopoContext ctx, MeshTopologyJob job, uint h) {
 }
 
 // The lowest halfedge arriving at corner `h`'s vertex reachable without crossing a selected edge or a boundary: its edge-split sector.
-inline uint TopoSectorRep(TopoContext ctx, MeshTopologyJob job, uint h) {
+inline uint TopoSectorRep(TopoContext ctx, device const MeshTopologyJob &job, uint h) {
     uint rep = h;
     const uint v = ctx.SrcCorners(job)[h];
     const uint fan_length = ctx.SrcFan(job, v).y;
@@ -79,7 +83,7 @@ inline uint TopoSectorRep(TopoContext ctx, MeshTopologyJob job, uint h) {
 }
 
 // The output vertex of corner `h` after an edge split: the vertex's own output plus its sector's rank among the sectors at the vertex.
-inline uint TopoSectorVertex(TopoContext ctx, MeshTopologyJob job, uint h) {
+inline uint TopoSectorVertex(TopoContext ctx, device const MeshTopologyJob &job, uint h) {
     const uint v = ctx.SrcCorners(job)[h];
     if (!(ctx.FlagVertices(job)[v] & TopoTagged)) return ctx.Counts(job, TopoCountVertices)[v];
     const uint rep = ctx.HalfedgeAux(job)[h];
@@ -93,7 +97,7 @@ inline uint TopoSectorVertex(TopoContext ctx, MeshTopologyJob job, uint h) {
 }
 
 // One sector per representative corner at an edge-split vertex, and one for any other vertex.
-inline uint TopoSectorCount(TopoContext ctx, MeshTopologyJob job, uint v) {
+inline uint TopoSectorCount(TopoContext ctx, device const MeshTopologyJob &job, uint v) {
     if (!(ctx.FlagVertices(job)[v] & TopoTagged)) return 1u;
     const uint2 fan = ctx.SrcFan(job, v);
     if (fan.y == 0u) return 1u;

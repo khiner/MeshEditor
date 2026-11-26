@@ -19,7 +19,6 @@
 #include "mesh/CornerNormalView.h"
 #include "mesh/ElementArena.h"
 #include "mesh/ElementAttribute.h"
-#include "mesh/MeshSchema.h"
 #include "mesh/PoseAttributeView.h"
 #include "mesh/SelectionQuery.h"
 #include "mesh/SelectionView.h"
@@ -28,6 +27,7 @@
 
 #include <expected>
 #include <mutex>
+#include <set>
 
 namespace mtl {
 struct ComputeChain;
@@ -41,6 +41,13 @@ struct CornerClassBatch;
 struct ArmatureDeformData {
     std::vector<uvec4> Joints;
     std::vector<vec4> Weights;
+};
+
+// A run of copies of one record in a concatenation, with the transforms that place them, one per copy, or none.
+struct ConcatPart {
+    uint32_t StoreId;
+    uint32_t Copies{1u};
+    SlotOffset Transforms{};
 };
 
 struct SharpnessSummary {
@@ -122,8 +129,8 @@ struct RenderArenas {
     std::array<ElementAttribute<uint32_t>, 3> ElementMeshlets;
 
     RenderRun Insert(RenderSet, ElementSetRef &, uint32_t count);
-    // Returns the first member handle for ascending `clusters`, or InvalidOffset for an empty span.
-    uint32_t ListMembers(ElementSetRef &, std::span<const uint32_t> clusters);
+    // Lists each run of `counts` consecutive ascending `clusters`, and returns each list's first member handle, or InvalidOffset for an empty run.
+    std::vector<uint32_t> ListMembers(ElementSetRef &, std::span<const uint32_t> clusters, std::span<const uint32_t> counts);
     void SyncMirrors();
     MeshletPayloadSlots PayloadSlots() const;
 };
@@ -247,6 +254,8 @@ struct MeshStore {
         std::vector<Range> VertexRanges{}; // The record's vertex handles whose restored positions changed
         // Ascending vertex, edge, face and halfedge blocks whose restored bytes changed.
         std::array<std::vector<uint32_t>, 4> Blocks{};
+        // The record kept its live tessellation and render records, which the refresh of VertexRanges brings to the restored positions.
+        bool LiveRender{};
     };
 
     // Record-relative handles resolve through each domain set.
@@ -261,6 +270,7 @@ struct MeshStore {
         Range PrimitiveMaterials{};
         bool FacePrimitivesReady{}, VertexPrimitivesReady{};
         ElementSetRef FaceCorners{};
+        uint32_t UnpairedCorners{0}; // Face corners without an opposite, as of the last connectivity build or repair.
         Range SelectionSummary{};
         bool ConnectivityFaceStarts{false}; // The connectivity build input holds explicit polygon ranges instead of implicit triangles.
         Range PointNormals{};
@@ -300,11 +310,14 @@ struct MeshStore {
         uint32_t SelectionBaselineActive{InvalidOffset};
         Element SelectionBaselineElement{Element::None};
         uint64_t NormalRevision{};
+        uint64_t CreatedStep{}; // The store's Step when the record was created
     };
 
     struct TopologyCounts {
         uint32_t Vertices, Halfedges, Faces;
     };
+    // The arena words a new record of these counts holds at most, with an edge and a triangle per halfedge.
+    uint64_t RecordWords(TopologyCounts) const;
     uint32_t BeginTopologyOutput(uint32_t source, std::span<const uint32_t> materials);
 
     // Inserts unselected elements with default attributes, capturing their value pages.
@@ -317,7 +330,7 @@ struct MeshStore {
     void TrimInsertedElements(uint32_t id, ElementDomain, ElementHandleRange &inserted, const BufferArena<uint32_t> &list, uint32_t used);
 
     void Track(store::History &);
-    // For its lifetime, intermediate states read from and stay in the history supplying a replay.
+    // For its lifetime, stored states read from and record into the history supplying a replay.
     struct HistoryScope {
         MeshStore &Meshes;
         store::History *Previous;
@@ -333,22 +346,44 @@ struct MeshStore {
 
     // Settles the tracked storage and returns the hash of its content.
     store::Hash128 StateHash();
-    // Settles the tracked storage, pins its version as the kept version of its state, and returns the state's hash.
+    // Versions of every tracked mesh page and record, which a restore returns to exactly.
+    struct Version {
+        std::vector<store::Version> Tracks;
+    };
+    // Settles the tracked storage and pins its version, which the caller releases.
+    Version Pin();
+    // Restores every track to the version.
+    // Requires all CPU and GPU access to mesh storage to be complete, and the caller reconciles the changes TakeChanges then returns.
+    void Restore(const Version &);
+    void Release(Version &);
+    // Settles the tracked storage, keeps its version as the most recently used kept state, and returns the state's hash.
+    // A new state stays kept until RecordKeptStates records or releases it, and the least recently used recorded states past MaxKeptStates release.
     store::Hash128 KeepState();
+    // The stored bytes of mesh storage in one state.
+    struct StoredState;
+    // The readers of stored states that restores of several records share.
+    // A reader holds while mesh storage changes only by clones and restores of records it reads.
+    struct StateReaders {
+        StateReaders();
+        StateReaders(StateReaders &&) noexcept;
+        StateReaders &operator=(StateReaders &&) noexcept;
+        ~StateReaders();
+        std::unordered_map<store::Hash128, std::unique_ptr<StoredState>, store::Hash128Hasher> Held;
+    };
     // Copies record `source` as it stood in state `state` into a new record without render data or selection state.
     // Reads a kept version or else the history's content logs, and returns none when neither holds the state.
-    std::optional<uint32_t> CloneStored(store::Hash128 state, uint32_t source);
+    std::optional<uint32_t> CloneStored(store::Hash128 state, uint32_t source, StateReaders &readers);
     // Restores record `id` to its content in state `state`, keeping live allocations where they fit, and returns the change that reconciles it.
     // Reads a kept version or else the history's content logs, and returns none when neither holds the state or the record is not alive in it.
-    // Requires all CPU and GPU access to mesh storage to be complete.
-    std::optional<Change> RestoreRecord(store::Hash128 state, uint32_t id);
+    // Requires all CPU and GPU access to mesh storage to be complete, and costs what the record's blocks and the pages of its stored ranges do, once `readers` holds the state.
+    // With `refreshed`, the caller refreshes the restored positions, and a record with render records whose topology, shading keys and primitives the state holds unchanged keeps its live tessellation and render records.
+    std::optional<Change> RestoreRecord(store::Hash128 state, uint32_t id, StateReaders &readers, bool refreshed);
     // Restores every track to the kept version of state `state`, and returns whether a kept version held it.
     // Requires all CPU and GPU access to mesh storage to be complete, and the caller reconciles the changes TakeChanges then returns.
     bool RestoreKeptState(store::Hash128 state);
-    // Records the roots of each listed kept state in the history, persisting the content no recorded state holds.
-    void RecordKeptStates(std::span<const store::Hash128> states);
-    // Ends a history step that refers to the listed states, releasing every other state's kept version and recording those the previous step referred to.
-    void EndStepStates(std::span<const store::Hash128> states);
+    // Records in the history each kept state that `states` lists, sorted by hash words, and releases each other state it has not recorded.
+    // Returns whether the history is open to record them, and changes nothing when it is not.
+    bool RecordKeptStates(std::span<const store::Hash128> states);
 
     // Each capture saves the destination pages before a GPU write to Persistent mesh data.
     void CaptureSelectionSummary(uint32_t id);
@@ -358,7 +393,8 @@ struct MeshStore {
     void CaptureWeldWrite(uint32_t id);
 
     // CommitReserves follows every PlanCreate and PlanClone call and precedes creating or cloning.
-    void PlanCreate(const MeshData &, const MeshPrimitives & = {}, bool has_deform = false, uint32_t morph_target_count = 0, const MeshVertexAttributes & = {});
+    // `corner_uvs0` plans texture coordinate set 0 given per corner.
+    void PlanCreate(const MeshData &, const MeshPrimitives & = {}, bool has_deform = false, uint32_t morph_target_count = 0, const MeshVertexAttributes & = {}, bool corner_uvs0 = false);
     void PlanClone(const Mesh &);
     void CommitReserves();
 
@@ -369,7 +405,8 @@ struct MeshStore {
     // Allocates connectivity in source order, reserving up to one edge per halfedge.
     // Empty `face_offsets` leaves the polygon starts to GPU writes.
     void AllocateConnectivity(uint32_t id, uint32_t halfedge_count, uint32_t face_count, bool face_starts, std::span<const uint32_t> face_offsets = {}, std::span<const std::array<uint32_t, 2>> wire_edges = {});
-    void FinishConnectivity(uint32_t id, uint32_t edge_count);
+    // Takes the built edge count and the count of edges whose first halfedge has no opposite.
+    void FinishConnectivity(uint32_t id, uint32_t edge_count, uint32_t open_edges);
     MeshConnectivity GetConnectivity(uint32_t id) const;
     ConnectivityRef GetConnectivityRef(uint32_t id) const;
     ElementTables GetElementTables(uint32_t id) const;
@@ -395,18 +432,17 @@ struct MeshStore {
     ElementView<uvec3> TriangleView(uint32_t id) const;
     // Completes source metadata and attribute storage, and TakeUnshaded lists the record until its shading derives.
     void CreateMesh(uint32_t id, const MeshData &, const MeshVertexAttributes &, const MeshPrimitives &, const CornerLayers &, bool has_authored_normals);
-    // Each element domain's ascending blocks or local blocks, indexed by ElementDomain.
-    using DomainBlockLists = std::array<std::vector<uint32_t>, 6>;
     // Returns clone ids in source order, keeping source handles in fresh blocks, with render sets when `render` is true.
     // Callers submit the queued copies before reading cloned ranges.
     std::vector<uint32_t> CloneMeshes(CloneCopies &, std::span<const uint32_t> source_ids, bool render);
-    // Moves the source's elements into `id`, remapping handles and materials.
-    // Missing layers and attributes take defaults, and `id` keeps its deformation channels.
-    // The caller releases the emptied source record.
-    void Join(state::Registry &, uint32_t id, uint32_t source);
+    // Returns one new record per concatenation, holding the elements of its parts' copies in order, and leaves the parts unchanged.
+    // Each copy's handles follow those of the copies before it, shifted by their live handle bounds, and its references and primitives shift with them.
+    // The first part supplies the deformation channels, missing layers and attributes take defaults, and every part's GPU data is current.
+    std::vector<uint32_t> Concatenate(state::Registry &, mtl::ComputeChain &, std::span<const std::vector<ConcatPart>>);
     // Returns a vertex-only store id, which Release frees.
     uint32_t AllocateVertexBuffer(std::span<const vec3> positions, const MeshVertexAttributes &);
     void SetExtrasIndices(uint32_t id, std::span<const uint32_t> faces, std::span<const uint32_t> edges);
+    // A record released in the step that created it belongs to no state, so its storage returns to zero.
     void Release(uint32_t id);
     void Release(std::span<const uint32_t> ids);
     // Releases render sets and element owners and resets render fields.
@@ -433,6 +469,8 @@ struct MeshStore {
     // Captures the record before a write.
     Record &WriteRecord(uint32_t id);
     const DerivedRecord &GetDerived(uint32_t id) const { return DerivedRecords.at(id); }
+    // Whether the record was created in the store's current step.
+    bool CreatedInStep(uint32_t id) const { return DerivedRecords.at(id).CreatedStep == Step; }
     const MeshArenas &Arenas() const { return Buffers; }
     RenderArenas &Render() { return Buffers.Render; }
     const RenderArenas &Render() const { return Buffers.Render; }
@@ -488,9 +526,12 @@ struct MeshStore {
     std::expected<void, AttributeError> RenameAttribute(uint32_t attribute, std::string_view name);
     std::expected<uint32_t, AttributeError> CopyAttribute(uint32_t attribute, std::string_view name);
     const NamedAttribute &GetAttribute(uint32_t attribute) const { return NamedAttributes.at(attribute); }
+    // Visits the record's attributes in ascending order, or the free entries for InvalidOffset.
     void ForEachNamedAttribute(uint32_t id, auto &&visit) const {
-        for (uint32_t a = 0u; a < NamedAttributes.size(); ++a) {
-            if (NamedAttributes[a].Record == id) visit(a, NamedAttributes[a]);
+        if (id == InvalidOffset) {
+            for (const auto a : FreeAttributes) visit(a, NamedAttributes[a]);
+        } else if (id < RecordAttributes.size()) {
+            for (const auto a : RecordAttributes[id]) visit(a, NamedAttributes[a]);
         }
     }
     template<AttributeScalar T> NamedAttributeView<T> AttributeView(uint32_t attribute) const {
@@ -561,6 +602,7 @@ struct MeshStore {
         std::array<std::vector<uint32_t>, 3> Blocks{};
         std::vector<SelectionSeed> Seeds{};
     };
+    // The updates of the chain's pending lanes record together.
     void UpdateSelection(state::Registry &, mtl::ComputeChain &, std::span<const SelectionUpdate>);
     // Derives the other two domains into the supplied masks by the UpdateSelection rules, hidden elements included.
     // Stored selection and aggregates stay unchanged.
@@ -605,6 +647,7 @@ struct MeshStore {
     void UpdateCornerClassification(state::Registry &, mtl::ComputeChain &, std::span<const uint32_t> ids);
 
 private:
+    void RecordSelectionUpdate(state::Registry &, mtl::ComputeChain &, std::span<const SelectionUpdate>);
     MeshArenas Buffers;
     MeshSlots SlotTable;
     std::vector<Record> Records{};
@@ -621,10 +664,17 @@ private:
     bool FrameReadsBlockLists{};
     mutable std::vector<Range> RetiredBlockLists{}; // Replaced list words a submitted frame can still read
     uint64_t NextNormalRevision{};
+    // Advances whenever the store's state is hashed, pinned or restored, and at each step end.
+    // A record created at the current value is in no state, and the pages it wrote are captured.
+    uint64_t Step{1};
     std::vector<uint32_t> FreeIds{};
     std::vector<uint32_t> Released{};
     std::vector<uint32_t> Unshaded{};
     std::vector<NamedAttribute> NamedAttributes{};
+    // Derived from NamedAttributes: each record's entries in ascending order, the free entries, and the record each entry is indexed under, or InvalidOffset for a free one.
+    std::vector<std::vector<uint32_t>> RecordAttributes{};
+    std::set<uint32_t> FreeAttributes{};
+    std::vector<uint32_t> IndexedAttributes{};
 
     struct HistoryState;
     std::unique_ptr<HistoryState> Tracked;
@@ -637,17 +687,19 @@ private:
     std::vector<size_t> TrackIndices;
     std::vector<TrackOwner> Owners;
     std::unordered_map<const void *, size_t> OwnerOf;
-    // Versions of every tracked mesh page and record, which a restore returns to exactly.
-    struct Version {
-        std::vector<store::Version> Tracks;
-    };
-    void Release(Version &);
-    struct StoredState;
     static constexpr size_t MaxKeptStates = 8;
-    std::unordered_map<store::Hash128, Version, store::Hash128Hasher> KeptStates;
-    std::vector<store::Hash128> KeptOrder;
-    // The kept states the last history step referred to.
-    std::vector<store::Hash128> StepStates;
+    struct KeptState {
+        store::Hash128 State;
+        Version Pinned;
+        // A state stays kept until the history records it or no component refers to it at a record, so the store never drops the only copy of a state the document refers to.
+        bool Recorded;
+    };
+    // The kept states, least recently used first.
+    std::vector<KeptState> Kept;
+    // The kept state of the hash, made the most recently used, or null.
+    KeptState *UseKept(store::Hash128);
+    // Releases the least recently used recorded states past MaxKeptStates.
+    void TrimKept();
 
     // Pairs of source and destination arena blocks, indexed by ElementDomain.
     using BlockPairs = std::array<std::vector<uvec2>, 6>;
@@ -671,6 +723,8 @@ private:
     }
     NamedAttribute &WriteAttribute(uint32_t attribute);
     uint32_t AcquireAttribute(NamedAttribute &&);
+    // Indexes the entry as NamedAttributes holds it, or drops it from the index past the table's end.
+    void IndexAttribute(uint32_t attribute);
     // Copies paired source blocks into destination blocks with matching live slots.
     void CopyBlocks(CloneCopies &, uint32_t destination, uint32_t source, const BlockPairs &pairs);
 };

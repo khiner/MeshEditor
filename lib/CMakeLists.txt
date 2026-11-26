@@ -58,3 +58,14 @@ set(MANIFOLD_CBIND OFF CACHE BOOL "" FORCE)
 set(MANIFOLD_DOWNLOADS OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 add_subdirectory(manifold EXCLUDE_FROM_ALL)
+
+# The test oracle for op nodes, MaterialX's own Metal shader generator.
+# Only the MaterialX oracle test links it.
+foreach(option PYTHON VIEWER GRAPH_EDITOR GEN_OSL GEN_MDL RENDER TESTS USE_CCACHE)
+    set(MATERIALX_BUILD_${option} OFF CACHE BOOL "" FORCE)
+endforeach()
+set(MATERIALX_TEST_RENDER OFF CACHE BOOL "" FORCE)
+add_subdirectory(materialx EXCLUDE_FROM_ALL)
+foreach(target MaterialXCore MaterialXFormat MaterialXGenShader MaterialXGenGlsl MaterialXGenMsl)
+    target_compile_options(${target} PRIVATE -w)
+endforeach()

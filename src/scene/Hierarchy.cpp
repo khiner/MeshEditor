@@ -88,8 +88,8 @@ bool HierarchyParentCycle(const state::Registry &r, state::Entity child, state::
         for (const auto c : Children{&r, e}) pending.push_back(c);
         if (const auto *instance = r.try_get<const HierarchyInstance>(e)) pending.push_back(instance->Source);
         if (const auto *placement = r.try_get<const Instance>(e)) {
-            if (const auto *procedure = r.try_get<const procedure::GeometryProcedure>(placement->Entity)) {
-                for (auto node = procedure->First; node != state::Null; node = r.get<const procedure::ProcedureNode>(node).Next) {
+            if (const auto *nodes = r.try_get<const procedure::NetworkNodes>(placement->Entity)) {
+                for (auto node = nodes->First; node != state::Null; node = r.get<const procedure::ProcedureNode>(node).Next) {
                     if (const auto *points = r.try_get<const procedure::InstanceOnPoints>(node); points && points->Prototype != state::Null) pending.push_back(points->Prototype);
                 }
             }

@@ -8,8 +8,8 @@ struct BufferArena {
     BufferArena(mtl::BufferContext &ctx, SlotType slot_type, mtl::BufferLifetime lifetime = mtl::BufferLifetime::Canonical) : Buffer(ctx, 0, slot_type, lifetime) {}
     explicit BufferArena(mtl::BufferContext &ctx) : Buffer(ctx, 0) {}
 
-    void Track(store::History &history, const std::string &name) {
-        Buffer.Track(history, name + ".bytes");
+    void Track(store::History &history, const std::string &name, uint64_t page_bytes) {
+        Buffer.Track(history, name + ".bytes", page_bytes);
         TrackAllocator(history, name);
     }
     // Runtime binding records restore allocation identity and rebuild their small descriptor from canonical addresses.

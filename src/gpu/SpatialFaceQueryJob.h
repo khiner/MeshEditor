@@ -1,0 +1,17 @@
+#pragma once
+
+#include "gpu/ElementTables.h"
+#include "gpu/ElementWork.h"
+
+// One record's candidate faces, one thread per candidate, whose tables resolve its handles, each below its domain's bound.
+struct SpatialFaceQueryJob {
+    ElementWork Candidates DEFAULT(), Faces DEFAULT();
+    ElementTables Tables DEFAULT();
+    uint32_t CandidateCount DEFAULT();
+    uint32_t FaceRangeSlot DEFAULT(InvalidSlot), CornerSlot DEFAULT(InvalidSlot), VertexSlot DEFAULT(InvalidSlot);
+    uint32_t Mode DEFAULT(); // 0 cuts by the plane, and 1 selects by screen stroke
+    vec3 PlaneNormal DEFAULT();
+    float PlaneOffset DEFAULT();
+    mat4 ScreenTransform DEFAULT();
+    vec2 Extent DEFAULT(), KnifeStart DEFAULT(), KnifeEnd DEFAULT();
+};

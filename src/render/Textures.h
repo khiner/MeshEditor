@@ -53,31 +53,21 @@ struct TextureEntry {
     NS::SharedPtr<MTL::SamplerState> Sampler;
     uint32_t SamplerSlot;
     TextureParams Params;
-    // Index into `gltf::SourceAssets::Images` for textures materialized from a `GltfImageRef`.
-    // UINT32_MAX denotes the raw-pixel uploads that outlive documents: the default white texture and the LUTs.
+    // Index into `gltf::SourceAssets::Images` of the image the texture materializes.
     // SaveGltf uses this value for re-encode lookup.
-    uint32_t SourceImageIndex{UINT32_MAX};
+    uint32_t SourceImageIndex;
 };
 
 struct PendingTextureUpload {
+    uint32_t SamplerSlot;
     // Indexes the glTF image array supplied at materialization.
     // The caller retains that array through the drain pass.
-    struct GltfImageRef {
-        uint32_t ImageIndex;
-    };
-    struct RawPixels {
-        std::vector<std::byte> Pixels;
-        uint32_t Width, Height;
-    };
-
-    uint32_t SamplerSlot;
-    std::variant<GltfImageRef, RawPixels> Source;
+    uint32_t ImageIndex;
     TextureParams Params;
 };
 
 struct TextureStore {
     std::vector<TextureEntry> Textures;
-    uint32_t WhiteTextureSlot;
     // Uploads the next event pass materializes.
     std::vector<PendingTextureUpload> PendingUploads;
 
@@ -119,8 +109,6 @@ struct PendingEnvironmentImport {
 
 struct EnvironmentStore {
     std::vector<HdriEntry> Hdris;
-    // Sampler slots of the raw-pixel LUT textures that TextureStore materializes and owns.
-    uint32_t BrdfLutSlot, SheenELutSlot, CharlieLutSlot;
     std::optional<EnvironmentPrefiltered> ImportedSceneWorld;
     EnvironmentPrefiltered EmptySceneWorld; // 1x1 flat-color cubemap used without an EXT_lights_image_based asset.
     EnvironmentSelection SceneWorld;
@@ -202,11 +190,10 @@ struct DecodedTexture {
     std::vector<MipUpload> Mips;
     MTL::PixelFormat Format{};
     uint32_t Width{}, Height{};
-    uint32_t SourceImageIndex{UINT32_MAX};
 };
-// Reads, decodes or transcodes the upload's source on the calling thread, taking raw pixels out of the upload.
+// Reads, decodes or transcodes the upload's source on the calling thread.
 // Independent uploads decode concurrently.
-std::expected<DecodedTexture, std::string> DecodeTextureSource(const state::Registry &, PendingTextureUpload &, const std::vector<gltf::Image> &);
+std::expected<DecodedTexture, std::string> DecodeTextureSource(const state::Registry &, const PendingTextureUpload &, const std::vector<gltf::Image> &);
 // Uploads the decoded pixels and binds the sampler at the upload's slot.
 TextureEntry MaterializeTextureEntry(const mtl::Context &, TextureUploadBatch &, mtl::BindlessSet &, const PendingTextureUpload &, const DecodedTexture &, float max_anisotropy);
 std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(const state::Registry &, mtl::BindlessSet &, const PendingEnvironmentImport &, const std::vector<gltf::Image> &);
@@ -228,9 +215,8 @@ void ReleaseUnlistedTextures(state::Registry &, std::span<const MaterializedText
 EnvironmentPrefiltered CreateIblFromHdri(const mtl::Context &, mtl::BindlessSet &, const Pipelines &, const std::filesystem::path &, std::string);
 // Allocate a 1x1x6 cubemap (1 mip) of the given linear color.
 EnvironmentPrefiltered BuildFlatColorEnvironment(const mtl::Context &, mtl::BindlessSet &, vec3 color, std::string name);
-IblSamplers MakeIblSamplers(const EnvironmentPrefiltered &, const EnvironmentStore &);
+IblSamplers MakeIblSamplers(const EnvironmentPrefiltered &);
 // Decodes a LUT image and queues it as a permanent raw-pixel upload, returning its sampler slot.
-uint32_t QueueLutTexture(TextureStore &, mtl::BindlessSet &, const std::filesystem::path &lut_path, std::string name);
 
 // The samplers of the named studio HDRI, or of the first HDRI when none has the name, prefiltering it on first use.
 // Without studio HDRIs, the scene world's samplers.

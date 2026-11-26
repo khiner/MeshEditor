@@ -10,6 +10,7 @@ struct PassFamily {
     MeshPass First, Last;
     const char *File;
     const char *Prefix{""}, *Suffix{""};
+    bool BinaryLinking{false};
 };
 constexpr std::array Families{
     PassFamily{MeshPass::ConnectivityFaces, MeshPass::ConnectivityEdgeTables, "MeshConnectivity.metal", "Mesh"},
@@ -49,15 +50,21 @@ constexpr std::array Families{
     PassFamily{MeshPass::RecalculateNormalNeighbors, MeshPass::RecalculateNormalFlips, "RecalculateNormals.metal"},
     PassFamily{MeshPass::PlanarFacePlanes, MeshPass::ListEditedVertices, "VertexPositionEdit.metal"},
     PassFamily{MeshPass::EditFaceUvs, MeshPass::EditFaceColors, "FaceAttributeEdit.metal"},
-    PassFamily{MeshPass::AttributeRead, MeshPass::AttributeSelectionMasks, "AttributeKernel.metal"},
-    PassFamily{MeshPass::FieldBoundary, MeshPass::FieldCurvature, "AttributeField.metal", "Attribute"},
+    PassFamily{MeshPass::AttributeSelectionMasks, MeshPass::AttributeSelectionMasks, "AttributeField.metal"},
+    PassFamily{MeshPass::OpElements, MeshPass::OpGrid, "OpDrivers.metal", "", "Driver", true},
+    PassFamily{MeshPass::OpPositions, MeshPass::OpPositions, "VertexPositionEdit.metal", "", "Driver", true},
+    PassFamily{MeshPass::BakeTriangleCounts, MeshPass::BakeMarginJump, "Bake.metal"},
+    PassFamily{MeshPass::BlurRows, MeshPass::BlurColumns, "ImageFilter.metal", "Image"},
+    PassFamily{MeshPass::FieldBoundary, MeshPass::FieldConvertDomain, "AttributeField.metal", "Attribute"},
     PassFamily{MeshPass::SimplifyVertexSetup, MeshPass::SimplifyTrim, "Simplify.metal"},
     PassFamily{MeshPass::MeshletBoundsRefit, MeshPass::MeshletBoundsRefit, "MeshletBoundsRefit.metal"},
     PassFamily{MeshPass::TopologyGatherCorners, MeshPass::TopologyEdgeAttributes, "MeshTopology.metal"},
+    PassFamily{MeshPass::LevelSetCount, MeshPass::LevelSetCount, "LevelSetCount.metal"},
     PassFamily{MeshPass::LodNodeRefit, MeshPass::LodNodeRefit, "LodNodeRefit.metal"},
     PassFamily{MeshPass::MeshletOwners, MeshPass::MeshletOwners, "MeshletOwners.metal"},
     PassFamily{MeshPass::MeshletBuildElements, MeshPass::MeshletBuildPrimitives, "MeshletBuild.metal"},
     PassFamily{MeshPass::CloneCopyByteRuns, MeshPass::CloneOffsetHandles, "MeshClone.metal"},
+    PassFamily{MeshPass::InstanceTransforms, MeshPass::PlaceCopies, "Instances.metal"},
 };
 // Every pass belongs to one family, which this fails to compile without.
 constexpr const PassFamily &FamilyOf(MeshPass pass) {
@@ -79,6 +86,7 @@ template<size_t I> constexpr auto KernelName = [] {
 constexpr auto PassFunctions = []<size_t... Is>(std::index_sequence<Is...>) {
     return std::array<std::pair<const char *, const char *>, sizeof...(Is)>{std::pair{FamilyOf(MeshPass(Is)).File, KernelName<Is>.c_str()}...};
 }(std::make_index_sequence<size_t(MeshPass::Count)>{});
+mtl::FunctionRef PassFunction(size_t i) { return {.Path = PassFunctions[i].first, .Name = PassFunctions[i].second, .BinaryLinking = FamilyOf(MeshPass(i)).BinaryLinking}; }
 } // namespace
 
 MeshPipelines::MeshPipelines(mtl::LibraryCache &libraries) : Libraries(libraries) {}
@@ -94,7 +102,7 @@ void MeshPipelines::PrewarmAsync() {
                     if (Pipelines[i]) continue;
                 }
                 try {
-                    mtl::ComputePipeline pipeline{*cache, {PassFunctions[i].first, PassFunctions[i].second}};
+                    mtl::ComputePipeline pipeline{*cache, PassFunction(i)};
                     const std::scoped_lock lock{Mutex};
                     if (!Pipelines[i]) Pipelines[i].emplace(std::move(pipeline));
                 } catch (...) {
@@ -113,7 +121,7 @@ const mtl::ComputePipeline &MeshPipelines::operator[](MeshPass pass) const {
     auto &pipeline = Pipelines.at(index);
     if (!pipeline) {
         const profile::CpuScope scope{"MeshPipelineCreate"};
-        pipeline.emplace(Libraries, mtl::FunctionRef{PassFunctions[index].first, PassFunctions[index].second});
+        pipeline.emplace(Libraries, PassFunction(index));
     }
     return *pipeline;
 }

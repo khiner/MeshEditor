@@ -15,12 +15,14 @@ struct SyncResult {
 
 // Moves the mesh's contribution to the flag totals to its record's flags, visible instance count and meshlet work.
 void RetallyMesh(state::Registry &, state::Entity mesh_entity);
-// Points the meshes' instances at their current render records and refreshes their meshlet work.
+// Points the meshes' instances at their current render records, or at none for a mesh without render records, and refreshes their meshlet work.
 // Each mesh's layout and record display fields rederive at the end of the settle pass.
 void RepointMeshInstances(state::Registry &, std::span<const state::Entity>);
 // Builds and places level-zero meshlets for the meshes and the procedural bone meshes in one batch on the chain, in input order.
 // The build submits the chain for its counts and publication, and the refreshed LOD attributes run with its next submit.
 void BuildMeshlets(state::Registry &, mtl::ComputeChain &, std::span<const state::Entity> mesh_entities, std::span<const state::Entity> bone_entities);
+// The mesh attributes a primitive drawing the material at the record index reads, where `debug_channels` holds one bit per DebugChannel a viewport shows and a mesh with `authored_tangents` reads its tangents.
+uint32_t MaterialAttributes(const state::Registry &, uint32_t material, uint32_t debug_channels, bool authored_tangents);
 // Recomputes each material's required LOD attributes and returns whether any differ from the attributes the primitives contain.
 bool RefreshMaterialLodAttributes(state::Registry &);
 // Refreshes primitive dependencies and records the refit of coarse groups those changes invalidate.

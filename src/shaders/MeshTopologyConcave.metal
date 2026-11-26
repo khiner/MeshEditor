@@ -106,33 +106,53 @@ struct ConcaveFace {
     }
 };
 
-inline uint3 TopoConcaveCount(TopoContext ctx, MeshTopologyJob job, uint f) {
+// Face f's split state in the scratch after its plan's n positions.
+inline ConcaveFace TopoConcaveFace(FaceSplitPolygons plan, uint n, float3 normal) {
+    device uint *scratch = reinterpret_cast<device uint *>(plan.Positions + n);
+    return {plan, scratch, scratch + 3u * n, scratch + 6u * n, scratch + 7u * n,
+        scratch + 8u * n, scratch + 9u * n, reinterpret_cast<device float *>(scratch + 10u * n), scratch + 11u * n,
+        float3(0.f), float3(0.f), normal, 0u};
+}
+
+// Whether face f splits: a selected face of over three corners with a concave corner about a nonzero normal.
+// Writes its plan and its concave corners.
+inline bool TopoConcaveSplits(TopoContext ctx, device const MeshTopologyJob &job, uint f) {
     // Blender's connect_verts_concave: triangulate, beautify, then join long diagonals first, leaving diagonals between original concave corners last.
     const uint2 range = ctx.SrcFaceRange(job, f);
     const uint n = range.y - range.x;
-    if (!ctx.SrcSelectedFace(job, f) || n <= 3u) return uint3(0u, 1u, n);
+    if (!ctx.SrcSelectedFace(job, f) || n <= 3u) return false;
     const auto plan = TopoInitFaceSplit(ctx, job, f);
-    const float3 normal = NormalizeOrZero(float3(ctx.SrcFaceNormals(job)[f]));
-    device uint *scratch = reinterpret_cast<device uint *>(plan.Positions + n);
-    ConcaveFace face{plan, scratch, scratch + 3u * n, scratch + 6u * n, scratch + 7u * n,
-        scratch + 8u * n, scratch + 9u * n, reinterpret_cast<device float *>(scratch + 10u * n), scratch + 11u * n,
-        float3(0.f), float3(0.f), normal, 0u};
+    const ConcaveFace face = TopoConcaveFace(plan, n, NormalizeOrZero(float3(ctx.SrcFaceNormals(job)[f])));
     bool concave = false;
     for (uint i = 0u; i < n; ++i) {
-        face.Concave[i] = dot(cross(plan.Point(i) - plan.Point(plan.Prev[i]), plan.Point(plan.Next[i]) - plan.Point(i)), normal) <= 0.f;
+        face.Concave[i] = dot(cross(plan.Point(i) - plan.Point(plan.Prev[i]), plan.Point(plan.Next[i]) - plan.Point(i)), face.Normal) <= 0.f;
         concave = concave || face.Concave[i];
     }
-    if (!concave || dot(normal, normal) == 0.f) return uint3(0u, 1u, n);
-    TopoPlaneFrame(normal, face.U, face.V);
-    TopoTriangulateFace(ctx, job, f, [&](uint3 triangle, uint t) {
+    return concave && dot(face.Normal, face.Normal) != 0.f;
+}
+
+// Writes face f's triangles as plan polygons with no opposite sides or edges.
+inline auto TopoConcaveTriangles(TopoContext ctx, device const MeshTopologyJob &job, uint f) {
+    const uint2 range = ctx.SrcFaceRange(job, f);
+    const ConcaveFace face = TopoConcaveFace(TopoFaceSplitPolygons(ctx, job, f), range.y - range.x, float3(0.f));
+    return [face](uvec3 triangle, uint t) {
         for (uint k = 0u; k < 3u; ++k) {
             const uint h = 3u * t + k;
-            plan.Source[h] = triangle[k]; plan.Next[h] = 3u * t + (k + 1u) % 3u; plan.Prev[h] = 3u * t + (k + 2u) % 3u;
+            face.Plan.Source[h] = triangle[k]; face.Plan.Next[h] = 3u * t + (k + 1u) % 3u; face.Plan.Prev[h] = 3u * t + (k + 2u) % 3u;
             face.Opposite[h] = InvalidOffset; face.Edge[h] = InvalidOffset;
         }
-        plan.Start[t] = 3u * t;
-        plan.Length[t] = t;
-    });
+        face.Plan.Start[t] = 3u * t;
+        face.Plan.Length[t] = t;
+    };
+}
+
+// The faces and corners of a triangulated split face after beautifying and joining its triangles.
+inline uint3 TopoConcaveCount(TopoContext ctx, device const MeshTopologyJob &job, uint f) {
+    const uint2 range = ctx.SrcFaceRange(job, f);
+    const uint n = range.y - range.x;
+    const auto plan = TopoFaceSplitPolygons(ctx, job, f);
+    ConcaveFace face = TopoConcaveFace(plan, n, NormalizeOrZero(float3(ctx.SrcFaceNormals(job)[f])));
+    TopoPlaneFrame(face.Normal, face.U, face.V);
     const uint mask = (1u << (32u - clz(2u * n - 1u))) - 1u;
     for (uint i = 0u; i <= mask; ++i) face.Hash[i] = 0u;
     uint edges = 0u;

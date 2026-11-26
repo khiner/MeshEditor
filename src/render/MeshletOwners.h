@@ -1,5 +1,5 @@
 #pragma once
-#include "gpu/MeshletOwnersPushConstants.h"
+#include "gpu/MeshletOwnersJob.h"
 #include "mesh/MeshStore.h"
 
 namespace mtl {

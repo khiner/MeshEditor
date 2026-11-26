@@ -1,7 +1,7 @@
 #include "mesh/ConnectivityEditWork.h"
 #include "Profile.h"
 
-#include "gpu/ConnectivityEditPushConstants.h"
+#include "gpu/ConnectivityEditJob.h"
 #include "mesh/ElementWorkSort.h"
 #include "mesh/MeshClosure.h"
 #include "mesh/MeshPipelines.h"
@@ -29,7 +29,7 @@ ConnectivityEditWork::ConnectivityEditWork(state::Registry &r, mtl::ComputeChain
         count = std::max(count, uint32_t(bound));
     }
     if (!count) return;
-    ConnectivityEditPushConstants pc{
+    ConnectivityEditJob job{
         .Before = {before.Elements[0], before.Elements[1], before.Elements[2]},
         .Counts = {before.Counts[0], before.Counts[1], before.Counts[2]},
         .Replaced = replaced,
@@ -37,9 +37,10 @@ ConnectivityEditWork::ConnectivityEditWork(state::Registry &r, mtl::ComputeChain
         .ErrorSlot = chain.Scratch.Buffer.Slot,
     };
     for (uint32_t d = 0u; d < 3u; ++d) {
-        pc.After[d] = Elements[d] = AllocateElementWork(chain.Scratch, capacities[d], uint64_t(before.Counts[d]) + emitted[d].Count);
+        job.After[d] = Elements[d] = AllocateElementWork(chain.Scratch, capacities[d], uint64_t(before.Counts[d]) + emitted[d].Count);
     }
-    chain.Groups(GetMeshPipelines(r)[MeshPass::ConnectivityEditWork], pc, TileCount(count, TileElements), 256u, 3u);
+    // A domain's threads cover its neighborhood and then its emitted handles, one layer per domain.
+    mtl::GatherPass(chain, GetMeshPipelines(r)[MeshPass::ConnectivityEditWork], job, count, TileElements, 3u);
     EncodeSortElementWork(r, chain, Elements);
 }
 

@@ -16,41 +16,11 @@ inline float4 getSpecularSample(const thread SceneT<SetT> &scene, float3 reflect
     return texture_sample;
 }
 
-inline float3 getIBLGGXFresnel(float2 f_ab, float NdotV, float roughness, float3 F0, float specular_weight) {
-    const float3 Fr = max(float3(1.0f - roughness), F0) - F0;
-    const float3 k_S = F0 + Fr * pow(1.0f - NdotV, 5.0f);
-    const float3 FssEss = specular_weight * (k_S * f_ab.x + f_ab.y);
-
-    const float Ems = 1.0f - (f_ab.x + f_ab.y);
-    const float3 F_avg = specular_weight * (F0 + (1.0f - F0) / 21.0f);
-    const float3 FmsEms = Ems * FssEss * F_avg / (1.0f - F_avg * Ems);
-    return FssEss + FmsEms;
-}
-
-template<typename SetT>
-inline float3 getIBLGGXFresnel(const thread SceneT<SetT> &scene, float3 n, float3 v, float roughness, float3 F0, float specular_weight) {
-    const float NdotV = clamp(dot(n, v), 0.0f, 1.0f);
-    const float2 f_ab = scene.SampleTex(scene.View.Ibl.BrdfLutSamplerSlot, clamp(float2(NdotV, roughness), float2(0.0f), float2(1.0f))).rg;
-    return getIBLGGXFresnel(f_ab, NdotV, roughness, F0, specular_weight);
-}
-
 template<typename SetT>
 inline float3 getIBLRadianceGGX(const thread SceneT<SetT> &scene, float3 n, float3 v, float roughness) {
     const uint mip_count = max(scene.View.Ibl.SpecularEnvMipCount, 1u);
     const float lod = roughness * float(mip_count - 1u);
     return getSpecularSample(scene, normalize(reflect(-v, n)), lod).rgb;
-}
-
-template<typename SetT>
-inline float4 getSheenSample(const thread SceneT<SetT> &scene, float3 reflection, float lod) {
-    float4 s = scene.SampleCubeLod(scene.View.Ibl.SheenEnvSamplerSlot, scene.View.EnvRotation.Unpack() * reflection, lod);
-    s.rgb *= scene.View.EnvIntensity;
-    return s;
-}
-
-template<typename SetT>
-inline float albedoSheenScalingLUT(const thread SceneT<SetT> &scene, float NdotV, float sheen_roughness) {
-    return scene.SampleTex(scene.View.Ibl.SheenELutSamplerSlot, clamp(float2(NdotV, sheen_roughness), float2(0.0f), float2(1.0f))).r;
 }
 
 template<typename SetT>
@@ -106,14 +76,5 @@ inline float3 getVolumeRefraction(const thread SceneT<SetT> &scene, float3 n, fl
     return real ?
         sampleTransmissionFramebuffer(scene, refracted, world_pos, world_thickness, perceptual_roughness, ior) :
         sampleIblRefraction(scene, refracted, perceptual_roughness, ior);
-}
-
-template<typename SetT>
-inline float3 getIBLRadianceCharlie(const thread SceneT<SetT> &scene, float3 n, float3 v, float sheen_roughness, float3 sheen_color) {
-    const float NdotV = clamp(dot(n, v), 0.0f, 1.0f);
-    const float lod = sheen_roughness * float(max(scene.View.Ibl.SheenEnvMipCount, 1u) - 1u);
-    const float3 reflection = normalize(reflect(-v, n));
-    const float brdf = scene.SampleTex(scene.View.Ibl.CharlieLutSamplerSlot, clamp(float2(NdotV, sheen_roughness), float2(0.0f), float2(1.0f))).b;
-    return getSheenSample(scene, reflection, lod).rgb * sheen_color * brdf;
 }
 

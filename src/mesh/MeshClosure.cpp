@@ -1,6 +1,6 @@
 #include "mesh/MeshClosure.h"
 
-#include "gpu/MeshClosurePushConstants.h"
+#include "gpu/MeshClosureJob.h"
 #include "mesh/ElementMembershipWork.h"
 #include "mesh/ElementWorkSort.h"
 #include "mesh/MeshPipelines.h"
@@ -90,33 +90,30 @@ StoreRecord RecordAt(const state::Registry &r, uint32_t id) {
 
 uint32_t DomainBound(const MeshArenas &a, const MeshStore::Record &record, uint32_t d) { return DomainBlockCount(a, record, d) * MeshElementBlockSize; }
 
+uint32_t InputTiles(const MeshClosureJob &job) { return TileCount(job.InputBound, TileElements); }
+
 MeshClosure EncodeClosure(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, uint32_t domain, const ClosureSeed &input, std::array<uint32_t, 4> bounds, const ClosureSeed &retained, const ClosureSeed &wires = {}, bool retain_isolated_only = false) {
     const auto [meshes, a, record] = RecordAt(r, id);
     MeshClosure closure;
     closure.Bounds = bounds;
     closure.Elements[domain] = input.Work;
     if (!input.Count && !retained.Count && !wires.Count) return closure;
-    MeshClosurePushConstants pc{.Connectivity = meshes.GetConnectivityRef(id)};
+    // The input domain's work stays unset, so the passes mark only the other domains.
+    GpuArray<ElementWork, 4> work{};
     std::vector<ElementWork> sorted;
     for (uint32_t d = 0u; d < 4u; ++d) {
         if (d == domain) continue;
-        closure.Elements[d] = pc.Work[d] = AllocateElementWork(chain.Scratch, DomainBound(a, record, d), std::min(bounds[d], DomainBlockCount(a, record, d)));
-        sorted.push_back(pc.Work[d]);
+        closure.Elements[d] = work[d] = AllocateElementWork(chain.Scratch, DomainBound(a, record, d), std::min(bounds[d], DomainBlockCount(a, record, d)));
+        sorted.push_back(work[d]);
     }
-    pc.Input = input.Work;
-    pc.InputDomain = domain;
-    pc.InputBound = input.Count;
-    pc.Retained = retained.Work;
-    pc.RetainedBound = retained.Count;
-    pc.RetainIsolatedOnly = retain_isolated_only;
-    chain.Groups(GetMeshPipelines(r)[MeshPass::MeshClosureExpand], pc, std::max(TileCount(input.Count, TileElements), TileCount(retained.Count, TileElements)));
-    if (wires.Count) {
-        pc.Input = wires.Work;
-        pc.InputDomain = 3u;
-        pc.InputBound = wires.Count;
-        pc.RetainedBound = 0u;
-        chain.Groups(GetMeshPipelines(r)[MeshPass::MeshClosureExpand], pc, TileCount(wires.Count, TileElements));
-    }
+    const auto connectivity = meshes.GetConnectivityRef(id);
+    // Wires expand as a second job over the same work.
+    const std::array jobs{
+        MeshClosureJob{.Connectivity = connectivity, .Work = work, .Input = input.Work, .Retained = retained.Work, .InputDomain = domain, .InputBound = input.Count, .RetainedBound = retained.Count, .RetainIsolatedOnly = retain_isolated_only},
+        MeshClosureJob{.Connectivity = connectivity, .Work = work, .Input = wires.Work, .InputDomain = 3u, .InputBound = wires.Count},
+    };
+    const std::array tiles{std::max(InputTiles(jobs[0]), TileCount(retained.Count, TileElements)), InputTiles(jobs[1])};
+    mtl::GatherPass(chain, GetMeshPipelines(r)[MeshPass::MeshClosureExpand], std::span{jobs}.first(wires.Count ? 2u : 1u), tiles, TileElements);
     EncodeSortElementWork(r, chain, sorted);
     return closure;
 }
@@ -146,12 +143,8 @@ void MeshClosure::EncodeIncidence(state::Registry &r, mtl::ComputeChain &chain, 
     const auto [index, d] = IncidenceIndex(element);
     const auto word = IncidenceWords[index] = IncidenceWord(chain);
     if (!Bounds[d]) return;
-    MeshClosurePushConstants pc{.Connectivity = r.Resources.get<const MeshStore>().GetConnectivityRef(id)};
-    pc.Input = Elements[d];
-    pc.InputDomain = d;
-    pc.InputBound = Bounds[d];
-    pc.Incidence = {chain.Scratch.Buffer.Slot, word};
-    chain.Groups(GetMeshPipelines(r)[MeshPass::MeshClosureCount], pc, TileCount(Bounds[d], TileElements));
+    const MeshClosureJob job{.Connectivity = r.Resources.get<const MeshStore>().GetConnectivityRef(id), .Input = Elements[d], .InputDomain = d, .InputBound = Bounds[d], .Incidence = {chain.Scratch.Buffer.Slot, word}};
+    mtl::GatherPass(chain, GetMeshPipelines(r)[MeshPass::MeshClosureCount], std::span{&job, 1u}, std::array{InputTiles(job)}, TileElements);
 }
 
 void MeshClosure::Finish(const mtl::ComputeChain &chain) {
@@ -174,15 +167,12 @@ ClosureSeed MeshClosure::Seed(Element element) const {
 ClosureSeed EncodeEdgeVertices(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, const ClosureSeed &edges) {
     const auto [meshes, a, record] = RecordAt(r, id);
     const auto count = uint32_t(std::min<uint64_t>(2ull * edges.Count, a.Vertices.Count(record.Vertices)));
-    MeshClosurePushConstants pc{.Connectivity = meshes.GetConnectivityRef(id)};
-    pc.Work[0] = AllocateElementWork(chain.Scratch, DomainBound(a, record, 0u), std::min(count, DomainBlockCount(a, record, 0u)));
-    if (!edges.Count) return {pc.Work[0]};
-    pc.Input = edges.Work;
-    pc.InputDomain = 3u;
-    pc.InputBound = edges.Count;
-    chain.Groups(GetMeshPipelines(r)[MeshPass::MeshClosureEdgeVertices], pc, TileCount(edges.Count, TileElements));
-    EncodeSortElementWork(r, chain, std::span{&pc.Work[0], 1u});
-    return {.Work = pc.Work[0], .Count = count, .Incidence = edges.Incidence, .Vertices = edges.Vertices, .All = edges.All};
+    const auto vertices = AllocateElementWork(chain.Scratch, DomainBound(a, record, 0u), std::min(count, DomainBlockCount(a, record, 0u)));
+    if (!edges.Count) return {vertices};
+    const MeshClosureJob job{.Connectivity = meshes.GetConnectivityRef(id), .Work = {vertices}, .Input = edges.Work, .InputDomain = 3u, .InputBound = edges.Count};
+    mtl::GatherPass(chain, GetMeshPipelines(r)[MeshPass::MeshClosureEdgeVertices], std::span{&job, 1u}, std::array{InputTiles(job)}, TileElements);
+    EncodeSortElementWork(r, chain, std::span{&vertices, 1u});
+    return {.Work = vertices, .Count = count, .Incidence = edges.Incidence, .Vertices = edges.Vertices, .All = edges.All};
 }
 
 ClosureSeed EncodeAllSeed(state::Registry &r, mtl::ComputeChain &chain, uint32_t id, Element element) {
@@ -273,7 +263,7 @@ FaceTriangles EncodeFaceTriangles(state::Registry &r, mtl::ComputeChain &chain, 
     const auto bound = faces.Incidence;
     result.Triangles = AllocateElementWork(chain.Scratch, a.Triangles.HandleBound(record.TriangleData), std::min(bound, record.TriangleData ? a.Triangles.Set(record.TriangleData).BlockCount : 0u));
     if (!faces.Count) return result;
-    const FaceTrianglePushConstants pc{
+    const FaceTriangleJob job{
         .Faces = faces.Work,
         .Triangles = result.Triangles,
         .Error = {chain.Scratch.Buffer.Slot, 0u},
@@ -291,7 +281,8 @@ FaceTriangles EncodeFaceTriangles(state::Registry &r, mtl::ComputeChain &chain, 
         .TriangleHandles = a.Triangles.HandleBound(record.TriangleData),
         .CornerHandles = a.FaceCorners.HandleBound(record.FaceCorners),
     };
-    chain.Groups(GetMeshPipelines(r)[MeshPass::MeshClosureTriangles], pc, faces.Count, 32u);
+    // One threadgroup of 32 threads per face.
+    mtl::GatherPass(chain, GetMeshPipelines(r)[MeshPass::MeshClosureTriangles], std::span{&job, 1u}, std::array{job.FaceBound}, 32u);
     EncodeSortElementWork(r, chain, std::span{&result.Triangles, 1u});
     return result;
 }

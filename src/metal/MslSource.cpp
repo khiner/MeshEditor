@@ -9,8 +9,6 @@ namespace msl {
 NS::SharedPtr<MTL::CompileOptions> CompileOptions() {
     auto options = NS::TransferPtr(MTL::CompileOptions::alloc()->init());
     options->setLanguageVersion(MTL::LanguageVersion3_2);
-    options->setMathMode(MTL::MathModeRelaxed);
-    options->setMathFloatingPointFunctions(MTL::MathFloatingPointFunctionsFast);
     return options;
 }
 

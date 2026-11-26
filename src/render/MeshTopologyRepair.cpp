@@ -85,6 +85,7 @@ std::vector<FragmentBuild> BuildFragments(state::Registry &r, mtl::ComputeChain 
         }
         BuildGpuMeshlets(r, chain, sources);
         std::vector<FragmentBuild> results(owners.size());
+        std::vector<MeshletOwnersJob> owner_jobs;
         for (uint32_t o = 0u, first = 0u; o < owners.size(); ++o) {
             auto &owner = *owners[o].Owner;
             const auto owner_partitions = owners[o].Partitions;
@@ -99,9 +100,10 @@ std::vector<FragmentBuild> BuildFragments(state::Registry &r, mtl::ComputeChain 
                 jobs.push_back({.First = range.Offset, .Count = range.Count, .ElementCount = uint32_t(partition.Elements.size()), .Group = partition.Group, .Primitive = partition.Primitive, .Leaf = partition.Leaf});
                 result.Runs.push_back({range.Offset, range.Count, partition.Primitive, true});
             }
-            result.Added = AdoptMeshletFragments(r, chain, owner, owners[o].Topology, std::span{fragments}.subspan(first, owner_partitions.size()), jobs, blocks[o]);
+            result.Added = AdoptMeshletFragments(r, owner, owners[o].Topology, std::span{fragments}.subspan(first, owner_partitions.size()), jobs, blocks[o], owner_jobs);
             first += uint32_t(owner_partitions.size());
         }
+        RecordMeshletOwners(r, chain, owner_jobs);
         return results;
     } catch (...) {
         std::vector<MeshStore::Record *> released;
@@ -112,7 +114,8 @@ std::vector<FragmentBuild> BuildFragments(state::Registry &r, mtl::ComputeChain 
     }
 }
 
-LodNodeRefit RepairElementMeshletDeletion(state::Registry &r, mtl::ComputeChain &chain, MeshStore::Record &owner, uint32_t topology, std::span<const uint32_t> elements) {
+// Appends the owner writes of the clusters that keep elements to `owner_jobs` and their bounds refits to `bounds`.
+LodNodeRefit RepairElementMeshletDeletion(state::Registry &r, BufferArena<uint32_t> &scratch, MeshStore::Record &owner, uint32_t topology, std::span<const uint32_t> elements, std::vector<MeshletOwnersJob> &owner_jobs, std::vector<MeshletBoundsRefitJob> &bounds) {
     const profile::CpuScope scope{"ElementMeshletDeletion"};
     auto &meshes = r.Resources.get<MeshStore>();
     auto &render = meshes.Render();
@@ -161,13 +164,8 @@ LodNodeRefit RepairElementMeshletDeletion(state::Registry &r, mtl::ComputeChain 
     meshes.ReleasePayloadRuns(owner, RenderPayload::VertexCorners, std::move(corner_tails));
     SortUnique(kept_blocks);
     std::ranges::sort(kept_addresses);
-    std::vector<MeshletOwnersJob> owner_jobs;
     PrepareMeshletOwners(r, owner, topology, HandleRuns(kept), kept_blocks, owner_jobs);
-    RecordMeshletOwners(r, chain, owner_jobs);
-    if (!kept.empty()) {
-        const MeshletBoundsRefitJob job{&owner, &chain.Scratch, SeedElementWorkHandles(chain.Scratch, render.Meshlets.Capacity(), kept_addresses)};
-        RefitCanonicalMeshletBounds(r, chain, std::span{&job, 1u});
-    }
+    if (!kept.empty()) bounds.push_back({&owner, &scratch, SeedElementWorkHandles(scratch, render.Meshlets.Capacity(), kept_addresses)});
     auto refit = EditLodNodes(r, owner, empty, {}, kept);
     RetireMeshletStorage(r, owner, empty);
     if (empty.empty()) ++owner.MeshletRevision;
@@ -183,6 +181,8 @@ void RepairElementMeshlets(state::Registry &r, mtl::ComputeChain &chain, std::sp
     std::vector<std::vector<MeshletPatchPartition>> partitions(repairs.size());
     std::vector<OwnerFragments> additions;
     std::vector<LodNodeRefit> refits;
+    std::vector<MeshletOwnersJob> owner_jobs;
+    std::vector<MeshletBoundsRefitJob> bounds;
     for (uint32_t i = 0u; i < repairs.size(); ++i) {
         auto &owner = meshes.WriteRecord(repairs[i].StoreId);
         const auto store_id = owner.StoreId, topology = repairs[i].Topology;
@@ -190,7 +190,7 @@ void RepairElementMeshlets(state::Registry &r, mtl::ComputeChain &chain, std::sp
         const auto domain = lines ? MeshStore::ElementDomain::Edge : MeshStore::ElementDomain::Vertex;
         const auto halfedge = [&](uint32_t h) { return meshes.HandleAddress(store_id, MeshStore::ElementDomain::Halfedge, ElementHandle{h}).Value(); };
         const auto &added = repairs[i].Added, &removed = repairs[i].Removed;
-        if (!removed.empty()) refits.push_back(RepairElementMeshletDeletion(r, chain, owner, topology, removed));
+        if (!removed.empty()) refits.push_back(RepairElementMeshletDeletion(r, chain.Scratch, owner, topology, removed, owner_jobs, bounds));
         if (added.empty()) continue;
         // A line draws with the primitive of its first endpoint, where its first halfedge starts.
         const auto primitives = a.VertexPrimitives.View(owner.VertexPrimitives);
@@ -208,6 +208,8 @@ void RepairElementMeshlets(state::Registry &r, mtl::ComputeChain &chain, std::sp
         }
         additions.push_back({&owner, owner_partitions, {}, topology});
     }
+    RecordMeshletOwners(r, chain, owner_jobs);
+    RefitCanonicalMeshletBounds(r, chain, bounds);
     if (!additions.empty()) {
         const auto built = BuildFragments(r, chain, additions);
         for (uint32_t o = 0u; o < additions.size(); ++o) refits.push_back(EditLodNodes(r, *additions[o].Owner, {}, built[o].Runs, {}));
@@ -335,13 +337,20 @@ void AccumulateChangedTriangles(state::Registry &r, AccumulatedTriangleEdits &ed
     });
 }
 
-void RepairTopologyRender(state::Registry &r, mtl::ComputeChain &chain, state::Entity entity, const AccumulatedTriangleEdits &edits) {
-    const auto clusters = edits.Clusters.Ascending(), emitted = SetBitHandles(edits.Emitted);
-    const auto added = HandleRuns(emitted);
-    std::vector<uint32_t> sources;
-    for (const auto t : emitted) sources.push_back(edits.Sources[t]);
-    const TriangleRepair repair{entity, {.Clusters = clusters, .Removed = SeedElementWorkWords(chain.Scratch, edits.Removed), .Added = added, .Sources = sources}};
-    RepairTriangleRender(r, chain, std::span{&repair, 1u}, {});
+void RepairTopologyRender(state::Registry &r, mtl::ComputeChain &chain, std::span<const std::pair<state::Entity, const AccumulatedTriangleEdits *>> accumulated) {
+    std::vector<std::vector<uint32_t>> clusters, sources;
+    std::vector<std::vector<Range>> added;
+    clusters.reserve(accumulated.size());
+    sources.reserve(accumulated.size());
+    added.reserve(accumulated.size());
+    std::vector<TriangleRepair> repairs;
+    for (const auto &[entity, edits] : accumulated) {
+        const auto emitted = SetBitHandles(edits->Emitted);
+        auto &own = sources.emplace_back();
+        for (const auto t : emitted) own.push_back(edits->Sources[t]);
+        repairs.push_back({entity, {.Clusters = clusters.emplace_back(edits->Clusters.Ascending()), .Removed = SeedElementWorkWords(chain.Scratch, edits->Removed), .Added = added.emplace_back(HandleRuns(emitted)), .Sources = own}});
+    }
+    RepairTriangleRender(r, chain, repairs, {});
 }
 
 void RepairFaceRender(state::Registry &r, mtl::ComputeChain &chain, std::span<const std::pair<state::Entity, FaceTriangles>> changes) {

@@ -38,20 +38,15 @@ void PrepareMeshletOwners(state::Registry &r, MeshStore::Record &owner, uint32_t
 void RecordMeshletOwners(state::Registry &r, mtl::ComputeChain &chain, std::span<const MeshletOwnersJob> jobs) {
     if (jobs.empty()) return;
     const auto &render = r.Resources.get<const MeshStore>().Render();
-    std::vector<uvec2> tiles;
-    for (uint32_t j = 0u; j < jobs.size(); ++j) {
-        for (uint32_t i = 0u; i < jobs[j].Count; ++i) tiles.emplace_back(j, i);
-    }
-    const MeshletOwnersPushConstants pc{
-        .Jobs = chain.Upload(std::as_bytes(jobs)),
-        .Tiles = chain.Upload(std::as_bytes(std::span{tiles})),
-        .Count = uint32_t(tiles.size()),
-        .Meshlets = render.Meshlets.Slots(),
-        .MeshletSlot = render.Meshlets.Buffer.Slot,
-        .TriangleIdsSlot = render.MeshletTriangleIds.Buffer.Slot,
-        .ErrorSlot = chain.Scratch.Buffer.Slot,
-    };
-    chain.Groups(GetMeshPipelines(r)[MeshPass::MeshletOwners], pc, pc.Count, 64u);
+    // Every job reads the same cluster buffers and marks the chain's error word, with a tile per cluster.
+    const auto bound = jobs | std::views::transform([&](MeshletOwnersJob job) {
+        job.Meshlets = render.Meshlets.Slots();
+        job.MeshletSlot = render.Meshlets.Buffer.Slot;
+        job.TriangleIdsSlot = render.MeshletTriangleIds.Buffer.Slot;
+        job.ErrorSlot = chain.Scratch.Buffer.Slot;
+        return job;
+    }) | std::ranges::to<std::vector>();
+    mtl::GatherPass(chain, GetMeshPipelines(r)[MeshPass::MeshletOwners], std::span{bound}, jobs | std::views::transform(&MeshletOwnersJob::Count) | std::ranges::to<std::vector>(), 64u);
 }
 
 void RetireMeshletOwners(state::Registry &r, MeshStore::Record &owner, std::span<const uint32_t> clusters, std::span<const uint32_t> retired) {

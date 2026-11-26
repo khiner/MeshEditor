@@ -39,6 +39,10 @@ set(RESOURCE_DEST "${CMAKE_BINARY_DIR}/res")
 if(NOT EXISTS ${RESOURCE_DEST})
     file(CREATE_LINK "${CMAKE_SOURCE_DIR}/res" ${RESOURCE_DEST} SYMBOLIC)
 endif()
+set(MATERIALX_LIBRARIES_DEST "${CMAKE_BINARY_DIR}/materialx")
+if(NOT EXISTS ${MATERIALX_LIBRARIES_DEST})
+    file(CREATE_LINK "${CMAKE_SOURCE_DIR}/lib/materialx/libraries" ${MATERIALX_LIBRARIES_DEST} SYMBOLIC)
+endif()
 
 # Put editable shader sources, compiled libraries, and shared GPU headers under one runtime path.
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
@@ -62,13 +66,8 @@ foreach(src IN LISTS SHADER_SOURCE_FILES)
         get_filename_component(stem "${src}" NAME_WE)
         set(air "${CMAKE_BINARY_DIR}/shader-libraries/${stem}.air")
         set(library "${CMAKE_BINARY_DIR}/shaders/${stem}.metallib")
-        set(metal_flags)
-        # Ray intervals, volume attenuation and temporal history depend on Inf/NaN semantics.
-        if(stem MATCHES "^(pbr|Ray.*|FastGI|LightCulling.*)$")
-            list(APPEND metal_flags -fmetal-math-mode=relaxed)
-        endif()
         add_custom_command(OUTPUT "${air}"
-            COMMAND xcrun metal -w -c -std=metal3.2 ${metal_flags}
+            COMMAND xcrun metal -w -c -std=metal3.2
                 -I "${CMAKE_SOURCE_DIR}/src/shaders" -I "${CMAKE_SOURCE_DIR}/src"
                 -MMD -MF "${air}.d" "${src}" -o "${air}"
             DEPENDS "${src}"

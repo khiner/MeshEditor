@@ -1,9 +1,7 @@
 #pragma once
 #include "mesh/MeshStore.h"
 
-namespace mtl {
-struct ComputeChain;
-} // namespace mtl
+struct MeshletOwnersJob;
 
 struct MeshletPatchInput {
     // The ascending finest clusters the edit retires.
@@ -42,5 +40,6 @@ struct MeshletPatchAdoptJob {
 };
 
 // Adopts locally built, primitive-bound finest meshlets into one canonical owner, taking its canonical element blocks from `blocks`, and empties the fragments.
+// Appends the owner writes of the adopted clusters to `owner_jobs`, which RecordMeshletOwners records.
 // Returns the adopted clusters in ascending order.
-std::vector<uint32_t> AdoptMeshletFragments(state::Registry &, mtl::ComputeChain &, MeshStore::Record &, uint32_t topology, std::span<MeshStore::Record> fragments, std::span<const MeshletPatchAdoptJob> jobs, std::span<const uint32_t> blocks);
+std::vector<uint32_t> AdoptMeshletFragments(state::Registry &, MeshStore::Record &, uint32_t topology, std::span<MeshStore::Record> fragments, std::span<const MeshletPatchAdoptJob> jobs, std::span<const uint32_t> blocks, std::vector<MeshletOwnersJob> &owner_jobs);

@@ -73,7 +73,7 @@ struct RenderTargets {
     };
 
     struct RayTracingResourcesT {
-        RayTracingResourcesT(const mtl::Context &, mtl::Extent2D, uint32_t step, uint32_t lobes, bool glass);
+        RayTracingResourcesT(const mtl::Context &, mtl::Extent2D, uint32_t step, uint32_t lobes, bool glass, bool coat, bool diffuse_transmission, bool sheen);
         mtl::Texture Radiance, Guide, HitGuide, Spatial, SpatialInfo, RayData, Incident;
         // Glass shape stores the octahedral normal, roughness and thickness in FP32.
         mtl::Texture ClosureNormal, GlassShape;
@@ -101,6 +101,8 @@ struct RenderTargets {
             mtl::Texture Radiance, MaterialValidity, Moments, Transmission, TransmissionMoments, Geometry, Normal, Film;
         };
         std::array<HistoryT, 2> History;
+        // The weights of the coat, diffuse transmission and sheen lobes the reflection and diffuse rays carry, and the coat's normal, present when the scene traces them.
+        mtl::Texture CoatWeight, CoatNormal, DiffuseTransmissionWeight, SheenWeight;
         uint32_t Frames{}, SampleIndex{}, JitterIndex{}, HistoryIndex{};
         uint64_t SceneRevision{}, GeometryRevision{};
         mat4 PreviousViewProj{1}, PreviousCameraProj{1};
@@ -110,11 +112,36 @@ struct RenderTargets {
     };
     std::unique_ptr<RayTracingResourcesT> RayTracing;
 
+    // Lazily allocated while a material in view computes inputs: the pattern words, laid out as `PatternWordsHeader` describes, the list of the pixels the pattern pass covers, and for a ray-traced view the list of ray samples whose first surface computes inputs.
+    struct PatternResourcesT {
+        PatternResourcesT(const mtl::Context &, mtl::Extent2D, uint32_t ray_samples);
+        // The words of the transparent fragment lists, laid out as `PatternWordsHeader` describes.
+        struct FragmentLists {
+            uint32_t Heads, Entries, Words, Capacity;
+        };
+        std::unique_ptr<mtl::Buffer> Words;
+        mtl::ResidentBuffer Work;
+        std::optional<mtl::ResidentBuffer> Hits; // Laid out as `BufferIndex_PatternHits` describes
+        uint32_t RaySamples;
+        uint32_t Ring; // The first word of the listed ray samples' words
+        FragmentLists Fragments;
+        // The fragments the lists hold, which a frame starts at one per pixel and each completed frame's listed count sets.
+        // Listed is set while a submitted frame lists fragments, and Overflowed after a completed frame listed more than the lists held.
+        uint32_t FragmentCapacity{};
+        bool Listed{}, Overflowed{};
+    };
+    std::unique_ptr<PatternResourcesT> Patterns;
+
     void SetExtent(const mtl::Context &, mtl::Extent2D, mtl::BindlessSet &);
     // Returns whether the allocation changed.
     bool EnsureTransmissionResources(const mtl::Context &, mtl::Extent2D, bool wanted);
     bool EnsureMotionBlurResources(const mtl::Context &, bool fast);
-    RayTracingResourcesT &EnsureRayTracingResources(const mtl::Context &, uint32_t step, uint32_t lobes, bool glass);
+    // The pattern resources with `stride` words per pixel and per listed ray sample of `ray_samples`, and with fragment lists of a fragment per pixel for `fragments`, or none for a zero stride.
+    PatternResourcesT *EnsurePatternResources(const mtl::Context &, mtl::BufferContext &, uint32_t stride, uint32_t ray_samples, bool fragments);
+    // Sizes the fragment lists to the completed frame's listed count, and returns whether the frame listed more fragments than they held.
+    // The lists keep their size until the count exceeds it or falls below a quarter of it.
+    bool FitFragmentLists();
+    RayTracingResourcesT &EnsureRayTracingResources(const mtl::Context &, uint32_t step, uint32_t lobes, bool glass, bool coat, bool diffuse_transmission, bool sheen);
 
     // Null lazy targets fall back to scene color to keep bindings valid.
     SampledTexture Nearest(const mtl::Texture *) const;
