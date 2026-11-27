@@ -6,17 +6,17 @@
 #include "viewport/Viewport.h"
 
 #include "TransformMath.h"
+#include "graph/Cook.h"
+#include "graph/Graph.h"
 #include "mesh/EditVisibility.h"
 #include "mesh/MeshPipelines.h"
 #include "mesh/Neighborhood.h"
 #include "mesh/SelectedChains.h"
 #include "metal/Dispatch.h"
 #include "object/ObjectOps.h"
-#include "procedure/Cook.h"
-#include "procedure/Procedure.h"
 #include "render/GpuSceneState.h"
-#include "render/Instance.h"
 #include "render/MeshletBuildGpu.h"
+#include "render/ObjectGeometry.h"
 #include "scene/WorldTransform.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
@@ -28,13 +28,13 @@
 
 namespace {
 // Copy each mesh's separated geometry into new meshes, and append a Delete node of the separated elements to the mesh.
-void SeparateSelected(state::Registry &r, const ::selection::PrimaryEditInstanceMap &primaries, action::mesh::SeparateMode mode) {
-    using namespace procedure;
+void SeparateSelected(state::Registry &r, const ::selection::PrimaryEditObjectMap &primaries, action::mesh::SeparateMode mode) {
+    using namespace graph;
     const auto &meshes = r.Resources.get<const MeshStore>();
     std::vector<MeshTopologyTask> copies;
     std::vector<state::Entity> copied;
     std::vector<std::pair<state::Entity, MeshTopologyTask>> removals;
-    for (const auto &[entity, instance] : primaries) {
+    for (const auto &[entity, object] : primaries) {
         if (!HasMesh(r, entity)) continue;
         const auto id = *DrawnStoreId(r, entity);
         auto planned = SeparateGeometryTasks(r, Mesh{meshes, id}, EditorGeometrySelection(meshes, id), mode);
@@ -52,11 +52,11 @@ void SeparateSelected(state::Registry &r, const ::selection::PrimaryEditInstance
     std::vector<state::Entity> created;
     for (uint32_t i = 0u; i < results.size(); ++i) {
         if (!results[i].Changed) continue;
-        const auto instance = primaries.at(copied[i]);
-        const MeshInstanceCreateInfo create{
-            .Name = std::format("{}.001", GetName(r, instance)),
-            .Transform = *WorldTransformOf(r, instance),
-            .Select = MeshInstanceCreateInfo::SelectBehavior::None,
+        const auto object = primaries.at(copied[i]);
+        const MeshObjectCreateInfo create{
+            .Name = std::string{NameStem(GetName(r, object))},
+            .Transform = *WorldTransformOf(r, object),
+            .Select = MeshObjectCreateInfo::SelectBehavior::None,
         };
         created.push_back(::AddMesh(r, results[i].GeometryId, create).first);
     }
@@ -91,30 +91,30 @@ void CombineSelected(state::Registry &r, const action::mesh::Boolean &boolean) {
     for (const auto e : SelectedIn(r)) {
         if (e != active) others.push_back(e);
     }
-    if (active == state::Null || others.size() != 1u || !r.all_of<Instance>(active) || !r.all_of<Instance>(others.front())) {
+    if (active == state::Null || others.size() != 1u || !r.all_of<ObjectGeometry>(active) || !r.all_of<ObjectGeometry>(others.front())) {
         return action::Fail(r, "A boolean combines the active object with one other selected object");
     }
-    const auto first = r.get<const Instance>(active).Entity, second = r.get<const Instance>(others.front()).Entity;
+    const auto first = r.get<const ObjectGeometry>(active).Entity, second = r.get<const ObjectGeometry>(others.front()).Entity;
     if (!HasMesh(r, first) || !DrawsMesh(r, second) || first == second) return action::Fail(r, "A boolean combines two different mesh objects");
-    if (!procedure::ObjectReferencesAcyclic(r, {}, others.front(), first)) return action::Fail(r, "Object references would create a geometry dependency cycle");
+    if (!graph::ObjectReferencesAcyclic(r, {}, others.front(), first)) return action::Fail(r, "Object references would create a geometry dependency cycle");
     const auto first_world = *WorldTransformOf(r, active), second_world = *WorldTransformOf(r, others.front());
     const auto to_first = Inverse(ToMatrix(first_world)) * ToMatrix(second_world);
     const auto rotation = ToMat3(to_first);
     if (!(Determinant(rotation) > 0.f)) return action::Fail(r, "A boolean cannot combine an object mirrored relative to the active one");
     if (!BooleanTask(GetMesh(r, first), GetMesh(r, second), boolean.Operation, rotation, vec3(to_first[3]))) return action::Fail(r, "A boolean combines closed surfaces");
     namespace nodes = action::nodes;
-    const auto boolean_entity = nodes::AppendNode(r, first, procedure::KindOf<procedure::Boolean>);
+    const auto boolean_entity = nodes::AppendNode(r, first, graph::KindOf<graph::Boolean>);
     if (boolean_entity == state::Null) return;
-    r.replace<procedure::Boolean>(boolean_entity, boolean.Operation, active);
-    const auto network = procedure::NetworkOf(r, boolean_entity);
-    nodes::Apply(r, nodes::AddNode{network, nodes::KindNode{procedure::KindOf<procedure::ObjectInfo>}});
-    const auto info = procedure::ActiveNodeOf(r, network);
-    r.replace<procedure::ObjectInfo>(info, others.front());
-    nodes::Apply(r, nodes::Link{network, info, 0u, boolean_entity, 1u});
-    nodes::Apply(r, nodes::SelectItems{network, boolean_entity, {boolean_entity}});
+    r.replace<graph::Boolean>(boolean_entity, boolean.Operation, active);
+    const auto graph = graph::GraphOf(r, boolean_entity);
+    nodes::Apply(r, nodes::AddNode{graph, nodes::KindNode{graph::KindOf<graph::ObjectInfo>}});
+    const auto info = graph::ActiveNodeOf(r, graph);
+    r.replace<graph::ObjectInfo>(info, others.front());
+    nodes::Apply(r, nodes::Link{graph, info, 0u, boolean_entity, 1u});
+    nodes::Apply(r, nodes::SelectItems{graph, boolean_entity, {boolean_entity}});
 }
 
-// The world transform of the mesh's transformable primary instance, which transformed position operators edit the mesh in.
+// The world transform of the mesh's transformable primary object, which transformed position operators edit the mesh in.
 std::optional<Transform> PrimaryFrame(const state::Registry &r, state::Entity mesh_entity) {
     const auto &primaries = r.get<const EditPrimaries>(state::Document).Transformable;
     const auto primary = primaries.find(mesh_entity);
@@ -125,11 +125,11 @@ std::optional<Transform> PrimaryFrame(const state::Registry &r, state::Entity me
 // The parameters of the node an operator appends to the mesh, resolved from the editor state the operator runs in.
 // Return none for a mesh the operator leaves unedited.
 template<typename A>
-    requires(procedure::KindOf<A> < procedure::KindCount)
+    requires(graph::KindOf<A> < graph::KindCount)
 std::optional<A> NodeOf(const state::Registry &, state::Entity, const A &a) { return a; }
 // A sphere blend across several meshes takes the mean distance of all their selected vertices from the center, each in its mesh's local space.
 // A single mesh's node measures its own.
-std::optional<procedure::ToSphere> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::ToSphere &a) {
+std::optional<graph::ToSphere> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::ToSphere &a) {
     const auto center = EditSelectionCenter(r);
     const auto &primaries = r.get<const EditPrimaries>(state::Document).Transformable;
     const auto blended = action::mesh::SelectedEditMeshes(r) | std::views::filter([&](state::Entity e) { return primaries.contains(e); }) | std::ranges::to<std::vector>();
@@ -151,10 +151,10 @@ std::optional<procedure::ToSphere> NodeOf(const state::Registry &r, state::Entit
         }
         radius = count ? float(distance / double(count)) : 0.f;
     }
-    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::ToSphere{a.Factor, center, radius, frame}; });
+    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return graph::ToSphere{a.Factor, center, radius, frame}; });
 }
-std::optional<procedure::PushPull> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::PushPull &a) {
-    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::PushPull{a.Distance, EditSelectionCenter(r), frame}; });
+std::optional<graph::PushPull> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::PushPull &a) {
+    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return graph::PushPull{a.Distance, EditSelectionCenter(r), frame}; });
 }
 bool HasCornerLayer(const state::Registry &r, state::Entity mesh_entity, bool colors, uint32_t uv_set) {
     if (!colors && uv_set >= MeshStore::MaxUvSets) return false;
@@ -163,7 +163,7 @@ bool HasCornerLayer(const state::Registry &r, state::Entity mesh_entity, bool co
 std::optional<action::mesh::CycleCornerAttribute> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::CycleCornerAttribute &a) {
     return HasCornerLayer(r, mesh_entity, a.Attribute == action::mesh::CornerAttribute::Colors, a.UVSet) ? std::optional{a} : std::nullopt;
 }
-std::optional<procedure::Shear> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::Shear &a) {
+std::optional<graph::Shear> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::Shear &a) {
     const auto axis = uint32_t(a.Axis), ortho = uint32_t(a.AxisOrtho);
     if (axis > 2u || ortho > 2u || axis == ortho) return {};
     vec3 normal{}, direction{};
@@ -175,46 +175,46 @@ std::optional<procedure::Shear> NodeOf(const state::Registry &r, state::Entity m
         normal = active->R * normal * (active->S[axis] < 0.f ? -1.f : 1.f);
         direction = active->R * direction * (active->S[ortho] < 0.f ? -1.f : 1.f);
     }
-    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::Shear{a.Angle, EditSelectionCenter(r), direction, normal, frame}; });
+    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return graph::Shear{a.Angle, EditSelectionCenter(r), direction, normal, frame}; });
 }
 ViewCamera ActionCamera(const state::Registry &r) { return ViewCameraOf(r, FindActiveViewport(r)); }
-std::optional<procedure::Warp> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::Warp &a) {
-    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::Warp{a.Angle, a.OffsetAngle, a.Center, a.AutoRange, a.Min, a.Max, ActionCamera(r).Orientation, frame}; });
+std::optional<graph::Warp> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::Warp &a) {
+    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return graph::Warp{a.Angle, a.OffsetAngle, a.Center, a.AutoRange, a.Min, a.Max, ActionCamera(r).Orientation, frame}; });
 }
-std::optional<procedure::Bend> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::Bend &a) {
-    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::Bend{a.Angle, a.Radius, a.OffsetAngle, a.Center, a.Clamp, ActionCamera(r).Orientation, frame}; });
+std::optional<graph::Bend> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::Bend &a) {
+    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return graph::Bend{a.Angle, a.Radius, a.OffsetAngle, a.Center, a.Clamp, ActionCamera(r).Orientation, frame}; });
 }
 vec3 ActionDirection(const state::Registry &r, vec3 value, bool view_space) {
     return view_space ? ActionCamera(r).Orientation * value : value;
 }
-std::optional<procedure::Extrude> NodeOf(const state::Registry &, state::Entity, const action::mesh::Extrude &a) {
-    return procedure::Extrude{.Mode = a.Mode, .Offset = a.Offset, .OffsetScale = a.OffsetScale, .AlongNormals = a.AlongNormals};
+std::optional<graph::Extrude> NodeOf(const state::Registry &, state::Entity, const action::mesh::Extrude &a) {
+    return graph::Extrude{.Mode = a.Mode, .Offset = a.Offset, .OffsetScale = a.OffsetScale, .AlongNormals = a.AlongNormals};
 }
-std::optional<procedure::Extrude> NodeOf(const state::Registry &r, state::Entity, const action::mesh::Revolve &a) {
+std::optional<graph::Extrude> NodeOf(const state::Registry &r, state::Entity, const action::mesh::Revolve &a) {
     const auto axis = ActionDirection(r, a.Axis, a.ViewSpace);
-    return procedure::Extrude{.Offset = axis, .OffsetScale = a.Offset, .AlongNormals = false, .Steps = a.Steps, .Angle = a.Angle, .Axis = axis, .Center = a.Center};
+    return graph::Extrude{.Offset = axis, .OffsetScale = a.Offset, .AlongNormals = false, .Steps = a.Steps, .Angle = a.Angle, .Axis = axis, .Center = a.Center};
 }
-std::optional<procedure::Bisect> NodeOf(const state::Registry &r, state::Entity, const action::mesh::Bisect &a) {
-    return procedure::Bisect{a.Point, ActionDirection(r, a.Normal, a.ViewSpace), a.ClearInner, a.ClearOuter};
+std::optional<graph::Bisect> NodeOf(const state::Registry &r, state::Entity, const action::mesh::Bisect &a) {
+    return graph::Bisect{a.Point, ActionDirection(r, a.Normal, a.ViewSpace), a.ClearInner, a.ClearOuter};
 }
-std::optional<procedure::VertexSlide> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::VertexSlide &a) {
-    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::VertexSlide{.Factor = a.Factor, .Direction = ActionDirection(r, a.Direction, a.ViewSpace), .Even = a.Even, .Flipped = a.Flipped, .Clamp = a.Clamp, .Frame = frame}; });
+std::optional<graph::VertexSlide> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::VertexSlide &a) {
+    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return graph::VertexSlide{.Factor = a.Factor, .Direction = ActionDirection(r, a.Direction, a.ViewSpace), .Even = a.Even, .Flipped = a.Flipped, .Clamp = a.Clamp, .Frame = frame}; });
 }
-std::optional<procedure::EdgeSlide> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::EdgeSlide &a) {
-    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return procedure::EdgeSlide{.Factor = a.Factor, .Direction = ActionDirection(r, a.Direction, a.ViewSpace), .Even = a.Even, .Flipped = a.Flipped, .Clamp = a.Clamp, .Frame = frame}; });
+std::optional<graph::EdgeSlide> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::EdgeSlide &a) {
+    return PrimaryFrame(r, mesh_entity).transform([&](const Transform &frame) { return graph::EdgeSlide{.Factor = a.Factor, .Direction = ActionDirection(r, a.Direction, a.ViewSpace), .Even = a.Even, .Flipped = a.Flipped, .Clamp = a.Clamp, .Frame = frame}; });
 }
-std::optional<procedure::Flatten> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::Flatten &a) {
+std::optional<graph::Flatten> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::Flatten &a) {
     const auto frame = PrimaryFrame(r, mesh_entity);
     if (!frame && a.Method == action::mesh::FlattenMethod::View) return {};
-    return procedure::Flatten{a.Method, a.Factor, a.Method == action::mesh::FlattenMethod::View ? ActionCamera(r).Forward() : vec3{0, 0, 1}, a.X, a.Y, a.Z, frame.value_or(Transform{})};
+    return graph::Flatten{a.Method, a.Factor, a.Method == action::mesh::FlattenMethod::View ? ActionCamera(r).Forward() : vec3{0, 0, 1}, a.X, a.Y, a.Z, frame.value_or(Transform{})};
 }
-std::optional<procedure::Knife> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::Knife &a) {
+std::optional<graph::Knife> NodeOf(const state::Registry &r, state::Entity mesh_entity, const action::mesh::Knife &a) {
     const auto &primaries = r.get<const EditPrimaries>(state::Document).All;
     const auto primary = primaries.find(mesh_entity);
     const auto view = CurrentRenderView(r, FindActiveViewport(r));
     if (!(view.Extent.x > 0.f && view.Extent.y > 0.f) || primary == primaries.end()) return {};
     const auto &camera = view.Camera;
-    return procedure::Knife{a.Start, a.End, view.Extent, camera.Projection(view.Extent.x / view.Extent.y) * camera.View(), *WorldTransformOf(r, primary->second)};
+    return graph::Knife{a.Start, a.End, view.Extent, camera.Projection(view.Extent.x / view.Extent.y) * camera.View(), *WorldTransformOf(r, primary->second)};
 }
 } // namespace
 
@@ -244,12 +244,12 @@ std::vector<state::Entity> SelectedEditMeshes(const state::Registry &r) {
 void Apply(state::Registry &r, const Action &action) {
     const auto visibility = [&](EditVisibilityOperation operation) {
         std::vector<uint32_t> ids;
-        for (const auto &[entity, instance] : r.get<const EditPrimaries>(state::Document).All) {
+        for (const auto &[entity, object] : r.get<const EditPrimaries>(state::Document).All) {
             if (HasMesh(r, entity)) ids.push_back(*DrawnStoreId(r, entity));
         }
         if (EditVisibility(r, ids, r.get<const EditMode>(state::Document).Value, operation)) {
             r.Resources.get<GpuSceneState>().EditSelectionDirty = true;
-            for (const auto &[entity, instance] : r.get<const EditPrimaries>(state::Document).All) {
+            for (const auto &[entity, object] : r.get<const EditPrimaries>(state::Document).All) {
                 r.remove<MeshActiveElement>(entity);
                 if (!HasMesh(r, entity)) continue;
                 ReopenSourceState(r, entity);
@@ -266,14 +266,14 @@ void Apply(state::Registry &r, const Action &action) {
                     using N = decltype(parameters)::value_type;
                     // A later step of a stage replaces the parameters of the node its first step appended.
                     // A preview step that restores its stage base finds none.
-                    const auto staged = nodes::StagedResultNode(r, e, procedure::KindOf<N>);
-                    const auto node = staged != state::Null ? staged : nodes::AppendNode(r, e, procedure::KindOf<N>);
+                    const auto staged = nodes::StagedResultNode(r, e, graph::KindOf<N>);
+                    const auto node = staged != state::Null ? staged : nodes::AppendNode(r, e, graph::KindOf<N>);
                     if (node == state::Null) break;
                     // The node keeps the reference vertex it captured.
                     if constexpr (requires { &N::Reference; }) parameters->Reference = r.get<const N>(node).Reference;
                     r.replace<N>(node, std::move(*parameters));
                     if (staged != state::Null) continue;
-                    r.emplace<procedure::StagedNode>(node);
+                    r.emplace<graph::StagedNode>(node);
                     r.remove<MeshActiveElement>(e);
                 }
                 if (Places(a)) r.emplace_or_replace<StartScreenTransform>(state::Document, TransformGizmo::TransformType::Translate);

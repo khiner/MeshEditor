@@ -4,7 +4,7 @@
 
 #include <bit>
 
-namespace procedure {
+namespace graph {
 struct SelectedBlock {
     uint32_t Local;
     SelectionBlock Mask;
@@ -72,4 +72,4 @@ struct InlineSelection {
 inline InlineSelection SelectionOf(const GeometrySelection &handles, Element domain) {
     return {.Vertices = SelectionOf(handles.Vertices), .Edges = SelectionOf(handles.Edges), .Faces = SelectionOf(handles.Faces), .Domain = domain};
 }
-} // namespace procedure
+} // namespace graph

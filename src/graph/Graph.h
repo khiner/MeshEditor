@@ -1,18 +1,20 @@
 #pragma once
 
 #include "gpu/InteractionMode.h"
-#include "procedure/InlineSelection.h"
-#include "procedure/Network.h"
+#include "graph/InlineSelection.h"
+#include "graph/ItemGraph.h"
 
 #include "TypeList.h"
 #include "action/Core.h"
 #include "action/Mesh.h"
 #include "gpu/Transform.h"
+#include "graph/BuiltinSubgraphs.h"
+#include "graph/GraphSchema.h"
+#include "graph/NumericValue.h"
 #include "mesh/MeshTopology.h"
 #include "mesh/Minkowski.h"
 #include "mesh/NamedAttribute.h"
 #include "mesh/PrimitiveType.h"
-#include "procedure/ProcedureSchema.h"
 #include "project/store/Hash.h"
 
 #include <map>
@@ -21,19 +23,19 @@ namespace mx {
 enum class Type : uint8_t;
 } // namespace mx
 
-namespace procedure {
+namespace graph {
 struct Source {};
 struct Join {};
 
 // Combine Mesh 1 with each Mesh 2, in link order, into Mesh 1's space, which Space's world transform places.
 // The inputs are closed meshes or regions on one plane.
-// The world transform of the object a Mesh 2 came from places it, and a Mesh 2 from this procedure's mesh stays in place relative to Mesh 1.
+// The world transform of the object a Mesh 2 came from places it, and a Mesh 2 from this graph's mesh stays in place relative to Mesh 1.
 struct Boolean {
     BooleanOperation Operation{BooleanOperation::Difference};
     state::Entity Space{state::Null};
 };
 
-// Both inputs are closed surfaces in this procedure's mesh space, or regions on parallel planes with Mesh 2's through the origin.
+// Both inputs are closed surfaces in this graph's mesh space, or regions on parallel planes with Mesh 2's through the origin.
 struct Minkowski {
     MinkowskiOperation Operation{MinkowskiOperation::Sum};
 };
@@ -211,7 +213,7 @@ struct InstanceOnPoints {
 
 struct RealizeInstances {};
 
-// Emit the object's mesh in its local space, or nothing for a missing mesh or this procedure's own mesh.
+// Emit the object's mesh in its local space, or nothing for a missing mesh or this graph's own mesh.
 struct ObjectInfo {
     state::Entity Object{state::Null};
 };
@@ -225,23 +227,6 @@ template<> inline constexpr auto ObjectInput<ObjectInfo> = &ObjectInfo::Object;
 template<> inline constexpr auto ObjectInput<Boolean> = &Boolean::Space;
 template<> inline constexpr auto ObjectInput<InstanceOnPoints> = &InstanceOnPoints::Prototype;
 
-// The data types a socket carries.
-// A color is three or four floats, and a matrix has no attribute storage.
-// An image is a grid of values that image nodes sample.
-enum class DataType : uint8_t { Float,
-                                Vec2,
-                                Vec3,
-                                Vec4,
-                                Color3,
-                                Color4,
-                                Matrix33,
-                                Matrix44,
-                                Int,
-                                Bool,
-                                Geometry,
-                                Instances,
-                                Image,
-                                Reference };
 // A set of data types, one TypeBit each.
 using DataTypes = uint16_t;
 constexpr DataTypes TypeBit(DataType type) { return DataTypes(1u << uint32_t(type)); }
@@ -283,30 +268,29 @@ constexpr DataType DataTypeOf(AttributeType type) {
     std::unreachable();
 }
 
-// A value of a numeric data type, in the words of its components.
-struct PortValue {
-    AttributeValue Words{};
-    DataType Type{DataType::Float};
-    bool operator==(const PortValue &) const = default;
-};
-// A subnet node's own state for a port of its definition: the link into an input port, and what an unlinked input port reads in place of its default.
-struct InstancePort {
-    uint16_t Id{};
+// A subgraph node's own state for a port of its subgraph: the link into an input port, and what an unlinked input port reads in place of its default.
+struct SubgraphNodePort {
+    uint16_t PortId{};
     SocketLink Source{};
-    std::optional<PortValue> Value{};
+    std::optional<NumericValue> Value{};
     // The selection an unlinked selection port passes in place of each reader's inline selection.
     std::optional<InlineSelection> Selection{};
 };
-// Persistent on a subnet node: the user definition it instances, or else the built-in definition named Builtin, and its own state of each port that has any, by id.
-struct Subnet {
-    state::Entity DefinitionEntity{state::Null};
-    std::string Builtin;
-    std::vector<InstancePort> Ports;
+// Persistent on a node of a geometry or material graph: the subgraph it evaluates, and its own state of each port that has any, sorted by port id.
+// The subgraph holds a chain of nodes.
+struct SubgraphNode {
+    SubgraphId SubgraphId{state::Null};
+    std::vector<SubgraphNodePort> Ports;
 };
+// The user subgraph the id identifies, or null for a built-in subgraph.
+inline state::Entity UserSubgraph(const SubgraphId &id) {
+    const auto *entity = std::get_if<state::Entity>(&id);
+    return entity ? *entity : state::Null;
+}
 
 // Evaluates the MaterialX node `Node` with the declaration its input types resolve to.
 // Output is the stored output type of a node whose input types do not determine it.
-// Literals holds the type of each value input set to a literal, whose value is in its procedure's op value block.
+// Literals holds the type of each value input set to a literal, whose value is in its graph's op value block.
 // Texts holds each string input that is set.
 // Images holds the document texture each unlinked image input reads, by input name.
 struct Op {
@@ -330,7 +314,7 @@ using NodeKinds = TypeList<
     action::mesh::ConvexHull, action::mesh::Simplify, action::mesh::RecalculateNormals, action::mesh::ConnectVertices, action::mesh::Fill, action::mesh::BridgeEdgeLoops, action::mesh::GridFill,
     action::mesh::EdgeRotate, action::mesh::BeautifyFaces, action::mesh::Unsubdivide, Knife, action::mesh::CycleCornerAttribute, MarkSharp, Shade, TransformElements,
     StoreNamedAttribute, StoreSelection, Bake, SetPosition,
-    MeshToPoints, InstanceOnPoints, RealizeInstances, ObjectInfo, Subnet, Op, Surface>;
+    MeshToPoints, InstanceOnPoints, RealizeInstances, ObjectInfo, SubgraphNode, Op, Surface>;
 template<typename K>
 concept Operated = requires { requires std::is_enum_v<decltype(K::Operation)>; };
 
@@ -501,8 +485,8 @@ template<> inline constexpr KindSpec Kind<MeshToPoints>{.Sockets = detail::Point
 template<> inline constexpr KindSpec Kind<InstanceOnPoints>{.Sockets = detail::InstanceSockets, .Group = KindGroup::Instances, .Help = "Places an instance of the second input at each point of the first"};
 template<> inline constexpr KindSpec Kind<RealizeInstances>{.Sockets = detail::RealizeSockets, .Group = KindGroup::Instances, .Help = "Emits a copy of the instance geometry for each instance, placed by its transform"};
 template<> inline constexpr KindSpec Kind<ObjectInfo>{.Sockets = detail::SourceSockets, .Group = KindGroup::Sources, .Help = "Emits another object's mesh in that mesh's local space"};
-// A subnet node's and an op node's sockets come from their definitions.
-template<> inline constexpr KindSpec Kind<Subnet>{.Sockets = {}, .Help = "Contains a network with named inputs and outputs"};
+// A subgraph node's and an op node's sockets come from their subgraphs.
+template<> inline constexpr KindSpec Kind<SubgraphNode>{.Sockets = {}, .Help = "Uses a subgraph, whose ports are its inputs and outputs"};
 template<> inline constexpr KindSpec Kind<Op>{.Sockets = {}, .Group = KindGroup::Math, .Added = false, .Help = "Evaluates a MaterialX node on its inputs"};
 template<> inline constexpr KindSpec Kind<Surface>{.Sockets = detail::SurfaceSockets, .Added = false, .Help = "Computes the material's linked inputs at each surface point, and the material's own values set the rest, alpha and transmission always, since they decide visibility before the graph runs"};
 
@@ -564,7 +548,7 @@ template<typename K> inline constexpr auto KindSocketTable = [] {
     for (const auto &socket : fixed) {
         if (socket.Direction == In) all[n++] = socket;
     }
-    if constexpr (field::Walkable<K> && !std::same_as<K, Op> && !std::same_as<K, Subnet>) {
+    if constexpr (field::Walkable<K> && !std::same_as<K, Op> && !std::same_as<K, SubgraphNode>) {
         K value{};
         field::ForEach(value, [&]<size_t I>(auto &member, std::integral_constant<size_t, I>) {
             using F = std::remove_cvref_t<decltype(member)>;
@@ -613,7 +597,7 @@ inline constexpr auto MultiInput = detail::PerKind(NodeKinds{}, []<typename K> {
 });
 // A node has one input slot per input socket, then one slot per extra link of its multi-input socket, in order.
 // The first link of a multi-input socket is in the socket's own slot.
-// A node whose sockets come from its definition has one slot per input socket.
+// A node whose sockets come from its subgraph has one slot per input socket.
 constexpr uint16_t SlotSocket(uint16_t kind, uint16_t slot) { return MultiInput[kind] != NoSocket && slot >= InputCount[kind] ? MultiInput[kind] : slot; }
 constexpr uint16_t SlotOf(uint16_t kind, uint16_t socket, uint16_t index) { return index == 0u ? socket : uint16_t(InputCount[kind] + index - 1u); }
 constexpr uint16_t NextMultiSlot(uint16_t kind, uint16_t slot) { return slot < InputCount[kind] ? InputCount[kind] : uint16_t(slot + 1u); }
@@ -719,7 +703,7 @@ inline constexpr std::array HandleSpecs{
 };
 
 // Accept an output whose data types intersect the input's, where a varying output needs an input that accepts a varying value.
-// A selection port read inside its subnet links only to selection inputs, since its unlinked value is each reader's inline selection.
+// A selection port read inside its subgraph links only to selection inputs, since its unlinked value is each reader's inline selection.
 constexpr bool Links(Socket from, Socket to) { return (from.Types & to.Types) && (!from.Varies || to.Varies) && (!from.Selection || to.Selection); }
 
 void VisitKind(uint16_t kind, auto &&f) {
@@ -729,9 +713,9 @@ void VisitKind(uint16_t kind, auto &&f) {
     }(NodeKinds{});
 }
 
-// Cooks the handle support of the node's occurrence in the subnet nodes of `path` of the mesh's procedure, and returns whether it has one.
+// Cooks the handle support of the node's occurrence in the subgraph nodes of `path` of the mesh's graph, and returns whether it has one.
 bool PrepareOperationHandle(state::Registry &, state::Entity mesh_entity, std::span<const state::Entity> path, state::Entity node);
-// A new record holding the geometry an input slot of the node's occurrence in the subnet nodes of `path` of the mesh's procedure reads.
+// A new record holding the geometry an input slot of the node's occurrence in the subgraph nodes of `path` of the mesh's graph reads.
 uint32_t SelectionInput(state::Registry &, state::Entity mesh_entity, std::span<const state::Entity> path, state::Entity node, uint16_t slot);
 void SetMeshSelection(state::Registry &, state::Entity mesh, const InlineSelection *);
 // The elements the node's operator acts on, which its linked selection evaluates on without a selection of its own.
@@ -743,92 +727,95 @@ void ForEachKind(auto &&f) {
 
 inline constexpr uint32_t NoNode = UINT32_MAX;
 
-// Parent is the subnet node whose definition's network holds the node, or NoNode for a node of the planned network.
-// A node of a built-in definition has its entity in the Library registry.
+// Parent is the subgraph node whose subgraph holds the node, or NoNode for a node of the planned graph.
+// InBuiltinSubgraph is set for a node of a built-in subgraph, whose entity is in the registry of built-in subgraphs.
 struct NodeRecord {
     state::Entity Entity;
     uint16_t Kind;
     uint32_t Parent{NoNode};
-    bool Builtin{};
+    bool InBuiltinSubgraph{};
     bool operator==(const NodeRecord &) const = default;
 };
 
 // Next is the node after this one in authoring order, or null for the last.
-// Network is the mesh entity of the geometry procedure or the entity of the subnet definition whose network holds the node.
-struct ProcedureNode {
-    state::Entity Network{state::Null};
+// Graph is the mesh entity of the geometry graph or the entity of the subgraph whose graph holds the node.
+struct GraphNode {
+    state::Entity Graph{state::Null};
     state::Entity Next{state::Null};
     uint16_t Kind{};
 };
-// A node occurrence in a mesh's cook: the subnet nodes enclosing it, outermost first, then the node.
+// A node occurrence in a mesh's cook: the subgraph nodes enclosing it, outermost first, then the node.
 using NodePath = std::vector<state::Entity>;
 
 // A port has the data types and the selection property of the socket it was made from.
-// A geometry definition's output port has the source inside its network, and its input port has none.
+// A geometry subgraph's output port has the source inside its graph, and its input port has none.
 // An input port without a default reads what the unlinked socket it exposes reads.
-struct SubnetPort {
+struct SubgraphPort {
     uint16_t Id{};
     std::string Name;
     DataTypes Types{};
     bool Selection{};
     SocketDirection Direction{SocketDirection::In};
     PortBinding Binding;
-    std::optional<PortValue> Default;
+    std::optional<NumericValue> Default;
     SocketLink &Source() { return std::get<SocketLink>(Binding); }
     const SocketLink &Source() const { return std::get<SocketLink>(Binding); }
 };
 // Whether the port is a numeric input other than a selection, which reads a value while unlinked.
-inline bool ReadsDefault(const SubnetPort &port) { return port.Direction == SocketDirection::In && (port.Types & NumericTypes) && !port.Selection; }
-struct SubnetInterface {
+inline bool ReadsDefault(const SubgraphPort &port) { return port.Direction == SocketDirection::In && (port.Types & NumericTypes) && !port.Selection; }
+struct SubgraphInterface {
     uint32_t NextId{};
-    std::vector<SubnetPort> Ports;
+    std::vector<SubgraphPort> Ports;
 };
-// Persistent on a node network: a geometry procedure's mesh entity, a subnet definition's entity or a material whose inputs a node graph computes.
-// The first and last node of the network in authoring order.
-struct NetworkNodes {
+// Persistent on a node graph: a geometry graph's mesh entity, a subgraph's entity or a material whose inputs a node graph computes.
+// The first and last node of the graph in authoring order.
+struct GraphNodes {
     state::Entity First{state::Null}, Last{state::Null};
-    bool operator==(const NetworkNodes &) const = default;
+    bool operator==(const GraphNodes &) const = default;
 };
-// Persistent on a subnet definition's entity, which also holds its NetworkNodes, SubnetInterface and Name.
-struct SubnetDefinition {};
-// Persistent on a material entity whose inputs a node graph computes, which also holds its NetworkNodes.
+// Persistent on every subgraph's entity, which also holds its SubgraphInterface and Name.
+// A subgraph of a geometry or material graph holds its nodes as a chain in GraphNodes.
+// A subgraph of a scene's or the document's graph holds its items in SubgraphItems.
+struct Subgraph {};
+// Persistent on a material entity whose inputs a node graph computes, which also holds its GraphNodes.
 // The graph holds one Surface node.
 struct MaterialGraph {};
-// The registry holding a definition and its entity there.
-struct DefinitionRef {
+// The registry holding a subgraph and its entity there.
+struct SubgraphRef {
     const state::Registry *Registry{};
     state::Entity Entity{state::Null};
 };
-// The built-in definitions, which a registry of their own holds once per session.
-const state::Registry &Library();
-DefinitionRef BuiltinDefinition(std::string_view name);
-DefinitionRef InstanceDefinition(const state::Registry &, state::Entity subnet);
-// The registry holding the network at the end of the path of subnet nodes, which is the library once a subnet node of the path instances a built-in definition.
+// The built-in subgraphs, which a registry of their own holds once per session.
+const state::Registry &BuiltinSubgraphRegistry();
+SubgraphRef BuiltinSubgraph(BuiltinSubgraphId);
+// The subgraph the subgraph node evaluates.
+SubgraphRef SubgraphOf(const state::Registry &, state::Entity node);
+// The registry holding the graph at the end of the path of subgraph nodes, which is the registry of built-in subgraphs once a subgraph node of the path uses one.
 const state::Registry &RegistryAt(const state::Registry &, std::span<const state::Entity> path);
-// The first node of a geometry procedure's or a definition's network.
-state::Entity FirstNode(const state::Registry &, state::Entity network);
-std::vector<state::Entity> NodesOf(const state::Registry &, state::Entity network);
-// Whether the network is or contains an instance of the user definition, at any depth.
-bool Uses(const state::Registry &, state::Entity network, state::Entity definition);
-// Each user definition with each mesh whose procedure instances it at any depth, ordered by definition.
-std::vector<std::pair<state::Entity, state::Entity>> DefinitionUses(const state::Registry &);
-// The meshes whose procedures hold the network: a geometry procedure's mesh itself, or each mesh that instances the definition among `uses`.
-std::vector<state::Entity> MeshesUsing(const state::Registry &, std::span<const std::pair<state::Entity, state::Entity>> uses, state::Entity network);
-// The meshes whose procedures hold the network, which for a user definition are those DefinitionUses gives.
-std::vector<state::Entity> MeshesUsing(const state::Registry &, state::Entity network);
-// The instance's state of the port, or null.
-const InstancePort *InstancePortOf(const state::Registry &, state::Entity subnet, uint16_t port);
-// The subnet node's name, which is its definition's.
-std::string InstanceName(const state::Registry &, state::Entity subnet);
-// Appends the node to the network's authoring order with the input links.
-void AddToNetwork(state::Registry &, state::Entity network, NodeRecord, std::vector<SocketLink> links);
-// Makes the nodes the network's nodes in this authoring order.
-void OrderNetwork(state::Registry &, state::Entity network, std::span<const state::Entity> nodes);
-// A new empty user definition with a unique name.
-state::Entity CreateDefinition(state::Registry &, std::string_view name);
-state::Entity CreateSubnet(state::Registry &, state::Entity network, Subnet);
-// Whether the entity is a geometry network or a material whose inputs a node graph computes, whose network node actions edit.
-bool IsNodeNetwork(const state::Registry &, state::Entity);
+// The first node of a geometry graph or a subgraph.
+state::Entity FirstNode(const state::Registry &, state::Entity graph);
+std::vector<state::Entity> NodesOf(const state::Registry &, state::Entity graph);
+// Whether the graph is the user subgraph or uses it, at any depth.
+bool Uses(const state::Registry &, state::Entity graph, state::Entity subgraph);
+// Each user subgraph with each mesh whose graph uses it at any depth, ordered by subgraph.
+std::vector<std::pair<state::Entity, state::Entity>> SubgraphUses(const state::Registry &);
+// The meshes whose graphs hold the graph: a geometry graph's mesh itself, or each mesh that uses the subgraph among `uses`.
+std::vector<state::Entity> MeshesUsing(const state::Registry &, std::span<const std::pair<state::Entity, state::Entity>> uses, state::Entity graph);
+// The meshes whose graphs hold the graph, which for a user subgraph are those SubgraphUses gives.
+std::vector<state::Entity> MeshesUsing(const state::Registry &, state::Entity graph);
+// The subgraph node's own state of the port, or null.
+const SubgraphNodePort *NodePortOf(const state::Registry &, state::Entity node, uint16_t port);
+// The subgraph node's name, which is its subgraph's.
+std::string SubgraphNodeName(const state::Registry &, state::Entity node);
+// Appends the node to the graph's authoring order with the input links.
+void AddToGraph(state::Registry &, state::Entity graph, NodeRecord, std::vector<SocketLink> links);
+// Makes the nodes the graph's nodes in this authoring order.
+void OrderGraph(state::Registry &, state::Entity graph, std::span<const state::Entity> nodes);
+// A new empty user subgraph with a unique name.
+state::Entity CreateSubgraph(state::Registry &, std::string_view name);
+state::Entity CreateSubgraphNode(state::Registry &, state::Entity graph, SubgraphId);
+// Whether the entity is a geometry graph or a material whose inputs a node graph computes, whose graph node actions edit.
+bool IsNodeGraph(const state::Registry &, state::Entity);
 state::Entity SurfaceNodeOf(const state::Registry &, state::Entity material);
 // Each source node and its copy, by source.
 struct NodeCopies {
@@ -837,13 +824,13 @@ struct NodeCopies {
 };
 // Maps a link of a copied node to a node that is not copied.
 using LinkMap = std::function<SocketLink(SocketLink)>;
-// Creates a copy of each node of `from` with each of its components but its place in a network and its input links.
-// A copied subnet node's port links read the copies, or else what `link` maps them to.
+// Creates a copy of each node of `from` with each of its components but its place in a graph and its input links.
+// A copied subgraph node's port links read the copies, or else what `link` maps them to.
 NodeCopies CopyNodes(state::Registry &, const state::Registry &from, std::span<const state::Entity> originals, const LinkMap &link);
 // The input links of the node of `from` that its copy reads: the copies, or else what `link` maps them to.
 std::vector<SocketLink> CopiedInputs(const state::Registry &from, state::Entity node, const NodeCopies &, const LinkMap &link);
-// Appends a copy of each node of `from` to the network in order, as CopyNodes copies them, and lays out the network's values with each copied op's literals.
-NodeCopies CopyInto(state::Registry &, state::Entity network, const state::Registry &from, std::span<const state::Entity> originals, const LinkMap &link);
+// Appends a copy of each node of `from` to the graph in order, as CopyNodes copies them, and lays out the graph's values with each copied op's literals.
+NodeCopies CopyInto(state::Registry &, state::Entity graph, const state::Registry &from, std::span<const state::Entity> originals, const LinkMap &link);
 // Rewrites each node occurrence every mesh holds: the occurrences its cooks kept, its record's tip and its displayed node.
 void RewritePaths(state::Registry &, const std::function<void(NodePath &)> &);
 
@@ -853,38 +840,38 @@ struct SocketEdit {
     SocketLink Source;
 };
 // A link resolved to the output socket that produces its value, in the node occurrence Path, held by Registry.
-// An unlinked numeric input port gives a constant, and an unlinked selection port of a subnet node with a selection of its own gives that subnet node and port.
+// An unlinked numeric input port gives a constant, and an unlinked selection port of a subgraph node with a selection of its own gives that subgraph node and port.
 struct ResolvedSocket {
     NodePath Path;
     const state::Registry *Registry{};
     SocketLink Source;
-    std::optional<PortValue> Constant;
-    state::Entity SelectionSubnet{state::Null};
+    std::optional<NumericValue> Constant;
+    state::Entity SelectionUse{state::Null};
     uint16_t SelectionPort{};
     bool Cycle{};
-    // The subnet node whose unlinked input port's value or default Constant is, under Path, and the port.
-    state::Entity ValueSubnet{state::Null};
+    // The subgraph node whose unlinked input port's value or default Constant is, under Path, and the port.
+    state::Entity ValueUse{state::Null};
     uint16_t ValuePort{};
 };
-// The network whose page shows the node.
-state::Entity NetworkOf(const state::Registry &, state::Entity node);
-// The port of a subnet node's definition, a definition's own port, or a scene subnet's port.
-const SubnetPort *PortOf(const state::Registry &, state::Entity subnet, uint16_t port);
-const SubnetInterface *InterfaceOf(const state::Registry &, state::Entity subnet);
+// The graph whose page shows the node.
+state::Entity GraphOf(const state::Registry &, state::Entity node);
+// The port of a subgraph node's subgraph, a subgraph's own port, or a scene subgraph's port.
+const SubgraphPort *PortOf(const state::Registry &, state::Entity use, uint16_t port);
+const SubgraphInterface *InterfaceOf(const state::Registry &, state::Entity use);
 // The port as a socket facing the direction: facing out, it passes its resolved source's value, and facing in, it accepts any value.
-// A definition's input port read inside its network passes a single value, and each link into a subnet node's input port is checked against the inputs it reaches.
-Socket PortSocket(const state::Registry &, state::Entity subnet, const SubnetPort &, SocketDirection facing);
+// A subgraph's input port read inside its graph passes a single value, and each link into a subgraph node's input port is checked against the inputs it reaches.
+Socket PortSocket(const state::Registry &, state::Entity use, const SubgraphPort &, SocketDirection facing);
 Socket SocketOf(const state::Registry &, state::Entity node, uint16_t socket);
-// The sockets of a node other than a subnet: its kind's, or an op node's from its definition, where no output varies.
+// The sockets of a node other than a subgraph: its kind's, or an op node's from its subgraph, where no output varies.
 std::span<const Socket> SocketsOf(const state::Registry &, state::Entity node);
 uint16_t InputCountOf(const state::Registry &, state::Entity node);
-// The socket of a node's input slot, which for a slot past its input sockets is its multi-input socket, and for a subnet node is the port of the slot's id.
+// The socket of a node's input slot, which for a slot past its input sockets is its multi-input socket, and for a subgraph node is the port of the slot's id.
 uint16_t SlotSocketOf(const state::Registry &, state::Entity node, uint16_t slot);
-// Calls `f(slot, link)` for each input link the node holds when the call starts, so `f` may set the node's inputs: a subnet node's port links by port id, or another node's links by slot.
+// Calls `f(slot, link)` for each input link the node holds when the call starts, so `f` may set the node's inputs: a subgraph node's port links by port id, or another node's links by slot.
 void ForEachInput(const state::Registry &, state::Entity node, const std::function<void(uint16_t slot, SocketLink)> &f);
-// Calls `f(node, slot, link)` for each input link of each node of the network, then for the source of each output port of a definition's network.
-void ForEachNetworkInput(const state::Registry &, state::Entity network, const std::function<void(state::Entity node, uint16_t slot, SocketLink)> &f);
-// The link in a node's input slot, a subnet node's input port's link, or a definition's output port's source.
+// Calls `f(node, slot, link)` for each input link of each node of the graph, then for the source of each output port of a subgraph.
+void ForEachGraphInput(const state::Registry &, state::Entity graph, const std::function<void(state::Entity node, uint16_t slot, SocketLink)> &f);
+// The link in a node's input slot, a subgraph node's input port's link, or a subgraph's output port's source.
 SocketLink InputOf(const state::Registry &, state::Entity node, uint16_t slot);
 // A null link in a multi-input socket's slot removes that link from the socket's list.
 void SetInput(state::Registry &, state::Entity node, uint16_t slot, SocketLink);
@@ -892,11 +879,11 @@ void SetInput(state::Registry &, state::Entity node, uint16_t slot, SocketLink);
 // If the socket already has the source, that link moves to `index`.
 void InsertInput(state::Registry &, state::Entity node, SocketLink, uint16_t index);
 std::vector<SocketLink> InputLinks(const state::Registry &, state::Entity node, uint16_t socket);
-// Resolves a link read in the network of the last subnet node of `path`, or of the network that holds the link's node for an empty path.
+// Resolves a link read in the graph of the last subgraph node of `path`, or of the graph that holds the link's node for an empty path.
 ResolvedSocket ResolveSocket(const state::Registry &, NodePath path, SocketLink, bool bypass = false, const SocketEdit * = nullptr);
 inline ResolvedSocket ResolveSocket(const state::Registry &r, SocketLink link, bool bypass = false, const SocketEdit *edit = nullptr) { return ResolveSocket(r, NodePath{}, link, bypass, edit); }
-std::optional<uint16_t> SubnetBypassInput(const state::Registry &, state::Entity, uint16_t output);
-std::optional<PortValue> ParameterDefault(const state::Registry &, state::Entity node, uint16_t socket);
+std::optional<uint16_t> SubgraphBypassInput(const state::Registry &, state::Entity, uint16_t output);
+std::optional<NumericValue> ParameterDefault(const state::Registry &, state::Entity node, uint16_t socket);
 
 // One link per input slot.
 // The links of a multi-input socket are distinct, and none is null unless the socket has no links.
@@ -914,19 +901,19 @@ constexpr std::optional<uint16_t> ResultSocket(uint16_t kind) {
     return {};
 }
 
-// Persistent on a mesh entity with a node network, which also holds its NetworkNodes.
-// DisplayNode is in the network of the last subnet node of DisplayPath, whose first subnet node is in the procedure's network, or in the procedure's network for an empty path.
-struct GeometryProcedure {
+// Persistent on a mesh entity with a node graph, which also holds its GraphNodes.
+// DisplayNode is in the graph of the last subgraph node of DisplayPath, whose first subgraph node is in the graph, or in the graph for an empty path.
+struct GeometryGraph {
     state::Entity DisplayNode{state::Null};
     std::optional<uint16_t> DisplayPort;
     std::vector<state::Entity> DisplayPath;
-    bool operator==(const GeometryProcedure &) const = default;
+    bool operator==(const GeometryGraph &) const = default;
 };
 
 std::optional<uint16_t> ResultSocket(const state::Registry &, state::Entity);
-SocketLink DisplayLink(const state::Registry &, const GeometryProcedure &);
+SocketLink DisplayLink(const state::Registry &, const GeometryGraph &);
 // The displayed node's occurrence.
-NodePath DisplayedPath(const GeometryProcedure &);
+NodePath DisplayedPath(const GeometryGraph &);
 
 struct NodeBypassed {};
 
@@ -936,30 +923,30 @@ struct NodeLink {
     uint16_t FromSocket{};
     bool operator==(const NodeLink &) const = default;
 };
-// A link that reads an unlinked selection port of a subnet node with a selection of its own has that subnet node as SelectionSubnet.
+// A link that reads an unlinked selection port of a subgraph node with a selection of its own has that subgraph node as SelectionUse.
 struct PlanLink {
     uint32_t FromNode{NoNode};
     uint16_t FromSocket{};
-    std::optional<PortValue> Constant;
-    uint32_t SelectionSubnet{NoNode};
+    std::optional<NumericValue> Constant;
+    uint32_t SelectionUse{NoNode};
     uint16_t SelectionPort{};
     bool operator==(const PlanLink &) const = default;
 };
-// What a plan reads of a subnet node of its own network other than its port values: its place, its bypass, its definition, and its ports' links and which of them hold a value or a selection.
-struct SubnetShape {
-    state::Entity Network, Next, Definition;
-    std::string Builtin;
+// What a plan reads of a subgraph node of its own graph other than its port values: its place, its bypass, its subgraph, and its ports' links and which of them hold a value or a selection.
+struct SubgraphShape {
+    state::Entity Graph, Next;
+    SubgraphId SubgraphId;
     bool Bypassed;
     std::vector<std::tuple<uint16_t, SocketLink, bool, bool>> Ports;
-    bool operator==(const SubnetShape &) const = default;
+    bool operator==(const SubgraphShape &) const = default;
 };
-// An input of a plan that reads the value or default of an unlinked input port of the subnet occurrence Subnet.
+// An input of a plan that reads the value or default of an unlinked input port of the subgraph node occurrence Use.
 struct PortRead {
-    uint32_t Input, Subnet;
+    uint32_t Input, Use;
     uint16_t Port;
 };
-// A network's nodes with each subnet node followed by the nodes of its definition's network, at any depth.
-// A subnet node has no sockets in a compiled plan, and inputs resolve through its ports.
+// A graph's nodes with each subgraph node followed by the nodes of its subgraph, at any depth.
+// A subgraph node has no sockets in a compiled plan, and inputs resolve through its ports.
 struct CookPlan {
     uint64_t Revision{};
     std::vector<Socket> ViewSockets; // Each node's sockets from its SocketFirst, where an op output varies as its links make it
@@ -973,31 +960,31 @@ struct CookPlan {
     std::vector<uint32_t> InputFirst, SocketFirst; // Each node's first input and first socket slot, then the totals
     std::vector<uint32_t> Consumers; // The inputs reading each socket slot
     std::vector<bool> Demanded; // Resolved ancestors of the displayed result
-    std::vector<state::Entity> Definitions; // The user definitions the plan's subnet nodes instance, at any depth, sorted
+    std::vector<state::Entity> Subgraphs; // The user subgraphs the plan's subgraph nodes use, at any depth, sorted
     std::vector<PortRead> PortReads;
-    std::vector<std::pair<uint32_t, SubnetShape>> Subnets; // Each subnet node of the plan's own network and its shape
+    std::vector<std::pair<uint32_t, SubgraphShape>> SubgraphNodes; // Each subgraph node of the plan's own graph and its shape
 };
-// The plan nodes of the demanded op occurrences that read the timeline's frame, and those that read its time, on the mesh entity of a procedure with any.
+// The plan nodes of the demanded op occurrences that read the timeline's frame, and those that read its time, on the mesh entity of a graph with any.
 struct TimeReads {
     std::vector<uint32_t> Frame, Time;
 };
-// The generator occurrences that write texture coordinate set 0, on the mesh entity of a procedure whose plan has a generator.
-// Every one writes them where All holds, which a material the mesh draws that reads the set or another procedure that reads the mesh makes hold.
+// The generator occurrences that write texture coordinate set 0, on the mesh entity of a graph whose plan has a generator.
+// Every one writes them where All holds, which a material the mesh draws that reads the set or another graph that reads the mesh makes hold.
 // Otherwise each one in Occurrences writes them, which a demanded node after it reads the set through.
 struct TexcoordWriters {
     bool All;
     std::vector<NodePath> Occurrences;
 };
 // The registry holding the plan node's entity.
-inline const state::Registry &Authored(const state::Registry &r, const NodeRecord &node) { return node.Builtin ? Library() : r; }
-// Plans a geometry procedure's network, or a definition's network whose input ports read nothing.
+inline const state::Registry &Authored(const state::Registry &r, const NodeRecord &node) { return node.InBuiltinSubgraph ? BuiltinSubgraphRegistry() : r; }
+// Plans a geometry graph, or a subgraph whose input ports read nothing.
 // The plan's display and result nodes stay unbound, which Compile binds.
-CookPlan Plan(const state::Registry &, state::Entity network, bool bypass = false, const SocketEdit * = nullptr);
-CookPlan Compile(const state::Registry &, state::Entity network);
-// The compiled plan with the port values the `changed` subnet nodes of its own network now hold, or none when any of them changed what else the plan read of it.
+CookPlan Plan(const state::Registry &, state::Entity graph, bool bypass = false, const SocketEdit * = nullptr);
+CookPlan Compile(const state::Registry &, state::Entity graph);
+// The compiled plan with the port values the `changed` subgraph nodes of its own graph now hold, or none when any of them changed what else the plan read of it.
 std::optional<CookPlan> Revalued(const state::Registry &, const CookPlan &, std::span<const state::Entity> changed);
 bool ObjectReferencesAcyclic(const state::Registry &, std::span<const state::Entity> nodes, state::Entity object, state::Entity additional_reader = state::Null, std::optional<std::pair<state::Entity, state::Entity>> binding = {});
-void BindDisplay(const state::Registry &, const GeometryProcedure &, CookPlan &);
+void BindDisplay(const state::Registry &, const GeometryGraph &, CookPlan &);
 // Demands the nodes and the nodes they read, and counts the demanded readers of each socket.
 void Demand(CookPlan &, std::span<const uint32_t> nodes);
 inline uint16_t InputsOf(const CookPlan &plan, uint32_t node) { return uint16_t(plan.InputFirst[node + 1] - plan.InputFirst[node]); }
@@ -1006,12 +993,12 @@ inline std::span<const Socket> NodeSockets(const CookPlan &plan, uint32_t node) 
 }
 inline std::span<const PlanLink> NodeLinks(const CookPlan &plan, uint32_t node) { return std::span{plan.Inputs}.subspan(plan.InputFirst[node], InputsOf(plan, node)); }
 std::optional<uint16_t> BypassInput(uint16_t kind);
-// The active node of a geometry procedure's or a definition's network.
-state::Entity ActiveNodeOf(const state::Registry &, state::Entity network);
+// The active node of a geometry graph or a subgraph.
+state::Entity ActiveNodeOf(const state::Registry &, state::Entity graph);
 // Orders the nodes by parent, entity and index, and lists each node's occurrence.
 void IndexNodes(CookPlan &);
-// The node's index among the nodes of `parent`'s definition, or of the planned network for NoNode, or NoNode.
-// An entity a page shows twice, a definition's boundaries, gives its first node.
+// The node's index among the nodes of `parent`'s subgraph, or of the planned graph for NoNode, or NoNode.
+// An entity a page shows twice, a subgraph's boundaries, gives its first node.
 uint32_t IndexOf(const CookPlan &, uint32_t parent, state::Entity);
 inline uint32_t IndexOf(const CookPlan &plan, state::Entity node) { return IndexOf(plan, NoNode, node); }
 // The index of the node occurrence, or NoNode.
@@ -1071,20 +1058,20 @@ inline std::optional<uint16_t> MainSocket(uint16_t kind, SocketDirection directi
     return {};
 }
 
-struct ProcedureInstances {
+struct GraphInstances {
     std::vector<state::Entity> Entities;
 };
 
-// The mesh entity has no object, transform or name, and is destroyed when the procedure stops instancing its geometry or is removed.
-struct ProcedureOwnedMesh {
+// The mesh entity has no object, transform or name, and is destroyed when the graph stops instancing its geometry or is removed.
+struct GraphOwnedMesh {
     state::Entity MeshEntity;
 };
 
-struct PublishSelection {}; // Persistent on a node a viewport operator or macro added, which selects its output as the operator does.
+struct PublishSelection {}; // Persistent on a node a viewport operator added, which selects its output as the operator does.
 
 state::Entity CreateNode(state::Registry &, uint16_t kind);
-// Sets the mesh entity's procedure to the root node of the kind alone, displayed, active and selected.
-void RootProcedure(state::Registry &, state::Entity mesh_entity, state::Entity root, uint16_t kind);
+// Sets the mesh entity's graph to the root node of the kind alone, displayed, active and selected.
+void RootGraph(state::Registry &, state::Entity mesh_entity, state::Entity root, uint16_t kind);
 
 // Faulted nodes pass through their input, as do unchanged nodes and nodes without geometry.
 enum class NodeFault : uint8_t {
@@ -1134,24 +1121,24 @@ struct NodeHandle {
     vec3 Center{}, Normal{};
     bool operator==(const NodeHandle &) const = default;
 };
-// Procedure is the mesh entity whose procedure holds the edited node's occurrence, and Mesh the mesh entity of the edited input.
-// Port is the selection port of the subnet node Node whose own selection is edited, or none for Node's inline selection.
+// Graph is the mesh entity whose graph holds the edited node's occurrence, and Mesh the mesh entity of the edited input.
+// Port is the selection port of the subgraph node Node whose own selection is edited, or none for Node's inline selection.
 struct SelectionEditing {
-    state::Entity Node, Procedure, Mesh, Placement;
+    state::Entity Node, Graph, Mesh, Placement;
     InteractionMode PriorMode;
     Element PriorElement;
     std::optional<InlineSelection> PriorSelection;
     std::optional<uint16_t> Port;
 };
-// Path holds the subnet nodes enclosing the node's occurrence in the procedure of Object's mesh.
+// Path holds the subgraph nodes enclosing the node's occurrence in the graph of Object's mesh.
 struct OperationHandle {
     state::Entity Node{state::Null}, Object{state::Null};
     HandleParameter Parameter{};
     NodePath Path{};
 };
 // The transform from each Mesh 2's space into Mesh 1's that a Boolean node's result was cooked with.
-// Operand is the object whose transform placed that Mesh 2, or null for a Mesh 2 in this procedure's mesh space.
-// A procedure whose placing objects only moved cooks when this transform changed.
+// Operand is the object whose transform placed that Mesh 2, or null for a Mesh 2 in this graph's mesh space.
+// A graph whose placing objects only moved cooks when this transform changed.
 struct OperandPlacement {
     state::Entity Operand{state::Null};
     mat4 ToFirst{1.f};
@@ -1163,7 +1150,7 @@ struct BooleanPlacement {
 };
 // What a mesh's cooks kept for a node occurrence they evaluated.
 // Results and extrusions hold for the nodes of the chained display path, an error for a node that faulted, a handle for a node with a viewport handle, and a placement for each Boolean node a cook evaluated.
-// Persistent on the node of an occurrence in the mesh's own network.
+// Persistent on the node of an occurrence in the mesh's own graph.
 struct NodeError {
     NodeFault Fault;
     bool operator==(const NodeError &) const = default;
@@ -1173,7 +1160,7 @@ struct PathOrder {
     using is_transparent = void;
     bool operator()(std::span<const state::Entity> a, std::span<const state::Entity> b) const { return std::ranges::lexicographical_compare(a, b); }
 };
-// Persistent on a subnet node of a mesh's own network: what the mesh's cooks kept for the occurrences inside it, by the path after the subnet node.
+// Persistent on a subgraph node of a mesh's own graph: what the mesh's cooks kept for the occurrences inside it, by the path after the subgraph node.
 struct NodeErrors {
     std::map<NodePath, NodeError, PathOrder> Values;
 };
@@ -1190,11 +1177,21 @@ struct BooleanPlacements {
     std::map<NodePath, BooleanPlacement, PathOrder> Values;
 };
 template<typename T> struct InnerOf;
-template<> struct InnerOf<NodeError> { using Type = NodeErrors; };
-template<> struct InnerOf<NodeResult> { using Type = NodeResults; };
-template<> struct InnerOf<NodeExtrusion> { using Type = NodeExtrusions; };
-template<> struct InnerOf<NodeHandle> { using Type = NodeHandles; };
-template<> struct InnerOf<BooleanPlacement> { using Type = BooleanPlacements; };
+template<> struct InnerOf<NodeError> {
+    using Type = NodeErrors;
+};
+template<> struct InnerOf<NodeResult> {
+    using Type = NodeResults;
+};
+template<> struct InnerOf<NodeExtrusion> {
+    using Type = NodeExtrusions;
+};
+template<> struct InnerOf<NodeHandle> {
+    using Type = NodeHandles;
+};
+template<> struct InnerOf<BooleanPlacement> {
+    using Type = BooleanPlacements;
+};
 template<typename T> using Inner = typename InnerOf<T>::Type;
 using OccurrenceStates = TypeList<NodeError, NodeResult, NodeExtrusion, NodeHandle, BooleanPlacement>;
 // The value the mesh's cooks kept for the occurrence, or null.
@@ -1224,8 +1221,8 @@ template<typename... T> void Drop(auto &r, std::span<const state::Entity> path) 
 }
 struct StagedNode {}; // Derived on a node a preview step appended, which the stage's later steps edit.
 
-// What a word range of an op value block holds: a literal an op input of the block's network is set to, a declaration's default, a constant an op input's link holds, a literal of an op of a definition, which its definition's block holds, or the default of a read of a field from a node other than an op.
-// A constant is a subnet port's value or default an op input reads.
+// What a word range of an op value block holds: a literal an op input of the block's graph is set to, a declaration's default, a constant an op input's link holds, a literal of an op of a subgraph, which its subgraph's block holds, or the default of a read of a field from a node other than an op.
+// A constant is a subgraph port's value or default an op input reads.
 enum class OpSlotKind : uint8_t { Literal,
                                   Default,
                                   Constant,
@@ -1239,132 +1236,132 @@ struct OpSlot {
     uint32_t Offset; // In words from the block's start
     bool operator==(const OpSlot &) const = default;
 };
-// Persistent on a geometry procedure's mesh entity with op nodes: its block of the op value store, which holds the values of each op occurrence of its plan in plan order.
-// Persistent on a definition entity with op literals: its block, which holds them by node.
+// Persistent on a geometry graph's mesh entity with op nodes: its block of the op value store, which holds the values of each op occurrence of its plan in plan order.
+// Persistent on a subgraph entity with op literals: its block, which holds them by node.
 struct OpValueBlock {
     Range Block;
     std::vector<OpSlot> Slots; // By offset
 };
-// The library registry's value store: the words of each literal of a built-in definition's op, by node and input.
+// The value store of the registry of built-in subgraphs: the words of each literal of a built-in subgraph's op, by node and input.
 // A document's blocks copy them for each occurrence.
-struct LibraryLiterals {
+struct BuiltinSubgraphLiterals {
     std::map<std::pair<state::Entity, std::string>, std::vector<uint32_t>> Words;
 };
-} // namespace procedure
+} // namespace graph
 
-template<> inline constexpr field::SpecTable<procedure::Boolean> Specs<procedure::Boolean>{
-    {&procedure::Boolean::Operation, {.Help = "Set operation applied to Mesh 1 and each Mesh 2 in turn. Difference subtracts every Mesh 2 from Mesh 1."}},
-    {&procedure::Boolean::Space, {.Help = "Object whose world transform places Mesh 1 and whose local space the result is in, or none to leave Mesh 1 in place. Each Mesh 2 is placed by the object its geometry came from."}},
+template<> inline constexpr field::SpecTable<graph::Boolean> Specs<graph::Boolean>{
+    {&graph::Boolean::Operation, {.Help = "Set operation applied to Mesh 1 and each Mesh 2 in turn. Difference subtracts every Mesh 2 from Mesh 1."}},
+    {&graph::Boolean::Space, {.Help = "Object whose world transform places Mesh 1 and whose local space the result is in, or none to leave Mesh 1 in place. Each Mesh 2 is placed by the object its geometry came from."}},
 };
-template<> inline constexpr field::SpecTable<procedure::Minkowski> Specs<procedure::Minkowski>{{&procedure::Minkowski::Operation, {.Help = "Sum sweeps Mesh 1 by Mesh 2, and Difference erodes Mesh 1 by it. Two regions sweep in Mesh 1's plane, with Mesh 2's plane through the origin."}}};
-template<> inline constexpr field::SpecTable<procedure::LevelSet> Specs<procedure::LevelSet>{
-    {&procedure::LevelSet::Min, {.Speed = 0.01f, .Help = "Lower corner of the box the surface is marched over, in local space"}},
-    {&procedure::LevelSet::Max, {.Speed = 0.01f, .Help = "Upper corner of the box, in local space"}},
-    {&procedure::LevelSet::EdgeLength, {.Min = 1e-4f, .Speed = 0.001f, .Help = "Largest spacing of the lattice the Value field is read on, which bounds the triangles' edge lengths"}},
-    {&procedure::LevelSet::Level, {.Speed = 0.01f, .Help = "Value the surface is extracted at, with larger values inside"}},
+template<> inline constexpr field::SpecTable<graph::Minkowski> Specs<graph::Minkowski>{{&graph::Minkowski::Operation, {.Help = "Sum sweeps Mesh 1 by Mesh 2, and Difference erodes Mesh 1 by it. Two regions sweep in Mesh 1's plane, with Mesh 2's plane through the origin."}}};
+template<> inline constexpr field::SpecTable<graph::LevelSet> Specs<graph::LevelSet>{
+    {&graph::LevelSet::Min, {.Speed = 0.01f, .Help = "Lower corner of the box the surface is marched over, in local space"}},
+    {&graph::LevelSet::Max, {.Speed = 0.01f, .Help = "Upper corner of the box, in local space"}},
+    {&graph::LevelSet::EdgeLength, {.Min = 1e-4f, .Speed = 0.001f, .Help = "Largest spacing of the lattice the Value field is read on, which bounds the triangles' edge lengths"}},
+    {&graph::LevelSet::Level, {.Speed = 0.01f, .Help = "Value the surface is extracted at, with larger values inside"}},
 };
-template<> inline constexpr field::SpecTable<procedure::StoreNamedAttribute> Specs<procedure::StoreNamedAttribute>{
-    {&procedure::StoreNamedAttribute::Name, {.Help = "Name of the attribute to write. An existing attribute with this name is replaced."}},
-    {&procedure::StoreNamedAttribute::Domain, {.Help = "Element domain the value is evaluated on and stored on. A field of another domain converts to it."}},
+template<> inline constexpr field::SpecTable<graph::StoreNamedAttribute> Specs<graph::StoreNamedAttribute>{
+    {&graph::StoreNamedAttribute::Name, {.Help = "Name of the attribute to write. An existing attribute with this name is replaced."}},
+    {&graph::StoreNamedAttribute::Domain, {.Help = "Element domain the value is evaluated on and stored on. A field of another domain converts to it."}},
 };
-template<> inline constexpr field::SpecTable<procedure::StoreSelection> Specs<procedure::StoreSelection>{{&procedure::StoreSelection::Name, {.Help = "Name of the Boolean attribute to write. An existing attribute with this name is replaced."}}};
-template<> inline constexpr field::SpecTable<procedure::Bake> Specs<procedure::Bake>{
-    {&procedure::Bake::UvSet, {.Min = 0, .Max = 3, .Label = "UV set", .Help = "Texture coordinate set whose layout places the texels on the geometry"}},
-    {&procedure::Bake::Width, {.Min = 1, .Max = 16384, .Help = "Texels along U"}},
-    {&procedure::Bake::Height, {.Min = 1, .Max = 16384, .Help = "Texels along V"}},
-    {&procedure::Bake::Margin, {.Min = 0, .Max = 4096, .SoftMin = 0, .SoftMax = 64, .Help = "Distance in texels past the layout's edges over which texels extend the field from the nearest point of the nearest triangle, so filtered lookups near seams read no empty texels"}},
+template<> inline constexpr field::SpecTable<graph::StoreSelection> Specs<graph::StoreSelection>{{&graph::StoreSelection::Name, {.Help = "Name of the Boolean attribute to write. An existing attribute with this name is replaced."}}};
+template<> inline constexpr field::SpecTable<graph::Bake> Specs<graph::Bake>{
+    {&graph::Bake::UvSet, {.Min = 0, .Max = 3, .Label = "UV set", .Help = "Texture coordinate set whose layout places the texels on the geometry"}},
+    {&graph::Bake::Width, {.Min = 1, .Max = 16384, .Help = "Texels along U"}},
+    {&graph::Bake::Height, {.Min = 1, .Max = 16384, .Help = "Texels along V"}},
+    {&graph::Bake::Margin, {.Min = 0, .Max = 4096, .SoftMin = 0, .SoftMax = 64, .Help = "Distance in texels past the layout's edges over which texels extend the field from the nearest point of the nearest triangle, so filtered lookups near seams read no empty texels"}},
 };
-template<> inline constexpr field::SpecTable<procedure::SetPosition> Specs<procedure::SetPosition>{{&procedure::SetPosition::Offset, {.Help = "Offset each selected vertex by the Position input instead of replacing its position"}}};
-template<> inline constexpr field::SpecTable<procedure::TransformElements> Specs<procedure::TransformElements>{
-    {&procedure::TransformElements::Delta, {.Help = "Translation, rotation, and scale applied to the selected vertices, all by default, around Pivot"}},
-    {&procedure::TransformElements::Pivot, {.Help = "Center of rotation and scale in Frame space, in local units"}},
-    {&procedure::TransformElements::Frame, {.Help = "Transform from mesh-local positions into the space Delta applies in"}},
-    {&procedure::TransformElements::Mirror, {.Speed = 0.01f, .Help = "Normal of the plane through Pivot the selected vertices reflect across before Delta, in Frame space. A zero normal reflects nothing."}},
+template<> inline constexpr field::SpecTable<graph::SetPosition> Specs<graph::SetPosition>{{&graph::SetPosition::Offset, {.Help = "Offset each selected vertex by the Position input instead of replacing its position"}}};
+template<> inline constexpr field::SpecTable<graph::TransformElements> Specs<graph::TransformElements>{
+    {&graph::TransformElements::Delta, {.Help = "Translation, rotation, and scale applied to the selected vertices, all by default, around Pivot"}},
+    {&graph::TransformElements::Pivot, {.Help = "Center of rotation and scale in Frame space, in local units"}},
+    {&graph::TransformElements::Frame, {.Help = "Transform from mesh-local positions into the space Delta applies in"}},
+    {&graph::TransformElements::Mirror, {.Speed = 0.01f, .Help = "Normal of the plane through Pivot the selected vertices reflect across before Delta, in Frame space. A zero normal reflects nothing."}},
 };
-template<> inline constexpr field::SpecTable<procedure::ToSphere> Specs<procedure::ToSphere>{
-    {&procedure::ToSphere::Factor, {.Min = 0, .Max = 1, .Speed = 0.01f}},
-    {&procedure::ToSphere::Center, {.Speed = 0.01f, .Help = "Sphere center in Frame space"}},
-    {&procedure::ToSphere::Radius, {.Min = 0, .Speed = 0.01f, .Help = "Distance from Center the vertices blend toward, in local units. Zero takes the selected vertices' mean distance."}},
-    {&procedure::ToSphere::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
+template<> inline constexpr field::SpecTable<graph::ToSphere> Specs<graph::ToSphere>{
+    {&graph::ToSphere::Factor, {.Min = 0, .Max = 1, .Speed = 0.01f}},
+    {&graph::ToSphere::Center, {.Speed = 0.01f, .Help = "Sphere center in Frame space"}},
+    {&graph::ToSphere::Radius, {.Min = 0, .Speed = 0.01f, .Help = "Distance from Center the vertices blend toward, in local units. Zero takes the selected vertices' mean distance."}},
+    {&graph::ToSphere::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
 };
-template<> inline constexpr field::SpecTable<procedure::PushPull> Specs<procedure::PushPull>{
-    {&procedure::PushPull::Center, {.Speed = 0.01f, .Help = "Point the vertices move toward, in Frame space"}},
-    {&procedure::PushPull::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
+template<> inline constexpr field::SpecTable<graph::PushPull> Specs<graph::PushPull>{
+    {&graph::PushPull::Center, {.Speed = 0.01f, .Help = "Point the vertices move toward, in Frame space"}},
+    {&graph::PushPull::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
 };
-template<> inline constexpr field::SpecTable<procedure::Shear> Specs<procedure::Shear>{
-    {&procedure::Shear::Angle, {.Min = -2 * std::numbers::pi_v<float>, .Max = 2 * std::numbers::pi_v<float>, .Unit = FieldUnit::Radians}},
-    {&procedure::Shear::Center, {.Speed = 0.01f, .Help = "Point on the shear plane, in Frame space"}},
-    {&procedure::Shear::Direction, {.Speed = 0.01f, .Help = "Displacement direction in Frame space"}},
-    {&procedure::Shear::Normal, {.Speed = 0.01f, .Help = "Shear plane normal in Frame space"}},
-    {&procedure::Shear::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
+template<> inline constexpr field::SpecTable<graph::Shear> Specs<graph::Shear>{
+    {&graph::Shear::Angle, {.Min = -2 * std::numbers::pi_v<float>, .Max = 2 * std::numbers::pi_v<float>, .Unit = FieldUnit::Radians}},
+    {&graph::Shear::Center, {.Speed = 0.01f, .Help = "Point on the shear plane, in Frame space"}},
+    {&graph::Shear::Direction, {.Speed = 0.01f, .Help = "Displacement direction in Frame space"}},
+    {&graph::Shear::Normal, {.Speed = 0.01f, .Help = "Shear plane normal in Frame space"}},
+    {&graph::Shear::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
 };
-template<> inline constexpr field::SpecTable<procedure::Warp> Specs<procedure::Warp>{
-    {&procedure::Warp::Angle, {.Unit = FieldUnit::Radians}},
-    {&procedure::Warp::OffsetAngle, {.Unit = FieldUnit::Radians}},
-    {&procedure::Warp::Center, {.Speed = 0.01f, .Help = "Warp center in Frame space"}},
-    {&procedure::Warp::Orientation, {.Help = "Rotation of the warp plane in Frame space"}},
-    {&procedure::Warp::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
+template<> inline constexpr field::SpecTable<graph::Warp> Specs<graph::Warp>{
+    {&graph::Warp::Angle, {.Unit = FieldUnit::Radians}},
+    {&graph::Warp::OffsetAngle, {.Unit = FieldUnit::Radians}},
+    {&graph::Warp::Center, {.Speed = 0.01f, .Help = "Warp center in Frame space"}},
+    {&graph::Warp::Orientation, {.Help = "Rotation of the warp plane in Frame space"}},
+    {&graph::Warp::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
 };
-template<> inline constexpr field::SpecTable<procedure::Bend> Specs<procedure::Bend>{
-    {&procedure::Bend::Angle, {.Unit = FieldUnit::Radians}},
-    {&procedure::Bend::OffsetAngle, {.Unit = FieldUnit::Radians}},
-    {&procedure::Bend::Center, {.Speed = 0.01f, .Help = "Bend start in Frame space"}},
-    {&procedure::Bend::Orientation, {.Help = "Rotation of the bend plane in Frame space"}},
-    {&procedure::Bend::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
+template<> inline constexpr field::SpecTable<graph::Bend> Specs<graph::Bend>{
+    {&graph::Bend::Angle, {.Unit = FieldUnit::Radians}},
+    {&graph::Bend::OffsetAngle, {.Unit = FieldUnit::Radians}},
+    {&graph::Bend::Center, {.Speed = 0.01f, .Help = "Bend start in Frame space"}},
+    {&graph::Bend::Orientation, {.Help = "Rotation of the bend plane in Frame space"}},
+    {&graph::Bend::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
 };
-template<> inline constexpr field::SpecTable<procedure::VertexSlide> Specs<procedure::VertexSlide>{
-    {&procedure::VertexSlide::Direction, {.Speed = 0.01f, .Help = "Direction in Frame space that chooses each vertex's edge"}},
-    {&procedure::VertexSlide::Reference, {.Help = "Vertex the even slide measures from, or the first selected vertex"}},
-    {&procedure::VertexSlide::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
+template<> inline constexpr field::SpecTable<graph::VertexSlide> Specs<graph::VertexSlide>{
+    {&graph::VertexSlide::Direction, {.Speed = 0.01f, .Help = "Direction in Frame space that chooses each vertex's edge"}},
+    {&graph::VertexSlide::Reference, {.Help = "Vertex the even slide measures from, or the first selected vertex"}},
+    {&graph::VertexSlide::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
 };
-template<> inline constexpr field::SpecTable<procedure::EdgeSlide> Specs<procedure::EdgeSlide>{
-    {&procedure::EdgeSlide::Direction, {.Speed = 0.01f, .Help = "Direction in Frame space that chooses the positive side"}},
-    {&procedure::EdgeSlide::Reference, {.Help = "Handle of the vertex where Direction chooses the positive side, or the maximum for the first selected vertex"}},
-    {&procedure::EdgeSlide::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
+template<> inline constexpr field::SpecTable<graph::EdgeSlide> Specs<graph::EdgeSlide>{
+    {&graph::EdgeSlide::Direction, {.Speed = 0.01f, .Help = "Direction in Frame space that chooses the positive side"}},
+    {&graph::EdgeSlide::Reference, {.Help = "Handle of the vertex where Direction chooses the positive side, or the maximum for the first selected vertex"}},
+    {&graph::EdgeSlide::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
 };
-template<> inline constexpr field::SpecTable<procedure::Flatten> Specs<procedure::Flatten>{
-    {&procedure::Flatten::Factor, {.Min = 0, .Max = 1}},
-    {&procedure::Flatten::ViewNormal, {.Speed = 0.01f, .Help = "Flattening direction of the View method, in Frame space"}},
-    {&procedure::Flatten::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
+template<> inline constexpr field::SpecTable<graph::Flatten> Specs<graph::Flatten>{
+    {&graph::Flatten::Factor, {.Min = 0, .Max = 1}},
+    {&graph::Flatten::ViewNormal, {.Speed = 0.01f, .Help = "Flattening direction of the View method, in Frame space"}},
+    {&graph::Flatten::Frame, {.Help = "Transform from mesh-local positions into the space the operation applies in"}},
 };
-template<> inline constexpr field::SpecTable<procedure::MarkSharp> Specs<procedure::MarkSharp>{{&procedure::MarkSharp::Sharp, {.Help = "Mark the elements sharp, or clear their marks"}}};
-template<> inline constexpr field::SpecTable<procedure::Knife> Specs<procedure::Knife>{
-    {&procedure::Knife::Start, {.Speed = 1.f, .Help = "First end of the cut segment, in view pixels from the top left"}},
-    {&procedure::Knife::End, {.Speed = 1.f, .Help = "Second end of the cut segment, in view pixels from the top left"}},
-    {&procedure::Knife::Extent, {.Min = 1, .Speed = 1.f, .Help = "Width and height of the view in pixels"}},
-    {&procedure::Knife::ViewProjection, {.Help = "Transform from Frame space into the view's clip space"}},
-    {&procedure::Knife::Frame, {.Help = "Transform from mesh-local positions into the space ViewProjection projects"}},
+template<> inline constexpr field::SpecTable<graph::MarkSharp> Specs<graph::MarkSharp>{{&graph::MarkSharp::Sharp, {.Help = "Mark the elements sharp, or clear their marks"}}};
+template<> inline constexpr field::SpecTable<graph::Knife> Specs<graph::Knife>{
+    {&graph::Knife::Start, {.Speed = 1.f, .Help = "First end of the cut segment, in view pixels from the top left"}},
+    {&graph::Knife::End, {.Speed = 1.f, .Help = "Second end of the cut segment, in view pixels from the top left"}},
+    {&graph::Knife::Extent, {.Min = 1, .Speed = 1.f, .Help = "Width and height of the view in pixels"}},
+    {&graph::Knife::ViewProjection, {.Help = "Transform from Frame space into the view's clip space"}},
+    {&graph::Knife::Frame, {.Help = "Transform from mesh-local positions into the space ViewProjection projects"}},
 };
-template<> inline constexpr field::SpecTable<procedure::Shade> Specs<procedure::Shade>{
-    {&procedure::Shade::Mode, {.Help = "Shade every face flat, smooth with no sharp marks, or smooth with sharp marks where faces meet above Angle"}},
-    {&procedure::Shade::Angle, {.Min = 0, .Max = std::numbers::pi, .Unit = FieldUnit::Radians, .Help = "Largest angle between adjacent face normals that shades smooth"}},
+template<> inline constexpr field::SpecTable<graph::Shade> Specs<graph::Shade>{
+    {&graph::Shade::Mode, {.Help = "Shade every face flat, smooth with no sharp marks, or smooth with sharp marks where faces meet above Angle"}},
+    {&graph::Shade::Angle, {.Min = 0, .Max = std::numbers::pi, .Unit = FieldUnit::Radians, .Help = "Largest angle between adjacent face normals that shades smooth"}},
 };
-template<> inline constexpr field::SpecTable<procedure::InstanceOnPoints> Specs<procedure::InstanceOnPoints>{
-    {&procedure::InstanceOnPoints::Prototype, {.Help = "Object hierarchy placed at each point. When empty, use the Instance geometry input."}},
-    {&procedure::InstanceOnPoints::Scale, {.Help = "Scale of each instance while the Scale input is unlinked"}},
-    {&procedure::InstanceOnPoints::Rotation, {.Help = "Rotation of each instance while the Rotation input is unlinked"}},
+template<> inline constexpr field::SpecTable<graph::InstanceOnPoints> Specs<graph::InstanceOnPoints>{
+    {&graph::InstanceOnPoints::Prototype, {.Help = "Scene subgraph that an instance at each point shows. When empty, use the Instance geometry input."}},
+    {&graph::InstanceOnPoints::Scale, {.Help = "Scale of each instance while the Scale input is unlinked"}},
+    {&graph::InstanceOnPoints::Rotation, {.Help = "Rotation of each instance while the Rotation input is unlinked"}},
 };
-template<> inline constexpr field::SpecTable<procedure::ObjectInfo> Specs<procedure::ObjectInfo>{{&procedure::ObjectInfo::Object, {.Help = "Object whose mesh the node emits. The object this procedure edits is not allowed."}}};
+template<> inline constexpr field::SpecTable<graph::ObjectInfo> Specs<graph::ObjectInfo>{{&graph::ObjectInfo::Object, {.Help = "Object whose mesh the node emits. The object this graph edits is not allowed."}}};
 
-template<> inline constexpr field::SpecTable<procedure::Extrude> Specs<procedure::Extrude>{
-    {&procedure::Extrude::Mode, field::SpecOf<&action::mesh::Extrude::Mode>},
-    {&procedure::Extrude::Offset, field::SpecOf<&action::mesh::Extrude::Offset>},
-    {&procedure::Extrude::OffsetScale, field::SpecOf<&action::mesh::Extrude::OffsetScale>},
-    {&procedure::Extrude::AlongNormals, field::SpecOf<&action::mesh::Extrude::AlongNormals>},
-    {&procedure::Extrude::Steps, field::SpecOf<&action::mesh::Revolve::Steps>},
-    {&procedure::Extrude::Angle, field::SpecOf<&action::mesh::Revolve::Angle>},
-    {&procedure::Extrude::Axis, field::SpecOf<&action::mesh::Revolve::Axis>},
-    {&procedure::Extrude::Center, field::SpecOf<&action::mesh::Revolve::Center>},
+template<> inline constexpr field::SpecTable<graph::Extrude> Specs<graph::Extrude>{
+    {&graph::Extrude::Mode, field::SpecOf<&action::mesh::Extrude::Mode>},
+    {&graph::Extrude::Offset, field::SpecOf<&action::mesh::Extrude::Offset>},
+    {&graph::Extrude::OffsetScale, field::SpecOf<&action::mesh::Extrude::OffsetScale>},
+    {&graph::Extrude::AlongNormals, field::SpecOf<&action::mesh::Extrude::AlongNormals>},
+    {&graph::Extrude::Steps, field::SpecOf<&action::mesh::Revolve::Steps>},
+    {&graph::Extrude::Angle, field::SpecOf<&action::mesh::Revolve::Angle>},
+    {&graph::Extrude::Axis, field::SpecOf<&action::mesh::Revolve::Axis>},
+    {&graph::Extrude::Center, field::SpecOf<&action::mesh::Revolve::Center>},
 };
-template<> inline constexpr field::SpecTable<procedure::SubdivisionSurface> Specs<procedure::SubdivisionSurface>{{&procedure::SubdivisionSurface::Levels, {.Min = 1, .Max = 6, .Help = "Number of subdivisions, each quadrupling the face count"}}};
-template<> inline constexpr field::SpecTable<procedure::SmoothSurface> Specs<procedure::SmoothSurface>{{&procedure::SmoothSurface::Cuts, {.Min = 1, .Max = 16, .Help = "Number of new vertices along each edge"}}};
-template<> inline constexpr field::SpecTable<procedure::Project> Specs<procedure::Project>{
-    {&procedure::Project::Point, {.Speed = 0.01f, .Help = "Point on the plane the outline lies on, in local space"}},
-    {&procedure::Project::Normal, {.Speed = 0.01f, .Help = "Direction the mesh is seen along, and the plane's normal, in local space"}},
+template<> inline constexpr field::SpecTable<graph::SubdivisionSurface> Specs<graph::SubdivisionSurface>{{&graph::SubdivisionSurface::Levels, {.Min = 1, .Max = 6, .Help = "Number of subdivisions, each quadrupling the face count"}}};
+template<> inline constexpr field::SpecTable<graph::SmoothSurface> Specs<graph::SmoothSurface>{{&graph::SmoothSurface::Cuts, {.Min = 1, .Max = 16, .Help = "Number of new vertices along each edge"}}};
+template<> inline constexpr field::SpecTable<graph::Project> Specs<graph::Project>{
+    {&graph::Project::Point, {.Speed = 0.01f, .Help = "Point on the plane the outline lies on, in local space"}},
+    {&graph::Project::Normal, {.Speed = 0.01f, .Help = "Direction the mesh is seen along, and the plane's normal, in local space"}},
 };
-template<> inline constexpr field::SpecTable<procedure::Bisect> Specs<procedure::Bisect>{
-    {&procedure::Bisect::Point, field::SpecOf<&action::mesh::Bisect::Point>},
-    {&procedure::Bisect::Normal, field::SpecOf<&action::mesh::Bisect::Normal>},
-    {&procedure::Bisect::ClearInner, field::SpecOf<&action::mesh::Bisect::ClearInner>},
-    {&procedure::Bisect::ClearOuter, field::SpecOf<&action::mesh::Bisect::ClearOuter>},
+template<> inline constexpr field::SpecTable<graph::Bisect> Specs<graph::Bisect>{
+    {&graph::Bisect::Point, field::SpecOf<&action::mesh::Bisect::Point>},
+    {&graph::Bisect::Normal, field::SpecOf<&action::mesh::Bisect::Normal>},
+    {&graph::Bisect::ClearInner, field::SpecOf<&action::mesh::Bisect::ClearInner>},
+    {&graph::Bisect::ClearOuter, field::SpecOf<&action::mesh::Bisect::ClearOuter>},
 };

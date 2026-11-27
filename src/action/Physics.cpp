@@ -2,6 +2,7 @@
 #include "TypeList.h"
 
 #include "action/ScopeResolve.h"
+#include "gpu/Transform.h"
 
 namespace action::physics {
 namespace {
@@ -25,7 +26,7 @@ void Apply(state::Registry &r, const Action &action) {
                         }
                     },
                     [&](state::Entity e) {
-                        e = HierarchySource(r, e);
+                        e = SourceOfCopy(r, e);
                         const bool want_motion = a.Value == Type::Kinematic || a.Value == Type::Dynamic;
                         const bool want_collider = a.Value == Type::Static || want_motion;
                         if (!want_motion) r.remove<PhysicsMotion>(e);
@@ -71,7 +72,7 @@ void Apply(state::Registry &r, const Action &action) {
             [&](AddPhysicsMaterial) { AddNamed<PhysicsMaterial>(r, "Material"); },
             [&](AddCollisionSystem) { AddNamed<CollisionSystem>(r, "System"); },
             [&](AddCollisionFilter) { AddNamed<CollisionFilter>(r, "Filter"); },
-            [&](AddJointDef) { AddNamed<PhysicsJointDef>(r, "Joint"); },
+            [&](AddJointDescription) { AddNamed<JointDescription>(r, "Joint"); },
             [&](const ToggleFilterEntity &a) {
                 r.patch<CollisionFilter>(a.FilterEntity, [&](CollisionFilter &f) {
                     auto &vec = a.Which == ToggleFilterEntity::List::Systems ? f.Systems : f.CollideSystems;
@@ -83,13 +84,13 @@ void Apply(state::Registry &r, const Action &action) {
                 });
             },
             [&]<typename T>(const SetJointVecItem<T> &a) {
-                r.patch<PhysicsJointDef>(a.JointDefEntity, [&](PhysicsJointDef &d) { (d.*JointVecMember<T>)[a.Index] = *a.Value; });
+                r.patch<JointDescription>(a.JointDescriptionEntity, [&](JointDescription &d) { (d.*JointVecMember<T>)[a.Index] = *a.Value; });
             },
             [&]<typename T>(const AddJointVecItem<T> &a) {
-                r.patch<PhysicsJointDef>(a.JointDefEntity, [&](PhysicsJointDef &d) { (d.*JointVecMember<T>).emplace_back(); });
+                r.patch<JointDescription>(a.JointDescriptionEntity, [&](JointDescription &d) { (d.*JointVecMember<T>).emplace_back(); });
             },
             [&]<typename T>(const DeleteJointVecItem<T> &a) {
-                r.patch<PhysicsJointDef>(a.JointDefEntity, [&](PhysicsJointDef &d) {
+                r.patch<JointDescription>(a.JointDescriptionEntity, [&](JointDescription &d) {
                     auto &vec = d.*JointVecMember<T>;
                     vec.erase(vec.begin() + a.Index);
                 });

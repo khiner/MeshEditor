@@ -1,13 +1,13 @@
-#include "procedure/MaterialGraphs.h"
+#include "graph/MaterialGraphs.h"
 #include "SortUnique.h"
 #include "animation/Keying.h"
 #include "gltf/GltfScene.h"
+#include "graph/OpNodes.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "metal/Dispatch.h"
 #include "ops/Evaluate.h"
-#include "procedure/OpNodes.h"
 #include "project/Assets.h"
 #include "render/GpuBuffers.h"
 #include "render/MaterialComponents.h"
@@ -23,7 +23,7 @@
 
 #include <format>
 
-namespace procedure {
+namespace graph {
 // The materials whose graphs changed, the meshes' nodes among them, and anything else every pattern reads: the material records and the document's textures.
 // Meshes holds the meshes whose records or material assignments changed, whose named attributes a pattern may read.
 // Revision counts the changes of anything a preview shows, and each preview the panels hold keeps the revision it shows.
@@ -53,7 +53,8 @@ std::vector<OpAttributeRef> MaterialAttributes(const MeshStore &meshes, uint32_t
 // The type of a Surface input's computed value, from its socket's types.
 constexpr mx::Type SurfaceInputType(uint32_t socket) {
     const auto types = detail::SurfaceSockets[socket].Types;
-    return types == detail::Float ? mx::Type::Float : types == detail::Normal3 ? mx::Type::Vector3 : mx::Type::Color3;
+    return types == detail::Float ? mx::Type::Float : types == detail::Normal3 ? mx::Type::Vector3 :
+                                                                                 mx::Type::Color3;
 }
 // A pattern's words hold three for each input whose socket takes more than a float, and one for each other.
 static_assert(std::size(detail::SurfaceSockets) == uint32_t(PbrInput::Count));
@@ -99,7 +100,7 @@ void ConvertOutput(OpGraph &graph, size_t output, mx::Type type, uint32_t node) 
 }
 // The graph computing the outputs for the Surface sockets, each converted to its input's type.
 OpGraph SurfaceGraph(const state::Registry &r, const CookPlan &plan, const OpLayout &layout, std::span<const std::pair<uint32_t, uint16_t>> outputs, std::span<const uint16_t> sockets, uint32_t surface) {
-    auto graph = GraphOf(r, plan, layout, outputs, FiltersOf(r, plan));
+    auto graph = OpGraphOf(r, plan, layout, outputs, FiltersOf(r, plan));
     for (size_t o = 0; o < outputs.size(); ++o) {
         const auto target = SurfaceInputType(sockets[o]);
         if (*OutputType(r, plan, layout, outputs[o].first, outputs[o].second) != target) ConvertOutput(graph, o, target, surface);
@@ -115,7 +116,7 @@ struct CompiledMaterial {
     std::vector<uint16_t> Sockets;
     const ops::Compiled *Compiled;
 };
-// The settle pass writes a material's layout, faults and program directly, outside an action's Apply, as the cook does for a geometry procedure, since the graph derives them.
+// The settle pass writes a material's layout, faults and program directly, outside an action's Apply, as the cook does for a geometry graph, since the graph derives them.
 // Lays out the material's value block and compiles its linked Surface inputs, or drops its nodes' faults and removes its program where it links none.
 std::optional<CompiledMaterial> CompileMaterial(state::Registry &r, state::Entity material) {
     auto [plan, layout, surface, outputs, sockets] = LinksOf(r, material);
@@ -284,7 +285,7 @@ std::expected<mx::MaterialDocument, std::string> MaterialXOf(const state::Regist
     const auto &name = r.get<const Material>(material).Name;
     const auto links = LinksOf(r, material);
     const auto &plan = links.Plan;
-    const auto graph = GraphOf(r, plan, links.Layout, links.Outputs, FiltersOf(r, plan));
+    const auto graph = OpGraphOf(r, plan, links.Layout, links.Outputs, FiltersOf(r, plan));
     mx::MaterialDocument document{.Name = name, .Graph = {.Name = "NG_" + name}};
     auto &nodes = document.Graph.Nodes;
     const auto output_type = [&](const mx::NodeOutput &from) { return lib.Declarations[nodes[from.Node].Declaration].Outputs[from.Output].Type; };
@@ -465,7 +466,7 @@ MaterialBake BakeMaterialInputs(state::Registry &r, uint32_t size) {
         }
     };
     std::vector<state::Entity> mesh_entities{std::from_range, r.view<const EvaluatedMesh>()};
-    for (const auto [_, owned] : r.view<const ProcedureOwnedMesh>().each()) {
+    for (const auto [_, owned] : r.view<const GraphOwnedMesh>().each()) {
         if (r.valid(owned.MeshEntity)) mesh_entities.push_back(owned.MeshEntity);
     }
     SortUnique(mesh_entities);
@@ -490,8 +491,8 @@ MaterialBake BakeMaterialInputs(state::Registry &r, uint32_t size) {
     for (auto &[material, baking] : bakings) {
         for (auto &input : baking.Inputs) {
             if (input.Square && input.Square->Program) input.Shared = bake_input(input.Socket, input.Graph, state::Null, [&](auto &chain, const auto &images, auto output) {
-                ops::RecordGrid(chain, drivers, *input.Square, {buffers.OpValues.Buffer.Slot, baking.Values + input.Graph.Base}, images, {size, size, 0u}, {output, 0u}, float(frame), time);
-            });
+                                                           ops::RecordGrid(chain, drivers, *input.Square, {buffers.OpValues.Buffer.Slot, baking.Values + input.Graph.Base}, images, {size, size, 0u}, {output, 0u}, float(frame), time);
+                                                       });
         }
     }
     each_drawn([&](state::Entity mesh_entity, uint32_t id, state::Entity material) {
@@ -523,10 +524,10 @@ void RegisterMaterialGraphHandlers(state::Registry &r) {
     auto &changes = r.Resources.emplace<MaterialGraphChanges>();
     changes.Changed.bind(r)
         .on<MaterialGraph>(On::Create | On::Update | On::Destroy)
-        .on<ProcedureNode>(On::Create | On::Update)
-        .on<NetworkNodes>(On::Create | On::Update)
-        .on<Subnet>(On::Update)
-        .on<SubnetInterface>(On::Create | On::Update)
+        .on<GraphNode>(On::Create | On::Update)
+        .on<GraphNodes>(On::Create | On::Update)
+        .on<SubgraphNode>(On::Update)
+        .on<SubgraphInterface>(On::Create | On::Update)
         .on<NodeInputs>(On::Update)
         .on<Op>(On::Update)
         .on<OpValueBlock>(On::Create | On::Update)
@@ -548,17 +549,17 @@ void SettleMaterialGraphs(state::Registry &r) {
     if (changes.empty() && !attributes) return;
     std::vector<state::Entity> materials;
     bool patterns = r.Resources.get<const MaterialPatterns>().Records || !r.view<const MaterialProgram>().empty();
-    bool definitions = false;
+    bool subgraphs = false;
     for (const auto e : changes) {
-        const auto *node = r.valid(e) ? r.try_get<const ProcedureNode>(e) : nullptr;
-        const auto network = node ? node->Network : e;
-        definitions |= r.valid(network) && r.all_of<SubnetDefinition>(network);
-        if (r.valid(network) && r.all_of<MaterialGraph>(network)) materials.push_back(network);
+        const auto *node = r.valid(e) ? r.try_get<const GraphNode>(e) : nullptr;
+        const auto graph = node ? node->Graph : e;
+        subgraphs |= r.valid(graph) && r.all_of<Subgraph>(graph);
+        if (r.valid(graph) && r.all_of<MaterialGraph>(graph)) materials.push_back(graph);
         // A material whose graph is gone computes nothing.
         else if (r.valid(e) && r.all_of<MaterialProgram>(e)) r.remove<MaterialProgram>(e);
     }
-    // A change inside a definition reaches every graph that may instance it.
-    if (definitions) materials.append_range(r.view<const MaterialGraph>());
+    // A change inside a subgraph reaches every graph that may use it.
+    if (subgraphs) materials.append_range(r.view<const MaterialGraph>());
     SortUnique(materials);
     CompileMaterials(r, materials);
     patterns |= !materials.empty() || attributes;
@@ -603,7 +604,7 @@ std::optional<ImageTextures> MaterialPreviewOf(state::Registry &r, state::Entity
         const auto socket = uint16_t(DefinitionOf(Authored(r, plan.Nodes[node]).get<const Op>(plan.Nodes[node].Entity).Node)->Inputs);
         const auto type = OutputType(r, plan, layout, node, socket);
         if (!type || mx::Words(*type) == 0u || mx::Words(*type) > 4u) return {};
-        auto graph = GraphOf(r, plan, layout, std::array{std::pair{node, socket}}, FiltersOf(r, plan));
+        auto graph = OpGraphOf(r, plan, layout, std::array{std::pair{node, socket}}, FiltersOf(r, plan));
         const bool vector = *type == mx::Type::Vector2 || *type == mx::Type::Vector3 || *type == mx::Type::Vector4;
         // An integer or boolean shows as the float it converts to.
         if (*type == mx::Type::Integer || *type == mx::Type::Boolean) ConvertOutput(graph, 0u, mx::Type::Float, node);
@@ -632,4 +633,4 @@ std::optional<ImageTextures> MaterialPreviewOf(state::Registry &r, state::Entity
     else changes.Previews.push_back({material, NodePath{path.begin(), path.end()}, changes.Revision, image});
     return texture_of(std::move(image));
 }
-} // namespace procedure
+} // namespace graph

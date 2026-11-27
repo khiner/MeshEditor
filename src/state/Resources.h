@@ -16,7 +16,7 @@ inline constexpr void (*ResetOf<T>)(void *, Registry &) = [](void *p, Registry &
 // Reset touches only its own domain and engine-lifetime resources, so resources reset in any order.
 // An engine-lifetime resource, such as the bindless set whose allocation is order-independent, declares none.
 // Fixed resource slots are selected at compile time.
-// Definitions stay in the owning TU.
+// Subgraphs stay in the owning TU.
 struct Resources {
     struct Slot {
         void *Value{};

@@ -2,8 +2,8 @@
 #include "SortUnique.h"
 #include "action/Errors.h"
 #include "action/ScopeResolve.h"
+#include "graph/ItemGraph.h"
 #include "object/ObjectOps.h"
-#include "procedure/Network.h"
 #include "scene/SceneGraph.h"
 #include "viewport/ViewportScene.h"
 
@@ -34,6 +34,10 @@ void Apply(state::Registry &r, const Action &action) {
             [&](const Remove &a) {
                 if (!r.all_of<Scene>(a.Scene)) return;
                 if (r.view<const Scene>().size() == 1) return Fail(r, "Cannot remove the only scene");
+                // A subgraph of the scene that an instance or a prototype uses moves to the document with its items.
+                for (const auto subgraph : SortedEntities(r.view<const graph::SubgraphItems>())) {
+                    if (graph::GraphRoot(r, subgraph) == a.Scene && SubgraphInstanced(r, subgraph)) UnplaceSubgraph(r, subgraph);
+                }
                 // A root in another scene leaves this one, and a root only in this one goes with its descendants.
                 std::vector<state::Entity> destroyed;
                 const auto add_subtree = [&](this const auto &self, state::Entity e) -> void {
@@ -52,7 +56,7 @@ void Apply(state::Registry &r, const Action &action) {
                 for (const auto [viewport, shown] : r.view<const ViewportScene>().each()) {
                     if (shown.Scene == a.Scene) r.replace<ViewportScene>(viewport, remaining);
                 }
-                procedure::RemoveNetworkSubnets(r, a.Scene);
+                graph::RemoveSubgraphs(r, a.Scene);
                 r.destroy(a.Scene);
             },
             [&](const LinkSelected &a) {

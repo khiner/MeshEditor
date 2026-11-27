@@ -7,7 +7,7 @@
 struct AABB;
 struct ColliderShape;
 
-// The colliders that fit or cook from a mesh: those naming it, and those on its instances.
+// The colliders that fit or cook from a mesh: those naming it, and those on the objects that draw it.
 struct MeshColliderList {
     std::vector<state::Entity> Colliders;
 };

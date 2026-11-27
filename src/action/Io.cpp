@@ -11,6 +11,8 @@
 #include "audio/RealImpact.h"
 #include "audio/RealImpactComponents.h"
 #include "gltf/GltfScene.h"
+#include "graph/Graph.h"
+#include "graph/MaterialGraphs.h"
 #include "mesh/MeshCreate.h"
 #include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
@@ -18,8 +20,6 @@
 #include "mesh/Primitives.h"
 #include "numeric/Angles.h"
 #include "object/ObjectOps.h"
-#include "procedure/MaterialGraphs.h"
-#include "procedure/Procedure.h"
 #include "scene/Defaults.h"
 #include "timeline/Timeline.h"
 #include "viewport/Viewport.h"
@@ -65,11 +65,11 @@ void Apply(state::Registry &r, const Action &action) {
                 const auto &path = a.Path;
                 const auto ext = path.extension().string();
                 if (ext == ".gltf" || ext == ".glb") LoadGltfFile(r, a.Path);
-                else if (ext == ".obj" || ext == ".ply") RequestImportMesh(r, path, MeshInstanceCreateInfo{.Name = path.stem().string()});
+                else if (ext == ".obj" || ext == ".ply") RequestImportMesh(r, path, MeshObjectCreateInfo{.Name = path.stem().string()});
                 else Fail(r, std::format("Unsupported file format: '{}'", ext));
             },
             [&](const SaveGltf &a) {
-                const auto bake = procedure::BakeMaterialInputs(r, a.BakeSize);
+                const auto bake = graph::BakeMaterialInputs(r, a.BakeSize);
                 if (auto save = gltf::SaveGltf(a.Path, r, {.Baked = bake.Materials}); !save) {
                     return Fail(r, std::format("Error saving glTF file '{}': {}", a.Path.string(), save.error()));
                 }
@@ -77,8 +77,8 @@ void Apply(state::Registry &r, const Action &action) {
                 for (const auto &unbaked : bake.Unbaked) Fail(r, std::format("Saved glTF file '{}': {}", a.Path.string(), unbaked));
             },
             [&](const SaveMaterialX &a) {
-                if (!r.valid(a.Material) || !r.all_of<procedure::MaterialGraph>(a.Material)) return Fail(r, "The material has no node graph");
-                const auto text = procedure::WriteMaterialX(r, a.Material);
+                if (!r.valid(a.Material) || !r.all_of<graph::MaterialGraph>(a.Material)) return Fail(r, "The material has no node graph");
+                const auto text = graph::WriteMaterialX(r, a.Material);
                 if (!text) return Fail(r, std::format("Error saving MaterialX file '{}': {}", a.Path.string(), text.error()));
                 if (auto written = File::WriteAtomic(a.Path, std::as_bytes(std::span{*text})); !written) Fail(r, std::format("Error saving MaterialX file '{}': {}", a.Path.string(), written.error()));
             },
@@ -97,7 +97,7 @@ void Apply(state::Registry &r, const Action &action) {
                 const auto imported = ImportMesh(
                     r,
                     source->Mesh,
-                    MeshInstanceCreateInfo{.Name = std::move(source->Name), .Transform = {.R = RealImpact::ObjectRotationToYUp}},
+                    MeshObjectCreateInfo{.Name = std::move(source->Name), .Transform = {.R = RealImpact::ObjectRotationToYUp}},
                     true // Weld vertices
                 );
 
@@ -105,7 +105,7 @@ void Apply(state::Registry &r, const Action &action) {
                     Fail(r, imported.error());
                     return;
                 }
-                const auto [mesh_entity, instance_entity] = *imported;
+                const auto [mesh_entity, object_entity] = *imported;
 
                 // The npy file's vertex indices use the source OBJ numbering, so look up by position instead.
                 const auto vertex_indices = NearestVertexOrdinals(r.Resources.get<const MeshStore>(), GetMeshPipelines(r), std::array{RecordPoints{GetMesh(r, mesh_entity).GetStoreId(), source->Positions}}).front();
@@ -115,7 +115,7 @@ void Apply(state::Registry &r, const Action &action) {
                 const auto listener_mesh_entity = AddMeshData(r, created.StoreId);
                 for (const auto &listener_point : listener_points) {
                     static const auto rot_z = AngleAxis(std::numbers::pi_v<float> / 2.f, vec3{0, 0, 1}); // The cylinder's axis is Y.
-                    const auto listener_instance_entity = ::AddMeshInstance(
+                    const auto listener_object_entity = ::AddMeshObject(
                         r, listener_mesh_entity,
                         {
                             .Name = std::format("RealImpact Microphone: {}", listener_point.Index),
@@ -123,26 +123,26 @@ void Apply(state::Registry &r, const Action &action) {
                                 .P = listener_point.GetPosition(Defaults::WorldUp, true),
                                 .R = AngleAxis(Radians(float(listener_point.AngleDeg)), Defaults::WorldUp) * rot_z,
                             },
-                            .Select = MeshInstanceCreateInfo::SelectBehavior::None,
+                            .Select = MeshObjectCreateInfo::SelectBehavior::None,
                         }
                     );
-                    r.emplace<RealImpactMicrophone>(listener_instance_entity, listener_point.Index);
+                    r.emplace<RealImpactMicrophone>(listener_object_entity, listener_point.Index);
 
                     if (listener_point.Index == RealImpact::CenteredListenerIndex) {
-                        r.emplace<RealImpactActiveMicrophone>(instance_entity, listener_instance_entity);
+                        r.emplace<RealImpactActiveMicrophone>(object_entity, listener_object_entity);
 
-                        if (const auto material_name = RealImpact::FindMaterialName(r.get<Name>(instance_entity).Value)) {
-                            if (const auto *material = materials::acoustic::Find(*material_name)) r.emplace<AcousticMaterial>(instance_entity, *material);
+                        if (const auto material_name = RealImpact::FindMaterialName(r.get<Name>(object_entity).Value)) {
+                            if (const auto *material = materials::acoustic::Find(*material_name)) r.emplace<AcousticMaterial>(object_entity, *material);
                         }
-                        r.emplace<ScaleLocked>(instance_entity);
-                        r.emplace<RealImpactVertices>(instance_entity, vertex_indices, source->Samples);
+                        r.emplace<ScaleLocked>(object_entity);
+                        r.emplace<RealImpactVertices>(object_entity, vertex_indices, source->Samples);
                         if (source->Samples.empty()) continue;
                         auto samples = RealImpact::LoadSamples(r, source->Samples, listener_point.Index);
                         if (!samples) {
                             Fail(r, std::move(samples.error()));
                             return;
                         }
-                        SetVertexSamples(r, instance_entity, vertex_indices, *samples);
+                        SetVertexSamples(r, object_entity, vertex_indices, *samples);
                     }
                 }
             },

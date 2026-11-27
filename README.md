@@ -18,15 +18,16 @@ Real-time mesh viewer and editor that converts meshes to rigid-body audio models
 * Save history and imported source assets in portable projects
 * Create and delete meshes and mesh instances
   - The Nodes panel opens the current scene and navigates to document resources, object geometry, and armature bones
-  - Every mesh has a geometry procedure with an explicit display flag, independent of node selection and layout
-  - Geometry subnets retain their internal nodes and expose named input/output ports and parameter defaults; compatible nodes and subnets can be bypassed
-  - Scene and resource subnets group nodes independently of transform parenting and scene membership, with nested navigation and exposed fields that edit the original objects
-  - Typed scene-reference ports connect parenting, shared geometry, materials, textures, rigs, physics relationships, and hierarchy sources across subnet boundaries
+  - Every mesh has a geometry graph with an explicit display flag, independent of node selection and layout
+  - The Add menu and its search list every node under the group that says what it does, with the document's own subgraphs under Subgraphs
+  - Geometry subgraphs retain their internal nodes and expose named input/output ports and parameter defaults; compatible nodes and subgraph nodes can be bypassed
+  - Scene and resource subgraphs hold nodes independently of transform parenting and scene membership, with nested navigation and ports for fields of the objects inside
+  - Typed scene-reference ports connect parenting, shared geometry, materials, textures, rigs, physics relationships, and instanced subgraphs across subgraph boundaries
   - Selection and layout remain undoable, and viewport operators append to the displayed stage
   - Extrude owns its offset vector, scale, and normal direction; the initial viewport drag edits that node, and subsequent transforms remain separate operations
   - Explicit Transform, Extrude, Bevel, and Inset handles edit upstream parameters while the downstream result stays displayed
-  - Hierarchy instances share a source definition with independent placement and visibility, including lights, cameras, rigs, animation, physics, and audio; make independent detaches the owned hierarchy
-  - Procedural instancing accepts a hierarchy prototype, with generated objects available through the producer's inspector; mesh realization reports hierarchy inputs instead of discarding their contents
+  - An instance shows a copy of a scene subgraph at its own transform, with its own name, visibility and port values, including lights, cameras, rigs, animation, physics, and audio; the copies draw the geometry of the subgraph's items, an edit of a copy changes the subgraph, make unique turns the copies into a subgraph of their own with their own geometry, and expand replaces the instance with plain copies of the subgraph's items; both keep an instance inside as an instance, and expand all levels replaces those too
+  - Instance on Points accepts a scene subgraph as its prototype, with generated objects available through the producer's inspector; mesh realization reports subgraph instances instead of discarding their contents
   - Primitives (Plane, Circle, Cube, IcoSphere, UVSphere, QuadSphere, Torus, Cylinder) are generator nodes with editable parameters
   - Load `.obj` and `.ply` mesh files (via [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply))
 * Select meshes, vertices, edges, or faces by clicking or box selection, through geometry with Blender's X-ray toggle (Alt+Z)
@@ -390,7 +391,7 @@ $ ./build/tests/MeshEditorTests
 | Target | Covers |
 |-|-|
 | `MeshEditorTests` | glTF roundtrip over every sample, every action alternative through the action log, edit selection primaries |
-| `MeshEditorProjectTest` | Every history scenario replays, restores cold and reopens to the same document and image: procedures, viewport gestures, each mesh operator against its kernel and Blender references, hierarchies and glTF samples |
+| `MeshEditorProjectTest` | Every history scenario replays, restores cold and reopens to the same document and image: geometry graphs, viewport gestures, each mesh operator against its kernel and Blender references, subgraph instances and glTF samples |
 | `MeshEditorGeometryTest` | The headless mesh kernels over every topology operator: mask and list selections agree, unselected geometry and named attributes survive, booleans yield the expected solids, plus element arenas, Metal buffers and cluster LOD builds |
 | `MeshEditorStoreTest` | Sparse native tables, entity generations, mutation capture and dirty sets against a model, version and history models, persistence failures, `.project` archives |
 | `MeshEditorAudioTest` | Hertz and punch contact laws over a grid, inertia decomposition, modal superposition, thread and rate independence, wav round trips, FastFEM surface solves |

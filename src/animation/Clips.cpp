@@ -2,7 +2,7 @@
 #include "TransformMath.h"
 
 #include "scene/Entity.h"
-#include "scene/HierarchyInstance.h"
+#include "scene/Instance.h"
 
 namespace animation {
 namespace {
@@ -15,34 +15,14 @@ uint32_t FindKeyframe(std::span<const float> times, float t) {
 } // namespace
 
 const AnimationClips *ClipsOf(const state::Registry &r, state::Entity e) {
-    return r.try_get<const AnimationClips>(HierarchySource(r, e));
+    return r.try_get<const AnimationClips>(SourceOfCopy(r, e));
 }
 std::vector<state::Entity> AnimatedEntities(const state::Registry &r) {
     auto entities = SortedEntities(r.view<const AnimationClips>());
-    for (const auto e : r.view<const HierarchyMember>())
+    for (const auto e : r.view<const CopyOf>())
         if (ClipsOf(r, e)) entities.push_back(e);
     std::ranges::sort(entities);
     return entities;
-}
-
-void PlaceChannel(const state::Registry &r, state::Entity e, AnimationChannel &channel) {
-    if (channel.Target.Component != state::Key<PosedLocal>()) return;
-    ForEachHierarchyPlacement(r, e, [&](state::Entity placed, state::Entity source) {
-        const auto delta = ToTransform(ToMatrix(r.get<const Transform>(placed)) * Inverse(ToMatrix(r.get<const Transform>(source))));
-        const auto apply = [&](std::span<float> value, bool tangent) {
-            if (channel.Target.Offset == offsetof(Transform, P) && value.size() == 3) {
-                const auto moved = delta.R * (delta.S * vec3{value[0], value[1], value[2]}) + (tangent ? vec3{} : delta.P);
-                std::copy_n(&moved.x, 3, value.begin());
-            } else if (channel.Target.Offset == offsetof(Transform, S) && value.size() == 3) {
-                const auto scaled = delta.S * vec3{value[0], value[1], value[2]};
-                std::copy_n(&scaled.x, 3, value.begin());
-            } else if (channel.Target.Offset == offsetof(Transform, R) && value.size() == 4) StoreQuat(value.data(), delta.R * LoadQuat(value.data()));
-        };
-        apply(channel.Rest, false);
-        const auto count = channel.Target.Count;
-        if (!count) return;
-        for (size_t offset = 0; offset + count <= channel.Values.size(); offset += count) apply(std::span{channel.Values}.subspan(offset, count), channel.Interp == AnimationInterpolation::CubicSpline && (offset / count) % 3 != 1);
-    });
 }
 
 const AnimationClip *ActiveClip(const state::Registry &r, const AnimationClips &clips) {

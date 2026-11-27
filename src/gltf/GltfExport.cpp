@@ -3,7 +3,7 @@
 #include "MaterialTable.h"
 #include "project/Assets.h"
 #include "render/LightComponents.h"
-#include "scene/HierarchyInstance.h"
+#include "scene/Instance.h"
 
 #include "Profile.h"
 #include "TransformMath.h"
@@ -17,15 +17,15 @@
 #include "audio/ContactSurface.h"
 #include "audio/ModalModes.h"
 #include "gltf/AnimationPointers.h"
+#include "graph/Graph.h"
 #include "image/ImageEncode.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Neighborhood.h"
-#include "procedure/Procedure.h"
 #include "render/GpuBuffers.h"
-#include "render/Instance.h"
 #include "render/MaterialComponents.h"
+#include "render/ObjectGeometry.h"
 #include "scene/CameraLens.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
@@ -172,7 +172,7 @@ void OverlayRest(const state::Registry &r, state::Entity e, state::TypeKey compo
 
 fastgltf::Light ConvertLightToFg(const SceneLight &pl, std::string_view name) {
     const auto type = pl.Type == LightType::Point ? fastgltf::LightType::Point : pl.Type == LightType::Spot ? fastgltf::LightType::Spot :
-                                                                                                                              fastgltf::LightType::Directional;
+                                                                                                              fastgltf::LightType::Directional;
     const bool is_spot = type == fastgltf::LightType::Spot;
     return {
         .type = type,
@@ -205,12 +205,17 @@ std::array<float, 4> AttributeFloats(const MeshStore &meshes, uint32_t attribute
 // An 8-bit channel of a value in [0, 1], encoded with the sRGB transfer function for a color texture.
 uint8_t ChannelByte(float value, bool srgb) {
     const float v = std::clamp(value, 0.f, 1.f);
-    const float encoded = !srgb ? v : v <= 0.0031308f ? 12.92f * v : 1.055f * std::pow(v, 1.f / 2.4f) - 0.055f;
+    const float encoded = !srgb ? v : v <= 0.0031308f ? 12.92f * v :
+                                                        1.055f * std::pow(v, 1.f / 2.4f) - 0.055f;
     return uint8_t(std::lround(encoded * 255.f));
 }
 
 // How a computed input's values map to its texture's channels: as they are, divided by their largest value when it exceeds one, divided by their largest value, as a normal mapped from [-1, 1], or as the direction at an angle mapped from [-1, 1].
-enum class BakedMap { Unit, Bounded, Range, Normal, Direction };
+enum class BakedMap { Unit,
+                      Bounded,
+                      Range,
+                      Normal,
+                      Direction };
 // Where a computed input packs into a material's glTF textures: the slot and its first channel, the map of its values, and the extension that holds the texture.
 // `Factors` sets the factors the texture scales, from the values' largest value and the divisor of their channels.
 struct BakedTarget {
@@ -290,7 +295,8 @@ std::vector<std::pair<uint32_t, PackedImage>> PackBaked(const BakedMaterial &bak
         auto &rgba = it->second.Rgba;
         const bool srgb = MaterialTextureSlots[target.Slot].ColorSpace == TextureColorSpace::Srgb;
         const float largest = std::ranges::max(input.Texels);
-        const float divisor = target.Map == BakedMap::Bounded ? std::max(largest, 1.f) : target.Map == BakedMap::Range && largest > 0.f ? largest : 1.f;
+        const float divisor = target.Map == BakedMap::Bounded ? std::max(largest, 1.f) : target.Map == BakedMap::Range && largest > 0.f ? largest :
+                                                                                                                                          1.f;
         for (size_t t = 0; t < size_t(input.Width) * input.Height; ++t) {
             const auto *value = input.Texels.data() + t * input.Components;
             auto *texel = rgba.data() + t * 4u + target.Channel;
@@ -366,7 +372,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     for (const auto e : r.view<const EvaluatedMesh>()) {
         if (!mesh_entity_to_index.contains(e)) mesh_entity_to_index[e] = mesh_count++;
     }
-    for (const auto [_, owned] : r.view<const procedure::ProcedureOwnedMesh>().each()) {
+    for (const auto [_, owned] : r.view<const graph::GraphOwnedMesh>().each()) {
         if (r.valid(owned.MeshEntity) && !mesh_entity_to_index.contains(owned.MeshEntity)) mesh_entity_to_index[owned.MeshEntity] = mesh_count++;
     }
 
@@ -500,7 +506,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     {
         const auto dfs = [&](this const auto &self, uint32_t ni) -> bool {
             auto &node = nodes[ni];
-            bool hidden = node.Entity != state::Null && (!r.all_of<Instance>(node.Entity) || r.all_of<Hidden>(node.Entity));
+            bool hidden = node.Entity != state::Null && (!r.all_of<ObjectGeometry>(node.Entity) || r.all_of<Hidden>(node.Entity));
             for (const auto child : node.Children) {
                 if (!self(child)) hidden = false;
             }
@@ -515,7 +521,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     // The asset is constructed before the allocator-bound collision filters.
     fastgltf::Asset asset;
 
-    std::unordered_map<state::Entity, uint32_t> physics_material_to_index, physics_jointdef_to_index, collision_filter_to_index;
+    std::unordered_map<state::Entity, uint32_t> physics_material_to_index, joint_description_to_index, collision_filter_to_index;
     {
         const auto mat_view = r.view<const PhysicsMaterial>();
         for (const auto e : ordered_by_source(mat_view, source_index)) {
@@ -529,9 +535,9 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 .restitutionCombine = FromCombineMode(pm.RestitutionCombine),
             });
         }
-        const auto jd_view = r.view<const ::PhysicsJointDef>();
+        const auto jd_view = r.view<const ::JointDescription>();
         for (const auto e : ordered_by_source(jd_view, source_index)) {
-            const auto &jd = r.get<const ::PhysicsJointDef>(e);
+            const auto &jd = r.get<const ::JointDescription>(e);
             std::vector<fastgltf::JointLimit> limits;
             limits.reserve(jd.Limits.size());
             for (const auto &lim : jd.Limits) {
@@ -562,7 +568,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                     .damping = drv.Damping,
                 });
             }
-            physics_jointdef_to_index[e] = asset.physicsJoints.size();
+            joint_description_to_index[e] = asset.physicsJoints.size();
             asset.physicsJoints.emplace_back(fastgltf::PhysicsJoint{.limits = std::move(limits), .drives = std::move(drives)});
         }
         const auto resolve_system_names = [&](std::span<const state::Entity> systems) {
@@ -903,7 +909,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                     const auto *row = gltf::RowOf(source.Target);
                     if (!row) continue;
                     auto channel = source;
-                    animation::PlaceChannel(r, entity, channel);
                     std::optional<fastgltf::AnimationChannel> target;
                     switch (row->Space) {
                         case gltf::PointerSpace::Node: {
@@ -1322,7 +1327,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             }
             if (joints.size() != skin.OrderedJointNodeIndices.size()) continue;
             fastgltf::optional<size_t> skeleton;
-            if (r.all_of<HierarchyMember>(binding.Object) || !std::ranges::any_of(ao.BoneEntities, [&](state::Entity bone) { return r.all_of<GltfNode>(bone); })) {
+            if (r.all_of<CopyOf>(binding.Object) || !std::ranges::any_of(ao.BoneEntities, [&](state::Entity bone) { return r.all_of<GltfNode>(bone); })) {
                 if (const auto parent = node_index_of.find(binding.Object); parent != node_index_of.end()) skeleton = parent->second;
             } else if (skin.SkeletonNodeIndex) {
                 for (const auto [e, node] : r.view<const GltfNode>().each()) {
@@ -1493,7 +1498,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
 
         fastgltf::optional<size_t> mesh_index, camera_index, light_index, skin_index;
-        if (const auto *inst = r.try_get<const Instance>(entity)) {
+        if (const auto *inst = r.try_get<const ObjectGeometry>(entity)) {
             if (const auto it = mesh_entity_to_index.find(inst->Entity); it != mesh_entity_to_index.end()) mesh_index = it->second;
         }
         if (const auto cit = camera_entity_to_index.find(entity); cit != camera_entity_to_index.end()) camera_index = cit->second;
@@ -1608,7 +1613,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             if (pj) {
                 fastgltf::Joint joint{};
                 if (const auto cit = node_index_of.find(pj->ConnectedNode); cit != node_index_of.end()) joint.connectedNode = cit->second;
-                if (const auto dit = physics_jointdef_to_index.find(pj->JointDefEntity); dit != physics_jointdef_to_index.end()) joint.joint = dit->second;
+                if (const auto dit = joint_description_to_index.find(pj->JointDescriptionEntity); dit != joint_description_to_index.end()) joint.joint = dit->second;
                 joint.enableCollision = pj->EnableCollision;
                 physics_rigid_body->joint = fastgltf::optional<fastgltf::Joint>{std::move(joint)};
             }
@@ -1625,7 +1630,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }();
 
         fastgltf::optional<fastgltf::AudioRigidBody> audio_rigid_body;
-        const auto *modes = r.try_get<const ModalModes>(HierarchySource(r, entity));
+        const auto *modes = r.try_get<const ModalModes>(SourceOfCopy(r, entity));
         const bool has_modal_model = modes && !modes->Freqs.empty();
         const auto *contact_surface = r.try_get<const ContactSurface>(entity);
         const bool has_acoustic_surface = contact_surface != nullptr;

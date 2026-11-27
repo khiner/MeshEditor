@@ -4,7 +4,7 @@
 
 // Render instance, material, lighting, and environment change sets, bound by RegisterSceneComponentHandlers.
 struct RenderChanges {
-    state::DirtySet InstanceVisibility; // An Instance or Hidden change that the settle pass derives RenderInstance from.
+    state::DirtySet InstanceVisibility; // An ObjectGeometry or Hidden change that the settle pass derives RenderInstance from.
     state::DirtySet InstanceCreated;
     state::DirtySet InstanceDestroyed; // A live entity lost its render instance.
     state::DirtySet Materials; // Material values changed in the UMA material buffer.

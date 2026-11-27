@@ -12,6 +12,9 @@
 #include "audio/ContactModel.h"
 #include "audio/SurfaceContact.h"
 #include "gizmo/GizmoInteraction.h"
+#include "graph/Cook.h"
+#include "graph/MaterialGraphs.h"
+#include "graph/NodeTheme.h"
 #include "mesh/MeshCreate.h"
 #include "mesh/MeshStores.h"
 #include "object/ObjectOps.h"
@@ -19,9 +22,6 @@
 #include "physics/PhysicsStores.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
-#include "procedure/Cook.h"
-#include "procedure/MaterialGraphs.h"
-#include "procedure/NodeTheme.h"
 #include "render/GpuSceneState.h"
 #include "render/Pipelines.h"
 #include "render/RenderStores.h"
@@ -420,8 +420,8 @@ void InitEngine(state::Registry &r) {
     RegisterViewportHandlers(r);
 
     RegisterMeshStoreHandlers(r);
-    RegisterProcedureHandlers(r);
-    procedure::RegisterMaterialGraphHandlers(r);
+    RegisterGraphHandlers(r);
+    graph::RegisterMaterialGraphHandlers(r);
     RegisterAudioStoreHandlers(r);
     RegisterPhysicsStoreHandlers(r);
     InitEntityNames(r);
@@ -465,14 +465,14 @@ void SetupDocument(state::Registry &r) {
     const auto defaults = [&]<typename... Cs>(TypeList<Cs...>) { (r.emplace_or_replace<Cs>(state::Document), ...); };
     defaults(TypeList<ActiveViewport, Interaction, EditMode>{});
     r.emplace_or_replace<ViewportTheme>(state::Document, Defaults::ViewportTheme);
-    defaults(TypeList<procedure::NodeTheme, InterfaceTheme, TimelineTheme, EnabledInteractionModes, TransformGizmoState, AnisotropicFilter>{});
+    defaults(TypeList<graph::NodeTheme, InterfaceTheme, TimelineTheme, EnabledInteractionModes, TransformGizmoState, AnisotropicFilter>{});
     physics::ApplySimulationSettings(r, r.emplace_or_replace<PhysicsSimulationSettings>(state::Document));
     defaults(TypeList<AudioOutputMix, Striker, ModalSoundControls, PlaybackFrame, LastEvaluatedFrame, TimelineView, TimelineRange, TimelinePlayback, TimelineNavigation, Animations, ShadeSmoothAngle, BoxSelectState, GizmoInteraction, TransformRoots, EditPrimaries, SelectionFlags, SelectedKeyframes, OutlinerRows>{});
     SurfaceSetupDocument(r);
 }
 
 void AddDefaultSceneContent(state::Registry &r) {
-    AddMeshPrimitive(r, primitive::Cube{}, MeshInstanceCreateInfo{.Name = "Cube"});
+    AddMeshPrimitive(r, primitive::Cube{}, MeshObjectCreateInfo{.Name = "Cube"});
 
     // Match Blender's startup scene in its Z-up, negative-Y-forward frame.
     constexpr vec3 LightLoc{4.07625, 1.00545, 5.90386}, CameraLoc{7.358891, -6.925791, 4.958309}, CameraEulerXYZ{1.109319, 0, 0.815801};
@@ -484,8 +484,8 @@ void AddDefaultSceneContent(state::Registry &r) {
     const float hfov = 2 * std::atan(SensorX / (2 * Lens));
     const float yfov = 2 * std::atan(std::tan(hfov * 0.5) * RenderH / RenderW);
 
-    ::AddLight(r, {.Name = "Light", .Transform = {.P = to_y_up_pos(LightLoc)}, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
-    ::AddCamera(r, {.Name = "Camera", .Transform = {.P = to_y_up_pos(CameraLoc), .R = to_y_up_rot * FromEulerAngles(CameraEulerXYZ)}, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, Perspective{.FieldOfViewRad = yfov, .FarClip = 1000, .NearClip = DefaultPerspectiveNearClip});
+    ::AddLight(r, {.Name = "Light", .Transform = {.P = to_y_up_pos(LightLoc)}, .Select = MeshObjectCreateInfo::SelectBehavior::None});
+    ::AddCamera(r, {.Name = "Camera", .Transform = {.P = to_y_up_pos(CameraLoc), .R = to_y_up_rot * FromEulerAngles(CameraEulerXYZ)}, .Select = MeshObjectCreateInfo::SelectBehavior::None}, Perspective{.FieldOfViewRad = yfov, .FarClip = 1000, .NearClip = DefaultPerspectiveNearClip});
 }
 
 void DeinitViewport(state::Registry &r) {

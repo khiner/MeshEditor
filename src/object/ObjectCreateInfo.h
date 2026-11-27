@@ -5,7 +5,7 @@
 
 #include <string>
 
-struct MeshInstanceCreateInfo {
+struct MeshObjectCreateInfo {
     std::string Name{};
     Transform Transform{};
 
@@ -18,14 +18,14 @@ struct MeshInstanceCreateInfo {
     bool Visible{true};
     state::Entity Scene{state::Null};
     bool BeginTranslate{true};
-    state::Entity Network{state::Null};
+    state::Entity Graph{state::Null};
 };
 
 struct ObjectCreateInfo {
     std::string Name{};
     Transform Transform{};
-    MeshInstanceCreateInfo::SelectBehavior Select{MeshInstanceCreateInfo::SelectBehavior::Exclusive};
+    MeshObjectCreateInfo::SelectBehavior Select{MeshObjectCreateInfo::SelectBehavior::Exclusive};
     state::Entity Scene{state::Null};
     bool BeginTranslate{true};
-    state::Entity Network{state::Null};
+    state::Entity Graph{state::Null};
 };

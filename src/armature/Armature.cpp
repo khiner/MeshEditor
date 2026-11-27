@@ -173,7 +173,7 @@ void BoneMat3ToVecRoll(const mat3 &m, vec3 &direction, float &roll) {
     roll = 2.f * std::atan2(Dot(vec3{twist.x, twist.y, twist.z}, nor), twist.w);
 }
 
-// One deform buffer per skin is shared across mesh instances, so a skinned mesh moved off its armature shifts rigidly instead of stretching.
+// One deform buffer per skin is shared across mesh objects, so a skinned mesh moved off its armature shifts rigidly instead of stretching.
 void ComputeDeformMatrices(
     const Armature &data, uint32_t skin_slot,
     std::span<const mat4> bone_pose_world, std::span<mat4> out_deform_matrices

@@ -1,9 +1,9 @@
 #include "physics/ColliderUpdate.h"
 #include "Variant.h"
+#include "graph/Graph.h"
 #include "mesh/MeshStore.h"
 #include "physics/PhysicsChanges.h"
 #include "physics/PhysicsTypes.h"
-#include "procedure/Procedure.h"
 #include "scene/Entity.h"
 #include "state/Registry.h"
 using numeric::Max;
@@ -13,13 +13,13 @@ state::Entity ColliderMesh(const state::Registry &r, state::Entity collider, con
     return shape.MeshEntity != state::Null ? shape.MeshEntity : FindMeshEntity(r, collider);
 }
 std::optional<PrimitiveParameters> PrimitiveOf(const state::Registry &r, state::Entity mesh_entity) {
-    using namespace procedure;
-    const auto *procedure = r.try_get<const GeometryProcedure>(mesh_entity);
-    if (!procedure || procedure->DisplayNode == state::Null) return {};
-    const auto display = procedure->DisplayNode;
+    using namespace graph;
+    const auto *graph = r.try_get<const GeometryGraph>(mesh_entity);
+    if (!graph || graph->DisplayNode == state::Null) return {};
+    const auto display = graph->DisplayNode;
     if (std::ranges::any_of(r.get<const NodeInputs>(display).Links, [](SocketLink input) { return input.FromNode != state::Null; })) return {};
     std::optional<PrimitiveParameters> parameters;
-    VisitKind(r.get<const ProcedureNode>(display).Kind, [&]<typename K> {
+    VisitKind(r.get<const GraphNode>(display).Kind, [&]<typename K> {
         if constexpr (Generator<K>) parameters = r.get<const K>(display);
     });
     return parameters;

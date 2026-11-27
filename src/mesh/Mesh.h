@@ -192,11 +192,11 @@ private:
     MeshConnectivity C{};
 };
 
-// Whether the entity is a mesh entity, which holds a geometry procedure.
+// Whether the entity is a mesh entity, which holds a geometry graph.
 bool HasMesh(const state::Registry &, state::Entity);
-// Whether an instance of the entity draws a mesh record: a cooked mesh entity's, or the record a procedure's instances place.
+// Whether an instance of the entity draws a mesh record: a cooked mesh entity's, or the record a graph's instances place.
 bool DrawsMesh(const state::Registry &, state::Entity);
-// The store record an entity's instances draw: its evaluated procedure output, its owned record, or the vertex record of a bone or joint.
+// The store record an entity's instances draw: its evaluated graph output, its owned record, or the vertex record of a bone or joint.
 std::optional<uint32_t> DrawnStoreId(const state::Registry &, state::Entity);
 // TryGetMesh returns empty for an entity drawing no mesh record.
 Mesh GetMesh(const state::Registry &, state::Entity);

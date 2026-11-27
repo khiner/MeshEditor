@@ -22,7 +22,7 @@ struct SurfaceRelief {
     uint64_t SourceKey{0}; // Hash of the map alone, distinguishing a surface edit from a relief edit without measuring the mesh.
 };
 
-// Rebuild a node's SurfaceRelief from its normal map, taken from the node's ContactSurface or else from the material of the mesh it instances.
+// Rebuild a node's SurfaceRelief from its normal map, taken from the node's ContactSurface or else from the material of the mesh it draws.
 // Removed when neither supplies a usable one.
 // Pass `geometry_changed` when the mesh itself moved, since the track's texel size is measured from its texture coordinates.
 void UpdateSurfaceRelief(state::Registry &, state::Entity node_entity, state::Entity mesh_entity, bool geometry_changed);

@@ -8,11 +8,11 @@
 #include "Solver.h"
 #include "SortUnique.h"
 #include "TransformMath.h"
+#include "graph/Cook.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Neighborhood.h"
-#include "procedure/Cook.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
 #include "viewport/ViewportEvents.h"
@@ -64,7 +64,7 @@ struct BodyRecord {
 };
 struct JointInput {
     PhysicsJoint Joint;
-    std::optional<PhysicsJointDef> Definition{};
+    std::optional<JointDescription> Definition{};
     state::Entity Owner = state::Null, ConnectedOwner = state::Null;
     Transform Node;
     std::optional<Transform> Connected;
@@ -219,7 +219,7 @@ JointInput ReadJoint(const PhysicsState &s, const state::Registry &r, state::Ent
         .Node = AuthoredWorld(r, entity),
         .Connected = r.valid(joint.ConnectedNode) ? std::optional{AuthoredWorld(r, joint.ConnectedNode)} : std::nullopt,
     };
-    if (const auto *definition = r.try_get<const PhysicsJointDef>(joint.JointDefEntity)) {
+    if (const auto *definition = r.try_get<const JointDescription>(joint.JointDescriptionEntity)) {
         input.Definition = *definition;
         input.Definition->Name.clear();
     }
@@ -392,7 +392,7 @@ physics::RbpBody CookBody(PhysicsState &s, const state::Registry &r, const LeafM
 
 // Gives the bodies whose colliders fit or cook from time-dependent meshes the collider geometry of the frame.
 void ShapeTimeBodies(PhysicsState &s, state::Registry &r, int frame) {
-    if (r.view<const procedure::TimeReads>().empty()) return;
+    if (r.view<const graph::TimeReads>().empty()) return;
     std::vector<state::Entity> bodies, meshes;
     for (const auto mesh : TimeDependentMeshes(r)) {
         for (const auto collider : MeshCollidersOf(r, mesh)) {
@@ -405,7 +405,7 @@ void ShapeTimeBodies(PhysicsState &s, state::Registry &r, int frame) {
     if (bodies.empty()) return;
     SortUnique(bodies);
     SortUnique(meshes);
-    // A procedure without a result at the frame leaves its mesh without geometry.
+    // A graph without a result at the frame leaves its mesh without geometry.
     std::vector<std::vector<vec3>> positions(meshes.size());
     std::vector<std::vector<uint32_t>> triangles(meshes.size());
     ReadAtFrame(r, meshes, frame, [&](std::span<const uint32_t> records) {
@@ -950,7 +950,7 @@ void ProcessChanges(state::Registry &r) {
     std::vector<state::Entity> reread, reframed_joints;
     for (const auto &[entity, input] : s.Joints) {
         const auto connected = input.Joint.ConnectedNode;
-        if (reaches(connected) || reaches(input.Joint.JointDefEntity) || left(input.Owner) || left(input.ConnectedOwner) || input.Connected.has_value() != r.valid(connected)) reread.push_back(entity);
+        if (reaches(connected) || reaches(input.Joint.JointDescriptionEntity) || left(input.Owner) || left(input.ConnectedOwner) || input.Connected.has_value() != r.valid(connected)) reread.push_back(entity);
         if (const auto *handle = reframed.empty() || !r.valid(entity) ? nullptr : r.try_get<const PhysicsConstraintHandle>(entity)) {
             const auto &joint = s.World->Joints[handle->ConstraintIndex];
             if (reframed.contains(joint.BodyA) || reframed.contains(joint.BodyB)) reframed_joints.push_back(entity);
@@ -1078,7 +1078,7 @@ void Init(state::Registry &r) {
     r.on_destroy<PhysicsMotion, &OnDestroyPhysicsInput>();
     r.on_destroy<ColliderShape, &OnDestroyPhysicsInput>();
     r.on_destroy<PhysicsJoint, &OnDestroyPhysicsInput>();
-    r.on_destroy<PhysicsJointDef, &OnDestroyPhysicsInput>();
+    r.on_destroy<JointDescription, &OnDestroyPhysicsInput>();
     auto &changes = r.Resources.emplace<PhysicsChanges>();
     changes.Input.bind(r)
         .on<PhysicsMotion>(On::Create | On::Update | On::Destroy)
@@ -1089,7 +1089,7 @@ void Init(state::Registry &r) {
         .on<ColliderMaterial>(On::Create | On::Update | On::Destroy)
         .on<TriggerTag>(On::Create | On::Destroy)
         .on<PhysicsJoint>(On::Create | On::Update | On::Destroy)
-        .on<::PhysicsJointDef>(On::Create | On::Update | On::Destroy);
+        .on<::JointDescription>(On::Create | On::Update | On::Destroy);
     changes.Transform.bind(r).on<Transform>(On::Update);
     changes.Geometry.bind(r).on<MeshGeometryDirty>(On::Create | On::Update).on<MeshPositionsChanged>(On::Create | On::Update);
     changes.ColliderPolicy.bind(r).on<::ColliderPolicy>(On::Create | On::Update);

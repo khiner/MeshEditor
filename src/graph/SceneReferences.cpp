@@ -6,21 +6,20 @@
 #include "action/Object.h"
 #include "action/Physics.h"
 #include "armature/BoneConstraint.h"
+#include "graph/Graph.h"
 #include "object/PendingSync.h"
 #include "physics/PhysicsTypes.h"
-#include "procedure/Procedure.h"
 #include "render/GpuBufferOps.h"
-#include "render/Instance.h"
 #include "render/MaterialComponents.h"
+#include "render/ObjectGeometry.h"
 #include "render/Textures.h"
 
-
-namespace procedure {
+namespace graph {
 namespace {
 // The geometry the object draws, or null.
 state::Entity DrawnGeometry(const state::Registry &r, state::Entity object) {
-    const auto *instance = r.try_get<const Instance>(object);
-    return instance && r.all_of<GeometryProcedure>(instance->Entity) ? instance->Entity : state::Null;
+    const auto *geometry = r.try_get<const ObjectGeometry>(object);
+    return geometry && r.all_of<GeometryGraph>(geometry->Entity) ? geometry->Entity : state::Null;
 }
 state::Entity FirstDrawer(const GeometryDrawers &drawers, state::Entity geometry) {
     const auto at = std::ranges::lower_bound(drawers, geometry, {}, &GeometryDrawers::value_type::first);
@@ -59,7 +58,7 @@ void ForEachReference(const state::Registry &r, state::Entity e, auto &&visit) {
     if (r.all_of<ObjectKind>(e) && !r.any_of<BoneIndex, SubElementOf>(e)) add(ReferenceKind::Parent);
     const auto geometry = DrawnGeometry(r, e);
     if (geometry != state::Null) add(ReferenceKind::Geometry);
-    if (r.all_of<HierarchyInstance>(e)) add(ReferenceKind::InstanceSource);
+    if (r.all_of<Instance>(e)) add(ReferenceKind::InstanceSubgraph);
     if (r.all_of<ArmatureModifier>(e)) add(ReferenceKind::Skin);
     if (const auto *constraints = r.try_get<const BoneConstraints>(e)) {
         for (uint32_t i = 0u; i < constraints->Stack.size(); ++i) add(ReferenceKind::Constraint, i);
@@ -71,7 +70,7 @@ void ForEachReference(const state::Registry &r, state::Entity e, auto &&visit) {
     }
     if (r.all_of<PhysicsJoint>(e)) {
         add(ReferenceKind::JointBody);
-        add(ReferenceKind::JointDefinition);
+        add(ReferenceKind::JointDescription);
     }
     if (const auto *trigger = r.try_get<const TriggerNodes>(e)) {
         add(ReferenceKind::TriggerFilter);
@@ -89,15 +88,15 @@ void ForEachReference(const state::Registry &r, state::Entity e, auto &&visit) {
 decltype(auto) ReferenceTarget(ReferenceKind kind, auto &&visit) {
     using enum ReferenceKind;
     switch (kind) {
+        case InstanceSubgraph: return visit.template operator()<SubgraphItems>();
         case Parent:
-        case InstanceSource:
         case Geometry:
         case ColliderMesh: return visit.template operator()<ObjectKind>();
         case Skin: return visit.template operator()<ArmatureObject>();
         case PhysicsMaterial: return visit.template operator()<::PhysicsMaterial>();
         case CollisionFilter:
         case TriggerFilter: return visit.template operator()<::CollisionFilter>();
-        case JointDefinition: return visit.template operator()<PhysicsJointDef>();
+        case JointDescription: return visit.template operator()<::JointDescription>();
         case FilterSystem:
         case FilterCollideSystem: return visit.template operator()<CollisionSystem>();
         case Constraint:
@@ -113,7 +112,11 @@ bool Accepts(const state::Registry &r, SceneReference reference, state::Entity e
     using enum ReferenceKind;
     if (e == state::Null) return true;
     if (!r.valid(e) || !ReferenceTarget(reference.Kind, [&]<typename T> { return r.all_of<T>(e); })) return false;
-    if (reference.Kind == InstanceSource) return !HierarchyParentCycle(r, e, reference.Owner);
+    if (reference.Kind == InstanceSubgraph) {
+        // The subgraph holds neither the object of the Instance nor an object below it.
+        if (!IsSceneSubgraph(r, e) || UseRecurses(r, e, SubgraphHolding(r, reference.Owner))) return false;
+        return std::ranges::none_of(ObjectClosure(r, reference.Owner), [&](state::Entity below) { return !r.all_of<CopyOf>(below) && SubgraphCopies(r, e, below); });
+    }
     if (reference.Kind == Parent) return !r.any_of<BoneIndex, SubElementOf>(e);
     if (reference.Kind == Skin) return r.get<const ArmatureObject>(e).Entity == r.get<const ArmatureModifier>(reference.Owner).ArmatureEntity;
     if (reference.Kind == Geometry) return e != reference.Owner && DrawnGeometry(r, e) != state::Null;
@@ -134,7 +137,7 @@ state::Entity StoredValue(const state::Registry &r, SceneReference reference) {
     if (const auto *list = ReferenceList(r, reference)) return index < list->size() ? (*list)[index] : state::Null;
     using enum ReferenceKind;
     switch (reference.Kind) {
-        case InstanceSource: return r.get<const HierarchyInstance>(e).Source;
+        case InstanceSubgraph: return r.get<const Instance>(e).SubgraphEntity;
         case Parent: return ParentOrNull(r, e);
         case Geometry: return DrawnGeometry(r, e);
         case Skin: return r.get<const ArmatureModifier>(e).ArmatureObjectEntity;
@@ -143,7 +146,7 @@ state::Entity StoredValue(const state::Registry &r, SceneReference reference) {
         case PhysicsMaterial: return r.get<const ::ColliderMaterial>(e).PhysicsMaterialEntity;
         case CollisionFilter: return r.get<const ::ColliderMaterial>(e).CollisionFilterEntity;
         case JointBody: return r.get<const PhysicsJoint>(e).ConnectedNode;
-        case JointDefinition: return r.get<const PhysicsJoint>(e).JointDefEntity;
+        case JointDescription: return r.get<const PhysicsJoint>(e).JointDescriptionEntity;
         case TriggerFilter: return r.get<const TriggerNodes>(e).CollisionFilterEntity;
         case Material: return MaterialAt(r, MaterialSlots(r, DrawnGeometry(r, e))[index]);
         case Texture: {
@@ -178,14 +181,14 @@ void StoredReferences(const state::Registry &r, state::Entity owner, std::vector
     });
 }
 // An entity with one of these components has a node: the kinds of item a page shows, and a geometry for its material slots.
-using ItemKinds = TypeList<ObjectKind, BoneIndex, Scene, HierarchyDefinition, ::PhysicsMaterial, CollisionSystem, ::CollisionFilter, PhysicsJointDef, NetworkSubnet, GeometryProcedure>;
+using ItemKinds = TypeList<ObjectKind, BoneIndex, Scene, ::PhysicsMaterial, CollisionSystem, ::CollisionFilter, JointDescription, SubgraphItems, GeometryGraph>;
 bool HasNode(const state::Registry &r, state::Entity e) {
     return []<typename... Ks>(const state::Registry &r, state::Entity e, TypeList<Ks...>) { return r.any_of<Ks...>(e); }(r, e, ItemKinds{});
 }
-bool CanExpose(const state::Registry &r, std::span<const state::Entity> members, const SubnetPort &port) {
-    if (std::ranges::contains(members, std::get<PromotedField>(port.Binding).Entity)) return true;
-    for (const auto member : members) {
-        if (const auto *ports = r.try_get<const SubnetInterface>(member)) {
+bool CanExpose(const state::Registry &r, std::span<const state::Entity> items, const SubgraphPort &port) {
+    if (std::ranges::contains(items, std::get<PromotedField>(port.Binding).Entity)) return true;
+    for (const auto item : items) {
+        if (const auto *ports = r.try_get<const SubgraphInterface>(item)) {
             if (std::ranges::any_of(ports->Ports, [&](const auto &inner) { return port.Binding == inner.Binding; })) return true;
         }
     }
@@ -207,8 +210,8 @@ std::string TextureLabel(uint32_t offset) {
 
 GeometryDrawers DrawersOf(const state::Registry &r) {
     GeometryDrawers drawers;
-    for (const auto [object, instance] : r.view<const Instance>().each()) {
-        if (r.all_of<ObjectKind>(object) && r.all_of<GeometryProcedure>(instance.Entity)) drawers.emplace_back(instance.Entity, object);
+    for (const auto [object, geometry] : r.view<const ObjectGeometry>().each()) {
+        if (r.all_of<ObjectKind>(object) && r.all_of<GeometryGraph>(geometry.Entity)) drawers.emplace_back(geometry.Entity, object);
     }
     std::ranges::sort(drawers);
     const auto [first, last] = std::ranges::unique(drawers, {}, &GeometryDrawers::value_type::first);
@@ -227,19 +230,19 @@ std::string ItemName(const state::Registry &r, state::Entity entity) {
     if (const auto *material = r.try_get<const ::Material>(entity)) return material->Name.empty() ? "Material" : material->Name;
     if (const auto *texture = r.try_get<const MaterializedTexture>(entity)) return texture->Params.Name.empty() ? "Texture" : texture->Params.Name;
     // A geometry is named only as a collider's value, when no object draws it.
-    if (r.all_of<GeometryProcedure>(entity)) return "Separate mesh";
+    if (r.all_of<GeometryGraph>(entity)) return "Separate mesh";
     if (const auto *m = r.try_get<const ::PhysicsMaterial>(entity)) return m->Name;
     if (const auto *f = r.try_get<const ::CollisionFilter>(entity)) return f->Name;
     if (const auto *c = r.try_get<const CollisionSystem>(entity)) return c->Name;
-    if (const auto *j = r.try_get<const PhysicsJointDef>(entity)) return j->Name;
+    if (const auto *j = r.try_get<const JointDescription>(entity)) return j->Name;
     return GetName(r, entity);
 }
 
 namespace {
-NetworkNode DeriveNode(const state::Registry &r, state::Entity e) {
-    NetworkNode node{.Title = ItemName(r, e)};
+ItemNode DeriveNode(const state::Registry &r, state::Entity e) {
+    ItemNode node{.Title = ItemName(r, e)};
     StoredReferences(r, e, node.References);
-    const auto slots = MaterialSlots(r, r.all_of<GeometryProcedure>(e) ? e : state::Null);
+    const auto slots = MaterialSlots(r, r.all_of<GeometryGraph>(e) ? e : state::Null);
     const auto materials = slots.empty() ? std::vector<state::Entity>{} : MaterialsByIndex(r);
     for (uint32_t i = 0; i < slots.size(); ++i) node.References.push_back({ReferenceKind::Material, i, slots[i] < materials.size() ? materials[slots[i]] : state::Null});
     return node;
@@ -252,10 +255,10 @@ void ShownReferences(const state::Registry &r, state::Entity item, const Geometr
     // A material's texture slots are read from its record, which no stored node holds.
     if (r.all_of<::Material>(item)) {
         StoredReferences(r, item, shown);
-    } else if (const auto *node = r.try_get<const NetworkNode>(item)) {
+    } else if (const auto *node = r.try_get<const ItemNode>(item)) {
         shown = node->References;
         for (const auto &reference : node->References) {
-            const auto *geometry = reference.Kind == ReferenceKind::Geometry ? r.try_get<const NetworkNode>(reference.Value) : nullptr;
+            const auto *geometry = reference.Kind == ReferenceKind::Geometry ? r.try_get<const ItemNode>(reference.Value) : nullptr;
             if (geometry) shown.append_range(geometry->References);
         }
     }
@@ -264,8 +267,8 @@ void ShownReferences(const state::Registry &r, state::Entity item, const Geometr
 
 bool NodesSettled(const state::Registry &r) {
     bool settled = true;
-    for (const auto e : r.view<const NetworkNode>()) settled &= HasNode(r, e) && r.get<const NetworkNode>(e) == DeriveNode(r, e);
-    const auto kind = [&]<typename K> { for (const auto e : r.view<const K>()) settled &= r.all_of<NetworkNode>(e); };
+    for (const auto e : r.view<const ItemNode>()) settled &= HasNode(r, e) && r.get<const ItemNode>(e) == DeriveNode(r, e);
+    const auto kind = [&]<typename K> { for (const auto e : r.view<const K>()) settled &= r.all_of<ItemNode>(e); };
     [&]<typename... Ks>(TypeList<Ks...>) { (kind.template operator()<Ks>(), ...); }(ItemKinds{});
     return settled;
 }
@@ -273,7 +276,7 @@ bool NodesSettled(const state::Registry &r) {
 std::string ReferenceLabel(const state::Registry &r, SceneReference reference) {
     using enum ReferenceKind;
     if (reference.Kind == Texture) return TextureLabel(reference.Index);
-    constexpr std::array labels{"Parent", "Geometry", "Skin armature", "Constraint target", "Collider geometry", "Physics material", "Collision filter", "Joint body", "Joint definition", "Trigger filter", "Trigger member", "Material slot", "Texture", "Instance source", "Member system", "Collide system"};
+    constexpr std::array labels{"Parent", "Geometry", "Skin armature", "Constraint target", "Collider geometry", "Physics material", "Collision filter", "Joint body", "Joint description", "Trigger filter", "Trigger member", "Material slot", "Texture", "Subgraph", "Member system", "Collide system"};
     std::string label{labels[uint8_t(reference.Kind)]};
     if (reference.Kind == FilterCollideSystem && r.get<const ::CollisionFilter>(reference.Owner).Mode == CollideMode::Blocklist) label = "Blocked system";
     if (const auto *list = ReferenceList(r, reference)) {
@@ -312,27 +315,28 @@ std::vector<SceneReference> ReferencesTo(const state::Registry &r, state::Entity
     };
     for (const auto e : r.view<const ::Material>()) visit(e);
     // A geometry's node holds the material slots that each object drawing it shows.
-    for (const auto e : r.view<const NetworkNode>()) {
-        if (!r.all_of<GeometryProcedure>(e)) visit(e);
+    for (const auto e : r.view<const ItemNode>()) {
+        if (!r.all_of<GeometryGraph>(e)) visit(e);
     }
     std::ranges::sort(users);
     return users;
 }
-} // namespace procedure
+} // namespace graph
 
 namespace action::nodes {
-using namespace procedure;
+using namespace graph;
 void Apply(state::Registry &r, const AssignReference &a) {
     if (!ReferenceAccepts(r, a.Reference, a.Source)) return Fail(r, "The source does not match this scene input");
-    const auto [e, source] = HierarchyReferenceTarget(r, a.Reference.Owner, a.Source, a.Reference.Kind == ReferenceKind::Parent || a.Reference.Kind == ReferenceKind::InstanceSource);
+    // An instance's subgraph is its own, and any other reference of a copy is its source's.
+    const auto [e, source] = a.Reference.Kind == ReferenceKind::InstanceSubgraph ? std::pair{a.Reference.Owner, a.Source} : CopyReferenceTarget(r, a.Reference.Owner, a.Source);
     const auto index = a.Reference.Index;
     // A geometry the object stops using is removed once no object or collider uses it.
     const auto release = [&](state::Entity geometry) { r.Resources.emplace<PendingObjectRemovals>().Buffers.emplace(geometry); };
     using enum ReferenceKind;
     switch (a.Reference.Kind) {
-        case InstanceSource:
-            if (source == state::Null) MakeHierarchyIndependent(r, std::array{e});
-            else BindHierarchyInstance(r, e, source);
+        case InstanceSubgraph:
+            if (source == state::Null) MakeInstanceUnique(r, e);
+            else SetInstanceSubgraph(r, e, source);
             return;
         case Parent:
             if (source == state::Null) object::Apply(r, object::ClearParent{e});
@@ -340,16 +344,16 @@ void Apply(state::Registry &r, const AssignReference &a) {
             break;
         case Geometry: {
             // Clearing gives the object its own copy of a geometry another object also draws.
-            const auto drawn = r.get<const Instance>(e).Entity;
+            const auto drawn = r.get<const ObjectGeometry>(e).Entity;
             if (source == state::Null) {
                 bool shared = false;
-                for (const auto [object, instance] : r.view<const Instance>().each()) shared |= object != e && instance.Entity == drawn;
-                if (shared) r.replace<Instance>(e, object::CopyGeometry(r, drawn));
+                for (const auto [object, geometry] : r.view<const ObjectGeometry>().each()) shared |= object != e && geometry.Entity == drawn;
+                if (shared) r.replace<ObjectGeometry>(e, object::CopyGeometry(r, drawn));
                 break;
             }
             const auto geometry = DrawnGeometry(r, source);
             if (!ObjectReferencesAcyclic(r, {}, state::Null, state::Null, std::pair{e, geometry})) return Fail(r, "The geometry assignment would create a dependency cycle");
-            r.replace<Instance>(e, geometry);
+            r.replace<ObjectGeometry>(e, geometry);
             release(drawn);
             break;
         }
@@ -362,7 +366,7 @@ void Apply(state::Registry &r, const AssignReference &a) {
         case PhysicsMaterial: action::Apply(r, Core{UpdateOf<&ColliderMaterial::PhysicsMaterialEntity>(e, source)}); break;
         case CollisionFilter: action::Apply(r, Core{UpdateOf<&ColliderMaterial::CollisionFilterEntity>(e, source)}); break;
         case JointBody: action::Apply(r, Core{UpdateOf<&PhysicsJoint::ConnectedNode>(e, source)}); break;
-        case JointDefinition: action::Apply(r, Core{UpdateOf<&PhysicsJoint::JointDefEntity>(e, source)}); break;
+        case JointDescription: action::Apply(r, Core{UpdateOf<&PhysicsJoint::JointDescriptionEntity>(e, source)}); break;
         case TriggerFilter: action::Apply(r, Core{UpdateOf<&TriggerNodes::CollisionFilterEntity>(e, source)}); break;
         // A list reference replaces its entry, or removes it for no source, and the reference past the last entry adds one.
         case TriggerMember:
@@ -390,49 +394,49 @@ void Apply(state::Registry &r, const AssignReference &a) {
 }
 
 void Apply(state::Registry &r, const ExposePort &a) {
-    SubnetPort port{.Name = a.Name ? *a.Name : std::string{}, .Binding = a.Field};
+    SubgraphPort port{.Name = a.Name ? *a.Name : std::string{}, .Binding = a.Field};
     const bool valid = !port.Name.empty() && action::ReadUpdate(r, a.Field.Entity, a.Field.Component, a.Field.Offset);
-    if (!valid || !r.all_of<NetworkSubnet>(a.Subnet) || !CanExpose(r, NetworkItems(r, a.Subnet), port)) return Fail(r, "Expose a field of an item inside the subnet, through each enclosing subnet");
-    const auto &interface = r.get<const SubnetInterface>(a.Subnet);
+    if (!valid || !r.all_of<SubgraphItems>(a.Subgraph) || !CanExpose(r, GraphItems(r, a.Subgraph), port)) return Fail(r, "Expose a field of an item inside the subgraph, through each enclosing subgraph");
+    const auto &interface = r.get<const SubgraphInterface>(a.Subgraph);
     if (std::ranges::any_of(interface.Ports, [&](const auto &existing) { return port.Binding == existing.Binding; })) return;
-    if (interface.NextId >= UINT16_MAX) return Fail(r, "The subnet has no available port identities");
-    r.patch<SubnetInterface>(a.Subnet, [&](auto &interface) {
+    if (interface.NextId >= UINT16_MAX) return Fail(r, "The subgraph has no available port identities");
+    r.patch<SubgraphInterface>(a.Subgraph, [&](auto &interface) {
         port.Id = uint16_t(interface.NextId++);
         interface.Ports.push_back(std::move(port));
     });
 }
 } // namespace action::nodes
 
-namespace procedure {
+namespace graph {
 void DropUnreachablePorts(state::Registry &r, state::Entity root) {
-    const auto subnets = SortedEntities(r.view<const NetworkSubnet>());
-    const auto order = DependencyOrder(uint32_t(subnets.size()), [&](auto edge) {
-        for (uint32_t child = 0; child < subnets.size(); ++child) {
-            const auto at = std::ranges::lower_bound(subnets, r.get<const NetworkSubnet>(subnets[child]).Parent);
-            if (at != subnets.end() && *at == r.get<const NetworkSubnet>(subnets[child]).Parent) edge(child, uint32_t(at - subnets.begin()));
+    const auto subgraphs = SortedEntities(r.view<const SubgraphItems>());
+    const auto order = DependencyOrder(uint32_t(subgraphs.size()), [&](auto edge) {
+        for (uint32_t child = 0; child < subgraphs.size(); ++child) {
+            const auto at = std::ranges::lower_bound(subgraphs, r.get<const SubgraphItems>(subgraphs[child]).ParentEntity);
+            if (at != subgraphs.end() && *at == r.get<const SubgraphItems>(subgraphs[child]).ParentEntity) edge(child, uint32_t(at - subgraphs.begin()));
         }
     });
     for (const auto index : order) {
-        const auto subnet = subnets[index];
-        if (NetworkRoot(r, subnet) != root) continue;
-        const auto members = NetworkItems(r, subnet);
-        const auto reachable = [&](const SubnetPort &port) { return CanExpose(r, members, port); };
-        if (!std::ranges::all_of(r.get<const SubnetInterface>(subnet).Ports, reachable)) r.patch<SubnetInterface>(subnet, [&](auto &interface) { std::erase_if(interface.Ports, std::not_fn(reachable)); });
+        const auto subgraph = subgraphs[index];
+        if (GraphRoot(r, subgraph) != root) continue;
+        const auto items = GraphItems(r, subgraph);
+        const auto reachable = [&](const SubgraphPort &port) { return CanExpose(r, items, port); };
+        if (!std::ranges::all_of(r.get<const SubgraphInterface>(subgraph).Ports, reachable)) r.patch<SubgraphInterface>(subgraph, [&](auto &interface) { std::erase_if(interface.Ports, std::not_fn(reachable)); });
     }
 }
 
-void SettleNetworks(state::Registry &r, bool restoring) {
-    auto &changes = r.Resources.get<NetworkChanges>();
+void SettleItemGraphs(state::Registry &r, bool restoring) {
+    auto &changes = r.Resources.get<GraphChanges>();
     bool changed = !changes.Pages.empty();
     std::vector<state::Entity> dead;
     for (const auto e : changes.Nodes) {
         if (!r.valid(e)) {
             dead.push_back(e);
         } else if (!HasNode(r, e)) {
-            // A geometry page titles a subnet node by its definition's name, and titles and labels a node by its operation.
-            changed |= r.remove<NetworkNode>(e) > 0u || r.any_of<ProcedureNode, SubnetDefinition>(e);
-        } else if (auto node = DeriveNode(r, e); !r.all_of<NetworkNode>(e) || r.get<const NetworkNode>(e) != node) {
-            r.emplace_or_replace<NetworkNode>(e, std::move(node));
+            // A geometry page titles a subgraph node by its subgraph's name, and titles and labels a node by its operation.
+            changed |= r.remove<ItemNode>(e) > 0u || r.all_of<GraphNode>(e) || r.all_of<Subgraph, GraphNodes>(e);
+        } else if (auto node = DeriveNode(r, e); !r.all_of<ItemNode>(e) || r.get<const ItemNode>(e) != node) {
+            r.emplace_or_replace<ItemNode>(e, std::move(node));
             changed = true;
         }
     }
@@ -443,25 +447,25 @@ void SettleNetworks(state::Registry &r, bool restoring) {
     if (!changes.Cells.empty()) ++changes.CellsRevision;
     const bool fields = !changes.Fields.empty();
     for (auto *set : {&changes.Nodes, &changes.Pages, &changes.Cells, &changes.Fields}) set->clear();
-    // A restore brings back cells, members and ports that already match its entities.
+    // A restore brings back cells, items and ports that already match its entities.
     // A pass that destroyed no entity and no component a port can address leaves them as they are.
     if (restoring || (dead.empty() && !fields)) return;
     SortUnique(dead);
     const auto is_dead = [&](state::Entity item) { return std::ranges::binary_search(dead, item); };
-    for (const auto network : SortedEntities(r.view<const NetworkLayout>())) {
-        const auto &cells = r.get<const NetworkLayout>(network).Cells;
-        if (std::ranges::none_of(cells, is_dead, &NetworkCell::Item)) continue;
-        if (std::ranges::all_of(cells, is_dead, &NetworkCell::Item)) r.remove<NetworkLayout>(network);
-        else r.patch<NetworkLayout>(network, [&](auto &layout) { std::erase_if(layout.Cells, [&](const auto &cell) { return is_dead(cell.Item); }); });
+    for (const auto graph : SortedEntities(r.view<const GraphLayout>())) {
+        const auto &cells = r.get<const GraphLayout>(graph).Cells;
+        if (std::ranges::none_of(cells, is_dead, &GraphCell::Item)) continue;
+        if (std::ranges::all_of(cells, is_dead, &GraphCell::Item)) r.remove<GraphLayout>(graph);
+        else r.patch<GraphLayout>(graph, [&](auto &layout) { std::erase_if(layout.Cells, [&](const auto &cell) { return is_dead(cell.Item); }); });
     }
-    for (const auto subnet : SortedEntities(r.view<const NetworkSubnet>())) {
-        if (std::ranges::any_of(r.get<const NetworkSubnet>(subnet).Members, is_dead)) r.patch<NetworkSubnet>(subnet, [&](auto &edited) { std::erase_if(edited.Members, is_dead); });
+    for (const auto subgraph : SortedEntities(r.view<const SubgraphItems>())) {
+        if (std::ranges::any_of(r.get<const SubgraphItems>(subgraph).Items, is_dead)) r.patch<SubgraphItems>(subgraph, [&](auto &edited) { std::erase_if(edited.Items, is_dead); });
         // A value port lasts while its field exists.
-        const auto exists = [&](const SubnetPort &port) {
+        const auto exists = [&](const SubgraphPort &port) {
             const auto &field = std::get<PromotedField>(port.Binding);
             return bool(action::ReadUpdate(r, field.Entity, field.Component, field.Offset));
         };
-        if (!std::ranges::all_of(r.get<const SubnetInterface>(subnet).Ports, exists)) r.patch<SubnetInterface>(subnet, [&](auto &interface) { std::erase_if(interface.Ports, std::not_fn(exists)); });
+        if (!std::ranges::all_of(r.get<const SubgraphInterface>(subgraph).Ports, exists)) r.patch<SubgraphInterface>(subgraph, [&](auto &interface) { std::erase_if(interface.Ports, std::not_fn(exists)); });
     }
 }
-} // namespace procedure
+} // namespace graph

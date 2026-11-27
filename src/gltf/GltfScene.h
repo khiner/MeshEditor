@@ -46,7 +46,7 @@ struct GltfNode {
     bool EmptyName{};
 };
 
-// Source order of a scene, physics material, collision filter, or joint definition.
+// Source order of a scene, physics material, collision filter, or joint description.
 struct SourceIndex {
     uint32_t Value{};
 };

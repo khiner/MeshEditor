@@ -7,7 +7,7 @@
 #include "metal/MetalCpp.h"
 #include "numeric/MatrixMath.h"
 #include "render/GpuBuffers.h"
-#include "render/Instance.h"
+#include "render/ObjectGeometry.h"
 #include "render/Pipelines.h"
 #include "state/Registry.h"
 #include <Metal/MTL4AccelerationStructure.hpp>
@@ -83,8 +83,7 @@ void RayTracingScene::CapturePositions(mtl::PassChain &chain, const GpuBuffers &
     for (size_t first = 0; first < out.PositionBlocks.size();) {
         size_t end = first + 1;
         while (end < out.PositionBlocks.size() && out.PositionBlocks[end] == out.PositionBlocks[end - 1] + 1u) ++end;
-        copy->copyFromBuffer(*source, size_t(out.PositionBlocks[first]) * block_bytes,
-            *out.PreviousPositions, payload + first * block_bytes, (end - first) * block_bytes);
+        copy->copyFromBuffer(*source, size_t(out.PositionBlocks[first]) * block_bytes, *out.PreviousPositions, payload + first * block_bytes, (end - first) * block_bytes);
         first = end;
     }
     out.PoseSnapshotValid = true;
@@ -106,7 +105,10 @@ RayTracingMaterials RayTracingMaterialUsage(const MeshStore &meshes, const GpuBu
     if (states.empty()) return {};
     const auto instances = buffers.Instances.RecordBuffer.GetSpan<InstanceRecord>();
     const auto materials = buffers.MaterialsFor(view);
-    enum class Casters { None, SingleSided, DoubleSided, Complex };
+    enum class Casters { None,
+                         SingleSided,
+                         DoubleSided,
+                         Complex };
     std::map<uint32_t, Casters> checked;
     bool single_sided = false, double_sided = false;
     for (const auto slot : buffers.GpuInstanceSlots.GetSpan<uint32_t>()) {
@@ -133,7 +135,8 @@ RayTracingMaterials RayTracingMaterialUsage(const MeshStore &meshes, const GpuBu
             const bool opaque = material.AlphaMode == MaterialAlphaMode::Opaque && (material.Unlit || material.Transmission.Factor == 0.f);
             usage.Opaque |= opaque;
             if (classify_casters) {
-                const auto kind = !opaque ? Casters::Complex : material.DoubleSided ? Casters::DoubleSided : Casters::SingleSided;
+                const auto kind = !opaque ? Casters::Complex : material.DoubleSided ? Casters::DoubleSided :
+                                                                                      Casters::SingleSided;
                 entry->second = entry->second == Casters::None || entry->second == kind ? kind : Casters::Complex;
             }
         });

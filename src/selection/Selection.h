@@ -29,7 +29,7 @@ state::Entity FindArmatureObject(const state::Registry &, state::Entity);
 // Returns null if no bone is active.
 state::Entity FindActiveBone(const state::Registry &);
 
-// The mean world position of the selected vertices of each mesh's transformable primary instance.
+// The mean world position of the selected vertices of each mesh's transformable primary object.
 vec3 EditSelectionCenter(const state::Registry &);
 // The pivot a transform of the current selection turns and scales about: the selection's center, with the active target's rotation.
 StartPivot TransformPivot(const state::Registry &);
@@ -68,5 +68,5 @@ struct ElementHit {
 std::vector<SelectionHit> ResolveHits(state::Registry &, std::span<const state::Entity> raw, bool bone_mode, bool merge_parts = false);
 
 namespace selection {
-using PrimaryEditInstanceMap = std::unordered_map<state::Entity, state::Entity>;
+using PrimaryEditObjectMap = std::unordered_map<state::Entity, state::Entity>;
 } // namespace selection

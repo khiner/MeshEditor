@@ -8,9 +8,9 @@
 #include "TransformMath.h"
 #include "mesh/MeshPipelines.h"
 #include "mesh/Neighborhood.h"
-#include "render/Instance.h"
 #include "render/MeshletSpatial.h"
-#include "scene/HierarchyInstance.h"
+#include "render/ObjectGeometry.h"
+#include "scene/Instance.h"
 #include "scene/SceneGraph.h"
 
 inline const ModalSoundControls &ModalControls(const state::Registry &r) {
@@ -20,14 +20,14 @@ inline const ModalSoundControls &ModalControls(const state::Registry &r) {
 }
 
 inline bool IsModalSounding(const state::Registry &r, state::Entity e) {
-    return r.valid(e) && r.all_of<ModalModes>(HierarchySource(r, e)) && r.all_of<SoundVertices, SoundVerticesModel>(e) && r.get<SoundVerticesModel>(e) == SoundVerticesModel::Modal;
+    return r.valid(e) && r.all_of<ModalModes>(SourceOfCopy(r, e)) && r.all_of<SoundVertices, SoundVerticesModel>(e) && r.get<SoundVerticesModel>(e) == SoundVerticesModel::Modal;
 }
 
 // Mean surface curvature in 1/m where a contact touches a node, read from that node's own mesh at `world_point`.
 // Empty when the node has no mesh.
 inline std::optional<double> SurfaceCurvature(const state::Registry &r, state::Entity node, vec3 world_point) {
     if (!r.valid(node)) return std::nullopt;
-    const auto *inst = r.try_get<const Instance>(node);
+    const auto *inst = r.try_get<const ObjectGeometry>(node);
     const auto *owner = inst ? TryRecordOf(r, inst->Entity) : nullptr;
     if (!owner || owner->SpatialRoot == InvalidOffset) return std::nullopt;
     const auto &wt = *WorldTransformOf(r, node);
@@ -82,7 +82,7 @@ inline ContactNodes ResolveContactNodes(const state::Registry &r, state::Entity 
         NearestNodeWith(r, collider, body, [&r](state::Entity e) { return r.all_of<ModalModes>(e); }),
         ContactSurfaceNode(r, collider, body),
         NearestNodeWith(r, collider, body, [&r](state::Entity e) {
-            const auto *inst = r.try_get<const Instance>(e);
+            const auto *inst = r.try_get<const ObjectGeometry>(e);
             const auto *owner = inst ? TryRecordOf(r, inst->Entity) : nullptr;
             return owner && owner->SpatialRoot != InvalidOffset;
         }),

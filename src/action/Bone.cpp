@@ -4,7 +4,7 @@
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
 #include "object/ObjectOps.h"
-#include "scene/HierarchyInstance.h"
+#include "scene/Instance.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
 #include "selection/Selection.h"
@@ -34,12 +34,15 @@ void RebuildBoneStructure(state::Registry &r, state::Entity arm_data_entity) {
     r.edit<LastEvaluatedFrame>(state::Document).Value = -1;
 }
 
+// The bone an action edits: the given bone, or else the active bone, as the bone a copy stands for.
+state::Entity EditedBone(const state::Registry &r, state::Entity bone) { return SourceOfCopy(r, bone != state::Null ? bone : FindActiveBone(r)); }
+
 // `display_scales` contains every bone's display scale, in bone order.
-state::Entity CreateSingleBoneInstance(state::Registry &r, state::Entity arm_obj_entity, BoneId bone_id, std::span<const float> display_scales) {
+state::Entity AddBoneEntity(state::Registry &r, state::Entity arm_obj_entity, BoneId bone_id, std::span<const float> display_scales) {
     const auto data = r.get<const ArmatureObject>(arm_obj_entity).Entity;
     const auto &armature = r.get<const Armature>(data);
     for (const auto object : SortedEntities(r.view<const ArmatureObject>())) {
-        if (r.get<const ArmatureObject>(object).Entity != data || r.all_of<HierarchyMember>(object)) continue;
+        if (r.get<const ArmatureObject>(object).Entity != data || r.all_of<CopyOf>(object)) continue;
         auto &arm_obj = r.edit<ArmatureObject>(object);
         for (uint32_t index = arm_obj.BoneEntities.size(); index < armature.Bones.size(); ++index) {
             const auto parent = armature.Bones[index].ParentIndex;
@@ -49,11 +52,11 @@ state::Entity CreateSingleBoneInstance(state::Registry &r, state::Entity arm_obj
             arm_obj.BoneEntities.push_back(bone);
         }
     }
-    if (r.all_of<HierarchyMember>(arm_obj_entity)) PublishHierarchyInstances(r);
+    if (r.all_of<CopyOf>(arm_obj_entity)) PublishSubgraphInstances(r);
     return r.get<const ArmatureObject>(arm_obj_entity).BoneEntities[*armature.FindBoneIndex(bone_id)];
 }
 
-void RemoveBoneInstances(state::Registry &r, state::Entity object, const Armature &armature, std::span<const uint32_t> indices) {
+void RemoveBoneEntities(state::Registry &r, state::Entity object, const Armature &armature, std::span<const uint32_t> indices) {
     auto &arm_obj = r.edit<ArmatureObject>(object);
     std::vector<state::Entity> destroyed;
     for (const auto index : indices) {
@@ -100,7 +103,7 @@ void Apply(state::Registry &r, const Action &action) {
                 const auto new_id = armature.AddBone("Bone", {}, {.P = (Conjugate(Normalize(arm_wt.R)) * -arm_wt.P) / arm_wt.S});
                 RebuildBoneStructure(r, r.get<ArmatureObject>(arm_obj_entity).Entity);
 
-                const auto bone_entity = CreateSingleBoneInstance(r, arm_obj_entity, new_id, ComputeBoneDisplayScales(armature));
+                const auto bone_entity = AddBoneEntity(r, arm_obj_entity, new_id, ComputeBoneDisplayScales(armature));
                 SelectBone(r, bone_entity);
                 r.emplace_or_replace<BoneSelection>(bone_entity, false, true, false);
             },
@@ -140,13 +143,13 @@ void Apply(state::Registry &r, const Action &action) {
 
                 const auto display_scales = ComputeBoneDisplayScales(armature);
                 for (const auto id : new_bone_ids) {
-                    const auto bone_entity = CreateSingleBoneInstance(r, arm_obj_entity, id, display_scales);
-                    r.replace<BoneDisplayScale>(HierarchySource(r, bone_entity), 0.f);
+                    const auto bone_entity = AddBoneEntity(r, arm_obj_entity, id, display_scales);
+                    r.replace<BoneDisplayScale>(SourceOfCopy(r, bone_entity), 0.f);
                     r.emplace<BoneSelection>(bone_entity, false, true, false);
                     r.emplace_or_replace<BoneActive>(bone_entity);
                 }
                 for (const auto idx : updated_parent_indices) {
-                    r.replace<BoneDisplayScale>(HierarchySource(r, arm_obj.BoneEntities[idx]), display_scales[idx]);
+                    r.replace<BoneDisplayScale>(SourceOfCopy(r, arm_obj.BoneEntities[idx]), display_scales[idx]);
                 }
                 r.emplace_or_replace<StartScreenTransform>(state::Document, TransformGizmo::TransformType::Translate);
             },
@@ -184,8 +187,8 @@ void Apply(state::Registry &r, const Action &action) {
                 const auto display_scales = ComputeBoneDisplayScales(armature);
                 state::Entity last_bone{};
                 for (const auto &[orig_entity, new_id] : duplicated) {
-                    last_bone = CreateSingleBoneInstance(r, arm_obj_entity, new_id, display_scales);
-                    r.replace<BoneDisplayScale>(HierarchySource(r, last_bone), r.get<const BoneDisplayScale>(orig_entity).Value);
+                    last_bone = AddBoneEntity(r, arm_obj_entity, new_id, display_scales);
+                    r.replace<BoneDisplayScale>(SourceOfCopy(r, last_bone), r.get<const BoneDisplayScale>(orig_entity).Value);
                     r.emplace<BoneSelection>(last_bone);
                 }
                 r.emplace<BoneActive>(last_bone);
@@ -195,7 +198,7 @@ void Apply(state::Registry &r, const Action &action) {
             [&](const ClearSelectedTransforms &a) {
                 if (FindArmatureObject(r, FindActiveEntity(r)) == state::Null) return;
                 for (const auto b : r.view<const BoneSelection, const BoneDelta>()) {
-                    r.patch<BoneDelta>(HierarchySource(r, b), [&](auto &delta) {
+                    r.patch<BoneDelta>(SourceOfCopy(r, b), [&](auto &delta) {
                         if (a.Position) delta.Value.P = {};
                         if (a.Rotation) delta.Value.R = {};
                         if (a.Scale) delta.Value.S = vec3{1};
@@ -214,25 +217,25 @@ void Apply(state::Registry &r, const Action &action) {
 
                 const auto data = arm_obj.Entity;
                 for (const auto object : SortedEntities(r.view<const ArmatureObject>())) {
-                    if (r.get<const ArmatureObject>(object).Entity == data && !r.all_of<HierarchyMember>(object)) RemoveBoneInstances(r, object, armature, to_delete);
+                    if (r.get<const ArmatureObject>(object).Entity == data && !r.all_of<CopyOf>(object)) RemoveBoneEntities(r, object, armature, to_delete);
                 }
                 for (const auto idx : to_delete) armature.RemoveBone(armature.Bones[idx].Id);
                 RebuildBoneStructure(r, data);
                 ::Select(r, arm_obj_entity);
             },
             [&](const SetEditHeadTailRoll &a) {
-                const auto e = HierarchySource(r, a.BoneEntity != state::Null ? a.BoneEntity : FindActiveBone(r));
+                const auto e = EditedBone(r, a.BoneEntity);
                 r.patch<PosedLocal>(e, [&](auto &posed) { posed.Value.P = a.LocalP; posed.Value.R = a.LocalR; });
                 r.replace<BoneDisplayScale>(e, a.DisplayScale);
             },
             [&](const SetConstraintTarget &a) {
-                r.patch<BoneConstraints>(HierarchySource(r, a.BoneEntity != state::Null ? a.BoneEntity : FindActiveBone(r)), [&](auto &cs) { cs.Stack[a.Index].TargetEntity = a.Target; });
+                r.patch<BoneConstraints>(EditedBone(r, a.BoneEntity), [&](auto &cs) { cs.Stack[a.Index].TargetEntity = a.Target; });
             },
             [&](const SetConstraintInfluence &a) {
-                r.patch<BoneConstraints>(HierarchySource(r, a.BoneEntity != state::Null ? a.BoneEntity : FindActiveBone(r)), [&](auto &cs) { cs.Stack[a.Index].Influence = a.Influence; });
+                r.patch<BoneConstraints>(EditedBone(r, a.BoneEntity), [&](auto &cs) { cs.Stack[a.Index].Influence = a.Influence; });
             },
             [&](const BakeConstraintChildOfInverse &a) {
-                const auto bone = HierarchySource(r, a.BoneEntity != state::Null ? a.BoneEntity : FindActiveBone(r));
+                const auto bone = EditedBone(r, a.BoneEntity);
                 r.patch<BoneConstraints>(bone, [&](auto &cs) {
                     const auto target = cs.Stack[a.Index].TargetEntity;
                     const auto *twt = WorldTransformOf(r, target);
@@ -242,13 +245,13 @@ void Apply(state::Registry &r, const Action &action) {
                 });
             },
             [&](const ClearConstraintChildOfInverse &a) {
-                r.patch<BoneConstraints>(HierarchySource(r, a.BoneEntity != state::Null ? a.BoneEntity : FindActiveBone(r)), [&](auto &cs) { std::get<ChildOfData>(cs.Stack[a.Index].Data).InverseMatrix = I4; });
+                r.patch<BoneConstraints>(EditedBone(r, a.BoneEntity), [&](auto &cs) { std::get<ChildOfData>(cs.Stack[a.Index].Data).InverseMatrix = I4; });
             },
             [&](const DeleteConstraint &a) {
-                r.patch<BoneConstraints>(HierarchySource(r, a.BoneEntity != state::Null ? a.BoneEntity : FindActiveBone(r)), [&](auto &cs) { cs.Stack.erase(cs.Stack.begin() + a.Index); });
+                r.patch<BoneConstraints>(EditedBone(r, a.BoneEntity), [&](auto &cs) { cs.Stack.erase(cs.Stack.begin() + a.Index); });
             },
             [&](const AddConstraint &a) {
-                const auto e = HierarchySource(r, a.BoneEntity != state::Null ? a.BoneEntity : FindActiveBone(r));
+                const auto e = EditedBone(r, a.BoneEntity);
                 if (!r.all_of<BoneConstraints>(e)) r.emplace<BoneConstraints>(e);
                 r.patch<BoneConstraints>(e, [&](auto &cs) {
                     cs.Stack.emplace_back(a.Kind == BoneConstraintKind::ChildOf ? BoneConstraint{.Data = ChildOfData{}} : BoneConstraint{.Data = CopyTransformsData{}});

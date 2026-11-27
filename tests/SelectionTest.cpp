@@ -1,5 +1,5 @@
 #include "mesh/MeshComponents.h"
-#include "render/Instance.h"
+#include "render/ObjectGeometry.h"
 #include "scene/Entity.h"
 #include "selection/SelectionState.h"
 
@@ -9,29 +9,29 @@
 namespace {
 const boost::ut::suite selection_tests = [] {
     using namespace boost::ut;
-    "primary edit instance is independent of component insertion order"_test = [] {
+    "primary edit object is independent of component insertion order"_test = [] {
         std::array order{0, 1, 2};
         do {
             state::Registry r;
             r.emplace<Scene>(r.create());
             const auto mesh = r.create();
-            const std::array instances{r.create(), r.create(), r.create()};
+            const std::array objects{r.create(), r.create(), r.create()};
             for (const auto i : order) {
-                const auto e = instances[i];
-                r.emplace<Instance>(e, mesh);
+                const auto e = objects[i];
+                r.emplace<ObjectGeometry>(e, mesh);
                 r.emplace<Selected>(e);
                 EmplaceObject(r, e, ObjectType::Mesh);
                 r.emplace<RenderInstance>(e);
             }
-            expect(ComputeEditPrimaries(r).All.at(mesh) == instances[0]);
-            r.emplace<Active>(instances[2]);
-            expect(ComputeEditPrimaries(r).All.at(mesh) == instances[2]);
-            r.emplace<ScaleLocked>(instances[2]);
+            expect(ComputeEditPrimaries(r).All.at(mesh) == objects[0]);
+            r.emplace<Active>(objects[2]);
+            expect(ComputeEditPrimaries(r).All.at(mesh) == objects[2]);
+            r.emplace<ScaleLocked>(objects[2]);
             const auto primaries = ComputeEditPrimaries(r);
-            expect(primaries.All.at(mesh) == instances[2]);
-            expect(primaries.Transformable.at(mesh) == instances[0]);
-            r.remove<Selected>(instances[0]);
-            expect(ComputeEditPrimaries(r).Transformable.at(mesh) == instances[1]);
+            expect(primaries.All.at(mesh) == objects[2]);
+            expect(primaries.Transformable.at(mesh) == objects[0]);
+            r.remove<Selected>(objects[0]);
+            expect(ComputeEditPrimaries(r).Transformable.at(mesh) == objects[1]);
         } while (std::next_permutation(order.begin(), order.end()));
     };
 };

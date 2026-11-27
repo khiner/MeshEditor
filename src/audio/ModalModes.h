@@ -29,13 +29,13 @@ constexpr auto serialize(auto &archive, const ModalModes &modes) {
     return archive(modes.Freqs, modes.T60s, modes.Shapes, modes.Vertices, modes.Positions, modes.Indices, modes.OriginalFundamentalFreq, modes.BakedScale);
 }
 
-// Per-instance
+// Per-object
 struct ModalGain {
     float Value{1.f};
 };
 template<> inline constexpr field::SpecTable<ModalGain> Specs<ModalGain>{{&ModalGain::Value, {.Min = 0, .Max = 2, .Label = "Gain", .Help = "Output gain of the object's modes"}}};
 
-// Per-instance synth tuning.
+// Per-object synth tuning.
 struct ModalTuning {
     std::optional<float> FundamentalFreq{}; // Target frequency of the first mode, Hz. All modes shift proportionally. Empty keeps the baked tuning.
     float T60Scale{1.f}; // Multiplies every mode's T60.

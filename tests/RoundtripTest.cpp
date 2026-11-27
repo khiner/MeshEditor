@@ -15,12 +15,13 @@
 #include "gltf/GltfScene.h"
 #include "gltf/SourceTexture.h"
 #include "mesh/MeshComponents.h"
+#include "object/ObjectOps.h"
 #include "render/GpuBuffers.h"
-#include "render/Instance.h"
 #include "render/MaterialComponents.h"
+#include "render/ObjectGeometry.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
-#include "scene/HierarchyInstance.h"
+#include "scene/Instance.h"
 #include "scene/SceneGraph.h"
 #include "snapshot/Workspace.h"
 
@@ -814,8 +815,8 @@ bool Load(const fs::path &path, SceneFixture &fx) {
 }
 
 state::Entity FirstMeshNode(state::Registry &r) {
-    for (auto e : r.view<const Instance, const GltfNode>()) {
-        if (HasMesh(r, r.get<const Instance>(e).Entity)) return e;
+    for (auto e : r.view<const ObjectGeometry, const GltfNode>()) {
+        if (HasMesh(r, r.get<const ObjectGeometry>(e).Entity)) return e;
     }
     return state::Null;
 }
@@ -840,7 +841,7 @@ void CheckCustomAttributes(state::Registry &r, bool integer_ids) {
     const auto node = FirstMeshNode(r);
     expect(fatal(node != state::Null));
     const auto &meshes = r.Resources.get<const MeshStore>();
-    const auto id = *DrawnStoreId(r, r.get<const Instance>(node).Entity);
+    const auto id = *DrawnStoreId(r, r.get<const ObjectGeometry>(node).Entity);
     const Mesh mesh{meshes, id};
     expect(mesh.VertexCount() == 4u);
     const auto find = [&](std::string_view name, AttributeDomain domain, AttributeType type) {
@@ -939,14 +940,14 @@ const FixtureCheck FixtureChecks[]{
          expect(fatal(node != state::Null));
          expect(std::ranges::equal(r.get<const ContactSurface>(node).Profile, std::array{0.f, 1e-6f, -1e-6f, 0.5e-6f}));
 #ifdef SURFACE_AUDIO
-         const auto mesh_entity = r.get<const Instance>(node).Entity;
+         const auto mesh_entity = r.get<const ObjectGeometry>(node).Entity;
          UpdateSurfaceRelief(r, node, mesh_entity, true);
          const auto *relief = r.try_get<const SurfaceRelief>(node);
          expect(fatal(relief != nullptr)) << "no mesoscale relief derived from the normal map";
          expect(relief->Track->Spacing > 1e-3f && relief->Track->Spacing < 1e-2f) << "texel size";
          const auto spacing = relief->Track->Spacing, rms = relief->Track->Rms;
-         for (auto e : r.view<const Instance>()) {
-             if (r.get<const Instance>(e).Entity == mesh_entity) r.patch<Transform>(e, [](Transform &t) { t.S = vec3{3.f}; });
+         for (auto e : r.view<const ObjectGeometry>()) {
+             if (r.get<const ObjectGeometry>(e).Entity == mesh_entity) r.patch<Transform>(e, [](Transform &t) { t.S = vec3{3.f}; });
          }
          ProcessComponentEvents(r);
          UpdateSurfaceRelief(r, node, mesh_entity, true);
@@ -962,7 +963,7 @@ const FixtureCheck FixtureChecks[]{
          using namespace boost::ut;
          const auto node = NodeWith<ContactSurface>(r);
          expect(fatal(node != state::Null));
-         const auto mesh_entity = r.get<const Instance>(node).Entity;
+         const auto mesh_entity = r.get<const ObjectGeometry>(node).Entity;
          const auto inherited = gltf::MeshMaterialNormalMap(r, mesh_entity);
          const auto expected_image = gltf::TextureImageIndex(r, 2);
          expect(fatal(inherited.has_value() && expected_image.has_value())) << "material normal map not resolved";
@@ -1000,8 +1001,11 @@ int main(int argc, const char **argv) {
             auto root = *source.R.view<const ArmatureObject>().begin();
             while (ParentOrNull(source.R, root) != state::Null) root = ParentOrNull(source.R, root);
             original_skins = source.R.view<const ArmatureModifier>().size();
-            const auto instance = CreateHierarchyInstance(source.R, root, Transform{.P = {5, 0, 0}});
-            expect(instance != state::Null) << fatal;
+            // An instance of a scene subgraph that holds the rig.
+            auto items = graph::GraphItems(source.R, FrameScene(source.R));
+            std::erase_if(items, [&, closure = ObjectClosure(source.R, root)](state::Entity e) { return !std::ranges::binary_search(closure, e); });
+            action::nodes::Apply(source.R, action::nodes::Action{action::nodes::Collapse{FrameScene(source.R), std::move(items)}});
+            AddInstance(source.R, *source.R.view<const graph::SubgraphItems>().begin(), {.Transform = {.P = {5, 0, 0}}});
             ProcessComponentEvents(source.R);
             expect(source.R.view<const ArmatureModifier>().size() == original_skins * 2);
         });

@@ -2,11 +2,9 @@
 
 #include "state/Slot.h"
 
-struct HierarchyInstance;
-struct HierarchyGeometry;
-struct HierarchyMember;
-struct HierarchyDefinition;
-struct HierarchyChanges;
+struct Instance;
+struct CopyOf;
+struct InstanceChanges;
 struct Orthographic;
 struct Perspective;
 struct Path;
@@ -27,7 +25,7 @@ struct WorldTransform;
 struct PosedLocal;
 struct UnkeyedPose;
 
-using SceneSchema = state::Schema<state::SceneBase, state::SceneCount, Orthographic, Perspective, Path, EntityNameCounts, Name, Scene, SceneMembership, Selected, Active, MeshActiveElement, SubElementOf, ScaleLocked, ObjectKind, SceneChanges, SceneParent, SceneChildren, WorldTransform, PosedLocal, HierarchyInstance, HierarchyMember, HierarchyDefinition, HierarchyChanges, HierarchyGeometry, UnkeyedPose>;
+using SceneSchema = state::Schema<state::SceneBase, state::SceneCount, Orthographic, Perspective, Path, EntityNameCounts, Name, Scene, SceneMembership, Selected, Active, MeshActiveElement, SubElementOf, ScaleLocked, ObjectKind, SceneChanges, SceneParent, SceneChildren, WorldTransform, PosedLocal, Instance, CopyOf, InstanceChanges, UnkeyedPose>;
 template<typename T>
     requires SceneSchema::Has<T>
 inline constexpr state::TypeId state::Slot<T> = SceneSchema::Of<T>();

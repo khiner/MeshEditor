@@ -6,6 +6,8 @@
 #include "action/Build.h"
 #include "action/Errors.h"
 #include "editor/Engine.h"
+#include "graph/BuiltinSubgraphs.h"
+#include "graph/Graph.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
 #include "mesh/MeshPipelines.h"
@@ -14,10 +16,8 @@
 #include "mesh/SpatialFaceWork.h"
 #include "metal/MetalCpp.h"
 #include "object/ObjectOps.h"
-#include "procedure/Macros.h"
-#include "procedure/Procedure.h"
 #include "project/Recording.h"
-#include "render/Instance.h"
+#include "render/ObjectGeometry.h"
 #include "render/Textures.h"
 #include "selection/SelectionGpu.h"
 #include "viewport/InteractionComponents.h"
@@ -105,7 +105,7 @@ struct EditSpec {
     void (*Stage)(uint32_t i, bool all) = nullptr;
     std::span<const uint16_t> Kinds{};
 };
-constexpr auto Smooth = procedure::KindOf<action::mesh::SmoothVertices>, Fatten = procedure::KindOf<action::mesh::ShrinkFatten>, Poke = procedure::KindOf<action::mesh::Poke>;
+constexpr auto Smooth = graph::KindOf<action::mesh::SmoothVertices>, Fatten = graph::KindOf<action::mesh::ShrinkFatten>, Poke = graph::KindOf<action::mesh::Poke>;
 constexpr std::array PositionChain{Smooth, Fatten, Smooth, Fatten, Smooth, Fatten, Smooth, Fatten};
 constexpr std::array TopologyChain{Poke, Poke, Poke};
 constexpr std::array MixedChain{Smooth, Poke, Fatten, Smooth, Poke, Fatten};
@@ -135,9 +135,9 @@ constexpr std::array EditSpecs{
     EditSpec{SingleEdit::Plain, "split-edge", Element::Edge, [] { return Edit(action::mesh::Split{}); }},
     EditSpec{SingleEdit::Plain, "split-face", Element::Face, [] { return Edit(action::mesh::Split{}); }},
     EditSpec{SingleEdit::Plain, "subdivide-edge", Element::Edge, [] { return Edit(action::mesh::Subdivide{.Cuts = 1u}); }},
-    EditSpec{SingleEdit::Plain, "loop-cut", Element::Edge, [] { return Edit(action::nodes::AppendMacro{procedure::LoopCutMacro, {{1u, 0u, 0u, 0u}}}); }},
+    EditSpec{SingleEdit::Plain, "loop-cut", Element::Edge, [] { return Edit(action::nodes::AppendSubgraphNode{graph::BuiltinSubgraphId::LoopCut, {{1u, 0u, 0u, 0u}}}); }},
     EditSpec{SingleEdit::FillFace, "fill-face", Element::Edge, [] { return Edit(action::mesh::Fill{}); }},
-    EditSpec{SingleEdit::FillHoles, "fill-holes", Element::Edge, [] { return Edit(action::nodes::AppendMacro{procedure::FillHolesMacro, {{4u, 0u, 0u, 0u}}}); }},
+    EditSpec{SingleEdit::FillHoles, "fill-holes", Element::Edge, [] { return Edit(action::nodes::AppendSubgraphNode{graph::BuiltinSubgraphId::FillHoles, {{4u, 0u, 0u, 0u}}}); }},
     EditSpec{SingleEdit::Bridge, "bridge", Element::Edge, [] { return Edit(action::mesh::BridgeEdgeLoops{}); }},
     EditSpec{SingleEdit::GridFill, "grid-fill", Element::Edge, [] { return Edit(action::mesh::GridFill{2u}); }},
     EditSpec{SingleEdit::SpaceEvenly, "space-evenly", Element::Edge, [] { return Edit(action::mesh::SpaceEvenly{}); }},
@@ -320,9 +320,9 @@ Result PlaceScene(Session &s) {
     Note(s, "Preparing benchmark scene...");
     const auto load_begin = std::chrono::steady_clock::now();
     const auto place = [&](MeshSource source) {
-        const auto [entity, instance] = AddMesh(r, CreateMesh(r, std::move(source)).StoreId, MeshInstanceCreateInfo{});
+        const auto [entity, object] = AddMesh(r, CreateMesh(r, std::move(source)).StoreId, MeshObjectCreateInfo{});
         p.Settle();
-        project::Do(p, action::MakeAction(action::selection::Select{instance}));
+        project::Do(p, action::MakeAction(action::selection::Select{object}));
     };
     if (scene.empty() && single_edit == SingleEdit::BeautifyFaces) {
         MeshSource source;
@@ -377,14 +377,14 @@ Result PlaceScene(Session &s) {
         auto &uvs = source.Attrs.TexCoords0.emplace();
         for (const auto position : source.Data.Positions) uvs.push_back({position.x, position.y});
         place(std::move(source));
-    } else if (scene.empty()) project::Do(p, action::MakeAction(action::object::AddMeshPrimitive{primitive::UVSphere{.Slices = slices, .Stacks = slices / 2}, std::make_unique<MeshInstanceCreateInfo>()}));
+    } else if (scene.empty()) project::Do(p, action::MakeAction(action::object::AddMeshPrimitive{primitive::UVSphere{.Slices = slices, .Stacks = slices / 2}, std::make_unique<MeshObjectCreateInfo>()}));
     else {
         project::Do(p, action::MakeAction(action::io::LoadGltf{scene}));
         state::Entity largest = state::Null;
         uint32_t count = 0u;
-        for (const auto [object, instance] : r.view<const Instance>().each()) {
-            if (!HasMesh(r, instance.Entity)) continue;
-            const auto mesh = GetMesh(r, instance.Entity);
+        for (const auto [object, geometry] : r.view<const ObjectGeometry>().each()) {
+            if (!HasMesh(r, geometry.Entity)) continue;
+            const auto mesh = GetMesh(r, geometry.Entity);
             if (mesh.FaceCount() > count) {
                 largest = object;
                 count = mesh.FaceCount();
@@ -397,7 +397,7 @@ Result PlaceScene(Session &s) {
     return {};
 }
 
-// Times a gesture that changes a parameter of the first or last node of a chain appended to the mesh's procedure.
+// Times a gesture that changes a parameter of the first or last node of a chain appended to the mesh's graph.
 Result BenchChain(Session &s) {
     using namespace action::mesh;
     auto &r = s.R;
@@ -405,15 +405,15 @@ Result BenchChain(Session &s) {
     s.Entity = GetActiveMeshEntity(r);
     std::vector<state::Entity> nodes;
     for (const auto kind : s.Config.Edit->Kinds) {
-        const auto display = r.get<const procedure::GeometryProcedure>(s.Entity).DisplayNode;
-        const auto result = *procedure::ResultSocket(r, display);
+        const auto display = r.get<const graph::GeometryGraph>(s.Entity).DisplayNode;
+        const auto result = *graph::ResultSocket(r, display);
         project::Do(p, action::MakeAction(action::nodes::AddNode{s.Entity, action::nodes::KindNode{kind}}));
-        nodes.push_back(r.get<const procedure::NetworkNodes>(s.Entity).Last);
+        nodes.push_back(r.get<const graph::GraphNodes>(s.Entity).Last);
         project::Do(p, action::MakeAction(action::nodes::Link{s.Entity, display, result, nodes.back(), 0u}));
         project::Do(p, action::MakeAction(action::nodes::SetDisplay{s.Entity, nodes.back()}));
     }
     const auto node = s.Config.Selection == "first" ? nodes.front() : nodes.back();
-    const auto kind = r.get<const procedure::ProcedureNode>(node).Kind;
+    const auto kind = r.get<const graph::GraphNode>(node).Kind;
     const auto counts = Counts(s);
     s.Vertices = counts[0];
     s.Selected = s.Faces = counts[1];

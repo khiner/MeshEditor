@@ -4,13 +4,13 @@
 #include "animation/AnimationChanges.h"
 #include "animation/Clips.h"
 #include "armature/ArmatureComponents.h"
+#include "graph/Graph.h"
 #include "mesh/MeshChanges.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
-#include "procedure/Procedure.h"
 #include "render/GpuSceneState.h"
-#include "render/Instance.h"
 #include "render/MaterialComponents.h"
+#include "render/ObjectGeometry.h"
 #include "render/RenderChanges.h"
 #include "scene/Entity.h"
 #include "scene/SceneChanges.h"
@@ -24,7 +24,7 @@
 
 ModeScope ScopeOf(const state::Registry &r) {
     const auto mode = r.get<const Interaction>(state::Document).Mode;
-    const bool armature = !r.all_of<procedure::SelectionEditing>(state::Document) && FindArmatureObject(r, FindActiveEntity(r)) != state::Null;
+    const bool armature = !r.all_of<graph::SelectionEditing>(state::Document) && FindArmatureObject(r, FindActiveEntity(r)) != state::Null;
     const bool bone_edit = mode == InteractionMode::Edit && armature;
     return {mode, bone_edit, bone_edit || (mode == InteractionMode::Pose && armature), mode == InteractionMode::Edit && !bone_edit};
 }
@@ -95,7 +95,7 @@ SelectionSharpness FaceSharpness(const std::array<uint32_t, 4> &meshes) { return
 
 // The flags that read the meshes' geometry and element selections.
 void ComputeElementFlags(const state::Registry &r, const ModeScope &scope, std::span<const state::Entity> selected, const EditPrimaries &primaries, SelectionFlags &out) {
-    const auto *task = r.try_get<const procedure::SelectionEditing>(state::Document);
+    const auto *task = r.try_get<const graph::SelectionEditing>(state::Document);
     const auto element = r.get<const EditMode>(state::Document).Value;
     bool element_sharp = false, element_smooth = false;
     if (scope.MeshEdit) {
@@ -115,9 +115,9 @@ void ComputeElementFlags(const state::Registry &r, const ModeScope &scope, std::
         if (selected.empty()) return false;
         if (!scope.MeshEdit) return true;
         for (const auto e : selected) {
-            const auto *instance = r.try_get<const Instance>(e);
-            if (!instance || r.all_of<ScaleLocked>(e)) continue;
-            const auto *stats = GetElementSelectionSummary(r, instance->Entity, element);
+            const auto *geometry = r.try_get<const ObjectGeometry>(e);
+            if (!geometry || r.all_of<ScaleLocked>(e)) continue;
+            const auto *stats = GetElementSelectionSummary(r, geometry->Entity, element);
             if (stats && stats->SelectedCount > 0) return true;
         }
         return false;
@@ -125,14 +125,14 @@ void ComputeElementFlags(const state::Registry &r, const ModeScope &scope, std::
 }
 
 void ComputeFlags(const state::Registry &r, const ModeScope &scope, std::span<const state::Entity> selected, const EditPrimaries &primaries, SelectionFlags &out) {
-    const auto *task = r.try_get<const procedure::SelectionEditing>(state::Document);
+    const auto *task = r.try_get<const graph::SelectionEditing>(state::Document);
     out.Meshes.clear();
     out.AllMeshes = std::ranges::none_of(selected, [&](state::Entity e) { const auto *kind = r.try_get<const ObjectKind>(e); return kind && kind->Value != ObjectType::Mesh; });
     out.AnyVisible = out.AnyHidden = false;
     for (const auto e : selected) {
-        const auto *instance = r.try_get<const Instance>(e);
-        if (!instance) continue;
-        if (HasMesh(r, instance->Entity)) out.Meshes.push_back(instance->Entity);
+        const auto *geometry = r.try_get<const ObjectGeometry>(e);
+        if (!geometry) continue;
+        if (HasMesh(r, geometry->Entity)) out.Meshes.push_back(geometry->Entity);
         if (r.all_of<SubElementOf>(e)) continue;
         if (r.all_of<Hidden>(e)) out.AnyHidden = true;
         else out.AnyVisible = true;
@@ -143,7 +143,7 @@ void ComputeFlags(const state::Registry &r, const ModeScope &scope, std::span<co
     }
     SortUnique(out.Meshes);
 
-    const bool edit_locked = task || (scope.Mode == InteractionMode::Edit && std::ranges::any_of(r.view<const Instance, const ScaleLocked>().each(), [&](const auto &entry) { return std::ranges::binary_search(out.Meshes, std::get<1>(entry).Entity); }));
+    const bool edit_locked = task || (scope.Mode == InteractionMode::Edit && std::ranges::any_of(r.view<const ObjectGeometry, const ScaleLocked>().each(), [&](const auto &entry) { return std::ranges::binary_search(out.Meshes, std::get<1>(entry).Entity); }));
     out.Transformable = !edit_locked;
     out.Scalable = !edit_locked && std::ranges::none_of(selected, [&](state::Entity e) { return r.all_of<ScaleLocked>(e); });
 
@@ -193,8 +193,8 @@ void ComputeKeyframes(const state::Registry &r, std::span<const state::Entity> s
     }
     // Material keys show for the material slot the active mesh displays.
     if (const auto active = FindActiveEntity(r); active != state::Null) {
-        const auto *instance = r.try_get<const Instance>(active);
-        if (const auto material = instance ? DisplayedMaterial(r, instance->Entity) : std::nullopt; material && *material != state::Null) append(*material, all);
+        const auto *geometry = r.try_get<const ObjectGeometry>(active);
+        if (const auto material = geometry ? DisplayedMaterial(r, geometry->Entity) : std::nullopt; material && *material != state::Null) append(*material, all);
     } else if (const auto node = FindActiveNode(r); node != state::Null && r.all_of<Material>(node)) {
         // An active material node shows its own keys.
         append(node, all);
@@ -214,18 +214,18 @@ void ComputeSelectedAncestors(const state::Registry &r, std::span<const state::E
 } // namespace
 
 EditPrimaries ComputeEditPrimaries(const state::Registry &r) {
-    if (const auto *task = r.try_get<const procedure::SelectionEditing>(state::Document)) return {{{task->Mesh, task->Placement}}, {}};
+    if (const auto *task = r.try_get<const graph::SelectionEditing>(state::Document)) return {{{task->Mesh, task->Placement}}, {}};
     const auto active = FindActiveEntity(r);
     const auto scene = FrameScene(r);
-    const auto choose = [active](selection::PrimaryEditInstanceMap &primaries, state::Entity mesh, state::Entity instance) {
-        auto &primary = primaries.try_emplace(mesh, instance).first->second;
-        if (instance == active || (primary != active && instance < primary)) primary = instance;
+    const auto choose = [active](selection::PrimaryEditObjectMap &primaries, state::Entity mesh, state::Entity object) {
+        auto &primary = primaries.try_emplace(mesh, object).first->second;
+        if (object == active || (primary != active && object < primary)) primary = object;
     };
     EditPrimaries primaries;
-    for (const auto [e, instance, kind, _] : r.view<const Instance, const Selected, const ObjectKind, const RenderInstance>(state::Exclude<Hidden>).each()) {
+    for (const auto [e, geometry, kind, _] : r.view<const ObjectGeometry, const Selected, const ObjectKind, const RenderInstance>(state::Exclude<Hidden>).each()) {
         if (kind.Value != ObjectType::Mesh || !InScene(r, e, scene)) continue;
-        choose(primaries.All, instance.Entity, e);
-        if (!r.all_of<ScaleLocked>(e)) choose(primaries.Transformable, instance.Entity, e);
+        choose(primaries.All, geometry.Entity, e);
+        if (!r.all_of<ScaleLocked>(e)) choose(primaries.Transformable, geometry.Entity, e);
     }
     return primaries;
 }
@@ -269,13 +269,13 @@ std::vector<state::Entity> UpdateSelectionState(state::Registry &r) {
     const auto scene = FrameScene(r);
     const bool rescoped = r.get<const OutlinerRows>(state::Document).Scene != scene || AnyChanged(scene_changes.Membership, scene_changes.Destroyed);
     // Selection editing scopes the selection to the edited node's mesh.
-    const bool selection = rescoped || AnyChanged(selection_changes.Selected, selection_changes.ActiveInstance, selection_changes.BoneSelection, selection_changes.Editing);
+    const bool selection = rescoped || AnyChanged(selection_changes.Selected, selection_changes.ActiveObject, selection_changes.BoneSelection, selection_changes.Editing);
     const bool interaction = AnyChanged(viewport_changes.InteractionMode);
     const bool parents = AnyChanged(scene_changes.Parent);
-    const bool instances = AnyChanged(render_changes.InstanceVisibility, render_changes.InstanceCreated, render_changes.InstanceDestroyed, scene_changes.ScaleLocked);
+    const bool render_instances = AnyChanged(render_changes.InstanceVisibility, render_changes.InstanceCreated, render_changes.InstanceDestroyed, scene_changes.ScaleLocked);
     const auto scope = ScopeOf(r);
 
-    const bool primaries_changed = selection || interaction || instances;
+    const bool primaries_changed = selection || interaction || render_instances;
     const bool roots_changed = selection || interaction || parents;
     const bool flags_changed = primaries_changed || AnyChanged(viewport_changes.EditMode);
     // A geometry or element selection change alone leaves the selected objects, which only mesh Edit mode's element flags then read.
@@ -288,8 +288,8 @@ std::vector<state::Entity> UpdateSelectionState(state::Registry &r) {
         auto &primaries = r.edit<EditPrimaries>(state::Document);
         auto next = scope.Mode == InteractionMode::Edit ? ComputeEditPrimaries(r) : EditPrimaries{};
         // A mesh a restore destroyed has no display to change.
-        for (const auto &[mesh_entity, instance_entity] : primaries.All) {
-            if (const auto found = next.All.find(mesh_entity); r.valid(mesh_entity) && (found == next.All.end() || found->second != instance_entity)) changed_primaries.push_back(mesh_entity);
+        for (const auto &[mesh_entity, object_entity] : primaries.All) {
+            if (const auto found = next.All.find(mesh_entity); r.valid(mesh_entity) && (found == next.All.end() || found->second != object_entity)) changed_primaries.push_back(mesh_entity);
         }
         for (const auto &[mesh_entity, _] : next.All) {
             if (!primaries.All.contains(mesh_entity)) changed_primaries.push_back(mesh_entity);

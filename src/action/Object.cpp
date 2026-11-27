@@ -9,20 +9,20 @@
 #include "animation/MorphWeights.h"
 #include "armature/Armature.h"
 #include "gltf/SourceAssets.h"
+#include "graph/Graph.h"
 #include "mesh/MeshClone.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
 #include "mesh/MeshStores.h"
 #include "object/ObjectOps.h"
 #include "physics/PhysicsTypes.h"
-#include "procedure/Procedure.h"
 #include "project/Assets.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
-#include "render/Instance.h"
 #include "render/MaterialComponents.h"
 #include "render/MeshletBuildGpu.h"
+#include "render/ObjectGeometry.h"
 #include "render/RenderChanges.h"
 #include "render/Textures.h"
 #include "scene/CameraLens.h"
@@ -35,7 +35,7 @@
 
 namespace {
 // Create an armature object over `data_entity`, creating fresh armature data when null.
-state::Entity CreateArmatureObject(state::Registry &r, MeshStore &meshes, state::Entity data_entity, std::string_view name, const Transform &transform, MeshInstanceCreateInfo::SelectBehavior select, state::Entity scene = state::Null) {
+state::Entity CreateArmatureObject(state::Registry &r, MeshStore &meshes, state::Entity data_entity, std::string_view name, const Transform &transform, MeshObjectCreateInfo::SelectBehavior select, state::Entity scene = state::Null) {
     if (data_entity == state::Null) {
         data_entity = r.create();
         r.emplace<Armature>(data_entity);
@@ -46,7 +46,7 @@ state::Entity CreateArmatureObject(state::Registry &r, MeshStore &meshes, state:
     r.emplace<Transform>(entity, transform);
     EmplaceUniqueName(r, entity, name.empty() ? "Armature" : name);
     ::ApplySelectBehavior(r, entity, select);
-    ::CreateBoneInstances(r, meshes, entity, data_entity);
+    ::CreateBoneEntities(r, meshes, entity, data_entity);
     return entity;
 }
 
@@ -57,17 +57,16 @@ struct MeshCopy {
     state::Entity Copy{state::Null};
 };
 
-// A procedure mesh's copy holds a copy of its procedure and draws the clone, and an owned mesh's copy is a mesh whose Source node holds the clone.
+// A graph mesh's copy holds a copy of its graph and draws the clone, and an owned mesh's copy is a mesh whose Source node holds the clone.
 state::Entity DuplicateOne(state::Registry &r, state::Entity e, MeshCopy *copy, std::span<const uint32_t> clones) {
     auto &meshes = r.Resources.get<MeshStore>();
     const ObjectCreateInfo create_info{
-        .Name = std::format("{}_copy", GetName(r, e)),
-        // Duplicate is created at root, so its local must match source's world.
+        .Name = std::string{NameStem(GetName(r, e))},
         .Transform = *WorldTransformOf(r, e),
-        .Select = r.all_of<Selected>(e) ? MeshInstanceCreateInfo::SelectBehavior::Additive : MeshInstanceCreateInfo::SelectBehavior::None,
+        .Select = r.all_of<Selected>(e) ? MeshObjectCreateInfo::SelectBehavior::Additive : MeshObjectCreateInfo::SelectBehavior::None,
     };
 
-    if (!r.all_of<Instance>(e)) {
+    if (!r.all_of<ObjectGeometry>(e)) {
         if (const auto object_type = r.all_of<ObjectKind>(e) ? r.get<const ObjectKind>(e).Value : ObjectType::Empty; object_type == ObjectType::Armature) {
             const auto copy_entity = CreateArmatureObject(r, meshes, state::Null, create_info.Name, create_info.Transform, create_info.Select);
             if (const auto *src_armature = r.try_get<ArmatureObject>(e)) {
@@ -78,26 +77,25 @@ state::Entity DuplicateOne(state::Registry &r, state::Entity e, MeshCopy *copy, 
         return ::AddEmpty(r, create_info);
     }
 
-    // Bone sub-entities, the head and tail joints and bone instances, duplicate only with their bone.
-    if (r.all_of<BoneSubPartOf>(e)) return state::Null;
+    // Bone sub-entities, the head and tail joints and bone entities, duplicate only with their bone.
 
-    // Camera, Empty and Light objects have an Instance but create their own wireframe mesh.
-    if (r.all_of<ObjectExtrasTag>(r.get<Instance>(e).Entity)) {
+    // Camera, Empty and Light objects have an ObjectGeometry but create their own wireframe mesh.
+    if (r.all_of<ObjectExtrasTag>(r.get<ObjectGeometry>(e).Entity)) {
         if (const auto lens = LensOf(r, e)) return ::AddCamera(r, create_info, *lens);
         if (const auto *light = r.try_get<const SceneLight>(e)) return ::AddLight(r, create_info, *light);
         return ::AddEmpty(r, create_info);
     }
 
-    const MeshInstanceCreateInfo info{.Name = create_info.Name, .Transform = create_info.Transform, .Select = create_info.Select, .Visible = !r.all_of<Hidden>(e)};
+    const MeshObjectCreateInfo info{.Name = create_info.Name, .Transform = create_info.Transform, .Select = create_info.Select, .Visible = !r.all_of<Hidden>(e)};
     if (copy->Copy == state::Null) {
         const auto clone = clones[copy->Clone];
-        copy->Copy = HasMesh(r, copy->Mesh) ? action::nodes::CopyProcedure(r, copy->Mesh, clone) : ::AddMeshData(r, clone);
+        copy->Copy = HasMesh(r, copy->Mesh) ? action::nodes::CopyGraph(r, copy->Mesh, clone) : ::AddMeshData(r, clone);
     }
-    const auto instance = ::AddMeshInstance(r, copy->Copy, info);
-    if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) r.emplace<ArmatureModifier>(instance, *armature_modifier);
-    if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) r.emplace<BoneAttachment>(instance, *bone_attachment);
-    if (const auto *weights = r.try_get<const MorphWeightRange>(e)) r.emplace<MorphWeightRange>(instance, r.Resources.get<GpuBuffers>().MorphWeightBuffer.Clone(weights->Weights));
-    return instance;
+    const auto duplicate = ::AddMeshObject(r, copy->Copy, info);
+    if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) r.emplace<ArmatureModifier>(duplicate, *armature_modifier);
+    if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) r.emplace<BoneAttachment>(duplicate, *bone_attachment);
+    if (const auto *weights = r.try_get<const MorphWeightRange>(e)) r.emplace<MorphWeightRange>(duplicate, r.Resources.get<GpuBuffers>().MorphWeightBuffer.Clone(weights->Weights));
+    return duplicate;
 }
 
 // Copies the clones' store records and render records together, in one submit after their entities exist.
@@ -121,20 +119,19 @@ void FinishClones(state::Registry &r, CloneCopies &copies, std::span<const uint3
 
 state::Entity DuplicateLinkedOne(state::Registry &r, state::Entity e) {
     auto &meshes = r.Resources.get<MeshStore>();
-    if (r.all_of<BoneSubPartOf>(e)) return state::Null;
-    if (!r.all_of<Instance>(e)) {
-        const auto select_behavior = r.all_of<Selected>(e) ? MeshInstanceCreateInfo::SelectBehavior::Additive : MeshInstanceCreateInfo::SelectBehavior::None;
+    if (!r.all_of<ObjectGeometry>(e)) {
+        const auto select_behavior = r.all_of<Selected>(e) ? MeshObjectCreateInfo::SelectBehavior::Additive : MeshObjectCreateInfo::SelectBehavior::None;
 
         if (const auto *armature = r.try_get<ArmatureObject>(e)) {
-            return CreateArmatureObject(r, meshes, armature->Entity, std::format("{}_copy", GetName(r, e)), *WorldTransformOf(r, e), select_behavior);
+            return CreateArmatureObject(r, meshes, armature->Entity, NameStem(GetName(r, e)), *WorldTransformOf(r, e), select_behavior);
         }
-        return ::AddEmpty(r, {.Name = std::format("{}_copy", GetName(r, e)), .Transform = *WorldTransformOf(r, e), .Select = select_behavior});
+        return ::AddEmpty(r, {.Name = std::string{NameStem(GetName(r, e))}, .Transform = *WorldTransformOf(r, e), .Select = select_behavior});
     }
 
-    const auto mesh_entity = r.get<Instance>(e).Entity;
+    const auto mesh_entity = r.get<ObjectGeometry>(e).Entity;
     const auto e_new = r.create();
     EmplaceUniqueName(r, e_new, NameStem(GetName(r, e)));
-    r.emplace<Instance>(e_new, mesh_entity);
+    r.emplace<ObjectGeometry>(e_new, mesh_entity);
     EmplaceObject(r, e_new, ObjectType::Mesh);
     const Transform t_new{*WorldTransformOf(r, e)};
     r.emplace_or_replace<Transform>(e_new, t_new);
@@ -157,7 +154,7 @@ state::Entity CopyGeometry(state::Registry &r, state::Entity geometry) {
     meshes.CommitReserves();
     CloneCopies copies;
     const auto clones = meshes.CloneMeshes(copies, std::vector{*id}, true);
-    const auto copy = HasMesh(r, geometry) ? nodes::CopyProcedure(r, geometry, clones.front()) : ::AddMeshData(r, clones.front());
+    const auto copy = HasMesh(r, geometry) ? nodes::CopyGraph(r, geometry, clones.front()) : ::AddMeshData(r, clones.front());
     FinishClones(r, copies, clones);
     return copy;
 }
@@ -168,27 +165,42 @@ void Apply(state::Registry &r, const Action &action) {
         if (!(linked ? CanDuplicateLinked(r) : CanDuplicate(r))) return;
         const profile::CpuScope scope{linked ? "DuplicateLinked" : "Duplicate"};
         auto entities = SelectedIn(r);
-        const auto selected = entities;
-        std::erase_if(entities, [&](state::Entity e) {
-            for (auto parent = ParentOrNull(r, e); parent != state::Null; parent = ParentOrNull(r, parent))
-                if (std::ranges::contains(selected, parent)) return true;
-            return false;
-        });
-        const auto hierarchy = [&](state::Entity e) {
-            const auto *object = r.try_get<const Instance>(e);
-            const auto *generated = object ? r.try_get<const procedure::ProcedureInstances>(object->Entity) : nullptr;
-            const bool children = std::ranges::any_of(Children{&r, e}, [&](state::Entity child) { return r.all_of<ObjectKind>(child) && (!generated || !std::ranges::contains(generated->Entities, child)); });
-            if (linked && r.all_of<ArmatureObject>(e) && !children && !r.all_of<HierarchyInstance>(e)) return false;
-            return r.all_of<HierarchyInstance>(e) || children || (r.all_of<ObjectKind>(e) && r.get<const ObjectKind>(e).Value != ObjectType::Mesh);
+        // A part duplicates with its object.
+        std::erase_if(entities, [&](state::Entity e) { return r.all_of<SubElementOf>(e); });
+        if (entities.empty()) return;
+        const auto has_instance = [&](state::Entity e) { return r.all_of<Instance>(e); };
+        // A selected object below a selected parent duplicates in its parent's group, where its duplicate hangs below the parent's duplicate.
+        // An object with an Instance heads no group, since it duplicates alone with an Instance of the same subgraph.
+        const auto joins_parent = [&](state::Entity e) {
+            const auto parent = ParentOrNull(r, e);
+            return parent != state::Null && !has_instance(parent) && std::ranges::contains(entities, parent);
         };
-        std::vector<uint32_t> sources, copy_of(entities.size(), InvalidOffset);
+        // Each group's root, then the selected objects below it.
+        std::vector<std::vector<state::Entity>> groups;
+        for (const auto e : entities)
+            if (!joins_parent(e)) groups.push_back({e});
+        for (const auto e : entities) {
+            if (!joins_parent(e)) continue;
+            auto root = e;
+            while (joins_parent(root)) root = ParentOrNull(r, root);
+            std::ranges::find(groups, root, [](const auto &group) { return group.front(); })->push_back(e);
+        }
+        // A group of several objects, or an object of a kind other than a mesh, duplicates through its copies.
+        const auto copied = [&](const std::vector<state::Entity> &group) {
+            const auto root = group.front();
+            if (has_instance(root)) return false;
+            if (group.size() > 1u) return true;
+            if (linked && r.all_of<ArmatureObject>(root)) return false;
+            return r.all_of<ObjectKind>(root) && r.get<const ObjectKind>(root).Value != ObjectType::Mesh;
+        };
+        std::vector<uint32_t> sources, copy_of(groups.size(), InvalidOffset);
         std::vector<MeshCopy> copies_of;
         if (!linked) {
             std::unordered_map<state::Entity, uint32_t> mesh_copies;
-            for (uint32_t i = 0u; i < entities.size(); ++i) {
-                const auto e = entities[i];
-                if (hierarchy(e) || !r.all_of<Instance>(e) || r.all_of<BoneSubPartOf>(e)) continue;
-                const auto mesh_entity = r.get<Instance>(e).Entity;
+            for (uint32_t i = 0u; i < groups.size(); ++i) {
+                const auto e = groups[i].front();
+                if (has_instance(e) || copied(groups[i]) || !r.all_of<ObjectGeometry>(e)) continue;
+                const auto mesh_entity = r.get<ObjectGeometry>(e).Entity;
                 if (r.all_of<ObjectExtrasTag>(mesh_entity) || !DrawsMesh(r, mesh_entity)) continue;
                 const auto [copy, added] = mesh_copies.try_emplace(mesh_entity, uint32_t(copies_of.size()));
                 if (added) {
@@ -203,23 +215,36 @@ void Apply(state::Registry &r, const Action &action) {
         }
         CloneCopies copies;
         const auto clones = meshes.CloneMeshes(copies, sources, true);
-        // The copies of hierarchies become independent together.
-        std::vector<state::Entity> instances;
-        for (uint32_t i = 0u; i < entities.size(); ++i) {
-            const auto src = entities[i];
-            const auto dup = hierarchy(src) ? CreateHierarchyInstance(r, src, *WorldTransformOf(r, src)) : linked ? DuplicateLinkedOne(r, src) :
-                                                                                                                    DuplicateOne(r, src, copy_of[i] == InvalidOffset ? nullptr : &copies_of[copy_of[i]], clones);
-            if (hierarchy(src)) {
-                if (!linked) instances.push_back(dup);
-                r.emplace_or_replace<Selected>(dup);
-            }
-            if (r.all_of<Active>(src)) {
-                r.remove<Active>(src);
-                r.emplace<Active>(dup);
-            }
-            r.remove<Selected>(src);
+        // Each lone mesh object's duplicate, then the duplicates of the other groups together.
+        std::vector<std::vector<state::Entity>> duplicates(groups.size()), together;
+        for (uint32_t i = 0u; i < groups.size(); ++i) {
+            const auto src = groups[i].front();
+            if (has_instance(src)) {
+                duplicates[i] = {AddInstance(r, r.get<const Instance>(src).SubgraphEntity, {.Name = std::string{NameStem(GetName(r, src))}, .Transform = *WorldTransformOf(r, src), .Select = MeshObjectCreateInfo::SelectBehavior::None}, r.get<const Instance>(src).PortValues)};
+            } else if (copied(groups[i])) together.push_back(groups[i]);
+            else duplicates[i] = {linked ? DuplicateLinkedOne(r, src) : DuplicateOne(r, src, copy_of[i] == InvalidOffset ? nullptr : &copies_of[copy_of[i]], clones)};
         }
-        if (!instances.empty()) MakeHierarchyIndependent(r, instances);
+        auto made = DuplicateObjects(r, together, linked);
+        auto next = made.begin();
+        for (uint32_t i = 0u; i < groups.size(); ++i) {
+            const bool selects = has_instance(groups[i].front()) || copied(groups[i]);
+            if (copied(groups[i])) duplicates[i] = std::move(*next++);
+            for (size_t m = 0; m < groups[i].size(); ++m) {
+                const auto src = groups[i][m], duplicate = duplicates[i][m];
+                // A duplicate takes its source's place: below the source's parent at the source's local transform, and in the subgraph that holds the source.
+                if (const auto parent = ParentOrNull(r, src); m == 0u && parent != state::Null) {
+                    ::SetParent(r, duplicate, parent);
+                    r.replace<Transform>(duplicate, r.get<const Transform>(src));
+                }
+                if (const auto holder = SubgraphHolding(r, src); holder != state::Null) graph::PlaceInGraph(r, holder, duplicate);
+                if (selects) r.emplace_or_replace<Selected>(duplicate);
+                if (r.all_of<Active>(src)) {
+                    r.remove<Active>(src);
+                    r.emplace<Active>(duplicate);
+                }
+                r.remove<Selected>(src);
+            }
+        }
         FinishClones(r, copies, clones);
         begin_translate();
     };
@@ -237,7 +262,7 @@ void Apply(state::Registry &r, const Action &action) {
     };
     const auto append = [&]<typename N>(std::span<const state::Entity> mesh_entities, const N &parameters) {
         for (const auto e : mesh_entities) {
-            const auto node = nodes::AppendNode(r, e, procedure::KindOf<N>);
+            const auto node = nodes::AppendNode(r, e, graph::KindOf<N>);
             if (node == state::Null) break;
             r.replace<N>(node, parameters);
         }
@@ -245,7 +270,7 @@ void Apply(state::Registry &r, const Action &action) {
     const bool valid_creation = std::visit([&](const auto &a) {
         if constexpr (requires { a.Info; }) {
             if (!a.Info || (a.Info->Scene != state::Null && !r.all_of<Scene>(a.Info->Scene))) return false;
-            return a.Info->Network == state::Null || (r.all_of<procedure::NetworkSubnet>(a.Info->Network) && procedure::NetworkRoot(r, a.Info->Network) == (a.Info->Scene == state::Null ? FrameScene(r) : a.Info->Scene));
+            return a.Info->Graph == state::Null || (r.all_of<graph::SubgraphItems>(a.Info->Graph) && graph::GraphRoot(r, a.Info->Graph) == (a.Info->Scene == state::Null ? FrameScene(r) : a.Info->Scene));
         } else return true;
     },
                                            action);
@@ -254,63 +279,61 @@ void Apply(state::Registry &r, const Action &action) {
         overloaded{
             [&](Delete) {
                 if (!CanDelete(r)) return;
-                auto removed = SelectedIn(r) | std::views::filter([&](state::Entity e) { return !r.all_of<SubElementOf>(e); }) | std::views::transform([&](state::Entity e) { return HierarchyEditTarget(r, e, true); }) | std::ranges::to<std::vector>();
+                auto removed = SelectedIn(r) | std::views::filter([&](state::Entity e) { return !r.all_of<SubElementOf>(e); }) | std::views::transform([&](state::Entity e) { return SourceOfCopy(r, e); }) | std::ranges::to<std::vector>();
                 SortUnique(removed);
                 Destroy(r, removed);
             },
             [&](Duplicate) { duplicate(false); },
             [&](DuplicateLinked) { duplicate(true); },
-            [&](const InstantiateHierarchy &a) {
-                if (!r.all_of<ObjectKind>(a.Source)) return Fail(r, "Choose an object hierarchy");
-                const auto root = CreateHierarchyInstance(r, a.Source, ComposeTransform(r, a.Source, state::Null, {}));
-                if (root != state::Null) ApplySelectBehavior(r, root, MeshInstanceCreateInfo::SelectBehavior::Exclusive);
+            [&](const Instantiate &a) {
+                if (!IsSceneSubgraph(r, a.Subgraph)) return Fail(r, "Choose a scene subgraph to instance");
+                AddInstance(r, a.Subgraph, {.Name = std::string{NameStem(GetName(r, a.Subgraph))}});
             },
-            [&](const MakeIndependent &a) { MakeHierarchyIndependent(r, std::array{a.Root}); },
             [&](ToggleHidden) {
                 for (const auto e : SelectedIn(r)) {
-                    const auto target = HierarchyEditTarget(r, e, true);
+                    const auto target = SourceOfCopy(r, e);
                     if (!r.all_of<Hidden>(e)) Hide(r, target);
                     else Show(r, target);
                 }
             },
             [&](const SetVisible &a) {
-                ForEachTarget(a.Target, [&] { return FindActiveEntity(r); }, [&](auto &&fn) { for (const auto e : SelectedIn(r)) fn(e); }, [&](state::Entity e) {
+                ForEachObjectTarget(r, a.Target, [&](state::Entity e) {
                     if (!r.all_of<ObjectKind>(e) || r.all_of<SubElementOf>(e)) return;
-                    e = HierarchyEditTarget(r, e, true);
                     if (a.Visible) Show(r, e);
                     else Hide(r, e); });
             },
-            [&](const ShadeSelected &a) { append(r.get<const SelectionFlags>(state::Document).Meshes, procedure::Shade{a.Mode, a.Angle}); },
-            [&](const SetSelectedSharp &a) { append(edit_selection_meshes(a.Element), procedure::MarkSharp{a.Sharp}); },
+            [&](const ShadeSelected &a) { append(r.get<const SelectionFlags>(state::Document).Meshes, graph::Shade{a.Mode, a.Angle}); },
+            [&](const SetSelectedSharp &a) { append(edit_selection_meshes(a.Element), graph::MarkSharp{a.Sharp}); },
             [&](ParentToActive) {
                 const auto active = FindActiveEntity(r);
                 if (active == state::Null) return;
                 std::vector<std::pair<state::Entity, state::Entity>> targets;
                 for (const auto e : SelectedIn(r))
-                    if (e != active) targets.push_back(HierarchyReferenceTarget(r, e, active, true));
+                    if (e != active) targets.push_back(CopyReferenceTarget(r, e, active));
                 SortUnique(targets);
                 for (const auto [entity, parent] : targets)
-                    if (HierarchyParentCycle(r, entity, parent)) return Fail(r, "Loop in parents");
+                    if (ParentCycle(r, entity, parent)) return Fail(r, "Loop in parents");
                 const auto owned = r.view<const BodyPoseCache>() | std::ranges::to<std::vector>();
                 for (const auto [entity, parent] : targets) SetParentKeepWorld(r, std::array{entity}, parent, owned);
             },
             [&](const ClearParent &a) {
                 std::vector<state::Entity> targets;
-                ForEachTarget(a.Target, [&] { return FindActiveEntity(r); }, [&](auto &&fn) { for (const auto e : SelectedIn(r)) fn(e); }, [&](state::Entity e) {
-                    if (r.valid(e)) targets.push_back(HierarchyEditTarget(r, e, true)); });
+                ForEachObjectTarget(r, a.Target, [&](state::Entity e) {
+                    if (r.valid(e)) targets.push_back(e);
+                });
                 SortUnique(targets);
                 ::ClearParents(r, targets);
             },
             [&](const SetParent &a) {
                 if (!r.all_of<ObjectKind>(a.Entity) || !r.all_of<ObjectKind>(a.Parent) || r.any_of<SubElementOf, BoneIndex>(a.Entity) || r.any_of<SubElementOf, BoneIndex>(a.Parent)) return action::Fail(r, "Parenting requires two scene objects");
-                const auto [entity, parent] = HierarchyReferenceTarget(r, a.Entity, a.Parent, true);
-                if (HierarchyParentCycle(r, entity, parent)) return Fail(r, "Loop in parents");
+                const auto [entity, parent] = CopyReferenceTarget(r, a.Entity, a.Parent);
+                if (ParentCycle(r, entity, parent)) return Fail(r, "Loop in parents");
                 SetParentKeepWorld(r, std::array{entity}, parent, r.view<const BodyPoseCache>() | std::ranges::to<std::vector>());
             },
             [&](const AddEmpty &a) { ::AddEmpty(r, *a.Info); if (a.Info->BeginTranslate) begin_translate(); },
             [&](const AddArmature &a) {
                 const auto entity = CreateArmatureObject(r, meshes, state::Null, a.Info->Name, a.Info->Transform, a.Info->Select, a.Info->Scene);
-                procedure::PlaceInNetwork(r, a.Info->Network, entity);
+                graph::PlaceInGraph(r, a.Info->Graph, entity);
                 if (a.Info->BeginTranslate) begin_translate();
             },
             [&](const AddCamera &a) { ::AddCamera(r, *a.Info, a.Props); if (a.Info->BeginTranslate) begin_translate(); },
@@ -333,7 +356,7 @@ void Apply(state::Registry &r, const Action &action) {
                 r.Resources.get<RenderChanges>().Materials.emplace(a.Material);
                 if constexpr (std::same_as<T, uint32_t>) {
                     // A texture slot is an unsigned field, and the document page shows it as a reference.
-                    r.Resources.get<procedure::NetworkChanges>().Pages.emplace(state::Document);
+                    r.Resources.get<graph::GraphChanges>().Pages.emplace(state::Document);
                     // The export writes each texture slot's source texture, which the material's import record holds.
                     for (uint8_t slot = 0; slot < MTS_Count; ++slot) {
                         if (animation::TextureSlotOffset(slot) + offsetof(TextureInfo, Slot) != a.Offset) continue;
@@ -364,7 +387,12 @@ void Apply(state::Registry &r, const Action &action) {
                     .Name = a.Path.filename().string(),
                 };
                 r.patch<gltf::SourceAssets>(state::Document, [&](gltf::SourceAssets &sources) {
-                    sources.Images.emplace_back(gltf::Image{.MimeType = extension == ".png" ? gltf::MimeType::PNG : extension == ".webp" ? gltf::MimeType::WEBP : extension == ".ktx2" ? gltf::MimeType::KTX2 : gltf::MimeType::JPEG, .Source = gltf::Image::SourceKind::External, .Name = params.Name, .SourcePath = project::AssetReference(r, a.Path).string()});
+                    sources.Images.emplace_back(gltf::Image{.MimeType = extension == ".png" ? gltf::MimeType::PNG : extension == ".webp" ? gltf::MimeType::WEBP :
+                                                                extension == ".ktx2"                                                     ? gltf::MimeType::KTX2 :
+                                                                                                                                           gltf::MimeType::JPEG,
+                                                            .Source = gltf::Image::SourceKind::External,
+                                                            .Name = params.Name,
+                                                            .SourcePath = project::AssetReference(r, a.Path).string()});
                     sources.Textures.emplace_back(gltf::Texture{.ImageIndex = image, .Name = params.Name});
                 });
                 ::Select(r, ::AddTexture(r, image, texture, params));
@@ -376,20 +404,12 @@ void Apply(state::Registry &r, const Action &action) {
                 for_each_mesh_target(a.Target, [&](state::Entity e) { r.emplace_or_replace<MeshMaterialAssignment>(e, a.PrimitiveIndex, a.Material); });
             },
             [&](const SetProjection &a) {
-                ForEachTarget(
-                    a.Target,
-                    [&] { const auto e = FindActiveEntity(r); return HasLens(r, e) ? e : state::Null; },
-                    [&](auto &&fn) {
-                        for (const auto e : SelectedIn(r)) {
-                            if (HasLens(r, e)) fn(e);
-                        }
-                    },
-                    [&](state::Entity e) {
-                        const float distance = std::max(Length(WorldTransformOf(r, e)->P), 1.f);
-                        if (const auto *perspective = r.try_get<const Perspective>(e); perspective && a.Orthographic) SetLens(r, e, OrthographicFromPerspective(*perspective, distance));
-                        else if (const auto *orthographic = r.try_get<const Orthographic>(e); orthographic && !a.Orthographic) SetLens(r, e, PerspectiveFromOrthographic(*orthographic, distance));
-                    }
-                );
+                ForEachObjectTarget(r, a.Target, [&](state::Entity e) {
+                    if (!HasLens(r, e)) return;
+                    const float distance = std::max(Length(WorldTransformOf(r, e)->P), 1.f);
+                    if (const auto *perspective = r.try_get<const Perspective>(e); perspective && a.Orthographic) SetLens(r, e, OrthographicFromPerspective(*perspective, distance));
+                    else if (const auto *orthographic = r.try_get<const Orthographic>(e); orthographic && !a.Orthographic) SetLens(r, e, PerspectiveFromOrthographic(*orthographic, distance));
+                });
             },
             [&](const SetLightType &a) {
                 ForEachComponentTarget<SceneLight>(r, a.Target, [&](auto e) {

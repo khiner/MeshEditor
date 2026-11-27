@@ -1,6 +1,6 @@
 #include "SurfaceAudio.h"
 #include "audio/surface/AudioSurfaceSchema.h"
-#include "scene/HierarchyInstance.h"
+#include "scene/Instance.h"
 
 #include "audio/ContactScene.h"
 #include "audio/Fft.h"
@@ -339,7 +339,7 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
     for (uint32_t i = 0; i < c.Sides.size(); ++i) {
         auto &side = out.Sides[i];
         curvature[i] = SurfaceCurvature(r, nodes[i].Geometry, c.Point).value_or(0.0);
-        const auto *modes = r.valid(nodes[i].Model) ? r.try_get<const ModalModes>(HierarchySource(r, nodes[i].Model)) : nullptr;
+        const auto *modes = r.valid(nodes[i].Model) ? r.try_get<const ModalModes>(SourceOfCopy(r, nodes[i].Model)) : nullptr;
         const auto *transform = modes ? WorldTransformOf(r, nodes[i].Model) : nullptr;
         if (!transform || modes->Positions.empty() || modes->Shapes.size() != modes->Positions.size()) continue;
 
@@ -966,7 +966,7 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
             for (uint32_t i = 0; i < c.Sides.size(); ++i) {
                 auto &side = out.Sides[i];
                 if (side.ModelEntity == state::Null) continue;
-                const auto *modes = r.try_get<const ModalModes>(HierarchySource(r, side.ModelEntity));
+                const auto *modes = r.try_get<const ModalModes>(SourceOfCopy(r, side.ModelEntity));
                 const auto *transform = WorldTransformOf(r, side.ModelEntity);
                 if (!modes || !transform) continue;
                 for (uint32_t bb = 0; bb < bin_count; ++bb) {
@@ -993,7 +993,7 @@ ResolvedContact ResolveContact(const state::Registry &r, ModalAudio &m, const Su
                 auto &side = out.Sides[i];
                 if (side.ModelEntity == state::Null) continue;
                 if (Length(c.Sides[i].SweepVelocity) > 0.01f * speed) continue;
-                const auto *modes = r.try_get<const ModalModes>(HierarchySource(r, side.ModelEntity));
+                const auto *modes = r.try_get<const ModalModes>(SourceOfCopy(r, side.ModelEntity));
                 const auto *transform = WorldTransformOf(r, side.ModelEntity);
                 const auto slot = FindModalObject(bank, side.ModelEntity);
                 if (!modes || !transform || !slot) continue;
@@ -1169,8 +1169,8 @@ void SurfaceUpdateContacts(state::Registry &r) {
     }
     const auto &surface_edits = changes.Edit, &material_edits = changes.Material, &mesh_edits = changes.Geometry;
     if (!surface_edits.empty() || !material_edits.empty() || !mesh_edits.empty()) {
-        for (const auto node : r.view<const Instance>()) {
-            const auto mesh_e = r.get<const Instance>(node).Entity;
+        for (const auto node : r.view<const ObjectGeometry>()) {
+            const auto mesh_e = r.get<const ObjectGeometry>(node).Entity;
             const bool geometry_changed = mesh_edits.contains(mesh_e);
             if (!geometry_changed && !surface_edits.contains(node) && !material_edits.contains(mesh_e)) continue;
             // Direct write outside Apply, derived from the node's surface and its mesh's coordinates.

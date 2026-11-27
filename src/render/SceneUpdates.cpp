@@ -12,12 +12,12 @@
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
-#include "render/Instance.h"
 #include "render/LodNodeEdit.h"
 #include "render/MaterialLodAttributes.h"
 #include "render/MaterialPatterns.h"
 #include "render/MeshletBuild.h"
 #include "render/MeshletBuildGpu.h"
+#include "render/ObjectGeometry.h"
 #include "render/RenderChanges.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
@@ -106,9 +106,9 @@ void RepointMeshInstances(state::Registry &r, std::span<const state::Entity> mes
         const auto mesh = mesh_buffers && mesh_buffers->RenderTopologies != 0u ? mesh_buffers->StoreId : InvalidOffset;
         for (uint32_t i = 0u; i < ids.size(); ++i) {
             if (!ids[i]) continue;
-            const auto instance_entity = r.EntityAt(ObjectIndex(ids[i]));
-            if (instance_entity == state::Null) continue;
-            const auto *ri = r.try_get<const RenderInstance>(instance_entity);
+            const auto object_entity = r.EntityAt(ObjectIndex(ids[i]));
+            if (object_entity == state::Null) continue;
+            const auto *ri = r.try_get<const RenderInstance>(object_entity);
             if (!ri || ri->Entity != mesh_entity || ri->BufferIndex != first + i) continue;
             records[i].Mesh = mesh;
         }
@@ -308,15 +308,15 @@ bool DeriveRenderInstances(state::Registry &r, bool rescope) {
     };
     for (const auto e : r.Resources.get<const RenderChanges>().InstanceVisibility.Entities) {
         if (!r.valid(e)) continue;
-        const auto *instance = r.try_get<const Instance>(e);
+        const auto *geometry = r.try_get<const ObjectGeometry>(e);
         if (const auto *render = r.try_get<const RenderInstance>(e)) {
-            if (instance && render->Entity == instance->Entity) {
+            if (geometry && render->Entity == geometry->Entity) {
                 write_hidden(e, *render);
                 continue;
             }
             r.remove<RenderInstance>(e);
         }
-        if (instance) r.emplace<RenderInstance>(e, instance->Entity, UINT32_MAX);
+        if (geometry) r.emplace<RenderInstance>(e, geometry->Entity, UINT32_MAX);
     }
     if (rescope) {
         for (const auto [e, render] : r.view<const RenderInstance>().each()) write_hidden(e, render);
@@ -481,14 +481,14 @@ SyncResult SyncModelsBuffers(state::Registry &r) {
         const auto *mesh_buffers = TryRecordOf(r, buffer_entity);
         const auto mesh_record = mesh_buffers && mesh_buffers->RenderTopologies != 0u ? mesh_buffers->StoreId : InvalidOffset;
         for (uint32_t j = 0; j < n; ++j) {
-            const auto instance_entity = group[j].second;
-            r.edit<RenderInstance>(instance_entity).BufferIndex = base_index + j;
+            const auto object_entity = group[j].second;
+            r.edit<RenderInstance>(object_entity).BufferIndex = base_index + j;
             inserted_slots.push_back(base_index + j);
-            object_ids[j] = ObjectId(instance_entity);
-            bases[j] = InstanceStateBits(r, instance_entity);
+            object_ids[j] = ObjectId(object_entity);
+            bases[j] = InstanceStateBits(r, object_entity);
             instance_records[j] = {
                 .Mesh = mesh_record,
-                .ObjectId = ObjectId(instance_entity),
+                .ObjectId = ObjectId(object_entity),
             };
         }
         // Transform slots stay unwritten here, and the world-transform recompute and the bone display pass write them before submit.
@@ -500,7 +500,7 @@ SyncResult SyncModelsBuffers(state::Registry &r) {
         buffers.Instances.RecordBuffer.Update(BytesOf(instance_records), uint64_t(base_index) * sizeof(InstanceRecord));
         std::ranges::fill(buffers.Instances.GetMutableBounds({base_index, n}), AABB{});
         mb.InstanceCount = new_total;
-        for (const auto &[_, instance_entity] : group) newly_inserted.push_back(instance_entity);
+        for (const auto &[_, object_entity] : group) newly_inserted.push_back(object_entity);
         relayout(buffer_entity);
         RetallyMesh(r, buffer_entity);
     }

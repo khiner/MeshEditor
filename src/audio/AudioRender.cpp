@@ -24,9 +24,9 @@ const std::vector<float> &GetSampleFrames(const state::Registry &r, const fs::pa
     return it != samples.end() ? it->second : EmptyFrames;
 }
 // The SoundVertices index of the mesh's active element, or zero when no element is active.
-uint32_t GetActiveVertexIndex(const state::Registry &r, state::Entity instance_entity) {
-    const auto &excitable = r.get<const SoundVertices>(instance_entity);
-    const auto mesh_entity = r.get<const Instance>(instance_entity).Entity;
+uint32_t GetActiveVertexIndex(const state::Registry &r, state::Entity object_entity) {
+    const auto &excitable = r.get<const SoundVertices>(object_entity);
+    const auto mesh_entity = r.get<const ObjectGeometry>(object_entity).Entity;
     if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) {
         const auto &meshes = r.Resources.get<const MeshStore>();
         if (auto vi = FindSoundVertexIndex(meshes.Arenas().SoundVertices.Get(excitable.Vertices), active->Handle)) return *vi;
@@ -34,10 +34,10 @@ uint32_t GetActiveVertexIndex(const state::Registry &r, state::Entity instance_e
     return 0;
 }
 
-std::optional<fs::path> ActiveSamplePath(const state::Registry &r, state::Entity instance_entity) {
-    const auto *samples = r.try_get<const VertexSamples>(HierarchySource(r, instance_entity));
+std::optional<fs::path> ActiveSamplePath(const state::Registry &r, state::Entity object_entity) {
+    const auto *samples = r.try_get<const VertexSamples>(SourceOfCopy(r, object_entity));
     if (!samples) return std::nullopt;
-    const auto mesh_entity = r.get<const Instance>(instance_entity).Entity;
+    const auto mesh_entity = r.get<const ObjectGeometry>(object_entity).Entity;
     const auto *active = r.try_get<const MeshActiveElement>(mesh_entity);
     if (!active) return std::nullopt;
     const auto it = samples->PathByVertex.find(active->Handle);

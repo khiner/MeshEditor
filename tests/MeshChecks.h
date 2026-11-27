@@ -115,7 +115,8 @@ inline bool Simple(std::span<const vec3> points, vec3 normal, float extent) {
     return true;
 }
 // Every triangle corner is a corner of the face and the triangles' directed edges cancel against the face loop.
-// A planar simple face's triangles also wind with the face and cover its area exactly once.
+// The triangles of a planar simple face also wind with the face and cover its area exactly once.
+// A face narrower than the triangulation's epsilon is exempt, since each of its triangles is a sliver within that epsilon.
 inline void ExpectPolygonTessellation(const MeshStore &meshes, const Mesh &mesh) {
     for (const auto face : mesh.faces()) {
         std::vector<vec3> points;
@@ -126,12 +127,13 @@ inline void ExpectPolygonTessellation(const MeshStore &meshes, const Mesh &mesh)
         const auto length = Length(area);
         if (!(length > 0.f)) continue;
         const auto normal = area / length;
-        float extent = 0.f, height = 0.f;
+        float extent = 0.f, height = 0.f, magnitude = 0.f;
         for (const auto p : points) {
             extent = std::max(extent, Length(p - origin));
             height = std::max(height, std::abs(Dot(p - origin, normal)));
+            magnitude = std::max({magnitude, std::abs(p.x), std::abs(p.y), std::abs(p.z)});
         }
-        const bool planar = height <= 1e-5f * extent && Simple(points, normal, extent);
+        const bool planar = length > RelativePrecision * magnitude * extent && height <= 1e-5f * extent && Simple(points, normal, extent);
         // Areas sum in double, since float rounding of a sliver's cross products exceeds the tolerance of its own area.
         const numeric::dvec3 double_normal{normal};
         const auto signed_area = [&](vec3 a, vec3 b, vec3 c) { return Dot(Cross(numeric::dvec3{b} - numeric::dvec3{a}, numeric::dvec3{c} - numeric::dvec3{a}), double_normal); };

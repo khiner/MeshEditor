@@ -126,6 +126,11 @@ void Append(Destination, Core);
 
 // Reads an editable field as its typed Update action, or nothing for an invalid component or field address.
 std::optional<Core> ReadUpdate(const state::Registry &, state::Entity, state::TypeKey, uint16_t offset);
+// The type of the component an Update of the key writes, or none for another key.
+std::optional<state::TypeId> UpdatedType(state::TypeKey component);
+// Writes the words as the bytes of the entity's own field, where the field holds another value.
+// A field larger than the words stays as it is.
+void WriteField(state::Registry &, state::Entity, state::TypeKey, uint16_t offset, const std::array<uint32_t, 4> &words);
 // Adds to the set each entity that loses a component ReadUpdate reads.
 void TrackFieldRemovals(state::DirtySet &);
 // The entity an Update of the component addresses for the active target, or null when there is none.

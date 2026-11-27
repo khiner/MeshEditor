@@ -2,7 +2,7 @@
 
 #include "MeshComponents.h"
 #include "MeshStore.h"
-#include "procedure/Procedure.h"
+#include "graph/Graph.h"
 
 #include "state/Registry.h"
 
@@ -50,7 +50,7 @@ Mesh::EH Mesh::EdgeAt(uint32_t ordinal) const { return EH{Store->LiveElementAt(S
 Mesh::FH Mesh::FaceAt(uint32_t ordinal) const { return FH{Store->LiveElementAt(StoreId, MeshStore::ElementDomain::Face, ordinal).Value}; }
 uint32_t Mesh::FaceOrdinal(FH face) const { return Store->LiveElementOrdinal(StoreId, MeshStore::ElementDomain::Face, ElementHandle{*face}); }
 
-bool HasMesh(const state::Registry &r, state::Entity e) { return r.all_of<procedure::GeometryProcedure>(e); }
+bool HasMesh(const state::Registry &r, state::Entity e) { return r.all_of<graph::GeometryGraph>(e); }
 bool DrawsMesh(const state::Registry &r, state::Entity e) { return r.any_of<EvaluatedMesh, MeshHandle>(e); }
 std::optional<uint32_t> DrawnStoreId(const state::Registry &r, state::Entity e) {
     if (const auto *evaluated = r.try_get<const EvaluatedMesh>(e)) return evaluated->StoreId;

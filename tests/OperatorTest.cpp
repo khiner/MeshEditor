@@ -1,6 +1,6 @@
-#include "ProcedureFixture.h"
+#include "GraphFixture.h"
 #include "TransformMath.h"
-#include "procedure/Macros.h"
+#include "graph/BuiltinSubgraphs.h"
 #include "scene/SceneGraph.h"
 #include "viewport/ViewCameraOps.h"
 
@@ -12,7 +12,7 @@
 using boost::ut::expect, boost::ut::fatal;
 
 namespace {
-using namespace procedure;
+using namespace graph;
 using action::UpdateOf;
 using action::nodes::Link;
 
@@ -26,7 +26,7 @@ test::Circulation OutgoingHalfedges(const Mesh &mesh, Mesh::VH v) {
 }
 
 // The kernel edit on a record holding the geometry of the mesh's Source node.
-Kernel SourceReference(ProcedureFixture &f, state::Entity mesh_entity, auto &&edit) {
+Kernel SourceReference(GraphFixture &f, state::Entity mesh_entity, auto &&edit) {
     return f.WithSource(mesh_entity, [&](uint32_t id) {
         const GeometrySelection selected = edit(id);
         return Kernel{Describe(f.Store(), id), Describe(f.Store(), id, selected)};
@@ -47,29 +47,29 @@ struct ViewportRow {
     uint32_t Clicks;
     uint16_t Kind;
     std::vector<float> Values;
-    void (*Gesture)(ProcedureFixture &, float value, bool first);
+    void (*Gesture)(GraphFixture &, float value, bool first);
     // Runs the operator on the clone at the clicked handles and returns its selected elements.
-    GeometrySelection (*Kernel)(ProcedureFixture &, uint32_t clone, const GeometrySelection &clicked, float value);
+    GeometrySelection (*Kernel)(GraphFixture &, uint32_t clone, const GeometrySelection &clicked, float value);
 };
 
 // Each viewport edit appends one node cooking like the kernel at the clicked elements, and a drag commits as one history node.
-void ViewportOperators(ProcedureFixture &f, Fixture &other) {
+void ViewportOperators(GraphFixture &f, Fixture &other) {
     using D = MeshStore::ElementDomain;
     static const std::array<ViewportRow, 4> rows{{
-        {"Extrude", Element::Face, 2u, KindOf<procedure::Extrude>, {0.f}, [](ProcedureFixture &f, float, bool) { f.Do(action::mesh::Extrude{}); }, [](ProcedureFixture &f, uint32_t clone, const GeometrySelection &clicked, float) { return PublishedKernel(f, clone, {.Op = MeshTopologyOp::ExtrudeRegion, .Selection = clicked}); }},
-        {"BevelDrag", Element::Edge, 1u, KindOf<action::mesh::Bevel>, {.05f, .1f, .2f, .3f}, [](ProcedureFixture &f, float width, bool first) {
+        {"Extrude", Element::Face, 2u, KindOf<graph::Extrude>, {0.f}, [](GraphFixture &f, float, bool) { f.Do(action::mesh::Extrude{}); }, [](GraphFixture &f, uint32_t clone, const GeometrySelection &clicked, float) { return PublishedKernel(f, clone, {.Op = MeshTopologyOp::ExtrudeRegion, .Selection = clicked}); }},
+        {"BevelDrag", Element::Edge, 1u, KindOf<action::mesh::Bevel>, {.05f, .1f, .2f, .3f}, [](GraphFixture &f, float width, bool first) {
              if (first) f.Stage(action::mesh::Bevel{.Width = width});
-             else f.Stage(UpdateOf<&action::mesh::Bevel::Width>(action::OnSelected{}, width)); }, [](ProcedureFixture &f, uint32_t clone, const GeometrySelection &clicked, float width) { return PublishedKernel(f, clone, {.Op = MeshTopologyOp::BevelEdges, .Param0 = width, .Steps = 1u, .Selection = clicked}); }},
-        {"InsetDrag", Element::Face, 1u, KindOf<action::mesh::Inset>, {.1f, .25f}, [](ProcedureFixture &f, float thickness, bool first) {
+             else f.Stage(UpdateOf<&action::mesh::Bevel::Width>(action::OnSelected{}, width)); }, [](GraphFixture &f, uint32_t clone, const GeometrySelection &clicked, float width) { return PublishedKernel(f, clone, {.Op = MeshTopologyOp::BevelEdges, .Param0 = width, .Steps = 1u, .Selection = clicked}); }},
+        {"InsetDrag", Element::Face, 1u, KindOf<action::mesh::Inset>, {.1f, .25f}, [](GraphFixture &f, float thickness, bool first) {
              if (first) f.Stage(action::mesh::Inset{.Thickness = thickness});
-             else f.Stage(UpdateOf<&action::mesh::Inset::Thickness>(action::OnSelected{}, thickness)); }, [](ProcedureFixture &f, uint32_t clone, const GeometrySelection &clicked, float thickness) { return PublishedKernel(f, clone, {.Op = MeshTopologyOp::InsetRegion, .Param0 = thickness, .Flags = TopologyFlagEvenOffset, .Selection = clicked}); }},
-        {"TransformDrag", Element::Vertex, 1u, KindOf<TransformElements>, {.5f, 1.f, 1.5f}, [](ProcedureFixture &f, float z, bool) { f.Stage(action::view::TransformElements{{.P = {0.f, 0.f, z}}}); }, [](ProcedureFixture &f, uint32_t clone, const GeometrySelection &clicked, float z) {
+             else f.Stage(UpdateOf<&action::mesh::Inset::Thickness>(action::OnSelected{}, thickness)); }, [](GraphFixture &f, uint32_t clone, const GeometrySelection &clicked, float thickness) { return PublishedKernel(f, clone, {.Op = MeshTopologyOp::InsetRegion, .Param0 = thickness, .Flags = TopologyFlagEvenOffset, .Selection = clicked}); }},
+        {"TransformDrag", Element::Vertex, 1u, KindOf<TransformElements>, {.5f, 1.f, 1.5f}, [](GraphFixture &f, float z, bool) { f.Stage(action::view::TransformElements{{.P = {0.f, 0.f, z}}}); }, [](GraphFixture &f, uint32_t clone, const GeometrySelection &clicked, float z) {
              const PositionOperationTarget target{.StoreId = clone, .Selection = clicked};
              expect(ExecuteGeometryPositions(f.R, target, PositionEditOp::Transform, 1.f, 1u, {.Transform = PositionTransform{.Delta = {.P = {0.f, 0.f, z}}}}).has_value());
              return clicked; }},
     }};
     for (const auto &row : rows) {
-        Scenario(f, other, std::string{row.Name}, [&row](ProcedureFixture &f) {
+        Scenario(f, other, std::string{row.Name}, [&row](GraphFixture &f) {
             const auto &r = f.R;
             const auto &meshes = f.Store();
             const auto domains = [](GeometrySelection &selection) {
@@ -109,8 +109,8 @@ void ViewportOperators(ProcedureFixture &f, Fixture &other) {
                 previous = shape;
             }
             if (f.P->HasStaged()) f.CommitGesture();
-            const auto node = r.get<const NetworkNodes>(mesh).Last;
-            const auto kind = r.get<const ProcedureNode>(node).Kind;
+            const auto node = r.get<const GraphNodes>(mesh).Last;
+            const auto kind = r.get<const GraphNode>(node).Kind;
             expect(NodesOf(r, mesh).size() == node_count + 1u && kind == row.Kind);
             expect(r.all_of<PublishSelection>(node) && !f.Fault(node));
             expect(f.P->History.Nodes[f.P->History.Present.value()].Parent == start);
@@ -153,10 +153,10 @@ struct OperatorRow {
     std::variant<PrimitiveParameters, MeshSource (*)()> Shape;
     Element Domain;
     uint16_t Kind;
-    void (*Gesture)(ProcedureFixture &, const Transform &frame);
+    void (*Gesture)(GraphFixture &, const Transform &frame);
     std::vector<vec3> (*Targets)(const Mesh &, vec3 eye){};
     Transform World{};
-    void (*Prepare)(ProcedureFixture &){};
+    void (*Prepare)(GraphFixture &){};
     std::vector<uint32_t> Select{};
     Oracle Expected{};
 };
@@ -221,25 +221,25 @@ std::vector<vec3> OppositeEdgeCenters(const Mesh &mesh, vec3) {
     return {center, -center};
 }
 
-void ShadedSmooth(ProcedureFixture &f) { f.Do(action::object::ShadeSelected{procedure::ShadeMode::Smooth}); }
-template<float Amount> void Randomized(ProcedureFixture &f) {
+void ShadedSmooth(GraphFixture &f) { f.Do(action::object::ShadeSelected{graph::ShadeMode::Smooth}); }
+template<float Amount> void Randomized(GraphFixture &f) {
     f.Do(action::selection::SelectAll{});
     f.Do(action::mesh::Randomize{.Amount = Amount, .Seed = 3u});
 }
-void Wires(ProcedureFixture &f) {
+void Wires(GraphFixture &f) {
     f.Do(action::selection::SelectAll{});
     f.Do(action::mesh::Delete{.Mode = action::mesh::DeleteMode::OnlyFaces});
 }
-const Transform &ActiveWorld(const ProcedureFixture &f) { return *WorldTransformOf(f.R, FindActiveEntity(f.R)); }
-void TriangulatedRandomized(ProcedureFixture &f) {
+const Transform &ActiveWorld(const GraphFixture &f) { return *WorldTransformOf(f.R, FindActiveEntity(f.R)); }
+void TriangulatedRandomized(GraphFixture &f) {
     f.Do(action::selection::SelectAll{});
     f.Do(action::mesh::SplitFaces{});
     f.Do(action::mesh::Randomize{.Amount = .3f, .Seed = 3u});
 }
 // Deletes the first edge between two faces looking toward the eye with its faces, which opens a boundary loop.
-void Opened(ProcedureFixture &f) {
+void Opened(GraphFixture &f) {
     f.Render();
-    const auto mesh = f.R.get<const Instance>(FindActiveEntity(f.R)).Entity;
+    const auto mesh = f.R.get<const ObjectGeometry>(FindActiveEntity(f.R)).Entity;
     const auto &world = ActiveWorld(f);
     f.Click(TransformPoint(world, FacingEdgeCenter(Mesh{f.Store(), f.Output(mesh)}, InverseTransformPoint(world, f.View().CameraPosition)).front()), false);
     f.Do(action::mesh::Delete{.Mode = action::mesh::DeleteMode::Edges});
@@ -427,7 +427,7 @@ bool WindingsLooseFaces(std::span<const std::vector<uint32_t>> loops, bool rever
     return true;
 }
 // Looks straight down the world Z axis turned by the frame, which the bend and warp references take as the viewport plane.
-void LookDown(ProcedureFixture &f, const Transform &frame) {
+void LookDown(GraphFixture &f, const Transform &frame) {
     f.R.patch<ViewCameraState>(FirstViewport(f.R), [&](auto &view) { view.Active.Orientation = frame.R; });
 }
 const Transform BendWorld{.P = {3, -1, 2}, .R = numeric::AngleAxis(std::numbers::pi_v<float> / 2.f, vec3{0, 0, 1}), .S = {-2, .5f, 1.5f}};
@@ -454,25 +454,25 @@ std::vector<uint32_t> CornerCells(uint32_t size, uint32_t corner) {
     return faces;
 }
 // The Ctrl+R gesture: clicks the edge at the mesh-local midpoint, appends an unslid Loop Cut and Slide, slides by each factor toward `positive`, and commits.
-void LoopSlide(ProcedureFixture &f, vec3 edge, vec3 positive, std::initializer_list<float> factors) {
+void LoopSlide(GraphFixture &f, vec3 edge, vec3 positive, std::initializer_list<float> factors) {
     const auto values = [&](float factor, uint32_t reference) {
         return std::vector{Words(1u), Words(factor), Words(positive), Words(reference)};
     };
     const auto hit = f.Pick(TransformPoint(ActiveWorld(f), edge), Element::Edge);
     expect(fatal(hit.has_value()));
-    f.Stage(action::selection::ApplyEditElementClick{false, hit}, action::nodes::AppendMacro{procedure::LoopCutAndSlideMacro, values(0.f, InvalidOffset)});
-    const Mesh mesh{f.Store(), f.Output(f.R.get<const Instance>(FindActiveEntity(f.R)).Entity)};
+    f.Stage(action::selection::ApplyEditElementClick{false, hit}, action::nodes::AppendSubgraphNode{graph::BuiltinSubgraphId::LoopCutAndSlide, values(0.f, InvalidOffset)});
+    const Mesh mesh{f.Store(), f.Output(f.R.get<const ObjectGeometry>(FindActiveEntity(f.R)).Entity)};
     const auto vertices = mesh.VertexValues();
     uint32_t reference = InvalidOffset;
     f.Store().GetSelectedElements(mesh.GetStoreId(), Element::Vertex).ForEach([&](uint32_t vertex) {
         if (Length(vertices[vertex].Position - edge) < 1e-4f) reference = vertex;
     });
     expect(fatal(reference != InvalidOffset));
-    for (const auto factor : factors) f.Stage(action::nodes::AppendMacro{procedure::LoopCutAndSlideMacro, values(factor, reference)});
+    for (const auto factor : factors) f.Stage(action::nodes::AppendSubgraphNode{graph::BuiltinSubgraphId::LoopCutAndSlide, values(factor, reference)});
     f.CommitGesture();
 }
-void Activate(ProcedureFixture &f, uint32_t ordinal) {
-    const auto mesh = f.R.get<const Instance>(FindActiveEntity(f.R)).Entity;
+void Activate(GraphFixture &f, uint32_t ordinal) {
+    const auto mesh = f.R.get<const ObjectGeometry>(FindActiveEntity(f.R)).Entity;
     f.R.emplace_or_replace<MeshActiveElement>(mesh, *Mesh{f.Store(), f.Output(mesh)}.VertexAt(ordinal));
     f.Commit("Set active vertex");
 }
@@ -593,7 +593,7 @@ bool ClosedOutward(const Mesh &mesh, std::span<const std::vector<uint32_t>>) {
     const auto volumes = test::ClosedComponentVolumes(mesh);
     return test::EnclosedVolume(mesh).has_value() && volumes.size() == 1u && volumes[0] > 0.0;
 }
-state::Entity SetUpRow(ProcedureFixture &f, const OperatorRow &row, const Transform &frame) {
+state::Entity SetUpRow(GraphFixture &f, const OperatorRow &row, const Transform &frame) {
     auto &r = f.R;
     const auto &meshes = f.Store();
     if (frame != Transform{}) {
@@ -604,11 +604,11 @@ state::Entity SetUpRow(ProcedureFixture &f, const OperatorRow &row, const Transf
     }
     const auto world = ComposeLocalTransforms(frame, row.World);
     if (const auto *shape = std::get_if<PrimitiveParameters>(&row.Shape)) {
-        f.Do(action::object::AddMeshPrimitive{*shape, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Transform = world})});
+        f.Do(action::object::AddMeshPrimitive{*shape, std::make_unique<MeshObjectCreateInfo>(MeshObjectCreateInfo{.Transform = world})});
     } else {
         f.AddSourced(std::get<MeshSource (*)()>(row.Shape)(), world);
     }
-    const auto mesh = r.get<const Instance>(FindActiveEntity(r)).Entity;
+    const auto mesh = r.get<const ObjectGeometry>(FindActiveEntity(r)).Entity;
     f.EnterEdit(row.Domain);
     if (row.Prepare) row.Prepare(f);
     if (row.Targets) {
@@ -631,7 +631,7 @@ struct WorldRecord {
     std::vector<std::vector<uint32_t>> Faces;
     std::vector<std::array<uint32_t, 2>> Edges;
 };
-WorldRecord WorldRecordOf(ProcedureFixture &f, state::Entity mesh) {
+WorldRecord WorldRecordOf(GraphFixture &f, state::Entity mesh) {
     const Mesh drawn{f.Store(), f.Output(mesh)};
     const auto world = *WorldTransformOf(f.R, f.Object(mesh));
     WorldRecord record;
@@ -649,7 +649,7 @@ WorldRecord WorldRecordOf(ProcedureFixture &f, state::Entity mesh) {
 // A turn about a skew axis and a translation, which the frame loop places each row's object and the view camera by.
 const Transform Rigid{.P = {1.5f, -2.f, .75f}, .R = numeric::AngleAxis(1.1f, Normalize(vec3{-2.f, 1.f, 3.f}))};
 // Each gesture draws the same world-space record on its object at the row's World and at that placement moved by Rigid, with the view camera moved by Rigid.
-void FrameEquivalence(ProcedureFixture &f, std::span<const OperatorRow> rows) {
+void FrameEquivalence(GraphFixture &f, std::span<const OperatorRow> rows) {
     for (const auto &row : rows) {
         boost::ut::test(std::format("{}Frame", row.Name)) = [&f, &row] {
             std::vector<WorldRecord> records;
@@ -672,160 +672,160 @@ void FrameEquivalence(ProcedureFixture &f, std::span<const OperatorRow> rows) {
 }
 // The node each operator appends cooks the record its Oracle describes at the same selection, and the operator draws the same world-space record under a rigid frame.
 // Operators that edit in their mesh's world frame place the object at a rotated and unevenly scaled transform.
-void RecordedOperators(ProcedureFixture &f, Fixture &other) {
+void RecordedOperators(GraphFixture &f, Fixture &other) {
     using namespace action::mesh;
     static const Transform Placed{.P = {.5f, .25f, -.5f}, .R = numeric::AngleAxis(.4f, Normalize(vec3{1.f, 2.f, 3.f})), .S = {1.f, 1.5f, .75f}};
     static const std::vector<OperatorRow> rows{
-        {"LimitedDissolveFaces", primitive::Circle{.Radius = 5.f, .Segments = 8u, .Fill = primitive::FillType::Fan}, Element::Face, KindOf<Dissolve>, [](ProcedureFixture &f, const Transform &) { f.Do(Dissolve{.Mode = DissolveMode::Limited}); }, AdjacentFaceCenters},
-        {"RelaxEdgeLoopsEven", primitive::Cube{{1.f, 2.f, 3.f}}, Element::Edge, KindOf<RelaxEdgeLoops>, [](ProcedureFixture &f, const Transform &) { f.Do(RelaxEdgeLoops{}); }, CornerEdgeCenters},
-        {"FlattenView", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Face, KindOf<procedure::Flatten>, [](ProcedureFixture &f, const Transform &frame) { f.R.patch<ViewCameraState>(FirstViewport(f.R), [&](auto &v) { v.Active.Orientation = frame.R * ViewCamera::OrientationFromAway(Normalize(vec3{1.f, 2.f, 2.f})); }); f.Do(action::mesh::Flatten{.Method = FlattenMethod::View}); }, {}, Placed},
-        {"EdgeSlideEvenActive", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::EdgeSlide>, [](ProcedureFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = .5f, .Direction = frame.R * vec3{0.f, 1.f, 0.f}, .Even = true}); }, FacingSide, {}, Randomized<.3f>},
+        {"LimitedDissolveFaces", primitive::Circle{.Radius = 5.f, .Segments = 8u, .Fill = primitive::FillType::Fan}, Element::Face, KindOf<Dissolve>, [](GraphFixture &f, const Transform &) { f.Do(Dissolve{.Mode = DissolveMode::Limited}); }, AdjacentFaceCenters},
+        {"RelaxEdgeLoopsEven", primitive::Cube{{1.f, 2.f, 3.f}}, Element::Edge, KindOf<RelaxEdgeLoops>, [](GraphFixture &f, const Transform &) { f.Do(RelaxEdgeLoops{}); }, CornerEdgeCenters},
+        {"FlattenView", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Face, KindOf<graph::Flatten>, [](GraphFixture &f, const Transform &frame) { f.R.patch<ViewCameraState>(FirstViewport(f.R), [&](auto &v) { v.Active.Orientation = frame.R * ViewCamera::OrientationFromAway(Normalize(vec3{1.f, 2.f, 2.f})); }); f.Do(action::mesh::Flatten{.Method = FlattenMethod::View}); }, {}, Placed},
+        {"EdgeSlideEvenActive", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<graph::EdgeSlide>, [](GraphFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = .5f, .Direction = frame.R * vec3{0.f, 1.f, 0.f}, .Even = true}); }, FacingSide, {}, Randomized<.3f>},
         // The cut through the ring of the grid's bottom left edge adds a loop at x = .5, and sliding it by half toward +X moves each new vertex halfway along its rail to x = .75.
-        {.Name = "LoopCutGrid", .Shape = +[] { return Grid(2u); }, .Domain = Element::Edge, .Kind = KindOf<Subnet>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::nodes::AppendMacro{procedure::LoopCutMacro, {{1u, 0u, 0u, 0u}}}); }, .Select = {0, 1}, .Expected = {.Points = {{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {0, 1, 0}, {1, 1, 0}, {2, 1, 0}, {0, 2, 0}, {1, 2, 0}, {2, 2, 0}, {.5f, 0, 0}, {.5f, 1, 0}, {.5f, 2, 0}}}},
-        {.Name = "LoopCutAndSlideGrid", .Shape = +[] { return Grid(2u); }, .Domain = Element::Edge, .Kind = KindOf<Subnet>, .Gesture = [](ProcedureFixture &f, const Transform &) { LoopSlide(f, {.5f, 2, 0}, {-1, 0, 0}, {.25f, .5f}); }, .Expected = {.Points = {{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {0, 1, 0}, {1, 1, 0}, {2, 1, 0}, {0, 2, 0}, {1, 2, 0}, {2, 2, 0}, {.25f, 0, 0}, {.25f, 1, 0}, {.25f, 2, 0}}}},
+        {.Name = "LoopCutGrid", .Shape = +[] { return Grid(2u); }, .Domain = Element::Edge, .Kind = KindOf<SubgraphNode>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::nodes::AppendSubgraphNode{graph::BuiltinSubgraphId::LoopCut, {{1u, 0u, 0u, 0u}}}); }, .Select = {0, 1}, .Expected = {.Points = {{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {0, 1, 0}, {1, 1, 0}, {2, 1, 0}, {0, 2, 0}, {1, 2, 0}, {2, 2, 0}, {.5f, 0, 0}, {.5f, 1, 0}, {.5f, 2, 0}}}},
+        {.Name = "LoopCutAndSlideGrid", .Shape = +[] { return Grid(2u); }, .Domain = Element::Edge, .Kind = KindOf<SubgraphNode>, .Gesture = [](GraphFixture &f, const Transform &) { LoopSlide(f, {.5f, 2, 0}, {-1, 0, 0}, {.25f, .5f}); }, .Expected = {.Points = {{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {0, 1, 0}, {1, 1, 0}, {2, 1, 0}, {0, 2, 0}, {1, 2, 0}, {2, 2, 0}, {.25f, 0, 0}, {.25f, 1, 0}, {.25f, 2, 0}}}},
         // The rings' rails reverse across the loop, and the slide follows the drag at the clicked edge on the near corner, away from the cut's first new vertex on the far corner.
-        {.Name = "LoopCutAndSlideRings", .Shape = TurnedRings, .Domain = Element::Edge, .Kind = KindOf<Subnet>, .Gesture = [](ProcedureFixture &f, const Transform &) { LoopSlide(f, {1.5f, 1.5f, 0}, {1, 1, 0}, {.25f, .5f}); }, .Expected = {.Points = RingsSlid()}},
-        {.Name = "BisectFill", .Shape = primitive::Cube{{2.f, 2.f, 2.f}}, .Domain = Element::Face, .Kind = KindOf<Subnet>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::nodes::AppendMacro{procedure::BisectFillMacro, {{0u, 0u, std::bit_cast<uint32_t>(.5f), 0u}, {0u, 0u, std::bit_cast<uint32_t>(1.f), 0u}}}); }, .Expected = {.Holds = CappedCube}},
-        {.Name = "BisectFillCorners", .Shape = primitive::Cube{{2.f, 2.f, 2.f}}, .Domain = Element::Face, .Kind = KindOf<Subnet>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::nodes::AppendMacro{procedure::BisectFillMacro, {{0u, 0u, 0u, 0u}, {std::bit_cast<uint32_t>(1.f), std::bit_cast<uint32_t>(1.f), 0u, 0u}}}); }, .Expected = {.Holds = CappedCorners}},
+        {.Name = "LoopCutAndSlideRings", .Shape = TurnedRings, .Domain = Element::Edge, .Kind = KindOf<SubgraphNode>, .Gesture = [](GraphFixture &f, const Transform &) { LoopSlide(f, {1.5f, 1.5f, 0}, {1, 1, 0}, {.25f, .5f}); }, .Expected = {.Points = RingsSlid()}},
+        {.Name = "BisectFill", .Shape = primitive::Cube{{2.f, 2.f, 2.f}}, .Domain = Element::Face, .Kind = KindOf<SubgraphNode>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::nodes::AppendSubgraphNode{graph::BuiltinSubgraphId::BisectFill, {{0u, 0u, std::bit_cast<uint32_t>(.5f), 0u}, {0u, 0u, std::bit_cast<uint32_t>(1.f), 0u}}}); }, .Expected = {.Holds = CappedCube}},
+        {.Name = "BisectFillCorners", .Shape = primitive::Cube{{2.f, 2.f, 2.f}}, .Domain = Element::Face, .Kind = KindOf<SubgraphNode>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::nodes::AppendSubgraphNode{graph::BuiltinSubgraphId::BisectFill, {{0u, 0u, 0u, 0u}, {std::bit_cast<uint32_t>(1.f), std::bit_cast<uint32_t>(1.f), 0u, 0u}}}); }, .Expected = {.Holds = CappedCorners}},
         // Symmetrize mirrors the randomized cube's kept side, in front along the plane's normal, onto the cleared one.
-        {.Name = "Symmetrize", .Shape = primitive::Cube{{2.f, 2.f, 2.f}}, .Domain = Element::Face, .Kind = KindOf<Subnet>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::nodes::AppendMacro{procedure::SymmetrizeMacro}); }, .Prepare = Randomized<.3f>, .Expected = {.Holds = Symmetrized<0u, false>}},
+        {.Name = "Symmetrize", .Shape = primitive::Cube{{2.f, 2.f, 2.f}}, .Domain = Element::Face, .Kind = KindOf<SubgraphNode>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::nodes::AppendSubgraphNode{graph::BuiltinSubgraphId::Symmetrize}); }, .Prepare = Randomized<.3f>, .Expected = {.Holds = Symmetrized<0u, false>}},
         // Symmetrize through the ring off the far cube's center snaps the ring onto the plane, so the seam welds at any coordinate scale.
-        {.Name = "SymmetrizeFar", .Shape = FarSplitCube, .Domain = Element::Face, .Kind = KindOf<Subnet>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::nodes::AppendMacro{procedure::SymmetrizeMacro, {{std::bit_cast<uint32_t>(50.f), std::bit_cast<uint32_t>(50.f), std::bit_cast<uint32_t>(50.f), 0u}, {std::bit_cast<uint32_t>(1.f), 0u, 0u, 0u}}}); }, .Expected = {.Holds = Symmetrized<0u, false, 50.f>}},
-        {.Name = "SymmetrizeNegativeY", .Shape = primitive::Cube{{2.f, 2.f, 2.f}}, .Domain = Element::Face, .Kind = KindOf<Subnet>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::nodes::AppendMacro{procedure::SymmetrizeMacro, {{0u, 0u, 0u, 0u}, {0u, std::bit_cast<uint32_t>(-1.f), 0u, 0u}}}); }, .Prepare = Randomized<.3f>, .Expected = {.Holds = Symmetrized<1u, true>}},
-        {.Name = "CrossSection", .Shape = primitive::Cube{{2.f, 2.f, 2.f}}, .Domain = Element::Face, .Kind = KindOf<Subnet>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::nodes::AppendMacro{procedure::CrossSectionMacro, {{0u, 0u, std::bit_cast<uint32_t>(.5f), 0u}}}); }, .Expected = {.Holds = SectionedCube}},
-        {"Fill", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<Fill>, [](ProcedureFixture &f, const Transform &) { f.Do(Fill{}); }, FacingDiagonal},
-        {"BridgeEdgeLoops", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Edge, KindOf<BridgeEdgeLoops>, [](ProcedureFixture &f, const Transform &) { f.Do(BridgeEdgeLoops{}); }, OppositeEdgeCenters, {}, Wires},
-        {"GridFill", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Edge, KindOf<GridFill>, [](ProcedureFixture &f, const Transform &) { f.Do(GridFill{}); }, BoundaryEdgeCenters, {}, Opened},
-        {"EdgeRotate", primitive::IcoSphere{.Radius = 3.f, .Subdivisions = 1u}, Element::Edge, KindOf<EdgeRotate>, [](ProcedureFixture &f, const Transform &) { f.Do(EdgeRotate{}); }, FacingEdgeCenter},
+        {.Name = "SymmetrizeFar", .Shape = FarSplitCube, .Domain = Element::Face, .Kind = KindOf<SubgraphNode>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::nodes::AppendSubgraphNode{graph::BuiltinSubgraphId::Symmetrize, {{std::bit_cast<uint32_t>(50.f), std::bit_cast<uint32_t>(50.f), std::bit_cast<uint32_t>(50.f), 0u}, {std::bit_cast<uint32_t>(1.f), 0u, 0u, 0u}}}); }, .Expected = {.Holds = Symmetrized<0u, false, 50.f>}},
+        {.Name = "SymmetrizeNegativeY", .Shape = primitive::Cube{{2.f, 2.f, 2.f}}, .Domain = Element::Face, .Kind = KindOf<SubgraphNode>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::nodes::AppendSubgraphNode{graph::BuiltinSubgraphId::Symmetrize, {{0u, 0u, 0u, 0u}, {0u, std::bit_cast<uint32_t>(-1.f), 0u, 0u}}}); }, .Prepare = Randomized<.3f>, .Expected = {.Holds = Symmetrized<1u, true>}},
+        {.Name = "CrossSection", .Shape = primitive::Cube{{2.f, 2.f, 2.f}}, .Domain = Element::Face, .Kind = KindOf<SubgraphNode>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::nodes::AppendSubgraphNode{graph::BuiltinSubgraphId::CrossSection, {{0u, 0u, std::bit_cast<uint32_t>(.5f), 0u}}}); }, .Expected = {.Holds = SectionedCube}},
+        {"Fill", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<Fill>, [](GraphFixture &f, const Transform &) { f.Do(Fill{}); }, FacingDiagonal},
+        {"BridgeEdgeLoops", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Edge, KindOf<BridgeEdgeLoops>, [](GraphFixture &f, const Transform &) { f.Do(BridgeEdgeLoops{}); }, OppositeEdgeCenters, {}, Wires},
+        {"GridFill", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Edge, KindOf<GridFill>, [](GraphFixture &f, const Transform &) { f.Do(GridFill{}); }, BoundaryEdgeCenters, {}, Opened},
+        {"EdgeRotate", primitive::IcoSphere{.Radius = 3.f, .Subdivisions = 1u}, Element::Edge, KindOf<EdgeRotate>, [](GraphFixture &f, const Transform &) { f.Do(EdgeRotate{}); }, FacingEdgeCenter},
         // Beautify leaves a randomized triangulated cube Delaunay in each quad's own plane with its element counts, and a selected planar fan Delaunay beside its unselected faces.
-        {.Name = "BeautifyFaces", .Shape = primitive::Cube{{2.f, 2.f, 2.f}}, .Domain = Element::Face, .Kind = KindOf<BeautifyFaces>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(BeautifyFaces{}); }, .Prepare = TriangulatedRandomized, .Expected = {.Holds = BeautifiedCube}},
-        {.Name = "BeautifyArea", .Shape = +[] { return Fanned({{-5, 0, 0}, {-4, -3, 0}, {-1, -4, 0}, {3, -3, 0}, {6, 0, 0}, {5, 4, 0}, {2, 6, 0}, {-2, 5, 0}}); }, .Domain = Element::Face, .Kind = KindOf<BeautifyFaces>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(BeautifyFaces{}); }, .Select = {0, 1, 2, 3, 4, 5}, .Expected = {.Holds = BeautifiedFan}},
-        {"RotateUVs", AttributedGrid, Element::Face, KindOf<CycleCornerAttribute>, [](ProcedureFixture &f, const Transform &) { f.Do(CycleCornerAttribute{}); }, AdjacentFaceCenters},
-        {"ReverseUVs", AttributedGrid, Element::Face, KindOf<CycleCornerAttribute>, [](ProcedureFixture &f, const Transform &) { f.Do(CycleCornerAttribute{.Cycle = CornerCycle::Reverse}); }, AdjacentFaceCenters},
-        {"RotateColors", AttributedGrid, Element::Face, KindOf<CycleCornerAttribute>, [](ProcedureFixture &f, const Transform &) { f.Do(CycleCornerAttribute{.Attribute = CornerAttribute::Colors, .Cycle = CornerCycle::Backward}); }, AdjacentFaceCenters},
-        {"MarkSharpEdges", primitive::Cube{{1.f, 2.f, 3.f}}, Element::Edge, KindOf<procedure::MarkSharp>, [](ProcedureFixture &f, const Transform &) { f.Do(action::object::SetSelectedSharp{.Element = Element::Edge, .Sharp = true}); }, CornerEdgeCenters},
-        {"MarkSharpVertices", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<procedure::MarkSharp>, [](ProcedureFixture &f, const Transform &) { f.Do(action::object::SetSelectedSharp{.Element = Element::Vertex, .Sharp = true}); }, FacingSide},
-        {"SmoothFace", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Face, KindOf<procedure::MarkSharp>, [](ProcedureFixture &f, const Transform &) { f.Do(action::object::SetSelectedSharp{.Element = Element::Face, .Sharp = false}); }, FacingFaceCenter},
-        {"Knife", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Face, KindOf<procedure::Knife>, [](ProcedureFixture &f, const Transform &frame) {
+        {.Name = "BeautifyFaces", .Shape = primitive::Cube{{2.f, 2.f, 2.f}}, .Domain = Element::Face, .Kind = KindOf<BeautifyFaces>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(BeautifyFaces{}); }, .Prepare = TriangulatedRandomized, .Expected = {.Holds = BeautifiedCube}},
+        {.Name = "BeautifyArea", .Shape = +[] { return Fanned({{-5, 0, 0}, {-4, -3, 0}, {-1, -4, 0}, {3, -3, 0}, {6, 0, 0}, {5, 4, 0}, {2, 6, 0}, {-2, 5, 0}}); }, .Domain = Element::Face, .Kind = KindOf<BeautifyFaces>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(BeautifyFaces{}); }, .Select = {0, 1, 2, 3, 4, 5}, .Expected = {.Holds = BeautifiedFan}},
+        {"RotateUVs", AttributedGrid, Element::Face, KindOf<CycleCornerAttribute>, [](GraphFixture &f, const Transform &) { f.Do(CycleCornerAttribute{}); }, AdjacentFaceCenters},
+        {"ReverseUVs", AttributedGrid, Element::Face, KindOf<CycleCornerAttribute>, [](GraphFixture &f, const Transform &) { f.Do(CycleCornerAttribute{.Cycle = CornerCycle::Reverse}); }, AdjacentFaceCenters},
+        {"RotateColors", AttributedGrid, Element::Face, KindOf<CycleCornerAttribute>, [](GraphFixture &f, const Transform &) { f.Do(CycleCornerAttribute{.Attribute = CornerAttribute::Colors, .Cycle = CornerCycle::Backward}); }, AdjacentFaceCenters},
+        {"MarkSharpEdges", primitive::Cube{{1.f, 2.f, 3.f}}, Element::Edge, KindOf<graph::MarkSharp>, [](GraphFixture &f, const Transform &) { f.Do(action::object::SetSelectedSharp{.Element = Element::Edge, .Sharp = true}); }, CornerEdgeCenters},
+        {"MarkSharpVertices", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Vertex, KindOf<graph::MarkSharp>, [](GraphFixture &f, const Transform &) { f.Do(action::object::SetSelectedSharp{.Element = Element::Vertex, .Sharp = true}); }, FacingSide},
+        {"SmoothFace", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Face, KindOf<graph::MarkSharp>, [](GraphFixture &f, const Transform &) { f.Do(action::object::SetSelectedSharp{.Element = Element::Face, .Sharp = false}); }, FacingFaceCenter},
+        {"Knife", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Face, KindOf<graph::Knife>, [](GraphFixture &f, const Transform &frame) {
              f.Render();
              f.Do(action::mesh::Knife{f.ScreenFraction(TransformPoint(frame, Placed.P + vec3{-4.f, .3f, 0.f})) * f.View().ViewportSize, f.ScreenFraction(TransformPoint(frame, Placed.P + vec3{4.f, -.2f, 0.f})) * f.View().ViewportSize}); }, {}, Placed},
-        {"ShadeSmooth", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Face, KindOf<procedure::Shade>, [](ProcedureFixture &f, const Transform &) { f.Do(action::object::ShadeSelected{procedure::ShadeMode::Smooth}); }},
-        {"ShadeFlat", primitive::UVSphere{.Radius = 2.f, .Slices = 8u, .Stacks = 4u}, Element::Face, KindOf<procedure::Shade>, [](ProcedureFixture &f, const Transform &) { f.Do(action::object::ShadeSelected{procedure::ShadeMode::Flat}); }, {}, {}, ShadedSmooth},
-        {"ShadeSmoothByAngle", primitive::UVSphere{.Radius = 2.f, .Slices = 8u, .Stacks = 4u}, Element::Face, KindOf<procedure::Shade>, [](ProcedureFixture &f, const Transform &) { f.Do(action::object::ShadeSelected{procedure::ShadeMode::ByAngle, .6f}); }},
+        {"ShadeSmooth", primitive::Cube{{2.f, 2.f, 2.f}}, Element::Face, KindOf<graph::Shade>, [](GraphFixture &f, const Transform &) { f.Do(action::object::ShadeSelected{graph::ShadeMode::Smooth}); }},
+        {"ShadeFlat", primitive::UVSphere{.Radius = 2.f, .Slices = 8u, .Stacks = 4u}, Element::Face, KindOf<graph::Shade>, [](GraphFixture &f, const Transform &) { f.Do(action::object::ShadeSelected{graph::ShadeMode::Flat}); }, {}, {}, ShadedSmooth},
+        {"ShadeSmoothByAngle", primitive::UVSphere{.Radius = 2.f, .Slices = 8u, .Stacks = 4u}, Element::Face, KindOf<graph::Shade>, [](GraphFixture &f, const Transform &) { f.Do(action::object::ShadeSelected{graph::ShadeMode::ByAngle, .6f}); }},
         // Fits against independent least-squares, SciPy spline and Blender references, each leaving the unselected far point.
-        {.Name = "Circularize", .Shape = +[] { return Sourced({{0, 0, 0}, {2, 0, 0}, {3, 1, 0}, {2, 3, 0}, {-1, 2, 0}, Far}, {{0, 1, 2, 3, 4}}); }, .Domain = Element::Edge, .Kind = KindOf<Circularize>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(Circularize{}); }, .Expected = {.Positions = {{-.4543723752f, .2665205426f, 0}, {1.74700349f, -.2120457217f, 0}, {2.882409607f, 1.733702031f, 0}, {1.382753314f, 3.41480654f, 0}, {-.6794913643f, 2.508038512f, 0}, Far}}},
-        {.Name = "CircularizeOpen", .Shape = +[] { return Sourced({{2, 0, 0}, {1.2f, 1, 0}, {0, 2, 0}, {-1, 1.1f, 0}, {-2, 0, 0}, Far}, {}, {{0, 1}, {1, 2}, {2, 3}, {3, 4}}); }, .Domain = Element::Edge, .Kind = KindOf<Circularize>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(Circularize{.Method = CircleFit::Contract, .Regular = false}); }, .Expected = {.Positions = {{1.08173014f, .2805637001f, 0}, {1.074599406f, .9587836917f, 0}, {.001674496185f, 1.730462079f, 0}, {-1, 1.1f, 0}, {-1.065226088f, .2831478019f, 0}, Far}}},
-        {.Name = "CurveBetweenSelected", .Shape = +[] { return Sourced({{0, 0, 0}, {.5f, 1, 0}, {1, 0, .2f}, {2, 1, .5f}, {3, -1, 0}, {4, 0, 0}, {5, 1, 0}, Far}, {}, {{0, 1}, {1, 2}, {2, 3}, {3, 4}, {4, 5}, {5, 6}}); }, .Domain = Element::Vertex, .Kind = KindOf<CurveBetweenSelected>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(CurveBetweenSelected{}); }, .Select = {1, 3, 5}, .Expected = {.Positions = {{0, 0, 0}, {.5f, 1, 0}, {1.203125f, 1.09375f, .34375f}, {2, 1, .5f}, {2.953125f, .59375f, .34375f}, {4, 0, 0}, {5, 1, 0}, Far}}},
-        {.Name = "Flatten", .Shape = +[] { return Sourced({{0, 0, 0}, {2, 0, 0}, {2, 2, 1}, {0, 2, 0}, {10, 0, 0}, {10, 2, 0}, {11, 2, 2}, {10, 0, 2}, Far}, {}, {{0, 1}, {1, 2}, {2, 3}, {4, 5}, {5, 6}, {6, 7}}); }, .Domain = Element::Edge, .Kind = KindOf<procedure::Flatten>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::Flatten{}); }, .Expected = {.Positions = {{.06480586011f, .06480586011f, -.2449150189f}, {1.941974115f, -.05802588532f, .2192920636f}, {2.051245911f, 2.051245911f, .8063308916f}, {-.05802588532f, 1.941974115f, .2192920636f}, {9.755084981f, .06480586011f, .06480586011f}, {10.21929206f, 1.941974115f, -.05802588532f}, {10.80633089f, 2.051245911f, 2.051245911f}, {10.21929206f, -.05802588532f, 1.941974115f}, Far}}},
-        {.Name = "RelaxEdgeLoops", .Shape = +[] { return Sourced({{0, 0, 0}, {1, 0, 0}, {3, 0, 0}, {3, 2, 0}, {0, 2, 0}, Far}, {}, {{0, 1}, {1, 2}, {2, 3}, {3, 4}, {4, 0}}); }, .Domain = Element::Edge, .Kind = KindOf<RelaxEdgeLoops>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(RelaxEdgeLoops{.EvenSpacing = false}); }, .Expected = {.Positions = {{.257891029f, .292481363f, 0}, {.982795715f, -.248387098f, 0}, {2.63177109f, .308072478f, 0}, {2.78709674f, 1.73870969f, 0}, {.611708343f, 1.09812188f, 0}, Far}}},
-        {.Name = "SpaceEvenlyLinear", .Shape = UnevenChain, .Domain = Element::Edge, .Kind = KindOf<SpaceEvenly>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(SpaceEvenly{.Interpolation = EdgeLoopInterpolation::Linear}); }, .Expected = {.Positions = {{0, 0, 0}, {1.11557984f, .50538290f, 0}, {2.45127296f, .90254611f, 0}, {3.56619334f, 1.43380666f, 0}, {5, 0, 0}, Far}}},
-        {.Name = "SpaceEvenlyCubic", .Shape = UnevenChain, .Domain = Element::Edge, .Kind = KindOf<SpaceEvenly>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(SpaceEvenly{.Interpolation = EdgeLoopInterpolation::Cubic}); }, .Expected = {.Positions = {{0, 0, 0}, {1.05305076f, .56604123f, 0}, {2.54712796f, .72494555f, 0}, {3.43722606f, 2.06138992f, 0}, {5, 0, 0}, Far}}},
-        {.Name = "SmoothVertices", .Shape = KinkedChain, .Domain = Element::Vertex, .Kind = KindOf<SmoothVertices>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(SmoothVertices{.Factor = .5f, .Repeat = 2u, .X = false}); }, .Select = {1, 3}, .Expected = {.Positions = {{0, 0, 0}, {1, .5f, 0}, {4, 0, 0}, {9, 9, 9}}}},
-        {.Name = "SmoothZero", .Shape = KinkedChain, .Domain = Element::Vertex, .Kind = KindOf<SmoothVertices>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(SmoothVertices{.Factor = 0.f}); }, .Select = {1, 3}, .Expected = {.Unchanged = true}},
-        {.Name = "MakePlanarFaces", .Shape = +[] { return Sourced({{-1, -1, 1}, {1, -1, -1}, {1, 1, 1}, {-1, 1, -1}, {3, 0, 2}, {4, 0, 2}, {3, 1, 2}}, {{0, 1, 2, 3}, {4, 5, 6}}); }, .Domain = Element::Face, .Kind = KindOf<MakePlanarFaces>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(MakePlanarFaces{}); }, .Expected = {.Positions = {{-1, -1, 0}, {1, -1, 0}, {1, 1, 0}, {-1, 1, 0}, {3, 0, 2}, {4, 0, 2}, {3, 1, 2}}}},
+        {.Name = "Circularize", .Shape = +[] { return Sourced({{0, 0, 0}, {2, 0, 0}, {3, 1, 0}, {2, 3, 0}, {-1, 2, 0}, Far}, {{0, 1, 2, 3, 4}}); }, .Domain = Element::Edge, .Kind = KindOf<Circularize>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(Circularize{}); }, .Expected = {.Positions = {{-.4543723752f, .2665205426f, 0}, {1.74700349f, -.2120457217f, 0}, {2.882409607f, 1.733702031f, 0}, {1.382753314f, 3.41480654f, 0}, {-.6794913643f, 2.508038512f, 0}, Far}}},
+        {.Name = "CircularizeOpen", .Shape = +[] { return Sourced({{2, 0, 0}, {1.2f, 1, 0}, {0, 2, 0}, {-1, 1.1f, 0}, {-2, 0, 0}, Far}, {}, {{0, 1}, {1, 2}, {2, 3}, {3, 4}}); }, .Domain = Element::Edge, .Kind = KindOf<Circularize>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(Circularize{.Method = CircleFit::Contract, .Regular = false}); }, .Expected = {.Positions = {{1.08173014f, .2805637001f, 0}, {1.074599406f, .9587836917f, 0}, {.001674496185f, 1.730462079f, 0}, {-1, 1.1f, 0}, {-1.065226088f, .2831478019f, 0}, Far}}},
+        {.Name = "CurveBetweenSelected", .Shape = +[] { return Sourced({{0, 0, 0}, {.5f, 1, 0}, {1, 0, .2f}, {2, 1, .5f}, {3, -1, 0}, {4, 0, 0}, {5, 1, 0}, Far}, {}, {{0, 1}, {1, 2}, {2, 3}, {3, 4}, {4, 5}, {5, 6}}); }, .Domain = Element::Vertex, .Kind = KindOf<CurveBetweenSelected>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(CurveBetweenSelected{}); }, .Select = {1, 3, 5}, .Expected = {.Positions = {{0, 0, 0}, {.5f, 1, 0}, {1.203125f, 1.09375f, .34375f}, {2, 1, .5f}, {2.953125f, .59375f, .34375f}, {4, 0, 0}, {5, 1, 0}, Far}}},
+        {.Name = "Flatten", .Shape = +[] { return Sourced({{0, 0, 0}, {2, 0, 0}, {2, 2, 1}, {0, 2, 0}, {10, 0, 0}, {10, 2, 0}, {11, 2, 2}, {10, 0, 2}, Far}, {}, {{0, 1}, {1, 2}, {2, 3}, {4, 5}, {5, 6}, {6, 7}}); }, .Domain = Element::Edge, .Kind = KindOf<graph::Flatten>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::Flatten{}); }, .Expected = {.Positions = {{.06480586011f, .06480586011f, -.2449150189f}, {1.941974115f, -.05802588532f, .2192920636f}, {2.051245911f, 2.051245911f, .8063308916f}, {-.05802588532f, 1.941974115f, .2192920636f}, {9.755084981f, .06480586011f, .06480586011f}, {10.21929206f, 1.941974115f, -.05802588532f}, {10.80633089f, 2.051245911f, 2.051245911f}, {10.21929206f, -.05802588532f, 1.941974115f}, Far}}},
+        {.Name = "RelaxEdgeLoops", .Shape = +[] { return Sourced({{0, 0, 0}, {1, 0, 0}, {3, 0, 0}, {3, 2, 0}, {0, 2, 0}, Far}, {}, {{0, 1}, {1, 2}, {2, 3}, {3, 4}, {4, 0}}); }, .Domain = Element::Edge, .Kind = KindOf<RelaxEdgeLoops>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(RelaxEdgeLoops{.EvenSpacing = false}); }, .Expected = {.Positions = {{.257891029f, .292481363f, 0}, {.982795715f, -.248387098f, 0}, {2.63177109f, .308072478f, 0}, {2.78709674f, 1.73870969f, 0}, {.611708343f, 1.09812188f, 0}, Far}}},
+        {.Name = "SpaceEvenlyLinear", .Shape = UnevenChain, .Domain = Element::Edge, .Kind = KindOf<SpaceEvenly>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(SpaceEvenly{.Interpolation = EdgeLoopInterpolation::Linear}); }, .Expected = {.Positions = {{0, 0, 0}, {1.11557984f, .50538290f, 0}, {2.45127296f, .90254611f, 0}, {3.56619334f, 1.43380666f, 0}, {5, 0, 0}, Far}}},
+        {.Name = "SpaceEvenlyCubic", .Shape = UnevenChain, .Domain = Element::Edge, .Kind = KindOf<SpaceEvenly>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(SpaceEvenly{.Interpolation = EdgeLoopInterpolation::Cubic}); }, .Expected = {.Positions = {{0, 0, 0}, {1.05305076f, .56604123f, 0}, {2.54712796f, .72494555f, 0}, {3.43722606f, 2.06138992f, 0}, {5, 0, 0}, Far}}},
+        {.Name = "SmoothVertices", .Shape = KinkedChain, .Domain = Element::Vertex, .Kind = KindOf<SmoothVertices>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(SmoothVertices{.Factor = .5f, .Repeat = 2u, .X = false}); }, .Select = {1, 3}, .Expected = {.Positions = {{0, 0, 0}, {1, .5f, 0}, {4, 0, 0}, {9, 9, 9}}}},
+        {.Name = "SmoothZero", .Shape = KinkedChain, .Domain = Element::Vertex, .Kind = KindOf<SmoothVertices>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(SmoothVertices{.Factor = 0.f}); }, .Select = {1, 3}, .Expected = {.Unchanged = true}},
+        {.Name = "MakePlanarFaces", .Shape = +[] { return Sourced({{-1, -1, 1}, {1, -1, -1}, {1, 1, 1}, {-1, 1, -1}, {3, 0, 2}, {4, 0, 2}, {3, 1, 2}}, {{0, 1, 2, 3}, {4, 5, 6}}); }, .Domain = Element::Face, .Kind = KindOf<MakePlanarFaces>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(MakePlanarFaces{}); }, .Expected = {.Positions = {{-1, -1, 0}, {1, -1, 0}, {1, 1, 0}, {-1, 1, 0}, {3, 0, 2}, {4, 0, 2}, {3, 1, 2}}}},
         // bpy.ops.transform.shrink_fatten(value=.2), Blender 5.2.2 d13f752e3b9c.
         // The unselected third face changes vertex normals only, and every user of a nonmanifold edge contributes to its normal and shell factor.
-        {.Name = "ShrinkFattenFaces", .Shape = Fan3, .Domain = Element::Face, .Kind = KindOf<ShrinkFatten>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(ShrinkFatten{.Distance = .2f}); }, .Select = {0, 1}, .Expected = {.Positions = {{0, .141421363f, .141421363f}, {2, .141421363f, .141421363f}, {0, 1, .2f}, {0, .2f, 1}, {-1, 2, 1}, {2, 2, 2}}}},
-        {.Name = "ShrinkFattenFacesEven", .Shape = Fan3, .Domain = Element::Face, .Kind = KindOf<ShrinkFatten>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(ShrinkFatten{.Distance = .2f, .Even = true}); }, .Select = {0, 1}, .Expected = {.Positions = {{0, .2f, .2f}, {2, .2f, .2f}, {0, 1, .2f}, {0, .2f, 1}, {-1, 2, 1}, {2, 2, 2}}}},
-        {.Name = "ShrinkFattenVertices", .Shape = Fan3, .Domain = Element::Vertex, .Kind = KindOf<ShrinkFatten>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(ShrinkFatten{.Distance = .2f}); }, .Select = {0, 1, 2}, .Expected = {.Positions = {{.033676531f, .121543162f, .155219704f}, {2, .141421363f, .141421363f}, {.100692429f, 1, .172803462f}, {0, 0, 1}, {-1, 2, 1}, {2, 2, 2}}}},
-        {.Name = "ShrinkFattenVerticesEven", .Shape = Fan3, .Domain = Element::Vertex, .Kind = KindOf<ShrinkFatten>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(ShrinkFatten{.Distance = .2f, .Even = true}); }, .Select = {0, 1, 2}, .Expected = {.Positions = {{.043392085f, .156607896f, .2f}, {2, .2f, .2f}, {.116539836f, 1, .2f}, {0, 0, 1}, {-1, 2, 1}, {2, 2, 2}}}},
-        {.Name = "ShrinkFattenNonmanifold", .Shape = NonmanifoldFan, .Domain = Element::Face, .Kind = KindOf<ShrinkFatten>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(ShrinkFatten{.Distance = .2f}); }, .Expected = {.Positions = {{0, .039776370f, .196004689f}, {2, .033695214f, .197141156f}, {0, 1, .2f}, {0, .2f, 1}, {-1, 1.91055727f, 1.17888546f}, {10, 0, 0}, {11, 0, 0}, {10, 1, 0}}}},
-        {.Name = "ShrinkFattenNonmanifoldEven", .Shape = NonmanifoldFan, .Domain = Element::Face, .Kind = KindOf<ShrinkFatten>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(ShrinkFatten{.Distance = .2f, .Even = true}); }, .Expected = {.Positions = {{0, .093217827f, .459346354f}, {2, .086327799f, .505079567f}, {0, 1, .2f}, {0, .2f, 1}, {-1, 1.91055727f, 1.17888546f}, {10, 0, 0}, {11, 0, 0}, {10, 1, 0}}}},
+        {.Name = "ShrinkFattenFaces", .Shape = Fan3, .Domain = Element::Face, .Kind = KindOf<ShrinkFatten>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(ShrinkFatten{.Distance = .2f}); }, .Select = {0, 1}, .Expected = {.Positions = {{0, .141421363f, .141421363f}, {2, .141421363f, .141421363f}, {0, 1, .2f}, {0, .2f, 1}, {-1, 2, 1}, {2, 2, 2}}}},
+        {.Name = "ShrinkFattenFacesEven", .Shape = Fan3, .Domain = Element::Face, .Kind = KindOf<ShrinkFatten>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(ShrinkFatten{.Distance = .2f, .Even = true}); }, .Select = {0, 1}, .Expected = {.Positions = {{0, .2f, .2f}, {2, .2f, .2f}, {0, 1, .2f}, {0, .2f, 1}, {-1, 2, 1}, {2, 2, 2}}}},
+        {.Name = "ShrinkFattenVertices", .Shape = Fan3, .Domain = Element::Vertex, .Kind = KindOf<ShrinkFatten>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(ShrinkFatten{.Distance = .2f}); }, .Select = {0, 1, 2}, .Expected = {.Positions = {{.033676531f, .121543162f, .155219704f}, {2, .141421363f, .141421363f}, {.100692429f, 1, .172803462f}, {0, 0, 1}, {-1, 2, 1}, {2, 2, 2}}}},
+        {.Name = "ShrinkFattenVerticesEven", .Shape = Fan3, .Domain = Element::Vertex, .Kind = KindOf<ShrinkFatten>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(ShrinkFatten{.Distance = .2f, .Even = true}); }, .Select = {0, 1, 2}, .Expected = {.Positions = {{.043392085f, .156607896f, .2f}, {2, .2f, .2f}, {.116539836f, 1, .2f}, {0, 0, 1}, {-1, 2, 1}, {2, 2, 2}}}},
+        {.Name = "ShrinkFattenNonmanifold", .Shape = NonmanifoldFan, .Domain = Element::Face, .Kind = KindOf<ShrinkFatten>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(ShrinkFatten{.Distance = .2f}); }, .Expected = {.Positions = {{0, .039776370f, .196004689f}, {2, .033695214f, .197141156f}, {0, 1, .2f}, {0, .2f, 1}, {-1, 1.91055727f, 1.17888546f}, {10, 0, 0}, {11, 0, 0}, {10, 1, 0}}}},
+        {.Name = "ShrinkFattenNonmanifoldEven", .Shape = NonmanifoldFan, .Domain = Element::Face, .Kind = KindOf<ShrinkFatten>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(ShrinkFatten{.Distance = .2f, .Even = true}); }, .Expected = {.Positions = {{0, .093217827f, .459346354f}, {2, .086327799f, .505079567f}, {0, 1, .2f}, {0, .2f, 1}, {-1, 1.91055727f, 1.17888546f}, {10, 0, 0}, {11, 0, 0}, {10, 1, 0}}}},
         // Radial edits about the selection center, whose mean radius the 252 central vertices dilute, and the far point unselected.
-        {.Name = "ToSphere", .Shape = Cross, .Domain = Element::Vertex, .Kind = KindOf<procedure::ToSphere>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::ToSphere{.25f}); }, .Select = Ordinals(0u, 256u), .Expected = {.Positions = Scaled(Cross(), 4u, [](float radius) { return (radius * .75f + (6.f / 257.f) * .25f) / radius; })}},
-        {.Name = "PushPull", .Shape = Cross, .Domain = Element::Vertex, .Kind = KindOf<procedure::PushPull>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::PushPull{-.4f}); }, .Select = Ordinals(0u, 256u), .Expected = {.Positions = Scaled(Cross(), 4u, [](float radius) { return (radius + .4f) / radius; })}},
-        {.Name = "ToSphereZero", .Shape = Cross, .Domain = Element::Vertex, .Kind = KindOf<procedure::ToSphere>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::ToSphere{0.f}); }, .Select = Ordinals(0u, 256u), .Expected = {.Unchanged = true}},
-        {.Name = "ToSphereNegative", .Shape = Cross, .Domain = Element::Vertex, .Kind = KindOf<procedure::ToSphere>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::ToSphere{-1.f}); }, .Select = Ordinals(0u, 256u), .Expected = {.Unchanged = true}},
-        {.Name = "PushPullZero", .Shape = Cross, .Domain = Element::Vertex, .Kind = KindOf<procedure::PushPull>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::PushPull{0.f}); }, .Select = Ordinals(0u, 256u), .Expected = {.Unchanged = true}},
+        {.Name = "ToSphere", .Shape = Cross, .Domain = Element::Vertex, .Kind = KindOf<graph::ToSphere>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::ToSphere{.25f}); }, .Select = Ordinals(0u, 256u), .Expected = {.Positions = Scaled(Cross(), 4u, [](float radius) { return (radius * .75f + (6.f / 257.f) * .25f) / radius; })}},
+        {.Name = "PushPull", .Shape = Cross, .Domain = Element::Vertex, .Kind = KindOf<graph::PushPull>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::PushPull{-.4f}); }, .Select = Ordinals(0u, 256u), .Expected = {.Positions = Scaled(Cross(), 4u, [](float radius) { return (radius + .4f) / radius; })}},
+        {.Name = "ToSphereZero", .Shape = Cross, .Domain = Element::Vertex, .Kind = KindOf<graph::ToSphere>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::ToSphere{0.f}); }, .Select = Ordinals(0u, 256u), .Expected = {.Unchanged = true}},
+        {.Name = "ToSphereNegative", .Shape = Cross, .Domain = Element::Vertex, .Kind = KindOf<graph::ToSphere>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::ToSphere{-1.f}); }, .Select = Ordinals(0u, 256u), .Expected = {.Unchanged = true}},
+        {.Name = "PushPullZero", .Shape = Cross, .Domain = Element::Vertex, .Kind = KindOf<graph::PushPull>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::PushPull{0.f}); }, .Select = Ordinals(0u, 256u), .Expected = {.Unchanged = true}},
         // Blender 5.2.2 edge_slide, positive side up, over strips, forked rails, a pentagon, a quad turn, a transformed nonplanar fork and a closed loop.
-        {.Name = "EdgeSlide", .Shape = SlideQuads, .Domain = Element::Edge, .Kind = KindOf<procedure::EdgeSlide>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = .25f, .Direction = frame.R * vec3{0, 1, 0}}); }, .Select = {3, 4, 4, 5}, .Expected = {.Positions = Replaced(SlideQuads(), {3, 4, 5}, {{-.125f, .5f, 0}, {2, .75f, 0}, {4.25f, .25f, 0}})}},
-        {.Name = "EdgeSlideBack", .Shape = SlideQuads, .Domain = Element::Edge, .Kind = KindOf<procedure::EdgeSlide>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = -.25f, .Direction = frame.R * vec3{0, 1, 0}}); }, .Select = {3, 4, 4, 5}, .Expected = {.Positions = Replaced(SlideQuads(), {3, 4, 5}, {{-.05f, -.25f, 0}, {2, -.5f, 0}, {4.125f, -.25f, 0}})}},
-        {.Name = "EdgeSlideEvenFlipped", .Shape = SlideQuads, .Domain = Element::Edge, .Kind = KindOf<procedure::EdgeSlide>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = .25f, .Direction = frame.R * vec3{0, 1, 0}, .Even = true, .Flipped = true}); }, .Select = {3, 4, 4, 5}, .Expected = {.Positions = Replaced(SlideQuads(), {3, 4, 5}, {{-.22286583f, .89146334f, 0}, {2, -.11564839f, 0}, {4.85387611f, .85387623f, 0}})}},
-        {.Name = "EdgeSlideUnclamped", .Shape = SlideQuads, .Domain = Element::Edge, .Kind = KindOf<procedure::EdgeSlide>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = -.25f, .Direction = frame.R * vec3{0, 1, 0}, .Clamp = false}); }, .Select = {3, 4, 4, 5}, .Expected = {.Positions = Replaced(SlideQuads(), {3, 4, 5}, {{.125f, -.5f, 0}, {2, -.75f, 0}, {3.75f, -.25f, 0}})}},
-        {.Name = "EdgeSlideEvenZero", .Shape = SlideQuads, .Domain = Element::Edge, .Kind = KindOf<procedure::EdgeSlide>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = 0.f, .Direction = frame.R * vec3{0, 1, 0}, .Even = true}); }, .Select = {3, 4, 4, 5}, .Expected = {.Positions = Replaced(SlideQuads(), {3, 4, 5}, {{-.1304878f, .5219512f, 0}, {2, 1.49251878f, 0}, {4.17364359f, -.34728706f, 0}})}},
-        {.Name = "EdgeSlideTriangles", .Shape = +[] { return SlideTriangles(); }, .Domain = Element::Edge, .Kind = KindOf<procedure::EdgeSlide>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = .25f, .Direction = frame.R * vec3{0, 1, 0}}); }, .Select = {3, 4, 4, 5}, .Expected = {.Positions = Replaced(SlideTriangles(), {3, 4, 5}, {{.5f, .75f, 0}, {2.375f, .5f, 0}, {4.25f, .25f, 0}})}},
-        {.Name = "EdgeSlidePentagon", .Shape = +[] { return Sourced({{0, 0, 0}, {2, 0, 0}, {3, 1, 0}, {1.5f, 3, 0}, {0, 2, 0}}, {{0, 1, 2, 3, 4}}); }, .Domain = Element::Edge, .Kind = KindOf<procedure::EdgeSlide>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = .25f, .Direction = frame.R * vec3{0, 1, 0}}); }, .Select = {0, 1, 1, 2}, .Expected = {.Positions = {{0, .5f, 0}, {1.72951460f, .65300971f, 0}, {2.625f, 1.5f, 0}, {1.5f, 3, 0}, {0, 2, 0}}}},
-        {.Name = "EdgeSlideQuadTurn", .Shape = +[] { return Sourced({{0, 0, 0}, {2, 0, 0}, {3, 2, 0}, {0, 2, 0}}, {{0, 1, 2, 3}}); }, .Domain = Element::Edge, .Kind = KindOf<procedure::EdgeSlide>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = .25f, .Direction = frame.R * vec3{0, 1, 0}}); }, .Select = {0, 1, 1, 2}, .Expected = {.Positions = {{0, .5f, 0}, {1.5f, .5f, 0}, {2.25f, 2, 0}, {0, 2, 0}}}},
-        {.Name = "EdgeSlideTransformed", .Shape = +[] { return SlideTriangles({.4f, -.2f, .5f, 0, 0, 0, .3f, .6f, -.3f}); }, .Domain = Element::Edge, .Kind = KindOf<procedure::EdgeSlide>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = .25f, .Direction = frame.R * SlideWorld.R * vec3{0, -1, 0}}); }, .World = SlideWorld, .Select = {3, 4, 4, 5}, .Expected = {.Positions = Replaced(SlideTriangles({.4f, -.2f, .5f, 0, 0, 0, .3f, .6f, -.3f}), {3, 4, 5}, {{.5f, .75f, .15f}, {2.375f, .5f, .0375f}, {4.25f, .25f, -.075f}})}},
-        {.Name = "EdgeSlideNonmanifold", .Shape = NonmanifoldEdge, .Domain = Element::Edge, .Kind = KindOf<procedure::EdgeSlide>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::EdgeSlide{}); }, .Select = {0, 1}, .Expected = {.Unchanged = true}},
-        {.Name = "EdgeSlideLoop", .Shape = Rings, .Domain = Element::Edge, .Kind = KindOf<procedure::EdgeSlide>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = .25f, .Direction = frame.R * vec3{1, 1, 0}}); }, .Select = {4, 5, 5, 6, 6, 7, 7, 4}, .Expected = {.Positions = Replaced(Rings(), {4, 5, 6, 7}, {{2.5f, 2.5f, 0}, {-2.5f, 2.5f, 0}, {-2.5f, -2.5f, 0}, {2.5f, -2.5f, 0}})}},
-        {.Name = "EdgeSlideLoopEven", .Shape = Rings, .Domain = Element::Edge, .Kind = KindOf<procedure::EdgeSlide>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = .25f, .Direction = frame.R * vec3{1, 1, 0}, .Even = true}); }, .Select = {4, 5, 5, 6, 6, 7, 7, 4}, .Expected = {.Positions = Replaced(Rings(), {4, 5, 6, 7}, {{2.875f, 2.875f, 0}, {-2.875f, 2.875f, 0}, {-2.875f, -2.875f, 0}, {2.875f, -2.875f, 0}})}},
-        {.Name = "EdgeSlideBranch", .Shape = Rings, .Domain = Element::Edge, .Kind = KindOf<procedure::EdgeSlide>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::EdgeSlide{}); }, .Select = {4, 5, 4, 7, 4, 8}, .Expected = {.Unchanged = true}},
+        {.Name = "EdgeSlide", .Shape = SlideQuads, .Domain = Element::Edge, .Kind = KindOf<graph::EdgeSlide>, .Gesture = [](GraphFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = .25f, .Direction = frame.R * vec3{0, 1, 0}}); }, .Select = {3, 4, 4, 5}, .Expected = {.Positions = Replaced(SlideQuads(), {3, 4, 5}, {{-.125f, .5f, 0}, {2, .75f, 0}, {4.25f, .25f, 0}})}},
+        {.Name = "EdgeSlideBack", .Shape = SlideQuads, .Domain = Element::Edge, .Kind = KindOf<graph::EdgeSlide>, .Gesture = [](GraphFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = -.25f, .Direction = frame.R * vec3{0, 1, 0}}); }, .Select = {3, 4, 4, 5}, .Expected = {.Positions = Replaced(SlideQuads(), {3, 4, 5}, {{-.05f, -.25f, 0}, {2, -.5f, 0}, {4.125f, -.25f, 0}})}},
+        {.Name = "EdgeSlideEvenFlipped", .Shape = SlideQuads, .Domain = Element::Edge, .Kind = KindOf<graph::EdgeSlide>, .Gesture = [](GraphFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = .25f, .Direction = frame.R * vec3{0, 1, 0}, .Even = true, .Flipped = true}); }, .Select = {3, 4, 4, 5}, .Expected = {.Positions = Replaced(SlideQuads(), {3, 4, 5}, {{-.22286583f, .89146334f, 0}, {2, -.11564839f, 0}, {4.85387611f, .85387623f, 0}})}},
+        {.Name = "EdgeSlideUnclamped", .Shape = SlideQuads, .Domain = Element::Edge, .Kind = KindOf<graph::EdgeSlide>, .Gesture = [](GraphFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = -.25f, .Direction = frame.R * vec3{0, 1, 0}, .Clamp = false}); }, .Select = {3, 4, 4, 5}, .Expected = {.Positions = Replaced(SlideQuads(), {3, 4, 5}, {{.125f, -.5f, 0}, {2, -.75f, 0}, {3.75f, -.25f, 0}})}},
+        {.Name = "EdgeSlideEvenZero", .Shape = SlideQuads, .Domain = Element::Edge, .Kind = KindOf<graph::EdgeSlide>, .Gesture = [](GraphFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = 0.f, .Direction = frame.R * vec3{0, 1, 0}, .Even = true}); }, .Select = {3, 4, 4, 5}, .Expected = {.Positions = Replaced(SlideQuads(), {3, 4, 5}, {{-.1304878f, .5219512f, 0}, {2, 1.49251878f, 0}, {4.17364359f, -.34728706f, 0}})}},
+        {.Name = "EdgeSlideTriangles", .Shape = +[] { return SlideTriangles(); }, .Domain = Element::Edge, .Kind = KindOf<graph::EdgeSlide>, .Gesture = [](GraphFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = .25f, .Direction = frame.R * vec3{0, 1, 0}}); }, .Select = {3, 4, 4, 5}, .Expected = {.Positions = Replaced(SlideTriangles(), {3, 4, 5}, {{.5f, .75f, 0}, {2.375f, .5f, 0}, {4.25f, .25f, 0}})}},
+        {.Name = "EdgeSlidePentagon", .Shape = +[] { return Sourced({{0, 0, 0}, {2, 0, 0}, {3, 1, 0}, {1.5f, 3, 0}, {0, 2, 0}}, {{0, 1, 2, 3, 4}}); }, .Domain = Element::Edge, .Kind = KindOf<graph::EdgeSlide>, .Gesture = [](GraphFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = .25f, .Direction = frame.R * vec3{0, 1, 0}}); }, .Select = {0, 1, 1, 2}, .Expected = {.Positions = {{0, .5f, 0}, {1.72951460f, .65300971f, 0}, {2.625f, 1.5f, 0}, {1.5f, 3, 0}, {0, 2, 0}}}},
+        {.Name = "EdgeSlideQuadTurn", .Shape = +[] { return Sourced({{0, 0, 0}, {2, 0, 0}, {3, 2, 0}, {0, 2, 0}}, {{0, 1, 2, 3}}); }, .Domain = Element::Edge, .Kind = KindOf<graph::EdgeSlide>, .Gesture = [](GraphFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = .25f, .Direction = frame.R * vec3{0, 1, 0}}); }, .Select = {0, 1, 1, 2}, .Expected = {.Positions = {{0, .5f, 0}, {1.5f, .5f, 0}, {2.25f, 2, 0}, {0, 2, 0}}}},
+        {.Name = "EdgeSlideTransformed", .Shape = +[] { return SlideTriangles({.4f, -.2f, .5f, 0, 0, 0, .3f, .6f, -.3f}); }, .Domain = Element::Edge, .Kind = KindOf<graph::EdgeSlide>, .Gesture = [](GraphFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = .25f, .Direction = frame.R * SlideWorld.R * vec3{0, -1, 0}}); }, .World = SlideWorld, .Select = {3, 4, 4, 5}, .Expected = {.Positions = Replaced(SlideTriangles({.4f, -.2f, .5f, 0, 0, 0, .3f, .6f, -.3f}), {3, 4, 5}, {{.5f, .75f, .15f}, {2.375f, .5f, .0375f}, {4.25f, .25f, -.075f}})}},
+        {.Name = "EdgeSlideNonmanifold", .Shape = NonmanifoldEdge, .Domain = Element::Edge, .Kind = KindOf<graph::EdgeSlide>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::EdgeSlide{}); }, .Select = {0, 1}, .Expected = {.Unchanged = true}},
+        {.Name = "EdgeSlideLoop", .Shape = Rings, .Domain = Element::Edge, .Kind = KindOf<graph::EdgeSlide>, .Gesture = [](GraphFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = .25f, .Direction = frame.R * vec3{1, 1, 0}}); }, .Select = {4, 5, 5, 6, 6, 7, 7, 4}, .Expected = {.Positions = Replaced(Rings(), {4, 5, 6, 7}, {{2.5f, 2.5f, 0}, {-2.5f, 2.5f, 0}, {-2.5f, -2.5f, 0}, {2.5f, -2.5f, 0}})}},
+        {.Name = "EdgeSlideLoopEven", .Shape = Rings, .Domain = Element::Edge, .Kind = KindOf<graph::EdgeSlide>, .Gesture = [](GraphFixture &f, const Transform &frame) { f.Do(action::mesh::EdgeSlide{.Factor = .25f, .Direction = frame.R * vec3{1, 1, 0}, .Even = true}); }, .Select = {4, 5, 5, 6, 6, 7, 7, 4}, .Expected = {.Positions = Replaced(Rings(), {4, 5, 6, 7}, {{2.875f, 2.875f, 0}, {-2.875f, 2.875f, 0}, {-2.875f, -2.875f, 0}, {2.875f, -2.875f, 0}})}},
+        {.Name = "EdgeSlideBranch", .Shape = Rings, .Domain = Element::Edge, .Kind = KindOf<graph::EdgeSlide>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::EdgeSlide{}); }, .Select = {4, 5, 4, 7, 4, 8}, .Expected = {.Unchanged = true}},
         // Blender 5.2.2 vert_slide with an explicit world direction and correct_uv=false, the first selected vertex its reference.
-        {.Name = "VertexSlide", .Shape = ThreeTriangles, .Domain = Element::Vertex, .Kind = KindOf<procedure::VertexSlide>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { f.Do(action::mesh::VertexSlide{.Factor = .25f, .Direction = frame.R * vec3{1, 0, 0}}); }, .Select = {0, 3, 6, 9}, .Expected = {.Positions = Replaced(ThreeTriangles(), {0, 3, 6}, {{.5f, 0, 0}, {1, 4, 0}, {.25f, 8, 0}})}},
-        {.Name = "VertexSlideEvenFlipped", .Shape = ThreeTriangles, .Domain = Element::Vertex, .Kind = KindOf<procedure::VertexSlide>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { f.Do(action::mesh::VertexSlide{.Factor = .25f, .Direction = frame.R * vec3{1, 0, 0}, .Even = true, .Flipped = true}); }, .Select = {0, 3, 6, 9}, .Expected = {.Positions = Replaced(ThreeTriangles(), {0, 3, 6}, {{1.5f, 0, 0}, {3.5f, 4, 0}, {.5f, 8, 0}})}},
-        {.Name = "VertexSlideEvenZero", .Shape = ThreeTriangles, .Domain = Element::Vertex, .Kind = KindOf<procedure::VertexSlide>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { f.Do(action::mesh::VertexSlide{.Factor = 0.f, .Direction = frame.R * vec3{1, 0, 0}, .Even = true, .Flipped = true}); }, .Select = {0, 3, 6, 9}, .Expected = {.Positions = Replaced(ThreeTriangles(), {0, 3, 6}, {{2, 0, 0}, {4, 4, 0}, {1, 8, 0}})}},
-        {.Name = "VertexSlideUnclamped", .Shape = ThreeTriangles, .Domain = Element::Vertex, .Kind = KindOf<procedure::VertexSlide>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { f.Do(action::mesh::VertexSlide{.Factor = -.5f, .Direction = frame.R * vec3{1, 0, 0}, .Even = true, .Clamp = false}); }, .Select = {0, 3, 6, 9}, .Expected = {.Positions = Replaced(ThreeTriangles(), {0, 3, 6}, {{-1, 0, 0}, {-1, 4, 0}, {-1, 8, 0}})}},
-        {.Name = "VertexSlideTransformed", .Shape = ThreeTriangles, .Domain = Element::Vertex, .Kind = KindOf<procedure::VertexSlide>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { f.Do(action::mesh::VertexSlide{.Factor = .25f, .Direction = frame.R * vec3{-.3f, 1, .2f}, .Even = true}); }, .World = VertexSlideWorld, .Select = {0, 3, 6, 9}, .Expected = {.Positions = Replaced(ThreeTriangles(), {0, 3, 6}, {{0, .5f, 0}, {-.223606795f, 4.447213650f, 0}, {0, 8.5f, 0}})}},
+        {.Name = "VertexSlide", .Shape = ThreeTriangles, .Domain = Element::Vertex, .Kind = KindOf<graph::VertexSlide>, .Gesture = [](GraphFixture &f, const Transform &frame) { f.Do(action::mesh::VertexSlide{.Factor = .25f, .Direction = frame.R * vec3{1, 0, 0}}); }, .Select = {0, 3, 6, 9}, .Expected = {.Positions = Replaced(ThreeTriangles(), {0, 3, 6}, {{.5f, 0, 0}, {1, 4, 0}, {.25f, 8, 0}})}},
+        {.Name = "VertexSlideEvenFlipped", .Shape = ThreeTriangles, .Domain = Element::Vertex, .Kind = KindOf<graph::VertexSlide>, .Gesture = [](GraphFixture &f, const Transform &frame) { f.Do(action::mesh::VertexSlide{.Factor = .25f, .Direction = frame.R * vec3{1, 0, 0}, .Even = true, .Flipped = true}); }, .Select = {0, 3, 6, 9}, .Expected = {.Positions = Replaced(ThreeTriangles(), {0, 3, 6}, {{1.5f, 0, 0}, {3.5f, 4, 0}, {.5f, 8, 0}})}},
+        {.Name = "VertexSlideEvenZero", .Shape = ThreeTriangles, .Domain = Element::Vertex, .Kind = KindOf<graph::VertexSlide>, .Gesture = [](GraphFixture &f, const Transform &frame) { f.Do(action::mesh::VertexSlide{.Factor = 0.f, .Direction = frame.R * vec3{1, 0, 0}, .Even = true, .Flipped = true}); }, .Select = {0, 3, 6, 9}, .Expected = {.Positions = Replaced(ThreeTriangles(), {0, 3, 6}, {{2, 0, 0}, {4, 4, 0}, {1, 8, 0}})}},
+        {.Name = "VertexSlideUnclamped", .Shape = ThreeTriangles, .Domain = Element::Vertex, .Kind = KindOf<graph::VertexSlide>, .Gesture = [](GraphFixture &f, const Transform &frame) { f.Do(action::mesh::VertexSlide{.Factor = -.5f, .Direction = frame.R * vec3{1, 0, 0}, .Even = true, .Clamp = false}); }, .Select = {0, 3, 6, 9}, .Expected = {.Positions = Replaced(ThreeTriangles(), {0, 3, 6}, {{-1, 0, 0}, {-1, 4, 0}, {-1, 8, 0}})}},
+        {.Name = "VertexSlideTransformed", .Shape = ThreeTriangles, .Domain = Element::Vertex, .Kind = KindOf<graph::VertexSlide>, .Gesture = [](GraphFixture &f, const Transform &frame) { f.Do(action::mesh::VertexSlide{.Factor = .25f, .Direction = frame.R * vec3{-.3f, 1, .2f}, .Even = true}); }, .World = VertexSlideWorld, .Select = {0, 3, 6, 9}, .Expected = {.Positions = Replaced(ThreeTriangles(), {0, 3, 6}, {{0, .5f, 0}, {-.223606795f, 4.447213650f, 0}, {0, 8.5f, 0}})}},
         // The active vertex is the even slide's reference, both endpoints of one edge meet at its middle, and a zero-length edge or a fork leaves its vertex.
-        {.Name = "VertexSlideActive", .Shape = SlideWires, .Domain = Element::Vertex, .Kind = KindOf<procedure::VertexSlide>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { Activate(f, 2u); f.Do(action::mesh::VertexSlide{.Factor = .25f, .Direction = frame.R * vec3{1, 0, 0}, .Even = true}); }, .Select = {0, 2, 7}, .Expected = {.Positions = Replaced(SlideWires(), {0, 2}, {{1, 0, 0}, {1, 3, 0}})}},
-        {.Name = "VertexSlideBothEnds", .Shape = SlideWires, .Domain = Element::Vertex, .Kind = KindOf<procedure::VertexSlide>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { f.Do(action::mesh::VertexSlide{.Direction = frame.R * vec3{1, 0, 0}}); }, .Select = {0, 1}, .Expected = {.Positions = Replaced(SlideWires(), {0, 1}, {{1, 0, 0}, {1, 0, 0}})}},
-        {.Name = "VertexSlideDegenerate", .Shape = SlideWires, .Domain = Element::Vertex, .Kind = KindOf<procedure::VertexSlide>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { f.Do(action::mesh::VertexSlide{.Direction = frame.R * vec3{-1, 0, 0}, .Flipped = true}); }, .Select = {4, 7}, .Expected = {.Positions = SlideWires().Data.Positions}},
-        {.Name = "VertexSlideDegenerateEven", .Shape = SlideWires, .Domain = Element::Vertex, .Kind = KindOf<procedure::VertexSlide>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { f.Do(action::mesh::VertexSlide{.Direction = frame.R * vec3{-1, 0, 0}, .Even = true, .Flipped = true}); }, .Select = {4, 7}, .Expected = {.Positions = SlideWires().Data.Positions}},
-        {.Name = "VertexSlideZeroDirection", .Shape = SlideWires, .Domain = Element::Vertex, .Kind = KindOf<procedure::VertexSlide>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::VertexSlide{.Direction = {}}); }, .Select = {0, 2, 7}, .Expected = {.Unchanged = true}},
-        {.Name = "VertexSlideNan", .Shape = SlideWires, .Domain = Element::Vertex, .Kind = KindOf<procedure::VertexSlide>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::VertexSlide{.Factor = std::numeric_limits<float>::quiet_NaN()}); }, .Select = {0, 2, 7}, .Expected = {.Unchanged = true}},
+        {.Name = "VertexSlideActive", .Shape = SlideWires, .Domain = Element::Vertex, .Kind = KindOf<graph::VertexSlide>, .Gesture = [](GraphFixture &f, const Transform &frame) { Activate(f, 2u); f.Do(action::mesh::VertexSlide{.Factor = .25f, .Direction = frame.R * vec3{1, 0, 0}, .Even = true}); }, .Select = {0, 2, 7}, .Expected = {.Positions = Replaced(SlideWires(), {0, 2}, {{1, 0, 0}, {1, 3, 0}})}},
+        {.Name = "VertexSlideBothEnds", .Shape = SlideWires, .Domain = Element::Vertex, .Kind = KindOf<graph::VertexSlide>, .Gesture = [](GraphFixture &f, const Transform &frame) { f.Do(action::mesh::VertexSlide{.Direction = frame.R * vec3{1, 0, 0}}); }, .Select = {0, 1}, .Expected = {.Positions = Replaced(SlideWires(), {0, 1}, {{1, 0, 0}, {1, 0, 0}})}},
+        {.Name = "VertexSlideDegenerate", .Shape = SlideWires, .Domain = Element::Vertex, .Kind = KindOf<graph::VertexSlide>, .Gesture = [](GraphFixture &f, const Transform &frame) { f.Do(action::mesh::VertexSlide{.Direction = frame.R * vec3{-1, 0, 0}, .Flipped = true}); }, .Select = {4, 7}, .Expected = {.Positions = SlideWires().Data.Positions}},
+        {.Name = "VertexSlideDegenerateEven", .Shape = SlideWires, .Domain = Element::Vertex, .Kind = KindOf<graph::VertexSlide>, .Gesture = [](GraphFixture &f, const Transform &frame) { f.Do(action::mesh::VertexSlide{.Direction = frame.R * vec3{-1, 0, 0}, .Even = true, .Flipped = true}); }, .Select = {4, 7}, .Expected = {.Positions = SlideWires().Data.Positions}},
+        {.Name = "VertexSlideZeroDirection", .Shape = SlideWires, .Domain = Element::Vertex, .Kind = KindOf<graph::VertexSlide>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::VertexSlide{.Direction = {}}); }, .Select = {0, 2, 7}, .Expected = {.Unchanged = true}},
+        {.Name = "VertexSlideNan", .Shape = SlideWires, .Domain = Element::Vertex, .Kind = KindOf<graph::VertexSlide>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::VertexSlide{.Factor = std::numeric_limits<float>::quiet_NaN()}); }, .Select = {0, 2, 7}, .Expected = {.Unchanged = true}},
         // Blender 5.2.2 snap to symmetry toward positive partners, unselected ones included, where the first canonical pair owns its partner and the competing last vertex stays.
-        {.Name = "SnapSymmetry", .Shape = Symmetric, .Domain = Element::Vertex, .Kind = KindOf<SnapSymmetry>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(SnapSymmetry{.Threshold = .2f, .Factor = .25f, .Negative = false}); }, .Select = {0, 2, 4, 5, 6, 7}, .Expected = {.Positions = {{-1.06f, .03f, .015f}, {1.06f, .03f, .015f}, {-2.015f, 1.0375f, .2375f}, {2.015f, 1.0375f, .2375f}, {0, 2, .3f}, {4, 2, 3}, {.1f, 4, .6f}, {-1.02f, 0, 0}}}},
-        {.Name = "SnapSymmetryNegative", .Shape = Symmetric, .Domain = Element::Vertex, .Kind = KindOf<SnapSymmetry>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(SnapSymmetry{.Threshold = .2f, .Factor = 0.f, .Negative = true, .Center = false}); }, .Select = {0, 2, 4, 5, 6, 7}, .Expected = {.Positions = Replaced(Symmetric(), {1, 3}, {{1, 0, 0}, {2, 1, .2f}})}},
-        {.Name = "SnapSymmetryZeroThreshold", .Shape = Symmetric, .Domain = Element::Vertex, .Kind = KindOf<SnapSymmetry>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(SnapSymmetry{.Threshold = 0.f}); }, .Select = {0, 2, 4, 5, 6, 7}, .Expected = {.Unchanged = true}},
+        {.Name = "SnapSymmetry", .Shape = Symmetric, .Domain = Element::Vertex, .Kind = KindOf<SnapSymmetry>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(SnapSymmetry{.Threshold = .2f, .Factor = .25f, .Negative = false}); }, .Select = {0, 2, 4, 5, 6, 7}, .Expected = {.Positions = {{-1.06f, .03f, .015f}, {1.06f, .03f, .015f}, {-2.015f, 1.0375f, .2375f}, {2.015f, 1.0375f, .2375f}, {0, 2, .3f}, {4, 2, 3}, {.1f, 4, .6f}, {-1.02f, 0, 0}}}},
+        {.Name = "SnapSymmetryNegative", .Shape = Symmetric, .Domain = Element::Vertex, .Kind = KindOf<SnapSymmetry>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(SnapSymmetry{.Threshold = .2f, .Factor = 0.f, .Negative = true, .Center = false}); }, .Select = {0, 2, 4, 5, 6, 7}, .Expected = {.Positions = Replaced(Symmetric(), {1, 3}, {{1, 0, 0}, {2, 1, .2f}})}},
+        {.Name = "SnapSymmetryZeroThreshold", .Shape = Symmetric, .Domain = Element::Vertex, .Kind = KindOf<SnapSymmetry>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(SnapSymmetry{.Threshold = 0.f}); }, .Select = {0, 2, 4, 5, 6, 7}, .Expected = {.Unchanged = true}},
         // A bend onto a quarter circle that stays put near zero angle, and a warp continuing beyond its bounds, with the world XY plane as the viewport plane.
-        {.Name = "Bend", .Shape = BendChain, .Domain = Element::Vertex, .Kind = KindOf<procedure::Bend>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { LookDown(f, frame); f.Do(action::mesh::Bend{.Angle = std::numbers::pi_v<float> / 2.f, .Radius = 2.f, .Center = frame.P}); }, .World = BendWorld, .Expected = {.Positions = [] {
-                                                                                                                                                                                                 std::vector<vec3> positions;
-                                                                                                                                                                                                 const float root2 = std::sqrt(2.f);
-                                                                                                                                                                                                 for (const auto p : {vec3{-1, 0, 0}, vec3{root2, root2 - 2.f, 1}, vec3{2, -2, 2}, vec3{2, -3, 3}}) positions.push_back(InverseTransformPoint(BendWorld, p));
-                                                                                                                                                                                                 return positions;
-                                                                                                                                                                                             }()}},
-        {.Name = "BendSmallAngle", .Shape = BendChain, .Domain = Element::Vertex, .Kind = KindOf<procedure::Bend>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { LookDown(f, frame); f.Do(action::mesh::Bend{.Angle = 1e-6f, .Radius = 2.f, .Center = frame.P, .Clamp = false}); }, .World = BendWorld, .Expected = {.Positions = BendChain().Data.Positions}},
-        {.Name = "BendZeroRadius", .Shape = BendChain, .Domain = Element::Vertex, .Kind = KindOf<procedure::Bend>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { LookDown(f, frame); f.Do(action::mesh::Bend{.Radius = 0.f}); }, .World = BendWorld, .Expected = {.Unchanged = true}},
-        {.Name = "Warp", .Shape = Columns, .Domain = Element::Vertex, .Kind = KindOf<procedure::Warp>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { LookDown(f, frame); f.Do(action::mesh::Warp{.Angle = std::numbers::pi_v<float>, .Center = frame.P, .AutoRange = false, .Min = 2.f, .Max = -2.f}); }, .Expected = {.Positions = [] {
-                                                                                                                                                                           std::vector<vec3> positions;
-                                                                                                                                                                           for (uint32_t i = 0u; i < 265u; ++i) positions.push_back(std::array{vec3{-1, -1, 0}, vec3{-1, 0, 0}, vec3{0, 1, 0}, vec3{1, 0, 0}, vec3{1, -1, 0}}[i % 5u] + vec3{0, 0, float(i / 5u)});
-                                                                                                                                                                           return positions;
-                                                                                                                                                                       }()}},
-        {.Name = "WarpAuto", .Shape = Columns, .Domain = Element::Vertex, .Kind = KindOf<procedure::Warp>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { LookDown(f, frame); f.Do(action::mesh::Warp{.Angle = std::numbers::pi_v<float>, .Center = frame.P, .AutoRange = true, .Min = 2.f, .Max = -2.f}); }, .Expected = {.Positions = [] {
-                                                                                                                                                                               std::vector<vec3> positions;
-                                                                                                                                                                               const float root3 = std::sqrt(3.f) * .5f;
-                                                                                                                                                                               for (uint32_t i = 0u; i < 265u; ++i) positions.push_back(std::array{vec3{-1, 0, 0}, vec3{-root3, .5f, 0}, vec3{0, 1, 0}, vec3{root3, .5f, 0}, vec3{1, 0, 0}}[i % 5u] + vec3{0, 0, float(i / 5u)});
-                                                                                                                                                                               return positions;
-                                                                                                                                                                           }()}},
-        {.Name = "WarpFlat", .Shape = Columns, .Domain = Element::Vertex, .Kind = KindOf<procedure::Warp>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { LookDown(f, frame); f.Do(action::mesh::Warp{.Angle = 0.f, .Center = frame.P}); }, .Expected = {.Positions = [] {
-                                                                                                                                                                               std::vector<vec3> positions;
-                                                                                                                                                                               for (uint32_t i = 0u; i < 265u; ++i) positions.push_back({0, 1, float(i / 5u)});
-                                                                                                                                                                               return positions;
-                                                                                                                                                                           }()}},
-        {.Name = "WarpEmptyRange", .Shape = Columns, .Domain = Element::Vertex, .Kind = KindOf<procedure::Warp>, .Gesture = [](ProcedureFixture &f, const Transform &frame) { LookDown(f, frame); f.Do(action::mesh::Warp{.AutoRange = false, .Min = 1.f, .Max = 1.f}); }, .Expected = {.Unchanged = true}},
+        {.Name = "Bend", .Shape = BendChain, .Domain = Element::Vertex, .Kind = KindOf<graph::Bend>, .Gesture = [](GraphFixture &f, const Transform &frame) { LookDown(f, frame); f.Do(action::mesh::Bend{.Angle = std::numbers::pi_v<float> / 2.f, .Radius = 2.f, .Center = frame.P}); }, .World = BendWorld, .Expected = {.Positions = [] {
+                                                                                                                                                                                         std::vector<vec3> positions;
+                                                                                                                                                                                         const float root2 = std::sqrt(2.f);
+                                                                                                                                                                                         for (const auto p : {vec3{-1, 0, 0}, vec3{root2, root2 - 2.f, 1}, vec3{2, -2, 2}, vec3{2, -3, 3}}) positions.push_back(InverseTransformPoint(BendWorld, p));
+                                                                                                                                                                                         return positions;
+                                                                                                                                                                                     }()}},
+        {.Name = "BendSmallAngle", .Shape = BendChain, .Domain = Element::Vertex, .Kind = KindOf<graph::Bend>, .Gesture = [](GraphFixture &f, const Transform &frame) { LookDown(f, frame); f.Do(action::mesh::Bend{.Angle = 1e-6f, .Radius = 2.f, .Center = frame.P, .Clamp = false}); }, .World = BendWorld, .Expected = {.Positions = BendChain().Data.Positions}},
+        {.Name = "BendZeroRadius", .Shape = BendChain, .Domain = Element::Vertex, .Kind = KindOf<graph::Bend>, .Gesture = [](GraphFixture &f, const Transform &frame) { LookDown(f, frame); f.Do(action::mesh::Bend{.Radius = 0.f}); }, .World = BendWorld, .Expected = {.Unchanged = true}},
+        {.Name = "Warp", .Shape = Columns, .Domain = Element::Vertex, .Kind = KindOf<graph::Warp>, .Gesture = [](GraphFixture &f, const Transform &frame) { LookDown(f, frame); f.Do(action::mesh::Warp{.Angle = std::numbers::pi_v<float>, .Center = frame.P, .AutoRange = false, .Min = 2.f, .Max = -2.f}); }, .Expected = {.Positions = [] {
+                                                                                                                                                                   std::vector<vec3> positions;
+                                                                                                                                                                   for (uint32_t i = 0u; i < 265u; ++i) positions.push_back(std::array{vec3{-1, -1, 0}, vec3{-1, 0, 0}, vec3{0, 1, 0}, vec3{1, 0, 0}, vec3{1, -1, 0}}[i % 5u] + vec3{0, 0, float(i / 5u)});
+                                                                                                                                                                   return positions;
+                                                                                                                                                               }()}},
+        {.Name = "WarpAuto", .Shape = Columns, .Domain = Element::Vertex, .Kind = KindOf<graph::Warp>, .Gesture = [](GraphFixture &f, const Transform &frame) { LookDown(f, frame); f.Do(action::mesh::Warp{.Angle = std::numbers::pi_v<float>, .Center = frame.P, .AutoRange = true, .Min = 2.f, .Max = -2.f}); }, .Expected = {.Positions = [] {
+                                                                                                                                                                       std::vector<vec3> positions;
+                                                                                                                                                                       const float root3 = std::sqrt(3.f) * .5f;
+                                                                                                                                                                       for (uint32_t i = 0u; i < 265u; ++i) positions.push_back(std::array{vec3{-1, 0, 0}, vec3{-root3, .5f, 0}, vec3{0, 1, 0}, vec3{root3, .5f, 0}, vec3{1, 0, 0}}[i % 5u] + vec3{0, 0, float(i / 5u)});
+                                                                                                                                                                       return positions;
+                                                                                                                                                                   }()}},
+        {.Name = "WarpFlat", .Shape = Columns, .Domain = Element::Vertex, .Kind = KindOf<graph::Warp>, .Gesture = [](GraphFixture &f, const Transform &frame) { LookDown(f, frame); f.Do(action::mesh::Warp{.Angle = 0.f, .Center = frame.P}); }, .Expected = {.Positions = [] {
+                                                                                                                                                                       std::vector<vec3> positions;
+                                                                                                                                                                       for (uint32_t i = 0u; i < 265u; ++i) positions.push_back({0, 1, float(i / 5u)});
+                                                                                                                                                                       return positions;
+                                                                                                                                                                   }()}},
+        {.Name = "WarpEmptyRange", .Shape = Columns, .Domain = Element::Vertex, .Kind = KindOf<graph::Warp>, .Gesture = [](GraphFixture &f, const Transform &frame) { LookDown(f, frame); f.Do(action::mesh::Warp{.AutoRange = false, .Min = 1.f, .Max = 1.f}); }, .Expected = {.Unchanged = true}},
         // bmesh.ops.unsubdivide and connect_verts_concave partitions, Blender 5.2.2 d13f752e3b9c, as oriented loops of source vertices.
-        {.Name = "UnsubdivideOnce", .Shape = +[] { return Grid(3u); }, .Domain = Element::Vertex, .Kind = KindOf<Unsubdivide>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(Unsubdivide{1u}); }, .Expected = {.Faces = {{9, 4, 1, 6}, {0, 1, 4}, {14, 9, 6, 11}, {9, 12, 4}, {9, 14, 12}, {1, 3, 6}, {11, 15, 14}, {3, 11, 6}}}},
-        {.Name = "UnsubdivideTwice", .Shape = +[] { return Grid(3u); }, .Domain = Element::Vertex, .Kind = KindOf<Unsubdivide>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(Unsubdivide{2u}); }, .Expected = {.Faces = {{9, 14, 4}, {0, 1, 4}, {14, 9, 11}, {9, 4, 1}, {11, 9, 1, 3}, {11, 15, 14}}}},
-        {.Name = "SplitConcaveFaces", .Shape = +[] { return Sourced({{0, 0, 0}, {4, 0, 0}, {4, 4, 0}, {3, 4, 0}, {3, 1, 0}, {1, 1, 0}, {1, 4, 0}, {0, 4, 0}, {10, 0, 0}, {13, 0, 0}, {13, 1, 0}, {11, 1, 0}, {11, 3, 0}, {10, 3, 0}}, {{0, 1, 2, 3, 4, 5, 6, 7}, {8, 9, 10, 11, 12, 13}}); }, .Domain = Element::Face, .Kind = KindOf<SplitFaces>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(SplitFaces{SplitTarget::Convex}); }, .Select = {0}, .Expected = {.Faces = {{0, 5, 6, 7}, {0, 1, 4, 5}, {1, 2, 3, 4}, {8, 9, 10, 11, 12, 13}}}},
-        {.Name = "ConnectVertices", .Shape = +[] { return Sourced({{2, 0, 0}, {1, 2, 0}, {-1, 2, 0}, {-2, 0, 0}, {-1, -2, 0}, {1, -2, 0}}, {{0, 1, 2, 3, 4, 5}}); }, .Domain = Element::Vertex, .Kind = KindOf<ConnectVertices>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(ConnectVertices{}); }, .Select = {0, 2, 4}, .Expected = {.Faces = {{0, 1, 2}, {2, 3, 4}, {0, 4, 5}, {0, 2, 4}}}},
+        {.Name = "UnsubdivideOnce", .Shape = +[] { return Grid(3u); }, .Domain = Element::Vertex, .Kind = KindOf<Unsubdivide>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(Unsubdivide{1u}); }, .Expected = {.Faces = {{9, 4, 1, 6}, {0, 1, 4}, {14, 9, 6, 11}, {9, 12, 4}, {9, 14, 12}, {1, 3, 6}, {11, 15, 14}, {3, 11, 6}}}},
+        {.Name = "UnsubdivideTwice", .Shape = +[] { return Grid(3u); }, .Domain = Element::Vertex, .Kind = KindOf<Unsubdivide>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(Unsubdivide{2u}); }, .Expected = {.Faces = {{9, 14, 4}, {0, 1, 4}, {14, 9, 11}, {9, 4, 1}, {11, 9, 1, 3}, {11, 15, 14}}}},
+        {.Name = "SplitConcaveFaces", .Shape = +[] { return Sourced({{0, 0, 0}, {4, 0, 0}, {4, 4, 0}, {3, 4, 0}, {3, 1, 0}, {1, 1, 0}, {1, 4, 0}, {0, 4, 0}, {10, 0, 0}, {13, 0, 0}, {13, 1, 0}, {11, 1, 0}, {11, 3, 0}, {10, 3, 0}}, {{0, 1, 2, 3, 4, 5, 6, 7}, {8, 9, 10, 11, 12, 13}}); }, .Domain = Element::Face, .Kind = KindOf<SplitFaces>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(SplitFaces{SplitTarget::Convex}); }, .Select = {0}, .Expected = {.Faces = {{0, 5, 6, 7}, {0, 1, 4, 5}, {1, 2, 3, 4}, {8, 9, 10, 11, 12, 13}}}},
+        {.Name = "ConnectVertices", .Shape = +[] { return Sourced({{2, 0, 0}, {1, 2, 0}, {-1, 2, 0}, {-2, 0, 0}, {-1, -2, 0}, {1, -2, 0}}, {{0, 1, 2, 3, 4, 5}}); }, .Domain = Element::Vertex, .Kind = KindOf<ConnectVertices>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(ConnectVertices{}); }, .Select = {0, 2, 4}, .Expected = {.Faces = {{0, 1, 2}, {2, 3, 4}, {0, 4, 5}, {0, 2, 4}}}},
         // A hexagon folded ninety degrees splits along its crease, and a nonplanar polygon has no valence limit.
-        {.Name = "SplitNonplanarFaces", .Shape = +[] { return Sourced({{0, 0, 0}, {1, 0, 1}, {1, 2, 1}, {0, 2, 0}, {-1, 2, 1}, {-1, 0, 1}, {3, 0, 0}, {4, 0, 0}, {4, 1, 0}, {3, 1, 0}, {2, 0, 0}, {2, 2, 2}, {3, 2, 1}}, {{0, 1, 2, 3, 4, 5}, {6, 7, 8, 9}, {2, 1, 10, 11}, {8, 12, 9}}); }, .Domain = Element::Face, .Kind = KindOf<SplitFaces>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(SplitFaces{SplitTarget::Planar}); }, .Select = {0, 1, 3}, .Expected = {.Faces = {{0, 1, 2, 3}, {0, 3, 4, 5}, {6, 7, 8, 9}, {2, 1, 10, 11}, {8, 12, 9}}}},
-        {.Name = "SplitNonplanarPolygon", .Shape = Ridge, .Domain = Element::Face, .Kind = KindOf<SplitFaces>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(SplitFaces{SplitTarget::Planar}); }, .Expected = {.Faces = {Ordinals(0u, 33u), [] { auto loop = Ordinals(33u, 65u); loop.push_back(0u); return loop; }()}}},
+        {.Name = "SplitNonplanarFaces", .Shape = +[] { return Sourced({{0, 0, 0}, {1, 0, 1}, {1, 2, 1}, {0, 2, 0}, {-1, 2, 1}, {-1, 0, 1}, {3, 0, 0}, {4, 0, 0}, {4, 1, 0}, {3, 1, 0}, {2, 0, 0}, {2, 2, 2}, {3, 2, 1}}, {{0, 1, 2, 3, 4, 5}, {6, 7, 8, 9}, {2, 1, 10, 11}, {8, 12, 9}}); }, .Domain = Element::Face, .Kind = KindOf<SplitFaces>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(SplitFaces{SplitTarget::Planar}); }, .Select = {0, 1, 3}, .Expected = {.Faces = {{0, 1, 2, 3}, {0, 3, 4, 5}, {6, 7, 8, 9}, {2, 1, 10, 11}, {8, 12, 9}}}},
+        {.Name = "SplitNonplanarPolygon", .Shape = Ridge, .Domain = Element::Face, .Kind = KindOf<SplitFaces>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(SplitFaces{SplitTarget::Planar}); }, .Expected = {.Faces = {Ordinals(0u, 33u), [] { auto loop = Ordinals(33u, 65u); loop.push_back(0u); return loop; }()}}},
         // A closed or nonmanifold input passes through simplification, and a half-ratio triangle grid ends at 36 triangles, as Blender 5.2.2 ends at 35 or 36.
-        {.Name = "SimplifyClosed", .Shape = +[] { return Sourced({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, {{0, 1, 2}, {1, 0, 3}, {1, 3, 2}, {0, 2, 3}}); }, .Domain = Element::Vertex, .Kind = KindOf<action::mesh::Simplify>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::Simplify{.Ratio = 0.f}); }, .Expected = {.Faulted = true}},
-        {.Name = "SimplifyNonmanifold", .Shape = NonmanifoldEdge, .Domain = Element::Vertex, .Kind = KindOf<action::mesh::Simplify>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::Simplify{.Ratio = 0.f}); }, .Expected = {.Faulted = true}},
-        {.Name = "SimplifyGrid", .Shape = +[] { return Grid(6u, true); }, .Domain = Element::Vertex, .Kind = KindOf<action::mesh::Simplify>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::Simplify{.Ratio = .5f}); }, .Expected = {.Relates = [](const Mesh &mesh, const Mesh &source) { return test::SimplifiedWithin(mesh, source, 36u, 1e-5f); }}},
+        {.Name = "SimplifyClosed", .Shape = +[] { return Sourced({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, {{0, 1, 2}, {1, 0, 3}, {1, 3, 2}, {0, 2, 3}}); }, .Domain = Element::Vertex, .Kind = KindOf<action::mesh::Simplify>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::Simplify{.Ratio = 0.f}); }, .Expected = {.Faulted = true}},
+        {.Name = "SimplifyNonmanifold", .Shape = NonmanifoldEdge, .Domain = Element::Vertex, .Kind = KindOf<action::mesh::Simplify>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::Simplify{.Ratio = 0.f}); }, .Expected = {.Faulted = true}},
+        {.Name = "SimplifyGrid", .Shape = +[] { return Grid(6u, true); }, .Domain = Element::Vertex, .Kind = KindOf<action::mesh::Simplify>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::Simplify{.Ratio = .5f}); }, .Expected = {.Relates = [](const Mesh &mesh, const Mesh &source) { return test::SimplifiedWithin(mesh, source, 36u, 1e-5f); }}},
         // A corner of a grid of many clusters retires only some of them, so the drawn record repairs once from what every round changed.
-        {.Name = "SimplifyGridCorner", .Shape = +[] { return Grid(16u, true); }, .Domain = Element::Face, .Kind = KindOf<action::mesh::Simplify>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::Simplify{.Ratio = .25f}); }, .Select = CornerCells(16u, 4u), .Expected = {.Relates = [](const Mesh &mesh, const Mesh &source) { return test::SimplifiedWithin(mesh, source, 512u - 32u + 8u, 1e-5f); }}},
+        {.Name = "SimplifyGridCorner", .Shape = +[] { return Grid(16u, true); }, .Domain = Element::Face, .Kind = KindOf<action::mesh::Simplify>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::Simplify{.Ratio = .25f}); }, .Select = CornerCells(16u, 4u), .Expected = {.Relates = [](const Mesh &mesh, const Mesh &source) { return test::SimplifiedWithin(mesh, source, 512u - 32u + 8u, 1e-5f); }}},
         // A wireframe of the unit quad takes the analytic wire positions for each option, and a cube's wireframe closes.
-        {.Name = "WireframeQuad", .Shape = Square, .Domain = Element::Face, .Kind = KindOf<action::mesh::Wireframe>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::Wireframe{.Thickness = .2f, .Offset = .5f}); }, .Expected = {.Points = WirePoints(.2f, .5f, true, true, true)}},
-        {.Name = "WireframeQuadKept", .Shape = Square, .Domain = Element::Face, .Kind = KindOf<action::mesh::Wireframe>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::Wireframe{.Thickness = .2f, .Offset = -1.f, .Replace = false, .Boundary = false, .Even = false}); }, .Expected = {.Points = WirePoints(.2f, -1.f, false, false, false)}},
-        {.Name = "WireframeQuadRelative", .Shape = Square, .Domain = Element::Face, .Kind = KindOf<action::mesh::Wireframe>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::Wireframe{.Thickness = .1f, .Even = false, .Relative = true}); }, .Expected = {.Points = WirePoints(.2f, 0.f, false, true, true)}},
-        {.Name = "SolidifyGrid", .Shape = +[] { return Grid(2u); }, .Domain = Element::Face, .Kind = KindOf<action::mesh::Solidify>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::Solidify{.Thickness = .25f}); }, .Expected = {.Holds = SolidifiedGrid}},
+        {.Name = "WireframeQuad", .Shape = Square, .Domain = Element::Face, .Kind = KindOf<action::mesh::Wireframe>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::Wireframe{.Thickness = .2f, .Offset = .5f}); }, .Expected = {.Points = WirePoints(.2f, .5f, true, true, true)}},
+        {.Name = "WireframeQuadKept", .Shape = Square, .Domain = Element::Face, .Kind = KindOf<action::mesh::Wireframe>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::Wireframe{.Thickness = .2f, .Offset = -1.f, .Replace = false, .Boundary = false, .Even = false}); }, .Expected = {.Points = WirePoints(.2f, -1.f, false, false, false)}},
+        {.Name = "WireframeQuadRelative", .Shape = Square, .Domain = Element::Face, .Kind = KindOf<action::mesh::Wireframe>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::Wireframe{.Thickness = .1f, .Even = false, .Relative = true}); }, .Expected = {.Points = WirePoints(.2f, 0.f, false, true, true)}},
+        {.Name = "SolidifyGrid", .Shape = +[] { return Grid(2u); }, .Domain = Element::Face, .Kind = KindOf<action::mesh::Solidify>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::Solidify{.Thickness = .25f}); }, .Expected = {.Holds = SolidifiedGrid}},
         // The quad tilted to the unit normal (0, -.6, .8) has its copy .25 behind it.
-        {.Name = "SolidifyTiltedQuad", .Shape = +[] { return Sourced({{-1, -1, 0}, {1, -1, 0}, {1, 1, 1.5f}, {-1, 1, 1.5f}}, {{0, 1, 2, 3}}); }, .Domain = Element::Face, .Kind = KindOf<action::mesh::Solidify>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::Solidify{.Thickness = .25f}); }, .Expected = {.Points = {{-1, -1, 0}, {1, -1, 0}, {1, 1, 1.5f}, {-1, 1, 1.5f}, {-1, -.85f, -.2f}, {1, -.85f, -.2f}, {1, 1.15f, 1.3f}, {-1, 1.15f, 1.3f}}}},
-        {.Name = "SolidifyCubeFace", .Shape = primitive::Cube{}, .Domain = Element::Face, .Kind = KindOf<action::mesh::Solidify>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::Solidify{.Thickness = .25f}); }, .Select = {1}, .Expected = {.Holds = SolidifiedCubeFace}},
-        {.Name = "WireframeCube", .Shape = primitive::Cube{}, .Domain = Element::Face, .Kind = KindOf<action::mesh::Wireframe>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::Wireframe{.Thickness = .2f}); }, .Expected = {.Holds = ClosedOutward}},
+        {.Name = "SolidifyTiltedQuad", .Shape = +[] { return Sourced({{-1, -1, 0}, {1, -1, 0}, {1, 1, 1.5f}, {-1, 1, 1.5f}}, {{0, 1, 2, 3}}); }, .Domain = Element::Face, .Kind = KindOf<action::mesh::Solidify>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::Solidify{.Thickness = .25f}); }, .Expected = {.Points = {{-1, -1, 0}, {1, -1, 0}, {1, 1, 1.5f}, {-1, 1, 1.5f}, {-1, -.85f, -.2f}, {1, -.85f, -.2f}, {1, 1.15f, 1.3f}, {-1, 1.15f, 1.3f}}}},
+        {.Name = "SolidifyCubeFace", .Shape = primitive::Cube{}, .Domain = Element::Face, .Kind = KindOf<action::mesh::Solidify>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::Solidify{.Thickness = .25f}); }, .Select = {1}, .Expected = {.Holds = SolidifiedCubeFace}},
+        {.Name = "WireframeCube", .Shape = primitive::Cube{}, .Domain = Element::Face, .Kind = KindOf<action::mesh::Wireframe>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::Wireframe{.Thickness = .2f}); }, .Expected = {.Holds = ClosedOutward}},
         // A revolve of an open grid and of a closed tetrahedron, whose UVs and colors turn with each step.
-        {.Name = "RevolveGrid", .Shape = +[] { return Attributed(Grid(2u)); }, .Domain = Element::Face, .Kind = KindOf<procedure::Extrude>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::Revolve{.Steps = 3u, .Angle = std::numbers::pi_v<float> * 1.5f, .Center = {.5f, .5f, 0.f}, .Offset = 6.f}); }},
-        {.Name = "RevolveTetrahedron", .Shape = +[] { return Attributed(Sourced({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, {{0, 2, 1}, {0, 1, 3}, {1, 2, 3}, {2, 0, 3}})); }, .Domain = Element::Face, .Kind = KindOf<procedure::Extrude>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::Revolve{.Steps = 3u, .Angle = std::numbers::pi_v<float> * 1.5f, .Center = {.5f, .5f, 0.f}, .Offset = 6.f}); }},
+        {.Name = "RevolveGrid", .Shape = +[] { return Attributed(Grid(2u)); }, .Domain = Element::Face, .Kind = KindOf<graph::Extrude>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::Revolve{.Steps = 3u, .Angle = std::numbers::pi_v<float> * 1.5f, .Center = {.5f, .5f, 0.f}, .Offset = 6.f}); }},
+        {.Name = "RevolveTetrahedron", .Shape = +[] { return Attributed(Sourced({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, {{0, 2, 1}, {0, 1, 3}, {1, 2, 3}, {2, 0, 3}})); }, .Domain = Element::Face, .Kind = KindOf<graph::Extrude>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::Revolve{.Steps = 3u, .Angle = std::numbers::pi_v<float> * 1.5f, .Center = {.5f, .5f, 0.f}, .Offset = 6.f}); }},
         // Recalculate Normals turns both cubes outward and leaves the fans and the lone triangle as wound, and Flip Normals after it turns every face inside out.
-        {.Name = "RecalculateNormals", .Shape = Windings, .Domain = Element::Face, .Kind = KindOf<RecalculateNormals>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(RecalculateNormals{}); }, .Expected = {.Holds = [](const Mesh &mesh, std::span<const std::vector<uint32_t>> loops) {
-                                                                                                                                                                                                                  const auto volumes = test::ClosedComponentVolumes(mesh);
-                                                                                                                                                                                                                  return volumes.size() == 2u && std::ranges::all_of(volumes, [](double v) { return v > 0.0; }) && WindingsLooseFaces(loops, false);
-                                                                                                                                                                                                              }}},
-        {.Name = "RecalculateNormalsFlipped", .Shape = Windings, .Domain = Element::Face, .Kind = KindOf<FlipNormals>, .Gesture = [](ProcedureFixture &f, const Transform &) {
+        {.Name = "RecalculateNormals", .Shape = Windings, .Domain = Element::Face, .Kind = KindOf<RecalculateNormals>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(RecalculateNormals{}); }, .Expected = {.Holds = [](const Mesh &mesh, std::span<const std::vector<uint32_t>> loops) {
+                                                                                                                                                                                                              const auto volumes = test::ClosedComponentVolumes(mesh);
+                                                                                                                                                                                                              return volumes.size() == 2u && std::ranges::all_of(volumes, [](double v) { return v > 0.0; }) && WindingsLooseFaces(loops, false);
+                                                                                                                                                                                                          }}},
+        {.Name = "RecalculateNormalsFlipped", .Shape = Windings, .Domain = Element::Face, .Kind = KindOf<FlipNormals>, .Gesture = [](GraphFixture &f, const Transform &) {
              f.Do(RecalculateNormals{});
              f.Do(FlipNormals{});
          },
@@ -833,48 +833,48 @@ void RecordedOperators(ProcedureFixture &f, Fixture &other) {
              const auto volumes = test::ClosedComponentVolumes(mesh);
              return volumes.size() == 2u && std::ranges::all_of(volumes, [](double volume) { return volume < 0.0; }) && WindingsLooseFaces(loops, true);
          }}},
-        {.Name = "PointHull", .Shape = +[] { return Sourced({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}); }, .Domain = Element::Vertex, .Kind = KindOf<ConvexHull>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(ConvexHull{}); }, .Expected = {.Holds = [](const Mesh &mesh, std::span<const std::vector<uint32_t>>) {
-                                                                                                                                                                                                                                                        const auto volumes = test::ClosedComponentVolumes(mesh);
-                                                                                                                                                                                                                                                        return mesh.VertexCount() == 4u && mesh.FaceCount() == 4u && volumes.size() == 1u && std::abs(volumes[0] - 1.0 / 6.0) < 1e-6;
-                                                                                                                                                                                                                                                    }}},
+        {.Name = "PointHull", .Shape = +[] { return Sourced({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}); }, .Domain = Element::Vertex, .Kind = KindOf<ConvexHull>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(ConvexHull{}); }, .Expected = {.Holds = [](const Mesh &mesh, std::span<const std::vector<uint32_t>>) {
+                                                                                                                                                                                                                                                    const auto volumes = test::ClosedComponentVolumes(mesh);
+                                                                                                                                                                                                                                                    return mesh.VertexCount() == 4u && mesh.FaceCount() == 4u && volumes.size() == 1u && std::abs(volumes[0] - 1.0 / 6.0) < 1e-6;
+                                                                                                                                                                                                                                                }}},
         // A shear by NaN cooks an identity, while a shear along one axis, a separation that leaves the cube whole and face layer edits on absent layers append no node.
-        {.Name = "ShearSameAxis", .Shape = primitive::Cube{}, .Domain = Element::Vertex, .Kind = NoKind, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::Shear{.6f, ShearAxis::X, ShearAxis::X}); }},
-        {.Name = "ShearNan", .Shape = primitive::Cube{}, .Domain = Element::Vertex, .Kind = KindOf<procedure::Shear>, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(action::mesh::Shear{std::numeric_limits<float>::quiet_NaN()}); }, .Expected = {.Unchanged = true}},
-        {.Name = "SeparateLooseCube", .Shape = primitive::Cube{}, .Domain = Element::Face, .Kind = NoKind, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(Separate{SeparateMode::LooseParts}); }},
-        {.Name = "SeparateMaterialCube", .Shape = primitive::Cube{}, .Domain = Element::Face, .Kind = NoKind, .Gesture = [](ProcedureFixture &f, const Transform &) { f.Do(Separate{SeparateMode::Material}); }},
-        {.Name = "AbsentFaceLayers", .Shape = primitive::Cube{}, .Domain = Element::Face, .Kind = NoKind, .Gesture = [](ProcedureFixture &f, const Transform &) {
+        {.Name = "ShearSameAxis", .Shape = primitive::Cube{}, .Domain = Element::Vertex, .Kind = NoKind, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::Shear{.6f, ShearAxis::X, ShearAxis::X}); }},
+        {.Name = "ShearNan", .Shape = primitive::Cube{}, .Domain = Element::Vertex, .Kind = KindOf<graph::Shear>, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(action::mesh::Shear{std::numeric_limits<float>::quiet_NaN()}); }, .Expected = {.Unchanged = true}},
+        {.Name = "SeparateLooseCube", .Shape = primitive::Cube{}, .Domain = Element::Face, .Kind = NoKind, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(Separate{SeparateMode::LooseParts}); }},
+        {.Name = "SeparateMaterialCube", .Shape = primitive::Cube{}, .Domain = Element::Face, .Kind = NoKind, .Gesture = [](GraphFixture &f, const Transform &) { f.Do(Separate{SeparateMode::Material}); }},
+        {.Name = "AbsentFaceLayers", .Shape = primitive::Cube{}, .Domain = Element::Face, .Kind = NoKind, .Gesture = [](GraphFixture &f, const Transform &) {
              f.Do(CycleCornerAttribute{.Attribute = CornerAttribute::Colors});
              f.Do(CycleCornerAttribute{.Attribute = CornerAttribute::Colors, .Cycle = CornerCycle::Reverse});
              f.Do(CycleCornerAttribute{.UVSet = 3u});
              f.Do(CycleCornerAttribute{.Cycle = CornerCycle::Reverse, .UVSet = 3u});
          }},
     };
-    const auto add_cubes = [](ProcedureFixture &f) {
+    const auto add_cubes = [](GraphFixture &f) {
         auto &r = f.R;
-        f.Do(action::object::AddMeshPrimitive{primitive::Cube{}, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Transform = Placed})});
+        f.Do(action::object::AddMeshPrimitive{primitive::Cube{}, std::make_unique<MeshObjectCreateInfo>(MeshObjectCreateInfo{.Transform = Placed})});
         const auto active = FindActiveEntity(r);
         const Transform world{.P = {1.f, .5f, -.25f}, .R = numeric::AngleAxis(.6f, Normalize(vec3{0.f, 1.f, 1.f})), .S = {.75f, 1.f, 1.25f}};
-        f.Do(action::object::AddMeshPrimitive{primitive::Cube{}, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Transform = world, .Select = MeshInstanceCreateInfo::SelectBehavior::Additive})});
+        f.Do(action::object::AddMeshPrimitive{primitive::Cube{}, std::make_unique<MeshObjectCreateInfo>(MeshObjectCreateInfo{.Transform = world, .Select = MeshObjectCreateInfo::SelectBehavior::Additive})});
         expect(fatal(FindActiveEntity(r) == active));
         state::Entity tool = state::Null;
-        for (const auto e : r.view<const Instance>())
+        for (const auto e : r.view<const ObjectGeometry>())
             if (e != active) tool = e;
-        return std::tuple{active, r.get<const Instance>(active).Entity, tool};
+        return std::tuple{active, r.get<const ObjectGeometry>(active).Entity, tool};
     };
     // A boolean with another object appends a Boolean node in the active object's space fed by an Object Info node, which cuts a closed part from the cube.
-    Scenario(f, other, "BooleanObject", [&](ProcedureFixture &f) {
+    Scenario(f, other, "BooleanObject", [&](GraphFixture &f) {
         auto &r = f.R;
         const auto [active, mesh, tool] = add_cubes(f);
         const auto node_count = uint32_t(r.get<const CookPlan>(mesh).Nodes.size());
         f.Do(action::mesh::Boolean{BooleanOperation::Difference});
-        const auto &procedure = r.get<const CookPlan>(mesh);
-        expect(fatal(procedure.Nodes.size() == node_count + 2u));
-        const auto [boolean, boolean_kind, boolean_parent, boolean_builtin] = procedure.Nodes[node_count];
-        const auto [info, info_kind, info_parent, info_builtin] = procedure.Nodes[node_count + 1u];
-        expect(boolean_kind == KindOf<procedure::Boolean> && info_kind == KindOf<procedure::ObjectInfo> && r.get<const procedure::ObjectInfo>(info).Object == tool);
-        expect(procedure.Inputs[procedure.InputFirst[node_count] + 1u].FromNode == node_count + 1u && IndexOf(procedure, ActiveNodeOf(r, mesh)) == node_count);
+        const auto &graph = r.get<const CookPlan>(mesh);
+        expect(fatal(graph.Nodes.size() == node_count + 2u));
+        const auto [boolean, boolean_kind, boolean_parent, boolean_in_builtin_subgraph] = graph.Nodes[node_count];
+        const auto [info, info_kind, info_parent, info_in_builtin_subgraph] = graph.Nodes[node_count + 1u];
+        expect(boolean_kind == KindOf<graph::Boolean> && info_kind == KindOf<graph::ObjectInfo> && r.get<const graph::ObjectInfo>(info).Object == tool);
+        expect(graph.Inputs[graph.InputFirst[node_count] + 1u].FromNode == node_count + 1u && IndexOf(graph, ActiveNodeOf(r, mesh)) == node_count);
         expect(!f.Fault(boolean) && !f.Fault(info));
-        expect(r.get<const procedure::Boolean>(boolean).Space == active);
+        expect(r.get<const graph::Boolean>(boolean).Space == active);
         const auto cut = f.Shaped(mesh);
         const auto volume = OutputVolume(f, mesh);
         expect(volume > 0.0 && volume < 8.0 - 1e-3) << volume;
@@ -885,7 +885,7 @@ void RecordedOperators(ProcedureFixture &f, Fixture &other) {
             f.Do(UpdateOf<&Transform::P>(moved, placed));
             expect(f.Shaped(mesh) == cut);
         }
-        // A generated Mesh 2 is in this procedure's mesh space, so it stays in place relative to Mesh 1 wherever Space moves: a bar through the cube cuts a 1 x 1 x 2 tunnel.
+        // A generated Mesh 2 is in this graph's mesh space, so it stays in place relative to Mesh 1 wherever Space moves: a bar through the cube cuts a 1 x 1 x 2 tunnel.
         const auto bar = f.Append(mesh, KindOf<primitive::Cube>);
         f.Do(UpdateOf<&primitive::Cube::HalfExtents>(bar, vec3{.5f, .5f, 2.f}));
         f.Do(action::nodes::Unlink{mesh, boolean, 1u});
@@ -897,7 +897,7 @@ void RecordedOperators(ProcedureFixture &f, Fixture &other) {
         f.Do(UpdateOf<&Transform::P>(active, placed));
     });
     // Moving a common parent of both objects leaves the transform between their spaces unchanged bit for bit, and moving one of them changes the cut.
-    Scenario(f, other, "BooleanCommonParent", [&](ProcedureFixture &f) {
+    Scenario(f, other, "BooleanCommonParent", [&](GraphFixture &f) {
         auto &r = f.R;
         const auto parent = f.AddEmpty("Parent");
         const auto [active, mesh, tool] = add_cubes(f);
@@ -914,7 +914,7 @@ void RecordedOperators(ProcedureFixture &f, Fixture &other) {
         expect(std::abs(OutputVolume(f, mesh) - 8.0) < 1e-4);
     });
     // A pose on an object placing an operand moves the Boolean's cut, and releasing it returns the cut.
-    Scenario(f, other, "BooleanPose", [&](ProcedureFixture &f) {
+    Scenario(f, other, "BooleanPose", [&](GraphFixture &f) {
         auto &r = f.R;
         const auto [active, mesh, tool] = add_cubes(f);
         f.Do(action::mesh::Boolean{BooleanOperation::Difference});
@@ -929,7 +929,7 @@ void RecordedOperators(ProcedureFixture &f, Fixture &other) {
         expect(f.Shaped(mesh) == cut);
     });
     for (const auto &row : rows) {
-        Scenario(f, other, std::string{row.Name}, [&row](ProcedureFixture &f) {
+        Scenario(f, other, std::string{row.Name}, [&row](GraphFixture &f) {
             auto &r = f.R;
             const auto &meshes = f.Store();
             const auto mesh = SetUpRow(f, row, {});
@@ -937,18 +937,18 @@ void RecordedOperators(ProcedureFixture &f, Fixture &other) {
             for (const Mesh before{meshes, f.Output(mesh)}; const auto v : before.vertices()) source.push_back(test::Position(before, v));
             const auto shape = f.Shaped(mesh);
             const auto node_count = r.get<const CookPlan>(mesh).Nodes.size();
-            const auto displayed = r.get<const GeometryProcedure>(mesh).DisplayNode;
+            const auto displayed = r.get<const GeometryGraph>(mesh).DisplayNode;
             const auto present = f.P->History.Present.value();
             row.Gesture(f, {});
-            const auto &procedure = r.get<const CookPlan>(mesh);
+            const auto &graph = r.get<const CookPlan>(mesh);
             if (row.Kind == NoKind) {
-                expect(procedure.Nodes.size() == node_count && f.P->History.Present == present);
+                expect(graph.Nodes.size() == node_count && f.P->History.Present == present);
                 expect(f.Shaped(mesh) == shape);
                 return;
             }
-            const auto node = r.get<const GeometryProcedure>(mesh).DisplayNode;
-            expect(fatal(procedure.Nodes.size() > node_count && node != displayed));
-            const auto kind = r.get<const ProcedureNode>(node).Kind;
+            const auto node = r.get<const GeometryGraph>(mesh).DisplayNode;
+            expect(fatal(graph.Nodes.size() > node_count && node != displayed));
+            const auto kind = r.get<const GraphNode>(node).Kind;
             const auto &expected = row.Expected;
             expect(kind == row.Kind && bool(f.Fault(node)) == expected.Faulted);
             if (expected.Unchanged || expected.Faulted) {
@@ -992,7 +992,7 @@ struct VisibilityReference {
     std::vector<uint32_t> Vertices, Faces;
     std::vector<std::array<uint32_t, 2>> Edges;
 };
-void EditVisibility(ProcedureFixture &f, Fixture &other) {
+void EditVisibility(GraphFixture &f, Fixture &other) {
     static const std::array<VisibilityReference, 6> references{{
         {Element::Vertex, false, {1}, {0, 1}, {{0, 1}, {1, 2}, {1, 4}}},
         {Element::Vertex, true, {0, 2, 3, 4, 5, 6}, {0, 1}, {{0, 1}, {0, 3}, {1, 2}, {1, 4}, {2, 5}, {3, 4}, {4, 5}}},
@@ -1002,7 +1002,7 @@ void EditVisibility(ProcedureFixture &f, Fixture &other) {
         {Element::Face, true, {2, 5, 6}, {1}, {{1, 2}, {2, 5}, {4, 5}}},
     }};
     for (const auto &reference : references) {
-        Scenario(f, other, std::format("Hide{}{}", reference.Unselected ? "Unselected" : "Selected", DomainName(reference.Mode)), [&reference](ProcedureFixture &f) {
+        Scenario(f, other, std::format("Hide{}{}", reference.Unselected ? "Unselected" : "Selected", DomainName(reference.Mode)), [&reference](GraphFixture &f) {
             const auto &meshes = f.Store();
             const auto mesh = f.AddSourced(TwoQuads()).first;
             f.EnterEdit(reference.Mode);
@@ -1046,9 +1046,9 @@ void EditVisibility(ProcedureFixture &f, Fixture &other) {
 }
 
 // A click reaches the visible element behind a hidden one and never selects a hidden element.
-void HiddenPicking(ProcedureFixture &f, Fixture &other) {
+void HiddenPicking(GraphFixture &f, Fixture &other) {
     for (const auto mode : {Element::Vertex, Element::Edge, Element::Face}) {
-        Scenario(f, other, std::format("HiddenPick{}", DomainName(mode)), [mode](ProcedureFixture &f) {
+        Scenario(f, other, std::format("HiddenPick{}", DomainName(mode)), [mode](GraphFixture &f) {
             const auto &meshes = f.Store();
             f.Render();
             const auto normal = Normalize(f.View().CameraPosition), right = Normalize(Cross(normal, vec3{0, 0, 1})), up = Cross(normal, right);
@@ -1085,7 +1085,7 @@ void HiddenPicking(ProcedureFixture &f, Fixture &other) {
 }
 
 // A hidden face stays hidden through a subdivision of its neighbors, undo and redo, and a duplicate.
-void HiddenFaceSurvivesEdits(ProcedureFixture &f) {
+void HiddenFaceSurvivesEdits(GraphFixture &f) {
     const auto &meshes = f.Store();
     const auto mesh = f.AddSourced(Sourced({{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {0, 1, 0}, {1, 1, 0}, {2, 1, 0}}, {{0, 1, 4, 3}, {1, 2, 5, 4}})).first;
     f.EnterEdit(Element::Face);
@@ -1111,7 +1111,7 @@ void HiddenFaceSurvivesEdits(ProcedureFixture &f) {
 }
 
 // A selection in a record's last block survives deleting that block and returns with undo.
-void SparseSelection(ProcedureFixture &f) {
+void SparseSelection(GraphFixture &f) {
     const auto &meshes = f.Store();
     std::vector<vec3> positions;
     for (uint32_t i = 0u; i < 258u; ++i) positions.push_back({float(i), 0, 0});
@@ -1132,18 +1132,18 @@ void SparseSelection(ProcedureFixture &f) {
     check(true);
 }
 
-std::array<state::Entity, 2> AddPair(ProcedureFixture &f, const std::array<Transform, 2> &worlds) {
+std::array<state::Entity, 2> AddPair(GraphFixture &f, const std::array<Transform, 2> &worlds) {
     static const std::array<std::vector<vec3>, 2> positions{{{{-2, 0, 0}, {1, 0, 0}, {0, 1, 0}}, {{0, -1, 0}, {2, 1, 0}, {0, 0, 2}}}};
-    std::array<state::Entity, 2> meshes, instances;
-    for (uint32_t m = 0u; m < 2u; ++m) std::tie(meshes[m], instances[m]) = AddMesh(f.R, CreateMesh(f.R, Sourced(positions[m])).StoreId, MeshInstanceCreateInfo{.Transform = worlds[m]});
+    std::array<state::Entity, 2> meshes, objects;
+    for (uint32_t m = 0u; m < 2u; ++m) std::tie(meshes[m], objects[m]) = AddMesh(f.R, CreateMesh(f.R, Sourced(positions[m])).StoreId, MeshObjectCreateInfo{.Transform = worlds[m]});
     f.Commit("Add pair");
-    f.Do(action::selection::Select{instances[0]});
-    f.Do(action::selection::ToggleSelected{instances[1]});
+    f.Do(action::selection::Select{objects[0]});
+    f.Do(action::selection::ToggleSelected{objects[1]});
     f.EnterEdit(Element::Vertex);
     f.Do(action::selection::SelectAll{});
     return meshes;
 }
-void ExpectPair(ProcedureFixture &f, const std::array<state::Entity, 2> &meshes, const std::array<std::array<vec3, 3>, 2> &expected) {
+void ExpectPair(GraphFixture &f, const std::array<state::Entity, 2> &meshes, const std::array<std::array<vec3, 3>, 2> &expected) {
     for (uint32_t m = 0u; m < 2u; ++m) {
         const Mesh mesh{f.Store(), f.Output(meshes[m])};
         for (uint32_t i = 0u; i < 3u; ++i) {
@@ -1153,8 +1153,8 @@ void ExpectPair(ProcedureFixture &f, const std::array<state::Entity, 2> &meshes,
     }
 }
 // Two objects, one rotated and unevenly scaled, edited together about their shared world median, against Blender 5.2.2 with center_override at that median.
-void TransformedPairs(ProcedureFixture &f, Fixture &other) {
-    Scenario(f, other, "RadialPair", [](ProcedureFixture &f) {
+void TransformedPairs(GraphFixture &f, Fixture &other) {
+    Scenario(f, other, "RadialPair", [](GraphFixture &f) {
         const auto meshes = AddPair(f, {Transform{.P = {2.f, 0.f, 0.f}, .R = numeric::AngleAxis(std::numbers::pi_v<float> / 2.f, vec3{0.f, 0.f, 1.f}), .S = {2.f, 1.f, 1.f}}, Transform{.P = {-1.f, 1.f, 0.f}, .S = {1.f, 3.f, 1.f}}});
         f.Do(action::mesh::ToSphere{.6f});
         ExpectPair(f, meshes, {{{{{-1.602138877f, 0.254631042f, 0.063657761f}, {1.016452074f, -0.023930311f, -0.005982578f}, {-0.127709180f, 0.489163578f, -0.510836482f}}}, {{{0.078688025f, -0.965901852f, 0.015737623f}, {2.049850702f, 1.191094637f, -0.049850762f}, {0.283103585f, -0.047183931f, 1.716896415f}}}}});
@@ -1163,7 +1163,7 @@ void TransformedPairs(ProcedureFixture &f, Fixture &other) {
         ExpectPair(f, meshes, {{{{{-1.666109681f, 0.213689774f, 0.053422447f}, {0.778049350f, 0.322837293f, 0.080709331f}, {0.069631100f, 1.278524160f, 0.278524280f}}}, {{{0.360994071f, -0.843569219f, 0.072198816f}, {1.902101994f, 0.624724150f, 0.097898051f}, {0.280898780f, -0.046816461f, 1.719101191f}}}}});
     });
     // Blender 5.2.2 shear, active object 0, angle .6, the Z and X axes, about the shared median, in global and in local space.
-    Scenario(f, other, "ShearPair", [](ProcedureFixture &f) {
+    Scenario(f, other, "ShearPair", [](GraphFixture &f) {
         const auto meshes = AddPair(f, {Transform{.P = {2, 0, 0}, .R = numeric::AngleAxis(std::numbers::pi_v<float> / 2.f, vec3{0, 0, 1}), .S = {2, 1, -1.f}}, Transform{.P = {-1, 1, 0}, .S = {-1.f, 3, .5f}}});
         f.Do(action::mesh::Shear{.Angle = .6f});
         ExpectPair(f, meshes, {{{{{-2, -2.850570202f, 0}, {1, 1.254251003f, 0}, {0, .885977149f, 0}}}, {{{-1.482296467f, -1, 0}, {4.622524738f, 1, 0}, {.570114136f, 0, 2}}}}});
@@ -1185,7 +1185,7 @@ struct SeparateCase {
     std::vector<std::vector<uint32_t>> Expected;
     uint32_t OutputEdges;
 };
-void Separations(ProcedureFixture &f, Fixture &other) {
+void Separations(GraphFixture &f, Fixture &other) {
     using Mode = action::mesh::SeparateMode;
     static const std::array<SeparateCase, 5> cases{{
         // Extracts both a face with an attached wire and an independent wire from a mixed source, with the first face hidden.
@@ -1196,7 +1196,7 @@ void Separations(ProcedureFixture &f, Fixture &other) {
         {"SeparateFaces", Mode::Selected, Element::Face, 4u, {{0, 1, 2}, {2, 1, 3}}, {}, {1}, {{0, 1, 2}, {1, 2, 3}}, 6u},
     }};
     for (const auto &c : cases) {
-        Scenario(f, other, std::string{c.Name}, [&c](ProcedureFixture &f) {
+        Scenario(f, other, std::string{c.Name}, [&c](GraphFixture &f) {
             auto &r = f.R;
             const auto &meshes = f.Store();
             const auto &a = meshes.Arenas();
@@ -1263,7 +1263,7 @@ void Separations(ProcedureFixture &f, Fixture &other) {
 }
 } // namespace
 
-void TestOperators(ProcedureFixture &f, Fixture &other) {
+void TestOperators(GraphFixture &f, Fixture &other) {
     ViewportOperators(f, other);
     RecordedOperators(f, other);
     EditVisibility(f, other);

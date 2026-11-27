@@ -9,19 +9,20 @@
 #include "animation/MorphWeights.h"
 #include "armature/ArmatureComponents.h"
 #include "editor/Engine.h"
+#include "graph/Cook.h"
+#include "graph/NodeView.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
 #include "mesh/NormalDeriveGpu.h"
 #include "object/ObjectOps.h"
-#include "procedure/Cook.h"
-#include "procedure/NodeView.h"
 #include "project/Recording.h"
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
-#include "render/Instance.h"
+#include "render/ObjectGeometry.h"
 #include "render/SceneUpdates.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
+#include "scene/Instance.h"
 #include "selection/SelectionGpu.h"
 #include "snapshot/Workspace.h"
 #include "viewport/InteractionComponents.h"
@@ -33,7 +34,7 @@
 // Compares rendered images, which --no-render skips.
 inline bool Render{true};
 // The first and last seed of the random history walks.
-inline std::array<uint32_t, 2> WalkSeeds{12u, 12u};
+inline std::array<uint32_t, 2> WalkSeeds{2u, 2u};
 
 inline const auto RiggedSimple = std::filesystem::path{MESHEDITOR_SOURCE_DIR} / "external/glTF-Sample-Assets/Models/RiggedSimple/glTF/RiggedSimple.gltf";
 
@@ -142,13 +143,22 @@ struct Fixture : Engine {
         Do(std::move(a));
         return FindActiveEntity(R);
     }
-    state::Entity AddCube() { return Add(action::object::AddMeshPrimitive{primitive::Cube{}, std::make_unique<MeshInstanceCreateInfo>()}); }
-    // Adds an object of the source at the world transform, selected alone, and returns its mesh entity and instance.
+    state::Entity AddCube() { return Add(action::object::AddMeshPrimitive{primitive::Cube{}, std::make_unique<MeshObjectCreateInfo>()}); }
+    // Adds an object of the source at the world transform, selected alone, and returns its mesh entity and the object.
     std::pair<state::Entity, state::Entity> AddSourced(MeshSource source, const Transform &world = {}) {
-        const auto added = ::AddMesh(R, CreateMesh(R, std::move(source)).StoreId, MeshInstanceCreateInfo{.Transform = world});
+        const auto added = ::AddMesh(R, CreateMesh(R, std::move(source)).StoreId, MeshObjectCreateInfo{.Transform = world});
         Commit("Add mesh");
         return added;
     }
+    // Collapses the object and its descendants into a scene subgraph, and returns the subgraph.
+    state::Entity CollapseHierarchy(state::Entity root) {
+        auto items = graph::GraphItems(R, FrameScene(R));
+        std::erase_if(items, [&, closure = ObjectClosure(R, root)](state::Entity e) { return !std::ranges::binary_search(closure, e); });
+        Do(action::nodes::Collapse{FrameScene(R), std::move(items)});
+        return FindActiveNode(R);
+    }
+    // Adds an Empty with an Instance of a new scene subgraph of the object and its descendants.
+    state::Entity Instantiate(state::Entity root) { return Add(action::object::Instantiate{CollapseHierarchy(root)}); }
     state::Entity AddEmpty(std::string name) {
         return Add(action::object::AddEmpty{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Name = std::move(name)})});
     }
@@ -176,7 +186,7 @@ inline void SelectOrdinals(Fixture &f, state::Entity mesh, std::span<const uint3
 
 inline uint64_t Cooks(const state::Registry &r) { return r.Resources.get<const CookCount>().Value; }
 
-// Recomputes each mesh's layout from its record, its instances and the interaction mode.
+// Recomputes each mesh's layout from its record, the objects that draw it and the interaction mode.
 // The bounds runs share no storage, and the topology and sharp-edge tallies agree with a recount.
 inline void CheckLayout(Fixture &f) {
     auto &r = f.R;
@@ -204,17 +214,17 @@ inline void CheckLayout(Fixture &f) {
         if (!HasMesh(r, entity)) continue;
         const auto *run = r.try_get<const BoundsRun>(entity);
         if (!run) {
-            fail("a mesh with instances has no bounds run");
+            fail("a mesh that objects draw has no bounds run");
             continue;
         }
         bool deformed = false;
         if (!edit) {
             for (const auto id : buffers.Instances.ObjectIdBuffer.GetSpan<uint32_t>({models.InstanceRange.Offset, models.InstanceCount})) {
-                const auto instance = r.EntityAt(ObjectIndex(id));
-                const auto *modifier = record->SkinBlocksReady ? r.try_get<const ArmatureModifier>(instance) : nullptr;
+                const auto object = r.EntityAt(ObjectIndex(id));
+                const auto *modifier = record->SkinBlocksReady ? r.try_get<const ArmatureModifier>(object) : nullptr;
                 const auto *pose_state = modifier ? r.try_get<const ArmaturePoseState>(modifier->ArmatureObjectEntity) : nullptr;
                 deformed |= pose_state && modifier->SkinSlot < pose_state->GpuDeformRanges.size();
-                deformed |= record->MorphBlocksReady && r.all_of<MorphWeightRange>(instance);
+                deformed |= record->MorphBlocksReady && r.all_of<MorphWeightRange>(object);
             }
         }
         const uint32_t count = deformed ? models.InstanceCount : 1u;
@@ -266,22 +276,22 @@ inline void CheckLayout(Fixture &f) {
     if (buffers.SharpEditMeshes != sharp_meshes) fail("sharp-edge tally");
 }
 
-// Every instance has a render instance of its mesh in a slot of the mesh's instance range that holds its object ID.
-// The slot's hidden bit in each shown scene agrees with the instance's Hidden component and scene membership.
-// Each mesh's instance count equals its render instances, so every slot in a range belongs to a live instance.
+// Every object that draws a mesh has a render instance of it in a slot of the mesh's instance range that holds its object ID.
+// The slot's hidden bit in each shown scene agrees with the object's Hidden component and scene membership.
+// Each mesh's instance count equals its render instances, so every slot in a range belongs to a live object.
 inline void CheckInstances(Fixture &f) {
     const auto &r = f.R;
     const auto &buffers = r.Resources.get<const GpuBuffers>();
     const auto object_ids = buffers.Instances.ObjectIdBuffer.GetSpan<uint32_t>();
     const auto fail = [&](state::Entity e, std::string_view what) {
-        std::println("instance {} at node {}: {}", state::Index(e), f.P->History.Present.value(), what);
+        std::println("object {} at node {}: {}", state::Index(e), f.P->History.Present.value(), what);
         boost::ut::expect(false);
     };
-    boost::ut::expect(r.view<const RenderInstance>().size() == r.view<const Instance>().size());
+    boost::ut::expect(r.view<const RenderInstance>().size() == r.view<const ObjectGeometry>().size());
     std::map<state::Entity, uint32_t> placed;
-    for (const auto [e, instance] : r.view<const Instance>().each()) {
+    for (const auto [e, geometry] : r.view<const ObjectGeometry>().each()) {
         const auto *render = r.try_get<const RenderInstance>(e);
-        const auto *models = render && render->Entity == instance.Entity ? r.try_get<const ModelsBuffer>(instance.Entity) : nullptr;
+        const auto *models = render && render->Entity == geometry.Entity ? r.try_get<const ModelsBuffer>(geometry.Entity) : nullptr;
         if (!models || render->BufferIndex < models->InstanceRange.Offset || render->BufferIndex >= models->InstanceRange.Offset + models->InstanceCount || object_ids[render->BufferIndex] != ObjectId(e)) {
             fail(e, "not placed in its mesh's instance range");
             continue;
@@ -290,7 +300,7 @@ inline void CheckInstances(Fixture &f) {
             const bool hidden = (buffers.Instances.States[i].GetSpan<uint8_t>()[render->BufferIndex] & InstanceStateHidden) != 0u;
             if (hidden != HiddenIn(r, e, buffers.Scenes[i])) fail(e, "hidden bit");
         }
-        ++placed[instance.Entity];
+        ++placed[geometry.Entity];
     }
     for (const auto [mesh, models] : r.view<const ModelsBuffer>().each()) {
         if (const auto it = placed.find(mesh); models.InstanceCount != (it != placed.end() ? it->second : 0u)) fail(mesh, "instance count");
@@ -302,8 +312,14 @@ inline void CheckInstances(Fixture &f) {
 struct Live {
     std::vector<std::byte> Image, Document, Workspace;
     std::map<state::Entity, Shape> Outputs;
+    // The image of a frame, which settles first, or no image under --no-render after the same settle.
+    static std::vector<std::byte> Frame(Fixture &f) {
+        if (Render) return f.Image();
+        f.P->Settle();
+        return {};
+    }
     explicit Live(Fixture &f)
-        : Image(Render ? f.Image() : std::vector<std::byte>{}), Document(f.P->History.MaterializeLive()), Workspace(snapshot::SerializeWorkspace(f.R)), Outputs(DrawnShapes(f)) {
+        : Image(Frame(f)), Document(f.P->History.MaterializeLive()), Workspace(snapshot::SerializeWorkspace(f.R)), Outputs(DrawnShapes(f)) {
         CheckRecords(f);
     }
     static std::map<state::Entity, uint32_t> DrawnRecords(const Fixture &f) {
@@ -331,14 +347,14 @@ struct Live {
         CheckLayout(f);
         CheckInstances(f);
         if (f.R.get<const Interaction>(state::Document).Mode != InteractionMode::Edit) return;
-        for (const auto [e, instance] : f.R.view<const Selected, const Instance>().each()) {
-            if (const auto id = DrawnStoreId(f.R, instance.Entity)) test::ExpectSelectionIndex(meshes, *id);
+        for (const auto [e, geometry] : f.R.view<const Selected, const ObjectGeometry>().each()) {
+            if (const auto id = DrawnStoreId(f.R, geometry.Entity)) test::ExpectSelectionIndex(meshes, *id);
         }
     }
     void Check(Fixture &f, bool present) const {
-        if (present && Render) {
-            const auto image = f.Image();
-            if (!RayTracingActive(f.R.get<const Viewport>(FirstViewport(f.R)))) boost::ut::expect(image == Image);
+        if (present) {
+            const auto image = Frame(f);
+            if (Render && !RayTracingActive(f.R.get<const Viewport>(FirstViewport(f.R)))) boost::ut::expect(image == Image);
         }
         boost::ut::expect(f.P->History.MaterializeLive() == Document);
         if (present) boost::ut::expect(snapshot::SerializeWorkspace(f.R) == Workspace);
@@ -419,15 +435,15 @@ inline void CheckHistory(Fixture &f, Fixture &other, const std::map<uint32_t, Li
     }
 }
 
-// Every page of the document, its scenes and their subnets as text: each node's item and title, its socket labels, and the socket each input is wired from.
-inline std::string NetworkPages(const state::Registry &r) {
-    std::vector<state::Entity> networks{state::Document};
-    networks.append_range(SortedEntities(r.view<const Scene>()));
-    networks.append_range(SortedEntities(r.view<const procedure::NetworkSubnet>()));
+// Every page of the document, its scenes and their subgraphs as text: each node's item and title, its socket labels, and the socket each input is wired from.
+inline std::string GraphPages(const state::Registry &r) {
+    std::vector<state::Entity> graphs{state::Document};
+    graphs.append_range(SortedEntities(r.view<const Scene>()));
+    graphs.append_range(SortedEntities(r.view<const graph::SubgraphItems>()));
     std::string text;
-    for (const auto network : networks) {
-        const auto view = procedure::SceneNodeDefinitions(r, network);
-        text += std::format("page {}\n", state::Integral(network));
+    for (const auto graph : graphs) {
+        const auto view = graph::ProjectItemGraph(r, graph);
+        text += std::format("page {}\n", state::Integral(graph));
         for (uint32_t n = 0; n < view.Nodes.size(); ++n) {
             const auto item = view.Nodes[n].Item;
             text += std::format("{} {}\n", state::Integral(item), view.Nodes[n].Title);
@@ -451,9 +467,9 @@ template<typename F> void Scenario(F &f, Fixture &other, std::string name, auto 
         f.Step = [&](bool replays) {
             if constexpr (requires { f.CheckStep(); }) f.CheckStep();
             // Each item's stored node is the one its entity derives, and a page that changed advanced the revision.
-            boost::ut::expect(procedure::NodesSettled(f.R)) << name << "stores a stale node";
-            const auto revised = f.R.Resources.template get<const procedure::NetworkChanges>().Revision;
-            auto shown = NetworkPages(f.R);
+            boost::ut::expect(graph::NodesSettled(f.R)) << name << "stores a stale node";
+            const auto revised = f.R.Resources.template get<const graph::GraphChanges>().Revision;
+            auto shown = GraphPages(f.R);
             boost::ut::expect(shown == pages || revised != revision) << name << "changed a page at one revision";
             pages = std::move(shown);
             revision = revised;

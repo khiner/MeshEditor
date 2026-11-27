@@ -30,6 +30,8 @@ struct Registry {
     void (*Capture)(Registry &, TypeId, std::span<const PageMask>){};
     void *HistoryOwner{};
     bool Restoring{}, DocumentReadOnly{}, RestoringEvents{};
+    // An action's Apply is running.
+    bool Applying{};
     uint64_t Epoch{1};
     Entity create();
     void destroy(Entity);

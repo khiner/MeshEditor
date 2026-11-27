@@ -9,8 +9,6 @@
 namespace animation {
 const AnimationClips *ClipsOf(const state::Registry &, state::Entity);
 std::vector<state::Entity> AnimatedEntities(const state::Registry &);
-// Convert an inherited root transform channel into its occurrence placement for detachment or export.
-void PlaceChannel(const state::Registry &, state::Entity, AnimationChannel &);
 
 // The entity's clip in the scene's active animation.
 const AnimationClip *ActiveClip(const state::Registry &, const AnimationClips &);

@@ -1,6 +1,6 @@
 #include "viewport/ViewportRenderGpu.h"
 #include "gpu/FastGiPushConstants.h"
-#include "procedure/Procedure.h"
+#include "graph/Graph.h"
 
 #include "Camera.h"
 #include "Profile.h"
@@ -11,10 +11,11 @@
 #include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
 #include "gizmo/GizmoInteraction.h"
-#include "gpu/BoundsReducePushConstants.h"
 #include "gpu/AreaShadowBounds.h"
-#include "gpu/GeometryEditJob.h"
+#include "gpu/BoundsReducePushConstants.h"
 #include "gpu/DepthPyramidReducePushConstants.h"
+#include "gpu/GeometryEditJob.h"
+#include "gpu/LightCulling.h"
 #include "gpu/LightRecord.h"
 #include "gpu/MeshletCullPushConstants.h"
 #include "gpu/MotionBlurAccumulatePushConstants.h"
@@ -27,7 +28,6 @@
 #include "gpu/OverlayJobDrawPushConstants.h"
 #include "gpu/PosedMeshletBoundsPushConstants.h"
 #include "gpu/RayLightingPushConstants.h"
-#include "gpu/LightCulling.h"
 #include "gpu/RayReconstructPushConstants.h"
 #include "gpu/RayTracingRecord.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
@@ -53,12 +53,12 @@
 #include "render/ClusterLod.h"
 #include "render/Encoding.h"
 #include "render/GpuSceneState.h"
-#include "render/Instance.h"
 #include "render/MaterialComponents.h"
 #include "render/MaterialPatterns.h"
 #include "render/MeshTopologyRepair.h"
 #include "render/MeshletBoundsRefit.h"
 #include "render/MeshletBuildGpu.h"
+#include "render/ObjectGeometry.h"
 #include "render/Pipelines.h"
 #include "render/RayFilm.h"
 #include "render/SceneUpdates.h"
@@ -146,31 +146,25 @@ ExtrasLine ExtrasGizmoParams(const state::Registry &r, state::Entity object, Obj
 void BuildOverlayJobs(const state::Registry &r, GpuBuffers &buffers, bool bounding_boxes) {
     constexpr uint32_t LinesPerJob{uint32_t(OverlayDispatch::LineGroupLines)};
     const auto object_ids = buffers.Instances.ObjectIdBuffer.GetSpan<uint32_t>();
-    const auto for_each_instance = [&](state::Entity buffer_entity, auto &&visit) {
-        const auto &models = r.get<const ModelsBuffer>(buffer_entity);
-        for (uint32_t slot = models.InstanceRange.Offset; slot < models.InstanceRange.Offset + models.InstanceCount; ++slot) visit(r.EntityAt(ObjectIndex(object_ids[slot])), slot);
-    };
+    // The jobs follow the instances' drawing order, so coplanar lines resolve the same way across loads.
     const auto for_each_job = [&](auto &&emit) {
-        for (const auto buffer_entity : r.view<const ObjectExtrasTag, const ModelsBuffer>()) {
-            for_each_instance(buffer_entity, [&](state::Entity object, uint32_t slot) {
+        for (const auto slot : buffers.GpuInstanceSlots.GetSpan<uint32_t>()) {
+            const auto object = r.EntityAt(ObjectIndex(object_ids[slot]));
+            const auto buffer_entity = r.get<const RenderInstance>(object).Entity;
+            if (r.all_of<ObjectExtrasTag>(buffer_entity)) {
                 const auto gizmo = ExtrasGizmoParams(r, object, r.get<const ObjectKind>(object).Value);
                 emit(OverlayJob{.Kind = OverlayJobKind::Extras, .InstanceIndex = slot, .ExtrasKind = gizmo.Kind, .LocalOffset = vec3{0}, .Params = gizmo.Params}, gizmo.LineCount);
-            });
-        }
-        for (const auto [entity, shape, render_instance] : r.view<const ColliderShape, const RenderInstance>().each()) {
-            const auto wire = ColliderWireParams(shape.Shape);
-            emit(OverlayJob{.Kind = OverlayJobKind::Extras, .InstanceIndex = render_instance.BufferIndex, .ExtrasKind = wire.Kind, .LocalOffset = shape.LocalOffset, .Params = wire.Params}, wire.LineCount);
-        }
-        if (bounding_boxes) {
-            for (const auto [entity, instance, render_instance] : r.view<const Instance, const RenderInstance>().each()) {
-                if (DrawsMesh(r, instance.Entity)) emit(OverlayJob{.Kind = OverlayJobKind::Bounds, .InstanceIndex = render_instance.BufferIndex}, 12u);
             }
-        }
-        for (const auto [mesh_entity, tets] : r.view<const TetBuffers>().each()) {
-            if (tets.EdgeIndices.Count == 0u || !r.all_of<ModelsBuffer>(mesh_entity)) continue;
-            for_each_instance(mesh_entity, [&](state::Entity, uint32_t slot) {
-                emit(OverlayJob{.Kind = OverlayJobKind::TetWire, .InstanceIndex = slot, .SourceOffset = tets.Positions.Offset, .IndexOffset = tets.EdgeIndices.Offset}, tets.EdgeIndices.Count / 2u);
-            });
+            if (const auto *shape = r.try_get<const ColliderShape>(object)) {
+                const auto wire = ColliderWireParams(shape->Shape);
+                emit(OverlayJob{.Kind = OverlayJobKind::Extras, .InstanceIndex = slot, .ExtrasKind = wire.Kind, .LocalOffset = shape->LocalOffset, .Params = wire.Params}, wire.LineCount);
+            }
+            if (const auto *geometry = bounding_boxes ? r.try_get<const ObjectGeometry>(object) : nullptr; geometry && DrawsMesh(r, geometry->Entity)) {
+                emit(OverlayJob{.Kind = OverlayJobKind::Bounds, .InstanceIndex = slot}, 12u);
+            }
+            if (const auto *tets = r.try_get<const TetBuffers>(buffer_entity); tets && tets->EdgeIndices.Count != 0u) {
+                emit(OverlayJob{.Kind = OverlayJobKind::TetWire, .InstanceIndex = slot, .SourceOffset = tets->Positions.Offset, .IndexOffset = tets->EdgeIndices.Offset}, tets->EdgeIndices.Count / 2u);
+            }
         }
     };
     uint32_t count = 0u;
@@ -685,7 +679,7 @@ struct DisplayContext {
           Displays(r.Resources.get<const GpuSceneState>().Displays), Mode(r.get<const Interaction>(state::Document).Mode),
           Primaries(r.get<const EditPrimaries>(state::Document).All), SelectedMeshes(r.get<const SelectionFlags>(state::Document).Meshes) {
         if (Mode == InteractionMode::Excite) {
-            for (const auto [_, instance, __] : r.view<const Instance, const SoundVertices>().each()) SoundMeshes.insert(instance.Entity);
+            for (const auto [_, geometry, __] : r.view<const ObjectGeometry, const SoundVertices>().each()) SoundMeshes.insert(geometry.Entity);
         }
     }
 
@@ -694,7 +688,7 @@ struct DisplayContext {
     const MeshStore &Meshes;
     const DisplayUnion &Displays;
     InteractionMode Mode;
-    const selection::PrimaryEditInstanceMap &Primaries;
+    const selection::PrimaryEditObjectMap &Primaries;
     const std::vector<state::Entity> &SelectedMeshes;
     std::unordered_set<state::Entity> SoundMeshes;
 
@@ -781,7 +775,7 @@ MeshDisplayState ComputeMeshDisplay(const DisplayContext &c, state::Entity mesh_
         if (faces == 0u) set(MeshletInstanceFlag::SolidWire);
         if (faces == 0u && !material_face_less) set(MeshletInstanceFlag::MaterialWire);
     }
-    const auto *selection_edit = r.try_get<const procedure::SelectionEditing>(state::Document);
+    const auto *selection_edit = r.try_get<const graph::SelectionEditing>(state::Document);
     if (armature || joint || (selection_edit && selection_edit->Mesh == mesh_entity)) set(MeshletInstanceFlag::OverlayOnly);
     if (displays.Bones) {
         if (armature) {
@@ -980,8 +974,7 @@ void BindTextures(mtl::Command &command, uint32_t first, std::initializer_list<M
     for (const auto *texture : textures) command.SetTexture(texture, first++);
 }
 
-void RecordFastGi(mtl::PassChain &chain, const MainPipeline &main, const RenderTargets::RayTracingResourcesT &rt, const RenderTargets::ScreenT &screen,
-    const RenderTargets::RayTracingResourcesT::HistoryT &previous, const RenderTargets::RayTracingResourcesT::HistoryT &next, const FastGiPushConstants &pc) {
+void RecordFastGi(mtl::PassChain &chain, const MainPipeline &main, const RenderTargets::RayTracingResourcesT &rt, const RenderTargets::ScreenT &screen, const RenderTargets::RayTracingResourcesT::HistoryT &previous, const RenderTargets::RayTracingResourcesT::HistoryT &next, const FastGiPushConstants &pc) {
     const auto &gi = *rt.FastGI;
     // Each Fast GI kernel uses consecutive texture slots beginning at zero.
     const auto dispatch = [](mtl::ComputeEncoder encoder, const mtl::ComputePipeline &pipeline, mtl::Extent2D extent, std::initializer_list<MTL::Texture *> textures) {
@@ -999,24 +992,38 @@ void RecordFastGi(mtl::PassChain &chain, const MainPipeline &main, const RenderT
     const auto setup = chain.BeginCompute("FastGiSetup", MTL::StageDispatch);
     setup.Cmd->SetBytes(pc, 1);
     dispatch(setup, main.FastGiSetup, gi.Radiance.Extent, {
-        *rt.Guide, *screen.SceneColorImage, *next.Geometry, *rt.Feedback,
-        *previous.Geometry, *previous.Normal, *previous.MaterialValidity, *rt.TransmissionWeight,
-        *rt.ReflectionWeight, *gi.RadianceMips[0], *gi.NormalMips[0], *rt.ClosureNormal, *(rt.CoatWeight ? rt.CoatWeight : rt.ReflectionWeight),
-    });
+                                                              *rt.Guide,
+                                                              *screen.SceneColorImage,
+                                                              *next.Geometry,
+                                                              *rt.Feedback,
+                                                              *previous.Geometry,
+                                                              *previous.Normal,
+                                                              *previous.MaterialValidity,
+                                                              *rt.TransmissionWeight,
+                                                              *rt.ReflectionWeight,
+                                                              *gi.RadianceMips[0],
+                                                              *gi.NormalMips[0],
+                                                              *rt.ClosureNormal,
+                                                              *(rt.CoatWeight ? rt.CoatWeight : rt.ReflectionWeight),
+                                                          });
     for (uint32_t mip = 1; mip < gi.Radiance.MipLevels; ++mip) {
         mtl::ComputeBarrier(setup);
-        dispatch(setup, main.FastGiReduce, gi.RadianceMips[mip].Extent,
-            {*gi.RadianceMips[mip - 1], *gi.NormalMips[mip - 1], *gi.RadianceMips[mip], *gi.NormalMips[mip]});
+        dispatch(setup, main.FastGiReduce, gi.RadianceMips[mip].Extent, {*gi.RadianceMips[mip - 1], *gi.NormalMips[mip - 1], *gi.RadianceMips[mip], *gi.NormalMips[mip]});
     }
 
-    dispatch(chain.BeginCompute("FastGiScan", MTL::StageDispatch), main.FastGiScan, gi.SH.Extent,
-        {*gi.Depth, *gi.Radiance, *gi.Normal, *rt.Guide, *gi.SH});
-    dispatch(chain.BeginCompute("FastGiDenoise", MTL::StageDispatch), main.FastGiDenoise, gi.FilteredSH.Extent,
-        {*gi.SH, *gi.FilteredSH, *gi.NormalMips[0], *gi.DepthMips[0]});
+    dispatch(chain.BeginCompute("FastGiScan", MTL::StageDispatch), main.FastGiScan, gi.SH.Extent, {*gi.Depth, *gi.Radiance, *gi.Normal, *rt.Guide, *gi.SH});
+    dispatch(chain.BeginCompute("FastGiDenoise", MTL::StageDispatch), main.FastGiDenoise, gi.FilteredSH.Extent, {*gi.SH, *gi.FilteredSH, *gi.NormalMips[0], *gi.DepthMips[0]});
     dispatch(chain.BeginCompute("FastGiResolve", MTL::StageDispatch), main.FastGiResolve, rt.Guide.Extent, {
-        *gi.FilteredSH, *gi.NormalMips[0], *gi.DepthMips[0], *rt.Guide,
-        *rt.TransmissionWeight, *rt.ReflectionWeight, *rt.ClosureNormal, *screen.SceneColorImage, *(rt.CoatWeight ? rt.CoatWeight : rt.ReflectionWeight),
-    });
+                                                                                                               *gi.FilteredSH,
+                                                                                                               *gi.NormalMips[0],
+                                                                                                               *gi.DepthMips[0],
+                                                                                                               *rt.Guide,
+                                                                                                               *rt.TransmissionWeight,
+                                                                                                               *rt.ReflectionWeight,
+                                                                                                               *rt.ClosureNormal,
+                                                                                                               *screen.SceneColorImage,
+                                                                                                               *(rt.CoatWeight ? rt.CoatWeight : rt.ReflectionWeight),
+                                                                                                           });
 }
 
 void RecordPhase(state::Registry &r, state::Entity viewport_entity, mtl::PassChain &chain, const PreludeSource &prelude, RenderPhase phase, uint32_t ubo_offset, uint32_t sample_weight = 1u) {
@@ -1145,8 +1152,7 @@ void RecordPhase(state::Registry &r, state::Entity viewport_entity, mtl::PassCha
     const auto drawn_patterns = show_rendered ? DrawnPatternFeatures(patterns, meshes, buffers, canonical) : DrawnPatterns{};
     pbr_features |= drawn_patterns.Features;
     const auto main_extent = targets.Screen->SceneColorImage.Extent;
-    auto *const pattern_targets = targets.EnsurePatternResources(r.Resources.get<const mtl::Context>(), buffers.Ctx, HasFeature(pbr_features, PbrFeature::Patterns) ? patterns.Words : 0u,
-        ray_tracing ? main_extent.Width * main_extent.Height * RayLightingLobeCount(ray_glass, traced_diffuse) : 0u, drawn_patterns.Transparent);
+    auto *const pattern_targets = targets.EnsurePatternResources(r.Resources.get<const mtl::Context>(), buffers.Ctx, HasFeature(pbr_features, PbrFeature::Patterns) ? patterns.Words : 0u, ray_tracing ? main_extent.Width * main_extent.Height * RayLightingLobeCount(ray_glass, traced_diffuse) : 0u, drawn_patterns.Transparent);
     const auto timeline_frame = r.get<const TimelinePlayback>(state::Document).CurrentFrame;
     for (auto *view : {&canonical, &ray_view}) {
         view->PatternWordSlot = pattern_targets ? pattern_targets->Words->Slot : InvalidSlot;
@@ -1327,7 +1333,8 @@ void RecordPhase(state::Registry &r, state::Entity viewport_entity, mtl::PassCha
         RecordMeshletCull(
             chain, slots, pipelines, buffers, viewport,
             {
-                .Mode = !show_rendered ? MeshletRouteMode::Visibility : real_transmission ? MeshletRouteMode::Transmission : MeshletRouteMode::Material,
+                .Mode = !show_rendered ? MeshletRouteMode::Visibility : real_transmission ? MeshletRouteMode::Transmission :
+                                                                                            MeshletRouteMode::Material,
                 .RequiredInstanceFlags = show_fill || overlay_scene_depth || wire_meshlets || bone_meshlets > 0u ||
                         normal_meshlets > 0u || element_overlay_meshlets > 0u ?
                     0u :
@@ -1687,8 +1694,7 @@ void RecordPhase(state::Registry &r, state::Entity viewport_entity, mtl::PassCha
                 pbr->Reconstruct->Bind(compute);
                 BindTextures(chain.Cmd, 0, {*(lobe == 2u ? rt.GlassDirect : radiance), *rt.Guide, *targets.Screen->VisibilityDepth, *rt.Spatial});
                 BindTextures(chain.Cmd, 4, {*(lobe ? rt.TransmissionHit : rt.HitGuide), *(lobe ? rt.TransmissionRayData : rt.RayData), *(lobe ? rt.TransmissionIncident : rt.Incident)});
-                BindTextures(chain.Cmd, 7, {*rt.Radiance, *rt.SpatialInfo, *targets.Screen->VisibilityImage,
-                    *(lobe ? rt.TransmissionWeight : rt.ReflectionWeight), *rt.ClosureNormal, *(rt.GlassShape ? rt.GlassShape : rt.ClosureNormal)});
+                BindTextures(chain.Cmd, 7, {*rt.Radiance, *rt.SpatialInfo, *targets.Screen->VisibilityImage, *(lobe ? rt.TransmissionWeight : rt.ReflectionWeight), *rt.ClosureNormal, *(rt.GlassShape ? rt.GlassShape : rt.ClosureNormal)});
                 bind_extra_lobes(13, 16, 17);
                 compute.Cmd->SetBytes(reconstruction, 1);
                 compute->dispatchThreadgroups(dispatch, ThreadgroupSize::Tile8);
@@ -1696,8 +1702,7 @@ void RecordPhase(state::Registry &r, state::Entity viewport_entity, mtl::PassCha
                     const auto temporal = chain.BeginCompute("RayTemporal", MTL::StageDispatch);
                     main.RayTemporal.Bind(temporal);
                     chain.Cmd.SetTexture(*rt.Spatial, 0);
-                    BindTextures(chain.Cmd, 3, {*rt.SpatialInfo, *(lobe ? previous.Transmission : previous.Radiance), *previous.MaterialValidity,
-                        *(lobe ? previous.TransmissionMoments : previous.Moments), *filtered});
+                    BindTextures(chain.Cmd, 3, {*rt.SpatialInfo, *(lobe ? previous.Transmission : previous.Radiance), *previous.MaterialValidity, *(lobe ? previous.TransmissionMoments : previous.Moments), *filtered});
                     chain.Cmd.SetTexture(*moments, 9);
                     BindTextures(chain.Cmd, 11, {*next.Geometry, *previous.Geometry, *previous.Normal});
                     temporal->dispatchThreadgroups(dispatch, ThreadgroupSize::Tile8);
@@ -1747,8 +1752,7 @@ void RecordPhase(state::Registry &r, state::Entity viewport_entity, mtl::PassCha
                         else accumulate.Cmd->SetBuffer(*rt.RayQueue, 0, 12);
                     }
                     accumulate.Cmd->SetBytes(RayFilmReprojectPushConstants{film, camera_view_proj, rt.PreviousCameraProj, rt.PreviousViewProj, clip_to_world, Inverse(rt.PreviousViewProj), uint32_t(object_motion), visibility_pc, uint32_t(viewport.Rays->HasDeformationHistory()), uint32_t(ray_glass || ray_blended)}, 1);
-                    BindTextures(chain.Cmd, 4, {*next.Geometry, *previous.Geometry, *next.Normal, *previous.Normal,
-                        *targets.Screen->VisibilityDepth, *next.MaterialValidity, *previous.MaterialValidity});
+                    BindTextures(chain.Cmd, 4, {*next.Geometry, *previous.Geometry, *next.Normal, *previous.Normal, *targets.Screen->VisibilityDepth, *next.MaterialValidity, *previous.MaterialValidity});
                     accumulate.Cmd->SetTexture(*rt.Guide, 13);
                 } else accumulate.Cmd->SetBytes(film, 1);
                 rt.FilmWeight += film.Weight;

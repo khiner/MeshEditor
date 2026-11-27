@@ -3,8 +3,8 @@
 #include "TypeList.h"
 #include "action/Core.h"
 #include "gpu/Transform.h"
+#include "graph/GraphSchema.h"
 #include "mesh/PrimitiveType.h"
-#include "procedure/ProcedureSchema.h"
 
 struct AudioOutputMix;
 struct ColliderMaterial;
@@ -45,16 +45,16 @@ using UpdatableComponents = TypeList<
     Animations,
     PhysicsSimulationSettings, PhysicsMaterial, PhysicsMotion, PhysicsVelocity, ColliderPolicy, CollisionFilter, PhysicsJoint, ColliderMaterial, TriggerNodes,
     ModalGain, ModalTuning, ModalSoundControls, Striker, SurfaceSoundControls, AudioOutputMix,
-    procedure::NodeTheme,
-    mesh::Delete, mesh::Merge, procedure::Extrude, mesh::Dissolve, mesh::Subdivide, procedure::SubdivisionSurface, procedure::SmoothSurface, mesh::SplitFaces,
+    graph::NodeTheme,
+    mesh::Delete, mesh::Merge, graph::Extrude, mesh::Dissolve, mesh::Subdivide, graph::SubdivisionSurface, graph::SmoothSurface, mesh::SplitFaces,
     mesh::Poke, mesh::EdgeSplit, mesh::Inset, mesh::Solidify, mesh::Wireframe, mesh::Bevel, mesh::SmoothVertices, mesh::ShrinkFatten,
-    mesh::Randomize, procedure::Bisect, procedure::Project, mesh::Simplify,
+    mesh::Randomize, graph::Bisect, graph::Project, mesh::Simplify,
     mesh::SpaceEvenly, mesh::RelaxEdgeLoops, mesh::CurveBetweenSelected, mesh::Circularize, mesh::MakePlanarFaces, mesh::SnapSymmetry,
     mesh::Fill, mesh::GridFill, mesh::Unsubdivide,
-    mesh::CycleCornerAttribute, procedure::MarkSharp, procedure::Knife, procedure::Shade,
-    procedure::ToSphere, procedure::PushPull, procedure::Shear, procedure::Warp, procedure::Bend, procedure::VertexSlide, procedure::EdgeSlide, procedure::Flatten,
-    procedure::TransformElements, procedure::Boolean, procedure::Minkowski, procedure::LevelSet,
-    procedure::StoreNamedAttribute, procedure::StoreSelection, procedure::Bake, procedure::SetPosition, procedure::InstanceOnPoints, procedure::ObjectInfo,
+    mesh::CycleCornerAttribute, graph::MarkSharp, graph::Knife, graph::Shade,
+    graph::ToSphere, graph::PushPull, graph::Shear, graph::Warp, graph::Bend, graph::VertexSlide, graph::EdgeSlide, graph::Flatten,
+    graph::TransformElements, graph::Boolean, graph::Minkowski, graph::LevelSet,
+    graph::StoreNamedAttribute, graph::StoreSelection, graph::Bake, graph::SetPosition, graph::InstanceOnPoints, graph::ObjectInfo,
     primitive::Plane, primitive::Circle, primitive::Cube, primitive::IcoSphere, primitive::UVSphere, primitive::QuadSphere, primitive::Torus, primitive::Cylinder>;
 
 template<typename C>

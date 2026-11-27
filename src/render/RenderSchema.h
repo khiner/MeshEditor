@@ -15,7 +15,7 @@ struct MeshDisplayDirty;
 struct MeshLayoutDirty;
 struct MeshBoundsDirty;
 struct GpuSceneState;
-struct Instance;
+struct ObjectGeometry;
 struct Hidden;
 struct Visibility;
 struct SceneLight;
@@ -34,7 +34,7 @@ struct MaterializedTexture;
 struct ViewportRenderResources;
 struct MaterialPatterns;
 
-using RenderSchema = state::Schema<state::RenderBase, state::RenderCount, GpuBuffers, PosedLayout, MeshEditWork, MeshVertexOverlays, BoundsRun, TalliedRecord, MeshletPositionsDirty, ClusterLodDirty, ClusterLodDemand, MeshDisplayDirty, MeshLayoutDirty, MeshBoundsDirty, GpuSceneState, Instance, Hidden, Visibility, SceneLight, ImageLight, Material, MeshMaterialAssignment, MeshMaterialSlotSelection, MaterialVariants, PbrMeshFeatures, Pipelines, RenderChanges, ActiveSamplerAnisotropy, TextureStore, EnvironmentStore, MaterializedTexture, ViewportRenderResources, MaterialPatterns>;
+using RenderSchema = state::Schema<state::RenderBase, state::RenderCount, GpuBuffers, PosedLayout, MeshEditWork, MeshVertexOverlays, BoundsRun, TalliedRecord, MeshletPositionsDirty, ClusterLodDirty, ClusterLodDemand, MeshDisplayDirty, MeshLayoutDirty, MeshBoundsDirty, GpuSceneState, ObjectGeometry, Hidden, Visibility, SceneLight, ImageLight, Material, MeshMaterialAssignment, MeshMaterialSlotSelection, MaterialVariants, PbrMeshFeatures, Pipelines, RenderChanges, ActiveSamplerAnisotropy, TextureStore, EnvironmentStore, MaterializedTexture, ViewportRenderResources, MaterialPatterns>;
 template<typename T>
     requires RenderSchema::Has<T>
 inline constexpr state::TypeId state::Slot<T> = RenderSchema::Of<T>();

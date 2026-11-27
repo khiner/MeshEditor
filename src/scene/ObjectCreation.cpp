@@ -1,11 +1,11 @@
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
+#include "graph/Graph.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 #include "object/ObjectOps.h"
-#include "procedure/Procedure.h"
-#include "render/Instance.h"
+#include "render/ObjectGeometry.h"
 #include "scene/CameraLens.h"
 #include "scene/Defaults.h"
 #include "scene/SceneGraph.h"
@@ -34,64 +34,64 @@ void ApplyVisibility(state::Registry &r, state::Entity e) {
     apply(e, hidden);
 }
 
-void ApplySelectBehavior(state::Registry &r, state::Entity e, MeshInstanceCreateInfo::SelectBehavior behavior) {
+void ApplySelectBehavior(state::Registry &r, state::Entity e, MeshObjectCreateInfo::SelectBehavior behavior) {
     switch (behavior) {
-        case MeshInstanceCreateInfo::SelectBehavior::Exclusive:
+        case MeshObjectCreateInfo::SelectBehavior::Exclusive:
             Select(r, e);
             break;
-        case MeshInstanceCreateInfo::SelectBehavior::Additive:
+        case MeshObjectCreateInfo::SelectBehavior::Additive:
             r.emplace<Selected>(e);
             // Fallthrough
-        case MeshInstanceCreateInfo::SelectBehavior::None:
+        case MeshObjectCreateInfo::SelectBehavior::None:
             if (r.view<const Active>().empty()) r.emplace<Active>(e);
             break;
     }
 }
 
-// Creates an object of the type instancing `instanced`, placed by the mesh or object creation `info` in its scene and network.
+// Creates an object of the type instancing `instanced`, placed by the mesh or object creation `info` in its scene and graph.
 state::Entity PlaceObject(state::Registry &r, ObjectType type, state::Entity instanced, const auto &info, std::string_view name) {
     const auto e = r.create();
-    r.emplace<Instance>(e, instanced);
+    r.emplace<ObjectGeometry>(e, instanced);
     EmplaceObject(r, e, type, info.Scene);
     r.emplace<Transform>(e, info.Transform);
     EmplaceUniqueName(r, e, name);
     ApplySelectBehavior(r, e, info.Select);
-    procedure::PlaceInNetwork(r, info.Network, e);
+    graph::PlaceInGraph(r, info.Graph, e);
     return e;
 }
 
-state::Entity AddMeshInstance(state::Registry &r, state::Entity mesh_entity, const MeshInstanceCreateInfo &info) {
+state::Entity AddMeshObject(state::Registry &r, state::Entity mesh_entity, const MeshObjectCreateInfo &info) {
     const auto e = PlaceObject(r, ObjectType::Mesh, mesh_entity, info, info.Name);
     if (!info.Visible) Hide(r, e);
     return e;
 }
 
 state::Entity AddMeshData(state::Registry &r, uint32_t store_id) {
-    using namespace procedure;
+    using namespace graph;
     const auto source = CreateNode(r, KindOf<Source>);
     r.emplace<SourceState>(source, store::Hash128{}, store_id);
     const auto mesh_entity = r.create();
-    RootProcedure(r, mesh_entity, source, KindOf<Source>);
+    RootGraph(r, mesh_entity, source, KindOf<Source>);
     r.emplace<EvaluatedMesh>(mesh_entity, store_id, std::vector{source});
     return mesh_entity;
 }
 
-std::pair<state::Entity, state::Entity> AddMesh(state::Registry &r, uint32_t store_id, const MeshInstanceCreateInfo &info) {
+std::pair<state::Entity, state::Entity> AddMesh(state::Registry &r, uint32_t store_id, const MeshObjectCreateInfo &info) {
     const auto mesh_entity = AddMeshData(r, store_id);
-    return {mesh_entity, AddMeshInstance(r, mesh_entity, info)};
+    return {mesh_entity, AddMeshObject(r, mesh_entity, info)};
 }
 
-std::pair<state::Entity, state::Entity> AddMeshPrimitive(state::Registry &r, const PrimitiveParameters &parameters, const MeshInstanceCreateInfo &info) {
-    using namespace procedure;
+std::pair<state::Entity, state::Entity> AddMeshPrimitive(state::Registry &r, const PrimitiveParameters &parameters, const MeshObjectCreateInfo &info) {
+    using namespace graph;
     return std::visit(
         [&]<typename K>(const K &shape) {
             const auto node = CreateNode(r, KindOf<K>);
             r.replace<K>(node, shape);
             const auto mesh_entity = r.create();
-            RootProcedure(r, mesh_entity, node, KindOf<K>);
+            RootGraph(r, mesh_entity, node, KindOf<K>);
             auto named = info;
             if (named.Name.empty()) named.Name = field::TypeLabel<K>.c_str();
-            return std::pair{mesh_entity, AddMeshInstance(r, mesh_entity, named)};
+            return std::pair{mesh_entity, AddMeshObject(r, mesh_entity, named)};
         },
         parameters
     );
@@ -119,7 +119,7 @@ state::Entity CreateBoneEntity(state::Registry &r, state::Entity arm_obj_entity,
     const auto bone_entity = r.create();
     r.emplace<BoneIndex>(bone_entity, bone_index);
     r.emplace<SubElementOf>(bone_entity, arm_obj_entity);
-    r.emplace<Instance>(bone_entity, arm_obj_entity);
+    r.emplace<ObjectGeometry>(bone_entity, arm_obj_entity);
     EmplaceUniqueName(r, bone_entity, bone.Name);
     r.emplace<BoneDisplayScale>(bone_entity, display_scale);
     r.emplace<PosedLocal>(bone_entity, Transform{bone.RestLocal.P, bone.RestLocal.R, vec3{1}});
@@ -132,14 +132,14 @@ void CreateBoneJoints(state::Registry &r, state::Entity arm_obj_entity, state::E
     const auto make = [&](bool is_tail) {
         const auto e = r.create();
         r.emplace<SubElementOf>(e, arm_obj_entity);
-        r.emplace<Instance>(e, joint_entity);
+        r.emplace<ObjectGeometry>(e, joint_entity);
         r.emplace<BoneSubPartOf>(e, bone_entity, is_tail);
         return e;
     };
     r.emplace<BoneJointEntities>(bone_entity, make(false), make(true));
 }
 
-void CreateBoneInstances(state::Registry &r, MeshStore &meshes, state::Entity arm_obj_entity, state::Entity arm_data_entity) {
+void CreateBoneEntities(state::Registry &r, MeshStore &meshes, state::Entity arm_obj_entity, state::Entity arm_data_entity) {
     const auto &armature = r.get<const Armature>(arm_data_entity);
     const uint32_t n = armature.Bones.size();
     if (n == 0) return;

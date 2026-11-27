@@ -1,5 +1,5 @@
 #include "SurfaceAudio.h"
-#include "scene/HierarchyInstance.h"
+#include "scene/Instance.h"
 
 #include "action/Audio.h"
 #include "audio/ContactScene.h"
@@ -39,7 +39,7 @@ void DrawContactSurfaceControls(state::Registry &r, state::Entity e, const Conta
     // Derive contact constants against an identical body under this object's weight.
     const auto &props = material.Properties;
     const auto *cd = r.try_get<const ContactDynamics>(e);
-    const auto *modes = r.try_get<const ModalModes>(HierarchySource(r, e));
+    const auto *modes = r.try_get<const ModalModes>(SourceOfCopy(r, e));
     const auto sample_curvature = modes && !modes->Positions.empty() ? SurfaceCurvature(r, e, TransformPoint(*WorldTransformOf(r, e), modes->Positions.front())) : std::nullopt;
     const double curvature = CombinedCurvature(sample_curvature.value_or(0.0), 0.0);
     const double inv_modulus = InvEffectiveModulus(props, props);

@@ -56,7 +56,7 @@ target_compile_definitions(MeshEditorEditBench PRIVATE MESHEDITOR_BUILD_DIR="${C
 rbp_copy_shaders(MeshEditorEditBench)
 mesheditor_test(MeshEditorProjectTest ProjectTest.cpp MeshEditorUi)
 add_dependencies(MeshEditorProjectTest MeshEditorShaderLibraries)
-target_sources(MeshEditorProjectTest PRIVATE ProcedureTest.cpp OperatorTest.cpp HistoryTest.cpp RayTracingTest.cpp MaterialGraphTest.cpp)
+target_sources(MeshEditorProjectTest PRIVATE GraphTest.cpp OperatorTest.cpp HistoryTest.cpp RayTracingTest.cpp MaterialGraphTest.cpp)
 target_compile_definitions(MeshEditorProjectTest PRIVATE
     MESHEDITOR_BUILD_DIR="${CMAKE_BINARY_DIR}" MESHEDITOR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 rbp_copy_shaders(MeshEditorProjectTest)

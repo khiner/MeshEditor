@@ -1,10 +1,10 @@
 #include "Paths.h"
 #include "ProjectFixture.h"
 #include "RunSuites.h"
-#include "animation/Fields.h"
 #include "animation/Clips.h"
+#include "animation/Fields.h"
+#include "graph/Graph.h"
 #include "materialx/Library.h"
-#include "procedure/Procedure.h"
 #include "project/Assets.h"
 #include "render/MaterialComponents.h"
 #include "selection/SelectionState.h"
@@ -107,7 +107,7 @@ void UnkeyedPoseAuthoring(Fixture &f) {
     expect(f.Image() == combined_image);
 }
 
-// Hiding and showing an instance keeps its slot, through undo and redo, and a duplicate of a hidden instance is hidden.
+// Hiding and showing an object keeps its slot, through undo and redo, and a duplicate of a hidden object is hidden.
 void RenderInstanceDerivation(Fixture &f) {
     auto &r = f.R;
     const auto entity = f.AddCube();
@@ -124,8 +124,8 @@ void RenderInstanceDerivation(Fixture &f) {
     const auto duplicate = f.Add(action::object::Duplicate{});
     expect(r.all_of<Hidden>(duplicate));
     f.Do(action::object::SetVisible{true});
-    const auto other_mesh = r.get<const Instance>(f.AddCube()).Entity;
-    r.replace<Instance>(duplicate, other_mesh);
+    const auto other_mesh = r.get<const ObjectGeometry>(f.AddCube()).Entity;
+    r.replace<ObjectGeometry>(duplicate, other_mesh);
     f.Commit("Retarget duplicate");
 }
 
@@ -189,7 +189,7 @@ void ExtrudedClosedRegionVisibility(Fixture &f) {
 // Drawing and object/face picking agree on visibility across viewport and material culling policies.
 void ViewportBackfacePolicy(Fixture &f) {
     auto &r = f.R;
-    f.Add(action::object::AddMeshPrimitive{primitive::Plane{}, std::make_unique<MeshInstanceCreateInfo>()});
+    f.Add(action::object::AddMeshPrimitive{primitive::Plane{}, std::make_unique<MeshObjectCreateInfo>()});
     const auto viewport = FirstViewport(r);
     f.Do(action::UpdateOf<&ViewportDisplay::ShowOverlays>(viewport, false));
     f.Do(action::UpdateOf<&ViewportDisplay::XRayWireframe>(viewport, false));
@@ -229,14 +229,14 @@ void ObjectHierarchy(Fixture &f) {
     expect(std::abs(WorldTransformOf(r, a)->P.x - 1.f) < 1e-4f);
     expect(std::abs(WorldTransformOf(r, c)->P.x - 1.f) < 1e-4f);
 }
-// A linked duplicate shares its source's mesh, and hiding one instance or deleting the other, each undone, renders the scene as before.
+// A linked duplicate shares its source's mesh, and hiding one object or deleting the other, each undone, renders the scene as before.
 void InstanceLifecycleRendersBack(Fixture &f) {
     auto &r = f.R;
     const auto first = f.AddCube();
     f.Do(action::view::TransformSelection{Transform{.P = {-2, 0, 0}}});
     const auto linked = f.Add(action::object::DuplicateLinked{});
     f.Do(action::view::TransformSelection{Transform{.P = {2, 0, 0}}});
-    expect(r.get<const Instance>(linked).Entity == r.get<const Instance>(first).Entity);
+    expect(r.get<const ObjectGeometry>(linked).Entity == r.get<const ObjectGeometry>(first).Entity);
     const auto renders_back = [&](state::Entity e, auto a) {
         f.Do(action::selection::Select{e});
         const auto before = Render ? f.Image() : std::vector<std::byte>{};
@@ -253,16 +253,16 @@ void DuplicateDrawsAsItsSource(Fixture &f) {
     auto &r = f.R;
     const auto &meshes = r.Resources.get<const MeshStore>();
     const auto render_owner = [&](state::Entity e) -> const MeshStore::Record & {
-        return meshes.Get(*DrawnStoreId(r, r.get<const Instance>(e).Entity));
+        return meshes.Get(*DrawnStoreId(r, r.get<const ObjectGeometry>(e).Entity));
     };
     const auto duplicate = [&](state::Entity source) {
         f.Do(action::selection::Select{source});
         const auto copy = f.Add(action::object::Duplicate{});
         expect(render_owner(copy).StoreId != render_owner(source).StoreId);
-        const auto states = [&](state::Entity instance) {
-            std::vector<procedure::SourceState> found;
-            for (const auto &node : r.get<const procedure::CookPlan>(r.get<const Instance>(instance).Entity).Nodes) {
-                if (const auto *source = r.try_get<const procedure::SourceState>(node.Entity)) found.push_back(*source);
+        const auto states = [&](state::Entity object) {
+            std::vector<graph::SourceState> found;
+            for (const auto &node : r.get<const graph::CookPlan>(r.get<const ObjectGeometry>(object).Entity).Nodes) {
+                if (const auto *source = r.try_get<const graph::SourceState>(node.Entity)) found.push_back(*source);
             }
             return found;
         };
@@ -270,10 +270,10 @@ void DuplicateDrawsAsItsSource(Fixture &f) {
         expect(meshes.CanonicalHash(render_owner(copy).StoreId) == meshes.CanonicalHash(render_owner(source).StoreId));
         return copy;
     };
-    const auto fragment = [&](state::Entity instance, std::span<const uint32_t> selected) {
-        f.Do(action::selection::Select{instance});
+    const auto fragment = [&](state::Entity object, std::span<const uint32_t> selected) {
+        f.Do(action::selection::Select{object});
         f.EnterEdit(Element::Vertex);
-        SelectOrdinals(f, r.get<const Instance>(instance).Entity, selected, Element::Vertex);
+        SelectOrdinals(f, r.get<const ObjectGeometry>(object).Entity, selected, Element::Vertex);
         f.Do(action::mesh::Delete{action::mesh::DeleteMode::Vertices});
         f.Do(action::view::SetInteractionMode{InteractionMode::Object});
     };
@@ -295,10 +295,10 @@ void DuplicateDrawsAsItsSource(Fixture &f) {
     expect(render_owner(duplicate(line_source)).RenderTopologies == 2u);
 
     // Enough triangles to take a cluster hierarchy, with 128-face fans at the poles.
-    const auto source = f.Add(action::object::AddMeshPrimitive{primitive::UVSphere{.Slices = 128u, .Stacks = 64u}, std::make_unique<MeshInstanceCreateInfo>()});
+    const auto source = f.Add(action::object::AddMeshPrimitive{primitive::UVSphere{.Slices = 128u, .Stacks = 64u}, std::make_unique<MeshObjectCreateInfo>()});
     expect(meshes.ClusterGroupCount(render_owner(source)) > 0u);
     f.EnterEdit(Element::Face);
-    SelectOrdinals(f, r.get<const Instance>(source).Entity, std::array{2000u, 3000u}, Element::Face);
+    SelectOrdinals(f, r.get<const ObjectGeometry>(source).Entity, std::array{2000u, 3000u}, Element::Face);
     f.Do(action::mesh::Subdivide{2u});
     f.Do(action::view::SetInteractionMode{InteractionMode::Object});
     f.Do(action::selection::SelectAll{});
@@ -319,9 +319,9 @@ void DuplicateDrawsAsItsSource(Fixture &f) {
     f.Do(action::selection::Select{point_source});
     f.Do(action::selection::ExtendActive{line_source});
     f.Do(action::selection::ExtendActive{copy});
-    const auto mesh_count = r.view<const procedure::GeometryProcedure>().size();
+    const auto mesh_count = r.view<const graph::GeometryGraph>().size();
     f.Do(action::object::Duplicate{});
-    expect(r.view<const procedure::GeometryProcedure>().size() == mesh_count + 3u);
+    expect(r.view<const graph::GeometryGraph>().size() == mesh_count + 3u);
 }
 
 // Mesh layouts follow scene load, linked skinned duplicates, history, edit-mode drags, separation and shading, which the per-step layout check verifies.
@@ -332,7 +332,7 @@ void IncrementalLayout(Fixture &f) {
     const auto skinned = *r.view<const ArmatureModifier>().begin();
     f.Do(action::selection::Select{skinned});
     f.Add(action::object::DuplicateLinked{});
-    expect(r.get<const BoundsRun>(r.get<const Instance>(skinned).Entity).Entries.Count == 2u);
+    expect(r.get<const BoundsRun>(r.get<const ObjectGeometry>(skinned).Entity).Entries.Count == 2u);
     const auto cube = f.AddCube();
     f.Add(action::object::Duplicate{});
     f.Do(action::object::SetVisible{false});
@@ -341,18 +341,18 @@ void IncrementalLayout(Fixture &f) {
     f.Do(action::selection::Select{cube});
     f.EnterEdit(Element::Face);
     f.Do(action::selection::SelectAll{});
-    const auto mesh_entity = r.get<const Instance>(cube).Entity;
+    const auto mesh_entity = r.get<const ObjectGeometry>(cube).Entity;
     f.Stage(action::view::TransformElements{{.P = {0.f, 1.f, 0.f}}});
-    expect(r.all_of<procedure::TransformElements>(r.get<const procedure::NetworkNodes>(mesh_entity).Last));
+    expect(r.all_of<graph::TransformElements>(r.get<const graph::GraphNodes>(mesh_entity).Last));
     CheckLayout(f);
     f.CommitGesture();
     SelectOrdinals(f, mesh_entity, std::array{0u, 1u}, Element::Face);
-    const auto mesh_count = r.view<const procedure::GeometryProcedure>().size();
+    const auto mesh_count = r.view<const graph::GeometryGraph>().size();
     f.Do(action::mesh::Separate{});
-    expect(r.view<const procedure::GeometryProcedure>().size() == mesh_count + 1u);
-    expect(r.all_of<action::mesh::Delete>(r.get<const procedure::NetworkNodes>(mesh_entity).Last));
+    expect(r.view<const graph::GeometryGraph>().size() == mesh_count + 1u);
+    expect(r.all_of<action::mesh::Delete>(r.get<const graph::GraphNodes>(mesh_entity).Last));
     f.Do(action::view::SetInteractionMode{InteractionMode::Object});
-    f.Do(action::object::ShadeSelected{procedure::ShadeMode::Smooth});
+    f.Do(action::object::ShadeSelected{graph::ShadeMode::Smooth});
     f.Do(action::view::SetViewportShading{FirstViewport(f.R), ViewportShadingMode::Wireframe});
 }
 
@@ -369,8 +369,8 @@ void TestProject() {
     WriteTriangle(buffer, 1.f);
     Scenario(f, other, "external references", [&](Fixture &f) {
         const auto max_x = [&] {
-            expect(f.R.view<const procedure::GeometryProcedure>().size() == 1u);
-            const auto mesh = GetMesh(f.R, *f.R.view<const procedure::GeometryProcedure>().begin());
+            expect(f.R.view<const graph::GeometryGraph>().size() == 1u);
+            const auto mesh = GetMesh(f.R, *f.R.view<const graph::GeometryGraph>().begin());
             float largest = 0;
             for (uint32_t i = 0; i < mesh.VertexCount(); ++i) largest = std::max(largest, test::Position(mesh, mesh.VertexAt(i)).x);
             return largest;
@@ -409,7 +409,7 @@ void TestProject() {
 }
 } // namespace
 
-void TestProcedures();
+void TestGraphs();
 void TestHistory();
 void TestMaterialGraphs();
 
@@ -436,7 +436,7 @@ int main(int argc, char **argv) {
     }
     mx::AddLibraryFolder(MESHEDITOR_SOURCE_DIR "/tests/nodes");
     TestProject();
-    TestProcedures();
+    TestGraphs();
     TestHistory();
     TestMaterialGraphs();
     return RunSuites();

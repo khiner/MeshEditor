@@ -4,10 +4,10 @@
 #include "animation/MorphWeights.h"
 #include "mesh/MeshComponents.h"
 #include "render/GpuSceneState.h"
-#include "render/Instance.h"
 #include "render/LightComponents.h"
+#include "render/ObjectGeometry.h"
 #include "scene/Entity.h"
-#include "scene/HierarchyInstance.h"
+#include "scene/Instance.h"
 #include "scene/SceneGraph.h"
 #include "snapshot/SnapshotRegistration.h"
 #include "timeline/Timeline.h"
@@ -19,8 +19,8 @@ void RegisterScene(Tables &tables) {
     Classify(
         tables,
         TypeList<
-            HierarchyGeometry, HierarchyInstance, HierarchyMember, HierarchyDefinition, Transform, SceneLight, Name, Selected, Active, ObjectKind, Scene, SceneMembership, SubElementOf,
-            ScaleLocked, Instance, Hidden, SceneParent, SceneChildren, ObjectExtrasTag, Path, Perspective, Orthographic, TimelineRange,
+            Instance, CopyOf, Transform, SceneLight, Name, Selected, Active, ObjectKind, Scene, SceneMembership, SubElementOf,
+            ScaleLocked, ObjectGeometry, Hidden, SceneParent, SceneChildren, ObjectExtrasTag, Path, Perspective, Orthographic, TimelineRange,
             TimelinePlayback, TimelineNavigation, TimelineView, TimelineTheme, AnimationClips, Animations, MorphWeightRange, ImageLight, Visibility, UnkeyedPose>{},
         TypeList<>{},
         TypeList<

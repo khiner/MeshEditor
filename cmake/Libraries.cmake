@@ -151,7 +151,7 @@ mesheditor_library(MeshEditorScene
     src/scene/Entity.cpp
     src/scene/ObjectCreation.cpp
     src/scene/RotationUi.cpp
-    src/scene/Hierarchy.cpp
+    src/scene/InstanceCopies.cpp
     src/scene/SceneGraph.cpp
     src/selection/Selection.cpp
     src/viewport/RenderExtent.cpp
@@ -250,16 +250,15 @@ mesheditor_library(MeshEditorEditor
     src/editor/Engine.cpp
     src/editor/Timeline.cpp
     src/object/ObjectOps.cpp
-    src/procedure/Cook.cpp
-    src/procedure/Plan.cpp
-    src/procedure/Subnetwork.cpp
-    src/procedure/Macros.cpp
-    src/procedure/MaterialGraphs.cpp
-    src/procedure/Network.cpp
-    src/procedure/OpNodes.cpp
-    src/procedure/SceneReferences.cpp
-    src/scene/HierarchyInstance.cpp
-    src/scene/HierarchyGeometry.cpp
+    src/graph/Cook.cpp
+    src/graph/Plan.cpp
+    src/graph/Subgraph.cpp
+    src/graph/BuiltinSubgraphs.cpp
+    src/graph/MaterialGraphs.cpp
+    src/graph/ItemGraph.cpp
+    src/graph/OpNodes.cpp
+    src/graph/SceneReferences.cpp
+    src/scene/Instance.cpp
     src/snapshot/ArmatureSnapshot.cpp
     src/snapshot/AssetsSnapshot.cpp
     src/snapshot/AudioSnapshot.cpp
@@ -282,8 +281,8 @@ mesheditor_library(MeshEditorUi
     src/audio/AudioUi.cpp
     src/gizmo/TransformGizmo.cpp
     src/physics/PhysicsUi.cpp
-    src/procedure/NodeEditor.cpp
-    src/procedure/SceneNodes.cpp
+    src/graph/NodeEditor.cpp
+    src/graph/SceneNodes.cpp
     src/render/SvgResource.cpp
     src/scene/SceneControlsUi.cpp
     src/ui/FieldEdit.cpp

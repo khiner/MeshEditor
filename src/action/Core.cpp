@@ -7,12 +7,12 @@
 #include "audio/ContactSurface.h"
 #include "audio/ModalModes.h"
 #include "gpu/ViewportTheme.h"
+#include "graph/Graph.h"
+#include "graph/NodeTheme.h"
 #include "physics/PhysicsTypes.h"
-#include "procedure/NodeTheme.h"
-#include "procedure/Procedure.h"
-#include "render/Instance.h"
 #include "render/LightComponents.h"
 #include "render/MaterialComponents.h"
+#include "render/ObjectGeometry.h"
 #include "scene/CameraLens.h"
 #include "snapshot/SnapshotRoles.h"
 #include "timeline/Timeline.h"
@@ -28,7 +28,6 @@ struct UpdateEntry {
     state::TypeKey Key;
     state::TypeId Type;
     std::string_view Name;
-    bool Placement; // A write to the component addresses the entity that places its hierarchy instance.
     const FieldRange &(*FieldAt)(uint16_t offset);
     bool (*Has)(const state::Registry &, state::Entity);
     state::Entity (*Active)(const state::Registry &);
@@ -63,23 +62,23 @@ std::optional<Core> ReadComponentUpdate(const state::Registry &r, state::Entity 
 bool AcceptsObjectReference(state::Registry &r, const UpdateEntry &entry, const Update<state::Entity> &a) {
     std::vector<state::Entity> nodes;
     ForEachTarget(a.Target, [&] { return entry.Active(r); }, [&](auto &&fn) { entry.ForEachSelected(r, fn); }, [&](state::Entity e) { if (entry.Has(r, e)) nodes.push_back(e); });
-    if (procedure::ObjectReferencesAcyclic(r, nodes, a.Value)) return true;
+    if (graph::ObjectReferencesAcyclic(r, nodes, a.Value)) return true;
     Fail(r, "Object references would create a geometry dependency cycle");
     return false;
 }
 bool AcceptsPrototype(state::Registry &r, const UpdateEntry &entry, const Update<state::Entity> &a) {
-    if (a.Value != state::Null && !r.all_of<ObjectKind>(a.Value)) {
-        Fail(r, "Choose an object hierarchy as the prototype");
+    if (a.Value != state::Null && !IsSceneSubgraph(r, a.Value)) {
+        Fail(r, "Choose a scene subgraph as the prototype");
         return false;
     }
     bool cycle = false;
-    const auto uses = procedure::DefinitionUses(r);
+    const auto uses = graph::SubgraphUses(r);
     ForEachTarget(a.Target, [&] { return entry.Active(r); }, [&](auto &&fn) { entry.ForEachSelected(r, fn); }, [&](state::Entity node) {
-        const auto *owner = r.try_get<const procedure::ProcedureNode>(node);
+        const auto *owner = r.try_get<const graph::GraphNode>(node);
         if (!owner) return;
-        const auto meshes = procedure::MeshesUsing(r, uses, owner->Network);
-        for (const auto [object, instance] : r.view<const Instance>().each())
-            if (std::ranges::contains(meshes, instance.Entity) && HierarchyParentCycle(r, a.Value, object)) cycle = true; });
+        const auto meshes = graph::MeshesUsing(r, uses, owner->Graph);
+        for (const auto [object, geometry] : r.view<const ObjectGeometry>().each())
+            if (std::ranges::contains(meshes, geometry.Entity) && UseRecurses(r, a.Value, SubgraphHolding(r, object))) cycle = true; });
     if (cycle) Fail(r, "The prototype would recursively instance its producer");
     return !cycle;
 }
@@ -90,7 +89,6 @@ template<typename C> constexpr UpdateEntry EntryFor() {
         .Key = state::Key<C>(),
         .Type = state::Type<C>(),
         .Name = state::LeafName<C>(),
-        .Placement = std::same_as<C, Transform> || std::same_as<C, PosedLocal> || std::same_as<C, Visibility>,
         .FieldAt = &FieldAt<C>,
         .Has = &Traits::Has,
         .Active = &Traits::Active,
@@ -99,8 +97,8 @@ template<typename C> constexpr UpdateEntry EntryFor() {
         .Write = &Traits::Write,
         .Bounds = &Traits::Bounds,
         .ReadUpdate = &ReadComponentUpdate<C>,
-        .AcceptsReference = std::same_as<C, procedure::ObjectInfo> ? &AcceptsObjectReference : std::same_as<C, procedure::InstanceOnPoints> ? &AcceptsPrototype :
-                                                                                                                                              nullptr,
+        .AcceptsReference = std::same_as<C, graph::ObjectInfo> ? &AcceptsObjectReference : std::same_as<C, graph::InstanceOnPoints> ? &AcceptsPrototype :
+                                                                                                                                      nullptr,
     };
 }
 constexpr auto Entries = []<typename... Cs>(TypeList<Cs...>) { return std::array{EntryFor<Cs>()...}; }(UpdatableComponents{});
@@ -120,9 +118,20 @@ void ApplyUpdate(state::Registry &r, const Update<Field> &a) {
         if (entry->AcceptsReference && !entry->AcceptsReference(r, *entry, a)) return;
     }
     const auto write = [&](state::Entity e, Field value) {
-        if constexpr (std::same_as<Field, state::Entity>) std::tie(e, value) = HierarchyReferenceTarget(r, e, value, entry->Placement);
-        else e = HierarchyEditTarget(r, e, entry->Placement);
         if constexpr (DeltaField<Field> && !RotationField<Field>) value = ClampField(value, entry->Bounds(r, e, a.Offset));
+        if constexpr (std::same_as<Field, state::Entity>) {
+            std::tie(e, value) = CopyReferenceTarget(r, e, value);
+        } else {
+            const auto target = CopyFieldTarget(r, e, a.ComponentType, a.Offset);
+            if constexpr (sizeof(Field) <= sizeof(graph::NumericValue::Words)) {
+                if (target.InstanceEntity != state::Null) {
+                    graph::NumericValue own{};
+                    std::memcpy(own.Words.data(), &value, sizeof(Field));
+                    return SetInstancePortValue(r, target.InstanceEntity, target.PortId, own);
+                }
+            }
+            e = SourceOfCopy(r, target.Entity);
+        }
         entry->Write(r, e, a.Offset, &value, sizeof(Field));
     };
     if constexpr (DeltaField<Field>) {
@@ -177,6 +186,28 @@ ComponentField UpdatedField(state::TypeKey key, uint16_t offset) {
 std::optional<Core> ReadUpdate(const state::Registry &r, state::Entity entity, state::TypeKey key, uint16_t offset) {
     const auto *entry = EntryOf(key);
     return entry ? entry->ReadUpdate(r, entity, offset) : std::nullopt;
+}
+
+std::optional<state::TypeId> UpdatedType(state::TypeKey key) {
+    const auto *entry = EntryOf(key);
+    return entry ? std::optional{entry->Type} : std::nullopt;
+}
+
+void WriteField(state::Registry &r, state::Entity entity, state::TypeKey key, uint16_t offset, const std::array<uint32_t, 4> &words) {
+    const auto *entry = EntryOf(key);
+    const auto current = entry ? entry->ReadUpdate(r, entity, offset) : std::nullopt;
+    if (!current) return;
+    std::visit([&]<typename A>(const A &update) {
+        if constexpr (IsUpdate<A>) {
+            using V = decltype(update.Value);
+            if constexpr (sizeof(V) <= sizeof(words)) {
+                V value;
+                std::memcpy(&value, words.data(), sizeof(V));
+                if (!(value == update.Value)) entry->Write(r, entity, offset, &value, sizeof(V));
+            }
+        }
+    },
+               *current);
 }
 
 void TrackFieldRemovals(state::DirtySet &set) {

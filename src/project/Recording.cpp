@@ -6,10 +6,10 @@
 #include "action/Errors.h"
 #include "animation/Keying.h"
 #include "editor/AudioIntegration.h"
+#include "graph/Cook.h"
+#include "graph/Graph.h"
 #include "mesh/MeshStore.h"
 #include "numeric/Serialize.h"
-#include "procedure/Cook.h"
-#include "procedure/Procedure.h"
 #include "project/Assets.h"
 #include "viewport/FrameState.h"
 #include "viewport/Viewport.h"
@@ -75,8 +75,10 @@ bool Continues(const action::Action &a, const action::Action &previous) {
             } else {
                 return true;
             }
-        }, domain);
-    }, a);
+        },
+                          domain);
+    },
+                      a);
 }
 template<typename A> bool Is(const action::Action &a) {
     const auto *domain = std::get_if<action::DomainIndex<A>>(&a);
@@ -141,7 +143,14 @@ void SettleRecordedFrame(Project &session, int frame, float playback_frame) {
     r.edit<PlaybackFrame>(state::Document).Value = playback_frame;
 }
 void Tick(Project &session, const action::Action &a, EventPass pass = EventPass::Frame) {
-    std::visit([&](const auto &domain) { Apply(session.R, domain); }, a);
+    {
+        struct Applying {
+            explicit Applying(state::Registry &r) : R(r) { R.Applying = true; }
+            ~Applying() { R.Applying = false; }
+            state::Registry &R;
+        } applying{session.R};
+        std::visit([&](const auto &domain) { Apply(session.R, domain); }, a);
+    }
     session.Settle(pass);
 }
 std::expected<void, std::string> RunRecorded(Project &session, store::History &source, std::span<const action::Action> actions, std::span<const uint32_t> workspaces) {
@@ -150,6 +159,7 @@ std::expected<void, std::string> RunRecorded(Project &session, store::History &s
     const auto saved = frame;
     auto live = session.Entities.Workspace.Pin();
     const auto errors = session.R.Resources.get<action::Errors>().Messages.size();
+    bool staged = false;
     for (size_t i = 0; i < actions.size(); ++i) {
         if (auto restored = source.RestoreWorkspace(workspaces[i]); !restored) {
             action::Fail(session.R, restored.error());
@@ -165,7 +175,10 @@ std::expected<void, std::string> RunRecorded(Project &session, store::History &s
         }
         frame.DeltaTime = inputs.DeltaTime;
         frame.FixedFrameStep = inputs.FixedFrameStep;
-        frame.GestureOpen = inputs.Staged;
+        // An unstaged action after staged ones applies once their gesture has ended, as it did when recorded.
+        if (staged && !inputs.Staged) session.EndGesture(EventPass::Settle);
+        staged = inputs.Staged;
+        frame.GestureOpen = staged;
         Tick(session, actions[i], inputs.Pass);
         if (session.R.Resources.get<action::Errors>().Messages.size() != errors) break;
     }
@@ -178,8 +191,8 @@ std::expected<void, std::string> RunRecorded(Project &session, store::History &s
     if (messages.size() != errors) return std::unexpected{messages[errors]};
     return {};
 }
-// Returns the live state to the state the last recorded action left, which playback cooked procedures on without recording, and settles the current frame on it as a replay settles an action's frame.
-// Playback changed only the cooks of the procedures, so the modal solves, the posted steps and the interaction state stay.
+// Returns the live state to the state the last recorded action left, which playback cooked graphs on without recording, and settles the current frame on it as a replay settles an action's frame.
+// Playback changed only the cooks of the graphs, so the modal solves, the posted steps and the interaction state stay.
 void ReturnToRecorded(Project &session) {
     auto &r = session.R;
     auto base = *std::exchange(session.PlaybackBase, std::nullopt);
@@ -193,9 +206,9 @@ void ReturnToRecorded(Project &session) {
     KeepModalSolves(r, epoch);
     SettleRecordedFrame(session, frame, playback_frame);
 }
-// Playback cooks procedures that read the frame without recording, on the state the last recorded action left, which the next recorded action returns to.
+// Playback cooks graphs that read the frame without recording, on the state the last recorded action left, which the next recorded action returns to.
 void PinPlaybackBase(Project &session) {
-    if (!session.PlaybackBase && session.R.get<const TimelinePlayback>(state::Document).Playing && !session.R.view<const procedure::TimeReads>().empty()) session.PlaybackBase = session.History.Pin();
+    if (!session.PlaybackBase && session.R.get<const TimelinePlayback>(state::Document).Playing && !session.R.view<const graph::TimeReads>().empty()) session.PlaybackBase = session.History.Pin();
 }
 // Captures the workspace before each recorded action, then applies it.
 bool Record(Project &session, std::span<action::Action> actions, EventPass pass, bool staged = false) {
@@ -272,11 +285,11 @@ bool Record(Project &session, action::Action a, EventPass pass, bool staged = fa
 // Returns the committed node, or the present node when nothing was recorded or a selection edit stays open.
 std::optional<uint32_t> Step(Project &session, std::span<action::Action> actions, EventPass pass, std::string label, bool keys) {
     auto &r = session.R;
-    if (r.all_of<procedure::SelectionEditing>(state::Document) && std::ranges::any_of(actions, [](const auto &a) { return !ContinuesSelection(a); })) session.FinishGesture(EventPass::Settle);
+    if (r.all_of<graph::SelectionEditing>(state::Document) && std::ranges::any_of(actions, [](const auto &a) { return !ContinuesSelection(a); })) session.FinishGesture(EventPass::Settle);
     session.FinishGesture(EventPass::Settle, true);
     if (label.empty()) label = Label(actions.back());
     const bool recorded = Record(session, actions, pass, Is<action::nodes::EditSelection>(actions.front()));
-    if (!recorded || r.all_of<procedure::SelectionEditing>(state::Document)) return session.History.Present;
+    if (!recorded || r.all_of<graph::SelectionEditing>(state::Document)) return session.History.Present;
     if (keys) session.RecordKeys();
     const auto committed = session.Commit(std::move(label));
     session.ReleaseGesture();
@@ -437,14 +450,14 @@ uint32_t Project::Commit(std::string label, std::optional<uint32_t> replace) {
 }
 void Project::FinishGesture(EventPass pass, bool keep_selection) {
     if (!HasStaged()) return;
-    if (keep_selection && R.all_of<procedure::SelectionEditing>(state::Document)) {
+    if (keep_selection && R.all_of<graph::SelectionEditing>(state::Document)) {
         EndGesture(pass);
         if (StageBase) History.Release(*StageBase);
         StageBase.reset();
         StageFirst.reset();
         return;
     }
-    if (R.all_of<procedure::SelectionEditing>(state::Document)) Record(*this, action::MakeAction(action::nodes::FinishSelection{}), pass);
+    if (R.all_of<graph::SelectionEditing>(state::Document)) Record(*this, action::MakeAction(action::nodes::FinishSelection{}), pass);
     if (Editing) {
         R.Resources.get<FrameState>().GestureOpen = false;
         Settle(pass);
@@ -556,7 +569,7 @@ void Project::Frame() {
         } else if (phase == action::Phase::Record) {
             Step(*this, actions, pass, {}, true);
         } else {
-            if (R.all_of<procedure::SelectionEditing>(state::Document) && std::ranges::any_of(actions, [](const auto &a) { return !ContinuesSelection(a); })) {
+            if (R.all_of<graph::SelectionEditing>(state::Document) && std::ranges::any_of(actions, [](const auto &a) { return !ContinuesSelection(a); })) {
                 FinishGesture(EventPass::Settle);
             }
             Record(*this, actions, pass, true);

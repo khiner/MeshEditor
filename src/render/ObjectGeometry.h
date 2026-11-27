@@ -3,7 +3,7 @@
 #include "render/RenderSchema.h"
 #include "state/Entity.h"
 
-struct Instance {
+struct ObjectGeometry {
     state::Entity Entity;
 };
 

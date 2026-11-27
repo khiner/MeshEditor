@@ -1,8 +1,8 @@
-#include "ProcedureFixture.h"
+#include "GraphFixture.h"
 #include "action/Io.h"
 #include "gpu/PbrFeature.h"
+#include "graph/MaterialGraphs.h"
 #include "materialx/Library.h"
-#include "procedure/MaterialGraphs.h"
 #include "render/MaterialComponents.h"
 #include "render/MaterialPreview.h"
 #include "viewport/FrameState.h"
@@ -11,7 +11,7 @@
 using boost::ut::expect;
 
 namespace {
-using namespace procedure;
+using namespace graph;
 using action::nodes::AddMaterialGraph, action::nodes::Link;
 
 const auto Textures = std::filesystem::path{MESHEDITOR_SOURCE_DIR} / "external/glTF-Sample-Assets/Models/NormalTangentTest/glTF";
@@ -19,7 +19,7 @@ const auto Textures = std::filesystem::path{MESHEDITOR_SOURCE_DIR} / "external/g
 // A scratch folder of the name, in which the fixture begins a project.
 struct Scratch {
     TestDir Dir;
-    Scratch(ProcedureFixture &f, std::string_view name) : Dir{std::format("/tmp/mesheditor-scratch/material-{}", name).c_str()} { f.Begin(Dir.Path); }
+    Scratch(GraphFixture &f, std::string_view name) : Dir{std::format("/tmp/mesheditor-scratch/material-{}", name).c_str()} { f.Begin(Dir.Path); }
 };
 
 // The material whose record was added last.
@@ -42,7 +42,7 @@ state::Entity ActiveMaterial(Fixture &f, uint32_t features) {
 }
 // A shaded cube, or another shape at the position, whose first primitive draws a new material.
 state::Entity MaterialCube(Fixture &f, uint32_t features, PrimitiveParameters shape = primitive::Cube{}, vec3 position = {}) {
-    f.Add(action::object::AddMeshPrimitive{std::move(shape), std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Transform = {.P = position}})});
+    f.Add(action::object::AddMeshPrimitive{std::move(shape), std::make_unique<MeshObjectCreateInfo>(MeshObjectCreateInfo{.Transform = {.P = position}})});
     return ActiveMaterial(f, features);
 }
 template<typename T> void SetField(Fixture &f, state::Entity material, uint16_t offset, T value) { f.Do(action::object::UpdateMaterial<T>{material, offset, value}); }
@@ -52,28 +52,28 @@ void SetValue(Fixture &f, state::Entity material, uint16_t offset, const std::ve
     else SetField(f, material, offset, vec3{value[0], value[1], value[2]});
 }
 // Sets the op's input of the name to the value, a float or a color.
-void SetConstant(ProcedureFixture &f, state::Entity node, std::string_view input, const std::vector<float> &value) {
+void SetConstant(GraphFixture &f, state::Entity node, std::string_view input, const std::vector<float> &value) {
     f.Do(OpInputOf(node, input, action::nodes::OpLiteral{value.size() == 1u ? mx::Type::Float : mx::Type::Color3, value | std::views::transform([](float v) { return std::bit_cast<uint32_t>(v); }) | std::ranges::to<std::vector>()}));
 }
-state::Entity Constant(ProcedureFixture &f, state::Entity material, const std::vector<float> &value) {
+state::Entity Constant(GraphFixture &f, state::Entity material, const std::vector<float> &value) {
     const auto constant = f.Append(material, "constant");
     SetConstant(f, constant, "value", value);
     return constant;
 }
-void LinkInput(ProcedureFixture &f, state::Entity material, state::Entity from, PbrInput input) { f.Do(Link{material, from, f.Out(from), SurfaceNodeOf(f.R, material), uint16_t(input)}); }
+void LinkInput(GraphFixture &f, state::Entity material, state::Entity from, PbrInput input) { f.Do(Link{material, from, f.Out(from), SurfaceNodeOf(f.R, material), uint16_t(input)}); }
 state::Entity AddTexture(Fixture &f, std::string_view file, bool color) {
     f.Do(action::object::AddTexture{Textures / file, color});
     return FindActiveNode(f.R);
 }
 // An image op reading the texture's components of the type at the surface's first texture coordinates.
-state::Entity Image(ProcedureFixture &f, state::Entity material, state::Entity texture, mx::Type type) {
+state::Entity Image(GraphFixture &f, state::Entity material, state::Entity texture, mx::Type type) {
     const auto node = f.Append(material, "image");
     f.Do(OpInputOf(node, "default", action::nodes::OpLiteral{type, std::vector<uint32_t>(mx::Words(type))}));
     f.Do(OpInputOf(node, "file", texture));
     return node;
 }
 // The normal a normal texture holds at the surface point, mapped to [-1, 1].
-state::Entity DecodedNormal(ProcedureFixture &f, state::Entity material, state::Entity texture) {
+state::Entity DecodedNormal(GraphFixture &f, state::Entity material, state::Entity texture) {
     const auto multiply = f.Append(material, "multiply", {From("in1", Image(f, material, texture, mx::Type::Vector3)), Literal("in2", 2.f)});
     return f.Append(material, "subtract", {From("in1", multiply), Literal("in2", 1.f)});
 }
@@ -173,11 +173,11 @@ int PreviewDifference(Fixture &f, state::Entity material, std::span<const std::b
     return largest;
 }
 // The cube's position mapped into [0.25, 0.75] on each axis, by a multiply and an add.
-state::Entity PositionColor(ProcedureFixture &f, state::Entity m) {
+state::Entity PositionColor(GraphFixture &f, state::Entity m) {
     const auto multiply = f.Append(m, "multiply", {From("in1", f.Append(m, "position")), Literal("in2", .25f)});
     return f.Append(m, "add", {From("in1", multiply), Literal("in2", .5f)});
 }
-// A cube whose procedure stores its position as PositionColor maps it as the named attribute "tint" on the domain, displaying the store.
+// A cube whose graph stores its position as PositionColor maps it as the named attribute "tint" on the domain, displaying the store.
 GraphDescription TintCube(AttributeDomain domain) {
     return {primitive::Cube{}, {{"position"}, {"multiply", {Literal("in2", .25f)}}, {"add", {Literal("in2", .5f)}}, {KindOf<StoreNamedAttribute>, {Named("tint"), Set<&StoreNamedAttribute::Domain>(domain)}}}, {{1, 2, 0, "in1"}, {2, 3, 0, "in1"}, {3, 4, 1}, {0, 4, 0}}, 4};
 }
@@ -189,14 +189,14 @@ struct TextureCase {
     bool Color;
     uint32_t Features{};
     std::function<void(Fixture &, state::Entity material, uint32_t slot)> Express;
-    std::function<state::Entity(ProcedureFixture &, state::Entity material, state::Entity texture)> Graph;
+    std::function<state::Entity(GraphFixture &, state::Entity material, state::Entity texture)> Graph;
     std::function<void(Fixture &, state::Entity)> Setup{};
 };
 std::vector<TextureCase> TextureCases() {
     // Sets the material's texture slot at the field.
     const auto slot_at = [](uint16_t field) { return [field](Fixture &f, state::Entity m, uint32_t slot) { SetField(f, m, field, slot); }; };
     const auto express_base_color = slot_at(Nested<TextureInfo>(&PBRMaterial::BaseColorTexture, &TextureInfo::Slot));
-    const auto graph_base_color = [](ProcedureFixture &f, state::Entity m, state::Entity texture) { return Image(f, m, texture, mx::Type::Color3); };
+    const auto graph_base_color = [](GraphFixture &f, state::Entity m, state::Entity texture) { return Image(f, m, texture, mx::Type::Color3); };
     return {
         {"base_color", PbrInput::BaseColor, "NormalTangentTest_BaseColor.png", true, 0u, express_base_color, graph_base_color},
         {"normal", PbrInput::Normal, "NormalTangentTest_Normal.png", false, 0u,
@@ -208,7 +208,7 @@ std::vector<TextureCase> TextureCases() {
              SetField(f, m, Offset(&PBRMaterial::OcclusionStrength), .5f);
              SetField(f, m, Nested<TextureInfo>(&PBRMaterial::OcclusionTexture, &TextureInfo::Slot), slot);
          },
-         [](ProcedureFixture &f, state::Entity m, state::Entity texture) {
+         [](GraphFixture &f, state::Entity m, state::Entity texture) {
              // The occlusion is one plus its strength times the texture's red channel less one.
              const auto subtract = f.Append(m, "subtract", {From("in1", Image(f, m, texture, mx::Type::Float)), Literal("in2", 1.f)});
              return f.Append(m, "add", {From("in1", f.Append(m, "multiply", {From("in1", subtract), Literal("in2", .5f)})), Literal("in2", 1.f)});
@@ -225,7 +225,7 @@ struct Built {
     Edit Change;
 };
 // Builds one side's scene.
-using Side = std::function<Built(ProcedureFixture &)>;
+using Side = std::function<Built(GraphFixture &)>;
 // A scene rendered two ways: a reference, and a material's graph that computes the same inputs.
 // The two render alike, and after their edits alike again and unlike before.
 struct GraphEquivalence {
@@ -246,29 +246,27 @@ struct GraphEquivalence {
 
 // The scene's material holding the case's value, and the material's graph computing the value while the material holds the other value.
 // Without ray tracing, each side's edit sets the other value: the reference's field and the graph's constant, whose edit writes the value block the next frame's pattern pass reads.
-GraphEquivalence ConstantRow(std::string name, const ConstantCase &c, std::function<state::Entity(ProcedureFixture &)> scene, bool ray) {
+GraphEquivalence ConstantRow(std::string name, const ConstantCase &c, std::function<state::Entity(GraphFixture &)> scene, bool ray) {
     return {
         .Name = std::move(name),
-        .Reference = [c, scene, ray](ProcedureFixture &f) {
+        .Reference = [c, scene, ray](GraphFixture &f) {
             const auto material = scene(f);
             SetValue(f, material, c.Field, c.Value);
-            return Built{material, ray ? Edit{} : Edit{[&f, material, c] { SetValue(f, material, c.Field, c.Other); }}};
-        },
-        .Graphed = [c, scene, ray](ProcedureFixture &f) {
+            return Built{material, ray ? Edit{} : Edit{[&f, material, c] { SetValue(f, material, c.Field, c.Other); }}}; },
+        .Graphed = [c, scene, ray](GraphFixture &f) {
             const auto material = scene(f);
             SetValue(f, material, c.Field, c.Other);
             f.Do(AddMaterialGraph{material});
             const auto constant = Constant(f, material, c.Value);
             LinkInput(f, material, constant, c.Input);
-            return Built{material, ray ? Edit{} : Edit{[&f, constant, c] { SetConstant(f, constant, "value", c.Other); }}};
-        },
+            return Built{material, ray ? Edit{} : Edit{[&f, constant, c] { SetConstant(f, constant, "value", c.Other); }}}; },
         .Ray = ray,
         .Preview = !ray,
     };
 }
 // The cube of the case's features and setup.
-std::function<state::Entity(ProcedureFixture &)> CaseCube(uint32_t features, std::function<void(Fixture &, state::Entity)> setup) {
-    return [features, setup](ProcedureFixture &f) {
+std::function<state::Entity(GraphFixture &)> CaseCube(uint32_t features, std::function<void(Fixture &, state::Entity)> setup) {
+    return [features, setup](GraphFixture &f) {
         const auto material = MaterialCube(f, features);
         if (setup) setup(f, material);
         return material;
@@ -280,20 +278,18 @@ GraphEquivalence TextureRow(std::string name, const TextureCase &c, bool ray) {
     const auto cube = CaseCube(c.Features, c.Setup);
     return {
         .Name = std::move(name),
-        .Reference = [c, cube, ray](ProcedureFixture &f) {
+        .Reference = [c, cube, ray](GraphFixture &f) {
             const auto material = cube(f);
             const auto plain = ray ? std::vector<std::byte>{} : f.Image();
             c.Express(f, material, f.R.get<const MaterializedTexture>(AddTexture(f, c.File, c.Color)).SamplerSlot);
             if (!ray) expect(f.Image() != plain);
-            return Built{material, {}};
-        },
-        .Graphed = [c, cube](ProcedureFixture &f) {
+            return Built{material, {}}; },
+        .Graphed = [c, cube](GraphFixture &f) {
             const auto material = cube(f);
             const auto texture = AddTexture(f, c.File, c.Color);
             f.Do(AddMaterialGraph{material});
             LinkInput(f, material, c.Graph(f, material, texture), c.Input);
-            return Built{material, {}};
-        },
+            return Built{material, {}}; },
         .Ray = ray,
         .Preview = !ray,
         .Blended = std::string_view{c.Name}.starts_with("blended"),
@@ -304,14 +300,14 @@ std::vector<GraphEquivalence> GraphEquivalences() {
     // A graph computing a constant renders as the material holding that constant does, also after a value edit of each.
     for (const auto &c : ConstantCases()) rows.push_back(ConstantRow(std::format("constant {}", c.Name), c, CaseCube(c.Features, c.Setup), false));
     // A blended cube filling the view, whose front and back faces put two transparent fragments at each pixel, computes the inputs of every fragment.
-    rows.push_back(ConstantRow("constant double-sided blended base_color", ConstantCases().front(), [](ProcedureFixture &f) {
+    rows.push_back(ConstantRow("constant double-sided blended base_color", ConstantCases().front(), [](GraphFixture &f) {
         const auto material = MaterialCube(f, 0u);
         Blend(f, material);
         SetField(f, material, Offset(&PBRMaterial::DoubleSided), 1u);
         f.Do(action::UpdateOf<&Transform::S>(action::OnActive{}, vec3{6.f}));
         return material; }, false));
     // A smooth sphere filling the view renders as its material's preview does.
-    rows.push_back(ConstantRow("constant sphere base_color", ConstantCases().front(), [](ProcedureFixture &f) {
+    rows.push_back(ConstantRow("constant sphere base_color", ConstantCases().front(), [](GraphFixture &f) {
         const auto material = MaterialCube(f, 0u, primitive::UVSphere{});
         f.Do(action::view::ZoomViewCamera{FirstViewport(f.R), .2f});
         f.Do(action::object::ShadeSelected{ShadeMode::Smooth});
@@ -324,7 +320,7 @@ std::vector<GraphEquivalence> GraphEquivalences() {
     // A checkerboard over the cube's texture coordinates renders as the checkerboard one cell over with its colors swapped, also after a tiling edit of each.
     // The edit changes the image only where the coordinates vary over the cube.
     const auto checkerboard = [](vec3 color1, vec3 color2, vec2 offset) -> Side {
-        return [=](ProcedureFixture &f) {
+        return [=](GraphFixture &f) {
             const auto material = MaterialCube(f, 0u);
             f.Do(AddMaterialGraph{material});
             const auto node = f.Append(material, "checkerboard", {Literal("uvoffset", offset)});
@@ -351,13 +347,13 @@ std::vector<GraphEquivalence> GraphEquivalences() {
     // With ray tracing, a patterned cube renders as the material holding its computed constant in the ray paths beside the deferred hits.
     // A blended transmissive plane puts one blended surface on each camera ray, whose pixels trace through their own surface.
     // A shadow ray through a transmissive surface tints by its data inputs, so the plane computes its roughness, which no shadow reads.
-    rows.push_back(ConstantRow("ray blended transmission", {"roughness", PbrInput::Roughness, Offset(&PBRMaterial::RoughnessFactor), {.35f}, {.9f}}, [](ProcedureFixture &f) {
+    rows.push_back(ConstantRow("ray blended transmission", {"roughness", PbrInput::Roughness, Offset(&PBRMaterial::RoughnessFactor), {.35f}, {.9f}}, [](GraphFixture &f) {
         const auto material = MaterialCube(f, FeatureBit(PbrFeature::Transmission), primitive::Plane{.HalfExtents = {1.5f, 1.5f}}, {0, 0, .5f});
         Blend(f, material);
         SetField(f, material, Nested<Transmission>(&PBRMaterial::Transmission, &Transmission::Factor), .7f);
         return material; }, true));
     // An opaque cube seen from inside a glass volume around the scene and the camera, which puts the camera inside a medium, leaves its surfaces to the rays.
-    rows.push_back(ConstantRow("ray opaque layer", ConstantCases().front(), [](ProcedureFixture &f) {
+    rows.push_back(ConstantRow("ray opaque layer", ConstantCases().front(), [](GraphFixture &f) {
         const auto material = MaterialCube(f, FeatureBit(PbrFeature::Transmission));
         const auto glass = MaterialCube(f, FeatureBit(PbrFeature::Transmission), primitive::Cube{.HalfExtents = {40, 40, 40}});
         SetField(f, glass, Nested<Transmission>(&PBRMaterial::Transmission, &Transmission::Factor), 1.f);
@@ -365,13 +361,13 @@ std::vector<GraphEquivalence> GraphEquivalences() {
         SetField(f, glass, Offset(&PBRMaterial::RoughnessFactor), 0.f);
         SetField(f, glass, Offset(&PBRMaterial::DoubleSided), 1u);
         return material; }, true));
-    // A material reading a named attribute a geometry procedure stores on vertices or corners renders as a material computing the attribute's value itself, at pixels, at transparent fragments and at ray hits.
+    // A material reading a named attribute a geometry graph stores on vertices or corners renders as a material computing the attribute's value itself, at pixels, at transparent fragments and at ray hits.
     // A value edit upstream of the store reaches the material's reads.
     // The opaque vertex row also recompiles its patterned materials' programs.
     for (const auto domain : {AttributeDomain::Vertex, AttributeDomain::Corner}) {
         for (const std::string_view mode : {"opaque", "blended", "ray"}) {
-            // The cube whose procedure stores the attribute, and its material's graph.
-            const auto scene = [domain, mode](ProcedureFixture &f) {
+            // The cube whose graph stores the attribute, and its material's graph.
+            const auto scene = [domain, mode](GraphFixture &f) {
                 const auto built = Build(f, TintCube(domain));
                 MaterialView(f);
                 f.Do(action::object::AddMaterial{0u, built.Mesh});
@@ -380,16 +376,16 @@ std::vector<GraphEquivalence> GraphEquivalences() {
                 f.Do(AddMaterialGraph{material});
                 return std::pair{built, material};
             };
-            const Side computed = [scene](ProcedureFixture &f) {
+            const Side computed = [scene](GraphFixture &f) {
                 const auto material = scene(f).second;
                 const auto color = PositionColor(f, material);
                 LinkInput(f, material, color, PbrInput::BaseColor);
                 return Built{material, [&f, color] { SetLiteral(f, color, "in2", .4f); }};
             };
-            const Side read = [scene](ProcedureFixture &f) {
+            const Side read = [scene](GraphFixture &f) {
                 const auto [built, material] = scene(f);
                 LinkInput(f, material, f.Append(material, "geompropvalue", {Literal("default", vec3{}), Text("geomprop", "tint")}), PbrInput::BaseColor);
-                // The procedure stores the position at another offset.
+                // The graph stores the position at another offset.
                 return Built{material, [&f, built] { SetLiteral(f, built.Nodes[3], "in2", .4f); }};
             };
             rows.push_back({
@@ -414,7 +410,7 @@ int Difference(std::span<const std::byte> a, std::span<const std::byte> b) {
     return largest;
 }
 // Each row's graphed side renders as its reference, before and after their edits, and its reference's edit changes its image.
-void Equivalences(ProcedureFixture &f) {
+void Equivalences(GraphFixture &f) {
     for (const auto &row : GraphEquivalences()) {
         boost::ut::test(std::format("material graph {}", row.Name)) = [&row, &f] {
             const auto shown = [&row, &f](std::string_view name, const Side &side) {
@@ -458,7 +454,7 @@ state::Entity TextureNamed(const Fixture &f, std::string_view file) {
 }
 // Adds the graph of a MaterialX document to the material through node actions: an op for each node with its values, texts, images and links, then a link from each graph output to the Surface input it feeds.
 // A filename reads the document texture of the file's name.
-void AddDocumentGraph(ProcedureFixture &f, state::Entity material, const mx::MaterialDocument &document) {
+void AddDocumentGraph(GraphFixture &f, state::Entity material, const mx::MaterialDocument &document) {
     const auto &lib = mx::Libraries();
     f.Do(AddMaterialGraph{material});
     std::vector<state::Entity> ops;
@@ -498,7 +494,7 @@ state::Entity MaterialBottles(Fixture &f, uint32_t features) {
     MaterialView(f);
     f.Do(action::io::LoadGltf{std::filesystem::path{MESHEDITOR_SOURCE_DIR} / "external/glTF-Sample-Assets/Models/WaterBottle/glTF/WaterBottle.gltf"});
     const auto mesh = *f.R.view<const EvaluatedMesh>().begin();
-    const auto object = *std::ranges::find_if(f.R.view<const Instance>(), [&](state::Entity e) { return f.R.get<const Instance>(e).Entity == mesh; });
+    const auto object = *std::ranges::find_if(f.R.view<const ObjectGeometry>(), [&](state::Entity e) { return f.R.get<const ObjectGeometry>(e).Entity == mesh; });
     f.Do(action::UpdateOf<&Transform::S>(object, vec3{8.f}));
     if (features) f.Do(action::object::SetPbrMeshFeaturesMask{features, mesh});
     f.Do(action::object::AddMaterial{0u, mesh});
@@ -515,48 +511,46 @@ struct ExportCase {
     // Sets the material's values and adds the textures its graph reads, in both scenes that build the graph.
     std::function<void(Fixture &, state::Entity)> Values;
     // Builds the graph the harness gives the material, before the image both renders compare.
-    std::function<void(ProcedureFixture &, state::Entity)> Graph;
+    std::function<void(GraphFixture &, state::Entity)> Graph;
     // The baked copies of the material the export writes: one that every mesh drawing the material shares where its inputs read nothing of a mesh, and else one for each mesh.
     uint32_t Copies{1u};
     // Builds the scene of the features and returns its material.
-    std::function<state::Entity(ProcedureFixture &, uint32_t features)> Scene{MaterialBottles};
+    std::function<state::Entity(GraphFixture &, uint32_t features)> Scene{MaterialBottles};
 };
 std::vector<ExportCase> ExportCases() {
     std::vector<ExportCase> cases;
     for (const auto &c : ConstantCases()) {
         cases.push_back({c.Name, c.Features, [c](Fixture &f, state::Entity m) {
                              if (c.Setup) c.Setup(f, m);
-                             SetValue(f, m, c.Field, c.Other);
-                         },
-                         [c](ProcedureFixture &f, state::Entity m) { LinkInput(f, m, Constant(f, m, c.Value), c.Input); }});
+                             SetValue(f, m, c.Field, c.Other); }, [c](GraphFixture &f, state::Entity m) { LinkInput(f, m, Constant(f, m, c.Value), c.Input); }});
     }
     const auto textures = [](Fixture &f, state::Entity) {
         AddTexture(f, "NormalTangentTest_BaseColor.png", true);
         AddTexture(f, "NormalTangentTest_Normal.png", false);
     };
-    cases.push_back({"position base_color", 0u, {}, [](ProcedureFixture &f, state::Entity m) { LinkInput(f, m, PositionColor(f, m), PbrInput::BaseColor); }, 2u});
-    cases.push_back({"image emissive", 0u, textures, [](ProcedureFixture &f, state::Entity m) {
+    cases.push_back({"position base_color", 0u, {}, [](GraphFixture &f, state::Entity m) { LinkInput(f, m, PositionColor(f, m), PbrInput::BaseColor); }, 2u});
+    cases.push_back({"image emissive", 0u, textures, [](GraphFixture &f, state::Entity m) {
                          LinkInput(f, m, Image(f, m, TextureNamed(f, "NormalTangentTest_BaseColor.png"), mx::Type::Color3), PbrInput::Emissive);
                      }});
-    cases.push_back({"image normal", 0u, textures, [](ProcedureFixture &f, state::Entity m) {
+    cases.push_back({"image normal", 0u, textures, [](GraphFixture &f, state::Entity m) {
                          LinkInput(f, m, DecodedNormal(f, m, TextureNamed(f, "NormalTangentTest_Normal.png")), PbrInput::Normal);
                      }});
-    cases.push_back({"layered", 0u, textures, [](ProcedureFixture &f, state::Entity m) {
+    cases.push_back({"layered", 0u, textures, [](GraphFixture &f, state::Entity m) {
                          LinkInput(f, m, PositionColor(f, m), PbrInput::BaseColor);
                          LinkInput(f, m, f.Append(m, "noise3d", {Literal("amplitude", .5f)}), PbrInput::Roughness);
                          LinkInput(f, m, Image(f, m, TextureNamed(f, "NormalTangentTest_BaseColor.png"), mx::Type::Color3), PbrInput::Emissive);
                          LinkInput(f, m, DecodedNormal(f, m, TextureNamed(f, "NormalTangentTest_Normal.png")), PbrInput::Normal);
                      },
                      2u});
-    // A material's bake reads a named attribute a geometry procedure stores on vertices or corners at each texel's corners, for each mesh.
+    // A material's bake reads a named attribute a geometry graph stores on vertices or corners at each texel's corners, for each mesh.
     for (const auto domain : {AttributeDomain::Vertex, AttributeDomain::Corner}) {
         cases.push_back({
             .Name = std::format("attribute {}", domain == AttributeDomain::Vertex ? "vertex" : "corner"),
-            .Graph = [](ProcedureFixture &f, state::Entity m) { LinkInput(f, m, f.Append(m, "geompropvalue", {Literal("default", vec3{}), Text("geomprop", "tint")}), PbrInput::BaseColor); },
+            .Graph = [](GraphFixture &f, state::Entity m) { LinkInput(f, m, f.Append(m, "geompropvalue", {Literal("default", vec3{}), Text("geomprop", "tint")}), PbrInput::BaseColor); },
             .Copies = 2u,
-            .Scene = [domain](ProcedureFixture &f, uint32_t features) {
+            .Scene = [domain](GraphFixture &f, uint32_t features) {
                 const auto material = MaterialBottles(f, features);
-                // Each bottle's procedure stores its position as PositionColor maps it as the named attribute "tint" on the domain.
+                // Each bottle's graph stores its position as PositionColor maps it as the named attribute "tint" on the domain.
                 for (const auto mesh : SortedEntities(f.R.view<const EvaluatedMesh>())) {
                     const auto source = f.Node(mesh, 0u);
                     const auto add = PositionColor(f, mesh);
@@ -565,20 +559,18 @@ std::vector<ExportCase> ExportCases() {
                     f.Do(Link{mesh, add, f.Out(add), store, 1u});
                     f.Do(action::nodes::SetDisplay{mesh, store});
                 }
-                return material;
-            },
+                return material; },
         });
     }
     // A mesh without texture coordinates exports the material's values, which its graph computes too.
     cases.push_back({
         .Name = "unbaked base_color",
         .Values = [](Fixture &f, state::Entity m) { SetValue(f, m, Offset(&PBRMaterial::BaseColorFactor), {.2f, .5f, .8f}); },
-        .Graph = [](ProcedureFixture &f, state::Entity m) { LinkInput(f, m, Constant(f, m, {.2f, .5f, .8f}), PbrInput::BaseColor); },
+        .Graph = [](GraphFixture &f, state::Entity m) { LinkInput(f, m, Constant(f, m, {.2f, .5f, .8f}), PbrInput::BaseColor); },
         .Copies = 0u,
-        .Scene = [](ProcedureFixture &f, uint32_t features) {
+        .Scene = [](GraphFixture &f, uint32_t features) {
             f.AddSourced({.Data = primitive::CreateMesh(primitive::Cube{}).Data, .FlatShaded = true});
-            return ActiveMaterial(f, features);
-        },
+            return ActiveMaterial(f, features); },
     });
     return cases;
 }
@@ -600,7 +592,7 @@ std::vector<std::string> UndrawnMaterials(Fixture &f) {
 // A material's graph exported to glTF bakes its computed inputs to textures, and the imported scene renders within four levels of the material's image.
 // The export writes the material's baked copies, and writes the material itself only where a mesh draws it without a bake, so every material the import holds that no primitive draws is one no primitive of the document draws.
 // Its graph written as a MaterialX document reads back to the same document, and the graph the read document builds renders the same image.
-void ExportRoundTrips(ProcedureFixture &f, ProcedureFixture &g, ProcedureFixture &h) {
+void ExportRoundTrips(GraphFixture &f, GraphFixture &g, GraphFixture &h) {
     for (const auto &c : ExportCases()) {
         boost::ut::test(std::format("material graph export {}", c.Name)) = [&c, &f, &g, &h] {
             const Scratch scratch{f, std::format("export-{}", c.Name)};
@@ -646,7 +638,7 @@ void ExportRoundTrips(ProcedureFixture &f, ProcedureFixture &g, ProcedureFixture
 
 void TestMaterialGraphs() {
     if (!Render) return;
-    ProcedureFixture f, g, h;
+    GraphFixture f, g, h;
     Equivalences(f);
     ExportRoundTrips(f, g, h);
 }

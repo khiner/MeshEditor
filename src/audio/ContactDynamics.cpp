@@ -1,4 +1,4 @@
-#include "scene/HierarchyInstance.h"
+#include "scene/Instance.h"
 
 #include "ContactModel.h"
 #include "ModalEigenSummary.h"
@@ -7,14 +7,14 @@
 #include "physics/PhysicsTypes.h"
 
 double ModalDensityRatio(const state::Registry &r, state::Entity e) {
-    const auto *summary = r.try_get<const ModalEigenSummary>(HierarchySource(r, e));
+    const auto *summary = r.try_get<const ModalEigenSummary>(SourceOfCopy(r, e));
     const auto *mat = r.try_get<const AcousticMaterial>(e);
     return summary && mat && summary->SolvedMaterial.Density > 0 ? mat->Properties.Density / summary->SolvedMaterial.Density : 1.0;
 }
 
 void UpdateContactDynamics(state::Registry &r, state::Entity e) {
     const auto *mp = r.try_get<const MassProperties>(e);
-    const auto *modes = r.try_get<const ModalModes>(HierarchySource(r, e));
+    const auto *modes = r.try_get<const ModalModes>(SourceOfCopy(r, e));
     if (!mp || !modes || modes->Positions.empty()) {
         r.remove<ContactDynamics>(e);
         return;

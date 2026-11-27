@@ -8,16 +8,16 @@
 #include "audio/ModalEigenSummary.h"
 #include "audio/ModalModes.h"
 #include "gltf/GltfScene.h"
+#include "graph/Graph.h"
+#include "graph/NodeTheme.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/TetBuffers.h"
 #include "numeric/Serialize.h"
-#include "procedure/NodeTheme.h"
-#include "procedure/Procedure.h"
-#include "render/Instance.h"
 #include "render/MaterialComponents.h"
+#include "render/ObjectGeometry.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
-#include "scene/HierarchyInstance.h"
+#include "scene/Instance.h"
 #include "scene/SceneGraph.h"
 #include "selection/SelectionComponents.h"
 #include "snapshot/SnapshotRoles.h"
@@ -215,7 +215,7 @@ const boost::ut::suite ActionSerialize = [] {
         };
         std::apply(
             [&](auto... schemas) { (ForEachType(schemas, check), ...); },
-            std::tuple<action::ActionSchema, AnimationSchema, ArmatureSchema, AudioSchema, GltfSchema, GpuSchema, MeshSchema, PhysicsSchema, ProcedureSchema, RenderSchema, SceneSchema, SelectionSchema, TimelineSchema, UiSchema, ViewportSchema>{}
+            std::tuple<action::ActionSchema, AnimationSchema, ArmatureSchema, AudioSchema, GltfSchema, GpuSchema, MeshSchema, PhysicsSchema, GraphSchema, RenderSchema, SceneSchema, SelectionSchema, TimelineSchema, UiSchema, ViewportSchema>{}
         );
         expect(checked == snapshot::TypesOf(snapshot::Role::Persistent).size() + snapshot::TypesOf(snapshot::Role::Workspace).size()) << "a domain schema with recorded types is missing from the list";
     };

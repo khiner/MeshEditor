@@ -3,7 +3,7 @@
 #include "gpu/MeshAttributeBit.h"
 #include "mesh/MeshStore.h"
 #include "render/GpuBuffers.h"
-#include "render/Instance.h"
+#include "render/ObjectGeometry.h"
 
 void Reset(MaterialPatterns &patterns, state::Registry &) {
     patterns.Records.reset();

@@ -1,9 +1,9 @@
-#include "procedure/Cook.h"
-#include "procedure/OccurrenceImages.h"
+#include "graph/Cook.h"
 #include "ProcessEvents.h"
 #include "animation/Keying.h"
-#include "procedure/OpNodes.h"
-#include "scene/HierarchyInstance.h"
+#include "graph/OccurrenceImages.h"
+#include "graph/OpNodes.h"
+#include "scene/Instance.h"
 #include "timeline/Timeline.h"
 #include "viewport/InteractionComponents.h"
 
@@ -39,9 +39,9 @@
 #include "render/ElementWorkOps.h"
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
-#include "render/Instance.h"
 #include "render/MeshTopologyRepair.h"
 #include "render/MeshletBuildGpu.h"
+#include "render/ObjectGeometry.h"
 #include "render/Pipelines.h"
 #include "render/RenderChanges.h"
 #include "render/SceneUpdates.h"
@@ -58,16 +58,24 @@
 
 using state::On;
 
-namespace procedure {
+namespace graph {
+// A kept mesh storage state, with what the cook that kept it holds for the nodes it runs from there.
+// Replaced is the record alive in the state that the cook releases when it publishes, or none.
+// Rendered is whether the cook's record has the render records its mesh draws.
+struct ExactState {
+    store::Hash128 State;
+    uint32_t Replaced;
+    bool Rendered;
+};
 // The mesh the last cook pass cooked alone, and the mesh storage states kept while only that mesh's passes wrote mesh storage.
 struct CookPass {
     state::Entity Mesh{state::Null};
     std::optional<store::Hash128> End;
-    std::vector<store::Hash128> Exact;
+    std::vector<ExactState> Exact;
     bool DependsOnEarlierCooks{}; // A cook took a path whose result depends on the cooks before it
 };
 void Reset(CookPass &pass, state::Registry &) { pass = {}; }
-// The timeline frame and frame rate the procedures' cooks hold.
+// The timeline frame and frame rate the graphs' cooks hold.
 struct CookTime {
     int Frame{};
     float Fps{};
@@ -201,7 +209,7 @@ Masks Later(const Masks &m, StageRound &later) { return {.In = m.In, .Domain = m
 
 struct Operand {
     uint32_t Attribute{InvalidOffset};
-    std::optional<PortValue> Constant;
+    std::optional<NumericValue> Constant;
 };
 struct NodeSelection {
     // The operand linked into the socket or its constant, which overrides the literal.
@@ -218,7 +226,7 @@ struct SocketValue {
     // The cook owns records when MeshEntity is null, and otherwise borrows them read-only from MeshEntity, which keeps owning them.
     state::Entity MeshEntity{state::Null};
     state::Entity Prototype{state::Null};
-    state::Entity Object{state::Null}; // For geometry, the object whose local space the geometry is in, or null for this procedure's mesh space
+    state::Entity Object{state::Null}; // For geometry, the object whose local space the geometry is in, or null for this graph's mesh space
     uint32_t Instance{InvalidOffset}; // The record an instances value's points each place, or InvalidOffset for points placing nothing
     union {
         uint32_t Record{InvalidOffset};
@@ -778,8 +786,7 @@ void ExecuteStage(state::Registry &r, std::vector<StagedTask> &stage) {
         for (size_t i = 0u; i < repairs.size(); ++i) {
             if (repaired[i]->Repair) repairs[i].Marked = RepairMarks(*repaired[i]) | std::ranges::to<std::vector>();
         }
-        if (!repairs.empty()) RepairDrawnElements(r, chain, repairs);
-    }, extruded);
+        if (!repairs.empty()) RepairDrawnElements(r, chain, repairs); }, extruded);
     for (size_t i = 0u; i < stage.size(); ++i) {
         if (auto *created = stage[i].Created) *created = results[i].Changed ? Outcome{results[i].GeometryId} : std::unexpected(NodeFault::Empty);
     }
@@ -1044,7 +1051,7 @@ Outcome RunExtrude(state::Registry &r, std::span<const state::Entity> node, cons
                     const auto source = elements[i];
                     const auto normal = per_element ? normals[i] : stage->RegionNormal;
                     const auto direction = offset != InvalidOffset ? meshes.AttributeView<vec3>(offset)[source] : p.AlongNormals ? normal :
-                                                                                                                                 p.Offset;
+                                                                                                                                   p.Offset;
                     offsets.emplace_back(source, direction * (scale != InvalidOffset ? meshes.AttributeView<float>(scale)[source] : p.OffsetScale));
                 }
                 std::ranges::sort(offsets, {}, &std::pair<uint32_t, vec3>::first);
@@ -1357,8 +1364,7 @@ Outcome PlanAfterReads(state::Registry &r, uint32_t id, const Masks &m, auto &&r
         const auto selection = Handles(r.Resources.get<const MeshStore>(), id, m);
         return AfterReads<std::optional<MeshTopologyTask>>(id, m, [&](mtl::ComputeChain &chain, auto then) { record(chain, Mesh{r.Resources.get<const MeshStore>(), id}, selection, std::move(then)); }, [&r, m, selection](std::optional<MeshTopologyTask> task) {
             if (task && task->Op == MeshTopologyOp::AddPrimitives) task->Selection = selection;
-            return Stage(r, std::move(task), m);
-        });
+            return Stage(r, std::move(task), m); });
     });
 }
 Outcome Run(state::Registry &r, const Fill &p, uint32_t id, const Masks &m) {
@@ -1595,11 +1601,11 @@ Operand OperandOf(const CookPlan &plan, std::span<const SocketValue> values, std
     if (NodeSockets(plan, link.FromNode)[link.FromSocket].Varies) return {attributes.empty() ? InvalidOffset : attributes[input]};
     const auto &source = values[plan.SocketFirst[link.FromNode] + link.FromSocket];
     if (!Takes(plan, node, uint16_t(input), source.Type)) return {};
-    return {.Constant = PortValue{source.Value, source.Type}};
+    return {.Constant = NumericValue{source.Value, source.Type}};
 }
 // A value a port or an op passes to a parameter is clamped to the parameter's range, and an integer one is a signed MaterialX integer.
 template<typename K> K Parameters(const state::Registry &r, const CookPlan &plan, std::span<const SocketValue> values, uint32_t node) {
-    const auto &[entity, kind, parent, builtin] = plan.Nodes[node];
+    const auto &[entity, kind, parent, in_builtin_subgraph] = plan.Nodes[node];
     auto p = Authored(r, plan.Nodes[node]).get<const K>(entity);
     if constexpr (field::Walkable<K>) {
         const auto [first, end] = ParameterRange(kind);
@@ -1611,10 +1617,10 @@ template<typename K> K Parameters(const state::Registry &r, const CookPlan &plan
     }
     return p;
 }
-// The inline selection the node's selection input reads: a subnet node's own selection of the port it reads, or else the node's own, or null.
+// The inline selection the node's selection input reads: a subgraph node's own selection of the port it reads, or else the node's own, or null.
 const InlineSelection *SelectionLiteral(const state::Registry &r, const CookPlan &plan, uint32_t node, uint16_t socket) {
     const auto &link = plan.Inputs[plan.InputFirst[node] + socket];
-    if (link.SelectionSubnet != NoNode) return &*InstancePortOf(Authored(r, plan.Nodes[link.SelectionSubnet]), plan.Nodes[link.SelectionSubnet].Entity, link.SelectionPort)->Selection;
+    if (link.SelectionUse != NoNode) return &*NodePortOf(Authored(r, plan.Nodes[link.SelectionUse]), plan.Nodes[link.SelectionUse].Entity, link.SelectionPort)->Selection;
     return Authored(r, plan.Nodes[node]).try_get<const InlineSelection>(plan.Nodes[node].Entity);
 }
 // The domain the node's selection applies to: the edit domain its inline selection was captured in, or else the elements its operator acts on for a linked selection, and vertices for every element.
@@ -1622,14 +1628,14 @@ Element SelectionDomain(const state::Registry &r, const CookPlan &plan, std::spa
     if (const auto *literal = SelectionLiteral(r, plan, node, socket)) return literal->Domain;
     const auto &link = plan.Inputs[plan.InputFirst[node] + socket];
     if (link.FromNode == NoNode && !link.Constant) return Element::Vertex;
-    const auto &[entity, kind, parent, builtin] = plan.Nodes[node];
+    const auto &[entity, kind, parent, in_builtin_subgraph] = plan.Nodes[node];
     auto domain = Element::Vertex;
     VisitKind(kind, [&]<typename K> { domain = NaturalDomain(values.empty() ? Authored(r, plan.Nodes[node]).get<const K>(entity) : Parameters<K>(r, plan, values, node)); });
     return domain;
 }
-// A socket constant, such as a subnet port's default, is a Bool field operand, and a linked field is the stored field `attributes` holds for it.
+// A socket constant, such as a subgraph port's default, is a Bool field operand, and a linked field is the stored field `attributes` holds for it.
 // A kind without a selection input selects every element.
-// An unlinked selection input reading a subnet node's selection port takes that node's selection in place of its own.
+// An unlinked selection input reading a subgraph node's selection port takes that node's selection in place of its own.
 NodeSelection ResolveSelection(const state::Registry &r, const CookPlan &plan, std::span<const SocketValue> values, std::span<const uint32_t> attributes, uint32_t node) {
     const auto sockets = KindSockets(plan.Nodes[node].Kind);
     const auto socket = uint16_t(std::ranges::find(sockets, true, &Socket::Selection) - sockets.begin());
@@ -1674,14 +1680,14 @@ PlanShape ShapeOf(const CookPlan &plan) {
     for (uint32_t n = 0u; n < plan.Nodes.size(); ++n) {
         const auto &node = plan.Nodes[n];
         const bool reads = op(n) || std::ranges::any_of(NodeLinks(plan, n), [&](const PlanLink &link) { return op(link.FromNode); });
-        shape.Nodes.push_back({reads ? node.Entity : state::Null, node.Kind, node.Parent, node.Builtin});
+        shape.Nodes.push_back({reads ? node.Entity : state::Null, node.Kind, node.Parent, node.InBuiltinSubgraph});
     }
     return shape;
 }
 uint64_t HashOf(const PlanShape &shape) {
     uint64_t h = shape.Nodes.size();
     const auto mix = [&h](uint64_t value) { h = store::Mix64(h ^ value); };
-    for (const auto &node : shape.Nodes) mix(uint64_t(state::Integral(node.Entity)) << 32 | uint64_t(node.Kind) << 16 | node.Builtin), mix(node.Parent);
+    for (const auto &node : shape.Nodes) mix(uint64_t(state::Integral(node.Entity)) << 32 | uint64_t(node.Kind) << 16 | node.InBuiltinSubgraph), mix(node.Parent);
     for (const auto &link : shape.Inputs) {
         mix(uint64_t(link.FromNode) << 32 | link.FromSocket);
         if (link.Constant) {
@@ -1695,7 +1701,7 @@ uint64_t HashOf(const PlanShape &shape) {
     return h;
 }
 // The op layouts and programs of one cook pass by plan shape, and the op nodes whose faults it reset.
-// The plans of the meshes that instance one definition share one shape, which lays out and compiles once.
+// The plans of the meshes that use one subgraph share one shape, which lays out and compiles once.
 struct OpPass {
     std::vector<PlanShape> Shapes;
     std::unordered_multimap<uint64_t, uint32_t> ShapesByHash;
@@ -1711,7 +1717,7 @@ struct OpPass {
 };
 // A cook pass at the timeline frame.
 OpPass PassAt(const state::Registry &r, int frame) { return {.Frame = float(frame), .Time = animation::FrameSeconds(r, frame)}; }
-// A procedure's op evaluation in one cook pass.
+// A graph's op evaluation in one cook pass.
 // Its programs read its block of the op value store.
 // A published evaluation and one for display keep the images of the occurrences they evaluate at the cooks' frame.
 // Unheld lists the filters that held no image, in the order they ran, which their readers read as their inputs.
@@ -1783,7 +1789,7 @@ StoredDomains StoredDomainsOf(const state::Registry &r, const CookPlan &plan, st
 // A selection evaluates on the domain its node's selection applies to, a stored-field op's input on its input domain, a filter's on UV texels, Store Named Attribute's value on its domain, Bake's value on texels, and every other input on the elements its kind evaluates its varying parameters on.
 // Without socket values, the consumer's own parameters decide.
 ops::Domain InputDomain(const state::Registry &r, const CookPlan &plan, std::span<const SocketValue> values, uint32_t node, uint16_t socket) {
-    const auto &[entity, kind, parent, builtin] = plan.Nodes[node];
+    const auto &[entity, kind, parent, in_builtin_subgraph] = plan.Nodes[node];
     const auto &at = Authored(r, plan.Nodes[node]);
     if (kind == KindOf<Op>) return IsFilterOp(r, plan, node) ? ops::Domain::Uv : StoredDomainsOf(r, plan, values, node).Input;
     if (KindSockets(kind)[socket].Selection) return ops::DomainOf(AttributeDomainOf(SelectionDomain(r, plan, values, node, socket)));
@@ -1848,13 +1854,13 @@ std::optional<std::string_view> ReadName(const mx::Library &lib, const ops::Node
 OpProgram &ProgramOf(state::Registry &r, OpPass &pass, uint32_t shape, const CookPlan &plan, const OpLayout &layout, uint32_t consumer, const OpRequest &request, std::span<const uint32_t> unheld = {}) {
     OpProgramKey key{shape, consumer, request.Domain, request.Colors, request.Outputs, {unheld.begin(), unheld.end()}};
     if (const auto found = pass.Programs.find(key); found != pass.Programs.end()) return found->second;
-    auto graph = GraphOf(r, plan, layout, request.Outputs, unheld);
+    auto graph = OpGraphOf(r, plan, layout, request.Outputs, unheld);
     graph.Graph.Colors = request.Colors;
     for (const auto &read : graph.Reads) std::get<std::string>(std::get<ops::Literal>(graph.Graph.Nodes[read.Node].Inputs.front().Source).Value) = TemporaryName(read.From, read.Socket);
     const auto &compiled = ops::CompileShared(ops::GetDrivers(r), graph.Graph, request.Domain);
     return pass.Programs.emplace(std::move(key), OpProgram{request.Domain, std::move(graph), &compiled}).first->second;
 }
-// The split's graph reading its values relative to its first, and the word of its first in the procedure's block, for a split of a program whose values start at `base`.
+// The split's graph reading its values relative to its first, and the word of its first in the graph's block, for a split of a program whose values start at `base`.
 std::pair<ops::Graph, uint32_t> Rebased(const ops::Split &split, uint32_t base) {
     auto graph = split.Graph;
     const auto first = Rebase(graph);
@@ -1906,7 +1912,7 @@ std::optional<PassedValue> Passed(const state::Registry &r, const CookPlan &plan
     if (slot == layout.Slots.end()) return {};
     return PassedValue{std::move(nodes), &*slot};
 }
-// Compiles the programs the procedure's cook can evaluate before it runs a node: the consumers', stored-field ops' and filters' inputs for records with faces, the splits of the sources they read on other domains, and the single values.
+// Compiles the programs the graph's cook can evaluate before it runs a node: the consumers', stored-field ops' and filters' inputs for records with faces, the splits of the sources they read on other domains, and the single values.
 void PrepareOpPrograms(state::Registry &r, OpPass &pass, state::Entity mesh, const CookPlan &plan) {
     if (!HasOps(plan)) return;
     const auto shape = ShapeIn(pass, r, mesh, plan);
@@ -1940,9 +1946,9 @@ std::vector<NodePath> ReadGenerators(state::Registry &r, OpPass &pass, state::En
     const auto read = [&](uint32_t n) {
         if (reads[n] >= 0) return reads[n] != 0;
         reads[n] = plan.Nodes[n].Kind == KindOf<Bake> || (HasOps(plan) && EvaluatesPrograms(r, plan, n) && std::ranges::any_of(RequestsOf(r, plan, {}, n, ops::Domain::Corner), [&](const OpRequest &request) {
-            const auto shape = ShapeIn(pass, r, mesh, plan);
-            return ReadsTexcoords(ops::GetDrivers(r), *ProgramOf(r, pass, shape, plan, pass.Layouts[shape], n, request).Compiled);
-        }));
+                                                              const auto shape = ShapeIn(pass, r, mesh, plan);
+                                                              return ReadsTexcoords(ops::GetDrivers(r), *ProgramOf(r, pass, shape, plan, pass.Layouts[shape], n, request).Compiled);
+                                                          }));
         return reads[n] != 0;
     };
     std::vector<NodePath> read_generators;
@@ -2331,7 +2337,7 @@ std::optional<DomainReduction> ReductionNamed(std::string_view mode, mx::Type ty
     if (!boolean && mode == "max") return DomainReduction::Max;
     return {};
 }
-// The words of the single value a stored-field op's input takes: the value of the op output it reads, or else its slot of the procedure's value block, which holds its constant, literal or default.
+// The words of the single value a stored-field op's input takes: the value of the op output it reads, or else its slot of the graph's value block, which holds its constant, literal or default.
 // None for a value of a type the input does not take.
 std::optional<AttributeValue> SingleOf(const state::Registry &r, const CookPlan &plan, std::span<const SocketValue> values, const OpCook &cook, uint32_t node, uint16_t socket) {
     const auto &link = plan.Inputs[plan.InputFirst[node] + socket];
@@ -2753,7 +2759,9 @@ std::expected<ImageValue, NodeFault> FilterNode(state::Registry &r, const CookPl
         }
         if (const auto held = HeldImage(r, holder)) return *held;
         // The image read at the grid's texels, filtered over each texel's footprint, and its edge texels past its edges.
-        const auto type = input.Components == 1u ? mx::Type::Float : input.Components == 2u ? mx::Type::Vector2 : input.Components == 3u ? mx::Type::Color3 : mx::Type::Color4;
+        const auto type = input.Components == 1u ? mx::Type::Float : input.Components == 2u ? mx::Type::Vector2 :
+            input.Components == 3u                                                          ? mx::Type::Color3 :
+                                                                                              mx::Type::Color4;
         const auto &compiled = ops::CompileShared(drivers, {.Nodes = {ImageRead(type, 0u)}, .Outputs = {{0u, 0u}}}, ops::Domain::Uv);
         ops::LinkCompiled(r, drivers);
         return blur(compiled, {}, {input.Texture}, texels(input.Width), texels(input.Height));
@@ -2779,15 +2787,15 @@ std::expected<ImageValue, NodeFault> FilterNode(state::Registry &r, const CookPl
     return blur(compiled, ValuesOf(cook, program), ImageTable(r, plan, values, program.Graph), texels(1024u), texels(1024u));
 }
 
-// Whether the node publishes its selection: it holds PublishSelection, or it is the source of the first linked output port of a subnet node that holds it.
+// Whether the node publishes its selection: it holds PublishSelection, or it is the source of the first linked output port of a subgraph node that holds it.
 bool Publishes(const state::Registry &r, const CookPlan &plan, uint32_t node) {
     const auto &record = plan.Nodes[node];
     if (Authored(r, record).all_of<PublishSelection>(record.Entity)) return true;
     if (record.Parent == NoNode) return false;
-    const auto &subnet = plan.Nodes[record.Parent];
-    const auto &at = Authored(r, subnet);
-    if (!at.all_of<PublishSelection>(subnet.Entity)) return false;
-    for (const auto &port : InterfaceOf(at, subnet.Entity)->Ports) {
+    const auto &use = plan.Nodes[record.Parent];
+    const auto &at = Authored(r, use);
+    if (!at.all_of<PublishSelection>(use.Entity)) return false;
+    for (const auto &port : InterfaceOf(at, use.Entity)->Ports) {
         if (port.Direction == SocketDirection::Out && port.Source().FromNode != state::Null) return port.Source().FromNode == record.Entity;
     }
     return false;
@@ -2859,7 +2867,7 @@ Outcome RunKind(state::Registry &r, const CookPlan &plan, std::span<const Socket
 // Whether the occurrence in the mesh's plan is the one the document's operation handle refers to.
 bool HandleActive(const state::Registry &r, state::Entity mesh, std::span<const state::Entity> path) {
     const auto *active = r.try_get<const OperationHandle>(state::Document);
-    const auto *object = active ? r.try_get<const Instance>(active->Object) : nullptr;
+    const auto *object = active ? r.try_get<const ObjectGeometry>(active->Object) : nullptr;
     return object && object->Entity == mesh && path.back() == active->Node && std::ranges::equal(path.first(path.size() - 1u), active->Path);
 }
 // Runs the node in the step and adds it to the step, which passes its outcome to `take` once the step's work completed.
@@ -2902,15 +2910,15 @@ void RunNode(state::Registry &r, const CookPlan &plan, std::vector<SocketValue> 
     added.Ran = evaluation ? run(std::move(*evaluation)) : Outcome{id};
 }
 
-// Whether the generator occurrence writes texture coordinate set 0, by the writers of its procedure, where a procedure without writers has no generator.
+// Whether the generator occurrence writes texture coordinate set 0, by the writers of its graph, where a graph without writers has no generator.
 bool Writes(const TexcoordWriters *writers, std::span<const state::Entity> path) {
     return writers && (writers->All || std::ranges::binary_search(writers->Occurrences, NodePath{path.begin(), path.end()}));
 }
-// Whether a material a record of the mesh draws reads texture coordinate set 0, or another procedure reads the mesh, where `readers` holds each read mesh with its reader, sorted.
+// Whether a material a record of the mesh draws reads texture coordinate set 0, or another graph reads the mesh, where `readers` holds each read mesh with its reader, sorted.
 bool TexcoordsRead(const state::Registry &r, state::Entity mesh, std::span<const std::pair<state::Entity, state::Entity>> readers) {
     if (std::ranges::binary_search(readers, mesh, {}, &std::pair<state::Entity, state::Entity>::first)) return true;
     const auto &meshes = r.Resources.get<const MeshStore>();
-    const auto *owned = r.try_get<const ProcedureOwnedMesh>(mesh);
+    const auto *owned = r.try_get<const GraphOwnedMesh>(mesh);
     for (const auto drawing : {mesh, owned && r.valid(owned->MeshEntity) ? owned->MeshEntity : state::Null}) {
         const auto id = drawing == state::Null ? std::nullopt : DrawnStoreId(r, drawing);
         if (!id) continue;
@@ -3022,13 +3030,13 @@ std::vector<std::optional<uint32_t>> Realize(state::Registry &r, std::span<const
 }
 
 void PublishInstances(state::Registry &r, state::Entity mesh_entity, state::Entity instanced, std::span<const Transform> transforms, state::Entity prototype = state::Null) {
-    const auto *current = r.try_get<const ProcedureInstances>(mesh_entity);
+    const auto *current = r.try_get<const GraphInstances>(mesh_entity);
     if (!current && transforms.empty()) return;
     const auto previous = current ? current->Entities : std::vector<state::Entity>{};
     std::vector<state::Entity> objects;
     if (!transforms.empty()) {
-        for (const auto [e, instance] : std::as_const(r).view<const Instance>().each()) {
-            if (instance.Entity == mesh_entity) objects.push_back(e);
+        for (const auto [e, geometry] : std::as_const(r).view<const ObjectGeometry>().each()) {
+            if (geometry.Entity == mesh_entity) objects.push_back(e);
         }
     }
     std::ranges::sort(objects);
@@ -3044,39 +3052,42 @@ void PublishInstances(state::Registry &r, state::Entity mesh_entity, state::Enti
         else extras.push_back(e);
     }
     Destroy(r, extras);
+    // A published object draws the instanced geometry, or with a prototype has an Instance of that scene subgraph.
+    const auto publish = [&](state::Entity object, const Transform &placement) {
+        const auto e = prototype == state::Null ? r.create() : AddGeneratedInstance(r, object, prototype, placement);
+        if (prototype == state::Null) {
+            r.emplace<Transform>(e, placement);
+            SetParent(r, e, object);
+            r.emplace<ObjectGeometry>(e, instanced);
+            EmplaceObject(r, e, ObjectType::Mesh);
+        }
+        ApplyVisibility(r, e);
+        return e;
+    };
     for (uint32_t o = 0u; o < objects.size(); ++o) {
         for (uint32_t i = 0u; i < count; ++i) {
             auto &e = published[o * count + i];
+            if (e != state::Null && r.all_of<Instance>(e) != (prototype != state::Null)) {
+                Destroy(r, e);
+                e = state::Null;
+            }
             if (e == state::Null) {
-                e = prototype != state::Null ? CreateHierarchyInstance(r, prototype, transforms[i]) : r.create();
-                if (prototype == state::Null) r.emplace<Instance>(e, instanced);
-                r.emplace_or_replace<Transform>(e, transforms[i]);
-                SetParent(r, e, objects[o]);
-                if (prototype == state::Null) EmplaceObject(r, e, ObjectType::Mesh);
-                ApplyVisibility(r, e);
+                e = publish(objects[o], transforms[i]);
                 continue;
             }
-            if (prototype != state::Null) BindHierarchyInstance(r, e, prototype);
-            else if (r.all_of<HierarchyInstance>(e)) {
-                const auto placement = r.get<const Transform>(e);
-                Destroy(r, e);
-                e = r.create();
-                r.emplace<Transform>(e, placement);
-                r.emplace<Instance>(e, instanced);
-                SetParent(r, e, objects[o]);
-                EmplaceObject(r, e, ObjectType::Mesh);
-            } else if (r.get<const Instance>(e).Entity != instanced) r.replace<Instance>(e, instanced);
+            if (prototype != state::Null) SetInstanceSubgraph(r, e, prototype);
+            else if (r.get<const ObjectGeometry>(e).Entity != instanced) r.replace<ObjectGeometry>(e, instanced);
             if (r.get<const Transform>(e) != transforms[i]) r.replace<Transform>(e, transforms[i]);
         }
     }
-    if (published.empty()) r.remove<ProcedureInstances>(mesh_entity);
-    else if (previous != published) r.emplace_or_replace<ProcedureInstances>(mesh_entity, std::move(published));
+    if (published.empty()) r.remove<GraphInstances>(mesh_entity);
+    else if (previous != published) r.emplace_or_replace<GraphInstances>(mesh_entity, std::move(published));
 }
 
 state::Entity OwnMesh(state::Registry &r, state::Entity mesh_entity, uint32_t record) {
-    const auto *owned = r.try_get<const ProcedureOwnedMesh>(mesh_entity);
+    const auto *owned = r.try_get<const GraphOwnedMesh>(mesh_entity);
     if (record == InvalidOffset) {
-        r.remove<ProcedureOwnedMesh>(mesh_entity);
+        r.remove<GraphOwnedMesh>(mesh_entity);
         return state::Null;
     }
     // The owned mesh entity is gone when its published instances were deleted by hand.
@@ -3084,7 +3095,7 @@ state::Entity OwnMesh(state::Registry &r, state::Entity mesh_entity, uint32_t re
     const auto e = kept ? owned->MeshEntity : r.create();
     if (!kept) {
         r.emplace<MeshHandle>(e, record);
-        r.emplace_or_replace<ProcedureOwnedMesh>(mesh_entity, e);
+        r.emplace_or_replace<GraphOwnedMesh>(mesh_entity, e);
     } else if (const auto held = r.get<const MeshHandle>(e).StoreId; held != record) {
         r.Resources.get<MeshStore>().Release(held);
         r.replace<MeshHandle>(e, record);
@@ -3200,7 +3211,7 @@ void HoldResult(state::Registry &r, const PathRun &run, size_t i, store::Hash128
     const auto &plan = *run.Plan;
     const NodeResult result{i ? NodePath{std::from_range, PathOf(plan, run.Path[i - 1u])} : NodePath{}, state, run.Record};
     Keep(r, PathOf(plan, run.Path[i]), result);
-    if (auto &pass = r.Resources.get<CookPass>(); state != store::Hash128{} && pass.Mesh == run.Mesh && !std::ranges::contains(pass.Exact, state)) pass.Exact.push_back(state);
+    if (auto &pass = r.Resources.get<CookPass>(); state != store::Hash128{} && pass.Mesh == run.Mesh && !std::ranges::contains(pass.Exact, state, &ExactState::State)) pass.Exact.push_back({state, run.Replaced, run.Rendered});
 }
 
 // Holds the result of the node before the path's first node to run, and returns the single op values its nodes take.
@@ -3427,7 +3438,7 @@ void PublishCooked(state::Registry &r, state::Entity mesh_entity, uint32_t recor
 // The held nodes are the root and each following node that holds a result on the result of the node before it.
 // The cook restarts after the last held node whose output the record holds, whose state is kept, or, for a held Extrude's topology, whose extrusion state is kept, and from a new record of the root otherwise.
 // The whole mesh storage restores while only this mesh's cooks wrote it since the state was kept, and the record alone restores otherwise.
-// A copied procedure's nodes keep the results their originals hold, and the components they were created with leave them unchanged.
+// A copied graph's nodes keep the results their originals hold, and the components they were created with leave them unchanged.
 // The cook's start: the path run from the held nodes, or none when the record holds the result or the root has no mesh.
 // A root's materialization and a restore of the record join `round`, which the caller submits, and a restore of the whole mesh storage submits `round` before it.
 std::optional<PathRun> StartChain(state::Registry &r, state::Entity mesh_entity, const CookPlan &plan, std::span<const uint32_t> path, const std::vector<bool> &changed, CookRound &round) {
@@ -3485,10 +3496,14 @@ std::optional<PathRun> StartChain(state::Registry &r, state::Entity mesh_entity,
         while (!restored_record && held && !holds(held)) {
             if (const auto *result = CookedOf<NodeResult>(r, entity_at(held - 1u)); result && result->StoreId == prior && result->State != store::Hash128{}) {
                 // The whole mesh storage restores after the round's other work.
-                const bool exact = std::ranges::contains(r.Resources.get<const CookPass>().Exact, result->State);
-                if (exact) SubmitRound(r, round);
+                const auto &states = r.Resources.get<const CookPass>().Exact;
+                const auto exact = std::ranges::find(states, result->State, &ExactState::State);
+                if (exact != states.end()) SubmitRound(r, round);
                 WaitForRender(r);
-                if (exact && meshes.RestoreKeptState(result->State)) {
+                if (exact != states.end() && meshes.RestoreKeptState(result->State)) {
+                    // The cook continues as the cook that kept the state did.
+                    replaced = exact->Replaced;
+                    rendered = exact->Rendered;
                     restored = ReconcileRestoredStore(r, mesh_entity);
                     restored_record = restored_store = true;
                 } else if (const auto change = meshes.RestoreRecord(result->State, prior, round.Readers, false)) {
@@ -3503,8 +3518,10 @@ std::optional<PathRun> StartChain(state::Registry &r, state::Entity mesh_entity,
             TakeMaterials(meshes, materials, record);
             kept = reuse_topology != TopologyReuse::Restored;
             if (kept) reuse_topology = TopologyReuse::Input;
-            replaced = InvalidOffset;
-            rendered = meshes.Get(record).RenderTopologies != 0u;
+            if (!restored_store) {
+                replaced = InvalidOffset;
+                rendered = meshes.Get(record).RenderTopologies != 0u;
+            }
         } else if (held) {
             reuse_topology = TopologyReuse::Input;
         } else {
@@ -3565,6 +3582,8 @@ void BuildInputRender(state::Registry &r, std::span<ChainCook> cooks) {
     for (auto &cook : cooks) {
         auto &run = cook.Run;
         if (!run.DrewRender || run.Rendered || !run.KeepsInput || run.First != run.Resume || run.First >= run.Path.size() || run.Reuse == TopologyReuse::Restored) continue;
+        // A record restored with the whole mesh storage has the render records the cook that kept the state built.
+        if (meshes.Get(run.Record).RenderTopologies != 0u) continue;
         refreshed.push_back({run.Record, &run.Drawn});
         built.push_back(&cook);
     }
@@ -3638,7 +3657,7 @@ void CookChains(state::Registry &r, CookRound &round, std::span<ChainCook> cooks
     for (const auto &cook : cooks) FinishChain(r, cook.Run);
 }
 
-// A procedure's cook through its value graph, which runs the nodes of its plan's order one at a time.
+// A graph's cook through its value graph, which runs the nodes of its plan's order one at a time.
 // The cook owns the records in Created, and the display reads the result socket after every node, so the result's other consumers clone it.
 struct GraphCook {
     state::Entity Mesh;
@@ -3796,7 +3815,7 @@ void RunBooleans(state::Registry &r, CookRound &round, std::vector<BooleanNode> 
             } else if (first_mesh.FaceCount() && second_mesh.FaceCount() && !first_mesh.HasClosedSurface() && !second_mesh.HasClosedSurface()) {
                 // Two open operands combine as regions in the first one's plane.
                 const auto fill = boolean.Operation == BooleanOperation::Union ? RegionFill::Union : boolean.Operation == BooleanOperation::Difference ? RegionFill::Difference :
-                                                                                                                                                      RegionFill::Intersection;
+                                                                                                                                                         RegionFill::Intersection;
                 const auto plane = *FacePlane(r, first_mesh);
                 const auto loops = RegionLoops(r, std::array{RegionTask{plane, {RegionOperand{.Record = boolean.Current}, RegionOperand{.Record = second, .Rotation = rotation, .Translation = vec3(to_first[3])}}, fill}}).front();
                 if (!loops) boolean.Fault = NodeFault::NotCoplanar;
@@ -3964,7 +3983,7 @@ void RunGraphNode(state::Registry &r, GraphCook &cook, uint32_t node, CookRound 
     const auto &plan = *cook.Plan;
     auto &values = cook.Values;
     const bool publish = cook.Mode == RunMode::Publish;
-    const auto &[entity, kind, parent, builtin] = plan.Nodes[node];
+    const auto &[entity, kind, parent, in_builtin_subgraph] = plan.Nodes[node];
     const auto &at = Authored(r, plan.Nodes[node]);
     const auto first = plan.SocketFirst[node];
     const auto &reached = plan.Demanded;
@@ -4007,10 +4026,10 @@ void RunGraphNode(state::Registry &r, GraphCook &cook, uint32_t node, CookRound 
         return;
     }
     if (kind == KindOf<ObjectInfo>) {
-        // The node reads the mesh the object draws, other than this procedure's mesh.
-        const auto object = ContextObject(r, cook.Mesh, at.get<const ObjectInfo>(entity).Object);
-        const auto *instance = r.valid(object) ? r.try_get<const Instance>(object) : nullptr;
-        const auto read_mesh = instance && instance->Entity != cook.Mesh && DrawsMesh(r, instance->Entity) ? instance->Entity : state::Null;
+        // The node reads the mesh the object draws, other than this graph's mesh.
+        const auto object = at.get<const ObjectInfo>(entity).Object;
+        const auto *geometry = r.valid(object) ? r.try_get<const ObjectGeometry>(object) : nullptr;
+        const auto read_mesh = geometry && geometry->Entity != cook.Mesh && DrawsMesh(r, geometry->Entity) ? geometry->Entity : state::Null;
         const auto &records = cook.Ops.Pass.Records;
         const auto held = records.find(read_mesh);
         if (read_mesh != state::Null) values[first] = {.MeshEntity = read_mesh, .Object = object, .Record = held != records.end() ? held->second : *DrawnStoreId(r, read_mesh)};
@@ -4054,7 +4073,6 @@ void RunGraphNode(state::Registry &r, GraphCook &cook, uint32_t node, CookRound 
     // A Boolean takes its operands, whose clones copy on the round, and combines them with the step's other Boolean nodes.
     if (kind == KindOf<Boolean>) {
         auto p = Parameters<Boolean>(r, plan, values, node);
-        p.Space = ContextObject(r, cook.Mesh, p.Space);
         BooleanNode boolean{.Cook = &cook, .Node = node, .In = in, .Operation = p.Operation, .Current = input};
         BooleanPlacement placement;
         for (auto slot = MultiInput[kind]; slot < InputsOf(plan, node); slot = NextMultiSlot(kind, slot)) {
@@ -4078,8 +4096,8 @@ void RunGraphNode(state::Registry &r, GraphCook &cook, uint32_t node, CookRound 
         const auto instance = Take(r, cook, round, node, 1u);
         values[first + InputCount[kind]] = in;
         if (input == InvalidOffset) return;
-        const auto prototype = ContextObject(r, cook.Mesh, at.get<const InstanceOnPoints>(entity).Prototype);
-        if (prototype != state::Null && !r.all_of<ObjectKind>(prototype)) return fail(NodeFault::Parameter);
+        const auto prototype = at.get<const InstanceOnPoints>(entity).Prototype;
+        if (prototype != state::Null && !IsSceneSubgraph(r, prototype)) return fail(NodeFault::Parameter);
         if (instance.Record == InvalidOffset && prototype == state::Null) return fail(NodeFault::NoMesh);
         const auto place = [&output = values[first + InputCount[kind]], prototype, instance, fail](const Outcome &placed) {
             if (!placed) return fail(placed.error());
@@ -4287,7 +4305,7 @@ void CookBatch(state::Registry &r, ChainBatch &batch) {
 }
 
 // The chained part of a published display path edits the mesh's record in place, from the record its root makes or a graph cook of the nodes the root reads makes.
-// Other procedures evaluate into a new record, empty when no node is displayed or the displayed node has no result.
+// Other graphs evaluate into a new record, empty when no node is displayed or the displayed node has no result.
 // A node the display does not demand holds no fault or placement.
 // A cook joins `batch` when one is given, and a cook that reads other meshes cooks the batch first, then a graph cook of it cooks alone.
 uint32_t Evaluate(state::Registry &r, state::Entity mesh_entity, const CookPlan &plan, OpPass &pass, const std::vector<bool> &changed, RunMode mode = RunMode::Publish, ChainBatch *batch = nullptr) {
@@ -4370,9 +4388,9 @@ uint32_t Evaluate(state::Registry &r, state::Entity mesh_entity, const CookPlan 
     return CookGraphs(r, round, std::span{&one, 1u}).front();
 }
 
-// Evaluates the mesh's procedure displaying the node's occurrence in the subnet nodes of `path`.
+// Evaluates the mesh's graph displaying the node's occurrence in the subgraph nodes of `path`.
 uint32_t EvaluateTarget(state::Registry &r, state::Entity mesh, NodePath path, state::Entity node, std::optional<uint16_t> port, RunMode mode) {
-    auto target = r.get<const GeometryProcedure>(mesh);
+    auto target = r.get<const GeometryGraph>(mesh);
     target.DisplayNode = node;
     target.DisplayPort = port;
     target.DisplayPath = std::move(path);
@@ -4390,11 +4408,11 @@ void QueueNodeRemovals(state::Registry &r, state::Entity mesh_entity) {
 }
 void QueueInstanceRemovals(state::Registry &r, state::Entity mesh_entity) {
     if (r.Restoring) return;
-    r.Resources.emplace<PendingObjectRemovals>().Objects.append_range(r.get<const ProcedureInstances>(mesh_entity).Entities);
+    r.Resources.emplace<PendingObjectRemovals>().Objects.append_range(r.get<const GraphInstances>(mesh_entity).Entities);
 }
 void QueueOwnedMeshRemoval(state::Registry &r, state::Entity mesh_entity) {
     if (r.Restoring) return;
-    r.Resources.emplace<PendingObjectRemovals>().Dependents.push_back(r.get<const ProcedureOwnedMesh>(mesh_entity).MeshEntity);
+    r.Resources.emplace<PendingObjectRemovals>().Dependents.push_back(r.get<const GraphOwnedMesh>(mesh_entity).MeshEntity);
 }
 } // namespace
 
@@ -4422,7 +4440,7 @@ void SetMeshSelection(state::Registry &r, state::Entity mesh_entity, const Inlin
 
 Element NaturalDomainOf(const state::Registry &r, state::Entity node) {
     auto domain = Element::Vertex;
-    VisitKind(r.get<const ProcedureNode>(node).Kind, [&]<typename K> { domain = NaturalDomain(r.get<const K>(node)); });
+    VisitKind(r.get<const GraphNode>(node).Kind, [&]<typename K> { domain = NaturalDomain(r.get<const K>(node)); });
     return domain;
 }
 
@@ -4434,14 +4452,14 @@ bool PrepareOperationHandle(state::Registry &r, state::Entity mesh_entity, std::
     return CookedOf<NodeHandle>(r, occurrence);
 }
 
-struct ProcedureChanges {
+struct CookChanges {
     state::DirtySet HandleInputs;
     state::DirtySet References;
     state::DirtySet Objects;
     uint64_t ReferencesEpoch{};
     std::vector<std::pair<state::Entity, state::Entity>> Readers;
     std::vector<std::pair<state::Entity, state::Entity>> PlacementReaders;
-    state::DirtySet Graph; // A geometry procedure's graph changed, on its mesh entity or one of its node entities.
+    state::DirtySet Graph; // A geometry graph's nodes or links changed, on its mesh entity or one of its node entities.
     state::DirtySet Inputs; // A node's parameters or inline selection, a mesh's geometry or objects, or a published instance's parent changed.
     state::DirtySet Created; // A node was created, whose own components the inputs list with it.
     state::DirtySet Moved; // An entity's local transform, pose, parent or published world transform changed since the last cook pass.
@@ -4462,31 +4480,31 @@ state::Entity CreateNode(state::Registry &r, uint16_t kind) {
     return entity;
 }
 
-void RootProcedure(state::Registry &r, state::Entity mesh_entity, state::Entity root, uint16_t kind) {
-    r.emplace<ProcedureNode>(root, mesh_entity, state::Null, kind);
+void RootGraph(state::Registry &r, state::Entity mesh_entity, state::Entity root, uint16_t kind) {
+    r.emplace<GraphNode>(root, mesh_entity, state::Null, kind);
     r.emplace<NodeInputs>(root, std::vector<SocketLink>(InputCount[kind]));
-    r.emplace_or_replace<GeometryProcedure>(mesh_entity, root);
-    r.emplace_or_replace<NetworkNodes>(mesh_entity, root, root);
-    r.emplace_or_replace<NetworkActive>(mesh_entity, root, std::vector{root});
+    r.emplace_or_replace<GeometryGraph>(mesh_entity, root);
+    r.emplace_or_replace<GraphNodes>(mesh_entity, root, root);
+    r.emplace_or_replace<GraphActive>(mesh_entity, root, std::vector{root});
 }
-} // namespace procedure
+} // namespace graph
 
-void RegisterProcedureHandlers(state::Registry &r) {
-    using namespace procedure;
+void RegisterGraphHandlers(state::Registry &r) {
+    using namespace graph;
     r.Resources.emplace<CookCount>();
-    auto &changes = r.Resources.emplace<ProcedureChanges>();
-    changes.Graph.bind(r).on<InstanceOnPoints>(On::Update).on<Op>(On::Update).on<GeometryProcedure>(On::Create | On::Update | On::Destroy).on<ProcedureNode>(On::Create | On::Update).on<NodeInputs>(On::Update).on<NodeBypassed>(On::Create | On::Destroy).on<SubnetInterface>(On::Create | On::Update | On::Destroy).on<Subnet>(On::Create | On::Update | On::Destroy).on<NetworkNodes>(On::Create | On::Update);
+    auto &changes = r.Resources.emplace<CookChanges>();
+    changes.Graph.bind(r).on<InstanceOnPoints>(On::Update).on<Op>(On::Update).on<GeometryGraph>(On::Create | On::Update | On::Destroy).on<GraphNode>(On::Create | On::Update).on<NodeInputs>(On::Update).on<NodeBypassed>(On::Create | On::Destroy).on<SubgraphInterface>(On::Create | On::Update | On::Destroy).on<SubgraphNode>(On::Create | On::Update | On::Destroy).on<GraphNodes>(On::Create | On::Update);
     changes.HandleInputs.bind(r).on<InlineSelection>(On::Create | On::Update | On::Destroy);
-    changes.Created.bind(r).on<ProcedureNode>(On::Create);
-    changes.Objects.bind(r, state::Clearing::Explicit).on<Instance>(On::Create | On::Update | On::Destroy);
+    changes.Created.bind(r).on<GraphNode>(On::Create);
+    changes.Objects.bind(r, state::Clearing::Explicit).on<ObjectGeometry>(On::Create | On::Update | On::Destroy);
     changes.References.bind(r, state::Clearing::Explicit)
         .on<ObjectInfo>(On::Create | On::Update | On::Destroy)
-        .on<procedure::Boolean>(On::Create | On::Update | On::Destroy)
-        .on<Instance>(On::Create | On::Update | On::Destroy)
+        .on<graph::Boolean>(On::Create | On::Update | On::Destroy)
+        .on<ObjectGeometry>(On::Create | On::Update | On::Destroy)
         .on<SceneParent>(On::Create | On::Update | On::Destroy);
-    r.on_destroy<GeometryProcedure, &QueueNodeRemovals>();
-    r.on_destroy<ProcedureInstances, &QueueInstanceRemovals>();
-    r.on_destroy<ProcedureOwnedMesh, &QueueOwnedMeshRemoval>();
+    r.on_destroy<GeometryGraph, &QueueNodeRemovals>();
+    r.on_destroy<GraphInstances, &QueueInstanceRemovals>();
+    r.on_destroy<GraphOwnedMesh, &QueueOwnedMeshRemoval>();
     // History restores the op value store's allocator, so a restore releases nothing.
     r.on_destroy<OpValueBlock, [](state::Registry &r, state::Entity e) {
         if (!r.Restoring) r.Resources.get<GpuBuffers>().OpValues.Release(r.get<const OpValueBlock>(e).Block);
@@ -4501,12 +4519,12 @@ void RegisterProcedureHandlers(state::Registry &r) {
     auto &inputs = changes.Inputs.bind(r);
     inputs.on<MeshGeometryDirty>(On::Create).on<MeshPositionsChanged>(On::Create);
     inputs.on<InlineSelection>(On::Create | On::Update | On::Destroy);
-    inputs.on<Instance>(On::Create).on<SceneParent>(On::Destroy);
+    inputs.on<ObjectGeometry>(On::Create).on<SceneParent>(On::Destroy);
     changes.Moved.bind(r, state::Clearing::Explicit).on<Transform>(On::Update).on<PosedLocal>(On::Create | On::Update | On::Destroy).on<SceneParent>(On::Create | On::Destroy);
     ForEachKind([&]<typename K> { inputs.on<K>(On::Update); });
 }
 
-namespace procedure {
+namespace graph {
 namespace {
 // Adds each mesh storage state the component refers to.
 void AddStates(const auto &held, std::vector<store::Hash128> &states) {
@@ -4526,19 +4544,19 @@ std::vector<uint32_t> Matches(const CookPlan &previous, const CookPlan &compiled
     using Key = std::tuple<bool, state::Entity, uint32_t>;
     const auto keys = [](const CookPlan &plan) {
         std::vector<Key> keys;
-        for (uint32_t n = 0; n < plan.Nodes.size(); ++n) keys.emplace_back(plan.Nodes[n].Builtin, plan.Nodes[n].Entity, n);
+        for (uint32_t n = 0; n < plan.Nodes.size(); ++n) keys.emplace_back(plan.Nodes[n].InBuiltinSubgraph, plan.Nodes[n].Entity, n);
         std::ranges::sort(keys);
         return keys;
     };
     const auto before = keys(previous), after = keys(compiled);
     const auto only = [](const std::vector<Key> &keys, const NodeRecord &node) {
-        const auto [first, last] = std::ranges::equal_range(keys, std::pair{node.Builtin, node.Entity}, {}, [](const Key &key) { return std::pair{std::get<0>(key), std::get<1>(key)}; });
+        const auto [first, last] = std::ranges::equal_range(keys, std::pair{node.InBuiltinSubgraph, node.Entity}, {}, [](const Key &key) { return std::pair{std::get<0>(key), std::get<1>(key)}; });
         return last - first == 1 ? std::get<2>(*first) : NoNode;
     };
     std::vector<uint32_t> matches(compiled.Nodes.size(), NoNode);
     for (uint32_t n = 0; n < compiled.Nodes.size(); ++n) {
         const auto &node = compiled.Nodes[n];
-        if (const auto same = IndexOf(previous, PathOf(compiled, n)); same != NoNode && previous.Nodes[same].Builtin == node.Builtin) matches[n] = same;
+        if (const auto same = IndexOf(previous, PathOf(compiled, n)); same != NoNode && previous.Nodes[same].InBuiltinSubgraph == node.InBuiltinSubgraph) matches[n] = same;
         else if (only(after, node) != NoNode) matches[n] = only(before, node);
     }
     return matches;
@@ -4552,7 +4570,7 @@ std::vector<bool> Rewired(const state::Registry &r, const CookPlan &previous, co
     for (uint32_t n = 0; n < compiled.Nodes.size(); ++n) {
         const auto before = matches[n];
         if (before == NoNode) {
-            rewired[n] = compiled.Nodes[n].Builtin || !created.contains(compiled.Nodes[n].Entity);
+            rewired[n] = compiled.Nodes[n].InBuiltinSubgraph || !created.contains(compiled.Nodes[n].Entity);
             continue;
         }
         const auto &at = Authored(r, compiled.Nodes[n]);
@@ -4562,7 +4580,7 @@ std::vector<bool> Rewired(const state::Registry &r, const CookPlan &previous, co
             const auto &a = compiled.Inputs[compiled.InputFirst[n] + i], &b = previous.Inputs[previous.InputFirst[before] + i];
             const bool same_constant = a.Constant == b.Constant ||
                 (a.FromNode == NoNode && a.Constant.has_value() != b.Constant.has_value() && ParameterDefault(at, entity, SlotSocketOf(at, entity, i)) == (a.Constant ? a.Constant : b.Constant));
-            changed = mapped(a.FromNode) != b.FromNode || a.FromSocket != b.FromSocket || !same_constant || mapped(a.SelectionSubnet) != b.SelectionSubnet || a.SelectionPort != b.SelectionPort;
+            changed = mapped(a.FromNode) != b.FromNode || a.FromSocket != b.FromSocket || !same_constant || mapped(a.SelectionUse) != b.SelectionUse || a.SelectionPort != b.SelectionPort;
         }
         rewired[n] = changed;
     }
@@ -4610,7 +4628,7 @@ void EvaluateAndRestore(state::Registry &r, std::span<const std::pair<state::Ent
     WaitForRender(r);
     auto pin = store.Pin();
     // The geometry changes the evaluation and the restore report leave the next cooks' inputs as they were.
-    auto &inputs = r.Resources.get<ProcedureChanges>().Inputs;
+    auto &inputs = r.Resources.get<CookChanges>().Inputs;
     const auto changed = inputs.Entities;
     auto pass = PassAt(r, frame);
     for (const auto [mesh, plan] : plans) PrepareOpPrograms(r, pass, mesh, *plan);
@@ -4626,44 +4644,44 @@ void EvaluateAndRestore(state::Registry &r, std::span<const std::pair<state::Ent
     }
 }
 } // namespace
-} // namespace procedure
+} // namespace graph
 
 namespace {
 void SettleChanges(state::Registry &r, EventPass pass) {
-    using namespace procedure;
+    using namespace graph;
     const bool cook = pass == EventPass::Frame || pass == EventPass::Settle;
-    auto &changes = r.Resources.get<ProcedureChanges>();
+    auto &changes = r.Resources.get<CookChanges>();
     r.Resources.get<TimeCooks>().Meshes.clear();
-    // The network holding the entity: a node's network, or the entity itself.
-    const auto network_of = [&](state::Entity e) {
-        const auto *node = r.valid(e) ? r.try_get<const ProcedureNode>(e) : nullptr;
-        return node ? node->Network : e;
+    // The graph holding the entity: a node's graph, or the entity itself.
+    const auto graph_of = [&](state::Entity e) {
+        const auto *node = r.valid(e) ? r.try_get<const GraphNode>(e) : nullptr;
+        return node ? node->Graph : e;
     };
-    // The meshes whose plans instance any of the definitions.
-    const auto instancing = [&](std::vector<state::Entity> definitions) {
-        SortUnique(definitions);
+    // The meshes whose plans use any of the subgraphs.
+    const auto using_any = [&](std::vector<state::Entity> subgraphs) {
+        SortUnique(subgraphs);
         std::vector<state::Entity> meshes;
-        if (definitions.empty()) return meshes;
+        if (subgraphs.empty()) return meshes;
         for (const auto [mesh, plan] : r.view<const CookPlan>().each())
-            if (std::ranges::any_of(plan.Definitions, [&](state::Entity d) { return std::ranges::binary_search(definitions, d); })) meshes.push_back(mesh);
+            if (std::ranges::any_of(plan.Subgraphs, [&](state::Entity d) { return std::ranges::binary_search(subgraphs, d); })) meshes.push_back(mesh);
         return meshes;
     };
-    std::vector<state::Entity> planned, rewired, definitions;
-    // Each procedure's changed entities, which hold the procedure itself when it changed.
+    std::vector<state::Entity> planned, rewired, subgraphs;
+    // Each graph's changed entities, which hold the graph itself when it changed.
     std::map<state::Entity, std::vector<state::Entity>> changed_nodes;
-    if (!changes.Graph.empty()) ++r.Resources.get<NetworkChanges>().GraphRevision;
+    if (!changes.Graph.empty()) ++r.Resources.get<GraphChanges>().GraphRevision;
     for (const auto e : changes.Graph) {
-        // An identity a restore brings back without its procedure keeps no plan of it.
-        if (r.valid(e) && !r.all_of<GeometryProcedure>(e)) r.remove<CookPlan, TimeReads, TexcoordWriters>(e);
-        const auto network = network_of(e);
-        if (!r.valid(network)) continue;
-        if (r.all_of<GeometryProcedure>(network)) {
-            planned.push_back(network);
-            if (e != network) rewired.push_back(network);
-            changed_nodes[network].push_back(e);
-        } else if (r.all_of<SubnetDefinition>(network)) definitions.push_back(network);
+        // An identity a restore brings back without its graph keeps no plan of it.
+        if (r.valid(e) && !r.all_of<GeometryGraph>(e)) r.remove<CookPlan, TimeReads, TexcoordWriters>(e);
+        const auto graph = graph_of(e);
+        if (!r.valid(graph)) continue;
+        if (r.all_of<GeometryGraph>(graph)) {
+            planned.push_back(graph);
+            if (e != graph) rewired.push_back(graph);
+            changed_nodes[graph].push_back(e);
+        } else if (r.all_of<Subgraph, GraphNodes>(graph)) subgraphs.push_back(graph);
     }
-    const auto replanned = instancing(std::move(definitions));
+    const auto replanned = using_any(std::move(subgraphs));
     planned.append_range(replanned);
     rewired.append_range(replanned);
     SortUnique(planned);
@@ -4672,13 +4690,13 @@ void SettleChanges(state::Registry &r, EventPass pass) {
     // Each replanned mesh's occurrences whose inputs differ from its previous plan's.
     std::map<state::Entity, std::vector<bool>> rewired_nodes;
     for (const auto e : planned) {
-        const auto &procedure = r.get<const GeometryProcedure>(e);
-        const auto &ends = r.get<const NetworkNodes>(e);
+        const auto &graph = r.get<const GeometryGraph>(e);
+        const auto &ends = r.get<const GraphNodes>(e);
         const auto *previous_plan = r.try_get<const CookPlan>(e);
         if (previous_plan && !std::ranges::binary_search(rewired, e) &&
             (previous_plan->Nodes.empty() ? ends.First == state::Null : previous_plan->Nodes.front().Entity == ends.First && IndexOf(*previous_plan, ends.Last) != NoNode)) {
             const auto result = previous_plan->ResultNode;
-            r.patch<CookPlan>(e, [&](auto &plan) { BindDisplay(r, procedure, plan); ++plan.Revision; });
+            r.patch<CookPlan>(e, [&](auto &plan) { BindDisplay(r, graph, plan); ++plan.Revision; });
             SetTimeReads(r, e);
             if (cook && result != r.get<const CookPlan>(e).ResultNode) cooked.push_back(e);
             continue;
@@ -4702,22 +4720,22 @@ void SettleChanges(state::Registry &r, EventPass pass) {
         r.emplace_or_replace<CookPlan>(e, std::move(compiled));
         SetTimeReads(r, e);
         if (!cook) continue;
-        // Occurrences inside a subnet node of the mesh's network that left the plan keep nothing.
+        // Occurrences inside a subgraph node of the mesh's graph that left the plan keep nothing.
         // The settle pass drops them directly, outside an action's Apply, since a plan derives which occurrences exist.
         const auto &plan = r.get<const CookPlan>(e);
         for (uint32_t n = 0; n < plan.Nodes.size(); ++n) {
-            if (plan.Nodes[n].Parent != NoNode || plan.Nodes[n].Kind != KindOf<Subnet>) continue;
-            const auto subnet = plan.Nodes[n].Entity;
+            if (plan.Nodes[n].Parent != NoNode || plan.Nodes[n].Kind != KindOf<SubgraphNode>) continue;
+            const auto use = plan.Nodes[n].Entity;
             const auto gone = [&](const auto &entry) {
                 auto at = n;
                 for (const auto entity : entry.first) at = at == NoNode ? NoNode : IndexOf(plan, at, entity);
                 return at == NoNode;
             };
             const auto prune = [&]<typename T> {
-                const auto *held = r.try_get<const Inner<T>>(subnet);
+                const auto *held = r.try_get<const Inner<T>>(use);
                 if (!held || std::ranges::none_of(held->Values, gone)) return;
-                r.patch<Inner<T>>(subnet, [&](auto &kept) { std::erase_if(kept.Values, gone); });
-                if (r.get<const Inner<T>>(subnet).Values.empty()) r.remove<Inner<T>>(subnet);
+                r.patch<Inner<T>>(use, [&](auto &kept) { std::erase_if(kept.Values, gone); });
+                if (r.get<const Inner<T>>(use).Values.empty()) r.remove<Inner<T>>(use);
             };
             [&]<typename... T>(TypeList<T...>) { (prune.template operator()<T>(), ...); }(OccurrenceStates{});
         }
@@ -4736,44 +4754,44 @@ void SettleChanges(state::Registry &r, EventPass pass) {
     if (references) {
         changes.Readers.clear();
         changes.PlacementReaders.clear();
-        const auto placement = [&](state::Entity procedure, state::Entity object) {
-            for (auto e = r.valid(object) ? object : state::Null; e != state::Null; e = ParentOrNull(r, e)) changes.PlacementReaders.emplace_back(e, procedure);
+        const auto placement = [&](state::Entity graph, state::Entity object) {
+            for (auto e = r.valid(object) ? object : state::Null; e != state::Null; e = ParentOrNull(r, e)) changes.PlacementReaders.emplace_back(e, graph);
         };
-        // The objects each demanded occurrence of a node with an object reference reads, as its mesh's hierarchy instance contexts map them.
+        // The objects each demanded occurrence of a node with an object reference reads.
         const auto read = [&](state::Entity mesh, uint32_t n, state::Entity node) {
             if (const auto *info = r.try_get<const ObjectInfo>(node)) {
-                const auto object = ContextObject(r, mesh, info->Object);
+                const auto object = info->Object;
                 if (cook && changes.Objects.contains(object)) {
                     rewired_of(mesh)[n] = true;
                     cooked.push_back(mesh);
                 }
-                if (const auto *instance = r.try_get<const Instance>(object); instance && instance->Entity != mesh) changes.Readers.emplace_back(instance->Entity, mesh);
+                if (const auto *geometry = r.try_get<const ObjectGeometry>(object); geometry && geometry->Entity != mesh) changes.Readers.emplace_back(geometry->Entity, mesh);
                 placement(mesh, object);
             } else {
-                placement(mesh, ContextObject(r, mesh, r.get<const procedure::Boolean>(node).Space));
+                placement(mesh, r.get<const graph::Boolean>(node).Space);
             }
         };
-        // A node of a mesh's network has one occurrence, and the occurrences of a definition's nodes are found in one pass over the plans that list their definitions.
+        // A node of a mesh's graph has one occurrence, and the occurrences of a subgraph's nodes are found in one pass over the plans that list their subgraphs.
         std::vector<state::Entity> inner, held;
         const auto visit = [&](state::Entity node) {
-            if (!r.all_of<ProcedureNode>(node)) return;
-            const auto network = NetworkOf(r, node);
-            if (!r.all_of<GeometryProcedure>(network)) {
+            if (!r.all_of<GraphNode>(node)) return;
+            const auto graph = GraphOf(r, node);
+            if (!r.all_of<GeometryGraph>(graph)) {
                 inner.push_back(node);
-                held.push_back(network);
+                held.push_back(graph);
                 return;
             }
-            const auto &plan = r.get<const CookPlan>(network);
-            if (const auto n = IndexOf(plan, node); n != NoNode && plan.Demanded[n]) read(network, n, node);
+            const auto &plan = r.get<const CookPlan>(graph);
+            if (const auto n = IndexOf(plan, node); n != NoNode && plan.Demanded[n]) read(graph, n, node);
         };
         for (const auto node : std::as_const(r).view<const ObjectInfo>()) visit(node);
-        for (const auto node : std::as_const(r).view<const procedure::Boolean>()) visit(node);
+        for (const auto node : std::as_const(r).view<const graph::Boolean>()) visit(node);
         if (!inner.empty()) {
             SortUnique(inner);
-            for (const auto procedure : instancing(std::move(held))) {
-                const auto &plan = r.get<const CookPlan>(procedure);
+            for (const auto graph : using_any(std::move(held))) {
+                const auto &plan = r.get<const CookPlan>(graph);
                 for (uint32_t n = 0; n < plan.Nodes.size(); ++n) {
-                    if (!plan.Nodes[n].Builtin && plan.Demanded[n] && std::ranges::binary_search(inner, plan.Nodes[n].Entity)) read(procedure, n, plan.Nodes[n].Entity);
+                    if (!plan.Nodes[n].InBuiltinSubgraph && plan.Demanded[n] && std::ranges::binary_search(inner, plan.Nodes[n].Entity)) read(graph, n, plan.Nodes[n].Entity);
                 }
             }
         }
@@ -4797,8 +4815,8 @@ void SettleChanges(state::Registry &r, EventPass pass) {
     const CookTime now{r.get<const TimelinePlayback>(state::Document).CurrentFrame, r.get<const TimelineRange>(state::Document).Fps};
     auto ops = PassAt(r, now.Frame);
     // A generator occurrence whose write of texture coordinate set 0 changed runs again.
-    // The settle pass keeps each procedure's writers directly, outside an action's Apply, since the document derives them.
-    // A restore, a change of what any procedure reads or of the materials, and a replanned mesh refresh them.
+    // The settle pass keeps each graph's writers directly, outside an action's Apply, since the document derives them.
+    // A restore, a change of what any graph reads or of the materials, and a replanned mesh refresh them.
     const auto &render_changes = r.Resources.get<const RenderChanges>();
     const bool refresh = pass == EventPass::Restore || references || !render_changes.Materials.empty() || !render_changes.ActiveMaterialVariant.empty() || !r.Resources.get<const MeshChanges>().Material.empty();
     for (const auto mesh : refresh ? SortedEntities(r.view<const CookPlan>()) : planned) {
@@ -4841,20 +4859,20 @@ void SettleChanges(state::Registry &r, EventPass pass) {
         }
     }
     std::vector<state::Entity> affected = planned, inputs;
-    definitions.clear();
+    subgraphs.clear();
     for (const auto e : changes.Inputs) {
-        const auto network = network_of(e);
-        if (r.valid(network) && r.all_of<GeometryProcedure>(network)) affected.push_back(network);
-        else if (r.valid(network) && r.all_of<SubnetDefinition>(network)) definitions.push_back(network);
-        else if (!(r.valid(e) && r.any_of<ProcedureNode, SubnetDefinition>(e))) inputs.push_back(e);
+        const auto graph = graph_of(e);
+        if (r.valid(graph) && r.all_of<GeometryGraph>(graph)) affected.push_back(graph);
+        else if (r.valid(graph) && r.all_of<Subgraph, GraphNodes>(graph)) subgraphs.push_back(graph);
+        else if (!(r.valid(e) && (r.all_of<GraphNode>(e) || r.all_of<Subgraph, GraphNodes>(e)))) inputs.push_back(e);
     }
-    affected.append_range(instancing(std::move(definitions)));
+    affected.append_range(using_any(std::move(subgraphs)));
     for (const auto &[mesh, nodes] : rewired_nodes) affected.push_back(mesh);
     for (const auto &[mesh, nodes] : timed) affected.push_back(mesh);
     SortUnique(affected);
     // The occurrences that changed of each affected mesh with any: rewired, or of a node whose own inputs changed since it was created.
     std::map<state::Entity, std::vector<bool>> changed;
-    // The procedures with an authored change of their own.
+    // The graphs with an authored change of their own.
     std::vector<state::Entity> authored = planned;
     for (const auto owner : affected) {
         const auto &plan = r.get<const CookPlan>(owner);
@@ -4869,7 +4887,7 @@ void SettleChanges(state::Registry &r, EventPass pass) {
         if (demanded) authored.push_back(owner);
         for (const auto n : plan.Order) {
             const auto &node = plan.Nodes[n];
-            const bool input = !node.Builtin && changes.Inputs.contains(node.Entity);
+            const bool input = !node.InBuiltinSubgraph && changes.Inputs.contains(node.Entity);
             const bool edit = (nodes && (*nodes)[n]) || (input && !changes.Created.contains(node.Entity));
             const bool own_change = edit || (times && (*times)[n]);
             if (edit) authored.push_back(owner);
@@ -4887,7 +4905,7 @@ void SettleChanges(state::Registry &r, EventPass pass) {
             if (!invalid[n]) continue;
             const auto path = PathOf(plan, n);
             // A handle follows the node's input and selection, so a cook that restarts at the node keeps one only for a change of its own parameters.
-            if (upstream || (!node.Builtin && (changes.HandleInputs.contains(node.Entity) || changes.Graph.contains(node.Entity)))) Drop<NodeHandle>(r, path);
+            if (upstream || (!node.InBuiltinSubgraph && (changes.HandleInputs.contains(node.Entity) || changes.Graph.contains(node.Entity)))) Drop<NodeHandle>(r, path);
             if (!plan.Demanded[n]) Drop<NodeResult, NodeExtrusion>(r, path);
         }
         if (demanded) cooked.push_back(owner);
@@ -4897,8 +4915,8 @@ void SettleChanges(state::Registry &r, EventPass pass) {
     const auto handle = [&] {
         if (!handle_dirty) return;
         const auto *active = r.try_get<const OperationHandle>(state::Document);
-        const auto *object = active && r.all_of<ProcedureNode>(active->Node) ? r.try_get<const Instance>(active->Object) : nullptr;
-        if (object && r.all_of<GeometryProcedure>(object->Entity)) PrepareOperationHandle(r, object->Entity, active->Path, active->Node);
+        const auto *object = active && r.all_of<GraphNode>(active->Node) ? r.try_get<const ObjectGeometry>(active->Object) : nullptr;
+        if (object && r.all_of<GeometryGraph>(object->Entity)) PrepareOperationHandle(r, object->Entity, active->Path, active->Node);
     };
     SortUnique(cooked);
     if (cooked.empty() && inputs.empty() && changes.Moved.empty()) {
@@ -4907,7 +4925,7 @@ void SettleChanges(state::Registry &r, EventPass pass) {
     }
     SortUnique(inputs);
     const auto input = [&](state::Entity e) { return std::ranges::binary_search(inputs, e); };
-    for (const auto [e, published] : std::as_const(r).view<const ProcedureInstances>().each()) {
+    for (const auto [e, published] : std::as_const(r).view<const GraphInstances>().each()) {
         if (std::ranges::any_of(published.Entities, input)) {
             cooked.push_back(e);
             authored.push_back(e);
@@ -4918,12 +4936,12 @@ void SettleChanges(state::Registry &r, EventPass pass) {
         return std::ranges::subrange(first, last);
     };
     for (const auto e : inputs) {
-        if (const auto *instance = r.try_get<const Instance>(e); instance && r.all_of<ProcedureInstances>(instance->Entity)) {
-            cooked.push_back(instance->Entity);
-            authored.push_back(instance->Entity);
+        if (const auto *geometry = r.try_get<const ObjectGeometry>(e); geometry && r.all_of<GraphInstances>(geometry->Entity)) {
+            cooked.push_back(geometry->Entity);
+            authored.push_back(geometry->Entity);
         }
     }
-    // A procedure whose placing objects moved cooks only when the motion changed one of its Boolean nodes' placements.
+    // A graph whose placing objects moved cooks only when the motion changed one of its Boolean nodes' placements.
     // An edit that cooked in its own pass then does not cook again for the world transform it published.
     std::vector<state::Entity> moved;
     for (const auto source : changes.Moved) {
@@ -4934,7 +4952,7 @@ void SettleChanges(state::Registry &r, EventPass pass) {
     // The mesh's changed occurrences, which an occurrence whose object changed what it reads joins.
     const auto changed_of = [&](state::Entity mesh) -> std::vector<bool> & { return changed.try_emplace(mesh, r.get<const CookPlan>(mesh).Nodes.size()).first->second; };
     // The occurrences whose objects changed what they read join the changed ones: the Boolean nodes whose placements changed, and the Object Info nodes whose objects' meshes cook or changed.
-    // The meshes among their procedures that keep an image drop the images of their readers.
+    // The meshes among their graphs that keep an image drop the images of their readers.
     std::vector<state::Entity> rereaders;
     const auto &kept = CurrentImages(r).Images;
     const auto reread = [&](state::Entity mesh, uint32_t node) {
@@ -4942,15 +4960,15 @@ void SettleChanges(state::Registry &r, EventPass pass) {
         const auto first = kept.lower_bound({mesh, NodePath{}});
         if (first != kept.end() && first->first.first == mesh) rereaders.push_back(mesh);
     };
-    for (const auto procedure : moved) {
-        const auto &plan = r.get<const CookPlan>(procedure);
+    for (const auto graph : moved) {
+        const auto &plan = r.get<const CookPlan>(graph);
         for (uint32_t n = 0; n < plan.Nodes.size(); ++n) {
-            const auto *placement = plan.Nodes[n].Kind == KindOf<procedure::Boolean> ? CookedOf<BooleanPlacement>(r, PathOf(plan, n)) : nullptr;
-            const auto space = placement ? ContextObject(r, procedure, Authored(r, plan.Nodes[n]).get<const procedure::Boolean>(plan.Nodes[n].Entity).Space) : state::Null;
+            const auto *placement = plan.Nodes[n].Kind == KindOf<graph::Boolean> ? CookedOf<BooleanPlacement>(r, PathOf(plan, n)) : nullptr;
+            const auto space = placement ? Authored(r, plan.Nodes[n]).get<const graph::Boolean>(plan.Nodes[n].Entity).Space : state::Null;
             if (placement && std::ranges::any_of(placement->Operands, [&](const auto &operand) { return ToFirst(r, space, operand.Operand) != operand.ToFirst; })) {
-                cooked.push_back(procedure);
-                authored.push_back(procedure);
-                reread(procedure, n);
+                cooked.push_back(graph);
+                authored.push_back(graph);
+                reread(graph, n);
             }
         }
     }
@@ -4965,8 +4983,8 @@ void SettleChanges(state::Registry &r, EventPass pass) {
             const auto &plan = r.get<const CookPlan>(reader);
             for (uint32_t n = 0; n < plan.Nodes.size(); ++n) {
                 if (plan.Nodes[n].Kind != KindOf<ObjectInfo>) continue;
-                const auto *instance = r.try_get<const Instance>(ContextObject(r, reader, Authored(r, plan.Nodes[n]).get<const ObjectInfo>(plan.Nodes[n].Entity).Object));
-                if (instance && instance->Entity == queue[i]) reread(reader, n);
+                const auto *geometry = r.try_get<const ObjectGeometry>(Authored(r, plan.Nodes[n]).get<const ObjectInfo>(plan.Nodes[n].Entity).Object);
+                if (geometry && geometry->Entity == queue[i]) reread(reader, n);
             }
             const auto at = std::ranges::lower_bound(cooked, reader);
             if (at != cooked.end() && *at == reader) continue;
@@ -4978,7 +4996,7 @@ void SettleChanges(state::Registry &r, EventPass pass) {
     for (const auto mesh : rereaders) DropReaderImages(r, mesh, changed_of(mesh));
     const auto order = ReadOrder(cooked, changes.Readers);
     assert(order.size() == cooked.size());
-    // A procedure that the time alone reaches, without an authored change of its own or of what it reads, is a time cook.
+    // A graph that the time alone reaches, without an authored change of its own or of what it reads, is a time cook.
     auto &time_cooks = r.Resources.get<TimeCooks>().Meshes;
     std::ranges::set_difference(cooked, authored, std::back_inserter(time_cooks));
     if (order.empty()) {
@@ -4991,7 +5009,7 @@ void SettleChanges(state::Registry &r, EventPass pass) {
     if (!(cook_pass.End && mesh != state::Null && mesh == cook_pass.Mesh && r.Resources.get<MeshStore>().StateHash() == *cook_pass.End)) cook_pass.Exact.clear();
     cook_pass.Mesh = mesh;
     cook_pass.End.reset();
-    // Derive new-mesh shading before cooking dependent procedures.
+    // Derive new-mesh shading before cooking dependent graphs.
     ShadeNewMeshes(r);
     for (const auto e : order) PrepareOpPrograms(r, ops, e, r.get<const CookPlan>(e));
     if (!ops.Programs.empty()) ops::LinkCompiled(r, ops::GetDrivers(r));
@@ -5008,18 +5026,18 @@ void SettleChanges(state::Registry &r, EventPass pass) {
 }
 } // namespace
 
-void SettleProcedures(state::Registry &r, EventPass pass) {
+void SettleGeometryGraphs(state::Registry &r, EventPass pass) {
     SettleChanges(r, pass);
     // A write later in the same event pass cooks in the next settle.
-    auto &changes = r.Resources.get<procedure::ProcedureChanges>();
+    auto &changes = r.Resources.get<graph::CookChanges>();
     for (auto *changed : {&changes.Graph, &changes.Inputs, &changes.HandleInputs, &changes.Created}) changed->clear();
 }
 
 std::vector<state::Entity> TimeDependentMeshes(const state::Registry &r) {
-    using namespace procedure;
+    using namespace graph;
     std::vector<state::Entity> meshes;
     for (const auto mesh : r.view<const TimeReads>()) meshes.push_back(mesh);
-    const auto &readers = r.Resources.get<const ProcedureChanges>().Readers;
+    const auto &readers = r.Resources.get<const CookChanges>().Readers;
     for (size_t i = 0; i < meshes.size(); ++i) {
         const auto [first, last] = std::ranges::equal_range(readers, meshes[i], {}, &std::pair<state::Entity, state::Entity>::first);
         for (const auto &[_, reader] : std::ranges::subrange(first, last)) {
@@ -5031,9 +5049,9 @@ std::vector<state::Entity> TimeDependentMeshes(const state::Registry &r) {
 }
 
 void ReadAtFrame(state::Registry &r, std::span<const state::Entity> meshes, int frame, const std::function<void(std::span<const uint32_t>)> &read) {
-    using namespace procedure;
+    using namespace graph;
     const auto dependent = TimeDependentMeshes(r);
-    const auto &readers = r.Resources.get<const ProcedureChanges>().Readers;
+    const auto &readers = r.Resources.get<const CookChanges>().Readers;
     // The time-dependent meshes the requested ones read, with them.
     std::vector<state::Entity> evaluated{meshes.begin(), meshes.end()};
     for (size_t i = 0; i < evaluated.size(); ++i) {
@@ -5047,20 +5065,20 @@ void ReadAtFrame(state::Registry &r, std::span<const state::Entity> meshes, int 
 }
 
 void RecordWorldTransformChanges(state::Registry &r) {
-    auto &moved = r.Resources.get<procedure::ProcedureChanges>().Moved;
+    auto &moved = r.Resources.get<graph::CookChanges>().Moved;
     for (const auto e : r.Resources.get<const SceneChanges>().WorldTransform) moved.emplace(e);
 }
 
 void FinishCookPass(state::Registry &r) {
-    auto &pass = r.Resources.get<procedure::CookPass>();
+    auto &pass = r.Resources.get<graph::CookPass>();
     if (pass.End || pass.Mesh == state::Null) return;
     pass.End = r.Resources.get<MeshStore>().StateHash();
 }
 
-void FinishSourceStates(state::Registry &r) { procedure::FinishPendingSourceStates(r, InvalidOffset); }
+void FinishSourceStates(state::Registry &r) { graph::FinishPendingSourceStates(r, InvalidOffset); }
 
 std::vector<store::Hash128> DocumentStates(const state::Registry &r) {
-    using namespace procedure;
+    using namespace graph;
     std::vector<store::Hash128> states;
     [&]<typename... Ts>(TypeList<Ts...>) { (..., [&] { for (const auto [_, held] : r.view<const Ts>().each()) AddStates(held, states); }()); }(StateHolders{});
     SortStates(states);
@@ -5068,8 +5086,8 @@ std::vector<store::Hash128> DocumentStates(const state::Registry &r) {
 }
 
 void RecordMeshStates(state::Registry &r, std::span<const store::Hash128> states) {
-    using namespace procedure;
-    auto &changed = r.Resources.get<ProcedureChanges>().States;
+    using namespace graph;
+    auto &changed = r.Resources.get<CookChanges>().States;
     std::vector<store::Hash128> referenced{states.begin(), states.end()};
     for (const auto entity : changed) {
         if (!r.valid(entity)) continue;
@@ -5080,24 +5098,24 @@ void RecordMeshStates(state::Registry &r, std::span<const store::Hash128> states
 }
 
 void ReopenSourceState(state::Registry &r, state::Entity mesh_entity) {
-    using namespace procedure;
+    using namespace graph;
     const auto *evaluated = r.try_get<const EvaluatedMesh>(mesh_entity);
     const auto tip = evaluated && evaluated->Tip.size() == 1u && r.valid(evaluated->Tip.front()) ? evaluated->Tip.front() : state::Null;
     const auto *source = tip != state::Null ? r.try_get<const SourceState>(tip) : nullptr;
     if (source && source->StoreId == evaluated->StoreId && source->State != store::Hash128{}) r.replace<SourceState>(tip, store::Hash128{}, source->StoreId);
 }
 
-void InvalidateNode(state::Registry &r, state::Entity node) { r.Resources.get<procedure::ProcedureChanges>().Inputs.emplace(node); }
+void InvalidateNode(state::Registry &r, state::Entity node) { r.Resources.get<graph::CookChanges>().Inputs.emplace(node); }
 
-bool CooksDependOnEarlierCooks(const state::Registry &r) { return r.Resources.get<const procedure::CookPass>().DependsOnEarlierCooks; }
-void ClearCookDependence(state::Registry &r) { r.Resources.get<procedure::CookPass>().DependsOnEarlierCooks = false; }
+bool CooksDependOnEarlierCooks(const state::Registry &r) { return r.Resources.get<const graph::CookPass>().DependsOnEarlierCooks; }
+void ClearCookDependence(state::Registry &r) { r.Resources.get<graph::CookPass>().DependsOnEarlierCooks = false; }
 
 void EndCookStep(state::Registry &r) {
-    r.clear<procedure::StagedNode>();
-    r.Resources.get<procedure::CookPass>().Exact.clear();
+    r.clear<graph::StagedNode>();
+    r.Resources.get<graph::CookPass>().Exact.clear();
 }
 
-namespace procedure {
+namespace graph {
 std::optional<ImageTextures> OccurrenceImageOf(state::Registry &r, state::Entity mesh, std::span<const state::Entity> path) {
     const std::pair key{mesh, NodePath{path.begin(), path.end()}};
     if (!CurrentImages(r).Images.contains(key)) {
@@ -5117,4 +5135,4 @@ std::optional<ImageTextures> OccurrenceImageOf(state::Registry &r, state::Entity
     const auto &views = *image.Views;
     return ImageTextures{*views.Texture, *views.Shown, views.Texture.Extent.Width, views.Texture.Extent.Height, image.Views};
 }
-} // namespace procedure
+} // namespace graph

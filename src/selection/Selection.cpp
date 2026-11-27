@@ -1,9 +1,10 @@
 #include "selection/Selection.h"
 
 #include "armature/ArmatureComponents.h"
+#include "graph/Graph.h"
 #include "mesh/Mesh.h"
-#include "procedure/Procedure.h"
 #include "scene/Entity.h"
+#include "scene/Instance.h"
 #include "scene/SceneGraph.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
@@ -35,7 +36,7 @@ state::Entity FindActiveBone(const state::Registry &r) {
 }
 
 bool IsBoneEditMode(const state::Registry &r) {
-    if (r.all_of<procedure::SelectionEditing>(state::Document)) return false;
+    if (r.all_of<graph::SelectionEditing>(state::Document)) return false;
     if (r.get<const Interaction>(state::Document).Mode != InteractionMode::Edit) return false;
     return FindArmatureObject(r, FindActiveEntity(r)) != state::Null;
 }
@@ -44,10 +45,10 @@ vec3 EditSelectionCenter(const state::Registry &r) {
     const auto element = r.get<const EditMode>(state::Document).Value;
     vec3 center{};
     uint32_t vertex_count = 0;
-    for (const auto &[mesh_entity, instance_entity] : r.get<const EditPrimaries>(state::Document).Transformable) {
+    for (const auto &[mesh_entity, object_entity] : r.get<const EditPrimaries>(state::Document).Transformable) {
         const auto *stats = GetElementSelectionSummary(r, mesh_entity, element);
         if (!stats || stats->SelectedVertexCount == 0) continue;
-        const auto &world = *WorldTransformOf(r, instance_entity);
+        const auto &world = *WorldTransformOf(r, object_entity);
         center += float(stats->SelectedVertexCount) * world.P + Rotate(world.R, world.S * stats->PositionSum);
         vertex_count += stats->SelectedVertexCount;
     }
@@ -122,7 +123,10 @@ std::vector<SelectionHit> ResolveHits(state::Registry &r, std::span<const state:
             if (first(sub.BoneEntity)) hits.emplace_back(BoneHit{{sub.BoneEntity}, sub.IsTip ? BoneSel::Tip : BoneSel::Root});
             else merge(sub.BoneEntity);
         } else if (!bone_mode) {
-            if (const auto target = r.all_of<SubElementOf>(e) ? r.get<SubElementOf>(e).Parent : e; first(target)) hits.emplace_back(ObjectHit{{target}});
+            // A hit on a copy is a hit on the object whose Instance shows it.
+            auto target = r.all_of<SubElementOf>(e) ? r.get<SubElementOf>(e).Parent : e;
+            while (const auto *copy = r.try_get<const CopyOf>(target)) target = copy->ObjectEntity;
+            if (first(target)) hits.emplace_back(ObjectHit{{target}});
         }
     }
     return hits;

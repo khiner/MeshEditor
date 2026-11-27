@@ -1,7 +1,7 @@
 #include "scene/Entity.h"
 
 #include "mesh/Mesh.h"
-#include "render/Instance.h"
+#include "render/ObjectGeometry.h"
 #include "scene/SceneGraph.h"
 #include "viewport/FrameState.h"
 
@@ -140,7 +140,7 @@ state::Entity FindActiveEntity(const state::Registry &registry, state::Entity sc
 state::Entity FindActiveEntity(const state::Registry &registry) { return FindActiveEntity(registry, FrameScene(registry)); }
 
 state::Entity GetMeshEntity(const state::Registry &r, state::Entity e) {
-    if (const auto *instance = r.try_get<Instance>(e); instance && HasMesh(r, instance->Entity)) return instance->Entity;
+    if (const auto *geometry = r.try_get<ObjectGeometry>(e); geometry && HasMesh(r, geometry->Entity)) return geometry->Entity;
     return state::Null;
 }
 state::Entity GetActiveMeshEntity(const state::Registry &r) {
@@ -149,6 +149,6 @@ state::Entity GetActiveMeshEntity(const state::Registry &r) {
 }
 
 state::Entity FindMeshEntity(const state::Registry &r, state::Entity entity) {
-    if (const auto *instance = r.try_get<const Instance>(entity)) return instance->Entity;
+    if (const auto *geometry = r.try_get<const ObjectGeometry>(entity)) return geometry->Entity;
     return entity;
 }

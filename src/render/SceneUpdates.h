@@ -35,7 +35,7 @@ bool BuildDemandedClusterLods(state::Registry &, mtl::ComputeChain &);
 bool SyncShownScenes(state::Registry &);
 // The scene's position among the shown scenes, or zero when the scene is not shown.
 uint32_t ShownSceneIndex(const state::Registry &, state::Entity scene);
-// Derives a RenderInstance for the Instance of each entity in RenderChanges::InstanceVisibility, and writes its hidden bit into a placed instance's state in each shown scene.
+// Derives a RenderInstance for the ObjectGeometry of each entity in RenderChanges::InstanceVisibility, and writes its hidden bit into a placed instance's state in each shown scene.
 // A rescope rewrites the hidden bit of every placed instance.
 // Returns whether a placed instance's visibility changed.
 bool DeriveRenderInstances(state::Registry &, bool rescope);

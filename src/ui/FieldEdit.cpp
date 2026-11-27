@@ -6,16 +6,16 @@
 #include <imgui_internal.h>
 
 namespace ui {
-void FieldPromotionMenu(const state::Registry &r, const procedure::PromotedField &field) {
+void FieldPromotionMenu(const state::Registry &r, const graph::PromotedField &field) {
     const auto *panels = r.Resources.find<const PanelsState>();
-    if (!panels || !r.all_of<procedure::NetworkSubnet>(panels->Nodes.Canvas.Root)) return;
-    const auto network = panels->Nodes.Canvas.Root;
+    if (!panels || !r.all_of<graph::SubgraphItems>(panels->Nodes.Canvas.Root)) return;
+    const auto graph = panels->Nodes.Canvas.Root;
     ImGui::PushID(int(state::Integral(field.Entity)));
     ImGui::PushID(int(field.Component));
     ImGui::PushID(int(field.Offset));
     if (ImGui::BeginPopupContextItem("FieldPromotion")) {
-        const bool member = std::ranges::contains(procedure::NetworkItems(r, network), field.Entity);
-        if (ImGui::MenuItem("Expose on subnet", nullptr, false, member)) action::Emit(action::nodes::ExposePort{network, field, std::make_unique<std::string>(action::UpdatedField(field.Component, field.Offset).Field.Path)});
+        const bool member = std::ranges::contains(graph::GraphItems(r, graph), field.Entity);
+        if (ImGui::MenuItem("Expose on subgraph", nullptr, false, member)) action::Emit(action::nodes::ExposePort{graph, field, std::make_unique<std::string>(action::UpdatedField(field.Component, field.Offset).Field.Path)});
         ImGui::EndPopup();
     }
     ImGui::PopID();

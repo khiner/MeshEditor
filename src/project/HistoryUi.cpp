@@ -1,9 +1,9 @@
 #include "project/HistoryUi.h"
 
 #include "action/Dispatch.h"
+#include "graph/Graph.h"
+#include "graph/NodeEditor.h"
 #include "materialx/Library.h"
-#include "procedure/NodeEditor.h"
-#include "procedure/Procedure.h"
 #include "project/Recording.h"
 #include "render/MaterialComponents.h"
 #include "ui/CtrlShortcut.h"
@@ -55,8 +55,8 @@ template<typename T> void DrawValue(const state::Registry &r, const char *label,
             else return v;
         }();
         // A material, texture or physics resource has no Name component, so the preview reads the item's name, and a graph node's reads its title.
-        const auto current = entity == state::Null || !r.valid(entity) ? std::string{"None"} : r.all_of<procedure::ProcedureNode>(entity) ? procedure::NodeTitle(r, entity) :
-                                                                                                                                             procedure::ItemName(r, entity);
+        const auto current = entity == state::Null || !r.valid(entity) ? std::string{"None"} : r.all_of<graph::GraphNode>(entity) ? graph::NodeTitle(r, entity) :
+                                                                                                                                    graph::ItemName(r, entity);
         bool edited = false;
         if (BeginCombo(label, current.c_str())) {
             if (Selectable("None", entity == state::Null)) {
@@ -172,9 +172,9 @@ template<typename T> void DrawValue(const state::Registry &r, const char *label,
 
 // A socket or port of `node` as a choice of the node's sockets, or false for an entity without sockets.
 bool DrawSocket(const state::Registry &r, const char *label, state::Entity node, uint16_t &socket, bool &changed, bool &finished) {
-    const auto titles = node != state::Null && r.valid(node) ? procedure::SocketTitles(r, node) : std::vector<procedure::SocketTitle>{};
+    const auto titles = node != state::Null && r.valid(node) ? graph::SocketTitles(r, node) : std::vector<graph::SocketTitle>{};
     if (titles.empty()) return false;
-    const auto current = std::ranges::find(titles, socket, &procedure::SocketTitle::Id);
+    const auto current = std::ranges::find(titles, socket, &graph::SocketTitle::Id);
     if (BeginCombo(label, current == titles.end() ? std::format("{}", socket).c_str() : current->Label.c_str())) {
         for (const auto &[id, title] : titles) {
             PushID(int(id));

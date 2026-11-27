@@ -58,35 +58,35 @@ struct HistoryPanel : Panel {
     bool EditorOpen{true};
 };
 
-struct NetworkCanvas {
-    state::Entity Network{state::Null};
+struct GraphCanvas {
+    state::Entity Graph{state::Null};
     numeric::vec2 Offset{};
     float Zoom{1};
 };
-// The page shows Root's network, or the definition's network of the last subnet node of Path.
+// The page shows Root's graph, or the subgraph of the last subgraph node of Path.
 struct NodeCanvas {
     numeric::vec2 Offset{}; // <= 0
     float Zoom{1};
     state::Entity Root{state::Null};
     state::Entity Object{state::Null};
-    std::vector<state::Entity> Path; // The subnet nodes from one in Root's network to the one whose definition's page shows, outermost first
-    state::Entity Inspected{state::Null}; // The node of a built-in definition's page whose parameters Properties shows read-only
-    std::vector<NetworkCanvas> Locations;
+    std::vector<state::Entity> Path; // The subgraph nodes from one in Root's graph to the one whose subgraph's page shows, outermost first
+    state::Entity Inspected{state::Null}; // The node of a built-in subgraph's page whose parameters Properties shows read-only
+    std::vector<GraphCanvas> Locations;
 };
-// The entity whose page the canvas shows: its root network, or the last subnet node of its path.
-inline state::Entity PageNetwork(const NodeCanvas &canvas) { return canvas.Path.empty() ? canvas.Root : canvas.Path.back(); }
+// The entity whose page the canvas shows: its root graph, or the last subgraph node of its path.
+inline state::Entity PageGraph(const NodeCanvas &canvas) { return canvas.Path.empty() ? canvas.Root : canvas.Path.back(); }
 enum class NodeDrag : uint8_t { None,
                                 Pan,
                                 Move,
                                 Grab,
                                 Wire,
                                 Box };
-namespace procedure {
+namespace graph {
 struct UseCounts;
 struct NodePage;
-} // namespace procedure
+} // namespace graph
 struct NodesPanel : Panel {
-    std::shared_ptr<procedure::NodePage> Page; // The displayed page with its layout, kept between frames
+    std::shared_ptr<graph::NodePage> Page; // The displayed page with its layout, kept between frames
     NodeCanvas Canvas{};
     uint64_t Epoch{};
     NodeDrag Drag{NodeDrag::None};
@@ -98,7 +98,7 @@ struct NodesPanel : Panel {
     uint32_t DragNode{UINT32_MAX}; // Node index for the active move, grab, or wire gesture
     uint32_t GrabAfter{}; // Start dragging the new active node after the count exceeds this value
     std::optional<action::nodes::Link> LinkingAdd; // The link a staged linking add makes next frame, whose null end is the node it added
-    state::Entity LinkingActive{state::Null}; // The active node of LinkingAdd's network before the add, which the added node replaces
+    state::Entity LinkingActive{state::Null}; // The active node of LinkingAdd's graph before the add, which the added node replaces
     uint32_t Expanded{UINT32_MAX}; // The node whose tray is open, or none
     uint32_t PickNode{UINT32_MAX}; // The node whose sockets the port picker lists for the held wire, or none
     uint32_t DetachNode{UINT32_MAX}; // The node whose input link the wire drag picked up, or none
@@ -112,10 +112,10 @@ struct NodesPanel : Panel {
     int SearchHighlight{}; // The search result Enter adds
     std::optional<state::Entity> Followed; // The active node the editor last saw, or none before its first frame
     state::Entity UsersOf{state::Null}; // The item whose users the Properties panel lists
-    uint64_t UsersRevision{UINT64_MAX}; // The network revision Users was read at
-    std::vector<procedure::SceneReference> Users; // The references that hold UsersOf
-    uint64_t UsesRevision{UINT64_MAX}; // The network revision Uses was counted at
-    std::shared_ptr<procedure::UseCounts> Uses; // The subnet nodes that use each definition
+    uint64_t UsersRevision{UINT64_MAX}; // The graph revision Users was read at
+    std::vector<graph::SceneReference> Users; // The references that hold UsersOf
+    uint64_t UsesRevision{UINT64_MAX}; // The graph revision Uses was counted at
+    std::shared_ptr<graph::UseCounts> Uses; // The subgraph nodes that use each subgraph
     std::array<char, 64> NameEdit{}; // The text the active text field edits
     uint32_t NameEditId{}; // The text field editing NameEdit, or zero
     // The textures of an image Properties drew, kept until the UI frame that drew them completes, and the ImGui frame that last drew it.

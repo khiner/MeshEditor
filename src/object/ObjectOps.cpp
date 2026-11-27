@@ -2,20 +2,20 @@
 #include "Profile.h"
 #include "assets/MeshImport.h"
 #include "project/Assets.h"
-#include "scene/HierarchyInstance.h"
+#include "scene/Instance.h"
 
 #include "Path.h"
 #include "SortUnique.h"
 #include "armature/ArmatureComponents.h"
 #include "assets/MaterialImport.h"
+#include "graph/ItemGraph.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
 #include "object/PendingSync.h"
 #include "physics/PhysicsTypes.h"
-#include "procedure/Network.h"
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
-#include "render/Instance.h"
+#include "render/ObjectGeometry.h"
 #include "render/Textures.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
@@ -53,7 +53,7 @@ void Destroy(state::Registry &r, state::Entity e) {
 
 void Destroy(state::Registry &r, std::span<const state::Entity> entities) {
     if (entities.empty()) return;
-    const auto expanded = PrepareHierarchyRemoval(r, entities);
+    const auto expanded = PrepareInstanceRemoval(r, entities);
     entities = expanded;
     if (entities.empty()) return;
     const profile::CpuScope scope{"DestroyObjects"};
@@ -63,8 +63,8 @@ void Destroy(state::Registry &r, std::span<const state::Entity> entities) {
     destroyed.reserve(entities.size());
     for (const auto e : entities) {
         if (!r.valid(e)) continue;
-        if (const auto *instance = r.try_get<Instance>(e)) {
-            if (HasMesh(r, instance->Entity) || DrawsMesh(r, instance->Entity) || r.all_of<ObjectExtrasTag>(instance->Entity)) pending.Buffers.emplace(instance->Entity);
+        if (const auto *geometry = r.try_get<ObjectGeometry>(e)) {
+            if (HasMesh(r, geometry->Entity) || DrawsMesh(r, geometry->Entity) || r.all_of<ObjectExtrasTag>(geometry->Entity)) pending.Buffers.emplace(geometry->Entity);
         }
         if (const auto *collider = r.try_get<const ColliderShape>(e); collider && r.valid(collider->MeshEntity)) pending.Buffers.emplace(collider->MeshEntity);
         const auto try_add_armature_data = [&](state::Entity data_entity) {
@@ -87,7 +87,7 @@ void Destroy(state::Registry &r, std::span<const state::Entity> entities) {
             destroyed.append_range(arm.BoneEntities);
         }
 
-        procedure::RemoveNetworkSubnets(r, e);
+        graph::RemoveSubgraphs(r, e);
         destroyed.push_back(e);
     }
     SortUnique(destroyed);
@@ -106,7 +106,7 @@ void ProcessObjectRemovals(state::Registry &r) {
         auto objects = std::exchange(pending->Objects, {});
         Destroy(r, objects);
         auto &geometry = pending->Buffers, &armatures = pending->Armatures;
-        for (const auto [_, instance] : r.view<const Instance>().each()) geometry.remove(instance.Entity);
+        for (const auto [_, drawn] : r.view<const ObjectGeometry>().each()) geometry.remove(drawn.Entity);
         for (const auto [_, collider] : r.view<const ColliderShape>().each()) geometry.remove(collider.MeshEntity);
         for (const auto [_, arm] : r.view<const ArmatureObject>().each()) armatures.remove(arm.Entity);
         for (const auto [_, modifier] : r.view<const ArmatureModifier>().each()) armatures.remove(modifier.ArmatureEntity);
@@ -122,8 +122,8 @@ void ProcessObjectRemovals(state::Registry &r) {
     }
     // A destroyed pose state leaves the meshes skinned to its armature undeformed.
     if (!pending->DeformRanges.empty()) {
-        for (const auto [_, instance, modifier] : r.view<const Instance, const ArmatureModifier>().each()) {
-            if (!r.valid(modifier.ArmatureObjectEntity) || !r.all_of<ArmaturePoseState>(modifier.ArmatureObjectEntity)) r.emplace_or_replace<MeshLayoutDirty>(instance.Entity);
+        for (const auto [_, geometry, modifier] : r.view<const ObjectGeometry, const ArmatureModifier>().each()) {
+            if (!r.valid(modifier.ArmatureObjectEntity) || !r.all_of<ArmaturePoseState>(modifier.ArmatureObjectEntity)) r.emplace_or_replace<MeshLayoutDirty>(geometry.Entity);
         }
     }
     auto &meshes = r.Resources.get<MeshStore>();
@@ -140,10 +140,10 @@ void ProcessObjectRemovals(state::Registry &r) {
 }
 
 void ClearMeshes(state::Registry &r) {
-    Destroy(r, SortedEntities(r.view<Instance>(state::Exclude<SubElementOf>)));
+    Destroy(r, SortedEntities(r.view<ObjectGeometry>(state::Exclude<SubElementOf>)));
 }
 
-std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(state::Registry &r, const std::filesystem::path &path, const MeshInstanceCreateInfo &info, bool deduplicate) {
+std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(state::Registry &r, const std::filesystem::path &path, const MeshObjectCreateInfo &info, bool deduplicate) {
     const auto stored_path = project::ResolveAsset(r, path);
     auto result = ReadMeshFile(stored_path);
     if (!result) return std::unexpected{result.error()};
@@ -161,6 +161,6 @@ std::expected<std::pair<state::Entity, state::Entity>, std::string> ImportMesh(s
     return entities;
 }
 
-void RequestImportMesh(state::Registry &r, std::filesystem::path path, MeshInstanceCreateInfo info) {
+void RequestImportMesh(state::Registry &r, std::filesystem::path path, MeshObjectCreateInfo info) {
     r.emplace_or_replace<PendingImportMesh>(state::Document, std::move(path), std::move(info));
 }

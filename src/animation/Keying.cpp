@@ -1,5 +1,5 @@
 #include "animation/Keying.h"
-#include "scene/HierarchyInstance.h"
+#include "scene/Instance.h"
 
 #include "animation/Clips.h"
 #include "animation/Fields.h"
@@ -82,11 +82,10 @@ ChannelState QueryChannel(const state::Registry &r, const KeyTarget &key, float 
     const auto *clip = clips ? ActiveClip(r, *clips) : nullptr;
     const auto *channel = clip ? FindChannel(*clip, key.Target) : nullptr;
     if (!channel) return {};
-    return {.HasChannel = true, .KeyAtFrame = FindKey(channel->Times, seconds).second, .Changed = FieldChanged(r, HierarchySource(r, key.Entity), *channel, seconds)};
+    return {.HasChannel = true, .KeyAtFrame = FindKey(channel->Times, seconds).second, .Changed = FieldChanged(r, SourceOfCopy(r, key.Entity), *channel, seconds)};
 }
 
-void InsertKey(state::Registry &r, const KeyTarget &requested, float seconds) {
-    const KeyTarget key{HierarchySource(r, requested.Entity), requested.Target};
+void InsertKey(state::Registry &r, const KeyTarget &key, float seconds) {
     std::vector<float> value(key.Target.Count);
     if (value.empty() || !ReadField(r, key.Entity, key.Target, value)) return;
     auto &animations = r.edit<Animations>(state::Document);
@@ -103,8 +102,7 @@ void InsertKey(state::Registry &r, const KeyTarget &requested, float seconds) {
     PublishClips(r, key.Entity);
 }
 
-bool DeleteKey(state::Registry &r, const KeyTarget &requested, float seconds) {
-    const KeyTarget key{HierarchySource(r, requested.Entity), requested.Target};
+bool DeleteKey(state::Registry &r, const KeyTarget &key, float seconds) {
     auto *clips = r.try_edit<AnimationClips>(key.Entity);
     auto *clip = clips ? clips->Find(r.get<const Animations>(state::Document).Active) : nullptr;
     auto *channel = clip ? FindChannel(*clip, key.Target) : nullptr;
@@ -119,7 +117,6 @@ bool DeleteKey(state::Registry &r, const KeyTarget &requested, float seconds) {
 }
 
 bool DeleteKeys(state::Registry &r, state::Entity entity, float seconds) {
-    entity = HierarchySource(r, entity);
     const auto *clips = r.try_get<const AnimationClips>(entity);
     const auto *clip = clips ? ActiveClip(r, *clips) : nullptr;
     if (!clip) return false;

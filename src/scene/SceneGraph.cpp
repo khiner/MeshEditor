@@ -44,8 +44,13 @@ const Transform *WorldTransformAt(const state::Registry &r, state::Entity e, uin
 }
 
 void SetWorldTransformAt(state::Registry &r, state::Entity e, uint32_t slot, const Transform &world) {
-    if (slot != UINT32_MAX) r.Resources.get<GpuBuffers>().Instances.TransformBuffer.GetMutableSpan<Transform>({slot, 1u})[0] = world;
-    else r.emplace_or_replace<WorldTransform>(e, world);
+    if (slot != UINT32_MAX) {
+        r.Resources.get<GpuBuffers>().Instances.TransformBuffer.GetMutableSpan<Transform>({slot, 1u})[0] = world;
+        // A node with a slot keeps no WorldTransform, so a node whose world moves back to WorldTransform composes it afresh.
+        r.remove<WorldTransform>(e);
+    } else {
+        r.emplace_or_replace<WorldTransform>(e, world);
+    }
     r.Resources.get<SceneChanges>().WorldTransform.emplace(e);
 }
 } // namespace

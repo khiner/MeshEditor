@@ -1,11 +1,11 @@
 #pragma once
 
-#include "procedure/Macros.h"
-#include "procedure/Procedure.h"
+#include "graph/BuiltinSubgraphs.h"
+#include "graph/Graph.h"
 
 struct NodesPanel;
 
-namespace procedure {
+namespace graph {
 // A node of a page: the item it stands for, its title, its kind's title, and its kind, which is KindCount on a scene page.
 struct EditorNode {
     state::Entity Item;
@@ -14,10 +14,10 @@ struct EditorNode {
     uint16_t Kind{KindCount};
     bool operator==(const EditorNode &) const = default;
 };
-// A page of a network as the editor shows it: its nodes, each node's sockets, inputs first, and the authored link in each input slot.
-// A geometry page shows the nodes of a geometry procedure's, a definition's or a material graph's network, which Authored holds, and a scene page shows items.
+// A page of a graph as the editor shows it: its nodes, each node's sockets, inputs first, and the authored link in each input slot.
+// A geometry page shows the nodes of a geometry graph, a subgraph or a material graph, which Authored holds, and a scene page shows items.
 struct NodeView {
-    state::Entity Network;
+    state::Entity Graph;
     const state::Registry *Authored{}; // The registry holding a geometry page's nodes, or null for a scene page
     std::vector<EditorNode> Nodes;
     std::vector<uint32_t> ByItem; // Node indices by item, then index
@@ -52,18 +52,18 @@ inline bool InTray(const NodeView &view, uint32_t node, uint16_t socket) { retur
 inline uint16_t SocketId(const NodeView &view, uint32_t node, uint16_t socket) { return view.SocketIds[view.SocketFirst[node] + socket]; }
 inline const PortBinding &BindingOf(const NodeView &view, uint32_t node, uint16_t socket) { return view.Bindings[view.SocketFirst[node] + socket]; }
 // The view's node for the item, or none.
-// Of the two nodes a definition's page shows for the definition, it is the first.
+// Of the two nodes a subgraph's page shows for the subgraph, it is the first.
 inline uint32_t NodeOf(const NodeView &view, state::Entity item) {
     const auto at = std::ranges::lower_bound(view.ByItem, item, {}, [&](uint32_t n) { return view.Nodes[n].Item; });
     return at != view.ByItem.end() && view.Nodes[*at].Item == item ? *at : NoNode;
 }
-// Whether the node is the output boundary of a definition's page, which stands for the definition with the input boundary.
-inline bool OutputBoundary(const NodeView &view, uint32_t node) { return view.Authored && view.Nodes[node].Item == view.Network && SlotsOf(view, node) > 0u; }
-// The geometry page of one network: a geometry procedure's or a material's network, or a definition's network between its input boundary and its output boundary.
-// Both boundaries stand for the definition: the input boundary, when the definition has input ports, comes first with them as outputs, and the output boundary, when it has output ports, comes last with them as inputs.
-// The display shows on the node of the page that is or encloses the occurrence `shown`, whose path starts at this network.
+// Whether the node is the output boundary of a subgraph's page, which stands for the subgraph with the input boundary.
+inline bool OutputBoundary(const NodeView &view, uint32_t node) { return view.Authored && view.Nodes[node].Item == view.Graph && SlotsOf(view, node) > 0u; }
+// The geometry page of one graph: a geometry graph or a material's graph, or a subgraph between its input boundary and its output boundary.
+// Both boundaries stand for the subgraph: the input boundary, when the subgraph has input ports, comes first with them as outputs, and the output boundary, when it has output ports, comes last with them as inputs.
+// The display shows on the node of the page that is or encloses the occurrence `shown`, whose path starts at this graph.
 // The nodes have no titles, and the sockets no labels or resolved types.
-NodeView ProjectNetwork(const state::Registry &, state::Entity network, std::span<const state::Entity> shown);
+NodeView ProjectGraph(const state::Registry &, state::Entity graph, std::span<const state::Entity> shown);
 // Whether the node can be inserted into the link in `to_slot`.
 // Its main input and output must be unlinked and compatible with the link's two ends, and the result must have no cycle.
 inline bool Inserts(const NodeView &view, uint32_t node, uint32_t to_node, uint16_t to_slot) {
@@ -76,22 +76,22 @@ inline bool Inserts(const NodeView &view, uint32_t node, uint32_t to_node, uint1
     const auto all = [](uint32_t) { return true; };
     return !Upstream(view.InputFirst, std::span{view.Wires}, node, all)[to_node] && !Upstream(view.InputFirst, std::span{view.Wires}, link.FromNode, all)[node];
 }
-// The subnet nodes of the document's geometry networks that use each definition, leaving out those of hierarchy instances' copies of procedures.
+// The subgraph nodes that use each subgraph, with the Instances that use each scene subgraph.
 struct UseCounts {
-    std::vector<std::pair<state::Entity, uint32_t>> User; // By user definition
-    std::array<uint32_t, MacroCount> Builtin{}; // By Macros index
-    std::vector<state::Entity> Used; // Sorted user definitions that any subnet node uses, including those of hierarchy instances' copies
+    std::vector<std::pair<state::Entity, uint32_t>> User; // By user subgraph
+    std::array<uint32_t, BuiltinSubgraphCount> ByBuiltinSubgraph{}; // By BuiltinSubgraphId
+    std::vector<state::Entity> Used; // Sorted user subgraphs that any subgraph node or Instance uses
 };
-UseCounts CountDefinitionUses(const state::Registry &);
-// The uses of the user definition, or of the built-in definition of the name for a null definition.
-uint32_t UseCount(const UseCounts &, state::Entity definition, std::string_view builtin = {});
-// Whether any subnet node uses the user definition, which keeps the definition from deletion.
-bool DefinitionUsed(const UseCounts &, state::Entity definition);
-NodeView SceneNodeDefinitions(const state::Registry &, state::Entity network);
+UseCounts CountSubgraphUses(const state::Registry &);
+// The subgraph nodes that use the subgraph.
+uint32_t UseCount(const UseCounts &, SubgraphId);
+// Whether any subgraph node uses the user subgraph, which keeps the subgraph from deletion.
+bool SubgraphUsed(const UseCounts &, state::Entity subgraph);
+NodeView ProjectItemGraph(const state::Registry &, state::Entity graph);
 // The kind of item, such as "Mesh" or "Physics material".
 const char *ItemLabel(const state::Registry &, state::Entity);
-void DrawSceneAddMenu(const state::Registry &, state::Entity network);
+void DrawSceneAddMenu(const state::Registry &, state::Entity graph);
 void DrawSceneNodeMenu(const state::Registry &, NodesPanel &, state::Entity);
 void DrawReferenceMenu(const state::Registry &, NodesPanel &, SceneReference);
 bool EnterNode(const state::Registry &, NodesPanel &, state::Entity);
-} // namespace procedure
+} // namespace graph

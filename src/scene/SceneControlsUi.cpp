@@ -15,12 +15,12 @@
 #include "gizmo/GizmoInteraction.h"
 #include "gizmo/TransformGizmo.h"
 #include "gltf/GltfScene.h"
-#include "physics/PhysicsUi.h"
-#include "procedure/Procedure.h"
-#include "render/GpuBufferOps.h"
-#include "render/Instance.h"
-#include "render/MaterialComponents.h"
 #include "gpu/PbrFeature.h"
+#include "graph/Graph.h"
+#include "physics/PhysicsUi.h"
+#include "render/GpuBufferOps.h"
+#include "render/MaterialComponents.h"
+#include "render/ObjectGeometry.h"
 #include "scene/CameraLens.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
@@ -205,8 +205,8 @@ void RenderEntityControls(state::Registry &r, state::Entity active_entity) {
         Text("Parent: %s", GetName(r, parent->Parent).c_str());
     }
 
-    if (const auto *instance = r.try_get<Instance>(active_entity)) {
-        Text("Instance of: %s", GetName(r, instance->Entity).c_str());
+    if (const auto *geometry = r.try_get<ObjectGeometry>(active_entity)) {
+        Text("Geometry: %s", GetName(r, geometry->Entity).c_str());
     }
     if (const auto *armature_modifier = r.try_get<ArmatureModifier>(active_entity)) {
         Text("Armature data: %s", GetName(r, armature_modifier->ArmatureEntity).c_str());
@@ -219,10 +219,10 @@ void RenderEntityControls(state::Registry &r, state::Entity active_entity) {
     }
     const auto object_type = r.all_of<ObjectKind>(active_entity) ? r.get<const ObjectKind>(active_entity).Value : ObjectType::Empty;
     Text("Object type: %s", field::EnumLabel(object_type));
-    const auto *active_instance = r.try_get<Instance>(active_entity);
-    const bool is_mesh_instance = active_instance && HasMesh(r, active_instance->Entity);
-    if (is_mesh_instance) {
-        const auto active_mesh_entity = active_instance->Entity;
+    const auto *active_geometry = r.try_get<ObjectGeometry>(active_entity);
+    const bool is_mesh_object = active_geometry && HasMesh(r, active_geometry->Entity);
+    if (is_mesh_object) {
+        const auto active_mesh_entity = active_geometry->Entity;
         const auto active_mesh = GetMesh(r, active_mesh_entity);
         TextUnformatted(
             std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", active_mesh.VertexCount(), active_mesh.EdgeCount(), active_mesh.FaceCount()).c_str()
@@ -354,8 +354,8 @@ void RenderEntityControls(state::Registry &r, state::Entity active_entity) {
         if (Button("Add Child Of")) action::Emit(action::bone::AddConstraint{action::bone::BoneConstraintKind::ChildOf});
         PopID();
     }
-    if (is_mesh_instance) {
-        const auto active_mesh_entity = active_instance->Entity;
+    if (is_mesh_object) {
+        const auto active_mesh_entity = active_geometry->Entity;
         if (CollapsingHeader("Material")) {
             const auto &active_mesh = GetMesh(r, active_mesh_entity);
             const std::span<const uint32_t> primitive_materials = meshes.Arenas().PrimitiveMaterials.Get(meshes.Get(active_mesh.GetStoreId()).PrimitiveMaterials);
@@ -451,7 +451,7 @@ void RenderEntityControls(state::Registry &r, state::Entity active_entity) {
             });
         }
     }
-    if (const auto *instance = r.try_get<Instance>(active_entity); instance && HasMesh(r, instance->Entity)) {
+    if (const auto *geometry = r.try_get<ObjectGeometry>(active_entity); geometry && HasMesh(r, geometry->Entity)) {
         const bool has_sound = r.all_of<SoundVerticesModel>(active_entity);
         if (CollapsingHeader("Audio", has_sound ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
             DrawObjectAudioControls(r, active_entity, GetMeshEntity(r, active_entity));
@@ -472,7 +472,7 @@ void RenderEntityControls(state::Registry &r, state::Entity active_entity) {
                 }
             }
             if (target == state::Null) {
-                for (const auto [e, _, inst] : r.view<const SoundVerticesModel, const Instance>().each()) {
+                for (const auto [e, _, inst] : r.view<const SoundVerticesModel, const ObjectGeometry>().each()) {
                     if (r.all_of<Path>(inst.Entity)) {
                         target = e;
                         break;
@@ -497,7 +497,7 @@ void RenderEntityControls(state::Registry &r, state::Entity active_entity) {
     physics_ui::RenderEntityProperties(r, active_entity, explicit_target);
 
     if (const auto *sa = r.try_get<const gltf::SourceAssets>(state::Document)) {
-        const auto mesh_entity = active_instance ? active_instance->Entity : state::Null;
+        const auto mesh_entity = active_geometry ? active_geometry->Entity : state::Null;
         const auto *mesh_layout = mesh_entity != state::Null ? r.try_get<const MeshSourceLayout>(mesh_entity) : nullptr;
         const auto *node = r.try_get<const GltfNode>(active_entity);
         const auto extras = [&](std::optional<uint32_t> index, uint32_t category) -> std::optional<std::string_view> {
@@ -540,7 +540,7 @@ void RenderInteractionControls(state::Registry &r) {
     auto interaction_mode_value = int(interaction_mode);
     bool interaction_mode_changed = false;
     const auto active_entity = FindActiveEntity(r);
-    const auto *selection_task = r.try_get<const procedure::SelectionEditing>(state::Document);
+    const auto *selection_task = r.try_get<const graph::SelectionEditing>(state::Document);
     const bool active_is_armature = !selection_task && FindArmatureObject(r, active_entity) != state::Null;
     const auto &flags = r.get<const SelectionFlags>(state::Document);
     const bool edit_allowed = flags.AllMeshes || active_is_armature;
@@ -564,8 +564,8 @@ void RenderInteractionControls(state::Registry &r) {
             SameLine();
             if (RadioButton(field::EnumLabel(element), &type_interaction_mode, int(element))) action::Emit(action::view::SetEditMode{.Mode = element});
         }
-        const auto *active_instance = active_entity != state::Null ? r.try_get<const Instance>(active_entity) : nullptr;
-        const auto active_mesh = selection_task ? selection_task->Mesh : active_instance && HasMesh(r, active_instance->Entity) ? active_instance->Entity :
+        const auto *active_geometry = active_entity != state::Null ? r.try_get<const ObjectGeometry>(active_entity) : nullptr;
+        const auto active_mesh = selection_task ? selection_task->Mesh : active_geometry && HasMesh(r, active_geometry->Entity) ? active_geometry->Entity :
                                                                                                                                   state::Null;
         const auto *active_stats = active_mesh != state::Null ? GetElementSelectionSummary(r, active_mesh, edit_mode) : nullptr;
         const uint32_t selected_count = active_stats ? active_stats->SelectedCount : 0u;
@@ -601,9 +601,9 @@ void RenderSelectionActions(state::Registry &r) {
             const bool mixed_smooth = sharpness == SelectionSharpness::Mixed;
             SameLine();
             if (mixed_smooth) PushItemFlag(ImGuiItemFlags_MixedValue, true);
-            if (bool set_smooth = sharpness == SelectionSharpness::Smooth; Checkbox("Smooth shading", &set_smooth)) action::Emit(action::object::ShadeSelected{set_smooth ? procedure::ShadeMode::Smooth : procedure::ShadeMode::Flat});
+            if (bool set_smooth = sharpness == SelectionSharpness::Smooth; Checkbox("Smooth shading", &set_smooth)) action::Emit(action::object::ShadeSelected{set_smooth ? graph::ShadeMode::Smooth : graph::ShadeMode::Flat});
             if (mixed_smooth) PopItemFlag();
-            if (Button("Smooth by angle")) action::Emit(action::object::ShadeSelected{procedure::ShadeMode::ByAngle, r.get<const ShadeSmoothAngle>(state::Document).Value});
+            if (Button("Smooth by angle")) action::Emit(action::object::ShadeSelected{graph::ShadeMode::ByAngle, r.get<const ShadeSmoothAngle>(state::Document).Value});
             SameLine();
             SetNextItemWidth(GetFontSize() * 6);
             ui::Edit{r, state::Document}.Draw<&ShadeSmoothAngle::Value>("##SmoothByAngle");
@@ -668,16 +668,16 @@ void RenderControls(state::Registry &r) {
                 for (uint32_t i = 0; i < primitive::Presets.size(); ++i) {
                     if (i % 4 != 0) SameLine();
                     const auto &[label, parameters] = primitive::Presets[i];
-                    if (Button(label)) action::Emit(action::object::AddMeshPrimitive{parameters, std::make_unique<MeshInstanceCreateInfo>()});
+                    if (Button(label)) action::Emit(action::object::AddMeshPrimitive{parameters, std::make_unique<MeshObjectCreateInfo>()});
                 }
                 Spacing();
-                if (Button("Empty")) action::Emit(action::object::AddEmpty{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
+                if (Button("Empty")) action::Emit(action::object::AddEmpty{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshObjectCreateInfo::SelectBehavior::Exclusive})});
                 SameLine();
-                if (Button("Armature")) action::Emit(action::object::AddArmature{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
+                if (Button("Armature")) action::Emit(action::object::AddArmature{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshObjectCreateInfo::SelectBehavior::Exclusive})});
                 SameLine();
-                if (Button("Camera")) action::Emit(action::object::AddCamera{.Info = std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
+                if (Button("Camera")) action::Emit(action::object::AddCamera{.Info = std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshObjectCreateInfo::SelectBehavior::Exclusive})});
                 SameLine();
-                if (Button("Light")) action::Emit(action::object::AddLight{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
+                if (Button("Light")) action::Emit(action::object::AddLight{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshObjectCreateInfo::SelectBehavior::Exclusive})});
             }
             EndTabItem();
         }

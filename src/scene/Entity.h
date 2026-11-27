@@ -102,8 +102,8 @@ state::Entity FindActiveEntity(const state::Registry &, state::Entity scene);
 // The active entity when it is in the frame's scene, else state::Null.
 state::Entity FindActiveEntity(const state::Registry &);
 
-// Mesh-data entity behind an instance.
-// GetMeshEntity returns null for non-mesh instances.
+// The mesh entity the object draws.
+// GetMeshEntity returns null for an object that draws no mesh.
 state::Entity GetMeshEntity(const state::Registry &, state::Entity);
 state::Entity GetActiveMeshEntity(const state::Registry &);
-state::Entity FindMeshEntity(const state::Registry &, state::Entity); // Instance's mesh entity, else the entity itself.
+state::Entity FindMeshEntity(const state::Registry &, state::Entity); // The mesh entity of its ObjectGeometry, else the entity itself.

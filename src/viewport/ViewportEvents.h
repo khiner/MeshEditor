@@ -25,7 +25,7 @@ struct PendingSetEditMode {
 
 struct PendingImportMesh {
     std::filesystem::path Path;
-    MeshInstanceCreateInfo Info;
+    MeshObjectCreateInfo Info;
 };
 
 // The lighting a presentation shows: the material preview, or the rendered scene lit by its image light or by its punctual lights.

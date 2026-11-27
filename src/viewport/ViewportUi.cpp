@@ -16,16 +16,16 @@
 #include "audio/SoundVertices.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gizmo/TransformGizmo.h"
+#include "graph/BuiltinSubgraphs.h"
+#include "graph/Graph.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshPipelines.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Neighborhood.h"
 #include "mesh/SelectedChains.h"
 #include "numeric/MatrixMath.h"
-#include "procedure/Macros.h"
-#include "procedure/Procedure.h"
 #include "project/Project.h"
-#include "render/Instance.h"
+#include "render/ObjectGeometry.h"
 #include "render/TextureRefs.h"
 #include "scene/CameraLens.h"
 #include "scene/Defaults.h"
@@ -140,8 +140,8 @@ void BeginMeshDrag(state::Registry &r, FrameState &frame, MeshOperatorDrag::Op o
     frame.MeshDrag = MeshOperatorDrag{.Value = op, .StartPx = ToVec2(GetMousePos()), .CenterPx = center_px, .WorldPerPx = pixels > 0.f ? 1.f / pixels : 0.f};
 }
 
-action::nodes::AppendMacro LoopSlide(float factor, vec3 positive, uint32_t reference) {
-    return {procedure::LoopCutAndSlideMacro, {Words(1u), Words(factor), Words(positive), Words(reference)}};
+action::nodes::AppendSubgraphNode LoopSlide(float factor, vec3 positive, uint32_t reference) {
+    return {graph::BuiltinSubgraphId::LoopCutAndSlide, {Words(1u), Words(factor), Words(positive), Words(reference)}};
 }
 // The drawn mesh's selected vertex at the picked edge's midpoint, which the cut inserted, or InvalidOffset before the cut cooks.
 uint32_t CutVertex(const state::Registry &r, const MeshOperatorDrag &drag) {
@@ -305,8 +305,8 @@ void DrawMeshOperatorMenus(state::Registry &r) {
         op("Extrude Edges", Extrude{ExtrudeMode::Edges}, action::Phase::Stage);
         op("Bevel Edges", Bevel{});
         op("Bridge Edge Loops", BridgeEdgeLoops{});
-        op("Loop Cut", action::nodes::AppendMacro{procedure::LoopCutMacro});
-        op("Loop Cut and Slide", action::nodes::AppendMacro{procedure::LoopCutAndSlideMacro});
+        op("Loop Cut", action::nodes::AppendSubgraphNode{graph::BuiltinSubgraphId::LoopCut});
+        op("Loop Cut and Slide", action::nodes::AppendSubgraphNode{graph::BuiltinSubgraphId::LoopCutAndSlide});
         op("Subdivide", Subdivide{});
         op("Un-Subdivide", Unsubdivide{});
         op("Simplify", Simplify{});
@@ -340,7 +340,7 @@ void DrawMeshOperatorMenus(state::Registry &r) {
         Separator();
         op("Fill", Fill{});
         op("Grid Fill", GridFill{});
-        op("Fill Holes", action::nodes::AppendMacro{procedure::FillHolesMacro});
+        op("Fill Holes", action::nodes::AppendSubgraphNode{graph::BuiltinSubgraphId::FillHoles});
         Separator();
         op("Flip Normals", FlipNormals{});
         op("Recalculate Outside", RecalculateNormals{});
@@ -351,7 +351,7 @@ void DrawMeshOperatorMenus(state::Registry &r) {
         op("Degenerate Dissolve", Dissolve{DissolveMode::Degenerate});
         op("Limited Dissolve", Dissolve{DissolveMode::Limited});
         op("Merge by Distance", Merge{MergeMode::ByDistance});
-        op("Fill Holes", action::nodes::AppendMacro{procedure::FillHolesMacro});
+        op("Fill Holes", action::nodes::AppendSubgraphNode{graph::BuiltinSubgraphId::FillHoles});
     };
     const auto mesh_items = [&] {
         const auto center = EditSelectionCenter(r);
@@ -361,7 +361,7 @@ void DrawMeshOperatorMenus(state::Registry &r) {
         submenu("Separate", separate_items);
         Separator();
         op("Bisect", Bisect{.Point = center, .ViewSpace = true});
-        op("Symmetrize", action::nodes::AppendMacro{procedure::SymmetrizeMacro});
+        op("Symmetrize", action::nodes::AppendSubgraphNode{graph::BuiltinSubgraphId::Symmetrize});
         op("Snap to Symmetry", SnapSymmetry{});
         Separator();
         op("Hide Selected", action::mesh::Hide{});
@@ -394,29 +394,29 @@ void DrawMeshOperatorMenus(state::Registry &r) {
     PopStyleVar();
 }
 
-procedure::NodePath OccurrenceOf(const procedure::OperationHandle &handle) {
+graph::NodePath OccurrenceOf(const graph::OperationHandle &handle) {
     auto occurrence = handle.Path;
     occurrence.push_back(handle.Node);
     return occurrence;
 }
-const procedure::OperationHandle *ActiveOperation(const state::Registry &r) {
-    const auto *handle = r.try_get<const procedure::OperationHandle>(state::Document);
+const graph::OperationHandle *ActiveOperation(const state::Registry &r) {
+    const auto *handle = r.try_get<const graph::OperationHandle>(state::Document);
     if (!handle) return nullptr;
     const auto outer = handle->Path.empty() ? handle->Node : handle->Path.front();
-    const auto *node = r.try_get<const procedure::ProcedureNode>(outer);
-    const auto *object = r.try_get<const Instance>(handle->Object);
-    return node && object && object->Entity == node->Network && procedure::CookedOf<procedure::NodeHandle>(r, OccurrenceOf(*handle)) ? handle : nullptr;
+    const auto *node = r.try_get<const graph::GraphNode>(outer);
+    const auto *object = r.try_get<const ObjectGeometry>(handle->Object);
+    return node && object && object->Entity == node->Graph && graph::CookedOf<graph::NodeHandle>(r, OccurrenceOf(*handle)) ? handle : nullptr;
 }
 
 bool DrawOperationHandle(state::Registry &r, FrameState &frame, const ViewCamera &camera, rect viewport_rect) {
-    using H = procedure::HandleParameter;
+    using H = graph::HandleParameter;
     const auto *handle = ActiveOperation(r);
     if (!handle) {
         frame.OperationStart.reset();
         return false;
     }
     const auto node = handle->Node;
-    const auto &support = *procedure::CookedOf<procedure::NodeHandle>(r, OccurrenceOf(*handle));
+    const auto &support = *graph::CookedOf<graph::NodeHandle>(r, OccurrenceOf(*handle));
     const auto world = *WorldTransformOf(r, handle->Object);
     auto center = TransformPoint(world, support.Center);
     const auto saved_cursor = GetCursorScreenPos();
@@ -432,7 +432,7 @@ bool DrawOperationHandle(state::Registry &r, FrameState &frame, const ViewCamera
             auto value = r.get<const C>(node).*Member;
             ui::Gesture(DragFloat(label, &value, .01f), [&] { return action::UpdateOf<Member>(node, value); });
         };
-        if (handle->Parameter == H::ExtrudeScale) scalar.operator()<&procedure::Extrude::OffsetScale>("Offset Scale");
+        if (handle->Parameter == H::ExtrudeScale) scalar.operator()<&graph::Extrude::OffsetScale>("Offset Scale");
         if (handle->Parameter == H::BevelWidth) scalar.operator()<&action::mesh::Bevel::Width>("Width");
         if (handle->Parameter == H::InsetThickness) scalar.operator()<&action::mesh::Inset::Thickness>("Thickness");
         if (handle->Parameter == H::InsetDepth) scalar.operator()<&action::mesh::Inset::Depth>("Depth");
@@ -441,14 +441,14 @@ bool DrawOperationHandle(state::Registry &r, FrameState &frame, const ViewCamera
         Transform value;
         Transform parameter_frame;
         if (handle->Parameter == H::Transform) {
-            const auto &p = r.get<const procedure::TransformElements>(node);
+            const auto &p = r.get<const graph::TransformElements>(node);
             value = p.Delta;
             parameter_frame = p.Frame;
             const auto before = TransformPoint(p.Frame, support.Center);
             const auto after = p.Pivot + p.Delta.P + p.Delta.R * ((before - p.Pivot) * p.Delta.S);
             center = TransformPoint(world, InverseTransformPoint(p.Frame, after));
         } else {
-            const auto &p = r.get<const procedure::Extrude>(node);
+            const auto &p = r.get<const graph::Extrude>(node);
             value.P = (p.AlongNormals ? support.Normal : p.Offset) * p.OffsetScale;
             center = TransformPoint(world, support.Center + value.P);
         }
@@ -472,9 +472,9 @@ bool DrawOperationHandle(state::Registry &r, FrameState &frame, const ViewCamera
             changed.R = Normalize(relative * delta.R * Conjugate(relative) * changed.R);
             changed.S *= delta.S;
             if (handle->Parameter == H::ExtrudeOffset) action::Emit(action::nodes::SetExtrudeOffset{node, changed.P}, action::Phase::Stage);
-            else if (gizmo.Current->Type == TransformGizmo::TransformType::Translate) action::Emit(action::UpdateOf<&procedure::TransformElements::Delta, &Transform::P>(node, changed.P), action::Phase::Stage);
-            else if (gizmo.Current->Type == TransformGizmo::TransformType::Rotate) action::Emit(action::UpdateOf<&procedure::TransformElements::Delta, &Transform::R>(node, changed.R), action::Phase::Stage);
-            else action::Emit(action::UpdateOf<&procedure::TransformElements::Delta, &Transform::S>(node, changed.S), action::Phase::Stage);
+            else if (gizmo.Current->Type == TransformGizmo::TransformType::Translate) action::Emit(action::UpdateOf<&graph::TransformElements::Delta, &Transform::P>(node, changed.P), action::Phase::Stage);
+            else if (gizmo.Current->Type == TransformGizmo::TransformType::Rotate) action::Emit(action::UpdateOf<&graph::TransformElements::Delta, &Transform::R>(node, changed.R), action::Phase::Stage);
+            else action::Emit(action::UpdateOf<&graph::TransformElements::Delta, &Transform::S>(node, changed.S), action::Phase::Stage);
         } else if (was_using) {
             frame.OperationStart.reset();
             action::Commit();
@@ -490,8 +490,8 @@ bool DrawOperationHandle(state::Registry &r, FrameState &frame, const ViewCamera
 TransformGizmo::Type EffectiveGizmoType(const state::Registry &r) {
     using enum TransformGizmo::Type;
     if (const auto *handle = ActiveOperation(r)) {
-        return handle->Parameter == procedure::HandleParameter::Transform ? Universal : handle->Parameter == procedure::HandleParameter::ExtrudeOffset ? Translate :
-                                                                                                                                                         None;
+        return handle->Parameter == graph::HandleParameter::Transform ? Universal : handle->Parameter == graph::HandleParameter::ExtrudeOffset ? Translate :
+                                                                                                                                                 None;
     }
     const auto type = r.get<const TransformGizmoState>(state::Document).Config.Type;
     const auto &flags = r.get<const SelectionFlags>(state::Document);
@@ -529,7 +529,7 @@ void Interact(state::Registry &r, FrameState &frame) {
     const bool nodes_hovered = r.Resources.get<const PanelsState>().Nodes.Hovered;
     const auto key = [&](ImGuiKeyChord chord, ImGuiInputFlags route = VKey) { return !nodes_hovered && Shortcut(chord, route); };
     const auto ctrl_key = [&](ImGuiKeyChord chord, ImGuiInputFlags route = VKey) { return !nodes_hovered && CtrlShortcut(chord, route); };
-    const bool selection_task = r.all_of<procedure::SelectionEditing>(state::Document);
+    const bool selection_task = r.all_of<graph::SelectionEditing>(state::Document);
     const auto finish_key = [&](ImGuiKey key) { return frame.BoxDrag ? IsKeyPressed(key, false) : Shortcut(key, VKey); };
     const auto latch_transform = [&] {
         using TransformGizmo::TransformType;
@@ -656,13 +656,13 @@ void Interact(state::Registry &r, FrameState &frame) {
             }
         }
         if (ctrl_key(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_E)) {
-            action::Emit(action::object::AddEmpty{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
+            action::Emit(action::object::AddEmpty{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshObjectCreateInfo::SelectBehavior::Exclusive})});
         } else if (ctrl_key(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_A)) {
-            action::Emit(action::object::AddArmature{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
+            action::Emit(action::object::AddArmature{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshObjectCreateInfo::SelectBehavior::Exclusive})});
         } else if (ctrl_key(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_C)) {
-            action::Emit(action::object::AddCamera{.Info = std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
+            action::Emit(action::object::AddCamera{.Info = std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshObjectCreateInfo::SelectBehavior::Exclusive})});
         } else if (ctrl_key(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_L)) {
-            action::Emit(action::object::AddLight{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
+            action::Emit(action::object::AddLight{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshObjectCreateInfo::SelectBehavior::Exclusive})});
         }
         if (!SelectedIn(r).empty()) {
             if (!bone_edit && !mesh_edit && key(ImGuiMod_Shift | ImGuiKey_D)) Duplicate(r);
@@ -1052,11 +1052,11 @@ void InteractOverlay(state::Registry &r, FrameState &frame, state::Entity viewpo
     PopItemFlag();
     SetCursorScreenPos(saved_cursor);
 
-    const auto *task = r.try_get<const procedure::SelectionEditing>(state::Document);
+    const auto *task = r.try_get<const graph::SelectionEditing>(state::Document);
     if (task) {
         SetCursorScreenPos(std::bit_cast<ImVec2>(viewport_rect.pos + vec2{80.f, 12.f}));
-        if (task->Port) Text("Edit selection: %s", procedure::PortOf(r, task->Node, *task->Port)->Name.c_str());
-        else procedure::VisitKind(r.get<const procedure::ProcedureNode>(task->Node).Kind, []<typename K> { Text("Edit selection: %s", field::TypeLabel<K>.c_str()); });
+        if (task->Port) Text("Edit selection: %s", graph::PortOf(r, task->Node, *task->Port)->Name.c_str());
+        else graph::VisitKind(r.get<const graph::GraphNode>(task->Node).Kind, []<typename K> { Text("Edit selection: %s", field::TypeLabel<K>.c_str()); });
         SameLine();
         if (Button("Done (Enter)")) action::Emit(action::nodes::FinishSelection{});
         SameLine();

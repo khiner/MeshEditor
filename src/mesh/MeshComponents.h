@@ -26,11 +26,11 @@ struct VertexStoreId {
     uint32_t StoreId;
 };
 
-// The record a procedure's instances place, held by its owned mesh entity.
+// The record a graph's instances place, held by its owned mesh entity.
 struct MeshHandle {
     uint32_t StoreId{~0u};
 };
-// The record a mesh entity's geometry procedure evaluates to, which its instances draw and its display path edits in place.
+// The record a mesh entity's geometry graph evaluates to, which its instances draw and its display path edits in place.
 struct EvaluatedMesh {
     uint32_t StoreId;
     // The occurrence of the last display-path node whose output the record holds, or empty after a cook that faulted or evaluated a path that is not chained.

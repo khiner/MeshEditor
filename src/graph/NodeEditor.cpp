@@ -1,23 +1,22 @@
-#include "procedure/NodeEditor.h"
+#include "graph/NodeEditor.h"
 #include "SortUnique.h"
-#include "procedure/Macros.h"
+#include "graph/BuiltinSubgraphs.h"
 #include "scene/Entity.h"
-#include "scene/HierarchyInstance.h"
 #include "scene/SceneGraph.h"
 
 #include "action/Bone.h"
 #include "action/Selection.h"
 #include "action/View.h"
 #include "armature/ArmatureComponents.h"
+#include "graph/Cook.h"
+#include "graph/MaterialGraphs.h"
+#include "graph/NodeTheme.h"
+#include "graph/NodeView.h"
+#include "graph/OpNodes.h"
 #include "mesh/Mesh.h"
 #include "metal/ImGuiTexture.h"
 #include "metal/MetalContext.h"
-#include "procedure/Cook.h"
-#include "procedure/MaterialGraphs.h"
-#include "procedure/NodeTheme.h"
-#include "procedure/NodeView.h"
-#include "procedure/OpNodes.h"
-#include "render/Instance.h"
+#include "render/ObjectGeometry.h"
 #include "ui/ChoiceCombo.h"
 #include "ui/FieldEdit.h"
 #include "ui/InterfaceUi.h"
@@ -31,7 +30,7 @@
 #include <format>
 #include <numeric>
 
-namespace procedure {
+namespace graph {
 using namespace ImGui;
 using numeric::uvec2;
 using numeric::vec2;
@@ -240,15 +239,15 @@ static_assert(std::ranges::is_sorted(OpTitles, {}, &std::pair<std::string_view, 
 struct OpEntry {
     std::string_view Node;
     std::string Title; // The node's OpTitles entry, or else its name presented as a title
-    std::vector<std::string> Labels; // By socket of the node's definition
-    std::vector<std::string> TextLabels; // By text input of the node's definition
-    uint32_t Group{NoNode}; // The group that offers it, or NoNode for a node no geometry network evaluates
+    std::vector<std::string> Labels; // By socket of the node's subgraph
+    std::vector<std::string> TextLabels; // By text input of the node's subgraph
+    uint32_t Group{NoNode}; // The group that offers it, or NoNode for a node no geometry graph evaluates
 };
 struct OpGroup {
     std::string Title;
     std::vector<uint32_t> Ops; // In title order
 };
-// The ops a geometry network offers, grouped by MaterialX node group.
+// The ops a geometry graph offers, collapsed by MaterialX node group.
 struct OpCatalog {
     std::vector<OpEntry> Ops; // In node name order
     std::vector<OpGroup> Groups; // In title order
@@ -325,7 +324,7 @@ std::array<std::string, 2u << field::EnumCount<DataType>> SocketTypeTexts;
 // A socket's direction and data types, such as "Input, Float or Vector", built once per direction and types mask.
 const char *SocketTypeText(Socket socket) {
     const bool input = socket.Direction == SocketDirection::In;
-    auto &text = SocketTypeTexts[(input ? 0u : 1u << field::EnumCount<DataType>) + socket.Types];
+    auto &text = SocketTypeTexts[(input ? 0u : 1u << field::EnumCount<DataType>)+socket.Types];
     if (!text.empty()) return text.c_str();
     text = input ? "Input, " : "Output, ";
     if (socket.Types == NumericTypes) {
@@ -404,7 +403,7 @@ const char *OperationTitle(const state::Registry &r, state::Entity node, uint16_
     return title;
 }
 const char *LabelOf(const NodeView &view, uint32_t node, uint16_t socket) { return view.Labels[view.SocketFirst[node] + socket].c_str(); }
-// Resolves each op node of the geometry page against `source`, the plan of the page's root network, where `path` leads from the root network to the page, and sets the data types each socket shows.
+// Resolves each op node of the geometry page against `source`, the plan of the page's root graph, where `path` leads from the root graph to the page, and sets the data types each socket shows.
 void ResolveOps(const state::Registry &r, NodeView &view, std::span<const state::Entity> path, const CookPlan &source) {
     const auto &a = AuthoredOf(r, view);
     view.Declarations.assign(view.Nodes.size(), std::nullopt);
@@ -435,23 +434,23 @@ void ResolveOps(const state::Registry &r, NodeView &view, std::span<const state:
         }
     }
 }
-// The geometry page of the root network, or of the definition's network of the last subnet node of `path`, whose subnet nodes lead from the root network to it.
-// A subnet node is titled by its definition's name and, when the definition has several, its uses.
-// An op node resolves against the plan of the root network, which is its occurrence's procedure for a geometry procedure.
+// The geometry page of the root graph, or of the subgraph of the last subgraph node of `path`, whose subgraph nodes lead from the root graph to it.
+// A subgraph node is titled by its subgraph's name and, when the subgraph has several, its uses.
+// An op node resolves against the plan of the root graph, which is its occurrence's graph for a geometry graph.
 NodeView GeometryPage(const state::Registry &r, const UseCounts &uses, state::Entity root, std::span<const state::Entity> path) {
     const auto &a = RegistryAt(r, path);
-    const auto *procedure = r.try_get<const GeometryProcedure>(root);
+    const auto *graph = r.try_get<const GeometryGraph>(root);
     // The display shows on this page's node that is or encloses the displayed occurrence.
-    const auto shown = procedure ? DisplayedPath(*procedure) : NodePath{};
+    const auto shown = graph ? DisplayedPath(*graph) : NodePath{};
     const bool below = shown.size() > path.size() && std::ranges::equal(path, std::span{shown}.first(path.size()));
-    auto view = ProjectNetwork(a, path.empty() ? root : InstanceDefinition(r, path.back()).Entity, below ? std::span{shown}.subspan(path.size()) : std::span<const state::Entity>{});
+    auto view = ProjectGraph(a, path.empty() ? root : SubgraphOf(r, path.back()).Entity, below ? std::span{shown}.subspan(path.size()) : std::span<const state::Entity>{});
     for (uint32_t n = 0; n < view.Nodes.size(); ++n) {
         auto &[entity, title, type_title, kind] = view.Nodes[n];
-        title = kind != KindOf<Subnet> || a.all_of<Subnet>(entity) ? NodeTitle(a, entity) :
-            SlotsOf(view, n) > 0u                                  ? std::string{"Subnet Output"} :
-                                                                     std::string{"Subnet Input"};
-        if (const auto *subnet = a.try_get<const Subnet>(entity)) {
-            if (const auto count = UseCount(uses, subnet->DefinitionEntity, subnet->Builtin); count > 1u) title += std::format(" ({} uses)", count);
+        title = kind != KindOf<SubgraphNode> || a.all_of<SubgraphNode>(entity) ? NodeTitle(a, entity) :
+            SlotsOf(view, n) > 0u                                              ? std::string{"Subgraph Output"} :
+                                                                                 std::string{"Subgraph Input"};
+        if (const auto *use = a.try_get<const SubgraphNode>(entity)) {
+            if (const auto count = UseCount(uses, use->SubgraphId); count > 1u) title += std::format(" ({} uses)", count);
         }
         type_title = KindTitles[kind];
         const auto *op = kind == KindOf<Op> ? FindOp(a.get<const Op>(entity).Node) : nullptr;
@@ -463,16 +462,16 @@ NodeView GeometryPage(const state::Registry &r, const UseCounts &uses, state::En
     return view;
 }
 uint32_t ActiveIndex(const state::Registry &r, const NodeView &view) {
-    if (view.Authored) return NodeOf(view, ActiveNodeOf(*view.Authored, view.Network));
+    if (view.Authored) return NodeOf(view, ActiveNodeOf(*view.Authored, view.Graph));
     // A bone page shows the active bone, and every other page the active node.
     if (const auto bone = NodeOf(view, FindActiveBone(r)); bone != NoNode) return bone;
     return NodeOf(view, FindActiveNode(r));
 }
-// A geometry node is selected in its network's selection, and any other node by its entity's selection tag.
+// A geometry node is selected in its graph's selection, and any other node by its entity's selection tag.
 bool Selected(const state::Registry &r, const NodeView &view, uint32_t node) {
     const auto entity = view.Nodes[node].Item;
     if (!view.Authored) return r.any_of<::Selected, BoneSelection>(entity);
-    const auto *selection = view.Authored->try_get<const NetworkActive>(view.Network);
+    const auto *selection = view.Authored->try_get<const GraphActive>(view.Graph);
     return selection && selection->Contains(entity);
 }
 // The distinct items of the nodes, sorted.
@@ -695,8 +694,8 @@ LaneLayout AutoLayout(const NodeView &view, std::span<Box> boxes) {
         }
         if (right != INT32_MIN) column[n] = right + 1;
     }
-    // A definition's input boundary takes the column before every other node of its island, and its output boundary the column after.
-    const auto boundary = [&](uint32_t n) { return view.Authored && view.Nodes[n].Item == view.Network; };
+    // A subgraph's input boundary takes the column before every other node of its island, and its output boundary the column after.
+    const auto boundary = [&](uint32_t n) { return view.Authored && view.Nodes[n].Item == view.Graph; };
     std::vector<int32_t> first(count, INT32_MAX), last(count, INT32_MIN);
     for (uint32_t n = 0u; n < count; ++n) {
         if (boundary(n)) continue;
@@ -781,8 +780,8 @@ LaneLayout AutoLayout(const NodeView &view, std::span<Box> boxes) {
 } // namespace
 
 std::string NodeTitle(const state::Registry &r, state::Entity node) {
-    const auto kind = r.get<const ProcedureNode>(node).Kind;
-    return kind == KindOf<Subnet> ? InstanceName(r, node) : std::string{OperationTitle(r, node, kind)};
+    const auto kind = r.get<const GraphNode>(node).Kind;
+    return kind == KindOf<SubgraphNode> ? SubgraphNodeName(r, node) : std::string{OperationTitle(r, node, kind)};
 }
 std::vector<SocketTitle> SocketTitles(const state::Registry &r, state::Entity node) {
     std::vector<SocketTitle> titles;
@@ -790,7 +789,7 @@ std::vector<SocketTitle> SocketTitles(const state::Registry &r, state::Entity no
         for (const auto &port : interface->Ports) titles.push_back({port.Id, port.Name});
         return titles;
     }
-    const auto *graph_node = r.try_get<const ProcedureNode>(node);
+    const auto *graph_node = r.try_get<const GraphNode>(node);
     if (!graph_node) return titles;
     const auto *op = graph_node->Kind == KindOf<Op> ? FindOp(r.get<const Op>(node).Node) : nullptr;
     const auto sockets = SocketsOf(r, node);
@@ -799,15 +798,15 @@ std::vector<SocketTitle> SocketTitles(const state::Registry &r, state::Entity no
 }
 
 // The displayed page, kept between frames.
-// Its view is built again when the history epoch, the canvas page or a network revision the view reads changes.
+// Its view is built again when the history epoch, the canvas page or a graph revision the view reads changes.
 // Its content is the view, each node's rows and box, and the automatic layout, measured again when the view or the node theme changes.
-// Its arrangement is the layout with the network's placed cells applied and the row indexes, rebuilt when the content or a placed cell changes.
+// Its arrangement is the layout with the graph's placed cells applied and the row indexes, rebuilt when the content or a placed cell changes.
 struct NodePage {
     uint64_t Epoch{};
-    state::Entity Root{state::Null}; // The network whose page the view shows, or that holds the first subnet node of Path
-    std::vector<state::Entity> Path; // The subnet nodes from the root network to a definition's page, outermost first
-    state::Entity Mesh{state::Null}; // The mesh whose procedure holds the page's occurrence, or null for a page with no occurrence
-    uint64_t Revision{UINT64_MAX}, GraphRevision{UINT64_MAX}; // The network revisions the view was built at
+    state::Entity Root{state::Null}; // The graph whose page the view shows, or that holds the first subgraph node of Path
+    std::vector<state::Entity> Path; // The subgraph nodes from the root graph to a subgraph's page, outermost first
+    state::Entity Mesh{state::Null}; // The mesh whose graph holds the page's occurrence, or null for a page with no occurrence
+    uint64_t Revision{UINT64_MAX}, GraphRevision{UINT64_MAX}; // The graph revisions the view was built at
     NodeView View;
     bool Rebuilt{}; // The view changed after the canvas last measured it
     std::vector<InputRows> Rows;
@@ -835,19 +834,19 @@ NodePage &PageOf(const state::Registry &r, NodesPanel &panel) {
     if (!panel.Page || panel.Page->Epoch != r.Epoch) panel.Page = std::make_shared<NodePage>(NodePage{.Epoch = r.Epoch});
     auto &page = *panel.Page;
     const auto &canvas = panel.Canvas;
-    const auto shown = EditorNetwork(r, panel);
+    const auto shown = EditorGraph(r, panel);
     const auto root = canvas.Path.empty() ? shown : canvas.Root;
-    const bool geometry = !canvas.Path.empty() || r.all_of<NetworkNodes>(root);
-    const auto &changes = r.Resources.get<const NetworkChanges>();
-    // A scene page reads no network graph.
+    const bool geometry = !canvas.Path.empty() || r.all_of<GraphNodes>(root);
+    const auto &changes = r.Resources.get<const GraphChanges>();
+    // A scene page reads no geometry graph.
     const auto graph = geometry ? changes.GraphRevision : 0u;
     if (page.Root == root && page.Path == canvas.Path && page.Revision == changes.Revision && page.GraphRevision == graph) return page;
     page.Root = root;
     page.Path = canvas.Path;
-    page.Mesh = geometry && r.all_of<GeometryProcedure>(root) ? root : state::Null;
+    page.Mesh = geometry && r.all_of<GeometryGraph>(root) ? root : state::Null;
     page.Revision = changes.Revision;
     page.GraphRevision = graph;
-    if (auto view = geometry ? GeometryPage(r, UsesOf(r, panel), root, canvas.Path) : SceneNodeDefinitions(r, shown); view != page.View) {
+    if (auto view = geometry ? GeometryPage(r, UsesOf(r, panel), root, canvas.Path) : ProjectItemGraph(r, shown); view != page.View) {
         page.View = std::move(view);
         page.Rebuilt = true;
     }
@@ -971,11 +970,11 @@ void Arrange(const state::Registry &r, NodePage &page, bool relaid) {
         }
     }
     page.Moved.clear();
-    if (const auto *layout = AuthoredOf(r, view).try_get<const NetworkLayout>(view.Network)) {
+    if (const auto *layout = AuthoredOf(r, view).try_get<const GraphLayout>(view.Graph)) {
         std::vector<uint32_t> placed;
         for (const auto &cell : layout->Cells) {
             const auto n = !cell.Output ? NodeOf(view, cell.Item) : !view.Nodes.empty() && OutputBoundary(view, uint32_t(view.Nodes.size() - 1u)) && view.Nodes.back().Item == cell.Item ? uint32_t(view.Nodes.size() - 1u) :
-                                                                                                                                                                          NoNode;
+                                                                                                                                                                                           NoNode;
             if (n == NoNode) continue;
             RemoveRows(page.Nodes, n);
             boxes[n].X = cell.Position.x;
@@ -1019,8 +1018,8 @@ void Arrange(const state::Registry &r, NodePage &page, bool relaid) {
     }
 }
 
-// The screen layout of the network, with cell c at Origin + c * Step.
-struct Graph {
+// The screen layout of the graph, with cell c at Origin + c * Step.
+struct PageScreen {
     const NodeTheme &Theme;
     ImVec2 Origin;
     float Step; // A cell's side in screen points
@@ -1033,51 +1032,51 @@ struct Graph {
     uint32_t DropNode{NoNode}; // The node whose multi-input socket DropSocket leaves a gap at DropIndex for the held wire
     uint16_t DropSocket{}, DropIndex{};
 };
-uint32_t RowAt(const Graph &graph, float y) { return uint32_t(std::max(0.f, std::floor((y - graph.Origin.y) / graph.Step))); }
+uint32_t RowAt(const PageScreen &graph, float y) { return uint32_t(std::max(0.f, std::floor((y - graph.Origin.y) / graph.Step))); }
 // The node's rows, which for the expanded node fit its open tray.
-uint32_t HeightOf(const Graph &graph, uint32_t node) {
+uint32_t HeightOf(const PageScreen &graph, uint32_t node) {
     const uint32_t outputs = uint32_t(NodeSockets(graph.Page.View, node).size()) - InputsOf(graph.Page.View, node);
     return node == graph.Expanded ? 1u + std::max({uint32_t(graph.Page.Rows[node].OpenCount()), outputs, 1u}) : graph.Page.Boxes[node].H;
 }
 // The node's rectangle, which the theme's margin separates from the edges of its cells.
-ImRect RectOf(const Graph &graph, uint32_t node) {
+ImRect RectOf(const PageScreen &graph, uint32_t node) {
     const auto &box = graph.Page.Boxes[node];
     const float margin = graph.Theme.Sizes.Margin * graph.Zoom;
     return {graph.Origin + ImVec2{float(box.X), float(box.Y)} * graph.Step + ImVec2{margin, margin}, graph.Origin + ImVec2{float(box.X + box.W), float(box.Y + HeightOf(graph, node))} * graph.Step - ImVec2{margin, margin}};
 }
-ImVec2 RowAt(const Graph &graph, uint32_t node, bool input, uint32_t row) {
+ImVec2 RowAt(const PageScreen &graph, uint32_t node, bool input, uint32_t row) {
     const auto &box = graph.Page.Boxes[node];
     return graph.Origin + ImVec2{float(box.X) + (input ? .5f : float(box.W) - .5f), float(box.Y) + 1.5f + float(row)} * graph.Step;
 }
 // The sockets of a closed tray are all at the tray's chevron.
-ImVec2 SocketAt(const Graph &graph, uint32_t node, uint16_t socket) {
+ImVec2 SocketAt(const PageScreen &graph, uint32_t node, uint16_t socket) {
     const auto inputs = InputsOf(graph.Page.View, node);
     if (socket >= inputs) return RowAt(graph, node, false, socket - inputs);
     const auto &rows = graph.Page.Rows[node];
     return RowAt(graph, node, true, node == graph.Expanded ? rows.Open[socket] : rows.Closed[socket]);
 }
-ImVec2 TrayAt(const Graph &graph, uint32_t node) { return RowAt(graph, node, true, graph.Page.Rows[node].Shown); }
-ImRect TrayRect(const Graph &graph, uint32_t node) {
+ImVec2 TrayAt(const PageScreen &graph, uint32_t node) { return RowAt(graph, node, true, graph.Page.Rows[node].Shown); }
+ImRect TrayRect(const PageScreen &graph, uint32_t node) {
     const float reach = graph.Theme.Sizes.SocketRadius * 1.2f * graph.Zoom + 3.f, row = graph.Step;
     const auto at = TrayAt(graph, node);
     return {{at.x - reach, at.y - row * .5f}, {at.x + reach, at.y + (float(graph.Page.Rows[node].Tray) - .5f) * row}};
 }
 // The end point of link `position` of `total` on a multi-input socket.
 // The links are evenly spaced and centered on the socket.
-ImVec2 MultiAt(const Graph &graph, ImVec2 socket, uint32_t position, uint32_t total) {
+ImVec2 MultiAt(const PageScreen &graph, ImVec2 socket, uint32_t position, uint32_t total) {
     const float spacing = std::min(MultiSpacing, MultiHalf * 2.f / float(std::max(total, 1u))) * graph.Step;
     return {socket.x, socket.y + (float(position) - float(total - 1u) * .5f) * spacing};
 }
 // The index, among the socket's links, of the link a wire drag has picked up, or none.
-std::optional<uint16_t> DetachedIndex(const Graph &graph, uint32_t node, uint16_t socket) {
+std::optional<uint16_t> DetachedIndex(const PageScreen &graph, uint32_t node, uint16_t socket) {
     if (graph.DetachNode != node || SlotSocket(graph.Page.View, node, graph.DetachSlot) != socket) return {};
     return SlotIndex(graph.Page.View, node, graph.DetachSlot);
 }
 // The number of links drawn into the socket, which leaves out a picked-up link.
-uint32_t ShownLinks(const Graph &graph, uint32_t node, uint16_t socket) { return LinksInto(graph.Page.View, node, socket) - uint32_t(DetachedIndex(graph, node, socket).has_value()); }
+uint32_t ShownLinks(const PageScreen &graph, uint32_t node, uint16_t socket) { return LinksInto(graph.Page.View, node, socket) - uint32_t(DetachedIndex(graph, node, socket).has_value()); }
 // Where the slot's wire ends.
 // On a multi-input socket, the links skip a picked-up link and leave a gap where the held wire would drop.
-ImVec2 SlotAt(const Graph &graph, uint32_t node, uint16_t slot) {
+ImVec2 SlotAt(const PageScreen &graph, uint32_t node, uint16_t slot) {
     const auto &view = graph.Page.View;
     const auto socket = SlotSocket(view, node, slot);
     const auto at = SocketAt(graph, node, socket);
@@ -1143,7 +1142,7 @@ void DrawWire(ImDrawList &draw, Wire w, ImU32 color, float thickness) {
 // A routed link runs level from its socket to the free column after its node's column, curves across each free column to the next lane or to its reader's column, and runs along the middle of each lane.
 // A routed link that returns leaves into the free column right of its source's column, runs left along the free row below the island, and rises in the free column left of its reader.
 // Any other link is one curve from socket to socket.
-void ForEachWire(const Graph &graph, auto &&f) {
+void ForEachWire(const PageScreen &graph, auto &&f) {
     const auto &view = graph.Page.View;
     const auto &page = graph.Page;
     const float curving = graph.Theme.Sizes.WireCurving;
@@ -1191,7 +1190,7 @@ struct Hit {
     uint16_t Index{}; // On a multi-input socket, the index of the link nearest the mouse
 };
 // Tests the expanded node first, then sockets before node bodies, with later-drawn nodes first.
-Hit HitTest(const Graph &graph, ImVec2 mouse) {
+Hit HitTest(const PageScreen &graph, ImVec2 mouse) {
     const auto &view = graph.Page.View;
     const float reach = std::max(graph.Theme.Sizes.SocketRadius * graph.Zoom, 4.f) + 3.f;
     const auto near = [&](ImVec2 at, float half) {
@@ -1238,14 +1237,14 @@ bool Joins(Socket held, Socket other) {
 }
 bool Accepts(const state::Registry &r, const NodeView &view, uint32_t held_node, uint16_t held_socket, uint32_t node, uint16_t socket) {
     if (NodeSockets(view, held_node)[held_socket].Direction == NodeSockets(view, node)[socket].Direction) return false;
-    if (view.Authored) return (node != held_node || view.Nodes[node].Kind == KindOf<Subnet>) && Joins(NodeSockets(view, held_node)[held_socket], NodeSockets(view, node)[socket]);
+    if (view.Authored) return (node != held_node || view.Nodes[node].Kind == KindOf<SubgraphNode>) && Joins(NodeSockets(view, held_node)[held_socket], NodeSockets(view, node)[socket]);
     const auto &a = BindingOf(view, held_node, held_socket), &b = BindingOf(view, node, socket);
     const auto *input = std::get_if<SceneReference>(&a);
     return input ? ReferenceAccepts(r, *input, std::get<state::Entity>(b)) : ReferenceAccepts(r, std::get<SceneReference>(b), std::get<state::Entity>(a));
 }
 // The node's visible sockets that the held wire can link with.
 // With `tray`, only its tray sockets.
-std::vector<uint16_t> LinkingSockets(const state::Registry &r, const Graph &graph, uint32_t held_node, uint16_t held_socket, uint32_t node, bool tray) {
+std::vector<uint16_t> LinkingSockets(const state::Registry &r, const PageScreen &graph, uint32_t held_node, uint16_t held_socket, uint32_t node, bool tray) {
     const auto &view = graph.Page.View;
     const auto inputs = InputsOf(view, node);
     std::vector<uint16_t> sockets;
@@ -1258,13 +1257,13 @@ std::vector<uint16_t> LinkingSockets(const state::Registry &r, const Graph &grap
 action::nodes::Link LinkOf(const NodeView &view, uint32_t held_node, uint16_t held_socket, uint32_t node, uint16_t socket, uint16_t index = UINT16_MAX) {
     const bool from_held = NodeSockets(view, held_node)[held_socket].Direction == SocketDirection::Out;
     const auto held = view.Nodes[held_node].Item, other = view.Nodes[node].Item;
-    return from_held ? action::nodes::Link{view.Network, held, SocketId(view, held_node, held_socket), other, SocketId(view, node, socket), index} : action::nodes::Link{view.Network, other, SocketId(view, node, socket), held, SocketId(view, held_node, held_socket)};
+    return from_held ? action::nodes::Link{view.Graph, held, SocketId(view, held_node, held_socket), other, SocketId(view, node, socket), index} : action::nodes::Link{view.Graph, other, SocketId(view, node, socket), held, SocketId(view, held_node, held_socket)};
 }
 action::nodes::Unlink UnlinkOf(const NodeView &view, uint32_t node, uint16_t slot) {
-    return {view.Network, view.Nodes[node].Item, SocketId(view, node, SlotSocket(view, node, slot)), SlotIndex(view, node, slot)};
+    return {view.Graph, view.Nodes[node].Item, SocketId(view, node, SlotSocket(view, node, slot)), SlotIndex(view, node, slot)};
 }
 action::nodes::InsertNode InsertOf(const NodeView &view, uint32_t node, uint32_t to_node, uint16_t to_slot, uint32_t shift = 0u) {
-    return {view.Network, view.Nodes[node].Item, view.Nodes[to_node].Item, SocketId(view, to_node, SlotSocket(view, to_node, to_slot)), shift, SlotIndex(view, to_node, to_slot)};
+    return {view.Graph, view.Nodes[node].Item, view.Nodes[to_node].Item, SocketId(view, to_node, SlotSocket(view, to_node, to_slot)), shift, SlotIndex(view, to_node, to_slot)};
 }
 // The assignment that links a scene page's reference socket with an item socket, given in either order.
 action::nodes::AssignReference AssignOf(const NodeView &view, uint32_t a_node, uint16_t a_socket, uint32_t b_node, uint16_t b_socket) {
@@ -1301,7 +1300,7 @@ void Disconnect(const state::Registry &r, const NodeView &view, uint32_t node, u
 // Drops the held wire on a node.
 // With one socket that can take it, links to that socket, and with several, opens the port picker.
 // Returns whether the picker opened.
-bool DropOnNode(const state::Registry &r, NodesPanel &panel, const Graph &graph, uint32_t node, bool tray) {
+bool DropOnNode(const state::Registry &r, NodesPanel &panel, const PageScreen &graph, uint32_t node, bool tray) {
     const auto sockets = LinkingSockets(r, graph, panel.DragNode, panel.DragSocket, node, tray);
     if (sockets.size() == 1u) Connect(r, panel, graph.Page.View, node, sockets.front());
     if (sockets.size() <= 1u) return false;
@@ -1334,11 +1333,11 @@ std::vector<uint32_t> SelectedNodes(const state::Registry &r, const NodeView &vi
         std::ranges::sort(selected);
         return selected;
     }
-    if (const auto *selection = view.Authored->try_get<const NetworkActive>(view.Network)) {
+    if (const auto *selection = view.Authored->try_get<const GraphActive>(view.Graph)) {
         for (const auto item : selection->Selection) {
             if (const auto n = NodeOf(view, item); n != NoNode) selected.push_back(n);
         }
-        if (const auto last = uint32_t(view.Nodes.size() - 1u); OutputBoundary(view, last) && selection->Contains(view.Network)) selected.push_back(last);
+        if (const auto last = uint32_t(view.Nodes.size() - 1u); OutputBoundary(view, last) && selection->Contains(view.Graph)) selected.push_back(last);
     }
     SortUnique(selected);
     return selected;
@@ -1364,7 +1363,7 @@ std::vector<action::nodes::Link> MakeLinks(const NodePage &page, std::vector<uin
                 // An input this command already linked keeps its new link.
                 if ((current.FromNode != NoNode) != linked || current != view.Wires[input_first[to] + input]) continue;
                 for (uint16_t output = InputsOf(view, from); output < from_sockets.size(); ++output) {
-                    if (Links(from_sockets[output], to_sockets[input]) && (current.FromNode != from || current.FromSocket != output)) return action::nodes::Link{view.Network, view.Nodes[from].Item, output, view.Nodes[to].Item, input};
+                    if (Links(from_sockets[output], to_sockets[input]) && (current.FromNode != from || current.FromSocket != output)) return action::nodes::Link{view.Graph, view.Nodes[from].Item, output, view.Nodes[to].Item, input};
                 }
             }
             return {};
@@ -1387,7 +1386,7 @@ struct Insert {
     uint32_t Shift;
 };
 // Of the links that cross the node's box and that it can be inserted into, the one passing nearest its main input socket.
-std::optional<Insert> InsertTarget(const Graph &graph, uint32_t node) {
+std::optional<Insert> InsertTarget(const PageScreen &graph, uint32_t node) {
     const auto &view = graph.Page.View;
     const auto input = view.Authored ? MainSocket(view.Nodes[node].Kind, SocketDirection::In) : std::nullopt;
     if (!input) return {};
@@ -1414,7 +1413,7 @@ struct Dock {
 };
 // On the port cell of a socket the held node can link with, the dock links that socket.
 // Anywhere else on the column, it links each output with the first input that is unlinked, or whose link the held node can be inserted into.
-Dock DockOf(const state::Registry &r, const Graph &graph, uint32_t held, ImVec2 mouse) {
+Dock DockOf(const state::Registry &r, const PageScreen &graph, uint32_t held, ImVec2 mouse) {
     const auto &view = graph.Page.View;
     const auto cell = (mouse - graph.Origin) / graph.Step;
     if (cell.x < 0.f || cell.y < 0.f) return {};
@@ -1467,11 +1466,11 @@ Dock DockOf(const state::Registry &r, const Graph &graph, uint32_t held, ImVec2 
 // Links the held node as the dock pairs its sockets, in place of the staged move.
 // The held node loses its placed cell, so the page lays it out from its connections.
 // It is inserted into each link that takes it at the node's socket: the link into an input that is not a multi-input, or every link from an output.
-void DropOnPorts(const Graph &graph, uint32_t held, const Dock &dock) {
+void DropOnPorts(const PageScreen &graph, uint32_t held, const Dock &dock) {
     const auto &view = graph.Page.View;
     action::Cancel();
     if (!action::Begin(action::Phase::Record)) return;
-    action::AddToGesture(action::nodes::UnplaceNode{view.Network, view.Nodes[held].Item, OutputBoundary(view, held)});
+    action::AddToGesture(action::nodes::UnplaceNode{view.Graph, view.Nodes[held].Item, OutputBoundary(view, held)});
     for (const auto [socket, held_socket] : dock.Links) {
         if (!view.Authored) {
             action::AddToGesture(AssignOf(view, held, held_socket, dock.Node, socket));
@@ -1501,7 +1500,7 @@ void DropOnPorts(const Graph &graph, uint32_t held, const Dock &dock) {
     }
 }
 
-void Interact(const state::Registry &r, NodesPanel &panel, Graph &graph, const std::vector<uint32_t> &selected, const Hit &hit, const std::optional<Insert> &insert, const Dock &dock) {
+void Interact(const state::Registry &r, NodesPanel &panel, PageScreen &graph, const std::vector<uint32_t> &selected, const Hit &hit, const std::optional<Insert> &insert, const Dock &dock) {
     const auto &io = GetIO();
     const auto &view = graph.Page.View;
     const auto &nodes = view.Nodes;
@@ -1511,7 +1510,7 @@ void Interact(const state::Registry &r, NodesPanel &panel, Graph &graph, const s
     // A scene or document page selects its nodes' entities, and no active node keeps the active one.
     const auto select = [&](const std::vector<uint32_t> &selection, uint32_t active) {
         const auto active_item = active == NoNode ? state::Null : nodes[active].Item;
-        if (view.Authored) action::Emit(action::nodes::SelectItems{view.Network, active_item, ItemsOf(view, selection)});
+        if (view.Authored) action::Emit(action::nodes::SelectItems{view.Graph, active_item, ItemsOf(view, selection)});
         else action::Emit(action::selection::SelectNodes(r, ItemsOf(view, selection), active_item));
     };
     const auto open_add = [&](bool linking) {
@@ -1527,7 +1526,7 @@ void Interact(const state::Registry &r, NodesPanel &panel, Graph &graph, const s
         const int64_t wanted_x = int64_t(panel.MoveStart.x) + std::lround((mouse.x - panel.Press.x) / graph.Step), wanted_y = int64_t(panel.MoveStart.y) + std::lround((mouse.y - panel.Press.y) / graph.Step);
         const auto [dx, dy] = Place(graph.Page.Boxes, graph.Page.Nodes, selected, wanted_x - int64_t(held.X), wanted_y - int64_t(held.Y), [&](uint32_t n) { return !std::ranges::binary_search(selected, n); });
         if (first || dx != 0 || dy != 0) {
-            action::nodes::MoveNodes move{view.Network, {}};
+            action::nodes::MoveNodes move{view.Graph, {}};
             for (const auto n : selected) {
                 auto &box = graph.Page.Boxes[n];
                 box.X = uint32_t(int64_t(box.X) + dx);
@@ -1586,7 +1585,7 @@ void Interact(const state::Registry &r, NodesPanel &panel, Graph &graph, const s
                     panel.DragSocket = hit.Socket;
                 }
             } else if (hit.Type == HitType::Node || hit.Type == HitType::Parameters) {
-                if (IsMouseDoubleClicked(ImGuiMouseButton_Left) && nodes[hit.Node].Item != view.Network && EnterNode(r, panel, nodes[hit.Node].Item)) {
+                if (IsMouseDoubleClicked(ImGuiMouseButton_Left) && nodes[hit.Node].Item != view.Graph && EnterNode(r, panel, nodes[hit.Node].Item)) {
                     return;
                 }
                 const bool is_selected = Selected(r, view, hit.Node), active = hit.Node == active_node;
@@ -1623,19 +1622,20 @@ void Interact(const state::Registry &r, NodesPanel &panel, Graph &graph, const s
             open_add(false);
         } else if (Shortcut(ImGuiKey_X, Key) || Shortcut(ImGuiKey_Delete, Key) || Shortcut(ImGuiKey_Backspace, Key)) {
             auto items = ItemsOf(view, selected);
-            // A definition's boundaries stay.
-            if (view.Authored) std::erase(items, view.Network);
+            // A subgraph's boundaries stay.
+            if (view.Authored) std::erase(items, view.Graph);
             if (items.empty()) {
-            } else if (view.Authored) action::Emit(action::nodes::DeleteNodes{view.Network, items});
+            } else if (view.Authored) action::Emit(action::nodes::DeleteNodes{view.Graph, items});
             else if (!r.all_of<BoneIndex>(items.front())) {
-                // A definition a subnet node uses stays, and its refused delete is a step of its own, which reports it.
+                // A subgraph a subgraph node uses stays, and its refused delete is a step of its own, which reports it.
                 std::vector<state::Entity> deleted, used;
-                for (const auto item : items) (item != state::Document && r.all_of<SubnetDefinition>(item) && DefinitionUsed(UsesOf(r, panel), item) ? used : deleted).push_back(item);
+                for (const auto item : items) (item != state::Document && r.all_of<Subgraph, GraphNodes>(item) && SubgraphUsed(UsesOf(r, panel), item) ? used : deleted).push_back(item);
                 if (!deleted.empty()) action::Emit(action::nodes::DeleteItems{std::move(deleted)});
-                for (const auto definition : used) action::Post(action::nodes::DeleteDefinition{definition});
+                for (const auto subgraph : used) action::Post(action::nodes::DeleteSubgraph{subgraph});
             }
             // Bones are deleted the way the viewport deletes them, in the armature's Edit mode.
-            else if (IsBoneEditMode(r)) action::Emit(action::bone::DeleteSelected{});
+            else if (IsBoneEditMode(r))
+                action::Emit(action::bone::DeleteSelected{});
         } else if (const bool replace = Shortcut(ImGuiMod_Shift | ImGuiKey_J, Key); replace || Shortcut(ImGuiKey_J, Key)) {
             // The links go into one undo step.
             if (auto links = MakeLinks(graph.Page, selected, replace); !links.empty() && action::Begin(action::Phase::Record)) {
@@ -1643,19 +1643,19 @@ void Interact(const state::Registry &r, NodesPanel &panel, Graph &graph, const s
             }
         } else if (Shortcut(ImGuiMod_Shift | ImGuiKey_D, Key)) {
             auto copied = ItemsOf(view, selected);
-            std::erase(copied, view.Network);
+            std::erase(copied, view.Graph);
             if (view.Authored && !copied.empty()) {
                 // The grab starts the copies from the cell of the node whose copy becomes active.
                 const auto &held = graph.Page.Boxes[std::ranges::binary_search(selected, active_node) ? active_node : selected.back()];
-                action::Emit(action::nodes::DuplicateNodes{view.Network, std::move(copied)});
+                action::Emit(action::nodes::DuplicateNodes{view.Graph, std::move(copied)});
                 Grab(panel, uint32_t(nodes.size()), {held.X, held.Y});
             }
         } else if (Shortcut(ImGuiMod_Ctrl | ImGuiKey_G, Key)) {
             if (view.Authored) {
-                auto grouped = ItemsOf(view, selected);
-                std::erase(grouped, view.Network);
-                if (!grouped.empty()) action::Emit(action::nodes::GroupNodes{view.Network, std::move(grouped)});
-            } else if (!selected.empty()) action::Emit(action::nodes::GroupItems{view.Network, ItemsOf(view, selected)});
+                auto collapsed = ItemsOf(view, selected);
+                std::erase(collapsed, view.Graph);
+                if (!collapsed.empty()) action::Emit(action::nodes::Collapse{view.Graph, std::move(collapsed)});
+            } else if (!selected.empty()) action::Emit(action::nodes::Collapse{view.Graph, ItemsOf(view, selected)});
         } else if (Shortcut(ImGuiKey_G, Key)) {
             if (active_node != NoNode && Selected(r, view, active_node)) Grab(panel, uint32_t(nodes.size()) - 1u, {graph.Page.Boxes[active_node].X, graph.Page.Boxes[active_node].Y});
         } else if (Shortcut(ImGuiKey_A, Key)) {
@@ -1665,7 +1665,7 @@ void Interact(const state::Registry &r, NodesPanel &panel, Graph &graph, const s
         } else if (Shortcut(ImGuiMod_Alt | ImGuiKey_A, Key)) {
             if (!selected.empty()) select({}, NoNode);
         } else if (Shortcut(ImGuiKey_L, Key)) {
-            if (r.all_of<NetworkLayout>(view.Network)) action::Emit(action::nodes::AutoLayout{view.Network});
+            if (r.all_of<GraphLayout>(view.Graph)) action::Emit(action::nodes::AutoLayout{view.Graph});
         }
     }
     if (panel.Drag == NodeDrag::Move) {
@@ -1717,65 +1717,65 @@ void Interact(const state::Registry &r, NodesPanel &panel, Graph &graph, const s
 char Lower(char c) { return char(std::tolower(static_cast<unsigned char>(c))); }
 bool Matches(std::string_view label, std::string_view text) { return text.empty() || !std::ranges::search(label, text, {}, Lower, Lower).empty(); }
 bool StartsWith(std::string_view label, std::string_view text) { return std::ranges::starts_with(label, text, {}, Lower, Lower); }
-// An Add menu entry: the node it adds, its label, and the groups it is filed under, such as "Operators > Boolean >".
+// A definition the Add menu and search offer: the node it adds, its title, the menu it is filed under, and the menus the search shows before it, such as "Operators > Boolean >".
+// An operation of a kind is found by search, and its kind's entry stands for it in the menu.
 struct AddEntry {
     action::nodes::NodeSpec Node;
-    const char *Label;
-    std::string Groups;
+    std::string Title, Group, Groups;
+    bool Operation{};
 };
-// Each kind a node is added by, each followed by one entry per operation.
-const auto AddEntries{[]<typename... Ks>(TypeList<Ks...>) {
-    std::vector<AddEntry> entries;
-    const auto add = [&]<typename K> {
-        if constexpr (Kind<K>.Added) {
-            const auto groups = std::format("{} >", GroupNames[uint8_t(Kind<K>.Group)]);
-            entries.push_back({action::nodes::KindNode{KindOf<K>}, KindTitles[KindOf<K>], groups});
-            if constexpr (Operated<K>) {
-                for (const auto op : field::EnumValues<decltype(K::Operation)>) entries.push_back({action::nodes::KindNode{KindOf<K>, uint32_t(op)}, field::EnumLabel(op), std::format("{} {} >", groups, KindTitles[KindOf<K>])});
-            }
-        }
-    };
-    (add.template operator()<Ks>(), ...);
-    return entries;
-}(NodeKinds{})};
-// The offered ops, by group, each group in title order.
-const std::vector<AddEntry> &OpEntries() {
+bool IsOp(const AddEntry &entry) { return std::holds_alternative<action::nodes::OpNode>(entry.Node); }
+// The definitions every document offers, in menu order: each kind group with its kinds, each followed by its operations, then its built-in subgraphs, then the ops of the MaterialX group of its title, and then each other group of ops.
+const std::vector<AddEntry> &FixedEntries() {
     static const auto entries = [] {
         std::vector<AddEntry> entries;
+        const auto add = [&](action::nodes::NodeSpec node, std::string_view title, std::string_view group) { entries.push_back({std::move(node), std::string{title}, std::string{group}, std::format("{} >", group)}); };
+        const auto add_ops = [&](const OpGroup &group) {
+            for (const auto op : group.Ops) add(action::nodes::OpNode{std::string{Ops().Ops[op].Node}}, Ops().Ops[op].Title, group.Title);
+        };
+        for (uint8_t group = 0u; group < uint8_t(std::size(GroupNames)); ++group) {
+            ForEachKind([&]<typename K> {
+                if constexpr (Kind<K>.Added) {
+                    if (Kind<K>.Group != KindGroup(group)) return;
+                    add(action::nodes::KindNode{KindOf<K>}, KindTitles[KindOf<K>], GroupNames[group]);
+                    if constexpr (Operated<K>) {
+                        for (const auto op : field::EnumValues<decltype(K::Operation)>) entries.push_back({action::nodes::KindNode{KindOf<K>, uint32_t(op)}, field::EnumLabel(op), GroupNames[group], std::format("{} > {} >", GroupNames[group], KindTitles[KindOf<K>]), true});
+                    }
+                }
+            });
+            for (uint16_t builtin = 0u; builtin < BuiltinSubgraphs.size(); ++builtin) {
+                if (BuiltinSubgraphs[builtin].Group == KindGroup(group)) add(action::nodes::BuiltinSubgraphNode{BuiltinSubgraphId(builtin)}, BuiltinSubgraphs[builtin].Name, GroupNames[group]);
+            }
+            if (const auto ops = std::ranges::find(Ops().Groups, std::string_view{GroupNames[group]}, &OpGroup::Title); ops != Ops().Groups.end()) add_ops(*ops);
+        }
         for (const auto &group : Ops().Groups) {
-            for (const auto op : group.Ops) entries.push_back({action::nodes::OpNode{std::string{Ops().Ops[op].Node}}, Ops().Ops[op].Title.c_str(), std::format("{} >", group.Title)});
+            if (!std::ranges::contains(GroupNames, group.Title, [](const char *name) { return std::string_view{name}; })) add_ops(group);
         }
         return entries;
     }();
     return entries;
 }
-// The subnets the network's Add menu offers: each built-in definition, then each user definition that does not contain the network.
-std::vector<AddEntry> SubnetEntries(const state::Registry &r, state::Entity network) {
-    std::vector<AddEntry> entries;
-    for (uint16_t macro = 0u; macro < Macros.size(); ++macro) entries.push_back({action::nodes::MacroNode{macro}, Macros[macro].Name, "Subnets >"});
-    for (const auto definition : SortedEntities(r.view<const SubnetDefinition>())) {
-        if (!Uses(r, definition, network)) entries.push_back({action::nodes::DefinitionNode{definition}, r.get<const Name>(definition).Value.c_str(), "Subnets >"});
+// The definitions the graph's Add menu and search offer, in menu order: the fixed ones, then under Subgraphs each of the document's subgraphs that does not contain the graph, which `own` holds.
+// A material's graph, and a null graph, offer only the ops.
+std::vector<const AddEntry *> AddableEntries(const state::Registry &r, state::Entity graph, std::vector<AddEntry> &own) {
+    const bool ops = graph == state::Null || r.all_of<MaterialGraph>(graph);
+    std::vector<const AddEntry *> entries;
+    for (const auto &entry : FixedEntries())
+        if (!ops || IsOp(entry)) entries.push_back(&entry);
+    if (ops) return entries;
+    for (const auto subgraph : SortedEntities(r.view<const Subgraph, const GraphNodes>())) {
+        if (!Uses(r, subgraph, graph)) own.push_back({action::nodes::UserSubgraphNode{subgraph}, r.get<const Name>(subgraph).Value, "Subgraphs", "Subgraphs >"});
     }
+    for (const auto &entry : own) entries.push_back(&entry);
     return entries;
 }
-// Search labels case-insensitively, placing prefix matches first.
-// The kinds and the subnets come first when `kinds` is set, then the offered ops, which also match by MaterialX node name.
-std::vector<const AddEntry *> SearchEntries(std::span<const AddEntry> subnets, std::string_view text, bool kinds) {
+// The entries whose title has the text, or for an op its MaterialX node name, case-insensitively, with prefix matches first.
+std::vector<const AddEntry *> SearchEntries(std::span<const AddEntry *const> entries, std::string_view text) {
+    const auto node_of = [](const AddEntry &entry) { return IsOp(entry) ? std::string_view{std::get<action::nodes::OpNode>(entry.Node).Node} : std::string_view{}; };
     std::vector<const AddEntry *> found;
-    const auto search = [&](std::span<const AddEntry> entries, bool by_node) {
-        for (const auto &entry : entries) {
-            if (Matches(entry.Label, text) || (by_node && Matches(std::get<action::nodes::OpNode>(entry.Node).Node, text))) found.push_back(&entry);
-        }
-    };
-    if (kinds) {
-        search(AddEntries, false);
-        search(subnets, false);
-    }
-    search(OpEntries(), true);
-    std::ranges::stable_partition(found, [&](const AddEntry *entry) {
-        const auto *op = std::get_if<action::nodes::OpNode>(&entry->Node);
-        return StartsWith(entry->Label, text) || (op && StartsWith(op->Node, text));
-    });
+    for (const auto *entry : entries)
+        if (Matches(entry->Title, text) || (IsOp(*entry) && Matches(node_of(*entry), text))) found.push_back(entry);
+    std::ranges::stable_partition(found, [&](const AddEntry *entry) { return StartsWith(entry->Title, text) || (IsOp(*entry) && StartsWith(node_of(*entry), text)); });
     return found;
 }
 
@@ -1803,45 +1803,53 @@ Search SearchField(NodesPanel &panel) {
     return {panel.Search.data(), previous, enter};
 }
 
-// A socket of a node an Add menu entry adds, which the Add menu offers to link a dropped wire through.
+// A socket of the node an Add menu entry adds, which the Add menu offers to link a dropped wire through.
+// Socket is the socket's index, or for a subgraph node the port's id.
 struct LinkingEntry {
     action::nodes::NodeSpec Node;
     uint16_t Socket;
-    procedure::Socket Shown; // The socket as a new node has it
+    graph::Socket Shown; // The socket as a new node has it
     std::string Groups;
     const char *SocketName;
     std::string Label;
 };
-// The sockets of every kind a node is added by and of every offered op.
-const std::vector<LinkingEntry> &LinkingEntries() {
-    static const auto entries = [] {
-        std::vector<LinkingEntry> entries;
-        ForEachKind([&]<typename K> {
-            if constexpr (Kind<K>.Added) {
-                const auto *title = KindTitles[KindOf<K>];
-                const auto sockets = KindSockets(KindOf<K>);
-                for (uint16_t s = 0u; s < uint16_t(sockets.size()); ++s) {
-                    const auto *name = LabelOf(sockets[s]);
-                    entries.push_back({action::nodes::KindNode{KindOf<K>}, s, sockets[s], std::string{title} + " >", name, std::string{title} + " " + name});
-                }
-            }
-        });
-        const auto &ops = Ops().Ops;
-        for (const auto &group : Ops().Groups) {
-            for (const auto op : group.Ops) {
-                const auto &entry = ops[op];
-                const auto &definition = *DefinitionOf(entry.Node);
+// Appends the sockets of the node the entry adds.
+void AppendSockets(const state::Registry &r, const AddEntry &entry, std::vector<LinkingEntry> &sockets) {
+    const auto add = [&](uint16_t socket, graph::Socket shown, const char *name) { sockets.push_back({entry.Node, socket, shown, entry.Title + " >", name, entry.Title + " " + name}); };
+    const auto add_ports = [&](SubgraphRef subgraph) {
+        for (const auto &port : subgraph.Registry->get<const SubgraphInterface>(subgraph.Entity).Ports) add(port.Id, PortSocket(*subgraph.Registry, subgraph.Entity, port, port.Direction), port.Name.c_str());
+    };
+    std::visit(
+        overloaded{
+            [&](const action::nodes::KindNode &node) {
+                const auto kind_sockets = KindSockets(node.Kind);
+                for (uint16_t s = 0u; s < uint16_t(kind_sockets.size()); ++s) add(s, kind_sockets[s], LabelOf(kind_sockets[s]));
+            },
+            [&](const action::nodes::OpNode &node) {
+                const auto &op = *std::ranges::find(Ops().Ops, node.Node, &OpEntry::Node);
+                const auto &definition = *DefinitionOf(node.Node);
                 const bool varies = OpVaries(definition, Op{}, [](uint16_t) { return OpInput::Unset; });
                 for (uint16_t s = 0u; s < uint16_t(definition.Sockets.size()); ++s) {
                     auto socket = definition.Sockets[s];
                     if (s >= definition.Inputs) socket.Varies = varies;
-                    entries.push_back({action::nodes::OpNode{std::string{entry.Node}}, s, socket, entry.Title + " >", entry.Labels[s].c_str(), entry.Title + " " + entry.Labels[s]});
+                    add(s, socket, op.Labels[s].c_str());
                 }
-            }
-        }
-        return entries;
+            },
+            [&](const action::nodes::UserSubgraphNode &node) { add_ports({&r, node.SubgraphEntity}); },
+            [&](const action::nodes::BuiltinSubgraphNode &node) { add_ports(BuiltinSubgraph(node.SubgraphId)); },
+        },
+        entry.Node
+    );
+}
+// The sockets of the node each fixed entry adds.
+const std::vector<LinkingEntry> &FixedSockets() {
+    static const auto sockets = [] {
+        std::vector<LinkingEntry> sockets;
+        for (const auto &entry : FixedEntries())
+            if (!entry.Operation) AppendSockets(BuiltinSubgraphRegistry(), entry, sockets);
+        return sockets;
     }();
-    return entries;
+    return sockets;
 }
 constexpr int ResultRows{10};
 // Draws each row's groups before its label, which texts(i) returns.
@@ -1868,107 +1876,78 @@ std::optional<int> DrawResults(int count, float width, int &highlight, int previ
     if (picked) CloseCurrentPopup();
     return picked;
 }
-// Draws the entries that match the search, each after its groups, and returns the node of the one picked.
-std::optional<action::nodes::NodeSpec> PickResult(const state::Registry &r, state::Entity network, NodesPanel &panel, const Search &search, bool kinds) {
-    const auto subnets = kinds ? SubnetEntries(r, network) : std::vector<AddEntry>{};
-    const auto found = SearchEntries(subnets, search.Text, kinds);
-    const auto picked = DrawResults(int(found.size()), GetFontSize() * 22.f, panel.SearchHighlight, search.Previous, search.Enter, [&](int i) { return std::pair{found[i]->Groups.c_str(), found[i]->Label}; });
-    return picked ? std::optional{found[size_t(*picked)]->Node} : std::nullopt;
-}
-// Draws a menu item for each op of the group and returns the MaterialX node of the op clicked.
-std::optional<std::string> OpItems(const OpGroup &group) {
-    std::optional<std::string> picked;
-    for (const auto op : group.Ops) {
-        if (MenuItem(Ops().Ops[op].Title.c_str())) picked = std::string{Ops().Ops[op].Node};
-    }
-    return picked;
-}
-// Draws a menu for each op group and returns the MaterialX node of the op clicked.
-// With `kinds`, a group titled as a kind group is left to that group's menu.
-std::optional<std::string> OpMenus(bool kinds) {
-    std::optional<std::string> picked;
-    for (const auto &group : Ops().Groups) {
-        if ((kinds && std::ranges::contains(GroupNames, group.Title, [](const char *name) { return std::string_view{name}; })) || !BeginMenu(group.Title.c_str())) continue;
-        if (auto op = OpItems(group)) picked = std::move(op);
-        EndMenu();
-    }
-    return picked;
-}
-// A search field over a menu for each op group, or over the ops matching its text.
-// Returns the MaterialX node of the op picked.
-std::optional<std::string> DrawOpChoice(const state::Registry &r, NodesPanel &panel) {
-    const auto search = SearchField(panel);
-    if (search.Text.empty()) return OpMenus(false);
-    const auto picked = PickResult(r, state::Null, panel, search, false);
-    return picked ? std::optional{std::get<action::nodes::OpNode>(*picked).Node} : std::nullopt;
-}
-
-// A material's graph offers only ops.
-void DrawAddMenu(const state::Registry &r, NodesPanel &panel, const NodeView &view, bool interactive) {
-    if (!BeginPopup("##AddNode")) return;
-    const auto network = view.Network;
-    const bool kinds = !r.all_of<MaterialGraph>(network);
-    const auto count = uint32_t(view.Nodes.size());
-    const bool linking = panel.Linking && panel.DragNode < count;
-    const auto add = [&](action::nodes::NodeSpec node) {
-        if (!interactive) return;
-        action::Emit(action::nodes::AddNode{network, std::move(node)});
-        Grab(panel, count, panel.AddAt);
-    };
-    const auto search = SearchField(panel);
-    if (linking) {
-        const auto held = NodeSockets(view, panel.DragNode)[panel.DragSocket];
-        std::vector<const LinkingEntry *> entries;
-        for (const auto &entry : LinkingEntries()) {
-            if ((kinds || std::holds_alternative<action::nodes::OpNode>(entry.Node)) && Joins(held, entry.Shown) && Matches(entry.Label, search.Text)) entries.push_back(&entry);
-        }
-        float width = GetFontSize() * 14.f;
-        for (const auto *entry : entries) width = std::max(width, CalcTextSize(entry->Label.c_str()).x + GetFontSize() * 2.f);
-        const auto picked = DrawResults(int(entries.size()), width, panel.SearchHighlight, search.Previous, search.Enter, [&](int i) { return std::pair{entries[i]->Groups.c_str(), entries[i]->SocketName}; });
-        if (picked && interactive) {
-            const auto &entry = *entries[*picked];
-            action::Emit(action::nodes::AddNode{network, entry.Node}, action::Phase::Stage);
-            // The added node becomes the network's active node, which the next frame links through the entry's socket.
-            const auto item = view.Nodes[panel.DragNode].Item;
-            const auto socket = SocketId(view, panel.DragNode, panel.DragSocket);
-            panel.LinkingAdd = held.Direction == SocketDirection::Out ? action::nodes::Link{network, item, socket, state::Null, entry.Socket} : action::nodes::Link{network, state::Null, entry.Socket, item, socket};
-            panel.LinkingActive = ActiveNodeOf(r, network);
-        }
-    } else if (search.Text.empty() && !kinds) {
-        if (auto op = OpMenus(false)) add(action::nodes::OpNode{std::move(*op)});
-    } else if (search.Text.empty()) {
-        for (uint8_t group = 0u; group < uint8_t(std::size(GroupNames)); ++group) {
-            if (!BeginMenu(GroupNames[group])) continue;
-            for (const auto &entry : AddEntries) {
-                const auto &node = std::get<action::nodes::KindNode>(entry.Node);
-                if (!node.Operation && KindGroups[node.Kind] == KindGroup(group) && MenuItem(entry.Label)) add(entry.Node);
-            }
-            // The ops of the MaterialX node group with this title follow the group's kinds.
-            if (const auto ops = std::ranges::find(Ops().Groups, std::string_view{GroupNames[group]}, &OpGroup::Title); ops != Ops().Groups.end()) {
-                Separator();
-                if (auto op = OpItems(*ops)) add(action::nodes::OpNode{std::move(*op)});
-            }
-            EndMenu();
-        }
-        if (auto op = OpMenus(true)) add(action::nodes::OpNode{std::move(*op)});
-        if (BeginMenu("Subnets")) {
-            const auto subnets = SubnetEntries(r, network);
-            for (uint32_t i = 0u; i < subnets.size(); ++i) {
-                if (i == Macros.size()) Separator();
+// Draws a menu for each group of the entries, in order, with the ops of a group after its other entries, and returns the entry clicked.
+const AddEntry *DrawEntryMenus(std::span<const AddEntry *const> entries) {
+    const AddEntry *picked = nullptr;
+    for (size_t first = 0u; first < entries.size();) {
+        const auto &group = entries[first]->Group;
+        const auto last = size_t(std::ranges::find_if(entries.subspan(first), [&](const AddEntry *entry) { return entry->Group != group; }) - entries.begin());
+        if (BeginMenu(group.c_str())) {
+            bool others = false;
+            for (size_t i = first; i < last; ++i) {
+                const auto &entry = *entries[i];
+                if (entry.Operation) continue;
+                if (IsOp(entry) && std::exchange(others, false)) Separator();
+                others = others || !IsOp(entry);
                 PushID(int(i));
-                if (MenuItem(subnets[i].Label)) add(subnets[i].Node);
+                if (MenuItem(entry.Title.c_str())) picked = &entry;
                 PopID();
             }
             EndMenu();
         }
-    } else if (auto picked = PickResult(r, network, panel, search, kinds)) {
-        add(std::move(*picked));
+        first = last;
+    }
+    return picked;
+}
+// A search field over a menu for each group of the entries, or over the entries matching its text.
+// Returns the entry picked.
+const AddEntry *DrawEntryChoice(std::span<const AddEntry *const> entries, NodesPanel &panel) {
+    const auto search = SearchField(panel);
+    if (search.Text.empty()) return DrawEntryMenus(entries);
+    const auto found = SearchEntries(entries, search.Text);
+    const auto picked = DrawResults(int(found.size()), GetFontSize() * 22.f, panel.SearchHighlight, search.Previous, search.Enter, [&](int i) { return std::pair{found[i]->Groups.c_str(), found[i]->Title.c_str()}; });
+    return picked ? found[size_t(*picked)] : nullptr;
+}
+
+void DrawAddMenu(const state::Registry &r, NodesPanel &panel, const NodeView &view, bool interactive) {
+    if (!BeginPopup("##AddNode")) return;
+    const auto graph = view.Graph;
+    const auto count = uint32_t(view.Nodes.size());
+    std::vector<AddEntry> own;
+    const auto entries = AddableEntries(r, graph, own);
+    if (panel.Linking && panel.DragNode < count) {
+        const auto search = SearchField(panel);
+        const bool ops = r.all_of<MaterialGraph>(graph);
+        const auto held = NodeSockets(view, panel.DragNode)[panel.DragSocket];
+        std::vector<LinkingEntry> own_sockets;
+        for (const auto &entry : own) AppendSockets(r, entry, own_sockets);
+        std::vector<const LinkingEntry *> sockets;
+        for (const auto *offered : {&FixedSockets(), &std::as_const(own_sockets)}) {
+            for (const auto &socket : *offered) {
+                if ((!ops || std::holds_alternative<action::nodes::OpNode>(socket.Node)) && Joins(held, socket.Shown) && Matches(socket.Label, search.Text)) sockets.push_back(&socket);
+            }
+        }
+        float width = GetFontSize() * 14.f;
+        for (const auto *socket : sockets) width = std::max(width, CalcTextSize(socket->Label.c_str()).x + GetFontSize() * 2.f);
+        const auto picked = DrawResults(int(sockets.size()), width, panel.SearchHighlight, search.Previous, search.Enter, [&](int i) { return std::pair{sockets[i]->Groups.c_str(), sockets[i]->SocketName}; });
+        if (picked && interactive) {
+            const auto &socket = *sockets[*picked];
+            action::Emit(action::nodes::AddNode{graph, socket.Node}, action::Phase::Stage);
+            // The added node becomes the graph's active node, which the next frame links through the entry's socket.
+            const auto item = view.Nodes[panel.DragNode].Item;
+            const auto held_id = SocketId(view, panel.DragNode, panel.DragSocket);
+            panel.LinkingAdd = held.Direction == SocketDirection::Out ? action::nodes::Link{graph, item, held_id, state::Null, socket.Socket} : action::nodes::Link{graph, state::Null, socket.Socket, item, held_id};
+            panel.LinkingActive = ActiveNodeOf(r, graph);
+        }
+    } else if (const auto *picked = DrawEntryChoice(entries, panel); picked && interactive) {
+        action::Emit(action::nodes::AddNode{graph, picked->Node});
+        Grab(panel, count, panel.AddAt);
     }
     if (IsKeyPressed(ImGuiKey_Escape)) CloseCurrentPopup();
     EndPopup();
 }
 
-void DrawPortPicker(const state::Registry &r, NodesPanel &panel, const Graph &graph, bool interactive) {
+void DrawPortPicker(const state::Registry &r, NodesPanel &panel, const PageScreen &graph, bool interactive) {
     if (panel.PickNode == NoNode) return;
     const auto &view = graph.Page.View;
     if (!BeginPopup("##PickPort")) {
@@ -2002,9 +1981,13 @@ void RecordHover(const state::Registry &r, const NodesPanel &panel, const NodePa
         const auto *error = view.Authored ? FaultOf(r, page, entity) : nullptr;
         static std::string status;
         if (error) status = FaultText(*view.Authored, entity, *error);
-        const auto *doc = op ? OpDoc(op->Node, declaration) : nullptr;
-        ui::Hovered = {.Label = view.Authored ? OperationTitle(*view.Authored, entity, kind) : type, .Path = type, .Type = type, .Help = doc ? doc : view.Authored ? KindHelp[kind] :
-                                                                                                                                                        nullptr,
+        // A node's help is its definition's: an op's document, a built-in subgraph's, or else its kind's.
+        const auto *use = view.Authored ? view.Authored->try_get<const SubgraphNode>(entity) : nullptr;
+        const auto *builtin_subgraph = use ? std::get_if<BuiltinSubgraphId>(&use->SubgraphId) : nullptr;
+        const auto *help = op ? OpDoc(op->Node, declaration) : builtin_subgraph ? BuiltinSubgraphs[size_t(*builtin_subgraph)].Help :
+                                                                                  nullptr;
+        ui::Hovered = {.Label = view.Authored ? OperationTitle(*view.Authored, entity, kind) : type, .Path = type, .Type = type, .Help = help ? help : view.Authored ? KindHelp[kind] :
+                                                                                                                                                                       nullptr,
                        .Status = error ? status.c_str() : nullptr};
     } else if (hit.Type == HitType::Parameters) {
         ui::Hovered = {.Label = "Parameters", .Path = type, .Help = "Hover to show the sockets of the node's value parameters. Drop a wire here to link it to one of them."};
@@ -2022,7 +2005,7 @@ void RecordHover(const state::Registry &r, const NodesPanel &panel, const NodePa
             // A linked input's parameter value is unused, so its help says how to move the link.
             .Help = !view.Authored ? "Reference to a document item" : socket.Multi ? "Accepts any number of links. They apply in order from top to bottom. Drag a link along the socket to reorder it." :
                 linked                                                             ? "Drag to move this link to another input. Drop it on empty canvas to unlink." :
-                kind == KindOf<Subnet>                                             ? "Named subnet interface port" :
+                kind == KindOf<SubgraphNode>                                       ? "Named subgraph interface port" :
                 op                                                                 ? (port && !port->Doc.empty() ? port->Doc.c_str() : nullptr) :
                                                                                      SocketHelps[SocketFirst[kind] + hit.Socket],
             .Status = dimmed ? "Cannot link with the held wire" : linked ? "Linked" :
@@ -2074,12 +2057,12 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
     const bool restyled = page.Theme != theme.Sizes || page.Cell != cell || page.Font != GetFontSize();
     const bool rebuilt = std::exchange(page.Rebuilt, false);
     const bool relaid = (rebuilt || restyled) && Measure(page, theme, cell, restyled);
-    // A rebuilt view can show another network with the same texts and wires, whose own placed cells the boxes take.
-    if (const auto cells = r.Resources.get<const NetworkChanges>().CellsRevision; relaid || rebuilt || page.Cells != cells) {
+    // A rebuilt view can show another graph with the same texts and wires, whose own placed cells the boxes take.
+    if (const auto cells = r.Resources.get<const GraphChanges>().CellsRevision; relaid || rebuilt || page.Cells != cells) {
         Arrange(r, page, relaid);
         page.Cells = cells;
     }
-    Graph graph{theme, origin + Im(canvas.Offset) + ImVec2{margin, margin}, cell * canvas.Zoom, canvas.Zoom, NoNode, page};
+    PageScreen graph{theme, origin + Im(canvas.Offset) + ImVec2{margin, margin}, cell * canvas.Zoom, canvas.Zoom, NoNode, page};
     if (panel.Expanded < nodes.size() && page.Rows[panel.Expanded].Tray > 0u) graph.Expanded = panel.Expanded;
     // The frame draws and tests the nodes and wires whose rows meet the canvas, and the expanded node.
     const auto top = RowAt(graph, origin.y), bottom = RowAt(graph, end.y);
@@ -2111,7 +2094,7 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
         drop_at = MultiAt(graph, at, graph.DropIndex, shown + 1u);
     }
     if (panel.Drag == NodeDrag::None || wiring) RecordHover(r, panel, page, hit);
-    // A built-in definition's page is read-only, and selects only the node the panel inspects.
+    // A built-in subgraph's page is read-only, and selects only the node the panel inspects.
     const bool editable = &AuthoredOf(r, view) == &r;
     const auto inspected = editable ? NoNode : NodeOf(view, panel.Canvas.Inspected);
     const auto selected = [&] {
@@ -2267,7 +2250,7 @@ void DrawCanvas(const state::Registry &r, FrameState &frame, NodesPanel &panel, 
     } else {
         BeginDisabled(!interactive);
         if (BeginPopup("##AddNode")) {
-            DrawSceneAddMenu(r, view.Network);
+            DrawSceneAddMenu(r, view.Graph);
             EndPopup();
         }
         if (BeginPopup("##NodeMenu")) {
@@ -2289,8 +2272,8 @@ bool ObjectChoice(const state::Registry &r, const char *label, state::Entity &va
     const auto current = r.valid(value) ? value : state::Null;
     const auto objects = [&] {
         std::vector<state::Entity> choices{state::Null};
-        for (const auto [e, instance] : r.view<const Instance>().each()) {
-            if (DrawsMesh(r, instance.Entity)) choices.push_back(e);
+        for (const auto [e, geometry] : r.view<const ObjectGeometry>().each()) {
+            if (DrawsMesh(r, geometry.Entity)) choices.push_back(e);
         }
         return choices;
     };
@@ -2394,9 +2377,9 @@ struct ParameterEdit : ui::FieldWidgets<Prefix...> {
 
 state::Entity ViewportObject(const state::Registry &r, state::Entity mesh) {
     const auto object = r.Resources.get<const PanelsState>().Nodes.Canvas.Object;
-    if (const auto *instance = r.try_get<const Instance>(object); instance && instance->Entity == mesh) return object;
-    for (const auto [e, instance] : r.view<const Instance>().each()) {
-        if (instance.Entity == mesh && InScene(r, e, FrameScene(r)) && !r.all_of<Hidden>(e)) return e;
+    if (const auto *geometry = r.try_get<const ObjectGeometry>(object); geometry && geometry->Entity == mesh) return object;
+    for (const auto [e, geometry] : r.view<const ObjectGeometry>().each()) {
+        if (geometry.Entity == mesh && InScene(r, e, FrameScene(r)) && !r.all_of<Hidden>(e)) return e;
     }
     return state::Null;
 }
@@ -2427,10 +2410,10 @@ bool DrawSelectionTask(const state::Registry &r, action::nodes::EditSelection ed
     SameLine();
     return true;
 }
-// A built-in definition's node, which the library registry holds, shows its selection read-only.
+// A built-in subgraph's node, which the registry of built-in subgraphs holds, shows its selection read-only.
 void DrawInlineSelection(const state::Registry &r, const NodePage &page, uint32_t node, bool interactive) {
     const auto &view = page.View;
-    if (view.Nodes[node].Kind == KindOf<Subnet>) return;
+    if (view.Nodes[node].Kind == KindOf<SubgraphNode>) return;
     const auto sockets = NodeSockets(view, node);
     const auto socket = std::ranges::find(sockets, true, &Socket::Selection);
     if (socket == sockets.end()) return;
@@ -2520,8 +2503,7 @@ bool DrawLiteral(const char *label, mx::Type type, std::span<uint32_t> words, co
         bool changed = false;
         ui::ChoiceCombo(label, current, std::views::iota(size_t{0}, port.EnumNames.size()), [&](size_t i) { return i < port.EnumNames.size() ? port.EnumNames[i] : std::string{}; }, [&](size_t i) {
             std::ranges::copy(value(i), words.begin());
-            changed = true;
-        });
+            changed = true; });
         return changed;
     }
     constexpr auto Infinity = std::numeric_limits<double>::infinity();
@@ -2588,7 +2570,8 @@ void DrawOp(const state::Registry &r, NodesPanel &panel, const NodeView &view, u
     const auto declaration = view.Declarations[node];
     const auto set_input = [&](std::string_view input, OpInputValue value) { return SetOpInput{entity, std::string{input}, std::make_unique<OpInputValue>(std::move(value))}; };
     if (BeginCombo("Node", entry.Title.c_str(), ImGuiComboFlags_HeightLarge)) {
-        if (auto picked = DrawOpChoice(r, panel); picked && interactive) action::Emit(ChangeOp{entity, std::move(*picked)});
+        std::vector<AddEntry> none;
+        if (const auto *picked = DrawEntryChoice(AddableEntries(r, state::Null, none), panel); picked && interactive) action::Emit(ChangeOp{entity, std::get<action::nodes::OpNode>(picked->Node).Node});
         if (IsKeyPressed(ImGuiKey_Escape)) CloseCurrentPopup();
         EndCombo();
     }
@@ -2627,8 +2610,7 @@ void DrawOp(const state::Registry &r, NodesPanel &panel, const NodeView &view, u
                 return choices;
             };
             ui::ChoiceCombo(label, held == op.Images.end() ? state::Null : held->second, textures, [&](state::Entity e) { return e == state::Null ? std::string{"None"} : ItemName(r, e); }, [&](state::Entity e) {
-                if (interactive) action::Emit(set_input(name, e));
-            });
+                if (interactive) action::Emit(set_input(name, e)); });
             if (IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ui::Hovered = {.Label = label, .Path = entry.Title.c_str(), .Type = "Image", .Help = "Document texture the input reads while unlinked. Without one, the node gives its default."};
         } else if (literal == op.Literals.end() && port.DefaultGeomProp) {
             TextDisabled("%s: %s", label, lib.GeomProps[*port.DefaultGeomProp].Name.c_str());
@@ -2692,9 +2674,9 @@ void DrawOp(const state::Registry &r, NodesPanel &panel, const NodeView &view, u
     }
 }
 
-constexpr const char *BuiltinText{"Built-in definition. Make unique to edit a copy."};
+constexpr const char *BuiltinSubgraphText{"Built-in subgraph. Make unique to edit a copy."};
 // Draws a numeric port value's components and returns whether they changed.
-bool DrawPortValue(const char *label, PortValue &value) {
+bool DrawPortValue(const char *label, NumericValue &value) {
     if (value.Type == DataType::Bool) {
         bool checked = value.Words[0] != 0u;
         if (!Checkbox(label, &checked)) return false;
@@ -2703,14 +2685,14 @@ bool DrawPortValue(const char *label, PortValue &value) {
     }
     return InputScalarN(label, value.Type == DataType::Int ? ImGuiDataType_U32 : ImGuiDataType_Float, value.Words.data(), int(AttributeComponents(StorageOf(value.Type))));
 }
-// The value an unlinked input port of a definition passes without a default: the parameter of the first socket of the definition's network that reads it, or zero.
-PortValue ExposedValue(const state::Registry &a, state::Entity definition, const SubnetPort &port) {
-    const SocketLink read{definition, port.Id};
-    for (const auto node : NodesOf(a, definition)) {
-        if (const auto *subnet = a.try_get<const Subnet>(node)) {
-            for (const auto &own : subnet->Ports) {
+// The value an unlinked input port of a subgraph passes without a default: the parameter of the first socket of the subgraph that reads it, or zero.
+NumericValue ExposedValue(const state::Registry &a, state::Entity subgraph, const SubgraphPort &port) {
+    const SocketLink read{subgraph, port.Id};
+    for (const auto node : NodesOf(a, subgraph)) {
+        if (const auto *use = a.try_get<const SubgraphNode>(node)) {
+            for (const auto &own : use->Ports) {
                 if (own.Source != read) continue;
-                if (const auto value = ParameterDefault(a, node, own.Id)) return *value;
+                if (const auto value = ParameterDefault(a, node, own.PortId)) return *value;
             }
             continue;
         }
@@ -2722,29 +2704,32 @@ PortValue ExposedValue(const state::Registry &a, state::Entity definition, const
     }
     return {{}, DataType(std::countr_zero(DataTypes(port.Types & NumericTypes)))};
 }
-// Draws a subnet node's uses of its definition and its own state of each port: what each unlinked input port reads, and the display of each output port.
-void DrawSubnetNode(state::Registry &r, NodesPanel &panel, const NodePage &page, state::Entity subnet, bool interactive) {
+// Draws a subgraph node's uses of its subgraph and its own state of each port: what each unlinked input port reads, and the display of each output port.
+void DrawSubgraphNode(state::Registry &r, NodesPanel &panel, const NodePage &page, state::Entity use, bool interactive) {
     using namespace action::nodes;
-    const auto &node = r.get<const Subnet>(subnet);
-    const auto definition = InstanceDefinition(r, subnet);
-    const bool builtin = definition.Registry != &r;
-    const auto uses = UseCount(UsesOf(r, panel), node.DefinitionEntity, node.Builtin);
-    if (Button("Ungroup") && interactive) action::Emit(UngroupNodes{subnet});
-    ui::Describe("Ungroup", "Replace this subnet node with a copy of its definition's nodes.");
+    const auto &node = r.get<const SubgraphNode>(use);
+    const auto subgraph = SubgraphOf(r, use);
+    const bool builtin_subgraph = subgraph.Registry != &r;
+    const auto uses = UseCount(UsesOf(r, panel), node.SubgraphId);
+    if (Button("Expand") && interactive) action::Emit(Expand{use});
+    ui::Describe("Expand", "Replace this subgraph node with a copy of its subgraph's nodes.");
     SameLine();
-    BeginDisabled(!builtin && uses < 2u);
-    if (Button("Make unique") && interactive) action::Emit(MakeUnique{subnet});
+    if (Button("Expand all levels") && interactive) action::Emit(Expand{use, true});
+    ui::Describe("Expand all levels", "Also replace each subgraph node among the copies, at every depth.");
+    SameLine();
+    BeginDisabled(!builtin_subgraph && uses < 2u);
+    if (Button("Make unique") && interactive) action::Emit(MakeUnique{use});
     EndDisabled();
-    ui::Describe("Make unique", "Give this subnet node its own copy of its definition, which its edits then change alone.");
-    TextWrapped("%s", builtin ? BuiltinText : UsesText(uses).c_str());
+    ui::Describe("Make unique", "Give this subgraph node its own copy of its subgraph, which its edits then change alone.");
+    TextWrapped("%s", builtin_subgraph ? BuiltinSubgraphText : UsesText(uses).c_str());
     const auto object = ViewportObject(r, page.Mesh);
-    for (const auto &port : InterfaceOf(r, subnet)->Ports) {
+    for (const auto &port : InterfaceOf(r, use)->Ports) {
         PushID(int(port.Id));
-        const auto *own = InstancePortOf(r, subnet, port.Id);
+        const auto *own = NodePortOf(r, use, port.Id);
         if (port.Direction == SocketDirection::Out) {
             if (page.Mesh != state::Null && (port.Types & ResultTypes)) {
                 SeparatorText(port.Name.c_str());
-                if (Button("Display output") && interactive) action::Emit(SetDisplay{page.Mesh, subnet, port.Id, page.Path});
+                if (Button("Display output") && interactive) action::Emit(SetDisplay{page.Mesh, use, port.Id, page.Path});
             }
             PopID();
             continue;
@@ -2754,21 +2739,23 @@ void DrawSubnetNode(state::Registry &r, NodesPanel &panel, const NodePage &page,
             TextDisabled("Linked");
         } else if (port.Selection) {
             TextUnformatted(own && own->Selection ? SelectionText(&*own->Selection).c_str() : "Each reader's own selection");
-            if (DrawSelectionTask(r, {subnet, object, page.Path, port.Id}, [] { return true; }, interactive)) {
+            if (DrawSelectionTask(r, {use, object, page.Path, port.Id}, [] { return true; }, interactive)) {
                 BeginDisabled(!own || !own->Selection);
-                if (Button("Clear") && interactive) action::Emit(ClearPortValue{subnet, port.Id});
+                if (Button("Clear") && interactive) action::Emit(ClearPortValue{use, port.Id});
                 EndDisabled();
                 ui::Describe("Clear", "Pass each reader's own selection in place of this node's selection.");
             }
         } else if (ReadsDefault(port)) {
-            auto value = own && own->Value ? *own->Value : port.Default ? *port.Default : ExposedValue(*definition.Registry, definition.Entity, port);
-            ui::Gesture(DrawPortValue("Value", value) && interactive, [&] { return SetPortValue{subnet, port.Id, value.Words}; });
+            auto value = own && own->Value ? *own->Value : port.Default ? *port.Default :
+                                                                          ExposedValue(*subgraph.Registry, subgraph.Entity, port);
+            ui::Gesture(DrawPortValue("Value", value) && interactive, [&] { return SetPortValue{use, port.Id, value.Words}; });
             SameLine();
             BeginDisabled(!own || !own->Value);
-            if (Button("Reset") && interactive) action::Emit(ClearPortValue{subnet, port.Id});
+            if (Button("Reset") && interactive) action::Emit(ClearPortValue{use, port.Id});
             EndDisabled();
-            ui::Describe("Reset", "Read the definition's default in place of this node's own value.");
-            TextDisabled("%s", own && own->Value ? "Own value" : port.Default ? "Definition default" : "Value of the exposed socket");
+            ui::Describe("Reset", "Read the subgraph's default in place of this node's own value.");
+            TextDisabled("%s", own && own->Value ? "Own value" : port.Default ? "Subgraph default" :
+                                                                                "Value of the exposed socket");
         }
         PopID();
     }
@@ -2798,7 +2785,7 @@ void DrawNodeImage(state::Registry &r, NodesPanel &panel, const NodePage &page, 
     const float width = GetContentRegionAvail().x;
     Image(ImTextureRef{mtl::ImGuiTextureId(image->Shown)}, {width, width * float(image->Height) / float(image->Width)});
 }
-// Draws the node's parameters, op inputs and inline selection, and a built-in definition's node shows them read-only.
+// Draws the node's parameters, op inputs and inline selection, and a built-in subgraph's node shows them read-only.
 void DrawParameters(state::Registry &r, NodesPanel &panel, const NodePage &page, uint32_t node, bool interactive) {
     const auto &view = page.View;
     const auto &a = AuthoredOf(r, view);
@@ -2806,24 +2793,24 @@ void DrawParameters(state::Registry &r, NodesPanel &panel, const NodePage &page,
     const auto kind = view.Nodes[node].Kind;
     const bool editable = &a == &r;
     PushID(int(state::Integral(active)));
-    SeparatorText(kind == KindOf<Subnet> ? InstanceName(r, active).c_str() : OperationTitle(a, active, kind));
+    SeparatorText(kind == KindOf<SubgraphNode> ? SubgraphNodeName(r, active).c_str() : OperationTitle(a, active, kind));
     BeginDisabled(!editable);
     const auto linked = LinkedParameters(view, node);
     const bool displays = editable && page.Mesh != state::Null && ResultSocket(r, active);
     if (displays) {
         auto shown = page.Path;
         shown.push_back(active);
-        ui::ActionField("Display", DisplayedPath(r.get<const GeometryProcedure>(page.Mesh)) == shown, [&](bool displayed) { return displayed ? action::nodes::SetDisplay{page.Mesh, active, {}, page.Path} : action::nodes::SetDisplay{page.Mesh}; }, {.Help = "Display this node's result. Turn off to display no result."}, interactive);
+        ui::ActionField("Display", DisplayedPath(r.get<const GeometryGraph>(page.Mesh)) == shown, [&](bool displayed) { return displayed ? action::nodes::SetDisplay{page.Mesh, active, {}, page.Path} : action::nodes::SetDisplay{page.Mesh}; }, {.Help = "Display this node's result. Turn off to display no result."}, interactive);
     }
-    if (editable && (BypassInput(kind) || kind == KindOf<Subnet>)) {
+    if (editable && (BypassInput(kind) || kind == KindOf<SubgraphNode>)) {
         if (displays) SameLine();
         ui::ActionField("Bypass", r.all_of<NodeBypassed>(active), [&](bool bypassed) { return action::nodes::SetBypass{active, bypassed}; }, {.Help = "Pass the compatible input through without applying this node."}, interactive);
     }
-    if (kind == KindOf<Subnet>) DrawSubnetNode(r, panel, page, active, interactive);
-    if (editable && r.all_of<SubnetDefinition>(view.Network) && BeginMenu("Expose socket")) {
+    if (kind == KindOf<SubgraphNode>) DrawSubgraphNode(r, panel, page, active, interactive);
+    if (editable && r.all_of<Subgraph>(view.Graph) && BeginMenu("Expose socket")) {
         for (uint16_t s = 0; s < NodeSockets(view, node).size(); ++s) {
             PushID(s);
-            if (MenuItem(LabelOf(view, node, s)) && interactive) action::Emit(action::nodes::ExposeSocket{view.Network, active, SocketId(view, node, s), {}});
+            if (MenuItem(LabelOf(view, node, s)) && interactive) action::Emit(action::nodes::ExposeSocket{view.Graph, active, SocketId(view, node, s), {}});
             PopID();
         }
         EndMenu();
@@ -2847,7 +2834,7 @@ void DrawParameters(state::Registry &r, NodesPanel &panel, const NodePage &page,
         }
     }
     VisitKind(kind, [&]<typename K> {
-        if constexpr (!std::is_empty_v<K> && !std::same_as<K, Op> && !std::same_as<K, Subnet>) ui::DrawFields<K>(ParameterEdit<K>{{}, r, panel, active, a.get<const K>(active), linked, interactive && editable, nullptr});
+        if constexpr (!std::is_empty_v<K> && !std::same_as<K, Op> && !std::same_as<K, SubgraphNode>) ui::DrawFields<K>(ParameterEdit<K>{{}, r, panel, active, a.get<const K>(active), linked, interactive && editable, nullptr});
     });
     if (kind == KindOf<Op>) DrawOp(a, panel, view, node, interactive && editable);
     if (editable && kind == KindOf<Bake>) DrawNodeImage(r, panel, page, active, "The image appears once the geometry and value bake.");
@@ -2863,19 +2850,15 @@ void DrawParameters(state::Registry &r, NodesPanel &panel, const NodePage &page,
     DrawFault(r, a, page, active);
     PopID();
 }
-// Turns a page whose subnet nodes no longer lead to it to the page of the nearest enclosing subnet node that still does, or else to its root network's page.
-// Each subnet node of the canvas path is in the network of its predecessor's user definition, and the first in the root network.
-// A hierarchy instance's copy of a procedure shows as its source's page.
+// Turns a page whose subgraph nodes no longer lead to it to the page of the nearest enclosing subgraph node that still does, or else to its root graph's page.
+// Each subgraph node of the canvas path is in the graph of its predecessor's user subgraph, and the first in the root graph.
 void SettleCanvas(const state::Registry &r, NodesPanel &panel) {
     auto &canvas = panel.Canvas;
-    if (canvas.Path.empty()) {
-        while (const auto *context = r.valid(canvas.Root) ? r.try_get<const HierarchyGeometry>(canvas.Root) : nullptr) canvas.Root = context->Source;
-        return;
-    }
-    auto network = canvas.Root;
+    if (canvas.Path.empty()) return;
+    auto graph = canvas.Root;
     size_t kept = 0;
-    for (; kept < canvas.Path.size() && network != state::Null && r.valid(canvas.Path[kept]) && r.all_of<Subnet>(canvas.Path[kept]) && NetworkOf(r, canvas.Path[kept]) == network; ++kept) {
-        network = r.get<const Subnet>(canvas.Path[kept]).DefinitionEntity;
+    for (; kept < canvas.Path.size() && graph != state::Null && r.valid(canvas.Path[kept]) && r.all_of<SubgraphNode, GraphNode>(canvas.Path[kept]) && GraphOf(r, canvas.Path[kept]) == graph; ++kept) {
+        graph = UserSubgraph(r.get<const SubgraphNode>(canvas.Path[kept]).SubgraphId);
     }
     if (kept == canvas.Path.size()) return;
     canvas.Path.resize(kept);
@@ -2905,23 +2888,23 @@ void HoldShownImage(const state::Registry &r, NodesPanel::ShownImage &shown, std
 }
 
 std::string UsesText(uint32_t uses) {
-    if (uses == 0u) return "No subnet node uses this definition.";
-    if (uses == 1u) return "One subnet node uses this definition.";
-    return std::format("{} subnet nodes use this definition. Edits change every use.", uses);
+    if (uses == 0u) return "No subgraph node uses this subgraph.";
+    if (uses == 1u) return "One subgraph node uses this subgraph.";
+    return std::format("{} subgraph nodes use this subgraph. Edits change every use.", uses);
 }
 const UseCounts &UsesOf(const state::Registry &r, NodesPanel &panel) {
-    if (const auto revision = r.Resources.get<const NetworkChanges>().Revision; !panel.Uses || panel.UsesRevision != revision) {
-        panel.Uses = std::make_shared<UseCounts>(CountDefinitionUses(r));
+    if (const auto revision = r.Resources.get<const GraphChanges>().Revision; !panel.Uses || panel.UsesRevision != revision) {
+        panel.Uses = std::make_shared<UseCounts>(CountSubgraphUses(r));
         panel.UsesRevision = revision;
     }
     return *panel.Uses;
 }
 
-void DrawDefinitionInterface(state::Registry &r, DefinitionRef definition, bool interactive) {
+void DrawSubgraphInterface(state::Registry &r, SubgraphRef subgraph, bool interactive) {
     using namespace action::nodes;
-    const auto &a = *definition.Registry;
+    const auto &a = *subgraph.Registry;
     const bool editable = &a == &r;
-    const auto &ports = a.get<const SubnetInterface>(definition.Entity).Ports;
+    const auto &ports = a.get<const SubgraphInterface>(subgraph.Entity).Ports;
     SeparatorText("Interface");
     if (ports.empty()) TextWrapped("Expose a socket of a node inside to add a port.");
     BeginDisabled(!editable);
@@ -2929,9 +2912,9 @@ void DrawDefinitionInterface(state::Registry &r, DefinitionRef definition, bool 
         const auto &port = ports[i];
         PushID(int(port.Id));
         auto name = port.Name;
-        ui::Gesture(InputText(port.Direction == SocketDirection::In ? "Input" : "Output", &name) && interactive && editable && !name.empty(), [&] { return RenamePort{definition.Entity, port.Id, name}; });
+        ui::Gesture(InputText(port.Direction == SocketDirection::In ? "Input" : "Output", &name) && interactive && editable && !name.empty(), [&] { return RenamePort{subgraph.Entity, port.Id, name}; });
         // The neighbouring ports of the same direction, which a move passes.
-        const auto neighbour = [&](bool before) -> const SubnetPort * {
+        const auto neighbour = [&](bool before) -> const SubgraphPort * {
             for (auto at = int(i) + (before ? -1 : 1); at >= 0 && at < int(ports.size()); at += before ? -1 : 1) {
                 if (ports[size_t(at)].Direction == port.Direction) return &ports[size_t(at)];
             }
@@ -2939,23 +2922,23 @@ void DrawDefinitionInterface(state::Registry &r, DefinitionRef definition, bool 
         };
         const auto *previous = neighbour(true), *next = neighbour(false);
         BeginDisabled(!previous);
-        if (Button("Move up") && interactive) action::Emit(MovePort{definition.Entity, port.Id, previous->Id});
+        if (Button("Move up") && interactive) action::Emit(MovePort{subgraph.Entity, port.Id, previous->Id});
         EndDisabled();
         SameLine();
         BeginDisabled(!next);
-        if (Button("Move down") && interactive) action::Emit(MovePort{definition.Entity, next->Id, port.Id});
+        if (Button("Move down") && interactive) action::Emit(MovePort{subgraph.Entity, next->Id, port.Id});
         EndDisabled();
         SameLine();
-        if (Button("Remove") && interactive) action::Emit(RemovePort{definition.Entity, port.Id});
+        if (Button("Remove") && interactive) action::Emit(RemovePort{subgraph.Entity, port.Id});
         ui::Describe("Remove", "Remove the port. Each node that reads it keeps its value.");
         if (ReadsDefault(port)) {
-            auto value = port.Default ? *port.Default : ExposedValue(a, definition.Entity, port);
-            ui::Gesture(DrawPortValue("Default", value) && interactive && editable, [&] { return SetPortValue{definition.Entity, port.Id, value.Words}; });
+            auto value = port.Default ? *port.Default : ExposedValue(a, subgraph.Entity, port);
+            ui::Gesture(DrawPortValue("Default", value) && interactive && editable, [&] { return SetPortValue{subgraph.Entity, port.Id, value.Words}; });
             SameLine();
             BeginDisabled(!port.Default);
-            if (Button("Clear") && interactive) action::Emit(ClearPortValue{definition.Entity, port.Id});
+            if (Button("Clear") && interactive) action::Emit(ClearPortValue{subgraph.Entity, port.Id});
             EndDisabled();
-            ui::Describe("Clear", "Read the value of the exposed socket while a subnet node leaves this port unlinked.");
+            ui::Describe("Clear", "Read the value of the exposed socket while a subgraph node leaves this port unlinked.");
             if (!port.Default) TextDisabled("Value of the exposed socket");
         }
         PopID();
@@ -2973,10 +2956,10 @@ void DrawNodesPanel(state::Registry &r, NodesPanel &panel, bool interactive) {
     }
     SettleCanvas(r, panel);
     FollowActiveNode(r, panel);
-    // A linking add links the node it staged, which is its network's active node once the add applies.
+    // A linking add links the node it staged, which is its graph's active node once the add applies.
     if (interactive && panel.LinkingAdd) {
         auto link = *std::exchange(panel.LinkingAdd, std::nullopt);
-        if (const auto added = ActiveNodeOf(r, link.Network); added != panel.LinkingActive) {
+        if (const auto added = ActiveNodeOf(r, link.Graph); added != panel.LinkingActive) {
             (link.FromNode == state::Null ? link.FromNode : link.ToNode) = added;
             action::Emit(std::move(link), action::Phase::Stage);
         }
@@ -2985,25 +2968,25 @@ void DrawNodesPanel(state::Registry &r, NodesPanel &panel, bool interactive) {
     panel.Hovered = false;
     if (!panel.Visible) return;
     if (Begin(panel.Name, &panel.Visible)) {
-        DrawNetworkNavigation(r, panel);
+        DrawGraphNavigation(r, panel);
         auto &page = PageOf(r, panel);
         const auto &view = page.View;
         const auto &a = AuthoredOf(r, view);
         SameLine();
-        BeginDisabled(&a != &r || !r.all_of<NetworkLayout>(view.Network));
-        if (Button("Auto-layout") && interactive) action::Emit(action::nodes::AutoLayout{view.Network});
+        BeginDisabled(&a != &r || !r.all_of<GraphLayout>(view.Graph));
+        if (Button("Auto-layout") && interactive) action::Emit(action::nodes::AutoLayout{view.Graph});
         EndDisabled();
         ui::Describe("Auto-layout", "Lay out every node on this page from its connections, removing the cells that nodes were placed at. Press L over the canvas to do the same.");
-        // A definition's page states its uses, and offers its subnet node a copy of its own when it shares the definition or the definition is built in.
-        if (view.Authored && a.all_of<SubnetDefinition>(view.Network)) {
-            const auto subnet = page.Path.empty() ? state::Null : page.Path.back();
-            const auto uses = &a == &r ? UseCount(UsesOf(r, panel), view.Network) : 0u;
+        // A subgraph's page states its uses, and offers its subgraph node a copy of its own when it shares the subgraph or the subgraph is built in.
+        if (view.Authored && a.all_of<Subgraph>(view.Graph)) {
+            const auto use = page.Path.empty() ? state::Null : page.Path.back();
+            const auto uses = &a == &r ? UseCount(UsesOf(r, panel), view.Graph) : 0u;
             AlignTextToFramePadding();
-            TextUnformatted(&a == &r ? UsesText(uses).c_str() : BuiltinText);
-            if (subnet != state::Null && (&a != &r || uses > 1u)) {
+            TextUnformatted(&a == &r ? UsesText(uses).c_str() : BuiltinSubgraphText);
+            if (use != state::Null && (&a != &r || uses > 1u)) {
                 SameLine();
-                if (Button("Make unique") && interactive) action::Emit(action::nodes::MakeUnique{subnet});
-                ui::Describe("Make unique", "Give this page's subnet node its own copy of the definition, which its edits then change alone.");
+                if (Button("Make unique") && interactive) action::Emit(action::nodes::MakeUnique{use});
+                ui::Describe("Make unique", "Give this page's subgraph node its own copy of the subgraph, which its edits then change alone.");
             }
         }
         PushStyleVar(ImGuiStyleVar_WindowPadding, {0.f, 0.f});
@@ -3018,7 +3001,7 @@ void DrawNodesPanel(state::Registry &r, NodesPanel &panel, bool interactive) {
 CanvasGeometry DrawnGeometry(const state::Registry &r, const NodesPanel &panel) {
     auto &page = *panel.Page;
     const auto &view = page.View;
-    Graph graph{r.get<const NodeTheme>(state::Document), {0.f, 0.f}, 1.f, 1.f, NoNode, page};
+    PageScreen graph{r.get<const NodeTheme>(state::Document), {0.f, 0.f}, 1.f, 1.f, NoNode, page};
     for (uint32_t slot = 0u; slot < view.Wires.size(); ++slot) {
         if (view.Wires[slot].FromNode != NoNode) graph.ShownWires.push_back(slot);
     }
@@ -3040,21 +3023,21 @@ state::Entity DrawNodeParameters(state::Registry &r, NodesPanel &panel, bool int
     const auto &view = page.View;
     if (!view.Authored) return state::Null;
     const auto &a = *view.Authored;
-    const auto owner = view.Network;
-    if (a.all_of<SubnetDefinition>(owner)) {
-        PushID("Definition");
+    const auto owner = view.Graph;
+    if (a.all_of<Subgraph>(owner)) {
+        PushID("Subgraph");
         auto name = GetName(a, owner);
         SeparatorText(name.c_str());
         if (&a == &r) ui::Gesture(InputText("Name", &name) && interactive, [&] { return action::nodes::RenameItem{owner, name}; });
-        DrawDefinitionInterface(r, {&a, owner}, interactive);
+        DrawSubgraphInterface(r, {&a, owner}, interactive);
         PopID();
     }
     const bool editable = &a == &r;
     const auto node = editable ? ActiveIndex(r, view) : NodeOf(view, panel.Canvas.Inspected);
     if (editable && node == NoNode) TextWrapped("Right click or press Shift+A to add a node.");
-    // A selected boundary stands for the definition, whose interface the page's Properties already shows.
-    else if (node != NoNode && view.Nodes[node].Item != owner && (editable || view.Nodes[node].Kind != KindOf<Subnet>)) DrawParameters(r, panel, page, node, interactive);
-    // A built-in definition's page is reached through a subnet node.
+    // A selected boundary stands for the subgraph, whose interface the page's Properties already shows.
+    else if (node != NoNode && view.Nodes[node].Item != owner && (editable || view.Nodes[node].Kind != KindOf<SubgraphNode>)) DrawParameters(r, panel, page, node, interactive);
+    // A built-in subgraph's page is reached through a subgraph node.
     return editable ? owner : page.Path.back();
 }
 void DrawEditor(auto &e, std::type_identity<CellSize>) {
@@ -3068,4 +3051,4 @@ void DrawNodeStyle(state::Registry &r) {
     if (Button("Reset")) action::Emit(action::view::ResetNodeTheme{});
     ui::DrawFields<NodeTheme>(ui::Edit{r, state::Document});
 }
-} // namespace procedure
+} // namespace graph

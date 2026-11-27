@@ -3,7 +3,7 @@
 #include "audio/ContactModel.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Neighborhood.h"
-#include "render/Instance.h"
+#include "render/ObjectGeometry.h"
 #include "state/Registry.h"
 
 #include <numbers>
@@ -24,7 +24,7 @@ vec3 TiltAlongNormal(vec3 n, vec2 joy) {
 } // namespace
 
 vec3 ExciteDirection(const state::Registry &r, state::Entity e, uint32_t vertex) {
-    const auto mesh = GetMesh(r, r.get<const Instance>(e).Entity);
+    const auto mesh = GetMesh(r, r.get<const ObjectGeometry>(e).Entity);
     const std::array handle{*mesh.VertexAt(vertex)};
     const auto n = Normalize(VertexNormals(r.Resources.get<const MeshStore>(), mesh.GetStoreId(), handle).front());
     return TiltAlongNormal(n, r.get<const Striker>(state::Document).Tilt);

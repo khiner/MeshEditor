@@ -202,7 +202,7 @@ struct GpuBuffers {
     // Each shown scene's lights, in Scenes order.
     std::vector<mtl::Buffer> Lights;
     mtl::Buffer Materials;
-    // Each geometry procedure's op values, in the block its OpValueBlock holds.
+    // Each geometry graph's op values, in the block its OpValueBlock holds.
     BufferArena<uint32_t> OpValues{Ctx, SlotType::Buffer};
 
     mtl::Buffer ViewportThemeUBO;

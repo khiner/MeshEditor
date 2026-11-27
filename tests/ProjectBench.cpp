@@ -3,9 +3,9 @@
 #include "RunSuites.h"
 #include "TestPaths.h"
 #include "editor/Engine.h"
+#include "graph/Graph.h"
 #include "materialx/Library.h"
 #include "mesh/MeshStore.h"
-#include "procedure/Procedure.h"
 #include "project/Recording.h"
 #include "scene/Entity.h"
 
@@ -45,11 +45,11 @@ std::pair<std::vector<double>, std::vector<double>> Navigations(store::History &
     }
     return {std::move(hot), std::move(cold)};
 }
-// The history bytes a node append and a parameter change copy on a procedure of the node count.
-bool BenchProcedureHistory(uint32_t node_count) {
-    return RunBench("mesheditor-project-procedure-bench", [&](state::Registry &r, project::Project &p) {
+// The history bytes a node append and a parameter change copy on a graph of the node count.
+bool BenchGraphHistory(uint32_t node_count) {
+    return RunBench("mesheditor-project-graph-bench", [&](state::Registry &r, project::Project &p) {
         p.Settle();
-        project::Do(p, action::MakeAction(action::object::AddMeshPrimitive{primitive::Cube{}, std::make_unique<MeshInstanceCreateInfo>()}));
+        project::Do(p, action::MakeAction(action::object::AddMeshPrimitive{primitive::Cube{}, std::make_unique<MeshObjectCreateInfo>()}));
         const auto mesh_entity = GetActiveMeshEntity(r);
         const auto add = [&] { project::Do(p, action::MakeAction(action::nodes::AddNode{mesh_entity, action::nodes::OpNode{"constant"}})); };
         for (uint32_t n = 1u; n < node_count; ++n) add();
@@ -60,13 +60,13 @@ bool BenchProcedureHistory(uint32_t node_count) {
             add();
             appends.push_back(double(owned() - before));
         }
-        const auto node = r.get<const procedure::NetworkNodes>(mesh_entity).Last;
+        const auto node = r.get<const graph::GraphNodes>(mesh_entity).Last;
         for (int i = 0; i < 30; ++i) {
             const auto before = owned();
             project::Do(p, action::MakeAction(action::nodes::SetOpInput{node, "value", std::make_unique<action::nodes::OpInputValue>(action::nodes::OpLiteral{mx::Type::Float, {std::bit_cast<uint32_t>(float(i + 1))}})}));
             changes.push_back(double(owned() - before));
         }
-        std::println("{}-node procedure: {:.0f} owned history bytes per node append, {:.0f} per parameter change (medians)", node_count, Median(appends), Median(changes));
+        std::println("{}-node graph: {:.0f} owned history bytes per node append, {:.0f} per parameter change (medians)", node_count, Median(appends), Median(changes));
     });
 }
 } // namespace
@@ -115,7 +115,7 @@ int main() {
         expect(history.Close());
     }
     for (const uint32_t node_count : {20u, 200u}) {
-        if (!BenchProcedureHistory(node_count)) return 1;
+        if (!BenchGraphHistory(node_count)) return 1;
     }
     return RunSuites();
 }

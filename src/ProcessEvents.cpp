@@ -26,25 +26,25 @@
 #include "editor/AudioIntegration.h"
 #include "gltf/GltfScene.h"
 #include "gpu/LightRecord.h"
+#include "graph/Cook.h"
+#include "graph/Graph.h"
+#include "graph/MaterialGraphs.h"
 #include "mesh/MeshChanges.h"
 #include "mesh/Primitives.h"
 #include "object/ObjectOps.h"
 #include "physics/PhysicsChanges.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
-#include "procedure/Cook.h"
-#include "procedure/MaterialGraphs.h"
-#include "procedure/Procedure.h"
 #include "render/ClusterLodRepair.h"
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
-#include "render/Instance.h"
 #include "render/MaterialComponents.h"
 #include "render/MeshletBoundsRefit.h"
+#include "render/ObjectGeometry.h"
 #include "render/Pipelines.h"
 #include "render/RenderChanges.h"
 #include "render/Textures.h"
-#include "scene/HierarchyInstance.h"
+#include "scene/Instance.h"
 #include "scene/SceneChanges.h"
 #include "scene/SceneGraph.h"
 #include "selection/SelectionChanges.h"
@@ -73,8 +73,8 @@ using std::views::iota;
 namespace {
 using namespace he;
 
-vec3 ComputeElementWorldPosition(const state::Registry &r, state::Entity instance_entity, Element element, uint32_t handle, bool canonical) {
-    const auto mesh = GetMesh(r, r.get<Instance>(instance_entity).Entity);
+vec3 ComputeElementWorldPosition(const state::Registry &r, state::Entity object_entity, Element element, uint32_t handle, bool canonical) {
+    const auto mesh = GetMesh(r, r.get<ObjectGeometry>(object_entity).Entity);
     const auto &meshes = r.Resources.get<const MeshStore>();
     const auto &pipelines = GetMeshPipelines(r);
     const auto id = mesh.GetStoreId();
@@ -91,7 +91,7 @@ vec3 ComputeElementWorldPosition(const state::Registry &r, state::Entity instanc
     }
     vec3 center{};
     for (const auto &position : VertexPositions(meshes, id, vertices)) center += position;
-    return TransformPoint(*WorldTransformOf(r, instance_entity), vertices.empty() ? center : center / float(vertices.size()));
+    return TransformPoint(*WorldTransformOf(r, object_entity), vertices.empty() ? center : center / float(vertices.size()));
 }
 
 void SetEditMode(state::Registry &r, Element mode) {
@@ -155,11 +155,11 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
 
     std::unordered_set<state::Entity> bone_state_dirty;
 
-    if (pass != EventPass::Restore) PublishHierarchyInstances(r);
-    else Reset(r.Resources.get<HierarchyChanges>(), r);
+    if (pass != EventPass::Restore) PublishSubgraphInstances(r);
+    else Reset(r.Resources.get<InstanceChanges>(), r);
     ProcessObjectRemovals(r);
 
-    // Playback advances the current frame before the procedures cook and the poses evaluate at it.
+    // Playback advances the current frame before the graphs cook and the poses evaluate at it.
     if (const auto &playback = r.get<const TimelinePlayback>(state::Document); playback.Playing && pass == EventPass::Frame && playback.CurrentFrame == r.get<const LastEvaluatedFrame>(state::Document).Value) {
         const auto &range = r.get<const TimelineRange>(state::Document);
         const auto &frame_state = r.Resources.get<const FrameState>();
@@ -171,7 +171,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         const auto new_frame = int(std::floor(pf));
         if (new_frame != playback.CurrentFrame) r.patch<TimelinePlayback>(state::Document, [&](auto &p) { p.CurrentFrame = new_frame; });
     }
-    // Textures materialize before the procedures cook, which sample them.
+    // Textures materialize before the graphs cook, which sample them.
     if (!render_changes.MaterializedTextures.empty()) {
         for (const auto [_, t] : r.view<const MaterializedTexture>().each()) {
             // A renamed texture node renames its GPU texture.
@@ -200,7 +200,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         SubmitTextureUploadBatch(batch);
         textures.PendingUploads.clear();
     }
-    // Pending assignments and the active variant's materials write to the drawn records before the procedures cook, which read the materials each mesh draws.
+    // Pending assignments and the active variant's materials write to the drawn records before the graphs cook, which read the materials each mesh draws.
     for (const auto mesh_entity : mesh_changes.Material) {
         const auto *assignment = r.valid(mesh_entity) && r.all_of<EvaluatedMesh>(mesh_entity) ? r.try_get<const MeshMaterialAssignment>(mesh_entity) : nullptr;
         if (!assignment) continue;
@@ -219,15 +219,15 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
             }
         }
     }
-    // The material graphs settle before the procedures cook, which read the attributes each material samples, and again after, for the attribute tables of the cooked records.
-    const auto settle_procedures = [&] {
-        procedure::SettleMaterialGraphs(r);
-        SettleProcedures(r, pass);
-        procedure::SettleMaterialGraphs(r);
-        if (pass != EventPass::Restore) CollectHierarchyDefinitions(r);
+    // The material graphs settle before the graphs cook, which read the attributes each material samples, and again after, for the attribute tables of the cooked records.
+    const auto settle_geometry_graphs = [&] {
+        graph::SettleMaterialGraphs(r);
+        SettleGeometryGraphs(r, pass);
+        graph::SettleMaterialGraphs(r);
+        if (pass != EventPass::Restore) CollectUnplacedSubgraphs(r);
         ProcessObjectRemovals(r);
     };
-    settle_procedures();
+    settle_geometry_graphs();
     if (pass == EventPass::Restore) r.Resources.get<FrameState>().Scene = ActingScene(r);
     // The active viewport takes an action's view setup before the records derive from its display.
     if (const auto viewport = FindActiveViewport(r); viewport != state::Null) TakePendingViewSetup(r, viewport);
@@ -249,7 +249,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         r.Resources.get<mtl::LibraryCache>().Clear();
         r.Resources.erase<Pipelines>();
         r.Resources.erase<MeshPipelines>();
-        procedure::ResetPrograms(r);
+        graph::ResetPrograms(r);
         RebuildStudioEnvironments(r);
         request();
     }
@@ -284,7 +284,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         pending_env.reset();
     }
     // A selection edit captures the elements an edit mode change or a box select leaves selected into its node.
-    const bool captures = r.all_of<procedure::SelectionEditing>(state::Document) && r.any_of<PendingSetEditMode, PendingBoxSelect>(state::Document);
+    const bool captures = r.all_of<graph::SelectionEditing>(state::Document) && r.any_of<PendingSetEditMode, PendingBoxSelect>(state::Document);
     // Process pending handlers before consuming the reactive trackers they update.
     if (const auto *pending = r.try_get<const PendingSetEditMode>(state::Document)) {
         const auto mode = pending->Mode;
@@ -374,8 +374,8 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
             }
         }
     }
-    // The procedures cook the captured selection in the same pass.
-    if (captures) settle_procedures();
+    // The graphs cook the captured selection in the same pass.
+    if (captures) settle_geometry_graphs();
     // Animation evaluates before render state syncs.
     bool anim_advanced;
     int evaluated_from;
@@ -418,8 +418,8 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     }
     if (!sync.NewlyInserted.empty()) {
         const auto records = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>();
-        for (const auto instance_entity : sync.NewlyInserted) {
-            if (const auto *force = r.try_get<const VertexForce>(instance_entity)) records[r.get<const RenderInstance>(instance_entity).BufferIndex].ExcitedVertex = force->Vertex;
+        for (const auto object_entity : sync.NewlyInserted) {
+            if (const auto *force = r.try_get<const VertexForce>(object_entity)) records[r.get<const RenderInstance>(object_entity).BufferIndex].ExcitedVertex = force->Vertex;
         }
     }
 
@@ -462,8 +462,8 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
             }
         }
         if (!pending_armatures.empty()) {
-            for (const auto [_, instance, modifier] : r.view<const Instance, const ArmatureModifier>().each()) {
-                if (std::ranges::contains(pending_armatures, modifier.ArmatureObjectEntity)) r.emplace_or_replace<MeshLayoutDirty>(instance.Entity);
+            for (const auto [_, geometry, modifier] : r.view<const ObjectGeometry, const ArmatureModifier>().each()) {
+                if (std::ranges::contains(pending_armatures, modifier.ArmatureObjectEntity)) r.emplace_or_replace<MeshLayoutDirty>(geometry.Entity);
             }
             request();
         }
@@ -472,7 +472,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     std::unordered_set<state::Entity> dirty_sound_selection_meshes;
 
     for (const auto object : armature_changes.SkinBinding) {
-        if (const auto *instance = r.try_get<const Instance>(object)) r.emplace_or_replace<MeshLayoutDirty>(instance->Entity);
+        if (const auto *geometry = r.try_get<const ObjectGeometry>(object)) r.emplace_or_replace<MeshLayoutDirty>(geometry->Entity);
     }
 
     if (auto shading = EncodeNewMeshShading(r, chain)) {
@@ -522,7 +522,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
 
     if (scenes_changed || sync.SlotsChanged ||
         AnyChanged(render_changes.SceneLight, render_changes.InstanceVisibility, render_changes.InstanceDestroyed, scene_changes.Hierarchy, scene_changes.Membership)) {
-        const auto light_entities = SortedEntities(r.view<const SceneLight, const Instance, const RenderInstance>());
+        const auto light_entities = SortedEntities(r.view<const SceneLight, const ObjectGeometry, const RenderInstance>());
         const auto same_shape = [](const LightRecord &a, const LightRecord &b) {
             return a.Type == b.Type && a.Size == b.Size && a.Range == b.Range && a.InnerConeCos == b.InnerConeCos && a.OuterConeCos == b.OuterConeCos;
         };
@@ -597,10 +597,11 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
             enabled_modes.insert(InteractionMode::Excite);
             if (interaction_mode == InteractionMode::Excite) {
                 for (const auto e : sound_vertex_changes.Vertices) {
-                    if (const auto *instance = r.valid(e) ? r.try_get<const Instance>(e) : nullptr) r.emplace_or_replace<MeshDisplayDirty>(instance->Entity);
+                    if (const auto *geometry = r.valid(e) ? r.try_get<const ObjectGeometry>(e) : nullptr) dirty_sound_selection_meshes.insert(geometry->Entity);
                 }
                 request();
-            } else {
+            } else if (!r.DocumentReadOnly) {
+                // New sound vertices show in Excite mode, and a restore brings back the mode it held.
                 SetInteractionMode(r, InteractionMode::Excite);
             }
         }
@@ -608,16 +609,16 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
 
     {
         const auto &selected_tracker = selection_changes.Selected;
-        const auto &active_tracker = selection_changes.ActiveInstance;
+        const auto &active_tracker = selection_changes.ActiveObject;
         const auto mode = r.get<const Interaction>(state::Document).Mode;
         if ((!selected_tracker.empty() || !active_tracker.empty()) && mode == InteractionMode::Edit) scene_state.EditPositionsPending = true;
         if (const auto element = r.get<const EditMode>(state::Document).Value; mode == InteractionMode::Edit && element != Element::None && !selected_tracker.empty()) {
             std::vector<state::Entity> converting;
             for (const auto e : selected_tracker) {
-                const auto *instance = r.valid(e) && r.all_of<Selected>(e) ? r.try_get<const Instance>(e) : nullptr;
-                if (!instance || !r.all_of<MeshElementSelection>(instance->Entity)) continue;
-                const auto id = *DrawnStoreId(r, instance->Entity);
-                if (meshes.Get(id).SelectionSummary.Count && meshes.GetSelectionSummary(id).Mode != element) converting.push_back(instance->Entity);
+                const auto *geometry = r.valid(e) && r.all_of<Selected>(e) ? r.try_get<const ObjectGeometry>(e) : nullptr;
+                if (!geometry || !r.all_of<MeshElementSelection>(geometry->Entity)) continue;
+                const auto id = *DrawnStoreId(r, geometry->Entity);
+                if (meshes.Get(id).SelectionSummary.Count && meshes.GetSelectionSummary(id).Mode != element) converting.push_back(geometry->Entity);
             }
             SortUnique(converting);
             if (!converting.empty()) select();
@@ -626,16 +627,16 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         if (!selected_tracker.empty() || (!active_tracker.empty() && mode != InteractionMode::Object)) request(mode == InteractionMode::Edit);
 
         bool states_written = false;
-        const auto write_instance_state = [&](state::Entity instance_entity) {
-            if (const auto *ri = r.try_get<const RenderInstance>(instance_entity); ri && ri->BufferIndex != UINT32_MAX) {
-                WriteInstanceState(r, buffers, instance_entity, ri->BufferIndex, InstanceStateBits(r, instance_entity));
+        const auto write_instance_state = [&](state::Entity object_entity) {
+            if (const auto *ri = r.try_get<const RenderInstance>(object_entity); ri && ri->BufferIndex != UINT32_MAX) {
+                WriteInstanceState(r, buffers, object_entity, ri->BufferIndex, InstanceStateBits(r, object_entity));
                 states_written = true;
             }
         };
         for (const auto *tracker : {&selected_tracker, &active_tracker}) {
-            for (const auto instance_entity : *tracker) {
-                write_instance_state(instance_entity);
-                if (const auto arm = FindArmatureObject(r, instance_entity); arm != state::Null) bone_state_dirty.insert(arm);
+            for (const auto object_entity : *tracker) {
+                write_instance_state(object_entity);
+                if (const auto arm = FindArmatureObject(r, object_entity); arm != state::Null) bone_state_dirty.insert(arm);
             }
         }
         if (states_written) request();
@@ -652,8 +653,8 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     const auto interaction_mode = r.get<const Interaction>(state::Document).Mode;
     const bool is_edit_mode = interaction_mode == InteractionMode::Edit;
 
-    const auto orbit_to_active = [&](state::Entity instance_entity, Element element, uint32_t handle, bool canonical) {
-        const auto world_pos = ComputeElementWorldPosition(r, instance_entity, element, handle, canonical);
+    const auto orbit_to_active = [&](state::Entity object_entity, Element element, uint32_t handle, bool canonical) {
+        const auto world_pos = ComputeElementWorldPosition(r, object_entity, element, handle, canonical);
         for (const auto [viewport, orbit, camera] : r.view<const OrbitToActive, const ViewCameraState>().each()) {
             if (!orbit.Value) continue;
             if (const auto dir = world_pos - camera.Active.Target; Dot(dir, dir) >= 1e-6f) {
@@ -665,24 +666,24 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     if (const auto &tracker = selection_changes.MeshActiveElement; !tracker.empty()) {
         const auto edit_mode = r.get<const EditMode>(state::Document).Value;
         const auto active_entity = FindActiveEntity(r);
-        const auto *active_instance = r.try_get<Instance>(active_entity);
+        const auto *active_geometry = r.try_get<ObjectGeometry>(active_entity);
         for (const auto mesh_entity : tracker) {
             if (const auto *active_element = r.try_get<MeshActiveElement>(mesh_entity);
-                active_element && edit_mode != Element::None && active_instance && active_instance->Entity == mesh_entity) {
+                active_element && edit_mode != Element::None && active_geometry && active_geometry->Entity == mesh_entity) {
                 orbit_to_active(active_entity, edit_mode, active_element->Handle, is_edit_mode);
             }
             if (interaction_mode == InteractionMode::Excite) dirty_sound_selection_meshes.insert(mesh_entity);
         }
     }
-    for (const auto instance_entity : sound_vertex_changes.VertexForce) {
+    for (const auto object_entity : sound_vertex_changes.VertexForce) {
         if (interaction_mode == InteractionMode::Excite) {
-            if (const auto *inst = r.try_get<Instance>(instance_entity)) dirty_sound_selection_meshes.insert(inst->Entity);
+            if (const auto *inst = r.try_get<ObjectGeometry>(object_entity)) dirty_sound_selection_meshes.insert(inst->Entity);
         }
-        if (const auto *ev = r.try_get<VertexForce>(instance_entity)) orbit_to_active(instance_entity, Element::Vertex, ev->Vertex, false);
+        if (const auto *ev = r.try_get<VertexForce>(object_entity)) orbit_to_active(object_entity, Element::Vertex, ev->Vertex, false);
     }
-    for (const auto instance_entity : sound_vertex_changes.Updated) {
+    for (const auto object_entity : sound_vertex_changes.Updated) {
         if (interaction_mode == InteractionMode::Excite) {
-            if (const auto *inst = r.try_get<const Instance>(instance_entity)) dirty_sound_selection_meshes.insert(inst->Entity);
+            if (const auto *inst = r.try_get<const ObjectGeometry>(object_entity)) dirty_sound_selection_meshes.insert(inst->Entity);
         }
     }
     // Camera overlays use the lenses evaluated by animation above.
@@ -699,12 +700,12 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         for (const auto e : r.view<const HasVariantMappings, const MeshSourceLayout>()) material_meshes.push_back(e);
     }
     // A geometry whose material slots changed shows them on its node.
-    for (const auto mesh_entity : material_meshes) r.Resources.get<procedure::NetworkChanges>().Nodes.emplace(mesh_entity);
+    for (const auto mesh_entity : material_meshes) r.Resources.get<graph::GraphChanges>().Nodes.emplace(mesh_entity);
     const bool every_mesh = (AnyChanged(render_changes.Materials) || displays_changed) && RefreshMaterialLodAttributes(r);
     if (every_mesh) {
         material_meshes.clear();
         for (const auto entity : r.view<const EvaluatedMesh>()) material_meshes.push_back(entity);
-        for (const auto [_, owned] : r.view<const procedure::ProcedureOwnedMesh>().each()) {
+        for (const auto [_, owned] : r.view<const graph::GraphOwnedMesh>().each()) {
             if (r.valid(owned.MeshEntity)) material_meshes.push_back(owned.MeshEntity);
         }
     }
@@ -806,12 +807,12 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     }
     const bool mode_changed = !viewport_changes.InteractionMode.empty();
     if (mode_changed) {
-        for (const auto [_, instance, __] : r.view<const Instance, const ArmatureModifier>().each()) r.emplace_or_replace<MeshLayoutDirty>(instance.Entity);
-        for (const auto [_, instance, __] : r.view<const Instance, const MorphWeightRange>().each()) r.emplace_or_replace<MeshLayoutDirty>(instance.Entity);
+        for (const auto [_, geometry, __] : r.view<const ObjectGeometry, const ArmatureModifier>().each()) r.emplace_or_replace<MeshLayoutDirty>(geometry.Entity);
+        for (const auto [_, geometry, __] : r.view<const ObjectGeometry, const MorphWeightRange>().each()) r.emplace_or_replace<MeshLayoutDirty>(geometry.Entity);
         request();
-        for (const auto [_, instance, __] : r.view<const Instance, const SoundVertices>().each()) {
-            r.emplace_or_replace<MeshDisplayDirty>(instance.Entity);
-            if (interaction_mode == InteractionMode::Excite) dirty_sound_selection_meshes.insert(instance.Entity);
+        for (const auto [_, geometry, __] : r.view<const ObjectGeometry, const SoundVertices>().each()) {
+            r.emplace_or_replace<MeshDisplayDirty>(geometry.Entity);
+            if (interaction_mode == InteractionMode::Excite) dirty_sound_selection_meshes.insert(geometry.Entity);
         }
         for (const auto arm : r.view<const ArmatureObject>()) bone_state_dirty.insert(arm);
     }
@@ -1123,8 +1124,8 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         std::vector<std::pair<state::Entity, std::span<const uint32_t>>> sound_selections;
         sound_selections.reserve(dirty_sound_selection_meshes.size());
         std::unordered_map<state::Entity, std::span<const uint32_t>> sound_vertices_by_mesh;
-        for (const auto [entity, instance, excitable] : r.view<const Instance, const SoundVertices>().each()) {
-            sound_vertices_by_mesh.try_emplace(instance.Entity, meshes.Arenas().SoundVertices.Get(excitable.Vertices));
+        for (const auto [entity, geometry, excitable] : r.view<const ObjectGeometry, const SoundVertices>().each()) {
+            sound_vertices_by_mesh.try_emplace(geometry.Entity, meshes.Arenas().SoundVertices.Get(excitable.Vertices));
         }
         for (const auto mesh_entity : dirty_sound_selection_meshes) {
             const auto it = sound_vertices_by_mesh.find(mesh_entity);
@@ -1162,12 +1163,12 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
         RefreshMeshDisplays(r);
         request();
     }
-    // A mesh's outlined instances follow its primary edit instance and its instances' selection and visibility.
-    if (!changed_primaries.empty() || AnyChanged(selection_changes.Selected, selection_changes.ActiveInstance, render_changes.InstanceVisibility)) {
+    // A mesh's outlined objects follow its primary edit object and its objects' selection and visibility.
+    if (!changed_primaries.empty() || AnyChanged(selection_changes.Selected, selection_changes.ActiveObject, render_changes.InstanceVisibility)) {
         auto retallied = changed_primaries;
-        for (const auto *instances : {&selection_changes.Selected, &selection_changes.ActiveInstance, &render_changes.InstanceVisibility}) {
-            for (const auto e : *instances) {
-                if (const auto *instance = r.valid(e) ? r.try_get<const Instance>(e) : nullptr) retallied.push_back(instance->Entity);
+        for (const auto *changed : {&selection_changes.Selected, &selection_changes.ActiveObject, &render_changes.InstanceVisibility}) {
+            for (const auto e : *changed) {
+                if (const auto *geometry = r.valid(e) ? r.try_get<const ObjectGeometry>(e) : nullptr) retallied.push_back(geometry->Entity);
             }
         }
         SortUnique(retallied);
@@ -1181,14 +1182,14 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
     }
     for (const auto viewport : viewport_changes.View) RequestFrame(r, viewport);
     RecordWorldTransformChanges(r);
-    procedure::SettleNetworks(r, pass == EventPass::Restore);
+    graph::SettleItemGraphs(r, pass == EventPass::Restore);
     r.ClearChanges();
     r.clear<MeshGeometryDirty, MeshPositionsChanged, MeshMaterialAssignment, MeshDisplayDirty>();
     FinishCookPass(r);
 }
 
 void RegisterSceneComponentHandlers(state::Registry &r) {
-    RegisterHierarchyInstances(r);
+    RegisterInstances(r);
     constexpr auto release_edit_work = [](state::Registry &r, state::Entity e) { r.remove<MeshEditWork>(e); };
     r.on_destroy<MeshHandle, release_edit_work>();
     r.on_destroy<EvaluatedMesh, release_edit_work>();
@@ -1196,10 +1197,10 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
     r.on_destroy<BoundsRun, &ReleaseMeshLayout>();
     auto &selection = r.Resources.emplace<SelectionChanges>();
     selection.Selected.bind(r).on<Selected>(On::Create | On::Destroy);
-    selection.ActiveInstance.bind(r).on<Active>(On::Create | On::Destroy);
+    selection.ActiveObject.bind(r).on<Active>(On::Create | On::Destroy);
     selection.BoneSelection.bind(r).on<BoneSelection>(On::Create | On::Update | On::Destroy).on<BoneActive>(On::Create | On::Destroy);
     selection.MeshActiveElement.bind(r).on<MeshActiveElement>(On::Create | On::Update);
-    selection.Editing.bind(r).on<procedure::SelectionEditing>(On::Create | On::Destroy);
+    selection.Editing.bind(r).on<graph::SelectionEditing>(On::Create | On::Destroy);
     auto &mesh = r.Resources.emplace<MeshChanges>();
     mesh.Geometry.bind(r).on<MeshGeometryDirty>(On::Create).on<MeshPositionsChanged>(On::Create);
     mesh.Material.bind(r).on<MeshMaterialAssignment>(On::Create | On::Update);
@@ -1210,7 +1211,7 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
     sound_vertices.Updated.bind(r).on<SoundVertices>(On::Update);
     sound_vertices.VertexForce.bind(r).on<VertexForce>(On::Create | On::Destroy);
     auto &render = r.Resources.emplace<RenderChanges>();
-    render.InstanceVisibility.bind(r).on<Instance>(On::Create | On::Update | On::Destroy).on<Hidden>(On::Create | On::Destroy);
+    render.InstanceVisibility.bind(r).on<ObjectGeometry>(On::Create | On::Update | On::Destroy).on<Hidden>(On::Create | On::Destroy);
     render.InstanceCreated.bind(r).on<RenderInstance>(On::Create);
     render.InstanceDestroyed.bind(r).on<RenderInstance>(On::Destroy);
     render.Materials.bind(r);
@@ -1253,25 +1254,25 @@ void RegisterSceneComponentHandlers(state::Registry &r) {
         .on<AnimationClips>(On::Create | On::Update | On::Destroy)
         .on<Animations>(On::Update);
     animation.KeyframeSources.bind(r).on<TimelineRange>(On::Create | On::Update).on<MeshMaterialSlotSelection>(On::Create | On::Update | On::Destroy);
-    // Nodes binds the components an item's title and references are derived from and a procedure node's title and labels follow, Pages those that decide which items a page shows and how many subnet nodes use each definition,
+    // Nodes binds the components an item's title and references are derived from and a graph node's title and labels follow, Pages those that decide which items a page shows and how many subgraph nodes use each subgraph,
     // and Fields the destruction of each component a value port can address.
-    auto &network = r.Resources.emplace<procedure::NetworkChanges>();
+    auto &graph = r.Resources.emplace<graph::GraphChanges>();
     const auto bind = [&]<typename... Cs>(state::DirtySet &set, TypeList<Cs...>) {
         set.bind(r, state::Clearing::Explicit);
         (set.on<Cs>(On::Create | On::Update | On::Destroy), ...);
     };
     bind(
-        network.Nodes,
+        graph.Nodes,
         TypeList<
-            ObjectKind, BoneIndex, Scene, HierarchyDefinition, PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef, procedure::NetworkSubnet, procedure::GeometryProcedure,
-            Name, SceneParent, Instance, HierarchyInstance, ArmatureModifier, BoneConstraints, ColliderShape, ColliderMaterial, PhysicsJoint, TriggerNodes,
+            ObjectKind, BoneIndex, Scene, PhysicsMaterial, CollisionSystem, CollisionFilter, JointDescription, graph::SubgraphItems, graph::GeometryGraph,
+            Name, SceneParent, ObjectGeometry, Instance, ArmatureModifier, BoneConstraints, ColliderShape, ColliderMaterial, PhysicsJoint, TriggerNodes,
             EvaluatedMesh, MeshHandle>{}
     );
     // A node kind with an operation is titled and labeled by it.
-    procedure::ForEachKind([&]<typename K> {
-        if constexpr (requires { &K::Operation; }) network.Nodes.on<K>(On::Update);
+    graph::ForEachKind([&]<typename K> {
+        if constexpr (requires { &K::Operation; }) graph.Nodes.on<K>(On::Update);
     });
-    bind(network.Pages, TypeList<SceneMembership, HierarchyMember, ArmatureObject, Material, MaterializedTexture, procedure::NetworkSubnet, procedure::ProcedureInstances, procedure::ProcedureNode, procedure::SubnetDefinition>{});
-    bind(network.Cells, TypeList<procedure::NetworkLayout>{});
-    action::TrackFieldRemovals(network.Fields.bind(r, state::Clearing::Explicit));
+    bind(graph.Pages, TypeList<SceneMembership, CopyOf, ArmatureObject, Material, MaterializedTexture, graph::SubgraphItems, graph::GraphInstances, graph::GraphNode, graph::Subgraph>{});
+    bind(graph.Cells, TypeList<graph::GraphLayout>{});
+    action::TrackFieldRemovals(graph.Fields.bind(r, state::Clearing::Explicit));
 }

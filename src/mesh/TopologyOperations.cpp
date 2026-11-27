@@ -271,6 +271,9 @@ std::optional<MeshTopologyTask> SubdivideLengthTask(state::Registry &r, const Me
             ++sides;
         }
         if (!cut || sides < 3u || sides > 4u || std::ranges::all_of(divisions | std::views::take(sides), [&](uint32_t d) { return d == divisions[0]; })) continue;
+        // The kernel's side c runs from corner c along the edge arriving at the next corner.
+        // A quad's sorted divisions depend on its first side, so the table's key starts where the kernel's does.
+        std::rotate(divisions.begin(), divisions.begin() + 1, divisions.begin() + sides);
         tables.insert(SortDivisions(divisions).Sorted);
     }
     list.push_back(uint32_t(tables.size()));

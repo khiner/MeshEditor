@@ -1,14 +1,14 @@
 #pragma once
 
 #include "gpu/OpPoint.h"
+#include "graph/Graph.h"
 #include "ops/Compile.h"
-#include "procedure/Procedure.h"
 
 namespace MTL {
 class Texture;
 } // namespace MTL
 
-namespace procedure {
+namespace graph {
 // The data type of a value of the MaterialX type, or none for a string, filename, shader or material.
 std::optional<DataType> DataTypeOf(mx::Type);
 // The MaterialX type of a numeric or matrix data type.
@@ -79,7 +79,7 @@ bool OpVaries(const OpDefinition &definition, const Op &op, auto &&input) {
 }
 bool OpVaries(const state::Registry &, state::Entity node);
 
-// The declaration each op node of a plan resolves to, and its procedure's op value block.
+// The declaration each op node of a plan resolves to, and its graph's op value block.
 // It depends on the plan's structure and its op nodes, so plans of one shape share it.
 struct OpLayout {
     struct Node {
@@ -106,26 +106,26 @@ OpLayout LayoutOf(const state::Registry &, const CookPlan &);
 std::optional<mx::Type> OutputType(const state::Registry &, const CookPlan &, const OpLayout &, uint32_t node, uint16_t socket);
 
 const OpSlot *FindOpSlot(const OpValueBlock &, const NodePath &node, std::string_view input, mx::Type, OpSlotKind);
-// Sets the op input to a literal of the type in its network's block, laying the block out again when the input held no literal of that type.
+// Sets the op input to a literal of the type in its graph's block, laying the block out again when the input held no literal of that type.
 // A literal of a definition's op is also written into each block that holds it for an occurrence, and every mesh holding one cooks from it.
-// In the library registry the words go to its literal store.
+// In the registry of built-in subgraphs the words go to its literal store.
 void WriteOpLiteral(state::Registry &, state::Entity node, std::string_view input, mx::Type, std::span<const uint32_t> words);
-// The words of the op input's literal of the type: in its network's block of the op value store, or in the library registry's literal store.
+// The words of the op input's literal of the type: in its graph's block of the op value store, or in the literal store of the registry of built-in subgraphs.
 // Empty for an input that holds no literal of the type.
 std::span<const uint32_t> LiteralWords(const state::Registry &, state::Entity node, std::string_view input, mx::Type);
-// Lays out the procedure's op value block for its plan's layout, keeping each set literal's value and writing every other slot's.
+// Lays out the graph's op value block for its plan's layout, keeping each set literal's value and writing every other slot's.
 // Writes only the words that differ when the layout is unchanged.
 void LayoutOpValues(state::Registry &, state::Entity mesh_entity, const CookPlan &, const OpLayout &);
 // Lays out the definition's op value block with a slot for each set literal of its ops, keeping their values.
-void LayoutDefinitionValues(state::Registry &, state::Entity definition);
-// Lays out the block of a geometry procedure's or a definition's network.
-void LayoutNetworkValues(state::Registry &, state::Entity network);
-// The type and words of each set literal of an op node, by input name, from its network's block.
+void LayoutSubgraphValues(state::Registry &, state::Entity definition);
+// Lays out the block of a geometry graph or a subgraph.
+void LayoutGraphValues(state::Registry &, state::Entity graph);
+// The type and words of each set literal of an op node, by input name, from its graph's block.
 using OpLiteralWords = std::map<std::string, std::pair<mx::Type, std::vector<uint32_t>>, std::less<>>;
 OpLiteralWords LiteralsOf(const state::Registry &, state::Entity node);
-// Writes the words of each literal the op node also holds with the same type into its network's block, which lays them out.
+// Writes the words of each literal the op node also holds with the same type into its graph's block, which lays them out.
 void WriteLiterals(state::Registry &, state::Entity node, const OpLiteralWords &);
-// Writes the literals each copied op node's original holds in `from` into the copy's network's block.
+// Writes the literals each copied op node's original holds in `from` into the copy's graph's block.
 void CopyLiterals(state::Registry &, const state::Registry &from, const NodeCopies &);
 
 // A read of a stored field by the graph node that reads it: an output of a node other than an op, or of a stored-field op.
@@ -164,7 +164,7 @@ struct OpGraph {
 // The op nodes the plan's op outputs read, in plan order, and a read of each stored field they take.
 // Each field read has an empty name, which the caller sets.
 // A filter of a field that varies reads as its image, and the filters in `unheld`, which hold none, read as their inputs.
-OpGraph GraphOf(const state::Registry &, const CookPlan &, const OpLayout &, std::span<const std::pair<uint32_t, uint16_t>> outputs, std::span<const uint32_t> unheld);
+OpGraph OpGraphOf(const state::Registry &, const CookPlan &, const OpLayout &, std::span<const std::pair<uint32_t, uint16_t>> outputs, std::span<const uint32_t> unheld);
 // Keeps each fault of the program the graph compiles to on the plan node of its graph node.
 void KeepFaults(state::Registry &, const CookPlan &, const OpGraph &, std::span<const ops::NodeFault>);
 // Whether the field a filter's first input reads lies over one set of texture coordinates: its texture coordinate nodes hold one index, which is zero where an input of it reads its default coordinates.
@@ -172,4 +172,4 @@ void KeepFaults(state::Registry &, const CookPlan &, const OpGraph &, std::span<
 bool ReadsOneCoordinateSet(const state::Registry &, const CookPlan &, const OpLayout &, uint32_t node, std::span<const uint32_t> unheld);
 // Makes the graph read its values relative to its first, so graphs whose values lay out alike from their first share a program, and returns the first's word.
 uint32_t Rebase(ops::Graph &);
-} // namespace procedure
+} // namespace graph

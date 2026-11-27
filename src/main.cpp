@@ -26,6 +26,7 @@
 #include "editor/Engine.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gltf/GltfScene.h"
+#include "graph/NodeEditor.h"
 #include "image/ImageEncode.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
@@ -35,12 +36,11 @@
 #include "metal/RenderTarget.h"
 #include "metal/Shader.h"
 #include "physics/PhysicsTypes.h"
-#include "procedure/NodeEditor.h"
 #include "project/HistoryUi.h"
 #include "project/Sessions.h"
 #include "render/GpuBuffers.h"
-#include "render/Instance.h"
 #include "render/MaterialComponents.h"
+#include "render/ObjectGeometry.h"
 #include "render/Textures.h"
 #include "scene/CameraLens.h"
 #include "scene/Entity.h"
@@ -473,7 +473,7 @@ void DrawStylePanel(state::Registry &r, Panel &panel) {
             EndTabItem();
         }
         if (BeginTabItem("Nodes")) {
-            procedure::DrawNodeStyle(r);
+            graph::DrawNodeStyle(r);
             EndTabItem();
         }
         if (BeginTabItem("Timeline")) {
@@ -612,8 +612,8 @@ EditorPanelsFrame BeginEditorPanels(
         End();
         PopStyleVar();
     });
-    DrawPanel(panels.Nodes.Name, [&] { procedure::DrawNodesPanel(r, panels.Nodes, interactive); });
-    DrawPanel(panels.Properties.Name, [&] { procedure::DrawPropertiesPanel(r, panels.Nodes, panels.Properties, interactive); });
+    DrawPanel(panels.Nodes.Name, [&] { graph::DrawNodesPanel(r, panels.Nodes, interactive); });
+    DrawPanel(panels.Properties.Name, [&] { graph::DrawPropertiesPanel(r, panels.Nodes, panels.Properties, interactive); });
     if (interactive) r.Resources.get<FrameState>().Scrubbing = scrubbing;
 
     if (interactive) FollowHoveredViewport(r);
@@ -1397,7 +1397,7 @@ struct BenchmarkDriver {
         if (Action != BenchAction::Transform && Action != BenchAction::Visibility && Action != BenchAction::Drag && Action != BenchAction::Material) return;
         std::vector<state::Entity> entities;
         for (const auto [entity, kind] : r.view<const ObjectKind>(state::Exclude<SubElementOf>).each()) {
-            if (kind.Value == ObjectType::Mesh && r.all_of<Instance, Transform>(entity) && !r.all_of<Hidden>(entity)) entities.emplace_back(entity);
+            if (kind.Value == ObjectType::Mesh && r.all_of<ObjectGeometry, Transform>(entity) && !r.all_of<Hidden>(entity)) entities.emplace_back(entity);
         }
         std::ranges::sort(entities);
         entities.resize(std::min<size_t>(entities.size(), capture.BenchActionCount));
@@ -1406,7 +1406,7 @@ struct BenchmarkDriver {
         } else if (Action == BenchAction::Material) {
             const auto &meshes = r.Resources.get<const MeshStore>();
             for (const auto entity : entities) {
-                const auto mesh = GetMesh(r, r.get<const Instance>(entity).Entity);
+                const auto mesh = GetMesh(r, r.get<const ObjectGeometry>(entity).Entity);
                 const auto materials = meshes.Arenas().PrimitiveMaterials.Get(meshes.Get(mesh.GetStoreId()).PrimitiveMaterials);
                 if (!materials.empty() && (MaterialEntity = MaterialAt(r, materials.front())) != state::Null) {
                     std::println("Benchmark material: {} (slot {})", r.get<const Material>(MaterialEntity).Name, materials.front());
@@ -1542,7 +1542,7 @@ struct CaptureDriver {
           RecordPath(capture.RecordPath), ScreenshotPath(capture.ScreenshotPath), RenderBasename(capture.RenderBasename) {
         if (RenderMode()) {
             const auto with = [&](const char *ext) { return fs::path{capture.RenderBasename.string() + ext}; };
-            const bool dynamic = !r.view<const PhysicsMotion>().empty() || !r.view<const AnimationClips>().empty() || !r.view<const procedure::TimeReads>().empty();
+            const bool dynamic = !r.view<const PhysicsMotion>().empty() || !r.view<const AnimationClips>().empty() || !r.view<const graph::TimeReads>().empty();
             if (dynamic) RecordPath = with(".mp4");
             else ScreenshotPath = with(".webp");
         }
@@ -1663,7 +1663,7 @@ CaptureDriver BeginCaptureSession(state::Registry &r, const CaptureRequest &capt
     }
     if (capture.EditMode) {
         std::vector<state::Entity> meshes;
-        for (const auto [entity, kind, _] : r.view<const ObjectKind, const Instance>().each()) {
+        for (const auto [entity, kind, _] : r.view<const ObjectKind, const ObjectGeometry>().each()) {
             if (kind.Value == ObjectType::Mesh) meshes.emplace_back(entity);
         }
         std::ranges::sort(meshes);
@@ -1698,9 +1698,7 @@ CaptureDriver BeginCaptureSession(state::Registry &r, const CaptureRequest &capt
             (Perform(r, action::UpdateOf<&ViewportDisplay::RayTracing, fields>(viewport, capture.Rays.*fields)), ...);
         };
         // Headless flags override these fields and preserve the loaded viewport's reflection setting.
-        apply.operator()<&Ray::Enabled, &Ray::Samples, &Ray::ShadowSamples, &Ray::Resolution, &Ray::FastGiResolution,
-                         &Ray::RefinementFrames, &Ray::MaxRoughness, &Ray::Diffuse, &Ray::FastGiDistance,
-                         &Ray::FastGiThickness, &Ray::Denoise, &Ray::TransmissionShadows>();
+        apply.operator()<&Ray::Enabled, &Ray::Samples, &Ray::ShadowSamples, &Ray::Resolution, &Ray::FastGiResolution, &Ray::RefinementFrames, &Ray::MaxRoughness, &Ray::Diffuse, &Ray::FastGiDistance, &Ray::FastGiThickness, &Ray::Denoise, &Ray::TransmissionShadows>();
     }
     if (capture.Overlays) Perform(r, action::UpdateOf<&ViewportDisplay::ShowOverlays>(viewport, *capture.Overlays));
     if (capture.LodErrorPixels >= 0.f) {
@@ -2219,7 +2217,8 @@ std::expected<LaunchOptions, int> ParseLaunchOptions(std::span<const std::string
             capture.TimelineEnd = std::atof((++it)->c_str());
         } else if (a == "--motion-blur" && std::next(it) != args.end()) {
             const std::string_view method = *++it;
-            capture.Blur = method == "off" ? MotionBlur{.Shutter = 0.f} : method == "fast" ? MotionBlur{} : MotionBlur{.Steps = uint8_t(std::clamp(std::atoi(method.data()), 1, 64)), .Method = MotionBlurMethod::FullSampling};
+            capture.Blur = method == "off" ? MotionBlur{.Shutter = 0.f} : method == "fast" ? MotionBlur{} :
+                                                                                             MotionBlur{.Steps = uint8_t(std::clamp(std::atoi(method.data()), 1, 64)), .Method = MotionBlurMethod::FullSampling};
         } else if (a == "--frames" && std::next(it) != args.end()) {
             capture.BenchFrames = std::atoi((++it)->c_str());
         } else if (a == "--bench-warmup" && std::next(it) != args.end()) {

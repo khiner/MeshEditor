@@ -41,8 +41,8 @@ std::optional<SelectionHit> PickObject(state::Registry &, state::Entity viewport
 // Returns click hits sorted by distance, depth, and object id, then advances the 8-bit epoch tag.
 std::vector<state::Entity> RunObjectPick(state::Registry &, state::Entity viewport, uvec2 mouse_px, uint32_t radius_px = 0);
 
-// Pick the nearest sound-vertex of an instance under the cursor.
-std::optional<uint32_t> RunSoundVerticesVertexPick(state::Registry &, state::Entity viewport, state::Entity instance_entity, uvec2 mouse_px);
+// Pick the nearest sound-vertex of an object under the cursor.
+std::optional<uint32_t> RunSoundVerticesVertexPick(state::Registry &, state::Entity viewport, state::Entity object_entity, uvec2 mouse_px);
 
 // Resolves a click to a mesh identity and canonical element handle without changing selection.
 std::optional<ElementHit> RunEditElementPick(state::Registry &, state::Entity viewport, Element, uvec2 mouse_px);

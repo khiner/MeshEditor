@@ -3,7 +3,7 @@
 #include "action/Core.h"
 #include "action/Timeline.h"
 #include "action/View.h"
-#include "procedure/NodeEditor.h"
+#include "graph/NodeEditor.h"
 #include "viewport/ViewportIcons.h"
 
 #include "timeline/TimelineTheme.h"
@@ -105,7 +105,7 @@ void RenderTimeline(const TimelineRange &range, const TimelinePlayback &playback
                 if (IsItemDeactivatedAfterEdit()) emit(action::animation::RenameAnimation{animations.Active, name});
                 if (auto *panels = r.Resources.find<PanelsState>()) {
                     SeparatorText("Targets");
-                    procedure::DrawAnimationTargets(r, panels->Nodes, animations.Active);
+                    graph::DrawAnimationTargets(r, panels->Nodes, animations.Active);
                 }
             }
             EndPopup();

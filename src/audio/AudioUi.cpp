@@ -15,9 +15,9 @@
 #include "implot.h"
 #include "imspinner.h"
 #include "mesh/MeshStore.h"
-#include "render/Instance.h"
+#include "render/ObjectGeometry.h"
 #include "scene/Entity.h"
-#include "scene/HierarchyInstance.h"
+#include "scene/Instance.h"
 #include "selection/SelectionComponents.h"
 #include "ui/ChoiceCombo.h"
 #include "ui/FieldEdit.h"
@@ -121,7 +121,7 @@ bool DrawModalModelActions(
     state::Registry &r, state::Entity e, state::Entity mesh_entity,
     const ModalSolveSettings &settings, const AcousticMaterial &material
 ) {
-    const bool present = r.all_of<ModalModes>(HierarchySource(r, e));
+    const bool present = r.all_of<ModalModes>(SourceOfCopy(r, e));
     const bool solving = IsSolving(r, e);
     bool has_action = false;
     if (r.all_of<SoundVerticesModel>(e)) {
@@ -218,7 +218,7 @@ void DrawModalModelSettings(
 
 std::vector<uint32_t> GetSampleOpVertices(const state::Registry &r, state::Entity sound_entity) {
     if (!r.valid(sound_entity)) return {};
-    const auto *inst = r.try_get<const Instance>(sound_entity);
+    const auto *inst = r.try_get<const ObjectGeometry>(sound_entity);
     if (!inst) return {};
     const auto mesh_entity = inst->Entity;
     const auto mesh = TryGetMesh(r, mesh_entity);
@@ -276,8 +276,9 @@ void DrawObjectAudioControls(state::Registry &r, state::Entity e, state::Entity 
     const bool has_model = r.all_of<SoundVerticesModel>(e);
     if (!has_model) DrawModalModelSettings(r, e, mesh_entity, settings, material);
 
-    const auto *samples = r.try_get<const VertexSamples>(HierarchySource(r, e));
-    const auto *modal_modes = r.try_get<const ModalModes>(HierarchySource(r, e));
+    const auto source = SourceOfCopy(r, e);
+    const auto *samples = r.try_get<const VertexSamples>(source);
+    const auto *modal_modes = r.try_get<const ModalModes>(source);
     const auto *excitable = r.try_get<const SoundVertices>(e);
     auto model = has_model ? r.get<SoundVerticesModel>(e) : SoundVerticesModel::Samples;
     const auto *recording = r.try_get<const Recording>(e);

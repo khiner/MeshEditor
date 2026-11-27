@@ -245,7 +245,7 @@ uint32_t Cleared(GeometryFixture &f, uint32_t id, vec3 point, vec3 normal, Plane
 uint32_t Bisected(GeometryFixture &f, uint32_t id, vec3 point, vec3 normal, PlaneSideKind cleared) {
     return Cleared(f, f.Run(PlaneCutTask(f.Get(id), point, normal)).GeometryId, point, normal, cleared);
 }
-// The macros' cap: Fill over the boundary edges whose vertices lie on the plane, with the vertices a linked edge selection derives.
+// The built-in subgraphs' cap: Fill over the boundary edges whose vertices lie on the plane, with the vertices a linked edge selection derives.
 uint32_t Capped(GeometryFixture &f, uint32_t id, vec3 point, vec3 normal) {
     auto &meshes = f.Store();
     const auto on = PlaneSideField(f.Scene, id, AttributeDomain::Edge, point, normal, PlaneSideKind::On, PlaneSideTolerance, "on").value();

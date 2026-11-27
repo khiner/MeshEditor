@@ -18,6 +18,7 @@
 #include "audio/ContactSurface.h"
 #include "audio/ModalModes.h"
 #include "gltf/AnimationPointers.h"
+#include "gpu/PbrFeature.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshCreate.h"
 #include "mesh/MeshPipelines.h"
@@ -25,9 +26,8 @@
 #include "mesh/Neighborhood.h"
 #include "object/ObjectOps.h"
 #include "render/GpuBuffers.h"
-#include "render/Instance.h"
 #include "render/MaterialComponents.h"
-#include "gpu/PbrFeature.h"
+#include "render/ObjectGeometry.h"
 #include "scene/CameraLens.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
@@ -1218,12 +1218,12 @@ std::expected<std::vector<ArmaturePlan>, std::string> PlanArmatures(const fastgl
         if (inserted) groups.emplace_back(ArmaturePlan{.ArmaNode = arma_node});
         groups[it->second].SkinIndices.emplace_back(skin_index);
     }
-    std::vector<bool> skin_has_instance(asset.skins.size(), false);
+    std::vector<bool> skin_has_object(asset.skins.size(), false);
     for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
         if (!plan.IsObjectEmitted[node_index]) continue;
         const auto &node = asset.nodes[node_index];
         const auto mesh_index = ToIndex(node.meshIndex, asset.meshes.size());
-        if (const auto skin_index = ToIndex(node.skinIndex, asset.skins.size()); skin_index && mesh_index && source_meshes[*mesh_index].HasParts()) skin_has_instance[*skin_index] = true;
+        if (const auto skin_index = ToIndex(node.skinIndex, asset.skins.size()); skin_index && mesh_index && source_meshes[*mesh_index].HasParts()) skin_has_object[*skin_index] = true;
     }
     std::vector<uint32_t> group_stamp(node_count, 0u);
     for (uint32_t group_index = 0; group_index < groups.size(); ++group_index) {
@@ -1235,7 +1235,7 @@ std::expected<std::vector<ArmaturePlan>, std::string> PlanArmatures(const fastgl
             return std::unexpected{std::format("glTF import failed for '{}': skin {} armature root node {} is not in the imported scene.", source_path.string(), group.SkinIndices.front(), *arma_node)};
         }
         for (const auto skin_index : group.SkinIndices) {
-            if (!skin_has_instance[skin_index]) return std::unexpected{std::format("glTF import failed '{}': skin {} is used but no mesh instances were emitted for skin binding.", source_path.string(), skin_index)};
+            if (!skin_has_object[skin_index]) return std::unexpected{std::format("glTF import failed '{}': skin {} is used but no mesh object was created for skin binding.", source_path.string(), skin_index)};
         }
 
         std::vector<uint32_t> source_bone_nodes;
@@ -1272,7 +1272,7 @@ std::expected<std::vector<ArmaturePlan>, std::string> PlanArmatures(const fastgl
 // Everything below runs after validation and cannot fail.
 
 struct PhysicsResources {
-    std::vector<state::Entity> Materials, JointDefs;
+    std::vector<state::Entity> Materials, JointDescriptions;
 };
 
 PhysicsResources ImportPhysicsResources(state::Registry &r, const fastgltf::Asset &asset) {
@@ -1285,10 +1285,10 @@ PhysicsResources ImportPhysicsResources(state::Registry &r, const fastgltf::Asse
         r.emplace<SourceIndex>(e, i);
         out.Materials.emplace_back(e);
     }
-    out.JointDefs.reserve(asset.physicsJoints.size());
+    out.JointDescriptions.reserve(asset.physicsJoints.size());
     for (uint32_t i = 0; i < asset.physicsJoints.size(); ++i) {
         const auto &src = asset.physicsJoints[i];
-        PhysicsJointDef def;
+        JointDescription def;
         for (const auto &lim : src.limits) {
             def.Limits.emplace_back(PhysicsJointLimit{
                 .LinearAxes = {lim.linearAxes.begin(), lim.linearAxes.end()},
@@ -1313,9 +1313,9 @@ PhysicsResources ImportPhysicsResources(state::Registry &r, const fastgltf::Asse
             });
         }
         const auto e = r.create();
-        r.emplace<PhysicsJointDef>(e, std::move(def));
+        r.emplace<JointDescription>(e, std::move(def));
         r.emplace<SourceIndex>(e, i);
-        out.JointDefs.emplace_back(e);
+        out.JointDescriptions.emplace_back(e);
     }
     return out;
 }
@@ -1519,27 +1519,27 @@ ImportedObjects ImportObjects(state::Registry &r, const fastgltf::Asset &asset, 
             auto node = SourceGltfNode(plan, node_index);
             state::Entity e = state::Null;
             if (primary_mesh != state::Null) {
-                const MeshInstanceCreateInfo info{.Name = std::move(name), .Transform = transform, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = true};
-                e = ::AddMeshInstance(r, primary_mesh, info);
+                const MeshObjectCreateInfo info{.Name = std::move(name), .Transform = transform, .Select = MeshObjectCreateInfo::SelectBehavior::None, .Visible = true};
+                e = ::AddMeshObject(r, primary_mesh, info);
                 for (const auto extra : mesh_entities[*mesh_index]) {
                     if (extra == state::Null || extra == primary_mesh) continue;
-                    const auto extra_instance = ::AddMeshInstance(r, extra, {.Name = info.Name, .Transform = Transform{}, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = true});
-                    SetParent(r, extra_instance, e);
+                    const auto extra_object = ::AddMeshObject(r, extra, {.Name = info.Name, .Transform = Transform{}, .Select = MeshObjectCreateInfo::SelectBehavior::None, .Visible = true});
+                    SetParent(r, extra_object, e);
                 }
             } else if (!mesh_index && camera_index) {
                 const auto &cam = asset.cameras[*camera_index];
-                e = ::AddCamera(r, {.Name = std::move(name), .Transform = transform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
+                e = ::AddCamera(r, {.Name = std::move(name), .Transform = transform, .Select = MeshObjectCreateInfo::SelectBehavior::None});
                 SetLens(r, e, ConvertCamera(cam));
                 node.Camera = *camera_index;
                 node.CameraName = cam.name;
                 if (objects.FirstCamera == state::Null && plan.SceneReach[scene_index][node_index]) objects.FirstCamera = e;
             } else if (!mesh_index && light_index) {
                 const auto &light = asset.lights[*light_index];
-                e = ::AddLight(r, {.Name = std::move(name), .Transform = transform, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, ConvertLight(light));
+                e = ::AddLight(r, {.Name = std::move(name), .Transform = transform, .Select = MeshObjectCreateInfo::SelectBehavior::None}, ConvertLight(light));
                 node.Light = *light_index;
                 node.LightName = light.name;
             } else {
-                e = ::AddEmpty(r, {.Name = std::move(name), .Transform = transform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
+                e = ::AddEmpty(r, {.Name = std::move(name), .Transform = transform, .Select = MeshObjectCreateInfo::SelectBehavior::None});
             }
             if (raw_name.empty()) node.EmptyName = true;
             else if (const auto *n = r.try_get<const Name>(e); n && n->Value != raw_name) node.Name = raw_name;
@@ -1562,7 +1562,7 @@ ImportedObjects ImportObjects(state::Registry &r, const fastgltf::Asset &asset, 
         auto node = SourceGltfNode(plan, node_index);
         r.emplace<Transform>(e, plan.LocalTransforms[node_index]);
         if (const auto mesh_index = ToIndex(source_node.meshIndex, asset.meshes.size()); mesh_index && mesh_entities[*mesh_index][size_t(MeshKind::Triangles)] != state::Null) {
-            r.emplace<Instance>(e, mesh_entities[*mesh_index][size_t(MeshKind::Triangles)]);
+            r.emplace<ObjectGeometry>(e, mesh_entities[*mesh_index][size_t(MeshKind::Triangles)]);
         }
         if (source_node.name.empty()) {
             node.EmptyName = true;
@@ -1648,7 +1648,7 @@ void ImportNodePhysics(state::Registry &r, const fastgltf::Asset &asset, const I
             const auto collider_mesh_entity = [&]() -> state::Entity {
                 if (!IsMeshBackedShape(shape)) return state::Null;
                 if (const auto geometry_mesh = triangles_of(rb->collider->geometry.mesh); geometry_mesh != state::Null) return geometry_mesh;
-                if (const auto *instance = r.try_get<const Instance>(entity)) return instance->Entity;
+                if (const auto *geometry = r.try_get<const ObjectGeometry>(entity)) return geometry->Entity;
                 return state::Null;
             }();
             r.emplace<ColliderShape>(entity, ColliderShape{.Shape = shape, .MeshEntity = collider_mesh_entity});
@@ -1692,8 +1692,8 @@ void ImportNodePhysics(state::Registry &r, const fastgltf::Asset &asset, const I
             );
         }
         if (rb->joint) {
-            const auto def = ToIndex(rb->joint->joint, resources.JointDefs.size());
-            r.emplace<PhysicsJoint>(entity, PhysicsJoint{.ConnectedNode = objects.Of(uint32_t(rb->joint->connectedNode)), .JointDefEntity = def ? resources.JointDefs[*def] : state::Null, .EnableCollision = rb->joint->enableCollision});
+            const auto def = ToIndex(rb->joint->joint, resources.JointDescriptions.size());
+            r.emplace<PhysicsJoint>(entity, PhysicsJoint{.ConnectedNode = objects.Of(uint32_t(rb->joint->connectedNode)), .JointDescriptionEntity = def ? resources.JointDescriptions[*def] : state::Null, .EnableCollision = rb->joint->enableCollision});
         }
     }
 }
@@ -1806,15 +1806,15 @@ void ImportAudio(state::Registry &r, const fastgltf::Asset &asset, const Importe
         surfaces.emplace_back(std::move(surface));
     }
 
-    const auto modal_model = [&](const auto &instance) -> std::optional<uint32_t> {
-        const auto i = ToIndex(instance.modalModel, models.size());
+    const auto modal_model = [&](const auto &rigid_body) -> std::optional<uint32_t> {
+        const auto i = ToIndex(rigid_body.modalModel, models.size());
         return i && !models[*i].Freqs.empty() ? i : std::nullopt;
     };
     const auto drawn_mesh = [&](state::Entity entity) {
-        const auto *instance = r.try_get<const Instance>(entity);
-        return instance && HasMesh(r, instance->Entity) ? instance->Entity : state::Null;
+        const auto *geometry = r.try_get<const ObjectGeometry>(entity);
+        return geometry && HasMesh(r, geometry->Entity) ? geometry->Entity : state::Null;
     };
-    // Each modal model's sample points map to the nearest vertices of each mesh its instances draw, in one lookup.
+    // Each modal model's sample points map to the nearest vertices of each mesh that an object with the model draws, in one lookup.
     std::map<std::pair<uint32_t, state::Entity>, std::vector<uint32_t>> vertices_by_model_mesh;
     {
         std::vector<std::pair<uint32_t, state::Entity>> keys;
@@ -1836,12 +1836,12 @@ void ImportAudio(state::Registry &r, const fastgltf::Asset &asset, const Importe
         const auto &source_node = asset.nodes[node_index];
         const auto entity = objects.Of(node_index);
         if (!source_node.audioRigidBody.has_value() || entity == state::Null) continue;
-        const auto &instance = *source_node.audioRigidBody;
+        const auto &rigid_body = *source_node.audioRigidBody;
 
-        const auto surface_index = ToIndex(instance.acousticSurface, asset.acousticSurfaces.size());
+        const auto surface_index = ToIndex(rigid_body.acousticSurface, asset.acousticSurfaces.size());
         if (surface_index) r.emplace_or_replace<ContactSurface>(entity, surfaces[*surface_index]);
 
-        const auto model_index = modal_model(instance);
+        const auto model_index = modal_model(rigid_body);
         const auto material_index = [&]() -> std::optional<uint32_t> {
             if (model_index) {
                 if (const auto i = ToIndex(asset.modalModels[*model_index].material, acoustic_materials.size())) return i;
@@ -1888,7 +1888,7 @@ void ImportAudio(state::Registry &r, const fastgltf::Asset &asset, const Importe
                                               });
         }
         if (excitable) r.emplace<SoundVerticesModel>(entity, SoundVerticesModel::Modal);
-        if (instance.gain != fastgltf::num(1)) r.emplace<ModalGain>(entity, ModalGain{instance.gain});
+        if (rigid_body.gain != fastgltf::num(1)) r.emplace<ModalGain>(entity, ModalGain{rigid_body.gain});
     }
 }
 
@@ -1920,7 +1920,7 @@ ImportedArmatures ImportArmatures(state::Registry &r, const fastgltf::Asset &ass
             const auto bone_id = armature.AddBone(MakeNodeName(asset, node), parent_bone_id, group.RestLocals[k], node);
             bone_id_by_node.emplace(node, bone_id);
             if (const auto object = objects.Of(node);
-                object != state::Null && r.all_of<Instance>(object) && !r.all_of<PhysicsMotion>(object) && !r.all_of<BoneAttachment>(object)) {
+                object != state::Null && r.all_of<ObjectGeometry>(object) && !r.all_of<PhysicsMotion>(object) && !r.all_of<BoneAttachment>(object)) {
                 r.emplace<BoneAttachment>(object, armature_data_entity, bone_id);
             }
         }
@@ -1965,18 +1965,18 @@ ImportedArmatures ImportArmatures(state::Registry &r, const fastgltf::Asset &ass
         std::vector<state::Entity> skinned;
         for (uint32_t skin_slot = 0; skin_slot < group.SkinIndices.size(); ++skin_slot) {
             for (const auto node_index : nodes_by_skin[group.SkinIndices[skin_slot]]) {
-                for (const auto &[_, mesh_instance_entity] : objects.OfNode(node_index)) {
-                    if (!r.all_of<Instance>(mesh_instance_entity)) continue;
-                    r.emplace_or_replace<ArmatureModifier>(mesh_instance_entity, armature_data_entity, armature_entity, skin_slot);
-                    r.emplace_or_replace<Transform>(mesh_instance_entity, Transform{});
-                    skinned.emplace_back(mesh_instance_entity);
+                for (const auto &[_, mesh_object_entity] : objects.OfNode(node_index)) {
+                    if (!r.all_of<ObjectGeometry>(mesh_object_entity)) continue;
+                    r.emplace_or_replace<ArmatureModifier>(mesh_object_entity, armature_data_entity, armature_entity, skin_slot);
+                    r.emplace_or_replace<Transform>(mesh_object_entity, Transform{});
+                    skinned.emplace_back(mesh_object_entity);
                 }
             }
         }
         ClearParents(r, skinned);
-        for (const auto mesh_instance_entity : skinned) SetParent(r, mesh_instance_entity, armature_entity);
+        for (const auto mesh_object_entity : skinned) SetParent(r, mesh_object_entity, armature_entity);
 
-        ::CreateBoneInstances(r, meshes, armature_entity, armature_data_entity);
+        ::CreateBoneEntities(r, meshes, armature_entity, armature_data_entity);
         const auto &bone_entities = r.get<const ArmatureObject>(armature_entity).BoneEntities;
         for (uint32_t i = 0; i < armature.Bones.size(); ++i) {
             const auto joint_node_index = armature.Bones[i].JointNodeIndex;
@@ -2045,11 +2045,11 @@ bool ImportAnimations(state::Registry &r, const fastgltf::Asset &asset, const Im
 
     const auto &meshes = r.Resources.get<const MeshStore>();
     auto &weight_buffer = r.Resources.get<GpuBuffers>().MorphWeightBuffer;
-    std::unordered_map<uint32_t, state::Entity> morph_instance_by_node;
-    for (const auto &[node_index, instance_entity] : objects.Entities) {
-        const auto *instance = r.try_get<const Instance>(instance_entity);
-        if (!instance || !HasMesh(r, instance->Entity)) continue;
-        const auto &record = meshes.Get(*DrawnStoreId(r, instance->Entity));
+    std::unordered_map<uint32_t, state::Entity> morph_object_by_node;
+    for (const auto &[node_index, object_entity] : objects.Entities) {
+        const auto *geometry = r.try_get<const ObjectGeometry>(object_entity);
+        if (!geometry || !HasMesh(r, geometry->Entity)) continue;
+        const auto &record = meshes.Get(*DrawnStoreId(r, geometry->Entity));
         if (record.MorphTargetCount == 0) continue;
         const auto &node_weights = asset.nodes[node_index].weights;
         auto weights = record.DefaultMorphWeights;
@@ -2057,8 +2057,8 @@ bool ImportAnimations(state::Registry &r, const fastgltf::Asset &asset, const Im
             weights.assign(record.MorphTargetCount, 0.f);
             std::copy_n(node_weights.begin(), std::min(node_weights.size(), size_t(record.MorphTargetCount)), weights.begin());
         }
-        r.emplace<MorphWeightRange>(instance_entity, weight_buffer.Allocate(std::span<const float>{weights}));
-        morph_instance_by_node[node_index] = instance_entity;
+        r.emplace<MorphWeightRange>(object_entity, weight_buffer.Allocate(std::span<const float>{weights}));
+        morph_object_by_node[node_index] = object_entity;
     }
     std::unordered_map<uint32_t, std::vector<state::Entity>> objects_by_camera, objects_by_light;
     for (const auto &[node_index, e] : objects.Entities) {
@@ -2093,8 +2093,8 @@ bool ImportAnimations(state::Registry &r, const fastgltf::Asset &asset, const Im
             case gltf::PointerSpace::Node: {
                 if (index >= asset.nodes.size()) break;
                 if (row->Target.Component == state::Key<MorphWeightRange>()) {
-                    const auto it = morph_instance_by_node.find(index);
-                    if (it == morph_instance_by_node.end()) break;
+                    const auto it = morph_object_by_node.find(index);
+                    if (it == morph_object_by_node.end()) break;
                     auto target = animation::WeightsTarget(r, it->second);
                     if (element) {
                         if (*element >= target.Count) break;

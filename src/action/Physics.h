@@ -39,7 +39,7 @@ struct SetTrigger {
 struct AddPhysicsMaterial {};
 struct AddCollisionSystem {};
 struct AddCollisionFilter {};
-struct AddJointDef {};
+struct AddJointDescription {};
 
 // `Add` appends a missing node or removes all occurrences.
 struct ToggleFilterEntity {
@@ -51,30 +51,30 @@ struct ToggleFilterEntity {
     bool Add;
 };
 
-// Maps a joint item type to its PhysicsJointDef vector.
-template<typename T> inline constexpr std::vector<T> PhysicsJointDef::*JointVecMember = nullptr;
-template<> inline constexpr std::vector<PhysicsJointLimit> PhysicsJointDef::*JointVecMember<PhysicsJointLimit> = &PhysicsJointDef::Limits;
-template<> inline constexpr std::vector<PhysicsJointDrive> PhysicsJointDef::*JointVecMember<PhysicsJointDrive> = &PhysicsJointDef::Drives;
+// Maps a joint item type to its JointDescription vector.
+template<typename T> inline constexpr std::vector<T> JointDescription::*JointVecMember = nullptr;
+template<> inline constexpr std::vector<PhysicsJointLimit> JointDescription::*JointVecMember<PhysicsJointLimit> = &JointDescription::Limits;
+template<> inline constexpr std::vector<PhysicsJointDrive> JointDescription::*JointVecMember<PhysicsJointDrive> = &JointDescription::Drives;
 
 template<typename T>
 struct SetJointVecItem {
-    state::Entity JointDefEntity;
+    state::Entity JointDescriptionEntity;
     uint32_t Index;
     std::unique_ptr<T> Value;
 };
 template<typename T>
 struct AddJointVecItem {
-    state::Entity JointDefEntity;
+    state::Entity JointDescriptionEntity;
 };
 template<typename T>
 struct DeleteJointVecItem {
-    state::Entity JointDefEntity;
+    state::Entity JointDescriptionEntity;
     uint32_t Index;
 };
 
 using Action = std::variant<
     SetMotionType, SetColliderShape, AddTrigger, RemoveTriggerNodes, SetTrigger,
-    AddPhysicsMaterial, AddCollisionSystem, AddCollisionFilter, AddJointDef,
+    AddPhysicsMaterial, AddCollisionSystem, AddCollisionFilter, AddJointDescription,
     ToggleFilterEntity,
     SetJointVecItem<PhysicsJointLimit>, AddJointVecItem<PhysicsJointLimit>, DeleteJointVecItem<PhysicsJointLimit>,
     SetJointVecItem<PhysicsJointDrive>, AddJointVecItem<PhysicsJointDrive>, DeleteJointVecItem<PhysicsJointDrive>>;

@@ -1,10 +1,10 @@
 #pragma once
 
 #include "MeshProperties.h"
+#include "graph/Graph.h"
 #include "mesh/BeautifyFaces.h"
 #include "mesh/GeometryRefresh.h"
 #include "mesh/TopologyOperations.h"
-#include "procedure/Procedure.h"
 #include "state/Registry.h"
 
 // The topology operator table over a patchwork region.
@@ -90,7 +90,7 @@ inline MeshTopologyTask Op(MeshTopologyOp op, float param0 = 0.f, uint32_t flags
 
 inline const std::array<TopologyCase, 42> TopologyCases = [] {
     using enum MeshTopologyOp;
-    using procedure::KindOf;
+    using graph::KindOf;
     namespace m = action::mesh;
     return std::array<TopologyCase, 42>{{
         {"DeleteVertices", KindOf<m::Delete>, Op(DeleteVertices)},
@@ -152,10 +152,10 @@ inline const std::array<TopologyCase, 42> TopologyCases = [] {
         {"ConnectVertices", KindOf<m::ConnectVertices>, Op(ConnectVertices)},
         {"SplitGeometry", KindOf<m::Split>, Op(SplitGeometry)},
         {"DuplicateGeometry", KindOf<m::Duplicate>, Op(DuplicateGeometry)},
-        {"ExtrudeVertices", KindOf<procedure::Extrude>, Op(ExtrudeVertices)},
-        {"ExtrudeEdges", KindOf<procedure::Extrude>, Op(ExtrudeEdges)},
-        {"ExtrudeRegion", KindOf<procedure::Extrude>, Op(ExtrudeRegion)},
-        {"ExtrudeFacesIndividual", KindOf<procedure::Extrude>, Op(ExtrudeFacesIndividual)},
+        {"ExtrudeVertices", KindOf<graph::Extrude>, Op(ExtrudeVertices)},
+        {"ExtrudeEdges", KindOf<graph::Extrude>, Op(ExtrudeEdges)},
+        {"ExtrudeRegion", KindOf<graph::Extrude>, Op(ExtrudeRegion)},
+        {"ExtrudeFacesIndividual", KindOf<graph::Extrude>, Op(ExtrudeFacesIndividual)},
         {"Subdivide", KindOf<m::Subdivide>, Op(Subdivide, 1.f)},
         // Clip space spans the 4 by 4 grid, so the screen line 37.5 pixels into a 100 pixel extent cuts its faces at x = 1.5.
         {"Knife", {}, {.Op = Subdivide}, [](state::Registry &, const Mesh &mesh, const GeometrySelection &) {
@@ -173,7 +173,7 @@ inline const std::array<TopologyCase, 42> TopologyCases = [] {
         {"InsetIndividual", KindOf<m::Inset>, Op(InsetIndividual, .1f)},
         {"Solidify", KindOf<m::Solidify>, Op(Solidify, .1f)},
         {"KeepSelectedFaces", {}, {.Op = KeepSelectedFaces, .SelectionElement = Element::Face}},
-        {"ExtrudeSteps", KindOf<procedure::Extrude>, {.Op = ExtrudeRegion}, [](state::Registry &, const Mesh &mesh, const GeometrySelection &selection) { return std::optional{ExtrudeStepsTask(mesh, selection, Element::None, 2u, mat3{1.f}, {0.f, 0.f, 1.f}, {})}; }},
+        {"ExtrudeSteps", KindOf<graph::Extrude>, {.Op = ExtrudeRegion}, [](state::Registry &, const Mesh &mesh, const GeometrySelection &selection) { return std::optional{ExtrudeStepsTask(mesh, selection, Element::None, 2u, mat3{1.f}, {0.f, 0.f, 1.f}, {})}; }},
     }};
 }();
 } // namespace test

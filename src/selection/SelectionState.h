@@ -16,13 +16,13 @@ ModeScope ScopeOf(const state::Registry &);
 // Derived viewport aggregates of the selection in the frame's scene, each recomputed in the settle pass when its own inputs change.
 // Per-frame readers take them in O(1).
 
-// Each edited mesh's primary instance, in Edit mode only.
+// Each edited mesh's primary object, in Edit mode only.
 struct EditPrimaries {
-    selection::PrimaryEditInstanceMap All, Transformable;
+    selection::PrimaryEditObjectMap All, Transformable;
 };
 
-// One selected visible mesh instance per mesh, preferring the active instance, then the lowest entity ID.
-// Transformable chooses among the instances that are not scale-locked.
+// One selected visible object per mesh, preferring the active object, then the lowest entity ID.
+// Transformable chooses among the objects that are not scale-locked.
 EditPrimaries ComputeEditPrimaries(const state::Registry &);
 
 // The selected entities a transform moves, and the pivot it turns and scales about.
@@ -45,10 +45,10 @@ enum class SelectionSharpness : uint8_t {
 };
 
 struct SelectionFlags {
-    std::vector<state::Entity> Meshes; // The meshes of selected instances, sorted.
+    std::vector<state::Entity> Meshes; // The meshes that selected objects draw, sorted.
     bool AllMeshes{true}; // Every selected object is a mesh object.
-    bool AnyVisible{false}, AnyHidden{false}; // Over selected instances that are not sub-elements.
-    bool Transformable{true}; // The selection transforms, which a mesh with a scale-locked instance blocks in Edit mode.
+    bool AnyVisible{false}, AnyHidden{false}; // Over selected objects that are not sub-elements.
+    bool Transformable{true}; // The selection transforms, which a mesh that a scale-locked object draws blocks in Edit mode.
     bool Scalable{true}; // It also scales, which a scale-locked selected entity blocks.
     bool HasTransformTarget{false}; // The gizmo has something to move.
     SelectionSharpness FaceSharpness{SelectionSharpness::None}; // Of the selected face meshes' faces.
@@ -83,6 +83,6 @@ struct OutlinerRows {
 // Rebuilds the rows of the frame's scene's roots from the scene graph and the open set.
 void BuildOutlinerRows(const state::Registry &, OutlinerRows &);
 
-// Recomputes the aggregates whose inputs changed this settle, and returns the meshes whose primary edit instance changed.
+// Recomputes the aggregates whose inputs changed this settle, and returns the meshes whose primary edit object changed.
 // Runs after the world transforms are current.
 std::vector<state::Entity> UpdateSelectionState(state::Registry &);

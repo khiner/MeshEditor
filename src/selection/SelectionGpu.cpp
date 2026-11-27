@@ -1,5 +1,5 @@
 #include "SortUnique.h"
-#include "procedure/Procedure.h"
+#include "graph/Graph.h"
 
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionState.h"
@@ -19,7 +19,7 @@
 #include "metal/RenderTarget.h"
 #include "render/Encoding.h"
 #include "render/GpuSceneState.h"
-#include "render/Instance.h"
+#include "render/ObjectGeometry.h"
 #include "render/PickConstants.h"
 #include "render/Pipelines.h"
 #include "scene/Entity.h"
@@ -160,7 +160,7 @@ void RecordSelectionVisibility(
     auto &buffers = r.Resources.get<GpuBuffers>();
     const auto &slots = r.Resources.get<const mtl::BindlessSet>();
     const auto &pipelines = GetPipelines(r);
-    const uint32_t flags = exact_edit_geometry && r.all_of<procedure::SelectionEditing>(state::Document) ? uint32_t(MeshletInstanceFlag::ElementSelection) : 0u;
+    const uint32_t flags = exact_edit_geometry && r.all_of<graph::SelectionEditing>(state::Document) ? uint32_t(MeshletInstanceFlag::ElementSelection) : 0u;
     RecordMeshletCull(chain, slots, pipelines, buffers, viewport, {.Mode = mode, .RequiredInstanceFlags = flags, .ExactEditGeometry = exact_edit_geometry});
     RecordMeshletVisibilityPass(chain, slots, pipelines, viewport, buffers, false, 0u, rect);
 }
@@ -313,7 +313,7 @@ void RecordVisibilityObjectSelection(
 }
 
 // `through` rasters every covered surface for an object box instead of the visible surface alone.
-void RenderSelectionPickPass(state::Registry &r, const Viewport &viewport, mtl::PassChain &chain, std::optional<ObjectSelectQuery> object, bool through, state::Entity sound_instance = state::Null, std::optional<ElementPickTarget> pick = {}) {
+void RenderSelectionPickPass(state::Registry &r, const Viewport &viewport, mtl::PassChain &chain, std::optional<ObjectSelectQuery> object, bool through, state::Entity sound_object = state::Null, std::optional<ElementPickTarget> pick = {}) {
     const auto &sel_slots = r.Resources.get<const SelectionSlots>();
     auto &buffers = r.Resources.get<GpuBuffers>();
     const auto &pipelines = GetPipelines(r);
@@ -327,7 +327,7 @@ void RenderSelectionPickPass(state::Registry &r, const Viewport &viewport, mtl::
         }
         RecordOverlayJobCull(chain, r.Resources.get<const mtl::BindlessSet>(), pipelines, buffers, viewport, true);
     }
-    const bool sound = sound_instance != state::Null;
+    const bool sound = sound_object != state::Null;
     const auto sound_rect = sound && pick ? RadiusRect(pick->Px, pick->RadiusSq, viewport.Targets.Screen->ScratchDepth.Extent) : std::nullopt;
     if (sound && !sound_rect) return;
     RunSelectionPass(r, viewport, chain, sound_rect, false, std::nullopt, pick.has_value(), [&](mtl::RenderEncoder encoder, mtl::Extent2D, bool resolve_id) {
@@ -335,7 +335,7 @@ void RenderSelectionPickPass(state::Registry &r, const Viewport &viewport, mtl::
             const SelectionElementPushConstants point_pc{MakeElementQuery(sel_slots, {}, {}, pick, resolve_id)};
             selection.ElementRaster(Element::Vertex, false, false).Bind(encoder);
             encode::SetFragmentPushConstants(encoder, point_pc);
-            DrawVertexBlocks(encoder, r, r.get<const Instance>(sound_instance).Entity, r.get<const RenderInstance>(sound_instance).BufferIndex, true);
+            DrawVertexBlocks(encoder, r, r.get<const ObjectGeometry>(sound_object).Entity, r.get<const RenderInstance>(sound_object).BufferIndex, true);
         }
         if (object) {
             const auto rect = ObjectQueryRect(*object, viewport.Targets.Screen->ScratchDepth.Extent);
@@ -400,19 +400,19 @@ void RunBoxSelectElements(state::Registry &r, state::Entity viewport_entity, std
     if (baseline) baseline->ElementSelectionCaptured = true;
 }
 
-std::optional<uint32_t> RunSoundVerticesVertexPick(state::Registry &r, state::Entity viewport, state::Entity instance_entity, uvec2 mouse_px) {
-    if (!r.all_of<SoundVertices>(instance_entity)) return {};
-    const auto *instance = r.try_get<Instance>(instance_entity);
-    if (!instance) return {};
+std::optional<uint32_t> RunSoundVerticesVertexPick(state::Registry &r, state::Entity viewport, state::Entity object_entity, uvec2 mouse_px) {
+    if (!r.all_of<SoundVertices>(object_entity)) return {};
+    const auto *geometry = r.try_get<ObjectGeometry>(object_entity);
+    if (!geometry) return {};
     auto &buffers = r.Resources.get<GpuBuffers>();
 
     const profile::CpuScope scope{"RunSoundVerticesVertexPick"};
-    const auto &mesh = GetMesh(r, instance->Entity);
+    const auto &mesh = GetMesh(r, geometry->Entity);
     if (mesh.VertexCount() == 0) return {};
 
     ResetElementPick(buffers);
     SubmitSelectionPasses(r, [&](mtl::PassChain &chain) {
-        RenderSelectionPickPass(r, r.get<const Viewport>(viewport), chain, std::nullopt, false, instance_entity, ElementPickTarget{mouse_px, ElementPickRadiusSq(Element::Vertex)});
+        RenderSelectionPickPass(r, r.get<const Viewport>(viewport), chain, std::nullopt, false, object_entity, ElementPickTarget{mouse_px, ElementPickRadiusSq(Element::Vertex)});
     });
     // Sound point pick ids are the mesh's vertex handles, which on a sparse set reach past the vertex count.
     const auto &meshes = r.Resources.get<const MeshStore>();

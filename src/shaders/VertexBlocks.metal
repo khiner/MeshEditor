@@ -50,7 +50,8 @@ inline VertexBlockLane ResolveVertexBlockLane(
     const MeshRecord mesh = scene.MeshRecords(scene.View.MeshRecordSlot)[instance.Mesh];
     const DrawData draw = ComposeDraw(mesh, instance, pc.Instance);
     uint visible = 0u;
-    if (simd_is_first()) visible = VertexBlockVisible(scene, pc, block, MeshletWorld(scene, draw), margin, depth_pull) ? 1u : 0u;
+    // An instance hidden in the view's scene shows none of its vertices.
+    if (simd_is_first()) visible = (scene.InstanceState(draw) & STATE_HIDDEN) == 0u && VertexBlockVisible(scene, pc, block, MeshletWorld(scene, draw), margin, depth_pull) ? 1u : 0u;
     visible = simd_broadcast_first(visible);
     const uint slot = (group % VertexBlockGroups) * VertexBlockLanes + lane;
     const MeshElementBlock members = BindlessBuffer(MeshElementBlock, scene.B.Buffer, pc.MembershipSlot)[block];

@@ -1,16 +1,16 @@
-#include "procedure/OpNodes.h"
+#include "graph/OpNodes.h"
 #include "SortUnique.h"
 #include "Variant.h"
 #include "action/Errors.h"
 #include "action/Nodes.h"
+#include "graph/Cook.h"
+#include "graph/MaterialGraphs.h"
 #include "materialx/Flatten.h"
-#include "procedure/Cook.h"
-#include "procedure/MaterialGraphs.h"
 #include "render/GpuBuffers.h"
 #include "render/Textures.h"
 #include "state/Registry.h"
 
-namespace procedure {
+namespace graph {
 namespace {
 // Each data type a MaterialX value has, with its MaterialX type.
 using TypePair = std::pair<DataType, mx::Type>;
@@ -96,7 +96,8 @@ std::optional<OpDefinition> Define(std::string_view node) {
         }
         for (const auto &port : declaration.Outputs)
             if (const auto type = DataTypeOf(port.Type)) merge(outputs, port, *type);
-        const auto domains = stored ? ops::MeshDomains : filter ? ops::AllDomains : AddNativeReads(lib, d, definition);
+        const auto domains = stored ? ops::MeshDomains : filter ? ops::AllDomains :
+                                                                  AddNativeReads(lib, d, definition);
         definition.Source |= domains != ops::AllDomains;
         if (HasValues(declaration)) definition.Domains |= domains;
     }
@@ -178,9 +179,8 @@ std::string_view TextOf(const Op &op, std::string_view input, uint32_t declarati
     return std::get<std::string>(std::ranges::find(ports, input, &mx::Port::Name)->Default);
 }
 
-
 std::optional<mx::Type> OutputType(const state::Registry &r, const CookPlan &plan, const OpLayout &layout, uint32_t node, uint16_t socket) {
-    const auto &[entity, kind, parent, builtin] = plan.Nodes[node];
+    const auto &[entity, kind, parent, in_builtin_subgraph] = plan.Nodes[node];
     if (kind == KindOf<Op>) {
         const auto &resolved = layout.Nodes[node];
         const auto output = socket - DefinitionOf(Authored(r, plan.Nodes[node]).get<const Op>(entity).Node)->Inputs;
@@ -328,7 +328,6 @@ OpLayout LayoutOf(const state::Registry &r, const CookPlan &plan) {
     return layout;
 }
 
-
 void LayoutOpValues(state::Registry &r, state::Entity mesh_entity, const CookPlan &plan, const OpLayout &layout) {
     auto &store = r.Resources.get<GpuBuffers>().OpValues;
     const auto *held = r.try_get<const OpValueBlock>(mesh_entity);
@@ -349,7 +348,7 @@ void LayoutOpValues(state::Registry &r, state::Entity mesh_entity, const CookPla
     Reblock(r, mesh_entity, held, std::move(slots), layout.Words, [&](size_t i) { return std::span<const uint32_t>{layout.Initial[i]}; });
 }
 
-void LayoutDefinitionValues(state::Registry &r, state::Entity definition) {
+void LayoutSubgraphValues(state::Registry &r, state::Entity definition) {
     const auto *held = r.try_get<const OpValueBlock>(definition);
     std::vector<OpSlot> slots;
     uint32_t words = 0;
@@ -369,22 +368,22 @@ void LayoutDefinitionValues(state::Registry &r, state::Entity definition) {
     Reblock(r, definition, held, std::move(slots), words, [](size_t) { return std::span<const uint32_t>{}; });
 }
 
-void LayoutNetworkValues(state::Registry &r, state::Entity network) {
-    if (r.all_of<SubnetDefinition>(network)) LayoutDefinitionValues(r, network);
+void LayoutGraphValues(state::Registry &r, state::Entity graph) {
+    if (r.all_of<Subgraph>(graph)) LayoutSubgraphValues(r, graph);
     else {
-        const auto plan = Compile(r, network);
-        LayoutOpValues(r, network, plan, LayoutOf(r, plan));
+        const auto plan = Compile(r, graph);
+        LayoutOpValues(r, graph, plan, LayoutOf(r, plan));
     }
 }
 
 std::span<const uint32_t> LiteralWords(const state::Registry &r, state::Entity node, std::string_view input, mx::Type type) {
     const auto &literals = r.get<const Op>(node).Literals;
     if (const auto literal = literals.find(input); literal == literals.end() || literal->second != type) return {};
-    if (const auto *library = r.Resources.find<LibraryLiterals>()) {
-        const auto found = library->Words.find(std::pair{node, std::string{input}});
-        return found == library->Words.end() ? std::span<const uint32_t>{} : std::span<const uint32_t>{found->second};
+    if (const auto *literals = r.Resources.find<BuiltinSubgraphLiterals>()) {
+        const auto found = literals->Words.find(std::pair{node, std::string{input}});
+        return found == literals->Words.end() ? std::span<const uint32_t>{} : std::span<const uint32_t>{found->second};
     }
-    const auto *block = r.try_get<const OpValueBlock>(NetworkOf(r, node));
+    const auto *block = r.try_get<const OpValueBlock>(GraphOf(r, node));
     const auto *slot = block ? FindOpSlot(*block, NodePath{node}, input, type, OpSlotKind::Literal) : nullptr;
     return slot ? r.Resources.get<const GpuBuffers>().OpValues.Get({block->Block.Offset + slot->Offset, mx::Words(type)}) : std::span<const uint32_t>{};
 }
@@ -404,7 +403,7 @@ void CopyLiterals(state::Registry &r, const state::Registry &from, const NodeCop
 void WriteLiterals(state::Registry &r, state::Entity node, const OpLiteralWords &words) {
     const auto &literals = r.get<const Op>(node).Literals;
     if (literals.empty()) return;
-    const auto &block = r.get<const OpValueBlock>(NetworkOf(r, node));
+    const auto &block = r.get<const OpValueBlock>(GraphOf(r, node));
     auto &store = r.Resources.get<GpuBuffers>().OpValues;
     for (const auto &[name, type] : literals) {
         const auto written = words.find(name);
@@ -467,7 +466,8 @@ bool ReadsOneCoordinateSet(const state::Registry &r, const CookPlan &plan, const
             const auto &link = plan.Inputs[plan.InputFirst[n] + *InputSocket(definition, "index")];
             // An index an op gives is known only to the cook.
             if (link.FromNode != NoNode) return false;
-            const auto index = link.Constant ? link.Constant->Words[0] : unset("index") ? 0u : LiteralWords(Authored(r, plan.Nodes[n]), plan.Nodes[n].Entity, "index", mx::Type::Integer)[0];
+            const auto index = link.Constant ? link.Constant->Words[0] : unset("index") ? 0u :
+                                                                                          LiteralWords(Authored(r, plan.Nodes[n]), plan.Nodes[n].Entity, "index", mx::Type::Integer)[0];
             if (set && *set != index) return false;
             set = index;
         } else if (const auto declaration = layout.Nodes[n].Declaration) {
@@ -477,7 +477,7 @@ bool ReadsOneCoordinateSet(const state::Registry &r, const CookPlan &plan, const
     return !set || *set == 0u || !defaults;
 }
 
-OpGraph GraphOf(const state::Registry &r, const CookPlan &plan, const OpLayout &layout, std::span<const std::pair<uint32_t, uint16_t>> outputs, std::span<const uint32_t> unheld) {
+OpGraph OpGraphOf(const state::Registry &r, const CookPlan &plan, const OpLayout &layout, std::span<const std::pair<uint32_t, uint16_t>> outputs, std::span<const uint32_t> unheld) {
     std::vector<bool> read(plan.Nodes.size());
     MarkRead(r, plan, layout, std::vector<uint32_t>{std::from_range, outputs | std::views::keys}, read, unheld);
     OpGraph graph;
@@ -512,7 +512,9 @@ OpGraph GraphOf(const state::Registry &r, const CookPlan &plan, const OpLayout &
             const auto slot = std::ranges::find_if(slots, [&](const OpLayout::Slot &slot) { return slot.Input == input && (slot.Kind == OpSlotKind::Read) == read; });
             return slot == slots.end() ? nullptr : &*slot;
         };
-        for (uint16_t s = 0; s < (image ? 0u : filter ? 1u : definition->Inputs); ++s) {
+        for (uint16_t s = 0; s < (image ? 0u : filter ? 1u :
+                                                        definition->Inputs);
+             ++s) {
             const auto &link = plan.Inputs[plan.InputFirst[n] + s];
             const std::string name{filter ? "in" : definition->Sockets[s].Name};
             // Every image input reads a slot of the image table, which holds an image output, the input's texture, or none.
@@ -605,27 +607,27 @@ uint32_t Rebase(ops::Graph &graph) {
 }
 
 void WriteOpLiteral(state::Registry &r, state::Entity node, std::string_view input, mx::Type type, std::span<const uint32_t> words) {
-    if (auto *library = r.Resources.find<LibraryLiterals>()) {
+    if (auto *literals = r.Resources.find<BuiltinSubgraphLiterals>()) {
         r.patch<Op>(node, [&](Op &op) { op.Literals.insert_or_assign(std::string{input}, type); });
-        library->Words.insert_or_assign(std::pair{node, std::string{input}}, std::vector<uint32_t>{std::from_range, words});
+        literals->Words.insert_or_assign(std::pair{node, std::string{input}}, std::vector<uint32_t>{std::from_range, words});
         return;
     }
-    const auto network = NetworkOf(r, node);
+    const auto graph = GraphOf(r, node);
     const auto literal = r.get<const Op>(node).Literals.find(input);
     const bool held = literal != r.get<const Op>(node).Literals.end() && literal->second == type;
-    const auto *block = r.try_get<const OpValueBlock>(network);
+    const auto *block = r.try_get<const OpValueBlock>(graph);
     const auto *slot = held && block ? FindOpSlot(*block, NodePath{node}, input, type, OpSlotKind::Literal) : nullptr;
-    const bool definition = r.all_of<SubnetDefinition>(network);
+    const bool definition = r.all_of<Subgraph>(graph);
     if (!slot) {
         if (!held) r.patch<Op>(node, [&](Op &op) { op.Literals.insert_or_assign(std::string{input}, type); });
-        LayoutNetworkValues(r, network);
-        block = &r.get<const OpValueBlock>(network);
+        LayoutGraphValues(r, graph);
+        block = &r.get<const OpValueBlock>(graph);
         slot = FindOpSlot(*block, NodePath{node}, input, type, OpSlotKind::Literal);
     }
     auto &store = r.Resources.get<GpuBuffers>().OpValues;
     Range range{block->Block.Offset + slot->Offset, uint32_t(words.size())};
     store.Update(range, words);
-    // Each mesh whose plan instances the definition, and each material graph, holds a copy of the literal for each occurrence of the node.
+    // Each mesh whose plan uses the subgraph, and each material graph, holds a copy of the literal for each occurrence of the node.
     if (definition) {
         const auto update_copies = [&](const OpValueBlock *held_block) {
             for (const auto &copy : held_block ? std::span{held_block->Slots} : std::span<const OpSlot>{}) {
@@ -634,24 +636,24 @@ void WriteOpLiteral(state::Registry &r, state::Entity node, std::string_view inp
                 store.Update(copied, words);
             }
         };
-        for (const auto [mesh, plan] : r.view<const CookPlan>().each()) update_copies(std::ranges::binary_search(plan.Definitions, network) ? r.try_get<const OpValueBlock>(mesh) : nullptr);
+        for (const auto [mesh, plan] : r.view<const CookPlan>().each()) update_copies(std::ranges::binary_search(plan.Subgraphs, graph) ? r.try_get<const OpValueBlock>(mesh) : nullptr);
         for (const auto [material, block] : r.view<const MaterialGraph, const OpValueBlock>().each()) update_copies(&block);
     }
-    if (definition || r.all_of<MaterialGraph>(network)) NoteMaterialValues(r);
+    if (definition || r.all_of<MaterialGraph>(graph)) NoteMaterialValues(r);
     InvalidateNode(r, node);
 }
-} // namespace procedure
+} // namespace graph
 
 namespace action::nodes {
-using namespace procedure;
+using namespace graph;
 namespace {
 // Unlinks each authored link that passes an op output to an input that cannot take it, since the output varies.
-// The link is the one in the innermost network holding both the output's occurrence and the input's occurrence.
+// The link is the one in the innermost graph holding both the output's occurrence and the input's occurrence.
 // A link of a user definition is unlinked only when it fails in each of its occurrences, and an occurrence it fails alone faults when it cooks.
-// The plans of the meshes that use the network decide, or the network's own plan when no mesh uses it.
-void DropFieldLinks(state::Registry &r, state::Entity network) {
-    auto owners = MeshesUsing(r, network);
-    if (owners.empty()) owners.push_back(network);
+// The plans of the meshes that use the graph decide, or the graph's own plan when no mesh uses it.
+void DropFieldLinks(state::Registry &r, state::Entity graph) {
+    auto owners = MeshesUsing(r, graph);
+    if (owners.empty()) owners.push_back(graph);
     const auto plans = owners | std::views::transform([&](state::Entity owner) { return Plan(r, owner); }) | std::ranges::to<std::vector>();
     // Each failing link by its node and slot, with the plan and node occurrence it fails in.
     std::vector<std::tuple<state::Entity, uint16_t, size_t, uint32_t>> failing;
@@ -663,12 +665,12 @@ void DropFieldLinks(state::Registry &r, state::Entity network) {
             return enclosing;
         };
         for (uint32_t n = 0; n < plan.Nodes.size(); ++n) {
-            if (plan.Nodes[n].Kind == KindOf<Subnet>) continue;
+            if (plan.Nodes[n].Kind == KindOf<SubgraphNode>) continue;
             for (uint16_t slot = 0; slot < InputsOf(plan, n); ++slot) {
                 const auto link = plan.Inputs[plan.InputFirst[n] + slot];
                 if (link.FromNode == NoNode || plan.Nodes[link.FromNode].Kind != KindOf<Op>) continue;
                 if (Links(NodeSockets(plan, link.FromNode)[link.FromSocket], NodeSockets(plan, n)[SlotSocket(plan.Nodes[n].Kind, slot)])) continue;
-                // The innermost subnet node occurrence enclosing both ends, whose network holds the link.
+                // The innermost subgraph node occurrence enclosing both ends, whose graph holds the link.
                 const auto source = ancestors(link.FromNode);
                 auto enclosing = NoNode;
                 for (const auto a : ancestors(n)) {
@@ -677,14 +679,14 @@ void DropFieldLinks(state::Registry &r, state::Entity network) {
                         break;
                     }
                 }
-                // Each network inside it reads the link through its definition's input port.
+                // Each graph inside it reads the link through its definition's input port.
                 auto node = n;
                 auto held = slot;
                 while (plan.Nodes[node].Parent != enclosing) {
                     held = InputOf(Authored(r, plan.Nodes[node]), plan.Nodes[node].Entity, held).FromSocket;
                     node = plan.Nodes[node].Parent;
                 }
-                if (!plan.Nodes[node].Builtin) failing.emplace_back(plan.Nodes[node].Entity, held, p, node);
+                if (!plan.Nodes[node].InBuiltinSubgraph) failing.emplace_back(plan.Nodes[node].Entity, held, p, node);
             }
         }
     }
@@ -694,7 +696,7 @@ void DropFieldLinks(state::Registry &r, state::Entity network) {
         const auto [entity, slot, p, n] = *at;
         const auto end = std::ranges::find_if(at, failing.end(), [&](const auto &f) { return std::get<0>(f) != entity || std::get<1>(f) != slot; });
         const auto occurrences = std::ranges::fold_left(plans, size_t{0}, [&](size_t count, const CookPlan &plan) {
-            return count + size_t(std::ranges::count_if(plan.Nodes, [&](const NodeRecord &node) { return !node.Builtin && node.Entity == entity; }));
+            return count + size_t(std::ranges::count_if(plan.Nodes, [&](const NodeRecord &node) { return !node.InBuiltinSubgraph && node.Entity == entity; }));
         });
         if (size_t(end - at) == occurrences) dropped.emplace_back(entity, slot);
         at = end;
@@ -751,7 +753,7 @@ void Apply(state::Registry &r, const SetOpOutputType &a) {
     const auto &definition = *DefinitionOf(op->Node);
     if (!definition.StoresOutput || !std::ranges::contains(definition.OutputTypes, a.Type)) return Fail(r, "The op's declarations have no output of this type");
     r.patch<Op>(a.Node, [&](Op &edited) { edited.Output = a.Type; });
-    DropFieldLinks(r, NetworkOf(r, a.Node));
+    DropFieldLinks(r, GraphOf(r, a.Node));
 }
 void Apply(state::Registry &r, const ChangeOp &a) {
     const auto *op = r.try_get<const Op>(a.Node);
@@ -759,7 +761,7 @@ void Apply(state::Registry &r, const ChangeOp &a) {
     if (!op) return Fail(r, "The node is not an op");
     if (!definition || definition->Sockets.size() == definition->Inputs) return Fail(r, "Name a MaterialX node with a value output");
     const auto *prior = DefinitionOf(op->Node);
-    const auto network = NetworkOf(r, a.Node);
+    const auto graph = GraphOf(r, a.Node);
     const auto &lib = mx::Libraries();
     Op changed{.Node = a.Op};
     if (definition->StoresOutput) changed.Output = op->Output && std::ranges::contains(definition->OutputTypes, *op->Output) ? *op->Output : lib.Declarations[mx::NodeDeclarations(lib, a.Op).front()].Outputs.front().Type;
@@ -790,9 +792,9 @@ void Apply(state::Registry &r, const ChangeOp &a) {
     };
     r.replace<Op>(a.Node, std::move(changed));
     r.replace<NodeInputs>(a.Node, std::move(links));
-    ForEachNetworkInput(r, network, [&](state::Entity node, uint16_t slot, SocketLink link) {
+    ForEachGraphInput(r, graph, [&](state::Entity node, uint16_t slot, SocketLink link) {
         if (const auto to = moved(link)) SetInput(r, node, slot, *to);
     });
-    DropFieldLinks(r, network);
+    DropFieldLinks(r, graph);
 }
 } // namespace action::nodes

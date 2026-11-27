@@ -3,11 +3,11 @@
 #include "Variant.h"
 #include "action/Nodes.h"
 #include "armature/ArmatureComponents.h"
-#include "procedure/NodeTheme.h"
-#include "procedure/Procedure.h"
+#include "graph/Graph.h"
+#include "graph/NodeTheme.h"
 #include "scene/CameraLens.h"
 #include "scene/Entity.h"
-#include "scene/HierarchyInstance.h"
+#include "scene/Instance.h"
 #include "scene/SceneGraph.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionState.h"
@@ -99,7 +99,7 @@ void Apply(state::Registry &r, const Action &action) {
             },
             [&](const ResetViewCamera &a) { PatchCameraStopped(r, a.Viewport, [](ViewCamera &c) { c = Defaults::ViewCamera; }); },
             [&](ResetViewportTheme) { r.emplace_or_replace<ViewportTheme>(state::Document, Defaults::ViewportTheme); },
-            [&](ResetNodeTheme) { r.replace<procedure::NodeTheme>(state::Document, procedure::NodeTheme{}); },
+            [&](ResetNodeTheme) { r.replace<graph::NodeTheme>(state::Document, graph::NodeTheme{}); },
             [&](ResetInterfaceTheme) { r.replace<InterfaceTheme>(state::Document, InterfaceTheme{}); },
             [&](ResetTimelineTheme) { r.replace<TimelineTheme>(state::Document, TimelineTheme{}); },
             [&](const ResetPbrLighting &a) {
@@ -184,13 +184,13 @@ void Apply(state::Registry &r, const Action &action) {
                         if (const auto *ds = r.try_get<BoneDisplayScale>(e)) r.emplace<StartBoneLength>(e, ds->Value);
                     }
                 }
-                for (const auto &[e, local] : locals) PatchEditedLocal(r, HierarchyEditTarget(r, e, true), [&](auto &t) { t = local; });
-                for (const auto &[e, length] : bone_scales) r.emplace_or_replace<BoneDisplayScale>(HierarchySource(r, e), length);
+                for (const auto &[e, local] : locals) PatchEditedLocal(r, SourceOfCopy(r, e), [&](auto &t) { t = local; });
+                for (const auto &[e, length] : bone_scales) r.emplace_or_replace<BoneDisplayScale>(SourceOfCopy(r, e), length);
             },
             [&](const TransformElements &a) {
-                for (const auto &[_, instance_entity] : r.get<const EditPrimaries>(state::Document).Transformable) {
-                    if (!r.all_of<StartTransform>(instance_entity)) {
-                        r.emplace<StartTransform>(instance_entity, *WorldTransformOf(r, instance_entity), ToTransform(GetParentDelta(r, instance_entity)));
+                for (const auto &[_, object_entity] : r.get<const EditPrimaries>(state::Document).Transformable) {
+                    if (!r.all_of<StartTransform>(object_entity)) {
+                        r.emplace<StartTransform>(object_entity, *WorldTransformOf(r, object_entity), ToTransform(GetParentDelta(r, object_entity)));
                     }
                 }
                 // An identity delta appends none.
@@ -200,23 +200,23 @@ void Apply(state::Registry &r, const Action &action) {
                     for (const auto mesh_entity : mesh::SelectedEditMeshes(r)) {
                         const auto primary = primaries.find(mesh_entity);
                         if (primary == primaries.end()) continue;
-                        if (const auto staged = nodes::StagedResultNode(r, mesh_entity, procedure::KindOf<procedure::Extrude>); staged != state::Null && a.Delta.R == quat{1.f, 0.f, 0.f, 0.f} && a.Delta.S == vec3{1.f}) {
+                        if (const auto staged = nodes::StagedResultNode(r, mesh_entity, graph::KindOf<graph::Extrude>); staged != state::Null && a.Delta.R == quat{1.f, 0.f, 0.f, 0.f} && a.Delta.S == vec3{1.f}) {
                             const auto frame = *WorldTransformOf(r, primary->second);
-                            r.patch<procedure::Extrude>(staged, [&](auto &p) {
+                            r.patch<graph::Extrude>(staged, [&](auto &p) {
                                 p.Offset = (Conjugate(frame.R) * a.Delta.P) / frame.S;
                                 p.OffsetScale = 1.f;
                                 p.AlongNormals = false;
                             });
                             continue;
                         }
-                        if (const auto staged = nodes::StagedResultNode(r, mesh_entity, procedure::KindOf<procedure::TransformElements>); staged != state::Null) {
-                            r.patch<procedure::TransformElements>(staged, [&](auto &p) { p.Delta = a.Delta; });
+                        if (const auto staged = nodes::StagedResultNode(r, mesh_entity, graph::KindOf<graph::TransformElements>); staged != state::Null) {
+                            r.patch<graph::TransformElements>(staged, [&](auto &p) { p.Delta = a.Delta; });
                             continue;
                         }
-                        const auto node = nodes::AppendNode(r, mesh_entity, procedure::KindOf<procedure::TransformElements>);
+                        const auto node = nodes::AppendNode(r, mesh_entity, graph::KindOf<graph::TransformElements>);
                         if (node == state::Null) return;
-                        r.replace<procedure::TransformElements>(node, a.Delta, pivot.P, *WorldTransformOf(r, primary->second));
-                        r.emplace<procedure::StagedNode>(node);
+                        r.replace<graph::TransformElements>(node, a.Delta, pivot.P, *WorldTransformOf(r, primary->second));
+                        r.emplace<graph::StagedNode>(node);
                     }
                 }
                 r.emplace_or_replace<PendingTransform>(state::Document, pivot.P, pivot.R, a.Delta);

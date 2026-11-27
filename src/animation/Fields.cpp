@@ -5,9 +5,9 @@
 #include "object/ObjectOps.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
-#include "render/Instance.h"
 #include "render/MaterialComponents.h"
 #include "render/MaterialTextureSchema.h"
+#include "render/ObjectGeometry.h"
 #include "render/RenderChanges.h"
 
 namespace animation {

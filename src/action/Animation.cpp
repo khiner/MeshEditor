@@ -28,7 +28,7 @@ std::vector<state::Entity> TargetEntities(const state::Registry &r, const Target
                 }
             }
         },
-        [&](state::Entity e) { entities.emplace_back(e); }
+        [&](state::Entity e) { entities.emplace_back(SourceOfCopy(r, e)); }
     );
     return entities;
 }

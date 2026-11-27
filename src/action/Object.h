@@ -13,9 +13,9 @@
 
 #include <filesystem>
 
-namespace procedure {
+namespace graph {
 enum class ShadeMode : uint8_t;
-} // namespace procedure
+} // namespace graph
 
 namespace action::object {
 struct SetLightType {
@@ -34,11 +34,9 @@ struct SetProjection {
 struct Delete {};
 struct Duplicate {};
 struct DuplicateLinked {};
-struct InstantiateHierarchy {
-    state::Entity Source;
-};
-struct MakeIndependent {
-    state::Entity Root;
+// Adds an Empty with an Instance of the scene subgraph to the frame's scene, at the origin.
+struct Instantiate {
+    state::Entity Subgraph;
 };
 struct ToggleHidden {};
 struct SetVisible {
@@ -47,7 +45,7 @@ struct SetVisible {
 };
 // Shade every face of the selected meshes flat, smooth, or smooth with edges sharp where the dihedral angle exceeds Angle in radians.
 struct ShadeSelected {
-    procedure::ShadeMode Mode;
+    graph::ShadeMode Mode;
     float Angle{};
 };
 // Vertex selections apply to every edge touching a selected vertex.
@@ -75,14 +73,14 @@ struct AddCamera {
 struct AddLight {
     std::unique_ptr<ObjectCreateInfo> Info;
 };
-// Creates a mesh whose procedure displays a generator node with the parameters.
+// Creates a mesh whose graph displays a generator node with the parameters.
 struct AddMeshPrimitive {
     PrimitiveParameters Parameters;
-    std::unique_ptr<MeshInstanceCreateInfo> Info;
+    std::unique_ptr<MeshObjectCreateInfo> Info;
 };
 struct ImportMesh {
     std::filesystem::path Path;
-    std::unique_ptr<MeshInstanceCreateInfo> Info;
+    std::unique_ptr<MeshObjectCreateInfo> Info;
 };
 // A zero Mask removes the component.
 // Targets the mesh entity.
@@ -124,7 +122,7 @@ struct AddTexture {
 };
 
 using Action = std::variant<
-    Delete, Duplicate, DuplicateLinked, InstantiateHierarchy, MakeIndependent, ToggleHidden, SetVisible, ShadeSelected,
+    Delete, Duplicate, DuplicateLinked, Instantiate, ToggleHidden, SetVisible, ShadeSelected,
     SetSelectedSharp,
     ParentToActive, ClearParent, SetParent,
     AddEmpty, AddArmature, AddCamera, AddLight, AddMeshPrimitive, ImportMesh,
@@ -134,7 +132,7 @@ using Action = std::variant<
     SetLightType, SetSpotCone, SetProjection>;
 
 void Apply(state::Registry &, const Action &);
-// A new geometry holding a copy of the geometry's procedure and drawn record.
+// A new geometry holding a copy of the geometry's graph and drawn record.
 state::Entity CopyGeometry(state::Registry &, state::Entity geometry);
 } // namespace action::object
 namespace action {

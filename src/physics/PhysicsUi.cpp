@@ -166,7 +166,7 @@ std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in, bool auto_
 } // namespace
 
 namespace {
-void RenderJointDefinition(state::Entity jd_entity, const PhysicsJointDef &jd) {
+void RenderJointDescription(state::Entity jd_entity, const JointDescription &jd) {
     static const char *const axis_names[]{"X", "Y", "Z"};
     RenderJointVecList<PhysicsJointLimit>(jd_entity, jd.Limits, "Limit", "Add limit", [&](const auto &limit, auto &&edit_limit) {
         const auto axes = [&](const char *label, auto member, bool angular) {
@@ -226,7 +226,7 @@ void RenderJointDefinition(state::Entity jd_entity, const PhysicsJointDef &jd) {
 bool physics_ui::RenderResourceProperties(state::Registry &r, state::Entity entity) {
     if (r.all_of<PhysicsMaterial>(entity)) ui::DrawFields<PhysicsMaterial, &PhysicsMaterial::Name>(ui::Edit{r, entity});
     else if (r.all_of<CollisionFilter>(entity)) RenderCollisionFilterBody(r, entity);
-    else if (const auto *joint = r.try_get<const PhysicsJointDef>(entity)) RenderJointDefinition(entity, *joint);
+    else if (const auto *joint = r.try_get<const JointDescription>(entity)) RenderJointDescription(entity, *joint);
     else return r.all_of<CollisionSystem>(entity);
     return true;
 }
@@ -345,10 +345,10 @@ void physics_ui::RenderEntityProperties(state::Registry &r, state::Entity entity
         Spacing();
         SeparatorText("Joint");
 
-        TargetCombo<PhysicsJointDef>(r, "Definition", joint->JointDefEntity, "No joint definitions", [&](state::Entity e) {
-            action::Emit(action::UpdateOf<&PhysicsJoint::JointDefEntity>(active_target, e));
+        TargetCombo<JointDescription>(r, "Description", joint->JointDescriptionEntity, "No joint descriptions", [&](state::Entity e) {
+            action::Emit(action::UpdateOf<&PhysicsJoint::JointDescriptionEntity>(active_target, e));
         });
-        if (const auto *def = joint->JointDefEntity != state::Null && r.valid(joint->JointDefEntity) ? r.try_get<const PhysicsJointDef>(joint->JointDefEntity) : nullptr) {
+        if (const auto *def = joint->JointDescriptionEntity != state::Null && r.valid(joint->JointDescriptionEntity) ? r.try_get<const JointDescription>(joint->JointDescriptionEntity) : nullptr) {
             Text("Limits: %zu, Drives: %zu", def->Limits.size(), def->Drives.size());
         }
 

@@ -8,15 +8,15 @@
 #include "editor/AudioIntegration.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gltf/SourceAssets.h"
+#include "graph/Cook.h"
+#include "graph/Graph.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStores.h"
-#include "procedure/Cook.h"
-#include "procedure/Procedure.h"
 #include "project/Assets.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
 #include "render/GpuSceneState.h"
-#include "render/Instance.h"
+#include "render/ObjectGeometry.h"
 #include "render/RenderChanges.h"
 #include "render/Textures.h"
 #include "selection/SelectionComponents.h"
@@ -113,8 +113,8 @@ void Project::TrackStores() {
                 const auto *models = R.try_get<const ModelsBuffer>(e);
                 if (!models) continue;
                 for (uint32_t slot = models->InstanceRange.Offset; slot < models->InstanceRange.Offset + models->InstanceCount; ++slot) {
-                    const auto instance_entity = render_instances.entity_at(ObjectIndex(object_ids[slot]));
-                    if (const auto *ri = instance_entity != state::Null ? R.try_get<const RenderInstance>(instance_entity) : nullptr; ri && ri->Entity == e) R.remove<RenderInstance>(instance_entity);
+                    const auto object_entity = render_instances.entity_at(ObjectIndex(object_ids[slot]));
+                    if (const auto *ri = object_entity != state::Null ? R.try_get<const RenderInstance>(object_entity) : nullptr; ri && ri->Entity == e) R.remove<RenderInstance>(object_entity);
                 }
                 FreeInstanceRange(R, models->InstanceRange);
             }
@@ -377,14 +377,14 @@ void Project::AfterRestore() {
     bool sources_changed = false, manifest_changed = false;
     std::vector<state::Entity> restored_meshes, deformed;
     for (const auto &[type, entity, event] : Entities.TakeChanges()) {
-        if (type == state::Type<MorphWeightRange>() || type == state::Type<Instance>()) deformed.push_back(entity);
+        if (type == state::Type<MorphWeightRange>() || type == state::Type<ObjectGeometry>()) deformed.push_back(entity);
         if (type == state::Type<Armature>()) {
             for (const auto [object, armature] : R.view<const ArmatureObject>().each())
                 if (armature.Entity == entity) R.remove<ArmaturePoseState>(object);
         } else if (type == state::Type<ArmatureObject>()) R.remove<ArmaturePoseState>(entity);
         const bool drawn_record = type == state::Type<MeshHandle>() || type == state::Type<EvaluatedMesh>() || type == state::Type<VertexStoreId>();
         // A mesh that still draws reconciles a changed vertex store through its storage changes.
-        if (drawn_record && R.valid(entity) && !R.all_of<procedure::ProcedureNode>(entity) && (type != state::Type<VertexStoreId>() || !DrawsMesh(R, entity))) restored_meshes.push_back(entity);
+        if (drawn_record && R.valid(entity) && !R.all_of<graph::GraphNode>(entity) && (type != state::Type<VertexStoreId>() || !DrawsMesh(R, entity))) restored_meshes.push_back(entity);
         sources_changed |= type == state::Type<gltf::SourceAssets>();
         manifest_changed |= type == state::Type<MaterializedTexture>();
     }
@@ -403,16 +403,16 @@ void Project::AfterRestore() {
     const bool materials_changed = !buffers.Materials.History()->Trie.TakeChanged().empty();
     if (materials_changed) {
         R.Resources.get<RenderChanges>().Materials.emplace(state::Document);
-        R.Resources.get<procedure::NetworkChanges>().Pages.emplace(state::Document);
+        R.Resources.get<graph::GraphChanges>().Pages.emplace(state::Document);
     }
     // A geometry's node holds its record's material slots and the materials they index, so it derives again when the restore replaced either.
     const auto restored = ReconcileRestoredMeshes(R, std::move(restored_meshes));
-    for (const auto mesh : R.view<const procedure::GeometryProcedure>()) {
-        if (materials_changed || std::ranges::binary_search(restored, mesh)) R.Resources.get<procedure::NetworkChanges>().Nodes.emplace(mesh);
+    for (const auto mesh : R.view<const graph::GeometryGraph>()) {
+        if (materials_changed || std::ranges::binary_search(restored, mesh)) R.Resources.get<graph::GraphChanges>().Nodes.emplace(mesh);
     }
-    // An instance whose placement or morph weights the restore changed deforms its mesh again.
+    // An object whose placement or morph weights the restore changed deforms its mesh again.
     for (const auto e : deformed) {
-        if (const auto *instance = R.valid(e) ? R.try_get<const Instance>(e) : nullptr) R.emplace_or_replace<MeshLayoutDirty>(instance->Entity);
+        if (const auto *geometry = R.valid(e) ? R.try_get<const ObjectGeometry>(e) : nullptr) R.emplace_or_replace<MeshLayoutDirty>(geometry->Entity);
     }
     if (!buffers.MorphWeightBuffer.Buffer.History()->Trie.TakeChanged().empty()) R.Resources.get<RenderChanges>().MorphWeights.emplace(state::Document);
     Settle(EventPass::Restore);

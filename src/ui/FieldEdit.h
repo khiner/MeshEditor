@@ -13,8 +13,8 @@
 #include "animation/Clips.h"
 #include "animation/Fields.h"
 #include "animation/Keying.h"
+#include "graph/ItemGraph.h"
 #include "numeric/Angles.h"
-#include "procedure/Network.h"
 #include "scene/RotationUi.h"
 #include "state/Registry.h"
 
@@ -89,12 +89,12 @@ inline void KeyDecorator(const state::Registry &r, state::Entity entity, const C
     if (const auto state = QueryKey(r, entity, target)) KeyDecorator(r, entity, target, *state);
 }
 
-void FieldPromotionMenu(const state::Registry &, const procedure::PromotedField &);
+void FieldPromotionMenu(const state::Registry &, const graph::PromotedField &);
 
 namespace detail {
 // Runs `widget` over `v` and stages its change in the item's gesture through `emit(scope, v)`.
 // A field with a channel target is tinted by its keying state on `entity` and followed by its keying decorator.
-bool RunField(state::Registry &r, state::Entity entity, const ChannelTarget &channel, auto v, auto widget, bool selection, bool delta_capable, auto emit, const procedure::PromotedField *promoted = nullptr) {
+bool RunField(state::Registry &r, state::Entity entity, const ChannelTarget &channel, auto v, auto widget, bool selection, bool delta_capable, auto emit, const graph::PromotedField *promoted = nullptr) {
     const auto state = channel.Count ? QueryKey(r, entity, channel) : std::nullopt;
     RunKey = state;
     RunSelection = selection;
@@ -432,7 +432,7 @@ struct Edit : FieldWidgets<Prefix...> {
         using Field = action::detail::last_field<Prefix..., Ms...>;
         using C = action::detail::first_class<Prefix..., Ms...>;
         const auto entity = ReadFrom<C>();
-        const procedure::PromotedField promoted{entity, state::Key<C>(), action::detail::FieldOffset<Prefix..., Ms...>()};
+        const graph::PromotedField promoted{entity, state::Key<C>(), action::detail::FieldOffset<Prefix..., Ms...>()};
         return detail::RunField(
             R, entity, detail::Channel<Prefix..., Ms...>(), ReadChain<Prefix..., Ms...>(R.template get<const C>(entity)), widget,
             !E, delta_capable && action::DeltaField<Field>,

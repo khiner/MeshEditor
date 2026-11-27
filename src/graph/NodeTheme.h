@@ -3,7 +3,7 @@
 #include "Field.h"
 #include "ui/Rgba8.h"
 
-namespace procedure {
+namespace graph {
 using numeric::vec4;
 
 struct NodeThemeColors {
@@ -75,27 +75,27 @@ struct NodeTheme {
     NodeThemeColors Colors{};
     NodeThemeSizes Sizes{};
 };
-} // namespace procedure
+} // namespace graph
 
-template<> inline constexpr field::SpecTable<procedure::CellSize> Specs<procedure::CellSize>{
-    {&procedure::CellSize::FollowFrameHeight, {.Label = "Frame height", .Help = "Make each cell one frame height, ignoring the grid size"}},
-    {&procedure::CellSize::Points, {.Min = 8, .Max = 128, .Unit = FieldUnit::Points, .Label = "Grid size", .Help = "Cell side length"}},
+template<> inline constexpr field::SpecTable<graph::CellSize> Specs<graph::CellSize>{
+    {&graph::CellSize::FollowFrameHeight, {.Label = "Frame height", .Help = "Make each cell one frame height, ignoring the grid size"}},
+    {&graph::CellSize::Points, {.Min = 8, .Max = 128, .Unit = FieldUnit::Points, .Label = "Grid size", .Help = "Cell side length"}},
 };
-template<> inline constexpr field::SpecTable<procedure::NodeThemeSizes> Specs<procedure::NodeThemeSizes>{
-    {&procedure::NodeThemeSizes::CoarseGridCells, {.Min = 2, .Max = 64, .Unit = FieldUnit::Cells, .Help = "Number of cells between coarse grid lines"}},
-    {&procedure::NodeThemeSizes::MaxLabelCells, {.Min = 2, .Max = 64, .Unit = FieldUnit::Cells, .Help = "Maximum socket label width. Longer labels end in an ellipsis."}},
-    {&procedure::NodeThemeSizes::TitlePadding, {.Min = 0, .Max = 24, .Unit = FieldUnit::Points, .Help = "Space on each side of a node title"}},
-    {&procedure::NodeThemeSizes::LabelSpacing, {.Min = 0, .Max = 24, .Unit = FieldUnit::Points, .Help = "Space between a socket and its label"}},
-    {&procedure::NodeThemeSizes::ParameterIndent, {.Min = 0, .Max = 24, .Unit = FieldUnit::Points, .Help = "Extra indent of parameter socket labels"}},
-    {&procedure::NodeThemeSizes::SocketRadius, {.Min = 2, .Max = 12, .Unit = FieldUnit::Points, .Help = "Socket radius"}},
-    {&procedure::NodeThemeSizes::Rounding, {.Min = 0, .Max = 12, .Unit = FieldUnit::Points, .Help = "Node corner radius"}},
-    {&procedure::NodeThemeSizes::Margin, {.Min = 0, .Max = 8, .Unit = FieldUnit::Points, .Help = "Space between a node and the edges of its cells, which separates nodes that touch"}},
-    {&procedure::NodeThemeSizes::WireWidth, {.Min = .5, .Max = 8, .Unit = FieldUnit::Points, .Help = "Link wire width"}},
-    {&procedure::NodeThemeSizes::WireCurving, {.Min = 0, .Max = 1, .Help = "Wire curve handle length as a fraction of the link's horizontal span"}},
-    {&procedure::NodeThemeSizes::BorderWidth, {.Min = .5, .Max = 4, .Unit = FieldUnit::Points, .Help = "Node border width"}},
-    {&procedure::NodeThemeSizes::HighlightBorderWidth, {.Min = .5, .Max = 6, .Unit = FieldUnit::Points, .Help = "Border width of a selected, active, or failing node"}},
-    {&procedure::NodeThemeSizes::OutlineWidth, {.Min = 0, .Max = 4, .Unit = FieldUnit::Points, .Help = "Outline width of sockets, chevrons, and the parameter tray"}},
+template<> inline constexpr field::SpecTable<graph::NodeThemeSizes> Specs<graph::NodeThemeSizes>{
+    {&graph::NodeThemeSizes::CoarseGridCells, {.Min = 2, .Max = 64, .Unit = FieldUnit::Cells, .Help = "Number of cells between coarse grid lines"}},
+    {&graph::NodeThemeSizes::MaxLabelCells, {.Min = 2, .Max = 64, .Unit = FieldUnit::Cells, .Help = "Maximum socket label width. Longer labels end in an ellipsis."}},
+    {&graph::NodeThemeSizes::TitlePadding, {.Min = 0, .Max = 24, .Unit = FieldUnit::Points, .Help = "Space on each side of a node title"}},
+    {&graph::NodeThemeSizes::LabelSpacing, {.Min = 0, .Max = 24, .Unit = FieldUnit::Points, .Help = "Space between a socket and its label"}},
+    {&graph::NodeThemeSizes::ParameterIndent, {.Min = 0, .Max = 24, .Unit = FieldUnit::Points, .Help = "Extra indent of parameter socket labels"}},
+    {&graph::NodeThemeSizes::SocketRadius, {.Min = 2, .Max = 12, .Unit = FieldUnit::Points, .Help = "Socket radius"}},
+    {&graph::NodeThemeSizes::Rounding, {.Min = 0, .Max = 12, .Unit = FieldUnit::Points, .Help = "Node corner radius"}},
+    {&graph::NodeThemeSizes::Margin, {.Min = 0, .Max = 8, .Unit = FieldUnit::Points, .Help = "Space between a node and the edges of its cells, which separates nodes that touch"}},
+    {&graph::NodeThemeSizes::WireWidth, {.Min = .5, .Max = 8, .Unit = FieldUnit::Points, .Help = "Link wire width"}},
+    {&graph::NodeThemeSizes::WireCurving, {.Min = 0, .Max = 1, .Help = "Wire curve handle length as a fraction of the link's horizontal span"}},
+    {&graph::NodeThemeSizes::BorderWidth, {.Min = .5, .Max = 4, .Unit = FieldUnit::Points, .Help = "Node border width"}},
+    {&graph::NodeThemeSizes::HighlightBorderWidth, {.Min = .5, .Max = 6, .Unit = FieldUnit::Points, .Help = "Border width of a selected, active, or failing node"}},
+    {&graph::NodeThemeSizes::OutlineWidth, {.Min = 0, .Max = 4, .Unit = FieldUnit::Points, .Help = "Outline width of sockets, chevrons, and the parameter tray"}},
 };
-template<> inline constexpr field::SpecTable<procedure::NodeTheme> Specs<procedure::NodeTheme>{
-    {&procedure::NodeTheme::Colors, {.Widget = FieldWidget::Color}},
+template<> inline constexpr field::SpecTable<graph::NodeTheme> Specs<graph::NodeTheme>{
+    {&graph::NodeTheme::Colors, {.Widget = FieldWidget::Color}},
 };

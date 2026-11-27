@@ -1,9 +1,9 @@
-#include "ProcedureFixture.h"
+#include "GraphFixture.h"
 #include "audio/AudioOutputConfig.h"
+#include "graph/BuiltinSubgraphs.h"
 #include "materialx/Library.h"
-#include "procedure/Macros.h"
 #include "render/MaterialComponents.h"
-#include "scene/HierarchyInstance.h"
+#include "scene/Instance.h"
 #include "scene/SceneGraph.h"
 #include "viewport/FrameState.h"
 #include "viewport/ViewCameraOps.h"
@@ -15,7 +15,7 @@
 using boost::ut::expect;
 
 namespace {
-struct HistoryFixture : ProcedureFixture {
+struct HistoryFixture : GraphFixture {
     // The fixture's images size the first viewport's panel, so a first viewport's panel is left out under rendering.
     state::Entity AddViewport() {
         const auto before = R.view<const ViewportScene>() | std::ranges::to<std::vector>();
@@ -49,26 +49,28 @@ enum class WalkStep {
     LookThroughCamera,
     SetVisible,
     Instantiate,
-    MakeIndependent,
+    MakeInstanceUnique,
     LoadRig,
     SetFrame,
     AddMaterial,
     ReadTexcoords,
     AssignReference,
     DeleteItems,
-    GroupItems,
-    UngroupItems,
+    CollapseItems,
+    ExpandItems,
+    ExposePort,
+    InstancePortValue,
     AddNode,
     Link,
     Unlink,
     InsertNode,
     DeleteNodes,
     DuplicateNodes,
-    GroupNodes,
-    UngroupNodes,
+    CollapseNodes,
+    ExpandNodes,
     MakeUnique,
     ExposeSocket,
-    PortValue,
+    NumericValue,
     SetDisplay,
     SetBypass,
     EditParameter,
@@ -76,7 +78,7 @@ enum class WalkStep {
     ChangeOp,
     MaterialPage,
     MoveNodes,
-    Collapse,
+    FreezeGraph,
     EnterPage,
     StageParameter,
     ExtrudeDrag,
@@ -88,20 +90,21 @@ enum class WalkStep {
     Count,
 };
 constexpr std::array<std::string_view, size_t(WalkStep::Count)> WalkStepNames{
-    "add primitive", "add empty", "add light", "add viewport", "remove viewport", "change view", "select object", "extend active", "parent to active", "move active", "delete", "duplicate", "look through camera", "set visible", "instantiate", "make independent", "load rig", "set frame",
-    "add material", "read texcoords", "assign reference", "delete items", "group items", "ungroup items",
-    "add node", "link", "unlink", "insert node", "delete nodes", "duplicate nodes", "group nodes", "ungroup nodes", "make unique", "expose socket", "port value", "set display", "set bypass", "edit parameter", "set op input", "change op", "material page", "move nodes", "collapse", "enter page",
-    "stage parameter", "extrude drag", "viewport operator", "edit selection", "make links", "add search", "linking add"};
+    "add primitive", "add empty", "add light", "add viewport", "remove viewport", "change view", "select object", "extend active", "parent to active", "move active", "delete", "duplicate", "look through camera", "set visible", "instantiate", "make instance unique", "load rig", "set frame",
+    "add material", "read texcoords", "assign reference", "delete items", "collapse items", "expand items", "expose port", "instance port value",
+    "add node", "link", "unlink", "insert node", "delete nodes", "duplicate nodes", "collapse nodes", "expand nodes", "make unique", "expose socket", "port value", "set display", "set bypass", "edit parameter", "set op input", "change op", "material page", "move nodes", "freeze graph", "enter page",
+    "stage parameter", "extrude drag", "viewport operator", "edit selection", "make links", "add search", "linking add"
+};
 
 // The rules a walk reaches at least once, each counted at a step that exercises it.
 constexpr std::array WalkRules{"index reuse", "fresh identity", "kind change", "name collision", "loop in parents", "viewport removal", "look through", "rejected", "cancelled"};
 
-// The MaterialX nodes a geometry network offers, in name order.
+// The MaterialX nodes a geometry graph offers, in name order.
 const std::vector<std::string_view> &GeometryOps() {
     static const auto nodes = [] {
         std::vector<std::string_view> found;
         for (const auto &[node, declarations] : mx::Libraries().DeclarationsByNode) {
-            const auto *definition = procedure::DefinitionOf(node);
+            const auto *definition = graph::DefinitionOf(node);
             if (definition && definition->Domains && definition->Sockets.size() > definition->Inputs) found.push_back(node);
         }
         return found;
@@ -124,45 +127,45 @@ const std::vector<std::string_view> &TexcoordOps() {
     return nodes;
 }
 
-// A socket of a node on a network's page by the id a link names it with.
+// A socket of a node on a graph's page by the id a link names it with.
 struct PageSocket {
     state::Entity Node;
     uint16_t Id;
-    procedure::Socket Socket;
+    graph::Socket Socket;
 };
-// The sockets of the node facing the direction on the network's page: a subnet node's ports, the definition's own ports at its boundary, or another node's sockets.
-std::vector<PageSocket> SocketsFacing(const state::Registry &r, state::Entity network, state::Entity node, procedure::SocketDirection direction) {
+// The sockets of the node facing the direction on the graph's page: a subgraph node's ports, the subgraph's own ports at its boundary, or another node's sockets.
+std::vector<PageSocket> SocketsFacing(const state::Registry &r, state::Entity graph, state::Entity node, graph::SocketDirection direction) {
     std::vector<PageSocket> sockets;
-    if (node == network || r.all_of<procedure::Subnet>(node)) {
-        // A boundary's input ports pass values into the network, and its output ports take them.
-        const bool boundary = node == network;
-        for (const auto &port : procedure::InterfaceOf(r, node)->Ports) {
-            if ((port.Direction == direction) != boundary) sockets.push_back({node, port.Id, procedure::PortSocket(r, node, port, direction)});
+    if (node == graph || r.all_of<graph::SubgraphNode>(node)) {
+        // A boundary's input ports pass values into the graph, and its output ports take them.
+        const bool boundary = node == graph;
+        for (const auto &port : graph::InterfaceOf(r, node)->Ports) {
+            if ((port.Direction == direction) != boundary) sockets.push_back({node, port.Id, graph::PortSocket(r, node, port, direction)});
         }
         return sockets;
     }
-    const auto all = procedure::SocketsOf(r, node);
+    const auto all = graph::SocketsOf(r, node);
     for (uint16_t s = 0; s < all.size(); ++s) {
         if (all[s].Direction == direction) sockets.push_back({node, s, all[s]});
     }
     return sockets;
 }
-// Each linked input of the network's nodes and of its boundary, as the node, its socket and the link's index among the socket's links.
-std::vector<std::tuple<state::Entity, uint16_t, uint16_t>> LinkedInputs(const state::Registry &r, state::Entity network) {
+// Each linked input of the graph's nodes and of its boundary, as the node, its socket and the link's index among the socket's links.
+std::vector<std::tuple<state::Entity, uint16_t, uint16_t>> LinkedInputs(const state::Registry &r, state::Entity graph) {
     std::vector<std::tuple<state::Entity, uint16_t, uint16_t>> linked;
     std::map<std::pair<state::Entity, uint16_t>, uint16_t> counts;
-    procedure::ForEachNetworkInput(r, network, [&](state::Entity node, uint16_t slot, procedure::SocketLink link) {
-        const auto socket = node == network || r.all_of<procedure::Subnet>(node) ? slot : procedure::SlotSocketOf(r, node, slot);
+    graph::ForEachGraphInput(r, graph, [&](state::Entity node, uint16_t slot, graph::SocketLink link) {
+        const auto socket = node == graph || r.all_of<graph::SubgraphNode>(node) ? slot : graph::SlotSocketOf(r, node, slot);
         const auto index = counts[{node, socket}]++;
         if (link.FromNode != state::Null) linked.emplace_back(node, socket, index);
     });
     return linked;
 }
-// The nodes holding C of each network, in network order.
-template<typename C> std::vector<state::Entity> NodesWith(const state::Registry &r, const std::vector<state::Entity> &networks) {
+// The nodes holding C of each graph, in graph order.
+template<typename C> std::vector<state::Entity> NodesWith(const state::Registry &r, const std::vector<state::Entity> &graphs) {
     std::vector<state::Entity> found;
-    for (const auto network : networks) {
-        for (const auto node : procedure::NodesOf(r, network))
+    for (const auto graph : graphs) {
+        for (const auto node : graph::NodesOf(r, graph))
             if (r.all_of<C>(node)) found.push_back(node);
     }
     return found;
@@ -183,14 +186,14 @@ ImVec2 CanvasPoint(numeric::vec2 cells) {
 // * A removed viewport is invalid, every other viewport keeps its camera, and a view change records no node.
 // * A viewport keeps looking through a camera whose creation is undone, and resolves it again on redo.
 // * An action that reports an error, and a cancelled gesture, leave the document and the history unchanged.
-// Each node action draws its network, nodes, sockets and values from the live document.
+// Each node action draws its graph, nodes, sockets and values from the live document.
 // The step checks of the fixture judge every state the walk reaches.
 void RandomHistoryWalk(HistoryFixture &f, uint32_t seed, uint32_t steps) {
     f.EveryStep = true;
-    using action::nodes::AddNode, action::nodes::AssignReference, action::nodes::AutoLayout, action::nodes::ChangeOp, action::nodes::ClearPortValue, action::nodes::CollapseProcedure, action::nodes::DefinitionNode, action::nodes::DeleteItems, action::nodes::DeleteNodes, action::nodes::DuplicateNodes;
-    using action::nodes::EditSelection, action::nodes::ExposeSocket, action::nodes::FinishSelection, action::nodes::GroupItems, action::nodes::GroupNodes, action::nodes::InsertNode, action::nodes::KindNode, action::nodes::Link, action::nodes::MacroNode, action::nodes::MakeUnique, action::nodes::MoveNodes;
-    using action::nodes::OpNode, action::nodes::SelectItems, action::nodes::SetBypass, action::nodes::SetDisplay, action::nodes::SetOpInput, action::nodes::SetOpOutputType, action::nodes::SetPortValue, action::nodes::UngroupItems, action::nodes::UngroupNodes, action::nodes::Unlink;
-    using procedure::SocketDirection;
+    using action::nodes::AddNode, action::nodes::AssignReference, action::nodes::AutoLayout, action::nodes::ChangeOp, action::nodes::ClearPortValue, action::nodes::FreezeGraph, action::nodes::UserSubgraphNode, action::nodes::DeleteItems, action::nodes::DeleteNodes, action::nodes::DuplicateNodes;
+    using action::nodes::EditSelection, action::nodes::ExposeSocket, action::nodes::FinishSelection, action::nodes::Collapse, action::nodes::ExposePort, action::nodes::InsertNode, action::nodes::KindNode, action::nodes::Link, action::nodes::BuiltinSubgraphNode, action::nodes::MakeUnique, action::nodes::MoveNodes;
+    using action::nodes::OpNode, action::nodes::SelectItems, action::nodes::SetBypass, action::nodes::SetDisplay, action::nodes::SetOpInput, action::nodes::SetOpOutputType, action::nodes::SetPortValue, action::nodes::Expand, action::nodes::Unlink;
+    using graph::SocketDirection;
     auto &r = f.R;
     std::mt19937 rng{seed};
     const auto below = [&](size_t n) { return std::uniform_int_distribution<size_t>{0u, n - 1u}(rng); };
@@ -301,69 +304,92 @@ void RandomHistoryWalk(HistoryFixture &f, uint32_t seed, uint32_t steps) {
     const auto pick = [&](const auto &entities) { return entities.empty() ? state::Null : entities[below(entities.size())]; };
     const auto objects = [&] { return SortedEntities(r.view<const ObjectKind>()); };
     const auto viewports = [&] { return SortedEntities(r.view<const ViewportScene>()); };
-    // The meshes whose procedures the walk edits, and the networks it edits: theirs and the user definitions'.
-    const auto meshes = [&] {
-        auto found = SortedEntities(r.view<const procedure::GeometryProcedure>());
-        std::erase_if(found, [&](state::Entity e) { return r.all_of<HierarchyGeometry>(e); });
-        return found;
-    };
+    // The meshes whose graphs the walk edits, and the graphs it edits: theirs and the user subgraphs'.
+    const auto meshes = [&] { return SortedEntities(r.view<const graph::GeometryGraph>()); };
     // Selects a random object drawing a mesh the walk edits, and returns the mesh.
     const auto select_mesh = [&] {
         const auto edited = meshes();
         std::vector<state::Entity> drawn;
-        for (const auto [e, instance] : r.view<const Instance>().each())
-            if (std::ranges::contains(edited, instance.Entity)) drawn.push_back(e);
+        for (const auto [e, geometry] : r.view<const ObjectGeometry>().each())
+            if (std::ranges::contains(edited, geometry.Entity)) drawn.push_back(e);
         std::ranges::sort(drawn);
         const auto object = pick(drawn);
         if (object == state::Null || !attempt(action::selection::Select{object})) return state::Null;
-        return r.get<const Instance>(object).Entity;
+        return r.get<const ObjectGeometry>(object).Entity;
     };
-    const auto definitions = [&] { return SortedEntities(r.view<const procedure::SubnetDefinition>()); };
-    const auto networks = [&] {
-        auto found = meshes();
-        found.append_range(definitions());
+    const auto subgraphs = [&] { return SortedEntities(r.view<const graph::Subgraph, const graph::GraphNodes>()); };
+    const auto scene_subgraphs = [&] {
+        auto found = SortedEntities(r.view<const graph::SubgraphItems>());
+        std::erase_if(found, [&](state::Entity e) { return !IsSceneSubgraph(r, e); });
         return found;
     };
-    const auto materials = [&] { return SortedEntities(r.view<const procedure::MaterialGraph>()); };
-    const auto nodes_of = [&](state::Entity network) { return network == state::Null ? std::vector<state::Entity>{} : procedure::NodesOf(r, network); };
-    const auto subnets = [&] { return NodesWith<procedure::Subnet>(r, networks()); };
+    const auto graphs = [&] {
+        auto found = meshes();
+        found.append_range(subgraphs());
+        return found;
+    };
+    const auto materials = [&] { return SortedEntities(r.view<const graph::MaterialGraph>()); };
+    const auto nodes_of = [&](state::Entity graph) { return graph == state::Null ? std::vector<state::Entity>{} : graph::NodesOf(r, graph); };
+    const auto uses = [&] { return NodesWith<graph::SubgraphNode>(r, graphs()); };
     const auto some = [&](std::vector<state::Entity> entities, size_t most) {
         std::ranges::shuffle(entities, rng);
         entities.resize(std::min(entities.size(), 1u + below(most)));
         return entities;
     };
-    // Each output of `from` and input of a node of `tos` that link on the network's page.
-    const auto linkable = [&](state::Entity network, state::Entity from, std::span<const state::Entity> tos) {
+    // A random scene subgraph, which is a new one of some items of the frame's scene when the document has none.
+    const auto some_scene_subgraph = [&] {
+        if (scene_subgraphs().empty()) {
+            const auto items = graph::GraphItems(r, FrameScene(r));
+            if (items.empty() || !attempt(Collapse{FrameScene(r), some(items, 2u)})) return state::Null;
+        }
+        return pick(scene_subgraphs());
+    };
+    // Exposes the position of a random object the scene subgraph holds as a port.
+    const auto expose_position = [&](state::Entity subgraph) {
+        auto items = graph::GraphItems(r, subgraph);
+        std::erase_if(items, [&](state::Entity e) { return !r.all_of<Transform>(e); });
+        return !items.empty() && attempt(ExposePort{subgraph, graph::PromotedField{pick(items), state::Key<Transform>(), uint16_t(offsetof(Transform, P))}, std::make_unique<std::string>("Position")});
+    };
+    // A random object with an Instance, placed in a scene, which is a new one when the document has none.
+    const auto some_instance = [&] {
+        auto instances = SortedEntities(r.view<const Instance>());
+        std::erase_if(instances, [&](state::Entity e) { return r.all_of<CopyOf>(e) || !RootMembership(r, e) || ParentOrNull(r, e) != state::Null; });
+        if (!instances.empty()) return pick(instances);
+        const auto subgraph = some_scene_subgraph();
+        return subgraph != state::Null && attempt(action::object::Instantiate{subgraph}) ? FindActiveEntity(r) : state::Null;
+    };
+    // Each output of `from` and input of a node of `tos` that link on the graph's page.
+    const auto linkable = [&](state::Entity graph, state::Entity from, std::span<const state::Entity> tos) {
         std::vector<std::pair<PageSocket, PageSocket>> pairs;
-        for (const auto &output : SocketsFacing(r, network, from, SocketDirection::Out)) {
+        for (const auto &output : SocketsFacing(r, graph, from, SocketDirection::Out)) {
             for (const auto to : tos) {
-                for (const auto &input : SocketsFacing(r, network, to, SocketDirection::In))
-                    if (procedure::Links(output.Socket, input.Socket)) pairs.emplace_back(output, input);
+                for (const auto &input : SocketsFacing(r, graph, to, SocketDirection::In))
+                    if (graph::Links(output.Socket, input.Socket)) pairs.emplace_back(output, input);
             }
         }
         return pairs;
     };
     // Links a random one of the output and input pairs, if there are any.
-    const auto link_any = [&](state::Entity network, const std::vector<std::pair<PageSocket, PageSocket>> &pairs) {
+    const auto link_any = [&](state::Entity graph, const std::vector<std::pair<PageSocket, PageSocket>> &pairs) {
         if (pairs.empty()) return false;
         const auto &[from, to] = pairs[below(pairs.size())];
-        return attempt(Link{network, from.Node, from.Id, to.Node, to.Id});
+        return attempt(Link{graph, from.Node, from.Id, to.Node, to.Id});
     };
-    // Links a random output into an input it links with on the network's page, one of them the node's when given.
-    const auto link_in = [&](state::Entity network, state::Entity node) {
-        if (network == state::Null) return false;
-        auto nodes = nodes_of(network);
-        if (r.all_of<procedure::SubnetDefinition>(network)) nodes.push_back(network);
+    // Links a random output into an input it links with on the graph's page, one of them the node's when given.
+    const auto link_in = [&](state::Entity graph, state::Entity node) {
+        if (graph == state::Null) return false;
+        auto nodes = nodes_of(graph);
+        if (r.all_of<graph::Subgraph>(graph)) nodes.push_back(graph);
         std::vector<std::pair<PageSocket, PageSocket>> pairs;
         for (const auto from : nodes) {
             const auto tos = nodes | std::views::filter([&](state::Entity to) { return to != from && (node == state::Null || from == node || to == node); }) | std::ranges::to<std::vector>();
-            pairs.append_range(linkable(network, from, tos));
+            pairs.append_range(linkable(graph, from, tos));
         }
-        return link_any(network, pairs);
+        return link_any(graph, pairs);
     };
     // Calls `use` with an update of a random field of the node's parameters, if its kind has any.
     const auto parameter_update = [&](state::Entity node, auto &&use) {
-        procedure::VisitKind(r.get<const procedure::ProcedureNode>(node).Kind, [&]<typename K> {
+        graph::VisitKind(r.get<const graph::GraphNode>(node).Kind, [&]<typename K> {
             if constexpr (!std::is_empty_v<K> && action::Updatable<K>) {
                 const auto &value = r.get<const K>(node);
                 size_t count = 0;
@@ -393,8 +419,8 @@ void RandomHistoryWalk(HistoryFixture &f, uint32_t seed, uint32_t steps) {
     };
     // A literal of a type the op input takes, or a choice of a text input.
     const auto op_input = [&](state::Entity node) -> std::optional<SetOpInput> {
-        const auto &op = r.get<const procedure::Op>(node);
-        const auto &definition = *procedure::DefinitionOf(op.Node);
+        const auto &op = r.get<const graph::Op>(node);
+        const auto &definition = *graph::DefinitionOf(op.Node);
         if (!definition.Texts.empty() && (definition.Inputs == 0u || below(3) == 0u)) {
             const auto name = definition.Texts[below(definition.Texts.size())].first;
             const auto &lib = mx::Libraries();
@@ -409,16 +435,17 @@ void RandomHistoryWalk(HistoryFixture &f, uint32_t seed, uint32_t steps) {
         const auto &socket = definition.Sockets[below(definition.Inputs)];
         std::vector<mx::Type> types;
         for (const auto type : {mx::Type::Boolean, mx::Type::Integer, mx::Type::Float, mx::Type::Vector2, mx::Type::Vector3, mx::Type::Vector4, mx::Type::Color3, mx::Type::Color4}) {
-            if (const auto data = procedure::DataTypeOf(type); data && (socket.Types & procedure::TypeBit(*data))) types.push_back(type);
+            if (const auto data = graph::DataTypeOf(type); data && (socket.Types & graph::TypeBit(*data))) types.push_back(type);
         }
         if (types.empty()) return {};
         const auto type = types[below(types.size())];
         std::vector<uint32_t> words(mx::Words(type));
-        for (auto &word : words) word = type == mx::Type::Boolean ? uint32_t(below(2)) : type == mx::Type::Integer ? std::bit_cast<uint32_t>(int32_t(below(5)) - 1) : std::bit_cast<uint32_t>(float(int32_t(below(9)) - 4) * .25f);
+        for (auto &word : words) word = type == mx::Type::Boolean ? uint32_t(below(2)) : type == mx::Type::Integer ? std::bit_cast<uint32_t>(int32_t(below(5)) - 1) :
+                                                                                                                     std::bit_cast<uint32_t>(float(int32_t(below(9)) - 4) * .25f);
         return OpInputOf(node, socket.Name, action::nodes::OpLiteral{type, std::move(words)});
     };
-    // Adds a node of the spec to the network and returns it, or null on a rejection.
-    const auto add_node = [&](state::Entity network, action::nodes::NodeSpec spec) { return attempt(AddNode{network, std::move(spec)}) ? procedure::NodesOf(r, network).back() : state::Null; };
+    // Adds a node of the spec to the graph and returns it, or null on a rejection.
+    const auto add_node = [&](state::Entity graph, action::nodes::NodeSpec spec) { return attempt(AddNode{graph, std::move(spec)}) ? graph::NodesOf(r, graph).back() : state::Null; };
     auto &panels = *f.Panels;
     ImGui::SetCurrentContext(panels.Context);
     auto &io = ImGui::GetIO();
@@ -433,9 +460,9 @@ void RandomHistoryWalk(HistoryFixture &f, uint32_t seed, uint32_t steps) {
         io.AddKeyEvent(key, false);
         ui_frame();
     };
-    // Shows a random geometry network's page under the mouse, settled.
-    const auto canvas_on = [&](state::Entity network) {
-        procedure::EnterNetwork(panels.Nodes, network);
+    // Shows a random geometry graph's page under the mouse, settled.
+    const auto canvas_on = [&](state::Entity graph) {
+        graph::EnterGraph(panels.Nodes, graph);
         io.AddMousePosEvent(500.f, 500.f);
         for (int i = 0; i < 2; ++i) ui_frame();
     };
@@ -452,7 +479,7 @@ void RandomHistoryWalk(HistoryFixture &f, uint32_t seed, uint32_t steps) {
     // A search text of a random kind's or op's name.
     const auto search_text = [&] {
         std::string text;
-        if (below(2)) procedure::VisitKind(uint16_t(below(procedure::KindCount)), [&]<typename K> { text = field::TypeLabel<K>.c_str(); });
+        if (below(2)) graph::VisitKind(uint16_t(below(graph::KindCount)), [&]<typename K> { text = field::TypeLabel<K>.c_str(); });
         else text = std::string{GeometryOps()[below(GeometryOps().size())]};
         return text;
     };
@@ -484,17 +511,17 @@ void RandomHistoryWalk(HistoryFixture &f, uint32_t seed, uint32_t steps) {
         const auto entry = WalkStep(draw < first_node ? draw : first_node + (draw - first_node) / 2u);
         // Each step names itself, so a failure of a check it runs follows its seed and step.
         boost::ut::log << std::format("{} {}", at(), WalkStepNames[size_t(entry)]);
-        // Grouping, ungrouping, making unique, exposing a socket, collapsing and entering a page leave the shape of every mesh drawn before and after unchanged.
-        bool keeps_shapes = entry == WalkStep::GroupNodes || entry == WalkStep::UngroupNodes || entry == WalkStep::MakeUnique || entry == WalkStep::ExposeSocket || entry == WalkStep::Collapse || entry == WalkStep::EnterPage;
+        // Collapsing into a subgraph, expanding, making unique, exposing a socket, freezing a graph and entering a page leave the shape of every mesh drawn before and after unchanged.
+        bool keeps_shapes = entry == WalkStep::CollapseNodes || entry == WalkStep::ExpandNodes || entry == WalkStep::MakeUnique || entry == WalkStep::ExposeSocket || entry == WalkStep::FreezeGraph || entry == WalkStep::EnterPage;
         const auto shapes = keeps_shapes ? Live::DrawnShapes(f) : std::map<state::Entity, Shape>{};
         const bool done = [&] {
             switch (entry) {
                 case WalkStep::AddPrimitive: {
                     const std::array<PrimitiveParameters, 8> primitives{primitive::Plane{.Subdivisions = {2u, 2u}}, primitive::Circle{.Segments = 8}, primitive::Cube{}, primitive::IcoSphere{.Subdivisions = 1}, primitive::UVSphere{.Slices = 12, .Stacks = 6}, primitive::QuadSphere{.Segments = 2}, primitive::Torus{.MajorSegments = 12, .MinorSegments = 6}, primitive::Cylinder{.Slices = 8}};
                     const auto shape = primitives[below(primitives.size())];
-                    if (!attempt(action::object::AddMeshPrimitive{shape, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Transform = {.P = {coordinate(), 0.f, coordinate()}}})})) return false;
+                    if (!attempt(action::object::AddMeshPrimitive{shape, std::make_unique<MeshObjectCreateInfo>(MeshObjectCreateInfo{.Transform = {.P = {coordinate(), 0.f, coordinate()}}})})) return false;
                     // Half the meshes start from a Source node holding the primitive's record.
-                    return below(2) || attempt(CollapseProcedure{r.get<const Instance>(FindActiveEntity(r)).Entity});
+                    return below(2) || attempt(FreezeGraph{r.get<const ObjectGeometry>(FindActiveEntity(r)).Entity});
                 }
                 case WalkStep::AddEmpty: {
                     const std::string requested = below(2) ? "Thing" : "Other";
@@ -563,8 +590,8 @@ void RandomHistoryWalk(HistoryFixture &f, uint32_t seed, uint32_t steps) {
                         if (ParentOrNull(r, child) == parent) {
                             f.Do(action::selection::Select{parent});
                             f.Do(action::selection::ExtendActive{child});
-                            // A hierarchy member parents through its source, so only two plain objects make a known loop.
-                            loop = !r.any_of<HierarchyMember>(child) && !r.any_of<HierarchyMember>(parent);
+                            // An instance's copy parents through its source, so only two plain objects make a known loop.
+                            loop = !r.any_of<CopyOf>(child) && !r.any_of<CopyOf>(parent);
                         }
                     }
                     return parent_to_active(loop);
@@ -590,12 +617,15 @@ void RandomHistoryWalk(HistoryFixture &f, uint32_t seed, uint32_t steps) {
                     return e != state::Null && attempt(action::object::SetVisible{below(2) == 0u, e});
                 }
                 case WalkStep::Instantiate: {
-                    const auto e = pick(objects());
-                    return e != state::Null && attempt(action::object::InstantiateHierarchy{e});
+                    const auto subgraph = some_scene_subgraph();
+                    return subgraph != state::Null && attempt(action::object::Instantiate{subgraph});
                 }
-                case WalkStep::MakeIndependent: {
-                    const auto e = pick(SortedEntities(r.view<const HierarchyInstance>()));
-                    return e != state::Null && attempt(action::object::MakeIndependent{e});
+                case WalkStep::MakeInstanceUnique: {
+                    // An instance takes objects of its own by make unique, by expand, or by expand of all levels.
+                    const auto e = some_instance();
+                    if (e == state::Null) return false;
+                    const auto way = below(3);
+                    return way == 0u ? attempt(MakeUnique{e}) : attempt(Expand{e, way == 2u});
                 }
                 case WalkStep::LoadRig: return r.view<const ArmatureObject>().size() < 2u && attempt(action::io::LoadGltf{RiggedSimple});
                 case WalkStep::SetFrame: return attempt(action::timeline::SetFrame{1 + int(below(30))});
@@ -607,7 +637,7 @@ void RandomHistoryWalk(HistoryFixture &f, uint32_t seed, uint32_t steps) {
                     const auto generators_of = [&](state::Entity mesh) {
                         std::vector<state::Entity> found;
                         for (const auto node : nodes_of(mesh)) {
-                            procedure::VisitKind(r.get<const procedure::ProcedureNode>(node).Kind, [&]<typename K> { if (procedure::Generator<K>) found.push_back(node); });
+                            graph::VisitKind(r.get<const graph::GraphNode>(node).Kind, [&]<typename K> { if (graph::Generator<K>) found.push_back(node); });
                         }
                         return found;
                     };
@@ -619,7 +649,7 @@ void RandomHistoryWalk(HistoryFixture &f, uint32_t seed, uint32_t steps) {
                     // A Store Named Attribute stores the op's field on a generator's output and shows it, or a material the mesh draws computes an input from the op.
                     if (below(2)) {
                         const auto generator = pick(generators_of(mesh));
-                        const auto store = add_node(mesh, KindNode{procedure::KindOf<procedure::StoreNamedAttribute>});
+                        const auto store = add_node(mesh, KindNode{graph::KindOf<graph::StoreNamedAttribute>});
                         if (store == state::Null) return false;
                         const auto read = add_node(mesh, op);
                         if (read == state::Null) return false;
@@ -640,136 +670,163 @@ void RandomHistoryWalk(HistoryFixture &f, uint32_t seed, uint32_t steps) {
                     if (drawn() == state::Null && !attempt(action::object::AddMaterial{0u, mesh})) return false;
                     const auto material = drawn();
                     if (material == state::Null) return false;
-                    if (!r.all_of<procedure::MaterialGraph>(material) && !attempt(action::nodes::AddMaterialGraph{material})) return false;
+                    if (!r.all_of<graph::MaterialGraph>(material) && !attempt(action::nodes::AddMaterialGraph{material})) return false;
                     const auto node = add_node(material, op);
                     if (node == state::Null) return false;
-                    return link_any(material, linkable(material, node, std::array{procedure::SurfaceNodeOf(r, material)}));
+                    return link_any(material, linkable(material, node, std::array{graph::SurfaceNodeOf(r, material)}));
                 }
                 case WalkStep::AssignReference: {
                     const auto object = pick(objects());
                     if (object == state::Null) return false;
-                    const std::array kinds{procedure::ReferenceKind::Parent, procedure::ReferenceKind::Geometry, procedure::ReferenceKind::Material};
-                    const procedure::SceneReference reference{object, kinds[below(kinds.size())], 0u};
-                    auto candidates = procedure::ReferenceCandidates(r, reference);
+                    const std::array kinds{graph::ReferenceKind::Parent, graph::ReferenceKind::Geometry, graph::ReferenceKind::Material};
+                    const graph::SceneReference reference{object, kinds[below(kinds.size())], 0u};
+                    auto candidates = graph::ReferenceCandidates(r, reference);
                     candidates.push_back(state::Null);
                     return attempt(AssignReference{reference, pick(candidates)});
                 }
                 case WalkStep::DeleteItems: {
-                    const auto item = pick(procedure::NetworkItems(r, state::Document));
+                    // An item of the document's page, or a scene subgraph, which stays in the document while an instance uses it.
+                    const auto item = pick(below(4) ? graph::GraphItems(r, state::Document) : scene_subgraphs());
                     return item != state::Null && attempt(DeleteItems{{item}});
                 }
-                case WalkStep::GroupItems: {
-                    const auto items = procedure::NetworkItems(r, FrameScene(r));
-                    return !items.empty() && attempt(GroupItems{FrameScene(r), some(items, 2u)});
+                case WalkStep::CollapseItems: {
+                    const auto items = graph::GraphItems(r, FrameScene(r));
+                    return !items.empty() && attempt(Collapse{FrameScene(r), some(items, 2u)});
                 }
-                case WalkStep::UngroupItems: {
-                    const auto group = pick(SortedEntities(r.view<const procedure::NetworkSubnet>()));
-                    return group != state::Null && attempt(UngroupItems{group});
+                case WalkStep::ExpandItems: {
+                    const auto subgraph = pick(SortedEntities(r.view<const graph::SubgraphItems>()));
+                    return subgraph != state::Null && attempt(Expand{subgraph});
+                }
+                case WalkStep::ExposePort: {
+                    const auto subgraph = some_scene_subgraph();
+                    return subgraph != state::Null && expose_position(subgraph);
+                }
+                case WalkStep::InstancePortValue: {
+                    // An instance's own value of a port, set at the port or through the field of its copy, or cleared.
+                    const auto instance = some_instance();
+                    if (instance == state::Null) return false;
+                    // An instance whose subgraph has no port takes one for the position of an object the subgraph holds.
+                    const auto subgraph = r.get<const Instance>(instance).SubgraphEntity;
+                    if (r.get<const graph::SubgraphInterface>(subgraph).Ports.empty() && !expose_position(subgraph)) return false;
+                    const auto &ports = r.get<const graph::SubgraphInterface>(subgraph).Ports;
+                    const auto port = ports[below(ports.size())].Id;
+                    const vec3 position{coordinate(), coordinate(), coordinate()};
+                    const auto copy = CopyFor(r.get<const Instance>(instance).Copies, std::get<graph::PromotedField>(graph::PortOf(r, instance, port)->Binding).Entity);
+                    const auto held = [&] { return r.get<const Transform>(copy).P; };
+                    switch (below(3)) {
+                        case 0u: return attempt(ClearPortValue{instance, port});
+                        case 1u: {
+                            std::array<uint32_t, 4> words{};
+                            std::memcpy(words.data(), &position, sizeof(position));
+                            return attempt(SetPortValue{instance, port, words}) && (expect(held() == position) << at(), true);
+                        }
+                        default: return attempt(action::UpdateOf<&Transform::P>(copy, position)) && (expect(held() == position) << at(), true);
+                    }
                 }
                 case WalkStep::AddNode: {
-                    const auto network = pick(networks());
-                    if (network == state::Null) return false;
-                    const auto user = pick(definitions());
+                    const auto graph = pick(graphs());
+                    if (graph == state::Null) return false;
+                    const auto user = pick(subgraphs());
                     const auto spec = [&]() -> action::nodes::NodeSpec {
                         if (const auto choice = below(8); choice < 3u) {
-                            auto kind = uint16_t(below(procedure::KindCount - 2u));
-                            if (kind >= procedure::KindOf<procedure::Op>) kind += 2u;
+                            auto kind = uint16_t(below(graph::KindCount - 2u));
+                            if (kind >= graph::KindOf<graph::Op>) kind += 2u;
                             return KindNode{kind};
                         } else if (choice < 6u) {
                             return OpNode{std::string{GeometryOps()[below(GeometryOps().size())]}};
                         } else if (choice == 6u || user == state::Null) {
-                            return MacroNode{uint16_t(below(procedure::MacroCount))};
+                            return BuiltinSubgraphNode{graph::BuiltinSubgraphId(below(graph::BuiltinSubgraphCount))};
                         } else {
-                            return DefinitionNode{user};
+                            return UserSubgraphNode{user};
                         }
                     }();
-                    const auto node = add_node(network, spec);
+                    const auto node = add_node(graph, spec);
                     // Most added nodes join the graph through a link.
-                    if (node != state::Null && below(4)) link_in(network, node);
+                    if (node != state::Null && below(4)) link_in(graph, node);
                     return node != state::Null;
                 }
-                case WalkStep::Link: return link_in(pick(networks()), state::Null);
+                case WalkStep::Link: return link_in(pick(graphs()), state::Null);
                 case WalkStep::Unlink: {
-                    const auto network = pick(networks());
-                    if (network == state::Null) return false;
-                    const auto linked = LinkedInputs(r, network);
+                    const auto graph = pick(graphs());
+                    if (graph == state::Null) return false;
+                    const auto linked = LinkedInputs(r, graph);
                     if (linked.empty()) return false;
                     const auto [node, socket, index] = linked[below(linked.size())];
-                    return attempt(Unlink{network, node, socket, index});
+                    return attempt(Unlink{graph, node, socket, index});
                 }
                 case WalkStep::InsertNode: {
-                    const auto network = pick(networks());
-                    if (network == state::Null) return false;
-                    const auto linked = LinkedInputs(r, network);
+                    const auto graph = pick(graphs());
+                    if (graph == state::Null) return false;
+                    const auto linked = LinkedInputs(r, graph);
                     if (linked.empty()) return false;
                     // An insert takes a node no link touches into a geometry link.
                     std::set<state::Entity> touched;
-                    procedure::ForEachNetworkInput(r, network, [&](state::Entity node, uint16_t, procedure::SocketLink link) {
+                    graph::ForEachGraphInput(r, graph, [&](state::Entity node, uint16_t, graph::SocketLink link) {
                         if (link.FromNode != state::Null) touched.insert({node, link.FromNode});
                     });
-                    auto free = nodes_of(network);
+                    auto free = nodes_of(graph);
                     std::erase_if(free, [&](state::Entity node) { return touched.contains(node); });
                     std::vector<std::tuple<state::Entity, uint16_t, uint16_t>> geometry;
                     for (const auto &input : linked) {
                         const auto &[to, socket, index] = input;
-                        const auto sockets = SocketsFacing(r, network, to, SocketDirection::In);
+                        const auto sockets = SocketsFacing(r, graph, to, SocketDirection::In);
                         const auto found = std::ranges::find(sockets, socket, &PageSocket::Id);
-                        if (found != sockets.end() && (found->Socket.Types & procedure::TypeBit(procedure::DataType::Geometry))) geometry.push_back(input);
+                        if (found != sockets.end() && (found->Socket.Types & graph::TypeBit(graph::DataType::Geometry))) geometry.push_back(input);
                     }
                     if (geometry.empty()) return false;
                     // Without a node no link touches, the insert takes a new Subdivide node.
-                    const auto node = free.empty() ? add_node(network, KindNode{procedure::KindOf<action::mesh::Subdivide>}) : pick(free);
+                    const auto node = free.empty() ? add_node(graph, KindNode{graph::KindOf<action::mesh::Subdivide>}) : pick(free);
                     if (node == state::Null) return false;
                     const auto [to, socket, index] = geometry[below(geometry.size())];
-                    return attempt(InsertNode{network, node, to, socket, uint32_t(below(4)), index});
+                    return attempt(InsertNode{graph, node, to, socket, uint32_t(below(4)), index});
                 }
                 case WalkStep::DeleteNodes: {
-                    const auto network = pick(networks());
-                    const auto nodes = nodes_of(network);
-                    return !nodes.empty() && attempt(DeleteNodes{network, some(nodes, 2u)});
+                    const auto graph = pick(graphs());
+                    const auto nodes = nodes_of(graph);
+                    return !nodes.empty() && attempt(DeleteNodes{graph, some(nodes, 2u)});
                 }
                 case WalkStep::DuplicateNodes: {
-                    const auto network = pick(networks());
-                    const auto nodes = nodes_of(network);
-                    return !nodes.empty() && attempt(DuplicateNodes{network, some(nodes, 2u)});
+                    const auto graph = pick(graphs());
+                    const auto nodes = nodes_of(graph);
+                    return !nodes.empty() && attempt(DuplicateNodes{graph, some(nodes, 2u)});
                 }
-                case WalkStep::GroupNodes: {
-                    const auto network = pick(networks());
-                    const auto nodes = nodes_of(network);
-                    return !nodes.empty() && attempt(GroupNodes{network, some(nodes, 3u)});
+                case WalkStep::CollapseNodes: {
+                    const auto graph = pick(graphs());
+                    const auto nodes = nodes_of(graph);
+                    return !nodes.empty() && attempt(Collapse{graph, some(nodes, 3u)});
                 }
-                case WalkStep::UngroupNodes: {
-                    const auto subnet = pick(subnets());
-                    return subnet != state::Null && attempt(UngroupNodes{subnet});
+                case WalkStep::ExpandNodes: {
+                    const auto use = pick(uses());
+                    return use != state::Null && attempt(Expand{use, below(2) == 0u});
                 }
                 case WalkStep::MakeUnique: {
-                    const auto subnet = pick(subnets());
-                    return subnet != state::Null && attempt(MakeUnique{subnet});
+                    const auto use = pick(uses());
+                    return use != state::Null && attempt(MakeUnique{use});
                 }
                 case WalkStep::ExposeSocket: {
-                    const auto definition = pick(definitions());
-                    const auto node = pick(nodes_of(definition));
+                    const auto subgraph = pick(subgraphs());
+                    const auto node = pick(nodes_of(subgraph));
                     if (node == state::Null) return false;
-                    auto sockets = SocketsFacing(r, definition, node, SocketDirection::In);
-                    sockets.append_range(SocketsFacing(r, definition, node, SocketDirection::Out));
+                    auto sockets = SocketsFacing(r, subgraph, node, SocketDirection::In);
+                    sockets.append_range(SocketsFacing(r, subgraph, node, SocketDirection::Out));
                     if (sockets.empty()) return false;
                     const auto &socket = sockets[below(sockets.size())];
                     // A port that replaces an input's link changes what the node reads.
-                    if (socket.Socket.Direction == SocketDirection::In && !socket.Socket.Multi && procedure::InputOf(r, node, socket.Id).FromNode != state::Null) keeps_shapes = false;
-                    return attempt(ExposeSocket{definition, node, socket.Id, {}});
+                    if (socket.Socket.Direction == SocketDirection::In && !socket.Socket.Multi && graph::InputOf(r, node, socket.Id).FromNode != state::Null) keeps_shapes = false;
+                    return attempt(ExposeSocket{subgraph, node, socket.Id, {}});
                 }
-                case WalkStep::PortValue: {
-                    auto holders = subnets();
-                    holders.append_range(definitions());
+                case WalkStep::NumericValue: {
+                    auto holders = uses();
+                    holders.append_range(subgraphs());
                     const auto holder = pick(holders);
                     if (holder == state::Null) return false;
-                    std::vector<const procedure::SubnetPort *> ports;
-                    for (const auto &port : procedure::InterfaceOf(r, holder)->Ports)
-                        if (procedure::ReadsDefault(port)) ports.push_back(&port);
+                    std::vector<const graph::SubgraphPort *> ports;
+                    for (const auto &port : graph::InterfaceOf(r, holder)->Ports)
+                        if (graph::ReadsDefault(port)) ports.push_back(&port);
                     if (ports.empty()) return false;
                     const auto &port = *ports[below(ports.size())];
                     if (below(4) == 0u) return attempt(ClearPortValue{holder, port.Id});
-                    const bool real = port.Types & (procedure::NumericTypes & ~(procedure::TypeBit(procedure::DataType::Int) | procedure::TypeBit(procedure::DataType::Bool)));
+                    const bool real = port.Types & (graph::NumericTypes & ~(graph::TypeBit(graph::DataType::Int) | graph::TypeBit(graph::DataType::Bool)));
                     std::array<uint32_t, 4> words{};
                     for (auto &word : words) word = real ? std::bit_cast<uint32_t>(.25f * float(1u + below(8))) : uint32_t(below(4));
                     return attempt(SetPortValue{holder, port.Id, words});
@@ -779,38 +836,38 @@ void RandomHistoryWalk(HistoryFixture &f, uint32_t seed, uint32_t steps) {
                     if (mesh == state::Null) return false;
                     std::vector<SetDisplay> displays{{mesh}};
                     for (const auto node : nodes_of(mesh)) {
-                        if (const auto port = procedure::ResultSocket(r, node)) displays.push_back({mesh, node, port});
-                        if (!r.all_of<procedure::Subnet>(node)) continue;
-                        const auto inner = procedure::InstanceDefinition(r, node);
-                        for (const auto n : procedure::NodesOf(*inner.Registry, inner.Entity))
-                            if (const auto port = procedure::ResultSocket(*inner.Registry, n)) displays.push_back({mesh, n, port, {node}});
+                        if (const auto port = graph::ResultSocket(r, node)) displays.push_back({mesh, node, port});
+                        if (!r.all_of<graph::SubgraphNode>(node)) continue;
+                        const auto inner = graph::SubgraphOf(r, node);
+                        for (const auto n : graph::NodesOf(*inner.Registry, inner.Entity))
+                            if (const auto port = graph::ResultSocket(*inner.Registry, n)) displays.push_back({mesh, n, port, {node}});
                     }
                     return attempt(std::move(displays[below(displays.size())]));
                 }
                 case WalkStep::SetBypass: {
                     // A bypass passes a node's input through, so it takes a node that has one.
-                    auto bypassed = nodes_of(pick(networks()));
-                    std::erase_if(bypassed, [&](state::Entity node) { return !r.all_of<procedure::Subnet>(node) && !procedure::BypassInput(r.get<const procedure::ProcedureNode>(node).Kind); });
+                    auto bypassed = nodes_of(pick(graphs()));
+                    std::erase_if(bypassed, [&](state::Entity node) { return !r.all_of<graph::SubgraphNode>(node) && !graph::BypassInput(r.get<const graph::GraphNode>(node).Kind); });
                     const auto node = pick(bypassed);
-                    return node != state::Null && attempt(SetBypass{node, !r.all_of<procedure::NodeBypassed>(node)});
+                    return node != state::Null && attempt(SetBypass{node, !r.all_of<graph::NodeBypassed>(node)});
                 }
                 case WalkStep::EditParameter: {
-                    const auto node = pick(nodes_of(pick(networks())));
+                    const auto node = pick(nodes_of(pick(graphs())));
                     if (node == state::Null) return false;
                     bool done = false;
                     parameter_update(node, [&](auto update) { done = attempt(std::move(update)); });
                     return done;
                 }
                 case WalkStep::SetOpInput: {
-                    const auto node = pick(NodesWith<procedure::Op>(r, networks()));
+                    const auto node = pick(NodesWith<graph::Op>(r, graphs()));
                     if (node == state::Null) return false;
                     auto input = op_input(node);
                     return input && attempt(std::move(*input));
                 }
                 case WalkStep::ChangeOp: {
-                    const auto node = pick(NodesWith<procedure::Op>(r, networks()));
+                    const auto node = pick(NodesWith<graph::Op>(r, graphs()));
                     if (node == state::Null) return false;
-                    const auto &definition = *procedure::DefinitionOf(r.get<const procedure::Op>(node).Node);
+                    const auto &definition = *graph::DefinitionOf(r.get<const graph::Op>(node).Node);
                     if (definition.StoresOutput && below(2)) return attempt(SetOpOutputType{node, definition.OutputTypes[below(definition.OutputTypes.size())]});
                     return attempt(ChangeOp{node, std::string{GeometryOps()[below(GeometryOps().size())]}});
                 }
@@ -828,36 +885,39 @@ void RandomHistoryWalk(HistoryFixture &f, uint32_t seed, uint32_t steps) {
                         auto input = op_input(op);
                         return input && attempt(std::move(*input));
                     } else if (choice == 1u) {
-                        return link_any(material, linkable(material, op, std::array{procedure::SurfaceNodeOf(r, material)}));
+                        return link_any(material, linkable(material, op, std::array{graph::SurfaceNodeOf(r, material)}));
                     }
-                    auto grouped = nodes_of(material);
-                    std::erase(grouped, procedure::SurfaceNodeOf(r, material));
-                    return attempt(GroupNodes{material, some(grouped, 3u)});
+                    auto collapsed = nodes_of(material);
+                    std::erase(collapsed, graph::SurfaceNodeOf(r, material));
+                    return attempt(Collapse{material, some(collapsed, 3u)});
                 }
                 case WalkStep::MoveNodes: {
-                    const auto network = pick(networks());
-                    const auto node = pick(nodes_of(network));
+                    const auto graph = pick(graphs());
+                    const auto node = pick(nodes_of(graph));
                     if (node == state::Null) return false;
-                    if (below(3) == 0u) return attempt(AutoLayout{network});
-                    return attempt(MoveNodes{network, {{node, {uint32_t(below(24)), uint32_t(below(16))}}}});
+                    if (below(3) == 0u) return attempt(AutoLayout{graph});
+                    return attempt(MoveNodes{graph, {{node, {uint32_t(below(24)), uint32_t(below(16))}}}});
                 }
-                case WalkStep::Collapse: {
+                case WalkStep::FreezeGraph: {
                     const auto mesh = pick(meshes());
-                    return mesh != state::Null && attempt(CollapseProcedure{mesh});
+                    return mesh != state::Null && attempt(FreezeGraph{mesh});
                 }
                 case WalkStep::EnterPage: {
-                    // The pages the node editor shows: the document's, each scene's, each network's and each subnet node's.
-                    auto pages = networks();
+                    // The pages the node editor shows: the document's, each scene's, each graph's, each subgraph node's, each scene or document subgraph's and each instance's.
+                    auto pages = graphs();
                     pages.push_back(state::Document);
                     pages.append_range(SortedEntities(r.view<const Scene>()));
-                    pages.append_range(subnets());
+                    pages.append_range(SortedEntities(r.view<const graph::SubgraphItems>()));
+                    pages.append_range(SortedEntities(r.view<const Instance>()));
+                    const auto nodes = uses();
+                    pages.append_range(nodes);
                     const auto page = pick(pages);
-                    if (r.all_of<procedure::Subnet>(page)) procedure::EnterNetwork(panels.Nodes, procedure::NetworkOf(r, page), state::Null, {page});
-                    else procedure::EnterNetwork(panels.Nodes, page);
+                    if (std::ranges::contains(nodes, page)) graph::EnterGraph(panels.Nodes, graph::GraphOf(r, page), state::Null, {page});
+                    else graph::EnterGraph(panels.Nodes, page);
                     return true;
                 }
                 case WalkStep::StageParameter: {
-                    const auto node = pick(nodes_of(pick(networks())));
+                    const auto node = pick(nodes_of(pick(graphs())));
                     if (node == state::Null) return false;
                     return gesture(below(3) != 0u, [&](auto &&stage) {
                         for (size_t i = 0, count = 2u + below(2); i < count; ++i) parameter_update(node, stage);
@@ -895,8 +955,8 @@ void RandomHistoryWalk(HistoryFixture &f, uint32_t seed, uint32_t steps) {
                     if (mesh == state::Null) return false;
                     std::vector<state::Entity> selecting;
                     for (const auto node : nodes_of(mesh)) {
-                        const auto sockets = procedure::SocketsOf(r, node);
-                        if (!r.all_of<procedure::Subnet>(node) && std::ranges::contains(sockets, true, &procedure::Socket::Selection)) selecting.push_back(node);
+                        const auto sockets = graph::SocketsOf(r, node);
+                        if (!r.all_of<graph::SubgraphNode>(node) && std::ranges::contains(sockets, true, &graph::Socket::Selection)) selecting.push_back(node);
                     }
                     const auto node = pick(selecting);
                     if (node == state::Null) return false;
@@ -918,29 +978,29 @@ void RandomHistoryWalk(HistoryFixture &f, uint32_t seed, uint32_t steps) {
                     return refused(unchanged, "cancelled");
                 }
                 case WalkStep::MakeLinks: {
-                    const auto network = pick(meshes());
-                    auto nodes = nodes_of(network);
+                    const auto graph = pick(meshes());
+                    auto nodes = nodes_of(graph);
                     if (nodes.size() < 2u) return false;
                     // Make Links chains the selected nodes, so the selection favors geometry nodes whose inputs are free.
-                    const auto linked = LinkedInputs(r, network);
+                    const auto linked = LinkedInputs(r, graph);
                     auto free = nodes;
                     std::erase_if(free, [&](state::Entity node) {
-                        const auto sockets = SocketsFacing(r, network, node, SocketDirection::In);
-                        return std::ranges::contains(linked, node, [](const auto &input) { return std::get<0>(input); }) || std::ranges::none_of(sockets, [](const PageSocket &socket) { return bool(socket.Socket.Types & procedure::TypeBit(procedure::DataType::Geometry)); });
+                        const auto sockets = SocketsFacing(r, graph, node, SocketDirection::In);
+                        return std::ranges::contains(linked, node, [](const auto &input) { return std::get<0>(input); }) || std::ranges::none_of(sockets, [](const PageSocket &socket) { return bool(socket.Socket.Types & graph::TypeBit(graph::DataType::Geometry)); });
                     });
                     auto chosen = free.size() >= 2u && below(4) ? free : nodes;
                     std::ranges::shuffle(chosen, rng);
                     chosen.resize(std::min<size_t>(chosen.size(), 3u));
-                    if (!attempt(SelectItems{network, chosen.back(), chosen})) return false;
+                    if (!attempt(SelectItems{graph, chosen.back(), chosen})) return false;
                     const auto count = f.P->History.Nodes.size();
                     const auto selected = f.P->History.Present;
-                    canvas_on(network);
+                    canvas_on(graph);
                     const bool replace = below(2);
-                    const auto planned = procedure::MakeLinksOf(r, panels.Nodes, replace);
+                    const auto planned = graph::MakeLinksOf(r, panels.Nodes, replace);
                     if (replace) io.AddKeyEvent(ImGuiMod_Shift, true);
                     press(ImGuiKey_J);
                     io.AddKeyEvent(ImGuiMod_Shift, false);
-                    // A link the network refuses, such as a field reaching a single-value input inside a subnet, refuses the whole command.
+                    // A link the graph refuses, such as a field reaching a single-value input inside a subgraph, refuses the whole command.
                     const bool rejected = !messages.empty();
                     const bool completed = finish_command(count);
                     // Make Links records one node holding each link it plans, or returns to a node of the history that holds the state it reaches, and each linked input reads its new source.
@@ -955,16 +1015,16 @@ void RandomHistoryWalk(HistoryFixture &f, uint32_t seed, uint32_t steps) {
                     expect(!recorded_node || recorded.size() == planned.size()) << at() << "make links planned" << planned.size() << "links and recorded" << recorded.size();
                     for (const auto &link : planned) {
                         bool linked = false;
-                        procedure::ForEachNetworkInput(r, network, [&](state::Entity node, uint16_t, procedure::SocketLink from) { linked |= node == link.ToNode && from.FromNode == link.FromNode && from.FromSocket == link.FromSocket; });
+                        graph::ForEachGraphInput(r, graph, [&](state::Entity node, uint16_t, graph::SocketLink from) { linked |= node == link.ToNode && from.FromNode == link.FromNode && from.FromSocket == link.FromSocket; });
                         expect(linked) << at() << "make links left a planned link out";
                     }
                     return completed;
                 }
                 case WalkStep::AddSearch: {
-                    const auto network = pick(networks());
-                    if (network == state::Null) return false;
+                    const auto graph = pick(graphs());
+                    if (graph == state::Null) return false;
                     const auto count = f.P->History.Nodes.size();
-                    canvas_on(network);
+                    canvas_on(graph);
                     io.AddKeyEvent(ImGuiMod_Shift, true);
                     press(ImGuiKey_A);
                     io.AddKeyEvent(ImGuiMod_Shift, false);
@@ -977,11 +1037,11 @@ void RandomHistoryWalk(HistoryFixture &f, uint32_t seed, uint32_t steps) {
                     return finish_command(count);
                 }
                 case WalkStep::LinkingAdd: {
-                    const auto network = pick(networks());
-                    if (network == state::Null) return false;
+                    const auto graph = pick(graphs());
+                    if (graph == state::Null) return false;
                     const auto count = f.P->History.Nodes.size();
-                    canvas_on(network);
-                    const auto boxes = procedure::DrawnGeometry(r, panels.Nodes).Nodes;
+                    canvas_on(graph);
+                    const auto boxes = graph::DrawnGeometry(r, panels.Nodes).Nodes;
                     if (boxes.empty()) return finish_command(count);
                     // A wire dropped from a node's first output row on empty canvas opens the linking add.
                     const auto box = boxes[below(boxes.size())];
@@ -1103,7 +1163,7 @@ void TestHistory() {
             const auto before = f.P->History.MaterializeLive();
             const auto nodes = f.P->History.Nodes.size();
             const auto emit = [&](uint32_t cuts) {
-                action::Emit(phase, action::view::SetEditMode{Element::Edge}, action::selection::ApplyEditElementClick{false, hit}, action::nodes::AppendMacro{procedure::LoopCutMacro, {{cuts, 0u, 0u, 0u}}});
+                action::Emit(phase, action::view::SetEditMode{Element::Edge}, action::selection::ApplyEditElementClick{false, hit}, action::nodes::AppendSubgraphNode{graph::BuiltinSubgraphId::LoopCut, {{cuts, 0u, 0u, 0u}}});
                 action::Emit(action::Phase::Record, action::view::SetEditMode{Element::Vertex}, action::object::Delete{});
                 f.P->Frame();
                 f.Audit();
@@ -1197,21 +1257,48 @@ void TestHistory() {
             f.MoveCamera(viewport, {100, 50, 25});
         });
     }
-    // Removing a source's member removes each occurrence of it, through occurrences of occurrences.
+    // A node reached by another path draws as it did when made.
+    // Two linked cameras with crossing lines are placed in another order when the first reuses a freed index at a later generation.
+    // An empty of one branch holds the identity of a bone of another, with the bone's mesh as its geometry.
+    Scenario(f, other, "paths to one node", [](HistoryFixture &f) {
+        auto &r = f.R;
+        const auto add_camera = [&] { return f.Add(action::object::AddCamera{std::make_unique<ObjectCreateInfo>(), {}}); };
+        add_camera();
+        f.Do(action::object::Delete{});
+        const auto camera = add_camera();
+        f.Do(action::object::DuplicateLinked{});
+        const auto linked = FindActiveEntity(r);
+        expect(state::Generation(camera) > state::Generation(linked) && r.get<const ObjectGeometry>(camera).Entity == r.get<const ObjectGeometry>(linked).Entity);
+        for (const auto e : {camera, linked}) f.Do(action::UpdateOf<&Transform::S>(e, vec3{6.f}));
+        f.Do(action::UpdateOf<&Transform::P>(linked, vec3{.3f, .15f, .05f}));
+        f.Do(action::UpdateOf<&Transform::R>(linked, AngleAxis(.3f, Normalize(vec3{1, 2, 3}))));
+        f.Do(action::selection::Select{camera});
+        const auto rig = f.Do(action::io::LoadGltf{RiggedSimple});
+        const auto bone = r.get<const ArmatureObject>(*r.view<const ArmatureObject>().begin()).BoneEntities.front();
+        const auto bone_mesh = r.get<const ObjectGeometry>(bone).Entity;
+        f.Undo();
+        auto empty = f.AddEmpty("Empty");
+        while (state::Index(empty) < state::Index(bone)) empty = f.AddEmpty("Empty");
+        expect(boost::ut::fatal(empty == bone && r.get<const ObjectGeometry>(empty).Entity == bone_mesh));
+        const auto branch = *f.P->History.Present;
+        for (const auto node : {rig, branch, rig}) f.Navigate(node);
+    });
+    // Deleting a copy deletes the item it stands for, and with it each copy of that item, through copies of copies.
     Scenario(f, other, "nested occurrence removal", [](HistoryFixture &f) {
         const auto parent = f.AddEmpty("Thing"), child = f.AddEmpty("Other");
         f.Do(action::selection::Select{child});
         f.Do(action::selection::ExtendActive{parent});
         f.Do(action::object::ParentToActive{});
         f.Do(action::selection::Select{parent});
-        const auto inner = f.Add(action::object::DuplicateLinked{});
-        const auto outer = f.Add(action::object::DuplicateLinked{});
-        const auto members = f.R.get<const HierarchyInstance>(outer).Members;
-        const auto occurrence = std::ranges::find_if(members, [&](const auto &member) { return member.Entity != outer; })->Entity;
+        const auto inner = f.Instantiate(parent);
+        const auto outer = f.Instantiate(inner);
+        const auto copies = f.R.get<const Instance>(outer).Copies;
+        const auto occurrence = std::ranges::find_if(copies, [&](const auto &pair) { return SourceOfCopy(f.R, pair.CopyEntity) == child; })->CopyEntity;
         f.Do(action::selection::Select{occurrence});
         f.Do(action::object::Delete{});
         expect(!f.R.valid(child) && !f.R.valid(occurrence));
-        expect(f.R.get<const HierarchyInstance>(inner).Members.size() == 1u && f.R.get<const HierarchyInstance>(outer).Members.size() == 1u);
+        // The inner instance keeps its copy of the parent, and the outer one its copies of the inner instance and of that copy.
+        expect(f.R.get<const Instance>(inner).Copies.size() == 1u && f.R.get<const Instance>(outer).Copies.size() == 2u);
     });
     // The default seed's walk reaches every rule and completes every vocabulary entry.
     for (auto seed = WalkSeeds[0]; seed <= WalkSeeds[1]; ++seed) {

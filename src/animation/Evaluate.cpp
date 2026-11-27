@@ -3,7 +3,7 @@
 #include "TransformMath.h"
 #include "animation/Clips.h"
 #include "animation/Fields.h"
-#include "scene/HierarchyInstance.h"
+#include "scene/Instance.h"
 
 namespace animation {
 void Evaluate(state::Registry &r, float seconds, bool persistent) {
@@ -23,7 +23,7 @@ void Evaluate(state::Registry &r, float seconds, bool persistent) {
             const bool posing = channel.Target.Component == state::Key<PosedLocal>();
             if (!posing && !persistent) continue;
             if (posing && !pose) {
-                const auto *transform = r.try_get<const Transform>(HierarchySource(r, entity));
+                const auto *transform = r.try_get<const Transform>(SourceOfCopy(r, entity));
                 if (!transform) break;
                 pose = *transform;
             }
@@ -34,9 +34,6 @@ void Evaluate(state::Registry &r, float seconds, bool persistent) {
         }
         // Publish pose writes only on changes.
         if (!pose) continue;
-        ForEachHierarchyPlacement(r, entity, [&](state::Entity e, state::Entity source) {
-            *pose = ToTransform(ToMatrix(r.get<const Transform>(e)) * Inverse(ToMatrix(r.get<const Transform>(source))) * ToMatrix(*pose));
-        });
         if (const auto *edited = r.try_get<const UnkeyedPose>(entity)) {
             if (edited->Components & TranslationBit) pose->P = edited->Value.P;
             if (edited->Components & RotationBit) pose->R = edited->Value.R;

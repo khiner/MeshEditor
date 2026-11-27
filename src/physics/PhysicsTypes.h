@@ -97,11 +97,11 @@ struct PhysicsJointDrive {
     bool operator==(const PhysicsJointDrive &) const = default;
 };
 
-struct PhysicsJointDef {
+struct JointDescription {
     std::vector<PhysicsJointLimit> Limits{};
     std::vector<PhysicsJointDrive> Drives{};
     std::string Name{};
-    bool operator==(const PhysicsJointDef &) const = default;
+    bool operator==(const JointDescription &) const = default;
 };
 
 // --- Per-shape ---
@@ -259,7 +259,7 @@ struct TriggerNodes {
 
 struct PhysicsJoint {
     state::Entity ConnectedNode{state::Null};
-    state::Entity JointDefEntity{state::Null};
+    state::Entity JointDescriptionEntity{state::Null};
     bool EnableCollision{false};
     bool operator==(const PhysicsJoint &) const = default;
 };
