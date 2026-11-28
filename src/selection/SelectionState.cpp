@@ -170,7 +170,7 @@ void RefreshFaceSharpness(const state::Registry &r, const state::DirtySet &geome
     out.FaceSharpness = FaceSharpness(out.FaceFlagMeshes);
 }
 
-void ComputeKeyframes(const state::Registry &r, std::span<const state::Entity> selected, SelectedKeyframes &out) {
+void ComputeKeyframes(const state::Registry &r, const ModeScope &scope, std::span<const state::Entity> selected, SelectedKeyframes &out) {
     const float fps = r.get<const TimelineRange>(state::Document).Fps;
     auto &frames = out.Frames;
     frames.clear();
@@ -186,9 +186,18 @@ void ComputeKeyframes(const state::Registry &r, std::span<const state::Entity> s
     };
     const auto all = [](const AnimationChannel &) { return true; };
     if (!r.view<const AnimationClips>().empty()) {
+        // Pose mode shows the keys of the selected bones, and every other mode shows the keys of all bones of a selected armature.
+        const bool posing = scope.Mode == InteractionMode::Pose && scope.Bone;
         for (const auto e : selected) {
             append(e, all);
-            if (const auto *armature = r.try_get<const ArmatureObject>(e)) append(armature->Entity, all);
+            const auto *armature = r.try_get<const ArmatureObject>(e);
+            if (!armature) continue;
+            append(armature->Entity, all);
+            if (posing) continue;
+            for (const auto bone : armature->BoneEntities) append(bone, all);
+        }
+        if (posing) {
+            for (const auto bone : r.view<const BoneSelection>()) append(bone, all);
         }
     }
     // Material keys show for the material slot the active mesh displays.
@@ -280,7 +289,7 @@ std::vector<state::Entity> UpdateSelectionState(state::Registry &r) {
     const bool flags_changed = primaries_changed || AnyChanged(viewport_changes.EditMode);
     // A geometry or element selection change alone leaves the selected objects, which only mesh Edit mode's element flags then read.
     const bool element_flags_changed = AnyChanged(mesh_changes.Geometry) || r.Resources.get<const GpuSceneState>().EditSelectionDirty;
-    const bool keyframes_changed = selection || AnyChanged(animation_changes.Edited, animation_changes.KeyframeSources, mesh_changes.Material, render_changes.ActiveMaterialVariant);
+    const bool keyframes_changed = selection || interaction || AnyChanged(animation_changes.Edited, animation_changes.KeyframeSources, mesh_changes.Material, render_changes.ActiveMaterialVariant);
     const bool ancestors_changed = selection || parents;
     const auto selected = roots_changed || flags_changed || keyframes_changed || ancestors_changed || (element_flags_changed && scope.MeshEdit) ? SelectedIn(r) : std::vector<state::Entity>{};
     std::vector<state::Entity> changed_primaries;
@@ -312,7 +321,7 @@ std::vector<state::Entity> UpdateSelectionState(state::Registry &r) {
     }
 
     if (keyframes_changed) {
-        ComputeKeyframes(r, selected, r.edit<SelectedKeyframes>(state::Document));
+        ComputeKeyframes(r, scope, selected, r.edit<SelectedKeyframes>(state::Document));
     }
 
     if (rescoped || AnyChanged(scene_changes.Hierarchy, scene_changes.Names)) BuildOutlinerRows(r, r.edit<OutlinerRows>(state::Document));

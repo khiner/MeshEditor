@@ -23,9 +23,7 @@ void Close(const state::Registry &r, std::vector<state::Entity> &closure, size_t
             if (generated && std::ranges::contains(generated->Entities, child)) continue;
             if (descendants || IsPart(r, child)) closure.push_back(child);
         }
-        if (const auto *arm = r.try_get<const ArmatureObject>(e)) {
-            if (arm->JointEntity != state::Null) closure.push_back(arm->JointEntity);
-        }
+        if (const auto *arm = r.try_get<const ArmatureObject>(e)) closure.push_back(arm->JointEntity);
         if (const auto *joints = r.try_get<const BoneJointEntities>(e)) {
             closure.push_back(joints->Head);
             closure.push_back(joints->Tail);

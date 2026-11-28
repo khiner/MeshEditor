@@ -839,7 +839,7 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
             if (!r.valid(arm_obj_entity) || !TryRecordOf(r, arm_obj_entity)) continue;
             const auto &arm_obj = r.get<const ArmatureObject>(arm_obj_entity);
             r.emplace_or_replace<MeshDisplayDirty>(arm_obj_entity);
-            if (r.valid(arm_obj.JointEntity)) r.emplace_or_replace<MeshDisplayDirty>(arm_obj.JointEntity);
+            r.emplace_or_replace<MeshDisplayDirty>(arm_obj.JointEntity);
             const auto &bone_entities = arm_obj.BoneEntities;
             uint8_t max_state = 0;
             if (is_object_mode) {
@@ -861,14 +861,11 @@ void ProcessComponentEvents(state::Registry &r, EventPass pass) {
             };
 
             const auto hidden = [&](state::Entity e) { return r.all_of<Hidden>(e) ? InstanceStateHidden : uint8_t{0}; };
-            const bool joints_live = arm_obj.JointEntity != state::Null && r.valid(arm_obj.JointEntity);
             for (const auto b : bone_entities) {
                 if (const auto *ri = r.try_get<RenderInstance>(b)) WriteInstanceState(r, buffers, b, ri->BufferIndex, uint8_t(compute_state(b, BoneSel::Body) | hidden(b)));
-                const auto *joints = joints_live ? r.try_get<const BoneJointEntities>(b) : nullptr;
-                if (!joints) continue;
-
-                for (const auto &[je, part] : {std::pair{joints->Head, BoneSel::Root}, {joints->Tail, BoneSel::Tip}}) {
-                    if (const auto *ri = je != state::Null ? r.try_get<const RenderInstance>(je) : nullptr) WriteInstanceState(r, buffers, je, ri->BufferIndex, uint8_t(compute_state(b, part) | hidden(je)));
+                const auto &joints = r.get<const BoneJointEntities>(b);
+                for (const auto &[je, part] : {std::pair{joints.Head, BoneSel::Root}, {joints.Tail, BoneSel::Tip}}) {
+                    if (const auto *ri = r.try_get<const RenderInstance>(je)) WriteInstanceState(r, buffers, je, ri->BufferIndex, uint8_t(compute_state(b, part) | hidden(je)));
                 }
             }
             request();

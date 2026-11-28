@@ -356,6 +356,53 @@ void IncrementalLayout(Fixture &f) {
     f.Do(action::view::SetViewportShading{FirstViewport(f.R), ViewportShadingMode::Wireframe});
 }
 
+// A new armature draws every bone added to it, and the timeline shows the keys of the bones the mode selects.
+void ArmatureAuthoring(Fixture &f) {
+    auto &r = f.R;
+    const auto armature = f.Add(action::object::AddArmature{std::make_unique<ObjectCreateInfo>()});
+    f.Do(action::view::SetInteractionMode{InteractionMode::Edit});
+    const auto bones = [&] { return r.get<const ArmatureObject>(armature).BoneEntities; };
+    const auto drawn = [&] {
+        return std::ranges::all_of(bones(), [&](state::Entity bone) {
+            const auto &joints = r.get<const BoneJointEntities>(bone);
+            return r.all_of<RenderInstance>(bone) && r.all_of<RenderInstance>(joints.Head) && r.all_of<RenderInstance>(joints.Tail);
+        });
+    };
+    f.Do(action::bone::Add{});
+    expect(bones().size() == 1u && drawn());
+    f.Do(action::selection::SelectBone{bones().front()});
+    f.Do(action::bone::DeleteSelected{});
+    expect(bones().empty());
+    f.Do(action::bone::Add{});
+    f.Do(action::bone::Extrude{});
+    expect(bones().size() == 2u && drawn());
+    if (Render) {
+        const auto viewport = FirstViewport(r);
+        const auto with_bones = f.Image();
+        f.Do(action::UpdateOf<&ViewportDisplay::Overlays, &ViewportOverlays::Bones>(viewport, false));
+        expect(f.Image() != with_bones);
+        f.Do(action::UpdateOf<&ViewportDisplay::Overlays, &ViewportOverlays::Bones>(viewport, true));
+    }
+
+    const auto keys = [&] { return r.get<const SelectedKeyframes>(state::Document).Frames; };
+    const auto first = bones()[0], second = bones()[1];
+    f.Do(action::view::SetInteractionMode{InteractionMode::Pose});
+    f.Do(action::animation::AddAnimation{"Pose"});
+    for (const auto [bone, frame] : {std::pair{first, 4}, {second, 9}, {first, 15}}) {
+        f.Do(action::timeline::SetFrame{frame});
+        f.Do(action::animation::InsertKey{{bone}});
+    }
+    f.Do(action::selection::SelectBone{first});
+    expect(keys() == std::vector{4.f, 15.f});
+    f.Do(action::selection::SelectBone{second});
+    expect(keys() == std::vector{9.f});
+    f.Do(action::timeline::SetFrame{1});
+    f.Do(action::timeline::JumpKeyframe{true});
+    expect(r.get<const TimelinePlayback>(state::Document).CurrentFrame == 9);
+    f.Do(action::view::SetInteractionMode{InteractionMode::Object});
+    expect(keys() == std::vector{4.f, 9.f, 15.f});
+}
+
 void TestProject() {
     Fixture f, other;
     const TestDir source{"/tmp/mesheditor-scratch/project-external-source"};
@@ -406,6 +453,7 @@ void TestProject() {
     Scenario(f, other, "instance lifecycle renders back", InstanceLifecycleRendersBack);
     Scenario(f, other, "duplicate draws as its source", DuplicateDrawsAsItsSource);
     Scenario(f, other, "incremental layout", IncrementalLayout);
+    Scenario(f, other, "armature authoring", ArmatureAuthoring);
 }
 } // namespace
 

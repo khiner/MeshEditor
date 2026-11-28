@@ -44,7 +44,6 @@ void Destroy(state::Registry &, state::Entity);
 void Destroy(state::Registry &, std::span<const state::Entity>);
 void ProcessObjectRemovals(state::Registry &);
 void ClearMeshes(state::Registry &);
-void DestroyArmatureData(state::Registry &, state::Entity arm_obj_entity);
 
 state::Entity CreateBoneEntity(state::Registry &, state::Entity arm_obj_entity, const Armature &, uint32_t bone_index, state::Entity parent_entity, float display_scale);
 void CreateBoneJoints(state::Registry &, state::Entity arm_obj_entity, state::Entity bone_entity, state::Entity joint_entity);

@@ -38,15 +38,6 @@ void ClearRelationships(state::Registry &r, std::span<const state::Entity> entit
 }
 } // namespace
 
-void DestroyArmatureData(state::Registry &r, state::Entity arm_obj_entity) {
-    auto &arm = r.edit<ArmatureObject>(arm_obj_entity);
-    if (arm.JointEntity != state::Null) {
-        r.destroy(arm.JointEntity);
-        arm.JointEntity = state::Null;
-    }
-    r.remove<VertexStoreId, ModelsBuffer>(arm_obj_entity);
-}
-
 void Destroy(state::Registry &r, state::Entity e) {
     Destroy(r, std::span{&e, 1u});
 }
@@ -76,12 +67,10 @@ void Destroy(state::Registry &r, std::span<const state::Entity> entities) {
 
         if (r.all_of<ArmatureObject>(e)) {
             const auto &arm = r.get<ArmatureObject>(e);
-            if (arm.JointEntity != state::Null) destroyed.push_back(arm.JointEntity);
+            destroyed.push_back(arm.JointEntity);
             for (const auto bone_entity : arm.BoneEntities) {
-                if (const auto *joints = r.try_get<BoneJointEntities>(bone_entity)) {
-                    if (joints->Head != state::Null) destroyed.push_back(joints->Head);
-                    if (joints->Tail != state::Null) destroyed.push_back(joints->Tail);
-                }
+                const auto &joints = r.get<const BoneJointEntities>(bone_entity);
+                destroyed.insert(destroyed.end(), {joints.Head, joints.Tail});
             }
 
             destroyed.append_range(arm.BoneEntities);

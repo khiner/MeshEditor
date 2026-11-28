@@ -142,7 +142,6 @@ void CreateBoneJoints(state::Registry &r, state::Entity arm_obj_entity, state::E
 void CreateBoneEntities(state::Registry &r, MeshStore &meshes, state::Entity arm_obj_entity, state::Entity arm_data_entity) {
     const auto &armature = r.get<const Armature>(arm_data_entity);
     const uint32_t n = armature.Bones.size();
-    if (n == 0) return;
 
     const auto bone_data = primitive::BoneOctahedron(1.f);
     const auto bone_store_id = meshes.AllocateVertexBuffer(bone_data.Mesh.Positions, bone_data.Attrs);

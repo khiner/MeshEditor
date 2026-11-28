@@ -48,7 +48,7 @@ state::Entity AddBoneEntity(state::Registry &r, state::Entity arm_obj_entity, Bo
             const auto parent = armature.Bones[index].ParentIndex;
             const auto parent_entity = parent == InvalidBoneIndex ? object : arm_obj.BoneEntities[parent];
             const auto bone = ::CreateBoneEntity(r, object, armature, index, parent_entity, display_scales[index]);
-            if (arm_obj.JointEntity != state::Null && r.valid(arm_obj.JointEntity)) ::CreateBoneJoints(r, object, bone, arm_obj.JointEntity);
+            ::CreateBoneJoints(r, object, bone, arm_obj.JointEntity);
             arm_obj.BoneEntities.push_back(bone);
         }
     }
@@ -63,10 +63,8 @@ void RemoveBoneEntities(state::Registry &r, state::Entity object, const Armature
         const auto bone_entity = arm_obj.BoneEntities[index];
         const auto &bone = armature.Bones[index];
         const auto grandparent = bone.ParentIndex == InvalidBoneIndex ? object : arm_obj.BoneEntities[bone.ParentIndex];
-        if (const auto *joints = r.try_get<const BoneJointEntities>(bone_entity)) {
-            if (joints->Head != state::Null) destroyed.push_back(joints->Head);
-            if (joints->Tail != state::Null) destroyed.push_back(joints->Tail);
-        }
+        const auto &joints = r.get<const BoneJointEntities>(bone_entity);
+        destroyed.insert(destroyed.end(), {joints.Head, joints.Tail});
         std::vector<state::Entity> children;
         for (const auto child : Children{&r, bone_entity}) children.push_back(child);
         ClearParents(r, children);
@@ -85,7 +83,6 @@ void RemoveBoneEntities(state::Registry &r, state::Entity object, const Armature
         const auto bone = arm_obj.BoneEntities[i];
         if (r.get<const BoneIndex>(bone).Index != i) r.replace<BoneIndex>(bone, i);
     }
-    if (arm_obj.BoneEntities.empty()) DestroyArmatureData(r, object);
 }
 } // namespace
 
