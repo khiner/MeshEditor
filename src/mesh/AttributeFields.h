@@ -38,7 +38,7 @@ std::optional<uint32_t> PlaneSideField(state::Registry &, uint32_t id, Attribute
 // Records the Plane Side field of a nonzero normal into the Bool attribute `output`, with the other pending lanes' fields at the same step.
 void RecordPlaneSide(const MeshStore &, const MeshPipelines &, mtl::ComputeChain &, uint32_t output, vec3 point, vec3 normal, PlaneSideKind, float tolerance);
 // Per listed element, the lowest listed handle its component under the adjacency reaches through listed elements only.
-// With parity, each label is that handle shifted left with the parity of the element's path to it in the low bit, each step flipping it.
+// With parity, each label is that handle shifted left with the parity of the element's shortest path to it in the low bit.
 std::vector<uint32_t> ComponentLabels(const MeshStore &, const MeshPipelines &, uint32_t id, Element domain, std::span<const uint32_t> handles, FieldAdjacency, bool parity = false);
-// Records the passes of ComponentLabels in the record's lane of the chain and calls `then` with the labels once the chain completed the round that changed none.
+// Records the passes of ComponentLabels in the record's lane of the chain and calls `then` with the labels once the chain completed the last round that changed none.
 void RecordComponentLabels(const MeshStore &, const MeshPipelines &, mtl::ComputeChain &, uint32_t id, Element domain, std::span<const uint32_t> handles, FieldAdjacency, bool parity, std::function<void(std::vector<uint32_t>)> then);

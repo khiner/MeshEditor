@@ -108,8 +108,8 @@ kernel void AttributeFieldPlaneSide(JOB_TABLE_ARGS(AttributeFieldJob)) {
 kernel void AttributeFieldLabelInit(JOB_TABLE_ARGS(NeighborFieldJob)) {
     FIELD_HANDLE(handle);
     if (handle == InvalidOffset) return;
-    FieldWords(b, pc.Labels)[handle] = pc.Parity ? handle << 1u : handle;
-    FieldWords(b, pc.Flags)[handle] = 0u;
+    FieldWords(b, pc.Labels)[handle] = handle;
+    FieldWords(b, pc.Flags)[handle] = pc.Parity ? InvalidOffset : 0u;
     if (pc.Restrict.Slot != InvalidSlot) FieldWords(b, pc.Restrict)[handle] = 0u;
 }
 kernel void AttributeFieldMarkList(JOB_TABLE_ARGS(NeighborFieldJob)) {
@@ -124,11 +124,25 @@ kernel void AttributeFieldLink(JOB_TABLE_ARGS(NeighborFieldJob)) {
     const ConnectivityView conn{b, pc.Connectivity};
     device uint *labels = FieldWords(b, pc.Labels);
     const uint current = labels[handle];
-    const uint shift = pc.Parity ? 1u : 0u, parity = current & shift;
-    uint least = min(current, labels[current >> shift] ^ parity);
-    FieldNeighbors(pc, conn, handle, [&](uint n) { if (FieldTakes(b, pc, n)) least = min(least, labels[n] ^ shift); });
-    if (least >> shift < current >> shift) {
+    uint least = min(current, labels[current]);
+    FieldNeighbors(pc, conn, handle, [&](uint n) { if (FieldTakes(b, pc, n)) least = min(least, labels[n]); });
+    if (least < current) {
         labels[handle] = least;
+        FieldWords(b, pc.Changed)[0] = 1u;
+    }
+}
+// Each distance falls to zero at its component's root and otherwise to one past the least of its neighbors', until a round changes nothing.
+// A distance only falls and always bounds a walk to the root, so the rounds end at the shortest path lengths in any thread order.
+kernel void AttributeFieldDistance(JOB_TABLE_ARGS(NeighborFieldJob)) {
+    FIELD_HANDLE(handle);
+    if (handle == InvalidOffset || !FieldTakes(b, pc, handle)) return;
+    const ConnectivityView conn{b, pc.Connectivity};
+    device uint *distances = FieldWords(b, pc.Flags);
+    const uint current = distances[handle];
+    uint least = FieldWords(b, pc.Labels)[handle] == handle ? 0u : current;
+    FieldNeighbors(pc, conn, handle, [&](uint n) { if (FieldTakes(b, pc, n) && distances[n] != InvalidOffset) least = min(least, distances[n] + 1u); });
+    if (least < current) {
+        distances[handle] = least;
         FieldWords(b, pc.Changed)[0] = 1u;
     }
 }

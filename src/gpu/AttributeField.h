@@ -23,13 +23,13 @@ struct NeighborFieldJob {
     uint32_t Mean; // Curvature: the mean curvature instead of the Gaussian
     uint32_t Complement;
     NamedAttributeRef Seed, Output;
-    // Per element handle: a component label and whether its root holds a seed, or the flags a growth step reads and writes.
+    // Per element handle: a component label and whether its root holds a seed or, with Parity, its distance from its root, or the flags a growth step reads and writes.
     SlotOffset Labels, Flags;
-    SlotOffset Changed; // One word a link round sets when a label falls
+    SlotOffset Changed; // One word a link or distance round sets when a label or a distance falls
     SlotOffset Restrict; // Per element handle: whether a link round takes the element, marked from List, or no slot to take every live element
     SlotOffset List;
     uint32_t ListCount;
-    uint32_t Parity; // Labels shift left and carry in the low bit the parity of the path to their root, which each adjacency step flips
+    uint32_t Parity; // Flags start unreached and hold the distance from the root that distance rounds relax once the labels settle
 };
 // One record's job writing a field over the live elements of its domain from its connectivity and positions alone, one thread per element slot of its blocks.
 // Plane Side reads the plane's unit normal and offset, the tolerance relative to the larger of one and a vertex's distance from the origin, and the selected side.

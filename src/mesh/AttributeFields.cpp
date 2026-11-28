@@ -111,8 +111,7 @@ void RecordComponents(const MeshStore &meshes, const MeshPipelines &pipelines, m
             RecordNeighborField(pipelines, chain, MeshPass::FieldMarkSeeds, pc, threads);
             RecordNeighborField(pipelines, chain, MeshPass::FieldComponents, pc, threads);
         });
-        then();
-    });
+        then(); });
 }
 
 void RecordPlaneSide(const MeshStore &meshes, const MeshPipelines &pipelines, mtl::ComputeChain &chain, uint32_t output, vec3 point, vec3 normal, PlaneSideKind side, float tolerance) {
@@ -151,12 +150,15 @@ void RecordComponentLabels(const MeshStore &meshes, const MeshPipelines &pipelin
         RecordNeighborField(pipelines, chain, MeshPass::FieldLabelInit, pc, field.Threads);
         RecordNeighborField(pipelines, chain, MeshPass::FieldMarkList, pc, pc.ListCount);
     });
-    RecordUntilUnchanged(chain, id, pc.Changed.Offset, [&pipelines, &chain, pc, threads = field.Threads] { RecordNeighborField(pipelines, chain, MeshPass::FieldLink, pc, threads); }, [&chain, labels = pc.Labels.Offset, bound = field.HandleBound, handles = std::vector<uint32_t>{handles.begin(), handles.end()}, then = std::move(then)] {
-        const auto all = chain.Scratch.Get({labels, bound});
-        then(handles | std::views::transform([&](uint32_t handle) { return all[handle]; }) | std::ranges::to<std::vector>());
-    });
+    // With parity, distance rounds follow the settled labels, and each label takes the parity of its distance.
+    const auto read = [&chain, pc, bound = field.HandleBound, handles = std::vector<uint32_t>{handles.begin(), handles.end()}, then = std::move(then)] {
+        const auto labels = chain.Scratch.Get({pc.Labels.Offset, bound}), distances = chain.Scratch.Get({pc.Flags.Offset, bound});
+        then(handles | std::views::transform([&](uint32_t handle) { return pc.Parity ? labels[handle] << 1u | (distances[handle] & 1u) : labels[handle]; }) | std::ranges::to<std::vector>());
+    };
+    RecordUntilUnchanged(chain, id, pc.Changed.Offset, [&pipelines, &chain, pc, threads = field.Threads] { RecordNeighborField(pipelines, chain, MeshPass::FieldLink, pc, threads); }, [&pipelines, &chain, id, pc, threads = field.Threads, read] {
+        if (!pc.Parity) return read();
+        RecordUntilUnchanged(chain, id, pc.Changed.Offset, [&pipelines, &chain, pc, threads] { RecordNeighborField(pipelines, chain, MeshPass::FieldDistance, pc, threads); }, read); });
 }
 std::vector<uint32_t> ComponentLabels(const MeshStore &meshes, const MeshPipelines &pipelines, uint32_t id, Element domain, std::span<const uint32_t> handles, FieldAdjacency adjacency, bool parity) {
     return mtl::Drained<std::vector<uint32_t>>(meshes.BufferContext(), [&](mtl::ComputeChain &chain, auto then) { RecordComponentLabels(meshes, pipelines, chain, id, domain, handles, adjacency, parity, std::move(then)); });
 }
-

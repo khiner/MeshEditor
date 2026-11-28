@@ -272,6 +272,7 @@ enum class MeshPass : uint16_t {
     FieldLabelInit,
     FieldMarkList,
     FieldLink,
+    FieldDistance,
     FieldMarkSeeds,
     FieldComponents,
     FieldGrowInit,
